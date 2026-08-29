@@ -1,0 +1,68 @@
+# Example team cartridge — a worked drill-down over `base`.
+#
+# Copy this directory to start a real team. Everything here is fake: the
+# tracker IDs are obviously invalid, the skill names point at a plugin that
+# does not exist, and the team is called "example-team". That is deliberate —
+# see docs/CLEAN-ROOM.md on why fixtures never sample a real workspace.
+team: example-team
+extends: base
+description: Worked example showing how a team binds the base contract
+version: 1
+
+# ── Role bindings ───────────────────────────────────────────────────────────
+# Every REQUIRED role in the base cartridge must be bound here or the loader
+# refuses to resolve. Values are skill NAMES (`plugin:skill`) — the graph never
+# sees a path, and the skill body lives in a plugin, not in this repo.
+skills:
+  plan:             example-skills:plan-ticket
+  build:            example-skills:build-in-worktree
+  review_charter:   example-skills:review-charter
+  board_apply_arm:  example-skills:board-lifecycle    # SINGLE WRITER of the board
+  ticket_apply_arm: example-skills:create-ticket
+  # optional roles this team chooses to fill
+  scope_epic:       example-skills:scope-epic
+  evidence_verify:  example-skills:verify-evidence
+  discipline:       example-skills:budget-guard
+
+# ── Where writes land ───────────────────────────────────────────────────────
+# The tracker is named once, here. Swapping trackers is an edit to this block
+# and nothing else — no graph and no skill hardcodes a vendor.
+landing_areas:
+  tracker: example-tracker
+  workspace_id: "0000000000000000"        # fake
+  auth_env: EXAMPLE_TRACKER_TOKEN         # env var NAME; never the value
+  worktree_root: ~/worktrees
+  board:
+    resolve: by_name                      # IDs drift; resolve at runtime
+    name_pattern: 'example team board'
+    sections: [Planned, In Progress, In Review, Blocked, Done]
+  future_landings:
+    backlog:  {resolve: by_name, name_pattern: 'example backlog'}
+    bugs:     {resolve: by_name, name_pattern: 'example bugs'}
+    roadmap:  {resolve: by_name, name_pattern: 'example roadmap'}
+
+# ── Apply-arm bindings + local tightenings ──────────────────────────────────
+# A team may bind an apply arm to a kind, and may tighten risk/ramp.
+# It may never loosen what the base declared.
+write_kinds:
+  ticket_create:    {apply_arm: ticket_apply_arm}
+  ticket_update:    {apply_arm: ticket_apply_arm}
+  board_move:       {apply_arm: board_apply_arm}
+  draft_pr_create:  {apply_arm: shell}
+  retry_idempotent:
+    apply_arm: shell
+    idempotency: check_execution_state_first
+  comment_add:
+    attribution: see context/conventions.md
+
+# ── What feeds the graphs ───────────────────────────────────────────────────
+intake:
+  - source: board
+    kind: tickets
+    cadence: weekday_morning
+  - source: manual
+    kind: ideas
+
+# ── Context packs (appended AFTER the base packs, base-first) ───────────────
+context:
+  - context/code-style.md    # the file every team replaces with its own

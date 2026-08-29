@@ -1,0 +1,24 @@
+# Provider profile — maps abstract capability tiers to concrete models.
+#
+# The vendor axis. Graphs and cartridges name TIERS, never model IDs, so
+# swapping providers or upgrading a model is an edit to this file alone.
+# Changing anything here resets autonomy streaks (see base policy): a track
+# record earned on one model is not a track record on another.
+profile: anthropic-default
+description: Default tier -> model bindings
+
+auth_env: ANTHROPIC_API_KEY    # env var NAME. Never the value, in any file, ever.
+
+tiers:
+  cheap:     claude-haiku-4-5-20251001   # bulk classification, enumeration
+  standard:  claude-sonnet-5             # most nodes
+  deep:      claude-opus-5               # verification, adversarial review, arbitration
+
+defaults:
+  plan:            standard
+  build:           standard
+  review_charter:  deep
+  review_adversary: deep
+  arbitrate:       deep
+  triage_classify: cheap
+  evidence_verify: deep
