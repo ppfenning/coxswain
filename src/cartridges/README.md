@@ -51,8 +51,9 @@ measured.
 
 Scaffold. `core/` modules carry their full contracts as docstrings and raise
 `NotImplementedError` — they are written against, not ported. See
-[`docs/CLEAN-ROOM.md`](docs/CLEAN-ROOM.md) for why, and for the rules on
-fixtures and examples.
+[`docs/CLEAN-ROOM.md`](docs/CLEAN-ROOM.md) for the working rule and
+[`docs/PROVENANCE.md`](docs/PROVENANCE.md) for where the ideas came from and
+what is still open.
 
 - [x] Base cartridge: roles, write kinds, routing, epic threshold, policy
 - [x] Base context packs: conventions, epic model
