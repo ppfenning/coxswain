@@ -33,7 +33,39 @@ providers/         tier -> model. the vendor axis, isolated.
 | **Domain** | you change teams, trackers, or conventions | `cartridges/` |
 | **Vendor** | you change model provider or tier bindings | `providers/` |
 
-A graph sits at the intersection and knows about neither.
+A graph sits at the intersection and knows about neither:
+
+```mermaid
+flowchart TB
+    NODE["<b>agent-graphs</b> — a node asks for<br/>role: review_charter · tier: deep"]
+
+    subgraph CART["agent-cartridges — the two axes"]
+        direction LR
+        DOMAIN["<b>domain</b><br/>cartridges/&lt;team&gt;<br/><i>role → skill name</i>"]
+        VENDOR["<b>vendor</b><br/>providers/&lt;profile&gt;<br/><i>tier → model</i>"]
+    end
+
+    BODY["<b>example-skills</b><br/>skills/&lt;name&gt;/SKILL.md"]
+    RUN(["the model call"])
+    POLICY["core/policy<br/><i>may this kind write yet?</i>"]
+    GATE{{"human gate"}}
+    LEDGER[("append-only ledger")]
+
+    NODE -- role --> DOMAIN
+    NODE -- tier --> VENDOR
+    DOMAIN -- "skill name" --> BODY
+    VENDOR -- "model id" --> RUN
+    BODY --> RUN
+    RUN -- "proposal<br/>{kind, risk, evidence}" --> POLICY
+    POLICY --> GATE
+    GATE -- "outcome, derived from<br/>what the human did" --> LEDGER
+    LEDGER -.-> POLICY
+```
+
+The node names a role and a tier. It never learns which skill filled the role or
+which model answered — that is the whole seam. The dotted edge is the loop that
+makes autonomy earnable: policy reads the ledger, and the ledger only ever
+records what happened at the gate.
 
 ## Autonomy is earned, per kind
 
@@ -46,6 +78,39 @@ everything — a track record earned under different rules is not a track record
 The asymmetry is the argument: a wrong proposal costs a minute of review, a
 wrong write costs an incident. Buy autonomy only where that ratio has been
 measured.
+
+```mermaid
+stateDiagram-v2
+    direction TB
+
+    state "never / gated" as BLOCKED
+    state "deferred" as DEFERRED
+    state "eligible — proposing" as PROPOSING
+    state "graduated — auto-applies" as AUTO
+
+    [*] --> BLOCKED
+    [*] --> DEFERRED
+    [*] --> PROPOSING
+
+    BLOCKED --> BLOCKED: never graduates
+    DEFERRED --> PROPOSING: eligible kinds<br/>went first
+    PROPOSING --> PROPOSING: clean, +1
+    PROPOSING --> AUTO: streak ≥ bar
+    AUTO --> AUTO: cap hit,<br/>overflow proposes
+    AUTO --> PROPOSING: reversal:<br/>bar × 2
+    AUTO --> PROPOSING: config change:<br/>streak void
+```
+
+Three things that diagram is making concrete, because they are the ones prose
+keeps losing:
+
+- **`skipped` appears nowhere.** A proposal approved but never executed proves
+  nothing either way, so it neither builds nor breaks a streak.
+- **The bar ratchets.** A reversal does not just reset progress, it doubles the
+  price of getting back — so a kind that keeps being wrong gets progressively
+  harder to trust, not merely re-tested.
+- **Hitting a cap is not a demotion.** The overflow is proposed and the streak is
+  left alone; the cap is the policy working, not the kind misbehaving.
 
 ## Status
 
