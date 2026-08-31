@@ -17,8 +17,8 @@ skills:
   plan:             example-skills:plan-ticket
   build:            example-skills:build-in-worktree
   review_charter:   example-skills:review-charter
-  board_apply_arm:  example-skills:board-lifecycle    # SINGLE WRITER of the board
-  ticket_apply_arm: example-skills:create-ticket
+  work_state_arm:   example-skills:board-lifecycle    # SINGLE WRITER of work state
+  work_item_arm:    example-skills:create-ticket
   # optional roles this team chooses to fill
   scope_epic:       example-skills:scope-epic
   evidence_verify:  example-skills:verify-evidence
@@ -47,9 +47,9 @@ landing_areas:
 # A team may bind an apply arm to a kind, and may tighten risk/ramp.
 # It may never loosen what the base declared.
 write_kinds:
-  ticket_create:    {apply_arm: ticket_apply_arm}
-  ticket_update:    {apply_arm: ticket_apply_arm}
-  board_move:       {apply_arm: board_apply_arm}
+  item_create:      {apply_arm: work_item_arm}
+  item_update:      {apply_arm: work_item_arm}
+  state_move:       {apply_arm: work_state_arm}
   doc_update:       {apply_arm: docs_apply_arm}       # runbook corrections land here
   draft_pr_create:  {apply_arm: shell}
   retry_idempotent:

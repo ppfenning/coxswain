@@ -1,0 +1,59 @@
+# Local cartridge — the substrate with no tracker at all.
+#
+# Everything the base contract asks for, bound to the filesystem. There is no
+# `tracker`, no `workspace_id`, and no `auth_env`, because there is no external
+# system to authenticate to: work items are markdown files under `work/`, git is
+# the audit trail, and a pull request is the review surface.
+#
+# This exists to prove a claim the substrate makes and had never tested — that a
+# graph names roles and landings, never vendors, so the vendor can be *nothing*.
+# If a graph needed a tracker, this cartridge could not resolve.
+team: local
+extends: base
+description: Solo/local operation — the work store is the repository
+version: 1
+
+# ── Role bindings ───────────────────────────────────────────────────────────
+# Point --skills-root at whichever plugin provides these bodies.
+skills:
+  plan:             local-skills:plan-task
+  build:            local-skills:build-in-worktree
+  review_charter:   local-skills:review-charter
+  work_state_arm:   local-skills:workstore-state     # SINGLE WRITER of state
+  work_item_arm:    local-skills:workstore-item
+  # The pieces that make a phased build worth running
+  decompose:        local-skills:decompose-initiative
+  handoff:          local-skills:handoff-brief
+  review_adversary: local-skills:review-adversary
+  arbitrate:        local-skills:arbitrate
+  scope_epic:       local-skills:scope-work
+  evidence_verify:  local-skills:verify-evidence
+  docs_apply_arm:   local-skills:update-docs
+
+# ── Where writes land ───────────────────────────────────────────────────────
+# Directories, not boards. The state names come from the base `work_routing`
+# block; only the landing each one maps to is local.
+landing_areas:
+  work_root:      work                # work/<initiative>/<phase>/<task>.md
+  worktree_root:  ~/worktrees
+  active_work:    work
+  planned_work:   work
+  future_work:    backlog             # scoped-but-not-started lives apart
+  runbook_index:  docs/runbooks/index.md
+
+# ── Apply arms ──────────────────────────────────────────────────────────────
+# Every write lands in a file this repository already tracks, so "applying" a
+# proposal is a commit someone can read, revert, and blame.
+write_kinds:
+  item_create:      {apply_arm: work_item_arm}
+  item_update:      {apply_arm: work_item_arm}
+  state_move:       {apply_arm: work_state_arm}
+  doc_update:       {apply_arm: docs_apply_arm}
+  draft_pr_create:  {apply_arm: shell}
+
+intake:
+  - source: manual
+    kind: ideas
+
+context:
+  - context/code-style.md

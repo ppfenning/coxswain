@@ -20,13 +20,15 @@ version: 1
 # portable: the same graph runs for any team that can bind its required roles.
 roles:
   required:
-    - plan              # decompose an intake item into an ordered plan
+    - plan              # decompose a work item into an ordered plan
     - build             # do the work, in an isolated workspace it owns
     - review_charter    # review against the team's own written standards
-    - board_apply_arm   # SINGLE WRITER of the team's active board
-    - ticket_apply_arm  # creates/updates tracker items
+    - work_state_arm    # SINGLE WRITER of work state, wherever that lives
+    - work_item_arm     # creates/updates work items
   optional:
-    - scope_epic        # initiative -> phases -> tickets
+    - decompose         # a large idea -> phases -> tasks, with dependency edges
+    - scope_epic        # one item -> epic / parent+subtasks / single item
+    - handoff           # validate that step N's output satisfies step N+1's needs
     - triage_classify   # symptom -> known-pattern key
     - runbook_execute   # follow a written operational procedure
     - evidence_verify   # deterministic checks that a claim is actually true
@@ -38,17 +40,19 @@ roles:
     - discipline        # budget/token/scope guardrails
 
 # ── Where work lands, by state ──────────────────────────────────────────────
-# Not every ticket belongs on the active board. Route by the state of the work,
-# not by who filed it.
-ticket_routing:
+# Not every item belongs in the active set. Route by the state of the work, not
+# by who filed it. The landing names below are ABSTRACT: a team with a tracker
+# binds them to boards and columns, a team without one binds them to
+# directories. Neither is named here.
+work_routing:
   states:
-    active:  board           # being worked now -> board state machine
-    planned: board_planned   # scoped and scheduled -> planned column / phase
-    future:  future_landing  # roadmapped for later -> NOT the active board
+    active:  active_work     # being worked now
+    planned: planned_work    # scoped and scheduled
+    future:  future_work     # roadmapped for later -> NOT the active set
   rules:
     - future work attaches to its parent epic when one exists
-    - future work never enters the active board; it graduates at scoping
-    - teams bind future_landing categories in their own landing_areas
+    - future work never enters the active set; it graduates at scoping
+    - teams bind the landing for each state in their own landing_areas
 
 # ── When something deserves to be an epic ───────────────────────────────────
 # Most work does not. Epic iff ANY of:
@@ -70,9 +74,9 @@ epic_threshold:
 #         never     a human does this, permanently
 write_kinds:
   comment_add:        {risk: low,    ramp: gated}
-  ticket_create:      {risk: low,    ramp: deferred}
-  ticket_update:      {risk: low,    ramp: deferred}
-  board_move:         {risk: low,    ramp: deferred}
+  item_create:        {risk: low,    ramp: deferred}
+  item_update:        {risk: low,    ramp: deferred}
+  state_move:         {risk: low,    ramp: deferred}
   doc_update:         {risk: low,    ramp: deferred}
   draft_pr_create:    {risk: low,    ramp: eligible}   # draft only — no effect until opened
   retry_idempotent:   {risk: medium, ramp: eligible}   # safe to run twice
@@ -93,7 +97,7 @@ policy:
   regraduation_multiplier: 2   # after a reversal, the bar doubles
   caps:                        # per-run ceilings even once graduated
     retry_idempotent: 3
-    ticket_create: 10
+    item_create: 10
   review_tier:
     tier0_patterns: [docs_only, rename_only, config_bump, param_tweak]
     tier1_max_changed_lines: 150
