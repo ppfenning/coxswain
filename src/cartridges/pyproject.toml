@@ -21,3 +21,8 @@ packages = ["core"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The suite imports helpers from tests/conftest.py by name, which needs the repo
+# root importable. `python -m pytest` adds the cwd for you and bare `pytest` does
+# not, so without this the suite passes locally and fails in CI — which is
+# exactly what happened.
+pythonpath = ["."]
