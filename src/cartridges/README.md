@@ -57,8 +57,10 @@ flowchart TB
     VENDOR -- "model id" --> RUN
     BODY --> RUN
     RUN -- "proposal<br/>{kind, risk, evidence}" --> POLICY
-    POLICY --> GATE
+    POLICY -- "propose" --> GATE
+    POLICY -- "auto<br/><i>(graduated kinds only)</i>" --> ARM["the apply arm<br/><i>itself a role</i>"]
     GATE -- "outcome, derived from<br/>what the human did" --> LEDGER
+    ARM -. "no ledger row —<br/>autonomy is spent, not earned, by acting" .-> LEDGER
     LEDGER -.-> POLICY
 ```
 
