@@ -10,7 +10,7 @@ description: Default tier -> model bindings
 auth_env: ANTHROPIC_API_KEY    # env var NAME. Never the value, in any file, ever.
 
 tiers:
-  cheap:     claude-haiku-4-5-20251001   # bulk classification, enumeration
+  cheap:     claude-haiku-4-5           # bulk classification, enumeration
   standard:  claude-sonnet-5             # most nodes
   deep:      claude-opus-5               # verification, adversarial review, arbitration
 

@@ -49,26 +49,46 @@ measured.
 
 ## Status
 
-Scaffold. `core/` modules carry their full contracts as docstrings and raise
-`NotImplementedError` — they are written against, not ported. See
-[`docs/CLEAN-ROOM.md`](docs/CLEAN-ROOM.md) for the working rule and
-[`docs/PROVENANCE.md`](docs/PROVENANCE.md) for where the ideas came from and
-what is still open.
+`core/` is implemented and tested. Each module still carries its contract as a
+docstring — the contract came first and the implementation was written against
+it, never ported. See [`docs/CLEAN-ROOM.md`](docs/CLEAN-ROOM.md) for the working
+rule and [`docs/PROVENANCE.md`](docs/PROVENANCE.md) for where the ideas came
+from.
 
 - [x] Base cartridge: roles, write kinds, routing, epic threshold, policy
 - [x] Base context packs: conventions, epic model
 - [x] Worked example team cartridge
 - [x] Provider profile
-- [ ] `core/` implementations
-- [ ] Graphs
-- [ ] Tests (synthetic fixtures only)
+- [x] `core/` implementations
+- [x] Tests (synthetic fixtures only)
+- [ ] Graphs — they live in [`agent-graphs`](https://github.com/ppfenning/agent-graphs)
 
 ## Getting started
 
 ```bash
+pip install -e ".[dev]"
 cp -r cartridges/example-team cartridges/my-team
 $EDITOR cartridges/my-team/cartridge.yaml          # bind roles, name landings
 cp context-templates/code-style.md cartridges/my-team/context/
 $EDITOR cartridges/my-team/context/code-style.md   # in your own words
-python -m core.cartridge --team my-team --json     # resolve + validate
+
+python -m core.cartridge --team my-team --json \
+  --skills-root ~/repos/example-skills                 # resolve + validate
 ```
+
+`--skills-root` is how the loader checks that every bound skill name resolves to
+exactly one skill body; pass it once per plugin root. There is a
+`--unverified-skills` escape hatch for resolving without that check, and it
+prints a warning every time — a check you can silently skip is not a check.
+
+## Tests
+
+```bash
+pytest -q
+```
+
+Fixtures are synthetic and obviously fake. The suite leans hardest on the ways
+autonomy must *fail* to be granted: streaks that do not transfer across kinds,
+risks, cartridge hashes, or provider profiles; a single reversal resetting the
+streak and doubling the bar; and `record_run` deriving outcomes from the gate
+rather than believing a run's own account of itself.

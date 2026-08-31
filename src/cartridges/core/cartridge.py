@@ -31,15 +31,259 @@ CLI: `python -m core.cartridge --team <name> --json` prints the resolved
 cartridge, which is what a shell injects into a graph's `args.cartridge`.
 There is deliberately no inline fallback anywhere in a graph — a fallback means
 the seam never gets exercised and quietly rots.
+
+IMPLEMENTATION NOTES (decisions the contract left open)
+
+`skill_index` is a REQUIRED keyword argument, not an optional one. The contract
+says resolution must refuse when a bound name does not resolve to exactly one
+body; a default of `None` would make that check quietly skippable, which is the
+precise failure mode this substrate exists to prevent. Build one with
+`core.skills.index_from_roots`, or hand tests a plain dict.
+
+`cartridge_sha` hashes the merged config with `context` EXCLUDED, then hashes
+each context pack's bytes in resolved order. Context paths are absolute, so
+including them in the hashed payload would make the sha depend on where the
+repo happens to be checked out — every machine would compute a different hash
+and no autonomy streak would ever survive moving a directory. Content is what
+matters, and content is what is hashed.
 """
 
 from __future__ import annotations
 
-__all__ = ["load"]
+import argparse
+import hashlib
+import json
+import sys
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+__all__ = ["load", "CartridgeError"]
+
+# A team may move a value toward the strict end of these orderings, never back.
+RISK_ORDER: Mapping[str, int] = {"low": 0, "medium": 1, "high": 2}
+RAMP_ORDER: Mapping[str, int] = {"eligible": 0, "deferred": 1, "gated": 2, "never": 3}
+
+# apply_arm usually names a role, but two values are literal sinks rather than
+# agent roles: the shell applies it itself, or it goes out as a pull request.
+NON_ROLE_APPLY_ARMS = frozenset({"shell", "pr"})
+
+# Emitted by load(), so excluded from the payload that load() hashes.
+DERIVED_KEYS = frozenset({"cartridge_dir", "cartridge_sha"})
 
 
-def load(*args, **kwargs):  # noqa: D401 - contract stub
-    raise NotImplementedError(
-        "Implement from the contract in this module's docstring. "
-        "Do not port a prior employer's implementation — see docs/CLEAN-ROOM.md."
+class CartridgeError(Exception):
+    """A cartridge could not be resolved, or resolved into something invalid."""
+
+
+def _read_yaml(path: Path) -> dict[str, Any]:
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise CartridgeError(f"{path}: cannot read cartridge: {exc}") from exc
+    if not isinstance(data, dict):
+        raise CartridgeError(f"{path}: expected a mapping at the top level, got {type(data).__name__}")
+    return data
+
+
+def _chain(team: str, cartridges_dir: Path) -> list[tuple[str, Path, dict[str, Any]]]:
+    """Resolve the `extends` chain, returned base-first (root ... team)."""
+    seen: list[str] = []
+    chain: list[tuple[str, Path, dict[str, Any]]] = []
+    name: Any = team
+    while name is not None:
+        if not isinstance(name, str):
+            raise CartridgeError(f"'extends' must name a cartridge, got {name!r}")
+        if name in seen:
+            raise CartridgeError("cartridge inheritance cycle: " + " -> ".join([*seen, name]))
+        seen.append(name)
+        directory = cartridges_dir / name
+        manifest = directory / "cartridge.yaml"
+        if not manifest.is_file():
+            raise CartridgeError(f"no cartridge for '{name}': expected {manifest}")
+        raw = _read_yaml(manifest)
+        chain.append((name, directory, raw))
+        name = raw.get("extends")
+    chain.reverse()
+    return chain
+
+
+def _absolutise_context(raw: Mapping[str, Any], directory: Path) -> list[str]:
+    """Context paths are relative to the cartridge that declared them."""
+    entries = raw.get("context", [])
+    if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes)):
+        raise CartridgeError(f"{directory}: 'context' must be a list, got {type(entries).__name__}")
+    return [str((directory / str(entry)).resolve()) for entry in entries]
+
+
+def _merge(parent: Mapping[str, Any], child: Mapping[str, Any]) -> dict[str, Any]:
+    """Deep-merge child over parent. `context` concatenates; other lists replace.
+
+    A list that is not `context` is a value, not a tree — a team that names its
+    board sections means those sections, not the base's plus its own.
+    """
+    merged = dict(parent)
+    for key, value in child.items():
+        if key == "context":
+            merged[key] = [*parent.get(key, []), *value]
+        elif isinstance(value, Mapping) and isinstance(parent.get(key), Mapping):
+            merged[key] = _merge(parent[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _loosenings(parent_kinds: Mapping[str, Any], child_kinds: Mapping[str, Any], child: str) -> list[str]:
+    """A team may tighten a risk or ramp. It may never loosen one."""
+    problems: list[str] = []
+    for kind, spec in child_kinds.items():
+        base = parent_kinds.get(kind)
+        if not isinstance(spec, Mapping) or not isinstance(base, Mapping):
+            continue
+        for field, order in (("risk", RISK_ORDER), ("ramp", RAMP_ORDER)):
+            if field not in spec or field not in base:
+                continue
+            new, old = spec[field], base[field]
+            if new not in order:
+                problems.append(f"'{child}' sets {kind}.{field} to unknown value '{new}'")
+            elif old in order and order[new] < order[old]:
+                problems.append(
+                    f"'{child}' loosens {kind}.{field} from '{old}' to '{new}'; "
+                    "a team may tighten what the base declared, never loosen it"
+                )
+    return problems
+
+
+def _cartridge_sha(merged: Mapping[str, Any], context_paths: Sequence[str]) -> str:
+    payload = {k: v for k, v in merged.items() if k not in DERIVED_KEYS and k != "context"}
+    digest = hashlib.sha256()
+    digest.update(json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8"))
+    for path in context_paths:
+        digest.update(b"\0")
+        digest.update(Path(path).read_bytes())
+    return digest.hexdigest()
+
+
+def _validate(merged: Mapping[str, Any], skill_index: Mapping[str, Sequence[Any]]) -> list[str]:
+    problems: list[str] = []
+    skills = merged.get("skills") or {}
+    if not isinstance(skills, Mapping):
+        return [f"'skills' must be a mapping, got {type(skills).__name__}"]
+
+    roles = merged.get("roles") or {}
+    required = roles.get("required", []) if isinstance(roles, Mapping) else []
+    for role in required:
+        if role not in skills:
+            problems.append(f"required role '{role}' is unbound; bind it under 'skills'")
+
+    for role, name in skills.items():
+        bodies = skill_index.get(name, ())
+        if len(bodies) == 1:
+            continue
+        if not bodies:
+            problems.append(f"role '{role}' binds skill '{name}', which resolves to no skill body")
+        else:
+            found = ", ".join(str(b) for b in bodies)
+            problems.append(f"role '{role}' binds skill '{name}', which resolves to {len(bodies)} bodies: {found}")
+
+    for entry in merged.get("context", []):
+        if not Path(entry).is_file():
+            problems.append(f"context pack does not exist: {entry}")
+
+    write_kinds = merged.get("write_kinds") or {}
+    if isinstance(write_kinds, Mapping):
+        for kind, spec in write_kinds.items():
+            if not isinstance(spec, Mapping):
+                continue
+            arm = spec.get("apply_arm")
+            if arm is None or arm in NON_ROLE_APPLY_ARMS or arm in skills:
+                continue
+            problems.append(f"write kind '{kind}' names apply_arm '{arm}', which is not a bound role")
+
+    return problems
+
+
+def load(team: str, cartridges_dir: Path | str, *, skill_index: Mapping[str, Sequence[Any]]) -> dict[str, Any]:
+    """Resolve `team` against its inheritance chain and validate the result.
+
+    Raises CartridgeError listing EVERY problem found, not just the first — a
+    caller fixing bindings one error per run is a caller who stops reading them.
+    """
+    cartridges_dir = Path(cartridges_dir).expanduser().resolve()
+    chain = _chain(team, cartridges_dir)
+
+    merged: dict[str, Any] = {}
+    problems: list[str] = []
+    for name, directory, raw in chain:
+        level = dict(raw)
+        level["context"] = _absolutise_context(raw, directory)
+        child_kinds = level.get("write_kinds") or {}
+        parent_kinds = merged.get("write_kinds") or {}
+        if isinstance(child_kinds, Mapping) and isinstance(parent_kinds, Mapping):
+            problems.extend(_loosenings(parent_kinds, child_kinds, name))
+        merged = _merge(merged, level)
+
+    problems.extend(_validate(merged, skill_index))
+    if problems:
+        raise CartridgeError(
+            f"cartridge '{team}' failed to resolve ({len(problems)} problem(s)):\n  - "
+            + "\n  - ".join(problems)
+        )
+
+    merged["cartridge_dir"] = str(chain[-1][1].resolve())
+    merged["cartridge_sha"] = _cartridge_sha(merged, merged.get("context", []))
+    return merged
+
+
+def _main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="python -m core.cartridge", description=__doc__.splitlines()[0])
+    parser.add_argument("--team", required=True, help="team cartridge to resolve")
+    parser.add_argument(
+        "--cartridges-dir",
+        default=Path(__file__).resolve().parent.parent / "cartridges",
+        help="directory holding cartridge directories (default: ./cartridges)",
     )
+    parser.add_argument(
+        "--skills-root",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="plugin root to scan for skill bodies (repeatable)",
+    )
+    parser.add_argument(
+        "--unverified-skills",
+        action="store_true",
+        help="resolve without checking that bound skills exist; prints a warning, never silent",
+    )
+    parser.add_argument("--json", action="store_true", help="print the resolved cartridge as JSON")
+    args = parser.parse_args(argv)
+
+    if not args.skills_root and not args.unverified_skills:
+        parser.error("pass --skills-root at least once, or --unverified-skills to skip the check explicitly")
+
+    from core.skills import index_from_roots
+
+    index: Mapping[str, Sequence[Any]] = index_from_roots(args.skills_root)
+    if args.unverified_skills:
+        print("warning: skill bindings NOT verified (--unverified-skills)", file=sys.stderr)
+
+        class _Unverified(dict):
+            def get(self, key, default=None):  # noqa: D102 - every binding "resolves" to exactly one
+                return [key]
+
+        index = _Unverified()
+
+    try:
+        resolved = load(args.team, args.cartridges_dir, skill_index=index)
+    except CartridgeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    print(json.dumps(resolved, indent=2, sort_keys=True, default=str) if args.json else resolved["cartridge_sha"])
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())
