@@ -70,6 +70,11 @@ write_kinds:
 intake:
   - source: manual
     kind: ideas
+  # A directory, not a service, for the same reason work/ is a directory: the
+  # audit trail is `git log`, and there is no second system to keep honest.
+  - source: queue_dir
+    kind: ideas
+    path: intake            # <repo>/intake/*.md, consumed items move to intake/consumed/
 
 context:
   - context/code-style.md
