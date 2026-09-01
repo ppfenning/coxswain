@@ -34,6 +34,11 @@ skills:
   docs_apply_arm:   local-skills:update-docs
   triage_classify:  local-skills:triage-classify
   reconcile:        local-skills:reconcile-state
+  # epic-swarm's validators, plus retro and the dispatcher
+  validate_chunk:   local-skills:validate-chunk      # did the task satisfy its own description
+  validate_phase:   local-skills:validate-phase      # do the tasks TOGETHER meet the phase goal
+  retro:            local-skills:retro-runs          # read the run record, propose what changes
+  dispatch:         local-skills:dispatch-graphs     # pick what runs next, and why
 
 # ── Where writes land ───────────────────────────────────────────────────────
 # Directories, not boards. The state names come from the base `work_routing`

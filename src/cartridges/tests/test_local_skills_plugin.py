@@ -40,6 +40,7 @@ def test_every_graph_facing_role_is_bound() -> None:
         "plan", "build", "review_charter", "scope_epic", "handoff",
         "review_adversary", "arbitrate", "decompose", "evidence_verify",
         "triage_classify", "reconcile",
+        "validate_chunk", "validate_phase", "retro", "dispatch",
     }
     arm_roles = {"work_state_arm", "work_item_arm", "docs_apply_arm"}
     unbound = (graph_roles | arm_roles) - set(resolved["skills"])
@@ -49,7 +50,7 @@ def test_every_graph_facing_role_is_bound() -> None:
 def test_skill_bodies_are_real_documents_not_stubs() -> None:
     """A body exists, names itself correctly, and carries actual guidance."""
     bodies = sorted(PLUGIN.glob("skills/*/SKILL.md"))
-    assert len(bodies) >= 14
+    assert len(bodies) >= 18
     for body in bodies:
         text = body.read_text(encoding="utf-8")
         match = re.match(r"^---\nname: (\S+)\n", text)
