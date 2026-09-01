@@ -50,6 +50,12 @@ landing_areas:
   planned_work:   work
   future_work:    backlog             # scoped-but-not-started lives apart
   runbook_index:  docs/runbooks/index.md
+  # The check arm: what the harness RUNS in a worktree after applying a patch,
+  # attaching pass/fail and parsed counts to the proposal as machine evidence.
+  # Named commands, not conventions — a check nobody configured is a check
+  # nobody ran, and the gate should know the difference.
+  checks:
+    - {name: tests, cmd: "pytest -q"}
 
 # ── Apply arms ──────────────────────────────────────────────────────────────
 # Every write lands in a file this repository already tracks, so "applying" a
