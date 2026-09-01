@@ -1,0 +1,65 @@
+"""The demo contract: a clean clone of THIS repo can resolve `local`.
+
+The `local` cartridge is the README's proof that a graph needs no tracker and
+no vendor. That proof is only honest if the skills it binds actually ship —
+which they did not, for a while: every binding pointed at a `local-skills`
+plugin that existed nowhere, and the first thing a clean clone hit was twelve
+resolution errors. These tests make that regression impossible to ship again.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+from core.cartridge import load
+from core.skills import index_from_roots
+
+REPO = Path(__file__).resolve().parent.parent
+PLUGIN_ROOT = REPO / "skills-plugins"
+PLUGIN = PLUGIN_ROOT / "local-skills"
+
+
+def test_local_cartridge_resolves_against_the_inrepo_plugin() -> None:
+    """The exact resolution a clean clone performs, minus nothing."""
+    resolved = load("local", REPO / "cartridges", skill_index=index_from_roots([PLUGIN_ROOT]))
+    assert resolved["team"] == "local"
+    assert resolved["cartridge_sha"]
+
+
+def test_every_graph_facing_role_is_bound() -> None:
+    """`local` exists to run the graphs, so it binds what the graphs ask for.
+
+    The graph repo asks for these roles by name; an unbound one fails at the
+    runner, mid-run, which is exactly the too-late failure the loader exists
+    to prevent. Kept as a literal list on purpose — if a graph grows a new
+    role, adding it here is the reminder to bind and write the skill.
+    """
+    resolved = load("local", REPO / "cartridges", skill_index=index_from_roots([PLUGIN_ROOT]))
+    graph_roles = {
+        "plan", "build", "review_charter", "scope_epic", "handoff",
+        "review_adversary", "arbitrate", "decompose", "evidence_verify",
+        "triage_classify", "reconcile",
+    }
+    arm_roles = {"work_state_arm", "work_item_arm", "docs_apply_arm"}
+    unbound = (graph_roles | arm_roles) - set(resolved["skills"])
+    assert not unbound, f"local leaves graph-facing roles unbound: {sorted(unbound)}"
+
+
+def test_skill_bodies_are_real_documents_not_stubs() -> None:
+    """A body exists, names itself correctly, and carries actual guidance."""
+    bodies = sorted(PLUGIN.glob("skills/*/SKILL.md"))
+    assert len(bodies) >= 14
+    for body in bodies:
+        text = body.read_text(encoding="utf-8")
+        match = re.match(r"^---\nname: (\S+)\n", text)
+        assert match, f"{body}: missing frontmatter name"
+        assert match.group(1) == body.parent.name, f"{body}: frontmatter name != directory"
+        assert len(text.splitlines()) >= 25, f"{body}: too short to be real guidance"
+
+
+def test_the_index_maps_each_binding_to_exactly_one_body() -> None:
+    index = index_from_roots([PLUGIN_ROOT])
+    resolved = load("local", REPO / "cartridges", skill_index=index)
+    for role, name in resolved["skills"].items():
+        assert len(index.get(name, ())) == 1, f"{role} -> {name} is not uniquely resolvable"

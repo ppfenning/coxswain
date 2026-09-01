@@ -14,7 +14,10 @@ description: Solo/local operation — the work store is the repository
 version: 1
 
 # ── Role bindings ───────────────────────────────────────────────────────────
-# Point --skills-root at whichever plugin provides these bodies.
+# The bodies for every binding here ship in this repo, under
+# `skills-plugins/local-skills/` — point --skills-root at `skills-plugins/`
+# (or at any other plugin root that provides the same names). The reference
+# cartridge and its reference skills travel together so a clean clone resolves.
 skills:
   plan:             local-skills:plan-task
   build:            local-skills:build-in-worktree
@@ -29,6 +32,8 @@ skills:
   scope_epic:       local-skills:scope-work
   evidence_verify:  local-skills:verify-evidence
   docs_apply_arm:   local-skills:update-docs
+  triage_classify:  local-skills:triage-classify
+  reconcile:        local-skills:reconcile-state
 
 # ── Where writes land ───────────────────────────────────────────────────────
 # Directories, not boards. The state names come from the base `work_routing`
