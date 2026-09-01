@@ -97,7 +97,7 @@ measured.
 
 ```mermaid
 stateDiagram-v2
-    direction TB
+    direction LR
 
     state "never, always gated" as BLOCKED
     state "deferred" as DEFERRED
@@ -113,8 +113,13 @@ stateDiagram-v2
     PROPOSING --> PROPOSING: clean outcome, streak plus one
     PROPOSING --> AUTO: streak reaches the bar
     AUTO --> AUTO: cap hit, overflow proposes
-    AUTO --> PROPOSING: reversal, and the bar doubles
-    AUTO --> PROPOSING: config change, streak void
+    AUTO --> PROPOSING: demoted
+
+    note right of AUTO
+      Two things demote a kind.
+      A reversal, which also doubles the bar.
+      A config change, which voids the streak.
+    end note
 ```
 
 Three things that diagram is making concrete, because they are the ones prose
