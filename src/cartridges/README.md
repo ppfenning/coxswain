@@ -43,30 +43,38 @@ A graph sits at the intersection and knows about neither:
 
 ```mermaid
 flowchart TB
-    NODE["<b>agent-graphs</b> — a node asks for<br/>role: review_charter · tier: deep"]
+    GRAPH["agent-graphs: a graph<br/>owns sequence, writes nothing<br/>a node asks for a role and a tier"]
 
-    subgraph CART["agent-cartridges — the two axes"]
+    subgraph CART["agent-cartridges: the two axes"]
         direction LR
-        DOMAIN["<b>domain</b><br/>cartridges/&lt;team&gt;<br/><i>role → skill name</i>"]
-        VENDOR["<b>vendor</b><br/>providers/&lt;profile&gt;<br/><i>tier → model</i>"]
+        DOMAIN["domain<br/>cartridges, per team<br/>role to skill name"]
+        VENDOR["vendor<br/>providers, per profile<br/>tier to model"]
     end
 
-    BODY["<b>a skills plugin</b><br/>skills/&lt;name&gt;/SKILL.md<br/><i>e.g. skills-plugins/local-skills</i>"]
-    RUN(["the model call"])
-    POLICY["core/policy<br/><i>may this kind write yet?</i>"]
-    GATE{{"human gate"}}
+    BODY["a skills plugin<br/>skills/NAME/SKILL.md<br/>e.g. skills-plugins/local-skills"]
+
+    subgraph HARNESS["agent-graphs: the harness, the only side effects"]
+        RUN(["the model call"])
+        POLICY{"policy: has this kind graduated?"}
+        GATE{{"human gate"}}
+        ARM["the apply arm, itself a role"]
+        WORK["git apply, in a worktree<br/>the harness created"]
+    end
+
     LEDGER[("append-only ledger")]
 
-    NODE -- role --> DOMAIN
-    NODE -- tier --> VENDOR
+    GRAPH -- "role" --> DOMAIN
+    GRAPH -- "tier" --> VENDOR
     DOMAIN -- "skill name" --> BODY
     VENDOR -- "model id" --> RUN
-    BODY --> RUN
-    RUN -- "proposal<br/>{kind, risk, evidence}" --> POLICY
+    BODY -- "skill body" --> RUN
+    RUN -- "proposal: kind, risk, evidence" --> POLICY
     POLICY -- "propose" --> GATE
-    POLICY -- "auto<br/><i>(graduated kinds only)</i>" --> ARM["the apply arm<br/><i>itself a role</i>"]
-    GATE -- "outcome, derived from<br/>what the human did" --> LEDGER
-    ARM -. "no ledger row —<br/>autonomy is spent, not earned, by acting" .-> LEDGER
+    POLICY -- "auto, graduated kinds only" --> ARM
+    GATE -- "approved" --> WORK
+    ARM --> WORK
+    GATE -- "outcome, from what the human did" --> LEDGER
+    ARM -. "no ledger row: autonomy is spent by acting" .-> LEDGER
     LEDGER -.-> POLICY
 ```
 
@@ -91,22 +99,22 @@ measured.
 stateDiagram-v2
     direction TB
 
-    state "never / gated" as BLOCKED
+    state "never, always gated" as BLOCKED
     state "deferred" as DEFERRED
-    state "eligible — proposing" as PROPOSING
-    state "graduated — auto-applies" as AUTO
+    state "eligible, proposing" as PROPOSING
+    state "graduated, auto-applies" as AUTO
 
     [*] --> BLOCKED
     [*] --> DEFERRED
     [*] --> PROPOSING
 
     BLOCKED --> BLOCKED: never graduates
-    DEFERRED --> PROPOSING: eligible kinds<br/>went first
-    PROPOSING --> PROPOSING: clean, +1
-    PROPOSING --> AUTO: streak ≥ bar
-    AUTO --> AUTO: cap hit,<br/>overflow proposes
-    AUTO --> PROPOSING: reversal:<br/>bar × 2
-    AUTO --> PROPOSING: config change:<br/>streak void
+    DEFERRED --> PROPOSING: eligible kinds went first
+    PROPOSING --> PROPOSING: clean outcome, streak plus one
+    PROPOSING --> AUTO: streak reaches the bar
+    AUTO --> AUTO: cap hit, overflow proposes
+    AUTO --> PROPOSING: reversal, and the bar doubles
+    AUTO --> PROPOSING: config change, streak void
 ```
 
 Three things that diagram is making concrete, because they are the ones prose
