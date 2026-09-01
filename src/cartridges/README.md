@@ -22,6 +22,8 @@ hardcodes a domain constant fails its own acceptance test.
 core/              pure substrate: merge, policy, manifest, ledger, work store.
 cartridges/base/   the contract: roles, write-kind taxonomy, autonomy policy.
 cartridges/<team>/ bindings: which skill fills each role, where writes land.
+                   local-comfort0/ and local-comfort1/ are COMFORT PRESETS —
+                   ramp-only tightenings, legal under the one-way tighten rule.
 skills-plugins/    the reference `local-skills` plugin — every role the
                    `local` cartridge binds, so a clean clone resolves.
 providers/         tier -> model. the vendor axis, isolated.
@@ -133,6 +135,31 @@ keeps losing:
 - **Hitting a cap is not a demotion.** The overflow is proposed and the streak is
   left alone; the cap is the policy working, not the kind misbehaving.
 
+Two grains sharpen the diagram without changing its shape:
+
+- **Trust is earned per subject, where a run names one.** A ledger row may
+  carry a `subject` — the runbook entry a `doc_update` amends, not the
+  `doc_update` category. A proposal carrying a subject has its streak read
+  over that entry's own rows; forty good entries cannot carry the one that is
+  wrong every time it fires, and a bad entry cannot hold its neighbours back
+  at their own grain. Creating a subject always gates: there is no track
+  record for something that does not exist yet. Proposals without a subject
+  get the old kind-level reading, counting every row — the strict fallback.
+- **A pass that took three tries is not a first-try pass.** Rows may carry
+  `attempts`, written by the fix loop. A clean with `attempts > 1` neither
+  builds nor breaks a streak — the loop converged, which proves the loop
+  works, not that the kind is trustworthy first-try. A reversal resets and
+  doubles the bar however many attempts it took: reading attempts there would
+  let a fix loop buy its way out of the ratchet.
+
+And one kind exists so the system cannot vote on its own rules: the harness
+escalates any change whose diff touches governance paths to
+`self_modification` (`risk: high`, `ramp: never`, out as a PR), whatever kind
+the graph claimed. `merge` itself split by target on 2026-09-01 —
+`merge_stack` (into a parent phase branch, earnable) and `merge_main` (to the
+default branch, a human at every comfort level) — which made within-initiative
+stack merges expressible by narrowing the kind rather than loosening a ramp.
+
 ## Status
 
 `core/` is implemented and tested. Each module still carries its contract as a
@@ -148,6 +175,11 @@ from.
 - [x] `core/` implementations
 - [x] Tests (synthetic fixtures only)
 - [x] Reference skills plugin (`skills-plugins/local-skills`) — the demo contract is CI-enforced
+- [x] Merge split by target (`merge_stack` / `merge_main`), `stack_rebase`, `self_modification`
+- [x] Subject-grain streaks and fix-loop `attempts` honesty in `core/policy.py`
+- [x] Comfort presets 0 and 1 as ramp-only bundles (`local-comfort0`, `local-comfort1`)
+- [x] Queue-directory intake (`core/intake.py`) beside `manual`
+- [x] Validator, retro, and dispatch roles with real skill bodies
 - [x] Graphs and the harness — implemented in [`agent-graphs`](https://github.com/ppfenning/agent-graphs)
 
 ## Getting started
