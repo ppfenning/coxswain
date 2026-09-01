@@ -11,6 +11,16 @@ what a graph proposed, what the human decided, and what actually happened:
 
     {run_id, ts, principal, kind, risk, outcome, cartridge_sha, provider_profile}
 
+Two fields are optional, and absent means absent — never a written default,
+because policy reads them and an invented value is an invented track record:
+
+    subject   the finer-grained principal inside a kind, when the run had one:
+              the runbook entry a `runbook_execute` row was following, say.
+              Trust is earned per subject where one is named.
+    attempts  how many build attempts the fix loop took before this outcome.
+              Absent means first try, which is the only kind of clean that
+              earns anything.
+
 `outcome` is one of:
     clean     applied exactly as proposed
     reversal  the human edited or refused it

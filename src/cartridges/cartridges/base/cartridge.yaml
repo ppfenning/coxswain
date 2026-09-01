@@ -38,6 +38,11 @@ roles:
     - docs_apply_arm    # writes to the knowledge base
     - fleet_sweep       # same check across many targets
     - discipline        # budget/token/scope guardrails
+    - validate_chunk    # did this task actually satisfy its own description
+    - validate_phase    # do these tasks TOGETHER accomplish the phase's goal —
+                        # never the phase's owner: that is self-review
+    - retro             # read the run record and say what should change
+    - dispatch          # pick which graphs to run next, and why
 
 # ── Where work lands, by state ──────────────────────────────────────────────
 # Not every item belongs in the active set. Route by the state of the work, not
@@ -83,7 +88,33 @@ write_kinds:
   pr_ready_flip:      {risk: medium, ramp: gated}
   state_mutation:     {risk: high,   ramp: never}      # changes production state
   destructive:        {risk: high,   ramp: never}      # deletes or overwrites
-  merge:              {risk: high,   ramp: never}
+
+  # 2026-09-01, merge split by target. One `merge` kind priced two unlike acts
+  # identically: joining a task branch to the phase branch above it, and putting
+  # code on the branch everyone else builds from. Only the second one is
+  # irreversible in the way that argues for a permanent human. Splitting is not
+  # loosening — merge_main inherits the old kind's never-graduates posture, and
+  # merge_stack is a NEW, narrower act that never had a kind of its own.
+  merge_stack:        {risk: high,   ramp: eligible}   # task branch -> its parent phase branch
+  merge_main:         {risk: high,   ramp: never}      # -> the default branch. a human, at every comfort level
+  # A team that does not want merge_stack earnable tightens it to `gated` in its
+  # own cartridge; the one-way tighten rule is what makes that toggle legal.
+
+  # Rewriting a branch other work is stacked on can silently drop a commit, and
+  # is not obviously reversible once the stack above it has moved. Governed
+  # through the ramp rather than banned outright, because the sentence worth
+  # being able to say is "rebase automatically, but only once you have done
+  # fifty of them cleanly".
+  stack_rebase:       {risk: high,   ramp: eligible}
+
+  # The kind the HARNESS escalates a proposal to when its diff mechanically
+  # touches governance: cartridges/, skills-plugins/, core/policy.py,
+  # core/ledger.py, harness/, the ledger file. A graph never emits this kind —
+  # it is derived from the patch, the way change_facts are. A system must not
+  # loosen its own rules on its own say-so, so this one goes out as a PR and
+  # never graduates, whatever streak the underlying kind had earned.
+  self_modification:  {risk: high,   ramp: never, apply_arm: pr}
+
   charter_proposal:   {ramp: never, apply_arm: pr}     # changes the rules themselves
   skill_proposal:     {ramp: never, apply_arm: pr}
 

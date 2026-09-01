@@ -1,0 +1,22 @@
+# Comfort 1 — drafts and idempotent retries may earn autonomy; anything that
+# rewrites or merges a branch stays human-gated.
+#
+# The step up from comfort 0 buys autonomy exactly where the asymmetry is
+# mildest: a draft PR has no effect until someone opens it, and an idempotent
+# retry is safe to run twice by construction. Both can be wrong without being
+# expensive, which is the whole test for whether a kind should be earnable.
+#
+# Branch topology is held back deliberately. merge_stack and stack_rebase are
+# `eligible` in base for teams that have measured them; a team still at comfort
+# 1 has not. Tightening them to `gated` also takes them out of the set the
+# deferred kinds must wait on — so item_create and friends still graduate here,
+# behind drafts and retries, rather than being blocked forever by a kind this
+# level has decided on purpose never to trust.
+team: local-comfort1
+extends: local
+description: Local operation at comfort 1 — low-cost kinds earn, branches do not
+version: 1
+
+write_kinds:
+  merge_stack:  {ramp: gated}
+  stack_rebase: {ramp: gated}

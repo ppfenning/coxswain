@@ -52,6 +52,24 @@ def test_unknown_decision_is_refused() -> None:
         gate_diff(PROPOSAL, "sort_of_approved", applied=True, edited=False)
 
 
+# ── gate_diff carries the grain a streak is measured at ────────────────────
+
+ENTRY_PROPOSAL = {**PROPOSAL, "subject": "rb-04", "subject_new": False, "attempts": 3}
+
+
+def test_subject_and_attempts_ride_through_the_gate() -> None:
+    diff = gate_diff(ENTRY_PROPOSAL, "approved", applied=True, edited=False)
+    assert diff["subject"] == "rb-04"
+    assert diff["subject_new"] is False
+    assert diff["attempts"] == 3
+
+
+def test_absent_grain_stays_absent_rather_than_being_defaulted() -> None:
+    """A default here would be an invented track record. Absent means absent."""
+    diff = gate_diff(PROPOSAL, "approved", applied=True, edited=False)
+    assert "subject" not in diff and "subject_new" not in diff and "attempts" not in diff
+
+
 # ── agreement_rate ─────────────────────────────────────────────────────────
 
 
@@ -108,6 +126,22 @@ def test_record_run_writes_manifest_and_derives_ledger_rows(tmp_path: Path) -> N
     assert [r["outcome"] for r in recorded] == ["clean", "reversal"]
     assert {r["principal"] for r in recorded} == {"lifecycle-propose"}, "principal is the graph, never a person"
     assert {r["cartridge_sha"] for r in recorded} == {"sha-1"}
+
+
+def test_record_run_writes_subject_and_attempts_onto_the_row(tmp_path: Path) -> None:
+    m = manifest(gate_diff(ENTRY_PROPOSAL, "approved", applied=True, edited=False))
+    record_run(m, runs_dir=tmp_path / "runs", ledger_path=tmp_path / "ledger.jsonl")
+    row = ledger.read(tmp_path / "ledger.jsonl")[0]
+    assert row["subject"] == "rb-04"
+    assert row["attempts"] == 3
+    assert "subject_new" not in row, "a fact about one moment, not about the row"
+
+
+def test_record_run_leaves_a_subjectless_run_subjectless(tmp_path: Path) -> None:
+    m = manifest(gate_diff(PROPOSAL, "approved", applied=True, edited=False))
+    record_run(m, runs_dir=tmp_path / "runs", ledger_path=tmp_path / "ledger.jsonl")
+    row = ledger.read(tmp_path / "ledger.jsonl")[0]
+    assert "subject" not in row and "attempts" not in row
 
 
 def test_caller_cannot_assert_a_run_was_clean(tmp_path: Path) -> None:

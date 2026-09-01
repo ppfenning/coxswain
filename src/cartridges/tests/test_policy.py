@@ -32,8 +32,8 @@ def config(**overrides):
     return {**base, **overrides}
 
 
-def clean(kind: str, risk: str, n: int):
-    return rows(*[(kind, risk, "clean")] * n)
+def clean(kind: str, risk: str, n: int, **row_kwargs):
+    return rows(*[(kind, risk, "clean")] * n, **row_kwargs)
 
 
 # ── Rule 1: ramp gates everything ───────────────────────────────────────────
@@ -151,6 +151,94 @@ def test_deferred_kind_graduates_once_every_eligible_kind_has() -> None:
 def test_deferred_kind_still_waits_if_one_eligible_kind_lags() -> None:
     ledger = clean("draft_pr_create", "low", 3) + clean("ticket_create", "low", 5)
     assert autonomy_policy("ticket_create", "low", ledger, config()) == PROPOSE
+
+
+# ── Rule 7: trust is earned per subject, where the caller names one ────────
+
+
+def test_a_subject_graduates_on_its_own_record_and_its_sibling_does_not() -> None:
+    """rb-04 has been right three times. rb-09 has never been run at all."""
+    ledger = clean("draft_pr_create", "low", 3, subject="rb-04")
+    assert autonomy_policy("draft_pr_create", "low", ledger, config(subject="rb-04")) == AUTO
+    assert autonomy_policy("draft_pr_create", "low", ledger, config(subject="rb-09")) == PROPOSE
+
+
+def test_a_reversal_resets_only_the_subject_it_was_against() -> None:
+    ledger = (
+        clean("draft_pr_create", "low", 3, subject="rb-04")
+        + clean("draft_pr_create", "low", 3, subject="rb-09")
+        + rows(("draft_pr_create", "low", "reversal"), subject="rb-04")
+    )
+    assert autonomy_policy("draft_pr_create", "low", ledger, config(subject="rb-04")) == PROPOSE
+    assert autonomy_policy("draft_pr_create", "low", ledger, config(subject="rb-09")) == AUTO
+
+
+def test_a_subject_with_no_history_proposes_even_where_the_kind_is_trusted() -> None:
+    ledger = clean("draft_pr_create", "low", 10, subject="rb-04")
+    assert autonomy_policy("draft_pr_create", "low", ledger, config(subject="rb-77")) == PROPOSE
+
+
+def test_a_subjectless_caller_falls_back_to_the_kind_and_counts_every_row() -> None:
+    """No subject in the config means the old reading: all rows of the kind."""
+    ledger = clean("draft_pr_create", "low", 2, subject="rb-04") + clean("draft_pr_create", "low", 1, subject="rb-09")
+    assert autonomy_policy("draft_pr_create", "low", ledger, config()) == AUTO
+
+
+def test_the_kind_level_fallback_carries_another_subjects_reversals() -> None:
+    """The strict direction of error: a bad entry weighs on the whole kind."""
+    ledger = rows(("draft_pr_create", "low", "reversal"), subject="rb-04") + clean(
+        "draft_pr_create", "low", 5, subject="rb-09"
+    )
+    assert autonomy_policy("draft_pr_create", "low", ledger, config()) == PROPOSE, "bar doubled to six"
+    assert autonomy_policy("draft_pr_create", "low", ledger, config(subject="rb-09")) == AUTO
+
+
+def test_deferred_still_waits_on_the_kind_level_record_not_the_subjects() -> None:
+    """`are the basics trusted` is a question about the taxonomy, not an entry."""
+    ledger = (
+        clean("draft_pr_create", "low", 3, subject="rb-04")
+        + clean("retry_idempotent", "medium", 3, subject="rb-04")
+        + clean("ticket_create", "low", 3, subject="rb-04")
+    )
+    assert autonomy_policy("ticket_create", "low", ledger, config(subject="rb-04")) == AUTO
+
+
+def test_a_new_subject_always_proposes_even_on_a_graduated_kind() -> None:
+    """Creating the entry is the one act no track record can vouch for."""
+    ledger = clean("draft_pr_create", "low", 10)
+    assert autonomy_policy("draft_pr_create", "low", ledger, config()) == AUTO
+    assert autonomy_policy("draft_pr_create", "low", ledger, config(subject_new=True)) == PROPOSE
+
+
+# ── Rule 8: a pass that took three tries is not a first-try pass ────────────
+
+
+def test_a_clean_that_took_several_attempts_neither_builds_nor_breaks() -> None:
+    """Transparent, exactly as `skipped` is. The first-try cleans still count."""
+    ledger = (
+        clean("draft_pr_create", "low", 1)
+        + clean("draft_pr_create", "low", 1, attempts=3)
+        + clean("draft_pr_create", "low", 2)
+    )
+    assert autonomy_policy("draft_pr_create", "low", ledger, config()) == AUTO
+
+
+def test_attempts_cleans_alone_never_graduate_a_kind() -> None:
+    """A fix loop that always converges on the third try has proved nothing."""
+    ledger = clean("draft_pr_create", "low", 10, attempts=3)
+    assert autonomy_policy("draft_pr_create", "low", ledger, config()) == PROPOSE
+
+
+def test_attempts_one_is_a_first_try_clean() -> None:
+    assert autonomy_policy("draft_pr_create", "low", clean("draft_pr_create", "low", 3, attempts=1), config()) == AUTO
+
+
+def test_a_reversal_resets_and_doubles_however_many_attempts_it_took() -> None:
+    """Reading attempts on a reversal would let the fix loop buy out the ratchet."""
+    after = rows(("draft_pr_create", "low", "reversal"), attempts=4) + clean("draft_pr_create", "low", 5)
+    assert autonomy_policy("draft_pr_create", "low", after, config()) == PROPOSE
+    six = rows(("draft_pr_create", "low", "reversal"), attempts=4) + clean("draft_pr_create", "low", 6)
+    assert autonomy_policy("draft_pr_create", "low", six, config()) == AUTO
 
 
 # ── refusing to guess ──────────────────────────────────────────────────────

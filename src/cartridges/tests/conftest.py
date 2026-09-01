@@ -60,8 +60,22 @@ def skill_index() -> dict[str, list[str]]:
     return {"acme-skills:plan": ["/fake/plan/SKILL.md"], "acme-skills:build": ["/fake/build/SKILL.md"]}
 
 
-def rows(*specs, sha: str = "sha-1", profile: str = "anthropic-default") -> list[dict]:
-    """Build ledger rows from (kind, risk, outcome) triples, oldest first."""
+def rows(
+    *specs,
+    sha: str = "sha-1",
+    profile: str = "anthropic-default",
+    subject: str | None = None,
+    attempts: int | None = None,
+) -> list[dict]:
+    """Build ledger rows from (kind, risk, outcome) triples, oldest first.
+
+    `subject` and `attempts` apply to every row in the call rather than riding
+    in the triple, because that is how a test reads them out loud: a block of
+    rows about one runbook entry, then the single row that took three tries.
+    Concatenate calls to build a mixed history. Both stay ABSENT when not
+    passed — a row with no subject is exactly what a graph without one writes,
+    and the fallback path has to be exercised on real absence, not on a None.
+    """
     return [
         {
             "run_id": f"r{i}",
@@ -72,6 +86,8 @@ def rows(*specs, sha: str = "sha-1", profile: str = "anthropic-default") -> list
             "outcome": outcome,
             "cartridge_sha": sha,
             "provider_profile": profile,
+            **({"subject": subject} if subject is not None else {}),
+            **({"attempts": attempts} if attempts is not None else {}),
         }
         for i, (kind, risk, outcome) in enumerate(specs)
     ]

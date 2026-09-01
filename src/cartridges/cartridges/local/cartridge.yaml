@@ -55,6 +55,12 @@ write_kinds:
   state_move:       {apply_arm: work_state_arm}
   doc_update:       {apply_arm: docs_apply_arm}
   draft_pr_create:  {apply_arm: shell}
+  # Branch surgery inside the stack is the shell's own work: the harness created
+  # these worktrees and is the only thing that knows where they are. merge_main
+  # is deliberately left unarmed — it has no arm because it has no arm to give,
+  # it goes to the gate and a human runs it. self_modification keeps base's `pr`.
+  merge_stack:      {apply_arm: shell}
+  stack_rebase:     {apply_arm: shell}
 
 intake:
   - source: manual

@@ -35,6 +35,16 @@ Rules the implementation must honour:
 6.  The principal in a ledger row is the GRAPH, never a person. This module
     measures whether a write kind is trustworthy, not whether someone is.
 
+7.  A row MAY carry a `subject` — the finer-grained principal inside a kind,
+    such as the runbook entry a `runbook_execute` row was following. Trust is
+    earned per subject where the caller names one: a runbook entry that has
+    been right forty times says nothing about the entry written yesterday.
+
+8.  A row MAY carry `attempts` — how many build attempts a fix loop took before
+    this outcome. A clean that took three tries proves the loop converged, not
+    that the kind is trustworthy first-try, so it neither builds nor breaks a
+    streak. The fix loop must never launder struggle into trust.
+
 Unit tests for this file should need nothing but dicts and lists.
 
 IMPLEMENTATION NOTES (decisions the contract left open)
@@ -46,10 +56,30 @@ averaging a streak across configurations that were never comparable. A policy
 that quietly does the wrong thing with bad input is how an agent earns autonomy
 it did not deserve.
 
-`policy_config` is the resolved cartridge's `policy` block plus two things the
-decision cannot be made without: `write_kinds` (to read the kind's ramp) and
-`applied_this_run` (to enforce caps). The documented four-argument signature is
-preserved rather than growing keyword arguments for them.
+`policy_config` is the resolved cartridge's `policy` block plus the things the
+decision cannot be made without: `write_kinds` (to read the kind's ramp),
+`applied_this_run` (to enforce caps), and — where the caller has one — the
+current proposal's `subject` and `subject_new`. The documented four-argument
+signature is preserved rather than growing keyword arguments for them.
+
+Subject is a GRAIN, not a scope. `SCOPE_KEYS` and `_require_single_scope` are
+untouched by rule 7: rows about two runbook entries under one cartridge sha are
+perfectly comparable, they are just answers to different questions. So:
+
+-   `subject_new` truthy -> PROPOSE, unconditionally, even for a kind that has
+    graduated. A brand-new entry has no track record by definition, and entry
+    creation is the moment where a wrong one is cheapest to catch.
+-   `subject` present -> the streak and the bar for this (kind, risk) are
+    counted over rows carrying THAT subject and no others. An entry with no
+    history has streak 0, and proposes.
+-   `subject` absent -> kind-level fallback, exactly as before: every row of
+    that (kind, risk) counts, whatever subject it happens to carry. That means
+    one bad entry's reversals weigh on a subject-less caller's bar. It is the
+    correct direction of error — the fallback should be the strict reading.
+
+The `deferred` ramp check stays kind-level regardless. It asks whether the
+basics are trusted at all, which is a question about the taxonomy, not about
+whichever entry is in front of us.
 """
 
 from __future__ import annotations
@@ -91,29 +121,48 @@ def _require_single_scope(rows: Sequence[Mapping[str, Any]]) -> None:
             )
 
 
+def _first_try(row: Mapping[str, Any]) -> bool:
+    """Did this outcome arrive on the first build attempt? Absent means yes.
+
+    See rule 8. Only cleans consult this: a reversal is a reversal however many
+    tries preceded it, and reading `attempts` there would let a fix loop buy
+    its way out of the ratchet.
+    """
+    return int(row.get("attempts", 1) or 1) <= 1
+
+
 def _streak_and_bar(
     rows: Sequence[Mapping[str, Any]],
     kind: str,
     risk: str,
     graduation_n: int,
     multiplier: int,
+    subject: Any = None,
 ) -> tuple[int, int]:
     """Consecutive clean outcomes for (kind, risk), and the bar they must clear.
 
     Walks oldest-first so the bar reflects every reversal in this kind's
     history, not just the ones after the most recent clean run.
+
+    `subject` narrows the history to one entry's own track record; None means
+    the kind-level reading, which counts every row whatever subject it carries.
     """
     streak = 0
     bar = graduation_n
     for row in rows:
         if row.get("kind") != kind or row.get("risk") != risk:
             continue
+        if subject is not None and row.get("subject") != subject:
+            continue
         outcome = row.get("outcome")
         if outcome in STREAK_BREAKING:
             streak = 0
             bar *= multiplier
-        elif outcome == CLEAN:
+        elif outcome == CLEAN and _first_try(row):
             streak += 1
+        # A clean that took several attempts falls through, transparent in
+        # exactly the way `skipped` is: it neither proves the kind trustworthy
+        # nor proves it wrong, so it must not move the streak either way.
     return streak, bar
 
 
@@ -123,8 +172,9 @@ def _has_graduated(
     risk: str,
     graduation_n: int,
     multiplier: int,
+    subject: Any = None,
 ) -> bool:
-    streak, bar = _streak_and_bar(rows, kind, risk, graduation_n, multiplier)
+    streak, bar = _streak_and_bar(rows, kind, risk, graduation_n, multiplier, subject)
     return streak >= bar
 
 
@@ -147,6 +197,11 @@ def autonomy_policy(
     if ramp in (None, "never", "gated"):
         return PROPOSE
 
+    if policy_config.get("subject_new"):
+        # Creating the entry is the one act no history can vouch for. Rule 7.
+        return PROPOSE
+
+    subject = policy_config.get("subject")
     graduation_n = int(policy_config.get("graduation_n", 5))
     multiplier = int(policy_config.get("regraduation_multiplier", 2))
 
@@ -159,12 +214,14 @@ def autonomy_policy(
         if not eligible:
             return PROPOSE
         for name, s in eligible:
+            # Kind-level on purpose: "are the basics trusted yet" is a question
+            # about the taxonomy, not about whichever subject is in front of us.
             if not _has_graduated(rows, name, s.get("risk", risk), graduation_n, multiplier):
                 return PROPOSE
     elif ramp != "eligible":
         raise PolicyError(f"write kind '{kind}' has unknown ramp '{ramp}'")
 
-    if not _has_graduated(rows, kind, risk, graduation_n, multiplier):
+    if not _has_graduated(rows, kind, risk, graduation_n, multiplier, subject):
         return PROPOSE
 
     # Graduated. Caps still bound how much it may do in one run; the overflow is

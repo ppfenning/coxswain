@@ -39,6 +39,14 @@ APPROVED = "approved"
 REFUSED = "refused"
 DECISIONS = frozenset({APPROVED, REFUSED})
 
+# Facts about the proposal that policy needs and the gate cannot recompute.
+CARRIED_FROM_PROPOSAL = ("subject", "subject_new", "attempts")
+
+# ...but only two of them reach the ledger. `subject_new` is a fact about one
+# moment, not about the row: once the entry exists, whether it was new when the
+# gate saw it tells a later streak nothing it should act on.
+CARRIED_TO_LEDGER = ("subject", "attempts")
+
 
 class ManifestError(Exception):
     """A manifest could not be built, or was asked to record something incoherent."""
@@ -91,6 +99,10 @@ def gate_diff(
     run was clean. `skipped` — approved but never executed — is deliberately
     neither a win nor a reversal: it proves nothing about whether the proposal
     was right, so it must not build or break a streak.
+
+    `subject`, `subject_new` and `attempts` ride through from the proposal WHEN
+    PRESENT. Absent stays absent: a default would be an invention, and policy
+    reads these to decide whose track record a row belongs to.
     """
     if decision not in DECISIONS:
         raise ManifestError(f"unknown gate decision {decision!r}; expected one of {sorted(DECISIONS)}")
@@ -100,7 +112,7 @@ def gate_diff(
         outcome = "clean"
     else:
         outcome = "skipped"
-    return {
+    diff = {
         "kind": proposal.get("kind"),
         "risk": proposal.get("risk"),
         "target": proposal.get("target"),
@@ -109,6 +121,10 @@ def gate_diff(
         "edited": bool(edited),
         "outcome": outcome,
     }
+    for field in CARRIED_FROM_PROPOSAL:
+        if field in proposal:
+            diff[field] = proposal[field]
+    return diff
 
 
 def agreement_rate(manifest: Mapping[str, Any]) -> float:
@@ -136,6 +152,9 @@ def record_run(
     THE I/O EDGE. Note what is not a parameter: the outcomes. They come from
     `gate_diff`, which computed them from what the human actually did. A caller
     cannot tell this function the run went well.
+
+    `subject` and `attempts` are copied onto the row when the diff carries them,
+    so policy can read a streak at whichever grain the run actually had.
     """
     if not manifest.get("run_id"):
         raise ManifestError("manifest has no run_id")
@@ -156,6 +175,7 @@ def record_run(
             "outcome": diff["outcome"],
             "cartridge_sha": manifest["cartridge_sha"],
             "provider_profile": manifest["provider_profile"],
+            **{field: diff[field] for field in CARRIED_TO_LEDGER if field in diff},
         }
         for diff in manifest.get("gate_diffs") or []
     ]
