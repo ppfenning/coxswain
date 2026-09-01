@@ -19,12 +19,18 @@ tooling is worthless. Here the seam is explicit and enforced — a graph that
 hardcodes a domain constant fails its own acceptance test.
 
 ```
-graphs/            portable. reference roles, never skills or vendors.
-core/              pure substrate: merge, policy, manifest, ledger.
+core/              pure substrate: merge, policy, manifest, ledger, work store.
 cartridges/base/   the contract: roles, write-kind taxonomy, autonomy policy.
 cartridges/<team>/ bindings: which skill fills each role, where writes land.
+skills-plugins/    the reference `local-skills` plugin — every role the
+                   `local` cartridge binds, so a clean clone resolves.
 providers/         tier -> model. the vendor axis, isolated.
 ```
+
+The graphs — and the **harness** that runs them — live in
+[`agent-graphs`](https://github.com/ppfenning/agent-graphs). The four nouns:
+a *harness* owns consequences, a *graph* owns sequence, a *cartridge* (this
+repo) owns who a run works for, and a *runner* executes nodes.
 
 ## The two axes
 
@@ -45,7 +51,7 @@ flowchart TB
         VENDOR["<b>vendor</b><br/>providers/&lt;profile&gt;<br/><i>tier → model</i>"]
     end
 
-    BODY["<b>example-skills</b><br/>skills/&lt;name&gt;/SKILL.md"]
+    BODY["<b>a skills plugin</b><br/>skills/&lt;name&gt;/SKILL.md<br/><i>e.g. skills-plugins/local-skills</i>"]
     RUN(["the model call"])
     POLICY["core/policy<br/><i>may this kind write yet?</i>"]
     GATE{{"human gate"}}
@@ -128,7 +134,8 @@ from.
 - [x] Provider profile
 - [x] `core/` implementations
 - [x] Tests (synthetic fixtures only)
-- [ ] Graphs — they live in [`agent-graphs`](https://github.com/ppfenning/agent-graphs)
+- [x] Reference skills plugin (`skills-plugins/local-skills`) — the demo contract is CI-enforced
+- [x] Graphs and the harness — implemented in [`agent-graphs`](https://github.com/ppfenning/agent-graphs)
 
 ## Getting started
 
@@ -139,9 +146,14 @@ $EDITOR cartridges/my-team/cartridge.yaml          # bind roles, name landings
 cp context-templates/code-style.md cartridges/my-team/context/
 $EDITOR cartridges/my-team/context/code-style.md   # in your own words
 
-python -m core.cartridge --team my-team --json \
-  --skills-root ~/repos/example-skills                 # resolve + validate
+python -m core.cartridge --team local --json \
+  --skills-root skills-plugins                     # resolve + validate
 ```
+
+`local` resolves out of the box because its skills ship in this repo. Your own
+team's cartridge resolves the same way once `--skills-root` points at a plugin
+providing the names it binds — `skills-plugins/local-skills/` is the worked
+example of what such a plugin looks like.
 
 `--skills-root` is how the loader checks that every bound skill name resolves to
 exactly one skill body; pass it once per plugin root. There is a
