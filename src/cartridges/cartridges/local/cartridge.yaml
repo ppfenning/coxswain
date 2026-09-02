@@ -40,6 +40,25 @@ skills:
   retro:            local-skills:retro-runs          # read the run record, propose what changes
   dispatch:         local-skills:dispatch-graphs     # pick what runs next, and why
 
+# ── The cast ────────────────────────────────────────────────────────────────
+# The seats from `agent-cast`, bound to the same reference skills this
+# cartridge already binds its graph roles to — so a clean clone of the three
+# repositories gives a working cast as well as a working graph run.
+cast:
+  nova:    {skills: [local-skills:verify-evidence, local-skills:reconcile-state],
+            context: "recon reads the repository and the work store; git log is the audit trail"}
+  sky:     {skills: [local-skills:triage-classify],
+            context: "there is no alerting system here — triage reads what you hand it"}
+  lewis:   {skills: [local-skills:review-charter, local-skills:review-adversary]}
+  sarah:   {skills: [local-skills:plan-task, local-skills:build-in-worktree]}
+  michael: {skills: [local-skills:verify-evidence],
+            context: "ops surface is the checks in landing_areas and the worktrees the harness owns"}
+  emma:    {skills: [local-skills:scope-work, local-skills:decompose-initiative, local-skills:workstore-item],
+            context: "the board is work/ — markdown files, not a tracker"}
+  echo:    {skills: [local-skills:update-docs]}
+  alice:   {skills: [],
+            context: "the run record is runs/<run-id>.json, its usage file, the ledger, and the work store"}
+
 # ── Where writes land ───────────────────────────────────────────────────────
 # Directories, not boards. The state names come from the base `work_routing`
 # block; only the landing each one maps to is local.
