@@ -38,7 +38,7 @@ effort:
 # under $0.10. The ceiling turns an unbounded session into a quarantined task
 # with a named reason (`error_max_budget_usd`).
 budget_usd:
-  cheap:     0.10
+  cheap:     0.15
   standard:  0.35
   deep:      0.80
 role_budget_usd:
@@ -63,7 +63,9 @@ defaults:
 tools:
   # Read the world, change nothing.
   decompose:        [Read, Grep, Glob]
-  scope_epic:       [Read, Grep, Glob]
+  # NOT scope_epic: it decides epic-vs-ticket from the work item's own text
+  # and the digest it is shown. Given tools on the cheap tier it wandered the
+  # repository for 15 turns and hit its $0.10 ceiling on the ninth live run.
   plan:             [Read, Grep, Glob]
   review_charter:   [Read, Grep, Glob]
   review_adversary: [Read, Grep, Glob]
