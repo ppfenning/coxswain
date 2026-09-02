@@ -75,8 +75,8 @@ flowchart TB
     POLICY -- "auto, graduated kinds only" --> ARM
     GATE -- "approved" --> WORK
     ARM --> WORK
-    GATE -- "outcome, from what the human did" --> LEDGER
-    ARM -. "no ledger row: autonomy is spent by acting" .-> LEDGER
+    GATE -- "outcome" --> LEDGER
+    ARM -. "no ledger row" .-> LEDGER
     LEDGER -.-> POLICY
 ```
 
