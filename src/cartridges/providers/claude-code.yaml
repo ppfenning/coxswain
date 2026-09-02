@@ -24,6 +24,14 @@ tiers:
   standard:  sonnet         # most nodes
   deep:      opus           # verification, adversarial review, arbitration
 
+# Effort per tier. Deep stays high, not xhigh: the verifier seats keep the
+# strongest model, and the extra thinking budget above `high` was the one
+# cost lever with no measured quality return on a review of a small diff.
+effort:
+  cheap:     low
+  standard:  high
+  deep:      high
+
 defaults:
   plan:            standard
   build:           standard
