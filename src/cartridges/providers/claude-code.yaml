@@ -46,13 +46,18 @@ tools:
   decompose:        [Read, Grep, Glob]
   scope_epic:       [Read, Grep, Glob]
   plan:             [Read, Grep, Glob]
-  build:            [Read, Grep, Glob]
   review_charter:   [Read, Grep, Glob]
   review_adversary: [Read, Grep, Glob]
   arbitrate:        [Read, Grep, Glob]
   evidence_verify:  [Read, Grep, Glob]
   reconcile:        [Read, Grep, Glob]
   retro:            [Read, Grep, Glob]
+  # The builder is the one role that WRITES to produce its answer. It gets a
+  # disposable scratch worktree from the runner, edits real files there, runs
+  # the project's real commands, and returns the diff git computed. Nothing it
+  # writes survives the call; the harness still applies the patch itself.
+  build:            [Read, Write, Edit, Grep, Glob, Bash]
+
   # NOT handoff, validate_chunk or validate_phase. Those judge the artifact
   # they are handed — a patch, a task record — against what the next step
   # needs, and a patch is never applied in the checkout they could read. The
