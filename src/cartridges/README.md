@@ -216,3 +216,7 @@ autonomy must *fail* to be granted: streaks that do not transfer across kinds,
 risks, cartridge hashes, or provider profiles; a single reversal resetting the
 streak and doubling the bar; and `record_run` deriving outcomes from the gate
 rather than believing a run's own account of itself.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
