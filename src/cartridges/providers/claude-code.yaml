@@ -47,15 +47,17 @@ tools:
   scope_epic:       [Read, Grep, Glob]
   plan:             [Read, Grep, Glob]
   build:            [Read, Grep, Glob]
-  handoff:          [Read, Grep, Glob]
   review_charter:   [Read, Grep, Glob]
   review_adversary: [Read, Grep, Glob]
   arbitrate:        [Read, Grep, Glob]
   evidence_verify:  [Read, Grep, Glob]
-  validate_chunk:   [Read, Grep, Glob]
-  validate_phase:   [Read, Grep, Glob]
   reconcile:        [Read, Grep, Glob]
   retro:            [Read, Grep, Glob]
+  # NOT handoff, validate_chunk or validate_phase. Those judge the artifact
+  # they are handed — a patch, a task record — against what the next step
+  # needs, and a patch is never applied in the checkout they could read. The
+  # first live epic gave them a view of the tree and they correctly reported
+  # that nothing had changed in it, quarantining every task. Blind is right.
   # The arms. Write into the work store; nowhere else.
   work_item_arm:    [Read, Write, Edit, Glob, Grep]
   work_state_arm:   [Read, Edit, Glob, Grep]
