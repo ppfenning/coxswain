@@ -1,0 +1,54 @@
+# Provider profile — headless Claude Code as the runner.
+#
+# Same vendor axis as anthropic-default.yaml, different execution: every node
+# is a `claude -p` session on the local login, so there is no API key and the
+# subscription pays. Tiers name Claude Code's model aliases, which track the
+# current model of each class; pin a full model id here to stop that.
+#
+# This profile also grants TOOLS per role, which the API runner cannot. The
+# rule that decides the table below: roles that read the world get a read-only
+# view of the repository; the apply arms — and only they — may write, and only
+# into the work store under the runner's working directory. The harness still
+# applies every diff itself, in a worktree it owns. A role not listed runs
+# with no tools at all, which is the API runner's contract exactly.
+#
+# Changing anything here resets autonomy streaks (see base policy): a track
+# record earned on one runner is not a track record on another.
+profile: claude-code
+description: Headless Claude Code (`claude -p`) on the local login; per-role tool grants
+runner: claude-code
+command: claude            # the binary; must be on PATH and logged in
+
+tiers:
+  cheap:     haiku          # bulk classification, enumeration
+  standard:  sonnet         # most nodes
+  deep:      opus           # verification, adversarial review, arbitration
+
+defaults:
+  plan:            standard
+  build:           standard
+  review_charter:  deep
+  review_adversary: deep
+  arbitrate:       deep
+  triage_classify: cheap
+  evidence_verify: deep
+
+tools:
+  # Read the world, change nothing.
+  decompose:        [Read, Grep, Glob]
+  scope_epic:       [Read, Grep, Glob]
+  plan:             [Read, Grep, Glob]
+  build:            [Read, Grep, Glob]
+  handoff:          [Read, Grep, Glob]
+  review_charter:   [Read, Grep, Glob]
+  review_adversary: [Read, Grep, Glob]
+  arbitrate:        [Read, Grep, Glob]
+  evidence_verify:  [Read, Grep, Glob]
+  validate_chunk:   [Read, Grep, Glob]
+  validate_phase:   [Read, Grep, Glob]
+  reconcile:        [Read, Grep, Glob]
+  retro:            [Read, Grep, Glob]
+  # The arms. Write into the work store; nowhere else.
+  work_item_arm:    [Read, Write, Edit, Glob, Grep]
+  work_state_arm:   [Read, Edit, Glob, Grep]
+  docs_apply_arm:   [Read, Write, Edit, Glob, Grep]
