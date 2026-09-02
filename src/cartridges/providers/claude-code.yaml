@@ -32,6 +32,23 @@ effort:
   standard:  high
   deep:      high
 
+# Dollar ceilings per node session, by tier, with per-role exceptions. Measured
+# on the run that prompted this: builds ran 79–101 turns at $1.1–$1.8 each and
+# failed anyway; a plan node that finishes cheaply does so in ~10 turns for
+# under $0.10. The ceiling turns an unbounded session into a quarantined task
+# with a named reason (`error_max_budget_usd`).
+budget_usd:
+  cheap:     0.10
+  standard:  0.35
+  deep:      0.80
+role_budget_usd:
+  build:     0.60          # it edits, tests and diffs; it still does not get to wander
+
+# Roles a graph asks "standard" for that are extraction, not judgment. The
+# profile may run them cheap; changing this resets streaks like any profile edit.
+tier_overrides:
+  scope_epic: cheap
+
 defaults:
   plan:            standard
   build:           standard
