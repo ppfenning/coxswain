@@ -15,10 +15,10 @@ binding you swap.
 | [`agent-cartridges`](https://github.com/ppfenning/agent-cartridges) | who a run works for | roles → skills, where writes land, tier → model |
 | [`agent-graphs`](https://github.com/ppfenning/agent-graphs) | what runs, and the harness that runs it | sequence, the gate, the ledger |
 | **`agent-cast`** | who speaks | seats, their authority, their voices |
-| [`voice-hud`](https://github.com/ppfenning/voice-hud) | where you hear and see it | wake word, HUD, work-state contract |
+| [`agent-voice-hud`](https://github.com/ppfenning/agent-voice-hud) | where you hear and see it | wake word, HUD, work-state contract |
 
 Cartridges say who a run works for, graphs say what runs, cast says who speaks,
-voice-hud is where it lands. Each is usable without the others.
+agent-voice-hud is where it lands. Each is usable without the others.
 
 ## The cast
 
