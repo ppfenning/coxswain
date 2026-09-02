@@ -42,7 +42,9 @@ budget_usd:
   standard:  0.35
   deep:      0.80
 role_budget_usd:
-  build:     0.60          # it edits, tests and diffs; it still does not get to wander
+  build:     1.00          # it edits, tests and diffs — and a fix-loop retry re-applies
+                           # the previous patch before amending it, which is not free.
+                           # Measured: a clean first build lands around $0.50 in ~40 turns.
 
 # Roles a graph asks "standard" for that are extraction, not judgment. The
 # profile may run them cheap; changing this resets streaks like any profile edit.

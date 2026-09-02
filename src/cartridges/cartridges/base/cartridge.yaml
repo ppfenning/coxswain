@@ -148,6 +148,7 @@ policy:
     item_create: 10
   review_tier:
     tier0_patterns: [docs_only, rename_only, config_bump, param_tweak]
+    tier0_max_changed_lines: 30    # this small, in one module, on no dangerous surface: the charter reviewer alone
     tier1_max_changed_lines: 150
     tier1_max_modules: 1
     tier2_surfaces: [schema, migration, deletion, auth, infrastructure, cross_repo, production_write_path]
