@@ -36,6 +36,7 @@ the work.
 | **Emma** | `bf_emma` | the board — epics, phases, item bodies, dates, reconciliation | proposes; the chief writes |
 | **Echo** | `am_echo` | writing — docs, RFCs, outward-facing replies | drafts only |
 | **Alice** | `bf_alice` | scribe — the visual plan for a swarm, tracked to completion | `plans/` and the HUD panel |
+| **Daniel** | `bm_daniel` | steward — reads the run records and proposes what should change: skills, workflows, spend, hygiene | none; every change is a PR |
 
 The **chief of staff** is the session you are talking to, not a file: see
 [`seats/SEATS.md`](seats/SEATS.md).
@@ -79,5 +80,5 @@ in this repository names a company, a tracker, a board, or a person.
 Every seat is a plain agent definition and works in any session. In a voice
 session a seat reports in its own voice, which is how you hear that a finding
 came from an independent pair of eyes rather than from the chief restating
-itself. In a text session the voice line is dropped. All eight voices ship with
+itself. In a text session the voice line is dropped. All nine voices ship with
 [Kokoro](https://github.com/remsky/Kokoro-FastAPI); none is required.
