@@ -58,6 +58,8 @@ cast:
   echo:    {skills: [local-skills:update-docs]}
   alice:   {skills: [],
             context: "the run record is runs/<run-id>.json, its usage file, the ledger, and the work store"}
+  daniel:  {skills: [local-skills:retro-runs],
+            context: "the steward reads runs/, the usage files, traces and the ledger; every change it proposes is a PR"}
 
 # ── Where writes land ───────────────────────────────────────────────────────
 # Directories, not boards. The state names come from the base `work_routing`
