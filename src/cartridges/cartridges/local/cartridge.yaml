@@ -106,3 +106,4 @@ intake:
 
 context:
   - context/code-style.md
+  - context/prose-style.md     # how every node writes what it returns; no code opinion
