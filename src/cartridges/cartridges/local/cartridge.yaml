@@ -29,6 +29,11 @@ skills:
   handoff:          local-skills:handoff-brief
   review_adversary: local-skills:review-adversary
   arbitrate:        local-skills:arbitrate
+  # Competition before build: the same planner told to differ, an arbiter of
+  # plans, and the adversary pointed at a plan's claims instead of a diff's.
+  plan_alternative: local-skills:plan-task
+  plan_arbitrate:   local-skills:arbitrate-plans
+  plan_adversary:   local-skills:attack-plan
   scope_epic:       local-skills:scope-work
   evidence_verify:  local-skills:verify-evidence
   docs_apply_arm:   local-skills:update-docs

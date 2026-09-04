@@ -41,6 +41,7 @@ def test_every_graph_facing_role_is_bound() -> None:
     graph_roles = {
         "plan", "build", "review_charter", "scope_epic", "handoff",
         "review_adversary", "arbitrate", "decompose", "evidence_verify",
+        "plan_alternative", "plan_arbitrate", "plan_adversary",
         "triage_classify", "reconcile",
         "validate_chunk", "validate_phase", "retro", "dispatch", "route",
     }

@@ -34,6 +34,11 @@ roles:
     - evidence_verify   # deterministic checks that a claim is actually true
     - review_adversary  # second reviewer whose job is to disagree
     - arbitrate         # resolve reviewer disagreement
+    # Competition before build (lifecycle-propose). A plan costs a tenth of a
+    # build, so alternatives are compared here, never as two diffs.
+    - plan_alternative  # a second, independent plan, told to differ from the first
+    - plan_arbitrate    # choose between two plans, or merge them, and name the price
+    - plan_adversary    # attack the chosen plan's claims before anyone builds it
     - reconcile         # compare declared state vs actual state
     - docs_apply_arm    # writes to the knowledge base
     - fleet_sweep       # same check across many targets

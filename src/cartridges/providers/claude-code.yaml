@@ -59,6 +59,12 @@ defaults:
   arbitrate:       deep
   triage_classify: cheap
   evidence_verify: deep
+  # The plan competition: a second plan is planning, the decision and the
+  # attack are judgment. Two short plans are a small document, which is why
+  # arbitrating here is affordable and arbitrating two diffs would not be.
+  plan_alternative: standard
+  plan_arbitrate:  deep
+  plan_adversary:  deep
 
 tools:
   # Read the world, change nothing.
@@ -67,6 +73,9 @@ tools:
   # and the digest it is shown. Given tools on the cheap tier it wandered the
   # repository for 15 turns and hit its $0.10 ceiling on the ninth live run.
   plan:             [Read, Grep, Glob]
+  plan_alternative: [Read, Grep, Glob]
+  plan_arbitrate:   [Read, Grep, Glob]   # checks a plan's named files exist before choosing it
+  plan_adversary:   [Read, Grep, Glob]   # attacks claims about the tree by reading the tree
   review_charter:   [Read, Grep, Glob]
   review_adversary: [Read, Grep, Glob]
   arbitrate:        [Read, Grep, Glob]

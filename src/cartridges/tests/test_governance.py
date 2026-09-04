@@ -52,6 +52,37 @@ def test_the_new_validation_roles_are_declared_optional() -> None:
     assert {"validate_chunk", "validate_phase", "retro", "dispatch"} <= optional
 
 
+def test_the_plan_competition_roles_are_optional_and_bound_by_local() -> None:
+    """Optional, so a team that binds none of them keeps the single-plan loop;
+    bound by `local`, so a clean clone gets the competition."""
+    resolved = resolve("local")
+    roles = {"plan_alternative", "plan_arbitrate", "plan_adversary"}
+    assert roles <= set(resolved["roles"]["optional"])
+    assert roles <= set(resolved["skills"])
+    assert resolved["skills"]["plan_arbitrate"] == "local-skills:arbitrate-plans"
+
+
+def test_the_plan_adversary_is_not_the_diff_adversary_wearing_a_new_role() -> None:
+    """Presence is not fit. `plan_adversary` once resolved to `review-adversary`,
+    which is diff-shaped — it speaks of "the change", says `approve` where the
+    graph wants `proceed`/`revise`, and forbids the scope objection the plan
+    attack exists to raise. A test that only checks the key is bound cannot see
+    that, so this one checks the two roles point at different bodies."""
+    skills = resolve("local")["skills"]
+    assert skills["plan_adversary"] != skills["review_adversary"], "one body cannot attack both a plan and a diff"
+    assert skills["plan_adversary"] == "local-skills:attack-plan"
+    assert skills["review_adversary"] == "local-skills:review-adversary"
+
+
+def test_the_plan_attack_skill_ships_with_the_plan_shaped_vocabulary() -> None:
+    """The body exists on disk, and speaks the graph's verdict words, not the diff reviewer's."""
+    body = PLUGIN_ROOT / "local-skills" / "skills" / "attack-plan" / "SKILL.md"
+    assert body.is_file(), "local binds plan_adversary to a skill that does not ship"
+    text = body.read_text(encoding="utf-8")
+    assert "`proceed`" in text and "`revise`" in text
+    assert "`approve`" not in text, "approve is the diff adversary's verdict, not the plan adversary's"
+
+
 def test_a_team_may_not_loosen_merge_main_off_never(tmp_path: Path) -> None:
     """The one kind whose whole value is that no streak can ever buy it."""
     root = tmp_path / "cartridges"
