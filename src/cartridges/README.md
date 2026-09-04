@@ -205,6 +205,21 @@ exactly one skill body; pass it once per plugin root. There is a
 `--unverified-skills` escape hatch for resolving without that check, and it
 prints a warning every time — a check you can silently skip is not a check.
 
+### Installing local-skills as a Claude Code plugin
+
+This checkout doubles as a local plugin marketplace — its manifest is
+`.claude-plugin/marketplace.json`.
+
+```sh
+claude plugin marketplace add /path/to/agent-cartridges
+claude plugin install local-skills@agent-cartridges
+```
+
+`route` is the optional role the `local` cartridge binds to the `route-work`
+skill — the judgment that decides whether a request is work for the harness
+(files it and launches a run) or a question to answer inline. A team
+substitutes its own by rebinding the role.
+
 ## Tests
 
 ```bash

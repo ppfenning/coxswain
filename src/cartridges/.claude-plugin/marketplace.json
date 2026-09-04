@@ -1,0 +1,11 @@
+{
+  "name": "agent-cartridges",
+  "owner": {"name": "agent-cartridges maintainers"},
+  "plugins": [
+    {
+      "name": "local-skills",
+      "source": "./skills-plugins/local-skills",
+      "description": "Reference skill bodies for the `local` cartridge — every role bound to the filesystem, no tracker anywhere."
+    }
+  ]
+}

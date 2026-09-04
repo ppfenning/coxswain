@@ -43,6 +43,7 @@ roles:
                         # never the phase's owner: that is self-review
     - retro             # read the run record and say what should change
     - dispatch          # pick which graphs to run next, and why
+    - route             # decide if a request is harness work, size it, launch it, report on it
 
 # ── The cast (optional): seats -> the skills they route to ──────────────────
 # A SEAT is a standing agent role — its surface, write authority, tiering rule

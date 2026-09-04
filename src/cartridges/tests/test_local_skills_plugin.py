@@ -9,6 +9,7 @@ resolution errors. These tests make that regression impossible to ship again.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from core.skills import index_from_roots
 REPO = Path(__file__).resolve().parent.parent
 PLUGIN_ROOT = REPO / "skills-plugins"
 PLUGIN = PLUGIN_ROOT / "local-skills"
+MARKETPLACE = REPO / ".claude-plugin" / "marketplace.json"
 
 
 def test_local_cartridge_resolves_against_the_inrepo_plugin() -> None:
@@ -40,7 +42,7 @@ def test_every_graph_facing_role_is_bound() -> None:
         "plan", "build", "review_charter", "scope_epic", "handoff",
         "review_adversary", "arbitrate", "decompose", "evidence_verify",
         "triage_classify", "reconcile",
-        "validate_chunk", "validate_phase", "retro", "dispatch",
+        "validate_chunk", "validate_phase", "retro", "dispatch", "route",
     }
     arm_roles = {"work_state_arm", "work_item_arm", "docs_apply_arm"}
     unbound = (graph_roles | arm_roles) - set(resolved["skills"])
@@ -64,3 +66,15 @@ def test_the_index_maps_each_binding_to_exactly_one_body() -> None:
     resolved = load("local", REPO / "cartridges", skill_index=index)
     for role, name in resolved["skills"].items():
         assert len(index.get(name, ())) == 1, f"{role} -> {name} is not uniquely resolvable"
+
+
+def test_the_marketplace_manifest_lists_local_skills_at_a_real_path() -> None:
+    """`claude plugin marketplace add` reads this file; a dangling source is silent until install time."""
+    manifest = json.loads(MARKETPLACE.read_text(encoding="utf-8"))
+    plugins = {plugin["name"]: plugin for plugin in manifest["plugins"]}
+    assert "local-skills" in plugins
+    source = plugins["local-skills"]["source"]
+    marketplace_root = MARKETPLACE.parent.parent
+    resolved = (marketplace_root / source).resolve()
+    assert resolved.is_dir()
+    assert resolved == PLUGIN.resolve()

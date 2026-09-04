@@ -39,6 +39,7 @@ skills:
   validate_phase:   local-skills:validate-phase      # do the tasks TOGETHER meet the phase goal
   retro:            local-skills:retro-runs          # read the run record, propose what changes
   dispatch:         local-skills:dispatch-graphs     # pick what runs next, and why
+  route:            local-skills:route-work          # decide, size, launch, and report on routed work
 
 # ── The cast ────────────────────────────────────────────────────────────────
 # The seats from `agent-cast`, bound to the same reference skills this
