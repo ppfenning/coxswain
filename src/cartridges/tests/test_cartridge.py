@@ -345,3 +345,47 @@ def test_layers_raises_the_same_error_load_raises_on_an_illegal_loosen(cartridge
     _write_fragment(cartridges / "acme", "10-loosen.yaml", {"write_kinds": {"merge": {"risk": "low"}}})
     with pytest.raises(CartridgeError, match="loosens merge.risk from 'high' to 'low'"):
         layers("acme", cartridges, skill_index=skill_index)
+
+
+def test_a_team_declaring_crew_resolves_with_no_deprecations(cartridges: Path, skill_index) -> None:
+    config = yaml.safe_load((cartridges / "acme" / "cartridge.yaml").read_text())
+    config["crew"] = {"nova": {"skills": []}}
+    (cartridges / "acme" / "cartridge.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+    resolved = load("acme", cartridges, skill_index=skill_index)
+    assert resolved["crew"] == {"nova": {"skills": []}}
+    assert resolved["deprecations"] == []
+
+
+def test_a_team_declaring_cast_resolves_to_the_same_crew_value_with_one_deprecation(
+    cartridges: Path, skill_index
+) -> None:
+    config = yaml.safe_load((cartridges / "acme" / "cartridge.yaml").read_text())
+    config["cast"] = {"nova": {"skills": []}}
+    (cartridges / "acme" / "cartridge.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+    resolved = load("acme", cartridges, skill_index=skill_index)
+    assert resolved["crew"] == {"nova": {"skills": []}}
+    assert resolved["deprecations"] == ["acme: rename cast to crew"]
+
+
+def test_a_layer_declaring_both_cast_and_crew_is_refused(cartridges: Path, skill_index) -> None:
+    config = yaml.safe_load((cartridges / "acme" / "cartridge.yaml").read_text())
+    config["cast"] = {"nova": {"skills": []}}
+    config["crew"] = {"sky": {"skills": []}}
+    (cartridges / "acme" / "cartridge.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+    with pytest.raises(CartridgeError, match="acme: declares both 'cast' and 'crew'"):
+        load("acme", cartridges, skill_index=skill_index)
+
+
+def test_a_fragment_using_cast_is_accepted_and_named_in_deprecations(cartridges: Path, skill_index) -> None:
+    _write_fragment(cartridges / "acme", "10-cast.yaml", {"cast": {"nova": {"skills": []}}})
+    resolved = load("acme", cartridges, skill_index=skill_index)
+    assert resolved["crew"] == {"nova": {"skills": []}}
+    assert resolved["deprecations"] == ["acme/cartridge.d/10-cast.yaml: rename cast to crew"]
+
+
+def test_the_resolved_dict_has_cast_equal_to_crew(cartridges: Path, skill_index) -> None:
+    config = yaml.safe_load((cartridges / "acme" / "cartridge.yaml").read_text())
+    config["crew"] = {"nova": {"skills": []}}
+    (cartridges / "acme" / "cartridge.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+    resolved = load("acme", cartridges, skill_index=skill_index)
+    assert resolved["cast"] == resolved["crew"]

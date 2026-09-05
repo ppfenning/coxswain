@@ -50,22 +50,25 @@ roles:
     - dispatch          # pick which graphs to run next, and why
     - route             # decide if a request is harness work, size it, launch it, report on it
 
-# ── The cast (optional): seats -> the skills they route to ──────────────────
+# ── The crew (optional): seats -> the skills they route to ──────────────────
 # A SEAT is a standing agent role — its surface, write authority, tiering rule
 # and brief discipline — defined outside any team, in `agent-cast`. A seat
 # names what it does; a cartridge says which of THIS team's skills fill it.
 #
 # The same seam as `skills` above, one layer up: `skills` binds the roles a
-# GRAPH's nodes ask for, `cast` binds the roles a PERSON delegates to. A team
+# GRAPH's nodes ask for, `crew` binds the roles a PERSON delegates to. A team
 # that binds neither still runs; a seat with no binding simply routes to
 # nothing team-specific.
 #
-#   cast:
+#   crew:
 #     nova:   {skills: [...], context: "one line on what this team means by it"}
 #     sarah:  {skills: [...]}
 #
+# `cast` is accepted as a deprecated alias for `crew` this release; a layer
+# that uses it is named in the resolved cartridge's `deprecations` list.
+#
 # Base binds nothing: it has no skills of its own to bind.
-cast: {}
+crew: {}
 
 # ── Where work lands, by state ──────────────────────────────────────────────
 # Not every item belongs in the active set. Route by the state of the work, not

@@ -48,7 +48,7 @@ def test_extends_local_yaml_is_the_minimal_generated_template():
     yaml_step = next(s for s in steps if s["path"] == "/repo/cartridges/acme/cartridge.yaml")
     assert yaml_step["text"] == (
         "# acme's cartridge. Everything the graphs need is inherited from `local`;\n"
-        "# add `cast:` bindings for this team's installed plugins, and `context/` files\n"
+        "# add `crew:` bindings for this team's installed plugins, and `context/` files\n"
         "# the reviewers should hold work to, here.\n"
         "team: acme\n"
         "extends: local\n"

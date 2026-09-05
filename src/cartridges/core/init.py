@@ -35,7 +35,7 @@ def _minimal_cartridge_yaml(team: str, extends: str) -> str:
     ones."""
     return (
         f"# {team}'s cartridge. Everything the graphs need is inherited from `{extends}`;\n"
-        "# add `cast:` bindings for this team's installed plugins, and `context/` files\n"
+        "# add `crew:` bindings for this team's installed plugins, and `context/` files\n"
         "# the reviewers should hold work to, here.\n"
         f"team: {team}\n"
         f"extends: {extends}\n"

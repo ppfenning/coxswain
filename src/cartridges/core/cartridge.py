@@ -26,6 +26,10 @@ Merge semantics:
     covers the merged config AND every context pack's content AND every
     fragment's content: changing a charter, or a fragment, changes the
     hash, which resets autonomy streaks.
+6.  `crew` is the canonical key for the seats mapping. `cast` is accepted as
+    a deprecated alias for one release: a layer using it resolves exactly as
+    `crew` would, and is named in the resolved dict's `deprecations` list.
+    The resolved dict carries both `crew` and `cast` with the same value.
 
 Validation — refuse to resolve, loudly, when:
 
@@ -34,6 +38,7 @@ Validation — refuse to resolve, loudly, when:
 -   a bound skill name does not resolve to exactly one skill body
 -   a context path does not exist
 -   a write kind names an apply_arm role that is not bound
+-   a layer declares both `cast` and `crew` for the seats mapping
 
 Fail at load, never at run. A graph that discovers a missing binding halfway
 through a production sweep has already done half the damage.
@@ -100,8 +105,11 @@ RAMP_ORDER: Mapping[str, int] = {"eligible": 0, "deferred": 1, "gated": 2, "neve
 # agent roles: the shell applies it itself, or it goes out as a pull request.
 NON_ROLE_APPLY_ARMS = frozenset({"shell", "pr"})
 
-# Emitted by load(), so excluded from the payload that load() hashes.
-DERIVED_KEYS = frozenset({"cartridge_dir", "cartridge_sha"})
+# Emitted by load(), so excluded from the payload that load() hashes. `cast`
+# and `deprecations` are excluded too: `cast` mirrors `crew` exactly, and
+# `deprecations` records which spelling a layer used, neither of which is
+# content a team declared.
+DERIVED_KEYS = frozenset({"cartridge_dir", "cartridge_sha", "cast", "deprecations"})
 
 # The flat `--team` parser's `--cartridges-dir` default and `init`'s template
 # source both resolve to the package's own `cartridges/`, never the shell's
@@ -123,6 +131,23 @@ def _read_yaml(path: Path, *, empty_ok: bool = False) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise CartridgeError(f"{path}: expected a mapping at the top level, got {type(data).__name__}")
     return data
+
+
+def _normalize_crew(raw: Mapping[str, Any], label: str) -> tuple[dict[str, Any], str | None, str | None]:
+    """`cast` is a deprecated alias for `crew`, treated exactly as `crew` for
+    merging and validation. `label` is the layer or fragment name a problem
+    or deprecation names, matching the labels `layers()` uses. A conflict is
+    returned as a problem string rather than raised, so `_resolve` reports it
+    alongside every other problem the chain has, in one pass.
+    """
+    if "cast" in raw and "crew" in raw:
+        problem = f"{label}: declares both 'cast' and 'crew'; 'cast' is a deprecated alias for 'crew'"
+        return dict(raw), None, problem
+    if "cast" not in raw:
+        return dict(raw), None, None
+    normalized = dict(raw)
+    normalized["crew"] = normalized.pop("cast")
+    return normalized, f"{label}: rename cast to crew", None
 
 
 def _chain(team: str, cartridges_dir: Path) -> list[tuple[str, Path, dict[str, Any]]]:
@@ -252,7 +277,7 @@ def _fold_fragments(
 
 def _walk(
     chain: Sequence[tuple[str, Path, dict[str, Any]]],
-) -> tuple[list[tuple[str, dict[str, Any]]], list[str], list[Path]]:
+) -> tuple[list[tuple[str, dict[str, Any]]], list[str], list[Path], list[str]]:
     """Walk `chain` base-first, snapshotting the resolved-so-far cartridge.
 
     One entry per layer right after its `cartridge.yaml` merges, labelled by
@@ -262,14 +287,27 @@ def _walk(
     fragments, checked against everything folded before it — the same
     accumulated authority `_fold_fragments` computes when given the whole
     list at once. `load` and `layers` share this walk; neither re-derives it.
+
+    Every layer's and fragment's raw dict is normalized through
+    `_normalize_crew` before it merges or folds, so `cast` and `crew` are
+    interchangeable for the rest of resolution; each use of `cast` appends
+    to the returned deprecations, in the order layers and fragments fold. A
+    layer or fragment declaring both `cast` and `crew` appends to the
+    returned problems instead of raising, alongside every other problem.
     """
     entries: list[tuple[str, dict[str, Any]]] = []
     merged: dict[str, Any] = {}
     problems: list[str] = []
+    deprecations: list[str] = []
     fragment_paths: list[Path] = []
     for name, directory, raw in chain:
-        level = dict(raw)
-        level["context"] = _absolutise_context(raw, directory)
+        normalized_layer, layer_deprecation, layer_problem = _normalize_crew(raw, name)
+        if layer_deprecation:
+            deprecations.append(layer_deprecation)
+        if layer_problem:
+            problems.append(layer_problem)
+        level = dict(normalized_layer)
+        level["context"] = _absolutise_context(normalized_layer, directory)
         child_kinds = level.get("write_kinds") or {}
         parent_kinds = merged.get("write_kinds") or {}
         if isinstance(child_kinds, Mapping) and isinstance(parent_kinds, Mapping):
@@ -280,11 +318,16 @@ def _walk(
         for path, frag in _fragments(directory):
             fragment_paths.append(path)
             label = f"{name}/cartridge.d/{path.name}"
-            current, frag_problems = _fold_fragments(current, [(label, frag)], current)
+            normalized_frag, frag_deprecation, frag_problem = _normalize_crew(frag, label)
+            if frag_deprecation:
+                deprecations.append(frag_deprecation)
+            if frag_problem:
+                problems.append(frag_problem)
+            current, frag_problems = _fold_fragments(current, [(label, normalized_frag)], current)
             problems.extend(frag_problems)
             entries.append((label, current))
         merged = current
-    return entries, problems, fragment_paths
+    return entries, problems, fragment_paths, deprecations
 
 
 def _cartridge_sha(
@@ -324,6 +367,20 @@ def _validate(merged: Mapping[str, Any], skill_index: Mapping[str, Sequence[Any]
             found = ", ".join(str(b) for b in bodies)
             problems.append(f"role '{role}' binds skill '{name}', which resolves to {len(bodies)} bodies: {found}")
 
+    crew = merged.get("crew") or {}
+    if isinstance(crew, Mapping):
+        for seat, spec in crew.items():
+            seat_skills = spec.get("skills", []) if isinstance(spec, Mapping) else []
+            for name in seat_skills:
+                bodies = skill_index.get(name, ())
+                if len(bodies) == 1:
+                    continue
+                if not bodies:
+                    problems.append(f"seat '{seat}' binds skill '{name}', which resolves to no skill body")
+                else:
+                    found = ", ".join(str(b) for b in bodies)
+                    problems.append(f"seat '{seat}' binds skill '{name}', which resolves to {len(bodies)} bodies: {found}")
+
     for entry in merged.get("context", []):
         if not Path(entry).is_file():
             problems.append(f"context pack does not exist: {entry}")
@@ -354,7 +411,7 @@ def _resolve(
     """
     cartridges_dir = Path(cartridges_dir).expanduser().resolve()
     chain = _chain(team, cartridges_dir)
-    entries, problems, fragment_paths = _walk(chain)
+    entries, problems, fragment_paths, deprecations = _walk(chain)
     merged = entries[-1][1]
 
     problems = [*problems, *_validate(merged, skill_index)]
@@ -367,6 +424,14 @@ def _resolve(
     final = dict(merged)
     final["cartridge_dir"] = str(chain[-1][1].resolve())
     final["cartridge_sha"] = _cartridge_sha(final, final.get("context", []), fragment_paths)
+    final["deprecations"] = deprecations
+    # `cast` is a deprecated alias for `crew`; mirrored here so readers still
+    # on the old name keep working. Drop this line when `cast` is removed
+    # next release. `_normalize_crew` renames a layer's seats key from `cast`
+    # to `crew` before it enters the payload `cartridge_sha` hashes (merge
+    # rule 5), so this release changes the sha, and resets the autonomy
+    # streak, for every team whose cartridge declared `cast`.
+    final["cast"] = final.get("crew", {})
     return [*entries[:-1], (entries[-1][0], final)]
 
 
