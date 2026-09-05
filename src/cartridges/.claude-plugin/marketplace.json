@@ -6,6 +6,11 @@
       "name": "local-skills",
       "source": "./skills-plugins/local-skills",
       "description": "Reference skill bodies for the `local` cartridge — every role bound to the filesystem, no tracker anywhere."
+    },
+    {
+      "name": "coxswain",
+      "source": "./skills-plugins/coxswain",
+      "description": "The coxswain session: docket at start, runs in the statusline, launch and land from the prompt."
     }
   ]
 }
