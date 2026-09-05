@@ -367,20 +367,9 @@ def _validate(merged: Mapping[str, Any], skill_index: Mapping[str, Sequence[Any]
             found = ", ".join(str(b) for b in bodies)
             problems.append(f"role '{role}' binds skill '{name}', which resolves to {len(bodies)} bodies: {found}")
 
-    crew = merged.get("crew") or {}
-    if isinstance(crew, Mapping):
-        for seat, spec in crew.items():
-            seat_skills = spec.get("skills", []) if isinstance(spec, Mapping) else []
-            for name in seat_skills:
-                bodies = skill_index.get(name, ())
-                if len(bodies) == 1:
-                    continue
-                if not bodies:
-                    problems.append(f"seat '{seat}' binds skill '{name}', which resolves to no skill body")
-                else:
-                    found = ", ".join(str(b) for b in bodies)
-                    problems.append(f"seat '{seat}' binds skill '{name}', which resolves to {len(bodies)} bodies: {found}")
-
+    # Seats bind Claude Code plugin skills (superpowers:*, example-skills:*, ...)
+    # that live in the provider's plugin cache, not in the harness skill index;
+    # they are not validated here. Only role bindings under `skills` are.
     for entry in merged.get("context", []):
         if not Path(entry).is_file():
             problems.append(f"context pack does not exist: {entry}")
