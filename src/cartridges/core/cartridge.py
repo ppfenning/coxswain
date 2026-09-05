@@ -8,13 +8,24 @@ Merge semantics:
 
 1.  A team cartridge declares `extends: <parent>`. Resolve the chain to the
     root, then deep-merge parent-under-child. Child wins on scalar conflicts.
-2.  `context` lists CONCATENATE, base-first. A team pack refines a base
+2.  Within EACH layer of that chain, `<layer>/cartridge.d/*.yaml` fragments
+    (sorted by filename) fold over that layer, after the layer has already
+    been merged into the chain — so `base`'s fragments fold before `base`
+    joins `local`, and a team's fragments fold last. Each fragment is
+    checked against the ACCUMULATED authority at that point: the parent
+    chain, then the layer's own `cartridge.yaml`, then every fragment
+    folded before it — not against the layer alone, so a fragment adding a
+    kind the layer's `cartridge.yaml` never mentioned is still checked
+    against whatever the parent chain declared for it. A refusal names the
+    fragment file, never the team.
+3.  `context` lists CONCATENATE, base-first. A team pack refines a base
     principle; it does not replace it. Order is the reading order.
-3.  Resolved `context` entries are ABSOLUTE paths. Graph scripts have no
+4.  Resolved `context` entries are ABSOLUTE paths. Graph scripts have no
     filesystem access — they pass paths to agent nodes, which read them.
-4.  Emit `cartridge_dir` and `cartridge_sha` on the resolved dict. The sha
-    covers the merged config AND every context pack's content: changing a
-    charter changes the hash, which resets autonomy streaks.
+5.  Emit `cartridge_dir` and `cartridge_sha` on the resolved dict. The sha
+    covers the merged config AND every context pack's content AND every
+    fragment's content: changing a charter, or a fragment, changes the
+    hash, which resets autonomy streaks.
 
 Validation — refuse to resolve, loudly, when:
 
@@ -41,11 +52,27 @@ precise failure mode this substrate exists to prevent. Build one with
 `core.skills.index_from_roots`, or hand tests a plain dict.
 
 `cartridge_sha` hashes the merged config with `context` EXCLUDED, then hashes
-each context pack's bytes in resolved order. Context paths are absolute, so
-including them in the hashed payload would make the sha depend on where the
-repo happens to be checked out — every machine would compute a different hash
-and no autonomy streak would ever survive moving a directory. Content is what
-matters, and content is what is hashed.
+each context pack's bytes in resolved order, then each fragment's bytes in the
+order they were folded. Context paths are absolute, so including them in the
+hashed payload would make the sha depend on where the repo happens to be
+checked out — every machine would compute a different hash and no autonomy
+streak would ever survive moving a directory. Content is what matters, and
+content is what is hashed.
+
+A fragment's `context` entries resolve relative to the TEAM directory (the one
+holding `cartridge.yaml`), not to `cartridge.d/` itself — a fragment is
+additional declaration for that layer, not a nested cartridge with its own
+base path. A fragment's `extends` key, if it has one, is silently ignored:
+`_chain` resolves inheritance from each layer's `cartridge.yaml` before any
+fragment is read, so by the time a fragment is folded in, the chain is
+already fixed.
+
+`_fold_fragments` is the one place fragments are folded and checked against an
+authority; `load` only reads files (the layer's `cartridge.yaml` and its
+`cartridge.d/*.yaml`) and calls it once per layer, so an illegal loosening is
+reported exactly once no matter how many fragments led to it. An empty or
+comment-only fragment file parses to `None`; it folds as `{}`, exactly as if
+the file were absent, rather than being refused.
 """
 
 from __future__ import annotations
@@ -55,6 +82,7 @@ import hashlib
 import json
 import sys
 from collections.abc import Mapping, Sequence
+from functools import reduce
 from pathlib import Path
 from typing import Any
 
@@ -85,11 +113,13 @@ class CartridgeError(Exception):
     """A cartridge could not be resolved, or resolved into something invalid."""
 
 
-def _read_yaml(path: Path) -> dict[str, Any]:
+def _read_yaml(path: Path, *, empty_ok: bool = False) -> dict[str, Any]:
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as exc:
         raise CartridgeError(f"{path}: cannot read cartridge: {exc}") from exc
+    if data is None and empty_ok:
+        return {}
     if not isinstance(data, dict):
         raise CartridgeError(f"{path}: expected a mapping at the top level, got {type(data).__name__}")
     return data
@@ -115,6 +145,27 @@ def _chain(team: str, cartridges_dir: Path) -> list[tuple[str, Path, dict[str, A
         name = raw.get("extends")
     chain.reverse()
     return chain
+
+
+def _fragments(directory: Path) -> list[tuple[Path, dict[str, Any]]]:
+    """Read `<directory>/cartridge.d/*.yaml`, sorted by filename.
+
+    A directory with no `cartridge.d/` yields no fragments — a team that has
+    never split anything out resolves exactly as it did before fragments
+    existed. An empty or comment-only fragment reads as `{}`, as if absent.
+    A fragment's `context` entries resolve against `directory` itself (the
+    team directory), not against `cartridge.d/`.
+    """
+    frag_dir = directory / "cartridge.d"
+    if not frag_dir.is_dir():
+        return []
+    fragments: list[tuple[Path, dict[str, Any]]] = []
+    for path in sorted(frag_dir.glob("*.yaml")):
+        raw = _read_yaml(path, empty_ok=True)
+        frag = dict(raw)
+        frag["context"] = _absolutise_context(raw, directory)
+        fragments.append((path, frag))
+    return fragments
 
 
 def _absolutise_context(raw: Mapping[str, Any], directory: Path) -> list[str]:
@@ -163,11 +214,52 @@ def _loosenings(parent_kinds: Mapping[str, Any], child_kinds: Mapping[str, Any],
     return problems
 
 
-def _cartridge_sha(merged: Mapping[str, Any], context_paths: Sequence[str]) -> str:
+def _fold_fragments(
+    layer: Mapping[str, Any],
+    fragments: Sequence[tuple[str, Mapping[str, Any]]],
+    authority: Mapping[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    """Fold `fragments` (sorted-filename order, already read) over `layer`.
+
+    Each fragment is checked against the ACCUMULATED authority: `authority`
+    as given (the parent chain merged with this layer's own `cartridge.yaml`),
+    then every fragment folded before it. A fragment that loosens a risk or
+    ramp field against that accumulated authority is a problem string naming
+    the fragment's own label, never the team. Pure: takes already-read dicts,
+    returns the folded layer and the problems found; nothing here reads a
+    file or rebinds a running total from outside.
+    """
+
+    def step(
+        acc: tuple[dict[str, Any], dict[str, Any], list[str]],
+        fragment: tuple[str, Mapping[str, Any]],
+    ) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+        folded, current_authority, problems = acc
+        label, frag = fragment
+        frag_kinds = frag.get("write_kinds") or {}
+        authority_kinds = current_authority.get("write_kinds") or {}
+        found = (
+            _loosenings(authority_kinds, frag_kinds, label)
+            if isinstance(frag_kinds, Mapping) and isinstance(authority_kinds, Mapping)
+            else []
+        )
+        next_folded = _merge(folded, frag)
+        return next_folded, next_folded, [*problems, *found]
+
+    folded, _, problems = reduce(step, fragments, (dict(layer), dict(authority), []))
+    return folded, problems
+
+
+def _cartridge_sha(
+    merged: Mapping[str, Any], context_paths: Sequence[str], fragment_paths: Sequence[Path] = ()
+) -> str:
     payload = {k: v for k, v in merged.items() if k not in DERIVED_KEYS and k != "context"}
     digest = hashlib.sha256()
     digest.update(json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8"))
     for path in context_paths:
+        digest.update(b"\0")
+        digest.update(Path(path).read_bytes())
+    for path in fragment_paths:
         digest.update(b"\0")
         digest.update(Path(path).read_bytes())
     return digest.hexdigest()
@@ -223,6 +315,7 @@ def load(team: str, cartridges_dir: Path | str, *, skill_index: Mapping[str, Seq
 
     merged: dict[str, Any] = {}
     problems: list[str] = []
+    fragment_paths: list[Path] = []
     for name, directory, raw in chain:
         level = dict(raw)
         level["context"] = _absolutise_context(raw, directory)
@@ -230,7 +323,16 @@ def load(team: str, cartridges_dir: Path | str, *, skill_index: Mapping[str, Seq
         parent_kinds = merged.get("write_kinds") or {}
         if isinstance(child_kinds, Mapping) and isinstance(parent_kinds, Mapping):
             problems.extend(_loosenings(parent_kinds, child_kinds, name))
-        merged = _merge(merged, level)
+        # The authority a fragment is checked against: the parent chain plus
+        # this layer's own cartridge.yaml — already validated above — never
+        # re-checked again once fragments have folded over it.
+        layer_authority = _merge(merged, level)
+        frag_files = _fragments(directory)
+        fragment_paths.extend(path for path, _ in frag_files)
+        fragments = [(f"{name}/cartridge.d/{path.name}", frag) for path, frag in frag_files]
+        folded, frag_problems = _fold_fragments(layer_authority, fragments, layer_authority)
+        problems.extend(frag_problems)
+        merged = folded
 
     problems.extend(_validate(merged, skill_index))
     if problems:
@@ -240,7 +342,7 @@ def load(team: str, cartridges_dir: Path | str, *, skill_index: Mapping[str, Seq
         )
 
     merged["cartridge_dir"] = str(chain[-1][1].resolve())
-    merged["cartridge_sha"] = _cartridge_sha(merged, merged.get("context", []))
+    merged["cartridge_sha"] = _cartridge_sha(merged, merged.get("context", []), fragment_paths)
     return merged
 
 
