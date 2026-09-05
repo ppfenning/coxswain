@@ -6,3 +6,15 @@
 Coxswain is in beta — versions may change between releases
 {% endif %}
 {% endblock %}
+
+{% block content %}
+<nav class="cox-page-nav" aria-label="Page navigation">
+  {% if page.previous_page %}
+  <a class="cox-page-nav__prev" href="{{ page.previous_page.url | url }}">← {{ page.previous_page.title }}</a>
+  {% endif %}
+  {% if page.next_page %}
+  <a class="cox-page-nav__next" href="{{ page.next_page.url | url }}">{{ page.next_page.title }} →</a>
+  {% endif %}
+</nav>
+{{ super() }}
+{% endblock %}
