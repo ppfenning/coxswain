@@ -208,6 +208,7 @@ dev = [
     { name = "mike" },
     { name = "mkdocs-material" },
     { name = "pytest" },
+    { name = "pyyaml" },
 ]
 
 [package.metadata]
@@ -217,6 +218,7 @@ dev = [
     { name = "mike", specifier = ">=2.1" },
     { name = "mkdocs-material", specifier = ">=9.5" },
     { name = "pytest", specifier = ">=8" },
+    { name = "pyyaml", specifier = ">=6.0" },
 ]
 
 [[package]]
