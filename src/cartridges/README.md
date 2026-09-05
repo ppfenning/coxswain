@@ -203,10 +203,14 @@ example of what such a plugin looks like.
 `cartridge init <team> --cartridges-dir <workspace>/cartridges` scaffolds the
 same layout without the manual `cp -r`: it creates `<team>/`, its `context/`
 tree, symlinks to `base` and (by default) `local`, and a `cartridge.yaml`
-naming `<team>`. It prints two lines, `team:` and `cartridges_dir:` — put both
+naming `<team>`. Once every step above has applied, it prints three lines:
+`wrote <team dir>`, then `team:` and `cartridges_dir:`. Put the latter two
 into `~/.config/agent-tools/profile.yaml` so other tools know which cartridge
 to load. This command reads its template from the package's own source tree,
 so it needs a source checkout of this repository, not an installed wheel.
+Left unset, `--cartridges-dir` defaults to `./cartridges` under the current
+directory, not the package's. `init` is the one command that writes, so it
+writes where you are.
 
 This repo, [`agent-graphs`](https://github.com/ppfenning/agent-graphs), and
 [`agent-tools`](https://github.com/ppfenning/agent-tools) are set up together,

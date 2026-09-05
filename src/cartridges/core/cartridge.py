@@ -341,8 +341,8 @@ def _init_main(argv: Sequence[str]) -> int:
     parser.add_argument("team", help="team slug for the new cartridge")
     parser.add_argument(
         "--cartridges-dir",
-        default=_DEFAULT_CARTRIDGES_DIR,
-        help="directory to create <team> under (default: ./cartridges, same as the flat parser above)",
+        default=Path.cwd() / "cartridges",
+        help="directory to create <team> under (default: ./cartridges in the current directory, not the package's)",
     )
     parser.add_argument("--extends", default="local", choices=("base", "local"), help="parent cartridge (default: local)")
     parser.add_argument("--dry-run", action="store_true", help="print the plan; write nothing")
@@ -360,8 +360,16 @@ def _init_main(argv: Sequence[str]) -> int:
         if args.dry_run:
             print(render_plan(steps))
             return 0
+        # Apply every step that touches the disk first, then say where the
+        # cartridge was written, then the profile lines — the README promises
+        # that order, and a reader pastes the last two lines into a profile.
         for step in steps:
-            _apply_init_step(step, force=args.force)
+            if step["op"] != "print":
+                _apply_init_step(step, force=args.force)
+        print(f"wrote {Path(steps[0]['path']).resolve()}")
+        for step in steps:
+            if step["op"] == "print":
+                _apply_init_step(step, force=args.force)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2

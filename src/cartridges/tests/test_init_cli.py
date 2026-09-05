@@ -28,7 +28,30 @@ def test_fresh_init_creates_team_dir_context_symlinks_yaml_and_prints_profile_li
     assert (cartridges_dir / "local").resolve() == (REPO / "cartridges" / "local").resolve()
     assert (cartridges_dir / "base").resolve() == (REPO / "cartridges" / "base").resolve()
     assert "team: acme" in (team_dir / "cartridge.yaml").read_text(encoding="utf-8").splitlines()
-    assert out == f"team: acme\ncartridges_dir: {cartridges_dir}\n"
+    assert out == f"wrote {team_dir.resolve()}\nteam: acme\ncartridges_dir: {cartridges_dir}\n"
+
+
+def test_init_with_no_flag_defaults_to_cartridges_under_the_current_directory(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = _main(["init", "acme"])
+    out = capsys.readouterr().out
+
+    team_dir = tmp_path / "cartridges" / "acme"
+    assert exit_code == 0
+    assert (team_dir / "cartridge.yaml").is_file()
+    assert f"wrote {team_dir.resolve()}\n" in out
+
+
+def test_an_explicit_cartridges_dir_still_overrides_the_cwd_default(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+
+    exit_code = _main(["init", "acme", "--cartridges-dir", str(elsewhere)])
+
+    assert exit_code == 0
+    assert (elsewhere / "acme" / "cartridge.yaml").is_file()
+    assert not (tmp_path / "cartridges").exists()
 
 
 def test_the_scaffolded_cartridge_resolves(tmp_path):
@@ -56,6 +79,7 @@ def test_dry_run_writes_nothing(tmp_path, capsys):
     assert exit_code == 0
     assert not cartridges_dir.exists()
     assert "mkdir" in out
+    assert "wrote" not in out
 
 
 def test_dry_run_shows_the_minimal_yaml_write_with_no_skills_bindings(tmp_path, capsys):
@@ -72,16 +96,19 @@ def test_dry_run_shows_the_minimal_yaml_write_with_no_skills_bindings(tmp_path, 
     assert "skills" not in out
 
 
-def test_second_init_without_force_exits_2_and_changes_nothing(tmp_path):
+def test_second_init_without_force_exits_2_and_changes_nothing(tmp_path, capsys):
     cartridges_dir = tmp_path / "cartridges"
     assert _main(["init", "acme", "--cartridges-dir", str(cartridges_dir)]) == 0
+    capsys.readouterr()  # discard the first, successful run's own "wrote" line
     yaml_path = cartridges_dir / "acme" / "cartridge.yaml"
     before = yaml_path.read_text(encoding="utf-8")
 
     exit_code = _main(["init", "acme", "--cartridges-dir", str(cartridges_dir)])
+    out = capsys.readouterr().out
 
     assert exit_code == 2
     assert yaml_path.read_text(encoding="utf-8") == before
+    assert "wrote" not in out
 
 
 def test_force_rewrites_the_yaml(tmp_path):
@@ -110,18 +137,21 @@ def test_existing_correct_symlink_is_accepted_silently(tmp_path):
     assert (cartridges_dir / "acme" / "cartridge.yaml").is_file()
 
 
-def test_flat_team_invocation_still_works_unchanged(capsys):
-    """The dispatch guard only wraps the flat parser; it must not change a
-    byte of what an unmodified `--team` call prints. Proof, not a smoke test:
-    compute the same resolution independently via `load` and require an exact
-    match, not just a nonempty line."""
-    expected_sha = load("local", "cartridges", skill_index=index_from_roots(["skills-plugins"]))["cartridge_sha"]
+def test_flat_team_invocation_still_works_unchanged(capsys, tmp_path, monkeypatch):
+    """The dispatch guard only wraps the flat parser; it must not change what an
+    unmodified `--team` call prints — including its default `--cartridges-dir`,
+    which is the PACKAGE's cartridges/, not the cwd. Run from a cwd with no
+    `cartridges/` so the two defaults cannot coincide."""
+    monkeypatch.chdir(tmp_path)
+    expected_sha = load("local", _DEFAULT_CARTRIDGES_DIR, skill_index=index_from_roots([REPO / "skills-plugins"]))["cartridge_sha"]
 
-    exit_code = _main(["--team", "local", "--cartridges-dir", "cartridges", "--skills-root", "skills-plugins"])
+    exit_code = _main(["--team", "local", "--skills-root", str(REPO / "skills-plugins")])
     out = capsys.readouterr().out
 
     assert exit_code == 0
-    assert out == f"{expected_sha}\n"
+    assert expected_sha in out
+    assert not (tmp_path / "cartridges").exists(), "the flat parser must not read or create ./cartridges"
+
 
 
 def test_the_installed_entry_point_with_argv_none_reaches_the_init_path(tmp_path, capsys, monkeypatch):
@@ -141,10 +171,20 @@ def test_the_installed_entry_point_with_argv_none_reaches_the_init_path(tmp_path
     assert "mkdir" in out
 
 
-def test_init_cartridges_dir_default_matches_the_flat_parsers_default():
-    """Both parsers build `--cartridges-dir`'s default from one constant, so
-    this is a structural guarantee, not just a read of matching literals."""
-    assert _DEFAULT_CARTRIDGES_DIR == REPO / "cartridges"
+def test_the_flat_parsers_cartridges_dir_default_is_still_the_package_constant(capsys):
+    """Omitting `--cartridges-dir` on the flat `--team` parser must still
+    resolve against `_DEFAULT_CARTRIDGES_DIR` itself: load `local` against
+    that constant directly and require the flag-less call to print the same
+    `cartridge_sha`. `init`'s own default is the caller's cwd instead, proved
+    by `test_init_with_no_flag_defaults_to_cartridges_under_the_current_directory`
+    above."""
+    expected_sha = load("local", _DEFAULT_CARTRIDGES_DIR, skill_index=index_from_roots([SKILLS_ROOT]))["cartridge_sha"]
+
+    exit_code = _main(["--team", "local", "--skills-root", "skills-plugins"])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert out == f"{expected_sha}\n"
 
 
 def test_a_reserved_team_name_exits_2_before_any_step_runs(tmp_path, capsys):
