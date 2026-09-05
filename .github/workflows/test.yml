@@ -11,4 +11,6 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - run: uv sync --group dev
       - run: uv run pytest -q
+      - name: ruff (rules in pyproject.toml; pre-commit mirrors it)
+        run: uv run ruff check .
       - run: test ! -f mkdocs.yml || uv run mkdocs build --strict
