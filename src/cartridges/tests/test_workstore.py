@@ -12,6 +12,7 @@ from core.workstore import (
     read_initiative,
     read_item,
     ready_tasks,
+    record_attempt,
     set_state,
     validate_dag,
     write_item,
@@ -68,6 +69,64 @@ def test_the_body_survives_a_state_change(tmp_path: Path) -> None:
     after = read_item(path)
     assert after["state"] == "done"
     assert after["body"] == before
+
+
+def test_an_item_with_two_attempts_reads_back_in_order(tmp_path: Path) -> None:
+    entries = [
+        {"run": "run-1", "phase": "p1", "reason": "quarantined: timeout", "ts": "2026-09-01T00:00:00Z"},
+        {"run": "run-2", "phase": "p1", "reason": "quarantined: flaky test", "ts": "2026-09-02T00:00:00Z"},
+    ]
+    path = write_item(
+        {
+            "id": "t1",
+            "phase": "p1",
+            "state": "todo",
+            "needs": [],
+            "surfaces": [],
+            "title": "t1",
+            "attempts": entries,
+            "body": "body",
+        },
+        tmp_path / "p1" / "t1.md",
+    )
+    item = read_item(path)
+    assert item["attempts"] == entries
+
+
+def test_record_attempt_twice_yields_two_entries_and_preserves_the_rest(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1", needs=["t0"], surfaces=["schema"], state="ready")
+    before = read_item(path)
+
+    record_attempt(path, run="run-1", phase="p1", reason="quarantined: timeout", ts="2026-09-01T00:00:00Z")
+    after = record_attempt(path, run="run-2", phase="p1", reason="quarantined: flaky test", ts="2026-09-02T00:00:00Z")
+
+    assert [a["run"] for a in after["attempts"]] == ["run-1", "run-2"]
+    assert after["attempts"][0] == {
+        "run": "run-1",
+        "phase": "p1",
+        "reason": "quarantined: timeout",
+        "ts": "2026-09-01T00:00:00Z",
+    }
+    assert after["state"] == before["state"]
+    assert after["needs"] == before["needs"]
+    assert after["surfaces"] == before["surfaces"]
+    assert after["body"] == before["body"]
+    assert read_item(path)["attempts"] == after["attempts"]
+
+
+def test_an_item_with_no_attempts_writes_no_attempts_line(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1")
+    assert "attempts:" not in path.read_text(encoding="utf-8")
+
+
+def test_a_malformed_attempts_value_reads_as_empty_rather_than_raising(tmp_path: Path) -> None:
+    path = tmp_path / "p1" / "t1.md"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "---\nid: t1\nphase: p1\nstate: todo\nattempts: not-a-list\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    assert read_item(path)["attempts"] == []
 
 
 def test_unknown_states_are_refused(tmp_path: Path) -> None:

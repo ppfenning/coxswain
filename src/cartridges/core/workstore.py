@@ -42,6 +42,7 @@ __all__ = [
     "read_initiative",
     "read_item",
     "write_item",
+    "record_attempt",
     "set_state",
     "validate_dag",
     "ready_tasks",
@@ -75,6 +76,21 @@ def _split_frontmatter(text: str, source: Path) -> tuple[dict[str, Any], str]:
     return dict(meta), "\n".join(lines[end + 1 :]).strip()
 
 
+def _coerce_attempts(raw: Any) -> list[dict[str, str]]:
+    if not isinstance(raw, list):
+        return []
+    return [
+        {
+            "run": str(entry.get("run") or ""),
+            "phase": str(entry.get("phase") or ""),
+            "reason": str(entry.get("reason") or ""),
+            "ts": str(entry.get("ts") or ""),
+        }
+        for entry in raw
+        if isinstance(entry, Mapping)
+    ]
+
+
 def read_item(path: Path | str) -> dict[str, Any]:
     """Read one work item. Its `id` defaults to the filename, never invented."""
     path = Path(path)
@@ -90,6 +106,7 @@ def read_item(path: Path | str) -> dict[str, Any]:
         "needs": [str(n) for n in (meta.get("needs") or [])],
         "surfaces": [str(s) for s in (meta.get("surfaces") or [])],
         "title": str(meta.get("title") or path.stem),
+        "attempts": _coerce_attempts(meta.get("attempts")),
         "body": body,
         "path": str(path),
     }
@@ -102,6 +119,7 @@ def write_item(item: Mapping[str, Any], path: Path | str) -> Path:
     """Write one work item, frontmatter first. Round-trips through `read_item`."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    attempts = list(item.get("attempts") or [])
     meta = {
         "id": item["id"],
         "phase": item.get("phase", ""),
@@ -109,12 +127,24 @@ def write_item(item: Mapping[str, Any], path: Path | str) -> Path:
         "needs": list(item.get("needs") or []),
         "surfaces": list(item.get("surfaces") or []),
         "title": item.get("title", item["id"]),
+        **({"attempts": attempts} if attempts else {}),
     }
     if meta["state"] not in STATES:
         raise WorkStoreError(f"unknown state '{meta['state']}'; expected one of {list(STATES)}")
     front = yaml.safe_dump(meta, sort_keys=False, default_flow_style=None).strip()
     path.write_text(f"{_FRONTMATTER}\n{front}\n{_FRONTMATTER}\n\n{item.get('body', '').strip()}\n", encoding="utf-8")
     return path
+
+
+def record_attempt(path: Path | str, *, run: str, phase: str, reason: str, ts: str) -> dict[str, Any]:
+    """Append one attempt to an item's history, preserving everything else.
+
+    The caller supplies `ts`; this module reads no clock.
+    """
+    item = read_item(path)
+    entry = {"run": str(run), "phase": str(phase), "reason": str(reason), "ts": str(ts)}
+    write_item({**item, "attempts": [*item["attempts"], entry]}, path)
+    return read_item(path)
 
 
 def set_state(path: Path | str, state: str) -> dict[str, Any]:
