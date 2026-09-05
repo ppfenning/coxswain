@@ -1,0 +1,58 @@
+/* The coxswain header sprite: a 160x24 racing shell, oars stroking in unison. */
+/* .cox-shell-track clips the glide to its own box so the boat stays beside */
+/* the beta banner text instead of sweeping across it. */
+.cox-shell-track {
+  position: relative;
+  display: inline-block;
+  overflow: hidden;
+  width: 200px;
+  height: 24px;
+  vertical-align: middle;
+  margin-right: 0.5em;
+}
+
+.cox-shell {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 160px;
+  height: 24px;
+  background-image: url("shell-sprite.svg");
+  background-repeat: no-repeat;
+  background-position: 0 0;
+  background-size: 640px 24px;
+  image-rendering: pixelated;
+  animation:
+    cox-stroke 0.8s steps(4) infinite,
+    cox-glide 24s linear infinite;
+}
+
+/* Cycles the four stroke frames: catch, drive, finish, recovery. */
+@keyframes cox-stroke {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: -640px 0;
+  }
+}
+
+/* Glides the shell across its own clipped track once every 24 seconds. */
+@keyframes cox-glide {
+  from {
+    left: 0;
+  }
+  to {
+    left: calc(100% - 160px);
+  }
+}
+
+/* Reduced motion: remove both animations so background-position and left */
+/* below take effect, resting the shell on frame 1 at the left edge. */
+@media (prefers-reduced-motion: reduce) {
+  .cox-shell {
+    animation: none;
+    background-position: 0 0;
+    left: 0;
+  }
+}
