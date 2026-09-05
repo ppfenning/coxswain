@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 import pytest
+import yaml
 
 BASH = shutil.which("bash")
 
@@ -21,6 +22,8 @@ STATUSLINE_SH = PLUGIN_DIR / "statusline" / "statusline.sh"
 SUMMARIZE_PY = PLUGIN_DIR / "statusline" / "summarize.py"
 SETTINGS_JSON = PLUGIN_DIR / "settings.json"
 MARKETPLACE_JSON = ROOT / ".claude-plugin" / "marketplace.json"
+COMMANDS_DIR = PLUGIN_DIR / "commands"
+COMMAND_NAMES = ("launch", "land", "runs", "intake", "regatta")
 
 
 def _load_summarize():
@@ -49,6 +52,15 @@ def _tracked_as_executable(path):
     )
     fields = result.stdout.split()
     return bool(fields) and fields[0] == "100755"
+
+
+def _command_frontmatter_and_body(name):
+    path = COMMANDS_DIR / f"{name}.md"
+    text = path.read_text()
+    assert text.startswith("---\n"), f"{name}.md must open with a --- frontmatter fence"
+    _, rest = text.split("---\n", 1)
+    front, body = rest.split("---\n", 1)
+    return yaml.safe_load(front), body.strip()
 
 
 def _run_via_shebang(script, **kwargs):
@@ -173,3 +185,41 @@ def test_summarize_excludes_rather_than_guesses_at_an_unparsable_timestamp():
     summary = SUMMARIZE.summarize(runs, slots=3, now=0)
     assert summary.spend is None
     assert summary.unparsed == ("not-a-timestamp",)
+
+
+@pytest.mark.parametrize("name", COMMAND_NAMES)
+def test_each_command_file_exists_with_frontmatter_and_a_body(name):
+    front, body = _command_frontmatter_and_body(name)
+    assert isinstance(front, dict)
+    assert "description" in front
+    assert "argument-hint" in front
+    assert body
+
+
+@pytest.mark.parametrize("name", ("launch", "intake"))
+def test_launch_and_intake_bodies_carry_the_arguments_placeholder(name):
+    _, body = _command_frontmatter_and_body(name)
+    assert "$ARGUMENTS" in body
+
+
+@pytest.mark.parametrize("name", COMMAND_NAMES)
+def test_each_command_falls_back_to_agent_tools_when_cox_is_absent(name):
+    _, body = _command_frontmatter_and_body(name)
+    assert "agent-tools" in body
+
+
+def test_launch_names_the_decompose_step_before_launching_an_epic_at_threshold():
+    body = " ".join(_command_frontmatter_and_body("launch")[1].split())
+    assert "route launch decompose" in body
+    assert "never launch the epic over an unscoped intake item" in body
+
+
+def test_land_waits_for_operator_to_say_apply_rather_than_deciding_itself():
+    body = " ".join(_command_frontmatter_and_body("land")[1].split())
+    assert "if the operator explicitly says to apply" in body.lower()
+    assert "never decide to apply it on your own reading of the plan" in body.lower()
+
+
+def test_runs_does_not_invent_a_runs_directory():
+    body = " ".join(_command_frontmatter_and_body("runs")[1].split())
+    assert "ask rather than guess at one" in body
