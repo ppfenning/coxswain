@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+
+{% block announce %}
+{% if config.extra.status == "beta" %}
+Coxswain is in beta — versions may change between releases
+{% endif %}
+{% endblock %}
