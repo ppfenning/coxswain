@@ -7,8 +7,22 @@ theme:
   features:
     - navigation.tabs
     - search.suggest
+  palette:
+    - scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light
+    - scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark
 
 extra_css:
+  - assets/palette.css
   - assets/sprite.css
 
 nav:
