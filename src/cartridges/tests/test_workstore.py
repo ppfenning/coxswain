@@ -133,6 +133,44 @@ def test_a_malformed_attempts_value_reads_as_empty_rather_than_raising(tmp_path:
     assert read_item(path)["attempts"] == []
 
 
+def test_an_item_with_patterns_reads_back_and_writes_the_line(tmp_path: Path) -> None:
+    path = write_item(
+        {
+            "id": "t1",
+            "phase": "p1",
+            "state": "todo",
+            "needs": [],
+            "surfaces": [],
+            "patterns": ["docs_only"],
+            "title": "t1",
+            "body": "body",
+        },
+        tmp_path / "p1" / "t1.md",
+    )
+    assert read_item(path)["patterns"] == ["docs_only"]
+    assert "patterns:" in path.read_text(encoding="utf-8")
+
+
+def test_an_item_with_no_patterns_reads_empty_and_writes_no_line(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1")
+    assert read_item(path)["patterns"] == []
+    assert "patterns:" not in path.read_text(encoding="utf-8")
+
+
+def test_a_non_list_patterns_value_reads_and_writes_as_empty(tmp_path: Path) -> None:
+    path = tmp_path / "p1" / "t1.md"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "---\nid: t1\nphase: p1\nstate: todo\npatterns: docs_only\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    assert read_item(path)["patterns"] == []
+
+    rewritten = write_item({**read_item(path), "patterns": "docs_only"}, path)
+    assert "patterns:" not in rewritten.read_text(encoding="utf-8")
+    assert read_item(rewritten)["patterns"] == []
+
+
 def test_an_item_with_a_budget_reads_back_and_writes_the_line(tmp_path: Path) -> None:
     path = write_item(
         {

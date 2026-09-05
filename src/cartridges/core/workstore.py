@@ -91,6 +91,12 @@ def _coerce_attempts(raw: Any) -> list[dict[str, str]]:
     ]
 
 
+def _coerce_patterns(raw: Any) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    return [str(p) for p in raw]
+
+
 def _coerce_budget_usd(raw: Any) -> float | None:
     if isinstance(raw, bool) or raw is None:
         return None
@@ -116,6 +122,7 @@ def read_item(path: Path | str) -> dict[str, Any]:
         "state": str(meta.get("state") or "todo"),
         "needs": [str(n) for n in (meta.get("needs") or [])],
         "surfaces": [str(s) for s in (meta.get("surfaces") or [])],
+        "patterns": _coerce_patterns(meta.get("patterns")),
         "title": str(meta.get("title") or path.stem),
         "attempts": _coerce_attempts(meta.get("attempts")),
         **({"budget_usd": budget_usd} if budget_usd is not None else {}),
@@ -133,12 +140,14 @@ def write_item(item: Mapping[str, Any], path: Path | str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     attempts = list(item.get("attempts") or [])
     budget_usd = _coerce_budget_usd(item.get("budget_usd"))
+    patterns = _coerce_patterns(item.get("patterns"))
     meta = {
         "id": item["id"],
         "phase": item.get("phase", ""),
         "state": item.get("state", "todo"),
         "needs": list(item.get("needs") or []),
         "surfaces": list(item.get("surfaces") or []),
+        **({"patterns": patterns} if patterns else {}),
         "title": item.get("title", item["id"]),
         **({"budget_usd": budget_usd} if budget_usd is not None else {}),
         **({"attempts": attempts} if attempts else {}),
