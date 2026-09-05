@@ -17,8 +17,24 @@ nav:
       - Install: install/index.md
       - Supported machines: install/machines.md
       - Providers: install/providers.md
-  - Methodology: methodology/index.md
-  - Customize: customize/index.md
+  - Methodology:
+      - Methodology: methodology/index.md
+      - Crew and seats: methodology/crew-and-seats.md
+      - Cartridges: methodology/cartridges.md
+      - Graphs: methodology/graphs.md
+      - Review: methodology/review.md
+      - Budgets: methodology/budgets.md
+      - Landing: methodology/landing.md
+      - Records: methodology/records.md
+  - Customize:
+      - Customize: customize/index.md
+      - Team cartridge: customize/team-cartridge.md
+      - Fragments: customize/fragments.md
+      - Skills: customize/skills.md
+      - Providers: customize/providers.md
+      - Policy: customize/policy.md
+      - Write a skill: customize/write-a-skill.md
+      - Write a graph: customize/write-a-graph.md
   - Components: components/index.md
   - Releases: releases/index.md
 
