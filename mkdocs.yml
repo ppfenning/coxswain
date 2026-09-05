@@ -8,6 +8,9 @@ theme:
     - navigation.tabs
     - search.suggest
 
+extra_css:
+  - assets/sprite.css
+
 nav:
   - Home: index.md
   - Start here:
