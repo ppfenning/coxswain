@@ -37,6 +37,12 @@ effort:
 # failed anyway; a plan node that finishes cheaply does so in ~10 turns for
 # under $0.10. The ceiling turns an unbounded session into a quarantined task
 # with a named reason (`error_max_budget_usd`).
+#
+# A budget stop is a shape constraint, not a price. When a node hits its
+# ceiling the documented response is to split the task — one file, one
+# behaviour, roughly 200 lines — never to raise the number here. Raising it
+# buys the same unbounded session at a higher price; splitting buys two
+# sessions that each finish.
 budget_usd:
   cheap:     0.15
   standard:  0.35
@@ -45,6 +51,10 @@ role_budget_usd:
   build:     1.00          # it edits, tests and diffs — and a fix-loop retry re-applies
                            # the previous patch before amending it, which is not free.
                            # Measured: a clean first build lands around $0.50 in ~40 turns.
+                           # A retry that hits the ceiling discards nothing the harness
+                           # has already recorded; a build that never finishes has no
+                           # patch to record at all, which is the other reason to keep
+                           # tasks small.
 
 # Roles a graph asks "standard" for that are extraction, not judgment. The
 # profile may run them cheap; changing this resets streaks like any profile edit.
