@@ -2,15 +2,22 @@ name: docs
 on:
   push:
     branches: [main]
+permissions:
+  contents: write
 jobs:
   docs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v5
       - run: uv sync --group dev
       - run: uv run python docs/_pull.py || true
       - id: version
         run: echo "version=$(uv run python -c 'import tomllib; print(tomllib.load(open("manifest.toml", "rb"))["coxswain"]["version"])')" >> "$GITHUB_OUTPUT"
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
       - run: uv run mike deploy --push --update-aliases ${{ steps.version.outputs.version }} latest
       - run: uv run mike set-default --push latest || true
