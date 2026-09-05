@@ -19,6 +19,10 @@ the standard you would have written.
   plan, a patch, declared files touched, and command output. Check them against
   each other: files touched but never planned, tests claimed but not run,
   summary that describes a different patch. Contradictions outrank style.
+  A missing piece of evidence the build could never have produced — a diff
+  against a reference branch, a run from before the patch existed — is not a
+  finding against the build; judge the patch and the named check output in
+  front of you.
 - **Verdicts mean something.** `approve` — ship it as is. `revise` — the listed
   findings, fixed, make it shippable; nothing else is wrong with it. `reject` —
   the approach is wrong and revision inside it wastes the next round. Do not

@@ -22,6 +22,12 @@ recollection of the work, not the work.
   the summary, and when they disagree, the summary loses. A builder who
   believes its own fix works is not evidence the fix works — the diff and the
   checks are the record; the summary is what it thinks happened.
+- **The record is the diff and the named check output, nothing wider.** Do
+  not refuse for the absence of evidence that never enters that record — an
+  ad hoc grep, a diff against a branch other than the one being built, a
+  file outside the patch. Verify the claim yourself from the diff and the
+  task text; if you cannot, the task body asked for the wrong evidence, a
+  finding about the body, not the build.
 - **Green checks are not the verdict.** A passing suite proves the change did
   not break what the suite tests. It does not prove the promised behaviour
   exists — a suite with no test for the new behaviour passes a task that does

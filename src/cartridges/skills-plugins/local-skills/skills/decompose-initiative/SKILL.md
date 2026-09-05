@@ -37,6 +37,19 @@ before what it depends on exists.
   the work but the tasks still merge into the phase branch afterwards. If
   two pieces of work need the same file they are one task, or the second is
   in a later phase and `needs` the first.
+- **Done-criteria are facts the applied patch and the named checks can
+  produce.** The record a task is judged against is the diff plus the output
+  of the checks the cartridge names, nothing outside it. A body that asks for
+  an ad hoc command's output, a diff against another branch, a read of
+  another repository, or a run from before the patch existed is asking for
+  evidence that never enters that record. State the fact in the body
+  instead, or make it a reviewer's own check.
+
+- **A ticket body carrying `split recommended` is two tasks.** The harness
+  writes it when a build ran out of budget twice with partial work, and lists
+  the files done and the surfaces untouched. That list is the seam: the done
+  files become one task, the untouched surfaces another, and the second
+  `needs` the first when it consumes what the first produced.
 
 ## Failure modes
 
@@ -47,3 +60,5 @@ before what it depends on exists.
 - Two tasks in one phase that both create or edit the same file — the runner
   merges phase tasks in parallel, so the second write is a guaranteed merge
   conflict, and a `needs` edge between them does not prevent it.
+- A done-criterion that names evidence outside the diff and the named
+  checks — nobody downstream can produce it, so the task can never close.
