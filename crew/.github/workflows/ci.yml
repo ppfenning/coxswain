@@ -9,5 +9,7 @@ jobs:
         run: python3 .github/check_seats.py
       - name: nothing names an employer
         run: python3 .github/check_clean.py
+      - name: ruff (rules in ruff.toml; pre-commit mirrors it)
+        run: pip install ruff==0.16.6 && ruff check .
       - name: install.sh is sound
         run: bash -n install.sh && ./install.sh --prefix "$RUNNER_TEMP/agents" && ./install.sh --check --prefix "$RUNNER_TEMP/agents"
