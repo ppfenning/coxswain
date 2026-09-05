@@ -60,6 +60,8 @@ from typing import Any
 
 import yaml
 
+from core.init import init_plan, render_plan
+
 __all__ = ["load", "CartridgeError"]
 
 # A team may move a value toward the strict end of these orderings, never back.
@@ -72,6 +74,11 @@ NON_ROLE_APPLY_ARMS = frozenset({"shell", "pr"})
 
 # Emitted by load(), so excluded from the payload that load() hashes.
 DERIVED_KEYS = frozenset({"cartridge_dir", "cartridge_sha"})
+
+# The flat `--team` parser's `--cartridges-dir` default and `init`'s template
+# source both resolve to the package's own `cartridges/`, never the shell's
+# cwd; one constant is how the two parsers are kept in agreement.
+_DEFAULT_CARTRIDGES_DIR = Path(__file__).resolve().parent.parent / "cartridges"
 
 
 class CartridgeError(Exception):
@@ -238,11 +245,17 @@ def load(team: str, cartridges_dir: Path | str, *, skill_index: Mapping[str, Seq
 
 
 def _main(argv: Sequence[str] | None = None) -> int:
+    # `init` is a separate subcommand with its own parser (`_init_main`); every
+    # other argv, including none, falls through unchanged to the flat parser below.
+    resolved_argv = sys.argv[1:] if argv is None else argv
+    if resolved_argv and resolved_argv[0] == "init":
+        return _init_main(resolved_argv[1:])
+
     parser = argparse.ArgumentParser(prog="python -m core.cartridge", description=__doc__.splitlines()[0])
     parser.add_argument("--team", required=True, help="team cartridge to resolve")
     parser.add_argument(
         "--cartridges-dir",
-        default=Path(__file__).resolve().parent.parent / "cartridges",
+        default=_DEFAULT_CARTRIDGES_DIR,
         help="directory holding cartridge directories (default: ./cartridges)",
     )
     parser.add_argument(
@@ -258,7 +271,7 @@ def _main(argv: Sequence[str] | None = None) -> int:
         help="resolve without checking that bound skills exist; prints a warning, never silent",
     )
     parser.add_argument("--json", action="store_true", help="print the resolved cartridge as JSON")
-    args = parser.parse_args(argv)
+    args = parser.parse_args(resolved_argv)
 
     if not args.skills_root and not args.unverified_skills:
         parser.error("pass --skills-root at least once, or --unverified-skills to skip the check explicitly")
@@ -282,6 +295,76 @@ def _main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     print(json.dumps(resolved, indent=2, sort_keys=True, default=str) if args.json else resolved["cartridge_sha"])
+    return 0
+
+
+def _example_team_template() -> Mapping[str, str]:
+    """Read the package's bundled `cartridges/example-team/` into {relative path: text}."""
+    root = _DEFAULT_CARTRIDGES_DIR / "example-team"
+    return {
+        path.relative_to(root).as_posix(): path.read_text(encoding="utf-8")
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def _apply_init_step(step: Mapping[str, Any], *, force: bool) -> None:
+    """Perform one `init_plan` step; refuse an unforceable conflict by path."""
+    op = step["op"]
+    if op == "mkdir":
+        Path(step["path"]).mkdir(parents=True, exist_ok=True)
+    elif op == "symlink":
+        path, target = Path(step["path"]), Path(step["target"])
+        if path.is_symlink():
+            if path.resolve() == target.resolve():
+                return
+            if not force:
+                raise ValueError(f"'{path}' already exists and does not point at '{target}'")
+            path.unlink()
+        elif path.exists():
+            # `--force` replaces a symlink; it never replaces a real directory.
+            raise ValueError(f"'{path}' already exists and is not a symlink")
+        path.symlink_to(target, target_is_directory=True)
+    elif op == "write":
+        path = Path(step["path"])
+        if path.exists() and not force:
+            raise ValueError(f"'{path}' already exists")
+        path.write_text(step["text"], encoding="utf-8")
+    elif op == "print":
+        print(step["text"])
+    else:
+        raise ValueError(f"unknown step op: {op!r}")
+
+
+def _init_main(argv: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(prog="cartridge init", description="Scaffold a new team cartridge.")
+    parser.add_argument("team", help="team slug for the new cartridge")
+    parser.add_argument(
+        "--cartridges-dir",
+        default=_DEFAULT_CARTRIDGES_DIR,
+        help="directory to create <team> under (default: ./cartridges, same as the flat parser above)",
+    )
+    parser.add_argument("--extends", default="local", choices=("base", "local"), help="parent cartridge (default: local)")
+    parser.add_argument("--dry-run", action="store_true", help="print the plan; write nothing")
+    parser.add_argument("--force", action="store_true", help="replace an existing symlink or overwrite an existing file")
+    args = parser.parse_args(argv)
+
+    try:
+        steps = init_plan(
+            args.team,
+            args.cartridges_dir,
+            extends=args.extends,
+            package_cartridges_dir=_DEFAULT_CARTRIDGES_DIR,
+            template=_example_team_template(),
+        )
+        if args.dry_run:
+            print(render_plan(steps))
+            return 0
+        for step in steps:
+            _apply_init_step(step, force=args.force)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     return 0
 
 

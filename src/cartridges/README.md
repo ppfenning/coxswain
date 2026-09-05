@@ -200,6 +200,14 @@ team's cartridge resolves the same way once `--skills-root` points at a plugin
 providing the names it binds — `skills-plugins/local-skills/` is the worked
 example of what such a plugin looks like.
 
+`cartridge init <team> --cartridges-dir <workspace>/cartridges` scaffolds the
+same layout without the manual `cp -r`: it creates `<team>/`, its `context/`
+tree, symlinks to `base` and (by default) `local`, and a `cartridge.yaml`
+naming `<team>`. It prints two lines, `team:` and `cartridges_dir:` — put both
+into `~/.config/agent-tools/profile.yaml` so other tools know which cartridge
+to load. This command reads its template from the package's own source tree,
+so it needs a source checkout of this repository, not an installed wheel.
+
 `--skills-root` is how the loader checks that every bound skill name resolves to
 exactly one skill body; pass it once per plugin root. There is a
 `--unverified-skills` escape hatch for resolving without that check, and it
