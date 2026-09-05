@@ -1,0 +1,16 @@
+name: docs
+on:
+  push:
+    branches: [main]
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --group dev
+      - run: uv run python docs/_pull.py || true
+      - id: version
+        run: echo "version=$(uv run python -c 'import tomllib; print(tomllib.load(open("manifest.toml", "rb"))["coxswain"]["version"])')" >> "$GITHUB_OUTPUT"
+      - run: uv run mike deploy --push --update-aliases ${{ steps.version.outputs.version }} latest
+      - run: uv run mike set-default --push latest || true

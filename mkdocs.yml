@@ -1,0 +1,23 @@
+site_name: Coxswain
+site_description: The umbrella for the agent platform.
+
+theme:
+  name: material
+  custom_dir: docs/overrides
+  features:
+    - navigation.tabs
+    - search.suggest
+
+nav:
+  - Home: index.md
+  - Start: start/index.md
+  - Install: install/index.md
+  - Methodology: methodology/index.md
+  - Customize: customize/index.md
+  - Components: components/index.md
+  - Releases: releases/index.md
+
+extra:
+  version:
+    provider: mike
+  status: beta
