@@ -24,6 +24,33 @@ def test_mkdocs_status_matches_manifest_status():
     assert mkdocs["extra"]["status"] == manifest["coxswain"]["status"]
 
 
+def _nav_targets(node):
+    if isinstance(node, dict):
+        for value in node.values():
+            yield from _nav_targets(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _nav_targets(item)
+    else:
+        yield node
+
+
+def test_every_doc_page_appears_in_nav():
+    mkdocs = _load_mkdocs()
+    nav_targets = set(_nav_targets(mkdocs["nav"]))
+
+    docs_dir = ROOT / "docs"
+    pages = set()
+    for path in docs_dir.rglob("*.md"):
+        parts = path.relative_to(docs_dir).parts
+        if len(parts) == 3 and parts[0] == "components" and parts[2] == "README.md":
+            continue
+        pages.add("/".join(parts))
+
+    missing = pages - nav_targets
+    assert not missing, f"pages missing from nav: {sorted(missing)}"
+
+
 def test_plan_yields_one_pair_per_repo_component_and_skips_path_components():
     manifest = {
         "components": {
