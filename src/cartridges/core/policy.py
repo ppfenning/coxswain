@@ -9,6 +9,8 @@ CONTRACT (implement against this; see docs/CLEAN-ROOM.md — write it fresh)
 
     autonomy_policy(kind, risk, ledger_rows, policy_config) -> "auto" | "propose"
 
+    plan_tier(cartridge, *, surfaces, patterns) -> 0 | 1 | 2
+
 Rules the implementation must honour:
 
 1.  ramp: never    -> always "propose". No streak can graduate it.
@@ -44,6 +46,11 @@ Rules the implementation must honour:
     this outcome. A clean that took three tries proves the loop converged, not
     that the kind is trustworthy first-try, so it neither builds nor breaks a
     streak. The fix loop must never launder struggle into trust.
+
+9.  Before a build there are no `change_facts`, only a task's `surfaces` and
+    `patterns`. `plan_tier` reads `cartridge["policy"]["review_tier"]`: 2 if
+    any surface is in `tier2_surfaces`, else 0 if any pattern is in
+    `tier0_patterns`, else 1. A missing list reads as empty.
 
 Unit tests for this file should need nothing but dicts and lists.
 
@@ -87,7 +94,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-__all__ = ["autonomy_policy", "PolicyError", "AUTO", "PROPOSE"]
+__all__ = ["autonomy_policy", "plan_tier", "PolicyError", "AUTO", "PROPOSE"]
 
 AUTO = "auto"
 PROPOSE = "propose"
@@ -232,3 +239,22 @@ def autonomy_policy(
         return PROPOSE
 
     return AUTO
+
+
+def plan_tier(cartridge: Mapping[str, Any], *, surfaces: Sequence[str], patterns: Sequence[str]) -> int:
+    """The pre-build tier, from a task's `surfaces` and `patterns` alone (rule 9).
+
+    Before a build there are no change facts, so this reads the same
+    `review_tier` config block the post-build tier does and answers from what
+    the work item declares: a dangerous surface is tier 2, a tier-0 pattern is
+    tier 0, anything else is tier 1.
+    """
+    review_tier = (cartridge.get("policy") or {}).get("review_tier") or {}
+    tier2_surfaces = set(review_tier.get("tier2_surfaces") or [])
+    tier0_patterns = set(review_tier.get("tier0_patterns") or [])
+
+    if tier2_surfaces & set(surfaces):
+        return 2
+    if tier0_patterns & set(patterns):
+        return 0
+    return 1

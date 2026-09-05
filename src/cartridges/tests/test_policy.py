@@ -3,14 +3,22 @@
 These tests are the argument that autonomy is earned rather than assumed, so
 they check the ways a kind must FAIL to graduate at least as hard as the one
 way it succeeds.
+
+One exception: `test_loading_local_resolves_base_cartridges_plan_competition_min_tier`
+loads the real `local` cartridge off disk, because the fact under test is
+what the shipped cartridge chain resolves to, not a function's behaviour on a
+literal.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
-from core.policy import AUTO, PROPOSE, PolicyError, autonomy_policy
+from core.policy import AUTO, PROPOSE, PolicyError, autonomy_policy, plan_tier
 from tests.conftest import rows
+
 
 WRITE_KINDS = {
     "draft_pr_create": {"risk": "low", "ramp": "eligible"},
@@ -247,3 +255,32 @@ def test_a_reversal_resets_and_doubles_however_many_attempts_it_took() -> None:
 def test_unknown_kind_is_refused_rather_than_defaulted() -> None:
     with pytest.raises(PolicyError, match="unknown write kind 'invented_by_a_node'"):
         autonomy_policy("invented_by_a_node", "low", [], config())
+
+
+# ── plan_tier: the pre-build gate, from surfaces and patterns alone ─────────
+
+REVIEW_TIER_CARTRIDGE = {
+    "policy": {
+        "review_tier": {
+            "tier0_patterns": ["docs_only", "rename_only"],
+            "tier2_surfaces": ["schema", "auth"],
+        }
+    }
+}
+
+
+def test_a_dangerous_surface_gives_tier_two_regardless_of_patterns() -> None:
+    assert plan_tier(REVIEW_TIER_CARTRIDGE, surfaces=["auth"], patterns=["docs_only"]) == 2
+
+
+def test_a_tier_zero_pattern_with_no_dangerous_surface_gives_tier_zero() -> None:
+    assert plan_tier(REVIEW_TIER_CARTRIDGE, surfaces=["ui"], patterns=["docs_only"]) == 0
+
+
+def test_neither_a_dangerous_surface_nor_a_tier_zero_pattern_gives_tier_one() -> None:
+    assert plan_tier(REVIEW_TIER_CARTRIDGE, surfaces=["ui"], patterns=["feature_add"]) == 1
+
+
+def test_empty_review_tier_lists_give_tier_one_for_anything() -> None:
+    empty = {"policy": {"review_tier": {}}}
+    assert plan_tier(empty, surfaces=["auth"], patterns=["docs_only"]) == 1

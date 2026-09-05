@@ -7,8 +7,11 @@ from pathlib import Path
 import pytest
 import yaml
 
+from core.skills import index_from_roots
 from core.cartridge import CartridgeError, load
 from tests.conftest import write_cartridge
+
+REPO = Path(__file__).resolve().parent.parent
 
 
 def test_resolves_chain_and_child_wins_on_scalars(cartridges: Path, skill_index) -> None:
@@ -132,3 +135,12 @@ def test_refuses_inheritance_cycle(tmp_path: Path) -> None:
 def test_refuses_missing_cartridge(tmp_path: Path) -> None:
     with pytest.raises(CartridgeError, match="no cartridge for 'ghost'"):
         load("ghost", tmp_path, skill_index={})
+
+
+def test_loading_local_resolves_base_cartridges_plan_competition_min_tier() -> None:
+    """Loads `local`, not `base`: `base` leaves required roles unbound and
+    cannot resolve alone. `local` extends `base` and declares no `policy`
+    block of its own, so the value asserted here is the one `base` sets.
+    """
+    resolved = load("local", REPO / "cartridges", skill_index=index_from_roots([REPO / "skills-plugins"]))
+    assert resolved["policy"]["plan_competition"]["min_tier"] == 1

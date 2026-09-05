@@ -158,6 +158,10 @@ policy:
     tier1_max_changed_lines: 150
     tier1_max_modules: 1
     tier2_surfaces: [schema, migration, deletion, auth, infrastructure, cross_repo, production_write_path]
+  plan_competition:
+    min_tier: 1                  # the alternative plan, the arbiter and the plan attacker run only when the task's
+                                 # pre-build tier (surfaces and patterns; no change facts exist yet) is at least this;
+                                 # 0 runs them on everything, 3 never.
   build_budget_usd_max: 3.0     # a work item may raise its own build ceiling with `budget_usd:`;
                                  # this is the most it may ask for, and the harness refuses anything above it, quoting this number.
   budgets:
