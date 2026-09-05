@@ -16,7 +16,13 @@ jobs:
       - run: uv run python docs/_pull.py
       - run: |
           tag=$(uv run python -c 'import tomllib; print(tomllib.load(open("manifest.toml", "rb"))["components"]["tools"].get("tag", ""))')
-          uv tool install "git+https://github.com/ppfenning/coxswain-tools@${tag:-main}"
+          ref=main
+          if [ -n "$tag" ] && git ls-remote --exit-code --tags https://github.com/ppfenning/coxswain-tools "refs/tags/${tag}" >/dev/null; then
+            ref="$tag"
+          else
+            echo "tag ${tag:-<none>} is not pushed yet, installing coxswain-tools@main"
+          fi
+          uv tool install "git+https://github.com/ppfenning/coxswain-tools@${ref}"
       - run: uv run python docs/_cli.py
       - id: version
         run: echo "version=$(uv run python -c 'import tomllib; print(tomllib.load(open("manifest.toml", "rb"))["coxswain"]["version"])')" >> "$GITHUB_OUTPUT"
