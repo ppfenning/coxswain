@@ -1,0 +1,22 @@
+# The single source of truth for what a Coxswain release installs.
+# Every component is tagged v<coxswain.version> at release, in lockstep.
+# Repository names are the post-rename names (design §1a); until the rename
+# lands, `cox install` follows GitHub's redirects from the agent-* names.
+
+[coxswain]
+version = "0.1.0-beta.1"
+status  = "beta"
+
+[components]
+cartridges = { repo = "ppfenning/coxswain-cartridges", tag = "v0.1.0-beta.1", required = true }
+graphs     = { repo = "ppfenning/coxswain-graphs",     tag = "v0.1.0-beta.1", required = true }
+tools      = { repo = "ppfenning/coxswain-tools",      tag = "v0.1.0-beta.1", required = true, provides = "cox" }
+crew       = { repo = "ppfenning/coxswain-crew",       tag = "v0.1.0-beta.1", flag = "crew" }
+hud        = { repo = "ppfenning/coxswain-hud",        tag = "v0.1.0-beta.1", flag = "hud" }
+desktop    = { path = "desktop/",                      flag = "desktop" }
+
+[providers]
+claude-code = { status = "supported", profile = "providers/claude-code.yaml" }
+codex       = { status = "planned" }
+gemini      = { status = "planned" }
+local       = { status = "planned" }
