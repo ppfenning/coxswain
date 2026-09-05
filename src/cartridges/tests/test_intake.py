@@ -47,14 +47,14 @@ def test_a_bare_file_gets_defaults_and_the_full_text_as_body(tmp_path: Path) -> 
 
 def test_unclosed_frontmatter_raises_naming_the_file(tmp_path: Path) -> None:
     root = tmp_path / "intake"
-    bad = write(root, "broken.md", "---\nkind: idea\nno closing fence\n")
+    write(root, "broken.md", "---\nkind: idea\nno closing fence\n")
     with pytest.raises(IntakeError, match="broken.md"):
         read_queue(root)
 
 
 def test_invalid_yaml_frontmatter_raises_naming_the_file(tmp_path: Path) -> None:
     root = tmp_path / "intake"
-    bad = write(root, "bad-yaml.md", "---\nkind: [unclosed\n---\n\nbody\n")
+    write(root, "bad-yaml.md", "---\nkind: [unclosed\n---\n\nbody\n")
     with pytest.raises(IntakeError, match="bad-yaml.md"):
         read_queue(root)
 

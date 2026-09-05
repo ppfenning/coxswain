@@ -37,16 +37,16 @@ from typing import Any
 import yaml
 
 __all__ = [
-    "WorkStoreError",
     "STATES",
+    "WorkStoreError",
+    "phases",
     "read_initiative",
     "read_item",
-    "write_item",
+    "ready_tasks",
     "record_attempt",
     "set_state",
     "validate_dag",
-    "ready_tasks",
-    "phases",
+    "write_item",
 ]
 
 STATES = ("todo", "ready", "in_progress", "blocked", "done")

@@ -37,7 +37,7 @@ from typing import Any
 
 from core.workstore import WorkStoreError, _split_frontmatter
 
-__all__ = ["IntakeError", "read_queue", "consume"]
+__all__ = ["IntakeError", "consume", "read_queue"]
 
 _FRONTMATTER = "---"
 

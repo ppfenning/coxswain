@@ -28,3 +28,5 @@ jobs:
           cache: pip
       - run: pip install -e ".[dev]"
       - run: pytest -q
+      - name: ruff (rules in pyproject.toml; pre-commit mirrors it)
+        run: pip install ruff==0.16.6 && ruff check .

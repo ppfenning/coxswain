@@ -95,7 +95,7 @@ import yaml
 
 from core.init import init_plan, render_plan
 
-__all__ = ["load", "CartridgeError"]
+__all__ = ["CartridgeError", "load"]
 
 # A team may move a value toward the strict end of these orderings, never back.
 RISK_ORDER: Mapping[str, int] = {"low": 0, "medium": 1, "high": 2}
@@ -486,7 +486,7 @@ def _main(argv: Sequence[str] | None = None) -> int:
         print("warning: skill bindings NOT verified (--unverified-skills)", file=sys.stderr)
 
         class _Unverified(dict):
-            def get(self, key, default=None):  # noqa: D102 - every binding "resolves" to exactly one
+            def get(self, key, default=None):
                 return [key]
 
         index = _Unverified()

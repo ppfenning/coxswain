@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from core.skills import index_from_roots
 from core.cartridge import CartridgeError, _fold_fragments, layers, load
+from core.skills import index_from_roots
 from tests.conftest import write_cartridge
 
 REPO = Path(__file__).resolve().parent.parent

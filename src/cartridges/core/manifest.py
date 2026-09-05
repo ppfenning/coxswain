@@ -33,7 +33,7 @@ from typing import Any
 
 from core import ledger
 
-__all__ = ["build_manifest", "gate_diff", "agreement_rate", "record_run", "ManifestError"]
+__all__ = ["ManifestError", "agreement_rate", "build_manifest", "gate_diff", "record_run"]
 
 APPROVED = "approved"
 REFUSED = "refused"

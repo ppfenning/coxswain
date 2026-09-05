@@ -94,7 +94,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-__all__ = ["autonomy_policy", "plan_tier", "PolicyError", "AUTO", "PROPOSE"]
+__all__ = ["AUTO", "PROPOSE", "PolicyError", "autonomy_policy", "plan_tier"]
 
 AUTO = "auto"
 PROPOSE = "propose"

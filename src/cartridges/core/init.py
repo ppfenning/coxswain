@@ -9,8 +9,8 @@ imports only the standard library and never opens a file itself.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Iterable, Mapping
 
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _RESERVED = ("base", "local")

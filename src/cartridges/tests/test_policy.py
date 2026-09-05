@@ -12,13 +12,10 @@ literal.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from core.policy import AUTO, PROPOSE, PolicyError, autonomy_policy, plan_tier
 from tests.conftest import rows
-
 
 WRITE_KINDS = {
     "draft_pr_create": {"risk": "low", "ramp": "eligible"},

@@ -13,17 +13,18 @@ import json
 import re
 import sys
 import time
-from typing import NamedTuple, Optional, Sequence
+from collections.abc import Sequence
+from typing import NamedTuple
 
 
 class Summary(NamedTuple):
     running: int
     slots: int
-    spend: Optional[float]
+    spend: float | None
     unparsed: tuple
 
 
-def _parsed_utc(stamp: str) -> Optional[float]:
+def _parsed_utc(stamp: str) -> float | None:
     try:
         return float(calendar.timegm(time.strptime(stamp[:19], "%Y-%m-%dT%H:%M:%S")))
     except (ValueError, TypeError, OverflowError):

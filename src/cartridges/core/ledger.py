@@ -36,11 +36,11 @@ is pure and takes these rows as input.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
-__all__ = ["append", "read", "append_observation", "LedgerError", "OUTCOMES", "REQUIRED_FIELDS"]
+__all__ = ["OUTCOMES", "REQUIRED_FIELDS", "LedgerError", "append", "append_observation", "read"]
 
 OUTCOMES = frozenset({"clean", "reversal", "skipped", "failure"})
 REQUIRED_FIELDS = ("run_id", "ts", "principal", "kind", "risk", "outcome", "cartridge_sha", "provider_profile")
