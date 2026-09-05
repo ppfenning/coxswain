@@ -35,8 +35,17 @@ nav:
       - Policy: customize/policy.md
       - Write a skill: customize/write-a-skill.md
       - Write a graph: customize/write-a-graph.md
-  - Components: components/index.md
-  - Releases: releases/index.md
+  - Components:
+      - Components: components/index.md
+      - Cartridges: components/cartridges.md
+      - Graphs: components/graphs.md
+      - Tools: components/tools.md
+      - Crew: components/crew.md
+      - HUD: components/hud.md
+      - Desktop: components/desktop.md
+  - Releases:
+      - Releases: releases/index.md
+      - 0.1.0-beta.1: releases/0.1.0-beta.1.md
 
 extra:
   version:
