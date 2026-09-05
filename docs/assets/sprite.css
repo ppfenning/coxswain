@@ -1,4 +1,4 @@
-/* The coxswain header sprite: a top-down 240x32 eight-plus-cox racing shell, */
+/* The coxswain header sprite: a top-down 240x48 eight-plus-cox racing shell, */
 /* oars out both sides and the cox on the stern deck. .cox-shell-track clips */
 /* the glide to its own box so the boat stays beside the beta banner text */
 /* instead of sweeping across it. */
@@ -7,7 +7,7 @@
   display: inline-block;
   overflow: hidden;
   width: 280px;
-  height: 32px;
+  height: 48px;
   vertical-align: middle;
   margin-right: 0.5em;
 }
@@ -17,16 +17,25 @@
   top: 0;
   left: 0;
   width: 240px;
-  height: 32px;
-  color: var(--md-primary-fg-color);
-  background-image: url("shell-sprite.svg");
+  height: 48px;
   background-repeat: no-repeat;
   background-position: 0 0;
-  background-size: 1440px 32px;
+  background-size: 1440px 48px;
   image-rendering: pixelated;
   animation:
     cox-stroke 0.9s steps(6) infinite,
     cox-glide 30s linear infinite;
+}
+
+/* An SVG loaded as a background-image cannot inherit the host page's color */
+/* or custom properties, so each theme gets its own generated sheet instead */
+/* of one currentColor file. docs/_sprite.py is the source of truth. */
+[data-md-color-scheme="slate"] .cox-shell {
+  background-image: url("shell-sprite-dark.svg");
+}
+
+[data-md-color-scheme="default"] .cox-shell {
+  background-image: url("shell-sprite-light.svg");
 }
 
 /* Cycles the six stroke frames: catch, drive-early, drive-late, finish, recovery-early, recovery-late. */

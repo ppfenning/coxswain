@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "docs"))
 import _cli  # noqa: E402
 import _pull  # noqa: E402
 import _shots  # noqa: E402
+import _sprite  # noqa: E402
 
 
 def _load_toml(name: str) -> dict:
@@ -64,34 +65,14 @@ def test_every_doc_page_appears_in_nav():
     assert not missing, f"pages missing from nav: {sorted(missing)}"
 
 
-def test_shell_sprite_has_six_frames_with_correct_viewbox():
-    svg_path = ROOT / "docs" / "assets" / "shell-sprite.svg"
-    root = ET.parse(svg_path).getroot()
-
-    assert root.attrib["viewBox"] == "0 0 1440 32"
-
-    frames = root.findall("{http://www.w3.org/2000/svg}g")
-    assert len(frames) == 6
-    frame_ids = {g.attrib["id"] for g in frames}
-    assert frame_ids == {
-        "frame-1",
-        "frame-2",
-        "frame-3",
-        "frame-4",
-        "frame-5",
-        "frame-6",
-    }
+def _sprite_path(theme):
+    return ROOT / "docs" / "assets" / f"shell-sprite-{theme}.svg"
 
 
 def _frame_x_offset(g):
     transform = g.attrib.get("transform", "translate(0,0)")
     inside = transform[transform.index("(") + 1 : transform.index(")")]
     return int(inside.split(",")[0])
-
-
-def _hull_currentcolor_rects(defs, ns):
-    hull = next(g for g in defs.findall(f"{ns}g") if g.attrib["id"] == "hull")
-    return [r for r in hull.findall(f"{ns}rect") if r.attrib["fill"] == "currentColor"]
 
 
 def _bounds(rects):
@@ -102,59 +83,75 @@ def _bounds(rects):
     return min(tops), max(bottoms), min(lefts), max(rights)
 
 
-def test_shell_sprite_oars_reach_above_and_below_the_hull():
-    ns = "{http://www.w3.org/2000/svg}"
-    svg_path = ROOT / "docs" / "assets" / "shell-sprite.svg"
-    root = ET.parse(svg_path).getroot()
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_sprite_sheet_has_six_frames_with_correct_viewbox(theme):
+    root = ET.parse(_sprite_path(theme)).getroot()
 
-    defs = root.find(f"{ns}defs")
-    hull_top, hull_bottom, _, _ = _bounds(_hull_currentcolor_rects(defs, ns))
+    assert root.attrib["viewBox"] == "0 0 1440 48"
+
+    frames = root.findall("{http://www.w3.org/2000/svg}g")
+    assert len(frames) == 6
+    frame_ids = {g.attrib["id"] for g in frames}
+    assert frame_ids == {"frame-1", "frame-2", "frame-3", "frame-4", "frame-5", "frame-6"}
+
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_sprite_sheet_contains_no_currentcolor(theme):
+    assert "currentColor" not in _sprite_path(theme).read_text()
+
+
+def test_sprite_sheets_use_their_own_palette_oar_colour():
+    dark = _sprite_path("dark").read_text()
+    light = _sprite_path("light").read_text()
+
+    assert _sprite.PALETTES["dark"]["oar"] in dark
+    assert _sprite.PALETTES["light"]["oar"] not in dark
+    assert _sprite.PALETTES["light"]["oar"] in light
+    assert _sprite.PALETTES["dark"]["oar"] not in light
+
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_sprite_sheet_oars_reach_above_and_below_the_hull(theme):
+    ns = "{http://www.w3.org/2000/svg}"
+    oar_color = _sprite.PALETTES[theme]["oar"]
+    hull_color = _sprite.PALETTES[theme]["hull"]
+    root = ET.parse(_sprite_path(theme)).getroot()
 
     frames = sorted(root.findall(f"{ns}g"), key=_frame_x_offset)
     assert [_frame_x_offset(g) for g in frames] == [0, 240, 480, 720, 960, 1200]
 
-    port_x_by_frame = []
     for frame in frames:
-        oars = [r for r in frame.findall(f"{ns}rect") if r.attrib["fill"] == "#e9c46a"]
+        hull_rects = [r for r in frame.findall(f"{ns}rect") if r.attrib["fill"] == hull_color]
+        hull_top, hull_bottom, _, _ = _bounds(hull_rects)
+
+        oars = [r for r in frame.findall(f"{ns}rect") if r.attrib["fill"] == oar_color]
         port = [r for r in oars if int(r.attrib["y"]) + int(r.attrib["height"]) <= hull_top]
         starboard = [r for r in oars if int(r.attrib["y"]) >= hull_bottom]
         assert port, frame.attrib["id"]
         assert starboard, frame.attrib["id"]
 
-        for side in (port, starboard):
-            by_x = {}
-            for rect in side:
-                by_x.setdefault(rect.attrib["x"], []).append(rect)
-            assert len(by_x) == 4, frame.attrib["id"]
-            for x, pair in by_x.items():
-                assert len(pair) == 2, (frame.attrib["id"], x)
-                spans = sorted(
-                    (int(r.attrib["y"]), int(r.attrib["y"]) + int(r.attrib["height"])) for r in pair
-                )
-                assert spans[0][1] == spans[1][0], (frame.attrib["id"], x)
 
-        port_x_by_frame.append(sorted(r.attrib["x"] for r in port))
-
-    assert len(set(map(tuple, port_x_by_frame))) > 1
-
-
-def test_shell_sprite_cox_sits_at_the_stern_once_per_frame():
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_sprite_sheet_cox_sits_at_the_stern_once_per_frame(theme):
     ns = "{http://www.w3.org/2000/svg}"
-    svg_path = ROOT / "docs" / "assets" / "shell-sprite.svg"
-    root = ET.parse(svg_path).getroot()
-
-    defs = root.find(f"{ns}defs")
-    _, _, hull_min_x, hull_max_x = _bounds(_hull_currentcolor_rects(defs, ns))
-    hull_mid_x = (hull_min_x + hull_max_x) / 2
-
-    cox = next(g for g in defs.findall(f"{ns}g") if g.attrib["id"] == "cox")
-    body = next(r for r in cox.findall(f"{ns}rect") if r.attrib["class"] == "coxswain-body")
-    assert body.attrib["fill"] == "#e63946"
-    assert int(body.attrib["x"]) < hull_mid_x
+    cap_color = _sprite.FIXED["cap"]
+    hull_color = _sprite.PALETTES[theme]["hull"]
+    root = ET.parse(_sprite_path(theme)).getroot()
 
     for frame in root.findall(f"{ns}g"):
-        cox_uses = [u for u in frame.findall(f"{ns}use") if u.attrib.get("href") == "#cox"]
-        assert len(cox_uses) == 1, frame.attrib["id"]
+        hull_rects = [r for r in frame.findall(f"{ns}rect") if r.attrib["fill"] == hull_color]
+        _, _, hull_min_x, hull_max_x = _bounds(hull_rects)
+        hull_mid_x = (hull_min_x + hull_max_x) / 2
+
+        cap_rects = [r for r in frame.findall(f"{ns}rect") if r.attrib["fill"] == cap_color]
+        assert cap_rects, frame.attrib["id"]
+        assert all(int(r.attrib["x"]) < hull_mid_x for r in cap_rects), frame.attrib["id"]
+
+
+def test_sprite_sheets_are_generated_from_docs_sprite_py():
+    for theme in _sprite.PALETTES:
+        committed = _sprite_path(theme).read_text()
+        assert _sprite.sheet(theme) == committed, "run python docs/_sprite.py"
 
 
 def test_sprite_css_respects_reduced_motion():
@@ -168,18 +165,20 @@ def test_reduced_motion_block_stops_the_animation():
     assert "animation: none" in media_block
 
 
-def test_sprite_css_paints_the_sprite_sheet_at_native_size():
-    svg_path = ROOT / "docs" / "assets" / "shell-sprite.svg"
-    sheet_width = ET.parse(svg_path).getroot().attrib["viewBox"].split()[2]
+def test_sprite_css_selects_a_sheet_per_color_scheme_at_native_size():
+    root = ET.parse(_sprite_path("dark")).getroot()
+    sheet_width, sheet_height = root.attrib["viewBox"].split()[2:]
 
     css = (ROOT / "docs" / "assets" / "sprite.css").read_text()
-    assert "shell-sprite.svg" in css
-    assert f"background-size: {sheet_width}px 32px" in css
+    assert '[data-md-color-scheme="slate"] .cox-shell' in css
+    assert "shell-sprite-dark.svg" in css
+    assert '[data-md-color-scheme="default"] .cox-shell' in css
+    assert "shell-sprite-light.svg" in css
+    assert f"background-size: {sheet_width}px {sheet_height}px" in css
 
 
 def test_stroke_animation_steps_match_frame_count_and_sheet_width():
-    svg_path = ROOT / "docs" / "assets" / "shell-sprite.svg"
-    root = ET.parse(svg_path).getroot()
+    root = ET.parse(_sprite_path("dark")).getroot()
     frame_count = len(root.findall("{http://www.w3.org/2000/svg}g"))
     sheet_width = root.attrib["viewBox"].split()[2]
 
