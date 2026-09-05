@@ -71,6 +71,80 @@ def test_shell_sprite_has_six_frames_with_correct_viewbox():
     }
 
 
+def _frame_x_offset(g):
+    transform = g.attrib.get("transform", "translate(0,0)")
+    inside = transform[transform.index("(") + 1 : transform.index(")")]
+    return int(inside.split(",")[0])
+
+
+def _hull_currentcolor_rects(defs, ns):
+    hull = next(g for g in defs.findall(f"{ns}g") if g.attrib["id"] == "hull")
+    return [r for r in hull.findall(f"{ns}rect") if r.attrib["fill"] == "currentColor"]
+
+
+def _bounds(rects):
+    tops = [int(r.attrib["y"]) for r in rects]
+    bottoms = [int(r.attrib["y"]) + int(r.attrib["height"]) for r in rects]
+    lefts = [int(r.attrib["x"]) for r in rects]
+    rights = [int(r.attrib["x"]) + int(r.attrib["width"]) for r in rects]
+    return min(tops), max(bottoms), min(lefts), max(rights)
+
+
+def test_shell_sprite_oars_reach_above_and_below_the_hull():
+    ns = "{http://www.w3.org/2000/svg}"
+    svg_path = ROOT / "docs" / "assets" / "shell-sprite.svg"
+    root = ET.parse(svg_path).getroot()
+
+    defs = root.find(f"{ns}defs")
+    hull_top, hull_bottom, _, _ = _bounds(_hull_currentcolor_rects(defs, ns))
+
+    frames = sorted(root.findall(f"{ns}g"), key=_frame_x_offset)
+    assert [_frame_x_offset(g) for g in frames] == [0, 240, 480, 720, 960, 1200]
+
+    port_x_by_frame = []
+    for frame in frames:
+        oars = [r for r in frame.findall(f"{ns}rect") if r.attrib["fill"] == "#e9c46a"]
+        port = [r for r in oars if int(r.attrib["y"]) + int(r.attrib["height"]) <= hull_top]
+        starboard = [r for r in oars if int(r.attrib["y"]) >= hull_bottom]
+        assert port, frame.attrib["id"]
+        assert starboard, frame.attrib["id"]
+
+        for side in (port, starboard):
+            by_x = {}
+            for rect in side:
+                by_x.setdefault(rect.attrib["x"], []).append(rect)
+            assert len(by_x) == 4, frame.attrib["id"]
+            for x, pair in by_x.items():
+                assert len(pair) == 2, (frame.attrib["id"], x)
+                spans = sorted(
+                    (int(r.attrib["y"]), int(r.attrib["y"]) + int(r.attrib["height"])) for r in pair
+                )
+                assert spans[0][1] == spans[1][0], (frame.attrib["id"], x)
+
+        port_x_by_frame.append(sorted(r.attrib["x"] for r in port))
+
+    assert len(set(map(tuple, port_x_by_frame))) > 1
+
+
+def test_shell_sprite_cox_sits_at_the_stern_once_per_frame():
+    ns = "{http://www.w3.org/2000/svg}"
+    svg_path = ROOT / "docs" / "assets" / "shell-sprite.svg"
+    root = ET.parse(svg_path).getroot()
+
+    defs = root.find(f"{ns}defs")
+    _, _, hull_min_x, hull_max_x = _bounds(_hull_currentcolor_rects(defs, ns))
+    hull_mid_x = (hull_min_x + hull_max_x) / 2
+
+    cox = next(g for g in defs.findall(f"{ns}g") if g.attrib["id"] == "cox")
+    body = next(r for r in cox.findall(f"{ns}rect") if r.attrib["class"] == "coxswain-body")
+    assert body.attrib["fill"] == "#e63946"
+    assert int(body.attrib["x"]) < hull_mid_x
+
+    for frame in root.findall(f"{ns}g"):
+        cox_uses = [u for u in frame.findall(f"{ns}use") if u.attrib.get("href") == "#cox"]
+        assert len(cox_uses) == 1, frame.attrib["id"]
+
+
 def test_sprite_css_respects_reduced_motion():
     css = (ROOT / "docs" / "assets" / "sprite.css").read_text()
     assert "prefers-reduced-motion" in css
