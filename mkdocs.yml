@@ -10,8 +10,13 @@ theme:
 
 nav:
   - Home: index.md
-  - Start: start/index.md
-  - Install: install/index.md
+  - Start here:
+      - Start: start/index.md
+      - The loop: start/loop.md
+  - Install:
+      - Install: install/index.md
+      - Supported machines: install/machines.md
+      - Providers: install/providers.md
   - Methodology: methodology/index.md
   - Customize: customize/index.md
   - Components: components/index.md
