@@ -31,7 +31,7 @@ def _parsed_utc(stamp: str) -> Optional[float]:
 
 
 def summarize(runs: Sequence[dict], slots: int, now: float) -> Summary:
-    running = sum(1 for run in runs if run.get("state") == "running")
+    running = sum(1 for run in runs if run.get("state") in ("alive", "running"))
     recent_costs = []
     unparsed = []
     for run in runs:
