@@ -37,3 +37,9 @@ For a disposable, fully isolated install, run the installer inside a
 container built from a Debian or Ubuntu base image with `git`, `curl`, and
 Python 3.11+ installed. This is the fastest way to try Coxswain without
 touching the host machine at all.
+
+## What you'll see
+
+<img alt="cox install --dry-run printing the install plan without writing anything under --root" src="../assets/shots/install-dry-run.svg">
+
+`cox install --dry-run` prints the same plan the installer would run, before it writes anything under `--root`.

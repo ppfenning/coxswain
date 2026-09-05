@@ -6,6 +6,7 @@ theme:
   custom_dir: docs/overrides
   features:
     - navigation.tabs
+    - navigation.footer
     - search.suggest
   palette:
     - scheme: slate
@@ -60,6 +61,8 @@ nav:
       - Crew: components/crew.md
       - HUD: components/hud.md
       - Desktop: components/desktop.md
+  - Reference:
+      - CLI reference: reference/cli/index.md
   - Releases:
       - Releases: releases/index.md
       - 0.1.0-beta.1: releases/0.1.0-beta.1.md

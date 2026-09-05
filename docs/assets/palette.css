@@ -41,3 +41,21 @@
   background-color: color-mix(in srgb, var(--cox-color-primary) 25%, transparent);
   color: var(--cox-color-accent);
 }
+
+/* The prev/next bar at the top of each page body. */
+.cox-page-nav {
+  display: flex;
+  gap: 1rem;
+  padding: 0.5rem 0 1rem;
+  font-size: 0.75rem;
+  color: var(--cox-color-muted);
+}
+
+.cox-page-nav a {
+  color: var(--cox-color-primary);
+  text-decoration: none;
+}
+
+.cox-page-nav__next {
+  margin-left: auto;
+}

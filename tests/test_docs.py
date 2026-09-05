@@ -8,7 +8,9 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "docs"))
 
+import _cli  # noqa: E402
 import _pull  # noqa: E402
+import _shots  # noqa: E402
 
 
 def _load_toml(name: str) -> dict:
@@ -220,6 +222,75 @@ def test_cox_shell_is_confined_to_its_own_clipped_track():
     css = (ROOT / "docs" / "assets" / "sprite.css").read_text()
     assert ".cox-shell-track" in css
     assert "overflow: hidden" in css
+
+
+def test_main_html_has_prev_next_links():
+    html = (ROOT / "docs" / "overrides" / "main.html").read_text()
+    assert "page.previous_page" in html
+    assert "page.next_page" in html
+
+
+_CLI_HELP = """usage: cox [-h] {versions,setup,route,install} ...
+
+positional arguments:
+  {versions,setup,route,install}
+                        sub-commands
+    versions            Print versions
+    setup               Setup commands
+    route               Route commands
+    install             Install components
+
+options:
+  -h, --help            show this help message and exit
+"""
+
+
+def test_parse_subcommands_reads_the_positional_arguments_block():
+    assert _cli.parse_subcommands(_CLI_HELP) == ["versions", "setup", "route", "install"]
+
+
+def test_clip_caps_a_long_capture_and_says_how_much_it_cut():
+    assert _shots.clip("a\nb\nc", max_lines=10) == "a\nb\nc"
+    clipped = _shots.clip("\n".join(str(n) for n in range(50)), max_lines=3)
+    assert clipped.splitlines() == ["0", "1", "2", "... 47 more lines"]
+
+
+def test_clip_also_truncates_a_line_wider_than_the_terminal():
+    wide = _shots.clip("x" * 40, max_lines=5, max_cols=10)
+    assert wide == "x" * 9 + "\u2026"
+    assert _shots.clip("short", max_lines=5, max_cols=10) == "short"
+
+
+def test_redact_replaces_the_home_directory_with_a_tilde():
+    line = "profile ok /home/someone/.config/agent-tools/profile.yaml"
+    assert _shots.redact(line, "/home/someone") == "profile ok ~/.config/agent-tools/profile.yaml"
+    assert _shots.redact(line, "/home/someone/") == "profile ok ~/.config/agent-tools/profile.yaml"
+    assert _shots.redact("nothing to do", "") == "nothing to do"
+
+
+def test_shot_plan_has_the_four_named_commands():
+    plan = _shots.shot_plan()
+    argv_by_name = dict(plan)
+
+    assert list(argv_by_name) == ["versions", "doctor", "route-status", "install-dry-run"]
+    assert argv_by_name["versions"] == ["cox", "versions", "--manifest", "manifest.toml"]
+    assert argv_by_name["doctor"] == ["cox", "setup", "doctor"]
+    assert argv_by_name["route-status"] == ["cox", "route", "status"]
+    assert argv_by_name["install-dry-run"] == [
+        "cox",
+        "install",
+        "--dry-run",
+        "--manifest",
+        "manifest.toml",
+        "--root",
+        "/tmp/x",
+    ]
+
+
+def test_reference_index_is_in_nav():
+    mkdocs = _load_mkdocs()
+    nav_targets = set(_nav_targets(mkdocs["nav"]))
+    assert "reference/cli/index.md" in nav_targets
 
 
 def test_plan_yields_one_pair_per_repo_component_and_skips_path_components():

@@ -42,6 +42,16 @@ cox doctor
 version `manifest.toml` expects, and that the configured provider's CLI is
 reachable on `PATH`.
 
+## What you'll see
+
+<img alt="cox versions --manifest manifest.toml listing each pinned component next to its installed tag" src="../assets/shots/versions.svg">
+
+`cox versions` lists every component next to the tag `manifest.toml` pins, so drift is visible before you upgrade.
+
+<img alt="cox setup doctor confirming every required component and provider CLI is reachable" src="../assets/shots/doctor.svg">
+
+`cox setup doctor` is what the checks above look like against a real install.
+
 ## Upgrade
 
 ```sh
