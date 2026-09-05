@@ -1,8 +1,11 @@
+import json
 import sys
 import tomllib
+import urllib.error
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -17,8 +20,15 @@ def _load_toml(name: str) -> dict:
     return tomllib.loads((ROOT / name).read_text())
 
 
+class _MkdocsLoader(yaml.SafeLoader):
+    """SafeLoader plus mkdocs-material's `!!python/name:` tag, kept as a string."""
+
+
+_MkdocsLoader.add_multi_constructor("tag:yaml.org,2002:python/name:", lambda loader, suffix, node: suffix)
+
+
 def _load_mkdocs() -> dict:
-    return yaml.safe_load((ROOT / "mkdocs.yml").read_text())
+    return yaml.load((ROOT / "mkdocs.yml").read_text(), Loader=_MkdocsLoader)
 
 
 def test_mkdocs_status_matches_manifest_status():
@@ -46,7 +56,7 @@ def test_every_doc_page_appears_in_nav():
     pages = set()
     for path in docs_dir.rglob("*.md"):
         parts = path.relative_to(docs_dir).parts
-        if len(parts) == 3 and parts[0] == "components" and parts[2] == "README.md":
+        if parts[0] == "components" and len(parts) >= 3:
             continue
         pages.add("/".join(parts))
 
@@ -293,24 +303,189 @@ def test_reference_index_is_in_nav():
     assert "reference/cli/index.md" in nav_targets
 
 
-def test_plan_yields_one_pair_per_repo_component_and_skips_path_components():
+def test_plan_yields_listed_docs_with_dests_and_skips_path_components():
     manifest = {
         "components": {
-            "cartridges": {"repo": "ppfenning/coxswain-cartridges", "tag": "v0.1.0-beta.1"},
-            "tools": {"repo": "ppfenning/coxswain-tools", "tag": "v0.1.0-beta.1"},
+            "cartridges": {"repo": "ppfenning/coxswain-cartridges", "tag": "v0.1.0-beta.1", "docs": ["README.md"]},
             "desktop": {"path": "desktop/", "flag": "desktop"},
         }
     }
 
-    result = _pull.plan(manifest)
-
-    assert result == [
-        (
-            "https://raw.githubusercontent.com/ppfenning/coxswain-cartridges/v0.1.0-beta.1/README.md",
-            "docs/components/cartridges/README.md",
-        ),
-        (
-            "https://raw.githubusercontent.com/ppfenning/coxswain-tools/v0.1.0-beta.1/README.md",
-            "docs/components/tools/README.md",
-        ),
+    assert _pull.plan(manifest) == [
+        {
+            "kind": "doc",
+            "repo": "ppfenning/coxswain-cartridges",
+            "entry": "README.md",
+            "ref": "v0.1.0-beta.1",
+            "url": "https://raw.githubusercontent.com/ppfenning/coxswain-cartridges/v0.1.0-beta.1/README.md",
+            "dest": "docs/components/cartridges/README.md",
+        }
     ]
+
+
+def test_plan_treats_a_glob_entry_as_one_directory_listing_to_resolve():
+    docs = ["graphs/delivery/epic-swarm.md", "docs/graphs/*.md"]
+    manifest = {"components": {"graphs": {"repo": "ppfenning/coxswain-graphs", "tag": "v0.1.0-beta.1", "docs": docs}}}
+
+    assert _pull.plan(manifest) == [
+        {
+            "kind": "doc",
+            "repo": "ppfenning/coxswain-graphs",
+            "entry": "graphs/delivery/epic-swarm.md",
+            "ref": "v0.1.0-beta.1",
+            "url": "https://raw.githubusercontent.com/ppfenning/coxswain-graphs/v0.1.0-beta.1/graphs/delivery/epic-swarm.md",
+            "dest": "docs/components/graphs/graphs/delivery/epic-swarm.md",
+        },
+        {
+            "kind": "glob",
+            "repo": "ppfenning/coxswain-graphs",
+            "tag": "v0.1.0-beta.1",
+            "dir": "docs/graphs",
+            "dest_dir": "docs/components/graphs/docs/graphs",
+        },
+    ]
+
+
+def _extension(mkdocs, key):
+    return next(e[key] for e in mkdocs["markdown_extensions"] if isinstance(e, dict) and key in e)
+
+
+def test_mkdocs_enables_snippets_with_docs_base_path():
+    assert _extension(_load_mkdocs(), "pymdownx.snippets")["base_path"] == ["docs"]
+
+
+def test_mkdocs_enables_superfences_with_mermaid_fence():
+    fences = _extension(_load_mkdocs(), "pymdownx.superfences")["custom_fences"]
+    assert "mermaid" in {fence["name"] for fence in fences}
+
+
+def test_every_graph_page_is_in_nav():
+    nav_targets = set(_nav_targets(_load_mkdocs()["nav"]))
+    pages = {f"methodology/graphs/{p.name}" for p in (ROOT / "docs" / "methodology" / "graphs").glob("*.md")}
+    assert pages and not pages - nav_targets
+
+
+def test_list_dir_falls_back_to_main_and_returns_the_ref_it_used(monkeypatch):
+    calls = []
+
+    def fake_fetch(url):
+        calls.append(url)
+        if url.endswith("ref=v0.1.0-beta.1"):
+            raise urllib.error.HTTPError(url, 404, "not found", None, None)
+        return json.dumps([{"name": "epic-swarm.md"}, {"name": "README.rst"}]).encode()
+
+    monkeypatch.setattr(_pull, "_fetch", fake_fetch)
+
+    ref, names = _pull._list_dir("ppfenning/coxswain-graphs", "v0.1.0-beta.1", "docs/graphs")
+
+    assert (ref, names) == ("main", ["epic-swarm.md"])
+    assert calls == [
+        "https://api.github.com/repos/ppfenning/coxswain-graphs/contents/docs/graphs?ref=v0.1.0-beta.1",
+        "https://api.github.com/repos/ppfenning/coxswain-graphs/contents/docs/graphs?ref=main",
+    ]
+
+
+def test_list_dir_raises_instead_of_crashing_on_a_non_listing_response(monkeypatch):
+    monkeypatch.setattr(_pull, "_fetch", lambda url: json.dumps({"name": "docs"}).encode())
+
+    try:
+        _pull._list_dir("ppfenning/coxswain-graphs", "v0.1.0-beta.1", "docs/graphs")
+    except urllib.error.URLError:
+        pass
+    else:
+        raise AssertionError("expected a URLError, not a silent return or a TypeError")
+
+
+def test_glob_docs_uses_the_resolved_ref_for_each_raw_url():
+    item = {
+        "kind": "glob",
+        "repo": "ppfenning/coxswain-graphs",
+        "tag": "v0.1.0-beta.1",
+        "dir": "docs/graphs",
+        "dest_dir": "docs/components/graphs/docs/graphs",
+    }
+
+    assert _pull._glob_docs(item, "main", ["epic-swarm.md"]) == [
+        {
+            "kind": "doc",
+            "url": "https://raw.githubusercontent.com/ppfenning/coxswain-graphs/main/docs/graphs/epic-swarm.md",
+            "dest": "docs/components/graphs/docs/graphs/epic-swarm.md",
+        }
+    ]
+
+
+def test_resolve_counts_an_empty_glob_listing_as_a_failure(monkeypatch):
+    monkeypatch.setattr(_pull, "_list_dir", lambda repo, tag, directory: ("main", []))
+
+    item = {"kind": "glob", "repo": "x/y", "tag": "v1", "dir": "docs/graphs", "dest_dir": "docs/components/x/docs"}
+    docs, failures = _pull._resolve([item])
+
+    assert (docs, failures) == ([], 1)
+
+
+def test_run_counts_a_skipped_fetch_as_a_failure(monkeypatch):
+    def fake_fetch(url):
+        raise urllib.error.HTTPError(url, 404, "not found", None, None)
+
+    monkeypatch.setattr(_pull, "_fetch", fake_fetch)
+    monkeypatch.setattr(_pull, "_write", lambda dest, content: None)
+
+    item = {"kind": "doc", "url": "https://raw.githubusercontent.com/x/y/main/README.md", "dest": "docs/x/README.md"}
+
+    assert _pull._run([item]) == 1
+
+
+def test_item_only_treats_an_exact_star_md_suffix_as_a_glob():
+    assert _pull._item("graphs", "x/y", "v1", "docs/graphs/all*.md") == {
+        "kind": "doc",
+        "repo": "x/y",
+        "entry": "docs/graphs/all*.md",
+        "ref": "v1",
+        "url": "https://raw.githubusercontent.com/x/y/v1/docs/graphs/all*.md",
+        "dest": "docs/components/graphs/docs/graphs/all*.md",
+    }
+
+
+def test_a_listed_path_falls_back_to_main_exactly_as_a_glob_does():
+    doc = _pull.plan(
+        {"components": {"graphs": {"repo": "ppfenning/coxswain-graphs", "tag": "v9.9.9", "docs": ["docs/X.md"]}}}
+    )[0]
+    assert _pull.fallback_url(doc) == "https://raw.githubusercontent.com/ppfenning/coxswain-graphs/main/docs/X.md"
+    assert _pull.fallback_url({**doc, "ref": "main"}) is None
+    assert _pull.fallback_url({"url": "u", "dest": "d"}) is None
+
+
+def test_fetch_retries_at_main_on_a_404_and_reraises_anything_else():
+    doc = _pull.plan(
+        {"components": {"graphs": {"repo": "ppfenning/coxswain-graphs", "tag": "v9.9.9", "docs": ["docs/X.md"]}}}
+    )[0]
+    seen = []
+
+    def fetch_404_then_ok(url):
+        seen.append(url)
+        if url == doc["url"]:
+            raise urllib.error.HTTPError(url, 404, "Not Found", None, None)
+        return b"body"
+
+    assert _pull._fetch_with_fallback(doc, fetch_404_then_ok) == b"body"
+    assert seen == [doc["url"], _pull.fallback_url(doc)]
+
+    def fetch_500(url):
+        raise urllib.error.HTTPError(url, 500, "Server Error", None, None)
+
+    with pytest.raises(urllib.error.HTTPError):
+        _pull._fetch_with_fallback(doc, fetch_500)
+
+
+def test_a_doc_that_resolves_at_its_tag_never_asks_for_main():
+    doc = _pull.plan(
+        {"components": {"graphs": {"repo": "ppfenning/coxswain-graphs", "tag": "v1", "docs": ["docs/X.md"]}}}
+    )[0]
+    seen = []
+
+    def fetch_ok(url):
+        seen.append(url)
+        return b"body"
+
+    assert _pull._fetch_with_fallback(doc, fetch_ok) == b"body"
+    assert seen == [doc["url"]]
