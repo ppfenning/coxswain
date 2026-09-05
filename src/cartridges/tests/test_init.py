@@ -43,30 +43,19 @@ def test_extends_local_has_mkdirs_for_team_and_context():
     assert mkdirs == ["/repo/cartridges/acme", "/repo/cartridges/acme/context"]
 
 
-def test_extends_local_yaml_carries_team_extends_and_description():
+def test_extends_local_yaml_is_the_minimal_generated_template():
     steps = _plan(extends="local")
     yaml_step = next(s for s in steps if s["path"] == "/repo/cartridges/acme/cartridge.yaml")
-    assert "team: acme\n" in yaml_step["text"]
-    assert "extends: local\n" in yaml_step["text"]
-    assert "description: acme's overlay on the local cartridge\n" in yaml_step["text"]
-
-
-def test_extends_local_yaml_keeps_other_lines_verbatim():
-    steps = _plan(extends="local")
-    yaml_step = next(s for s in steps if s["path"] == "/repo/cartridges/acme/cartridge.yaml")
-    assert "version: 1\n" in yaml_step["text"]
-    assert "# a comment that must survive verbatim\n" in yaml_step["text"]
-    assert "role: some-skill\n" in yaml_step["text"]
-
-
-def test_indented_keys_that_merely_contain_description_are_left_alone():
-    template = {
-        **TEMPLATE,
-        "cartridge.yaml": TEMPLATE["cartridge.yaml"] + "nested:\n  description: not the top-level one\n",
-    }
-    steps = init_plan("acme", "/repo/cartridges", package_cartridges_dir="/pkg/cartridges", template=template)
-    yaml_step = next(s for s in steps if s["path"] == "/repo/cartridges/acme/cartridge.yaml")
-    assert "  description: not the top-level one\n" in yaml_step["text"]
+    assert yaml_step["text"] == (
+        "# acme's cartridge. Everything the graphs need is inherited from `local`;\n"
+        "# add `cast:` bindings for this team's installed plugins, and `context/` files\n"
+        "# the reviewers should hold work to, here.\n"
+        "team: acme\n"
+        "extends: local\n"
+        "description: acme's overlay on the local cartridge\n"
+        "version: 1\n"
+    )
+    assert "skills" not in yaml_step["text"]
 
 
 def test_extends_local_writes_every_template_file():
@@ -156,24 +145,18 @@ def test_unknown_extends_raises():
         )
 
 
-def test_template_without_cartridge_yaml_raises():
-    with pytest.raises(ValueError, match="has no"):
-        init_plan(
-            "acme",
-            "/repo/cartridges",
-            package_cartridges_dir="/pkg/cartridges",
-            template={"context/code-style.md": "x"},
-        )
-
-
-def test_template_yaml_missing_required_lines_raises():
-    with pytest.raises(ValueError, match="missing line"):
-        init_plan(
-            "acme",
-            "/repo/cartridges",
-            package_cartridges_dir="/pkg/cartridges",
-            template={"cartridge.yaml": "version: 1\n"},
-        )
+def test_a_template_without_cartridge_yaml_is_fine():
+    steps = init_plan(
+        "acme",
+        "/repo/cartridges",
+        package_cartridges_dir="/pkg/cartridges",
+        template={"context/code-style.md": "x"},
+    )
+    written = {s["path"] for s in steps if s["op"] == "write"}
+    assert written == {
+        "/repo/cartridges/acme/cartridge.yaml",
+        "/repo/cartridges/acme/context/code-style.md",
+    }
 
 
 def test_render_plan_produces_the_pinned_dry_run_format():

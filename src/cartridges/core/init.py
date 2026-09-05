@@ -15,10 +15,9 @@ from typing import Iterable, Mapping
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _RESERVED = ("base", "local")
 _KNOWN_EXTENDS = ("base", "local")
-_REQUIRED_YAML_KEYS = ("team:", "extends:", "description:")
 
 
-def _validate(team: str, extends: str, template: Mapping[str, str]) -> None:
+def _validate(team: str, extends: str) -> None:
     if not _SLUG.match(team):
         raise ValueError(f"'{team}' is not a valid team slug (expected [a-z0-9][a-z0-9-]*)")
     if team in _RESERVED:
@@ -27,29 +26,22 @@ def _validate(team: str, extends: str, template: Mapping[str, str]) -> None:
         raise ValueError(f"a team cannot extend itself ('{team}')")
     if extends not in _KNOWN_EXTENDS:
         raise ValueError(f"'extends' must be one of {_KNOWN_EXTENDS}, got '{extends}'")
-    if "cartridge.yaml" not in template:
-        raise ValueError("template has no 'cartridge.yaml'")
-    yaml_lines = template["cartridge.yaml"].splitlines()
-    missing = [key for key in _REQUIRED_YAML_KEYS if not any(line.startswith(key) for line in yaml_lines)]
-    if missing:
-        raise ValueError(f"template's cartridge.yaml is missing line(s): {', '.join(missing)}")
 
 
-def _rewrite_line(line: str, team: str, extends: str) -> str:
-    """Rewrite an exact top-level key; an indented line merely containing the
-    same word (e.g. a nested `description:` under some other key) is untouched."""
-    ending = line[len(line.rstrip("\n")):]
-    if line.startswith("team:"):
-        return f"team: {team}{ending}"
-    if line.startswith("extends:"):
-        return f"extends: {extends}{ending}"
-    if line.startswith("description:"):
-        return f"description: {team}'s overlay on the {extends} cartridge{ending}"
-    return line
-
-
-def _rewrite_cartridge_yaml(text: str, team: str, extends: str) -> str:
-    return "".join(_rewrite_line(line, team, extends) for line in text.splitlines(keepends=True))
+def _minimal_cartridge_yaml(team: str, extends: str) -> str:
+    """A cartridge that only extends inherits every binding the loader merges
+    (core/cartridge.py's `_merge`) — so a freshly scaffolded team starts with
+    no bindings of its own rather than inheriting a template's fictional
+    ones."""
+    return (
+        f"# {team}'s cartridge. Everything the graphs need is inherited from `{extends}`;\n"
+        "# add `cast:` bindings for this team's installed plugins, and `context/` files\n"
+        "# the reviewers should hold work to, here.\n"
+        f"team: {team}\n"
+        f"extends: {extends}\n"
+        f"description: {team}'s overlay on the {extends} cartridge\n"
+        "version: 1\n"
+    )
 
 
 def _ancestor_dirs(relative_paths: Iterable[str]) -> list[str]:
@@ -73,13 +65,14 @@ def init_plan(
     """Return the ordered steps that would build `<cartridges_dir>/<team>`."""
     root = Path(cartridges_dir)
     package_root = Path(package_cartridges_dir)
-    _validate(team, extends, template)
+    _validate(team, extends)
 
     team_dir = root / team
     needed_links = [extends] if extends == "base" else [extends, "base"]
+    context_template = {path: text for path, text in template.items() if path != "cartridge.yaml"}
 
     mkdir_steps = [{"op": "mkdir", "path": str(team_dir)}] + [
-        {"op": "mkdir", "path": str(team_dir / rel)} for rel in _ancestor_dirs(template.keys())
+        {"op": "mkdir", "path": str(team_dir / rel)} for rel in _ancestor_dirs(context_template.keys())
     ]
     # `base` and `local` only need a symlink when they live somewhere other than
     # `cartridges_dir` itself. When the two roots coincide (every cartridge in
@@ -93,21 +86,17 @@ def init_plan(
             for name in needed_links
         ]
     )
-    # Breadcrumb: this copies every template value verbatim except the three
-    # rewritten cartridge.yaml lines. A template is not neutral content — the
-    # shipped cartridges/example-team/cartridge.yaml binds every role to
-    # example-skills:* and sets a fake tracker/workspace_id/auth_env, and under
-    # extends: local those child scalars would win over local's own bindings
-    # in core/cartridge.py's _merge. Whether example-team is the right
-    # template to hand in for a given `extends` is the caller's decision, not
-    # this module's; init_plan only renders whatever template it is given.
+    # Breadcrumb: the team's own cartridge.yaml is generated fresh, never
+    # copied from the template. The shipped cartridges/example-team/cartridge.yaml
+    # binds every role to a fictional example-skills:* plugin; copying it
+    # would hand a new team ten bindings that resolve to no skill body.
+    # Everything else the template carries (context/* charters, etc.) is
+    # still copied verbatim, if the caller's template includes any.
     write_steps = [
-        {
-            "op": "write",
-            "path": str(team_dir / relative_path),
-            "text": _rewrite_cartridge_yaml(text, team, extends) if relative_path == "cartridge.yaml" else text,
-        }
-        for relative_path, text in template.items()
+        {"op": "write", "path": str(team_dir / "cartridge.yaml"), "text": _minimal_cartridge_yaml(team, extends)}
+    ] + [
+        {"op": "write", "path": str(team_dir / relative_path), "text": text}
+        for relative_path, text in context_template.items()
     ]
     print_step = [{"op": "print", "text": f"team: {team}\ncartridges_dir: {root}"}]
 

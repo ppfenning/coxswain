@@ -7,7 +7,6 @@ including that the cartridge it scaffolds actually resolves — the point of
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from core.cartridge import _DEFAULT_CARTRIDGES_DIR, _main, load
@@ -15,36 +14,6 @@ from core.skills import index_from_roots
 
 REPO = Path(__file__).resolve().parent.parent
 SKILLS_ROOT = REPO / "skills-plugins"
-
-# Every role `cartridges/example-team/cartridge.yaml` binds, as the skill slug
-# it names under the (nonexistent) `example-skills` plugin — see that file's
-# own header. No such plugin ships anywhere; this builds a stand-in under
-# `tmp_path` purely so the freshly-scaffolded cartridge can resolve in a test.
-_EXAMPLE_TEAM_SLUGS = [
-    "plan-ticket",
-    "build-in-worktree",
-    "review-charter",
-    "board-lifecycle",
-    "create-ticket",
-    "scope-epic",
-    "verify-evidence",
-    "budget-guard",
-    "reconcile-epic",
-    "update-runbook",
-]
-
-
-def _write_example_skills_plugin(root: Path) -> Path:
-    plugin_dir = root / "example-skills"
-    (plugin_dir / ".claude-plugin").mkdir(parents=True)
-    (plugin_dir / ".claude-plugin" / "plugin.json").write_text(
-        json.dumps({"name": "example-skills"}), encoding="utf-8"
-    )
-    for slug in _EXAMPLE_TEAM_SLUGS:
-        skill_dir = plugin_dir / "skills" / slug
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text(f"# {slug}\n", encoding="utf-8")
-    return plugin_dir
 
 
 def test_fresh_init_creates_team_dir_context_symlinks_yaml_and_prints_profile_lines(tmp_path, capsys):
@@ -63,11 +32,14 @@ def test_fresh_init_creates_team_dir_context_symlinks_yaml_and_prints_profile_li
 
 
 def test_the_scaffolded_cartridge_resolves(tmp_path):
+    """A minimal cartridge.yaml (team/extends/description/version only) binds
+    nothing of its own, so it must resolve against the repository's REAL
+    skills root with no stand-in plugin — this is the test that would have
+    caught a scaffold that inherited a template's fictional bindings."""
     cartridges_dir = tmp_path / "cartridges"
     assert _main(["init", "acme", "--cartridges-dir", str(cartridges_dir)]) == 0
 
-    plugin_dir = _write_example_skills_plugin(tmp_path)
-    index = index_from_roots([SKILLS_ROOT, plugin_dir])
+    index = index_from_roots([SKILLS_ROOT])
 
     resolved = load("acme", cartridges_dir, skill_index=index)
 
@@ -84,6 +56,20 @@ def test_dry_run_writes_nothing(tmp_path, capsys):
     assert exit_code == 0
     assert not cartridges_dir.exists()
     assert "mkdir" in out
+
+
+def test_dry_run_shows_the_minimal_yaml_write_with_no_skills_bindings(tmp_path, capsys):
+    """The ticket's own Done criterion: a dry run names the generated
+    cartridge.yaml's write step and its line count, and the plan it renders
+    names no skill binding anywhere."""
+    cartridges_dir = tmp_path / "cartridges"
+
+    exit_code = _main(["init", "demo", "--cartridges-dir", str(cartridges_dir), "--dry-run"])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert f"write {cartridges_dir / 'demo' / 'cartridge.yaml'} (7 lines)" in out
+    assert "skills" not in out
 
 
 def test_second_init_without_force_exits_2_and_changes_nothing(tmp_path):
