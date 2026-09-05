@@ -8,11 +8,23 @@ version = "0.1.0-beta.1"
 status  = "beta"
 
 [components]
-cartridges = { repo = "ppfenning/coxswain-cartridges", tag = "v0.1.0-beta.1", required = true }
-graphs     = { repo = "ppfenning/coxswain-graphs",     tag = "v0.1.0-beta.1", required = true }
-tools      = { repo = "ppfenning/coxswain-tools",      tag = "v0.1.0-beta.1", required = true, provides = "cox" }
-crew       = { repo = "ppfenning/coxswain-crew",       tag = "v0.1.0-beta.1", flag = "crew" }
-hud        = { repo = "ppfenning/coxswain-hud",        tag = "v0.1.0-beta.1", flag = "hud" }
+cartridges = { repo = "ppfenning/coxswain-cartridges", tag = "v0.1.0-beta.1", required = true, docs = ["README.md"] }
+graphs     = { repo = "ppfenning/coxswain-graphs",     tag = "v0.1.0-beta.1", required = true, docs = [
+    "README.md",
+    "graphs/delivery/epic-swarm.md",
+    "graphs/delivery/lifecycle-propose.md",
+    "graphs/delivery/initiative-decompose.md",
+    "graphs/ops/coxswain.md",
+    "graphs/ops/epic-reconcile.md",
+    "graphs/ops/retro-propose.md",
+    "graphs/ops/triage-propose.md",
+    "docs/GRAPH-CONTRACT.md",
+    "docs/RUNBOOK-TRUST.md",
+    "docs/graphs/*.md",
+] }
+tools      = { repo = "ppfenning/coxswain-tools",      tag = "v0.1.0-beta.1", required = true, provides = "cox", docs = ["README.md"] }
+crew       = { repo = "ppfenning/coxswain-crew",       tag = "v0.1.0-beta.1", flag = "crew", docs = ["README.md"] }
+hud        = { repo = "ppfenning/coxswain-hud",        tag = "v0.1.0-beta.1", flag = "hud", docs = ["README.md"] }
 desktop    = { path = "desktop/",                      flag = "desktop" }
 
 [providers]

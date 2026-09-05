@@ -26,6 +26,15 @@ extra_css:
   - assets/palette.css
   - assets/sprite.css
 
+markdown_extensions:
+  - pymdownx.snippets:
+      base_path: [docs]
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
 nav:
   - Home: index.md
   - Start here:
@@ -39,7 +48,15 @@ nav:
       - Methodology: methodology/index.md
       - Crew and seats: methodology/crew-and-seats.md
       - Cartridges: methodology/cartridges.md
-      - Graphs: methodology/graphs.md
+      - Graphs:
+          - Graphs: methodology/graphs.md
+          - coxswain: methodology/graphs/coxswain.md
+          - epic-swarm: methodology/graphs/epic-swarm.md
+          - lifecycle-propose: methodology/graphs/lifecycle-propose.md
+          - initiative-decompose: methodology/graphs/initiative-decompose.md
+          - epic-reconcile: methodology/graphs/epic-reconcile.md
+          - retro-propose: methodology/graphs/retro-propose.md
+          - triage-propose: methodology/graphs/triage-propose.md
       - Review: methodology/review.md
       - Budgets: methodology/budgets.md
       - Landing: methodology/landing.md
