@@ -8,7 +8,7 @@ import pytest
 import yaml
 
 from core.skills import index_from_roots
-from core.cartridge import CartridgeError, _fold_fragments, load
+from core.cartridge import CartridgeError, _fold_fragments, layers, load
 from tests.conftest import write_cartridge
 
 REPO = Path(__file__).resolve().parent.parent
@@ -303,3 +303,45 @@ def test_base_cartridge_bounds_dispatch_concurrency() -> None:
     """
     resolved = load("local", REPO / "cartridges", skill_index=index_from_roots([REPO / "skills-plugins"]))
     assert resolved["policy"]["dispatch"]["max_in_flight"] == 3
+
+
+def test_layers_of_a_lone_cartridge_is_one_entry_labelled_by_its_name(tmp_path: Path) -> None:
+    root = tmp_path / "cartridges"
+    write_cartridge(root / "base", {"team": "base", "version": 1})
+    resolved = layers("base", root, skill_index={})
+    assert [label for label, _ in resolved] == ["base"]
+    assert resolved[-1][1] == load("base", root, skill_index={})
+
+
+def test_layers_of_base_plus_acme_is_two_entries_ending_in_load(cartridges: Path, skill_index) -> None:
+    resolved = layers("acme", cartridges, skill_index=skill_index)
+    assert [label for label, _ in resolved] == ["base", "acme"]
+    assert resolved[-1][1] == load("acme", cartridges, skill_index=skill_index)
+
+
+def test_layers_of_acme_with_two_fragments_is_four_entries_each_showing_its_own_change(
+    cartridges: Path, skill_index
+) -> None:
+    _write_fragment(cartridges / "acme", "10-first.yaml", {"beta": "on"})
+    _write_fragment(cartridges / "acme", "20-second.yaml", {"gamma": "on"})
+    resolved = layers("acme", cartridges, skill_index=skill_index)
+    assert [label for label, _ in resolved] == [
+        "base",
+        "acme",
+        "acme/cartridge.d/10-first.yaml",
+        "acme/cartridge.d/20-second.yaml",
+    ]
+    before_first = resolved[1][1]
+    after_first = resolved[2][1]
+    after_second = resolved[3][1]
+    assert "beta" not in before_first
+    assert after_first["beta"] == "on"
+    assert "gamma" not in after_first
+    assert after_second["gamma"] == "on"
+    assert resolved[-1][1] == load("acme", cartridges, skill_index=skill_index)
+
+
+def test_layers_raises_the_same_error_load_raises_on_an_illegal_loosen(cartridges: Path, skill_index) -> None:
+    _write_fragment(cartridges / "acme", "10-loosen.yaml", {"write_kinds": {"merge": {"risk": "low"}}})
+    with pytest.raises(CartridgeError, match="loosens merge.risk from 'high' to 'low'"):
+        layers("acme", cartridges, skill_index=skill_index)

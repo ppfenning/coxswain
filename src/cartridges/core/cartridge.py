@@ -250,6 +250,43 @@ def _fold_fragments(
     return folded, problems
 
 
+def _walk(
+    chain: Sequence[tuple[str, Path, dict[str, Any]]],
+) -> tuple[list[tuple[str, dict[str, Any]]], list[str], list[Path]]:
+    """Walk `chain` base-first, snapshotting the resolved-so-far cartridge.
+
+    One entry per layer right after its `cartridge.yaml` merges, labelled by
+    that layer's name; one entry per fragment right after it folds, labelled
+    `<layer>/cartridge.d/<file>.yaml`. Each fragment folds through
+    `_fold_fragments` one at a time so a snapshot can be taken between
+    fragments, checked against everything folded before it — the same
+    accumulated authority `_fold_fragments` computes when given the whole
+    list at once. `load` and `layers` share this walk; neither re-derives it.
+    """
+    entries: list[tuple[str, dict[str, Any]]] = []
+    merged: dict[str, Any] = {}
+    problems: list[str] = []
+    fragment_paths: list[Path] = []
+    for name, directory, raw in chain:
+        level = dict(raw)
+        level["context"] = _absolutise_context(raw, directory)
+        child_kinds = level.get("write_kinds") or {}
+        parent_kinds = merged.get("write_kinds") or {}
+        if isinstance(child_kinds, Mapping) and isinstance(parent_kinds, Mapping):
+            problems.extend(_loosenings(parent_kinds, child_kinds, name))
+        layer_authority = _merge(merged, level)
+        entries.append((name, layer_authority))
+        current = layer_authority
+        for path, frag in _fragments(directory):
+            fragment_paths.append(path)
+            label = f"{name}/cartridge.d/{path.name}"
+            current, frag_problems = _fold_fragments(current, [(label, frag)], current)
+            problems.extend(frag_problems)
+            entries.append((label, current))
+        merged = current
+    return entries, problems, fragment_paths
+
+
 def _cartridge_sha(
     merged: Mapping[str, Any], context_paths: Sequence[str], fragment_paths: Sequence[Path] = ()
 ) -> str:
@@ -304,46 +341,56 @@ def _validate(merged: Mapping[str, Any], skill_index: Mapping[str, Sequence[Any]
     return problems
 
 
-def load(team: str, cartridges_dir: Path | str, *, skill_index: Mapping[str, Sequence[Any]]) -> dict[str, Any]:
-    """Resolve `team` against its inheritance chain and validate the result.
+def _resolve(
+    team: str, cartridges_dir: Path | str, *, skill_index: Mapping[str, Sequence[Any]]
+) -> list[tuple[str, dict[str, Any]]]:
+    """Resolve `team`'s full chain and return every snapshot `_walk` recorded.
 
     Raises CartridgeError listing EVERY problem found, not just the first — a
-    caller fixing bindings one error per run is a caller who stops reading them.
+    caller fixing bindings one error per run is a caller who stops reading
+    them. The last entry carries `cartridge_dir`/`cartridge_sha`, the same
+    values `load` has always returned; `load` and `layers` are both thin
+    reads of this one resolution, never two.
     """
     cartridges_dir = Path(cartridges_dir).expanduser().resolve()
     chain = _chain(team, cartridges_dir)
+    entries, problems, fragment_paths = _walk(chain)
+    merged = entries[-1][1]
 
-    merged: dict[str, Any] = {}
-    problems: list[str] = []
-    fragment_paths: list[Path] = []
-    for name, directory, raw in chain:
-        level = dict(raw)
-        level["context"] = _absolutise_context(raw, directory)
-        child_kinds = level.get("write_kinds") or {}
-        parent_kinds = merged.get("write_kinds") or {}
-        if isinstance(child_kinds, Mapping) and isinstance(parent_kinds, Mapping):
-            problems.extend(_loosenings(parent_kinds, child_kinds, name))
-        # The authority a fragment is checked against: the parent chain plus
-        # this layer's own cartridge.yaml — already validated above — never
-        # re-checked again once fragments have folded over it.
-        layer_authority = _merge(merged, level)
-        frag_files = _fragments(directory)
-        fragment_paths.extend(path for path, _ in frag_files)
-        fragments = [(f"{name}/cartridge.d/{path.name}", frag) for path, frag in frag_files]
-        folded, frag_problems = _fold_fragments(layer_authority, fragments, layer_authority)
-        problems.extend(frag_problems)
-        merged = folded
-
-    problems.extend(_validate(merged, skill_index))
+    problems = [*problems, *_validate(merged, skill_index)]
     if problems:
         raise CartridgeError(
             f"cartridge '{team}' failed to resolve ({len(problems)} problem(s)):\n  - "
             + "\n  - ".join(problems)
         )
 
-    merged["cartridge_dir"] = str(chain[-1][1].resolve())
-    merged["cartridge_sha"] = _cartridge_sha(merged, merged.get("context", []), fragment_paths)
-    return merged
+    final = dict(merged)
+    final["cartridge_dir"] = str(chain[-1][1].resolve())
+    final["cartridge_sha"] = _cartridge_sha(final, final.get("context", []), fragment_paths)
+    return [*entries[:-1], (entries[-1][0], final)]
+
+
+def load(team: str, cartridges_dir: Path | str, *, skill_index: Mapping[str, Sequence[Any]]) -> dict[str, Any]:
+    """Resolve `team` against its inheritance chain and validate the result.
+
+    Raises CartridgeError listing EVERY problem found, not just the first — a
+    caller fixing bindings one error per run is a caller who stops reading them.
+    """
+    return _resolve(team, cartridges_dir, skill_index=skill_index)[-1][1]
+
+
+def layers(
+    team: str, cartridges_dir: Path | str, *, skill_index: Mapping[str, Sequence[Any]]
+) -> list[tuple[str, dict[str, Any]]]:
+    """Resolve `team` and return the resolved-so-far cartridge after each step.
+
+    One entry per layer after its `cartridge.yaml` merges (labelled `base`,
+    `local`, the team...), then one entry per fragment after it folds
+    (labelled `<layer>/cartridge.d/<file>.yaml`). The last entry equals
+    `load(team, cartridges_dir, skill_index=skill_index)` exactly. Raises the
+    same `CartridgeError` `load` raises, on the same problems.
+    """
+    return _resolve(team, cartridges_dir, skill_index=skill_index)
 
 
 def _main(argv: Sequence[str] | None = None) -> int:
