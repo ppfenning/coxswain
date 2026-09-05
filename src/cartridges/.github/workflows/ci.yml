@@ -1,15 +1,15 @@
 name: ci
 
-# This repo is private, so Actions minutes are billable. Docs-only pushes do not
-# trigger a run, a superseded run is cancelled rather than finishing, and pip is
-# cached. The suite takes about a fifth of a second — the runner startup and the
-# install were the entire cost.
+# This repo is private, so Actions minutes are billable. Docs-only pushes to
+# main skip a run, a superseded run is cancelled rather than finishing, and pip
+# is cached. Pull requests always run: the branch-protection ruleset requires
+# the `test` check before a merge, and a markdown-only PR with no check can
+# never merge without an administrator override.
 on:
   push:
     branches: [main]
     paths-ignore: ['**.md', '.gitignore', 'LICENSE']
   pull_request:
-    paths-ignore: ['**.md', '.gitignore', 'LICENSE']
   workflow_dispatch:
 
 concurrency:
