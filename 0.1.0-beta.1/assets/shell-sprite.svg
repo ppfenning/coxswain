@@ -1,44 +1,103 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 24" shape-rendering="crispEdges">
-  <!-- Coxswain header sprite: one stroke cycle, 4 frames of 160x24, laid out left to right. -->
-  <!-- Palette: hull #6b4423, oars #d9a441, water #4a90d9, coxswain accent #e63946. -->
-  <!-- Each frame: hull spans x 20-140, bow at the right (direction of travel), stern at the left. -->
-  <!-- The coxswain sits in the stern (x 20-30, inside the hull) and faces right, toward the crew. -->
-  <!-- The oars are drawn as one rect: in unison, port and starboard coincide in this side view. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 32" shape-rendering="crispEdges">
+  <!-- Coxswain header sprite: one stroke cycle, 6 frames of 240x32, laid out left to right. -->
+  <!-- Hull and crew use currentColor, set from the primary colour variable by sprite.css, so the -->
+  <!-- boat follows the palette toggle. Oars #e9c46a (oar-wood gold), water #4a90d9 and its -->
+  <!-- ripple #bfe0fb, coxswain accent #e63946 stay fixed regardless of scheme. -->
+  <!-- Each frame: hull spans x 22-218, bow (tapered) at the right, stern (tapered) at the left. -->
+  <!-- Eight rowers sit along the hull; the coxswain sits in the stern and faces the crew. -->
+  <!-- The oars are one angled run of pixels: port and starboard coincide in this side view, -->
+  <!-- moving through catch, drive-early, drive-late, finish, recovery-early, recovery-late. -->
+  <!-- The water ripple shifts one pixel to the right on each successive frame. -->
 
-  <!-- Frame 1: catch — oar forward near the bow, blade at the waterline. -->
+  <defs>
+    <g id="hull">
+      <rect class="hull-stern-tip" x="22" y="22" width="4" height="2" fill="currentColor"/>
+      <rect class="hull-stern" x="26" y="21" width="8" height="4" fill="currentColor"/>
+      <rect class="hull" x="34" y="20" width="170" height="6" fill="currentColor"/>
+      <rect class="hull-bow" x="204" y="21" width="10" height="4" fill="currentColor"/>
+      <rect class="hull-bow-tip" x="214" y="22" width="4" height="2" fill="currentColor"/>
+    </g>
+    <g id="rower">
+      <rect class="rower" x="-2" y="10" width="3" height="3" fill="currentColor"/>
+      <rect class="rower" x="-3" y="14" width="4" height="5" fill="currentColor"/>
+    </g>
+    <g id="crew">
+      <use href="#rower" x="42"/>
+      <use href="#rower" x="64"/>
+      <use href="#rower" x="86"/>
+      <use href="#rower" x="108"/>
+      <use href="#rower" x="130"/>
+      <use href="#rower" x="152"/>
+      <use href="#rower" x="174"/>
+      <use href="#rower" x="196"/>
+    </g>
+  </defs>
+
+  <!-- Frame 1: catch — blade entering the water near the bow. -->
   <g id="frame-1" transform="translate(0,0)">
-    <rect class="water" x="0" y="18" width="160" height="6" fill="#4a90d9"/>
-    <rect class="hull" x="20" y="12" width="120" height="6" fill="#6b4423"/>
-    <rect class="oars" x="108" y="18" width="24" height="1" fill="#d9a441"/>
-    <rect class="coxswain-body" x="20" y="8" width="6" height="8" fill="#e63946"/>
-    <rect class="coxswain-head" x="25" y="4" width="5" height="4" fill="#e63946"/>
+    <rect class="water" x="0" y="28" width="240" height="2" fill="#4a90d9"/>
+    <rect class="ripple" x="15" y="27" width="6" height="1" fill="#bfe0fb"/>
+    <use href="#hull"/>
+    <use href="#crew"/>
+    <rect class="oars" x="190" y="27" width="30" height="2" fill="#e9c46a"/>
+    <rect class="coxswain-body" x="26" y="12" width="8" height="8" fill="#e63946"/>
+    <rect class="coxswain-head" x="29" y="8" width="5" height="4" fill="#e63946"/>
   </g>
 
-  <!-- Frame 2: drive — oar pulling through, blade buried, coxswain calling the stroke (mouth open). -->
-  <g id="frame-2" transform="translate(160,0)">
-    <rect class="water" x="0" y="18" width="160" height="6" fill="#4a90d9"/>
-    <rect class="hull" x="20" y="12" width="120" height="6" fill="#6b4423"/>
-    <rect class="oars" x="64" y="19" width="24" height="2" fill="#d9a441"/>
-    <rect class="coxswain-body" x="20" y="8" width="6" height="8" fill="#e63946"/>
-    <rect class="coxswain-head" x="25" y="4" width="5" height="4" fill="#e63946"/>
-    <rect class="coxswain-mouth" x="28" y="6" width="1" height="1" fill="#6b4423"/>
+  <!-- Frame 2: drive-early — blade buried, pulling through; coxswain calling the stroke (mouth open). -->
+  <g id="frame-2" transform="translate(240,0)">
+    <rect class="water" x="0" y="28" width="240" height="2" fill="#4a90d9"/>
+    <rect class="ripple" x="16" y="27" width="6" height="1" fill="#bfe0fb"/>
+    <use href="#hull"/>
+    <use href="#crew"/>
+    <rect class="oars" x="150" y="28" width="30" height="2" fill="#e9c46a"/>
+    <rect class="coxswain-body" x="26" y="12" width="8" height="8" fill="#e63946"/>
+    <rect class="coxswain-head" x="29" y="8" width="5" height="4" fill="#e63946"/>
+    <rect class="coxswain-mouth" x="31" y="9" width="1" height="1" fill="#0b1622"/>
   </g>
 
-  <!-- Frame 3: finish — oar aft, near the stern side, blade lifting clear at the waterline. -->
-  <g id="frame-3" transform="translate(320,0)">
-    <rect class="water" x="0" y="18" width="160" height="6" fill="#4a90d9"/>
-    <rect class="hull" x="20" y="12" width="120" height="6" fill="#6b4423"/>
-    <rect class="oars" x="40" y="18" width="24" height="1" fill="#d9a441"/>
-    <rect class="coxswain-body" x="20" y="8" width="6" height="8" fill="#e63946"/>
-    <rect class="coxswain-head" x="25" y="4" width="5" height="4" fill="#e63946"/>
+  <!-- Frame 3: drive-late — blade still buried, further aft; coxswain still calling (mouth open). -->
+  <g id="frame-3" transform="translate(480,0)">
+    <rect class="water" x="0" y="28" width="240" height="2" fill="#4a90d9"/>
+    <rect class="ripple" x="17" y="27" width="6" height="1" fill="#bfe0fb"/>
+    <use href="#hull"/>
+    <use href="#crew"/>
+    <rect class="oars" x="110" y="28" width="30" height="2" fill="#e9c46a"/>
+    <rect class="coxswain-body" x="26" y="12" width="8" height="8" fill="#e63946"/>
+    <rect class="coxswain-head" x="29" y="8" width="5" height="4" fill="#e63946"/>
+    <rect class="coxswain-mouth" x="31" y="9" width="1" height="1" fill="#0b1622"/>
   </g>
 
-  <!-- Frame 4: recovery — oar feathered, swinging forward above the hull, clear of the water. -->
-  <g id="frame-4" transform="translate(480,0)">
-    <rect class="water" x="0" y="18" width="160" height="6" fill="#4a90d9"/>
-    <rect class="hull" x="20" y="12" width="120" height="6" fill="#6b4423"/>
-    <rect class="oars" x="76" y="9" width="24" height="1" fill="#d9a441"/>
-    <rect class="coxswain-body" x="20" y="8" width="6" height="8" fill="#e63946"/>
-    <rect class="coxswain-head" x="25" y="4" width="5" height="4" fill="#e63946"/>
+  <!-- Frame 4: finish — blade lifting clear of the water near the stern. -->
+  <g id="frame-4" transform="translate(720,0)">
+    <rect class="water" x="0" y="28" width="240" height="2" fill="#4a90d9"/>
+    <rect class="ripple" x="18" y="27" width="6" height="1" fill="#bfe0fb"/>
+    <use href="#hull"/>
+    <use href="#crew"/>
+    <rect class="oars" x="70" y="27" width="30" height="2" fill="#e9c46a"/>
+    <rect class="coxswain-body" x="26" y="12" width="8" height="8" fill="#e63946"/>
+    <rect class="coxswain-head" x="29" y="8" width="5" height="4" fill="#e63946"/>
+  </g>
+
+  <!-- Frame 5: recovery-early — oar feathered, swinging forward just above the hull. -->
+  <g id="frame-5" transform="translate(960,0)">
+    <rect class="water" x="0" y="28" width="240" height="2" fill="#4a90d9"/>
+    <rect class="ripple" x="19" y="27" width="6" height="1" fill="#bfe0fb"/>
+    <use href="#hull"/>
+    <use href="#crew"/>
+    <rect class="oars" x="90" y="15" width="30" height="1" fill="#e9c46a"/>
+    <rect class="coxswain-body" x="26" y="12" width="8" height="8" fill="#e63946"/>
+    <rect class="coxswain-head" x="29" y="8" width="5" height="4" fill="#e63946"/>
+  </g>
+
+  <!-- Frame 6: recovery-late — oar swung further forward, high above the hull, nearing the catch. -->
+  <g id="frame-6" transform="translate(1200,0)">
+    <rect class="water" x="0" y="28" width="240" height="2" fill="#4a90d9"/>
+    <rect class="ripple" x="20" y="27" width="6" height="1" fill="#bfe0fb"/>
+    <use href="#hull"/>
+    <use href="#crew"/>
+    <rect class="oars" x="140" y="11" width="30" height="1" fill="#e9c46a"/>
+    <rect class="coxswain-body" x="26" y="12" width="8" height="8" fill="#e63946"/>
+    <rect class="coxswain-head" x="29" y="8" width="5" height="4" fill="#e63946"/>
   </g>
 </svg>
