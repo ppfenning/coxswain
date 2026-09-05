@@ -144,3 +144,11 @@ def test_loading_local_resolves_base_cartridges_plan_competition_min_tier() -> N
     """
     resolved = load("local", REPO / "cartridges", skill_index=index_from_roots([REPO / "skills-plugins"]))
     assert resolved["policy"]["plan_competition"]["min_tier"] == 1
+
+
+def test_base_cartridge_bounds_dispatch_concurrency() -> None:
+    """Loads `local`, not `base`, for the same reason as above: `local`
+    declares no `policy` block, so the value asserted here is `base`'s.
+    """
+    resolved = load("local", REPO / "cartridges", skill_index=index_from_roots([REPO / "skills-plugins"]))
+    assert resolved["policy"]["dispatch"]["max_in_flight"] == 3

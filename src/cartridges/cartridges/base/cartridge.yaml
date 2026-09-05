@@ -162,6 +162,9 @@ policy:
     min_tier: 1                  # the alternative plan, the arbiter and the plan attacker run only when the task's
                                  # pre-build tier (surfaces and patterns; no change facts exist yet) is at least this;
                                  # 0 runs them on everything, 3 never.
+  dispatch:
+    max_in_flight: 3             # how many harness runs the dispatcher may have alive at once;
+                                 # the docket reports what is in flight and the dispatcher fills only the free slots.
   build_budget_usd_max: 3.0     # a work item may raise its own build ceiling with `budget_usd:`;
                                  # this is the most it may ask for, and the harness refuses anything above it, quoting this number.
   budgets:
