@@ -1,6 +1,7 @@
-/* The coxswain header sprite: a 240x32 eight-plus-cox racing shell, oars */
-/* stroking in unison. .cox-shell-track clips the glide to its own box so */
-/* the boat stays beside the beta banner text instead of sweeping across it. */
+/* The coxswain header sprite: a top-down 240x32 eight-plus-cox racing shell, */
+/* oars out both sides and the cox on the stern deck. .cox-shell-track clips */
+/* the glide to its own box so the boat stays beside the beta banner text */
+/* instead of sweeping across it. */
 .cox-shell-track {
   position: relative;
   display: inline-block;
