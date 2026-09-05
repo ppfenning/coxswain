@@ -32,6 +32,14 @@ and the ones you do not check are the ones the builder discovers.
   in, a refactor that came along for the ride — name it, and say what the
   ticket actually asked for. The scope that grew is the objection most worth
   raising, because it is the one nobody downstream will see.
+- **When the plan lays out phases and tasks, two of them claiming one file in
+  the same phase is a shape defect.** List each phase's tasks by the files
+  named in `surfaces` and in their bodies, and object when a file appears
+  twice in the same phase — name the file and the two tasks. Phase tasks
+  merge into the phase branch afterwards regardless of any `needs` edge
+  between them, so a shared file is a guaranteed conflict however the two
+  tasks are ordered, not a quality complaint. A single-task build plan has
+  no phases to check, and this bullet does not apply to it.
 - **`strongest_objection` is a forced choice.** Name the one that should decide
   the verdict. If your strongest objection is weak, say so — that IS the
   signal that the plan survives.

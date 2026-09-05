@@ -30,6 +30,13 @@ before what it depends on exists.
   empty surfaces list on a dangerous task under-reviews it.
 - **Ids are stable slugs.** They become filenames and dependency references;
   rename one later and every edge naming it dangles.
+- **Tasks in one phase never share a file.** Every task names the files it
+  will create or edit in `surfaces`, in the terms the team's review policy
+  uses, and again in its body, and no file appears under two tasks of the
+  same phase, whether or not one `needs` the other — a `needs` edge orders
+  the work but the tasks still merge into the phase branch afterwards. If
+  two pieces of work need the same file they are one task, or the second is
+  in a later phase and `needs` the first.
 
 ## Failure modes
 
@@ -37,3 +44,6 @@ before what it depends on exists.
   edges were written from narrative order, not data flow.
 - A fully parallel plan — nothing needs anything. The opposite lie.
 - Tasks whose bodies say "see initiative".
+- Two tasks in one phase that both create or edit the same file — the runner
+  merges phase tasks in parallel, so the second write is a guaranteed merge
+  conflict, and a `needs` edge between them does not prevent it.
