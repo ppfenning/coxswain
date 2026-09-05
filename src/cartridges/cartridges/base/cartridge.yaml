@@ -158,6 +158,8 @@ policy:
     tier1_max_changed_lines: 150
     tier1_max_modules: 1
     tier2_surfaces: [schema, migration, deletion, auth, infrastructure, cross_repo, production_write_path]
+  build_budget_usd_max: 3.0     # a work item may raise its own build ceiling with `budget_usd:`;
+                                 # this is the most it may ask for, and the harness refuses anything above it, quoting this number.
   budgets:
     triage_run_tokens: 200000
     build_run_tokens: 500000

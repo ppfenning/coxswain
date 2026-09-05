@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from core.cartridge import load
+from core.skills import index_from_roots
 from core.workstore import (
     WorkStoreError,
     phases,
@@ -17,6 +19,8 @@ from core.workstore import (
     validate_dag,
     write_item,
 )
+
+REPO = Path(__file__).resolve().parent.parent
 
 
 def task(root: Path, phase: str, tid: str, *, needs=(), state="todo", surfaces=()) -> Path:
@@ -129,10 +133,75 @@ def test_a_malformed_attempts_value_reads_as_empty_rather_than_raising(tmp_path:
     assert read_item(path)["attempts"] == []
 
 
+def test_an_item_with_a_budget_reads_back_and_writes_the_line(tmp_path: Path) -> None:
+    path = write_item(
+        {
+            "id": "t1",
+            "phase": "p1",
+            "state": "todo",
+            "needs": [],
+            "surfaces": [],
+            "title": "t1",
+            "budget_usd": 2.5,
+            "body": "body",
+        },
+        tmp_path / "p1" / "t1.md",
+    )
+    assert read_item(path)["budget_usd"] == 2.5
+    assert "budget_usd:" in path.read_text(encoding="utf-8")
+
+
+def test_an_item_with_no_budget_has_no_key_and_writes_no_line(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1")
+    assert "budget_usd" not in read_item(path)
+    assert "budget_usd:" not in path.read_text(encoding="utf-8")
+
+
+def test_a_non_numeric_or_zero_budget_reads_as_absent(tmp_path: Path) -> None:
+    zero = tmp_path / "p1" / "t1.md"
+    zero.parent.mkdir(parents=True)
+    zero.write_text(
+        "---\nid: t1\nphase: p1\nstate: todo\nbudget_usd: 0\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    assert "budget_usd" not in read_item(zero)
+
+    non_numeric = tmp_path / "p2" / "t1.md"
+    non_numeric.parent.mkdir(parents=True)
+    non_numeric.write_text(
+        "---\nid: t1\nphase: p2\nstate: todo\nbudget_usd: soon\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    assert "budget_usd" not in read_item(non_numeric)
+
+
+def test_write_item_refuses_a_negative_budget_same_as_read_item(tmp_path: Path) -> None:
+    path = write_item(
+        {
+            "id": "t1",
+            "phase": "p1",
+            "state": "todo",
+            "needs": [],
+            "surfaces": [],
+            "title": "t1",
+            "budget_usd": -1,
+            "body": "body",
+        },
+        tmp_path / "p1" / "t1.md",
+    )
+    assert "budget_usd:" not in path.read_text(encoding="utf-8")
+    assert "budget_usd" not in read_item(path)
+
+
 def test_unknown_states_are_refused(tmp_path: Path) -> None:
     path = task(tmp_path, "p1", "t1")
     with pytest.raises(WorkStoreError, match="unknown state 'nearly'"):
         set_state(path, "nearly")
+
+
+def test_base_cartridge_caps_the_build_budget_at_3_dollars() -> None:
+    resolved = load("local", REPO / "cartridges", skill_index=index_from_roots([REPO / "skills-plugins"]))
+    assert resolved["policy"]["build_budget_usd_max"] == 3.0
 
 
 def test_frontmatter_must_be_present(tmp_path: Path) -> None:

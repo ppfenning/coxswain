@@ -91,6 +91,16 @@ def _coerce_attempts(raw: Any) -> list[dict[str, str]]:
     ]
 
 
+def _coerce_budget_usd(raw: Any) -> float | None:
+    if isinstance(raw, bool) or raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
 def read_item(path: Path | str) -> dict[str, Any]:
     """Read one work item. Its `id` defaults to the filename, never invented."""
     path = Path(path)
@@ -99,6 +109,7 @@ def read_item(path: Path | str) -> dict[str, Any]:
     except OSError as exc:
         raise WorkStoreError(f"cannot read work item {path}: {exc}") from exc
 
+    budget_usd = _coerce_budget_usd(meta.get("budget_usd"))
     item = {
         "id": str(meta.get("id") or path.stem),
         "phase": str(meta.get("phase") or path.parent.name),
@@ -107,6 +118,7 @@ def read_item(path: Path | str) -> dict[str, Any]:
         "surfaces": [str(s) for s in (meta.get("surfaces") or [])],
         "title": str(meta.get("title") or path.stem),
         "attempts": _coerce_attempts(meta.get("attempts")),
+        **({"budget_usd": budget_usd} if budget_usd is not None else {}),
         "body": body,
         "path": str(path),
     }
@@ -120,6 +132,7 @@ def write_item(item: Mapping[str, Any], path: Path | str) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     attempts = list(item.get("attempts") or [])
+    budget_usd = _coerce_budget_usd(item.get("budget_usd"))
     meta = {
         "id": item["id"],
         "phase": item.get("phase", ""),
@@ -127,6 +140,7 @@ def write_item(item: Mapping[str, Any], path: Path | str) -> Path:
         "needs": list(item.get("needs") or []),
         "surfaces": list(item.get("surfaces") or []),
         "title": item.get("title", item["id"]),
+        **({"budget_usd": budget_usd} if budget_usd is not None else {}),
         **({"attempts": attempts} if attempts else {}),
     }
     if meta["state"] not in STATES:
