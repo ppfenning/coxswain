@@ -1,5 +1,6 @@
 import sys
 import tomllib
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import yaml
@@ -49,6 +50,70 @@ def test_every_doc_page_appears_in_nav():
 
     missing = pages - nav_targets
     assert not missing, f"pages missing from nav: {sorted(missing)}"
+
+
+def test_shell_sprite_has_four_frames_with_correct_viewbox():
+    svg_path = ROOT / "docs" / "assets" / "shell-sprite.svg"
+    root = ET.parse(svg_path).getroot()
+
+    assert root.attrib["viewBox"] == "0 0 640 24"
+
+    frames = root.findall("{http://www.w3.org/2000/svg}g")
+    assert len(frames) == 4
+    frame_ids = {g.attrib["id"] for g in frames}
+    assert frame_ids == {"frame-1", "frame-2", "frame-3", "frame-4"}
+
+
+def test_sprite_css_respects_reduced_motion():
+    css = (ROOT / "docs" / "assets" / "sprite.css").read_text()
+    assert "prefers-reduced-motion" in css
+
+
+def test_reduced_motion_block_stops_the_animation():
+    css = (ROOT / "docs" / "assets" / "sprite.css").read_text()
+    media_block = css[css.index("prefers-reduced-motion") :]
+    assert "animation: none" in media_block
+
+
+def test_sprite_css_paints_the_sprite_sheet_at_native_size():
+    svg_path = ROOT / "docs" / "assets" / "shell-sprite.svg"
+    sheet_width = ET.parse(svg_path).getroot().attrib["viewBox"].split()[2]
+
+    css = (ROOT / "docs" / "assets" / "sprite.css").read_text()
+    assert "shell-sprite.svg" in css
+    assert f"background-size: {sheet_width}px 24px" in css
+
+
+def test_stroke_animation_steps_match_frame_count_and_sheet_width():
+    svg_path = ROOT / "docs" / "assets" / "shell-sprite.svg"
+    root = ET.parse(svg_path).getroot()
+    frame_count = len(root.findall("{http://www.w3.org/2000/svg}g"))
+    sheet_width = root.attrib["viewBox"].split()[2]
+
+    css = (ROOT / "docs" / "assets" / "sprite.css").read_text()
+    stroke_block = css[css.index("@keyframes cox-stroke") : css.index("@keyframes cox-glide")]
+
+    assert f"steps({frame_count})" in css
+    assert f"background-position: -{sheet_width}px 0" in stroke_block
+
+
+def test_mkdocs_lists_sprite_css():
+    mkdocs = _load_mkdocs()
+    assert "assets/sprite.css" in mkdocs["extra_css"]
+
+
+def test_main_html_includes_cox_shell():
+    html = (ROOT / "docs" / "overrides" / "main.html").read_text()
+    assert 'class="cox-shell"' in html
+
+
+def test_cox_shell_is_confined_to_its_own_clipped_track():
+    html = (ROOT / "docs" / "overrides" / "main.html").read_text()
+    assert 'class="cox-shell-track"' in html
+
+    css = (ROOT / "docs" / "assets" / "sprite.css").read_text()
+    assert ".cox-shell-track" in css
+    assert "overflow: hidden" in css
 
 
 def test_plan_yields_one_pair_per_repo_component_and_skips_path_components():
