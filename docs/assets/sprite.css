@@ -1,12 +1,12 @@
-/* The coxswain header sprite: a 160x24 racing shell, oars stroking in unison. */
-/* .cox-shell-track clips the glide to its own box so the boat stays beside */
-/* the beta banner text instead of sweeping across it. */
+/* The coxswain header sprite: a 240x32 eight-plus-cox racing shell, oars */
+/* stroking in unison. .cox-shell-track clips the glide to its own box so */
+/* the boat stays beside the beta banner text instead of sweeping across it. */
 .cox-shell-track {
   position: relative;
   display: inline-block;
   overflow: hidden;
-  width: 200px;
-  height: 24px;
+  width: 280px;
+  height: 32px;
   vertical-align: middle;
   margin-right: 0.5em;
 }
@@ -15,35 +15,36 @@
   position: absolute;
   top: 0;
   left: 0;
-  width: 160px;
-  height: 24px;
+  width: 240px;
+  height: 32px;
+  color: var(--md-primary-fg-color);
   background-image: url("shell-sprite.svg");
   background-repeat: no-repeat;
   background-position: 0 0;
-  background-size: 640px 24px;
+  background-size: 1440px 32px;
   image-rendering: pixelated;
   animation:
-    cox-stroke 0.8s steps(4) infinite,
-    cox-glide 24s linear infinite;
+    cox-stroke 0.9s steps(6) infinite,
+    cox-glide 30s linear infinite;
 }
 
-/* Cycles the four stroke frames: catch, drive, finish, recovery. */
+/* Cycles the six stroke frames: catch, drive-early, drive-late, finish, recovery-early, recovery-late. */
 @keyframes cox-stroke {
   from {
     background-position: 0 0;
   }
   to {
-    background-position: -640px 0;
+    background-position: -1440px 0;
   }
 }
 
-/* Glides the shell across its own clipped track once every 24 seconds. */
+/* Glides the shell across its own clipped track once every 30 seconds. */
 @keyframes cox-glide {
   from {
     left: 0;
   }
   to {
-    left: calc(100% - 160px);
+    left: calc(100% - 240px);
   }
 }
 
@@ -56,3 +57,4 @@
     left: 0;
   }
 }
+

@@ -52,16 +52,23 @@ def test_every_doc_page_appears_in_nav():
     assert not missing, f"pages missing from nav: {sorted(missing)}"
 
 
-def test_shell_sprite_has_four_frames_with_correct_viewbox():
+def test_shell_sprite_has_six_frames_with_correct_viewbox():
     svg_path = ROOT / "docs" / "assets" / "shell-sprite.svg"
     root = ET.parse(svg_path).getroot()
 
-    assert root.attrib["viewBox"] == "0 0 640 24"
+    assert root.attrib["viewBox"] == "0 0 1440 32"
 
     frames = root.findall("{http://www.w3.org/2000/svg}g")
-    assert len(frames) == 4
+    assert len(frames) == 6
     frame_ids = {g.attrib["id"] for g in frames}
-    assert frame_ids == {"frame-1", "frame-2", "frame-3", "frame-4"}
+    assert frame_ids == {
+        "frame-1",
+        "frame-2",
+        "frame-3",
+        "frame-4",
+        "frame-5",
+        "frame-6",
+    }
 
 
 def test_sprite_css_respects_reduced_motion():
@@ -81,7 +88,7 @@ def test_sprite_css_paints_the_sprite_sheet_at_native_size():
 
     css = (ROOT / "docs" / "assets" / "sprite.css").read_text()
     assert "shell-sprite.svg" in css
-    assert f"background-size: {sheet_width}px 24px" in css
+    assert f"background-size: {sheet_width}px 32px" in css
 
 
 def test_stroke_animation_steps_match_frame_count_and_sheet_width():
@@ -100,6 +107,31 @@ def test_stroke_animation_steps_match_frame_count_and_sheet_width():
 def test_mkdocs_lists_sprite_css():
     mkdocs = _load_mkdocs()
     assert "assets/sprite.css" in mkdocs["extra_css"]
+
+
+def test_mkdocs_lists_palette_css():
+    mkdocs = _load_mkdocs()
+    assert "assets/palette.css" in mkdocs["extra_css"]
+
+
+def test_palette_css_defines_both_schemes():
+    css = (ROOT / "docs" / "assets" / "palette.css").read_text()
+    assert '[data-md-color-scheme="slate"]' in css
+    assert '[data-md-color-scheme="default"]' in css
+
+
+def test_mkdocs_palette_is_slate_first_with_named_toggles():
+    mkdocs = _load_mkdocs()
+    palette = mkdocs["theme"]["palette"]
+
+    assert isinstance(palette, list)
+    assert len(palette) == 2
+    assert palette[0]["scheme"] == "slate"
+    assert palette[1]["scheme"] == "default"
+    for entry in palette:
+        assert entry["primary"] == "custom"
+        assert entry["accent"] == "custom"
+        assert entry["toggle"]["name"]
 
 
 def test_main_html_includes_cox_shell():
