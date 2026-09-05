@@ -26,6 +26,9 @@ def test_every_component_is_pinned_in_lockstep_or_lives_here():
             assert c["tag"] == tag, f"{name} is not pinned to {tag}"
             assert c["repo"].startswith("ppfenning/coxswain-"), name
         assert c.get("required") or c.get("flag"), f"{name} is neither required nor optional"
+        if "docs" in c:
+            assert c["docs"], f"{name} declares an empty docs list"
+            assert all(isinstance(d, str) for d in c["docs"]), f"{name} docs must be paths"
 
 
 def test_exactly_one_component_provides_cox():
