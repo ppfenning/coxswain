@@ -30,6 +30,12 @@ becomes a **pull request**, and a human — or CI, or both — decides whether i
 No step in that loop writes to the system of record except the one that owns
 it. See [conventions: single writer](../methodology/index.md) for why.
 
+## What you'll see
+
+<img alt="cox route status showing the configured provider, CLI, and model tier" src="../assets/shots/route-status.svg">
+
+`cox route status` shows which provider and model tier a run will use before it starts.
+
 ## Vocabulary
 
 - **crew** — the agents that do the rowing: they plan, build, review, and
