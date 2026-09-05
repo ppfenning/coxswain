@@ -208,6 +208,14 @@ into `~/.config/agent-tools/profile.yaml` so other tools know which cartridge
 to load. This command reads its template from the package's own source tree,
 so it needs a source checkout of this repository, not an installed wheel.
 
+This repo, [`agent-graphs`](https://github.com/ppfenning/agent-graphs), and
+[`agent-tools`](https://github.com/ppfenning/agent-tools) are set up together,
+not one at a time. The order to bring them up in, each repo's environment, the
+logins each needs, the `profile.yaml` shape just described, and how to verify
+the install are written once, in
+[`agent-tools`' `docs/getting-started.md`](https://github.com/ppfenning/agent-tools/blob/main/docs/getting-started.md) —
+that page walks the whole three-repo setup end to end.
+
 `--skills-root` is how the loader checks that every bound skill name resolves to
 exactly one skill body; pass it once per plugin root. There is a
 `--unverified-skills` escape hatch for resolving without that check, and it
