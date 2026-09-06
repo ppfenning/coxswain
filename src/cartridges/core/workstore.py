@@ -51,7 +51,9 @@ __all__ = [
     "read_item",
     "ready_tasks",
     "record_attempt",
+    "resolve_surfaces",
     "set_state",
+    "surface_problem",
     "validate_dag",
     "write_item",
 ]
@@ -61,6 +63,7 @@ DONE = "done"
 DEFAULT_PRIORITY = 3
 
 _FRONTMATTER = "---"
+_NEW_SUFFIX = " (new)"
 
 
 class WorkStoreError(Exception):
@@ -124,6 +127,29 @@ def _coerce_priority(raw: Any) -> int:
     except (TypeError, ValueError):
         return DEFAULT_PRIORITY
     return value if 1 <= value <= 5 else DEFAULT_PRIORITY
+
+
+def resolve_surfaces(surfaces: Sequence[str], tree: frozenset[str]) -> tuple[list[str], list[str]]:
+    """Split surfaces into those that are real paths in `tree` and those that are not."""
+    resolved: list[str] = []
+    unresolved: list[str] = []
+    for surface in surfaces:
+        is_new = surface.endswith(_NEW_SUFFIX)
+        path = surface[: -len(_NEW_SUFFIX)] if is_new else surface
+        parent = path.rsplit("/", 1)[0] if "/" in path else ""
+        under_dir = bool(tree) if not parent else any(p == parent or p.startswith(f"{parent}/") for p in tree)
+        if path in tree or (is_new and under_dir):
+            resolved.append(surface)
+        else:
+            unresolved.append(surface)
+    return resolved, unresolved
+
+
+def surface_problem(unresolved: Sequence[str]) -> str | None:
+    """The one-line refusal both callers print; None when every surface resolved."""
+    if not unresolved:
+        return None
+    return "surfaces do not resolve against the checkout: " + ", ".join(unresolved)
 
 
 def read_item(path: Path | str) -> dict[str, Any]:

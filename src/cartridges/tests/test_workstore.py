@@ -16,7 +16,9 @@ from core.workstore import (
     read_item,
     ready_tasks,
     record_attempt,
+    resolve_surfaces,
     set_state,
+    surface_problem,
     validate_dag,
     write_item,
 )
@@ -393,3 +395,40 @@ def test_ready_orders_by_priority_then_id(tmp_path: Path) -> None:
 
 def test_phases_are_listed_in_order(initiative: Path) -> None:
     assert phases(read_initiative(initiative)["items"]) == ["p1-foundations", "p2-rollout"]
+
+
+# ── surfaces ───────────────────────────────────────────────────────────────
+
+
+def test_a_path_already_in_the_tree_resolves() -> None:
+    assert resolve_surfaces(["core/workstore.py"], frozenset({"core/workstore.py"})) == (["core/workstore.py"], [])
+
+
+def test_a_new_path_under_an_existing_directory_resolves() -> None:
+    tree = frozenset({"x/existing.py"})
+    assert resolve_surfaces(["x/y.py (new)"], tree) == (["x/y.py (new)"], [])
+
+
+def test_a_new_path_under_a_directory_that_does_not_exist_is_unresolved() -> None:
+    tree = frozenset({"x/existing.py"})
+    assert resolve_surfaces(["z/y.py (new)"], tree) == ([], ["z/y.py (new)"])
+
+
+def test_prose_is_unresolved() -> None:
+    tree = frozenset({"core/workstore.py"})
+    surface = "the cox route launch command"
+    assert resolve_surfaces([surface], tree) == ([], [surface])
+
+
+def test_an_empty_list_resolves_to_two_empty_lists() -> None:
+    assert resolve_surfaces([], frozenset()) == ([], [])
+
+
+def test_surface_problem_is_none_when_nothing_is_unresolved() -> None:
+    assert surface_problem([]) is None
+
+
+def test_surface_problem_names_every_unresolved_surface() -> None:
+    message = surface_problem(["tests/test_epic.py", "HUD config schema"])
+    assert "tests/test_epic.py" in message
+    assert "HUD config schema" in message
