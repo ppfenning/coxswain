@@ -32,7 +32,8 @@ FIXED = {
     "outline": "#1b2430",
     "shirt": "#2b3a55",
     "shadow": "#1b2536",
-    "seat": "#a8dad5",
+    "crew": "#e8eef2",
+    "crew_shadow": "#b9c6d1",
     "wake_outer": "#4a90d9",
     "wake_inner": "#bfe0fb",
     "ripple": "#bfe0fb",
@@ -77,12 +78,12 @@ COX_GRID = [
     "...eHHHHHHHHHe.....",
     "....esssssssss.....",
     "....ssesssses......",
-    "....sssssssss..bb..",
-    "....ssssooosss.bbbb",
-    "....sssssossssBbbbb",
-    "...eSSSSSSSSSes.bbb",
-    "...ettttttttteb.bb.",
-    "..sttttttttttts....",
+    "....sssssssss....bB",
+    "....ssssooosss.bbbB",
+    "....sssssosssbbbbbB",
+    "...eSSSSSSSSSesbBBB",
+    "...ettttttttte.BBBB",
+    "..sttttttttttts..BB",
     "..sttttttttttts....",
     "...ttttttttttt.....",
     "...eTTTTTTTTTe.....",
@@ -91,6 +92,21 @@ COX_GRID = [
     "...................",
 ]
 COX_X0, COX_Y0 = 24, 14
+
+# The crew: one rower per seat, four to port near the top edge of the deck
+# and four to starboard near the bottom, fixed in place while the oars sweep.
+# Hair, a face, and a cream singlet that reads against the hull in both
+# themes and keeps the navy for the cox alone.
+ROWER_GRID = [
+    ".kk.",
+    "kssk",
+    ".ss.",
+    "cccc",
+    "CccC",
+]
+ROWER_LEGEND = {"k": "outline", "s": "skin", "c": "crew", "C": "crew_shadow"}
+PORT_ROWERS = [(x, 18) for x in (48, 92, 136, 180)]
+STARBOARD_ROWERS = [(x, 25) for x in (70, 114, 158, 202)]
 COX_LEGEND = {
     "h": "cap",
     "H": "brim",
@@ -119,6 +135,13 @@ def _rows_to_rects(rows, x0, y0, legend, colors):
             while col < len(row) and row[col] == char:
                 col += 1
             rects.append((x0 + start, y, col - start, 1, colors[legend[char]]))
+    return rects
+
+
+def _rower_rects(colors):
+    rects = []
+    for x, y in PORT_ROWERS + STARBOARD_ROWERS:
+        rects.extend(_rows_to_rects(ROWER_GRID, x, y, ROWER_LEGEND, colors))
     return rects
 
 
@@ -153,6 +176,7 @@ def _frame_rects(frame_index, colors):
         _wake_rects(frame_index, colors)
         + _hull_rects(colors)
         + [(rx, ry, rw, rh, colors["ripple"])]
+        + _rower_rects(colors)
         + _oar_rects(frame_index, colors)
         + _rows_to_rects(COX_GRID, COX_X0, COX_Y0, COX_LEGEND, colors)
     )
