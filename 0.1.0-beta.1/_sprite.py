@@ -33,7 +33,6 @@ FIXED = {
     "shirt": "#2b3a55",
     "shadow": "#1b2536",
     "crew": "#e8eef2",
-    "crew_shadow": "#b9c6d1",
     "wake_outer": "#4a90d9",
     "wake_inner": "#bfe0fb",
     "ripple": "#bfe0fb",
@@ -95,16 +94,15 @@ COX_X0, COX_Y0 = 24, 14
 
 # The crew: one rower per seat, four to port near the top edge of the deck
 # and four to starboard near the bottom, fixed in place while the oars sweep.
-# Hair, a face, and a cream singlet that reads against the hull in both
-# themes and keeps the navy for the cox alone.
+# A cream square each: at this size a face is noise, and cream reads against
+# the hull in both themes while the navy stays the cox's alone.
 ROWER_GRID = [
-    ".kk.",
-    "kssk",
-    ".ss.",
     "cccc",
-    "CccC",
+    "cccc",
+    "cccc",
+    "cccc",
 ]
-ROWER_LEGEND = {"k": "outline", "s": "skin", "c": "crew", "C": "crew_shadow"}
+ROWER_LEGEND = {"c": "crew"}
 PORT_ROWERS = [(x, 18) for x in (48, 92, 136, 180)]
 STARBOARD_ROWERS = [(x, 25) for x in (70, 114, 158, 202)]
 COX_LEGEND = {
