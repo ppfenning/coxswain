@@ -1,6 +1,6 @@
 [project]
 name = "coxswain"
-version = "0.2.0"
+version = "0.3.0"
 description = "Coxswain: the agent platform. The command is `cox`, from the coxswain-tools package."
 readme = "README.md"
 requires-python = ">=3.11"
