@@ -8,3 +8,4 @@ if [ ! -f "$profile" ]; then
 fi
 
 cox route context 2>/dev/null || agent-tools route context 2>/dev/null || true
+cox route leader status 2>/dev/null || agent-tools route leader status 2>/dev/null || true

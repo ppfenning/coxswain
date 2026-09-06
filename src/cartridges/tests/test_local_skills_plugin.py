@@ -62,6 +62,25 @@ def test_skill_bodies_are_real_documents_not_stubs() -> None:
         assert len(text.splitlines()) >= 25, f"{body}: too short to be real guidance"
 
 
+def test_route_work_checks_the_leader_before_routing_anything() -> None:
+    raw = (PLUGIN / "skills" / "route-work" / "SKILL.md").read_text(encoding="utf-8")
+    text = " ".join(raw.split())
+    assert "cox route leader status" in text
+    assert "cox route leader take" in text
+    assert "do not re-arm" in text
+    assert "naming your own label" in text
+    assert "leader lock still names you" in text
+
+
+def test_route_work_stops_rather_than_clearing_an_unavailable_leader_check() -> None:
+    raw = (PLUGIN / "skills" / "route-work" / "SKILL.md").read_text(encoding="utf-8")
+    text = " ".join(raw.split())
+    assert "errors or is not yet installed" in text
+    assert "say the check is unavailable and stop there too" in text
+    assert "do not treat a failed or missing check as a clear lock" in text
+    assert "proceed as if no lock exists" not in text
+
+
 def test_the_index_maps_each_binding_to_exactly_one_body() -> None:
     index = index_from_roots([PLUGIN_ROOT])
     resolved = load("local", REPO / "cartridges", skill_index=index)

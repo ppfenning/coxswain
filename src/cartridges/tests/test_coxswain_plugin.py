@@ -126,6 +126,46 @@ def test_docket_invoked_by_its_own_shebang_also_prints_nothing(tmp_path):
     assert result.stdout == ""
 
 
+def test_docket_prints_the_leader_line_alongside_context_when_profile_exists(tmp_path):
+    profile = tmp_path / "profile.yaml"
+    profile.write_text("team: local\n")
+    fake_cox = tmp_path / "cox"
+    fake_cox.write_text(
+        "#!/bin/bash\n"
+        'case "$*" in\n'
+        '  "route context") echo "context: local" ;;\n'
+        '  "route leader status") echo "leader: none" ;;\n'
+        "esac\n"
+    )
+    fake_cox.chmod(0o755)
+    result = subprocess.run(
+        [BASH, str(DOCKET_SH)],
+        env={
+            **os.environ,
+            "AGENT_TOOLS_PROFILE": str(profile),
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "context: local" in result.stdout
+    assert "leader: none" in result.stdout
+
+
+def test_docket_tolerates_a_profile_with_neither_cox_nor_agent_tools_on_path(tmp_path):
+    profile = tmp_path / "profile.yaml"
+    profile.write_text("team: local\n")
+    result = subprocess.run(
+        [BASH, str(DOCKET_SH)],
+        env={"AGENT_TOOLS_PROFILE": str(profile), "PATH": ""},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert result.stdout == ""
+
+
 def test_statusline_with_no_cox_on_path_prints_just_the_model():
     result = subprocess.run(
         [BASH, str(STATUSLINE_SH)],
@@ -223,3 +263,13 @@ def test_land_waits_for_operator_to_say_apply_rather_than_deciding_itself():
 def test_runs_does_not_invent_a_runs_directory():
     body = " ".join(_command_frontmatter_and_body("runs")[1].split())
     assert "ask rather than guess at one" in body
+
+
+def test_runs_checks_leader_status_but_still_shows_the_table_read_only():
+    body = " ".join(_command_frontmatter_and_body("runs")[1].split())
+    assert "do not re-arm" in body
+    assert "errors or is not yet installed" in body
+    leader_at = body.index("cox route leader status")
+    status_at = body.index("cox route status")
+    assert leader_at < status_at
+    assert "show the table anyway" in body
