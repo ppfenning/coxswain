@@ -48,6 +48,14 @@ budget_usd:
   standard:  0.35
   deep:      0.80
 role_budget_usd:
+  # A review reads a whole patch and the charter, which the standard tier's
+  # $0.35 does not cover: moving the reviewers off the deep tier (they run the
+  # standard MODEL now, since the arbiter is where deep was measured to pay)
+  # also moved them onto the standard BUDGET, and four tasks in one run died at
+  # it — two of them in review_charter and review_adversary. The model tier and
+  # the dollar ceiling are separate choices; this keeps the ceiling they had.
+  review_charter:   0.80
+  review_adversary: 0.80
   build:     1.00          # it edits, tests and diffs — and a fix-loop retry re-applies
                            # the previous patch before amending it, which is not free.
                            # Measured: a clean first build lands around $0.50 in ~40 turns.
