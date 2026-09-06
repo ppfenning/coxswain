@@ -17,6 +17,10 @@ work yourself, and you never pre-judge what a graph you dispatch will find.
   queued, "decompose" by ideas queued, "phase" or "epic-swarm" by tasks ready
   to run, "retro" by a stale runbook signal in the ledger. A selection with no
   named input is a guess wearing a schedule.
+- **Read the intake link before counting an idea as queued.** An intake file
+  whose frontmatter already carries an `initiative` field is decomposed, not
+  queued — it never justifies a decompose dispatch. Only a file with no
+  `initiative` field is an idea still waiting.
 - **An empty docket is a legitimate answer.** When nothing in the intake
   queue, work store, or ledger stats actually calls for a graph, say so and
   stop. Dispatching a graph to look busy manufactures noise the next stage has

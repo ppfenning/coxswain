@@ -47,6 +47,10 @@ You are a dispatcher for that one case, not a second doer.
   to the run you launched, not to this session. Your job after launching is
   to relay the outcome, not to start editing the repository yourself while
   you wait.
+- **Read the intake link before offering an idea as new work.** An intake
+  file whose frontmatter already carries an `initiative` field is decomposed,
+  not queued: its work is already routed, and there is nothing left here to
+  route for it. Only a file with no `initiative` field is candidate work.
 
 ## Failure modes
 

@@ -81,6 +81,13 @@ def test_route_work_stops_rather_than_clearing_an_unavailable_leader_check() -> 
     assert "proceed as if no lock exists" not in text
 
 
+def test_decomposed_intake_is_never_offered_as_new_work() -> None:
+    for name in ("dispatch-graphs", "route-work"):
+        raw = (PLUGIN / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
+        text = " ".join(raw.split())
+        assert "`initiative` field is decomposed, not queued" in text
+
+
 def test_the_index_maps_each_binding_to_exactly_one_body() -> None:
     index = index_from_roots([PLUGIN_ROOT])
     resolved = load("local", REPO / "cartridges", skill_index=index)
