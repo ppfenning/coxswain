@@ -24,8 +24,15 @@ than cautious.
   it actually printed. If you could not run something, record that as its
   output — an honest "not run: no test runner in context" beats a remembered
   pass. Never report output you did not see.
-- **Match the codebase you were shown.** Its naming, its comment density, its
-  idioms. A technically correct patch in a foreign style is a revise.
+- **Match the codebase you were shown.** Its naming, its idioms. A technically
+  correct patch in a foreign style is a revise. Comment density is the one
+  thing not to match: write lean even beside verbose neighbours.
+- **Write lean.** The typed signature is the documentation. A docstring is one
+  line, and only where the signature cannot say it — a rule, a unit, an
+  invariant, an ordering. No comment narrates what the next lines do. A pure
+  function is deterministic, so one literal call per rule is its test; a test
+  per branch, or one that restates the implementation, is weight the reviewer
+  strikes. Spend the lines on the function, not on prose about it.
 
 ## What good looks like
 

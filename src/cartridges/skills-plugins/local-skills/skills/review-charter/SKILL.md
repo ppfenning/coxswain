@@ -29,6 +29,14 @@ the standard you would have written.
   use revise as a soft reject.
 - **A finding names its file.** A reviewer who cannot say where the problem is
   has not finished finding it.
+- **The signature is the documentation.** Where the charter states its lean
+  principle (a typed signature carries the contract; a docstring is one line
+  and only where the signature cannot say it — a rule, a unit, an invariant, an
+  ordering; no comment narrates what the next lines do; one literal call per
+  rule is the test), cite it: a narrating comment or a module docstring past
+  one line is a finding of the same class as a rebound name, and a test per
+  branch or a test that restates the implementation is a finding, never a
+  request for more tests. Where the charter is silent on it, say nothing.
 
 ## What good looks like
 

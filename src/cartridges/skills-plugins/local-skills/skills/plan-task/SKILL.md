@@ -27,6 +27,10 @@ and everything you decide leaves in the structured output.
   out_of_scope on non-trivial work usually means the boundary was never
   considered.
 
+- **Size counts source, not evidence.** A `~N lines` target bounds the source
+  the change adds; tests are the evidence for it, reported beside the source
+  and never counted against the target or refused for their length.
+
 ## What good looks like
 
 Three to eight steps. A competent builder who has never seen this codebase
