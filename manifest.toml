@@ -2,6 +2,11 @@
 # Every component is tagged v<coxswain.version> at release, in lockstep.
 # Repository names are the post-rename names (design §1a); until the rename
 # lands, `cox install` follows GitHub's redirects from the agent-* names.
+#
+# A component entry carries either `tag = "vX.Y.Z"` (the release channel,
+# what `cox install` gives a fresh install) or `ref = "main"` (the edge
+# channel, what `cox install --edge` resolves to) — never both. A half-edge
+# install, part tag and part ref, is a configuration nobody tested.
 
 [coxswain]
 version = "0.2.0"
