@@ -19,6 +19,7 @@ already the audit trail, so there is no second system to keep honest.
     needs: [t1-schema-probe]
     surfaces: [schema]
     title: Benchmark harness for the vendor join
+    priority: 2
     ---
 
     Prose describing the work.
@@ -26,6 +27,12 @@ already the audit trail, so there is no second system to keep honest.
 `state` is one of todo | ready | in_progress | blocked | done, and the
 `work_state_arm` is its single writer — the single-writer conviction survives
 having no tracker, because the conviction was never about the tracker.
+
+`priority` is 1..5, 1 highest; an item that omits it defaults to 3. It is
+validated like `budget_usd`. Reading exposes it on every parsed item, never
+absent, unlike `budget_usd`. Writing omits the key once it equals the
+default, the same way `budget_usd` omits a value that is not meaningful, so
+a legacy item without `priority:` still saves with no such line.
 """
 
 from __future__ import annotations
@@ -51,6 +58,7 @@ __all__ = [
 
 STATES = ("todo", "ready", "in_progress", "blocked", "done")
 DONE = "done"
+DEFAULT_PRIORITY = 3
 
 _FRONTMATTER = "---"
 
@@ -107,6 +115,17 @@ def _coerce_budget_usd(raw: Any) -> float | None:
     return value if value > 0 else None
 
 
+def _coerce_priority(raw: Any) -> int:
+    """1..5, 1 highest. Anything else — absent, non-numeric, or out of range — is the default."""
+    if isinstance(raw, bool):
+        return DEFAULT_PRIORITY
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_PRIORITY
+    return value if 1 <= value <= 5 else DEFAULT_PRIORITY
+
+
 def read_item(path: Path | str) -> dict[str, Any]:
     """Read one work item. Its `id` defaults to the filename, never invented."""
     path = Path(path)
@@ -126,6 +145,7 @@ def read_item(path: Path | str) -> dict[str, Any]:
         "title": str(meta.get("title") or path.stem),
         "attempts": _coerce_attempts(meta.get("attempts")),
         **({"budget_usd": budget_usd} if budget_usd is not None else {}),
+        "priority": _coerce_priority(meta.get("priority")),
         "body": body,
         "path": str(path),
     }
@@ -141,6 +161,7 @@ def write_item(item: Mapping[str, Any], path: Path | str) -> Path:
     attempts = list(item.get("attempts") or [])
     budget_usd = _coerce_budget_usd(item.get("budget_usd"))
     patterns = _coerce_patterns(item.get("patterns"))
+    priority = _coerce_priority(item.get("priority"))
     meta = {
         "id": item["id"],
         "phase": item.get("phase", ""),
@@ -150,6 +171,7 @@ def write_item(item: Mapping[str, Any], path: Path | str) -> Path:
         **({"patterns": patterns} if patterns else {}),
         "title": item.get("title", item["id"]),
         **({"budget_usd": budget_usd} if budget_usd is not None else {}),
+        **({"priority": priority} if priority != DEFAULT_PRIORITY else {}),
         **({"attempts": attempts} if attempts else {}),
     }
     if meta["state"] not in STATES:
@@ -274,5 +296,5 @@ def ready_tasks(items: Sequence[Mapping[str, Any]], *, phase: str | None = None)
             and (phase is None or item.get("phase") == phase)
             and all(need in done for need in item.get("needs") or [])
         ),
-        key=lambda item: str(item["id"]),
+        key=lambda item: (_coerce_priority(item.get("priority")), str(item["id"])),
     )

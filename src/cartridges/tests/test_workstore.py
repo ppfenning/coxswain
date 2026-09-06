@@ -10,6 +10,7 @@ from core.cartridge import load
 from core.skills import index_from_roots
 from core.workstore import (
     WorkStoreError,
+    _coerce_priority,
     phases,
     read_initiative,
     read_item,
@@ -23,7 +24,7 @@ from core.workstore import (
 REPO = Path(__file__).resolve().parent.parent
 
 
-def task(root: Path, phase: str, tid: str, *, needs=(), state="todo", surfaces=()) -> Path:
+def task(root: Path, phase: str, tid: str, *, needs=(), state="todo", surfaces=(), priority=None) -> Path:
     return write_item(
         {
             "id": tid,
@@ -32,6 +33,7 @@ def task(root: Path, phase: str, tid: str, *, needs=(), state="todo", surfaces=(
             "needs": list(needs),
             "surfaces": list(surfaces),
             "title": tid.replace("-", " "),
+            **({"priority": priority} if priority is not None else {}),
             "body": "What someone picking this up cold needs to know.",
         },
         root / phase / f"{tid}.md",
@@ -231,6 +233,54 @@ def test_write_item_refuses_a_negative_budget_same_as_read_item(tmp_path: Path) 
     assert "budget_usd" not in read_item(path)
 
 
+def test_coerce_priority_defaults_absent_valid_and_invalid_input() -> None:
+    assert _coerce_priority(None) == 3
+    assert _coerce_priority(1) == 1
+    assert _coerce_priority(6) == 3
+    assert _coerce_priority(0) == 3
+    assert _coerce_priority("high") == 3
+
+
+def test_an_item_with_priority_reads_back_and_writes_the_line(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1", priority=1)
+    assert read_item(path)["priority"] == 1
+    assert "priority: 1" in path.read_text(encoding="utf-8")
+
+
+def test_write_item_omits_priority_that_equals_the_default(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1", priority=3)
+    assert "priority:" not in path.read_text(encoding="utf-8")
+    assert read_item(path)["priority"] == 3
+
+
+def test_an_item_with_no_priority_still_loads_as_it_does_today(tmp_path: Path) -> None:
+    path = tmp_path / "p1" / "t1.md"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "---\nid: t1\nphase: p1\nstate: ready\nneeds: [t0]\nsurfaces: [schema]\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    item = read_item(path)
+    assert item["priority"] == 3
+    assert item["id"] == "t1"
+    assert item["needs"] == ["t0"]
+    assert item["surfaces"] == ["schema"]
+    assert item["state"] == "ready"
+
+
+def test_an_item_with_no_priority_also_saves_unchanged(tmp_path: Path) -> None:
+    """The done-criterion: an item without `priority:` loads AND saves unchanged.
+
+    A state move round-trips through `read_item`/`write_item`, so this is
+    where a writer that stamps every item with its default would show up.
+    """
+    path = tmp_path / "p1" / "t1.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("---\nid: t1\nphase: p1\nstate: todo\n---\n\nbody\n", encoding="utf-8")
+    set_state(path, "done")
+    assert "priority:" not in path.read_text(encoding="utf-8")
+
+
 def test_unknown_states_are_refused(tmp_path: Path) -> None:
     path = task(tmp_path, "p1", "t1")
     with pytest.raises(WorkStoreError, match="unknown state 'nearly'"):
@@ -331,6 +381,14 @@ def test_done_work_is_never_ready(initiative: Path) -> None:
 def test_ready_is_ordered_so_a_run_is_replayable(initiative: Path) -> None:
     items = list(reversed(read_initiative(initiative)["items"]))
     assert [t["id"] for t in ready_tasks(items)] == ["t1-schema-probe", "t2-bench-harness"]
+
+
+def test_ready_orders_by_priority_then_id(tmp_path: Path) -> None:
+    task(tmp_path, "p1", "t-low", priority=3)
+    task(tmp_path, "p1", "t-high", priority=1)
+    task(tmp_path, "p1", "t-mid", priority=2)
+    items = [read_item(p) for p in sorted(tmp_path.glob("*/*.md"))]
+    assert [t["id"] for t in ready_tasks(items)] == ["t-high", "t-mid", "t-low"]
 
 
 def test_phases_are_listed_in_order(initiative: Path) -> None:

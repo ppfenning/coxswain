@@ -168,6 +168,21 @@ policy:
   dispatch:
     max_in_flight: 3             # how many harness runs the dispatcher may have alive at once;
                                  # the docket reports what is in flight and the dispatcher fills only the free slots.
+  # Pacing: read by coxswain-tools' agent_tools/pacing.py::assess() to decide
+  # whether a launch may proceed at its requested tier and effort, or must
+  # degrade. Neither a risk nor a ramp, so a team layer may set these fields
+  # freely.
+  pacing:
+    # ceiling_usd: intentionally UNSET here. ccusage reports only what local
+    # transcripts cost, never what a plan or enterprise seat actually allows,
+    # so a guessed ceiling would be worse than none. Left absent, `assess()`
+    # reads this as unmeasured and returns its unmeasured go verdict.
+    window_hours: 5                        # the block window pacing is measured against
+    spent_vs_elapsed_margin: 0.15          # spent-fraction minus elapsed-fraction that counts as "ahead of pace"
+    late_threshold: {fraction: 0.70, hours_left: 2}  # 70% spent with >2h left in the window triggers degradation
+    min_headroom_usd: 1.0                  # below this remaining headroom, nothing launches
+    tier_ladder: [deep, standard, cheap]   # degradation order for model tier
+    effort_ladder: [high, low]             # degradation order for effort
   build_budget_usd_max: 3.0     # a work item may raise its own build ceiling with `budget_usd:`;
                                  # this is the most it may ask for, and the harness refuses anything above it, quoting this number.
   budgets:

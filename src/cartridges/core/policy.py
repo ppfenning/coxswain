@@ -94,7 +94,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-__all__ = ["AUTO", "PROPOSE", "PolicyError", "autonomy_policy", "plan_tier"]
+__all__ = ["AUTO", "PROPOSE", "PolicyError", "autonomy_policy", "pacing_policy", "plan_tier"]
 
 AUTO = "auto"
 PROPOSE = "propose"
@@ -258,3 +258,62 @@ def plan_tier(cartridge: Mapping[str, Any], *, surfaces: Sequence[str], patterns
     if tier0_patterns & set(patterns):
         return 0
     return 1
+
+
+TIER_LADDER = ("deep", "standard", "cheap")
+EFFORT_LADDER = ("high", "low")
+
+
+def _optional_number(pacing: Mapping[str, Any], field: str) -> float | None:
+    value = pacing.get(field)
+    if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))):
+        raise PolicyError(f"policy.pacing.{field} must be a number or null, got {type(value).__name__}")
+    return value
+
+
+def _number(pacing: Mapping[str, Any], field: str, default: float) -> float:
+    value = pacing.get(field, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise PolicyError(f"policy.pacing.{field} must be a number, got {type(value).__name__}")
+    return value
+
+
+def _late_threshold(pacing: Mapping[str, Any]) -> dict[str, float]:
+    """Merge field-by-field so a team naming only `fraction` still gets a
+    usable `hours_left` — a whole-value override would silently drop it."""
+    raw = pacing.get("late_threshold")
+    if raw is not None and not isinstance(raw, Mapping):
+        raise PolicyError(f"policy.pacing.late_threshold must be a mapping, got {type(raw).__name__}")
+    merged = {"fraction": 0.70, "hours_left": 2, **(raw or {})}
+    for key in ("fraction", "hours_left"):
+        if not isinstance(merged[key], (int, float)):
+            raise PolicyError(f"policy.pacing.late_threshold.{key} must be a number, got {type(merged[key]).__name__}")
+    return merged
+
+
+def pacing_policy(cartridge: Mapping[str, Any]) -> dict[str, Any]:
+    """Resolve `policy.pacing`, filling in the defaults a launch reasons from.
+
+    Field names and shapes are the Policy contract coxswain-tools'
+    `agent_tools/pacing.py::assess()` consumes; do not rename or add to them
+    here without carrying that change to the other repository first.
+    `ceiling_usd` has no default — ccusage reports only what local transcripts
+    cost, never what a plan or an enterprise seat allows, so an unset ceiling
+    must read as `None` and drive `assess()` to its unmeasured go verdict
+    rather than a guessed number. `tier_ladder` and `effort_ladder` are handed
+    through as given, same as any other field here; nothing in this repo
+    knows the direction `assess()` walks them in, so nothing here polices it.
+    """
+    pacing = (cartridge.get("policy") or {}).get("pacing") or {}
+    if not isinstance(pacing, Mapping):
+        raise PolicyError(f"policy.pacing must be a mapping, got {type(pacing).__name__}")
+
+    return {
+        "ceiling_usd": _optional_number(pacing, "ceiling_usd"),
+        "window_hours": _number(pacing, "window_hours", 5),
+        "spent_vs_elapsed_margin": _number(pacing, "spent_vs_elapsed_margin", 0.15),
+        "late_threshold": _late_threshold(pacing),
+        "min_headroom_usd": _number(pacing, "min_headroom_usd", 1.0),
+        "tier_ladder": list(pacing.get("tier_ladder", TIER_LADDER)),
+        "effort_ladder": list(pacing.get("effort_ladder", EFFORT_LADDER)),
+    }

@@ -12,10 +12,17 @@ literal.
 
 from __future__ import annotations
 
-import pytest
+from pathlib import Path
 
-from core.policy import AUTO, PROPOSE, PolicyError, autonomy_policy, plan_tier
+import pytest
+import yaml
+
+from core.cartridge import load
+from core.policy import AUTO, PROPOSE, PolicyError, autonomy_policy, pacing_policy, plan_tier
+from core.skills import index_from_roots
 from tests.conftest import rows
+
+REPO = Path(__file__).resolve().parent.parent
 
 WRITE_KINDS = {
     "draft_pr_create": {"risk": "low", "ramp": "eligible"},
@@ -281,3 +288,73 @@ def test_neither_a_dangerous_surface_nor_a_tier_zero_pattern_gives_tier_one() ->
 def test_empty_review_tier_lists_give_tier_one_for_anything() -> None:
     empty = {"policy": {"review_tier": {}}}
     assert plan_tier(empty, surfaces=["auth"], patterns=["docs_only"]) == 1
+
+
+def test_pacing_defaults_resolve_when_the_key_is_absent() -> None:
+    assert pacing_policy({}) == {
+        "ceiling_usd": None,
+        "window_hours": 5,
+        "spent_vs_elapsed_margin": 0.15,
+        "late_threshold": {"fraction": 0.70, "hours_left": 2},
+        "min_headroom_usd": 1.0,
+        "tier_ladder": ["deep", "standard", "cheap"],
+        "effort_ladder": ["high", "low"],
+    }
+
+
+def test_a_team_layers_pacing_values_win_and_the_rest_still_default() -> None:
+    team = {"policy": {"pacing": {"ceiling_usd": 40.0, "window_hours": 3}}}
+    resolved = pacing_policy(team)
+    assert resolved["ceiling_usd"] == 40.0
+    assert resolved["window_hours"] == 3
+    assert resolved["min_headroom_usd"] == 1.0
+    assert resolved["tier_ladder"] == ["deep", "standard", "cheap"]
+
+
+def test_a_partial_late_threshold_still_carries_both_keys() -> None:
+    """A whole-value override would silently drop `hours_left`; the merge is
+    field-by-field so naming only `fraction` still leaves a usable pair."""
+    team = {"policy": {"pacing": {"late_threshold": {"fraction": 0.8}}}}
+    assert pacing_policy(team)["late_threshold"] == {"fraction": 0.8, "hours_left": 2}
+
+
+def test_a_non_numeric_pacing_field_is_refused_rather_than_passed_through() -> None:
+    team = {"policy": {"pacing": {"window_hours": "5"}}}
+    with pytest.raises(PolicyError, match="window_hours"):
+        pacing_policy(team)
+
+
+def test_a_bool_is_refused_where_a_number_is_required() -> None:
+    """`isinstance(True, int)` is true in Python; a bare type check would let
+    a mistyped `true` through as the window `1`, so both helpers exclude it."""
+    team = {"policy": {"pacing": {"window_hours": True}}}
+    with pytest.raises(PolicyError, match="window_hours"):
+        pacing_policy(team)
+
+
+def test_a_team_layer_may_set_a_ladder_to_anything_shaped_like_a_list() -> None:
+    """No validation runs on ladder contents here: `assess()`, in the other
+    repository, is the only thing that knows which direction it walks them,
+    so nothing in this repo is positioned to police reordering."""
+    team = {"policy": {"pacing": {"tier_ladder": ["cheap", "deep"], "effort_ladder": ["low"]}}}
+    resolved = pacing_policy(team)
+    assert resolved["tier_ladder"] == ["cheap", "deep"]
+    assert resolved["effort_ladder"] == ["low"]
+
+
+def test_the_base_cartridge_still_loads_with_pacing_unmeasured() -> None:
+    """Loads `local`, not `base`: `local` declares no `policy` block of its
+    own, so the pacing block asserted here is the one `base` ships. Reads the
+    raw merged tree rather than `pacing_policy`'s output, so a removed or
+    misplaced yaml block fails this test even though the shipped values equal
+    the resolver's own defaults.
+    """
+    local_yaml = yaml.safe_load((REPO / "cartridges" / "local" / "cartridge.yaml").read_text())
+    assert "policy" not in local_yaml  # confirms the premise above: nothing here overrides base's pacing block
+
+    resolved = load("local", REPO / "cartridges", skill_index=index_from_roots([REPO / "skills-plugins"]))
+    shipped = resolved["policy"]["pacing"]
+    assert shipped["window_hours"] == 5
+    assert shipped["tier_ladder"] == ["deep", "standard", "cheap"]
+    assert "ceiling_usd" not in shipped
+    assert pacing_policy(resolved)["ceiling_usd"] is None
