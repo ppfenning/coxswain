@@ -6,7 +6,8 @@ every change is planned, built under a budget, reviewed by two reviewers made
 to disagree, checked against the project's own tests, and handed to you as a
 pull request, with every stroke on the record. This site is the umbrella: the
 methodology, the manifest that pins every component in lockstep, and the
-installer.
+installer. macOS installs `cox` via the `ppfenning/homebrew-coxswain` Homebrew
+tap.
 
 ## Start here
 

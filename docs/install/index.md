@@ -28,6 +28,16 @@ curl -fsSL https://raw.githubusercontent.com/ppfenning/coxswain/main/install.sh 
 | release | `tag = "vX.Y.Z"` | a fresh install, stable | `cox install` |
 | edge | `ref = "main"` | tracking main daily | `cox install --edge` |
 
+## macOS
+
+```sh
+brew install ppfenning/coxswain/cox
+cox setup doctor
+```
+
+The formula installs `cox` alone; `cox install` fetches the rest of the
+pinned components from `manifest.toml`.
+
 ## Flags
 
 | Flag | Meaning |
