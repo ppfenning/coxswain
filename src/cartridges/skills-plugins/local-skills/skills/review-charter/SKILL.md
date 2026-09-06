@@ -29,14 +29,27 @@ the standard you would have written.
   use revise as a soft reject.
 - **A finding names its file.** A reviewer who cannot say where the problem is
   has not finished finding it.
-- **The signature is the documentation.** Where the charter states its lean
+- **Style is noted, never blocking.** Where the charter states its lean
   principle (a typed signature carries the contract; a docstring is one line
   and only where the signature cannot say it — a rule, a unit, an invariant, an
   ordering; no comment narrates what the next lines do; one literal call per
-  rule is the test), cite it: a narrating comment or a module docstring past
-  one line is a finding of the same class as a rebound name, and a test per
-  branch or a test that restates the implementation is a finding, never a
-  request for more tests. Where the charter is silent on it, say nothing.
+  rule is the test), a departure is worth NOTING and is never grounds to
+  revise. Say it in the rationale and approve. Three things and only these may
+  carry a revise: the diff is wrong, it does not do what the task describes, or
+  a check fails. A line target is a budget signal, not a contract.
+
+  This is a correction, not a preference. Style was a blocking finding "of the
+  same class as a rebound name" until 2026-09-06, when three of four
+  quarantines in one afternoon were style rejections of code this seat had
+  itself traced and called correct: an accordion revised for having two tests
+  where the task said one, a dispatch line quarantined over a single narrating
+  docstring. Each burned its whole attempt budget and the work was thrown away.
+  A correct, tested diff lands with its style noted; the note is settled by the
+  next change to that file, or by the style pass that owns it.
+
+  Anything a tool can prove is not yours to find: `ruff` and the project's own
+  checks run before you do, at no cost, and their output is already in the
+  evidence. Do not re-report what a linter caught or would catch.
 
 ## What good looks like
 
