@@ -693,6 +693,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#channels" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Channels
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#flags" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2096,6 +2107,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#channels" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Channels
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#flags" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2193,6 +2215,32 @@ command.</p>
 <li>Writes the provider config for <code>--provider</code>, so <code>cox</code> knows which CLI,
    plugin, and model tiers to use.</li>
 </ol>
+<h2 id="channels">Channels</h2>
+<p><code>manifest.toml</code> pins each component to one of two channels, never a mix.</p>
+<table>
+<thead>
+<tr>
+<th>Channel</th>
+<th>Pin</th>
+<th>For</th>
+<th>Command</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>release</td>
+<td><code>tag = "vX.Y.Z"</code></td>
+<td>a fresh install, stable</td>
+<td><code>cox install</code></td>
+</tr>
+<tr>
+<td>edge</td>
+<td><code>ref = "main"</code></td>
+<td>tracking main daily</td>
+<td><code>cox install --edge</code></td>
+</tr>
+</tbody>
+</table>
 <h2 id="flags">Flags</h2>
 <table>
 <thead>
