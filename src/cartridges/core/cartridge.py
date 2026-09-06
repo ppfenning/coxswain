@@ -109,7 +109,9 @@ NON_ROLE_APPLY_ARMS = frozenset({"shell", "pr"})
 # and `deprecations` are excluded too: `cast` mirrors `crew` exactly, and
 # `deprecations` records which spelling a layer used, neither of which is
 # content a team declared.
-DERIVED_KEYS = frozenset({"cartridge_dir", "cartridge_sha", "cast", "deprecations"})
+DERIVED_KEYS = frozenset({"cartridge_dir", "cartridge_sha", "cast", "deprecations", "overlay_sha"})
+
+OVERLAY_ALLOWED_KEYS = frozenset({"context", "policy", "landing_areas", "description"})
 
 # The flat `--team` parser's `--cartridges-dir` default and `init`'s template
 # source both resolve to the package's own `cartridges/`, never the shell's
@@ -245,6 +247,124 @@ def _loosenings(parent_kinds: Mapping[str, Any], child_kinds: Mapping[str, Any],
     return problems
 
 
+def _is_plain_list(value: Any) -> bool:
+    return isinstance(value, Sequence) and not isinstance(value, (str, bytes))
+
+
+def _as_mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+_OVERLAY_NESTED_ALLOWED = {"policy": "review_tier", "landing_areas": "checks"}
+
+
+def overlay_errors(overlay: Mapping[str, Any]) -> list[str]:
+    """Refused top-level keys, refused nested keys, and malformed values, named for `CartridgeError`."""
+    problems = [f"project layer overlay refuses key '{key}'" for key in overlay if key not in OVERLAY_ALLOWED_KEYS]
+    context = overlay.get("context")
+    if context is not None and not _is_plain_list(context):
+        problems.append(f"overlay key 'context' must be a list, got {type(context).__name__}")
+    for key, allowed_subkey in _OVERLAY_NESTED_ALLOWED.items():
+        value = overlay.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, Mapping):
+            problems.append(f"overlay key '{key}' must be a mapping, got {type(value).__name__}")
+            continue
+        problems += [f"project layer overlay refuses key '{key}.{sub}'" for sub in value if sub != allowed_subkey]
+        sub_value = value.get(allowed_subkey)
+        if sub_value is not None and not isinstance(sub_value, Mapping):
+            problems.append(f"overlay key '{key}.{allowed_subkey}' must be a mapping, got {type(sub_value).__name__}")
+    return problems
+
+
+def _overlay_review_tier(overlay: Mapping[str, Any]) -> Mapping[str, Any]:
+    return _as_mapping(_as_mapping(overlay.get("policy")).get("review_tier"))
+
+
+# Lists whose membership review_tier's tighten-only rule bounds in opposite
+# directions: more tier2 surfaces is more scrutiny (tighter); more tier0
+# patterns routes more work to the weakest review (looser).
+_REVIEW_TIER_GROW_ONLY = frozenset({"tier2_surfaces"})
+_REVIEW_TIER_SHRINK_ONLY = frozenset({"tier0_patterns"})
+
+
+def _review_tier_problems(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> list[str]:
+    """Every tighten-only violation in `overlay` against `base`'s `review_tier`."""
+    problems: list[str] = []
+    for key, new in overlay.items():
+        old = base.get(key)
+        if key in _REVIEW_TIER_GROW_ONLY or key in _REVIEW_TIER_SHRINK_ONLY:
+            if not _is_plain_list(new):
+                problems.append(f"overlay sets {key} to {type(new).__name__}, not a list")
+            elif _is_plain_list(old):
+                grows = key in _REVIEW_TIER_GROW_ONLY
+                changed = [v for v in old if v not in new] if grows else [v for v in new if v not in old]
+                if changed:
+                    verb, allowed = ("drops", "add") if grows else ("adds", "remove")
+                    problems.append(f"overlay {verb} {key} {changed}; a project layer may only {allowed} entries")
+        elif isinstance(new, bool) or not isinstance(new, (int, float)):
+            problems.append(f"overlay sets review_tier.{key} to {type(new).__name__}, not a number")
+        elif isinstance(old, (int, float)) and not isinstance(old, bool) and new > old:
+            problems.append(
+                f"overlay raises review_tier.{key} from {old} to {new}; a project layer may only lower a threshold"
+            )
+    return problems
+
+
+def apply_overlay(
+    resolved: Mapping[str, Any], overlay: Mapping[str, Any] | None, overlay_dir: Path | str | None = None
+) -> dict[str, Any]:
+    """Merge the project layer's whitelisted keys over `resolved`, unchecked; `overlay=None` returns it unchanged."""
+    if overlay is None:
+        return dict(resolved)
+    merged = dict(resolved)
+    if "context" in overlay:
+        entries = (
+            [str((Path(overlay_dir) / str(entry)).resolve()) for entry in overlay["context"]]
+            if overlay_dir is not None
+            else list(overlay["context"])
+        )
+        merged["context"] = [*resolved.get("context", []), *entries]
+    if "description" in overlay:
+        merged["description"] = overlay["description"]
+    landing_areas = _as_mapping(overlay.get("landing_areas"))
+    if "checks" in landing_areas:
+        merged["landing_areas"] = {**_as_mapping(resolved.get("landing_areas")), "checks": landing_areas["checks"]}
+    review_tier = _overlay_review_tier(overlay)
+    if review_tier:
+        base_policy = _as_mapping(resolved.get("policy"))
+        base_review_tier = _as_mapping(base_policy.get("review_tier"))
+        merged["policy"] = {**base_policy, "review_tier": {**base_review_tier, **review_tier}}
+    return merged
+
+
+def _merge_overlay(
+    team: str,
+    merged: Mapping[str, Any],
+    overlay: Mapping[str, Any],
+    overlay_dir: Path | str | None,
+    skill_index: Mapping[str, Sequence[Any]],
+) -> dict[str, Any]:
+    """`merged` with `overlay` applied, raising CartridgeError listing EVERY overlay problem found."""
+    review_tier = _overlay_review_tier(overlay)
+    base_review_tier = _as_mapping(_as_mapping(merged.get("policy")).get("review_tier"))
+    problems = [*overlay_errors(overlay), *_review_tier_problems(base_review_tier, review_tier)]
+    if problems:
+        raise CartridgeError(
+            f"cartridge '{team}' overlay failed to resolve ({len(problems)} problem(s)):\n  - "
+            + "\n  - ".join(problems)
+        )
+    overlaid = apply_overlay(merged, overlay, overlay_dir)
+    validation = _validate(overlaid, skill_index)
+    if validation:
+        raise CartridgeError(
+            f"cartridge '{team}' overlay failed to resolve ({len(validation)} problem(s)):\n  - "
+            + "\n  - ".join(validation)
+        )
+    return overlaid
+
+
 def _fold_fragments(
     layer: Mapping[str, Any],
     fragments: Sequence[tuple[str, Mapping[str, Any]]],
@@ -336,8 +456,15 @@ def _walk(
     return entries, problems, fragment_paths, deprecations
 
 
+def _overlay_text(overlay: Mapping[str, Any]) -> str:
+    return json.dumps(overlay, sort_keys=True, separators=(",", ":"), default=str)
+
+
 def _cartridge_sha(
-    merged: Mapping[str, Any], context_paths: Sequence[str], fragment_paths: Sequence[Path] = ()
+    merged: Mapping[str, Any],
+    context_paths: Sequence[str],
+    fragment_paths: Sequence[Path] = (),
+    overlay: Mapping[str, Any] | None = None,
 ) -> str:
     payload = {k: v for k, v in merged.items() if k not in DERIVED_KEYS and k != "context"}
     digest = hashlib.sha256()
@@ -348,6 +475,9 @@ def _cartridge_sha(
     for path in fragment_paths:
         digest.update(b"\0")
         digest.update(Path(path).read_bytes())
+    if overlay is not None:
+        digest.update(b"\0")
+        digest.update(_overlay_text(overlay).encode("utf-8"))
     return digest.hexdigest()
 
 
@@ -394,9 +524,14 @@ def _validate(merged: Mapping[str, Any], skill_index: Mapping[str, Sequence[Any]
 
 
 def _resolve(
-    team: str, cartridges_dir: Path | str, *, skill_index: Mapping[str, Sequence[Any]]
+    team: str,
+    cartridges_dir: Path | str,
+    *,
+    skill_index: Mapping[str, Sequence[Any]],
+    overlay: Mapping[str, Any] | None = None,
+    overlay_dir: Path | str | None = None,
 ) -> list[tuple[str, dict[str, Any]]]:
-    """Resolve `team`'s full chain and return every snapshot `_walk` recorded.
+    """Resolve `team`'s full chain, then the project layer's `overlay`, and return every snapshot `_walk` recorded.
 
     Raises CartridgeError listing EVERY problem found, not just the first — a
     caller fixing bindings one error per run is a caller who stops reading
@@ -416,9 +551,14 @@ def _resolve(
             + "\n  - ".join(problems)
         )
 
-    final = dict(merged)
+    overlaid = merged if overlay is None else _merge_overlay(team, merged, overlay, overlay_dir, skill_index)
+
+    final = dict(overlaid)
     final["cartridge_dir"] = str(chain[-1][1].resolve())
-    final["cartridge_sha"] = _cartridge_sha(final, final.get("context", []), fragment_paths)
+    final["cartridge_sha"] = _cartridge_sha(final, final.get("context", []), fragment_paths, overlay)
+    final["overlay_sha"] = (
+        hashlib.sha256(_overlay_text(overlay).encode("utf-8")).hexdigest() if overlay is not None else None
+    )
     final["deprecations"] = deprecations
     # `cast` is a deprecated alias for `crew`; mirrored here so readers still
     # on the old name keep working. Drop this line when `cast` is removed
@@ -430,13 +570,20 @@ def _resolve(
     return [*entries[:-1], (entries[-1][0], final)]
 
 
-def load(team: str, cartridges_dir: Path | str, *, skill_index: Mapping[str, Sequence[Any]]) -> dict[str, Any]:
-    """Resolve `team` against its inheritance chain and validate the result.
+def load(
+    team: str,
+    cartridges_dir: Path | str,
+    *,
+    skill_index: Mapping[str, Sequence[Any]],
+    overlay: Mapping[str, Any] | None = None,
+    overlay_dir: Path | str | None = None,
+) -> dict[str, Any]:
+    """Resolve `team` against its inheritance chain and the project layer's overlay, and validate the result.
 
     Raises CartridgeError listing EVERY problem found, not just the first — a
     caller fixing bindings one error per run is a caller who stops reading them.
     """
-    return _resolve(team, cartridges_dir, skill_index=skill_index)[-1][1]
+    return _resolve(team, cartridges_dir, skill_index=skill_index, overlay=overlay, overlay_dir=overlay_dir)[-1][1]
 
 
 def layers(

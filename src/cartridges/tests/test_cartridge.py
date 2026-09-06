@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
 import yaml
 
-from core.cartridge import CartridgeError, _fold_fragments, layers, load
+from core.cartridge import (
+    DERIVED_KEYS,
+    CartridgeError,
+    _fold_fragments,
+    _review_tier_problems,
+    apply_overlay,
+    layers,
+    load,
+    overlay_errors,
+)
 from core.skills import index_from_roots
 from tests.conftest import write_cartridge
 
@@ -389,3 +400,130 @@ def test_the_resolved_dict_has_cast_equal_to_crew(cartridges: Path, skill_index)
     (cartridges / "acme" / "cartridge.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
     resolved = load("acme", cartridges, skill_index=skill_index)
     assert resolved["cast"] == resolved["crew"]
+
+
+def test_overlay_errors_names_the_refused_key() -> None:
+    assert overlay_errors({"skills": {"plan": "x"}}) == ["project layer overlay refuses key 'skills'"]
+
+
+def test_overlay_errors_refuses_unknown_nested_keys() -> None:
+    overlay = {"policy": {"merge_main": "eligible"}, "landing_areas": {"active_work": "foo"}}
+    problems = overlay_errors(overlay)
+    assert "project layer overlay refuses key 'policy.merge_main'" in problems
+    assert "project layer overlay refuses key 'landing_areas.active_work'" in problems
+
+
+def test_overlay_errors_refuses_a_non_list_context() -> None:
+    assert overlay_errors({"context": "style.md"}) == ["overlay key 'context' must be a list, got str"]
+
+
+def test_apply_overlay_adds_a_context_file_and_a_tier2_surface() -> None:
+    resolved = {"context": ["/repo/base.md"], "policy": {"review_tier": {"tier2_surfaces": ["schema"]}}}
+    overlay = {"context": ["/repo/overlay.md"], "policy": {"review_tier": {"tier2_surfaces": ["schema", "auth"]}}}
+    merged = apply_overlay(resolved, overlay)
+    assert merged["context"] == ["/repo/base.md", "/repo/overlay.md"]
+    assert merged["policy"]["review_tier"]["tier2_surfaces"] == ["schema", "auth"]
+
+
+def test_apply_overlay_sets_description_and_merges_landing_areas_checks() -> None:
+    resolved = {"description": "old", "landing_areas": {"active_work": "board"}}
+    overlay = {"description": "new", "landing_areas": {"checks": ["lint"]}}
+    merged = apply_overlay(resolved, overlay)
+    assert merged["description"] == "new"
+    assert merged["landing_areas"] == {"active_work": "board", "checks": ["lint"]}
+
+
+def test_apply_overlay_of_none_returns_the_input_unchanged() -> None:
+    resolved = {"context": ["/repo/base.md"]}
+    assert apply_overlay(resolved, None) == resolved
+
+
+def test_review_tier_problems_reports_a_raised_threshold() -> None:
+    base = {"tier1_max_changed_lines": 150}
+    overlay = {"tier1_max_changed_lines": 200}
+    assert _review_tier_problems(base, overlay) == [
+        "overlay raises review_tier.tier1_max_changed_lines from 150 to 200; a project layer may only lower a threshold"
+    ]
+
+
+def test_review_tier_problems_refuses_a_non_numeric_threshold() -> None:
+    base = {"tier1_max_changed_lines": 150}
+    overlay = {"tier1_max_changed_lines": "999"}
+    assert _review_tier_problems(base, overlay) == [
+        "overlay sets review_tier.tier1_max_changed_lines to str, not a number"
+    ]
+
+
+def test_review_tier_problems_reports_a_dropped_surface() -> None:
+    base = {"tier2_surfaces": ["schema", "auth"]}
+    overlay = {"tier2_surfaces": ["schema"]}
+    assert _review_tier_problems(base, overlay) == [
+        "overlay drops tier2_surfaces ['auth']; a project layer may only add entries"
+    ]
+
+
+def test_review_tier_problems_refuses_a_non_list_tier2_surfaces() -> None:
+    base = {"tier2_surfaces": ["auth"]}
+    overlay = {"tier2_surfaces": "authz"}
+    assert _review_tier_problems(base, overlay) == ["overlay sets tier2_surfaces to str, not a list"]
+
+
+def test_review_tier_problems_reports_an_added_tier0_pattern() -> None:
+    base = {"tier0_patterns": ["docs_only"]}
+    overlay = {"tier0_patterns": ["docs_only", "config_bump"]}
+    assert _review_tier_problems(base, overlay) == [
+        "overlay adds tier0_patterns ['config_bump']; a project layer may only remove entries"
+    ]
+
+
+def test_load_with_overlay_none_matches_a_call_with_no_overlay_argument(cartridges: Path, skill_index) -> None:
+    explicit_none = load("acme", cartridges, skill_index=skill_index, overlay=None)
+    omitted = load("acme", cartridges, skill_index=skill_index)
+    assert explicit_none == omitted
+    assert explicit_none["overlay_sha"] is None
+
+
+def test_cartridge_sha_with_no_overlay_equals_the_payload_and_context_hash(cartridges: Path, skill_index) -> None:
+    resolved = load("acme", cartridges, skill_index=skill_index)
+    payload = {k: v for k, v in resolved.items() if k not in DERIVED_KEYS and k != "context"}
+    digest = hashlib.sha256()
+    digest.update(json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8"))
+    for path in resolved["context"]:
+        digest.update(b"\0")
+        digest.update(Path(path).read_bytes())
+    assert digest.hexdigest() == resolved["cartridge_sha"]
+
+
+def test_load_reports_every_overlay_problem_not_just_the_first(cartridges: Path, skill_index) -> None:
+    config = yaml.safe_load((cartridges / "acme" / "cartridge.yaml").read_text())
+    config["policy"] = {"review_tier": {"tier1_max_changed_lines": 10}}
+    (cartridges / "acme" / "cartridge.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+    overlay = {"skills": {"x": "y"}, "policy": {"review_tier": {"tier1_max_changed_lines": 999}}}
+    with pytest.raises(CartridgeError) as exc:
+        load("acme", cartridges, skill_index=skill_index, overlay=overlay)
+    message = str(exc.value)
+    assert "refuses key 'skills'" in message
+    assert "raises review_tier.tier1_max_changed_lines" in message
+
+
+def test_load_applies_an_overlay_context_file_and_changes_the_sha(tmp_path: Path, cartridges: Path, skill_index) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    (project_dir / "ops.md").write_text("ops charter\n", encoding="utf-8")
+    without_overlay = load("acme", cartridges, skill_index=skill_index)
+    overlay = {"context": ["ops.md"], "policy": {"review_tier": {"tier2_surfaces": ["schema"]}}}
+    resolved = load("acme", cartridges, skill_index=skill_index, overlay=overlay, overlay_dir=project_dir)
+    assert Path(resolved["context"][-1]) == (project_dir / "ops.md").resolve()
+    assert resolved["policy"]["review_tier"]["tier2_surfaces"] == ["schema"]
+    assert resolved["cartridge_sha"] != without_overlay["cartridge_sha"]
+    assert resolved["overlay_sha"] is not None
+
+
+def test_load_refuses_an_overlay_context_file_that_does_not_exist(cartridges: Path, skill_index) -> None:
+    overlay = {"context": ["missing.md"]}
+    with pytest.raises(CartridgeError, match="context pack does not exist"):
+        load("acme", cartridges, skill_index=skill_index, overlay=overlay, overlay_dir=cartridges)
+
+
+def test_a_non_mapping_review_tier_is_an_overlay_error():
+    assert overlay_errors({"policy": {"review_tier": "tight"}}) == ["overlay key 'policy.review_tier' must be a mapping, got str"]
