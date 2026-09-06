@@ -1825,62 +1825,6 @@ Coxswain is in beta — versions may change between releases
 
               
             
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../components/hud/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    HUD
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../components/desktop/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Desktop
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
           </ul>
         </nav>
       
@@ -2207,7 +2151,7 @@ Coxswain is in beta — versions may change between releases
 <h1 id="install">Install</h1>
 <p>How to install the components pinned by <code>manifest.toml</code> with the <code>cox</code>
 command.</p>
-<div class="highlight"><pre><span></span><code>curl<span class="w"> </span>-fsSL<span class="w"> </span>https://raw.githubusercontent.com/ppfenning/coxswain/main/install.sh<span class="w"> </span><span class="p">|</span><span class="w"> </span>sh<span class="w"> </span>-s<span class="w"> </span>--<span class="w"> </span>--provider<span class="w"> </span>claude-code<span class="w"> </span>--with<span class="w"> </span>hud
+<div class="highlight"><pre><span></span><code>curl<span class="w"> </span>-fsSL<span class="w"> </span>https://raw.githubusercontent.com/ppfenning/coxswain/main/install.sh<span class="w"> </span><span class="p">|</span><span class="w"> </span>sh<span class="w"> </span>-s<span class="w"> </span>--<span class="w"> </span>--provider<span class="w"> </span>claude-code<span class="w"> </span>--with<span class="w"> </span>crew
 </code></pre></div>
 <h2 id="what-it-does">What it does</h2>
 <ol>
@@ -2217,8 +2161,7 @@ command.</p>
    the install uses to fetch and run Python tooling.</li>
 <li>Fetches the required components (cartridges, graphs, <code>cox</code> itself) at
    their pinned tag into <code>--root</code>.</li>
-<li>Fetches whichever optional components <code>--with</code> named (crew, HUD,
-   desktop) at the same tag.</li>
+<li>Fetches whichever optional components <code>--with</code> named (crew) at the same tag.</li>
 <li>Writes the provider config for <code>--provider</code>, so <code>cox</code> knows which CLI,
    plugin, and model tiers to use.</li>
 </ol>
@@ -2236,7 +2179,7 @@ command.</p>
 <td>Which provider profile to configure (see <a href="providers/">Providers</a>).</td>
 </tr>
 <tr>
-<td><code>--with crew\|hud\|desktop</code></td>
+<td><code>--with crew</code></td>
 <td>Optional components to install alongside the required ones. Repeatable.</td>
 </tr>
 <tr>
