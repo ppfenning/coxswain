@@ -10,8 +10,8 @@
 <p align="center"><em>Agents pull the oars. You hold the tiller.</em></p>
 
 <p align="center">
-  <a href="https://ppfenning.github.io/coxswain/">Docs</a> ·
-  <a href="https://ppfenning.github.io/coxswain/releases/">Releases</a> ·
+  <a href="https://ppfenning.github.io/coxswain/latest/">Docs</a> ·
+  <a href="https://ppfenning.github.io/coxswain/latest/releases/">Releases</a> ·
   <a href="https://pypi.org/project/coxswain-tools/">PyPI</a>
 </p>
 
@@ -19,7 +19,7 @@
 
 Coxswain is a platform that builds software with a crew of AI agents and keeps a person on the tiller. You describe a change; it is filed as a work item, planned, built in a worktree under a dollar budget, reviewed by two independent reviewers who are made to disagree, arbitrated, checked against the project's own tests as evidence, and handed to you as a pull request. You merge. Every step leaves a record you can read back.
 
-**Status: beta.** The loop runs itself daily on its own repositories. Interfaces are still moving; see the [release notes](https://ppfenning.github.io/coxswain/releases/) for what each version changes.
+**Status: beta.** The loop runs itself daily on its own repositories. Interfaces are still moving; see the [release notes](https://ppfenning.github.io/coxswain/latest/releases/) for what each version changes.
 
 ## Install
 
@@ -28,7 +28,7 @@ uv tool install coxswain-tools
 cox setup doctor
 ```
 
-`cox setup doctor` tells you whether this machine can run an epic and what is missing. `cox install` sets up every component from the manifest in this repository; `cox setup` is a screen over the same steps. The [install guide](https://ppfenning.github.io/coxswain/install/) covers a fresh machine end to end.
+`cox setup doctor` tells you whether this machine can run an epic and what is missing. `cox install` sets up every component from the manifest in this repository; `cox setup` is a screen over the same steps. The [install guide](https://ppfenning.github.io/coxswain/latest/install/) covers a fresh machine end to end.
 
 ## The loop, in one screen
 
@@ -57,7 +57,7 @@ The manifest is [`manifest.toml`](manifest.toml). `cox versions` reports every i
 
 ## Make it yours
 
-Everything a stranger needs is a command in a public repository; everything that makes it yours is a file the command reads. A **cartridge** is that file for your team — which skills each role carries, what budget a build gets, what a reviewer holds code to. A **profile** is that file for your machine. Neither is code. `cartridge init <team>` writes one that inherits everything and lets you tighten what you care about; the [customize guide](https://ppfenning.github.io/coxswain/customize/) walks through it.
+Everything a stranger needs is a command in a public repository; everything that makes it yours is a file the command reads. A **cartridge** is that file for your team — which skills each role carries, what budget a build gets, what a reviewer holds code to. A **profile** is that file for your machine. Neither is code. `cartridge init <team>` writes one that inherits everything and lets you tighten what you care about; the [customize guide](https://ppfenning.github.io/coxswain/latest/customize/) walks through it.
 
 ## Contributing
 
