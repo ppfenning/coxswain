@@ -1,4 +1,4 @@
-# agent-cartridges
+# coxswain-cartridges
 
 A portable substrate for running agent graphs against *your* team's rules.
 
@@ -30,7 +30,7 @@ providers/         tier -> model. the vendor axis, isolated.
 ```
 
 The graphs — and the **harness** that runs them — live in
-[`agent-graphs`](https://github.com/ppfenning/agent-graphs). The four nouns:
+[`coxswain-graphs`](https://github.com/ppfenning/coxswain-graphs). The four nouns:
 a *harness* owns consequences, a *graph* owns sequence, a *cartridge* (this
 repo) owns who a run works for, and a *runner* executes nodes.
 
@@ -45,9 +45,9 @@ A graph sits at the intersection and knows about neither:
 
 ```mermaid
 flowchart TB
-    GRAPH["agent-graphs: a graph<br/>owns sequence, writes nothing<br/>a node asks for a role and a tier"]
+    GRAPH["coxswain-graphs: a graph<br/>owns sequence, writes nothing<br/>a node asks for a role and a tier"]
 
-    subgraph CART["agent-cartridges: the two axes"]
+    subgraph CART["coxswain-cartridges: the two axes"]
         direction LR
         DOMAIN["domain<br/>cartridges, per team<br/>role to skill name"]
         VENDOR["vendor<br/>providers, per profile<br/>tier to model"]
@@ -55,7 +55,7 @@ flowchart TB
 
     BODY["a skills plugin<br/>skills/NAME/SKILL.md<br/>e.g. skills-plugins/local-skills"]
 
-    subgraph HARNESS["agent-graphs: the harness, the only side effects"]
+    subgraph HARNESS["coxswain-graphs: the harness, the only side effects"]
         RUN(["the model call"])
         POLICY{"policy: has this kind graduated?"}
         GATE{{"human gate"}}
@@ -190,7 +190,7 @@ from.
 - [x] Comfort presets 0 and 1 as ramp-only bundles (`local-comfort0`, `local-comfort1`)
 - [x] Queue-directory intake (`core/intake.py`) beside `manual`
 - [x] Validator, retro, and dispatch roles with real skill bodies
-- [x] Graphs and the harness — implemented in [`agent-graphs`](https://github.com/ppfenning/agent-graphs)
+- [x] Graphs and the harness — implemented in [`coxswain-graphs`](https://github.com/ppfenning/coxswain-graphs)
 
 ## Getting started
 
@@ -215,19 +215,19 @@ same layout without the manual `cp -r`: it creates `<team>/`, its `context/`
 tree, symlinks to `base` and (by default) `local`, and a `cartridge.yaml`
 naming `<team>`. Once every step above has applied, it prints three lines:
 `wrote <team dir>`, then `team:` and `cartridges_dir:`. Put the latter two
-into `~/.config/agent-tools/profile.yaml` so other tools know which cartridge
+into `~/.config/coxswain-tools/profile.yaml` so other tools know which cartridge
 to load. This command reads its template from the package's own source tree,
 so it needs a source checkout of this repository, not an installed wheel.
 Left unset, `--cartridges-dir` defaults to `./cartridges` under the current
 directory, not the package's. `init` is the one command that writes, so it
 writes where you are.
 
-This repo, [`agent-graphs`](https://github.com/ppfenning/agent-graphs), and
-[`agent-tools`](https://github.com/ppfenning/agent-tools) are set up together,
+This repo, [`coxswain-graphs`](https://github.com/ppfenning/coxswain-graphs), and
+[`coxswain-tools`](https://github.com/ppfenning/coxswain-tools) are set up together,
 not one at a time. The order to bring them up in, each repo's environment, the
 logins each needs, the `profile.yaml` shape just described, and how to verify
 the install are written once, in
-[`agent-tools`' `docs/getting-started.md`](https://github.com/ppfenning/agent-tools/blob/main/docs/getting-started.md) —
+[`coxswain-tools`' `docs/getting-started.md`](https://github.com/ppfenning/coxswain-tools/blob/main/docs/getting-started.md) —
 that page walks the whole three-repo setup end to end.
 
 `--skills-root` is how the loader checks that every bound skill name resolves to
@@ -241,8 +241,8 @@ This checkout doubles as a local plugin marketplace — its manifest is
 `.claude-plugin/marketplace.json`.
 
 ```sh
-claude plugin marketplace add /path/to/agent-cartridges
-claude plugin install local-skills@agent-cartridges
+claude plugin marketplace add /path/to/coxswain-cartridges
+claude plugin install local-skills@coxswain-cartridges
 ```
 
 `route` is the optional role the `local` cartridge binds to the `route-work`
