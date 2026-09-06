@@ -11,6 +11,29 @@ arbitrate, validate, and so on. It is defined once and reused by every
 run, the way a rowing course is laid out once and rowed by every crew
 that races it.
 
+## What a graph may not do
+
+A graph owns sequence. It decides which node runs next and what each one
+is asked. It writes nothing at all: no file, no branch, no pull request,
+no ledger row.
+
+Every consequence belongs to the harness instead — the worktree a build
+runs in, the checks that have to pass, the gate a write goes through, and
+the append-only ledger that records what happened.
+
+The split is what makes a new graph cheap. Write one and it inherits the
+gate, the worktree, the checks and the ledger by existing, rather than by
+remembering to call them. It also bounds what a bad graph can cost you:
+the worst it can do is ask for the wrong thing in the wrong order,
+because it has no way to touch the repository at all.
+
+Two more names finish the picture. A **cartridge** says who a run works
+for — which skills a role uses, which model a tier gets, where a write is
+allowed to land. A **runner** executes one node against a provider and
+returns what it said. Swap the runner and the same graph runs against a
+different provider; swap the cartridge and the same graph works for a
+different team.
+
 ## Phases order tickets that need it, and only those
 
 An epic is a container with one section per phase. Phases are ordered;

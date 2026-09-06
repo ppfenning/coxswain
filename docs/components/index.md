@@ -3,7 +3,9 @@
 The repositories that make up a Coxswain release, pulled in from `manifest.toml`.
 
 Three are required: without them there is no CLI and nothing to run. Three
-are optional, installed with `cox install --with <flag>`. Every component,
+are optional, installed with `cox install --with <flag>`. Six components come
+from six repositories, but they are not the same six: the desktop shell ships
+from this umbrella repository rather than one of its own. Every component,
 required or not, is tagged with the same Coxswain version at release, so
 `manifest.toml` always tells you exactly what a given install has, in
 lockstep.
