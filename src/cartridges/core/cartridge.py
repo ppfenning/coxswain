@@ -553,6 +553,12 @@ def _validate(merged: Mapping[str, Any], skill_index: Mapping[str, Sequence[Any]
                 continue
             problems.append(f"write kind '{kind}' names apply_arm '{arm}', which is not a bound role")
 
+    crew = merged.get("crew")
+    if isinstance(crew, Mapping):
+        for seat, entry in crew.items():
+            if isinstance(entry, Mapping) and "enabled" in entry and not isinstance(entry["enabled"], bool):
+                problems.append(f"seat '{seat}' sets enabled to {entry['enabled']!r}; enabled must be a bool")
+
     return problems
 
 

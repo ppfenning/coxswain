@@ -428,6 +428,27 @@ def test_the_resolved_dict_has_cast_equal_to_crew(cartridges: Path, skill_index)
     assert resolved["cast"] == resolved["crew"]
 
 
+def test_a_child_seat_inherits_enabled_from_the_parent_when_it_only_sets_other_fields(
+    cartridges: Path, skill_index
+) -> None:
+    base_config = yaml.safe_load((cartridges / "base" / "cartridge.yaml").read_text())
+    base_config["crew"] = {"nova": {"enabled": False}}
+    (cartridges / "base" / "cartridge.yaml").write_text(yaml.safe_dump(base_config), encoding="utf-8")
+    config = yaml.safe_load((cartridges / "acme" / "cartridge.yaml").read_text())
+    config["crew"] = {"nova": {"skills": []}}
+    (cartridges / "acme" / "cartridge.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+    resolved = load("acme", cartridges, skill_index=skill_index)
+    assert resolved["crew"] == {"nova": {"enabled": False, "skills": []}}
+
+
+def test_a_seat_enabled_that_is_not_a_bool_is_refused_naming_the_seat(cartridges: Path, skill_index) -> None:
+    config = yaml.safe_load((cartridges / "acme" / "cartridge.yaml").read_text())
+    config["crew"] = {"nova": {"enabled": "yes"}}
+    (cartridges / "acme" / "cartridge.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+    with pytest.raises(CartridgeError, match="seat 'nova' sets enabled"):
+        load("acme", cartridges, skill_index=skill_index)
+
+
 def test_overlay_errors_names_the_refused_key() -> None:
     assert overlay_errors({"skills": {"plan": "x"}}) == ["project layer overlay refuses key 'skills'"]
 
