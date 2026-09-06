@@ -186,8 +186,8 @@ def _frame_rects(frame_index, colors):
     )
 
 
-def sheet(theme: str) -> str:
-    """Render the whole six-frame sheet for one theme, every fill a literal hex."""
+def _frames(theme: str) -> str:
+    """The six frames side by side, each in its own group, every fill a literal hex."""
     colors = {**FIXED, **PALETTES[theme]}
     frames = []
     for i in range(FRAME_COUNT):
@@ -196,7 +196,33 @@ def sheet(theme: str) -> str:
             for x, y, w, h, fill in _frame_rects(i, colors)
         )
         frames.append(f'<g id="frame-{i + 1}" transform="translate({i * FRAME_WIDTH},0)">{rects}</g>')
-    body = "\n  ".join(frames)
+    return "\n  ".join(frames)
+
+
+def banner(theme: str) -> str:
+    """One frame's window onto the sheet, stepping through the stroke by itself.
+
+    The docs site animates the sheet with CSS. A README cannot run CSS, but an
+    SVG loaded as an image may carry its own SMIL animation, so the banner
+    slides the whole sheet left one frame at a time behind a 240x48 window.
+    Same art, same six frames, same 0.9s cycle as sprite.css.
+    """
+    steps = ";".join(f"{-i * FRAME_WIDTH} 0" for i in range(FRAME_COUNT))
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg" '
+        f'viewBox="0 0 {FRAME_WIDTH} {FRAME_HEIGHT}" shape-rendering="crispEdges">\n'
+        "  <g>\n"
+        f'    <animateTransform attributeName="transform" type="translate" values="{steps}" '
+        'calcMode="discrete" dur="0.9s" repeatCount="indefinite"/>\n'
+        f"  {_frames(theme)}\n"
+        "  </g>\n"
+        "</svg>\n"
+    )
+
+
+def sheet(theme: str) -> str:
+    """Render the whole six-frame sheet for one theme, every fill a literal hex."""
+    body = _frames(theme)
     return (
         '<svg xmlns="http://www.w3.org/2000/svg" '
         f'viewBox="0 0 {FRAME_WIDTH * FRAME_COUNT} {FRAME_HEIGHT}" shape-rendering="crispEdges">\n'
@@ -208,6 +234,7 @@ def sheet(theme: str) -> str:
 def main() -> None:
     for theme in PALETTES:
         (ASSETS / f"shell-sprite-{theme}.svg").write_text(sheet(theme))
+        (ASSETS / f"shell-banner-{theme}.svg").write_text(banner(theme))
 
 
 if __name__ == "__main__":

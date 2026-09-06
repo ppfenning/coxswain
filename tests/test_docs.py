@@ -152,6 +152,23 @@ def test_sprite_sheets_are_generated_from_docs_sprite_py():
     for theme in _sprite.PALETTES:
         committed = _sprite_path(theme).read_text()
         assert _sprite.sheet(theme) == committed, "run python docs/_sprite.py"
+        banner = (ROOT / "docs" / "assets" / f"shell-banner-{theme}.svg").read_text()
+        assert _sprite.banner(theme) == banner, "run python docs/_sprite.py"
+
+
+def test_readme_banner_is_one_frame_wide_and_animates_itself():
+    for theme in _sprite.PALETTES:
+        svg = (ROOT / "docs" / "assets" / f"shell-banner-{theme}.svg").read_text()
+        assert 'viewBox="0 0 240 48"' in svg
+        assert "animateTransform" in svg and 'calcMode="discrete"' in svg
+        assert svg.count("<g id=\"frame-") == 6
+
+
+def test_readme_shows_the_banner_for_both_themes():
+    readme = (ROOT / "README.md").read_text()
+    assert 'media="(prefers-color-scheme: dark)"' in readme
+    assert "docs/assets/shell-banner-dark.svg" in readme
+    assert "docs/assets/shell-banner-light.svg" in readme
 
 
 def test_sprite_css_respects_reduced_motion():
