@@ -9,12 +9,12 @@
 # install, part tag and part ref, is a configuration nobody tested.
 
 [coxswain]
-version = "0.2.0"
+version = "0.3.0"
 status  = "beta"
 
 [components]
-cartridges = { repo = "ppfenning/coxswain-cartridges", tag = "v0.2.0", required = true, docs = ["README.md"] }
-graphs     = { repo = "ppfenning/coxswain-graphs",     tag = "v0.2.0", required = true, docs = [
+cartridges = { repo = "ppfenning/coxswain-cartridges", tag = "v0.3.0", required = true, docs = ["README.md"] }
+graphs     = { repo = "ppfenning/coxswain-graphs",     tag = "v0.3.0", required = true, docs = [
     "README.md",
     "graphs/delivery/epic-swarm.md",
     "graphs/delivery/lifecycle-propose.md",
@@ -27,8 +27,8 @@ graphs     = { repo = "ppfenning/coxswain-graphs",     tag = "v0.2.0", required 
     "docs/RUNBOOK-TRUST.md",
     "docs/graphs/*.md",
 ] }
-tools      = { repo = "ppfenning/coxswain-tools",      tag = "v0.2.0", required = true, provides = "cox", docs = ["README.md"] }
-crew       = { repo = "ppfenning/coxswain-crew",       tag = "v0.2.0", flag = "crew", docs = ["README.md"] }
+tools      = { repo = "ppfenning/coxswain-tools",      tag = "v0.3.0", required = true, provides = "cox", docs = ["README.md"] }
+crew       = { repo = "ppfenning/coxswain-crew",       tag = "v0.3.0", flag = "crew", docs = ["README.md"] }
 
 [providers]
 claude-code = { status = "supported", profile = "providers/claude-code.yaml" }
