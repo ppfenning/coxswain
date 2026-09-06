@@ -1,0 +1,2524 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Agents pull the oars. You hold the tiller. Every stroke on the record.">
+      
+      
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../../../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>epic-swarm — specification - Coxswain</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../../../../assets/palette.css">
+    
+      <link rel="stylesheet" href="../../../../../assets/sprite.css">
+    
+    <script>__md_scope=new URL("../../../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#epic-swarm-specification" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+        <aside class="md-banner">
+          <div class="md-banner__inner md-grid md-typeset">
+            
+            
+
+<span class="cox-shell-track" aria-hidden="true"><span class="cox-shell"></span></span>
+Coxswain is in beta — versions may change between releases
+
+
+          </div>
+          
+        </aside>
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../../../../.." title="Coxswain" class="md-header__button md-logo" aria-label="Coxswain" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Coxswain
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              epic-swarm — specification
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to light" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to dark" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../../../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../../../start/" class="md-tabs__link">
+          
+  
+  
+  Start here
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../../../install/" class="md-tabs__link">
+          
+  
+  
+  Install
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../../../methodology/" class="md-tabs__link">
+          
+  
+  
+  Methodology
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../../../customize/" class="md-tabs__link">
+          
+  
+  
+  Customize
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../../" class="md-tabs__link">
+          
+  
+  
+  Components
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../../../reference/cli/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../../../releases/" class="md-tabs__link">
+          
+  
+  
+  Releases
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../../../.." title="Coxswain" class="md-nav__button md-logo" aria-label="Coxswain" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Coxswain
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Start here
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Start here
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../start/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../start/loop/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The loop
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Install
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Install
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../install/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Install
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../install/machines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Supported machines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../install/providers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Providers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Methodology
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Methodology
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../methodology/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Methodology
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../methodology/crew-and-seats/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Crew and seats
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../methodology/cartridges/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cartridges
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_4" id="__nav_4_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Graphs
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Graphs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../methodology/graphs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Graphs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../methodology/graphs/coxswain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    coxswain
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../methodology/graphs/epic-swarm/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    epic-swarm
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../methodology/graphs/lifecycle-propose/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    lifecycle-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../methodology/graphs/initiative-decompose/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    initiative-decompose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../methodology/graphs/epic-reconcile/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    epic-reconcile
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../methodology/graphs/retro-propose/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    retro-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../methodology/graphs/triage-propose/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    triage-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../methodology/review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../methodology/budgets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Budgets
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../methodology/landing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Landing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../methodology/records/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Records
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Customize
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Customize
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../customize/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Customize
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../customize/team-cartridge/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Team cartridge
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../customize/fragments/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Fragments
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../customize/skills/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Skills
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../customize/providers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Providers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../customize/policy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Policy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../customize/write-a-skill/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Write a skill
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../customize/write-a-graph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Write a graph
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Components
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Components
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Components
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../cartridges/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cartridges
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Graphs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../crew/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Crew
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../reference/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Releases
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Releases
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../releases/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Releases
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../releases/0.3.0/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0.3.0
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../releases/0.2.0/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0.2.0
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../releases/0.1.0-beta.1/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0.1.0-beta.1
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#this-is-not-a-graph-and-that-matters" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        This is not a graph, and that matters
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#roles-and-kinds-this-needs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Roles and kinds this needs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-central-claim-producing-is-not-landing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The central claim: producing is not landing
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#stacking-and-the-blast-radius-of-a-rebase" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stacking, and the blast radius of a rebase
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#two-validators-and-the-failure-the-second-one-exists-for" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Two validators, and the failure the second one exists for
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#comfort-levels-and-what-is-actually-expressible" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Comfort levels — and what is actually expressible
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#when-a-task-fails" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When a task fails
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#prerequisite-nested-invocation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Prerequisite: nested invocation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#decisions-2026-09-01" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Decisions — 2026-09-01
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-the-implementation-deviates-on" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the implementation deviates on
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+<nav class="cox-page-nav" aria-label="Page navigation">
+  
+  
+</nav>
+
+                  
+
+
+
+<h1 id="epic-swarm-specification">epic-swarm — specification</h1>
+<p>Runs a whole initiative to completion without supervision, and lands nothing.</p>
+<p><code>initiative-decompose</code> produces phases, tasks, and the edges between them.
+<code>run_phase</code> already runs one phase's unblocked tasks at once. What is missing is
+the thing above both: something that walks the phase graph, drives each phase in
+dependency order, decides when a phase is actually finished, and keeps going
+until the initiative is done or stuck.</p>
+<p>The vocabulary is the one already in the work store: <strong>initiative → phase →
+task</strong>. A task is the unit that gets a worktree and a draft PR. There is no
+fourth level and no synonym for <code>task</code>.</p>
+<h2 id="this-is-not-a-graph-and-that-matters">This is not a graph, and that matters</h2>
+<p>The contract already ruled on this, in <code>docs/GRAPH-CONTRACT.md</code>:</p>
+<blockquote>
+<p>Running a <em>phase</em> is not a graph: the shell runs <code>lifecycle-propose</code> once per
+unblocked task, concurrently. Sequence belongs to a graph; concurrency belongs
+to the I/O edge that already owns every side effect.</p>
+</blockquote>
+<p>Everything that argument says about a phase driver says the same about a swarm
+driver, only louder. This thing invokes graphs, waits on them, decides what to
+invoke next from what came back, and does it concurrently. A graph is
+<code>run(args, runner) -&gt; dict</code> — pure, replayable, no clock, no disk. A driver that
+blocks on futures is none of those things.</p>
+<p>So <code>epic-swarm</code> is <strong>a harness capability plus two roles and a write kind</strong>, not
+a fifth graph. It is specified here, beside the graphs it drives, because this is
+where a reader looks for it — but it belongs in <code>harness/</code>, next to <code>phase.py</code>,
+and it must not acquire a <code>SPEC</code> or appear in the graph registry. If it ever
+does, <code>test_portability.py</code> will start asserting purity rules against something
+that cannot satisfy them, and the honest answer will be to weaken the test.</p>
+<p>It shipped as <code>harness/epic.py</code>, and <code>run_epic</code> is the whole of it.</p>
+<p>The parts of this that <em>are</em> model calls — <code>validate_chunk</code>, <code>validate_phase</code> —
+are nodes, and nodes belong to graphs. They shipped as
+<code>graphs/delivery/phase_validate.py</code>, the <code>phase-validate</code> graph, which the driver
+invokes exactly the way it invokes <code>lifecycle-propose</code>. See <em>Decision 3</em>.</p>
+<h2 id="roles-and-kinds-this-needs">Roles and kinds this needs</h2>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Kind</th>
+<th>Status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>validate_chunk</code></td>
+<td>role</td>
+<td><strong>shipped, optional</strong></td>
+<td>did this task actually satisfy its own description</td>
+</tr>
+<tr>
+<td><code>validate_phase</code></td>
+<td>role</td>
+<td><strong>shipped, optional</strong></td>
+<td>do these tasks, together, accomplish the phase</td>
+</tr>
+<tr>
+<td><code>stack_rebase</code></td>
+<td>write kind</td>
+<td><strong>shipped</strong></td>
+<td>rewriting a branch other work is stacked on</td>
+</tr>
+</tbody>
+</table>
+<p>All three landed in the base cartridge. The two roles are additions to
+<code>roles.optional</code>, which is ordinary. <code>stack_rebase</code> is an addition to
+<code>write_kinds</code>, also ordinary. What was <em>not</em> ordinary is discussed under
+<em>Comfort levels</em>, below, and it is the finding that most affected this design.</p>
+<p><strong>Args:</strong> <code>run_id</code>, <code>date</code>, <code>cartridge</code> (resolved, required, no fallback),
+<code>initiative</code> (the work store's own output, read by the CLI and passed in — a
+driver that read the store itself would put the filesystem back inside the thing
+under test), <code>repo</code> (required: stacking is real branches in a real repository,
+and there is no honest way to fake that), <code>max_parallel</code>, and the harness's usual
+<code>ledger_path</code> / <code>runs_dir</code> / <code>worktree_root</code> / <code>provider_profile</code> / <code>assume</code>.</p>
+<p>There is no <code>comfort</code> argument. A comfort level is a cartridge — <code>local-comfort0</code>
+and <code>local-comfort1</code> in <code>agent-cartridges</code> — and a flag that could override the
+resolved ramps would be a second source of truth about what a team has earned.</p>
+<p><strong>Returns:</strong> <code>{run_id, date, initiative, phases[], tasks[], quarantined[],
+proposals[], totals}</code> — where <code>totals</code> reports <code>phases_complete</code>,
+<code>phases_partial</code>, <code>tasks_quarantined</code>, and <code>stacks_rebased</code>.</p>
+<h2 id="the-central-claim-producing-is-not-landing">The central claim: producing is not landing</h2>
+<p>An unattended swarm and an autonomy policy that gates every write look like they
+cannot both be true. They can, because they are about different acts.</p>
+<p><strong>The swarm runs to completion producing draft PRs.</strong> A draft PR has no effect
+until a human opens it — that is why <code>draft_pr_create</code> carries <code>risk: low</code> in the
+base taxonomy while <code>merge_main</code> carries <code>never</code>. Producing work is cheap to undo:
+the artifact is a branch and a draft, and the cost of a wrong one is a branch
+nobody reads. Landing work is not, and landing is where the policy lives.</p>
+<p>So the terminal state of an unsupervised run is a stack of draft PRs across every
+phase, one per task, with nothing merged, nothing marked ready, and no row in any
+system of record that a human did not approve. The swarm never <em>needs</em> autonomy
+to finish. It needs autonomy only to save you clicks afterwards, which is exactly
+the thing that should have to be earned.</p>
+<p>This is the whole argument for why the swarm may default to running unattended.
+If a reviewer of this spec disagrees with one paragraph, it should be this one.</p>
+<h2 id="stacking-and-the-blast-radius-of-a-rebase">Stacking, and the blast radius of a rebase</h2>
+<p>Tasks within a phase are independent <strong>by construction</strong> — that independence is
+what <code>initiative-decompose</code>'s adversary exists to establish, and it is what makes
+them parallelisable at all. So every task in a phase branches from the same base
+and its draft PR merges independently. Tasks do not stack on each other.</p>
+<p>Only <strong>phase-to-phase</strong> relationships stack. A phase whose dependencies are
+satisfied takes its base ref from the parent phase's branch head rather than from
+the default branch. Phases with no parent branch from the default branch.</p>
+<p>This is a deliberate constraint, not a simplification. If tasks stacked on tasks,
+a change to any one of them would force a rebase of everything downstream inside
+the phase — N rebases, N possible conflicts, unattended and concurrent, which is
+how stacked-PR workflows already fail for humans. Restricting stacks to phase
+boundaries bounds the blast radius to exactly the places a human is most likely
+to be looking anyway.</p>
+<p><strong>A rebase is a write, so it is a kind.</strong> <code>stack_rebase</code> rewrites a branch that
+other work depends on; it can silently discard a commit, and it is not obviously
+reversible from the outside. Governing it through the same ramp as everything
+else costs nothing and buys the ability to say "rebase automatically, but only
+once you have done fifty of them cleanly."</p>
+<h2 id="two-validators-and-the-failure-the-second-one-exists-for">Two validators, and the failure the second one exists for</h2>
+<p><code>validate_chunk</code> asks whether one task satisfies its own description. It is
+cheap, it runs per task, and it is largely a restatement of the <code>done_criteria</code>
+the cartridge already carries.</p>
+<p><code>validate_phase</code> is the one that earns its place. It reads <strong>the phase's original
+goal</strong> — not the task list, the goal — and asks whether what now exists
+accomplishes it. Five tasks that each went green and do not add up is a real
+failure mode, and it is invisible to every check below it: each task passed its
+own review, each draft PR is defensible, and the phase is nonetheless not done. A
+<code>validate_phase</code> that only confirms every task finished is ceremony, and should
+be left unbound instead.</p>
+<p>Both are optional roles. A team that binds neither gets a swarm that reports
+task completion and makes no claim about phase completion, which is honest.
+Binding either one to a human is how a comfort level becomes a gate.</p>
+<h2 id="comfort-levels-and-what-is-actually-expressible">Comfort levels — and what is actually expressible</h2>
+<p>The intent was that comfort levels are named bundles of existing <code>write_kinds</code>
+ramps plus <code>caps</code> — presets, not new machinery. <strong>That is true for two of the
+four levels and false for the other two</strong>, and the reason is worth stating
+plainly because it is a governance question, not a coding one.</p>
+<p><code>cartridges/base/cartridge.yaml</code> says: <em>"A team may TIGHTEN a risk or ramp. A
+team may never loosen one."</em> Against the shipped taxonomy:</p>
+<table>
+<thead>
+<tr>
+<th>Level</th>
+<th>Intent</th>
+<th>Expressible as a preset?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>everything proposes</td>
+<td><strong>Yes.</strong> Tighten every relevant kind to <code>gated</code>. Ships as <code>local-comfort0</code></td>
+</tr>
+<tr>
+<td>1</td>
+<td>draft PRs auto-created</td>
+<td><strong>Yes, once earned.</strong> <code>draft_pr_create</code> is already <code>ramp: eligible</code>; it auto-applies after <code>graduation_n</code> clean outcomes, not on being switched on. Ships as <code>local-comfort1</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td>graduated kinds may mark ready</td>
+<td><strong>No, still.</strong> <code>pr_ready_flip</code> is <code>ramp: gated</code> in base. A team cannot loosen it, and nothing here justifies loosening it for everyone. Unshipped</td>
+</tr>
+<tr>
+<td>3</td>
+<td>graduated kinds merge within a phase</td>
+<td><strong>Yes, now</strong> — by narrowing the kind rather than loosening a ramp. See below</td>
+</tr>
+</tbody>
+</table>
+<p>Level 3 changed, and the way it changed is the point. The old row said <code>merge</code> is
+<code>ramp: never</code> and a team cannot loosen it, which was true and was the wrong
+question. One <code>merge</code> kind priced two unlike acts identically: joining a task
+branch to the phase branch above it, and putting code on the branch everyone else
+builds from. Only the second is irreversible in the way that argues for a
+permanent human. So <code>merge</code> split into <code>merge_stack</code> (<code>eligible</code>) and <code>merge_main</code>
+(<code>never</code>), and <em>within-initiative</em> stack merges became expressible without anyone
+loosening anything — <code>merge_main</code> inherited the old kind's posture, and
+<code>merge_stack</code> is a new, narrower act that never had a kind of its own.</p>
+<p>A team that does not want stack merges earnable tightens <code>merge_stack</code> to <code>gated</code>
+in its own cartridge, which is exactly what the comfort-1 bundle does. The
+one-way tighten rule is what makes that toggle legal, and it is why the split is
+not a loosening dressed up as a refactor.</p>
+<p>Level 1 carries a subtlety that reads as a bug if it surprises you: a preset
+cannot <em>grant</em> autonomy, only permit it to be earned. <code>autonomy_policy</code> returns
+<code>AUTO</code> for an <code>eligible</code> kind only after the streak clears the bar, and
+<code>graduation_n</code> lives in the cartridge's <code>policy</code> block, globally, not per kind.
+Setting <code>graduation_n: 0</code> to make level 1 immediate would make <em>every</em> eligible
+kind immediate. There is no per-kind graduation override, and adding one would be
+a change to the trust model rather than a preset.</p>
+<p>Level 2 still requires editing the base taxonomy — loosening <code>pr_ready_flip</code> for
+everyone — which the base forbids teams from doing and which nothing here
+justifies doing on their behalf. <strong>Levels 0 and 1 shipped as bundles; level 3
+became expressible through the split; level 2 remains unshipped.</strong> The swarm's
+value never depended on 2: clicking "ready" on work you were going to read anyway
+is not the expensive part of the job.</p>
+<h2 id="when-a-task-fails">When a task fails</h2>
+<p><code>on_task_failure</code> is a cartridge setting: <code>continue_independent</code> (default),
+<code>halt_phase</code>, or <code>quarantine</code>.</p>
+<p>The default is not a new behaviour — <code>harness/phase.py</code> already collects a failed
+task into <code>failures</code> and lets the rest of the phase finish, on the stated grounds
+that "one task failing must not take the phase with it." This spec names that
+policy and adds the ability to override it.</p>
+<p>Halting discards the parallelism the decomposition just bought, so it is the
+wrong default; it exists for phases where a partial result is worse than none.
+<code>quarantine</code> sets the failed task aside with its diagnosis and continues, which
+is <code>continue_independent</code> plus a place to look afterwards.</p>
+<p>A phase can therefore end <strong>partially complete</strong>, and <code>validate_phase</code> must have
+an opinion about that rather than treating a quarantined task as absent. A phase
+that is 4-of-5 done is a different fact from a phase that is done.</p>
+<pre class="mermaid"><code>flowchart TB
+    INIT["initiative, from initiative-decompose&lt;br/&gt;phases, tasks, dependency edges"]
+    INIT --&gt; SELECT
+
+    subgraph DRIVER["the swarm driver: an I/O edge, not a graph"]
+        SELECT{"phase ready?&lt;br/&gt;every dependency phase validated"}
+        BASE["base ref: parent phase branch,&lt;br/&gt;or the default branch when unparented"]
+        FANOUT["run_phase: lifecycle-propose per unblocked task,&lt;br/&gt;each in its own worktree"]
+        VCHUNK["validate_chunk&lt;br/&gt;role, once per task"]
+        VPHASE["validate_phase&lt;br/&gt;role, reads the phase goal"]
+        QUAR["quarantine&lt;br/&gt;per on_task_failure"]
+    end
+
+    SELECT -- "blocked" --&gt; WAIT(["wait for a dependency"])
+    SELECT -- "ready" --&gt; BASE
+    BASE --&gt; FANOUT
+    FANOUT -- "one draft PR per task" --&gt; VCHUNK
+    VCHUNK -- "task failed" --&gt; QUAR
+    VCHUNK -- "task satisfied" --&gt; VPHASE
+    QUAR --&gt; VPHASE
+    VPHASE -- "goal unmet, or partial" --&gt; SELECT
+    VPHASE -- "goal met" --&gt; DONE["unblock dependent phases"]
+    DONE --&gt; SELECT
+
+    FANOUT -. "proposals" .-&gt; POLICY{"autonomy_policy&lt;br/&gt;has this kind graduated?"}
+    POLICY -- "propose" --&gt; GATE{{"human gate"}}
+    POLICY -- "auto, graduated kinds only" --&gt; ARM["apply arm, a role"]
+
+    ARM -. "never reaches" .-&gt; MERGE["merge_main"]
+
+    style MERGE stroke-dasharray: 5 5</code></pre>
+<p>The dashed edge carries the same weight here as it does in <code>lifecycle-propose</code>,
+and the split is what made it precise rather than sweeping: no path through this
+driver reaches the default branch, at any comfort level, on any streak. Stack
+merges inside an initiative do happen, once <code>merge_stack</code> has been decided or
+earned. The swarm's output is branches and drafts, and the branch everyone else
+builds from is not one of them.</p>
+<h2 id="prerequisite-nested-invocation">Prerequisite: nested invocation</h2>
+<p>This needed one primitive the harness did not have — <strong>a graph invoking graphs
+and waiting on the results</strong>, with the invoked run's proposals flowing into the
+same policy, gate and ledger as everything else rather than into a side channel.
+It shipped as <code>harness/invoke.py</code>, and <code>run_phase</code> is now a thin wrapper over it.</p>
+<p>It is shared with two other pieces of deferred work: the bounded fix loop in
+<code>lifecycle-propose</code>, and the coxswain dispatcher. Building it once was the
+point. What this spec needed from it, specifically:</p>
+<ul>
+<li>invoke a named graph from the registry with constructed args</li>
+<li>bound concurrency, which <code>run_phase</code> already does</li>
+<li>collect proposals across invocations under <strong>one</strong> <code>run_id</code>, so the manifest
+  hashes one cartridge and <code>_require_single_scope</code> stays satisfiable</li>
+<li>surface a child's <code>ContractViolation</code> as a task failure, not a swarm failure</li>
+</ul>
+<p>All four hold. The driver invokes <code>lifecycle</code> and <code>validate</code> by registry name,
+bounds concurrency at <code>max_parallel</code>, records one manifest per phase under
+<code>run_id:phase</code> so the manifest hashes one cartridge, and takes a child's
+<code>ContractViolation</code> or <code>RunnerError</code> as a quarantined task.</p>
+<h2 id="decisions-2026-09-01">Decisions — 2026-09-01</h2>
+<p>The three open questions, closed.</p>
+<p><strong>1. Are phase boundaries ever ungated?</strong> <em>Decided: they are gated by
+<code>merge_stack</code>'s ramp, which is the same answer as "no" for every team that has
+not measured one.</em> A phase boundary is the last place a human can redirect the
+work cheaply — after it, the next phase's tasks branch from this phase's head and
+a change means rebasing them all. Since the split, that boundary has a kind of its
+own: <code>merge_stack</code> is <code>eligible</code>, so it gates until it is earned and can then be
+earned through the ordinary ramp, and a team that wants it permanently human pins
+it <code>gated</code> under the one-way tighten rule. The comfort-1 bundle does exactly that.
+<code>merge_main</code> stays <code>never</code>, at every comfort level and on every streak, and no
+path through this driver emits or executes it.</p>
+<p>The driver makes that gate load-bearing rather than decorative: <strong>a phase is
+complete only when its merges actually happened.</strong> A met goal on work that never
+reached the phase branch is a phase whose dependents would branch from nothing.</p>
+<p><strong>2. Can a partially-complete phase unblock its dependents?</strong> <em>Decided: blanket
+no.</em> A phase unblocks its dependents only when <code>validate_phase</code> says the goal is
+met. Blanket yes turns one quarantined task into a phase of work built on ground
+that is not there. The refinement — unblock when the quarantined tasks are not on
+the dependent path — asks <code>validate_phase</code> to reason about <em>which</em> task failed
+rather than how many, which is a heavier ask of that role than anything else here.
+So the validator <em>reports</em> it, as <code>quarantine_blocks_dependents</code>, and nothing acts
+on it yet. The field exists so the judgment can be measured before it is trusted,
+which is the same shape as every other ramp in this system.</p>
+<p><strong>3. Where do the validators live?</strong> <em>Decided: in a graph.</em> <code>phase-validate</code> is a
+two-node graph — <code>validate_chunk</code> per task, <code>validate_phase</code> once — and the driver
+invokes it through <code>invoke_graphs</code> like anything else. The ceremony buys the thing
+that matters: the nodes stay under the portability suite, the cartridge is
+required with no fallback, and the run is replayable. A driver calling the runner
+directly would have put the two judgments the phase boundary rests on outside
+every rule the rest of the system is held to.</p>
+<p>A budget stop (<code>error_max_budget_usd</code>) is a shape signal, not a ceiling to
+raise: the answer is to split the task into one file and one behaviour, on
+the order of two hundred lines, not to buy the build a bigger number. When a
+<code>lifecycle-propose</code> fix-loop retry hits it, the loop keeps the last reviewed
+build on the record rather than lose it to the exception, and marks
+<code>fix_loop.stopped == "budget"</code>. That record is not resumed automatically —
+a budget-stopped result's patch is kept on the record for whoever picks the
+task up next, but <code>harness/resume.py</code>'s <code>reusable</code> requires an approved
+<code>draft_pr_create</code> proposal and no <code>fix_loop.stopped</code>, and a budget-stopped
+result has neither, so the task still runs again from scratch on the next
+pass rather than being resumed as though it were approved. What it buys is
+the quarantine reason and the saved patch being visible to whoever picks the
+task up, in place of a run that recorded nothing at all.</p>
+<h2 id="what-the-implementation-deviates-on">What the implementation deviates on</h2>
+<p>Four places where the shipped driver is narrower or differently shaped than the
+text above, each recorded rather than quietly absorbed.</p>
+<p><strong>Validators run between the fan-out and the merges.</strong> The phase verdict judges
+the union of what the tasks produced, on their own branches, before any of it is
+joined to the phase branch. It is not a re-read of the merged branch. The verdict
+is therefore about work that exists and is checked, not about a state the driver
+already committed to — and a phase that does not add up is caught while nothing
+has moved.</p>
+<p><strong>A v1 stack supports one parent phase.</strong> A phase with two parent phases is not
+representable as a single git stack: one stack has one base ref. Such a phase is
+marked blocked with that diagnosis and does not run, rather than the driver
+picking a parent and silently building on half the ground.</p>
+<p><strong>Per-phase manifests, under <code>run_id:phase</code>.</strong> One phase, one cartridge, one
+scope, so <code>_require_single_scope</code> stays satisfiable and a phase's ledger rows are
+attributable to the phase that earned them.</p>
+<p><strong>A draft is a local branch until a forge arm exists.</strong> After the gate, the driver
+creates <code>epic/&lt;initiative&gt;/&lt;phase&gt;--&lt;task&gt;</code> from the scratch branch the work was
+built on. The <code>--</code> is not cosmetic: git cannot hold both <code>refs/heads/epic/i/p1</code>
+and <code>refs/heads/epic/i/p1/t1</code>, because one is a file where the other needs a
+directory. Nothing is pushed and nothing is opened, which is the same blast radius
+the taxonomy prices <code>draft_pr_create</code> at.</p>
+<p>One more, smaller: the work store's phases are bare directory names, so a phase
+goal is reconstructed from the phase name and the initiative's own prose when the
+store carries nothing better. Decompose-produced initiatives should eventually
+land per-phase goals in the store; <code>validate_phase</code> is only as good as the goal it
+is handed, and a reconstructed one is the weakest input in this design.</p>
+<p><strong>Deferred from v0:</strong> the bounded fix loop (a task that fails validation is
+quarantined, not retried), cross-initiative scheduling, cost and token budgets
+across a whole swarm (<code>policy.budgets</code> bounds a run, not a swarm), acting on
+<code>quarantine_blocks_dependents</code>, and comfort level 2.</p>
+<p><strong>Status:</strong> implemented. <code>harness/epic.py</code> is the driver — no <code>SPEC</code>, not in the
+registry, and it must stay that way. <code>graphs/delivery/phase_validate.py</code> is the
+<code>phase-validate</code> graph it invokes for the two judgments. <code>validate_chunk</code>,
+<code>validate_phase</code>, <code>merge_stack</code> and <code>stack_rebase</code> all exist in the base
+cartridge, so this resolves.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../../../../..", "features": ["navigation.tabs", "navigation.footer", "search.suggest"], "search": "../../../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"provider": "mike"}}</script>
+    
+    
+      <script src="../../../../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
