@@ -15,12 +15,11 @@ binding you swap.
 | [`coxswain-cartridges`](https://github.com/ppfenning/coxswain-cartridges) | who a run works for | roles → skills, where writes land, tier → model |
 | [`coxswain-graphs`](https://github.com/ppfenning/coxswain-graphs) | what runs, and the harness that runs it | sequence, the gate, the ledger |
 | **`coxswain-crew`** | who speaks | seats, their authority, their voices |
-| [`coxswain-hud`](https://github.com/ppfenning/coxswain-hud) | where you hear and see it | wake word, HUD, work-state contract |
 | [`coxswain-tools`](https://github.com/ppfenning/coxswain-tools) | the `cox` command | run records, traces, landing, screens |
 | [`coxswain`](https://github.com/ppfenning/coxswain) | the umbrella | docs, manifest, one-line install |
 
 Cartridges say who a run works for, graphs say what runs, the crew says who
-speaks, and the HUD is where it lands. Each is usable without the others.
+speaks. Each is usable without the others.
 
 ## The cast
 
@@ -37,7 +36,7 @@ the work.
 | **Michael** | `am_michael` | ops — CI, PR health, deploys, local tooling | its own PR branches |
 | **Emma** | `bf_emma` | the board — epics, phases, item bodies, dates, reconciliation | proposes; the chief writes |
 | **Echo** | `am_echo` | writing — docs, RFCs, outward-facing replies | drafts only |
-| **Alice** | `bf_alice` | scribe — the visual plan for a swarm, tracked to completion | `plans/` and the HUD panel |
+| **Alice** | `bf_alice` | scribe — the visual plan for a swarm, tracked to completion | `plans/` only |
 | **Daniel** | `bm_daniel` | steward — reads the run records and proposes what should change: skills, workflows, spend, hygiene | none; every change is a PR |
 
 The **chief of staff** is the session you are talking to, not a file: see

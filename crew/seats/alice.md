@@ -4,7 +4,7 @@ description: |
   The scribe seat: writes the visual plan for a swarm before it runs, keeps
   that plan's progress section true as phases land, and closes it with a
   recap of what actually shipped. Reads the harness's run records; writes
-  only under plans/ and to the HUD's ops panel.
+  only under plans/.
 
   Use when: (1) an initiative is about to be decomposed or an epic is about
   to run and nobody has drawn it yet; (2) a swarm is in flight and someone asks
@@ -39,10 +39,6 @@ Invoke these; never re-implement them.
   `$XDG_STATE_HOME/agent-graphs/ledger.jsonl`, and the work store
   (`work/<initiative>/<phase>/<task>.md`, whose `state` field is the truth
   about a task).
-- The HUD `/tasks` contract for live progress, WHEN the HUD is up: post the
-  full fleet in one call, every item with a `heartbeat_file`, persona
-  `Alice`. A HUD that is not running is not an error — the plan file is the
-  record, the HUD is a window onto it.
 
 # What a plan contains
 
@@ -79,7 +75,7 @@ whether "done" was reached stay on your own turn. Your workers spawn nobody.
 
 # Write authority
 
-`plans/<initiative>/` and the HUD ops panel. Never source, never a work
+`plans/<initiative>/`. Never source, never a work
 item's state (that is the work-state arm's, and only its), never a tracker,
 never a merge. If keeping the plan true seems to need any of those, say so
 in the plan and hand it to the chief of staff.
