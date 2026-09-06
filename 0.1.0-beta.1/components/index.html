@@ -1722,62 +1722,6 @@ Coxswain is in beta — versions may change between releases
 
               
             
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="hud/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    HUD
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="desktop/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Desktop
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
           </ul>
         </nav>
       
@@ -2029,10 +1973,9 @@ Coxswain is in beta — versions may change between releases
 
 <h1 id="components">Components</h1>
 <p>The repositories that make up a Coxswain release, pulled in from <code>manifest.toml</code>.</p>
-<p>Three are required: without them there is no CLI and nothing to run. Three
-are optional, installed with <code>cox install --with &lt;flag&gt;</code>. Six components come
-from six repositories, but they are not the same six: the desktop shell ships
-from this umbrella repository rather than one of its own. Every component,
+<p>Three are required: without them there is no CLI and nothing to run. One is
+optional, installed with <code>cox install --with crew</code>. Each lives in its own
+repository, tagged with the same Coxswain version at release. Every component,
 required or not, is tagged with the same Coxswain version at release, so
 <code>manifest.toml</code> always tells you exactly what a given install has, in
 lockstep.</p>
@@ -2069,18 +2012,6 @@ lockstep.</p>
 <td><a href="https://github.com/ppfenning/coxswain-crew">ppfenning/coxswain-crew</a></td>
 <td>flag: <code>crew</code></td>
 <td>The agent seats that plan, build, review, and validate.</td>
-</tr>
-<tr>
-<td><a href="hud/">HUD</a></td>
-<td><a href="https://github.com/ppfenning/coxswain-hud">ppfenning/coxswain-hud</a></td>
-<td>flag: <code>hud</code></td>
-<td>A live view of in-flight runs and the docket.</td>
-</tr>
-<tr>
-<td><a href="desktop/">Desktop</a></td>
-<td>this repository's <code>desktop/</code></td>
-<td>flag: <code>desktop</code></td>
-<td>A desktop shell around the HUD.</td>
 </tr>
 </tbody>
 </table>
