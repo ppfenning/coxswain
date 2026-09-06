@@ -100,6 +100,7 @@ __all__ = ["CartridgeError", "load"]
 # A team may move a value toward the strict end of these orderings, never back.
 RISK_ORDER: Mapping[str, int] = {"low": 0, "medium": 1, "high": 2}
 RAMP_ORDER: Mapping[str, int] = {"eligible": 0, "deferred": 1, "gated": 2, "never": 3}
+GATE_ORDER: Mapping[str, int] = {"ticket": 0, "phase": 1, "epic": 2, "full": 3}
 
 # apply_arm usually names a role, but two values are literal sinks rather than
 # agent roles: the shell applies it itself, or it goes out as a pull request.
@@ -247,6 +248,18 @@ def _loosenings(parent_kinds: Mapping[str, Any], child_kinds: Mapping[str, Any],
     return problems
 
 
+def gate_loosening(parent: str, child: str, label: str) -> str | None:
+    """Tighten-only: `child` may move `policy.gate` toward `ticket`, never toward `full`."""
+    if child not in GATE_ORDER:
+        return f"'{label}' sets policy.gate to unknown value '{child}'; must be one of {', '.join(GATE_ORDER)}"
+    if parent in GATE_ORDER and GATE_ORDER[child] > GATE_ORDER[parent]:
+        return (
+            f"'{label}' loosens policy.gate from '{parent}' to '{child}'; "
+            "a team may tighten what the base declared, never loosen it"
+        )
+    return None
+
+
 def _is_plain_list(value: Any) -> bool:
     return isinstance(value, Sequence) and not isinstance(value, (str, bytes))
 
@@ -389,11 +402,21 @@ def _fold_fragments(
         label, frag = fragment
         frag_kinds = frag.get("write_kinds") or {}
         authority_kinds = current_authority.get("write_kinds") or {}
-        found = (
-            _loosenings(authority_kinds, frag_kinds, label)
-            if isinstance(frag_kinds, Mapping) and isinstance(authority_kinds, Mapping)
-            else []
+        frag_gate = _as_mapping(frag.get("policy")).get("gate")
+        authority_gate = _as_mapping(current_authority.get("policy")).get("gate")
+        gate_problem = (
+            gate_loosening(authority_gate, frag_gate, label)
+            if frag_gate is not None and authority_gate is not None
+            else None
         )
+        found = [
+            *(
+                _loosenings(authority_kinds, frag_kinds, label)
+                if isinstance(frag_kinds, Mapping) and isinstance(authority_kinds, Mapping)
+                else []
+            ),
+            *([gate_problem] if gate_problem else []),
+        ]
         next_folded = _merge(folded, frag)
         return next_folded, next_folded, [*problems, *found]
 
@@ -438,6 +461,12 @@ def _walk(
         parent_kinds = merged.get("write_kinds") or {}
         if isinstance(child_kinds, Mapping) and isinstance(parent_kinds, Mapping):
             problems.extend(_loosenings(parent_kinds, child_kinds, name))
+        child_gate = _as_mapping(level.get("policy")).get("gate")
+        parent_gate = _as_mapping(merged.get("policy")).get("gate")
+        if child_gate is not None and parent_gate is not None:
+            gate_problem = gate_loosening(parent_gate, child_gate, name)
+            if gate_problem:
+                problems.append(gate_problem)
         layer_authority = _merge(merged, level)
         entries.append((name, layer_authority))
         current = layer_authority
@@ -509,6 +538,10 @@ def _validate(merged: Mapping[str, Any], skill_index: Mapping[str, Sequence[Any]
     for entry in merged.get("context", []):
         if not Path(entry).is_file():
             problems.append(f"context pack does not exist: {entry}")
+
+    gate = _as_mapping(merged.get("policy")).get("gate")
+    if gate is not None and gate not in GATE_ORDER:
+        problems.append(f"policy.gate is set to unknown value '{gate}'; must be one of {', '.join(GATE_ORDER)}")
 
     write_kinds = merged.get("write_kinds") or {}
     if isinstance(write_kinds, Mapping):

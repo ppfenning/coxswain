@@ -161,6 +161,12 @@ policy:
     tier1_max_changed_lines: 150
     tier1_max_modules: 1
     tier2_surfaces: [schema, migration, deletion, auth, infrastructure, cross_repo, production_write_path]
+  # Four levels, ordered ticket < phase < epic < full by how much they let
+  # through: ticket asks before each ticket moves on, phase asks once a
+  # phase's tickets all complete, epic asks once every phase completes, and
+  # full merges all of it autonomously. Default is ticket, the safest
+  # rather than the fastest.
+  gate: ticket
   plan_competition:
     min_tier: 1                  # the alternative plan, the arbiter and the plan attacker run only when the task's
                                  # pre-build tier (surfaces and patterns; no change facts exist yet) is at least this;

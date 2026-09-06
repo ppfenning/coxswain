@@ -15,6 +15,7 @@ from core.cartridge import (
     _fold_fragments,
     _review_tier_problems,
     apply_overlay,
+    gate_loosening,
     layers,
     load,
     overlay_errors,
@@ -121,6 +122,31 @@ def test_fold_fragments_reports_one_loosening_named_by_fragment_label() -> None:
     assert len(problems) == 1, "each illegal loosen is reported exactly once"
     assert "20-loosen.yaml" in problems[0]
     assert "loosens merge.risk from 'high' to 'low'" in problems[0]
+
+
+def test_gate_loosening_allows_tightening_toward_ticket() -> None:
+    assert gate_loosening("phase", "ticket", "acme") is None
+
+
+def test_gate_loosening_refuses_loosening_toward_full_by_name() -> None:
+    problem = gate_loosening("ticket", "phase", "acme")
+    assert problem is not None
+    assert "acme" in problem and "ticket" in problem and "phase" in problem
+
+
+def test_gate_loosening_refuses_an_unknown_level_naming_the_four_allowed() -> None:
+    problem = gate_loosening("ticket", "urgent", "acme")
+    assert problem is not None
+    assert "urgent" in problem
+    assert "ticket, phase, epic, full" in problem
+
+
+def test_gate_absent_in_a_fragment_inherits_the_authoritys() -> None:
+    layer = {"policy": {"gate": "phase"}}
+    fragments = [("10-noop.yaml", {"team": "acme"})]
+    folded, problems = _fold_fragments(layer, fragments, layer)
+    assert problems == []
+    assert folded["policy"]["gate"] == "phase"
 
 
 def test_a_fragment_overrides_a_scalar(cartridges: Path, skill_index) -> None:
