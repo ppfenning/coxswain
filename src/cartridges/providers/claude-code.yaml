@@ -61,11 +61,20 @@ role_budget_usd:
 tier_overrides:
   scope_epic: cheap
 
+# Where the deep tier actually pays. Measured over 2026-09-05/06, about 75
+# runs: the arbiter was right nearly every time it overturned a review — the
+# orphan flag that fired on every run, a row ordering duplicated between the
+# renderer and its cursor, PR citations reported as drift when `gh` was never
+# asked, a decompose that silently dropped the tasks it could not resolve.
+# The two reviewers that feed it were not the scarce part: they find and state
+# the candidate defects, and one arbitration call decides which one carries.
+# So the reviewers run standard and the arbiter stays deep — one deep call per
+# attempt instead of three, for the judgment that was demonstrably load-bearing.
 defaults:
   plan:            standard
   build:           standard
-  review_charter:  deep
-  review_adversary: deep
+  review_charter:  standard
+  review_adversary: standard
   arbitrate:       deep
   triage_classify: cheap
   evidence_verify: deep
