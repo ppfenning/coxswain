@@ -1,4 +1,4 @@
-# agent-cast
+# coxswain-crew
 
 A standing cast of named agent **seats** — who does what, what each may touch,
 and how each reports — with no employer inside any of them.
@@ -8,17 +8,19 @@ that board, those conventions. Then the team changes, or you do, and the
 roster is worthless. Here the seat is the durable part and the employer is a
 binding you swap.
 
-## The four repositories
+## The six repositories
 
 | Repository | Owns | The sentence |
 |---|---|---|
-| [`agent-cartridges`](https://github.com/ppfenning/agent-cartridges) | who a run works for | roles → skills, where writes land, tier → model |
-| [`agent-graphs`](https://github.com/ppfenning/agent-graphs) | what runs, and the harness that runs it | sequence, the gate, the ledger |
-| **`agent-cast`** | who speaks | seats, their authority, their voices |
-| [`agent-voice-hud`](https://github.com/ppfenning/agent-voice-hud) | where you hear and see it | wake word, HUD, work-state contract |
+| [`coxswain-cartridges`](https://github.com/ppfenning/coxswain-cartridges) | who a run works for | roles → skills, where writes land, tier → model |
+| [`coxswain-graphs`](https://github.com/ppfenning/coxswain-graphs) | what runs, and the harness that runs it | sequence, the gate, the ledger |
+| **`coxswain-crew`** | who speaks | seats, their authority, their voices |
+| [`coxswain-hud`](https://github.com/ppfenning/coxswain-hud) | where you hear and see it | wake word, HUD, work-state contract |
+| [`coxswain-tools`](https://github.com/ppfenning/coxswain-tools) | the `cox` command | run records, traces, landing, screens |
+| [`coxswain`](https://github.com/ppfenning/coxswain) | the umbrella | docs, manifest, one-line install |
 
-Cartridges say who a run works for, graphs say what runs, cast says who speaks,
-agent-voice-hud is where it lands. Each is usable without the others.
+Cartridges say who a run works for, graphs say what runs, the crew says who
+speaks, and the HUD is where it lands. Each is usable without the others.
 
 ## The cast
 
@@ -49,9 +51,9 @@ stays human.
 ## Install
 
 ```bash
-git clone https://github.com/ppfenning/agent-cast ~/repos/agent-cast
-~/repos/agent-cast/install.sh            # symlinks seats into ~/.claude/agents
-~/repos/agent-cast/install.sh --check    # what is installed, and from where
+git clone https://github.com/ppfenning/coxswain-crew ~/repos/coxswain-crew
+~/repos/coxswain-crew/install.sh            # symlinks seats into ~/.claude/agents
+~/repos/coxswain-crew/install.sh --check    # what is installed, and from where
 ```
 
 Symlinks, not copies, so editing a seat here changes what every session loads.
@@ -61,7 +63,7 @@ symlink into this repository.
 ## Binding a seat to your team
 
 A seat names roles; a cartridge says which skills fill them. Add a `cast:`
-block to your team cartridge in `agent-cartridges`:
+block to your team cartridge in `coxswain-cartridges`:
 
 ```yaml
 cast:
