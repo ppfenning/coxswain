@@ -20,14 +20,24 @@ before what it depends on exists.
 - **Phases are checkpoints, not categories.** A phase boundary is where a
   human could stop the initiative and still hold something coherent. Do not
   use phases to group similar work — that is what titles are for.
+- **Every phase states one goal line.** The phase validator judges the
+  phase's work against that line, so it names the outcome, not the tasks.
 - **Tasks are one-sitting sized.** Each task's `body` should let a builder
   start without re-reading the initiative: what to do, what done looks like,
   what is out of bounds. A task needing its own decomposition was scoped too
   big.
-- **`surfaces` is the risk flag.** Name what the task touches (schema,
-  migration, auth, production write path...) in the terms the team's review
-  policy uses — that field decides how hard the work is reviewed later. An
-  empty surfaces list on a dangerous task under-reviews it.
+- **A task's tests ride with its code.** Never split tests into a task of
+  their own — a separate tests task doubles the reviews and lands code
+  without its evidence.
+- **`surfaces` are paths, not prose.** Each entry is a file path in the
+  checkout — one that already exists, or one marked `(new)` under a
+  directory that already exists — never a description of an area. That
+  field decides how hard the work is reviewed later; an empty surfaces list
+  on a dangerous task under-reviews it.
+- **A title is plain text.** A backtick in YAML frontmatter breaks the file,
+  so titles carry none.
+- **A task whose surfaces live in another repository is that repository's
+  task.** Link it with `blocked_on` instead of folding its work in here.
 - **Ids are stable slugs.** They become filenames and dependency references;
   rename one later and every edge naming it dangles.
 - **Tasks in one phase never share a file.** Every task names the files it
