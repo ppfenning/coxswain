@@ -168,6 +168,11 @@ policy:
   dispatch:
     max_in_flight: 3             # how many harness runs the dispatcher may have alive at once;
                                  # the docket reports what is in flight and the dispatcher fills only the free slots.
+  # tracker: unset here, so the default rule applies — `github-projects` (a
+  # one-way mirror of this work store) when the repository's remote is
+  # github.com, else `none`. Set explicitly to `none` to switch the mirror
+  # off regardless of remote, or to a cartridge-bound tracker's name (e.g.
+  # `jira`, `asana`) to use that tracker instead. See core/policy.py::tracker_for.
   # Pacing: read by coxswain-tools' agent_tools/pacing.py::assess() to decide
   # whether a launch may proceed at its requested tier and effort, or must
   # degrade. Neither a risk nor a ramp, so a team layer may set these fields

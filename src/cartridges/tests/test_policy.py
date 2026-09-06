@@ -18,7 +18,7 @@ import pytest
 import yaml
 
 from core.cartridge import load
-from core.policy import AUTO, PROPOSE, PolicyError, autonomy_policy, pacing_policy, plan_tier
+from core.policy import AUTO, PROPOSE, PolicyError, autonomy_policy, pacing_policy, plan_tier, tracker_for
 from core.skills import index_from_roots
 from tests.conftest import rows
 
@@ -358,3 +358,28 @@ def test_the_base_cartridge_still_loads_with_pacing_unmeasured() -> None:
     assert shipped["tier_ladder"] == ["deep", "standard", "cheap"]
     assert "ceiling_usd" not in shipped
     assert pacing_policy(resolved)["ceiling_usd"] is None
+
+
+def test_tracker_defaults_to_github_projects_on_a_github_remote() -> None:
+    assert tracker_for({}, "git@github.com:example-team/agent-cartridges.git") == "github-projects"
+
+
+def test_tracker_defaults_to_none_on_a_non_github_remote() -> None:
+    assert tracker_for({}, "https://gitlab.example.com/example-team/agent-cartridges.git") == "none"
+
+
+def test_an_explicit_none_wins_over_a_github_remote() -> None:
+    cartridge = {"policy": {"tracker": "none"}}
+    assert tracker_for(cartridge, "git@github.com:example-team/agent-cartridges.git") == "none"
+
+
+def test_an_explicit_bound_tracker_is_returned_verbatim() -> None:
+    cartridge = {"policy": {"tracker": "jira"}}
+    assert tracker_for(cartridge, "git@github.com:example-team/agent-cartridges.git") == "jira"
+
+
+def test_the_base_cartridge_still_loads_with_no_tracker_set() -> None:
+    """Confirms the premise the yaml comment states: base ships no value, so
+    every resolution here falls through to `tracker_for`'s own default."""
+    resolved = load("local", REPO / "cartridges", skill_index=index_from_roots([REPO / "skills-plugins"]))
+    assert "tracker" not in resolved["policy"]

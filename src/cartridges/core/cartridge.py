@@ -210,6 +210,8 @@ def _merge(parent: Mapping[str, Any], child: Mapping[str, Any]) -> dict[str, Any
     `policy.pacing` is neither a risk nor a ramp, so it merges like any other
     mapping here: a team layer may set or override its fields without the
     tighten-only restriction `_loosenings` enforces on write_kinds.
+    `policy.tracker` is the same: neither a risk nor a ramp, so a team layer
+    may set it freely.
     """
     merged = dict(parent)
     for key, value in child.items():

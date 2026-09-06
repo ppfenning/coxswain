@@ -160,6 +160,16 @@ the graph claimed. `merge` itself split by target on 2026-09-01 —
 default branch, a human at every comfort level) — which made within-initiative
 stack merges expressible by narrowing the kind rather than loosening a ramp.
 
+`policy.tracker` names what mirrors this work store, if anything. A GitHub
+Projects v2 board is a one-way mirror — the markdown work store under `work/`
+stays the source of truth the harness reads, and the tracker only ever
+reflects it, never the other direction. `github-projects` is the default the
+moment a repository's remote is github.com; `none` switches the mirror off
+regardless of remote; naming a tracker a cartridge binds (`jira`, `asana`, and
+so on) uses that instead. Every step the mirror needs is planned by a pure
+function and carried out by a thin `gh` edge, the same split as everywhere
+else in this repository.
+
 ## Status
 
 `core/` is implemented and tested. Each module still carries its contract as a

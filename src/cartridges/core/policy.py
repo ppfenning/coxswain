@@ -94,7 +94,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-__all__ = ["AUTO", "PROPOSE", "PolicyError", "autonomy_policy", "pacing_policy", "plan_tier"]
+__all__ = ["AUTO", "PROPOSE", "PolicyError", "autonomy_policy", "pacing_policy", "plan_tier", "tracker_for"]
 
 AUTO = "auto"
 PROPOSE = "propose"
@@ -317,3 +317,21 @@ def pacing_policy(cartridge: Mapping[str, Any]) -> dict[str, Any]:
         "tier_ladder": list(pacing.get("tier_ladder", TIER_LADDER)),
         "effort_ladder": list(pacing.get("effort_ladder", EFFORT_LADDER)),
     }
+
+
+def tracker_for(cartridge: Mapping[str, Any], remote_url: str | None) -> str:
+    """Which tracker mirrors the work store, if any.
+
+    `policy.tracker` set to anything — including the literal `none` — wins
+    outright, whether it is switching the mirror off or naming a
+    cartridge-bound tracker. Unset, the default follows the remote:
+    `github-projects` on a github.com remote, else `none`. The markdown work
+    store stays the source of truth either way; a tracker only ever mirrors
+    it, one way, never the reverse.
+    """
+    tracker = (cartridge.get("policy") or {}).get("tracker")
+    if tracker is not None:
+        return tracker
+    if remote_url and "github.com" in remote_url:
+        return "github-projects"
+    return "none"
