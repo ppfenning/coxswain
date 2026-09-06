@@ -76,8 +76,6 @@ nav:
       - Graphs: components/graphs.md
       - Tools: components/tools.md
       - Crew: components/crew.md
-      - HUD: components/hud.md
-      - Desktop: components/desktop.md
   - Reference:
       - CLI reference: reference/cli/index.md
   - Releases:

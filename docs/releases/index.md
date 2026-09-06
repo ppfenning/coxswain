@@ -28,8 +28,6 @@ The manifest for the first release, transcribed by hand from
 | graphs | `ppfenning/coxswain-graphs` | `v0.1.0-beta.1` | required |
 | tools | `ppfenning/coxswain-tools` | `v0.1.0-beta.1` | required, provides `cox` |
 | crew | `ppfenning/coxswain-crew` | `v0.1.0-beta.1` | flag: `crew` |
-| hud | `ppfenning/coxswain-hud` | `v0.1.0-beta.1` | flag: `hud` |
-| desktop | `desktop/` (this repository) | — | flag: `desktop` |
 
 See the [0.1.0-beta.1 release notes](0.1.0-beta.1.md) for what landed in
 each component.

@@ -24,8 +24,6 @@ graphs     = { repo = "ppfenning/coxswain-graphs",     tag = "v0.1.0-beta.1", re
 ] }
 tools      = { repo = "ppfenning/coxswain-tools",      tag = "v0.1.0-beta.1", required = true, provides = "cox", docs = ["README.md"] }
 crew       = { repo = "ppfenning/coxswain-crew",       tag = "v0.1.0-beta.1", flag = "crew", docs = ["README.md"] }
-hud        = { repo = "ppfenning/coxswain-hud",        tag = "v0.1.0-beta.1", flag = "hud", docs = ["README.md"] }
-desktop    = { path = "desktop/",                      flag = "desktop" }
 
 [providers]
 claude-code = { status = "supported", profile = "providers/claude-code.yaml" }
