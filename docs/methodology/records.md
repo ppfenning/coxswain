@@ -13,6 +13,9 @@ actually executed, not a summary written after the fact. The trace is
 what lets a human, or the next node, reconstruct what a given seat saw
 and returned, rather than trusting a paraphrase of it.
 
+A run on the edge channel is not reproducible from a version number
+alone, so its record names the commit each component was at.
+
 ## usage.json
 
 A run's cost is not left to be reconstructed from a provider's own

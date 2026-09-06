@@ -19,6 +19,15 @@ curl -fsSL https://raw.githubusercontent.com/ppfenning/coxswain/main/install.sh 
 5. Writes the provider config for `--provider`, so `cox` knows which CLI,
    plugin, and model tiers to use.
 
+## Channels
+
+`manifest.toml` pins each component to one of two channels, never a mix.
+
+| Channel | Pin | For | Command |
+| --- | --- | --- | --- |
+| release | `tag = "vX.Y.Z"` | a fresh install, stable | `cox install` |
+| edge | `ref = "main"` | tracking main daily | `cox install --edge` |
+
 ## Flags
 
 | Flag | Meaning |
