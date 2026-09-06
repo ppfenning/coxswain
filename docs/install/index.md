@@ -4,7 +4,7 @@ How to install the components pinned by `manifest.toml` with the `cox`
 command.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ppfenning/coxswain/main/install.sh | sh -s -- --provider claude-code --with hud
+curl -fsSL https://raw.githubusercontent.com/ppfenning/coxswain/main/install.sh | sh -s -- --provider claude-code --with crew
 ```
 
 ## What it does
@@ -15,8 +15,7 @@ curl -fsSL https://raw.githubusercontent.com/ppfenning/coxswain/main/install.sh 
    the install uses to fetch and run Python tooling.
 3. Fetches the required components (cartridges, graphs, `cox` itself) at
    their pinned tag into `--root`.
-4. Fetches whichever optional components `--with` named (crew, HUD,
-   desktop) at the same tag.
+4. Fetches whichever optional components `--with` named (crew) at the same tag.
 5. Writes the provider config for `--provider`, so `cox` knows which CLI,
    plugin, and model tiers to use.
 
@@ -25,7 +24,7 @@ curl -fsSL https://raw.githubusercontent.com/ppfenning/coxswain/main/install.sh 
 | Flag | Meaning |
 | --- | --- |
 | `--provider` | Which provider profile to configure (see [Providers](providers.md)). |
-| `--with crew\|hud\|desktop` | Optional components to install alongside the required ones. Repeatable. |
+| `--with crew` | Optional components to install alongside the required ones. Repeatable. |
 | `--root` | Where to install components. Defaults to a path under your home directory. |
 | `--team` | Which team's cartridge to pull in, if you belong to more than one. |
 | `--workspace` | The workspace root the crew will operate on. |

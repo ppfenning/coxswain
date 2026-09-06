@@ -4,8 +4,7 @@ Coxswain is the umbrella for the agent platform. It is not itself an agent:
 this repository holds the docs you're reading, `manifest.toml` (the file that
 pins every other component to the same version, in lockstep), the one-line
 installer, and the release notes. The components it pins do the work: a
-cartridges repo, a graphs repo, the `cox` CLI, and optional crew, HUD, and
-desktop add-ons.
+cartridges repo, a graphs repo, the `cox` CLI, and an optional crew add-on.
 
 Coxswain is **beta**. See [What beta means](#what-beta-means) below before
 you rely on it for anything you can't afford to redo by hand.
