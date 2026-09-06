@@ -7,7 +7,7 @@
 
 <h1 align="center">Coxswain</h1>
 
-<p align="center"><em>The coxswain steers and calls the stroke for the crew, and never rows.</em></p>
+<p align="center"><em>Agents pull the oars. You hold the tiller.</em></p>
 
 <p align="center">
   <a href="https://ppfenning.github.io/coxswain/">Docs</a> ·

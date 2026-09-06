@@ -1,8 +1,12 @@
 # Coxswain
 
-Coxswain is the umbrella for the agent platform: a version manifest that pins
-every component in lockstep, methodology docs, and a one-line installer. The
-coxswain steers and calls the stroke for the crew, and never rows.
+**Agents pull the oars. You hold the tiller.** Coxswain is a platform that
+builds software with a crew of AI agents and keeps a person on the tiller:
+every change is planned, built under a budget, reviewed by two reviewers made
+to disagree, checked against the project's own tests, and handed to you as a
+pull request, with every stroke on the record. This site is the umbrella: the
+methodology, the manifest that pins every component in lockstep, and the
+installer.
 
 ## Start here
 
