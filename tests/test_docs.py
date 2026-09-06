@@ -488,3 +488,15 @@ def test_a_doc_that_resolves_at_its_tag_never_asks_for_main():
 
     assert _pull._fetch_with_fallback(doc, fetch_ok) == b"body"
     assert seen == [doc["url"]]
+
+
+def test_eight_rowers_sit_on_deck_in_every_frame():
+    import re
+
+    for theme in ("dark", "light"):
+        svg = (ROOT / "docs" / "assets" / f"shell-sprite-{theme}.svg").read_text()
+        frames = re.findall(r'<g id="frame-\d+"[^>]*>(.*?)</g>', svg, re.S)
+        assert len(frames) == 6
+        for frame in frames:
+            singlets = re.findall(r'<rect[^>]*fill="#e8eef2"', frame)
+            assert len(singlets) >= 8, "fewer than eight crew singlets in a frame"
