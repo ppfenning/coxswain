@@ -6,7 +6,10 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
-PYPROJECT_VERSION = re.compile(r"^\d+\.\d+\.\d+b\d+$")
+# A release (0.2.0) or a pre-release of one (0.1.0b1). The beta suffix was
+# required until 0.2.0: a zero major already says the interface may move, so
+# saying it twice only cost pre-release resolution in pip and uv.
+PYPROJECT_VERSION = re.compile(r"^\d+\.\d+\.\d+(?:b\d+)?$")
 
 
 def _load_toml(name: str) -> dict:
@@ -17,7 +20,7 @@ def _normalize(manifest_version: str) -> str:
     return manifest_version.replace("-beta.", "b")
 
 
-def test_project_is_named_coxswain_with_a_beta_version():
+def test_project_is_named_coxswain_with_a_release_version():
     pyproject = _load_toml("pyproject.toml")
     assert pyproject["project"]["name"] == "coxswain"
     assert PYPROJECT_VERSION.match(pyproject["project"]["version"])
