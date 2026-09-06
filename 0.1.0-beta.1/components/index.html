@@ -2030,7 +2030,9 @@ Coxswain is in beta — versions may change between releases
 <h1 id="components">Components</h1>
 <p>The repositories that make up a Coxswain release, pulled in from <code>manifest.toml</code>.</p>
 <p>Three are required: without them there is no CLI and nothing to run. Three
-are optional, installed with <code>cox install --with &lt;flag&gt;</code>. Every component,
+are optional, installed with <code>cox install --with &lt;flag&gt;</code>. Six components come
+from six repositories, but they are not the same six: the desktop shell ships
+from this umbrella repository rather than one of its own. Every component,
 required or not, is tagged with the same Coxswain version at release, so
 <code>manifest.toml</code> always tells you exactly what a given install has, in
 lockstep.</p>
