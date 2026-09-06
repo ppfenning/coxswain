@@ -78,6 +78,7 @@ def build_manifest(
         "ts": ts,
         "principal": principal,
         "cartridge_sha": sha,
+        "overlay_sha": cartridge.get("overlay_sha"),
         "cartridge_team": cartridge.get("team"),
         "provider_profile": provider_profile,
         "proposals": [dict(p) for p in proposals],

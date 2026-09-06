@@ -109,6 +109,22 @@ def test_human_minutes_is_carried_run_level() -> None:
     assert manifest(human_minutes=12.5)["human_minutes"] == 12.5
 
 
+def test_overlay_sha_rides_through_when_the_cartridge_carries_one() -> None:
+    over = build_manifest(
+        run_id="run-1",
+        ts="2026-08-30T12:00:00Z",
+        principal="lifecycle-propose",
+        cartridge={**CARTRIDGE, "overlay_sha": "overlay-1"},
+        provider_profile="anthropic-default",
+        proposals=[PROPOSAL],
+    )
+    assert over["overlay_sha"] == "overlay-1"
+
+
+def test_overlay_sha_is_none_when_the_cartridge_has_no_overlay() -> None:
+    assert manifest()["overlay_sha"] is None
+
+
 # ── record_run: the I/O edge ───────────────────────────────────────────────
 
 
