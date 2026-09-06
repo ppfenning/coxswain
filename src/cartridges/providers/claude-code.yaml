@@ -63,6 +63,10 @@ role_budget_usd:
                            # has already recorded; a build that never finishes has no
                            # patch to record at all, which is the other reason to keep
                            # tasks small.
+  style_pass: 1.20          # higher than a reviewer's $0.80: a review reads a diff, this
+                           # seat reads every file the diff touched, in full. The operator's own
+                           # words: "those may need to have a different buffer level, as
+                           # docstrings and full line reads may require higher context."
 
 # Roles a graph asks "standard" for that are extraction, not judgment. The
 # profile may run them cheap; changing this resets streaks like any profile edit.
@@ -92,6 +96,9 @@ defaults:
   plan_alternative: standard
   plan_arbitrate:  deep
   plan_adversary:  deep
+  # Recognition and rewriting against a stated rule, not judgment: deep is
+  # where arbitration was measured to pay, and nothing suggests it pays here.
+  style_pass:      standard
 
 tools:
   # Read the world, change nothing.
@@ -114,6 +121,10 @@ tools:
   # the project's real commands, and returns the diff git computed. Nothing it
   # writes survives the call; the harness still applies the patch itself.
   build:            [Read, Write, Edit, Grep, Glob, Bash]
+  # The second seat that WRITES. No Bash: it changes docstrings, comments and
+  # test shape, and it never needs to run anything. The harness applies its
+  # patch the same way it applies a build's.
+  style_pass:       [Read, Write, Edit, Grep, Glob]
 
   # NOT handoff, validate_chunk or validate_phase. Those judge the artifact
   # they are handed — a patch, a task record — against what the next step
