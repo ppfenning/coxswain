@@ -51,7 +51,6 @@ This repository is the umbrella: the docs site, the version manifest that pins e
 | [`coxswain-graphs`](https://github.com/ppfenning/coxswain-graphs) | What runs: the graphs as pure functions, and the harness that budgets, reviews, checks and records them. |
 | [`coxswain-tools`](https://github.com/ppfenning/coxswain-tools) | The `cox` command: install, doctor, route, runs, land, the setup and editor screens. |
 | [`coxswain-crew`](https://github.com/ppfenning/coxswain-crew) | The seats: who speaks, with what authority, in what voice. |
-| [`coxswain-hud`](https://github.com/ppfenning/coxswain-hud) | Where you hear and see it: the voice HUD, and the regatta view of runs as a race. |
 
 The manifest is [`manifest.toml`](manifest.toml). `cox versions` reports every installed component against it.
 
