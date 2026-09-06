@@ -50,13 +50,17 @@ HULL_SEGMENTS = [
 
 # Per-frame oar x positions and blade width: catch, drive-early, drive,
 # finish, recovery-early (feathered), recovery-late (feathered).
+# Per-frame stroke: the shaft's sweep, as an offset from its rower's seat,
+# and the head's width — a four-pixel spoon square to the water through
+# catch, drive and finish, then two pixels edge-on while feathered on the
+# recovery. Every oar springs from the seat it belongs to.
 OAR_FRAMES = [
-    ([45, 89, 133, 177], [67, 111, 155, 199], 2),
-    ([43, 87, 131, 175], [65, 109, 153, 197], 2),
-    ([42, 86, 130, 174], [64, 108, 152, 196], 2),
-    ([39, 83, 127, 171], [61, 105, 149, 193], 2),
-    ([41, 85, 129, 173], [63, 107, 151, 195], 1),
-    ([44, 88, 132, 176], [66, 110, 154, 198], 1),
+    (3, 4),   # catch
+    (1, 4),   # drive-early
+    (0, 4),   # drive
+    (-3, 4),  # finish
+    (-1, 2),  # recovery-early, feathered
+    (2, 2),   # recovery-late, feathered
 ]
 PORT_SHAFT_Y, SHAFT_H = 8, 9
 PORT_BLADE_Y, BLADE_H = 5, 3
@@ -150,14 +154,16 @@ def _hull_rects(colors):
 
 
 def _oar_rects(frame_index, colors):
-    port_x, starboard_x, blade_w = OAR_FRAMES[frame_index]
+    sweep, head_w = OAR_FRAMES[frame_index]
     rects = []
-    for x in port_x:
-        rects.append((x, PORT_SHAFT_Y, 2, SHAFT_H, colors["oar"]))
-        rects.append((x, PORT_BLADE_Y, blade_w, BLADE_H, colors["oar"]))
-    for x in starboard_x:
-        rects.append((x, STARBOARD_SHAFT_Y, 2, SHAFT_H, colors["oar"]))
-        rects.append((x, STARBOARD_BLADE_Y, blade_w, BLADE_H, colors["oar"]))
+    for seat_x, _ in PORT_ROWERS:
+        shaft_x = seat_x + 1 + sweep
+        rects.append((shaft_x, PORT_SHAFT_Y, 2, SHAFT_H, colors["oar"]))
+        rects.append((shaft_x + 1 - head_w // 2, PORT_BLADE_Y, head_w, BLADE_H, colors["oar"]))
+    for seat_x, _ in STARBOARD_ROWERS:
+        shaft_x = seat_x + 1 + sweep
+        rects.append((shaft_x, STARBOARD_SHAFT_Y, 2, SHAFT_H, colors["oar"]))
+        rects.append((shaft_x + 1 - head_w // 2, STARBOARD_BLADE_Y, head_w, BLADE_H, colors["oar"]))
     return rects
 
 
