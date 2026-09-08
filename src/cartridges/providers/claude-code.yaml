@@ -86,6 +86,22 @@ role_budget_usd:
   #
   # Three samples changed this conclusion, and only because someone looked.
   # That is the argument for the run stats store (P0) in one line.
+  # Measured 2026-09-08 over 310 recorded plan calls: median $0.123, mean $0.151,
+  # p95 $0.317 — and a maximum of $0.345 against a $0.35 ceiling. A distribution
+  # that stops $0.005 short of its limit is CENSORED, not comfortable: a plan
+  # that would have cost more died on the ceiling and wrote no usage.json, so
+  # the tail is invisible in the very data used to set the number.
+  #
+  # Four such deaths in one night, all on integration tasks whose traces show
+  # NO wandering — the ingest-cli plan read the design doc, the spike verdict,
+  # both modules it composes, events.py's shape and cli.py's subparser
+  # convention, in 13 turns. That is the work, not a seat exploring.
+  #
+  # This does not loosen the typical plan: at a $0.123 median, 92% of calls are
+  # under $0.30 and unaffected. It stops the ceiling from killing the class of
+  # plan that must read several modules to compose them. A plan that cannot
+  # finish under 0.60 is planning a task that should have been split.
+  plan:      0.60
   decompose: 0.60
   style_pass: 1.20          # higher than a reviewer's $0.80: a review reads a diff, this
                            # seat reads every file the diff touched, in full. The operator's own
