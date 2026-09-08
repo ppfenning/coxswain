@@ -63,6 +63,23 @@ role_budget_usd:
                            # has already recorded; a build that never finishes has no
                            # patch to record at all, which is the other reason to keep
                            # tasks small.
+  # Measured 2026-09-07, two decompose runs against a real spec: $0.4454 and
+  # $0.3936, both `error_max_budget_usd` against standard's $0.35 — the first
+  # AFTER it had already emitted correct structured output, which the ceiling
+  # then discarded (exit 0, empty log, no work items: a silent failure that
+  # reads as success). Cost split roughly half output/thinking, half cache
+  # creation; 15 turns and 9 tool calls, so it was not runaway exploration.
+  #
+  # Standard's $0.35 was calibrated from PLAN nodes ("~10 turns, under $0.10").
+  # This seat reads a whole design document and reasons about phase structure
+  # before it writes anything — it never resembled a plan node. Trimming the
+  # idea body from 729 to 184 words moved the cost only $0.45 -> $0.39, which
+  # is what ruled out "the input was too long" as the explanation.
+  #
+  # Not a licence for an unbounded session: 0.60 sits just above both measured
+  # runs. A decompose that cannot finish under it is decomposing an idea that
+  # should have been filed as several.
+  decompose: 0.60
   style_pass: 1.20          # higher than a reviewer's $0.80: a review reads a diff, this
                            # seat reads every file the diff touched, in full. The operator's own
                            # words: "those may need to have a different buffer level, as
