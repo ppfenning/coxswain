@@ -14,7 +14,8 @@ jobs:
       - run: uv run ruff check .
       - run: test ! -f mkdocs.yml || uv run mkdocs build --strict
       - if: failure()
-        run: echo "releasable: coxswain (this repo) failed" >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          echo "releasable: coxswain (this repo) failed" >> "$GITHUB_STEP_SUMMARY"
   components:
     runs-on: ubuntu-latest
     strategy:
@@ -39,7 +40,8 @@ jobs:
       - run: uv sync --group dev
       - run: uv run pytest -q
       - if: failure()
-        run: echo "releasable: ${{ matrix.component }} (${{ matrix.repo }}@main) failed" >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          echo "releasable: ${{ matrix.component }} (${{ matrix.repo }}@main) failed" >> "$GITHUB_STEP_SUMMARY"
   summary:
     runs-on: ubuntu-latest
     if: always()
