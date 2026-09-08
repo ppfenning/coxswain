@@ -38,3 +38,8 @@ its `attempts` count — independent of any one run's own record. A task
 that has failed validation twice looks different to the docket than one
 seeing its first attempt, even though both look identical from inside a
 single run's own trace.
+
+## releasable.yml
+
+A green run of `releasable.yml` means the components pass together
+against current main tonight, not that any particular tag is good.

@@ -1,0 +1,49 @@
+name: releasable
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+jobs:
+  self:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --group dev
+      - run: uv run pytest -q
+      - run: uv run ruff check .
+      - run: test ! -f mkdocs.yml || uv run mkdocs build --strict
+      - if: failure()
+        run: echo "releasable: coxswain (this repo) failed" >> "$GITHUB_STEP_SUMMARY"
+  components:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: cartridges
+            repo: ppfenning/coxswain-cartridges
+          - component: graphs
+            repo: ppfenning/coxswain-graphs
+          - component: tools
+            repo: ppfenning/coxswain-tools
+          - component: crew
+            repo: ppfenning/coxswain-crew
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.repo }}
+      - uses: astral-sh/setup-uv@v5
+      # component CI is out of budget to read here; this mirrors coxswain's
+      # own test.yml as the closest known convention, not a verified one.
+      - run: uv sync --group dev
+      - run: uv run pytest -q
+      - if: failure()
+        run: echo "releasable: ${{ matrix.component }} (${{ matrix.repo }}@main) failed" >> "$GITHUB_STEP_SUMMARY"
+  summary:
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [self, components]
+    steps:
+      - if: needs.self.result != 'success' || needs.components.result != 'success'
+        run: exit 1
