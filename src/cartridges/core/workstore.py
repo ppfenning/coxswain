@@ -61,6 +61,7 @@ __all__ = [
 STATES = ("todo", "ready", "in_progress", "blocked", "done")
 DONE = "done"
 DEFAULT_PRIORITY = 3
+ATTEMPT_KINDS = ("refused", "no_work", "unverified", "infra")
 
 _FRONTMATTER = "---"
 _NEW_SUFFIX = " (new)"
@@ -96,6 +97,8 @@ def _coerce_attempts(raw: Any) -> list[dict[str, str]]:
             "phase": str(entry.get("phase") or ""),
             "reason": str(entry.get("reason") or ""),
             "ts": str(entry.get("ts") or ""),
+            **({"kind": str(entry["kind"])} if entry.get("kind") else {}),
+            **({"patch_kept": True} if entry.get("patch_kept") else {}),
         }
         for entry in raw
         if isinstance(entry, Mapping)
@@ -207,13 +210,28 @@ def write_item(item: Mapping[str, Any], path: Path | str) -> Path:
     return path
 
 
-def record_attempt(path: Path | str, *, run: str, phase: str, reason: str, ts: str) -> dict[str, Any]:
+def record_attempt(
+    path: Path | str,
+    *,
+    run: str,
+    phase: str,
+    reason: str,
+    ts: str,
+    kind: str | None = None,
+    patch_kept: bool = False,
+) -> dict[str, Any]:
     """Append one attempt to an item's history, preserving everything else.
 
     The caller supplies `ts`; this module reads no clock.
     """
+    if kind is not None and kind not in ATTEMPT_KINDS:
+        raise WorkStoreError(f"unknown attempt kind '{kind}'; expected one of {list(ATTEMPT_KINDS)}")
     item = read_item(path)
     entry = {"run": str(run), "phase": str(phase), "reason": str(reason), "ts": str(ts)}
+    if kind is not None:
+        entry["kind"] = kind
+    if patch_kept:
+        entry["patch_kept"] = True
     write_item({**item, "attempts": [*item["attempts"], entry]}, path)
     return read_item(path)
 

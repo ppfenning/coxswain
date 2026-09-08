@@ -122,6 +122,31 @@ def test_record_attempt_twice_yields_two_entries_and_preserves_the_rest(tmp_path
     assert read_item(path)["attempts"] == after["attempts"]
 
 
+def test_record_attempt_with_kind_and_patch_kept_carries_both(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1")
+    after = record_attempt(path, run="run-1", phase="p1", reason="unverified", ts="t", kind="unverified", patch_kept=True)
+    assert after["attempts"][0] == {
+        "run": "run-1",
+        "phase": "p1",
+        "reason": "unverified",
+        "ts": "t",
+        "kind": "unverified",
+        "patch_kept": True,
+    }
+
+
+def test_record_attempt_with_no_kind_carries_neither_key(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1")
+    after = record_attempt(path, run="run-1", phase="p1", reason="quarantined: timeout", ts="t")
+    assert after["attempts"][0] == {"run": "run-1", "phase": "p1", "reason": "quarantined: timeout", "ts": "t"}
+
+
+def test_record_attempt_with_an_unknown_kind_raises(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1")
+    with pytest.raises(WorkStoreError):
+        record_attempt(path, run="run-1", phase="p1", reason="x", ts="t", kind="bogus")
+
+
 def test_an_item_with_no_attempts_writes_no_attempts_line(tmp_path: Path) -> None:
     path = task(tmp_path, "p1", "t1")
     assert "attempts:" not in path.read_text(encoding="utf-8")
