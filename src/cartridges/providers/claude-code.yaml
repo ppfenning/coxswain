@@ -102,7 +102,24 @@ role_budget_usd:
   # plan that must read several modules to compose them. A plan that cannot
   # finish under 0.60 is planning a task that should have been split.
   plan:      0.60
-  decompose: 0.60
+  # RAISED to 2.00 on 2026-09-08, and the argument is leverage rather than size.
+  # decompose runs ONCE PER INITIATIVE; every other seat runs once per task. It is
+  # structurally the cheapest place to be generous and the most expensive place to
+  # be tight, because its output shapes every downstream call. The leader->chair
+  # rename cost $53 across 22 runs substantially because its DAG split runs_top.py
+  # from runs_top_screen.py when they share a test, and left on-screen copy owned by
+  # no ticket. A better decomposition would have cost cents more and saved dollars.
+  #
+  # Measured over 16 recorded calls: median $0.2097, mean $0.2555, max $0.5064.
+  # But the four most expensive all have output_tokens NULL — they were recovered
+  # from traces, meaning they DIED on budget. The top of that distribution is
+  # entirely deaths, so the successful range ($0.19-$0.31, 2-6 turns) is what the
+  # ceiling was actually sampling. Deaths ran 10-21 turns.
+  #
+  # A spec is the largest input any seat receives, and it should not be the
+  # operator's job to pre-trim it so the node survives — which is exactly what the
+  # chair had been doing, keeping intake bodies to 184-437 words to dodge this.
+  decompose: 2.00
   style_pass: 1.20          # higher than a reviewer's $0.80: a review reads a diff, this
                            # seat reads every file the diff touched, in full. The operator's own
                            # words: "those may need to have a different buffer level, as
