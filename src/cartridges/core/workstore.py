@@ -46,6 +46,7 @@ import yaml
 __all__ = [
     "STATES",
     "WorkStoreError",
+    "phase_complete",
     "phases",
     "read_initiative",
     "read_item",
@@ -58,8 +59,10 @@ __all__ = [
     "write_item",
 ]
 
-STATES = ("todo", "ready", "in_progress", "blocked", "done")
+STATES = ("todo", "ready", "in_progress", "blocked", "done", "dropped")
 DONE = "done"
+DROPPED = "dropped"
+_TERMINAL = frozenset({DONE, DROPPED})
 DEFAULT_PRIORITY = 3
 ATTEMPT_KINDS = ("refused", "no_work", "unverified", "infra")
 
@@ -281,6 +284,11 @@ def phases(items: Sequence[Mapping[str, Any]]) -> list[str]:
     return sorted({str(item.get("phase") or "") for item in items} - {""})
 
 
+def phase_complete(items: Sequence[Mapping[str, Any]], phase: str) -> bool:
+    """A phase is complete once every one of its items is done or dropped."""
+    return all(item.get("state") in _TERMINAL for item in items if item.get("phase") == phase)
+
+
 def validate_dag(items: Iterable[Mapping[str, Any]]) -> None:
     """Refuse a dangling edge or a cycle. Loudly, and listing every problem."""
     items = list(items)
@@ -331,12 +339,12 @@ def ready_tasks(items: Sequence[Mapping[str, Any]], *, phase: str | None = None)
     exists only because the work "feels sequential" costs exactly this — it
     keeps a task out of this list for no reason.
     """
-    done = {str(item["id"]) for item in items if item.get("state") == DONE}
+    done = {str(item["id"]) for item in items if item.get("state") in _TERMINAL}
     return sorted(
         (
             dict(item)
             for item in items
-            if item.get("state") != DONE
+            if item.get("state") not in _TERMINAL
             and (phase is None or item.get("phase") == phase)
             and all(need in done for need in item.get("needs") or [])
         ),

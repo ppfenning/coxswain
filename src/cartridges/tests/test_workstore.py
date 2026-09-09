@@ -11,6 +11,7 @@ from core.skills import index_from_roots
 from core.workstore import (
     WorkStoreError,
     _coerce_priority,
+    phase_complete,
     phases,
     read_initiative,
     read_item,
@@ -420,6 +421,35 @@ def test_ready_orders_by_priority_then_id(tmp_path: Path) -> None:
 
 def test_phases_are_listed_in_order(initiative: Path) -> None:
     assert phases(read_initiative(initiative)["items"]) == ["p1-foundations", "p2-rollout"]
+
+
+# ── dropped ────────────────────────────────────────────────────────────────
+
+
+def test_set_state_can_drop_an_item(initiative: Path) -> None:
+    path = initiative / "p1-foundations" / "t1-schema-probe.md"
+    dropped = set_state(path, "dropped")
+    assert dropped["state"] == "dropped"
+    assert read_item(path)["state"] == "dropped"
+
+
+def test_a_phase_of_done_and_dropped_items_is_complete(initiative: Path) -> None:
+    set_state(initiative / "p1-foundations" / "t1-schema-probe.md", "dropped")
+    set_state(initiative / "p1-foundations" / "t2-bench-harness.md", "done")
+    set_state(initiative / "p1-foundations" / "t3-cutover.md", "done")
+    items = read_initiative(initiative)["items"]
+    assert phase_complete(items, "p1-foundations") is True
+
+
+def test_a_dropped_items_dependents_become_ready(initiative: Path) -> None:
+    set_state(initiative / "p1-foundations" / "t1-schema-probe.md", "dropped")
+    set_state(initiative / "p1-foundations" / "t2-bench-harness.md", "done")
+    items = read_initiative(initiative)["items"]
+    assert [t["id"] for t in ready_tasks(items)] == ["t3-cutover"]
+
+    task(initiative, "p2-rollout", "t5-only-needs-dropped", needs=["t1-schema-probe"])
+    items = read_initiative(initiative)["items"]
+    assert "t5-only-needs-dropped" in [t["id"] for t in ready_tasks(items, phase="p2-rollout")]
 
 
 # ── surfaces ───────────────────────────────────────────────────────────────
