@@ -124,6 +124,10 @@ role_budget_usd:
                            # seat reads every file the diff touched, in full. The operator's own
                            # words: "those may need to have a different buffer level, as
                            # docstrings and full line reads may require higher context."
+  # A sweep node replaces twenty narrow ones, so its ceiling is measured
+  # against the sweep, not against a narrow task.
+  sweep_plan:  1.50
+  sweep_build: 2.00
 
 # Roles a graph asks "standard" for that are extraction, not judgment. The
 # profile may run them cheap; changing this resets streaks like any profile edit.
@@ -156,6 +160,8 @@ defaults:
   # Recognition and rewriting against a stated rule, not judgment: deep is
   # where arbitration was measured to pay, and nothing suggests it pays here.
   style_pass:      standard
+  sweep_plan:      deep
+  sweep_build:     standard
 
 tools:
   # Read the world, change nothing.
@@ -167,6 +173,7 @@ tools:
   plan_alternative: [Read, Grep, Glob]
   plan_arbitrate:   [Read, Grep, Glob]   # checks a plan's named files exist before choosing it
   plan_adversary:   [Read, Grep, Glob]   # attacks claims about the tree by reading the tree
+  sweep_plan:       [Read, Grep, Glob]
   review_charter:   [Read, Grep, Glob]
   review_adversary: [Read, Grep, Glob]
   arbitrate:        [Read, Grep, Glob]
@@ -178,6 +185,7 @@ tools:
   # the project's real commands, and returns the diff git computed. Nothing it
   # writes survives the call; the harness still applies the patch itself.
   build:            [Read, Write, Edit, Grep, Glob, Bash]
+  sweep_build:      [Read, Write, Edit, Grep, Glob, Bash]
   # The second seat that WRITES. No Bash: it changes docstrings, comments and
   # test shape, and it never needs to run anything. The harness applies its
   # patch the same way it applies a build's.

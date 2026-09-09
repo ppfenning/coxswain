@@ -22,3 +22,15 @@ def test_style_pass_carries_write_tools_and_no_bash() -> None:
 
 def test_style_pass_role_budget_exceeds_the_standard_tier() -> None:
     assert PROFILE["role_budget_usd"]["style_pass"] > PROFILE["budget_usd"]["standard"]
+
+
+def test_sweep_plan_carries_read_only_tools_and_deep_tier() -> None:
+    assert set(PROFILE["tools"]["sweep_plan"]) == {"Read", "Grep", "Glob"}
+    assert PROFILE["defaults"]["sweep_plan"] == "deep"
+    assert PROFILE["role_budget_usd"]["sweep_plan"] == 1.50
+
+
+def test_sweep_build_carries_the_standard_build_tool_grant_and_tier() -> None:
+    assert set(PROFILE["tools"]["sweep_build"]) == set(PROFILE["tools"]["build"])
+    assert PROFILE["defaults"]["sweep_build"] == "standard"
+    assert PROFILE["role_budget_usd"]["sweep_build"] == 2.00
