@@ -141,6 +141,12 @@ write_kinds:
   # never graduates, whatever streak the underlying kind had earned.
   self_modification:  {risk: high,   ramp: never, apply_arm: pr}
 
+  # Triggered only by a finding, during a build, that the build cannot satisfy
+  # its own ticket without touching a file another ticket in the phase owns —
+  # never by a model's preference. Firing this kind emits ONE merged ticket
+  # and moves the superseded tickets it consolidates to the `dropped` state.
+  consolidate:        {risk: low,    ramp: deferred}
+
   charter_proposal:   {ramp: never, apply_arm: pr}     # changes the rules themselves
   skill_proposal:     {ramp: never, apply_arm: pr}
 
