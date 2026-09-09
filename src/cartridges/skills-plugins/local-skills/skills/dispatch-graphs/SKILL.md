@@ -42,6 +42,10 @@ work yourself, and you never pre-judge what a graph you dispatch will find.
   just became ready) outranks one that opens a new front (a decompose of a
   fresh idea). With no free slots, answer idle with the reason `at capacity`
   — that is not a failure, it is the bound working.
+- **Shape.** Decompose only what needs design per unit; a rename, a path
+  move, a signature change across callers, or a doc sync is a `sweep`. When
+  in doubt, sweep first and decompose what the sweep's exceptions leave
+  behind.
 
 ## Failure modes
 
@@ -53,3 +57,5 @@ work yourself, and you never pre-judge what a graph you dispatch will find.
 - Treating an empty docket as a failure to find something to do.
 - Selecting as many graphs as there are runnable inputs, so the machine's
   throughput is set by the queue instead of by the bound.
+- Decomposing a rename, a path move, a signature change across callers, or a
+  doc sync into many small design tickets instead of naming it a `sweep`.
