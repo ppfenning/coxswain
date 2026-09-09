@@ -120,6 +120,19 @@ role_budget_usd:
   # operator's job to pre-trim it so the node survives — which is exactly what the
   # chair had been doing, keeping intake bodies to 184-437 words to dodge this.
   decompose: 2.00
+  # Raised 2026-09-08 after a work_item_arm budget stop KILLED A WHOLE RUN.
+  # `cartridges-work-shape-3` finished its build, review, adversary and arbitration —
+  # all three approved — and then died at $0.35 in the arm that writes the work item,
+  # 23 turns in, with an uncaught BudgetStop traceback out of `run_epic`. An arm is not
+  # a judgment seat: it reads the item file, edits frontmatter, and writes it back, and
+  # its cost scales with how many items an initiative holds, not with the difficulty of
+  # the task. Killing a completed, thrice-approved task over the bookkeeping step that
+  # follows it is the worst possible place to be tight. The arms get the reviewers'
+  # ceiling; the graph-level fix (an arm failure quarantines the phase, it does not
+  # crash the run) is filed separately.
+  work_item_arm:    0.80
+  work_state_arm:   0.80
+  docs_apply_arm:   0.80
   style_pass: 1.20          # higher than a reviewer's $0.80: a review reads a diff, this
                            # seat reads every file the diff touched, in full. The operator's own
                            # words: "those may need to have a different buffer level, as
