@@ -342,6 +342,15 @@ def test_base_cartridge_bounds_dispatch_concurrency() -> None:
     assert resolved["policy"]["dispatch"]["max_in_flight"] == 3
 
 
+def test_local_cartridge_checks_run_lint_before_tests() -> None:
+    """`local` declares its own `landing_areas.checks`; lint is cheapest, so it runs first."""
+    resolved = load("local", REPO / "cartridges", skill_index=index_from_roots([REPO / "skills-plugins"]))
+    assert resolved["landing_areas"]["checks"] == [
+        {"name": "lint", "cmd": "ruff check ."},
+        {"name": "tests", "cmd": "pytest -q"},
+    ]
+
+
 def test_layers_of_a_lone_cartridge_is_one_entry_labelled_by_its_name(tmp_path: Path) -> None:
     root = tmp_path / "cartridges"
     write_cartridge(root / "base", {"team": "base", "version": 1})

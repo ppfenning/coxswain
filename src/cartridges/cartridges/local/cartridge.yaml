@@ -82,6 +82,7 @@ landing_areas:
   # Named commands, not conventions — a check nobody configured is a check
   # nobody ran, and the gate should know the difference.
   checks:
+    - {name: lint, cmd: "ruff check ."}
     - {name: tests, cmd: "pytest -q"}
 
 # ── Apply arms ──────────────────────────────────────────────────────────────
