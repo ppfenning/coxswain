@@ -2321,13 +2321,7 @@ for one release: <code>agent-tools</code> as an alias for <code>cox</code>, and 
 plans it, builds it in a worktree under a budget, has two independent reviewers argue about it, arbitrates
 them, runs the project's tests as evidence, and hands you a pull request. You merge.</p>
 <h2 id="coxswain">coxswain</h2>
-<ul>
-<li><code>manifest.toml</code> is the single source of truth for what a release installs, with lockstep pins.</li>
-<li>The docs site: MkDocs Material with <code>mike</code> versions, a CLI reference generated at build time from
-  <code>cox --help</code>, terminal screenshots captured with Rich, every graph's diagram pulled from the graphs
-  repository at build time, and the animated racing-eight header.</li>
-<li><code>publish.yml</code>: PyPI trusted publishing on <code>v*</code> tags, no token stored anywhere.</li>
-</ul>
+<p><code>manifest.toml</code> is the single source of truth for what a release installs, with lockstep pins. The docs site: MkDocs Material with <code>mike</code> versions, a CLI reference generated at build time from <code>cox --help</code>, terminal screenshots captured with Rich, every graph's diagram pulled from the graphs repository at build time, and the animated racing-eight header. <code>publish.yml</code>: PyPI trusted publishing on <code>v*</code> tags, no token stored anywhere.</p>
 <h2 id="coxswain-cartridges">coxswain-cartridges</h2>
 <ul>
 <li>The <code>coxswain</code> Claude Code plugin: a session-start hook that prints the docket, a statusline, and the

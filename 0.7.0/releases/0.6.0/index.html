@@ -2304,49 +2304,45 @@ harness observed rather than what the seat reported.</p>
 <h2 id="coxswain-graphs">coxswain-graphs</h2>
 <ul>
 <li>Every call appends to <code>runs/&lt;run&gt;.calls.jsonl</code> as it completes, so a run that dies mid-flight still has
-  a ledger (#65, #68); <code>files_touched</code> and <code>commands_run</code> are derived from the runner's own trace, never
-  from the model's summary (#71).</li>
+  a ledger (graphs #65, #68); <code>files_touched</code> and <code>commands_run</code> are derived from the runner's own trace, never
+  from the model's summary (graphs #71).</li>
 <li>A quarantine has a kind — <code>refused</code>, <code>unverified</code> (patch kept), <code>infra</code> (patch kept, attempt not
-  counted), <code>dropped</code> — on the record and on the work item's attempt history (#67).</li>
+  counted), <code>dropped</code> — on the record and on the work item's attempt history (graphs #67).</li>
 <li>A stale phase branch is recreated from the default branch instead of blocking the run; <code>done +
-  dropped</code> completes a phase (#69); <code>collected_ids</code> and <code>coverage_floor_holds</code> gate the trim (#70); one
-  <code>style_pass</code> trim runs per phase and is refused when it drops a collected test id or fails a check (#77).</li>
-<li><code>lint_tickets</code>' coupling rule is clean for a pair ordered by <code>needs</code>, transitively (coxswain #74); the
+  dropped</code> completes a phase (graphs #69); <code>collected_ids</code> and <code>coverage_floor_holds</code> gate the trim (graphs #70); one
+  <code>style_pass</code> trim runs per phase and is refused when it drops a collected test id or fails a check (graphs #77).</li>
+<li><code>lint_tickets</code>' coupling rule is clean for a pair ordered by <code>needs</code>, transitively (graphs #74); the
   worktree library (<code>prune_registrations</code>, <code>remove_worktree</code>, <code>keep_worktree</code>) lands ahead of the exit-path
-  wiring (#72); the four static ticket rules exist as a pure function (#76).</li>
-<li>Design specs committed under <code>docs/design/</code>: observed record (coxswain #62), landing model (coxswain #63), work shape
-  (#66), validator reach, cost bounds, triage (#75). <code>ruff</code> is a dev dependency (#64).</li>
+  wiring (graphs #72); the four static ticket rules exist as a pure function (graphs #76).</li>
+<li>Design specs committed under <code>docs/design/</code>: observed record (graphs #62), landing model (graphs #63), work shape
+  (graphs #66), validator reach, cost bounds, triage (graphs #75). <code>ruff</code> is a dev dependency (graphs #64).</li>
 </ul>
 <h2 id="coxswain-tools">coxswain-tools</h2>
 <ul>
 <li><code>cox runs recover &lt;run&gt; &lt;task&gt; --repo PATH</code> merges an approved, escalated commit into its phase branch —
-  the remedy every escalated run had named since 0.5.0 (#132).</li>
-<li><code>cox runs land</code> plans from the run's own paths (coxswain #124), lands a whole phase off its epic branch (coxswain #125),
+  the remedy every escalated run had named since 0.5.0 (tools #132).</li>
+<li><code>cox runs land</code> plans from the run's own paths (tools #124), lands a whole phase off its epic branch (tools #125),
   runs the repository's configured checks in a fresh worktree and names the failing check and its tail
-  (#130); <code>route</code> treats <code>dropped</code> as terminal and never ready (#131).</li>
-<li><code>cox route launch sweep</code> (coxswain #126), <code>cox route lint</code> with the four static rules (coxswain #127) and <code>cox route
-  groups</code> (#129).</li>
-<li><code>cox stats ingest</code> reads <code>calls.jsonl</code> and trace-recovered figures (coxswain #116), anchors events to their run
-  (#120), classifies outcomes by kind (#117), rolls call cost up to tasks so <code>cost_per_landed</code> is real
-  (#115); <code>cox stats coverage</code> reports known/total provenance rows (#121).</li>
-<li><code>release-check</code> gains the pages and readmes checks (coxswain #114, #118). <code>ruff</code> is a dev dependency (coxswain #122).</li>
+  (tools #130); <code>route</code> treats <code>dropped</code> as terminal and never ready (tools #131).</li>
+<li><code>cox route launch sweep</code> (tools #126), <code>cox route lint</code> with the four static rules (tools #127) and <code>cox route
+  groups</code> (tools #129).</li>
+<li><code>cox stats ingest</code> reads <code>calls.jsonl</code> and trace-recovered figures (tools #116), anchors events to their run
+  (tools #120), classifies outcomes by kind (tools #117), rolls call cost up to tasks so <code>cost_per_landed</code> is real
+  (tools #115); <code>cox stats coverage</code> reports known/total provenance rows (tools #121).</li>
+<li><code>release-check</code> gains the pages and readmes checks (tools #114, #118). <code>ruff</code> is a dev dependency (tools #122).</li>
 </ul>
 <h2 id="coxswain-cartridges">coxswain-cartridges</h2>
 <ul>
-<li><code>record_attempt</code> takes <code>kind</code> and <code>patch_kept</code> (coxswain #56); <code>dropped</code> is a work-store state (coxswain #58);
+<li><code>record_attempt</code> takes <code>kind</code> and <code>patch_kept</code> (cartridges #56); <code>dropped</code> is a work-store state (cartridges #58);
   <code>landing_areas.checks</code> is what a build worktree and a land both run, and a project layer may declare
-  its own list (#59, #68); <code>approved</code> is a work-store state for built, reviewed work whose merge awaits a
-  person (#67).</li>
-<li>The dispatch schema's <code>shape</code> discipline, the <code>consolidate</code> write kind and the sweep ceilings (#62,
+  its own list (cartridges #59, #68); <code>approved</code> is a work-store state for built, reviewed work whose merge awaits a
+  person (cartridges #67).</li>
+<li>The dispatch schema's <code>shape</code> discipline, the <code>consolidate</code> write kind and the sweep ceilings (cartridges #62,
   #63, #64); the three arms carry the reviewers' ceiling so a bookkeeping step cannot kill an approved
-  task (#65). Specs: landing model (#57), work shape (#61), cost bounds and triage (#66).</li>
+  task (cartridges #65). Specs: landing model (cartridges #57), work shape (cartridges #61), cost bounds and triage (cartridges #66).</li>
 </ul>
 <h2 id="known-gaps">Known gaps</h2>
-<ul>
-<li><code>release-check</code> reported 48 drifts on a clean tree, all false; this release was cut with
-  <code>--allow-doc-drift</code>. G6 fixes the checks.</li>
-<li>The fix loop can spend a third build it never reviews; filed.</li>
-</ul>
+<p><code>release-check</code> reported 48 drifts on a clean tree, all false; this release was cut with <code>--allow-doc-drift</code>. G6 fixes the checks. The fix loop can spend a third build it never reviews; filed.</p>
 <h2 id="components">Components</h2>
 <p><code>coxswain-graphs</code>, <code>coxswain-tools</code> and <code>coxswain-cartridges</code> carry the changes above; <code>coxswain</code> carries
 the manifest and these notes (#39). <code>coxswain-crew</code> is unchanged since <code>v0.4.0</code> and is tagged in lockstep.</p>

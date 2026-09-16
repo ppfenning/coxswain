@@ -2300,54 +2300,47 @@ PyPI from that tag. Status: <strong>beta</strong>. The version string drops the 
 versioning the major already says the interface may move and the minor is where breaking changes go.
 <strong>Breaking:</strong> the HUD and desktop are no longer components, and <code>policy.gate</code> defaults to <code>ticket</code>.</p>
 <h2 id="coxswain">coxswain</h2>
-<ul>
-<li>The HUD and desktop leave the product: four components, not six; <code>cox install --with hud|desktop</code> and
-  <code>cox hud</code> are gone, and the voice loop lives on in its own repository (#25, #26).</li>
-<li>The methodology states what a graph may not do: a graph owns sequence and writes nothing, one harness
-  owns every consequence (#24); the front page, tagline, licence and animated header (#16–#21); the README
-  is the package's long description (#22); post-rename repository names and resolving docs links (#23).
-  Manifest and notes (#27, #28).</li>
-</ul>
+<p>The HUD and desktop leave the product: four components, not six; <code>cox install --with hud|desktop</code> and <code>cox hud</code> are gone, and the voice loop lives on in its own repository (#25, #26). The methodology states what a graph may not do: a graph owns sequence and writes nothing, one harness owns every consequence (#24); the front page, tagline, licence and animated header (#16–#21); the README is the package's long description (#22); post-rename repository names and resolving docs links (#23). Manifest and notes (#27, #28).</p>
 <h2 id="coxswain-cartridges">coxswain-cartridges</h2>
 <ul>
 <li><code>policy.gate</code> declares one of four human-gate levels, default <code>ticket</code> — the harness proposes and a
-  person merges — tighten-only through the chain (#44).</li>
+  person merges — tighten-only through the chain (cartridges #44).</li>
 <li>The project layer: a target repository's <code>.agent/cartridge.yaml</code> merges last, four keys allowed,
-  tighten-only, and runs record an <code>overlay_sha</code> (#37, #41).</li>
-<li>Reviews run at the standard tier, arbitration stays deep (coxswain #40); the reviewers keep their dollar ceiling
-  after the move (#43); the plan skill has a read budget (#39); size counts source lines, tests are
-  reported, never refused (#36); <code>policy.pacing</code> and a priority on work items (#34, #35); the route-work
-  and runs skills open by checking the leader (#38).</li>
+  tighten-only, and runs record an <code>overlay_sha</code> (cartridges #37, #41).</li>
+<li>Reviews run at the standard tier, arbitration stays deep (cartridges #40); the reviewers keep their dollar ceiling
+  after the move (cartridges #43); the plan skill has a read budget (cartridges #39); size counts source lines, tests are
+  reported, never refused (cartridges #36); <code>policy.pacing</code> and a priority on work items (cartridges #34, #35); the route-work
+  and runs skills open by checking the leader (cartridges #38).</li>
 </ul>
 <h2 id="coxswain-graphs">coxswain-graphs</h2>
 <ul>
-<li>The harness reads the project overlay at the edge and passes it to <code>load(overlay=)</code> (coxswain #45); the trust
-  runbook documents the layer and trap observations carry <code>overlay_sha</code> (#46).</li>
-<li>A build's size target counts source lines and reports test lines beside them (coxswain #44); the handoff no
-  longer asks for evidence the harness measured (#42); a validator that answers with a placeholder twice
-  abstains, and its evidence request must name a real path (#43, #47); review tiers (#48); a pacing stop
-  verdict zeroes the free slots (#41).</li>
+<li>The harness reads the project overlay at the edge and passes it to <code>load(overlay=)</code> (graphs #45); the trust
+  runbook documents the layer and trap observations carry <code>overlay_sha</code> (graphs #46).</li>
+<li>A build's size target counts source lines and reports test lines beside them (graphs #44); the handoff no
+  longer asks for evidence the harness measured (graphs #42); a validator that answers with a placeholder twice
+  abstains, and its evidence request must name a real path (graphs #43, #47); review tiers (graphs #48); a pacing stop
+  verdict zeroes the free slots (graphs #41).</li>
 </ul>
 <h2 id="coxswain-tools">coxswain-tools</h2>
 <ul>
 <li><code>cox runs detail RUN</code> — node timeline, standing objection, quarantine reason, last tool calls; <code>ENTER</code>
-  from <code>runs top</code> (#50, #54).</li>
-<li><code>cox runs notify</code> — desktop notifications for exits, quarantines, budget stops and cost (coxswain #52).</li>
+  from <code>runs top</code> (tools #50, #54).</li>
+<li><code>cox runs notify</code> — desktop notifications for exits, quarantines, budget stops and cost (tools #52).</li>
 <li><code>cox route leader take|beat|release|status</code> — one file says who drives the landing loop; <code>route launch</code>
-  and <code>runs land --apply</code> refuse while another live session holds it (#51, #56, #57, #60).</li>
+  and <code>runs land --apply</code> refuse while another live session holds it (tools #51, #56, #57, #60).</li>
 <li><code>cox dev release-check</code> — CLI surface, manifest and release-notes citation checks; <code>cox dev release</code>
-  refuses to tag while a drift stands unless <code>--allow-doc-drift</code> says why (#53, #59, #61).</li>
+  refuses to tag while a drift stands unless <code>--allow-doc-drift</code> says why (tools #53, #59, #61).</li>
 <li><code>cox route file --from-intake</code> links an intake file to its initiative and retires it; <code>route status</code>
-  shows queued, decomposed and landed (#55).</li>
+  shows queued, decomposed and landed (tools #55).</li>
 <li><code>cox usage assess</code> and pacing: a window gatherer, a tighten-only tier and effort ceiling on <code>route
-  launch</code>, a stop verdict honoured by a pure launch gate (#38, #42, #44, #45, #48).</li>
-<li><code>runs land</code> runs checks with the project's own interpreter and waits for checks to register (coxswain #49, #63);
-  <code>cox setup</code> gains the cartridge editor (#39, #41); the HUD command surface is removed (#66, #67);
-  <code>pyproject</code> bumped (#68).</li>
+  launch</code>, a stop verdict honoured by a pure launch gate (tools #38, #42, #44, #45, #48).</li>
+<li><code>runs land</code> runs checks with the project's own interpreter and waits for checks to register (tools #49, #63);
+  <code>cox setup</code> gains the cartridge editor (tools #39, #41); the HUD command surface is removed (tools #66, #67);
+  <code>pyproject</code> bumped (tools #68).</li>
 </ul>
 <h2 id="coxswain-crew">coxswain-crew</h2>
 <ul>
-<li>The scribe's plan is the record; the HUD panel leaves the seat (coxswain #5); post-rename names (coxswain #4).</li>
+<li>The scribe's plan is the record; the HUD panel leaves the seat (crew #5); post-rename names (crew #4).</li>
 </ul>
 
 

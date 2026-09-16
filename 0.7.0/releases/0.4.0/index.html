@@ -2301,35 +2301,29 @@ scripted against the old names must change before upgrading.</p>
 <h2 id="coxswain-tools">coxswain-tools</h2>
 <ul>
 <li><code>cox route leader take|beat|release|status</code> → <code>cox route chair …</code>; <code>agent_tools/leader.py</code> stays as a
-  deprecation shim re-exporting from <code>agent_tools.chair</code>, and its docstring names when it may go (#94,
+  deprecation shim re-exporting from <code>agent_tools.chair</code>, and its docstring names when it may go (tools #94,
   #96, #98, #99, #100, #102).</li>
 <li>Historical run logs stay readable: <code>events.py</code> parses both <code>leader taken:</code> and <code>chair taken:</code>
-  permanently, with a test on an old-worded line (#92, #95, #101).</li>
+  permanently, with a test on an old-worded line (tools #92, #95, #101).</li>
 <li><code>cox route chair clear</code> removes a lock whose holder is provably not live, refuses a live one without
-  <code>--force</code>, and holds the lock across read-decide-unlink (#99).</li>
-<li><code>cox stats ingest</code> (preview): a SQLite schema (coxswain #93), pure derivations (coxswain #97), the ingest CLI (coxswain #103),
+  <code>--force</code>, and holds the lock across read-decide-unlink (tools #99).</li>
+<li><code>cox stats ingest</code> (preview): a SQLite schema (tools #93), pure derivations (tools #97), the ingest CLI (tools #103),
   and trace recovery for budget-stopped runs that write no <code>usage.json</code> — 101 calls worth <code>$29.20</code> on the
-  development corpus (#104). No query surface yet. The stats-store contract and spike verdict are in the
-  repository (#91).</li>
-<li><code>pyproject</code> bumped to match the tag (coxswain #105).</li>
+  development corpus (tools #104). No query surface yet. The stats-store contract and spike verdict are in the
+  repository (tools #91).</li>
+<li><code>pyproject</code> bumped to match the tag (tools #105).</li>
 </ul>
 <h2 id="coxswain-cartridges">coxswain-cartridges</h2>
 <ul>
 <li><code>plan</code> gets a measured <code>$0.60</code> ceiling: over 310 calls, p95 <code>$0.317</code> and a maximum of <code>$0.345</code> against
-  <code>$0.35</code> — a distribution that stops <code>$0.005</code> short of its limit is censored (#54).</li>
+  <code>$0.35</code> — a distribution that stops <code>$0.005</code> short of its limit is censored (cartridges #54).</li>
 <li><code>decompose</code> gets its own <code>$0.60</code> ceiling; it had inherited a number calibrated from plan nodes, and
-  three identical runs cost <code>$0.45</code>, <code>$0.39</code> and <code>$0.22</code> — the problem is variance (#52, #53).</li>
+  three identical runs cost <code>$0.45</code>, <code>$0.39</code> and <code>$0.22</code> — the problem is variance (cartridges #52, #53).</li>
 </ul>
 <h2 id="coxswain">coxswain</h2>
-<ul>
-<li><code>releasable.yml</code>: a nightly, manually dispatchable check that the umbrella and all four components are
-  green on their default branches (#33). Manifest and notes (#34, #35).</li>
-</ul>
+<p><code>releasable.yml</code>: a nightly, manually dispatchable check that the umbrella and all four components are green on their default branches (#33). Manifest and notes (#34, #35).</p>
 <h2 id="known-gaps">Known gaps</h2>
-<ul>
-<li><code>cox stats</code> has <code>ingest</code> and nothing else, and the calls-to-task attribution is not applied.</li>
-<li><code>releasable.yml</code> shipped as invalid YAML and never ran; found and fixed in <code>0.5.0</code>.</li>
-</ul>
+<p><code>cox stats</code> has <code>ingest</code> and nothing else, and the calls-to-task attribution is not applied. <code>releasable.yml</code> shipped as invalid YAML and never ran; found and fixed in <code>0.5.0</code>.</p>
 <h2 id="components">Components</h2>
 <p><code>coxswain-tools</code> carries the rename, <code>chair clear</code> and the stats preview; <code>coxswain-cartridges</code> the
 ceilings; <code>coxswain</code> the workflow. <code>coxswain-graphs</code> and <code>coxswain-crew</code> are unchanged since <code>v0.3.0</code>.</p>

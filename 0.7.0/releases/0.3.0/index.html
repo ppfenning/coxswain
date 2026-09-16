@@ -2324,53 +2324,43 @@ the defects it fixed were the ones costing it runs.</p>
 <h2 id="coxswain-graphs">coxswain-graphs</h2>
 <ul>
 <li>A stale phase branch is rebased, or blocked by name, before the first task builds — twice in one
-  morning a correct diff had been discarded at the end instead (#52).</li>
+  morning a correct diff had been discarded at the end instead (graphs #52).</li>
 <li>A check that could not run is recorded as a harness fault carrying the command and the shell's answer,
-  not as a failing build (#56); check evidence is kept on failure and a patch is salvaged from the
-  scratch tree when the model's recollection of it has drifted (#51); a truncated patch is retried, not
-  reviewed (#55).</li>
+  not as a failing build (graphs #56); check evidence is kept on failure and a patch is salvaged from the
+  scratch tree when the model's recollection of it has drifted (graphs #51); a truncated patch is retried, not
+  reviewed (graphs #55).</li>
 <li>An approved build that does not land is named in the exit summary with the command that re-applies
-  it (#58).</li>
-<li>A failed child dispatch leaves a record naming its intake item (coxswain #57); the dispatch line (coxswain #53); a
-  decompose runs under the initiative's budget rather than a fixed node cap (#50) and writes
-  <code>initiative.md</code> with phase goals (#54); the review entry point is one function (#59).</li>
+  it (graphs #58).</li>
+<li>A failed child dispatch leaves a record naming its intake item (graphs #57); the dispatch line (graphs #53); a
+  decompose runs under the initiative's budget rather than a fixed node cap (graphs #50) and writes
+  <code>initiative.md</code> with phase goals (graphs #54); the review entry point is one function (graphs #59).</li>
 </ul>
 <h2 id="coxswain-tools">coxswain-tools</h2>
 <ul>
 <li><code>cox home</code>: leader, runs, backlog and attention in bordered panels, <code>ENTER</code> to drill in, <code>l</code> to land,
-  <code>i</code> for intake, <code>t</code> for the conversation (#69, #73, #74, #75, #77, #84, #85).</li>
+  <code>i</code> for intake, <code>t</code> for the conversation (tools #69, #73, #74, #75, #77, #84, #85).</li>
 <li><code>cox runs top</code>: aligned columns, a TOKENS column, a COST column, NODE is the node running now, and the
-  drill-down opens under the row (#70, #72, #76, #87).</li>
+  drill-down opens under the row (tools #70, #72, #76, #87).</li>
 <li><code>cox route leader</code> gains <code>--pid</code> naming the durable process that owns the loop, refused when it is not
-  alive, and a heartbeat primary (#71, #88, #90).</li>
+  alive, and a heartbeat primary (tools #71, #88, #90).</li>
 <li><code>cox setup</code> gains a Roster tab; <code>enabled</code> is honoured by <code>setup install</code> and reported by the doctor
-  (#79, #86); <code>cox route pull</code> is the first intake adapter (GitHub issues) behind a source interface (#82,
-  #83); <code>runs land</code> treats unanimous approval as landable (#78); a window ceiling for pacing (#81); ruff
-  docstring rules (#80). <code>pyproject</code> bumped (#89).</li>
+  (tools #79, #86); <code>cox route pull</code> is the first intake adapter (GitHub issues) behind a source interface (tools #82,
+  #83); <code>runs land</code> treats unanimous approval as landable (tools #78); a window ceiling for pacing (tools #81); ruff
+  docstring rules (tools #80). <code>pyproject</code> bumped (tools #89).</li>
 </ul>
 <h2 id="coxswain-cartridges">coxswain-cartridges</h2>
 <ul>
 <li>Style is guidance: the review charter notes a style departure and never withholds approval for it
-  (#45); a <code>style_pass</code> role and skill make the edit after approval instead of sending the build back
-  (#47, #51).</li>
-<li><code>resolve_surfaces</code> refuses a work item whose surfaces are not real paths (coxswain #49); the decompose and
-  intake-link skills state the rules the harness enforces (#48, #50); a seat's <code>enabled</code> must be a bool
-  (#46).</li>
+  (cartridges #45); a <code>style_pass</code> role and skill make the edit after approval instead of sending the build back
+  (cartridges #47, #51).</li>
+<li><code>resolve_surfaces</code> refuses a work item whose surfaces are not real paths (cartridges #49); the decompose and
+  intake-link skills state the rules the harness enforces (cartridges #48, #50); a seat's <code>enabled</code> must be a bool
+  (cartridges #46).</li>
 </ul>
 <h2 id="coxswain">coxswain</h2>
-<ul>
-<li><code>brew install ppfenning/coxswain/cox</code> on macOS; the formula installs <code>cox</code> alone and <code>cox install</code>
-  fetches the rest (#30). The manifest documents the release (<code>tag</code>) and edge (<code>ref</code>) channels, never
-  both on one entry (#29). Manifest and notes (#31, #32).</li>
-</ul>
+<p><code>brew install ppfenning/coxswain/cox</code> on macOS; the formula installs <code>cox</code> alone and <code>cox install</code> fetches the rest (#30). The manifest documents the release (<code>tag</code>) and edge (<code>ref</code>) channels, never both on one entry (#29). Manifest and notes (#31, #32).</p>
 <h2 id="known-gaps">Known gaps</h2>
-<ul>
-<li><code>cox dev release-check</code> reports drift that is not there on a clean tree (a doubled path in the manifest
-  check; a comparison against generated CLI pages); until fixed, <code>cox dev release</code> needs
-  <code>--allow-doc-drift</code>.</li>
-<li>The cartridge's configured checks run only <code>pytest</code> while every repository runs ruff in CI; six pull
-  requests in one day were red for a rule the harness could not see.</li>
-</ul>
+<p><code>cox dev release-check</code> reports drift that is not there on a clean tree (a doubled path in the manifest check; a comparison against generated CLI pages); until fixed, <code>cox dev release</code> needs <code>--allow-doc-drift</code>. The cartridge's configured checks run only <code>pytest</code> while every repository runs ruff in CI; six pull requests in one day were red for a rule the harness could not see.</p>
 <h2 id="components">Components</h2>
 <p>All four code components carry changes; <code>coxswain-crew</code> is unchanged since <code>v0.2.0</code>.</p>
 
