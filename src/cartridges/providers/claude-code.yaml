@@ -54,11 +54,11 @@ role_budget_usd:
   # also moved them onto the standard BUDGET, and four tasks in one run died at
   # it — two of them in review_charter and review_adversary. The model tier and
   # the dollar ceiling are separate choices; this keeps the ceiling they had.
-  review_charter:   0.80
-  review_adversary: 0.80
+  review_charter:   1.20
+  review_adversary: 1.20
   triage:    0.80          # a classification seat reading several task records and
                            # traces; measured later by `cox stats bounds`.
-  build:     1.00          # it edits, tests and diffs — and a fix-loop retry re-applies
+  build:     1.50          # it edits, tests and diffs — and a fix-loop retry re-applies
                            # the previous patch before amending it, which is not free.
                            # Measured: a clean first build lands around $0.50 in ~40 turns.
                            # A retry that hits the ceiling discards nothing the harness
@@ -103,7 +103,11 @@ role_budget_usd:
   # under $0.30 and unaffected. It stops the ceiling from killing the class of
   # plan that must read several modules to compose them. A plan that cannot
   # finish under 0.60 is planning a task that should have been split.
-  plan:      0.60
+  plan:      1.00
+  plan_alternative: 0.50   # censored at 0.35: max $0.342 against a $0.35 ceiling (n=63, 2026-09-16)
+  plan_arbitrate:  1.20   # censored at 0.80: max $0.794 (n=73)
+  plan_adversary:  1.20   # censored at 0.80: max $0.792, p95 $0.782 (n=56)
+  validate_phase:  0.50   # censored at 0.35: p95 $0.362, max $0.561 (n=218)
   # RAISED to 2.00 on 2026-09-08, and the argument is leverage rather than size.
   # decompose runs ONCE PER INITIATIVE; every other seat runs once per task. It is
   # structurally the cheapest place to be generous and the most expensive place to
