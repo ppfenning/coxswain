@@ -2348,7 +2348,7 @@ Coxswain is in beta — versions may change between releases
 <p>Cut on 2026-09-16. <code>coxswain-cartridges</code>, <code>coxswain-graphs</code> and <code>coxswain-tools</code> are tagged <code>v0.8.0</code> in
 lockstep; <code>coxswain-crew</code> is pinned at <code>v0.7.0</code> for the first time instead of re-tagged, and
 <code>coxswain-tools</code> is published to PyPI from its tag. Status: <strong>beta</strong>; nothing here breaks a <code>0.7.0</code>
-install. This release closes the graphs halves of <strong>G5 cost bounds</strong> and <strong>G7 triage</strong>, and fixes the
+install. This release closes the graphs half of <strong>G5 cost bounds</strong> and all but one ticket of <strong>G7 triage</strong>, and fixes the
 fix loop's habit of throwing away correct builds — the theme is that <code>done</code> now means on main, a
 build is judged by what it changed, and the machine can classify its own stranded work.</p>
 <h2 id="coxswain-graphs">coxswain-graphs</h2>
@@ -2403,8 +2403,9 @@ longer jumps from <code>0.6.0</code> to <code>0.3.0</code> (coxswain #46).</p>
 <p><code>release-check</code> still reports false <code>cli_surface</code> drifts for the bare <code>cox</code> and the <code>setup</code>/<code>dev</code> groups,
 so this release was cut with <code>--allow-doc-drift</code>; the fix is filed. A node that dies on the account's
 session limit is still recorded as a task attempt rather than pausing the run; bare <code>cox</code> prints the chair
-heartbeat command instead of starting a beater. Three <code>graphs-loop-fixes</code>
-tickets remain at the attempt cap and roll to <code>0.9.0</code>, where the P projects begin.</p>
+heartbeat command instead of starting a beater. The graphs triage half is eight tickets of nine: the
+docket's <code>stranded</code> count rolls to <code>0.9.0</code> after three rounds of contradictory arbitration, as do three
+<code>graphs-loop-fixes</code> tickets at the attempt cap. The P projects begin at <code>0.9.0</code>.</p>
 <h2 id="components">Components</h2>
 <p><code>coxswain-graphs</code>, <code>coxswain-tools</code>, <code>coxswain-cartridges</code> and <code>coxswain</code> carry the changes above.
 <code>coxswain-crew</code> is unchanged since <code>v0.7.0</code> and is pinned there; it is released on its own version from now on.</p>
