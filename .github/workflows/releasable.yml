@@ -32,8 +32,10 @@ jobs:
             check: pip install -e ".[dev]" && pytest -q
           - component: graphs
             repo: ppfenning/coxswain-graphs
-            # the substrate is optional; tests/conftest.py skips what needs it
-            check: pip install -e ".[dev]" && pytest -q
+            # coxswain-cartridges is public: install the substrate from GitHub
+            # and run the WHOLE suite, not the token-gated subset graphs' own CI
+            # falls back to (two tests import `core` outside the skip guard).
+            check: pip install -e ".[dev]" "git+https://github.com/ppfenning/coxswain-cartridges@main" && pytest -q
           - component: tools
             repo: ppfenning/coxswain-tools
             check: pip install -e ".[dev]" && pytest -q
