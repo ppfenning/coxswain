@@ -23,7 +23,12 @@ def test_every_component_is_pinned_in_lockstep_or_lives_here():
     for name, c in m["components"].items():
         assert ("repo" in c) != ("path" in c), name
         if "repo" in c:
-            assert c["tag"] == tag, f"{name} is not pinned to {tag}"
+            if c.get("lockstep", True):
+                assert c["tag"] == tag, f"{name} is not pinned to {tag}"
+            else:
+                # A `lockstep = false` component keeps the tag it names (crew,
+                # from 0.8.0); it must still be a real release tag.
+                assert SEMVER.match(c["tag"].lstrip("v")), f"{name} pins a non-semver tag {c['tag']}"
             assert c["repo"].startswith("ppfenning/coxswain-"), name
         assert c.get("required") or c.get("flag"), f"{name} is neither required nor optional"
         if "docs" in c:
