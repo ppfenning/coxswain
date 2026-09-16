@@ -2311,29 +2311,29 @@ harness observed rather than what the seat reported.</p>
 <li>A stale phase branch is recreated from the default branch instead of blocking the run; <code>done +
   dropped</code> completes a phase (#69); <code>collected_ids</code> and <code>coverage_floor_holds</code> gate the trim (#70); one
   <code>style_pass</code> trim runs per phase and is refused when it drops a collected test id or fails a check (#77).</li>
-<li><code>lint_tickets</code>' coupling rule is clean for a pair ordered by <code>needs</code>, transitively (#74); the
+<li><code>lint_tickets</code>' coupling rule is clean for a pair ordered by <code>needs</code>, transitively (coxswain #74); the
   worktree library (<code>prune_registrations</code>, <code>remove_worktree</code>, <code>keep_worktree</code>) lands ahead of the exit-path
   wiring (#72); the four static ticket rules exist as a pure function (#76).</li>
-<li>Design specs committed under <code>docs/design/</code>: observed record (#62), landing model (#63), work shape
+<li>Design specs committed under <code>docs/design/</code>: observed record (coxswain #62), landing model (coxswain #63), work shape
   (#66), validator reach, cost bounds, triage (#75). <code>ruff</code> is a dev dependency (#64).</li>
 </ul>
 <h2 id="coxswain-tools">coxswain-tools</h2>
 <ul>
 <li><code>cox runs recover &lt;run&gt; &lt;task&gt; --repo PATH</code> merges an approved, escalated commit into its phase branch —
   the remedy every escalated run had named since 0.5.0 (#132).</li>
-<li><code>cox runs land</code> plans from the run's own paths (#124), lands a whole phase off its epic branch (#125),
+<li><code>cox runs land</code> plans from the run's own paths (coxswain #124), lands a whole phase off its epic branch (coxswain #125),
   runs the repository's configured checks in a fresh worktree and names the failing check and its tail
   (#130); <code>route</code> treats <code>dropped</code> as terminal and never ready (#131).</li>
-<li><code>cox route launch sweep</code> (#126), <code>cox route lint</code> with the four static rules (#127) and <code>cox route
+<li><code>cox route launch sweep</code> (coxswain #126), <code>cox route lint</code> with the four static rules (coxswain #127) and <code>cox route
   groups</code> (#129).</li>
-<li><code>cox stats ingest</code> reads <code>calls.jsonl</code> and trace-recovered figures (#116), anchors events to their run
+<li><code>cox stats ingest</code> reads <code>calls.jsonl</code> and trace-recovered figures (coxswain #116), anchors events to their run
   (#120), classifies outcomes by kind (#117), rolls call cost up to tasks so <code>cost_per_landed</code> is real
   (#115); <code>cox stats coverage</code> reports known/total provenance rows (#121).</li>
-<li><code>release-check</code> gains the pages and readmes checks (#114, #118). <code>ruff</code> is a dev dependency (#122).</li>
+<li><code>release-check</code> gains the pages and readmes checks (coxswain #114, #118). <code>ruff</code> is a dev dependency (coxswain #122).</li>
 </ul>
 <h2 id="coxswain-cartridges">coxswain-cartridges</h2>
 <ul>
-<li><code>record_attempt</code> takes <code>kind</code> and <code>patch_kept</code> (#56); <code>dropped</code> is a work-store state (#58);
+<li><code>record_attempt</code> takes <code>kind</code> and <code>patch_kept</code> (coxswain #56); <code>dropped</code> is a work-store state (coxswain #58);
   <code>landing_areas.checks</code> is what a build worktree and a land both run, and a project layer may declare
   its own list (#59, #68); <code>approved</code> is a work-store state for built, reviewed work whose merge awaits a
   person (#67).</li>
