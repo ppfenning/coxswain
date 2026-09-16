@@ -351,6 +351,15 @@ def test_local_cartridge_checks_run_lint_before_tests() -> None:
     ]
 
 
+def test_load_with_a_checks_overlay_replaces_locals_lint_and_tests() -> None:
+    """A project layer overlay's `landing_areas.checks` replaces `local`'s pytest-gated pair, not just the literal."""
+    overlay = {"landing_areas": {"checks": [{"name": "syntax", "cmd": "bash -n *.sh"}]}}
+    resolved = load(
+        "local", REPO / "cartridges", skill_index=index_from_roots([REPO / "skills-plugins"]), overlay=overlay
+    )
+    assert resolved["landing_areas"]["checks"] == [{"name": "syntax", "cmd": "bash -n *.sh"}]
+
+
 def test_base_cartridge_declares_consolidate_as_low_risk_deferred() -> None:
     """Loads `local`, not `base`, for the same reason as above: `local`
     declares no `consolidate` entry of its own, so the value asserted here is `base`'s.
@@ -481,6 +490,27 @@ def test_overlay_errors_refuses_a_non_list_context() -> None:
     assert overlay_errors({"context": "style.md"}) == ["overlay key 'context' must be a list, got str"]
 
 
+def test_overlay_errors_refuses_an_empty_checks_list() -> None:
+    overlay = {"landing_areas": {"checks": []}}
+    assert overlay_errors(overlay) == ["project layer overlay refuses landing_areas.checks: list must not be empty"]
+
+
+def test_overlay_errors_names_a_checks_entry_missing_cmd() -> None:
+    problems = overlay_errors({"landing_areas": {"checks": [{"name": "lint"}]}})
+    assert problems == ["project layer overlay refuses checks entry {'name': 'lint'}: missing 'name' or 'cmd'"]
+
+
+def test_overlay_errors_names_a_duplicate_checks_entry() -> None:
+    checks = [{"name": "lint", "cmd": "ruff check ."}, {"name": "lint", "cmd": "bash -n"}]
+    overlay = {"landing_areas": {"checks": checks}}
+    assert overlay_errors(overlay) == ["project layer overlay refuses checks entry 'lint': duplicate name"]
+
+
+def test_overlay_errors_still_refuses_an_unknown_key_alongside_valid_checks() -> None:
+    overlay = {"landing_areas": {"checks": [{"name": "lint", "cmd": "bash -n"}]}, "skills": {"plan": "x"}}
+    assert overlay_errors(overlay) == ["project layer overlay refuses key 'skills'"]
+
+
 def test_apply_overlay_adds_a_context_file_and_a_tier2_surface() -> None:
     resolved = {"context": ["/repo/base.md"], "policy": {"review_tier": {"tier2_surfaces": ["schema"]}}}
     overlay = {"context": ["/repo/overlay.md"], "policy": {"review_tier": {"tier2_surfaces": ["schema", "auth"]}}}
@@ -495,6 +525,15 @@ def test_apply_overlay_sets_description_and_merges_landing_areas_checks() -> Non
     merged = apply_overlay(resolved, overlay)
     assert merged["description"] == "new"
     assert merged["landing_areas"] == {"active_work": "board", "checks": ["lint"]}
+
+
+def test_apply_overlay_checks_replaces_the_base_list() -> None:
+    base_checks = [{"name": "lint", "cmd": "ruff check ."}, {"name": "tests", "cmd": "pytest -q"}]
+    project_checks = [{"name": "lint", "cmd": "bash -n *.sh"}, {"name": "shellcheck", "cmd": "shellcheck *.sh"}]
+    resolved = {"landing_areas": {"checks": base_checks}}
+    overlay = {"landing_areas": {"checks": project_checks}}
+    merged = apply_overlay(resolved, overlay)
+    assert merged["landing_areas"]["checks"] == project_checks
 
 
 def test_apply_overlay_of_none_returns_the_input_unchanged() -> None:
@@ -591,3 +630,10 @@ def test_load_refuses_an_overlay_context_file_that_does_not_exist(cartridges: Pa
 
 def test_a_non_mapping_review_tier_is_an_overlay_error():
     assert overlay_errors({"policy": {"review_tier": "tight"}}) == ["overlay key 'policy.review_tier' must be a mapping, got str"]
+
+
+def test_overlay_errors_refuses_a_checks_entry_whose_cmd_is_blank():
+    """`cmd:` left empty parses to None or ""; key presence alone is not a usable check (arbitration, run cartridges-loop-fixes-1)."""
+    problems = overlay_errors({"landing_areas": {"checks": [{"name": "lint", "cmd": None}, {"name": "tests", "cmd": ""}]}})
+    assert len(problems) == 2
+    assert all("must be non-empty strings" in p for p in problems)

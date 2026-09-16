@@ -268,7 +268,38 @@ def _as_mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
+# `landing_areas.checks` is the build/lint/test list a project layer may
+# declare; an overlay's list REPLACES the base cartridge's list for that
+# tree, because a project that runs `bash -n` does not also want `pytest`.
+# That is the opposite of the repo-root `.agent-checks` file, which ADDS
+# extra checks and is untouched by this key.
 _OVERLAY_NESTED_ALLOWED = {"policy": "review_tier", "landing_areas": "checks"}
+
+# Which allowed nested subkeys hold a list of entries rather than a mapping;
+# `landing_areas.checks` is the one exception to the mapping shape the loop
+# in `overlay_errors` otherwise assumes.
+_OVERLAY_LIST_SUBKEYS = frozenset({"checks"})
+
+
+def _checks_problems(checks: Any) -> list[str]:
+    """A replacement `checks` list: non-empty, each entry a mapping with `name` and `cmd`, names unique."""
+    if not _is_plain_list(checks):
+        return [f"project layer overlay refuses landing_areas.checks: must be a list, got {type(checks).__name__}"]
+    if not checks:
+        return ["project layer overlay refuses landing_areas.checks: list must not be empty"]
+    problems: list[str] = []
+    seen: list[str] = []
+    for entry in checks:
+        if not isinstance(entry, Mapping) or "name" not in entry or "cmd" not in entry:
+            problems.append(f"project layer overlay refuses checks entry {entry!r}: missing 'name' or 'cmd'")
+            continue
+        if not all(isinstance(entry.get(k), str) and entry[k].strip() for k in ("name", "cmd")):
+            problems.append(f"project layer overlay refuses checks entry {entry!r}: 'name' and 'cmd' must be non-empty strings")
+            continue
+        if entry["name"] in seen:
+            problems.append(f"project layer overlay refuses checks entry '{entry['name']}': duplicate name")
+        seen.append(entry["name"])
+    return problems
 
 
 def overlay_errors(overlay: Mapping[str, Any]) -> list[str]:
@@ -286,7 +317,11 @@ def overlay_errors(overlay: Mapping[str, Any]) -> list[str]:
             continue
         problems += [f"project layer overlay refuses key '{key}.{sub}'" for sub in value if sub != allowed_subkey]
         sub_value = value.get(allowed_subkey)
-        if sub_value is not None and not isinstance(sub_value, Mapping):
+        if sub_value is None:
+            continue
+        if allowed_subkey in _OVERLAY_LIST_SUBKEYS:
+            problems += _checks_problems(sub_value)
+        elif not isinstance(sub_value, Mapping):
             problems.append(f"overlay key '{key}.{allowed_subkey}' must be a mapping, got {type(sub_value).__name__}")
     return problems
 
