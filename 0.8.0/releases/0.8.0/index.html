@@ -2366,6 +2366,8 @@ build is judged by what it changed, and the machine can classify its own strande
   <code>files_touched</code> and the ticket's evidence commands must appear in <code>commands_run</code> with output — and a
   placeholder is re-prompted once, cap-exempt, then quarantined as <code>build_output_invalid</code> (graphs #110,
   #111, #113).</li>
+<li>The graphs epic recreates a phase branch whose commits are all on main by patch-id instead of refusing
+  it as "behind main"; a branch with a genuinely unapplied commit is still refused (graphs #115).</li>
 <li>Node ceilings in graphs resolve from <code>policy.cost</code> through the bounds file, with a per-node cap
   (graphs #101, #102).</li>
 <li>Autonomy scope in graphs follows the routing profile, and a provider profile hash keys the ledger's
@@ -2401,8 +2403,7 @@ longer jumps from <code>0.6.0</code> to <code>0.3.0</code> (coxswain #46).</p>
 <p><code>release-check</code> still reports false <code>cli_surface</code> drifts for the bare <code>cox</code> and the <code>setup</code>/<code>dev</code> groups,
 so this release was cut with <code>--allow-doc-drift</code>; the fix is filed. A node that dies on the account's
 session limit is still recorded as a task attempt rather than pausing the run; bare <code>cox</code> prints the chair
-heartbeat command instead of starting a beater; and a phase branch whose commits reached main by
-squash-merge is still refused as "behind main" until the patch-id check lands. Three <code>graphs-loop-fixes</code>
+heartbeat command instead of starting a beater. Three <code>graphs-loop-fixes</code>
 tickets remain at the attempt cap and roll to <code>0.9.0</code>, where the P projects begin.</p>
 <h2 id="components">Components</h2>
 <p><code>coxswain-graphs</code>, <code>coxswain-tools</code>, <code>coxswain-cartridges</code> and <code>coxswain</code> carry the changes above.
