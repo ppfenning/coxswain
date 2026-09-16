@@ -39,6 +39,28 @@ See the [0.7.0 release notes](0.7.0.md) for what landed in each component.
 
 See the [0.6.0 release notes](0.6.0.md) for what landed in each component.
 
+## `0.5.0`
+
+| Component | Repository or path | Tag | Required or flag |
+| --- | --- | --- | --- |
+| cartridges | `ppfenning/coxswain-cartridges` | `v0.5.0` | required |
+| graphs | `ppfenning/coxswain-graphs` | `v0.5.0` | required |
+| tools | `ppfenning/coxswain-tools` | `v0.5.0` | required, provides `cox` |
+| crew | `ppfenning/coxswain-crew` | `v0.5.0` | flag: `crew` |
+
+See the [0.5.0 release notes](0.5.0.md) for what landed in each component.
+
+## `0.4.0`
+
+| Component | Repository or path | Tag | Required or flag |
+| --- | --- | --- | --- |
+| cartridges | `ppfenning/coxswain-cartridges` | `v0.4.0` | required |
+| graphs | `ppfenning/coxswain-graphs` | `v0.4.0` | required |
+| tools | `ppfenning/coxswain-tools` | `v0.4.0` | required, provides `cox` |
+| crew | `ppfenning/coxswain-crew` | `v0.4.0` | flag: `crew` |
+
+See the [0.4.0 release notes](0.4.0.md) for what landed in each component.
+
 ## `0.3.0`
 
 | Component | Repository or path | Tag | Required or flag |
@@ -49,6 +71,17 @@ See the [0.6.0 release notes](0.6.0.md) for what landed in each component.
 | crew | `ppfenning/coxswain-crew` | `v0.3.0` | flag: `crew` |
 
 See the [0.3.0 release notes](0.3.0.md) for what landed in each component.
+
+## `0.2.0`
+
+| Component | Repository or path | Tag | Required or flag |
+| --- | --- | --- | --- |
+| cartridges | `ppfenning/coxswain-cartridges` | `v0.2.0` | required |
+| graphs | `ppfenning/coxswain-graphs` | `v0.2.0` | required |
+| tools | `ppfenning/coxswain-tools` | `v0.2.0` | required, provides `cox` |
+| crew | `ppfenning/coxswain-crew` | `v0.2.0` | flag: `crew` |
+
+See the [0.2.0 release notes](0.2.0.md) for what landed in each component.
 
 ## `0.1.0-beta.1`
 
