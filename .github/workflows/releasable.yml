@@ -21,24 +21,33 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Each component is checked the way ITS OWN ci.yml checks it. The
+        # previous version assumed every component had a uv `dev` dependency
+        # group and a pyproject; none did (cartridges/tools use an optional
+        # `dev` extra, graphs' `shell` extra needs the private substrate, crew
+        # is bash), so this job failed every night from 2026-09-09 on.
         include:
           - component: cartridges
             repo: ppfenning/coxswain-cartridges
+            check: pip install -e ".[dev]" && pytest -q
           - component: graphs
             repo: ppfenning/coxswain-graphs
+            # the substrate is optional; tests/conftest.py skips what needs it
+            check: pip install -e ".[dev]" && pytest -q
           - component: tools
             repo: ppfenning/coxswain-tools
+            check: pip install -e ".[dev]" && pytest -q
           - component: crew
             repo: ppfenning/coxswain-crew
+            check: python3 .github/check_seats.py && python3 .github/check_clean.py && bash -n install.sh && ./install.sh --prefix "$RUNNER_TEMP/agents" && ./install.sh --check --prefix "$RUNNER_TEMP/agents"
     steps:
       - uses: actions/checkout@v4
         with:
           repository: ${{ matrix.repo }}
-      - uses: astral-sh/setup-uv@v5
-      # component CI is out of budget to read here; this mirrors coxswain's
-      # own test.yml as the closest known convention, not a verified one.
-      - run: uv sync --group dev
-      - run: uv run pytest -q
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: ${{ matrix.check }}
       - if: failure()
         run: |
           echo "releasable: ${{ matrix.component }} (${{ matrix.repo }}@main) failed" >> "$GITHUB_STEP_SUMMARY"
