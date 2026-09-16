@@ -452,6 +452,49 @@ def test_a_dropped_items_dependents_become_ready(initiative: Path) -> None:
     assert "t5-only-needs-dropped" in [t["id"] for t in ready_tasks(items, phase="p2-rollout")]
 
 
+# ── approved ───────────────────────────────────────────────────────────────
+
+
+def test_an_approved_item_round_trips(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1", state="approved")
+    assert read_item(path)["state"] == "approved"
+
+
+def test_ready_can_move_to_approved(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1", state="ready")
+    assert set_state(path, "approved")["state"] == "approved"
+
+
+def test_in_progress_can_move_to_approved(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1", state="in_progress")
+    assert set_state(path, "approved")["state"] == "approved"
+
+
+def test_approved_can_move_to_done(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1", state="approved")
+    assert set_state(path, "done")["state"] == "done"
+
+
+def test_approved_can_relaunch_back_to_ready(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1", state="approved")
+    assert set_state(path, "ready")["state"] == "ready"
+
+
+def test_approved_to_in_progress_is_refused(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1", state="approved")
+    with pytest.raises(WorkStoreError, match="approved"):
+        set_state(path, "in_progress")
+
+
+def test_an_approved_item_leaves_its_phase_incomplete(initiative: Path) -> None:
+    set_state(initiative / "p1-foundations" / "t1-schema-probe.md", "ready")
+    set_state(initiative / "p1-foundations" / "t1-schema-probe.md", "approved")
+    set_state(initiative / "p1-foundations" / "t2-bench-harness.md", "done")
+    set_state(initiative / "p1-foundations" / "t3-cutover.md", "done")
+    items = read_initiative(initiative)["items"]
+    assert phase_complete(items, "p1-foundations") is False
+
+
 # ── surfaces ───────────────────────────────────────────────────────────────
 
 

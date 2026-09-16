@@ -28,6 +28,12 @@ already the audit trail, so there is no second system to keep honest.
 `work_state_arm` is its single writer — the single-writer conviction survives
 having no tracker, because the conviction was never about the tracker.
 
+`approved` sits between `in_progress` and `done`: the task's build was
+reviewed and approved but its merge was escalated to a person. It is NOT
+ready — no run may pick it up — and NOT done — it does not complete its
+phase or initiative, the `done + dropped` completion rule from #58 is
+unchanged — and the land/recover tooling is what moves it on to `done`.
+
 `priority` is 1..5, 1 highest; an item that omits it defaults to 3. It is
 validated like `budget_usd`. Reading exposes it on every parsed item, never
 absent, unlike `budget_usd`. Writing omits the key once it equals the
@@ -59,10 +65,13 @@ __all__ = [
     "write_item",
 ]
 
-STATES = ("todo", "ready", "in_progress", "blocked", "done", "dropped")
+STATES = ("todo", "ready", "in_progress", "approved", "blocked", "done", "dropped")
 DONE = "done"
 DROPPED = "dropped"
+APPROVED = "approved"
 _TERMINAL = frozenset({DONE, DROPPED})
+_INTO_APPROVED = frozenset({"ready", "in_progress"})
+_OUT_OF_APPROVED = frozenset({"done", "ready"})
 DEFAULT_PRIORITY = 3
 ATTEMPT_KINDS = ("refused", "no_work", "unverified", "infra")
 
@@ -244,6 +253,11 @@ def set_state(path: Path | str, state: str) -> dict[str, Any]:
     if state not in STATES:
         raise WorkStoreError(f"unknown state '{state}'; expected one of {list(STATES)}")
     item = read_item(path)
+    current = item["state"]
+    if state == APPROVED and current not in _INTO_APPROVED:
+        raise WorkStoreError(f"cannot move '{current}' -> 'approved'; only ready or in_progress may")
+    if current == APPROVED and state != APPROVED and state not in _OUT_OF_APPROVED:
+        raise WorkStoreError(f"cannot move 'approved' -> '{state}'; only done or ready may follow approved")
     item["state"] = state
     write_item(item, path)
     return item
