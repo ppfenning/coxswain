@@ -2362,6 +2362,11 @@ graphs and tools stay in lockstep; crew keeps its own tag from the next release.
   model — output is 40–69% of spend, cache reads under a third (tools #146).</li>
 <li>The operator's spend ceiling lives in the profile's <code>spend:</code> block and reaches <code>usage_window</code>, so
   <code>route context</code> reports a measured window instead of "unmeasured" (tools #143).</li>
+<li><code>route lint</code>'s coupling rule is clean for a pair ordered by <code>needs</code>, transitively (tools #149); <code>route
+  launch decompose</code> writes <code>initiative.md</code> deterministically before launching, ending the one file every
+  decomposed initiative lacked (tools #151); <code>runs usage</code> on a live run answers from the trace instead of a
+  traceback (tools #152); <code>wait_workflows</code> runs <code>gh</code> from the component directory — the first cut under the
+  new gate stopped on exactly that (tools #150).</li>
 <li><code>route.parse_frontmatter</code> reads block-style lists (tools #140); <code>route context</code>/<code>status</code> validate item states
   when they read them and show <code>approved</code> as awaiting merge (tools #142); <code>cox runs notify</code> seeds its state from
   disk on first start instead of replaying 389 runs to the desktop (tools #141).</li>
@@ -2375,7 +2380,7 @@ graphs and tools stay in lockstep; crew keeps its own tag from the next release.
 <h2 id="coxswain">coxswain</h2>
 <p>The nightly <code>releasable</code> workflow checks each component the way its own <code>ci.yml</code> does and installs the public substrate for graphs; it had failed every night since 09-09 on a guessed install step (#40, #41).</p>
 <h2 id="known-gaps">Known gaps</h2>
-<p><code>release-check</code> still reports 7 false <code>cli_surface</code> drifts — the bare <code>cox</code> and the <code>setup</code>/<code>dev</code> groups read as commands to remove — so this release was cut with <code>--allow-doc-drift</code>; filed. The fix loop can still build a third time it never reviews; the ticket for it is at the attempt cap awaiting a person, as is the dispatcher counting itself as a slot. Four route.py fixes (lint honours <code>needs</code>, deterministic <code>initiative.md</code>, land closes <code>approved</code>, <code>runs usage</code> on a live run) and the graphs/cartridges halves of G5 and G7 are in flight for <code>0.8.0</code>.</p>
+<p><code>release-check</code> still reports 7 false <code>cli_surface</code> drifts — the bare <code>cox</code> and the <code>setup</code>/<code>dev</code> groups read as commands to remove — so this release was cut with <code>--allow-doc-drift</code>; filed. The fix loop can still build a third time it never reviews; the ticket for it is at the attempt cap awaiting a person, as is the dispatcher counting itself as a slot. One route.py fix (land closes <code>approved</code>) and the graphs/cartridges halves of G5 and G7 are in flight for <code>0.8.0</code>.</p>
 <h2 id="components">Components</h2>
 <p><code>coxswain-graphs</code>, <code>coxswain-tools</code>, <code>coxswain-cartridges</code> and <code>coxswain</code> carry the changes above.
 <code>coxswain-crew</code> is unchanged since <code>v0.4.0</code> and is tagged in lockstep for the last time.</p>
