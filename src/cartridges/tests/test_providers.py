@@ -34,3 +34,7 @@ def test_sweep_build_carries_the_standard_build_tool_grant_and_tier() -> None:
     assert set(PROFILE["tools"]["sweep_build"]) == set(PROFILE["tools"]["build"])
     assert PROFILE["defaults"]["sweep_build"] == "standard"
     assert PROFILE["role_budget_usd"]["sweep_build"] == 2.00
+
+
+def test_triage_role_budget_is_eighty_cents() -> None:
+    assert PROFILE["role_budget_usd"]["triage"] == 0.80

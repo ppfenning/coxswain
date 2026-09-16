@@ -56,6 +56,8 @@ role_budget_usd:
   # the dollar ceiling are separate choices; this keeps the ceiling they had.
   review_charter:   0.80
   review_adversary: 0.80
+  triage:    0.80          # a classification seat reading several task records and
+                           # traces; measured later by `cox stats bounds`.
   build:     1.00          # it edits, tests and diffs — and a fix-loop retry re-applies
                            # the previous patch before amending it, which is not free.
                            # Measured: a clean first build lands around $0.50 in ~40 turns.

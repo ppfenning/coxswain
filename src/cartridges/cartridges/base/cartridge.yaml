@@ -147,6 +147,11 @@ write_kinds:
   # and moves the superseded tickets it consolidates to the `dropped` state.
   consolidate:        {risk: low,    ramp: deferred}
 
+  # An amendment only ever APPENDS to a work item; the harness forces `gated`
+  # on any diff that deletes or modifies text (triage.md §2), so the streak
+  # is earned only by additive amendments.
+  ticket_amend:        {risk: low,    ramp: eligible}
+
   charter_proposal:   {ramp: never, apply_arm: pr}     # changes the rules themselves
   skill_proposal:     {ramp: never, apply_arm: pr}
 

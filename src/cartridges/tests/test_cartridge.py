@@ -368,6 +368,14 @@ def test_base_cartridge_declares_consolidate_as_low_risk_deferred() -> None:
     assert resolved["write_kinds"]["consolidate"] == {"risk": "low", "ramp": "deferred"}
 
 
+def test_base_cartridge_declares_ticket_amend_as_low_risk_eligible() -> None:
+    """Loads `local`, not `base`, for the same reason as above: `local`
+    declares no `ticket_amend` entry of its own, so the value asserted here is `base`'s.
+    """
+    resolved = load("local", REPO / "cartridges", skill_index=index_from_roots([REPO / "skills-plugins"]))
+    assert resolved["write_kinds"]["ticket_amend"] == {"risk": "low", "ramp": "eligible"}
+
+
 def test_layers_of_a_lone_cartridge_is_one_entry_labelled_by_its_name(tmp_path: Path) -> None:
     root = tmp_path / "cartridges"
     write_cartridge(root / "base", {"team": "base", "version": 1})
