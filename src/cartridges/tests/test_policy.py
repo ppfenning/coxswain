@@ -127,6 +127,25 @@ def test_rows_spanning_two_provider_profiles_are_refused() -> None:
         autonomy_policy("draft_pr_create", "low", ledger, config())
 
 
+def test_rows_spanning_two_models_are_refused() -> None:
+    bound = clean("draft_pr_create", "low", 3)
+    for row in bound:
+        row["model"] = "claude-sonnet-5"
+    other = rows(("draft_pr_create", "low", "clean"))
+    other[0]["model"] = "claude-haiku-5"
+    with pytest.raises(PolicyError, match="span 2 values of 'model'"):
+        autonomy_policy("draft_pr_create", "low", bound + other, config())
+
+
+def test_rows_all_lacking_model_pass_as_one_scope_same_as_a_shared_model() -> None:
+    unbound = clean("draft_pr_create", "low", 3)
+    assert autonomy_policy("draft_pr_create", "low", unbound, config()) == AUTO
+    bound = clean("draft_pr_create", "low", 3)
+    for row in bound:
+        row["model"] = "claude-sonnet-5"
+    assert autonomy_policy("draft_pr_create", "low", bound, config()) == AUTO
+
+
 # ── Rule 5: caps bound a graduated kind, and overflow does not punish it ────
 
 

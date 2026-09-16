@@ -52,6 +52,20 @@ def test_a_bad_row_writes_nothing_at_all(tmp_path: Path) -> None:
     assert not path.exists()
 
 
+def test_a_row_with_model_round_trips_the_value(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.jsonl"
+    row = rows(("ticket_create", "low", "clean"))[0]
+    row["model"] = "claude-sonnet-5"
+    ledger.append([row], path)
+    assert ledger.read(path)[0]["model"] == "claude-sonnet-5"
+
+
+def test_a_row_without_model_still_validates(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.jsonl"
+    ledger.append(rows(("ticket_create", "low", "clean")), path)
+    assert "model" not in ledger.read(path)[0]
+
+
 def test_append_observation_records_a_failure(tmp_path: Path) -> None:
     path = tmp_path / "ledger.jsonl"
     row = rows(("retry_idempotent", "medium", "clean"))[0]

@@ -109,7 +109,7 @@ FAILURE = "failure"
 STREAK_BREAKING = frozenset({REVERSAL, FAILURE})
 
 # Rows must be comparable on these before any streak may be counted across them.
-SCOPE_KEYS = ("cartridge_sha", "provider_profile")
+SCOPE_KEYS = ("cartridge_sha", "provider_profile", "model")
 
 
 class PolicyError(Exception):
