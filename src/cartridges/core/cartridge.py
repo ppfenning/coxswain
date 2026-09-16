@@ -101,6 +101,7 @@ __all__ = ["CartridgeError", "load"]
 RISK_ORDER: Mapping[str, int] = {"low": 0, "medium": 1, "high": 2}
 RAMP_ORDER: Mapping[str, int] = {"eligible": 0, "deferred": 1, "gated": 2, "never": 3}
 GATE_ORDER: Mapping[str, int] = {"ticket": 0, "phase": 1, "epic": 2, "full": 3}
+COST_LEVEL_ORDER: Mapping[str, int] = {"strict": 0, "moderate": 1, "liberal": 2}
 
 # apply_arm usually names a role, but two values are literal sinks rather than
 # agent roles: the shell applies it itself, or it goes out as a pull request.
@@ -260,6 +261,18 @@ def gate_loosening(parent: str, child: str, label: str) -> str | None:
     return None
 
 
+def cost_level_loosening(parent: str, child: str, label: str) -> str | None:
+    """Tighten-only: `child` may move `policy.cost.level` toward `strict`, never toward `liberal`."""
+    if child not in COST_LEVEL_ORDER:
+        return f"'{label}' sets policy.cost.level to unknown value '{child}'; must be one of {', '.join(COST_LEVEL_ORDER)}"
+    if parent in COST_LEVEL_ORDER and COST_LEVEL_ORDER[child] > COST_LEVEL_ORDER[parent]:
+        return (
+            f"'{label}' loosens policy.cost.level from '{parent}' to '{child}'; "
+            "a team may tighten what the base declared, never loosen it"
+        )
+    return None
+
+
 def _is_plain_list(value: Any) -> bool:
     return isinstance(value, Sequence) and not isinstance(value, (str, bytes))
 
@@ -273,7 +286,7 @@ def _as_mapping(value: Any) -> Mapping[str, Any]:
 # tree, because a project that runs `bash -n` does not also want `pytest`.
 # That is the opposite of the repo-root `.agent-checks` file, which ADDS
 # extra checks and is untouched by this key.
-_OVERLAY_NESTED_ALLOWED = {"policy": "review_tier", "landing_areas": "checks"}
+_OVERLAY_NESTED_ALLOWED = {"policy": frozenset({"review_tier", "cost"}), "landing_areas": frozenset({"checks"})}
 
 # Which allowed nested subkeys hold a list of entries rather than a mapping;
 # `landing_areas.checks` is the one exception to the mapping shape the loop
@@ -302,32 +315,46 @@ def _checks_problems(checks: Any) -> list[str]:
     return problems
 
 
+def _cost_overlay_problems(cost: Any) -> list[str]:
+    """Only `level` is overlayable under `policy.cost`; `bounds` is a base/team concern, never a project one."""
+    if not isinstance(cost, Mapping):
+        return [f"overlay key 'policy.cost' must be a mapping, got {type(cost).__name__}"]
+    return [f"project layer overlay refuses key 'policy.cost.{sub}'" for sub in cost if sub != "level"]
+
+
 def overlay_errors(overlay: Mapping[str, Any]) -> list[str]:
     """Refused top-level keys, refused nested keys, and malformed values, named for `CartridgeError`."""
     problems = [f"project layer overlay refuses key '{key}'" for key in overlay if key not in OVERLAY_ALLOWED_KEYS]
     context = overlay.get("context")
     if context is not None and not _is_plain_list(context):
         problems.append(f"overlay key 'context' must be a list, got {type(context).__name__}")
-    for key, allowed_subkey in _OVERLAY_NESTED_ALLOWED.items():
+    for key, allowed_subkeys in _OVERLAY_NESTED_ALLOWED.items():
         value = overlay.get(key)
         if value is None:
             continue
         if not isinstance(value, Mapping):
             problems.append(f"overlay key '{key}' must be a mapping, got {type(value).__name__}")
             continue
-        problems += [f"project layer overlay refuses key '{key}.{sub}'" for sub in value if sub != allowed_subkey]
-        sub_value = value.get(allowed_subkey)
-        if sub_value is None:
-            continue
-        if allowed_subkey in _OVERLAY_LIST_SUBKEYS:
-            problems += _checks_problems(sub_value)
-        elif not isinstance(sub_value, Mapping):
-            problems.append(f"overlay key '{key}.{allowed_subkey}' must be a mapping, got {type(sub_value).__name__}")
+        problems += [f"project layer overlay refuses key '{key}.{sub}'" for sub in value if sub not in allowed_subkeys]
+        for allowed_subkey in allowed_subkeys:
+            sub_value = value.get(allowed_subkey)
+            if sub_value is None:
+                continue
+            if allowed_subkey in _OVERLAY_LIST_SUBKEYS:
+                problems += _checks_problems(sub_value)
+            elif allowed_subkey == "cost":
+                problems += _cost_overlay_problems(sub_value)
+            elif not isinstance(sub_value, Mapping):
+                problems.append(f"overlay key '{key}.{allowed_subkey}' must be a mapping, got {type(sub_value).__name__}")
     return problems
 
 
 def _overlay_review_tier(overlay: Mapping[str, Any]) -> Mapping[str, Any]:
     return _as_mapping(_as_mapping(overlay.get("policy")).get("review_tier"))
+
+
+def _overlay_cost_level(overlay: Mapping[str, Any]) -> str | None:
+    return _as_mapping(_as_mapping(overlay.get("policy")).get("cost")).get("level")
 
 
 # Lists whose membership review_tier's tighten-only rule bounds in opposite
@@ -384,6 +411,11 @@ def apply_overlay(
         base_policy = _as_mapping(resolved.get("policy"))
         base_review_tier = _as_mapping(base_policy.get("review_tier"))
         merged["policy"] = {**base_policy, "review_tier": {**base_review_tier, **review_tier}}
+    cost_level = _overlay_cost_level(overlay)
+    if cost_level is not None:
+        base_policy = _as_mapping(merged.get("policy"))
+        base_cost = _as_mapping(base_policy.get("cost"))
+        merged["policy"] = {**base_policy, "cost": {**base_cost, "level": cost_level}}
     return merged
 
 
@@ -397,7 +429,18 @@ def _merge_overlay(
     """`merged` with `overlay` applied, raising CartridgeError listing EVERY overlay problem found."""
     review_tier = _overlay_review_tier(overlay)
     base_review_tier = _as_mapping(_as_mapping(merged.get("policy")).get("review_tier"))
-    problems = [*overlay_errors(overlay), *_review_tier_problems(base_review_tier, review_tier)]
+    cost_level = _overlay_cost_level(overlay)
+    base_cost_level = _as_mapping(_as_mapping(merged.get("policy")).get("cost")).get("level")
+    cost_problem = (
+        cost_level_loosening(base_cost_level, cost_level, team)
+        if cost_level is not None and base_cost_level is not None
+        else None
+    )
+    problems = [
+        *overlay_errors(overlay),
+        *_review_tier_problems(base_review_tier, review_tier),
+        *([cost_problem] if cost_problem else []),
+    ]
     if problems:
         raise CartridgeError(
             f"cartridge '{team}' overlay failed to resolve ({len(problems)} problem(s)):\n  - "
@@ -577,6 +620,17 @@ def _validate(merged: Mapping[str, Any], skill_index: Mapping[str, Sequence[Any]
     gate = _as_mapping(merged.get("policy")).get("gate")
     if gate is not None and gate not in GATE_ORDER:
         problems.append(f"policy.gate is set to unknown value '{gate}'; must be one of {', '.join(GATE_ORDER)}")
+
+    cost = _as_mapping(merged.get("policy")).get("cost")
+    if cost is not None:
+        level = _as_mapping(cost).get("level")
+        if level is not None and level not in COST_LEVEL_ORDER:
+            problems.append(
+                f"policy.cost.level is set to unknown value '{level}'; must be one of {', '.join(COST_LEVEL_ORDER)}"
+            )
+        bounds = _as_mapping(cost).get("bounds")
+        if bounds is not None and not isinstance(bounds, str):
+            problems.append(f"policy.cost.bounds must be null or a string, got {type(bounds).__name__}")
 
     write_kinds = merged.get("write_kinds") or {}
     if isinstance(write_kinds, Mapping):

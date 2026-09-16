@@ -185,6 +185,16 @@ policy:
   dispatch:
     max_in_flight: 3             # how many harness runs the dispatcher may have alive at once;
                                  # the docket reports what is in flight and the dispatcher fills only the free slots.
+  # cost: says what a budget stop MEANS, not what it is — the ceiling itself
+  # comes from the bounds file or the provider profile. strict: a stop means
+  # mis-shaped, split it. moderate: unusual, look at it. liberal: something
+  # is wrong. A project layer may tighten this toward strict, never loosen
+  # it toward liberal (core/cartridge.py::cost_level_loosening).
+  cost:
+    level: moderate
+    # bounds: a JSON path, relative to the cartridge dir, written by
+    # `cox stats bounds --write`; null until one has been generated.
+    bounds: null
   # tracker: unset here, so the default rule applies — `github-projects` (a
   # one-way mirror of this work store) when the repository's remote is
   # github.com, else `none`. Set explicitly to `none` to switch the mirror

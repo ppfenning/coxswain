@@ -15,6 +15,7 @@ from core.cartridge import (
     _fold_fragments,
     _review_tier_problems,
     apply_overlay,
+    cost_level_loosening,
     gate_loosening,
     layers,
     load,
@@ -139,6 +140,48 @@ def test_gate_loosening_refuses_an_unknown_level_naming_the_four_allowed() -> No
     assert problem is not None
     assert "urgent" in problem
     assert "ticket, phase, epic, full" in problem
+
+
+def test_cost_level_loosening_allows_tightening_toward_strict() -> None:
+    assert cost_level_loosening("moderate", "strict", "acme") is None
+
+
+def test_cost_level_loosening_refuses_loosening_toward_liberal_by_name() -> None:
+    problem = cost_level_loosening("moderate", "liberal", "acme")
+    assert problem is not None
+    assert "acme" in problem and "moderate" in problem and "liberal" in problem
+
+
+def test_cost_level_loosening_refuses_an_unknown_level_naming_it() -> None:
+    problem = cost_level_loosening("moderate", "urgent", "acme")
+    assert problem is not None and "urgent" in problem
+
+
+def test_the_base_cartridge_declares_cost_at_moderate_with_no_bounds_file() -> None:
+    resolved = load("local", REPO / "cartridges", skill_index=index_from_roots([REPO / "skills-plugins"]))
+    assert resolved["policy"]["cost"] == {"level": "moderate", "bounds": None}
+
+
+def test_an_unknown_cost_level_is_refused_naming_it(cartridges: Path, skill_index) -> None:
+    config = yaml.safe_load((cartridges / "acme" / "cartridge.yaml").read_text())
+    config["policy"] = {"cost": {"level": "aggressive", "bounds": None}}
+    (cartridges / "acme" / "cartridge.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+    with pytest.raises(CartridgeError, match="policy.cost.level is set to unknown value 'aggressive'"):
+        load("acme", cartridges, skill_index=skill_index)
+
+
+def test_an_overlay_tightening_cost_level_to_strict_is_accepted() -> None:
+    overlay = {"policy": {"cost": {"level": "strict"}}}
+    resolved = load(
+        "local", REPO / "cartridges", skill_index=index_from_roots([REPO / "skills-plugins"]), overlay=overlay
+    )
+    assert resolved["policy"]["cost"]["level"] == "strict"
+
+
+def test_an_overlay_loosening_cost_level_to_liberal_is_refused() -> None:
+    overlay = {"policy": {"cost": {"level": "liberal"}}}
+    with pytest.raises(CartridgeError, match="loosens policy.cost.level from 'moderate' to 'liberal'"):
+        load("local", REPO / "cartridges", skill_index=index_from_roots([REPO / "skills-plugins"]), overlay=overlay)
 
 
 def test_gate_absent_in_a_fragment_inherits_the_authoritys() -> None:
@@ -492,6 +535,11 @@ def test_overlay_errors_refuses_unknown_nested_keys() -> None:
     problems = overlay_errors(overlay)
     assert "project layer overlay refuses key 'policy.merge_main'" in problems
     assert "project layer overlay refuses key 'landing_areas.active_work'" in problems
+
+
+def test_overlay_errors_refuses_policy_cost_bounds_by_name() -> None:
+    problems = overlay_errors({"policy": {"cost": {"bounds": "x"}}})
+    assert problems == ["project layer overlay refuses key 'policy.cost.bounds'"]
 
 
 def test_overlay_errors_refuses_a_non_list_context() -> None:
