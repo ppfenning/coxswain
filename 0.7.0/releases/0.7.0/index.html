@@ -2326,66 +2326,56 @@ graphs and tools stay in lockstep; crew keeps its own tag from the next release.
 <h2 id="coxswain-graphs">coxswain-graphs</h2>
 <ul>
 <li>The sweep graph exists: <code>graphs/ops/sweep.py</code> with <code>sweep_plan</code>, harness-run <code>sweep_apply</code> and a
-  no-model <code>sweep_verify</code> (#83), registered in <code>_KNOWN_GRAPHS</code> and the CLI (#84), with its <code>SPEC</code>, table
-  rows and page (#85); the docket marks <code>sweep</code> runnable when an idea is queued (#86) and the dispatch
-  schema carries <code>shape</code> with a required <code>why</code> (#90).</li>
-<li>The epic emits a <code>consolidate</code> proposal on the finding class work-shape.md §4 names (coxswain #92).</li>
+  no-model <code>sweep_verify</code> (graphs #83), registered in <code>_KNOWN_GRAPHS</code> and the CLI (graphs #84), with its <code>SPEC</code>, table
+  rows and page (graphs #85); the docket marks <code>sweep</code> runnable when an idea is queued (graphs #86) and the dispatch
+  schema carries <code>shape</code> with a required <code>why</code> (graphs #90).</li>
+<li>The epic emits a <code>consolidate</code> proposal on the finding class work-shape.md §4 names (graphs #92).</li>
 <li>Every run removes its worktrees and prunes dead registrations on every exit path, <code>--keep-worktrees</code>
-  moves them under <code>_kept/&lt;run&gt;</code> (#78, #82).</li>
+  moves them under <code>_kept/&lt;run&gt;</code> (graphs #78, #82).</li>
 <li><code>lint_tickets</code> runs at the end of decompose: reach and coupling refuse with corrections, grant and
-  size attach as <code>lint:</code> advisories on the ticket (#79); the reach rule now refuses corpus paths (#93) and
-  the trust runbook says what a seat can see (#94).</li>
+  size attach as <code>lint:</code> advisories on the ticket (graphs #79); the reach rule now refuses corpus paths (graphs #93) and
+  the trust runbook says what a seat can see (graphs #94).</li>
 <li>An escalated, approved task reads <code>approved</code> in the work store, not <code>done</code> — the disagreement between
-  the store and git that stranded nine tasks on 09-09 is closed at the source (#91).</li>
+  the store and git that stranded nine tasks on 09-09 is closed at the source (graphs #91).</li>
 <li>The validator judges what the harness saw: every call record carries a <code>task_id</code>, and a task's evidence
-  array holds its trace-observed commands keyed by it instead of by which files it touched (#96); the
-  brief says so (#95); a refusal must name a defect with a file, is retried once when malformed, and is
-  recorded <code>abstained</code> rather than discarding an approved patch (#97).</li>
+  array holds its trace-observed commands keyed by it instead of by which files it touched (graphs #96); the
+  brief says so (graphs #95); a refusal must name a defect with a file, is retried once when malformed, and is
+  recorded <code>abstained</code> rather than discarding an approved patch (graphs #97).</li>
 <li>An arm's <code>BudgetStop</code> quarantines the task as <code>infra</code> with the patch kept and the run exits normally
-  (#88); a node failing mid-review writes the task record on the way out, <code>infra</code>, patch kept (#89); a
-  provider safeguard refusal is retried once on the tier's alternate model (#81); a failed configured
-  check reaches the task record and the fix-loop brief by name and output tail, never "see evidence" (#87).</li>
+  (graphs #88); a node failing mid-review writes the task record on the way out, <code>infra</code>, patch kept (graphs #89); a
+  provider safeguard refusal is retried once on the tier's alternate model (graphs #81); a failed configured
+  check reaches the task record and the fix-loop brief by name and output tail, never "see evidence" (graphs #87).</li>
 <li>The coverage-floor trim runs <code>pytest</code> through the current interpreter, so a land's fresh checkout no
-  longer fails it (#80).</li>
+  longer fails it (graphs #80).</li>
 </ul>
 <h2 id="coxswain-tools">coxswain-tools</h2>
 <ul>
-<li><code>cox dev release</code> bumps what it tags (branch, PR, wait, merge — reusing the land executor) (coxswain #137), waits
-  on the workflows each tag starts and refuses to call the release done on any failure (#138), and
-  <code>release-check</code> gains a <code>versions</code> check <code>gate</code> never allows by reason (#136).</li>
+<li><code>cox dev release</code> bumps what it tags (branch, PR, wait, merge — reusing the land executor) (tools #137), waits
+  on the workflows each tag starts and refuses to call the release done on any failure (tools #138), and
+  <code>release-check</code> gains a <code>versions</code> check <code>gate</code> never allows by reason (tools #136).</li>
 <li><code>release-check</code> compares the CLI surface against the docs generator's output rather than the tree
-  (#135) and stops demanding a version string of component pages that never carry one (#139) — 48 false
+  (tools #135) and stops demanding a version string of component pages that never carry one (tools #139) — 48 false
   drifts on a clean tree become 7 (see known gaps).</li>
 <li><code>cox stats bounds</code> reports, per (role, model), n, p50, p95, max, the declared ceiling, whether the
   distribution is censored by it, and the strict/moderate/liberal candidates; <code>--write</code> produces the
-  bounds file the harness will read (#144, #145). <code>cox stats spend-mix</code> splits cost by token class per
-  model — output is 40–69% of spend, cache reads under a third (#146).</li>
+  bounds file the harness will read (tools #144, #145). <code>cox stats spend-mix</code> splits cost by token class per
+  model — output is 40–69% of spend, cache reads under a third (tools #146).</li>
 <li>The operator's spend ceiling lives in the profile's <code>spend:</code> block and reaches <code>usage_window</code>, so
-  <code>route context</code> reports a measured window instead of "unmeasured" (#143).</li>
-<li><code>route.parse_frontmatter</code> reads block-style lists (coxswain #140); <code>route context</code>/<code>status</code> validate item states
-  when they read them and show <code>approved</code> as awaiting merge (#142); <code>cox runs notify</code> seeds its state from
-  disk on first start instead of replaying 389 runs to the desktop (#141).</li>
+  <code>route context</code> reports a measured window instead of "unmeasured" (tools #143).</li>
+<li><code>route.parse_frontmatter</code> reads block-style lists (tools #140); <code>route context</code>/<code>status</code> validate item states
+  when they read them and show <code>approved</code> as awaiting merge (tools #142); <code>cox runs notify</code> seeds its state from
+  disk on first start instead of replaying 389 runs to the desktop (tools #141).</li>
 </ul>
 <h2 id="coxswain-cartridges">coxswain-cartridges</h2>
 <ul>
-<li>The <code>ticket_amend</code> write kind (risk low, ramp eligible) and a <code>triage</code> role ceiling (coxswain #69).</li>
+<li>The <code>ticket_amend</code> write kind (risk low, ramp eligible) and a <code>triage</code> role ceiling (cartridges #69).</li>
 <li>Ledger rows may carry <code>model</code>; <code>SCOPE_KEYS</code> gains it, so a streak earned under one binding does not
-  transfer to another (#70).</li>
+  transfer to another (cartridges #70).</li>
 </ul>
 <h2 id="coxswain">coxswain</h2>
-<ul>
-<li>The nightly <code>releasable</code> workflow checks each component the way its own <code>ci.yml</code> does and installs the
-  public substrate for graphs; it had failed every night since 09-09 on a guessed install step (#40, #41).</li>
-</ul>
+<p>The nightly <code>releasable</code> workflow checks each component the way its own <code>ci.yml</code> does and installs the public substrate for graphs; it had failed every night since 09-09 on a guessed install step (#40, #41).</p>
 <h2 id="known-gaps">Known gaps</h2>
-<ul>
-<li><code>release-check</code> still reports 7 false <code>cli_surface</code> drifts — the bare <code>cox</code> and the <code>setup</code>/<code>dev</code>
-  groups read as commands to remove — so this release was cut with <code>--allow-doc-drift</code>; filed.</li>
-<li>The fix loop can still build a third time it never reviews; the ticket for it is at the attempt cap
-  awaiting a person, as is the dispatcher counting itself as a slot.</li>
-<li>Four route.py fixes (lint honours <code>needs</code>, deterministic <code>initiative.md</code>, land closes <code>approved</code>,
-  <code>runs usage</code> on a live run) and the graphs/cartridges halves of G5 and G7 are in flight for <code>0.8.0</code>.</li>
-</ul>
+<p><code>release-check</code> still reports 7 false <code>cli_surface</code> drifts — the bare <code>cox</code> and the <code>setup</code>/<code>dev</code> groups read as commands to remove — so this release was cut with <code>--allow-doc-drift</code>; filed. The fix loop can still build a third time it never reviews; the ticket for it is at the attempt cap awaiting a person, as is the dispatcher counting itself as a slot. Four route.py fixes (lint honours <code>needs</code>, deterministic <code>initiative.md</code>, land closes <code>approved</code>, <code>runs usage</code> on a live run) and the graphs/cartridges halves of G5 and G7 are in flight for <code>0.8.0</code>.</p>
 <h2 id="components">Components</h2>
 <p><code>coxswain-graphs</code>, <code>coxswain-tools</code>, <code>coxswain-cartridges</code> and <code>coxswain</code> carry the changes above.
 <code>coxswain-crew</code> is unchanged since <code>v0.4.0</code> and is tagged in lockstep for the last time.</p>
