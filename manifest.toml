@@ -29,7 +29,7 @@ graphs     = { repo = "ppfenning/coxswain-graphs",     tag = "v0.12.0", required
     "docs/graphs/*.md",
 ] }
 tools      = { repo = "ppfenning/coxswain-tools",      tag = "v0.12.0", required = true, provides = "cox", docs = ["README.md"] }
-crew       = { repo = "ppfenning/coxswain-crew",       tag = "v0.12.0", flag = "crew", docs = ["README.md"] }
+crew       = { repo = "ppfenning/coxswain-crew",       tag = "v0.12.0", lockstep = false, flag = "crew", docs = ["README.md"] }
 
 [providers]
 claude-code = { status = "supported", profile = "providers/claude-code.yaml" }
