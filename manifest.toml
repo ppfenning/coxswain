@@ -10,7 +10,7 @@
 # install, part tag and part ref, is a configuration nobody tested.
 
 [coxswain]
-version = "0.12.0"
+version = "0.12.1"
 status  = "beta"
 
 [components]
