@@ -1,6 +1,6 @@
 {
-  "name": "agent-cartridges",
-  "owner": {"name": "agent-cartridges maintainers"},
+  "name": "coxswain-cartridges",
+  "owner": {"name": "coxswain-cartridges maintainers"},
   "plugins": [
     {
       "name": "local-skills",
