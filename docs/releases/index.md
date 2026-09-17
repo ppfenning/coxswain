@@ -152,3 +152,14 @@ The manifest for the first release, transcribed by hand from
 
 See the [0.1.0-beta.1 release notes](0.1.0-beta.1.md) for what landed in
 each component.
+
+## `0.12.1`
+
+| Component | Repository or path | Tag | Required or flag |
+| --- | --- | --- | --- |
+| cartridges | `ppfenning/coxswain-cartridges` | `v0.12.1` | required |
+| crew | `ppfenning/coxswain-crew` | `v0.12.0` | flag: `crew` (pinned) |
+| graphs | `ppfenning/coxswain-graphs` | `v0.12.1` | required |
+| tools | `ppfenning/coxswain-tools` | `v0.12.1` | required, provides `cox` |
+
+See the [0.12.1 release notes](0.12.1.md) for what landed in each component.
