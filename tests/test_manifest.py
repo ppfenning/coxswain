@@ -44,6 +44,6 @@ def test_exactly_one_component_provides_cox():
 def test_providers_declare_status_and_supported_ones_a_profile():
     m = _load()
     for name, p in m["providers"].items():
-        assert p["status"] in {"supported", "planned"}, name
-        if p["status"] == "supported":
+        assert p["status"] in {"supported", "experimental", "planned"}, name
+        if p["status"] in {"supported", "experimental"}:
             assert p["profile"].endswith(".yaml"), name

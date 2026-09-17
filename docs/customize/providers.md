@@ -31,11 +31,14 @@ to use:
 claude-code = { status = "supported", profile = "providers/claude-code.yaml" }
 codex       = { status = "planned" }
 gemini      = { status = "planned" }
-local       = { status = "planned" }
+local       = { status = "experimental", profile = "providers/local-oss.yaml" }
 ```
 
-Only `claude-code` is `status = "supported"` today; the others are
-`status = "planned"` and have no profile to point at yet.
+Only `claude-code` is `status = "supported"` today. `local` is
+`status = "experimental"`: its profile, `providers/local-oss.yaml`, declares
+its capabilities and puts the `cheap` tier on a local OpenAI-compatible
+endpoint, but no runner drives it yet. The others are `status = "planned"`
+and have no profile to point at.
 
 ## Where the detail lives
 

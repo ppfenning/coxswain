@@ -9,7 +9,7 @@ selects one from `manifest.toml`'s `[providers]` table.
 | Claude Code | supported | The `claude` CLI on `PATH`, the Coxswain plugin, and the per-tier model choice and budget ceiling for each seat. |
 | Codex | planned | A profile still needs to name the Codex CLI on `PATH` and map Coxswain's seat tiers to Codex's own model and budget controls. |
 | Gemini | planned | A profile still needs to name the Gemini CLI on `PATH` and map Coxswain's seat tiers to Gemini's model and budget controls. |
-| local | planned | A profile still needs to name a local model runner on `PATH` and define what a budget ceiling even means without a metered API. |
+| local | experimental | `providers/local-oss.yaml` declares the capabilities the harness reads and maps the `cheap` tier to a local OpenAI-compatible endpoint, with `standard` and `deep` still on Claude; no runner drives it yet, so the install works only as a declaration. |
 
 Only Claude Code is installable today; the `--provider` flag accepts the
 others, but `cox doctor` will report their profile as unconfigured.
