@@ -1,0 +1,64 @@
+# Provider profile — an OpenAI-compatible local endpoint as the runner.
+#
+# Same vendor axis as anthropic-default.yaml and claude-code.yaml, a third
+# execution: requests go to a local, OpenAI-compatible server named by
+# LOCAL_LLM_BASE_URL, which the harness reads at run time. This file never
+# names the URL itself, only the environment variable that carries it.
+#
+# Every capability below is false until it is measured against the endpoint
+# actually running. A role that needs one falls up a tier per the vendor-axis
+# contract (graphs #128/#129/#131) rather than running against a promise.
+profile: local-oss
+description: An OpenAI-compatible local endpoint; capabilities unproven, so most roles fall up a tier
+runner: openai-compatible
+endpoint_env: LOCAL_LLM_BASE_URL
+
+capabilities:
+  structured_output: false
+  tool_use: false
+  resume: false
+  streaming: false
+  max_context: 32000
+
+tiers:
+  cheap:     local/qwen2.5-7b-instruct
+  standard:  anthropic/claude-standard
+  deep:      anthropic/claude-deep
+
+budget_usd:
+  cheap:     0.05
+  standard:  0.35
+  deep:      0.80
+role_budget_usd:
+  review_charter:   1.20
+  review_adversary: 1.20
+  triage:    0.80
+  build:     1.50
+
+# Roles a graph asks "standard" for that are extraction, not judgment; the
+# cheap tier's local model can carry them. NOT build, review_charter,
+# review_adversary or arbitrate: those need `resume` or `structured_output`,
+# which this profile's capabilities block declares false, so the harness
+# falls them up a tier regardless of what stands here.
+tier_overrides:
+  scope_epic: cheap
+  triage_classify: cheap
+  handoff: cheap
+
+defaults:
+  plan:            standard
+  build:           standard
+  review_charter:  standard
+  review_adversary: standard
+  arbitrate:       deep
+  triage_classify: cheap
+  evidence_verify: deep
+  plan_alternative: standard
+  plan_arbitrate:  deep
+  plan_adversary:  deep
+  style_pass:      standard
+  sweep_plan:      deep
+  sweep_build:     standard
+
+# The OpenAI-compatible runner grants no tools.
+tools: {}

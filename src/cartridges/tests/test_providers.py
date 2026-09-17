@@ -38,3 +38,36 @@ def test_sweep_build_carries_the_standard_build_tool_grant_and_tier() -> None:
 
 def test_triage_role_budget_is_eighty_cents() -> None:
     assert PROFILE["role_budget_usd"]["triage"] == 0.80
+
+
+LOCAL_PROFILE = yaml.safe_load(
+    (Path(__file__).resolve().parent.parent / "providers" / "local-oss.yaml").read_text()
+)
+
+
+def test_the_local_oss_profile_parses() -> None:
+    assert LOCAL_PROFILE["profile"] == "local-oss"
+
+
+def test_local_oss_capabilities_are_false_until_measured() -> None:
+    caps = LOCAL_PROFILE["capabilities"]
+    assert set(caps) == {"structured_output", "tool_use", "resume", "streaming", "max_context"}
+    assert caps["structured_output"] is False
+    assert caps["tool_use"] is False
+    assert caps["resume"] is False
+    assert caps["streaming"] is False
+
+
+def test_local_oss_every_routed_role_resolves_to_a_declared_tier() -> None:
+    tiers = set(LOCAL_PROFILE["tiers"])
+    roles = set(LOCAL_PROFILE["defaults"].values()) | set(LOCAL_PROFILE["tier_overrides"].values())
+    assert roles <= tiers
+
+
+def test_local_oss_role_budgets_match_claude_code_for_the_shared_roles() -> None:
+    for role in ("review_charter", "review_adversary", "triage", "build"):
+        assert LOCAL_PROFILE["role_budget_usd"][role] == PROFILE["role_budget_usd"][role]
+
+
+def test_local_oss_defaults_are_copied_verbatim_from_claude_code() -> None:
+    assert LOCAL_PROFILE["defaults"] == PROFILE["defaults"]
