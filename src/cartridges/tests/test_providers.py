@@ -71,3 +71,44 @@ def test_local_oss_role_budgets_match_claude_code_for_the_shared_roles() -> None
 
 def test_local_oss_defaults_are_copied_verbatim_from_claude_code() -> None:
     assert LOCAL_PROFILE["defaults"] == PROFILE["defaults"]
+
+
+ANTHROPIC_PROFILE = yaml.safe_load(
+    (Path(__file__).resolve().parent.parent / "providers" / "anthropic-default.yaml").read_text()
+)
+
+GRAPH_ROLES = (
+    "decompose",
+    "dispatch",
+    "handoff",
+    "reconcile",
+    "retro",
+    "scope_epic",
+    "triage",
+    "validate_chunk",
+    "validate_phase",
+)
+
+
+def test_claude_code_defaults_record_the_graph_roles_at_todays_tiers() -> None:
+    defaults = PROFILE["defaults"]
+    assert set(GRAPH_ROLES) <= set(defaults)
+    assert defaults["validate_phase"] == "deep"
+    assert defaults["retro"] == "deep"
+    assert defaults["triage"] == "deep"
+
+
+def test_anthropic_default_defaults_record_the_graph_roles_at_todays_tiers() -> None:
+    defaults = ANTHROPIC_PROFILE["defaults"]
+    assert set(GRAPH_ROLES) <= set(defaults)
+    assert defaults["validate_phase"] == "deep"
+    assert defaults["retro"] == "deep"
+    assert defaults["triage"] == "deep"
+
+
+def test_local_oss_defaults_record_the_graph_roles_at_todays_tiers() -> None:
+    defaults = LOCAL_PROFILE["defaults"]
+    assert set(GRAPH_ROLES) <= set(defaults)
+    assert defaults["validate_phase"] == "deep"
+    assert defaults["retro"] == "deep"
+    assert defaults["triage"] == "deep"

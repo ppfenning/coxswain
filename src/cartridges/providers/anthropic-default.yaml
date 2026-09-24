@@ -22,3 +22,12 @@ defaults:
   arbitrate:       deep
   triage_classify: cheap
   evidence_verify: deep
+  decompose:       standard
+  dispatch:        standard
+  handoff:         standard
+  reconcile:       standard
+  retro:           deep
+  scope_epic:      standard
+  triage:          deep
+  validate_chunk:  standard
+  validate_phase:  deep
