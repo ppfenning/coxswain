@@ -62,14 +62,23 @@ def test_skill_bodies_are_real_documents_not_stubs() -> None:
         assert len(text.splitlines()) >= 25, f"{body}: too short to be real guidance"
 
 
-def test_route_work_checks_the_leader_before_routing_anything() -> None:
+def test_route_work_checks_the_chair_before_routing_anything() -> None:
     raw = (PLUGIN / "skills" / "route-work" / "SKILL.md").read_text(encoding="utf-8")
     text = " ".join(raw.split())
-    assert "cox route leader status" in text
-    assert "cox route leader take" in text
+    assert "cox route chair status" in text
+    assert "cox route chair take" in text
     assert "do not re-arm" in text
     assert "naming your own label" in text
-    assert "leader lock still names you" in text
+    assert "chair lock still names you" in text
+    assert "route leader" not in text
+
+
+def test_route_work_launches_with_the_work_path_and_the_chair_label() -> None:
+    raw = (PLUGIN / "skills" / "route-work" / "SKILL.md").read_text(encoding="utf-8")
+    text = " ".join(raw.split())
+    assert "takes the `work/<id>` path, never the bare initiative id" in text
+    assert "routing: no initiative.md at <id>/initiative.md" in text
+    assert "`--label <chair label>`" in text
 
 
 def test_route_work_stops_rather_than_clearing_an_unavailable_leader_check() -> None:

@@ -13,15 +13,16 @@ You are a dispatcher for that one case, not a second doer.
 
 ## Discipline
 
-- **Open by checking the leader.** Before anything else, run `cox route
-  leader status` (fall back to `agent-tools route leader status`). A LIVE
+- **Open by checking the chair.** Before anything else, run `cox route
+  chair status` (fall back to `agent-tools route chair status`). A LIVE
   result naming another session's label means the loop is owned by
   `<holder>`; message it or resume it, do not re-arm — and stop there: take
   no lock, arm no monitor, launch nothing. A LIVE result naming your own
   label, a STALE result, or NONE clears you to route. If the command errors
   or is not yet installed, say the check is unavailable and stop there too
   — do not treat a failed or missing check as a clear lock. Take the lock
-  with `cox route leader take` only once cleared.
+  with `cox route chair take` only once cleared. The chair subcommands are
+  `status`, `take`, `beat`, `release`, `clear` and `chat`.
 - **Route work, answer everything else.** A request routes iff acting on it
   would change a repository. A question, a check, an operations task, or a
   request about the machine gets answered inline, and when you decline to
@@ -37,9 +38,14 @@ You are a dispatcher for that one case, not a second doer.
   above the threshold: `agent-tools route file --intake`, then
   `agent-tools route launch decompose`, then `agent-tools route launch
   epic` once the decomposed tasks have landed.
+- **Launch with the path and the label.** `route launch epic --initiative`
+  takes the `work/<id>` path, never the bare initiative id. A bare id fails
+  with `routing: no initiative.md at <id>/initiative.md`. When the chair is
+  held by your own session, `route launch epic` refuses unless you pass
+  `--label <chair label>`, the label that `chair status` shows.
 - **Detach, watch, report.** Once a run is launched, arm `agent-tools epic
   watch PIDFILE --log LOG` in the background, and re-arm it while the pid
-  is still alive and the leader lock still names you. When it exits, report
+  is still alive and the chair lock still names you. When it exits, report
   what landed, what was quarantined and why, the cost from `agent-tools
   runs usage`, and the branch to open a pull request from. Merging that
   branch to the default branch is never this skill's job.
@@ -62,7 +68,9 @@ You are a dispatcher for that one case, not a second doer.
 - Retrying a quarantined run without reading why it was quarantined.
 - Reporting a run as landed because the log looks like a normal run, rather
   than because its outcome lines actually say so.
-- Re-arming an exit monitor, or launching anything, once `cox route leader
+- Re-arming an exit monitor, or launching anything, once `cox route chair
   status` reports the lock live under a name that is not yours.
-- Treating a `cox route leader status` that errors or is missing as
+- Treating a `cox route chair status` that errors or is missing as
   evidence the lock is clear, rather than stopping and saying so.
+- Passing a bare initiative id to `--initiative`, or omitting `--label` when
+  the chair is held by your own session.
