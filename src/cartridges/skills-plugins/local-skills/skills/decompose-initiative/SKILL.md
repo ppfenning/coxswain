@@ -36,6 +36,10 @@ before what it depends on exists.
   on a dangerous task under-reviews it.
 - **A title is plain text.** A backtick in YAML frontmatter breaks the file,
   so titles carry none.
+- **A foreign `needs` id is written as the target's own id.** A task in another
+  initiative is named exactly as its file names it, never prefixed with this
+  initiative's id. The edge is legal only when that task already exists in the
+  work store, and it is met only when that task is `done`.
 - **A task whose surfaces live in another repository is that repository's
   task.** Link it with `blocked_on` instead of folding its work in here.
 - **Ids are stable slugs.** They become filenames and dependency references;
@@ -70,5 +74,7 @@ before what it depends on exists.
 - Two tasks in one phase that both create or edit the same file — the runner
   merges phase tasks in parallel, so the second write is a guaranteed merge
   conflict, and a `needs` edge between them does not prevent it.
+- A foreign id prefixed with this initiative's id. It names no task, so the
+  DAG check refuses the whole initiative.
 - A done-criterion that names evidence outside the diff and the named
   checks — nobody downstream can produce it, so the task can never close.

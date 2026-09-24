@@ -11,6 +11,7 @@ from core.skills import index_from_roots
 from core.workstore import (
     WorkStoreError,
     _coerce_priority,
+    foreign_states,
     phase_complete,
     phases,
     read_initiative,
@@ -415,6 +416,48 @@ def test_the_dag_is_validated_at_read_not_at_run(initiative: Path) -> None:
     task(initiative, "p1-foundations", "t9-broken", needs=["does-not-exist"])
     with pytest.raises(WorkStoreError, match="does not exist"):
         read_initiative(initiative)
+
+
+# ── needs across initiatives ───────────────────────────────────────────────
+
+FOREIGN = "graphs-model-router-decision-record-type"
+
+
+@pytest.fixture
+def store(tmp_path: Path) -> Path:
+    """A work store with a sibling initiative whose task the deciders initiative waits on."""
+    work = tmp_path / "work"
+    task(work / "graphs-model-router", "p1-record", FOREIGN, state="in_progress")
+    task(work / "graphs-system-one-deciders", "p1-log", "decision-log-fields", needs=[FOREIGN])
+    return work
+
+
+def test_foreign_states_holds_only_other_initiatives(store: Path) -> None:
+    assert foreign_states(store, "graphs-system-one-deciders") == {FOREIGN: "in_progress"}
+
+
+def test_a_foreign_need_resolves_and_a_missing_one_still_refuses() -> None:
+    validate_dag([{"id": "a", "needs": ["x"]}], {"x": "done"})
+    with pytest.raises(WorkStoreError, match="needs 'x', which does not exist"):
+        validate_dag([{"id": "a", "needs": ["x"]}])
+
+
+def test_the_unprefixed_foreign_id_resolves_and_the_prefixed_spelling_is_refused(store: Path) -> None:
+    deciders = store / "graphs-system-one-deciders"
+    assert read_initiative(deciders)["foreign"] == {FOREIGN: "in_progress"}
+    task(deciders, "p1-log", "decision-log-fields", needs=[f"graphs-system-one-deciders-{FOREIGN}"])
+    with pytest.raises(WorkStoreError, match="which does not exist"):
+        read_initiative(deciders)
+
+
+def test_a_store_scan_is_skipped_when_every_need_is_local(initiative: Path) -> None:
+    assert read_initiative(initiative)["foreign"] == {}
+
+
+@pytest.mark.parametrize(("state", "ready"), [("done", True), ("in_progress", False), ("dropped", False)])
+def test_a_foreign_need_is_met_only_by_done(state: str, ready: bool) -> None:
+    items = [{"id": "a", "state": "todo", "needs": ["x"]}]
+    assert bool(ready_tasks(items, foreign={"x": state})) is ready
 
 
 # ── what can run at once ───────────────────────────────────────────────────

@@ -57,6 +57,7 @@ import yaml
 __all__ = [
     "STATES",
     "WorkStoreError",
+    "foreign_states",
     "phase_complete",
     "phases",
     "read_initiative",
@@ -299,7 +300,10 @@ def read_initiative(root: Path | str) -> dict[str, Any]:
         meta, body = _split_frontmatter(overview.read_text(encoding="utf-8"), overview)
 
     items = [read_item(p) for p in sorted(root.glob("*/*.md")) if p.name != "initiative.md"]
-    validate_dag(items)
+    own = {str(item["id"]) for item in items}
+    dangling = any(need not in own for item in items for need in item["needs"])
+    foreign = foreign_states(root.parent, root.name) if dangling else {}
+    validate_dag(items, foreign)
 
     return {
         "id": str(meta.get("id") or root.name),
@@ -308,6 +312,19 @@ def read_initiative(root: Path | str) -> dict[str, Any]:
         "root": str(root),
         "phases": phases(items),
         "items": items,
+        "foreign": foreign,
+    }
+
+
+def foreign_states(store_root: Path | str, own_initiative: str) -> dict[str, str]:
+    """Task id to state for every task in an initiative other than `own_initiative`."""
+    return {
+        item["id"]: item["state"]
+        for item in (
+            read_item(p)
+            for p in sorted(Path(store_root).glob("*/*/*.md"))
+            if p.parts[-3] != own_initiative and p.name != "initiative.md"
+        )
     }
 
 
@@ -321,16 +338,21 @@ def phase_complete(items: Sequence[Mapping[str, Any]], phase: str) -> bool:
     return all(item.get("state") in _TERMINAL for item in items if item.get("phase") == phase)
 
 
-def validate_dag(items: Iterable[Mapping[str, Any]]) -> None:
-    """Refuse a dangling edge or a cycle. Loudly, and listing every problem."""
+def validate_dag(items: Iterable[Mapping[str, Any]], foreign: Mapping[str, str] | None = None) -> None:
+    """Refuse a dangling edge or a cycle. Loudly, and listing every problem.
+
+    `foreign` maps ids of tasks in other initiatives to their state. A need
+    found there is not dangling, and the cycle walk never enters it.
+    """
     items = list(items)
+    foreign = foreign or {}
     by_id = {str(item["id"]): item for item in items}
 
     problems = [
         f"'{item['id']}' needs '{need}', which does not exist"
         for item in items
         for need in item.get("needs") or []
-        if need not in by_id
+        if need not in by_id and need not in foreign
     ]
     duplicates = sorted({i["id"] for i in items if sum(1 for j in items if j["id"] == i["id"]) > 1})
     problems.extend(f"duplicate work item id '{dup}'" for dup in duplicates)
@@ -363,15 +385,21 @@ def validate_dag(items: Iterable[Mapping[str, Any]]) -> None:
         )
 
 
-def ready_tasks(items: Sequence[Mapping[str, Any]], *, phase: str | None = None) -> list[dict[str, Any]]:
+def ready_tasks(
+    items: Sequence[Mapping[str, Any]], *, phase: str | None = None, foreign: Mapping[str, str] | None = None
+) -> list[dict[str, Any]]:
     """Every task whose dependencies are all done, and which is not itself finished.
+
+    A need in another initiative (`foreign`) is met only by state `done`; `dropped` does not satisfy it.
 
     This is the parallelism: whatever comes back can run at the same time,
     because nothing in the set depends on anything else in it. An edge that
     exists only because the work "feels sequential" costs exactly this — it
     keeps a task out of this list for no reason.
     """
+    own = {str(item["id"]) for item in items}
     done = {str(item["id"]) for item in items if item.get("state") in _TERMINAL}
+    done |= {tid for tid, state in (foreign or {}).items() if state == DONE and tid not in own}
     return sorted(
         (
             dict(item)
