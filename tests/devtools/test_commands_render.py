@@ -131,4 +131,10 @@ def test_the_committed_readme_commands_block_is_what_render_produces() -> None:
         pytest.skip("coxswain-tools is not a checkout here")
     text = README.read_text(encoding="utf-8")
     rendered = render_readme_block(tools_cli.COMMAND_TABLE)
-    assert splice(text, rendered) == text, f"README Commands block is stale; run `python -m devtools commands render`. Expected:\n{rendered}"
+    assert splice(text, rendered) == text, f"README Commands block is stale; run `uv run --frozen python -m devtools commands render`. Expected:\n{rendered}"
+
+
+def test_render_defaults_to_the_sibling_tools_readme() -> None:
+    umbrella = Path(__file__).resolve().parent.parent.parent
+    a = cli.build_parser().parse_args(["commands", "render"])
+    assert Path(a.readme) == umbrella.parent / "coxswain-tools" / "README.md"

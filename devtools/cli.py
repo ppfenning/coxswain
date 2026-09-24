@@ -1,6 +1,7 @@
 """The maintainer's release edge, moved out of the published `cox dev` group:
-`python -m devtools release|release-check|backfill-github-releases|commands`,
-run from the umbrella checkout. Same arguments and output as `cox dev ...`."""
+`uv run --frozen python -m devtools release|release-check|backfill-github-releases|commands`,
+run from the umbrella checkout (`--frozen`, or a moved component version rewrites
+uv.lock and the release refuses a dirty umbrella). Same arguments and output as `cox dev ...`."""
 
 from __future__ import annotations
 
@@ -27,6 +28,8 @@ from devtools import (
 )
 
 _NO_CHECKS = "no checks reported"
+# the umbrella's own README is not the command table's; render tools' by default
+TOOLS_README = Path(__file__).resolve().parent.parent.parent / "coxswain-tools" / "README.md"
 
 
 def _wait_decision(returncode: int, output: str, elapsed_s: float, timeout_s: float) -> str:
@@ -712,7 +715,7 @@ def _dev_commands(a: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="python -m devtools",
+    p = argparse.ArgumentParser(prog="uv run --frozen python -m devtools",
                                 description="maintainer commands for the Coxswain repositories; not needed to use Coxswain")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -744,7 +747,7 @@ def build_parser() -> argparse.ArgumentParser:
     cmds.add_argument("verb", choices=("render",), help="the only action: render")
     cmds.add_argument("--target", choices=("all", "pages", "readme"), default="all")
     cmds.add_argument("--pages-dir", help="where the slash-command pages are written; without it only the README is rendered")
-    cmds.add_argument("--readme", default="README.md")
+    cmds.add_argument("--readme", default=str(TOOLS_README), help="default: ../coxswain-tools/README.md beside this checkout")
     cmds.set_defaults(fn=_dev_commands)
     return p
 
