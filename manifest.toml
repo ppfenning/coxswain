@@ -15,7 +15,7 @@ status  = "beta"
 
 [components]
 cartridges = { repo = "ppfenning/coxswain-cartridges", tag = "v0.13.0", required = true, docs = ["README.md"] }
-graphs     = { repo = "ppfenning/coxswain-graphs",     tag = "v0.12.1", required = true, docs = [
+graphs     = { repo = "ppfenning/coxswain-graphs",     tag = "v0.13.0", required = true, docs = [
     "README.md",
     "graphs/delivery/epic-swarm.md",
     "graphs/delivery/lifecycle-propose.md",
