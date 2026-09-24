@@ -12,7 +12,7 @@ auth_env: ANTHROPIC_API_KEY    # env var NAME. Never the value, in any file, eve
 tiers:
   cheap:     claude-haiku-4-5           # bulk classification, enumeration
   standard:  claude-sonnet-5             # most nodes
-  deep:      claude-opus-5               # verification, adversarial review, arbitration
+  deep:      claude-opus-5-5             # verification, adversarial review, arbitration
 
 defaults:
   plan:            standard

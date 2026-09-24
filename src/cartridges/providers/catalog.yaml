@@ -1,0 +1,54 @@
+# Model catalog — one entry per model the router may choose.
+#
+# Prices are USD per million tokens. input and output are the figures in the
+# ticket brief. cache_write and cache_read are NOT quoted per model: they are
+# derived from the published Anthropic prompt-caching multipliers, which price
+# a 5-minute cache write at 1.25x the input price and a cache read at 0.1x.
+# Source: https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
+# (pricing section). Not fetched during this build; verify against the live
+# pricing page before the router relies on them.
+#
+# context_window is null where the figure was not in the brief and could not
+# be sourced. null means unknown. It does not mean unlimited. Fill it from the
+# provider's models page.
+#
+# effort lists are seed values, not sourced. Confirm per model before routing
+# on them.
+#
+# aliases: the short names the provider profiles use. haiku and claude-haiku-4-5
+# both bind to the same model because claude-code.yaml and anthropic-default.yaml
+# spell it differently.
+#
+# classes: extract, reason, judge, frontier.
+models:
+  - id: claude-fable-5-1
+    aliases: [fable]
+    provider: anthropic
+    price: {input: 10.0, output: 50.0, cache_write: 12.5, cache_read: 1.0}
+    effort: [low, medium, high, xhigh]
+    classes: [frontier]
+    context_window: null
+
+  - id: claude-opus-5-5
+    aliases: [opus]
+    provider: anthropic
+    price: {input: 4.0, output: 20.0, cache_write: 5.0, cache_read: 0.4}
+    effort: [low, medium, high, xhigh]
+    classes: [judge, reason, frontier]
+    context_window: null
+
+  - id: claude-sonnet-5
+    aliases: [sonnet]
+    provider: anthropic
+    price: {input: 2.0, output: 10.0, cache_write: 2.5, cache_read: 0.2}
+    effort: [low, medium, high]
+    classes: [reason, extract]
+    context_window: null
+
+  - id: claude-haiku-4-5-20251001
+    aliases: [haiku, claude-haiku-4-5]
+    provider: anthropic
+    price: {input: 1.0, output: 5.0, cache_write: 1.25, cache_read: 0.1}
+    effort: [low, medium, high]
+    classes: [extract]
+    context_window: 200000
