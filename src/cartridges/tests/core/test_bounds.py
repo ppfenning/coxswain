@@ -31,7 +31,7 @@ def test_missing_values_use_the_named_defaults_and_say_so():
         "high",
         None,
         None,
-        "normal",
+        "go",
         ("class_ceiling", "effort_ceiling", "node_budget_cap_usd", "run_budget_cap_usd", "pacing_state"),
     )
 
@@ -59,6 +59,10 @@ def test_a_zero_cap_is_valid():
     assert from_policy({}, {"node_budget_cap_usd": 0}).node_budget_cap_usd == 0
 
 
+def test_from_policy_accepts_stop():
+    assert from_policy({}, {"pacing_state": "stop"}).pacing_state == "stop"
+
+
 def test_the_record_is_frozen():
     with pytest.raises(dataclasses.FrozenInstanceError):
         from_policy({}, {}).class_ceiling = "cheap"  # type: ignore[misc]
@@ -68,5 +72,5 @@ def test_the_edge_reads_the_yaml_policy_and_applies_flags(tmp_path):
     path = tmp_path / "cartridge.yaml"
     path.write_text("policy:\n  pacing:\n    effort_ceiling: low\n    run_budget_cap_usd: 3.0\n")
     assert load_bounds(path, {"tier_ceiling": "cheap"}) == ChairBounds(
-        "cheap", "low", None, 3.0, "normal", ("node_budget_cap_usd", "pacing_state")
+        "cheap", "low", None, 3.0, "go", ("node_budget_cap_usd", "pacing_state")
     )

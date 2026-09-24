@@ -29,9 +29,8 @@ __all__ = [
     "load_bounds",
 ]
 
-# unknown: the full set of pacing states. Only `normal` and `go_degraded` are named
-# by the ticket; extend this tuple when agent_tools/pacing.py::assess() is measured.
-PACING_STATES = ("normal", "go_degraded")
+# The verdicts agent_tools/pacing.py assess() returns in coxswain-tools.
+PACING_STATES = ("go", "go_degraded", "stop")
 
 DEFAULT_CLASS_CEILING = TIER_LADDER[0]
 DEFAULT_EFFORT_CEILING = EFFORT_LADDER[0]
