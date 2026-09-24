@@ -44,6 +44,11 @@ a legacy item without `priority:` still saves with no such line.
 and kept: `read_item` exposes it on every item and `write_item` writes it back,
 so a state move never erases it. It is empty when absent. Any other shape
 raises `WorkStoreError`.
+
+`tier` maps a role name to `cheap`, `standard` or `deep`, so one ticket can
+elevate a role without touching the provider profile. `read_item` exposes it
+on every item, `{}` when absent. `write_item` writes it back when non-empty,
+so a state move never erases it. Any other shape raises `WorkStoreError`.
 """
 
 from __future__ import annotations
@@ -80,6 +85,7 @@ _INTO_APPROVED = frozenset({"ready", "in_progress"})
 _OUT_OF_APPROVED = frozenset({"done", "ready"})
 DEFAULT_PRIORITY = 3
 ATTEMPT_KINDS = ("refused", "no_work", "unverified", "infra")
+TIERS = ("cheap", "standard", "deep")
 
 _FRONTMATTER = "---"
 _NEW_SUFFIX = " (new)"
@@ -137,6 +143,21 @@ def _coerce_verify(raw: Any, path: Path | str) -> list[str]:
     if not isinstance(items, list) or not all(isinstance(c, str) for c in items):
         raise WorkStoreError(f"{path}: verify must be a string or a list of strings, got {raw!r}")
     return [c.strip() for c in items if c.strip()]
+
+
+def _coerce_tier(raw: Any, path: Path | str) -> dict[str, str]:
+    """Role -> tier map; absent is {}. A non-mapping, blank role, or tier outside TIERS raises."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping):
+        raise WorkStoreError(f"{path}: tier must be a mapping of role to tier, got {raw!r}")
+    bad_role = [k for k in raw if not isinstance(k, str) or not k.strip()]
+    if bad_role:
+        raise WorkStoreError(f"{path}: tier roles must be non-empty strings, got {bad_role[0]!r}")
+    bad_tier = [v for v in raw.values() if v not in TIERS]
+    if bad_tier:
+        raise WorkStoreError(f"{path}: tier must be one of {list(TIERS)}, got {bad_tier[0]!r}")
+    return {k.strip(): v for k, v in raw.items()}
 
 
 def _coerce_budget_usd(raw: Any) -> float | None:
@@ -200,6 +221,7 @@ def read_item(path: Path | str) -> dict[str, Any]:
         "surfaces": [str(s) for s in (meta.get("surfaces") or [])],
         "patterns": _coerce_patterns(meta.get("patterns")),
         "verify": _coerce_verify(meta.get("verify"), path),
+        "tier": _coerce_tier(meta.get("tier"), path),
         "title": str(meta.get("title") or path.stem),
         "attempts": _coerce_attempts(meta.get("attempts")),
         **({"budget_usd": budget_usd} if budget_usd is not None else {}),
@@ -220,6 +242,7 @@ def write_item(item: Mapping[str, Any], path: Path | str) -> Path:
     budget_usd = _coerce_budget_usd(item.get("budget_usd"))
     patterns = _coerce_patterns(item.get("patterns"))
     verify = _coerce_verify(item.get("verify"), path)
+    tier = _coerce_tier(item.get("tier"), path)
     priority = _coerce_priority(item.get("priority"))
     meta = {
         "id": item["id"],
@@ -229,6 +252,7 @@ def write_item(item: Mapping[str, Any], path: Path | str) -> Path:
         "surfaces": list(item.get("surfaces") or []),
         **({"patterns": patterns} if patterns else {}),
         **({"verify": verify} if verify else {}),
+        **({"tier": tier} if tier else {}),
         "title": item.get("title", item["id"]),
         **({"budget_usd": budget_usd} if budget_usd is not None else {}),
         **({"priority": priority} if priority != DEFAULT_PRIORITY else {}),

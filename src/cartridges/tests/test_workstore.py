@@ -240,6 +240,40 @@ def test_a_verify_that_is_not_a_string_or_list_of_strings_raises(tmp_path: Path,
         read_item(path)
 
 
+def test_a_tier_map_reads_back_round_trips_and_survives_a_state_move(tmp_path: Path) -> None:
+    path = _verify_file(tmp_path, "tier: {build: deep, review_adversary: deep}\n")
+    expected = {"build": "deep", "review_adversary": "deep"}
+    assert read_item(path)["tier"] == expected
+    rewritten = write_item(read_item(path), tmp_path / "out" / "t1.md")
+    assert "tier:" in rewritten.read_text(encoding="utf-8")
+    assert read_item(rewritten)["tier"] == expected
+    set_state(rewritten, "in_progress")
+    assert read_item(rewritten)["tier"] == expected
+
+
+def test_an_item_with_no_tier_reads_empty_and_writes_no_line(tmp_path: Path) -> None:
+    path = _verify_file(tmp_path, "")
+    assert read_item(path)["tier"] == {}
+    assert "tier:" not in write_item(read_item(path), path).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "tier: {build: premium}\n",
+        "tier: {'': deep}\n",
+        "tier: {5: deep}\n",
+        "tier: {build: 3}\n",
+        "tier: deep\n",
+        "tier: [build]\n",
+    ],
+)
+def test_a_bad_tier_raises_naming_the_path(tmp_path: Path, line: str) -> None:
+    path = _verify_file(tmp_path, line)
+    with pytest.raises(WorkStoreError, match="t1.md"):
+        read_item(path)
+
+
 def test_an_item_with_a_budget_reads_back_and_writes_the_line(tmp_path: Path) -> None:
     path = write_item(
         {
