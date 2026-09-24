@@ -215,6 +215,11 @@ policy:
     min_headroom_usd: 1.0                  # below this remaining headroom, nothing launches
     tier_ladder: [deep, standard, cheap]   # degradation order for model tier
     effort_ladder: [high, low]             # degradation order for effort
+    # Router bounds, read by core/bounds.py::from_policy; a launch flag overrides each.
+    # The class ceiling is the head of tier_ladder, so it needs no key of its own.
+    effort_ceiling: high                   # highest effort a route may ask for; high is the top of effort_ladder
+    node_budget_cap_usd: null              # per-node spend cap; null means no cap, as today
+    run_budget_cap_usd: null               # per-run spend cap; null means no cap, as today
   build_budget_usd_max: 3.0     # a work item may raise its own build ceiling with `budget_usd:`;
                                  # this is the most it may ask for, and the harness refuses anything above it, quoting this number.
   budgets:
