@@ -1,8 +1,12 @@
 """The coxswain pointer package: name, version, and its trusted-publish workflow."""
 import re
+import shutil
+import subprocess
 import tomllib
+import zipfile
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -43,3 +47,12 @@ def test_publish_workflow_is_a_trusted_publisher_on_tags():
     runs = [step["run"] for step in job["steps"] if "run" in step]
     assert "pypa/gh-action-pypi-publish@release/v1" in uses
     assert any("uv build" in run for run in runs)
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="needs uv to build the wheel")
+def test_the_built_wheel_never_ships_devtools(tmp_path):
+    subprocess.run(["uv", "build", "--wheel", "--out-dir", str(tmp_path)], cwd=ROOT, check=True, capture_output=True)
+    (wheel,) = tmp_path.glob("*.whl")
+    names = zipfile.ZipFile(wheel).namelist()
+    assert any(n.startswith("coxswain/") for n in names)
+    assert not [n for n in names if n.startswith("devtools/") or "/devtools/" in n]

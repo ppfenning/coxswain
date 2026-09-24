@@ -4,10 +4,10 @@ What changes between versions and how the lockstep tag scheme works.
 
 ## How a release works
 
-A release is cut with:
+A release is cut from the umbrella checkout with:
 
 ```
-cox release <version>
+uv run python -m devtools release <version> --root ~/repos --manifest ~/repos/coxswain/manifest.toml --umbrella ~/repos/coxswain
 ```
 
 That one command tags every component repository and this repository at
