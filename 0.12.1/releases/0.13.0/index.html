@@ -2527,6 +2527,8 @@ since 0.12.0 are finished.</p>
   asks the builder for output it is not allowed to produce. They run in the build's own scratch checkout
   after the patch; handoff and both reviewers see their output, marked as harness-run, and so do validation
   and the phase check. A failing verify command is evidence, never a quarantine (graphs #151, #271).</li>
+<li>The graphs <code>CallDecision</code> gains six optional system-one fields, backend, mode, answer, confidence,
+  threshold and agreement, for the Jev deciders' shadow mode; old rows load with them unset (graphs #273).</li>
 </ul>
 <h2 id="coxswain-tools">coxswain-tools</h2>
 <ul>
@@ -2551,9 +2553,12 @@ since 0.12.0 are finished.</p>
   waits when GitHub has not yet scheduled a pull request's checks instead of failing (tools #232), and
   checks how the notes cite a version already cut (tools #233). The home screen's slow-reader test no
   longer depends on wall-clock time (tools #236).</li>
+<li><code>cox dev commands render</code> in tools writes the README's Commands section from the command table, and
+  reproduces the committed text byte for byte (tools #435).</li>
 </ul>
 <h2 id="known-gaps">Known gaps</h2>
-<p>The graphs model router's shadow mode and CLI version pin are held until they are rescoped around the rule
+<p>The cartridges work store drops a ticket's <code>verify:</code> list when it reads the ticket, so the graphs
+verify step above has nothing to run yet; the fix is first in 0.13.1. The graphs model router's shadow mode and CLI version pin are held until they are rescoped around the rule
 that graphs never import the cartridges router. The epic driver runs a task whose state is <code>blocked</code>, and cannot
 follow a dependency into another initiative. <code>cox runs land</code> refuses a stacked task after its parent lands,
 and does not resume when its pull-request branch already exists. All are filed. The Jev system-one deciders,
