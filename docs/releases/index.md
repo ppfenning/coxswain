@@ -22,9 +22,9 @@ always tells you exactly what a given release installs.
 | Component | Repository or path | Tag | Required or flag |
 | --- | --- | --- | --- |
 | cartridges | `ppfenning/coxswain-cartridges` | `v0.13.0` | required |
+| crew | `ppfenning/coxswain-crew` | `v0.12.0` | flag: `crew` (pinned) |
 | graphs | `ppfenning/coxswain-graphs` | `v0.13.0` | required |
 | tools | `ppfenning/coxswain-tools` | `v0.13.0` | required, provides `cox` |
-| crew | `ppfenning/coxswain-crew` | `v0.12.0` | flag: `crew` (pinned) |
 
 See the [0.13.0 release notes](0.13.0.md) for what landed in each component.
 
