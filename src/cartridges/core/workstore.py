@@ -39,6 +39,11 @@ validated like `budget_usd`. Reading exposes it on every parsed item, never
 absent, unlike `budget_usd`. Writing omits the key once it equals the
 default, the same way `budget_usd` omits a value that is not meaningful, so
 a legacy item without `priority:` still saves with no such line.
+
+`verify` is a list of shell commands, or a single command string. It is read
+and kept: `read_item` exposes it on every item and `write_item` writes it back,
+so a state move never erases it. It is empty when absent. Any other shape
+raises `WorkStoreError`.
 """
 
 from __future__ import annotations
@@ -123,6 +128,16 @@ def _coerce_patterns(raw: Any) -> list[str]:
     return [str(p) for p in raw]
 
 
+def _coerce_verify(raw: Any, path: Path | str) -> list[str]:
+    """Stripped non-blank command strings; absent is []. Anything but a string or list of strings raises."""
+    if raw is None:
+        return []
+    items = [raw] if isinstance(raw, str) else raw
+    if not isinstance(items, list) or not all(isinstance(c, str) for c in items):
+        raise WorkStoreError(f"{path}: verify must be a string or a list of strings, got {raw!r}")
+    return [c.strip() for c in items if c.strip()]
+
+
 def _coerce_budget_usd(raw: Any) -> float | None:
     if isinstance(raw, bool) or raw is None:
         return None
@@ -183,6 +198,7 @@ def read_item(path: Path | str) -> dict[str, Any]:
         "needs": [str(n) for n in (meta.get("needs") or [])],
         "surfaces": [str(s) for s in (meta.get("surfaces") or [])],
         "patterns": _coerce_patterns(meta.get("patterns")),
+        "verify": _coerce_verify(meta.get("verify"), path),
         "title": str(meta.get("title") or path.stem),
         "attempts": _coerce_attempts(meta.get("attempts")),
         **({"budget_usd": budget_usd} if budget_usd is not None else {}),
@@ -202,6 +218,7 @@ def write_item(item: Mapping[str, Any], path: Path | str) -> Path:
     attempts = list(item.get("attempts") or [])
     budget_usd = _coerce_budget_usd(item.get("budget_usd"))
     patterns = _coerce_patterns(item.get("patterns"))
+    verify = _coerce_verify(item.get("verify"), path)
     priority = _coerce_priority(item.get("priority"))
     meta = {
         "id": item["id"],
@@ -210,6 +227,7 @@ def write_item(item: Mapping[str, Any], path: Path | str) -> Path:
         "needs": list(item.get("needs") or []),
         "surfaces": list(item.get("surfaces") or []),
         **({"patterns": patterns} if patterns else {}),
+        **({"verify": verify} if verify else {}),
         "title": item.get("title", item["id"]),
         **({"budget_usd": budget_usd} if budget_usd is not None else {}),
         **({"priority": priority} if priority != DEFAULT_PRIORITY else {}),

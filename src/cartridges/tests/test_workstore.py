@@ -201,6 +201,44 @@ def test_a_non_list_patterns_value_reads_and_writes_as_empty(tmp_path: Path) -> 
     assert read_item(rewritten)["patterns"] == []
 
 
+def _verify_file(tmp_path: Path, verify_line: str) -> Path:
+    path = tmp_path / "p1" / "t1.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"---\nid: t1\nphase: p1\nstate: todo\n{verify_line}---\n\nbody\n", encoding="utf-8")
+    return path
+
+
+def test_an_item_with_a_verify_list_reads_it_back(tmp_path: Path) -> None:
+    path = _verify_file(tmp_path, "verify:\n  - pytest tests -q\n  - ruff check .\n")
+    assert read_item(path)["verify"] == ["pytest tests -q", "ruff check ."]
+
+
+def test_an_item_with_no_verify_reads_empty_and_writes_no_line(tmp_path: Path) -> None:
+    path = _verify_file(tmp_path, "")
+    assert read_item(path)["verify"] == []
+    assert "verify:" not in write_item(read_item(path), path).read_text(encoding="utf-8")
+
+
+def test_a_single_verify_string_reads_as_one_command_and_blanks_are_dropped(tmp_path: Path) -> None:
+    assert read_item(_verify_file(tmp_path, "verify: '  make test '\n"))["verify"] == ["make test"]
+    assert read_item(_verify_file(tmp_path, "verify: ['a', '  ']\n"))["verify"] == ["a"]
+
+
+def test_verify_round_trips_and_survives_a_state_move(tmp_path: Path) -> None:
+    path = write_item({"id": "t1", "phase": "p1", "verify": ["pytest -q", "ruff check ."]}, tmp_path / "p1" / "t1.md")
+    assert "verify:" in path.read_text(encoding="utf-8")
+    assert read_item(path)["verify"] == ["pytest -q", "ruff check ."]
+    set_state(path, "in_progress")
+    assert read_item(path)["verify"] == ["pytest -q", "ruff check ."]
+
+
+@pytest.mark.parametrize("line", ["verify: 5\n", "verify: [1, 2]\n", "verify: {a: b}\n"])
+def test_a_verify_that_is_not_a_string_or_list_of_strings_raises(tmp_path: Path, line: str) -> None:
+    path = _verify_file(tmp_path, line)
+    with pytest.raises(WorkStoreError, match="t1.md"):
+        read_item(path)
+
+
 def test_an_item_with_a_budget_reads_back_and_writes_the_line(tmp_path: Path) -> None:
     path = write_item(
         {
