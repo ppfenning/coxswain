@@ -26,12 +26,10 @@ def _manifest_toml_at(version: str) -> str:
 
 
 # `release_plan` tags a component only when `pinned_commits` shows commits
-# since its manifest tag, and the edge in `cli.py` measures those commits only
-# for a `lockstep = false` component. The planner ignores the key, so this
-# fixture carries it purely as the edge's trigger to measure, paired with
-# `_fake_git_run(commits=1)`. Transitional: v2 makes the edge measure every
-# repo component, and the key can then go from this fixture.
-_MANIFEST_TOML_CHANGED = _MANIFEST_TOML.replace('tag = "v0.1.0"\n', 'tag = "v0.1.0"\nlockstep = false\n')
+# since its manifest tag, and the edge in `cli.py` measures those commits for
+# every repo component. Paired with `_fake_git_run(commits=1)`, this manifest
+# plans a tag for each component.
+_MANIFEST_TOML_CHANGED = _MANIFEST_TOML
 
 
 def _manifest_toml_changed_at(version: str) -> str:
@@ -226,6 +224,24 @@ def test_cli_release_dry_run_prints_a_tag_line_for_a_changed_component_with_a_st
     assert rc == 0
     assert "tag crew: org/crew -> v0.9.0" in out
     assert "rejoin" not in out
+
+
+def test_cli_release_dry_run_plans_pinned_for_a_component_with_no_commits_and_tags_the_rest(tmp_path, capsys, monkeypatch):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
+
+    def run(argv, cwd):
+        if argv[3] == "rev-list":
+            return (0, "0\n") if argv[2].endswith("cartridges") else (0, "2\n")
+        return (0, "")
+    monkeypatch.setattr(cli, "_real_run", run)
+    rc = cli.main(["release", "0.2.0", "--dry-run", "--manifest", str(manifest_path)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "tag harness: org/harness -> v0.2.0" in out
+    assert "pinned cartridges:" in out
+    assert "tag cartridges" not in out
 
 
 def test_a_manifest_with_no_lockstep_key_tags_only_the_components_with_commits():

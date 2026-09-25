@@ -43,6 +43,26 @@ def test_check_release_index_flags_a_section_missing_one_components_line():
     ]
 
 
+def test_check_release_index_accepts_a_pinned_components_old_tag():
+    section = index_section("0.2.0", {"cox": "v0.2.0", "crew": "v0.1.0"})
+    facts = {
+        "release_versions": {"0.2.0"},
+        "releases_index": f"{section}\n",
+        "manifest": {"coxswain": {"version": "0.2.0"}, "components": {"cox": {"tag": "v0.2.0"}, "crew": {"tag": "v0.1.0"}}},
+    }
+    assert "(pinned)" in section.splitlines()[-3]
+    assert check_release_index(facts) == []
+
+
+def test_check_release_index_flags_a_pinned_components_old_tag_missing_from_the_current_section():
+    facts = {
+        "release_versions": {"0.2.0"},
+        "releases_index": "## `0.2.0`\n\n| cox | `v0.2.0` |\n| crew | `v0.2.0` |\n",
+        "manifest": {"coxswain": {"version": "0.2.0"}, "components": {"cox": {"tag": "v0.2.0"}, "crew": {"tag": "v0.1.0"}}},
+    }
+    assert len(check_release_index(facts)) == 1
+
+
 def test_gather_release_index_facts_reads_versions_from_page_filenames_and_the_index_text(tmp_path):
     releases = tmp_path / "docs" / "releases"
     releases.mkdir(parents=True)
