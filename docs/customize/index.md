@@ -20,6 +20,9 @@ runs dispatch.
   [Policy](policy.md).
 - **Your dashboards** — Superset over your own runs, with a dashboard to
   read and charts you can add. See [Dashboards](dashboards.md).
+- **Your several machines** — a chair that launches and lands, lane
+  machines that run, and one shared run store. See [Several
+  machines](several-machines.md).
 - **Your plugins** — the integrations that name a vendor (a tracker, a
   forge, a hosted decider, a runner), installed beside `cox` or the
   harness and chosen by name. See [Plugins](plugins.md).
