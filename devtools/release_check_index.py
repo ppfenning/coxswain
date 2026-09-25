@@ -16,11 +16,12 @@ if TYPE_CHECKING:
 
 
 def index_section(version: str, component_tags: dict[str, str], components: Mapping | None = None) -> str:
-    """The page's table for one release. `components` (the manifest's) supplies
+    """The page's table for one release, rows in `component_tags` order (the
+    manifest's, which is the order a notes PR writes). `components` supplies
     repo and required/flag when given; without it the row still names the tag."""
     components = components or {}
     rows = []
-    for name, tag in sorted(component_tags.items()):
+    for name, tag in component_tags.items():
         spec = components.get(name, {})
         repo = f"`{spec['repo']}`" if spec.get("repo") else spec.get("path", "")
         flag = "required" if spec.get("required") else (f"flag: `{spec['flag']}`" if spec.get("flag") else "")
