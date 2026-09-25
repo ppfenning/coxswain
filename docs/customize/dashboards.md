@@ -21,6 +21,37 @@ The Coxswain dashboard answers four questions about your runs.
   were quarantined.
 - **Tool use.** Which tools were used, read from traces.
 
+## Efficiency
+
+The first rows of the dashboard ask whether the system is getting cheaper
+and faster. Each chart answers one question.
+
+- **Cost per turn by model, by day.** What one model turn costs, per model.
+- **Cache-read share by model, by day.** The share of each model's input
+  tokens read from cache that day. At a grain coarser than a day, the
+  chart averages the daily shares weighted by turns, not by tokens.
+- **Cost per landed task, by day.** The day's spend divided by the tasks
+  that landed that day.
+- **Landed tasks per day.** Throughput.
+- **First-try build rate, by day.** The share of landed tasks that needed
+  exactly one build call.
+- **Lead time, launch to land (median hours), by day.** The median hours
+  from a run's launch to its task landing.
+- **Spend by task outcome, last 14 days.** Spend on tasks that landed, are
+  still in flight, or never landed. A task counts as never landed once its
+  last call is two days old and it has no landing in `runs/land.jsonl`.
+
+A task landed when its record in `runs/land.jsonl` exited 0 and reached
+`mark_done`. Land history starts when `runs/land.jsonl` began, which is
+2026-09-25 in the reference workspace. Earlier days show cost but no
+landings. The datasets that read that file are skipped, with their
+charts, until both it and `runs/cox.db` exist.
+
+The never-landed bar is not waste until the log covers the chart's whole
+window. A task that landed before the log began has no landing record, so
+it counts as never landed. In the reference workspace the bar overstates
+waste until 2026-10-09, fourteen days after the log began.
+
 ## Start it
 
 You need Docker with the compose plugin. From the repository root:
