@@ -5,7 +5,9 @@ description: Decide whether the umbrella's CLI docs, manifest, release notes, an
 
 # Release sync
 
-`cox dev release` and `cox dev release-check` both call you to compare the
+The umbrella's `devtools` release commands, `python -m devtools release` and
+`python -m devtools release-check` (run from the umbrella checkout; they left
+the published `cox` CLI in 0.15.0), both call you to compare the
 umbrella's claims — CLI docs, `manifest.toml`, release notes, package pages —
 against facts an edge already gathered from the components. You decide; you
 never gather. A finding is a `Drift`, never a raw assertion that something is
@@ -44,9 +46,9 @@ wrong.
   README or the `description` field only inside a sentence that says it is
   deprecated; the `description` field is one sentence under 160 characters.
   Any one of these unmet is a drift.
-- **Two callers, two postures.** `cox dev release` refuses to tag while any
+- **Two callers, two postures.** `devtools release` refuses to tag while any
   `Drift` stands, unless invoked with `--allow-doc-drift <reason>`, in which
-  case it tags and records the reason alongside the run. `cox dev
+  case it tags and records the reason alongside the run. `devtools
   release-check` reports whatever drift exists on demand and never blocks
   anything — it has no tag to refuse.
 
