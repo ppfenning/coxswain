@@ -386,10 +386,11 @@ def test_base_cartridge_bounds_dispatch_concurrency() -> None:
 
 
 def test_local_cartridge_checks_run_lint_before_tests() -> None:
-    """`local` declares its own `landing_areas.checks`; lint is cheapest, so it runs first."""
+    """`local` declares its own `landing_areas.checks`; lint is cheapest, so it runs first, and carries the safe
+    `fix` the harness's lint-fix step runs before it calls a task approved."""
     resolved = load("local", REPO / "cartridges", skill_index=index_from_roots([REPO / "skills-plugins"]))
     assert resolved["landing_areas"]["checks"] == [
-        {"name": "lint", "cmd": "ruff check ."},
+        {"name": "lint", "cmd": "ruff check .", "fix": "ruff check --fix ."},
         {"name": "tests", "cmd": "pytest -q"},
     ]
 
