@@ -6,8 +6,7 @@ catalog model, or no model between the floor and a ceiling. `observed_costs` and
 `spend_usd` are required, so a caller cannot leave the run cap silently off.
 `clipped_by` is in application order. "pacing" is named only when the chair's go_degraded
 state, applied to the hints, changed class or effort.
-unknown: bounds.py class ceilings use TIER_LADDER (deep, standard, cheap), not the catalog
-classes. The top tier `deep` means no ceiling. Any other tier is refused until reconciled.
+Ceilings are classes: a class ceiling is a rung of CLASS_LADDER, and any other value is refused.
 """
 
 from __future__ import annotations
@@ -18,7 +17,6 @@ from types import MappingProxyType
 
 from core.bounds import ChairBounds
 from core.catalog import Catalog, ModelEntry
-from core.policy import TIER_LADDER
 from core.router_budget import budget_usd
 from core.router_rules import DEGRADED, NEVER_BELOW_FLOOR, Hints, History, floor_class, select_class, select_effort
 
@@ -31,7 +29,6 @@ BASE_EFFORT = "medium"
 DIFF_THRESHOLD = 400
 FILE_THRESHOLD = 10
 STOP = "stop"
-TOP_TIER = TIER_LADDER[0]
 _RULE_KW = {"reviewed": REVIEWED, "diff_threshold": DIFF_THRESHOLD, "file_threshold": FILE_THRESHOLD}
 
 
@@ -42,6 +39,7 @@ class Decision:
     budget_usd: float
     reasons: tuple[str, ...]
     clipped_by: tuple[str, ...]
+    chosen_class: str
 
 
 def _price(entry: ModelEntry) -> float:
@@ -66,15 +64,12 @@ def _clip(ladder: tuple[str, ...], value: str, ceiling: str) -> tuple[str, bool]
 
 
 def _ceiling_errors(bounds: ChairBounds) -> list[str]:
-    """A ceiling off its ladder cannot be enforced. The top policy tier means no class ceiling."""
-    checks = (
-        ("class", CLASS_LADDER, bounds.class_ceiling, TOP_TIER),
-        ("effort", EFFORT_LADDER, bounds.effort_ceiling, None),
-    )
+    """A ceiling off its ladder cannot be enforced."""
+    checks = (("class", CLASS_LADDER, bounds.class_ceiling), ("effort", EFFORT_LADDER, bounds.effort_ceiling))
     return [
         f"{kind} ceiling {ceiling} is not on the {kind} ladder {list(ladder)} and cannot be enforced"
-        for kind, ladder, ceiling, open_value in checks
-        if ceiling not in ladder and ceiling != open_value
+        for kind, ladder, ceiling in checks
+        if ceiling not in ladder
     ]
 
 
@@ -93,10 +88,10 @@ def _usable(catalog: Catalog) -> tuple[ModelEntry, ...]:
 
 def _pick(
     entries: tuple[ModelEntry, ...], cls: str, effort: str, lowest: str, class_ceiling: str, effort_ceiling: str
-) -> tuple[ModelEntry, str, tuple[str, ...]] | str:
+) -> tuple[ModelEntry, str, tuple[str, ...], str] | str:
     """Cheapest carrier of `cls` supporting `effort`; else the nearest class in [lowest, ceiling] and effort.
 
-    Returns an error string when no model fits between the bounds.
+    Returns the entry, effort, notes and the class picked for, or an error string when no model fits.
     """
     used, notes = cls, ()
     carrying = tuple(e for e in entries if cls in e.classes)
@@ -116,7 +111,7 @@ def _pick(
         notes = (f"no model carries class {cls}; using class {used}",)
     exact = tuple(e for e in carrying if effort in e.effort)
     if exact:
-        return _cheapest(exact), effort, notes
+        return _cheapest(exact), effort, notes, used
     allowed = {
         x for e in carrying for x in e.effort if x in EFFORT_LADDER and _within(EFFORT_LADDER, x, effort_ceiling)
     }
@@ -124,7 +119,7 @@ def _pick(
         return f"no model carrying class {used} supports an effort at or below ceiling {effort_ceiling}"
     chosen = _nearest(EFFORT_LADDER, effort, allowed)
     entry = _cheapest(tuple(e for e in carrying if chosen in e.effort))
-    return entry, chosen, (*notes, f"effort {effort} unsupported for class {used}; using {chosen}")
+    return entry, chosen, (*notes, f"effort {effort} unsupported for class {used}; using {chosen}"), used
 
 
 def _reference_costs(
@@ -176,7 +171,8 @@ def decide(
     paced_hints = replace(hints, pacing_state=DEGRADED) if bounds.pacing_state == DEGRADED else hints
     cls, effort, cls_reason, effort_reason = rules(paced_hints)
     paced = rules(hints)[:2] != (cls, effort)
-    cls_to, cls_clipped = _clip(CLASS_LADDER, cls, bounds.class_ceiling)
+    cls_clipped = CLASS_LADDER.index(cls) > CLASS_LADDER.index(bounds.class_ceiling)
+    cls_to = bounds.class_ceiling if cls_clipped else cls
     effort_to, effort_clipped = _clip(EFFORT_LADDER, effort, bounds.effort_ceiling)
     floor = floor_class(role, CLASS_LADDER, FLOORS)[0]
     never_below = role in NEVER_BELOW_FLOOR
@@ -185,7 +181,7 @@ def decide(
     picked = _pick(entries, cls_to, effort_to, lowest, bounds.class_ceiling, bounds.effort_ceiling)
     if isinstance(picked, str):
         return [picked]
-    entry, final_effort, pick_notes = picked
+    entry, final_effort, pick_notes, chosen_class = picked
     reference = _cheapest(entries)
     costs, cost_notes = _reference_costs(observed_costs, catalog, reference)
     budget, budget_reason = budget_usd(costs, price_ratio=_price(entry) / _price(reference))
@@ -207,4 +203,4 @@ def decide(
         ("effort_ceiling", effort_clipped),
         (cap_name, cap_name is not None),
     )
-    return Decision(entry.id, final_effort, capped, reasons, tuple(name for name, hit in named if hit))
+    return Decision(entry.id, final_effort, capped, reasons, tuple(name for name, hit in named if hit), chosen_class)

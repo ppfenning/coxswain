@@ -43,12 +43,13 @@ def test_no_rule_fired_gives_the_floor_class_base_effort_and_floor_budget():
             "budget: no observed turn costs; using floor $0.25",
         ),
         (),
+        "extract",
     )
 
 
 def test_a_retry_surfaces_for_class_and_effort():
     result = run(hints=RETRY)
-    assert (result.model, result.effort) == ("m-reason", "high")
+    assert (result.model, result.effort, result.chosen_class) == ("m-reason", "high", "reason")
     assert {"class: +1 revise or retry", "effort: +1 revise or retry"} <= set(result.reasons)
 
 
@@ -59,7 +60,7 @@ def test_size_surfaces_when_past_a_threshold():
 def test_degraded_pacing_in_the_hints_surfaces_and_lowers_effort_without_naming_pacing():
     result = run(hints=Hints(pacing_state="go_degraded"))
     assert "effort: -1 pacing go_degraded" in result.reasons
-    assert (result.effort, result.clipped_by) == ("low", ())
+    assert (result.effort, result.clipped_by, result.chosen_class) == ("low", (), "extract")
 
 
 def test_the_challenger_surfaces_on_every_tenth_call_of_a_reviewed_seat():
@@ -70,12 +71,12 @@ def test_the_challenger_surfaces_on_every_tenth_call_of_a_reviewed_seat():
 def test_escalation_surfaces_when_the_landed_rate_is_low_after_twenty_calls():
     result = run(history=History(role_calls={"plan": 20}, landed_rate=0.5))
     assert "class: +1 landed rate 0.5 under 0.7" in result.reasons
-    assert result.model == "m-reason"
+    assert (result.model, result.chosen_class) == ("m-reason", "reason")
 
 
 def test_build_never_drops_below_floor_under_degraded_pacing_or_a_challenge():
     result = run(role="build", hints=Hints(pacing_state="go_degraded"), history=History(role_calls={"build": 10}))
-    assert result.model == "m-reason"
+    assert (result.model, result.chosen_class) == ("m-reason", "reason")
     assert "class: floor reason for build" in result.reasons
     assert not any(r.startswith("class: -1") for r in result.reasons)
 
@@ -104,20 +105,30 @@ def test_an_observation_for_a_model_not_in_the_catalog_is_ignored_and_named():
 def test_an_unsupported_effort_falls_back_to_the_nearest_supported_and_says_so():
     bounds = ChairBounds("extract", "xhigh", None, None, "go", ())
     result = run(hints=RETRY, bounds=bounds)
-    assert (result.model, result.effort) == ("m-extract", "medium")
+    assert (result.model, result.effort, result.chosen_class) == ("m-extract", "medium", "extract")
     assert "effort high unsupported for class extract; using medium" in result.reasons
+
+
+JUDGE_HINTS = Hints(diff_lines=500)
+JUDGE_HISTORY = History(role_calls={"plan": 20}, landed_rate=0.1)
 
 
 def test_the_class_ceiling_repicks_the_model_and_names_the_bound():
     bounds = ChairBounds("reason", "xhigh", None, None, "go", ())
-    result = run(hints=Hints(diff_lines=500), history=History(role_calls={"plan": 20}, landed_rate=0.1), bounds=bounds)
-    assert (result.model, result.clipped_by) == ("m-reason", ("class_ceiling",))
+    result = run(hints=JUDGE_HINTS, history=JUDGE_HISTORY, bounds=bounds)
+    assert (result.model, result.chosen_class, result.clipped_by) == ("m-reason", "reason", ("class_ceiling",))
     assert "class judge clipped to ceiling reason" in result.reasons
+
+
+def test_a_frontier_ceiling_clips_nothing_and_reports_the_judge_class():
+    result = run(hints=JUDGE_HINTS, history=JUDGE_HISTORY)
+    assert (result.model, result.chosen_class, result.clipped_by) == ("m-judge", "judge", ())
+    assert not any("clipped to ceiling" in r for r in result.reasons)
 
 
 def test_a_ceiling_below_floor_forces_build_down_and_says_so():
     result = run(role="build", bounds=ChairBounds("extract", "xhigh", None, None, "go", ()))
-    assert (result.model, result.clipped_by) == ("m-extract", ("class_ceiling",))
+    assert (result.model, result.chosen_class, result.clipped_by) == ("m-extract", "extract", ("class_ceiling",))
     assert "build forced below floor by class_ceiling" in result.reasons
 
 
@@ -197,10 +208,10 @@ def test_pacing_is_not_named_for_a_role_that_never_goes_below_floor():
     assert (result.model, result.effort, result.clipped_by) == ("m-reason", "medium", ())
 
 
-def test_the_top_policy_tier_means_no_class_ceiling_and_adds_no_reason():
-    result = run(bounds=ChairBounds("deep", "xhigh", None, None, "go", ()))
-    assert result.clipped_by == ()
-    assert not any("ceiling" in r for r in result.reasons)
+def test_a_legacy_tier_name_is_not_a_class_ceiling_and_returns_an_error_value():
+    assert run(bounds=ChairBounds("deep", "xhigh", None, None, "go", ())) == [
+        "class ceiling deep is not on the class ladder ['extract', 'reason', 'judge', 'frontier'] and cannot be enforced"
+    ]
 
 
 def test_a_class_ceiling_the_router_cannot_enforce_returns_an_error_value():
@@ -249,7 +260,7 @@ def test_a_catalog_with_no_class_or_effort_on_the_ladders_returns_an_error_value
 def test_a_missing_class_falls_back_to_the_nearest_class_inside_the_ceiling():
     no_extract = Catalog((model("m-reason", ("reason",), ("low", "medium"), 3.0),))
     result = run(catalog=no_extract)
-    assert result.model == "m-reason"
+    assert (result.model, result.chosen_class) == ("m-reason", "reason")
     assert "no model carries class extract; using class reason" in result.reasons
 
 
@@ -269,7 +280,7 @@ def test_an_effort_ceiling_no_carrier_can_meet_returns_an_error_value_instead_of
 
 def test_default_bounds_from_policy_route_without_a_class_clip():
     result = run(bounds=from_policy({}, {}))
-    assert (result.model, result.clipped_by) == ("m-extract", ())
+    assert (result.model, result.chosen_class, result.clipped_by) == ("m-extract", "extract", ())
 
 
 def test_bounds_built_by_from_policy_clip_effort():
@@ -279,7 +290,7 @@ def test_bounds_built_by_from_policy_clip_effort():
 
 def test_a_legacy_tier_ceiling_set_through_from_policy_clips_the_class():
     result = run(role="build", bounds=from_policy({}, {"tier_ceiling": "cheap"}))
-    assert (result.model, result.clipped_by) == ("m-extract", ("class_ceiling",))
+    assert (result.model, result.chosen_class, result.clipped_by) == ("m-extract", "extract", ("class_ceiling",))
 
 
 def test_bounds_built_by_from_policy_cap_the_run_from_recorded_spend():
