@@ -46,28 +46,28 @@ tier_overrides:
   handoff: cheap
 
 defaults:
-  plan:            standard
-  build:           standard
-  review_charter:  standard
-  review_adversary: standard
-  arbitrate:       deep
-  triage_classify: cheap
-  evidence_verify: deep
-  plan_alternative: standard
-  plan_arbitrate:  deep
-  plan_adversary:  deep
-  style_pass:      standard
-  sweep_plan:      deep
-  sweep_build:     standard
-  decompose:       standard
-  dispatch:        standard
-  handoff:         standard
-  reconcile:       standard
-  retro:           deep
-  scope_epic:      standard
-  triage:          deep
-  validate_chunk:  standard
-  validate_phase:  deep
+  plan:            reason
+  build:           reason
+  review_charter:  reason
+  review_adversary: reason
+  arbitrate:       judge
+  triage_classify: extract
+  evidence_verify: judge
+  plan_alternative: reason
+  plan_arbitrate:  judge
+  plan_adversary:  judge
+  style_pass:      reason
+  sweep_plan:      judge
+  sweep_build:     reason
+  decompose:       reason
+  dispatch:        reason
+  handoff:         reason
+  reconcile:       reason
+  retro:           judge
+  scope_epic:      reason
+  triage:          judge
+  validate_chunk:  reason
+  validate_phase:  judge
 
 # The OpenAI-compatible runner grants no tools.
 tools: {}

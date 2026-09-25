@@ -25,8 +25,8 @@ tiers:
   deep:      opus           # verification, adversarial review, arbitration
 
 # Capability classes -> ordered catalog ids or aliases, first entry preferred.
-# tiers and defaults above and below still serve graphs and tools; nothing
-# reads this map yet.
+# The defaults block below names these classes. The tiers map above still
+# stands for tier-keyed readers such as effort and budgets.
 classes:
   extract:  [haiku]
   reason:   [sonnet]
@@ -172,33 +172,33 @@ tier_overrides:
 # So the reviewers run standard and the arbiter stays deep — one deep call per
 # attempt instead of three, for the judgment that was demonstrably load-bearing.
 defaults:
-  plan:            standard
-  build:           standard
-  review_charter:  standard
-  review_adversary: standard
-  arbitrate:       deep
-  triage_classify: cheap
-  evidence_verify: deep
+  plan:            reason
+  build:           reason
+  review_charter:  reason
+  review_adversary: reason
+  arbitrate:       judge
+  triage_classify: extract
+  evidence_verify: judge
   # The plan competition: a second plan is planning, the decision and the
   # attack are judgment. Two short plans are a small document, which is why
   # arbitrating here is affordable and arbitrating two diffs would not be.
-  plan_alternative: standard
-  plan_arbitrate:  deep
-  plan_adversary:  deep
-  # Recognition and rewriting against a stated rule, not judgment: deep is
+  plan_alternative: reason
+  plan_arbitrate:  judge
+  plan_adversary:  judge
+  # Recognition and rewriting against a stated rule, not judgment: judge is
   # where arbitration was measured to pay, and nothing suggests it pays here.
-  style_pass:      standard
-  sweep_plan:      deep
-  sweep_build:     standard
-  decompose:       standard
-  dispatch:        standard
-  handoff:         standard
-  reconcile:       standard
-  retro:           deep
-  scope_epic:      standard
-  triage:          deep
-  validate_chunk:  standard
-  validate_phase:  deep
+  style_pass:      reason
+  sweep_plan:      judge
+  sweep_build:     reason
+  decompose:       reason
+  dispatch:        reason
+  handoff:         reason
+  reconcile:       reason
+  retro:           judge
+  scope_epic:      reason
+  triage:          judge
+  validate_chunk:  reason
+  validate_phase:  judge
 
 tools:
   # Read the world, change nothing.

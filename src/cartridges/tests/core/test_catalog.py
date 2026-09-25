@@ -186,5 +186,17 @@ def test_every_profile_defines_all_four_classes(profile):
     assert set(classes) == CLASSES
 
 
+@pytest.mark.parametrize("profile", _PROFILES, ids=lambda p: p.name)
+def test_every_profile_default_names_a_capability_class(profile):
+    defaults = yaml.safe_load(profile.read_text(encoding="utf-8"))["defaults"]
+    assert defaults
+    assert set(defaults.values()) <= CLASSES
+
+
+def test_local_oss_defaults_name_capability_classes():
+    defaults = yaml.safe_load((PROVIDERS / "local-oss.yaml").read_text(encoding="utf-8"))["defaults"]
+    assert set(defaults.values()) <= CLASSES
+
+
 def test_the_profile_glob_found_the_profiles_it_is_meant_to_check():
     assert [p.name for p in _PROFILES] == ["anthropic-default.yaml", "claude-code.yaml"]
