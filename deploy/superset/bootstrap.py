@@ -24,10 +24,18 @@ import yaml
 KINDS = ("database", "dataset", "chart", "dashboard")
 NAME_FIELD = {"database": "database_name", "dataset": "table_name", "chart": "slice_name", "dashboard": "dashboard_title"}
 SOURCE_NOTES = {"sqlite": "no cox.db yet", "parquet-traces": "no Parquet traces yet", "land-log": "needs land.jsonl and cox.db"}
+# An attached catalog is connected once at connect time, so the store URL never appears in per-dataset SQL as it would with postgres_scan.
+STORE_CATALOG = "store"
+STORE_FORM = re.compile(r"\{\{store:([A-Za-z_][A-Za-z0-9_]*)\}\}")
+STORE_LIKE = re.compile(r"\{\{\s*store\b[^}]*\}\}")
+
+
+class StoreError(NamedTuple):
+    reason: str
 
 
 class Op(NamedTuple):
-    action: str  # create, update, unchanged or skipped
+    action: str  # create, update, unchanged, skipped or error
     kind: str
     name: str
     payload: dict[str, Any]
@@ -35,7 +43,7 @@ class Op(NamedTuple):
 
 
 def line(op: Op) -> str:
-    return f"skipped: {op.name} ({op.reason})" if op.action == "skipped" else f"{op.action}: {op.kind} {op.name}"
+    return f"{op.action}: {op.name} ({op.reason})" if op.action in ("skipped", "error") else f"{op.action}: {op.kind} {op.name}"
 
 
 def covers(have: Any, want: Any) -> bool:
@@ -92,11 +100,21 @@ def query_context(queries: list[dict[str, Any]], dataset_id: int) -> dict[str, A
     return {"datasource": {"id": dataset_id, "type": "table"}, "force": False, "queries": queries, "result_format": "json", "result_type": "full"}
 
 
-def plan(specs: dict[str, Any], existing: dict[str, dict[str, dict]], present: frozenset[str] | set[str]) -> list[Op]:
+def expand_store(sql: str, store_url: str | None) -> str | StoreError:
+    """Replace every {{store:TABLE}}. Postgres URLs read the attached catalog's public schema; anything else scans cox.db."""
+    bad = [f for f in STORE_LIKE.findall(sql) if not STORE_FORM.fullmatch(f)]
+    if bad:
+        return StoreError(f"unknown store placeholder {bad[0]}")
+    postgres = bool(store_url) and urllib.parse.urlparse(store_url).scheme in ("postgres", "postgresql")
+    return STORE_FORM.sub(lambda m: f"{STORE_CATALOG}.public.{m[1]}" if postgres else f"sqlite_scan('/data/runs/cox.db', '{m[1]}')", sql)
+
+
+def plan(specs: dict[str, Any], existing: dict[str, dict[str, dict]], present: frozenset[str] | set[str], store_url: str | None = None) -> list[Op]:
     """Ordered operations: database, datasets, charts, dashboard.
 
     `existing` maps kind to name to the object as `normalize` shapes it. A dataset whose `requires`
-    source is not in `present` is skipped, and so is every chart on it. `seen` is what `decide`
+    source is not in `present` is skipped, and so is every chart on it. Dataset SQL goes through
+    `expand_store`, and a bad placeholder becomes an error op. `seen` is what `decide`
     compares when it differs from the payload, as with a masked database password.
     """
 
@@ -107,12 +125,16 @@ def plan(specs: dict[str, Any], existing: dict[str, dict[str, dict]], present: f
 
     database, dash = specs["database"], specs["dashboard"]
     absent = {d["name"]: SOURCE_NOTES.get(d["requires"], f"no {d['requires']}") for d in specs["datasets"] if d["requires"] not in present}
-    datasets = [
-        Op("skipped", "dataset", d["name"], {}, absent[d["name"]])
-        if d["name"] in absent
-        else decide("dataset", d["name"], {"database": d["database"], "sql": d["sql"].strip()})
-        for d in specs["datasets"]
-    ]
+
+    def dataset(d: dict) -> Op:
+        if d["name"] in absent:
+            return Op("skipped", "dataset", d["name"], {}, absent[d["name"]])
+        sql = expand_store(d["sql"].strip(), store_url)
+        if isinstance(sql, StoreError):
+            return Op("error", "dataset", d["name"], {}, sql.reason)
+        return decide("dataset", d["name"], {"database": d["database"], "sql": sql})
+
+    datasets = [dataset(d) for d in specs["datasets"]]
     charts = [
         Op("skipped", "chart", c["name"], {}, f"dataset {c['dataset']} skipped")
         if c["dataset"] in absent
@@ -284,6 +306,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--specs", required=True, help="directory of *.yaml specs")
     ap.add_argument("--url", default=os.environ.get("SUPERSET_URL"), help="Superset base URL, default $SUPERSET_URL")
     ap.add_argument("--runs", default="/data/runs", help="the runs directory whose sources decide what is skipped")
+    ap.add_argument("--store-url", default=os.environ.get("COX_STORE_URL"), help="Postgres store URL, default $COX_STORE_URL; absent means cox.db")
     args = ap.parse_args(argv)
     user, password = os.environ.get("SUPERSET_ADMIN_USERNAME"), os.environ.get("SUPERSET_ADMIN_PASSWORD")
     if not (args.url and user and password):
@@ -294,7 +317,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         client.login(user, password)
         existing, ids = fetch_existing(client, specs)
-        apply(client, plan(specs, existing, present_sources(Path(args.runs))), ids)
+        ops = plan(specs, existing, present_sources(Path(args.runs)), args.store_url)
+        errors = [op for op in ops if op.action == "error"]
+        if errors:
+            print("\n".join(line(op) for op in errors), file=sys.stderr)
+            return 1
+        apply(client, ops, ids)
     except urllib.error.HTTPError as e:
         print(f"error: {e.code} {e.url}: {e.read().decode(errors='replace')[:300]}", file=sys.stderr)
         return 1
