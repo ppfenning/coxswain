@@ -199,3 +199,14 @@ each component.
 | crew | `ppfenning/coxswain-crew` | `v0.12.0` | flag: `crew` (pinned) |
 
 See the [0.15.0 release notes](0.15.0.md) for what landed in each component.
+
+## `0.16.0`
+
+| Component | Repository or path | Tag | Required or flag |
+| --- | --- | --- | --- |
+| cartridges | `ppfenning/coxswain-cartridges` | `v0.16.0` | required |
+| graphs | `ppfenning/coxswain-graphs` | `v0.16.0` | required |
+| tools | `ppfenning/coxswain-tools` | `v0.16.0` | required, provides `cox` |
+| crew | `ppfenning/coxswain-crew` | `v0.12.0` | flag: `crew` (pinned) |
+
+See the [0.16.0 release notes](0.16.0.md) for what landed in each component.
