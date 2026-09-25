@@ -63,3 +63,8 @@ def test_gather_release_index_facts_with_no_releases_directory_yields_empty_fact
         "releases_index": "",
         "releases_index_path": str(tmp_path / "docs" / "releases" / "index.md"),
     }
+
+
+def test_index_section_keeps_the_callers_row_order_so_crew_stays_last():
+    out = index_section("0.2.0", {"cartridges": "v0.2.0", "tools": "v0.2.0", "crew": "v0.1.0"})
+    assert out.index("| cartridges |") < out.index("| tools |") < out.index("| crew |")
