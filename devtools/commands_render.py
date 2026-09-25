@@ -49,9 +49,20 @@ def usage(command: str, args: Sequence[Arg]) -> str:
     return " ".join([command, *filter(None, map(arg_usage, args))])
 
 
+def _leaves(rows: Sequence[Command]) -> list[tuple[Command, tuple[str, ...]]]:
+    """Each invocable row with its name path; a row with subcommands is replaced by them."""
+    return [
+        (leaf, path)
+        for r in rows
+        for leaf, path in (
+            [(s, (r.name, s.name)) for s in getattr(r, "subcommands", ())] or [(r, (r.name,))]
+        )
+    ]
+
+
 def _entries(group: Group, rows: Sequence[Command]) -> list[Entry]:
     return (
-        [Entry(f"cox {group.name} {r.name}", r.args, r.summary, r.examples) for r in rows]
+        [Entry(f"cox {group.name} {' '.join(path)}", r.args, r.summary, r.examples) for r, path in _leaves(rows)]
         if rows
         else [Entry(f"cox {group.name}", group.args, group.help, ())]
     )
@@ -77,8 +88,8 @@ def splice(text: str, block: str) -> str | None:
     return None if start < 0 or end < close else text[:close] + "\n" + block + text[end:]
 
 
-def render_page(row: Command) -> str:
-    """The plugin slash-command page for one `slash=True` row."""
+def render_page(row: Command, path: tuple[str, ...] | None = None) -> str:
+    """The plugin slash-command page for one `slash=True` row; `path` is its name path when nested."""
     hint = " ".join(filter(None, map(arg_usage, row.args)))
     examples = ["", "Examples:", "", "```", *row.examples, "```"] if row.examples else []
     return "\n".join([
@@ -87,7 +98,7 @@ def render_page(row: Command) -> str:
         f"argument-hint: {json.dumps(hint)}",
         "---",
         "",
-        f"Run `cox {row.group} {row.name} $ARGUMENTS` and report what it prints.",
+        f"Run `cox {row.group} {' '.join(path or (row.name,))} $ARGUMENTS` and report what it prints.",
         "",
         row.summary,
         *examples,
@@ -95,5 +106,10 @@ def render_page(row: Command) -> str:
 
 
 def render_pages(table: Table) -> dict[str, str]:
-    """file name -> page, for every `slash=True` row."""
-    return {f"{r.name}.md": render_page(r) for _, rows in table for r in rows if r.slash}
+    """file name -> page, for every `slash=True` row or subcommand."""
+    return {
+        "-".join(path) + ".md": render_page(r, path)
+        for _, rows in table
+        for r, path in _leaves(rows)
+        if r.slash
+    }
