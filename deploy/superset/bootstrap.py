@@ -23,7 +23,7 @@ import yaml
 
 KINDS = ("database", "dataset", "chart", "dashboard")
 NAME_FIELD = {"database": "database_name", "dataset": "table_name", "chart": "slice_name", "dashboard": "dashboard_title"}
-SOURCE_NOTES = {"sqlite": "no cox.db yet", "parquet-traces": "no Parquet traces yet"}
+SOURCE_NOTES = {"sqlite": "no cox.db yet", "parquet-traces": "no Parquet traces yet", "land-log": "needs land.jsonl and cox.db"}
 
 
 class Op(NamedTuple):
@@ -254,7 +254,12 @@ def fetch_existing(client: Client, specs: dict[str, Any]) -> tuple[dict[str, dic
 
 
 def present_sources(runs: Path) -> frozenset[str]:
-    found = {"sqlite": (runs / "cox.db").is_file(), "parquet-traces": any(runs.glob("traces/*/*/*/*.parquet"))}
+    found = {
+        "sqlite": (runs / "cox.db").is_file(),
+        "parquet-traces": any(runs.glob("traces/*/*/*/*.parquet")),
+        # The land-log datasets also scan cox.db, and `requires` names one source, so land-log needs both files.
+        "land-log": (runs / "land.jsonl").is_file() and (runs / "cox.db").is_file(),
+    }
     return frozenset(name for name, here in found.items() if here)
 
 

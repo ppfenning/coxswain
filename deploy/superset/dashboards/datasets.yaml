@@ -61,3 +61,84 @@ datasets:
       SELECT *, tool AS tool_name
       FROM read_parquet('/data/runs/traces/*/*/*/*.parquet')
       WHERE tool IS NOT NULL
+
+  # Cost and cache share by day and model. cache_read_share is a per-group ratio, so a
+  # chart over several groups weights it by turns.
+  - name: calls_by_day
+    database: coxswain
+    requires: sqlite
+    sql: |
+      SELECT CAST(CAST(ts AS TIMESTAMPTZ) AS DATE) AS day, model_alias,
+             SUM(cost_usd) AS cost_usd, SUM(turns) AS turns, SUM(cost_usd) / NULLIF(SUM(turns), 0) AS cost_per_turn,
+             SUM(cache_read_tokens) * 1.0 / NULLIF(SUM(input_total), 0) AS cache_read_share
+      FROM sqlite_scan('/data/runs/cox.db', 'node_calls')
+      GROUP BY ALL
+
+  # The three datasets below read land.jsonl and cox.db. bootstrap counts land-log present
+  # only when both files exist. A task landed when its land record exited 0 and reached mark_done.
+  - name: daily_efficiency
+    database: coxswain
+    requires: land-log
+    sql: |
+      WITH cost AS (
+        SELECT CAST(CAST(ts AS TIMESTAMPTZ) AS DATE) AS day, SUM(cost_usd) AS cost_usd
+        FROM sqlite_scan('/data/runs/cox.db', 'node_calls') GROUP BY 1
+      ),
+      landed AS (
+        SELECT CAST(CAST(ts AS TIMESTAMPTZ) AS DATE) AS day, COUNT(*) AS landed
+        FROM read_json_auto('/data/runs/land.jsonl', format = 'newline_delimited', ignore_errors = true)
+        WHERE exit = 0 AND list_contains(steps_reached, 'mark_done') AND task IS NOT NULL
+        GROUP BY 1
+      )
+      SELECT cost.day, cost.cost_usd, COALESCE(landed.landed, 0) AS landed,
+             cost.cost_usd / NULLIF(landed.landed, 0) AS cost_per_landed
+      FROM cost LEFT JOIN landed USING (day)
+
+  # One row per landed task, with its build count, first-try flag, task cost and lead
+  # time from the run's launch.
+  - name: landed_tasks
+    database: coxswain
+    requires: land-log
+    sql: |
+      WITH landed AS (
+        SELECT run, task, CAST(ts AS TIMESTAMPTZ) AS landed_at
+        FROM read_json_auto('/data/runs/land.jsonl', format = 'newline_delimited', ignore_errors = true)
+        WHERE exit = 0 AND list_contains(steps_reached, 'mark_done') AND task IS NOT NULL
+      ),
+      builds AS (
+        SELECT task_id, COUNT(*) AS builds FROM sqlite_scan('/data/runs/cox.db', 'node_calls') WHERE role = 'build' GROUP BY 1
+      ),
+      spend AS (
+        SELECT task_id, SUM(cost_usd) AS cost_usd FROM sqlite_scan('/data/runs/cox.db', 'node_calls') GROUP BY 1
+      ),
+      launch AS (
+        SELECT run_id, CAST(launched_at AS TIMESTAMPTZ) AS launched_at FROM sqlite_scan('/data/runs/cox.db', 'runs')
+      )
+      SELECT landed.task, landed.run, landed.landed_at, CAST(landed.landed_at AS DATE) AS day,
+             COALESCE(builds.builds, 0) AS builds, COALESCE(builds.builds, 0) = 1 AS first_try,
+             spend.cost_usd AS task_cost_usd,
+             date_diff('minute', launch.launched_at, landed.landed_at) / 60.0 AS lead_hours
+      FROM landed
+      LEFT JOIN builds ON builds.task_id = landed.task
+      LEFT JOIN spend ON spend.task_id = landed.task
+      LEFT JOIN launch ON launch.run_id = landed.run
+
+  # Each task's spend and whether it landed. A task counts as `never landed` once its
+  # last call is two days old.
+  - name: task_outcomes
+    database: coxswain
+    requires: land-log
+    sql: |
+      WITH landed AS (
+        SELECT DISTINCT task FROM read_json_auto('/data/runs/land.jsonl', format = 'newline_delimited', ignore_errors = true)
+        WHERE exit = 0 AND list_contains(steps_reached, 'mark_done') AND task IS NOT NULL
+      ),
+      tasks AS (
+        SELECT task_id, SUM(cost_usd) AS cost_usd, MAX(CAST(ts AS TIMESTAMPTZ)) AS last_call
+        FROM sqlite_scan('/data/runs/cox.db', 'node_calls') WHERE task_id IS NOT NULL GROUP BY 1
+      )
+      SELECT task_id, cost_usd, last_call, CAST(last_call AS DATE) AS day,
+             CASE WHEN task_id IN (SELECT task FROM landed) THEN 'landed'
+                  WHEN last_call < now() - INTERVAL 2 DAY THEN 'never landed'
+                  ELSE 'in flight' END AS outcome
+      FROM tasks

@@ -15,7 +15,7 @@ check = importlib.util.module_from_spec(_check_spec)
 _check_spec.loader.exec_module(check)
 
 SPECS = bootstrap.load_specs(DEPLOY / "dashboards")
-ALL_SOURCES = frozenset({"sqlite", "parquet-traces"})
+ALL_SOURCES = frozenset({"sqlite", "parquet-traces", "land-log"})
 READS = re.compile(r"\b(?:read_\w+|\w+_scan)\s*\(")
 LITERAL_READS = re.compile(r"\b(?:read_\w+|\w+_scan)\s*\(\s*'([^']*)'")
 
@@ -67,7 +67,7 @@ def test_plan_on_an_empty_server_creates_everything_in_order():
     assert {o.action for o in ops} == {"create"}
     kinds = [o.kind for o in ops]
     assert kinds == sorted(kinds, key=bootstrap.KINDS.index)
-    assert Counter(kinds) == {"database": 1, "dataset": 5, "chart": 6, "dashboard": 1}
+    assert Counter(kinds) == {"database": 1, "dataset": 9, "chart": 13, "dashboard": 1}
 
 
 def test_plan_is_all_unchanged_when_the_server_matches():
@@ -91,18 +91,42 @@ def test_plan_updates_a_dataset_whose_sql_changed_and_only_that_one():
 
 
 def test_plan_skips_traces_and_its_chart_while_no_parquet_exists():
-    ops = bootstrap.plan(SPECS, {}, frozenset({"sqlite"}))
+    ops = bootstrap.plan(SPECS, {}, frozenset({"sqlite", "land-log"}))
     lines = [bootstrap.line(o) for o in ops if o.action == "skipped"]
     assert lines[0] == "skipped: traces (no Parquet traces yet)"
     assert lines[1] == "skipped: Tool uses by name, top 15 (dataset traces skipped)"
     assert len(lines) == 2
     (board,) = [o for o in ops if o.kind == "dashboard"]
     assert "Tool uses by name, top 15" not in json.dumps(board.payload)
-    assert Counter(o.kind for o in ops if o.action == "create") == {"database": 1, "dataset": 4, "chart": 5, "dashboard": 1}
+    assert Counter(o.kind for o in ops if o.action == "create") == {"database": 1, "dataset": 8, "chart": 12, "dashboard": 1}
+
+
+def test_plan_skips_the_land_log_datasets_and_their_charts_while_no_land_log_exists():
+    ops = bootstrap.plan(SPECS, {}, frozenset({"sqlite", "parquet-traces"}))
+    assert [bootstrap.line(o) for o in ops if o.action == "skipped"] == [
+        "skipped: daily_efficiency (needs land.jsonl and cox.db)",
+        "skipped: landed_tasks (needs land.jsonl and cox.db)",
+        "skipped: task_outcomes (needs land.jsonl and cox.db)",
+        "skipped: Cost per landed task, by day (dataset daily_efficiency skipped)",
+        "skipped: Landed tasks per day (dataset daily_efficiency skipped)",
+        "skipped: First-try build rate, by day (dataset landed_tasks skipped)",
+        "skipped: Lead time, launch to land (median hours), by day (dataset landed_tasks skipped)",
+        "skipped: Spend by task outcome, last 14 days (dataset task_outcomes skipped)",
+    ]
+    (board,) = [o for o in ops if o.kind == "dashboard"]
+    assert "Landed tasks per day" not in json.dumps(board.payload)
+    assert "Cost per turn by model, by day" in json.dumps(board.payload)
+
+
+def test_present_sources_counts_the_land_log_only_beside_a_cox_db(tmp_path):
+    (tmp_path / "land.jsonl").write_text("")
+    assert bootstrap.present_sources(tmp_path) == frozenset()
+    (tmp_path / "cox.db").write_text("")
+    assert bootstrap.present_sources(tmp_path) == frozenset({"sqlite", "land-log"})
 
 
 def test_a_later_run_adds_traces_and_updates_the_dashboard():
-    first = bootstrap.plan(SPECS, {}, frozenset({"sqlite"}))
+    first = bootstrap.plan(SPECS, {}, frozenset({"sqlite", "land-log"}))
     ops = bootstrap.plan(SPECS, _server(first), ALL_SOURCES)
     assert [(o.action, o.kind, o.name) for o in ops if o.action != "unchanged"] == [
         ("create", "dataset", "traces"),
@@ -136,6 +160,7 @@ def test_specs_are_plain_yaml_files_in_the_dashboards_directory():
 # Written by hand from Superset 4.1's frontend, not from queries_of: the x axis is the BASE_AXIS column
 # getXAxisColumn builds, carrying timeGrain only when time_grain_sqla is set; group-by columns follow.
 SUM_COST = {"expressionType": "SIMPLE", "column": {"column_name": "cost_usd"}, "aggregate": "SUM", "label": "cost_usd"}
+DAY_AXIS = {"columnType": "BASE_AXIS", "expressionType": "SQL", "label": "day", "sqlExpression": "day", "timeGrain": "P1D"}
 TOOL_USES = {"expressionType": "SQL", "sqlExpression": "COUNT(*)", "label": "tool_uses"}
 EXPECTED_QUERIES = {
     "Cost per day by model alias": [
@@ -195,6 +220,76 @@ EXPECTED_QUERIES = {
             "orderby": [[TOOL_USES, False]],
             "row_limit": 15,
             "filters": [],
+            "extras": {},
+        }
+    ],
+    "Cost per turn by model, by day": [
+        {
+            "columns": [DAY_AXIS, "model_alias"],
+            "metrics": [{"expressionType": "SQL", "sqlExpression": "SUM(cost_usd) / NULLIF(SUM(turns), 0)", "label": "cost_per_turn"}],
+            "orderby": [],
+            "row_limit": 10000,
+            "filters": [],
+            "extras": {"time_grain_sqla": "P1D"},
+        }
+    ],
+    "Cache-read share by model, by day": [
+        {
+            "columns": [DAY_AXIS, "model_alias"],
+            "metrics": [{"expressionType": "SQL", "sqlExpression": "SUM(cache_read_share * turns) / NULLIF(SUM(turns), 0)", "label": "cache_read_share"}],
+            "orderby": [],
+            "row_limit": 10000,
+            "filters": [],
+            "extras": {"time_grain_sqla": "P1D"},
+        }
+    ],
+    "Cost per landed task, by day": [
+        {
+            "columns": [DAY_AXIS],
+            "metrics": [{"expressionType": "SQL", "sqlExpression": "SUM(cost_usd) / NULLIF(SUM(landed), 0)", "label": "cost_per_landed"}],
+            "orderby": [],
+            "row_limit": 10000,
+            "filters": [],
+            "extras": {"time_grain_sqla": "P1D"},
+        }
+    ],
+    "Landed tasks per day": [
+        {
+            "columns": [DAY_AXIS],
+            "metrics": [{"expressionType": "SQL", "sqlExpression": "SUM(landed)", "label": "landed"}],
+            "orderby": [],
+            "row_limit": 10000,
+            "filters": [],
+            "extras": {"time_grain_sqla": "P1D"},
+        }
+    ],
+    "First-try build rate, by day": [
+        {
+            "columns": [DAY_AXIS],
+            "metrics": [{"expressionType": "SQL", "sqlExpression": "AVG(CAST(first_try AS INTEGER))", "label": "first_try_rate"}],
+            "orderby": [],
+            "row_limit": 10000,
+            "filters": [],
+            "extras": {"time_grain_sqla": "P1D"},
+        }
+    ],
+    "Lead time, launch to land (median hours), by day": [
+        {
+            "columns": [DAY_AXIS],
+            "metrics": [{"expressionType": "SQL", "sqlExpression": "MEDIAN(lead_hours)", "label": "lead_hours"}],
+            "orderby": [],
+            "row_limit": 10000,
+            "filters": [],
+            "extras": {"time_grain_sqla": "P1D"},
+        }
+    ],
+    "Spend by task outcome, last 14 days": [
+        {
+            "columns": [{"columnType": "BASE_AXIS", "expressionType": "SQL", "label": "outcome", "sqlExpression": "outcome"}],
+            "metrics": [{"expressionType": "SQL", "sqlExpression": "SUM(cost_usd)", "label": "cost_usd"}],
+            "orderby": [],
+            "row_limit": 10000,
+            "filters": [{"col": "last_call", "op": "TEMPORAL_RANGE", "val": "Last 2 weeks"}],
             "extras": {},
         }
     ],
