@@ -25,6 +25,17 @@ tiers:
   standard:  anthropic/claude-standard
   deep:      anthropic/claude-deep
 
+# Capability classes -> endpoint model names, first entry preferred. Each
+# class holds the model its legacy tier named: cheap is extract, standard is
+# reason, deep is judge. The endpoint serves nothing above deep, so frontier
+# also resolves to it. defaults below names these classes; tiers and
+# tier_overrides stay in legacy tier names for the readers that resolve them.
+classes:
+  extract:  [local/qwen2.5-7b-instruct]
+  reason:   [anthropic/claude-standard]
+  judge:    [anthropic/claude-deep]
+  frontier: [anthropic/claude-deep]
+
 budget_usd:
   cheap:     0.05
   standard:  0.35
@@ -46,28 +57,28 @@ tier_overrides:
   handoff: cheap
 
 defaults:
-  plan:            standard
-  build:           standard
-  review_charter:  standard
-  review_adversary: standard
-  arbitrate:       deep
-  triage_classify: cheap
-  evidence_verify: deep
-  plan_alternative: standard
-  plan_arbitrate:  deep
-  plan_adversary:  deep
-  style_pass:      standard
-  sweep_plan:      deep
-  sweep_build:     standard
-  decompose:       standard
-  dispatch:        standard
-  handoff:         standard
-  reconcile:       standard
-  retro:           deep
-  scope_epic:      standard
-  triage:          deep
-  validate_chunk:  standard
-  validate_phase:  deep
+  plan:            reason
+  build:           reason
+  review_charter:  reason
+  review_adversary: reason
+  arbitrate:       judge
+  triage_classify: extract
+  evidence_verify: judge
+  plan_alternative: reason
+  plan_arbitrate:  judge
+  plan_adversary:  judge
+  style_pass:      reason
+  sweep_plan:      judge
+  sweep_build:     reason
+  decompose:       reason
+  dispatch:        reason
+  handoff:         reason
+  reconcile:       reason
+  retro:           judge
+  scope_epic:      reason
+  triage:          judge
+  validate_chunk:  reason
+  validate_phase:  judge
 
 # The OpenAI-compatible runner grants no tools.
 tools: {}
