@@ -9,6 +9,9 @@ dashboard:
     - - {chart: "First-try build rate, by day", width: 6}
       - {chart: "Lead time, launch to land (median hours), by day", width: 6}
     - - {chart: "Spend by task outcome, last 14 days", width: 12}
+    - - {chart: "Reviewer agreement", width: 4}
+      - {chart: "Arbiter decisions", width: 4}
+      - {chart: "Build attempts per task", width: 4}
     - - {chart: "Cost per day by model alias", width: 6}
       - {chart: "Cost by role, last 7 days", width: 6}
     - - {chart: "Busy lanes per hour", width: 12}
