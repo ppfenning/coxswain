@@ -12,6 +12,7 @@ dashboard:
     - - {chart: "Cost per day by model alias", width: 6}
       - {chart: "Cost by role, last 7 days", width: 6}
     - - {chart: "Busy lanes per hour", width: 12}
-    - - {chart: "Runs per day", width: 6}
-      - {chart: "Quarantined attempts per day", width: 6}
+    - - {chart: "Runs per day", width: 12}
+    - - {chart: "Quarantined attempts per day", width: 6}
+      - {chart: "Quarantines by cause, last 14 days", width: 6}
     - - {chart: "Tool uses by name, top 15", width: 12}

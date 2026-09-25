@@ -60,6 +60,13 @@ def test_quarantine_chart_counts_exactly_the_kinds_it_states():
     assert kind_filter["comparator"] == chart["counts_kinds"]
 
 
+def test_the_cause_chart_reuses_the_quarantine_kinds():
+    (quarantine,) = [c for c in SPECS["charts"] if "counts_kinds" in c]
+    (cause,) = [c for c in SPECS["charts"] if c["name"] == "Quarantines by cause, last 14 days"]
+    (kind_filter,) = [f for f in cause["params"]["adhoc_filters"] if f["subject"] == "kind"]
+    assert kind_filter["comparator"] == quarantine["counts_kinds"]
+
+
 def test_dashboard_rows_fill_twelve_columns():
     assert all(sum(c["width"] for c in row) == 12 for row in SPECS["dashboard"]["grid"])
 
@@ -69,7 +76,7 @@ def test_plan_on_an_empty_server_creates_everything_in_order():
     assert {o.action for o in ops} == {"create"}
     kinds = [o.kind for o in ops]
     assert kinds == sorted(kinds, key=bootstrap.KINDS.index)
-    assert Counter(kinds) == {"database": 1, "dataset": 9, "chart": 13, "dashboard": 1}
+    assert Counter(kinds) == {"database": 1, "dataset": 9, "chart": 14, "dashboard": 1}
 
 
 def test_plan_is_all_unchanged_when_the_server_matches():
@@ -100,7 +107,7 @@ def test_plan_skips_traces_and_its_chart_while_no_parquet_exists():
     assert len(lines) == 2
     (board,) = [o for o in ops if o.kind == "dashboard"]
     assert "Tool uses by name, top 15" not in json.dumps(board.payload)
-    assert Counter(o.kind for o in ops if o.action == "create") == {"database": 1, "dataset": 8, "chart": 12, "dashboard": 1}
+    assert Counter(o.kind for o in ops if o.action == "create") == {"database": 1, "dataset": 8, "chart": 13, "dashboard": 1}
 
 
 def test_plan_skips_the_land_log_datasets_and_their_charts_while_no_land_log_exists():
@@ -213,6 +220,19 @@ EXPECTED_QUERIES = {
             "row_limit": 10000,
             "filters": [{"col": "kind", "op": "IN", "val": ["refused", "unverified", "infra", "dropped"]}],
             "extras": {"time_grain_sqla": "P1D"},
+        }
+    ],
+    "Quarantines by cause, last 14 days": [
+        {
+            "columns": [{"columnType": "BASE_AXIS", "expressionType": "SQL", "label": "cause", "sqlExpression": "cause"}],
+            "metrics": [{"expressionType": "SQL", "sqlExpression": "COUNT(*)", "label": "quarantined"}],
+            "orderby": [],
+            "row_limit": 10000,
+            "filters": [
+                {"col": "kind", "op": "IN", "val": ["refused", "unverified", "infra", "dropped"]},
+                {"col": "at", "op": "TEMPORAL_RANGE", "val": "Last 2 weeks"},
+            ],
+            "extras": {},
         }
     ],
     "Tool uses by name, top 15": [
