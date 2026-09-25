@@ -2763,9 +2763,11 @@ Coxswain is in beta — versions may change between releases
 <h1 id="releases">Releases</h1>
 <p>What changes between versions and how the lockstep tag scheme works.</p>
 <h2 id="how-a-release-works">How a release works</h2>
-<p>A release is cut with:</p>
-<div class="highlight"><pre><span></span><code>cox release &lt;version&gt;
+<p>From 0.15.0, a release is cut from the umbrella checkout with:</p>
+<div class="highlight"><pre><span></span><code>uv run --frozen python -m devtools release &lt;version&gt; --root ~/repos --manifest ~/repos/coxswain/manifest.toml --umbrella ~/repos/coxswain
 </code></pre></div>
+<p>0.14.x and earlier were cut with <code>cox dev release</code>. <code>--frozen</code> keeps <code>uv run</code> from rewriting
+<code>uv.lock</code> when a component's version moves, since a dirty umbrella refuses the cut.</p>
 <p>That one command tags every component repository and this repository at
 <code>&lt;version&gt;</code>, bumps <code>manifest.toml</code> to match, and publishes both the docs
 site at that version (via <code>mike</code>) and the <code>cox</code> package to PyPI (via
