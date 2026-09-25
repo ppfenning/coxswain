@@ -16,13 +16,22 @@ and returned, rather than trusting a paraphrase of it.
 A run on the edge channel is not reproducible from a version number
 alone, so its record names the commit each component was at.
 
-## usage.json
+From 0.17.0 the record lives in the run store (`runs/cox.db`, or the
+Postgres store a provider profile names). The run's totals, its phases,
+its gate decisions, its ledger rows and every model call are rows there.
+Each call's stream events are compacted into `runs/traces` when the run
+ends. The task records under `runs/<run>/tasks/` stay files, because
+landing and resuming read them.
+
+## Usage, in the run store
 
 A run's cost is not left to be reconstructed from a provider's own
-billing later. Each run writes a usage record — the tokens and dollars
-spent per node — so a budget stop (see [Budgets](budgets.md)) or a
-retrospective on cost can be checked against a file instead of a memory
-of what the run probably cost.
+billing later. Each model call is a row in the run store, with its tokens
+and dollars, and the run's totals are printed from those rows when it
+ends. A budget stop (see [Budgets](budgets.md)) or a retrospective on cost
+can be checked against the store, not against a memory of what the run
+probably cost. Runs from before 0.17.0 kept a `<run>.usage.json` file,
+which `cox` still reads.
 
 ## The ledger
 
