@@ -2,3 +2,6 @@
 site/
 __pycache__/
 .pytest_cache/
+
+# The Superset deploy's secrets (deploy/superset/.env.example is the template)
+deploy/superset/.env
