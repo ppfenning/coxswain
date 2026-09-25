@@ -186,46 +186,5 @@ def test_every_profile_defines_all_four_classes(profile):
     assert set(classes) == CLASSES
 
 
-# local-oss names endpoint models, not catalog ones, but its defaults still
-# have to resolve through its own classes map.
-_DEFAULTS_PROFILES = [*_PROFILES, PROVIDERS / "local-oss.yaml"]
-
-# The models each profile's legacy tiers named before defaults moved to
-# classes, written out so the check does not compare a file with itself. A
-# default of deep means judge; a chair ceiling of deep means frontier
-# (core/bounds.py).
-_LEGACY_TIER_MODELS = {
-    "anthropic-default.yaml": ("claude-haiku-4-5", "claude-sonnet-5", "claude-opus-5-5"),
-    "claude-code.yaml": ("haiku", "sonnet", "opus"),
-    "local-oss.yaml": ("local/qwen2.5-7b-instruct", "anthropic/claude-standard", "anthropic/claude-deep"),
-}
-
-
-@pytest.mark.parametrize("profile", _DEFAULTS_PROFILES, ids=lambda p: p.name)
-def test_every_default_is_a_class_the_profile_binds(profile):
-    data = yaml.safe_load(profile.read_text(encoding="utf-8"))
-    bound = CLASSES & {k for k, v in data["classes"].items() if v}
-    assert data["defaults"]
-    assert {role: c for role, c in data["defaults"].items() if c not in bound} == {}
-
-
-@pytest.mark.parametrize("profile", _DEFAULTS_PROFILES, ids=lambda p: p.name)
-def test_tier_overrides_stay_legacy_tier_names(profile):
-    data = yaml.safe_load(profile.read_text(encoding="utf-8"))
-    assert set(data.get("tier_overrides", {}).values()) <= set(data["tiers"])
-
-
-@pytest.mark.parametrize("profile", _DEFAULTS_PROFILES, ids=lambda p: p.name)
-def test_each_legacy_tier_model_heads_the_class_its_defaults_moved_to(profile):
-    data = yaml.safe_load(profile.read_text(encoding="utf-8"))
-    cheap, standard, deep = _LEGACY_TIER_MODELS[profile.name]
-    assert (data["tiers"]["cheap"], data["tiers"]["standard"], data["tiers"]["deep"]) == (cheap, standard, deep)
-    assert (data["classes"]["extract"][0], data["classes"]["reason"][0], data["classes"]["judge"][0]) == (
-        cheap,
-        standard,
-        deep,
-    )
-
-
 def test_the_profile_glob_found_the_profiles_it_is_meant_to_check():
     assert [p.name for p in _PROFILES] == ["anthropic-default.yaml", "claude-code.yaml"]

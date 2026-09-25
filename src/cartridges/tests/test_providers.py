@@ -24,15 +24,15 @@ def test_style_pass_role_budget_exceeds_the_standard_tier() -> None:
     assert PROFILE["role_budget_usd"]["style_pass"] > PROFILE["budget_usd"]["standard"]
 
 
-def test_sweep_plan_carries_read_only_tools_and_judge_class() -> None:
+def test_sweep_plan_carries_read_only_tools_and_deep_tier() -> None:
     assert set(PROFILE["tools"]["sweep_plan"]) == {"Read", "Grep", "Glob"}
-    assert PROFILE["defaults"]["sweep_plan"] == "judge"
+    assert PROFILE["defaults"]["sweep_plan"] == "deep"
     assert PROFILE["role_budget_usd"]["sweep_plan"] == 1.50
 
 
-def test_sweep_build_carries_the_standard_build_tool_grant_and_reason_class() -> None:
+def test_sweep_build_carries_the_standard_build_tool_grant_and_tier() -> None:
     assert set(PROFILE["tools"]["sweep_build"]) == set(PROFILE["tools"]["build"])
-    assert PROFILE["defaults"]["sweep_build"] == "reason"
+    assert PROFILE["defaults"]["sweep_build"] == "standard"
     assert PROFILE["role_budget_usd"]["sweep_build"] == 2.00
 
 
@@ -56,6 +56,12 @@ def test_local_oss_capabilities_are_false_until_measured() -> None:
     assert caps["tool_use"] is False
     assert caps["resume"] is False
     assert caps["streaming"] is False
+
+
+def test_local_oss_every_routed_role_resolves_to_a_declared_tier() -> None:
+    tiers = set(LOCAL_PROFILE["tiers"])
+    roles = set(LOCAL_PROFILE["defaults"].values()) | set(LOCAL_PROFILE["tier_overrides"].values())
+    assert roles <= tiers
 
 
 def test_local_oss_role_budgets_match_claude_code_for_the_shared_roles() -> None:
@@ -84,25 +90,25 @@ GRAPH_ROLES = (
 )
 
 
-def test_claude_code_defaults_record_the_graph_roles_in_classes() -> None:
+def test_claude_code_defaults_record_the_graph_roles_at_todays_tiers() -> None:
     defaults = PROFILE["defaults"]
     assert set(GRAPH_ROLES) <= set(defaults)
-    assert defaults["validate_phase"] == "judge"
-    assert defaults["retro"] == "judge"
-    assert defaults["triage"] == "judge"
+    assert defaults["validate_phase"] == "deep"
+    assert defaults["retro"] == "deep"
+    assert defaults["triage"] == "deep"
 
 
-def test_anthropic_default_defaults_record_the_graph_roles_in_classes() -> None:
+def test_anthropic_default_defaults_record_the_graph_roles_at_todays_tiers() -> None:
     defaults = ANTHROPIC_PROFILE["defaults"]
     assert set(GRAPH_ROLES) <= set(defaults)
-    assert defaults["validate_phase"] == "judge"
-    assert defaults["retro"] == "judge"
-    assert defaults["triage"] == "judge"
+    assert defaults["validate_phase"] == "deep"
+    assert defaults["retro"] == "deep"
+    assert defaults["triage"] == "deep"
 
 
-def test_local_oss_defaults_record_the_graph_roles_in_classes() -> None:
+def test_local_oss_defaults_record_the_graph_roles_at_todays_tiers() -> None:
     defaults = LOCAL_PROFILE["defaults"]
     assert set(GRAPH_ROLES) <= set(defaults)
-    assert defaults["validate_phase"] == "judge"
-    assert defaults["retro"] == "judge"
-    assert defaults["triage"] == "judge"
+    assert defaults["validate_phase"] == "deep"
+    assert defaults["retro"] == "deep"
+    assert defaults["triage"] == "deep"

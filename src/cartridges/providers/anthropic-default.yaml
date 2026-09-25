@@ -15,8 +15,7 @@ tiers:
   deep:      claude-opus-5-5             # verification, adversarial review, arbitration
 
 # Capability classes -> ordered catalog ids or aliases, first entry preferred.
-# defaults below names these classes; tiers stays for the readers that still
-# resolve a legacy tier name.
+# tiers and defaults still serve graphs and tools; nothing reads this map yet.
 classes:
   extract:  [claude-haiku-4-5]
   reason:   [claude-sonnet-5]
@@ -24,19 +23,19 @@ classes:
   frontier: [claude-fable-5-1, claude-opus-5-5]
 
 defaults:
-  plan:            reason
-  build:           reason
-  review_charter:  judge
-  review_adversary: judge
-  arbitrate:       judge
-  triage_classify: extract
-  evidence_verify: judge
-  decompose:       reason
-  dispatch:        reason
-  handoff:         reason
-  reconcile:       reason
-  retro:           judge
-  scope_epic:      reason
-  triage:          judge
-  validate_chunk:  reason
-  validate_phase:  judge
+  plan:            standard
+  build:           standard
+  review_charter:  deep
+  review_adversary: deep
+  arbitrate:       deep
+  triage_classify: cheap
+  evidence_verify: deep
+  decompose:       standard
+  dispatch:        standard
+  handoff:         standard
+  reconcile:       standard
+  retro:           deep
+  scope_epic:      standard
+  triage:          deep
+  validate_chunk:  standard
+  validate_phase:  deep
