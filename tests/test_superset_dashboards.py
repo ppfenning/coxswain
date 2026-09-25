@@ -33,9 +33,11 @@ def test_every_chart_names_a_dataset_that_exists():
 
 def test_every_dataset_sql_reads_only_under_data_runs():
     for d in SPECS["datasets"]:
-        paths = LITERAL_READS.findall(d["sql"])
+        sql = bootstrap.expand_store(d["sql"], None)
+        assert isinstance(sql, str), d["name"]
+        paths = LITERAL_READS.findall(sql)
         assert paths, d["name"]
-        assert len(READS.findall(d["sql"])) == len(paths), f"{d['name']} reads a source that is not a literal path"
+        assert len(READS.findall(sql)) == len(paths), f"{d['name']} reads a source that is not a literal path"
         assert all(p.startswith("/data/runs/") for p in paths), d["name"]
 
 
@@ -329,7 +331,7 @@ def _api_listing():
         "backend": "duckdb",
     }
     datasets = {
-        d["name"]: {"id": dataset_ids[d["name"]], "table_name": d["name"], "database": {"id": 1, "database_name": "coxswain", "backend": "duckdb"}, "sql": d["sql"]}
+        d["name"]: {"id": dataset_ids[d["name"]], "table_name": d["name"], "database": {"id": 1, "database_name": "coxswain", "backend": "duckdb"}, "sql": bootstrap.expand_store(d["sql"], None)}
         for d in SPECS["datasets"]
     }
     charts = {
