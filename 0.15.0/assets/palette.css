@@ -1,0 +1,61 @@
+/* Coxswain palette: dark by default (slate), a light toggle (default). */
+/* Contrast pairs used for body text against the page background: */
+/*   slate:   text #e8eef2 on background #0b1622 -> ~16.9:1 */
+/*   default: text #14202b on background #f6f9fb -> ~16.3:1 */
+/* Both clear the 7:1 body-text bar with headroom for the muted tone too. */
+
+[data-md-color-scheme="slate"] {
+  --cox-color-background: #0b1622;
+  --cox-color-surface: #10202e;
+  --cox-color-primary: #2a9d8f;
+  --cox-color-accent: #e9c46a;
+  --cox-color-text: #e8eef2;
+  --cox-color-muted: #9fb3c8;
+
+  --md-primary-fg-color: var(--cox-color-primary);
+  --md-accent-fg-color: var(--cox-color-accent);
+  --md-default-bg-color: var(--cox-color-background);
+  --md-default-fg-color: var(--cox-color-text);
+  --md-code-bg-color: var(--cox-color-surface);
+  --md-typeset-a-color: var(--cox-color-primary);
+}
+
+[data-md-color-scheme="default"] {
+  --cox-color-background: #f6f9fb;
+  --cox-color-surface: #ffffff;
+  --cox-color-primary: #1d6f66;
+  --cox-color-accent: #b8860b;
+  --cox-color-text: #14202b;
+  --cox-color-muted: #4a5b6b;
+
+  --md-primary-fg-color: var(--cox-color-primary);
+  --md-accent-fg-color: var(--cox-color-accent);
+  --md-default-bg-color: var(--cox-color-background);
+  --md-default-fg-color: var(--cox-color-text);
+  --md-code-bg-color: var(--cox-color-surface);
+  --md-typeset-a-color: var(--cox-color-primary);
+}
+
+/* The beta banner: accent text over a translucent wash of the primary colour. */
+.md-banner {
+  background-color: color-mix(in srgb, var(--cox-color-primary) 25%, transparent);
+  color: var(--cox-color-accent);
+}
+
+/* The prev/next bar at the top of each page body. */
+.cox-page-nav {
+  display: flex;
+  gap: 1rem;
+  padding: 0.5rem 0 1rem;
+  font-size: 0.75rem;
+  color: var(--cox-color-muted);
+}
+
+.cox-page-nav a {
+  color: var(--cox-color-primary);
+  text-decoration: none;
+}
+
+.cox-page-nav__next {
+  margin-left: auto;
+}
