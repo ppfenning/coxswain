@@ -76,7 +76,7 @@ def test_plan_on_an_empty_server_creates_everything_in_order():
     assert {o.action for o in ops} == {"create"}
     kinds = [o.kind for o in ops]
     assert kinds == sorted(kinds, key=bootstrap.KINDS.index)
-    assert Counter(kinds) == {"database": 1, "dataset": 9, "chart": 14, "dashboard": 1}
+    assert Counter(kinds) == {"database": 1, "dataset": 10, "chart": 17, "dashboard": 1}
 
 
 def test_plan_is_all_unchanged_when_the_server_matches():
@@ -107,7 +107,7 @@ def test_plan_skips_traces_and_its_chart_while_no_parquet_exists():
     assert len(lines) == 2
     (board,) = [o for o in ops if o.kind == "dashboard"]
     assert "Tool uses by name, top 15" not in json.dumps(board.payload)
-    assert Counter(o.kind for o in ops if o.action == "create") == {"database": 1, "dataset": 8, "chart": 13, "dashboard": 1}
+    assert Counter(o.kind for o in ops if o.action == "create") == {"database": 1, "dataset": 9, "chart": 16, "dashboard": 1}
 
 
 def test_plan_skips_the_land_log_datasets_and_their_charts_while_no_land_log_exists():
@@ -312,6 +312,36 @@ EXPECTED_QUERIES = {
             "orderby": [],
             "row_limit": 10000,
             "filters": [{"col": "last_call", "op": "TEMPORAL_RANGE", "val": "Last 2 weeks"}],
+            "extras": {},
+        }
+    ],
+    "Reviewer agreement": [
+        {
+            "columns": [{"columnType": "BASE_AXIS", "expressionType": "SQL", "label": "charter_verdict", "sqlExpression": "charter_verdict"}, "adversary_verdict"],
+            "metrics": [{"expressionType": "SQL", "sqlExpression": "COUNT(*)", "label": "tasks"}],
+            "orderby": [],
+            "row_limit": 10000,
+            "filters": [],
+            "extras": {},
+        }
+    ],
+    "Arbiter decisions": [
+        {
+            "columns": [{"columnType": "BASE_AXIS", "expressionType": "SQL", "label": "arbiter_verdict", "sqlExpression": "arbiter_verdict"}],
+            "metrics": [{"expressionType": "SQL", "sqlExpression": "COUNT(*)", "label": "tasks"}],
+            "orderby": [],
+            "row_limit": 10000,
+            "filters": [],
+            "extras": {},
+        }
+    ],
+    "Build attempts per task": [
+        {
+            "columns": [{"columnType": "BASE_AXIS", "expressionType": "SQL", "label": "build_attempts", "sqlExpression": "build_attempts"}],
+            "metrics": [{"expressionType": "SQL", "sqlExpression": "COUNT(*)", "label": "tasks"}],
+            "orderby": [],
+            "row_limit": 10000,
+            "filters": [],
             "extras": {},
         }
     ],
