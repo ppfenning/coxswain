@@ -72,6 +72,7 @@ nav:
       - Write a skill: customize/write-a-skill.md
       - Write a graph: customize/write-a-graph.md
       - Dashboards: customize/dashboards.md
+      - Several machines: customize/several-machines.md
   - Components:
       - Components: components/index.md
       - Cartridges: components/cartridges.md
