@@ -21,8 +21,8 @@ installer, since the system `python3` may be too old for `uv` to use.
 ## macOS
 
 `git` ships with the Xcode Command Line Tools (`xcode-select --install`).
-`curl` is preinstalled. Get a current Python with `brew install python@3.11`
-if the system one is older.
+`curl` is preinstalled. Get a current Python with `brew install python@3.12`
+if the system one is older (coxswain needs 3.12 or newer).
 
 ## Proxmox LXC
 
