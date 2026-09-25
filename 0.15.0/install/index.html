@@ -2656,10 +2656,13 @@ command.</p>
 </tbody>
 </table>
 <h2 id="macos">macOS</h2>
-<div class="highlight"><pre><span></span><code>brew<span class="w"> </span>install<span class="w"> </span>ppfenning/coxswain/cox
+<div class="highlight"><pre><span></span><code>brew<span class="w"> </span>tap<span class="w"> </span>ppfenning/coxswain
+brew<span class="w"> </span>trust<span class="w"> </span>ppfenning/coxswain
+brew<span class="w"> </span>install<span class="w"> </span>cox
 cox<span class="w"> </span>setup<span class="w"> </span>doctor
 </code></pre></div>
-<p>The formula installs <code>cox</code> alone; <code>cox install</code> fetches the rest of the
+<p>Current Homebrew refuses a formula from a third-party tap until you trust the tap, once.
+The formula installs <code>cox</code> alone; <code>cox install</code> fetches the rest of the
 pinned components from <code>manifest.toml</code>.</p>
 <h2 id="flags">Flags</h2>
 <table>
