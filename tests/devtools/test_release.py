@@ -1674,3 +1674,24 @@ def test_release_execute_wait_checks_times_out_past_grace(tmp_path, capsys):
                                sleep=lambda s: clock.__setitem__(0, clock[0] + s), now=lambda: clock[0])
     assert rc == 2
     assert "FAILED wait_checks harness: no checks reported within 180s" in capsys.readouterr().out
+
+
+def test_release_dry_run_reads_component_versions_from_checkouts_and_bumps_each_below_target(tmp_path, capsys, monkeypatch):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(
+        '[coxswain]\nversion = "0.1.0"\n\n'
+        '[components.harness]\nrepo = "org/harness"\ntag = "v0.1.0"\n\n'
+        '[components.cartridges]\nrepo = "org/cartridges"\ntag = "v0.1.0"\n'
+    )
+    for name in ("harness", "cartridges"):
+        component_dir = tmp_path / name
+        component_dir.mkdir()
+        (component_dir / "pyproject.toml").write_text('[project]\nversion = "0.1.0"\n')
+    monkeypatch.setattr(cli, "_maintainer_remote_url", lambda directory: "git@github.com:ppfenning/coxswain.git")
+    monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
+    rc = cli.main(["release", "0.2.0", "--dry-run", "--manifest", str(manifest_path), "--root", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    for name in ("harness", "cartridges"):
+        assert f"bump_pyproject {name}:" in out
+        assert "'from': '0.1.0'" in out and "'to': '0.2.0'" in out
