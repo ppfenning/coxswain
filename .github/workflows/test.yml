@@ -9,6 +9,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+      # the dev group installs coxswain-tools from the sibling checkout (devtools/ renders its command table)
+      - run: git clone --depth 1 https://github.com/ppfenning/coxswain-tools ../coxswain-tools
       - run: uv sync --group dev
       - run: uv run pytest -q
       - name: ruff (rules in pyproject.toml; pre-commit mirrors it)
