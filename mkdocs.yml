@@ -68,6 +68,7 @@ nav:
       - Skills: customize/skills.md
       - Providers: customize/providers.md
       - Policy: customize/policy.md
+      - Plugins: customize/plugins.md
       - Write a skill: customize/write-a-skill.md
       - Write a graph: customize/write-a-graph.md
       - Dashboards: customize/dashboards.md
