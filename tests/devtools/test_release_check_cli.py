@@ -242,5 +242,5 @@ def _real_cox_help_texts():
 def test_walk_help_on_the_real_cox_parser_reaches_setup_and_dev_but_drops_release():
     commands = walk_help(_real_cox_help_texts())
     assert any(cmd.startswith("cox setup ") for cmd in commands)
-    assert any(cmd.startswith("cox dev ") for cmd in commands)
+    assert any(cmd.split()[:2] == ["cox", "dev"] for cmd in commands)  # a bare `cox dev` once tools #442 lands
     assert not any(cmd.split()[1] == "release" for cmd in commands)
