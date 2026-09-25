@@ -11,7 +11,7 @@ datasets:
     requires: sqlite
     sql: |
       SELECT *, CAST(ts AS TIMESTAMPTZ) AS at
-      FROM sqlite_scan('/data/runs/cox.db', 'node_calls')
+      FROM {{store:node_calls}}
 
   - name: runs
     database: coxswain
@@ -21,14 +21,14 @@ datasets:
         CAST(launched_at AS TIMESTAMPTZ) AS launched_at,
         CAST(ended_at AS TIMESTAMPTZ) AS ended_at
       )
-      FROM sqlite_scan('/data/runs/cox.db', 'runs')
+      FROM {{store:runs}}
 
   - name: attempts
     database: coxswain
     requires: sqlite
     sql: |
       SELECT *, CAST(ts AS TIMESTAMPTZ) AS at
-      FROM sqlite_scan('/data/runs/cox.db', 'attempts')
+      FROM {{store:attempts}}
 
   # One row per hour over the last 14 days. A run is busy in an hour when it
   # launched by the hour's end and had not ended before the hour's start.
@@ -46,7 +46,7 @@ datasets:
       ),
       r AS (
         SELECT CAST(launched_at AS TIMESTAMPTZ) AS launched_at, CAST(ended_at AS TIMESTAMPTZ) AS ended_at
-        FROM sqlite_scan('/data/runs/cox.db', 'runs')
+        FROM {{store:runs}}
       )
       SELECT hours.hour_start, count(r.launched_at) AS busy_lanes
       FROM hours
@@ -71,7 +71,7 @@ datasets:
       SELECT CAST(CAST(ts AS TIMESTAMPTZ) AS DATE) AS day, model_alias,
              SUM(cost_usd) AS cost_usd, SUM(turns) AS turns, SUM(cost_usd) / NULLIF(SUM(turns), 0) AS cost_per_turn,
              SUM(cache_read_tokens) * 1.0 / NULLIF(SUM(input_total), 0) AS cache_read_share
-      FROM sqlite_scan('/data/runs/cox.db', 'node_calls')
+      FROM {{store:node_calls}}
       GROUP BY ALL
 
   # The three datasets below read land.jsonl and cox.db. bootstrap counts land-log present
@@ -82,7 +82,7 @@ datasets:
     sql: |
       WITH cost AS (
         SELECT CAST(CAST(ts AS TIMESTAMPTZ) AS DATE) AS day, SUM(cost_usd) AS cost_usd
-        FROM sqlite_scan('/data/runs/cox.db', 'node_calls') GROUP BY 1
+        FROM {{store:node_calls}} GROUP BY 1
       ),
       landed AS (
         SELECT CAST(CAST(ts AS TIMESTAMPTZ) AS DATE) AS day, COUNT(*) AS landed
@@ -106,13 +106,13 @@ datasets:
         WHERE exit = 0 AND list_contains(steps_reached, 'mark_done') AND task IS NOT NULL
       ),
       builds AS (
-        SELECT task_id, COUNT(*) AS builds FROM sqlite_scan('/data/runs/cox.db', 'node_calls') WHERE role = 'build' GROUP BY 1
+        SELECT task_id, COUNT(*) AS builds FROM {{store:node_calls}} WHERE role = 'build' GROUP BY 1
       ),
       spend AS (
-        SELECT task_id, SUM(cost_usd) AS cost_usd FROM sqlite_scan('/data/runs/cox.db', 'node_calls') GROUP BY 1
+        SELECT task_id, SUM(cost_usd) AS cost_usd FROM {{store:node_calls}} GROUP BY 1
       ),
       launch AS (
-        SELECT run_id, CAST(launched_at AS TIMESTAMPTZ) AS launched_at FROM sqlite_scan('/data/runs/cox.db', 'runs')
+        SELECT run_id, CAST(launched_at AS TIMESTAMPTZ) AS launched_at FROM {{store:runs}}
       )
       SELECT landed.task, landed.run, landed.landed_at, CAST(landed.landed_at AS DATE) AS day,
              COALESCE(builds.builds, 0) AS builds, COALESCE(builds.builds, 0) = 1 AS first_try,
@@ -135,7 +135,7 @@ datasets:
       ),
       tasks AS (
         SELECT task_id, SUM(cost_usd) AS cost_usd, MAX(CAST(ts AS TIMESTAMPTZ)) AS last_call
-        FROM sqlite_scan('/data/runs/cox.db', 'node_calls') WHERE task_id IS NOT NULL GROUP BY 1
+        FROM {{store:node_calls}} WHERE task_id IS NOT NULL GROUP BY 1
       )
       SELECT task_id, cost_usd, last_call, CAST(last_call AS DATE) AS day,
              CASE WHEN task_id IN (SELECT task FROM landed) THEN 'landed'
