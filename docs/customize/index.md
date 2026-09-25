@@ -20,6 +20,10 @@ runs dispatch.
   [Policy](policy.md).
 - **Your dashboards** — Superset over your own runs, with a dashboard to
   read and charts you can add. See [Dashboards](dashboards.md).
+- **Your lake** — your runs in Iceberg tables, synced after each land and
+  queried with SQL. See [The lake](lake.md).
+- **Your efficiency numbers** — cost, landed rate, and quarantine causes,
+  read from the run store. See [Efficiency](efficiency.md).
 - **Your several machines** — a chair that launches and lands, lane
   machines that run, and one shared run store. See [Several
   machines](several-machines.md).
