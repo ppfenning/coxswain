@@ -1146,7 +1146,7 @@ def test_gate_refuses_a_versions_drift_even_when_a_reason_is_given():
 def test_gate_a_behind_pyproject_with_a_planned_bump_pyproject_passes_the_gate():
     drifts = [Drift("versions", "manifest.toml", None, "cartridges/pyproject.toml", None,
                      "cartridges pyproject.toml is 0.10.0, manifest wants 0.11.0 "
-                     "(cox dev release 0.11.0 performs the bump)")]
+                     "(devtools release 0.11.0 performs the bump)")]
     plan_steps = [{"kind": "bump_pyproject", "component": "cartridges", "to": "0.11.0"}]
     assert release.gate(drifts, None, plan_steps) == [
         {"kind": "note", "component": "versions",
@@ -1158,7 +1158,7 @@ def test_gate_a_behind_pyproject_with_a_planned_bump_pyproject_passes_the_gate()
 def test_gate_a_behind_pyproject_with_no_planned_bump_refuses():
     drifts = [Drift("versions", "manifest.toml", None, "cartridges/pyproject.toml", None,
                      "cartridges pyproject.toml is 0.10.0, manifest wants 0.11.0 "
-                     "(cox dev release 0.11.0 performs the bump)")]
+                     "(devtools release 0.11.0 performs the bump)")]
     assert release.gate(drifts, None, []) == [
         {"kind": "refuse", "component": "versions",
          "detail": "versions: manifest.toml <-> cartridges/pyproject.toml — cartridges pyproject.toml is 0.10.0, "
@@ -1169,7 +1169,7 @@ def test_gate_a_behind_pyproject_with_no_planned_bump_refuses():
 def test_gate_a_manifest_one_version_behind_with_a_planned_bump_manifest_passes():
     drifts = [Drift("versions", "manifest.toml", None, "coxswain/pyproject.toml", None,
                      "umbrella pyproject.toml is 0.10.0, manifest wants 0.11.0 "
-                     "(cox dev release 0.11.0 performs the bump)")]
+                     "(devtools release 0.11.0 performs the bump)")]
     plan_steps = [{"kind": "bump_manifest", "component": "manifest", "from": "0.10.0", "to": "0.11.0"}]
     assert release.gate(drifts, None, plan_steps) == [
         {"kind": "note", "component": "versions",

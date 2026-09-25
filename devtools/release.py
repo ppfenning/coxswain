@@ -40,7 +40,7 @@ def _refuse(component: str | None, detail: str) -> list[dict]:
 
 
 _VERSIONS_LABEL_RE = re.compile(r"^(\S+) pyproject\.toml is (\S+), manifest wants (\S+)")
-_PERFORMS_BUMP_SUFFIX_RE = re.compile(r"\s*\(cox dev release [^)]*\)$")
+_PERFORMS_BUMP_SUFFIX_RE = re.compile(r"\s*\(devtools release [^)]*\)$")
 
 
 def _drift_line(d, will_bump: bool = False) -> str:

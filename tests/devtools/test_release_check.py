@@ -87,7 +87,7 @@ def test_check_versions_drifts_on_a_component_pyproject_below_the_manifest_versi
     assert d.check == "versions"
     assert d.b_file == "/root/cox/pyproject.toml"
     assert "cox" in d.correction and "0.1.0" in d.correction and "0.2.0" in d.correction
-    assert "cox dev release 0.2.0" in d.correction
+    assert "devtools release 0.2.0" in d.correction
 
 
 def test_check_versions_drifts_advisory_on_a_lockstep_false_component_past_its_pinned_tag():
@@ -147,7 +147,7 @@ def test_cli_release_check_reports_a_real_versions_drift_from_disk(tmp_path, cap
     payload = json.loads(capsys.readouterr().out)
     versions_drifts = [d for d in payload["drifts"] if d["check"] == "versions"]
     assert len(versions_drifts) == 1
-    assert "cox" in versions_drifts[0]["correction"] and "cox dev release 0.2.0" in versions_drifts[0]["correction"]
+    assert "cox" in versions_drifts[0]["correction"] and "devtools release 0.2.0" in versions_drifts[0]["correction"]
 
 
 def test_cli_release_check_with_a_valid_manifest_exits_zero_and_reports_no_drift(tmp_path, capsys, monkeypatch):
