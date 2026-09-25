@@ -58,4 +58,6 @@ datasets:
     database: coxswain
     requires: parquet-traces
     sql: |
-      SELECT * FROM read_parquet('/data/runs/traces/*/*/*/*.parquet')
+      SELECT *, tool AS tool_name
+      FROM read_parquet('/data/runs/traces/*/*/*/*.parquet')
+      WHERE tool IS NOT NULL

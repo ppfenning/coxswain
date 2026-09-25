@@ -55,8 +55,27 @@ Log in with `SUPERSET_ADMIN_USERNAME` and `SUPERSET_ADMIN_PASSWORD` from
 your `.env`. The username is `admin` unless you changed it.
 
 Open the Dashboards list from the top menu and choose the Coxswain
-dashboard. If the list is empty, the dashboards have not been installed
-into your Superset yet.
+dashboard.
+
+`docker compose up -d` also runs the `superset-dashboards` one-shot
+service once Superset is healthy, and that service installs the
+dashboards. It reads the specs in `deploy/superset/dashboards` and skips
+the tool-use chart until graphs has written its first Parquet trace.
+Run it again after a spec changes, or once that first trace exists. A
+second run changes nothing when the specs already match Superset.
+
+```sh
+docker compose run --rm superset-dashboards
+```
+
+To confirm every chart returns data, export the values from your `.env`
+and run the check from the repository root. It prints one line per chart,
+`<chart>: <rows> rows` or `<chart>: ERROR <message>`, and exits 1 if any
+chart errors.
+
+```sh
+python deploy/superset/check.py
+```
 
 ## Change the time range
 
