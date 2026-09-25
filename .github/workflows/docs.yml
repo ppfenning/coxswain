@@ -12,10 +12,8 @@ jobs:
         with:
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v5
-      - run: uv sync --group dev
-      - run: uv run python docs/_pull.py
       - run: |
-          tag=$(uv run python -c 'import tomllib; print(tomllib.load(open("manifest.toml", "rb"))["components"]["tools"].get("tag", ""))')
+          tag=$(python3 -c 'import tomllib; print(tomllib.load(open("manifest.toml", "rb"))["components"]["tools"].get("tag", ""))')
           ref=main
           if [ -n "$tag" ] && git ls-remote --exit-code --tags https://github.com/ppfenning/coxswain-tools "refs/tags/${tag}" >/dev/null; then
             ref="$tag"
@@ -23,6 +21,11 @@ jobs:
             echo "tag ${tag:-<none>} is not pushed yet, installing coxswain-tools@main"
           fi
           uv tool install "git+https://github.com/ppfenning/coxswain-tools@${ref}"
+          # the dev group installs coxswain-tools from this sibling checkout (devtools/ renders its
+          # command table); the same ref, so the venv's cox is the one the CLI reference is built from
+          git clone --depth 1 --branch "${ref}" https://github.com/ppfenning/coxswain-tools ../coxswain-tools
+      - run: uv sync --group dev
+      - run: uv run python docs/_pull.py
       - run: uv run python docs/_cli.py
       - id: version
         run: echo "version=$(uv run python -c 'import tomllib; print(tomllib.load(open("manifest.toml", "rb"))["coxswain"]["version"])')" >> "$GITHUB_OUTPUT"

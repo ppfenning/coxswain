@@ -4,11 +4,14 @@ What changes between versions and how the lockstep tag scheme works.
 
 ## How a release works
 
-A release is cut with:
+From 0.15.0, a release is cut from the umbrella checkout with:
 
 ```
-cox release <version>
+uv run --frozen python -m devtools release <version> --root ~/repos --manifest ~/repos/coxswain/manifest.toml --umbrella ~/repos/coxswain
 ```
+
+0.14.x and earlier were cut with `cox dev release`. `--frozen` keeps `uv run` from rewriting
+`uv.lock` when a component's version moves, since a dirty umbrella refuses the cut.
 
 That one command tags every component repository and this repository at
 `<version>`, bumps `manifest.toml` to match, and publishes both the docs
