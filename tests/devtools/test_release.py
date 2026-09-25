@@ -901,10 +901,12 @@ def test_cli_release_execute_runs_the_bump_manifest_land_sequence_and_leaves_the
     # executor switches back to the default branch and pulls it before the
     # pre-existing `tag_self` step tags HEAD, so it tags the squash-merged
     # commit rather than the stale pre-merge commit on release/0.2.0.
-    assert kinds == ["status", "rev-parse", "symbolic-ref", "checkout", "add", "commit", "push",
+    assert kinds == ["status", "rev-parse", "symbolic-ref", "checkout", "add", "commit", "push", "status",
                       "symbolic-ref", "checkout", "pull", "tag", "push"]
-    assert umbrella_calls[8] == release.checkout_ref_argv(str(umbrella_dir), "main")
-    assert umbrella_calls[9] == release.pull_argv(str(umbrella_dir), "main")
+    assert umbrella_calls[9] == release.checkout_ref_argv(str(umbrella_dir), "main")
+    assert umbrella_calls[10] == release.pull_argv(str(umbrella_dir), "main")
+    assert umbrella_calls[4] == release.add_argv(str(umbrella_dir), "manifest.toml", "docs/releases/index.md",
+                                                 "pyproject.toml", "uv.lock")
     assert ["gh", "pr", "create", "--title", "manifest: bump to 0.2.0 to match the tag",
             "--body", "Bumps manifest.toml version to 0.2.0 to match tag v0.2.0."] in calls
     assert ["gh", "pr", "merge", "--squash", "--delete-branch"] in calls
@@ -962,13 +964,13 @@ def test_cli_release_execute_runs_the_bump_pyproject_land_sequence_in_order_and_
     # default branch and pulls it before the pre-existing `tag` step runs —
     # otherwise `tag` (which tags HEAD with no ref) would tag the stale
     # pre-squash commit still checked out on release/0.2.0.
-    assert kinds == ["status", "rev-parse", "symbolic-ref", "checkout", "add", "commit", "push",
+    assert kinds == ["status", "rev-parse", "symbolic-ref", "checkout", "add", "commit", "push", "status",
                       "symbolic-ref", "checkout", "pull", "tag", "push"]
     assert harness_calls[3] == release.checkout_branch_argv(str(harness_dir), "release/0.2.0")
     assert harness_calls[5] == release.commit_argv(
         str(harness_dir), "pyproject: bump to 0.2.0 to match the tag", "pyproject.toml")
-    assert harness_calls[8] == release.checkout_ref_argv(str(harness_dir), "main")
-    assert harness_calls[9] == release.pull_argv(str(harness_dir), "main")
+    assert harness_calls[9] == release.checkout_ref_argv(str(harness_dir), "main")
+    assert harness_calls[10] == release.pull_argv(str(harness_dir), "main")
     assert ["gh", "pr", "create", "--title", "pyproject: bump to 0.2.0 to match the tag",
             "--body", "Bumps harness's pyproject.toml version to 0.2.0 to match tag v0.2.0."] in calls
     assert ["gh", "pr", "merge", "--squash", "--delete-branch"] in calls
@@ -1270,6 +1272,7 @@ def test_umbrella_release_slug_is_none_with_no_manifest_repo_and_no_url_and_read
 def test_tools_repository_url_reads_installed_package_metadata_not_a_checkout_path():
     """No monkeypatch: proves the lookup survives being installed (editable
     counts), unlike a `pyproject.toml` path that only exists in a checkout."""
+    pytest.importorskip("agent_tools", reason="reads installed coxswain-tools metadata")
     assert cli._tools_repository_url() == _TOOLS_REPO_URL
 
 
@@ -1695,3 +1698,64 @@ def test_release_dry_run_reads_component_versions_from_checkouts_and_bumps_each_
     for name in ("harness", "cartridges"):
         assert f"bump_pyproject {name}:" in out
         assert "'from': '0.1.0'" in out and "'to': '0.2.0'" in out
+
+
+_CREW_LAST = {"components": {
+    "cartridges": {"repo": "o/cartridges", "required": True},
+    "graphs": {"repo": "o/graphs", "required": True},
+    "tools": {"repo": "o/tools", "required": True},
+    "crew": {"repo": "o/crew", "tag": "v0.1.0", "lockstep": False, "flag": "crew"},
+}}
+
+
+def _notes_then_bump(tmp_path, index_text):
+    umbrella_dir = tmp_path / "coxswain"
+    (umbrella_dir / "docs" / "releases").mkdir(parents=True)
+    (umbrella_dir / "docs" / "releases" / "0.2.0.md").write_text("notes")
+    index_path = umbrella_dir / "docs" / "releases" / "index.md"
+    index_path.write_text(index_text)
+    manifest_path = umbrella_dir / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    steps = [
+        {"kind": "notes", "path": "docs/releases/0.2.0.md"},
+        {"kind": "bump_manifest", "component": "manifest", "from": "0.1.0", "to": "0.2.0",
+         "branch": "release/0.2.0", "commit_subject": "manifest: bump to 0.2.0 to match the tag"},
+    ]
+    calls, fake_run = _fake_git_run()
+    rc = cli._release_execute(steps, "0.2.0", str(tmp_path), {}, str(umbrella_dir), fake_run,
+                               _CREW_LAST, str(manifest_path))
+    return rc, calls, index_path, str(umbrella_dir)
+
+
+def test_notes_step_leaves_an_index_already_holding_the_identical_section_unwritten(tmp_path):
+    written = release.release_index_text("## `0.1.0`\n\nold\n", "0.2.0", _CREW_LAST)
+    assert written.index("| cartridges |") < written.index("| graphs |") < written.index("| tools |") < written.index("| crew |")
+    rc, calls, index_path, umbrella = _notes_then_bump(tmp_path, written)
+    assert rc == 0
+    assert index_path.read_text() == written
+    add = next(c for c in calls if c[0] == "git" and c[3] == "add")
+    assert add == release.add_argv(umbrella, "manifest.toml")
+
+
+def test_manifest_bump_commit_carries_the_index_when_the_notes_step_rewrote_it(tmp_path):
+    rc, calls, index_path, umbrella = _notes_then_bump(tmp_path, "## `0.1.0`\n\nold\n")
+    assert rc == 0
+    assert "## `0.2.0`" in index_path.read_text()
+    paths = ("manifest.toml", "docs/releases/index.md")
+    assert release.add_argv(umbrella, *paths) in calls
+    assert release.commit_argv(umbrella, "manifest: bump to 0.2.0 to match the tag", *paths) in calls
+
+
+def test_merge_refuses_naming_the_dirty_file_before_merging_or_pulling(tmp_path, capsys):
+    calls = []
+
+    def run(argv, cwd):
+        calls.append(argv)
+        return (0, " M docs/releases/index.md\n") if argv[-2:] == ["status", "--porcelain"] else (0, "")
+    step = {"kind": "merge", "component": "manifest"}
+    rc = cli._release_execute([step], "0.2.0", str(tmp_path), {}, str(tmp_path), run, {}, "")
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert out.strip().splitlines() == [
+        f"FAILED merge manifest: {tmp_path} has uncommitted changes: docs/releases/index.md"]
+    assert not any(c[0] == "gh" or "pull" in c for c in calls)

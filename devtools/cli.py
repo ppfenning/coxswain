@@ -138,6 +138,12 @@ def _checkout_ready(directory: str, run) -> tuple[bool, str]:
     return True, ""
 
 
+def _dirty_files(directory: str, run) -> list[str]:
+    """Paths `git status --porcelain` reports as changed in `directory`."""
+    _, out = run(["git", "-C", directory, "status", "--porcelain"], None)
+    return [line.strip().split(None, 1)[-1] for line in out.splitlines() if line.strip()]
+
+
 def _fetch_index(url: str) -> dict:
     with urllib.request.urlopen(url, timeout=30) as response:
         return json.load(response)
@@ -182,17 +188,19 @@ def _release_bump_pyproject(directory: str, path: Path, to: str, branch: str, co
 
 
 def _release_bump_manifest(umbrella: str, manifest_file: Path, to: str, branch: str, commit_subject: str,
-                            rejoining: set, run) -> tuple[bool, str]:
+                            rejoining: set, run, extra_paths: tuple[str, ...] = ()) -> tuple[bool, str]:
     """`_release_bump` for a `bump_manifest` step: rewrites `manifest_file`'s
     version and component tags, and — when the umbrella checkout carries its
     own `pyproject.toml` — that file's version line and, when `uv.lock` also
     exists and that pyproject names a package, its matching `[[package]]`
     stanza's version — all only once `branch` is checked out. Which of the
     umbrella's files exist is read before the checkout (a read touches
-    nothing), so `paths` is known up front without ever writing early."""
+    nothing), so `paths` is known up front without ever writing early.
+    `extra_paths` (files already rewritten on disk, such as the release index)
+    ride in the same commit."""
     pyproject_path = Path(umbrella) / "pyproject.toml"
     lock_path = Path(umbrella) / "uv.lock"
-    paths = ["manifest.toml"]
+    paths = ["manifest.toml", *extra_paths]
     package_name = None
     if pyproject_path.exists():
         package_name = tomllib.loads(pyproject_path.read_text()).get("project", {}).get("name")
@@ -338,6 +346,9 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
     # merge; its later land steps no-op the same way rather than push a
     # branch nothing was ever committed to.
     already_bumped: dict[str, str] = {}
+    # Paths the `notes` step really rewrote; the manifest bump commits them so
+    # the umbrella is clean again before the merge pulls.
+    rewritten: list[str] = []
 
     for step in steps:
         kind = step["kind"]
@@ -355,7 +366,10 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
         elif kind == "notes":
             index_path = Path(umbrella) / "docs" / "releases" / "index.md"
             existing = index_path.read_text() if index_path.exists() else ""
-            index_path.write_text(release.release_index_text(existing, version, manifest))
+            new_index = release.release_index_text(existing, version, manifest)
+            if new_index != existing:
+                index_path.write_text(new_index)
+                rewritten.append("docs/releases/index.md")
             print(f"notes notes: {step['path']}")
         elif kind == "note":
             print(f"note {step['component']}: {step['detail']}")
@@ -381,7 +395,8 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                 print(f"bump_manifest {step['component']}: already at {step['to']}")
                 continue
             ok, detail = _release_bump_manifest(umbrella, manifest_file, step["to"], step["branch"],
-                                                 step["commit_subject"], release.rejoined(steps), run)
+                                                 step["commit_subject"], release.rejoined(steps), run,
+                                                 tuple(rewritten))
             if not ok:
                 print(f"FAILED bump_manifest {step['component']}: {detail}")
                 return 2
@@ -421,6 +436,10 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                 print(f"merge {step['component']}: already at {already_bumped[step['component']]}")
                 continue
             directory = _release_step_dir(step["component"], root, overrides, umbrella)
+            dirty = _dirty_files(directory, run)
+            if dirty:
+                print(f"FAILED merge {step['component']}: {directory} has uncommitted changes: {', '.join(dirty)}")
+                return 2
             merge_rc, merge_out = run(release.pr_merge_argv(), directory)
             if merge_rc != 0:
                 print(f"FAILED merge {step['component']}: {merge_out.strip()}")
