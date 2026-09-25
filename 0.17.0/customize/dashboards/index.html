@@ -2766,8 +2766,21 @@ cp<span class="w"> </span>.env.example<span class="w"> </span>.env
 <p>Log in with <code>SUPERSET_ADMIN_USERNAME</code> and <code>SUPERSET_ADMIN_PASSWORD</code> from
 your <code>.env</code>. The username is <code>admin</code> unless you changed it.</p>
 <p>Open the Dashboards list from the top menu and choose the Coxswain
-dashboard. If the list is empty, the dashboards have not been installed
-into your Superset yet.</p>
+dashboard.</p>
+<p><code>docker compose up -d</code> also runs the <code>superset-dashboards</code> one-shot
+service once Superset is healthy, and that service installs the
+dashboards. It reads the specs in <code>deploy/superset/dashboards</code> and skips
+the tool-use chart until graphs has written its first Parquet trace.
+Run it again after a spec changes, or once that first trace exists. A
+second run changes nothing when the specs already match Superset.</p>
+<div class="highlight"><pre><span></span><code>docker<span class="w"> </span>compose<span class="w"> </span>run<span class="w"> </span>--rm<span class="w"> </span>superset-dashboards
+</code></pre></div>
+<p>To confirm every chart returns data, export the values from your <code>.env</code>
+and run the check from the repository root. It prints one line per chart,
+<code>&lt;chart&gt;: &lt;rows&gt; rows</code> or <code>&lt;chart&gt;: ERROR &lt;message&gt;</code>, and exits 1 if any
+chart errors.</p>
+<div class="highlight"><pre><span></span><code>python<span class="w"> </span>deploy/superset/check.py
+</code></pre></div>
 <h2 id="change-the-time-range">Change the time range</h2>
 <p>The dashboard has a time range filter. Open it, pick a range such as the
 last week or a pair of dates, and apply it. Every chart on the dashboard
