@@ -64,3 +64,72 @@ charts:
       x_axis_sort: tool_uses
       x_axis_sort_asc: false
       row_limit: 15
+
+  # Efficiency. Cost per turn and cost per landed divide summed parts. Cache-read share has no
+  # token parts in calls_by_day, so above a one-day grain it is a turn-weighted mean of daily shares.
+  - name: Cost per turn by model, by day
+    dataset: calls_by_day
+    viz_type: echarts_timeseries_line
+    params:
+      x_axis: day
+      time_grain_sqla: P1D
+      metrics:
+        - {expressionType: SQL, sqlExpression: "SUM(cost_usd) / NULLIF(SUM(turns), 0)", label: cost_per_turn}
+      groupby: [model_alias]
+
+  - name: Cache-read share by model, by day
+    dataset: calls_by_day
+    viz_type: echarts_timeseries_line
+    params:
+      x_axis: day
+      time_grain_sqla: P1D
+      metrics:
+        - {expressionType: SQL, sqlExpression: "SUM(cache_read_share * turns) / NULLIF(SUM(turns), 0)", label: cache_read_share}
+      groupby: [model_alias]
+
+  - name: Cost per landed task, by day
+    dataset: daily_efficiency
+    viz_type: echarts_timeseries_bar
+    params:
+      x_axis: day
+      time_grain_sqla: P1D
+      metrics:
+        - {expressionType: SQL, sqlExpression: "SUM(cost_usd) / NULLIF(SUM(landed), 0)", label: cost_per_landed}
+
+  - name: Landed tasks per day
+    dataset: daily_efficiency
+    viz_type: echarts_timeseries_bar
+    params:
+      x_axis: day
+      time_grain_sqla: P1D
+      metrics:
+        - {expressionType: SQL, sqlExpression: "SUM(landed)", label: landed}
+
+  - name: First-try build rate, by day
+    dataset: landed_tasks
+    viz_type: echarts_timeseries_line
+    params:
+      x_axis: day
+      time_grain_sqla: P1D
+      metrics:
+        - {expressionType: SQL, sqlExpression: "AVG(CAST(first_try AS INTEGER))", label: first_try_rate}
+
+  - name: Lead time, launch to land (median hours), by day
+    dataset: landed_tasks
+    viz_type: echarts_timeseries_line
+    params:
+      x_axis: day
+      time_grain_sqla: P1D
+      metrics:
+        - {expressionType: SQL, sqlExpression: "MEDIAN(lead_hours)", label: lead_hours}
+
+  # The dataset's day is a DATE, so the temporal filter reads last_call.
+  - name: Spend by task outcome, last 14 days
+    dataset: task_outcomes
+    viz_type: echarts_timeseries_bar
+    params:
+      x_axis: outcome
+      metrics:
+        - {expressionType: SQL, sqlExpression: "SUM(cost_usd)", label: cost_usd}
+      adhoc_filters:
+        - {expressionType: SIMPLE, clause: WHERE, subject: last_call, operator: TEMPORAL_RANGE, comparator: Last 2 weeks}
