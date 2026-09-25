@@ -8,7 +8,14 @@ from pathlib import Path
 import pytest
 
 from core import ledger
-from core.manifest import ManifestError, agreement_rate, build_manifest, gate_diff, record_run
+from core.manifest import (
+    ManifestError,
+    agreement_rate,
+    append_ledger,
+    build_manifest,
+    gate_diff,
+    record_run,
+)
 
 CARTRIDGE = {"team": "acme", "cartridge_sha": "sha-1"}
 PROPOSAL = {"kind": "ticket_create", "risk": "low", "target": "TICKET-1"}
@@ -166,3 +173,30 @@ def test_caller_cannot_assert_a_run_was_clean(tmp_path: Path) -> None:
     m["proposals"][0]["self_reported"] = "all good!"
     record_run(m, runs_dir=tmp_path / "runs", ledger_path=tmp_path / "ledger.jsonl")
     assert [r["outcome"] for r in ledger.read(tmp_path / "ledger.jsonl")] == ["reversal"]
+
+
+# ── append_ledger: the ledger half of record_run ───────────────────────────
+
+
+def test_append_ledger_appends_the_rows_record_run_writes(tmp_path: Path) -> None:
+    m = manifest(
+        gate_diff(ENTRY_PROPOSAL, "approved", applied=True, edited=False),
+        gate_diff(PROPOSAL, "refused", applied=False, edited=False),
+    )
+    record_run(m, runs_dir=tmp_path / "runs", ledger_path=tmp_path / "via-record.jsonl")
+    append_ledger(m, ledger_path=tmp_path / "via-append.jsonl")
+    assert ledger.read(tmp_path / "via-append.jsonl") == ledger.read(tmp_path / "via-record.jsonl")
+
+
+def test_append_ledger_writes_no_manifest_file(tmp_path: Path) -> None:
+    m = manifest(gate_diff(PROPOSAL, "approved", applied=True, edited=False))
+    append_ledger(m, ledger_path=tmp_path / "ledger.jsonl")
+    assert not (tmp_path / "runs").exists()
+    assert [r["outcome"] for r in ledger.read(tmp_path / "ledger.jsonl")] == ["clean"]
+
+
+def test_append_ledger_refuses_a_manifest_without_run_id(tmp_path: Path) -> None:
+    m = {**manifest(gate_diff(PROPOSAL, "approved", applied=True, edited=False)), "run_id": ""}
+    with pytest.raises(ManifestError):
+        append_ledger(m, ledger_path=tmp_path / "ledger.jsonl")
+    assert not (tmp_path / "ledger.jsonl").exists()

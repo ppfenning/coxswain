@@ -6,6 +6,7 @@ CONTRACT (implement against this; see docs/CLEAN-ROOM.md — write it fresh)
     gate_diff(proposal, decision, applied, edited) -> dict   # pure
     agreement_rate(manifest) -> float    # pure
     record_run(manifest, ...) -> None    # THE I/O EDGE: writes runs/ + ledger
+    append_ledger(manifest, ...) -> None # I/O edge: ledger rows only
 
 Design rules:
 
@@ -33,7 +34,14 @@ from typing import Any
 
 from core import ledger
 
-__all__ = ["ManifestError", "agreement_rate", "build_manifest", "gate_diff", "record_run"]
+__all__ = [
+    "ManifestError",
+    "agreement_rate",
+    "append_ledger",
+    "build_manifest",
+    "gate_diff",
+    "record_run",
+]
 
 APPROVED = "approved"
 REFUSED = "refused"
@@ -142,29 +150,10 @@ def agreement_rate(manifest: Mapping[str, Any]) -> float:
     return sum(1 for d in decided if d["outcome"] == "clean") / len(decided)
 
 
-def record_run(
-    manifest: Mapping[str, Any],
-    *,
-    runs_dir: Path | str,
-    ledger_path: Path | str,
-) -> None:
-    """Write the manifest to runs/ and derive ledger rows from its gate diffs.
-
-    THE I/O EDGE. Note what is not a parameter: the outcomes. They come from
-    `gate_diff`, which computed them from what the human actually did. A caller
-    cannot tell this function the run went well.
-
-    `subject` and `attempts` are copied onto the row when the diff carries them,
-    so policy can read a streak at whichever grain the run actually had.
-    """
+def append_ledger(manifest: Mapping[str, Any], *, ledger_path: Path | str) -> None:
+    """Derive ledger rows from the manifest's gate diffs and append them; writes no manifest file."""
     if not manifest.get("run_id"):
         raise ManifestError("manifest has no run_id")
-
-    runs_dir = Path(runs_dir)
-    runs_dir.mkdir(parents=True, exist_ok=True)
-    (runs_dir / f"{manifest['run_id']}.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8"
-    )
 
     rows = [
         {
@@ -181,3 +170,29 @@ def record_run(
         for diff in manifest.get("gate_diffs") or []
     ]
     ledger.append(rows, ledger_path)
+
+
+def record_run(
+    manifest: Mapping[str, Any],
+    *,
+    runs_dir: Path | str,
+    ledger_path: Path | str,
+) -> None:
+    """Write the manifest to runs/ and derive ledger rows from its gate diffs.
+
+    THE I/O EDGE. Note what is not a parameter: the outcomes. They come from
+    `gate_diff`, which computed them from what the human actually did. A caller
+    cannot tell this function the run went well.
+
+    `subject` and `attempts` are copied onto the row by `append_ledger` when the
+    diff carries them, so policy can read a streak at whichever grain the run had.
+    """
+    if not manifest.get("run_id"):
+        raise ManifestError("manifest has no run_id")
+
+    runs_dir = Path(runs_dir)
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    (runs_dir / f"{manifest['run_id']}.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8"
+    )
+    append_ledger(manifest, ledger_path=ledger_path)
