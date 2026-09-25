@@ -20,7 +20,8 @@ if TYPE_CHECKING:
 
 def parse_bullet(text: str, components: set[str]) -> tuple[str | None, set[str]]:
     component = next((name for name in sorted(components)
-                       if re.search(rf"\b{re.escape(name)}\b(?!://)", text)), None)
+                       # `coxswain.forges` (an entry-point group) or `coxswain-sources` (another repo) is not the component.
+                       if re.search(rf"\b{re.escape(name)}\b(?!://|[.-]\w)", text)), None)
     citations = set(_PR.findall(text)) | set(_SHA.findall(text))
     return component, citations
 

@@ -94,3 +94,15 @@ def test_readme_h1_still_drifts_when_the_title_does_not_match_the_repository_nam
     pkg = _package(name="tools", repo="org/coxswain-tools", readme="# tools\n\nbody\n")
     drifts = check_pages({"packages": [pkg]})
     assert any(d.correction == "set the README H1 to coxswain-tools" for d in drifts)
+
+
+def test_alias_sentences_keeps_a_dotted_path_inside_its_sentence():
+    text = "The route group reads `~/.config/agent-tools/profile.yaml` (the directory keeps the deprecated name). Next."
+    assert alias_sentences(text, ("agent-tools",)) == [
+        (1, "The route group reads `~/.config/agent-tools/profile.yaml` (the directory keeps the deprecated name).")
+    ]
+
+
+def test_alias_sentences_numbers_a_sentence_from_its_first_word():
+    text = "First line.\n\nagent-tools is deprecated."
+    assert alias_sentences(text, ("agent-tools",)) == [(3, "agent-tools is deprecated.")]
