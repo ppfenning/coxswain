@@ -24,6 +24,15 @@ def test_the_same_dead_name_inside_an_alias_sentence_does_not_drift():
     assert check_readmes(facts) == []
 
 
+def test_a_deprecation_sentence_wrapped_across_two_lines_exempts_the_name_on_the_second_line():
+    facts = {
+        "readmes": {"graphs": "The old package is\nagent-graphs and is deprecated.\n"},
+        "repo_names": {"org/coxswain-graphs"},
+        "docs_base": "latest",
+    }
+    assert check_readmes(facts) == []
+
+
 def test_a_plain_mention_after_an_aliased_one_still_drifts_at_its_own_line():
     text = (
         "This repo was formerly agent-graphs, an alias kept for history.\n"
