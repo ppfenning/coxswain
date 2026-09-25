@@ -24,6 +24,15 @@ tiers:
   standard:  sonnet         # most nodes
   deep:      opus           # verification, adversarial review, arbitration
 
+# Capability classes -> ordered catalog ids or aliases, first entry preferred.
+# tiers and defaults above and below still serve graphs and tools; nothing
+# reads this map yet.
+classes:
+  extract:  [haiku]
+  reason:   [sonnet]
+  judge:    [opus]
+  frontier: [fable, opus]
+
 # Effort per tier. Deep stays high, not xhigh: the verifier seats keep the
 # strongest model, and the extra thinking budget above `high` was the one
 # cost lever with no measured quality return on a review of a small diff.

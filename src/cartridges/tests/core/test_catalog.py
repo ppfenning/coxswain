@@ -4,6 +4,7 @@ import pytest
 import yaml
 
 from core.catalog import (
+    CLASSES,
     Catalog,
     ModelEntry,
     Price,
@@ -159,6 +160,30 @@ def test_every_model_a_profile_names_is_a_catalog_id_or_alias(profile):
         if entry_by_id(cat, model) is None and entry_by_alias(cat, model) is None
     }
     assert unknown == {}
+
+
+def _resolve(cat, name):
+    return entry_by_id(cat, name) or entry_by_alias(cat, name)
+
+
+@pytest.mark.parametrize("profile", _PROFILES, ids=lambda p: p.name)
+def test_every_profile_class_list_is_non_empty_and_names_models_carrying_that_class(profile):
+    cat = load_catalog(PROVIDERS / "catalog.yaml")
+    classes = yaml.safe_load(profile.read_text(encoding="utf-8"))["classes"]
+    assert set(classes) <= CLASSES
+    assert {k for k, v in classes.items() if not v} == set()
+    unresolved = {(k, m) for k, v in classes.items() for m in v if _resolve(cat, m) is None}
+    assert unresolved == set()
+    lacking = {
+        (k, m) for k, v in classes.items() for m in v if k not in _resolve(cat, m).classes
+    }
+    assert lacking == set()
+
+
+@pytest.mark.parametrize("profile", _PROFILES, ids=lambda p: p.name)
+def test_every_profile_defines_all_four_classes(profile):
+    classes = yaml.safe_load(profile.read_text(encoding="utf-8"))["classes"]
+    assert set(classes) == CLASSES
 
 
 def test_the_profile_glob_found_the_profiles_it_is_meant_to_check():

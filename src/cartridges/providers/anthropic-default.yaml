@@ -14,6 +14,14 @@ tiers:
   standard:  claude-sonnet-5             # most nodes
   deep:      claude-opus-5-5             # verification, adversarial review, arbitration
 
+# Capability classes -> ordered catalog ids or aliases, first entry preferred.
+# tiers and defaults still serve graphs and tools; nothing reads this map yet.
+classes:
+  extract:  [claude-haiku-4-5]
+  reason:   [claude-sonnet-5]
+  judge:    [claude-opus-5-5]
+  frontier: [claude-fable-5-1, claude-opus-5-5]
+
 defaults:
   plan:            standard
   build:           standard
