@@ -31,10 +31,13 @@ curl -fsSL https://raw.githubusercontent.com/ppfenning/coxswain/main/install.sh 
 ## macOS
 
 ```sh
-brew install ppfenning/coxswain/cox
+brew tap ppfenning/coxswain
+brew trust ppfenning/coxswain
+brew install cox
 cox setup doctor
 ```
 
+Current Homebrew refuses a formula from a third-party tap until you trust the tap, once.
 The formula installs `cox` alone; `cox install` fetches the rest of the
 pinned components from `manifest.toml`.
 
