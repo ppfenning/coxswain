@@ -1,0 +1,63 @@
+# The :? form on every variable makes compose refuse to start when one is unset or empty.
+x-superset-base: &superset-base
+  build: .
+  image: coxswain-superset:local
+  environment:
+    SUPERSET_CONFIG_PATH: /app/pythonpath/superset_config.py
+    SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:?set SUPERSET_SECRET_KEY in .env}
+    SUPERSET_ADMIN_USERNAME: ${SUPERSET_ADMIN_USERNAME:?set SUPERSET_ADMIN_USERNAME in .env}
+    SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:?set SUPERSET_ADMIN_PASSWORD in .env}
+    SUPERSET_ADMIN_EMAIL: ${SUPERSET_ADMIN_EMAIL:?set SUPERSET_ADMIN_EMAIL in .env}
+    SUPERSET_ADMIN_FIRSTNAME: ${SUPERSET_ADMIN_FIRSTNAME:?set SUPERSET_ADMIN_FIRSTNAME in .env}
+    SUPERSET_ADMIN_LASTNAME: ${SUPERSET_ADMIN_LASTNAME:?set SUPERSET_ADMIN_LASTNAME in .env}
+  volumes:
+    - ./superset_config.py:/app/pythonpath/superset_config.py:ro
+    - superset_meta:/var/lib/superset
+    # Read-only: Superset can query the runs, never change them.
+    - ${COXSWAIN_RUNS_DIR:?set COXSWAIN_RUNS_DIR in .env}:/data/runs:ro
+
+services:
+  superset-init:
+    <<: *superset-base
+    restart: "no"
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        superset db upgrade
+        # FAB's list-users prints one "username:<name> | email:... | role:..." line per user.
+        # create-admin exits 0 even when it creates nobody, so its exit code proves nothing.
+        # The admin's presence afterwards is the check; if it is missing, init fails.
+        admin_exists() { superset fab list-users | grep -qF "username:$$SUPERSET_ADMIN_USERNAME |"; }
+        if ! admin_exists; then
+          superset fab create-admin \
+            --username "$$SUPERSET_ADMIN_USERNAME" \
+            --password "$$SUPERSET_ADMIN_PASSWORD" \
+            --email "$$SUPERSET_ADMIN_EMAIL" \
+            --firstname "$$SUPERSET_ADMIN_FIRSTNAME" \
+            --lastname "$$SUPERSET_ADMIN_LASTNAME"
+        fi
+        if ! admin_exists; then
+          echo "admin user $$SUPERSET_ADMIN_USERNAME is missing after create-admin" >&2
+          exit 1
+        fi
+        superset init
+        # HOOK: dashboards bootstrap. The next task adds this script and its mount.
+        if [ -x /app/bootstrap/dashboards-bootstrap.sh ]; then
+          /app/bootstrap/dashboards-bootstrap.sh
+        else
+          echo "no dashboards bootstrap hook found; skipping"
+        fi
+
+  superset:
+    <<: *superset-base
+    restart: unless-stopped
+    depends_on:
+      superset-init:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:8088:8088"
+
+volumes:
+  superset_meta:
