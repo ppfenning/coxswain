@@ -142,3 +142,18 @@ datasets:
                   WHEN last_call < now() - INTERVAL 2 DAY THEN 'never landed'
                   ELSE 'in flight' END AS outcome
       FROM tasks
+
+  # One row per task record, with the review, adversary and arbiter verdicts and the
+  # build attempt count pulled out of the record's JSON.
+  - name: task_verdicts
+    database: coxswain
+    requires: sqlite
+    sql: |
+      SELECT run_id, task_id,
+             COALESCE(json_extract_string(record_json, '$.review.verdict'), 'none') AS charter_verdict,
+             COALESCE(json_extract_string(record_json, '$.adversary.verdict'), 'none') AS adversary_verdict,
+             COALESCE(json_extract_string(record_json, '$.arbitration.verdict'), 'not needed') AS arbiter_verdict,
+             CAST(json_extract(record_json, '$.fix_loop.attempts') AS DOUBLE) AS build_attempts,
+             json_extract_string(record_json, '$.fix_loop.stopped') AS stopped,
+             CAST(updated_at AS TIMESTAMPTZ) AS at
+      FROM {{store:task_records}}
