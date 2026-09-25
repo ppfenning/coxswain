@@ -29,7 +29,7 @@ class Drift:
 def check_versions(facts: Mapping) -> list[Drift]:
     """Every component pyproject and the umbrella's must equal `expected_version`
     (the manifest's `coxswain.version`, gathered by `gather_version_facts`); a
-    `lockstep = false` component compares against its own `tag` instead (advisory)."""
+    component whose manifest `tag` is not `v<expected>` is pinned and compares against its own `tag` instead (advisory)."""
     expected = facts.get("expected_version")
     if expected is None:
         return []
@@ -46,7 +46,7 @@ def check_versions(facts: Mapping) -> list[Drift]:
     umbrella_found = facts.get("umbrella_pyproject", {}).get("project", {}).get("version")
     umbrella_drift = mismatch("umbrella", umbrella_file, umbrella_found)
 
-    pinned = {name for name, spec in facts.get("components", {}).items() if not spec.get("lockstep", True)}
+    pinned = {name for name, spec in facts.get("components", {}).items() if spec.get("tag") != f"v{expected}"}
     pyprojects = facts.get("pyprojects", {})
     component_drifts = [
         d

@@ -27,7 +27,7 @@ def index_section(version: str, component_tags: dict[str, str], components: Mapp
         flag = "required" if spec.get("required") else (f"flag: `{spec['flag']}`" if spec.get("flag") else "")
         if spec.get("provides"):
             flag = f"{flag}, provides `{spec['provides']}`"
-        if not spec.get("lockstep", True):
+        if tag != f"v{version}":
             flag = f"{flag} (pinned)"
         rows.append(f"| {name} | {repo} | `{tag}` | {flag} |")
     table = "\n".join(["| Component | Repository or path | Tag | Required or flag |", "| --- | --- | --- | --- |", *rows])
@@ -55,11 +55,12 @@ def check_release_index(facts: Mapping) -> list[Drift]:
         Drift("release_index", index_file, None, index_file, None, f"add its section for {version}")
         for version in sorted(facts.get("release_versions", set()))
         for tags in [{
-            # A lockstep component's tag is the version's; a pinned component's
-            # is knowable only for the manifest's current version — an older
-            # section keeps whatever it was pinned at then, so only its row is required.
-            name: (f"v{version}" if spec.get("lockstep", True)
-                   else (str(spec.get("tag")) if version == current else None))
+            # The current version's row carries each component's manifest tag,
+            # older than `v<version>` for a pinned component. An older section
+            # expects `v<version>` only of a component tagged at the current
+            # version; a pinned one kept whatever it was at then, so only its row is required.
+            name: (str(spec.get("tag")) if version == current
+                   else (f"v{version}" if spec.get("tag") == f"v{current}" else None))
             for name, spec in components.items()
         }]
         if (section := _section_text(index_text, version)) is None

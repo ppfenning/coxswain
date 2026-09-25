@@ -366,7 +366,7 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
         elif kind == "notes":
             index_path = Path(umbrella) / "docs" / "releases" / "index.md"
             existing = index_path.read_text() if index_path.exists() else ""
-            new_index = release.release_index_text(existing, version, manifest)
+            new_index = release.release_index_text(existing, version, manifest, tagged=release.rejoined(steps))
             if new_index != existing:
                 index_path.write_text(new_index)
                 rewritten.append("docs/releases/index.md")
@@ -592,7 +592,7 @@ def _release(a: argparse.Namespace) -> int:
                       if spec.get("repo")}
     pinned_commits = {}
     for name, spec in manifest.get("components", {}).items():
-        if spec.get("repo") and not spec.get("lockstep", True):
+        if spec.get("repo"):
             directory = release.component_dir(root, name, overrides)
             rc, out = _real_run(["git", "-C", directory, "rev-list", f"{spec['tag']}..HEAD", "--count"], None)
             pinned_commits[name] = int(out.strip()) if rc == 0 and out.strip().isdigit() else 0
