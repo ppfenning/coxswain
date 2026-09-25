@@ -201,7 +201,8 @@ defaults:
   validate_phase:  judge
 
 # System one: a local kNN decider, shadowed by default. Nothing leaves the
-# machine. The examples file is written by `cox stats examples --role handoff`.
+# machine. The examples file holds every role and is written by:
+#   cox stats examples --role handoff --role review_charter --out ~/.local/state/coxswain/system_one/examples.jsonl
 # A missing or empty file turns shadow off with one `system-one: off (<reason>)`
 # line (graphs #332), so this default is safe before that command has run.
 # `model` is what the parser requires and the decision log records;
@@ -210,11 +211,12 @@ system_one:
   backend: knn-local
   model: all-MiniLM-L6-v2
   embedding_model: all-MiniLM-L6-v2
-  examples: ~/.local/state/coxswain/system_one/handoff.jsonl
+  examples: ~/.local/state/coxswain/system_one/examples.jsonl
   k: 5
   device: cpu
   roles:
     handoff: {mode: shadow, threshold: 0.9}
+    review_charter: {mode: shadow, threshold: 0.9}
 
 tools:
   # Read the world, change nothing.

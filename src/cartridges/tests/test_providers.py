@@ -118,10 +118,13 @@ SYSTEM_ONE = {
     "backend": "knn-local",
     "model": "all-MiniLM-L6-v2",
     "embedding_model": "all-MiniLM-L6-v2",
-    "examples": "~/.local/state/coxswain/system_one/handoff.jsonl",
+    "examples": "~/.local/state/coxswain/system_one/examples.jsonl",
     "k": 5,
     "device": "cpu",
-    "roles": {"handoff": {"mode": "shadow", "threshold": 0.9}},
+    "roles": {
+        "handoff": {"mode": "shadow", "threshold": 0.9},
+        "review_charter": {"mode": "shadow", "threshold": 0.9},
+    },
 }
 
 
