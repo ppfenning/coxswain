@@ -11,6 +11,7 @@ import argparse
 import http.cookiejar
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.parse
@@ -46,16 +47,62 @@ def covers(have: Any, want: Any) -> bool:
     return have == want
 
 
+def mask_uri(uri: str) -> str:
+    """The URI as Superset returns it: a password becomes ten X."""
+    return re.sub(r"(://[^:/@]+):[^@]*@", r"\1:XXXXXXXXXX@", uri)
+
+
+def loads(raw: Any) -> dict[str, Any]:
+    """Superset returns params and query_context as JSON strings, or null. Read them as dicts."""
+    return json.loads(raw) if isinstance(raw, str) and raw else (raw or {})
+
+
+def detail_path(kind: str, pk: int) -> str:
+    """Superset 4.x leaves sqlalchemy_uri out of GET /database/<pk>; only /connection returns it."""
+    return f"/api/v1/database/{pk}/connection" if kind == "database" else f"/api/v1/{kind}/{pk}"
+
+
+def axis_column(x: str, grain: str | None) -> dict[str, Any]:
+    """The x axis as Superset's getXAxisColumn writes it: a BASE_AXIS column, timed only when a grain is set."""
+    base = {"columnType": "BASE_AXIS", "expressionType": "SQL", "label": x, "sqlExpression": x}
+    return {**base, "timeGrain": grain} if grain else base
+
+
+def queries_of(params: dict[str, Any]) -> list[dict[str, Any]]:
+    """The one query a timeseries chart runs. Only SIMPLE adhoc filters are read."""
+    x, grain = params.get("x_axis"), params.get("time_grain_sqla")
+    axis = [axis_column(x, grain)] if x else []
+    metrics = params["metrics"]
+    by_label = {m.get("label"): m for m in metrics}
+    sort = params.get("x_axis_sort")
+    return [
+        {
+            "columns": [*axis, *params.get("groupby", [])],
+            "metrics": metrics,
+            "orderby": [[by_label.get(sort, sort), params.get("x_axis_sort_asc", True)]] if sort else [],
+            "row_limit": params.get("row_limit", 10000),
+            "filters": [{"col": f["subject"], "op": f["operator"], "val": f["comparator"]} for f in params.get("adhoc_filters", []) if f["expressionType"] == "SIMPLE"],
+            "extras": {"time_grain_sqla": grain} if grain else {},
+        }
+    ]
+
+
+def query_context(queries: list[dict[str, Any]], dataset_id: int) -> dict[str, Any]:
+    """The query context Superset's chart data endpoint needs saved beside the form data."""
+    return {"datasource": {"id": dataset_id, "type": "table"}, "force": False, "queries": queries, "result_format": "json", "result_type": "full"}
+
+
 def plan(specs: dict[str, Any], existing: dict[str, dict[str, dict]], present: frozenset[str] | set[str]) -> list[Op]:
     """Ordered operations: database, datasets, charts, dashboard.
 
     `existing` maps kind to name to the object as `normalize` shapes it. A dataset whose `requires`
-    source is not in `present` is skipped, and so is every chart on it.
+    source is not in `present` is skipped, and so is every chart on it. `seen` is what `decide`
+    compares when it differs from the payload, as with a masked database password.
     """
 
-    def decide(kind: str, name: str, payload: dict) -> Op:
+    def decide(kind: str, name: str, payload: dict, seen: dict | None = None) -> Op:
         have = existing.get(kind, {}).get(name)
-        action = "create" if have is None else ("unchanged" if covers(have, payload) else "update")
+        action = "create" if have is None else ("unchanged" if covers(have, payload if seen is None else seen) else "update")
         return Op(action, kind, name, payload)
 
     database, dash = specs["database"], specs["dashboard"]
@@ -69,13 +116,14 @@ def plan(specs: dict[str, Any], existing: dict[str, dict[str, dict]], present: f
     charts = [
         Op("skipped", "chart", c["name"], {}, f"dataset {c['dataset']} skipped")
         if c["dataset"] in absent
-        else decide("chart", c["name"], {"dataset": c["dataset"], "viz_type": c["viz_type"], "params": c["params"]})
+        else decide("chart", c["name"], {"dataset": c["dataset"], "viz_type": c["viz_type"], "params": c["params"], "queries": queries_of(c["params"])})
         for c in specs["charts"]
     ]
     live = {o.name for o in charts if o.action != "skipped"}
     grid = [row for row in ([cell for cell in row if cell["chart"] in live] for row in dash["grid"]) if row]
     board = decide("dashboard", dash["name"], {"grid": grid}) if grid else Op("skipped", "dashboard", dash["name"], {}, "no charts")
-    return [decide("database", database["name"], {"sqlalchemy_uri": database["sqlalchemy_uri"]}), *datasets, *charts, board]
+    uri = database["sqlalchemy_uri"]
+    return [decide("database", database["name"], {"sqlalchemy_uri": uri}, {"sqlalchemy_uri": mask_uri(uri)}), *datasets, *charts, board]
 
 
 def position(grid: list[list[dict]], chart_ids: dict[str, int], title: str) -> dict[str, Any]:
@@ -120,11 +168,15 @@ def grid_of(pos: dict[str, Any]) -> list[list[dict]]:
 def normalize(kind: str, detail: dict[str, Any], dataset_names: dict[int, str]) -> dict[str, Any]:
     """A server object in the same name-based shape `plan` builds its payloads in."""
     if kind == "database":
-        return {"sqlalchemy_uri": detail.get("sqlalchemy_uri")}
+        return {"sqlalchemy_uri": mask_uri(detail.get("sqlalchemy_uri") or "")}
     if kind == "dataset":
         return {"database": detail["database"]["database_name"], "sql": (detail.get("sql") or "").strip()}
     if kind == "chart":
-        return {"dataset": dataset_names.get(detail.get("datasource_id")), "viz_type": detail["viz_type"], "params": json.loads(detail.get("params") or "{}")}
+        params = loads(detail.get("params"))
+        # GET /chart/<pk> has no datasource_id in Superset 4.x; params.datasource ("<id>__table") names it.
+        given = detail.get("datasource_id")
+        ds = given if given is not None else int(params["datasource"].split("__")[0]) if "datasource" in params else None
+        return {"dataset": dataset_names.get(ds), "viz_type": detail["viz_type"], "params": params, "queries": loads(detail.get("query_context")).get("queries")}
     return {"grid": grid_of(json.loads(detail.get("position_json") or "{}"))}
 
 
@@ -147,7 +199,14 @@ def body(op: Op, ids: dict[str, dict[str, int]]) -> dict[str, Any]:
     if op.kind == "chart":
         ds = ids["dataset"][p["dataset"]]
         params = {**p["params"], "viz_type": p["viz_type"], "datasource": f"{ds}__table"}
-        return {"slice_name": op.name, "viz_type": p["viz_type"], "datasource_id": ds, "datasource_type": "table", "params": json.dumps(params)}
+        return {
+            "slice_name": op.name,
+            "viz_type": p["viz_type"],
+            "datasource_id": ds,
+            "datasource_type": "table",
+            "params": json.dumps(params),
+            "query_context": json.dumps(query_context(p["queries"], ds)),
+        }
     return {"dashboard_title": op.name, "published": True, "position_json": json.dumps(position(p["grid"], ids["chart"], op.name))}
 
 
@@ -190,7 +249,7 @@ def fetch_existing(client: Client, specs: dict[str, Any]) -> tuple[dict[str, dic
     ids = {k: {r[NAME_FIELD[k]]: r["id"] for r in list_all(client, k)} for k in KINDS}
     dataset_names = {i: n for n, i in ids["dataset"].items()}
     wanted = names_of(specs)
-    existing = {k: {n: normalize(k, client.call("GET", f"/api/v1/{k}/{i}")["result"], dataset_names) for n, i in ids[k].items() if n in wanted[k]} for k in KINDS}
+    existing = {k: {n: normalize(k, client.call("GET", detail_path(k, i))["result"], dataset_names) for n, i in ids[k].items() if n in wanted[k]} for k in KINDS}
     return existing, ids
 
 
