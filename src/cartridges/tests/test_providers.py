@@ -3,6 +3,7 @@ YAML load, since nothing in this repo parses the provider profile today."""
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
@@ -111,3 +112,39 @@ def test_local_oss_defaults_record_the_graph_roles_at_todays_classes() -> None:
     assert defaults["validate_phase"] == "judge"
     assert defaults["retro"] == "judge"
     assert defaults["triage"] == "judge"
+
+
+SYSTEM_ONE = {
+    "backend": "knn-local",
+    "model": "all-MiniLM-L6-v2",
+    "embedding_model": "all-MiniLM-L6-v2",
+    "examples": "~/.local/state/coxswain/system_one/handoff.jsonl",
+    "k": 5,
+    "device": "cpu",
+    "roles": {"handoff": {"mode": "shadow", "threshold": 0.9}},
+}
+
+
+def test_claude_code_system_one_is_the_local_shadow_default() -> None:
+    assert PROFILE["system_one"] == SYSTEM_ONE
+
+
+def test_local_oss_carries_the_same_system_one_block() -> None:
+    assert LOCAL_PROFILE["system_one"] == PROFILE["system_one"]
+
+
+def test_anthropic_default_has_no_system_one_key() -> None:
+    assert "system_one" not in ANTHROPIC_PROFILE
+
+
+def test_system_one_block_satisfies_the_graphs_parser_rules() -> None:
+    block = PROFILE["system_one"]
+    assert {"backend", "model", "roles"} <= set(block)
+    model = block["model"]
+    assert isinstance(model, str) and model and not model.endswith("latest")
+    assert re.search(r"\d+(\.\d+)*", model)
+    for role in block["roles"].values():
+        assert role["mode"] in {"off", "shadow", "on"}
+        threshold = role["threshold"]
+        assert isinstance(threshold, (int, float)) and not isinstance(threshold, bool)
+        assert 0 <= threshold <= 1
