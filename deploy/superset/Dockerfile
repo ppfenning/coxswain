@@ -12,6 +12,6 @@ RUN mkdir -p /var/lib/superset \
 # Extensions install into the running user's home, so this runs as superset,
 # not root. Root's ~/.duckdb is invisible to the process that serves queries.
 USER superset
-RUN python -c "import duckdb; [duckdb.sql(f'INSTALL {e}') for e in ('sqlite','parquet','iceberg')]"
+RUN python -c "import duckdb; [duckdb.sql(f'INSTALL {e}') for e in ('sqlite','parquet','iceberg','postgres')]"
 # The build is the evidence: the duckdb-engine dialect must load in Superset's interpreter.
 RUN python -c "import sqlalchemy; sqlalchemy.create_engine('duckdb:///:memory:').connect().close()"
