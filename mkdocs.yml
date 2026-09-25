@@ -70,6 +70,7 @@ nav:
       - Policy: customize/policy.md
       - Write a skill: customize/write-a-skill.md
       - Write a graph: customize/write-a-graph.md
+      - Dashboards: customize/dashboards.md
   - Components:
       - Components: components/index.md
       - Cartridges: components/cartridges.md

@@ -18,6 +18,8 @@ runs dispatch.
 - **Your policy** — the knobs that change review tier, plan competition,
   build budgets, and how many runs are in flight at once. See
   [Policy](policy.md).
+- **Your dashboards** — Superset over your own runs, with a dashboard to
+  read and charts you can add. See [Dashboards](dashboards.md).
 
 ## What isn't
 
