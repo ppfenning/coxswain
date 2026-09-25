@@ -50,10 +50,11 @@ def check_readmes(facts: Mapping) -> list[Drift]:
     def readme_drifts(name: str, text: str) -> list[Drift]:
         readme_file = f"{name}/README.md"
         exempt = {
-            (old, line)
+            (old, spanned)
             for old in mapping
             for line, sentence in alias_sentences(text, (old,))
             if any(marker in sentence.lower() for marker in MARKERS)
+            for spanned in range(line, line + sentence.count("\n") + 1)
         }
         first_line: dict[str, int] = {}
         for line, old, correction in _hits(text, mapping):
