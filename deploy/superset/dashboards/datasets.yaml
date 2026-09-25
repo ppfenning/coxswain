@@ -1,0 +1,61 @@
+# Virtual datasets. `requires` names the source a dataset reads: bootstrap skips a
+# dataset, and the charts on it, while that source is absent. DuckDB's read_parquet
+# errors on an empty glob and Superset reads the columns when it creates the dataset.
+#
+# unknown: column names beyond ts, launched_at, ended_at and kind (cost_usd,
+# model_alias, role, tool_name) come from the dashboard brief, not from a schema
+# read. Check them against cox.db and the compacted traces before trusting a chart.
+datasets:
+  - name: calls
+    database: coxswain
+    requires: sqlite
+    sql: |
+      SELECT *, CAST(ts AS TIMESTAMPTZ) AS at
+      FROM sqlite_scan('/data/runs/cox.db', 'node_calls')
+
+  - name: runs
+    database: coxswain
+    requires: sqlite
+    sql: |
+      SELECT * REPLACE (
+        CAST(launched_at AS TIMESTAMPTZ) AS launched_at,
+        CAST(ended_at AS TIMESTAMPTZ) AS ended_at
+      )
+      FROM sqlite_scan('/data/runs/cox.db', 'runs')
+
+  - name: attempts
+    database: coxswain
+    requires: sqlite
+    sql: |
+      SELECT *, CAST(ts AS TIMESTAMPTZ) AS at
+      FROM sqlite_scan('/data/runs/cox.db', 'attempts')
+
+  # One row per hour over the last 14 days. A run is busy in an hour when it
+  # launched by the hour's end and had not ended before the hour's start.
+  - name: lanes_by_hour
+    database: coxswain
+    requires: sqlite
+    sql: |
+      WITH hours AS (
+        SELECT h AS hour_start, h + INTERVAL 1 HOUR AS hour_end
+        FROM generate_series(
+          date_trunc('hour', now()) - INTERVAL 14 DAY,
+          date_trunc('hour', now()),
+          INTERVAL 1 HOUR
+        ) AS t(h)
+      ),
+      r AS (
+        SELECT CAST(launched_at AS TIMESTAMPTZ) AS launched_at, CAST(ended_at AS TIMESTAMPTZ) AS ended_at
+        FROM sqlite_scan('/data/runs/cox.db', 'runs')
+      )
+      SELECT hours.hour_start, count(r.launched_at) AS busy_lanes
+      FROM hours
+      LEFT JOIN r ON r.launched_at <= hours.hour_end AND COALESCE(r.ended_at, now()) >= hours.hour_start
+      GROUP BY hours.hour_start
+      ORDER BY hours.hour_start
+
+  - name: traces
+    database: coxswain
+    requires: parquet-traces
+    sql: |
+      SELECT * FROM read_parquet('/data/runs/traces/*/*/*/*.parquet')
