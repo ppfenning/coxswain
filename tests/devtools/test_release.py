@@ -324,6 +324,7 @@ def test_cli_release_execute_opens_the_tap_pr_with_the_index_sdist(tmp_path):
     assert rc == 0
     assert 'url "https://x/cox-0.2.0.tar.gz"' in formula.read_text() and "b" * 64 in formula.read_text()
     assert ["gh", "pr", "create", "--title", "cox 0.2.0", "--body", "Bumps the formula to 0.2.0 on PyPI."] in calls
+    assert fake_run.current_branch[str(tmp_path / "homebrew-coxswain")] == "main"
 
 
 def test_bumped_manifest_text_leaves_a_lockstep_false_components_tag_untouched():
