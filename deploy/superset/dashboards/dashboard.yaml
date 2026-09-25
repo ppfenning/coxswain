@@ -1,0 +1,10 @@
+# A 12-column grid. Each row lists charts by name with a width; widths in a row sum to 12.
+dashboard:
+  name: Coxswain
+  grid:
+    - - {chart: "Cost per day by model alias", width: 6}
+      - {chart: "Cost by role, last 7 days", width: 6}
+    - - {chart: "Busy lanes per hour", width: 12}
+    - - {chart: "Runs per day", width: 6}
+      - {chart: "Quarantined attempts per day", width: 6}
+    - - {chart: "Tool uses by name, top 15", width: 12}

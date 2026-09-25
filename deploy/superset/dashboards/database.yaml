@@ -1,0 +1,4 @@
+# One in-memory DuckDB. Every dataset reads the runs directory through it, read-only.
+database:
+  name: coxswain
+  sqlalchemy_uri: "duckdb:///:memory:"

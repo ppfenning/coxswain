@@ -43,12 +43,6 @@ services:
           exit 1
         fi
         superset init
-        # HOOK: dashboards bootstrap. The next task adds this script and its mount.
-        if [ -x /app/bootstrap/dashboards-bootstrap.sh ]; then
-          /app/bootstrap/dashboards-bootstrap.sh
-        else
-          echo "no dashboards bootstrap hook found; skipping"
-        fi
 
   superset:
     <<: *superset-base
@@ -58,6 +52,27 @@ services:
         condition: service_completed_successfully
     ports:
       - "127.0.0.1:8088:8088"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8088/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # One-shot. It needs the web server's REST API, which superset-init runs before.
+  superset-dashboards:
+    <<: *superset-base
+    restart: "no"
+    depends_on:
+      superset:
+        condition: service_healthy
+    # A merge key replaces a list, so the base mounts are not inherited. This needs only the runs dir,
+    # to see which sources exist, and the script and specs.
+    volumes:
+      - ${COXSWAIN_RUNS_DIR:?set COXSWAIN_RUNS_DIR in .env}:/data/runs:ro
+      - ./bootstrap.py:/app/bootstrap/bootstrap.py:ro
+      - ./dashboards:/app/bootstrap/dashboards:ro
+    command: ["python", "/app/bootstrap/bootstrap.py", "--specs", "/app/bootstrap/dashboards", "--url", "http://superset:8088"]
 
 volumes:
   superset_meta:

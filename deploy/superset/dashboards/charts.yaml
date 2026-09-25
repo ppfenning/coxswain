@@ -1,0 +1,66 @@
+# Charts. `params` is Superset's form data without the datasource, which bootstrap adds.
+charts:
+  - name: Cost per day by model alias
+    dataset: calls
+    viz_type: echarts_timeseries_bar
+    params:
+      x_axis: at
+      time_grain_sqla: P1D
+      metrics:
+        - {expressionType: SIMPLE, column: {column_name: cost_usd}, aggregate: SUM, label: cost_usd}
+      groupby: [model_alias]
+      stack: true
+
+  - name: Cost by role, last 7 days
+    dataset: calls
+    viz_type: echarts_timeseries_bar
+    params:
+      x_axis: role
+      metrics:
+        - {expressionType: SIMPLE, column: {column_name: cost_usd}, aggregate: SUM, label: cost_usd}
+      adhoc_filters:
+        - {expressionType: SIMPLE, clause: WHERE, subject: at, operator: TEMPORAL_RANGE, comparator: Last week}
+
+  - name: Busy lanes per hour
+    dataset: lanes_by_hour
+    viz_type: echarts_timeseries_line
+    params:
+      x_axis: hour_start
+      time_grain_sqla: PT1H
+      metrics:
+        - {expressionType: SIMPLE, column: {column_name: busy_lanes}, aggregate: MAX, label: busy_lanes}
+
+  - name: Runs per day
+    dataset: runs
+    viz_type: echarts_timeseries_bar
+    params:
+      x_axis: launched_at
+      time_grain_sqla: P1D
+      metrics:
+        - {expressionType: SQL, sqlExpression: COUNT(*), label: runs}
+
+  # An attempt is a quarantine when its kind is one of counts_kinds. The four kinds
+  # are the ones the 0.6.0 release notes name. unknown: whether attempts.kind spells
+  # them the same way; check the table before trusting this chart.
+  - name: Quarantined attempts per day
+    dataset: attempts
+    viz_type: echarts_timeseries_bar
+    counts_kinds: &quarantine_kinds [refused, unverified, infra, dropped]
+    params:
+      x_axis: at
+      time_grain_sqla: P1D
+      metrics:
+        - {expressionType: SQL, sqlExpression: COUNT(*), label: quarantined}
+      adhoc_filters:
+        - {expressionType: SIMPLE, clause: WHERE, subject: kind, operator: IN, comparator: *quarantine_kinds}
+
+  - name: Tool uses by name, top 15
+    dataset: traces
+    viz_type: echarts_timeseries_bar
+    params:
+      x_axis: tool_name
+      metrics:
+        - {expressionType: SQL, sqlExpression: COUNT(*), label: tool_uses}
+      x_axis_sort: tool_uses
+      x_axis_sort_asc: false
+      row_limit: 15
