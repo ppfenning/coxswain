@@ -216,7 +216,9 @@ policy:
     tier_ladder: [deep, standard, cheap]   # degradation order for model tier
     effort_ladder: [high, low]             # degradation order for effort
     # Router bounds, read by core/bounds.py::from_policy; a launch flag overrides each.
-    # The class ceiling is the head of tier_ladder, so it needs no key of its own.
+    # class_ceiling is a capability class (extract, reason, judge, frontier) or a legacy tier name.
+    # null falls back to the head of tier_ladder, which is deep and so frontier: no ceiling, as today.
+    class_ceiling: null
     effort_ceiling: high                   # highest effort a route may ask for; high is the top of effort_ladder
     node_budget_cap_usd: null              # per-node spend cap; null means no cap, as today
     run_budget_cap_usd: null               # per-run spend cap; null means no cap, as today

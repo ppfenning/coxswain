@@ -277,9 +277,9 @@ def test_bounds_built_by_from_policy_clip_effort():
     assert (result.effort, result.clipped_by) == ("low", ("effort_ceiling",))
 
 
-def test_a_tier_ceiling_set_through_from_policy_fails_closed_until_the_ladders_are_reconciled():
-    result = run(bounds=from_policy({}, {"tier_ceiling": "cheap"}))
-    assert result[0].startswith("class ceiling cheap is not on the class ladder")
+def test_a_legacy_tier_ceiling_set_through_from_policy_clips_the_class():
+    result = run(role="build", bounds=from_policy({}, {"tier_ceiling": "cheap"}))
+    assert (result.model, result.clipped_by) == ("m-extract", ("class_ceiling",))
 
 
 def test_bounds_built_by_from_policy_cap_the_run_from_recorded_spend():
