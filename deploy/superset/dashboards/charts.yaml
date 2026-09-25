@@ -54,6 +54,18 @@ charts:
       adhoc_filters:
         - {expressionType: SIMPLE, clause: WHERE, subject: kind, operator: IN, comparator: *quarantine_kinds}
 
+  # unknown: whether attempts has a cause column; check the table before trusting this chart.
+  - name: Quarantines by cause, last 14 days
+    dataset: attempts
+    viz_type: echarts_timeseries_bar
+    params:
+      x_axis: cause
+      metrics:
+        - {expressionType: SQL, sqlExpression: COUNT(*), label: quarantined}
+      adhoc_filters:
+        - {expressionType: SIMPLE, clause: WHERE, subject: kind, operator: IN, comparator: *quarantine_kinds}
+        - {expressionType: SIMPLE, clause: WHERE, subject: at, operator: TEMPORAL_RANGE, comparator: Last 2 weeks}
+
   - name: Tool uses by name, top 15
     dataset: traces
     viz_type: echarts_timeseries_bar
