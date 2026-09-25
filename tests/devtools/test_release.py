@@ -25,6 +25,19 @@ def _manifest_toml_at(version: str) -> str:
     return _MANIFEST_TOML.replace('version = "0.1.0"', f'version = "{version}"', 1)
 
 
+# `release_plan` tags a component only when `pinned_commits` shows commits
+# since its manifest tag, and the edge in `cli.py` measures those commits only
+# for a `lockstep = false` component. The planner ignores the key, so this
+# fixture carries it purely as the edge's trigger to measure, paired with
+# `_fake_git_run(commits=1)`. Transitional: v2 makes the edge measure every
+# repo component, and the key can then go from this fixture.
+_MANIFEST_TOML_CHANGED = _MANIFEST_TOML.replace('tag = "v0.1.0"\n', 'tag = "v0.1.0"\nlockstep = false\n')
+
+
+def _manifest_toml_changed_at(version: str) -> str:
+    return _MANIFEST_TOML_CHANGED.replace('version = "0.1.0"', f'version = "{version}"', 1)
+
+
 _MANIFEST_TOML_WITH_PINNED = _MANIFEST_TOML + """
 [components.crew]
 repo = "org/crew"
@@ -32,12 +45,19 @@ tag = "v0.6.0"
 lockstep = false
 """
 
+_MANIFEST_TOML_CHANGED_WITH_CREW = _MANIFEST_TOML_CHANGED + _MANIFEST_TOML_WITH_PINNED[len(_MANIFEST_TOML):]
+
 _TOOLS_REPO_URL = "https://github.com/ppfenning/coxswain-tools"
 
 
 def _no_tags(manifest):
     """Every repo component reachable with no tags — the clean case."""
     return {name: [] for name, spec in manifest["components"].items() if spec.get("repo")}
+
+
+def _all_changed(manifest):
+    """One commit past its tag for every repo component: the release tags them all."""
+    return {name: 1 for name, spec in manifest["components"].items() if spec.get("repo")}
 
 
 def _manifest(current="0.1.0"):
@@ -54,7 +74,8 @@ def _maintainer_checkout(monkeypatch):
 
 
 def test_step_order_for_a_two_component_manifest():
-    steps = release.release_plan(_manifest(), "0.2.0", _no_tags(_manifest()), tools_repository_url=_TOOLS_REPO_URL)
+    steps = release.release_plan(_manifest(), "0.2.0", _no_tags(_manifest()), pinned_commits=_all_changed(_manifest()),
+                                  tools_repository_url=_TOOLS_REPO_URL)
     assert [s["kind"] for s in steps] == [
         "tag", "wait_workflows", "github_release", "tag", "wait_workflows", "github_release", "notes",
         "bump_manifest", "push", "pr_create", "wait_checks", "merge", "tag_self", "wait_workflows", "github_release"]
@@ -76,7 +97,7 @@ def test_step_order_for_a_two_component_manifest():
 
 
 def test_manifest_below_target_gets_its_own_bump_and_land_and_tag_sequence():
-    steps = release.release_plan(_manifest(), "0.2.0", _no_tags(_manifest()))
+    steps = release.release_plan(_manifest(), "0.2.0", _no_tags(_manifest()), pinned_commits=_all_changed(_manifest()))
     manifest_steps = [s for s in steps if s["component"] in ("manifest", "coxswain")]
     assert [s["kind"] for s in manifest_steps] == [
         "bump_manifest", "push", "pr_create", "wait_checks", "merge", "tag_self", "wait_workflows", "github_release"]
@@ -91,7 +112,8 @@ def test_manifest_below_target_gets_its_own_bump_and_land_and_tag_sequence():
 
 def test_a_component_below_the_target_version_yields_bump_pyproject_then_the_land_sequence_then_tag():
     manifest = _manifest("0.2.0")
-    steps = release.release_plan(manifest, "0.2.0", _no_tags(manifest), {"harness": "0.1.0"})
+    steps = release.release_plan(manifest, "0.2.0", _no_tags(manifest), {"harness": "0.1.0"},
+                                  pinned_commits=_all_changed(manifest))
     harness_steps = [s for s in steps if s["component"] == "harness"]
     assert [s["kind"] for s in harness_steps] == [
         "bump_pyproject", "push", "pr_create", "wait_checks", "merge", "tag", "wait_workflows", "github_release"]
@@ -112,54 +134,67 @@ def test_a_component_below_the_target_version_yields_bump_pyproject_then_the_lan
 
 def test_a_component_already_at_the_target_version_yields_no_bump_steps_for_it():
     manifest = _manifest("0.2.0")
-    steps = release.release_plan(manifest, "0.2.0", _no_tags(manifest), {"harness": "0.2.0"})
+    steps = release.release_plan(manifest, "0.2.0", _no_tags(manifest), {"harness": "0.2.0"},
+                                  pinned_commits=_all_changed(manifest))
     assert [s["kind"] for s in steps if s["component"] == "harness"] == ["tag", "wait_workflows", "github_release"]
 
 
-def test_a_lockstep_false_component_gets_a_pinned_step_and_no_tag_step():
+def test_a_component_with_no_commits_is_pinned_with_no_bump_tag_or_release_step():
     manifest = {"coxswain": {"version": "0.1.0"},
                 "components": {"harness": {"repo": "org/harness", "tag": "v0.1.0"},
-                                "crew": {"repo": "org/crew", "tag": "v0.6.0", "lockstep": False}}}
-    steps = release.release_plan(manifest, "0.2.0", _no_tags(manifest))
+                                "crew": {"repo": "org/crew", "tag": "v0.6.0"}}}
+    steps = release.release_plan(manifest, "0.2.0", _no_tags(manifest), {"crew": "0.1.0"}, pinned_commits={"harness": 2})
     assert [s for s in steps if s["component"] == "crew"] == [
         {"kind": "pinned", "component": "crew", "tag": "v0.6.0"}]
-    assert "tag" not in [s["kind"] for s in steps if s["component"] == "crew"]
     assert {"kind": "tag", "component": "harness", "repo": "org/harness", "tag": "v0.2.0"} in steps
 
 
+def test_a_component_with_commits_is_tagged_at_the_release_version_whatever_its_lockstep_key_says():
+    manifest = {"coxswain": {"version": "0.1.0"},
+                "components": {"harness": {"repo": "org/harness", "tag": "v0.1.0", "lockstep": False},
+                                "crew": {"repo": "org/crew", "tag": "v0.6.0", "lockstep": True}}}
+    steps = release.release_plan(manifest, "0.2.0", _no_tags(manifest), pinned_commits={"harness": 2, "crew": 0})
+    assert [s["kind"] for s in steps if s["component"] == "harness"] == ["tag", "wait_workflows", "github_release"]
+    assert {"kind": "tag", "component": "harness", "repo": "org/harness", "tag": "v0.2.0"} in steps
+    assert [s["kind"] for s in steps if s["component"] == "crew"] == ["pinned"]
+    assert "rejoin" not in [s["kind"] for s in steps]
+
+
 def test_a_pinned_components_unreadable_remote_or_colliding_tag_does_not_refuse_the_release():
-    """The two preflight guards select only lockstep components: a pinned
-    repository the plan will never tag cannot block the release, whether its
-    remote is unreadable (None) or already carries the umbrella's next tag."""
+    """The two preflight guards select only the components this plan will
+    tag: a pinned repository it never tags cannot block the release, whether
+    its remote is unreadable (None) or already carries the umbrella's next tag."""
     manifest = {"coxswain": {"version": "0.1.0"},
                 "components": {"harness": {"repo": "org/harness", "tag": "v0.1.0"},
-                                "crew": {"repo": "org/crew", "tag": "v0.6.0", "lockstep": False}}}
+                                "crew": {"repo": "org/crew", "tag": "v0.6.0"}}}
     for crew_tags in (None, ["v0.6.0", "v0.2.0"]):
-        steps = release.release_plan(manifest, "0.2.0", {"harness": [], "crew": crew_tags})
+        steps = release.release_plan(manifest, "0.2.0", {"harness": [], "crew": crew_tags},
+                                      pinned_commits={"harness": 1})
         assert [s["kind"] for s in steps if s["component"] == "crew"] == ["pinned"]
         assert {"kind": "tag", "component": "harness", "repo": "org/harness", "tag": "v0.2.0"} in steps
-    # A lockstep component's unknown or colliding tag still refuses, as before.
-    assert release.release_plan(manifest, "0.2.0", {"harness": None, "crew": []})[0]["kind"] == "refuse"
-    assert release.release_plan(manifest, "0.2.0", {"harness": ["v0.2.0"], "crew": []})[0]["kind"] == "refuse"
+    # A tagged component's unknown or colliding tag still refuses.
+    commits = {"harness": 1, "crew": 1}
+    assert release.release_plan(manifest, "0.2.0", {"harness": None, "crew": []}, pinned_commits=commits)[0]["kind"] == "refuse"
+    assert release.release_plan(manifest, "0.2.0", {"harness": ["v0.2.0"], "crew": []}, pinned_commits=commits)[0]["kind"] == "refuse"
+    assert release.release_plan(manifest, "0.2.0", {"harness": [], "crew": None}, pinned_commits=commits)[0]["kind"] == "refuse"
 
 
-def test_a_lockstep_false_component_with_commits_past_its_tag_gets_a_rejoin_step():
+def test_a_changed_component_with_a_stale_lockstep_false_key_gets_a_tag_step_not_a_rejoin_step():
     manifest = {"coxswain": {"version": "0.1.0"},
                 "components": {"harness": {"repo": "org/harness", "tag": "v0.1.0"},
                                 "crew": {"repo": "org/crew", "tag": "v0.7.0", "lockstep": False}}}
     steps = release.release_plan(manifest, "0.9.0", _no_tags(manifest), pinned_commits={"crew": 3},
                                   tools_repository_url=_TOOLS_REPO_URL)
     crew_steps = [s for s in steps if s["component"] == "crew"]
-    assert [s["kind"] for s in crew_steps] == ["rejoin", "wait_workflows", "github_release"]
-    assert crew_steps[0] == {"kind": "rejoin", "component": "crew", "repo": "org/crew", "tag": "v0.9.0",
-                              "from": "v0.7.0", "commits": 3}
+    assert [s["kind"] for s in crew_steps] == ["tag", "wait_workflows", "github_release"]
+    assert crew_steps[0] == {"kind": "tag", "component": "crew", "repo": "org/crew", "tag": "v0.9.0"}
     assert crew_steps[2] == {"kind": "github_release", "component": "crew", "repo": "org/crew", "tag": "v0.9.0",
                               "title": "coxswain-crew 0.9.0", "notes_path": "docs/releases/0.9.0.md",
                               "heading": "## coxswain-crew", "from": "v0.7.0",
                               "link": "https://github.com/ppfenning/coxswain/releases/tag/v0.9.0"}
 
 
-def test_a_lockstep_false_component_with_zero_or_no_pinned_commits_still_gets_pinned():
+def test_a_component_with_zero_or_no_pinned_commits_entry_gets_pinned():
     manifest = {"coxswain": {"version": "0.1.0"},
                 "components": {"harness": {"repo": "org/harness", "tag": "v0.1.0"},
                                 "crew": {"repo": "org/crew", "tag": "v0.7.0", "lockstep": False}}}
@@ -169,7 +204,7 @@ def test_a_lockstep_false_component_with_zero_or_no_pinned_commits_still_gets_pi
             {"kind": "pinned", "component": "crew", "tag": "v0.7.0"}]
 
 
-def test_pinned_commits_for_other_components_does_not_affect_a_lockstep_component():
+def test_pinned_commits_for_other_components_does_not_affect_an_unchanged_component():
     manifest = {"coxswain": {"version": "0.1.0"},
                 "components": {"harness": {"repo": "org/harness", "tag": "v0.1.0"},
                                 "crew": {"repo": "org/crew", "tag": "v0.7.0", "lockstep": False}}}
@@ -178,7 +213,7 @@ def test_pinned_commits_for_other_components_does_not_affect_a_lockstep_componen
     assert [s["kind"] for s in steps if s["component"] == "crew"] == ["pinned"]
 
 
-def test_cli_release_dry_run_prints_a_rejoin_line_for_a_changed_pinned_component(tmp_path, capsys, monkeypatch):
+def test_cli_release_dry_run_prints_a_tag_line_for_a_changed_component_with_a_stale_lockstep_key(tmp_path, capsys, monkeypatch):
     manifest_path = tmp_path / "manifest.toml"
     manifest_path.write_text(_MANIFEST_TOML_WITH_PINNED.replace('tag = "v0.6.0"', 'tag = "v0.7.0"'))
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
@@ -189,18 +224,22 @@ def test_cli_release_dry_run_prints_a_rejoin_line_for_a_changed_pinned_component
     rc = cli.main(["release", "0.9.0", "--dry-run", "--manifest", str(manifest_path)])
     out = capsys.readouterr().out
     assert rc == 0
-    assert "rejoin crew: v0.7.0 -> v0.9.0 (3 commits)" in out
+    assert "tag crew: org/crew -> v0.9.0" in out
+    assert "rejoin" not in out
 
 
-def test_a_manifest_with_no_lockstep_key_tags_every_component_as_before():
+def test_a_manifest_with_no_lockstep_key_tags_only_the_components_with_commits():
     manifest = _manifest()
-    steps = release.release_plan(manifest, "0.2.0", _no_tags(manifest))
+    steps = release.release_plan(manifest, "0.2.0", _no_tags(manifest), pinned_commits=_all_changed(manifest))
     assert [s["kind"] for s in steps if s["component"] in ("harness", "cartridges") and s["kind"] == "tag"] == ["tag", "tag"]
+    unchanged = release.release_plan(manifest, "0.2.0", _no_tags(manifest))
+    assert [s["kind"] for s in unchanged if s["component"] in ("harness", "cartridges")] == ["pinned", "pinned"]
 
 
 def test_wait_workflows_is_inserted_only_after_tag_and_tag_self_steps():
     manifest = _manifest()
-    steps = release.release_plan(manifest, "0.2.0", _no_tags(manifest), {"harness": "0.1.0"})
+    steps = release.release_plan(manifest, "0.2.0", _no_tags(manifest), {"harness": "0.1.0"},
+                                  pinned_commits=_all_changed(manifest))
     kinds = [s["kind"] for s in steps]
     assert "bump_pyproject" in kinds and "push" in kinds and "pr_create" in kinds
     assert "wait_checks" in kinds and "merge" in kinds and "notes" in kinds and "bump_manifest" in kinds
@@ -218,7 +257,7 @@ def test_refuse_on_bad_semver():
 
 def test_refuse_on_an_existing_tag_names_all_colliding_components():
     existing = {"harness": ["v0.2.0"], "cartridges": ["v0.2.0"]}
-    step = release.release_plan(_manifest(), "0.2.0", existing)[0]
+    step = release.release_plan(_manifest(), "0.2.0", existing, pinned_commits=_all_changed(_manifest()))[0]
     assert step["kind"] == "refuse" and "harness" in step["detail"] and "cartridges" in step["detail"]
 
 
@@ -243,7 +282,7 @@ def test_bumped_manifest_text_preserves_comments_and_changes_only_the_values():
     text = ('# coxswain manifest\n[coxswain]\nversion = "0.1.0"  # the released version\n\n'
             '[components.harness]\nrepo = "org/harness"\ntag = "v0.1.0"\n')
     before = tomllib.loads(text)
-    after_text = release.bumped_manifest_text(text, "0.2.0")
+    after_text = release.bumped_manifest_text(text, "0.2.0", rejoining={"harness"})
     after = tomllib.loads(after_text)
 
     assert "# coxswain manifest" in after_text and "# the released version" in after_text
@@ -279,13 +318,15 @@ def _tap_kinds(manifest, version="0.2.0", **kw):
 
 
 def test_release_plan_plans_the_tap_step_last_when_the_tools_repo_is_tagged():
-    steps, kinds = _tap_kinds(_tools_manifest(), "0.2.0-beta.2")
+    steps, kinds = _tap_kinds(_tools_manifest(), "0.2.0-beta.2", pinned_commits={"tools": 1})
     assert kinds[-1] == "tap_formula_pr"
     assert steps[-1]["index_url"] == "https://pypi.org/pypi/coxswain-tools/0.2.0b2/json"
 
 
-def test_release_plan_omits_the_tap_step_when_the_tools_repo_is_pinned_and_so_never_tagged():
-    assert "tap_formula_pr" not in _tap_kinds(_tools_manifest(lockstep=False))[1]
+def test_release_plan_omits_the_tap_step_when_the_tools_repo_is_unchanged_and_so_never_tagged():
+    steps, kinds = _tap_kinds(_tools_manifest(), pinned_commits={"harness": 4, "tools": 0})
+    assert "tap_formula_pr" not in kinds
+    assert [s for s in steps if s["component"] == "tools"] == [{"kind": "pinned", "component": "tools", "tag": "v0.1.0"}]
 
 
 def test_release_plan_omits_the_tap_step_when_no_step_tags_the_tools_repo():
@@ -293,7 +334,7 @@ def test_release_plan_omits_the_tap_step_when_no_step_tags_the_tools_repo():
 
 
 def test_release_plan_refuses_naming_the_tap_when_its_checkout_is_dirty():
-    steps, _ = _tap_kinds(_tools_manifest(), tap_state="dirty")
+    steps, _ = _tap_kinds(_tools_manifest(), tap_state="dirty", pinned_commits={"tools": 1})
     assert [s["component"] for s in steps if s["kind"] == "refuse"] == ["tap"]
 
 
@@ -316,7 +357,7 @@ def test_cli_release_execute_opens_the_tap_pr_with_the_index_sdist(tmp_path):
     formula = tmp_path / "homebrew-coxswain" / "Formula" / "cox.rb"
     formula.parent.mkdir(parents=True)
     formula.write_text(_FORMULA)
-    steps, _ = _tap_kinds(_tools_manifest())
+    steps, _ = _tap_kinds(_tools_manifest(), pinned_commits={"tools": 1})
     calls, fake_run = _fake_git_run()
     index = {"urls": [{"packagetype": "sdist", "url": "https://x/cox-0.2.0.tar.gz", "digests": {"sha256": "b" * 64}}]}
     rc = cli._release_execute(steps[-1:], "0.2.0", str(tmp_path), {}, str(tmp_path), fake_run, {}, "",
@@ -327,14 +368,23 @@ def test_cli_release_execute_opens_the_tap_pr_with_the_index_sdist(tmp_path):
     assert fake_run.current_branch[str(tmp_path / "homebrew-coxswain")] == "main"
 
 
-def test_bumped_manifest_text_leaves_a_lockstep_false_components_tag_untouched():
+def test_bumped_manifest_text_rewrites_only_the_tagged_components_tag_and_keeps_every_other_byte():
     text = ('[coxswain]\nversion = "0.1.0"\n\n'
             '[components.harness]\nrepo = "org/harness"\ntag = "v0.1.0"\n\n'
-            '[components.crew]\nrepo = "org/crew"\ntag = "v0.6.0"\nlockstep = false\n')
-    after = tomllib.loads(release.bumped_manifest_text(text, "0.2.0"))
+            '[components.crew]\nrepo = "org/crew"\ntag = "v0.6.0"\n')
+    after_text = release.bumped_manifest_text(text, "0.2.0", rejoining={"harness"})
+    after = tomllib.loads(after_text)
     assert after["coxswain"]["version"] == "0.2.0"
     assert after["components"]["harness"]["tag"] == "v0.2.0"
     assert after["components"]["crew"]["tag"] == "v0.6.0"
+    assert after_text == text.replace('version = "0.1.0"', 'version = "0.2.0"').replace(
+        'tag = "v0.1.0"', 'tag = "v0.2.0"')
+
+
+def test_bumped_manifest_text_leaves_every_tag_alone_when_nothing_is_tagged_and_still_bumps_the_version():
+    text = ('[coxswain]\nversion = "0.1.0"\n\n'
+            '[components.harness]\nrepo = "org/harness"\ntag = "v0.1.0"\n')
+    assert release.bumped_manifest_text(text, "0.2.0") == text.replace('version = "0.1.0"', 'version = "0.2.0"')
 
 
 def test_bumped_manifest_text_rewrites_a_rejoining_components_tag_but_keeps_lockstep_false():
@@ -370,8 +420,8 @@ _MANIFEST_TOML_INLINE = (
 )
 
 
-def test_bumped_manifest_text_rewrites_the_inline_table_components_tags_and_pins_a_lockstep_false_inline_component():
-    after_text = release.bumped_manifest_text(_MANIFEST_TOML_INLINE, "0.12.1")
+def test_bumped_manifest_text_rewrites_the_tagged_inline_table_components_tags_and_leaves_the_untagged_one():
+    after_text = release.bumped_manifest_text(_MANIFEST_TOML_INLINE, "0.12.1", rejoining={"harness", "cartridges"})
 
     assert 'harness = { repo = "ppfenning/harness", tag = "v0.12.1", required = true, schema = 4 }\n' in after_text
     assert ('cartridges = { repo = "ppfenning/cartridges", tag = "v0.12.1", required = true, schema = 3 }\n'
@@ -397,14 +447,15 @@ def test_bumped_manifest_text_rewrites_a_rejoining_inline_table_components_tag_b
 
     assert after["components"]["crew"]["tag"] == "v0.12.1"
     assert after["components"]["crew"]["lockstep"] is False
-    assert after["components"]["cartridges"]["tag"] == "v0.12.1"
+    assert after["components"]["cartridges"]["tag"] == "v0.12.0"
+    assert after["components"]["harness"]["tag"] == "v0.12.0"
 
 
 def test_bumped_manifest_text_leaves_an_inline_table_outside_the_components_table_untouched():
     """A `name = { ..., tag = "...", lockstep = false, ... }` line under some
     other table (`[notify]` here) is not a component and must never be read
     or rewritten as one, even though its shape matches a component's."""
-    after_text = release.bumped_manifest_text(_MANIFEST_TOML_INLINE, "0.12.1")
+    after_text = release.bumped_manifest_text(_MANIFEST_TOML_INLINE, "0.12.1", rejoining={"harness", "cartridges", "slack"})
     assert 'slack = { channel = "#releases", tag = "v9.9.9", lockstep = false }\n' in after_text
     assert 'pager = { channel = "#oncall", tag = "v9.9.9" }\n' in after_text
     assert tomllib.loads(after_text)["notify"]["pager"]["tag"] == "v9.9.9"
@@ -437,7 +488,8 @@ _MANIFEST_TOML_MULTILINE = (
 
 
 def test_bumped_manifest_text_rewrites_a_multi_line_inline_components_tag_and_changes_no_other_byte():
-    after_text = release.bumped_manifest_text(_MANIFEST_TOML_MULTILINE, "0.13.0")
+    after_text = release.bumped_manifest_text(_MANIFEST_TOML_MULTILINE, "0.13.0",
+                                              rejoining={"graphs", "cartridges", "tools"})
 
     assert after_text == (_MANIFEST_TOML_MULTILINE
                           .replace('version = "0.12.1"', 'version = "0.13.0"')
@@ -457,11 +509,11 @@ _MANIFEST_TOML_MULTILINE_PINNED = (
 )
 
 
-def test_a_multi_line_inline_component_with_lockstep_false_on_a_continuation_line_stays_pinned():
+def test_a_multi_line_inline_component_not_named_as_tagged_keeps_its_tag():
     text = _MANIFEST_TOML_MULTILINE_PINNED
     assert release._pinned_components(text) == {"graphs"}
 
-    after = tomllib.loads(release.bumped_manifest_text(text, "0.6.0"))["components"]
+    after = tomllib.loads(release.bumped_manifest_text(text, "0.6.0", rejoining={"tools"}))["components"]
     assert after["graphs"]["tag"] == "v0.5.0"
     assert after["tools"]["tag"] == "v0.6.0"
 
@@ -478,16 +530,17 @@ def test__inline_owners_carries_a_components_name_across_its_lines_and_stops_whe
     assert release._inline_owners(lines) == [None, "a", "a", "a", "b", None, None]
 
 
-def test_rejoined_names_the_components_release_plan_gave_a_rejoin_step():
+def test_rejoined_names_the_components_release_plan_tagged():
     manifest = {"coxswain": {"version": "0.1.0"},
                 "components": {"harness": {"repo": "org/harness", "tag": "v0.1.0"},
                                 "crew": {"repo": "org/crew", "tag": "v0.7.0", "lockstep": False}}}
     steps = release.release_plan(manifest, "0.9.0", _no_tags(manifest), pinned_commits={"crew": 3})
     assert release.rejoined(steps) == {"crew"}
     assert release.rejoined(release.release_plan(manifest, "0.9.0", _no_tags(manifest))) == set()
+    assert release.rejoined([{"kind": "rejoin", "component": "old"}]) == {"old"}
 
 
-def test_a_release_that_bumps_the_manifest_also_rejoins_a_pinned_component_in_one_pass():
+def test_a_release_that_bumps_the_manifest_also_retags_a_changed_component_in_one_pass():
     text = ('[coxswain]\nversion = "0.1.0"\n\n'
             '[components.harness]\nrepo = "org/harness"\ntag = "v0.1.0"\n\n'
             '[components.crew]\nrepo = "org/crew"\ntag = "v0.7.0"\nlockstep = false\n')
@@ -523,8 +576,9 @@ def test_remote_tags_is_none_on_a_failing_git(monkeypatch):
 
 def test_cli_release_dry_run_prints_every_step_and_exits_zero(tmp_path, capsys, monkeypatch):
     manifest_path = tmp_path / "manifest.toml"
-    manifest_path.write_text(_MANIFEST_TOML)
+    manifest_path.write_text(_MANIFEST_TOML_CHANGED)
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
+    monkeypatch.setattr(cli, "_real_run", _fake_git_run(commits=1)[1])
     rc = cli.main(["release", "0.2.0", "--dry-run", "--manifest", str(manifest_path)])
     out = capsys.readouterr().out
     assert rc == 0
@@ -535,7 +589,8 @@ def test_cli_release_dry_run_prints_every_step_and_exits_zero(tmp_path, capsys, 
 
 
 def test_first_cut_of_the_declared_version_yields_tag_notes_tag_self_with_no_bump():
-    steps = release.release_plan(_manifest("0.2.0"), "0.2.0", _no_tags(_manifest("0.2.0")))
+    steps = release.release_plan(_manifest("0.2.0"), "0.2.0", _no_tags(_manifest("0.2.0")),
+                                  pinned_commits=_all_changed(_manifest("0.2.0")))
     assert [s["kind"] for s in steps] == [
         "tag", "wait_workflows", "github_release", "tag", "wait_workflows", "github_release",
         "notes", "tag_self", "wait_workflows", "github_release"]
@@ -546,7 +601,7 @@ def test_first_cut_of_the_declared_version_yields_tag_notes_tag_self_with_no_bum
 
 def test_equal_version_with_an_existing_tag_still_refuses():
     existing = {**_no_tags(_manifest("0.2.0")), "harness": ["v0.2.0"]}
-    step = release.release_plan(_manifest("0.2.0"), "0.2.0", existing)[0]
+    step = release.release_plan(_manifest("0.2.0"), "0.2.0", existing, pinned_commits=_all_changed(_manifest("0.2.0")))[0]
     assert step["kind"] == "refuse" and "harness" in step["detail"]
 
 
@@ -569,21 +624,32 @@ def test_component_version_is_none_with_no_version_field():
 
 def test_release_index_text_appends_the_sections_rendering_to_an_empty_file():
     manifest = {"components": {"harness": {"repo": "org/harness"}, "cartridges": {"repo": "org/cartridges"}}}
-    text = release.release_index_text("", "0.1.0", manifest)
+    text = release.release_index_text("", "0.1.0", manifest, tagged={"harness", "cartridges"})
     assert text == release_check_index.index_section("0.1.0", {"harness": "v0.1.0", "cartridges": "v0.1.0"}, manifest["components"]) + "\n"
+
+
+def test_release_index_text_lists_a_tagged_component_at_the_release_and_a_pinned_one_at_its_old_tag():
+    manifest = {"components": {"harness": {"repo": "org/harness", "tag": "v0.1.0"},
+                                "crew": {"repo": "org/crew", "tag": "v0.6.0", "lockstep": True}}}
+    text = release.release_index_text("", "0.2.0", manifest, tagged={"harness"})
+    assert text == release_check_index.index_section(
+        "0.2.0", {"harness": "v0.2.0", "crew": "v0.6.0"}, manifest["components"]) + "\n"
+    assert "v0.6.0" in text and text.count("v0.2.0") >= 1
+    assert release.release_index_text("", "0.2.0", manifest) == release_check_index.index_section(
+        "0.2.0", {"harness": "v0.1.0", "crew": "v0.6.0"}, manifest["components"]) + "\n"
 
 
 def test_release_index_text_is_unchanged_when_the_versions_section_is_already_present():
     manifest = {"components": {"harness": {"repo": "org/harness"}}}
     existing = f"{release_check_index.index_section('0.1.0', {'harness': 'v0.1.0'}, manifest['components'])}\n"
-    assert release.release_index_text(existing, "0.1.0", manifest) == existing
+    assert release.release_index_text(existing, "0.1.0", manifest, tagged={"harness"}) == existing
 
 
 def test_release_index_text_replaces_a_stale_section_for_the_same_version_instead_of_duplicating_it():
     stale_manifest = {"components": {"crew": {"tag": "v0.6.0", "lockstep": False}}}
     existing = release.release_index_text("", "0.7.0", stale_manifest)
     rejoined_manifest = {"components": {"crew": {"tag": "v0.7.0", "lockstep": False}}}
-    text = release.release_index_text(existing, "0.7.0", rejoined_manifest)
+    text = release.release_index_text(existing, "0.7.0", rejoined_manifest, tagged={"crew"})
     assert text.count("## `0.7.0`") == 1
     assert text == release_check_index.index_section("0.7.0", {"crew": "v0.7.0"}, rejoined_manifest["components"]) + "\n"
 
@@ -607,9 +673,12 @@ def test_release_index_text_does_not_drop_an_adjacent_section_missing_its_blank_
     assert "## `0.2.0`\n\n| harness | x | `v0.2.0` | required |" in text
 
 
-def _fake_git_run(dirty=(), fail=None, off_branch=(), gh_conclusion="success"):
+def _fake_git_run(dirty=(), fail=None, off_branch=(), gh_conclusion="success", commits=0):
     """`fail`, when given, is `(directory, kind)` for the one call that
     should return non-zero — everything else in a clean, on-branch tree.
+    A nonzero `commits` is what `git rev-list <tag>..HEAD --count` reports for
+    every component; zero keeps the non-numeric answer, which the edge reads as
+    no commits since the tag.
     Every `gh run list` call reports one run with `gh_conclusion`. Tracks
     each directory's current branch (starting off-default for any directory
     named in `off_branch`) across `checkout` calls, exposed as
@@ -641,7 +710,7 @@ def _fake_git_run(dirty=(), fail=None, off_branch=(), gh_conclusion="success"):
         if argv[3] == "symbolic-ref":
             return (0, "refs/remotes/origin/main\n")
         if argv[3] == "rev-list":
-            return (0, "deadbeef\n")
+            return (0, f"{commits}\n" if commits and "--count" in argv else "deadbeef\n")
         return (0, "")
     run.current_branch = current_branch
     return calls, run
@@ -761,11 +830,11 @@ def test_wait_workflows_returns_immediately_with_no_polling_for_a_component_with
 
 def test_cli_release_execute_records_tag_and_push_argv_per_component_and_the_umbrella(tmp_path, monkeypatch):
     manifest_path = tmp_path / "manifest.toml"
-    manifest_path.write_text(_MANIFEST_TOML)
+    manifest_path.write_text(_MANIFEST_TOML_CHANGED)
     umbrella_dir = tmp_path / "coxswain"
     (umbrella_dir / "docs" / "releases").mkdir(parents=True)
     (umbrella_dir / "docs" / "releases" / "0.1.0.md").write_text("notes")
-    calls, fake_run = _fake_git_run()
+    calls, fake_run = _fake_git_run(commits=1)
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
     monkeypatch.setattr(cli, "_real_run", fake_run)
     monkeypatch.setattr(cli, "_component_declares_tag_trigger", lambda directory: True)
@@ -826,7 +895,7 @@ def test_cli_release_execute_runs_a_pinned_component_to_success_with_no_tag_or_p
     assert "pinned crew: v0.6.0" in capsys.readouterr().out
 
 
-def test_cli_release_execute_tags_and_pushes_a_rejoined_pinned_component_in_argv_order(tmp_path, monkeypatch, capsys):
+def test_cli_release_execute_tags_and_pushes_a_changed_component_in_argv_order(tmp_path, monkeypatch, capsys):
     manifest_path = tmp_path / "manifest.toml"
     manifest_path.write_text(_MANIFEST_TOML_WITH_PINNED)
     umbrella_dir = tmp_path / "coxswain"
@@ -844,16 +913,16 @@ def test_cli_release_execute_tags_and_pushes_a_rejoined_pinned_component_in_argv
     crew_dir = str(tmp_path / "crew")
     tag_push = [c for c in calls if c[2] == crew_dir and c[3] in ("tag", "push")]
     assert tag_push == [release.tag_argv(crew_dir, "0.1.0"), release.push_argv(crew_dir, "0.1.0")]
-    assert "rejoin crew: v0.1.0" in capsys.readouterr().out
+    assert "tag crew: v0.1.0" in capsys.readouterr().out
 
 
 def test_cli_release_execute_fails_the_release_when_a_wait_workflows_run_is_not_success(tmp_path, monkeypatch, capsys):
     manifest_path = tmp_path / "manifest.toml"
-    manifest_path.write_text(_MANIFEST_TOML)
+    manifest_path.write_text(_MANIFEST_TOML_CHANGED)
     umbrella_dir = tmp_path / "coxswain"
     (umbrella_dir / "docs" / "releases").mkdir(parents=True)
     (umbrella_dir / "docs" / "releases" / "0.1.0.md").write_text("notes")
-    calls, fake_run = _fake_git_run(gh_conclusion="failure")
+    calls, fake_run = _fake_git_run(gh_conclusion="failure", commits=1)
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
     monkeypatch.setattr(cli, "_real_run", fake_run)
     monkeypatch.setattr(cli, "_component_declares_tag_trigger", lambda directory: True)
@@ -946,20 +1015,22 @@ def test_release_execute_bump_pyproject_no_ops_and_skips_its_land_steps_when_alr
 
 def test_cli_release_execute_runs_the_bump_pyproject_land_sequence_in_order_and_leaves_the_file_bumped(tmp_path, monkeypatch):
     manifest_path = tmp_path / "manifest.toml"
-    manifest_path.write_text(_manifest_toml_at("0.2.0"))
+    manifest_path.write_text(_manifest_toml_changed_at("0.2.0"))
     harness_dir = tmp_path / "harness"
     harness_dir.mkdir()
     (harness_dir / "pyproject.toml").write_text('[project]\nversion = "0.1.0"\n')
     umbrella_dir = tmp_path / "coxswain"
     (umbrella_dir / "docs" / "releases").mkdir(parents=True)
     (umbrella_dir / "docs" / "releases" / "0.2.0.md").write_text("notes")
-    calls, fake_run = _fake_git_run()
+    calls, fake_run = _fake_git_run(commits=1)
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
     monkeypatch.setattr(cli, "_real_run", fake_run)
     monkeypatch.setattr(cli, "_component_declares_tag_trigger", lambda directory: True)
     rc = cli.main(["release", "0.2.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
     assert rc == 0
-    harness_calls = [c for c in calls if c[0] == "git" and c[2] == str(harness_dir)]
+    # The edge's own `rev-list --count` measurement of commits since the tag is
+    # not part of the bump-and-land sequence under test, so it is left out.
+    harness_calls = [c for c in calls if c[0] == "git" and c[2] == str(harness_dir) and "--count" not in c]
     kinds = [c[3] for c in harness_calls]
     # After `merge`, the executor switches the local checkout back to the
     # default branch and pulls it before the pre-existing `tag` step runs —
@@ -1051,12 +1122,12 @@ def test_cli_release_execute_refuses_before_any_tag_or_push_when_the_release_not
 
 def test_cli_release_execute_stops_at_the_first_failed_tag(tmp_path, monkeypatch):
     manifest_path = tmp_path / "manifest.toml"
-    manifest_path.write_text(_MANIFEST_TOML)
+    manifest_path.write_text(_MANIFEST_TOML_CHANGED)
     umbrella_dir = tmp_path / "coxswain"
     (umbrella_dir / "docs" / "releases").mkdir(parents=True)
     (umbrella_dir / "docs" / "releases" / "0.1.0.md").write_text("notes")
     harness_dir = str(tmp_path / "harness")
-    calls, fake_run = _fake_git_run(fail=(harness_dir, "tag"))
+    calls, fake_run = _fake_git_run(fail=(harness_dir, "tag"), commits=1)
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
     monkeypatch.setattr(cli, "_real_run", fake_run)
     rc = cli.main(["release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
@@ -1072,8 +1143,9 @@ def test_cli_release_missing_manifest_fails_gracefully_not_a_traceback(tmp_path,
 
 def test_cli_release_exits_two_and_names_the_component_on_an_existing_tag(tmp_path, capsys, monkeypatch):
     manifest_path = tmp_path / "manifest.toml"
-    manifest_path.write_text(_MANIFEST_TOML)
+    manifest_path.write_text(_MANIFEST_TOML_CHANGED)
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: ["v0.2.0"] if repo == "org/harness" else [])
+    monkeypatch.setattr(cli, "_real_run", _fake_git_run(commits=1)[1])
     rc = cli.main(["release", "0.2.0", "--dry-run", "--manifest", str(manifest_path)])
     out = capsys.readouterr().out
     assert rc == 2 and "refuse" in out and "harness" in out
@@ -1081,7 +1153,7 @@ def test_cli_release_exits_two_and_names_the_component_on_an_existing_tag(tmp_pa
 
 def test_release_plan_refuses_when_a_remote_could_not_be_read():
     manifest = {"coxswain": {"version": "0.1.0-beta.1"}, "components": {"harness": {"repo": "org/harness", "tag": "v0.1.0-beta.1", "required": True}}}
-    steps = release.release_plan(manifest, "0.1.0-beta.2", {"harness": None})
+    steps = release.release_plan(manifest, "0.1.0-beta.2", {"harness": None}, pinned_commits={"harness": 1})
     assert [s["kind"] for s in steps] == ["refuse"] and "unknown" in steps[0]["detail"]
 
 
@@ -1092,8 +1164,8 @@ def test_parse_ls_remote_is_pure_and_skips_peeled_refs():
 
 def test_cli_release_execute_refuses_before_any_tag_when_a_checkout_is_not_on_its_default_branch(tmp_path, monkeypatch, capsys):
     manifest_path = tmp_path / "manifest.toml"
-    manifest_path.write_text(_MANIFEST_TOML)
-    calls, fake_run = _fake_git_run(off_branch={str(tmp_path / "harness")})
+    manifest_path.write_text(_MANIFEST_TOML_CHANGED)
+    calls, fake_run = _fake_git_run(off_branch={str(tmp_path / "harness")}, commits=1)
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
     monkeypatch.setattr(cli, "_real_run", fake_run)
     rc = cli.main(["release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
@@ -1214,7 +1286,8 @@ def test_cli_release_with_allow_doc_drift_notes_the_reason_and_proceeds(tmp_path
     monkeypatch.setattr(release_check, "CHECKS", (stub,))
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
     manifest_path = tmp_path / "manifest.toml"
-    manifest_path.write_text(_MANIFEST_TOML)
+    manifest_path.write_text(_MANIFEST_TOML_CHANGED)
+    monkeypatch.setattr(cli, "_real_run", _fake_git_run(commits=1)[1])
     rc = cli.main(["release", "0.2.0", "--dry-run", "--manifest", str(manifest_path),
                    "--root", str(tmp_path), "--allow-doc-drift", "docs land next sprint"])
     out = capsys.readouterr().out
@@ -1291,11 +1364,11 @@ def test_cli_release_dry_run_prints_the_umbrella_github_release_command(tmp_path
 
 def test_cli_release_execute_edits_an_existing_github_release_instead_of_creating_one(tmp_path, monkeypatch):
     manifest_path = tmp_path / "manifest.toml"
-    manifest_path.write_text(_MANIFEST_TOML)
+    manifest_path.write_text(_MANIFEST_TOML_CHANGED)
     umbrella_dir = tmp_path / "coxswain"
     (umbrella_dir / "docs" / "releases").mkdir(parents=True)
     (umbrella_dir / "docs" / "releases" / "0.1.0.md").write_text("## coxswain-harness\nharness notes\n")
-    calls, fake_run = _fake_git_run()
+    calls, fake_run = _fake_git_run(commits=1)
 
     def run(argv, cwd):
         if argv[:3] == ["gh", "release", "view"]:
@@ -1312,12 +1385,12 @@ def test_cli_release_execute_edits_an_existing_github_release_instead_of_creatin
 
 def test_cli_release_execute_writes_a_components_section_and_link_line_to_its_notes_file(tmp_path, monkeypatch):
     manifest_path = tmp_path / "manifest.toml"
-    manifest_path.write_text(_MANIFEST_TOML)
+    manifest_path.write_text(_MANIFEST_TOML_CHANGED)
     umbrella_dir = tmp_path / "coxswain"
     (umbrella_dir / "docs" / "releases").mkdir(parents=True)
     (umbrella_dir / "docs" / "releases" / "0.1.0.md").write_text(
         "## coxswain-harness\nharness notes\n\n## coxswain-cartridges\ncartridges notes\n")
-    calls, fake_run = _fake_git_run()
+    calls, fake_run = _fake_git_run(commits=1)
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
     monkeypatch.setattr(cli, "_real_run", fake_run)
     monkeypatch.setattr(cli, "_tools_repository_url", lambda: _TOOLS_REPO_URL)
@@ -1330,16 +1403,22 @@ def test_cli_release_execute_writes_a_components_section_and_link_line_to_its_no
     assert "https://github.com/ppfenning/coxswain/releases/tag/v0.1.0" in content
 
 
-def test_cli_release_execute_falls_back_to_unchanged_since_when_crews_section_is_absent(tmp_path, monkeypatch):
+def test_cli_release_execute_falls_back_to_unchanged_since_the_previous_release_tag_when_crews_section_is_absent(tmp_path, monkeypatch):
+    """A changed component now gets a `tag` step, so the executor names the tag
+    the previous release's manifest held, read through `git show`, rather than
+    the removed `rejoin` step's own `from` field."""
     manifest_path = tmp_path / "manifest.toml"
-    manifest_path.write_text(_MANIFEST_TOML_WITH_PINNED)
+    manifest_path.write_text(_MANIFEST_TOML_CHANGED_WITH_CREW.replace('"v0.6.0"', '"v0.7.0"'))
     umbrella_dir = tmp_path / "coxswain"
     (umbrella_dir / "docs" / "releases").mkdir(parents=True)
+    (umbrella_dir / "docs" / "releases" / "0.0.9.md").write_text("## coxswain-harness\nold notes\n")
     (umbrella_dir / "docs" / "releases" / "0.1.0.md").write_text("## coxswain-harness\nharness notes\n")
-    calls, fake_run = _fake_git_run()
+    calls, fake_run = _fake_git_run(commits=3)
 
     def run(argv, cwd):
-        return (0, "3\n") if argv[3] == "rev-list" and "--count" in argv else fake_run(argv, cwd)
+        if argv[0] == "git" and argv[3] == "show":
+            return (0, _MANIFEST_TOML_WITH_PINNED)
+        return fake_run(argv, cwd)
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
     monkeypatch.setattr(cli, "_real_run", run)
     rc = cli.main(["release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
@@ -1350,9 +1429,9 @@ def test_cli_release_execute_falls_back_to_unchanged_since_when_crews_section_is
 
 
 def test_cli_release_execute_names_the_previous_release_tag_not_the_one_being_cut(tmp_path, monkeypatch):
-    manifest_v1 = _MANIFEST_TOML
+    manifest_v1 = _MANIFEST_TOML_CHANGED
     manifest_path = tmp_path / "manifest.toml"
-    manifest_path.write_text(_MANIFEST_TOML.replace('version = "0.1.0"', 'version = "0.2.0"').replace(
+    manifest_path.write_text(_MANIFEST_TOML_CHANGED.replace('version = "0.1.0"', 'version = "0.2.0"').replace(
         'tag = "v0.1.0"', 'tag = "v0.2.0"'))
     umbrella_dir = tmp_path / "coxswain"
     (umbrella_dir / "docs" / "releases").mkdir(parents=True)
@@ -1375,16 +1454,14 @@ def test_cli_release_execute_names_the_previous_release_tag_not_the_one_being_cu
 
 def test_cli_release_execute_names_first_release_when_no_earlier_release_notes_exist(tmp_path, monkeypatch):
     manifest_path = tmp_path / "manifest.toml"
-    manifest_path.write_text(_MANIFEST_TOML_WITH_PINNED)
+    manifest_path.write_text(_MANIFEST_TOML_CHANGED_WITH_CREW)
     umbrella_dir = tmp_path / "coxswain"
     (umbrella_dir / "docs" / "releases").mkdir(parents=True)
     (umbrella_dir / "docs" / "releases" / "0.1.0.md").write_text("## coxswain-harness\nharness notes\n")
-    calls, fake_run = _fake_git_run()
+    calls, fake_run = _fake_git_run(commits=3)
 
-    def run(argv, cwd):
-        return (0, "3\n") if argv[3] == "rev-list" and "--count" in argv else fake_run(argv, cwd)
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
-    monkeypatch.setattr(cli, "_real_run", run)
+    monkeypatch.setattr(cli, "_real_run", fake_run)
     rc = cli.main(["release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
     assert rc == 0
     create_calls = [c for c in calls if c[0] == "gh" and c[1] == "release" and c[2] == "create"]
@@ -1684,8 +1761,8 @@ def test_release_dry_run_reads_component_versions_from_checkouts_and_bumps_each_
     manifest_path = tmp_path / "manifest.toml"
     manifest_path.write_text(
         '[coxswain]\nversion = "0.1.0"\n\n'
-        '[components.harness]\nrepo = "org/harness"\ntag = "v0.1.0"\n\n'
-        '[components.cartridges]\nrepo = "org/cartridges"\ntag = "v0.1.0"\n'
+        '[components.harness]\nrepo = "org/harness"\ntag = "v0.1.0"\nlockstep = false\n\n'
+        '[components.cartridges]\nrepo = "org/cartridges"\ntag = "v0.1.0"\nlockstep = false\n'
     )
     for name in ("harness", "cartridges"):
         component_dir = tmp_path / name
@@ -1693,6 +1770,7 @@ def test_release_dry_run_reads_component_versions_from_checkouts_and_bumps_each_
         (component_dir / "pyproject.toml").write_text('[project]\nversion = "0.1.0"\n')
     monkeypatch.setattr(cli, "_maintainer_remote_url", lambda directory: "git@github.com:ppfenning/coxswain.git")
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
+    monkeypatch.setattr(cli, "_real_run", _fake_git_run(commits=1)[1])
     rc = cli.main(["release", "0.2.0", "--dry-run", "--manifest", str(manifest_path), "--root", str(tmp_path)])
     out = capsys.readouterr().out
     assert rc == 0

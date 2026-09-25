@@ -1,8 +1,14 @@
-"""The pure planner over coxswain's lockstep release: what `cox release
+"""The pure planner over coxswain's release: what `cox release
 <version> --dry-run` prints, and the argv `cox release <version>` runs
 through an injected runner. No filesystem, subprocess or clock here —
 `cli.py` gathers the existing tags, resolves checkout directories, and
-runs the git commands at the edge."""
+runs the git commands at the edge.
+
+The rule: a `repo` component is tagged at the release version only when it
+has commits since its manifest tag. An unchanged component keeps its tag,
+and the manifest keeps naming it. The umbrella always tags the release
+version. The manifest's `lockstep` key is deprecated: it is read and
+ignored."""
 
 from __future__ import annotations
 
@@ -206,27 +212,33 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
                   pinned_commits: Mapping[str, int] | None = None,
                   tools_repository_url: str | None = None,
                   tap_state: str = "clean") -> list[dict]:
-    """Steps in order: per `repo` component, either a plain `tag` (its
-    `component_versions` entry is missing or already at `version`) or a
-    `bump_pyproject`-and-land sequence ending in `tag` — unless its manifest
-    entry declares `lockstep = false`, in which case it gets one `pinned`
-    step naming its own `tag`, or `rejoin` tagging it at `version` when `pinned_commits` shows commits; one `notes`; then
-    either a plain `tag_self` or the manifest's own `bump_manifest`-and-land
-    sequence ending in `tag_self`. `component_versions` is the version each
-    component's own checkout pyproject.toml currently declares — a fact this
-    pure function cannot read itself, gathered by the edge the way
-    `existing_tags` is. A single `refuse` step, naming the reason, when
-    `version` is not valid semver-with-optional-beta, when the tag already
-    exists on any component (or on the umbrella, when `existing_tags` carries
-    a `"coxswain"` key), or when `version` is strictly less than the
-    manifest's current version by semver-with-beta rules.
+    """Steps in order: per `repo` component, one `pinned` step naming its own
+    manifest `tag` when `pinned_commits` shows no commits since that tag, or,
+    when it shows commits, a plain `tag` (its `component_versions` entry is
+    missing or already at `version`) or a `bump_pyproject`-and-land sequence
+    ending in `tag`; one `notes`; then either a plain `tag_self` or the
+    manifest's own `bump_manifest`-and-land sequence ending in `tag_self`.
+    A component missing from `pinned_commits` has 0 commits, so it is pinned:
+    the safe side, since it never re-tags. The manifest's `lockstep` key is
+    deprecated and ignored. The `rejoin` kind is still accepted by old
+    callers, but this planner emits `tag` for every changed component.
+    `component_versions` is the version each component's own checkout
+    pyproject.toml currently declares — a fact this pure function cannot read
+    itself, gathered by the edge the way `existing_tags` is. A single
+    `refuse` step, naming the reason, when `version` is not valid
+    semver-with-optional-beta, when the tag already exists on a component
+    this plan will tag (or on the umbrella, when `existing_tags` carries a
+    `"coxswain"` key), when the remote of a component this plan will tag
+    could not be read, or when `version` is strictly less than the
+    manifest's current version by semver-with-beta rules. A pinned
+    component's remote and tags are not this release's concern.
 
     `version` equal to the current version is the first cut of the version
     the manifest already declares: nothing is tagged yet, so the plan
     proceeds with no `bump_manifest` step — the manifest already says so.
 
     A `github_release` step follows every step that actually tags a repo
-    this run — a `tag`, a `rejoin`, or the umbrella's `tag_self` — naming
+    this run — a `tag` or the umbrella's `tag_self` — naming
     the `gh release` command `cli.py`'s executor runs through the idempotent
     view-then-create-or-edit check; a `pinned` component gets none, since its
     old release must never be rewritten by a later cut. `tools_repository_url`
@@ -236,8 +248,8 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
 
     A final `tap_formula_pr` step follows only when this plan tags the tools
     repo (`tools_repository_url`) with a `tag`, `rejoin` or `tag_self`: that
-    tag push is what publishes to PyPI, so a `lockstep = false` component
-    never triggers it. A `refuse` naming the tap replaces it when
+    tag push is what publishes to PyPI, so an unchanged tools repo never
+    triggers it. A `refuse` naming the tap replaces it when
     `tap_state` (`clean`, `dirty` or `absent`) says the checkout is unfit."""
     parsed = _parse_semver(version)
     if parsed is None:
@@ -248,17 +260,19 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
     components = manifest.get("components", {})
     repo_components = [(name, spec) for name, spec in components.items() if spec.get("repo")]
 
+    commit_counts = {name: (pinned_commits or {}).get(name) or 0 for name, _ in repo_components}
+    changed = [(name, spec) for name, spec in repo_components if commit_counts[name]]
+
     # Three states per component: a list of tags, an empty list (reachable, no
     # tags), or None (the remote could not be read). Unknown is not clean: a
     # reused tag is the one thing a release must never risk, so None refuses.
-    # A `lockstep = false` component is never tagged here, so its remote's
+    # An unchanged component is never tagged here, so its remote's
     # readability and its existing tags are not this release's concern.
-    lockstep_components = [(name, spec) for name, spec in repo_components if spec.get("lockstep", True)]
-    unknown = sorted(name for name, _ in lockstep_components if existing_tags.get(name) is None)
+    unknown = sorted(name for name, _ in changed if existing_tags.get(name) is None)
     if unknown:
         return _refuse(", ".join(unknown), f"tags unknown for {', '.join(unknown)} (remote unreadable); refusing rather than risk reusing {new_tag}")
 
-    collision_sources = [name for name, _ in lockstep_components] + (["coxswain"] if "coxswain" in existing_tags else [])
+    collision_sources = [name for name, _ in changed] + (["coxswain"] if "coxswain" in existing_tags else [])
     colliding = sorted(name for name in collision_sources if new_tag in (existing_tags.get(name) or []))
     if colliding:
         return _refuse(", ".join(colliding), f"tag {new_tag} already exists on {', '.join(colliding)}")
@@ -268,16 +282,8 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
     umbrella_slug = umbrella_release_slug(manifest, tools_repository_url)
     tag_steps = []
     for name, spec in repo_components:
-        if not spec.get("lockstep", True):
-            commits = (pinned_commits or {}).get(name) or 0
-            if commits:
-                rejoin_step = {"kind": "rejoin", "component": name, "repo": spec["repo"], "tag": new_tag,
-                               "from": spec["tag"], "commits": commits}
-                tag_steps.extend([rejoin_step,
-                                   _component_github_release_step(name, spec["repo"], new_tag, version,
-                                                                   umbrella_slug, fallback_from=spec["tag"])])
-            else:
-                tag_steps.append({"kind": "pinned", "component": name, "tag": spec["tag"]})
+        if not commit_counts[name]:
+            tag_steps.append({"kind": "pinned", "component": name, "tag": spec["tag"]})
             continue
         tag_step = {"kind": "tag", "component": name, "repo": spec["repo"], "tag": new_tag}
         gr_step = _component_github_release_step(name, spec["repo"], new_tag, version, umbrella_slug,
@@ -320,7 +326,8 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
                                                             umbrella_slug, tap_state)
 
 
-def release_index_text(existing_index: str, version: str, manifest: Mapping) -> str:
+def release_index_text(existing_index: str, version: str, manifest: Mapping,
+                        tagged: Iterable[str] = ()) -> str:
     """`existing_index` with its `## VERSION` section for `version` replaced
     by `index_section`'s current rendering, or that rendering appended when
     no such section exists yet. Keyed on the heading, not the rendered text,
@@ -328,8 +335,11 @@ def release_index_text(existing_index: str, version: str, manifest: Mapping) -> 
     instead of leaving a stale one beside a fresh one. Sections split on any
     `## ` at the start of a line, blank line before it or not, since a
     hand-written `index.md` cannot be relied on for that blank line and a
-    missed one must never delete a neighbouring version's entry."""
-    component_tags = {name: f"v{version}" if spec.get("lockstep", True) else str(spec.get("tag"))
+    missed one must never delete a neighbouring version's entry. Each
+    component is listed at the tag the manifest will hold after the bump:
+    `v<version>` when named in `tagged`, else its current manifest tag."""
+    tagged_names = set(tagged)
+    component_tags = {name: f"v{version}" if name in tagged_names else str(spec.get("tag"))
                        for name, spec in manifest.get("components", {}).items()}
     section = index_section(version, component_tags, manifest.get("components", {}))
     headings = (f"## {version}", f"## `{version}`")
@@ -577,21 +587,21 @@ def _pinned_components(text: str) -> set[str]:
 
 
 def rejoined(steps: list[dict]) -> set[str]:
-    """Component names `release_plan` gave a `rejoin` step, for `bumped_manifest_text`'s `rejoining`."""
-    return {s["component"] for s in steps if s["kind"] == "rejoin"}
+    """Component names `release_plan` tagged this release, for `bumped_manifest_text`'s `rejoining`."""
+    return {s["component"] for s in steps if s["kind"] in ("tag", "rejoin")}
 
 
 def bumped_manifest_text(text: str, version: str, rejoining: Iterable[str] = ()) -> str:
-    """`text` with every `version = "..."` value, and every `tag = "v..."`
-    value outside a `lockstep = false` component's section — whether the
-    component is a `[components.<name>]` section or a `name = { ... }`
-    inline table directly under `[components]`, on one line or several —
-    rewritten to `version`; comments, blank lines and layout untouched, and
-    every other key on an inline table's lines kept byte-identical. A pinned
-    component's own `tag` is left exactly as it reads, unless named in
-    `rejoining`."""
+    """`text` with every `version = "..."` value rewritten to `version`, and
+    the `tag = "v..."` value of each component named in `rejoining` (the
+    components this release tags) — whether the component is a
+    `[components.<name>]` section or a `name = { ... }` inline table directly
+    under `[components]`, on one line or several. Every other component's
+    `tag` stays exactly as it reads, whatever its `lockstep` key; comments,
+    blank lines and layout are untouched, and every other key on an inline
+    table's lines is kept byte-identical."""
     new_tag = "v" + version
-    pinned = _pinned_components(text) - set(rejoining)
+    tagging = set(rejoining)
     section = None
     out = []
     lines = text.splitlines(keepends=True)
@@ -606,9 +616,9 @@ def bumped_manifest_text(text: str, version: str, rejoining: Iterable[str] = ())
         if _MANIFEST_VERSION_RE.match(line):
             out.append(_MANIFEST_VERSION_RE.sub(lambda m: f"{m.group(1)}{version}{m.group(2)}", line))
         elif owner:
-            keep = owner in pinned
-            out.append(line if keep else _MANIFEST_INLINE_TAG_RE.sub(lambda m: f"{m.group(1)}{new_tag}{m.group(2)}", line))
-        elif _MANIFEST_TAG_RE.match(line) and section not in pinned:
+            retag = owner in tagging
+            out.append(_MANIFEST_INLINE_TAG_RE.sub(lambda m: f"{m.group(1)}{new_tag}{m.group(2)}", line) if retag else line)
+        elif _MANIFEST_TAG_RE.match(line) and section in tagging:
             out.append(_MANIFEST_TAG_RE.sub(lambda m: f"{m.group(1)}{new_tag}{m.group(2)}", line))
         else:
             out.append(line)
