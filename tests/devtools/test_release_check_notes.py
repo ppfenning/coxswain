@@ -199,3 +199,10 @@ def test_landed_set_is_the_previous_tag_to_the_versions_own_tag_when_cut_else_to
     assert drift_lines({"v0.10.0", "v0.11.0"}) == [2]  # cut: #190 merged after the tag does not count
     assert drift_lines({"v0.10.0"}) == []  # not yet cut: the range runs to HEAD
     assert drift_lines(set()) == []  # no previous tag in this checkout: the whole history
+
+
+def test_parse_bullet_skips_a_component_name_that_is_part_of_a_dotted_or_hyphenated_name():
+    components = {"coxswain", "tools"}
+    assert parse_bullet("- entry points under `coxswain.forges` (tools #518)", components) == ("tools", {"518"})
+    assert parse_bullet("- moved to `ppfenning/coxswain-sources` (tools #506)", components) == ("tools", {"506"})
+    assert parse_bullet("- the umbrella is coxswain. (#90)", {"coxswain"}) == ("coxswain", {"90"})
