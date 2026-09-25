@@ -1284,10 +1284,10 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
-  <a href="#usagejson" class="md-nav__link">
+  <a href="#usage-in-the-run-store" class="md-nav__link">
     <span class="md-ellipsis">
       
-        usage.json
+        Usage, in the run store
       
     </span>
   </a>
@@ -2047,6 +2047,34 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
+      <a href="../../releases/0.17.0/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0.17.0
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../releases/0.16.0/" class="md-nav__link">
         
   
@@ -2561,10 +2589,10 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
-  <a href="#usagejson" class="md-nav__link">
+  <a href="#usage-in-the-run-store" class="md-nav__link">
     <span class="md-ellipsis">
       
-        usage.json
+        Usage, in the run store
       
     </span>
   </a>
@@ -2643,12 +2671,20 @@ what lets a human, or the next node, reconstruct what a given seat saw
 and returned, rather than trusting a paraphrase of it.</p>
 <p>A run on the edge channel is not reproducible from a version number
 alone, so its record names the commit each component was at.</p>
-<h2 id="usagejson">usage.json</h2>
+<p>From 0.17.0 the record lives in the run store (<code>runs/cox.db</code>, or the
+Postgres store a provider profile names). The run's totals, its phases,
+its gate decisions, its ledger rows and every model call are rows there.
+Each call's stream events are compacted into <code>runs/traces</code> when the run
+ends. The task records under <code>runs/&lt;run&gt;/tasks/</code> stay files, because
+landing and resuming read them.</p>
+<h2 id="usage-in-the-run-store">Usage, in the run store</h2>
 <p>A run's cost is not left to be reconstructed from a provider's own
-billing later. Each run writes a usage record — the tokens and dollars
-spent per node — so a budget stop (see <a href="../budgets/">Budgets</a>) or a
-retrospective on cost can be checked against a file instead of a memory
-of what the run probably cost.</p>
+billing later. Each model call is a row in the run store, with its tokens
+and dollars, and the run's totals are printed from those rows when it
+ends. A budget stop (see <a href="../budgets/">Budgets</a>) or a retrospective on cost
+can be checked against the store, not against a memory of what the run
+probably cost. Runs from before 0.17.0 kept a <code>&lt;run&gt;.usage.json</code> file,
+which <code>cox</code> still reads.</p>
 <h2 id="the-ledger">The ledger</h2>
 <p>The ledger is the record of what a run did: the evidence, the verdicts,
 and the patch. It's what a human reads to decide whether to trust the
