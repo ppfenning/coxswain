@@ -1,4 +1,4 @@
-"""The pure core of `cox dev release-check`: drifts computed from facts the
+"""The pure core of `devtools release-check`: drifts computed from facts the
 edge gathers. No check here reads a file, runs a command or touches the
 network — `cli.py` gathers the facts named by `facts_plan` and calls in."""
 
@@ -40,7 +40,7 @@ def check_versions(facts: Mapping) -> list[Drift]:
             return None
         return Drift("versions", manifest_file, None, pyproject_file, None,
                      f"{label} pyproject.toml is {found}, manifest wants {expected} "
-                     f"(cox dev release {expected} performs the bump)")
+                     f"(devtools release {expected} performs the bump)")
 
     umbrella_file = str(Path(facts.get("umbrella", "coxswain")) / "pyproject.toml")
     umbrella_found = facts.get("umbrella_pyproject", {}).get("project", {}).get("version")
@@ -55,7 +55,7 @@ def check_versions(facts: Mapping) -> list[Drift]:
         for d in [mismatch(name, pyprojects.get(name, f"{name}/pyproject.toml"), (pyproject or {}).get("project", {}).get("version"))]
         if d is not None
     ]
-    # Advisory: `cox dev release` folds a changed pinned component back in on its own (`rejoin`).
+    # Advisory: `devtools release` folds a changed pinned component back in on its own (`rejoin`).
     lockstep_drifts = [
         Drift("lockstep", manifest_file, None, pyprojects.get(name, f"{name}/pyproject.toml"), None,
               f"{name} is pinned at {facts['components'][name]['tag']} but its pyproject.toml is {found}")

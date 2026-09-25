@@ -575,7 +575,7 @@ def _release(a: argparse.Namespace) -> int:
     checkout = str(manifest_path.resolve().parent)
     remote = _maintainer_remote_url(checkout)
     if remote is None or not release.is_maintainer_remote(remote):
-        print(f"refuse: {checkout} is not a ppfenning/coxswain checkout (cox dev release runs on a maintainer's machine)")
+        print(f"refuse: {checkout} is not a ppfenning/coxswain checkout (devtools release runs on a maintainer's machine)")
         return 2
     root = a.root or "."
     overrides = dict(pair.split("=", 1) for pair in (a.checkout or []))
