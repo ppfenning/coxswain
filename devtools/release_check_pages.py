@@ -17,7 +17,8 @@ if TYPE_CHECKING:
 
 ALIASES = ("agent-tools", "cast")
 DEPRECATION_MARKERS = ("deprecated", "deprecation", "no longer", "retired", "will be removed")
-_SENTENCE_RE = re.compile(r"[^.]*\.")
+# A sentence ends at a period followed by whitespace or the end; `~/.config` and `profile.yaml` do not end one.
+_SENTENCE_RE = re.compile(r"(?:[^.]|\.(?=\S))*\.(?=\s|$)")
 
 
 def readme_h1(text: str) -> str | None:
@@ -26,7 +27,8 @@ def readme_h1(text: str) -> str | None:
 
 def alias_sentences(text: str, aliases: tuple[str, ...]) -> list[tuple[int, str]]:
     return [
-        (text[: m.start()].count("\n") + 1, m.group().strip())
+        # Numbered from the sentence's first word, not the whitespace before it.
+        (text[: m.start() + len(m.group()) - len(m.group().lstrip())].count("\n") + 1, m.group().strip())
         for m in _SENTENCE_RE.finditer(text)
         if any(alias in m.group() for alias in aliases)
     ]
