@@ -119,6 +119,18 @@ def test_check_versions_is_silent_on_a_lockstep_false_component_still_at_its_pin
     assert release_check.check_versions(facts) == []
 
 
+def test_check_versions_treats_a_component_tagged_before_the_manifest_version_as_pinned():
+    facts = {
+        "expected_version": "0.9.0",
+        "manifest_path": "manifest.toml",
+        "components": {"crew": {"tag": "v0.7.0"}, "cox": {"tag": "v0.9.0"}},
+        "umbrella_pyproject": {"project": {"version": "0.9.0"}},
+        "component_pyprojects": {"crew": {"project": {"version": "0.7.0"}}, "cox": {"project": {"version": "0.9.0"}}},
+        "pyprojects": {"crew": "/root/crew/pyproject.toml"},
+    }
+    assert release_check.check_versions(facts) == []
+
+
 def test_gather_version_facts_reads_each_component_and_the_umbrella_pyproject_off_disk(tmp_path):
     (tmp_path / "cox").mkdir()
     (tmp_path / "cox" / "pyproject.toml").write_text('[project]\nversion = "0.1.0"\n')
@@ -198,7 +210,7 @@ def test_release_check_checkout_override_resolves_the_named_directory_not_the_co
     manifest_path = tmp_path / "manifest.toml"
     manifest_path.write_text(
         '[coxswain]\nversion = "0.2.0"\n\n'
-        '[components.graphs]\nrepo = "org/graphs"\ntag = "v0.1.0"\n'
+        '[components.graphs]\nrepo = "org/graphs"\ntag = "v0.2.0"\n'
     )
     override_dir = tmp_path / "custom-graphs-checkout"
     override_dir.mkdir()
