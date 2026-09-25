@@ -192,3 +192,22 @@ def test_cli_release_check_json_flag_prints_a_json_list(tmp_path, capsys, monkey
     rc = cli.main(["release-check", "--root", str(tmp_path), "--manifest", str(manifest_path), "--json"])
     assert rc == 0
     assert json.loads(capsys.readouterr().out) == {"checks_run": 7, "drifts": []}
+
+
+def test_release_check_checkout_override_resolves_the_named_directory_not_the_coxswain_prefix_fallback(tmp_path, capsys):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(
+        '[coxswain]\nversion = "0.2.0"\n\n'
+        '[components.graphs]\nrepo = "org/graphs"\ntag = "v0.1.0"\n'
+    )
+    override_dir = tmp_path / "custom-graphs-checkout"
+    override_dir.mkdir()
+    (override_dir / "pyproject.toml").write_text('[project]\nversion = "0.1.5"\n')
+    rc = cli.main(["release-check", "--manifest", str(manifest_path), "--root", str(tmp_path),
+                   "--checkout", f"graphs={override_dir}", "--json"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    payload = json.loads(out)
+    versions_drift = next(d for d in payload["drifts"] if d["check"] == "versions" and "0.1.5" in d["correction"])
+    assert "0.2.0" in versions_drift["correction"]
+    assert versions_drift["b_file"] == str(override_dir / "pyproject.toml")
