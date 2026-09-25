@@ -515,6 +515,9 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                 return 2
             directory = release.component_dir(root, release.TAP_CHECKOUT, overrides)
             formula = Path(directory) / step["path"]
+            # The tap PR is left for the maintainer, so the checkout goes back to the branch it was on:
+            # the next cut refuses a tap clone that sits on an old release branch.
+            rev_rc, before = run(["git", "-C", directory, "rev-parse", "--abbrev-ref", "HEAD"], None)
             ok, detail = _release_bump(
                 directory, step["branch"], step["title"], [step["path"]],
                 lambda f=formula, s=sdist: f.write_text(release.bumped_formula_text(f.read_text(), version, *s)), run)
@@ -527,6 +530,8 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                 if rc != 0:
                     print(f"FAILED tap_formula_pr tap: {out.strip()}")
                     return 2
+            if rev_rc == 0 and before.strip() not in ("", "HEAD"):
+                run(["git", "-C", directory, "checkout", before.strip()], None)
             print(f"tap_formula_pr tap: {step['title']}")
         else:
             print(f"FAILED {kind} {step.get('component', '')}: no executor for this step kind")
