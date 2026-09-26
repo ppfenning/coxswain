@@ -16,6 +16,8 @@ things in order. The default tick is 60 seconds.
 - It retries a quarantine caused by the harness once.
 - It fills free lanes from the work store first, then decomposes intake in
   pairs.
+- It fills lanes on the hosts named in `lane_hosts` too, after the local
+  lanes.
 - It prints one status line.
 
 The status line looks like this:
@@ -73,6 +75,41 @@ spend settings of the routing profile.
 The loop never cuts a release. It never merges a Homebrew tap PR. It never
 pushes the workspace. It never changes a profile or a tier.
 
+## Lane hosts
+
+Each tick, the loop counts the live lanes on every host. It reads them from
+the leases in the store, in `runs.host`.
+
+The loop fills the local lanes first, up to `policy.dispatch.max_in_flight`.
+It then fills each `lane_hosts` entry in profile order, up to the same cap.
+Decomposes and pulls stay local.
+
+The loop launches a remote lane with `--on`:
+
+```sh
+cox route launch epic --initiative work/<id> --on <host>
+```
+
+The status line names a remote launch as `epic:<initiative>@<host>`:
+
+```text
+chair 09-26 12:30 EDT | lanes 8/8 | lands 0 | launched: epic:x@jarvis | limits 5h 20% | needs chair: none
+```
+
+An approved task on a remote run gets a fetch before its land. The run has a
+`<run>.remote.json` and no fetched marker. The loop runs `cox runs fetch
+<run>` once per run, then lands.
+
+The launch checks the login on the host first. If `claude` is not logged in
+there, the launch is refused:
+
+```text
+routing: launch on <host> failed at auth: claude auth: not logged in on the host (run claude auth login there)
+```
+
+Log in on the host to clear it. [Several machines](several-machines.md)
+shows how to set up a lane machine.
+
 ## Taking over
 
 To take the chair yourself, run this from an interactive session:
@@ -106,6 +143,11 @@ The rescue re-applies the patch. It runs the configured checks itself, then
 runs the review round. On approve, the task lands as usual.
 
 A rescue runs at most once per version of the ticket.
+
+## Drafts
+
+The status line shows `drafts N` when N is above 0. N is the count of
+initiatives waiting for approval.
 
 ## What it records
 
