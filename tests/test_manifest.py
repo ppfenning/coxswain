@@ -7,6 +7,10 @@ MANIFEST = Path(__file__).resolve().parent.parent / "manifest.toml"
 SEMVER = re.compile(r"^\d+\.\d+\.\d+(-beta\.\d+)?$")
 
 
+def _key(tag: str) -> tuple[int, ...]:
+    return tuple(int(n) for n in re.findall(r"\d+", tag.split("-")[0]))
+
+
 def _load() -> dict:
     return tomllib.loads(MANIFEST.read_text())
 
@@ -24,7 +28,10 @@ def test_every_component_is_pinned_in_lockstep_or_lives_here():
         assert ("repo" in c) != ("path" in c), name
         if "repo" in c:
             if c.get("lockstep", True):
-                assert c["tag"] == tag, f"{name} is not pinned to {tag}"
+                # Changed-only versioning (Pat, 2026-09-23): a component with no changes since its last tag keeps
+                # it, so a lockstep component sits at this release or an earlier one, never a later one.
+                assert SEMVER.match(c["tag"].lstrip("v")), f"{name} pins a non-semver tag {c['tag']}"
+                assert _key(c["tag"]) <= _key(tag), f"{name} is pinned past {tag}"
             else:
                 # A `lockstep = false` component keeps the tag it names (crew,
                 # from 0.8.0); it must still be a real release tag.
