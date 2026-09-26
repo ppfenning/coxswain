@@ -98,11 +98,37 @@ its branches, `agents/<run>/*`, from the host's repos. Then run
 The chair's copy of a ticket stays at its old state while the lane runs. The
 land marks it done.
 
-## Traces
+## Shared storage
 
-Traces stay on the machine that ran the lane. Set `traces_url` in the
-provider profile to change that. It names shared storage, either an `s3://`
-URL or a shared path.
+With no settings, traces live under `runs/traces` and the Iceberg lake
+under `runs/lake` on each machine. One machine needs nothing more.
+
+For several machines, point `traces_url` and `lake_url` in the provider
+profile at a shared path. An NFS mount works, if every machine has it at
+the same absolute path. No new service is needed.
+
+For object storage, use `s3://` URLs with a self-hosted S3-compatible
+server, such as Garage. Add an `object_store` block to the provider
+profile:
+
+```yaml
+object_store:
+  endpoint: http://garage.lan:3900
+  region: garage
+  access_key_env: GARAGE_ACCESS_KEY_ID
+  secret_key_env: GARAGE_SECRET_ACCESS_KEY
+  path_style: true
+```
+
+The profile names the environment variables that hold the key and secret.
+It never holds the values. A literal key in the profile is refused.
+`cox lake doctor` shows the endpoint and whether each variable is set.
+
+Other URL schemes and cloud-specific sign-in come from plugins in the
+`coxswain.storage` entry-point group. The [Plugins](plugins.md) page lists
+the groups. Core names no cloud vendor.
+
+Traces and the lake still stay local unless these are set.
 
 ## What's next
 
