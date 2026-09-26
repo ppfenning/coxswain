@@ -1755,6 +1755,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#lane-hosts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lane hosts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#taking-over" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1770,6 +1781,17 @@ Coxswain is in beta — versions may change between releases
     <span class="md-ellipsis">
       
         Rescue
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#drafts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Drafts
       
     </span>
   </a>
@@ -2818,6 +2840,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#lane-hosts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lane hosts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#taking-over" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2833,6 +2866,17 @@ Coxswain is in beta — versions may change between releases
     <span class="md-ellipsis">
       
         Rescue
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#drafts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Drafts
       
     </span>
   </a>
@@ -2891,6 +2935,8 @@ things in order. The default tick is 60 seconds.</p>
 <li>It retries a quarantine caused by the harness once.</li>
 <li>It fills free lanes from the work store first, then decomposes intake in
   pairs.</li>
+<li>It fills lanes on the hosts named in <code>lane_hosts</code> too, after the local
+  lanes.</li>
 <li>It prints one status line.</li>
 </ul>
 <p>The status line looks like this:</p>
@@ -2927,6 +2973,27 @@ is <code>weekly_hard_stop_fraction</code> of <code>weekly_ceiling_usd</code>. Bo
 spend settings of the routing profile.</p>
 <p>The loop never cuts a release. It never merges a Homebrew tap PR. It never
 pushes the workspace. It never changes a profile or a tier.</p>
+<h2 id="lane-hosts">Lane hosts</h2>
+<p>Each tick, the loop counts the live lanes on every host. It reads them from
+the leases in the store, in <code>runs.host</code>.</p>
+<p>The loop fills the local lanes first, up to <code>policy.dispatch.max_in_flight</code>.
+It then fills each <code>lane_hosts</code> entry in profile order, up to the same cap.
+Decomposes and pulls stay local.</p>
+<p>The loop launches a remote lane with <code>--on</code>:</p>
+<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>route<span class="w"> </span>launch<span class="w"> </span>epic<span class="w"> </span>--initiative<span class="w"> </span>work/&lt;id&gt;<span class="w"> </span>--on<span class="w"> </span>&lt;host&gt;
+</code></pre></div>
+<p>The status line names a remote launch as <code>epic:&lt;initiative&gt;@&lt;host&gt;</code>:</p>
+<div class="highlight"><pre><span></span><code>chair 09-26 12:30 EDT | lanes 8/8 | lands 0 | launched: epic:x@jarvis | limits 5h 20% | needs chair: none
+</code></pre></div>
+<p>An approved task on a remote run gets a fetch before its land. The run has a
+<code>&lt;run&gt;.remote.json</code> and no fetched marker. The loop runs <code>cox runs fetch
+&lt;run&gt;</code> once per run, then lands.</p>
+<p>The launch checks the login on the host first. If <code>claude</code> is not logged in
+there, the launch is refused:</p>
+<div class="highlight"><pre><span></span><code>routing: launch on &lt;host&gt; failed at auth: claude auth: not logged in on the host (run claude auth login there)
+</code></pre></div>
+<p>Log in on the host to clear it. <a href="../several-machines/">Several machines</a>
+shows how to set up a lane machine.</p>
 <h2 id="taking-over">Taking over</h2>
 <p>To take the chair yourself, run this from an interactive session:</p>
 <div class="highlight"><pre><span></span><code>cox<span class="w"> </span>route<span class="w"> </span>chair<span class="w"> </span>take<span class="w"> </span>--steal
@@ -2946,6 +3013,9 @@ You can rescue it. Run this in the harness:</p>
 <p>The rescue re-applies the patch. It runs the configured checks itself, then
 runs the review round. On approve, the task lands as usual.</p>
 <p>A rescue runs at most once per version of the ticket.</p>
+<h2 id="drafts">Drafts</h2>
+<p>The status line shows <code>drafts N</code> when N is above 0. N is the count of
+initiatives waiting for approval.</p>
 <h2 id="what-it-records">What it records</h2>
 <p>Some actions the loop only records, such as a "needs the chair" report.
 Each one is appended to <code>chair.actions.jsonl</code> in the runs directory. The
