@@ -24,11 +24,15 @@ With a local SQLite store, everything stays on one machine.
 
 Do these steps on each machine that will run lanes.
 
-1. Clone the component repos.
+1. Clone the component repos. Also clone each repo your initiatives target,
+   at the same absolute path as on the chair, with its `.venv` and check
+   tools. The lane reads the initiative's `repo:` path unchanged.
 2. Install cox with the postgres extra, as above.
 3. Use the same provider profile. Its `storage_url` names the shared
    Postgres.
-4. Run `cox setup doctor`.
+4. Put `claude` on the PATH of a non-interactive ssh shell, and log in.
+   Set a git `user.name` and `user.email`.
+5. Run `cox setup doctor`.
 
 The `store` row of the doctor shows the store's kind and run count. It never
 shows the URL.
@@ -43,6 +47,10 @@ lane_hosts:
 ```
 
 `workspace_dir` is the workspace's absolute path on that machine.
+
+`ssh` is a destination only. Put a port, user or key in your ssh config under
+a Host alias, and use the alias here. Connect once by hand so the host key is
+known.
 
 Run the doctor on a lane machine from the chair with `--host`:
 
@@ -86,6 +94,9 @@ cox runs fetch <run>
 This brings the lane's task records and log to the chair. It also fetches
 its branches, `agents/<run>/*`, from the host's repos. Then run
 `cox runs land` as usual.
+
+The chair's copy of a ticket stays at its old state while the lane runs. The
+land marks it done.
 
 ## Traces
 
