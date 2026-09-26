@@ -2949,6 +2949,18 @@ extra:</p>
 </ol>
 <p>The <code>store</code> row of the doctor shows the store's kind and run count. It never
 shows the URL.</p>
+<p>From the chair, <code>cox setup doctor --host &lt;name&gt;</code> also runs <code>claude auth
+status</code> on the host. It adds a <code>claude auth</code> row. The row reads like this
+when the login is good:</p>
+<div class="highlight"><pre><span></span><code>claude auth      ok
+</code></pre></div>
+<p>When it is not, the row reads like this, and the doctor exits 1:</p>
+<div class="highlight"><pre><span></span><code>claude auth: not logged in on the host (run claude auth login there)
+</code></pre></div>
+<p>Run <code>claude auth login</code> on the host. A login can lapse on a machine nobody
+types on, so a lane machine that worked last week can fail this check.
+<code>cox route launch --on &lt;host&gt;</code> runs the same check first and refuses to
+launch when it fails.</p>
 <h2 id="name-the-lane-machines-on-the-chair">Name the lane machines on the chair</h2>
 <p>On the chair, list the lane machines in the routing profile:</p>
 <div class="highlight"><pre><span></span><code><span class="nt">lane_hosts</span><span class="p">:</span>
@@ -2982,6 +2994,8 @@ store. A second run of the same epic is refused on any machine.</p>
 <p>This brings the lane's task records and log to the chair. It also fetches
 its branches, <code>agents/&lt;run&gt;/*</code>, from the host's repos. Then run
 <code>cox runs land</code> as usual.</p>
+<p>The <a href="../autonomous-chair/">autonomous chair</a> does the fetch itself. It runs
+<code>cox runs fetch</code> before it lands a remote lane.</p>
 <p>The chair's copy of a ticket stays at its old state while the lane runs. The
 land marks it done.</p>
 <h2 id="shared-storage">Shared storage</h2>
