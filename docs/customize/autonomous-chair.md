@@ -18,6 +18,7 @@ things in order. The default tick is 60 seconds.
   pairs.
 - It fills lanes on the hosts named in `lane_hosts` too, after the local
   lanes.
+- It counts the drafts waiting for approval and never launches one.
 - It prints one status line.
 
 The status line looks like this:
@@ -47,8 +48,8 @@ between ticks:
 cox chair run --interval 120
 ```
 
-To keep it running, use a user service. This unit is an example only.
-Adjust it to your machine:
+To keep it running, use a user service. This unit is an example of the
+shape:
 
 ```ini
 [Unit]
@@ -62,7 +63,44 @@ Restart=on-failure
 WantedBy=default.target
 ```
 
-Put the unit in your user unit directory.
+To write the real unit for your machine, run the install command. Every
+flag is optional:
+
+```sh
+cox chair service --install [--label L] [--interval S] [--environment-file PATH] [--profile P]
+```
+
+It writes `~/.config/systemd/user/coxswain-chair.service`. The unit has
+these lines:
+
+- `ExecStart=<absolute cox> chair run --label L --interval S`
+- `WorkingDirectory=<workspace_dir>`
+- `Restart=on-failure`
+- `RestartSec=30`
+
+It adds `EnvironmentFile=-<path>` when you pass an environment file. It adds
+the same line when `~/.config/agent-tools/garage.env` exists.
+
+The command prints the unit path and three lines to run:
+
+```sh
+systemctl --user daemon-reload
+systemctl --user enable --now coxswain-chair.service
+systemctl --user status coxswain-chair.service
+```
+
+The command runs no `systemctl` itself. You run those three lines.
+
+To see the installed unit, run this:
+
+```sh
+cox chair service --status
+```
+
+It prints the unit text. If there is no unit, it prints `no unit at <path>`.
+
+A user service stops when you log out. To keep the loop running while nobody
+is logged in, run `loginctl enable-linger` yourself. Cox does not run it.
 
 ## Limits
 
@@ -115,11 +153,35 @@ shows how to set up a lane machine.
 To take the chair yourself, run this from an interactive session:
 
 ```sh
-cox route chair take --steal
+cox route chair take --steal --hours H
 ```
+
+The `--hours` flag defaults to `policy.leader.takeover_hours`, which is 3.
+It stamps `until` on the chair record.
 
 The loop sees the change on its next beat. It stops acting and reports who
 holds the chair. Any action it planned under the lost lease is refused.
+
+While you hold the chair, the loop's status line reads:
+
+```text
+standby: held by <session> until <time>
+```
+
+To move `until`, run this from the session that holds the chair:
+
+```sh
+cox route chair extend --hours H
+```
+
+A beat never moves `until`. Only `take` and `extend` do.
+
+`cox route chair status` shows `until <time>` and the hours left. When the
+time has passed, it shows `(expired)`.
+
+Once `until` has passed, the loop's next tick takes the chair back. The
+action is `take_lease`, with the reason `takeover expired at <time>`. A
+forgotten takeover cannot park the fleet.
 
 To hand the chair back:
 
@@ -146,8 +208,51 @@ A rescue runs at most once per version of the ticket.
 
 ## Drafts
 
-The status line shows `drafts N` when N is above 0. N is the count of
-initiatives waiting for approval.
+A draft is an initiative under `work/<id>/`. Its `initiative.md` frontmatter
+has `draft: true`, `proposed_by` and `proposed_at`. Its tasks are
+`state: todo`.
+
+Every part of Coxswain holds `todo`. The driver builds only `ready` tasks
+whose needs are done. A draft therefore never builds until you approve it.
+
+To write drafts, run the steward:
+
+```sh
+cox steward draft [--json]
+```
+
+It writes each grounded steward proposal in intake as a draft. It lists the
+drafts that already exist. It lists the proposals it could not ground.
+
+To approve a draft, run this:
+
+```sh
+cox route approve <initiative> [--task <id>]
+```
+
+It moves the draft's `todo` tasks to `ready`. With `--task`, it moves only
+that task.
+
+To decline a draft, give a reason:
+
+```sh
+cox route decline <initiative> --reason <text>
+```
+
+It moves the draft's tasks to `dropped`.
+
+The loop never launches a draft. Two places show that drafts are waiting.
+
+- The status line shows `drafts N` when N is above 0.
+- `cox route status` ends with a `drafts:` list. Each row is
+  `<id>  <proposed_by>  <age>`.
+
+The tail of `cox route status` looks like this:
+
+```text
+drafts:
+  my-initiative  steward  2h
+```
 
 ## What it records
 
