@@ -677,8 +677,17 @@ def test_release_index_text_replaces_a_middle_section_in_place_leaving_the_other
     existing = release.release_index_text(existing, "0.3.0", manifest)
     stale_manifest = {"components": {"harness": {"tag": "v0.1.5", "lockstep": False}}}
     text = release.release_index_text(existing, "0.2.0", stale_manifest)
-    assert text.index("## `0.1.0`") < text.index("## `0.2.0`") < text.index("## `0.3.0`")
+    assert text.index("## `0.3.0`") < text.index("## `0.2.0`") < text.index("## `0.1.0`")
     assert "v0.1.5" in text
+
+
+def test_release_index_text_puts_a_new_version_above_older_ones_below_the_preamble():
+    manifest = {"components": {"harness": {"repo": "org/harness"}}}
+    existing = "# Releases\n\n## How a release works\n\ntext"
+    for version in ("0.1.0", "0.3.0", "0.2.0"):
+        existing = release.release_index_text(existing, version, manifest)
+    order = [existing.index(h) for h in ("## How", "## `0.3.0`", "## `0.2.0`", "## `0.1.0`")]
+    assert order == sorted(order)
 
 
 def test_release_index_text_does_not_drop_an_adjacent_section_missing_its_blank_line():

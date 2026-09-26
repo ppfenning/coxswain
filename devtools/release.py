@@ -335,7 +335,9 @@ def release_index_text(existing_index: str, version: str, manifest: Mapping,
     instead of leaving a stale one beside a fresh one. Sections split on any
     `## ` at the start of a line, blank line before it or not, since a
     hand-written `index.md` cannot be relied on for that blank line and a
-    missed one must never delete a neighbouring version's entry. Each
+    missed one must never delete a neighbouring version's entry. A new
+    section goes before the first older version's, so the page stays
+    newest-first. Each
     component is listed at the tag the manifest will hold after the bump:
     `v<version>` when named in `tagged`, else its current manifest tag."""
     tagged_names = set(tagged)
@@ -347,8 +349,19 @@ def release_index_text(existing_index: str, version: str, manifest: Mapping,
     sections = [s.strip("\n") for s in re.split(r"\n(?=## )", body)] if body else []
     at = next((i for i, s in enumerate(sections)
                if any(s == h or s.startswith(f"{h}\n") for h in headings)), None)
-    new_sections = [*sections, section] if at is None else [*sections[:at], section, *sections[at + 1:]]
+    if at is not None:
+        new_sections = [*sections[:at], section, *sections[at + 1:]]
+    else:
+        older = next((i for i, s in enumerate(sections) if _older_section(s, version)), len(sections))
+        new_sections = [*sections[:older], section, *sections[older:]]
     return "\n\n".join(new_sections) + "\n"
+
+
+def _older_section(section: str, version: str) -> bool:
+    """Is `section` headed by a version older than `version`?"""
+    m = re.fullmatch(r"## `?([^`\s]+)`?", section.split("\n", 1)[0])
+    theirs, ours = (_parse_semver(m.group(1)) if m else None), _parse_semver(version)
+    return theirs is not None and ours is not None and _sort_key(theirs) < _sort_key(ours)
 
 
 def versions_oldest_first(versions: Iterable[str]) -> list[str]:
