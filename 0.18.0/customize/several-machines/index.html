@@ -1760,10 +1760,10 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
-  <a href="#traces" class="md-nav__link">
+  <a href="#shared-storage" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Traces
+        Shared storage
       
     </span>
   </a>
@@ -2789,10 +2789,10 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
-  <a href="#traces" class="md-nav__link">
+  <a href="#shared-storage" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Traces
+        Shared storage
       
     </span>
   </a>
@@ -2900,10 +2900,29 @@ its branches, <code>agents/&lt;run&gt;/*</code>, from the host's repos. Then run
 <code>cox runs land</code> as usual.</p>
 <p>The chair's copy of a ticket stays at its old state while the lane runs. The
 land marks it done.</p>
-<h2 id="traces">Traces</h2>
-<p>Traces stay on the machine that ran the lane. Set <code>traces_url</code> in the
-provider profile to change that. It names shared storage, either an <code>s3://</code>
-URL or a shared path.</p>
+<h2 id="shared-storage">Shared storage</h2>
+<p>With no settings, traces live under <code>runs/traces</code> and the Iceberg lake
+under <code>runs/lake</code> on each machine. One machine needs nothing more.</p>
+<p>For several machines, point <code>traces_url</code> and <code>lake_url</code> in the provider
+profile at a shared path. An NFS mount works, if every machine has it at
+the same absolute path. No new service is needed.</p>
+<p>For object storage, use <code>s3://</code> URLs with a self-hosted S3-compatible
+server, such as Garage. Add an <code>object_store</code> block to the provider
+profile:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">object_store</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">endpoint</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http://garage.lan:3900</span>
+<span class="w">  </span><span class="nt">region</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">garage</span>
+<span class="w">  </span><span class="nt">access_key_env</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">GARAGE_ACCESS_KEY_ID</span>
+<span class="w">  </span><span class="nt">secret_key_env</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">GARAGE_SECRET_ACCESS_KEY</span>
+<span class="w">  </span><span class="nt">path_style</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+</code></pre></div>
+<p>The profile names the environment variables that hold the key and secret.
+It never holds the values. A literal key in the profile is refused.
+<code>cox lake doctor</code> shows the endpoint and whether each variable is set.</p>
+<p>Other URL schemes and cloud-specific sign-in come from plugins in the
+<code>coxswain.storage</code> entry-point group. The <a href="../plugins/">Plugins</a> page lists
+the groups. Core names no cloud vendor.</p>
+<p>Traces and the lake still stay local unless these are set.</p>
 <h2 id="whats-next">What's next</h2>
 <p>Moving task records and the chair lock into the store is planned. Any
 machine could then land.</p>
