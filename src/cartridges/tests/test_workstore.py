@@ -11,6 +11,8 @@ from core.skills import index_from_roots
 from core.workstore import (
     WorkStoreError,
     _coerce_priority,
+    attempts_on_current_body,
+    body_sha,
     foreign_states,
     phase_complete,
     phases,
@@ -116,6 +118,7 @@ def test_record_attempt_twice_yields_two_entries_and_preserves_the_rest(tmp_path
         "phase": "p1",
         "reason": "quarantined: timeout",
         "ts": "2026-09-01T00:00:00Z",
+        "body_sha": body_sha(before["body"]),
     }
     assert after["state"] == before["state"]
     assert after["needs"] == before["needs"]
@@ -134,19 +137,52 @@ def test_record_attempt_with_kind_and_patch_kept_carries_both(tmp_path: Path) ->
         "ts": "t",
         "kind": "unverified",
         "patch_kept": True,
+        "body_sha": body_sha(after["body"]),
     }
 
 
 def test_record_attempt_with_no_kind_carries_neither_key(tmp_path: Path) -> None:
     path = task(tmp_path, "p1", "t1")
     after = record_attempt(path, run="run-1", phase="p1", reason="quarantined: timeout", ts="t")
-    assert after["attempts"][0] == {"run": "run-1", "phase": "p1", "reason": "quarantined: timeout", "ts": "t"}
+    assert after["attempts"][0] == {
+        "run": "run-1",
+        "phase": "p1",
+        "reason": "quarantined: timeout",
+        "ts": "t",
+        "body_sha": body_sha(after["body"]),
+    }
 
 
 def test_record_attempt_with_an_unknown_kind_raises(tmp_path: Path) -> None:
     path = task(tmp_path, "p1", "t1")
     with pytest.raises(WorkStoreError):
         record_attempt(path, run="run-1", phase="p1", reason="x", ts="t", kind="bogus")
+
+
+def test_body_sha_is_twelve_hex_characters_of_the_stripped_sha256() -> None:
+    assert body_sha("abc") == "ba7816bf8f01"
+    assert body_sha("  abc\n") == body_sha("abc")
+
+
+def test_record_attempt_stamps_the_body_sha(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1")
+    after = record_attempt(path, run="run-1", phase="p1", reason="x", ts="t")
+    assert after["attempts"][0]["body_sha"] == body_sha(after["body"])
+
+
+def test_an_attempt_on_an_earlier_body_is_not_on_the_current_body(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1")
+    record_attempt(path, run="run-1", phase="p1", reason="old text", ts="t")
+    write_item({**read_item(path), "body": "A rewritten ticket."}, path)
+    record_attempt(path, run="run-2", phase="p1", reason="new text", ts="t")
+    item = read_item(path)
+    assert [a["run"] for a in item["attempts"]] == ["run-1", "run-2"]
+    assert [a["run"] for a in attempts_on_current_body(item)] == ["run-2"]
+
+
+def test_an_attempt_with_no_body_sha_is_on_the_current_body() -> None:
+    attempt = {"run": "r", "phase": "p", "reason": "r", "ts": "t"}
+    assert attempts_on_current_body({"body": "x", "attempts": [attempt]}) == [attempt]
 
 
 def test_an_item_with_no_attempts_writes_no_attempts_line(tmp_path: Path) -> None:

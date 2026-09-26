@@ -53,6 +53,7 @@ so a state move never erases it. Any other shape raises `WorkStoreError`.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -123,6 +124,7 @@ def _coerce_attempts(raw: Any) -> list[dict[str, str]]:
             "ts": str(entry.get("ts") or ""),
             **({"kind": str(entry["kind"])} if entry.get("kind") else {}),
             **({"patch_kept": True} if entry.get("patch_kept") else {}),
+            **({"body_sha": str(entry["body_sha"])} if entry.get("body_sha") else {}),
         }
         for entry in raw
         if isinstance(entry, Mapping)
@@ -265,6 +267,17 @@ def write_item(item: Mapping[str, Any], path: Path | str) -> Path:
     return path
 
 
+def body_sha(body: str) -> str:
+    """First 12 hex characters of the sha256 of the stripped body."""
+    return hashlib.sha256(body.strip().encode("utf-8")).hexdigest()[:12]
+
+
+def attempts_on_current_body(item: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Attempts made on the item's current text. An attempt with no `body_sha` predates stamping and counts."""
+    current = body_sha(item["body"])
+    return [a for a in item["attempts"] if a.get("body_sha", current) == current]
+
+
 def record_attempt(
     path: Path | str,
     *,
@@ -282,7 +295,13 @@ def record_attempt(
     if kind is not None and kind not in ATTEMPT_KINDS:
         raise WorkStoreError(f"unknown attempt kind '{kind}'; expected one of {list(ATTEMPT_KINDS)}")
     item = read_item(path)
-    entry = {"run": str(run), "phase": str(phase), "reason": str(reason), "ts": str(ts)}
+    entry = {
+        "run": str(run),
+        "phase": str(phase),
+        "reason": str(reason),
+        "ts": str(ts),
+        "body_sha": body_sha(item["body"]),
+    }
     if kind is not None:
         entry["kind"] = kind
     if patch_kept:
