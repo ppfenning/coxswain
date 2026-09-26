@@ -130,7 +130,32 @@ the groups. Core names no cloud vendor.
 
 Traces and the lake still stay local unless these are set.
 
-## What's next
+## Land from any machine
 
-Moving task records and the chair lock into the store is planned. Any
-machine could then land.
+By default the ticket files hold each task's state, which is
+`work_state: files`. Only the chair lands.
+
+Set `work_state: store` in the provider profile on every machine. The
+shared store then becomes the source of truth for task state. Nothing
+changes until this is set.
+
+With it set, a land on any machine checks that the task is approved in
+the store. It holds a lease named `land:<task>` while it merges. It moves
+the task to done with a compare-and-set. If another machine landed the
+task first, the land stops before it merges anything. The ticket file's
+`state:` is updated after.
+
+The ticket files become a cache. This command shows how they differ from
+the store:
+
+```sh
+python -m harness.store_cli regenerate-states <work_dir> --initiative <id>
+```
+
+Add `--apply` to rewrite their `state:` lines.
+
+When the shared store already holds the lane's task records,
+`cox runs fetch` brings only the lane's branches.
+
+Every machine that lands needs a checkout of the workspace. Ticket bodies
+stay in git.
