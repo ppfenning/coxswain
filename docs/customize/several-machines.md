@@ -146,6 +146,65 @@ The profile names the environment variables that hold the key and secret.
 It never holds the values. A literal key in the profile is refused.
 `cox lake doctor` shows the endpoint and whether each variable is set.
 
+### A Garage server
+
+A single-node Garage on the tailnet needs one profile block. Replace `<host>`
+and `<bucket>` with your own:
+
+```yaml
+object_store:
+  endpoint: http://<host>:3900
+  region: garage
+  access_key_env: GARAGE_ACCESS_KEY_ID
+  secret_key_env: GARAGE_SECRET_ACCESS_KEY
+  path_style: true
+traces_url: s3://<bucket>/traces
+lake_url: s3://<bucket>/lake
+```
+
+Garage 1.1 also needs two SDK settings. Without them the pyarrow S3 client
+fails every upload with `invalid checksum algorithm`. Set both to
+`when_required`:
+
+- `AWS_REQUEST_CHECKSUM_CALCULATION=when_required`
+- `AWS_RESPONSE_CHECKSUM_VALIDATION=when_required`
+
+Keep the key, the secret and these two settings in one env file. Write them
+as `export NAME=value` lines and set the mode to 600:
+
+```bash
+export GARAGE_ACCESS_KEY_ID=<key>
+export GARAGE_SECRET_ACCESS_KEY=<secret>
+export AWS_REQUEST_CHECKSUM_CALCULATION=when_required
+export AWS_RESPONSE_CHECKSUM_VALIDATION=when_required
+```
+
+```bash
+chmod 600 <the EnvironmentFile path>
+```
+
+The file's path is the one `cox chair service` uses as `EnvironmentFile`.
+Source it from the login shell's startup file on every machine. For zsh that
+is `~/.zshenv`:
+
+```bash
+. <the EnvironmentFile path>
+```
+
+Lanes started over ssh get their environment from that file and from nothing
+else. A file sourced only from an interactive startup file does not reach them.
+
+A run reads the profile when it starts. It reads it again when it writes its
+trace at the end. A run started before the file existed fails its trace write
+with `object_store names env var ... which is not set`. The first trace in the
+bucket comes from the first run started after the change.
+
+Check the setup in three places:
+
+- `cox lake doctor` shows the endpoint and whether both variables are set.
+- `cox setup doctor` has a traces row that names the endpoint.
+- The bucket listing shows a trace after one run.
+
 Other URL schemes and cloud-specific sign-in come from plugins in the
 `coxswain.storage` entry-point group. The [Plugins](plugins.md) page lists
 the groups. Core names no cloud vendor.
