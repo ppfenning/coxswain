@@ -2825,10 +2825,14 @@ extra:</p>
 <h2 id="set-up-a-lane-machine">Set up a lane machine</h2>
 <p>Do these steps on each machine that will run lanes.</p>
 <ol>
-<li>Clone the component repos.</li>
+<li>Clone the component repos. Also clone each repo your initiatives target,
+   at the same absolute path as on the chair, with its <code>.venv</code> and check
+   tools. The lane reads the initiative's <code>repo:</code> path unchanged.</li>
 <li>Install cox with the postgres extra, as above.</li>
 <li>Use the same provider profile. Its <code>storage_url</code> names the shared
    Postgres.</li>
+<li>Put <code>claude</code> on the PATH of a non-interactive ssh shell, and log in.
+   Set a git <code>user.name</code> and <code>user.email</code>.</li>
 <li>Run <code>cox setup doctor</code>.</li>
 </ol>
 <p>The <code>store</code> row of the doctor shows the store's kind and run count. It never
@@ -2839,6 +2843,9 @@ shows the URL.</p>
 <span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="nv">box2</span><span class="p p-Indicator">,</span><span class="nt"> ssh</span><span class="p">:</span><span class="w"> </span><span class="nv">me@box2</span><span class="p p-Indicator">,</span><span class="nt"> workspace_dir</span><span class="p">:</span><span class="w"> </span><span class="nv">/home/me/workspace</span><span class="p p-Indicator">}</span>
 </code></pre></div>
 <p><code>workspace_dir</code> is the workspace's absolute path on that machine.</p>
+<p><code>ssh</code> is a destination only. Put a port, user or key in your ssh config under
+a Host alias, and use the alias here. Connect once by hand so the host key is
+known.</p>
 <p>Run the doctor on a lane machine from the chair with <code>--host</code>:</p>
 <div class="highlight"><pre><span></span><code>cox<span class="w"> </span>setup<span class="w"> </span>doctor<span class="w"> </span>--host<span class="w"> </span>box2
 </code></pre></div>
@@ -2863,6 +2870,8 @@ store. A second run of the same epic is refused on any machine.</p>
 <p>This brings the lane's task records and log to the chair. It also fetches
 its branches, <code>agents/&lt;run&gt;/*</code>, from the host's repos. Then run
 <code>cox runs land</code> as usual.</p>
+<p>The chair's copy of a ticket stays at its old state while the lane runs. The
+land marks it done.</p>
 <h2 id="traces">Traces</h2>
 <p>Traces stay on the machine that ran the lane. Set <code>traces_url</code> in the
 provider profile to change that. It names shared storage, either an <code>s3://</code>
