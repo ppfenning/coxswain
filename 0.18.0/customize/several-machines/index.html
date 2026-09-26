@@ -1771,10 +1771,10 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
-  <a href="#whats-next" class="md-nav__link">
+  <a href="#land-from-any-machine" class="md-nav__link">
     <span class="md-ellipsis">
       
-        What's next
+        Land from any machine
       
     </span>
   </a>
@@ -2800,10 +2800,10 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
-  <a href="#whats-next" class="md-nav__link">
+  <a href="#land-from-any-machine" class="md-nav__link">
     <span class="md-ellipsis">
       
-        What's next
+        Land from any machine
       
     </span>
   </a>
@@ -2923,9 +2923,26 @@ It never holds the values. A literal key in the profile is refused.
 <code>coxswain.storage</code> entry-point group. The <a href="../plugins/">Plugins</a> page lists
 the groups. Core names no cloud vendor.</p>
 <p>Traces and the lake still stay local unless these are set.</p>
-<h2 id="whats-next">What's next</h2>
-<p>Moving task records and the chair lock into the store is planned. Any
-machine could then land.</p>
+<h2 id="land-from-any-machine">Land from any machine</h2>
+<p>By default the ticket files hold each task's state, which is
+<code>work_state: files</code>. Only the chair lands.</p>
+<p>Set <code>work_state: store</code> in the provider profile on every machine. The
+shared store then becomes the source of truth for task state. Nothing
+changes until this is set.</p>
+<p>With it set, a land on any machine checks that the task is approved in
+the store. It holds a lease named <code>land:&lt;task&gt;</code> while it merges. It moves
+the task to done with a compare-and-set. If another machine landed the
+task first, the land stops before it merges anything. The ticket file's
+<code>state:</code> is updated after.</p>
+<p>The ticket files become a cache. This command shows how they differ from
+the store:</p>
+<div class="highlight"><pre><span></span><code>python<span class="w"> </span>-m<span class="w"> </span>harness.store_cli<span class="w"> </span>regenerate-states<span class="w"> </span>&lt;work_dir&gt;<span class="w"> </span>--initiative<span class="w"> </span>&lt;id&gt;
+</code></pre></div>
+<p>Add <code>--apply</code> to rewrite their <code>state:</code> lines.</p>
+<p>When the shared store already holds the lane's task records,
+<code>cox runs fetch</code> brings only the lane's branches.</p>
+<p>Every machine that lands needs a checkout of the workspace. Ticket bodies
+stay in git.</p>
 
 
 
