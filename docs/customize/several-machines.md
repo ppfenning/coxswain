@@ -37,6 +37,25 @@ Do these steps on each machine that will run lanes.
 The `store` row of the doctor shows the store's kind and run count. It never
 shows the URL.
 
+From the chair, `cox setup doctor --host <name>` also runs `claude auth
+status` on the host. It adds a `claude auth` row. The row reads like this
+when the login is good:
+
+```text
+claude auth      ok
+```
+
+When it is not, the row reads like this, and the doctor exits 1:
+
+```text
+claude auth: not logged in on the host (run claude auth login there)
+```
+
+Run `claude auth login` on the host. A login can lapse on a machine nobody
+types on, so a lane machine that worked last week can fail this check.
+`cox route launch --on <host>` runs the same check first and refuses to
+launch when it fails.
+
 ## Name the lane machines on the chair
 
 On the chair, list the lane machines in the routing profile:
@@ -94,6 +113,9 @@ cox runs fetch <run>
 This brings the lane's task records and log to the chair. It also fetches
 its branches, `agents/<run>/*`, from the host's repos. Then run
 `cox runs land` as usual.
+
+The [autonomous chair](autonomous-chair.md) does the fetch itself. It runs
+`cox runs fetch` before it lands a remote lane.
 
 The chair's copy of a ticket stays at its old state while the lane runs. The
 land marks it done.
