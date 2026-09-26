@@ -1768,6 +1768,23 @@ Coxswain is in beta — versions may change between releases
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Shared storage">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#a-garage-server" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A Garage server
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -2881,6 +2898,23 @@ Coxswain is in beta — versions may change between releases
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Shared storage">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#a-garage-server" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A Garage server
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -3017,6 +3051,51 @@ profile:</p>
 <p>The profile names the environment variables that hold the key and secret.
 It never holds the values. A literal key in the profile is refused.
 <code>cox lake doctor</code> shows the endpoint and whether each variable is set.</p>
+<h3 id="a-garage-server">A Garage server</h3>
+<p>A single-node Garage on the tailnet needs one profile block. Replace <code>&lt;host&gt;</code>
+and <code>&lt;bucket&gt;</code> with your own:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">object_store</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">endpoint</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http://&lt;host&gt;:3900</span>
+<span class="w">  </span><span class="nt">region</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">garage</span>
+<span class="w">  </span><span class="nt">access_key_env</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">GARAGE_ACCESS_KEY_ID</span>
+<span class="w">  </span><span class="nt">secret_key_env</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">GARAGE_SECRET_ACCESS_KEY</span>
+<span class="w">  </span><span class="nt">path_style</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<span class="nt">traces_url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">s3://&lt;bucket&gt;/traces</span>
+<span class="nt">lake_url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">s3://&lt;bucket&gt;/lake</span>
+</code></pre></div>
+<p>Garage 1.1 also needs two SDK settings. Without them the pyarrow S3 client
+fails every upload with <code>invalid checksum algorithm</code>. Set both to
+<code>when_required</code>:</p>
+<ul>
+<li><code>AWS_REQUEST_CHECKSUM_CALCULATION=when_required</code></li>
+<li><code>AWS_RESPONSE_CHECKSUM_VALIDATION=when_required</code></li>
+</ul>
+<p>Keep the key, the secret and these two settings in one env file. Write them
+as <code>export NAME=value</code> lines and set the mode to 600:</p>
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">GARAGE_ACCESS_KEY_ID</span><span class="o">=</span>&lt;key&gt;
+<span class="nb">export</span><span class="w"> </span><span class="nv">GARAGE_SECRET_ACCESS_KEY</span><span class="o">=</span>&lt;secret&gt;
+<span class="nb">export</span><span class="w"> </span><span class="nv">AWS_REQUEST_CHECKSUM_CALCULATION</span><span class="o">=</span>when_required
+<span class="nb">export</span><span class="w"> </span><span class="nv">AWS_RESPONSE_CHECKSUM_VALIDATION</span><span class="o">=</span>when_required
+</code></pre></div>
+<div class="highlight"><pre><span></span><code>chmod<span class="w"> </span><span class="m">600</span><span class="w"> </span>&lt;the<span class="w"> </span>EnvironmentFile<span class="w"> </span>path&gt;
+</code></pre></div>
+<p>The file's path is the one <code>cox chair service</code> uses as <code>EnvironmentFile</code>.
+Source it from the login shell's startup file on every machine. For zsh that
+is <code>~/.zshenv</code>:</p>
+<div class="highlight"><pre><span></span><code>.<span class="w"> </span>&lt;the<span class="w"> </span>EnvironmentFile<span class="w"> </span>path&gt;
+</code></pre></div>
+<p>Lanes started over ssh get their environment from that file and from nothing
+else. A file sourced only from an interactive startup file does not reach them.</p>
+<p>A run reads the profile when it starts. It reads it again when it writes its
+trace at the end. A run started before the file existed fails its trace write
+with <code>object_store names env var ... which is not set</code>. The first trace in the
+bucket comes from the first run started after the change.</p>
+<p>Check the setup in three places:</p>
+<ul>
+<li><code>cox lake doctor</code> shows the endpoint and whether both variables are set.</li>
+<li><code>cox setup doctor</code> has a traces row that names the endpoint.</li>
+<li>The bucket listing shows a trace after one run.</li>
+</ul>
 <p>Other URL schemes and cloud-specific sign-in come from plugins in the
 <code>coxswain.storage</code> entry-point group. The <a href="../plugins/">Plugins</a> page lists
 the groups. Core names no cloud vendor.</p>
