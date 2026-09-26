@@ -306,7 +306,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--specs", required=True, help="directory of *.yaml specs")
     ap.add_argument("--url", default=os.environ.get("SUPERSET_URL"), help="Superset base URL, default $SUPERSET_URL")
     ap.add_argument("--runs", default="/data/runs", help="the runs directory whose sources decide what is skipped")
-    ap.add_argument("--store-url", default=os.environ.get("COX_STORE_URL"), help="Postgres store URL, default $COX_STORE_URL; absent means cox.db")
+    ap.add_argument("--store-url", default=os.environ.get("COXSWAIN_STORE_URL") or os.environ.get("COX_STORE_URL"), help="Postgres store URL, default $COXSWAIN_STORE_URL then $COX_STORE_URL; absent means cox.db")
     args = ap.parse_args(argv)
     user, password = os.environ.get("SUPERSET_ADMIN_USERNAME"), os.environ.get("SUPERSET_ADMIN_PASSWORD")
     if not (args.url and user and password):

@@ -13,6 +13,7 @@ CONFIG = DEPLOY / "superset_config.py"
 INIT_SCRIPT = COMPOSE["services"]["superset-init"]["command"][-1]
 ADMIN_VARS = ("SUPERSET_ADMIN_USERNAME", "SUPERSET_ADMIN_PASSWORD", "SUPERSET_ADMIN_EMAIL", "SUPERSET_ADMIN_FIRSTNAME", "SUPERSET_ADMIN_LASTNAME")
 REQUIRED = ("SUPERSET_SECRET_KEY", *ADMIN_VARS)
+OPTIONAL = "COXSWAIN_STORE_URL"
 
 
 def _load_config(monkeypatch, env):
@@ -49,7 +50,8 @@ def test_every_compose_variable_appears_in_env_example():
 def test_every_compose_variable_is_required_so_compose_refuses_an_unset_one():
     refs = re.findall(r"\$\{(\w+)([^}]*)\}", COMPOSE_TEXT)
     assert {name for name, _ in refs} >= set(REQUIRED) | {"COXSWAIN_RUNS_DIR"}
-    assert all(mod.startswith(":?") for _, mod in refs)
+    assert all(mod.startswith(":?") for name, mod in refs if name != OPTIONAL)
+    assert [mod for name, mod in refs if name == OPTIONAL] == [":-"]
 
 
 @pytest.mark.parametrize("missing", REQUIRED)

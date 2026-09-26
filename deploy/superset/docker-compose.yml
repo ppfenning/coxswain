@@ -10,6 +10,8 @@ x-superset-base: &superset-base
     SUPERSET_ADMIN_EMAIL: ${SUPERSET_ADMIN_EMAIL:?set SUPERSET_ADMIN_EMAIL in .env}
     SUPERSET_ADMIN_FIRSTNAME: ${SUPERSET_ADMIN_FIRSTNAME:?set SUPERSET_ADMIN_FIRSTNAME in .env}
     SUPERSET_ADMIN_LASTNAME: ${SUPERSET_ADMIN_LASTNAME:?set SUPERSET_ADMIN_LASTNAME in .env}
+    # Optional: empty means Superset reads cox.db.
+    COXSWAIN_STORE_URL: ${COXSWAIN_STORE_URL:-}
   volumes:
     - ./superset_config.py:/app/pythonpath/superset_config.py:ro
     - superset_meta:/var/lib/superset
