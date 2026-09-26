@@ -82,6 +82,7 @@ DONE = "done"
 DROPPED = "dropped"
 APPROVED = "approved"
 _TERMINAL = frozenset({DONE, DROPPED})
+_RUNNABLE = frozenset({"ready"})
 _INTO_APPROVED = frozenset({"ready", "in_progress"})
 _OUT_OF_APPROVED = frozenset({"done", "ready"})
 DEFAULT_PRIORITY = 3
@@ -431,7 +432,10 @@ def validate_dag(items: Iterable[Mapping[str, Any]], foreign: Mapping[str, str] 
 def ready_tasks(
     items: Sequence[Mapping[str, Any]], *, phase: str | None = None, foreign: Mapping[str, str] | None = None
 ) -> list[dict[str, Any]]:
-    """Every task whose dependencies are all done, and which is not itself finished.
+    """Every task in state `ready` whose dependencies are all done.
+
+    `todo`, `blocked`, `approved` and `in_progress` are held. `in_progress` is
+    held because the driver's resume behaviour was not checked when this was written.
 
     A need in another initiative (`foreign`) is met only by state `done`; `dropped` does not satisfy it.
 
@@ -447,7 +451,7 @@ def ready_tasks(
         (
             dict(item)
             for item in items
-            if item.get("state") not in _TERMINAL
+            if item.get("state") in _RUNNABLE
             and (phase is None or item.get("phase") == phase)
             and all(need in done for need in item.get("needs") or [])
         ),

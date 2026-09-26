@@ -46,6 +46,13 @@ def task(root: Path, phase: str, tid: str, *, needs=(), state="todo", surfaces=(
     )
 
 
+def mark_ready(root: Path) -> None:
+    """Promote every todo task under `root` to ready, as the single writer would."""
+    for path in sorted(root.glob("*/*.md")):
+        if read_item(path)["state"] == "todo":
+            set_state(path, "ready")
+
+
 @pytest.fixture
 def initiative(tmp_path: Path) -> Path:
     root = tmp_path / "work" / "arrow-migration"
@@ -526,7 +533,7 @@ def test_a_store_scan_is_skipped_when_every_need_is_local(initiative: Path) -> N
 
 @pytest.mark.parametrize(("state", "ready"), [("done", True), ("in_progress", False), ("dropped", False)])
 def test_a_foreign_need_is_met_only_by_done(state: str, ready: bool) -> None:
-    items = [{"id": "a", "state": "todo", "needs": ["x"]}]
+    items = [{"id": "a", "state": "ready", "needs": ["x"]}]
     assert bool(ready_tasks(items, foreign={"x": state})) is ready
 
 
@@ -535,6 +542,7 @@ def test_a_foreign_need_is_met_only_by_done(state: str, ready: bool) -> None:
 
 def test_ready_returns_everything_unblocked(initiative: Path) -> None:
     """This set IS the parallelism — nothing in it depends on anything else in it."""
+    mark_ready(initiative)
     items = read_initiative(initiative)["items"]
     assert [t["id"] for t in ready_tasks(items)] == ["t1-schema-probe", "t2-bench-harness"]
 
@@ -542,11 +550,13 @@ def test_ready_returns_everything_unblocked(initiative: Path) -> None:
 def test_finishing_a_dependency_unblocks_its_dependents(initiative: Path) -> None:
     set_state(initiative / "p1-foundations" / "t1-schema-probe.md", "done")
     set_state(initiative / "p1-foundations" / "t2-bench-harness.md", "done")
+    mark_ready(initiative)
     items = read_initiative(initiative)["items"]
     assert [t["id"] for t in ready_tasks(items)] == ["t3-cutover"]
 
 
 def test_ready_can_be_scoped_to_one_phase(initiative: Path) -> None:
+    mark_ready(initiative)
     items = read_initiative(initiative)["items"]
     assert [t["id"] for t in ready_tasks(items, phase="p2-rollout")] == []
 
@@ -558,16 +568,37 @@ def test_done_work_is_never_ready(initiative: Path) -> None:
 
 
 def test_ready_is_ordered_so_a_run_is_replayable(initiative: Path) -> None:
+    mark_ready(initiative)
     items = list(reversed(read_initiative(initiative)["items"]))
     assert [t["id"] for t in ready_tasks(items)] == ["t1-schema-probe", "t2-bench-harness"]
 
 
 def test_ready_orders_by_priority_then_id(tmp_path: Path) -> None:
-    task(tmp_path, "p1", "t-low", priority=3)
-    task(tmp_path, "p1", "t-high", priority=1)
-    task(tmp_path, "p1", "t-mid", priority=2)
+    task(tmp_path, "p1", "t-low", priority=3, state="ready")
+    task(tmp_path, "p1", "t-high", priority=1, state="ready")
+    task(tmp_path, "p1", "t-mid", priority=2, state="ready")
     items = [read_item(p) for p in sorted(tmp_path.glob("*/*.md"))]
     assert [t["id"] for t in ready_tasks(items)] == ["t-high", "t-mid", "t-low"]
+
+
+@pytest.mark.parametrize("state", ["todo", "blocked", "approved", "in_progress"])
+def test_only_a_ready_task_is_returned(state: str) -> None:
+    assert ready_tasks([{"id": "a", "state": state, "needs": []}]) == []
+
+
+def test_a_todo_task_with_its_needs_done_is_not_returned() -> None:
+    items = [{"id": "a", "state": "done"}, {"id": "b", "state": "todo", "needs": ["a"]}]
+    assert ready_tasks(items) == []
+
+
+def test_a_ready_task_with_its_needs_done_is_returned() -> None:
+    items = [{"id": "a", "state": "done"}, {"id": "b", "state": "ready", "needs": ["a"]}]
+    assert [t["id"] for t in ready_tasks(items)] == ["b"]
+
+
+def test_a_ready_task_with_an_unmet_need_is_not_returned() -> None:
+    items = [{"id": "a", "state": "in_progress"}, {"id": "b", "state": "ready", "needs": ["a"]}]
+    assert ready_tasks(items) == []
 
 
 def test_phases_are_listed_in_order(initiative: Path) -> None:
@@ -595,10 +626,11 @@ def test_a_phase_of_done_and_dropped_items_is_complete(initiative: Path) -> None
 def test_a_dropped_items_dependents_become_ready(initiative: Path) -> None:
     set_state(initiative / "p1-foundations" / "t1-schema-probe.md", "dropped")
     set_state(initiative / "p1-foundations" / "t2-bench-harness.md", "done")
+    mark_ready(initiative)
     items = read_initiative(initiative)["items"]
     assert [t["id"] for t in ready_tasks(items)] == ["t3-cutover"]
 
-    task(initiative, "p2-rollout", "t5-only-needs-dropped", needs=["t1-schema-probe"])
+    task(initiative, "p2-rollout", "t5-only-needs-dropped", needs=["t1-schema-probe"], state="ready")
     items = read_initiative(initiative)["items"]
     assert "t5-only-needs-dropped" in [t["id"] for t in ready_tasks(items, phase="p2-rollout")]
 
