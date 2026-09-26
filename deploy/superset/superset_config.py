@@ -1,4 +1,6 @@
+import contextlib
 import os
+import urllib.parse
 
 PLACEHOLDER = "change-me"
 ADMIN_VARS = (
@@ -16,6 +18,37 @@ def _require(name: str) -> str:
     if not value or value == PLACEHOLDER:
         raise RuntimeError(f"{name} is unset or still {PLACEHOLDER!r}; copy .env.example to .env and fill it in")
     return value
+
+
+def attach_sql(store_url: str | None) -> str | None:
+    """The ATTACH statement for a Postgres store URL; None for anything else, which leaves cox.db in use."""
+    if not store_url or urllib.parse.urlparse(store_url).scheme not in ("postgres", "postgresql"):
+        return None
+    # The catalog name `store` must equal bootstrap.STORE_CATALOG; this file is mounted alone and cannot import it.
+    return f"ATTACH '{store_url.replace(chr(39), chr(39) * 2)}' AS store (TYPE postgres, READ_ONLY)"
+
+
+def attach_store(dbapi_connection, connection_record) -> None:
+    """Attach the Postgres store to each new DuckDB connection; other engines, such as Superset's SQLite, are left alone."""
+    if not type(dbapi_connection).__module__.startswith("duckdb"):
+        return
+    statement = attach_sql(os.environ.get("COXSWAIN_STORE_URL"))
+    if statement is None:
+        return
+    dbapi_connection.execute("LOAD postgres")
+    dbapi_connection.execute(statement)
+
+
+def _register() -> None:
+    from sqlalchemy import event
+    from sqlalchemy.engine import Engine
+
+    event.listen(Engine, "connect", attach_store)
+
+
+# Superset always ships SQLAlchemy; only the bare test environment lacks it.
+with contextlib.suppress(ModuleNotFoundError):
+    _register()
 
 
 SECRET_KEY = _require("SUPERSET_SECRET_KEY")
