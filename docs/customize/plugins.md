@@ -16,6 +16,7 @@ repository holds the ones Coxswain ships.
 | `coxswain.trackers` | `cox route sync` | the profile's `tracker:` key | `none` (the default) and `github-projects` |
 | `coxswain.system_one` | the harness's fast path | the provider profile's `system_one.backend` | `model-tier` |
 | `coxswain.runners` | the harness | the provider profile's `runner:` key | `claude-code` and `anthropic` |
+| `coxswain.storage` | the harness's trace store | the URL's scheme | `file` and `s3` (built in) |
 
 A name that is neither built in nor registered is refused with a line
 naming the group, except in system one: an unregistered backend turns
