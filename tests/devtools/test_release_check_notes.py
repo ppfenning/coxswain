@@ -171,6 +171,11 @@ def test_bullets_from_notes_joins_a_wrapped_bullets_continuation_lines():
     ]
 
 
+def test_bullets_from_notes_keeps_a_hash_digits_continuation_on_its_bullet():
+    text = "- The CLI writes no usage file (graphs\n  #372). The driver needs a store.\n"
+    assert bullets_from_notes(text) == [(1, "- The CLI writes no usage file (graphs #372). The driver needs a store.")]
+
+
 def test_previous_version_is_the_greatest_release_below_the_one_checked():
     assert previous_version("0.11.0", ["0.9.0", "0.10.0", "0.11.0", "0.12.0"]) == "0.10.0"
     assert previous_version("0.1.0", ["0.1.0"]) is None
