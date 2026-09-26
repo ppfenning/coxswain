@@ -2109,6 +2109,34 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
+      <a href="../../releases/0.18.0/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0.18.0
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../releases/0.17.0/" class="md-nav__link">
         
   
@@ -2781,8 +2809,13 @@ dependencies. <code>cox setup doctor</code> lists what each side can load in its
   <code>wait_checks(repo, timeout_s, *, ref="HEAD")</code> and <code>merge(repo, step)</code>.
   Each except the first returns <code>(ok, detail)</code>. <code>merge</code> updates the local
   default branch without checking anything out.</li>
-<li><strong>Tracker</strong>: resolves by name today, but <code>route sync</code> still runs only
-  the built-in GitHub Projects sync.</li>
+<li><strong>Tracker</strong> (a module): <code>sync(workspace, items, *, dry_run) -&gt; (ok,
+  lines)</code>. <code>cox route sync</code> reads the work store's items, applies
+  <code>--item</code> if given, and hands them over. <code>items</code> are the work store's
+  initiatives and tasks: each has an id, title, body, repo, state, phase,
+  run, cost, gate, issue and parent. Return <code>ok</code> and the lines to print,
+  and write nothing when <code>dry_run</code> is true. An exception is reported as
+  the tracker failing, and <code>route sync</code> exits 1.</li>
 <li><strong>System-one backend</strong> (a callable): <code>make(model, api_key, block)</code>
   returns a decider whose <code>decide(question, state)</code> returns an answer
   with a confidence. Set <code>make.needs_key = True</code> for a hosted service. Its
