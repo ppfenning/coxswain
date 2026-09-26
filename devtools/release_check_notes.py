@@ -13,6 +13,7 @@ from devtools import release
 _PR = re.compile(r"#(\d+)")
 _SHA = re.compile(r"\b[0-9a-f]{7,40}\b")
 _BULLET = re.compile(r"^[-*]\s+\S")
+_HEADING = re.compile(r"#{1,6}\s")
 
 
 if TYPE_CHECKING:
@@ -36,8 +37,9 @@ def bullets_from_notes(text: str) -> list[tuple[int, str]]:
     """Each bullet with its continuation lines joined. The notes wrap at 100
     columns, so a bullet's citation usually sits on its second or third line;
     a continuation is an indented, non-blank, non-heading line that directly
-    follows the bullet or another continuation. A blank line or a heading ends
-    the bullet, so a later indented paragraph is never glued onto it."""
+    follows the bullet or another continuation. A heading is one to six `#`
+    then whitespace, so a continuation opening `#372).` stays on its bullet.
+    A blank line or a heading ends the bullet."""
     bullets: list[tuple[int, str]] = []
     open_bullet = False
     for i, raw in enumerate(text.splitlines(), start=1):
@@ -45,7 +47,7 @@ def bullets_from_notes(text: str) -> list[tuple[int, str]]:
         if _BULLET.match(line):
             bullets.append((i, line))
             open_bullet = True
-        elif open_bullet and line and raw[:1].isspace() and not line.startswith("#"):
+        elif open_bullet and line and raw[:1].isspace() and not _HEADING.match(line):
             n, so_far = bullets[-1]
             bullets[-1] = (n, f"{so_far} {line}")
         else:
