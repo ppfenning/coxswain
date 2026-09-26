@@ -1698,6 +1698,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#point-the-dashboard-at-postgres" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Point the dashboard at Postgres
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#other-data-sources" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2794,6 +2805,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#point-the-dashboard-at-postgres" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Point the dashboard at Postgres
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#other-data-sources" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2938,17 +2960,51 @@ with no import step.</p>
 <p>Superset keeps its own users, datasets, and charts in a separate Docker
 volume. Removing that volume loses your charts and never touches your
 runs.</p>
+<h2 id="point-the-dashboard-at-postgres">Point the dashboard at Postgres</h2>
+<p>By default the dashboard reads the SQLite store at <code>/data/runs/cox.db</code>.
+If your store lives in Postgres, set <code>COXSWAIN_STORE_URL</code> in <code>.env</code> to its
+URL. The URL below is a placeholder.</p>
+<div class="highlight"><pre><span></span><code><span class="nv">COXSWAIN_STORE_URL</span><span class="o">=</span>postgresql://reader:change-me@db.example:5432/coxswain
+</code></pre></div>
+<p>Use a read-only Postgres role. The connection is attached read-only, but
+the role is the real limit. The store's tables must sit in the <code>public</code>
+schema of the database the URL names. A table in another schema fails
+when a chart queries it.</p>
+<p>With the variable set, the datasets read the store through an attached
+catalog named <code>store</code>. Their SQL reads <code>store.public.&lt;table&gt;</code>. With it
+unset or empty, nothing changes. Default mode stays <code>sqlite_scan</code> of
+<code>/data/runs/cox.db</code>.</p>
+<p>The <code>superset-dashboards</code> one-shot writes that SQL into the datasets.
+<code>docker compose up -d</code> runs it, as described above. If it did not run, the
+datasets keep their old SQL and charts still read SQLite. Run it by hand
+after changing the variable.</p>
+<div class="highlight"><pre><span></span><code>docker<span class="w"> </span>compose<span class="w"> </span>run<span class="w"> </span>--rm<span class="w"> </span>superset-dashboards
+</code></pre></div>
+<p><code>runs/cox.db</code> must still exist in the runs directory in Postgres mode. The
+one-shot decides which datasets to install by looking for files there, and
+it never checks the store URL. Without <code>cox.db</code>, it skips every dataset
+that reads the store, with its charts. It skips the landing datasets too.
+The file only has to exist. The datasets still read Postgres.</p>
+<p>The attached catalog was chosen over <code>postgres_scan</code>. A <code>postgres_scan</code> call
+takes the connection string in its arguments. That puts the password in the
+SQL of every dataset, and Superset saves that SQL. An attached catalog is
+set up by the connection, not by the query. The dataset SQL names a table
+in the catalog and never holds a URL.</p>
+<p>A connect hook in <code>superset_config.py</code> does the attaching. Each time
+Superset opens a DuckDB connection, the hook reads <code>COXSWAIN_STORE_URL</code> from
+the container environment and runs ATTACH with it. So the password lives
+only in that environment. The saved database object and the dataset SQL
+hold no URL.</p>
+<p>Only the store moves. Traces and <code>runs/land.jsonl</code> stay file-based. Superset
+still reads them from the runs directory at <code>/data/runs</code>, even when the
+store is in Postgres. A multi-machine setup therefore needs them on shared
+storage later. <a href="../several-machines/">Several machines</a> covers the
+<code>traces_url</code> setting for traces. This page does not set up shared storage.</p>
 <h2 id="other-data-sources">Other data sources</h2>
 <p>The Superset image queries with DuckDB, so a dataset can read from more
 than local files.</p>
-<p><strong>A Postgres store.</strong> Use <code>postgres_scan</code> in the dataset SQL. The
-connection string below is a placeholder.</p>
-<div class="highlight"><pre><span></span><code><span class="k">SELECT</span><span class="w"> </span><span class="o">*</span>
-<span class="k">FROM</span><span class="w"> </span><span class="n">postgres_scan</span><span class="p">(</span><span class="s1">'host=db.example dbname=coxswain user=reader password=change-me'</span><span class="p">,</span><span class="w"> </span><span class="s1">'public'</span><span class="p">,</span><span class="w"> </span><span class="s1">'runs'</span><span class="p">)</span>
-</code></pre></div>
-<p>The image installs the sqlite, parquet, and iceberg extensions. It does
-not install the postgres extension, so DuckDB fetches it on first use and
-the container needs network access for that.</p>
+<p><strong>A Postgres store.</strong> See the section above, which sets it up without
+putting the password in any SQL.</p>
 <p><strong>Shared Parquet traces.</strong> Point the dataset SQL at the shared location
 with <code>read_parquet</code>. The path below is a placeholder.</p>
 <div class="highlight"><pre><span></span><code><span class="k">SELECT</span><span class="w"> </span><span class="o">*</span>
