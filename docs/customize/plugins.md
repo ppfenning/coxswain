@@ -63,8 +63,13 @@ Each group expects a different shape:
   `wait_checks(repo, timeout_s, *, ref="HEAD")` and `merge(repo, step)`.
   Each except the first returns `(ok, detail)`. `merge` updates the local
   default branch without checking anything out.
-- **Tracker**: resolves by name today, but `route sync` still runs only
-  the built-in GitHub Projects sync.
+- **Tracker** (a module): `sync(workspace, items, *, dry_run) -> (ok,
+  lines)`. `cox route sync` reads the work store's items, applies
+  `--item` if given, and hands them over. `items` are the work store's
+  initiatives and tasks: each has an id, title, body, repo, state, phase,
+  run, cost, gate, issue and parent. Return `ok` and the lines to print,
+  and write nothing when `dry_run` is true. An exception is reported as
+  the tracker failing, and `route sync` exits 1.
 - **System-one backend** (a callable): `make(model, api_key, block)`
   returns a decider whose `decide(question, state)` returns an answer
   with a confidence. Set `make.needs_key = True` for a hosted service. Its
