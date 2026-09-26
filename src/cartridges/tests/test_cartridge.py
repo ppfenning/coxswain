@@ -341,6 +341,13 @@ def test_shell_and_pr_are_valid_apply_arms_without_being_roles(cartridges: Path,
     assert load("acme", cartridges, skill_index=skill_index)["write_kinds"]["ticket_create"]["apply_arm"] == "shell"
 
 
+def test_workstore_is_a_valid_apply_arm_without_being_a_role(cartridges: Path, skill_index) -> None:
+    config = yaml.safe_load((cartridges / "acme" / "cartridge.yaml").read_text())
+    config["write_kinds"]["state_move"] = {"apply_arm": "workstore"}
+    (cartridges / "acme" / "cartridge.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+    assert load("acme", cartridges, skill_index=skill_index)["write_kinds"]["state_move"]["apply_arm"] == "workstore"
+
+
 def test_reports_every_problem_at_once(cartridges: Path) -> None:
     """One error per run is how people stop reading errors."""
     config = yaml.safe_load((cartridges / "acme" / "cartridge.yaml").read_text())

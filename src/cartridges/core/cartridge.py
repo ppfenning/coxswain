@@ -103,9 +103,10 @@ RAMP_ORDER: Mapping[str, int] = {"eligible": 0, "deferred": 1, "gated": 2, "neve
 GATE_ORDER: Mapping[str, int] = {"ticket": 0, "phase": 1, "epic": 2, "full": 3}
 COST_LEVEL_ORDER: Mapping[str, int] = {"strict": 0, "moderate": 1, "liberal": 2}
 
-# apply_arm usually names a role, but two values are literal sinks rather than
-# agent roles: the shell applies it itself, or it goes out as a pull request.
-NON_ROLE_APPLY_ARMS = frozenset({"shell", "pr"})
+# apply_arm usually names a role, but three values are literal sinks rather than
+# agent roles: the shell applies it itself, it goes out as a pull request, or
+# the harness's workstore arm writes the ticket in code (graphs `harness.gate`).
+NON_ROLE_APPLY_ARMS = frozenset({"shell", "pr", "workstore"})
 
 # Emitted by load(), so excluded from the payload that load() hashes. `cast`
 # and `deprecations` are excluded too: `cast` mirrors `crew` exactly, and
