@@ -7,7 +7,16 @@ requires-python = ">=3.11"
 dependencies = []
 
 [dependency-groups]
-dev = ["pytest>=8", "mkdocs-material>=9.5", "mike>=2.1", "pyyaml>=6.0", "ruff==0.16.6", "rich>=13", "coxswain-tools; python_version >= '3.12'"]
+dev = [
+    "pytest>=8",
+    "mkdocs-material>=9.5",
+    "mike>=2.1",
+    "pyyaml>=6.0",
+    "ruff==0.16.6",
+    "rich>=13",
+    "coxswain-tools; python_version >= '3.12'",
+    "duckdb>=1.1",
+]
 
 # devtools/ (never in the wheel) renders tools' own command table, so the dev
 # group installs coxswain-tools from the sibling checkout; CI clones it there.
