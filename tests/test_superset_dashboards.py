@@ -1,9 +1,12 @@
+import datetime
 import importlib.util
 import json
 import re
+import urllib.error
 from collections import Counter
 from pathlib import Path
 
+import pytest
 import yaml
 
 DEPLOY = Path(__file__).resolve().parent.parent / "deploy" / "superset"
@@ -15,7 +18,8 @@ check = importlib.util.module_from_spec(_check_spec)
 _check_spec.loader.exec_module(check)
 
 SPECS = bootstrap.load_specs(DEPLOY / "dashboards")
-ALL_SOURCES = frozenset({"sqlite", "parquet-traces", "land-log"})
+ALL_SOURCES = frozenset({"sqlite", "parquet-traces", "land-log", "chair-store"})
+CHAIR_DATASETS = ["chair_actions_by_hour", "chair_lanes_by_host_hour", "chair_spend_by_day", "chair_needs_backlog", "chair_status"]
 READS = re.compile(r"\b(?:read_\w+|\w+_scan)\s*\(")
 LITERAL_READS = re.compile(r"\b(?:read_\w+|\w+_scan)\s*\(\s*'([^']*)'")
 
@@ -76,7 +80,7 @@ def test_plan_on_an_empty_server_creates_everything_in_order():
     assert {o.action for o in ops} == {"create"}
     kinds = [o.kind for o in ops]
     assert kinds == sorted(kinds, key=bootstrap.KINDS.index)
-    assert Counter(kinds) == {"database": 1, "dataset": 10, "chart": 17, "dashboard": 1}
+    assert Counter(kinds) == {"database": 1, "dataset": 15, "chart": 17, "dashboard": 1}
 
 
 def test_plan_is_all_unchanged_when_the_server_matches():
@@ -100,18 +104,18 @@ def test_plan_updates_a_dataset_whose_sql_changed_and_only_that_one():
 
 
 def test_plan_skips_traces_and_its_chart_while_no_parquet_exists():
-    ops = bootstrap.plan(SPECS, {}, frozenset({"sqlite", "land-log"}))
+    ops = bootstrap.plan(SPECS, {}, frozenset({"sqlite", "land-log", "chair-store"}))
     lines = [bootstrap.line(o) for o in ops if o.action == "skipped"]
     assert lines[0] == "skipped: traces (no Parquet traces yet)"
     assert lines[1] == "skipped: Tool uses by name, top 15 (dataset traces skipped)"
     assert len(lines) == 2
     (board,) = [o for o in ops if o.kind == "dashboard"]
     assert "Tool uses by name, top 15" not in json.dumps(board.payload)
-    assert Counter(o.kind for o in ops if o.action == "create") == {"database": 1, "dataset": 9, "chart": 16, "dashboard": 1}
+    assert Counter(o.kind for o in ops if o.action == "create") == {"database": 1, "dataset": 14, "chart": 16, "dashboard": 1}
 
 
 def test_plan_skips_the_land_log_datasets_and_their_charts_while_no_land_log_exists():
-    ops = bootstrap.plan(SPECS, {}, frozenset({"sqlite", "parquet-traces"}))
+    ops = bootstrap.plan(SPECS, {}, frozenset({"sqlite", "parquet-traces", "chair-store"}))
     assert [bootstrap.line(o) for o in ops if o.action == "skipped"] == [
         "skipped: daily_efficiency (needs land.jsonl and cox.db)",
         "skipped: landed_tasks (needs land.jsonl and cox.db)",
@@ -134,8 +138,108 @@ def test_present_sources_counts_the_land_log_only_beside_a_cox_db(tmp_path):
     assert bootstrap.present_sources(tmp_path) == frozenset({"sqlite", "land-log"})
 
 
+def test_plan_without_chair_store_skips_the_five_chair_datasets_and_keeps_the_others():
+    ops = bootstrap.plan(SPECS, {}, ALL_SOURCES - {"chair-store"})
+    assert [bootstrap.line(o) for o in ops if o.action == "skipped"] == [f"skipped: {n} (no chair tables in the store yet)" for n in CHAIR_DATASETS]
+    assert [o.name for o in ops if o.kind == "dataset" and o.action == "create"] == [d["name"] for d in SPECS["datasets"] if d["name"] not in CHAIR_DATASETS]
+    assert not [c for c in SPECS["charts"] if c["dataset"] in CHAIR_DATASETS]
+    assert Counter(o.kind for o in ops if o.action == "create") == {"database": 1, "dataset": 10, "chart": 17, "dashboard": 1}
+
+
+def test_a_store_without_chair_store_plans_the_existing_datasets_as_before():
+    with_chair = bootstrap.plan(SPECS, {}, ALL_SOURCES)
+    without = bootstrap.plan(SPECS, {}, ALL_SOURCES - {"chair-store"})
+    old = [o for o in with_chair if o.name not in CHAIR_DATASETS]
+    assert [o for o in without if o.action != "skipped"] == old
+    assert bootstrap.present_sources(Path("/nonexistent")) == frozenset()
+
+
+def test_no_chair_dataset_sql_names_a_log_file_or_a_scan():
+    sqls = {d["name"]: d["sql"] for d in SPECS["datasets"] if d["name"] in CHAIR_DATASETS}
+    postgres = {n: bootstrap.expand_store(sql, "postgresql://u@h/db") for n, sql in sqls.items()}
+    assert sorted(sqls) == sorted(CHAIR_DATASETS)
+    assert not [n for n, sql in sqls.items() if ".jsonl" in sql or "sqlite_scan" in sql or READS.findall(sql)]
+    assert not [n for n, sql in postgres.items() if ".jsonl" in sql or "sqlite_scan" in sql or "store.public." not in sql]
+    assert all(d["requires"] == "chair-store" for d in SPECS["datasets"] if d["name"] in CHAIR_DATASETS)
+
+
+class _SqlLab:
+    """SQL Lab over a store holding `tables`. A select on any other table answers 400, as a query error does."""
+
+    def __init__(self, tables, code=400):
+        self.tables, self.code, self.sent = tables, code, []
+
+    def call(self, method, path, data=None):
+        self.sent.append(data["sql"])
+        if re.search(r"'(\w+)'\) LIMIT 0$", data["sql"])[1] not in self.tables:
+            raise urllib.error.HTTPError(path, self.code, "error", {}, None)
+        return {"data": []}
+
+
+def test_the_chair_probe_selects_limit_0_from_every_table_it_reads_and_needs_all():
+    full = _SqlLab({"chair_actions", "chair_ticks", "leases", "runs"})
+    assert bootstrap.chair_tables_readable(full, 1, None) is True
+    assert full.sent[0] == "SELECT ts, kind, initiative, task, status, reason FROM sqlite_scan('/data/runs/cox.db', 'chair_actions') LIMIT 0"
+    assert full.sent[2] == "SELECT name, holder, host, epoch, heartbeat_at FROM sqlite_scan('/data/runs/cox.db', 'leases') LIMIT 0"
+    assert bootstrap.chair_tables_readable(_SqlLab({"chair_actions", "leases", "runs"}), 1, None) is False
+    assert bootstrap.present_sources(Path("/nonexistent"), True) == frozenset({"chair-store"})
+
+
+def test_the_chair_probe_raises_on_an_error_that_is_not_a_query_error():
+    with pytest.raises(urllib.error.HTTPError) as raised:
+        bootstrap.chair_tables_readable(_SqlLab(set(), code=401), 1, None)
+    assert raised.value.code == 401
+
+
+CHAIR_STORE = """
+SET TimeZone = 'UTC';
+CREATE TABLE node_calls AS SELECT * FROM (VALUES ('2026-09-20T10:00:00Z', 3.0)) AS t(ts, cost_usd);
+CREATE TABLE chair_actions AS SELECT * FROM (VALUES
+  ('2026-09-21T09:00:00Z', 3, 'needs_chair', 'i', 'a', 'ok', 'review'),
+  ('2026-09-21T09:00:00Z', 3, 'needs_chair', 'i', 'b', 'ok', 'conflict'),
+  ('2026-09-21T10:00:00Z', 3, 'land', 'i', 'a', 'ok', ''),
+  ('2026-09-21T10:00:00Z', 3, 'land', 'i', 'b', 'failed', 'merge')
+) AS t(ts, epoch, kind, initiative, task, status, reason);
+CREATE TABLE chair_ticks AS SELECT * FROM (VALUES
+  ('2026-09-21T10:00:00Z', 'me', 'box1', 3, 8, 0.4),
+  ('2026-09-21T11:00:00Z', 'me', 'box1', 3, 8, 0.5)
+) AS t(ts, holder, host, epoch, max_in_flight, weekly_fraction);
+CREATE TABLE leases AS SELECT * FROM (VALUES
+  ('chair', 'me', 'box1', 3, '2026-09-21T11:00:00Z', '2026-09-21T11:05:00Z')
+) AS t(name, holder, host, epoch, heartbeat_at, expires_at);
+CREATE TABLE runs AS SELECT '' AS host, CAST(now() - INTERVAL 2 HOUR AS VARCHAR) AS launched_at, CAST(NULL AS VARCHAR) AS ended_at;
+"""
+
+
+def _chair_rows(name):
+    """The dataset's rows over CHAIR_STORE, with each placeholder read as a plain table."""
+    duckdb = pytest.importorskip("duckdb")
+    con = duckdb.connect()
+    con.execute(CHAIR_STORE)
+    (sql,) = [d["sql"] for d in SPECS["datasets"] if d["name"] == name]
+    return con.execute(bootstrap.STORE_FORM.sub(lambda m: m[1], sql)).fetchall()
+
+
+def test_the_chair_sql_runs_over_literal_rows_in_duckdb():
+    assert _chair_rows("chair_spend_by_day") == [
+        (datetime.date(2026, 9, 20), 3.0, 0, None, None),
+        (datetime.date(2026, 9, 21), 0.0, 1, 0.0, 0.0),
+    ]
+    assert [(r[0], r[1]) for r in _chair_rows("chair_needs_backlog")] == [("i", "b")]
+    (status,) = _chair_rows("chair_status")
+    assert status[:3] == ("me", "box1", 3) and status[3] > 0 and status[4] == 0.5
+    assert {(r[1], r[3]) for r in _chair_rows("chair_lanes_by_host_hour")} == {("local", 8)}
+    assert sorted((r[1], r[2]) for r in _chair_rows("chair_actions_by_hour")) == [("land", 2), ("needs_chair", 2)]
+
+
+def test_the_chair_backlog_flagged_at_is_a_naive_utc_datetime():
+    (row,) = [r for r in _chair_rows("chair_needs_backlog") if r[1] == "b"]
+    assert row[3] == datetime.datetime.fromisoformat("2026-09-21T09:00:00")
+    assert row[3].tzinfo is None
+
+
 def test_a_later_run_adds_traces_and_updates_the_dashboard():
-    first = bootstrap.plan(SPECS, {}, frozenset({"sqlite", "land-log"}))
+    first = bootstrap.plan(SPECS, {}, frozenset({"sqlite", "land-log", "chair-store"}))
     ops = bootstrap.plan(SPECS, _server(first), ALL_SOURCES)
     assert [(o.action, o.kind, o.name) for o in ops if o.action != "unchanged"] == [
         ("create", "dataset", "traces"),
