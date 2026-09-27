@@ -2937,6 +2937,7 @@ things in order. The default tick is 60 seconds.</p>
   pairs.</li>
 <li>It fills lanes on the hosts named in <code>lane_hosts</code> too, after the local
   lanes.</li>
+<li>It counts the drafts waiting for approval and never launches one.</li>
 <li>It prints one status line.</li>
 </ul>
 <p>The status line looks like this:</p>
@@ -2953,8 +2954,8 @@ things in order. The default tick is 60 seconds.</p>
 between ticks:</p>
 <div class="highlight"><pre><span></span><code>cox<span class="w"> </span>chair<span class="w"> </span>run<span class="w"> </span>--interval<span class="w"> </span><span class="m">120</span>
 </code></pre></div>
-<p>To keep it running, use a user service. This unit is an example only.
-Adjust it to your machine:</p>
+<p>To keep it running, use a user service. This unit is an example of the
+shape:</p>
 <div class="highlight"><pre><span></span><code><span class="k">[Unit]</span>
 <span class="na">Description</span><span class="o">=</span><span class="s">Coxswain autonomous chair</span>
 
@@ -2965,7 +2966,32 @@ Adjust it to your machine:</p>
 <span class="k">[Install]</span>
 <span class="na">WantedBy</span><span class="o">=</span><span class="s">default.target</span>
 </code></pre></div>
-<p>Put the unit in your user unit directory.</p>
+<p>To write the real unit for your machine, run the install command. Every
+flag is optional:</p>
+<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>chair<span class="w"> </span>service<span class="w"> </span>--install<span class="w"> </span><span class="o">[</span>--label<span class="w"> </span>L<span class="o">]</span><span class="w"> </span><span class="o">[</span>--interval<span class="w"> </span>S<span class="o">]</span><span class="w"> </span><span class="o">[</span>--environment-file<span class="w"> </span>PATH<span class="o">]</span><span class="w"> </span><span class="o">[</span>--profile<span class="w"> </span>P<span class="o">]</span>
+</code></pre></div>
+<p>It writes <code>~/.config/systemd/user/coxswain-chair.service</code>. The unit has
+these lines:</p>
+<ul>
+<li><code>ExecStart=&lt;absolute cox&gt; chair run --label L --interval S</code></li>
+<li><code>WorkingDirectory=&lt;workspace_dir&gt;</code></li>
+<li><code>Restart=on-failure</code></li>
+<li><code>RestartSec=30</code></li>
+</ul>
+<p>It adds <code>EnvironmentFile=-&lt;path&gt;</code> when you pass an environment file. It adds
+the same line when <code>~/.config/agent-tools/garage.env</code> exists.</p>
+<p>The command prints the unit path and three lines to run:</p>
+<div class="highlight"><pre><span></span><code>systemctl<span class="w"> </span>--user<span class="w"> </span>daemon-reload
+systemctl<span class="w"> </span>--user<span class="w"> </span><span class="nb">enable</span><span class="w"> </span>--now<span class="w"> </span>coxswain-chair.service
+systemctl<span class="w"> </span>--user<span class="w"> </span>status<span class="w"> </span>coxswain-chair.service
+</code></pre></div>
+<p>The command runs no <code>systemctl</code> itself. You run those three lines.</p>
+<p>To see the installed unit, run this:</p>
+<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>chair<span class="w"> </span>service<span class="w"> </span>--status
+</code></pre></div>
+<p>It prints the unit text. If there is no unit, it prints <code>no unit at &lt;path&gt;</code>.</p>
+<p>A user service stops when you log out. To keep the loop running while nobody
+is logged in, run <code>loginctl enable-linger</code> yourself. Cox does not run it.</p>
 <h2 id="limits">Limits</h2>
 <p>The lane cap is <code>policy.dispatch.max_in_flight</code> in the team cartridge.</p>
 <p>Past the hard stop, the loop lands work but launches nothing. The hard stop
@@ -2996,10 +3022,24 @@ there, the launch is refused:</p>
 shows how to set up a lane machine.</p>
 <h2 id="taking-over">Taking over</h2>
 <p>To take the chair yourself, run this from an interactive session:</p>
-<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>route<span class="w"> </span>chair<span class="w"> </span>take<span class="w"> </span>--steal
+<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>route<span class="w"> </span>chair<span class="w"> </span>take<span class="w"> </span>--steal<span class="w"> </span>--hours<span class="w"> </span>H
 </code></pre></div>
+<p>The <code>--hours</code> flag defaults to <code>policy.leader.takeover_hours</code>, which is 3.
+It stamps <code>until</code> on the chair record.</p>
 <p>The loop sees the change on its next beat. It stops acting and reports who
 holds the chair. Any action it planned under the lost lease is refused.</p>
+<p>While you hold the chair, the loop's status line reads:</p>
+<div class="highlight"><pre><span></span><code>standby: held by &lt;session&gt; until &lt;time&gt;
+</code></pre></div>
+<p>To move <code>until</code>, run this from the session that holds the chair:</p>
+<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>route<span class="w"> </span>chair<span class="w"> </span>extend<span class="w"> </span>--hours<span class="w"> </span>H
+</code></pre></div>
+<p>A beat never moves <code>until</code>. Only <code>take</code> and <code>extend</code> do.</p>
+<p><code>cox route chair status</code> shows <code>until &lt;time&gt;</code> and the hours left. When the
+time has passed, it shows <code>(expired)</code>.</p>
+<p>Once <code>until</code> has passed, the loop's next tick takes the chair back. The
+action is <code>take_lease</code>, with the reason <code>takeover expired at &lt;time&gt;</code>. A
+forgotten takeover cannot park the fleet.</p>
 <p>To hand the chair back:</p>
 <div class="highlight"><pre><span></span><code>cox<span class="w"> </span>route<span class="w"> </span>chair<span class="w"> </span>release
 </code></pre></div>
@@ -3014,8 +3054,35 @@ You can rescue it. Run this in the harness:</p>
 runs the review round. On approve, the task lands as usual.</p>
 <p>A rescue runs at most once per version of the ticket.</p>
 <h2 id="drafts">Drafts</h2>
-<p>The status line shows <code>drafts N</code> when N is above 0. N is the count of
-initiatives waiting for approval.</p>
+<p>A draft is an initiative under <code>work/&lt;id&gt;/</code>. Its <code>initiative.md</code> frontmatter
+has <code>draft: true</code>, <code>proposed_by</code> and <code>proposed_at</code>. Its tasks are
+<code>state: todo</code>.</p>
+<p>Every part of Coxswain holds <code>todo</code>. The driver builds only <code>ready</code> tasks
+whose needs are done. A draft therefore never builds until you approve it.</p>
+<p>To write drafts, run the steward:</p>
+<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>steward<span class="w"> </span>draft<span class="w"> </span><span class="o">[</span>--json<span class="o">]</span>
+</code></pre></div>
+<p>It writes each grounded steward proposal in intake as a draft. It lists the
+drafts that already exist. It lists the proposals it could not ground.</p>
+<p>To approve a draft, run this:</p>
+<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>route<span class="w"> </span>approve<span class="w"> </span>&lt;initiative&gt;<span class="w"> </span><span class="o">[</span>--task<span class="w"> </span>&lt;id&gt;<span class="o">]</span>
+</code></pre></div>
+<p>It moves the draft's <code>todo</code> tasks to <code>ready</code>. With <code>--task</code>, it moves only
+that task.</p>
+<p>To decline a draft, give a reason:</p>
+<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>route<span class="w"> </span>decline<span class="w"> </span>&lt;initiative&gt;<span class="w"> </span>--reason<span class="w"> </span>&lt;text&gt;
+</code></pre></div>
+<p>It moves the draft's tasks to <code>dropped</code>.</p>
+<p>The loop never launches a draft. Two places show that drafts are waiting.</p>
+<ul>
+<li>The status line shows <code>drafts N</code> when N is above 0.</li>
+<li><code>cox route status</code> ends with a <code>drafts:</code> list. Each row is
+  <code>&lt;id&gt;  &lt;proposed_by&gt;  &lt;age&gt;</code>.</li>
+</ul>
+<p>The tail of <code>cox route status</code> looks like this:</p>
+<div class="highlight"><pre><span></span><code>drafts:
+  my-initiative  steward  2h
+</code></pre></div>
 <h2 id="what-it-records">What it records</h2>
 <p>Some actions the loop only records, such as a "needs the chair" report.
 Each one is appended to <code>chair.actions.jsonl</code> in the runs directory. The
