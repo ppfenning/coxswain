@@ -1,3 +1,5 @@
+import re
+
 import pytest
 
 from devtools.release_check import Drift
@@ -228,9 +230,12 @@ def _real_cox_help_texts():
     three shapes above are checked against the actual `cox --help` this
     repo ships, the same text `cox dev release-check` would gather."""
     build_parser = pytest.importorskip("agent_tools.cli").build_parser
+    # Python 3.14 argparse colours format_help() when the environment asks for it;
+    # `cox --help` piped to the release check is plain, so strip the escapes here.
+    ansi = re.compile(r"\x1b\[[0-9;]*m")
 
     def texts_from(parser, prefix):
-        found = {prefix: parser.format_help()}
+        found = {prefix: ansi.sub("", parser.format_help())}
         for group_action in parser._subparsers._group_actions if parser._subparsers else []:
             for name, sub in group_action.choices.items():
                 found.update(texts_from(sub, f"{prefix} {name}"))
@@ -241,6 +246,6 @@ def _real_cox_help_texts():
 
 def test_walk_help_on_the_real_cox_parser_reaches_setup_and_dev_but_drops_release():
     commands = walk_help(_real_cox_help_texts())
-    assert any(cmd.startswith("cox setup ") for cmd in commands)
-    assert any(cmd.split()[:2] == ["cox", "dev"] for cmd in commands)  # a bare `cox dev` once tools #442 lands
-    assert not any(cmd.split()[1] == "release" for cmd in commands)
+    required = {"cox setup doctor", "cox dev"}  # `cox dev` is a bare leaf now: it only points at the checkout
+    assert required <= commands
+    assert not any(cmd.split()[:2] == ["cox", "release"] for cmd in commands)  # SUPPRESS-marked, so dropped
