@@ -125,7 +125,7 @@ def expand_store(sql: str, store_url: str | None) -> str | StoreError:
 
 
 def plan(specs: dict[str, Any], existing: dict[str, dict[str, dict]], present: frozenset[str] | set[str], store_url: str | None = None) -> list[Op]:
-    """Ordered operations: database, datasets, charts, dashboard.
+    """Ordered operations: database, datasets, charts, dashboards.
 
     `existing` maps kind to name to the object as `normalize` shapes it. A dataset whose `requires`
     source is not in `present` is skipped, and so is every chart on it. Dataset SQL goes through
@@ -138,7 +138,7 @@ def plan(specs: dict[str, Any], existing: dict[str, dict[str, dict]], present: f
         action = "create" if have is None else ("unchanged" if covers(have, payload if seen is None else seen) else "update")
         return Op(action, kind, name, payload)
 
-    database, dash = specs["database"], specs["dashboard"]
+    database = specs["database"]
     absent = {d["name"]: SOURCE_NOTES.get(d["requires"], f"no {d['requires']}") for d in specs["datasets"] if d["requires"] not in present}
 
     def dataset(d: dict) -> Op:
@@ -157,10 +157,14 @@ def plan(specs: dict[str, Any], existing: dict[str, dict[str, dict]], present: f
         for c in specs["charts"]
     ]
     live = {o.name for o in charts if o.action != "skipped"}
-    grid = [row for row in ([cell for cell in row if cell["chart"] in live] for row in dash["grid"]) if row]
-    board = decide("dashboard", dash["name"], {"grid": grid}) if grid else Op("skipped", "dashboard", dash["name"], {}, "no charts")
+
+    def board(dash: dict) -> Op:
+        grid = [row for row in ([cell for cell in row if cell["chart"] in live] for row in dash["grid"]) if row]
+        return decide("dashboard", dash["name"], {"grid": grid}) if grid else Op("skipped", "dashboard", dash["name"], {}, "no charts")
+
+    boards = [board(d) for d in specs.get("dashboards") or [specs["dashboard"]]]
     uri = database["sqlalchemy_uri"]
-    return [decide("database", database["name"], {"sqlalchemy_uri": uri}, {"sqlalchemy_uri": mask_uri(uri)}), *datasets, *charts, board]
+    return [decide("database", database["name"], {"sqlalchemy_uri": uri}, {"sqlalchemy_uri": mask_uri(uri)}), *datasets, *charts, *boards]
 
 
 def position(grid: list[list[dict]], chart_ids: dict[str, int], title: str) -> dict[str, Any]:
@@ -222,7 +226,7 @@ def names_of(specs: dict[str, Any]) -> dict[str, set[str]]:
         "database": {specs["database"]["name"]},
         "dataset": {d["name"] for d in specs["datasets"]},
         "chart": {c["name"] for c in specs["charts"]},
-        "dashboard": {specs["dashboard"]["name"]},
+        "dashboard": {d["name"] for d in specs.get("dashboards") or [specs["dashboard"]]},
     }
 
 
