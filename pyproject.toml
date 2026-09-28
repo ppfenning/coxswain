@@ -14,7 +14,7 @@ dev = [
     "pyyaml>=6.0",
     "ruff==0.16.6",
     "rich>=13",
-    "coxswain-tools; python_version >= '3.12'",
+    "coxswain-tools[postgres]; python_version >= '3.12'",
     "duckdb>=1.1",
 ]
 
