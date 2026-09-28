@@ -2128,17 +2128,6 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
-  <a href="#coxswain-graphs" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        coxswain-graphs
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#coxswain" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2830,17 +2819,6 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
-  <a href="#coxswain-graphs" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        coxswain-graphs
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#coxswain" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2889,8 +2867,8 @@ Coxswain is in beta — versions may change between releases
 
 
 <h1 id="0220">0.22.0</h1>
-<p>Cut on 2026-09-27. <code>coxswain-cartridges</code>, <code>coxswain-graphs</code> and <code>coxswain-tools</code> are tagged <code>v0.22.0</code>.
-<code>coxswain-crew</code> stays pinned at <code>v0.12.0</code>. <code>coxswain-tools</code> is published to PyPI from its tag. Status: <strong>beta</strong>.
+<p>Cut on 2026-09-27. <code>coxswain-tools</code> is tagged <code>v0.22.0</code>. <code>coxswain-cartridges</code> and <code>coxswain-graphs</code> had no changes
+and stay pinned at <code>v0.21.0</code>; <code>coxswain-crew</code> stays pinned at <code>v0.12.0</code>. <code>coxswain-tools</code> is published to PyPI from its tag. Status: <strong>beta</strong>.
 This release makes the chair loop steady on its own, and it carries three headlines.</p>
 <p><strong>The loop lands what it can and waits for what it must.</strong> A phase counts as complete when every task in it is done,
 approved or dropped, so a phase with several approved tasks lands instead of waiting on itself. The loop relaunches an
@@ -2935,15 +2913,11 @@ the weekly window at the meter's reset instead of a rolling seven days. The loop
 <li>Work items in the store, groundwork for the queue of record: the docket, quarantined and stranded readers, the
   launch claim, facts from the store, <code>cox route import</code> and the export (tools #968, #970, #975, #993, #995, #1011);
   <code>route import</code> prints the store's refusal when a write fails (tools #1052).
-  These call <code>harness.store_queue</code>, which graphs does not have yet; until it lands, the queue reads as unavailable and
+  These call <code>harness.store_queue</code>, which the harness does not provide yet; until it does, the queue reads as unavailable and
   the loop reads the work-item files, as before.</li>
 <li>Reverted: land checks with a private <code>TMPDIR</code> and pytest <code>--basetemp</code> (tools #985, reverted in 18705d1). Exporting
   <code>--basetemp</code> breaks tests that start a nested pytest, and the failures it targeted came from two lands of one task
   sharing a worktree.</li>
-</ul>
-<h2 id="coxswain-graphs">coxswain-graphs</h2>
-<ul>
-<li>No changes.</li>
 </ul>
 <h2 id="coxswain">coxswain</h2>
 <ul>
