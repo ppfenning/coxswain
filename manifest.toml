@@ -10,7 +10,7 @@
 # install, part tag and part ref, is a configuration nobody tested.
 
 [coxswain]
-version = "0.21.0"
+version = "0.22.0"
 status  = "beta"
 
 [components]
@@ -28,7 +28,7 @@ graphs     = { repo = "ppfenning/coxswain-graphs",     tag = "v0.21.0", required
     "docs/RUNBOOK-TRUST.md",
     "docs/graphs/*.md",
 ] }
-tools      = { repo = "ppfenning/coxswain-tools",      tag = "v0.21.0", required = true, provides = "cox", docs = ["README.md"] }
+tools      = { repo = "ppfenning/coxswain-tools",      tag = "v0.22.0", required = true, provides = "cox", docs = ["README.md"] }
 crew       = { repo = "ppfenning/coxswain-crew",       tag = "v0.12.0", lockstep = false, flag = "crew", docs = ["README.md"] }
 
 [providers]
