@@ -251,12 +251,14 @@ class _SqlLab:
 
 
 def test_the_chair_probe_selects_where_false_from_every_table_it_reads_and_needs_all():
-    full = _SqlLab({"chair_actions", "chair_ticks", "leases", "runs"})
+    full = _SqlLab({"chair_actions", "leases", "runs"})
     assert bootstrap.chair_tables_readable(full, 1, None) is True
-    assert full.sent[0] == "SELECT ts, kind, initiative, task, status, reason FROM sqlite_scan('/data/runs/cox.db', 'chair_actions') WHERE false"
-    assert full.sent[2] == "SELECT name, holder, host, epoch, heartbeat_at FROM sqlite_scan('/data/runs/cox.db', 'leases') WHERE false"
-    assert bootstrap.chair_tables_readable(_SqlLab({"chair_actions", "leases", "runs"}), 1, None) is False
+    assert full.sent[0] == "SELECT ts, kind, target, status, reason, action_json FROM sqlite_scan('/data/runs/cox.db', 'chair_actions') WHERE false"
+    assert full.sent[1] == "SELECT name, holder, epoch, heartbeat_at FROM sqlite_scan('/data/runs/cox.db', 'leases') WHERE false"
+    assert full.sent[2] == "SELECT host, launched_at, ended_at FROM sqlite_scan('/data/runs/cox.db', 'runs') WHERE false"
+    assert bootstrap.chair_tables_readable(_SqlLab({"chair_actions", "leases"}), 1, None) is False
     assert bootstrap.present_sources(Path("/nonexistent"), True) == frozenset({"chair-store"})
+    assert not any("chair_ticks" in probe for probe in bootstrap.CHAIR_PROBES)
 
 
 def test_the_chair_probe_raises_on_a_401_even_though_the_body_carries_errors():
@@ -268,7 +270,7 @@ def test_the_chair_probe_raises_on_a_401_even_though_the_body_carries_errors():
 def test_the_hosts_probe_selects_where_false_from_the_hosts_table():
     full = _SqlLab({"hosts"})
     assert bootstrap.hosts_table_readable(full, 1, None) is True
-    assert full.sent == ["SELECT host, state, last_login_check_at FROM sqlite_scan('/data/runs/cox.db', 'hosts') WHERE false"]
+    assert full.sent == ["SELECT name, state, capacity, beat_at, versions_json FROM sqlite_scan('/data/runs/cox.db', 'hosts') WHERE false"]
     assert bootstrap.hosts_table_readable(_SqlLab({"chair_actions"}), 1, None) is False
     assert bootstrap.present_sources(Path("/nonexistent"), hosts_table=True) == frozenset({"hosts-table"})
 
@@ -289,19 +291,18 @@ CHAIR_STORE = """
 SET TimeZone = 'UTC';
 CREATE TABLE node_calls AS SELECT * FROM (VALUES ('2026-09-20T10:00:00Z', 3.0)) AS t(ts, cost_usd);
 CREATE TABLE chair_actions AS SELECT * FROM (VALUES
-  ('2026-09-21T09:00:00Z', 3, 'needs_chair', 'i', 'a', 'ok', 'review'),
-  ('2026-09-21T09:00:00Z', 3, 'needs_chair', 'i', 'b', 'ok', 'conflict'),
-  ('2026-09-21T10:00:00Z', 3, 'land', 'i', 'a', 'ok', ''),
-  ('2026-09-21T10:00:00Z', 3, 'land', 'i', 'b', 'failed', 'merge')
-) AS t(ts, epoch, kind, initiative, task, status, reason);
-CREATE TABLE chair_ticks AS SELECT * FROM (VALUES
-  ('2026-09-21T10:00:00Z', 'me', 'box1', 3, 8, 0.4),
-  ('2026-09-21T11:00:00Z', 'me', 'box1', 3, 8, 0.5)
-) AS t(ts, holder, host, epoch, max_in_flight, weekly_fraction);
+  ('2026-09-21T09:00:00Z', 3, 'me@box1:1', 'needs_chair', 'i/a', 'ok', '', '{"initiative":"i","run":"r1","phase":"p1","reason":"review"}'),
+  ('2026-09-21T09:00:00Z', 3, 'me@box1:1', 'needs_chair', 'i/b', 'ok', '', '{"initiative":"i","run":"r1","phase":"p1","reason":"conflict"}'),
+  ('2026-09-21T10:00:00Z', 3, 'me@box1:1', 'land', 'i/a', 'landed', '', '{}'),
+  ('2026-09-21T10:00:00Z', 3, 'me@box1:1', 'land', 'i/b', 'failed', 'merge', '{}')
+) AS t(ts, epoch, holder, kind, target, status, reason, action_json);
 CREATE TABLE leases AS SELECT * FROM (VALUES
-  ('chair', 'me', 'box1', 3, '2026-09-21T11:00:00Z', '2026-09-21T11:05:00Z')
-) AS t(name, holder, host, epoch, heartbeat_at, expires_at);
+  ('chair', 'me@box1:12345', 3, '2026-09-21T11:00:00Z', '2026-09-21T11:05:00Z')
+) AS t(name, holder, epoch, heartbeat_at, expires_at);
 CREATE TABLE runs AS SELECT '' AS host, CAST(now() - INTERVAL 2 HOUR AS VARCHAR) AS launched_at, CAST(NULL AS VARCHAR) AS ended_at;
+CREATE TABLE hosts AS SELECT * FROM (VALUES
+  ('local', 'ssh://local', 8, 'active', '2026-09-21T09:00:00Z', '{}', '2026-09-21T09:00:00Z', 'me')
+) AS t(name, ssh, capacity, state, beat_at, versions_json, updated_at, updated_by);
 """
 
 
@@ -316,43 +317,38 @@ def _chair_rows(name):
 
 def test_the_chair_sql_runs_over_literal_rows_in_duckdb():
     assert _chair_rows("chair_spend_by_day") == [
-        (datetime.date(2026, 9, 20), 3.0, 0, None, None),
-        (datetime.date(2026, 9, 21), 0.0, 1, 0.0, 0.0),
+        (datetime.date(2026, 9, 20), 3.0, 0, None),
     ]
-    assert [(r[0], r[1]) for r in _chair_rows("chair_needs_backlog")] == [("i", "b")]
+    assert [(r[0], r[4]) for r in _chair_rows("chair_needs_backlog")] == [("i/b", "conflict")]
     (status,) = _chair_rows("chair_status")
-    assert status[:3] == ("me", "box1", 3) and status[3] > 0 and status[4] == 0.5
+    assert status[:3] == ("me@box1:12345", "box1", 3) and status[3] > 0
+    assert len(status) == 4
     assert {(r[1], r[3]) for r in _chair_rows("chair_lanes_by_host_hour")} == {("local", 8)}
     assert sorted((r[1], r[2]) for r in _chair_rows("chair_actions_by_hour")) == [("land", 2), ("needs_chair", 2)]
 
 
 def test_the_chair_backlog_flagged_at_is_a_naive_utc_datetime():
-    (row,) = [r for r in _chair_rows("chair_needs_backlog") if r[1] == "b"]
-    assert row[3] == datetime.datetime.fromisoformat("2026-09-21T09:00:00")
-    assert row[3].tzinfo is None
+    (row,) = [r for r in _chair_rows("chair_needs_backlog") if r[0] == "i/b"]
+    assert row[5] == datetime.datetime.fromisoformat("2026-09-21T09:00:00")
+    assert row[5].tzinfo is None
 
 
 FLEET_STORE = """
 SET TimeZone = 'UTC';
 CREATE TABLE hosts AS SELECT * FROM (VALUES
-  ('box1', 'active', '2026-09-21T09:00:00Z'),
-  ('box2', 'quarantined', '2026-09-19T08:00:00Z')
-) AS t(host, state, last_login_check_at);
+  ('box1', 'ssh://box1', 8, 'active', '2026-09-21T09:00:00Z', '{"login_ok": true, "login_checked_at": "2026-09-21T09:00:00Z"}', '2026-09-21T09:00:00Z', 'me'),
+  ('box2', 'ssh://box2', 4, 'quarantined', '2026-09-19T08:00:00Z', '{"login_ok": false, "login_checked_at": "2026-09-19T08:00:00Z"}', '2026-09-19T08:00:00Z', 'me')
+) AS t(name, ssh, capacity, state, beat_at, versions_json, updated_at, updated_by);
 CREATE TABLE chair_actions AS SELECT * FROM (VALUES
-  ('2026-09-21T09:00:00Z', 3, 'needs_chair', 'i', 'a', 'ok', 'review'),
-  ('2026-09-21T09:00:00Z', 3, 'needs_chair', 'i', 'b', 'ok', 'conflict'),
-  ('2026-09-21T10:00:00Z', 3, 'land', 'i', 'a', 'ok', ''),
-  ('2026-09-21T10:00:00Z', 3, 'land', 'i', 'b', 'failed', 'merge')
-) AS t(ts, epoch, kind, initiative, task, status, reason);
-CREATE TABLE chair_ticks AS SELECT ts, holder, host, epoch, max_in_flight, CAST(weekly_fraction AS DOUBLE) AS weekly_fraction FROM (VALUES
-  ('2026-09-14T10:00:00Z', 'me', 'box1', 3, 8, 0.9),
-  ('2026-09-15T10:00:00Z', 'me', 'box1', 3, 8, 0.1),
-  ('2026-09-16T10:00:00Z', 'me', 'box1', 3, 8, 0.3)
-) AS t(ts, holder, host, epoch, max_in_flight, weekly_fraction);
+  ('2026-09-21T09:00:00Z', 3, 'me@box1:1', 'needs_chair', 'i/a', 'ok', '', '{"reason":"review"}'),
+  ('2026-09-21T09:00:00Z', 3, 'me@box1:1', 'needs_chair', 'i/b', 'ok', '', '{"reason":"conflict"}'),
+  ('2026-09-21T10:00:00Z', 3, 'me@box1:1', 'land', 'i/a', 'landed', '', '{}'),
+  ('2026-09-21T10:00:00Z', 3, 'me@box1:1', 'land', 'i/b', 'failed', 'merge', '{}')
+) AS t(ts, epoch, holder, kind, target, status, reason, action_json);
 CREATE TABLE node_calls AS SELECT * FROM (VALUES
   ('2026-09-14T11:00:00Z', 2.0),
   ('2026-09-15T11:00:00Z', 3.0),
-  ('2026-09-16T11:00:00Z', 1.0)
+  ('2026-09-21T11:00:00Z', 1.0)
 ) AS t(ts, cost_usd);
 """
 
@@ -368,15 +364,15 @@ def _fleet_rows(name):
 
 def test_the_fleet_sql_runs_over_literal_rows_in_duckdb():
     assert _fleet_rows("fleet_host_state") == [
-        ("box1", "active", datetime.datetime.fromisoformat("2026-09-21T09:00:00")),
-        ("box2", "quarantined", datetime.datetime.fromisoformat("2026-09-19T08:00:00")),
+        ("box1", "active", 8, datetime.datetime.fromisoformat("2026-09-21T09:00:00"), True, datetime.datetime.fromisoformat("2026-09-21T09:00:00")),
+        ("box2", "quarantined", 4, datetime.datetime.fromisoformat("2026-09-19T08:00:00"), False, datetime.datetime.fromisoformat("2026-09-19T08:00:00")),
     ]
-    assert all(r[2].tzinfo is None for r in _fleet_rows("fleet_host_state"))
+    assert all(r[3].tzinfo is None for r in _fleet_rows("fleet_host_state"))
     assert [(r[0], r[1]) for r in _fleet_rows("fleet_needs_chair_by_cause")] == [("conflict", 1)]
-    assert _fleet_rows("fleet_weekly_spend") == [
-        (datetime.date(2026, 9, 15), 3.0, 3.0, 0.1),
-        (datetime.date(2026, 9, 16), 1.0, 4.0, 0.3),
-    ]
+    weekly = _fleet_rows("fleet_weekly_spend")
+    assert [round(r[1], 2) for r in weekly] == [5.0, 1.0]
+    assert weekly[0][0] == datetime.datetime.fromisoformat("2026-09-14T00:00:00")
+    assert weekly[1][0] == datetime.datetime.fromisoformat("2026-09-21T00:00:00")
     assert not [d for d in SPECS["datasets"] if d["name"] == "fleet_drafts_waiting_approval"]
 
 
@@ -386,6 +382,38 @@ def test_no_fleet_dataset_sql_names_a_log_file_or_a_scan():
     assert sorted(sqls) == sorted(FLEET_DATASETS)
     assert not [n for n, sql in sqls.items() if ".jsonl" in sql or "sqlite_scan" in sql or READS.findall(sql)]
     assert not [n for n, sql in postgres.items() if ".jsonl" in sql or "sqlite_scan" in sql or "store.public." not in sql]
+
+
+def test_no_dataset_sql_names_chair_ticks():
+    assert not [d["name"] for d in SPECS["datasets"] if "chair_ticks" in d["sql"]]
+
+
+def test_every_chair_and_hosts_dataset_runs_against_the_stores_real_columns():
+    """A dataset naming a column the store doesn't have fails to execute against this fixture."""
+    duckdb = pytest.importorskip("duckdb")
+    con = duckdb.connect()
+    con.execute("ATTACH ':memory:' AS store")
+    con.execute("CREATE SCHEMA store.public")
+    con.execute(
+        "CREATE TABLE store.public.chair_actions "
+        "(ts VARCHAR, epoch INTEGER, holder VARCHAR, kind VARCHAR, target VARCHAR, status VARCHAR, reason VARCHAR, action_json VARCHAR)"
+    )
+    con.execute(
+        "CREATE TABLE store.public.hosts "
+        "(name VARCHAR, ssh VARCHAR, capacity INTEGER, state VARCHAR, beat_at VARCHAR, versions_json VARCHAR, updated_at VARCHAR, updated_by VARCHAR)"
+    )
+    con.execute("CREATE TABLE store.public.leases (name VARCHAR, holder VARCHAR, epoch INTEGER, heartbeat_at VARCHAR, expires_at VARCHAR)")
+    con.execute("CREATE TABLE store.public.runs (host VARCHAR, launched_at VARCHAR, ended_at VARCHAR)")
+    # node_calls is not one of the tables the ticket's schema names, but chair_spend_by_day and
+    # fleet_weekly_spend both read it; its shape is unchanged by this task.
+    con.execute("CREATE TABLE store.public.node_calls (ts VARCHAR, cost_usd DOUBLE)")
+    gated = {d["name"]: d["sql"] for d in SPECS["datasets"] if d["requires"] in ("chair-store", "hosts-table")}
+    assert sorted(gated) == sorted({*FLEET_CHAIR_DATASETS, "fleet_host_state"})
+    for sql in gated.values():
+        con.execute(bootstrap.expand_store(sql, "postgresql://u@h/db"))
+    # The probes gate whether those datasets are created, so each must run against the real columns too.
+    for probe in bootstrap.CHAIR_PROBES + bootstrap.HOSTS_PROBES:
+        con.execute(bootstrap.expand_store(probe, "postgresql://u@h/db"))
 
 
 def test_a_later_run_adds_traces_and_updates_the_dashboard():
