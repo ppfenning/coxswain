@@ -18,8 +18,11 @@ check = importlib.util.module_from_spec(_check_spec)
 _check_spec.loader.exec_module(check)
 
 SPECS = bootstrap.load_specs(DEPLOY / "dashboards")
-ALL_SOURCES = frozenset({"sqlite", "parquet-traces", "land-log", "chair-store"})
+ALL_SOURCES = frozenset({"sqlite", "parquet-traces", "land-log", "chair-store", "hosts-table"})
 CHAIR_DATASETS = ["chair_actions_by_hour", "chair_lanes_by_host_hour", "chair_spend_by_day", "chair_needs_backlog", "chair_status"]
+FLEET_DATASETS = ["fleet_host_state", "fleet_needs_chair_by_cause", "fleet_weekly_spend"]
+# fleet_needs_chair_by_cause and fleet_weekly_spend read chair_actions/chair_ticks, so chair-store gates them too.
+FLEET_CHAIR_DATASETS = [*CHAIR_DATASETS, "fleet_needs_chair_by_cause", "fleet_weekly_spend"]
 READS = re.compile(r"\b(?:read_\w+|\w+_scan)\s*\(")
 LITERAL_READS = re.compile(r"\b(?:read_\w+|\w+_scan)\s*\(\s*'([^']*)'")
 
@@ -80,7 +83,7 @@ def test_plan_on_an_empty_server_creates_everything_in_order():
     assert {o.action for o in ops} == {"create"}
     kinds = [o.kind for o in ops]
     assert kinds == sorted(kinds, key=bootstrap.KINDS.index)
-    assert Counter(kinds) == {"database": 1, "dataset": 15, "chart": 17, "dashboard": 1}
+    assert Counter(kinds) == {"database": 1, "dataset": 18, "chart": 17, "dashboard": 1}
 
 
 def test_plan_is_all_unchanged_when_the_server_matches():
@@ -104,18 +107,18 @@ def test_plan_updates_a_dataset_whose_sql_changed_and_only_that_one():
 
 
 def test_plan_skips_traces_and_its_chart_while_no_parquet_exists():
-    ops = bootstrap.plan(SPECS, {}, frozenset({"sqlite", "land-log", "chair-store"}))
+    ops = bootstrap.plan(SPECS, {}, frozenset({"sqlite", "land-log", "chair-store", "hosts-table"}))
     lines = [bootstrap.line(o) for o in ops if o.action == "skipped"]
     assert lines[0] == "skipped: traces (no Parquet traces yet)"
     assert lines[1] == "skipped: Tool uses by name, top 15 (dataset traces skipped)"
     assert len(lines) == 2
     (board,) = [o for o in ops if o.kind == "dashboard"]
     assert "Tool uses by name, top 15" not in json.dumps(board.payload)
-    assert Counter(o.kind for o in ops if o.action == "create") == {"database": 1, "dataset": 14, "chart": 16, "dashboard": 1}
+    assert Counter(o.kind for o in ops if o.action == "create") == {"database": 1, "dataset": 17, "chart": 16, "dashboard": 1}
 
 
 def test_plan_skips_the_land_log_datasets_and_their_charts_while_no_land_log_exists():
-    ops = bootstrap.plan(SPECS, {}, frozenset({"sqlite", "parquet-traces", "chair-store"}))
+    ops = bootstrap.plan(SPECS, {}, frozenset({"sqlite", "parquet-traces", "chair-store", "hosts-table"}))
     assert [bootstrap.line(o) for o in ops if o.action == "skipped"] == [
         "skipped: daily_efficiency (needs land.jsonl and cox.db)",
         "skipped: landed_tasks (needs land.jsonl and cox.db)",
@@ -138,18 +141,18 @@ def test_present_sources_counts_the_land_log_only_beside_a_cox_db(tmp_path):
     assert bootstrap.present_sources(tmp_path) == frozenset({"sqlite", "land-log"})
 
 
-def test_plan_without_chair_store_skips_the_five_chair_datasets_and_keeps_the_others():
+def test_plan_without_chair_store_skips_the_chair_gated_datasets_and_keeps_the_others():
     ops = bootstrap.plan(SPECS, {}, ALL_SOURCES - {"chair-store"})
-    assert [bootstrap.line(o) for o in ops if o.action == "skipped"] == [f"skipped: {n} (no chair tables in the store yet)" for n in CHAIR_DATASETS]
-    assert [o.name for o in ops if o.kind == "dataset" and o.action == "create"] == [d["name"] for d in SPECS["datasets"] if d["name"] not in CHAIR_DATASETS]
-    assert not [c for c in SPECS["charts"] if c["dataset"] in CHAIR_DATASETS]
-    assert Counter(o.kind for o in ops if o.action == "create") == {"database": 1, "dataset": 10, "chart": 17, "dashboard": 1}
+    assert [bootstrap.line(o) for o in ops if o.action == "skipped"] == [f"skipped: {n} (no chair tables in the store yet)" for n in FLEET_CHAIR_DATASETS]
+    assert [o.name for o in ops if o.kind == "dataset" and o.action == "create"] == [d["name"] for d in SPECS["datasets"] if d["name"] not in FLEET_CHAIR_DATASETS]
+    assert not [c for c in SPECS["charts"] if c["dataset"] in FLEET_CHAIR_DATASETS]
+    assert Counter(o.kind for o in ops if o.action == "create") == {"database": 1, "dataset": 11, "chart": 17, "dashboard": 1}
 
 
 def test_a_store_without_chair_store_plans_the_existing_datasets_as_before():
     with_chair = bootstrap.plan(SPECS, {}, ALL_SOURCES)
     without = bootstrap.plan(SPECS, {}, ALL_SOURCES - {"chair-store"})
-    old = [o for o in with_chair if o.name not in CHAIR_DATASETS]
+    old = [o for o in with_chair if o.name not in FLEET_CHAIR_DATASETS]
     assert [o for o in without if o.action != "skipped"] == old
     assert bootstrap.present_sources(Path("/nonexistent")) == frozenset()
 
@@ -189,6 +192,23 @@ def test_the_chair_probe_raises_on_an_error_that_is_not_a_query_error():
     with pytest.raises(urllib.error.HTTPError) as raised:
         bootstrap.chair_tables_readable(_SqlLab(set(), code=401), 1, None)
     assert raised.value.code == 401
+
+
+def test_the_hosts_probe_selects_limit_0_from_the_hosts_table():
+    full = _SqlLab({"hosts"})
+    assert bootstrap.hosts_table_readable(full, 1, None) is True
+    assert full.sent == ["SELECT host, state, last_login_check_at FROM sqlite_scan('/data/runs/cox.db', 'hosts') LIMIT 0"]
+    assert bootstrap.hosts_table_readable(_SqlLab({"chair_actions"}), 1, None) is False
+    assert bootstrap.present_sources(Path("/nonexistent"), hosts_table=True) == frozenset({"hosts-table"})
+
+
+def test_plan_without_hosts_table_skips_fleet_host_state_and_keeps_the_other_new_datasets_unchanged():
+    ops = bootstrap.plan(SPECS, {}, ALL_SOURCES - {"hosts-table"})
+    assert [bootstrap.line(o) for o in ops if o.action == "skipped"] == ["skipped: fleet_host_state (no hosts table in the store yet)"]
+    assert [o.name for o in ops if o.kind == "dataset" and o.action == "create" and o.name in FLEET_DATASETS] == [
+        "fleet_needs_chair_by_cause",
+        "fleet_weekly_spend",
+    ]
 
 
 CHAIR_STORE = """
@@ -238,8 +258,64 @@ def test_the_chair_backlog_flagged_at_is_a_naive_utc_datetime():
     assert row[3].tzinfo is None
 
 
+FLEET_STORE = """
+SET TimeZone = 'UTC';
+CREATE TABLE hosts AS SELECT * FROM (VALUES
+  ('box1', 'active', '2026-09-21T09:00:00Z'),
+  ('box2', 'quarantined', '2026-09-19T08:00:00Z')
+) AS t(host, state, last_login_check_at);
+CREATE TABLE chair_actions AS SELECT * FROM (VALUES
+  ('2026-09-21T09:00:00Z', 3, 'needs_chair', 'i', 'a', 'ok', 'review'),
+  ('2026-09-21T09:00:00Z', 3, 'needs_chair', 'i', 'b', 'ok', 'conflict'),
+  ('2026-09-21T10:00:00Z', 3, 'land', 'i', 'a', 'ok', ''),
+  ('2026-09-21T10:00:00Z', 3, 'land', 'i', 'b', 'failed', 'merge')
+) AS t(ts, epoch, kind, initiative, task, status, reason);
+CREATE TABLE chair_ticks AS SELECT ts, holder, host, epoch, max_in_flight, CAST(weekly_fraction AS DOUBLE) AS weekly_fraction FROM (VALUES
+  ('2026-09-14T10:00:00Z', 'me', 'box1', 3, 8, 0.9),
+  ('2026-09-15T10:00:00Z', 'me', 'box1', 3, 8, 0.1),
+  ('2026-09-16T10:00:00Z', 'me', 'box1', 3, 8, 0.3)
+) AS t(ts, holder, host, epoch, max_in_flight, weekly_fraction);
+CREATE TABLE node_calls AS SELECT * FROM (VALUES
+  ('2026-09-14T11:00:00Z', 2.0),
+  ('2026-09-15T11:00:00Z', 3.0),
+  ('2026-09-16T11:00:00Z', 1.0)
+) AS t(ts, cost_usd);
+"""
+
+
+def _fleet_rows(name):
+    """The dataset's rows over FLEET_STORE, with each placeholder read as a plain table."""
+    duckdb = pytest.importorskip("duckdb")
+    con = duckdb.connect()
+    con.execute(FLEET_STORE)
+    (sql,) = [d["sql"] for d in SPECS["datasets"] if d["name"] == name]
+    return con.execute(bootstrap.STORE_FORM.sub(lambda m: m[1], sql)).fetchall()
+
+
+def test_the_fleet_sql_runs_over_literal_rows_in_duckdb():
+    assert _fleet_rows("fleet_host_state") == [
+        ("box1", "active", datetime.datetime.fromisoformat("2026-09-21T09:00:00")),
+        ("box2", "quarantined", datetime.datetime.fromisoformat("2026-09-19T08:00:00")),
+    ]
+    assert all(r[2].tzinfo is None for r in _fleet_rows("fleet_host_state"))
+    assert [(r[0], r[1]) for r in _fleet_rows("fleet_needs_chair_by_cause")] == [("conflict", 1)]
+    assert _fleet_rows("fleet_weekly_spend") == [
+        (datetime.date(2026, 9, 15), 3.0, 3.0, 0.1),
+        (datetime.date(2026, 9, 16), 1.0, 4.0, 0.3),
+    ]
+    assert not [d for d in SPECS["datasets"] if d["name"] == "fleet_drafts_waiting_approval"]
+
+
+def test_no_fleet_dataset_sql_names_a_log_file_or_a_scan():
+    sqls = {d["name"]: d["sql"] for d in SPECS["datasets"] if d["name"] in FLEET_DATASETS}
+    postgres = {n: bootstrap.expand_store(sql, "postgresql://u@h/db") for n, sql in sqls.items()}
+    assert sorted(sqls) == sorted(FLEET_DATASETS)
+    assert not [n for n, sql in sqls.items() if ".jsonl" in sql or "sqlite_scan" in sql or READS.findall(sql)]
+    assert not [n for n, sql in postgres.items() if ".jsonl" in sql or "sqlite_scan" in sql or "store.public." not in sql]
+
+
 def test_a_later_run_adds_traces_and_updates_the_dashboard():
-    first = bootstrap.plan(SPECS, {}, frozenset({"sqlite", "land-log", "chair-store"}))
+    first = bootstrap.plan(SPECS, {}, frozenset({"sqlite", "land-log", "chair-store", "hosts-table"}))
     ops = bootstrap.plan(SPECS, _server(first), ALL_SOURCES)
     assert [(o.action, o.kind, o.name) for o in ops if o.action != "unchanged"] == [
         ("create", "dataset", "traces"),

@@ -28,6 +28,7 @@ SOURCE_NOTES = {
     "parquet-traces": "no Parquet traces yet",
     "land-log": "needs land.jsonl and cox.db",
     "chair-store": "no chair tables in the store yet",
+    "hosts-table": "no hosts table in the store yet",
 }
 # Every store column the chair datasets read. chair-store is present only when each select runs.
 CHAIR_PROBES = (
@@ -36,6 +37,8 @@ CHAIR_PROBES = (
     "SELECT name, holder, host, epoch, heartbeat_at FROM {{store:leases}} LIMIT 0",
     "SELECT host, launched_at, ended_at FROM {{store:runs}} LIMIT 0",
 )
+# The one store column the fleet host-state dataset reads. hosts-table is present only when it runs.
+HOSTS_PROBES = ("SELECT host, state, last_login_check_at FROM {{store:hosts}} LIMIT 0",)
 # An attached catalog is connected once at connect time, so the store URL never appears in per-dataset SQL as it would with postgres_scan.
 STORE_CATALOG = "store"
 STORE_FORM = re.compile(r"\{\{store:([A-Za-z_][A-Za-z0-9_]*)\}\}")
@@ -287,13 +290,13 @@ def fetch_existing(client: Client, specs: dict[str, Any]) -> tuple[dict[str, dic
     return existing, ids
 
 
-def chair_tables_readable(client: Client, database_id: int, store_url: str | None) -> bool:
-    """True when every CHAIR_PROBES select runs through SQL Lab on the database the datasets use.
+def _probes_readable(client: Client, database_id: int, store_url: str | None, probes: tuple[str, ...]) -> bool:
+    """True when every select in `probes` runs through SQL Lab on the database the datasets use.
 
     Only a query error, 400 or 422 from SQL Lab, means absent. Any other HTTP or network error
     propagates, so a 401, a 500 or SQL Lab turned off stops bootstrap instead of skipping quietly.
     """
-    for probe in CHAIR_PROBES:
+    for probe in probes:
         sql = expand_store(probe, store_url)
         if isinstance(sql, StoreError):
             return False
@@ -308,13 +311,24 @@ def chair_tables_readable(client: Client, database_id: int, store_url: str | Non
     return True
 
 
-def present_sources(runs: Path, chair_store: bool = False) -> frozenset[str]:
+def chair_tables_readable(client: Client, database_id: int, store_url: str | None) -> bool:
+    """True when every CHAIR_PROBES select runs, meaning the chair-store tables are readable."""
+    return _probes_readable(client, database_id, store_url, CHAIR_PROBES)
+
+
+def hosts_table_readable(client: Client, database_id: int, store_url: str | None) -> bool:
+    """True when every HOSTS_PROBES select runs, meaning the hosts table is readable."""
+    return _probes_readable(client, database_id, store_url, HOSTS_PROBES)
+
+
+def present_sources(runs: Path, chair_store: bool = False, hosts_table: bool = False) -> frozenset[str]:
     found = {
         "sqlite": (runs / "cox.db").is_file(),
         "parquet-traces": any(runs.glob("traces/*/*/*/*.parquet")),
         # The land-log datasets also scan cox.db, and `requires` names one source, so land-log needs both files.
         "land-log": (runs / "land.jsonl").is_file() and (runs / "cox.db").is_file(),
         "chair-store": chair_store,
+        "hosts-table": hosts_table,
     }
     return frozenset(name for name, here in found.items() if here)
 
@@ -357,7 +371,8 @@ def main(argv: list[str] | None = None) -> int:
         if database_id is None:
             print("note: chair-store is probed on the next run, once the coxswain database exists", flush=True)
         chair = database_id is not None and chair_tables_readable(client, database_id, args.store_url)
-        ops = plan(specs, existing, present_sources(Path(args.runs), chair), args.store_url)
+        hosts_table = database_id is not None and hosts_table_readable(client, database_id, args.store_url)
+        ops = plan(specs, existing, present_sources(Path(args.runs), chair, hosts_table), args.store_url)
         errors = [op for op in ops if op.action == "error"]
         if errors:
             print("\n".join(line(op) for op in errors), file=sys.stderr)
