@@ -1,5 +1,11 @@
 # A 12-column grid. Each row lists charts by name with a width; widths in a row sum to 12.
-dashboard:
+#
+# `dashboard` stays the single Coxswain dict bootstrap.py's plan() reads (it does
+# `dash = specs["dashboard"]`, then `dash["grid"]`), so this key keeps that exact shape.
+# `dashboards` below lists all three declaratively, with the anchor reusing Coxswain's grid so
+# it is written once. Teaching plan()/apply() to walk `dashboards` and create the Fleet and
+# Chair dashboards on a server is a separate, later change; this file only holds the data.
+dashboard: &coxswain
   name: Coxswain
   grid:
     - - {chart: "Cost per turn by model, by day", width: 6}
@@ -19,3 +25,18 @@ dashboard:
     - - {chart: "Quarantined attempts per day", width: 6}
       - {chart: "Quarantines by cause, last 14 days", width: 6}
     - - {chart: "Tool uses by name, top 15", width: 12}
+
+dashboards:
+  - *coxswain
+  - name: Fleet
+    grid:
+      - - {chart: "Chair holder, epoch and beat age", width: 12}
+      - - {chart: "Lanes per host over time against capacity", width: 6}
+        - {chart: "Host state and last login", width: 6}
+      - - {chart: "Needs-chair items by cause", width: 12}
+      - - {chart: "Weekly spend against the ceiling", width: 12}
+  - name: Chair
+    grid:
+      - - {chart: "Chair actions per hour by kind", width: 12}
+      - - {chart: "Spend per landed task per day", width: 6}
+        - {chart: "Needs-chair backlog", width: 6}
