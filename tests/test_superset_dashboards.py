@@ -1,5 +1,6 @@
 import datetime
 import importlib.util
+import io
 import json
 import re
 import urllib.error
@@ -236,37 +237,38 @@ def test_no_chair_dataset_sql_names_a_log_file_or_a_scan():
 
 
 class _SqlLab:
-    """SQL Lab over a store holding `tables`. A select on any other table answers 400, as a query error does."""
+    """SQL Lab over a store holding `tables`. A select on any other table answers `code` with a query-error body."""
 
     def __init__(self, tables, code=400):
         self.tables, self.code, self.sent = tables, code, []
 
     def call(self, method, path, data=None):
         self.sent.append(data["sql"])
-        if re.search(r"'(\w+)'\) LIMIT 0$", data["sql"])[1] not in self.tables:
-            raise urllib.error.HTTPError(path, self.code, "error", {}, None)
+        if re.search(r"'(\w+)'\) WHERE false$", data["sql"])[1] not in self.tables:
+            body = io.BytesIO(json.dumps({"errors": [{"message": "error"}]}).encode())
+            raise urllib.error.HTTPError(path, self.code, "error", {}, body)
         return {"data": []}
 
 
-def test_the_chair_probe_selects_limit_0_from_every_table_it_reads_and_needs_all():
+def test_the_chair_probe_selects_where_false_from_every_table_it_reads_and_needs_all():
     full = _SqlLab({"chair_actions", "chair_ticks", "leases", "runs"})
     assert bootstrap.chair_tables_readable(full, 1, None) is True
-    assert full.sent[0] == "SELECT ts, kind, initiative, task, status, reason FROM sqlite_scan('/data/runs/cox.db', 'chair_actions') LIMIT 0"
-    assert full.sent[2] == "SELECT name, holder, host, epoch, heartbeat_at FROM sqlite_scan('/data/runs/cox.db', 'leases') LIMIT 0"
+    assert full.sent[0] == "SELECT ts, kind, initiative, task, status, reason FROM sqlite_scan('/data/runs/cox.db', 'chair_actions') WHERE false"
+    assert full.sent[2] == "SELECT name, holder, host, epoch, heartbeat_at FROM sqlite_scan('/data/runs/cox.db', 'leases') WHERE false"
     assert bootstrap.chair_tables_readable(_SqlLab({"chair_actions", "leases", "runs"}), 1, None) is False
     assert bootstrap.present_sources(Path("/nonexistent"), True) == frozenset({"chair-store"})
 
 
-def test_the_chair_probe_raises_on_an_error_that_is_not_a_query_error():
+def test_the_chair_probe_raises_on_a_401_even_though_the_body_carries_errors():
     with pytest.raises(urllib.error.HTTPError) as raised:
         bootstrap.chair_tables_readable(_SqlLab(set(), code=401), 1, None)
     assert raised.value.code == 401
 
 
-def test_the_hosts_probe_selects_limit_0_from_the_hosts_table():
+def test_the_hosts_probe_selects_where_false_from_the_hosts_table():
     full = _SqlLab({"hosts"})
     assert bootstrap.hosts_table_readable(full, 1, None) is True
-    assert full.sent == ["SELECT host, state, last_login_check_at FROM sqlite_scan('/data/runs/cox.db', 'hosts') LIMIT 0"]
+    assert full.sent == ["SELECT host, state, last_login_check_at FROM sqlite_scan('/data/runs/cox.db', 'hosts') WHERE false"]
     assert bootstrap.hosts_table_readable(_SqlLab({"chair_actions"}), 1, None) is False
     assert bootstrap.present_sources(Path("/nonexistent"), hosts_table=True) == frozenset({"hosts-table"})
 

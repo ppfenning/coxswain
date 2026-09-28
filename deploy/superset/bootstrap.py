@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import http.cookiejar
+import io
 import json
 import os
 import re
@@ -32,13 +33,13 @@ SOURCE_NOTES = {
 }
 # Every store column the chair datasets read. chair-store is present only when each select runs.
 CHAIR_PROBES = (
-    "SELECT ts, kind, initiative, task, status, reason FROM {{store:chair_actions}} LIMIT 0",
-    "SELECT ts, max_in_flight, weekly_fraction FROM {{store:chair_ticks}} LIMIT 0",
-    "SELECT name, holder, host, epoch, heartbeat_at FROM {{store:leases}} LIMIT 0",
-    "SELECT host, launched_at, ended_at FROM {{store:runs}} LIMIT 0",
+    "SELECT ts, kind, initiative, task, status, reason FROM {{store:chair_actions}} WHERE false",
+    "SELECT ts, max_in_flight, weekly_fraction FROM {{store:chair_ticks}} WHERE false",
+    "SELECT name, holder, host, epoch, heartbeat_at FROM {{store:leases}} WHERE false",
+    "SELECT host, launched_at, ended_at FROM {{store:runs}} WHERE false",
 )
 # The one store column the fleet host-state dataset reads. hosts-table is present only when it runs.
-HOSTS_PROBES = ("SELECT host, state, last_login_check_at FROM {{store:hosts}} LIMIT 0",)
+HOSTS_PROBES = ("SELECT host, state, last_login_check_at FROM {{store:hosts}} WHERE false",)
 # An attached catalog is connected once at connect time, so the store URL never appears in per-dataset SQL as it would with postgres_scan.
 STORE_CATALOG = "store"
 STORE_FORM = re.compile(r"\{\{store:([A-Za-z_][A-Za-z0-9_]*)\}\}")
@@ -294,11 +295,22 @@ def fetch_existing(client: Client, specs: dict[str, Any]) -> tuple[dict[str, dic
     return existing, ids
 
 
+def query_error(body: bytes) -> bool:
+    """True when a SQL Lab body is a JSON object carrying `errors`. An unparseable body is not a query error."""
+    try:
+        answer = json.loads(body)
+    except ValueError:
+        return False
+    return isinstance(answer, dict) and bool(answer.get("errors"))
+
+
 def _probes_readable(client: Client, database_id: int, store_url: str | None, probes: tuple[str, ...]) -> bool:
     """True when every select in `probes` runs through SQL Lab on the database the datasets use.
 
-    Only a query error, 400 or 422 from SQL Lab, means absent. Any other HTTP or network error
-    propagates, so a 401, a 500 or SQL Lab turned off stops bootstrap instead of skipping quietly.
+    A SQL Lab answer whose JSON body carries an `errors` key means absent, whatever HTTP status
+    it arrived on (200, 400, 422 or 500 alike), the same as a missing table or column would read.
+    A 401 or 403, any other error status without an `errors` body, or a network error the HTTP
+    call itself raises, propagates and stops bootstrap with the server's body still readable.
     """
     for probe in probes:
         sql = expand_store(probe, store_url)
@@ -307,9 +319,13 @@ def _probes_readable(client: Client, database_id: int, store_url: str | None, pr
         try:
             answer = client.call("POST", "/api/v1/sqllab/execute/", {"database_id": database_id, "sql": sql, "runAsync": False, "queryLimit": 1})
         except urllib.error.HTTPError as e:
-            if e.code in (400, 422):
-                return False
-            raise
+            if e.code in (401, 403):
+                raise
+            body = e.read()
+            if not query_error(body):
+                # The body stream is spent now, so re-raise with it restored for main's message.
+                raise urllib.error.HTTPError(e.filename, e.code, e.msg, e.hdrs, io.BytesIO(body)) from e
+            return False
         if answer.get("errors") or answer.get("error"):
             return False
     return True
