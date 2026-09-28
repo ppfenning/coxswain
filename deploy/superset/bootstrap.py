@@ -32,14 +32,14 @@ SOURCE_NOTES = {
     "hosts-table": "no hosts table in the store yet",
 }
 # Every store column the chair datasets read. chair-store is present only when each select runs.
+# There is no chair_ticks table and nothing writes one, so no probe reads it.
 CHAIR_PROBES = (
-    "SELECT ts, kind, initiative, task, status, reason FROM {{store:chair_actions}} WHERE false",
-    "SELECT ts, max_in_flight, weekly_fraction FROM {{store:chair_ticks}} WHERE false",
-    "SELECT name, holder, host, epoch, heartbeat_at FROM {{store:leases}} WHERE false",
+    "SELECT ts, kind, target, status, reason, action_json FROM {{store:chair_actions}} WHERE false",
+    "SELECT name, holder, epoch, heartbeat_at FROM {{store:leases}} WHERE false",
     "SELECT host, launched_at, ended_at FROM {{store:runs}} WHERE false",
 )
-# The one store column the fleet host-state dataset reads. hosts-table is present only when it runs.
-HOSTS_PROBES = ("SELECT host, state, last_login_check_at FROM {{store:hosts}} WHERE false",)
+# The store columns the fleet host-state dataset reads. hosts-table is present only when it runs.
+HOSTS_PROBES = ("SELECT name, state, capacity, beat_at, versions_json FROM {{store:hosts}} WHERE false",)
 # An attached catalog is connected once at connect time, so the store URL never appears in per-dataset SQL as it would with postgres_scan.
 STORE_CATALOG = "store"
 STORE_FORM = re.compile(r"\{\{store:([A-Za-z_][A-Za-z0-9_]*)\}\}")

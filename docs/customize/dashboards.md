@@ -174,9 +174,6 @@ r AS (
          COALESCE(NULLIF(host, ''), 'local') AS host
   FROM {{store:runs}}
 ),
-ticks AS (
-  SELECT CAST(ts AS TIMESTAMP) AS ts, max_in_flight FROM {{store:chair_ticks}}
-),
 busy AS (
   SELECT hours.hour_start, r.host, COUNT(*) AS lanes
   FROM hours
@@ -184,16 +181,18 @@ busy AS (
         AND COALESCE(r.ended_at, CAST(now() AT TIME ZONE 'UTC' AS TIMESTAMP)) >= hours.hour_start
   GROUP BY ALL
 )
-SELECT busy.hour_start AS hour, busy.host, busy.lanes,
-       (SELECT t.max_in_flight FROM ticks AS t WHERE t.ts <= busy.hour_start ORDER BY t.ts DESC LIMIT 1) AS max_in_flight
+SELECT busy.hour_start AS hour, busy.host, busy.lanes, hosts.capacity
 FROM busy
+LEFT JOIN {{store:hosts}} AS hosts ON hosts.name = busy.host
 ORDER BY hour, host
 ```
 
 `fleet_host_state` feeds **Host state and last login**:
 
 ```sql
-SELECT host, state, CAST(last_login_check_at AS TIMESTAMP) AS last_login_check_at
+SELECT name, state, capacity, CAST(beat_at AS TIMESTAMP) AS beat_at,
+       CAST(json_extract(versions_json, '$.login_ok') AS BOOLEAN) AS login_ok,
+       CAST(json_extract_string(versions_json, '$.login_checked_at') AS TIMESTAMP) AS login_checked_at
 FROM {{store:hosts}}
 ```
 
@@ -201,20 +200,20 @@ FROM {{store:hosts}}
 
 ```sql
 WITH flagged AS (
-  SELECT initiative, task, reason, CAST(ts AS TIMESTAMP) AS flagged_at,
-         ROW_NUMBER() OVER (PARTITION BY initiative, task ORDER BY CAST(ts AS TIMESTAMP) DESC) AS rn
+  SELECT target, json_extract_string(action_json, '$.reason') AS reason, CAST(ts AS TIMESTAMP) AS flagged_at,
+         ROW_NUMBER() OVER (PARTITION BY target ORDER BY CAST(ts AS TIMESTAMP) DESC) AS rn
   FROM {{store:chair_actions}} WHERE kind = 'needs_chair'
 ),
 landed AS (
-  SELECT initiative, task, CAST(ts AS TIMESTAMP) AS landed_at
-  FROM {{store:chair_actions}} WHERE kind = 'land' AND status = 'ok'
+  SELECT target, CAST(ts AS TIMESTAMP) AS landed_at
+  FROM {{store:chair_actions}} WHERE kind IN ('land', 'land_phase') AND status = 'landed'
 ),
 waiting AS (
   SELECT f.reason, f.flagged_at
   FROM flagged AS f
   WHERE f.rn = 1
     AND NOT EXISTS (
-      SELECT 1 FROM landed AS l WHERE l.initiative = f.initiative AND l.task = f.task AND l.landed_at > f.flagged_at
+      SELECT 1 FROM landed AS l WHERE l.target = f.target AND l.landed_at > f.flagged_at
     )
 )
 SELECT reason AS cause, COUNT(*) AS items,
@@ -226,36 +225,11 @@ GROUP BY reason
 `fleet_weekly_spend` feeds **Weekly spend against the ceiling**:
 
 ```sql
-WITH ticks AS (
-  SELECT CAST(ts AS TIMESTAMP) AS ts, weekly_fraction,
-         LAG(weekly_fraction) OVER (ORDER BY CAST(ts AS TIMESTAMP)) AS prior_fraction
-  FROM {{store:chair_ticks}}
-),
-reset_at AS (
-  SELECT COALESCE(
-    MAX(CASE WHEN prior_fraction IS NOT NULL AND weekly_fraction < prior_fraction THEN ts END),
-    MIN(ts)
-  ) AS reset_ts
-  FROM ticks
-),
-cost AS (
-  SELECT CAST(CAST(ts AS TIMESTAMP) AS DATE) AS day, SUM(cost_usd) AS cost_usd
-  FROM {{store:node_calls}} GROUP BY 1
-),
-tick_days AS (
-  SELECT DISTINCT CAST(ts AS DATE) AS day FROM ticks
-),
-days AS (
-  SELECT day FROM cost WHERE day >= (SELECT CAST(reset_ts AS DATE) FROM reset_at)
-  UNION
-  SELECT day FROM tick_days WHERE day >= (SELECT CAST(reset_ts AS DATE) FROM reset_at)
-)
-SELECT days.day, COALESCE(cost.cost_usd, 0.0) AS cost_usd,
-       SUM(COALESCE(cost.cost_usd, 0.0)) OVER (ORDER BY days.day) AS cumulative_cost_usd,
-       (SELECT t.weekly_fraction FROM ticks AS t WHERE CAST(t.ts AS DATE) <= days.day ORDER BY t.ts DESC LIMIT 1) AS weekly_fraction
-FROM days
-LEFT JOIN cost ON cost.day = days.day
-ORDER BY days.day
+SELECT date_trunc('week', CAST(ts AS TIMESTAMP)) AS week, SUM(cost_usd) AS cost_usd
+FROM {{store:node_calls}}
+WHERE CAST(ts AS TIMESTAMP) >= date_trunc('week', CAST(now() AT TIME ZONE 'UTC' AS TIMESTAMP)) - INTERVAL 12 WEEK
+GROUP BY 1
+ORDER BY 1
 ```
 
 The fifth panel, **Chair holder, epoch and beat age**, reads the
