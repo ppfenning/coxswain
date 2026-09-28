@@ -1660,6 +1660,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#archive-your-logs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Archive your logs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#where-it-lives" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2919,6 +2930,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#archive-your-logs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Archive your logs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#where-it-lives" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2998,26 +3020,52 @@ it fresh, and query it with SQL. It assumes you have never used Iceberg.</p>
 <p>The extra brings pyiceberg with a SQL catalog, and duckdb.</p>
 <h2 id="sync-your-runs">Sync your runs</h2>
 <p><code>cox lake sync</code> appends the rows of each ended run to Iceberg tables. The
-tables are runs, phases, node_calls, gate_decisions, and ledger.</p>
+tables are runs, phases, node_calls, gate_decisions, ledger, and traces.</p>
 <ul>
 <li><strong>Once.</strong> Each table has its own mark, so a run is appended once.</li>
 <li><strong>In place.</strong> The Parquet trace files are registered where they sit.
   Nothing is copied.</li>
 <li><strong>Dry run.</strong> <code>--dry-run</code> writes nothing.</li>
+<li><strong>Housekeeping.</strong> The chair loop's housekeeping runs <code>cox lake sync</code> and
+  a trace prune, both at the same <code>log_retention_days</code> age.</li>
+</ul>
+<h2 id="archive-your-logs">Archive your logs</h2>
+<p>Each ended run also leaves a <code>&lt;run&gt;.log</code> and a <code>&lt;run&gt;.calls.jsonl</code>. <code>cox
+lake sync</code> archives the ones older than <code>log_retention_days</code> days, a
+routing-profile key that defaults to 7; a missing, invalid, or
+non-positive value falls back to 7 too.</p>
+<ul>
+<li><strong>Where they go.</strong> Archived logs land at <code>logs/&lt;yyyy&gt;/&lt;mm&gt;/&lt;file&gt;.gz</code>,
+  beside the traces root: a traces root ending in <code>/traces</code> becomes
+  <code>/logs</code>, so <code>s3://coxswain/traces</code> becomes <code>s3://coxswain/logs</code>. The
+  year and month come from the file's last write, in UTC.</li>
+<li><strong>Verified before deleted.</strong> The local file is deleted only after the
+  archived copy reads back identical. A failed archive keeps the local
+  file and is reported.</li>
+<li><strong>Reporting.</strong> <code>cox lake sync</code> prints a logs line only when some logs
+  were due. <code>--dry-run</code> reports what would be synced and writes nothing;
+  <code>--json</code> prints the report as JSON.</li>
+<li><strong>Kept indefinitely.</strong> The lake tables (runs, phases, node_calls,
+  gate_decisions, ledger, traces) and the archived logs are kept
+  indefinitely.</li>
 </ul>
 <h2 id="where-it-lives">Where it lives</h2>
 <p>Two values in your provider profile say where the lake is.</p>
 <ul>
-<li><strong><code>lake_catalog_url</code>.</strong> The catalog. It defaults to
-  <code>runs/lake-catalog.db</code>.</li>
-<li><strong><code>lake_url</code>.</strong> The warehouse. It defaults to <code>runs/lake/</code>.</li>
+<li><strong><code>lake_url</code>.</strong> The warehouse, e.g. <code>s3://coxswain/lake</code>.</li>
+<li><strong><code>lake_catalog_url</code>.</strong> The Iceberg catalog. Any SQLAlchemy URL works,
+  e.g. <code>postgresql+psycopg://user@host:5432/db</code>, which lets every machine
+  that reaches the database find the tables.</li>
 </ul>
+<p>With neither set, both default to files under the runs directory:
+<code>lake-catalog.db</code> and <code>lake/</code>.</p>
 <h2 id="query-it">Query it</h2>
 <p><code>cox lake query "&lt;sql&gt;"</code> runs read-only DuckDB SQL over the lake tables.
 Add <code>--json</code> to get the result as JSON.</p>
 <h2 id="check-it">Check it</h2>
-<p><code>cox lake doctor</code> checks the catalog, the warehouse, and each table. It
-creates nothing.</p>
+<p><code>cox lake doctor</code> checks the object store, the catalog, the namespace,
+the warehouse, and each table, and exits 1 on a failed check. It creates
+nothing.</p>
 <h2 id="keep-it-fresh">Keep it fresh</h2>
 <p>After the first sync, <code>cox runs land</code> syncs after each land.</p>
 
