@@ -12,11 +12,17 @@ x-superset-base: &superset-base
     SUPERSET_ADMIN_LASTNAME: ${SUPERSET_ADMIN_LASTNAME:?set SUPERSET_ADMIN_LASTNAME in .env}
     # Optional: empty means Superset reads cox.db.
     COXSWAIN_STORE_URL: ${COXSWAIN_STORE_URL:-}
+    # Optional: empty skips loading the Garage-backed Iceberg lake entirely.
+    COXSWAIN_S3_ENDPOINT: ${COXSWAIN_S3_ENDPOINT:-}
+    # Optional: paired with COXSWAIN_S3_ENDPOINT above.
+    COXSWAIN_S3_KEY_ID: ${COXSWAIN_S3_KEY_ID:-}
+    # Optional: paired with COXSWAIN_S3_ENDPOINT above.
+    COXSWAIN_S3_SECRET: ${COXSWAIN_S3_SECRET:-}
+    # Optional: defaults to "garage" in code when left empty.
+    COXSWAIN_S3_REGION: ${COXSWAIN_S3_REGION:-}
   volumes:
     - ./superset_config.py:/app/pythonpath/superset_config.py:ro
     - superset_meta:/var/lib/superset
-    # Read-only: Superset can query the runs, never change them.
-    - ${COXSWAIN_RUNS_DIR:?set COXSWAIN_RUNS_DIR in .env}:/data/runs:ro
 
 services:
   superset-init:
@@ -68,10 +74,9 @@ services:
     depends_on:
       superset:
         condition: service_healthy
-    # A merge key replaces a list, so the base mounts are not inherited. This needs only the runs dir,
-    # to see which sources exist, and the script and specs.
+    # A merge key replaces a list, so the base mounts are not inherited. This needs only the script and specs;
+    # bootstrap.py reads store and lake sources through Superset's own connection, not local files.
     volumes:
-      - ${COXSWAIN_RUNS_DIR:?set COXSWAIN_RUNS_DIR in .env}:/data/runs:ro
       - ./bootstrap.py:/app/bootstrap/bootstrap.py:ro
       - ./dashboards:/app/bootstrap/dashboards:ro
     command: ["python", "/app/bootstrap/bootstrap.py", "--specs", "/app/bootstrap/dashboards", "--url", "http://superset:8088"]
