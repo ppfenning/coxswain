@@ -11,10 +11,10 @@
       
       
       
-        <link rel="prev" href="../0.23.0/">
+        <link rel="prev" href="../">
       
       
-        <link rel="next" href="../0.21.0/">
+        <link rel="next" href="../0.22.0/">
       
       
         
@@ -25,7 +25,7 @@
     
     
       
-        <title>0.22.0 - Coxswain</title>
+        <title>0.23.0 - Coxswain</title>
       
     
     
@@ -80,7 +80,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#0220" class="md-skip">
+        <a href="#0230" class="md-skip">
           Skip to content
         </a>
       
@@ -131,7 +131,7 @@ Coxswain is in beta — versions may change between releases
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              0.22.0
+              0.23.0
             
           </span>
         </div>
@@ -2054,34 +2054,6 @@ Coxswain is in beta — versions may change between releases
                 
   
   
-  
-  
-    <li class="md-nav__item">
-      <a href="../0.23.0/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    0.23.0
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
     
   
   
@@ -2101,7 +2073,7 @@ Coxswain is in beta — versions may change between releases
   <span class="md-ellipsis">
     
   
-    0.22.0
+    0.23.0
   
 
     
@@ -2119,7 +2091,7 @@ Coxswain is in beta — versions may change between releases
   <span class="md-ellipsis">
     
   
-    0.22.0
+    0.23.0
   
 
     
@@ -2156,6 +2128,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#coxswain-graphs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        coxswain-graphs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#coxswain" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2181,6 +2164,34 @@ Coxswain is in beta — versions may change between releases
   
 </nav>
       
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../0.22.0/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0.22.0
+  
+
+    
+  </span>
+  
+  
+
+      </a>
     </li>
   
 
@@ -2847,6 +2858,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#coxswain-graphs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        coxswain-graphs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#coxswain" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2883,10 +2905,10 @@ Coxswain is in beta — versions may change between releases
                 
 <nav class="cox-page-nav" aria-label="Page navigation">
   
-  <a class="cox-page-nav__prev" href="../0.23.0/">← 0.23.0</a>
+  <a class="cox-page-nav__prev" href="../">← Releases</a>
   
   
-  <a class="cox-page-nav__next" href="../0.21.0/">0.21.0 →</a>
+  <a class="cox-page-nav__next" href="../0.22.0/">0.22.0 →</a>
   
 </nav>
 
@@ -2894,67 +2916,73 @@ Coxswain is in beta — versions may change between releases
 
 
 
-<h1 id="0220">0.22.0</h1>
-<p>Cut on 2026-09-27. <code>coxswain-tools</code> is tagged <code>v0.22.0</code>. <code>coxswain-cartridges</code> and <code>coxswain-graphs</code> had no changes
-and stay pinned at <code>v0.21.0</code>; <code>coxswain-crew</code> stays pinned at <code>v0.12.0</code>. <code>coxswain-tools</code> is published to PyPI from its tag. Status: <strong>beta</strong>.
-This release makes the chair loop steady on its own, and it carries three headlines.</p>
-<p><strong>The loop lands what it can and waits for what it must.</strong> A phase counts as complete when every task in it is done,
-approved or dropped, so a phase with several approved tasks lands instead of waiting on itself. The loop relaunches an
-initiative only after its last run has an exit record, removes the previous run's phase worktrees before a relaunch,
-and treats a branch clear that finds nothing as done. Dropped work and missing repositories are skipped in the
-stranded listing. The loop's own lands and launches never claim the chair lease, and a land into a repository another
-land holds refuses instead of racing it.</p>
-<p><strong>Fewer hand merges.</strong> Tickets in one phase that share a file are merged into one ticket before lint and launch. When
-two tasks' changes only add lines at the same spot, the land keeps both sides and lets its checks decide.</p>
-<p><strong>Spend counted by the meter's own week.</strong> <code>spend.weekly_reset</code> (for example <code>"Sun 04:00 America/New_York"</code>) anchors
-the weekly window at the meter's reset instead of a rolling seven days. The loop, the launch gate, <code>route context</code> and
-<code>usage assess</code> all count the same week, and the status line shows where the week began.</p>
-<p><strong>Upgrading from 0.21.0.</strong> Nothing to change on one machine. To count the week the way the meter does, add
-<code>weekly_reset</code> under <code>spend:</code> in the profile. A fleet can give each lane host its own capacity with
-<code>cox host add &lt;name&gt; --ssh &lt;dest&gt; --capacity &lt;n&gt;</code>; the local cap stays the team cartridge's
-<code>policy.dispatch.max_in_flight</code>, and it applies per machine.</p>
+<h1 id="0230">0.23.0</h1>
+<p>Cut on 2026-09-28. <code>coxswain-graphs</code> and <code>coxswain-tools</code> are tagged <code>v0.23.0</code>. <code>coxswain-cartridges</code> had no changes
+and stays pinned at <code>v0.21.0</code>; <code>coxswain-crew</code> stays pinned at <code>v0.12.0</code>. <code>coxswain-tools</code> is published to PyPI from
+its tag. Status: <strong>beta</strong>. This release lets the fleet run itself, and it carries four headlines.</p>
+<p><strong>The store is the board.</strong> Work items live in the store (graphs <code>harness.store_queue</code>, migration 0009), intake
+states agree between the ticket files and the store, and <code>cox route drift</code> compares intake rows as well as tasks. A
+machine whose profile names a shared Postgres <code>storage_url</code> now reads its board from the store when the store answers,
+and says <code>work state: files (store unreachable)</code> when it does not; a local SQLite store keeps the ticket files, so
+local-first stays the default.</p>
+<p><strong>A lane host can come and go.</strong> A lane whose host has gone quiet and whose own lease heartbeat has stopped is
+marked lost and relaunched elsewhere; hosts can be drained, and placement weighs hosts and their capabilities. The
+loop checks each lane host's Claude login every 30 minutes over ssh, records it with the host's beat, and gives a
+host with a lapsed login no new lanes. A remote run's approvals reach the chair's ticket files when it is fetched,
+and so do its phase branches.</p>
+<p><strong>The chair is resident and has a console.</strong> <code>cox chair service --install --host &lt;name&gt;</code> prints or runs the steps
+that put the chair loop on a lane host as a user service, and <code>--status --host</code> reports it. <code>cox console</code> is one
+terminal screen of drafts, hosts, lanes, the chair and needs-chair items, whose keys run <code>cox</code> commands after a y/n.
+Stale work becomes a draft for a person to approve or decline.</p>
+<p><strong>One merge to main per phase.</strong> The loop lands a completed phase as one squash of its branch onto a fresh main,
+from its own <code>pr/</code> branch, and marks every task in it done; a partial phase's branch is carried forward on relaunch
+with main merged into it, and an approved task of a partial phase waits for its phase instead of landing alone.</p>
+<p><strong>Upgrading from 0.22.0.</strong> Run the graphs migration (0009) against the store. A lane host needs the tools' <code>postgres</code>
+extra. To make a machine a resident chair, run <code>cox chair service --install --host &lt;name&gt;</code>, then the two steps it
+prints for a person (<code>loginctl enable-linger</code> and <code>systemctl --user enable --now</code>).</p>
 <h2 id="coxswain-tools">coxswain-tools</h2>
 <ul>
-<li>A phase is complete when every task in it is done, approved or dropped, so approved siblings land (tools cc600e8).
-  The stranded listing uses the land's own approval rule, so unanimous approval counts (tools 83591df).</li>
-<li>The loop relaunches only after an exit record, sends a land that refuses to the chair with its cause, and prunes
-  the previous run's worktrees before a relaunch (tools #972, #983, #1026). The run-exit reader is wired into the loop's
-  facts (tools 3c1a69a), and a branch clear with nothing to delete is done (tools aae95b7).</li>
-<li>Stranded means approved and still live: dropped items and missing repositories are skipped and reported once
-  (tools #966, #977). The stranded rule skips a task whose phase branch is being carried forward, the first piece
-  of one merge to main per phase, which ships whole in 0.23 (tools #1038).</li>
-<li>The loop's lands and launches pass <code>--no-claim</code>, so a land it starts never takes the chair lease (tools 7e1e6a1,
-  e026358).</li>
-<li>One land per repository at a time: a store lease around every land, a busy land is a skip for the loop, and each
-  land's worktree carries its process id (tools #1033, #1041, #1043, #1054).</li>
-<li>Same-phase tickets that share a file are merged before lint and launch (tools #996, #1013, #1015).</li>
-<li>The land resolves add/add cherry-pick conflicts and lets the checks decide (tools #987, #1024).</li>
-<li>One lake sync at a time, through a store lease around every sync (tools #989, #1007).</li>
-<li>The weekly spend window is anchored at <code>spend.weekly_reset</code>, and the profile's spend block accepts it (tools #999,
-  #1009, #1019, #1021, 64d8b7c).</li>
-<li>The loop's facts carry remote-unfetched runs and housekeeping history, the tick passes its clock to the planner,
-  and a guard test fails if any fact is left unwired (tools #1028, #1030, #1036).</li>
-<li>Loop housekeeping: lake sync, trace prune and run clean on a period, recorded as chair actions (tools #960, #962,
-  #964).</li>
-<li>Stale work becomes a draft for a person to approve or decline: the stale rule, its types and the draft rewrite
-  (tools #1045, #1047, #1049).</li>
-<li>Work items in the store, groundwork for the queue of record: the docket, quarantined and stranded readers, the
-  launch claim, facts from the store, <code>cox route import</code> and the export (tools #968, #970, #975, #993, #995, #1011);
-  <code>route import</code> prints the store's refusal when a write fails (tools #1052).
-  These call <code>harness.store_queue</code>, which the harness does not provide yet; until it does, the queue reads as unavailable and
-  the loop reads the work-item files, as before.</li>
-<li>Reverted: land checks with a private <code>TMPDIR</code> and pytest <code>--basetemp</code> (tools #985, reverted in 18705d1). Exporting
-  <code>--basetemp</code> breaks tests that start a nested pytest, and the failures it targeted came from two lands of one task
-  sharing a worktree.</li>
+<li>Lost lanes: the contract, the drained display, marking a run lost, the recovery rule and the signal reader
+  (tools #1061, #1063, #1065, #1067, #1069); placement facts and weighted, capability-aware fill (tools #1090, #1092).
+  A lane counts as lost only when its own lease heartbeat is quiet too (tools 95616b6).</li>
+<li>Login watchdog: types, the watch rule, the executor, the facts and the plan (tools #1097, #1099, #1101, #1103,
+  #1105); the loop reads the hosts table for it and the ssh check times out after 60 seconds (tools 249cca8).</li>
+<li>One merge to main per phase: the carry rule, no lone lands for a partial phase, the land_phase action and its
+  executor, the stranded wiring and the carry merge (tools #1078, #1080, #1082, #1109, #1113, #1115). Phase lands
+  accept approved tasks, squash the phase onto a fresh main from a <code>pr/</code> branch, close each task's work item, and a
+  remote fetch brings back phase branches (tools #1140, #1142, #1150, #1152). The planner switch (tools #1117) was
+  reverted until a phase land could merge (tools 168c789) and then re-applied (tools #1154); the first phase land
+  under it is tools #1156.</li>
+<li>Stale work becomes a draft: the executor, the planner, the signal reader and the facts (tools #1074, #1084, #1086,
+  #1095); a ticket with no commit reads its file's modification time, so a fresh ticket is never stale (tools
+  91a4010); a stale draft names <code>proposed_by</code> and <code>proposed_at</code> (tools 5e736a7).</li>
+<li>The store as queue: <code>cox route file</code> writes the store first (tools #1088); intake states agree, and drift and
+  import compare intake rows (tools #1136, #1146, #1148); the work-state default reads a shared Postgres store
+  (tools #1156).</li>
+<li><code>cox console</code> (tools #1121, #1125, #1127), with drafts, one needs-chair line per item and host login shown (tools
+  21a6b57).</li>
+<li>Resident chair: the install steps, <code>--install --host</code> and <code>--status --host</code> (tools #1130, #1138, #1144).</li>
+<li>Remote runs: every unfetched remote run is found, not only the newest, and a run with no directory is fetched once
+  (tools #1132, #1134); a fetched run's approvals reach the ticket files (tools 936aa2e).</li>
+<li>The loop: it takes its lease under its own host (tools 6abe8d1), recovery launches stop at the machine's free lanes
+  (tools 2d26c92), and a loop tick under a takeover still moves the record heartbeat (tools #1123).</li>
+</ul>
+<h2 id="coxswain-graphs">coxswain-graphs</h2>
+<ul>
+<li><code>harness.store_queue</code>: migration 0009 adds the work-item queue columns, and the queue verbs read, upsert, claim and
+  release rows (graphs #594, #596); an upsert without a stamp gets the write time and <code>store_queue</code> as author (graphs
+  980225b).</li>
 </ul>
 <h2 id="coxswain">coxswain</h2>
 <ul>
-<li>The release check walks <code>cox --help</code> with colour off, so Python 3.14's coloured help never reads as drift
-  (coxswain #165).</li>
+<li>Fleet and Chair dashboards: the fleet datasets, the charts and dashboards, the installer creating every listed
+  dashboard, and their docs (coxswain #172, #175, #179, #181).</li>
+<li>The release branches the tap PR from the fetched remote default, not the local tap checkout (coxswain #177).</li>
+<li>The 0.22.0 notes name the real pins (coxswain 7a3e274).</li>
 </ul>
 <h2 id="components">Components</h2>
-<p><code>coxswain-tools</code> carries nearly every change and the umbrella carries the release-check fix. <code>coxswain-graphs</code>,
-<code>coxswain-cartridges</code> and <code>coxswain-crew</code> are unchanged.</p>
+<p><code>coxswain-tools</code> carries most of the release, <code>coxswain-graphs</code> the store queue, and the umbrella the dashboards and
+the release fix. <code>coxswain-cartridges</code> and <code>coxswain-crew</code> are unchanged.</p>
 
 
 
@@ -2985,7 +3013,7 @@ the weekly window at the meter's reset instead of a rolling seven days. The loop
       <nav class="md-footer__inner md-grid" aria-label="Footer" >
         
           
-          <a href="../0.23.0/" class="md-footer__link md-footer__link--prev" aria-label="Previous: 0.23.0">
+          <a href="../" class="md-footer__link md-footer__link--prev" aria-label="Previous: Releases">
             <div class="md-footer__button md-icon">
               
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
@@ -2995,20 +3023,20 @@ the weekly window at the meter's reset instead of a rolling seven days. The loop
                 Previous
               </span>
               <div class="md-ellipsis">
-                0.23.0
+                Releases
               </div>
             </div>
           </a>
         
         
           
-          <a href="../0.21.0/" class="md-footer__link md-footer__link--next" aria-label="Next: 0.21.0">
+          <a href="../0.22.0/" class="md-footer__link md-footer__link--next" aria-label="Next: 0.22.0">
             <div class="md-footer__title">
               <span class="md-footer__direction">
                 Next
               </span>
               <div class="md-ellipsis">
-                0.21.0
+                0.22.0
               </div>
             </div>
             <div class="md-footer__button md-icon">
