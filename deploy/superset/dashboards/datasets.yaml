@@ -293,3 +293,89 @@ datasets:
              date_diff('second', lease.heartbeat_at, CAST(now() AT TIME ZONE 'UTC' AS TIMESTAMP)) AS beat_age_seconds,
              (SELECT weekly_fraction FROM tick) AS weekly_fraction
       FROM (SELECT 1) AS one LEFT JOIN lease ON true
+
+  # Fleet datasets: host state, needs-chair by cause, weekly spend.
+  # All read the store only, through {{store:<table>}} like the chair datasets above. Every
+  # timestamp here is a naive UTC TIMESTAMP too, so DuckDB needs no pytz.
+
+  # One row per host, straight from the store's hosts table (state, last login check).
+  - name: fleet_host_state
+    database: coxswain
+    requires: hosts-table
+    sql: |
+      SELECT host, state, CAST(last_login_check_at AS TIMESTAMP) AS last_login_check_at
+      FROM {{store:hosts}}
+
+  # chair_needs_backlog's own logic (the newest needs_chair action per initiative and task,
+  # unless a later successful land came after it), grouped by reason instead of listed per task.
+  - name: fleet_needs_chair_by_cause
+    database: coxswain
+    requires: chair-store
+    sql: |
+      WITH flagged AS (
+        SELECT initiative, task, reason, CAST(ts AS TIMESTAMP) AS flagged_at,
+               ROW_NUMBER() OVER (PARTITION BY initiative, task ORDER BY CAST(ts AS TIMESTAMP) DESC) AS rn
+        FROM {{store:chair_actions}} WHERE kind = 'needs_chair'
+      ),
+      landed AS (
+        SELECT initiative, task, CAST(ts AS TIMESTAMP) AS landed_at
+        FROM {{store:chair_actions}} WHERE kind = 'land' AND status = 'ok'
+      ),
+      waiting AS (
+        SELECT f.reason, f.flagged_at
+        FROM flagged AS f
+        WHERE f.rn = 1
+          AND NOT EXISTS (
+            SELECT 1 FROM landed AS l WHERE l.initiative = f.initiative AND l.task = f.task AND l.landed_at > f.flagged_at
+          )
+      )
+      SELECT reason AS cause, COUNT(*) AS items,
+             MAX(date_diff('minute', flagged_at, CAST(now() AT TIME ZONE 'UTC' AS TIMESTAMP))) / 60.0 AS oldest_waiting_hours
+      FROM waiting
+      GROUP BY reason
+
+  # No fleet_drafts_waiting_approval dataset: it needs a not-yet-approved draft state on
+  # task_records and the time a task entered it. This repo holds no DDL for task_records.
+  # task_verdicts reads it as run_id, task_id, record_json and updated_at, and no record_json
+  # path read here names a draft or approval state. Without that filter the dataset would list
+  # approved work as waiting, so it waits until the store's schema names the state column.
+
+  # One row per day since the most recent weekly reset (a chair_ticks.weekly_fraction lower
+  # than the immediately prior tick's value, found with LAG ordered by ts). Every {{store:...}}
+  # select runs inside DuckDB regardless of the store behind it: expand_store either attaches
+  # Postgres or scans cox.db's SQLite file, but DuckDB always executes the SQL, so LAG needs no
+  # per-engine fallback here. Before any reset has happened, the earliest tick is the start.
+  - name: fleet_weekly_spend
+    database: coxswain
+    requires: chair-store
+    sql: |
+      WITH ticks AS (
+        SELECT CAST(ts AS TIMESTAMP) AS ts, weekly_fraction,
+               LAG(weekly_fraction) OVER (ORDER BY CAST(ts AS TIMESTAMP)) AS prior_fraction
+        FROM {{store:chair_ticks}}
+      ),
+      reset_at AS (
+        SELECT COALESCE(
+          MAX(CASE WHEN prior_fraction IS NOT NULL AND weekly_fraction < prior_fraction THEN ts END),
+          MIN(ts)
+        ) AS reset_ts
+        FROM ticks
+      ),
+      cost AS (
+        SELECT CAST(CAST(ts AS TIMESTAMP) AS DATE) AS day, SUM(cost_usd) AS cost_usd
+        FROM {{store:node_calls}} GROUP BY 1
+      ),
+      tick_days AS (
+        SELECT DISTINCT CAST(ts AS DATE) AS day FROM ticks
+      ),
+      days AS (
+        SELECT day FROM cost WHERE day >= (SELECT CAST(reset_ts AS DATE) FROM reset_at)
+        UNION
+        SELECT day FROM tick_days WHERE day >= (SELECT CAST(reset_ts AS DATE) FROM reset_at)
+      )
+      SELECT days.day, COALESCE(cost.cost_usd, 0.0) AS cost_usd,
+             SUM(COALESCE(cost.cost_usd, 0.0)) OVER (ORDER BY days.day) AS cumulative_cost_usd,
+             (SELECT t.weekly_fraction FROM ticks AS t WHERE CAST(t.ts AS DATE) <= days.day ORDER BY t.ts DESC LIMIT 1) AS weekly_fraction
+      FROM days
+      LEFT JOIN cost ON cost.day = days.day
+      ORDER BY days.day
