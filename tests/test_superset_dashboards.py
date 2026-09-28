@@ -144,7 +144,7 @@ def test_plan_on_an_empty_server_creates_everything_in_order():
     assert {o.action for o in ops} == {"create"}
     kinds = [o.kind for o in ops]
     assert kinds == sorted(kinds, key=bootstrap.KINDS.index)
-    assert Counter(kinds) == {"database": 1, "dataset": 18, "chart": 25, "dashboard": 1}
+    assert Counter(kinds) == {"database": 1, "dataset": 18, "chart": 25, "dashboard": 3}
 
 
 def test_plan_is_all_unchanged_when_the_server_matches():
@@ -173,9 +173,9 @@ def test_plan_skips_traces_and_its_chart_while_no_parquet_exists():
     assert lines[0] == "skipped: traces (no Parquet traces yet)"
     assert lines[1] == "skipped: Tool uses by name, top 15 (dataset traces skipped)"
     assert len(lines) == 2
-    (board,) = [o for o in ops if o.kind == "dashboard"]
+    (board,) = [o for o in ops if o.kind == "dashboard" and o.name == "Coxswain"]
     assert "Tool uses by name, top 15" not in json.dumps(board.payload)
-    assert Counter(o.kind for o in ops if o.action == "create") == {"database": 1, "dataset": 17, "chart": 24, "dashboard": 1}
+    assert Counter(o.kind for o in ops if o.action == "create") == {"database": 1, "dataset": 17, "chart": 24, "dashboard": 3}
 
 
 def test_plan_skips_the_land_log_datasets_and_their_charts_while_no_land_log_exists():
@@ -190,7 +190,7 @@ def test_plan_skips_the_land_log_datasets_and_their_charts_while_no_land_log_exi
         "skipped: Lead time, launch to land (median hours), by day (dataset landed_tasks skipped)",
         "skipped: Spend by task outcome, last 14 days (dataset task_outcomes skipped)",
     ]
-    (board,) = [o for o in ops if o.kind == "dashboard"]
+    (board,) = [o for o in ops if o.kind == "dashboard" and o.name == "Coxswain"]
     assert "Landed tasks per day" not in json.dumps(board.payload)
     assert "Cost per turn by model, by day" in json.dumps(board.payload)
 
@@ -207,18 +207,22 @@ def test_plan_without_chair_store_skips_the_chair_gated_datasets_and_keeps_the_o
     assert [bootstrap.line(o) for o in ops if o.action == "skipped"] == (
         [f"skipped: {n} (no chair tables in the store yet)" for n in FLEET_CHAIR_DATASETS]
         + [f"skipped: {chart} (dataset {dataset} skipped)" for chart, dataset in CHAIR_STORE_GATED_CHARTS]
+        + ["skipped: Chair (no charts)"]
     )
     assert [o.name for o in ops if o.kind == "dataset" and o.action == "create"] == [d["name"] for d in SPECS["datasets"] if d["name"] not in FLEET_CHAIR_DATASETS]
     assert sorted(c["name"] for c in SPECS["charts"] if c["dataset"] in FLEET_CHAIR_DATASETS) == sorted(chart for chart, _ in CHAIR_STORE_GATED_CHARTS)
-    assert Counter(o.kind for o in ops if o.action == "create") == {"database": 1, "dataset": 11, "chart": 18, "dashboard": 1}
+    # The Chair dashboard's own three charts are all chair-store gated, so its grid empties out and it is skipped too.
+    assert Counter(o.kind for o in ops if o.action == "create") == {"database": 1, "dataset": 11, "chart": 18, "dashboard": 2}
 
 
 def test_a_store_without_chair_store_plans_the_existing_datasets_as_before():
     with_chair = bootstrap.plan(SPECS, {}, ALL_SOURCES)
     without = bootstrap.plan(SPECS, {}, ALL_SOURCES - {"chair-store"})
     gated_names = {*FLEET_CHAIR_DATASETS, *(chart for chart, _ in CHAIR_STORE_GATED_CHARTS)}
-    old = [o for o in with_chair if o.name not in gated_names]
-    assert [o for o in without if o.action != "skipped"] == old
+    # Dashboard grids drop whichever charts the missing source gated, so their payload always
+    # differs between the two plans; only database, dataset and chart ops are compared here.
+    old = [o for o in with_chair if o.kind != "dashboard" and o.name not in gated_names]
+    assert [o for o in without if o.action != "skipped" and o.kind != "dashboard"] == old
     assert bootstrap.present_sources(Path("/nonexistent")) == frozenset()
 
 
@@ -709,8 +713,11 @@ def _api_listing():
         }
         for c in SPECS["charts"]
     }
-    dashboard = {"id": 1, "dashboard_title": "Coxswain", "position_json": json.dumps(bootstrap.position(SPECS["dashboard"]["grid"], chart_ids, "Coxswain"))}
-    return {"database": {"coxswain": database}, "dataset": datasets, "chart": charts, "dashboard": {"Coxswain": dashboard}}, {i: n for n, i in dataset_ids.items()}
+    dashboards = {
+        d["name"]: {"id": i, "dashboard_title": d["name"], "position_json": json.dumps(bootstrap.position(d["grid"], chart_ids, d["name"]))}
+        for i, d in enumerate(SPECS["dashboards"], start=1)
+    }
+    return {"database": {"coxswain": database}, "dataset": datasets, "chart": charts, "dashboard": dashboards}, {i: n for n, i in dataset_ids.items()}
 
 
 def _existing(listing, dataset_names):
