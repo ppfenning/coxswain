@@ -13,7 +13,7 @@ CONFIG = DEPLOY / "superset_config.py"
 INIT_SCRIPT = COMPOSE["services"]["superset-init"]["command"][-1]
 ADMIN_VARS = ("SUPERSET_ADMIN_USERNAME", "SUPERSET_ADMIN_PASSWORD", "SUPERSET_ADMIN_EMAIL", "SUPERSET_ADMIN_FIRSTNAME", "SUPERSET_ADMIN_LASTNAME")
 REQUIRED = ("SUPERSET_SECRET_KEY", *ADMIN_VARS)
-OPTIONAL = "COXSWAIN_STORE_URL"
+OPTIONAL = ("COXSWAIN_STORE_URL", "COXSWAIN_S3_ENDPOINT", "COXSWAIN_S3_KEY_ID", "COXSWAIN_S3_SECRET", "COXSWAIN_S3_REGION")
 
 
 def _load_config(monkeypatch, env):
@@ -28,10 +28,10 @@ def test_compose_parses_with_the_superset_and_init_services():
     assert {"superset", "superset-init"} <= set(COMPOSE["services"])
 
 
-def test_runs_directory_is_mounted_read_only_at_data_runs():
-    mounts = [v for s in COMPOSE["services"].values() for v in s["volumes"] if ":/data/runs" in v]
-    assert mounts
-    assert all(re.fullmatch(r"\$\{COXSWAIN_RUNS_DIR[^}]*\}:/data/runs:ro", m) for m in mounts)
+def test_no_service_mounts_the_runs_directory_any_more():
+    mounts = [v for s in COMPOSE["services"].values() for v in s.get("volumes", []) if ":/data/runs" in v]
+    assert mounts == []
+    assert "COXSWAIN_RUNS_DIR" not in COMPOSE_TEXT
 
 
 def test_every_port_binds_to_loopback_only():
@@ -49,9 +49,11 @@ def test_every_compose_variable_appears_in_env_example():
 
 def test_every_compose_variable_is_required_so_compose_refuses_an_unset_one():
     refs = re.findall(r"\$\{(\w+)([^}]*)\}", COMPOSE_TEXT)
-    assert {name for name, _ in refs} >= set(REQUIRED) | {"COXSWAIN_RUNS_DIR"}
-    assert all(mod.startswith(":?") for name, mod in refs if name != OPTIONAL)
-    assert [mod for name, mod in refs if name == OPTIONAL] == [":-"]
+    assert {name for name, _ in refs} >= set(REQUIRED) | set(OPTIONAL)
+    assert all(mod.startswith(":?") for name, mod in refs if name not in OPTIONAL)
+    optional_mods = [mod for name, mod in refs if name in OPTIONAL]
+    assert len(optional_mods) == len(OPTIONAL)
+    assert all(mod == ":-" for mod in optional_mods)
 
 
 @pytest.mark.parametrize("missing", REQUIRED)
