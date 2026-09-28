@@ -24,8 +24,8 @@ always tells you exactly what a given release installs.
 
 | Component | Repository or path | Tag | Required or flag |
 | --- | --- | --- | --- |
-| cartridges | `ppfenning/coxswain-cartridges` | `v0.22.0` | required |
-| graphs | `ppfenning/coxswain-graphs` | `v0.22.0` | required |
+| cartridges | `ppfenning/coxswain-cartridges` | `v0.21.0` | required (pinned) |
+| graphs | `ppfenning/coxswain-graphs` | `v0.21.0` | required (pinned) |
 | tools | `ppfenning/coxswain-tools` | `v0.22.0` | required, provides `cox` |
 | crew | `ppfenning/coxswain-crew` | `v0.12.0` | flag: `crew` (pinned) |
 
