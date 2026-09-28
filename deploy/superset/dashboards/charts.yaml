@@ -171,3 +171,90 @@ charts:
       x_axis: build_attempts
       metrics:
         - {expressionType: SQL, sqlExpression: "COUNT(*)", label: tasks}
+
+  # Fleet charts. chair_lanes_by_host_hour, chair_status, fleet_needs_chair_by_cause and
+  # fleet_weekly_spend require chair-store, the same source as the Chair charts below;
+  # fleet_host_state requires hosts-table instead. No chart here reads
+  # fleet_drafts_waiting_approval: datasets.yaml has no such dataset yet (it says why, and
+  # test_the_fleet_sql_runs_over_literal_rows_in_duckdb guards its absence), so the Fleet
+  # dashboard ships five charts, not the six the brief names, until that dataset lands.
+  - name: Lanes per host over time against capacity
+    dataset: chair_lanes_by_host_hour
+    viz_type: echarts_timeseries_line
+    params:
+      x_axis: hour
+      time_grain_sqla: PT1H
+      metrics:
+        - {expressionType: SIMPLE, column: {column_name: lanes}, aggregate: MAX, label: lanes}
+        - {expressionType: SIMPLE, column: {column_name: max_in_flight}, aggregate: MAX, label: cap}
+      groupby: [host]
+
+  # Table charts use Superset's raw query_mode (all_columns) to list plain columns. queries_of
+  # has no branch for all_columns, so the "queries" it saves for these stays empty apart from
+  # any x_axis_sort; that only shapes the query_context bootstrap saves, not what all_columns
+  # renders in Superset.
+  - name: Host state and last login
+    dataset: fleet_host_state
+    viz_type: table
+    params:
+      query_mode: raw
+      all_columns: [host, state, last_login_check_at]
+      metrics: []
+
+  - name: Chair holder, epoch and beat age
+    dataset: chair_status
+    viz_type: table
+    params:
+      query_mode: raw
+      all_columns: [holder, host, epoch, beat_age_seconds, weekly_fraction]
+      metrics: []
+
+  - name: Needs-chair items by cause
+    dataset: fleet_needs_chair_by_cause
+    viz_type: echarts_timeseries_bar
+    params:
+      x_axis: cause
+      metrics:
+        - {expressionType: SIMPLE, column: {column_name: items}, aggregate: SUM, label: items}
+
+  - name: Weekly spend against the ceiling
+    dataset: fleet_weekly_spend
+    viz_type: echarts_timeseries_line
+    params:
+      x_axis: day
+      time_grain_sqla: P1D
+      metrics:
+        - {expressionType: SIMPLE, column: {column_name: cumulative_cost_usd}, aggregate: MAX, label: spend}
+        - {expressionType: SIMPLE, column: {column_name: weekly_fraction}, aggregate: MAX, label: "fraction of ceiling"}
+
+  # Chair charts.
+  - name: Chair actions per hour by kind
+    dataset: chair_actions_by_hour
+    viz_type: echarts_timeseries_bar
+    params:
+      x_axis: hour
+      time_grain_sqla: PT1H
+      metrics:
+        - {expressionType: SIMPLE, column: {column_name: actions}, aggregate: SUM, label: actions}
+      groupby: [kind]
+      stack: true
+
+  - name: Spend per landed task per day
+    dataset: chair_spend_by_day
+    viz_type: echarts_timeseries_line
+    params:
+      x_axis: day
+      time_grain_sqla: P1D
+      metrics:
+        - {expressionType: SIMPLE, column: {column_name: cost_per_landed}, aggregate: MAX, label: "interactive chair"}
+        - {expressionType: SIMPLE, column: {column_name: loop_cost_per_landed}, aggregate: MAX, label: "chair loop"}
+
+  - name: Needs-chair backlog
+    dataset: chair_needs_backlog
+    viz_type: table
+    params:
+      query_mode: raw
+      all_columns: [initiative, task, reason, flagged_at, waiting_hours]
+      metrics: []
+      x_axis_sort: waiting_hours
+      x_axis_sort_asc: false
