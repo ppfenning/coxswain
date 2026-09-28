@@ -74,10 +74,10 @@ datasets:
       FROM {{lake:node_calls}}
       GROUP BY ALL
 
-  # The three datasets below also read land.jsonl directly. `requires: lake` gates dataset
-  # creation on the lake connection, not on land.jsonl's existence, so land.jsonl must be
-  # mounted before the first bootstrap run against a fresh runs directory. A task landed
-  # when its land record exited 0 and reached mark_done.
+  # The three datasets below read landed rows from the store's task_records table instead
+  # of land.jsonl. A task counts as landed once record_json.landed is `true` (older
+  # records) or an object such as {"at": ..., "pr": ...} (newer ones); landed_at is the
+  # object's `at` when present, else the record's updated_at.
   - name: daily_efficiency
     database: coxswain
     requires: lake
@@ -87,9 +87,10 @@ datasets:
         FROM {{lake:node_calls}} GROUP BY 1
       ),
       landed AS (
-        SELECT CAST(CAST(ts AS TIMESTAMPTZ) AS DATE) AS day, COUNT(*) AS landed
-        FROM read_json_auto('/data/runs/land.jsonl', format = 'newline_delimited', ignore_errors = true)
-        WHERE exit = 0 AND list_contains(steps_reached, 'mark_done') AND task IS NOT NULL
+        SELECT CAST(CAST(COALESCE(json_extract_string(record_json, '$.landed.at'), updated_at) AS TIMESTAMPTZ) AS DATE) AS day,
+               COUNT(*) AS landed
+        FROM {{store:task_records}}
+        WHERE json_type(record_json, '$.landed') = 'OBJECT' OR json_extract_string(record_json, '$.landed') = 'true'
         GROUP BY 1
       )
       SELECT cost.day, cost.cost_usd, COALESCE(landed.landed, 0) AS landed,
@@ -103,9 +104,10 @@ datasets:
     requires: lake
     sql: |
       WITH landed AS (
-        SELECT run, task, CAST(ts AS TIMESTAMPTZ) AS landed_at
-        FROM read_json_auto('/data/runs/land.jsonl', format = 'newline_delimited', ignore_errors = true)
-        WHERE exit = 0 AND list_contains(steps_reached, 'mark_done') AND task IS NOT NULL
+        SELECT run_id AS run, task_id AS task,
+               CAST(COALESCE(json_extract_string(record_json, '$.landed.at'), updated_at) AS TIMESTAMPTZ) AS landed_at
+        FROM {{store:task_records}}
+        WHERE json_type(record_json, '$.landed') = 'OBJECT' OR json_extract_string(record_json, '$.landed') = 'true'
       ),
       builds AS (
         SELECT task_id, COUNT(*) AS builds FROM {{lake:node_calls}} WHERE role = 'build' GROUP BY 1
@@ -132,8 +134,9 @@ datasets:
     requires: lake
     sql: |
       WITH landed AS (
-        SELECT DISTINCT task FROM read_json_auto('/data/runs/land.jsonl', format = 'newline_delimited', ignore_errors = true)
-        WHERE exit = 0 AND list_contains(steps_reached, 'mark_done') AND task IS NOT NULL
+        SELECT DISTINCT task_id AS task
+        FROM {{store:task_records}}
+        WHERE json_type(record_json, '$.landed') = 'OBJECT' OR json_extract_string(record_json, '$.landed') = 'true'
       ),
       tasks AS (
         SELECT task_id, SUM(cost_usd) AS cost_usd, MAX(CAST(ts AS TIMESTAMPTZ)) AS last_call

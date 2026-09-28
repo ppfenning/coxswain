@@ -26,6 +26,8 @@ FLEET_DATASETS = ["fleet_host_state", "fleet_needs_chair_by_cause", "fleet_weekl
 STORE_GATED_DATASETS = [*CHAIR_DATASETS, *FLEET_DATASETS]
 # The ten history datasets, all gated by the single `lake` requirement, in datasets.yaml order.
 LAKE_DATASETS = ["calls", "runs", "attempts", "lanes_by_hour", "traces", "calls_by_day", "daily_efficiency", "landed_tasks", "task_outcomes", "task_verdicts"]
+# The three datasets that read landed rows out of the store's task_records table.
+LAND_DATASETS = ["daily_efficiency", "landed_tasks", "task_outcomes"]
 # The Fleet dashboard's charts: five, not the brief's six, since fleet_drafts_waiting_approval
 # has no dataset yet. Each pairs with the chart it gates when store is absent.
 FLEET_CHART_NAMES = [
@@ -406,6 +408,10 @@ def test_every_chair_and_hosts_dataset_runs_against_the_stores_real_columns():
     # node_calls is not one of the tables the ticket's schema names, but chair_spend_by_day and
     # fleet_weekly_spend both read it; its shape is unchanged by this task.
     con.execute("CREATE TABLE store.public.node_calls (ts VARCHAR, cost_usd DOUBLE)")
+    con.execute(
+        "CREATE TABLE store.public.task_records "
+        "(run_id VARCHAR, phase_id VARCHAR, task_id VARCHAR, record_json VARCHAR, updated_at VARCHAR)"
+    )
     gated = {d["name"]: d["sql"] for d in SPECS["datasets"] if d["requires"] == "store"}
     assert sorted(gated) == sorted(STORE_GATED_DATASETS)
     for sql in gated.values():
@@ -413,6 +419,40 @@ def test_every_chair_and_hosts_dataset_runs_against_the_stores_real_columns():
     # The probes gate whether those datasets are created, so each must run against the real columns too.
     for probe in bootstrap.CHAIR_PROBES + bootstrap.HOSTS_PROBES:
         con.execute(bootstrap.expand_store(probe, "postgresql://u@h/db"))
+    # The three land-log datasets require lake but also read {{store:task_records}}; give them
+    # a minimal lake schema so they run end to end against the store's real task_records shape.
+    con.execute("CREATE SCHEMA lake")
+    con.execute("CREATE TABLE lake.node_calls (ts VARCHAR, cost_usd DOUBLE, task_id VARCHAR, role VARCHAR)")
+    con.execute("CREATE TABLE lake.runs (run_id VARCHAR, launched_at VARCHAR)")
+    land_datasets = {d["name"]: d["sql"] for d in SPECS["datasets"] if d["name"] in LAND_DATASETS}
+    assert sorted(land_datasets) == sorted(LAND_DATASETS)
+    for sql in land_datasets.values():
+        con.execute(bootstrap.expand_lake(bootstrap.expand_store(sql, "postgresql://u@h/db")))
+
+
+LANDED_TASK_RECORDS = """
+SET TimeZone = 'UTC';
+CREATE TABLE task_records AS SELECT * FROM (VALUES
+  ('r1', 'p1', 'task-a', '{"landed": true}', '2026-09-20T10:00:00Z'),
+  ('r2', 'p1', 'task-b', '{"landed": {"at": "2026-09-21T09:00:00Z", "pr": "https://example/pull/1"}}', '2026-09-22T00:00:00Z')
+) AS t(run_id, phase_id, task_id, record_json, updated_at);
+CREATE TABLE node_calls AS SELECT NULL::VARCHAR AS ts, NULL::DOUBLE AS cost_usd, NULL::VARCHAR AS task_id, NULL::VARCHAR AS role WHERE false;
+CREATE TABLE runs AS SELECT NULL::VARCHAR AS run_id, NULL::VARCHAR AS launched_at WHERE false;
+"""
+
+
+def test_a_boolean_true_landed_flag_and_an_at_landed_object_both_count_as_landed():
+    """task-a's `landed: true` falls back to updated_at; task-b's `landed: {"at": ...}` wins over its updated_at."""
+    duckdb = pytest.importorskip("duckdb")
+    con = duckdb.connect()
+    con.execute(LANDED_TASK_RECORDS)
+    (sql,) = [d["sql"] for d in SPECS["datasets"] if d["name"] == "landed_tasks"]
+    plain = bootstrap.LAKE_FORM.sub(lambda m: m[1], bootstrap.STORE_FORM.sub(lambda m: m[1], sql))
+    rows = con.execute(f"SELECT task, CAST(landed_at AS VARCHAR) FROM ({plain}) AS d").fetchall()
+    landed_at = dict(rows)
+    assert set(landed_at) == {"task-a", "task-b"}
+    assert landed_at["task-a"] == "2026-09-20 10:00:00+00"
+    assert landed_at["task-b"] == "2026-09-21 09:00:00+00"
 
 
 def test_a_later_run_adds_the_lake_datasets_and_the_coxswain_dashboard_once_lake_appears():
