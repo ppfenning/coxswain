@@ -19,13 +19,15 @@ check = importlib.util.module_from_spec(_check_spec)
 _check_spec.loader.exec_module(check)
 
 SPECS = bootstrap.load_specs(DEPLOY / "dashboards")
-ALL_SOURCES = frozenset({"sqlite", "parquet-traces", "land-log", "chair-store", "hosts-table"})
+ALL_SOURCES = frozenset({"store", "lake"})
 CHAIR_DATASETS = ["chair_actions_by_hour", "chair_lanes_by_host_hour", "chair_spend_by_day", "chair_needs_backlog", "chair_status"]
 FLEET_DATASETS = ["fleet_host_state", "fleet_needs_chair_by_cause", "fleet_weekly_spend"]
-# fleet_needs_chair_by_cause and fleet_weekly_spend read chair_actions/chair_ticks, so chair-store gates them too.
-FLEET_CHAIR_DATASETS = [*CHAIR_DATASETS, "fleet_needs_chair_by_cause", "fleet_weekly_spend"]
+# Every dataset gated by the single `store` requirement, in datasets.yaml order.
+STORE_GATED_DATASETS = [*CHAIR_DATASETS, *FLEET_DATASETS]
+# The ten history datasets, all gated by the single `lake` requirement, in datasets.yaml order.
+LAKE_DATASETS = ["calls", "runs", "attempts", "lanes_by_hour", "traces", "calls_by_day", "daily_efficiency", "landed_tasks", "task_outcomes", "task_verdicts"]
 # The Fleet dashboard's charts: five, not the brief's six, since fleet_drafts_waiting_approval
-# has no dataset yet. Each pairs with the chart it gates when chair-store or hosts-table is absent.
+# has no dataset yet. Each pairs with the chart it gates when store is absent.
 FLEET_CHART_NAMES = [
     "Lanes per host over time against capacity",
     "Host state and last login",
@@ -34,9 +36,10 @@ FLEET_CHART_NAMES = [
     "Weekly spend against the ceiling",
 ]
 CHAIR_CHART_NAMES = ["Chair actions per hour by kind", "Spend per landed task per day", "Needs-chair backlog"]
-# Every new chart gated by chair-store, paired with the dataset that gates it, in charts.yaml order.
-CHAIR_STORE_GATED_CHARTS = [
+# Every chart gated by `store`, paired with the dataset that gates it, in charts.yaml order.
+STORE_GATED_CHARTS = [
     ("Lanes per host over time against capacity", "chair_lanes_by_host_hour"),
+    ("Host state and last login", "fleet_host_state"),
     ("Chair holder, epoch and beat age", "chair_status"),
     ("Needs-chair items by cause", "fleet_needs_chair_by_cause"),
     ("Weekly spend against the ceiling", "fleet_weekly_spend"),
@@ -102,8 +105,9 @@ def test_every_dataset_sql_reads_only_under_data_runs():
     for d in SPECS["datasets"]:
         sql = bootstrap.expand_store(d["sql"], None)
         assert isinstance(sql, str), d["name"]
+        sql = bootstrap.expand_lake(sql)
+        assert isinstance(sql, str), d["name"]
         paths = LITERAL_READS.findall(sql)
-        assert paths, d["name"]
         assert len(READS.findall(sql)) == len(paths), f"{d['name']} reads a source that is not a literal path"
         assert all(p.startswith("/data/runs/") for p in paths), d["name"]
 
@@ -168,63 +172,51 @@ def test_plan_updates_a_dataset_whose_sql_changed_and_only_that_one():
     assert [(o.kind, o.name) for o in ops if o.action == "update"] == [("dataset", "runs")]
 
 
-def test_plan_skips_traces_and_its_chart_while_no_parquet_exists():
-    ops = bootstrap.plan(SPECS, {}, frozenset({"sqlite", "land-log", "chair-store", "hosts-table"}))
-    lines = [bootstrap.line(o) for o in ops if o.action == "skipped"]
-    assert lines[0] == "skipped: traces (no Parquet traces yet)"
-    assert lines[1] == "skipped: Tool uses by name, top 15 (dataset traces skipped)"
-    assert len(lines) == 2
-    (board,) = [o for o in ops if o.kind == "dashboard" and o.name == "Coxswain"]
-    assert "Tool uses by name, top 15" not in json.dumps(board.payload)
-    assert Counter(o.kind for o in ops if o.action == "create") == {"database": 1, "dataset": 17, "chart": 24, "dashboard": 3}
+def test_the_ten_history_datasets_require_lake_and_read_no_local_runs_files():
+    by_name = {d["name"]: d for d in SPECS["datasets"]}
+    assert sorted(LAKE_DATASETS) == sorted(n for n, d in by_name.items() if d["requires"] == "lake")
+    for name in LAKE_DATASETS:
+        sql = by_name[name]["sql"]
+        assert "read_parquet" not in sql
+        assert "sqlite_scan" not in sql
 
 
-def test_plan_skips_the_land_log_datasets_and_their_charts_while_no_land_log_exists():
-    ops = bootstrap.plan(SPECS, {}, frozenset({"sqlite", "parquet-traces", "chair-store", "hosts-table"}))
-    assert [bootstrap.line(o) for o in ops if o.action == "skipped"] == [
-        "skipped: daily_efficiency (needs land.jsonl and cox.db)",
-        "skipped: landed_tasks (needs land.jsonl and cox.db)",
-        "skipped: task_outcomes (needs land.jsonl and cox.db)",
-        "skipped: Cost per landed task, by day (dataset daily_efficiency skipped)",
-        "skipped: Landed tasks per day (dataset daily_efficiency skipped)",
-        "skipped: First-try build rate, by day (dataset landed_tasks skipped)",
-        "skipped: Lead time, launch to land (median hours), by day (dataset landed_tasks skipped)",
-        "skipped: Spend by task outcome, last 14 days (dataset task_outcomes skipped)",
-    ]
-    (board,) = [o for o in ops if o.kind == "dashboard" and o.name == "Coxswain"]
-    assert "Landed tasks per day" not in json.dumps(board.payload)
-    assert "Cost per turn by model, by day" in json.dumps(board.payload)
+def test_every_datasets_requires_is_lake_or_store():
+    assert {d["requires"] for d in SPECS["datasets"]} == {"lake", "store"}
 
 
-def test_present_sources_counts_the_land_log_only_beside_a_cox_db(tmp_path):
-    (tmp_path / "land.jsonl").write_text("")
-    assert bootstrap.present_sources(tmp_path) == frozenset()
-    (tmp_path / "cox.db").write_text("")
-    assert bootstrap.present_sources(tmp_path) == frozenset({"sqlite", "land-log"})
+def test_store_without_lake_skips_the_ten_history_datasets_and_keeps_chair_fleet_and_the_database():
+    ops = bootstrap.plan(SPECS, {}, frozenset({"store"}))
+    skipped_datasets = {o.name for o in ops if o.kind == "dataset" and o.action == "skipped"}
+    assert skipped_datasets == set(LAKE_DATASETS)
+    assert {o.name for o in ops if o.kind == "dataset" and o.action == "create"} == {d["name"] for d in SPECS["datasets"] if d["requires"] == "store"}
+    skipped_charts = {o.name for o in ops if o.kind == "chart" and o.action == "skipped"}
+    assert skipped_charts == {c["name"] for c in SPECS["charts"] if c["dataset"] in LAKE_DATASETS}
+    assert {o.name for o in ops if o.kind == "chart" and o.action == "create"} == {c["name"] for c in SPECS["charts"] if c["dataset"] not in LAKE_DATASETS}
+    (database_op,) = [o for o in ops if o.kind == "database"]
+    assert database_op.action == "create"
+    assert {o.name for o in ops if o.kind == "dashboard" and o.action == "skipped"} == {"Coxswain"}
+    assert {o.name for o in ops if o.kind == "dashboard" and o.action != "skipped"} == {"Fleet", "Chair"}
 
 
-def test_plan_without_chair_store_skips_the_chair_gated_datasets_and_keeps_the_others():
-    ops = bootstrap.plan(SPECS, {}, ALL_SOURCES - {"chair-store"})
+def test_present_sources_reports_store_and_lake_from_the_two_probes():
+    assert bootstrap.present_sources() == frozenset()
+    assert bootstrap.present_sources(store=True) == frozenset({"store"})
+    assert bootstrap.present_sources(lake=True) == frozenset({"lake"})
+    assert bootstrap.present_sources(True, True) == ALL_SOURCES
+
+
+def test_plan_without_store_skips_every_chair_and_fleet_dataset_and_both_dashboards():
+    ops = bootstrap.plan(SPECS, {}, ALL_SOURCES - {"store"})
     assert [bootstrap.line(o) for o in ops if o.action == "skipped"] == (
-        [f"skipped: {n} (no chair tables in the store yet)" for n in FLEET_CHAIR_DATASETS]
-        + [f"skipped: {chart} (dataset {dataset} skipped)" for chart, dataset in CHAIR_STORE_GATED_CHARTS]
-        + ["skipped: Chair (no charts)"]
+        [f"skipped: {n} (no store tables yet)" for n in STORE_GATED_DATASETS]
+        + [f"skipped: {chart} (dataset {dataset} skipped)" for chart, dataset in STORE_GATED_CHARTS]
+        + ["skipped: Fleet (no charts)", "skipped: Chair (no charts)"]
     )
-    assert [o.name for o in ops if o.kind == "dataset" and o.action == "create"] == [d["name"] for d in SPECS["datasets"] if d["name"] not in FLEET_CHAIR_DATASETS]
-    assert sorted(c["name"] for c in SPECS["charts"] if c["dataset"] in FLEET_CHAIR_DATASETS) == sorted(chart for chart, _ in CHAIR_STORE_GATED_CHARTS)
-    # The Chair dashboard's own three charts are all chair-store gated, so its grid empties out and it is skipped too.
-    assert Counter(o.kind for o in ops if o.action == "create") == {"database": 1, "dataset": 11, "chart": 18, "dashboard": 2}
-
-
-def test_a_store_without_chair_store_plans_the_existing_datasets_as_before():
-    with_chair = bootstrap.plan(SPECS, {}, ALL_SOURCES)
-    without = bootstrap.plan(SPECS, {}, ALL_SOURCES - {"chair-store"})
-    gated_names = {*FLEET_CHAIR_DATASETS, *(chart for chart, _ in CHAIR_STORE_GATED_CHARTS)}
-    # Dashboard grids drop whichever charts the missing source gated, so their payload always
-    # differs between the two plans; only database, dataset and chart ops are compared here.
-    old = [o for o in with_chair if o.kind != "dashboard" and o.name not in gated_names]
-    assert [o for o in without if o.action != "skipped" and o.kind != "dashboard"] == old
-    assert bootstrap.present_sources(Path("/nonexistent")) == frozenset()
+    assert [o.name for o in ops if o.kind == "dataset" and o.action == "create"] == [d["name"] for d in SPECS["datasets"] if d["name"] not in STORE_GATED_DATASETS]
+    assert sorted(c["name"] for c in SPECS["charts"] if c["dataset"] in STORE_GATED_DATASETS) == sorted(chart for chart, _ in STORE_GATED_CHARTS)
+    # Every Fleet and every Chair chart is store-gated, so both dashboards' grids empty out and skip too.
+    assert Counter(o.kind for o in ops if o.action == "create") == {"database": 1, "dataset": 10, "chart": 17, "dashboard": 1}
 
 
 def test_no_chair_dataset_sql_names_a_log_file_or_a_scan():
@@ -233,7 +225,7 @@ def test_no_chair_dataset_sql_names_a_log_file_or_a_scan():
     assert sorted(sqls) == sorted(CHAIR_DATASETS)
     assert not [n for n, sql in sqls.items() if ".jsonl" in sql or "sqlite_scan" in sql or READS.findall(sql)]
     assert not [n for n, sql in postgres.items() if ".jsonl" in sql or "sqlite_scan" in sql or "store.public." not in sql]
-    assert all(d["requires"] == "chair-store" for d in SPECS["datasets"] if d["name"] in CHAIR_DATASETS)
+    assert all(d["requires"] == "store" for d in SPECS["datasets"] if d["name"] in CHAIR_DATASETS)
 
 
 class _SqlLab:
@@ -257,7 +249,6 @@ def test_the_chair_probe_selects_where_false_from_every_table_it_reads_and_needs
     assert full.sent[1] == "SELECT name, holder, epoch, heartbeat_at FROM sqlite_scan('/data/runs/cox.db', 'leases') WHERE false"
     assert full.sent[2] == "SELECT host, launched_at, ended_at FROM sqlite_scan('/data/runs/cox.db', 'runs') WHERE false"
     assert bootstrap.chair_tables_readable(_SqlLab({"chair_actions", "leases"}), 1, None) is False
-    assert bootstrap.present_sources(Path("/nonexistent"), True) == frozenset({"chair-store"})
     assert not any("chair_ticks" in probe for probe in bootstrap.CHAIR_PROBES)
 
 
@@ -272,19 +263,27 @@ def test_the_hosts_probe_selects_where_false_from_the_hosts_table():
     assert bootstrap.hosts_table_readable(full, 1, None) is True
     assert full.sent == ["SELECT name, state, capacity, beat_at, versions_json FROM sqlite_scan('/data/runs/cox.db', 'hosts') WHERE false"]
     assert bootstrap.hosts_table_readable(_SqlLab({"chair_actions"}), 1, None) is False
-    assert bootstrap.present_sources(Path("/nonexistent"), hosts_table=True) == frozenset({"hosts-table"})
 
 
-def test_plan_without_hosts_table_skips_fleet_host_state_and_keeps_the_other_new_datasets_unchanged():
-    ops = bootstrap.plan(SPECS, {}, ALL_SOURCES - {"hosts-table"})
-    assert [bootstrap.line(o) for o in ops if o.action == "skipped"] == [
-        "skipped: fleet_host_state (no hosts table in the store yet)",
-        "skipped: Host state and last login (dataset fleet_host_state skipped)",
-    ]
-    assert [o.name for o in ops if o.kind == "dataset" and o.action == "create" and o.name in FLEET_DATASETS] == [
-        "fleet_needs_chair_by_cause",
-        "fleet_weekly_spend",
-    ]
+class _LakeLab:
+    """SQL Lab where the lake.runs probe succeeds only when `readable` is True."""
+
+    def __init__(self, readable):
+        self.readable, self.sent = readable, []
+
+    def call(self, method, path, data=None):
+        self.sent.append(data["sql"])
+        if not self.readable:
+            body = io.BytesIO(json.dumps({"errors": [{"message": "error"}]}).encode())
+            raise urllib.error.HTTPError(path, 400, "error", {}, body)
+        return {"data": []}
+
+
+def test_the_lake_probe_selects_where_false_from_lake_runs():
+    lab = _LakeLab(True)
+    assert bootstrap.lake_readable(lab, 1, None) is True
+    assert lab.sent == [f"SELECT * FROM {bootstrap.LAKE_SCHEMA}.runs WHERE false"]
+    assert bootstrap.lake_readable(_LakeLab(False), 1, None) is False
 
 
 CHAIR_STORE = """
@@ -407,8 +406,8 @@ def test_every_chair_and_hosts_dataset_runs_against_the_stores_real_columns():
     # node_calls is not one of the tables the ticket's schema names, but chair_spend_by_day and
     # fleet_weekly_spend both read it; its shape is unchanged by this task.
     con.execute("CREATE TABLE store.public.node_calls (ts VARCHAR, cost_usd DOUBLE)")
-    gated = {d["name"]: d["sql"] for d in SPECS["datasets"] if d["requires"] in ("chair-store", "hosts-table")}
-    assert sorted(gated) == sorted({*FLEET_CHAIR_DATASETS, "fleet_host_state"})
+    gated = {d["name"]: d["sql"] for d in SPECS["datasets"] if d["requires"] == "store"}
+    assert sorted(gated) == sorted(STORE_GATED_DATASETS)
     for sql in gated.values():
         con.execute(bootstrap.expand_store(sql, "postgresql://u@h/db"))
     # The probes gate whether those datasets are created, so each must run against the real columns too.
@@ -416,14 +415,16 @@ def test_every_chair_and_hosts_dataset_runs_against_the_stores_real_columns():
         con.execute(bootstrap.expand_store(probe, "postgresql://u@h/db"))
 
 
-def test_a_later_run_adds_traces_and_updates_the_dashboard():
-    first = bootstrap.plan(SPECS, {}, frozenset({"sqlite", "land-log", "chair-store", "hosts-table"}))
+def test_a_later_run_adds_the_lake_datasets_and_the_coxswain_dashboard_once_lake_appears():
+    first = bootstrap.plan(SPECS, {}, ALL_SOURCES - {"lake"})
     ops = bootstrap.plan(SPECS, _server(first), ALL_SOURCES)
-    assert [(o.action, o.kind, o.name) for o in ops if o.action != "unchanged"] == [
-        ("create", "dataset", "traces"),
-        ("create", "chart", "Tool uses by name, top 15"),
-        ("update", "dashboard", "Coxswain"),
-    ]
+    created = {(o.kind, o.name) for o in ops if o.action == "create"}
+    assert created == {
+        *(("dataset", n) for n in LAKE_DATASETS),
+        *(("chart", c["name"]) for c in SPECS["charts"] if c["dataset"] in LAKE_DATASETS),
+        ("dashboard", "Coxswain"),
+    }
+    assert {o.action for o in ops} == {"create", "unchanged"}
 
 
 def test_position_json_reads_back_as_the_grid_it_was_written_from():
@@ -727,7 +728,12 @@ def _api_listing():
         "backend": "duckdb",
     }
     datasets = {
-        d["name"]: {"id": dataset_ids[d["name"]], "table_name": d["name"], "database": {"id": 1, "database_name": "coxswain", "backend": "duckdb"}, "sql": bootstrap.expand_store(d["sql"], None)}
+        d["name"]: {
+            "id": dataset_ids[d["name"]],
+            "table_name": d["name"],
+            "database": {"id": 1, "database_name": "coxswain", "backend": "duckdb"},
+            "sql": bootstrap.expand_lake(bootstrap.expand_store(d["sql"], None)),
+        }
         for d in SPECS["datasets"]
     }
     charts = {

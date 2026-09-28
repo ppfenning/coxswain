@@ -25,25 +25,30 @@ import yaml
 KINDS = ("database", "dataset", "chart", "dashboard")
 NAME_FIELD = {"database": "database_name", "dataset": "table_name", "chart": "slice_name", "dashboard": "dashboard_title"}
 SOURCE_NOTES = {
-    "sqlite": "no cox.db yet",
-    "parquet-traces": "no Parquet traces yet",
-    "land-log": "needs land.jsonl and cox.db",
-    "chair-store": "no chair tables in the store yet",
-    "hosts-table": "no hosts table in the store yet",
+    "store": "no store tables yet",
+    "lake": "no lake views yet",
 }
-# Every store column the chair datasets read. chair-store is present only when each select runs.
+# Every store column the chair datasets read, gated by the single `store` requirement below.
 # There is no chair_ticks table and nothing writes one, so no probe reads it.
 CHAIR_PROBES = (
     "SELECT ts, kind, target, status, reason, action_json FROM {{store:chair_actions}} WHERE false",
     "SELECT name, holder, epoch, heartbeat_at FROM {{store:leases}} WHERE false",
     "SELECT host, launched_at, ended_at FROM {{store:runs}} WHERE false",
 )
-# The store columns the fleet host-state dataset reads. hosts-table is present only when it runs.
+# The store columns the fleet host-state dataset reads, gated by `store` too.
 HOSTS_PROBES = ("SELECT name, state, capacity, beat_at, versions_json FROM {{store:hosts}} WHERE false",)
 # An attached catalog is connected once at connect time, so the store URL never appears in per-dataset SQL as it would with postgres_scan.
 STORE_CATALOG = "store"
 STORE_FORM = re.compile(r"\{\{store:([A-Za-z_][A-Za-z0-9_]*)\}\}")
 STORE_LIKE = re.compile(r"\{\{\s*store\b[^}]*\}\}")
+# The connect hook (a later task) must create every lake view under this exact schema name;
+# superset_config.py cannot import this module, so the name is duplicated there by hand.
+LAKE_SCHEMA = "lake"
+LAKE_FORM = re.compile(r"\{\{lake:([A-Za-z_][A-Za-z0-9_]*)\}\}")
+LAKE_LIKE = re.compile(r"\{\{\s*lake\b[^}]*\}\}")
+# The lake carries runs, phases, node_calls, gate_decisions, ledger and traces; `lake` is
+# present only when the first of those is readable through the connection.
+LAKE_PROBES = (f"SELECT * FROM {LAKE_SCHEMA}.runs WHERE false",)
 
 
 class StoreError(NamedTuple):
@@ -125,13 +130,21 @@ def expand_store(sql: str, store_url: str | None) -> str | StoreError:
     return STORE_FORM.sub(lambda m: f"{STORE_CATALOG}.public.{m[1]}" if postgres else f"sqlite_scan('/data/runs/cox.db', '{m[1]}')", sql)
 
 
+def expand_lake(sql: str) -> str | StoreError:
+    """Replace every {{lake:TABLE}} with LAKE_SCHEMA.TABLE; the connect hook creates every lake view there."""
+    bad = [f for f in LAKE_LIKE.findall(sql) if not LAKE_FORM.fullmatch(f)]
+    if bad:
+        return StoreError(f"unknown lake placeholder {bad[0]}")
+    return LAKE_FORM.sub(lambda m: f"{LAKE_SCHEMA}.{m[1]}", sql)
+
+
 def plan(specs: dict[str, Any], existing: dict[str, dict[str, dict]], present: frozenset[str] | set[str], store_url: str | None = None) -> list[Op]:
     """Ordered operations: database, datasets, charts, dashboards.
 
     `existing` maps kind to name to the object as `normalize` shapes it. A dataset whose `requires`
     source is not in `present` is skipped, and so is every chart on it. Dataset SQL goes through
-    `expand_store`, and a bad placeholder becomes an error op. `seen` is what `decide`
-    compares when it differs from the payload, as with a masked database password.
+    `expand_store` then `expand_lake`, and a bad placeholder from either becomes an error op.
+    `seen` is what `decide` compares when it differs from the payload, as with a masked database password.
     """
 
     def decide(kind: str, name: str, payload: dict, seen: dict | None = None) -> Op:
@@ -146,6 +159,9 @@ def plan(specs: dict[str, Any], existing: dict[str, dict[str, dict]], present: f
         if d["name"] in absent:
             return Op("skipped", "dataset", d["name"], {}, absent[d["name"]])
         sql = expand_store(d["sql"].strip(), store_url)
+        if isinstance(sql, StoreError):
+            return Op("error", "dataset", d["name"], {}, sql.reason)
+        sql = expand_lake(sql)
         if isinstance(sql, StoreError):
             return Op("error", "dataset", d["name"], {}, sql.reason)
         return decide("dataset", d["name"], {"database": d["database"], "sql": sql})
@@ -341,16 +357,14 @@ def hosts_table_readable(client: Client, database_id: int, store_url: str | None
     return _probes_readable(client, database_id, store_url, HOSTS_PROBES)
 
 
-def present_sources(runs: Path, chair_store: bool = False, hosts_table: bool = False) -> frozenset[str]:
-    found = {
-        "sqlite": (runs / "cox.db").is_file(),
-        "parquet-traces": any(runs.glob("traces/*/*/*/*.parquet")),
-        # The land-log datasets also scan cox.db, and `requires` names one source, so land-log needs both files.
-        "land-log": (runs / "land.jsonl").is_file() and (runs / "cox.db").is_file(),
-        "chair-store": chair_store,
-        "hosts-table": hosts_table,
-    }
-    return frozenset(name for name, here in found.items() if here)
+def lake_readable(client: Client, database_id: int, store_url: str | None) -> bool:
+    """True when every LAKE_PROBES select runs, meaning lake.runs is readable."""
+    return _probes_readable(client, database_id, store_url, LAKE_PROBES)
+
+
+def present_sources(store: bool = False, lake: bool = False) -> frozenset[str]:
+    """`store` is present once the chair and hosts probes both run; `lake` once the lake probe does."""
+    return frozenset(name for name, here in {"store": store, "lake": lake}.items() if here)
 
 
 def apply(client: Client, ops: list[Op], ids: dict[str, dict[str, int]]) -> None:
@@ -373,7 +387,6 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--specs", required=True, help="directory of *.yaml specs")
     ap.add_argument("--url", default=os.environ.get("SUPERSET_URL"), help="Superset base URL, default $SUPERSET_URL")
-    ap.add_argument("--runs", default="/data/runs", help="the runs directory whose sources decide what is skipped")
     ap.add_argument("--store-url", default=os.environ.get("COXSWAIN_STORE_URL") or os.environ.get("COX_STORE_URL"), help="Postgres store URL, default $COXSWAIN_STORE_URL then $COX_STORE_URL; absent means cox.db")
     args = ap.parse_args(argv)
     user, password = os.environ.get("SUPERSET_ADMIN_USERNAME"), os.environ.get("SUPERSET_ADMIN_PASSWORD")
@@ -389,10 +402,10 @@ def main(argv: list[str] | None = None) -> int:
         # skips the chair datasets and the next run adds them. The note says so instead of blaming the store.
         database_id = ids["database"].get(specs["database"]["name"])
         if database_id is None:
-            print("note: chair-store is probed on the next run, once the coxswain database exists", flush=True)
-        chair = database_id is not None and chair_tables_readable(client, database_id, args.store_url)
-        hosts_table = database_id is not None and hosts_table_readable(client, database_id, args.store_url)
-        ops = plan(specs, existing, present_sources(Path(args.runs), chair, hosts_table), args.store_url)
+            print("note: store and lake are probed on the next run, once the coxswain database exists", flush=True)
+        store = database_id is not None and chair_tables_readable(client, database_id, args.store_url) and hosts_table_readable(client, database_id, args.store_url)
+        lake = database_id is not None and lake_readable(client, database_id, args.store_url)
+        ops = plan(specs, existing, present_sources(store, lake), args.store_url)
         errors = [op for op in ops if op.action == "error"]
         if errors:
             print("\n".join(line(op) for op in errors), file=sys.stderr)
