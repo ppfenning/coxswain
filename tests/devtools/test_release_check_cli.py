@@ -249,3 +249,38 @@ def test_walk_help_on_the_real_cox_parser_reaches_setup_and_dev_but_drops_releas
     required = {"cox setup doctor", "cox dev"}  # `cox dev` is a bare leaf now: it only points at the checkout
     assert required <= commands
     assert not any(cmd.split()[:2] == ["cox", "release"] for cmd in commands)  # SUPPRESS-marked, so dropped
+
+
+def test_plain_env_forces_no_color_and_strips_force_color():
+    from devtools.cli import _plain_env
+
+    assert _plain_env({"FORCE_COLOR": "1", "PATH": "/x"}) == {
+        "PATH": "/x", "NO_COLOR": "1", "PYTHON_COLORS": "0",
+    }
+
+
+def test_release_check_gathers_cli_facts_through_help_run_not_real_run(tmp_path, monkeypatch):
+    from devtools import cli
+
+    recorded = {}
+
+    def fake_gather_cli_facts(root, run):
+        recorded["run"] = run
+        return {}
+
+    monkeypatch.setattr(cli.release_check_cli, "gather_cli_facts", fake_gather_cli_facts)
+    monkeypatch.setattr(cli.release_check_manifest, "gather_manifest_facts", lambda *a, **k: {})
+    monkeypatch.setattr(cli.release_check_notes, "gather_notes_facts", lambda *a, **k: {})
+    monkeypatch.setattr(cli.release_check_pages, "gather_page_facts", lambda *a, **k: {})
+    monkeypatch.setattr(cli.release_check_readmes, "gather_readmes_facts", lambda *a, **k: {})
+    monkeypatch.setattr(cli.release_check, "gather_version_facts", lambda *a, **k: {})
+    monkeypatch.setattr(cli.release_check_index, "gather_release_index_facts", lambda *a, **k: {})
+    monkeypatch.setattr(cli.release_check, "CHECKS", ())
+
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text('[coxswain]\nversion = "0.1.0"\n')
+
+    rc = cli.main(["release-check", "--manifest", str(manifest_path), "--root", str(tmp_path)])
+
+    assert rc == 0
+    assert recorded["run"] is cli._help_run
