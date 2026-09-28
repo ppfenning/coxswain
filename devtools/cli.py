@@ -139,6 +139,18 @@ def _default_branch(directory: str, run) -> str:
     return ref_out.strip().rsplit("/", 1)[-1] if ref_rc == 0 and ref_out.strip() else "main"
 
 
+def _tap_branch_base(directory: str, run) -> tuple[bool, str]:
+    """`(True, "origin/<default>")` once `git fetch origin` succeeds in the tap
+    checkout, else `(False, detail)`. The formula bump branches from that
+    fetched ref, never the local HEAD: the 0.22.0 cut branched from a clone
+    still on the 0.20.0 formula and conflicted with master at 0.21.0. A failed
+    fetch refuses rather than trusting the remote-tracking refs already cached."""
+    fetch_rc, fetch_out = run(release.fetch_argv(directory), None)
+    if fetch_rc != 0:
+        return False, fetch_out.strip() or "fetch origin failed"
+    return True, f"origin/{_default_branch(directory, run)}"
+
+
 def _checkout_ready(directory: str, run) -> tuple[bool, str]:
     """Clean and on its default branch, or `(False, reason)` — checked
     before a single tag is made, since a release must never tag some
@@ -175,15 +187,18 @@ def _release_step_dir(component: str, root: str, overrides: dict, umbrella: str)
     return umbrella if component == "manifest" else release.component_dir(root, component, overrides)
 
 
-def _release_bump(directory: str, branch: str, commit_subject: str, paths: list[str], write, run) -> tuple[bool, str]:
-    """Checks out `branch` from the default branch in `directory`, and only
-    once that succeeds calls `write()` to rewrite `paths` on disk — `write`
-    never runs, and nothing on the default branch is ever touched, when the
-    checkout itself fails (a stale local `branch` left by an earlier partial
-    run, a hook, a permission error). Then stages `paths` and commits them
-    with `commit_subject`. `(False, detail)` names the first git call that
+def _release_bump(directory: str, branch: str, commit_subject: str, paths: list[str], write, run,
+                   start_point: str | None = None) -> tuple[bool, str]:
+    """Checks out `branch` from the default branch in `directory` (or from
+    `start_point` when given — the tap step's fetched `origin/<default>`,
+    never the local checkout's own HEAD), and only once that succeeds calls
+    `write()` to rewrite `paths` on disk — `write` never runs, and nothing on
+    the default branch is ever touched, when the checkout itself fails (a
+    stale local `branch` left by an earlier partial run, a hook, a
+    permission error). Then stages `paths` and commits them with
+    `commit_subject`. `(False, detail)` names the first git call that
     failed."""
-    co_rc, co_out = run(release.checkout_branch_argv(directory, branch), None)
+    co_rc, co_out = run(release.checkout_branch_argv(directory, branch, start_point), None)
     if co_rc != 0:
         return False, co_out.strip() or "checkout failed"
     write()
@@ -536,9 +551,14 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
             # The tap PR is left for the maintainer, so the checkout goes back to the branch it was on:
             # the next cut refuses a tap clone that sits on an old release branch.
             rev_rc, before = run(["git", "-C", directory, "rev-parse", "--abbrev-ref", "HEAD"], None)
+            fetched, base = _tap_branch_base(directory, run)
+            if not fetched:
+                print(f"FAILED tap_formula_pr tap: {base}")
+                return 2
             ok, detail = _release_bump(
                 directory, step["branch"], step["title"], [step["path"]],
-                lambda f=formula, s=sdist: f.write_text(release.bumped_formula_text(f.read_text(), version, *s)), run)
+                lambda f=formula, s=sdist: f.write_text(release.bumped_formula_text(f.read_text(), version, *s)), run,
+                start_point=base)
             if not ok:
                 print(f"FAILED tap_formula_pr tap: {detail}")
                 return 2
@@ -629,7 +649,13 @@ def _release(a: argparse.Namespace) -> int:
     steps = release.gate(drifts, a.allow_doc_drift, plan_steps) + plan_steps
     if a.dry_run:
         for step in steps:
-            print(f"{step['kind']} {step['component']}: {_release_detail(step)}")
+            if step["kind"] == "tap_formula_pr":
+                # Read-only: the dry run names the base from the cached origin/HEAD and never runs `git fetch`.
+                default = _default_branch(release.component_dir(root, release.TAP_CHECKOUT, overrides), _real_run)
+                print(f"tap_formula_pr {step['component']}: would fetch origin, then branch {step['branch']} "
+                      f"from origin/{default} (default branch {default})")
+            else:
+                print(f"{step['kind']} {step['component']}: {_release_detail(step)}")
         return 2 if any(step["kind"] == "refuse" for step in steps) else 0
     umbrella = a.umbrella or str(Path(root) / "coxswain")
     return _release_execute(steps, a.version, root, overrides, umbrella, _real_run, manifest, str(manifest_path))
