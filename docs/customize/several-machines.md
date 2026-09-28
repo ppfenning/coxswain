@@ -56,6 +56,11 @@ types on, so a lane machine that worked last week can fail this check.
 `cox route launch --on <host>` runs the same check first and refuses to
 launch when it fails.
 
+A login watchdog also checks every lane host's Claude login over ssh every
+30 minutes, timing out after 60 seconds, and records the result with the
+host's beat. A host whose login has lapsed gets no new lanes; it stays in
+the hosts table and its running lanes continue.
+
 ## Name the lane machines on the chair
 
 On the chair, list the lane machines in the routing profile:
@@ -78,6 +83,23 @@ cox setup doctor --host box2
 ```
 
 The doctor runs there over your own ssh config. The profile holds no keys.
+
+## Add a host to the shared table
+
+Add the host to the hosts table in the shared store so placement can fill
+it:
+
+```sh
+cox host add box2 --ssh me@box2 --capacity 3
+```
+
+`--capacity` is the lanes the host may run at once. An optional `--weight`
+sets its share of new placements, and an optional `--capabilities` names
+the list it can be matched on.
+
+`cox host drain box2` stops launching on the host while its live lanes
+finish; `cox host activate box2` makes it a lane host again. `cox host
+list` prints one line per host: its state, capacity, beat age, and login.
 
 ## Launch a lane
 
@@ -102,6 +124,21 @@ machines hold. Each one reads like this:
 The docket is `cox route context`. Liveness comes from a lease in the shared
 store. A second run of the same epic is refused on any machine.
 
+A lane counts as lost only when its host has gone quiet and its own lease
+heartbeat has been quiet for 10 minutes; a lost lane is marked lost and
+relaunched on another host. Placement weighs each host's weight and
+capabilities when it fills free lanes.
+
+## Make a lane machine the resident chair
+
+A lane machine can run the chair loop itself. `cox chair service --install
+--host <name>` prints the steps that put the loop on that host as a
+systemd user service; add `--apply` to run them instead of printing. `cox
+chair service --status --host <name>` reports it.
+
+Two steps stay with a person: `loginctl enable-linger` and `systemctl
+--user enable --now`.
+
 ## Land the work
 
 When the lane ends, bring its work home:
@@ -111,8 +148,9 @@ cox runs fetch <run>
 ```
 
 This brings the lane's task records and log to the chair. It also fetches
-its branches, `agents/<run>/*`, from the host's repos. Then run
-`cox runs land` as usual.
+its branches, `agents/<run>/*`, and its phase branches, `epic/<initiative>/*`,
+from the host's repos, and the fetched run's approvals reach the ticket
+files. Then run `cox runs land` as usual.
 
 The [autonomous chair](autonomous-chair.md) does the fetch itself. It runs
 `cox runs fetch` before it lands a remote lane.
@@ -214,20 +252,21 @@ Traces and the lake still stay local unless these are set.
 ## Land from any machine
 
 By default the ticket files hold each task's state, which is
-`work_state: files`. Only the chair lands.
+`work_state: files`. When the provider profile's `storage_url` names a
+shared Postgres database that answers, the loop reads work items from the
+store instead; `cox route status` then prints `work state: store` first. A
+local SQLite store keeps the files as the board. Only the chair lands from
+the ticket files; any machine can land once the store is the board.
 
-Set `work_state: store` in the provider profile on every machine. The
-shared store then becomes the source of truth for task state. Nothing
-changes until this is set.
+With the store as the board, a land on any machine checks that the task is
+approved in the store. It holds a lease named `land:<task>` while it
+merges. It moves the task to done with a compare-and-set. If another
+machine landed the task first, the land stops before it merges anything.
+The ticket file's `state:` is updated after.
 
-With it set, a land on any machine checks that the task is approved in
-the store. It holds a lease named `land:<task>` while it merges. It moves
-the task to done with a compare-and-set. If another machine landed the
-task first, the land stops before it merges anything. The ticket file's
-`state:` is updated after.
-
-The ticket files become a cache. This command shows how they differ from
-the store:
+The ticket files become a cache. After editing them by hand, `cox route
+import` writes them to the store, and `cox route drift` compares the two.
+This command also shows how they differ from the store:
 
 ```sh
 python -m harness.store_cli regenerate-states <work_dir> --initiative <id>

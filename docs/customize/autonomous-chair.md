@@ -10,7 +10,9 @@ things in order. The default tick is 60 seconds.
 
 - It beats the chair lease.
 - It reads the 5-hour window and the weekly spend.
-- It lands every approved task, one repository at a time.
+- It lands a completed phase as one squash onto a fresh main, from
+  `pr/<initiative>--<phase>`, one repository at a time. An approved task in
+  a partial phase waits for the rest of the phase instead of landing alone.
 - It relaunches an initiative once its ready tasks' dependencies have
   landed.
 - It retries a quarantine caused by the harness once.
@@ -18,14 +20,27 @@ things in order. The default tick is 60 seconds.
   pairs.
 - It fills lanes on the hosts named in `lane_hosts` too, after the local
   lanes.
+- It runs housekeeping on a period: a lake sync, a trace prune, and a run
+  clean.
 - It counts the drafts waiting for approval and never launches one.
-- It prints one status line.
+- It prints one status line, and a `work state:` line naming its board when
+  a shared store is configured.
 
 The status line looks like this:
 
 ```text
 chair 09-26 12:30 EDT | lanes 1/8 | lands 0 | limits 5h 20% weekly 75%/93% | needs chair: none
 ```
+
+When the profile names a shared Postgres store, the loop also prints where
+it reads the board from. If the store is unreachable, that line reads:
+
+```text
+work state: files (store unreachable)
+```
+
+A local SQLite store keeps the ticket files as the board and needs no shared
+store; local-first stays the default.
 
 ## Running it
 
@@ -102,16 +117,68 @@ It prints the unit text. If there is no unit, it prints `no unit at <path>`.
 A user service stops when you log out. To keep the loop running while nobody
 is logged in, run `loginctl enable-linger` yourself. Cox does not run it.
 
+## cox console
+
+`cox console` is one terminal screen of drafts, hosts, lanes, the chair and
+needs-chair items, one line per item. Its keys run the matching `cox`
+command after a y/n confirmation, so watching the fleet and acting on it no
+longer needs a second terminal:
+
+```sh
+cox console
+```
+
 ## Limits
 
-The lane cap is `policy.dispatch.max_in_flight` in the team cartridge.
+The lane cap is `policy.dispatch.max_in_flight` in the team cartridge, and
+it applies per machine, not across the fleet. A fleet gives each lane host
+its own capacity with `cox host add <name> --ssh <dest> --capacity <n>`; the
+Lane hosts section below shows how the loop fills each host in turn.
+
+The weekly spend window is anchored at `spend.weekly_reset` in the profile's
+`spend` block (for example `"Sun 04:00 America/New_York"`), not a rolling
+seven days. The loop, the launch gate, `route context` and `usage assess`
+all count the same week, and the status line shows where the week began.
 
 Past the hard stop, the loop lands work but launches nothing. The hard stop
 is `weekly_hard_stop_fraction` of `weekly_ceiling_usd`. Both live in the
 spend settings of the routing profile.
 
+`role_ceiling_usd` is a separate failsafe on one build's own cumulative
+spend, not a hard bound on any single action. The Claude Code provider
+profile sets `role_ceiling_usd: {build: 6.0}`; the Build checkpoints section
+below shows how a build spends against it.
+
 The loop never cuts a release. It never merges a Homebrew tap PR. It never
 pushes the workspace. It never changes a profile or a tier.
+
+## Build checkpoints
+
+A build runs in slices. Each slice stops at the guide, the build's measured
+shape (about $1.90), where the harness judges go or no-go: the session can
+resume, the partial work stays inside the task's surfaces, and the slice
+changed something.
+
+A build that passes its checkpoint resumes, as many times as it takes, until
+the session's cumulative spend reaches the `role_ceiling_usd` failsafe ($6
+on the Claude Code profile). Past it, the build is refused with a split
+recommendation. The weekly cap described above stays the fleet's global
+bound; `role_ceiling_usd` bounds one build's session, not the fleet.
+
+## Housekeeping
+
+Each tick, the loop runs housekeeping on a period and records it as a chair
+action: a lake sync, a trace prune, and a run clean.
+
+The lake sync is also where run logs are archived. `cox lake sync` archives
+each ended run's text log and call log older than
+`log_retention_days` (default 7) beside the traces on the object store,
+reads each copy back, and only then removes the local file. The loop's
+trace prune keeps the same number of days.
+
+To keep logs longer, set `log_retention_days` in the routing profile. Every
+machine needs it applied together, since an older `cox` refuses a key it
+does not know.
 
 ## Lane hosts
 
@@ -223,6 +290,12 @@ cox steward draft [--json]
 
 It writes each grounded steward proposal in intake as a draft. It lists the
 drafts that already exist. It lists the proposals it could not ground.
+
+Not every draft starts with the steward. Stale work becomes a draft too, for
+a person to approve or decline: a ticket with no recent commit is turned
+into a draft naming `proposed_by` and `proposed_at`, the same fields a
+steward draft carries. A ticket with no commit yet reads its file's
+modification time instead, so a fresh ticket is never judged stale.
 
 To approve a draft, run this:
 
