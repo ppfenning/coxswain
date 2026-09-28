@@ -159,22 +159,30 @@ datasets:
       FROM {{store:task_records}}
 
   # Chair datasets. All read the store only, and all require chair-store. bootstrap runs a
-  # LIMIT 0 select on every column below that these datasets read, and skips them until each
-  # select runs. `cox chair run` in another repository writes chair_actions and chair_ticks.
-  # This file assumes these columns and creates nothing.
-  #   chair_actions: ts, epoch, kind, initiative, task, status, reason. kind is one of land,
-  #     launch_epic, launch_decompose, rescue, relaunch, needs_chair, standby.
-  #   chair_ticks: ts, holder, host, epoch, max_in_flight, weekly_fraction.
-  #   leases: name, holder, host, epoch, heartbeat_at, expires_at. Times are UTC text,
-  #     YYYY-MM-DDTHH:MM:SSZ. heartbeat_at is the renewal time.
+  # WHERE false select on every column below that these datasets read, and skips them until
+  # each select runs. `cox chair run` in another repository writes chair_actions. There is no
+  # chair_ticks table and nothing writes one; every dataset below that used to read it now
+  # reads chair_actions, leases or hosts instead.
+  #   chair_actions: ts, epoch, holder, kind, target, status, reason, action_json. kind is one
+  #     of land, land_phase, launch_epic, launch_decompose, rescue, relaunch, needs_chair,
+  #     standby. target is the initiative/run/phase/task key the action is about; the display
+  #     columns that used to be plain initiative/task columns are pulled out of action_json,
+  #     the one place the richer identifying fields (initiative, run, phase, reason) live.
+  #   leases: name, holder, epoch, heartbeat_at, expires_at. Times are UTC text,
+  #     YYYY-MM-DDTHH:MM:SSZ. heartbeat_at is the renewal time. holder is `label@host:pid`;
+  #     there is no separate host column, so host is parsed out of holder.
+  #   hosts: name, ssh, capacity, state, beat_at, versions_json, updated_at, updated_by.
+  #     login_ok and login_checked_at are not columns; they live inside versions_json.
   #   runs: host, empty for a run on this machine.
   #
-  # A task landed when a chair_actions row has kind land and status ok, at that row's ts.
+  # A task landed when a chair_actions row has kind land or land_phase and status landed, at
+  # that row's ts, for the same target a needs_chair row named.
   # task_records is not the source: this repo holds no DDL for it, and the record_json paths
   # read here (review, adversary, arbitration, fix_loop) carry no land state. So these datasets
   # count only the lands the chair loop made.
-  # unknown: the success value `ok`, the lease name `chair` and the host column on leases come
-  # from the task's contract, not a schema read. The probe checks the columns, not the values.
+  # unknown: the status value `landed`, the lease name `chair`, the `label@host:pid` shape of
+  # holder and the action_json field names (initiative, run, phase, reason) come from the
+  # task's contract, not a schema read. The probe checks the columns, not the values.
   #
   # Every timestamp here is a naive UTC TIMESTAMP, never TIMESTAMPTZ. DuckDB needs a timezone
   # package to hand a timezone-aware value to Python, and coxswain does not declare one. The
@@ -189,8 +197,8 @@ datasets:
       WHERE kind IN ('land', 'launch_epic', 'launch_decompose', 'rescue', 'relaunch', 'needs_chair', 'standby')
       GROUP BY ALL
 
-  # lanes_by_hour split by host, over the same 14 days. max_in_flight is the newest chair tick
-  # at or before the hour's start, NULL when no tick exists yet.
+  # lanes_by_hour split by host, over the same 14 days, against that host's capacity from the
+  # hosts table (NULL when the host is not in hosts, which is expected for 'local').
   - name: chair_lanes_by_host_hour
     database: coxswain
     requires: chair-store
@@ -208,9 +216,6 @@ datasets:
                COALESCE(NULLIF(host, ''), 'local') AS host
         FROM {{store:runs}}
       ),
-      ticks AS (
-        SELECT CAST(ts AS TIMESTAMP) AS ts, max_in_flight FROM {{store:chair_ticks}}
-      ),
       busy AS (
         SELECT hours.hour_start, r.host, COUNT(*) AS lanes
         FROM hours
@@ -218,14 +223,13 @@ datasets:
               AND COALESCE(r.ended_at, CAST(now() AT TIME ZONE 'UTC' AS TIMESTAMP)) >= hours.hour_start
         GROUP BY ALL
       )
-      SELECT busy.hour_start AS hour, busy.host, busy.lanes,
-             (SELECT t.max_in_flight FROM ticks AS t WHERE t.ts <= busy.hour_start ORDER BY t.ts DESC LIMIT 1) AS max_in_flight
+      SELECT busy.hour_start AS hour, busy.host, busy.lanes, hosts.capacity
       FROM busy
+      LEFT JOIN {{store:hosts}} AS hosts ON hosts.name = busy.host
       ORDER BY hour, host
 
-  # One row per day with node_calls cost or a chair tick. loop_cost_per_landed is the literal 0.0
-  # on a day with a chair tick and NULL otherwise. The zero is true: the chair loop makes no
-  # model calls, so it adds nothing to cost_usd. A tick day with no calls shows cost_usd 0.0.
+  # One row per day with node_calls cost. There is no chair_ticks table any more to mark a day
+  # the chair loop ran but made no model calls, so this dataset lists cost days only.
   - name: chair_spend_by_day
     database: coxswain
     requires: chair-store
@@ -235,98 +239,98 @@ datasets:
         FROM {{store:node_calls}} GROUP BY 1
       ),
       landed AS (
-        SELECT CAST(CAST(ts AS TIMESTAMP) AS DATE) AS day, COUNT(DISTINCT concat_ws('/', initiative, task)) AS landed
+        SELECT CAST(CAST(ts AS TIMESTAMP) AS DATE) AS day, COUNT(DISTINCT target) AS landed
         FROM {{store:chair_actions}}
-        WHERE kind = 'land' AND status = 'ok'
+        WHERE kind IN ('land', 'land_phase') AND status = 'landed'
         GROUP BY 1
-      ),
-      tick_days AS (
-        SELECT DISTINCT CAST(CAST(ts AS TIMESTAMP) AS DATE) AS day FROM {{store:chair_ticks}}
-      ),
-      days AS (
-        SELECT day FROM cost UNION SELECT day FROM tick_days
       )
-      SELECT days.day, COALESCE(cost.cost_usd, 0.0) AS cost_usd, COALESCE(landed.landed, 0) AS landed,
-             COALESCE(cost.cost_usd, 0.0) / NULLIF(landed.landed, 0) AS cost_per_landed,
-             CASE WHEN days.day IN (SELECT day FROM tick_days) THEN 0.0 ELSE NULL END AS loop_cost_per_landed
-      FROM days
-      LEFT JOIN cost ON cost.day = days.day
-      LEFT JOIN landed ON landed.day = days.day
-      ORDER BY days.day
+      SELECT cost.day, cost.cost_usd, COALESCE(landed.landed, 0) AS landed,
+             cost.cost_usd / NULLIF(landed.landed, 0) AS cost_per_landed
+      FROM cost
+      LEFT JOIN landed ON landed.day = cost.day
+      ORDER BY cost.day
 
-  # The newest needs_chair action per initiative and task, unless a successful land action
-  # for the same task came after it. A failed land leaves the task waiting.
+  # The newest needs_chair action per target, unless a landed action for the same target came
+  # after it. A failed or missing land leaves the target waiting. initiative, run, phase and
+  # reason are display columns pulled out of action_json; target is the key everything joins on.
   - name: chair_needs_backlog
     database: coxswain
     requires: chair-store
     sql: |
       WITH flagged AS (
-        SELECT initiative, task, reason, CAST(ts AS TIMESTAMP) AS flagged_at,
-               ROW_NUMBER() OVER (PARTITION BY initiative, task ORDER BY CAST(ts AS TIMESTAMP) DESC) AS rn
+        SELECT target,
+               json_extract_string(action_json, '$.initiative') AS initiative,
+               json_extract_string(action_json, '$.run') AS run,
+               json_extract_string(action_json, '$.phase') AS phase,
+               json_extract_string(action_json, '$.reason') AS reason,
+               CAST(ts AS TIMESTAMP) AS flagged_at,
+               ROW_NUMBER() OVER (PARTITION BY target ORDER BY CAST(ts AS TIMESTAMP) DESC) AS rn
         FROM {{store:chair_actions}} WHERE kind = 'needs_chair'
       ),
       landed AS (
-        SELECT initiative, task, CAST(ts AS TIMESTAMP) AS landed_at
-        FROM {{store:chair_actions}} WHERE kind = 'land' AND status = 'ok'
+        SELECT target, CAST(ts AS TIMESTAMP) AS landed_at
+        FROM {{store:chair_actions}} WHERE kind IN ('land', 'land_phase') AND status = 'landed'
       )
-      SELECT f.initiative, f.task, f.reason, f.flagged_at,
+      SELECT f.target, f.initiative, f.run, f.phase, f.reason, f.flagged_at,
              date_diff('minute', f.flagged_at, CAST(now() AT TIME ZONE 'UTC' AS TIMESTAMP)) / 60.0 AS waiting_hours
       FROM flagged AS f
       WHERE f.rn = 1
         AND NOT EXISTS (
-          SELECT 1 FROM landed AS l WHERE l.initiative = f.initiative AND l.task = f.task AND l.landed_at > f.flagged_at
+          SELECT 1 FROM landed AS l WHERE l.target = f.target AND l.landed_at > f.flagged_at
         )
 
-  # One row. The lease columns are NULL while no chair lease exists.
+  # One row. The lease columns are NULL while no chair lease exists. leases has no host column,
+  # so host is parsed out of holder's `label@host:pid` form. No weekly_fraction: that read the
+  # gone chair_ticks table, and the weekly ceiling is profile config, not store data.
   - name: chair_status
     database: coxswain
     requires: chair-store
     sql: |
       WITH lease AS (
-        SELECT holder, host, epoch, CAST(heartbeat_at AS TIMESTAMP) AS heartbeat_at
+        SELECT holder, regexp_extract(holder, '@([^:]+):', 1) AS host, epoch,
+               CAST(heartbeat_at AS TIMESTAMP) AS heartbeat_at
         FROM {{store:leases}} WHERE name = 'chair'
-      ),
-      tick AS (
-        SELECT weekly_fraction FROM {{store:chair_ticks}} ORDER BY CAST(ts AS TIMESTAMP) DESC LIMIT 1
       )
       SELECT lease.holder, lease.host, lease.epoch,
-             date_diff('second', lease.heartbeat_at, CAST(now() AT TIME ZONE 'UTC' AS TIMESTAMP)) AS beat_age_seconds,
-             (SELECT weekly_fraction FROM tick) AS weekly_fraction
+             date_diff('second', lease.heartbeat_at, CAST(now() AT TIME ZONE 'UTC' AS TIMESTAMP)) AS beat_age_seconds
       FROM (SELECT 1) AS one LEFT JOIN lease ON true
 
   # Fleet datasets: host state, needs-chair by cause, weekly spend.
   # All read the store only, through {{store:<table>}} like the chair datasets above. Every
   # timestamp here is a naive UTC TIMESTAMP too, so DuckDB needs no pytz.
 
-  # One row per host, straight from the store's hosts table (state, last login check).
+  # One row per host, from the store's hosts table (name, state, capacity). login_ok and
+  # login_checked_at are not columns on hosts; both live inside versions_json.
   - name: fleet_host_state
     database: coxswain
     requires: hosts-table
     sql: |
-      SELECT host, state, CAST(last_login_check_at AS TIMESTAMP) AS last_login_check_at
+      SELECT name, state, capacity, CAST(beat_at AS TIMESTAMP) AS beat_at,
+             CAST(json_extract(versions_json, '$.login_ok') AS BOOLEAN) AS login_ok,
+             CAST(json_extract_string(versions_json, '$.login_checked_at') AS TIMESTAMP) AS login_checked_at
       FROM {{store:hosts}}
 
-  # chair_needs_backlog's own logic (the newest needs_chair action per initiative and task,
-  # unless a later successful land came after it), grouped by reason instead of listed per task.
+  # chair_needs_backlog's own logic (the newest needs_chair action per target, unless a later
+  # landed action came after it), grouped by reason instead of listed per target.
   - name: fleet_needs_chair_by_cause
     database: coxswain
     requires: chair-store
     sql: |
       WITH flagged AS (
-        SELECT initiative, task, reason, CAST(ts AS TIMESTAMP) AS flagged_at,
-               ROW_NUMBER() OVER (PARTITION BY initiative, task ORDER BY CAST(ts AS TIMESTAMP) DESC) AS rn
+        SELECT target, json_extract_string(action_json, '$.reason') AS reason, CAST(ts AS TIMESTAMP) AS flagged_at,
+               ROW_NUMBER() OVER (PARTITION BY target ORDER BY CAST(ts AS TIMESTAMP) DESC) AS rn
         FROM {{store:chair_actions}} WHERE kind = 'needs_chair'
       ),
       landed AS (
-        SELECT initiative, task, CAST(ts AS TIMESTAMP) AS landed_at
-        FROM {{store:chair_actions}} WHERE kind = 'land' AND status = 'ok'
+        SELECT target, CAST(ts AS TIMESTAMP) AS landed_at
+        FROM {{store:chair_actions}} WHERE kind IN ('land', 'land_phase') AND status = 'landed'
       ),
       waiting AS (
         SELECT f.reason, f.flagged_at
         FROM flagged AS f
         WHERE f.rn = 1
           AND NOT EXISTS (
-            SELECT 1 FROM landed AS l WHERE l.initiative = f.initiative AND l.task = f.task AND l.landed_at > f.flagged_at
+            SELECT 1 FROM landed AS l WHERE l.target = f.target AND l.landed_at > f.flagged_at
           )
       )
       SELECT reason AS cause, COUNT(*) AS items,
@@ -340,42 +344,15 @@ datasets:
   # path read here names a draft or approval state. Without that filter the dataset would list
   # approved work as waiting, so it waits until the store's schema names the state column.
 
-  # One row per day since the most recent weekly reset (a chair_ticks.weekly_fraction lower
-  # than the immediately prior tick's value, found with LAG ordered by ts). Every {{store:...}}
-  # select runs inside DuckDB regardless of the store behind it: expand_store either attaches
-  # Postgres or scans cox.db's SQLite file, but DuckDB always executes the SQL, so LAG needs no
-  # per-engine fallback here. Before any reset has happened, the earliest tick is the start.
+  # Dollars per week, not a fraction: the weekly ceiling lives in profile config, not the
+  # store, so this dataset carries no fraction column. One row per week that has spend, over
+  # the trailing 12 weeks from now, so an idle week before that window doesn't linger forever.
   - name: fleet_weekly_spend
     database: coxswain
     requires: chair-store
     sql: |
-      WITH ticks AS (
-        SELECT CAST(ts AS TIMESTAMP) AS ts, weekly_fraction,
-               LAG(weekly_fraction) OVER (ORDER BY CAST(ts AS TIMESTAMP)) AS prior_fraction
-        FROM {{store:chair_ticks}}
-      ),
-      reset_at AS (
-        SELECT COALESCE(
-          MAX(CASE WHEN prior_fraction IS NOT NULL AND weekly_fraction < prior_fraction THEN ts END),
-          MIN(ts)
-        ) AS reset_ts
-        FROM ticks
-      ),
-      cost AS (
-        SELECT CAST(CAST(ts AS TIMESTAMP) AS DATE) AS day, SUM(cost_usd) AS cost_usd
-        FROM {{store:node_calls}} GROUP BY 1
-      ),
-      tick_days AS (
-        SELECT DISTINCT CAST(ts AS DATE) AS day FROM ticks
-      ),
-      days AS (
-        SELECT day FROM cost WHERE day >= (SELECT CAST(reset_ts AS DATE) FROM reset_at)
-        UNION
-        SELECT day FROM tick_days WHERE day >= (SELECT CAST(reset_ts AS DATE) FROM reset_at)
-      )
-      SELECT days.day, COALESCE(cost.cost_usd, 0.0) AS cost_usd,
-             SUM(COALESCE(cost.cost_usd, 0.0)) OVER (ORDER BY days.day) AS cumulative_cost_usd,
-             (SELECT t.weekly_fraction FROM ticks AS t WHERE CAST(t.ts AS DATE) <= days.day ORDER BY t.ts DESC LIMIT 1) AS weekly_fraction
-      FROM days
-      LEFT JOIN cost ON cost.day = days.day
-      ORDER BY days.day
+      SELECT date_trunc('week', CAST(ts AS TIMESTAMP)) AS week, SUM(cost_usd) AS cost_usd
+      FROM {{store:node_calls}}
+      WHERE CAST(ts AS TIMESTAMP) >= date_trunc('week', CAST(now() AT TIME ZONE 'UTC' AS TIMESTAMP)) - INTERVAL 12 WEEK
+      GROUP BY 1
+      ORDER BY 1
