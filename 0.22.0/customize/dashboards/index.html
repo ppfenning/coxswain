@@ -1665,6 +1665,39 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#fleet" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fleet
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#chair" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Chair
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#verify-fleet-and-chair" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verify Fleet and Chair
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#change-the-time-range" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2940,6 +2973,39 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#fleet" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fleet
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#chair" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Chair
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#verify-fleet-and-chair" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verify Fleet and Chair
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#change-the-time-range" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3105,6 +3171,205 @@ and run the check from the repository root. It prints one line per chart,
 chart errors.</p>
 <div class="highlight"><pre><span></span><code>python<span class="w"> </span>deploy/superset/check.py
 </code></pre></div>
+<h2 id="fleet">Fleet</h2>
+<p>The Fleet dashboard answers five questions about the machines running
+Coxswain, one chart per panel.</p>
+<ul>
+<li><strong>Chair holder, epoch and beat age.</strong> Who holds the chair lease, which
+  host and epoch it holds it at, and how many seconds have passed since
+  its last heartbeat.</li>
+<li><strong>Lanes per host over time against capacity.</strong> How many lanes each
+  host ran per hour over the last 14 days, next to the max-in-flight
+  limit in force at that hour.</li>
+<li><strong>Host state and last login.</strong> Every host's state and when it last
+  checked in.</li>
+<li><strong>Needs-chair items by cause.</strong> How many tasks are waiting on the
+  chair, grouped by why, and how long the oldest one in each group has
+  waited.</li>
+<li><strong>Weekly spend against the ceiling.</strong> Cumulative spend since the most
+  recent weekly reset, next to the weekly_fraction the chair loop
+  recorded at each point.</li>
+</ul>
+<p>There is no drafts panel yet. The store keeps no draft or approval state
+on <code>task_records</code>, so a dataset that lists items waiting on a draft has
+no column to filter on; see the <code>fleet_drafts_waiting_approval</code> comment
+in <code>deploy/superset/dashboards/datasets.yaml</code>.</p>
+<p>Fleet reads the store only: <code>hosts</code>, <code>chair_actions</code>, <code>chair_ticks</code>,
+<code>leases</code>, <code>runs</code>, and <code>node_calls</code>. It reads them through the same
+connection as the Coxswain and Chair dashboards, <code>sqlite_scan</code> of
+<code>cox.db</code> or an attached Postgres catalog, and never
+<code>chair.actions.jsonl</code>, <code>land.jsonl</code>, or any other log file. None of its
+datasets reads <code>task_records</code>.</p>
+<p>The host-state panel is skipped until the <code>hosts</code> table exists in the
+store. <code>fleet_host_state</code> requires <code>hosts-table</code>, and bootstrap installs
+a dataset only once its required source is present. Once a run has
+written to <code>hosts</code>, rerun <code>docker compose run --rm superset-dashboards</code>
+to install the panel.</p>
+<p>bootstrap.py creates every Fleet chart from the specs in
+<code>deploy/superset/dashboards/charts.yaml</code>, but it still groups only the
+Coxswain charts into a Superset dashboard page. The comment atop
+<code>deploy/superset/dashboards/dashboard.yaml</code> names teaching it to also
+build the Fleet and Chair pages as a separate, later change. Until then,
+open Charts from the top menu and find a panel by its title; a chart
+opened this way shows the same query a dashboard page would.</p>
+<p>Four of the five panels read a dataset new to Fleet. Their SQL, copied
+from <code>deploy/superset/dashboards/datasets.yaml</code>:</p>
+<p><code>chair_lanes_by_host_hour</code> feeds <strong>Lanes per host over time against
+capacity</strong>:</p>
+<div class="highlight"><pre><span></span><code><span class="k">WITH</span><span class="w"> </span><span class="n">hours</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="p">(</span>
+<span class="w">  </span><span class="k">SELECT</span><span class="w"> </span><span class="n">h</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">hour_start</span><span class="p">,</span><span class="w"> </span><span class="n">h</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">INTERVAL</span><span class="w"> </span><span class="mi">1</span><span class="w"> </span><span class="n">HOUR</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">hour_end</span>
+<span class="w">  </span><span class="k">FROM</span><span class="w"> </span><span class="n">generate_series</span><span class="p">(</span>
+<span class="w">    </span><span class="n">date_trunc</span><span class="p">(</span><span class="s1">'hour'</span><span class="p">,</span><span class="w"> </span><span class="k">CAST</span><span class="p">(</span><span class="n">now</span><span class="p">()</span><span class="w"> </span><span class="k">AT</span><span class="w"> </span><span class="k">TIME</span><span class="w"> </span><span class="k">ZONE</span><span class="w"> </span><span class="s1">'UTC'</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="k">TIMESTAMP</span><span class="p">))</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="nb">INTERVAL</span><span class="w"> </span><span class="mi">14</span><span class="w"> </span><span class="k">DAY</span><span class="p">,</span>
+<span class="w">    </span><span class="n">date_trunc</span><span class="p">(</span><span class="s1">'hour'</span><span class="p">,</span><span class="w"> </span><span class="k">CAST</span><span class="p">(</span><span class="n">now</span><span class="p">()</span><span class="w"> </span><span class="k">AT</span><span class="w"> </span><span class="k">TIME</span><span class="w"> </span><span class="k">ZONE</span><span class="w"> </span><span class="s1">'UTC'</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="k">TIMESTAMP</span><span class="p">)),</span>
+<span class="w">    </span><span class="nb">INTERVAL</span><span class="w"> </span><span class="mi">1</span><span class="w"> </span><span class="n">HOUR</span>
+<span class="w">  </span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">t</span><span class="p">(</span><span class="n">h</span><span class="p">)</span>
+<span class="p">),</span>
+<span class="n">r</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="p">(</span>
+<span class="w">  </span><span class="k">SELECT</span><span class="w"> </span><span class="k">CAST</span><span class="p">(</span><span class="n">launched_at</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="k">TIMESTAMP</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">launched_at</span><span class="p">,</span><span class="w"> </span><span class="k">CAST</span><span class="p">(</span><span class="n">ended_at</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="k">TIMESTAMP</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">ended_at</span><span class="p">,</span>
+<span class="w">         </span><span class="k">COALESCE</span><span class="p">(</span><span class="k">NULLIF</span><span class="p">(</span><span class="k">host</span><span class="p">,</span><span class="w"> </span><span class="s1">''</span><span class="p">),</span><span class="w"> </span><span class="s1">'local'</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="k">host</span>
+<span class="w">  </span><span class="k">FROM</span><span class="w"> </span><span class="err">{{</span><span class="n">store</span><span class="p">:</span><span class="n">runs</span><span class="err">}}</span>
+<span class="p">),</span>
+<span class="n">ticks</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="p">(</span>
+<span class="w">  </span><span class="k">SELECT</span><span class="w"> </span><span class="k">CAST</span><span class="p">(</span><span class="n">ts</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="k">TIMESTAMP</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">ts</span><span class="p">,</span><span class="w"> </span><span class="n">max_in_flight</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="err">{{</span><span class="n">store</span><span class="p">:</span><span class="n">chair_ticks</span><span class="err">}}</span>
+<span class="p">),</span>
+<span class="n">busy</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="p">(</span>
+<span class="w">  </span><span class="k">SELECT</span><span class="w"> </span><span class="n">hours</span><span class="p">.</span><span class="n">hour_start</span><span class="p">,</span><span class="w"> </span><span class="n">r</span><span class="p">.</span><span class="k">host</span><span class="p">,</span><span class="w"> </span><span class="k">COUNT</span><span class="p">(</span><span class="o">*</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">lanes</span>
+<span class="w">  </span><span class="k">FROM</span><span class="w"> </span><span class="n">hours</span>
+<span class="w">  </span><span class="k">JOIN</span><span class="w"> </span><span class="n">r</span><span class="w"> </span><span class="k">ON</span><span class="w"> </span><span class="n">r</span><span class="p">.</span><span class="n">launched_at</span><span class="w"> </span><span class="o">&lt;=</span><span class="w"> </span><span class="n">hours</span><span class="p">.</span><span class="n">hour_end</span>
+<span class="w">        </span><span class="k">AND</span><span class="w"> </span><span class="k">COALESCE</span><span class="p">(</span><span class="n">r</span><span class="p">.</span><span class="n">ended_at</span><span class="p">,</span><span class="w"> </span><span class="k">CAST</span><span class="p">(</span><span class="n">now</span><span class="p">()</span><span class="w"> </span><span class="k">AT</span><span class="w"> </span><span class="k">TIME</span><span class="w"> </span><span class="k">ZONE</span><span class="w"> </span><span class="s1">'UTC'</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="k">TIMESTAMP</span><span class="p">))</span><span class="w"> </span><span class="o">&gt;=</span><span class="w"> </span><span class="n">hours</span><span class="p">.</span><span class="n">hour_start</span>
+<span class="w">  </span><span class="k">GROUP</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="k">ALL</span>
+<span class="p">)</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">busy</span><span class="p">.</span><span class="n">hour_start</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">hour</span><span class="p">,</span><span class="w"> </span><span class="n">busy</span><span class="p">.</span><span class="k">host</span><span class="p">,</span><span class="w"> </span><span class="n">busy</span><span class="p">.</span><span class="n">lanes</span><span class="p">,</span>
+<span class="w">       </span><span class="p">(</span><span class="k">SELECT</span><span class="w"> </span><span class="n">t</span><span class="p">.</span><span class="n">max_in_flight</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">ticks</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">t</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">t</span><span class="p">.</span><span class="n">ts</span><span class="w"> </span><span class="o">&lt;=</span><span class="w"> </span><span class="n">busy</span><span class="p">.</span><span class="n">hour_start</span><span class="w"> </span><span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">t</span><span class="p">.</span><span class="n">ts</span><span class="w"> </span><span class="k">DESC</span><span class="w"> </span><span class="k">LIMIT</span><span class="w"> </span><span class="mi">1</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">max_in_flight</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">busy</span>
+<span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">hour</span><span class="p">,</span><span class="w"> </span><span class="k">host</span>
+</code></pre></div>
+<p><code>fleet_host_state</code> feeds <strong>Host state and last login</strong>:</p>
+<div class="highlight"><pre><span></span><code><span class="k">SELECT</span><span class="w"> </span><span class="k">host</span><span class="p">,</span><span class="w"> </span><span class="k">state</span><span class="p">,</span><span class="w"> </span><span class="k">CAST</span><span class="p">(</span><span class="n">last_login_check_at</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="k">TIMESTAMP</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">last_login_check_at</span>
+<span class="k">FROM</span><span class="w"> </span><span class="err">{{</span><span class="n">store</span><span class="p">:</span><span class="n">hosts</span><span class="err">}}</span>
+</code></pre></div>
+<p><code>fleet_needs_chair_by_cause</code> feeds <strong>Needs-chair items by cause</strong>:</p>
+<div class="highlight"><pre><span></span><code><span class="k">WITH</span><span class="w"> </span><span class="n">flagged</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="p">(</span>
+<span class="w">  </span><span class="k">SELECT</span><span class="w"> </span><span class="n">initiative</span><span class="p">,</span><span class="w"> </span><span class="n">task</span><span class="p">,</span><span class="w"> </span><span class="n">reason</span><span class="p">,</span><span class="w"> </span><span class="k">CAST</span><span class="p">(</span><span class="n">ts</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="k">TIMESTAMP</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">flagged_at</span><span class="p">,</span>
+<span class="w">         </span><span class="n">ROW_NUMBER</span><span class="p">()</span><span class="w"> </span><span class="n">OVER</span><span class="w"> </span><span class="p">(</span><span class="n">PARTITION</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">initiative</span><span class="p">,</span><span class="w"> </span><span class="n">task</span><span class="w"> </span><span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="k">CAST</span><span class="p">(</span><span class="n">ts</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="k">TIMESTAMP</span><span class="p">)</span><span class="w"> </span><span class="k">DESC</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">rn</span>
+<span class="w">  </span><span class="k">FROM</span><span class="w"> </span><span class="err">{{</span><span class="n">store</span><span class="p">:</span><span class="n">chair_actions</span><span class="err">}}</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">kind</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'needs_chair'</span>
+<span class="p">),</span>
+<span class="n">landed</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="p">(</span>
+<span class="w">  </span><span class="k">SELECT</span><span class="w"> </span><span class="n">initiative</span><span class="p">,</span><span class="w"> </span><span class="n">task</span><span class="p">,</span><span class="w"> </span><span class="k">CAST</span><span class="p">(</span><span class="n">ts</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="k">TIMESTAMP</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">landed_at</span>
+<span class="w">  </span><span class="k">FROM</span><span class="w"> </span><span class="err">{{</span><span class="n">store</span><span class="p">:</span><span class="n">chair_actions</span><span class="err">}}</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">kind</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'land'</span><span class="w"> </span><span class="k">AND</span><span class="w"> </span><span class="n">status</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'ok'</span>
+<span class="p">),</span>
+<span class="n">waiting</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="p">(</span>
+<span class="w">  </span><span class="k">SELECT</span><span class="w"> </span><span class="n">f</span><span class="p">.</span><span class="n">reason</span><span class="p">,</span><span class="w"> </span><span class="n">f</span><span class="p">.</span><span class="n">flagged_at</span>
+<span class="w">  </span><span class="k">FROM</span><span class="w"> </span><span class="n">flagged</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">f</span>
+<span class="w">  </span><span class="k">WHERE</span><span class="w"> </span><span class="n">f</span><span class="p">.</span><span class="n">rn</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span>
+<span class="w">    </span><span class="k">AND</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">EXISTS</span><span class="w"> </span><span class="p">(</span>
+<span class="w">      </span><span class="k">SELECT</span><span class="w"> </span><span class="mi">1</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">landed</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">l</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">l</span><span class="p">.</span><span class="n">initiative</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">f</span><span class="p">.</span><span class="n">initiative</span><span class="w"> </span><span class="k">AND</span><span class="w"> </span><span class="n">l</span><span class="p">.</span><span class="n">task</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">f</span><span class="p">.</span><span class="n">task</span><span class="w"> </span><span class="k">AND</span><span class="w"> </span><span class="n">l</span><span class="p">.</span><span class="n">landed_at</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="n">f</span><span class="p">.</span><span class="n">flagged_at</span>
+<span class="w">    </span><span class="p">)</span>
+<span class="p">)</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">reason</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">cause</span><span class="p">,</span><span class="w"> </span><span class="k">COUNT</span><span class="p">(</span><span class="o">*</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">items</span><span class="p">,</span>
+<span class="w">       </span><span class="k">MAX</span><span class="p">(</span><span class="n">date_diff</span><span class="p">(</span><span class="s1">'minute'</span><span class="p">,</span><span class="w"> </span><span class="n">flagged_at</span><span class="p">,</span><span class="w"> </span><span class="k">CAST</span><span class="p">(</span><span class="n">now</span><span class="p">()</span><span class="w"> </span><span class="k">AT</span><span class="w"> </span><span class="k">TIME</span><span class="w"> </span><span class="k">ZONE</span><span class="w"> </span><span class="s1">'UTC'</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="k">TIMESTAMP</span><span class="p">)))</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="mi">60</span><span class="p">.</span><span class="mi">0</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">oldest_waiting_hours</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">waiting</span>
+<span class="k">GROUP</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">reason</span>
+</code></pre></div>
+<p><code>fleet_weekly_spend</code> feeds <strong>Weekly spend against the ceiling</strong>:</p>
+<div class="highlight"><pre><span></span><code><span class="k">WITH</span><span class="w"> </span><span class="n">ticks</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="p">(</span>
+<span class="w">  </span><span class="k">SELECT</span><span class="w"> </span><span class="k">CAST</span><span class="p">(</span><span class="n">ts</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="k">TIMESTAMP</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">ts</span><span class="p">,</span><span class="w"> </span><span class="n">weekly_fraction</span><span class="p">,</span>
+<span class="w">         </span><span class="n">LAG</span><span class="p">(</span><span class="n">weekly_fraction</span><span class="p">)</span><span class="w"> </span><span class="n">OVER</span><span class="w"> </span><span class="p">(</span><span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="k">CAST</span><span class="p">(</span><span class="n">ts</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="k">TIMESTAMP</span><span class="p">))</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">prior_fraction</span>
+<span class="w">  </span><span class="k">FROM</span><span class="w"> </span><span class="err">{{</span><span class="n">store</span><span class="p">:</span><span class="n">chair_ticks</span><span class="err">}}</span>
+<span class="p">),</span>
+<span class="n">reset_at</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="p">(</span>
+<span class="w">  </span><span class="k">SELECT</span><span class="w"> </span><span class="k">COALESCE</span><span class="p">(</span>
+<span class="w">    </span><span class="k">MAX</span><span class="p">(</span><span class="k">CASE</span><span class="w"> </span><span class="k">WHEN</span><span class="w"> </span><span class="n">prior_fraction</span><span class="w"> </span><span class="k">IS</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="w"> </span><span class="k">AND</span><span class="w"> </span><span class="n">weekly_fraction</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">prior_fraction</span><span class="w"> </span><span class="k">THEN</span><span class="w"> </span><span class="n">ts</span><span class="w"> </span><span class="k">END</span><span class="p">),</span>
+<span class="w">    </span><span class="k">MIN</span><span class="p">(</span><span class="n">ts</span><span class="p">)</span>
+<span class="w">  </span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">reset_ts</span>
+<span class="w">  </span><span class="k">FROM</span><span class="w"> </span><span class="n">ticks</span>
+<span class="p">),</span>
+<span class="n">cost</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="p">(</span>
+<span class="w">  </span><span class="k">SELECT</span><span class="w"> </span><span class="k">CAST</span><span class="p">(</span><span class="k">CAST</span><span class="p">(</span><span class="n">ts</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="k">TIMESTAMP</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="nb">DATE</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="k">day</span><span class="p">,</span><span class="w"> </span><span class="k">SUM</span><span class="p">(</span><span class="n">cost_usd</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">cost_usd</span>
+<span class="w">  </span><span class="k">FROM</span><span class="w"> </span><span class="err">{{</span><span class="n">store</span><span class="p">:</span><span class="n">node_calls</span><span class="err">}}</span><span class="w"> </span><span class="k">GROUP</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="mi">1</span>
+<span class="p">),</span>
+<span class="n">tick_days</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="p">(</span>
+<span class="w">  </span><span class="k">SELECT</span><span class="w"> </span><span class="k">DISTINCT</span><span class="w"> </span><span class="k">CAST</span><span class="p">(</span><span class="n">ts</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="nb">DATE</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="k">day</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">ticks</span>
+<span class="p">),</span>
+<span class="n">days</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="p">(</span>
+<span class="w">  </span><span class="k">SELECT</span><span class="w"> </span><span class="k">day</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">cost</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="k">day</span><span class="w"> </span><span class="o">&gt;=</span><span class="w"> </span><span class="p">(</span><span class="k">SELECT</span><span class="w"> </span><span class="k">CAST</span><span class="p">(</span><span class="n">reset_ts</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="nb">DATE</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">reset_at</span><span class="p">)</span>
+<span class="w">  </span><span class="k">UNION</span>
+<span class="w">  </span><span class="k">SELECT</span><span class="w"> </span><span class="k">day</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">tick_days</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="k">day</span><span class="w"> </span><span class="o">&gt;=</span><span class="w"> </span><span class="p">(</span><span class="k">SELECT</span><span class="w"> </span><span class="k">CAST</span><span class="p">(</span><span class="n">reset_ts</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="nb">DATE</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">reset_at</span><span class="p">)</span>
+<span class="p">)</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">days</span><span class="p">.</span><span class="k">day</span><span class="p">,</span><span class="w"> </span><span class="k">COALESCE</span><span class="p">(</span><span class="n">cost</span><span class="p">.</span><span class="n">cost_usd</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">.</span><span class="mi">0</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">cost_usd</span><span class="p">,</span>
+<span class="w">       </span><span class="k">SUM</span><span class="p">(</span><span class="k">COALESCE</span><span class="p">(</span><span class="n">cost</span><span class="p">.</span><span class="n">cost_usd</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">.</span><span class="mi">0</span><span class="p">))</span><span class="w"> </span><span class="n">OVER</span><span class="w"> </span><span class="p">(</span><span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">days</span><span class="p">.</span><span class="k">day</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">cumulative_cost_usd</span><span class="p">,</span>
+<span class="w">       </span><span class="p">(</span><span class="k">SELECT</span><span class="w"> </span><span class="n">t</span><span class="p">.</span><span class="n">weekly_fraction</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">ticks</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">t</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="k">CAST</span><span class="p">(</span><span class="n">t</span><span class="p">.</span><span class="n">ts</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="nb">DATE</span><span class="p">)</span><span class="w"> </span><span class="o">&lt;=</span><span class="w"> </span><span class="n">days</span><span class="p">.</span><span class="k">day</span><span class="w"> </span><span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">t</span><span class="p">.</span><span class="n">ts</span><span class="w"> </span><span class="k">DESC</span><span class="w"> </span><span class="k">LIMIT</span><span class="w"> </span><span class="mi">1</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">weekly_fraction</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">days</span>
+<span class="k">LEFT</span><span class="w"> </span><span class="k">JOIN</span><span class="w"> </span><span class="n">cost</span><span class="w"> </span><span class="k">ON</span><span class="w"> </span><span class="n">cost</span><span class="p">.</span><span class="k">day</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">days</span><span class="p">.</span><span class="k">day</span>
+<span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">days</span><span class="p">.</span><span class="k">day</span>
+</code></pre></div>
+<p>The fifth panel, <strong>Chair holder, epoch and beat age</strong>, reads the
+<code>chair_status</code> dataset.</p>
+<h2 id="chair">Chair</h2>
+<p>The Chair dashboard answers three questions about the always-on chair
+loop, one chart per panel.</p>
+<ul>
+<li><strong>Chair actions per hour by kind.</strong> How many actions the loop took
+  each hour, split by kind: land, launch_epic, launch_decompose, rescue,
+  relaunch, needs_chair, or standby. It reads the <code>chair_actions_by_hour</code>
+  dataset.</li>
+<li><strong>Spend per landed task per day.</strong> The day's model spend divided by
+  the tasks the loop landed that day, next to the loop's own cost per
+  landed task. It reads the <code>chair_spend_by_day</code> dataset.</li>
+<li><strong>Needs-chair backlog.</strong> Which tasks are waiting on the chair right
+  now, and how long the oldest one has waited. It reads the
+  <code>chair_needs_backlog</code> dataset.</li>
+</ul>
+<p>The loop makes no model calls itself, so its line in the spend panel is
+zero by construction. It exists for contrast with the interactive
+chair, which does call a model, so the two lines show a loop that costs
+nothing next to one that does.</p>
+<p>Chair reads the store only: <code>chair_actions</code>, <code>chair_ticks</code>, and
+<code>node_calls</code>. It reads them through the same connection as the Coxswain
+and Fleet dashboards, and never <code>chair.actions.jsonl</code>, <code>land.jsonl</code>, or
+any other log file. None of its datasets reads <code>task_records</code>; a task
+counts as landed from its <code>chair_actions</code> row, as the comment above the
+chair datasets in <code>datasets.yaml</code> explains.</p>
+<p>Like Fleet, bootstrap.py creates each Chair chart but still groups only
+the Coxswain charts into a dashboard page. Open Charts from the top menu
+and find a panel by its title.</p>
+<h2 id="verify-fleet-and-chair">Verify Fleet and Chair</h2>
+<p>Bring the stack up and install the specs, from <code>deploy/superset</code>:</p>
+<div class="highlight"><pre><span></span><code>docker<span class="w"> </span>compose<span class="w"> </span>up<span class="w"> </span>-d
+docker<span class="w"> </span>compose<span class="w"> </span>run<span class="w"> </span>--rm<span class="w"> </span>superset-dashboards
+</code></pre></div>
+<p>Then export the values from your <code>.env</code> and run the check from the
+repository root.</p>
+<div class="highlight"><pre><span></span><code>python<span class="w"> </span>deploy/superset/check.py
+</code></pre></div>
+<p>It prints one line per chart, <code>&lt;chart&gt;: &lt;rows&gt; rows</code> or <code>&lt;chart&gt;: ERROR
+&lt;message&gt;</code>, and exits 1 if any chart errors. Among its lines are the
+five Fleet charts and the three Chair charts: Chair holder, epoch and
+beat age; Lanes per host over time against capacity; Host state and
+last login; Needs-chair items by cause; Weekly spend against the
+ceiling; Chair actions per hour by kind; Spend per landed task per day;
+Needs-chair backlog. A clean run exits 0.</p>
+<p>Open each chart from the Charts list at <a href="http://127.0.0.1:8088">http://127.0.0.1:8088</a> to see
+it rendered.</p>
+<ul>
+<li><strong>Chair holder, epoch and beat age</strong> is healthy when it shows one row
+  with a holder, host and epoch, and a beat age of a few seconds, well
+  under the chair's heartbeat interval.</li>
+<li><strong>Lanes per host over time against capacity</strong> is healthy when each
+  host's line sits at or below its max-in-flight line.</li>
+<li><strong>Host state and last login</strong> is healthy when every host reads a
+  known state with a recent last login check.</li>
+<li><strong>Needs-chair items by cause</strong> is healthy when it is empty, or short;
+  a large oldest-waiting-hours value means the chair loop is behind.</li>
+<li><strong>Weekly spend against the ceiling</strong> is healthy when the cumulative
+  line rises but stays under the ceiling for the week.</li>
+<li><strong>Chair actions per hour by kind</strong> is healthy when it shows a bar for
+  most hours, mostly <code>land</code> and <code>standby</code>.</li>
+<li><strong>Spend per landed task per day</strong> is healthy when the loop's line
+  sits flat at zero next to the interactive chair's nonzero line.</li>
+<li><strong>Needs-chair backlog</strong> is healthy when it is empty; a growing table
+  means tasks are waiting longer than the loop is clearing them.</li>
+</ul>
 <h2 id="change-the-time-range">Change the time range</h2>
 <p>The dashboard has a time range filter. Open it, pick a range such as the
 last week or a pair of dates, and apply it. Every chart on the dashboard
