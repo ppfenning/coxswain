@@ -159,11 +159,11 @@ role_budget_usd:
 
 # Roles a graph asks "standard" for that are extraction, not judgment. The
 # profile may run them cheap; changing this resets streaks like any profile edit.
-# A hard runaway ceiling per role (the operator, 2026-09-28): "the global weekly cap should be the bound ... tracking spend per
-# build and minimizing it is the right move, but the bound should never be hard on the individual build, just used as
-# a guide", with a high upper limit "like $6 to prevent huge runaway tasks". For a role named here, this is the only
-# per-call stop (graphs `role_ceiling_usd`); the role or tier budget above, or the measured bounds row, becomes the
-# guide the ledger records and `cox stats` ranks against. Decomposition keeps builds well below it.
+# A runaway failsafe per role (the operator, 2026-09-28): "The $6 hard cap is a failsafe more than anything, periodic checks
+# should be made well before that limit, and multiple times to allow for go/no-go." Each slice still stops at the role
+# or tier budget above (or the measured bounds row), the guide, where the harness judges go/no-go and resumes; this
+# number caps the session's cumulative spend across slices (graphs `role_ceiling_usd`). The weekly cap bounds the rest,
+# and decomposition keeps builds well below it.
 role_ceiling_usd:
   build: 6.0
 
