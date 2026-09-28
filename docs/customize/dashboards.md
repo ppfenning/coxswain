@@ -1,15 +1,15 @@
 # Dashboards
 
-This page shows how to run Apache Superset over your Coxswain runs, read
-the Coxswain dashboard, and add a chart of your own. It assumes you have
-never used Superset.
+This page shows how to run Apache Superset over your Coxswain store and
+lake, read the Coxswain dashboard, and add a chart of your own. It
+assumes you have never used Superset.
 
 ## What Superset is
 
 Superset is a web app for charts and dashboards over SQL. You point it at
 a data source, write a query, and save the result as a chart. Charts sit
 together on a dashboard. Coxswain ships a Superset setup in
-`deploy/superset` that reads your runs directory.
+`deploy/superset` that reads the store and the lake over the network.
 
 ## What the dashboards show
 
@@ -39,18 +39,23 @@ and faster. Each chart answers one question.
   from a run's launch to its task landing.
 - **Spend by task outcome, last 14 days.** Spend on tasks that landed, are
   still in flight, or never landed. A task counts as never landed once its
-  last call is two days old and it has no landing in `runs/land.jsonl`.
+  last call is two days old and it has no landing in the store's
+  `task_records` table.
 
-A task landed when its record in `runs/land.jsonl` exited 0 and reached
-`mark_done`. Land history starts when `runs/land.jsonl` began, which is
-2026-09-25 in the reference workspace. Earlier days show cost but no
-landings. The datasets that read that file are skipped, with their
-charts, until both it and `runs/cox.db` exist.
+A task landed when its row in the store's `task_records` table has
+`record_json.landed` set: `true` on an older record, or an object such
+as `{"at": ..., "pr": ...}` on a newer one. `daily_efficiency`,
+`landed_tasks` and `task_outcomes` each carry a single `requires: lake`
+in `datasets.yaml`, so they are created when the lake probe answers, and
+they read the store too, through `{{store:task_records}}`: a store that
+is down makes their charts fail at query time, not at dataset creation.
+See [The lake](#the-lake).
 
-The never-landed bar is not waste until the log covers the chart's whole
-window. A task that landed before the log began has no landing record, so
-it counts as never landed. In the reference workspace the bar overstates
-waste until 2026-10-09, fourteen days after the log began.
+The never-landed bar can overstate waste for a task that landed before
+`task_records` started tracking it in your workspace. unknown: when a
+given workspace's `task_records` table starts holding landed rows; the
+store carries no fixed epoch the way `runs/land.jsonl`'s first line once
+did.
 
 ## Start it
 
@@ -67,11 +72,18 @@ Open `.env` and replace every placeholder.
   `openssl rand -base64 42`.
 - `SUPERSET_ADMIN_PASSWORD` is the password for the admin user. Keep the
   other admin values or change them.
-- `COXSWAIN_RUNS_DIR` is the path to your workspace's runs directory on
-  the host.
+- `COXSWAIN_S3_ENDPOINT` is the S3-compatible endpoint of the
+  Garage-backed Iceberg lake. Empty skips the lake entirely.
+- `COXSWAIN_S3_KEY_ID` is the access key id for that endpoint.
+- `COXSWAIN_S3_SECRET` is the secret access key for that endpoint.
+- `COXSWAIN_S3_REGION` is the region DuckDB sends with each S3 request.
+  Garage accepts any string; it defaults to `garage` when left empty.
 
-Superset refuses to start when a variable is unset or still reads
-`change-me`. Never commit `.env`.
+`SUPERSET_SECRET_KEY` and every admin variable must be set, and compose
+refuses to start when one is empty or still reads `change-me`.
+`COXSWAIN_STORE_URL` and the `COXSWAIN_S3_*` variables carry no such
+check: they default to empty, and an empty `COXSWAIN_S3_ENDPOINT` just
+skips the lake. Never commit `.env`.
 
 ```sh
 docker compose up -d
@@ -91,9 +103,20 @@ dashboard.
 `docker compose up -d` also runs the `superset-dashboards` one-shot
 service once Superset is healthy, and that service installs the
 dashboards. It reads the specs in `deploy/superset/dashboards` and skips
-the tool-use chart until graphs has written its first Parquet trace.
-Run it again after a spec changes, or once that first trace exists. A
-second run changes nothing when the specs already match Superset.
+each dataset, with its charts, until the source it requires answers a
+readiness probe. Run it again after a spec changes, or once the store or
+the lake first answers. A second run changes nothing when the specs
+already match Superset.
+
+Readiness comes from a probe, not a file check. Before installing
+anything, bootstrap runs one `SELECT ... WHERE false` per required
+table through SQL Lab, never `LIMIT 0`; a `WHERE false` select fails on
+a missing table or column exactly like a real query would, and reads no
+row when it succeeds. A SQL Lab answer whose JSON body carries an
+`errors` key counts as absent, whatever HTTP status it arrived on: 200,
+400, 422 and 500 all read the same way. A 401 or 403, or a network
+error the HTTP call itself raises, is not treated as absent; it
+propagates and stops bootstrap instead of quietly skipping a dataset.
 
 ```sh
 docker compose run --rm superset-dashboards
@@ -133,18 +156,21 @@ on `task_records`, so a dataset that lists items waiting on a draft has
 no column to filter on; see the `fleet_drafts_waiting_approval` comment
 in `deploy/superset/dashboards/datasets.yaml`.
 
-Fleet reads the store only: `hosts`, `chair_actions`, `chair_ticks`,
-`leases`, `runs`, and `node_calls`. It reads them through the same
+Fleet reads the store only: `chair_actions`, `hosts`, `leases`, `runs`,
+and `node_calls`. An earlier ticks table that used to sit alongside
+`chair_actions` is gone from this list; nothing ever wrote to it, so no
+Fleet dataset reads it. Fleet reads these tables through the same
 connection as the Coxswain and Chair dashboards, `sqlite_scan` of
 `cox.db` or an attached Postgres catalog, and never
 `chair.actions.jsonl`, `land.jsonl`, or any other log file. None of its
 datasets reads `task_records`.
 
-The host-state panel is skipped until the `hosts` table exists in the
-store. `fleet_host_state` requires `hosts-table`, and bootstrap installs
-a dataset only once its required source is present. Once a run has
-written to `hosts`, rerun `docker compose run --rm superset-dashboards`
-to install the panel.
+The host-state panel is skipped until the `hosts` table is readable.
+`fleet_host_state` requires `store`, the same single requirement every
+Fleet dataset carries, and bootstrap installs a dataset only once its
+required source answers its probe. Once a run has written to `hosts`,
+rerun `docker compose run --rm superset-dashboards` to install the
+panel.
 
 bootstrap.py creates every Fleet chart from the specs in
 `deploy/superset/dashboards/charts.yaml`, but it still groups only the
@@ -256,16 +282,46 @@ zero by construction. It exists for contrast with the interactive
 chair, which does call a model, so the two lines show a loop that costs
 nothing next to one that does.
 
-Chair reads the store only: `chair_actions`, `chair_ticks`, and
-`node_calls`. It reads them through the same connection as the Coxswain
-and Fleet dashboards, and never `chair.actions.jsonl`, `land.jsonl`, or
-any other log file. None of its datasets reads `task_records`; a task
-counts as landed from its `chair_actions` row, as the comment above the
-chair datasets in `datasets.yaml` explains.
+Chair reads the store only: `chair_actions` and `node_calls`. The same
+ticks table Fleet no longer lists is gone from here too; nothing ever
+wrote to it, so no Chair dataset reads it. Chair reads these tables
+through the same connection as the
+Coxswain and Fleet dashboards, and never `chair.actions.jsonl`,
+`land.jsonl`, or any other log file. None of its datasets reads
+`task_records`; a task counts as landed from its `chair_actions` row,
+as the comment above the chair datasets in `datasets.yaml` explains.
 
 Like Fleet, bootstrap.py creates each Chair chart but still groups only
 the Coxswain charts into a dashboard page. Open Charts from the top menu
 and find a panel by its title.
+
+## The lake
+
+The lake carries six tables: `runs`, `phases`, `node_calls`,
+`gate_decisions`, `ledger`, and `traces`. Only `node_calls`, `runs` and
+`traces` back a dataset today.
+
+`calls` and `calls_by_day` read `{{lake:node_calls}}`. `runs` and
+`lanes_by_hour` read `{{lake:runs}}`. `traces` reads `{{lake:traces}}`.
+`daily_efficiency` and `task_outcomes` read `{{lake:node_calls}}`, and
+`landed_tasks` reads `{{lake:node_calls}}` and `{{lake:runs}}`; all
+three also read the store's `task_records` table, through
+`{{store:task_records}}` (see [Efficiency](#efficiency)).
+
+Every Fleet and Chair dataset reads the store only, through
+`{{store:<table>}}`, and requires `store` rather than `lake`. Two more
+datasets, `attempts` and `task_verdicts`, read the store only too but
+still carry `requires: lake` in `datasets.yaml`, so bootstrap skips them
+until the lake probe succeeds even though their SQL never touches it.
+
+The `traces` dataset now reads `{{lake:traces}}` instead of scanning
+local Parquet files, so a trace that graphs has pruned from disk still
+shows up in the tool-use chart; the lake keeps its history after the
+local file is gone.
+
+A dataset with `requires: lake` is skipped, with its charts, until the
+lake probe succeeds, the same way a `requires: store` dataset waits on
+the store probes.
 
 ## Verify Fleet and Chair
 
@@ -332,20 +388,29 @@ Charts are built from a dataset, which is a saved SQL query or table.
 
 ## The data is read-only
 
-`COXSWAIN_RUNS_DIR` is mounted into the container read-only at
-`/data/runs`. Superset can query your runs but cannot change them.
-Queries read the files each time they run, so a refresh shows new runs
-with no import step.
+There is no `COXSWAIN_RUNS_DIR` and no `/data/runs` mount any more. No
+service in `docker-compose.yml` mounts a runs directory; the store and
+the lake are read over the network instead. The store connection
+attaches Postgres with `READ_ONLY` (`attach_sql` in
+`superset_config.py`); the lake connection only creates DuckDB views
+over `iceberg_scan` (`lake_view_sql`), which has no write path. Superset
+can query both but cannot change them.
+
+With `COXSWAIN_STORE_URL` and `COXSWAIN_S3_ENDPOINT` set, every dataset
+runs on any machine that reaches the store and Garage: that includes
+`daily_efficiency`, `landed_tasks` and `task_outcomes`, which read
+landed rows from the store's `task_records` table, not from a local
+file. Queries read the store and the lake each time they run, so a
+refresh shows new data with no import step.
 
 Superset keeps its own users, datasets, and charts in a separate Docker
-volume. Removing that volume loses your charts and never touches your
-runs.
+volume. Removing that volume loses your charts and never touches the
+store or the lake.
 
 ## Point the dashboard at Postgres
 
-By default the dashboard reads the SQLite store at `/data/runs/cox.db`.
-If your store lives in Postgres, set `COXSWAIN_STORE_URL` in `.env` to its
-URL. The URL below is a placeholder.
+Set `COXSWAIN_STORE_URL` in `.env` to your Postgres store's URL. The URL
+below is a placeholder.
 
 ```sh
 COXSWAIN_STORE_URL=postgresql://reader:change-me@db.example:5432/coxswain
@@ -358,23 +423,26 @@ when a chart queries it.
 
 With the variable set, the datasets read the store through an attached
 catalog named `store`. Their SQL reads `store.public.<table>`. With it
-unset or empty, nothing changes. Default mode stays `sqlite_scan` of
-`/data/runs/cox.db`.
+unset or empty, dataset SQL still falls back to a `sqlite_scan` of
+`/data/runs/cox.db`, but nothing mounts that path any more, so the store
+probes fail and bootstrap skips every store dataset, with its charts. In
+practice the deploy needs `COXSWAIN_STORE_URL` set.
 
 The `superset-dashboards` one-shot writes that SQL into the datasets.
-`docker compose up -d` runs it, as described above. If it did not run, the
-datasets keep their old SQL and charts still read SQLite. Run it by hand
-after changing the variable.
+`docker compose up -d` runs it, as described above. If it did not run,
+the datasets keep their old SQL. Run it by hand after changing the
+variable.
 
 ```sh
 docker compose run --rm superset-dashboards
 ```
 
-`runs/cox.db` must still exist in the runs directory in Postgres mode. The
-one-shot decides which datasets to install by looking for files there, and
-it never checks the store URL. Without `cox.db`, it skips every dataset
-that reads the store, with its charts. It skips the landing datasets too.
-The file only has to exist. The datasets still read Postgres.
+Readiness in Postgres mode comes from the same probes as any other
+mode. Bootstrap runs the chair, hosts and lake probes through SQL Lab on
+the database Superset already has; it never checks for a local file.
+Until those probes succeed it skips the datasets that need them, with
+their charts, the same way it does on the first run against a new
+server.
 
 The attached catalog was chosen over `postgres_scan`. A `postgres_scan` call
 takes the connection string in its arguments. That puts the password in the
@@ -388,27 +456,29 @@ the container environment and runs ATTACH with it. So the password lives
 only in that environment. The saved database object and the dataset SQL
 hold no URL.
 
-Only the store moves. Traces and `runs/land.jsonl` stay file-based. Superset
-still reads them from the runs directory at `/data/runs`, even when the
-store is in Postgres. A multi-machine setup therefore needs them on shared
-storage later. [Several machines](several-machines.md) covers the
-`traces_url` setting for traces. This page does not set up shared storage.
+The same hook loads the lake, and only after that `ATTACH`. With
+`COXSWAIN_STORE_URL` unset it returns before the lake step, whatever the
+`COXSWAIN_S3_*` variables hold; the lake's table list is also read from
+the attached store, from `store.public.iceberg_tables`. Set
+`COXSWAIN_STORE_URL` and `COXSWAIN_S3_ENDPOINT` together to read the
+lake. The "Shared storage" section of
+[Several machines](several-machines.md#shared-storage) puts traces and
+the lake on Garage, through `traces_url`, `lake_url` and an
+`object_store` block in the provider profile.
 
 ## Other data sources
 
-The Superset image queries with DuckDB, so a dataset can read from more
-than local files.
+The Superset image queries with DuckDB, so a dataset can read any source
+DuckDB reads.
 
 **A Postgres store.** See the section above, which sets it up without
 putting the password in any SQL.
 
-**Shared Parquet traces.** Point the dataset SQL at the shared location
-with `read_parquet`. The path below is a placeholder.
+**Traces.** Traces come from the lake now, through `{{lake:traces}}`;
+see [The lake](#the-lake). No dataset needs a shared Parquet location
+any more.
 
-```sql
-SELECT *
-FROM read_parquet('/data/runs/shared-traces/*.parquet')
-```
-
-A location outside `/data/runs` must be mounted into the container
-first, and mounting it is a change to the deploy files.
+**A local file.** No container mounts a host directory. A dataset that
+must read one needs a volume added to `docker-compose.yml` first, which
+is a change to the deploy files and ties the deploy to the machine that
+holds the file.
