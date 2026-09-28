@@ -77,6 +77,8 @@ def _attach_lake(dbapi_connection, env) -> None:
     dbapi_connection.execute("LOAD httpfs")
     dbapi_connection.execute("LOAD iceberg")
     dbapi_connection.execute(secret)
+    # The views live in their own schema, which a fresh connection does not have.
+    dbapi_connection.execute("CREATE SCHEMA IF NOT EXISTS lake")
     for table, metadata_location in dbapi_connection.execute(LAKE_TABLES_SQL).fetchall():
         dbapi_connection.execute(lake_view_sql(table, metadata_location))
 
