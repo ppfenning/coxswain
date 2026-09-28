@@ -75,6 +75,7 @@ def test_an_endpoint_adds_the_loads_the_secret_and_one_view_per_catalog_row(conf
         "LOAD httpfs",
         "LOAD iceberg",
         SECRET,
+        "CREATE SCHEMA IF NOT EXISTS lake",
         config.LAKE_TABLES_SQL,
         "CREATE OR REPLACE VIEW lake.runs AS SELECT * FROM iceberg_scan('s3://r.json')",
         "CREATE OR REPLACE VIEW lake.phases AS SELECT * FROM iceberg_scan('s3://p.json')",
