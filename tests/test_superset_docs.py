@@ -58,3 +58,32 @@ def test_the_chair_section_names_only_datasets_that_exist():
         "Chair",
         {"chair_actions_by_hour", "chair_spend_by_day", "chair_needs_backlog"},
     )
+
+
+def test_the_page_names_no_chair_ticks():
+    assert "chair_ticks" not in DOCS.read_text()
+
+
+def test_the_page_names_every_coxswain_s3_variable():
+    text = DOCS.read_text()
+    for name in ("COXSWAIN_S3_ENDPOINT", "COXSWAIN_S3_KEY_ID", "COXSWAIN_S3_SECRET", "COXSWAIN_S3_REGION"):
+        assert name in text
+
+
+def test_the_page_does_not_describe_coxswain_runs_dir_as_required():
+    text = DOCS.read_text()
+    assert "COXSWAIN_RUNS_DIR` is the path" not in text
+    assert "no `COXSWAIN_RUNS_DIR`" in text
+
+
+def test_the_lake_section_names_every_lake_table():
+    section = _section("The lake")
+    for name in ("runs", "phases", "node_calls", "gate_decisions", "ledger", "traces"):
+        assert f"`{name}`" in section
+
+
+def test_the_efficiency_section_names_the_store_as_the_source_of_landed_tasks():
+    section = _section("Efficiency")
+    assert "task_records" in section
+    assert "record_json.landed" in section
+    assert "wait on both" not in DOCS.read_text()
