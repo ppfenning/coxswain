@@ -431,9 +431,9 @@ def test_unknown_states_are_refused(tmp_path: Path) -> None:
         set_state(path, "nearly")
 
 
-def test_base_cartridge_caps_the_build_budget_at_3_dollars() -> None:
+def test_base_cartridge_caps_the_build_budget_at_the_6_dollar_runaway_ceiling() -> None:
     resolved = load("local", REPO / "cartridges", skill_index=index_from_roots([REPO / "skills-plugins"]))
-    assert resolved["policy"]["build_budget_usd_max"] == 3.0
+    assert resolved["policy"]["build_budget_usd_max"] == 6.0
 
 
 def test_frontmatter_must_be_present(tmp_path: Path) -> None:

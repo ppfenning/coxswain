@@ -159,6 +159,14 @@ role_budget_usd:
 
 # Roles a graph asks "standard" for that are extraction, not judgment. The
 # profile may run them cheap; changing this resets streaks like any profile edit.
+# A hard runaway ceiling per role (the operator, 2026-09-28): "the global weekly cap should be the bound ... tracking spend per
+# build and minimizing it is the right move, but the bound should never be hard on the individual build, just used as
+# a guide", with a high upper limit "like $6 to prevent huge runaway tasks". For a role named here, this is the only
+# per-call stop (graphs `role_ceiling_usd`); the role or tier budget above, or the measured bounds row, becomes the
+# guide the ledger records and `cox stats` ranks against. Decomposition keeps builds well below it.
+role_ceiling_usd:
+  build: 6.0
+
 tier_overrides:
   scope_epic: cheap
 

@@ -116,3 +116,8 @@ def test_local_oss_defaults_record_the_graph_roles_at_todays_classes() -> None:
 def test_no_provider_profile_turns_system_one_on() -> None:
     for profile in (PROFILE, LOCAL_PROFILE, ANTHROPIC_PROFILE):
         assert "system_one" not in profile
+
+
+def test_a_build_has_a_6_dollar_runaway_ceiling_above_its_guide():
+    assert PROFILE["role_ceiling_usd"] == {"build": 6.0}
+    assert PROFILE["role_ceiling_usd"]["build"] > PROFILE["role_budget_usd"]["build"]

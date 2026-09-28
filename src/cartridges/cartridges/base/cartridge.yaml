@@ -222,7 +222,7 @@ policy:
     effort_ceiling: high                   # highest effort a route may ask for; high is the top of effort_ladder
     node_budget_cap_usd: null              # per-node spend cap; null means no cap, as today
     run_budget_cap_usd: null               # per-run spend cap; null means no cap, as today
-  build_budget_usd_max: 3.0     # a work item may raise its own build ceiling with `budget_usd:`;
+  build_budget_usd_max: 6.0     # a work item may raise its own build guide with `budget_usd:`, up to the $6 runaway ceiling;
                                  # this is the most it may ask for, and the harness refuses anything above it, quoting this number.
   budgets:
     triage_run_tokens: 200000
