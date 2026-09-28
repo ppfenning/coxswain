@@ -384,6 +384,50 @@ def test_cli_release_execute_opens_the_tap_pr_with_the_index_sdist(tmp_path):
     assert fake_run.current_branch[str(tmp_path / "homebrew-coxswain")] == "main"
 
 
+def test_cli_release_execute_branches_the_tap_pr_from_the_fetched_origin_default_not_the_local_head(tmp_path):
+    directory = tmp_path / "homebrew-coxswain"
+    formula = directory / "Formula" / "cox.rb"
+    formula.parent.mkdir(parents=True)
+    formula.write_text(_FORMULA)
+    steps, _ = _tap_kinds(_tools_manifest(), pinned_commits={"tools": 1})
+    # The local checkout sits on "feature/x". origin/HEAD reads as "master" only
+    # once `git fetch` has run, so a base read before the fetch, or not read at all, differs.
+    calls, inner = _fake_git_run(off_branch={str(directory)})
+    fetched = []
+
+    def fake_run(argv, cwd):
+        rc, out = inner(argv, cwd)
+        if argv[0] == "git" and argv[3] == "fetch":
+            fetched.append(argv[2])
+        if argv[0] == "git" and argv[3] == "symbolic-ref":
+            return (0, "refs/remotes/origin/master\n") if argv[2] in fetched else (1, "not a symbolic ref")
+        return rc, out
+
+    index = {"urls": [{"packagetype": "sdist", "url": "https://x/cox-0.2.0.tar.gz", "digests": {"sha256": "b" * 64}}]}
+    rc = cli._release_execute(steps[-1:], "0.2.0", str(tmp_path), {}, str(tmp_path), fake_run, {}, "",
+                              fetch_index=lambda url: index)
+    branch_from_fetched = release.checkout_branch_argv(str(directory), "release/0.2.0", "origin/master")
+    assert rc == 0
+    assert calls.index(release.fetch_argv(str(directory))) < calls.index(branch_from_fetched)
+    assert [c for c in calls if c[3:5] == ["checkout", "-b"]] == [branch_from_fetched]
+
+
+def test_cli_release_execute_refuses_the_tap_pr_when_the_fetch_fails(tmp_path, capsys):
+    directory = tmp_path / "homebrew-coxswain"
+    formula = directory / "Formula" / "cox.rb"
+    formula.parent.mkdir(parents=True)
+    formula.write_text(_FORMULA)
+    steps, _ = _tap_kinds(_tools_manifest(), pinned_commits={"tools": 1})
+    calls, fake_run = _fake_git_run(fail=(str(directory), "fetch"))
+    index = {"urls": [{"packagetype": "sdist", "url": "https://x/cox-0.2.0.tar.gz", "digests": {"sha256": "b" * 64}}]}
+    rc = cli._release_execute(steps[-1:], "0.2.0", str(tmp_path), {}, str(tmp_path), fake_run, {}, "",
+                              fetch_index=lambda url: index)
+    assert rc == 2
+    assert "FAILED tap_formula_pr tap: fetch failed" in capsys.readouterr().out
+    assert [c for c in calls if c[0] == "gh" or c[3] in ("checkout", "add", "commit", "push")] == []
+    assert formula.read_text() == _FORMULA
+
+
 def test_bumped_manifest_text_rewrites_only_the_tagged_components_tag_and_keeps_every_other_byte():
     text = ('[coxswain]\nversion = "0.1.0"\n\n'
             '[components.harness]\nrepo = "org/harness"\ntag = "v0.1.0"\n\n'

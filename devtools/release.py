@@ -430,11 +430,23 @@ def bumped_uv_lock_text(text: str, package: str, to: str) -> str:
         for b in blocks)
 
 
-def checkout_branch_argv(directory: str, branch: str) -> list[str]:
-    """`git -C <directory> checkout -b <branch>` — cut from whatever commit
+def checkout_branch_argv(directory: str, branch: str, start_point: str | None = None) -> list[str]:
+    """`git -C <directory> checkout -b <branch> [start_point]` — cut from
+    `start_point` when given (the tap step passes `origin/<default>` so the
+    formula bump never branches from a stale local HEAD, the cause of the
+    0.22.0 cut landing on the 0.20.0 formula), otherwise from whatever commit
     `directory` is on, which `_checkout_ready` has already required to be
     the clean default branch."""
-    return ["git", "-C", directory, "checkout", "-b", branch]
+    argv = ["git", "-C", directory, "checkout", "-b", branch]
+    return argv + [start_point] if start_point else argv
+
+
+def fetch_argv(directory: str) -> list[str]:
+    """`git -C <directory> fetch origin` — brings `origin/HEAD` and every
+    remote-tracking branch up to date before the tap step reads the remote's
+    default branch, so `checkout_branch_argv`'s `start_point` is never a
+    stale `origin/<default>`."""
+    return ["git", "-C", directory, "fetch", "origin"]
 
 
 def add_argv(directory: str, *paths: str) -> list[str]:
