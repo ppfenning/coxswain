@@ -23,8 +23,33 @@ CHAIR_DATASETS = ["chair_actions_by_hour", "chair_lanes_by_host_hour", "chair_sp
 FLEET_DATASETS = ["fleet_host_state", "fleet_needs_chair_by_cause", "fleet_weekly_spend"]
 # fleet_needs_chair_by_cause and fleet_weekly_spend read chair_actions/chair_ticks, so chair-store gates them too.
 FLEET_CHAIR_DATASETS = [*CHAIR_DATASETS, "fleet_needs_chair_by_cause", "fleet_weekly_spend"]
+# The Fleet dashboard's charts: five, not the brief's six, since fleet_drafts_waiting_approval
+# has no dataset yet. Each pairs with the chart it gates when chair-store or hosts-table is absent.
+FLEET_CHART_NAMES = [
+    "Lanes per host over time against capacity",
+    "Host state and last login",
+    "Chair holder, epoch and beat age",
+    "Needs-chair items by cause",
+    "Weekly spend against the ceiling",
+]
+CHAIR_CHART_NAMES = ["Chair actions per hour by kind", "Spend per landed task per day", "Needs-chair backlog"]
+# Every new chart gated by chair-store, paired with the dataset that gates it, in charts.yaml order.
+CHAIR_STORE_GATED_CHARTS = [
+    ("Lanes per host over time against capacity", "chair_lanes_by_host_hour"),
+    ("Chair holder, epoch and beat age", "chair_status"),
+    ("Needs-chair items by cause", "fleet_needs_chair_by_cause"),
+    ("Weekly spend against the ceiling", "fleet_weekly_spend"),
+    ("Chair actions per hour by kind", "chair_actions_by_hour"),
+    ("Spend per landed task per day", "chair_spend_by_day"),
+    ("Needs-chair backlog", "chair_needs_backlog"),
+]
 READS = re.compile(r"\b(?:read_\w+|\w+_scan)\s*\(")
 LITERAL_READS = re.compile(r"\b(?:read_\w+|\w+_scan)\s*\(\s*'([^']*)'")
+
+
+def _dashboard(name):
+    (dash,) = [d for d in SPECS["dashboards"] if d["name"] == name]
+    return dash
 
 
 def _server(ops):
@@ -36,6 +61,40 @@ def test_every_chart_names_a_dataset_that_exists():
     datasets = {d["name"] for d in SPECS["datasets"]}
     assert SPECS["charts"]
     assert {c["dataset"] for c in SPECS["charts"]} <= datasets
+
+
+def test_the_fleet_dashboard_names_its_charts_and_each_names_a_dataset_that_exists():
+    cells = [c["chart"] for row in _dashboard("Fleet")["grid"] for c in row]
+    assert sorted(cells) == sorted(FLEET_CHART_NAMES)
+    datasets = {d["name"] for d in SPECS["datasets"]}
+    dataset_of = {c["name"]: c["dataset"] for c in SPECS["charts"]}
+    assert all(dataset_of[name] in datasets for name in FLEET_CHART_NAMES)
+
+
+def test_the_chair_dashboard_names_its_charts_and_each_names_a_dataset_that_exists():
+    cells = [c["chart"] for row in _dashboard("Chair")["grid"] for c in row]
+    assert sorted(cells) == sorted(CHAIR_CHART_NAMES)
+    datasets = {d["name"] for d in SPECS["datasets"]}
+    dataset_of = {c["name"]: c["dataset"] for c in SPECS["charts"]}
+    assert all(dataset_of[name] in datasets for name in CHAIR_CHART_NAMES)
+
+
+def test_the_coxswain_dashboard_in_dashboards_is_unchanged():
+    # A literal copy of the grid before the Fleet and Chair dashboards were added. The yaml anchor
+    # makes SPECS["dashboard"] and this entry one object, so only a literal can catch a change.
+    assert _dashboard("Coxswain")["grid"] == [
+        [{"chart": "Cost per turn by model, by day", "width": 6}, {"chart": "Cache-read share by model, by day", "width": 6}],
+        [{"chart": "Cost per landed task, by day", "width": 6}, {"chart": "Landed tasks per day", "width": 6}],
+        [{"chart": "First-try build rate, by day", "width": 6}, {"chart": "Lead time, launch to land (median hours), by day", "width": 6}],
+        [{"chart": "Spend by task outcome, last 14 days", "width": 12}],
+        [{"chart": "Reviewer agreement", "width": 4}, {"chart": "Arbiter decisions", "width": 4}, {"chart": "Build attempts per task", "width": 4}],
+        [{"chart": "Cost per day by model alias", "width": 6}, {"chart": "Cost by role, last 7 days", "width": 6}],
+        [{"chart": "Busy lanes per hour", "width": 12}],
+        [{"chart": "Runs per day", "width": 12}],
+        [{"chart": "Quarantined attempts per day", "width": 6}, {"chart": "Quarantines by cause, last 14 days", "width": 6}],
+        [{"chart": "Tool uses by name, top 15", "width": 12}],
+    ]
+    assert _dashboard("Coxswain") == SPECS["dashboard"]
 
 
 def test_every_dataset_sql_reads_only_under_data_runs():
@@ -52,7 +111,9 @@ def test_names_are_unique_within_each_kind():
     cells = [c["chart"] for row in SPECS["dashboard"]["grid"] for c in row]
     for names in ([d["name"] for d in SPECS["datasets"]], [c["name"] for c in SPECS["charts"]], cells):
         assert not [n for n, k in Counter(names).items() if k > 1]
-    assert sorted(cells) == sorted(c["name"] for c in SPECS["charts"])
+    # Every chart lives on exactly one of the three dashboards; none is orphaned or shared.
+    all_cells = [c["chart"] for dash in SPECS["dashboards"] for row in dash["grid"] for c in row]
+    assert sorted(all_cells) == sorted(c["name"] for c in SPECS["charts"])
 
 
 def test_every_dataset_names_the_one_database_and_a_known_source():
@@ -75,7 +136,7 @@ def test_the_cause_chart_reuses_the_quarantine_kinds():
 
 
 def test_dashboard_rows_fill_twelve_columns():
-    assert all(sum(c["width"] for c in row) == 12 for row in SPECS["dashboard"]["grid"])
+    assert all(sum(c["width"] for c in row) == 12 for dash in SPECS["dashboards"] for row in dash["grid"])
 
 
 def test_plan_on_an_empty_server_creates_everything_in_order():
@@ -83,7 +144,7 @@ def test_plan_on_an_empty_server_creates_everything_in_order():
     assert {o.action for o in ops} == {"create"}
     kinds = [o.kind for o in ops]
     assert kinds == sorted(kinds, key=bootstrap.KINDS.index)
-    assert Counter(kinds) == {"database": 1, "dataset": 18, "chart": 17, "dashboard": 1}
+    assert Counter(kinds) == {"database": 1, "dataset": 18, "chart": 25, "dashboard": 1}
 
 
 def test_plan_is_all_unchanged_when_the_server_matches():
@@ -114,7 +175,7 @@ def test_plan_skips_traces_and_its_chart_while_no_parquet_exists():
     assert len(lines) == 2
     (board,) = [o for o in ops if o.kind == "dashboard"]
     assert "Tool uses by name, top 15" not in json.dumps(board.payload)
-    assert Counter(o.kind for o in ops if o.action == "create") == {"database": 1, "dataset": 17, "chart": 16, "dashboard": 1}
+    assert Counter(o.kind for o in ops if o.action == "create") == {"database": 1, "dataset": 17, "chart": 24, "dashboard": 1}
 
 
 def test_plan_skips_the_land_log_datasets_and_their_charts_while_no_land_log_exists():
@@ -143,16 +204,20 @@ def test_present_sources_counts_the_land_log_only_beside_a_cox_db(tmp_path):
 
 def test_plan_without_chair_store_skips_the_chair_gated_datasets_and_keeps_the_others():
     ops = bootstrap.plan(SPECS, {}, ALL_SOURCES - {"chair-store"})
-    assert [bootstrap.line(o) for o in ops if o.action == "skipped"] == [f"skipped: {n} (no chair tables in the store yet)" for n in FLEET_CHAIR_DATASETS]
+    assert [bootstrap.line(o) for o in ops if o.action == "skipped"] == (
+        [f"skipped: {n} (no chair tables in the store yet)" for n in FLEET_CHAIR_DATASETS]
+        + [f"skipped: {chart} (dataset {dataset} skipped)" for chart, dataset in CHAIR_STORE_GATED_CHARTS]
+    )
     assert [o.name for o in ops if o.kind == "dataset" and o.action == "create"] == [d["name"] for d in SPECS["datasets"] if d["name"] not in FLEET_CHAIR_DATASETS]
-    assert not [c for c in SPECS["charts"] if c["dataset"] in FLEET_CHAIR_DATASETS]
-    assert Counter(o.kind for o in ops if o.action == "create") == {"database": 1, "dataset": 11, "chart": 17, "dashboard": 1}
+    assert sorted(c["name"] for c in SPECS["charts"] if c["dataset"] in FLEET_CHAIR_DATASETS) == sorted(chart for chart, _ in CHAIR_STORE_GATED_CHARTS)
+    assert Counter(o.kind for o in ops if o.action == "create") == {"database": 1, "dataset": 11, "chart": 18, "dashboard": 1}
 
 
 def test_a_store_without_chair_store_plans_the_existing_datasets_as_before():
     with_chair = bootstrap.plan(SPECS, {}, ALL_SOURCES)
     without = bootstrap.plan(SPECS, {}, ALL_SOURCES - {"chair-store"})
-    old = [o for o in with_chair if o.name not in FLEET_CHAIR_DATASETS]
+    gated_names = {*FLEET_CHAIR_DATASETS, *(chart for chart, _ in CHAIR_STORE_GATED_CHARTS)}
+    old = [o for o in with_chair if o.name not in gated_names]
     assert [o for o in without if o.action != "skipped"] == old
     assert bootstrap.present_sources(Path("/nonexistent")) == frozenset()
 
@@ -204,7 +269,10 @@ def test_the_hosts_probe_selects_limit_0_from_the_hosts_table():
 
 def test_plan_without_hosts_table_skips_fleet_host_state_and_keeps_the_other_new_datasets_unchanged():
     ops = bootstrap.plan(SPECS, {}, ALL_SOURCES - {"hosts-table"})
-    assert [bootstrap.line(o) for o in ops if o.action == "skipped"] == ["skipped: fleet_host_state (no hosts table in the store yet)"]
+    assert [bootstrap.line(o) for o in ops if o.action == "skipped"] == [
+        "skipped: fleet_host_state (no hosts table in the store yet)",
+        "skipped: Host state and last login (dataset fleet_host_state skipped)",
+    ]
     assert [o.name for o in ops if o.kind == "dataset" and o.action == "create" and o.name in FLEET_DATASETS] == [
         "fleet_needs_chair_by_cause",
         "fleet_weekly_spend",
@@ -525,6 +593,70 @@ EXPECTED_QUERIES = {
             "extras": {},
         }
     ],
+    "Lanes per host over time against capacity": [
+        {
+            "columns": [{"columnType": "BASE_AXIS", "expressionType": "SQL", "label": "hour", "sqlExpression": "hour", "timeGrain": "PT1H"}, "host"],
+            "metrics": [
+                {"expressionType": "SIMPLE", "column": {"column_name": "lanes"}, "aggregate": "MAX", "label": "lanes"},
+                {"expressionType": "SIMPLE", "column": {"column_name": "max_in_flight"}, "aggregate": "MAX", "label": "cap"},
+            ],
+            "orderby": [],
+            "row_limit": 10000,
+            "filters": [],
+            "extras": {"time_grain_sqla": "PT1H"},
+        }
+    ],
+    # Table charts pass all_columns, a field queries_of has no branch for, so their saved
+    # "columns" and "metrics" stay empty here; only x_axis_sort (Needs-chair backlog) shows up.
+    "Host state and last login": [{"columns": [], "metrics": [], "orderby": [], "row_limit": 10000, "filters": [], "extras": {}}],
+    "Chair holder, epoch and beat age": [{"columns": [], "metrics": [], "orderby": [], "row_limit": 10000, "filters": [], "extras": {}}],
+    "Needs-chair items by cause": [
+        {
+            "columns": [{"columnType": "BASE_AXIS", "expressionType": "SQL", "label": "cause", "sqlExpression": "cause"}],
+            "metrics": [{"expressionType": "SIMPLE", "column": {"column_name": "items"}, "aggregate": "SUM", "label": "items"}],
+            "orderby": [],
+            "row_limit": 10000,
+            "filters": [],
+            "extras": {},
+        }
+    ],
+    "Weekly spend against the ceiling": [
+        {
+            "columns": [DAY_AXIS],
+            "metrics": [
+                {"expressionType": "SIMPLE", "column": {"column_name": "cumulative_cost_usd"}, "aggregate": "MAX", "label": "spend"},
+                {"expressionType": "SIMPLE", "column": {"column_name": "weekly_fraction"}, "aggregate": "MAX", "label": "fraction of ceiling"},
+            ],
+            "orderby": [],
+            "row_limit": 10000,
+            "filters": [],
+            "extras": {"time_grain_sqla": "P1D"},
+        }
+    ],
+    "Chair actions per hour by kind": [
+        {
+            "columns": [{"columnType": "BASE_AXIS", "expressionType": "SQL", "label": "hour", "sqlExpression": "hour", "timeGrain": "PT1H"}, "kind"],
+            "metrics": [{"expressionType": "SIMPLE", "column": {"column_name": "actions"}, "aggregate": "SUM", "label": "actions"}],
+            "orderby": [],
+            "row_limit": 10000,
+            "filters": [],
+            "extras": {"time_grain_sqla": "PT1H"},
+        }
+    ],
+    "Spend per landed task per day": [
+        {
+            "columns": [DAY_AXIS],
+            "metrics": [
+                {"expressionType": "SIMPLE", "column": {"column_name": "cost_per_landed"}, "aggregate": "MAX", "label": "interactive chair"},
+                {"expressionType": "SIMPLE", "column": {"column_name": "loop_cost_per_landed"}, "aggregate": "MAX", "label": "chair loop"},
+            ],
+            "orderby": [],
+            "row_limit": 10000,
+            "filters": [],
+            "extras": {"time_grain_sqla": "P1D"},
+        }
+    ],
+    "Needs-chair backlog": [{"columns": [], "metrics": [], "orderby": [["waiting_hours", False]], "row_limit": 10000, "filters": [], "extras": {}}],
 }
 
 
