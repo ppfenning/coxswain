@@ -1,6 +1,6 @@
-# Virtual datasets. `requires` names the source a dataset reads: bootstrap skips a
-# dataset, and the charts on it, while that source is absent. DuckDB's read_parquet
-# errors on an empty glob and Superset reads the columns when it creates the dataset.
+# Virtual datasets. `requires` names the source a dataset reads: `lake` or `store`. bootstrap
+# skips a dataset, and the charts on it, while that source's connection probe hasn't succeeded
+# yet. Superset reads the columns when it creates the dataset.
 #
 # unknown: column names beyond ts, launched_at, ended_at and kind (cost_usd,
 # model_alias, role, tool_name) come from the dashboard brief, not from a schema
@@ -8,24 +8,24 @@
 datasets:
   - name: calls
     database: coxswain
-    requires: sqlite
+    requires: lake
     sql: |
       SELECT *, CAST(ts AS TIMESTAMPTZ) AS at
-      FROM {{store:node_calls}}
+      FROM {{lake:node_calls}}
 
   - name: runs
     database: coxswain
-    requires: sqlite
+    requires: lake
     sql: |
       SELECT * REPLACE (
         CAST(launched_at AS TIMESTAMPTZ) AS launched_at,
         CAST(ended_at AS TIMESTAMPTZ) AS ended_at
       )
-      FROM {{store:runs}}
+      FROM {{lake:runs}}
 
   - name: attempts
     database: coxswain
-    requires: sqlite
+    requires: lake
     sql: |
       SELECT *, CAST(ts AS TIMESTAMPTZ) AS at
       FROM {{store:attempts}}
@@ -34,7 +34,7 @@ datasets:
   # launched by the hour's end and had not ended before the hour's start.
   - name: lanes_by_hour
     database: coxswain
-    requires: sqlite
+    requires: lake
     sql: |
       WITH hours AS (
         SELECT h AS hour_start, h + INTERVAL 1 HOUR AS hour_end
@@ -46,7 +46,7 @@ datasets:
       ),
       r AS (
         SELECT CAST(launched_at AS TIMESTAMPTZ) AS launched_at, CAST(ended_at AS TIMESTAMPTZ) AS ended_at
-        FROM {{store:runs}}
+        FROM {{lake:runs}}
       )
       SELECT hours.hour_start, count(r.launched_at) AS busy_lanes
       FROM hours
@@ -56,33 +56,35 @@ datasets:
 
   - name: traces
     database: coxswain
-    requires: parquet-traces
+    requires: lake
     sql: |
       SELECT *, tool AS tool_name
-      FROM read_parquet('/data/runs/traces/*/*/*/*.parquet')
+      FROM {{lake:traces}}
       WHERE tool IS NOT NULL
 
   # Cost and cache share by day and model. cache_read_share is a per-group ratio, so a
   # chart over several groups weights it by turns.
   - name: calls_by_day
     database: coxswain
-    requires: sqlite
+    requires: lake
     sql: |
       SELECT CAST(CAST(ts AS TIMESTAMPTZ) AS DATE) AS day, model_alias,
              SUM(cost_usd) AS cost_usd, SUM(turns) AS turns, SUM(cost_usd) / NULLIF(SUM(turns), 0) AS cost_per_turn,
              SUM(cache_read_tokens) * 1.0 / NULLIF(SUM(input_total), 0) AS cache_read_share
-      FROM {{store:node_calls}}
+      FROM {{lake:node_calls}}
       GROUP BY ALL
 
-  # The three datasets below read land.jsonl and cox.db. bootstrap counts land-log present
-  # only when both files exist. A task landed when its land record exited 0 and reached mark_done.
+  # The three datasets below also read land.jsonl directly. `requires: lake` gates dataset
+  # creation on the lake connection, not on land.jsonl's existence, so land.jsonl must be
+  # mounted before the first bootstrap run against a fresh runs directory. A task landed
+  # when its land record exited 0 and reached mark_done.
   - name: daily_efficiency
     database: coxswain
-    requires: land-log
+    requires: lake
     sql: |
       WITH cost AS (
         SELECT CAST(CAST(ts AS TIMESTAMPTZ) AS DATE) AS day, SUM(cost_usd) AS cost_usd
-        FROM {{store:node_calls}} GROUP BY 1
+        FROM {{lake:node_calls}} GROUP BY 1
       ),
       landed AS (
         SELECT CAST(CAST(ts AS TIMESTAMPTZ) AS DATE) AS day, COUNT(*) AS landed
@@ -98,7 +100,7 @@ datasets:
   # time from the run's launch.
   - name: landed_tasks
     database: coxswain
-    requires: land-log
+    requires: lake
     sql: |
       WITH landed AS (
         SELECT run, task, CAST(ts AS TIMESTAMPTZ) AS landed_at
@@ -106,13 +108,13 @@ datasets:
         WHERE exit = 0 AND list_contains(steps_reached, 'mark_done') AND task IS NOT NULL
       ),
       builds AS (
-        SELECT task_id, COUNT(*) AS builds FROM {{store:node_calls}} WHERE role = 'build' GROUP BY 1
+        SELECT task_id, COUNT(*) AS builds FROM {{lake:node_calls}} WHERE role = 'build' GROUP BY 1
       ),
       spend AS (
-        SELECT task_id, SUM(cost_usd) AS cost_usd FROM {{store:node_calls}} GROUP BY 1
+        SELECT task_id, SUM(cost_usd) AS cost_usd FROM {{lake:node_calls}} GROUP BY 1
       ),
       launch AS (
-        SELECT run_id, CAST(launched_at AS TIMESTAMPTZ) AS launched_at FROM {{store:runs}}
+        SELECT run_id, CAST(launched_at AS TIMESTAMPTZ) AS launched_at FROM {{lake:runs}}
       )
       SELECT landed.task, landed.run, landed.landed_at, CAST(landed.landed_at AS DATE) AS day,
              COALESCE(builds.builds, 0) AS builds, COALESCE(builds.builds, 0) = 1 AS first_try,
@@ -127,7 +129,7 @@ datasets:
   # last call is two days old.
   - name: task_outcomes
     database: coxswain
-    requires: land-log
+    requires: lake
     sql: |
       WITH landed AS (
         SELECT DISTINCT task FROM read_json_auto('/data/runs/land.jsonl', format = 'newline_delimited', ignore_errors = true)
@@ -135,7 +137,7 @@ datasets:
       ),
       tasks AS (
         SELECT task_id, SUM(cost_usd) AS cost_usd, MAX(CAST(ts AS TIMESTAMPTZ)) AS last_call
-        FROM {{store:node_calls}} WHERE task_id IS NOT NULL GROUP BY 1
+        FROM {{lake:node_calls}} WHERE task_id IS NOT NULL GROUP BY 1
       )
       SELECT task_id, cost_usd, last_call, CAST(last_call AS DATE) AS day,
              CASE WHEN task_id IN (SELECT task FROM landed) THEN 'landed'
@@ -147,7 +149,7 @@ datasets:
   # build attempt count pulled out of the record's JSON.
   - name: task_verdicts
     database: coxswain
-    requires: sqlite
+    requires: lake
     sql: |
       SELECT run_id, task_id,
              COALESCE(json_extract_string(record_json, '$.review.verdict'), 'none') AS charter_verdict,
@@ -158,7 +160,7 @@ datasets:
              CAST(updated_at AS TIMESTAMPTZ) AS at
       FROM {{store:task_records}}
 
-  # Chair datasets. All read the store only, and all require chair-store. bootstrap runs a
+  # Chair datasets. All read the store only, and all require store. bootstrap runs a
   # WHERE false select on every column below that these datasets read, and skips them until
   # each select runs. `cox chair run` in another repository writes chair_actions. There is no
   # chair_ticks table and nothing writes one; every dataset below that used to read it now
@@ -190,7 +192,7 @@ datasets:
   # is the naive UTC clock to compare it with.
   - name: chair_actions_by_hour
     database: coxswain
-    requires: chair-store
+    requires: store
     sql: |
       SELECT date_trunc('hour', CAST(ts AS TIMESTAMP)) AS hour, kind, COUNT(*) AS actions
       FROM {{store:chair_actions}}
@@ -201,7 +203,7 @@ datasets:
   # hosts table (NULL when the host is not in hosts, which is expected for 'local').
   - name: chair_lanes_by_host_hour
     database: coxswain
-    requires: chair-store
+    requires: store
     sql: |
       WITH hours AS (
         SELECT h AS hour_start, h + INTERVAL 1 HOUR AS hour_end
@@ -232,7 +234,7 @@ datasets:
   # the chair loop ran but made no model calls, so this dataset lists cost days only.
   - name: chair_spend_by_day
     database: coxswain
-    requires: chair-store
+    requires: store
     sql: |
       WITH cost AS (
         SELECT CAST(CAST(ts AS TIMESTAMP) AS DATE) AS day, SUM(cost_usd) AS cost_usd
@@ -255,7 +257,7 @@ datasets:
   # reason are display columns pulled out of action_json; target is the key everything joins on.
   - name: chair_needs_backlog
     database: coxswain
-    requires: chair-store
+    requires: store
     sql: |
       WITH flagged AS (
         SELECT target,
@@ -284,7 +286,7 @@ datasets:
   # gone chair_ticks table, and the weekly ceiling is profile config, not store data.
   - name: chair_status
     database: coxswain
-    requires: chair-store
+    requires: store
     sql: |
       WITH lease AS (
         SELECT holder, regexp_extract(holder, '@([^:]+):', 1) AS host, epoch,
@@ -303,7 +305,7 @@ datasets:
   # login_checked_at are not columns on hosts; both live inside versions_json.
   - name: fleet_host_state
     database: coxswain
-    requires: hosts-table
+    requires: store
     sql: |
       SELECT name, state, capacity, CAST(beat_at AS TIMESTAMP) AS beat_at,
              CAST(json_extract(versions_json, '$.login_ok') AS BOOLEAN) AS login_ok,
@@ -314,7 +316,7 @@ datasets:
   # landed action came after it), grouped by reason instead of listed per target.
   - name: fleet_needs_chair_by_cause
     database: coxswain
-    requires: chair-store
+    requires: store
     sql: |
       WITH flagged AS (
         SELECT target, json_extract_string(action_json, '$.reason') AS reason, CAST(ts AS TIMESTAMP) AS flagged_at,
@@ -349,7 +351,7 @@ datasets:
   # the trailing 12 weeks from now, so an idle week before that window doesn't linger forever.
   - name: fleet_weekly_spend
     database: coxswain
-    requires: chair-store
+    requires: store
     sql: |
       SELECT date_trunc('week', CAST(ts AS TIMESTAMP)) AS week, SUM(cost_usd) AS cost_usd
       FROM {{store:node_calls}}
