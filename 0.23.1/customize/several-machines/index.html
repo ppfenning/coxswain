@@ -1727,6 +1727,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#add-a-host-to-the-shared-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Add a host to the shared table
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#launch-a-lane" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1742,6 +1753,17 @@ Coxswain is in beta — versions may change between releases
     <span class="md-ellipsis">
       
         Watch the lanes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#make-a-lane-machine-the-resident-chair" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Make a lane machine the resident chair
       
     </span>
   </a>
@@ -2969,6 +2991,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#add-a-host-to-the-shared-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Add a host to the shared table
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#launch-a-lane" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2984,6 +3017,17 @@ Coxswain is in beta — versions may change between releases
     <span class="md-ellipsis">
       
         Watch the lanes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#make-a-lane-machine-the-resident-chair" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Make a lane machine the resident chair
       
     </span>
   </a>
@@ -3107,6 +3151,10 @@ when the login is good:</p>
 types on, so a lane machine that worked last week can fail this check.
 <code>cox route launch --on &lt;host&gt;</code> runs the same check first and refuses to
 launch when it fails.</p>
+<p>A login watchdog also checks every lane host's Claude login over ssh every
+30 minutes, timing out after 60 seconds, and records the result with the
+host's beat. A host whose login has lapsed gets no new lanes; it stays in
+the hosts table and its running lanes continue.</p>
 <h2 id="name-the-lane-machines-on-the-chair">Name the lane machines on the chair</h2>
 <p>On the chair, list the lane machines in the routing profile:</p>
 <div class="highlight"><pre><span></span><code><span class="nt">lane_hosts</span><span class="p">:</span>
@@ -3120,6 +3168,17 @@ known.</p>
 <div class="highlight"><pre><span></span><code>cox<span class="w"> </span>setup<span class="w"> </span>doctor<span class="w"> </span>--host<span class="w"> </span>box2
 </code></pre></div>
 <p>The doctor runs there over your own ssh config. The profile holds no keys.</p>
+<h2 id="add-a-host-to-the-shared-table">Add a host to the shared table</h2>
+<p>Add the host to the hosts table in the shared store so placement can fill
+it:</p>
+<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>host<span class="w"> </span>add<span class="w"> </span>box2<span class="w"> </span>--ssh<span class="w"> </span>me@box2<span class="w"> </span>--capacity<span class="w"> </span><span class="m">3</span>
+</code></pre></div>
+<p><code>--capacity</code> is the lanes the host may run at once. An optional <code>--weight</code>
+sets its share of new placements, and an optional <code>--capabilities</code> names
+the list it can be matched on.</p>
+<p><code>cox host drain box2</code> stops launching on the host while its live lanes
+finish; <code>cox host activate box2</code> makes it a lane host again. <code>cox host
+list</code> prints one line per host: its state, capacity, beat age, and login.</p>
 <h2 id="launch-a-lane">Launch a lane</h2>
 <p>Launch an epic on a lane machine with <code>--on</code>:</p>
 <div class="highlight"><pre><span></span><code>cox<span class="w"> </span>route<span class="w"> </span>launch<span class="w"> </span>epic<span class="w"> </span>--initiative<span class="w"> </span>work/&lt;id&gt;<span class="w"> </span>--on<span class="w"> </span>box2
@@ -3133,13 +3192,25 @@ machines hold. Each one reads like this:</p>
 </code></pre></div>
 <p>The docket is <code>cox route context</code>. Liveness comes from a lease in the shared
 store. A second run of the same epic is refused on any machine.</p>
+<p>A lane counts as lost only when its host has gone quiet and its own lease
+heartbeat has been quiet for 10 minutes; a lost lane is marked lost and
+relaunched on another host. Placement weighs each host's weight and
+capabilities when it fills free lanes.</p>
+<h2 id="make-a-lane-machine-the-resident-chair">Make a lane machine the resident chair</h2>
+<p>A lane machine can run the chair loop itself. <code>cox chair service --install
+--host &lt;name&gt;</code> prints the steps that put the loop on that host as a
+systemd user service; add <code>--apply</code> to run them instead of printing. <code>cox
+chair service --status --host &lt;name&gt;</code> reports it.</p>
+<p>Two steps stay with a person: <code>loginctl enable-linger</code> and <code>systemctl
+--user enable --now</code>.</p>
 <h2 id="land-the-work">Land the work</h2>
 <p>When the lane ends, bring its work home:</p>
 <div class="highlight"><pre><span></span><code>cox<span class="w"> </span>runs<span class="w"> </span>fetch<span class="w"> </span>&lt;run&gt;
 </code></pre></div>
 <p>This brings the lane's task records and log to the chair. It also fetches
-its branches, <code>agents/&lt;run&gt;/*</code>, from the host's repos. Then run
-<code>cox runs land</code> as usual.</p>
+its branches, <code>agents/&lt;run&gt;/*</code>, and its phase branches, <code>epic/&lt;initiative&gt;/*</code>,
+from the host's repos, and the fetched run's approvals reach the ticket
+files. Then run <code>cox runs land</code> as usual.</p>
 <p>The <a href="../autonomous-chair/">autonomous chair</a> does the fetch itself. It runs
 <code>cox runs fetch</code> before it lands a remote lane.</p>
 <p>The chair's copy of a ticket stays at its old state while the lane runs. The
@@ -3214,17 +3285,19 @@ the groups. Core names no cloud vendor.</p>
 <p>Traces and the lake still stay local unless these are set.</p>
 <h2 id="land-from-any-machine">Land from any machine</h2>
 <p>By default the ticket files hold each task's state, which is
-<code>work_state: files</code>. Only the chair lands.</p>
-<p>Set <code>work_state: store</code> in the provider profile on every machine. The
-shared store then becomes the source of truth for task state. Nothing
-changes until this is set.</p>
-<p>With it set, a land on any machine checks that the task is approved in
-the store. It holds a lease named <code>land:&lt;task&gt;</code> while it merges. It moves
-the task to done with a compare-and-set. If another machine landed the
-task first, the land stops before it merges anything. The ticket file's
-<code>state:</code> is updated after.</p>
-<p>The ticket files become a cache. This command shows how they differ from
-the store:</p>
+<code>work_state: files</code>. When the provider profile's <code>storage_url</code> names a
+shared Postgres database that answers, the loop reads work items from the
+store instead; <code>cox route status</code> then prints <code>work state: store</code> first. A
+local SQLite store keeps the files as the board. Only the chair lands from
+the ticket files; any machine can land once the store is the board.</p>
+<p>With the store as the board, a land on any machine checks that the task is
+approved in the store. It holds a lease named <code>land:&lt;task&gt;</code> while it
+merges. It moves the task to done with a compare-and-set. If another
+machine landed the task first, the land stops before it merges anything.
+The ticket file's <code>state:</code> is updated after.</p>
+<p>The ticket files become a cache. After editing them by hand, <code>cox route
+import</code> writes them to the store, and <code>cox route drift</code> compares the two.
+This command also shows how they differ from the store:</p>
 <div class="highlight"><pre><span></span><code>python<span class="w"> </span>-m<span class="w"> </span>harness.store_cli<span class="w"> </span>regenerate-states<span class="w"> </span>&lt;work_dir&gt;<span class="w"> </span>--initiative<span class="w"> </span>&lt;id&gt;
 </code></pre></div>
 <p>Add <code>--apply</code> to rewrite their <code>state:</code> lines.</p>

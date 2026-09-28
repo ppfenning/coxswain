@@ -1744,10 +1744,43 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#cox-console" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        cox console
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#limits" class="md-nav__link">
     <span class="md-ellipsis">
       
         Limits
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#build-checkpoints" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build checkpoints
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#housekeeping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Housekeeping
       
     </span>
   </a>
@@ -2941,10 +2974,43 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#cox-console" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        cox console
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#limits" class="md-nav__link">
     <span class="md-ellipsis">
       
         Limits
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#build-checkpoints" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build checkpoints
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#housekeeping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Housekeeping
       
     </span>
   </a>
@@ -3041,7 +3107,9 @@ things in order. The default tick is 60 seconds.</p>
 <ul>
 <li>It beats the chair lease.</li>
 <li>It reads the 5-hour window and the weekly spend.</li>
-<li>It lands every approved task, one repository at a time.</li>
+<li>It lands a completed phase as one squash onto a fresh main, from
+  <code>pr/&lt;initiative&gt;--&lt;phase&gt;</code>, one repository at a time. An approved task in
+  a partial phase waits for the rest of the phase instead of landing alone.</li>
 <li>It relaunches an initiative once its ready tasks' dependencies have
   landed.</li>
 <li>It retries a quarantine caused by the harness once.</li>
@@ -3049,12 +3117,21 @@ things in order. The default tick is 60 seconds.</p>
   pairs.</li>
 <li>It fills lanes on the hosts named in <code>lane_hosts</code> too, after the local
   lanes.</li>
+<li>It runs housekeeping on a period: a lake sync, a trace prune, and a run
+  clean.</li>
 <li>It counts the drafts waiting for approval and never launches one.</li>
-<li>It prints one status line.</li>
+<li>It prints one status line, and a <code>work state:</code> line naming its board when
+  a shared store is configured.</li>
 </ul>
 <p>The status line looks like this:</p>
 <div class="highlight"><pre><span></span><code>chair 09-26 12:30 EDT | lanes 1/8 | lands 0 | limits 5h 20% weekly 75%/93% | needs chair: none
 </code></pre></div>
+<p>When the profile names a shared Postgres store, the loop also prints where
+it reads the board from. If the store is unreachable, that line reads:</p>
+<div class="highlight"><pre><span></span><code>work state: files (store unreachable)
+</code></pre></div>
+<p>A local SQLite store keeps the ticket files as the board and needs no shared
+store; local-first stays the default.</p>
 <h2 id="running-it">Running it</h2>
 <p>Start with a dry run. It plans one tick and changes nothing:</p>
 <div class="highlight"><pre><span></span><code>cox<span class="w"> </span>chair<span class="w"> </span>run<span class="w"> </span>--once<span class="w"> </span>--dry-run
@@ -3104,13 +3181,52 @@ systemctl<span class="w"> </span>--user<span class="w"> </span>status<span class
 <p>It prints the unit text. If there is no unit, it prints <code>no unit at &lt;path&gt;</code>.</p>
 <p>A user service stops when you log out. To keep the loop running while nobody
 is logged in, run <code>loginctl enable-linger</code> yourself. Cox does not run it.</p>
+<h2 id="cox-console">cox console</h2>
+<p><code>cox console</code> is one terminal screen of drafts, hosts, lanes, the chair and
+needs-chair items, one line per item. Its keys run the matching <code>cox</code>
+command after a y/n confirmation, so watching the fleet and acting on it no
+longer needs a second terminal:</p>
+<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>console
+</code></pre></div>
 <h2 id="limits">Limits</h2>
-<p>The lane cap is <code>policy.dispatch.max_in_flight</code> in the team cartridge.</p>
+<p>The lane cap is <code>policy.dispatch.max_in_flight</code> in the team cartridge, and
+it applies per machine, not across the fleet. A fleet gives each lane host
+its own capacity with <code>cox host add &lt;name&gt; --ssh &lt;dest&gt; --capacity &lt;n&gt;</code>; the
+Lane hosts section below shows how the loop fills each host in turn.</p>
+<p>The weekly spend window is anchored at <code>spend.weekly_reset</code> in the profile's
+<code>spend</code> block (for example <code>"Sun 04:00 America/New_York"</code>), not a rolling
+seven days. The loop, the launch gate, <code>route context</code> and <code>usage assess</code>
+all count the same week, and the status line shows where the week began.</p>
 <p>Past the hard stop, the loop lands work but launches nothing. The hard stop
 is <code>weekly_hard_stop_fraction</code> of <code>weekly_ceiling_usd</code>. Both live in the
 spend settings of the routing profile.</p>
+<p><code>role_ceiling_usd</code> is a separate failsafe on one build's own cumulative
+spend, not a hard bound on any single action. The Claude Code provider
+profile sets <code>role_ceiling_usd: {build: 6.0}</code>; the Build checkpoints section
+below shows how a build spends against it.</p>
 <p>The loop never cuts a release. It never merges a Homebrew tap PR. It never
 pushes the workspace. It never changes a profile or a tier.</p>
+<h2 id="build-checkpoints">Build checkpoints</h2>
+<p>A build runs in slices. Each slice stops at the guide, the build's measured
+shape (about $1.90), where the harness judges go or no-go: the session can
+resume, the partial work stays inside the task's surfaces, and the slice
+changed something.</p>
+<p>A build that passes its checkpoint resumes, as many times as it takes, until
+the session's cumulative spend reaches the <code>role_ceiling_usd</code> failsafe ($6
+on the Claude Code profile). Past it, the build is refused with a split
+recommendation. The weekly cap described above stays the fleet's global
+bound; <code>role_ceiling_usd</code> bounds one build's session, not the fleet.</p>
+<h2 id="housekeeping">Housekeeping</h2>
+<p>Each tick, the loop runs housekeeping on a period and records it as a chair
+action: a lake sync, a trace prune, and a run clean.</p>
+<p>The lake sync is also where run logs are archived. <code>cox lake sync</code> archives
+each ended run's text log and call log older than
+<code>log_retention_days</code> (default 7) beside the traces on the object store,
+reads each copy back, and only then removes the local file. The loop's
+trace prune keeps the same number of days.</p>
+<p>To keep logs longer, set <code>log_retention_days</code> in the routing profile. Every
+machine needs it applied together, since an older <code>cox</code> refuses a key it
+does not know.</p>
 <h2 id="lane-hosts">Lane hosts</h2>
 <p>Each tick, the loop counts the live lanes on every host. It reads them from
 the leases in the store, in <code>runs.host</code>.</p>
@@ -3176,6 +3292,11 @@ whose needs are done. A draft therefore never builds until you approve it.</p>
 </code></pre></div>
 <p>It writes each grounded steward proposal in intake as a draft. It lists the
 drafts that already exist. It lists the proposals it could not ground.</p>
+<p>Not every draft starts with the steward. Stale work becomes a draft too, for
+a person to approve or decline: a ticket with no recent commit is turned
+into a draft naming <code>proposed_by</code> and <code>proposed_at</code>, the same fields a
+steward draft carries. A ticket with no commit yet reads its file's
+modification time instead, so a fresh ticket is never judged stale.</p>
 <p>To approve a draft, run this:</p>
 <div class="highlight"><pre><span></span><code>cox<span class="w"> </span>route<span class="w"> </span>approve<span class="w"> </span>&lt;initiative&gt;<span class="w"> </span><span class="o">[</span>--task<span class="w"> </span>&lt;id&gt;<span class="o">]</span>
 </code></pre></div>
