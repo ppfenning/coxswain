@@ -104,10 +104,13 @@ def queries_of(params: dict[str, Any]) -> list[dict[str, Any]]:
     metrics = params["metrics"]
     by_label = {m.get("label"): m for m in metrics}
     sort = params.get("x_axis_sort")
+    raw = params.get("query_mode") == "raw"
+    columns = params["all_columns"] if raw else [*axis, *params.get("groupby", [])]
+    query_metrics = [] if raw else metrics
     return [
         {
-            "columns": [*axis, *params.get("groupby", [])],
-            "metrics": metrics,
+            "columns": columns,
+            "metrics": query_metrics,
             "orderby": [[by_label.get(sort, sort), params.get("x_axis_sort_asc", True)]] if sort else [],
             "row_limit": params.get("row_limit", 10000),
             "filters": [{"col": f["subject"], "op": f["operator"], "val": f["comparator"]} for f in params.get("adhoc_filters", []) if f["expressionType"] == "SIMPLE"],
