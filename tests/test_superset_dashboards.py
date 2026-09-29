@@ -497,7 +497,7 @@ TOOL_USES = {"expressionType": "SQL", "sqlExpression": "COUNT(*)", "label": "too
 EXPECTED_QUERIES = {
     "Cost per day by model alias": [
         {
-            "columns": [{"columnType": "BASE_AXIS", "expressionType": "SQL", "label": "at", "sqlExpression": "at", "timeGrain": "P1D"}, "model_alias"],
+            "columns": [{"columnType": "BASE_AXIS", "expressionType": "SQL", "label": "occurred_at", "sqlExpression": "occurred_at", "timeGrain": "P1D"}, "model_alias"],
             "metrics": [SUM_COST],
             "orderby": [],
             "row_limit": 10000,
@@ -511,7 +511,7 @@ EXPECTED_QUERIES = {
             "metrics": [SUM_COST],
             "orderby": [],
             "row_limit": 10000,
-            "filters": [{"col": "at", "op": "TEMPORAL_RANGE", "val": "Last week"}],
+            "filters": [{"col": "occurred_at", "op": "TEMPORAL_RANGE", "val": "Last week"}],
             "extras": {},
         }
     ],
@@ -537,7 +537,7 @@ EXPECTED_QUERIES = {
     ],
     "Quarantined attempts per day": [
         {
-            "columns": [{"columnType": "BASE_AXIS", "expressionType": "SQL", "label": "at", "sqlExpression": "at", "timeGrain": "P1D"}],
+            "columns": [{"columnType": "BASE_AXIS", "expressionType": "SQL", "label": "occurred_at", "sqlExpression": "occurred_at", "timeGrain": "P1D"}],
             "metrics": [{"expressionType": "SQL", "sqlExpression": "COUNT(*)", "label": "quarantined"}],
             "orderby": [],
             "row_limit": 10000,
@@ -553,7 +553,7 @@ EXPECTED_QUERIES = {
             "row_limit": 10000,
             "filters": [
                 {"col": "kind", "op": "IN", "val": ["refused", "unverified", "infra", "dropped"]},
-                {"col": "at", "op": "TEMPORAL_RANGE", "val": "Last 2 weeks"},
+                {"col": "occurred_at", "op": "TEMPORAL_RANGE", "val": "Last 2 weeks"},
             ],
             "extras": {},
         }
