@@ -752,10 +752,10 @@ EXPECTED_QUERIES = {
             "extras": {"time_grain_sqla": "PT1H"},
         }
     ],
-    # Table charts pass all_columns, a field queries_of has no branch for, so their saved
-    # "columns" and "metrics" stay empty here; only x_axis_sort (Needs-chair backlog) shows up.
-    "Host state and last login": [{"columns": [], "metrics": [], "orderby": [], "row_limit": 10000, "filters": [], "extras": {}}],
-    "Chair holder, epoch and beat age": [{"columns": [], "metrics": [], "orderby": [], "row_limit": 10000, "filters": [], "extras": {}}],
+    # Table charts run in raw query_mode: their saved all_columns become "columns" and
+    # "metrics" stays empty, since a raw chart selects plain columns, not aggregates.
+    "Host state and last login": [{"columns": ["name", "state", "login_checked_at"], "metrics": [], "orderby": [], "row_limit": 10000, "filters": [], "extras": {}}],
+    "Chair holder, epoch and beat age": [{"columns": ["holder", "host", "epoch", "beat_age_seconds"], "metrics": [], "orderby": [], "row_limit": 10000, "filters": [], "extras": {}}],
     "Needs-chair items by cause": [
         {
             "columns": [{"columnType": "BASE_AXIS", "expressionType": "SQL", "label": "cause", "sqlExpression": "cause"}],
@@ -796,12 +796,29 @@ EXPECTED_QUERIES = {
             "extras": {"time_grain_sqla": "P1D"},
         }
     ],
-    "Needs-chair backlog": [{"columns": [], "metrics": [], "orderby": [["waiting_hours", False]], "row_limit": 10000, "filters": [], "extras": {}}],
+    "Needs-chair backlog": [
+        {
+            "columns": ["initiative", "target", "reason", "flagged_at", "waiting_hours"],
+            "metrics": [],
+            "orderby": [["waiting_hours", False]],
+            "row_limit": 10000,
+            "filters": [],
+            "extras": {},
+        }
+    ],
 }
 
 
 def test_each_chart_queries_its_axis_group_by_metrics_filters_and_grain():
     assert {c["name"]: bootstrap.queries_of(c["params"]) for c in SPECS["charts"]} == EXPECTED_QUERIES
+
+
+def test_a_raw_mode_chart_queries_its_all_columns_with_no_metrics():
+    params = {"query_mode": "raw", "all_columns": ["a", "b", "c"], "metrics": [], "x_axis_sort": "b"}
+    (query,) = bootstrap.queries_of(params)
+    assert query["columns"] == ["a", "b", "c"]
+    assert query["metrics"] == []
+    assert query["orderby"] == [["b", True]]
 
 
 def test_chart_body_carries_a_query_context_for_the_resolved_dataset():
