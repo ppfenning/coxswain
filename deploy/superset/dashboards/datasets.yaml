@@ -10,7 +10,7 @@ datasets:
     database: coxswain
     requires: lake
     sql: |
-      SELECT *, CAST(ts AS TIMESTAMPTZ) AS at
+      SELECT *, CAST(ts AS TIMESTAMPTZ) AS occurred_at
       FROM {{lake:node_calls}}
 
   - name: runs
@@ -27,7 +27,7 @@ datasets:
     database: coxswain
     requires: lake
     sql: |
-      SELECT *, CAST(ts AS TIMESTAMPTZ) AS at
+      SELECT *, CAST(ts AS TIMESTAMPTZ) AS occurred_at
       FROM {{store:attempts}}
 
   # One row per hour over the last 14 days. A run is busy in an hour when it
@@ -160,7 +160,7 @@ datasets:
              COALESCE(json_extract_string(record_json, '$.arbitration.verdict'), 'not needed') AS arbiter_verdict,
              CAST(json_extract(record_json, '$.fix_loop.attempts') AS DOUBLE) AS build_attempts,
              json_extract_string(record_json, '$.fix_loop.stopped') AS stopped,
-             CAST(updated_at AS TIMESTAMPTZ) AS at
+             CAST(updated_at AS TIMESTAMPTZ) AS occurred_at
       FROM {{store:task_records}}
 
   # Chair datasets. All read the store only, and all require store. bootstrap runs a
