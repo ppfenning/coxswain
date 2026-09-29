@@ -430,6 +430,76 @@ def test_every_chair_and_hosts_dataset_runs_against_the_stores_real_columns():
         con.execute(bootstrap.expand_lake(bootstrap.expand_store(sql, "postgresql://u@h/db")))
 
 
+def _all_datasets_con():
+    """A DuckDB connection carrying every table every dataset's SQL reads, store and lake alike.
+
+    Builds on the store/lake shapes test_every_chair_and_hosts_dataset_runs_against_the_stores_real_columns
+    already uses, plus the tables the ten lake-only datasets need. attempts has no DDL anywhere in this
+    repo; kind and cause are what Quarantined attempts per day and Quarantines by cause already assume
+    (see their `unknown:` comments in charts.yaml).
+    """
+    duckdb = pytest.importorskip("duckdb")
+    con = duckdb.connect()
+    con.execute("ATTACH ':memory:' AS store")
+    con.execute("CREATE SCHEMA store.public")
+    con.execute(
+        "CREATE TABLE store.public.chair_actions "
+        "(ts VARCHAR, epoch INTEGER, holder VARCHAR, kind VARCHAR, target VARCHAR, status VARCHAR, reason VARCHAR, action_json VARCHAR)"
+    )
+    con.execute(
+        "CREATE TABLE store.public.hosts "
+        "(name VARCHAR, ssh VARCHAR, capacity INTEGER, state VARCHAR, beat_at VARCHAR, versions_json VARCHAR, updated_at VARCHAR, updated_by VARCHAR)"
+    )
+    con.execute("CREATE TABLE store.public.leases (name VARCHAR, holder VARCHAR, epoch INTEGER, heartbeat_at VARCHAR, expires_at VARCHAR)")
+    con.execute("CREATE TABLE store.public.runs (host VARCHAR, launched_at VARCHAR, ended_at VARCHAR)")
+    con.execute("CREATE TABLE store.public.node_calls (ts VARCHAR, cost_usd DOUBLE)")
+    con.execute(
+        "CREATE TABLE store.public.task_records "
+        "(run_id VARCHAR, phase_id VARCHAR, task_id VARCHAR, record_json VARCHAR, updated_at VARCHAR)"
+    )
+    con.execute("CREATE TABLE store.public.attempts (ts VARCHAR, kind VARCHAR, cause VARCHAR)")
+    con.execute("CREATE SCHEMA lake")
+    con.execute(
+        "CREATE TABLE lake.node_calls "
+        "(ts VARCHAR, cost_usd DOUBLE, task_id VARCHAR, role VARCHAR, model_alias VARCHAR, turns INTEGER, cache_read_tokens INTEGER, input_total INTEGER)"
+    )
+    con.execute("CREATE TABLE lake.runs (run_id VARCHAR, launched_at VARCHAR, ended_at VARCHAR)")
+    con.execute("CREATE TABLE lake.traces (tool VARCHAR)")
+    return con
+
+
+def _dataset_real_columns(name):
+    """The dataset's real column list: its SQL, expanded for postgres, run over _all_datasets_con's tables."""
+    con = _all_datasets_con()
+    (sql,) = [d["sql"] for d in SPECS["datasets"] if d["name"] == name]
+    plain = bootstrap.expand_lake(bootstrap.expand_store(sql, "postgresql://u@h/db"))
+    return [c[0] for c in con.execute(plain).description]
+
+
+def _chart_columns(chart):
+    """Every column name a chart's params names: all_columns, group-by, x axis, SIMPLE metric columns, SIMPLE filter subjects."""
+    params = chart["params"]
+    plain_columns = [*params.get("all_columns", []), *params.get("groupby", [])]
+    axis = [params["x_axis"]] if params.get("x_axis") else []
+    metric_columns = [m["column"]["column_name"] for m in params.get("metrics", []) if m["expressionType"] == "SIMPLE"]
+    filter_subjects = [f["subject"] for f in params.get("adhoc_filters", []) if f["expressionType"] == "SIMPLE"]
+    return [*plain_columns, *axis, *metric_columns, *filter_subjects]
+
+
+def test_every_chart_names_only_columns_its_dataset_has():
+    """Every column, metric column, x axis and filter a chart names is a real column of the dataset it reads."""
+    for chart in SPECS["charts"]:
+        real = _dataset_real_columns(chart["dataset"])
+        for name in _chart_columns(chart):
+            assert name in real, f"{chart['name']!r} names {name!r}, not among {chart['dataset']}'s columns {real}"
+
+
+def test_no_dataset_column_is_named_at():
+    """`at` was the pre-rename landed-timestamp column; occurred_at replaced it everywhere."""
+    for dataset in SPECS["datasets"]:
+        assert "at" not in _dataset_real_columns(dataset["name"]), dataset["name"]
+
+
 LANDED_TASK_RECORDS = """
 SET TimeZone = 'UTC';
 CREATE TABLE task_records AS SELECT * FROM (VALUES
@@ -493,6 +563,7 @@ def test_specs_are_plain_yaml_files_in_the_dashboards_directory():
 # getXAxisColumn builds, carrying timeGrain only when time_grain_sqla is set; group-by columns follow.
 SUM_COST = {"expressionType": "SIMPLE", "column": {"column_name": "cost_usd"}, "aggregate": "SUM", "label": "cost_usd"}
 DAY_AXIS = {"columnType": "BASE_AXIS", "expressionType": "SQL", "label": "day", "sqlExpression": "day", "timeGrain": "P1D"}
+WEEK_AXIS = {"columnType": "BASE_AXIS", "expressionType": "SQL", "label": "week", "sqlExpression": "week", "timeGrain": "P1W"}
 TOOL_USES = {"expressionType": "SQL", "sqlExpression": "COUNT(*)", "label": "tool_uses"}
 EXPECTED_QUERIES = {
     "Cost per day by model alias": [
@@ -673,7 +744,7 @@ EXPECTED_QUERIES = {
             "columns": [{"columnType": "BASE_AXIS", "expressionType": "SQL", "label": "hour", "sqlExpression": "hour", "timeGrain": "PT1H"}, "host"],
             "metrics": [
                 {"expressionType": "SIMPLE", "column": {"column_name": "lanes"}, "aggregate": "MAX", "label": "lanes"},
-                {"expressionType": "SIMPLE", "column": {"column_name": "max_in_flight"}, "aggregate": "MAX", "label": "cap"},
+                {"expressionType": "SIMPLE", "column": {"column_name": "capacity"}, "aggregate": "MAX", "label": "cap"},
             ],
             "orderby": [],
             "row_limit": 10000,
@@ -697,15 +768,12 @@ EXPECTED_QUERIES = {
     ],
     "Weekly spend against the ceiling": [
         {
-            "columns": [DAY_AXIS],
-            "metrics": [
-                {"expressionType": "SIMPLE", "column": {"column_name": "cumulative_cost_usd"}, "aggregate": "MAX", "label": "spend"},
-                {"expressionType": "SIMPLE", "column": {"column_name": "weekly_fraction"}, "aggregate": "MAX", "label": "fraction of ceiling"},
-            ],
+            "columns": [WEEK_AXIS],
+            "metrics": [{"expressionType": "SIMPLE", "column": {"column_name": "cost_usd"}, "aggregate": "SUM", "label": "spend"}],
             "orderby": [],
             "row_limit": 10000,
             "filters": [],
-            "extras": {"time_grain_sqla": "P1D"},
+            "extras": {"time_grain_sqla": "P1W"},
         }
     ],
     "Chair actions per hour by kind": [
@@ -721,10 +789,7 @@ EXPECTED_QUERIES = {
     "Spend per landed task per day": [
         {
             "columns": [DAY_AXIS],
-            "metrics": [
-                {"expressionType": "SIMPLE", "column": {"column_name": "cost_per_landed"}, "aggregate": "MAX", "label": "interactive chair"},
-                {"expressionType": "SIMPLE", "column": {"column_name": "loop_cost_per_landed"}, "aggregate": "MAX", "label": "chair loop"},
-            ],
+            "metrics": [{"expressionType": "SIMPLE", "column": {"column_name": "cost_per_landed"}, "aggregate": "MAX", "label": "cost per landed"}],
             "orderby": [],
             "row_limit": 10000,
             "filters": [],
