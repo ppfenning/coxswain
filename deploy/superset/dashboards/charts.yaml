@@ -4,7 +4,7 @@ charts:
     dataset: calls
     viz_type: echarts_timeseries_bar
     params:
-      x_axis: at
+      x_axis: occurred_at
       time_grain_sqla: P1D
       metrics:
         - {expressionType: SIMPLE, column: {column_name: cost_usd}, aggregate: SUM, label: cost_usd}
@@ -19,7 +19,7 @@ charts:
       metrics:
         - {expressionType: SIMPLE, column: {column_name: cost_usd}, aggregate: SUM, label: cost_usd}
       adhoc_filters:
-        - {expressionType: SIMPLE, clause: WHERE, subject: at, operator: TEMPORAL_RANGE, comparator: Last week}
+        - {expressionType: SIMPLE, clause: WHERE, subject: occurred_at, operator: TEMPORAL_RANGE, comparator: Last week}
 
   - name: Busy lanes per hour
     dataset: lanes_by_hour
@@ -47,7 +47,7 @@ charts:
     viz_type: echarts_timeseries_bar
     counts_kinds: &quarantine_kinds [refused, unverified, infra, dropped]
     params:
-      x_axis: at
+      x_axis: occurred_at
       time_grain_sqla: P1D
       metrics:
         - {expressionType: SQL, sqlExpression: COUNT(*), label: quarantined}
@@ -64,7 +64,7 @@ charts:
         - {expressionType: SQL, sqlExpression: COUNT(*), label: quarantined}
       adhoc_filters:
         - {expressionType: SIMPLE, clause: WHERE, subject: kind, operator: IN, comparator: *quarantine_kinds}
-        - {expressionType: SIMPLE, clause: WHERE, subject: at, operator: TEMPORAL_RANGE, comparator: Last 2 weeks}
+        - {expressionType: SIMPLE, clause: WHERE, subject: occurred_at, operator: TEMPORAL_RANGE, comparator: Last 2 weeks}
 
   - name: Tool uses by name, top 15
     dataset: traces
