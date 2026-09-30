@@ -14,10 +14,10 @@ its own beyond the view you left it on.
 
 Dash is optional: nothing else needs it. It joined the release in 0.26.0 as
 a beta preview and is tagged in lockstep with the rest. Install it with
-cargo, at the tag of your Coxswain release:
+cargo, at the tag of your Coxswain release (the crate is `coxswain-dash`; it installs `coxtop`):
 
 ```sh
-cargo install --git https://github.com/ppfenning/coxswain-dash --tag <release tag> coxtop
+cargo install --git https://github.com/ppfenning/coxswain-dash --tag <release tag>
 ```
 
 Prebuilt binaries and a tap formula are planned, so cargo will not always be
