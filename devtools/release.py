@@ -210,6 +210,11 @@ def sdist_from_index(payload: Mapping) -> tuple[str, str] | None:
                  if u.get("packagetype") == "sdist"), None)
 
 
+def _joins(spec: Mapping, version: str) -> bool:
+    """A component whose `since` is this version has no earlier tag to count commits from."""
+    return str(spec.get("since", "")) == version
+
+
 def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, list[str] | None],
                   component_versions: Mapping[str, str | None] | None = None,
                   pinned_commits: Mapping[str, int] | None = None,
@@ -223,7 +228,8 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
     ending in `tag`; one `notes`; then either a plain `tag_self` or the
     manifest's own `bump_manifest`-and-land sequence ending in `tag_self`.
     A component missing from `pinned_commits` has 0 commits, so it is pinned:
-    the safe side, since it never re-tags. The manifest's `lockstep` key is
+    the safe side, since it never re-tags. A component whose `since` is
+    `version` joins with this release and is tagged whatever its count. The manifest's `lockstep` key is
     deprecated and ignored. The `rejoin` kind is still accepted by old
     callers, but this planner emits `tag` for every changed component.
     `component_versions` is the version each component's own checkout
@@ -270,7 +276,8 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
     repo_components = [(name, spec) for name, spec in components.items() if spec.get("repo")]
 
     commit_counts = {name: (pinned_commits or {}).get(name) or 0 for name, _ in repo_components}
-    changed = [(name, spec) for name, spec in repo_components if commit_counts[name]]
+    tagged = {name for name, spec in repo_components if commit_counts[name] or _joins(spec, version)}
+    changed = [(name, spec) for name, spec in repo_components if name in tagged]
 
     # Three states per component: a list of tags, an empty list (reachable, no
     # tags), or None (the remote could not be read). Unknown is not clean: a
@@ -291,7 +298,7 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
     umbrella_slug = umbrella_release_slug(manifest, tools_repository_url)
     tag_steps = []
     for name, spec in repo_components:
-        if not commit_counts[name]:
+        if name not in tagged:
             tag_steps.append({"kind": "pinned", "component": name, "tag": spec["tag"]})
             continue
         tag_step = {"kind": "tag", "component": name, "repo": spec["repo"], "tag": new_tag}
