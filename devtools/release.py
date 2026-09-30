@@ -297,7 +297,7 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
         subject = f"pyproject: bump to {version} to match the tag"
         bump_step = {"kind": "bump_pyproject", "component": name, "repo": spec["repo"],
                      "branch": branch, "commit_subject": subject, "from": found, "to": version}
-        body = f"Bumps {name}'s pyproject.toml version to {version} to match tag {new_tag}."
+        body = f"Bumps {name}'s pyproject.toml version to {version} to match tag {new_tag}.\n\n{pr_footer(version)}"
         tag_steps.extend(_bump_and_land(bump_step, branch, body) + [tag_step, gr_step])
 
     # The release notes are a page of the docs site, so they live under `docs/`
@@ -320,7 +320,7 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
     subject = f"manifest: bump to {version} to match the tag"
     bump_step = {"kind": "bump_manifest", "component": "manifest", "from": current, "to": version,
                  "branch": branch, "commit_subject": subject}
-    body = f"Bumps manifest.toml version to {version} to match tag {new_tag}."
+    body = f"Bumps manifest.toml version to {version} to match tag {new_tag}.\n\n{pr_footer(version)}"
     steps = tag_steps + [notes_step] + _bump_and_land(bump_step, branch, body) + [tag_self_step, umbrella_gr_step]
     return _with_wait_workflows(steps) + _tap_formula_steps(steps, version, tools_repository_url,
                                                             umbrella_slug, tap_state)
@@ -463,6 +463,12 @@ def push_branch_argv(directory: str, branch: str) -> list[str]:
     """`git -C <directory> push -u origin <branch>` — a branch push, unlike
     `push_argv`'s tag push."""
     return ["git", "-C", directory, "push", "-u", "origin", branch]
+
+
+def pr_footer(version: str) -> str:
+    """The line every bump PR body ends with, naming the release `version`
+    this plan is cutting rather than any installed package's own version."""
+    return f"🚣 Built with [coxswain](https://github.com/ppfenning/coxswain) {version}"
 
 
 def pr_create_argv(title: str, body: str) -> list[str]:

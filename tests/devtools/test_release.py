@@ -102,7 +102,8 @@ def test_manifest_below_target_gets_its_own_bump_and_land_and_tag_sequence():
     assert manifest_steps[1] == {"kind": "push", "component": "manifest", "branch": "release/0.2.0"}
     assert manifest_steps[2] == {"kind": "pr_create", "component": "manifest",
                                   "title": "manifest: bump to 0.2.0 to match the tag",
-                                  "body": "Bumps manifest.toml version to 0.2.0 to match tag v0.2.0."}
+                                  "body": "Bumps manifest.toml version to 0.2.0 to match tag v0.2.0.\n\n"
+                                          + release.pr_footer("0.2.0")}
     assert manifest_steps[3] == {"kind": "wait_checks", "component": "manifest"}
     assert manifest_steps[4] == {"kind": "merge", "component": "manifest"}
     assert manifest_steps[5] == {"kind": "tag_self", "component": "coxswain", "tag": "v0.2.0"}
@@ -121,13 +122,22 @@ def test_a_component_below_the_target_version_yields_bump_pyproject_then_the_lan
     assert harness_steps[1] == {"kind": "push", "component": "harness", "branch": "release/0.2.0"}
     assert harness_steps[2] == {"kind": "pr_create", "component": "harness",
                                  "title": "pyproject: bump to 0.2.0 to match the tag",
-                                 "body": "Bumps harness's pyproject.toml version to 0.2.0 to match tag v0.2.0."}
+                                 "body": "Bumps harness's pyproject.toml version to 0.2.0 to match tag v0.2.0.\n\n"
+                                         + release.pr_footer("0.2.0")}
     assert harness_steps[3] == {"kind": "wait_checks", "component": "harness"}
     assert harness_steps[4] == {"kind": "merge", "component": "harness"}
     assert harness_steps[5] == {"kind": "tag", "component": "harness", "repo": "org/harness", "tag": "v0.2.0"}
     assert harness_steps[6] == {"kind": "wait_workflows", "component": "harness", "tag": "v0.2.0"}
     # cartridges carries no component_versions fact, so it gets no bump.
     assert [s["kind"] for s in steps if s["component"] == "cartridges"] == ["tag", "wait_workflows", "github_release"]
+
+
+def test_a_component_bump_pr_create_step_ends_its_body_with_the_coxswain_footer():
+    manifest = _manifest("1.2.3")
+    steps = release.release_plan(manifest, "1.2.3", _no_tags(manifest), {"harness": "1.0.0"},
+                                  pinned_commits=_all_changed(manifest))
+    harness_pr_create = next(s for s in steps if s["component"] == "harness" and s["kind"] == "pr_create")
+    assert harness_pr_create["body"].endswith(release.pr_footer("1.2.3"))
 
 
 def test_a_component_already_at_the_target_version_yields_no_bump_steps_for_it():
@@ -1047,7 +1057,8 @@ def test_cli_release_execute_runs_the_bump_manifest_land_sequence_and_leaves_the
     assert umbrella_calls[4] == release.add_argv(str(umbrella_dir), "manifest.toml", "docs/releases/index.md",
                                                  "pyproject.toml", "uv.lock")
     assert ["gh", "pr", "create", "--title", "manifest: bump to 0.2.0 to match the tag",
-            "--body", "Bumps manifest.toml version to 0.2.0 to match tag v0.2.0."] in calls
+            "--body", "Bumps manifest.toml version to 0.2.0 to match tag v0.2.0.\n\n"
+                      + release.pr_footer("0.2.0")] in calls
     assert ["gh", "pr", "merge", "--squash", "--delete-branch"] in calls
     assert 'version = "0.2.0"' in (umbrella_dir / "manifest.toml").read_text()
     assert 'version = "0.2.0"' in (umbrella_dir / "pyproject.toml").read_text()
@@ -1113,7 +1124,8 @@ def test_cli_release_execute_runs_the_bump_pyproject_land_sequence_in_order_and_
     assert harness_calls[9] == release.checkout_ref_argv(str(harness_dir), "main")
     assert harness_calls[10] == release.pull_argv(str(harness_dir), "main")
     assert ["gh", "pr", "create", "--title", "pyproject: bump to 0.2.0 to match the tag",
-            "--body", "Bumps harness's pyproject.toml version to 0.2.0 to match tag v0.2.0."] in calls
+            "--body", "Bumps harness's pyproject.toml version to 0.2.0 to match tag v0.2.0.\n\n"
+                      + release.pr_footer("0.2.0")] in calls
     assert ["gh", "pr", "merge", "--squash", "--delete-branch"] in calls
     assert (harness_dir / "pyproject.toml").read_text() == '[project]\nversion = "0.2.0"\n'
     # The checkout is back on main by the time `tag` runs (and stays there),
