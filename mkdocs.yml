@@ -82,6 +82,7 @@ nav:
       - Graphs: components/graphs.md
       - Tools: components/tools.md
       - Crew: components/crew.md
+      - Dash: components/dash.md
   - Reference:
       - CLI reference: reference/cli/index.md
   - Releases:
