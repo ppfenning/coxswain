@@ -19,6 +19,7 @@ def versions_in(text: str) -> set[str]:
 
 def check_manifest(facts: Mapping) -> list[Drift]:
     from devtools.release_check import Drift
+    from devtools.release_check_index import in_release
 
     manifest = facts.get("manifest", {})
     components = manifest.get("components", {})
@@ -47,8 +48,8 @@ def check_manifest(facts: Mapping) -> list[Drift]:
     else:
         notes_drifts = [
             Drift("manifest", manifest_file, None, notes_file, None, f"mention {name} in {notes_file}")
-            for name in components
-            if not re.search(rf"\b{re.escape(name)}\b", notes_page)
+            for name, spec in components.items()
+            if (not version or in_release(spec or {}, version)) and not re.search(rf"\b{re.escape(name)}\b", notes_page)
         ]
     return page_drifts + notes_drifts
 

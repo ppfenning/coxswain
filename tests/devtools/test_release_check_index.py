@@ -88,3 +88,31 @@ def test_gather_release_index_facts_with_no_releases_directory_yields_empty_fact
 def test_index_section_keeps_the_callers_row_order_so_crew_stays_last():
     out = index_section("0.2.0", {"cartridges": "v0.2.0", "tools": "v0.2.0", "crew": "v0.1.0"})
     assert out.index("| cartridges |") < out.index("| tools |") < out.index("| crew |")
+
+
+def test_check_release_index_expects_no_row_for_a_component_before_its_since_version():
+    older = index_section("0.25.1", {"cox": "v0.25.1"})
+    facts = {
+        "release_versions": {"0.25.1"},
+        "releases_index": f"{older}\n",
+        "manifest": {
+            "coxswain": {"version": "0.25.1"},
+            "components": {"cox": {"tag": "v0.25.1"}, "dash": {"tag": "v0.1.0", "since": "0.26.0"}},
+        },
+    }
+    assert check_release_index(facts) == []
+
+
+def test_check_release_index_expects_the_row_from_the_since_version_on():
+    facts = {
+        "release_versions": {"0.26.0"},
+        "releases_index": index_section("0.26.0", {"cox": "v0.26.0"}) + "\n",
+        "manifest": {
+            "coxswain": {"version": "0.26.0"},
+            "components": {"cox": {"tag": "v0.26.0"}, "dash": {"tag": "v0.26.0", "since": "0.26.0"}},
+        },
+    }
+    assert check_release_index(facts) == [
+        Drift("release_index", "docs/releases/index.md", None,
+              "docs/releases/index.md", None, "add its section for 0.26.0"),
+    ]
