@@ -45,7 +45,9 @@ def _refuse(component: str | None, detail: str) -> list[dict]:
     return [{"kind": "refuse", "component": component, "detail": detail}]
 
 
-_VERSIONS_LABEL_RE = re.compile(r"^(\S+) pyproject\.toml is (\S+), manifest wants (\S+)")
+_VERSIONS_LABEL_RE = re.compile(r"^(\S+) (pyproject\.toml|Cargo\.toml) is (\S+), manifest wants (\S+)")
+# The component bump that rewrites each file a `versions` drift can name.
+_BUMP_KIND_FOR_FILE = {"pyproject.toml": "bump_pyproject", "Cargo.toml": "bump_cargo"}
 _PERFORMS_BUMP_SUFFIX_RE = re.compile(r"\s*\(devtools release [^)]*\)$")
 
 
@@ -61,19 +63,20 @@ def _drift_line(d, will_bump: bool = False) -> str:
 
 def _versions_drift_is_planned(d, plan_steps: Sequence[dict]) -> bool:
     """True when `plan_steps` already carries the bump that resolves `d`: a
-    `bump_pyproject` step for the same component landing at the version the
-    drift wants, or — when `d` names the umbrella's own pyproject.toml — a
-    `bump_manifest` step landing there. `d.correction`'s own wording
-    (`"<label> pyproject.toml is <found>, manifest wants <wants>"`, written by
+    `bump_pyproject` step (`bump_cargo` when the drift names a Cargo.toml) for
+    the same component landing at the version the drift wants, or — when `d`
+    names the umbrella's own pyproject.toml — a `bump_manifest` step landing
+    there. `d.correction`'s own wording
+    (`"<label> <file> is <found>, manifest wants <wants>"`, written by
     `release_check.check_versions`) is the only place that names both the
     component and the target version, so it is parsed rather than re-derived."""
     m = _VERSIONS_LABEL_RE.match(d.correction)
     if not m:
         return False
-    label, _found, wants = m.groups()
+    label, file, _found, wants = m.groups()
     if label == "umbrella":
         return any(s["kind"] == "bump_manifest" and s.get("to") == wants for s in plan_steps)
-    return any(s["kind"] == "bump_pyproject" and s.get("component") == label and s.get("to") == wants
+    return any(s["kind"] == _BUMP_KIND_FOR_FILE[file] and s.get("component") == label and s.get("to") == wants
                for s in plan_steps)
 
 
@@ -211,7 +214,8 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
                   component_versions: Mapping[str, str | None] | None = None,
                   pinned_commits: Mapping[str, int] | None = None,
                   tools_repository_url: str | None = None,
-                  tap_state: str = "clean") -> list[dict]:
+                  tap_state: str = "clean",
+                  cargo_versions: Mapping[str, str | None] | None = None) -> list[dict]:
     """Steps in order: per `repo` component, one `pinned` step naming its own
     manifest `tag` when `pinned_commits` shows no commits since that tag, or,
     when it shows commits, a plain `tag` (its `component_versions` entry is
@@ -224,8 +228,12 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
     callers, but this planner emits `tag` for every changed component.
     `component_versions` is the version each component's own checkout
     pyproject.toml currently declares — a fact this pure function cannot read
-    itself, gathered by the edge the way `existing_tags` is. A single
-    `refuse` step, naming the reason, when `version` is not valid
+    itself, gathered by the edge the way `existing_tags` is. A component named
+    in `cargo_versions` instead (its checkout has a Cargo.toml and no
+    pyproject.toml) gets a `bump_cargo`-and-land sequence in place of
+    `bump_pyproject` when behind `version`; the two maps are checked
+    independently, so a `component_versions` entry's planning is unaffected.
+    A single `refuse` step, naming the reason, when `version` is not valid
     semver-with-optional-beta, when the tag already exists on a component
     this plan will tag (or on the umbrella, when `existing_tags` carries a
     `"coxswain"` key), when the remote of a component this plan will tag
@@ -256,6 +264,7 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
         return _refuse(version, f"{version!r} is not a valid version (expected X.Y.Z or X.Y.Z-beta.N)")
 
     component_versions = component_versions or {}
+    cargo_versions = cargo_versions or {}
     new_tag = "v" + version
     components = manifest.get("components", {})
     repo_components = [(name, spec) for name, spec in components.items() if spec.get("repo")]
@@ -288,16 +297,23 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
         tag_step = {"kind": "tag", "component": name, "repo": spec["repo"], "tag": new_tag}
         gr_step = _component_github_release_step(name, spec["repo"], new_tag, version, umbrella_slug,
                                                    fallback_from=spec["tag"])
-        found = component_versions.get(name)
+        is_cargo = name in cargo_versions
+        found = cargo_versions.get(name) if is_cargo else component_versions.get(name)
         found_parsed = _parse_semver(found) if found is not None else None
         if found_parsed is None or _sort_key(found_parsed) >= _sort_key(parsed):
             tag_steps.extend([tag_step, gr_step])
             continue
         branch = f"release/{version}"
-        subject = f"pyproject: bump to {version} to match the tag"
-        bump_step = {"kind": "bump_pyproject", "component": name, "repo": spec["repo"],
-                     "branch": branch, "commit_subject": subject, "from": found, "to": version}
-        body = f"Bumps {name}'s pyproject.toml version to {version} to match tag {new_tag}.\n\n{pr_footer(version)}"
+        if is_cargo:
+            subject = f"cargo: bump to {version} to match the tag"
+            bump_step = {"kind": "bump_cargo", "component": name, "repo": spec["repo"],
+                         "branch": branch, "commit_subject": subject, "from": found, "to": version}
+            body = f"Bumps {name}'s Cargo.toml version to {version} to match tag {new_tag}.\n\n{pr_footer(version)}"
+        else:
+            subject = f"pyproject: bump to {version} to match the tag"
+            bump_step = {"kind": "bump_pyproject", "component": name, "repo": spec["repo"],
+                         "branch": branch, "commit_subject": subject, "from": found, "to": version}
+            body = f"Bumps {name}'s pyproject.toml version to {version} to match tag {new_tag}.\n\n{pr_footer(version)}"
         tag_steps.extend(_bump_and_land(bump_step, branch, body) + [tag_step, gr_step])
 
     # The release notes are a page of the docs site, so they live under `docs/`
@@ -423,6 +439,19 @@ def bumped_uv_lock_text(text: str, package: str, to: str) -> str:
     """`text` (uv.lock) with `package`'s own `[[package]]` stanza's `version`
     line rewritten to `to`; every other package's stanza, and the lockfile's
     own top-of-file `version = 1` schema line, are left untouched."""
+    blocks = re.split(r"(?=\n\[\[package\]\])", text)
+    return "".join(
+        re.sub(r'(?m)^version = "[^"]*"', f'version = "{to}"', b, count=1)
+        if re.search(rf'(?m)^name = "{re.escape(package)}"$', b) else b
+        for b in blocks)
+
+
+def bumped_cargo_lock_text(text: str, package: str, to: str) -> str:
+    """`text` (Cargo.lock) with `package`'s own `[[package]]` stanza's
+    `version` line rewritten to `to`; every other package's stanza is left
+    untouched. Cargo.lock's `[[package]]` stanzas share uv.lock's shape
+    (`name = "..."` followed by a `version = "..."` line), so the
+    split-and-match approach is the same as `bumped_uv_lock_text`."""
     blocks = re.split(r"(?=\n\[\[package\]\])", text)
     return "".join(
         re.sub(r'(?m)^version = "[^"]*"', f'version = "{to}"', b, count=1)
