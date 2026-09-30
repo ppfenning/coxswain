@@ -237,6 +237,15 @@ def test_a_changed_component_with_a_stale_lockstep_false_key_gets_a_tag_step_not
                               "link": "https://github.com/ppfenning/coxswain/releases/tag/v0.9.0"}
 
 
+def test_a_component_joining_at_its_since_version_is_tagged_with_no_commit_count():
+    manifest = {"coxswain": {"version": "0.1.0"},
+                "components": {"harness": {"repo": "org/harness", "tag": "v0.1.0"},
+                                "dash": {"repo": "org/dash", "tag": "v0.1.0", "since": "0.2.0"}}}
+    steps = release.release_plan(manifest, "0.2.0", _no_tags(manifest), pinned_commits={"dash": 0})
+    assert {"kind": "tag", "component": "dash", "repo": "org/dash", "tag": "v0.2.0"} in steps
+    assert [s["kind"] for s in steps if s["component"] == "harness"] == ["pinned"]
+
+
 def test_a_component_with_zero_or_no_pinned_commits_entry_gets_pinned():
     manifest = {"coxswain": {"version": "0.1.0"},
                 "components": {"harness": {"repo": "org/harness", "tag": "v0.1.0"},
