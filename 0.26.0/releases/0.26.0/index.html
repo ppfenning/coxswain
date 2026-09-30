@@ -3115,8 +3115,8 @@ dashboard for the fleet built with ratatui. It shows the chair, spend, machines,
 on the Regatta and Slipstream pages, with a Harbor Light toggle. You can drill into a run, an initiative or a machine.
 It reads <code>cox dash --feed</code> and <code>cox dash --detail</code>, and every action it offers is a <code>cox</code> command it shows you before
 it runs. coxtop is a beta and is actively being improved. The visuals will move toward the design canvas in 0.27, and
-a panel to talk with the chair is planned. Install it with cargo:</p>
-<div class="highlight"><pre><span></span><code>cargo<span class="w"> </span>install<span class="w"> </span>--git<span class="w"> </span>https://github.com/ppfenning/coxswain-dash<span class="w"> </span>--tag<span class="w"> </span>v0.26.0<span class="w"> </span>coxtop
+a panel to talk with the chair is planned. Install it with cargo (the crate is <code>coxswain-dash</code>; it installs <code>coxtop</code>):</p>
+<div class="highlight"><pre><span></span><code>cargo<span class="w"> </span>install<span class="w"> </span>--git<span class="w"> </span>https://github.com/ppfenning/coxswain-dash<span class="w"> </span>--tag<span class="w"> </span>v0.26.0
 </code></pre></div>
 <p><strong>Short ids from the store.</strong> Intakes and initiatives get short ids from a sequence in the store (store migration
 0011). Existing work gets <code>short_id</code> aliases backfilled. Commands accept either the short id or the full slug and show
