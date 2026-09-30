@@ -29,17 +29,19 @@ class Drift:
 def check_versions(facts: Mapping) -> list[Drift]:
     """Every component pyproject and the umbrella's must equal `expected_version`
     (the manifest's `coxswain.version`, gathered by `gather_version_facts`); a
-    component whose manifest `tag` is not `v<expected>` is pinned and compares against its own `tag` instead (advisory)."""
+    component whose manifest `tag` is not `v<expected>` is pinned and compares against its own `tag` instead (advisory).
+    A component with no pyproject.toml version (an empty or missing `component_pyprojects` entry) compares its
+    `component_cargos` entry's `[package].version` instead."""
     expected = facts.get("expected_version")
     if expected is None:
         return []
     manifest_file = facts.get("manifest_path", "manifest.toml")
 
-    def mismatch(label: str, pyproject_file: str, found: str | None) -> Drift | None:
+    def mismatch(label: str, version_file: str, found: str | None) -> Drift | None:
         if found is None or found == expected:
             return None
-        return Drift("versions", manifest_file, None, pyproject_file, None,
-                     f"{label} pyproject.toml is {found}, manifest wants {expected} "
+        return Drift("versions", manifest_file, None, version_file, None,
+                     f"{label} {Path(version_file).name} is {found}, manifest wants {expected} "
                      f"(devtools release {expected} performs the bump)")
 
     umbrella_file = str(Path(facts.get("umbrella", "coxswain")) / "pyproject.toml")
@@ -48,11 +50,23 @@ def check_versions(facts: Mapping) -> list[Drift]:
 
     pinned = {name for name, spec in facts.get("components", {}).items() if spec.get("tag") != f"v{expected}"}
     pyprojects = facts.get("pyprojects", {})
+    cargos = facts.get("component_cargos", {})
+
+    def found_version(name: str, pyproject: Mapping | None) -> tuple[str, str | None]:
+        """`(file, version)`: the pyproject.toml's version, else the Cargo.toml's
+        `[package].version` beside it, so the drift names the file it read."""
+        pyproject_file = pyprojects.get(name, f"{name}/pyproject.toml")
+        version = (pyproject or {}).get("project", {}).get("version")
+        cargo_version = (cargos.get(name) or {}).get("package", {}).get("version")
+        if version is None and cargo_version is not None:
+            return str(Path(pyproject_file).with_name("Cargo.toml")), cargo_version
+        return pyproject_file, version
+
     component_drifts = [
         d
         for name, pyproject in facts.get("component_pyprojects", {}).items()
         if name not in pinned
-        for d in [mismatch(name, pyprojects.get(name, f"{name}/pyproject.toml"), (pyproject or {}).get("project", {}).get("version"))]
+        for d in [mismatch(name, *found_version(name, pyproject))]
         if d is not None
     ]
     # Advisory: `devtools release` folds a changed pinned component back in on its own (`rejoin`).
@@ -68,7 +82,10 @@ def check_versions(facts: Mapping) -> list[Drift]:
 
 def gather_version_facts(manifest: Mapping, manifest_path: str, component_dirs: Mapping[str, str], umbrella: str) -> dict:
     """Edge for `check_versions`: the manifest's declared version, and each
-    component's and the umbrella's pyproject.toml read off disk (`{}` when absent)."""
+    component's and the umbrella's pyproject.toml read off disk (`{}` when
+    absent), plus each component's Cargo.toml read the same way into
+    `component_cargos` — the fact a Rust-only component's `[package].version`
+    is read from, since it carries no pyproject.toml at all."""
 
     def read(path: Path) -> dict:
         return tomllib.loads(path.read_text()) if path.exists() else {}
@@ -78,6 +95,7 @@ def gather_version_facts(manifest: Mapping, manifest_path: str, component_dirs: 
         "manifest_path": manifest_path,
         "components": manifest.get("components", {}),
         "component_pyprojects": {name: read(Path(d) / "pyproject.toml") for name, d in component_dirs.items()},
+        "component_cargos": {name: read(Path(d) / "Cargo.toml") for name, d in component_dirs.items()},
         "umbrella_pyproject": read(Path(umbrella) / "pyproject.toml"),
     }
 

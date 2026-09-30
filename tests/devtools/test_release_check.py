@@ -90,6 +90,24 @@ def test_check_versions_drifts_on_a_component_pyproject_below_the_manifest_versi
     assert "devtools release 0.2.0" in d.correction
 
 
+def test_check_versions_reads_the_version_from_a_cargo_toml_fixture_for_a_component_with_no_pyproject():
+    facts = {
+        "expected_version": "0.2.0",
+        "manifest_path": "manifest.toml",
+        "umbrella_pyproject": {"project": {"version": "0.2.0"}},
+        "component_pyprojects": {"harness": {}},
+        "component_cargos": {"harness": {"package": {"version": "0.1.0"}}},
+        "pyprojects": {"harness": "/root/harness/pyproject.toml"},
+    }
+    drifts = release_check.check_versions(facts)
+    assert len(drifts) == 1
+    d = drifts[0]
+    assert d.check == "versions"
+    assert d.b_file == "/root/harness/Cargo.toml"
+    assert d.correction == ("harness Cargo.toml is 0.1.0, manifest wants 0.2.0 "
+                            "(devtools release 0.2.0 performs the bump)")
+
+
 def test_check_versions_drifts_advisory_on_a_lockstep_false_component_past_its_pinned_tag():
     facts = {
         "expected_version": "0.9.0",
@@ -144,6 +162,22 @@ def test_gather_version_facts_reads_each_component_and_the_umbrella_pyproject_of
     assert facts["components"] == {"cox": {"tag": "v0.2.0"}}
     assert facts["component_pyprojects"] == {"cox": {"project": {"version": "0.1.0"}}}
     assert facts["umbrella_pyproject"] == {"project": {"version": "0.2.0"}}
+
+
+def test_gather_version_facts_reads_each_components_cargo_toml_off_disk_empty_when_absent(tmp_path):
+    (tmp_path / "dash").mkdir()
+    (tmp_path / "dash" / "Cargo.toml").write_text('[package]\nname = "coxswain-dash"\nversion = "0.1.0"\n')
+    (tmp_path / "cox").mkdir()
+    (tmp_path / "cox" / "pyproject.toml").write_text('[project]\nversion = "0.1.0"\n')
+    (tmp_path / "coxswain").mkdir()
+    manifest = {"coxswain": {"version": "0.2.0"}, "components": {"dash": {"tag": "v0.2.0"}, "cox": {"tag": "v0.2.0"}}}
+    facts = release_check.gather_version_facts(
+        manifest, "manifest.toml", {"dash": str(tmp_path / "dash"), "cox": str(tmp_path / "cox")}, str(tmp_path / "coxswain")
+    )
+    assert facts["component_cargos"] == {
+        "dash": {"package": {"name": "coxswain-dash", "version": "0.1.0"}},
+        "cox": {},
+    }
 
 
 def test_cli_release_check_reports_a_real_versions_drift_from_disk(tmp_path, capsys, monkeypatch):

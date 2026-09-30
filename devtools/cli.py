@@ -211,6 +211,24 @@ def _release_bump(directory: str, branch: str, commit_subject: str, paths: list[
     return True, "committed"
 
 
+def _release_bump_cargo(directory: str, to: str, branch: str, commit_subject: str, run) -> tuple[bool, str]:
+    """`_release_bump` for a `bump_cargo` step: rewrites Cargo.toml's
+    `[package]` version and, when Cargo.lock exists, that package's own
+    `[[package]]` stanza, in one commit, only once `branch` is checked out.
+    Which files exist is read before the checkout, so `paths` is known up front."""
+    cargo_path = Path(directory) / "Cargo.toml"
+    lock_path = Path(directory) / "Cargo.lock"
+    package_name = tomllib.loads(cargo_path.read_text()).get("package", {}).get("name")
+    paths = ["Cargo.toml", "Cargo.lock"] if lock_path.exists() and package_name else ["Cargo.toml"]
+
+    def write():
+        cargo_path.write_text(release.bumped_version_line(cargo_path.read_text(), to))
+        if "Cargo.lock" in paths:
+            lock_path.write_text(release.bumped_cargo_lock_text(lock_path.read_text(), package_name, to))
+
+    return _release_bump(directory, branch, commit_subject, paths, write, run)
+
+
 def _release_bump_pyproject(directory: str, path: Path, to: str, branch: str, commit_subject: str,
                              run) -> tuple[bool, str]:
     """`_release_bump` for a `bump_pyproject` step: rewrites `path`'s version
@@ -421,6 +439,18 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                 print(f"FAILED bump_pyproject {step['component']}: {detail}")
                 return 2
             print(f"bump_pyproject {step['component']}: {step['from']} -> {step['to']}")
+        elif kind == "bump_cargo":
+            directory = release.component_dir(root, step["component"], overrides)
+            cargo_toml = tomllib.loads((Path(directory) / "Cargo.toml").read_text())
+            if cargo_toml.get("package", {}).get("version") == step["to"]:
+                already_bumped[step["component"]] = step["to"]
+                print(f"bump_cargo {step['component']}: already at {step['to']}")
+                continue
+            ok, detail = _release_bump_cargo(directory, step["to"], step["branch"], step["commit_subject"], run)
+            if not ok:
+                print(f"FAILED bump_cargo {step['component']}: {detail}")
+                return 2
+            print(f"bump_cargo {step['component']}: {step['from']} -> {step['to']}")
         elif kind == "bump_manifest":
             manifest_file = Path(manifest_path)
             if tomllib.loads(manifest_file.read_text()).get("coxswain", {}).get("version") == step["to"]:
@@ -635,9 +665,13 @@ def _release(a: argparse.Namespace) -> int:
             rc, out = _real_run(["git", "-C", directory, "rev-list", f"{spec['tag']}..HEAD", "--count"], None)
             pinned_commits[name] = int(out.strip()) if rc == 0 and out.strip().isdigit() else 0
     component_versions = {}
+    cargo_versions = {}
     for name, directory in component_dirs.items():
         pyproject_path = Path(directory) / "pyproject.toml"
         if not pyproject_path.exists():
+            found = facts.get("component_cargos", {}).get(name, {}).get("package", {}).get("version")
+            if found is not None:
+                cargo_versions[name] = found
             continue
         found = release.component_version(pyproject_path.read_text())
         if found is not None:
@@ -645,7 +679,8 @@ def _release(a: argparse.Namespace) -> int:
     plan_steps = release.release_plan(
         manifest, a.version, existing_tags, component_versions=component_versions, pinned_commits=pinned_commits,
         tools_repository_url=_tools_repository_url(),
-        tap_state=_tap_state(release.component_dir(root, release.TAP_CHECKOUT, overrides)))
+        tap_state=_tap_state(release.component_dir(root, release.TAP_CHECKOUT, overrides)),
+        cargo_versions=cargo_versions)
     steps = release.gate(drifts, a.allow_doc_drift, plan_steps) + plan_steps
     if a.dry_run:
         for step in steps:
