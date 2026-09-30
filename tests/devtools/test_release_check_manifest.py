@@ -221,3 +221,15 @@ def test_check_manifest_mirroring_the_umbrella_layout_has_zero_drift(tmp_path):
         **gather_manifest_facts(manifest, str(manifest_path), plan["component_docs"], plan["release_notes"]),
     }
     assert check_manifest(facts) == []
+
+
+def test_check_manifest_asks_no_notes_mention_of_a_component_before_its_since_version():
+    facts = {
+        "manifest": {"coxswain": {"version": "0.2.0"}, "components": {"cox": {"tag": "v0.1.0", "since": "0.3.0"}}},
+        "manifest_path": "/repo/manifest.toml",
+        "component_docs": {"cox": "/repo/coxswain/docs/components/cox.md"},
+        "release_notes": "/repo/coxswain/docs/releases/0.2.0.md",
+        "component_pages": {"cox": "cox is at v0.1.0"},
+        "notes_page": "nothing about it here",
+    }
+    assert check_manifest(facts) == []

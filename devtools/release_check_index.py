@@ -44,6 +44,15 @@ def _section_text(index_text: str, version: str) -> str | None:
     return rest[: nxt.start()] if nxt else rest
 
 
+def _version_key(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in re.findall(r"\d+", version))
+
+
+def in_release(spec: Mapping, version: str) -> bool:
+    """A component with `since` joined the release at that version; older sections carry no row for it."""
+    return not spec.get("since") or _version_key(version) >= _version_key(str(spec["since"]))
+
+
 def check_release_index(facts: Mapping) -> list[Drift]:
     from devtools.release_check import Drift
 
@@ -62,6 +71,7 @@ def check_release_index(facts: Mapping) -> list[Drift]:
             name: (str(spec.get("tag")) if version == current
                    else (f"v{version}" if spec.get("tag") == f"v{current}" else None))
             for name, spec in components.items()
+            if in_release(spec, version)
         }]
         if (section := _section_text(index_text, version)) is None
         or any(f"| {name} |" not in section or (tag is not None and tag not in section) for name, tag in tags.items())
