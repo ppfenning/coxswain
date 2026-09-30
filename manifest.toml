@@ -30,6 +30,8 @@ graphs     = { repo = "ppfenning/coxswain-graphs",     tag = "v0.25.1", required
 ] }
 tools      = { repo = "ppfenning/coxswain-tools",      tag = "v0.25.1", required = true, provides = "cox", docs = ["README.md"] }
 crew       = { repo = "ppfenning/coxswain-crew",       tag = "v0.12.0", lockstep = false, flag = "crew", docs = ["README.md"] }
+# v0.1.0 is a placeholder until coxswain-dash cuts its first release.
+dash       = { repo = "ppfenning/coxswain-dash",       tag = "v0.1.0",  flag = "dash", provides = "coxtop", docs = ["README.md"] }
 
 [providers]
 claude-code = { status = "supported", profile = "providers/claude-code.yaml" }
