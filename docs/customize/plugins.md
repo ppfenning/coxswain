@@ -11,7 +11,7 @@ repository holds the ones Coxswain ships.
 
 | Group | Loaded by | Chosen by | Built in |
 | --- | --- | --- | --- |
-| `coxswain.sources` | `cox route pull` | `--source <name>`, configured under the profile's `sources.<name>` | none |
+| `coxswain.sources` | `cox route pull` | `--source <name>`, configured under the profile's `sources.<name>`; a bare pull reads every configured source | `github` (issues labelled `intake` and PRs labelled `review`, through `gh`) and `folder` |
 | `coxswain.forges` | `cox runs land` | the profile's `forge:` key | `local` (plain git, the default) and `github` |
 | `coxswain.trackers` | `cox route sync` | the profile's `tracker:` key | `none` (the default) and `github-projects` |
 | `coxswain.system_one` | the harness's fast path | the provider profile's `system_one.backend` | `model-tier` |
@@ -21,6 +21,29 @@ repository holds the ones Coxswain ships.
 A name that is neither built in nor registered is refused with a line
 naming the group, except in system one: an unregistered backend turns
 system one off for that run, and the run goes on without it.
+
+## Built-in sources
+
+Both run locally: `github` through your own `gh` login, `folder` on the
+filesystem. Name them in the routing profile, and map each listed repo
+or folder to the repository its tickets target:
+
+```yaml
+sources: {"github": {"repos": ["owner/repo"]}, "folder": {"repos": ["~/intake"]}}
+repo_map: {"owner/repo": "/path/to/repo", "~/intake": "/path/to/repo"}
+```
+
+- **github** files each issue labelled `intake` (`filter: label:<name>`
+  picks another label), then swaps the label for `intake:taken` and
+  comments the intake path. An open PR labelled `review` is reviewed
+  instead, and relabelled `review:taken`.
+- **folder** files each `*.md` directly in the folder: its first
+  `# heading` is the title (else the file name), the rest the body. A
+  filed file moves into the folder's `done/`, so the folder holds only
+  what is waiting. The same name with new text files again.
+
+The autonomous chair runs a bare `cox route pull` when it has free lanes
+and nothing else queued, so it reads every configured source.
 
 ## Installing
 
