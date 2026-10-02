@@ -1537,6 +1537,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#built-in-sources" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Built-in sources
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#installing" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3015,6 +3026,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#built-in-sources" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Built-in sources
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#installing" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3083,8 +3105,8 @@ repository holds the ones Coxswain ships.</p>
 <tr>
 <td><code>coxswain.sources</code></td>
 <td><code>cox route pull</code></td>
-<td><code>--source &lt;name&gt;</code>, configured under the profile's <code>sources.&lt;name&gt;</code></td>
-<td>none</td>
+<td><code>--source &lt;name&gt;</code>, configured under the profile's <code>sources.&lt;name&gt;</code>; a bare pull reads every configured source</td>
+<td><code>github</code> (issues labelled <code>intake</code> and PRs labelled <code>review</code>, through <code>gh</code>) and <code>folder</code></td>
 </tr>
 <tr>
 <td><code>coxswain.forges</code></td>
@@ -3121,6 +3143,25 @@ repository holds the ones Coxswain ships.</p>
 <p>A name that is neither built in nor registered is refused with a line
 naming the group, except in system one: an unregistered backend turns
 system one off for that run, and the run goes on without it.</p>
+<h2 id="built-in-sources">Built-in sources</h2>
+<p>Both run locally: <code>github</code> through your own <code>gh</code> login, <code>folder</code> on the
+filesystem. Name them in the routing profile, and map each listed repo
+or folder to the repository its tickets target:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">sources</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="s">"github"</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="s">"repos"</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">"owner/repo"</span><span class="p p-Indicator">]},</span><span class="w"> </span><span class="s">"folder"</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="s">"repos"</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">"~/intake"</span><span class="p p-Indicator">]}}</span>
+<span class="nt">repo_map</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="s">"owner/repo"</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="s">"/path/to/repo"</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">"~/intake"</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="s">"/path/to/repo"</span><span class="p p-Indicator">}</span>
+</code></pre></div>
+<ul>
+<li><strong>github</strong> files each issue labelled <code>intake</code> (<code>filter: label:&lt;name&gt;</code>
+  picks another label), then swaps the label for <code>intake:taken</code> and
+  comments the intake path. An open PR labelled <code>review</code> is reviewed
+  instead, and relabelled <code>review:taken</code>.</li>
+<li><strong>folder</strong> files each <code>*.md</code> directly in the folder: its first
+  <code># heading</code> is the title (else the file name), the rest the body. A
+  filed file moves into the folder's <code>done/</code>, so the folder holds only
+  what is waiting. The same name with new text files again.</li>
+</ul>
+<p>The autonomous chair runs a bare <code>cox route pull</code> when it has free lanes
+and nothing else queued, so it reads every configured source.</p>
 <h2 id="installing">Installing</h2>
 <p><code>cox</code> loads sources, forges and trackers from its own environment:</p>
 <div class="highlight"><pre><span></span><code>uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span>coxswain-tools<span class="w"> </span>--with<span class="w"> </span><span class="s2">"coxswain-plugins @ git+https://github.com/ppfenning/coxswain-plugins"</span>
