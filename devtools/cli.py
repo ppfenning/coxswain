@@ -593,7 +593,7 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                 print(f"FAILED tap_formula_pr tap: {detail}")
                 return 2
             for argv, cwd in ((release.push_branch_argv(directory, step["branch"]), None),
-                              (release.pr_create_argv(step["title"], f"Bumps the formula to {version} on PyPI."), directory)):
+                              (release.pr_create_argv(step["title"], f"Bumps the formula to {version} on PyPI.\n\n{release.pr_footer(version)}"), directory)):
                 rc, out = run(argv, cwd)
                 if rc != 0:
                     print(f"FAILED tap_formula_pr tap: {out.strip()}")

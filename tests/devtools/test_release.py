@@ -434,8 +434,23 @@ def test_cli_release_execute_opens_the_tap_pr_with_the_index_sdist(tmp_path):
                               fetch_index=lambda url: index)
     assert rc == 0
     assert 'url "https://x/cox-0.2.0.tar.gz"' in formula.read_text() and "b" * 64 in formula.read_text()
-    assert ["gh", "pr", "create", "--title", "cox 0.2.0", "--body", "Bumps the formula to 0.2.0 on PyPI."] in calls
+    assert ["gh", "pr", "create", "--title", "cox 0.2.0", "--body",
+            "Bumps the formula to 0.2.0 on PyPI.\n\n" + release.pr_footer("0.2.0")] in calls
     assert fake_run.current_branch[str(tmp_path / "homebrew-coxswain")] == "main"
+
+
+def test_cli_release_execute_ends_the_tap_pr_body_with_the_coxswain_footer(tmp_path):
+    formula = tmp_path / "homebrew-coxswain" / "Formula" / "cox.rb"
+    formula.parent.mkdir(parents=True)
+    formula.write_text(_FORMULA)
+    steps, _ = _tap_kinds(_tools_manifest(), "1.2.3", pinned_commits={"tools": 1})
+    calls, fake_run = _fake_git_run()
+    index = {"urls": [{"packagetype": "sdist", "url": "https://x/cox-1.2.3.tar.gz", "digests": {"sha256": "b" * 64}}]}
+    rc = cli._release_execute(steps[-1:], "1.2.3", str(tmp_path), {}, str(tmp_path), fake_run, {}, "",
+                              fetch_index=lambda url: index)
+    pr_create = next(c for c in calls if c[:3] == ["gh", "pr", "create"])
+    assert rc == 0
+    assert pr_create[pr_create.index("--body") + 1].endswith(release.pr_footer("1.2.3"))
 
 
 def test_cli_release_execute_branches_the_tap_pr_from_the_fetched_origin_default_not_the_local_head(tmp_path):
