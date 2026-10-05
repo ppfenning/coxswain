@@ -31,16 +31,17 @@ jobs:
       - name: ruff (rules in pyproject.toml; pre-commit mirrors it)
         run: pip install ruff==0.16.6 && ruff check .
 
-  # The suite on Python 3.12, the supported floor. Not in the branch ruleset,
+  # The suite on Python 3.15, a canary ahead of the 3.14 floor. Not in the branch ruleset,
   # which requires `test` by name, so a red run here is a finding, not a merge block.
-  py312:
+  py315:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.15"
+          allow-prereleases: true
           cache: pip
       - run: pip install -e ".[dev]"
       - run: pytest -q
