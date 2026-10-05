@@ -2,9 +2,11 @@ name: ci
 on: [push, pull_request]
 jobs:
   seats:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.14" }
       - name: every seat is well formed
         run: python3 .github/check_seats.py
       - name: nothing names an employer
