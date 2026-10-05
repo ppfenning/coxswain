@@ -20,6 +20,18 @@ trusted publishing — no long-lived token in this repository's secrets).
 Every component in a release carries the same tag, so `manifest.toml`
 always tells you exactly what a given release installs.
 
+## `0.31.0`
+
+| Component | Repository or path | Tag | Required or flag |
+| --- | --- | --- | --- |
+| cartridges | `ppfenning/coxswain-cartridges` | `v0.31.0` | required |
+| graphs | `ppfenning/coxswain-graphs` | `v0.31.0` | required |
+| tools | `ppfenning/coxswain-tools` | `v0.31.0` | required, provides `cox` |
+| crew | `ppfenning/coxswain-crew` | `v0.31.0` | flag: `crew` |
+| dash | `ppfenning/coxswain-dash` | `v0.31.0` | flag: `dash`, provides `coxtop` |
+
+See the [0.31.0 release notes](0.31.0.md) for what landed in each component.
+
 ## `0.30.0`
 
 | Component | Repository or path | Tag | Required or flag |
