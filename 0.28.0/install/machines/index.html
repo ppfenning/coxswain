@@ -3213,32 +3213,31 @@ Coxswain is in beta — versions may change between releases
 
 
 <h1 id="supported-machines">Supported machines</h1>
-<p>Every platform below needs the same three things before you run the
-installer: <code>git</code>, <code>curl</code>, and a Python 3.11 or newer for <code>uv</code> to use. You
-don't need to install <code>uv</code> yourself — the install script installs it if it
+<p>Every platform below needs <code>git</code> and <code>curl</code> before you run the installer.
+Coxswain needs Python 3.14 or newer; <code>uv</code> downloads a managed Python 3.14
+when the system one is older, so you don't need to install it yourself. You
+don't need to install <code>uv</code> either — the install script installs it if it
 isn't already on <code>PATH</code>.</p>
 <h2 id="arch-and-omarchy">Arch and Omarchy</h2>
-<p><code>git</code>, <code>curl</code>, and Python 3.11+ are in the official repos: <code>pacman -S git
-curl python</code>. Omarchy ships all three by default, so on a stock Omarchy
-install there is nothing to do before running the installer.</p>
+<p><code>git</code> and <code>curl</code> are in the official repos: <code>pacman -S git curl</code>. Omarchy
+ships both by default, so on a stock Omarchy install there is nothing to do
+before running the installer.</p>
 <h2 id="debian-and-ubuntu">Debian and Ubuntu</h2>
-<p>Recent releases ship Python 3.11+ already. On older releases, install it
-from <code>deb.nodesource.com</code>-style backports or <code>deadsnakes</code> before running the
-installer, since the system <code>python3</code> may be too old for <code>uv</code> to use.
-<code>apt install git curl python3</code> covers the rest.</p>
+<p><code>apt install git curl</code> covers the prerequisites. The system <code>python3</code> is
+usually older than 3.14, which is fine: <code>uv</code> downloads its own.</p>
 <h2 id="macos">macOS</h2>
 <p><code>git</code> ships with the Xcode Command Line Tools (<code>xcode-select --install</code>).
-<code>curl</code> is preinstalled. Get a current Python with <code>brew install python@3.12</code>
-if the system one is older (coxswain needs 3.12 or newer).</p>
+<code>curl</code> is preinstalled. <code>uv</code> downloads Python 3.14 if the system one is
+older, or install it with <code>brew install python@3.14</code>.</p>
 <h2 id="proxmox-lxc">Proxmox LXC</h2>
 <p>Use an unprivileged container with a current Debian or Ubuntu template, and
 follow the Debian and Ubuntu prerequisites above. Nesting isn't required —
-the installer doesn't need a container runtime, just the three prerequisites
+the installer doesn't need a container runtime, just the two prerequisites
 and network access to GitHub.</p>
 <h2 id="docker-clean-room">Docker clean room</h2>
 <p>For a disposable, fully isolated install, run the installer inside a
-container built from a Debian or Ubuntu base image with <code>git</code>, <code>curl</code>, and
-Python 3.11+ installed. This is the fastest way to try Coxswain without
+container built from a Debian or Ubuntu base image with <code>git</code> and <code>curl</code>
+installed. This is the fastest way to try Coxswain without
 touching the host machine at all.</p>
 <h2 id="what-youll-see">What you'll see</h2>
 <p><img alt="cox install --dry-run printing the install plan without writing anything under --root" src="../assets/shots/install-dry-run.svg"></p>
