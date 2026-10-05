@@ -34,6 +34,12 @@ before what it depends on exists.
   directory that already exists — never a description of an area. That
   field decides how hard the work is reviewed later; an empty surfaces list
   on a dangerous task under-reviews it.
+- **Every path in a task is relative to the repository.** Write
+  `agent_tools/dash_feed.py`, never the checkout's absolute path, a
+  home-directory path, or the workspace's `runs/` or `plans/`. The
+  initiative's `repo:` names a checkout on whichever machine built it, and
+  the build seat sees only its own worktree; describe what is read from
+  outside it instead of naming where it lives.
 - **A title is plain text.** A backtick in YAML frontmatter breaks the file,
   so titles carry none.
 - **A foreign `needs` id is written as the target's own id.** A task in another
