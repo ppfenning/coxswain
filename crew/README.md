@@ -39,6 +39,7 @@ the work.
 | **Alice** | `bf_alice` | scribe — the visual plan for a swarm, tracked to completion | `plans/` only |
 | **Daniel** | `bm_daniel` | steward — reads the run records and proposes what should change: skills, workflows, spend, hygiene | none; every change is a PR |
 | **Liam** | `am_liam` | courier — reads the courier inbox, resolves each reference, relays it to its owner | none; acks only |
+| **Model steward** | none declared | model choice — owns which model each role runs on, read off the run stats; not daniel, who changes skills and workflows | proposes, never applies; one weekly pull request to the provider profile |
 
 The **chief of staff** is the session you are talking to, not a file: see
 [`seats/SEATS.md`](seats/SEATS.md).

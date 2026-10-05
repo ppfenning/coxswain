@@ -29,6 +29,12 @@ Each seat is three layers, and only the first lives here:
    tiers. Verify, judge, arbitrate, synthesize, scope and root-cause stay on
    the seat's own turn — a confident shallow answer misleads whoever acts on it.
 
+## The roster
+
+| Seat | Voice | Surface | Write authority |
+|---|---|---|---|
+| **Model steward** | none declared | model choice — owns which model each role runs on, read off the run stats; not daniel, who changes skills and workflows | proposes, never applies; one weekly pull request to the provider profile |
+
 ## The brief every seat writes
 
 1. what is already established
