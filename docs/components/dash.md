@@ -1,12 +1,13 @@
 # Dash
 
-Dash is coxtop, a terminal dashboard for the fleet: lanes, the chair, the
+Dash is towpath, a terminal dashboard for the fleet: lanes, the chair, the
 queue and spend on one screen, with a drill-down into any run. It reads
-`cox dash --feed`, so it shows what the store shows.
+`cox dash --feed`, so it shows what the store shows. coxtop was its name
+through 0.34, and the coxtop alias lasts until 0.37.
 
 ## What it owns
 
-The dash repository owns the `coxtop` binary (Rust and ratatui), its themes
+The dash repository owns the `towpath` binary (Rust and ratatui), its themes
 and its keymap. Every action it offers is a `cox` verb; it holds no state of
 its own beyond the view you left it on.
 
@@ -14,7 +15,7 @@ its own beyond the view you left it on.
 
 Dash is optional: nothing else needs it. It joined the release in 0.26.0 as
 a beta preview and is tagged in lockstep with the rest. Install it with
-cargo, at the tag of your Coxswain release (the crate is `coxswain-dash`; it installs `coxtop`):
+cargo, at the tag of your Coxswain release (the crate is `coxswain-dash`; it installs `towpath`):
 
 ```sh
 cargo install --git https://github.com/ppfenning/coxswain-dash --tag <release tag>
