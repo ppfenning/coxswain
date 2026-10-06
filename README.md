@@ -23,12 +23,12 @@ Coxswain is a platform that builds software with a crew of AI agents and keeps a
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/coxtop/regatta-dark.png">
-    <img alt="coxtop's Regatta page: the chair, spend, machines, lanes, runs, queue, inbox and history frames" src="docs/assets/coxtop/regatta-light.png" width="900">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/towpath/regatta-dark.png">
+    <img alt="towpath's Regatta page: the chair, spend, machines, lanes, runs, queue, inbox and history frames" src="docs/assets/towpath/regatta-light.png" width="900">
   </picture>
 </p>
 
-<p align="center"><em>coxtop, Coxswain's terminal home: the chair, the machines and every run on one screen.</em></p>
+<p align="center"><em>towpath, Coxswain's terminal home: the chair, the machines and every run on one screen.</em></p>
 
 ## Install
 

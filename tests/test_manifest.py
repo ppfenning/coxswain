@@ -48,12 +48,12 @@ def test_exactly_one_component_provides_cox():
     assert [n for n, c in m["components"].items() if c.get("provides") == "cox"] == ["tools"]
 
 
-def test_dash_component_declares_repo_flag_and_provides_coxtop():
+def test_dash_component_declares_repo_flag_and_provides_towpath():
     m = _load()
     dash = m["components"]["dash"]
     assert dash["repo"] == "ppfenning/coxswain-dash"
     assert dash["flag"] == "dash"
-    assert dash["provides"] == "coxtop"
+    assert dash["provides"] == "towpath"
 
 
 def test_providers_declare_status_and_supported_ones_a_profile():

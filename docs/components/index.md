@@ -16,4 +16,4 @@ lockstep.
 | [Graphs](graphs.md) | [ppfenning/coxswain-graphs](https://github.com/ppfenning/coxswain-graphs) | required | Defines the ordered nodes a run executes: plan, build, review, arbitrate, validate. |
 | [Tools](tools.md) | [ppfenning/coxswain-tools](https://github.com/ppfenning/coxswain-tools) | required, provides `cox` | The `cox` CLI: install, dispatch, and run the loop. |
 | [Crew](crew.md) | [ppfenning/coxswain-crew](https://github.com/ppfenning/coxswain-crew) | flag: `crew` | The agent seats that plan, build, review, and validate. |
-| [Dash](dash.md) | [ppfenning/coxswain-dash](https://github.com/ppfenning/coxswain-dash) | flag: `dash`, provides `coxtop` | A terminal dashboard for the fleet (beta, from 0.26.0). |
+| [Dash](dash.md) | [ppfenning/coxswain-dash](https://github.com/ppfenning/coxswain-dash) | flag: `dash`, provides `towpath` | A terminal dashboard for the fleet (beta, from 0.26.0). |

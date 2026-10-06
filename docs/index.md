@@ -9,10 +9,10 @@ methodology, the manifest that pins every component in lockstep, and the
 installer. macOS installs `cox` via the `ppfenning/homebrew-coxswain` Homebrew
 tap.
 
-![coxtop's Regatta page: the chair, spend, machines, lanes, runs, queue, inbox and history frames](assets/coxtop/regatta-light.png#only-light)
-![coxtop's Regatta page: the chair, spend, machines, lanes, runs, queue, inbox and history frames](assets/coxtop/regatta-dark.png#only-dark)
+![towpath's Regatta page: the chair, spend, machines, lanes, runs, queue, inbox and history frames](assets/towpath/regatta-light.png#only-light)
+![towpath's Regatta page: the chair, spend, machines, lanes, runs, queue, inbox and history frames](assets/towpath/regatta-dark.png#only-dark)
 
-*coxtop, Coxswain's terminal home: the chair, the machines and every run on one screen.*
+*towpath, Coxswain's terminal home: the chair, the machines and every run on one screen.*
 
 ## Start here
 
