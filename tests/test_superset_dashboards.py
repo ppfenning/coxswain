@@ -23,7 +23,7 @@ ALL_SOURCES = frozenset({"store", "lake"})
 CHAIR_DATASETS = ["chair_actions_by_hour", "chair_lanes_by_host_hour", "chair_spend_by_day", "chair_needs_backlog", "chair_status"]
 FLEET_DATASETS = ["fleet_host_state", "fleet_needs_chair_by_cause", "fleet_weekly_spend"]
 # Every dataset gated by the single `store` requirement, in datasets.yaml order.
-CREW_DATASETS = ["crew_calls", "crew_quarantines"]
+CREW_DATASETS = ["crew_calls", "crew_quarantines", "crew_tasks", "crew_reviews", "crew_task_roles"]
 STORE_GATED_DATASETS = [*CHAIR_DATASETS, *FLEET_DATASETS, *CREW_DATASETS]
 # The ten history datasets, all gated by the single `lake` requirement, in datasets.yaml order.
 LAKE_DATASETS = ["calls", "runs", "attempts", "lanes_by_hour", "traces", "calls_by_day", "daily_efficiency", "landed_tasks", "task_outcomes", "task_verdicts"]
@@ -46,6 +46,11 @@ CREW_CHART_NAMES = [
     "Cache-read share by role",
     "Quarantines by role and cause, last 14 days",
     "Quarantines by repository and cause, last 14 days",
+    "First-try approval rate by builder seat",
+    "Build attempts per approved task by builder seat",
+    "Crew reviewer verdict mix",
+    "Arbiter sides with the adversary",
+    "Cost per approved task per role",
 ]
 # Every chart gated by `store`, paired with the dataset that gates it, in charts.yaml order.
 STORE_GATED_CHARTS = [
@@ -63,6 +68,11 @@ STORE_GATED_CHARTS = [
     ("Cache-read share by role", "crew_calls"),
     ("Quarantines by role and cause, last 14 days", "crew_quarantines"),
     ("Quarantines by repository and cause, last 14 days", "crew_quarantines"),
+    ("First-try approval rate by builder seat", "crew_tasks"),
+    ("Build attempts per approved task by builder seat", "crew_tasks"),
+    ("Crew reviewer verdict mix", "crew_reviews"),
+    ("Arbiter sides with the adversary", "crew_reviews"),
+    ("Cost per approved task per role", "crew_task_roles"),
 ]
 READS = re.compile(r"\b(?:read_\w+|\w+_scan)\s*\(")
 LITERAL_READS = re.compile(r"\b(?:read_\w+|\w+_scan)\s*\(\s*'([^']*)'")
@@ -71,6 +81,11 @@ LITERAL_READS = re.compile(r"\b(?:read_\w+|\w+_scan)\s*\(\s*'([^']*)'")
 def _dashboard(name):
     (dash,) = [d for d in SPECS["dashboards"] if d["name"] == name]
     return dash
+
+
+def _chart(name):
+    (chart,) = [c for c in SPECS["charts"] if c["name"] == name]
+    return chart
 
 
 def _server(ops):
@@ -100,7 +115,7 @@ def test_the_chair_dashboard_names_its_charts_and_each_names_a_dataset_that_exis
     assert all(dataset_of[name] in datasets for name in CHAIR_CHART_NAMES)
 
 
-def test_the_crew_dashboard_names_exactly_its_six_charts_and_each_names_a_dataset_that_exists():
+def test_the_crew_dashboard_names_exactly_its_eleven_charts_and_each_names_a_dataset_that_exists():
     cells = [c["chart"] for row in _dashboard("Crew")["grid"] for c in row]
     assert sorted(cells) == sorted(CREW_CHART_NAMES)
     datasets = {d["name"] for d in SPECS["datasets"]}
@@ -201,7 +216,7 @@ def test_plan_on_an_empty_server_creates_everything_in_order():
     assert {o.action for o in ops} == {"create"}
     kinds = [o.kind for o in ops]
     assert kinds == sorted(kinds, key=bootstrap.KINDS.index)
-    assert Counter(kinds) == {"database": 1, "dataset": 20, "chart": 31, "dashboard": 4}
+    assert Counter(kinds) == {"database": 1, "dataset": 23, "chart": 36, "dashboard": 4}
 
 
 def test_plan_on_an_empty_server_creates_the_crew_dashboard_after_every_chart_op():
@@ -570,9 +585,11 @@ def test_every_chart_names_only_columns_its_dataset_has():
 def test_no_dataset_column_is_named_at():
     """`at` was the pre-rename landed-timestamp column; occurred_at replaced it everywhere.
 
-    crew_quarantines is exempt: its ticket names its attempt timestamp `at`, and it holds no landed time.
+    crew_quarantines, crew_tasks, crew_reviews and crew_task_roles are exempt: their tickets name their row
+    timestamp `at`, and none holds a landed time.
     """
-    for dataset in [d for d in SPECS["datasets"] if d["name"] != "crew_quarantines"]:
+    exempt = ("crew_quarantines", "crew_tasks", "crew_reviews", "crew_task_roles")
+    for dataset in [d for d in SPECS["datasets"] if d["name"] not in exempt]:
         assert "at" not in _dataset_real_columns(dataset["name"]), dataset["name"]
 
 
@@ -945,7 +962,73 @@ EXPECTED_QUERIES = {
             "extras": {},
         }
     ],
+    "First-try approval rate by builder seat": [
+        {
+            "columns": [{"columnType": "BASE_AXIS", "expressionType": "SQL", "label": "builder_seat", "sqlExpression": "builder_seat"}],
+            "metrics": [{"expressionType": "SQL", "sqlExpression": "AVG(CAST(first_try AS INTEGER))", "label": "first_try_rate"}],
+            "orderby": [],
+            "row_limit": 10000,
+            "filters": [],
+            "extras": {},
+        }
+    ],
+    "Build attempts per approved task by builder seat": [
+        {
+            "columns": [{"columnType": "BASE_AXIS", "expressionType": "SQL", "label": "builder_seat", "sqlExpression": "builder_seat"}],
+            "metrics": [{"expressionType": "SQL", "sqlExpression": "AVG(build_attempts)", "label": "attempts_per_approved"}],
+            "orderby": [],
+            "row_limit": 10000,
+            "filters": [{"col": "approved", "op": "==", "val": True}],
+            "extras": {},
+        }
+    ],
+    "Crew reviewer verdict mix": [
+        {
+            "columns": [{"columnType": "BASE_AXIS", "expressionType": "SQL", "label": "charter_verdict", "sqlExpression": "charter_verdict"}, "adversary_verdict"],
+            "metrics": [{"expressionType": "SQL", "sqlExpression": "COUNT(*)", "label": "tasks"}],
+            "orderby": [],
+            "row_limit": 10000,
+            "filters": [],
+            "extras": {},
+        }
+    ],
+    "Arbiter sides with the adversary": [
+        {
+            "columns": [{"columnType": "BASE_AXIS", "expressionType": "SQL", "label": "arbiter_side", "sqlExpression": "arbiter_side"}],
+            "metrics": [{"expressionType": "SQL", "sqlExpression": "COUNT(*)", "label": "tasks"}],
+            "orderby": [],
+            "row_limit": 10000,
+            "filters": [{"col": "arbiter_side", "op": "!=", "val": "not needed"}],
+            "extras": {},
+        }
+    ],
+    "Cost per approved task per role": [
+        {
+            "columns": [{"columnType": "BASE_AXIS", "expressionType": "SQL", "label": "role", "sqlExpression": "role"}],
+            "metrics": [
+                {
+                    "expressionType": "SQL",
+                    "sqlExpression": "SUM(CASE WHEN approved THEN cost_usd ELSE 0 END) / NULLIF(COUNT(DISTINCT CASE WHEN approved THEN task_id END), 0)",
+                    "label": "cost_per_approved",
+                }
+            ],
+            "orderby": [],
+            "row_limit": 10000,
+            "filters": [],
+            "extras": {},
+        }
+    ],
 }
+
+
+def test_the_arbiter_chart_filters_out_not_needed():
+    (query,) = bootstrap.queries_of(_chart("Arbiter sides with the adversary")["params"])
+    assert query["filters"] == [{"col": "arbiter_side", "op": "!=", "val": "not needed"}]
+
+
+def test_the_attempts_chart_filters_to_approved_tasks():
+    (query,) = bootstrap.queries_of(_chart("Build attempts per approved task by builder seat")["params"])
+    assert query["filters"] == [{"col": "approved", "op": "==", "val": True}]
 
 
 def test_each_chart_queries_its_axis_group_by_metrics_filters_and_grain():

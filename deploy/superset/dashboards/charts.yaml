@@ -334,3 +334,52 @@ charts:
       stack: true
       adhoc_filters:
         - {expressionType: SIMPLE, clause: WHERE, subject: at, operator: TEMPORAL_RANGE, comparator: Last 2 weeks}
+
+  # Crew approval charts. crew_tasks carries one row per task, crew_reviews one row per task with
+  # both reviewers' verdicts and the arbiter's side, crew_task_roles one row per task and role.
+  # "Reviewer agreement" is the Coxswain dashboard's verdict chart, so this one is named Crew.
+  - name: First-try approval rate by builder seat
+    dataset: crew_tasks
+    viz_type: echarts_timeseries_bar
+    params:
+      x_axis: builder_seat
+      metrics:
+        - {expressionType: SQL, sqlExpression: "AVG(CAST(first_try AS INTEGER))", label: first_try_rate}
+
+  - name: Build attempts per approved task by builder seat
+    dataset: crew_tasks
+    viz_type: echarts_timeseries_bar
+    params:
+      x_axis: builder_seat
+      metrics:
+        - {expressionType: SQL, sqlExpression: "AVG(build_attempts)", label: attempts_per_approved}
+      adhoc_filters:
+        - {expressionType: SIMPLE, clause: WHERE, subject: approved, operator: "==", comparator: true}
+
+  - name: Crew reviewer verdict mix
+    dataset: crew_reviews
+    viz_type: echarts_timeseries_bar
+    params:
+      x_axis: charter_verdict
+      metrics:
+        - {expressionType: SQL, sqlExpression: "COUNT(*)", label: tasks}
+      groupby: [adversary_verdict]
+      stack: true
+
+  - name: Arbiter sides with the adversary
+    dataset: crew_reviews
+    viz_type: echarts_timeseries_bar
+    params:
+      x_axis: arbiter_side
+      metrics:
+        - {expressionType: SQL, sqlExpression: "COUNT(*)", label: tasks}
+      adhoc_filters:
+        - {expressionType: SIMPLE, clause: WHERE, subject: arbiter_side, operator: "!=", comparator: not needed}
+
+  - name: Cost per approved task per role
+    dataset: crew_task_roles
+    viz_type: echarts_timeseries_bar
+    params:
+      x_axis: role
+      metrics:
+        - {expressionType: SQL, sqlExpression: "SUM(CASE WHEN approved THEN cost_usd ELSE 0 END) / NULLIF(COUNT(DISTINCT CASE WHEN approved THEN task_id END), 0)", label: cost_per_approved}
