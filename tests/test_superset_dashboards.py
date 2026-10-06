@@ -23,7 +23,8 @@ ALL_SOURCES = frozenset({"store", "lake"})
 CHAIR_DATASETS = ["chair_actions_by_hour", "chair_lanes_by_host_hour", "chair_spend_by_day", "chair_needs_backlog", "chair_status"]
 FLEET_DATASETS = ["fleet_host_state", "fleet_needs_chair_by_cause", "fleet_weekly_spend"]
 # Every dataset gated by the single `store` requirement, in datasets.yaml order.
-STORE_GATED_DATASETS = [*CHAIR_DATASETS, *FLEET_DATASETS]
+CREW_DATASETS = ["crew_calls", "crew_quarantines"]
+STORE_GATED_DATASETS = [*CHAIR_DATASETS, *FLEET_DATASETS, *CREW_DATASETS]
 # The ten history datasets, all gated by the single `lake` requirement, in datasets.yaml order.
 LAKE_DATASETS = ["calls", "runs", "attempts", "lanes_by_hour", "traces", "calls_by_day", "daily_efficiency", "landed_tasks", "task_outcomes", "task_verdicts"]
 # The three datasets that read landed rows out of the store's task_records table.
@@ -151,7 +152,7 @@ def test_plan_on_an_empty_server_creates_everything_in_order():
     assert {o.action for o in ops} == {"create"}
     kinds = [o.kind for o in ops]
     assert kinds == sorted(kinds, key=bootstrap.KINDS.index)
-    assert Counter(kinds) == {"database": 1, "dataset": 18, "chart": 25, "dashboard": 3}
+    assert Counter(kinds) == {"database": 1, "dataset": 20, "chart": 25, "dashboard": 3}
 
 
 def test_plan_is_all_unchanged_when_the_server_matches():
@@ -404,10 +405,19 @@ def test_every_chair_and_hosts_dataset_runs_against_the_stores_real_columns():
         "(name VARCHAR, ssh VARCHAR, capacity INTEGER, state VARCHAR, beat_at VARCHAR, versions_json VARCHAR, updated_at VARCHAR, updated_by VARCHAR)"
     )
     con.execute("CREATE TABLE store.public.leases (name VARCHAR, holder VARCHAR, epoch INTEGER, heartbeat_at VARCHAR, expires_at VARCHAR)")
-    con.execute("CREATE TABLE store.public.runs (host VARCHAR, launched_at VARCHAR, ended_at VARCHAR)")
-    # node_calls is not one of the tables the ticket's schema names, but chair_spend_by_day and
-    # fleet_weekly_spend both read it; its shape is unchanged by this task.
-    con.execute("CREATE TABLE store.public.node_calls (ts VARCHAR, cost_usd DOUBLE)")
+    # run_id and repo on runs, and run_id, task_id and cause_why on attempts, are what crew_quarantines
+    # reads; this repo holds no DDL for either table (see the comment above crew_quarantines).
+    con.execute("CREATE TABLE store.public.runs (run_id VARCHAR, repo VARCHAR, host VARCHAR, launched_at VARCHAR, ended_at VARCHAR)")
+    con.execute(
+        "CREATE TABLE store.public.attempts "
+        "(ts VARCHAR, run_id VARCHAR, task_id VARCHAR, kind VARCHAR, cause VARCHAR, cause_why VARCHAR)"
+    )
+    # node_calls carries the columns the lake's node_calls mirror carries below, plus run_id.
+    con.execute(
+        "CREATE TABLE store.public.node_calls "
+        "(ts VARCHAR, run_id VARCHAR, task_id VARCHAR, role VARCHAR, model_alias VARCHAR, cost_usd DOUBLE, "
+        "turns INTEGER, input_total INTEGER, cache_read_tokens INTEGER)"
+    )
     con.execute(
         "CREATE TABLE store.public.task_records "
         "(run_id VARCHAR, phase_id VARCHAR, task_id VARCHAR, record_json VARCHAR, updated_at VARCHAR)"
@@ -451,13 +461,20 @@ def _all_datasets_con():
         "(name VARCHAR, ssh VARCHAR, capacity INTEGER, state VARCHAR, beat_at VARCHAR, versions_json VARCHAR, updated_at VARCHAR, updated_by VARCHAR)"
     )
     con.execute("CREATE TABLE store.public.leases (name VARCHAR, holder VARCHAR, epoch INTEGER, heartbeat_at VARCHAR, expires_at VARCHAR)")
-    con.execute("CREATE TABLE store.public.runs (host VARCHAR, launched_at VARCHAR, ended_at VARCHAR)")
-    con.execute("CREATE TABLE store.public.node_calls (ts VARCHAR, cost_usd DOUBLE)")
+    con.execute("CREATE TABLE store.public.runs (run_id VARCHAR, repo VARCHAR, host VARCHAR, launched_at VARCHAR, ended_at VARCHAR)")
+    con.execute(
+        "CREATE TABLE store.public.node_calls "
+        "(ts VARCHAR, run_id VARCHAR, task_id VARCHAR, role VARCHAR, model_alias VARCHAR, cost_usd DOUBLE, "
+        "turns INTEGER, input_total INTEGER, cache_read_tokens INTEGER)"
+    )
     con.execute(
         "CREATE TABLE store.public.task_records "
         "(run_id VARCHAR, phase_id VARCHAR, task_id VARCHAR, record_json VARCHAR, updated_at VARCHAR)"
     )
-    con.execute("CREATE TABLE store.public.attempts (ts VARCHAR, kind VARCHAR, cause VARCHAR)")
+    con.execute(
+        "CREATE TABLE store.public.attempts "
+        "(ts VARCHAR, run_id VARCHAR, task_id VARCHAR, kind VARCHAR, cause VARCHAR, cause_why VARCHAR)"
+    )
     con.execute("CREATE SCHEMA lake")
     con.execute(
         "CREATE TABLE lake.node_calls "
@@ -495,8 +512,11 @@ def test_every_chart_names_only_columns_its_dataset_has():
 
 
 def test_no_dataset_column_is_named_at():
-    """`at` was the pre-rename landed-timestamp column; occurred_at replaced it everywhere."""
-    for dataset in SPECS["datasets"]:
+    """`at` was the pre-rename landed-timestamp column; occurred_at replaced it everywhere.
+
+    crew_quarantines is exempt: its ticket names its attempt timestamp `at`, and it holds no landed time.
+    """
+    for dataset in [d for d in SPECS["datasets"] if d["name"] != "crew_quarantines"]:
         assert "at" not in _dataset_real_columns(dataset["name"]), dataset["name"]
 
 

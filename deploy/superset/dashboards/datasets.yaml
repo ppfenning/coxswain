@@ -361,3 +361,50 @@ datasets:
       WHERE CAST(ts AS TIMESTAMP) >= date_trunc('week', CAST(now() AT TIME ZONE 'UTC' AS TIMESTAMP)) - INTERVAL 12 WEEK
       GROUP BY 1
       ORDER BY 1
+
+  # Crew datasets: spend by role and model, and quarantines by role and repository. Both read the
+  # store only, through {{store:<table>}}, and every timestamp is a naive UTC TIMESTAMP.
+
+  # One row per day, role and model_alias, sums only: a chart takes cost per turn and cache-read
+  # share as a ratio of sums, never an average of per-row ratios. The columns are the ones
+  # calls_by_day already reads from node_calls.
+  - name: crew_calls
+    database: coxswain
+    requires: store
+    sql: |
+      SELECT CAST(CAST(ts AS TIMESTAMP) AS DATE) AS day, role, model_alias,
+             COUNT(*) AS calls, SUM(cost_usd) AS cost_usd, SUM(turns) AS turns,
+             SUM(input_total) AS input_total, SUM(cache_read_tokens) AS cache_read_tokens
+      FROM {{store:node_calls}}
+      GROUP BY ALL
+
+  # One row per quarantined attempt. This repo holds no DDL for attempts or runs, so the columns
+  # below are not confirmed against the store. What the repo does confirm: attempts has ts, kind,
+  # cause (the Quarantined attempts per day chart reads kind and ts) and cause_why (the 0.18.0
+  # release notes name attempts.cause and cause_why, migration 0005).
+  #   cause, cause_why: attempts.cause and attempts.cause_why; a NULL or empty cause is 'unclassified'.
+  #   role: unknown whether attempts has a role column. It is taken from the role of the last
+  #         node_calls row (by ts) for the same run_id and task_id. unknown: that attempts and
+  #         node_calls both carry run_id and task_id in the store.
+  #   repo: runs.repo, joined on run_id. unknown: whether runs has a repo column or names the
+  #         repository some other way. If it does not, change r.repo to the column that does.
+  # Both joins are LEFT, so an attempt with no run or no call keeps its row with a NULL repo or role.
+  # The kinds are the four the Quarantined attempts per day chart counts.
+  - name: crew_quarantines
+    database: coxswain
+    requires: store
+    sql: |
+      WITH last_call AS (
+        SELECT run_id, task_id, role,
+               ROW_NUMBER() OVER (PARTITION BY run_id, task_id ORDER BY CAST(ts AS TIMESTAMP) DESC) AS rn
+        FROM {{store:node_calls}}
+      )
+      SELECT CAST(a.ts AS TIMESTAMP) AS at,
+             COALESCE(NULLIF(a.cause, ''), 'unclassified') AS cause,
+             a.cause_why AS cause_why,
+             c.role AS role,
+             r.repo AS repo
+      FROM {{store:attempts}} AS a
+      LEFT JOIN last_call AS c ON c.run_id = a.run_id AND c.task_id = a.task_id AND c.rn = 1
+      LEFT JOIN {{store:runs}} AS r ON r.run_id = a.run_id
+      WHERE a.kind IN ('refused', 'unverified', 'infra', 'dropped')
