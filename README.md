@@ -21,6 +21,15 @@ Coxswain is a platform that builds software with a crew of AI agents and keeps a
 
 **Status: beta.** The loop runs itself daily on its own repositories. Interfaces are still moving; see the [release notes](https://ppfenning.github.io/coxswain/latest/releases/) for what each version changes.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/coxtop/regatta-dark.png">
+    <img alt="coxtop's Regatta page: the chair, spend, machines, lanes, runs, queue, inbox and history frames" src="docs/assets/coxtop/regatta-light.png" width="900">
+  </picture>
+</p>
+
+<p align="center"><em>coxtop, Coxswain's terminal home: the chair, the machines and every run on one screen.</em></p>
+
 ## Install
 
 ```sh
