@@ -12,6 +12,7 @@ ignored."""
 
 from __future__ import annotations
 
+import json
 import re
 import tomllib
 from collections.abc import Iterable, Mapping, Sequence
@@ -522,6 +523,52 @@ def pr_checks_argv() -> list[str]:
 def pr_merge_argv() -> list[str]:
     """`gh pr merge --squash --delete-branch`."""
     return ["gh", "pr", "merge", "--squash", "--delete-branch"]
+
+
+def tap_may_merge(conclusion: str | None) -> bool:
+    """True only for the literal conclusion `success`; cancelled, skipped, timed_out, failure and missing are not a pass."""
+    return conclusion == "success"
+
+
+def install_proof_dispatch_argv(tap_ref: str, version: str) -> list[str]:
+    """`gh workflow run install-proof.yml -f tap_ref=<tap_ref> -f version=<version>`."""
+    return ["gh", "workflow", "run", "install-proof.yml", "-f", f"tap_ref={tap_ref}", "-f", f"version={version}"]
+
+
+def install_proof_list_argv() -> list[str]:
+    """The 20 newest dispatched install-proof runs, as JSON."""
+    return ["gh", "run", "list", "--workflow", "install-proof.yml", "--event", "workflow_dispatch",
+            "--json", "databaseId", "--limit", "20"]
+
+
+def install_proof_view_argv(run_id: int) -> list[str]:
+    """`gh run view <run_id>` as JSON, the source of the run's conclusion."""
+    return ["gh", "run", "view", str(run_id), "--json", "databaseId,status,conclusion,url"]
+
+
+def install_proof_ids(text: str) -> list[int] | None:
+    """Run ids in `gh run list` JSON; `[]` for no runs, None for output that is not a list of runs."""
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        return None
+    ok = isinstance(payload, list) and all(isinstance(r, dict) and isinstance(r.get("databaseId"), int) for r in payload)
+    return [r["databaseId"] for r in payload] if ok else None
+
+
+def new_install_proof_runs(before: list[int], after: list[int]) -> list[int]:
+    """Ids in `after` newer than every id in `before`; GitHub run ids only grow."""
+    return [i for i in after if i > max(before, default=0)]
+
+
+def install_proof_result(text: str) -> tuple[str | None, str | None]:
+    """`(conclusion, url)` from `gh run view` JSON; conclusion None while unfinished or when the output is malformed."""
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        return None, None
+    return ((payload.get("conclusion") or None, payload.get("url") or None) if isinstance(payload, dict)
+            else (None, None))
 
 
 def checkout_ref_argv(directory: str, ref: str) -> list[str]:
