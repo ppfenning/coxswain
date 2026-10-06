@@ -408,3 +408,99 @@ datasets:
       LEFT JOIN last_call AS c ON c.run_id = a.run_id AND c.task_id = a.task_id AND c.rn = 1
       LEFT JOIN {{store:runs}} AS r ON r.run_id = a.run_id
       WHERE a.kind IN ('refused', 'unverified', 'infra', 'dropped')
+
+  # One row per task record, with the builder seat, build attempts, approval and cost.
+  #   approved: no approved marker found. The repo holds no DDL for task_records. Release notes
+  #     0.15.0 and 0.19.0 say a task's state in the store is `approved` before `cox runs land`
+  #     merges it, but no column or record_json key naming that state appears anywhere here.
+  #     approved is therefore the final review verdict: $.arbitration.verdict when the arbiter
+  #     ruled, else $.review.verdict, equal to 'approve'. It does not read record_json.landed, so
+  #     an approved task that has not landed yet reads true. unknown: the state column or key
+  #     that marks approved, and that 'approve' is the verdict string for an approval.
+  #   repo: runs.repo, joined on run_id, as crew_quarantines reads it. unknown: whether
+  #     task_records carries its own repo column or JSON key, and whether runs.repo exists.
+  #   build_attempts: the count of role = 'build' node_calls rows for the run and task, the count
+  #     landed_tasks uses for builds. It is not $.fix_loop.attempts from task_verdicts.
+  #   builder_seat: model_alias of the earliest role = 'build' row by ts.
+  #   first_try: approved with exactly one build attempt.
+  - name: crew_tasks
+    database: coxswain
+    requires: store
+    sql: |
+      WITH builds AS (
+        SELECT run_id, task_id, COUNT(*) AS build_attempts,
+               ARG_MIN(model_alias, CAST(ts AS TIMESTAMP)) AS builder_seat
+        FROM {{store:node_calls}} WHERE role = 'build' GROUP BY 1, 2
+      ),
+      spend AS (
+        SELECT run_id, task_id, SUM(cost_usd) AS cost_usd
+        FROM {{store:node_calls}} GROUP BY 1, 2
+      ),
+      tasks AS (
+        SELECT run_id, task_id,
+               COALESCE(json_extract_string(record_json, '$.arbitration.verdict'),
+                        json_extract_string(record_json, '$.review.verdict')) IS NOT DISTINCT FROM 'approve' AS approved,
+               CAST(updated_at AS TIMESTAMP) AS at
+        FROM {{store:task_records}}
+      )
+      SELECT t.run_id, t.task_id, r.repo AS repo, b.builder_seat AS builder_seat,
+             COALESCE(b.build_attempts, 0) AS build_attempts,
+             t.approved AND COALESCE(b.build_attempts, 0) = 1 AS first_try,
+             t.approved AS approved, s.cost_usd AS cost_usd, t.at AS at
+      FROM tasks AS t
+      LEFT JOIN builds AS b ON b.run_id = t.run_id AND b.task_id = t.task_id
+      LEFT JOIN spend AS s ON s.run_id = t.run_id AND s.task_id = t.task_id
+      LEFT JOIN {{store:runs}} AS r ON r.run_id = t.run_id
+
+  # One row per task record, with the three verdicts and which side the arbiter took. The verdict
+  # columns copy task_verdicts, paths and defaults.
+  #   arbiter_side: read from $.arbitration.sided_with. The arbiter's output schema names that
+  #     field with the values charter, adversary and neither; this repo holds no DDL for
+  #     task_records and no other reader of the key. A record with no $.arbitration.verdict is
+  #     'not needed'. An arbitration that records no sided_with is 'not recorded'.
+  #     unknown: that the store keeps sided_with under $.arbitration in record_json.
+  - name: crew_reviews
+    database: coxswain
+    requires: store
+    sql: |
+      WITH verdicts AS (
+        SELECT run_id, task_id, updated_at,
+               json_extract_string(record_json, '$.review.verdict') AS charter,
+               json_extract_string(record_json, '$.adversary.verdict') AS adversary,
+               json_extract_string(record_json, '$.arbitration.verdict') AS arbiter,
+               json_extract_string(record_json, '$.arbitration.sided_with') AS sided_with
+        FROM {{store:task_records}}
+      )
+      SELECT run_id, task_id,
+             COALESCE(charter, 'none') AS charter_verdict,
+             COALESCE(adversary, 'none') AS adversary_verdict,
+             COALESCE(arbiter, 'not needed') AS arbiter_verdict,
+             CASE WHEN arbiter IS NULL THEN 'not needed'
+                  ELSE COALESCE(sided_with, 'not recorded') END AS arbiter_side,
+             CAST(updated_at AS TIMESTAMP) AS at
+      FROM verdicts
+
+  # One row per run, task and role: node_calls cost and call count, with the task's approval.
+  #   run_id: a task is (run_id, task_id), as in crew_tasks, so a task_id reused in two runs
+  #     keeps two rows per role and each run's own approval.
+  #   approved: the same final-verdict test as crew_tasks; see its comment. A task with no
+  #     task_records row reads approved = false.
+  #   at: the latest call ts for the task and role.
+  - name: crew_task_roles
+    database: coxswain
+    requires: store
+    sql: |
+      WITH approval AS (
+        SELECT run_id, task_id,
+               BOOL_OR(COALESCE(json_extract_string(record_json, '$.arbitration.verdict'),
+                                json_extract_string(record_json, '$.review.verdict')) IS NOT DISTINCT FROM 'approve') AS approved
+        FROM {{store:task_records}} GROUP BY 1, 2
+      ),
+      roles AS (
+        SELECT run_id, task_id, role, SUM(cost_usd) AS cost_usd, COUNT(*) AS calls,
+               MAX(CAST(ts AS TIMESTAMP)) AS at
+        FROM {{store:node_calls}} WHERE task_id IS NOT NULL GROUP BY 1, 2, 3
+      )
+      SELECT roles.run_id, roles.task_id, roles.role, COALESCE(approval.approved, false) AS approved,
+             roles.cost_usd, roles.calls, roles.at
+      FROM roles LEFT JOIN approval ON approval.run_id = roles.run_id AND approval.task_id = roles.task_id

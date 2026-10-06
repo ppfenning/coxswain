@@ -48,3 +48,8 @@ dashboards:
         - {chart: "Cache-read share by role", width: 6}
       - - {chart: "Quarantines by role and cause, last 14 days", width: 6}
         - {chart: "Quarantines by repository and cause, last 14 days", width: 6}
+      - - {chart: "First-try approval rate by builder seat", width: 6}
+        - {chart: "Build attempts per approved task by builder seat", width: 6}
+      - - {chart: "Crew reviewer verdict mix", width: 6}
+        - {chart: "Arbiter sides with the adversary", width: 6}
+      - - {chart: "Cost per approved task per role", width: 12}
