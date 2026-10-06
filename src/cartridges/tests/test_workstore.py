@@ -713,3 +713,16 @@ def test_surface_problem_names_every_unresolved_surface() -> None:
     message = surface_problem(["tests/test_epic.py", "HUD config schema"])
     assert "tests/test_epic.py" in message
     assert "HUD config schema" in message
+
+
+def test_a_quarantined_item_reads_and_is_neither_runnable_nor_complete(tmp_path):
+    # The store's export writes `quarantined` into ticket files (2026-10-06); reading one must not raise.
+    from core.workstore import phase_complete, read_item, ready_tasks
+
+    path = tmp_path / "q.md"
+    path.write_text("---\nid: q\ntitle: Q\nphase: p\nstate: quarantined\nneeds: []\nsurfaces: []\n---\nBody.\n", encoding="utf-8")
+    item = read_item(path)
+    sibling = {"id": "r", "phase": "p", "state": "ready", "needs": []}
+    assert item["state"] == "quarantined"
+    assert [t["id"] for t in ready_tasks([item, sibling])] == ["r"]
+    assert not phase_complete([item, sibling], "p")

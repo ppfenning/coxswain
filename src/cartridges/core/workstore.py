@@ -77,7 +77,10 @@ __all__ = [
     "write_item",
 ]
 
-STATES = ("todo", "ready", "in_progress", "approved", "blocked", "done", "dropped")
+# `quarantined` is a store state since coxswain-graphs #699, and the store's export writes it into ticket files; it is
+# not runnable (only `ready` is) and not complete, so a run skips the task and its phase stays open (2026-10-06:
+# every relaunch of an initiative with a quarantined task crashed reading its file).
+STATES = ("todo", "ready", "in_progress", "approved", "blocked", "done", "dropped", "quarantined")
 DONE = "done"
 DROPPED = "dropped"
 APPROVED = "approved"
