@@ -23,7 +23,7 @@ ALL_SOURCES = frozenset({"store", "lake"})
 CHAIR_DATASETS = ["chair_actions_by_hour", "chair_lanes_by_host_hour", "chair_spend_by_day", "chair_needs_backlog", "chair_status"]
 FLEET_DATASETS = ["fleet_host_state", "fleet_needs_chair_by_cause", "fleet_weekly_spend"]
 # Every dataset gated by the single `store` requirement, in datasets.yaml order.
-CREW_DATASETS = ["crew_calls", "crew_quarantines"]
+CREW_DATASETS = ["crew_calls", "crew_quarantines", "crew_tasks", "crew_reviews", "crew_task_roles"]
 STORE_GATED_DATASETS = [*CHAIR_DATASETS, *FLEET_DATASETS, *CREW_DATASETS]
 # The ten history datasets, all gated by the single `lake` requirement, in datasets.yaml order.
 LAKE_DATASETS = ["calls", "runs", "attempts", "lanes_by_hour", "traces", "calls_by_day", "daily_efficiency", "landed_tasks", "task_outcomes", "task_verdicts"]
@@ -201,7 +201,7 @@ def test_plan_on_an_empty_server_creates_everything_in_order():
     assert {o.action for o in ops} == {"create"}
     kinds = [o.kind for o in ops]
     assert kinds == sorted(kinds, key=bootstrap.KINDS.index)
-    assert Counter(kinds) == {"database": 1, "dataset": 20, "chart": 31, "dashboard": 4}
+    assert Counter(kinds) == {"database": 1, "dataset": 23, "chart": 31, "dashboard": 4}
 
 
 def test_plan_on_an_empty_server_creates_the_crew_dashboard_after_every_chart_op():
@@ -570,9 +570,11 @@ def test_every_chart_names_only_columns_its_dataset_has():
 def test_no_dataset_column_is_named_at():
     """`at` was the pre-rename landed-timestamp column; occurred_at replaced it everywhere.
 
-    crew_quarantines is exempt: its ticket names its attempt timestamp `at`, and it holds no landed time.
+    crew_quarantines, crew_tasks, crew_reviews and crew_task_roles are exempt: their tickets name their row
+    timestamp `at`, and none holds a landed time.
     """
-    for dataset in [d for d in SPECS["datasets"] if d["name"] != "crew_quarantines"]:
+    exempt = ("crew_quarantines", "crew_tasks", "crew_reviews", "crew_task_roles")
+    for dataset in [d for d in SPECS["datasets"] if d["name"] not in exempt]:
         assert "at" not in _dataset_real_columns(dataset["name"]), dataset["name"]
 
 
