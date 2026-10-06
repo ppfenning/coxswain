@@ -1,0 +1,32 @@
+name: install-proof-negative
+
+# Standing failing case: the proof must reject a deliberately broken formula.
+# A green run means the proof caught it. This workflow writes nothing and
+# touches no tap.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    uses: ./.github/workflows/install-proof.yml
+    with:
+      formula_path: tests/devtools/broken_cox.rb
+      version: 0.0.0-negative-control
+
+  expect-failure:
+    needs: proof
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail unless the proof rejected the broken formula
+        env:
+          PROOF_RESULT: ${{ needs.proof.result }}
+        run: |
+          echo "proof result: ${PROOF_RESULT}"
+          test "${PROOF_RESULT}" = "failure"
