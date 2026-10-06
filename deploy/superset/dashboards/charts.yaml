@@ -266,3 +266,71 @@ charts:
       metrics: []
       x_axis_sort: waiting_hours
       x_axis_sort_asc: false
+
+  # Crew charts. crew_calls carries one row per day, role and model_alias; crew_quarantines one
+  # row per quarantined attempt, with its timestamp named at.
+  - name: Crew cost per day by role
+    dataset: crew_calls
+    viz_type: echarts_timeseries_bar
+    params:
+      x_axis: day
+      time_grain_sqla: P1D
+      metrics:
+        - {expressionType: SQL, sqlExpression: SUM(cost_usd), label: cost_usd}
+      groupby: [role]
+      stack: true
+
+  - name: Crew cost per day by model
+    dataset: crew_calls
+    viz_type: echarts_timeseries_bar
+    params:
+      x_axis: day
+      time_grain_sqla: P1D
+      metrics:
+        - {expressionType: SQL, sqlExpression: SUM(cost_usd), label: cost_usd}
+      groupby: [model_alias]
+      stack: true
+
+  - name: Crew turns per day by role
+    dataset: crew_calls
+    viz_type: echarts_timeseries_line
+    params:
+      x_axis: day
+      time_grain_sqla: P1D
+      metrics:
+        - {expressionType: SQL, sqlExpression: SUM(turns), label: turns}
+      groupby: [role]
+
+  - name: Cache-read share by role
+    dataset: crew_calls
+    viz_type: echarts_timeseries_bar
+    params:
+      x_axis: role
+      metrics:
+        - {expressionType: SQL, sqlExpression: "SUM(cache_read_tokens) * 1.0 / NULLIF(SUM(input_total), 0)", label: cache_read_share}
+      adhoc_filters:
+        - {expressionType: SIMPLE, clause: WHERE, subject: day, operator: TEMPORAL_RANGE, comparator: Last 2 weeks}
+
+  - name: Quarantines by role and cause, last 14 days
+    dataset: crew_quarantines
+    viz_type: echarts_timeseries_bar
+    params:
+      x_axis: role
+      metrics:
+        - {expressionType: SQL, sqlExpression: COUNT(*), label: quarantined}
+      groupby: [cause]
+      stack: true
+      adhoc_filters:
+        - {expressionType: SIMPLE, clause: WHERE, subject: at, operator: TEMPORAL_RANGE, comparator: Last 2 weeks}
+
+  - name: Quarantines by repository and cause, last 14 days
+    dataset: crew_quarantines
+    viz_type: echarts_timeseries_bar
+    params:
+      x_axis: repo
+      metrics:
+        - {expressionType: SQL, sqlExpression: COUNT(*), label: quarantined}
+      groupby: [cause]
+      stack: true
+      adhoc_filters:
+        - {expressionType: SIMPLE, clause: WHERE, subject: at, operator: TEMPORAL_RANGE, comparator: Last 2 weeks}

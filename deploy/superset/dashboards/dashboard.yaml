@@ -2,9 +2,9 @@
 #
 # `dashboard` stays the single Coxswain dict bootstrap.py's plan() reads (it does
 # `dash = specs["dashboard"]`, then `dash["grid"]`), so this key keeps that exact shape.
-# `dashboards` below lists all three declaratively, with the anchor reusing Coxswain's grid so
-# it is written once. Teaching plan()/apply() to walk `dashboards` and create the Fleet and
-# Chair dashboards on a server is a separate, later change; this file only holds the data.
+# `dashboards` below lists all four declaratively, with the anchor reusing Coxswain's grid so
+# it is written once. Teaching plan()/apply() to walk `dashboards` and create the Fleet, Chair
+# and Crew dashboards on a server is a separate, later change; this file only holds the data.
 dashboard: &coxswain
   name: Coxswain
   grid:
@@ -40,3 +40,11 @@ dashboards:
       - - {chart: "Chair actions per hour by kind", width: 12}
       - - {chart: "Spend per landed task per day", width: 6}
         - {chart: "Needs-chair backlog", width: 6}
+  - name: Crew
+    grid:
+      - - {chart: "Crew cost per day by role", width: 6}
+        - {chart: "Crew cost per day by model", width: 6}
+      - - {chart: "Crew turns per day by role", width: 6}
+        - {chart: "Cache-read share by role", width: 6}
+      - - {chart: "Quarantines by role and cause, last 14 days", width: 6}
+        - {chart: "Quarantines by repository and cause, last 14 days", width: 6}
