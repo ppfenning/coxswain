@@ -497,6 +497,146 @@ def test_cli_release_execute_refuses_the_tap_pr_when_the_fetch_fails(tmp_path, c
     assert formula.read_text() == _FORMULA
 
 
+def test_tap_may_merge_is_true_for_success():
+    assert release.tap_may_merge("success") is True
+
+
+def test_tap_may_merge_is_false_for_failure():
+    assert release.tap_may_merge("failure") is False
+
+
+def test_tap_may_merge_is_false_for_cancelled():
+    assert release.tap_may_merge("cancelled") is False
+
+
+def test_tap_may_merge_is_false_for_skipped():
+    assert release.tap_may_merge("skipped") is False
+
+
+def test_tap_may_merge_is_false_for_timed_out():
+    assert release.tap_may_merge("timed_out") is False
+
+
+def test_tap_may_merge_is_false_for_a_missing_conclusion():
+    assert release.tap_may_merge(None) is False
+
+
+def test_install_proof_argv_and_parsing_are_literal():
+    assert release.install_proof_dispatch_argv("release/0.2.0", "0.2.0") == [
+        "gh", "workflow", "run", "install-proof.yml", "-f", "tap_ref=release/0.2.0", "-f", "version=0.2.0"]
+    assert release.install_proof_ids('[{"databaseId": 7}, {"databaseId": 5}]') == [7, 5]
+    assert release.install_proof_ids("[]") == []
+    assert release.install_proof_ids("not json") is None
+    assert release.install_proof_ids('[{"id": 7}]') is None
+    assert release.new_install_proof_runs([5], [7, 5, 3]) == [7]
+    assert release.new_install_proof_runs([], [7]) == [7]
+    assert release.install_proof_result('{"conclusion": "failure", "url": "u"}') == ("failure", "u")
+    assert release.install_proof_result('{"conclusion": ""}') == (None, None)
+    assert release.install_proof_result("not json") == (None, None)
+
+
+def _run_tap_step(tmp_path, install_conclusion="success", override=None):
+    """`override(argv)` returns a `(rc, out)` that replaces the fake runner's answer, or None to keep it."""
+    directory = tmp_path / "homebrew-coxswain"
+    formula = directory / "Formula" / "cox.rb"
+    formula.parent.mkdir(parents=True)
+    formula.write_text(_FORMULA)
+    steps, _ = _tap_kinds(_tools_manifest(), pinned_commits={"tools": 1})
+    calls, inner = _fake_git_run(install_conclusion=install_conclusion)
+    clock = iter(range(0, 10**9, 60))
+
+    def fake_run(argv, cwd):
+        replaced = override(argv) if override else None
+        if replaced is None:
+            return inner(argv, cwd)
+        calls.append(argv)
+        return replaced
+
+    index = {"urls": [{"packagetype": "sdist", "url": "https://x/cox-0.2.0.tar.gz", "digests": {"sha256": "b" * 64}}]}
+    rc = cli._release_execute(steps[-1:], "0.2.0", str(tmp_path), {}, str(tmp_path), fake_run, {}, "",
+                              sleep=lambda s: None, now=lambda: next(clock), fetch_index=lambda url: index)
+    return rc, calls
+
+
+def _merged(calls):
+    return release.pr_merge_argv() in calls
+
+
+def test_cli_release_execute_refuses_without_dispatch_when_the_baseline_run_list_fails(tmp_path, capsys):
+    rc, calls = _run_tap_step(tmp_path, override=lambda argv: (1, "HTTP 502") if argv[2:3] == ["list"] else None)
+    assert rc == 2
+    assert not _merged(calls)
+    assert [c for c in calls if c[:3] == ["gh", "workflow", "run"]] == []
+    assert "existing runs could not be listed" in capsys.readouterr().out
+
+
+def test_cli_release_execute_refuses_when_no_new_run_appears_and_only_a_stale_success_is_listed(tmp_path, capsys):
+    stale = (0, json.dumps([{"databaseId": 1}]))
+    rc, calls = _run_tap_step(tmp_path, override=lambda argv: stale if argv[2:3] == ["list"] else None)
+    assert rc == 2
+    assert not _merged(calls)
+    assert [c for c in calls if c[:3] == ["gh", "run", "view"]] == []
+    assert "did not appear after dispatch" in capsys.readouterr().out
+
+
+def test_cli_release_execute_refuses_when_another_run_starts_beside_the_dispatched_one(tmp_path, capsys):
+    lists = iter([[1], [2, 1], [3, 2, 1]])
+    rc, calls = _run_tap_step(tmp_path, override=lambda argv: (
+        (0, json.dumps([{"databaseId": i} for i in next(lists)])) if argv[2:3] == ["list"] else None))
+    assert rc == 2
+    assert not _merged(calls)
+    assert "ambiguous" in capsys.readouterr().out
+
+
+def test_cli_release_execute_refuses_when_the_dispatch_fails(tmp_path, capsys):
+    rc, calls = _run_tap_step(tmp_path, override=lambda argv: (1, "no such workflow") if argv[1:2] == ["workflow"] else None)
+    assert rc == 2
+    assert not _merged(calls)
+    assert "no such workflow" in capsys.readouterr().out
+
+
+def test_cli_release_execute_refuses_when_the_proof_never_finishes(tmp_path, capsys):
+    running = (0, json.dumps({"databaseId": 2, "status": "in_progress", "conclusion": ""}))
+    rc, calls = _run_tap_step(tmp_path, override=lambda argv: running if argv[2:3] == ["view"] else None)
+    assert rc == 2
+    assert not _merged(calls)
+    assert "did not finish" in capsys.readouterr().out
+
+
+def test_cli_release_execute_leaves_the_tap_pr_open_when_the_install_proof_fails(tmp_path, capsys):
+    rc, calls = _run_tap_step(tmp_path, install_conclusion="failure")
+    assert rc != 0
+    assert release.pr_merge_argv() not in calls
+    assert release.install_proof_dispatch_argv("release/0.2.0", "0.2.0") in calls
+    out = capsys.readouterr().out
+    assert "failure" in out and "https://x/proof/2" in out
+
+
+def test_cli_release_execute_succeeds_after_a_passing_proof_and_issues_no_merge(tmp_path):
+    dispatch = release.install_proof_dispatch_argv("release/0.2.0", "0.2.0")
+    rc, calls = _run_tap_step(tmp_path)
+    assert rc == 0
+    assert dispatch in calls
+    assert calls.index(dispatch) < calls.index(release.install_proof_view_argv(2))
+    assert not _merged(calls)
+
+
+def test_cli_release_dry_run_says_the_proof_would_run_and_the_tap_pr_stays_open_and_runs_nothing(tmp_path, capsys, monkeypatch):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    seen, fake_run = _fake_git_run()
+    monkeypatch.setattr(cli, "_real_run", fake_run)
+    steps = [{"kind": "tap_formula_pr", "component": "tap", "branch": "release/0.2.0"}]
+    monkeypatch.setattr(release, "release_plan", lambda *a, **k: steps)
+    monkeypatch.setattr(release, "gate", lambda *a, **k: [])
+    monkeypatch.setattr(cli, "_default_branch", lambda directory, run: "main")
+    cli.main(["release", "0.2.0", "--dry-run", "--manifest", str(manifest_path)])
+    out = capsys.readouterr().out
+    assert "would run install-proof.yml with tap_ref=release/0.2.0 version=0.2.0" in out
+    assert "left open for the maintainer to merge" in out
+    assert [c for c in seen if c[0] == "gh"] == []
+
+
 def test_bumped_manifest_text_rewrites_only_the_tagged_components_tag_and_keeps_every_other_byte():
     text = ('[coxswain]\nversion = "0.1.0"\n\n'
             '[components.harness]\nrepo = "org/harness"\ntag = "v0.1.0"\n\n'
@@ -811,7 +951,7 @@ def test_release_index_text_does_not_drop_an_adjacent_section_missing_its_blank_
     assert "## `0.2.0`\n\n| harness | x | `v0.2.0` | required |" in text
 
 
-def _fake_git_run(dirty=(), fail=None, off_branch=(), gh_conclusion="success", commits=0):
+def _fake_git_run(dirty=(), fail=None, off_branch=(), gh_conclusion="success", commits=0, install_conclusion="success"):
     """`fail`, when given, is `(directory, kind)` for the one call that
     should return non-zero — everything else in a clean, on-branch tree.
     A nonzero `commits` is what `git rev-list <tag>..HEAD --count` reports for
@@ -822,12 +962,23 @@ def _fake_git_run(dirty=(), fail=None, off_branch=(), gh_conclusion="success", c
     named in `off_branch`) across `checkout` calls, exposed as
     `run.current_branch`, so a test can pin what branch a later `tag` call
     actually ran on rather than trust a runner that reports "main" no
-    matter what was checked out."""
+    matter what was checked out. The install-proof workflow lists run 1 until
+    `gh workflow run` dispatches it, then runs 2 and 1; run 2 finishes with
+    `install_conclusion`."""
     calls: list = []
     current_branch = dict.fromkeys(off_branch, "feature/x")
+    dispatched: list = []
 
     def run(argv, cwd):
         calls.append(argv)
+        if argv[:3] == ["gh", "workflow", "run"]:
+            dispatched.append(argv)
+            return (0, "")
+        if argv[:2] == ["gh", "run"] and argv[2] == "list" and "install-proof.yml" in argv:
+            return (0, json.dumps([{"databaseId": i} for i in ([2, 1] if dispatched else [1])]))
+        if argv[:3] == ["gh", "run", "view"]:
+            return (0, json.dumps({"databaseId": 2, "status": "completed", "conclusion": install_conclusion,
+                                    "url": "https://x/proof/2"}))
         if argv[0] == "gh" and argv[1] == "run":
             tag = argv[argv.index("--branch") + 1]
             return (0, json.dumps([{"status": "completed", "conclusion": gh_conclusion, "name": "ci",

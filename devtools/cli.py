@@ -15,6 +15,7 @@ import tempfile
 import time
 import tomllib
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 
 from devtools import (
@@ -349,6 +350,59 @@ def _github_release_notes_text(umbrella: str, notes_path: str, heading: str, fro
     return body + link_line
 
 
+_PROOF_APPEAR_SECONDS = 300
+_PROOF_FINISH_SECONDS = 3600
+
+
+def _poll[T](probe: Callable[[], T | None], sleep: Callable[[float], object], now: Callable[[], float],
+             seconds: float, interval: float) -> T | None:
+    """The first non-None `probe()`, or None once `seconds` have passed on the `now` clock."""
+    deadline = now() + seconds
+    while True:
+        found = probe()
+        if found is not None or now() >= deadline:
+            return found
+        sleep(interval)
+
+
+def _install_proof_ids(run, umbrella: str) -> list[int] | None:
+    rc, out = run(release.install_proof_list_argv(), umbrella)
+    return release.install_proof_ids(out) if rc == 0 else None
+
+
+def _tap_install_proof(run, umbrella: str, branch: str, version: str, sleep, now) -> str | None:
+    """None only when the one run this dispatch started concludes as `tap_may_merge` accepts; else the failure line."""
+    before = _install_proof_ids(run, umbrella)
+    if before is None:
+        return "install proof not dispatched: the existing runs could not be listed, so a new run cannot be told apart"
+    rc, out = run(release.install_proof_dispatch_argv(branch, version), umbrella)
+    if rc != 0:
+        return f"install proof not dispatched ({umbrella} must hold .github/workflows/install-proof.yml): {out.strip()}"
+
+    def appeared():
+        after = _install_proof_ids(run, umbrella)
+        return (release.new_install_proof_runs(before, after) or None) if after is not None else None
+
+    new = _poll(appeared, sleep, now, _PROOF_APPEAR_SECONDS, 5)
+    if new is None or len(new) != 1:
+        return ("install proof run did not appear after dispatch" if new is None else
+                f"install proof is ambiguous: runs {new} all started after the dispatch")
+
+    def finished():
+        rc, out = run(release.install_proof_view_argv(new[0]), umbrella)
+        result = release.install_proof_result(out) if rc == 0 else (None, None)
+        return result if result[0] is not None else None
+
+    result = _poll(finished, sleep, now, _PROOF_FINISH_SECONDS, 15)
+    if result is None:
+        return f"install proof run {new[0]} did not finish within {_PROOF_FINISH_SECONDS}s; it may still be running"
+    after = _install_proof_ids(run, umbrella)
+    if after is None or release.new_install_proof_runs(before, after) != new:
+        return f"install proof is ambiguous: another run started after the dispatch besides {new[0]}"
+    conclusion, url = result
+    return None if release.tap_may_merge(conclusion) else f"install proof concluded {conclusion}: {url or new[0]}"
+
+
 def _release_execute(steps: list[dict], version: str, root: str, overrides: dict, umbrella: str, run,
                       manifest: dict, manifest_path: str, sleep=time.sleep, now=time.monotonic,
                       fetch_index=_fetch_index) -> int:
@@ -598,8 +652,14 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                 if rc != 0:
                     print(f"FAILED tap_formula_pr tap: {out.strip()}")
                     return 2
+            # The flow never merges the tap PR, so the proof gates nothing to merge here: a proof that does not
+            # pass fails the release and the PR stays open for the maintainer, who merges it only after a pass.
+            proof_failure = _tap_install_proof(run, umbrella, step["branch"], version, sleep, now)
             if rev_rc == 0 and before.strip() not in ("", "HEAD"):
                 run(["git", "-C", directory, "checkout", before.strip()], None)
+            if proof_failure is not None:
+                print(f"FAILED tap_formula_pr tap: {proof_failure}; the tap PR is left open")
+                return 2
             print(f"tap_formula_pr tap: {step['title']}")
         else:
             print(f"FAILED {kind} {step.get('component', '')}: no executor for this step kind")
@@ -689,6 +749,9 @@ def _release(a: argparse.Namespace) -> int:
                 default = _default_branch(release.component_dir(root, release.TAP_CHECKOUT, overrides), _real_run)
                 print(f"tap_formula_pr {step['component']}: would fetch origin, then branch {step['branch']} "
                       f"from origin/{default} (default branch {default})")
+                print(f"tap_formula_pr tap: would run install-proof.yml with tap_ref={step['branch']} "
+                      f"version={a.version}; any conclusion but success exits non-zero, and the tap PR is "
+                      "left open for the maintainer to merge")
             else:
                 print(f"{step['kind']} {step['component']}: {_release_detail(step)}")
         return 2 if any(step["kind"] == "refuse" for step in steps) else 0
