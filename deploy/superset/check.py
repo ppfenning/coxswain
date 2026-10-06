@@ -2,11 +2,13 @@
 
 First it plans the database and datasets offline, once with no store URL and once with a sentinel Postgres URL,
 and exits 1 on any failure. Then it fetches each chart's data endpoint and prints its row count.
+A chart that returns no rows fails the check, so every chart on every dashboard, Crew included, must return data.
+It walks the charts the server lists, so a chart whose dataset bootstrap.py skipped for an absent source is never fetched.
 
 Run it from the host with the .env values exported. It reads SUPERSET_ADMIN_USERNAME and
 SUPERSET_ADMIN_PASSWORD, and SUPERSET_URL when set (default http://127.0.0.1:8088). It exits 1 if any chart errors.
 The offline plan reads bootstrap.py and the YAML specs, so it needs PyYAML; the chart check uses the standard library.
-`report`, `mode_failures` and `plan_failures` are pure; everything else is the edge.
+`report`, `chart_answers`, `mode_failures` and `plan_failures` are pure; everything else is the edge.
 """
 
 from __future__ import annotations
@@ -35,19 +37,25 @@ def message(answer: dict[str, Any]) -> str:
 
 
 def verdict(name: str, answer: dict[str, Any]) -> tuple[str, bool]:
-    """The chart's line and whether it returned data."""
+    """The chart's line and whether it returned at least one row. No chart is exempt."""
     first = (answer.get("result") or [None])[0]
     if first is None:
         return f"{name}: ERROR {message(answer)}", False
     if first.get("error"):
         return f"{name}: ERROR {first['error']}", False
-    return f"{name}: {len(first.get('data') or [])} rows", True
+    rows = len(first.get("data") or [])
+    return f"{name}: {rows} rows", rows > 0
 
 
 def report(answers: dict[str, dict[str, Any]]) -> tuple[list[str], int]:
     """One line per chart, in the order given, and the exit code: 1 if any chart errored, else 0."""
     verdicts = [verdict(n, a) for n, a in answers.items()]
     return [line for line, _ in verdicts], int(not all(ok for _, ok in verdicts))
+
+
+def chart_answers(charts: list[dict[str, Any]], fetch: Callable[[dict[str, Any]], dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Each chart's name mapped to what `fetch` returns for it, in the order given."""
+    return {chart["slice_name"]: fetch(chart) for chart in charts}
 
 
 def mode_failures(mode: str, store_url: str | None, specs: dict[str, Any], ops: list[Any]) -> list[str]:
@@ -110,13 +118,13 @@ def fetch_answers(base: str, username: str, password: str) -> dict[str, dict[str
         page += 1
         if len(batch) < 100:
             break
-    answers: dict[str, dict[str, Any]] = {}
-    for chart in charts:
+    def fetch(chart: dict[str, Any]) -> dict[str, Any]:
         try:
-            answers[chart["slice_name"]] = call(opener, base, headers, "GET", f"/api/v1/chart/{chart['id']}/data/")
+            return call(opener, base, headers, "GET", f"/api/v1/chart/{chart['id']}/data/")
         except urllib.error.HTTPError as e:
-            answers[chart["slice_name"]] = {"message": f"{e.code} {e.read().decode(errors='replace')[:200]}"}
-    return answers
+            return {"message": f"{e.code} {e.read().decode(errors='replace')[:200]}"}
+
+    return chart_answers(charts, fetch)
 
 
 def main() -> int:

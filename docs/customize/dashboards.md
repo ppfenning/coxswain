@@ -295,6 +295,68 @@ Like Fleet, bootstrap.py creates each Chair chart but still groups only
 the Coxswain charts into a dashboard page. Open Charts from the top menu
 and find a panel by its title.
 
+## Crew
+
+The Crew dashboard has eleven charts. They fall into five groups: cost
+and turns, approval and attempts, verdicts, quarantines, and efficiency.
+Crew reads the store only, through the `crew_calls`, `crew_quarantines`,
+`crew_tasks`, `crew_reviews` and `crew_task_roles` datasets.
+
+Cost and turns:
+
+- **Crew cost per day by role.** How much each role spent each day.
+- **Crew cost per day by model.** How much each model alias spent each
+  day.
+- **Crew turns per day by role.** How many turns each role took each day.
+
+Approval and attempts:
+
+- **First-try approval rate by builder seat.** What share of each
+  builder seat's tasks were approved on the first build attempt.
+- **Build attempts per approved task by builder seat.** How many build
+  attempts each builder seat needed on the tasks that were approved.
+
+Verdicts:
+
+- **Crew reviewer verdict mix.** How the charter reviewer's verdicts
+  split across the adversary's verdicts.
+- **Arbiter sides with the adversary.** Which side the arbiter took on
+  the tasks it ruled on.
+
+Quarantines:
+
+- **Quarantines by role and cause, last 14 days.** Which roles had
+  attempts quarantined, and why.
+- **Quarantines by repository and cause, last 14 days.** Which
+  repositories had attempts quarantined, and why.
+
+Efficiency:
+
+- **Cache-read share by role.** What share of each role's input tokens
+  came from the cache over the last two weeks.
+- **Cost per approved task per role.** What each role spends for every
+  approved task.
+
+Some terms are easy to misread. A task is first-try when it is approved
+with exactly one build attempt. The builder seat is the model alias of
+the task's build calls, taken from the earliest build call. A quarantine
+is an attempt of kind refused, unverified, infra or dropped, and an
+attempt with no cause is counted as unclassified. The arbiter chart
+leaves out tasks with no arbitration, so it counts only tasks the arbiter
+ruled on. Cost per approved task divides a role's cost on approved tasks
+by the number of approved tasks.
+
+The datasets state fallbacks that the charts inherit. No approved marker
+has been found in the store, so a task counts as approved when its final
+review verdict is `approve`. That verdict is the arbiter's when the
+arbiter ruled and the reviewer's otherwise. It does not read the landed
+state, so an approved task that has not landed yet counts as approved.
+A quarantined attempt takes its role from the last model call for the
+same run and task. It takes its repository from `runs.repo`, joined on
+the run. An attempt with no matching call or run keeps its row with an
+empty role or repository. The datasets mark as unknown whether `runs.repo`
+exists, and that `approve` is the stored verdict string.
+
 ## The lake
 
 The lake carries six tables: `runs`, `phases`, `node_calls`,
