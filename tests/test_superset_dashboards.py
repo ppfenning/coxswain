@@ -39,6 +39,14 @@ FLEET_CHART_NAMES = [
     "Weekly spend against the ceiling",
 ]
 CHAIR_CHART_NAMES = ["Chair actions per hour by kind", "Spend per landed task per day", "Needs-chair backlog"]
+CREW_CHART_NAMES = [
+    "Crew cost per day by role",
+    "Crew cost per day by model",
+    "Crew turns per day by role",
+    "Cache-read share by role",
+    "Quarantines by role and cause, last 14 days",
+    "Quarantines by repository and cause, last 14 days",
+]
 # Every chart gated by `store`, paired with the dataset that gates it, in charts.yaml order.
 STORE_GATED_CHARTS = [
     ("Lanes per host over time against capacity", "chair_lanes_by_host_hour"),
@@ -49,6 +57,12 @@ STORE_GATED_CHARTS = [
     ("Chair actions per hour by kind", "chair_actions_by_hour"),
     ("Spend per landed task per day", "chair_spend_by_day"),
     ("Needs-chair backlog", "chair_needs_backlog"),
+    ("Crew cost per day by role", "crew_calls"),
+    ("Crew cost per day by model", "crew_calls"),
+    ("Crew turns per day by role", "crew_calls"),
+    ("Cache-read share by role", "crew_calls"),
+    ("Quarantines by role and cause, last 14 days", "crew_quarantines"),
+    ("Quarantines by repository and cause, last 14 days", "crew_quarantines"),
 ]
 READS = re.compile(r"\b(?:read_\w+|\w+_scan)\s*\(")
 LITERAL_READS = re.compile(r"\b(?:read_\w+|\w+_scan)\s*\(\s*'([^']*)'")
@@ -84,6 +98,41 @@ def test_the_chair_dashboard_names_its_charts_and_each_names_a_dataset_that_exis
     datasets = {d["name"] for d in SPECS["datasets"]}
     dataset_of = {c["name"]: c["dataset"] for c in SPECS["charts"]}
     assert all(dataset_of[name] in datasets for name in CHAIR_CHART_NAMES)
+
+
+def test_the_crew_dashboard_names_exactly_its_six_charts_and_each_names_a_dataset_that_exists():
+    cells = [c["chart"] for row in _dashboard("Crew")["grid"] for c in row]
+    assert sorted(cells) == sorted(CREW_CHART_NAMES)
+    datasets = {d["name"] for d in SPECS["datasets"]}
+    dataset_of = {c["name"]: c["dataset"] for c in SPECS["charts"]}
+    assert all(dataset_of[name] in datasets for name in CREW_CHART_NAMES)
+    assert {dataset_of[name] for name in CREW_CHART_NAMES} == set(CREW_DATASETS)
+
+
+def test_the_crew_dashboard_is_fourth_and_the_other_three_chart_lists_are_unchanged():
+    assert [d["name"] for d in SPECS["dashboards"]] == ["Coxswain", "Fleet", "Chair", "Crew"]
+    cells = {name: [c["chart"] for row in _dashboard(name)["grid"] for c in row] for name in ("Coxswain", "Fleet", "Chair")}
+    assert sorted(cells["Fleet"]) == sorted(FLEET_CHART_NAMES)
+    assert sorted(cells["Chair"]) == sorted(CHAIR_CHART_NAMES)
+    assert cells["Coxswain"] == [
+        "Cost per turn by model, by day",
+        "Cache-read share by model, by day",
+        "Cost per landed task, by day",
+        "Landed tasks per day",
+        "First-try build rate, by day",
+        "Lead time, launch to land (median hours), by day",
+        "Spend by task outcome, last 14 days",
+        "Reviewer agreement",
+        "Arbiter decisions",
+        "Build attempts per task",
+        "Cost per day by model alias",
+        "Cost by role, last 7 days",
+        "Busy lanes per hour",
+        "Runs per day",
+        "Quarantined attempts per day",
+        "Quarantines by cause, last 14 days",
+        "Tool uses by name, top 15",
+    ]
 
 
 def test_the_coxswain_dashboard_in_dashboards_is_unchanged():
@@ -152,7 +201,14 @@ def test_plan_on_an_empty_server_creates_everything_in_order():
     assert {o.action for o in ops} == {"create"}
     kinds = [o.kind for o in ops]
     assert kinds == sorted(kinds, key=bootstrap.KINDS.index)
-    assert Counter(kinds) == {"database": 1, "dataset": 20, "chart": 25, "dashboard": 3}
+    assert Counter(kinds) == {"database": 1, "dataset": 20, "chart": 31, "dashboard": 4}
+
+
+def test_plan_on_an_empty_server_creates_the_crew_dashboard_after_every_chart_op():
+    ops = bootstrap.plan(SPECS, {}, ALL_SOURCES)
+    (crew,) = [i for i, o in enumerate(ops) if o.kind == "dashboard" and o.name == "Crew"]
+    assert ops[crew].action == "create"
+    assert crew > max(i for i, o in enumerate(ops) if o.kind == "chart")
 
 
 def test_plan_is_all_unchanged_when_the_server_matches():
@@ -199,7 +255,7 @@ def test_store_without_lake_skips_the_ten_history_datasets_and_keeps_chair_fleet
     (database_op,) = [o for o in ops if o.kind == "database"]
     assert database_op.action == "create"
     assert {o.name for o in ops if o.kind == "dashboard" and o.action == "skipped"} == {"Coxswain"}
-    assert {o.name for o in ops if o.kind == "dashboard" and o.action != "skipped"} == {"Fleet", "Chair"}
+    assert {o.name for o in ops if o.kind == "dashboard" and o.action != "skipped"} == {"Fleet", "Chair", "Crew"}
 
 
 def test_present_sources_reports_store_and_lake_from_the_two_probes():
@@ -214,7 +270,7 @@ def test_plan_without_store_skips_every_chair_and_fleet_dataset_and_both_dashboa
     assert [bootstrap.line(o) for o in ops if o.action == "skipped"] == (
         [f"skipped: {n} (no store tables yet)" for n in STORE_GATED_DATASETS]
         + [f"skipped: {chart} (dataset {dataset} skipped)" for chart, dataset in STORE_GATED_CHARTS]
-        + ["skipped: Fleet (no charts)", "skipped: Chair (no charts)"]
+        + ["skipped: Fleet (no charts)", "skipped: Chair (no charts)", "skipped: Crew (no charts)"]
     )
     assert [o.name for o in ops if o.kind == "dataset" and o.action == "create"] == [d["name"] for d in SPECS["datasets"] if d["name"] not in STORE_GATED_DATASETS]
     assert sorted(c["name"] for c in SPECS["charts"] if c["dataset"] in STORE_GATED_DATASETS) == sorted(chart for chart, _ in STORE_GATED_CHARTS)
@@ -585,6 +641,7 @@ SUM_COST = {"expressionType": "SIMPLE", "column": {"column_name": "cost_usd"}, "
 DAY_AXIS = {"columnType": "BASE_AXIS", "expressionType": "SQL", "label": "day", "sqlExpression": "day", "timeGrain": "P1D"}
 WEEK_AXIS = {"columnType": "BASE_AXIS", "expressionType": "SQL", "label": "week", "sqlExpression": "week", "timeGrain": "P1W"}
 TOOL_USES = {"expressionType": "SQL", "sqlExpression": "COUNT(*)", "label": "tool_uses"}
+CREW_SUM_COST = {"expressionType": "SQL", "sqlExpression": "SUM(cost_usd)", "label": "cost_usd"}
 EXPECTED_QUERIES = {
     "Cost per day by model alias": [
         {
@@ -823,6 +880,68 @@ EXPECTED_QUERIES = {
             "orderby": [["waiting_hours", False]],
             "row_limit": 10000,
             "filters": [],
+            "extras": {},
+        }
+    ],
+    "Crew cost per day by role": [
+        {
+            "columns": [DAY_AXIS, "role"],
+            "metrics": [CREW_SUM_COST],
+            "orderby": [],
+            "row_limit": 10000,
+            "filters": [],
+            "extras": {"time_grain_sqla": "P1D"},
+        }
+    ],
+    "Crew cost per day by model": [
+        {
+            "columns": [DAY_AXIS, "model_alias"],
+            "metrics": [CREW_SUM_COST],
+            "orderby": [],
+            "row_limit": 10000,
+            "filters": [],
+            "extras": {"time_grain_sqla": "P1D"},
+        }
+    ],
+    "Crew turns per day by role": [
+        {
+            "columns": [DAY_AXIS, "role"],
+            "metrics": [{"expressionType": "SQL", "sqlExpression": "SUM(turns)", "label": "turns"}],
+            "orderby": [],
+            "row_limit": 10000,
+            "filters": [],
+            "extras": {"time_grain_sqla": "P1D"},
+        }
+    ],
+    "Cache-read share by role": [
+        {
+            "columns": [{"columnType": "BASE_AXIS", "expressionType": "SQL", "label": "role", "sqlExpression": "role"}],
+            "metrics": [
+                {"expressionType": "SQL", "sqlExpression": "SUM(cache_read_tokens) * 1.0 / NULLIF(SUM(input_total), 0)", "label": "cache_read_share"}
+            ],
+            "orderby": [],
+            "row_limit": 10000,
+            "filters": [{"col": "day", "op": "TEMPORAL_RANGE", "val": "Last 2 weeks"}],
+            "extras": {},
+        }
+    ],
+    "Quarantines by role and cause, last 14 days": [
+        {
+            "columns": [{"columnType": "BASE_AXIS", "expressionType": "SQL", "label": "role", "sqlExpression": "role"}, "cause"],
+            "metrics": [{"expressionType": "SQL", "sqlExpression": "COUNT(*)", "label": "quarantined"}],
+            "orderby": [],
+            "row_limit": 10000,
+            "filters": [{"col": "at", "op": "TEMPORAL_RANGE", "val": "Last 2 weeks"}],
+            "extras": {},
+        }
+    ],
+    "Quarantines by repository and cause, last 14 days": [
+        {
+            "columns": [{"columnType": "BASE_AXIS", "expressionType": "SQL", "label": "repo", "sqlExpression": "repo"}, "cause"],
+            "metrics": [{"expressionType": "SQL", "sqlExpression": "COUNT(*)", "label": "quarantined"}],
+            "orderby": [],
+            "row_limit": 10000,
+            "filters": [{"col": "at", "op": "TEMPORAL_RANGE", "val": "Last 2 weeks"}],
             "extras": {},
         }
     ],
