@@ -3334,8 +3334,9 @@ into the land. The chair keeps relaunches off decompose-only local lanes, knows 
 tier proposal to the inbox, and sends an intake whose decompose wrote nothing twice to the chair instead of
 decomposing it again.</p>
 <p><strong>Started, not yet wired.</strong> The parts of reverting a land that turns main red (the rule, its facts and the revert
-executor), the notifier's core (off until a channel is configured) and the release tool's install-proof gate
-(not called yet) are on main; their wiring lands in 0.35.</p>
+executor) and the notifier's core (off until a channel is configured) are on main; their wiring lands in 0.35.
+The release tool dispatches an install-proof workflow before merging the tap; until that workflow lands, the tap
+pull request is left open for a hand merge.</p>
 <p><strong>Upgrading from 0.33.0.</strong> Nothing migrates and the store schema is unchanged. Install <code>towpath</code> from the dash
 release (the <code>coxtop</code> binary still ships), restart the chair loop with the tools venv on PATH, and run
 <code>cox route store-fill</code> once if your store predates 0.34.</p>
@@ -3362,7 +3363,8 @@ release (the <code>coxtop</code> binary still ships), restart the chair loop wit
 <h2 id="coxswain-umbrella">coxswain (umbrella)</h2>
 <ul>
 <li>The docs, README and manifest name the dashboard towpath (coxswain #244).</li>
-<li>The release tool gains an install-proof gate for the tap merge, not yet called (coxswain #243).</li>
+<li>The release tool dispatches an install-proof workflow before the tap merge and leaves the tap PR open when it
+  does not pass (coxswain #243).</li>
 </ul>
 
 
