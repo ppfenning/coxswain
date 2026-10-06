@@ -1687,6 +1687,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#crew" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Crew
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#the-lake" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3398,6 +3409,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#crew" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Crew
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#the-lake" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3748,6 +3770,64 @@ as the comment above the chair datasets in <code>datasets.yaml</code> explains.<
 <p>Like Fleet, bootstrap.py creates each Chair chart but still groups only
 the Coxswain charts into a dashboard page. Open Charts from the top menu
 and find a panel by its title.</p>
+<h2 id="crew">Crew</h2>
+<p>The Crew dashboard has eleven charts. They fall into five groups: cost
+and turns, approval and attempts, verdicts, quarantines, and efficiency.
+Crew reads the store only, through the <code>crew_calls</code>, <code>crew_quarantines</code>,
+<code>crew_tasks</code>, <code>crew_reviews</code> and <code>crew_task_roles</code> datasets.</p>
+<p>Cost and turns:</p>
+<ul>
+<li><strong>Crew cost per day by role.</strong> How much each role spent each day.</li>
+<li><strong>Crew cost per day by model.</strong> How much each model alias spent each
+  day.</li>
+<li><strong>Crew turns per day by role.</strong> How many turns each role took each day.</li>
+</ul>
+<p>Approval and attempts:</p>
+<ul>
+<li><strong>First-try approval rate by builder seat.</strong> What share of each
+  builder seat's tasks were approved on the first build attempt.</li>
+<li><strong>Build attempts per approved task by builder seat.</strong> How many build
+  attempts each builder seat needed on the tasks that were approved.</li>
+</ul>
+<p>Verdicts:</p>
+<ul>
+<li><strong>Crew reviewer verdict mix.</strong> How the charter reviewer's verdicts
+  split across the adversary's verdicts.</li>
+<li><strong>Arbiter sides with the adversary.</strong> Which side the arbiter took on
+  the tasks it ruled on.</li>
+</ul>
+<p>Quarantines:</p>
+<ul>
+<li><strong>Quarantines by role and cause, last 14 days.</strong> Which roles had
+  attempts quarantined, and why.</li>
+<li><strong>Quarantines by repository and cause, last 14 days.</strong> Which
+  repositories had attempts quarantined, and why.</li>
+</ul>
+<p>Efficiency:</p>
+<ul>
+<li><strong>Cache-read share by role.</strong> What share of each role's input tokens
+  came from the cache over the last two weeks.</li>
+<li><strong>Cost per approved task per role.</strong> What each role spends for every
+  approved task.</li>
+</ul>
+<p>Some terms are easy to misread. A task is first-try when it is approved
+with exactly one build attempt. The builder seat is the model alias of
+the task's build calls, taken from the earliest build call. A quarantine
+is an attempt of kind refused, unverified, infra or dropped, and an
+attempt with no cause is counted as unclassified. The arbiter chart
+leaves out tasks with no arbitration, so it counts only tasks the arbiter
+ruled on. Cost per approved task divides a role's cost on approved tasks
+by the number of approved tasks.</p>
+<p>The datasets state fallbacks that the charts inherit. No approved marker
+has been found in the store, so a task counts as approved when its final
+review verdict is <code>approve</code>. That verdict is the arbiter's when the
+arbiter ruled and the reviewer's otherwise. It does not read the landed
+state, so an approved task that has not landed yet counts as approved.
+A quarantined attempt takes its role from the last model call for the
+same run and task. It takes its repository from <code>runs.repo</code>, joined on
+the run. An attempt with no matching call or run keeps its row with an
+empty role or repository. The datasets mark as unknown whether <code>runs.repo</code>
+exists, and that <code>approve</code> is the stored verdict string.</p>
 <h2 id="the-lake">The lake</h2>
 <p>The lake carries six tables: <code>runs</code>, <code>phases</code>, <code>node_calls</code>,
 <code>gate_decisions</code>, <code>ledger</code>, and <code>traces</code>. Only <code>node_calls</code>, <code>runs</code> and
