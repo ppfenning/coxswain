@@ -367,6 +367,17 @@ _FORMULA = ('class Cox < Formula\n  url "https://x/cox-0.1.0.tar.gz"\n  sha256 "
             '  resource "dep" do\n    url "https://x/dep-1.0.tar.gz"\n    sha256 "' + "a" * 64 + '"\n  end\nend\n')
 
 
+# A formula with every anchor `bumped_formula_text(..., towpath=...)` needs: a resource, `def install` and `test do`.
+_TAP_FORMULA = (_FORMULA.removesuffix("end\n")
+                + '\n  def install\n    virtualenv_install_with_resources\n  end\n\n'
+                + '  test do\n    system bin/"cox", "--version"\n  end\nend\n')
+
+
+def _dash_text(url):
+    """Every `.sha256` dash asset reads as one digest line."""
+    return "c" * 64 + "  " + url.rsplit("/", 1)[-1].removesuffix(".sha256") + "\n"
+
+
 def test_bumped_formula_text_rewrites_url_and_sha_and_leaves_the_resource_stanza():
     after = release.bumped_formula_text(_FORMULA, "0.2.0", "https://x/cox-0.2.0.tar.gz", "b" * 64)
     assert after == _FORMULA.replace("cox-0.1.0", "cox-0.2.0").replace("0" * 64, "b" * 64)
@@ -426,12 +437,12 @@ def test_tap_state_reads_absent_clean_and_dirty(tmp_path):
 def test_cli_release_execute_opens_the_tap_pr_with_the_index_sdist(tmp_path):
     formula = tmp_path / "homebrew-coxswain" / "Formula" / "cox.rb"
     formula.parent.mkdir(parents=True)
-    formula.write_text(_FORMULA)
+    formula.write_text(_TAP_FORMULA)
     steps, _ = _tap_kinds(_tools_manifest(), pinned_commits={"tools": 1})
     calls, fake_run = _fake_git_run()
     index = {"urls": [{"packagetype": "sdist", "url": "https://x/cox-0.2.0.tar.gz", "digests": {"sha256": "b" * 64}}]}
     rc = cli._release_execute(steps[-1:], "0.2.0", str(tmp_path), {}, str(tmp_path), fake_run, {}, "",
-                              fetch_index=lambda url: index)
+                              fetch_index=lambda url: index, fetch_text=_dash_text)
     assert rc == 0
     assert 'url "https://x/cox-0.2.0.tar.gz"' in formula.read_text() and "b" * 64 in formula.read_text()
     assert ["gh", "pr", "create", "--title", "cox 0.2.0", "--body",
@@ -442,12 +453,12 @@ def test_cli_release_execute_opens_the_tap_pr_with_the_index_sdist(tmp_path):
 def test_cli_release_execute_ends_the_tap_pr_body_with_the_coxswain_footer(tmp_path):
     formula = tmp_path / "homebrew-coxswain" / "Formula" / "cox.rb"
     formula.parent.mkdir(parents=True)
-    formula.write_text(_FORMULA)
+    formula.write_text(_TAP_FORMULA)
     steps, _ = _tap_kinds(_tools_manifest(), "1.2.3", pinned_commits={"tools": 1})
     calls, fake_run = _fake_git_run()
     index = {"urls": [{"packagetype": "sdist", "url": "https://x/cox-1.2.3.tar.gz", "digests": {"sha256": "b" * 64}}]}
     rc = cli._release_execute(steps[-1:], "1.2.3", str(tmp_path), {}, str(tmp_path), fake_run, {}, "",
-                              fetch_index=lambda url: index)
+                              fetch_index=lambda url: index, fetch_text=_dash_text)
     pr_create = next(c for c in calls if c[:3] == ["gh", "pr", "create"])
     assert rc == 0
     assert pr_create[pr_create.index("--body") + 1].endswith(release.pr_footer("1.2.3"))
@@ -457,7 +468,7 @@ def test_cli_release_execute_branches_the_tap_pr_from_the_fetched_origin_default
     directory = tmp_path / "homebrew-coxswain"
     formula = directory / "Formula" / "cox.rb"
     formula.parent.mkdir(parents=True)
-    formula.write_text(_FORMULA)
+    formula.write_text(_TAP_FORMULA)
     steps, _ = _tap_kinds(_tools_manifest(), pinned_commits={"tools": 1})
     # The local checkout sits on "feature/x". origin/HEAD reads as "master" only
     # once `git fetch` has run, so a base read before the fetch, or not read at all, differs.
@@ -474,7 +485,7 @@ def test_cli_release_execute_branches_the_tap_pr_from_the_fetched_origin_default
 
     index = {"urls": [{"packagetype": "sdist", "url": "https://x/cox-0.2.0.tar.gz", "digests": {"sha256": "b" * 64}}]}
     rc = cli._release_execute(steps[-1:], "0.2.0", str(tmp_path), {}, str(tmp_path), fake_run, {}, "",
-                              fetch_index=lambda url: index)
+                              fetch_index=lambda url: index, fetch_text=_dash_text)
     branch_from_fetched = release.checkout_branch_argv(str(directory), "release/0.2.0", "origin/master")
     assert rc == 0
     assert calls.index(release.fetch_argv(str(directory))) < calls.index(branch_from_fetched)
@@ -485,16 +496,16 @@ def test_cli_release_execute_refuses_the_tap_pr_when_the_fetch_fails(tmp_path, c
     directory = tmp_path / "homebrew-coxswain"
     formula = directory / "Formula" / "cox.rb"
     formula.parent.mkdir(parents=True)
-    formula.write_text(_FORMULA)
+    formula.write_text(_TAP_FORMULA)
     steps, _ = _tap_kinds(_tools_manifest(), pinned_commits={"tools": 1})
     calls, fake_run = _fake_git_run(fail=(str(directory), "fetch"))
     index = {"urls": [{"packagetype": "sdist", "url": "https://x/cox-0.2.0.tar.gz", "digests": {"sha256": "b" * 64}}]}
     rc = cli._release_execute(steps[-1:], "0.2.0", str(tmp_path), {}, str(tmp_path), fake_run, {}, "",
-                              fetch_index=lambda url: index)
+                              fetch_index=lambda url: index, fetch_text=_dash_text)
     assert rc == 2
     assert "FAILED tap_formula_pr tap: fetch failed" in capsys.readouterr().out
     assert [c for c in calls if c[0] == "gh" or c[3] in ("checkout", "add", "commit", "push")] == []
-    assert formula.read_text() == _FORMULA
+    assert formula.read_text() == _TAP_FORMULA
 
 
 def test_tap_may_merge_is_true_for_success():
@@ -540,7 +551,7 @@ def _run_tap_step(tmp_path, install_conclusion="success", override=None):
     directory = tmp_path / "homebrew-coxswain"
     formula = directory / "Formula" / "cox.rb"
     formula.parent.mkdir(parents=True)
-    formula.write_text(_FORMULA)
+    formula.write_text(_TAP_FORMULA)
     steps, _ = _tap_kinds(_tools_manifest(), pinned_commits={"tools": 1})
     calls, inner = _fake_git_run(install_conclusion=install_conclusion)
     clock = iter(range(0, 10**9, 60))
@@ -554,7 +565,7 @@ def _run_tap_step(tmp_path, install_conclusion="success", override=None):
 
     index = {"urls": [{"packagetype": "sdist", "url": "https://x/cox-0.2.0.tar.gz", "digests": {"sha256": "b" * 64}}]}
     rc = cli._release_execute(steps[-1:], "0.2.0", str(tmp_path), {}, str(tmp_path), fake_run, {}, "",
-                              sleep=lambda s: None, now=lambda: next(clock), fetch_index=lambda url: index)
+                              sleep=lambda s: None, now=lambda: next(clock), fetch_index=lambda url: index, fetch_text=_dash_text)
     return rc, calls
 
 

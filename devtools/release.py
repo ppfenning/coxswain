@@ -211,6 +211,35 @@ def sdist_from_index(payload: Mapping) -> tuple[str, str] | None:
                  if u.get("packagetype") == "sdist"), None)
 
 
+_DASH_REPO = "ppfenning/coxswain-dash"
+_SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
+
+
+def towpath_asset_urls(version: str) -> dict[str, str]:
+    """The dash release's towpath tarball url for each platform; each has its digest in the `.sha256` asset beside it."""
+    base = f"https://github.com/{_DASH_REPO}/releases/download/v{version}"
+    return {target: f"{base}/towpath-v{version}-{target}.tar.gz" for target in (TOWPATH_MACOS_ARM, TOWPATH_LINUX_INTEL)}
+
+
+def sha256_from_asset(text: str) -> str | None:
+    """The first whitespace-separated token of a `.sha256` asset when it is 64 hex chars, else None."""
+    token = next(iter(text.split()), "")
+    return token if _SHA256_RE.fullmatch(token) else None
+
+
+def towpath_assets(version: str, texts: Mapping[str, str | None]) -> tuple[TowpathAssets | None, str | None]:
+    """`(assets, None)`, or `(None, reason)` naming the first `.sha256` asset in `texts` that is missing, empty or malformed.
+
+    `texts` maps each `.sha256` asset url to its body, or None when it could not be fetched."""
+    found = {}
+    for target, url in towpath_asset_urls(version).items():
+        sha = sha256_from_asset(texts.get(f"{url}.sha256") or "")
+        if sha is None:
+            return None, f"{url}.sha256 is missing, empty or not a 64-hex digest"
+        found[target] = (url, sha)
+    return found, None
+
+
 def _joins(spec: Mapping, version: str) -> bool:
     """A component whose `since` is this version has no earlier tag to count commits from."""
     return str(spec.get("since", "")) == version
