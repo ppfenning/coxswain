@@ -50,8 +50,22 @@ def test_check_doctor_passes_the_passing_run():
     assert check_doctor(_PASSING) is None
 
 
-def test_check_doctor_names_the_profile_row_of_a_fresh_profile():
-    assert check_doctor(_NO_PROFILE) == "doctor: profile failed: missing: <temp dir>/profile.yaml"
+def test_check_doctor_passes_a_fresh_install_whose_only_failures_await_setup():
+    assert check_doctor(_NO_PROFILE) is None
+
+
+def test_check_doctor_fails_a_setup_independent_row_on_a_fresh_install():
+    rows = (
+        '{"rows": [{"check": "git", "ok": false, "detail": "git not found"}, '
+        '{"check": "profile", "ok": false, "detail": "missing: <temp dir>/profile.yaml"}, '
+        '{"check": "store", "ok": false, "detail": "skipped: no profile"}], "ok": false}'
+    )
+    assert check_doctor(rows) == "doctor: git failed: git not found"
+
+
+def test_check_doctor_fails_when_no_row_passes():
+    rows = '{"rows": [{"check": "profile", "ok": false, "detail": "missing: x"}], "ok": false}'
+    assert check_doctor(rows) == "doctor: no row passed"
 
 
 def test_check_doctor_fails_a_failing_row_under_a_true_top_level():
@@ -67,6 +81,7 @@ def test_check_doctor_fails_invalid_json():
 
 
 def test_main_returns_1_and_writes_stderr_for_a_failing_doctor(monkeypatch, capsys):
-    monkeypatch.setattr("sys.stdin", io.StringIO(_NO_PROFILE))
+    failing = '{"rows": [{"check": "git", "ok": false, "detail": "git not found"}], "ok": false}'
+    monkeypatch.setattr("sys.stdin", io.StringIO(failing))
     assert main(["check-doctor"]) == 1
-    assert "profile" in capsys.readouterr().err
+    assert "git" in capsys.readouterr().err

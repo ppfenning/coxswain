@@ -46,10 +46,17 @@ def check_version(output: str, expected: str) -> str | None:
     return f"version: expected {expected!r}, first output line was {first!r}"
 
 
+def _awaits_setup(row: dict) -> bool:
+    """A fresh install has no profile until `cox setup install` runs: the profile row reports it missing and every
+    row that needs a profile reports itself skipped. Those are the expected state of a clean machine."""
+    detail = str(row.get("detail", ""))
+    return (row.get("check") == "profile" and detail.startswith("missing:")) or detail == "skipped: no profile"
+
+
 def _row_reason(row: object) -> str | None:
     if not isinstance(row, dict):
         return _one_line(f"doctor: row {row!r} failed: not an object")
-    if row.get("ok") is True:
+    if row.get("ok") is True or _awaits_setup(row):
         return None
     return _one_line(f"doctor: {row.get('check', '?')} failed: {row.get('detail', '')}")
 
@@ -63,13 +70,14 @@ def _doctor_reason(data: object) -> str | None:
     first_failure = next((reason for row in rows if (reason := _row_reason(row)) is not None), None)
     if first_failure is not None:
         return first_failure
-    if data.get("ok") is not True:
-        return "doctor: top-level ok is not true"
+    if not any(isinstance(r, dict) and r.get("ok") is True for r in rows):
+        return "doctor: no row passed"
     return None
 
 
 def check_doctor(text: str) -> str | None:
-    """None only for a JSON object with top-level ok true and non-empty rows that are all ok true."""
+    """None for a JSON object with non-empty rows where every row passes or only awaits setup (a fresh machine has no
+    profile yet), and at least one row passes. The top-level ok is not required: it is false until setup runs."""
     try:
         data = json.loads(text)
     except ValueError as exc:
