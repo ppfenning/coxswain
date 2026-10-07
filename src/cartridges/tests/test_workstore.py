@@ -726,3 +726,55 @@ def test_a_quarantined_item_reads_and_is_neither_runnable_nor_complete(tmp_path)
     assert item["state"] == "quarantined"
     assert [t["id"] for t in ready_tasks([item, sibling])] == ["r"]
     assert not phase_complete([item, sibling], "p")
+
+
+def _literal(path: Path, text: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_an_unknown_state_in_an_own_item_reads_back_opaque(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    root = tmp_path / "own"
+    odd = _literal(root / "p1" / "odd.md", "---\nid: odd\nphase: p1\nstate: nearly\n---\n\nbody\n")
+    _literal(root / "p1" / "after.md", "---\nid: after\nphase: p1\nstate: ready\nneeds: [odd]\n---\n\nbody\n")
+    with caplog.at_level("WARNING", logger="core.workstore"):
+        item = read_item(odd)
+    assert item["state"] == "nearly"
+    assert str(odd) in caplog.text
+    assert "'nearly'" in caplog.text
+
+    items = read_initiative(root)["items"]
+    assert ready_tasks(items) == []
+    assert not phase_complete(items, "p1")
+    assert ready_tasks([item, {"id": "x", "phase": "p1", "state": "ready", "needs": ["odd"]}]) == []
+    with pytest.raises(WorkStoreError, match="unknown state 'nearly'"):
+        write_item(item, tmp_path / "out" / "odd.md")
+    assert not (tmp_path / "out" / "odd.md").exists()
+
+
+def test_an_unknown_state_in_a_foreign_item_does_not_stop_reads(tmp_path: Path) -> None:
+    store = tmp_path / "work"
+    _literal(store / "other" / "p1" / "new.md", "---\nid: new\nphase: p1\nstate: nearly\n---\n\nb\n")
+    _literal(store / "other" / "p1" / "fin.md", "---\nid: fin\nphase: p1\nstate: done\n---\n\nb\n")
+    _literal(store / "mine" / "p1" / "t.md", "---\nid: t\nphase: p1\nstate: ready\nneeds: [fin, new]\n---\n\nb\n")
+    assert foreign_states(store, "mine") == {"fin": "done", "new": "nearly"}
+    loaded = read_initiative(store / "mine")
+    assert loaded["foreign"] == {"fin": "done", "new": "nearly"}
+    assert ready_tasks(loaded["items"], foreign=loaded["foreign"]) == []
+
+
+def test_an_unreadable_foreign_file_is_skipped_with_a_warning(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    store = tmp_path / "work"
+    bare = _literal(store / "other" / "p1" / "bare.md", "just prose, no header\n")
+    binary = store / "other" / "p1" / "binary.md"
+    binary.write_bytes(b"---\nid: binary\n---\n\xff\xfe\n")
+    _literal(store / "other" / "p1" / "fin.md", "---\nid: fin\nphase: p1\nstate: done\n---\n\nb\n")
+    _literal(store / "mine" / "p1" / "t.md", "---\nid: t\nphase: p1\nstate: ready\nneeds: [fin, bare]\n---\n\nb\n")
+    with caplog.at_level("WARNING", logger="core.workstore"):
+        states = foreign_states(store, "mine")
+    assert states == {"fin": "done"}
+    assert str(bare) in caplog.text
+    assert str(binary) in caplog.text
+    with pytest.raises(WorkStoreError, match="'t' needs 'bare', which does not exist"):
+        read_initiative(store / "mine")

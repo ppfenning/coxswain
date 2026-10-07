@@ -54,11 +54,14 @@ so a state move never erases it. Any other shape raises `WorkStoreError`.
 from __future__ import annotations
 
 import hashlib
+import logging
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "STATES",
@@ -215,7 +218,7 @@ def read_item(path: Path | str) -> dict[str, Any]:
     path = Path(path)
     try:
         meta, body = _split_frontmatter(path.read_text(encoding="utf-8"), path)
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         raise WorkStoreError(f"cannot read work item {path}: {exc}") from exc
 
     budget_usd = _coerce_budget_usd(meta.get("budget_usd"))
@@ -236,7 +239,8 @@ def read_item(path: Path | str) -> dict[str, Any]:
         "path": str(path),
     }
     if item["state"] not in STATES:
-        raise WorkStoreError(f"{path}: unknown state '{item['state']}'; expected one of {list(STATES)}")
+        # Opaque on read: in neither _RUNNABLE nor _TERMINAL, so never ready and never satisfies a need.
+        logger.warning("%s: unknown state '%s'; kept opaque, not runnable and not complete", path, item["state"])
     return item
 
 
@@ -364,15 +368,21 @@ def read_initiative(root: Path | str) -> dict[str, Any]:
 
 
 def foreign_states(store_root: Path | str, own_initiative: str) -> dict[str, str]:
-    """Task id to state for every task in an initiative other than `own_initiative`."""
-    return {
-        item["id"]: item["state"]
-        for item in (
-            read_item(p)
-            for p in sorted(Path(store_root).glob("*/*/*.md"))
-            if p.parts[-3] != own_initiative and p.name != "initiative.md"
-        )
-    }
+    """Task id to state for every readable task in an initiative other than `own_initiative`.
+
+    A file that cannot be read is skipped with a warning and contributes no state, so a need on it stays unmet.
+    """
+    states: dict[str, str] = {}
+    for p in sorted(Path(store_root).glob("*/*/*.md")):
+        if p.parts[-3] == own_initiative or p.name == "initiative.md":
+            continue
+        try:
+            item = read_item(p)
+        except WorkStoreError as exc:
+            logger.warning("skipping unreadable foreign work item %s: %s", p, exc)
+            continue
+        states[item["id"]] = item["state"]
+    return states
 
 
 def phases(items: Sequence[Mapping[str, Any]]) -> list[str]:
