@@ -17,8 +17,8 @@ That one command tags every component repository and this repository at
 `<version>`, bumps `manifest.toml` to match, and publishes both the docs
 site at that version (via `mike`) and the `cox` package to PyPI (via
 trusted publishing — no long-lived token in this repository's secrets).
-Every component in a release carries the same tag, so `manifest.toml`
-always tells you exactly what a given release installs.
+Changed components are tagged `v<version>`; unchanged ones keep their
+tag. `manifest.toml` records the tag each component is pinned to.
 
 ### The tap pull request and the install proof
 
@@ -47,7 +47,8 @@ you merge the tap pull request by hand.
 A proof that cannot fail proves nothing, so `.github/workflows/install-proof-negative.yml`
 runs weekly and on dispatch. It feeds the proof the deliberately broken formula
 `tests/devtools/broken_cox.rb`. Its own run is green only when the proof failed, so a
-green run there means the proof still catches a broken formula.
+green run there means the proof failed on that one formula. It does not show
+the proof catches every broken formula.
 
 A green proof means that formula installs and upgrades on those two platforms today. It
 does not mean the release is otherwise good.
