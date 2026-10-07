@@ -52,6 +52,18 @@ green run there means the proof still catches a broken formula.
 A green proof means that formula installs and upgrades on those two platforms today. It
 does not mean the release is otherwise good.
 
+## `0.36.0`
+
+| Component | Repository or path | Tag | Required or flag |
+| --- | --- | --- | --- |
+| cartridges | `ppfenning/coxswain-cartridges` | `v0.36.0` | required |
+| graphs | `ppfenning/coxswain-graphs` | `v0.36.0` | required |
+| tools | `ppfenning/coxswain-tools` | `v0.36.0` | required, provides `cox` |
+| crew | `ppfenning/coxswain-crew` | `v0.32.0` | flag: `crew` (pinned) |
+| dash | `ppfenning/coxswain-dash` | `v0.36.0` | flag: `dash`, provides `towpath` |
+
+See the [0.36.0 release notes](0.36.0.md) for what landed in each component.
+
 ## `0.35.0`
 
 | Component | Repository or path | Tag | Required or flag |
