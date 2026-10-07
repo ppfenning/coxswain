@@ -4,6 +4,9 @@
     parse_catalog(raw)          -> Catalog | list[str]    raw is a plain dict
     entries_for_class(c, cls)   -> tuple[ModelEntry, ...] cheapest first
     entry_by_id / entry_by_alias -> ModelEntry | None
+    parse_model_id(id)          -> (family, version tuple) | None
+    newest_in_family(ids, fam)  -> exact id | None
+    is_family_alias(name)       -> bool
 
 Failures are returned as a list of messages, never raised, so a caller can show
 every problem in a catalog at once instead of the first one.
@@ -11,6 +14,8 @@ every problem in a catalog at once instead of the first one.
 
 from __future__ import annotations
 
+import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -25,12 +30,18 @@ __all__ = [
     "entries_for_class",
     "entry_by_alias",
     "entry_by_id",
+    "is_family_alias",
     "load_catalog",
+    "newest_in_family",
     "parse_catalog",
+    "parse_model_id",
 ]
 
 CLASSES = frozenset({"extract", "reason", "judge", "frontier"})
 _PRICE_KEYS = ("input", "output", "cache_write", "cache_read")
+_FAMILIES = frozenset({"sonnet", "opus", "haiku"})
+_MODEL_ID = re.compile(r"(?:claude-)?([a-z][a-z-]*?)((?:-\d{1,3})+)(?:-\d{8})?")
+_LATEST = re.compile(r"[a-z]+(?:-[a-z]+)*-latest")
 
 
 @dataclass(frozen=True)
@@ -164,6 +175,27 @@ def entry_by_id(catalog: Catalog, model_id: str) -> ModelEntry | None:
 
 def entry_by_alias(catalog: Catalog, alias: str) -> ModelEntry | None:
     return next((e for e in catalog.entries if alias in e.aliases), None)
+
+
+def parse_model_id(model_id: str) -> tuple[str, tuple[int, ...]] | None:
+    """Family and integer version; a trailing 8-digit date is ignored. Never compare versions as strings."""
+    m = _MODEL_ID.fullmatch(model_id)
+    return (m.group(1), tuple(int(n) for n in m.group(2).split("-")[1:])) if m else None
+
+
+def newest_in_family(catalog_ids: Iterable[str], family: str) -> str | None:
+    """The exact catalog id with the highest version in `family`, or None."""
+    rows = [
+        (parsed[1], i)
+        for i in catalog_ids
+        if (parsed := parse_model_id(i)) is not None and parsed[0] == family
+    ]
+    return max(rows)[1] if rows else None
+
+
+def is_family_alias(name: str) -> bool:
+    """True for sonnet, opus, haiku and <family>-latest; an exact id is never an alias."""
+    return parse_model_id(name) is None and (name in _FAMILIES or _LATEST.fullmatch(name) is not None)
 
 
 def load_catalog(path: Path) -> Catalog | list[str]:
