@@ -83,7 +83,7 @@ landing_areas:
   # nobody ran, and the gate should know the difference.
   checks:
     - {name: lint, cmd: "ruff check .", fix: "ruff check --fix ."}
-    - {name: tests, cmd: "pytest -q"}
+    - {name: tests, cmd: "pytest -q", timeout: 1500}
 
 # ── Apply arms ──────────────────────────────────────────────────────────────
 # Every write lands in a file this repository already tracks, so "applying" a

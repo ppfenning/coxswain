@@ -398,7 +398,7 @@ def test_local_cartridge_checks_run_lint_before_tests() -> None:
     resolved = load("local", REPO / "cartridges", skill_index=index_from_roots([REPO / "skills-plugins"]))
     assert resolved["landing_areas"]["checks"] == [
         {"name": "lint", "cmd": "ruff check .", "fix": "ruff check --fix ."},
-        {"name": "tests", "cmd": "pytest -q"},
+        {"name": "tests", "cmd": "pytest -q", "timeout": 1500},
     ]
 
 
@@ -592,7 +592,7 @@ def test_apply_overlay_sets_description_and_merges_landing_areas_checks() -> Non
 
 
 def test_apply_overlay_checks_replaces_the_base_list() -> None:
-    base_checks = [{"name": "lint", "cmd": "ruff check ."}, {"name": "tests", "cmd": "pytest -q"}]
+    base_checks = [{"name": "lint", "cmd": "ruff check ."}, {"name": "tests", "cmd": "pytest -q", "timeout": 1500}]
     project_checks = [{"name": "lint", "cmd": "bash -n *.sh"}, {"name": "shellcheck", "cmd": "shellcheck *.sh"}]
     resolved = {"landing_areas": {"checks": base_checks}}
     overlay = {"landing_areas": {"checks": project_checks}}
