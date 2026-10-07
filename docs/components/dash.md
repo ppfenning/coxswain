@@ -14,15 +14,31 @@ its own beyond the view you left it on.
 ## Installing it
 
 Dash is optional: nothing else needs it. It joined the release in 0.26.0 as
-a beta preview and is tagged in lockstep with the rest. Install it with
-cargo, at the tag of your Coxswain release (the crate is `coxswain-dash`; it installs `towpath`):
+a beta preview. Changed components are tagged `v<version>`; unchanged ones
+keep their tag. Install it one of three ways, in this order.
+
+**Release asset.** Each dash release ships prebuilt binaries named
+`towpath-<tag>-<target>.tar.gz`, since 0.31. Download the one for your target
+from the release page of
+[coxswain-dash](https://github.com/ppfenning/coxswain-dash/releases) and put
+`towpath` on your `PATH`.
+
+**Homebrew.** From 0.36 the formula in the Coxswain tap installs `towpath`
+along with `cox`:
+
+```sh
+brew tap ppfenning/coxswain
+brew trust ppfenning/coxswain
+brew install cox
+```
+
+**Cargo, as the fallback.** If neither of those fits your platform, build from
+source at the tag of your Coxswain release (the crate is `coxswain-dash`; it
+installs `towpath`):
 
 ```sh
 cargo install --git https://github.com/ppfenning/coxswain-dash --tag <release tag>
 ```
-
-Prebuilt binaries and a tap formula are planned, so cargo will not always be
-needed.
 
 ## Its own docs
 
