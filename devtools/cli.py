@@ -27,6 +27,7 @@ from devtools import (
     release_check_notes,
     release_check_pages,
     release_check_readmes,
+    run_status,
 )
 
 _NO_CHECKS = "no checks reported"
@@ -43,19 +44,41 @@ def _wait_decision(returncode: int, output: str, elapsed_s: float, timeout_s: fl
     return "failed"
 
 
-def _await_checks(poll, timeout_s: float = 180.0, sleep=time.sleep, now=time.monotonic) -> tuple[bool, str]:
-    """`poll() -> (returncode, output)` until green or failed. No check yet means not yet: retry every 15s for `timeout_s`."""
+def _runs_verdict(list_runs) -> run_status.Verdict | None:
+    """The classified `gh run list` output, or None when the listing failed or was not JSON."""
+    rc, output = list_runs()
+    if rc != 0:
+        return None
+    try:
+        return run_status.classify_runs(json.loads(output))
+    except (json.JSONDecodeError, AttributeError, KeyError):
+        return None
+
+
+def _await_checks(poll, timeout_s: float = 180.0, sleep=time.sleep, now=time.monotonic,
+                  list_runs=None, branch: str = "") -> tuple[bool, str]:
+    """`poll() -> (returncode, output)` until green or failed. No check yet means not yet: retry every 15s for `timeout_s`.
+    `list_runs() -> (returncode, output)` is the branch's `gh run list` JSON: a startup_failure ends the wait at once, and the timeout message says why."""
     started, waiting = now(), False
     while True:
         rc, output = poll()
         decision = _wait_decision(rc, output, now() - started, timeout_s)
         if decision == "retry":
+            verdict = _runs_verdict(list_runs) if list_runs else None
+            if verdict is not None and verdict.kind == "startup_failure":
+                return False, run_status.render_verdict(verdict, branch)
             if not waiting:
                 print(f"no checks reported yet, waiting up to {timeout_s:.0f}s for the first one to appear")
             waiting = True
             sleep(15)
         elif decision == "timeout":
-            return False, f"no checks reported within {timeout_s:.0f}s"
+            message = f"no checks reported within {timeout_s:.0f}s"
+            verdict = _runs_verdict(list_runs) if list_runs else None
+            if verdict is None:
+                return False, message
+            if verdict.kind == "unknown":
+                message += ", though runs exist"
+            return False, f"{message}: {run_status.render_verdict(verdict, branch)}"
         else:
             return decision == "green", "green" if decision == "green" else output.strip()
 
@@ -568,7 +591,12 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                 print(f"wait_checks {step['component']}: already at {already_bumped[step['component']]}")
                 continue
             directory = _release_step_dir(step["component"], root, overrides, umbrella)
-            wc_ok, wc_out = _await_checks(lambda d=directory: run(release.pr_checks_argv(), d), sleep=sleep, now=now)
+            branch = next((s["branch"] for s in steps if s["kind"] == "push" and s["component"] == step["component"]), "")
+            # no push step means no branch to list runs for; wait on the checks alone
+            list_runs = (lambda d=directory, b=branch: run(["gh", "run", "list", "--branch", b, "--json", "conclusion,name,url"], d)) if branch else None
+            wc_ok, wc_out = _await_checks(
+                lambda d=directory: run(release.pr_checks_argv(), d), sleep=sleep, now=now,
+                list_runs=list_runs, branch=branch)
             if not wc_ok:
                 print(f"FAILED wait_checks {step['component']}: {wc_out}")
                 return 2
