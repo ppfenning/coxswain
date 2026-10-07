@@ -180,12 +180,23 @@ def _fetch_index(url: str) -> dict:
         return json.load(response)
 
 
+def _fetch_text(url: str) -> str:
+    with urllib.request.urlopen(url, timeout=30) as response:
+        return response.read().decode()
+
+
 def _release_step_dir(component: str, root: str, overrides: dict, umbrella: str) -> str:
     """The checkout a `bump_pyproject`/`push`/`pr_create`/`wait_checks`/`merge`
     step runs against: `umbrella` for the manifest's own bump (its component
     is always `"manifest"`, never a real manifest entry), otherwise that
     component's own checkout."""
     return umbrella if component == "manifest" else release.component_dir(root, component, overrides)
+
+
+def _checkout_back(directory: str, rev_rc: int, before: str, run) -> None:
+    """Checks `directory` out to the branch the `rev-parse` read as `before`; nothing when it was unreadable or detached."""
+    if rev_rc == 0 and before.strip() not in ("", "HEAD"):
+        run(["git", "-C", directory, "checkout", before.strip()], None)
 
 
 def _release_bump(directory: str, branch: str, commit_subject: str, paths: list[str], write, run,
@@ -405,7 +416,7 @@ def _tap_install_proof(run, umbrella: str, branch: str, version: str, sleep, now
 
 def _release_execute(steps: list[dict], version: str, root: str, overrides: dict, umbrella: str, run,
                       manifest: dict, manifest_path: str, sleep=time.sleep, now=time.monotonic,
-                      fetch_index=_fetch_index) -> int:
+                      fetch_index=_fetch_index, fetch_text=_fetch_text) -> int:
     """Runs `steps` for real, through `run`. Every checkout that will be
     tagged or branched — every component, the umbrella when `tag_self` is in
     the plan, and any component or the umbrella a `bump_pyproject` or
@@ -630,6 +641,16 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
             if sdist is None:
                 print(f"FAILED tap_formula_pr tap: {step['index_url']}: {detail}")
                 return 2
+            texts = {}
+            for asset_url in release.towpath_asset_urls(version).values():
+                try:
+                    texts[f"{asset_url}.sha256"] = fetch_text(f"{asset_url}.sha256")
+                except (OSError, ValueError):
+                    texts[f"{asset_url}.sha256"] = None
+            towpath, reason = release.towpath_assets(version, texts)
+            if towpath is None:
+                print(f"FAILED tap_formula_pr tap: {reason}")
+                return 2
             directory = release.component_dir(root, release.TAP_CHECKOUT, overrides)
             formula = Path(directory) / step["path"]
             # The tap PR is left for the maintainer, so the checkout goes back to the branch it was on:
@@ -639,11 +660,16 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
             if not fetched:
                 print(f"FAILED tap_formula_pr tap: {base}")
                 return 2
-            ok, detail = _release_bump(
-                directory, step["branch"], step["title"], [step["path"]],
-                lambda f=formula, s=sdist: f.write_text(release.bumped_formula_text(f.read_text(), version, *s)), run,
-                start_point=base)
+            try:
+                ok, detail = _release_bump(
+                    directory, step["branch"], step["title"], [step["path"]],
+                    lambda f=formula, s=sdist, t=towpath: f.write_text(
+                        release.bumped_formula_text(f.read_text(), version, *s, towpath=t)), run,
+                    start_point=base)
+            except (ValueError, KeyError) as exc:
+                ok, detail = False, f"the formula could not be bumped: {exc}"
             if not ok:
+                _checkout_back(directory, rev_rc, before, run)
                 print(f"FAILED tap_formula_pr tap: {detail}")
                 return 2
             for argv, cwd in ((release.push_branch_argv(directory, step["branch"]), None),
@@ -655,8 +681,7 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
             # The flow never merges the tap PR, so the proof gates nothing to merge here: a proof that does not
             # pass fails the release and the PR stays open for the maintainer, who merges it only after a pass.
             proof_failure = _tap_install_proof(run, umbrella, step["branch"], version, sleep, now)
-            if rev_rc == 0 and before.strip() not in ("", "HEAD"):
-                run(["git", "-C", directory, "checkout", before.strip()], None)
+            _checkout_back(directory, rev_rc, before, run)
             if proof_failure is not None:
                 print(f"FAILED tap_formula_pr tap: {proof_failure}; the tap PR is left open")
                 return 2
