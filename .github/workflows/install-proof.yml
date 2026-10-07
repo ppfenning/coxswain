@@ -1,0 +1,143 @@
+name: install-proof
+
+# Installs the previous release, upgrades to the candidate, then clean-installs it, on macOS arm64
+# and in a Linux Homebrew container. Writes nothing. No `uses:` action: the container has no node.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tap_ref: {description: "Tap ref to stage as the candidate; empty keeps the default branch", default: ""}
+      formula_path: {description: "Formula in this repository copied over the tap's cox.rb", default: ""}
+      version: {description: "Version the candidate must install as", required: true}
+  workflow_call:
+    inputs:
+      tap_ref: {type: string, default: ""}
+      formula_path: {type: string, default: ""}
+      version: {type: string, required: true}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  VERSION: ${{ inputs.version }}
+  TAP_REF: ${{ inputs.tap_ref }}
+  FORMULA_PATH: ${{ inputs.formula_path }}
+  HOMEBREW_NO_AUTO_UPDATE: "1" # an update would reset the staged tap
+
+jobs:
+  proof-macos:
+    runs-on: macos-14
+    steps:
+      - name: Fetch sources
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd "$(mktemp -d)"
+          git init -q
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}"
+          git fetch -q --depth 1 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+          echo "SRC=$PWD" >> "$GITHUB_ENV"
+      - name: Install previous release
+        run: |
+          brew install ppfenning/coxswain/cox
+          installed=$(brew list --versions cox)
+          if [[ "$VERSION" =~ ^v?[0-9]+(\.[0-9]+)*$ ]]; then
+            tags=$(git -C "$SRC" ls-remote --tags --refs origin | sed 's|.*refs/tags/||')
+            prev=$(python3 "$SRC/devtools/install_proof.py" previous-tag "$VERSION" <<< "$tags") || { echo "no release tag below $VERSION"; exit 1; }
+            [ "$installed" = "cox ${prev#v}" ] || { echo "installed '$installed', expected 'cox ${prev#v}'"; exit 1; }
+          else
+            echo "skip previous-version assertion: $VERSION is not a release"
+          fi
+      - name: Stage candidate
+        run: |
+          have=$(brew list --versions cox)
+          have=${have#cox }
+          tap=$(brew --repository ppfenning/coxswain)
+          if [ -n "$TAP_REF" ]; then git -C "$tap" fetch -q origin "$TAP_REF"; git -C "$tap" checkout -q FETCH_HEAD; fi
+          if [ -n "$FORMULA_PATH" ]; then cp "$SRC/$FORMULA_PATH" "$tap/Formula/cox.rb"; fi
+          staged=$(brew info --json=v2 ppfenning/coxswain/cox | python3 -c 'import json,sys; print(json.load(sys.stdin)["formulae"][0]["versions"]["stable"])')
+          if [ "$staged" = "$have" ] || [ "$(printf '%s\n%s\n' "$have" "$staged" | sort -V | tail -n 1)" != "$staged" ]; then
+            echo "staged $staged is not above installed $have"; exit 1
+          fi
+      - name: Upgrade, then clean install
+        run: |
+          check() (
+            d=$(mktemp -d)
+            export HOME=$d XDG_CONFIG_HOME=$d/config XDG_DATA_HOME=$d/data XDG_STATE_HOME=$d/state XDG_CACHE_HOME=$d/cache
+            cox --version | python3 "$SRC/devtools/install_proof.py" check-version "$VERSION"
+            cox setup doctor --json | python3 "$SRC/devtools/install_proof.py" check-doctor
+            for b in towpath coxtop; do ! command -v "$b" || { echo "unexpected $b"; exit 1; }; done
+          )
+          before=$(brew list --versions cox)
+          brew upgrade cox
+          after=$(brew list --versions cox)
+          [ "$after" != "$before" ] || { echo "brew upgrade changed nothing: '$after'"; exit 1; }
+          [ "$after" = "cox $VERSION" ] || { echo "after upgrade '$after', expected 'cox $VERSION'"; exit 1; }
+          check
+          brew uninstall cox
+          brew install ppfenning/coxswain/cox
+          after=$(brew list --versions cox)
+          [ "$after" = "cox $VERSION" ] || { echo "clean install '$after', expected 'cox $VERSION'"; exit 1; }
+          check
+
+  proof-linux:
+    runs-on: ubuntu-latest
+    container: homebrew/brew
+    steps:
+      - name: Fetch sources
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd "$(mktemp -d)"
+          git init -q
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}"
+          git fetch -q --depth 1 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+          echo "SRC=$PWD" >> "$GITHUB_ENV"
+      - name: Install previous release
+        run: |
+          brew install ppfenning/coxswain/cox
+          installed=$(brew list --versions cox)
+          if [[ "$VERSION" =~ ^v?[0-9]+(\.[0-9]+)*$ ]]; then
+            tags=$(git -C "$SRC" ls-remote --tags --refs origin | sed 's|.*refs/tags/||')
+            prev=$(python3 "$SRC/devtools/install_proof.py" previous-tag "$VERSION" <<< "$tags") || { echo "no release tag below $VERSION"; exit 1; }
+            [ "$installed" = "cox ${prev#v}" ] || { echo "installed '$installed', expected 'cox ${prev#v}'"; exit 1; }
+          else
+            echo "skip previous-version assertion: $VERSION is not a release"
+          fi
+      - name: Stage candidate
+        run: |
+          have=$(brew list --versions cox)
+          have=${have#cox }
+          tap=$(brew --repository ppfenning/coxswain)
+          if [ -n "$TAP_REF" ]; then git -C "$tap" fetch -q origin "$TAP_REF"; git -C "$tap" checkout -q FETCH_HEAD; fi
+          if [ -n "$FORMULA_PATH" ]; then cp "$SRC/$FORMULA_PATH" "$tap/Formula/cox.rb"; fi
+          staged=$(brew info --json=v2 ppfenning/coxswain/cox | python3 -c 'import json,sys; print(json.load(sys.stdin)["formulae"][0]["versions"]["stable"])')
+          if [ "$staged" = "$have" ] || [ "$(printf '%s\n%s\n' "$have" "$staged" | sort -V | tail -n 1)" != "$staged" ]; then
+            echo "staged $staged is not above installed $have"; exit 1
+          fi
+      - name: Upgrade, then clean install
+        run: |
+          check() (
+            d=$(mktemp -d)
+            export HOME=$d XDG_CONFIG_HOME=$d/config XDG_DATA_HOME=$d/data XDG_STATE_HOME=$d/state XDG_CACHE_HOME=$d/cache
+            cox --version | python3 "$SRC/devtools/install_proof.py" check-version "$VERSION"
+            cox setup doctor --json | python3 "$SRC/devtools/install_proof.py" check-doctor
+            for b in towpath coxtop; do ! command -v "$b" || { echo "unexpected $b"; exit 1; }; done
+          )
+          before=$(brew list --versions cox)
+          brew upgrade cox
+          after=$(brew list --versions cox)
+          [ "$after" != "$before" ] || { echo "brew upgrade changed nothing: '$after'"; exit 1; }
+          [ "$after" = "cox $VERSION" ] || { echo "after upgrade '$after', expected 'cox $VERSION'"; exit 1; }
+          check
+          brew uninstall cox
+          brew install ppfenning/coxswain/cox
+          after=$(brew list --versions cox)
+          [ "$after" = "cox $VERSION" ] || { echo "clean install '$after', expected 'cox $VERSION'"; exit 1; }
+          check
