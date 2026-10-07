@@ -6,6 +6,7 @@ uv.lock and the release refuses a dirty umbrella). Same arguments and output as 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.metadata
 import json
 import os
@@ -802,16 +803,58 @@ def _profile_path(flag: str | None, environ: Mapping[str, str]) -> str | None:
     return flag or environ.get("AGENT_TOOLS_PROFILE")
 
 
-def _after_release(rc: int, version: str, steps: list[dict], config, state_path, now: float, post=None) -> int:
-    """Return rc unchanged; after a successful cut, push the release_cut event and name a failed push."""
-    if rc != 0 or config is None:
+def _release_failed_event(version: str, failed: str, now: float):
+    """The release_failed event; keyed per attempt by `now`, since the notify state file drops a key already sent."""
+    from agent_tools.notify_core import Event
+
+    return Event(kind="release_failed", key=f"release_failed:{version}:{int(now)}", title=f"Release {version} failed",
+                 body=f"Release {version} stopped: {failed}")
+
+
+def _release_tap_event(version: str, steps: list[dict]):
+    """The release_tap event for a `--tap-only` run, which tags nothing and only opens the tap PR."""
+    from agent_tools.notify_core import Event
+
+    titles = ", ".join(step["title"] for step in steps if step["kind"] == "tap_formula_pr")
+    return Event(kind="release_tap", key=f"release_tap:{version}", title=f"Release {version} tap PR opened",
+                 body=f"Release {version} tap formula PR opened: {titles}")
+
+
+def _failed_step(output: str) -> str | None:
+    """`FAILED <kind>` or `refuse <component>` from the first such line the executor printed, else None."""
+    line = next((ln for ln in output.splitlines() if ln.startswith(("FAILED ", "refuse "))), None)
+    return " ".join(line.split()[:2]).rstrip(":") if line is not None else None
+
+
+class _Tee:
+    """Passes writes through to `stream` and keeps them, so the failed step can be read back after the run."""
+
+    def __init__(self, stream) -> None:
+        self.stream, self.text = stream, ""
+
+    def write(self, data: str) -> int:
+        self.text += data
+        return self.stream.write(data)
+
+    def flush(self) -> None:
+        self.stream.flush()
+
+
+def _after_release(rc: int, version: str, steps: list[dict], config, state_path, now: float, post=None,
+                   failed: str | None = None) -> int:
+    """Return rc unchanged; push the release_cut event after a successful cut, or the release_failed event
+    naming `failed` after a stopped one. A stop with no named step pushes nothing. Name a failed push."""
+    if config is None or (rc != 0 and failed is None):
         return rc
-    key = f"release_cut:{version}"
+    tap_only = bool(steps) and all(step["kind"] == "tap_formula_pr" for step in steps)
+    event = (_release_failed_event(version, failed, now) if rc != 0 else
+             _release_tap_event(version, steps) if tap_only else _release_cut_event(version, steps))
+    key = event.key
     try:
         from agent_tools.notify_dispatch import dispatch
 
         extra = {"post": post} if post is not None else {}
-        pushed = dispatch([_release_cut_event(version, steps)], config, state_path, now, **extra)
+        pushed = dispatch([event], config, state_path, now, **extra)
         if key not in pushed:
             print(f"notify: {key} was not delivered")
     except Exception as exc:
@@ -838,6 +881,11 @@ def _release(a: argparse.Namespace) -> int:
     drifts = release_check.run_checks(facts)
     existing_tags = {name: _remote_tags(spec["repo"]) for name, spec in manifest.get("components", {}).items()
                       if spec.get("repo")}
+    if a.tap_only:
+        # The tap-only plan requires the tag on the umbrella too; with no slug the key stays absent and it refuses.
+        umbrella_slug = release.umbrella_release_slug(manifest, _tools_repository_url())
+        if umbrella_slug:
+            existing_tags["coxswain"] = _remote_tags(umbrella_slug)
     pinned_commits = {}
     for name, spec in manifest.get("components", {}).items():
         if spec.get("repo"):
@@ -860,8 +908,9 @@ def _release(a: argparse.Namespace) -> int:
         manifest, a.version, existing_tags, component_versions=component_versions, pinned_commits=pinned_commits,
         tools_repository_url=_tools_repository_url(),
         tap_state=_tap_state(release.component_dir(root, release.TAP_CHECKOUT, overrides)),
-        cargo_versions=cargo_versions)
-    steps = release.gate(drifts, a.allow_doc_drift, plan_steps) + plan_steps
+        cargo_versions=cargo_versions, tap_only=a.tap_only)
+    # The drift gate guards a cut; a tap-only resume runs after the cut landed and reads only PyPI and the tap clone.
+    steps = plan_steps if a.tap_only else release.gate(drifts, a.allow_doc_drift, plan_steps) + plan_steps
     if a.dry_run:
         for step in steps:
             if step["kind"] == "tap_formula_pr":
@@ -877,9 +926,11 @@ def _release(a: argparse.Namespace) -> int:
         return 2 if any(step["kind"] == "refuse" for step in steps) else 0
     umbrella = a.umbrella or str(Path(root) / "coxswain")
     path = _profile_path(a.profile, os.environ)
-    return _after_release(
-        _release_execute(steps, a.version, root, overrides, umbrella, _real_run, manifest, str(manifest_path)),
-        a.version, steps, *_notify_config(path), time.time())
+    printed = _Tee(sys.stdout)
+    with contextlib.redirect_stdout(printed):
+        rc = _release_execute(steps, a.version, root, overrides, umbrella, _real_run, manifest, str(manifest_path))
+    failed = (_failed_step(printed.text) or f"exit {rc}") if rc != 0 else None
+    return _after_release(rc, a.version, steps, *_notify_config(path), time.time(), failed=failed)
 
 
 def _backfill_github_releases(a: argparse.Namespace) -> int:
@@ -1012,6 +1063,8 @@ def build_parser() -> argparse.ArgumentParser:
     rel.add_argument("version")
     rel.add_argument("--manifest")
     rel.add_argument("--dry-run", action="store_true")
+    rel.add_argument("--tap-only", dest="tap_only", action="store_true",
+                     help="run only the tap formula PR, for a version already tagged on every repo and the umbrella")
     rel.add_argument("--root", default=".")
     rel.add_argument("--checkout", action="append", default=None, metavar="NAME=PATH")
     rel.add_argument("--umbrella")
