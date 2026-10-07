@@ -735,6 +735,10 @@ def _main(argv: Sequence[str] | None = None) -> int:
     resolved_argv = sys.argv[1:] if argv is None else argv
     if resolved_argv and resolved_argv[0] == "init":
         return _init_main(resolved_argv[1:])
+    if list(resolved_argv[:2]) == ["providers", "refresh"]:
+        from core import providers_refresh
+
+        return providers_refresh.main(resolved_argv[2:])
 
     parser = argparse.ArgumentParser(prog="python -m core.cartridge", description=__doc__.splitlines()[0])
     parser.add_argument("--team", required=True, help="team cartridge to resolve")
