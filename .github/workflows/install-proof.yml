@@ -44,7 +44,7 @@ jobs:
           git checkout -q FETCH_HEAD
       - name: Install previous release
         run: |
-          brew update --quiet # once, before staging: an image's Homebrew can predate its bottles' format
+          [ -z "${BREW_UPDATE:-}" ] || brew update --quiet # once, before staging
           brew install ppfenning/coxswain/cox
           installed=$(brew list --versions cox)
           if [[ "$VERSION" =~ ^v?[0-9]+(\.[0-9]+)*$ ]]; then
@@ -90,6 +90,9 @@ jobs:
   proof-linux:
     runs-on: ubuntu-latest
     container: homebrew/brew
+    env:
+      HOME: /home/linuxbrew # the container's /github/home is not writable by the linuxbrew user
+      BREW_UPDATE: "1" # the image's Homebrew can predate its bottles' format; the macOS runner's must not update (openssl link conflict)
     steps:
       - name: Fetch sources
         env:
@@ -102,7 +105,7 @@ jobs:
           git checkout -q FETCH_HEAD
       - name: Install previous release
         run: |
-          brew update --quiet # once, before staging: an image's Homebrew can predate its bottles' format
+          [ -z "${BREW_UPDATE:-}" ] || brew update --quiet # once, before staging
           brew install ppfenning/coxswain/cox
           installed=$(brew list --versions cox)
           if [[ "$VERSION" =~ ^v?[0-9]+(\.[0-9]+)*$ ]]; then
