@@ -9,10 +9,13 @@ description: Default tier -> model bindings
 
 auth_env: ANTHROPIC_API_KEY    # env var NAME. Never the value, in any file, ever.
 
+# Tiers name model families; core.profile.load_profile resolves each to the
+# newest catalog row in its family, so a new model needs only a catalog row
+# (the operator 2026-10-07: always the latest model, never hardcoded).
 tiers:
-  cheap:     claude-haiku-4-5           # bulk classification, enumeration
-  standard:  claude-sonnet-5-5           # most nodes
-  deep:      claude-opus-5-5             # verification, adversarial review, arbitration
+  cheap:     haiku                      # bulk classification, enumeration
+  standard:  sonnet                     # most nodes
+  deep:      opus                       # verification, adversarial review, arbitration
 
 # Capability classes -> ordered catalog ids or aliases, first entry preferred.
 # The defaults block below names these classes. The tiers map above still stands.
