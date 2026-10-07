@@ -71,7 +71,8 @@ jobs:
             d=$(mktemp -d)
             export HOME=$d XDG_CONFIG_HOME=$d/config XDG_DATA_HOME=$d/data XDG_STATE_HOME=$d/state XDG_CACHE_HOME=$d/cache
             cox --version | python3 "$SRC/devtools/install_proof.py" check-version "$VERSION"
-            cox setup doctor --json | python3 "$SRC/devtools/install_proof.py" check-doctor
+            # doctor exits 1 until setup runs; the checker judges its rows, so its exit code must not fail the pipe
+            { cox setup doctor --json || true; } | python3 "$SRC/devtools/install_proof.py" check-doctor
             for b in towpath coxtop; do ! command -v "$b" >/dev/null || "$b" --version | python3 "$SRC/devtools/install_proof.py" check-version "$VERSION"; done
           )
           before=$(brew list --versions cox)
@@ -132,7 +133,8 @@ jobs:
             d=$(mktemp -d)
             export HOME=$d XDG_CONFIG_HOME=$d/config XDG_DATA_HOME=$d/data XDG_STATE_HOME=$d/state XDG_CACHE_HOME=$d/cache
             cox --version | python3 "$SRC/devtools/install_proof.py" check-version "$VERSION"
-            cox setup doctor --json | python3 "$SRC/devtools/install_proof.py" check-doctor
+            # doctor exits 1 until setup runs; the checker judges its rows, so its exit code must not fail the pipe
+            { cox setup doctor --json || true; } | python3 "$SRC/devtools/install_proof.py" check-doctor
             for b in towpath coxtop; do ! command -v "$b" >/dev/null || "$b" --version | python3 "$SRC/devtools/install_proof.py" check-version "$VERSION"; done
           )
           before=$(brew list --versions cox)

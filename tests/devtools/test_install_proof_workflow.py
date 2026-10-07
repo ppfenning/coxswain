@@ -33,7 +33,7 @@ COX = """#!/bin/bash
 echo "cox $*" >> "$STUB_DIR/calls"
 case "$1" in
   --version) echo "cox $(cat "$STUB_DIR/installed")" ;;
-  setup) echo '{"ok": true, "rows": [{"check": "home", "ok": true, "detail": ""}]}' ;;
+  setup) echo '{"ok": false, "rows": [{"check": "git", "ok": true, "detail": "git version 2.56.0"}, {"check": "profile", "ok": false, "detail": "missing: x/profile.yaml"}, {"check": "store", "ok": false, "detail": "skipped: no profile"}]}'; exit 1 ;;
 esac
 """
 
