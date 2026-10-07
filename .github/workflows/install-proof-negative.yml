@@ -17,7 +17,7 @@ jobs:
     uses: ./.github/workflows/install-proof.yml
     with:
       formula_path: tests/devtools/broken_cox.rb
-      version: 0.0.0-negative-control
+      version: 999.0.0-negative-control
 
   expect-failure:
     needs: proof
