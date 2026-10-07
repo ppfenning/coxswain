@@ -27,6 +27,7 @@ env:
   TAP_REF: ${{ inputs.tap_ref }}
   FORMULA_PATH: ${{ inputs.formula_path }}
   HOMEBREW_NO_AUTO_UPDATE: "1" # an update would reset the staged tap
+  SRC: /tmp/coxswain-src # a fixed path: the Linux container's user cannot write $GITHUB_ENV
 
 jobs:
   proof-macos:
@@ -36,14 +37,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cd "$(mktemp -d)"
+          mkdir -p "$SRC" && cd "$SRC"
           git init -q
           git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}"
           git fetch -q --depth 1 origin "$GITHUB_SHA"
           git checkout -q FETCH_HEAD
-          echo "SRC=$PWD" >> "$GITHUB_ENV"
       - name: Install previous release
         run: |
+          [ -z "${BREW_UPDATE:-}" ] || brew update --quiet # once, before staging
           brew install ppfenning/coxswain/cox
           installed=$(brew list --versions cox)
           if [[ "$VERSION" =~ ^v?[0-9]+(\.[0-9]+)*$ ]]; then
@@ -71,10 +72,11 @@ jobs:
             export HOME=$d XDG_CONFIG_HOME=$d/config XDG_DATA_HOME=$d/data XDG_STATE_HOME=$d/state XDG_CACHE_HOME=$d/cache
             cox --version | python3 "$SRC/devtools/install_proof.py" check-version "$VERSION"
             cox setup doctor --json | python3 "$SRC/devtools/install_proof.py" check-doctor
-            for b in towpath coxtop; do ! command -v "$b" || { echo "unexpected $b"; exit 1; }; done
+            for b in towpath coxtop; do ! command -v "$b" >/dev/null || "$b" --version | python3 "$SRC/devtools/install_proof.py" check-version "$VERSION"; done
           )
           before=$(brew list --versions cox)
           brew upgrade cox
+          brew cleanup -q cox # an upgrade keeps the old keg, which `brew list --versions` would print too
           after=$(brew list --versions cox)
           [ "$after" != "$before" ] || { echo "brew upgrade changed nothing: '$after'"; exit 1; }
           [ "$after" = "cox $VERSION" ] || { echo "after upgrade '$after', expected 'cox $VERSION'"; exit 1; }
@@ -88,19 +90,22 @@ jobs:
   proof-linux:
     runs-on: ubuntu-latest
     container: homebrew/brew
+    env:
+      HOME: /home/linuxbrew # the container's /github/home is not writable by the linuxbrew user
+      BREW_UPDATE: "1" # the image's Homebrew can predate its bottles' format; the macOS runner's must not update (openssl link conflict)
     steps:
       - name: Fetch sources
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cd "$(mktemp -d)"
+          mkdir -p "$SRC" && cd "$SRC"
           git init -q
           git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}"
           git fetch -q --depth 1 origin "$GITHUB_SHA"
           git checkout -q FETCH_HEAD
-          echo "SRC=$PWD" >> "$GITHUB_ENV"
       - name: Install previous release
         run: |
+          [ -z "${BREW_UPDATE:-}" ] || brew update --quiet # once, before staging
           brew install ppfenning/coxswain/cox
           installed=$(brew list --versions cox)
           if [[ "$VERSION" =~ ^v?[0-9]+(\.[0-9]+)*$ ]]; then
@@ -128,10 +133,11 @@ jobs:
             export HOME=$d XDG_CONFIG_HOME=$d/config XDG_DATA_HOME=$d/data XDG_STATE_HOME=$d/state XDG_CACHE_HOME=$d/cache
             cox --version | python3 "$SRC/devtools/install_proof.py" check-version "$VERSION"
             cox setup doctor --json | python3 "$SRC/devtools/install_proof.py" check-doctor
-            for b in towpath coxtop; do ! command -v "$b" || { echo "unexpected $b"; exit 1; }; done
+            for b in towpath coxtop; do ! command -v "$b" >/dev/null || "$b" --version | python3 "$SRC/devtools/install_proof.py" check-version "$VERSION"; done
           )
           before=$(brew list --versions cox)
           brew upgrade cox
+          brew cleanup -q cox # an upgrade keeps the old keg, which `brew list --versions` would print too
           after=$(brew list --versions cox)
           [ "$after" != "$before" ] || { echo "brew upgrade changed nothing: '$after'"; exit 1; }
           [ "$after" = "cox $VERSION" ] || { echo "after upgrade '$after', expected 'cox $VERSION'"; exit 1; }
