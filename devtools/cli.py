@@ -180,6 +180,20 @@ def _fetch_index(url: str) -> dict:
         return json.load(response)
 
 
+def _fetch_with_retry(fetch: Callable[[str], dict], url: str, sleep: Callable[[float], object],
+                      attempts: int = 5, delay_s: float = 30.0) -> dict:
+    """`fetch(url)`, tried `attempts` times with `delay_s` between tries (five tries over two minutes by default);
+    the last OSError or ValueError is raised once none succeeded."""
+    for attempt in range(1, attempts + 1):
+        try:
+            return fetch(url)
+        except (OSError, ValueError):
+            if attempt == attempts:
+                raise
+            sleep(delay_s)
+    raise ValueError("attempts must be at least 1")
+
+
 def _fetch_text(url: str) -> str:
     with urllib.request.urlopen(url, timeout=30) as response:
         return response.read().decode()
@@ -633,7 +647,7 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
             print(f"github_release {step['component']}: {step['tag']}")
         elif kind == "tap_formula_pr":
             try:
-                sdist = release.sdist_from_index(fetch_index(step["index_url"]))
+                sdist = release.sdist_from_index(_fetch_with_retry(fetch_index, step["index_url"], sleep))
             except (OSError, ValueError) as exc:
                 sdist, detail = None, str(exc)
             else:
@@ -653,38 +667,42 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                 return 2
             directory = release.component_dir(root, release.TAP_CHECKOUT, overrides)
             formula = Path(directory) / step["path"]
-            # The tap PR is left for the maintainer, so the checkout goes back to the branch it was on:
-            # the next cut refuses a tap clone that sits on an old release branch.
+            # The tap PR is left for the maintainer, so the checkout goes back to the branch it was on on every
+            # path out of the step: the next cut refuses a tap clone that sits on an old release branch.
             rev_rc, before = run(["git", "-C", directory, "rev-parse", "--abbrev-ref", "HEAD"], None)
             fetched, base = _tap_branch_base(directory, run)
             if not fetched:
                 print(f"FAILED tap_formula_pr tap: {base}")
                 return 2
             try:
-                ok, detail = _release_bump(
-                    directory, step["branch"], step["title"], [step["path"]],
-                    lambda f=formula, s=sdist, t=towpath: f.write_text(
-                        release.bumped_formula_text(f.read_text(), version, *s, towpath=t)), run,
-                    start_point=base)
-            except (ValueError, KeyError) as exc:
-                ok, detail = False, f"the formula could not be bumped: {exc}"
-            if not ok:
-                _checkout_back(directory, rev_rc, before, run)
-                print(f"FAILED tap_formula_pr tap: {detail}")
-                return 2
-            for argv, cwd in ((release.push_branch_argv(directory, step["branch"]), None),
-                              (release.pr_create_argv(step["title"], f"Bumps the formula to {version} on PyPI.\n\n{release.pr_footer(version)}"), directory)):
-                rc, out = run(argv, cwd)
-                if rc != 0:
-                    print(f"FAILED tap_formula_pr tap: {out.strip()}")
+                try:
+                    ok, detail = _release_bump(
+                        directory, step["branch"], step["title"], [step["path"]],
+                        lambda f=formula, s=sdist, t=towpath: f.write_text(
+                            release.bumped_formula_text(f.read_text(), version, *s, towpath=t)), run,
+                        start_point=base)
+                except (ValueError, KeyError) as exc:
+                    ok, detail = False, f"the formula could not be bumped: {exc}"
+                if not ok:
+                    print(f"FAILED tap_formula_pr tap: {detail}")
                     return 2
-            # The flow never merges the tap PR, so the proof gates nothing to merge here: a proof that does not
-            # pass fails the release and the PR stays open for the maintainer, who merges it only after a pass.
-            proof_failure = _tap_install_proof(run, umbrella, step["branch"], version, sleep, now)
-            _checkout_back(directory, rev_rc, before, run)
-            if proof_failure is not None:
-                print(f"FAILED tap_formula_pr tap: {proof_failure}; the tap PR is left open")
+                for argv, cwd in ((release.push_branch_argv(directory, step["branch"]), None),
+                                  (release.pr_create_argv(step["title"], f"Bumps the formula to {version} on PyPI.\n\n{release.pr_footer(version)}"), directory)):
+                    rc, out = run(argv, cwd)
+                    if rc != 0:
+                        print(f"FAILED tap_formula_pr tap: {out.strip()}")
+                        return 2
+                # The flow never merges the tap PR, so the proof gates nothing to merge here: a proof that does not
+                # pass fails the release and the PR stays open for the maintainer, who merges it only after a pass.
+                proof_failure = _tap_install_proof(run, umbrella, step["branch"], version, sleep, now)
+                if proof_failure is not None:
+                    print(f"FAILED tap_formula_pr tap: {proof_failure}; the tap PR is left open")
+                    return 2
+            except Exception as exc:  # the edge: any failure becomes a step result, never a traceback
+                print(f"FAILED tap_formula_pr tap: {exc}")
                 return 2
+            finally:
+                _checkout_back(directory, rev_rc, before, run)
             print(f"tap_formula_pr tap: {step['title']}")
         else:
             print(f"FAILED {kind} {step.get('component', '')}: no executor for this step kind")

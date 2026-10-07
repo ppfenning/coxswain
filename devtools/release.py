@@ -205,6 +205,28 @@ def _tap_formula_steps(steps: list[dict], version: str, tools_repository_url: st
              "index_url": f"https://pypi.org/pypi/{_PYPI_PACKAGE}/{pypi_version}/json"}]
 
 
+def _tap_only_plan(repo_components: list[tuple[str, Mapping]], changed: set[str], new_tag: str,
+                    existing_tags: Mapping[str, list[str] | None], version: str,
+                    tools_repository_url: str | None, umbrella_slug: str | None, tap_state: str) -> list[dict]:
+    """Just the tap step once `new_tag` is on every release repo and the umbrella, else one `refuse`.
+
+    A release repo has commits, is pinned at `new_tag` by the manifest, or is the tools repo.
+    Presence is required: an umbrella the caller did not look up is unknown, which refuses."""
+    tools_slug = "/".join(tools_repository_url.rstrip("/").split("/")[-2:]) if tools_repository_url else None
+    holders = [name for name, spec in repo_components
+               if name in changed or spec.get("tag") == new_tag or spec["repo"] == tools_slug]
+    checked = holders + ["coxswain"]
+    unknown = sorted(name for name in checked if existing_tags.get(name) is None)
+    if unknown:
+        return _refuse(", ".join(unknown), f"tags unknown for {', '.join(unknown)} (remote unreadable); tap-only cannot confirm {new_tag}")
+    missing = sorted(name for name in checked if new_tag not in existing_tags[name])
+    if missing:
+        return _refuse(", ".join(missing), f"tap-only needs tag {new_tag} on every repo; missing on {', '.join(missing)}")
+    tagged = [{"kind": "tag", "repo": spec["repo"]} for name, spec in repo_components if name in holders]
+    return (_tap_formula_steps(tagged + [{"kind": "tag_self"}], version, tools_repository_url, umbrella_slug, tap_state)
+            or _refuse("tap", "nothing to publish: the tools repo is not tagged by this release"))
+
+
 def sdist_from_index(payload: Mapping) -> tuple[str, str] | None:
     """The `(url, sha256)` of the sdist in a PyPI `/pypi/<name>/<version>/json` payload, or None when it lists none."""
     return next(((u["url"], u["digests"]["sha256"]) for u in payload.get("urls", [])
@@ -250,7 +272,8 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
                   pinned_commits: Mapping[str, int] | None = None,
                   tools_repository_url: str | None = None,
                   tap_state: str = "clean",
-                  cargo_versions: Mapping[str, str | None] | None = None) -> list[dict]:
+                  cargo_versions: Mapping[str, str | None] | None = None,
+                  *, tap_only: bool = False) -> list[dict]:
     """Steps in order: per `repo` component, one `pinned` step naming its own
     manifest `tag` when `pinned_commits` shows no commits since that tag, or,
     when it shows commits, a plain `tag` (its `component_versions` entry is
@@ -294,7 +317,13 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
     repo (`tools_repository_url`) with a `tag`, `rejoin` or `tag_self`: that
     tag push is what publishes to PyPI, so an unchanged tools repo never
     triggers it. A `refuse` naming the tap replaces it when
-    `tap_state` (`clean`, `dirty` or `absent`) says the checkout is unfit."""
+    `tap_state` (`clean`, `dirty` or `absent`) says the checkout is unfit.
+
+    `tap_only` returns exactly `[tap_formula_pr]` when `v<version>` already
+    exists on every release repo and on the umbrella (`existing_tags` must
+    carry a `"coxswain"` key), and a single `refuse` naming what is missing
+    or unreadable otherwise. A version below the manifest's is refused as in
+    a normal plan."""
     parsed = _parse_semver(version)
     if parsed is None:
         return _refuse(version, f"{version!r} is not a valid version (expected X.Y.Z or X.Y.Z-beta.N)")
@@ -308,6 +337,13 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
     commit_counts = {name: (pinned_commits or {}).get(name) or 0 for name, _ in repo_components}
     tagged = {name for name, spec in repo_components if commit_counts[name] or _joins(spec, version)}
     changed = [(name, spec) for name, spec in repo_components if name in tagged]
+    if tap_only:
+        current_version = manifest.get("coxswain", {}).get("version")
+        current_semver = _parse_semver(current_version) if current_version is not None else None
+        if current_semver is not None and _sort_key(parsed) < _sort_key(current_semver):
+            return _refuse(version, f"{version} is not greater than the current version {current_version}")
+        return _tap_only_plan(repo_components, tagged, new_tag, existing_tags, version, tools_repository_url,
+                              umbrella_release_slug(manifest, tools_repository_url), tap_state)
 
     # Three states per component: a list of tags, an empty list (reachable, no
     # tags), or None (the remote could not be read). Unknown is not clean: a
