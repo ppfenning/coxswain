@@ -171,12 +171,19 @@ def test_a_release_runs_install_stage_upgrade_and_clean_install_in_order(rig):
     assert rig.calls().count("cox --version") == 2
 
 
-def test_a_coxtop_on_path_fails_the_checks(rig):
+def test_a_coxtop_on_path_at_another_version_fails_the_checks(rig):
     rig.seed("1.1.0", "1.2.0")
-    rig.add_tool("coxtop", "#!/bin/bash\n")
+    rig.add_tool("coxtop", "#!/bin/bash\necho coxtop 1.1.0\n")
     done = rig.run(CLEAN)
     assert done.returncode != 0
-    assert "unexpected coxtop" in done.stdout
+    assert "version: expected '1.2.0'" in done.stderr
+
+
+def test_a_towpath_on_path_at_the_candidate_version_passes(rig):
+    rig.seed("1.1.0", "1.2.0")
+    rig.add_tool("towpath", "#!/bin/bash\necho towpath 1.2.0\n")
+    done = rig.run(CLEAN)
+    assert done.returncode == 0, done.stdout
 
 
 def test_staging_copies_the_formula_path_over_the_tap_and_checks_out_the_tap_ref(rig):
