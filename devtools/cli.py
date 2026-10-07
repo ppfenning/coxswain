@@ -15,7 +15,7 @@ import tempfile
 import time
 import tomllib
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from devtools import (
@@ -699,6 +699,55 @@ def _tap_state(directory: str) -> str:
     return "absent" if result.returncode != 0 else "dirty" if result.stdout.strip() else "clean"
 
 
+def _release_cut_event(version: str, steps: list[dict]):
+    """The release_cut event: names every component a tag, rejoin or tag_self step cut, in plan order."""
+    from agent_tools.notify_core import Event
+
+    cut = [step["component"] for step in steps if step["kind"] in ("tag", "rejoin", "tag_self")]
+    body = f"Release {version} cut: " + (", ".join(cut) if cut else "no components tagged")
+    return Event(kind="release_cut", key=f"release_cut:{version}", title=f"Release {version} cut", body=body)
+
+
+def _notify_config(profile_path: str | None):
+    """(NotifyConfig, state file) from the profile, or (None, None) when it cannot notify.
+
+    Runs after the release is cut, so any failure here must be (None, None), never an exception."""
+    if not profile_path:
+        return None, None
+    try:
+        from agent_tools import route
+        from agent_tools.notify_core import config_from_profile
+
+        profile = route.parse_profile(Path(profile_path).read_text())
+        workspace_dir = profile.get("workspace_dir")
+        if not profile.get("notify") or not workspace_dir:
+            return None, None
+        return config_from_profile(profile), Path(str(workspace_dir)).expanduser() / "notify-sent.json"
+    except Exception:
+        return None, None
+
+
+def _profile_path(flag: str | None, environ: Mapping[str, str]) -> str | None:
+    return flag or environ.get("AGENT_TOOLS_PROFILE")
+
+
+def _after_release(rc: int, version: str, steps: list[dict], config, state_path, now: float, post=None) -> int:
+    """Return rc unchanged; after a successful cut, push the release_cut event and name a failed push."""
+    if rc != 0 or config is None:
+        return rc
+    key = f"release_cut:{version}"
+    try:
+        from agent_tools.notify_dispatch import dispatch
+
+        extra = {"post": post} if post is not None else {}
+        pushed = dispatch([_release_cut_event(version, steps)], config, state_path, now, **extra)
+        if key not in pushed:
+            print(f"notify: {key} was not delivered")
+    except Exception as exc:
+        print(f"notify: {key} failed: {exc}")
+    return rc
+
+
 def _release(a: argparse.Namespace) -> int:
     manifest_path = Path(a.manifest) if a.manifest else Path("coxswain") / "manifest.toml"
     manifest = _load_manifest(manifest_path)
@@ -756,7 +805,10 @@ def _release(a: argparse.Namespace) -> int:
                 print(f"{step['kind']} {step['component']}: {_release_detail(step)}")
         return 2 if any(step["kind"] == "refuse" for step in steps) else 0
     umbrella = a.umbrella or str(Path(root) / "coxswain")
-    return _release_execute(steps, a.version, root, overrides, umbrella, _real_run, manifest, str(manifest_path))
+    path = _profile_path(a.profile, os.environ)
+    return _after_release(
+        _release_execute(steps, a.version, root, overrides, umbrella, _real_run, manifest, str(manifest_path)),
+        a.version, steps, *_notify_config(path), time.time())
 
 
 def _backfill_github_releases(a: argparse.Namespace) -> int:
@@ -892,6 +944,8 @@ def build_parser() -> argparse.ArgumentParser:
     rel.add_argument("--root", default=".")
     rel.add_argument("--checkout", action="append", default=None, metavar="NAME=PATH")
     rel.add_argument("--umbrella")
+    rel.add_argument("--profile", metavar="PATH",
+                     help="agent-tools profile whose notify.ntfy receives a release_cut push; default: $AGENT_TOOLS_PROFILE")
     rel.add_argument("--allow-doc-drift", dest="allow_doc_drift", metavar="REASON", default=None,
                      help="proceed despite a standing release-check drift, naming why")
     rel.set_defaults(fn=_release)
