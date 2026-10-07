@@ -12,4 +12,4 @@ selects one from `manifest.toml`'s `[providers]` table.
 | local | experimental | `providers/local-oss.yaml` declares the capabilities the harness reads and maps the `cheap` tier to a local OpenAI-compatible endpoint, with `standard` and `deep` still on Claude; no runner drives it yet, so the install works only as a declaration. |
 
 Only Claude Code is installable today; the `--provider` flag accepts the
-others, but `cox doctor` will report their profile as unconfigured.
+others, but `cox setup doctor` will report their profile as unconfigured.
