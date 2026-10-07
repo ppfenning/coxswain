@@ -744,8 +744,137 @@ _FORMULA_SHA_RE = re.compile(r'^(\s*sha256\s+")[^"]*(")')
 _FORMULA_RESOURCE_RE = re.compile(r"^\s*resource\s")
 
 
-def bumped_formula_text(text: str, version: str, sdist_url: str, sha256: str) -> str:
-    """`text` with the `url` and `sha256` lines before the first `resource` stanza rewritten; `version` is carried by `sdist_url`."""
+TOWPATH_MACOS_ARM = "aarch64-apple-darwin"
+TOWPATH_LINUX_INTEL = "x86_64-unknown-linux-gnu"
+TowpathAssets = Mapping[str, tuple[str, str]]
+
+_TOWPATH_PLATFORMS = {("on_macos", "on_arm"): TOWPATH_MACOS_ARM, ("on_linux", "on_intel"): TOWPATH_LINUX_INTEL}
+_TOWPATH_RESOURCE_RE = re.compile(r'^(\s*)resource\s+"towpath"\s+do\b')
+_TOWPATH_VERSION_RE = re.compile(r"towpath.*--version")
+_FORMULA_SCOPE_RE = re.compile(r"^(\s*)(on_\w+)\s+do\s*$")
+_FORMULA_END_RE = re.compile(r"^(\s*)end\s*$")
+_FORMULA_INSTALL_RE = re.compile(r"^  def install\b")
+_FORMULA_TEST_RE = re.compile(r"^\s*test do\s*$")
+_FORMULA_VENV_RE = re.compile(r"^(\s*virtualenv_install_with_resources)(\s*)$")
+_FORMULA_TOP_RESOURCE_RE = re.compile(r"^  resource\s")
+_FORMULA_TOP_END_RE = re.compile(r"^  end\s*$")
+# The towpath resource exists only on macOS arm and Linux intel, so the install, pip and test lines guard on it.
+_TOWPATH_STAGE = ('    if resources.map(&:name).include?("towpath")\n      resource("towpath").stage do\n'
+                  '        bin.install "towpath", "coxtop"\n      end\n    end\n')
+_TOWPATH_WITHOUT = ' without: resources.map(&:name) & ["towpath"]'
+_TOWPATH_TEST = '    system bin/"towpath", "--version" if (bin/"towpath").exist?\n'
+
+
+def _towpath_block(towpath: TowpathAssets) -> str:
+    """The two platform-scoped towpath resource stanzas, 2-space indented, ending in a newline."""
+    def stanza(scope: str, arch: str, key: str) -> str:
+        url, sha = towpath[key]
+        return (f'  {scope} do\n    {arch} do\n      resource "towpath" do\n        url "{url}"\n'
+                f'        sha256 "{sha}"\n      end\n    end\n  end\n')
+    return stanza("on_macos", "on_arm", TOWPATH_MACOS_ARM) + "\n" + stanza("on_linux", "on_intel", TOWPATH_LINUX_INTEL)
+
+
+def _rewritten_towpath(text: str, towpath: TowpathAssets) -> str:
+    """`text` with each towpath resource's url and sha256 replaced; raises rather than leave a stale pair.
+
+    KeyError: a platform is missing from `towpath`. ValueError: a towpath resource sits under scopes other than
+    on_macos/on_arm or on_linux/on_intel, or a platform's new url and sha256 did not land in any block."""
+    out = []
+    scopes: list[tuple[str, str]] = []
+    block: tuple[str, tuple[str, str]] | None = None
+    for line in text.splitlines(keepends=True):
+        bare = line.rstrip("\r\n")
+        end, scope, res = _FORMULA_END_RE.match(bare), _FORMULA_SCOPE_RE.match(bare), _TOWPATH_RESOURCE_RE.match(bare)
+        if block is not None:
+            indent, (url, sha) = block
+            if end and end.group(1) == indent:
+                block = None
+                out.append(line)
+            elif _FORMULA_URL_RE.match(line):
+                out.append(_FORMULA_URL_RE.sub(lambda m, value=url: f"{m.group(1)}{value}{m.group(2)}", line))
+            elif _FORMULA_SHA_RE.match(line):
+                out.append(_FORMULA_SHA_RE.sub(lambda m, value=sha: f"{m.group(1)}{value}{m.group(2)}", line))
+            else:
+                out.append(line)
+            continue
+        if res:
+            names = tuple(name for _, name in scopes[-2:])
+            key = _TOWPATH_PLATFORMS.get(names)
+            if key is None:
+                raise ValueError(f"towpath resource under unrecognised scopes {names}")
+            block = (res.group(1), towpath[key])
+        elif scope:
+            scopes.append((scope.group(1), scope.group(2)))
+        elif end and scopes and scopes[-1][0] == end.group(1):
+            scopes.pop()
+        out.append(line)
+    result = "".join(out)
+    stale = [key for key in _TOWPATH_PLATFORMS.values()
+             if f'url "{towpath[key][0]}"' not in result or f'sha256 "{towpath[key][1]}"' not in result]
+    if stale:
+        raise ValueError(f"towpath url and sha256 not rewritten for {', '.join(stale)}")
+    return result
+
+
+def _top_resource_end(lines: Sequence[str]) -> int | None:
+    """Index of the `  end` closing the last top-level resource, or None."""
+    ends = [i for i, line in enumerate(lines) if _FORMULA_TOP_END_RE.match(line)]
+    closers = [next((e for e in ends if e > i), None) for i, line in enumerate(lines) if _FORMULA_TOP_RESOURCE_RE.match(line)]
+    return max((e for e in closers if e is not None), default=None)
+
+
+def _with_towpath_block(text: str, towpath: TowpathAssets) -> str:
+    """`text` with the towpath block, stage-and-install, pip exclusion and test line added; ValueError if any of them has no anchor."""
+    lines = text.splitlines(keepends=True)
+    block = _towpath_block(towpath)
+    resource_end = _top_resource_end(lines)
+    installs = [i for i, line in enumerate(lines) if _FORMULA_INSTALL_RE.match(line)]
+    closing = [i for i, line in enumerate(lines) if line.rstrip() == "end"]
+    if resource_end is not None:
+        inserts = {resource_end + 1: "\n" + block}
+    elif installs:
+        inserts = {installs[0]: block + "\n"}
+    elif closing:
+        inserts = {closing[-1]: "\n" + block}
+    else:
+        raise ValueError("formula has no resource, def install or closing end to anchor the towpath block")
+    tests = [i for i, line in enumerate(lines) if _FORMULA_TEST_RE.match(line)]
+    body = [_FORMULA_VENV_RE.sub(lambda m: m.group(1) + _TOWPATH_WITHOUT + m.group(2), line) for line in lines]
+    # Each requirement below raises when its anchor is missing: a formula that declares the resource but never
+    # stages it, never keeps pip off its tarball, or never tests it is not a bumped formula.
+    if 'resource("towpath")' in text:
+        install_after = {}
+    elif installs:
+        install_after = {installs[0] + 1: _TOWPATH_STAGE}
+    else:
+        raise ValueError("formula has no `def install` to stage the towpath resource in")
+    if _TOWPATH_WITHOUT not in text and body == lines:
+        raise ValueError("formula has no bare `virtualenv_install_with_resources` line to exclude the towpath resource from")
+    if _TOWPATH_VERSION_RE.search(text):
+        test_after = {}
+    elif tests:
+        test_after = {tests[0] + 1: _TOWPATH_TEST}
+    else:
+        raise ValueError("formula has no `test do` to run `towpath --version` in")
+    extras = {**install_after, **test_after}
+    return "".join(inserts.get(i, "") + extras.get(i, "") + line for i, line in enumerate([*body, ""]))
+
+
+def bumped_formula_text(text: str, version: str, sdist_url: str, sha256: str, *, towpath: TowpathAssets | None = None) -> str:
+    """`text` with the `url` and `sha256` lines before the first `resource` stanza rewritten; `version` is carried by `sdist_url`.
+
+    `towpath` maps TOWPATH_MACOS_ARM and TOWPATH_LINUX_INTEL to (url, sha256). When given, an existing towpath block
+    has its url and sha256 lines rewritten, and a formula without one gains the block, an install line and a test line.
+    Either path raises KeyError or ValueError instead of returning a formula with a stale or missing towpath pair."""
+    bumped = _bumped_sdist_text(text, sdist_url, sha256)
+    if towpath is None:
+        return bumped
+    if any(_TOWPATH_RESOURCE_RE.match(line.rstrip("\r\n")) for line in bumped.splitlines()):
+        return _rewritten_towpath(bumped, towpath)
+    return _with_towpath_block(bumped, towpath)
+
+
+def _bumped_sdist_text(text: str, sdist_url: str, sha256: str) -> str:
     out = []
     in_resource = False
     for line in text.splitlines(keepends=True):
