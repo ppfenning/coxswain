@@ -20,6 +20,38 @@ trusted publishing — no long-lived token in this repository's secrets).
 Every component in a release carries the same tag, so `manifest.toml`
 always tells you exactly what a given release installs.
 
+### The tap pull request and the install proof
+
+A cut that tags the tools repository ends with the `tap_formula_pr` step. It bumps
+`Formula/cox.rb` in the `ppfenning/homebrew-coxswain` tap to the new PyPI sdist on a
+release branch and opens a pull request there. The tap is what `brew install` reads, so
+this pull request is the last gate between a tag and a Homebrew user.
+
+Before anyone merges it, the step dispatches `.github/workflows/install-proof.yml`
+against that branch as `tap_ref` and waits for the one run it started. The proof runs on
+two platforms: macOS arm64 on `macos-14`, and a Linux Homebrew container, `homebrew/brew`
+on `ubuntu-latest`. On each it runs `brew install ppfenning/coxswain/cox` to install the
+previous release and checks that the installed version is the one tagged just below the
+candidate. It stages the candidate formula from the tap branch, then runs
+`brew upgrade cox` and fails if the version did not move to the candidate. On a temporary
+profile, with `HOME` and the `XDG_*` directories pointed at a fresh directory, it runs
+`cox --version` and `cox setup doctor --json` and checks both outputs. Then it runs
+`brew uninstall cox` and `brew install ppfenning/coxswain/cox` again, and repeats the same
+two checks on the clean install.
+
+The release flow never merges the tap pull request. If the proof's conclusion is anything
+other than `success`, which is what `tap_may_merge` tests, the command prints the
+conclusion and the run URL, leaves the pull request open and exits non-zero. After a pass,
+you merge the tap pull request by hand.
+
+A proof that cannot fail proves nothing, so `.github/workflows/install-proof-negative.yml`
+runs weekly and on dispatch. It feeds the proof the deliberately broken formula
+`tests/devtools/broken_cox.rb`. Its own run is green only when the proof failed, so a
+green run there means the proof still catches a broken formula.
+
+A green proof means that formula installs and upgrades on those two platforms today. It
+does not mean the release is otherwise good.
+
 ## `0.34.0`
 
 | Component | Repository or path | Tag | Required or flag |
