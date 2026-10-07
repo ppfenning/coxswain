@@ -91,6 +91,9 @@ _TERMINAL = frozenset({DONE, DROPPED})
 _RUNNABLE = frozenset({"ready"})
 _INTO_APPROVED = frozenset({"ready", "in_progress"})
 _OUT_OF_APPROVED = frozenset({"done", "ready"})
+# The chair, as the single writer, may release a quarantined item to ready, and nothing else may leave quarantined.
+# No transition rule here makes quarantined reachable: the store's export is the only way in.
+_OUT_OF_QUARANTINED = frozenset({"ready"})
 DEFAULT_PRIORITY = 3
 ATTEMPT_KINDS = ("refused", "no_work", "unverified", "infra")
 TIERS = ("cheap", "standard", "deep")
@@ -328,6 +331,8 @@ def set_state(path: Path | str, state: str) -> dict[str, Any]:
         raise WorkStoreError(f"cannot move '{current}' -> 'approved'; only ready or in_progress may")
     if current == APPROVED and state != APPROVED and state not in _OUT_OF_APPROVED:
         raise WorkStoreError(f"cannot move 'approved' -> '{state}'; only done or ready may follow approved")
+    if current == "quarantined" and state != current and state not in _OUT_OF_QUARANTINED:
+        raise WorkStoreError(f"cannot move 'quarantined' -> '{state}'; only the chair's release to ready may follow quarantined")
     item["state"] = state
     write_item(item, path)
     return item

@@ -669,6 +669,19 @@ def test_approved_to_in_progress_is_refused(tmp_path: Path) -> None:
         set_state(path, "in_progress")
 
 
+def test_quarantined_can_be_released_to_ready(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1", state="quarantined")
+    assert set_state(path, "ready")["state"] == "ready"
+    assert read_item(path)["state"] == "ready"
+
+
+def test_quarantined_to_anything_but_ready_is_refused(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1", state="quarantined")
+    with pytest.raises(WorkStoreError, match="quarantined"):
+        set_state(path, "done")
+    assert read_item(path)["state"] == "quarantined"
+
+
 def test_an_approved_item_leaves_its_phase_incomplete(initiative: Path) -> None:
     set_state(initiative / "p1-foundations" / "t1-schema-probe.md", "ready")
     set_state(initiative / "p1-foundations" / "t1-schema-probe.md", "approved")
