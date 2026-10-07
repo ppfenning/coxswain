@@ -7,7 +7,7 @@ intake to landing on a branch.
 ## What it owns
 
 The tools repository owns the `cox` command, its subcommands (`cox
-install`, `cox release`, and the rest), and the dispatcher that enforces the
+install`, `cox dev release`, and the rest), and the dispatcher that enforces the
 in-flight bound.
 
 ## Installing it
