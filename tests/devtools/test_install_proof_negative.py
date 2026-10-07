@@ -46,6 +46,14 @@ def test_workflow_writes_nothing_and_touches_no_tap():
     assert "tap" not in text.replace("touches no tap", "")
 
 
+def test_fixture_and_workflow_share_a_version_above_any_release():
+    version = _workflow()["jobs"]["proof"]["with"]["version"]
+    text = FIXTURE.read_text()
+    assert version.startswith("999.")
+    assert f'version "{version}"' in text
+    assert f"cox-{version}.tar.gz" in text
+
+
 def test_fixture_is_marked_broken_and_carries_no_real_sha256():
     text = FIXTURE.read_text()
     assert "DELIBERATELY BROKEN" in text.splitlines()[0]
