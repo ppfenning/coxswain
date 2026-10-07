@@ -14,6 +14,8 @@ _PR = re.compile(r"#(\d+)")
 _SHA = re.compile(r"\b[0-9a-f]{7,40}\b")
 _BULLET = re.compile(r"^[-*]\s+\S")
 _HEADING = re.compile(r"#{1,6}\s")
+_SECTION = re.compile(r"##\s+coxswain-([\w-]+)")
+_TOP_HEADING = re.compile(r"#{1,2}\s")
 
 
 if TYPE_CHECKING:
@@ -25,6 +27,35 @@ def parse_bullet(text: str, components: set[str]) -> tuple[str | None, set[str]]
                        if re.search(rf"\b{re.escape(name)}\b(?!://|[.-]\w)", text)), None)
     citations = set(_PR.findall(text)) | set(_SHA.findall(text))
     return component, citations
+
+
+def sections_from_notes(text: str, components: set[str]) -> dict[int, str | None]:
+    """Each bullet's line number mapped to the component of its enclosing `## coxswain-<name>`
+    heading. The umbrella heading, an unknown name, or no heading yet maps to None."""
+    section: str | None = None
+    sections: dict[int, str | None] = {}
+    for i, raw in enumerate(text.splitlines(), start=1):
+        line = raw.strip()
+        if _TOP_HEADING.match(line):
+            named = _SECTION.match(line)
+            section = named.group(1) if named and named.group(1) in components else None
+        elif _BULLET.match(line):
+            sections[i] = section
+    return sections
+
+
+def resolve_citations(section: str | None, text: str, components: set[str]) -> list[tuple[str, str]]:
+    """(component, citation) pairs. Under a component section, `<name> #N` resolves N against
+    <name> and every other citation against the section; the umbrella keeps `parse_bullet`'s rules."""
+    if section is None:
+        component, citations = parse_bullet(text, components)
+        return [] if component is None else [(component, c) for c in sorted(citations)]
+    names = "|".join(re.escape(n) for n in sorted(components, key=len, reverse=True))
+    explicit = re.compile(rf"(?<![\w.-])({names})\s+#(\d+)")
+    rest = explicit.sub(" ", text)
+    pairs = [(m.group(1), m.group(2)) for m in explicit.finditer(text)]
+    pairs += [(section, c) for c in _PR.findall(rest) + _SHA.findall(rest)]
+    return list(dict.fromkeys(pairs))
 
 
 def _resolves(citation: str, known: set[str]) -> bool:
@@ -66,19 +97,21 @@ def previous_version(version: str, versions: list[str]) -> str | None:
 
 
 def _bullet_drift(notes_path: str, line_no: int, text: str, components: set[str],
-                   landed: Mapping[str, set[str]], component_dirs: Mapping[str, str], pr_numbers_measured: bool = True) -> Drift | None:
+                   landed: Mapping[str, set[str]], component_dirs: Mapping[str, str],
+                   measured: Mapping[str, bool] | None = None, section: str | None = None) -> Drift | None:
     from devtools.release_check import Drift
 
-    component, citations = parse_bullet(text, components)
+    measured = measured or {}
+    component = section or parse_bullet(text, components)[0]
     if component is None:
         return Drift("notes_citation", notes_path, line_no, notes_path, None,
                       "name a landed component for this bullet")
-    known = landed.get(component, set())
-    if not citations:
+    pairs = resolve_citations(section, text, components)
+    if not pairs:
         return Drift("notes_citation", notes_path, line_no, component_dirs.get(component, component), None,
                       f"cite the PR or commit landed in {component}")
-    if not any(_resolves(c, known) for c in citations):
-        if not pr_numbers_measured and any(c.isdigit() for c in citations):
+    if not any(_resolves(c, landed.get(name, set())) for name, c in pairs):
+        if any(c.isdigit() and not measured.get(name, True) for name, c in pairs):
             return None
         return Drift("notes_citation", notes_path, line_no, component_dirs.get(component, component), None,
                       f"cite a PR or commit landed in {component}, or remove")
@@ -90,9 +123,10 @@ def check_notes(facts: Mapping) -> list[Drift]:
     landed: Mapping[str, set[str]] = facts.get("landed", {})
     components: set[str] = set(component_dirs) | set(landed)
     measured: Mapping[str, bool] = facts.get("pr_numbers_measured", {})
+    sections: Mapping[int, str | None] = facts.get("notes_sections", {})
     notes_path = facts.get("release_notes", "")
     drifts = [
-        _bullet_drift(notes_path, line_no, text, components, landed, component_dirs, measured.get(parse_bullet(text, components)[0], True))
+        _bullet_drift(notes_path, line_no, text, components, landed, component_dirs, measured, sections.get(line_no))
         for line_no, text in facts.get("notes_bullets", [])
     ]
     return [d for d in drifts if d is not None]
@@ -123,8 +157,10 @@ def gather_notes_facts(root: str, manifest: Mapping, run: Callable) -> dict:
     def landed(directory: str) -> set[str]:
         return _component_landed(directory, run, version or "", previous)
 
+    notes_text = notes_path.read_text() if notes_path and notes_path.exists() else ""
     return {
-        "notes_bullets": bullets_from_notes(notes_path.read_text()) if notes_path and notes_path.exists() else [],
+        "notes_bullets": bullets_from_notes(notes_text),
+        "notes_sections": sections_from_notes(notes_text, set(components) | {"coxswain"}),
         "landed": {name: landed(release.component_dir(root, name)) for name in components}
         | {"coxswain": landed(umbrella_dir)},
     }

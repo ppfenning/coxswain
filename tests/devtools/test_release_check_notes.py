@@ -6,7 +6,12 @@ from devtools.release_check_notes import (
     landed_from_git,
     parse_bullet,
     previous_version,
+    resolve_citations,
+    sections_from_notes,
 )
+
+_SECTION_FACTS = {"component_dirs": {"tools": "/r/tools", "dash": "/r/dash", "coxswain": "/r/coxswain"},
+                  "landed": {"tools": {"1381"}, "dash": {"1381", "77"}, "coxswain": {"90"}}, "release_notes": "notes.md"}
 
 
 def test_check_notes_resolves_against_facts_plans_own_component_dirs_and_release_notes_keys(tmp_path):
@@ -211,3 +216,55 @@ def test_parse_bullet_skips_a_component_name_that_is_part_of_a_dotted_or_hyphena
     assert parse_bullet("- entry points under `coxswain.forges` (tools #518)", components) == ("tools", {"518"})
     assert parse_bullet("- moved to `ppfenning/coxswain-sources` (tools #506)", components) == ("tools", {"506"})
     assert parse_bullet("- the umbrella is coxswain. (#90)", {"coxswain"}) == ("coxswain", {"90"})
+
+
+def test_sections_from_notes_maps_each_bullet_to_its_heading_component():
+    text = "# 0.1.0\n\n## coxswain-tools\n\n- a (#1)\n\n## coxswain-nope\n\n- b (#2)\n\n## coxswain (umbrella)\n\n- c (#3)\n"
+    assert sections_from_notes(text, {"tools", "coxswain"}) == {5: "tools", 9: None, 13: None}
+
+
+def test_a_tools_bullet_citing_tools_and_mentioning_dash_is_checked_against_tools_history_only():
+    facts = _SECTION_FACTS | {"landed": {"tools": {"1381"}, "dash": set(), "coxswain": set()},
+                              "notes_bullets": [(5, "- `cox dash --feed` gains a field (tools #1381)")],
+                              "notes_sections": {5: "tools"}}
+    assert check_notes(facts) == []
+
+
+def test_a_bare_dash_pr_number_in_a_tools_section_is_flagged():
+    facts = _SECTION_FACTS | {"landed": {"tools": {"1"}, "dash": {"77"}, "coxswain": set()},
+                              "notes_bullets": [(5, "- the dash feed gains a field (#77)")],
+                              "notes_sections": {5: "tools"}}
+    assert check_notes(facts) == [
+        Drift("notes_citation", "notes.md", 5, "/r/tools", None, "cite a PR or commit landed in tools, or remove")
+    ]
+
+
+def test_an_explicit_dash_pair_in_a_tools_section_resolves_against_dash():
+    facts = _SECTION_FACTS | {"notes_bullets": [(5, "- tools reads the new field (dash #77)")], "notes_sections": {5: "tools"}}
+    assert check_notes(facts) == []
+
+
+def test_the_umbrella_section_still_takes_its_component_from_the_bullet_text():
+    text = "- dash gains a key (#77)"
+    facts = _SECTION_FACTS | {"notes_bullets": [(5, text)], "notes_sections": {5: None}}
+    assert check_notes(facts) == []
+    assert resolve_citations(None, text, {"dash", "tools"}) == [("dash", "77")]
+
+
+def test_resolve_citations_sends_a_bare_number_to_the_section_and_a_named_one_to_its_own_component():
+    components = {"dash", "tools"}
+    assert resolve_citations("tools", "- dash feed (tools #5, dash #6, #7)", components) == [
+        ("tools", "5"), ("dash", "6"), ("tools", "7")]
+    assert resolve_citations("tools", "- no citation", components) == []
+
+
+def test_gather_notes_facts_records_each_bullets_section(tmp_path):
+    notes_dir = tmp_path / "coxswain" / "docs" / "releases"
+    notes_dir.mkdir(parents=True)
+    (notes_dir / "0.1.0.md").write_text("## coxswain-cox\n\n- added retry (#42)\n")
+    manifest = {"coxswain": {"version": "0.1.0"}, "components": {"cox": {"repo": "x"}}}
+
+    def run(cmd, cwd, capture_output, text):
+        return type("Result", (), {"stdout": ""})()
+
+    assert release_check_notes.gather_notes_facts(str(tmp_path), manifest, run)["notes_sections"] == {3: "cox"}
