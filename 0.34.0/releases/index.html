@@ -2125,6 +2125,23 @@ Coxswain is in beta — versions may change between releases
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="How a release works">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-tap-pull-request-and-the-install-proof" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The tap pull request and the install proof
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -3660,6 +3677,23 @@ Coxswain is in beta — versions may change between releases
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="How a release works">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-tap-pull-request-and-the-install-proof" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The tap pull request and the install proof
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -4120,6 +4154,32 @@ site at that version (via <code>mike</code>) and the <code>cox</code> package to
 trusted publishing — no long-lived token in this repository's secrets).
 Every component in a release carries the same tag, so <code>manifest.toml</code>
 always tells you exactly what a given release installs.</p>
+<h3 id="the-tap-pull-request-and-the-install-proof">The tap pull request and the install proof</h3>
+<p>A cut that tags the tools repository ends with the <code>tap_formula_pr</code> step. It bumps
+<code>Formula/cox.rb</code> in the <code>ppfenning/homebrew-coxswain</code> tap to the new PyPI sdist on a
+release branch and opens a pull request there. The tap is what <code>brew install</code> reads, so
+this pull request is the last gate between a tag and a Homebrew user.</p>
+<p>Before anyone merges it, the step dispatches <code>.github/workflows/install-proof.yml</code>
+against that branch as <code>tap_ref</code> and waits for the one run it started. The proof runs on
+two platforms: macOS arm64 on <code>macos-14</code>, and a Linux Homebrew container, <code>homebrew/brew</code>
+on <code>ubuntu-latest</code>. On each it runs <code>brew install ppfenning/coxswain/cox</code> to install the
+previous release and checks that the installed version is the one tagged just below the
+candidate. It stages the candidate formula from the tap branch, then runs
+<code>brew upgrade cox</code> and fails if the version did not move to the candidate. On a temporary
+profile, with <code>HOME</code> and the <code>XDG_*</code> directories pointed at a fresh directory, it runs
+<code>cox --version</code> and <code>cox setup doctor --json</code> and checks both outputs. Then it runs
+<code>brew uninstall cox</code> and <code>brew install ppfenning/coxswain/cox</code> again, and repeats the same
+two checks on the clean install.</p>
+<p>The release flow never merges the tap pull request. If the proof's conclusion is anything
+other than <code>success</code>, which is what <code>tap_may_merge</code> tests, the command prints the
+conclusion and the run URL, leaves the pull request open and exits non-zero. After a pass,
+you merge the tap pull request by hand.</p>
+<p>A proof that cannot fail proves nothing, so <code>.github/workflows/install-proof-negative.yml</code>
+runs weekly and on dispatch. It feeds the proof the deliberately broken formula
+<code>tests/devtools/broken_cox.rb</code>. Its own run is green only when the proof failed, so a
+green run there means the proof still catches a broken formula.</p>
+<p>A green proof means that formula installs and upgrades on those two platforms today. It
+does not mean the release is otherwise good.</p>
 <h2 id="0340"><code>0.34.0</code></h2>
 <table>
 <thead>
