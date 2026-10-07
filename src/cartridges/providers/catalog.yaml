@@ -37,8 +37,16 @@ models:
     classes: [judge, reason, frontier]
     context_window: null
 
-  - id: claude-sonnet-5
+  - id: claude-sonnet-5-5
     aliases: [sonnet]
+    provider: anthropic
+    price: {input: 2.0, output: 10.0, cache_write: 2.5, cache_read: 0.2}
+    effort: [low, medium, high]
+    classes: [reason, extract]
+    context_window: null
+
+  - id: claude-sonnet-5
+    aliases: []
     provider: anthropic
     price: {input: 2.0, output: 10.0, cache_write: 2.5, cache_read: 0.2}
     effort: [low, medium, high]
