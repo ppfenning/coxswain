@@ -10,12 +10,15 @@ curl -fsSL https://raw.githubusercontent.com/ppfenning/coxswain/main/install.sh 
 ## What it does
 
 1. Reads `manifest.toml` from the pinned release to find out which
-   components exist and which tag they share.
+   components exist and which tag each one is pinned to.
 2. Installs `uv` if it isn't already on `PATH` — `uv` is what the rest of
    the install uses to fetch and run Python tooling.
 3. Fetches the required components (cartridges, graphs, `cox` itself) at
    their pinned tag into `--root`.
-4. Fetches whichever optional components `--with` named (crew) at the same tag.
+4. Fetches whichever optional components `--with` named (crew) at their
+   pinned tags. A release tags only the components that changed, as
+   `v<version>`; unchanged components keep their earlier tag. Crew, for
+   example, is pinned at `v0.32.0`.
 5. Writes the provider config for `--provider`, so `cox` knows which CLI,
    plugin, and model tiers to use.
 
@@ -56,10 +59,10 @@ pinned components from `manifest.toml`.
 ## Verify
 
 ```sh
-cox doctor
+cox setup doctor
 ```
 
-`cox doctor` checks that every required component is present, pinned to the
+`cox setup doctor` checks that every required component is present, pinned to the
 version `manifest.toml` expects, and that the configured provider's CLI is
 reachable on `PATH`.
 
@@ -79,8 +82,9 @@ reachable on `PATH`.
 cox upgrade
 ```
 
-`cox upgrade` re-reads the manifest for the latest release and moves every
-pinned component to the new tag in lockstep.
+`cox upgrade` re-reads the manifest for the latest release and moves each
+component to the tag that manifest pins. Components that changed in the
+release are tagged `v<version>`; unchanged components keep their tag.
 
 ## Uninstall
 

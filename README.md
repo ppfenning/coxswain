@@ -52,7 +52,7 @@ A run is a detached process. It plans one task at a time, builds it in a worktre
 
 ## What is in the box
 
-This repository is the umbrella: the docs site, the version manifest that pins every component in lockstep, and the installer. The components are their own repositories, tagged together at every release.
+This repository is the umbrella: the docs site, the version manifest that pins every component, and the installer. The components are their own repositories. At each release, changed components are tagged `v<version>`; unchanged ones keep their tag.
 
 | Component | What it owns |
 |---|---|
