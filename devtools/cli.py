@@ -176,10 +176,66 @@ def _tap_branch_base(directory: str, run) -> tuple[bool, str]:
     return True, f"origin/{_default_branch(directory, run)}"
 
 
-def _checkout_ready(directory: str, run) -> tuple[bool, str]:
-    """Clean and on its default branch, or `(False, reason)` — checked
-    before a single tag is made, since a release must never tag some
-    components and stop partway through a checkout that turns out dirty."""
+def _commits(n: int) -> str:
+    return f"{n} commit" + ("" if n == 1 else "s")
+
+
+def sync_refusal(ahead: int, behind: int, ref: str) -> str | None:
+    """None when HEAD is level with `ref`, else a phrase naming how far apart they are."""
+    if ahead == 0 and behind == 0:
+        return None
+    if behind == 0:
+        return f"ahead of {ref} by {_commits(ahead)}"
+    if ahead == 0:
+        return f"behind {ref} by {_commits(behind)}"
+    return f"ahead of {ref} by {_commits(ahead)} and behind by {_commits(behind)}"
+
+
+def parse_counts(out: str) -> tuple[int, int] | None:
+    """`(ahead, behind)` from `rev-list --left-right --count HEAD...<ref>` stdout:
+    the first line that is exactly two integers. Any other line is noise."""
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and all(part.isdigit() for part in parts):
+            return int(parts[0]), int(parts[1])
+    return None
+
+
+def _stdout_run(argv: list, cwd: str | None) -> tuple:
+    """Like `_real_run`, but stdout only: git writes progress and warnings to
+    stderr, and a number parsed out of folded output would read them too."""
+    result = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
+    return result.returncode, result.stdout
+
+
+def _fetch_checkout(directory: str, run) -> tuple[bool, str]:
+    """`(True, "")` once `git fetch origin` succeeds in `directory`, else
+    `(False, reason)` naming it. A failed fetch refuses; it never raises."""
+    rc, out = run(release.fetch_argv(directory), None)
+    return (True, "") if rc == 0 else (False, f"{directory}: fetch origin failed: {out.strip() or 'no output'}")
+
+
+def _sync_gate(directory: str, default: str, count_run) -> str | None:
+    """A refusal when `directory`'s HEAD is not `origin/<default>`, else None."""
+    ref = f"origin/{default}"
+    rc, out = count_run(["git", "-C", directory, "rev-list", "--left-right", "--count", f"HEAD...{ref}"], None)
+    counts = parse_counts(out) if rc == 0 else None
+    if counts is None:
+        return f"{directory}: could not compare HEAD with {ref}"
+    refusal = sync_refusal(*counts, ref)
+    return None if refusal is None else f"{directory} is {refusal}"
+
+
+def _checkout_ready(directory: str, run, fetched: bool = False, count_run=None) -> tuple[bool, str]:
+    """Fetched, clean, on its default branch and level with `origin/<default>`,
+    or `(False, reason)` — checked before a single tag is made, since a release
+    must never tag some components and stop partway through a checkout that
+    turns out dirty or out of date. `fetched` skips the fetch a caller already
+    ran; `count_run` is the stdout-only runner for the commit counts (default `run`)."""
+    if not fetched:
+        fetch_ok, fetch_reason = _fetch_checkout(directory, run)
+        if not fetch_ok:
+            return False, fetch_reason
     status_rc, status_out = run(["git", "-C", directory, "status", "--porcelain"], None)
     if status_rc != 0:
         return False, status_out.strip() or f"could not read status for {directory}"
@@ -190,7 +246,8 @@ def _checkout_ready(directory: str, run) -> tuple[bool, str]:
     default = _default_branch(directory, run)
     if current != default:
         return False, f"{directory} is on {current}, not {default}"
-    return True, ""
+    refusal = _sync_gate(directory, default, count_run or run)
+    return (True, "") if refusal is None else (False, refusal)
 
 
 def _dirty_files(directory: str, run) -> list[str]:
@@ -452,10 +509,20 @@ def _tap_install_proof(run, umbrella: str, branch: str, version: str, sleep, now
     return None if release.tap_may_merge(conclusion) else f"install proof concluded {conclusion}: {url or new[0]}"
 
 
+def _tagged_checkouts(steps: list[dict], root: str, overrides: dict, umbrella: str) -> list[tuple[str, str]]:
+    """`(name, directory)` for every checkout a tag, rejoin or tag_self step will tag."""
+    tagged = [(s["component"], release.component_dir(root, s["component"], overrides))
+              for s in steps if s["kind"] in ("tag", "rejoin")]
+    return tagged + ([("coxswain", umbrella)] if any(s["kind"] == "tag_self" for s in steps) else [])
+
+
 def _release_execute(steps: list[dict], version: str, root: str, overrides: dict, umbrella: str, run,
                       manifest: dict, manifest_path: str, sleep=time.sleep, now=time.monotonic,
-                      fetch_index=_fetch_index, fetch_text=_fetch_text) -> int:
-    """Runs `steps` for real, through `run`. Every checkout that will be
+                      fetch_index=_fetch_index, fetch_text=_fetch_text,
+                      prefetched: frozenset = frozenset(), count_run=None) -> int:
+    """Runs `steps` for real, through `run`. `prefetched` names the checkouts
+    `_release` already fetched, which are not fetched again; `count_run` is the
+    stdout-only runner for the sync gate's commit counts. Every checkout that will be
     tagged or branched — every component, the umbrella when `tag_self` is in
     the plan, and any component or the umbrella a `bump_pyproject` or
     `bump_manifest` step will branch — and the umbrella's release note are
@@ -481,11 +548,8 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
         print(f"refuse {refusal['component']}: {refusal['detail']}")
         return 2
 
-    tag_checkouts = [(s["component"], release.component_dir(root, s["component"], overrides))
-                      for s in steps if s["kind"] in ("tag", "rejoin")]
-    umbrella_checkouts = [("coxswain", umbrella)] if any(s["kind"] == "tag_self" for s in steps) else []
-    for name, directory in tag_checkouts + umbrella_checkouts:
-        ready, reason = _checkout_ready(directory, run)
+    for name, directory in _tagged_checkouts(steps, root, overrides, umbrella):
+        ready, reason = _checkout_ready(directory, run, directory in prefetched, count_run)
         if not ready:
             print(f"refuse {name}: {reason}")
             return 2
@@ -876,6 +940,16 @@ def _release(a: argparse.Namespace) -> int:
     root = a.root or "."
     overrides = dict(pair.split("=", 1) for pair in (a.checkout or []))
     component_dirs = {name: release.component_dir(root, name, overrides) for name in manifest.get("components", {})}
+    umbrella = a.umbrella or str(Path(root) / "coxswain")
+    # Fetch once per checkout before anything is planned, so no plan reads stale refs. A tap-only
+    # resume runs after the cut and fetches only the tap clone, in its own step.
+    fetch_failures: dict[str, str] = {}
+    prefetched: frozenset = frozenset()
+    if not a.tap_only:
+        to_fetch = [directory for name, directory in component_dirs.items() if manifest["components"][name].get("repo")]
+        results = {directory: _fetch_checkout(directory, _real_run) for directory in dict.fromkeys(to_fetch + [umbrella])}
+        fetch_failures = {directory: reason for directory, (ok, reason) in results.items() if not ok}
+        prefetched = frozenset(directory for directory, (ok, _) in results.items() if ok)
     plan = release_check.facts_plan(root, manifest)
     facts = {**plan, **release_check.gather_version_facts(manifest, str(manifest_path), component_dirs, plan["umbrella"])}
     drifts = release_check.run_checks(facts)
@@ -890,7 +964,9 @@ def _release(a: argparse.Namespace) -> int:
     for name, spec in manifest.get("components", {}).items():
         if spec.get("repo"):
             directory = release.component_dir(root, name, overrides)
-            rc, out = _real_run(["git", "-C", directory, "rev-list", f"{spec['tag']}..HEAD", "--count"], None)
+            # origin/<default>, not HEAD: a component with only remote commits is changed, not pinned.
+            ref = f"origin/{_default_branch(directory, _real_run)}"
+            rc, out = _stdout_run(["git", "-C", directory, "rev-list", f"{spec['tag']}..{ref}", "--count"], None)
             pinned_commits[name] = int(out.strip()) if rc == 0 and out.strip().isdigit() else 0
     component_versions = {}
     cargo_versions = {}
@@ -923,12 +999,21 @@ def _release(a: argparse.Namespace) -> int:
                       "left open for the maintainer to merge")
             else:
                 print(f"{step['kind']} {step['component']}: {_release_detail(step)}")
-        return 2 if any(step["kind"] == "refuse" for step in steps) else 0
-    umbrella = a.umbrella or str(Path(root) / "coxswain")
+        refused = 0
+        for name, directory in ([] if a.tap_only else _tagged_checkouts(steps, root, overrides, umbrella)):
+            reason = fetch_failures.get(directory) or _sync_gate(
+                directory, _default_branch(directory, _real_run), _stdout_run)
+            if reason:
+                refused += 1
+                print(f"refuse {name}: {reason}")
+        return 2 if refused or any(step["kind"] == "refuse" for step in steps) else 0
     path = _profile_path(a.profile, os.environ)
     printed = _Tee(sys.stdout)
     with contextlib.redirect_stdout(printed):
-        rc = _release_execute(steps, a.version, root, overrides, umbrella, _real_run, manifest, str(manifest_path))
+        # A tap-only resume tags nothing, so it has no sync gate to feed.
+        gate = {} if a.tap_only else {"prefetched": prefetched, "count_run": _stdout_run}
+        rc = _release_execute(steps, a.version, root, overrides, umbrella, _real_run, manifest, str(manifest_path),
+                              **gate)
     failed = (_failed_step(printed.text) or f"exit {rc}") if rc != 0 else None
     return _after_release(rc, a.version, steps, *_notify_config(path), time.time(), failed=failed)
 
