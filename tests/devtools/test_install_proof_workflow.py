@@ -59,6 +59,9 @@ class Rig:
         (self.bin / name).write_text(body)
         (self.bin / name).chmod(0o755)
 
+    def write_formula(self, text: str) -> None:
+        (self.state / "tap" / "Formula" / "cox.rb").write_text(text)
+
     def seed(self, previous: str, candidate: str) -> None:
         (self.state / "previous").write_text(previous)
         (self.state / "candidate").write_text(candidate)
@@ -102,10 +105,76 @@ def test_workflow_is_read_only_and_uses_no_action():
     assert not re.search(r"git push|git tag|\bgh \w+|secrets\.", text)
 
 
-def test_the_formula_installs_cox_only_so_towpath_and_coxtop_are_checked_absent():
+def test_the_formula_installs_cox_only_so_coxtop_is_skipped_absent_and_towpath_follows_the_formula():
     text = WORKFLOW.read_text()
     assert not re.search(r"brew (install|upgrade)\S*[^\n]*(coxtop|towpath)", text)
-    assert "for b in towpath coxtop" in text
+    assert '! command -v coxtop >/dev/null || coxtop --version' in text
+    assert "for b in towpath coxtop" not in text
+
+
+WITH_TOWPATH = 'class Cox < Formula\n  resource "towpath" do\n    url "u"\n  end\nend\n'
+WITHOUT_TOWPATH = 'class Cox < Formula\n  resource "pyyaml" do\n    url "u"\n  end\nend\n'
+
+
+@pytest.mark.parametrize("job", ["proof-macos", "proof-linux"])
+def test_towpath_assertion_is_guarded_by_the_formula_declaring_a_towpath_resource(job):
+    script = _script(job, CLEAN)
+    guard = script.index('grep -Eq \'^[[:space:]]*resource "towpath" do\' "$formula"')
+    assert guard < script.index("command -v towpath") < script.index("towpath --version") < script.index("fi\n")
+    assert 'formula="$(brew --repository ppfenning/coxswain)/Formula/cox.rb"' in script
+
+
+def test_a_formula_with_a_towpath_resource_fails_when_towpath_is_not_on_path(rig):
+    rig.seed("1.1.0", "1.2.0")
+    rig.write_formula(WITH_TOWPATH)
+    done = rig.run(CLEAN)
+    assert done.returncode != 0
+    assert "towpath is not on PATH" in done.stdout
+
+
+def test_a_formula_with_a_towpath_resource_passes_when_towpath_is_on_path(rig):
+    rig.seed("1.1.0", "1.2.0")
+    rig.write_formula(WITH_TOWPATH)
+    rig.add_tool("towpath", "#!/bin/bash\necho towpath 1.2.0\n")
+    assert rig.run(CLEAN).returncode == 0
+
+
+def test_a_formula_without_a_towpath_resource_skips_the_towpath_assertion(rig):
+    rig.seed("1.1.0", "1.2.0")
+    rig.write_formula(WITHOUT_TOWPATH)
+    done = rig.run(CLEAN)
+    assert done.returncode == 0, done.stdout
+    assert "towpath" not in done.stdout
+
+
+def test_allow_installed_candidate_is_a_dispatch_boolean_defaulting_to_false_and_reaches_both_jobs():
+    workflow = _workflow()
+    spec = workflow[True]["workflow_dispatch"]["inputs"]["allow_installed_candidate"]
+    assert spec["type"] == "boolean"
+    assert spec["default"] is False
+    assert workflow["env"]["ALLOW_INSTALLED_CANDIDATE"] == "${{ inputs.allow_installed_candidate }}"
+    assert all("ALLOW_INSTALLED_CANDIDATE" in _script(job, PREVIOUS) for job in ("proof-macos", "proof-linux"))
+
+
+TAGS = "v1.1.0 v1.2.0"
+
+
+def test_previous_release_assertion_fails_when_the_candidate_is_already_installed_and_the_flag_is_off(rig):
+    rig.seed("1.2.0", "1.2.0")
+    for flag in ({}, {"ALLOW_INSTALLED_CANDIDATE": "false"}):
+        done = rig.run(PREVIOUS, STUB_TAGS=TAGS, **flag)
+        assert done.returncode != 0
+        assert "installed 'cox 1.2.0', expected 'cox 1.1.0'" in done.stdout
+
+
+def test_previous_release_assertion_accepts_the_installed_candidate_when_the_flag_is_on(rig):
+    rig.seed("1.2.0", "1.2.0")
+    assert rig.run(PREVIOUS, STUB_TAGS=TAGS, ALLOW_INSTALLED_CANDIDATE="true").returncode == 0
+
+
+def test_the_flag_does_not_excuse_a_version_that_is_neither_previous_nor_candidate(rig):
+    rig.seed("1.0.5", "1.2.0")
+    assert rig.run(PREVIOUS, STUB_TAGS=TAGS, ALLOW_INSTALLED_CANDIDATE="true").returncode != 0
 
 
 def test_upgrade_that_changes_nothing_fails_before_any_cox_call(rig):
