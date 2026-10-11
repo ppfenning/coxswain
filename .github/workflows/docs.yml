@@ -12,6 +12,7 @@ jobs:
         with:
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v5
+        with: { python-version: "3.14" }
       - run: |
           tag=$(python3 -c 'import tomllib; print(tomllib.load(open("manifest.toml", "rb"))["components"]["tools"].get("tag", ""))')
           ref=main
