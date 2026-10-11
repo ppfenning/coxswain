@@ -9,6 +9,7 @@ on:
       tap_ref: {description: "Tap ref to stage as the candidate; empty keeps the default branch", default: ""}
       formula_path: {description: "Formula in this repository copied over the tap's cox.rb", default: ""}
       version: {description: "Version the candidate must install as", required: true}
+      allow_installed_candidate: {description: "Post-merge rerun: accept the tap's default branch already installing the candidate", type: boolean, default: false}
   workflow_call:
     inputs:
       tap_ref: {type: string, default: ""}
@@ -26,6 +27,7 @@ env:
   VERSION: ${{ inputs.version }}
   TAP_REF: ${{ inputs.tap_ref }}
   FORMULA_PATH: ${{ inputs.formula_path }}
+  ALLOW_INSTALLED_CANDIDATE: ${{ inputs.allow_installed_candidate }} # empty under workflow_call, which reads as false
   HOMEBREW_NO_AUTO_UPDATE: "1" # an update would reset the staged tap
   SRC: /tmp/coxswain-src # a fixed path: the Linux container's user cannot write $GITHUB_ENV
 
@@ -50,7 +52,7 @@ jobs:
           if [[ "$VERSION" =~ ^v?[0-9]+(\.[0-9]+)*$ ]]; then
             tags=$(git -C "$SRC" ls-remote --tags --refs origin | sed 's|.*refs/tags/||')
             prev=$(python3 "$SRC/devtools/install_proof.py" previous-tag "$VERSION" <<< "$tags") || { echo "no release tag below $VERSION"; exit 1; }
-            [ "$installed" = "cox ${prev#v}" ] || { echo "installed '$installed', expected 'cox ${prev#v}'"; exit 1; }
+            [ "$installed" = "cox ${prev#v}" ] || { [ "${ALLOW_INSTALLED_CANDIDATE:-}" = true ] && [ "$installed" = "cox ${VERSION#v}" ]; } || { echo "installed '$installed', expected 'cox ${prev#v}'"; exit 1; }
           else
             echo "skip previous-version assertion: $VERSION is not a release"
           fi
@@ -73,8 +75,14 @@ jobs:
             cox --version | python3 "$SRC/devtools/install_proof.py" check-version "$VERSION"
             # doctor exits 1 until setup runs; the checker judges its rows, so its exit code must not fail the pipe
             { cox setup doctor --json || true; } | python3 "$SRC/devtools/install_proof.py" check-doctor
-            for b in towpath coxtop; do ! command -v "$b" >/dev/null || "$b" --version | python3 "$SRC/devtools/install_proof.py" check-version "$VERSION"; done
+            # a formula that declares a towpath resource must put towpath on PATH; one without it is not asked to
+            if grep -Eq '^[[:space:]]*resource "towpath" do' "$formula"; then
+              command -v towpath >/dev/null || { echo "formula declares a towpath resource but towpath is not on PATH"; exit 1; }
+              towpath --version | python3 "$SRC/devtools/install_proof.py" check-version "$VERSION"
+            fi
+            ! command -v coxtop >/dev/null || coxtop --version | python3 "$SRC/devtools/install_proof.py" check-version "$VERSION"
           )
+          formula="$(brew --repository ppfenning/coxswain)/Formula/cox.rb"
           before=$(brew list --versions cox)
           brew upgrade cox
           brew cleanup -q cox # an upgrade keeps the old keg, which `brew list --versions` would print too
@@ -112,7 +120,7 @@ jobs:
           if [[ "$VERSION" =~ ^v?[0-9]+(\.[0-9]+)*$ ]]; then
             tags=$(git -C "$SRC" ls-remote --tags --refs origin | sed 's|.*refs/tags/||')
             prev=$(python3 "$SRC/devtools/install_proof.py" previous-tag "$VERSION" <<< "$tags") || { echo "no release tag below $VERSION"; exit 1; }
-            [ "$installed" = "cox ${prev#v}" ] || { echo "installed '$installed', expected 'cox ${prev#v}'"; exit 1; }
+            [ "$installed" = "cox ${prev#v}" ] || { [ "${ALLOW_INSTALLED_CANDIDATE:-}" = true ] && [ "$installed" = "cox ${VERSION#v}" ]; } || { echo "installed '$installed', expected 'cox ${prev#v}'"; exit 1; }
           else
             echo "skip previous-version assertion: $VERSION is not a release"
           fi
@@ -135,8 +143,14 @@ jobs:
             cox --version | python3 "$SRC/devtools/install_proof.py" check-version "$VERSION"
             # doctor exits 1 until setup runs; the checker judges its rows, so its exit code must not fail the pipe
             { cox setup doctor --json || true; } | python3 "$SRC/devtools/install_proof.py" check-doctor
-            for b in towpath coxtop; do ! command -v "$b" >/dev/null || "$b" --version | python3 "$SRC/devtools/install_proof.py" check-version "$VERSION"; done
+            # a formula that declares a towpath resource must put towpath on PATH; one without it is not asked to
+            if grep -Eq '^[[:space:]]*resource "towpath" do' "$formula"; then
+              command -v towpath >/dev/null || { echo "formula declares a towpath resource but towpath is not on PATH"; exit 1; }
+              towpath --version | python3 "$SRC/devtools/install_proof.py" check-version "$VERSION"
+            fi
+            ! command -v coxtop >/dev/null || coxtop --version | python3 "$SRC/devtools/install_proof.py" check-version "$VERSION"
           )
+          formula="$(brew --repository ppfenning/coxswain)/Formula/cox.rb"
           before=$(brew list --versions cox)
           brew upgrade cox
           brew cleanup -q cox # an upgrade keeps the old keg, which `brew list --versions` would print too
