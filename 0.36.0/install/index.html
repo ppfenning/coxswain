@@ -3488,12 +3488,15 @@ command.</p>
 <h2 id="what-it-does">What it does</h2>
 <ol>
 <li>Reads <code>manifest.toml</code> from the pinned release to find out which
-   components exist and which tag they share.</li>
+   components exist and which tag each one is pinned to.</li>
 <li>Installs <code>uv</code> if it isn't already on <code>PATH</code> — <code>uv</code> is what the rest of
    the install uses to fetch and run Python tooling.</li>
 <li>Fetches the required components (cartridges, graphs, <code>cox</code> itself) at
    their pinned tag into <code>--root</code>.</li>
-<li>Fetches whichever optional components <code>--with</code> named (crew) at the same tag.</li>
+<li>Fetches whichever optional components <code>--with</code> named (crew) at their
+   pinned tags. A release tags only the components that changed, as
+   <code>v&lt;version&gt;</code>; unchanged components keep their earlier tag. Crew, for
+   example, is pinned at <code>v0.32.0</code>.</li>
 <li>Writes the provider config for <code>--provider</code>, so <code>cox</code> knows which CLI,
    plugin, and model tiers to use.</li>
 </ol>
@@ -3572,9 +3575,9 @@ pinned components from <code>manifest.toml</code>.</p>
 </tbody>
 </table>
 <h2 id="verify">Verify</h2>
-<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>doctor
+<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>setup<span class="w"> </span>doctor
 </code></pre></div>
-<p><code>cox doctor</code> checks that every required component is present, pinned to the
+<p><code>cox setup doctor</code> checks that every required component is present, pinned to the
 version <code>manifest.toml</code> expects, and that the configured provider's CLI is
 reachable on <code>PATH</code>.</p>
 <h2 id="what-youll-see">What you'll see</h2>
@@ -3585,8 +3588,9 @@ reachable on <code>PATH</code>.</p>
 <h2 id="upgrade">Upgrade</h2>
 <div class="highlight"><pre><span></span><code>cox<span class="w"> </span>upgrade
 </code></pre></div>
-<p><code>cox upgrade</code> re-reads the manifest for the latest release and moves every
-pinned component to the new tag in lockstep.</p>
+<p><code>cox upgrade</code> re-reads the manifest for the latest release and moves each
+component to the tag that manifest pins. Components that changed in the
+release are tagged <code>v&lt;version&gt;</code>; unchanged components keep their tag.</p>
 <h2 id="uninstall">Uninstall</h2>
 <p>There is no <code>cox uninstall</code> yet. Removing an install means deleting
 <code>--root</code> by hand; a dedicated uninstall command is planned.</p>

@@ -4252,8 +4252,8 @@ Coxswain is in beta — versions may change between releases
 <code>&lt;version&gt;</code>, bumps <code>manifest.toml</code> to match, and publishes both the docs
 site at that version (via <code>mike</code>) and the <code>cox</code> package to PyPI (via
 trusted publishing — no long-lived token in this repository's secrets).
-Every component in a release carries the same tag, so <code>manifest.toml</code>
-always tells you exactly what a given release installs.</p>
+Changed components are tagged <code>v&lt;version&gt;</code>; unchanged ones keep their
+tag. <code>manifest.toml</code> records the tag each component is pinned to.</p>
 <h3 id="the-tap-pull-request-and-the-install-proof">The tap pull request and the install proof</h3>
 <p>A cut that tags the tools repository ends with the <code>tap_formula_pr</code> step. It bumps
 <code>Formula/cox.rb</code> in the <code>ppfenning/homebrew-coxswain</code> tap to the new PyPI sdist on a
@@ -4277,7 +4277,8 @@ you merge the tap pull request by hand.</p>
 <p>A proof that cannot fail proves nothing, so <code>.github/workflows/install-proof-negative.yml</code>
 runs weekly and on dispatch. It feeds the proof the deliberately broken formula
 <code>tests/devtools/broken_cox.rb</code>. Its own run is green only when the proof failed, so a
-green run there means the proof still catches a broken formula.</p>
+green run there means the proof failed on that one formula. It does not show
+the proof catches every broken formula.</p>
 <p>A green proof means that formula installs and upgrades on those two platforms today. It
 does not mean the release is otherwise good.</p>
 <h2 id="0360"><code>0.36.0</code></h2>
