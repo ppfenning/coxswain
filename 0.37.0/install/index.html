@@ -748,6 +748,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#where-personal-setup-goes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where personal setup goes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#upgrade" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3461,6 +3472,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#where-personal-setup-goes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where personal setup goes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#upgrade" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3613,6 +3635,12 @@ reachable on <code>PATH</code>.</p>
 <p><code>cox versions</code> lists every component next to the tag <code>manifest.toml</code> pins, so drift is visible before you upgrade.</p>
 <p><img alt="cox setup doctor confirming every required component and provider CLI is reachable" src="../assets/shots/doctor.svg"></p>
 <p><code>cox setup doctor</code> is what the checks above look like against a real install.</p>
+<h2 id="where-personal-setup-goes">Where personal setup goes</h2>
+<p>Personal setup never goes in a shipped repository. It lives in one of two homes.</p>
+<ul>
+<li><strong>The team cartridge</strong> holds the cast, the policy, the inline repos and the context packs. A cartridge named <code>example-team</code> is one such home.</li>
+<li><strong>The provider profile</strong> holds the operator, the store and the notifier. A profile named <code>example-provider</code> is one such home.</li>
+</ul>
 <h2 id="upgrade">Upgrade</h2>
 <div class="highlight"><pre><span></span><code>cox<span class="w"> </span>upgrade
 </code></pre></div>
