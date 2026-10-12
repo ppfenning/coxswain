@@ -97,10 +97,10 @@ def test_fetch_sources_provides_python3_for_the_checker_only_when_it_is_missing(
     assert "apt-get install -y -qq --no-install-recommends python3" in script
 
 
-def test_triggers_are_dispatch_and_call_with_three_inputs():
+def test_triggers_are_dispatch_and_call_with_four_inputs():
     triggers = _workflow()[True]
     assert "workflow_dispatch" in triggers
-    assert set(triggers["workflow_call"]["inputs"]) == {"tap_ref", "formula_path", "version"}
+    assert set(triggers["workflow_call"]["inputs"]) == {"tap_ref", "formula_path", "version", "expect_failure"}
     assert triggers["workflow_call"]["inputs"]["version"]["required"] is True
 
 
@@ -268,3 +268,86 @@ def test_staging_copies_the_formula_path_over_the_tap_and_checks_out_the_tap_ref
     assert done.returncode == 0
     assert (rig.state / "tap" / "Formula" / "cox.rb").read_text() == (ROOT / "tests/devtools/broken_cox.rb").read_text()
     assert f"git -C {rig.state}/tap checkout -q FETCH_HEAD" in rig.calls()
+
+
+NEGATIVE = ROOT / ".github" / "workflows" / "install-proof-negative.yml"
+EXPECTED_CONTINUE = "${{ inputs.expect_failure == true }}"
+PLATFORM_OUTPUTS = {"proof-macos": "macos_outcome", "proof-linux": "linux_outcome"}
+
+
+def _negative() -> dict:
+    return yaml.safe_load(NEGATIVE.read_text())
+
+
+def _clean_step(job: str) -> dict:
+    return next(step for step in _workflow()["jobs"][job]["steps"] if step["name"] == CLEAN)
+
+
+def test_expect_failure_is_a_boolean_input_defaulting_to_false_on_workflow_call_only():
+    triggers = _workflow()[True]
+    assert triggers["workflow_call"]["inputs"]["expect_failure"]["type"] == "boolean"
+    assert triggers["workflow_call"]["inputs"]["expect_failure"]["default"] is False
+    assert "expect_failure" not in triggers["workflow_dispatch"]["inputs"]
+
+
+@pytest.mark.parametrize("job", PLATFORM_OUTPUTS)
+def test_the_clean_install_step_has_an_id_and_the_exact_continue_on_error_expression(job):
+    step = _clean_step(job)
+    assert step["id"]
+    assert step["continue-on-error"] == EXPECTED_CONTINUE
+
+
+@pytest.mark.parametrize("job", PLATFORM_OUTPUTS)
+def test_each_platform_job_exports_the_clean_install_outcome_as_a_job_output(job):
+    outputs = _workflow()["jobs"][job]["outputs"]
+    assert outputs == {PLATFORM_OUTPUTS[job]: "${{ steps." + _clean_step(job)["id"] + ".outcome }}"}
+
+
+def test_workflow_call_outputs_expose_both_platform_outputs_under_distinct_names():
+    outputs = _workflow()[True]["workflow_call"]["outputs"]
+    assert {name: out["value"] for name, out in outputs.items()} == {
+        name: "${{ jobs." + job + ".outputs." + name + " }}" for job, name in PLATFORM_OUTPUTS.items()
+    }
+
+
+def test_continue_on_error_reads_the_input_alone_so_false_keeps_a_failed_install_failing():
+    expression = _clean_step("proof-macos")["continue-on-error"]
+    refs = re.findall(r"[A-Za-z_][\w.]*", expression.removeprefix("${{").removesuffix("}}"))
+    assert refs == ["inputs.expect_failure", "true"]
+    assert _clean_step("proof-linux")["continue-on-error"] == expression
+
+
+def test_the_negative_workflow_passes_expect_failure_true():
+    assert _negative()["jobs"]["proof"]["with"]["expect_failure"] is True
+
+
+def test_the_expect_failure_job_reads_both_platform_outputs_from_the_proof_call():
+    steps = _negative()["jobs"]["expect-failure"]["steps"]
+    env = {k: v for step in steps for k, v in step.get("env", {}).items()}
+    assert env == {
+        "MACOS_OUTCOME": "${{ needs.proof.outputs.macos_outcome }}",
+        "LINUX_OUTCOME": "${{ needs.proof.outputs.linux_outcome }}",
+    }
+
+
+def _verdict(macos: str, linux: str) -> int:
+    job = _negative()["jobs"]["expect-failure"]
+    env = {"PATH": "/usr/bin:/bin", "MACOS_OUTCOME": macos, "LINUX_OUTCOME": linux}
+    script = "\n".join(step["run"] for step in job["steps"])
+    return subprocess.run([BASH, "-eo", "pipefail", "-c", script], env=env, capture_output=True, text=True).returncode
+
+
+@pytest.mark.parametrize(
+    ("macos", "linux", "passes"),
+    [
+        ("failure", "failure", True),
+        ("success", "failure", False),
+        ("failure", "success", False),
+        ("failure", "skipped", False),
+        ("cancelled", "failure", False),
+        ("failure", "", False),
+        ("", "", False),
+    ],
+)
+def test_the_expect_failure_job_succeeds_only_when_both_outcomes_are_failure(macos, linux, passes):
+    assert (_verdict(macos, linux) == 0) is passes

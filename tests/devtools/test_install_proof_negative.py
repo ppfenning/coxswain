@@ -28,14 +28,14 @@ def test_workflow_triggers_on_dispatch_and_schedule():
     assert triggers["schedule"][0]["cron"]
 
 
-def test_expect_failure_job_passes_only_when_the_proof_failed():
+def test_expect_failure_job_passes_only_when_both_platforms_failed():
     job = _workflow()["jobs"]["expect-failure"]
     assert job["needs"] == "proof"
     assert "always()" in job["if"]
     script = "\n".join(step.get("run", "") for step in job["steps"])
     env = {k: v for step in job["steps"] for k, v in step.get("env", {}).items()}
-    assert "needs.proof.result" in " ".join(env.values())
-    assert '= "failure"' in script
+    assert sorted(env.values()) == ["${{ needs.proof.outputs.linux_outcome }}", "${{ needs.proof.outputs.macos_outcome }}"]
+    assert script.count('= "failure"') == 2
     assert "success" not in script
 
 
