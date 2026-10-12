@@ -17,4 +17,9 @@ jobs:
       - run: uv run pytest -q
       - name: ruff (rules in pyproject.toml; pre-commit mirrors it)
         run: uv run ruff check .
+      # no person, host or home path ships; the names rule's regex lives only in the secret (unset on fork PRs: skipped)
+      - name: clean (no personal reference)
+        run: python .github/check_clean.py .
+        env:
+          COXSWAIN_CLEAN_DENY: ${{ secrets.COXSWAIN_CLEAN_DENY }}
       - run: test ! -f mkdocs.yml || uv run mkdocs build --strict
