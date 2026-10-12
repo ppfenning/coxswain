@@ -110,6 +110,13 @@ intake:
     kind: ideas
     path: intake            # <repo>/intake/*.md, consumed items move to intake/consumed/
 
+# ── Inline work ─────────────────────────────────────────────────────────────
+# Repositories where the chair may work a small change inline instead of
+# launching a graph. files_max is left unset and takes the base default.
+epic_threshold:
+  inline:
+    repos: [example-repo]
+
 context:
   - context/code-style.md
   - context/prose-style.md     # how every node writes what it returns; no code opinion

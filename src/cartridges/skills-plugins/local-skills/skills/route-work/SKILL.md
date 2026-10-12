@@ -32,12 +32,24 @@ You are a dispatcher for that one case, not a second doer.
   from inside one. If it is ambiguous which repository is meant, that is a
   question back to the person, never a guess.
 - **Size the work before deciding how to route it.** Weigh it against the
-  cartridge's `epic_threshold`. Below the threshold — one phase, fewer than
-  three tasks, one repository — `agent-tools route file` writes the
-  one-task initiative and `agent-tools route launch epic` runs it. At or
-  above the threshold: `agent-tools route file --intake`, then
-  `agent-tools route launch decompose`, then `agent-tools route launch
-  epic` once the decomposed tasks have landed.
+  cartridge's `epic_threshold`. Sizing has three outcomes: inline, a
+  one-task initiative, or an intake plus decompose. Below the threshold —
+  one phase, fewer than three tasks, one repository — `agent-tools route
+  file` writes the one-task initiative and `agent-tools route launch epic`
+  runs it.
+  - **Inline.** A change is inline when all four hold: its repository is
+    listed in `epic_threshold.inline.repos`; it touches at most
+    `epic_threshold.inline.files_max` files; the fix is fully specified;
+    and its tests run locally. With the default empty
+    `epic_threshold.inline.repos` list, nothing is inline. An inline change
+    is not filed or launched. You work it like any regular session: a
+    branch, the repository's own checks, a pull request, a merge on green
+    under the chair's merge authority, and a one-line note in the session.
+  - **Anything else.** A change that does not meet all four conditions
+    routes exactly as before. At or above the threshold:
+    `agent-tools route file --intake`, then `agent-tools route launch
+    decompose`, then `agent-tools route launch epic` once the decomposed
+    tasks have landed.
 - **Launch with the path and the label.** `route launch epic --initiative`
   takes the `work/<id>` path, never the bare initiative id. A bare id fails
   with `routing: no initiative.md at <id>/initiative.md`. When the chair is
@@ -49,7 +61,9 @@ You are a dispatcher for that one case, not a second doer.
   what landed, what was quarantined and why, the cost from `agent-tools
   runs usage`, and the branch to open a pull request from. Merging that
   branch to the default branch is never this skill's job.
-- **Never do the routed work inline.** Once a request is routed, it belongs
+- **Never do the routed work inline.** The one exception is the `inline`
+  size above, which is worked in this session and never routed. Once a
+  request is routed, it belongs
   to the run you launched, not to this session. Your job after launching is
   to relay the outcome, not to start editing the repository yourself while
   you wait.

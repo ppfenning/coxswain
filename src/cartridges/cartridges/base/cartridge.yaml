@@ -91,6 +91,12 @@ epic_threshold:
   phases_min: 2      # genuinely multi-phase
   tickets_min: 3     # 3+ tickets even if single-phase
   multi_repo: true   # coordinated change across repositories
+  inline:
+    files_max: 2     # the most files an inline change may touch
+    # Repositories where the chair may work a small change inline. An empty
+    # list means no repository is inline; a cartridge overlay opts a
+    # repository in by name.
+    repos: []
 # Below threshold: one unit of work -> one ticket. Two related but unordered
 # units -> a parent ticket with subtasks. Attach to an existing epic if one
 # covers the area; otherwise route per ticket_routing.
