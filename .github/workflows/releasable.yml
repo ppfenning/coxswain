@@ -53,6 +53,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
+      # The self-hosted runner keeps setup-python's toolcache between runs, so an
+      # editable install from one component (cartridges' `core`) stayed importable
+      # in the next and failed a tools test that expects it absent. Each check gets
+      # a fresh venv with no system site-packages.
+      - run: |
+          rm -rf "$RUNNER_TEMP/venv" && python -m venv "$RUNNER_TEMP/venv"
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+          echo "VIRTUAL_ENV=$RUNNER_TEMP/venv" >> "$GITHUB_ENV"
       - run: ${{ matrix.check }}
       - if: failure()
         run: |
