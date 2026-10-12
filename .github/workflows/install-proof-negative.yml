@@ -18,15 +18,18 @@ jobs:
     with:
       formula_path: tests/devtools/broken_cox.rb
       version: 999.0.0-negative-control
+      expect_failure: true
 
   expect-failure:
     needs: proof
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: Fail unless the proof rejected the broken formula
+      - name: Fail unless the proof rejected the broken formula on both platforms
         env:
-          PROOF_RESULT: ${{ needs.proof.result }}
+          MACOS_OUTCOME: ${{ needs.proof.outputs.macos_outcome }}
+          LINUX_OUTCOME: ${{ needs.proof.outputs.linux_outcome }}
         run: |
-          echo "proof result: ${PROOF_RESULT}"
-          test "${PROOF_RESULT}" = "failure"
+          echo "macos outcome: ${MACOS_OUTCOME}"
+          echo "linux outcome: ${LINUX_OUTCOME}"
+          test "${MACOS_OUTCOME}" = "failure" && test "${LINUX_OUTCOME}" = "failure"
