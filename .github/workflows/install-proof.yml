@@ -15,6 +15,14 @@ on:
       tap_ref: {type: string, default: ""}
       formula_path: {type: string, default: ""}
       version: {type: string, required: true}
+      expect_failure: {description: "Negative control: let the upgrade-then-clean-install step fail and report its outcome", type: boolean, default: false}
+    outputs:
+      macos_outcome:
+        description: "Outcome of the macOS upgrade-then-clean-install step: success, failure, cancelled or skipped"
+        value: ${{ jobs.proof-macos.outputs.macos_outcome }}
+      linux_outcome:
+        description: "Outcome of the Linux upgrade-then-clean-install step: success, failure, cancelled or skipped"
+        value: ${{ jobs.proof-linux.outputs.linux_outcome }}
 
 permissions:
   contents: read
@@ -34,6 +42,8 @@ env:
 jobs:
   proof-macos:
     runs-on: macos-14
+    outputs:
+      macos_outcome: ${{ steps.upgrade.outcome }} # outcome, not conclusion: continue-on-error turns a failed step's conclusion into success
     steps:
       - name: Fetch sources
         env:
@@ -74,6 +84,8 @@ jobs:
             echo "staged $staged is not above installed $have"; exit 1
           fi
       - name: Upgrade, then clean install
+        id: upgrade
+        continue-on-error: ${{ inputs.expect_failure == true }}
         run: |
           check() (
             d=$(mktemp -d)
@@ -105,6 +117,8 @@ jobs:
   proof-linux:
     runs-on: ubuntu-latest
     container: homebrew/brew
+    outputs:
+      linux_outcome: ${{ steps.upgrade.outcome }} # outcome, not conclusion: continue-on-error turns a failed step's conclusion into success
     env:
       HOME: /home/linuxbrew # the container's /github/home is not writable by the linuxbrew user
       BREW_UPDATE: "1" # the image's Homebrew can predate its bottles' format; the macOS runner's must not update (openssl link conflict)
@@ -148,6 +162,8 @@ jobs:
             echo "staged $staged is not above installed $have"; exit 1
           fi
       - name: Upgrade, then clean install
+        id: upgrade
+        continue-on-error: ${{ inputs.expect_failure == true }}
         run: |
           check() (
             d=$(mktemp -d)
