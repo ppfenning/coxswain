@@ -1492,6 +1492,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#the-operator" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The operator
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#where-the-detail-lives" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3362,6 +3373,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#the-operator" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The operator
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#where-the-detail-lives" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3431,6 +3453,16 @@ local       = { status = "experimental", profile = "providers/local-oss.yaml" }
 its capabilities and puts the <code>cheap</code> tier on a local OpenAI-compatible
 endpoint, but no runner drives it yet. The others are <code>status = "planned"</code>
 and have no profile to point at.</p>
+<h2 id="the-operator">The operator</h2>
+<p>The provider-profile key <code>operator</code> names the human the courier and
+decisions address. Its default is <code>operator</code>, so a profile that omits it
+addresses "operator". Set it to a team role or a handle:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">claude-code</span>
+<span class="nt">operator</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">reviewer-on-call</span>
+</code></pre></div>
+<p>The settings command flags operator-only rows with the field
+<code>operator_only</code>. The older field name <code>pat_only</code> is accepted as an alias
+for one release and then removed, so use <code>operator_only</code> in anything new.</p>
 <h2 id="where-the-detail-lives">Where the detail lives</h2>
 <p>The full shape of a provider profile — the file format, every field a
 tier or role can set — is in <a href="../../install/providers/">Install:
