@@ -1,7 +1,7 @@
 """Install proof checker: pure output checks and previous-tag selection.
 
-Stdlib only, because the proof workflow runs this file with whatever python3 the
-installed formula puts on PATH. The core takes text and returns a failure reason
+Stdlib only, because the proof workflow runs this file with whatever python3 is on
+PATH (the runner's own, or the container's apt python3 that Fetch sources installs). The core takes text and returns a failure reason
 or None; `main` is the thin edge that reads stdin and sets the exit code."""
 
 from __future__ import annotations
