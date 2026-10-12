@@ -21,6 +21,7 @@ from pathlib import Path
 import yaml
 
 from devtools.release_check_index import index_section
+from devtools.release_notes_blanks import find_blanks
 
 _VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?$")
 
@@ -81,7 +82,21 @@ def _versions_drift_is_planned(d, plan_steps: Sequence[dict]) -> bool:
                for s in plan_steps)
 
 
+def blank_names(notes_text: str) -> list[str]:
+    """Names of the blank markers a notes draft still holds; empty for a finished page."""
+    return list(find_blanks(notes_text))
+
+
 def gate(drifts: Sequence, allow_reason: str | None, plan_steps: Sequence[dict] = ()) -> list[dict]:
+    """A `notes_blank` drift always refuses: `allow_reason` cannot waive an unwritten paragraph.
+    Every other drift goes through `_gate_drifts`."""
+    blanks = [d for d in drifts if d.check == "notes_blank"]
+    rest = [d for d in drifts if d.check != "notes_blank"]
+    blank_steps = [{"kind": "refuse", "component": d.check, "detail": _drift_line(d)} for d in blanks]
+    return blank_steps + _gate_drifts(rest, allow_reason, plan_steps)
+
+
+def _gate_drifts(drifts: Sequence, allow_reason: str | None, plan_steps: Sequence[dict] = ()) -> list[dict]:
     """Refuse steps naming each drift, or one note step when `allow_reason`
     says why they stand; empty when `drifts` is empty. A `versions` drift
     still refuses unless `plan_steps` (the same invocation's `release_plan`
