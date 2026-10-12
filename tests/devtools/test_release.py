@@ -8,6 +8,25 @@ import pytest
 from devtools import cli, release, release_check, release_check_index
 from devtools.release_check import Drift
 
+
+@pytest.fixture(autouse=True)
+def _stdout_runner_follows_the_fake(monkeypatch):
+    """The sync gate reads commit counts through `cli._stdout_run`; in these tests the
+    patched `cli._real_run` stands in for it, so no test shells out to a real git."""
+    # Late-bound on purpose: a test patches `cli._real_run` after this fixture runs.
+    monkeypatch.setattr(cli, "_stdout_run", lambda argv, cwd: cli._real_run(argv, cwd))  # noqa: PLW0108
+
+
+def _level(argv):
+    """The fake's answer to the sync gate's `rev-list --left-right --count`: level with origin."""
+    return (0, "0\t0\n") if "--left-right" in argv else None
+
+
+def _is_tag_count(argv):
+    """True for the edge's `rev-list <tag>..<ref> --count`, not the sync gate's left-right count."""
+    return argv[3] == "rev-list" and "--count" in argv and "--left-right" not in argv
+
+
 _MANIFEST_TOML = """
 [coxswain]
 version = "0.1.0"
@@ -271,7 +290,7 @@ def test_cli_release_dry_run_prints_a_tag_line_for_a_changed_component_with_a_st
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
 
     def run(argv, cwd):
-        return (0, "3\n") if argv[3] == "rev-list" else (0, "")
+        return _level(argv) or ((0, "3\n") if argv[3] == "rev-list" else (0, ""))
     monkeypatch.setattr(cli, "_real_run", run)
     rc = cli.main(["release", "0.9.0", "--dry-run", "--manifest", str(manifest_path)])
     out = capsys.readouterr().out
@@ -287,7 +306,7 @@ def test_cli_release_dry_run_plans_pinned_for_a_component_with_no_commits_and_ta
 
     def run(argv, cwd):
         if argv[3] == "rev-list":
-            return (0, "0\n") if argv[2].endswith("cartridges") else (0, "2\n")
+            return _level(argv) or ((0, "0\n") if argv[2].endswith("cartridges") else (0, "2\n"))
         return (0, "")
     monkeypatch.setattr(cli, "_real_run", run)
     rc = cli.main(["release", "0.2.0", "--dry-run", "--manifest", str(manifest_path)])
@@ -1010,7 +1029,7 @@ def _fake_git_run(dirty=(), fail=None, off_branch=(), gh_conclusion="success", c
         if argv[3] == "symbolic-ref":
             return (0, "refs/remotes/origin/main\n")
         if argv[3] == "rev-list":
-            return (0, f"{commits}\n" if commits and "--count" in argv else "deadbeef\n")
+            return _level(argv) or (0, f"{commits}\n" if commits and "--count" in argv else "deadbeef\n")
         return (0, "")
     run.current_branch = current_branch
     return calls, run
@@ -1204,7 +1223,7 @@ def test_cli_release_execute_tags_and_pushes_a_changed_component_in_argv_order(t
     calls, fake_run = _fake_git_run()
 
     def run(argv, cwd):
-        return (0, "3\n") if argv[3] == "rev-list" and "--count" in argv else fake_run(argv, cwd)
+        return (0, "3\n") if _is_tag_count(argv) else fake_run(argv, cwd)
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
     monkeypatch.setattr(cli, "_real_run", run)
     monkeypatch.setattr(cli, "_component_declares_tag_trigger", lambda directory: True)
@@ -1265,7 +1284,9 @@ def test_cli_release_execute_runs_the_bump_manifest_land_sequence_and_leaves_the
     monkeypatch.setattr(cli, "_component_declares_tag_trigger", lambda directory: True)
     rc = cli.main(["release", "0.2.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
     assert rc == 0
-    umbrella_calls = [c for c in calls if c[0] == "git" and c[2] == str(umbrella_dir)]
+    # The fetch and the sync gate's `rev-list --count` are not part of the bump-and-land sequence under test.
+    umbrella_calls = [c for c in calls if c[0] == "git" and c[2] == str(umbrella_dir)
+                      and c[3] != "fetch" and "--count" not in c]
     kinds = [c[3] for c in umbrella_calls]
     # Same ordering guarantee as the component case: after `merge`, the
     # executor switches back to the default branch and pulls it before the
@@ -1331,7 +1352,10 @@ def test_cli_release_execute_runs_the_bump_pyproject_land_sequence_in_order_and_
     assert rc == 0
     # The edge's own `rev-list --count` measurement of commits since the tag is
     # not part of the bump-and-land sequence under test, so it is left out.
-    harness_calls = [c for c in calls if c[0] == "git" and c[2] == str(harness_dir) and "--count" not in c]
+    harness_calls = [c for c in calls if c[0] == "git" and c[2] == str(harness_dir) and "--count" not in c
+                     and c[3] != "fetch"]
+    # Planning reads the default branch once (symbolic-ref) before the executor's first call.
+    harness_calls = harness_calls[1:]
     kinds = [c[3] for c in harness_calls]
     # After `merge`, the executor switches the local checkout back to the
     # default branch and pulls it before the pre-existing `tag` step runs —
@@ -1403,6 +1427,7 @@ def test_cli_release_dry_run_still_prints_every_step_and_touches_no_file(tmp_pat
     manifest_path = tmp_path / "manifest.toml"
     manifest_path.write_text(_MANIFEST_TOML)
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
+    monkeypatch.setattr(cli, "_real_run", _fake_git_run()[1])
     rc = cli.main(["release", "0.2.0", "--dry-run", "--manifest", str(manifest_path), "--root", str(tmp_path)])
     out = capsys.readouterr().out
     assert rc == 0
@@ -1657,6 +1682,8 @@ def test_cli_release_dry_run_prints_the_umbrella_github_release_command(tmp_path
     manifest_path.write_text(_MANIFEST_TOML)
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
     monkeypatch.setattr(cli, "_tools_repository_url", lambda: _TOOLS_REPO_URL)
+    # A fake git whose checkouts fetch and sit level with origin, so the sync gate passes.
+    monkeypatch.setattr(cli, "_real_run", _fake_git_run()[1])
     rc = cli.main(["release", "0.2.0", "--dry-run", "--manifest", str(manifest_path)])
     out = capsys.readouterr().out
     assert rc == 0
@@ -1744,7 +1771,7 @@ def test_cli_release_execute_names_the_previous_release_tag_not_the_one_being_cu
     def run(argv, cwd):
         if argv[0] == "git" and argv[3] == "show":
             return (0, manifest_v1)
-        return (0, "3\n") if argv[3] == "rev-list" and "--count" in argv else fake_run(argv, cwd)
+        return (0, "3\n") if _is_tag_count(argv) else fake_run(argv, cwd)
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
     monkeypatch.setattr(cli, "_real_run", run)
     rc = cli.main(["release", "0.2.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
