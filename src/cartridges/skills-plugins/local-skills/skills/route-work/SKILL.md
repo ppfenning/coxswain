@@ -61,6 +61,26 @@ You are a dispatcher for that one case, not a second doer.
   what landed, what was quarantined and why, the cost from `agent-tools
   runs usage`, and the branch to open a pull request from. Merging that
   branch to the default branch is never this skill's job.
+- **Keep your own context clear by backgrounding most in-session work.**
+  The operator's intent, 2026-10-11: the chair should background most tasks so its
+  context window stays clear, by whatever means fits, named or sub agents
+  within the session if not passing to a coxswain. The exit watcher above
+  is one case of this rule. This rule covers what you do in-session
+  instead of routing. Work that changes a repository still routes to the
+  lanes as before.
+  - **Background it** when it is an investigation, a multi-step
+    diagnostic, log or CI digging, a land and the waits around it, or
+    anything that reads more than a few files. Use a background subagent
+    or a background shell job: a named agent, a fork, or
+    `run_in_background`. Keep only the conclusion in your context. Relay
+    it to the operator in a few lines, not the agent's full report.
+  - **Examples to background.** A CI failure dig. A land plus its wait. A
+    sweep across run logs. Filing an intake that needs file reading.
+  - **Do it yourself** when it is a short single lookup or decision: one
+    status command, one file you already know, a yes or no on a land, or
+    choosing what to launch.
+  - **Examples not to background.** One `cox route chair status`. One
+    priority set. A merge decision on a green PR.
 - **Never do the routed work inline.** The one exception is the `inline`
   size above, which is worked in this session and never routed. Once a
   request is routed, it belongs
