@@ -125,7 +125,7 @@ def test_a_pinned_component_is_checked_at_its_tag_not_at_main(tmp_path, monkeypa
 
 def test_the_umbrella_itself_is_checked(tmp_path, monkeypatch, capsys):
     _checkouts(tmp_path, {"README.md": "harness\n"})
-    _commit(tmp_path / "coxswain", {"docs/hosts.md": "store at jarvis" + ".lan\n"})
+    _commit(tmp_path / "coxswain", {"docs/hosts.md": "store at host-a" + ".lan\n"})
     rc = _dry_run(tmp_path, monkeypatch)
     out = capsys.readouterr().out
     assert rc == 2
