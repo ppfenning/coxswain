@@ -3484,7 +3484,7 @@ vocabulary. The umbrella's <code>release-check</code> no longer files a bullet u
 a Plugins page (coxswain #97) and a Dashboards page (coxswain #103).</p>
 <p><strong>Upgrading from 0.16.0.</strong> Nothing to change in the profile. <code>zstandard</code> is now installed with <code>coxswain-tools</code>.
 System one is off unless a provider profile configures a backend. Install <code>coxswain-plugins</code> in place of the
-archived <code>coxswain-sources</code> for the Jira and Asana intake sources. Record files from earlier runs are still read
+archived <code>coxswain-sources</code> for the Jira and Asana intake sources. Record files from earlier runs are still read <!-- clean: allow: names the vendor plugins that moved out -->
 first. <code>python -m harness.store_backfill</code> imports them into the store, and archiving them is optional. The store
 migrates itself to schema version 3 on the next run; the migration adds a nullable <code>runs.host</code>. The new extras
 are optional: <code>postgres</code> to read a Postgres store, <code>parquet</code> for Parquet traces, and <code>lake</code> for the Iceberg lake.</p>

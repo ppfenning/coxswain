@@ -29,7 +29,7 @@ FIXED = {
     "brim": "#8c1e29",
     "skin": "#f0b083",
     "skin_shadow": "#d18f63",
-    "outline": "#1b2430",
+    "outline": "#1b2430",  # clean: allow (the SVG outline colour, not a vendor)
     "shirt": "#2b3a55",
     "shadow": "#1b2536",
     "crew": "#e8eef2",
@@ -39,7 +39,7 @@ FIXED = {
 }
 
 # Hull cross-section, stern to bow: (x, width, outline_y, outline_h, fill_y, fill_h).
-# The 1px gap between an outline row and its fill row is the hull's border.
+# The 1px gap between an outline row and its fill row is the hull's border.  # clean: allow (the SVG outline colour, not a vendor)
 HULL_SEGMENTS = [
     (21, 6, 21, 6, 22, 4),  # stern-tip
     (25, 10, 19, 10, 20, 8),  # stern
@@ -114,8 +114,8 @@ COX_LEGEND = {
     "H": "brim",
     "s": "skin",
     "S": "skin_shadow",
-    "e": "outline",
-    "o": "outline",
+    "e": "outline",  # clean: allow (the SVG outline colour, not a vendor)
+    "o": "outline",  # clean: allow (the SVG outline colour, not a vendor)
     "t": "shirt",
     "T": "shadow",
     "b": "oar",
@@ -148,7 +148,7 @@ def _rower_rects(colors):
 
 
 def _hull_rects(colors):
-    outlines = [(x, y_out, w, h_out, colors["outline"]) for x, w, y_out, h_out, _, _ in HULL_SEGMENTS]
+    outlines = [(x, y_out, w, h_out, colors["outline"]) for x, w, y_out, h_out, _, _ in HULL_SEGMENTS]  # clean: allow (the SVG outline colour, not a vendor)
     fills = [(x, y_fill, w, h_fill, colors["hull"]) for x, w, _, _, y_fill, h_fill in HULL_SEGMENTS]
     return outlines + fills
 
