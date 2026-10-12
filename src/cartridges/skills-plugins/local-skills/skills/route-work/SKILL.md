@@ -62,7 +62,7 @@ You are a dispatcher for that one case, not a second doer.
   runs usage`, and the branch to open a pull request from. Merging that
   branch to the default branch is never this skill's job.
 - **Keep your own context clear by backgrounding most in-session work.**
-  The operator's intent, 2026-10-11: the chair should background most tasks so its
+  The operator's intent: the chair should background most tasks so its
   context window stays clear, by whatever means fits, named or sub agents
   within the session if not passing to a coxswain. The exit watcher above
   is one case of this rule. This rule covers what you do in-session

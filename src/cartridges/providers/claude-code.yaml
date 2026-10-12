@@ -149,8 +149,8 @@ role_budget_usd:
   work_state_arm:   0.80
   docs_apply_arm:   0.80
   style_pass: 1.20          # higher than a reviewer's $0.80: a review reads a diff, this
-                           # seat reads every file the diff touched, in full. The operator's own
-                           # words: "those may need to have a different buffer level, as
+                           # seat reads every file the diff touched, in full. In the
+                           # operator's words: "those may need to have a different buffer level, as
                            # docstrings and full line reads may require higher context."
   # A sweep node replaces twenty narrow ones, so its ceiling is measured
   # against the sweep, not against a narrow task.
@@ -159,7 +159,7 @@ role_budget_usd:
 
 # Roles a graph asks "standard" for that are extraction, not judgment. The
 # profile may run them cheap; changing this resets streaks like any profile edit.
-# A runaway failsafe per role (the operator, 2026-09-28): "The $6 hard cap is a failsafe more than anything, periodic checks
+# A runaway failsafe per role: "The $6 hard cap is a failsafe more than anything, periodic checks
 # should be made well before that limit, and multiple times to allow for go/no-go." Each slice still stops at the role
 # or tier budget above (or the measured bounds row), the guide, where the harness judges go/no-go and resumes; this
 # number caps the session's cumulative spend across slices (graphs `role_ceiling_usd`). The weekly cap bounds the rest,

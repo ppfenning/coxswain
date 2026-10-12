@@ -113,9 +113,11 @@ intake:
 # ── Inline work ─────────────────────────────────────────────────────────────
 # Repositories where the chair may work a small change inline instead of
 # launching a graph. files_max is left unset and takes the base default.
+# Empty here: a team cartridge, kept outside this repository, lists its own
+# inline repos.
 epic_threshold:
   inline:
-    repos: [example-repo]
+    repos: []
 
 context:
   - context/code-style.md

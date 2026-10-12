@@ -165,8 +165,8 @@ Projects v2 board is a one-way mirror — the markdown work store under `work/`
 stays the source of truth the harness reads, and the tracker only ever
 reflects it, never the other direction. `github-projects` is the default the
 moment a repository's remote is github.com; `none` switches the mirror off
-regardless of remote; naming a tracker a cartridge binds (`jira`, `asana`, and
-so on) uses that instead. Every step the mirror needs is planned by a pure
+regardless of remote; naming a tracker a cartridge binds (any issue tracker's
+name) uses that instead. Every step the mirror needs is planned by a pure
 function and carried out by a thin `gh` edge, the same split as everywhere
 else in this repository.
 

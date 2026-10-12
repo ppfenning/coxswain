@@ -393,8 +393,8 @@ def test_an_explicit_none_wins_over_a_github_remote() -> None:
 
 
 def test_an_explicit_bound_tracker_is_returned_verbatim() -> None:
-    cartridge = {"policy": {"tracker": "jira"}}
-    assert tracker_for(cartridge, "git@github.com:example-team/agent-cartridges.git") == "jira"
+    cartridge = {"policy": {"tracker": "example-tracker"}}
+    assert tracker_for(cartridge, "git@github.com:example-team/agent-cartridges.git") == "example-tracker"
 
 
 def test_the_base_cartridge_still_loads_with_no_tracker_set() -> None:

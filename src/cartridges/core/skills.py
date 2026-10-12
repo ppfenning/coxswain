@@ -35,7 +35,7 @@ def index_from_roots(roots: Iterable[Path | str]) -> Mapping[str, list[Path]]:
     """Scan roots for plugins and return {"plugin:skill": [body, ...]}.
 
     A root may be a plugin itself or a directory containing plugins; both are
-    common (`~/repos/example-skills` vs `~/.claude/plugins`), and guessing wrong
+    common (`~/repos/<your-skills>` vs `~/.claude/plugins`), and guessing wrong
     would silently produce an empty index — which would then fail every binding
     at load with a misleading message.
     """

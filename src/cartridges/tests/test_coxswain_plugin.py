@@ -254,7 +254,7 @@ def test_launch_names_the_decompose_step_before_launching_an_epic_at_threshold()
     assert "never launch the epic over an unscoped intake item" in body
 
 
-def test_land_waits_for_operator_to_say_apply_rather_than_deciding_itself():
+def test_land_waits_for_the_operator_to_say_apply_rather_than_deciding_itself():
     body = " ".join(_command_frontmatter_and_body("land")[1].split())
     assert "if the operator explicitly says to apply" in body.lower()
     assert "never decide to apply it on your own reading of the plan" in body.lower()

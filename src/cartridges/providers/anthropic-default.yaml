@@ -11,7 +11,7 @@ auth_env: ANTHROPIC_API_KEY    # env var NAME. Never the value, in any file, eve
 
 # Tiers name model families; core.profile.load_profile resolves each to the
 # newest catalog row in its family, so a new model needs only a catalog row
-# (the operator 2026-10-07: always the latest model, never hardcoded).
+# (always the latest model, never hardcoded).
 tiers:
   cheap:     haiku                      # bulk classification, enumeration
   standard:  sonnet                     # most nodes

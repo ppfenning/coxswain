@@ -30,6 +30,10 @@ jobs:
       - run: pytest -q
       - name: ruff (rules in pyproject.toml; pre-commit mirrors it)
         run: pip install ruff==0.16.6 && ruff check .
+      - name: no operator, host or personal repo named (names come from a secret, never committed)
+        run: python .github/check_clean.py .
+        env:
+          COXSWAIN_CLEAN_DENY: ${{ secrets.COXSWAIN_CLEAN_DENY }}
 
   # The suite on Python 3.15, a canary ahead of the 3.14 floor. Not in the branch ruleset,
   # which requires `test` by name, so a red run here is a finding, not a merge block.

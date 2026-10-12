@@ -135,3 +135,15 @@ def test_a_preset_tightens_ramps_and_touches_nothing_else(team: str) -> None:
     for kind, spec in preset["write_kinds"].items():
         assert spec.get("risk") == base["write_kinds"][kind].get("risk"), f"{team} restated {kind}'s risk"
     assert preset["cartridge_sha"] != base["cartridge_sha"], "different rules, so a different track record"
+
+
+# ── the shipped cartridge names no operator's repository ───────────────────
+
+
+def test_local_resolves_with_no_inline_repos() -> None:
+    """Which repositories the chair may work inline is a team's choice, so the
+    shipped `local` names none; a team cartridge kept outside this repository
+    lists its own."""
+    inline = resolve("local")["epic_threshold"]["inline"]
+    assert inline["repos"] == []
+    assert inline["files_max"] == 2, "files_max still comes from the base default"
