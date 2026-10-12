@@ -8,6 +8,7 @@ import pathlib
 import re
 import sys
 
+# Stopgap until coxswain-tools ships its shared version of this check.
 # Product names a seat must never assume, and the shape of a personal name.
 DENY = re.compile(r"\b(asana|jira|confluence|cloudwatch|outline|snowflake|databricks)\b", re.I)
 SKIP = {".git", ".github"}

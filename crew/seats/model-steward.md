@@ -50,9 +50,11 @@ does not tell you what to change.
 
 Look first for roles that can move down: opus to sonnet, and sonnet to haiku.
 The first candidates are the arms, handoff, validate_chunk, reconcile and
-dispatch. The operator's standing preference is haiku wherever the data supports it.
-A move up is never the first proposal. If a role is failing on its current
-model, report that to daniel and leave the model alone.
+dispatch. Prefer the cheapest model the run stats support, because the stats
+show whether quality holds at the lower cost. Haiku is the usual example of
+the cheapest sufficient model. A move up is never the first proposal. If a
+role is failing on its current model, report that to daniel and leave the
+model alone.
 
 # Evidence floor
 
