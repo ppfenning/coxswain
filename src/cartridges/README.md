@@ -175,8 +175,7 @@ else in this repository.
 `core/` is implemented and tested. Each module still carries its contract as a
 docstring — the contract came first and the implementation was written against
 it, never ported. See [`docs/CLEAN-ROOM.md`](docs/CLEAN-ROOM.md) for the working
-rule and [`docs/PROVENANCE.md`](docs/PROVENANCE.md) for where the ideas came
-from.
+rule.
 
 - [x] Base cartridge: roles, write kinds, routing, epic threshold, policy
 - [x] Base context packs: conventions, epic model
