@@ -3537,11 +3537,10 @@ initiative, measured against open work only. A ticket edited by hand is not over
 <p><strong>A tick that cannot hang.</strong> The loop's store connections carry connect, keepalive and statement timeouts. The
 facts stage has a wall-clock bound; a tick that overruns it is abandoned, and <code>cox chair run</code> exits for its
 supervisor after three overruns in a row.</p>
-<p><strong>Deferred to 0.39.0.</strong> Rerunning a red main from a CI job that never started: this release carries the
-classifier, the rules and the ports, but the loop does not wire the green-since reader or the rerun port yet,
-and the flow test that proves the whole path is not written. Also deferred: the reach allow-list, home-relative
-repository paths, and an epic land that closes its tasks' review pull requests (the forge call and the selection
-core land here; the land does not call them yet).</p>
+<p><strong>A red main from a job that never started is rerun.</strong> When main goes red because a CI job never started, the
+loop reruns it instead of reverting the land that preceded it; a real test failure is still reverted.</p>
+<p><strong>Deferred to 0.39.0.</strong> The reach allow-list, home-relative repository paths, and an epic land that closes its
+tasks' review pull requests (the forge call and the selection core land here; the land does not call them yet).</p>
 <p><strong>Upgrading from 0.37.0.</strong> The store schema is unchanged. Courier rows and decisions are addressed to the
 profile's <code>operator</code>, which defaults to <code>operator</code>. An install whose courier rows were addressed to a person's
 name sets <code>operator: &lt;name&gt;</code> in its provider profile, then restarts the chair loop. <code>cox settings get --json</code>
@@ -3601,10 +3600,14 @@ names rule is skipped and the other rules still run. coxswain-crew rejoins locks
 <li><code>cox route priority --top</code> and <code>--bottom</code> place an initiative one above or one below every other open
   initiative, measured against open work only, and a queued intake takes a priority as well (tools #1524,
   tools #1527, tools #1531). Decomposed tasks inherit their intake's priority (tools #1547).</li>
-<li>The groundwork for rerunning a red main from a CI job that never started instead of reverting it: the job
-  classifier, the rules, a per-commit read of main's CI, the green-since reader, the facts, the executor's rerun
-  port, and a revert that replaces its own leftover branch (tools #1520, tools #1521, tools #1534, tools #1538,
-  tools #1539, tools #1541, tools #1542). The loop does not wire it yet; see Deferred.</li>
+<li>A red main from a CI job that never started is rerun instead of reverted: the job classifier, the rules, a
+  per-commit read of main's CI, the green-since reader, the facts, the executor's rerun port, and a revert that
+  replaces its own leftover branch (tools #1520, tools #1521, tools #1534, tools #1538, tools #1539, tools #1541,
+  tools #1542). The loop wires the green-since reader and the rerun port, and a pending watch resolves once main
+  goes green at or after its commit (tools #1559); an end-to-end test covers the rerun, the revert and no
+  walk-back (tools #1560).</li>
+<li>Clearing branches before a relaunch ignores another initiative's lands in the same repository, so a relaunch
+  is not starved by them (tools #1561).</li>
 <li>The forge can close pull requests, and a pure core picks an epic land's task review pull requests to close
   (tools #1548).</li>
 <li>A land renews its repository lease while it waits on checks (tools #1535).</li>
