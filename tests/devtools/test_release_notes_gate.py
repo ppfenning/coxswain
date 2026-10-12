@@ -72,11 +72,14 @@ def _run_release(tmp_path, monkeypatch, text, *flags):
 
     def fake_run(argv, cwd):
         calls.append(argv)
+        if "--left-right" in argv:
+            return (0, "0\t0\n")  # the sync gate's count: level with origin
         return (0, "1\n") if "rev-list" in argv else (0, "")
 
     monkeypatch.setattr(release_check, "CHECKS", (release_check.check_notes_blanks,))
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
     monkeypatch.setattr(cli, "_real_run", fake_run)
+    monkeypatch.setattr(cli, "_stdout_run", fake_run)
     monkeypatch.setattr(cli, "_component_declares_tag_trigger", lambda directory: True)
     rc = cli.main(["release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path), *flags])
     return rc, calls

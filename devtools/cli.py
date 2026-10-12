@@ -941,6 +941,15 @@ def _release(a: argparse.Namespace) -> int:
     overrides = dict(pair.split("=", 1) for pair in (a.checkout or []))
     component_dirs = {name: release.component_dir(root, name, overrides) for name in manifest.get("components", {})}
     umbrella = a.umbrella or str(Path(root) / "coxswain")
+    # The notes text is the first gate: a blank refuses before any git step runs, the fetch included.
+    blanks = [] if a.tap_only else release.gate(release_check.run_checks(release_check.gather_version_facts(
+        manifest, str(manifest_path), {}, release_check.facts_plan(root, manifest)["umbrella"]),
+        (release_check.check_notes_blanks,)), None)
+    if blanks:
+        for step in blanks:
+            print(f"refuse {step['component']}: {step['detail']}")
+        return 2 if a.dry_run else _after_release(2, a.version, blanks, *_notify_config(_profile_path(a.profile, os.environ)),
+                                                  time.time(), failed=f"refuse {blanks[0]['component']}")
     # Fetch once per checkout before anything is planned, so no plan reads stale refs. A tap-only
     # resume runs after the cut and fetches only the tap clone, in its own step.
     fetch_failures: dict[str, str] = {}
