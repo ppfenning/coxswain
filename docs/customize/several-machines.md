@@ -173,7 +173,7 @@ profile:
 
 ```yaml
 object_store:
-  endpoint: http://garage.example.internal:3900
+  endpoint: http://example.internal:3900
   region: garage
   access_key_env: GARAGE_ACCESS_KEY_ID
   secret_key_env: GARAGE_SECRET_ACCESS_KEY
