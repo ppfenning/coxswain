@@ -1682,6 +1682,8 @@ def test_cli_release_dry_run_prints_the_umbrella_github_release_command(tmp_path
     manifest_path.write_text(_MANIFEST_TOML)
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
     monkeypatch.setattr(cli, "_tools_repository_url", lambda: _TOOLS_REPO_URL)
+    # A fake git whose checkouts fetch and sit level with origin, so the sync gate passes.
+    monkeypatch.setattr(cli, "_real_run", _fake_git_run()[1])
     rc = cli.main(["release", "0.2.0", "--dry-run", "--manifest", str(manifest_path)])
     out = capsys.readouterr().out
     assert rc == 0
