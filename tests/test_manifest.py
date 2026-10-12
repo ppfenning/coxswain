@@ -28,7 +28,7 @@ def test_every_component_is_pinned_in_lockstep_or_lives_here():
         assert ("repo" in c) != ("path" in c), name
         if "repo" in c:
             if c.get("lockstep", True):
-                # Changed-only versioning (the operator, 2026-09-23): a component with no changes since its last tag keeps
+                # Changed-only versioning: a component with no changes since its last tag keeps
                 # it, so a lockstep component sits at this release or an earlier one, never a later one.
                 assert SEMVER.match(c["tag"].lstrip("v")), f"{name} pins a non-semver tag {c['tag']}"
                 assert _key(c["tag"]) <= _key(tag), f"{name} is pinned past {tag}"
