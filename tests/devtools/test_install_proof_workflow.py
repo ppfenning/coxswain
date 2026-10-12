@@ -90,6 +90,12 @@ def test_both_jobs_run_on_arm64_macos_and_the_homebrew_container():
     assert jobs["proof-macos"]["steps"] == jobs["proof-linux"]["steps"]
 
 
+def test_fetch_sources_provides_python3_for_the_checker_only_when_it_is_missing():
+    script = _script("proof-linux", "Fetch sources")
+    assert "command -v python3 >/dev/null || { sudo apt-get update" in script
+    assert "apt-get install -y -qq --no-install-recommends python3" in script
+
+
 def test_triggers_are_dispatch_and_call_with_three_inputs():
     triggers = _workflow()[True]
     assert "workflow_dispatch" in triggers
