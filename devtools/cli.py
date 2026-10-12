@@ -8,10 +8,13 @@ from __future__ import annotations
 import argparse
 import contextlib
 import importlib.metadata
+import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import tomllib
@@ -28,6 +31,7 @@ from devtools import (
     release_check_notes,
     release_check_pages,
     release_check_readmes,
+    release_clean,
     release_notes_blanks,
     release_notes_draft,
     release_notes_index,
@@ -39,6 +43,8 @@ from devtools import (
 _NO_CHECKS = "no checks reported"
 # the umbrella's own README is not the command table's; render tools' by default
 TOOLS_README = Path(__file__).resolve().parent.parent.parent / "coxswain-tools" / "README.md"
+# the canonical clean checker, copied verbatim from coxswain-tools; the release runs it over every tree it pins
+CHECK_CLEAN = Path(__file__).resolve().parent.parent / ".github" / "check_clean.py"
 
 
 def _wait_decision(returncode: int, output: str, elapsed_s: float, timeout_s: float) -> str:
@@ -548,9 +554,10 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
     A `github_release` step checks `gh release view` first and edits an
     existing release instead of creating one. One line per step; the first
     failure stops the rest."""
-    refusal = next((s for s in steps if s["kind"] == "refuse"), None)
-    if refusal is not None:
-        print(f"refuse {refusal['component']}: {refusal['detail']}")
+    refused = [s for s in steps if s["kind"] == "refuse"]
+    if refused:
+        for refusal in refused:
+            print(f"refuse {refusal['component']}: {refusal['detail']}")
         return 2
 
     for name, directory in _tagged_checkouts(steps, root, overrides, umbrella):
@@ -931,6 +938,50 @@ def _after_release(rc: int, version: str, steps: list[dict], config, state_path,
     return rc
 
 
+def _load_checker(path: Path = CHECK_CLEAN):
+    """The checker module loaded from its file, so the release runs exactly the
+    rules CI runs and no second copy of them can drift."""
+    spec = importlib.util.spec_from_file_location("check_clean", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _tree_hits(directory: str, ref: str, checker, active) -> list[str] | None:
+    """The checker's hit lines over `ref` as `git archive` exports it from
+    `directory` — tracked files only, exactly what the tag ships — or None
+    when git could not export it."""
+    with tempfile.TemporaryDirectory() as tmp:
+        archive, tree = Path(tmp) / "tree.tar", Path(tmp) / "tree"
+        result = subprocess.run(["git", "-C", directory, "archive", "--format=tar", "-o", str(archive), ref],
+                                capture_output=True)
+        if result.returncode != 0:
+            return None
+        tree.mkdir()
+        with tarfile.open(archive) as tar:
+            tar.extractall(tree, filter="data")
+        return list(checker.hits(tree, active))
+
+
+def _clean_gate(steps: list[dict], root: str, overrides: dict, umbrella: str,
+                environ: Mapping[str, str]) -> tuple[list[dict], str | None]:
+    """`refuse` steps for every personal reference in a tree the plan pins,
+    and the checker's one line when the names rule is skipped. The names rule
+    reads COXSWAIN_CLEAN_DENY from `environ`, the same variable CI passes."""
+    checker = _load_checker()
+    try:
+        active, skipped = checker.rules(environ)
+    except re.error:
+        return release_clean.unusable_deny(), None
+    results = {}
+    for component, ref in release_clean.clean_targets(steps):
+        directory = umbrella if component == release_clean.UMBRELLA else release.component_dir(root, component, overrides)
+        # origin/<default>, as the commit count reads it: the sync gate holds HEAD level with it before any tag.
+        at = ref or f"origin/{_default_branch(directory, _real_run)}"
+        results[component] = (at, _tree_hits(directory, at, checker, active))
+    return release_clean.refusals(results), skipped
+
+
 def _release(a: argparse.Namespace) -> int:
     manifest_path = Path(a.manifest) if a.manifest else Path("coxswain") / "manifest.toml"
     manifest = _load_manifest(manifest_path)
@@ -1001,6 +1052,12 @@ def _release(a: argparse.Namespace) -> int:
         cargo_versions=cargo_versions, tap_only=a.tap_only)
     # The drift gate guards a cut; a tap-only resume runs after the cut landed and reads only PyPI and the tap clone.
     steps = plan_steps if a.tap_only else release.gate(drifts, a.allow_doc_drift, plan_steps) + plan_steps
+    if not a.tap_only:
+        # Every tree the release pins, the umbrella's included, is checked at that exact ref, dry run or not.
+        unclean, skipped = _clean_gate(plan_steps, root, overrides, umbrella, os.environ)
+        if skipped:
+            print(skipped)
+        steps = unclean + steps
     if a.dry_run:
         for step in steps:
             if step["kind"] == "tap_formula_pr":

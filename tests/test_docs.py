@@ -288,9 +288,9 @@ def test_clip_also_truncates_a_line_wider_than_the_terminal():
 
 
 def test_redact_replaces_the_home_directory_with_a_tilde():
-    line = "profile ok /home/someone/.config/agent-tools/profile.yaml"
-    assert _shots.redact(line, "/home/someone") == "profile ok ~/.config/agent-tools/profile.yaml"
-    assert _shots.redact(line, "/home/someone/") == "profile ok ~/.config/agent-tools/profile.yaml"
+    line = "profile ok /home/someone/.config/agent-tools/profile.yaml"  # clean: allow
+    assert _shots.redact(line, "/home/someone") == "profile ok ~/.config/agent-tools/profile.yaml"  # clean: allow
+    assert _shots.redact(line, "/home/someone/") == "profile ok ~/.config/agent-tools/profile.yaml"  # clean: allow
     assert _shots.redact("nothing to do", "") == "nothing to do"
 
 
