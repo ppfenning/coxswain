@@ -120,7 +120,7 @@ jobs:
     outputs:
       linux_outcome: ${{ steps.upgrade.outcome }} # outcome, not conclusion: continue-on-error turns a failed step's conclusion into success
     env:
-      HOME: /home/linuxbrew # the container's /github/home is not writable by the linuxbrew user
+      HOME: /home/linuxbrew # clean: allow (Homebrew's own user, no person); the container's /github/home is not writable by the linuxbrew user
       BREW_UPDATE: "1" # the image's Homebrew can predate its bottles' format; the macOS runner's must not update (openssl link conflict)
     steps:
       - name: Fetch sources

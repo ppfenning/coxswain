@@ -1,5 +1,5 @@
 """The maintainer's release edge, moved out of the published `cox dev` group:
-`uv run --frozen python -m devtools release|release-check|backfill-github-releases|commands`,
+`uv run --frozen python -m devtools release|release-check|notes-draft|backfill-github-releases|commands`,
 run from the umbrella checkout (`--frozen`, or a moved component version rewrites
 uv.lock and the release refuses a dirty umbrella). Same arguments and output as `cox dev ...`."""
 
@@ -8,10 +8,13 @@ from __future__ import annotations
 import argparse
 import contextlib
 import importlib.metadata
+import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import tomllib
@@ -28,12 +31,20 @@ from devtools import (
     release_check_notes,
     release_check_pages,
     release_check_readmes,
+    release_clean,
+    release_notes_blanks,
+    release_notes_draft,
+    release_notes_index,
+    release_notes_opener,
+    release_notes_prs,
     run_status,
 )
 
 _NO_CHECKS = "no checks reported"
 # the umbrella's own README is not the command table's; render tools' by default
 TOOLS_README = Path(__file__).resolve().parent.parent.parent / "coxswain-tools" / "README.md"
+# the canonical clean checker, copied verbatim from coxswain-tools; the release runs it over every tree it pins
+CHECK_CLEAN = Path(__file__).resolve().parent.parent / ".github" / "check_clean.py"
 
 
 def _wait_decision(returncode: int, output: str, elapsed_s: float, timeout_s: float) -> str:
@@ -543,9 +554,10 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
     A `github_release` step checks `gh release view` first and edits an
     existing release instead of creating one. One line per step; the first
     failure stops the rest."""
-    refusal = next((s for s in steps if s["kind"] == "refuse"), None)
-    if refusal is not None:
-        print(f"refuse {refusal['component']}: {refusal['detail']}")
+    refused = [s for s in steps if s["kind"] == "refuse"]
+    if refused:
+        for refusal in refused:
+            print(f"refuse {refusal['component']}: {refusal['detail']}")
         return 2
 
     for name, directory in _tagged_checkouts(steps, root, overrides, umbrella):
@@ -926,6 +938,50 @@ def _after_release(rc: int, version: str, steps: list[dict], config, state_path,
     return rc
 
 
+def _load_checker(path: Path = CHECK_CLEAN):
+    """The checker module loaded from its file, so the release runs exactly the
+    rules CI runs and no second copy of them can drift."""
+    spec = importlib.util.spec_from_file_location("check_clean", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _tree_hits(directory: str, ref: str, checker, active) -> list[str] | None:
+    """The checker's hit lines over `ref` as `git archive` exports it from
+    `directory` — tracked files only, exactly what the tag ships — or None
+    when git could not export it."""
+    with tempfile.TemporaryDirectory() as tmp:
+        archive, tree = Path(tmp) / "tree.tar", Path(tmp) / "tree"
+        result = subprocess.run(["git", "-C", directory, "archive", "--format=tar", "-o", str(archive), ref],
+                                capture_output=True)
+        if result.returncode != 0:
+            return None
+        tree.mkdir()
+        with tarfile.open(archive) as tar:
+            tar.extractall(tree, filter="data")
+        return list(checker.hits(tree, active))
+
+
+def _clean_gate(steps: list[dict], root: str, overrides: dict, umbrella: str,
+                environ: Mapping[str, str]) -> tuple[list[dict], str | None]:
+    """`refuse` steps for every personal reference in a tree the plan pins,
+    and the checker's one line when the names rule is skipped. The names rule
+    reads COXSWAIN_CLEAN_DENY from `environ`, the same variable CI passes."""
+    checker = _load_checker()
+    try:
+        active, skipped = checker.rules(environ)
+    except re.error:
+        return release_clean.unusable_deny(), None
+    results = {}
+    for component, ref in release_clean.clean_targets(steps):
+        directory = umbrella if component == release_clean.UMBRELLA else release.component_dir(root, component, overrides)
+        # origin/<default>, as the commit count reads it: the sync gate holds HEAD level with it before any tag.
+        at = ref or f"origin/{_default_branch(directory, _real_run)}"
+        results[component] = (at, _tree_hits(directory, at, checker, active))
+    return release_clean.refusals(results), skipped
+
+
 def _release(a: argparse.Namespace) -> int:
     manifest_path = Path(a.manifest) if a.manifest else Path("coxswain") / "manifest.toml"
     manifest = _load_manifest(manifest_path)
@@ -996,6 +1052,12 @@ def _release(a: argparse.Namespace) -> int:
         cargo_versions=cargo_versions, tap_only=a.tap_only)
     # The drift gate guards a cut; a tap-only resume runs after the cut landed and reads only PyPI and the tap clone.
     steps = plan_steps if a.tap_only else release.gate(drifts, a.allow_doc_drift, plan_steps) + plan_steps
+    if not a.tap_only:
+        # Every tree the release pins, the umbrella's included, is checked at that exact ref, dry run or not.
+        unclean, skipped = _clean_gate(plan_steps, root, overrides, umbrella, os.environ)
+        if skipped:
+            print(skipped)
+        steps = unclean + steps
     if a.dry_run:
         for step in steps:
             if step["kind"] == "tap_formula_pr":
@@ -1120,6 +1182,131 @@ def _release_check(a: argparse.Namespace) -> int:
     return 0
 
 
+def _text_run(argv: list[str]) -> str:
+    """stdout of `argv`; a failing command raises, so a draft never reads half a window."""
+    return subprocess.run(argv, capture_output=True, text=True, check=True).stdout
+
+
+def _claude_complete(prompt: str) -> str:
+    """The `--cheap-opener` model call: one non-interactive `claude -p` on the haiku tier."""
+    return subprocess.run(["claude", "-p", "--model", "haiku"], input=prompt, capture_output=True, text=True,
+                          check=True).stdout.strip()
+
+
+_DRAFT_FAILURES = (subprocess.CalledProcessError, OSError, ValueError, KeyError)
+
+
+def _bumped_components(steps: list[dict]) -> list[str]:
+    """Components the plan tags: a `tag` or `rejoin` step names each one; `pinned` and the umbrella's `tag_self` do not."""
+    return [step["component"] for step in steps if step["kind"] in ("tag", "rejoin")]
+
+
+def _draft_plan(manifest: dict, version: str, root: str, overrides: dict, run: Callable[[list[str]], str]) -> list[dict]:
+    """`release.release_plan` fed the way `_release` feeds it: remote tags per repo, commits past each pin."""
+    def as_pair(argv: list, cwd: str | None) -> tuple:
+        try:
+            return 0, run(argv)
+        except _DRAFT_FAILURES:
+            return 1, ""
+
+    components = {name: spec for name, spec in manifest.get("components", {}).items() if spec.get("repo")}
+    existing_tags = {}
+    for name, spec in components.items():
+        try:
+            existing_tags[name] = release.parse_ls_remote(run(["git", "ls-remote", "--tags", f"https://github.com/{spec['repo']}.git"]))
+        except _DRAFT_FAILURES:
+            existing_tags[name] = None
+    pinned_commits = {}
+    for name, spec in components.items():
+        directory = release.component_dir(root, name, overrides)
+        # origin/<default>, not HEAD: a component with only remote commits is changed, not pinned.
+        rc, out = as_pair(["git", "-C", directory, "rev-list", f"{spec['tag']}..origin/{_default_branch(directory, as_pair)}",
+                           "--count"], None)
+        pinned_commits[name] = int(out.strip()) if rc == 0 and out.strip().isdigit() else 0
+    return release.release_plan(manifest, version, existing_tags, pinned_commits=pinned_commits)
+
+
+def _opened(text: str, version: str, complete: Callable[[str], str]) -> str:
+    """`text` with the opener blank filled from its own bullets; the marker stays, with the reason printed, when no draft passes."""
+    bullets = [line[2:] for line in text.splitlines() if line.startswith("- ")]
+    try:
+        opener = release_notes_opener.draft_opener(version, bullets, complete)
+    except _DRAFT_FAILURES as exc:
+        print(f"opener left blank: the model call failed: {exc}")
+        return text
+    if opener is None:
+        print("opener left blank: the draft broke the opener rules twice (3 to 5 sentences, no banned words or marks)")
+        return text
+    return release_notes_blanks.replace_blank(text, "opener", opener)
+
+
+def _release_notes_draft(a: argparse.Namespace, run: Callable[[list[str]], str] = _text_run,
+                         complete: Callable[[str], str] | None = None) -> int:
+    """`notes-draft <version>`: write docs/releases/<version>.md from the PRs merged since each bumped
+    component's previous tag, then register it in the releases index and the nav. Reads and writes live
+    here; the modules compute. A finished file (no blanks left) is refused, never overwritten."""
+    manifest_path = Path(a.manifest) if a.manifest else Path("coxswain") / "manifest.toml"
+    manifest = _load_manifest(manifest_path)
+    if manifest is None:
+        print(f"refusing: no manifest at {manifest_path}")
+        return 2
+    root = a.root or "."
+    overrides = dict(pair.split("=", 1) for pair in (a.checkout or []))
+    umbrella = Path(a.umbrella) if a.umbrella else Path(release_check.facts_plan(root, manifest)["umbrella"])
+    notes_path = umbrella / "docs" / "releases" / f"{a.version}.md"
+    index_path = umbrella / "docs" / "releases" / "index.md"
+    nav_path = umbrella / "mkdocs.yml"
+    existing = _read_text_or_none(notes_path)
+    if existing is not None and not release_notes_blanks.find_blanks(existing):
+        print(f"refuse: {notes_path} has no blanks left; a finished file is never overwritten")
+        return 2
+    try:
+        steps = _draft_plan(manifest, a.version, root, overrides, run)
+        refusals = [step["detail"] for step in steps if step["kind"] == "refuse"]
+        if refusals:
+            print("\n".join(f"refuse: {detail}" for detail in refusals))
+            return 2
+        components = manifest.get("components", {})
+        bumped = _bumped_components(steps)
+        windows = {name: release_notes_prs.gather_component_prs(
+            run, name, components[name]["repo"], release.component_dir(root, name, overrides), a.version) for name in bumped}
+        umbrella_slug = release.umbrella_release_slug(manifest, _tools_repository_url())
+        if umbrella_slug:
+            windows[release_notes_draft.UMBRELLA] = release_notes_prs.gather_component_prs(
+                run, release_notes_draft.UMBRELLA, umbrella_slug, str(umbrella), a.version)
+    except _DRAFT_FAILURES as exc:
+        print(f"refuse: could not gather the merged PRs: {exc}")
+        return 2
+    # The manifest still names the previous version until the cut bumps it; the draft describes this one.
+    this_release = {**manifest, "coxswain": {**manifest.get("coxswain", {}), "version": a.version}}
+    # unknown: where migration files live; none are read, so Upgrading says "no migrations" until a path is named.
+    facts = release_notes_prs.upgrade_facts(this_release, [])
+    listed = [(name, a.version if name in bumped else spec["tag"].removeprefix("v"))
+              for name, spec in components.items() if spec.get("tag")]
+    text = release_notes_draft.render_notes(a.version, {name: prs for name, (_, prs) in windows.items()}, listed, facts)
+    if a.cheap_opener:
+        text = _opened(text, a.version, complete or _claude_complete)
+    index_text, nav_text = _read_text_or_none(index_path), _read_text_or_none(nav_path)
+    missing = [str(path) for path, body in ((index_path, index_text), (nav_path, nav_text)) if body is None]
+    if missing:
+        print(f"refuse: cannot read {', '.join(missing)}")
+        return 2
+    tags = [(name, f"v{a.version}" if name in bumped else spec["tag"]) for name, spec in components.items() if spec.get("tag")]
+    try:
+        registered = [(index_path, release_notes_index.add_index_rows(index_text, a.version, tags)),
+                      (nav_path, release_notes_index.add_nav_line(nav_text, a.version))]
+    except ValueError as exc:
+        print(f"refuse: {exc}")
+        return 2
+    notes_path.parent.mkdir(parents=True, exist_ok=True)
+    for path, body in [(notes_path, text), *registered]:
+        if _read_text_or_none(path) != body:
+            path.write_text(body, encoding="utf-8")
+    print(f"wrote {notes_path}")
+    print(f"blanks still to fill: {', '.join(release_notes_blanks.find_blanks(text)) or 'none'}")
+    return 0
+
+
 def _dev_commands(a: argparse.Namespace) -> int:
     """`cox dev commands render`: rewrite the README's marked Commands block,
     and with --pages-dir the slash-command pages, from `COMMAND_TABLE`."""
@@ -1174,6 +1361,16 @@ def build_parser() -> argparse.ArgumentParser:
     chk.add_argument("--json", action="store_true")
     chk.add_argument("--checkout", action="append", default=None, metavar="NAME=PATH")
     chk.set_defaults(fn=_release_check)
+
+    draft = sub.add_parser("notes-draft", help="write docs/releases/<version>.md from the PRs merged since each bumped component's last tag, and register it in the index and nav")
+    draft.add_argument("version")
+    draft.add_argument("--cheap-opener", dest="cheap_opener", action="store_true",
+                       help="fill the opener blank with a short model draft; the Known gaps blank is always left")
+    draft.add_argument("--manifest")
+    draft.add_argument("--root", default=".")
+    draft.add_argument("--checkout", action="append", default=None, metavar="NAME=PATH")
+    draft.add_argument("--umbrella")
+    draft.set_defaults(fn=_release_notes_draft)
 
     back = sub.add_parser("backfill-github-releases",
                           help="walk the umbrella's past docs/releases/<version>.md files oldest-first, creating or editing the GitHub Release for every tagged repo missing or drifted from one")

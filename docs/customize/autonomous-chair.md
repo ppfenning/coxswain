@@ -198,7 +198,7 @@ cox route launch epic --initiative work/<id> --on <host>
 The status line names a remote launch as `epic:<initiative>@<host>`:
 
 ```text
-chair 09-26 12:30 EDT | lanes 8/8 | lands 0 | launched: epic:x@jarvis | limits 5h 20% | needs chair: none
+chair 09-26 12:30 EDT | lanes 8/8 | lands 0 | launched: epic:x@host-a | limits 5h 20% | needs chair: none
 ```
 
 An approved task on a remote run gets a fetch before its land. The run has a

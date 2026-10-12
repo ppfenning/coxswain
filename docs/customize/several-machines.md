@@ -67,7 +67,7 @@ On the chair, list the lane machines in the routing profile:
 
 ```yaml
 lane_hosts:
-  - {name: box2, ssh: me@box2, workspace_dir: /home/me/workspace}
+  - {name: box2, ssh: user@box2, workspace_dir: /home/user/workspace}
 ```
 
 `workspace_dir` is the workspace's absolute path on that machine.
@@ -173,7 +173,7 @@ profile:
 
 ```yaml
 object_store:
-  endpoint: http://garage.lan:3900
+  endpoint: http://example.internal:3900
   region: garage
   access_key_env: GARAGE_ACCESS_KEY_ID
   secret_key_env: GARAGE_SECRET_ACCESS_KEY

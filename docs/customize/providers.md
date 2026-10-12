@@ -40,6 +40,21 @@ its capabilities and puts the `cheap` tier on a local OpenAI-compatible
 endpoint, but no runner drives it yet. The others are `status = "planned"`
 and have no profile to point at.
 
+## The operator
+
+The provider-profile key `operator` names the human the courier and
+decisions address. Its default is `operator`, so a profile that omits it
+addresses "operator". Set it to a team role or a handle:
+
+```yaml
+name: claude-code
+operator: reviewer-on-call
+```
+
+The settings command flags operator-only rows with the field
+`operator_only`. The older field name `pat_only` is accepted as an alias
+for one release and then removed, so use `operator_only` in anything new.
+
 ## Where the detail lives
 
 The full shape of a provider profile — the file format, every field a
