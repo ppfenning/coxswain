@@ -13,8 +13,10 @@ jobs:
         with: { python-version: "3.14" }
       - name: every seat is well formed
         run: python3 .github/check_seats.py
-      - name: nothing names an employer
-        run: python3 .github/check_clean.py
+      - name: nothing names a person, host, home path or vendor
+        run: python3 .github/check_clean.py .
+        env:
+          COXSWAIN_CLEAN_DENY: ${{ secrets.COXSWAIN_CLEAN_DENY }}
       - name: ruff (rules in ruff.toml; pre-commit mirrors it)
         run: pip install ruff==0.16.6 && ruff check .
       - name: install.sh is sound
