@@ -76,6 +76,13 @@ reachable on `PATH`.
 
 `cox setup doctor` is what the checks above look like against a real install.
 
+## Where personal setup goes
+
+Personal setup never goes in a shipped repository. It lives in one of two homes.
+
+- **The team cartridge** holds the cast, the policy, the inline repos and the context packs. A cartridge named `example-team` is one such home.
+- **The provider profile** holds the operator, the store and the notifier. A profile named `example-provider` is one such home.
+
 ## Upgrade
 
 ```sh
