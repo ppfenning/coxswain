@@ -80,6 +80,27 @@ def check_versions(facts: Mapping) -> list[Drift]:
     return ([umbrella_drift] if umbrella_drift is not None else []) + component_drifts + lockstep_drifts
 
 
+_BLANK_LABELS = {
+    "opener": "write the opener paragraph, 3 to 5 sentences introducing the release",
+    "known-gaps": "write the Known gaps paragraph, on what this release does not do yet",
+}
+
+
+def check_notes_blanks(facts: Mapping) -> list[Drift]:
+    """One drift per blank marker the version's notes text still holds, in `find_blanks` order."""
+    notes_path = facts.get("release_notes") or "docs/releases/<version>.md"
+    return [
+        Drift("notes_blank", notes_path, None, notes_path, None,
+              f"notes still hold the {name} blank: {_BLANK_LABELS.get(name, 'write it')}")
+        for name in release.blank_names(facts.get("notes_text", ""))
+    ]
+
+
+def check_notes_page(facts: Mapping) -> list[Drift]:
+    """The notes page's bullet citations, then its unwritten blanks, as one registered check."""
+    return release_check_notes.check_notes(facts) + check_notes_blanks(facts)
+
+
 def gather_version_facts(manifest: Mapping, manifest_path: str, component_dirs: Mapping[str, str], umbrella: str) -> dict:
     """Edge for `check_versions`: the manifest's declared version, and each
     component's and the umbrella's pyproject.toml read off disk (`{}` when
@@ -90,8 +111,12 @@ def gather_version_facts(manifest: Mapping, manifest_path: str, component_dirs: 
     def read(path: Path) -> dict:
         return tomllib.loads(path.read_text()) if path.exists() else {}
 
+    version = manifest.get("coxswain", {}).get("version")
+    # Both `release` and `release-check` gather here, so the one notes read for the blank check lives at this edge.
+    notes_path = Path(umbrella) / "docs" / "releases" / f"{version}.md" if version else None
     return {
-        "expected_version": manifest.get("coxswain", {}).get("version"),
+        "notes_text": notes_path.read_text() if notes_path and notes_path.exists() else "",
+        "expected_version": version,
         "manifest_path": manifest_path,
         "components": manifest.get("components", {}),
         "component_pyprojects": {name: read(Path(d) / "pyproject.toml") for name, d in component_dirs.items()},
@@ -100,7 +125,7 @@ def gather_version_facts(manifest: Mapping, manifest_path: str, component_dirs: 
     }
 
 
-CHECKS: tuple[Callable[[Mapping], list[Drift]], ...] = (release_check_cli.check_cli_surface, check_manifest, release_check_notes.check_notes, check_pages, check_readmes, check_versions, check_release_index)
+CHECKS: tuple[Callable[[Mapping], list[Drift]], ...] = (release_check_cli.check_cli_surface, check_manifest, check_notes_page, check_pages, check_readmes, check_versions, check_release_index)
 
 
 def run_checks(facts: Mapping, checks: tuple[Callable[[Mapping], list[Drift]], ...] | None = None) -> list[Drift]:
