@@ -92,7 +92,8 @@ def test_both_jobs_run_on_arm64_macos_and_the_homebrew_container():
 
 def test_fetch_sources_provides_python3_for_the_checker_only_when_it_is_missing():
     script = _script("proof-linux", "Fetch sources")
-    assert "command -v python3 >/dev/null || { sudo apt-get update" in script
+    assert "if ! command -v python3 >/dev/null; then" in script
+    assert "\n  sudo apt-get update -qq\n" in script  # not inside an || list, so -e fails the step if apt fails
     assert "apt-get install -y -qq --no-install-recommends python3" in script
 
 

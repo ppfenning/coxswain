@@ -40,7 +40,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           # the checker needs a python3; the Homebrew container has none, and cox's python@3.x links none once it is not brew's default
-          command -v python3 >/dev/null || { sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends python3 >/dev/null; }
+          if ! command -v python3 >/dev/null; then
+            sudo rm -f /etc/apt/sources.list.d/github-cli.list # the image's GitHub CLI apt source fails signature checks, and the proof needs nothing from it
+            sudo apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends python3 >/dev/null
+          fi
           mkdir -p "$SRC" && cd "$SRC"
           git init -q
           git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}"
@@ -110,7 +114,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           # the checker needs a python3; the Homebrew container has none, and cox's python@3.x links none once it is not brew's default
-          command -v python3 >/dev/null || { sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends python3 >/dev/null; }
+          if ! command -v python3 >/dev/null; then
+            sudo rm -f /etc/apt/sources.list.d/github-cli.list # the image's GitHub CLI apt source fails signature checks, and the proof needs nothing from it
+            sudo apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends python3 >/dev/null
+          fi
           mkdir -p "$SRC" && cd "$SRC"
           git init -q
           git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}"
