@@ -1,8 +1,9 @@
 name: install-proof-negative
 
-# Standing failing case: the proof must reject a deliberately broken formula.
-# A green run means the proof caught it. This workflow writes nothing and
-# touches no tap.
+# Standing failing case: the proof must reject a deliberately broken formula, and reject it at
+# check-version. The formula installs the real previous-release sdist but declares 999.0.0, so
+# the upgrade succeeds and only the version check can fail. A failure anywhere else (the upgrade,
+# check-doctor, a bad HOME override) leaves the negative control red. This workflow writes nothing.
 
 on:
   workflow_dispatch:
@@ -17,19 +18,62 @@ jobs:
     uses: ./.github/workflows/install-proof.yml
     with:
       formula_path: tests/devtools/broken_cox.rb
-      version: 999.0.0-negative-control
+      version: 999.0.0
       expect_failure: true
 
-  expect-failure:
+  # The proof is a reusable-workflow call, whose outputs carry only each platform's step outcome.
+  # This job reads the proof jobs' own logs and names the check each platform failed in.
+  failed-step:
     needs: proof
     if: always()
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      macos_failed_step: ${{ steps.find.outputs.macos_failed_step }}
+      linux_failed_step: ${{ steps.find.outputs.linux_failed_step }}
     steps:
-      - name: Fail unless the proof rejected the broken formula on both platforms
+      - name: Name the check each platform failed in
+        id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED: 999.0.0
+        run: |
+          # check-version: the upgrade landed on the declared version and cox then reported a real
+          # release, so the checker printed "version: expected '999.0.0', first output line was 'cox X.Y.Z'".
+          failed_step() {
+            if grep -Eq "version: expected '${EXPECTED//./\\.}', first output line was 'cox [0-9]+\.[0-9]+\.[0-9]+'"; then
+              echo check-version
+            else
+              echo other
+            fi
+          }
+          jobs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs" --paginate -q '.jobs[] | "\(.id)\t\(.name)"')
+          for platform in macos linux; do
+            id=$(printf '%s\n' "$jobs" | awk -F'\t' -v job="proof-$platform" '$2 ~ (job "$") { print $1; exit }')
+            step=missing
+            if [ -n "$id" ] && gh api "repos/$GITHUB_REPOSITORY/actions/jobs/$id/logs" > "$RUNNER_TEMP/proof-$platform.log"; then
+              step=$(failed_step < "$RUNNER_TEMP/proof-$platform.log")
+            fi
+            echo "$platform failed step: $step"
+            echo "${platform}_failed_step=$step" >> "$GITHUB_OUTPUT"
+          done
+
+  expect-failure:
+    needs: [proof, failed-step]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail unless the proof rejected the broken formula at check-version on both platforms
         env:
           MACOS_OUTCOME: ${{ needs.proof.outputs.macos_outcome }}
           LINUX_OUTCOME: ${{ needs.proof.outputs.linux_outcome }}
+          MACOS_FAILED_STEP: ${{ needs.failed-step.outputs.macos_failed_step }}
+          LINUX_FAILED_STEP: ${{ needs.failed-step.outputs.linux_failed_step }}
         run: |
-          echo "macos outcome: ${MACOS_OUTCOME}"
-          echo "linux outcome: ${LINUX_OUTCOME}"
-          test "${MACOS_OUTCOME}" = "failure" && test "${LINUX_OUTCOME}" = "failure"
+          echo "macos outcome: ${MACOS_OUTCOME}, failed step: ${MACOS_FAILED_STEP}"
+          echo "linux outcome: ${LINUX_OUTCOME}, failed step: ${LINUX_FAILED_STEP}"
+          test "${MACOS_OUTCOME}" = "failure"
+          test "${LINUX_OUTCOME}" = "failure"
+          test "${MACOS_FAILED_STEP}" = "check-version"
+          test "${LINUX_FAILED_STEP}" = "check-version"

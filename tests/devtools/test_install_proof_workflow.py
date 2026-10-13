@@ -327,12 +327,15 @@ def test_the_expect_failure_job_reads_both_platform_outputs_from_the_proof_call(
     assert env == {
         "MACOS_OUTCOME": "${{ needs.proof.outputs.macos_outcome }}",
         "LINUX_OUTCOME": "${{ needs.proof.outputs.linux_outcome }}",
+        "MACOS_FAILED_STEP": "${{ needs.failed-step.outputs.macos_failed_step }}",
+        "LINUX_FAILED_STEP": "${{ needs.failed-step.outputs.linux_failed_step }}",
     }
 
 
-def _verdict(macos: str, linux: str) -> int:
+def _verdict(macos: str, linux: str, macos_step: str = "check-version", linux_step: str = "check-version") -> int:
     job = _negative()["jobs"]["expect-failure"]
-    env = {"PATH": "/usr/bin:/bin", "MACOS_OUTCOME": macos, "LINUX_OUTCOME": linux}
+    env = {"PATH": "/usr/bin:/bin", "MACOS_OUTCOME": macos, "LINUX_OUTCOME": linux,
+           "MACOS_FAILED_STEP": macos_step, "LINUX_FAILED_STEP": linux_step}
     script = "\n".join(step["run"] for step in job["steps"])
     return subprocess.run([BASH, "-eo", "pipefail", "-c", script], env=env, capture_output=True, text=True).returncode
 
@@ -351,3 +354,98 @@ def _verdict(macos: str, linux: str) -> int:
 )
 def test_the_expect_failure_job_succeeds_only_when_both_outcomes_are_failure(macos, linux, passes):
     assert (_verdict(macos, linux) == 0) is passes
+
+
+# The negative control proves the checks run: the broken formula is the real previous-release sdist declared as
+# 999.0.0, so the upgrade succeeds and the proof must reject it at check-version, not anywhere earlier.
+
+BROKEN = ROOT / "tests" / "devtools" / "broken_cox.rb"
+CHECK_VERSION = "check-version"
+
+
+def test_the_broken_formula_declares_999_and_points_at_no_example_invalid_url():
+    text = BROKEN.read_text()
+    assert re.search(r'^  version "999\.0\.0"$', text, re.MULTILINE)
+    assert "example.invalid" not in text
+    assert _negative()["jobs"]["proof"]["with"]["version"] == "999.0.0"
+
+
+def test_the_failed_step_job_exposes_each_platforms_failed_step_as_a_job_output():
+    job = _negative()["jobs"]["failed-step"]
+    assert job["needs"] == "proof"
+    assert "always()" in job["if"]
+    step_id = job["steps"][0]["id"]
+    assert job["outputs"] == {
+        f"{platform}_failed_step": "${{ steps." + step_id + ".outputs." + platform + "_failed_step }}"
+        for platform in ("macos", "linux")
+    }
+
+
+def test_expect_failure_needs_the_failed_step_job_and_compares_it_to_check_version():
+    job = _negative()["jobs"]["expect-failure"]
+    assert job["needs"] == ["proof", "failed-step"]
+    script = "\n".join(step["run"] for step in job["steps"])
+    assert f'test "${{MACOS_FAILED_STEP}}" = "{CHECK_VERSION}"' in script
+    assert f'test "${{LINUX_FAILED_STEP}}" = "{CHECK_VERSION}"' in script
+
+
+@pytest.mark.parametrize(
+    ("macos_step", "linux_step", "passes"),
+    [
+        ("check-version", "check-version", True),
+        ("other", "check-version", False),
+        ("check-version", "other", False),
+        ("missing", "check-version", False),
+        ("", "", False),
+    ],
+)
+def test_a_failure_outside_check_version_fails_the_expect_failure_step(macos_step, linux_step, passes):
+    assert (_verdict("failure", "failure", macos_step, linux_step) == 0) is passes
+
+
+GH = """#!/bin/bash
+case "$2" in
+  */jobs) printf '%s\\t%s\\n' 11 "proof / proof-macos" 12 "proof / proof-linux" 13 "failed-step" ;;
+  */jobs/11/logs) cat "$STUB_DIR/macos.log" ;;
+  */jobs/12/logs) cat "$STUB_DIR/linux.log" ;;
+  *) exit 1 ;;
+esac
+"""
+VERSION_MISS = "2026-10-12T17:00:00.0Z version: expected '999.0.0', first output line was 'cox 0.38.0'\n"
+
+
+def _failed_steps(tmp_path: Path, macos_log: str, linux_log: str) -> dict:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "gh").write_text(GH)
+    (bin_dir / "gh").chmod(0o755)
+    (tmp_path / "macos.log").write_text(macos_log)
+    (tmp_path / "linux.log").write_text(linux_log)
+    out = tmp_path / "output"
+    out.touch()
+    step = _negative()["jobs"]["failed-step"]["steps"][0]
+    env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "STUB_DIR": str(tmp_path), "GITHUB_OUTPUT": str(out),
+           "RUNNER_TEMP": str(tmp_path), "GITHUB_REPOSITORY": "o/r", "GITHUB_RUN_ID": "1",
+           "GITHUB_RUN_ATTEMPT": "1", "EXPECTED": step["env"]["EXPECTED"]}
+    done = subprocess.run([BASH, "-eo", "pipefail", "-c", step["run"]], env=env, capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    return dict(line.split("=", 1) for line in out.read_text().splitlines())
+
+
+def test_a_version_miss_on_a_real_release_names_check_version(tmp_path):
+    steps = _failed_steps(tmp_path, VERSION_MISS, VERSION_MISS)
+    assert steps == {"macos_failed_step": CHECK_VERSION, "linux_failed_step": CHECK_VERSION}
+
+
+@pytest.mark.parametrize(
+    "log",
+    [
+        "Error: cox: SHA256 mismatch\n",  # the upgrade never ran: the old all-zero digest
+        "after upgrade 'cox 0.38.0', expected 'cox 999.0.0'\n",
+        "version: expected '999.0.0', first output line was ''\n",  # cox did not run: a bad HOME override
+        "doctor: git failed: missing\n",
+    ],
+)
+def test_any_other_failure_is_not_named_check_version(tmp_path, log):
+    steps = _failed_steps(tmp_path, log, VERSION_MISS)
+    assert steps == {"macos_failed_step": "other", "linux_failed_step": CHECK_VERSION}
