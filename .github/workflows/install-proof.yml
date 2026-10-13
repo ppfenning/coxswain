@@ -96,7 +96,7 @@ jobs:
             # a formula that declares a towpath resource must put towpath on PATH; one without it is not asked to
             if grep -Eq '^[[:space:]]*resource "towpath" do' "$formula"; then
               command -v towpath >/dev/null || { echo "formula declares a towpath resource but towpath is not on PATH"; exit 1; }
-              towpath --version | python3 "$SRC/devtools/install_proof.py" check-version "$VERSION"
+              towpath --version | python3 "$SRC/devtools/install_proof.py" check-version "$(python3 "$SRC/devtools/install_proof.py" towpath-version "$VERSION" < "$formula")"
             fi
             ! command -v coxtop >/dev/null || coxtop --version | python3 "$SRC/devtools/install_proof.py" check-version "$VERSION"
           )
@@ -174,7 +174,7 @@ jobs:
             # a formula that declares a towpath resource must put towpath on PATH; one without it is not asked to
             if grep -Eq '^[[:space:]]*resource "towpath" do' "$formula"; then
               command -v towpath >/dev/null || { echo "formula declares a towpath resource but towpath is not on PATH"; exit 1; }
-              towpath --version | python3 "$SRC/devtools/install_proof.py" check-version "$VERSION"
+              towpath --version | python3 "$SRC/devtools/install_proof.py" check-version "$(python3 "$SRC/devtools/install_proof.py" towpath-version "$VERSION" < "$formula")"
             fi
             ! command -v coxtop >/dev/null || coxtop --version | python3 "$SRC/devtools/install_proof.py" check-version "$VERSION"
           )

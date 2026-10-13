@@ -85,14 +85,28 @@ def check_doctor(text: str) -> str | None:
     return _doctor_reason(data)
 
 
+_TOWPATH_URL = re.compile(r"/releases/download/v(\d+(?:\.\d+)*(?:[-.\w]*)?)/towpath-")
+
+
+def towpath_version(formula: str, fallback: str) -> str:
+    """The dash release the formula's towpath resource downloads from, else `fallback`. A cut that pins dash points
+    the formula at dash's own tag, so the installed towpath reports that version, not the candidate's."""
+    found = _TOWPATH_URL.search(formula)
+    return found.group(1) if found else fallback
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="install_proof")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("previous-tag").add_argument("version")
     sub.add_parser("check-version").add_argument("expected")
     sub.add_parser("check-doctor")
+    sub.add_parser("towpath-version").add_argument("fallback")
     args = parser.parse_args(argv)
     text = sys.stdin.read()
+    if args.command == "towpath-version":
+        print(towpath_version(text, args.fallback))
+        return 0
     if args.command == "previous-tag":
         tag = previous_tag(text.split(), args.version)
         if tag is None:

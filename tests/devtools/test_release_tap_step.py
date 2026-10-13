@@ -72,3 +72,46 @@ def test_a_formula_without_the_towpath_anchors_fails_cleanly_and_restores_the_br
     assert fake_run.current_branch[directory] == "feature/x"
     assert formula.read_text() == unanchored
     assert [c for c in calls if c[0] == "gh" or c[3:4] in (["push"], ["commit"])] == []
+
+
+def _dash_manifest(dash_tag):
+    manifest = _tools_manifest()
+    manifest["components"]["dash"] = {"repo": "ppfenning/coxswain-dash", "tag": dash_tag}
+    return manifest
+
+
+def test_a_pinned_dash_points_the_tap_step_at_its_own_tag():
+    steps, _ = _tap_kinds(_dash_manifest("v0.1.0"), pinned_commits={"tools": 1, "dash": 0})
+    assert steps[-1]["towpath_version"] == "0.1.0"
+
+
+def test_a_dash_tagged_by_this_release_points_the_tap_step_at_the_release():
+    steps, _ = _tap_kinds(_dash_manifest("v0.1.0"), pinned_commits={"tools": 1, "dash": 2})
+    assert steps[-1]["towpath_version"] == "0.2.0"
+
+
+def test_a_manifest_without_dash_points_the_tap_step_at_the_release():
+    steps, _ = _tap_kinds(_tools_manifest(), pinned_commits={"tools": 1})
+    assert steps[-1]["towpath_version"] == "0.2.0"
+
+
+def test_a_pinned_dash_fetches_and_writes_the_tarballs_of_its_own_release(tmp_path):
+    pinned = release.towpath_asset_urls("0.1.0")
+    fetched = []
+
+    def fetch(url):
+        fetched.append(url)
+        return ("1" if "darwin" in url else "2") * 64 + "  asset\n"
+
+    directory = tmp_path / "homebrew-coxswain"
+    formula = directory / "Formula" / "cox.rb"
+    formula.parent.mkdir(parents=True)
+    formula.write_text(_TAP_FORMULA)
+    steps, _ = _tap_kinds(_dash_manifest("v0.1.0"), pinned_commits={"tools": 1, "dash": 0})
+    _, fake_run = _fake_git_run(off_branch={str(directory)})
+    rc = cli._release_execute(steps[-1:], "0.2.0", str(tmp_path), {}, str(tmp_path), fake_run, {}, "",
+                              sleep=lambda s: None, now=iter(range(0, 10**9, 60)).__next__,
+                              fetch_index=lambda url: _INDEX, fetch_text=fetch)
+    assert rc == 0
+    assert sorted(fetched) == sorted(f"{url}.sha256" for url in pinned.values())
+    assert f'url "{pinned[release.TOWPATH_MACOS_ARM]}"' in formula.read_text()
