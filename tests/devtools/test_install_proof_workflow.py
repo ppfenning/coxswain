@@ -455,3 +455,12 @@ def test_a_version_miss_on_a_real_release_names_check_version(tmp_path):
 def test_any_other_failure_is_not_named_check_version(tmp_path, log):
     steps = _failed_steps(tmp_path, log, VERSION_MISS)
     assert steps == {"macos_failed_step": "other", "linux_failed_step": CHECK_VERSION}
+
+
+def test_a_formula_pinning_an_older_dash_expects_that_towpath_version(rig):
+    rig.seed("1.1.0", "1.2.0")
+    rig.write_formula('class Cox < Formula\n  resource "towpath" do\n'
+                      '    url "https://github.com/ppfenning/coxswain-dash/releases/download/v1.0.0/towpath-v1.0.0-x.tar.gz"\n'
+                      '  end\nend\n')
+    rig.add_tool("towpath", "#!/bin/bash\necho towpath 1.0.0\n")
+    assert rig.run(CLEAN).returncode == 0

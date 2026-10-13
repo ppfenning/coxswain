@@ -85,3 +85,11 @@ def test_main_returns_1_and_writes_stderr_for_a_failing_doctor(monkeypatch, caps
     monkeypatch.setattr("sys.stdin", io.StringIO(failing))
     assert main(["check-doctor"]) == 1
     assert "git" in capsys.readouterr().err
+
+
+def test_towpath_version_reads_the_dash_release_the_formula_downloads_from():
+    from devtools.install_proof import towpath_version
+    formula = ('  resource "towpath" do\n    url "https://github.com/ppfenning/coxswain-dash/releases/download/v0.38.0/'
+               'towpath-v0.38.0-aarch64-apple-darwin.tar.gz"\n  end\n')
+    assert towpath_version(formula, "0.39.0") == "0.38.0"
+    assert towpath_version('  resource "towpath" do\n    url "u"\n  end\n', "0.39.0") == "0.39.0"

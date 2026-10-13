@@ -760,13 +760,15 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
             if sdist is None:
                 print(f"FAILED tap_formula_pr tap: {step['index_url']}: {detail}")
                 return 2
+            # A dash pinned by this release keeps its tag, so its tarballs live under that release, not this one.
+            towpath_at = step.get("towpath_version") or version
             texts = {}
-            for asset_url in release.towpath_asset_urls(version).values():
+            for asset_url in release.towpath_asset_urls(towpath_at).values():
                 try:
                     texts[f"{asset_url}.sha256"] = fetch_text(f"{asset_url}.sha256")
                 except (OSError, ValueError):
                     texts[f"{asset_url}.sha256"] = None
-            towpath, reason = release.towpath_assets(version, texts)
+            towpath, reason = release.towpath_assets(towpath_at, texts)
             if towpath is None:
                 print(f"FAILED tap_formula_pr tap: {reason}")
                 return 2

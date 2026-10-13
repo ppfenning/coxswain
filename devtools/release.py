@@ -203,9 +203,18 @@ _PYPI_PACKAGE = "coxswain-tools"
 TAP_CHECKOUT = "homebrew-coxswain"
 
 
+def towpath_version(repo_components: list[tuple[str, Mapping]], tagged: set[str] | list[str], version: str) -> str:
+    """The dash release whose towpath tarballs the formula installs: `version` when this release tags dash (or the
+    manifest already pins it at `v<version>`, or names no dash), else dash's pinned manifest tag without its `v`."""
+    spec = next((spec for name, spec in repo_components if spec.get("repo") == _DASH_REPO and name not in tagged), None)
+    tag = str(spec.get("tag") or "") if spec is not None else ""
+    return tag.removeprefix("v") if tag and tag != f"v{version}" else version
+
+
 def _tap_formula_steps(steps: list[dict], version: str, tools_repository_url: str | None,
-                        umbrella_slug: str | None, tap_state: str) -> list[dict]:
-    """Nothing unless `steps` tags the tools repo, whose tag push runs the PyPI publish; a `refuse` when the tap checkout is not `clean`."""
+                        umbrella_slug: str | None, tap_state: str, towpath: str | None = None) -> list[dict]:
+    """Nothing unless `steps` tags the tools repo, whose tag push runs the PyPI publish; a `refuse` when the tap checkout is not `clean`.
+    `towpath` is the dash release the formula's towpath resources point at (`towpath_version`), `version` when None."""
     tools_slug = "/".join(tools_repository_url.rstrip("/").split("/")[-2:]) if tools_repository_url else None
     publishing = tools_slug is not None and any(
         (s["kind"] in ("tag", "rejoin") and s["repo"] == tools_slug)
@@ -217,7 +226,8 @@ def _tap_formula_steps(steps: list[dict], version: str, tools_repository_url: st
     pypi_version = re.sub(r"-beta\.(\d+)$", r"b\1", version)
     return [{"kind": "tap_formula_pr", "component": "tap", "repo": _TAP_REPO, "path": "Formula/cox.rb",
              "version": version, "branch": f"release/{version}", "title": f"cox {version}",
-             "index_url": f"https://pypi.org/pypi/{_PYPI_PACKAGE}/{pypi_version}/json"}]
+             "index_url": f"https://pypi.org/pypi/{_PYPI_PACKAGE}/{pypi_version}/json",
+             "towpath_version": towpath or version}]
 
 
 def _tap_only_plan(repo_components: list[tuple[str, Mapping]], changed: set[str], new_tag: str,
@@ -238,7 +248,8 @@ def _tap_only_plan(repo_components: list[tuple[str, Mapping]], changed: set[str]
     if missing:
         return _refuse(", ".join(missing), f"tap-only needs tag {new_tag} on every repo; missing on {', '.join(missing)}")
     tagged = [{"kind": "tag", "repo": spec["repo"]} for name, spec in repo_components if name in holders]
-    return (_tap_formula_steps(tagged + [{"kind": "tag_self"}], version, tools_repository_url, umbrella_slug, tap_state)
+    return (_tap_formula_steps(tagged + [{"kind": "tag_self"}], version, tools_repository_url, umbrella_slug, tap_state,
+                               towpath_version(repo_components, holders, version))
             or _refuse("tap", "nothing to publish: the tools repo is not tagged by this release"))
 
 
@@ -418,7 +429,8 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
         if _sort_key(parsed) == _sort_key(current_parsed):
             steps = tag_steps + [notes_step, tag_self_step, umbrella_gr_step]
             return _with_wait_workflows(steps) + _tap_formula_steps(steps, version, tools_repository_url,
-                                                                    umbrella_slug, tap_state)
+                                                                    umbrella_slug, tap_state,
+                                                                    towpath_version(repo_components, tagged, version))
 
     branch = f"release/{version}"
     subject = f"manifest: bump to {version} to match the tag"
@@ -427,7 +439,8 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
     body = f"Bumps manifest.toml version to {version} to match tag {new_tag}.\n\n{pr_footer(version)}"
     steps = tag_steps + [notes_step] + _bump_and_land(bump_step, branch, body) + [tag_self_step, umbrella_gr_step]
     return _with_wait_workflows(steps) + _tap_formula_steps(steps, version, tools_repository_url,
-                                                            umbrella_slug, tap_state)
+                                                            umbrella_slug, tap_state,
+                                                            towpath_version(repo_components, tagged, version))
 
 
 def release_index_text(existing_index: str, version: str, manifest: Mapping,
