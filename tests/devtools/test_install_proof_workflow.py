@@ -406,9 +406,14 @@ def test_a_failure_outside_check_version_fails_the_expect_failure_step(macos_ste
 GH = """#!/bin/bash
 case "$2" in
   */jobs) printf '%s\\t%s\\n' 11 "proof / proof-macos" 12 "proof / proof-linux" 13 "failed-step" ;;
-  */jobs/11/logs) cat "$STUB_DIR/macos.log" ;;
-  */jobs/12/logs) cat "$STUB_DIR/linux.log" ;;
   *) exit 1 ;;
+esac
+"""
+CURL = """#!/bin/bash
+case "${@: -1}" in
+  https://api.test/repos/o/r/actions/jobs/11/logs) cat "$STUB_DIR/macos.log" ;;
+  https://api.test/repos/o/r/actions/jobs/12/logs) cat "$STUB_DIR/linux.log" ;;
+  *) exit 22 ;;
 esac
 """
 VERSION_MISS = "2026-10-12T17:00:00.0Z version: expected '999.0.0', first output line was 'cox 0.38.0'\n"
@@ -417,8 +422,9 @@ VERSION_MISS = "2026-10-12T17:00:00.0Z version: expected '999.0.0', first output
 def _failed_steps(tmp_path: Path, macos_log: str, linux_log: str) -> dict:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    (bin_dir / "gh").write_text(GH)
-    (bin_dir / "gh").chmod(0o755)
+    for name, body in (("gh", GH), ("curl", CURL)):
+        (bin_dir / name).write_text(body)
+        (bin_dir / name).chmod(0o755)
     (tmp_path / "macos.log").write_text(macos_log)
     (tmp_path / "linux.log").write_text(linux_log)
     out = tmp_path / "output"
@@ -426,7 +432,7 @@ def _failed_steps(tmp_path: Path, macos_log: str, linux_log: str) -> dict:
     step = _negative()["jobs"]["failed-step"]["steps"][0]
     env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "STUB_DIR": str(tmp_path), "GITHUB_OUTPUT": str(out),
            "RUNNER_TEMP": str(tmp_path), "GITHUB_REPOSITORY": "o/r", "GITHUB_RUN_ID": "1",
-           "GITHUB_RUN_ATTEMPT": "1", "EXPECTED": step["env"]["EXPECTED"]}
+           "GITHUB_RUN_ATTEMPT": "1", "GITHUB_API_URL": "https://api.test", "GH_TOKEN": "t", "EXPECTED": step["env"]["EXPECTED"]}
     done = subprocess.run([BASH, "-eo", "pipefail", "-c", step["run"]], env=env, capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
     return dict(line.split("=", 1) for line in out.read_text().splitlines())

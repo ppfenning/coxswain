@@ -52,7 +52,8 @@ jobs:
           for platform in macos linux; do
             id=$(printf '%s\n' "$jobs" | awk -F'\t' -v job="proof-$platform" '$2 ~ (job "$") { print $1; exit }')
             step=missing
-            if [ -n "$id" ] && gh api "repos/$GITHUB_REPOSITORY/actions/jobs/$id/logs" > "$RUNNER_TEMP/proof-$platform.log"; then
+            # curl, not gh api: gh refuses to print a log that holds terminal escape sequences, and brew's output does
+            if [ -n "$id" ] && curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/jobs/$id/logs" > "$RUNNER_TEMP/proof-$platform.log"; then
               step=$(failed_step < "$RUNNER_TEMP/proof-$platform.log")
             fi
             echo "$platform failed step: $step"
