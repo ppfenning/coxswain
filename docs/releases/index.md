@@ -57,8 +57,8 @@ does not mean the release is otherwise good.
 
 | Component | Repository or path | Tag | Required or flag |
 | --- | --- | --- | --- |
-| cartridges | `ppfenning/coxswain-cartridges` | `v0.39.1` | required |
-| graphs | `ppfenning/coxswain-graphs` | `v0.39.1` | required |
+| cartridges | `ppfenning/coxswain-cartridges` | `v0.39.0` | required (pinned) |
+| graphs | `ppfenning/coxswain-graphs` | `v0.39.0` | required (pinned) |
 | tools | `ppfenning/coxswain-tools` | `v0.39.1` | required, provides `cox` |
 | crew | `ppfenning/coxswain-crew` | `v0.38.0` | flag: `crew` (pinned) |
 | dash | `ppfenning/coxswain-dash` | `v0.38.0` | flag: `dash`, provides `towpath` (pinned) |
