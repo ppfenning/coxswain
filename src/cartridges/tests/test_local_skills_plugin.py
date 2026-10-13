@@ -97,6 +97,17 @@ def test_decomposed_intake_is_never_offered_as_new_work() -> None:
         assert "`initiative` field is decomposed, not queued" in text
 
 
+def test_decompose_names_the_build_grant_as_the_only_commands_a_ticket_may_name() -> None:
+    raw = (PLUGIN / "skills" / "decompose-initiative" / "SKILL.md").read_text(encoding="utf-8")
+    assert re.search(r"^name: decompose-initiative$", raw, re.MULTILINE)
+    text = " ".join(raw.split())
+    rule = text[text.index("only what the build role is granted"):]
+    rule = rule[: rule.index("- **")]
+    for command in ("`pytest`", "`git status`", "`git diff`"):
+        assert command in rule
+    assert "route lint refuses it" in text
+
+
 def test_the_index_maps_each_binding_to_exactly_one_body() -> None:
     index = index_from_roots([PLUGIN_ROOT])
     resolved = load("local", REPO / "cartridges", skill_index=index)

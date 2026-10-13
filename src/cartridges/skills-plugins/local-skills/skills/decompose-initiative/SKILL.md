@@ -64,6 +64,12 @@ before what it depends on exists.
   another repository, or a run from before the patch existed is asking for
   evidence that never enters that record. State the fact in the body
   instead, or make it a reviewer's own check.
+- **A task's checks name only what the build role is granted:** `pytest`,
+  `git status` and `git diff`. A body that names `ruff`, `cox`, `uv`, `gh`,
+  `grep` or any other command is refused by the route lint and costs a hand
+  re-ground. State the fact in the body, or make it a reviewer's check. A
+  file in another repository is never a surface here either: it is that
+  repository's own task, linked with `blocked_on`.
 
 - **A ticket body carrying `split recommended` is two tasks.** The harness
   writes it when a build ran out of budget twice with partial work, and lists
@@ -84,3 +90,6 @@ before what it depends on exists.
   DAG check refuses the whole initiative.
 - A done-criterion that names evidence outside the diff and the named
   checks — nobody downstream can produce it, so the task can never close.
+- A task whose checks name a command outside the build grant, or whose
+  surfaces name a file in another repository — the route lint refuses it
+  before any lane can run it.
