@@ -28,35 +28,43 @@ def test_workflow_triggers_on_dispatch_and_schedule():
     assert triggers["schedule"][0]["cron"]
 
 
-def test_expect_failure_job_passes_only_when_both_platforms_failed():
+def test_expect_failure_job_passes_only_when_both_platforms_failed_at_check_version():
     job = _workflow()["jobs"]["expect-failure"]
-    assert job["needs"] == "proof"
+    assert job["needs"] == ["proof", "failed-step"]
     assert "always()" in job["if"]
     script = "\n".join(step.get("run", "") for step in job["steps"])
     env = {k: v for step in job["steps"] for k, v in step.get("env", {}).items()}
-    assert sorted(env.values()) == ["${{ needs.proof.outputs.linux_outcome }}", "${{ needs.proof.outputs.macos_outcome }}"]
+    assert sorted(env.values()) == [
+        "${{ needs.failed-step.outputs.linux_failed_step }}",
+        "${{ needs.failed-step.outputs.macos_failed_step }}",
+        "${{ needs.proof.outputs.linux_outcome }}",
+        "${{ needs.proof.outputs.macos_outcome }}",
+    ]
     assert script.count('= "failure"') == 2
+    assert script.count('= "check-version"') == 2
     assert "success" not in script
 
 
 def test_workflow_writes_nothing_and_touches_no_tap():
     text = WORKFLOW.read_text()
     assert _workflow()["permissions"] == {"contents": "read"}
+    assert _workflow()["jobs"]["failed-step"]["permissions"] == {"actions": "read"}
     assert "secrets" not in text
     assert "tap" not in text.replace("touches no tap", "")
 
 
 def test_fixture_and_workflow_share_a_version_above_any_release():
     version = _workflow()["jobs"]["proof"]["with"]["version"]
-    text = FIXTURE.read_text()
-    assert version.startswith("999.")
-    assert f'version "{version}"' in text
-    assert f"cox-{version}.tar.gz" in text
+    assert version == "999.0.0"
+    assert f'version "{version}"' in FIXTURE.read_text()
 
 
-def test_fixture_is_marked_broken_and_carries_no_real_sha256():
+def test_fixture_is_marked_broken_and_installs_a_real_released_sdist():
     text = FIXTURE.read_text()
     assert "DELIBERATELY BROKEN" in text.splitlines()[0]
-    digests = re.findall(r'sha256 "([0-9a-fA-F]+)"', text)
-    assert digests
-    assert all(set(d) == {"0"} for d in digests)
+    assert "example.invalid" not in text
+    url = re.search(r'^  url "([^"]+)"', text, re.MULTILINE).group(1)
+    assert re.fullmatch(r"https://files\.pythonhosted\.org/packages/.+/coxswain_tools-\d+\.\d+\.\d+\.tar\.gz", url)
+    digest = re.search(r'^  sha256 "([^"]+)"', text, re.MULTILINE).group(1)
+    assert re.fullmatch(r"[0-9a-f]{64}", digest)
+    assert set(digest) != {"0"}
