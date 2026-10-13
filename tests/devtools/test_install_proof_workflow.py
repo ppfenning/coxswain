@@ -464,3 +464,13 @@ def test_a_formula_pinning_an_older_dash_expects_that_towpath_version(rig):
                       '  end\nend\n')
     rig.add_tool("towpath", "#!/bin/bash\necho towpath 1.0.0\n")
     assert rig.run(CLEAN).returncode == 0
+
+
+def test_a_formula_pinning_an_older_dash_expects_that_coxtop_version(rig):
+    rig.seed("1.1.0", "1.2.0")
+    rig.write_formula('class Cox < Formula\n  resource "towpath" do\n'
+                      '    url "https://github.com/ppfenning/coxswain-dash/releases/download/v1.0.0/towpath-v1.0.0-x.tar.gz"\n'
+                      '  end\nend\n')
+    rig.add_tool("towpath", "#!/bin/bash\necho towpath 1.0.0\n")
+    rig.add_tool("coxtop", "#!/bin/bash\necho towpath 1.0.0\n")
+    assert rig.run(CLEAN).returncode == 0

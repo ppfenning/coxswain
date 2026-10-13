@@ -93,12 +93,15 @@ jobs:
             cox --version | python3 "$SRC/devtools/install_proof.py" check-version "$VERSION"
             # doctor exits 1 until setup runs; the checker judges its rows, so its exit code must not fail the pipe
             { cox setup doctor --json || true; } | python3 "$SRC/devtools/install_proof.py" check-doctor
+            # towpath and its coxtop alias come from the dash release the formula downloads, which a cut that pins dash keeps
+            towpath_version=$VERSION
+            [ ! -f "$formula" ] || towpath_version=$(python3 "$SRC/devtools/install_proof.py" towpath-version "$VERSION" < "$formula")
             # a formula that declares a towpath resource must put towpath on PATH; one without it is not asked to
             if grep -Eq '^[[:space:]]*resource "towpath" do' "$formula"; then
               command -v towpath >/dev/null || { echo "formula declares a towpath resource but towpath is not on PATH"; exit 1; }
-              towpath --version | python3 "$SRC/devtools/install_proof.py" check-version "$(python3 "$SRC/devtools/install_proof.py" towpath-version "$VERSION" < "$formula")"
+              towpath --version | python3 "$SRC/devtools/install_proof.py" check-version "$towpath_version"
             fi
-            ! command -v coxtop >/dev/null || coxtop --version | python3 "$SRC/devtools/install_proof.py" check-version "$VERSION"
+            ! command -v coxtop >/dev/null || coxtop --version | python3 "$SRC/devtools/install_proof.py" check-version "$towpath_version"
           )
           formula="$(brew --repository ppfenning/coxswain)/Formula/cox.rb"
           before=$(brew list --versions cox)
@@ -171,12 +174,15 @@ jobs:
             cox --version | python3 "$SRC/devtools/install_proof.py" check-version "$VERSION"
             # doctor exits 1 until setup runs; the checker judges its rows, so its exit code must not fail the pipe
             { cox setup doctor --json || true; } | python3 "$SRC/devtools/install_proof.py" check-doctor
+            # towpath and its coxtop alias come from the dash release the formula downloads, which a cut that pins dash keeps
+            towpath_version=$VERSION
+            [ ! -f "$formula" ] || towpath_version=$(python3 "$SRC/devtools/install_proof.py" towpath-version "$VERSION" < "$formula")
             # a formula that declares a towpath resource must put towpath on PATH; one without it is not asked to
             if grep -Eq '^[[:space:]]*resource "towpath" do' "$formula"; then
               command -v towpath >/dev/null || { echo "formula declares a towpath resource but towpath is not on PATH"; exit 1; }
-              towpath --version | python3 "$SRC/devtools/install_proof.py" check-version "$(python3 "$SRC/devtools/install_proof.py" towpath-version "$VERSION" < "$formula")"
+              towpath --version | python3 "$SRC/devtools/install_proof.py" check-version "$towpath_version"
             fi
-            ! command -v coxtop >/dev/null || coxtop --version | python3 "$SRC/devtools/install_proof.py" check-version "$VERSION"
+            ! command -v coxtop >/dev/null || coxtop --version | python3 "$SRC/devtools/install_proof.py" check-version "$towpath_version"
           )
           formula="$(brew --repository ppfenning/coxswain)/Formula/cox.rb"
           before=$(brew list --versions cox)
