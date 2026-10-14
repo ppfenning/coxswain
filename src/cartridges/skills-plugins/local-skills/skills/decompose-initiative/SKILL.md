@@ -37,9 +37,11 @@ before what it depends on exists.
 - **Every path in a task is relative to the repository.** Write
   `agent_tools/dash_feed.py`, never the checkout's absolute path, a
   home-directory path, or the workspace's `runs/` or `plans/`. The
-  initiative's `repo:` names a checkout on whichever machine built it, and
-  the build seat sees only its own worktree; describe what is read from
-  outside it instead of naming where it lives.
+  initiative's `repo:` line is written in the tilde form, a tilde, a slash,
+  then the path under the home directory (`~/<repos-dir>/<repo-name>`), and
+  each reader expands it on its own machine, so it names the same checkout
+  everywhere. The build seat sees only its own worktree; describe what is
+  read from outside it instead of naming where it lives.
 - **A title is plain text.** A backtick in YAML frontmatter breaks the file,
   so titles carry none.
 - **A foreign `needs` id is written as the target's own id.** A task in another
