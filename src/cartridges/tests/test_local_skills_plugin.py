@@ -108,6 +108,14 @@ def test_decompose_names_the_build_grant_as_the_only_commands_a_ticket_may_name(
     assert "route lint refuses it" in text
 
 
+def test_decompose_states_the_contract_fixture_path_rule() -> None:
+    raw = (PLUGIN / "skills" / "decompose-initiative" / "SKILL.md").read_text(encoding="utf-8")
+    text = " ".join(raw.split())
+    assert "tests/fixtures/<interface>_v1.json" in text
+    assert "dash_feed_v1.json" in text
+    assert re.search(r"^name: decompose-initiative$", raw, re.MULTILINE)
+
+
 def test_the_index_maps_each_binding_to_exactly_one_body() -> None:
     index = index_from_roots([PLUGIN_ROOT])
     resolved = load("local", REPO / "cartridges", skill_index=index)

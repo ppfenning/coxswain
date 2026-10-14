@@ -50,6 +50,10 @@ before what it depends on exists.
   work store, and it is met only when that task is `done`.
 - **A task whose surfaces live in another repository is that repository's
   task.** Link it with `blocked_on` instead of folding its work in here.
+- **A contract task's surface is a fixture path, not prose.** It is
+  `tests/fixtures/<interface>_v1.json` in the producer repository, and
+  `dash_feed_v1.json` is the model. The surface must be a file path ending in
+  .json, or the contract lint refuses it: "contract task has no .json surface".
 - **Ids are stable slugs.** They become filenames and dependency references;
   rename one later and every edge naming it dangles.
 - **Tasks in one phase never share a file.** Every task names the files it
@@ -95,3 +99,5 @@ before what it depends on exists.
 - A task whose checks name a command outside the build grant, or whose
   surfaces name a file in another repository — the route lint refuses it
   before any lane can run it.
+- A contract task whose surfaces are prose or lack a .json fixture path. The
+  contract lint refuses it.
