@@ -168,6 +168,8 @@ role_ceiling_usd:
   build: 6.0
 
 tier_overrides:
+  # The build never escalates to the judge model; judges stay on opus (operator 2026-10-14, cost/throughput comparison pending).
+  build: standard
   scope_epic: cheap
 
 # Where the deep tier actually pays. Measured over 2026-09-05/06, about 75
