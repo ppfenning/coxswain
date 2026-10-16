@@ -1,4 +1,5 @@
 import json
+import re
 import sys
 import tomllib
 import urllib.error
@@ -517,3 +518,58 @@ def test_eight_rowers_sit_on_deck_in_every_frame():
         for frame in frames:
             singlets = re.findall(r'<rect[^>]*fill="#e8eef2"', frame)
             assert len(singlets) >= 8, "fewer than eight crew singlets in a frame"
+
+
+_THIS_REPO_RAW_URL = re.compile(
+    r"https://raw\.githubusercontent\.com/ppfenning/coxswain/[^/\s)>\"'`]+/([^\s)>\"'`]+)", re.IGNORECASE
+)
+_UNTRACKED_DIRS = {".git", ".venv", "site", "__pycache__", ".pytest_cache"}
+
+
+def raw_urls_untracked(text: str, tracked: frozenset[str]) -> list[str]:
+    """Paths named by this repository's raw URLs in `text` that are not in `tracked`."""
+    paths = (path.rstrip(".,;:") for path in _THIS_REPO_RAW_URL.findall(text))
+    return [path for path in paths if path not in tracked]
+
+
+def _tracked_files() -> frozenset[str]:
+    return frozenset(
+        path.relative_to(ROOT).as_posix()
+        for path in ROOT.rglob("*")
+        if path.is_file() and not _UNTRACKED_DIRS & set(path.relative_to(ROOT).parts)
+    )
+
+
+def test_raw_url_scan_reports_a_path_missing_from_the_tracked_set():
+    text = "curl https://raw.githubusercontent.com/ppfenning/coxswain/main/install.sh | sh"
+    assert raw_urls_untracked(text, frozenset({"manifest.toml"})) == ["install.sh"]
+
+
+def test_raw_url_scan_passes_a_tracked_path():
+    text = "[manifest](https://raw.githubusercontent.com/ppfenning/coxswain/main/manifest.toml)."
+    assert raw_urls_untracked(text, frozenset({"manifest.toml"})) == []
+
+
+def test_raw_url_scan_matches_the_owner_in_any_case():
+    text = "https://RAW.githubusercontent.com/PPfenning/Coxswain/main/install.sh"
+    assert raw_urls_untracked(text, frozenset()) == ["install.sh"]
+
+
+def test_raw_url_scan_ignores_other_repositories():
+    text = "https://raw.githubusercontent.com/ppfenning/coxswain-graphs/main/nothing.md"
+    assert raw_urls_untracked(text, frozenset()) == []
+
+
+def test_every_raw_url_for_this_repo_in_docs_and_readme_names_a_tracked_file():
+    tracked = _tracked_files()
+    pages = [ROOT / "README.md", *sorted((ROOT / "docs").rglob("*.md"))]
+    missing = {
+        page.relative_to(ROOT).as_posix(): untracked
+        for page in pages
+        if (untracked := raw_urls_untracked(page.read_text(), tracked))
+    }
+    assert not missing, f"raw URLs naming untracked files: {missing}"
+
+
+def test_install_page_does_not_mention_install_sh():
+    assert "install.sh" not in (ROOT / "docs" / "install" / "index.md").read_text()

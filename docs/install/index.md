@@ -4,22 +4,27 @@ How to install the components pinned by `manifest.toml` with the `cox`
 command.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ppfenning/coxswain/main/install.sh | sh -s -- --provider claude-code --with crew
+uv tool install coxswain-tools
+cox install --with crew
+cox setup doctor
 ```
 
-## What it does
+The first command needs `uv` already on your `PATH`; `cox install` does not
+install it for you. Get `uv` from <https://docs.astral.sh/uv/> before you
+start. On macOS you can install `cox` from the Homebrew tap instead; see
+[macOS](#macos). Either way, `cox install` is the step that fetches the rest.
+
+## What `cox install` does
 
 1. Reads `manifest.toml` from the pinned release to find out which
    components exist and which tag each one is pinned to.
-2. Installs `uv` if it isn't already on `PATH` — `uv` is what the rest of
-   the install uses to fetch and run Python tooling.
-3. Fetches the required components (cartridges, graphs, `cox` itself) at
+2. Fetches the required components (cartridges, graphs, `cox` itself) at
    their pinned tag into `--root`.
-4. Fetches whichever optional components `--with` named (crew) at their
+3. Fetches whichever optional components `--with` named (crew) at their
    pinned tags. A release tags only the components that changed, as
    `v<version>`; unchanged components keep their earlier tag. Crew, for
    example, is pinned at `v0.32.0`.
-5. Writes the provider config for `--provider`, so `cox` knows which CLI,
+4. Writes the provider config for `--provider`, so `cox` knows which CLI,
    plugin, and model tiers to use.
 
 ## Channels
@@ -46,6 +51,9 @@ pinned components from `manifest.toml`.
 
 ## Flags
 
+Run `cox install --help` for the flags your installed version accepts. The
+table below lists the ones this page documents.
+
 | Flag | Meaning |
 | --- | --- |
 | `--provider` | Which provider profile to configure (see [Providers](providers.md)). |
@@ -54,7 +62,7 @@ pinned components from `manifest.toml`.
 | `--team` | Which team's cartridge to pull in, if you belong to more than one. |
 | `--workspace` | The workspace root the crew will operate on. |
 | `--version` | Install a specific Coxswain version instead of the latest release. |
-| `--dry-run` | Print what the installer would do without doing it. |
+| `--dry-run` | Print what `cox install` would do without doing it. |
 
 ## Verify
 
