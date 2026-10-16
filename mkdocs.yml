@@ -87,6 +87,7 @@ nav:
       - CLI reference: reference/cli/index.md
   - Releases:
       - Releases: releases/index.md
+      - 0.40.0: releases/0.40.0.md
       - 0.39.1: releases/0.39.1.md
       - 0.39.0: releases/0.39.0.md
       - 0.38.0: releases/0.38.0.md
