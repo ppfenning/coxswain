@@ -682,10 +682,10 @@ Coxswain is in beta — versions may change between releases
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#what-it-does" class="md-nav__link">
+  <a href="#what-cox-install-does" class="md-nav__link">
     <span class="md-ellipsis">
       
-        What it does
+        What cox install does
       
     </span>
   </a>
@@ -3518,10 +3518,10 @@ Coxswain is in beta — versions may change between releases
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#what-it-does" class="md-nav__link">
+  <a href="#what-cox-install-does" class="md-nav__link">
     <span class="md-ellipsis">
       
-        What it does
+        What cox install does
       
     </span>
   </a>
@@ -3645,14 +3645,18 @@ Coxswain is in beta — versions may change between releases
 <h1 id="install">Install</h1>
 <p>How to install the components pinned by <code>manifest.toml</code> with the <code>cox</code>
 command.</p>
-<div class="highlight"><pre><span></span><code>curl<span class="w"> </span>-fsSL<span class="w"> </span>https://raw.githubusercontent.com/ppfenning/coxswain/main/install.sh<span class="w"> </span><span class="p">|</span><span class="w"> </span>sh<span class="w"> </span>-s<span class="w"> </span>--<span class="w"> </span>--provider<span class="w"> </span>claude-code<span class="w"> </span>--with<span class="w"> </span>crew
+<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span>coxswain-tools
+cox<span class="w"> </span>install<span class="w"> </span>--with<span class="w"> </span>crew
+cox<span class="w"> </span>setup<span class="w"> </span>doctor
 </code></pre></div>
-<h2 id="what-it-does">What it does</h2>
+<p>The first command needs <code>uv</code> already on your <code>PATH</code>; <code>cox install</code> does not
+install it for you. Get <code>uv</code> from <a href="https://docs.astral.sh/uv/">https://docs.astral.sh/uv/</a> before you
+start. On macOS you can install <code>cox</code> from the Homebrew tap instead; see
+<a href="#macos">macOS</a>. Either way, <code>cox install</code> is the step that fetches the rest.</p>
+<h2 id="what-cox-install-does">What <code>cox install</code> does</h2>
 <ol>
 <li>Reads <code>manifest.toml</code> from the pinned release to find out which
    components exist and which tag each one is pinned to.</li>
-<li>Installs <code>uv</code> if it isn't already on <code>PATH</code> — <code>uv</code> is what the rest of
-   the install uses to fetch and run Python tooling.</li>
 <li>Fetches the required components (cartridges, graphs, <code>cox</code> itself) at
    their pinned tag into <code>--root</code>.</li>
 <li>Fetches whichever optional components <code>--with</code> named (crew) at their
@@ -3698,6 +3702,8 @@ cox<span class="w"> </span>setup<span class="w"> </span>doctor
 The formula installs <code>cox</code> alone; <code>cox install</code> fetches the rest of the
 pinned components from <code>manifest.toml</code>.</p>
 <h2 id="flags">Flags</h2>
+<p>Run <code>cox install --help</code> for the flags your installed version accepts. The
+table below lists the ones this page documents.</p>
 <table>
 <thead>
 <tr>
@@ -3732,7 +3738,7 @@ pinned components from <code>manifest.toml</code>.</p>
 </tr>
 <tr>
 <td><code>--dry-run</code></td>
-<td>Print what the installer would do without doing it.</td>
+<td>Print what <code>cox install</code> would do without doing it.</td>
 </tr>
 </tbody>
 </table>
