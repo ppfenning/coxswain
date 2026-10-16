@@ -34,6 +34,7 @@ Coxswain is a platform that builds software with a crew of AI agents and keeps a
 
 ```sh
 uv tool install coxswain-tools
+cox install
 cox setup doctor
 ```
 
