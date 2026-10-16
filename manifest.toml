@@ -8,12 +8,12 @@
 # install, part tag and part ref, is a configuration nobody tested.
 
 [coxswain]
-version = "0.39.1"
+version = "0.40.0"
 status  = "beta"
 
 [components]
-cartridges = { repo = "ppfenning/coxswain-cartridges", tag = "v0.39.0", required = true, docs = ["README.md"] }
-graphs     = { repo = "ppfenning/coxswain-graphs",     tag = "v0.39.0", required = true, docs = [
+cartridges = { repo = "ppfenning/coxswain-cartridges", tag = "v0.40.0", required = true, docs = ["README.md"] }
+graphs     = { repo = "ppfenning/coxswain-graphs",     tag = "v0.40.0", required = true, docs = [
     "README.md",
     "graphs/delivery/epic-swarm.md",
     "graphs/delivery/lifecycle-propose.md",
@@ -26,9 +26,9 @@ graphs     = { repo = "ppfenning/coxswain-graphs",     tag = "v0.39.0", required
     "docs/RUNBOOK-TRUST.md",
     "docs/graphs/*.md",
 ] }
-tools      = { repo = "ppfenning/coxswain-tools",      tag = "v0.39.1", required = true, provides = "cox", docs = ["README.md"] }
+tools      = { repo = "ppfenning/coxswain-tools",      tag = "v0.40.0", required = true, provides = "cox", docs = ["README.md"] }
 crew       = { repo = "ppfenning/coxswain-crew",       tag = "v0.38.0", lockstep = false, flag = "crew", docs = ["README.md"] }
-dash       = { repo = "ppfenning/coxswain-dash",       tag = "v0.38.0",  flag = "dash", provides = "towpath", since = "0.26.0", docs = ["README.md"] }
+dash       = { repo = "ppfenning/coxswain-dash",       tag = "v0.40.0",  flag = "dash", provides = "towpath", since = "0.26.0", docs = ["README.md"] }
 
 [providers]
 claude-code = { status = "supported", profile = "providers/claude-code.yaml" }
