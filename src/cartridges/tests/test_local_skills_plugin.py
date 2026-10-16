@@ -116,6 +116,14 @@ def test_decompose_states_the_contract_fixture_path_rule() -> None:
     assert re.search(r"^name: decompose-initiative$", raw, re.MULTILINE)
 
 
+def test_build_in_worktree_requires_neutral_test_data() -> None:
+    raw = (PLUGIN / "skills" / "build-in-worktree" / "SKILL.md").read_text(encoding="utf-8")
+    text = " ".join(raw.split())
+    assert "/" + "home/user" in text
+    assert "check_clean" in text
+    assert re.search(r"^name: build-in-worktree$", raw, re.MULTILINE)
+
+
 def test_the_index_maps_each_binding_to_exactly_one_body() -> None:
     index = index_from_roots([PLUGIN_ROOT])
     resolved = load("local", REPO / "cartridges", skill_index=index)

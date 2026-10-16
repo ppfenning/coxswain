@@ -34,6 +34,17 @@ than cautious.
   per branch, or one that restates the implementation, is weight the reviewer
   strikes. Spend the lines on the function, not on prose about it.
 
+## Test data
+
+In any repository that ships a `.github/check_clean.py`, tests and fixtures use
+only neutral stand-ins. The one neutral home directory is `/home/user`, the
+home folder of a user named `user`. Hosts are example names with no `.lan`
+suffix. Ssh users and operator or team settings are a neutral word such as
+`dev` or `acme`. No private-network or tailnet address appears.
+
+CI's clean check rejects anything else, and the names rule reads a pattern you
+cannot see, so the safe move is never to use a real name or path.
+
 ## What good looks like
 
 The smallest patch that satisfies the plan, with a summary that says what
@@ -45,3 +56,7 @@ changed and why in two sentences, and command output a reviewer can trust.
 - Claimed test results with no command recorded.
 - A diff that will not apply because it was written from memory of the file
   rather than the file as given.
+- Test data treated as harmless because only a test reads it: a real home
+  path, a real person's name as an ssh user or sample setting, a `.lan` host.
+  The review is green, then CI's clean check fails the test job, and the task
+  costs a quarantine and a hand fix.
