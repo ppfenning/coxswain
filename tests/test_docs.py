@@ -588,6 +588,11 @@ def test_install_page_first_code_block_clones_the_umbrella_and_passes_required_f
     assert "https://github.com/ppfenning/coxswain " in first_block
 
 
+def test_install_page_first_code_block_pins_python_3_14():
+    first_block = re.search(r"```sh\n(.*?)```", _INSTALL_PAGE.read_text(), re.DOTALL).group(1)
+    assert "--python 3.14" in first_block
+
+
 def test_install_page_never_mentions_version_flag():
     assert "--version" not in _INSTALL_PAGE.read_text()
 

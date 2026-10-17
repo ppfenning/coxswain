@@ -86,7 +86,7 @@ def _install(previous: str | None) -> tuple[tuple[str, ...], ...]:
     tools = "coxswain-tools" if previous is None else f"coxswain-tools=={previous.removeprefix('v')}"
     branch = () if previous is None else ("--branch", previous)
     return (
-        ("uv", "tool", "install", tools),
+        ("uv", "tool", "install", "--python", "3.14", tools),
         ("git", "clone", *branch, UMBRELLA_URL, f"{ROOT}/coxswain"),
         ("cox", "install", "--root", ROOT, "--team", "rehearse", "--workspace", WORKSPACE, "--with", "crew", "--with", "dash"),
         ("mkdir", "-p", *(f"{WORKSPACE}/{d}" for d in ("work", "runs", "intake", "cartridges"))),
@@ -117,10 +117,12 @@ def verdict(results: Mapping[str, str], declared: Sequence[str]) -> tuple[int, l
 
 
 def _env(home: Path) -> dict[str, str]:
-    # a scratch HOME per scenario; uv's tool dir is fixed so the tools receipt can be read back
+    # a scratch HOME per scenario; uv's tool dir is fixed so the tools receipt can be read back,
+    # and its tool bin dir is the one PATH already searches
     path = f"{home}/.local/bin:{os.environ.get('PATH', '')}"
     return {**os.environ, "HOME": str(home), "XDG_CONFIG_HOME": f"{home}/config", "XDG_DATA_HOME": f"{home}/data",
-            "XDG_STATE_HOME": f"{home}/state", "XDG_CACHE_HOME": f"{home}/cache", "UV_TOOL_DIR": f"{home}/uv-tools", "PATH": path}
+            "XDG_STATE_HOME": f"{home}/state", "XDG_CACHE_HOME": f"{home}/cache", "UV_TOOL_DIR": f"{home}/uv-tools",
+            "UV_TOOL_BIN_DIR": f"{home}/.local/bin", "PATH": path}
 
 
 def _git(repo: Path, *args: str) -> str:

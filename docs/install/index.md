@@ -4,7 +4,7 @@ How to install the components pinned by `manifest.toml` with the `cox`
 command.
 
 ```sh
-uv tool install coxswain-tools
+uv tool install --python 3.14 coxswain-tools
 git clone --branch vX.Y.Z https://github.com/ppfenning/coxswain <root>/coxswain
 cox install --root <root> --team my-team --workspace <workspace> --with crew
 mkdir -p <workspace>/work <workspace>/runs <workspace>/intake <workspace>/cartridges
@@ -17,6 +17,8 @@ Here `vX.Y.Z` is a release tag, `<root>` is the install directory and
 `<workspace>` is the workspace directory. The doctor that `cox install` runs
 at its close may report the missing workspace and cartridge until the `mkdir`,
 `git init` and `cartridge init` steps are done.
+
+The `--python 3.14` flag makes the installer fetch a 3.14 interpreter when none is present, so you do not silently get a release from before the Python 3.14 floor. If your shell cannot find the installed `cox` command, run `uv tool update-shell` and then open a new shell.
 
 `cox install` reads the manifest at `<root>/coxswain/manifest.toml`, which is
 why the umbrella repository is cloned there first.
