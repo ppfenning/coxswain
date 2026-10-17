@@ -1,3 +1,4 @@
+import hashlib
 import json
 import subprocess
 import tomllib
@@ -5,8 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from devtools import cli, release, release_check, release_check_index
+from devtools import cli, release, release_check, release_check_index, release_rehearsal_gate
 from devtools.release_check import Drift
+
+_REAL_REHEARSAL_STEPS = cli._rehearsal_steps
 
 
 @pytest.fixture(autouse=True)
@@ -1621,6 +1624,78 @@ def test_cli_release_with_allow_doc_drift_notes_the_reason_and_proceeds(tmp_path
     assert rc == 0
     assert "note release-check: docs land next sprint (1 drift allowed)" in out
     assert "tag harness: org/harness -> v0.2.0" in out
+
+
+_REHEARSAL_COMPONENTS = ("cartridges", "graphs", "tools", "crew", "dash")
+_MANIFEST_TOML_REHEARSAL = '[coxswain]\nversion = "0.1.0"\n' + "".join(
+    f'\n[components.{name}]\nrepo = "org/{name}"\ntag = "v0.1.0"\n' for name in _REHEARSAL_COMPONENTS)
+_REHEARSAL_NOTES_LINE = "Cut with `--allow-no-rehearsal`: the runner image was unavailable."
+
+
+def _sha_of(directory):
+    return hashlib.sha1(str(directory).encode()).hexdigest()
+
+
+def _rehearsal_edge(tmp_path, runs, jobs=()):
+    """A runner for the gate's edge: origin commits are a hash of the checkout path, the umbrella's one tag
+    is v0.1.0, and the rehearsal workflow lists `runs`. Anything else is the clean fake git."""
+    git = _fake_git_run(commits=1)[1]
+
+    def run(argv, cwd):
+        if argv[:3] == ["gh", "run", "list"] and "release-rehearsal.yml" in argv:
+            return 0, json.dumps(runs)
+        if argv[:3] == ["gh", "run", "view"] and "jobs" in argv:
+            return 0, json.dumps({"jobs": list(jobs)})
+        if argv[3:4] == ["rev-parse"] and argv[-1].startswith("origin/"):
+            return 0, _sha_of(argv[2]) + "\n"
+        if argv[3:5] == ["tag", "--list"]:
+            return 0, "v0.1.0\n"
+        return git(argv, cwd)
+    return run
+
+
+def _rehearsal_title(tmp_path):
+    return release_rehearsal_gate.run_title(
+        {name: _sha_of(tmp_path / name) for name in _REHEARSAL_COMPONENTS}, "v0.1.0", [])
+
+
+def _rehearsal_cut(tmp_path, monkeypatch, runs, *flags, notes="", jobs=()):
+    monkeypatch.setattr(cli, "_rehearsal_steps", _REAL_REHEARSAL_STEPS)
+    monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
+    monkeypatch.setattr(cli, "_real_run", _fake_git_run(commits=1)[1])
+    monkeypatch.setattr(cli, "_stdout_run", _rehearsal_edge(tmp_path, runs, jobs))
+    (tmp_path / "manifest.toml").write_text(_MANIFEST_TOML_REHEARSAL)
+    (tmp_path / "coxswain" / "docs" / "releases").mkdir(parents=True)
+    (tmp_path / "coxswain" / "docs" / "releases" / "0.2.0.md").write_text(notes)
+    return cli.main(["release", "0.2.0", *flags, "--manifest", str(tmp_path / "manifest.toml"), "--root", str(tmp_path)])
+
+
+def test_cli_release_refuses_before_any_tag_step_when_no_rehearsal_run_matches(tmp_path, capsys, monkeypatch):
+    rc = _rehearsal_cut(tmp_path, monkeypatch, [])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert f"refuse rehearsal: No rehearsal run matches. Looked for: {_rehearsal_title(tmp_path)}" in out
+    assert "tag " not in out
+
+
+def test_cli_release_proceeds_when_the_matching_rehearsal_run_passed(tmp_path, capsys, monkeypatch):
+    runs = [{"databaseId": 7, "displayTitle": _rehearsal_title(tmp_path), "conclusion": "success",
+             "createdAt": "2026-10-01T10:00:00Z"}]
+    jobs = [{"name": "fresh", "conclusion": "success"}, {"name": "upgrade", "conclusion": "success"},
+            {"name": "migrate", "conclusion": "skipped"}]
+    rc = _rehearsal_cut(tmp_path, monkeypatch, runs, "--dry-run", jobs=jobs)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "note rehearsal: rehearsal passed: gh run view 7" in out
+
+
+def test_cli_release_with_allow_no_rehearsal_and_the_matching_notes_line_proceeds(tmp_path, capsys, monkeypatch):
+    rc = _rehearsal_cut(tmp_path, monkeypatch, [], "--dry-run", "--allow-no-rehearsal",
+                        "the runner image was unavailable", notes=f"## Known gaps\n\n{_REHEARSAL_NOTES_LINE}\n")
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "note rehearsal: the runner image was unavailable" in out
+    assert "tag cartridges: org/cartridges -> v0.2.0" in out
 
 
 def test_component_dir_falls_back_to_the_coxswain_prefixed_checkout(tmp_path):
