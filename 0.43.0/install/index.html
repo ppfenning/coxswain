@@ -3927,6 +3927,9 @@ release are tagged <code>v&lt;version&gt;</code>; unchanged components keep thei
 <code>cox setup migrate --apply</code> moves this machine; run <code>cox setup doctor</code> afterwards. On the chair's machine,
 <code>cox setup migrate --apply --hosts</code> also moves each lane host. Until a machine is migrated, <code>cox setup doctor</code> warns
 on the home rows with <code>not migrated: run cox setup migrate</code>.</p>
+<p>Once every machine has moved, run <code>cox setup migrate --finish</code> to see what it would rewrite, then
+<code>cox setup migrate --finish --apply</code> on each machine with its lanes and loop stopped. The first run rewrites the
+repository paths in the shared queue; each run removes that machine's compatibility links and its migration marker.</p>
 <h2 id="uninstall">Uninstall</h2>
 <p>There is no <code>cox uninstall</code> yet. Removing an install means deleting
 the coxswain home (or <code>--root</code>) by hand; a dedicated uninstall command is planned.</p>
