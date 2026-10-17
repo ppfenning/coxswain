@@ -5,7 +5,9 @@ verdict, all from plain data. The edge at the bottom runs the plan's steps as pr
 touches the machine. Stdlib only: the workflow runs it with the container's apt python3.
 
 How the candidate commits get installed: the documented install command puts each component in a git checkout under
---root. The `@pin` step then checks every checkout out at its candidate SHA, reinstalls `cox` from the tools SHA the way
+the root. The fresh scenario installs into the default coxswain home, {home}/data/coxswain, with no root flag; the
+released PyPI tool cannot do that, so an `@cox` step installs the candidate tools first. The `@pin` step then checks
+every checkout out at its candidate SHA, reinstalls `cox` from the tools SHA the way
 docs.yml installs it at a ref, and reads the result back. A scenario passes only when that read-back shows the SHAs in the
 run title, so a green run proves what it names. No cox flag that pins a commit exists, so none is used.
 """
@@ -27,8 +29,9 @@ COMPONENTS = ("cartridges", "graphs", "tools", "crew", "dash")
 INPUTS = (*(f"{c}_sha" for c in COMPONENTS), "previous_tag", "migrations")
 ORDER = ("fresh", "upgrade", "migrate")
 SHA = re.compile(r"[0-9a-f]{40}")
-POPULATE, PIN, DOCTOR = "@populate", "@pin", "@doctor"
+POPULATE, PIN, DOCTOR, COX = "@populate", "@pin", "@doctor", "@cox"
 HOME, WORKSPACE, ROOT = "{home}", "{workspace}", "{root}"
+MIGRATE_APPLY = ("cox", "setup", "migrate", "--apply")
 LINT = ("cox", "route", "lint", "{workspace}/work/rehearsal")
 # Work items the upgrade and migrate scenarios put in a workspace; the layout is work/<initiative>/<phase>/<task>.md.
 WORK_ITEMS = {f"work/rehearsal/p{p}/t{t}.md": f"# Task {p}.{t}\n\nA rehearsal work item.\n" for p in (1, 2) for t in (1, 2)}
@@ -80,6 +83,36 @@ def doctor_problem(text: str) -> str | None:
     return None if any(r.get("ok") is True for r in rows) else "doctor: no row passed"
 
 
+def tools_install_argv(sha: str) -> tuple[str, ...]:
+    return ("uv", "tool", "install", "--force", "--python", "3.14", f"{TOOLS_URL}@{sha}")
+
+
+def fill_paths(scenario: str, home: Path) -> dict[str, str]:
+    """Only the fresh scenario installs into the default coxswain home, {home}/data/coxswain."""
+    base = f"{home}/data/coxswain"
+    root, workspace = (f"{base}/installs", f"{base}/workspaces/rehearse") if scenario == "fresh" else (f"{home}/root", f"{home}/workspace")
+    return {HOME: str(home), WORKSPACE: workspace, ROOT: root}
+
+
+def _workspace_steps() -> tuple[tuple[str, ...], ...]:
+    return (
+        ("mkdir", "-p", *(f"{WORKSPACE}/{d}" for d in ("work", "runs", "intake", "cartridges"))),
+        ("git", "init", WORKSPACE),
+        ("cartridge", "init", "rehearse", "--cartridges-dir", f"{WORKSPACE}/cartridges"),
+    )
+
+
+def _fresh_install(tools_sha: str) -> tuple[tuple[str, ...], ...]:
+    """The released tools cannot install without a root flag, so `@cox` swaps in the candidate tools before `cox install`."""
+    return (
+        ("uv", "tool", "install", "--python", "3.14", "coxswain-tools"),
+        (COX, tools_sha),
+        ("git", "clone", UMBRELLA_URL, f"{ROOT}/coxswain"),
+        ("cox", "install", "--team", "rehearse", "--with", "crew", "--with", "dash"),
+        *_workspace_steps(),
+    )
+
+
 def _install(previous: str | None) -> tuple[tuple[str, ...], ...]:
     """The sequence docs/install/index.md gives. `previous` is a tag such as v0.40.0; None installs the default release."""
     tools = "coxswain-tools" if previous is None else f"coxswain-tools=={previous.removeprefix('v')}"
@@ -88,17 +121,15 @@ def _install(previous: str | None) -> tuple[tuple[str, ...], ...]:
         ("uv", "tool", "install", "--python", "3.14", tools),
         ("git", "clone", *branch, UMBRELLA_URL, f"{ROOT}/coxswain"),
         ("cox", "install", "--root", ROOT, "--team", "rehearse", "--workspace", WORKSPACE, "--with", "crew", "--with", "dash"),
-        ("mkdir", "-p", *(f"{WORKSPACE}/{d}" for d in ("work", "runs", "intake", "cartridges"))),
-        ("git", "init", WORKSPACE),
-        ("cartridge", "init", "rehearse", "--cartridges-dir", f"{WORKSPACE}/cartridges"),
+        *_workspace_steps(),
     )
 
 
 def plan(inputs: Mapping[str, str]) -> list[Scenario]:
     pin = (PIN, *(f"{c}={inputs[f'{c}_sha']}" for c in COMPONENTS))
     ids = parse_migrations(inputs["migrations"])
-    fresh = Scenario("fresh", (*_install(None), pin, (DOCTOR,)))
-    upgrade = Scenario("upgrade", (*_install(inputs["previous_tag"]), (POPULATE,), pin, LINT, (DOCTOR,)))
+    fresh = Scenario("fresh", (*_fresh_install(inputs["tools_sha"]), pin, (DOCTOR,)))
+    upgrade = Scenario("upgrade", (*_install(inputs["previous_tag"]), (POPULATE,), pin, MIGRATE_APPLY, LINT, (DOCTOR,)))
     # unknown: how a migration id maps to a command; confirm against the release notes of the release that declares it
     each = tuple(s for i in ids for s in (("cox", "migrate", i, "--workspace", WORKSPACE), LINT))
     migrate = Scenario("migrate", (*_install(None), (POPULATE,), pin, *each) if ids else ())
@@ -161,8 +192,9 @@ def _doctor(env: Mapping[str, str]) -> bool:
     return problem is None
 
 
-def _run_step(step: tuple[str, ...], home: Path, env: Mapping[str, str]) -> bool:
-    workspace, root = home / "workspace", home / "root"
+def _run_step(step: tuple[str, ...], scenario: str, home: Path, env: Mapping[str, str]) -> bool:
+    fill = fill_paths(scenario, home)
+    workspace, root = Path(fill[WORKSPACE]), Path(fill[ROOT])
     try:
         if step[0] == POPULATE:
             _populate(workspace)
@@ -171,7 +203,8 @@ def _run_step(step: tuple[str, ...], home: Path, env: Mapping[str, str]) -> bool
             return _pin(dict(a.split("=") for a in step[1:]), root, home, env)
         if step[0] == DOCTOR:
             return _doctor(env)
-        fill = {HOME: str(home), WORKSPACE: str(workspace), ROOT: str(root)}
+        if step[0] == COX:
+            return subprocess.run(tools_install_argv(step[1]), env=env).returncode == 0
         argv = [re.sub(r"\{(home|workspace|root)\}", lambda m: fill[m.group(0)], a) for a in step]
         return subprocess.run(argv, env=env).returncode == 0
     except OSError as exc:  # a command missing from PATH is a failed scenario with a line, not a traceback
@@ -182,10 +215,11 @@ def _run_step(step: tuple[str, ...], home: Path, env: Mapping[str, str]) -> bool
 def execute(scenario: Scenario, home: Path) -> str:
     if not scenario.steps:
         return "skip"
-    (home / "workspace").mkdir(exist_ok=True)
-    (home / "root").mkdir(exist_ok=True)
+    fill = fill_paths(scenario.name, home)
+    for key in (WORKSPACE, ROOT):
+        Path(fill[key]).mkdir(parents=True, exist_ok=True)
     env = _env(home)
-    return "pass" if all(_run_step(step, home, env) for step in scenario.steps) else "fail"
+    return "pass" if all(_run_step(step, scenario.name, home, env) for step in scenario.steps) else "fail"
 
 
 def _rehearse(scenario: Scenario) -> str:
