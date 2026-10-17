@@ -576,14 +576,13 @@ def test_install_page_does_not_mention_install_sh():
 
 
 _INSTALL_PAGE = ROOT / "docs" / "install" / "index.md"
-_INSTALL_FLAGS = {"--root", "--manifest", "--provider", "--with", "--team", "--workspace", "--edge", "--dry-run"}
+_INSTALL_FLAGS = {"--root", "--home", "--manifest", "--provider", "--with", "--team", "--workspace", "--edge", "--dry-run"}
 
 
-def test_install_page_first_code_block_clones_the_umbrella_and_passes_required_flags():
+def test_install_page_first_code_block_clones_the_umbrella_into_the_home():
     first_block = re.search(r"```sh\n(.*?)```", _INSTALL_PAGE.read_text(), re.DOTALL).group(1)
-    assert "cox install --root" in first_block
-    assert "--team" in first_block
-    assert "--workspace" in first_block
+    assert "cox install --team" in first_block
+    assert "<home>/installs/coxswain" in first_block
     assert "git clone --branch" in first_block
     assert "https://github.com/ppfenning/coxswain " in first_block
 
@@ -597,7 +596,7 @@ def test_install_page_never_mentions_version_flag():
     assert "--version" not in _INSTALL_PAGE.read_text()
 
 
-def test_install_flags_table_names_only_the_eight_documented_flags():
+def test_install_flags_table_names_only_the_documented_flags():
     section = _INSTALL_PAGE.read_text().split("## Flags", 1)[1].split("\n## ", 1)[0]
     named = set(re.findall(r"^\| `(--[a-z-]+)", section, re.MULTILINE))
     assert named and named <= _INSTALL_FLAGS
