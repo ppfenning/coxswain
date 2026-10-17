@@ -21,13 +21,12 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import NamedTuple
 
-INSTALL_URL = "https://raw.githubusercontent.com/ppfenning/coxswain/main/install.sh"
+UMBRELLA_URL = "https://github.com/ppfenning/coxswain"
 TOOLS_URL = "git+https://github.com/ppfenning/coxswain-tools"
 COMPONENTS = ("cartridges", "graphs", "tools", "crew", "dash")
 INPUTS = (*(f"{c}_sha" for c in COMPONENTS), "previous_tag", "migrations")
 ORDER = ("fresh", "upgrade", "migrate")
 SHA = re.compile(r"[0-9a-f]{40}")
-REPO_URL = re.compile(r"ppfenning/coxswain-(cartridges|graphs|tools|crew|dash)(?:\.git)?/?$")
 POPULATE, PIN, DOCTOR = "@populate", "@pin", "@doctor"
 HOME, WORKSPACE, ROOT = "{home}", "{workspace}", "{root}"
 # unknown: route lint's workspace argument and what its static rules need of a work item; confirm against `cox route lint --help`
@@ -48,11 +47,6 @@ def parse_migrations(raw: str) -> list[str]:
 def refusals(inputs: Mapping[str, str]) -> list[str]:
     """One reason per `*_sha` input that is not a full 40 character lowercase hex SHA; a branch or short SHA can move."""
     return [f"{n}: not a full 40 character SHA: {inputs[n]!r}" for n in INPUTS[:5] if not SHA.fullmatch(inputs[n])]
-
-
-def component_for_url(url: str) -> str | None:
-    found = REPO_URL.search(url.strip())
-    return found.group(1) if found else None
 
 
 def pin_problems(heads: Mapping[str, str | None], shas: Mapping[str, str], receipt: str | None) -> list[str]:
@@ -87,21 +81,28 @@ def doctor_problem(text: str) -> str | None:
     return None if any(r.get("ok") is True for r in rows) else "doctor: no row passed"
 
 
-def _install(extra: Sequence[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    # the documented install command, as a download then a run so a failed download fails the step
-    flags = ("--with", "crew", "--with", "dash", "--root", ROOT, "--workspace", WORKSPACE, *extra)
-    return ("curl", "-fsSL", "-o", f"{HOME}/install.sh", INSTALL_URL), ("sh", f"{HOME}/install.sh", *flags)
+def _install(previous: str | None) -> tuple[tuple[str, ...], ...]:
+    """The sequence docs/install/index.md gives. `previous` is a tag such as v0.40.0; None installs the default release."""
+    tools = "coxswain-tools" if previous is None else f"coxswain-tools=={previous.removeprefix('v')}"
+    branch = () if previous is None else ("--branch", previous)
+    return (
+        ("uv", "tool", "install", tools),
+        ("git", "clone", *branch, UMBRELLA_URL, f"{ROOT}/coxswain"),
+        ("cox", "install", "--root", ROOT, "--team", "rehearse", "--workspace", WORKSPACE, "--with", "crew", "--with", "dash"),
+        ("mkdir", "-p", *(f"{WORKSPACE}/{d}" for d in ("work", "runs", "intake", "cartridges"))),
+        ("git", "init", WORKSPACE),
+        ("cartridge", "init", "rehearse", "--cartridges-dir", f"{WORKSPACE}/cartridges"),
+    )
 
 
 def plan(inputs: Mapping[str, str]) -> list[Scenario]:
     pin = (PIN, *(f"{c}={inputs[f'{c}_sha']}" for c in COMPONENTS))
     ids = parse_migrations(inputs["migrations"])
-    fresh = Scenario("fresh", (*_install(()), pin, (DOCTOR,)))
-    previous = ("--version", inputs["previous_tag"].removeprefix("v"))
-    upgrade = Scenario("upgrade", (*_install(previous), (POPULATE,), pin, LINT, (DOCTOR,)))
+    fresh = Scenario("fresh", (*_install(None), pin, (DOCTOR,)))
+    upgrade = Scenario("upgrade", (*_install(inputs["previous_tag"]), (POPULATE,), pin, LINT, (DOCTOR,)))
     # unknown: how a migration id maps to a command; confirm against the release notes of the release that declares it
     each = tuple(s for i in ids for s in (("cox", "migrate", i, "--workspace", WORKSPACE), LINT))
-    migrate = Scenario("migrate", (*_install(()), (POPULATE,), pin, *each) if ids else ())
+    migrate = Scenario("migrate", (*_install(None), (POPULATE,), pin, *each) if ids else ())
     return [fresh, upgrade, migrate]
 
 
@@ -128,8 +129,8 @@ def _git(repo: Path, *args: str) -> str:
 
 
 def _checkouts(root: Path) -> dict[str, Path]:
-    repos = (g.parent for pattern in ("*/.git", "*/*/.git") for g in root.glob(pattern))
-    return {c: r for r in repos if (c := component_for_url(_git(r, "remote", "get-url", "origin")))}
+    # `cox install` clones each component to <root>/coxswain-<name>
+    return {c: root / f"coxswain-{c}" for c in COMPONENTS if (root / f"coxswain-{c}" / ".git").exists()}
 
 
 def _populate(workspace: Path) -> None:

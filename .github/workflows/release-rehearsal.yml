@@ -31,6 +31,14 @@ jobs:
     steps:
       - run: apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git python3
       - uses: actions/checkout@v4
+      - name: install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: install node and npm
+        run: apt-get install -y --no-install-recommends nodejs npm
+      - name: install claude code
+        run: npm install -g @anthropic-ai/claude-code
       - name: fresh
         run: >-
           python3 scripts/release_rehearsal.py --scenario fresh
@@ -43,6 +51,14 @@ jobs:
     steps:
       - run: apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git python3
       - uses: actions/checkout@v4
+      - name: install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: install node and npm
+        run: apt-get install -y --no-install-recommends nodejs npm
+      - name: install claude code
+        run: npm install -g @anthropic-ai/claude-code
       - name: upgrade
         run: >-
           python3 scripts/release_rehearsal.py --scenario upgrade
@@ -55,6 +71,14 @@ jobs:
     steps:
       - run: apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git python3
       - uses: actions/checkout@v4
+      - name: install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: install node and npm
+        run: apt-get install -y --no-install-recommends nodejs npm
+      - name: install claude code
+        run: npm install -g @anthropic-ai/claude-code
       - name: migrate
         run: >-
           python3 scripts/release_rehearsal.py --scenario migrate
