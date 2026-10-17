@@ -33,7 +33,7 @@ Coxswain is a platform that builds software with a crew of AI agents and keeps a
 ## Install
 
 ```sh
-uv tool install coxswain-tools
+uv tool install --python 3.14 coxswain-tools
 git clone --branch vX.Y.Z https://github.com/ppfenning/coxswain <root>/coxswain
 cox install --root <root> --team my-team --workspace <workspace> --with crew
 mkdir -p <workspace>/work <workspace>/runs <workspace>/intake <workspace>/cartridges

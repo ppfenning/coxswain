@@ -103,7 +103,8 @@ def test_every_scenario_that_runs_pins_the_candidate_after_installing_and_before
 def test_fresh_plan_is_the_documented_sequence_with_no_script_download_or_version_flag():
     lines = _joined(_scenario("fresh"))
     assert not any(w in line for line in lines for w in ("curl", "install.sh", "--version"))
-    assert "uv tool install coxswain-tools" in lines
+    assert "uv tool install --python 3.14 coxswain-tools" in lines
+    assert {"--python", "3.14"} <= set(_scenario("fresh").steps[0])
     assert "git clone https://github.com/ppfenning/coxswain {root}/coxswain" in lines
     assert "cox install --root {root} --team rehearse --workspace {workspace} --with crew --with dash" in lines
     assert "mkdir -p {workspace}/work {workspace}/runs {workspace}/intake {workspace}/cartridges" in lines
@@ -113,9 +114,16 @@ def test_fresh_plan_is_the_documented_sequence_with_no_script_download_or_versio
 
 def test_upgrade_plan_pins_the_tools_package_and_clones_the_previous_tag():
     lines = _joined(_scenario("upgrade"))
-    assert "uv tool install coxswain-tools==0.40.0" in lines
+    assert "uv tool install --python 3.14 coxswain-tools==0.40.0" in lines
+    assert {"--python", "3.14", "coxswain-tools==0.40.0"} <= set(_scenario("upgrade").steps[0])
     assert "git clone --branch v0.40.0 https://github.com/ppfenning/coxswain {root}/coxswain" in lines
     assert not any("--version" in line for line in lines)
+
+
+def test_env_points_uv_tool_bin_dir_at_the_dir_path_searches(tmp_path):
+    env = rehearsal._env(tmp_path)
+    assert env["UV_TOOL_BIN_DIR"] == f"{tmp_path}/.local/bin"
+    assert env["PATH"].startswith(f"{tmp_path}/.local/bin:")
 
 
 def test_checkouts_are_read_at_the_directory_cox_install_clones_into(tmp_path):
