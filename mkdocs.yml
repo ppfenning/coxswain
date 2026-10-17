@@ -88,6 +88,7 @@ nav:
   - Releases:
       - Releases: releases/index.md
       - Release rehearsal: release-rehearsal.md
+      - 0.44.0: releases/0.44.0.md
       - 0.43.0: releases/0.43.0.md
       - 0.42.0: releases/0.42.0.md
       - 0.41.0: releases/0.41.0.md
