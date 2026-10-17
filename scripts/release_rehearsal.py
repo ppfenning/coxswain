@@ -88,9 +88,9 @@ def tools_install_argv(sha: str) -> tuple[str, ...]:
 
 
 def fill_paths(scenario: str, home: Path) -> dict[str, str]:
-    """Only the fresh scenario installs into the default coxswain home, {home}/data/coxswain."""
+    """Only the fresh scenario installs into the default coxswain home, {home}/data/coxswain, and its default workspace."""
     base = f"{home}/data/coxswain"
-    root, workspace = (f"{base}/installs", f"{base}/workspaces/rehearse") if scenario == "fresh" else (f"{home}/root", f"{home}/workspace")
+    root, workspace = (f"{base}/installs", f"{base}/workspaces/main") if scenario == "fresh" else (f"{home}/root", f"{home}/workspace")
     return {HOME: str(home), WORKSPACE: workspace, ROOT: root}
 
 

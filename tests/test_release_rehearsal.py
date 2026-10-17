@@ -157,7 +157,7 @@ def test_only_the_fresh_scenario_fills_under_the_default_coxswain_home(tmp_path)
     assert rehearsal.fill_paths("fresh", tmp_path) == {
         "{home}": str(tmp_path),
         "{root}": f"{tmp_path}/data/coxswain/installs",
-        "{workspace}": f"{tmp_path}/data/coxswain/workspaces/rehearse",
+        "{workspace}": f"{tmp_path}/data/coxswain/workspaces/main",
     }
     for name in ("upgrade", "migrate"):
         fill = rehearsal.fill_paths(name, tmp_path)
