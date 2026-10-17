@@ -4,8 +4,8 @@ A release is cut only after a rehearsal has passed on the exact commits it will 
 
 The rehearsal runs three scenarios. Each scenario is a job in the workflow.
 
-- **fresh**: install the candidate commits on a clean machine by the documented install command and check that `cox doctor` passes. The candidate installs fresh into the default coxswain home, with no root or workspace flag. It does so after the candidate tools are installed at the pinned sha.
-- **upgrade**: install the previous release, populate a workspace with real work items, upgrade to the candidate commits and check that the workspace still reads. The older install is migrated into that home by the apply form of the setup migrate command. The migration runs after the pin step and before lint.
+- **fresh**: install the candidate commits on a clean machine by the documented install command and check that `cox doctor` passes.
+- **upgrade**: install the previous release, populate a workspace with real work items, upgrade to the candidate commits and check that the workspace still reads.
 - **migrate**: run each migration the release declares against a populated workspace and check that each one leaves it valid.
 
 The migrate scenario may not skip when migrations are declared. It may skip only when the release declares none.

@@ -89,15 +89,8 @@ def _joined(scenario):
 
 def test_upgrade_installs_the_previous_release_populates_then_pins_the_candidate_shas():
     upgrade = _scenario("upgrade")
-    assert _kinds(upgrade) == ["uv", "git", "cox", "mkdir", "git", "cartridge", "@populate", "@pin", "cox", "cox", "@doctor"]
+    assert _kinds(upgrade) == ["uv", "git", "cox", "mkdir", "git", "cartridge", "@populate", "@pin", "cox", "@doctor"]
     assert upgrade.steps[7][1:] == tuple(f"{c}={SHA}" for c in ("cartridges", "graphs", "tools", "crew", "dash"))
-
-
-def test_upgrade_applies_migrations_right_after_the_pin_and_before_the_lint():
-    steps = _scenario("upgrade").steps
-    pinned = next(i for i, step in enumerate(steps) if step[0] == "@pin")
-    assert steps[pinned + 1] == ("cox", "setup", "migrate", "--apply")
-    assert steps[pinned + 2][:3] == ("cox", "route", "lint")
 
 
 def _lint_step(scenario):
@@ -130,44 +123,10 @@ def test_fresh_plan_is_the_documented_sequence_with_no_script_download_or_versio
     assert "uv tool install --python 3.14 coxswain-tools" in lines
     assert {"--python", "3.14"} <= set(_scenario("fresh").steps[0])
     assert "git clone https://github.com/ppfenning/coxswain {root}/coxswain" in lines
-    assert "cox install --team rehearse --with crew --with dash" in lines
-    assert not any("--root" in line or "--workspace" in line for line in lines)
+    assert "cox install --root {root} --team rehearse --workspace {workspace} --with crew --with dash" in lines
     assert "mkdir -p {workspace}/work {workspace}/runs {workspace}/intake {workspace}/cartridges" in lines
     assert "git init {workspace}" in lines
     assert "cartridge init rehearse --cartridges-dir {workspace}/cartridges" in lines
-
-
-def test_fresh_plan_installs_the_candidate_tools_before_cox_install():
-    fresh = _scenario("fresh")
-    assert _kinds(fresh) == ["uv", "@cox", "git", "cox", "mkdir", "git", "cartridge", "@pin", "@doctor"]
-    assert fresh.steps[1] == ("@cox", SHA)
-
-
-def test_upgrade_and_migrate_keep_the_root_and_workspace_flags():
-    for name in ("upgrade", "migrate"):
-        assert "cox install --root {root} --team rehearse --workspace {workspace} --with crew --with dash" in _joined(_scenario(name))
-
-
-def test_tools_install_argv_is_the_force_install_of_the_candidate_tools_sha():
-    expected = f"uv tool install --force --python 3.14 git+https://github.com/ppfenning/coxswain-tools@{SHA}"
-    assert " ".join(rehearsal.tools_install_argv(SHA)) == expected
-
-
-def test_only_the_fresh_scenario_fills_under_the_default_coxswain_home(tmp_path):
-    assert rehearsal.fill_paths("fresh", tmp_path) == {
-        "{home}": str(tmp_path),
-        "{root}": f"{tmp_path}/data/coxswain/installs",
-        "{workspace}": f"{tmp_path}/data/coxswain/workspaces/rehearse",
-    }
-    for name in ("upgrade", "migrate"):
-        fill = rehearsal.fill_paths(name, tmp_path)
-        assert (fill["{root}"], fill["{workspace}"]) == (f"{tmp_path}/root", f"{tmp_path}/workspace")
-
-
-def test_the_fresh_pin_lookup_reads_checkouts_under_the_filled_root(tmp_path):
-    root = Path(rehearsal.fill_paths("fresh", tmp_path)["{root}"])
-    (root / "coxswain-tools" / ".git").mkdir(parents=True)
-    assert rehearsal._checkouts(root) == {"tools": root / "coxswain-tools"}
 
 
 def test_upgrade_plan_pins_the_tools_package_and_clones_the_previous_tag():
