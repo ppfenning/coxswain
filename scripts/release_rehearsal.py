@@ -29,8 +29,7 @@ ORDER = ("fresh", "upgrade", "migrate")
 SHA = re.compile(r"[0-9a-f]{40}")
 POPULATE, PIN, DOCTOR = "@populate", "@pin", "@doctor"
 HOME, WORKSPACE, ROOT = "{home}", "{workspace}", "{root}"
-# unknown: route lint's workspace argument and what its static rules need of a work item; confirm against `cox route lint --help`
-LINT = ("cox", "route", "lint", "--workspace", WORKSPACE)
+LINT = ("cox", "route", "lint", "{workspace}/work/rehearsal")
 # Work items the upgrade and migrate scenarios put in a workspace; the layout is work/<initiative>/<phase>/<task>.md.
 WORK_ITEMS = {f"work/rehearsal/p{p}/t{t}.md": f"# Task {p}.{t}\n\nA rehearsal work item.\n" for p in (1, 2) for t in (1, 2)}
 
