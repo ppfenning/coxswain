@@ -21,6 +21,24 @@ def test_migrations_none_is_an_empty_declaration():
     assert parse_declaration("Migrations: none\n") == ()
 
 
+def test_a_closing_full_stop_after_none_is_still_none():
+    assert parse_declaration("Migrations: none.\n") == parse_declaration("Migrations: none\n") == ()
+
+
+def test_a_closing_full_stop_after_ids_is_dropped():
+    assert parse_declaration("Migrations: a, b.\n") == ("a", "b")
+
+
+def test_an_id_outside_the_charset_is_refused_naming_it():
+    error = validate_migrations(("a;b",))
+    assert isinstance(error, MigrationError)
+    assert "a;b" in error.message
+
+
+def test_an_id_inside_the_charset_passes():
+    assert validate_migrations(("add-col_2",)) is None
+
+
 def test_a_bare_migrations_line_is_an_error():
     assert isinstance(parse_declaration("Migrations:\n"), MigrationError)
 
