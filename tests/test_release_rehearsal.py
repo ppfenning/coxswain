@@ -2,7 +2,7 @@
 
 import importlib.util
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import yaml
 
@@ -91,6 +91,23 @@ def test_upgrade_installs_the_previous_release_populates_then_pins_the_candidate
     upgrade = _scenario("upgrade")
     assert _kinds(upgrade) == ["uv", "git", "cox", "mkdir", "git", "cartridge", "@populate", "@pin", "cox", "@doctor"]
     assert upgrade.steps[7][1:] == tuple(f"{c}={SHA}" for c in ("cartridges", "graphs", "tools", "crew", "dash"))
+
+
+def _lint_step(scenario):
+    return next(step for step in scenario.steps if step[:3] == ("cox", "route", "lint"))
+
+
+def test_upgrade_lint_step_is_route_lint_on_the_rehearsal_initiative_directory():
+    assert _lint_step(_scenario("upgrade")) == ("cox", "route", "lint", "{workspace}/work/rehearsal")
+
+
+def test_upgrade_lint_directory_is_the_initiative_directory_of_the_work_items():
+    phases = {PurePosixPath(rel).parent for rel in rehearsal.WORK_ITEMS}
+    assert all(p.parent.parent == PurePosixPath("work") and p.name.startswith("p") for p in phases)
+    assert all(PurePosixPath(rel).name.startswith("t") for rel in rehearsal.WORK_ITEMS)
+    initiatives = {p.parent for p in phases}
+    assert len(initiatives) == 1
+    assert _lint_step(_scenario("upgrade"))[-1] == f"{{workspace}}/{initiatives.pop()}"
 
 
 def test_every_scenario_that_runs_pins_the_candidate_after_installing_and_before_judging():
