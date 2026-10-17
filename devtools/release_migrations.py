@@ -4,6 +4,7 @@ import re
 from typing import NamedTuple
 
 _LINE = re.compile(r"^Migrations:(.*)$", re.MULTILINE)
+_ID = re.compile(r"[A-Za-z0-9_-]+")
 
 
 class MigrationError(NamedTuple):
@@ -11,10 +12,12 @@ class MigrationError(NamedTuple):
 
 
 def validate_migrations(names: tuple[str, ...]) -> MigrationError | None:
-    """None when every name is a non-empty single token and none repeats; an empty list is valid."""
+    """None when every name is a non-empty token of letters, digits, hyphens and underscores and none repeats; an empty list is valid."""
     for name in names:
         if not name or len(name.split()) != 1:
             return MigrationError(f"migration id must be one token with no spaces: {name!r}")
+        if _ID.fullmatch(name) is None:
+            return MigrationError(f"migration id may only use letters, digits, hyphens and underscores: {name!r}")
     duplicates = sorted({name for name in names if names.count(name) > 1})
     if duplicates:
         return MigrationError(f"duplicate migration id: {duplicates[0]}")
@@ -29,9 +32,10 @@ def parse_declaration(notes_text: str) -> tuple[str, ...] | MigrationError | Non
     body = match.group(1).strip()
     if not body:
         return MigrationError("Migrations line has nothing after it; write ids or 'none'")
-    if body == "none":
+    closed = body.removesuffix(".")
+    if closed == "none":
         return ()
-    names = tuple(part.strip() for part in body.split(","))
+    names = tuple(part.strip() for part in closed.split(","))
     return validate_migrations(names) or names
 
 
