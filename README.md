@@ -34,9 +34,15 @@ Coxswain is a platform that builds software with a crew of AI agents and keeps a
 
 ```sh
 uv tool install coxswain-tools
-cox install
+git clone --branch vX.Y.Z https://github.com/ppfenning/coxswain <root>/coxswain
+cox install --root <root> --team my-team --workspace <workspace> --with crew
+mkdir -p <workspace>/work <workspace>/runs <workspace>/intake <workspace>/cartridges
+git -C <workspace> init
+cartridge init my-team --cartridges-dir <workspace>/cartridges
 cox setup doctor
 ```
+
+The install's own closing doctor may report the missing workspace and cartridge until the mkdir, git init and cartridge init steps are done.
 
 `cox setup doctor` tells you whether this machine can run an epic and what is missing. `cox install` sets up every component from the manifest in this repository; `cox setup` is a screen over the same steps. The [install guide](https://ppfenning.github.io/coxswain/latest/install/) covers a fresh machine end to end.
 

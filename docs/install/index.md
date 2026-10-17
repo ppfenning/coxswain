@@ -5,9 +5,21 @@ command.
 
 ```sh
 uv tool install coxswain-tools
-cox install --with crew
+git clone --branch vX.Y.Z https://github.com/ppfenning/coxswain <root>/coxswain
+cox install --root <root> --team my-team --workspace <workspace> --with crew
+mkdir -p <workspace>/work <workspace>/runs <workspace>/intake <workspace>/cartridges
+git -C <workspace> init
+cartridge init my-team --cartridges-dir <workspace>/cartridges
 cox setup doctor
 ```
+
+Here `vX.Y.Z` is a release tag, `<root>` is the install directory and
+`<workspace>` is the workspace directory. The doctor that `cox install` runs
+at its close may report the missing workspace and cartridge until the `mkdir`,
+`git init` and `cartridge init` steps are done.
+
+`cox install` reads the manifest at `<root>/coxswain/manifest.toml`, which is
+why the umbrella repository is cloned there first.
 
 The first command needs `uv` already on your `PATH`; `cox install` does not
 install it for you. Get `uv` from <https://docs.astral.sh/uv/> before you
@@ -56,12 +68,13 @@ table below lists the ones this page documents.
 
 | Flag | Meaning |
 | --- | --- |
+| `--root` | Required. Where to install components. The umbrella is cloned to `<root>/coxswain` first. |
+| `--manifest` | Path to the `manifest.toml` to read instead of the one under `--root`. |
 | `--provider` | Which provider profile to configure (see [Providers](providers.md)). |
 | `--with crew` | Optional components to install alongside the required ones. Repeatable. |
-| `--root` | Where to install components. Defaults to a path under your home directory. |
-| `--team` | Which team's cartridge to pull in, if you belong to more than one. |
-| `--workspace` | The workspace root the crew will operate on. |
-| `--version` | Install a specific Coxswain version instead of the latest release. |
+| `--team` | Required. Which team's cartridge to pull in. |
+| `--workspace` | Required. The workspace root the crew will operate on. |
+| `--edge` | Track `main` instead of the pinned release tags. |
 | `--dry-run` | Print what `cox install` would do without doing it. |
 
 ## Verify
