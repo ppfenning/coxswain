@@ -3648,8 +3648,8 @@ Coxswain is in beta — versions may change between releases
 <p>A release is cut only after a rehearsal has passed on the exact commits it will tag. The rehearsal is a GitHub Actions workflow. The release command only looks up its result. This page decides how the pieces connect.</p>
 <p>The rehearsal runs three scenarios. Each scenario is a job in the workflow.</p>
 <ul>
-<li><strong>fresh</strong>: install the candidate commits on a clean machine by the documented install command and check that <code>cox doctor</code> passes.</li>
-<li><strong>upgrade</strong>: install the previous release, populate a workspace with real work items, upgrade to the candidate commits and check that the workspace still reads.</li>
+<li><strong>fresh</strong>: install the candidate commits on a clean machine by the documented install command and check that <code>cox doctor</code> passes. The candidate installs fresh into the default coxswain home, with no root or workspace flag. It does so after the candidate tools are installed at the pinned sha.</li>
+<li><strong>upgrade</strong>: install the previous release, populate a workspace with real work items, upgrade to the candidate commits and check that the workspace still reads. The older install is migrated into that home by the apply form of the setup migrate command. The migration runs after the pin step and before lint.</li>
 <li><strong>migrate</strong>: run each migration the release declares against a populated workspace and check that each one leaves it valid.</li>
 </ul>
 <p>The migrate scenario may not skip when migrations are declared. It may skip only when the release declares none.</p>
