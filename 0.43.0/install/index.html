@@ -770,6 +770,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#moving-an-install-under-the-home" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Moving an install under the home
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#uninstall" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3718,6 +3729,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#moving-an-install-under-the-home" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Moving an install under the home
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#uninstall" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3758,20 +3780,24 @@ Coxswain is in beta — versions may change between releases
 <p>How to install the components pinned by <code>manifest.toml</code> with the <code>cox</code>
 command.</p>
 <div class="highlight"><pre><span></span><code>uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span>--python<span class="w"> </span><span class="m">3</span>.14<span class="w"> </span>coxswain-tools
-git<span class="w"> </span>clone<span class="w"> </span>--branch<span class="w"> </span>vX.Y.Z<span class="w"> </span>https://github.com/ppfenning/coxswain<span class="w"> </span>&lt;root&gt;/coxswain
-cox<span class="w"> </span>install<span class="w"> </span>--root<span class="w"> </span>&lt;root&gt;<span class="w"> </span>--team<span class="w"> </span>my-team<span class="w"> </span>--workspace<span class="w"> </span>&lt;workspace&gt;<span class="w"> </span>--with<span class="w"> </span>crew
+git<span class="w"> </span>clone<span class="w"> </span>--branch<span class="w"> </span>vX.Y.Z<span class="w"> </span>https://github.com/ppfenning/coxswain<span class="w"> </span>&lt;home&gt;/installs/coxswain
+cox<span class="w"> </span>install<span class="w"> </span>--team<span class="w"> </span>my-team<span class="w"> </span>--with<span class="w"> </span>crew
 mkdir<span class="w"> </span>-p<span class="w"> </span>&lt;workspace&gt;/work<span class="w"> </span>&lt;workspace&gt;/runs<span class="w"> </span>&lt;workspace&gt;/intake<span class="w"> </span>&lt;workspace&gt;/cartridges
 git<span class="w"> </span>-C<span class="w"> </span>&lt;workspace&gt;<span class="w"> </span>init
 cartridge<span class="w"> </span>init<span class="w"> </span>my-team<span class="w"> </span>--cartridges-dir<span class="w"> </span>&lt;workspace&gt;/cartridges
 cox<span class="w"> </span>setup<span class="w"> </span>doctor
 </code></pre></div>
-<p>Here <code>vX.Y.Z</code> is a release tag, <code>&lt;root&gt;</code> is the install directory and
-<code>&lt;workspace&gt;</code> is the workspace directory. The doctor that <code>cox install</code> runs
-at its close may report the missing workspace and cartridge until the <code>mkdir</code>,
-<code>git init</code> and <code>cartridge init</code> steps are done.</p>
+<p>Here <code>vX.Y.Z</code> is a release tag and <code>&lt;home&gt;</code> is the coxswain home: <code>--home</code>, else <code>COXSWAIN_HOME</code>, else
+<code>$XDG_DATA_HOME/coxswain</code>, else <code>~/.local/share/coxswain</code>. Components are installed under <code>&lt;home&gt;/installs</code>, and
+the workspace is <code>&lt;workspace&gt;</code> = <code>&lt;home&gt;/workspaces/main</code> unless you pass <code>--workspace</code>. The doctor that
+<code>cox install</code> runs at its close may report the missing workspace and cartridge until the <code>mkdir</code>, <code>git init</code> and
+<code>cartridge init</code> steps are done.</p>
+<p>To install somewhere else instead, pass <code>--root &lt;root&gt;</code> and <code>--workspace &lt;workspace&gt;</code> (both are then required) and
+clone the umbrella to <code>&lt;root&gt;/coxswain</code>. An install made before 0.44.0 under <code>--root</code> keeps working; to move it under
+the home, see <a href="#moving-an-install-under-the-home">Moving an install under the home</a>.</p>
 <p>The <code>--python 3.14</code> flag makes the installer fetch a 3.14 interpreter when none is present, so you do not silently get a release from before the Python 3.14 floor. If your shell cannot find the installed <code>cox</code> command, run <code>uv tool update-shell</code> and then open a new shell.</p>
-<p><code>cox install</code> reads the manifest at <code>&lt;root&gt;/coxswain/manifest.toml</code>, which is
-why the umbrella repository is cloned there first.</p>
+<p><code>cox install</code> reads the manifest at <code>&lt;home&gt;/installs/coxswain/manifest.toml</code> (or <code>&lt;root&gt;/coxswain/manifest.toml</code>
+with <code>--root</code>), which is why the umbrella repository is cloned there first.</p>
 <p>The first command needs <code>uv</code> already on your <code>PATH</code>; <code>cox install</code> does not
 install it for you. Get <code>uv</code> from <a href="https://docs.astral.sh/uv/">https://docs.astral.sh/uv/</a> before you
 start. On macOS you can install <code>cox</code> from the Homebrew tap instead; see
@@ -3781,7 +3807,7 @@ start. On macOS you can install <code>cox</code> from the Homebrew tap instead; 
 <li>Reads <code>manifest.toml</code> from the pinned release to find out which
    components exist and which tag each one is pinned to.</li>
 <li>Fetches the required components (cartridges, graphs, <code>cox</code> itself) at
-   their pinned tag into <code>--root</code>.</li>
+   their pinned tag into <code>&lt;home&gt;/installs</code>, or into <code>--root</code> when given.</li>
 <li>Fetches whichever optional components <code>--with</code> named (crew) at their
    pinned tags. A release tags only the components that changed, as
    <code>v&lt;version&gt;</code>; unchanged components keep their earlier tag. Crew, for
@@ -3837,11 +3863,15 @@ table below lists the ones this page documents.</p>
 <tbody>
 <tr>
 <td><code>--root</code></td>
-<td>Required. Where to install components. The umbrella is cloned to <code>&lt;root&gt;/coxswain</code> first.</td>
+<td>Where to install components instead of <code>&lt;home&gt;/installs</code>. The umbrella is cloned to <code>&lt;root&gt;/coxswain</code> first.</td>
+</tr>
+<tr>
+<td><code>--home</code></td>
+<td>Absolute path of the coxswain home, used when <code>--root</code> is omitted.</td>
 </tr>
 <tr>
 <td><code>--manifest</code></td>
-<td>Path to the <code>manifest.toml</code> to read instead of the one under <code>--root</code>.</td>
+<td>Path to the <code>manifest.toml</code> to read instead of the umbrella's.</td>
 </tr>
 <tr>
 <td><code>--provider</code></td>
@@ -3853,11 +3883,11 @@ table below lists the ones this page documents.</p>
 </tr>
 <tr>
 <td><code>--team</code></td>
-<td>Required. Which team's cartridge to pull in.</td>
+<td>Which team's cartridge to pull in.</td>
 </tr>
 <tr>
 <td><code>--workspace</code></td>
-<td>Required. The workspace root the crew will operate on.</td>
+<td>The workspace root the crew will operate on; <code>&lt;home&gt;/workspaces/main</code> by default, required with <code>--root</code>.</td>
 </tr>
 <tr>
 <td><code>--edge</code></td>
@@ -3892,9 +3922,14 @@ reachable on <code>PATH</code>.</p>
 <p><code>cox upgrade</code> re-reads the manifest for the latest release and moves each
 component to the tag that manifest pins. Components that changed in the
 release are tagged <code>v&lt;version&gt;</code>; unchanged components keep their tag.</p>
+<h2 id="moving-an-install-under-the-home">Moving an install under the home</h2>
+<p><code>cox setup migrate</code> prints the plan for moving an existing install under the home and changes nothing.
+<code>cox setup migrate --apply</code> moves this machine; run <code>cox setup doctor</code> afterwards. On the chair's machine,
+<code>cox setup migrate --apply --hosts</code> also moves each lane host. Until a machine is migrated, <code>cox setup doctor</code> warns
+on the home rows with <code>not migrated: run cox setup migrate</code>.</p>
 <h2 id="uninstall">Uninstall</h2>
 <p>There is no <code>cox uninstall</code> yet. Removing an install means deleting
-<code>--root</code> by hand; a dedicated uninstall command is planned.</p>
+the coxswain home (or <code>--root</code>) by hand; a dedicated uninstall command is planned.</p>
 <p>See <a href="machines/">Supported machines</a> for prerequisites on specific
 platforms.</p>
 
