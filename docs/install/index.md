@@ -129,6 +129,10 @@ release are tagged `v<version>`; unchanged components keep their tag.
 `cox setup migrate --apply --hosts` also moves each lane host. Until a machine is migrated, `cox setup doctor` warns
 on the home rows with `not migrated: run cox setup migrate`.
 
+Once every machine has moved, run `cox setup migrate --finish` to see what it would rewrite, then
+`cox setup migrate --finish --apply` on each machine with its lanes and loop stopped. The first run rewrites the
+repository paths in the shared queue; each run removes that machine's compatibility links and its migration marker.
+
 ## Uninstall
 
 There is no `cox uninstall` yet. Removing an install means deleting
