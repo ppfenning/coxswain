@@ -197,6 +197,13 @@ def test_refusals_name_each_input_that_is_not_a_full_sha():
     assert [r.split(":")[0] for r in rehearsal.refusals(bad)] == ["graphs_sha", "crew_sha", "dash_sha"]
 
 
+def test_pin_problems_accepts_an_editable_receipt_naming_the_tools_checkout():
+    shas = {c: c[0] * 40 for c in rehearsal.COMPONENTS}
+    receipt = 'requirements = [{ name = "coxswain-tools", editable = "/i/coxswain-tools" }]'
+    assert rehearsal.pin_problems(dict(shas), shas, receipt, "/i/coxswain-tools") == []
+    assert rehearsal.pin_problems(dict(shas), shas, receipt, "/other/coxswain-tools") != []
+
+
 def test_pin_problems_is_empty_only_when_every_head_and_the_tools_receipt_hold_the_sha():
     shas = {c: str(i) * 40 for i, c in enumerate(("cartridges", "graphs", "tools", "crew", "dash"))}
     assert rehearsal.pin_problems(dict(shas), shas, f'rev = "{shas["tools"]}"') == []

@@ -51,14 +51,18 @@ def refusals(inputs: Mapping[str, str]) -> list[str]:
     return [f"{n}: not a full 40 character SHA: {inputs[n]!r}" for n in INPUTS[:5] if not SHA.fullmatch(inputs[n])]
 
 
-def pin_problems(heads: Mapping[str, str | None], shas: Mapping[str, str], receipt: str | None) -> list[str]:
-    """`heads` is each component's checkout HEAD, None when no checkout was found. `receipt` is the tools uv receipt text."""
+def pin_problems(
+    heads: Mapping[str, str | None], shas: Mapping[str, str], receipt: str | None, tools_checkout: str | None = None,
+) -> list[str]:
+    """`heads` is each component's checkout HEAD, None when no checkout was found. `receipt` is the tools uv receipt text.
+    The receipt is pinned when it names the candidate SHA, or names `tools_checkout`, whose HEAD is checked above."""
     checkouts = [
         f"{c}: no checkout under the install root" if heads.get(c) is None else f"{c}: at {heads[c][:12]}, expected {shas[c][:12]}"
         for c in COMPONENTS
         if heads.get(c) != shas[c]
     ]
-    cox = [] if receipt is not None and shas["tools"] in receipt else ["tools: installed cox is not pinned to the candidate SHA"]
+    pinned = receipt is not None and (shas["tools"] in receipt or (tools_checkout is not None and tools_checkout in receipt))
+    cox = [] if pinned else ["tools: installed cox is not pinned to the candidate SHA"]
     return [*checkouts, *cox]
 
 
@@ -177,10 +181,13 @@ def _pin(shas: Mapping[str, str], root: Path, home: Path, env: Mapping[str, str]
     for component, repo in repos.items():
         _git(repo, "fetch", "--quiet", "origin", shas[component])
         _git(repo, "checkout", "--quiet", "--detach", shas[component])
-    subprocess.run(["uv", "tool", "install", "--force", f"{TOOLS_URL}@{shas['tools']}"], env=env)
+    # editable from the tools checkout, now at the candidate SHA: the install cox setup install leaves behind
+    tools = repos.get("tools")
+    target = ["-e", str(tools)] if tools is not None else [f"{TOOLS_URL}@{shas['tools']}"]
+    subprocess.run(["uv", "tool", "install", "--force", *target], env=env)
     receipt = home / "uv-tools" / "coxswain-tools" / "uv-receipt.toml"
     heads = {c: _git(r, "rev-parse", "HEAD") for c, r in repos.items()}
-    problems = pin_problems(heads, shas, receipt.read_text() if receipt.exists() else None)
+    problems = pin_problems(heads, shas, receipt.read_text() if receipt.exists() else None, str(tools) if tools else None)
     sys.stderr.write("".join(f"{p}\n" for p in problems))
     return not problems
 
