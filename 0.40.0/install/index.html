@@ -3674,9 +3674,19 @@ Coxswain is in beta — versions may change between releases
 <p>How to install the components pinned by <code>manifest.toml</code> with the <code>cox</code>
 command.</p>
 <div class="highlight"><pre><span></span><code>uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span>coxswain-tools
-cox<span class="w"> </span>install<span class="w"> </span>--with<span class="w"> </span>crew
+git<span class="w"> </span>clone<span class="w"> </span>--branch<span class="w"> </span>vX.Y.Z<span class="w"> </span>https://github.com/ppfenning/coxswain<span class="w"> </span>&lt;root&gt;/coxswain
+cox<span class="w"> </span>install<span class="w"> </span>--root<span class="w"> </span>&lt;root&gt;<span class="w"> </span>--team<span class="w"> </span>my-team<span class="w"> </span>--workspace<span class="w"> </span>&lt;workspace&gt;<span class="w"> </span>--with<span class="w"> </span>crew
+mkdir<span class="w"> </span>-p<span class="w"> </span>&lt;workspace&gt;/work<span class="w"> </span>&lt;workspace&gt;/runs<span class="w"> </span>&lt;workspace&gt;/intake<span class="w"> </span>&lt;workspace&gt;/cartridges
+git<span class="w"> </span>-C<span class="w"> </span>&lt;workspace&gt;<span class="w"> </span>init
+cartridge<span class="w"> </span>init<span class="w"> </span>my-team<span class="w"> </span>--cartridges-dir<span class="w"> </span>&lt;workspace&gt;/cartridges
 cox<span class="w"> </span>setup<span class="w"> </span>doctor
 </code></pre></div>
+<p>Here <code>vX.Y.Z</code> is a release tag, <code>&lt;root&gt;</code> is the install directory and
+<code>&lt;workspace&gt;</code> is the workspace directory. The doctor that <code>cox install</code> runs
+at its close may report the missing workspace and cartridge until the <code>mkdir</code>,
+<code>git init</code> and <code>cartridge init</code> steps are done.</p>
+<p><code>cox install</code> reads the manifest at <code>&lt;root&gt;/coxswain/manifest.toml</code>, which is
+why the umbrella repository is cloned there first.</p>
 <p>The first command needs <code>uv</code> already on your <code>PATH</code>; <code>cox install</code> does not
 install it for you. Get <code>uv</code> from <a href="https://docs.astral.sh/uv/">https://docs.astral.sh/uv/</a> before you
 start. On macOS you can install <code>cox</code> from the Homebrew tap instead; see
@@ -3741,6 +3751,14 @@ table below lists the ones this page documents.</p>
 </thead>
 <tbody>
 <tr>
+<td><code>--root</code></td>
+<td>Required. Where to install components. The umbrella is cloned to <code>&lt;root&gt;/coxswain</code> first.</td>
+</tr>
+<tr>
+<td><code>--manifest</code></td>
+<td>Path to the <code>manifest.toml</code> to read instead of the one under <code>--root</code>.</td>
+</tr>
+<tr>
 <td><code>--provider</code></td>
 <td>Which provider profile to configure (see <a href="providers/">Providers</a>).</td>
 </tr>
@@ -3749,20 +3767,16 @@ table below lists the ones this page documents.</p>
 <td>Optional components to install alongside the required ones. Repeatable.</td>
 </tr>
 <tr>
-<td><code>--root</code></td>
-<td>Where to install components. Defaults to a path under your home directory.</td>
-</tr>
-<tr>
 <td><code>--team</code></td>
-<td>Which team's cartridge to pull in, if you belong to more than one.</td>
+<td>Required. Which team's cartridge to pull in.</td>
 </tr>
 <tr>
 <td><code>--workspace</code></td>
-<td>The workspace root the crew will operate on.</td>
+<td>Required. The workspace root the crew will operate on.</td>
 </tr>
 <tr>
-<td><code>--version</code></td>
-<td>Install a specific Coxswain version instead of the latest release.</td>
+<td><code>--edge</code></td>
+<td>Track <code>main</code> instead of the pinned release tags.</td>
 </tr>
 <tr>
 <td><code>--dry-run</code></td>
