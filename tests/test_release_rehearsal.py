@@ -79,23 +79,50 @@ def _kinds(scenario):
     return [step[0] for step in scenario.steps]
 
 
+def _scenario(name):
+    return next(s for s in rehearsal.plan(INPUTS) if s.name == name)
+
+
+def _joined(scenario):
+    return [" ".join(step) for step in scenario.steps]
+
+
 def test_upgrade_installs_the_previous_release_populates_then_pins_the_candidate_shas():
-    upgrade = next(s for s in rehearsal.plan(INPUTS) if s.name == "upgrade")
-    assert _kinds(upgrade) == ["curl", "sh", "@populate", "@pin", "cox", "@doctor"]
-    assert upgrade.steps[1][-2:] == ("--version", "0.40.0")
-    assert upgrade.steps[3][1:] == tuple(f"{c}={SHA}" for c in ("cartridges", "graphs", "tools", "crew", "dash"))
+    upgrade = _scenario("upgrade")
+    assert _kinds(upgrade) == ["uv", "git", "cox", "mkdir", "git", "cartridge", "@populate", "@pin", "cox", "@doctor"]
+    assert upgrade.steps[7][1:] == tuple(f"{c}={SHA}" for c in ("cartridges", "graphs", "tools", "crew", "dash"))
 
 
 def test_every_scenario_that_runs_pins_the_candidate_after_installing_and_before_judging():
     for s in (s for s in rehearsal.plan(INPUTS) if s.steps):
+        installed = next(i for i, step in enumerate(s.steps) if step[:2] == ("cox", "install"))
         kinds = _kinds(s)
-        assert kinds.index("sh") < kinds.index("@pin") < len(kinds) - 1
+        assert installed < kinds.index("@pin") < len(kinds) - 1
 
 
-def test_install_is_a_download_then_a_run_never_a_pipe():
-    fresh = next(s for s in rehearsal.plan(INPUTS) if s.name == "fresh")
-    assert fresh.steps[0][:2] == ("curl", "-fsSL")
-    assert all("|" not in arg for step in fresh.steps for arg in step)
+def test_fresh_plan_is_the_documented_sequence_with_no_script_download_or_version_flag():
+    lines = _joined(_scenario("fresh"))
+    assert not any(w in line for line in lines for w in ("curl", "install.sh", "--version"))
+    assert "uv tool install coxswain-tools" in lines
+    assert "git clone https://github.com/ppfenning/coxswain {root}/coxswain" in lines
+    assert "cox install --root {root} --team rehearse --workspace {workspace} --with crew --with dash" in lines
+    assert "mkdir -p {workspace}/work {workspace}/runs {workspace}/intake {workspace}/cartridges" in lines
+    assert "git init {workspace}" in lines
+    assert "cartridge init rehearse --cartridges-dir {workspace}/cartridges" in lines
+
+
+def test_upgrade_plan_pins_the_tools_package_and_clones_the_previous_tag():
+    lines = _joined(_scenario("upgrade"))
+    assert "uv tool install coxswain-tools==0.40.0" in lines
+    assert "git clone --branch v0.40.0 https://github.com/ppfenning/coxswain {root}/coxswain" in lines
+    assert not any("--version" in line for line in lines)
+
+
+def test_checkouts_are_read_at_the_directory_cox_install_clones_into(tmp_path):
+    for name in ("tools", "dash"):
+        (tmp_path / f"coxswain-{name}" / ".git").mkdir(parents=True)
+    (tmp_path / "coxswain" / ".git").mkdir(parents=True)
+    assert rehearsal._checkouts(tmp_path) == {"tools": tmp_path / "coxswain-tools", "dash": tmp_path / "coxswain-dash"}
 
 
 def test_refusals_name_each_input_that_is_not_a_full_sha():
@@ -113,12 +140,6 @@ def test_pin_problems_is_empty_only_when_every_head_and_the_tools_receipt_hold_t
         "crew: no checkout under the install root",
         "tools: installed cox is not pinned to the candidate SHA",
     ]
-
-
-def test_component_for_url_reads_the_component_from_the_origin_url():
-    assert rehearsal.component_for_url("https://github.com/ppfenning/coxswain-tools.git\n") == "tools"
-    assert rehearsal.component_for_url("git@github.com:ppfenning/coxswain-dash") == "dash"
-    assert rehearsal.component_for_url("https://github.com/ppfenning/coxswain") is None
 
 
 def test_doctor_problem_accepts_passing_rows_and_rows_that_await_setup():
