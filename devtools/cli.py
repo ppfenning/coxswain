@@ -32,11 +32,13 @@ from devtools import (
     release_check_pages,
     release_check_readmes,
     release_clean,
+    release_migrations,
     release_notes_blanks,
     release_notes_draft,
     release_notes_index,
     release_notes_opener,
     release_notes_prs,
+    release_rehearsal_gate,
     run_status,
 )
 
@@ -984,6 +986,44 @@ def _clean_gate(steps: list[dict], root: str, overrides: dict, umbrella: str,
     return release_clean.refusals(results), skipped
 
 
+_RUN_LIST = ["gh", "run", "list", "--workflow", "release-rehearsal.yml", "--event", "workflow_dispatch",
+             "--limit", str(release_rehearsal_gate.WINDOW), "--json", "databaseId,displayTitle,conclusion,createdAt"]
+
+
+def _gh_json(run, argv: list, cwd: str):
+    """The parsed JSON `argv` prints, or None when `gh` fails or prints something else."""
+    rc, out = run(argv, cwd)
+    try:
+        return json.loads(out) if rc == 0 else None
+    except ValueError:
+        return None
+
+
+def _rehearsal_steps(a: argparse.Namespace, manifest: dict, component_dirs: dict, umbrella: str, run) -> list[dict]:
+    """The rehearsal gate's steps. This edge reads each origin commit, the umbrella's tags, the notes and
+    `gh`; `release_rehearsal_gate.decide` judges. An override skips the `gh` calls."""
+    notes_text = _read_text_or_none(Path(umbrella) / "docs" / "releases" / f"{a.version}.md") or ""
+    declared = release_migrations.parse_declaration(notes_text)
+    if isinstance(declared, release_migrations.MigrationError):
+        return [{"kind": "refuse", "component": "rehearsal", "detail": declared.message}]
+    shas = {}
+    for name, directory in component_dirs.items():
+        if manifest["components"][name].get("repo"):
+            rc, out = run(["git", "-C", directory, "rev-parse", f"origin/{_default_branch(directory, run)}"], None)
+            if rc == 0 and out.strip():
+                shas[name] = out.strip()
+    _, tag_out = run(["git", "-C", umbrella, "tag", "--list"], None)
+    previous = release_notes_prs.previous_tag(tag_out.split(), a.version) or ""
+    runs = [] if a.allow_no_rehearsal is not None else _gh_json(run, _RUN_LIST, umbrella)
+    if runs is None:
+        return [{"kind": "refuse", "component": "rehearsal", "detail": "gh run list for release-rehearsal.yml failed"}]
+
+    def jobs_of(found):
+        view = _gh_json(run, ["gh", "run", "view", str(found["databaseId"]), "--json", "jobs"], umbrella)
+        return view.get("jobs", []) if isinstance(view, dict) else []
+    return release_rehearsal_gate.decide(runs, jobs_of, shas, previous, declared or (), a.allow_no_rehearsal, notes_text)
+
+
 def _release(a: argparse.Namespace) -> int:
     manifest_path = Path(a.manifest) if a.manifest else Path("coxswain") / "manifest.toml"
     manifest = _load_manifest(manifest_path)
@@ -1053,7 +1093,8 @@ def _release(a: argparse.Namespace) -> int:
         tap_state=_tap_state(release.component_dir(root, release.TAP_CHECKOUT, overrides)),
         cargo_versions=cargo_versions, tap_only=a.tap_only)
     # The drift gate guards a cut; a tap-only resume runs after the cut landed and reads only PyPI and the tap clone.
-    steps = plan_steps if a.tap_only else release.gate(drifts, a.allow_doc_drift, plan_steps) + plan_steps
+    steps = plan_steps if a.tap_only else (_rehearsal_steps(a, manifest, component_dirs, umbrella, _stdout_run)
+                                           + release.gate(drifts, a.allow_doc_drift, plan_steps) + plan_steps)
     if not a.tap_only:
         # Every tree the release pins, the umbrella's included, is checked at that exact ref, dry run or not.
         unclean, skipped = _clean_gate(plan_steps, root, overrides, umbrella, os.environ)
@@ -1355,6 +1396,8 @@ def build_parser() -> argparse.ArgumentParser:
                      help="agent-tools profile whose notify.ntfy receives a release_cut push; default: $AGENT_TOOLS_PROFILE")
     rel.add_argument("--allow-doc-drift", dest="allow_doc_drift", metavar="REASON", default=None,
                      help="proceed despite a standing release-check drift, naming why")
+    rel.add_argument("--allow-no-rehearsal", dest="allow_no_rehearsal", metavar="REASON", default=None,
+                     help="cut without a passing rehearsal run, naming why; the release notes must carry the same reason")
     rel.set_defaults(fn=_release)
 
     chk = sub.add_parser("release-check", help="gather facts and print drifts between the CLI, the manifest, the docs and the release notes")
