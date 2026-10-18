@@ -53,6 +53,18 @@ the proof catches every broken formula.
 A green proof means that formula installs and upgrades on those two platforms today. It
 does not mean the release is otherwise good.
 
+## `0.46.0`
+
+| Component | Repository or path | Tag | Required or flag |
+| --- | --- | --- | --- |
+| cartridges | `ppfenning/coxswain-cartridges` | `v0.40.0` | required (pinned) |
+| graphs | `ppfenning/coxswain-graphs` | `v0.43.0` | required (pinned) |
+| tools | `ppfenning/coxswain-tools` | `v0.46.0` | required, provides `cox` |
+| crew | `ppfenning/coxswain-crew` | `v0.38.0` | flag: `crew` (pinned) |
+| dash | `ppfenning/coxswain-dash` | `v0.42.0` | flag: `dash`, provides `towpath` (pinned) |
+
+See the [0.46.0 release notes](0.46.0.md) for what landed in each component.
+
 ## `0.45.0`
 
 | Component | Repository or path | Tag | Required or flag |
