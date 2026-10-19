@@ -17,7 +17,7 @@ core/                pure substrate: merge, policy, manifest, ledger, work store
 cartridges/base/     the contract: roles, write-kind taxonomy, autonomy policy
 cartridges/local/    the filesystem-only cartridge every install starts from
 cartridges/<name>/   example-team, and the comfort presets local-comfort0 and local-comfort1
-providers/           tier -> model, one profile per provider (claude-code.yaml is the default)
+providers/           the shipped provider profiles (tier -> model) and catalog.yaml, the model price list
 skills-plugins/      the reference `local-skills` plugin and the `coxswain` session plugin
 context-templates/   starting points for a team's own context packs
 .claude-plugin/      the Claude Code plugin marketplace, named coxswain-cartridges
@@ -27,6 +27,23 @@ tests/               this folder's suite
 
 A workspace's `cartridges/base` and `cartridges/local` are links into
 `cartridges/` here, so they move with the checkout's release.
+
+## Provider profiles
+
+A provider profile names the runner, maps each tier to a model, and sets the
+budget for each tier and role.
+The files in `providers/` are the shipped defaults: `claude-code.yaml`,
+`anthropic-default.yaml` and `local-oss.yaml`. A fresh `cox install` points
+the machine profile's `provider_profile` at
+`<checkout>/src/cartridges/providers/claude-code.yaml`.
+
+A profile your team edits is team configuration, not code. Keep it outside the
+checkout, in the workspace or in `<home>/providers/`, and point
+`provider_profile` in each machine's profile at it. An edited file inside the
+checkout makes it dirty, and `cox upgrade` refuses a dirty checkout. Copy
+`catalog.yaml` along with the profile: the chair reads model prices from the
+`catalog.yaml` beside `provider_profile` first. `cox setup migrate` leaves a
+profile that is already outside the checkout where it is.
 
 ## Tests
 

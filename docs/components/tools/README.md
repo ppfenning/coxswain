@@ -158,24 +158,21 @@ cox setup store switch files|shared [--host HOST] [--port PORT] [--database DATA
 ```
 <!-- commands:end -->
 
-These `route` subcommands are built by hand in `build_parser` and are not yet
-rows in the command table, so the renderer does not emit them:
-
-```
-cox route launch epic --initiative DIR [--repo PATH] [--fix-attempts N] [--dry-run]   start the harness detached with a pidfile and log, and AGENT_GRAPHS_TRACE_DIR set to `<runs_dir>/<run-id>-trace` so every node writes a trace; exit 2 on a missing profile or harness venv, a missing initiative.md, a dirty repo, or a live run of the same initiative
-cox route launch decompose --idea FILE --initiative-id ID [--dry-run]   start the harness detached; exit 2 on a missing profile, harness venv, or idea file
-cox route launch cos [--dry-run]   start the chief of staff detached: it reads intake and runs, dispatches within the bound, and consumes what it dispatched
-cox route sync [--item ID] [--project OWNER/N] [--dry-run]   one-way mirror of the work store onto a GitHub Projects board; exit 2 if gh is not authenticated
-cox route sync --project OWNER/N                accept an existing project instead of creating one named "Coxswain" under the repo's owner
-cox setup   a small terminal UI over setup doctor, setup install and cartridge init (needs a terminal)
-```
+Bare `cox setup` opens a small terminal UI over `setup doctor`, `setup
+install` and `cartridge init`; it needs a terminal.
 
 The `route` group reads one profile, `~/.config/agent-tools/profile.yaml` (the
 directory keeps the deprecated agent-tools name), or the path in
 `AGENT_TOOLS_PROFILE`, or `--profile PATH` for one command. `cox setup install`
-and `cox setup migrate` point its `harness_dir`, `skills_roots`,
-`provider_profile` and `umbrella_dir` into the checkout. `cox setup --store
-files|shared` picks the run store; see [`docs/shared-store.md`](https://github.com/ppfenning/coxswain/blob/main/src/tools/docs/shared-store.md).
+and `cox setup migrate` point its `harness_dir`, `skills_roots` and
+`umbrella_dir` into the checkout. `cox setup install` points
+`provider_profile` at the shipped `src/cartridges/providers/claude-code.yaml`
+unless `--provider-profile` names another; a team's own provider profile
+lives outside the checkout, in `<home>/providers/` or the workspace, and
+`cox setup migrate` keeps it. `cox setup store --store files|shared` picks
+the run store; see [`docs/shared-store.md`](https://github.com/ppfenning/coxswain/blob/main/src/tools/docs/shared-store.md). New to
+the profile? [`docs/getting-started.md`](https://github.com/ppfenning/coxswain/blob/main/src/tools/docs/getting-started.md) walks
+through it.
 
 Integrations that name a vendor (intake sources, forges, trackers) live in
 [ppfenning/coxswain-plugins](https://github.com/ppfenning/coxswain-plugins).

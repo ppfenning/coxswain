@@ -13,8 +13,8 @@ binding you swap.
 ## What is here
 
 ```
-seats/          one agent definition per seat, and SEATS.md for the chief of staff
-install.sh      links every seat into ~/.claude/agents
+seats/          one agent definition per seat (eleven), and SEATS.md for the chief of staff
+install.sh      links every seat into ~/.claude/agents (SEATS.md is not linked)
 check_seats.py  checks every seat's frontmatter: name, description, tools, an explicit model
 ```
 
@@ -65,8 +65,9 @@ crew/install.sh --check    # what is installed, and from where
 ```
 
 Symlinks, not copies, so editing a seat here changes what every session loads.
-`--prefix` installs elsewhere; nothing is overwritten unless it is already a
-symlink into this folder. `--uninstall` removes only the links that point here.
+`--prefix DIR` installs into `DIR` instead. A file that is not a symlink is never
+overwritten; `install.sh` says so and skips that seat. `--uninstall` removes only
+the links that point here.
 
 ## Binding a seat to your team
 
@@ -90,5 +91,6 @@ in this repository names a company, a tracker, a board, or a person.
 Every seat is a plain agent definition and works in any session. In a voice
 session a seat reports in its own voice, which is how you hear that a finding
 came from an independent pair of eyes rather than from the chief restating
-itself. In a text session the voice line is dropped. All nine voices ship with
+itself. In a text session the voice line is dropped. The model steward declares
+no voice. The other ten voices ship with
 [Kokoro](https://github.com/remsky/Kokoro-FastAPI); none is required.
