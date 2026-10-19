@@ -59,7 +59,7 @@ for `build` overrides it. A third attempt is never escalated: third attempts
 landed nothing on 09-06.
 
 Next step, not in this repository: per-launch elevation,
-`cox route launch epic --elevate ROLE=TIER` (repeatable), lives in coxswain-tools.
+`cox route launch epic --elevate ROLE=TIER` (repeatable), lives in src/tools.
 
 Deferred (see graphs/lifecycle-propose.md): intake queue, verification, retro.
 """
@@ -922,7 +922,7 @@ def _append_checkpoint_ledger(ctx: _CheckpointContext, signals: CheckpointSignal
     A no-op when the context carries no `runs_dir` — a caller that never set
     one (most tests) gets no file rather than a path built from `None`. The
     file is opened in append mode only: this writer never rewrites what is
-    already on disk. A reader lives in `cox stats`, in coxswain-tools.
+    already on disk. A reader lives in `cox stats`, in src/tools.
     """
     if ctx.runs_dir is None:
         return

@@ -7,7 +7,7 @@ NOW = "2026-09-26T10:00:00Z"
 PROPOSAL = {
     "id": "raise-build-ceiling",
     "title": "Raise the build ceiling",
-    "repo": "coxswain-tools",
+    "repo": "coxswain",
     "files": ["agent_tools/steward.py"],
     "evidence": ["stats.db calls table, run r1"],
     "tickets": [
@@ -132,7 +132,7 @@ def test_json_gives_the_three_lists(tmp_path, monkeypatch, capsys):
 def test_steward_propose_intake_file_is_listed_as_ungrounded(tmp_path, monkeypatch, capsys):
     profile, ws = _setup(tmp_path, monkeypatch, {})
     (ws / "intake" / "2026-09-26-steward-raise.md").write_text(
-        "---\nid: steward-raise\ntitle: \"steward: raise\"\nrepo: coxswain-tools\n---\nRaise it.\n"
+        "---\nid: steward-raise\ntitle: \"steward: raise\"\nrepo: coxswain\n---\nRaise it.\n"
     )
 
     rc, out = _run(profile, capsys, "--json")

@@ -294,7 +294,7 @@ def _late_threshold(pacing: Mapping[str, Any]) -> dict[str, float]:
 def pacing_policy(cartridge: Mapping[str, Any]) -> dict[str, Any]:
     """Resolve `policy.pacing`, filling in the defaults a launch reasons from.
 
-    Field names and shapes are the Policy contract coxswain-tools'
+    Field names and shapes are the Policy contract the tools package's
     `agent_tools/pacing.py::assess()` consumes; do not rename or add to them
     here without carrying that change to the other repository first.
     `ceiling_usd` has no default — ccusage reports only what local transcripts

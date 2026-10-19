@@ -1,25 +1,30 @@
-# coxswain-crew
+# crew
 
 A standing cast of named agent **seats** — who does what, what each may touch,
-and how each reports — with no employer inside any of them.
+and how each reports — with no employer inside any of them. This folder is
+part of the coxswain repository and ships in every release. To install
+Coxswain, see the [root README](https://github.com/ppfenning/coxswain/blob/main/README.md).
 
 Most agent rosters hardcode a workplace into the definitions: this tracker,
 that board, those conventions. Then the team changes, or you do, and the
 roster is worthless. Here the seat is the durable part and the employer is a
 binding you swap.
 
-## The six repositories
+## What is here
 
-| Repository | Owns | The sentence |
-|---|---|---|
-| [`coxswain-cartridges`](https://github.com/ppfenning/coxswain-cartridges) | who a run works for | roles → skills, where writes land, tier → model |
-| [`coxswain-graphs`](https://github.com/ppfenning/coxswain-graphs) | what runs, and the harness that runs it | sequence, the gate, the ledger |
-| **`coxswain-crew`** | who speaks | seats, their authority, their voices |
-| [`coxswain-tools`](https://github.com/ppfenning/coxswain-tools) | the `cox` command | run records, traces, landing, screens |
-| [`coxswain`](https://github.com/ppfenning/coxswain) | the umbrella | docs, manifest, one-line install |
+```
+seats/          one agent definition per seat, and SEATS.md for the chief of staff
+install.sh      links every seat into ~/.claude/agents
+check_seats.py  checks every seat's frontmatter: name, description, tools, an explicit model
+```
 
-Cartridges say who a run works for, graphs say what runs, the crew says who
-speaks. Each is usable without the others.
+## Checks
+
+From this folder:
+
+```sh
+cd crew && python3 check_seats.py
+```
 
 ## The cast
 
@@ -51,20 +56,22 @@ stays human.
 
 ## Install
 
+`cox install` and `cox upgrade` run `install.sh` for you. To run it by hand
+from a checkout:
+
 ```bash
-git clone https://github.com/ppfenning/coxswain-crew ~/repos/coxswain-crew
-~/repos/coxswain-crew/install.sh            # symlinks seats into ~/.claude/agents
-~/repos/coxswain-crew/install.sh --check    # what is installed, and from where
+crew/install.sh            # symlink every seat into ~/.claude/agents
+crew/install.sh --check    # what is installed, and from where
 ```
 
 Symlinks, not copies, so editing a seat here changes what every session loads.
 `--prefix` installs elsewhere; nothing is overwritten unless it is already a
-symlink into this repository.
+symlink into this folder. `--uninstall` removes only the links that point here.
 
 ## Binding a seat to your team
 
 A seat names roles; a cartridge says which skills fill them. Add a `cast:`
-block to your team cartridge in `coxswain-cartridges`:
+block to your team cartridge (see `src/cartridges`):
 
 ```yaml
 cast:

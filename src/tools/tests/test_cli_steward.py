@@ -79,7 +79,7 @@ def test_propose_writes_exactly_one_intake_file_for_the_clearing_candidate(tmp_p
     assert str(intake_files[0]) == written[0]
     fields, body = route.parse_frontmatter(intake_files[0].read_text())
     assert fields["title"] == "steward: raise build's ceiling for sonnet-5"
-    assert fields["repo"] == "coxswain-tools"
+    assert fields["repo"] == "coxswain"
     assert "id" in fields
     assert "Raise build's ceiling for sonnet-5 from 2.0 to 2.4." in body
     assert "| build | sonnet-5 | 20 | 0.91 | 0.85 | 10 |" in body
@@ -248,7 +248,7 @@ def test_propose_refuses_to_overwrite_an_existing_proposal_for_the_same_candidat
     monkeypatch.setattr(cli, "_steward_bounds_rows_for", lambda a: [CLEARING_ROW])
     date = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
     title = "steward: raise build's ceiling for sonnet-5"
-    mapping = route.intake_file(title, "stale proposal from an earlier run", "coxswain-tools", date)
+    mapping = route.intake_file(title, "stale proposal from an earlier run", "coxswain", date)
     (rel,) = mapping
     existing_path = ws / rel
     existing_path.parent.mkdir(parents=True)

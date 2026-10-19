@@ -32,7 +32,7 @@ __all__ = [
     "load_bounds",
 ]
 
-# The verdicts agent_tools/pacing.py assess() returns in coxswain-tools.
+# The verdicts agent_tools/pacing.py assess() returns (src/tools).
 PACING_STATES = ("go", "go_degraded", "stop")
 
 CAPABILITY_CLASSES = ("extract", "reason", "judge", "frontier")  # lowest rank first

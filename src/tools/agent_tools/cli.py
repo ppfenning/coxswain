@@ -899,7 +899,7 @@ def _steward_propose(a: argparse.Namespace) -> int:
     mapping: dict[str, str] = {}
     for candidate in candidates:
         title = f"steward: {candidate['direction']} {candidate['role']}'s ceiling for {candidate['model']}"
-        mapping.update(route.intake_file(title, steward.render_proposal(candidate), "coxswain-tools", date, ids=ids))
+        mapping.update(route.intake_file(title, steward.render_proposal(candidate), "coxswain", date, ids=ids))
     targets = {rel: ws / rel for rel in mapping}
     existing = [str(path) for path in targets.values() if path.exists()]
     if existing:

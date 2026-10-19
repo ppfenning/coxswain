@@ -2,7 +2,7 @@
 
     freshness_warnings(profile, catalog, vendor_ids=None) -> list[str]
 
-No I/O. Nothing calls this yet. The coxswain-tools doctor intake must call it with the
+No I/O. Nothing calls this yet. The tools doctor intake must call it with the
 profile from `load_profile` and the catalog from `load_catalog`. `vendor_ids` comes from
 the refresh edge; when it is None no vendor line is produced, so the check never needs
 the network.
