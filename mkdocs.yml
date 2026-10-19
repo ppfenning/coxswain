@@ -87,6 +87,8 @@ nav:
       - CLI reference: reference/cli/index.md
   - Releases:
       - Releases: releases/index.md
+      - From 0.47 to the monorepo: monorepo.md
+      - 2026.10.0: releases/2026.10.0.md
       - Release rehearsal: release-rehearsal.md
       - 0.47.0: releases/0.47.0.md
       - 0.46.0: releases/0.46.0.md

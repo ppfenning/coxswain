@@ -1,0 +1,91 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  test:
+    runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with: { python-version: "3.14" }
+      - run: uv sync --group dev
+      - run: uv run pytest -q
+      - run: uv run pytest -q
+        working-directory: src/tools
+      - run: uv run pytest -q
+        working-directory: src/graphs
+      - run: uv run pytest -q
+        working-directory: src/cartridges
+      - name: ruff (rules in pyproject.toml, tools adds src/tools/ruff.toml)
+        run: uv run ruff check .
+      # no person, host or home path ships; the names rule's regex lives only in the secret (unset on fork PRs: skipped)
+      - name: clean (no personal reference)
+        run: python .github/check_clean.py .
+        env:
+          COXSWAIN_CLEAN_DENY: ${{ secrets.COXSWAIN_CLEAN_DENY }}
+      - run: uv run mkdocs build --strict
+
+  py315:
+    runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with: { python-version: "3.15" }
+      - run: uv sync --group dev --python 3.15
+      - run: uv run pytest -q
+      - run: uv run pytest -q
+        working-directory: src/tools
+      - run: uv run pytest -q
+        working-directory: src/graphs
+      - run: uv run pytest -q
+        working-directory: src/cartridges
+
+  extras:
+    # The lake, Parquet and Postgres tests import-skip in `test`, which installs no extras.
+    # This job installs them and a Postgres 16, so those tests run.
+    runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        # a random host port, so two of these jobs can share a self-hosted runner's host
+        ports:
+          - 5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Point the store tests at the service's host port
+        run: |
+          url="postgresql://postgres:postgres@localhost:${{ job.services.postgres.ports['5432'] }}/postgres"
+          echo "COX_TEST_POSTGRES_URL=$url" >> "$GITHUB_ENV"
+          echo "COXSWAIN_TEST_PG_URL=$url" >> "$GITHUB_ENV"
+      - uses: astral-sh/setup-uv@v5
+        with: { python-version: "3.14" }
+      - run: uv sync --group dev --all-extras
+      # Fails here, with the import error, rather than as a pytest run that skipped them all.
+      - run: uv run python -c "import psycopg, pyarrow, pyiceberg, duckdb, harness.store_migrate"
+      - run: uv run pytest -q -rs
+      - run: uv run pytest -q -rs
+        working-directory: src/tools
+      - run: uv run pytest -q -rs
+        working-directory: src/graphs
+      - run: uv run pytest -q -rs
+        working-directory: src/cartridges
+
+  seats:
+    runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 check_seats.py
+        working-directory: crew
+      - name: install.sh writes and checks the seats
+        working-directory: crew
+        run: bash -n install.sh && ./install.sh --prefix "$RUNNER_TEMP/agents" && ./install.sh --check --prefix "$RUNNER_TEMP/agents"

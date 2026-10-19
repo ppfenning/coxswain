@@ -100,14 +100,16 @@ def test_a_clean_readme_yields_no_drift():
 
 
 def test_gather_readmes_facts_reads_the_readmes_named_by_facts_plan(tmp_path):
-    manifest = {"coxswain": {"version": "0.2.0"}, "components": {"cox": {"repo": "org/coxswain-cox"}}}
-    paths = facts_plan(str(tmp_path), manifest)
-    Path(paths["readmes"]["cox"]).parent.mkdir(parents=True)
-    Path(paths["readmes"]["cox"]).write_text("cox is coxswain-cox")
+    manifest = {"coxswain": {"version": "2026.10.0"}, "components": {"dash": {"repo": "org/coxswain-dash"}}}
+    paths = facts_plan(str(tmp_path / "coxswain"), manifest, {"dash": str(tmp_path / "dash")})
+    for name in ("dash", "tools"):
+        Path(paths["readmes"][name]).parent.mkdir(parents=True)
+        Path(paths["readmes"][name]).write_text(f"{name} is coxswain-{name}")
     facts = gather_readmes_facts(paths["readmes"], manifest, "latest")
     assert facts == {
-        "readmes": {"cox": "cox is coxswain-cox"},
-        "repo_names": {"org/coxswain-cox"},
+        "readmes": {"dash": "dash is coxswain-dash", "tools": "tools is coxswain-tools"},
+        # an in-repo folder keeps its pre-rename mapping: agent-tools still reads as coxswain-tools
+        "repo_names": {"org/coxswain-dash", "coxswain-dash", "coxswain-tools"},
         "docs_base": "latest",
     }
 

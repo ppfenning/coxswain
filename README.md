@@ -5,21 +5,21 @@
   </picture>
 </p>
 
-<h1 align="center">Coxswain</h1>
+# coxswain
 
 <p align="center"><em>Agents pull the oars. You hold the tiller.</em></p>
 
 <p align="center">
   <a href="https://ppfenning.github.io/coxswain/latest/">Docs</a> ·
   <a href="https://ppfenning.github.io/coxswain/latest/releases/">Releases</a> ·
-  <a href="https://pypi.org/project/coxswain-tools/">PyPI</a>
+  <a href="https://pypi.org/project/coxswain/">PyPI</a>
 </p>
 
 ---
 
 Coxswain is a platform that builds software with a crew of AI agents and keeps a person on the tiller. You describe a change; it is filed as a work item, planned, built in a worktree under a dollar budget, reviewed by two independent reviewers who are made to disagree, arbitrated, checked against the project's own tests as evidence, and handed to you as a pull request. You merge. Every step leaves a record you can read back.
 
-**Status: beta.** The loop runs itself daily on its own repositories. Interfaces are still moving; see the [release notes](https://ppfenning.github.io/coxswain/latest/releases/) for what each version changes.
+**Status: beta.** The loop runs itself daily on its own repository. Interfaces are still moving; see the [release notes](https://ppfenning.github.io/coxswain/latest/releases/) for what each version changes.
 
 <p align="center">
   <picture>
@@ -32,19 +32,32 @@ Coxswain is a platform that builds software with a crew of AI agents and keeps a
 
 ## Install
 
+One package, `coxswain`. One command, `cox`.
+
 ```sh
-uv tool install --python 3.14 coxswain-tools
-git clone --branch vX.Y.Z https://github.com/ppfenning/coxswain <root>/coxswain
-cox install --root <root> --team my-team --workspace <workspace> --with crew
+brew install ppfenning/coxswain/cox        # or: uv tool install --python 3.14 coxswain
+git clone --branch <tag> https://github.com/ppfenning/coxswain ~/.local/share/coxswain/installs/coxswain
+cox install --team my-team
 mkdir -p <workspace>/work <workspace>/runs <workspace>/intake <workspace>/cartridges
 git -C <workspace> init
 cartridge init my-team --cartridges-dir <workspace>/cartridges
 cox setup doctor
 ```
 
-The install's own closing doctor may report the missing workspace and cartridge until the mkdir, git init and cartridge init steps are done.
+`<tag>` is a release tag, such as `v2026.10.0`. That one checkout is the whole install: `cox install` reads its `manifest.toml`, creates one venv inside it, installs `cox` editable from it, writes this machine's profile and links the crew. `<workspace>` is `~/.local/share/coxswain/workspaces/main` unless you pass `--workspace`. The install's closing doctor may report the missing workspace and cartridge until the `mkdir`, `git init` and `cartridge init` steps are done.
 
-`cox setup doctor` tells you whether this machine can run an epic and what is missing. `cox install` sets up every component from the manifest in this repository; `cox setup` is a screen over the same steps. The [install guide](https://ppfenning.github.io/coxswain/latest/install/) covers a fresh machine end to end.
+`cox setup doctor` tells you whether this machine can run an epic and what is missing. The [install guide](https://ppfenning.github.io/coxswain/latest/install/) covers a fresh machine end to end.
+
+## Upgrade
+
+```sh
+brew upgrade cox            # or: uv tool upgrade coxswain
+cox upgrade
+```
+
+The first updates `cox` itself. `cox upgrade` moves the checkout to the newest release, syncs its venv, reinstalls `cox` from it and relinks the crew.
+
+**Coming from 0.47 or earlier?** Those releases installed a checkout per component. Update `cox` (`brew upgrade cox`, or `uv tool uninstall coxswain-tools && uv tool install coxswain`), then run `cox setup migrate` to see the plan, `cox setup migrate --apply` to move, and `cox setup doctor`. Old checkouts are moved to `installs/.retired-<date>/`, never deleted. See [From 0.47 to the monorepo](https://ppfenning.github.io/coxswain/latest/monorepo/).
 
 ## The loop, in one screen
 
@@ -57,18 +70,23 @@ cox runs land <run> --repo R --apply             # rebase, PR, merge on green, c
 
 A run is a detached process. It plans one task at a time, builds it in a worktree it owns, runs the real tests, and asks two reviewers — one holding the change to the team's written charter, one whose job is to find what is wrong — before an arbiter decides. A task that fails its budget is split, never given more money. Nothing merges to a default branch without a person.
 
-## What is in the box
+## Layout
 
-This repository is the umbrella: the docs site, the version manifest that pins every component, and the installer. The components are their own repositories. At each release, changed components are tagged `v<version>`; unchanged ones keep their tag.
-
-| Component | What it owns |
+| Folder | What it holds |
 |---|---|
-| [`coxswain-cartridges`](https://github.com/ppfenning/coxswain-cartridges) | Who a run works for: roles, skills, budgets, policy, the tighten-only layers a team writes over the base. |
-| [`coxswain-graphs`](https://github.com/ppfenning/coxswain-graphs) | What runs: the graphs as pure functions, and the harness that budgets, reviews, checks and records them. |
-| [`coxswain-tools`](https://github.com/ppfenning/coxswain-tools) | The `cox` command: install, doctor, route, runs, land, the setup and editor screens. |
-| [`coxswain-crew`](https://github.com/ppfenning/coxswain-crew) | The seats: who speaks, with what authority, in what voice. |
+| [`src/tools`](src/tools) | The `cox` command: install, doctor, route, runs, land, the setup screens. |
+| [`src/graphs`](src/graphs) | What runs: the graphs as pure functions, and the harness that budgets, reviews, checks and records them. |
+| [`src/cartridges`](src/cartridges) | Who a run works for: roles, skills, budgets, policy, provider profiles, the plugin marketplace. |
+| [`crew`](crew) | The seats: who speaks, with what authority, in what voice. |
+| `docs/`, `devtools/`, `tests/` | The docs site, the release tooling, and the root suite. |
 
-The manifest is [`manifest.toml`](manifest.toml). `cox versions` reports every installed component against it.
+The dashboard, `towpath`, is a separate Rust repository, [coxswain-dash](https://github.com/ppfenning/coxswain-dash); `cox install --with dash` adds it, and the Homebrew formula includes it.
+
+Each folder runs its own suite: `cd src/tools && uv run pytest -q`, and the same in `src/graphs` and `src/cartridges`. The root suite is `uv run pytest -q` from the repository root.
+
+## Versions
+
+Releases are CalVer, `YYYY.M.N`, tagged `vYYYY.M.N`: the year, the month, and a count of releases in that month from 0. The first is 2026.10.0. A release is one tag, one PyPI publish, one GitHub release and one Homebrew formula update. The number does not promise compatibility; the store and workspace schema and `cox setup migrate` carry that. 0.47.0 was the last release of the old multi-repository line.
 
 ## Make it yours
 
@@ -76,7 +94,7 @@ Everything a stranger needs is a command in a public repository; everything that
 
 ## Contributing
 
-Every change to any component lands as a pull request, most of them built by the platform itself. Ruff runs in CI and pre-commit on every repository with one shared rule set; `pre-commit install` mirrors it locally. Ideas go in as intake items and are decomposed before they are built.
+Every change lands as a pull request, most of them built by the platform itself. Ruff runs in CI and pre-commit with one shared rule set; `pre-commit install` mirrors it locally. Ideas go in as intake items and are decomposed before they are built.
 
 ## License
 

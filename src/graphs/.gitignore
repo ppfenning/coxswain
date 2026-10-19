@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.DS_Store
+*:Zone.Identifier
+node_modules/
+
+# Run artifacts contain whatever a graph actually touched.
+runs/
+*.jsonl

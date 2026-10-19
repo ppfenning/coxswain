@@ -74,11 +74,16 @@ def check_pages(facts: Mapping) -> list[Drift]:
     return [d for pkg in facts.get("packages", []) for d in package_drifts(pkg)]
 
 
-def gather_page_facts(root: str, manifest: Mapping, run: Callable) -> dict:
-    components = manifest.get("components", {})
+def gather_page_facts(umbrella: str, manifest: Mapping, run: Callable,
+                      component_dirs: Mapping[str, str] | None = None) -> dict:
+    """The coxswain checkout at `umbrella` publishes `coxswain`; a `[components]` checkout (`component_dirs`,
+    default beside it) is checked only when it carries its own publish workflow."""
+    components = {release.UMBRELLA: {"repo": release.UMBRELLA_REPO}, **manifest.get("components", {})}
+    dirs = {release.UMBRELLA: str(umbrella), **(component_dirs if component_dirs is not None else {
+        name: release.component_dir(str(Path(umbrella).resolve().parent), name) for name in manifest.get("components", {})})}
 
     def package_facts(name: str, spec: Mapping) -> dict | None:
-        component_dir = Path(release.component_dir(root, name))
+        component_dir = Path(dirs.get(name, ""))
         if not (component_dir / ".github" / "workflows" / "publish.yml").exists():
             return None
         pyproject_path = component_dir / "pyproject.toml"

@@ -122,7 +122,7 @@ def _leaf_texts(
 
 
 def _load_generator(root: str):
-    path = Path(root) / "coxswain" / "docs" / "_cli.py"
+    path = Path(root) / "docs" / "_cli.py"
     spec = importlib.util.spec_from_file_location("_umbrella_docs_cli", path)
     if spec is None or spec.loader is None:
         raise ModuleNotFoundError(f"no generator at {path}")
@@ -159,6 +159,8 @@ def _generated_doc_commands(root: str, help_texts: Mapping[str, str]) -> tuple[d
 
 
 def gather_cli_facts(root: str, run: Callable[[list[str], str], tuple[int, str]]) -> dict:
+    """`root` is the coxswain checkout: its docs/_cli.py builds the reference, and a top-level folder's
+    README named after a command group must list that group's commands."""
     readme_paths = sorted(Path(root).glob("*/README.md"))
     readme_commands = {p.parent.name: commands_in_doc(p.read_text()) for p in readme_paths}
     help_texts, cox_error = _leaf_texts([], root, run)

@@ -1,0 +1,138 @@
+import json
+from datetime import UTC, datetime, timedelta, timezone
+
+from agent_tools.dash_history import build_history, history_today
+
+
+def _task(run, task, **record):
+    return {"run_id": run, "phase_id": "p1", "task_id": task, "record_json": json.dumps(record), "updated_at": "2026-10-04T10:00:00Z"}
+
+
+def _run(run, ended_at, status="landed", host="box"):
+    return {"run_id": run, "host": host, "status": status, "ended_at": ended_at}
+
+
+def test_an_ended_run_with_a_landed_task_carries_its_pr_and_summed_cost():
+    runs = [_run("acme-1", "2026-10-04T10:00:00Z")]
+    tasks = [_task("acme-1", "t1", landed=True, ticket="t1", initiative="acme", pr="https://github.com/o/r/pull/7"), _task("acme-1", "t2", landed=False)]
+    calls = [{"run_id": "acme-1", "cost_usd": 1.5}, {"run_id": "acme-1", "cost_usd": 0.25}, {"run_id": "other", "cost_usd": 9.0}]
+    assert build_history(runs, tasks, calls) == [{
+        "run": "acme-1", "machine": "box", "initiative": "acme", "ended_at": "2026-10-04T10:00:00Z",
+        "outcome": "landed", "cost_usd": 1.75, "landed": [{"task": "t1", "pr": 7}],
+    }]
+
+
+def test_a_quarantined_run_carries_its_first_cause_and_others_carry_none():
+    runs = [_run("a-1", "2026-10-04T10:00:00Z", status="quarantined"), _run("a-2", "2026-10-04T09:00:00Z", status="approved")]
+    tasks = [
+        _task("a-1", "t1", attempts=[{"kind": "quarantine", "cause": "harness"}, {"cause": "code"}]),
+        _task("a-1", "t2", attempts=[{"cause": "ticket"}]),
+    ]
+    rows = build_history(runs, tasks, [])
+    assert rows[0]["outcome"] == "quarantined" and rows[0]["cause"] == "harness" and rows[0]["cost_usd"] == 0.0
+    assert rows[1]["outcome"] == "approved" and "cause" not in rows[1]
+
+
+def test_a_run_with_no_end_is_never_in_the_history():
+    runs = [_run("a-1", None, status="running"), _run("a-2", "", status="running")]
+    assert build_history(runs, [], []) == []
+
+
+def test_history_is_newest_ended_first_and_cut_to_the_limit():
+    runs = [_run("a-1", "2026-10-04T08:00:00Z"), _run("a-3", "2026-10-04T10:00:00Z"), _run("a-2", "2026-10-04T09:00:00Z")]
+    assert [row["run"] for row in build_history(runs, [], [], limit=2)] == ["a-3", "a-2"]
+
+
+def test_an_unlanded_run_with_no_known_status_is_stopped_or_crashed():
+    runs = [_run("a-1", "2026-10-04T10:00:00Z", status="budget"), _run("a-2", "2026-10-04T09:00:00Z", status="exited")]
+    assert [row["outcome"] for row in build_history(runs, [], [])] == ["stopped", "crashed"]
+
+
+def test_todays_counts_exclude_a_run_ended_before_local_midnight():
+    tz = timezone(timedelta(hours=-7))
+    now = datetime(2026, 10, 4, 20, 0, tzinfo=UTC)
+    runs = [
+        _run("a-1", "2026-10-04T18:00:00Z"),
+        _run("a-2", "2026-10-04T12:00:00Z", status="quarantined"),
+        _run("a-3", "2026-10-04T05:00:00Z"),
+        _run("a-4", None, status="running"),
+    ]
+    calls = [{"run_id": "a-1", "cost_usd": 2.0}, {"run_id": "a-2", "cost_usd": 0.5}, {"run_id": "a-3", "cost_usd": 7.0}]
+    assert history_today(runs, [], calls, now, tz) == {"lands": 1, "quarantines": 1, "cost_usd": 2.5, "runs": 2}
+
+
+_APPROVED = {"review": {"verdict": "approve"}, "adversary": {"verdict": "approve"}, "arbitration": "arbiter: skipped (both approved)"}
+_LANDED = {"at": "2026-10-04T10:00:00Z", "pr": "https://github.com/o/r/pull/12"}
+
+
+def _pg_task(run, task, **record):
+    """A Postgres row: jsonb `record_json` arrives as a dict, not text."""
+    return {**_task(run, task), "record_json": record}
+
+
+def _outcome(status, *tasks):
+    return build_history([_run("acme-3", "2026-10-04T10:00:00Z", status=status)], list(tasks), [])[0]["outcome"]
+
+
+def test_an_ok_run_reads_from_its_records_never_as_crashed():
+    assert _outcome("ok", _task("acme-3", "t1", **_APPROVED)) == "approved"
+    assert _outcome("ok", _pg_task("acme-3", "t1", **_APPROVED)) == "approved"
+    assert _outcome("ok", _task("acme-3", "t1", **_APPROVED), _task("acme-3", "t2", landed=True)) == "landed"
+    assert _outcome("ok", _pg_task("acme-3", "t1", **_APPROVED, landed=_LANDED)) == "landed"
+    assert _outcome("ok") == "idle"
+    assert _outcome("ok", _pg_task("acme-3", "t1", review={"verdict": "revise"})) == "idle"
+
+
+def test_a_mark_landed_record_carries_the_pr_from_its_landed_facts():
+    tasks = [_pg_task("acme-3", "t1", ticket="t1", landed=_LANDED)]
+    assert build_history([_run("acme-3", "2026-10-04T10:00:00Z", status="ok")], tasks, [])[0]["landed"] == [{"task": "t1", "pr": 12}]
+
+
+def test_an_unbuilt_run_is_crashed_quarantined_or_stopped_by_its_status_and_cause():
+    assert _outcome("error") == "crashed"
+    assert _outcome(None) == "crashed"
+    rows = build_history([_run("acme-3", "2026-10-04T10:00:00Z", status="failed")], [_pg_task("acme-3", "t1", cause="review")], [])
+    assert rows[0]["outcome"] == "quarantined" and rows[0]["cause"] == "review"
+    assert _outcome("failed", _task("acme-3", "t1", review={"verdict": "revise"}, cause="ticket")) == "quarantined"
+    assert _outcome("stopped") == "stopped"
+
+
+def test_a_run_with_no_records_takes_its_initiative_from_the_run_id():
+    runs = [_run("chair-carries-a-split-phase-12", "2026-10-04T10:00:00Z", status="ok")]
+    assert build_history(runs, [], [])[0]["initiative"] == "chair-carries-a-split-phase"
+
+
+def _recorded_row(status, **outcome):
+    run = {**_run("acme-4", "2026-10-04T10:00:00Z", status=status), "record_json": json.dumps({"outcome": outcome})}
+    return build_history([run], [], [])[0]
+
+
+def test_a_blocked_run_is_blocked_and_carries_its_first_reason():
+    row = _recorded_row("ok", blocked=["phase-block: p2", "second"])
+    assert (row["outcome"], row["cause"]) == ("blocked", "phase-block: p2")
+
+
+def test_a_refused_run_is_refused_and_carries_the_refusal_line():
+    row = _recorded_row("error", refused="ticket lint: missing surfaces")
+    assert (row["outcome"], row["cause"]) == ("refused", "ticket lint: missing surfaces")
+
+
+def test_a_waiting_run_is_waiting_and_carries_its_first_phase():
+    row = _recorded_row("ok", waiting=["p3", "p4"])
+    assert (row["outcome"], row["cause"]) == ("waiting", "p3")
+
+
+def test_a_run_with_no_recorded_outcome_keeps_its_label_from_status():
+    runs = [_run("acme-4", "2026-10-04T10:00:00Z", status="ok"), {**_run("acme-5", "2026-10-04T09:00:00Z", status="error"), "record_json": "{}"}]
+    rows = build_history(runs, [], [])
+    assert [row["outcome"] for row in rows] == ["idle", "crashed"] and all("cause" not in row for row in rows)
+    assert _recorded_row("ok", blocked=[])["outcome"] == "idle"
+
+
+def test_a_run_that_exits_awaiting_land_is_idle_and_a_paused_run_is_stopped():
+    """2026-10-11: two runs that exited awaiting_land (an approved task waiting for its land) showed as crashed."""
+    from agent_tools.dash_history import run_outcome
+
+    assert run_outcome({"status": "awaiting_land", "record_json": {}}, []) == "idle"
+    assert run_outcome({"status": "paused", "record_json": {}}, []) == "stopped"
+    assert run_outcome({"status": "error", "record_json": {}}, []) == "crashed"

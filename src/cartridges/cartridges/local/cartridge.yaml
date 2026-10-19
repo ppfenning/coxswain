@@ -1,0 +1,124 @@
+# Local cartridge — the substrate with no tracker at all.
+#
+# Everything the base contract asks for, bound to the filesystem. There is no
+# `tracker`, no `workspace_id`, and no `auth_env`, because there is no external
+# system to authenticate to: work items are markdown files under `work/`, git is
+# the audit trail, and a pull request is the review surface.
+#
+# This exists to prove a claim the substrate makes and had never tested — that a
+# graph names roles and landings, never vendors, so the vendor can be *nothing*.
+# If a graph needed a tracker, this cartridge could not resolve.
+team: local
+extends: base
+description: Solo/local operation — the work store is the repository
+version: 1
+
+# ── Role bindings ───────────────────────────────────────────────────────────
+# The bodies for every binding here ship in this repo, under
+# `skills-plugins/local-skills/` — point --skills-root at `skills-plugins/`
+# (or at any other plugin root that provides the same names). The reference
+# cartridge and its reference skills travel together so a clean clone resolves.
+skills:
+  plan:             local-skills:plan-task
+  build:            local-skills:build-in-worktree
+  review_charter:   local-skills:review-charter
+  work_state_arm:   local-skills:workstore-state     # SINGLE WRITER of state
+  work_item_arm:    local-skills:workstore-item
+  # The pieces that make a phased build worth running
+  decompose:        local-skills:decompose-initiative
+  handoff:          local-skills:handoff-brief
+  review_adversary: local-skills:review-adversary
+  arbitrate:        local-skills:arbitrate
+  # Competition before build: the same planner told to differ, an arbiter of
+  # plans, and the adversary pointed at a plan's claims instead of a diff's.
+  plan_alternative: local-skills:plan-task
+  plan_arbitrate:   local-skills:arbitrate-plans
+  plan_adversary:   local-skills:attack-plan
+  scope_epic:       local-skills:scope-work
+  evidence_verify:  local-skills:verify-evidence
+  docs_apply_arm:   local-skills:update-docs
+  triage_classify:  local-skills:triage-classify
+  reconcile:        local-skills:reconcile-state
+  # epic-swarm's validators, plus retro and the dispatcher
+  validate_chunk:   local-skills:validate-chunk      # did the task satisfy its own description
+  validate_phase:   local-skills:validate-phase      # do the tasks TOGETHER meet the phase goal
+  retro:            local-skills:retro-runs          # read the run record, propose what changes
+  dispatch:         local-skills:dispatch-graphs     # pick what runs next, and why
+  route:            local-skills:route-work          # decide, size, launch, and report on routed work
+
+# ── The cast ────────────────────────────────────────────────────────────────
+# The seats from `agent-cast`, bound to the same reference skills this
+# cartridge already binds its graph roles to — so a clean clone of the three
+# repositories gives a working cast as well as a working graph run.
+cast:
+  nova:    {skills: [local-skills:verify-evidence, local-skills:reconcile-state],
+            context: "recon reads the repository and the work store; git log is the audit trail"}
+  sky:     {skills: [local-skills:triage-classify],
+            context: "there is no alerting system here — triage reads what you hand it"}
+  lewis:   {skills: [local-skills:review-charter, local-skills:review-adversary]}
+  sarah:   {skills: [local-skills:plan-task, local-skills:build-in-worktree]}
+  michael: {skills: [local-skills:verify-evidence],
+            context: "ops surface is the checks in landing_areas and the worktrees the harness owns"}
+  emma:    {skills: [local-skills:scope-work, local-skills:decompose-initiative, local-skills:workstore-item],
+            context: "the board is work/ — markdown files, not a tracker"}
+  echo:    {skills: [local-skills:update-docs]}
+  alice:   {skills: [],
+            context: "the run record is runs/<run-id>.json, its usage file, the ledger, and the work store"}
+  daniel:  {skills: [local-skills:retro-runs],
+            context: "the steward reads runs/, the usage files, traces and the ledger; every change it proposes is a PR"}
+
+# ── Where writes land ───────────────────────────────────────────────────────
+# Directories, not boards. The state names come from the base `work_routing`
+# block; only the landing each one maps to is local.
+landing_areas:
+  work_root:      work                # work/<initiative>/<phase>/<task>.md
+  worktree_root:  ~/worktrees
+  active_work:    work
+  planned_work:   work
+  future_work:    backlog             # scoped-but-not-started lives apart
+  runbook_index:  docs/runbooks/index.md
+  # The check arm: what the harness RUNS in a worktree after applying a patch,
+  # attaching pass/fail and parsed counts to the proposal as machine evidence.
+  # Named commands, not conventions — a check nobody configured is a check
+  # nobody ran, and the gate should know the difference.
+  checks:
+    - {name: lint, cmd: "ruff check .", fix: "ruff check --fix ."}
+    - {name: tests, cmd: "pytest -q", timeout: 1500}
+
+# ── Apply arms ──────────────────────────────────────────────────────────────
+# Every write lands in a file this repository already tracks, so "applying" a
+# proposal is a commit someone can read, revert, and blame.
+write_kinds:
+  item_create:      {apply_arm: work_item_arm}
+  item_update:      {apply_arm: work_item_arm}
+  state_move:       {apply_arm: work_state_arm}
+  doc_update:       {apply_arm: docs_apply_arm}
+  draft_pr_create:  {apply_arm: shell}
+  # Branch surgery inside the stack is the shell's own work: the harness created
+  # these worktrees and is the only thing that knows where they are. merge_main
+  # is deliberately left unarmed — it has no arm because it has no arm to give,
+  # it goes to the gate and a human runs it. self_modification keeps base's `pr`.
+  merge_stack:      {apply_arm: shell}
+  stack_rebase:     {apply_arm: shell}
+
+intake:
+  - source: manual
+    kind: ideas
+  # A directory, not a service, for the same reason work/ is a directory: the
+  # audit trail is `git log`, and there is no second system to keep honest.
+  - source: queue_dir
+    kind: ideas
+    path: intake            # <repo>/intake/*.md, consumed items move to intake/consumed/
+
+# ── Inline work ─────────────────────────────────────────────────────────────
+# Repositories where the chair may work a small change inline instead of
+# launching a graph. files_max is left unset and takes the base default.
+# Empty here: a team cartridge, kept outside this repository, lists its own
+# inline repos.
+epic_threshold:
+  inline:
+    repos: []
+
+context:
+  - context/code-style.md
+  - context/prose-style.md     # how every node writes what it returns; no code opinion

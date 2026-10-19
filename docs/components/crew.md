@@ -5,24 +5,16 @@ validate. The coxswain steers; the crew rows.
 
 ## What it owns
 
-The crew repository owns the seat implementations — builder, charter
-reviewer, adversary, arbiter, validator — one role in the crew, filled by
-one agent doing one job on one run.
+The `crew` folder holds the seat definitions — recon, triage, build, review,
+ops, the board, writing, the scribe, the steward, the courier — each one role
+filled by one agent doing one job.
 
 ## Installing it
 
-Crew is optional. Install it with:
-
-```
-cox install --with crew
-```
+`cox install` and `cox upgrade` link every seat from `<checkout>/crew` into
+`~/.claude/agents`. Nothing to pass.
 
 ## Its own docs
 
-The crew repository's own README and docs live at
-[github.com/ppfenning/coxswain-crew](https://github.com/ppfenning/coxswain-crew).
-
-## Reference
-
-The component's README at the pinned tag is included below when the site is
-built from a release.
+The folder's README lives at
+[crew](https://github.com/ppfenning/coxswain/tree/main/crew).

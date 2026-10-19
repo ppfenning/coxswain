@@ -77,6 +77,9 @@ def resolve_docs_base(mkdocs_path: str) -> str:
 
 
 def gather_readmes_facts(readme_paths: Mapping[str, str], manifest: Mapping, docs_base: str) -> dict:
+    """`repo_names`: every manifest repository plus `coxswain-<name>` for each README read, so an in-repo
+    folder's pre-rename `agent-<name>` still maps to the name it shipped under."""
     readmes = {name: Path(path).read_text() for name, path in readme_paths.items() if Path(path).exists()}
-    repo_names = {spec["repo"] for spec in manifest.get("components", {}).values() if spec.get("repo")}
+    repo_names = ({spec["repo"] for spec in manifest.get("components", {}).values() if spec.get("repo")}
+                  | {f"coxswain-{name}" for name in readmes})
     return {"readmes": readmes, "repo_names": repo_names, "docs_base": docs_base}

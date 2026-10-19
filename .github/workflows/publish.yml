@@ -1,4 +1,7 @@
 name: publish
+# A `v*` tag publishes the one distribution, `coxswain`, to PyPI. The guard refuses a tag that is not
+# `v` + pyproject.toml's version, or a version that is not CalVer (YYYY.M.N): `python -m devtools release`
+# bumps both before it tags.
 on:
   push:
     tags: ["v*"]
@@ -13,5 +16,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with: { python-version: "3.14" }
+      - name: the tag names this checkout's CalVer version
+        run: uv run --no-project python .github/check_release_tag.py "$GITHUB_REF_NAME"
       - run: uv build
       - uses: pypa/gh-action-pypi-publish@release/v1

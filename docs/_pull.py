@@ -1,5 +1,11 @@
 """Pull each component's declared docs into docs/components/<name>/<path>.
 
+Tools, graphs, cartridges and crew are folders of this checkout, so their docs
+are copied from disk (`LOCAL_DOCS`, planned by `local_plan`, copied by
+`_copy_local`): the build documents exactly the tree it is built from. A
+component that lives in another repository (`[components]` in manifest.toml,
+only dash) is still fetched from GitHub at its pinned tag, as below.
+
 The core (`plan`) is pure: given a parsed manifest, it decides which URLs to
 fetch and where to write them, with no I/O. A `*.md` glob entry cannot be
 expanded without asking GitHub what is in the directory, so `plan` returns it
@@ -30,11 +36,99 @@ kind planned it.
 from __future__ import annotations
 
 import json
+import posixpath
+import re
 import sys
 import tomllib
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+# name -> (folder in this checkout, docs under it). A `dir/*.md` entry copies every .md file in that folder.
+LOCAL_DOCS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "cartridges": ("src/cartridges", ("README.md",)),
+    "graphs": ("src/graphs", (
+        "README.md",
+        "graphs/delivery/epic-swarm.md",
+        "graphs/delivery/lifecycle-propose.md",
+        "graphs/delivery/initiative-decompose.md",
+        "graphs/ops/coxswain.md",
+        "graphs/ops/epic-reconcile.md",
+        "graphs/ops/retro-propose.md",
+        "graphs/ops/triage-propose.md",
+        "docs/GRAPH-CONTRACT.md",
+        "docs/RUNBOOK-TRUST.md",
+        "docs/graphs/*.md",
+    )),
+    "tools": ("src/tools", ("README.md",)),
+    "crew": ("crew", ("README.md",)),
+}
+
+
+def local_plan(local_docs: dict[str, tuple[str, tuple[str, ...]]]) -> list[dict]:
+    """Pure: one `copy` item per listed file and one `copy_glob` item per `dir/*.md` entry, each landing at
+    docs/components/<name>/<entry>, the same destination a GitHub pull of that component used."""
+    def item(name: str, folder: str, entry: str) -> dict:
+        if entry.endswith("/*.md"):
+            directory = entry[: -len("/*.md")]
+            return {"kind": "copy_glob", "src_dir": f"{folder}/{directory}", "dest_dir": f"docs/components/{name}/{directory}"}
+        return {"kind": "copy", "src": f"{folder}/{entry}", "dest": f"docs/components/{name}/{entry}"}
+    return [item(name, folder, entry) for name, (folder, entries) in local_docs.items() for entry in entries]
+
+
+# Where a copied page's link to a file that is not copied points: the file in the repository, on GitHub.
+SOURCE_BLOB = "https://github.com/ppfenning/coxswain/blob/main"
+_LINK = re.compile(r"(\]\()([^)\s]+)")
+
+
+def rewrite_links(text: str, src: str, dests: dict[str, str]) -> str:
+    """Pure: `text` of the page copied from `src` with each relative `](target)` link re-aimed. A target that is
+    itself copied (a key of `dests`, source path to site path) is linked relative to where the page lands; any
+    other file of the checkout is linked on GitHub, so the site never carries a link to a page it does not have."""
+    here = posixpath.dirname(dests[src])
+
+    def aim(match: re.Match) -> str:
+        target, _, anchor = match.group(2).partition("#")
+        if not target or "://" in target or target.startswith(("/", "mailto:")):
+            return match.group(0)
+        path = posixpath.normpath(posixpath.join(posixpath.dirname(src), target))
+        aimed = posixpath.relpath(dests[path], here) if path in dests else f"{SOURCE_BLOB}/{path}"
+        return match.group(1) + aimed + (f"#{anchor}" if anchor else "")
+
+    return _LINK.sub(aim, text)
+
+
+def _local_pairs(items: list[dict], root: Path) -> tuple[list[tuple[str, str]], int]:
+    """Edge: `(source, dest)` paths relative to `root` for every local item, and how many globs matched nothing."""
+    pairs: list[tuple[str, str]] = []
+    failures = 0
+    for item in items:
+        if item["kind"] == "copy_glob":
+            found = [(f"{item['src_dir']}/{p.name}", f"{item['dest_dir']}/{p.name}")
+                     for p in sorted((root / item["src_dir"]).glob("*.md"))]
+            if not found:
+                print(f"skip: {item['src_dir']}: no .md files")
+                failures += 1
+            pairs.extend(found)
+        else:
+            pairs.append((item["src"], item["dest"]))
+    return pairs, failures
+
+
+def _copy_local(items: list[dict], root: Path) -> int:
+    """Edge: copy every local item under `root`, links re-aimed (`rewrite_links`); return how many did not land.
+    A missing file, or a glob folder with no .md files, is a failure, the same as a doc that failed to fetch."""
+    pairs, failures = _local_pairs(items, root)
+    dests = {src: dest.removeprefix("docs/") for src, dest in pairs}
+    for src, dest in pairs:
+        try:
+            text = (root / src).read_text(encoding="utf-8")
+        except OSError as exc:
+            print(f"skip: {src}: {exc}")
+            failures += 1
+            continue
+        _write(str(root / dest), rewrite_links(text, src, dests).encode("utf-8"))
+    return failures
 
 
 def raw_url(repo: str, ref: str, entry: str) -> str:
@@ -205,7 +299,7 @@ def _run(items: list[dict]) -> int:
 
 def main() -> int:
     manifest = tomllib.loads(Path("manifest.toml").read_text())
-    failures = _run(plan(manifest))
+    failures = _copy_local(local_plan(LOCAL_DOCS), Path(".")) + _run(plan(manifest))
     if failures:
         print(f"failed: {failures} doc(s) did not pull")
     return 1 if failures else 0

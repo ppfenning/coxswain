@@ -1,0 +1,236 @@
+"""Pure derivation functions for the stats store's ingest task.
+
+Spec: docs/design/run-stats-store.md §3. Spike verdict:
+agent_tools/stats-join-spike.md. Each function here takes already-parsed
+plain data — no file reads, no network, no clock — and returns plain data;
+the ingest task (out of scope here) is responsible for reading
+*.usage.json, task-record json, the autonomy ledger and run logs, and for
+parsing raw log text into agent_tools.events.Event objects before calling
+resolve_outcome.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from functools import reduce
+from math import ceil
+from typing import Any
+
+from agent_tools.stats_schema import FAILURE_CLASSES, OUTCOMES
+
+__all__ = [
+    "LIST_RATES_USD_PER_MTOK",
+    "attempt_numbers",
+    "bounds_for_costs",
+    "extract_failure_class",
+    "resolve_outcome",
+    "spend_mix_for_model",
+]
+
+# cost-bounds.md §4: "Rates come from one table in agent_tools/stats_derive.py,
+# named per model id, with a test pinning the 2026-09 list prices." §4 names no
+# figures itself, only this table as their one source; the numbers below are
+# the 2026-09 published list rates, USD per million tokens, by token class,
+# and test_list_rates_pin_the_2026_09_published_list_prices pins them. Keys
+# are the short model names already stored in calls.model by this test suite's
+# own fixtures (tests/test_stats_query.py's `_call` defaults to "sonnet"), not
+# a vendor API id. A rate move is a PR that updates this table and that test,
+# same discipline as §2's ceilings.
+LIST_RATES_USD_PER_MTOK: dict[str, dict[str, float]] = {
+    "sonnet": {"input": 3.0, "output": 15.0, "cache_creation": 3.75, "cache_read": 0.30},
+    "opus": {"input": 15.0, "output": 75.0, "cache_creation": 18.75, "cache_read": 1.50},
+    "haiku": {"input": 0.80, "output": 4.0, "cache_creation": 1.0, "cache_read": 0.08},
+}
+
+_TOKEN_COLUMNS = {
+    "input": "input_tokens",
+    "output": "output_tokens",
+    "cache_creation": "cache_creation_tokens",
+    "cache_read": "cache_read_tokens",
+}
+
+
+def bounds_for_costs(costs: Sequence[float]) -> dict[str, Any]:
+    """n, p50, p95, max and the strict/moderate/liberal candidates
+    (docs/design/cost-bounds.md §2): strict=p50, moderate=p95, liberal=3*p95,
+    nearest-rank percentiles on the sorted costs. `n < 20` returns
+    `{"n": n, "insufficient": True}` with no candidates (§6 rule 4)."""
+    n = len(costs)
+    if n < 20:
+        return {"n": n, "insufficient": True}
+    ordered = sorted(costs)
+
+    def _percentile(pct: float) -> float:
+        return ordered[max(0, min(n - 1, ceil(pct * n) - 1))]
+
+    p50 = _percentile(0.50)
+    p95 = _percentile(0.95)
+    return {
+        "n": n,
+        "p50": p50,
+        "p95": p95,
+        "max": ordered[-1],
+        "strict": p50,
+        "moderate": p95,
+        "liberal": 3 * p95,
+    }
+
+
+def _token_counts(rows: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    return {cls: sum(int(r.get(col) or 0) for r in rows) for cls, col in _TOKEN_COLUMNS.items()}
+
+
+def _cost_share(token_counts: Mapping[str, int], rates: Mapping[str, float]) -> dict[str, float]:
+    class_costs = {cls: tokens / 1_000_000 * rates.get(cls, 0.0) for cls, tokens in token_counts.items()}
+    total = sum(class_costs.values())
+    return {cls: round(cost / total, 6) if total else 0.0 for cls, cost in class_costs.items()}
+
+
+def spend_mix_for_model(rows: Sequence[Mapping[str, Any]], model: str) -> dict[str, Any]:
+    """Token counts and cost share by class (input/output/cache_creation/
+    cache_read) for `rows`, all calls for `model`, at the pinned list rates in
+    LIST_RATES_USD_PER_MTOK (cost-bounds.md §4); shares sum to 1.0 per §6 rule
+    8, or read all-zero when `rows` carries no tokens. `build` carries the
+    same split restricted to rows whose `role` is 'build'."""
+    rates = LIST_RATES_USD_PER_MTOK.get(model, {})
+    build_rows = [r for r in rows if r.get("role") == "build"]
+    token_counts = _token_counts(rows)
+    build_token_counts = _token_counts(build_rows)
+    return {
+        "model": model,
+        "token_counts": token_counts,
+        "cost_share": _cost_share(token_counts, rates),
+        "build": {
+            "token_counts": build_token_counts,
+            "cost_share": _cost_share(build_token_counts, rates),
+        },
+    }
+
+
+def attempt_numbers(calls: Sequence[Mapping[str, Any]]) -> list[int]:
+    """Each call's 1-based ordinal among calls sharing its 'role', in call order."""
+
+    def step(state: tuple[dict[str, int], list[int]], call: Mapping[str, Any]) -> tuple[dict[str, int], list[int]]:
+        counts, attempts = state
+        role = call["role"]
+        n = counts.get(role, 0) + 1
+        return {**counts, role: n}, [*attempts, n]
+
+    _, attempts = reduce(step, calls, ({}, []))
+    return attempts
+
+
+def resolve_outcome(task_record: Mapping[str, Any]) -> tuple[str, str]:
+    """(outcome, outcome_source) per spec §3's order: landed, then the work
+    store's own `state: done`, then the last gate_diffs entry targeting this
+    ticket, then a log line naming this ticket, else unknown.
+
+    A run-level `budget_stop` log event (agent_tools/events.py:51) carries an
+    empty detail dict and names no task: a run holds several tickets, so there
+    is no sound way to attribute it to one of them. It is therefore never a
+    source of a task's outcome here; a task that only budget-stop's run has
+    `unknown`, not a guess.
+    """
+    if task_record.get("landed") is True:
+        return "landed", "landed_field"
+
+    if task_record.get("work_store_done") is True:
+        return "landed", "work_store"
+
+    ticket = task_record.get("ticket")
+    gate_diffs = task_record.get("gate_diffs") or ()
+    scoped = [d for d in gate_diffs if ticket is not None and d.get("target") == ticket]
+    if scoped:
+        outcome = scoped[-1]["outcome"]
+        if outcome in OUTCOMES:
+            return outcome, "gate_diffs"
+
+    log_events = task_record.get("log_events") or ()
+    if ticket is not None and any(
+        e.kind == "task_quarantined" and e.detail.get("task") == ticket for e in log_events
+    ):
+        return "quarantined", "log_line"
+
+    return "unknown", "unknown"
+
+
+_EDIT_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
+
+_PATCHING_ROLES = frozenset({"build", "style_pass"})
+
+
+def _final_result(trace: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    """The last `type: result` event, whose `subtype`/`is_error`/`num_turns`/
+    `total_cost_usd` sit at its own top level — the same shape
+    agent_tools.records.trace_summary reads. Never `{}`'s a `result` sub-key:
+    the per-call trace carries no such nesting."""
+    result: Mapping[str, Any] | None = None
+    for entry in trace:
+        if entry.get("type") == "result":
+            result = entry
+    return result or {}
+
+
+def _content_blocks(entry: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    return list((entry.get("message") or {}).get("content") or [])
+
+
+def _budget_stopped(trace: Sequence[Mapping[str, Any]], log_excerpt: str) -> bool:
+    if "error_max_budget_usd" in log_excerpt or "fix loop stopped: budget" in log_excerpt:
+        return True
+    return _final_result(trace).get("subtype") == "error_max_budget_usd"
+
+
+def _tool_errored(trace: Sequence[Mapping[str, Any]]) -> bool:
+    return any(
+        block.get("type") == "tool_result" and block.get("is_error")
+        for entry in trace
+        if entry.get("type") == "user"
+        for block in _content_blocks(entry)
+    )
+
+
+def _refused(trace: Sequence[Mapping[str, Any]]) -> bool:
+    return any(
+        entry.get("type") == "assistant" and (entry.get("message") or {}).get("stop_reason") == "refusal"
+        for entry in trace
+    )
+
+
+def _touched_no_files(trace: Sequence[Mapping[str, Any]]) -> bool:
+    return not any(
+        block.get("type") == "tool_use" and block.get("name") in _EDIT_TOOLS
+        for entry in trace
+        if entry.get("type") == "assistant"
+        for block in _content_blocks(entry)
+    )
+
+
+def _succeeded(trace: Sequence[Mapping[str, Any]]) -> bool:
+    result = _final_result(trace)
+    return bool(result) and not result.get("is_error")
+
+
+def extract_failure_class(trace: Sequence[Mapping[str, Any]], log_excerpt: str, role: str | None) -> str:
+    """One of stats_schema.FAILURE_CLASSES. Trusts only the trace's terminal
+    `type: result` entry to decide success, matching the convention
+    agent_tools/records.py:102 already uses (`is_error` read from the last
+    result only) — a call that hits a failed tool_result or a refusal partway
+    through and then finishes clean is `ok`, not `tool_error` or `refused`.
+    Assumes trace and log_excerpt are already scoped to this one call by the
+    caller; scoping them is the ingest task's job, not enforced here.
+
+    `empty_patch` is only meaningful where a patch was expected: `role` outside
+    `_PATCHING_ROLES` (only `build` and `style_pass` are granted Write/Edit by
+    the provider profile) can never read `empty_patch` on success, only `ok`."""
+    if _succeeded(trace):
+        candidate = "empty_patch" if role in _PATCHING_ROLES and _touched_no_files(trace) else "ok"
+    elif _budget_stopped(trace, log_excerpt):
+        candidate = "budget_stop"
+    elif _tool_errored(trace):
+        candidate = "tool_error"
+    elif _refused(trace):
+        candidate = "refused"
+    else:
+        candidate = "unknown"
+    return candidate if candidate in FAILURE_CLASSES else "unknown"

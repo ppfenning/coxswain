@@ -25,6 +25,17 @@ def test_previous_tag_sorts_numerically_and_keeps_the_spelling():
     assert previous_tag(["v0.9.0", "v0.10.0", "v0.11.0"], "0.11.0") == "v0.10.0"
 
 
+def test_previous_tag_of_the_first_calver_release_is_the_last_semver_one():
+    tags = ["v0.46.0", "v0.47.0", "v2026.10.0", "v2026.10.9", "v2026.10.10"]
+    assert previous_tag(tags, "2026.10.0") == "v0.47.0"
+    assert previous_tag(tags, "2026.11.0") == "v2026.10.10"
+
+
+def test_check_version_matches_a_calver_version_line():
+    assert check_version("cox 2026.10.0\n", "2026.10.0") is None
+    assert check_version("cox 2026.10.10\n", "2026.10.1") is not None
+
+
 def test_previous_tag_is_none_without_a_lower_tag():
     assert previous_tag(["v0.11.0", "nightly", "v0.12.0"], "0.11.0") is None
 

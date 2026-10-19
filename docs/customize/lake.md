@@ -5,11 +5,17 @@ it fresh, and query it with SQL. It assumes you have never used Iceberg.
 
 ## Install it
 
-The lake needs extra packages. Install them with the `lake` extra.
+The lake needs extra packages. Add the `lake` extra to `cox`, which is
+installed editable from the coxswain checkout:
 
 ```sh
-pip install 'coxswain-tools[lake]'
+uv tool install --force --editable "$HOME/.local/share/coxswain/installs/coxswain[lake]"
 ```
+
+The install replaces the extras `cox` had, so name each one you use, such as
+`[postgres,lake]`.
+
+`cox upgrade` keeps the extras `cox` was installed with.
 
 The extra brings pyiceberg with a SQL catalog, and duckdb.
 

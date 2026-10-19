@@ -1,34 +1,27 @@
-# The single source of truth for what a Coxswain release installs.
-# At release, changed components are tagged v<version>; unchanged ones keep their tag.
-# Repository names are the post-rename names (design §1a).
+# What a Coxswain release is, beyond the checkout it ships in.
 #
-# A component entry carries either `tag = "vX.Y.Z"` (the release channel,
-# what `cox install` gives a fresh install) or `ref = "main"` (the edge
-# channel, what `cox install --edge` resolves to) — never both. A half-edge
-# install, part tag and part ref, is a configuration nobody tested.
+# One repository (ppfenning/coxswain), one distribution (`coxswain`, the `cox` command), one
+# version: CalVer YYYY.M.N, tagged vYYYY.M.N. The checkout IS the release, so tools, graphs,
+# cartridges and crew are folders here (src/tools, src/graphs, src/cartridges, crew), never
+# pinned. `python -m devtools release <version>` bumps `[coxswain] version` and the root
+# pyproject.toml together.
+#
+# Shape (readers: devtools/, docs/_pull.py, src/tools/agent_tools/install.py):
+#   [coxswain]   version = "YYYY.M.N"; status = "beta" | "stable"
+#   [components] only what lives in another repository, opted into by a flag. Each entry:
+#                repo = "org/name", tag = "vX" (the release channel) or ref = "main" (edge),
+#                never both; flag = the `--with` name; provides = the command it installs;
+#                since = the release it joined; docs = paths the docs site pulls from it.
+#                A release tags it only when it has commits since its tag; else it keeps its tag.
+#   [providers]  name = { status = "supported" | "experimental" | "planned", profile = path
+#                under src/cartridges/ } for the provider profiles a host may pick.
 
 [coxswain]
-version = "0.47.0"
+version = "2026.10.0"
 status  = "beta"
 
 [components]
-cartridges = { repo = "ppfenning/coxswain-cartridges", tag = "v0.40.0", required = true, docs = ["README.md"] }
-graphs     = { repo = "ppfenning/coxswain-graphs",     tag = "v0.43.0", required = true, docs = [
-    "README.md",
-    "graphs/delivery/epic-swarm.md",
-    "graphs/delivery/lifecycle-propose.md",
-    "graphs/delivery/initiative-decompose.md",
-    "graphs/ops/coxswain.md",
-    "graphs/ops/epic-reconcile.md",
-    "graphs/ops/retro-propose.md",
-    "graphs/ops/triage-propose.md",
-    "docs/GRAPH-CONTRACT.md",
-    "docs/RUNBOOK-TRUST.md",
-    "docs/graphs/*.md",
-] }
-tools      = { repo = "ppfenning/coxswain-tools",      tag = "v0.47.0", required = true, provides = "cox", docs = ["README.md"] }
-crew       = { repo = "ppfenning/coxswain-crew",       tag = "v0.38.0", lockstep = false, flag = "crew", docs = ["README.md"] }
-dash       = { repo = "ppfenning/coxswain-dash",       tag = "v0.42.0",  flag = "dash", provides = "towpath", since = "0.26.0", docs = ["README.md"] }
+dash = { repo = "ppfenning/coxswain-dash", tag = "v0.42.0", flag = "dash", provides = "towpath", since = "0.26.0", docs = ["README.md"] }
 
 [providers]
 claude-code = { status = "supported", profile = "providers/claude-code.yaml" }

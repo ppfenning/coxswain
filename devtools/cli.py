@@ -1,7 +1,9 @@
 """The maintainer's release edge, moved out of the published `cox dev` group:
 `uv run --frozen python -m devtools release|release-check|notes-draft|backfill-github-releases|commands`,
-run from the umbrella checkout (`--frozen`, or a moved component version rewrites
-uv.lock and the release refuses a dirty umbrella). Same arguments and output as `cox dev ...`."""
+run from the coxswain checkout (`--frozen`, or the version bump rewrites uv.lock
+and the release refuses a dirty checkout). Dash and the Homebrew tap are read
+from checkouts beside it (`--root`, default the checkout's parent) or from
+`--checkout dash=PATH` / `--checkout homebrew-coxswain=PATH`."""
 
 from __future__ import annotations
 
@@ -22,6 +24,7 @@ import urllib.request
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
+from agent_tools import release_version
 from devtools import (
     release,
     release_check,
@@ -44,8 +47,8 @@ from devtools import (
 
 _NO_CHECKS = "no checks reported"
 # the umbrella's own README is not the command table's; render tools' by default
-TOOLS_README = Path(__file__).resolve().parent.parent.parent / "coxswain-tools" / "README.md"
-# the canonical clean checker, copied verbatim from coxswain-tools; the release runs it over every tree it pins
+TOOLS_README = Path(__file__).resolve().parent.parent / "src" / "tools" / "README.md"
+# the canonical clean checker; the release runs it over every tree it pins
 CHECK_CLEAN = Path(__file__).resolve().parent.parent / ".github" / "check_clean.py"
 
 
@@ -151,7 +154,13 @@ _RELEASE_DETAIL = {
     "refuse": lambda step: step["detail"],
     "note": lambda step: step["detail"],
     "tag": lambda step: f"{step['repo']} -> {step['tag']}",
-    "bump_manifest": lambda step: f"{step['from']} -> {step['to']}",
+    "bump_version": lambda step: f"pyproject.toml, uv.lock, manifest.toml {step['from']} -> {step['to']} on {step['branch']}",
+    "bump_cargo": lambda step: f"Cargo.toml {step['from']} -> {step['to']} on {step['branch']}",
+    "bump_pyproject": lambda step: f"pyproject.toml {step['from']} -> {step['to']} on {step['branch']}",
+    "push": lambda step: step["branch"],
+    "pr_create": lambda step: step["title"],
+    "wait_checks": lambda step: "gh pr checks --watch",
+    "merge": lambda step: "gh pr merge --squash, then pull the default branch",
     "notes": lambda step: step["path"],
     "tag_self": lambda step: step["tag"],
     "wait_workflows": lambda step: step["tag"],
@@ -294,11 +303,10 @@ def _fetch_text(url: str) -> str:
 
 
 def _release_step_dir(component: str, root: str, overrides: dict, umbrella: str) -> str:
-    """The checkout a `bump_pyproject`/`push`/`pr_create`/`wait_checks`/`merge`
-    step runs against: `umbrella` for the manifest's own bump (its component
-    is always `"manifest"`, never a real manifest entry), otherwise that
-    component's own checkout."""
-    return umbrella if component == "manifest" else release.component_dir(root, component, overrides)
+    """The checkout a `bump_*`/`push`/`pr_create`/`wait_checks`/`merge`/`tag`
+    step runs against: the coxswain checkout for its own steps (component
+    `coxswain`), otherwise that component's own checkout (dash)."""
+    return umbrella if component == release.UMBRELLA else release.component_dir(root, component, overrides)
 
 
 def _checkout_back(directory: str, rev_rc: int, before: str, run) -> None:
@@ -358,15 +366,15 @@ def _release_bump_pyproject(directory: str, path: Path, to: str, branch: str, co
     return _release_bump(directory, branch, commit_subject, ["pyproject.toml"], write, run)
 
 
-def _release_bump_manifest(umbrella: str, manifest_file: Path, to: str, branch: str, commit_subject: str,
-                            rejoining: set, run, extra_paths: tuple[str, ...] = ()) -> tuple[bool, str]:
-    """`_release_bump` for a `bump_manifest` step: rewrites `manifest_file`'s
-    version and component tags, and — when the umbrella checkout carries its
-    own `pyproject.toml` — that file's version line and, when `uv.lock` also
-    exists and that pyproject names a package, its matching `[[package]]`
-    stanza's version — all only once `branch` is checked out. Which of the
-    umbrella's files exist is read before the checkout (a read touches
-    nothing), so `paths` is known up front without ever writing early.
+def _release_bump_version(umbrella: str, manifest_file: Path, to: str, branch: str, commit_subject: str,
+                           rejoining: set, run, extra_paths: tuple[str, ...] = ()) -> tuple[bool, str]:
+    """`_release_bump` for a `bump_version` step: rewrites `manifest_file`'s
+    version and the tags of the components this release tags, the root
+    `pyproject.toml`'s version line and, when `uv.lock` also exists, the
+    `coxswain` `[[package]]` stanza's version — all only once `branch` is
+    checked out. Which of the checkout's files exist is read before the
+    checkout (a read touches nothing), so `paths` is known up front without
+    ever writing early.
     `extra_paths` (files already rewritten on disk, such as the release index)
     ride in the same commit."""
     pyproject_path = Path(umbrella) / "pyproject.toml"
@@ -538,11 +546,11 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
     stdout-only runner for the sync gate's commit counts. Every checkout that will be
     tagged or branched — every component, the umbrella when `tag_self` is in
     the plan, and any component or the umbrella a `bump_pyproject` or
-    `bump_manifest` step will branch — and the umbrella's release note are
+    `bump_version` step will branch — and the umbrella's release note are
     all checked before a single tag is made. Then each `tag` step's tag and
     push run in turn, and `tag_self` tags and pushes the umbrella; a
     `pinned` step runs no git command at all, since its component keeps the
-    tag the manifest already names. A `bump_pyproject`/`bump_manifest` step
+    tag the manifest already names. A `bump_pyproject`/`bump_cargo`/`bump_version` step
     checks out its `branch`, rewrites the version on disk and commits it —
     a no-op, printing "already at <version>", when the file already reads
     `to`, and every later `push`/`pr_create`/`wait_checks`/`merge` step for
@@ -551,7 +559,7 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
     switches the checkout back to its default branch and pulls it — the very
     next step for that same directory is the pre-existing `tag`/`tag_self`
     executor, which tags HEAD with no ref, so without this the tag would
-    land on the stale pre-squash commit `bump_pyproject`/`bump_manifest`
+    land on the stale pre-squash commit a `bump_*` step
     left checked out on `release/<version>` instead of what actually merged.
     A `github_release` step checks `gh release view` first and edits an
     existing release instead of creating one. One line per step; the first
@@ -573,7 +581,7 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
             print(f"refuse notes: {notes_step['path']} missing under {umbrella}")
             return 2
 
-    # A component whose bump_pyproject/bump_manifest step no-ops (the file was
+    # A component whose bump step no-ops (the file was
     # already at the target version) has nothing to push, PR, wait on or
     # merge; its later land steps no-op the same way rather than push a
     # branch nothing was ever committed to.
@@ -632,19 +640,19 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                 print(f"FAILED bump_cargo {step['component']}: {detail}")
                 return 2
             print(f"bump_cargo {step['component']}: {step['from']} -> {step['to']}")
-        elif kind == "bump_manifest":
+        elif kind == "bump_version":
             manifest_file = Path(manifest_path)
             if tomllib.loads(manifest_file.read_text()).get("coxswain", {}).get("version") == step["to"]:
                 already_bumped[step["component"]] = step["to"]
-                print(f"bump_manifest {step['component']}: already at {step['to']}")
+                print(f"bump_version {step['component']}: already at {step['to']}")
                 continue
-            ok, detail = _release_bump_manifest(umbrella, manifest_file, step["to"], step["branch"],
-                                                 step["commit_subject"], release.rejoined(steps), run,
-                                                 tuple(rewritten))
+            ok, detail = _release_bump_version(umbrella, manifest_file, step["to"], step["branch"],
+                                                step["commit_subject"], release.rejoined(steps), run,
+                                                tuple(rewritten))
             if not ok:
-                print(f"FAILED bump_manifest {step['component']}: {detail}")
+                print(f"FAILED bump_version {step['component']}: {detail}")
                 return 2
-            print(f"bump_manifest {step['component']}: {step['from']} -> {step['to']}")
+            print(f"bump_version {step['component']}: {step['from']} -> {step['to']}")
         elif kind == "push":
             if step["component"] in already_bumped:
                 print(f"push {step['component']}: already at {already_bumped[step['component']]}")
@@ -695,7 +703,7 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                 return 2
             # `gh pr merge --squash` lands the bump as a brand-new commit on
             # the default branch upstream; it does not touch this local
-            # checkout, which `bump_pyproject`/`bump_manifest` left on
+            # checkout, which the `bump_*` step left on
             # `release/<version>`. The very next step for this same directory
             # is the pre-existing `tag`/`tag_self` executor, which tags HEAD
             # with no ref — so without switching back and pulling here, it
@@ -827,13 +835,13 @@ def _maintainer_remote_url(directory: str) -> str | None:
     return result.stdout.strip() if result.returncode == 0 else None
 
 
-def _tools_repository_url() -> str | None:
-    """coxswain-tools' own `Repository` project URL, from installed package
-    metadata — a live read that survives shipping as a wheel, unlike a
+def _repository_url() -> str | None:
+    """The `coxswain` distribution's own `Repository` project URL, from installed
+    package metadata — a live read that survives shipping as a wheel, unlike a
     `pyproject.toml` path that only resolves in a checkout. `None` when the
     package (or that URL) can't be found, e.g. an uninstalled checkout."""
     try:
-        urls = importlib.metadata.metadata("coxswain-tools").get_all("Project-URL") or []
+        urls = importlib.metadata.metadata(release.UMBRELLA).get_all("Project-URL") or []
     except importlib.metadata.PackageNotFoundError:
         return None
     for entry in urls:
@@ -999,19 +1007,24 @@ def _gh_json(run, argv: list, cwd: str):
         return None
 
 
-def _rehearsal_steps(a: argparse.Namespace, manifest: dict, component_dirs: dict, umbrella: str, run) -> list[dict]:
-    """The rehearsal gate's steps. This edge reads each origin commit, the umbrella's tags, the notes and
-    `gh`; `release_rehearsal_gate.decide` judges. An override skips the `gh` calls."""
+def _origin_sha(directory: str, run) -> str:
+    """`origin/<default>`'s commit in `directory`, or "" when git could not read it."""
+    rc, out = run(["git", "-C", directory, "rev-parse", f"origin/{_default_branch(directory, run)}"], None)
+    return out.strip() if rc == 0 else ""
+
+
+def _rehearsal_steps(a: argparse.Namespace, plan_steps: list[dict], root: str, overrides: dict, umbrella: str,
+                     run) -> list[dict]:
+    """The rehearsal gate's steps. This edge reads the origin commit of the coxswain checkout (and of dash when
+    the plan tags it), the checkout's tags, the notes and `gh`; `release_rehearsal_gate.decide` judges.
+    An override skips the `gh` calls."""
     notes_text = _read_text_or_none(Path(umbrella) / "docs" / "releases" / f"{a.version}.md") or ""
     declared = release_migrations.parse_declaration(notes_text)
     if isinstance(declared, release_migrations.MigrationError):
         return [{"kind": "refuse", "component": "rehearsal", "detail": declared.message}]
-    shas = {}
-    for name, directory in component_dirs.items():
-        if manifest["components"][name].get("repo"):
-            rc, out = run(["git", "-C", directory, "rev-parse", f"origin/{_default_branch(directory, run)}"], None)
-            if rc == 0 and out.strip():
-                shas[name] = out.strip()
+    shas = {release.UMBRELLA: _origin_sha(umbrella, run)}
+    shas |= {step["component"]: _origin_sha(release.component_dir(root, step["component"], overrides), run)
+             for step in plan_steps if step["kind"] == "tag"}
     _, tag_out = run(["git", "-C", umbrella, "tag", "--list"], None)
     previous = release_notes_prs.previous_tag(tag_out.split(), a.version) or ""
     runs = [] if a.allow_no_rehearsal is not None else _gh_json(run, _RUN_LIST, umbrella)
@@ -1024,25 +1037,31 @@ def _rehearsal_steps(a: argparse.Namespace, manifest: dict, component_dirs: dict
     return release_rehearsal_gate.decide(runs, jobs_of, shas, previous, declared or (), a.allow_no_rehearsal, notes_text)
 
 
+def _checkouts(a: argparse.Namespace) -> tuple[Path, str, str, dict]:
+    """`(manifest_path, umbrella, root, overrides)`: the manifest (default `manifest.toml` here), the coxswain
+    checkout holding it (`--umbrella` overrides), the directory beside it where dash and the tap are looked
+    for (`--root`, default the checkout's parent), and the `--checkout NAME=PATH` overrides."""
+    manifest_path = Path(a.manifest) if a.manifest else Path("manifest.toml")
+    umbrella = str(Path(getattr(a, "umbrella", None) or manifest_path.resolve().parent))
+    root = a.root or str(Path(umbrella).resolve().parent)
+    overrides = dict(pair.split("=", 1) for pair in (a.checkout or []))
+    return manifest_path, umbrella, root, overrides
+
+
 def _release(a: argparse.Namespace) -> int:
-    manifest_path = Path(a.manifest) if a.manifest else Path("coxswain") / "manifest.toml"
+    manifest_path, umbrella, root, overrides = _checkouts(a)
     manifest = _load_manifest(manifest_path)
     if manifest is None:
         print(f"refusing: no manifest at {manifest_path}")
         return 2
-    checkout = str(manifest_path.resolve().parent)
-    remote = _maintainer_remote_url(checkout)
+    remote = _maintainer_remote_url(umbrella)
     if remote is None or not release.is_maintainer_remote(remote):
-        print(f"refuse: {checkout} is not a ppfenning/coxswain checkout (devtools release runs on a maintainer's machine)")
+        print(f"refuse: {umbrella} is not a {release.UMBRELLA_REPO} checkout (devtools release runs on a maintainer's machine)")
         return 2
-    root = a.root or "."
-    overrides = dict(pair.split("=", 1) for pair in (a.checkout or []))
-    component_dirs = {name: release.component_dir(root, name, overrides) for name in manifest.get("components", {})}
-    umbrella = a.umbrella or str(Path(root) / "coxswain")
+    component_dirs = release_check.component_dirs_for(umbrella, manifest, overrides, root)
     # The notes text is the first gate: a blank refuses before any git step runs, the fetch included.
     blanks = [] if a.tap_only else release.gate(release_check.run_checks(release_check.gather_version_facts(
-        manifest, str(manifest_path), {}, release_check.facts_plan(root, manifest)["umbrella"]),
-        (release_check.check_notes_blanks,)), None)
+        manifest, str(manifest_path), {}, umbrella), (release_check.check_notes_blanks,)), None)
     if blanks:
         for step in blanks:
             print(f"refuse {step['component']}: {step['detail']}")
@@ -1053,24 +1072,21 @@ def _release(a: argparse.Namespace) -> int:
     fetch_failures: dict[str, str] = {}
     prefetched: frozenset = frozenset()
     if not a.tap_only:
-        to_fetch = [directory for name, directory in component_dirs.items() if manifest["components"][name].get("repo")]
-        results = {directory: _fetch_checkout(directory, _real_run) for directory in dict.fromkeys(to_fetch + [umbrella])}
+        results = {directory: _fetch_checkout(directory, _real_run)
+                   for directory in dict.fromkeys([*component_dirs.values(), umbrella])}
         fetch_failures = {directory: reason for directory, (ok, reason) in results.items() if not ok}
         prefetched = frozenset(directory for directory, (ok, _) in results.items() if ok)
-    plan = release_check.facts_plan(root, manifest)
-    facts = {**plan, **release_check.gather_version_facts(manifest, str(manifest_path), component_dirs, plan["umbrella"])}
+    plan = release_check.facts_plan(umbrella, manifest, component_dirs)
+    facts = {**plan, **release_check.gather_version_facts(manifest, str(manifest_path), component_dirs, umbrella)}
     drifts = release_check.run_checks(facts)
-    existing_tags = {name: _remote_tags(spec["repo"]) for name, spec in manifest.get("components", {}).items()
-                      if spec.get("repo")}
-    if a.tap_only:
-        # The tap-only plan requires the tag on the umbrella too; with no slug the key stays absent and it refuses.
-        umbrella_slug = release.umbrella_release_slug(manifest, _tools_repository_url())
-        if umbrella_slug:
-            existing_tags["coxswain"] = _remote_tags(umbrella_slug)
+    components = manifest.get("components", {})
+    umbrella_slug = release.umbrella_release_slug(manifest, _repository_url())
+    existing_tags = {name: _remote_tags(spec["repo"]) for name, spec in components.items() if spec.get("repo")}
+    existing_tags[release.UMBRELLA] = _remote_tags(umbrella_slug)
     pinned_commits = {}
-    for name, spec in manifest.get("components", {}).items():
+    for name, spec in components.items():
         if spec.get("repo"):
-            directory = release.component_dir(root, name, overrides)
+            directory = component_dirs[name]
             # origin/<default>, not HEAD: a component with only remote commits is changed, not pinned.
             ref = f"origin/{_default_branch(directory, _real_run)}"
             rc, out = _stdout_run(["git", "-C", directory, "rev-list", f"{spec['tag']}..{ref}", "--count"], None)
@@ -1089,14 +1105,14 @@ def _release(a: argparse.Namespace) -> int:
             component_versions[name] = found
     plan_steps = release.release_plan(
         manifest, a.version, existing_tags, component_versions=component_versions, pinned_commits=pinned_commits,
-        tools_repository_url=_tools_repository_url(),
+        repository_url=_repository_url(),
         tap_state=_tap_state(release.component_dir(root, release.TAP_CHECKOUT, overrides)),
         cargo_versions=cargo_versions, tap_only=a.tap_only)
     # The drift gate guards a cut; a tap-only resume runs after the cut landed and reads only PyPI and the tap clone.
-    steps = plan_steps if a.tap_only else (_rehearsal_steps(a, manifest, component_dirs, umbrella, _stdout_run)
+    steps = plan_steps if a.tap_only else (_rehearsal_steps(a, plan_steps, root, overrides, umbrella, _stdout_run)
                                            + release.gate(drifts, a.allow_doc_drift, plan_steps) + plan_steps)
     if not a.tap_only:
-        # Every tree the release pins, the umbrella's included, is checked at that exact ref, dry run or not.
+        # Every tree the release pins, the coxswain checkout's included, is checked at that exact ref, dry run or not.
         unclean, skipped = _clean_gate(plan_steps, root, overrides, umbrella, os.environ)
         if skipped:
             print(skipped)
@@ -1106,6 +1122,7 @@ def _release(a: argparse.Namespace) -> int:
             if step["kind"] == "tap_formula_pr":
                 # Read-only: the dry run names the base from the cached origin/HEAD and never runs `git fetch`.
                 default = _default_branch(release.component_dir(root, release.TAP_CHECKOUT, overrides), _real_run)
+                print(f"tap_formula_pr {step['component']}: {_release_detail(step)}")
                 print(f"tap_formula_pr {step['component']}: would fetch origin, then branch {step['branch']} "
                       f"from origin/{default} (default branch {default})")
                 print(f"tap_formula_pr tap: would run install-proof.yml with tap_ref={step['branch']} "
@@ -1133,40 +1150,46 @@ def _release(a: argparse.Namespace) -> int:
 
 
 def _backfill_github_releases(a: argparse.Namespace) -> int:
-    """Walks the umbrella's docs/releases/<version>.md files oldest-first,
+    """Walks the checkout's docs/releases/<version>.md files oldest-first,
     creating or editing the GitHub Release for every tagged repo at that
     version whose body doesn't already match the one this command would
     write, so a rerun touches nothing already current. Each version's own
     manifest.toml — `git show v<version>:manifest.toml`, falling back to the
     manifest at HEAD when that tag predates the file — decides every
-    component's tag; a pinned component not tagged or rejoined this version
-    is skipped, since its release was already backfilled at the version it
-    was actually cut and a later cut must never rewrite it. `from_tag`
-    carries forward the last tag this walk saw for a component, mirroring
-    the live step's own pre-bump `spec["tag"]` read rather than the already-
-    bumped value that version's own manifest now shows. The first failed
-    `gh` write stops the walk, the same as the live `github_release` step."""
-    root = a.root
-    umbrella = str(Path(root) / "coxswain")
+    component's tag; a component not tagged at that version is skipped, since
+    its release was already backfilled at the version it was actually cut and
+    a later cut must never rewrite it. Through 0.47.0 the manifest named the
+    tools, graphs, cartridges and crew repositories too; their checkouts are
+    looked for under `--root` the same way dash's is. `from_tag` carries
+    forward the last tag this walk saw for a component, mirroring the live
+    step's own pre-bump `spec["tag"]` read rather than the already-bumped
+    value that version's own manifest now shows. The first failed `gh` write
+    stops the walk, the same as the live `github_release` step."""
+    umbrella = str(Path(a.umbrella or "."))
+    root = a.root or str(Path(umbrella).resolve().parent)
     head_manifest = _load_manifest(Path(umbrella) / "manifest.toml") or {}
-    tools_repository_url = _tools_repository_url()
+    repository_url = _repository_url()
     releases_dir = Path(umbrella) / "docs" / "releases"
     versions = release.versions_oldest_first(p.stem for p in releases_dir.glob("*.md") if p.stem != "index")
     previous_tag: dict[str, str] = {}
     for version in versions:
         show_rc, show_out = _real_run(["git", "-C", umbrella, "show", f"v{version}:manifest.toml"], None)
         manifest = tomllib.loads(show_out) if show_rc == 0 else head_manifest
-        slug = release.umbrella_release_slug(manifest, tools_repository_url)
+        slug = release.umbrella_release_slug(manifest, repository_url)
         notes_path = f"docs/releases/{version}.md"
-        link = f"https://github.com/{slug}/releases/tag/v{version}" if slug else None
+        link = f"https://github.com/{slug}/releases/tag/v{version}"
         items = [("coxswain", slug, f"v{version}", umbrella, None, None, f"coxswain {version}")]
         for name, spec in manifest.get("components", {}).items():
             if not spec.get("repo"):
                 continue
-            tag = f"v{version}" if spec.get("lockstep", True) else spec["tag"]
+            # Through 0.47.0 a component without `lockstep = false` was cut with every release; from the first
+            # CalVer release on, only the manifest's own tag says a component was tagged at that version.
+            tagged_here = spec.get("tag") == f"v{version}" or (
+                not release_version.is_calver(version) and spec.get("lockstep", True))
+            tag = f"v{version}"
             from_tag = previous_tag.get(name, spec.get("tag"))
             previous_tag[name] = spec.get("tag")
-            if tag == f"v{version}":
+            if tagged_here:
                 items.append((name, spec["repo"], tag, release.component_dir(root, name),
                               f"## coxswain-{name}", from_tag, f"coxswain-{name} {version}"))
         for _name, repo, tag, directory, heading, from_tag, title in items:
@@ -1195,29 +1218,24 @@ def _backfill_github_releases(a: argparse.Namespace) -> int:
 
 
 def _release_check(a: argparse.Namespace) -> int:
-    manifest_path = Path(a.manifest) if a.manifest else Path("coxswain") / "manifest.toml"
+    manifest_path, umbrella, root, overrides = _checkouts(a)
     manifest = _load_manifest(manifest_path)
     if manifest is None:
         print(f"refusing: no manifest at {manifest_path}")
         return 2
-    root = a.root or "."
-    overrides = dict(pair.split("=", 1) for pair in (a.checkout or []))
-    component_dirs = {name: release.component_dir(root, name, overrides) for name in manifest.get("components", {})}
-    readmes = {name: str(Path(d) / "README.md") for name, d in component_dirs.items()}
-    pyprojects = {name: str(Path(d) / "pyproject.toml") for name, d in component_dirs.items()}
-    plan = release_check.facts_plan(root, manifest)
+    component_dirs = release_check.component_dirs_for(umbrella, manifest, overrides, root)
+    plan = release_check.facts_plan(umbrella, manifest, component_dirs)
     facts = {
         **plan,
-        **release_check_cli.gather_cli_facts(root, _help_run),
+        **release_check_cli.gather_cli_facts(umbrella, _help_run),
         **release_check_manifest.gather_manifest_facts(manifest, str(manifest_path), plan["component_docs"], plan["release_notes"]),
-        **release_check_notes.gather_notes_facts(root, manifest, subprocess.run),
-        **release_check_pages.gather_page_facts(root, manifest, subprocess.run),
+        **release_check_notes.gather_notes_facts(umbrella, manifest, subprocess.run, component_dirs),
+        **release_check_pages.gather_page_facts(umbrella, manifest, subprocess.run, component_dirs),
         **release_check_readmes.gather_readmes_facts(
-            readmes, manifest, release_check_readmes.resolve_docs_base(str(Path(plan["umbrella"]) / "mkdocs.yml"))
+            plan["readmes"], manifest, release_check_readmes.resolve_docs_base(str(Path(umbrella) / "mkdocs.yml"))
         ),
-        **release_check.gather_version_facts(manifest, str(manifest_path), component_dirs, plan["umbrella"]),
-        **release_check_index.gather_release_index_facts(plan["umbrella"]),
-        "pyprojects": pyprojects,
+        **release_check.gather_version_facts(manifest, str(manifest_path), component_dirs, umbrella),
+        **release_check_index.gather_release_index_facts(umbrella),
     }
     drifts = release_check.run_checks(facts)
     rendered = release_check.render(drifts, len(release_check.CHECKS))
@@ -1244,8 +1262,10 @@ def _bumped_components(steps: list[dict]) -> list[str]:
     return [step["component"] for step in steps if step["kind"] in ("tag", "rejoin")]
 
 
-def _draft_plan(manifest: dict, version: str, root: str, overrides: dict, run: Callable[[list[str]], str]) -> list[dict]:
-    """`release.release_plan` fed the way `_release` feeds it: remote tags per repo, commits past each pin."""
+def _draft_plan(manifest: dict, version: str, root: str, overrides: dict, run: Callable[[list[str]], str],
+                umbrella_slug: str = release.UMBRELLA_REPO) -> list[dict]:
+    """`release.release_plan` fed the way `_release` feeds it: remote tags per repo (the coxswain repository's
+    under `coxswain`), commits past each pin. The tap is not this command's concern, so it reads as clean."""
     def as_pair(argv: list, cwd: str | None) -> tuple:
         try:
             return 0, run(argv)
@@ -1254,9 +1274,9 @@ def _draft_plan(manifest: dict, version: str, root: str, overrides: dict, run: C
 
     components = {name: spec for name, spec in manifest.get("components", {}).items() if spec.get("repo")}
     existing_tags = {}
-    for name, spec in components.items():
+    for name, repo in [*((name, spec["repo"]) for name, spec in components.items()), (release.UMBRELLA, umbrella_slug)]:
         try:
-            existing_tags[name] = release.parse_ls_remote(run(["git", "ls-remote", "--tags", f"https://github.com/{spec['repo']}.git"]))
+            existing_tags[name] = release.parse_ls_remote(run(["git", "ls-remote", "--tags", f"https://github.com/{repo}.git"]))
         except _DRAFT_FAILURES:
             existing_tags[name] = None
     pinned_commits = {}
@@ -1288,14 +1308,12 @@ def _release_notes_draft(a: argparse.Namespace, run: Callable[[list[str]], str] 
     """`notes-draft <version>`: write docs/releases/<version>.md from the PRs merged since each bumped
     component's previous tag, then register it in the releases index and the nav. Reads and writes live
     here; the modules compute. A finished file (no blanks left) is refused, never overwritten."""
-    manifest_path = Path(a.manifest) if a.manifest else Path("coxswain") / "manifest.toml"
+    manifest_path, umbrella_dir, root, overrides = _checkouts(a)
     manifest = _load_manifest(manifest_path)
     if manifest is None:
         print(f"refusing: no manifest at {manifest_path}")
         return 2
-    root = a.root or "."
-    overrides = dict(pair.split("=", 1) for pair in (a.checkout or []))
-    umbrella = Path(a.umbrella) if a.umbrella else Path(release_check.facts_plan(root, manifest)["umbrella"])
+    umbrella = Path(umbrella_dir)
     notes_path = umbrella / "docs" / "releases" / f"{a.version}.md"
     index_path = umbrella / "docs" / "releases" / "index.md"
     nav_path = umbrella / "mkdocs.yml"
@@ -1303,8 +1321,9 @@ def _release_notes_draft(a: argparse.Namespace, run: Callable[[list[str]], str] 
     if existing is not None and not release_notes_blanks.find_blanks(existing):
         print(f"refuse: {notes_path} has no blanks left; a finished file is never overwritten")
         return 2
+    umbrella_slug = release.umbrella_release_slug(manifest, _repository_url())
     try:
-        steps = _draft_plan(manifest, a.version, root, overrides, run)
+        steps = _draft_plan(manifest, a.version, root, overrides, run, umbrella_slug)
         refusals = [step["detail"] for step in steps if step["kind"] == "refuse"]
         if refusals:
             print("\n".join(f"refuse: {detail}" for detail in refusals))
@@ -1313,10 +1332,8 @@ def _release_notes_draft(a: argparse.Namespace, run: Callable[[list[str]], str] 
         bumped = _bumped_components(steps)
         windows = {name: release_notes_prs.gather_component_prs(
             run, name, components[name]["repo"], release.component_dir(root, name, overrides), a.version) for name in bumped}
-        umbrella_slug = release.umbrella_release_slug(manifest, _tools_repository_url())
-        if umbrella_slug:
-            windows[release_notes_draft.UMBRELLA] = release_notes_prs.gather_component_prs(
-                run, release_notes_draft.UMBRELLA, umbrella_slug, str(umbrella), a.version)
+        windows[release_notes_draft.UMBRELLA] = release_notes_prs.gather_component_prs(
+            run, release_notes_draft.UMBRELLA, umbrella_slug, str(umbrella), a.version)
     except _DRAFT_FAILURES as exc:
         print(f"refuse: could not gather the merged PRs: {exc}")
         return 2
@@ -1354,9 +1371,8 @@ def _dev_commands(a: argparse.Namespace) -> int:
     """`cox dev commands render`: rewrite the README's marked Commands block,
     and with --pages-dir the slash-command pages, from `COMMAND_TABLE`."""
     # tools' public command table is the input; imported here so the release
-    # commands never need coxswain-tools installed.
+    # commands never import the whole cox CLI.
     from agent_tools.cli import COMMAND_TABLE
-
     from devtools import commands_render
 
     if a.target in ("all", "readme"):
@@ -1383,15 +1399,16 @@ def build_parser() -> argparse.ArgumentParser:
                                 description="maintainer commands for the Coxswain repositories; not needed to use Coxswain")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    rel = sub.add_parser("release", help="the lockstep tag/bump-manifest/notes plan across coxswain's manifest, or (without --dry-run) tags and pushes every component")
-    rel.add_argument("version")
-    rel.add_argument("--manifest")
+    rel = sub.add_parser("release", help="the CalVer release plan for this checkout (bump, tag, publish, GitHub release, tap PR), or (without --dry-run) runs it")
+    rel.add_argument("version", help="CalVer YYYY.M.N, such as 2026.10.0")
+    rel.add_argument("--manifest", help="default: manifest.toml in the current directory")
     rel.add_argument("--dry-run", action="store_true")
     rel.add_argument("--tap-only", dest="tap_only", action="store_true",
-                     help="run only the tap formula PR, for a version already tagged on every repo and the umbrella")
-    rel.add_argument("--root", default=".")
-    rel.add_argument("--checkout", action="append", default=None, metavar="NAME=PATH")
-    rel.add_argument("--umbrella")
+                     help="run only the tap formula PR, for a version already tagged here (and on dash when the release tagged it)")
+    rel.add_argument("--root", default=None, help="where the dash and homebrew-coxswain checkouts sit; default: the checkout's parent")
+    rel.add_argument("--checkout", action="append", default=None, metavar="NAME=PATH",
+                     help="dash=PATH or homebrew-coxswain=PATH when not under --root")
+    rel.add_argument("--umbrella", help="the coxswain checkout; default: the manifest's directory")
     rel.add_argument("--profile", metavar="PATH",
                      help="agent-tools profile whose notify.ntfy receives a release_cut push; default: $AGENT_TOOLS_PROFILE")
     rel.add_argument("--allow-doc-drift", dest="allow_doc_drift", metavar="REASON", default=None,
@@ -1402,24 +1419,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     chk = sub.add_parser("release-check", help="gather facts and print drifts between the CLI, the manifest, the docs and the release notes")
     chk.add_argument("--manifest")
-    chk.add_argument("--root", default=".")
+    chk.add_argument("--root", default=None)
     chk.add_argument("--json", action="store_true")
     chk.add_argument("--checkout", action="append", default=None, metavar="NAME=PATH")
     chk.set_defaults(fn=_release_check)
 
-    draft = sub.add_parser("notes-draft", help="write docs/releases/<version>.md from the PRs merged since each bumped component's last tag, and register it in the index and nav")
+    draft = sub.add_parser("notes-draft", help="write docs/releases/<version>.md from the PRs merged since the last tag (and dash's, when it changed), and register it in the index and nav")
     draft.add_argument("version")
     draft.add_argument("--cheap-opener", dest="cheap_opener", action="store_true",
                        help="fill the opener blank with a short model draft; the Known gaps blank is always left")
     draft.add_argument("--manifest")
-    draft.add_argument("--root", default=".")
+    draft.add_argument("--root", default=None)
     draft.add_argument("--checkout", action="append", default=None, metavar="NAME=PATH")
     draft.add_argument("--umbrella")
     draft.set_defaults(fn=_release_notes_draft)
 
     back = sub.add_parser("backfill-github-releases",
                           help="walk the umbrella's past docs/releases/<version>.md files oldest-first, creating or editing the GitHub Release for every tagged repo missing or drifted from one")
-    back.add_argument("--root", required=True, help="the checkouts root containing the umbrella and every component")
+    back.add_argument("--umbrella", default=None, help="the coxswain checkout; default: the current directory")
+    back.add_argument("--root", default=None, help="where component checkouts sit for releases through 0.47.0, and dash's; default: the checkout's parent")
     back.add_argument("--dry-run", action="store_true")
     back.set_defaults(fn=_backfill_github_releases)
 
@@ -1427,7 +1445,7 @@ def build_parser() -> argparse.ArgumentParser:
     cmds.add_argument("verb", choices=("render",), help="the only action: render")
     cmds.add_argument("--target", choices=("all", "pages", "readme"), default="all")
     cmds.add_argument("--pages-dir", help="where the slash-command pages are written; without it only the README is rendered")
-    cmds.add_argument("--readme", default=str(TOOLS_README), help="default: ../coxswain-tools/README.md beside this checkout")
+    cmds.add_argument("--readme", default=str(TOOLS_README), help="default: src/tools/README.md in this checkout")
     cmds.set_defaults(fn=_dev_commands)
     return p
 

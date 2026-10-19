@@ -1,0 +1,6 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "local-skills",
+  "version": "0.1.0",
+  "description": "Reference skill bodies for the `local` cartridge \u2014 every role bound to the filesystem, no tracker anywhere."
+}

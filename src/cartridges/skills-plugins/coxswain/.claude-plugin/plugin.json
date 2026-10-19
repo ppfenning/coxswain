@@ -1,0 +1,6 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "coxswain",
+  "version": "0.1.0",
+  "description": "The coxswain session: docket at start, runs in the statusline, launch and land from the prompt."
+}

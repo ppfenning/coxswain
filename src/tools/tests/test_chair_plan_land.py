@@ -1,0 +1,295 @@
+from datetime import UTC, datetime, timedelta
+
+from agent_tools.chair_facts import land_freeze_fact
+from agent_tools.chair_land_freeze import LandFreeze, active_freeze
+from agent_tools.chair_plan import plan_tick
+from agent_tools.chair_plan_land import plan_lands
+from agent_tools.chair_types import Facts
+
+
+def _task(
+    id: str, repo: str = "r", needs: tuple[str, ...] = (), done: bool = True, run: str = "", fetch: bool = False,
+    phase: str = "",
+) -> dict:
+    return {
+        "id": id, "initiative": "i", "repo": repo, "phase": phase or id, "phase_done": done, "needs": list(needs),
+        "run": run or f"i-{id}", "needs_fetch": fetch,
+    }
+
+
+def _kinds(facts: Facts) -> list[str]:
+    return [a["kind"] for a in plan_lands(facts)]
+
+
+def test_two_tasks_on_one_unfetched_remote_run_plan_one_fetch_before_both_lands():
+    assert _kinds(_facts([_task("a", run="i-1", fetch=True), _task("b", run="i-1", fetch=True)])) == [
+        "fetch", "land_phase", "land_phase"
+    ]
+
+
+def test_a_local_run_plans_a_land_phase_only():
+    assert _kinds(_facts([_task("a")])) == ["land_phase"]
+
+
+def _facts(approved: list[dict], landed: frozenset[str] = frozenset()) -> Facts:
+    return {
+        "lease": {"holder": "a", "host": "h", "epoch": 3, "mine": True, "released": False, "stale": False},
+        "limits": {
+            "hard_stop": False,
+            "weekly_fraction": 0.4,
+            "hard_stop_fraction": 0.9,
+            "launch_cap": 2,
+            "go_degraded": False,
+        },
+        "dispatch": {"max_in_flight": 3, "live_runs": 0},
+        "approved": approved,
+        "initiatives": [{"id": "i", "started": True, "ready_tasks": [], "landed": set(landed)}],
+        "quarantines": [],
+        "intake": [],
+        "work_store_ready": True,
+        "sources_configured": False,
+    }
+
+
+def _phases(facts: Facts) -> list[str]:
+    return [a["phase"] for a in plan_lands(facts)]
+
+
+def test_a_done_phase_task_is_planned_and_a_not_done_one_gets_none():
+    assert _phases(_facts([_task("a"), _task("b", done=False)])) == ["a"]
+
+
+def test_a_task_comes_after_the_task_it_needs_whatever_the_input_order():
+    assert _phases(_facts([_task("b", needs=("a",)), _task("a")])) == ["a", "b"]
+
+
+def test_lands_for_one_repository_are_contiguous():
+    assert _phases(_facts([_task("a1", "A"), _task("b1", "B"), _task("a2", "A")])) == ["a1", "a2", "b1"]
+
+
+def test_a_cross_repository_need_puts_the_needed_repository_first():
+    assert _phases(_facts([_task("a1", "A", needs=("b1",)), _task("b1", "B")])) == ["b1", "a1"]
+
+
+def test_a_need_that_is_not_landed_and_not_planned_leaves_the_task_and_its_dependents_out():
+    approved = [_task("a", needs=("x",)), _task("b", needs=("a",)), _task("c", done=False), _task("d", needs=("c",))]
+    assert _phases(_facts(approved)) == []
+
+
+def test_a_landed_need_lets_the_task_through():
+    assert _phases(_facts([_task("a", needs=("x",))], landed=frozenset({"x"}))) == ["a"]
+
+
+def test_a_cycle_and_an_unknown_id_are_omitted_without_raising():
+    approved = [
+        _task("a", needs=("b",)),
+        _task("b", needs=("a",)),
+        _task("c", needs=("a",)),
+        _task("d"),
+        _task("e", needs=("nope",)),
+    ]
+    assert _phases(_facts(approved)) == ["d"]
+
+
+def test_a_chain_that_crosses_back_into_a_repository_plans_its_prefix_and_the_rest_next_tick():
+    approved = [_task("a1", "A"), _task("b1", "B", needs=("a1",)), _task("a2", "A", needs=("b1",)), _task("c", "C")]
+    assert _phases(_facts(approved)) == ["a1", "b1", "c"]
+    assert _phases(_facts([_task("a2", "A", needs=("b1",))], landed=frozenset({"a1", "b1"}))) == ["a2"]
+
+
+def test_a_task_in_another_repository_that_needs_only_the_planned_prefix_is_planned():
+    approved = [_task("a1", "A"), _task("b1", "B", needs=("a1",)), _task("a2", "A", needs=("b1",)), _task("d1", "D", needs=("a1",))]
+    assert _phases(_facts(approved)) == ["a1", "b1", "d1"]
+
+
+def test_a_task_needing_one_left_for_a_later_tick_is_left_too():
+    approved = [_task("a1", "A"), _task("b1", "B", needs=("a1",)), _task("a2", "A", needs=("b1",)), _task("e", "E", needs=("a2",))]
+    assert _phases(_facts(approved)) == ["a1", "b1"]
+
+
+def test_a_long_chain_plans_in_order_without_raising():
+    approved = [_task("t0")] + [_task(f"t{n}", needs=(f"t{n - 1}",)) for n in range(1, 5000)]
+    assert _phases(_facts(approved)) == [f"t{n}" for n in range(5000)]
+
+
+def test_a_repeated_id_keeps_its_first_occurrence_position_and_fields():
+    approved = [_task("x", "A"), _task("y", "A"), _task("x", "B")]
+    assert [(a["phase"], a["repo"]) for a in plan_lands(_facts(approved))] == [("x", "A"), ("y", "A")]
+
+
+def test_every_action_is_a_land_phase_with_no_epoch_yet():
+    assert plan_lands(_facts([_task("a", "R")])) == [
+        {"kind": "land_phase", "initiative": "i", "phase": "a", "repo": "R", "run": "i-a", "epoch": None, "task_runs": {"a": "i-a"}}
+    ]
+
+
+def test_two_tasks_of_one_done_phase_give_one_land_phase():
+    approved = [_task("a", phase="p", run="i-1"), _task("b", phase="p", run="i-1")]
+    assert _kinds(_facts(approved)) == ["land_phase"]
+
+
+def test_a_phase_naming_the_run_with_the_higher_suffix():
+    approved = [_task("a", phase="p", run="i-2"), _task("b", phase="p", run="i-10")]
+    [action] = plan_lands(_facts(approved))
+    assert action["run"] == "i-10"
+
+
+def test_a_fetch_precedes_its_phase_and_is_not_repeated():
+    approved = [
+        _task("a", phase="p1", run="i-1", fetch=True),
+        _task("b", phase="p2", run="i-1", fetch=True),
+    ]
+    assert _kinds(_facts(approved)) == ["fetch", "land_phase", "land_phase"]
+
+
+def test_a_carried_phase_fetches_the_run_its_land_names():
+    approved = [_task("a", phase="p", run="i-2", fetch=True), _task("b", phase="p", run="i-10", fetch=True)]
+    assert [(a["kind"], a["run"]) for a in plan_lands(_facts(approved))] == [("fetch", "i-10"), ("land_phase", "i-10")]
+
+
+def test_a_phase_not_done_gives_no_action():
+    assert plan_lands(_facts([_task("a", done=False)])) == []
+
+
+def test_a_needed_phase_lands_first():
+    approved = [_task("b", phase="b", needs=("a",)), _task("a", phase="a")]
+    assert _phases(_facts(approved)) == ["a", "b"]
+
+
+def test_a_task_whose_run_is_empty_gets_needs_chair_no_run_and_no_land_phase():
+    # Built directly, not through _task: its `run or f"i-{id}"` default masks an empty run.
+    task = {
+        "id": "a", "initiative": "i", "repo": "r", "phase": "a", "phase_done": True,
+        "needs": [], "run": "", "needs_fetch": False,
+    }
+    actions = plan_lands(_facts([task]))
+    assert actions == [{"kind": "needs_chair", "initiative": "i", "cause": "no_run"}]
+    assert not [a for a in actions if a["kind"] == "land_phase"]
+
+
+def test_a_phase_with_one_known_run_and_one_unknown_waits_with_no_run_instead_of_raising():
+    # A remote run approved task b in the store while still running; the chair knows a's older run only.
+    known = {"id": "a", "initiative": "i", "repo": "r", "phase": "p", "phase_done": True, "needs": [], "run": "i-5", "needs_fetch": False}
+    unknown = {**known, "id": "b", "run": ""}
+    assert plan_lands(_facts([known, unknown])) == [{"kind": "needs_chair", "initiative": "i", "cause": "no_run"}]
+
+
+def test_an_awaiting_task_skips_its_phase_land_and_a_ready_phase_in_the_same_repo_still_lands():
+    facts = _facts([_task("a", phase="p1"), _task("b", phase="p2")])
+    facts["review_prs"] = [
+        {"initiative": "i", "phase": "p1", "task_id": "a", "repo": "r", "url": "u", "state": "open", "merged_at": None}
+    ]
+    assert _phases(facts) == ["p2"]
+
+
+def _awaiting(phase: str, task_id: str, state: str) -> dict:
+    return {"initiative": "i", "phase": phase, "task_id": task_id, "repo": "r", "url": "u", "state": state, "merged_at": None}
+
+
+def test_a_phase_awaiting_review_plans_no_land_whatever_the_pr_state():
+    facts = _facts([_task(x) for x in ("a", "b", "c", "d", "e")])
+    facts["review_prs"] = [_awaiting(x, x, s) for x, s in (("a", "open"), ("b", "merged"), ("c", "closed"), ("d", "unknown"))]
+    assert _phases(facts) == ["e"]
+
+
+def test_a_phase_needing_an_awaiting_task_plans_no_land_while_an_independent_one_does():
+    facts = _facts([_task("a", phase="p1"), _task("b", phase="p2", needs=("a",)), _task("c", phase="p3")])
+    facts["review_prs"] = [_awaiting("p1", "a", "open")]
+    assert _phases(facts) == ["p3"]
+
+
+def test_newest_run_orders_a_non_numeric_suffix_first_instead_of_raising():
+    from agent_tools.chair_plan_land import newest_run
+
+    assert newest_run({"i-2", "i-10", "i-x"}) == "i-10"
+
+
+
+def _by_task(task_runs: dict[str, str], phase: str = "p1", run: str = "i-1") -> dict:
+    return {
+        "kind": "partial_land", "initiative": "i", "phase": phase, "task_ids": list(task_runs), "quarantined": 0,
+        "repo": "r", "run": run, "task_runs": task_runs,
+    }
+
+
+def test_an_approved_task_whose_run_has_no_phase_record_is_landed_by_task():
+    facts: Facts = {**_facts([_task("a", run="i-1", phase="p1")]), "phase_records": []}
+    assert plan_lands(facts) == [_by_task({"a": "i-1"})]
+
+
+def test_an_approved_task_whose_run_has_a_phase_record_still_gets_a_land_phase():
+    land_phase = {
+        "kind": "land_phase", "initiative": "i", "phase": "p1", "repo": "r", "run": "i-1", "epoch": None,
+        "task_runs": {"a": "i-1"},
+    }
+    approved = [_task("a", run="i-1", phase="p1")]
+    assert plan_lands({**_facts(approved), "phase_records": ["i-1:p1"]}) == [land_phase]
+    assert plan_lands(_facts(approved)) == [land_phase]  # no phase_records fact: unknown, so a land_phase as before
+
+
+def test_a_record_of_another_run_or_phase_does_not_count_for_this_one():
+    facts: Facts = {**_facts([_task("a", run="i-1", phase="p1")]), "phase_records": ["i-1:p2", "i-2:p1"]}
+    assert plan_lands(facts) == [_by_task({"a": "i-1"})]
+
+
+def test_every_approved_task_of_a_phase_without_a_record_lands_by_task_in_one_action():
+    facts: Facts = {
+        **_facts([_task("a", run="i-1", phase="p1"), _task("b", run="i-2", phase="p1")]), "phase_records": ["i-1:p1"],
+    }
+    assert plan_lands(facts) == [_by_task({"a": "i-1", "b": "i-2"}, run="i-2")]
+
+
+def test_a_run_still_to_fetch_keeps_its_land_phase_since_the_record_may_come_with_the_fetch():
+    facts: Facts = {**_facts([_task("a", run="i-1", phase="p1", fetch=True)]), "phase_records": []}
+    assert _kinds(facts) == ["fetch", "land_phase"]
+
+
+_NOW = datetime(2026, 10, 17, 12, 0, tzinfo=UTC)
+
+
+def _frozen(facts: Facts) -> Facts:
+    return {**facts, "land_freeze": LandFreeze(reason="cut", expires_at=_NOW + timedelta(minutes=30))}
+
+
+def _kinds_of_tick(facts: Facts) -> list[str]:
+    return [a["kind"] for a in plan_tick({**facts, "dispatch": {"max_in_flight": 3, "live_runs": 0, "hosts": []}})]
+
+
+def test_a_live_freeze_plans_no_land_for_an_approved_phase_while_an_intake_still_decomposes():
+    facts: Facts = {**_facts([_task("a", phase="p1")]), "intake": ["i1"]}
+    assert _kinds_of_tick(facts) == ["land_phase", "launch_decompose"]
+    assert _kinds_of_tick(_frozen(facts)) == ["launch_decompose"]
+
+
+def test_an_expired_freeze_plans_the_land_for_the_same_approved_phase():
+    row = {"holder": "cut", "expires_at": (_NOW - timedelta(minutes=1)).isoformat()}
+    facts: Facts = {**_facts([_task("a", phase="p1")]), "intake": ["i1"], "land_freeze": active_freeze(row, _NOW)}
+    assert _kinds_of_tick(facts) == ["land_phase", "launch_decompose"]
+
+
+def test_a_live_freeze_also_suppresses_a_by_task_land():
+    facts: Facts = {**_facts([_task("a", run="i-1", phase="p1")]), "phase_records": []}
+    assert plan_lands(facts) == [_by_task({"a": "i-1"})]
+    assert plan_lands(_frozen(facts)) == []
+
+
+def test_a_live_freeze_still_plans_the_fetch_for_an_unfetched_run():
+    assert _kinds(_frozen(_facts([_task("a", run="i-1", phase="p1", fetch=True)]))) == ["fetch"]
+
+
+def test_a_live_freeze_still_plans_launches():
+    facts = _facts([])
+    facts["initiatives"] = [{"id": "n", "started": False, "ready_tasks": [{"id": "t1", "needs": []}], "landed": set()}]
+    assert _kinds_of_tick(_frozen(facts)) == ["launch_epic"]
+
+
+def test_a_live_freeze_still_plans_recoveries(monkeypatch):
+    monkeypatch.setattr("agent_tools.chair_plan.plan_recover", lambda facts, now=None: [{"kind": "relaunch", "initiative": "i"}])
+    facts: Facts = {**_facts([_task("a", phase="p1")]), "run_exited": {"i": True}}
+    assert _kinds_of_tick(facts) == ["land_phase", "relaunch"]
+    assert _kinds_of_tick(_frozen(facts)) == ["relaunch"]
+
+
+def test_an_expired_row_is_no_freeze_and_an_unset_runs_dir_reads_no_store():
+    assert active_freeze({"holder": "cut", "expires_at": _NOW.isoformat()}, _NOW) is None
+    assert land_freeze_fact("", _NOW) is None

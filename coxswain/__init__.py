@@ -1,4 +1,4 @@
-"""Coxswain: the agent platform. The command is `cox`, from the coxswain-tools package."""
+"""Coxswain: the agent platform. One package, one command: `cox`."""
 
 from importlib.metadata import version
 

@@ -1,0 +1,553 @@
+import subprocess
+import sys
+
+from agent_tools import cli, install, install_exec
+
+
+def _fake_schema_package(tmp_path, monkeypatch, *, cartridges, graphs):
+    pkg = tmp_path / "fakeschema"
+    (pkg / "core").mkdir(parents=True)
+    (pkg / "core" / "__init__.py").write_text(f"SCHEMA_VERSION = {cartridges!r}\n")
+    (pkg / "harness").mkdir(parents=True)
+    (pkg / "harness" / "__init__.py").write_text(f"CORE_SCHEMA = {graphs!r}\n")
+    monkeypatch.syspath_prepend(str(pkg))
+    monkeypatch.delitem(sys.modules, "core", raising=False)
+    monkeypatch.delitem(sys.modules, "harness", raising=False)
+
+
+def _manifest():
+    return {
+        "coxswain": {"version": "0.1.0"},
+        "components": {
+            "harness": {"repo": "org/harness", "tag": "v1.0.0", "required": True},
+            "cartridges": {"repo": "org/cartridges", "tag": "v1.0.0", "required": True},
+            "extra": {"repo": "org/extra", "tag": "v1.0.0", "required": False, "flag": "extra"},
+            "desktop-app": {"repo": "org/desktop-app", "tag": "v1.0.0", "required": False,
+                            "flag": "desktop", "path": "/Applications/Coxswain.app"},
+        },
+        "providers": {
+            "claude-code": {"status": "supported"},
+            "other-cli": {"status": "planned"},
+        },
+    }
+
+
+def _facts(checkouts=None, provider_cli_on_path=True):
+    return {"root": "/root", "checkouts": checkouts or {}, "provider_cli_on_path": provider_cli_on_path}
+
+
+def _options(provider="claude-code", with_=None, team="example-team", workspace="/ws", root="/root"):
+    return {"provider": provider, "with": with_ or [], "root": root, "team": team, "workspace": workspace}
+
+
+def _kinds(steps):
+    return [(s["kind"], s["component"]) for s in steps]
+
+
+def test_the_checkout_comes_first_pinned_at_the_manifests_own_version():
+    steps = install.plan(_manifest(), _facts(), _options())
+    assert steps[0] == {"kind": "clone", "component": "coxswain", "detail": "clone ppfenning/coxswain at v0.1.0"}
+    at_pin = {"coxswain": {"present": True, "tag": "v0.1.0", "dirty": False}}
+    assert install.plan(_manifest(), _facts(at_pin), _options())[0]["kind"] == "skip"
+    assert install.rows(_manifest(), _facts(at_pin))[0] == ("coxswain", "v0.1.0", "v0.1.0", "ok")
+
+
+def test_a_clean_checkout_off_its_pin_is_installed_as_is():
+    candidate = {"coxswain": {"present": True, "tag": None, "dirty": False}}
+    assert install.plan(_manifest(), _facts(candidate), _options())[0] == {
+        "kind": "skip", "component": "coxswain", "detail": "present at an untagged commit; installed as is (cox upgrade moves it)"}
+
+
+def test_a_retired_with_flag_is_dropped_with_one_note():
+    assert install.drop_retired_flags(["crew", "dash", "crew"]) == (["dash"], [install.RETIRED_FLAGS["crew"]])
+
+
+def test_fresh_root_clones_required_only():
+    steps = install.plan(_manifest(), _facts(), _options())
+    kinds = _kinds(steps)
+    assert ("clone", "harness") in kinds
+    assert ("clone", "cartridges") in kinds
+    assert not any(c == "extra" for _, c in kinds)
+    assert not any(c == "desktop-app" for _, c in kinds)
+    assert ("setup_install", "setup_install") in kinds
+    assert ("doctor", "doctor") in kinds
+
+
+def test_with_a_flagged_component_adds_it():
+    steps = install.plan(_manifest(), _facts(), _options(with_=["extra"]))
+    assert ("clone", "extra") in _kinds(steps)
+
+
+def test_present_at_tag_skips():
+    checkouts = {"harness": {"present": True, "tag": "v1.0.0", "dirty": False},
+                 "cartridges": {"present": True, "tag": "v1.0.0", "dirty": False}}
+    steps = install.plan(_manifest(), _facts(checkouts), _options())
+    kinds = _kinds(steps)
+    assert ("skip", "harness") in kinds
+    assert ("skip", "cartridges") in kinds
+
+
+def test_tag_drift_fetches():
+    checkouts = {"harness": {"present": True, "tag": "v0.9.0", "dirty": False},
+                 "cartridges": {"present": True, "tag": "v1.0.0", "dirty": False}}
+    steps = install.plan(_manifest(), _facts(checkouts), _options())
+    assert ("fetch_checkout", "harness") in _kinds(steps)
+    assert ("skip", "cartridges") in _kinds(steps)
+
+
+def test_dirty_checkout_refuses():
+    checkouts = {"harness": {"present": True, "tag": "v1.0.0", "dirty": True},
+                 "cartridges": {"present": True, "tag": "v1.0.0", "dirty": False}}
+    steps = install.plan(_manifest(), _facts(checkouts), _options())
+    refused = [s["component"] for s in steps if s["kind"] == "refuse"]
+    assert refused == ["harness"]
+
+
+def test_unknown_with_flag_yields_a_single_refuse():
+    steps = install.plan(_manifest(), _facts(), _options(with_=["bogus"]))
+    assert len(steps) == 1 and steps[0]["kind"] == "refuse" and steps[0]["component"] == "bogus"
+
+
+def test_with_desktop_adds_a_desktop_step_after_doctor():
+    steps = install.plan(_manifest(), _facts(), _options(with_=["desktop"]))
+    kinds = _kinds(steps)
+    assert ("desktop", "desktop-app") in kinds
+    assert kinds.index(("doctor", "doctor")) < kinds.index(("desktop", "desktop-app"))
+
+
+def test_unplanned_provider_yields_a_single_refuse():
+    steps = install.plan(_manifest(), _facts(), _options(provider="other-cli"))
+    assert len(steps) == 1 and steps[0]["kind"] == "refuse" and steps[0]["component"] == "other-cli"
+
+
+def test_rows_statuses_ok_drift_missing_extra():
+    checkouts = {
+        "harness": {"present": True, "tag": "v1.0.0", "dirty": False},
+        "cartridges": {"present": True, "tag": "v0.9.0", "dirty": False},
+        "extra-thing": {"present": True, "tag": "v9.9.9", "dirty": False},
+    }
+    by_name = {r[0]: r for r in install.rows(_manifest(), _facts(checkouts))}
+    assert by_name["harness"] == ("harness", "v1.0.0", "v1.0.0", "ok")
+    assert by_name["cartridges"] == ("cartridges", "v1.0.0", "v0.9.0", "drift")
+    assert by_name["extra"] == ("extra", "v1.0.0", None, "missing")
+    assert by_name["desktop-app"] == ("desktop-app", "v1.0.0", None, "missing")
+    assert by_name["extra-thing"] == ("extra-thing", None, "v9.9.9", "extra")
+
+
+def test_doctor_step_names_provider_cli_on_path_from_facts_in_both_directions():
+    for on_path in (True, False):
+        steps = install.plan(_manifest(), _facts(provider_cli_on_path=on_path), _options())
+        doctor_step = next(s for s in steps if s["kind"] == "doctor")
+        assert str(on_path) in doctor_step["detail"]
+
+
+_MANIFEST_TOML = """
+[coxswain]
+version = "0.1.0"
+
+[components.harness]
+repo = "org/harness"
+tag = "v1.0.0"
+required = true
+
+[components.cartridges]
+repo = "org/cartridges"
+tag = "v1.0.0"
+required = true
+
+[providers.claude-code]
+status = "supported"
+"""
+
+
+def _git_repo(path, tag=None, dirty=False):
+    """A real checkout at `path`: init, one commit, an optional exact tag,
+    and an optional uncommitted edit afterward."""
+    path.mkdir(parents=True, exist_ok=True)
+    def run(*argv):
+        return subprocess.run(argv, cwd=path, check=True, capture_output=True, text=True)
+    run("git", "init", "-q")
+    run("git", "config", "user.email", "a@b.c")
+    run("git", "config", "user.name", "t")
+    (path / "f").write_text("1")
+    run("git", "add", "-A")
+    run("git", "commit", "-q", "-m", "x")
+    if tag:
+        run("git", "tag", tag)
+    if dirty:
+        (path / "f").write_text("2")
+    return path
+
+
+def test_cli_install_dry_run_lists_clones_and_exits_zero(tmp_path, capsys):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    rc = cli.main(["install", "--dry-run", "--root", str(tmp_path), "--manifest", str(manifest_path),
+                   "--provider", "claude-code", "--team", "example-team", "--workspace", str(tmp_path / "ws")])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "clone harness" in out and "clone cartridges" in out and "doctor" in out
+
+
+def test_cli_install_without_dry_run_and_no_manifest_refuses_and_exits_two(tmp_path, capsys):
+    rc = cli.main(["install", "--root", str(tmp_path), "--manifest", str(tmp_path / "manifest.toml"),
+                   "--provider", "claude-code"])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "refusing: no manifest at" in out
+
+
+def test_cli_install_unknown_with_flag_exits_two(tmp_path, capsys):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    rc = cli.main(["install", "--dry-run", "--root", str(tmp_path), "--manifest", str(manifest_path),
+                   "--provider", "claude-code", "--with", "bogus"])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "refuse bogus" in out
+
+
+def test_cli_install_missing_manifest_fails_gracefully_not_a_traceback(tmp_path, capsys):
+    rc = cli.main(["install", "--dry-run", "--root", str(tmp_path), "--provider", "claude-code"])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "refusing" in out
+
+
+def test_cli_versions_missing_manifest_fails_gracefully_not_a_traceback(tmp_path, capsys):
+    rc = cli.main(["versions", "--root", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "refusing" in out
+    assert "run `cox install`" in out and "--manifest" in out
+
+
+def test_cli_install_does_not_borrow_the_enclosing_repos_tag_or_dirty_state(tmp_path, capsys):
+    # tmp_path itself is a real, dirty checkout tagged v9.9.9; harness is a
+    # plain directory under it with no .git of its own. `git -C harness ...`
+    # would otherwise walk up and report tmp_path's own tag and dirty state.
+    _git_repo(tmp_path, tag="v9.9.9", dirty=True)
+    (tmp_path / "harness").mkdir()
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    rc = cli.main(["install", "--dry-run", "--root", str(tmp_path), "--manifest", str(manifest_path),
+                   "--provider", "claude-code"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "clone harness" in out
+    assert "refuse harness" not in out and "skip harness" not in out and "fetch_checkout harness" not in out
+
+
+def test_cli_install_exits_two_when_a_refuse_is_mixed_among_other_steps(tmp_path, capsys):
+    _git_repo(tmp_path / "coxswain-harness", tag="v1.0.0", dirty=True)
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    rc = cli.main(["install", "--dry-run", "--root", str(tmp_path), "--manifest", str(manifest_path),
+                   "--provider", "claude-code"])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "refuse harness" in out
+    assert "clone cartridges" in out
+    assert "doctor" in out
+
+
+def test_cli_install_resolves_provider_cli_from_the_manifests_command_not_the_provider_key(tmp_path, monkeypatch):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML.replace(
+        '[providers.claude-code]\nstatus = "supported"',
+        '[providers.claude-code]\nstatus = "supported"\ncommand = "totally-fake-cli-xyz"'))
+    seen = []
+    monkeypatch.setattr(cli.shutil, "which", lambda name: seen.append(name) or None)
+    rc = cli.main(["install", "--dry-run", "--root", str(tmp_path), "--manifest", str(manifest_path),
+                   "--provider", "claude-code"])
+    assert rc == 0
+    assert seen == ["totally-fake-cli-xyz"]
+
+
+def test_cli_versions_reports_ok_missing_and_extra_from_real_checkouts(tmp_path, capsys):
+    manifest_dir = tmp_path / "coxswain"
+    manifest_dir.mkdir()
+    manifest_path = manifest_dir / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    _git_repo(tmp_path / "coxswain-harness", tag="v1.0.0")
+    _git_repo(tmp_path / "extra-thing", tag="v9.9.9")
+    rc = cli.main(["versions", "--manifest", str(manifest_path)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "harness" in out and "ok" in out
+    assert "cartridges" in out and "missing" in out
+    assert "extra-thing" in out and "extra" in out
+
+
+def test_cli_versions_schema_cell_of_the_checkout_reads_the_checkouts_own_schemas(tmp_path, capsys):
+    """`root` is `tmp_path` (the manifest lives at `tmp_path/coxswain`); the schemas are read from the checkout's
+    src/cartridges and src/graphs, so a disagreeing core version there turns the checkout's cell to WARN."""
+    manifest_dir = tmp_path / "coxswain"
+    (manifest_dir / "src" / "cartridges" / "core").mkdir(parents=True)
+    (manifest_dir / "src" / "cartridges" / "core" / "__init__.py").write_text('SCHEMA_VERSION = "2.5"\n')
+    (manifest_dir / "src" / "graphs" / "harness").mkdir(parents=True)
+    (manifest_dir / "src" / "graphs" / "harness" / "__init__.py").write_text('CORE_SCHEMA = "1.0"\n')
+    manifest_path = manifest_dir / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    rc = cli.main(["versions", "--manifest", str(manifest_path)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    checkout_line = next(line for line in out.splitlines() if line.split()[0] == "coxswain").rstrip()
+    assert checkout_line.endswith("WARN")
+
+
+def test_cli_install_prints_no_schema_warn_line_when_all_three_agree(tmp_path, monkeypatch, capsys):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    _fake_schema_package(tmp_path, monkeypatch, cartridges="1.0", graphs="1.0")
+    rc = cli.main(["install", "--dry-run", "--root", str(tmp_path), "--manifest", str(manifest_path),
+                   "--provider", "claude-code", "--team", "example-team", "--workspace", str(tmp_path / "ws")])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "schema" not in out
+
+
+def test_cli_install_warns_naming_only_the_disagreeing_pair_before_the_plan(tmp_path, monkeypatch, capsys):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    _fake_schema_package(tmp_path, monkeypatch, cartridges="1.0", graphs="2.0")
+    rc = cli.main(["install", "--dry-run", "--root", str(tmp_path), "--manifest", str(manifest_path),
+                   "--provider", "claude-code", "--team", "example-team", "--workspace", str(tmp_path / "ws")])
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    assert lines[0] == "schema  WARN  graphs 2.0"
+    assert "cartridges 1.0" not in lines[0] and "tools 1.0" not in lines[0]
+    assert rc == 0
+
+
+def test_cli_versions_root_flag_overrides_the_manifests_own_directory(tmp_path, capsys):
+    manifest_path = tmp_path / "elsewhere" / "manifest.toml"
+    manifest_path.parent.mkdir()
+    manifest_path.write_text(_MANIFEST_TOML)
+    real_root = tmp_path / "real-root"
+    _git_repo(real_root / "coxswain-harness", tag="v1.0.0")
+    rc = cli.main(["versions", "--manifest", str(manifest_path), "--root", str(real_root)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "harness" in out and "ok" in out
+
+
+def _edge_manifest():
+    return {"components": {"harness": {"repo": "org/harness", "ref": "trunk", "required": True},
+                            "cartridges": {"repo": "org/cartridges", "required": True}},
+            "providers": {"claude-code": {"status": "supported"}}}
+
+
+def _first_kind(manifest, checkout, channel):
+    checkouts = dict.fromkeys(manifest["components"], checkout)
+    steps = install.plan(manifest, _facts(checkouts), {**_options(), "channel": channel})
+    return steps[1]["kind"]
+
+
+def test_each_channel_clones_fetches_skips_and_refuses_a_dirty_checkout():
+    absent = {"present": False, "tag": None, "dirty": False}
+    at_pin = {"present": True, "tag": "v1.0.0", "branch": "trunk", "branch_tip": True, "dirty": False}
+    off_pin = {"present": True, "tag": "v0.9.0", "branch": "trunk", "branch_tip": False, "dirty": False}
+    dirty = {**at_pin, "dirty": True}
+    checkouts = (absent, off_pin, at_pin, dirty)
+    expected = ["clone", "fetch_checkout", "skip", "refuse"]
+    assert [_first_kind(_manifest(), c, "release") for c in checkouts] == expected
+    assert [_first_kind(_edge_manifest(), c, "edge") for c in checkouts] == expected
+
+
+def test_edge_defaults_a_ref_less_component_to_main():
+    steps = install.plan(_edge_manifest(), _facts(), {**_options(), "channel": "edge"})
+    assert [s["detail"] for s in steps[1:3]] == ["clone org/harness at trunk", "clone org/cartridges at main"]
+
+
+def test_a_release_run_with_a_branch_pinned_component_refuses_naming_the_mix():
+    manifest = _manifest()
+    manifest["components"]["cartridges"] = {"repo": "org/cartridges", "ref": "main", "required": True}
+    steps = install.plan(manifest, _facts(), _options())
+    assert [(s["kind"], s["component"]) for s in steps] == [("refuse", "cartridges")]
+    assert "mixed channels" in steps[0]["detail"]
+
+
+def test_the_channel_is_named_in_the_setup_install_step():
+    def detail(channel):
+        steps = install.plan(_manifest(), _facts(), {**_options(), "channel": channel})
+        return next(s["detail"] for s in steps if s["kind"] == "setup_install")
+    assert detail("release").startswith("channel=release ") and detail("edge").startswith("channel=edge ")
+
+
+def test_cli_install_edge_prints_its_channel(tmp_path, capsys):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    rc = cli.main(["install", "--edge", "--dry-run", "--root", str(tmp_path), "--manifest", str(manifest_path),
+                   "--provider", "claude-code", "--team", "example-team", "--workspace", str(tmp_path / "ws")])
+    out = capsys.readouterr().out
+    assert rc == 0 and "channel: edge" in out and "channel=edge" in out
+
+
+def test_a_release_run_over_a_branch_only_manifest_refuses_without_calling_it_mixed():
+    manifest = {"components": {"harness": {"repo": "org/harness", "ref": "main", "required": True}},
+                "providers": {"claude-code": {"status": "supported"}}}
+    steps = install.plan(manifest, _facts(), _options())
+    assert [(s["kind"], s["component"]) for s in steps] == [("refuse", "harness")]
+    assert steps[0]["detail"].startswith("branch-only manifest")
+
+
+def test_edge_rows_compare_the_branch_and_its_tip_not_a_tag():
+    manifest = {"components": {"harness": {"repo": "org/harness", "tag": "v1.0.0"},
+                               "cartridges": {"repo": "org/cartridges", "ref": "trunk"}}}
+    checkouts = {"harness": {"present": True, "tag": None, "branch": "main", "branch_tip": True, "dirty": False},
+                 "cartridges": {"present": True, "tag": None, "branch": "trunk", "branch_tip": False, "dirty": False}}
+    assert install.rows(manifest, _facts(checkouts), "edge") == [
+        ("coxswain", "main", None, "missing"), ("harness", "main", "main", "ok"), ("cartridges", "trunk", "trunk", "drift")]
+
+
+def _run(cwd, *argv):
+    return subprocess.run(argv, cwd=cwd, check=True, capture_output=True, text=True)
+
+
+def _commit(work, text):
+    (work / "f").write_text(text)
+    _run(work, "git", "add", "-A")
+    _run(work, "git", "commit", "-q", "-m", text)
+    _run(work, "git", "push", "-q", "origin", "main")
+
+
+def test_an_edge_checkout_behind_the_remote_fetches_and_then_lands_on_the_tip(tmp_path):
+    origin, work, root = tmp_path / "origin.git", tmp_path / "work", tmp_path / "root"
+    _run(tmp_path, "git", "init", "-q", "--bare", "-b", "main", str(origin))
+    work.mkdir()
+    _run(work, "git", "init", "-q", "-b", "main")
+    _run(work, "git", "config", "user.email", "a@b.c")
+    _run(work, "git", "config", "user.name", "t")
+    _run(work, "git", "remote", "add", "origin", str(origin))
+    _commit(work, "1")
+    root.mkdir()
+    _run(tmp_path, "git", "clone", "-q", str(origin), str(root / "coxswain-harness"))
+    _commit(work, "2")
+    manifest = {"components": {"harness": {"repo": "org/harness", "required": True}},
+                "providers": {"claude-code": {"status": "supported"}}}
+    options = {**_options(), "channel": "edge"}
+
+    def steps():
+        return install.plan(manifest, _facts({"harness": cli._checkout_facts(root / "coxswain-harness", fetch=True)}), options)
+
+    assert steps()[1]["kind"] == "fetch_checkout"
+    def run(argv, cwd):
+        proc = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
+        return proc.returncode, proc.stdout + proc.stderr
+    results = install_exec.execute(install_exec.from_plan(steps()[1:2], manifest=manifest, options=options),
+                                   root=str(root), run=run)
+    assert results[0]["exit"] == 0 and (root / "coxswain-harness" / "f").read_text() == "2"
+    assert steps()[1]["kind"] == "skip"
+
+
+_HOME_ARGS = ["--provider", "claude-code", "--team", "example-team"]
+
+
+def _home_manifest(tmp_path):
+    manifest_path = tmp_path / "installs" / "coxswain" / "manifest.toml"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(_MANIFEST_TOML)
+    return manifest_path
+
+
+def test_cli_install_defaults_its_root_to_the_homes_installs_folder(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("COXSWAIN_HOME", str(tmp_path))
+    _home_manifest(tmp_path)
+    rc = cli.main(["install", "--dry-run", *_HOME_ARGS, "--workspace", str(tmp_path / "ws")])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "clone harness" in out and "clone cartridges" in out
+
+
+def test_cli_install_home_flag_overrides_the_environment(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("COXSWAIN_HOME", str(tmp_path / "other"))
+    _home_manifest(tmp_path)
+    rc = cli.main(["install", "--dry-run", "--home", str(tmp_path), *_HOME_ARGS, "--workspace", str(tmp_path / "ws")])
+    assert rc == 0 and "clone harness" in capsys.readouterr().out
+
+
+def test_cli_install_home_default_without_a_manifest_names_the_path_and_exits_two(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("COXSWAIN_HOME", str(tmp_path))
+    rc = cli.main(["install", "--dry-run", *_HOME_ARGS])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "no manifest at " + str(tmp_path / "installs" / "coxswain" / "manifest.toml") + ";" in out
+    assert out.rstrip().endswith("; clone the umbrella there first")
+
+
+def test_cli_install_relative_home_refuses_and_exits_two(capsys):
+    rc = cli.main(["install", "--dry-run", "--home", "relative/home", *_HOME_ARGS])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert out.startswith("refusing: --home must be an absolute path")
+
+
+def test_cli_install_root_flag_output_is_the_same_as_before(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("COXSWAIN_HOME", str(tmp_path / "ignored"))
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    rc = cli.main(["install", "--dry-run", "--root", str(tmp_path / "R"), "--manifest", str(manifest_path),
+                   *_HOME_ARGS, "--workspace", str(tmp_path / "ws")])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert out == (
+        "channel: release\n"
+        "clone coxswain: clone ppfenning/coxswain at v0.1.0\n"
+        "clone harness: clone org/harness at v1.0.0\n"
+        "clone cartridges: clone org/cartridges at v1.0.0\n"
+        f"setup_install setup_install: channel=release team=example-team workspace={tmp_path / 'ws'}\n"
+        "doctor doctor: run cox setup doctor; provider CLI on PATH: False\n"
+    )
+    assert not (tmp_path / "ignored").exists() and "--home" not in out
+
+
+def test_cli_install_creates_the_installs_folder_before_cloning_but_not_on_dry_run(tmp_path, monkeypatch):
+    monkeypatch.setenv("COXSWAIN_HOME", str(tmp_path / "home"))
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    seen = []
+    monkeypatch.setattr(cli, "_install_execute",
+                        lambda steps, manifest, options, root: seen.append((root.is_dir(), options.get("home"))) or 0)
+    argv = ["install", "--manifest", str(manifest_path), *_HOME_ARGS, "--workspace", str(tmp_path / "ws")]
+    assert cli.main([*argv, "--dry-run"]) == 0
+    assert not (tmp_path / "home" / "installs").exists() and seen == []
+    assert cli.main(argv) == 0
+    assert seen == [(True, str(tmp_path / "home"))]
+
+
+def test_cli_install_with_root_passes_no_home_to_the_steps(tmp_path, monkeypatch):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    seen = []
+    monkeypatch.setattr(cli, "_install_execute",
+                        lambda steps, manifest, options, root: seen.append(options) or 0)
+    assert cli.main(["install", "--root", str(tmp_path / "R"), "--manifest", str(manifest_path), *_HOME_ARGS]) == 0
+    assert "home" not in seen[0] and not (tmp_path / "R").exists()
+
+
+def test_cli_upgrade_without_root_resolves_its_checkouts_under_the_homes_installs_folder(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("COXSWAIN_HOME", str(tmp_path))
+    installs = tmp_path / "installs"
+    _home_manifest(tmp_path)
+    monkeypatch.setattr(cli, "_checkout_facts", lambda path: {"present": True, "tag": "v0.9.0", "dirty": False})
+    calls = []
+
+    def fake_run(argv, cwd):
+        calls.append(argv)
+        return (0, "abc\trefs/tags/v1.0.0\n") if "ls-remote" in argv else (0, "")
+
+    monkeypatch.setattr(cli, "_real_run", fake_run)
+    rc = cli.main(["upgrade", "--dry-run", "--provider", "claude-code", "--to", "v1.0.0"])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "would move umbrella: v0.9.0 to v1.0.0" in out
+    for component in ("coxswain-harness", "coxswain-cartridges"):
+        assert any(call[:3] == ["git", "-C", str(installs / component)] for call in calls)
+
+
+def test_cli_upgrade_home_default_without_a_manifest_names_the_path_and_exits_two(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("COXSWAIN_HOME", str(tmp_path))
+    rc = cli.main(["upgrade", "--dry-run", "--provider", "claude-code"])
+    out = capsys.readouterr().out
+    assert rc == 2 and str(tmp_path / "installs" / "coxswain" / "manifest.toml") in out

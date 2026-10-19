@@ -6,21 +6,17 @@ that needs that shape of work.
 
 ## What it owns
 
-The graphs repository owns the node definitions and the wiring between
-them — which node hands off to which, and on what condition. See
-[Graphs](../methodology/graphs.md) for the methodology behind the shape.
+The `src/graphs` folder holds the graphs, the harness that runs them (the
+gate, the budget, the checks, the records), and the runners that execute
+nodes. See [Graphs](../methodology/graphs.md) for the methodology behind the
+shape.
 
 ## Installing it
 
-Graphs is required. It installs by default with `cox install`, no `--with`
-flag needed.
+Graphs ships in every install. The profile's `harness_dir` points at
+`<checkout>/src/graphs`, and the harness runs in the checkout's venv.
 
 ## Its own docs
 
-The graphs repository's own README and docs live at
-[github.com/ppfenning/coxswain-graphs](https://github.com/ppfenning/coxswain-graphs).
-
-## Reference
-
-The component's README at the pinned tag is included below when the site is
-built from a release.
+The folder's README and docs live at
+[src/graphs](https://github.com/ppfenning/coxswain/tree/main/src/graphs).

@@ -1,0 +1,103 @@
+---
+name: decompose-initiative
+description: Turn one large idea into phases and a task DAG whose edges are real — parallelism falls out of honest dependencies.
+---
+
+# Decompose
+
+You take an initiative — a paragraph of intent — and return phases, tasks, and
+the dependency edges between tasks. Everything downstream trusts your edges:
+the phase runner executes every task with no unmet `needs` **at the same
+time**, so a fake edge silently serialises work and a missing one runs a task
+before what it depends on exists.
+
+## Discipline
+
+- **An edge is a data dependency, not a vibe.** `task A needs B` means A
+  consumes something B produces — a file, a schema, a decision. "B feels
+  first-ish" is not an edge. You will be adversarially reviewed specifically
+  on whether each edge is real; write each one so it survives that.
+- **Phases are checkpoints, not categories.** A phase boundary is where a
+  human could stop the initiative and still hold something coherent. Do not
+  use phases to group similar work — that is what titles are for.
+- **Every phase states one goal line.** The phase validator judges the
+  phase's work against that line, so it names the outcome, not the tasks.
+- **Tasks are one-sitting sized.** Each task's `body` should let a builder
+  start without re-reading the initiative: what to do, what done looks like,
+  what is out of bounds. A task needing its own decomposition was scoped too
+  big.
+- **A task's tests ride with its code.** Never split tests into a task of
+  their own — a separate tests task doubles the reviews and lands code
+  without its evidence.
+- **`surfaces` are paths, not prose.** Each entry is a file path in the
+  checkout — one that already exists, or one marked `(new)` under a
+  directory that already exists — never a description of an area. That
+  field decides how hard the work is reviewed later; an empty surfaces list
+  on a dangerous task under-reviews it.
+- **Every path in a task is relative to the repository.** Write
+  `agent_tools/dash_feed.py`, never the checkout's absolute path, a
+  home-directory path, or the workspace's `runs/` or `plans/`. The
+  initiative's `repo:` line is written in the tilde form, a tilde, a slash,
+  then the path under the home directory (`~/<repos-dir>/<repo-name>`), and
+  each reader expands it on its own machine, so it names the same checkout
+  everywhere. The build seat sees only its own worktree; describe what is
+  read from outside it instead of naming where it lives.
+- **A title is plain text.** A backtick in YAML frontmatter breaks the file,
+  so titles carry none.
+- **A foreign `needs` id is written as the target's own id.** A task in another
+  initiative is named exactly as its file names it, never prefixed with this
+  initiative's id. The edge is legal only when that task already exists in the
+  work store, and it is met only when that task is `done`.
+- **A task whose surfaces live in another repository is that repository's
+  task.** Link it with `blocked_on` instead of folding its work in here.
+- **A contract task's surface is a fixture path, not prose.** It is
+  `tests/fixtures/<interface>_v1.json` in the producer repository, and
+  `dash_feed_v1.json` is the model. The surface must be a file path ending in
+  .json, or the contract lint refuses it: "contract task has no .json surface".
+- **Ids are stable slugs.** They become filenames and dependency references;
+  rename one later and every edge naming it dangles.
+- **Tasks in one phase never share a file.** Every task names the files it
+  will create or edit in `surfaces`, in the terms the team's review policy
+  uses, and again in its body, and no file appears under two tasks of the
+  same phase, whether or not one `needs` the other — a `needs` edge orders
+  the work but the tasks still merge into the phase branch afterwards. If
+  two pieces of work need the same file they are one task, or the second is
+  in a later phase and `needs` the first.
+- **Done-criteria are facts the applied patch and the named checks can
+  produce.** The record a task is judged against is the diff plus the output
+  of the checks the cartridge names, nothing outside it. A body that asks for
+  an ad hoc command's output, a diff against another branch, a read of
+  another repository, or a run from before the patch existed is asking for
+  evidence that never enters that record. State the fact in the body
+  instead, or make it a reviewer's own check.
+- **A task's checks name only what the build role is granted:** `pytest`,
+  `git status` and `git diff`. A body that names `ruff`, `cox`, `uv`, `gh`,
+  `grep` or any other command is refused by the route lint and costs a hand
+  re-ground. State the fact in the body, or make it a reviewer's check. A
+  file in another repository is never a surface here either: it is that
+  repository's own task, linked with `blocked_on`.
+
+- **A ticket body carrying `split recommended` is two tasks.** The harness
+  writes it when a build ran out of budget twice with partial work, and lists
+  the files done and the surfaces untouched. That list is the seam: the done
+  files become one task, the untouched surfaces another, and the second
+  `needs` the first when it consumes what the first produced.
+
+## Failure modes
+
+- A linear chain — everything needs the previous thing. Almost always a sign
+  edges were written from narrative order, not data flow.
+- A fully parallel plan — nothing needs anything. The opposite lie.
+- Tasks whose bodies say "see initiative".
+- Two tasks in one phase that both create or edit the same file — the runner
+  merges phase tasks in parallel, so the second write is a guaranteed merge
+  conflict, and a `needs` edge between them does not prevent it.
+- A foreign id prefixed with this initiative's id. It names no task, so the
+  DAG check refuses the whole initiative.
+- A done-criterion that names evidence outside the diff and the named
+  checks — nobody downstream can produce it, so the task can never close.
+- A task whose checks name a command outside the build grant, or whose
+  surfaces name a file in another repository — the route lint refuses it
+  before any lane can run it.
+- A contract task whose surfaces are prose or lack a .json fixture path. The
+  contract lint refuses it.

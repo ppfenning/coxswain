@@ -367,6 +367,13 @@ def _extension(mkdocs, key):
     return next(e[key] for e in mkdocs["markdown_extensions"] if isinstance(e, dict) and key in e)
 
 
+def test_a_copied_page_links_copied_pages_relatively_and_the_rest_on_github():
+    dests = {"src/graphs/README.md": "components/graphs/README.md", "src/graphs/docs/A.md": "components/graphs/docs/A.md"}
+    text = "[a](docs/A.md#x) [b](graphs/b.py) [c](https://x.y/z) [d](#top)"
+    assert _pull.rewrite_links(text, "src/graphs/README.md", dests) == (
+        f"[a](docs/A.md#x) [b]({_pull.SOURCE_BLOB}/src/graphs/graphs/b.py) [c](https://x.y/z) [d](#top)")
+
+
 def test_mkdocs_enables_snippets_with_docs_base_path():
     assert _extension(_load_mkdocs(), "pymdownx.snippets")["base_path"] == ["docs"]
 
@@ -600,3 +607,34 @@ def test_install_flags_table_names_only_the_documented_flags():
     section = _INSTALL_PAGE.read_text().split("## Flags", 1)[1].split("\n## ", 1)[0]
     named = set(re.findall(r"^\| `(--[a-z-]+)", section, re.MULTILINE))
     assert named and named <= _INSTALL_FLAGS
+
+
+def test_local_plan_copies_the_in_repo_folders_docs_to_the_same_destinations():
+    items = _pull.local_plan({"graphs": ("src/graphs", ("README.md", "docs/graphs/*.md"))})
+    assert items == [
+        {"kind": "copy", "src": "src/graphs/README.md", "dest": "docs/components/graphs/README.md"},
+        {"kind": "copy_glob", "src_dir": "src/graphs/docs/graphs", "dest_dir": "docs/components/graphs/docs/graphs"},
+    ]
+
+
+def test_every_local_doc_names_a_file_or_folder_this_checkout_holds():
+    for item in _pull.local_plan(_pull.LOCAL_DOCS):
+        if item["kind"] == "copy":
+            assert (ROOT / item["src"]).is_file(), item["src"]
+        else:
+            assert list((ROOT / item["src_dir"]).glob("*.md")), item["src_dir"]
+
+
+def test_copy_local_counts_a_missing_file_and_an_empty_glob_as_failures(tmp_path):
+    (tmp_path / "src" / "a").mkdir(parents=True)
+    (tmp_path / "src" / "a" / "README.md").write_text("# a\n")
+    items = [{"kind": "copy", "src": "src/a/README.md", "dest": "docs/components/a/README.md"},
+             {"kind": "copy", "src": "src/a/missing.md", "dest": "docs/components/a/missing.md"},
+             {"kind": "copy_glob", "src_dir": "src/a/empty", "dest_dir": "docs/components/a/empty"}]
+    assert _pull._copy_local(items, tmp_path) == 2
+    assert (tmp_path / "docs" / "components" / "a" / "README.md").read_text() == "# a\n"
+
+
+def test_the_manifest_leaves_only_dash_to_fetch():
+    assert [item["repo"] for item in _pull.plan(tomllib.loads((ROOT / "manifest.toml").read_text()))] == [
+        "ppfenning/coxswain-dash"]

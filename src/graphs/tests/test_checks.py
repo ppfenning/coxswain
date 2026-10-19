@@ -1,0 +1,811 @@
+"""The check arm: run the project's commands, in the state they were applied to.
+
+`_change_facts` in `graphs/delivery/lifecycle_propose.py` counts a diff's shape
+from the patch instead of asking the build node to self-report it. These tests
+hold `harness/checks.py` and `harness/worktree.py`'s `create_worktree` to the
+same discipline: pass/fail counts come from parsing real subprocess output, a
+check missing `name` or `cmd` is refused rather than quietly dropped, a check
+that never finishes is a failure and not an absence, and — the one that would
+be silently wrong if the wiring were off by a step — a check run after
+`apply_patch` actually sees the patched file, not the pre-patch one.
+
+Offline throughout: real `git` and `sys.executable`, no network.
+"""
+
+from __future__ import annotations
+
+import io
+import shlex
+import signal
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
+
+import pytest
+
+from harness.cause_rule import classify_cause
+from harness.checks import (
+    all_passed,
+    check_feedback,
+    check_outcome,
+    check_timeout,
+    checks_evidence,
+    collected_ids,
+    coverage_floor_holds,
+    failed_test_files,
+    fixable_checks,
+    is_harness_fault,
+    outside_surface_files,
+    quarantine_reason,
+    refix_route,
+    repo_checks,
+    run_checks,
+)
+from harness.worktree import apply_patch, create_worktree, link_venv
+
+
+def _run(cmd: list[str], cwd) -> None:
+    result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    assert result.returncode == 0, f"{cmd} failed: {result.stderr}"
+
+
+def _init_repo(path, *, filename="a.txt", content="one\n"):
+    """A tiny real git repo: init, local identity, one commit."""
+    path.mkdir(parents=True, exist_ok=True)
+    _run(["git", "init", "-q"], cwd=path)
+    _run(["git", "config", "user.email", "test@example.com"], cwd=path)
+    _run(["git", "config", "user.name", "Test"], cwd=path)
+    (path / filename).write_text(content, encoding="utf-8")
+    _run(["git", "add", filename], cwd=path)
+    _run(["git", "commit", "-q", "-m", "initial"], cwd=path)
+    return path
+
+
+def _head(path) -> str:
+    result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=path, capture_output=True, text=True)
+    return result.stdout.strip()
+
+
+def _py(code: str) -> str:
+    """A shell-safe `sys.executable -c <code>` invocation for run_checks.
+
+    Wrapped in literal double quotes rather than `repr()`'d: `repr` turns a
+    real newline into the two characters `\\` and `n`, which survives a shell
+    round-trip as those two characters rather than as a newline — the script
+    it hands to `python -c` is not the script that was written. Every check
+    command here sticks to single quotes internally so the double-quote
+    wrapper never has to escape anything.
+    """
+    return f'{sys.executable} -c "{textwrap.dedent(code).strip()}"'
+
+
+# ---------------------------------------------------------------------------
+# run_checks
+# ---------------------------------------------------------------------------
+
+
+def test_run_checks_passing_cmd_reports_counts_and_passed(tmp_path) -> None:
+    checks = [{"name": "tests", "cmd": _py("print('3 passed')")}]
+    [result] = run_checks(tmp_path, checks)
+    assert result["passed"] is True
+    assert result["exit_code"] == 0
+    assert result["counts"] == {"passed": 3}
+    assert result["name"] == "tests"
+    assert result["outcome"] == "passed"
+
+
+def test_run_checks_failing_cmd_reports_both_counts_and_failure(tmp_path) -> None:
+    """Mixed output ('1 failed, 2 passed') parses every token, not just the first."""
+    checks = [
+        {
+            "name": "tests",
+            "cmd": _py("import sys; print('1 failed, 2 passed'); sys.exit(1)"),
+        }
+    ]
+    [result] = run_checks(tmp_path, checks)
+    assert result["passed"] is False
+    assert result["exit_code"] == 1
+    assert result["counts"] == {"failed": 1, "passed": 2}
+    assert result["outcome"] == "failed"
+
+
+# This interpreter's own pytest by absolute path: a land runs the suite as `.venv/bin/python -m pytest`
+# without the venv on PATH, where a bare `pytest` exits 127. The name still ends in `pytest`, which is
+# what `_is_pytest_cmd` keys on.
+_PYTEST_Q = f"{shlex.quote(str(Path(sys.executable).with_name('pytest')))} -q"
+
+
+def test_run_checks_pytest_exit_5_with_no_python_tests_is_skipped(tmp_path) -> None:
+    """pytest's own "no tests ran" exit is a skip, not a failure, when the tree has none."""
+    checks = [{"name": "tests", "cmd": _PYTEST_Q}]
+    [result] = run_checks(tmp_path, checks)
+    assert result["exit_code"] == 5
+    assert result["outcome"] == "skipped"
+    assert result["passed"] is True
+    [row] = checks_evidence([result])
+    assert row["output"] == "skipped: no Python tests"
+
+
+def test_run_checks_pytest_exit_5_with_a_test_file_present_is_a_failure(tmp_path) -> None:
+    """A Python repo that loses all its tests still fails: exit 5 with a test_*.py on disk."""
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_something.py").write_text("", encoding="utf-8")
+    checks = [{"name": "tests", "cmd": _PYTEST_Q}]
+    [result] = run_checks(tmp_path, checks)
+    assert result["exit_code"] == 5
+    assert result["outcome"] == "failed"
+    assert result["passed"] is False
+
+
+def test_run_checks_pytest_exit_1_is_a_failure_regardless_of_test_files(tmp_path) -> None:
+    """A real test failure (exit 1) is never rewritten to a skip."""
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_something.py").write_text("def test_x():\n    assert False\n", encoding="utf-8")
+    checks = [{"name": "tests", "cmd": _PYTEST_Q}]
+    [result] = run_checks(tmp_path, checks)
+    assert result["exit_code"] == 1
+    assert result["outcome"] == "failed"
+    assert result["passed"] is False
+
+
+def test_run_checks_unrunnable_cmd_is_a_harness_fault_not_a_failure(tmp_path) -> None:
+    missing = tmp_path / "no-such-worktree"
+    checks = [{"name": "ghost", "cmd": "true"}]
+    [result] = run_checks(missing, checks)
+    assert result["outcome"] == check_outcome(result["exit_code"], result["error"])
+    assert result["outcome"] == "unrunnable"
+    assert result["exit_code"] is None
+    assert "no-such-worktree" in result["error"]
+
+
+def test_run_checks_missing_binary_is_unrunnable_naming_the_command(tmp_path) -> None:
+    checks = [{"name": "tests", "cmd": "no-such-binary-xyz -q"}]
+    [result] = run_checks(tmp_path, checks)
+    assert result["outcome"] == "unrunnable"
+    assert "no-such-binary-xyz -q" in result["error"]
+
+
+def test_missing_binary_evidence_carries_the_command_and_error(tmp_path) -> None:
+    checks = [{"name": "tests", "cmd": "no-such-binary-xyz -q"}]
+    results = run_checks(tmp_path, checks)
+    [row] = checks_evidence(results)
+    assert "no-such-binary-xyz -q" in row["output"]
+    assert "command not found" in row["output"]
+
+
+def test_missing_binary_evidence_also_carries_the_shells_own_words(tmp_path) -> None:
+    """The synthesized error names the command; the shell's own text must still survive beside it."""
+    checks = [{"name": "tests", "cmd": "no-such-binary-xyz -q"}]
+    results = run_checks(tmp_path, checks)
+    assert results[0]["output_tail"].strip()
+    [row] = checks_evidence(results)
+    assert results[0]["output_tail"].strip() in row["output"]
+
+
+def test_run_checks_no_counts_in_output_is_empty_not_invented(tmp_path) -> None:
+    """A check whose output names no pass/fail tokens gets an EMPTY counts dict,
+    never a guessed one — the whole point of counting from reality."""
+    checks = [{"name": "lint", "cmd": _py("print('no complaints here')")}]
+    [result] = run_checks(tmp_path, checks)
+    assert result["passed"] is True
+    assert result["counts"] == {}
+
+
+def test_run_checks_missing_name_is_refused(tmp_path) -> None:
+    with pytest.raises(ValueError):
+        run_checks(tmp_path, [{"cmd": "true"}])
+
+
+def test_run_checks_missing_cmd_is_refused(tmp_path) -> None:
+    with pytest.raises(ValueError):
+        run_checks(tmp_path, [{"name": "tests"}])
+
+
+def test_run_checks_timeout_is_a_failure_not_an_absence(tmp_path) -> None:
+    """A check that never finishes is not 'still pending' — it failed, with no
+    exit code, and the output tail says so."""
+    checks = [{"name": "hangs", "cmd": _py("import time; time.sleep(5)")}]
+    [result] = run_checks(tmp_path, checks, timeout=0.3)
+    assert result["passed"] is False
+    assert result["exit_code"] is None
+    assert "timed out" in result["output_tail"]
+
+
+class _TimingOutPopen:
+    """A Popen whose first communicate() times out with bytes output; the second returns nothing."""
+
+    pid = 4242
+
+    def __init__(self, cmd, **kwargs):
+        self.cmd = cmd
+        self.calls = 0
+        self.stdout = io.StringIO()
+        self.stderr = io.StringIO()
+
+    def _times_out(self, timeout):
+        return subprocess.TimeoutExpired(self.cmd, timeout, output=b"3 passed\nhalf \xff", stderr=b"warn: slow")
+
+    def communicate(self, timeout=None):
+        self.calls += 1
+        if self.calls == 1:
+            raise self._times_out(timeout)
+        return "", ""
+
+    def wait(self):
+        return 0
+
+
+class _StuckPopen(_TimingOutPopen):
+    """A group-escaping grandchild holds the pipes: every communicate() times out, and an unbounded one fails."""
+
+    def communicate(self, timeout=None):
+        if timeout is None:
+            raise RuntimeError("unbounded communicate() would hang on a grandchild that left the group")
+        raise self._times_out(timeout)
+
+
+class _CrashingPopen(_TimingOutPopen):
+    def communicate(self, timeout=None):
+        raise KeyboardInterrupt
+
+
+def test_a_check_whose_pipes_stay_held_after_the_kill_still_returns_its_timeout(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("harness.checks.subprocess.Popen", _StuckPopen)
+    monkeypatch.setattr("harness.checks.os.killpg", lambda pid, sig: None)
+    [result] = run_checks(tmp_path, [{"name": "slow", "cmd": "x"}], timeout=9)
+    assert result["outcome"] == "timed_out"
+    assert result["counts"] == {"passed": 3}
+
+
+def test_an_error_other_than_a_timeout_still_kills_the_group_and_propagates(tmp_path, monkeypatch) -> None:
+    killed: list = []
+    monkeypatch.setattr("harness.checks.subprocess.Popen", _CrashingPopen)
+    monkeypatch.setattr("harness.checks.os.killpg", lambda pid, sig: killed.append((pid, sig)))
+    with pytest.raises(KeyboardInterrupt):
+        run_checks(tmp_path, [{"name": "slow", "cmd": "x"}], timeout=9)
+    assert killed == [(_CrashingPopen.pid, signal.SIGKILL)]
+
+
+def test_a_timed_out_check_kills_its_process_group_and_tolerates_a_gone_one(tmp_path, monkeypatch) -> None:
+    killed: list = []
+
+    def killpg(pid, sig):
+        killed.append((pid, sig))
+        raise ProcessLookupError
+
+    monkeypatch.setattr("harness.checks.subprocess.Popen", _TimingOutPopen)
+    monkeypatch.setattr("harness.checks.os.killpg", killpg)
+    [result] = run_checks(tmp_path, [{"name": "slow", "cmd": "x"}], timeout=9)
+    assert killed == [(_TimingOutPopen.pid, signal.SIGKILL)]
+    assert result["outcome"] == "timed_out"
+
+
+def test_a_timed_out_check_keeps_its_bytes_output_and_is_a_harness_fault(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("harness.checks.subprocess.Popen", _TimingOutPopen)
+    monkeypatch.setattr("harness.checks.os.killpg", lambda pid, sig: None)
+    results = run_checks(tmp_path, [{"name": "slow", "cmd": "x"}], timeout=9)
+    [result] = results
+    assert result["outcome"] == "timed_out"
+    assert result["passed"] is False
+    assert result["exit_code"] is None
+    assert result["counts"] == {"passed": 3}
+    assert result["output_tail"].startswith("3 passed\nhalf \N{REPLACEMENT CHARACTER}warn: slow")
+    assert result["output_tail"].endswith("[timed out after 9s]")
+    assert result["error"].startswith("harness fault:")
+    reason = quarantine_reason(results)
+    assert is_harness_fault(reason)
+    assert classify_cause("unverified", reason) == "harness"
+    assert classify_cause("unverified", "configured check failed: tests") == "code"
+
+
+def test_check_timeout_is_the_checks_own_positive_int_else_the_default() -> None:
+    assert check_timeout({"name": "a"}, 600) == 600
+    assert check_timeout({"name": "a", "timeout": 7}, 600) == 7
+    for bad in (0, -1, True, "30"):
+        with pytest.raises(ValueError, match=rf"'a'.*{bad!r}"):
+            check_timeout({"name": "a", "timeout": bad}, 600)
+
+
+def test_run_checks_output_tail_is_bounded(tmp_path) -> None:
+    checks = [{"name": "noisy", "cmd": _py("print('x' * 5000)")}]
+    [result] = run_checks(tmp_path, checks)
+    assert len(result["output_tail"]) <= 2000
+
+
+# ---------------------------------------------------------------------------
+# check_outcome
+# ---------------------------------------------------------------------------
+
+
+def test_check_outcome_is_passed_on_a_zero_return_with_no_error() -> None:
+    assert check_outcome(0, None) == "passed"
+
+
+def test_check_outcome_is_failed_on_a_nonzero_return_with_no_error() -> None:
+    assert check_outcome(1, None) == "failed"
+
+
+def test_check_outcome_is_unrunnable_when_an_error_is_present() -> None:
+    assert check_outcome(None, "No such file or directory") == "unrunnable"
+
+
+# ---------------------------------------------------------------------------
+# checks_evidence
+# ---------------------------------------------------------------------------
+
+
+def test_checks_evidence_verdict_first_with_counts() -> None:
+    results = [{"name": "tests", "cmd": "pytest -q", "passed": True, "exit_code": 0, "counts": {"passed": 12}}]
+    [row] = checks_evidence(results)
+    assert row["check"] == "checks:tests"
+    assert row["output"].startswith("pass —")
+    assert "12 passed" in row["output"]
+    assert "exit 0" in row["output"]
+
+
+def test_checks_evidence_failure_is_all_caps_fail_with_exit_code() -> None:
+    results = [{"name": "tests", "cmd": "pytest -q", "passed": False, "exit_code": 1, "counts": {"failed": 2, "passed": 10}}]
+    [row] = checks_evidence(results)
+    assert row["output"].startswith("FAIL —")
+    assert "2 failed" in row["output"]
+    assert "10 passed" in row["output"]
+    assert "exit 1" in row["output"]
+
+
+def test_checks_evidence_exit_code_present_even_with_no_counts() -> None:
+    results = [{"name": "lint", "cmd": "lint", "passed": True, "exit_code": 0, "counts": {}}]
+    [row] = checks_evidence(results)
+    assert "exit 0" in row["output"]
+
+
+def test_checks_evidence_failure_carries_the_command_and_output_tail() -> None:
+    results = [
+        {
+            "name": "tests",
+            "cmd": "pytest -q",
+            "passed": False,
+            "outcome": "failed",
+            "exit_code": 1,
+            "counts": {"failed": 1},
+            "output_tail": "AssertionError: boom",
+        }
+    ]
+    [row] = checks_evidence(results)
+    assert "cmd: pytest -q" in row["output"]
+    assert "AssertionError: boom" in row["output"]
+
+
+def test_checks_evidence_truncates_a_long_tail_with_a_marker() -> None:
+    lines = [f"line {i}" for i in range(25)]
+    results = [
+        {
+            "name": "tests",
+            "cmd": "pytest -q",
+            "passed": False,
+            "outcome": "failed",
+            "exit_code": 1,
+            "counts": {},
+            "output_tail": "\n".join(lines),
+        }
+    ]
+    [row] = checks_evidence(results)
+    assert "[truncated" in row["output"]
+    assert "line 0" not in row["output"]
+    assert "line 24" in row["output"]
+
+
+def test_checks_evidence_unrunnable_carries_the_command_and_error() -> None:
+    results = [
+        {
+            "name": "ghost",
+            "cmd": "true",
+            "passed": False,
+            "outcome": "unrunnable",
+            "error": "No such file or directory",
+            "exit_code": None,
+            "counts": {},
+            "output_tail": "",
+        }
+    ]
+    [row] = checks_evidence(results)
+    assert "cmd: true" in row["output"]
+    assert "No such file or directory" in row["output"]
+
+
+def test_checks_evidence_unrunnable_appends_captured_output_beside_the_error() -> None:
+    results = [
+        {
+            "name": "tests",
+            "cmd": "no-such-binary -q",
+            "passed": False,
+            "outcome": "unrunnable",
+            "error": "command not found: no-such-binary -q",
+            "exit_code": 127,
+            "counts": {},
+            "output_tail": "/bin/sh: 1: no-such-binary: not found",
+        }
+    ]
+    [row] = checks_evidence(results)
+    assert "command not found: no-such-binary -q" in row["output"]
+    assert "/bin/sh: 1: no-such-binary: not found" in row["output"]
+
+
+def test_all_passed() -> None:
+    assert all_passed([{"passed": True}, {"passed": True}]) is True
+    assert all_passed([{"passed": True}, {"passed": False}]) is False
+    assert all_passed([]) is True
+
+
+# ---------------------------------------------------------------------------
+# quarantine_reason
+# ---------------------------------------------------------------------------
+
+
+def test_quarantine_reason_is_none_when_everything_passed() -> None:
+    assert quarantine_reason([{"passed": True, "outcome": "passed"}]) is None
+
+
+def test_quarantine_reason_is_the_harness_fault_wording_for_an_unrunnable_check() -> None:
+    results = [{"name": "ghost", "passed": False, "outcome": "unrunnable", "error": "No such file or directory"}]
+    reason = quarantine_reason(results)
+    assert reason == "harness fault: check 'ghost' could not run: No such file or directory"
+
+
+def test_quarantine_reason_is_the_ordinary_wording_with_no_tail_for_a_real_failure() -> None:
+    results = [{"name": "tests", "passed": False, "outcome": "failed"}]
+    assert quarantine_reason(results) == "configured check failed: tests"
+
+
+def test_quarantine_reason_does_not_hide_a_real_failure_behind_an_unrunnable_one() -> None:
+    results = [
+        {"name": "tests", "passed": False, "outcome": "failed"},
+        {"name": "lint", "passed": False, "outcome": "unrunnable", "error": "No such file or directory"},
+    ]
+    reason = quarantine_reason(results)
+    assert reason == "configured check failed: tests, lint"
+    assert not is_harness_fault(reason)
+
+
+def test_quarantine_reason_names_the_check_and_the_first_non_empty_tail_line() -> None:
+    results = [{
+        "name": "lint",
+        "passed": False,
+        "outcome": "failed",
+        "output_tail": "F401 harness/x.py:3 unused import\nF401 harness/y.py:9 unused import",
+    }]
+    reason = quarantine_reason(results)
+    assert reason == "configured check failed: lint — F401 harness/x.py:3 unused import"
+    assert "see evidence" not in reason
+
+
+_HEADER = "=========================== short test summary info ============================"
+_OLD = f"configured check failed: tests — {_HEADER}"
+
+
+def _summary(*lines: str) -> str:
+    return "\n".join([_HEADER, *lines, "1 failed in 0.12s"])
+
+
+_PYTEST_TAIL = _summary(
+    "FAILED tests/test_other.py::test_a - assert 1 == 2",
+    "FAILED tests/test_other.py::test_b - KeyError: 'x'",
+    "FAILED tests/test_third.py::test_c - assert False",
+)
+
+
+def _failed(tail: str, name: str = "tests") -> dict:
+    return {"name": name, "passed": False, "outcome": "failed", "output_tail": tail}
+
+
+def test_failed_test_files_is_sorted_and_unique_per_file() -> None:
+    assert failed_test_files(_PYTEST_TAIL) == ("tests/test_other.py", "tests/test_third.py")
+
+
+def test_quarantine_reason_names_one_failing_file_outside_the_surfaces() -> None:
+    tail = _summary("FAILED tests/test_other.py::test_a - assert 1 == 2")
+    reason = quarantine_reason([_failed(tail)], ["harness/checks.py"], ["tests/test_checks.py"])
+    assert reason == "configured check failed outside surfaces: tests/test_other.py"
+
+
+def test_quarantine_reason_lists_duplicate_lines_for_one_file_once() -> None:
+    tail = _summary("FAILED tests/test_other.py::test_a - x", "FAILED tests/test_other.py::test_b - y")
+    reason = quarantine_reason([_failed(tail)], ["harness"], [])
+    assert reason == "configured check failed outside surfaces: tests/test_other.py"
+
+
+def test_quarantine_reason_joins_several_outside_files_sorted() -> None:
+    reason = quarantine_reason([_failed(_PYTEST_TAIL)], ["harness"], [])
+    assert reason == "configured check failed outside surfaces: tests/test_other.py, tests/test_third.py"
+
+
+def test_quarantine_reason_keeps_the_old_text_with_the_default_arguments() -> None:
+    tail = "FAILED tests/test_other.py::test_a - x"
+    assert quarantine_reason([_failed(tail)]) == f"configured check failed: tests — {tail}"
+    assert quarantine_reason([_failed(_PYTEST_TAIL)]) == _OLD
+
+
+def test_quarantine_reason_falls_back_when_one_failing_file_is_inside_a_surface() -> None:
+    assert quarantine_reason([_failed(_PYTEST_TAIL)], ["tests/test_third.py"], []) == _OLD
+
+
+def test_quarantine_reason_falls_back_when_the_failing_file_is_in_the_patch() -> None:
+    tail = _summary("FAILED tests/test_other.py::test_a - x")
+    assert quarantine_reason([_failed(tail)], ["harness"], ["tests/test_other.py"]) == _OLD
+
+
+def test_quarantine_reason_falls_back_when_there_are_no_failed_lines() -> None:
+    reason = quarantine_reason([_failed("boom\n1 failed in 0.1s")], ["harness"], [])
+    assert reason == "configured check failed: tests — boom"
+
+
+def test_quarantine_reason_falls_back_when_the_summary_header_was_truncated_away() -> None:
+    tail = "FAILED tests/test_other.py::test_a - x\n1 failed in 0.1s"
+    reason = quarantine_reason([_failed(tail)], ["harness"], [])
+    assert reason == "configured check failed: tests — FAILED tests/test_other.py::test_a - x"
+
+
+def test_quarantine_reason_falls_back_when_another_failing_check_has_no_pytest_summary() -> None:
+    tail = _summary("FAILED tests/test_other.py::test_a - x")
+    lint = _failed("F401 harness/checks.py:3 unused import", name="lint")
+    reason = quarantine_reason([_failed(tail), lint], ["harness"], [])
+    assert reason == f"configured check failed: tests, lint — {_HEADER}"
+
+
+def test_quarantine_reason_matches_a_surface_as_a_directory_prefix() -> None:
+    tail = _summary("FAILED tests/sub/test_x.py::test_a - x")
+    assert quarantine_reason([_failed(tail)], ["tests"], []) == _OLD
+
+
+def test_quarantine_reason_does_not_match_a_sibling_directory_by_string_prefix() -> None:
+    tail = _summary("FAILED tests_extra/test_x.py::test_a - x")
+    assert quarantine_reason([_failed(tail)], ["tests"], []) == (
+        "configured check failed outside surfaces: tests_extra/test_x.py"
+    )
+
+
+def test_quarantine_reason_normalises_dot_slash_and_dot_surfaces() -> None:
+    tail = _summary("FAILED ./tests/test_x.py::test_a - x")
+    assert quarantine_reason([_failed(tail)], ["./tests/"], []) == _OLD
+    assert quarantine_reason([_failed(tail)], ["."], []) == _OLD
+
+
+def test_quarantine_reason_falls_back_on_an_absolute_failing_path() -> None:
+    tail = _summary("FAILED /repo/tests/test_x.py::test_a - x")
+    assert quarantine_reason([_failed(tail)], ["harness"], []) == _OLD
+
+
+def test_outside_surface_files_round_trips_the_reason() -> None:
+    reason = quarantine_reason([_failed(_PYTEST_TAIL)], ["harness"], [])
+    assert outside_surface_files(reason) == ("tests/test_other.py", "tests/test_third.py")
+
+
+def test_outside_surface_files_is_empty_for_any_other_reason() -> None:
+    assert outside_surface_files("configured check failed: tests") == ()
+    assert outside_surface_files("configured check failed outside surfaces: ") == ()
+    assert outside_surface_files("harness fault: check 'x' could not run: y") == ()
+
+
+# ---------------------------------------------------------------------------
+# is_harness_fault
+# ---------------------------------------------------------------------------
+
+
+def test_is_harness_fault_matches_the_prefix_quarantine_reason_emits() -> None:
+    reason = quarantine_reason([{"name": "ghost", "passed": False, "outcome": "unrunnable", "error": "boom"}])
+    assert is_harness_fault(reason)
+
+
+def test_is_harness_fault_is_false_for_the_ordinary_wording() -> None:
+    assert not is_harness_fault("configured checks failed: tests — see evidence")
+
+
+# ---------------------------------------------------------------------------
+# create_worktree
+# ---------------------------------------------------------------------------
+
+
+def test_create_worktree_creates_it_at_head(tmp_path) -> None:
+    repo = _init_repo(tmp_path / "repo")
+    worktree = tmp_path / "wt"
+    ok, detail = create_worktree(repo, worktree, branch="agents/run-1")
+    assert ok, detail
+    assert (worktree / "a.txt").read_text(encoding="utf-8") == "one\n"
+    assert (worktree / ".git").exists()
+
+
+def test_create_worktree_alone_does_not_link_the_venv(tmp_path) -> None:
+    repo = _init_repo(tmp_path / "repo")
+    (repo / ".venv").mkdir()
+    ok, detail = create_worktree(repo, tmp_path / "wt", branch="review-diff-1")
+    assert ok, detail
+    assert not (tmp_path / "wt" / ".venv").exists()
+
+
+def test_link_venv_links_the_land_worktree_and_git_add_all_stages_nothing(tmp_path) -> None:
+    repo = _init_repo(tmp_path / "repo")
+    (repo / ".venv").mkdir()
+    worktree = tmp_path / "wt"
+    create_worktree(repo, worktree, branch="agents/run-1")
+    assert link_venv(repo, worktree)
+    assert (worktree / ".venv").is_symlink()
+    _run(["git", "add", "-A"], cwd=worktree)
+    status = subprocess.run(["git", "status", "--porcelain"], cwd=worktree, capture_output=True, text=True)
+    assert status.stdout == ""
+
+
+def test_create_worktree_existing_branch_fails_with_gits_message(tmp_path) -> None:
+    """The caller picks unique branch names; guessing a suffix here would
+    silently attach the work to the wrong branch, so this just surfaces
+    git's own refusal."""
+    repo = _init_repo(tmp_path / "repo")
+    _run(["git", "branch", "taken"], cwd=repo)
+    ok, detail = create_worktree(repo, tmp_path / "wt", branch="taken")
+    assert not ok
+    assert "taken" in detail
+
+
+def test_create_worktree_base_ref_respected(tmp_path) -> None:
+    """Two commits; basing on the first must produce the FIRST commit's file
+    state in the new worktree, not the second's."""
+    repo = _init_repo(tmp_path / "repo")
+    first = _head(repo)
+    (repo / "a.txt").write_text("two\n", encoding="utf-8")
+    _run(["git", "add", "a.txt"], cwd=repo)
+    _run(["git", "commit", "-q", "-m", "second"], cwd=repo)
+
+    worktree = tmp_path / "wt"
+    ok, detail = create_worktree(repo, worktree, branch="agents/based", base=first)
+    assert ok, detail
+    assert (worktree / "a.txt").read_text(encoding="utf-8") == "one\n"
+
+
+# ---------------------------------------------------------------------------
+# integration: create_worktree + apply_patch + run_checks see the SAME state
+# ---------------------------------------------------------------------------
+
+
+def test_checks_run_against_the_applied_state_not_the_pre_patch_one(tmp_path) -> None:
+    """The entire point of the check arm: a check that greps for the patched
+    line must find it, which only happens if apply_patch actually landed the
+    diff in the same worktree run_checks executes in."""
+    repo = _init_repo(tmp_path / "repo", filename="status.txt", content="pending\n")
+    worktree = tmp_path / "wt"
+    ok, detail = create_worktree(repo, worktree, branch="agents/patch-run")
+    assert ok, detail
+
+    # Produce a real unified diff by editing inside the worktree and asking git
+    # for it, then undo the edit — the diff is applied for real by apply_patch,
+    # the thing under test, not by this edit.
+    (worktree / "status.txt").write_text("patched\n", encoding="utf-8")
+    diff = subprocess.run(["git", "diff"], cwd=worktree, capture_output=True, text=True).stdout
+    assert diff, "expected git to produce a non-empty diff"
+    _run(["git", "checkout", "--", "status.txt"], cwd=worktree)
+    assert (worktree / "status.txt").read_text(encoding="utf-8") == "pending\n"
+
+    applied_ok, applied_detail = apply_patch(diff, worktree)
+    assert applied_ok, applied_detail
+    assert (worktree / "status.txt").read_text(encoding="utf-8") == "patched\n"
+
+    checks = [
+        {
+            "name": "grep-patched",
+            "cmd": _py(
+                """
+                import sys
+                content = open('status.txt').read()
+                if 'patched' in content:
+                    print('1 passed')
+                    sys.exit(0)
+                print('1 failed')
+                sys.exit(1)
+                """
+            ),
+        }
+    ]
+    [result] = run_checks(worktree, checks)
+    assert result["passed"] is True
+    assert result["counts"] == {"passed": 1}
+
+
+def test_repo_checks_ignores_comments_and_blanks_and_keeps_order():
+    text = textwrap.dedent(
+        """
+        # a leading comment
+        pytest -q
+
+        ruff check .
+        # a trailing comment
+        """
+    )
+    assert repo_checks(text) == [
+        {"name": "pytest", "cmd": "pytest -q"},
+        {"name": "ruff", "cmd": "ruff check ."},
+    ]
+
+
+def test_repo_checks_collapses_a_duplicate_cmd_to_its_first_occurrence():
+    text = "pytest -q\nruff check .\npytest -q\n"
+    assert repo_checks(text) == [
+        {"name": "pytest", "cmd": "pytest -q"},
+        {"name": "ruff", "cmd": "ruff check ."},
+    ]
+
+
+def test_repo_checks_names_are_the_first_word():
+    assert repo_checks("mypy src/ --strict") == [{"name": "mypy", "cmd": "mypy src/ --strict"}]
+
+
+def test_repo_checks_never_raises_on_odd_input():
+    assert repo_checks("") == []
+    assert repo_checks(None) == []
+
+
+def test_fixable_checks_selects_only_entries_with_a_fix_command():
+    checks = [
+        {"name": "lint", "cmd": "ruff check .", "fix": "ruff check . --fix"},
+        {"name": "pytest", "cmd": "pytest -q"},
+    ]
+    assert fixable_checks(checks) == [{"name": "lint", "cmd": "ruff check . --fix"}]
+
+
+def test_collected_ids_reads_node_ids_and_drops_the_summary_line():
+    output = textwrap.dedent(
+        """\
+        tests/test_a.py::test_one
+        tests/test_a.py::test_two
+        2 tests collected in 0.01s
+        """
+    )
+    ids = collected_ids(output)
+    assert ids == {"tests/test_a.py::test_one", "tests/test_a.py::test_two"}
+    assert "2 tests collected in 0.01s" not in ids
+
+
+def test_coverage_floor_holds_when_before_is_a_subset_of_after():
+    before = {"tests/test_a.py::test_one"}
+    after = {"tests/test_a.py::test_one", "tests/test_a.py::test_two"}
+    assert coverage_floor_holds(before, after) is True
+
+
+def test_coverage_floor_fails_when_a_before_id_is_missing_from_after():
+    before = {"tests/test_a.py::test_one", "tests/test_a.py::test_two"}
+    after = {"tests/test_a.py::test_one"}
+    assert coverage_floor_holds(before, after) is False
+
+
+# ── where an approved build whose checks failed goes next ───────────────────
+
+_B023 = "B023 Function definition does not bind loop variable `directory`"
+_LINT_FAIL = {"name": "lint", "cmd": "ruff check .", "passed": False, "outcome": "failed", "exit_code": 1, "output_tail": _B023}
+_TEST_FAIL = {"name": "pytest", "cmd": "pytest -q", "passed": False, "outcome": "failed", "exit_code": 1, "output_tail": "1 failed"}
+_TEST_OK = {"name": "pytest", "cmd": "pytest -q", "passed": True, "outcome": "passed", "exit_code": 0, "output_tail": ""}
+_CONFIGURED = [{"name": "lint", "cmd": "ruff check ."}, {"name": "pytest", "cmd": "pytest -q"}]
+
+
+def test_check_feedback_quotes_the_failing_output_and_skips_a_passing_check() -> None:
+    assert check_feedback([_LINT_FAIL, _TEST_OK]) == f"lint: ruff check .\nexit 1\n{_B023}"
+
+
+def test_a_lint_only_failure_with_attempts_left_goes_to_style_pass() -> None:
+    assert refix_route([_LINT_FAIL, _TEST_OK], _CONFIGURED, attempts_left=2, style_bound=True) == "style_pass"
+
+
+def test_a_lint_failure_with_no_style_seat_or_a_test_failure_goes_back_as_a_revise() -> None:
+    assert refix_route([_LINT_FAIL], _CONFIGURED, attempts_left=2, style_bound=False) == "revise"
+    assert refix_route([_LINT_FAIL, _TEST_FAIL], _CONFIGURED, attempts_left=2, style_bound=True) == "revise"
+
+
+def test_a_check_with_a_fix_command_counts_as_lint_whatever_it_is_called() -> None:
+    configured = [{"name": "style", "cmd": "black --check .", "fix": "black ."}]
+    failed = [{"name": "style", "passed": False, "outcome": "failed"}]
+    assert refix_route(failed, configured, attempts_left=1, style_bound=True) == "style_pass"
+
+
+def test_no_attempts_left_a_harness_fault_or_a_pass_all_quarantine() -> None:
+    assert refix_route([_LINT_FAIL], _CONFIGURED, attempts_left=0, style_bound=True) == "quarantine"
+    unrunnable = {"name": "lint", "cmd": "ruff", "passed": False, "outcome": "unrunnable", "error": "not found"}
+    assert refix_route([unrunnable], _CONFIGURED, attempts_left=2, style_bound=True) == "quarantine"
+    assert refix_route([_TEST_OK], _CONFIGURED, attempts_left=2, style_bound=True) == "quarantine"

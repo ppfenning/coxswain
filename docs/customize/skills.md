@@ -28,10 +28,9 @@ seat-specific patch layered on top of it.
 Skill bindings are a cartridge concern, layered the same way any other
 cartridge content is: base ships default bindings, local and team can
 add or override them, tighten-only where the binding governs something
-risk related. Skill bodies themselves are versioned independently, the
-way any other pinned component is — see
-[Cartridges](../methodology/cartridges.md) for how provenance works for
-a cartridge's pinned dependencies.
+risk related. The skill bodies Coxswain ships live in the checkout under
+`src/cartridges/skills-plugins/` and move with its release tag — see
+[Cartridges](../methodology/cartridges.md) for how provenance works.
 
 ## Writing a new one
 
