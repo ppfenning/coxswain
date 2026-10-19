@@ -313,7 +313,7 @@ def test_cli_upgrade_moves_the_checkout_then_syncs_reinstalls_cox_and_links_the_
     assert [argv for argv, _ in calls][:5] == [
         ["git", "-C", checkout, "fetch", "--tags"],
         ["git", "-C", checkout, "checkout", "v2.0.0"],
-        ["uv", "sync", "--frozen", "--all-extras", "-q"],
+        ["uv", "sync", "--frozen", "--all-extras", "--inexact", "-q"],
         ["uv", "tool", "install", "--force", "-q", "--editable", checkout],
         [f"{checkout}/crew/install.sh"],
     ]

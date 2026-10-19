@@ -130,7 +130,7 @@ def ops(steps):
 def test_the_047_layout_plans_every_rule_in_order():
     assert ops(migrate_plan(layout_047(), LOCS)) == [
         ("checkout", CO),
-        ("run", "uv sync --frozen --all-extras -q"),
+        ("run", "uv sync --frozen --all-extras --inexact -q"),
         ("rewrite_profile_key", "skills_roots"),
         ("rewrite_profile_key", "provider_profile"),
         ("rewrite_profile_key", "harness_dir"),
@@ -247,8 +247,8 @@ def test_the_venv_is_synced_only_when_coxswain_is_not_editable_from_the_checkout
 
 
 def test_the_venv_is_synced_when_it_is_behind_the_lock_or_the_plan_touches_the_host():
-    assert ops(migrate_plan(migrated(venv_current=False), LOCS))[0] == ("run", "uv sync --frozen --all-extras -q")
-    assert ops(migrate_plan(migrated(home_record="/old/home"), LOCS))[0] == ("run", "uv sync --frozen --all-extras -q")
+    assert ops(migrate_plan(migrated(venv_current=False), LOCS))[0] == ("run", "uv sync --frozen --all-extras --inexact -q")
+    assert ops(migrate_plan(migrated(home_record="/old/home"), LOCS))[0] == ("run", "uv sync --frozen --all-extras --inexact -q")
 
 
 def test_profile_keys_move_into_the_checkout_and_a_teams_own_provider_profile_stays():
@@ -335,7 +335,7 @@ def test_a_leftover_old_tool_is_uninstalled_even_when_coxswain_is_already_instal
     bins = {**NEW_BINS, "agent-cartridges": {"installed": True, "editable": None, "extras": ["x"]}}
     steps = [s["argv"] for s in migrate_plan(migrated(install_bins=bins), LOCS) if s["op"] == "run"]
     assert steps == [
-        ["uv", "sync", "--frozen", "--all-extras", "-q"],
+        ["uv", "sync", "--frozen", "--all-extras", "--inexact", "-q"],
         ["uv", "tool", "uninstall", "agent-cartridges"],
         ["uv", "tool", "install", "--force", "-q", "--editable", f"{CO}[traces,postgres,x]"],
     ]

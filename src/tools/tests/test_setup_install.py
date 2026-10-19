@@ -12,6 +12,7 @@ from agent_tools.setup_install import (
     marketplace_steps,
     profile_text,
     render_plan,
+    sync_step,
 )
 
 LOC = home.resolve({}, "/home/user", "linux")
@@ -50,9 +51,13 @@ def _writes(steps):
 def test_the_one_checkout_is_synced_then_installed_as_the_cox_tool():
     runs = [s for s in _plan() if s["op"] == "run" and s["argv"][0] == "uv"]
     assert [(r["argv"], r.get("cwd")) for r in runs] == [
-        (["uv", "sync", "--frozen", "--all-extras", "-q"], CHECKOUT),
+        (["uv", "sync", "--frozen", "--all-extras", "--inexact", "-q"], CHECKOUT),
         (["uv", "tool", "install", "--force", "-q", "--editable", CHECKOUT], None),
     ]
+
+
+def test_the_sync_is_inexact_so_hand_installed_packages_survive():
+    assert "--inexact" in sync_step("/c")["argv"]
 
 
 def test_layout_derives_every_path_from_the_checkout():
