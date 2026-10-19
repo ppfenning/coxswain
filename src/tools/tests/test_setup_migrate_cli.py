@@ -110,7 +110,9 @@ def layout(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cli.land_repo_lease, "acquire", acquire)
     monkeypatch.setattr(
-        cli.land_repo_lease, "release", lambda runs_dir, repo, holder, epoch: calls.append(("release", repo))
+        cli.land_repo_lease,
+        "release",
+        lambda runs_dir, repo, holder, epoch: calls.append(("release", repo)) or store_cli.LeaseReleased(),
     )
     monkeypatch.setattr(cli.run_store, "live_lanes", lambda runs_dir, now: [])
     monkeypatch.setattr(cli.run_store, "hosts", lambda runs_dir: [])
@@ -517,6 +519,48 @@ def test_leases_are_released_when_a_local_step_raises(layout, monkeypatch):
     with pytest.raises(RuntimeError):
         run(apply=True)
     assert len(taken(layout, "release")) == 4
+
+
+def test_a_release_that_returns_a_lease_error_is_reported_and_the_rest_still_release(layout, monkeypatch, capsys):
+    def release(runs_dir, repo, holder, epoch):
+        layout.calls.append(("release", repo))
+        return store_cli.LeaseError("exit -1: x") if repo.endswith("coxswain-graphs") else store_cli.LeaseReleased()
+
+    monkeypatch.setattr(cli.land_repo_lease, "release", release)
+    assert run(apply=True) == 0
+    out = capsys.readouterr().out
+    assert f"migrate: could not release the lease on {layout.installs}/coxswain-graphs: exit -1: x" in out
+    assert out.count("could not release the lease") == 1
+    assert len(taken(layout, "release")) == 4
+
+
+def test_a_release_that_returns_released_prints_no_failure_line(layout, monkeypatch, capsys):
+    monkeypatch.setattr(cli.land_repo_lease, "release", lambda runs_dir, repo, holder, epoch: store_cli.LeaseReleased())
+    assert run(apply=True) == 0
+    assert "could not release the lease" not in capsys.readouterr().out
+
+
+def test_a_release_that_raises_is_reported_and_the_rest_still_release(layout, monkeypatch, capsys):
+    def release(runs_dir, repo, holder, epoch):
+        layout.calls.append(("release", repo))
+        if repo.endswith("coxswain-graphs"):
+            raise OSError("gone")
+        return store_cli.LeaseReleased()
+
+    monkeypatch.setattr(cli.land_repo_lease, "release", release)
+    assert run(apply=True) == 0
+    assert f"migrate: could not release the lease on {layout.installs}/coxswain-graphs: gone" in capsys.readouterr().out
+    assert len(taken(layout, "release")) == 4
+
+
+def test_the_interpreter_cache_is_cleared_once_before_the_first_release(layout, monkeypatch):
+    order = []
+    monkeypatch.setattr(cli.run_store, "_harness_python_for", types.SimpleNamespace(cache_clear=lambda: order.append("clear")))
+    monkeypatch.setattr(
+        cli.land_repo_lease, "release", lambda runs_dir, repo, holder, epoch: order.append("release") or store_cli.LeaseReleased()
+    )
+    assert run(apply=True) == 0
+    assert order == ["clear", "release", "release", "release", "release"]
 
 
 def test_a_plan_of_only_skip_steps_takes_no_lease(layout):
