@@ -170,7 +170,9 @@ def _checkout_steps(checkout: Mapping[str, Any], tag: str | None, path: str) -> 
         argvs = [["git", "clone", "--branch", tag, checkout["url"], path]]
         why = f"The monorepo checkout is cloned at {tag}."
     else:
-        argvs = [["git", "-C", path, "fetch", "--tags"], ["git", "-C", path, "checkout", tag]]
+        unshallow = ["--unshallow"] if checkout.get("shallow", False) else []
+        fetch = ["git", "-C", path, "fetch", *unshallow, "--force", "origin", f"refs/tags/{tag}:refs/tags/{tag}"]
+        argvs = [fetch, ["git", "-C", path, "checkout", tag]]
         why = f"The umbrella checkout becomes the monorepo by checking out {tag}."
     return [_step("checkout", why, path=path, tag=tag, argvs=argvs)]
 
@@ -514,6 +516,15 @@ def migrate_plan(observed: dict[str, Any], locs: Locations, home_spellings: Sequ
     if not body:
         return [_step("skip", "The checkout, its venv, the tools, links, settings and profile keys are already final.")]
     return [*body, *_prints(observed.get("workspace"), moved, locs), *market_notes]
+
+
+def split_pre_lease(plan: list[Step], harness_in_checkout: bool) -> tuple[list[Step], list[Step]]:
+    """With the harness in the checkout, split after the sync step; otherwise nothing runs before the lease."""
+    sync_argv = list(setup_install.SYNC_ARGV)
+    at = [i for i, s in enumerate(plan) if s.get("op") == "run" and s.get("argv") == sync_argv]
+    if harness_in_checkout and at:
+        return list(plan[: at[0] + 1]), list(plan[at[0] + 1 :])
+    return [], list(plan)
 
 
 def is_monorepo_pyproject(text: str | None) -> bool:

@@ -30,6 +30,7 @@ from agent_tools.setup_migrate import (
     remove_link,
     render_plan,
     resolve_old_root,
+    split_pre_lease,
     stale_script_lines,
 )
 from agent_tools.setup_migrate_hosts import ObservedHost
@@ -174,7 +175,34 @@ def test_a_second_run_over_the_result_plans_one_skip():
 
 def test_the_umbrella_checks_out_the_target_tag_in_place():
     step = migrate_plan(layout_047(), LOCS)[0]
-    assert step["argvs"] == [["git", "-C", CO, "fetch", "--tags"], ["git", "-C", CO, "checkout", TAG]]
+    assert step["argvs"] == [
+        ["git", "-C", CO, "fetch", "--force", "origin", f"refs/tags/{TAG}:refs/tags/{TAG}"],
+        ["git", "-C", CO, "checkout", TAG],
+    ]
+
+
+def test_a_shallow_checkout_unshallows_in_the_fetch():
+    shallow = {"kind": "dir", "monorepo": False, "dirty": False, "url": "u", "shallow": True}
+    step = migrate_plan(layout_047(checkout=shallow), LOCS)[0]
+    assert step["argvs"] == [
+        ["git", "-C", CO, "fetch", "--unshallow", "--force", "origin", f"refs/tags/{TAG}:refs/tags/{TAG}"],
+        ["git", "-C", CO, "checkout", TAG],
+    ]
+
+
+PRE_PLAN = [
+    {"op": "checkout", "why": "w", "argvs": []},
+    setup_install.sync_step(CO),
+    {"op": "print", "why": "w"},
+]
+
+
+def test_split_pre_lease_cuts_after_the_sync_step_when_the_harness_is_in_the_checkout():
+    assert split_pre_lease(PRE_PLAN, True) == (PRE_PLAN[:2], PRE_PLAN[2:])
+
+
+def test_split_pre_lease_returns_the_whole_plan_when_the_harness_is_elsewhere():
+    assert split_pre_lease(PRE_PLAN, False) == ([], PRE_PLAN)
 
 
 def test_an_absent_checkout_is_cloned_at_the_target_tag():
