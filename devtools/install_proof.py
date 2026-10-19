@@ -29,7 +29,8 @@ def _parse(tag: str) -> tuple[int, ...] | None:
 
 
 def previous_tag(tags: list[str], version: str) -> str | None:
-    """The highest tag strictly below `version` by numeric dotted order, spelled as in `tags`."""
+    """The highest tag strictly below `version` by numeric dotted order, spelled as in `tags`. A CalVer tag's
+    first number is a year, so the whole 0.x line (v0.47.0 last) sorts below v2026.10.0 with no special case."""
     target = _parse(version)
     if target is None:
         return None
