@@ -14,6 +14,7 @@ from agent_tools.usage_window import (
     _usage_started,
     block_remaining,
     ceiling_remaining,
+    five_hour_start,
     gather,
     gather_weekly,
     parse_weekly_reset,
@@ -58,6 +59,37 @@ def test_a_block_present_but_not_marked_active_falls_back_to_usage_files():
     blocks_json = {"blocks": [_active_block(active=False)]}
     window = window_from(blocks_json, [(inside, {"cost_usd": 7.0})], _NOW, window_hours=5.0)
     assert window.spent_usd == 7.0
+
+
+def test_five_hour_start_with_a_future_reset_is_five_hours_before_it():
+    resets_at = datetime(2026, 9, 5, 15, 0, 0, tzinfo=UTC)
+    assert five_hour_start(resets_at, _NOW) == datetime(2026, 9, 5, 10, 0, 0, tzinfo=UTC)
+
+
+def test_five_hour_start_with_a_past_reset_is_the_reset_itself():
+    resets_at = datetime(2026, 9, 5, 9, 0, 0, tzinfo=UTC)
+    assert five_hour_start(resets_at, _NOW) == resets_at
+
+
+def test_five_hour_start_with_no_reset_is_none():
+    assert five_hour_start(None, _NOW) is None
+
+
+def test_window_from_with_a_start_ignores_a_block_that_would_answer():
+    start = datetime(2026, 9, 5, 10, 0, 0, tzinfo=UTC)
+    usage_files = [(datetime(2026, 9, 5, 11, 0, 0, tzinfo=UTC), {"cost_usd": 5.0})]
+    window = window_from({"blocks": [_active_block(cost=30.0)]}, usage_files, _NOW, start=start)
+    assert (window.start, window.end) == (start, _NOW)
+    assert (window.spent_usd, window.runs_in_flight) == (5.0, 1)
+
+
+def test_gather_with_a_start_does_not_launch_ccusage(tmp_path):
+    def run_must_not_be_called(*_a, **_k):
+        raise AssertionError("ccusage was launched")
+
+    start = datetime(2026, 9, 5, 10, 0, 0, tzinfo=UTC)
+    window = gather(tmp_path, _NOW, run=run_must_not_be_called, usage=[], start=start)
+    assert window.start == start
 
 
 def test_a_usage_file_before_the_window_is_excluded():

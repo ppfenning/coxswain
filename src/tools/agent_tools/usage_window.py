@@ -26,7 +26,7 @@ from agent_tools.pacing import Policy, Window
 
 __all__ = [
     "CCUSAGE_CACHE_S", "DEFAULT_POLICY", "WeeklyReset", "block_remaining", "ceiling_remaining",
-    "gather", "gather_weekly", "parse_weekly_reset", "read_usage", "usage_cost_usd",
+    "five_hour_start", "gather", "gather_weekly", "parse_weekly_reset", "read_usage", "usage_cost_usd",
     "weekly_start_from_reset", "weekly_window_from", "weekly_window_start", "window_from",
 ]
 
@@ -116,10 +116,12 @@ def window_from(
     now: datetime,
     window_hours: float = 5.0,
     ceiling_usd: float | None = None,
+    start: datetime | None = None,
 ) -> Window:
     """Pure. `usage_files` is `(start, parsed usage.json)` pairs; the caller
-    supplies each start, this function never stats a file."""
-    active = _active_block(blocks_json)
+    supplies each start, this function never stats a file. A given `start`
+    skips the ccusage block and runs the spend window from `start` to `now`."""
+    active = None if start is not None else _active_block(blocks_json)
     if active is not None:
         span_hours = max((active["end"] - active["start"]).total_seconds() / 3600, 1e-9)
         return Window(
@@ -128,12 +130,12 @@ def window_from(
             burn_usd_per_hour=active["spent"] / span_hours, runs_in_flight=0,
         )
 
-    start = now - timedelta(hours=window_hours)
-    in_window = [usage for ts, usage in usage_files if start <= ts <= now]
+    window_start = now - timedelta(hours=window_hours) if start is None else start
+    in_window = [usage for ts, usage in usage_files if window_start <= ts <= now]
     spent_usd = sum(usage_cost_usd(u) for u in in_window)
-    elapsed_hours = max((now - start).total_seconds() / 3600, 1e-9)
+    elapsed_hours = max((now - window_start).total_seconds() / 3600, 1e-9)
     return Window(
-        start=start, end=now,
+        start=window_start, end=now,
         spent_usd=spent_usd, ceiling_usd=ceiling_usd,
         burn_usd_per_hour=spent_usd / elapsed_hours, runs_in_flight=len(in_window),
     )
@@ -255,13 +257,14 @@ def gather(
     window_hours: float = 5.0,
     ceiling_usd: float | None = None,
     usage: list[tuple[datetime, dict[str, Any]]] | None = None,
+    start: datetime | None = None,
 ) -> Window:
     """Impure edge: launches ccusage (or reuses its answer cached under a minute),
     reads the run directory's usage (unless `usage` is given), and folds whichever
-    answers into a `Window` via `window_from`."""
-    cached = _read_ccusage_cache(runs_dir, now)
+    answers into a `Window` via `window_from`. A given `start` never consults ccusage."""
+    cached = None if start is not None else _read_ccusage_cache(runs_dir, now)
     blocks_json: dict[str, Any] = {} if cached is None else cached
-    if cached is None:
+    if cached is None and start is None:
         try:
             result = run(
                 ["npx", "-y", "ccusage@latest", "blocks", "--active", "--json"],
@@ -274,7 +277,7 @@ def gather(
             blocks_json = {}
 
     return window_from(
-        blocks_json, read_usage(runs_dir, now) if usage is None else usage, now, window_hours, ceiling_usd,
+        blocks_json, read_usage(runs_dir, now) if usage is None else usage, now, window_hours, ceiling_usd, start,
     )
 
 
@@ -307,6 +310,20 @@ def weekly_start_from_reset(
     else:
         return now - week
     return (base + ((now - base) // week) * week).astimezone(now.tzinfo)
+
+
+_FIVE_HOURS = timedelta(hours=5)
+
+
+def five_hour_start(resets_at: datetime | None, at: datetime) -> datetime | None:
+    """Pure. Start of the five-hour window the meter reports: `resets_at` minus five
+    hours while it is still ahead of `at`, `resets_at` itself once it has passed, and
+    None with no `resets_at`."""
+    if resets_at is None:
+        return None
+    if resets_at > at:
+        return resets_at - _FIVE_HOURS
+    return resets_at
 
 
 def weekly_window_from(
