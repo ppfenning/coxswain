@@ -11,6 +11,10 @@ programme. Keep them in step. -->
 
 # Run stats store (P0) — design
 
+> Written when tools, graphs and cartridges were separate repositories (`coxswain-tools`, `coxswain-graphs`,
+> `coxswain-cartridges`). Since 2026.10.0 they are the folders `src/tools`, `src/graphs` and `src/cartridges` of
+> one repository. Read a repository name below as that folder.
+
 Date: 2026-09-07. Status: approved in chat, spec for review. Author: chair session with the operator.
 
 The stats store is the substrate for routing work by evidence instead of by hand. Today the

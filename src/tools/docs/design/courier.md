@@ -1,5 +1,8 @@
 # Courier: the reference scheme and the bus contract
 
+> Since this was written a seventh kind joined the six below: `initiative`, whose `<id>` resolves to
+> `work/<id>/initiative.md`, or to the initiative whose frontmatter `id` matches (`agent_tools/courier.py`).
+
 Courier lets one graph or chair hand a note to another without polling the
 other's state. This fixes the reference, resolver, and bus so tickets 2 and
 3 build without re-deciding anything.

@@ -1,5 +1,10 @@
 # The coxswain home
 
+> The monorepo (2026.10.0) replaced the install layout this describes. The home's installs folder now holds one
+> checkout, `installs/coxswain`, with tools, graphs and cartridges as its folders `src/tools`, `src/graphs` and
+> `src/cartridges`, and one venv inside it. Read "the three coxswain-* checkouts" below as that one checkout.
+> `cox setup migrate` moves a 0.47 install to it.
+
 Status: design for the install-workspace-and-settings epic, phase one. Date: 2026-10-16.
 
 Goal: coxswain gets its own root after install, and no shipped file names a user's project folder. This document

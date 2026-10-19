@@ -1,5 +1,9 @@
 # Work shape
 
+> Written when tools, graphs and cartridges were separate repositories (`coxswain-tools`, `coxswain-graphs`,
+> `coxswain-cartridges`). Since 2026.10.0 they are the folders `src/tools`, `src/graphs` and `src/cartridges` of
+> one repository, each with its own `docs/design/`. Read a repository name below as that folder.
+
 Status: approved by the chair 2026-09-08 on the operator's direction (2026-09-08): "the coxswain will make the
 distinction of mechanical vs novel. not everything can work through decomposition"; "this needs to be a
 formal path with coxswain"; "can the chair (or a dedicated agent) attempt to group intake tickets into a

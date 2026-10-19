@@ -1,5 +1,9 @@
 # The routing layer — design
 
+> Written when the platform was separate repositories (`agent-tools`, `agent-graphs`, `agent-cartridges`, later
+> renamed `coxswain-*`). Since 2026.10.0 they are the folders `src/tools`, `src/graphs` and `src/cartridges` of one
+> repository, and the command is `cox route`.
+
 Make the harness the default for work. A live session that receives a work
 request — anything that changes a repository — files it and runs it through
 the harness under the active cartridge, instead of editing the repository
