@@ -1,36 +1,57 @@
 # Fragments
 
-This page settles what a fragment is, where it lives, and the one rule
-that governs editing one: `cartridge.d/*.yaml`, read in sorted order,
-tighten-only, and never edited in place once it's shipped — the editor
-writes a new `edited.yaml` instead.
+This page settles what a fragment is, where it lives, and the rule that
+governs one: `cartridge.d/*.yaml`, folded in sorted order, checked against
+everything folded before it.
 
 ## cartridge.d/*.yaml
 
-A fragment is one piece of context text — a convention, a charter
-section, a style note — that gets assembled into a seat's prompt for a
-run. Fragments for a layer live as separate files under that layer's
-`cartridge.d/`, one concern per file, rather than one large file covering
-everything the layer wants to say.
+A fragment is a small YAML file that adds to one cartridge layer. It has
+the same keys as `cartridge.yaml`. Fragments for a layer live beside that
+layer's `cartridge.yaml`, in `cartridge.d/`, one concern per file:
+
+```text
+cartridges/my-team/
+  cartridge.yaml
+  cartridge.d/
+    10-review.yaml
+    20-checks.yaml
+  context/
+    charter.md
+```
+
+Prose (a charter, conventions) does not go in a fragment. It goes in a
+markdown file that a `context:` list names. A fragment can add to that
+list; its paths resolve from the team directory, not from `cartridge.d/`.
 
 ## Sorted order
 
-Fragments assemble in the sorted order of their file names. This makes
-the file name part of the contract: two fragments that must appear in a
-particular order in the assembled prompt need file names that sort that
-way, and renaming a fragment changes where it lands.
+Each layer folds its fragments in the sorted order of their file names,
+after the layer's own `cartridge.yaml`. Base's fragments fold before base
+joins local, and a team's fragments fold last. A later value wins a scalar
+conflict, so the file name is part of the contract. Number the files when
+order matters.
+
+A fragment's `extends` key is ignored: the chain is fixed by each layer's
+`cartridge.yaml` before any fragment is read. An empty fragment folds as
+nothing.
 
 ## Tighten-only
 
-A fragment can only narrow what a lower layer already set — raise a
-threshold, add a required check, shrink a budget — never loosen it. This
-is the same rule described in [Cartridges](../methodology/cartridges.md),
-applied at the level of one file instead of one layer.
+Each fragment is checked against the accumulated authority at its point:
+the parent chain, the layer's `cartridge.yaml`, and every fragment folded
+before it. A fragment that lowers a write kind's risk or shortens its ramp
+is refused, and the refusal names the fragment file. This is the rule in
+[Cartridges](../methodology/cartridges.md#tighten-only), applied one file
+at a time.
 
-## edited.yaml
+## Changing a fragment
 
-A fragment isn't hand-edited in its shipped location. An editor working
-on a fragment writes its changes to `edited.yaml` alongside it, so the
-original fragment and the proposed change are both on disk and diffable
-against each other, rather than a single file being overwritten in place
-with no record of what it said before.
+Edit the file and commit it in your workspace's cartridges folder. Every
+fragment's content is part of `cartridge_sha`, so changing one resets the
+autonomy streaks the old rules earned. To see the result, resolve the
+cartridge:
+
+```sh
+cartridge --team my-team --cartridges-dir <workspace>/cartridges --json
+```

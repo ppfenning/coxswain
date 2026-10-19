@@ -12,7 +12,7 @@ repository holds the ones Coxswain ships.
 | Group | Loaded by | Chosen by | Built in |
 | --- | --- | --- | --- |
 | `coxswain.sources` | `cox route pull` | `--source <name>`, configured under the profile's `sources.<name>`; a bare pull reads every configured source | `github` (issues labelled `intake` and PRs labelled `review`, through `gh`) and `folder` |
-| `coxswain.forges` | `cox runs land` | the profile's `forge:` key | `local` (plain git, the default) and `github` |
+| `coxswain.forges` | `cox runs land` | the profile's `forge:` key | `local` (plain git, the default), `github`, `forgejo`, and `auto` (each repository's forge, from its `origin`) |
 | `coxswain.trackers` | `cox route sync` | the profile's `tracker:` key | `none` (the default) and `github-projects` |
 | `coxswain.system_one` | the harness's fast path | the provider profile's `system_one.backend` | `model-tier` |
 | `coxswain.runners` | the harness | the provider profile's `runner:` key | `claude-code` and `anthropic` |
