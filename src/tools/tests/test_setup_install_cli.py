@@ -21,15 +21,15 @@ def _run(argv):
 @pytest.fixture
 def install_env(tmp_path, monkeypatch):
     root = tmp_path / "root"
-    for repo in ("coxswain-cartridges", "coxswain-graphs", "coxswain-tools"):
-        (root / repo).mkdir(parents=True)
+    log = tmp_path / "log.txt"
+    (root / "coxswain" / "crew").mkdir(parents=True)
+    _write_executable(root / "coxswain" / "crew" / "install.sh", f'#!/bin/sh\necho crew >> {log}\n')
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     home = tmp_path / "home"
     home.mkdir()
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    log = tmp_path / "log.txt"
     _write_executable(bin_dir / "uv", f'#!/bin/sh\necho "$@" >> {log}\nexit 0\n')
     _write_executable(bin_dir / "claude", f'#!/bin/sh\necho "$@" >> {log}\nexit 0\n')
     monkeypatch.setenv("HOME", str(home))
@@ -60,7 +60,7 @@ def test_dry_run_executes_nothing_and_prints_every_step(install_env, capsys):
     assert not install_env["log"].exists()
     assert not profile_path.exists()
     out = capsys.readouterr().out
-    assert "run" in out and "uv venv" in out
+    assert "run" in out and "uv sync" in out
     assert f"write {profile_path}" in out
     assert "verify with: agent-tools setup doctor" in out
 
@@ -69,15 +69,14 @@ def test_full_install_calls_uv_in_order_and_writes_profile(install_env):
     rc = _run(_base_argv(install_env, "--assume", "r"))
     assert rc == 0
     lines = install_env["log"].read_text(encoding="utf-8").splitlines()
-    assert lines[0] == "venv -q"
-    assert lines[1] == "pip install -q -e .[dev]"
-    assert lines[6] == f"tool install --force -q -e {install_env['root']}/coxswain-tools"
+    assert lines == ["sync --frozen --all-extras -q", f"tool install --force -q --editable {install_env['root']}/coxswain",
+                     "crew"]
     profile_path = install_env["home"] / ".config" / "agent-tools" / "profile.yaml"
     profile = route.parse_profile(profile_path.read_text(encoding="utf-8"))
     assert profile["team"] == "acme"
     assert profile["assume"] == "r"
     assert profile["cartridges_dir"] == f"{install_env['workspace']}/cartridges"
-    assert profile["harness_dir"] == f"{install_env['root']}/coxswain-graphs"
+    assert profile["harness_dir"] == f"{install_env['root']}/coxswain/src/graphs"
 
 
 def test_window_ceiling_usd_flag_writes_the_spend_block_into_the_written_profile(install_env):
@@ -122,18 +121,15 @@ def test_plugins_calls_fake_claude_twice(install_env):
 
 
 def test_failing_uv_stops_at_first_failure_and_profile_not_written(install_env):
-    # Fails from the 3rd logged call onward (the 2nd repo's `uv venv`), so a run
-    # that kept going after the first failure would leave more than 3 lines.
+    # `uv sync` fails, so a run that kept going would log the tool install and the crew script too.
     _write_executable(install_env["bin"] / "uv", f'''#!/bin/sh
 echo "$@" >> {install_env["log"]}
-n=$(wc -l < {install_env["log"]})
-if [ "$n" -ge 3 ]; then echo boom 1>&2; exit 1; fi
-exit 0
+echo boom 1>&2; exit 1
 ''')
     rc = _run(_base_argv(install_env))
     assert rc == 1
     lines = install_env["log"].read_text(encoding="utf-8").splitlines()
-    assert len(lines) == 3
+    assert len(lines) == 1
     assert not (install_env["home"] / ".config" / "agent-tools" / "profile.yaml").exists()
 
 
@@ -147,9 +143,8 @@ exit 0
     assert rc == 0
     out = capsys.readouterr().out
     warn_lines = [line for line in out.splitlines() if line.startswith("warn:")]
-    assert len(warn_lines) == 2
-    assert any("coxswain-tools" in line for line in warn_lines)
-    assert any("coxswain-cartridges" in line for line in warn_lines)
+    assert len(warn_lines) == 1
+    assert "tool install" in warn_lines[0]
     profile_path = install_env["home"] / ".config" / "agent-tools" / "profile.yaml"
     assert profile_path.exists()
 
@@ -164,12 +159,9 @@ def test_an_unsafe_team_value_is_refused_not_a_traceback(install_env, capsys):
     assert not install_env["log"].exists()
 
 
-def test_a_missing_repo_directory_fails_gracefully_not_a_traceback(tmp_path, monkeypatch):
+def test_a_missing_checkout_fails_gracefully_not_a_traceback(tmp_path, monkeypatch):
     root = tmp_path / "root"
     root.mkdir()
-    # coxswain-cartridges is deliberately never checked out here.
-    for repo in ("coxswain-graphs", "coxswain-tools"):
-        (root / repo).mkdir(parents=True)
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     home = tmp_path / "home"
@@ -210,7 +202,7 @@ def test_dry_run_without_root_plans_into_the_home(home_env, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     cox = home_env["cox"]
-    assert f"run ({cox}/installs/coxswain-tools) " in out
+    assert f"run ({cox}/installs/coxswain) uv sync" in out
     assert f"mkdir {cox}/workspaces/main" in out
     assert f"write {home_env['home']}/.config/agent-tools/profile.yaml" in out
     assert f"write {home_env['record']}" in out
@@ -220,8 +212,7 @@ def test_dry_run_without_root_plans_into_the_home(home_env, capsys):
 
 def test_a_real_run_without_root_creates_the_workspace_and_records_the_home(home_env, capsys):
     cox = home_env["cox"]
-    for repo in ("coxswain-cartridges", "coxswain-graphs", "coxswain-tools"):
-        (cox / "installs" / repo).mkdir(parents=True)
+    (cox / "installs" / "coxswain").mkdir(parents=True)
     assert _run(["setup", "install", "--team", "acme"]) == 0
     for folder in ("work", "runs", "intake", "cartridges"):
         assert (cox / "workspaces" / "main" / folder).is_dir()
@@ -246,7 +237,7 @@ def test_home_flag_names_the_home_and_the_registered_marketplace_is_read(home_en
     rc = _run(["setup", "install", "--team", "acme", "--home", str(other), "--plugins", "--dry-run"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert f"run ({other}/installs/coxswain-tools) " in out
+    assert f"run ({other}/installs/coxswain) uv sync" in out
     assert "claude plugin marketplace remove coxswain-cartridges" in out
 
 
@@ -272,7 +263,7 @@ def test_a_matching_or_unnamed_home_record_is_not_refused(home_env, monkeypatch,
     home_env["record"].write_text("/somewhere/else\n", encoding="utf-8")
     monkeypatch.delenv("COXSWAIN_HOME")
     assert _run(["setup", "install", "--team", "acme", "--dry-run"]) == 0
-    assert "run (/somewhere/else/installs/coxswain-tools) " in capsys.readouterr().out
+    assert "run (/somewhere/else/installs/coxswain) uv sync" in capsys.readouterr().out
 
 
 def test_a_refused_resolve_exits_2_with_its_reason(home_env, capsys):

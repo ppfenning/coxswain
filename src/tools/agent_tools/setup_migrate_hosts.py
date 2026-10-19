@@ -1,12 +1,13 @@
 """Pure migration plan for the lane hosts, per docs/design/coxswain-home.md questions 1 and 4.
 
 A host is judged only by what its own beat reports. A beat host is migrated when it reports at least one
-checkout and every checkout path has a parent directory named installs. No host path is ever compared with the
-chair's, because hosts on different operating systems have different home roots.
+checkout and every checkout path lies in the one monorepo checkout, `<...>/installs/coxswain`. No host path is
+ever compared with the chair's, because hosts on different operating systems have different home roots.
 """
 
 from __future__ import annotations
 
+import itertools
 import json
 import posixpath
 import shlex
@@ -36,12 +37,17 @@ class Step:
     payload: dict = field(default_factory=dict)
 
 
+def in_checkout(path: str) -> bool:
+    """True when `path` is the monorepo checkout `<...>/installs/coxswain` or a folder inside it. A component
+    checkout of the old layout, `installs/coxswain-tools`, is not."""
+    parts = posixpath.normpath(path).split("/")
+    return any(a == "installs" and b == "coxswain" for a, b in itertools.pairwise(parts))
+
+
 def is_migrated(host: ObservedHost) -> bool:
-    """Reports a checkout, and every reported path lies inside a folder named installs: a checkout directly under it, or
-    a folder inside such a checkout (a lane host reports `coxswain-cartridges/providers` among its repos)."""
-    return bool(host.checkouts) and all(
-        "installs" in posixpath.dirname(path).split("/") for path in host.checkouts.values()
-    )
+    """Reports a checkout, and every reported path lies in the monorepo checkout: the checkout itself, or a folder
+    inside it (an older beat reports `src/cartridges/providers` beside it)."""
+    return bool(host.checkouts) and all(in_checkout(path) for path in host.checkouts.values())
 
 
 def _host_steps(host: ObservedHost) -> list[Step]:
@@ -52,7 +58,7 @@ def _host_steps(host: ObservedHost) -> list[Step]:
             Step(
                 "remote_migrate",
                 host.name,
-                f"{host.name} reports checkouts outside an installs folder, so run setup migrate on it.",
+                f"{host.name} reports checkouts outside the monorepo checkout, so run setup migrate on it.",
                 argv=["ssh", host.ssh, "cox", "setup", "migrate", "--apply"],
             )
         ]
@@ -61,11 +67,11 @@ def _host_steps(host: ObservedHost) -> list[Step]:
             Step(
                 "rewrite_host_workspace",
                 host.name,
-                f"{host.name} beats installs paths but the lane_hosts entry is stale, so re-point it.",
+                f"{host.name} beats the monorepo checkout but the lane_hosts entry is stale, so re-point it.",
                 payload={"workspace_dir": host.workspace_dir, "checkouts": dict(host.checkouts)},
             )
         ]
-    return [Step("skip", host.name, f"{host.name} beats installs paths and the lane_hosts entry already agrees.")]
+    return [Step("skip", host.name, f"{host.name} beats the monorepo checkout and the lane_hosts entry already agrees.")]
 
 
 def host_migrate_plan(hosts: Sequence[ObservedHost], locations: Locations) -> list[list[Step]]:

@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import shlex
+
+from agent_tools.setup_install import CHECKOUT, SYNC_ARGV
+
 Step = tuple[list[str], bool]
 
 
@@ -10,15 +14,19 @@ def install_steps(ssh: str, root: str, repos: dict[str, str], workspace_remote: 
 
     The workspace clone (`{root}/workspace` from `workspace_remote`) refuses when the host already has a plain
     directory there instead of a git checkout; that step is still listed, never dropped, so the person sees the
-    failure and clears the directory themselves.
+    failure and clears the directory themselves. The one checkout, `{root}/coxswain`, gets its venv synced and
+    becomes the editable `cox` tool.
     """
+    checkout = f"{root}/{CHECKOUT}"
+
     def _sync(name: str, url: str) -> Step:
         return (["ssh", ssh, f"test -d {root}/{name} && git -C {root}/{name} pull --ff-only || git clone {url} {root}/{name}"], True)
 
     return [
         *(_sync(name, url) for name, url in repos.items()),
         _sync("workspace", workspace_remote),
-        (["ssh", ssh, f"uv tool install --force --editable '{root}/coxswain-tools[traces,parquet,lake,postgres]'"], True),
+        (["ssh", ssh, f"cd {checkout} && {shlex.join(SYNC_ARGV)}"], True),
+        (["ssh", ssh, f"uv tool install --force --editable '{checkout}[traces,parquet,lake,postgres]'"], True),
         (["ssh", ssh, f"cox chair service --install --label {label}"], True),
         (["sudo", "loginctl", "enable-linger", "<user>"], False),
         (["ssh", ssh, "systemctl --user enable --now coxswain-chair.service"], False),

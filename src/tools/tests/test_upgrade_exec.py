@@ -23,29 +23,35 @@ def _git(directory, *args):
     return ["git", "-C", f"/r/{directory}", *args]
 
 
-def test_umbrella_moves_before_crew_and_dash_and_each_gets_fetch_then_checkout():
+AFTER = ({"argv": ["uv", "sync"], "cwd": "/r/coxswain"}, {"argv": ["/r/coxswain/crew/install.sh"], "warn_only": True})
+
+
+def test_the_checkout_moves_then_its_after_steps_run_before_any_component():
     run, calls = _recorder()
-    code = run_plan(Plan((UMBRELLA, CREW, DASH), ()), root=ROOT, run=run, dry_run=False)
+    code = run_plan(Plan((UMBRELLA, DASH), ()), root=ROOT, run=run, dry_run=False, after_move=AFTER)
     assert code == 0
     assert calls == [
         _git("coxswain", "fetch", "--tags"), _git("coxswain", "checkout", "v2"),
-        _git("coxswain-crew", "fetch", "--tags"), _git("coxswain-crew", "checkout", "v2"),
-        ["/r/coxswain-crew/install.sh"],
+        ["uv", "sync"], ["/r/coxswain/crew/install.sh"],
         _git("coxswain-dash", "fetch", "--tags"), _git("coxswain-dash", "checkout", "v2"),
     ]
 
 
-def test_install_script_is_not_run_when_crew_has_no_step():
-    run, calls = _recorder()
-    run_plan(Plan((UMBRELLA, DASH), ()), root=ROOT, run=run, dry_run=False)
-    assert ["/r/coxswain-crew/install.sh"] not in calls
+def test_a_failed_warn_only_after_step_warns_and_a_failed_sync_stops(capsys):
+    run, calls = _recorder(fail_on="/r/coxswain/crew/install.sh")
+    assert run_plan(Plan((UMBRELLA,), ()), root=ROOT, run=run, dry_run=False, after_move=AFTER) == 0
+    assert "warn: /r/coxswain/crew/install.sh exited 1" in capsys.readouterr().out
+    run, calls = _recorder(fail_on="sync")
+    assert run_plan(Plan((UMBRELLA, DASH), ()), root=ROOT, run=run, dry_run=False, after_move=AFTER) == 2
+    assert calls[-1] == ["uv", "sync"]
 
 
 def test_dry_run_prints_the_steps_and_makes_no_calls(capsys):
     run, calls = _recorder()
-    code = run_plan(Plan((UMBRELLA, CREW), ()), root=ROOT, run=run, dry_run=True)
+    code = run_plan(Plan((UMBRELLA, CREW), ()), root=ROOT, run=run, dry_run=True, after_move=AFTER)
     assert (code, calls) == (0, [])
-    assert "would move crew: v1 to v2" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "would move crew: v1 to v2" in out and "would run uv sync" in out
 
 
 def test_left_behind_is_printed_and_exits_2(capsys):

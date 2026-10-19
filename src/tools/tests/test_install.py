@@ -44,6 +44,14 @@ def _kinds(steps):
     return [(s["kind"], s["component"]) for s in steps]
 
 
+def test_the_checkout_comes_first_pinned_at_the_manifests_own_version():
+    steps = install.plan(_manifest(), _facts(), _options())
+    assert steps[0] == {"kind": "clone", "component": "coxswain", "detail": "clone ppfenning/coxswain at v0.1.0"}
+    at_pin = {"coxswain": {"present": True, "tag": "v0.1.0", "dirty": False}}
+    assert install.plan(_manifest(), _facts(at_pin), _options())[0]["kind"] == "skip"
+    assert install.rows(_manifest(), _facts(at_pin))[0] == ("coxswain", "v0.1.0", "v0.1.0", "ok")
+
+
 def test_fresh_root_clones_required_only():
     steps = install.plan(_manifest(), _facts(), _options())
     kinds = _kinds(steps)
@@ -261,39 +269,21 @@ def test_cli_versions_reports_ok_missing_and_extra_from_real_checkouts(tmp_path,
     assert "extra-thing" in out and "extra" in out
 
 
-def test_cli_versions_schema_column_reports_the_gathered_version(tmp_path, monkeypatch, capsys):
+def test_cli_versions_schema_cell_of_the_checkout_reads_the_checkouts_own_schemas(tmp_path, capsys):
+    """`root` is `tmp_path` (the manifest lives at `tmp_path/coxswain`); the schemas are read from the checkout's
+    src/cartridges and src/graphs, so a disagreeing core version there turns the checkout's cell to WARN."""
     manifest_dir = tmp_path / "coxswain"
-    manifest_dir.mkdir()
+    (manifest_dir / "src" / "cartridges" / "core").mkdir(parents=True)
+    (manifest_dir / "src" / "cartridges" / "core" / "__init__.py").write_text('SCHEMA_VERSION = "2.5"\n')
+    (manifest_dir / "src" / "graphs" / "harness").mkdir(parents=True)
+    (manifest_dir / "src" / "graphs" / "harness" / "__init__.py").write_text('CORE_SCHEMA = "1.0"\n')
     manifest_path = manifest_dir / "manifest.toml"
     manifest_path.write_text(_MANIFEST_TOML)
-    _git_repo(tmp_path / "harness", tag="v1.0.0")
-    _fake_schema_package(tmp_path, monkeypatch, cartridges="1.0", graphs="1.0")
     rc = cli.main(["versions", "--manifest", str(manifest_path)])
     out = capsys.readouterr().out
     assert rc == 0
-    cartridges_line = next(line for line in out.splitlines() if line.split()[0] == "cartridges").rstrip()
-    assert cartridges_line.endswith("1.0")
-
-
-def test_cli_versions_schema_column_prefers_the_root_checkout_over_the_import_fallback(tmp_path, monkeypatch, capsys):
-    """`root` here is `tmp_path` (the manifest lives at `tmp_path/coxswain`), so
-    `<root>/cartridges/core/__init__.py` is the real path `_versions` seeds its
-    reader with; it must win over whatever `_fake_schema_package` put on
-    `sys.path`, proving the reader is wired to the checkout, not the import."""
-    manifest_dir = tmp_path / "coxswain"
-    manifest_dir.mkdir()
-    manifest_path = manifest_dir / "manifest.toml"
-    manifest_path.write_text(_MANIFEST_TOML)
-    _git_repo(tmp_path / "harness", tag="v1.0.0")
-    _fake_schema_package(tmp_path, monkeypatch, cartridges="1.0", graphs="1.0")
-    core_dir = tmp_path / "cartridges" / "core"
-    core_dir.mkdir(parents=True)
-    (core_dir / "__init__.py").write_text('SCHEMA_VERSION = "2.5"\n')
-    rc = cli.main(["versions", "--manifest", str(manifest_path)])
-    out = capsys.readouterr().out
-    assert rc == 0
-    cartridges_line = next(line for line in out.splitlines() if line.split()[0] == "cartridges").rstrip()
-    assert cartridges_line.endswith("2.5")
+    checkout_line = next(line for line in out.splitlines() if line.split()[0] == "coxswain").rstrip()
+    assert checkout_line.endswith("WARN")
 
 
 def test_cli_install_prints_no_schema_warn_line_when_all_three_agree(tmp_path, monkeypatch, capsys):
@@ -341,7 +331,7 @@ def _edge_manifest():
 def _first_kind(manifest, checkout, channel):
     checkouts = dict.fromkeys(manifest["components"], checkout)
     steps = install.plan(manifest, _facts(checkouts), {**_options(), "channel": channel})
-    return steps[0]["kind"]
+    return steps[1]["kind"]
 
 
 def test_each_channel_clones_fetches_skips_and_refuses_a_dirty_checkout():
@@ -357,7 +347,7 @@ def test_each_channel_clones_fetches_skips_and_refuses_a_dirty_checkout():
 
 def test_edge_defaults_a_ref_less_component_to_main():
     steps = install.plan(_edge_manifest(), _facts(), {**_options(), "channel": "edge"})
-    assert [s["detail"] for s in steps[:2]] == ["clone org/harness at trunk", "clone org/cartridges at main"]
+    assert [s["detail"] for s in steps[1:3]] == ["clone org/harness at trunk", "clone org/cartridges at main"]
 
 
 def test_a_release_run_with_a_branch_pinned_component_refuses_naming_the_mix():
@@ -398,7 +388,7 @@ def test_edge_rows_compare_the_branch_and_its_tip_not_a_tag():
     checkouts = {"harness": {"present": True, "tag": None, "branch": "main", "branch_tip": True, "dirty": False},
                  "cartridges": {"present": True, "tag": None, "branch": "trunk", "branch_tip": False, "dirty": False}}
     assert install.rows(manifest, _facts(checkouts), "edge") == [
-        ("harness", "main", "main", "ok"), ("cartridges", "trunk", "trunk", "drift")]
+        ("coxswain", "main", None, "missing"), ("harness", "main", "main", "ok"), ("cartridges", "trunk", "trunk", "drift")]
 
 
 def _run(cwd, *argv):
@@ -431,14 +421,14 @@ def test_an_edge_checkout_behind_the_remote_fetches_and_then_lands_on_the_tip(tm
     def steps():
         return install.plan(manifest, _facts({"harness": cli._checkout_facts(root / "coxswain-harness", fetch=True)}), options)
 
-    assert steps()[0]["kind"] == "fetch_checkout"
+    assert steps()[1]["kind"] == "fetch_checkout"
     def run(argv, cwd):
         proc = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
         return proc.returncode, proc.stdout + proc.stderr
-    results = install_exec.execute(install_exec.from_plan(steps()[:1], manifest=manifest, options=options),
+    results = install_exec.execute(install_exec.from_plan(steps()[1:2], manifest=manifest, options=options),
                                    root=str(root), run=run)
     assert results[0]["exit"] == 0 and (root / "coxswain-harness" / "f").read_text() == "2"
-    assert steps()[0]["kind"] == "skip"
+    assert steps()[1]["kind"] == "skip"
 
 
 _HOME_ARGS = ["--provider", "claude-code", "--team", "example-team"]
@@ -493,6 +483,7 @@ def test_cli_install_root_flag_output_is_the_same_as_before(tmp_path, monkeypatc
     assert rc == 0
     assert out == (
         "channel: release\n"
+        "clone coxswain: clone ppfenning/coxswain at v0.1.0\n"
         "clone harness: clone org/harness at v1.0.0\n"
         "clone cartridges: clone org/cartridges at v1.0.0\n"
         f"setup_install setup_install: channel=release team=example-team workspace={tmp_path / 'ws'}\n"

@@ -8,7 +8,7 @@ import posixpath
 import re
 from collections.abc import Callable, Mapping, Sequence
 
-from agent_tools import records, route, schema, store_dialect
+from agent_tools import records, route, schema, setup_install, store_dialect
 from agent_tools.home import Locations
 from agent_tools.setup_migrate import cartridge_link_target
 from agent_tools.setup_migrate_hosts import ObservedHost, is_migrated
@@ -373,7 +373,7 @@ def freshness_rows(
     return [_warn_row(line) for line in lines]
 
 
-_MARKETPLACE = "coxswain-cartridges"
+_MARKETPLACE = setup_install.MARKETPLACE
 
 
 def _home_root_row(locations: Locations, root_exists: bool, root_writable: bool) -> dict:
@@ -413,13 +413,13 @@ def _marketplace_registered_row(listing: Mapping[str, str] | None) -> dict:
 
 
 def _marketplace_location_row(locations: Locations, listing: Mapping[str, str] | None, in_project: bool) -> dict:
-    """Text compare against the checkout under the resolved installs folder; no link is followed."""
+    """Text compare against the checkout's `src/cartridges` under the resolved installs folder; no link is followed."""
     if listing is None:
         return _home_warn_row("marketplace location", _NO_CLAUDE)
     source = listing.get(_MARKETPLACE)
     if source is None:
         return _home_warn_row("marketplace location", f"no {_MARKETPLACE} entry to compare with the home")
-    expected = posixpath.join(locations.installs, _MARKETPLACE)
+    expected = setup_install.layout(locations.installs).cartridges
     if source == expected:
         return {"check": "marketplace location", "ok": True, "detail": f"{source} equals the checkout under the home"}
     where = "inside a user project folder" if in_project else "not the checkout under the home"
@@ -427,11 +427,11 @@ def _marketplace_location_row(locations: Locations, listing: Mapping[str, str] |
 
 
 def _legacy_layout_row(legacy_path: str | None) -> dict:
-    """A warn row keeps `ok` True so `exit_code` ignores it; `legacy_path` is the old checkout location when still present."""
+    """A warn row keeps `ok` True so `exit_code` ignores it; `legacy_path` is a component checkout still in use."""
     if legacy_path is None:
         return {"check": "old layout", "ok": True, "detail": "no old-layout checkout found"}
     return {"check": "old layout", "ok": True, "warn": True,
-            "detail": f"old layout still present at {legacy_path}; run `cox setup migrate` to move it"}
+            "detail": f"old layout still present at {legacy_path}; run `cox setup migrate` to retire it"}
 
 
 def _expand_tilde(path: str, user_home: str) -> str:
@@ -492,7 +492,7 @@ def _cartridge_links_row(locations: Locations, links: Mapping[str, str]) -> dict
         if target
         not in (
             (expected := cartridge_link_target(path, locations)),
-            posixpath.join(locations.installs, "coxswain-cartridges", "cartridges", posixpath.basename(path)),
+            posixpath.join(setup_install.layout(locations.installs).cartridges, "cartridges", posixpath.basename(path)),
         )
     ]
     if stale:
@@ -504,17 +504,14 @@ def _cartridge_links_row(locations: Locations, links: Mapping[str, str]) -> dict
     }
 
 
-_INSTALL_BIN_REPOS = {
-    "graphs venv": "coxswain-graphs",
-    "tools venv": "coxswain-tools",
-    "tools receipt": "coxswain-tools",
-    "cartridges receipt": _MARKETPLACE,
-}
+# Both editable installs come from the one checkout: the venv's `coxswain` and the `coxswain` uv tool.
+_INSTALL_BIN_SOURCES = ("venv", "tool receipt")
 
 
 def install_bins_row(locations: Locations, sources: Mapping[str, str | None]) -> dict:
-    """Each source must equal its own repo's checkout under `locations.installs`; None or an absent key is missing."""
-    expected = {name: posixpath.join(locations.installs, repo) for name, repo in _INSTALL_BIN_REPOS.items()}
+    """Each source must equal the checkout under `locations.installs`; None or an absent key is missing."""
+    checkout = setup_install.layout(locations.installs).checkout
+    expected = dict.fromkeys(_INSTALL_BIN_SOURCES, checkout)
     missing = [name for name in expected if sources.get(name) is None]
     stale = [
         f"{name} -> {sources[name]}; expected {path}"
@@ -524,7 +521,7 @@ def install_bins_row(locations: Locations, sources: Mapping[str, str | None]) ->
     problems = [*([f"missing {', '.join(missing)}"] if missing else []), *stale]
     if problems:
         return {"check": "install bins", "ok": False, "detail": "; ".join(problems)}
-    return {"check": "install bins", "ok": True, "detail": "all 4 sources reach their checkout under the home"}
+    return {"check": "install bins", "ok": True, "detail": f"the venv and the cox tool are editable from {checkout}"}
 
 
 def home_rows(
@@ -580,7 +577,7 @@ def _host_findings(host: ObservedHost) -> list[str]:
         *(
             []
             if is_migrated(host)
-            else [f"{host.name} reports checkouts outside an installs folder; run cox setup migrate --apply on it"]
+            else [f"{host.name} reports checkouts outside the monorepo checkout; run cox setup migrate --apply on it"]
         ),
         *(
             [
@@ -594,14 +591,14 @@ def _host_findings(host: ObservedHost) -> list[str]:
 
 
 def lane_host_paths_row(hosts: Sequence[ObservedHost]) -> dict:
-    """Warn-only: a lane host off the installs paths is advice, never a failure."""
+    """Warn-only: a lane host off the monorepo checkout is advice, never a failure."""
     check = "lane host paths"
     if not hosts:
         return {"check": check, "ok": True, "detail": "no lane hosts"}
     findings = [f for host in hosts for f in _host_findings(host)]
     if findings:
         return {"check": check, "ok": True, "warn": True, "detail": "; ".join(findings)}
-    return {"check": check, "ok": True, "detail": f"{len(hosts)} hosts on installs paths"}
+    return {"check": check, "ok": True, "detail": f"{len(hosts)} hosts on the monorepo checkout"}
 
 
 _STORE_CHECK = "shared store"

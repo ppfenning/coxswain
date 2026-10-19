@@ -4,15 +4,14 @@ from agent_tools import chair_service_host
 
 
 def test_install_steps_gives_the_exact_argv_and_run_flags_in_order() -> None:
-    repos = {"coxswain": "git@example.com:coxswain.git", "coxswain-tools": "git@example.com:coxswain-tools.git"}
+    repos = {"coxswain": "git@example.com:coxswain.git"}
     assert chair_service_host.install_steps("host-a", "/r", repos, "git@example.com:workspace.git", "chair") == [
         (["ssh", "host-a", "test -d /r/coxswain && git -C /r/coxswain pull --ff-only || "
                             "git clone git@example.com:coxswain.git /r/coxswain"], True),
-        (["ssh", "host-a", "test -d /r/coxswain-tools && git -C /r/coxswain-tools pull --ff-only || "
-                            "git clone git@example.com:coxswain-tools.git /r/coxswain-tools"], True),
         (["ssh", "host-a", "test -d /r/workspace && git -C /r/workspace pull --ff-only || "
                             "git clone git@example.com:workspace.git /r/workspace"], True),
-        (["ssh", "host-a", "uv tool install --force --editable '/r/coxswain-tools[traces,parquet,lake,postgres]'"], True),
+        (["ssh", "host-a", "cd /r/coxswain && uv sync --frozen --all-extras -q"], True),
+        (["ssh", "host-a", "uv tool install --force --editable '/r/coxswain[traces,parquet,lake,postgres]'"], True),
         (["ssh", "host-a", "cox chair service --install --label chair"], True),
         (["sudo", "loginctl", "enable-linger", "<user>"], False),
         (["ssh", "host-a", "systemctl --user enable --now coxswain-chair.service"], False),

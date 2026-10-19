@@ -5884,7 +5884,11 @@ _DOCTOR_HOME_CHECKS = (
 
 
 def _doctor_legacy_path(profile: Mapping, locs) -> str | None:
-    """Edge. The old checkout folder when it is not the installs folder and holds a real coxswain-graphs directory."""
+    """Edge. A component checkout still a real directory in the installs folder, else the pre-home checkout folder
+    when it is not the installs folder and holds a real coxswain-graphs directory."""
+    left = [p for p in (Path(locs.installs) / name for name in setup_migrate.RETIRED) if p.is_dir() and not p.is_symlink()]
+    if left:
+        return str(left[0])
     old = _migrate_old_root(profile, locs)
     graphs = Path(old) / setup_migrate.GRAPHS if old else None
     return old if old and old != locs.installs and graphs.is_dir() and not graphs.is_symlink() else None
@@ -5898,7 +5902,7 @@ def _doctor_home_rows(profile: dict | None) -> list[dict]:
     if isinstance(locs, home_paths.Refused):
         return [{"check": "home root", "ok": False, "detail": locs.reason}]
     listing = _marketplace_listing()
-    source = (listing or {}).get("coxswain-cartridges")
+    source = (listing or {}).get(setup_install.MARKETPLACE)
     workspace = profile.get("workspace_dir")
     in_project = bool(source and workspace and Path(source).parent == Path(workspace).expanduser().parent)
     record = _read_text_or_none(Path(locs.record))
@@ -5910,7 +5914,7 @@ def _doctor_home_rows(profile: dict | None) -> list[dict]:
         _doctor_legacy_path(profile, locs),
         in_project,
         _migrate_cartridge_links(profile),
-        _doctor_install_sources(_migrate_install_bins(locs)),
+        _doctor_install_sources(_migrate_install_bins(), setup_migrate.read_venv_source(setup_install.layout(locs.installs).checkout)),
         home_record=(record or "").strip() or None,
         skills_roots=profile.get("skills_roots") or (),
         provider_profile=profile.get("provider_profile") or "",
@@ -6004,7 +6008,7 @@ def _install_home_refusal(home: str, record: str | None, named: bool) -> str | N
 
 def _install_facts(a: argparse.Namespace) -> dict:
     """Gathers exactly what `install_plan` needs and nothing it decides:
-    PATH lookups, each repo's venv, the profile's existence, and the
+    PATH lookups, the coxswain tool's receipt extras, the profile's existence, and the
     config/settings paths expanded once, here. Without `--root` the checkouts,
     profile and workspace come from the resolved coxswain home; a refusal
     raises ValueError for the caller to print."""
@@ -6026,26 +6030,20 @@ def _install_facts(a: argparse.Namespace) -> dict:
         root, profile_file = locs.installs, locs.profile
         workspace_exists = Path(locs.workspaces, "main").exists()
         listing = _marketplace_listing() if a.plugins and shutil.which("claude") is not None else None
-        registered = (listing or {}).get("coxswain-cartridges")
-    python_exists = {repo: (Path(root) / repo / ".venv" / "bin" / "python").exists()
-                      for repo in setup_install.REPOS}
+        registered = (listing or {}).get(setup_install.MARKETPLACE)
     tool_dir = setup_receipts.default_tool_dir(os.environ, str(Path.home()))
-    receipt_extras = {
-        key: setup_receipts.read_tool_extras(tool_dir, setup_migrate.TOOL_RECEIPTS[repo])
-        for key, repo in (("tool_extras", setup_migrate.TOOLS), ("cartridge_extras", setup_migrate.CARTRIDGES))
-    }
+    paths = setup_install.layout(root)
     return {
-        **receipt_extras,
+        "tool_extras": setup_receipts.read_tool_extras(tool_dir, setup_install.TOOL),
         "root": root,
         "team": a.team,
         "workspace": a.workspace or "",
         "locations": locs,
         "registered_marketplace": registered,
         "workspace_exists": workspace_exists,
-        "provider_profile": a.provider_profile or f"{root}/coxswain-cartridges/providers/claude-code.yaml",
-        "skills_root": a.skills_root or f"{root}/coxswain-cartridges/skills-plugins",
+        "provider_profile": a.provider_profile or paths.provider_profile,
+        "skills_root": a.skills_root or paths.skills_root,
         "uv_on_path": shutil.which("uv") is not None,
-        "python_exists": python_exists,
         "claude_on_path": shutil.which("claude") is not None,
         "profile_exists": Path(profile_file).exists(),
         "force_profile": a.force_profile,
@@ -6064,6 +6062,9 @@ def _install_run(step: dict) -> str | None:
     try:
         proc = subprocess.run(step["argv"], cwd=step.get("cwd"), capture_output=True, text=True)
     except OSError as exc:
+        if step.get("warn_only"):
+            print(f"warn: {argv}: {exc}")
+            return None
         print(f"FAILED: {argv}: {exc}")
         return f"{argv}: {exc}"
     if proc.returncode == 0:
@@ -6152,25 +6153,6 @@ def _migrate_kind(path: Path) -> str:
     return "file" if path.exists() else "absent"
 
 
-def _migrate_entry(root: str, name: str, locs) -> dict:
-    old, new = Path(root) / name, Path(locs.installs) / name
-    if old == new:  # the profile already names the installs folder, so the old path is no longer known
-        return {"old": str(old), "old_kind": "symlink", "new_kind": _migrate_kind(new), "old_target": str(new)}
-    target = os.readlink(old) if old.is_symlink() else None
-    return {
-        "old": str(old),
-        "old_kind": _migrate_kind(old),
-        "new_kind": _migrate_kind(new),
-        "old_target": target,
-        "target_git": _migrate_target_git(old),
-    }
-
-
-def _migrate_target_git(old: Path) -> bool:
-    """Edge. True when `old` is a symlink whose target is a directory holding a .git entry."""
-    return old.is_symlink() and (old / ".git").exists() and old.resolve().is_dir()
-
-
 def _migrate_worktrees(checkout: Path) -> list[str] | None:
     """Edge. Every path `git worktree list` names for the checkout, main one first; None when git cannot list."""
     try:
@@ -6198,18 +6180,6 @@ def _migrate_checkouts() -> tuple[str, ...]:
     return tuple(dict.fromkeys((*setup_migrate.CHECKOUTS, setup_migrate.UMBRELLA)))
 
 
-def _migrate_entries(root: str, locs) -> dict:
-    """Edge. One entry per checkout. The umbrella is optional, so it is left out when nothing sits at its old or final path."""
-    entries = {name: _migrate_entry(root, name, locs) for name in _migrate_checkouts()}
-    return {
-        name: e
-        for name, e in entries.items()
-        if name in setup_migrate.CHECKOUTS
-        or e["new_kind"] != "absent"
-        or (e["old_kind"] != "absent" and Path(e["old"]) != Path(locs.installs) / name)
-    }
-
-
 def _migrate_old_root(profile: Mapping, locs) -> str | None:
     """Pure. The folder holding the old checkouts: the parent of the first checkout-named path component in a
     profile setting that lies outside the installs folder, else the installs folder when every setting is already
@@ -6235,39 +6205,43 @@ def _migrate_tool_dir() -> str | None:
     return done.stdout.strip() or None if done.returncode == 0 else None
 
 
-def _migrate_install_bins(locs) -> dict | None:
+def _migrate_install_bins() -> dict | None:
     """Edge. `setup_migrate.observe_install_bins` for this machine; None when the uv tool dir is unknown."""
     tool_dir = _migrate_tool_dir()
-    return None if tool_dir is None else setup_migrate.observe_install_bins(locs, tool_dir)
+    return None if tool_dir is None else setup_migrate.observe_install_bins(tool_dir)
 
 
-def _doctor_install_sources(bins: Mapping | None) -> dict[str, str | None] | None:
-    """Pure. The `install_bins` observation flattened to the four named sources `doctor.home_rows` compares."""
+def _doctor_install_sources(bins: Mapping | None, venv_source: str | None) -> dict[str, str | None] | None:
+    """Pure. The two editable sources `doctor.home_rows` compares with the checkout: the venv's `coxswain` and the
+    `coxswain` uv tool's receipt. None when the uv tool dir is unknown."""
     if bins is None:
         return None
-    tools, carts = setup_migrate.TOOLS, setup_migrate.CARTRIDGES
-    return {
-        "graphs venv": (bins.get(setup_migrate.GRAPHS) or {}).get("source"),
-        "tools venv": (bins.get(tools) or {}).get("source"),
-        "tools receipt": (bins.get(f"tool:{tools}") or {}).get("editable"),
-        "cartridges receipt": (bins.get(f"tool:{carts}") or {}).get("editable"),
-    }
+    return {"venv": venv_source, "tool receipt": (bins.get(setup_install.TOOL) or {}).get("editable")}
 
 
-def _migrate_observe(locs) -> dict:
-    """Edge. The old layout as the plain dict `setup_migrate.migrate_plan` takes. When every setting already names
-    the installs folder no old path is recorded anywhere, so each checkout is reported as a link to its new path."""
+def _migrate_checkout_url(checkout: Path) -> str:
+    """Edge. The checkout's origin, else the coxswain repository on GitHub."""
+    return (_origin_url(str(checkout)) if checkout.is_dir() else None) or f"https://github.com/{install.CHECKOUT_REPO}.git"
+
+
+def _migrate_target_tag(checkout: Path, url: str, to: str | None) -> str | None:
+    """Edge. `--to` as a release tag, else the newest release the checkout's remote offers."""
+    if to:
+        return upgrade_plan.release_tag(to)
+    return upgrade_exec.newest_release(_offered_tags(checkout, None if checkout.is_dir() else url))
+
+
+def _migrate_observe(locs, to: str | None = None) -> dict:
+    """Edge. The host as the plain dict `setup_migrate.migrate_plan` takes. The remote is asked for a release tag
+    only while the checkout is not yet the monorepo."""
     profile = _migrate_profile(locs)
-    root = _migrate_old_root(profile, locs)
-    entries = _migrate_entries(root, locs) if root else {}
-    seen = {}
-    for name, entry in entries.items():
-        new, old = Path(locs.installs) / name, Path(entry["old"])
-        linked = old if entry.get("target_git") else None  # a link to a git checkout: git reads it through the link
-        where = new if _migrate_kind(new) == "dir" else old if _migrate_kind(old) == "dir" else linked
-        listed = _migrate_worktrees(where) if where is not None else None
-        if listed is not None:
-            seen[name] = listed
+    installs = Path(locs.installs)
+    checkout = Path(setup_install.layout(locs.installs).checkout)
+    kind = _migrate_kind(checkout)
+    monorepo = kind == "dir" and setup_migrate.read_is_monorepo(str(checkout))
+    url = _migrate_checkout_url(checkout)
+    components = {name: _migrate_kind(installs / name) for name in setup_migrate.RETIRED}
+    listed = {name: _migrate_worktrees(installs / name) for name, k in components.items() if k == "dir"}
     record = _read_text_or_none(Path(locs.record))
     links = _migrate_cartridge_links(profile)
     linux = sys.platform.startswith("linux")
@@ -6275,19 +6249,24 @@ def _migrate_observe(locs) -> dict:
     unit = _read_text_or_none(unit_file) if linux else None
     drop_ins = _migrate_chair_drop_ins(unit_file.parent) if linux else ()
     claude_on_path = shutil.which("claude") is not None
+    bins = _migrate_install_bins()
     return {
+        "checkout": {"kind": kind, "monorepo": monorepo, "url": url,
+                     "dirty": kind == "dir" and bool(_checkout_facts(checkout).get("dirty"))},
+        "target_tag": None if monorepo else _migrate_target_tag(checkout, url, to),
+        "components": components,
+        "worktrees": {name: paths[1:] for name, paths in listed.items() if paths is not None},
+        "venv_source": setup_migrate.read_venv_source(str(checkout)),
         "claude_on_path": claude_on_path,
-        "marketplace": (_marketplace_listing() or {}).get("coxswain-cartridges"),
+        "marketplace": (_marketplace_listing() or {}).get(setup_install.MARKETPLACE),
         "marketplace_plugins": _marketplace_plugins(),
         "chair_unit": unit,
         "chair_unit_drop_ins": drop_ins,
         "chair_active": bool(drop_ins) and _migrate_chair_active(),
-        "entries": entries,
-        "settings": {key: profile[key] for key in setup_migrate.SETTING_KEYS if key in profile},
+        "settings": {key: profile[key] for key in (*setup_migrate.SETTING_KEYS, setup_migrate.REPO_MAP_KEY) if key in profile},
         "home_record": record.strip() if record and record.strip() else None,
-        "worktrees": {name: paths[1:] for name, paths in seen.items()},
-        "worktree_status": {name: "clean" for name, paths in seen.items() if all(Path(p).exists() for p in paths)},
-        "install_bins": _migrate_install_bins(locs),
+        "today": datetime.datetime.now(datetime.UTC).date().isoformat(),
+        **({"install_bins": bins} if bins is not None else {}),
         **({"cartridge_links": links} if links is not None else {}),
         **({"workspace": {"path": profile["workspace_dir"]}} if isinstance(profile.get("workspace_dir"), str) else {}),
     }
@@ -6350,14 +6329,18 @@ def _migrate_profile_value(value) -> str:
     return "[" + ", ".join(str(v) for v in value) + "]" if isinstance(value, list) else str(value)
 
 
-def _migrate_edit_key(text: str, key: str, new) -> tuple[str | None, str]:
-    """Pure. (edited text, "") with the one top-level `key:` line replaced, or (None, reason) when no one-line
-    edit reads back as `new`."""
+def _migrate_edit_key(text: str, key: str, new, add: bool = False) -> tuple[str | None, str]:
+    """Pure. (edited text, "") with the one top-level `key:` line replaced, or appended when `add` and the profile
+    has none, or (None, reason) when no one-line edit reads back as `new`."""
     lines = text.splitlines(keepends=True)
     hits = [i for i, line in enumerate(lines) if line.startswith(f"{key}:")]
-    if len(hits) != 1:
+    line = f"{key}: {_migrate_profile_value(new)}\n"
+    if add and not hits:
+        edited = text + ("" if not text or text.endswith("\n") else "\n") + line
+    elif len(hits) != 1:
         return None, f"the profile has {len(hits)} top-level {key} lines, and one is needed"
-    edited = "".join([*lines[: hits[0]], f"{key}: {_migrate_profile_value(new)}\n", *lines[hits[0] + 1 :]])
+    else:
+        edited = "".join([*lines[: hits[0]], line, *lines[hits[0] + 1 :]])
     try:
         parsed = yaml.safe_load(edited)
     except yaml.YAMLError:
@@ -6367,16 +6350,27 @@ def _migrate_edit_key(text: str, key: str, new) -> tuple[str | None, str]:
     return edited, ""
 
 
-def _migrate_rewrite_line(path: Path, key: str, new) -> str | None:
+def _migrate_rewrite_line(path: Path, key: str, new, add: bool = False) -> str | None:
     """Edge. Writes `_migrate_edit_key`'s result; the file is untouched when it refuses."""
     text = _read_text_or_none(path)
     if text is None:
         return f"cannot read the profile at {path}"
-    edited, reason = _migrate_edit_key(text, key, new)
+    edited, reason = _migrate_edit_key(text, key, new, add)
     if edited is None:
         return f"{path}: {reason}"
     path.write_text(edited, encoding="utf-8")
     print(f"profile {key} -> {_migrate_profile_value(new)}")
+    return None
+
+
+def _migrate_checkout(step: dict) -> str | None:
+    """Edge. Runs the step's git commands in order, then checks the checkout now holds the monorepo."""
+    for argv in step["argvs"]:
+        failure = _install_run({"argv": argv})
+        if failure is not None:
+            return failure
+    if not setup_migrate.read_is_monorepo(step["path"]):
+        return f"{step['tag']} is not a monorepo release (its pyproject names no coxswain distribution); pass --to"
     return None
 
 
@@ -6404,7 +6398,9 @@ def _migrate_exec(step: dict, locs) -> str | None:
     if op == "symlink":
         return _migrate_link(step)
     if op == "rewrite_profile_key":
-        return _migrate_rewrite_line(Path(locs.profile), step["key"], step["new"])
+        return _migrate_rewrite_line(Path(locs.profile), step["key"], step["new"], add=step["old"] is None)
+    if op == "checkout":
+        return _migrate_checkout(step)
     if op == "rewrite_setting":
         record = Path(step["path"])
         record.parent.mkdir(parents=True, exist_ok=True)
@@ -6791,7 +6787,7 @@ def _setup_migrate(a: argparse.Namespace) -> int:
         return 2
     if a.finish:
         return _migrate_finish(a, locs)
-    observed = _migrate_observe(locs)
+    observed = _migrate_observe(locs, getattr(a, "to", None))
     plan = setup_migrate.migrate_plan(observed, locs)
     host_plan = setup_migrate_hosts.host_migrate_plan(_migrate_observe_hosts(locs), locs)
     if not a.apply:
@@ -6804,7 +6800,8 @@ def _setup_migrate(a: argparse.Namespace) -> int:
     holder = f"migrate@{socket.gethostname()}:{os.getpid()}"
     try:
         if _migrate_needs_preflight(plan, host_plan, a.hosts):
-            taken = _migrate_acquire(runs_dir, [observed["entries"][name]["old"] for name in _migrate_checkouts() if name in observed["entries"]], holder)
+            leased = (*(n for n in setup_migrate.RETIRED if observed["components"].get(n) == "dir"), setup_migrate.UMBRELLA)
+            taken = _migrate_acquire(runs_dir, [str(Path(locs.installs) / name) for name in leased], holder)
             lanes, chair_lease, host_rows = _migrate_read_holders(runs_dir, socket.gethostname())
             refusals = setup_migrate.preflight_refusals(tuple(o for o, _ in taken), lanes, socket.gethostname(), chair_lease, host_rows)
             if refusals:
@@ -7132,11 +7129,12 @@ def _checkout_facts(path: Path, fetch: bool = False) -> dict:
 
 
 def _gather_checkout_facts(root: Path, components: dict, fetch: bool = False) -> dict:
-    """Every manifest component, plus any other git checkout actually
-    present under `root` — the `extra` rows `install.rows` can then report.
+    """The one checkout and every manifest component, plus any other git checkout actually
+    present under `root` — the `extra` rows `install.rows` can then report (a component
+    checkout of the old layout not yet retired shows up there).
     `fetch` refreshes each declared checkout's remote branch first (edge)."""
     options = {"fetch": True} if fetch else {}
-    declared_dirs = {name: Path(install_exec.clone_dir(str(root), name)) for name in components}
+    declared_dirs = {name: Path(install_exec.clone_dir(str(root), name)) for name in (install.CHECKOUT, *components)}
     declared = {name: _checkout_facts(path, **options) for name, path in declared_dirs.items()}
     if not root.exists():
         return declared
@@ -7155,8 +7153,12 @@ def _manifest_provider_command(manifest: dict, provider: str) -> str:
 
 def _real_run(argv: list, cwd: str | None) -> tuple:
     """The subprocess wrapper `install_exec.execute` calls at the edge;
-    stdout and stderr are folded together since the caller only prints."""
-    result = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
+    stdout and stderr are folded together since the caller only prints. A command that cannot start (a missing
+    program or working folder) is exit 127 with the reason, never a traceback."""
+    try:
+        result = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
+    except OSError as exc:
+        return 127, f"{argv[0]}: {exc}"
     return result.returncode, result.stdout + result.stderr
 
 
@@ -7225,7 +7227,7 @@ def _install(a: argparse.Namespace) -> int:
     if resolved is None:
         return 2
     root, home = resolved
-    manifest_path = Path(a.manifest) if a.manifest else root / "coxswain" / "manifest.toml"
+    manifest_path = Path(a.manifest) if a.manifest else _checkout_path(root) / "manifest.toml"
     manifest = _load_manifest(manifest_path)
     if manifest is None:
         print((_NO_HOME_MANIFEST if home and not a.manifest else _NO_MANIFEST).format(manifest_path))
@@ -7238,7 +7240,7 @@ def _install(a: argparse.Namespace) -> int:
     }
     options = {"provider": a.provider, "with": a.with_ or [], "root": str(root), "team": a.team,
                "workspace": a.workspace, "channel": channel, **({"home": home} if home else {})}
-    schema_state, schema_detail = schema.status(_schema_versions(str(root / "harness"), str(root / "cartridges")))
+    schema_state, schema_detail = schema.status(_checkout_schema_versions(root))
     if schema_state != "ok":
         print(f"schema  WARN  {schema_detail}")
     steps = install.plan(manifest, facts, options)
@@ -7274,13 +7276,14 @@ def _upgrade_facts(manifest: dict, root: Path, provider: str) -> dict:
 
 
 def _upgrade_refused(manifest: dict, root: Path, options: dict) -> bool:
-    """Print and return True when an upgrade must not start: a dirty checkout, the umbrella's included,
+    """Print and return True when an upgrade must not start: a dirty checkout, the one checkout's included,
     or a plan refusal such as an unsupported provider or an unknown --with flag."""
     facts = _upgrade_facts(manifest, root, options["provider"])
-    checkouts = {**facts["checkouts"], "coxswain": _checkout_facts(root / "coxswain")}
-    dirty = sorted(name for name, checkout in checkouts.items() if checkout.get("dirty"))
+    dirty = sorted(name for name, checkout in facts["checkouts"].items() if checkout.get("dirty"))
     if dirty:
-        print(f"refusing: {root / dirty[0]} is dirty; refusing to upgrade it")
+        declared = dirty[0] == install.CHECKOUT or dirty[0] in manifest.get("components", {})
+        where = install_exec.clone_dir(str(root), dirty[0]) if declared else root / dirty[0]
+        print(f"refusing: {where} is dirty; refusing to upgrade it")
         return True
     refusals = [step for step in install.plan(manifest, facts, options) if step["kind"] == "refuse"]
     for step in refusals:
@@ -7288,65 +7291,90 @@ def _upgrade_refused(manifest: dict, root: Path, options: dict) -> bool:
     return bool(refusals)
 
 
-def _upgrade_plan_for(manifest: dict, root: Path, target: str, umbrella_tag: str | None) -> tuple:
-    """The planner's plan for `manifest`'s pins against what is installed and what each remote offers now,
-    and the clone URL of every component that has no checkout yet."""
-    components = manifest.get("components", {})
-    checkouts = _gather_checkout_facts(root, components)
+def _upgrade_plan_for(manifest: dict, root: Path, target: str, checkout_tag: str | None, with_flags: list) -> tuple:
+    """The planner's plan for `manifest`'s optional components (required, asked for with --with, or already
+    present) against what is installed and what each remote offers now, and the clone URL of every component
+    that has no checkout yet. The checkout itself is the plan's first step."""
+    checkouts = _gather_checkout_facts(root, manifest.get("components", {}))
+    components = {name: spec for name, spec in manifest.get("components", {}).items()
+                  if spec.get("required") or spec.get("flag") in with_flags or checkouts[name]["present"]}
     urls = {name: _clone_url(spec) for name, spec in components.items() if not checkouts[name]["present"]}
     plan = upgrade_plan.plan_upgrade(
         target,
-        umbrella_tag or "untagged",
+        checkout_tag or "untagged",
         {name: spec.get("tag") for name, spec in components.items()},
-        {name: facts.get("tag") for name, facts in checkouts.items()},
+        {name: checkouts[name].get("tag") for name in components},
         {name: frozenset(_offered_tags(Path(install_exec.clone_dir(str(root), name)), urls.get(name))) for name in components},
     )
     return plan, {name: url for name, url in urls.items() if url}
 
 
+def _checkout_path(root: Path) -> Path:
+    return Path(install_exec.clone_dir(str(root), install.CHECKOUT))
+
+
+def _upgrade_after_move(root: Path) -> list[dict]:
+    """The steps that follow the checkout's move: sync its venv, reinstall the cox tool with the extras its
+    receipt carries, link the crew seats."""
+    checkout = str(_checkout_path(root))
+    extras = setup_receipts.read_tool_extras(
+        setup_receipts.default_tool_dir(os.environ, str(Path.home())), setup_install.TOOL)
+    return [setup_install.sync_step(checkout), setup_install.tool_step(checkout, extras), setup_install.crew_step(checkout)]
+
+
 def _upgrade(a: argparse.Namespace) -> int:
-    """Move the umbrella first, then plan components from the manifest the moved umbrella carries."""
+    """Move the one checkout to the target tag, sync its venv, reinstall cox and the crew links, then move any
+    optional component the moved manifest pins, then run the doctor."""
     resolved = _install_root(a)
     if resolved is None:
         return 2
     root, home = resolved
-    manifest_path = Path(a.manifest) if a.manifest else root / "coxswain" / "manifest.toml"
+    checkout = _checkout_path(root)
+    manifest_path = Path(a.manifest) if a.manifest else checkout / "manifest.toml"
     manifest = _load_manifest(manifest_path)
     if manifest is None:
         print((_NO_HOME_MANIFEST if home and not a.manifest else _NO_MANIFEST).format(manifest_path))
         return 2
-    options = {"provider": a.provider, "with": a.with_ or [], "root": str(root), "team": a.team, "workspace": a.workspace,
+    with_flags = a.with_ or []
+    options = {"provider": a.provider, "with": with_flags, "root": str(root), "team": a.team, "workspace": a.workspace,
                **({"home": home} if home else {})}
     if _upgrade_refused(manifest, root, options):
         return 2
-    umbrella = root / "coxswain"
-    umbrella_tag = _checkout_facts(umbrella)["tag"]
-    target = upgrade_plan.release_tag(a.to) if a.to else upgrade_exec.newest_release(_offered_tags(umbrella))
+    checkout_tag = _checkout_facts(checkout)["tag"]
+    target = upgrade_plan.release_tag(a.to) if a.to else upgrade_exec.newest_release(_offered_tags(checkout))
     if target is None:
-        print(f"refusing: {umbrella} offers no release tag to upgrade to; pass --to")
+        print(f"refusing: {checkout} offers no release tag to upgrade to; pass --to")
         return 2
+    after_move = _upgrade_after_move(root)
     if a.dry_run:
-        print("dry run: component steps use the pins in the current manifest; a real run re-reads them after the umbrella moves")
-        plan, urls = _upgrade_plan_for(manifest, root, target, umbrella_tag)
-        return upgrade_exec.run_plan(plan, root=root, run=_real_run, dry_run=True, clone_urls=urls)
-    umbrella_only = upgrade_plan.plan_upgrade(target, umbrella_tag or "untagged", {}, {}, {})
-    code = upgrade_exec.run_plan(umbrella_only, root=root, run=_real_run, dry_run=False)
+        print("dry run: component steps use the pins in the current manifest; a real run re-reads them after the checkout moves")
+        plan, urls = _upgrade_plan_for(manifest, root, target, checkout_tag, with_flags)
+        return upgrade_exec.run_plan(plan, root=root, run=_real_run, dry_run=True, clone_urls=urls, after_move=after_move)
+    _load_lazy_modules()  # the tool reinstall replaces this cox's own environment
+    checkout_only = upgrade_plan.plan_upgrade(target, checkout_tag or "untagged", {}, {}, {})
+    code = upgrade_exec.run_plan(checkout_only, root=root, run=_real_run, dry_run=False, after_move=after_move)
     if code != 0:
         return code
-    moved_path = umbrella / "manifest.toml"
+    moved_path = checkout / "manifest.toml"
     moved = _load_manifest(moved_path)
     if moved is None:
         print(_NO_MANIFEST.format(moved_path))
         return 2
     if _upgrade_refused(moved, root, options):
         return 2
-    plan, urls = _upgrade_plan_for(moved, root, target, target)
+    plan, urls = _upgrade_plan_for(moved, root, target, target, with_flags)
     code = upgrade_exec.run_plan(dataclasses.replace(plan, steps=plan.steps[1:]), root=root, run=_real_run, dry_run=False, clone_urls=urls)
     if code != 0:
         return code
     tail = [step for step in install.plan(moved, _upgrade_facts(moved, root, a.provider), options)
-            if step["kind"] in ("setup_install", "doctor", "desktop")]
+            if step["kind"] in ("doctor", "desktop")]
     return _install_execute(tail, moved, options, root)
+
+
+def _checkout_schema_versions(root: Path) -> dict[str, str | None]:
+    """The schema versions read from the one checkout under `root`."""
+    paths = setup_install.layout(str(root))
+    return _schema_versions(paths.harness_dir, paths.provider_profile, [paths.skills_root])
 
 
 def _schema_versions(harness_dir: str = "", provider_profile: str = "", skills_roots: list[str] | None = None
@@ -7371,7 +7399,7 @@ def _versions(a: argparse.Namespace) -> int:
     root = Path(a.root) if a.root else manifest_path.resolve().parent.parent
     facts = {"root": str(root), "checkouts": _gather_checkout_facts(root, manifest.get("components", {})),
               "provider_cli_on_path": False}
-    schema_versions = _schema_versions(str(root / "harness"), str(root / "cartridges"))
+    schema_versions = _checkout_schema_versions(root)
     from agent_tools import versions_hint
     from agent_tools.version_info import UNKNOWN, package_version
 
@@ -7382,13 +7410,13 @@ def _versions(a: argparse.Namespace) -> int:
             return None
         return done.stdout.strip() if done.returncode == 0 else None
 
-    umbrella_tag = git_out(str(root / "coxswain"), "describe", "--tags") or None
+    umbrella_tag = git_out(str(_checkout_path(root)), "describe", "--tags") or None
     release = package_version()
     release_tag = None if release == UNKNOWN else release
     hint = versions_hint.umbrella_hint(umbrella_tag, release_tag)
 
     def offered(component: str) -> frozenset[str]:
-        return frozenset((git_out(str(root / component), "tag", "--list") or "").split())
+        return frozenset((git_out(install_exec.clone_dir(str(root), component), "tag", "--list") or "").split())
 
     def label(component: str, pinned: str | None, status: str) -> str:
         # Only a drift row pinned at the umbrella's own release is explained by a stale umbrella; a component
@@ -7399,8 +7427,10 @@ def _versions(a: argparse.Namespace) -> int:
             return status
         return versions_hint.status_label(status, pinned, release_tag, offered(component))
 
+    # The checkout carries all three schemas, so its cell is their agreement; an optional component has none.
+    schema_cell = {install.CHECKOUT: schema.status(schema_versions)[0]}
     display = [{"component": c, "pinned_tag": p or "", "installed_tag": i or "", "status": label(c, p, s),
-                "schema": schema.cell(schema_versions.get(c)) if c in schema_versions else "?"}
+                "schema": schema_cell.get(c, "?")}
                for c, p, i, s in install.rows(manifest, facts)]
     if hint:
         print(hint)
@@ -9101,7 +9131,7 @@ SETUP_COMMANDS = [
         "agent_tools.cli:_setup_doctor_row", False, (),
     ),
     commands.Command(
-        "install", "setup", "clone components and write a profile for this machine",
+        "install", "setup", "sync the checkout's venv, install cox and write a profile for this machine",
         (
             commands.Arg(("--root",)), commands.Arg(("--team",), {"required": True}), commands.Arg(("--workspace",)),
             commands.Arg(("--home",), {"help": "absolute path of the coxswain home; used when --root is omitted"}),
@@ -9114,7 +9144,7 @@ SETUP_COMMANDS = [
         "agent_tools.cli:_setup_install", False, (),
     ),
     commands.Command(
-        "migrate", "setup", "plan moving a layout under the home; --apply migrates",
+        "migrate", "setup", "plan moving this host to the one monorepo checkout; --apply migrates",
         (
             commands.Arg(("--home",), {"help": "absolute path of the coxswain home to migrate to"}),
             commands.Arg(("--dry-run",), {"action": "store_true", "help": "same as the default: print the plans; change nothing"}),
@@ -9122,6 +9152,7 @@ SETUP_COMMANDS = [
             commands.Arg(("--hosts",), {"action": "store_true", "help": "with --apply, also run the host steps; use it on the chair's machine"}),
             commands.Arg(("--finish",), {"action": "store_true", "help": "own mode, after every host migrated: rewrite queue paths, remove old links"}),
             commands.Arg(("--old-root",), {"metavar": "PATH", "help": "with --finish, the old checkout root when no marker names it"}),
+            commands.Arg(("--to",), {"metavar": "VERSION", "help": "the release the umbrella checkout becomes; default the newest"}),
         ),
         "agent_tools.cli:_setup_migrate", False, (),
     ),
@@ -10538,6 +10569,16 @@ def _host_list(a: argparse.Namespace) -> int:
     lines = host_cmd.format_host_list(rows, datetime.datetime.now(datetime.UTC), live_by_host)
     print("\n".join(lines) if rows else "no hosts")
     return 0
+
+
+def _profile_checkout(profile: Mapping) -> str | None:
+    """Pure. The one checkout of a monorepo profile: `umbrella_dir` when `harness_dir` lies inside it; None for a
+    profile of the component layout, whose umbrella held no code."""
+    umbrella, harness = profile.get("umbrella_dir"), profile.get("harness_dir")
+    if not umbrella or not harness:
+        return None
+    root, inner = Path(umbrella).expanduser(), Path(harness).expanduser()
+    return str(root) if inner.is_relative_to(root) and inner != root else None
 
 
 def _cartridges_checkout(profile: Mapping) -> str:
