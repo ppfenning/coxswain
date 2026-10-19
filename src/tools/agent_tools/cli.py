@@ -7234,6 +7234,14 @@ def _install_root(a: argparse.Namespace) -> tuple[Path, str | None] | None:
     return Path(locs.installs), locs.home
 
 
+def _with_flags(a: argparse.Namespace) -> list[str]:
+    """Edge. The `--with` flags the planner sees; a retired one is dropped with its one-line note."""
+    flags, notes = install.drop_retired_flags(a.with_ or [])
+    for note in notes:
+        print(f"note: {note}")
+    return flags
+
+
 def _install(a: argparse.Namespace) -> int:
     resolved = _install_root(a)
     if resolved is None:
@@ -7250,7 +7258,8 @@ def _install(a: argparse.Namespace) -> int:
         "checkouts": _gather_checkout_facts(root, manifest.get("components", {}), fetch=a.edge),
         "provider_cli_on_path": shutil.which(_manifest_provider_command(manifest, a.provider)) is not None,
     }
-    options = {"provider": a.provider, "with": a.with_ or [], "root": str(root), "team": a.team,
+    with_flags = _with_flags(a)
+    options = {"provider": a.provider, "with": with_flags, "root": str(root), "team": a.team,
                "workspace": a.workspace, "channel": channel, **({"home": home} if home else {})}
     schema_state, schema_detail = schema.status(_checkout_schema_versions(root))
     if schema_state != "ok":
@@ -7347,7 +7356,7 @@ def _upgrade(a: argparse.Namespace) -> int:
     if manifest is None:
         print((_NO_HOME_MANIFEST if home and not a.manifest else _NO_MANIFEST).format(manifest_path))
         return 2
-    with_flags = a.with_ or []
+    with_flags = _with_flags(a)
     options = {"provider": a.provider, "with": with_flags, "root": str(root), "team": a.team, "workspace": a.workspace,
                **({"home": home} if home else {})}
     if _upgrade_refused(manifest, root, options):

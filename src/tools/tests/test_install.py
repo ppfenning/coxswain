@@ -58,6 +58,10 @@ def test_a_clean_checkout_off_its_pin_is_installed_as_is():
         "kind": "skip", "component": "coxswain", "detail": "present at an untagged commit; installed as is (cox upgrade moves it)"}
 
 
+def test_a_retired_with_flag_is_dropped_with_one_note():
+    assert install.drop_retired_flags(["crew", "dash", "crew"]) == (["dash"], [install.RETIRED_FLAGS["crew"]])
+
+
 def test_fresh_root_clones_required_only():
     steps = install.plan(_manifest(), _facts(), _options())
     kinds = _kinds(steps)
