@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 
+from agent_tools.install import CHECKOUT, checkout_spec
+
 Runner = Callable[[list, str | None], tuple]
 
 
@@ -18,7 +20,7 @@ def from_plan(steps: Sequence[Mapping], *, manifest: Mapping, options: Mapping) 
     manifest, `team`/`workspace` (and `home`, when supplied) for
     `setup_install` from the options.
     Leaves `skip`, `refuse`, `doctor` and `desktop` steps as they arrived."""
-    components = manifest.get("components", {})
+    components = {CHECKOUT: checkout_spec(manifest), **manifest.get("components", {})}
     return [_enrich(step, components, options) for step in steps]
 
 
@@ -41,8 +43,9 @@ def _edge(step: Mapping) -> bool:
 
 
 def clone_dir(root: str, component: str) -> str:
-    """The one place a clone target is named; `setup_install` looks for `<root>/coxswain-<component>`."""
-    return f"{root}/coxswain-{component}"
+    """The one place a clone target is named: the checkout is `<root>/coxswain`, which `setup_install` installs;
+    an optional component such as dash is `<root>/coxswain-<component>`."""
+    return f"{root}/{CHECKOUT}" if component == CHECKOUT else f"{root}/coxswain-{component}"
 
 
 def _clone_argv(step: Mapping, root: str) -> list:

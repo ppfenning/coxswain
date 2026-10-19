@@ -8,15 +8,16 @@ from agent_tools.setup_install import (
     _agent_steps,
     hook_settings,
     install_plan,
+    layout,
     marketplace_steps,
     profile_text,
     render_plan,
-    venv_steps,
 )
 
 LOC = home.resolve({}, "/home/user", "linux")
 INSTALLS = "/home/user/.local/share/coxswain/installs"
-CARTRIDGES = f"{INSTALLS}/coxswain-cartridges"
+CHECKOUT = f"{INSTALLS}/coxswain"
+CARTRIDGES = f"{CHECKOUT}/src/cartridges"
 WORKSPACE = "/home/user/.local/share/coxswain/workspaces/main"
 
 
@@ -29,7 +30,6 @@ def _plan(**overrides):
         "skills_root": f"{CARTRIDGES}/skills-plugins",
         "locations": LOC,
         "uv_on_path": True,
-        "python_exists": {"coxswain-cartridges": False, "coxswain-graphs": False, "coxswain-tools": False},
         "claude_on_path": True,
         "profile_exists": False,
         "force_profile": False,
@@ -47,105 +47,31 @@ def _writes(steps):
     return [s for s in steps if s["op"] == "write" and s["path"] != LOC.record]
 
 
-def test_install_plan_orders_venv_steps_with_graphs_carrying_the_cartridges_dep():
-    steps = _plan()
-    runs = [s for s in steps if s["op"] == "run"]
-    argvs = [r["argv"] for r in runs]
-    assert argvs[0] == ["uv", "venv", "-q"] and runs[0]["cwd"] == CARTRIDGES
-    assert argvs[1] == ["uv", "pip", "install", "-q", "-e", ".[dev]"]
-    assert runs[1]["cwd"] == CARTRIDGES
-    assert argvs[2] == ["uv", "venv", "-q"] and runs[2]["cwd"] == f"{INSTALLS}/coxswain-graphs"
-    assert argvs[3] == [
-        "uv", "pip", "install", "-q", "-e", ".[dev]", "-e", CARTRIDGES,
-    ]
-    assert runs[3]["cwd"] == f"{INSTALLS}/coxswain-graphs"
-    assert argvs[4] == ["uv", "venv", "-q"] and runs[4]["cwd"] == f"{INSTALLS}/coxswain-tools"
-    assert argvs[5] == ["uv", "pip", "install", "-q", "-e", ".[dev]"]
-    assert runs[5]["cwd"] == f"{INSTALLS}/coxswain-tools"
-    assert argvs[6] == ["uv", "tool", "install", "--force", "-q", "-e", f"{INSTALLS}/coxswain-tools"]
-    assert argvs[7] == ["uv", "tool", "install", "--force", "-q", "-e", CARTRIDGES]
-    cartridge_tool_installs = [a for a in argvs if a[-1] == CARTRIDGES
-                                and a[:3] == ["uv", "tool", "install"]]
-    assert len(cartridge_tool_installs) == 1
-
-
-def test_venv_steps_tools_without_clear():
-    assert venv_steps("coxswain-tools", INSTALLS, CARTRIDGES, False) == [
-        {"op": "run", "argv": ["uv", "venv", "-q"], "cwd": f"{INSTALLS}/coxswain-tools",
-         "why": "coxswain-tools has no virtualenv yet"},
-        {"op": "run", "argv": ["uv", "pip", "install", "-q", "-e", ".[dev]"],
-         "cwd": f"{INSTALLS}/coxswain-tools",
-         "why": "install coxswain-tools and its dev extras"},
+def test_the_one_checkout_is_synced_then_installed_as_the_cox_tool():
+    runs = [s for s in _plan() if s["op"] == "run" and s["argv"][0] == "uv"]
+    assert [(r["argv"], r.get("cwd")) for r in runs] == [
+        (["uv", "sync", "--frozen", "--all-extras", "-q"], CHECKOUT),
+        (["uv", "tool", "install", "--force", "-q", "--editable", CHECKOUT], None),
     ]
 
 
-def test_venv_steps_tools_with_clear():
-    assert venv_steps("coxswain-tools", INSTALLS, CARTRIDGES, True) == [
-        {"op": "run", "argv": ["uv", "venv", "--clear", "-q"], "cwd": f"{INSTALLS}/coxswain-tools",
-         "why": "recreate the coxswain-tools virtualenv"},
-        {"op": "run", "argv": ["uv", "pip", "install", "-q", "-e", ".[dev]"],
-         "cwd": f"{INSTALLS}/coxswain-tools",
-         "why": "install coxswain-tools and its dev extras"},
-    ]
-
-
-def test_venv_steps_graphs_installs_the_cartridges_checkout_editable():
-    assert venv_steps("coxswain-graphs", INSTALLS, CARTRIDGES, True) == [
-        {"op": "run", "argv": ["uv", "venv", "--clear", "-q"], "cwd": f"{INSTALLS}/coxswain-graphs",
-         "why": "recreate the coxswain-graphs virtualenv"},
-        {"op": "run", "argv": ["uv", "pip", "install", "-q", "-e", ".[dev]", "-e", CARTRIDGES],
-         "cwd": f"{INSTALLS}/coxswain-graphs",
-         "why": "install coxswain-graphs and its dev extras"},
-    ]
-
-
-def test_venv_steps_names_the_extras_comma_joined_in_brackets():
-    steps = venv_steps("coxswain-tools", INSTALLS, CARTRIDGES, False, extras=("dev", "postgres", "live"))
-    assert steps[1]["argv"] == ["uv", "pip", "install", "-q", "-e", ".[dev,postgres,live]"]
-
-
-def test_venv_steps_without_extras_equals_the_pre_change_steps():
-    assert venv_steps("coxswain-tools", INSTALLS, CARTRIDGES, False) == [
-        {
-            "op": "run",
-            "argv": ["uv", "venv", "-q"],
-            "cwd": f"{INSTALLS}/coxswain-tools",
-            "why": "coxswain-tools has no virtualenv yet",
-        },
-        {
-            "op": "run",
-            "argv": ["uv", "pip", "install", "-q", "-e", ".[dev]"],
-            "cwd": f"{INSTALLS}/coxswain-tools",
-            "why": "install coxswain-tools and its dev extras",
-        },
-    ]
-
-
-def test_venv_steps_graphs_keeps_the_cartridges_install_with_extras_set():
-    steps = venv_steps("coxswain-graphs", INSTALLS, CARTRIDGES, True, extras=("dev", "postgres"))
-    assert steps[1]["argv"] == ["uv", "pip", "install", "-q", "-e", ".[dev,postgres]", "-e", CARTRIDGES]
-
-
-def test_install_plan_venv_steps_are_the_venv_steps_output():
-    runs = [s for s in _plan() if s["op"] == "run"]
-    assert runs[2:4] == venv_steps("coxswain-graphs", INSTALLS, CARTRIDGES, False)
-
-
-def test_existing_venvs_skip_uv_venv_but_still_run_pip_install():
-    steps = _plan(
-        python_exists={"coxswain-cartridges": True, "coxswain-graphs": True, "coxswain-tools": True}
+def test_layout_derives_every_path_from_the_checkout():
+    assert layout(INSTALLS) == (
+        CHECKOUT, f"{CHECKOUT}/src/graphs", CARTRIDGES, f"{CARTRIDGES}/skills-plugins",
+        f"{CARTRIDGES}/providers/claude-code.yaml", f"{CHECKOUT}/crew/install.sh",
     )
-    runs = [s for s in steps if s["op"] == "run"]
-    argvs = [r["argv"][:2] for r in runs]
-    assert ["uv", "venv"] not in argvs
-    pip_installs = [r for r in runs if r["argv"][:3] == ["uv", "pip", "install"]]
-    assert len(pip_installs) == 3
+
+
+def test_crew_install_runs_from_the_checkout_and_only_warns():
+    crew = [s for s in _plan() if s["op"] == "run" and s["argv"] == [f"{CHECKOUT}/crew/install.sh"]]
+    assert crew == [{"op": "run", "argv": [f"{CHECKOUT}/crew/install.sh"], "cwd": f"{CHECKOUT}/crew",
+                     "why": "link the crew seats", "warn_only": True}]
 
 
 def test_no_uv_gives_one_skip_and_no_runs():
     steps = _plan(uv_on_path=False)
     runs = [s for s in steps if s["op"] == "run" and s["argv"][0] == "uv"]
-    skips = [s for s in steps if s["op"] == "skip" and s.get("what") == "venvs"]
+    skips = [s for s in steps if s["op"] == "skip" and s.get("what") == "venv"]
     assert runs == []
     assert len(skips) == 1
     assert "uv is not on PATH" in skips[0]["why"]
@@ -292,8 +218,9 @@ def test_profile_write_step_carries_derived_paths_under_the_resolved_root():
     text = writes[0]["text"]
     assert writes[0]["path"] == LOC.profile
     assert f"cartridges_dir: {WORKSPACE}/cartridges" in text
-    assert f"harness_dir: {INSTALLS}/coxswain-graphs" in text
+    assert f"harness_dir: {CHECKOUT}/src/graphs" in text
     assert f"skills_roots: [{CARTRIDGES}/skills-plugins]" in text
+    assert f"umbrella_dir: {CHECKOUT}" in text
     assert not any(line == f"harness_dir: {LOC.home}" for line in text.splitlines())
     assert "/root" not in text
 
@@ -305,15 +232,12 @@ def test_profile_cartridges_dir_is_workspace_based_not_the_repo_checkout():
     steps = _plan()
     writes = [s for s in steps if s["op"] == "write"]
     assert f"cartridges_dir: {WORKSPACE}/cartridges" in writes[0]["text"]
-    runs = [s for s in steps if s["op"] == "run"]
-    graphs_install = [r for r in runs if r.get("cwd") == f"{INSTALLS}/coxswain-graphs" and "pip" in r["argv"]]
-    assert graphs_install[0]["argv"][-1] == CARTRIDGES
 
 
 def test_marketplace_add_location_equals_the_resolved_location_from_the_design():
     steps = _plan()
     adds = [s["argv"] for s in steps if s["op"] == "run" and s["argv"][:4] == ["claude", "plugin", "marketplace", "add"]]
-    assert adds == [["claude", "plugin", "marketplace", "add", posixpath.join(LOC.installs, "coxswain-cartridges")]]
+    assert adds == [["claude", "plugin", "marketplace", "add", posixpath.join(LOC.installs, "coxswain", "src", "cartridges")]]
 
 
 def test_marketplace_listed_elsewhere_is_removed_then_added():
@@ -338,7 +262,6 @@ def test_public_marketplace_call_only_skips_when_the_source_matches():
 
 def test_a_second_run_over_its_own_result_changes_nothing():
     steps = _plan(
-        python_exists=dict.fromkeys(("coxswain-cartridges", "coxswain-graphs", "coxswain-tools"), True),
         profile_exists=True,
         registered_marketplace=CARTRIDGES,
     )
@@ -366,35 +289,9 @@ def test_no_user_project_folder_appears_for_an_ordinary_home(plugins, registered
     assert "/root" not in blob
 
 
-def test_tool_install_step_is_warn_only():
-    steps = _plan()
-    tool_install = [s for s in steps if s["op"] == "run" and s["argv"][:2] == ["uv", "tool"]]
-    assert len(tool_install) == 2
-    assert all(step["warn_only"] is True for step in tool_install)
-
-
-def test_tool_install_target_carries_extras_and_empty_is_unchanged():
-    def tool_argvs(steps):
-        return [s["argv"] for s in steps if s["op"] == "run" and s["argv"][:2] == ["uv", "tool"]]
-
-    tools_checkout = f"{INSTALLS}/coxswain-tools"
-    extras = ("traces", "parquet", "lake", "postgres")
-    with_extras = tool_argvs(_plan(tool_extras=extras))
-    without = tool_argvs(_plan())
-    assert with_extras[0] == ["uv", "tool", "install", "--force", "-q", "-e", f"{tools_checkout}[traces,parquet,lake,postgres]"]
-    assert with_extras[1] == without[1]
-    assert without[0] == ["uv", "tool", "install", "--force", "-q", "-e", tools_checkout]
-    assert tool_argvs(_plan(tool_extras=())) == without
-
-
-def test_cartridge_install_target_carries_extras_and_empty_is_unchanged():
-    def cartridge_argv(steps):
-        return [s["argv"] for s in steps if s["op"] == "run" and s["argv"][:2] == ["uv", "tool"]][1]
-
-    checkout = f"{INSTALLS}/coxswain-cartridges"
-    assert cartridge_argv(_plan(cartridge_extras=("x", "y")))[-1] == f"{checkout}[x,y]"
-    assert cartridge_argv(_plan())[-1] == checkout
-    assert cartridge_argv(_plan(cartridge_extras=())) == cartridge_argv(_plan())
+def test_tool_install_target_carries_the_receipts_extras():
+    argvs = [s["argv"] for s in _plan(tool_extras=("traces", "postgres")) if s.get("argv", [])[:2] == ["uv", "tool"]]
+    assert argvs == [["uv", "tool", "install", "--force", "-q", "--editable", f"{CHECKOUT}[traces,postgres]"]]
 
 
 def test_assume_flows_into_the_written_profile():

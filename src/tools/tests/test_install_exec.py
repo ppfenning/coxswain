@@ -51,18 +51,11 @@ def test_clone_step_writes_exactly_the_three_prefixed_directories(tmp_path):
     assert _layout(tmp_path) == ["coxswain-cartridges", "coxswain-graphs", "coxswain-tools"]
 
 
-def test_setup_install_lookup_finds_each_prefixed_directory(tmp_path):
+def test_the_checkout_clones_to_the_folder_setup_install_installs(tmp_path):
     from agent_tools import setup_install
 
-    steps = setup_install.install_plan(
-        root=str(tmp_path), team="acme", workspace=str(tmp_path / "ws"), provider_profile="p",
-        skills_root="/skills", uv_on_path=True, python_exists={}, claude_on_path=False,
-        profile_exists=True, force_profile=False, plugins=False, hook=False,
-        config_dir="/cfg", claude_settings_path="/cfg/settings.json")
-    venv_dirs = [s["cwd"] for s in steps if s.get("argv") == ["uv", "venv", "-q"]]
-    expected = [str(tmp_path / name) for name in PREFIXED]
-    assert venv_dirs == expected
-    assert [install_exec.clone_dir(str(tmp_path), name) for name in COMPONENTS] == expected
+    assert install_exec.clone_dir(str(tmp_path), "coxswain") == setup_install.layout(str(tmp_path)).checkout
+    assert install_exec.clone_dir(str(tmp_path), "dash") == f"{tmp_path}/coxswain-dash"
 
 
 def test_running_the_clone_step_twice_leaves_the_same_layout_as_once(tmp_path):
@@ -236,6 +229,7 @@ def test_cli_install_without_dry_run_executes_and_the_table_reflects_what_landed
 
     manifest_path = tmp_path / "manifest.toml"
     manifest_path.write_text(
+        "[coxswain]\nversion = \"1.0.0\"\n\n"
         "[components.harness]\nrepo = \"org/harness\"\ntag = \"v1.0.0\"\nrequired = true\n\n"
         "[providers.claude-code]\nstatus = \"supported\"\n"
     )
@@ -255,7 +249,8 @@ def test_cli_install_without_dry_run_executes_and_the_table_reflects_what_landed
 
     assert rc == 0
     assert any(argv[-1] == str(tmp_path / "coxswain-harness") for argv in calls)
-    assert "ok: clone harness" in out
+    assert any(argv[-1] == str(tmp_path / "coxswain") for argv in calls)
+    assert "ok: clone coxswain" in out and "ok: clone harness" in out
     assert "ok: setup_install setup_install" in out
     assert "ok: doctor doctor" in out
     assert "missing" not in out
@@ -510,7 +505,7 @@ def test_cli_upgrade_imports_every_lazy_module_before_setup_replaces_the_environ
         return real_import(name, package)
 
     def fake_run(run_argv, cwd):
-        replaced["yes"] = replaced["yes"] or run_argv[:3] == ["cox", "setup", "install"]
+        replaced["yes"] = replaced["yes"] or run_argv[:3] == ["uv", "tool", "install"]
         return (0, "abc\trefs/tags/v2.0.0\n") if "ls-remote" in run_argv else (0, "")
 
     monkeypatch.setattr(cli, "_real_run", fake_run)
@@ -538,24 +533,6 @@ def test_load_lazy_modules_loads_every_registered_module_once(monkeypatch):
     cli._load_lazy_modules()
 
     assert loaded == ["fake_pkg.first", "fake_pkg.second"]
-
-
-def test_cli_upgrade_without_a_setup_step_loads_no_lazy_modules(monkeypatch, tmp_path):
-    from agent_tools import cli
-
-    argv = _upgrade_argv(tmp_path)
-    monkeypatch.setattr(cli, "_checkout_facts", lambda path: {"present": True, "tag": "v1.0.0", "dirty": False})
-    monkeypatch.setattr(cli.install, "plan", lambda manifest, facts, options: [
-        {"kind": "doctor", "component": "doctor", "detail": "run cox setup doctor"}])
-    monkeypatch.setattr(cli, "_real_run",
-                        lambda run_argv, cwd: (0, "abc\trefs/tags/v2.0.0\n") if "ls-remote" in run_argv else (0, ""))
-    calls = []
-    monkeypatch.setattr(cli, "_load_lazy_modules", lambda: calls.append(1))
-
-    rc = cli.main(argv)
-
-    assert rc == 0
-    assert calls == []
 
 
 def _install_argv(tmp_path):
@@ -650,14 +627,3 @@ def test_versions_reports_a_bare_named_git_directory_as_extra(tmp_path, capsys):
     rows = _versions_rows(tmp_path, capsys)
     assert next(row for row in rows if row[0] == "cartridges")[3] == "ok"
     assert "extra" in next(row for row in rows if row[0] == "./cartridges")
-
-
-def test_the_crew_install_script_runs_from_the_prefixed_crew_directory(tmp_path):
-    from agent_tools.upgrade_exec import run_plan
-    from agent_tools.upgrade_plan import Plan, Step
-
-    calls = []
-    run_plan(Plan((Step("component", "crew", "v1", "v2"),), ()), root=tmp_path,
-             run=lambda argv, cwd: calls.append((argv, cwd)) or (0, ""), dry_run=False)
-    script = str(tmp_path / "coxswain-crew" / "install.sh")
-    assert calls[-1] == ([script], str(tmp_path / "coxswain-crew"))

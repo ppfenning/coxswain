@@ -1,9 +1,11 @@
-"""Runs an upgrade Plan: git fetch and checkout per step, crew's install script after crew moves.
-The only side effects are the injected `run(argv, cwd) -> (exit, output)` and print."""
+"""Runs an upgrade Plan: git fetch and checkout per step, then the steps that follow the checkout's move
+(its venv sync, the cox tool, the crew links). The only side effects are the injected
+`run(argv, cwd) -> (exit, output)` and print."""
 import re
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
+from agent_tools.install import CHECKOUT
 from agent_tools.install_exec import clone_dir
 from agent_tools.upgrade_plan import Plan, Step
 
@@ -26,8 +28,8 @@ def newest_release(tags: Sequence[str]) -> str | None:
 
 
 def _step_dir(root: Path, step: Step) -> Path:
-    """The umbrella checkout is `<root>/coxswain`, not a manifest component; a component is `<root>/coxswain-<name>`."""
-    return root / "coxswain" if step.kind == "umbrella" else Path(clone_dir(str(root), step.name))
+    """The umbrella step moves the one checkout, `<root>/coxswain`; a component is `<root>/coxswain-<name>`."""
+    return Path(clone_dir(str(root), CHECKOUT if step.kind == "umbrella" else step.name))
 
 
 def _move(step: Step, root: Path, run: Run, clone_url: str | None) -> tuple:
@@ -45,24 +47,42 @@ def _describe(step: Step) -> str:
     return f"{step.name}: {step.from_tag or 'not installed'} to {step.to_tag}"
 
 
+def _after(steps: Sequence[Mapping], run: Run) -> tuple:
+    """Each step in order; a warn-only step that fails prints and goes on, any other stops with its exit."""
+    for step in steps:
+        code, output = run(list(step["argv"]), step.get("cwd"))
+        if code == 0:
+            continue
+        if not step.get("warn_only"):
+            return code, output
+        print(f"warn: {' '.join(step['argv'])} exited {code}: {output.strip()}")
+    return 0, ""
+
+
 def run_plan(
-    plan: Plan, *, root: Path | str, run: Run, dry_run: bool, clone_urls: Mapping[str, str] | None = None
+    plan: Plan,
+    *,
+    root: Path | str,
+    run: Run,
+    dry_run: bool,
+    clone_urls: Mapping[str, str] | None = None,
+    after_move: Sequence[Mapping] = (),
 ) -> int:
     """Exit 2 on a failed command or when any component is left behind, else 0. A dry run makes no `run` call.
-    `clone_urls` names the components with no checkout yet."""
+    `clone_urls` names the components with no checkout yet. `after_move` are run steps (`argv`, `cwd`,
+    `warn_only`) that follow the umbrella step: they run only once the checkout has moved."""
     root = Path(root)
     urls = clone_urls or {}
-    install_script = Path(clone_dir(str(root), "crew")) / "install.sh"
     for step in plan.steps:
         print(f"would move {_describe(step)}" if dry_run else f"moving {_describe(step)}")
-        moves_crew = step.kind == "component" and step.name == "crew"
+        follows = after_move if step.kind == "umbrella" else ()
         if dry_run:
-            if moves_crew:
-                print(f"would run {install_script}")
+            for after in follows:
+                print(f"would run {' '.join(after['argv'])}")
             continue
         code, output = _move(step, root, run, urls.get(step.name) if step.kind == "component" else None)
-        if code == 0 and moves_crew:
-            code, output = run([str(install_script)], str(install_script.parent))
+        if code == 0 and follows:
+            code, output = _after(follows, run)
         if code != 0:
             print(f"FAILED: {step.name}: {output.strip()}")
             return 2

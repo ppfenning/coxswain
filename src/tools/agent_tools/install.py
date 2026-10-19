@@ -6,6 +6,22 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from agent_tools.upgrade_plan import release_tag
+
+# The one checkout every install has. It is not a manifest component: the manifest lives inside it, so its pin
+# is the manifest's own `[coxswain] version`. Only optional extras (dash) stay `[components]`.
+CHECKOUT = "coxswain"
+CHECKOUT_REPO = "ppfenning/coxswain"
+
+
+def checkout_spec(manifest: Mapping) -> dict:
+    """The checkout as a component spec: the repository (`[coxswain] repo`, else the default), the release tag of
+    `[coxswain] version`, and `main` for the edge channel."""
+    table = manifest.get("coxswain", {})
+    version = table.get("version")
+    return {"repo": table.get("repo", CHECKOUT_REPO), "tag": release_tag(str(version)) if version else None,
+            "ref": table.get("ref", "main"), "required": True}
+
 
 def _known_flags(manifest: Mapping) -> set[str]:
     return {spec["flag"] for spec in manifest.get("components", {}).values() if spec.get("flag")}
@@ -61,7 +77,7 @@ def _desktop_step(name: str, spec: Mapping) -> dict:
 
 def plan(manifest: Mapping, facts: Mapping, options: Mapping) -> list[dict]:
     """Steps in manifest order: `clone`/`fetch_checkout`/`skip`/`refuse` for
-    each required-or-requested component, then one `setup_install`, one
+    the checkout, then for each requested component, then one `setup_install`, one
     `doctor`, then `desktop` for each requested component that carries a
     `path`. An unknown `--with` flag or an unsupported provider refuses the
     whole plan down to the one step naming why."""
@@ -80,14 +96,16 @@ def plan(manifest: Mapping, facts: Mapping, options: Mapping) -> list[dict]:
         return [{"kind": "refuse", "component": flag, "detail": f"unknown --with flag: {flag}"}]
 
     checkouts = facts.get("checkouts", {})
-    requested = [(name, spec) for name, spec in manifest.get("components", {}).items()
-                 if _requested(spec, with_flags)]
+    components = [(name, spec) for name, spec in manifest.get("components", {}).items() if _requested(spec, with_flags)]
+    requested = [(CHECKOUT, checkout_spec(manifest)), *components]
     channel = options.get("channel", "release")
-    refusal = _channel_refusal(requested, channel)
+    refusal = _channel_refusal(components, channel)
     if refusal:
         return [refusal]
     empty_checkout = {"present": False, "tag": None, "dirty": False}
     checkout_steps = [_checkout_step(name, spec, checkouts.get(name, empty_checkout), channel)
+                      if _pinned(spec, channel) else
+                      {"kind": "skip", "component": name, "detail": "the manifest names no [coxswain] version"}
                       for name, spec in requested]
     setup_install_step = {"kind": "setup_install", "component": "setup_install",
                            "detail": f"channel={channel} team={options.get('team')} workspace={options.get('workspace')}"}
@@ -106,11 +124,11 @@ def _component_row(name: str, spec: Mapping, checkouts: Mapping, channel: str = 
 
 
 def rows(manifest: Mapping, facts: Mapping, channel: str = "release") -> list[tuple]:
-    """`(component, pinned_tag, installed_tag, status)` for every manifest
+    """`(component, pinned_tag, installed_tag, status)` for the checkout and every manifest
     component (`missing` absent, `drift` present off its pin, `ok` present at
     it) plus one `extra` row per checkout present in `facts` that the
     manifest never declared. On `edge` the pin and installed columns hold branches."""
-    components = manifest.get("components", {})
+    components = {CHECKOUT: checkout_spec(manifest), **manifest.get("components", {})}
     checkouts = facts.get("checkouts", {})
     component_rows = [_component_row(name, spec, checkouts, channel) for name, spec in components.items()]
     extra_rows = [(name, None, checkout.get("tag"), "extra") for name, checkout in checkouts.items()

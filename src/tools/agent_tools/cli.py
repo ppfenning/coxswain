@@ -5984,7 +5984,7 @@ def _install_home_refusal(home: str, record: str | None, named: bool) -> str | N
 
 def _install_facts(a: argparse.Namespace) -> dict:
     """Gathers exactly what `install_plan` needs and nothing it decides:
-    PATH lookups, each repo's venv, the profile's existence, and the
+    PATH lookups, the coxswain tool's receipt extras, the profile's existence, and the
     config/settings paths expanded once, here. Without `--root` the checkouts,
     profile and workspace come from the resolved coxswain home; a refusal
     raises ValueError for the caller to print."""
@@ -6006,26 +6006,20 @@ def _install_facts(a: argparse.Namespace) -> dict:
         root, profile_file = locs.installs, locs.profile
         workspace_exists = Path(locs.workspaces, "main").exists()
         listing = _marketplace_listing() if a.plugins and shutil.which("claude") is not None else None
-        registered = (listing or {}).get("coxswain-cartridges")
-    python_exists = {repo: (Path(root) / repo / ".venv" / "bin" / "python").exists()
-                      for repo in setup_install.REPOS}
+        registered = (listing or {}).get(setup_install.MARKETPLACE)
     tool_dir = setup_receipts.default_tool_dir(os.environ, str(Path.home()))
-    receipt_extras = {
-        key: setup_receipts.read_tool_extras(tool_dir, setup_migrate.TOOL_RECEIPTS[repo])
-        for key, repo in (("tool_extras", setup_migrate.TOOLS), ("cartridge_extras", setup_migrate.CARTRIDGES))
-    }
+    paths = setup_install.layout(root)
     return {
-        **receipt_extras,
+        "tool_extras": setup_receipts.read_tool_extras(tool_dir, setup_install.TOOL),
         "root": root,
         "team": a.team,
         "workspace": a.workspace or "",
         "locations": locs,
         "registered_marketplace": registered,
         "workspace_exists": workspace_exists,
-        "provider_profile": a.provider_profile or f"{root}/coxswain-cartridges/providers/claude-code.yaml",
-        "skills_root": a.skills_root or f"{root}/coxswain-cartridges/skills-plugins",
+        "provider_profile": a.provider_profile or paths.provider_profile,
+        "skills_root": a.skills_root or paths.skills_root,
         "uv_on_path": shutil.which("uv") is not None,
-        "python_exists": python_exists,
         "claude_on_path": shutil.which("claude") is not None,
         "profile_exists": Path(profile_file).exists(),
         "force_profile": a.force_profile,
@@ -6044,6 +6038,9 @@ def _install_run(step: dict) -> str | None:
     try:
         proc = subprocess.run(step["argv"], cwd=step.get("cwd"), capture_output=True, text=True)
     except OSError as exc:
+        if step.get("warn_only"):
+            print(f"warn: {argv}: {exc}")
+            return None
         print(f"FAILED: {argv}: {exc}")
         return f"{argv}: {exc}"
     if proc.returncode == 0:
@@ -7112,11 +7109,12 @@ def _checkout_facts(path: Path, fetch: bool = False) -> dict:
 
 
 def _gather_checkout_facts(root: Path, components: dict, fetch: bool = False) -> dict:
-    """Every manifest component, plus any other git checkout actually
-    present under `root` — the `extra` rows `install.rows` can then report.
+    """The one checkout and every manifest component, plus any other git checkout actually
+    present under `root` — the `extra` rows `install.rows` can then report (a component
+    checkout of the old layout not yet retired shows up there).
     `fetch` refreshes each declared checkout's remote branch first (edge)."""
     options = {"fetch": True} if fetch else {}
-    declared_dirs = {name: Path(install_exec.clone_dir(str(root), name)) for name in components}
+    declared_dirs = {name: Path(install_exec.clone_dir(str(root), name)) for name in (install.CHECKOUT, *components)}
     declared = {name: _checkout_facts(path, **options) for name, path in declared_dirs.items()}
     if not root.exists():
         return declared
@@ -7205,7 +7203,7 @@ def _install(a: argparse.Namespace) -> int:
     if resolved is None:
         return 2
     root, home = resolved
-    manifest_path = Path(a.manifest) if a.manifest else root / "coxswain" / "manifest.toml"
+    manifest_path = Path(a.manifest) if a.manifest else _checkout_path(root) / "manifest.toml"
     manifest = _load_manifest(manifest_path)
     if manifest is None:
         print((_NO_HOME_MANIFEST if home and not a.manifest else _NO_MANIFEST).format(manifest_path))
@@ -7218,7 +7216,7 @@ def _install(a: argparse.Namespace) -> int:
     }
     options = {"provider": a.provider, "with": a.with_ or [], "root": str(root), "team": a.team,
                "workspace": a.workspace, "channel": channel, **({"home": home} if home else {})}
-    schema_state, schema_detail = schema.status(_schema_versions(str(root / "harness"), str(root / "cartridges")))
+    schema_state, schema_detail = schema.status(_checkout_schema_versions(root))
     if schema_state != "ok":
         print(f"schema  WARN  {schema_detail}")
     steps = install.plan(manifest, facts, options)
@@ -7254,13 +7252,14 @@ def _upgrade_facts(manifest: dict, root: Path, provider: str) -> dict:
 
 
 def _upgrade_refused(manifest: dict, root: Path, options: dict) -> bool:
-    """Print and return True when an upgrade must not start: a dirty checkout, the umbrella's included,
+    """Print and return True when an upgrade must not start: a dirty checkout, the one checkout's included,
     or a plan refusal such as an unsupported provider or an unknown --with flag."""
     facts = _upgrade_facts(manifest, root, options["provider"])
-    checkouts = {**facts["checkouts"], "coxswain": _checkout_facts(root / "coxswain")}
-    dirty = sorted(name for name, checkout in checkouts.items() if checkout.get("dirty"))
+    dirty = sorted(name for name, checkout in facts["checkouts"].items() if checkout.get("dirty"))
     if dirty:
-        print(f"refusing: {root / dirty[0]} is dirty; refusing to upgrade it")
+        declared = dirty[0] == install.CHECKOUT or dirty[0] in manifest.get("components", {})
+        where = install_exec.clone_dir(str(root), dirty[0]) if declared else root / dirty[0]
+        print(f"refusing: {where} is dirty; refusing to upgrade it")
         return True
     refusals = [step for step in install.plan(manifest, facts, options) if step["kind"] == "refuse"]
     for step in refusals:
@@ -7268,65 +7267,90 @@ def _upgrade_refused(manifest: dict, root: Path, options: dict) -> bool:
     return bool(refusals)
 
 
-def _upgrade_plan_for(manifest: dict, root: Path, target: str, umbrella_tag: str | None) -> tuple:
-    """The planner's plan for `manifest`'s pins against what is installed and what each remote offers now,
-    and the clone URL of every component that has no checkout yet."""
-    components = manifest.get("components", {})
-    checkouts = _gather_checkout_facts(root, components)
+def _upgrade_plan_for(manifest: dict, root: Path, target: str, checkout_tag: str | None, with_flags: list) -> tuple:
+    """The planner's plan for `manifest`'s optional components (required, asked for with --with, or already
+    present) against what is installed and what each remote offers now, and the clone URL of every component
+    that has no checkout yet. The checkout itself is the plan's first step."""
+    checkouts = _gather_checkout_facts(root, manifest.get("components", {}))
+    components = {name: spec for name, spec in manifest.get("components", {}).items()
+                  if spec.get("required") or spec.get("flag") in with_flags or checkouts[name]["present"]}
     urls = {name: _clone_url(spec) for name, spec in components.items() if not checkouts[name]["present"]}
     plan = upgrade_plan.plan_upgrade(
         target,
-        umbrella_tag or "untagged",
+        checkout_tag or "untagged",
         {name: spec.get("tag") for name, spec in components.items()},
-        {name: facts.get("tag") for name, facts in checkouts.items()},
+        {name: checkouts[name].get("tag") for name in components},
         {name: frozenset(_offered_tags(Path(install_exec.clone_dir(str(root), name)), urls.get(name))) for name in components},
     )
     return plan, {name: url for name, url in urls.items() if url}
 
 
+def _checkout_path(root: Path) -> Path:
+    return Path(install_exec.clone_dir(str(root), install.CHECKOUT))
+
+
+def _upgrade_after_move(root: Path) -> list[dict]:
+    """The steps that follow the checkout's move: sync its venv, reinstall the cox tool with the extras its
+    receipt carries, link the crew seats."""
+    checkout = str(_checkout_path(root))
+    extras = setup_receipts.read_tool_extras(
+        setup_receipts.default_tool_dir(os.environ, str(Path.home())), setup_install.TOOL)
+    return [setup_install.sync_step(checkout), setup_install.tool_step(checkout, extras), setup_install.crew_step(checkout)]
+
+
 def _upgrade(a: argparse.Namespace) -> int:
-    """Move the umbrella first, then plan components from the manifest the moved umbrella carries."""
+    """Move the one checkout to the target tag, sync its venv, reinstall cox and the crew links, then move any
+    optional component the moved manifest pins, then run the doctor."""
     resolved = _install_root(a)
     if resolved is None:
         return 2
     root, home = resolved
-    manifest_path = Path(a.manifest) if a.manifest else root / "coxswain" / "manifest.toml"
+    checkout = _checkout_path(root)
+    manifest_path = Path(a.manifest) if a.manifest else checkout / "manifest.toml"
     manifest = _load_manifest(manifest_path)
     if manifest is None:
         print((_NO_HOME_MANIFEST if home and not a.manifest else _NO_MANIFEST).format(manifest_path))
         return 2
-    options = {"provider": a.provider, "with": a.with_ or [], "root": str(root), "team": a.team, "workspace": a.workspace,
+    with_flags = a.with_ or []
+    options = {"provider": a.provider, "with": with_flags, "root": str(root), "team": a.team, "workspace": a.workspace,
                **({"home": home} if home else {})}
     if _upgrade_refused(manifest, root, options):
         return 2
-    umbrella = root / "coxswain"
-    umbrella_tag = _checkout_facts(umbrella)["tag"]
-    target = upgrade_plan.release_tag(a.to) if a.to else upgrade_exec.newest_release(_offered_tags(umbrella))
+    checkout_tag = _checkout_facts(checkout)["tag"]
+    target = upgrade_plan.release_tag(a.to) if a.to else upgrade_exec.newest_release(_offered_tags(checkout))
     if target is None:
-        print(f"refusing: {umbrella} offers no release tag to upgrade to; pass --to")
+        print(f"refusing: {checkout} offers no release tag to upgrade to; pass --to")
         return 2
+    after_move = _upgrade_after_move(root)
     if a.dry_run:
-        print("dry run: component steps use the pins in the current manifest; a real run re-reads them after the umbrella moves")
-        plan, urls = _upgrade_plan_for(manifest, root, target, umbrella_tag)
-        return upgrade_exec.run_plan(plan, root=root, run=_real_run, dry_run=True, clone_urls=urls)
-    umbrella_only = upgrade_plan.plan_upgrade(target, umbrella_tag or "untagged", {}, {}, {})
-    code = upgrade_exec.run_plan(umbrella_only, root=root, run=_real_run, dry_run=False)
+        print("dry run: component steps use the pins in the current manifest; a real run re-reads them after the checkout moves")
+        plan, urls = _upgrade_plan_for(manifest, root, target, checkout_tag, with_flags)
+        return upgrade_exec.run_plan(plan, root=root, run=_real_run, dry_run=True, clone_urls=urls, after_move=after_move)
+    _load_lazy_modules()  # the tool reinstall replaces this cox's own environment
+    checkout_only = upgrade_plan.plan_upgrade(target, checkout_tag or "untagged", {}, {}, {})
+    code = upgrade_exec.run_plan(checkout_only, root=root, run=_real_run, dry_run=False, after_move=after_move)
     if code != 0:
         return code
-    moved_path = umbrella / "manifest.toml"
+    moved_path = checkout / "manifest.toml"
     moved = _load_manifest(moved_path)
     if moved is None:
         print(_NO_MANIFEST.format(moved_path))
         return 2
     if _upgrade_refused(moved, root, options):
         return 2
-    plan, urls = _upgrade_plan_for(moved, root, target, target)
+    plan, urls = _upgrade_plan_for(moved, root, target, target, with_flags)
     code = upgrade_exec.run_plan(dataclasses.replace(plan, steps=plan.steps[1:]), root=root, run=_real_run, dry_run=False, clone_urls=urls)
     if code != 0:
         return code
     tail = [step for step in install.plan(moved, _upgrade_facts(moved, root, a.provider), options)
-            if step["kind"] in ("setup_install", "doctor", "desktop")]
+            if step["kind"] in ("doctor", "desktop")]
     return _install_execute(tail, moved, options, root)
+
+
+def _checkout_schema_versions(root: Path) -> dict[str, str | None]:
+    """The schema versions read from the one checkout under `root`."""
+    paths = setup_install.layout(str(root))
+    return _schema_versions(paths.harness_dir, paths.provider_profile, [paths.skills_root])
 
 
 def _schema_versions(harness_dir: str = "", provider_profile: str = "", skills_roots: list[str] | None = None
@@ -7350,7 +7374,7 @@ def _versions(a: argparse.Namespace) -> int:
     root = Path(a.root) if a.root else manifest_path.resolve().parent.parent
     facts = {"root": str(root), "checkouts": _gather_checkout_facts(root, manifest.get("components", {})),
               "provider_cli_on_path": False}
-    schema_versions = _schema_versions(str(root / "harness"), str(root / "cartridges"))
+    schema_versions = _checkout_schema_versions(root)
     from agent_tools import versions_hint
     from agent_tools.version_info import UNKNOWN, package_version
 
@@ -7361,13 +7385,13 @@ def _versions(a: argparse.Namespace) -> int:
             return None
         return done.stdout.strip() if done.returncode == 0 else None
 
-    umbrella_tag = git_out(str(root / "coxswain"), "describe", "--tags") or None
+    umbrella_tag = git_out(str(_checkout_path(root)), "describe", "--tags") or None
     release = package_version()
     release_tag = None if release == UNKNOWN else release
     hint = versions_hint.umbrella_hint(umbrella_tag, release_tag)
 
     def offered(component: str) -> frozenset[str]:
-        return frozenset((git_out(str(root / component), "tag", "--list") or "").split())
+        return frozenset((git_out(install_exec.clone_dir(str(root), component), "tag", "--list") or "").split())
 
     def label(component: str, pinned: str | None, status: str) -> str:
         # Only a drift row pinned at the umbrella's own release is explained by a stale umbrella; a component
@@ -7378,8 +7402,10 @@ def _versions(a: argparse.Namespace) -> int:
             return status
         return versions_hint.status_label(status, pinned, release_tag, offered(component))
 
+    # The checkout carries all three schemas, so its cell is their agreement; an optional component has none.
+    schema_cell = {install.CHECKOUT: schema.status(schema_versions)[0]}
     display = [{"component": c, "pinned_tag": p or "", "installed_tag": i or "", "status": label(c, p, s),
-                "schema": schema.cell(schema_versions.get(c)) if c in schema_versions else "?"}
+                "schema": schema_cell.get(c, "?")}
                for c, p, i, s in install.rows(manifest, facts)]
     if hint:
         print(hint)
