@@ -1,4 +1,5 @@
 import argparse
+import copy
 import datetime
 import json
 from pathlib import Path
@@ -19,34 +20,37 @@ assume: y
 """
 
 
-def test_parse_profile_reads_scalars_and_lists():
-    profile = route.parse_profile(VALID_PROFILE)
-    assert profile["team"] == "acme"
-    assert profile["cartridges_dir"] == "/opt/cartridges"
-    assert profile["skills_roots"] == ["/opt/skills-a", "/opt/skills-b"]
-    assert profile["provider_profile"] == "/opt/providers/acme.yaml"
-    assert profile["harness_dir"] == "/opt/coxswain-graphs"
-    assert profile["workspace_dir"] == "/home/user/workspace"
-    assert profile["assume"] == "y"
+@pytest.mark.parametrize(
+    "text, key, expected",
+    [
+        (VALID_PROFILE, "team", "acme"),
+        (VALID_PROFILE, "skills_roots", ["/opt/skills-a", "/opt/skills-b"]),
+        ("team: acme\ncartridges_dir: /opt/cartridges\n", "assume", "a"),
+        ("team: acme\nassume:\n", "assume", "a"),
+        # spec §1's own sample line, verbatim.
+        ("assume: a          # gate answer for detached runs; drafts only ever land\n", "assume", "a"),
+        (VALID_PROFILE + "ids: sequence\n", "ids", "sequence"),
+        (VALID_PROFILE + "spend:\n  window_ceiling_usd: 300\n  node_cap_usd: 2.00\n", "window_ceiling_usd", 300.0),
+        (VALID_PROFILE + "spend:\n  window_ceiling_usd: 300\n  node_cap_usd: 2.00\n", "node_cap_usd", 2.0),
+        (VALID_PROFILE + "chair:\n  housekeeping_hours: 6\n", "chair", {"housekeeping_hours": 6.0}),
+        (VALID_PROFILE + "chair:\n  idle_stall_minutes: 20\n", "chair", {"idle_stall_minutes": 20.0}),
+    ],
+)
+def test_parse_profile_reads_key(text, key, expected):
+    assert route.parse_profile(text)[key] == expected
 
 
-def test_parse_profile_defaults_assume_to_a_when_absent():
-    text = "team: acme\ncartridges_dir: /opt/cartridges\n"
-    profile = route.parse_profile(text)
-    assert profile["assume"] == "a"
-
-
-def test_parse_profile_defaults_assume_to_a_when_value_is_empty():
-    text = "team: acme\nassume:\n"
-    profile = route.parse_profile(text)
-    assert profile["assume"] == "a"
-
-
-def test_parse_profile_strips_the_spec_sample_inline_comment():
-    # spec §1's own sample line, verbatim.
-    text = "assume: a          # gate answer for detached runs; drafts only ever land\n"
-    profile = route.parse_profile(text)
-    assert profile["assume"] == "a"
+@pytest.mark.parametrize(
+    "text, key",
+    [
+        (VALID_PROFILE, "window_ceiling_usd"),
+        (VALID_PROFILE, "node_cap_usd"),
+        (VALID_PROFILE, "chair"),
+        (VALID_PROFILE + "spend:\n  window_ceiling_usd: 300\n", "node_cap_usd"),
+    ],
+)
+def test_parse_profile_omits_a_key_it_was_not_given(text, key):
+    assert key not in route.parse_profile(text)
 
 
 def test_parse_profile_unknown_key_warns_once_and_keeps_the_rest(capsys, monkeypatch):
@@ -72,116 +76,43 @@ def test_parse_profile_drops_an_unknown_key_with_an_indented_block(capsys, monke
     assert route.unknown_keys(text) == [("future", 2)]
 
 
-def test_parse_profile_malformed_known_key_still_raises():
-    with pytest.raises(route.ProfileError) as exc_info:
-        route.parse_profile("team: acme\nsources: not-json\n")
-    assert str(exc_info.value).startswith("line 2:")
-
-
-def test_parse_profile_nested_key_names_the_line():
-    text = "team: acme\n  nested: bad\n"
-    with pytest.raises(route.ProfileError) as exc_info:
-        route.parse_profile(text)
-    message = str(exc_info.value)
-    assert message.startswith("line 2:")
-    assert "nested: bad" in message
-
-
-def test_parse_profile_has_no_spend_keys_when_the_block_is_absent():
-    profile = route.parse_profile(VALID_PROFILE)
-    assert "window_ceiling_usd" not in profile
-    assert "node_cap_usd" not in profile
-
-
-def test_parse_profile_reads_both_spend_keys_when_both_are_set():
-    text = VALID_PROFILE + "spend:\n  window_ceiling_usd: 300\n  node_cap_usd: 2.00\n"
-    profile = route.parse_profile(text)
-    assert profile["window_ceiling_usd"] == 300.0
-    assert profile["node_cap_usd"] == 2.0
-
-
-def test_parse_profile_leaves_the_other_spend_key_absent_when_only_one_is_set():
-    text = VALID_PROFILE + "spend:\n  window_ceiling_usd: 300\n"
-    profile = route.parse_profile(text)
-    assert profile["window_ceiling_usd"] == 300.0
-    assert "node_cap_usd" not in profile
-
-
-def test_parse_profile_unknown_key_inside_spend_names_the_line():
-    text = VALID_PROFILE + "spend:\n  bogus: 1\n"
-    with pytest.raises(route.ProfileError) as exc_info:
-        route.parse_profile(text)
-    assert "bogus: 1" in str(exc_info.value)
-
-
-def test_parse_profile_non_numeric_spend_value_names_the_line():
-    text = VALID_PROFILE + "spend:\n  window_ceiling_usd: 300 USD\n"
+@pytest.mark.parametrize(
+    "text, prefix, offending",
+    [
+        ("team: acme\nsources: not-json\n", "line 2:", ""),
+        ("team: acme\n  nested: bad\n", "line 2:", "nested: bad"),
+        (VALID_PROFILE + "spend:\n  bogus: 1\n", "line 9:", "bogus: 1"),
+        (VALID_PROFILE + "spend:\n  window_ceiling_usd: 300 USD\n", "line 9:", "window_ceiling_usd: 300 USD"),
+        (VALID_PROFILE + "chair:\n  bogus: 1\n", "line 9:", "bogus: 1"),
+    ],
+)
+def test_parse_profile_error_names_the_line(text, prefix, offending):
     with pytest.raises(route.ProfileError) as exc_info:
         route.parse_profile(text)
     message = str(exc_info.value)
-    assert message.startswith("line 9:")
-    assert "window_ceiling_usd: 300 USD" in message
+    assert message.startswith(prefix)
+    assert offending in message
 
 
-def test_parse_profile_reads_the_chair_housekeeping_hours():
-    text = VALID_PROFILE + "chair:\n  housekeeping_hours: 6\n"
-    profile = route.parse_profile(text)
-    assert profile["chair"] == {"housekeeping_hours": 6.0}
-
-
-def test_parse_profile_reads_the_chair_idle_stall_minutes():
-    text = VALID_PROFILE + "chair:\n  idle_stall_minutes: 20\n"
-    assert route.parse_profile(text)["chair"] == {"idle_stall_minutes": 20.0}
-
-
-def test_parse_profile_unknown_key_inside_chair_names_the_line():
-    text = VALID_PROFILE + "chair:\n  bogus: 1\n"
-    with pytest.raises(route.ProfileError) as exc_info:
-        route.parse_profile(text)
-    assert "bogus: 1" in str(exc_info.value)
-
-
-def test_parse_profile_has_no_chair_key_when_the_block_is_absent():
-    profile = route.parse_profile(VALID_PROFILE)
-    assert "chair" not in profile
-    assert profile == {
-        "team": "acme",
-        "cartridges_dir": "/opt/cartridges",
-        "skills_roots": ["/opt/skills-a", "/opt/skills-b"],
-        "provider_profile": "/opt/providers/acme.yaml",
-        "harness_dir": "/opt/coxswain-graphs",
-        "workspace_dir": "/home/user/workspace",
-        "assume": "y",
-    }
-
-
-def test_slugify_handles_punctuation_unicode_and_whitespace():
-    assert route.slugify("  Fix the Bug!! ") == "fix-the-bug"
-    assert route.slugify("Café Résumé — draft") == "caf-r-sum-draft"
-    assert route.slugify("multiple   spaces\tand\ttabs") == "multiple-spaces-and-tabs"
-
-
-def test_slugify_truncates_to_48_characters():
-    title = "a" * 60
-    slug = route.slugify(title)
-    assert len(slug) <= 48
-    assert slug == "a" * 48
-
-
-def test_slugify_returns_empty_string_when_title_has_no_alphanumerics():
-    # Pinned, not asserted-away: callers using this as a path segment must
-    # guard against the empty result themselves (see route.py docstring).
-    assert route.slugify("!!!") == ""
-    assert route.slugify("   ") == ""
-
-
-def test_slugify_cuts_a_long_title_at_a_word_boundary_and_drops_leading_stopwords():
-    title = "Fix the Loop A Build's Structured Output Was A Placeholder For Something Broken Today Okay"
-    assert len(title) == 90
-    slug = route.slugify(title)
-    assert len(slug) <= 48
-    assert not slug.startswith(("the-", "a-", "an-", "cox-", "fix-", "loop-", "initiative-"))
-    assert slug == "build-s-structured-output-was-a-placeholder-for"
+@pytest.mark.parametrize(
+    "title, slug",
+    [
+        ("  Fix the Bug!! ", "fix-the-bug"),
+        ("Café Résumé — draft", "caf-r-sum-draft"),
+        ("multiple   spaces\tand\ttabs", "multiple-spaces-and-tabs"),
+        ("a" * 60, "a" * 48),
+        # Pinned, not asserted-away: callers using this as a path segment must
+        # guard against the empty result themselves (see route.py docstring).
+        ("!!!", ""),
+        ("   ", ""),
+        (
+            "Fix the Loop A Build's Structured Output Was A Placeholder For Something Broken Today Okay",
+            "build-s-structured-output-was-a-placeholder-for",
+        ),
+    ],
+)
+def test_slugify(title, slug):
+    assert route.slugify(title) == slug
 
 
 def test_surface_candidates_keeps_only_backticked_tokens_that_look_like_paths():
@@ -195,34 +126,20 @@ def test_surface_candidates_keeps_only_backticked_tokens_that_look_like_paths():
     ]
 
 
-def test_next_run_id_returns_one_past_the_highest_and_never_fills_a_gap():
-    assert route.next_run_id(["myinit-1", "myinit-2", "otherinit-1"], "myinit") == "myinit-3"
-    assert route.next_run_id(["myinit-1", "myinit-3", "otherinit-9"], "myinit") == "myinit-4"
-
-
-def test_next_run_id_counts_a_bare_store_id_without_an_extension():
-    assert route.next_run_id(["myinit-1.log", "myinit-7"], "myinit") == "myinit-8"
-
-
-def test_next_run_id_starts_at_one_when_none_exist():
-    assert route.next_run_id([], "freshinit") == "freshinit-1"
-
-
-def test_next_run_id_never_collides_with_existing_names():
-    existing = [f"init-{n}" for n in range(1, 6)]
-    new_id = route.next_run_id(existing, "init")
-    assert new_id not in existing
-    assert new_id == "init-6"
-
-
-def test_next_run_id_matches_real_runs_dir_filenames_not_bare_ids():
-    # spec §4/§5: runs_dir holds <run-id>.log and <run-id>.pid, never a
-    # bare id — a fixture of bare ids would hide a collision here.
-    existing = ["myinit-1.log", "myinit-1.pid", "myinit-2.log", "myinit-2.pid"]
-    new_id = route.next_run_id(existing, "myinit")
-    assert new_id == "myinit-3"
-    assert new_id + ".log" not in existing
-    assert new_id + ".pid" not in existing
+@pytest.mark.parametrize(
+    "existing, prefix, expected",
+    [
+        (["myinit-1", "myinit-2", "otherinit-1"], "myinit", "myinit-3"),
+        (["myinit-1", "myinit-3", "otherinit-9"], "myinit", "myinit-4"),
+        (["myinit-1.log", "myinit-7"], "myinit", "myinit-8"),
+        ([], "freshinit", "freshinit-1"),
+        # spec §4/§5: runs_dir holds <run-id>.log and <run-id>.pid, never a
+        # bare id — a fixture of bare ids would hide a collision here.
+        (["myinit-1.log", "myinit-1.pid", "myinit-2.log", "myinit-2.pid"], "myinit", "myinit-3"),
+    ],
+)
+def test_next_run_id(existing, prefix, expected):
+    assert route.next_run_id(existing, prefix) == expected
 
 
 def test_initiative_files_returns_the_initiative_and_task_paths_and_text():
@@ -256,60 +173,46 @@ def test_initiative_files_returns_the_initiative_and_task_paths_and_text():
     )
 
 
-def test_initiative_files_quotes_a_title_containing_yaml_metacharacters():
-    # The colon and the `#` are both in the *title* here, not the body, so
-    # this exercises both branches of _yaml_scalar's quoting predicate
-    # (a bare `#` reads as a comment to this module's own parse_profile).
-    files = route.initiative_files(
-        "route.py: initiative_files #wip", "Ship it.", "repo-url"
-    )
-    slug = route.slugify("route.py: initiative_files #wip")
-    initiative_text = files[f"work/{slug}/initiative.md"]
-    task_text = files[f"work/{slug}/build/{slug}.md"]
-    assert 'title: "route.py: initiative_files #wip"' in initiative_text
-    assert 'title: "route.py: initiative_files #wip"' in task_text
-    # needs/surfaces stay bare list literals, not quoted strings.
-    assert "needs: []" in task_text
-    assert "surfaces: []" in task_text
+@pytest.mark.parametrize(
+    "title, line",
+    [
+        # Colon and `#` in the title: both branches of _yaml_scalar's quoting predicate.
+        ("route.py: initiative_files #wip", 'title: "route.py: initiative_files #wip"'),
+        # A title that merely looks like a YAML list is quoted, not treated as a raw literal.
+        ("[draft] ship it", 'title: "[draft] ship it"'),
+    ],
+)
+def test_initiative_files_quotes_a_title_that_would_read_as_yaml(title, line):
+    slug = route.slugify(title)
+    files = route.initiative_files(title, "Ship it.", "repo-url")
+    assert line in files[f"work/{slug}/initiative.md"]
+    assert line in files[f"work/{slug}/build/{slug}.md"]
 
 
-def test_initiative_files_quotes_a_bracketed_title_instead_of_treating_it_as_raw_yaml():
-    # A title that merely *looks* like a YAML list must not be classified
-    # as one by its shape — only this module's own needs/surfaces literals
-    # are raw. Unquoted, a real YAML reader would parse `[draft] ship it`
-    # as a flow sequence, not the title string.
-    files = route.initiative_files("[draft] ship it", "Ship it.", "repo-url")
-    slug = route.slugify("[draft] ship it")
-    initiative_text = files[f"work/{slug}/initiative.md"]
-    assert 'title: "[draft] ship it"' in initiative_text
-
-
-def test_initiative_files_refuses_a_title_that_slugifies_to_empty():
-    # slugify's own docstring hands this guard to callers using the slug
-    # as a path segment; a bare "work/initiative.md" write is the wrong
-    # write into the work store this guard exists to prevent.
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda: route.initiative_files("!!!", "body", "repo-url"),
+        lambda: route.intake_file("!!!", "body", "repo-url", "2026-09-03"),
+    ],
+    ids=["initiative_files", "intake_file"],
+)
+def test_a_title_that_slugifies_to_empty_is_refused(call):
+    # A bare "work/initiative.md" write is the wrong write into the work store.
     with pytest.raises(ValueError):
-        route.initiative_files("!!!", "body", "repo-url")
+        call()
 
 
 def test_initiative_files_writes_surfaces_budget_attempts_lint_and_a_given_slug():
     files = route.initiative_files(
         "Fix the Bug", "Do the thing.", "repo-url",
-        surfaces=["agent_tools/schema.py"], budget_usd=2.0, slug="custom-slug",
+        surfaces=["a:b.py", "plain.py"], budget_usd=2.0, slug="custom-slug",
     )
     task_text = files["work/custom-slug/build/custom-slug.md"]
-    assert "surfaces: [agent_tools/schema.py]" in task_text
+    assert 'surfaces: ["a:b.py", plain.py]' in task_text
     assert "budget_usd: 2.0" in task_text
     assert "attempts: []" in task_text
     assert "lint: []" in task_text
-
-
-def test_initiative_files_quotes_a_surface_entry_containing_a_colon():
-    files = route.initiative_files(
-        "Fix the Bug", "Do the thing.", "repo-url", surfaces=["a:b.py", "plain.py"], budget_usd=2.0,
-    )
-    task_text = files["work/fix-the-bug/build/fix-the-bug.md"]
-    assert 'surfaces: ["a:b.py", plain.py]' in task_text
 
 
 def test_initiative_files_defaults_phase_to_build_and_body_to_title():
@@ -331,41 +234,6 @@ def test_initiative_text_writes_id_title_repo_intake_and_body():
         "intake": "intake/2026-09-04-fix-thing.md",
     }
     assert body == "Do the thing."
-
-
-def test_intake_file_returns_the_dated_path_and_text():
-    files = route.intake_file(
-        "Fix the Bug", "Do the thing.", "git@example.com:acme/widget.git", "2026-09-03"
-    )
-    assert set(files) == {"intake/2026-09-03-fix-the-bug.md"}
-    assert files["intake/2026-09-03-fix-the-bug.md"] == (
-        "---\n"
-        "id: fix-the-bug\n"
-        "title: Fix the Bug\n"
-        'repo: "git@example.com:acme/widget.git"\n'
-        "---\n"
-        "\n"
-        "Do the thing.\n"
-    )
-
-
-def test_intake_file_quotes_a_title_containing_yaml_metacharacters():
-    files = route.intake_file(
-        "route.py: initiative_files #wip", "Ship it.", "repo-url", "2026-09-03"
-    )
-    slug = route.slugify("route.py: initiative_files #wip")
-    text = files[f"intake/2026-09-03-{slug}.md"]
-    assert 'title: "route.py: initiative_files #wip"' in text
-
-
-def test_intake_file_refuses_a_title_that_slugifies_to_empty():
-    with pytest.raises(ValueError):
-        route.intake_file("!!!", "body", "repo-url", "2026-09-03")
-
-
-def test_parse_profile_reads_the_ids_key_as_sequence():
-    text = VALID_PROFILE + "ids: sequence\n"
-    assert route.parse_profile(text)["ids"] == "sequence"
 
 
 def test_intake_file_with_ids_sequence_writes_the_allocated_id_and_title():
@@ -495,41 +363,36 @@ def test_harness_argv_builds_the_decompose_command_line():
     ]
 
 
-def test_harness_argv_appends_task_ids_for_decompose_when_given():
+@pytest.mark.parametrize(
+    "graph, needs, tail",
+    [
+        (
+            "decompose",
+            {"idea": "/intake/myidea.md", "initiative_id": "myidea", "task_ids": "ordinal"},
+            ["--task-ids", "ordinal", "--workdir", "/home/user/workspace"],
+        ),
+        (
+            "decompose",
+            {"idea": "/intake/myidea.md", "initiative_id": "myidea", "repo": "/repos/widget"},
+            ["--repo", "/repos/widget", "--workdir", "/home/user/workspace"],
+        ),
+        (
+            "epic",
+            {"initiative": "/work/myinit", "repo": "/repos/widget", "fix_attempts": 3},
+            ["--fix-attempts", "3", "--workdir", "/home/user/workspace"],
+        ),
+        (
+            "rescue",
+            {"initiative": "/work/myinit", "repo": "/repos/widget", "task": "T1"},
+            ["--task", "T1", "--workdir", "/home/user/workspace"],
+        ),
+    ],
+)
+def test_harness_argv_ends_with_the_graph_flags_then_workdir(graph, needs, tail):
     profile = route.parse_profile(VALID_PROFILE)
-    argv = route.harness_argv(
-        profile, "decompose", "myidea-1", idea="/intake/myidea.md", initiative_id="myidea", task_ids="ordinal",
-    )
-    assert argv[-4:] == ["--task-ids", "ordinal", "--workdir", "/home/user/workspace"]
-
-
-def test_harness_argv_omits_task_ids_for_decompose_when_absent():
-    profile = route.parse_profile(VALID_PROFILE)
-    argv = route.harness_argv(profile, "decompose", "myidea-1", idea="/intake/myidea.md", initiative_id="myidea")
-    assert "--task-ids" not in argv
-
-
-def test_harness_argv_passes_the_intake_repo_to_a_decompose():
-    profile = route.parse_profile(VALID_PROFILE)
-    argv = route.harness_argv(
-        profile, "decompose", "myidea-1", idea="/intake/myidea.md", initiative_id="myidea", repo="/repos/widget",
-    )
-    assert argv[-4:] == ["--repo", "/repos/widget", "--workdir", "/home/user/workspace"]
-
-
-def test_harness_argv_builds_the_rescue_command_line():
-    profile = route.parse_profile(VALID_PROFILE)
-    rescue = route.harness_argv(
-        profile, "rescue", "myinit-1", initiative="/work/myinit", repo="/repos/widget", task="T1",
-    )
-    epic = route.harness_argv(
-        profile, "epic", "myinit-1", initiative="/work/myinit", repo="/repos/widget",
-    )
-    assert rescue[2] == "rescue"
-    assert rescue[rescue.index("--initiative") + 1] == "/work/myinit"
-    assert rescue[rescue.index("--task") + 1] == "T1"
-    assert rescue[rescue.index("--repo") + 1] == "/repos/widget"
-    assert rescue[3:rescue.index("--initiative")] == epic[3:epic.index("--initiative")]
+    argv = route.harness_argv(profile, graph, "x-1", **needs)
+    assert argv[2] == graph
+    assert argv[-4:] == tail
 
 
 def test_harness_argv_builds_the_cos_command_line():
@@ -539,22 +402,6 @@ def test_harness_argv_builds_the_cos_command_line():
     assert "--runs-dir" in argv
     assert "--max-parallel" in argv
     assert "--initiative" not in argv
-
-
-def test_harness_argv_appends_fix_attempts_for_epic_when_given():
-    profile = route.parse_profile(VALID_PROFILE)
-    argv = route.harness_argv(
-        profile, "epic", "myinit-1", initiative="/work/myinit", repo="/repos/widget", fix_attempts=3,
-    )
-    assert argv[argv.index("--repo") + 2 :] == ["--fix-attempts", "3", "--workdir", "/home/user/workspace"]
-
-
-def test_harness_argv_omits_fix_attempts_for_epic_when_absent():
-    profile = route.parse_profile(VALID_PROFILE)
-    argv = route.harness_argv(
-        profile, "epic", "myinit-1", initiative="/work/myinit", repo="/repos/widget",
-    )
-    assert "--fix-attempts" not in argv
 
 
 def test_harness_argv_appends_node_cap_usd_when_set_in_the_profile():
@@ -579,51 +426,43 @@ _PROFILE = {
 }
 
 
-def test_overlay_tier_ceiling_runs_every_tier_above_it_as_that_tier():
-    overlaid = route.overlay(_PROFILE, "standard", None)
-    assert overlaid["tiers"] == {"cheap": "haiku", "standard": "sonnet", "deep": "sonnet"}
-    assert overlaid["effort"] == {"cheap": "low", "standard": "high", "deep": "high"}
-    assert overlaid["budget_usd"] == _PROFILE["budget_usd"]  # a ceiling is about model and effort
-
-
-def test_overlay_effort_ceiling_clamps_every_tier():
-    overlaid = route.overlay(_PROFILE, None, "low")
-    assert overlaid["effort"] == {"cheap": "low", "standard": "low", "deep": "low"}
-    assert overlaid["tiers"] == _PROFILE["tiers"]
-
-
-def test_overlay_both_ceilings_compose():
-    overlaid = route.overlay(_PROFILE, "cheap", "low")
-    assert overlaid["tiers"] == {"cheap": "haiku", "standard": "haiku", "deep": "haiku"}
-    assert overlaid["effort"] == {"cheap": "low", "standard": "low", "deep": "low"}
-
-
-def test_overlay_with_no_ceiling_is_a_no_op_and_mutates_nothing():
-    before = {**_PROFILE, "tiers": dict(_PROFILE["tiers"])}
-    assert route.overlay(_PROFILE, None, None) == _PROFILE
+@pytest.mark.parametrize(
+    "tier, effort, tiers, efforts",
+    [
+        ("standard", None,
+         {"cheap": "haiku", "standard": "sonnet", "deep": "sonnet"},
+         {"cheap": "low", "standard": "high", "deep": "high"}),
+        (None, "low",
+         {"cheap": "haiku", "standard": "sonnet", "deep": "opus"},
+         {"cheap": "low", "standard": "low", "deep": "low"}),
+        ("cheap", "low",
+         {"cheap": "haiku", "standard": "haiku", "deep": "haiku"},
+         {"cheap": "low", "standard": "low", "deep": "low"}),
+        ("deep", "high", _PROFILE["tiers"], _PROFILE["effort"]),
+        (None, None, _PROFILE["tiers"], _PROFILE["effort"]),
+    ],
+)
+def test_overlay_ceilings(tier, effort, tiers, efforts):
+    before = copy.deepcopy(_PROFILE)
+    # A ceiling is about model and effort: budgets and the rest pass through.
+    assert route.overlay(_PROFILE, tier, effort) == {**_PROFILE, "tiers": tiers, "effort": efforts}
     assert before == _PROFILE
 
 
-def test_overlay_at_the_profiles_own_top_changes_nothing():
-    assert route.overlay(_PROFILE, "deep", "high") == _PROFILE
-
-
-def test_overlay_refuses_a_tier_above_the_profiles_own_top():
-    profile = {**_PROFILE, "tiers": {"cheap": "haiku", "standard": "sonnet"}}
-    result = route.overlay(profile, "deep", None)
-    assert isinstance(result, str) and "deep" in result and "standard" in result
-
-
-def test_overlay_refuses_an_effort_above_the_profiles_own_top():
-    profile = {**_PROFILE, "effort": {"cheap": "low", "standard": "low", "deep": "low"}}
-    result = route.overlay(profile, None, "high")
-    assert isinstance(result, str) and "high" in result and "low" in result
-
-
-def test_overlay_refuses_when_the_profile_declares_no_usable_axis():
-    assert "unset" in route.overlay({"command": "claude"}, "deep", None)
-    assert "unset" in route.overlay({"tiers": {"ultra": "x"}}, "cheap", None)
-    assert "unset" in route.overlay({"effort": "high"}, None, "low")  # a scalar is not the profile's shape
+@pytest.mark.parametrize(
+    "profile, tier, effort, fragments",
+    [
+        ({**_PROFILE, "tiers": {"cheap": "haiku", "standard": "sonnet"}}, "deep", None, ("deep", "standard")),
+        ({**_PROFILE, "effort": {"cheap": "low", "standard": "low", "deep": "low"}}, None, "high", ("high", "low")),
+        ({"command": "claude"}, "deep", None, ("unset",)),
+        ({"tiers": {"ultra": "x"}}, "cheap", None, ("unset",)),
+        ({"effort": "high"}, None, "low", ("unset",)),  # a scalar is not the profile's shape
+    ],
+)
+def test_overlay_refuses_a_ceiling_the_profile_cannot_honour(profile, tier, effort, fragments):
+    result = route.overlay(profile, tier, effort)
+    assert isinstance(result, str)
+    assert all(fragment in result for fragment in fragments)
 
 
 def test_overlay_never_raises_on_off_ladder_values():
@@ -632,56 +471,61 @@ def test_overlay_never_raises_on_off_ladder_values():
     assert "unset" in route.overlay(profile, None, "low")
 
 
-def test_child_env_prepends_both_venv_bins_and_leaves_other_keys_untouched():
-    environ = {"PATH": "/usr/bin:/bin", "HOME": "/home/user", "LANG": "C.UTF-8"}
-    env = route.child_env(environ, harness_bin="/opt/coxswain-graphs/.venv/bin", repo="/repos/widget")
-    assert env["PATH"] == "/repos/widget/.venv/bin:/opt/coxswain-graphs/.venv/bin:/usr/bin:/bin"
-    assert env["HOME"] == "/home/user"
-    assert env["LANG"] == "C.UTF-8"
-    assert environ["PATH"] == "/usr/bin:/bin"  # input untouched
-
-
-def test_child_env_omits_a_prefix_that_is_not_given():
-    environ = {"PATH": "/usr/bin"}
-    env = route.child_env(environ, harness_bin="/opt/coxswain-graphs/.venv/bin", repo="")
-    assert env["PATH"] == "/opt/coxswain-graphs/.venv/bin:/usr/bin"
-
-
-def test_child_env_sets_trace_dir_and_still_prepends_path():
-    environ = {"PATH": "/usr/bin"}
-    env = route.child_env(environ, harness_bin="/opt/coxswain-graphs/.venv/bin", trace_dir="/runs/x-1-trace")
-    assert env["AGENT_GRAPHS_TRACE_DIR"] == "/runs/x-1-trace"
-    assert env["PATH"] == "/opt/coxswain-graphs/.venv/bin:/usr/bin"
-
-
-def test_child_env_without_trace_dir_leaves_the_key_untouched():
-    absent = route.child_env({"PATH": "/usr/bin"})
-    assert "AGENT_GRAPHS_TRACE_DIR" not in absent
-    present = route.child_env({"PATH": "/usr/bin", "AGENT_GRAPHS_TRACE_DIR": "/old"})
-    assert present["AGENT_GRAPHS_TRACE_DIR"] == "/old"
-
-
-def test_child_env_replaces_a_callers_pre_set_trace_dir():
-    environ = {"PATH": "/usr/bin", "AGENT_GRAPHS_TRACE_DIR": "/old"}
-    env = route.child_env(environ, trace_dir="/runs/x-1-trace")
-    assert env["AGENT_GRAPHS_TRACE_DIR"] == "/runs/x-1-trace"
-
-
-def test_child_env_exports_the_chair_model_and_still_prepends_path():
-    env = route.child_env({"PATH": "/usr/bin"}, harness_bin="/opt/coxswain-graphs/.venv/bin", chair_model="sonnet")
-    assert env["COXSWAIN_CHAIR_MODEL"] == "sonnet"
-    assert env["PATH"] == "/opt/coxswain-graphs/.venv/bin:/usr/bin"
-
-
-def test_child_env_with_an_empty_chair_model_keeps_a_pre_set_value_and_adds_none():
-    assert route.child_env({"COXSWAIN_CHAIR_MODEL": "haiku"}, chair_model="")["COXSWAIN_CHAIR_MODEL"] == "haiku"
-    assert "COXSWAIN_CHAIR_MODEL" not in route.child_env({"PATH": "/usr/bin"}, chair_model="")
-
-
-def test_child_env_leaves_the_input_mapping_unchanged():
-    environ = {"PATH": "/usr/bin", "COXSWAIN_CHAIR_MODEL": "haiku"}
-    route.child_env(environ, harness_bin="/h", repo="/r", trace_dir="/t", chair_model="opus")
-    assert environ == {"PATH": "/usr/bin", "COXSWAIN_CHAIR_MODEL": "haiku"}
+@pytest.mark.parametrize(
+    "environ, kwargs, expected",
+    [
+        (
+            {"PATH": "/usr/bin:/bin", "HOME": "/home/user", "LANG": "C.UTF-8"},
+            {"harness_bin": "/opt/coxswain-graphs/.venv/bin", "repo": "/repos/widget"},
+            {
+                "PATH": "/repos/widget/.venv/bin:/opt/coxswain-graphs/.venv/bin:/usr/bin:/bin",
+                "HOME": "/home/user",
+                "LANG": "C.UTF-8",
+            },
+        ),
+        (
+            {"PATH": "/usr/bin"},
+            {"harness_bin": "/opt/coxswain-graphs/.venv/bin", "repo": ""},
+            {"PATH": "/opt/coxswain-graphs/.venv/bin:/usr/bin"},
+        ),
+        (
+            {"PATH": "/usr/bin"},
+            {"harness_bin": "/opt/coxswain-graphs/.venv/bin", "trace_dir": "/runs/x-1-trace"},
+            {"PATH": "/opt/coxswain-graphs/.venv/bin:/usr/bin", "AGENT_GRAPHS_TRACE_DIR": "/runs/x-1-trace"},
+        ),
+        ({"PATH": "/usr/bin"}, {}, {"PATH": "/usr/bin"}),
+        (
+            {"PATH": "/usr/bin", "AGENT_GRAPHS_TRACE_DIR": "/old"},
+            {},
+            {"PATH": "/usr/bin", "AGENT_GRAPHS_TRACE_DIR": "/old"},
+        ),
+        (
+            {"PATH": "/usr/bin", "AGENT_GRAPHS_TRACE_DIR": "/old"},
+            {"trace_dir": "/runs/x-1-trace"},
+            {"PATH": "/usr/bin", "AGENT_GRAPHS_TRACE_DIR": "/runs/x-1-trace"},
+        ),
+        (
+            {"PATH": "/usr/bin"},
+            {"harness_bin": "/opt/coxswain-graphs/.venv/bin", "chair_model": "sonnet"},
+            {"PATH": "/opt/coxswain-graphs/.venv/bin:/usr/bin", "COXSWAIN_CHAIR_MODEL": "sonnet"},
+        ),
+        (
+            {"COXSWAIN_CHAIR_MODEL": "haiku"},
+            {"chair_model": ""},
+            {"COXSWAIN_CHAIR_MODEL": "haiku"},
+        ),
+        ({"PATH": "/usr/bin"}, {"chair_model": ""}, {"PATH": "/usr/bin"}),
+        (
+            {"PATH": "/usr/bin", "COXSWAIN_CHAIR_MODEL": "haiku"},
+            {"harness_bin": "/h", "repo": "/r", "trace_dir": "/t", "chair_model": "opus"},
+            {"PATH": "/r/.venv/bin:/h:/usr/bin", "AGENT_GRAPHS_TRACE_DIR": "/t", "COXSWAIN_CHAIR_MODEL": "opus"},
+        ),
+    ],
+)
+def test_child_env(environ, kwargs, expected):
+    before = copy.deepcopy(environ)
+    assert route.child_env(environ, **kwargs) == expected
+    assert environ == before
 
 
 def test_child_env_exports_the_variable_name_the_fixture_declares():
