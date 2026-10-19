@@ -1,38 +1,65 @@
 [project]
 name = "coxswain"
-version = "0.47.0"
-description = "Coxswain: the agent platform. The command is `cox`, from the coxswain-tools package."
+version = "2026.10.0"
+description = "Coxswain: the agent platform. One package, one command: `cox`."
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.14"
-dependencies = []
+dependencies = ["pyyaml>=6", "zstandard>=0.23"]
+
+[project.optional-dependencies]
+traces = ["zstandard>=0.23", "pyarrow>=15"]
+postgres = ["psycopg[binary]>=3.2"]
+parquet = ["pyarrow"]
+lake = ["pyiceberg[sql-sqlite,sql-postgres,pyiceberg-core]>=0.9", "duckdb>=1.0"]
+analytics = ["duckdb>=1.0"]
+live = ["anthropic>=0.40"]
+
+[project.scripts]
+cox = "agent_tools.cli:main"
+agent-tools = "agent_tools.cli:main"
+cartridge = "core.cartridge:_main"
+
+[project.urls]
+Repository = "https://github.com/ppfenning/coxswain"
 
 [dependency-groups]
 dev = [
     "pytest>=8",
+    "ruff==0.16.6",
     "mkdocs-material>=9.5",
     "mike>=2.1",
-    "pyyaml>=6.0",
-    "ruff==0.16.6",
     "rich>=13",
-    "coxswain-tools[postgres]; python_version >= '3.12'",
     "duckdb>=1.1",
 ]
 
-# devtools/ (never in the wheel) renders tools' own command table, so the dev
-# group installs coxswain-tools from the sibling checkout; CI clones it there.
-[tool.uv.sources]
-coxswain-tools = { path = "../coxswain-tools", editable = true }
-
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
 
-[tool.hatch.build.targets.wheel]
-packages = ["coxswain"]
+# One distribution, several import packages, each in the folder its history lives in:
+# src/tools (agent_tools), src/graphs (harness, runner, graphs), src/cartridges (core), and the umbrella's coxswain/.
+[tool.setuptools]
+packages = [
+    "coxswain",
+    "agent_tools", "agent_tools.settings_sections",
+    "harness", "runner",
+    "graphs", "graphs.delivery", "graphs.ops",
+    "core",
+]
+
+[tool.setuptools.package-dir]
+agent_tools = "src/tools/agent_tools"
+harness = "src/graphs/harness"
+runner = "src/graphs/runner"
+graphs = "src/graphs/graphs"
+core = "src/cartridges/core"
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "src/tools/tests", "src/graphs/tests", "src/cartridges/tests"]
 pythonpath = ["."]
+# Four suites each have a tests/ folder with same-named modules; importlib mode keeps them apart.
+addopts = ["--import-mode=importlib"]
 
 [tool.ruff]
 line-length = 120

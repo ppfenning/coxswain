@@ -1,0 +1,5 @@
+# tools also enforces one-line docstring shape (D200, D210, D400); the rest comes from the root pyproject.
+extend = "../../pyproject.toml"
+
+[lint]
+extend-select = ["D200", "D210", "D400"]
