@@ -13,13 +13,17 @@ import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 
-_SEMVER_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$")
+# `X.Y.Z` or `X.Y.Z-pre`, with or without a leading `v`: CalVer `YYYY.M.N` from 2026.10.0 on, SemVer before it.
+_VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$")
+# A first number this large is a year: every CalVer release sorts above every 0.x release.
+_YEAR_FLOOR = 1000
 
 
 def _sort_key(tag: str) -> tuple | None:
-    """Sort key for `X.Y.Z` or `X.Y.Z-pre`, with or without a leading `v`.
-    A pre-release sorts below its own release; `None` when `tag` is not semver."""
-    m = _SEMVER_RE.match(tag)
+    """Sort key for `X.Y.Z` or `X.Y.Z-pre`, with or without a leading `v`; the CalVer line sorts above the
+    SemVer line whatever the numbers say. A pre-release sorts below its own release; `None` when `tag` is
+    neither."""
+    m = _VERSION_RE.match(tag)
     if not m:
         return None
     major, minor, patch, pre = m.groups()
@@ -28,11 +32,11 @@ def _sort_key(tag: str) -> tuple | None:
         if pre is None
         else (0, tuple((0, int(p), "") if p.isdigit() else (1, 0, p) for p in pre.split(".")))
     )
-    return (int(major), int(minor), int(patch), pre_key)
+    return (int(int(major) >= _YEAR_FLOOR), int(major), int(minor), int(patch), pre_key)
 
 
 def previous_tag(tags: list[str], version: str) -> str | None:
-    """The highest semver tag strictly below `version`, or None. Non-semver tags are ignored."""
+    """The highest release tag strictly below `version`, or None. A tag that is not a release is ignored."""
     ceiling = _sort_key(version)
     keyed = [(k, t) for t in tags if (k := _sort_key(t)) is not None]
     below = [(k, t) for k, t in keyed if ceiling is not None and k < ceiling]
