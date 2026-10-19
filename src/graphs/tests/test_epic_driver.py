@@ -1119,32 +1119,33 @@ def test_task_outcome_names_all_four_cases() -> None:
     assert task_outcome("revise", None, None, False) == "rejected"
 
 
-def test_unapproved_names_the_arbitration_verdict_and_its_first_sentence() -> None:
-    result = {
-        "fix_loop": {"stopped": "attempts_exhausted", "attempts": 2},
-        "review": {"verdict": "approve"},
-        "arbitration": {
-            "verdict": "revise",
-            "sided_with": "adversary",
-            "reasoning": "The adversary is right. The reviewer missed the null case.",
-        },
-    }
-    assert _unapproved(result) == (
-        "the fix loop stopped: attempts_exhausted after 2 build attempts; the last review "
-        "verdict was 'revise', sided_with adversary: The adversary is right and no build "
-        "was approved"
-    )
-
-
-def test_unapproved_names_the_review_verdict_when_no_arbitration_ran() -> None:
-    result = {
-        "fix_loop": {"stopped": "attempts_exhausted", "attempts": 2},
-        "review": {"verdict": "revise"},
-    }
-    assert _unapproved(result) == (
-        "the fix loop stopped: attempts_exhausted after 2 build attempts; the last review "
-        "verdict was 'revise' and no build was approved"
-    )
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        (
+            {
+                "fix_loop": {"stopped": "attempts_exhausted", "attempts": 2},
+                "review": {"verdict": "approve"},
+                "arbitration": {
+                    "verdict": "revise",
+                    "sided_with": "adversary",
+                    "reasoning": "The adversary is right. The reviewer missed the null case.",
+                },
+            },
+            "the fix loop stopped: attempts_exhausted after 2 build attempts; the last review "
+            "verdict was 'revise', sided_with adversary: The adversary is right and no build "
+            "was approved",
+        ),
+        (
+            {"fix_loop": {"stopped": "attempts_exhausted", "attempts": 2}, "review": {"verdict": "revise"}},
+            "the fix loop stopped: attempts_exhausted after 2 build attempts; the last review "
+            "verdict was 'revise' and no build was approved",
+        ),
+    ],
+    ids=["arbitration-verdict", "review-verdict"],
+)
+def test_unapproved_names_the_deciding_verdict(result, expected) -> None:
+    assert _unapproved(result) == expected
 
 
 def test_an_approved_and_quarantined_task_names_itself_in_the_exit_summary(repo, cart, tmp_path) -> None:
@@ -1208,32 +1209,11 @@ def test_a_successful_arm_call_is_unchanged(repo, cart, tmp_path) -> None:
         assert task_record["outcome"] == "landed"
 
 
-def test_a_limitstop_from_the_apply_arm_pauses_the_run_with_no_quarantine_or_attempt(repo, cart, tmp_path) -> None:
-    """The session-limit banner stops the run in place; it is not the task's failure."""
-    wi = tmp_path / "wi"
-    (wi / "p1-foundations").mkdir(parents=True)
-    (wi / "initiative.md").write_text(
-        "---\nid: demo-initiative\ntitle: demo\n---\n\nmake the vendor join measurable end to end\n"
-    )
-    (wi / "p1-foundations" / "t1-probe.md").write_text(
-        "---\nid: t1-probe\nphase: p1-foundations\nstate: ready\nneeds: []\nsurfaces: []\n"
-        "title: schema probe\n---\n\nread the vendor schema\n"
-    )
-    work = workstore.read_initiative(wi)
-    banner = "You've hit your session limit · resets 10:50am (America/New_York)"
-    runner = LimitStopArm({"t1-probe": new_file_patch("t1-probe.txt")}, stops="t1-probe", detail=banner)
-    result, _ = drive(repo, cart, tmp_path, runner=runner, work=work, run_id="epic-limit")
-
-    assert result["quarantined"] == []
-    assert result["paused_until"] == "10:50am (America/New_York)"
-    assert result["exit_code"] == EXIT_PAUSED
-    assert "paused: account session limit, resets 10:50am (America/New_York)" in result["exit_summary"]
-    item = workstore.read_item(wi / "p1-foundations" / "t1-probe.md")
-    assert not item.get("attempts")
-
-
-def test_a_limitstop_halts_the_phase_before_the_next_task_in_batch_order(repo, cart, tmp_path) -> None:
-    """Unlike an infra quarantine, a paused run never reaches a later task's own merge."""
+@pytest.mark.parametrize("where", ["apply_arm", "build_node"])
+def test_a_limitstop_pauses_the_run_before_the_next_task_with_no_quarantine_or_attempt(
+    repo, cart, tmp_path, where
+) -> None:
+    """The session-limit banner stops the run in place, from the apply arm or the build node; it is not the task's failure."""
     wi = tmp_path / "wi"
     (wi / "p1-foundations").mkdir(parents=True)
     (wi / "initiative.md").write_text(
@@ -1246,64 +1226,23 @@ def test_a_limitstop_halts_the_phase_before_the_next_task_in_batch_order(repo, c
         )
     work = workstore.read_initiative(wi)
     banner = "You've hit your session limit · resets 10:50am (America/New_York)"
-    runner = LimitStopArm(
-        {"t1-probe": new_file_patch("t1-probe.txt"), "t2-bench": new_file_patch("t2-bench.txt")},
-        stops="t1-probe", detail=banner,
+    patches = {"t1-probe": new_file_patch("t1-probe.txt"), "t2-bench": new_file_patch("t2-bench.txt")}
+    runner = (
+        LimitStopArm(patches, stops="t1-probe", detail=banner)
+        if where == "apply_arm"
+        else LimitStopBuild(patches, detail=banner)
     )
-    result, _ = drive(repo, cart, tmp_path, runner=runner, work=work, run_id="epic-limit-batch")
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=work, run_id="epic-limit")
 
     assert result["quarantined"] == []
-    t2_item = workstore.read_item(wi / "p1-foundations" / "t2-bench.md")
-    # `work_state_arm` runs in task-id order: t1-probe's pause happens before
-    # t2-bench's own turn, which an infra quarantine (below) would still take.
-    assert t2_item["state"] == "ready"
-    assert not t2_item.get("attempts")
-
-
-def test_a_limitstop_from_the_build_node_pauses_the_run_with_no_quarantine_or_attempt(repo, cart, tmp_path) -> None:
-    """A session limit inside a fan-out node is not the task's failure: no `no_work` quarantine, no attempt."""
-    wi = tmp_path / "wi"
-    (wi / "p1-foundations").mkdir(parents=True)
-    (wi / "initiative.md").write_text(
-        "---\nid: demo-initiative\ntitle: demo\n---\n\nmake the vendor join measurable end to end\n"
-    )
-    (wi / "p1-foundations" / "t1-probe.md").write_text(
-        "---\nid: t1-probe\nphase: p1-foundations\nstate: ready\nneeds: []\nsurfaces: []\n"
-        "title: schema probe\n---\n\nread the vendor schema\n"
-    )
-    work = workstore.read_initiative(wi)
-    banner = "You've hit your session limit · resets 10:50am (America/New_York)"
-    runner = LimitStopBuild({"t1-probe": new_file_patch("t1-probe.txt")}, detail=banner)
-    result, _ = drive(repo, cart, tmp_path, runner=runner, work=work, run_id="epic-limit-build")
-
     assert result["paused_until"] == "10:50am (America/New_York)"
     assert result["exit_code"] == EXIT_PAUSED
-    assert result["quarantined"] == []
-    item = workstore.read_item(wi / "p1-foundations" / "t1-probe.md")
-    assert not item.get("attempts")
-
-
-def test_an_ordinary_runnererror_from_the_build_node_still_quarantines_no_work_and_records_an_attempt(
-    repo, cart, tmp_path
-) -> None:
-    """Nothing is scripted for the build, so `Runner` raises a plain `RunnerError` there."""
-    wi = tmp_path / "wi"
-    (wi / "p1-foundations").mkdir(parents=True)
-    (wi / "initiative.md").write_text(
-        "---\nid: demo-initiative\ntitle: demo\n---\n\nmake the vendor join measurable end to end\n"
-    )
-    (wi / "p1-foundations" / "t1-probe.md").write_text(
-        "---\nid: t1-probe\nphase: p1-foundations\nstate: ready\nneeds: []\nsurfaces: []\n"
-        "title: schema probe\n---\n\nread the vendor schema\n"
-    )
-    work = workstore.read_initiative(wi)
-    result, _ = drive(repo, cart, tmp_path, runner=Runner({}), work=work, run_id="epic-build-fail")
-
-    assert "paused_until" not in result
-    entry = next(q for q in result["quarantined"] if q["id"] == "t1-probe")
-    assert entry["kind"] == "no_work"
-    item = workstore.read_item(wi / "p1-foundations" / "t1-probe.md")
-    assert len(item["attempts"]) == 1
+    assert "paused: account session limit, resets 10:50am (America/New_York)" in result["exit_summary"]
+    # A paused run never reaches a later task's own turn, unlike an infra quarantine.
+    for task in ("t1-probe", "t2-bench"):
+        item = workstore.read_item(wi / "p1-foundations" / f"{task}.md")
+        assert item["state"] == "ready"
+        assert not item.get("attempts")
 
 
 class AuthFailRunner(Runner):
@@ -1391,34 +1330,31 @@ def _one_task_initiative(tmp_path):
     return wi, workstore.read_initiative(wi)
 
 
-def test_an_oauth_refresh_collision_is_quarantined_as_infra_and_spends_no_attempt(repo, cart, tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("message", "kind"),
+    [
+        ("Failed to refresh OAuth token: refresh token reused", "infra"),
+        ("provider-side safeguard error", "no_work"),
+    ],
+    ids=["oauth-collision-is-infra", "unrelated-error-is-no_work"],
+)
+def test_a_runnererror_from_the_invoke_is_quarantined_by_kind_and_the_next_run_builds_it(
+    repo, cart, tmp_path, message, kind
+) -> None:
     wi, work = _one_task_initiative(tmp_path)
-    runner = FailOnceRunner(
-        {"t1-probe": new_file_patch("t1-probe.txt")}, message="Failed to refresh OAuth token: refresh token reused"
-    )
-    result, _ = drive(repo, cart, tmp_path, runner=runner, work=work, run_id="epic-collide-1")
+    runner = FailOnceRunner({"t1-probe": new_file_patch("t1-probe.txt")}, message=message)
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=work, run_id="epic-fail-1")
 
     assert not result["phases"][0].get("stopped")
+    assert "paused_until" not in result
     entry = next(q for q in result["quarantined"] if q["id"] == "t1-probe")
-    assert entry["kind"] == "infra"
+    assert entry["kind"] == kind
     item = workstore.read_item(wi / "p1-foundations" / "t1-probe.md")
-    assert [a["kind"] for a in item["attempts"]] == ["infra"]
+    assert [a["kind"] for a in item["attempts"]] == [kind]
 
-    # The next run builds it: the collision spent nothing against ATTEMPT_CAP.
-    result, _ = drive(repo, cart, tmp_path, runner=runner, work=workstore.read_initiative(wi), run_id="epic-collide-2")
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=workstore.read_initiative(wi), run_id="epic-fail-2")
     assert not any("attempt cap" in q["reason"] for q in result["quarantined"])
     assert is_ancestor(repo, "epic/demo-initiative/p1-foundations--t1-probe", "epic/demo-initiative/p1-foundations")
-
-
-def test_an_unrelated_runnererror_from_the_invoke_still_counts_as_an_attempt(repo, cart, tmp_path) -> None:
-    wi, work = _one_task_initiative(tmp_path)
-    runner = FailOnceRunner({"t1-probe": new_file_patch("t1-probe.txt")}, message="provider-side safeguard error")
-    result, _ = drive(repo, cart, tmp_path, runner=runner, work=work, run_id="epic-unrelated-1")
-
-    entry = next(q for q in result["quarantined"] if q["id"] == "t1-probe")
-    assert entry["kind"] == "no_work"
-    item = workstore.read_item(wi / "p1-foundations" / "t1-probe.md")
-    assert [a["kind"] for a in item["attempts"]] == ["no_work"]
 
 
 def test_invoke_failure_kind_matches_the_collision_text_case_insensitively() -> None:
@@ -1450,22 +1386,17 @@ def test_two_infra_attempts_do_not_trip_the_attempt_cap(repo, cart, tmp_path) ->
 # ── ticket_amend's additive check, and the attempt cap launching triage ─────
 
 
-def test_additive_ticket_amend_diff_stays_eligible() -> None:
-    old = "---\nid: t1\n---\nOriginal text."
-    new = old + "\n\n## 2026-09-16\nAppended note."
-    assert _ticket_amend_ramp(old, new) == "eligible"
-
-
-def test_a_removed_line_forces_the_amendment_gated() -> None:
-    old = "---\nid: t1\n---\nLine one.\nLine two."
-    new = "---\nid: t1\n---\nLine one."
-    assert _ticket_amend_ramp(old, new) == "gated"
-
-
-def test_a_frontmatter_change_forces_the_amendment_gated() -> None:
-    old = "---\nid: t1\nstate: ready\n---\nBody text."
-    new = "---\nid: t1\nstate: done\n---\nBody text.\n\nAppended."
-    assert _ticket_amend_ramp(old, new) == "gated"
+@pytest.mark.parametrize(
+    ("old", "new", "expected"),
+    [
+        ("---\nid: t1\n---\nOriginal text.", "---\nid: t1\n---\nOriginal text.\n\n## 2026-09-16\nAppended note.", "eligible"),
+        ("---\nid: t1\n---\nLine one.\nLine two.", "---\nid: t1\n---\nLine one.", "gated"),
+        ("---\nid: t1\nstate: ready\n---\nBody text.", "---\nid: t1\nstate: done\n---\nBody text.\n\nAppended.", "gated"),
+    ],
+    ids=["additive", "removed-line", "frontmatter-change"],
+)
+def test_the_ticket_amend_ramp_is_eligible_only_for_an_additive_body_diff(old, new, expected) -> None:
+    assert _ticket_amend_ramp(old, new) == expected
 
 
 class TriageAttemptRunner(Runner):
@@ -1575,46 +1506,32 @@ def _rebuilt(result, runner) -> bool:
     return not any(c["role"] == "triage" for c in runner.calls) and builds_per_task(runner)["t1-probe"] == 1 and not quarantined
 
 
-@pytest.mark.parametrize("cause", ["ticket", "code"])
-def test_one_ticket_or_code_caused_quarantine_sends_the_task_to_triage_on_relaunch(repo, cart, tmp_path, cause) -> None:
-    result, runner = _drive_with_attempts(repo, cart, tmp_path, [{"cause": cause}])
+@pytest.mark.parametrize(
+    ("attempts", "stored", "triaged"),
+    [
+        ([{"cause": "ticket"}], (), True),
+        ([{"cause": "code"}], (), True),
+        ([{"cause": "harness"}], (), False),
+        ([{"cause": "harness"}, {"cause": "harness"}], (), True),
+        # Newest by `ts` and last in the list, but on an older body: only the body filter can ignore it.
+        ([{"cause": "harness"}, {"cause": "ticket", "body_sha": OLDER_BODY, "ts": "2026-09-09T00:00:00+00:00"}], (), False),
+        ([{}], [("epic-prior-1", "ticket")], True),
+        ([{}], [("epic-prior-1", "code")], True),
+        ([{}], [("epic-prior-1", "harness")], False),
+        ([{}], [("epic-prior-1", "weather")], False),
+        ([{}], [], False),
+    ],
+)
+def test_the_cause_on_the_relaunch_decides_between_triage_and_a_rebuild(
+    repo, cart, tmp_path, attempts, stored, triaged
+) -> None:
+    result, runner = _drive_with_attempts(repo, cart, tmp_path, attempts, stored=stored)
 
-    assert _triaged(runner)
-    assert any(p["target"] == "t1-probe" for p in result["proposals"])
-
-
-def test_one_harness_caused_quarantine_is_rebuilt_and_not_triaged(repo, cart, tmp_path) -> None:
-    result, runner = _drive_with_attempts(repo, cart, tmp_path, [{"cause": "harness"}])
-
-    assert _rebuilt(result, runner)
-
-
-def test_two_harness_caused_quarantines_are_triaged_as_before(repo, cart, tmp_path) -> None:
-    _, runner = _drive_with_attempts(repo, cart, tmp_path, [{"cause": "harness"}, {"cause": "harness"}])
-
-    assert _triaged(runner)
-
-
-def test_a_ticket_caused_quarantine_on_an_older_body_does_not_lower_the_cap(repo, cart, tmp_path) -> None:
-    """The older-body ticket attempt is the newest by `ts` and last in the list: only the body filter can ignore it."""
-    attempts = [{"cause": "harness"}, {"cause": "ticket", "body_sha": OLDER_BODY, "ts": "2026-09-09T00:00:00+00:00"}]
-    result, runner = _drive_with_attempts(repo, cart, tmp_path, attempts)
-
-    assert _rebuilt(result, runner)
-
-
-@pytest.mark.parametrize("cause", ["ticket", "code"])
-def test_a_stored_ticket_or_code_cause_on_a_causeless_file_attempt_sends_the_task_to_triage(repo, cart, tmp_path, cause) -> None:
-    _, runner = _drive_with_attempts(repo, cart, tmp_path, [{}], stored=[("epic-prior-1", cause)])
-
-    assert _triaged(runner)
-
-
-@pytest.mark.parametrize("stored", [[("epic-prior-1", "harness")], [("epic-prior-1", "weather")], []])
-def test_a_stored_harness_or_unknown_cause_or_none_keeps_the_cap_at_two(repo, cart, tmp_path, stored) -> None:
-    result, runner = _drive_with_attempts(repo, cart, tmp_path, [{}], stored=stored)
-
-    assert _rebuilt(result, runner)
+    if triaged:
+        assert _triaged(runner)
+        assert any(p["target"] == "t1-probe" for p in result["proposals"])
+    else:
+        assert _rebuilt(result, runner)
 
 
 AMEND_ACTION = "add a note describing the missing fixture"  # what `TriageAttemptRunner` scripts as the triage action
@@ -1693,50 +1610,42 @@ def _amend_arm_calls(runner) -> list[dict]:
     return [c for c in runner.calls if c["role"] == "work_state_arm" and "ticket_amend" in c["prompt"]]
 
 
-def test_an_append_only_ticket_amend_is_applied_without_the_gate_and_the_task_is_built_on_it(repo, cart, tmp_path) -> None:
-    result, runner, path = _drive_on_disk(repo, cart, tmp_path, "write")
+@pytest.mark.parametrize(
+    ("mode", "tail"),
+    [("write", AMEND_ACTION), ("dated", f"## 2026-10-17\n{AMEND_ACTION}")],
+)
+def test_an_append_only_ticket_amend_is_applied_without_the_gate_and_the_task_is_built_on_it(
+    repo, cart, tmp_path, mode, tail
+) -> None:
+    result, runner, path = _drive_on_disk(repo, cart, tmp_path, mode)
 
     assert len(_amend_arm_calls(runner)) == 1
     assert not any(p["kind"] == "ticket_amend" for p in result["proposals"])
     ledger_file = tmp_path / "ledger.jsonl"
     assert "ticket_amend" not in (ledger_file.read_text() if ledger_file.exists() else "")
-    assert workstore.read_item(path)["body"].endswith(AMEND_ACTION)
+    assert workstore.read_item(path)["body"].endswith(tail)
     assert builds_per_task(runner)["t1-probe"] == 1
     build = next(c for c in runner.calls if c["role"] == "build" and "t1-probe" in c["prompt"])
-    assert "read the vendor schema" in build["prompt"] and AMEND_ACTION in build["prompt"]
+    assert "read the vendor schema" in build["prompt"] and tail in build["prompt"]
     assert not any(q["id"] == "t1-probe" for q in result["quarantined"])
 
 
-def test_the_task_is_rebuilt_on_the_body_the_arm_wrote_when_it_adds_a_dated_heading(repo, cart, tmp_path) -> None:
-    result, runner, path = _drive_on_disk(repo, cart, tmp_path, "dated")
-
-    assert len(_amend_arm_calls(runner)) == 1
-    assert not any(p["kind"] == "ticket_amend" for p in result["proposals"])
-    assert workstore.read_item(path)["body"].endswith(f"## 2026-10-17\n{AMEND_ACTION}")
-    build = next(c for c in runner.calls if c["role"] == "build" and "t1-probe" in c["prompt"])
-    assert f"## 2026-10-17\n{AMEND_ACTION}" in build["prompt"]
-    assert not any(q["id"] == "t1-probe" for q in result["quarantined"])
-
-
-@pytest.mark.parametrize("mode", ["silent", "rewrite"])
-def test_an_arm_that_wrote_nothing_or_edited_in_place_quarantines_the_task_and_is_not_applied_twice(
-    repo, cart, tmp_path, mode
+@pytest.mark.parametrize(
+    ("mode", "reason"),
+    [
+        ("silent", "does not hold the old body with text appended"),
+        ("rewrite", "does not hold the old body with text appended"),
+        ("refuse", "applying it failed: refused"),
+    ],
+)
+def test_an_arm_that_fails_or_does_not_append_quarantines_the_task_once_and_does_not_rebuild(
+    repo, cart, tmp_path, mode, reason
 ) -> None:
     result, runner, path = _drive_on_disk(repo, cart, tmp_path, mode)
 
     entries = [q for q in result["quarantined"] if q["id"] == "t1-probe"]
-    assert len(entries) == 1 and "does not hold the old body with text appended" in entries[0]["reason"]
-    assert workstore.read_item(path)["body"] == "read the vendor schema"
-    assert not any(p["kind"] == "ticket_amend" for p in result["proposals"])
+    assert len(entries) == 1 and reason in entries[0]["reason"]
     assert len(_amend_arm_calls(runner)) == 1
-    assert "t1-probe" not in builds_per_task(runner)
-
-
-def test_an_arm_that_reports_failure_quarantines_the_task_once_and_does_not_rebuild(repo, cart, tmp_path) -> None:
-    result, runner, path = _drive_on_disk(repo, cart, tmp_path, "refuse")
-
-    entries = [q for q in result["quarantined"] if q["id"] == "t1-probe"]
-    assert len(entries) == 1 and "applying it failed: refused" in entries[0]["reason"]
     assert workstore.read_item(path)["body"] == "read the vendor schema"
     assert not any(p["kind"] == "ticket_amend" for p in result["proposals"])
     assert "t1-probe" not in builds_per_task(runner)
