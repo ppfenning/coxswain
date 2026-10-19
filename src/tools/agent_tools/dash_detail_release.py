@@ -1,4 +1,4 @@
-"""The data behind `cox dash --detail release`: the installed coxswain-tools
+"""The data behind `cox dash --detail release`: the installed coxswain
 version, the umbrella manifest's component pins, the newest `v*` tag cut in
 the umbrella checkout, and whether the Homebrew tap formula matches what is
 installed. `release_facts` is the pure core: four raw strings (any may be
@@ -22,12 +22,17 @@ from importlib import metadata
 from pathlib import Path
 
 from agent_tools import route
+from agent_tools.version_info import DISTRIBUTION
 
-__all__ = ["build", "release_facts"]
+__all__ = ["build", "formula_paths", "release_facts"]
 
 DEFAULT_PROFILE = "~/.config/agent-tools/profile.yaml"
 
-_TAP_URL_RE = re.compile(r"coxswain_tools-([^\"'\s]+)\.tar\.gz")
+# The sdist the formula installs: `coxswain-2026.10.0.tar.gz` from 2026.10.0 on, `coxswain_tools-0.47.0.tar.gz` before.
+_TAP_URL_RE = re.compile(r"/coxswain(?:_tools)?-(\d[^\"'\s/]*)\.tar\.gz")
+# Where Homebrew keeps the tap's checkout under each of its usual prefixes.
+_BREW_REPOSITORIES = ("/opt/homebrew", "/usr/local/Homebrew", "/home/linuxbrew/.linuxbrew/Homebrew")
+_TAP_SUBPATH = Path("Library") / "Taps" / "ppfenning" / "homebrew-coxswain"
 
 
 def _pinned(manifest_text: str) -> dict:
@@ -113,15 +118,27 @@ def _tag_line(umbrella: Path) -> str | None:
     return line or None
 
 
+def formula_paths(umbrella: Path, brew_repository: str | None) -> list[Path]:
+    """Where the tap formula may be read, first match wins: a maintainer's tap checkout beside the coxswain
+    checkout, then Homebrew's own tap under `brew_repository` (`$HOMEBREW_REPOSITORY`) or its usual prefixes."""
+    prefixes = dict.fromkeys([*([brew_repository] if brew_repository else []), *_BREW_REPOSITORIES])
+    return [umbrella.parent / "homebrew-coxswain" / "Formula" / "cox.rb",
+            *(Path(prefix) / _TAP_SUBPATH / "Formula" / "cox.rb" for prefix in prefixes)]
+
+
 def build(now: str) -> dict:
     """`now` is accepted for the caller's uniform call and unused."""
     del now
-    version = metadata.version("coxswain-tools")
+    try:
+        version = metadata.version(DISTRIBUTION)
+    except metadata.PackageNotFoundError:
+        version = "unknown"
     umbrella_dir = _umbrella_dir()
     if not umbrella_dir:
         return release_facts(version, None, None, None)
     umbrella = Path(umbrella_dir).expanduser()
     manifest_text = _read_text_or_none(umbrella / "manifest.toml")
     tag_line = _tag_line(umbrella)
-    formula_text = _read_text_or_none(umbrella.parent / "homebrew-coxswain" / "Formula" / "cox.rb")
+    paths = formula_paths(umbrella, os.environ.get("HOMEBREW_REPOSITORY"))
+    formula_text = next((text for path in paths if (text := _read_text_or_none(path)) is not None), None)
     return release_facts(version, manifest_text, tag_line, formula_text)

@@ -2,6 +2,8 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from agent_tools import release_version
+
 PIN_NOT_IN_REPO = "pin_not_in_repo"
 NO_TAG_AT_TARGET = "no_tag_at_target"
 
@@ -32,9 +34,8 @@ class Plan:
 
 
 def release_tag(version: str) -> str:
-    """A release tag always carries a leading v; a bare 0.43.0 becomes v0.43.0."""
-    stripped = version.strip()
-    return stripped if stripped.startswith("v") else f"v{stripped}"
+    """A release tag always carries a leading v; a bare 0.43.0 becomes v0.43.0, a bare 2026.10.0 v2026.10.0."""
+    return release_version.release_tag(version)
 
 
 def _decide(

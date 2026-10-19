@@ -75,3 +75,8 @@ def test_newest_release_skips_prereleases():
 def test_offered_tags_keeps_order_and_drops_peeled_duplicates():
     output = "a1\trefs/tags/v2\nb2\trefs/tags/v2^{}\nc3\trefs/tags/v1\nd4\trefs/heads/main\n"
     assert offered_tags(output) == ("v2", "v1")
+
+
+def test_newest_release_takes_calver_over_semver_in_any_order():
+    assert newest_release(["v0.47.0", "v2026.10.0", "v0.9.0"]) == "v2026.10.0"
+    assert newest_release(["v2026.10.9", "v2026.10.10"]) == "v2026.10.10"

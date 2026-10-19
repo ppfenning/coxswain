@@ -89,3 +89,7 @@ def test_plan_is_identical_for_identical_inputs():
     again = plan_upgrade("v2.0", "v1.0", {"crew": "v2.0", "dash": "v2.0"}, {"crew": "v1.0"}, available)
     reordered = plan_upgrade("v2.0", "v1.0", {"dash": "v2.0", "crew": "v2.0"}, {"crew": "v1.0"}, available)
     assert first == again == reordered
+
+
+def test_release_tag_prefixes_a_calver_version():
+    assert release_tag("2026.10.0") == "v2026.10.0"
