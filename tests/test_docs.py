@@ -367,6 +367,13 @@ def _extension(mkdocs, key):
     return next(e[key] for e in mkdocs["markdown_extensions"] if isinstance(e, dict) and key in e)
 
 
+def test_a_copied_page_links_copied_pages_relatively_and_the_rest_on_github():
+    dests = {"src/graphs/README.md": "components/graphs/README.md", "src/graphs/docs/A.md": "components/graphs/docs/A.md"}
+    text = "[a](docs/A.md#x) [b](graphs/b.py) [c](https://x.y/z) [d](#top)"
+    assert _pull.rewrite_links(text, "src/graphs/README.md", dests) == (
+        f"[a](docs/A.md#x) [b]({_pull.SOURCE_BLOB}/src/graphs/graphs/b.py) [c](https://x.y/z) [d](#top)")
+
+
 def test_mkdocs_enables_snippets_with_docs_base_path():
     assert _extension(_load_mkdocs(), "pymdownx.snippets")["base_path"] == ["docs"]
 
