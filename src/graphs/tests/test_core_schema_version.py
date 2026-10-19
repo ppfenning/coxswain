@@ -83,7 +83,7 @@ def test_a_major_mismatch_refuses_before_any_node_launches(monkeypatch, tmp_path
     err = capsys.readouterr().err
     assert "core schema 2.0" in err
     assert "CORE_SCHEMA 1.0" in err
-    assert "coxswain-graphs" in err
+    assert "update the coxswain checkout" in err
 
 
 def test_a_minor_mismatch_warns_and_proceeds(monkeypatch, tmp_path, capsys) -> None:

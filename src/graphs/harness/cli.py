@@ -64,6 +64,8 @@ from runner.protocol import LimitStop, RunnerError
 __all__ = ["main"]
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+# The cartridges component beside this one in the coxswain checkout: src/graphs -> src/cartridges.
+CARTRIDGES_ROOT = REPO_ROOT.parent / "cartridges"
 
 
 def _default_ledger() -> Path:
@@ -174,7 +176,7 @@ def _core_schema_status(installed: str, required: str) -> tuple[str, str] | None
     installed_major, installed_minor = (int(p) for p in installed.split(".", 1))
     required_major, required_minor = (int(p) for p in required.split(".", 1))
     if installed_major != required_major:
-        return "fatal", f"core schema {installed} does not match harness CORE_SCHEMA {required}; upgrade coxswain-graphs"
+        return "fatal", f"core schema {installed} does not match harness CORE_SCHEMA {required}; update the coxswain checkout"
     if installed_minor != required_minor:
         return "warn", f"core schema {installed} does not match harness CORE_SCHEMA {required}"
     return None
@@ -206,12 +208,12 @@ def _build_parser(specs: dict[str, GraphSpec]) -> argparse.ArgumentParser:
     parser.add_argument("--team", required=True, help="team cartridge to resolve")
     parser.add_argument(
         "--cartridges-dir",
-        default=REPO_ROOT.parent / "agent-cartridges" / "cartridges",
+        default=CARTRIDGES_ROOT / "cartridges",
         help="where cartridge directories live",
     )
     parser.add_argument(
         "--provider-profile",
-        default=REPO_ROOT.parent / "agent-cartridges" / "providers" / "anthropic-default.yaml",
+        default=CARTRIDGES_ROOT / "providers" / "anthropic-default.yaml",
     )
     parser.add_argument("--skills-root", action="append", default=[], metavar="PATH")
     parser.add_argument("--unverified-skills", action="store_true", help="skip skill checks; warns every time")

@@ -572,7 +572,6 @@ def test_the_last_checkpoint_editing_an_existing_file_with_passing_checks_resume
     cart, plan_response, build_response, tmp_path
 ) -> None:
     """The check reads the base file and the partial edit together, so it passes only in a real worktree."""
-    pytest.importorskip("core")
     repo = _repo_with_existing_file(tmp_path)
     stop = _checkpoint_stop(EDIT_EXISTING_FILE, checkpoint_index=LAST_CHECKPOINT)
     result, scripted = _run_at_last_checkpoint(
@@ -584,7 +583,6 @@ def test_the_last_checkpoint_editing_an_existing_file_with_passing_checks_resume
 
 
 def test_the_last_checkpoint_with_checks_still_failing_revises_with_split(cart, plan_response, tmp_path) -> None:
-    pytest.importorskip("core")
     repo = _repo_with_existing_file(tmp_path)
     stop = _checkpoint_stop(EDIT_EXISTING_FILE, checkpoint_index=LAST_CHECKPOINT)
     result, scripted = _run_at_last_checkpoint(cart, plan_response, stop, repo, "grep -q '^finished line$' src/a.py")

@@ -187,6 +187,12 @@ def test_keep_worktrees_flag_defaults_to_off_and_is_settable() -> None:
     assert on.keep_worktrees is True
 
 
+def test_the_cartridge_defaults_name_the_cartridges_component_of_this_checkout() -> None:
+    parsed = cli._build_parser(cli.discover()).parse_args(["lifecycle", "--team", "acme", "--unverified-skills"])
+    assert Path(parsed.cartridges_dir).is_dir()
+    assert Path(parsed.provider_profile).is_file()
+
+
 def test_sweep_is_a_selectable_graph_choice_and_round_trips_through_parsing() -> None:
     parser = cli._build_parser(cli.discover())
 
