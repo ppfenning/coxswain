@@ -28,6 +28,9 @@ jobs:
       - run: uv run mkdocs build --strict
 
   py315:
+    # The pre-release interpreter builds several dependencies from source (about 20 minutes), and a land waits for
+    # every check on its pull request. It runs on each push to main instead, so a break still shows right after the merge.
+    if: github.event_name == 'push'
     runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
