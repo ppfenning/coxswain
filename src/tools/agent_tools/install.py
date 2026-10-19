@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from agent_tools import release_version
 from agent_tools.upgrade_plan import release_tag
 
 # The one checkout every install has. It is not a manifest component: the manifest lives inside it, so its pin
@@ -21,6 +22,18 @@ def checkout_spec(manifest: Mapping) -> dict:
     version = table.get("version")
     return {"repo": table.get("repo", CHECKOUT_REPO), "tag": release_tag(str(version)) if version else None,
             "ref": table.get("ref", "main"), "required": True}
+
+
+def clone_argv(kind: str, version: str, repo: str, path: str) -> list[str] | str:
+    """The git argv that clones a release checkout into `path`, `[]` for a checkout there, else a refusal."""
+    if kind == "absent" and release_version.is_release(version):
+        return ["git", "clone", "--branch", release_version.release_tag(version), f"https://github.com/{repo}.git", path]
+    if kind == "absent":
+        return (f"refusing: cox {version} is not a release, so there is no tag to clone; "
+                f"clone the repository into {path} or pass --manifest")
+    if kind == "dir":
+        return []
+    return f"refusing: {path} is a {kind}, not a checkout"
 
 
 # `--with` flags of components that are folders of the checkout now and so always install. Accepted, with a note,

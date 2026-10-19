@@ -441,6 +441,26 @@ def test_an_edge_checkout_behind_the_remote_fetches_and_then_lands_on_the_tip(tm
     assert steps()[1]["kind"] == "skip"
 
 
+def test_clone_argv_absent_release_clones_its_tag():
+    assert install.clone_argv("absent", "2026.10.0", "ppfenning/coxswain", "/h/installs/coxswain") == [
+        "git", "clone", "--branch", "v2026.10.0", "https://github.com/ppfenning/coxswain.git", "/h/installs/coxswain"]
+
+
+def test_clone_argv_absent_non_release_refuses():
+    assert install.clone_argv("absent", "main", "ppfenning/coxswain", "/h/installs/coxswain") == (
+        "refusing: cox main is not a release, so there is no tag to clone; "
+        "clone the repository into /h/installs/coxswain or pass --manifest")
+
+
+def test_clone_argv_dir_is_an_empty_argv():
+    assert install.clone_argv("dir", "2026.10.0", "ppfenning/coxswain", "/h/installs/coxswain") == []
+
+
+def test_clone_argv_other_kind_refuses_naming_it():
+    assert install.clone_argv("file", "2026.10.0", "ppfenning/coxswain", "/h/installs/coxswain") == (
+        "refusing: /h/installs/coxswain is a file, not a checkout")
+
+
 _HOME_ARGS = ["--provider", "claude-code", "--team", "example-team"]
 
 
