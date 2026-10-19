@@ -30,8 +30,8 @@ DEFAULT_PROFILE = "~/.config/agent-tools/profile.yaml"
 
 # The sdist the formula installs: `coxswain-2026.10.0.tar.gz` from 2026.10.0 on, `coxswain_tools-0.47.0.tar.gz` before.
 _TAP_URL_RE = re.compile(r"/coxswain(?:_tools)?-(\d[^\"'\s/]*)\.tar\.gz")
-# Where Homebrew keeps the tap's checkout under each of its usual prefixes.
-_BREW_REPOSITORIES = ("/opt/homebrew", "/usr/local/Homebrew", "/home/linuxbrew/.linuxbrew/Homebrew")
+# Where Homebrew keeps its repository on macOS; on Linux `brew shellenv` exports HOMEBREW_REPOSITORY.
+_BREW_REPOSITORIES = ("/opt/homebrew", "/usr/local/Homebrew")
 _TAP_SUBPATH = Path("Library") / "Taps" / "ppfenning" / "homebrew-coxswain"
 
 
