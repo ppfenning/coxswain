@@ -69,7 +69,7 @@ def test_full_install_calls_uv_in_order_and_writes_profile(install_env):
     rc = _run(_base_argv(install_env, "--assume", "r"))
     assert rc == 0
     lines = install_env["log"].read_text(encoding="utf-8").splitlines()
-    assert lines == ["sync --frozen --all-extras -q", f"tool install --force -q --editable {install_env['root']}/coxswain",
+    assert lines == ["sync --frozen --all-extras --inexact -q", f"tool install --force -q --editable {install_env['root']}/coxswain",
                      "crew"]
     profile_path = install_env["home"] / ".config" / "agent-tools" / "profile.yaml"
     profile = route.parse_profile(profile_path.read_text(encoding="utf-8"))

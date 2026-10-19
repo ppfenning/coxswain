@@ -191,7 +191,7 @@ def test_apply_makes_the_umbrella_the_monorepo_and_retires_the_components(layout
     assert f"harness_dir: {layout.checkout}/src/graphs" in text
     assert f"provider_profile: {layout.checkout}/src/cartridges/providers/claude-code.yaml" in text
     assert "coxswain-" not in text
-    assert layout.uv_log.read_text().splitlines() == ["sync --frozen --all-extras -q"]
+    assert layout.uv_log.read_text().splitlines() == ["sync --frozen --all-extras --inexact -q"]
 
 
 def test_apply_lists_a_stale_script_then_the_beat_then_the_verify_line(layout, monkeypatch, capsys):
@@ -743,13 +743,21 @@ def test_apply_loads_the_lazy_modules_then_swaps_the_component_tools_for_coxswai
     monkeypatch.setattr(cli, "_load_lazy_modules", lambda: events.append("lazy"))
     assert run(apply=True) == 0
     assert events == [
-        ["uv", "sync", "--check", "--frozen", "--all-extras", "-q", "--directory", str(layout.checkout)],
+        ["uv", "sync", "--check", "--frozen", "--all-extras", "--inexact", "-q", "--directory", str(layout.checkout)],
         "lazy",
-        ["uv", "sync", "--frozen", "--all-extras", "-q"],
+        ["uv", "sync", "--frozen", "--all-extras", "--inexact", "-q"],
         ["uv", "tool", "uninstall", "coxswain-tools"],
         ["uv", "tool", "uninstall", "agent-cartridges"],
         ["uv", "tool", "install", "--force", "-q", "--editable", f"{layout.checkout}[lake]"],
     ]
+
+
+def test_the_venv_current_check_keeps_hand_installed_packages_with_inexact(monkeypatch, tmp_path):
+    recorded = []
+    monkeypatch.setattr(cli.subprocess, "run", lambda argv, **kw: recorded.append(argv) or subprocess.CompletedProcess(argv, 0, "", ""))
+    assert cli._migrate_venv_current(tmp_path) is True
+    assert "--inexact" in recorded[0]
+    assert recorded[0][:3] == ["uv", "sync", "--check"]
 
 
 def test_a_failing_tool_install_stops_the_apply_before_any_checkout_retires(layout, monkeypatch, tmp_path, capsys):

@@ -11,7 +11,7 @@ def test_install_steps_gives_the_exact_argv_and_run_flags_in_order() -> None:
                             "else git clone git@example.com:coxswain.git /r/coxswain; fi"], True),
         (["ssh", "host-a", "if test -d /r/workspace; then git -C /r/workspace pull --ff-only; "
                             "else git clone git@example.com:workspace.git /r/workspace; fi"], True),
-        (["ssh", "host-a", "cd /r/coxswain && uv sync --frozen --all-extras -q"], True),
+        (["ssh", "host-a", "cd /r/coxswain && uv sync --frozen --all-extras --inexact -q"], True),
         (["ssh", "host-a", "uv tool install --force --editable '/r/coxswain[traces,parquet,lake,postgres]'"], True),
         (["ssh", "host-a", "cox chair service --install --label chair"], True),
         (["sudo", "loginctl", "enable-linger", "<user>"], False),

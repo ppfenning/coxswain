@@ -28,7 +28,7 @@ TOOL = "coxswain"
 MARKETPLACE = "coxswain-cartridges"
 DEFAULT_PLUGIN = f"local-skills@{MARKETPLACE}"
 # The rule the beat checks (`checkout_env.SYNC_COMMAND`): exactly the lock, every extra.
-SYNC_ARGV = ("uv", "sync", "--frozen", "--all-extras", "-q")
+SYNC_ARGV = ("uv", "sync", "--frozen", "--all-extras", "--inexact", "-q")
 _HOOK_COMMAND = "agent-tools route context 2>/dev/null || true"
 
 
