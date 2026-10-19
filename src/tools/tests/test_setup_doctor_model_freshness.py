@@ -14,9 +14,9 @@ def _home(tmp_path, monkeypatch):
 
 
 def _probe(tmp_path, monkeypatch, provider_profile, **core_kwargs):
-    profile, cartridges_dir, skills_a, skills_b, harness_dir = _real_probe_setup(
+    profile, cartridges_dir, skills_a, skills_b, _ = _real_probe_setup(
         tmp_path, monkeypatch, _fresh_core("return []", **core_kwargs))
-    facts = _run_core_probe(str(harness_dir / ".venv" / "bin" / "python"), str(cartridges_dir), "acme",
+    facts = _run_core_probe(str(cartridges_dir), "acme",
                             [str(skills_a), str(skills_b)], provider_profile=provider_profile)
     return profile, facts
 

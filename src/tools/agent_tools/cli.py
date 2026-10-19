@@ -5491,111 +5491,94 @@ def _route_launch_sweep(a: argparse.Namespace) -> int:
     return 2
 
 
-_CORE_PROBE_SCRIPT = '''
-import json, os, sys
-
-cartridges_dir, team, *roots = sys.argv[1:]
-out = {"import": None, "load": None, "indexed": {}, "resolved": None, "skill_index": {}, "layers": None}
-try:
-    from importlib.metadata import entry_points
-    out["plugins"] = {g: sorted(ep.name for ep in entry_points(group=g))
-                      for g in ("coxswain.system_one", "coxswain.runners")}
-except Exception:
-    pass  # left unset: the doctor row reads "not checked", never an empty claim
-try:
-    from core.cartridge import load
-    from core.skills import index_from_roots
-except Exception as exc:
-    out["import"] = f"{type(exc).__name__}: {exc}"
-    print(json.dumps(out)); raise SystemExit(0)
-try:
-    index = index_from_roots(roots)
-    out["indexed"] = {root: len(index_from_roots([root])) for root in roots}
-    out["skill_index"] = {name: [str(p) for p in paths] for name, paths in index.items()}
-except Exception as exc:
-    # An empty mapping would read downstream as "no roots configured"; a zero
-    # per root fails the skills row honestly, and the cartridge row names why.
-    out["indexed"] = {root: 0 for root in roots}
-    out["load"] = f"skill index failed: {type(exc).__name__}: {exc}"
-    print(json.dumps(out)); raise SystemExit(0)
-try:
-    out["resolved"] = load(team, cartridges_dir, skill_index=index)
-except Exception as exc:
-    out["load"] = f"{type(exc).__name__}: {exc}"
-try:
-    from core.cartridge import layers
-    out["layers"] = [[label, resolved] for label, resolved in layers(team, cartridges_dir, skill_index=index)]
-except Exception as exc:
-    # Never an empty list: a chain one layer short must be visibly unknown,
-    # not silently read as "nothing set anything".
-    out["layers"] = None
-    out["layers_error"] = f"{type(exc).__name__}: {exc}"
-overlay_text = os.environ.get("AGENT_TOOLS_OVERLAY_TEXT")
-if overlay_text is None:
-    out["overlay_errors"] = None
-else:
-    try:
-        from core.cartridge import overlay_errors
-        out["overlay_errors"] = overlay_errors(overlay_text)
-    except Exception as exc:
-        out["overlay_errors"] = [f"{type(exc).__name__}: {exc}"]
-provider_profile = os.environ.get("AGENT_TOOLS_PROVIDER_PROFILE")
-if not provider_profile:
-    out["freshness"] = ["model freshness not checked: AGENT_TOOLS_PROVIDER_PROFILE is unset"]
-else:
+def _core_freshness(provider_profile: str | None) -> list[str] | None:
+    """The model freshness lines for `provider_profile`; None for a core too old for the check (the doctor prints one skip row)."""
+    if not provider_profile:
+        return ["model freshness not checked: AGENT_TOOLS_PROVIDER_PROFILE is unset"]
     try:
         from core.model_freshness import freshness_warnings
     except ImportError:
-        out["freshness"] = None  # a core too old for the check: the doctor prints one skip row
+        return None
+    # load_profile reads the file with Path.read_text, so it takes a Path, never the raw str.
+    profile_path = Path(provider_profile).expanduser()
+    try:
+        import core
+        from core.catalog import load_catalog
+        from core.profile import load_profile
+        if not profile_path.is_file():
+            return [f"model freshness not checked: provider profile not found at {profile_path}"]
+        if not os.access(profile_path, os.R_OK):
+            return [f"model freshness not checked: provider profile unreadable at {profile_path}"]
+        catalog_path = Path(core.__file__).resolve().parent.parent / "providers" / "catalog.yaml"
+        catalog = load_catalog(catalog_path)
+        profile = catalog if isinstance(catalog, list) else load_profile(profile_path, catalog_path)
+        errors = catalog if isinstance(catalog, list) else profile if isinstance(profile, list) else None
+        if errors is None:
+            return list(freshness_warnings(profile, catalog))
+        return ["model freshness not checked: " + str(errors[0] if errors else "unknown error")]
+    except Exception:
+        return [f"model freshness not checked: could not evaluate the provider profile at {profile_path}"]
+
+
+def _core_probe(cartridges_dir: str, team: str, roots: list, overlay_text: str | None, provider_profile: str | None) -> dict:
+    """Edge. The cartridge API, imported in-process (one venv: core sits beside agent_tools), as one JSON-shaped dict.
+
+    Each step's failure lands in its own key and never raises; a failed import or skill index stops the walk there."""
+    out: dict = {"import": None, "load": None, "indexed": {}, "resolved": None, "skill_index": {}, "layers": None}
+    try:
+        from importlib.metadata import entry_points
+        out["plugins"] = {g: sorted(ep.name for ep in entry_points(group=g))
+                          for g in ("coxswain.system_one", "coxswain.runners")}
+    except Exception:
+        pass  # left unset: the doctor row reads "not checked", never an empty claim
+    try:
+        from core.cartridge import load
+        from core.skills import index_from_roots
+    except Exception as exc:
+        out["import"] = f"{type(exc).__name__}: {exc}"
+        return out
+    try:
+        index = index_from_roots(roots)
+        out["indexed"] = {root: len(index_from_roots([root])) for root in roots}
+        out["skill_index"] = {name: [str(p) for p in paths] for name, paths in index.items()}
+    except Exception as exc:
+        # An empty mapping would read downstream as "no roots configured"; a zero
+        # per root fails the skills row honestly, and the cartridge row names why.
+        out["indexed"] = dict.fromkeys(roots, 0)
+        out["load"] = f"skill index failed: {type(exc).__name__}: {exc}"
+        return out
+    try:
+        out["resolved"] = load(team, cartridges_dir, skill_index=index)
+    except Exception as exc:
+        out["load"] = f"{type(exc).__name__}: {exc}"
+    try:
+        from core.cartridge import layers
+        out["layers"] = [[label, resolved] for label, resolved in layers(team, cartridges_dir, skill_index=index)]
+    except Exception as exc:
+        # Never an empty list: a chain one layer short must be visibly unknown,
+        # not silently read as "nothing set anything".
+        out["layers"] = None
+        out["layers_error"] = f"{type(exc).__name__}: {exc}"
+    if overlay_text is None:
+        out["overlay_errors"] = None
     else:
-        from pathlib import Path
-        # load_profile reads the file with Path.read_text, so it takes a Path, never the raw env str.
-        profile_path = Path(provider_profile).expanduser()
         try:
-            import core
-            from core.catalog import load_catalog
-            from core.profile import load_profile
-            if not profile_path.is_file():
-                out["freshness"] = [f"model freshness not checked: provider profile not found at {profile_path}"]
-            elif not os.access(profile_path, os.R_OK):
-                out["freshness"] = [f"model freshness not checked: provider profile unreadable at {profile_path}"]
-            else:
-                catalog_path = Path(core.__file__).resolve().parent.parent / "providers" / "catalog.yaml"
-                catalog = load_catalog(catalog_path)
-                profile = catalog if isinstance(catalog, list) else load_profile(profile_path, catalog_path)
-                errors = catalog if isinstance(catalog, list) else profile if isinstance(profile, list) else None
-                if errors is None:
-                    out["freshness"] = list(freshness_warnings(profile, catalog))
-                else:
-                    out["freshness"] = ["model freshness not checked: " + str(errors[0] if errors else "unknown error")]
-        except Exception:
-            out["freshness"] = [f"model freshness not checked: could not evaluate the provider profile at {profile_path}"]
-print(json.dumps(out))
-'''
+            from core.cartridge import overlay_errors
+            out["overlay_errors"] = overlay_errors(overlay_text)
+        except Exception as exc:
+            out["overlay_errors"] = [f"{type(exc).__name__}: {exc}"]
+    out["freshness"] = _core_freshness(provider_profile)
+    return out
 
 
-def _run_core_probe(python_path: str, cartridges_dir: str, team: str, skills_roots: list, raw_roots: list | None = None,
+def _run_core_probe(cartridges_dir: str, team: str, skills_roots: list, raw_roots: list | None = None,
                      overlay_text: str | None = None, provider_profile: str | None = None) -> dict:
-    """One `python -c` call into the harness venv (spec: setup doctor). Any
-    failure to get parseable JSON back is folded into `core_import` as the
-    stderr tail, never raised."""
-    env = dict(os.environ)
-    if overlay_text is not None:
-        env["AGENT_TOOLS_OVERLAY_TEXT"] = overlay_text
-    if provider_profile is not None:
-        env["AGENT_TOOLS_PROVIDER_PROFILE"] = provider_profile
+    """The core probe's facts (spec: setup doctor). Any failure the probe did not
+    catch itself is folded into `core_import`, never raised."""
     try:
-        proc = subprocess.run(
-            [python_path, "-c", _CORE_PROBE_SCRIPT, cartridges_dir, team, *skills_roots],
-            capture_output=True, text=True, timeout=60, env=env,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return {"core_import": str(exc)}
-    try:
-        parsed = json.loads(proc.stdout)
-    except ValueError:
-        tail = (proc.stderr or "").strip().splitlines()
-        return {"core_import": tail[-1] if tail else f"core probe exited {proc.returncode} with no JSON"}
+        parsed = _core_probe(cartridges_dir, team, list(skills_roots), overlay_text, provider_profile)
+    except Exception as exc:
+        return {"core_import": f"{type(exc).__name__}: {exc}"}
     indexed = parsed.get("indexed", {}) or {}
     if raw_roots and len(raw_roots) == len(skills_roots):
         # The probe saw expanded paths; the core keys its skills row by the
@@ -5780,11 +5763,10 @@ def _gather_doctor_facts(profile_path: Path, repo: Path) -> dict:
     expand = lambda p: str(Path(p).expanduser()) if p else ""  # noqa: E731
     facts["paths_exist"] = {p: Path(expand(p)).exists() for p in (*singles, *roots) if p}
     harness_dir = expand(profile.get("harness_dir", ""))
-    venv_python = Path(harness_dir) / ".venv" / "bin" / "python" if harness_dir else Path("/nonexistent")
-    facts["harness_python_exists"] = venv_python.exists()
+    facts["harness_python_exists"] = bool(harness_dir) and install_root.harness_python(harness_dir).exists()
     if facts["harness_python_exists"]:
         overlay_text = _read_text_or_none(repo / ".agent" / "cartridge.yaml")
-        facts.update(_run_core_probe(str(venv_python), expand(profile.get("cartridges_dir", "")), profile.get("team", ""),
+        facts.update(_run_core_probe(expand(profile.get("cartridges_dir", "")), profile.get("team", ""),
                                      [expand(r) for r in roots], raw_roots=roots, overlay_text=overlay_text,
                                      provider_profile=expand(profile.get("provider_profile", "")) or None))
     if profile.get("provider_profile"):

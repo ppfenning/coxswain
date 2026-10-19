@@ -1,8 +1,6 @@
 import subprocess
 import sys
 
-import pytest
-
 from agent_tools import cli, install, install_exec
 
 
@@ -261,21 +259,6 @@ def test_cli_versions_reports_ok_missing_and_extra_from_real_checkouts(tmp_path,
     assert "harness" in out and "ok" in out
     assert "cartridges" in out and "missing" in out
     assert "extra-thing" in out and "extra" in out
-
-
-@pytest.mark.skip(reason="monorepo phase 2: one venv, core always imports; the harness-venv probe is replaced")
-def test_cli_versions_schema_column_reads_question_mark_when_core_is_not_importable(tmp_path, capsys):
-    manifest_dir = tmp_path / "coxswain"
-    manifest_dir.mkdir()
-    manifest_path = manifest_dir / "manifest.toml"
-    manifest_path.write_text(_MANIFEST_TOML)
-    _git_repo(tmp_path / "harness", tag="v1.0.0")
-    rc = cli.main(["versions", "--manifest", str(manifest_path)])
-    out = capsys.readouterr().out
-    assert rc == 0
-    assert "schema" in out
-    cartridges_line = next(line for line in out.splitlines() if line.split()[0] == "cartridges").rstrip()
-    assert cartridges_line.endswith("?")
 
 
 def test_cli_versions_schema_column_reports_the_gathered_version(tmp_path, monkeypatch, capsys):

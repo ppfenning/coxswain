@@ -30,21 +30,18 @@ def _write_home_record(tmp_path, home):
     record.parent.mkdir(parents=True, exist_ok=True)
     record.write_text(f"{home}\n")
 
-_STUB = """#!{python}
-import json
-import os
-import sys
-from pathlib import Path
-from pathlib import Path
+_REAL_CORE_PROBE = cli._core_probe
 
-args = sys.argv[3:]
-cartridges_dir, team, *roots = args
-harness_dir = Path(__file__).resolve().parents[2]
-(harness_dir / "probe_argv.json").write_text(json.dumps(args))
 
-load = None if os.path.isdir(cartridges_dir) else f"cartridge not found: {{cartridges_dir}}"
-print(json.dumps({{"import": None, "load": load, "indexed": {{root: 3 for root in roots}}, "overlay_errors": None}}))
-"""
+def _stub_core_probe(harness_dir):
+    """Stands in for the in-process core probe: records its arguments and fails the load only for a missing cartridges_dir."""
+
+    def probe(cartridges_dir, team, roots, overlay_text, provider_profile):
+        (harness_dir / "probe_argv.json").write_text(json.dumps([cartridges_dir, team, *roots]))
+        load = None if os.path.isdir(cartridges_dir) else f"cartridge not found: {cartridges_dir}"
+        return {"import": None, "load": load, "indexed": dict.fromkeys(roots, 3), "overlay_errors": None}
+
+    return probe
 
 _PROVIDER = """#!{python}
 print("fakeprovider 1.0.0")
@@ -79,7 +76,9 @@ def _good_setup(tmp_path, monkeypatch):
     provider_profile = tmp_path / "provider.yaml"
     provider_profile.write_text("command: fakeprovider\n")
 
-    _write_executable(harness_dir / ".venv" / "bin" / "python", _STUB.format(python=sys.executable))
+    # An unmigrated harness venv: install_root picks it, and the doctor's harness venv row passes.
+    _write_executable(harness_dir / ".venv" / "bin" / "python", "#!/bin/sh\n")
+    monkeypatch.setattr(cli, "_core_probe", _stub_core_probe(harness_dir))
     bin_dir = tmp_path / "bin"
     _write_executable(bin_dir / "fakeprovider", _PROVIDER.format(python=sys.executable))
     _write_executable(bin_dir / "git", _GIT)
@@ -182,7 +181,7 @@ def test_json_output_parses_and_ok_matches_the_exit_code(tmp_path, monkeypatch, 
     assert isinstance(doc["rows"], list) and doc["rows"]
 
 
-# ── the probe text itself is executed against a fake `core` package ─────────
+# ── the real probe runs in-process against a fake `core` package ─────────────
 
 _FAKE_CORE_OK = {
     "core/__init__.py": "",
@@ -197,20 +196,17 @@ _FAKE_CORE_OK = {
     ),
     "core/skills.py": "def index_from_roots(roots):\n    return {f'local-skills:{i}': [r] for i, r in enumerate(roots, 1)}\n",
 }
-_WRAPPER = """#!/bin/sh
-PYTHONPATH={pkg} exec {python} "$@"
-"""
-
-
 def _real_probe_setup(tmp_path, monkeypatch, fake_core):
     profile, cartridges_dir, skills_a, skills_b, harness_dir = _good_setup(tmp_path, monkeypatch)
     pkg = tmp_path / "fakepkg"
     for rel, text in fake_core.items():
         (pkg / rel).parent.mkdir(parents=True, exist_ok=True)
         (pkg / rel).write_text(text)
-    # A wrapper that runs the REAL interpreter with the fake package on PYTHONPATH,
-    # so `_CORE_PROBE_SCRIPT` is executed rather than stubbed.
-    _write_executable(harness_dir / ".venv" / "bin" / "python", _WRAPPER.format(pkg=pkg, python=sys.executable))
+    # The fake package first on sys.path and no `core` module cached, so the REAL probe imports the fake.
+    monkeypatch.syspath_prepend(str(pkg))
+    for name in [m for m in sys.modules if m == "core" or m.startswith("core.")]:
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.setattr(cli, "_core_probe", _REAL_CORE_PROBE)
     return profile, cartridges_dir, skills_a, skills_b, harness_dir
 
 
@@ -228,7 +224,7 @@ def test_the_probe_runs_the_real_cartridge_api_and_passes(tmp_path, monkeypatch,
 
 def test_the_probe_reports_the_resolved_cartridge_and_the_skill_index(tmp_path, monkeypatch, capsys):
     profile, cartridges_dir, skills_a, skills_b, harness_dir = _real_probe_setup(tmp_path, monkeypatch, _FAKE_CORE_OK)
-    facts = _run_core_probe(str(harness_dir / ".venv" / "bin" / "python"), str(cartridges_dir), "acme",
+    facts = _run_core_probe(str(cartridges_dir), "acme",
                              [str(skills_a), str(skills_b)])
     assert facts["resolved"] == {"team": "acme"}
     assert facts["skill_index"] == {"local-skills:1": [str(skills_a)], "local-skills:2": [str(skills_b)]}
@@ -254,7 +250,7 @@ def test_a_cartridge_load_error_gives_resolved_none_but_keeps_the_skill_index(tm
     fake = dict(_FAKE_CORE_OK)
     fake["core/cartridge.py"] = "class CartridgeError(Exception):\n    pass\n\ndef load(team, cartridges_dir, *, skill_index):\n    raise CartridgeError(\"no cartridge for 'acme'\")\n"
     _, cartridges_dir, skills_a, skills_b, harness_dir = _real_probe_setup(tmp_path, monkeypatch, fake)
-    facts = _run_core_probe(str(harness_dir / ".venv" / "bin" / "python"), str(cartridges_dir), "acme",
+    facts = _run_core_probe(str(cartridges_dir), "acme",
                              [str(skills_a), str(skills_b)])
     assert facts["resolved"] is None
     assert facts["cartridge_load"] == "CartridgeError: no cartridge for 'acme'"
@@ -274,7 +270,7 @@ def test_a_failing_skill_index_fails_skills_and_names_itself_on_the_cartridge_ro
 
 def test_the_probe_reports_provenance_for_each_key_the_fixed_layers_set(tmp_path, monkeypatch):
     _, cartridges_dir, skills_a, skills_b, harness_dir = _real_probe_setup(tmp_path, monkeypatch, _FAKE_CORE_OK)
-    facts = _run_core_probe(str(harness_dir / ".venv" / "bin" / "python"), str(cartridges_dir), "acme",
+    facts = _run_core_probe(str(cartridges_dir), "acme",
                              [str(skills_a), str(skills_b)])
     assert facts["provenance"] == {"policy.review_tier": "acme"}
 
@@ -290,7 +286,7 @@ def test_a_layers_failure_surfaces_as_provenance_error_with_the_exception_text(t
         "    raise RuntimeError('extends chain broke')\n"
     )
     _, cartridges_dir, skills_a, skills_b, harness_dir = _real_probe_setup(tmp_path, monkeypatch, fake)
-    facts = _run_core_probe(str(harness_dir / ".venv" / "bin" / "python"), str(cartridges_dir), "acme",
+    facts = _run_core_probe(str(cartridges_dir), "acme",
                              [str(skills_a), str(skills_b)])
     assert "provenance" not in facts
     assert facts["provenance_error"] == "RuntimeError: extends chain broke"
@@ -307,7 +303,7 @@ def test_an_empty_layers_list_is_a_loader_contract_violation_not_a_clean_result(
         "    return []\n"
     )
     _, cartridges_dir, skills_a, skills_b, harness_dir = _real_probe_setup(tmp_path, monkeypatch, fake)
-    facts = _run_core_probe(str(harness_dir / ".venv" / "bin" / "python"), str(cartridges_dir), "acme",
+    facts = _run_core_probe(str(cartridges_dir), "acme",
                              [str(skills_a), str(skills_b)])
     assert "provenance" not in facts
     assert facts["provenance_error"] == "the loader returned no layers"
@@ -345,19 +341,6 @@ def test_no_overlay_file_leaves_every_row_ok(tmp_path, monkeypatch, capsys):
     rows = _rows(capsys)
     assert rows["project overlay"] == {"check": "project overlay", "ok": True, "detail": "no project overlay"}
     assert rc == 0
-
-
-@pytest.mark.skip(reason="monorepo phase 2: one venv, core always imports; the harness-venv probe is replaced")
-def test_a_core_import_failure_leaves_project_overlay_not_checked_even_with_an_overlay_present(tmp_path, monkeypatch, capsys):
-    fake = {"core/__init__.py": "", "core/cartridge.py": _FAKE_CORE_OVERLAY["core/cartridge.py"]}
-    profile, *_ = _real_probe_setup(tmp_path, monkeypatch, fake)
-    repo = tmp_path / "repo"
-    (repo / ".agent").mkdir(parents=True)
-    (repo / ".agent" / "cartridge.yaml").write_text("skills:\n  - forbidden\n")
-    rc = main(["setup", "doctor", "--profile", str(profile), "--repo", str(repo), "--json"])
-    rows = _rows(capsys)
-    assert rows["project overlay"] == {"check": "project overlay", "ok": False, "detail": "not checked"}
-    assert rc == 1
 
 
 def test_a_trailing_yaml_comment_on_the_provider_command_is_not_part_of_the_command(tmp_path, monkeypatch, capsys):
@@ -439,7 +422,8 @@ def test_schema_row_reads_cartridges_from_the_checkout_above_provider_profile(tm
     provider_profile = provider_dir / "provider.yaml"
     provider_profile.write_text("command: fakeprovider\n")
 
-    _write_executable(harness_dir / ".venv" / "bin" / "python", _STUB.format(python=sys.executable))
+    _write_executable(harness_dir / ".venv" / "bin" / "python", "#!/bin/sh\n")
+    monkeypatch.setattr(cli, "_core_probe", _stub_core_probe(harness_dir))
     (harness_dir / "harness").mkdir()
     (harness_dir / "harness" / "__init__.py").write_text('CORE_SCHEMA = "1.0"\n')
     bin_dir = tmp_path / "bin"
@@ -519,15 +503,6 @@ def test_a_freshness_warning_prints_one_warn_line_and_leaves_the_exit_code(tmp_p
     out = capsys.readouterr().out
     lines = [line for line in out.splitlines() if line.startswith("model freshness")]
     assert len(lines) == 1 and "warn" in lines[0] and "opus-4 is 120 days old" in lines[0]
-    assert rc == 0
-
-
-@pytest.mark.skip(reason="monorepo phase 2: one venv, core always imports; the harness-venv probe is replaced")
-def test_a_core_without_model_freshness_gives_the_one_skip_line(tmp_path, monkeypatch, capsys):
-    profile, *_ = _real_probe_setup(tmp_path, monkeypatch, _FAKE_CORE_OK)
-    rc = main(["setup", "doctor", "--profile", str(profile), "--json"])
-    (row,) = _freshness_rows(_rows(capsys))
-    assert row["ok"] is True and row["warn"] is True and row["detail"].startswith("skipped:")
     assert rc == 0
 
 
