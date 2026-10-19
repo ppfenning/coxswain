@@ -1,59 +1,31 @@
-"""The manifest's shape, checked with literals: this is what `cox` will read."""
-import re
+"""The manifest's shape, checked with literals: this is what `cox` and `devtools release` read."""
 import tomllib
 from pathlib import Path
 
+from agent_tools.release_version import is_calver, release_key
+
 MANIFEST = Path(__file__).resolve().parent.parent / "manifest.toml"
-SEMVER = re.compile(r"^\d+\.\d+\.\d+(-beta\.\d+)?$")
-
-
-def _key(tag: str) -> tuple[int, ...]:
-    return tuple(int(n) for n in re.findall(r"\d+", tag.split("-")[0]))
 
 
 def _load() -> dict:
     return tomllib.loads(MANIFEST.read_text())
 
 
-def test_version_is_semver_with_optional_beta():
+def test_version_is_calver_and_status_is_named():
     m = _load()
-    assert SEMVER.match(m["coxswain"]["version"])
+    assert is_calver(m["coxswain"]["version"])
     assert m["coxswain"]["status"] in {"beta", "stable"}
 
 
-def test_every_component_is_pinned_in_lockstep_or_lives_here():
+def test_only_dash_is_a_component_and_it_lives_in_its_own_repo():
     m = _load()
-    tag = "v" + m["coxswain"]["version"]
-    for name, c in m["components"].items():
-        assert ("repo" in c) != ("path" in c), name
-        if "repo" in c:
-            if c.get("lockstep", True):
-                # Changed-only versioning: a component with no changes since its last tag keeps
-                # it, so a lockstep component sits at this release or an earlier one, never a later one.
-                assert SEMVER.match(c["tag"].lstrip("v")), f"{name} pins a non-semver tag {c['tag']}"
-                assert _key(c["tag"]) <= _key(tag), f"{name} is pinned past {tag}"
-            else:
-                # A `lockstep = false` component keeps the tag it names (crew,
-                # from 0.8.0); it must still be a real release tag.
-                assert SEMVER.match(c["tag"].lstrip("v")), f"{name} pins a non-semver tag {c['tag']}"
-            assert c["repo"].startswith("ppfenning/coxswain-"), name
-        assert c.get("required") or c.get("flag"), f"{name} is neither required nor optional"
-        if "docs" in c:
-            assert c["docs"], f"{name} declares an empty docs list"
-            assert all(isinstance(d, str) for d in c["docs"]), f"{name} docs must be paths"
-
-
-def test_exactly_one_component_provides_cox():
-    m = _load()
-    assert [n for n, c in m["components"].items() if c.get("provides") == "cox"] == ["tools"]
-
-
-def test_dash_component_declares_repo_flag_and_provides_towpath():
-    m = _load()
+    assert list(m["components"]) == ["dash"]
     dash = m["components"]["dash"]
     assert dash["repo"] == "ppfenning/coxswain-dash"
     assert dash["flag"] == "dash"
     assert dash["provides"] == "towpath"
+    assert release_key(dash["tag"]) is not None
+    assert dash["docs"] and all(isinstance(d, str) for d in dash["docs"])
 
 
 def test_providers_declare_status_and_supported_ones_a_profile():

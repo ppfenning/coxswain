@@ -1,18 +1,15 @@
 name: release-rehearsal
 # Design: docs/release-rehearsal.md. Dispatched with full commit SHAs; the run title is what the release gate matches on.
+# upgrade and migrate start from a real install of previous_tag (v0.47.0: the multi-repo coxswain-tools line).
 run-name: >-
-  rehearsal cartridges=${{ inputs.cartridges_sha }} graphs=${{ inputs.graphs_sha }} tools=${{ inputs.tools_sha }}
-  crew=${{ inputs.crew_sha }} dash=${{ inputs.dash_sha }} previous=${{ inputs.previous_tag }}
+  rehearsal sha=${{ inputs.sha }} dash=${{ inputs.dash_sha || 'pinned' }} previous=${{ inputs.previous_tag }}
   migrations=${{ inputs.migrations || 'none' }}
 on:
   workflow_dispatch:
     inputs:
-      cartridges_sha: { description: Full 40 character commit SHA of cartridges, type: string, required: true }
-      graphs_sha: { description: Full 40 character commit SHA of graphs, type: string, required: true }
-      tools_sha: { description: Full 40 character commit SHA of tools, type: string, required: true }
-      crew_sha: { description: Full 40 character commit SHA of crew, type: string, required: true }
-      dash_sha: { description: Full 40 character commit SHA of dash, type: string, required: true }
-      previous_tag: { description: "Last release tag, such as v0.40.0", type: string, required: true }
+      sha: { description: Full 40 character commit SHA of coxswain, type: string, required: true }
+      dash_sha: { description: "Full 40 character commit SHA of coxswain-dash when the release tags it; empty keeps its pinned tag", type: string, required: false, default: "" }
+      previous_tag: { description: "Last release tag, such as v0.47.0", type: string, required: true }
       migrations: { description: "Declared migration ids, comma separated; empty when none", type: string, required: false, default: "" }
 permissions:
   contents: read
@@ -21,10 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     container: debian:stable-slim
     env: &inputs
-      CARTRIDGES_SHA: ${{ inputs.cartridges_sha }}
-      GRAPHS_SHA: ${{ inputs.graphs_sha }}
-      TOOLS_SHA: ${{ inputs.tools_sha }}
-      CREW_SHA: ${{ inputs.crew_sha }}
+      SHA: ${{ inputs.sha }}
       DASH_SHA: ${{ inputs.dash_sha }}
       PREVIOUS_TAG: ${{ inputs.previous_tag }}
       MIGRATIONS: ${{ inputs.migrations }}
@@ -42,8 +36,7 @@ jobs:
       - name: fresh
         run: >-
           python3 scripts/release_rehearsal.py --scenario fresh
-          --cartridges-sha "$CARTRIDGES_SHA" --graphs-sha "$GRAPHS_SHA" --tools-sha "$TOOLS_SHA"
-          --crew-sha "$CREW_SHA" --dash-sha "$DASH_SHA" --previous-tag "$PREVIOUS_TAG" --migrations "$MIGRATIONS"
+          --sha "$SHA" --dash-sha "$DASH_SHA" --previous-tag "$PREVIOUS_TAG" --migrations "$MIGRATIONS"
   upgrade:
     runs-on: ubuntu-latest
     container: debian:stable-slim
@@ -62,8 +55,7 @@ jobs:
       - name: upgrade
         run: >-
           python3 scripts/release_rehearsal.py --scenario upgrade
-          --cartridges-sha "$CARTRIDGES_SHA" --graphs-sha "$GRAPHS_SHA" --tools-sha "$TOOLS_SHA"
-          --crew-sha "$CREW_SHA" --dash-sha "$DASH_SHA" --previous-tag "$PREVIOUS_TAG" --migrations "$MIGRATIONS"
+          --sha "$SHA" --dash-sha "$DASH_SHA" --previous-tag "$PREVIOUS_TAG" --migrations "$MIGRATIONS"
   migrate:
     runs-on: ubuntu-latest
     container: debian:stable-slim
@@ -82,5 +74,4 @@ jobs:
       - name: migrate
         run: >-
           python3 scripts/release_rehearsal.py --scenario migrate
-          --cartridges-sha "$CARTRIDGES_SHA" --graphs-sha "$GRAPHS_SHA" --tools-sha "$TOOLS_SHA"
-          --crew-sha "$CREW_SHA" --dash-sha "$DASH_SHA" --previous-tag "$PREVIOUS_TAG" --migrations "$MIGRATIONS"
+          --sha "$SHA" --dash-sha "$DASH_SHA" --previous-tag "$PREVIOUS_TAG" --migrations "$MIGRATIONS"

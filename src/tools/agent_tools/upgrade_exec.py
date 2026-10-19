@@ -1,9 +1,9 @@
 """Runs an upgrade Plan: git fetch and checkout per step, crew's install script after crew moves.
 The only side effects are the injected `run(argv, cwd) -> (exit, output)` and print."""
-import re
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
+from agent_tools import release_version
 from agent_tools.install_exec import clone_dir
 from agent_tools.upgrade_plan import Plan, Step
 
@@ -21,8 +21,9 @@ def offered_tags(ls_remote_output: str) -> tuple[str, ...]:
 
 
 def newest_release(tags: Sequence[str]) -> str | None:
-    """The first tag shaped `v1.2.3`; a prerelease such as `v1.2.3-rc1` is never a default target."""
-    return next((tag for tag in tags if re.fullmatch(r"v\d+(\.\d+)*", tag)), None)
+    """The greatest `v`-prefixed release tag, whatever order `tags` come in: CalVer `v2026.10.0` above every
+    legacy `v0.x` tag. A prerelease such as `v1.2.3-rc1` or `v0.20.0-beta.1` is never a default target."""
+    return release_version.newest(tag for tag in tags if tag.startswith("v"))
 
 
 def _step_dir(root: Path, step: Step) -> Path:

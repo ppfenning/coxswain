@@ -1,5 +1,11 @@
 """Pull each component's declared docs into docs/components/<name>/<path>.
 
+Tools, graphs, cartridges and crew are folders of this checkout, so their docs
+are copied from disk (`LOCAL_DOCS`, planned by `local_plan`, copied by
+`_copy_local`): the build documents exactly the tree it is built from. A
+component that lives in another repository (`[components]` in manifest.toml,
+only dash) is still fetched from GitHub at its pinned tag, as below.
+
 The core (`plan`) is pure: given a parsed manifest, it decides which URLs to
 fetch and where to write them, with no I/O. A `*.md` glob entry cannot be
 expanded without asking GitHub what is in the directory, so `plan` returns it
@@ -35,6 +41,61 @@ import tomllib
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+# name -> (folder in this checkout, docs under it). A `dir/*.md` entry copies every .md file in that folder.
+LOCAL_DOCS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "cartridges": ("src/cartridges", ("README.md",)),
+    "graphs": ("src/graphs", (
+        "README.md",
+        "graphs/delivery/epic-swarm.md",
+        "graphs/delivery/lifecycle-propose.md",
+        "graphs/delivery/initiative-decompose.md",
+        "graphs/ops/coxswain.md",
+        "graphs/ops/epic-reconcile.md",
+        "graphs/ops/retro-propose.md",
+        "graphs/ops/triage-propose.md",
+        "docs/GRAPH-CONTRACT.md",
+        "docs/RUNBOOK-TRUST.md",
+        "docs/graphs/*.md",
+    )),
+    "tools": ("src/tools", ("README.md",)),
+    "crew": ("crew", ("README.md",)),
+}
+
+
+def local_plan(local_docs: dict[str, tuple[str, tuple[str, ...]]]) -> list[dict]:
+    """Pure: one `copy` item per listed file and one `copy_glob` item per `dir/*.md` entry, each landing at
+    docs/components/<name>/<entry>, the same destination a GitHub pull of that component used."""
+    def item(name: str, folder: str, entry: str) -> dict:
+        if entry.endswith("/*.md"):
+            directory = entry[: -len("/*.md")]
+            return {"kind": "copy_glob", "src_dir": f"{folder}/{directory}", "dest_dir": f"docs/components/{name}/{directory}"}
+        return {"kind": "copy", "src": f"{folder}/{entry}", "dest": f"docs/components/{name}/{entry}"}
+    return [item(name, folder, entry) for name, (folder, entries) in local_docs.items() for entry in entries]
+
+
+def _copy_local(items: list[dict], root: Path) -> int:
+    """Edge: copy every local item under `root`; return how many did not land. A missing file, or a glob
+    folder with no .md files, is a failure, the same as a doc that failed to fetch."""
+    failures = 0
+    for item in items:
+        if item["kind"] == "copy_glob":
+            sources = sorted((root / item["src_dir"]).glob("*.md"))
+            pairs = [(src, f"{item['dest_dir']}/{src.name}") for src in sources]
+            if not pairs:
+                print(f"skip: {item['src_dir']}: no .md files")
+                failures += 1
+        else:
+            pairs = [(root / item["src"], item["dest"])]
+        for src, dest in pairs:
+            try:
+                content = src.read_bytes()
+            except OSError as exc:
+                print(f"skip: {src}: {exc}")
+                failures += 1
+                continue
+            _write(str(root / dest), content)
+    return failures
 
 
 def raw_url(repo: str, ref: str, entry: str) -> str:
@@ -205,7 +266,7 @@ def _run(items: list[dict]) -> int:
 
 def main() -> int:
     manifest = tomllib.loads(Path("manifest.toml").read_text())
-    failures = _run(plan(manifest))
+    failures = _copy_local(local_plan(LOCAL_DOCS), Path(".")) + _run(plan(manifest))
     if failures:
         print(f"failed: {failures} doc(s) did not pull")
     return 1 if failures else 0

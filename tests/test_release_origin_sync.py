@@ -4,16 +4,17 @@ from types import SimpleNamespace
 
 from devtools import cli, release
 
-_MANIFEST_TOML = """
+V = "2026.10.0"
+_MANIFEST_TOML = f"""
 [coxswain]
-version = "0.1.0"
+version = "{V}"
 
-[components.harness]
-repo = "org/harness"
-tag = "v0.1.0"
+[components.dash]
+repo = "org/dash"
+tag = "v0.42.0"
 """
 
-_DIR = "/work/harness"
+_DIR = "/work/dash"
 
 
 def _git(counts="0\t0\n", fetch=(0, ""), calls=None):
@@ -104,14 +105,16 @@ def test_a_prefetched_checkout_is_not_fetched_again():
 
 def _dry_run(tmp_path, monkeypatch, capsys, counts):
     """Runs `release --dry-run`; returns (rc, stdout, ordered calls)."""
-    manifest_path = tmp_path / "manifest.toml"
+    (tmp_path / "coxswain").mkdir()
+    manifest_path = tmp_path / "coxswain" / "manifest.toml"
     manifest_path.write_text(_MANIFEST_TOML)
     calls = []
     monkeypatch.setattr(cli, "_maintainer_remote_url", lambda directory: "git@github.com:ppfenning/coxswain.git")
+    monkeypatch.setattr(cli, "_tap_state", lambda directory: "clean")
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
     monkeypatch.setattr(cli, "_real_run", _git(counts, calls=calls))
     monkeypatch.setattr(cli, "_stdout_run", _git(counts, calls=calls))
-    rc = cli.main(["release", "0.2.0", "--dry-run", "--manifest", str(manifest_path), "--root", str(tmp_path)])
+    rc = cli.main(["release", V, "--dry-run", "--manifest", str(manifest_path)])
     return rc, capsys.readouterr().out, calls
 
 
@@ -126,12 +129,13 @@ def test_every_checkout_is_fetched_before_the_plan_reads_commits(tmp_path, monke
 def test_pinned_commits_count_against_origin_default_not_head(tmp_path, monkeypatch, capsys):
     _, _, calls = _dry_run(tmp_path, monkeypatch, capsys, "0\t0\n")
     argv = next(a for a in calls if "--count" in a and "--left-right" not in a)
-    assert argv[4] == "v0.1.0..origin/main"
+    assert argv[4] == "v0.42.0..origin/main"
     assert "HEAD" not in argv
 
 
 def test_dry_run_prints_one_line_per_refused_checkout_and_exits_two(tmp_path, monkeypatch, capsys):
     rc, out, _ = _dry_run(tmp_path, monkeypatch, capsys, "0\t3\n")
-    harness = release.component_dir(str(tmp_path), "harness", {})
+    dash = release.component_dir(str(tmp_path), "dash", {})
     assert rc == 2
-    assert f"refuse harness: {harness} is behind origin/main by 3 commits" in out
+    assert f"refuse dash: {dash} is behind origin/main by 3 commits" in out
+    assert f"refuse coxswain: {tmp_path / 'coxswain'} is behind origin/main by 3 commits" in out

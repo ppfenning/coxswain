@@ -9,16 +9,18 @@ from collections.abc import Callable, Mapping, Sequence
 
 from devtools import release_migrations
 
-COMPONENTS = ("cartridges", "graphs", "tools", "crew", "dash")
+# The run title names the coxswain commit and dash's: a dash commit when this release tags dash, else `pinned`.
+PINNED = "pinned"
 SCENARIOS = ("fresh", "upgrade", "migrate")
 WINDOW = 200
 _OVERRIDE_LINE = re.compile(r"^Cut with `--allow-no-rehearsal`: (.*)\.$")
 
 
-def run_title(shas: Mapping[str, str], previous_tag: str, migrations: Sequence[str]) -> str:
-    """The run name the workflow gives itself: the five SHAs in manifest order, then the previous tag and migrations."""
-    parts = [f"{name}={shas[name]}" for name in COMPONENTS]
-    return " ".join(["rehearsal", *parts, f"previous={previous_tag}", f"migrations={','.join(migrations) or 'none'}"])
+def run_title(sha: str, dash: str, previous_tag: str, migrations: Sequence[str]) -> str:
+    """The run name the workflow gives itself: the coxswain SHA, dash's SHA (or `pinned`), the previous tag and
+    the migrations, in the order release-rehearsal.yml's `run-name` writes them."""
+    return " ".join(["rehearsal", f"sha={sha}", f"dash={dash or PINNED}", f"previous={previous_tag}",
+                     f"migrations={','.join(migrations) or 'none'}"])
 
 
 def newest_match(runs: Sequence[Mapping], title: str) -> Mapping | None:
@@ -59,16 +61,18 @@ def _override(reason: str, notes_text: str) -> list[dict]:
     return [_step("refuse", f"The release notes lack the line: Cut with `--allow-no-rehearsal`: {wanted}.")]
 
 
-def decide(runs: Sequence[Mapping], jobs_of: Callable[[Mapping], Sequence[Mapping]], shas: Mapping[str, str],
+def decide(runs: Sequence[Mapping], jobs_of: Callable[[Mapping], Sequence[Mapping]], shas: Mapping[str, str | None],
            previous_tag: str, declared: Sequence[str], allow_reason: str | None, notes_text: str) -> list[dict]:
-    """Release-plan steps: a refuse blocks the cut, a note records why it may go on. `None` for
+    """Release-plan steps: a refuse blocks the cut, a note records why it may go on. `shas` holds the origin
+    commit of `coxswain` and, when this release tags dash, of `dash` (absent or None: dash is pinned; a dash
+    the release tags must resolve, so the edge passes its SHA or the empty string). `None` for
     `allow_reason` means no override, so the lookup runs; an empty string is an override with no reason."""
     if allow_reason is not None:
         return _override(allow_reason, notes_text)
-    unresolved = [name for name in COMPONENTS if name not in shas]
-    if unresolved:
-        return [_step("refuse", f"No origin commit resolved for {', '.join(unresolved)}.")]
-    title = run_title(shas, previous_tag, declared)
+    unresolved = [name for name in ("coxswain", "dash") if name in shas and not shas[name]]
+    if unresolved or not shas.get("coxswain"):
+        return [_step("refuse", f"No origin commit resolved for {', '.join(unresolved or ['coxswain'])}.")]
+    title = run_title(shas["coxswain"], shas.get("dash") or PINNED, previous_tag, declared)
     run = newest_match(runs, title)
     if run is None:
         full = f" The listing returned {WINDOW} runs, so the window may be full." if len(runs) == WINDOW else ""

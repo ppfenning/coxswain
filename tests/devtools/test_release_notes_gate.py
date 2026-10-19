@@ -3,17 +3,18 @@ import pytest
 from devtools import cli, release, release_check
 from devtools.release_notes_blanks import GAPS_BLANK, OPENER_BLANK
 
-_MANIFEST_TOML = """
+V = "2026.10.0"
+_MANIFEST_TOML = f"""
 [coxswain]
-version = "0.1.0"
+version = "{V}"
 
-[components.harness]
-repo = "org/harness"
-tag = "v0.1.0"
+[components.dash]
+repo = "org/dash"
+tag = "v0.42.0"
 """
 
-_CLEAN = "# coxswain 0.1.0\n\nA finished opener.\n\n- coxswain harness #12 landed the gate.\n\n## Known gaps\n\nNothing yet.\n"
-_BOTH = f"# coxswain 0.1.0\n\n{OPENER_BLANK}\n\n- coxswain harness #12 landed the gate.\n\n## Known gaps\n\n{GAPS_BLANK}\n"
+_CLEAN = f"# coxswain {V}\n\nA finished opener.\n\n- coxswain #12 landed the gate.\n\n## Known gaps\n\nNothing yet.\n"
+_BOTH = f"# coxswain {V}\n\n{OPENER_BLANK}\n\n- coxswain #12 landed the gate.\n\n## Known gaps\n\n{GAPS_BLANK}\n"
 _ONE = _CLEAN.replace("A finished opener.", OPENER_BLANK)
 
 
@@ -64,10 +65,10 @@ def test_gate_refuses_a_blank_even_when_doc_drift_is_allowed():
 
 
 def _run_release(tmp_path, monkeypatch, text, *flags):
-    manifest_path = tmp_path / "manifest.toml"
-    manifest_path.write_text(_MANIFEST_TOML)
     (tmp_path / "coxswain" / "docs" / "releases").mkdir(parents=True)
-    (tmp_path / "coxswain" / "docs" / "releases" / "0.1.0.md").write_text(text)
+    manifest_path = tmp_path / "coxswain" / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    (tmp_path / "coxswain" / "docs" / "releases" / f"{V}.md").write_text(text)
     calls = []
 
     def fake_run(argv, cwd):
@@ -78,10 +79,11 @@ def _run_release(tmp_path, monkeypatch, text, *flags):
 
     monkeypatch.setattr(release_check, "CHECKS", (release_check.check_notes_blanks,))
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
+    monkeypatch.setattr(cli, "_tap_state", lambda directory: "clean")
     monkeypatch.setattr(cli, "_real_run", fake_run)
     monkeypatch.setattr(cli, "_stdout_run", fake_run)
     monkeypatch.setattr(cli, "_component_declares_tag_trigger", lambda directory: True)
-    rc = cli.main(["release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path), *flags])
+    rc = cli.main(["release", V, "--manifest", str(manifest_path), *flags])
     return rc, calls
 
 
@@ -97,4 +99,4 @@ def test_release_accepts_a_clean_notes_text(tmp_path, monkeypatch, capsys):
     rc, _calls = _run_release(tmp_path, monkeypatch, _CLEAN, "--dry-run")
     out = capsys.readouterr().out
     assert rc == 0 and "refuse" not in out
-    assert "tag harness" in out
+    assert "tag dash" in out and "tag_self coxswain" in out

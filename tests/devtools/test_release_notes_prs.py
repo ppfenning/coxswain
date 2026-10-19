@@ -26,6 +26,11 @@ def test_previous_tag_sorts_a_prerelease_below_its_release():
     assert previous_tag(["v0.2.0"], "0.2.0-beta.1") is None
 
 
+def test_previous_tag_puts_the_calver_line_above_the_semver_line():
+    assert previous_tag(["v0.46.0", "v0.47.0", "v2026.10.0"], "2026.10.0") == "v0.47.0"
+    assert previous_tag(["v2026.10.9", "v2026.10.10", "v0.47.0"], "2026.11.0") == "v2026.10.10"
+
+
 def test_previous_tag_ignores_a_non_semver_tag():
     assert previous_tag(["latest", "v1", "release-9", "v0.1.0"], "0.2.0") == "v0.1.0"
 

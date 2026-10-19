@@ -68,3 +68,9 @@ def test_status_compares_across_tag_formats():
     assert status_label("drift", "v0.25.0", "v0.26.0-3-gabc", frozenset({"v0.26.0"})) == "drift"
     assert status_label("drift", "v0.26.0", "0.26.0", frozenset()) == "drift"
     assert status_label("drift", "v0.25.0", "0.26.0", frozenset({"v0.25.0"})) == "untagged"
+
+
+def test_hint_present_when_the_umbrella_is_still_on_the_semver_line():
+    assert umbrella_hint("v0.47.0", "2026.10.0") is not None
+    assert umbrella_hint("v2026.10.9", "v2026.10.10-2-gabc") is not None
+    assert umbrella_hint("v2026.11.0", "2026.10.12") is None

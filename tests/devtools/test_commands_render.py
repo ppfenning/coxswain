@@ -142,10 +142,10 @@ def test_the_committed_readme_commands_block_is_what_render_produces() -> None:
     assert splice(text, rendered) == text, f"README Commands block is stale; run `uv run --frozen python -m devtools commands render`. Expected:\n{rendered}"
 
 
-def test_render_defaults_to_the_sibling_tools_readme() -> None:
+def test_render_defaults_to_the_tools_readme_in_this_checkout() -> None:
     umbrella = Path(__file__).resolve().parent.parent.parent
     a = cli.build_parser().parse_args(["commands", "render"])
-    assert Path(a.readme) == umbrella.parent / "coxswain-tools" / "README.md"
+    assert Path(a.readme) == umbrella / "src" / "tools" / "README.md"
 
 
 def test_splice_keeps_an_older_begin_marker_wording() -> None:

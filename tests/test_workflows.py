@@ -1,8 +1,7 @@
-"""The docs workflow resolves the tools tag before installing it.
+"""The docs workflow builds from this checkout alone: no component repository is cloned or installed.
 
-A pinned-but-unpushed tag must not redden the build: the install step falls
-back to `main` when `git ls-remote` cannot find the tag, mirroring the rule
-`docs/_pull.py` applies per-path via `fallback_url`.
+The CLI reference is generated from the `cox` the checkout installs into its own venv, and docs/_pull.py reads
+the in-repo folders from disk (only dash, a separate repository, is fetched at its manifest tag).
 """
 
 from pathlib import Path
@@ -12,32 +11,18 @@ import yaml
 WORKFLOW = Path(__file__).parent.parent / ".github" / "workflows" / "docs.yml"
 
 
-def _install_step(steps: list[dict]) -> str:
-    """Pure: the run block of the step that installs coxswain-tools via uv."""
-    for step in steps:
-        run = step.get("run", "")
-        if "uv tool install" in run and "coxswain-tools@" in run:
-            return run
-    raise AssertionError("no step installs coxswain-tools")
-
-
-def _docs_job_steps() -> list[dict]:
+def _runs() -> list[str]:
     workflow = yaml.safe_load(WORKFLOW.read_text())
-    return workflow["jobs"]["docs"]["steps"]
+    return [step.get("run", "") for step in workflow["jobs"]["docs"]["steps"]]
 
 
-def test_install_step_resolves_the_tag_with_ls_remote_before_installing():
-    run = _install_step(_docs_job_steps())
-    assert "ls-remote" in run
-    assert "refs/tags/" in run
+def test_the_docs_build_installs_this_checkout_and_no_component_repository():
+    runs = _runs()
+    assert "uv sync --group dev" in runs
+    assert not any("coxswain-tools" in run or "git clone" in run or "uv tool install" in run for run in runs)
 
 
-def test_install_step_installs_at_main_by_default_and_installs_that_ref():
-    run = _install_step(_docs_job_steps())
-    assert "ref=main" in run
-    assert 'coxswain-tools@${ref}"' in run
-
-
-def test_install_step_no_longer_uses_the_bare_shell_fallback():
-    run = _install_step(_docs_job_steps())
-    assert "${tag:-main}" not in run
+def test_the_pull_runs_before_the_cli_reference_and_the_deploy():
+    runs = _runs()
+    pull = runs.index("uv run python docs/_pull.py")
+    assert runs.index("uv sync --group dev") < pull < runs.index("uv run python docs/_cli.py")

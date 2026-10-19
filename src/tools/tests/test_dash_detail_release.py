@@ -50,3 +50,17 @@ def test_release_facts_tap_mismatch_when_formula_lags_installed():
 def test_release_facts_tap_is_none_without_a_formula():
     facts = release_facts(VERSION, MANIFEST, TAG_LINE, None)
     assert facts["tap"] is None
+
+
+def test_release_facts_reads_the_coxswain_sdist_from_the_calver_formula():
+    formula = 'url "https://files.pythonhosted.org/packages/ab/cd/coxswain-2026.10.0.tar.gz"\n'
+    assert release_facts("2026.10.0", None, None, formula)["tap"] == {"version": "2026.10.0", "matches_installed": True}
+
+
+def test_formula_paths_try_the_maintainer_tap_checkout_before_homebrew():
+    from pathlib import Path
+
+    from agent_tools.dash_detail_release import formula_paths
+    paths = formula_paths(Path("/i/coxswain"), "/brew")
+    assert paths[0] == Path("/i/homebrew-coxswain/Formula/cox.rb")
+    assert paths[1] == Path("/brew/Library/Taps/ppfenning/homebrew-coxswain/Formula/cox.rb")
