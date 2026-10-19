@@ -52,7 +52,20 @@ __all__ = [
 # judged by, policy.py is the judgment itself, ledger.py is the record the
 # judgment reads, and harness/ is every hand that touches any of them —
 # including this file.
+#
+# Both layouts are listed. The monorepo's `src/...` entries are spelled out so
+# the guard never rests on the anywhere-match in `_segments_match` alone. The
+# component-root entries stay because the gate reads every run's patch, whatever
+# repository it targets: a patch against an unmigrated component checkout (or one
+# rooted at `src/<component>/`) names `harness/gate.py`, and must still hit. The
+# segment match makes `cartridges/` cover all of `src/cartridges/`, core included:
+# over-collection, which this module prefers to a miss.
 GOVERNANCE_PATHS: tuple[str, ...] = (
+    "src/cartridges/cartridges/",
+    "src/cartridges/skills-plugins/",
+    "src/cartridges/core/policy.py",
+    "src/cartridges/core/ledger.py",
+    "src/graphs/harness/",
     "cartridges/",
     "skills-plugins/",
     "core/policy.py",
