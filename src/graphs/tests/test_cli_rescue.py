@@ -7,9 +7,9 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-from core import workstore
 
 import harness.epic
+from core import workstore
 from harness import cli
 from harness.resume import save_result
 from harness.store_dialect import default_url

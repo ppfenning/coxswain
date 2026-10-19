@@ -10,8 +10,8 @@ invoking exactly what got selected and consuming only what actually ran.
 from __future__ import annotations
 
 import pytest
-from core.ledger import append as ledger_append
 
+from core.ledger import append as ledger_append
 from graphs._contract import ContractViolation
 from graphs._spec import GraphSpec
 from graphs.ops import coxswain

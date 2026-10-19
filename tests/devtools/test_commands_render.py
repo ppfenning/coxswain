@@ -11,7 +11,6 @@ pytest.importorskip("agent_tools", reason="commands render reads coxswain-tools'
 import agent_tools
 from agent_tools import cli as tools_cli
 from agent_tools.commands import Arg, Command, Group
-
 from devtools import cli
 from devtools.commands_render import (
     BEGIN,

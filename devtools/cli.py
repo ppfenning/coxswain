@@ -1356,7 +1356,6 @@ def _dev_commands(a: argparse.Namespace) -> int:
     # tools' public command table is the input; imported here so the release
     # commands never need coxswain-tools installed.
     from agent_tools.cli import COMMAND_TABLE
-
     from devtools import commands_render
 
     if a.target in ("all", "readme"):

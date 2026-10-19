@@ -6,7 +6,7 @@ import pytest
 
 from agent_tools.version_info import UNKNOWN, choose_version, package_version
 
-INSTALLED = importlib.metadata.version("coxswain-tools")
+INSTALLED = importlib.metadata.version("coxswain")
 DESCRIBED = "v0.37.0-19-gaa15d67"
 
 

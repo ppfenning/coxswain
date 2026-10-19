@@ -10,7 +10,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-DISTRIBUTION = "coxswain-tools"
+DISTRIBUTION = "coxswain"
 UNKNOWN = "unknown"
 GIT_TIMEOUT_S = 5
 

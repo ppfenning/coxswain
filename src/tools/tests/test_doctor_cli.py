@@ -347,6 +347,7 @@ def test_no_overlay_file_leaves_every_row_ok(tmp_path, monkeypatch, capsys):
     assert rc == 0
 
 
+@pytest.mark.skip(reason="monorepo phase 2: one venv, core always imports; the harness-venv probe is replaced")
 def test_a_core_import_failure_leaves_project_overlay_not_checked_even_with_an_overlay_present(tmp_path, monkeypatch, capsys):
     fake = {"core/__init__.py": "", "core/cartridge.py": _FAKE_CORE_OVERLAY["core/cartridge.py"]}
     profile, *_ = _real_probe_setup(tmp_path, monkeypatch, fake)
@@ -521,6 +522,7 @@ def test_a_freshness_warning_prints_one_warn_line_and_leaves_the_exit_code(tmp_p
     assert rc == 0
 
 
+@pytest.mark.skip(reason="monorepo phase 2: one venv, core always imports; the harness-venv probe is replaced")
 def test_a_core_without_model_freshness_gives_the_one_skip_line(tmp_path, monkeypatch, capsys):
     profile, *_ = _real_probe_setup(tmp_path, monkeypatch, _FAKE_CORE_OK)
     rc = main(["setup", "doctor", "--profile", str(profile), "--json"])

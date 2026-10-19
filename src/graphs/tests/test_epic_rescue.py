@@ -7,7 +7,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from core import workstore
-
 from harness.epic import _Ctx, rescue_task, with_stored_causes, with_stored_rescues
 from harness.resume import load_result, save_result
 from harness.store_migrate import open_store

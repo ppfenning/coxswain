@@ -7,8 +7,8 @@ import sys
 from pathlib import Path
 
 import pytest
-from core import ledger
 
+from core import ledger
 from harness import split_by_policy
 from harness.store_read import ledger_streak_rows
 from harness.store_write import Store

@@ -1,5 +1,4 @@
 from core.workstore import body_sha
-
 from harness.checks import HARNESS_FAULT_PREFIX
 from harness.rescue_select import RESCUE_KIND, eligible, patch_of, rescue_cause
 

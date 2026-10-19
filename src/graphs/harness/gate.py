@@ -10,7 +10,6 @@ from typing import Any
 
 from core import workstore
 from core.manifest import gate_diff
-
 from runner.protocol import Capability, ProviderProfile, RunnerError, resolve_profile
 
 __all__ = ["APPLY_SCHEMA", "apply_arm_for", "apply_decisions", "auto_apply", "gate", "workstore_route"]

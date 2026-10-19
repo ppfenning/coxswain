@@ -24,8 +24,8 @@ from pathlib import Path
 from typing import ClassVar
 
 import pytest
-from core import ledger, workstore
 
+from core import ledger, workstore
 from graphs._spec import GraphSpec
 from graphs.delivery import lifecycle_propose, phase_validate
 from graphs.ops import triage_quarantine

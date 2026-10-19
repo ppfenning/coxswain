@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import ClassVar
 
 import pytest
-from core import ledger
 
+from core import ledger
 from harness import apply_arm_for as _apply_arm_for
 from harness import auto_apply as _auto_apply
 from harness import split_by_policy as _split_by_policy

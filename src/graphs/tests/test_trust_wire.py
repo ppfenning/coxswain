@@ -21,8 +21,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from core import ledger
 
+from core import ledger
 from harness import cli, split_by_policy
 from harness.cli import _default_ledger, _observe_trap_failures
 from harness.epic import _policy_split

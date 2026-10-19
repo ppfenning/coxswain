@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from core import workstore
-
 from graphs.ops import triage_quarantine
 from tests.test_epic_driver import (  # noqa: F401 -- cart and repo are fixtures
     SPECS,

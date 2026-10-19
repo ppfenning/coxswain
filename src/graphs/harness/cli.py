@@ -31,12 +31,12 @@ from datetime import date as date_type
 from pathlib import Path
 from typing import Any, TextIO
 
-import core
 import yaml
+
+import core
 from core import ledger, workstore
 from core.cartridge import CartridgeError
 from core.manifest import append_ledger, build_manifest
-
 from graphs._contract import ContractViolation
 from graphs.delivery.initiative_decompose import GRAPH_NAME as _DECOMPOSE_GRAPH_NAME
 from graphs.delivery.initiative_decompose import LintRefusal, first_problem_line, unexecuted_item_create_reason

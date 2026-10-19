@@ -6,11 +6,11 @@ import sys
 from pathlib import Path
 
 import pytest
-from core import workstore
 
 import harness.epic as epic
 import harness.store_read as read
 import harness.store_work_state as sws
+from core import workstore
 from harness.store_write import Store
 from tests.test_epic_driver import cart, drive, initiative, repo  # noqa: F401 -- cart and repo are fixtures
 from tests.test_epic_store_authority_write import (  # noqa: F401 -- item is a fixture

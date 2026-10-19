@@ -9,10 +9,10 @@ import sys
 from pathlib import Path
 
 import pytest
-from core import workstore
 
 import harness.epic as epic
 import harness.store_read as read
+from core import workstore
 from harness.store_write import Store
 
 REPO = Path(__file__).resolve().parent.parent

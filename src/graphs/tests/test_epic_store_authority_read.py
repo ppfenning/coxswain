@@ -6,10 +6,10 @@ import logging
 from pathlib import Path
 
 import pytest
-from core import workstore
 
 import harness.epic as epic
 import harness.store_read as read
+from core import workstore
 from harness import work_mirror
 from harness.store_write import Store
 

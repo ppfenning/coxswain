@@ -225,7 +225,7 @@ def test_runs_usage_with_no_usage_file_reads_an_ended_run_from_the_store(tmp_pat
 
 
 def test_cox_and_agent_tools_scripts_resolve_to_the_same_callable():
-    data = tomllib.loads(Path(__file__).resolve().parent.parent.joinpath("pyproject.toml").read_text())
+    data = tomllib.loads(Path(__file__).resolve().parents[3].joinpath("pyproject.toml").read_text())
     scripts = data["project"]["scripts"]
     assert scripts["cox"] == scripts["agent-tools"]
 

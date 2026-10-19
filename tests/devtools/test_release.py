@@ -1745,6 +1745,7 @@ def test_umbrella_release_slug_is_none_with_no_manifest_repo_and_no_url_and_read
     assert release.umbrella_release_slug({"coxswain": {"version": "0.1.0"}}, None) is None
 
 
+@pytest.mark.skip(reason="monorepo phase 5: the release planner is rewritten for one distribution")
 def test_tools_repository_url_reads_installed_package_metadata_not_a_checkout_path():
     """No monkeypatch: proves the lookup survives being installed (editable
     counts), unlike a `pyproject.toml` path that only exists in a checkout."""

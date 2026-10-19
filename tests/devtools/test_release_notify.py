@@ -2,12 +2,12 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
+import pytest
+
 import agent_tools.notify_core
 import agent_tools.notify_dispatch
 import agent_tools.route
-import pytest
 from agent_tools.notify_core import NotifyConfig
-
 from devtools import cli
 
 STEPS = [

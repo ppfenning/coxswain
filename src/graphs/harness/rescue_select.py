@@ -6,7 +6,6 @@ from collections.abc import Mapping
 from typing import Any
 
 from core.workstore import attempts_on_current_body
-
 from harness.checks import HARNESS_FAULT_PREFIX
 
 RESCUE_KIND = "rescue_failed"

@@ -56,7 +56,6 @@ from urllib.parse import urlencode
 from core import ledger, workstore
 from core.manifest import append_ledger, build_manifest, gate_diff
 from core.workstore import WorkStoreError, record_attempt
-
 from graphs._contract import proposal
 from graphs.delivery import rescue_review
 from graphs.delivery.budget_estimate import estimate_budget

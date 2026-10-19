@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 _SPEC = importlib.util.spec_from_file_location(
-    "check_clean", Path(__file__).resolve().parents[1] / ".github" / "check_clean.py"
+    "check_clean", Path(__file__).resolve().parents[3] / ".github" / "check_clean.py"
 )
 check_clean = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(check_clean)

@@ -5,3 +5,6 @@ __pycache__/
 
 # The Superset deploy's secrets (deploy/superset/.env.example is the template)
 deploy/superset/.env
+
+# setuptools build scratch
+build/

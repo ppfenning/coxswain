@@ -2,10 +2,10 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-import agent_tools.notify_dispatch
 import pytest
-from agent_tools.notify_core import NotifyConfig
 
+import agent_tools.notify_dispatch
+from agent_tools.notify_core import NotifyConfig
 from devtools import cli, release
 
 _TOOLS_REPO_URL = "https://github.com/ppfenning/coxswain-tools"
