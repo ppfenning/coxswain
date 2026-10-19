@@ -240,6 +240,53 @@ def test_move_onto_an_existing_destination_fails_without_touching_the_source(tmp
     assert (src / "keep").is_dir()
 
 
+def test_copy_creates_an_absent_destination_and_its_parents(tmp_path):
+    src, dst = tmp_path / "src.yaml", tmp_path / "deep" / "er" / "dst.yaml"
+    src.write_bytes(b"tier: 1\n")
+    assert cli._migrate_exec({"op": "copy", "src": str(src), "dst": str(dst)}, None) is None
+    assert dst.read_bytes() == b"tier: 1\n"
+
+
+def test_copy_onto_identical_bytes_does_nothing(tmp_path):
+    src, dst = tmp_path / "src.yaml", tmp_path / "dst.yaml"
+    src.write_bytes(b"tier: 1\n")
+    dst.write_bytes(b"tier: 1\n")
+    assert cli._migrate_exec({"op": "copy", "src": str(src), "dst": str(dst)}, None) is None
+    assert dst.read_bytes() == b"tier: 1\n"
+
+
+def test_copy_onto_different_bytes_fails_and_leaves_the_destination(tmp_path):
+    src, dst = tmp_path / "src.yaml", tmp_path / "dst.yaml"
+    src.write_bytes(b"tier: 1\n")
+    dst.write_bytes(b"tier: 2\n")
+    reason = cli._migrate_exec({"op": "copy", "src": str(src), "dst": str(dst)}, None)
+    assert reason == f"{dst} already exists and differs from {src}; nothing was copied"
+    assert dst.read_bytes() == b"tier: 2\n"
+
+
+def test_profile_tracked_is_none_outside_the_cartridges_checkout(tmp_path):
+    assert cli._migrate_profile_tracked(tmp_path, str(tmp_path / "elsewhere" / "p.yaml")) is None
+    assert cli._migrate_profile_tracked(tmp_path, None) is None
+
+
+def test_profile_tracked_follows_git_ls_files(layout):
+    checkout = layout.installs / "coxswain-cartridges"
+    tracked, untracked = checkout / "providers" / "a.yaml", checkout / "providers" / "b.yaml"
+    tracked.parent.mkdir(parents=True)
+    tracked.write_text("a: 1\n")
+    untracked.write_text("b: 1\n")
+    git("add", "providers/a.yaml", cwd=checkout)
+    assert cli._migrate_profile_tracked(layout.installs, str(tracked)) is True
+    assert cli._migrate_profile_tracked(layout.installs, str(untracked)) is False
+
+
+def test_profile_tracked_is_none_when_the_checkout_is_not_a_repository(tmp_path):
+    profile = tmp_path / "coxswain-cartridges" / "providers" / "a.yaml"
+    profile.parent.mkdir(parents=True)
+    profile.write_text("a: 1\n")
+    assert cli._migrate_profile_tracked(tmp_path, str(profile)) is None
+
+
 def test_rerun_after_a_stop_resumes_from_the_remaining_steps(layout, capsys):
     good = layout.profile.read_text()
     roots = f"skills_roots: [{layout.installs}/coxswain-cartridges/skills-plugins]\n"
