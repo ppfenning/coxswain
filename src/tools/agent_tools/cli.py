@@ -8449,7 +8449,7 @@ def _lake_sync(a: argparse.Namespace) -> int:
     except ImportError as err:
         # pyiceberg imported, but a module the lake also needs, such as pyarrow, did not.
         return _lake_refuse(a, f"the Iceberg lake needs the optional extra `lake`; {err.name or err} is missing: "
-                               "pip install 'coxswain-tools[lake]'")
+                               "pip install 'coxswain[lake]'")
     return _lake_sync_outcome(a, outcome)
 
 
@@ -8464,7 +8464,7 @@ def _lake_config_for(a: argparse.Namespace) -> tuple[lake_config.LakeConfig | No
 def _lake_extra_missing(a: argparse.Namespace, err: ImportError) -> int:
     # pyiceberg or a module the lake also needs, such as duckdb or pyarrow, did not import.
     return _lake_refuse(a, f"the Iceberg lake needs the optional extra `lake`; {err.name or err} is missing: "
-                           "pip install 'coxswain-tools[lake]'")
+                           "pip install 'coxswain[lake]'")
 
 
 def _lake_query(a: argparse.Namespace) -> int:

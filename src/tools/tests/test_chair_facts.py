@@ -825,7 +825,7 @@ def test_a_reader_without_psycopg_still_holds_off_a_land_the_recorder_wrote(tmp_
     record({"kind": "land_phase", "status": "refused", "initiative": "i", "phase": "p", "run": "i-1", "reason": "x"})
 
     def no_driver(runs_dir):
-        raise RuntimeError("a postgres store needs psycopg: pip install 'coxswain-tools[postgres]'")
+        raise RuntimeError("a postgres store needs psycopg: pip install 'coxswain[postgres]'")
 
     monkeypatch.setattr(run_store, "_open", no_driver)
     assert _planned_kinds(tmp_path, NOW + timedelta(minutes=5)) == []

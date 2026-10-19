@@ -80,6 +80,6 @@ def load_catalog(config: LakeConfig, env: Mapping[str, str] = os.environ):
     try:
         from pyiceberg.catalog.sql import SqlCatalog
     except ImportError as err:
-        raise LakeUnavailable("the Iceberg lake needs the optional extra `lake`: pip install 'coxswain-tools[lake]'") from err
+        raise LakeUnavailable("the Iceberg lake needs the optional extra `lake`: pip install 'coxswain[lake]'") from err
     extra = iceberg_properties(config.object_store, env) if config.warehouse.startswith("s3://") else {}
     return SqlCatalog("coxswain", uri=config.catalog_uri, warehouse=config.warehouse, **extra)

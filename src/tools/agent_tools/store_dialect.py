@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 POSTGRES_SCHEMES = ("postgres", "postgresql")
 READ_ONLY_OPTION = "-c default_transaction_read_only=on"
 URL_OVERRIDE_KEYS = ("connect_timeout", "keepalives_idle", "keepalives_interval", "keepalives_count")
-MISSING_PSYCOPG = "a postgres store needs psycopg: pip install 'coxswain-tools[postgres]'"
+MISSING_PSYCOPG = "a postgres store needs psycopg: pip install 'coxswain[postgres]'"
 
 
 def is_postgres(url: str) -> bool:

@@ -79,7 +79,7 @@ def test_missing_zstandard_exits_2_with_its_message(tmp_path, capsys, monkeypatc
     (tmp_path / "traces").mkdir()
     monkeypatch.setitem(sys.modules, "zstandard", None)
     assert cli_module.main(["runs", "trace", "r", "--runs-dir", str(tmp_path)]) == 2
-    assert "coxswain-tools[traces]" in capsys.readouterr().out
+    assert "coxswain[traces]" in capsys.readouterr().out
 
 
 def summarised(role, call_id, turns, cost, command):
