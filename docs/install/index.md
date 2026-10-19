@@ -5,7 +5,6 @@ then let `cox install` set up the rest.
 
 ```sh
 brew install ppfenning/coxswain/cox          # or: uv tool install --python 3.14 coxswain
-git clone --branch <tag> https://github.com/ppfenning/coxswain <home>/installs/coxswain
 cox install --team my-team
 mkdir -p <workspace>/work <workspace>/runs <workspace>/intake <workspace>/cartridges
 git -C <workspace> init
@@ -13,14 +12,14 @@ cartridge init my-team --cartridges-dir <workspace>/cartridges
 cox setup doctor
 ```
 
-`<tag>` is a release tag, such as `v2026.10.0`. `<home>` is the coxswain
-home: `--home`, else `COXSWAIN_HOME`, else `$XDG_DATA_HOME/coxswain`, else
-`~/.local/share/coxswain`. `<workspace>` is `<home>/workspaces/main` unless
-you pass `--workspace`.
+`<home>` is the coxswain home: `--home`, else `COXSWAIN_HOME`, else
+`$XDG_DATA_HOME/coxswain`, else `~/.local/share/coxswain`. `<workspace>` is
+`<home>/workspaces/main` unless you pass `--workspace`.
 
-`cox install` reads `manifest.toml` from the checkout at
-`<home>/installs/coxswain`, which is why the repository is cloned there first.
-That checkout is the whole install: there is one, with one venv.
+When the home has no checkout, `cox install` clones one at the release tag
+matching its own version into `<home>/installs/coxswain`, then reads
+`manifest.toml` from it. That checkout is the whole install: there is one,
+with one venv.
 
 The doctor that `cox install` runs at its close may report the missing
 workspace and cartridge until the `mkdir`, `git init` and `cartridge init`
