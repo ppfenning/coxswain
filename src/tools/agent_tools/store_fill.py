@@ -7,6 +7,7 @@ the writes. Reading files and calling `run_store` is the edge's job, at the bott
 from __future__ import annotations
 
 import argparse
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -58,20 +59,60 @@ def _linked(row: Row, ids: frozenset[str]) -> Row:
     return {**row, "state": state, "extra": {**(row.get("extra") or {}), **extra}}
 
 
+def _intake_match(row: Row, initiatives: Sequence[Row]) -> Row | None:
+    """The first initiative whose id is the intake's id, or whose `extra.intake` path has it as its stem (route.initiative_repo's rule)."""
+    return next(
+        (
+            i for i in initiatives
+            if i.get("kind") == "initiative"
+            and (
+                i["task_id"] == row["task_id"]
+                or Path(str((i.get("extra") or {}).get("intake") or "")).stem == row["task_id"]
+            )
+        ),
+        None,
+    )
+
+
+def intake_links(stored: Sequence[Row], initiatives: Sequence[Row]) -> tuple[Row, ...]:
+    """Each stored queued intake with no initiative link, decomposed and linked to its matching initiative; no match, no row."""
+    pairs = [
+        (row, _intake_match(row, initiatives))
+        for row in stored
+        if row.get("kind") == "intake" and row.get("state") == "queued" and not (row.get("extra") or {}).get("initiative")
+    ]
+    return tuple(
+        {
+            **{k: v for k, v in row.items() if k not in _CLAIM_KEYS},
+            "state": "decomposed",
+            "extra": {**(row.get("extra") or {}), "initiative": match["task_id"]},
+        }
+        for row, match in pairs
+        if match is not None
+    )
+
+
 def plan_fill(parsed: list[Row], existing: list[Row]) -> Plan:
-    """Insert a row the store lacks; fill only the missing content of one it has. First row per key wins, so
-    `intake/x.md` and `intake/done/x.md` cannot overwrite each other."""
+    """Insert a row the store lacks; fill only the missing content of one it has; link a stored queued intake to its
+    initiative, one write per row. First row per key wins, so `intake/x.md` and `intake/done/x.md` cannot overwrite each other."""
     first_at = {_key(row): i for i, row in reversed(list(enumerate(parsed)))}
     deduped = [row for i, row in enumerate(parsed) if first_at[_key(row)] == i]
     stored = {_key(row): row for row in existing}
-    ids = initiative_ids(existing)
+    known = [*existing, *(row for row in deduped if _key(row) not in stored)]
+    ids = initiative_ids(known)
     outcomes = [
         ("inserted", _linked(row, ids)) if _key(row) not in stored else ("filled", _filled(row, stored[_key(row)]))
         for row in deduped
     ]
-    writes = tuple(write for tag, write in outcomes if write is not None)
+    filled_rows = {_key(write): write for tag, write in outcomes if tag == "filled" and write is not None}
+    links = intake_links([filled_rows.get(_key(row), row) for row in existing], known)
+    linked_keys = frozenset(_key(link) for link in links)
+    base = tuple(write for _, write in outcomes if write is not None and _key(write) not in linked_keys)
+    writes = (*base, *links)
     inserted = sum(tag == "inserted" for tag, _ in outcomes)
-    return Plan(writes, inserted, len(writes) - inserted, len(outcomes) - len(writes))
+    written_keys = frozenset(_key(write) for write in writes)
+    unchanged = sum(_key(row) not in written_keys for row in deduped)
+    return Plan(writes, inserted, len(writes) - inserted, unchanged)
 
 
 def shape_of(parts: tuple[str, ...]) -> tuple[str, tuple[str, ...]] | None:
