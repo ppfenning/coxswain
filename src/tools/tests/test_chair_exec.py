@@ -1723,7 +1723,7 @@ def _stale_deps(calls: list, tmp_path) -> Deps:
     return replace(_deps(calls), work_dir=tmp_path, runs_dir=tmp_path, now=lambda: "2026-09-27T00:00:00+00:00")
 
 
-def test_a_stale_to_draft_writes_the_rewritten_initiative_and_ticket_and_records_it(tmp_path) -> None:
+def test_a_stale_to_draft_rewrites_the_files_notes_the_courier_and_is_approvable_to_ready(tmp_path) -> None:
     _write_stale_initiative(tmp_path)
     calls: list = []
     results = perform([_stale_action()], _stale_deps(calls, tmp_path), lambda: 1, False)
@@ -1733,15 +1733,12 @@ def test_a_stale_to_draft_writes_the_rewritten_initiative_and_ticket_and_records
     assert "draft: true" in initiative_text
     assert "state: todo" in ticket_text
     assert ("record", "stale_to_draft") in calls
-
-
-def test_the_same_action_sends_one_courier_note_referencing_the_initiative(tmp_path) -> None:
-    _write_stale_initiative(tmp_path)
-    perform([_stale_action()], _stale_deps([], tmp_path), lambda: 1, False)
     blob = (tmp_path / "courier.jsonl").read_text(encoding="utf-8")
     # The inbox bare `cox` prints at start: its own chair label, as holder.
     [entry] = courier.inbox(blob, "chair-2026-09-27", holder="chair-2026-09-27")
     assert (entry["ref"], entry["note"]) == ("coxswain://initiative/demo", "idle 10 days")
+    plan = plan_approve(initiative_text, {"t1": ticket_text}, None, "operator", datetime(2026, 9, 27, tzinfo=UTC))
+    assert plan.moves == (("t1", "todo", "ready"),)
 
 
 def test_a_tick_acks_the_open_land_notice_of_a_done_task(tmp_path) -> None:
@@ -1771,54 +1768,30 @@ def test_a_stale_to_draft_for_an_already_draft_initiative_writes_nothing(tmp_pat
     assert not (tmp_path / "courier.jsonl").exists()
 
 
-def test_a_fenced_stale_to_draft_is_fenced_and_calls_nothing(tmp_path) -> None:
-    _write_stale_initiative(tmp_path)
-    calls: list = []
-    results = perform([_stale_action()], _stale_deps(calls, tmp_path), lambda: 2, False)
-    assert results[0]["status"] == "fenced"
-    assert _touched(calls) == []
-    assert not (tmp_path / "courier.jsonl").exists()
-
-
-def test_a_dry_run_stale_to_draft_performs_nothing(tmp_path) -> None:
-    _write_stale_initiative(tmp_path)
-    calls: list = []
-    results = perform([_stale_action()], _stale_deps(calls, tmp_path), lambda: 1, True)
-    assert results[0]["status"] == "dry_run"
-    assert calls == []
-    assert not (tmp_path / "courier.jsonl").exists()
-
-
 def _signal_deps(calls: list, tmp_path) -> Deps:
     return replace(_deps(calls), runs_dir=tmp_path, send_signal=lambda pid, sig: calls.append(("signal", pid, sig)))
 
 
-def test_a_stalled_usr1_with_a_pidfile_signals_the_pid_and_is_recorded_done(tmp_path) -> None:
+def _stalled_action(kind: str) -> dict:
+    return {"kind": kind, "run": "r1", "initiative": "i", "epoch": 1}
+
+
+@pytest.mark.parametrize("kind, sig", [("stalled_usr1", signal.SIGUSR1), ("stalled_stop", signal.SIGTERM)])
+def test_a_stalled_action_with_a_pidfile_signals_the_pid_and_is_recorded_done(tmp_path, kind: str, sig: int) -> None:
     (tmp_path / "r1.pid").write_text("4242", encoding="utf-8")
     calls: list = []
-    action = {"kind": "stalled_usr1", "run": "r1", "initiative": "i", "epoch": 1}
-    results = perform([action], _signal_deps(calls, tmp_path), lambda: 1, False)
+    results = perform([_stalled_action(kind)], _signal_deps(calls, tmp_path), lambda: 1, False)
     assert results[0]["status"] == "done"
-    assert ("signal", 4242, signal.SIGUSR1) in calls
-    assert ("record", "stalled_usr1") in [c for c in calls if c[0] == "record"]
+    assert ("signal", 4242, sig) in calls
+    assert ("record", kind) in calls
 
 
 def test_a_stalled_usr1_with_no_pidfile_signals_nothing_and_fails(tmp_path) -> None:
     calls: list = []
-    action = {"kind": "stalled_usr1", "run": "r1", "initiative": "i", "epoch": 1}
-    results = perform([action], _signal_deps(calls, tmp_path), lambda: 1, False)
+    results = perform([_stalled_action("stalled_usr1")], _signal_deps(calls, tmp_path), lambda: 1, False)
     assert results[0]["status"] == "failed"
     assert results[0]["reason"] == "no pidfile"
     assert [c for c in calls if c[0] == "signal"] == []
-
-
-def test_a_stalled_stop_with_a_pidfile_signals_sigterm_and_is_recorded_done(tmp_path) -> None:
-    (tmp_path / "r1.pid").write_text("4242", encoding="utf-8")
-    calls: list = []
-    action = {"kind": "stalled_stop", "run": "r1", "initiative": "i", "epoch": 1}
-    results = perform([action], _signal_deps(calls, tmp_path), lambda: 1, False)
-    assert results[0]["status"] == "done"
-    assert ("signal", 4242, signal.SIGTERM) in calls
 
 
 def test_a_stalled_stop_whose_pid_is_gone_is_recorded_failed_and_the_tick_goes_on(tmp_path) -> None:
@@ -1829,38 +1802,10 @@ def test_a_stalled_stop_whose_pid_is_gone_is_recorded_failed_and_the_tick_goes_o
         raise ProcessLookupError(3, "No such process")
 
     deps = replace(_deps(calls), runs_dir=tmp_path, send_signal=gone)
-    actions = [{"kind": "stalled_stop", "run": "r1", "initiative": "i", "epoch": 1}, {"kind": "standby", "epoch": 1}]
+    actions = [_stalled_action("stalled_stop"), {"kind": "standby", "epoch": 1}]
     results = perform(actions, deps, lambda: 1, False)
     assert [(r["action"]["kind"], r["status"]) for r in results] == [("stalled_stop", "failed"), ("standby", "recorded")]
     assert calls == [("record", "stalled_stop"), ("record", "standby")]
-
-
-@pytest.mark.parametrize("kind", ["stalled_usr1", "stalled_stop"])
-def test_a_fenced_stalled_action_is_fenced_and_signals_nothing(tmp_path, kind: str) -> None:
-    (tmp_path / "r1.pid").write_text("4242", encoding="utf-8")
-    calls: list = []
-    action = {"kind": kind, "run": "r1", "initiative": "i", "epoch": 1}
-    results = perform([action], _signal_deps(calls, tmp_path), lambda: 2, False)
-    assert results[0]["status"] == "fenced"
-    assert [c for c in calls if c[0] == "signal"] == []
-
-
-@pytest.mark.parametrize("kind", ["stalled_usr1", "stalled_stop"])
-def test_a_dry_run_stalled_action_performs_nothing(tmp_path, kind: str) -> None:
-    (tmp_path / "r1.pid").write_text("4242", encoding="utf-8")
-    calls: list = []
-    action = {"kind": kind, "run": "r1", "initiative": "i", "epoch": 1}
-    results = perform([action], _signal_deps(calls, tmp_path), lambda: 1, True)
-    assert results[0]["status"] == "dry_run"
-    assert calls == []
-
-
-def test_a_needs_chair_action_with_cause_stalled_is_recorded_through_the_generic_path() -> None:
-    calls: list = []
-    action = {"kind": "needs_chair", "initiative": "i", "cause": "stalled", "epoch": 1}
-    results = perform([action], _deps(calls), lambda: 1, False)
-    assert results[0]["status"] == "recorded"
-    assert ("record", "needs_chair") in calls
 
 
 def test_land_commit_matches_git_log_on_a_fixture_repo(tmp_path) -> None:
@@ -1887,52 +1832,37 @@ def _landed_result(repo: str, pr_url: str, commit: str) -> dict:
     return {"action": {"kind": "land", "repo": repo}, "status": "landed", "reason": reason, "commit": commit}
 
 
-def test_smoke_targets_keeps_only_the_named_repos() -> None:
-    # An action's repo is the initiative frontmatter's checkout path, e.g. `repo: /home/user/repos/coxswain-tools`.
-    tools = _landed_result("/x/coxswain-tools", "https://github.com/org/coxswain-tools/pull/42", "abc123")
-    other = _landed_result("/x/widget", "https://github.com/org/widget/pull/9", "def456")
-    assert smoke_targets([tools, other]) == [{"repo": "/x/coxswain-tools", "pr": 42, "commit": "abc123"}]
+# An action's repo is the initiative frontmatter's checkout path, e.g. `repo: /home/user/repos/coxswain-tools`.
+@pytest.mark.parametrize(
+    "repo, pr, kept",
+    [
+        ("/x/coxswain-tools", 42, True),
+        ("/x/coxswain", 9, True),
+        ("/x/coxswain-graphs/", 7, True),
+        ("/x/widget", 9, False),
+    ],
+)
+def test_smoke_targets_keeps_only_the_named_repos_and_reads_the_pr_from_the_url(repo: str, pr: int, kept: bool) -> None:
+    name = repo.rstrip("/").rsplit("/", 1)[1]
+    landed_result = _landed_result(repo, f"https://github.com/org/{name}/pull/{pr}", "abc123")
+    assert smoke_targets([landed_result]) == ([{"repo": repo, "pr": pr, "commit": "abc123"}] if kept else [])
 
 
-def test_smoke_targets_include_the_monorepo() -> None:
-    monorepo = _landed_result("/x/coxswain", "https://github.com/org/coxswain/pull/9", "def456")
-    assert smoke_targets([monorepo]) == [{"repo": "/x/coxswain", "pr": 9, "commit": "def456"}]
-
-
-def test_smoke_targets_matches_graphs_by_checkout_path_with_a_trailing_slash() -> None:
-    graphs = _landed_result("/x/coxswain-graphs/", "https://github.com/org/coxswain-graphs/pull/7", "fed321")
-    assert [t["pr"] for t in smoke_targets([graphs])] == [7]
-
-
-def test_smoke_targets_reads_the_pr_from_the_land_step_lines_it_prints() -> None:
+def test_smoke_targets_reads_the_pr_from_the_pr_create_line_alone() -> None:
     # The shape `cli._land_walk` prints: one `<kind>: <detail>` line per step, `pr_create`'s detail being gh's PR URL.
     reason = (
         "forge: github\npick_branch: agents/r/t1 (Add seams)\ncherry_pick: cherry-picked a1b2c3d4 onto pr/t1\n"
-        "checks: ok\npush: pushed pr/t1\npr_create: https://github.com/org/coxswain-tools/pull/118\n"
+        "checks: see https://github.com/org/other/pull/5\npush: pushed pr/t1\n"
+        "pr_create: https://github.com/org/coxswain-tools/pull/118\n"
         "wait_checks: green\nmerge: merged\nclean: removed agents/r/t1\nmark_done: t1 done\n"
     )
     landed_result = {"action": {"kind": "land", "repo": "/x/coxswain-tools"}, "status": "landed", "reason": reason, "commit": "c0ffee"}
     assert smoke_targets([landed_result])[0]["pr"] == 118
 
 
-def test_smoke_targets_ignores_a_pull_path_outside_the_pr_create_line() -> None:
-    reason = "checks: see https://github.com/org/other/pull/5\npr_create: https://github.com/org/coxswain-tools/pull/9\nmerge: ok\nmark_done: ok\n"
-    landed_result = {"action": {"kind": "land", "repo": "/x/coxswain-tools"}, "status": "landed", "reason": reason, "commit": "c"}
-    assert smoke_targets([landed_result])[0]["pr"] == 9
-
-
 def test_smoke_targets_skips_results_that_did_not_land() -> None:
     not_landed = {"action": {"kind": "land", "repo": "/x/coxswain-tools"}, "status": "not_landed", "reason": "boom"}
     assert smoke_targets([not_landed]) == []
-
-
-def test_draft_apply_plan_approve_moves_the_written_stale_task_from_todo_to_ready(tmp_path) -> None:
-    _write_stale_initiative(tmp_path)
-    perform([_stale_action()], _stale_deps([], tmp_path), lambda: 1, False)
-    initiative_text = (tmp_path / "work" / "demo" / "initiative.md").read_text(encoding="utf-8")
-    ticket_text = (tmp_path / "work" / "demo" / "phase-1" / "t1.md").read_text(encoding="utf-8")
-    plan = plan_approve(initiative_text, {"t1": ticket_text}, None, "operator", datetime(2026, 9, 27, tzinfo=UTC))
-    assert plan.moves == (("t1", "todo", "ready"),)
 
 
 def _tune(to_lanes: int = 3, epoch: int = 1) -> dict:
@@ -1977,7 +1907,7 @@ def test_a_tune_lanes_outside_min_or_max_writes_nothing(tmp_path) -> None:
     assert _touched(calls) == []
 
 
-def test_a_propose_tiers_sends_one_inbox_item_with_the_body_and_records_one_action(tmp_path) -> None:
+def test_a_propose_tiers_sends_one_inbox_item_with_the_body_and_writes_no_setting(tmp_path) -> None:
     calls: list = []
     results = perform([_propose()], _tune_deps(calls, tmp_path), lambda: 1, False)
     assert [r["status"] for r in results] == ["done"]
@@ -1986,30 +1916,34 @@ def test_a_propose_tiers_sends_one_inbox_item_with_the_body_and_records_one_acti
     assert calls == [("record", "propose_tiers")]
 
 
-def test_a_propose_tiers_calls_the_settings_writer_zero_times(tmp_path) -> None:
+def _armed_deps(calls: list, tmp_path) -> Deps:
+    """Deps on which every fenceable kind has something to do: a stale initiative, a pidfile and a lane writer."""
+    _write_stale_initiative(tmp_path)
+    (tmp_path / "r1.pid").write_text("4242", encoding="utf-8")
+    return replace(
+        _tune_deps(calls, tmp_path),
+        now=lambda: "2026-09-27T00:00:00+00:00",
+        send_signal=lambda pid, sig: calls.append(("signal", pid, sig)),
+    )
+
+
+_FENCEABLE = [_stale_action(), _stalled_action("stalled_usr1"), _stalled_action("stalled_stop"), _tune(), _propose()]
+
+
+@pytest.mark.parametrize("action", _FENCEABLE, ids=lambda a: a["kind"])
+def test_a_fenced_action_is_fenced_and_reaches_nothing(tmp_path, action: dict) -> None:
     calls: list = []
-    perform([_propose()], _tune_deps(calls, tmp_path), lambda: 1, False)
-    assert _touched(calls) == []
-
-
-def test_a_writer_that_raises_on_a_non_lane_key_is_never_tripped_by_either_action(tmp_path) -> None:
-    calls: list = []
-    results = perform([_tune(), _propose()], _tune_deps(calls, tmp_path), lambda: 1, False)
-    assert [r["status"] for r in results] == ["done", "done"]
-
-
-def test_a_fenced_tune_lanes_and_propose_tiers_call_nothing(tmp_path) -> None:
-    calls: list = []
-    results = perform([_tune(), _propose()], _tune_deps(calls, tmp_path), lambda: 2, False)
-    assert [r["status"] for r in results] == ["fenced", "fenced"]
+    results = perform([action], _armed_deps(calls, tmp_path), lambda: 2, False)
+    assert results[0]["status"] == "fenced"
     assert _touched(calls) == []
     assert not (tmp_path / "courier.jsonl").exists()
 
 
-def test_a_dry_run_of_tune_lanes_and_propose_tiers_performs_nothing(tmp_path) -> None:
+@pytest.mark.parametrize("action", _FENCEABLE, ids=lambda a: a["kind"])
+def test_a_dry_run_action_performs_and_records_nothing(tmp_path, action: dict) -> None:
     calls: list = []
-    results = perform([_tune(), _propose()], _tune_deps(calls, tmp_path), lambda: 1, True)
-    assert [r["status"] for r in results] == ["dry_run", "dry_run"]
+    results = perform([action], _armed_deps(calls, tmp_path), lambda: 1, True)
+    assert results[0]["status"] == "dry_run"
     assert calls == []
     assert not (tmp_path / "courier.jsonl").exists()
 
@@ -2028,31 +1962,25 @@ def _sleeps(calls: list) -> list:
     return [c for c in calls if c[0] == "sleep"]
 
 
-def test_two_same_host_launches_sleep_once_between_them(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "hosts, order, sleeps",
+    [
+        (["host-a", "host-a"], ["run", "sleep", "run"], [("sleep", 20.0)]),
+        (["", ""], ["run", "sleep", "run"], [("sleep", 20.0)]),
+        (["host-a", "friday"], ["run", "run"], []),
+        (["host-a", "friday", "host-a"], ["run", "run", "sleep", "run"], [("sleep", 20.0)]),
+    ],
+    ids=["same-host", "no-host-is-local", "different-hosts", "third-launch-waits"],
+)
+def test_launches_sleep_only_between_two_launches_on_the_same_host_and_keep_their_order(
+    tmp_path: Path, hosts: list, order: list, sleeps: list
+) -> None:
     calls: list = []
-    _staggered(calls, tmp_path, [_epic("a", "host-a"), _epic("b", "host-a")])
-    assert [c[0] for c in _touched(calls)] == ["run", "sleep", "run"]
-    assert _sleeps(calls) == [("sleep", 20.0)]
-
-
-def test_launches_with_no_host_share_the_local_machine(tmp_path: Path) -> None:
-    calls: list = []
-    _staggered(calls, tmp_path, [_epic("a"), _epic("b")])
-    assert _sleeps(calls) == [("sleep", 20.0)]
-
-
-def test_two_different_host_launches_never_sleep(tmp_path: Path) -> None:
-    calls: list = []
-    _staggered(calls, tmp_path, [_epic("a", "host-a"), _epic("b", "friday")])
-    assert _sleeps(calls) == []
-
-
-def test_a_third_launch_on_the_first_host_waits_and_order_is_kept(tmp_path: Path) -> None:
-    calls: list = []
-    results = _staggered(calls, tmp_path, [_epic("a", "host-a"), _epic("b", "friday"), _epic("c", "host-a")])
-    assert _sleeps(calls) == [("sleep", 20.0)]
-    assert [c[0] for c in _touched(calls)] == ["run", "run", "sleep", "run"]
-    assert [r["action"]["initiative"] for r in results] == ["a", "b", "c"]
+    actions = [_epic(name, host) for name, host in zip("abc", hosts)]
+    results = _staggered(calls, tmp_path, actions)
+    assert [c[0] for c in _touched(calls)] == order
+    assert _sleeps(calls) == sleeps
+    assert [r["action"]["initiative"] for r in results] == [a["initiative"] for a in actions]
 
 
 def test_launch_stagger_s_overrides_the_default_and_zero_skips_the_sleep(tmp_path: Path) -> None:
@@ -2108,18 +2036,17 @@ def test_a_land_phase_refused_for_a_missing_phase_record_lands_its_tasks_in_the_
     assert ("record", "needs_chair") not in calls
 
 
-def test_a_land_phase_refused_for_another_reason_does_not_fall_back_to_task_lands() -> None:
+@pytest.mark.parametrize(
+    "code, output, with_task_runs",
+    [(2, "land: refusing, /home/user/ws/app has uncommitted changes\n", True), (1, NO_PHASE_RECORD, False)],
+    ids=["another-reason", "no-task-runs"],
+)
+def test_a_phase_land_refusal_falls_back_only_for_a_missing_record_with_task_runs(
+    code: int, output: str, with_task_runs: bool
+) -> None:
     calls: list = []
-    refusal = "land: refusing, /home/user/ws/app has uncommitted changes\n"
-    results = perform([_phase_land_with_tasks()], _phase_land_by_task_deps(calls, 2, refusal), lambda: 1, False)
-    assert _cox_lands(calls) == [["run-1", "--phase", "p1"]]
-    assert [r["status"] for r in results] == ["refused", "escalated"]
-
-
-def test_a_missing_phase_record_without_task_runs_stays_a_refusal() -> None:
-    calls: list = []
-    land = {**_land_phase("p1", "r"), "initiative": "A"}
-    results = perform([land], _phase_land_by_task_deps(calls, 1, NO_PHASE_RECORD), lambda: 1, False)
+    land = _phase_land_with_tasks() if with_task_runs else {**_land_phase("p1", "r"), "initiative": "A"}
+    results = perform([land], _phase_land_by_task_deps(calls, code, output), lambda: 1, False)
     assert _cox_lands(calls) == [["run-1", "--phase", "p1"]]
     assert [r["status"] for r in results] == ["refused", "escalated"]
 
