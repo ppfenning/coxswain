@@ -25,6 +25,7 @@ from agent_tools.setup_migrate import (
     migrate_plan,
     observe_links,
     preflight_refusals,
+    release_lines,
     removal_decisions,
     remove_link,
     render_plan,
@@ -665,3 +666,11 @@ def test_stale_script_lines_prefix_only_sibling_is_not_a_match():
 
 def test_stale_script_lines_no_match_is_empty():
     assert stale_script_lines({"run.sh": "echo hello"}, [OLD_TOOLS], "/u") == []
+
+
+def test_release_lines_released_outcome_gives_no_line():
+    assert release_lines([("/u/src/x", True, "")]) == []
+
+
+def test_release_lines_unreleased_outcome_gives_the_exact_line():
+    assert release_lines([("/u/src/x", False, "boom")]) == ["migrate: could not release the lease on /u/src/x: boom"]
