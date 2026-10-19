@@ -8,6 +8,7 @@ The deciders take the facts as arguments; `checkout_root` and `harness_python` r
 
 from __future__ import annotations
 
+import os
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
@@ -69,7 +70,7 @@ def _read_name(directory: Path) -> str | None:
 
 def checkout_root(harness_dir: str | Path) -> Path | None:
     """Edge. The coxswain checkout holding `harness_dir`, None on an unmigrated host."""
-    start = Path(harness_dir).expanduser().absolute()
+    start = Path(os.path.abspath(Path(harness_dir).expanduser()))
     names = {d: _read_name(d) for d in (start, *start.parents)}
     return nearest_checkout(start, names)
 

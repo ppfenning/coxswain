@@ -142,6 +142,7 @@ home_paths = _LazyModule("agent_tools.home")
 host_cmd = _LazyModule("agent_tools.host_cmd")
 install = _LazyModule("agent_tools.install")
 install_exec = _LazyModule("agent_tools.install_exec")
+install_root = _LazyModule("agent_tools.install_root")
 intake_state = _LazyModule("agent_tools.intake_state")
 lake_config = _LazyModule("agent_tools.lake_config")
 lake_lease = _LazyModule("agent_tools.lake_lease")
@@ -1269,7 +1270,7 @@ def _runs_move_harness_python(a: argparse.Namespace) -> str:
     except route.ProfileError:
         profile = {}
     harness_dir = profile.get("harness_dir", "")
-    return str(Path(harness_dir) / ".venv" / "bin" / "python") if harness_dir else "python"
+    return str(install_root.harness_python(harness_dir)) if harness_dir else "python"
 
 
 def _runs_move(a: argparse.Namespace) -> int:
@@ -4496,7 +4497,7 @@ def _harness_ready_or_refuse(harness_dir: str):
     the reason, or `None` when the venv is ready.
     """
     shell_py = Path(harness_dir) / "shell.py"
-    venv_python = Path(harness_dir) / ".venv" / "bin" / "python"
+    venv_python = install_root.harness_python(harness_dir)
     if not shell_py.exists() or not venv_python.exists():
         print(f"routing: harness venv missing at {harness_dir}; install it (see the harness README)")
         return 2
@@ -4814,15 +4815,20 @@ def _route_launch(a: argparse.Namespace) -> int:
     if overlaid_provider_profile is not None:
         overlaid_path = runs_dir / f"{run_id}.provider-profile.yaml"
         launch_profile = {**profile, "provider_profile": str(overlaid_path)}
-    argv = route.harness_argv(launch_profile, a.graph, run_id, **needs)
+    harness_python = str(install_root.harness_python(harness_dir)) if harness_dir else None
+    argv = route.harness_argv(launch_profile, a.graph, run_id, python=harness_python, **needs)
     log_path = runs_dir / f"{run_id}.log"
     pid_path = runs_dir / f"{run_id}.pid"
     trace_dir = runs_dir / f"{run_id}-trace"
     env = route.child_env(
-        dict(os.environ), harness_dir=harness_dir, repo=env_repo, trace_dir=str(trace_dir), chair_model=chair_model,
+        dict(os.environ), harness_bin=str(Path(harness_python).parent) if harness_python else "", repo=env_repo,
+        trace_dir=str(trace_dir), chair_model=chair_model,
     )
 
-    launch_harness = str(Path(harness_dir).expanduser()) if harness_dir else None
+    # The lane host syncs the git checkout that holds the harness: the coxswain checkout once migrated (harness_dir
+    # is its src/graphs, not a checkout root), else the harness checkout itself. The host's own `cox route launch`
+    # then picks its interpreter with the same install_root rule.
+    launch_harness = str(install_root.checkout_root(harness_dir) or Path(harness_dir).expanduser()) if harness_dir else None
     if host is not None and a.dry_run:
         checkouts = _host_checkouts(run_store.hosts(runs_dir), host.name)
         # The sync steps are listed only for a host with recorded checkouts: test_cli_launch_on pins the bare rsync + ssh plan otherwise.
@@ -9426,7 +9432,7 @@ def _chair_run_deps(
     ws = runs_dir.parent
     home = os.path.expanduser("~")
     harness_dir = profile.get("harness_dir", "")
-    harness_python = str(Path(harness_dir) / ".venv" / "bin" / "python") if harness_dir else "python"
+    harness_python = str(install_root.harness_python(harness_dir)) if harness_dir else "python"
 
     def now() -> datetime.datetime:
         return datetime.datetime.now(datetime.UTC)
@@ -9881,10 +9887,12 @@ def _chair_unit_inputs(label: str | None, env_file: str | None, profile_path: Pa
     if not profile.get("workspace_dir", ""):
         return _ChairUnitRefusal(f"routing: workspace_dir not set in profile {profile_path}")
     harness_dir = profile.get("harness_dir")
+    # The tools venv: the coxswain checkout's, else (an unmigrated host) the tools checkout's own.
+    tools_root = install_root.checkout_root(Path(__file__).parent) or Path(__file__).resolve().parents[1]
     unit_path_value = chair_service.path_value(
         os.path.abspath(cox),
-        str(Path(__file__).resolve().parents[1] / ".venv" / "bin"),
-        str(Path(harness_dir).expanduser() / ".venv" / "bin") if harness_dir else "",
+        str(install_root.venv_python(tools_root).parent),
+        str(install_root.harness_python(harness_dir).parent) if harness_dir else "",
         os.environ.get("PATH", ""),
     )
     # systemd does not expand `~/` in WorkingDirectory=, and the unit does not inherit this shell's

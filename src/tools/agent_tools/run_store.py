@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from agent_tools import analytics_snapshot, epic
+from agent_tools import analytics_snapshot, epic, install_root
 from agent_tools.lake_config import _LITERAL_SECRETS, _from_env
 from agent_tools.store_dialect import connect_readonly_url, is_postgres, placeholder
 from agent_tools.store_url import TracesRoot, profile_traces_root, read_provider_profile, resolve_store_url
@@ -165,11 +165,11 @@ def _traces_root_for(runs_dir: str, routing_profile: str) -> TracesRoot:
 
 
 def harness_python(routing: Mapping[str, Any]) -> Path | None:
-    """Edge: the routing profile's `<harness_dir>/.venv/bin/python` when that file exists, else None."""
+    """Edge: the python `install_root.harness_python` chooses for the routing profile's `harness_dir` when that file exists, else None."""
     harness_dir = routing.get("harness_dir")
     if not isinstance(harness_dir, str) or not harness_dir:
         return None
-    python = Path(harness_dir).expanduser() / ".venv" / "bin" / "python"
+    python = install_root.harness_python(harness_dir)
     return python if python.is_file() else None
 
 

@@ -9,7 +9,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from agent_tools import land, route
+from agent_tools import install_root, land, route
 
 Runner = Callable[[list[str]], Any]
 
@@ -22,12 +22,14 @@ def parse_pr_url(url: str) -> tuple[str, str, int] | None:
     return (m[1], m[2], int(m[3])) if m else None
 
 
-def review_plan(pr: Mapping, repo_facts: Mapping, profile: Mapping, run_id: str) -> list[dict]:
-    """`pr` carries `repo` (owner/repo), `target` (its local checkout), `ref`, `diff_path` and `result_path`; a bare-`pytest` fallback means no interpreter is configured."""
+def review_plan(pr: Mapping, repo_facts: Mapping, profile: Mapping, run_id: str, python: str | None = None) -> list[dict]:
+    """`pr` carries `repo` (owner/repo), `target` (its local checkout), `ref`, `diff_path` and `result_path`; a bare-`pytest` fallback means no interpreter is configured.
+
+    `python` runs the harness, as `install_root.harness_python` chose it."""
     checks = land.checks_argv(dict(repo_facts))
     if checks == _BARE_CHECKS:
         return [{"kind": "refuse", "reason": f"{land.LAUNCH_ERROR}{checks[0][0]}: no interpreter configured for {pr['repo']}"}]
-    argv = route.harness_argv(dict(profile), "review-diff", run_id) + [
+    argv = route.harness_argv(dict(profile), "review-diff", run_id, python=python) + [
         "--diff", pr["diff_path"], "--target-repo", pr["target"], "--ref", pr["ref"], "--result-out", pr["result_path"],
     ]
     return [{"kind": "graph", "argv": argv}, {"kind": "post"}]
@@ -77,7 +79,7 @@ def run_review(url: str, profile: Mapping, run_id: str, runner: Runner) -> int:
         plan = review_plan(
             {"repo": f"{owner}/{repo}", "target": target, "ref": f"origin/{pr['base']['ref']}",
              "diff_path": str(diff_path), "result_path": str(result_path)},
-            {"uv_lock": uv_lock}, profile, run_id,
+            {"uv_lock": uv_lock}, profile, run_id, str(install_root.harness_python(profile["harness_dir"])),
         )
         if plan[0]["kind"] == "refuse":
             print(plan[0]["reason"])
