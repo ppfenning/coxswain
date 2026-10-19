@@ -13,6 +13,7 @@ from agent_tools.setup_migrate_hosts import ObservedHost
 
 ORIGINAL_OBSERVE_HOSTS = cli._migrate_observe_hosts
 ORIGINAL_TOOL_DIR = cli._migrate_tool_dir
+ORIGINAL_OBSERVE = cli._migrate_observe
 NAMES = ("coxswain-cartridges", "coxswain-graphs", "coxswain-tools")
 TAG = "v2026.10.0"
 
@@ -115,6 +116,11 @@ def layout(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.run_store, "hosts", lambda runs_dir: [])
     monkeypatch.setattr(cli.chair_read_lease, "read_lease", lambda runs_dir, now: dict(chair_read_lease.ABSENT))
     monkeypatch.setattr(cli.socket, "gethostname", lambda: "here")
+    # The fixture's profile lives in a tracked cartridges checkout. The real observer fills this fact in a sibling
+    # task; until then the fixture states it, so the planner maps the profile into the checkout instead of printing.
+    monkeypatch.setattr(
+        cli, "_migrate_observe", lambda locs, to=None: {**ORIGINAL_OBSERVE(locs, to), "provider_profile_tracked": True}
+    )
     monkeypatch.setattr(cli, "_migrate_beat", lambda locs: "beat: ok")  # never beat the real machine
     monkeypatch.setattr(cli, "_migrate_operator_files", lambda locs: {})
     return types_ns(

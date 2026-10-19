@@ -94,6 +94,7 @@ def layout_047(**over):
         "venv_source": None,
         "install_bins": OLD_BINS,
         "settings": OLD_SETTINGS,
+        "provider_profile_tracked": True,
         "home_record": "/h/coxswain",
         "cartridge_links": OLD_LINKS,
         "claude_on_path": True,
@@ -226,6 +227,36 @@ def test_profile_keys_move_into_the_checkout_and_a_teams_own_provider_profile_st
     settings = {**OLD_SETTINGS, "provider_profile": "/u/ws/providers/team.yaml"}
     rewrites = {s["key"]: s["new"] for s in migrate_plan(layout_047(settings=settings), LOCS) if s["op"] == "rewrite_profile_key"}
     assert rewrites == {"skills_roots": NEW_SETTINGS["skills_roots"], "harness_dir": NEW_SETTINGS["harness_dir"]}
+
+
+SHARED = f"{NEW}/{CART}/providers/claude-code.shared.yaml"
+NOT_CHECKED = f"provider_profile {SHARED} was not checked against the cartridges checkout; move it by hand."
+
+
+def _profile_plan(tracked):
+    observed = layout_047(settings={**OLD_SETTINGS, "provider_profile": SHARED}, provider_profile_tracked=tracked)
+    return migrate_plan(observed, LOCS)
+
+
+def test_a_tracked_provider_profile_maps_into_the_checkout():
+    [step] = [s for s in _profile_plan(True) if s.get("key") == "provider_profile"]
+    assert step["op"] == "rewrite_profile_key" and step["new"] == f"{SRC_CART}/providers/claude-code.shared.yaml"
+
+
+def test_an_untracked_provider_profile_is_copied_then_rewritten_before_every_move():
+    plan = _profile_plan(False)
+    names = [s["op"] for s in plan]
+    copy = next(s for s in plan if s["op"] == "copy")
+    rewrite = next(s for s in plan if s.get("key") == "provider_profile")
+    assert (copy["src"], copy["dst"]) == (SHARED, "/h/coxswain/providers/claude-code.shared.yaml")
+    assert rewrite["new"] == copy["dst"] and names.index("copy") + 1 == names.index("rewrite_profile_key", names.index("copy"))
+    assert max(names.index("copy"), plan.index(rewrite)) < names.index("move")
+
+
+def test_an_unchecked_provider_profile_prints_a_note_and_rewrites_nothing():
+    plan = _profile_plan(None)
+    assert [s["why"] for s in plan if s["op"] == "print" and s.get("item") == "provider_profile"] == [NOT_CHECKED]
+    assert not [s for s in plan if s.get("key") == "provider_profile" or s["op"] == "copy"]
 
 
 def test_tilde_form_settings_are_expanded_before_comparing():
