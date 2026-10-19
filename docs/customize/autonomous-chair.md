@@ -9,6 +9,8 @@ you have run Coxswain on one machine and know what the chair is.
 things in order. The default tick is 60 seconds.
 
 - It beats the chair lease.
+- It pulls the workspace checkout from its upstream (see
+  [The workspace checkout](#the-workspace-checkout)).
 - It reads the 5-hour window and the weekly spend.
 - It lands a completed phase as one squash onto a fresh main, from
   `pr/<initiative>--<phase>`, one repository at a time. An approved task in
@@ -18,11 +20,17 @@ things in order. The default tick is 60 seconds.
 - It retries a quarantine caused by the harness once.
 - It fills free lanes from the work store first, then decomposes intake in
   pairs.
-- It fills lanes on the hosts named in `lane_hosts` too, after the local
-  lanes.
+- It fills lanes on the lane hosts too, after the local lanes. The lane
+  hosts are the hosts table (`cox host add`), or the profile's `lane_hosts`
+  while that table is empty.
 - It runs housekeeping on a period: a lake sync, a trace prune, and a run
   clean.
+- At most once a day it tunes each host's lane count in the hosts table,
+  within that host's bounds, and sends any tier proposal to the inbox.
 - It counts the drafts waiting for approval and never launches one.
+- When the board lives in a shared store and the tick changed rows, it
+  exports the board to `work/` and `intake/`, commits, and pushes the
+  workspace.
 - It prints one status line, and a `work state:` line naming its board when
   a shared store is configured.
 
@@ -141,8 +149,12 @@ seven days. The loop, the launch gate, `route context` and `usage assess`
 all count the same week, and the status line shows where the week began.
 
 Past the hard stop, the loop lands work but launches nothing. The hard stop
-is `weekly_hard_stop_fraction` of `weekly_ceiling_usd`. Both live in the
-spend settings of the routing profile.
+is `weekly_hard_stop_fraction` of `weekly_ceiling_usd`.
+`weekly_ceiling_usd` lives in the profile's `spend` block.
+`weekly_hard_stop_fraction` is read from `<runs>/policy.pacing.json`, a
+JSON file you write in the workspace's runs directory; it is 0.93 when the
+file or the key is absent. The same file may set `hard_stop_fraction` (the
+5-hour window, default 0.99) and `max_in_flight`.
 
 `role_ceiling_usd` is a separate failsafe on one build's own cumulative
 spend, not a hard bound on any single action. The Claude Code provider
@@ -150,7 +162,49 @@ profile sets `role_ceiling_usd: {build: 6.0}`; the Build checkpoints section
 below shows how a build spends against it.
 
 The loop never cuts a release. It never merges a Homebrew tap PR. It never
-pushes the workspace. It never changes a profile or a tier.
+edits a profile file and never applies a tier; it only proposes tiers. The
+one setting it writes is a host's lane count in the hosts table. It pushes
+only the workspace checkout, as described next.
+
+To hold every land while you cut a release, freeze lands. A freeze lifts
+itself when its minutes pass:
+
+```sh
+cox chair freeze-lands --for 60 --reason "cutting 2026.10.1"
+cox chair freeze-lands            # show the freeze
+cox chair freeze-lands --off      # lift it now
+```
+
+## The workspace checkout
+
+The workspace (`work/`, `intake/`, `runs/`) is a git checkout. The loop
+keeps it in step with its upstream on every live tick. A dry run does
+neither step.
+
+**Pull.** Right after the beat, the loop runs
+`git pull --ff-only --autostash` in the workspace. Uncommitted changes are
+carried across. If re-applying them conflicts, the loop puts the checkout
+back where it was and restores the changes. A workspace that is not a git
+checkout, or a branch with no upstream, is skipped. A failed pull never
+stops the tick: the status line gains `workspace pull failed: <reason>`,
+and the store records one `pull_workspace` action per distinct reason.
+
+**Export, commit and push.** This step runs only when the board lives in a
+shared store (`work state: store`) and the tick changed rows. The loop:
+
+1. writes the changed rows from the store to their files under `work/` and
+   `intake/`, leaving out files someone edited by hand (the export holds
+   them);
+2. stages `work/` and `intake/` (`git add -A`), without the held files;
+3. commits the staged files as `chair: export <n> changed row(s)`;
+4. pushes the current branch to its upstream
+   (`git push <remote> HEAD:<branch>`).
+
+Nothing else in the workspace is committed. No upstream, or no git
+checkout, means no push. A failed `git add` or `git commit` shows as
+`export failed: <reason>` on the status line; the rows stay changed in the
+store. A failed push shows as `workspace push failed: <reason>` and never
+fails the tick.
 
 ## Build checkpoints
 
@@ -185,9 +239,16 @@ does not know.
 Each tick, the loop counts the live lanes on every host. It reads them from
 the leases in the store, in `runs.host`.
 
+The lane hosts are the active rows of the hosts table. Add one with
+`cox host add <name> --ssh <dest> --capacity <n> [--weight W]
+[--capabilities a,b]`. While the table is empty, the profile's `lane_hosts`
+list is used instead.
+
 The loop fills the local lanes first, up to `policy.dispatch.max_in_flight`.
-It then fills each `lane_hosts` entry in profile order, up to the same cap.
-Decomposes and pulls stay local.
+It then places the remaining epics on lane hosts in proportion to each
+host's weight, up to each host's capacity, and only on a host whose
+capabilities cover the initiative's tasks. Decomposes and pulls stay
+local.
 
 The loop launches a remote lane with `--on`:
 
@@ -262,10 +323,10 @@ chair. [Several machines](several-machines.md) shows how to set that up.
 ## Rescue
 
 A build can be quarantined for a harness reason and still keep its patch.
-You can rescue it. Run this in the harness:
+You can rescue it. Run this from `src/graphs` in the checkout:
 
 ```sh
-python shell.py rescue --initiative work/<id> --task <task-id>
+python shell.py rescue --team <team> --initiative work/<id> --task <task-id>
 ```
 
 The rescue re-applies the patch. It runs the configured checks itself, then
@@ -327,8 +388,21 @@ drafts:
   my-initiative  steward  2h
 ```
 
+## Watching the loop
+
+`cox chair attach` says whether a live loop holds the lease. It exits 0 if
+one does and 1 if not, and never touches the lease.
+
+`cox chair watchdog` is a one-shot check for a five-minute timer. It reads
+only the store and sends an alert when the loop has been idle or has not
+beaten its lease for too long. `cox chair watchdog --install` writes the
+timer files for this platform and prints the lines that activate them;
+`--uninstall` removes them.
+
 ## What it records
 
 Some actions the loop only records, such as a "needs the chair" report.
 Each one is appended to `chair.actions.jsonl` in the runs directory. The
-line carries its time and the lease epoch.
+line carries its time and the lease epoch. When the profile names a store,
+the same line is also written to the store's `chair_actions` table, so any
+machine can read it.
