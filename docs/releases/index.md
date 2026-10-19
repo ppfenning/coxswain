@@ -106,13 +106,11 @@ today. It does not mean the release is otherwise good.
 
 ## `2026.10.0`
 
-Upcoming: the first monorepo release. It is not cut yet. See
-[From 0.47 to the monorepo](../monorepo.md). The cut replaces this section
-with its own.
-
 | Component | Repository or path | Tag | Required or flag |
 | --- | --- | --- | --- |
 | dash | `ppfenning/coxswain-dash` | `v0.42.0` | flag: `dash`, provides `towpath` (pinned) |
+
+See the [2026.10.0 release notes](2026.10.0.md) for what landed in each component.
 
 ## Component releases (0.x)
 
