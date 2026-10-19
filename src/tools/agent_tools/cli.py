@@ -10705,6 +10705,16 @@ def _host_doctor(a: argparse.Namespace) -> int:
     return code
 
 
+def _chair_heads(profile: Mapping) -> dict[str, host_cmd.ChairHead]:
+    """Edge. `{checkout name: the commit it runs}` for this machine's checkouts (`_host_repos`), the commits
+    `cox host sync` brings a lane host to; a checkout git cannot read is left out."""
+    def head(path: str) -> host_cmd.ChairHead | None:
+        sha = _git_out(Path(path), "rev-parse", "HEAD")
+        return host_cmd.ChairHead(sha, _git_out(Path(path), "branch", "--show-current") or None) if sha else None
+    heads = {Path(p).name: head(p) for p in _host_repos(profile)}
+    return {name: h for name, h in heads.items() if h is not None}
+
+
 def _host_sync(a: argparse.Namespace) -> int:
     profile, runs_dir, rc = _leader_runs_dir_or_refuse(a)
     if rc is not None:
@@ -10717,7 +10727,7 @@ def _host_sync(a: argparse.Namespace) -> int:
     repos = host_cmd.recorded_repos(row)
     if not repos:
         print(f"paths: this machine's, since {a.name} has not beaten with its own; run `cox host beat {a.name}` there")
-    code, lines = host_cmd.sync_host(host.ssh, repos or _host_repos(profile), _run_ssh)
+    code, lines = host_cmd.sync_host(host.ssh, repos or _host_repos(profile), _run_ssh, _chair_heads(profile))
     print("\n".join(lines))
     return code
 
@@ -10772,7 +10782,7 @@ HOST_COMMANDS = [
     ),
     commands.Command("doctor", "host", "the table's line for a host, then its doctor over ssh", (commands.Arg(("name",)),), "agent_tools.cli:_host_doctor", False, ()),
     commands.Command(
-        "sync", "host", "git pull --ff-only in the harness, cartridges and tools checkouts on a host",
+        "sync", "host", "bring a host's checkouts to the commits this machine runs (fetch, then fast-forward or check out)",
         (commands.Arg(("name",)),), "agent_tools.cli:_host_sync", False, (),
     ),
 ]

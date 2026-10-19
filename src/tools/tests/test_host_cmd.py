@@ -268,6 +268,16 @@ def test_sync_reports_a_pull_that_is_not_a_fast_forward_and_does_not_force():
     assert all("--force" not in " ".join(c) for c in calls)
 
 
+def test_sync_brings_a_host_checkout_to_the_chairs_detached_commit():
+    assert host_cmd.sync_argvs("/c", host_cmd.ChairHead("abc")) == [
+        ["git", "-C", "/c", "fetch", "--tags", "origin"], ["git", "-C", "/c", "checkout", "--detach", "abc"]]
+
+
+def test_sync_fast_forwards_the_chairs_branch_to_its_commit():
+    assert host_cmd.sync_argvs("/c", host_cmd.ChairHead("abc", "main"))[1:] == [
+        ["git", "-C", "/c", "checkout", "main"], ["git", "-C", "/c", "merge", "--ff-only", "abc"]]
+
+
 def test_cox_host_add_runs_store_cli_host_upsert_with_the_holder_label(tmp_path, monkeypatch, capsys):
     (tmp_path / "ws").mkdir()
     profile = tmp_path / "profile.yaml"

@@ -12,6 +12,7 @@ import os
 import platform
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from typing import NamedTuple
 
 from agent_tools.checkout_env import (
     CHECKOUT_ENV_KEY,
@@ -31,9 +32,9 @@ Run = Callable[[list[str]], tuple[int, str]]
 Row = Mapping[str, object]
 
 __all__ = [
-    "add_argv", "beat_argv", "beat_versions", "capacity_upsert_argv", "delete_argv", "dispatchable", "doctor_line", "env_rows", "format_host_list",
+    "ChairHead", "add_argv", "beat_argv", "beat_versions", "capacity_upsert_argv", "delete_argv", "dispatchable", "doctor_line", "env_rows", "format_host_list",
     "host_line", "host_rows_to_lane_hosts", "local_host_add_argv", "local_host_missing", "local_workspace_dir", "recorded_repos", "remove_refusal",
-    "removed_line", "row_capabilities", "row_capacities", "row_weights", "set_state_argv", "shadowed", "sync_host", "versions_report",
+    "removed_line", "row_capabilities", "row_capacities", "row_weights", "set_state_argv", "shadowed", "sync_argvs", "sync_host", "versions_report",
 ]
 
 
@@ -366,20 +367,45 @@ def beat_versions(
     }
 
 
-def _pull_line(ssh: str, repo: str, run: Run) -> tuple[bool, str]:
-    code, output = run(ssh_argv(ssh, ["git", "-C", repo, "pull", "--ff-only"]))
-    if code == 0:
-        _, head = run(ssh_argv(ssh, ["git", "-C", repo, "rev-parse", "--short", "HEAD"]))
-        return True, f"{Path(repo).name}  {(head.strip().splitlines() or ['?'])[-1]}"
-    why = (
-        f"no checkout at {repo} on the host" if "cannot change to" in output or "No such file" in output
-        else "not a fast-forward" if "ast-forward" in output
-        else "pull failed"
-    )
-    return False, f"{Path(repo).name}  not updated ({why}): {' '.join(output.split())[:120]}"
+class ChairHead(NamedTuple):
+    """The commit one of the chair's checkouts runs: its HEAD, and its branch (None when detached, as at a release tag)."""
+
+    sha: str
+    branch: str | None = None
 
 
-def sync_host(ssh: str, repos: Sequence[str], run: Run) -> tuple[int, list[str]]:
-    """`git pull --ff-only` in each repo over ssh; one line per repo with its new head. A non-fast-forward is reported, not forced."""
-    results = [_pull_line(ssh, repo, run) for repo in repos]
+def sync_argvs(repo: str, head: ChairHead | None) -> list[list[str]]:
+    """The git commands that bring a host checkout to `head`, the chair's commit for the checkout of the same name:
+    fetch, then the chair's branch fast-forwarded to it, or a detached checkout of it (a release tag). With no chair
+    head, the old `pull --ff-only`. Nothing is forced: local changes or a non-fast-forward fail their step."""
+    git = ["git", "-C", repo]
+    if head is None:
+        return [[*git, "pull", "--ff-only"]]
+    fetch = [*git, "fetch", "--tags", "origin"]
+    if head.branch:
+        return [fetch, [*git, "checkout", head.branch], [*git, "merge", "--ff-only", head.sha]]
+    return [fetch, [*git, "checkout", "--detach", head.sha]]
+
+
+def _sync_why(repo: str, output: str) -> str:
+    if "cannot change to" in output or "No such file" in output:
+        return f"no checkout at {repo} on the host"
+    if "ast-forward" in output:
+        return "not a fast-forward"
+    return "local changes" if "would be overwritten" in output else "git failed"
+
+
+def _sync_line(ssh: str, repo: str, head: ChairHead | None, run: Run) -> tuple[bool, str]:
+    for argv in sync_argvs(repo, head):
+        code, output = run(ssh_argv(ssh, argv))
+        if code != 0:
+            return False, f"{Path(repo).name}  not updated ({_sync_why(repo, output)}): {' '.join(output.split())[:120]}"
+    _, short = run(ssh_argv(ssh, ["git", "-C", repo, "rev-parse", "--short", "HEAD"]))
+    return True, f"{Path(repo).name}  {(short.strip().splitlines() or ['?'])[-1]}"
+
+
+def sync_host(ssh: str, repos: Sequence[str], run: Run, heads: Mapping[str, ChairHead] | None = None) -> tuple[int, list[str]]:
+    """Each repo over ssh brought to the chair's commit for the checkout of its name in `heads` (`sync_argvs`), so a
+    host at a detached release tag follows the chair; one line per repo with its new head. Nothing is forced."""
+    results = [_sync_line(ssh, repo, (heads or {}).get(Path(repo).name), run) for repo in repos]
     return (0 if all(ok for ok, _ in results) else 1), [line for _, line in results]

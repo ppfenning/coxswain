@@ -157,7 +157,7 @@ cox host capacity NAME N [--json]   change only a host's capacity, leaving ssh, 
 cox host beat [NAME]   record this machine's versions and claude login in the table
 cox host login NAME {true,false,none} [--reason REASON] [--failures FAILURES]   store a host's login state without touching its beat time
 cox host doctor NAME   the table's line for a host, then its doctor over ssh
-cox host sync NAME   git pull --ff-only in the harness, cartridges and tools checkouts on a host
+cox host sync NAME   bring a host's checkouts to the commits this machine runs (fetch, then fast-forward or check out)
 cox router select --role ROLE [--db DB] [--profile PROFILE] [--json]   the effective tier for a role under the profile's router: off|shadow|on flag
 cox steward propose [--db DB] [--profile PROFILE] [--json]   write each candidate clearing the evidence bar as a new intake file; never edits a provider profile
 cox steward draft [--profile PROFILE] [--json]   write each grounded proposal in intake as a draft initiative under work/, list those that exist or could not be grounded
