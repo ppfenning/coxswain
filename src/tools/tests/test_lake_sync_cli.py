@@ -281,7 +281,7 @@ def test_a_missing_pyarrow_exits_non_zero_naming_the_extra_and_json_stays_json(e
     rc, out = _run([*argv, *dry_run, "--json"], capsys)
     assert rc == 2
     assert json.loads(out) == {
-        "error": "the Iceberg lake needs the optional extra `lake`; pyarrow is missing: pip install 'coxswain-tools[lake]'"
+        "error": "the Iceberg lake needs the optional extra `lake`; pyarrow is missing: pip install 'coxswain[lake]'"
     }
 
 

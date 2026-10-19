@@ -19,7 +19,7 @@ __all__ = ["Check", "run_checks", "sqlite_catalog_path", "verdict"]
 
 OK, WARN, FAIL = "ok", "warn", "fail"
 _SYNC_HINT = "run cox lake sync"
-_NEEDS_EXTRA = "the Iceberg lake needs the optional extra `lake`: pip install 'coxswain-tools[lake]'"
+_NEEDS_EXTRA = "the Iceberg lake needs the optional extra `lake`: pip install 'coxswain[lake]'"
 
 
 @dataclass(frozen=True)

@@ -119,7 +119,7 @@ def test_a_missing_sqlite_catalog_warns_and_is_not_created(config, tmp_path):
 def test_a_missing_extra_with_no_catalog_file_fails_on_the_extra(config, tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "pyiceberg.catalog.sql", None)
     checks = run_checks(config)
-    assert [(c.name, c.status) for c in checks] == [("lake extra", "fail")] and "coxswain-tools[lake]" in checks[0].detail
+    assert [(c.name, c.status) for c in checks] == [("lake extra", "fail")] and "coxswain[lake]" in checks[0].detail
     assert not (tmp_path / "cat.db").exists()
 
 

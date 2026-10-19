@@ -498,7 +498,7 @@ def test_call_events_is_none_with_no_loose_file_and_no_trace_store(tmp_path, mon
 def test_call_events_without_zstandard_raises_naming_the_extra(tmp_path, monkeypatch):
     (tmp_path / "traces").mkdir()
     monkeypatch.setitem(sys.modules, "zstandard", None)
-    with pytest.raises(run_store.TracesUnavailable, match=r"coxswain-tools\[traces\]"):
+    with pytest.raises(run_store.TracesUnavailable, match=r"coxswain\[traces\]"):
         run_store.call_events(tmp_path, "r1", {"id": "c1"})
 
 

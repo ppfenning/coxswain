@@ -25,7 +25,7 @@ def test_scheme_dispatch_recognises_both_postgres_schemes_and_nothing_else():
 
 def test_a_postgres_url_without_psycopg_names_the_extra_to_install(monkeypatch):
     monkeypatch.setitem(sys.modules, "psycopg", None)
-    with pytest.raises(RuntimeError, match=r"coxswain-tools\[postgres\]"):
+    with pytest.raises(RuntimeError, match=r"coxswain\[postgres\]"):
         connect_readonly_url("postgresql://h/db")
 
 

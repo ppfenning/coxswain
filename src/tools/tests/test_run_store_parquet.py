@@ -141,13 +141,13 @@ def test_a_parquet_file_without_pyarrow_raises_naming_the_parquet_extra(tmp_path
     path.parent.mkdir(parents=True)
     path.write_bytes(b"")
     monkeypatch.setitem(sys.modules, "pyarrow", None)
-    with pytest.raises(run_store.TracesUnavailable, match=r"coxswain-tools\[parquet\]"):
+    with pytest.raises(run_store.TracesUnavailable, match=r"coxswain\[parquet\]"):
         run_store.call_events(tmp_path, "r1", {"id": "c1"})
 
 
 def test_an_s3_root_without_pyarrow_cannot_be_probed_and_raises_the_same_error(monkeypatch):
     monkeypatch.setitem(sys.modules, "pyarrow", None)
-    with pytest.raises(run_store.TracesUnavailable, match=r"coxswain-tools\[parquet\]"):
+    with pytest.raises(run_store.TracesUnavailable, match=r"coxswain\[parquet\]"):
         run_store._parquet_rows(TracesRoot("s3://bucket/traces", True), "r1")
 
 

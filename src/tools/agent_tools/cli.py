@@ -16,6 +16,7 @@ import io
 import json
 import math
 import os
+import posixpath
 import re
 import secrets
 import shlex
@@ -5792,9 +5793,11 @@ def _gather_doctor_facts(profile_path: Path, repo: Path) -> dict:
     expand = lambda p: str(Path(p).expanduser()) if p else ""  # noqa: E731
     facts["paths_exist"] = {p: Path(expand(p)).exists() for p in (*singles, *roots) if p}
     harness_dir = expand(profile.get("harness_dir", ""))
-    facts["harness_python_exists"] = bool(harness_dir) and install_root.harness_python(harness_dir).exists()
+    python = install_root.harness_python(harness_dir) if harness_dir else None
+    facts["harness_python"] = str(python) if python else None
+    facts["harness_python_exists"] = bool(python) and python.exists()
     if facts["harness_python_exists"]:
-        plugins = _harness_plugins(str(install_root.harness_python(harness_dir)))
+        plugins = _harness_plugins(str(python))
         if plugins is not None:
             facts["plugins_harness"] = plugins
         overlay_text = _read_text_or_none(repo / ".agent" / "cartridge.yaml")
@@ -6231,6 +6234,23 @@ def _migrate_target_tag(checkout: Path, url: str, to: str | None) -> str | None:
     return upgrade_exec.newest_release(_offered_tags(checkout, None if checkout.is_dir() else url))
 
 
+def _migrate_locations(locs):
+    """Edge. The locations the migration works in: the folder of a `cox install --root` install, read from the
+    profile's harness_dir and holding the umbrella checkout, else the home's (`setup_migrate.install_locations`)."""
+    folder = setup_migrate.profile_install_folder(_migrate_profile(locs).get("harness_dir"), posixpath.dirname(locs.config))
+    present = bool(folder) and Path(folder, setup_migrate.UMBRELLA).is_dir()
+    return setup_migrate.install_locations(locs, folder, present)
+
+
+def _migrate_venv_current(checkout: Path) -> bool:
+    """Edge. Whether the checkout's venv matches its lock with every extra: `uv sync --check` exits 0, changing nothing."""
+    argv = [*setup_install.SYNC_ARGV[:2], "--check", *setup_install.SYNC_ARGV[2:], "--directory", str(checkout)]
+    try:
+        return subprocess.run(argv, capture_output=True, text=True).returncode == 0
+    except OSError:
+        return False
+
+
 def _migrate_observe(locs, to: str | None = None) -> dict:
     """Edge. The host as the plain dict `setup_migrate.migrate_plan` takes. The remote is asked for a release tag
     only while the checkout is not yet the monorepo."""
@@ -6257,6 +6277,7 @@ def _migrate_observe(locs, to: str | None = None) -> dict:
         "components": components,
         "worktrees": {name: paths[1:] for name, paths in listed.items() if paths is not None},
         "venv_source": setup_migrate.read_venv_source(str(checkout)),
+        "venv_current": kind == "dir" and _migrate_venv_current(checkout),
         "claude_on_path": claude_on_path,
         "marketplace": (_marketplace_listing() or {}).get(setup_install.MARKETPLACE),
         "marketplace_plugins": _marketplace_plugins(),
@@ -6785,6 +6806,7 @@ def _setup_migrate(a: argparse.Namespace) -> int:
     if a.old_root and not a.finish:
         print("refusing: --old-root belongs to --finish; pass --finish or drop --old-root")
         return 2
+    locs = _migrate_locations(locs)
     if a.finish:
         return _migrate_finish(a, locs)
     observed = _migrate_observe(locs, getattr(a, "to", None))
@@ -7222,6 +7244,14 @@ def _install_root(a: argparse.Namespace) -> tuple[Path, str | None] | None:
     return Path(locs.installs), locs.home
 
 
+def _with_flags(a: argparse.Namespace) -> list[str]:
+    """Edge. The `--with` flags the planner sees; a retired one is dropped with its one-line note."""
+    flags, notes = install.drop_retired_flags(a.with_ or [])
+    for note in notes:
+        print(f"note: {note}")
+    return flags
+
+
 def _install(a: argparse.Namespace) -> int:
     resolved = _install_root(a)
     if resolved is None:
@@ -7238,7 +7268,8 @@ def _install(a: argparse.Namespace) -> int:
         "checkouts": _gather_checkout_facts(root, manifest.get("components", {}), fetch=a.edge),
         "provider_cli_on_path": shutil.which(_manifest_provider_command(manifest, a.provider)) is not None,
     }
-    options = {"provider": a.provider, "with": a.with_ or [], "root": str(root), "team": a.team,
+    with_flags = _with_flags(a)
+    options = {"provider": a.provider, "with": with_flags, "root": str(root), "team": a.team,
                "workspace": a.workspace, "channel": channel, **({"home": home} if home else {})}
     schema_state, schema_detail = schema.status(_checkout_schema_versions(root))
     if schema_state != "ok":
@@ -7335,7 +7366,7 @@ def _upgrade(a: argparse.Namespace) -> int:
     if manifest is None:
         print((_NO_HOME_MANIFEST if home and not a.manifest else _NO_MANIFEST).format(manifest_path))
         return 2
-    with_flags = a.with_ or []
+    with_flags = _with_flags(a)
     options = {"provider": a.provider, "with": with_flags, "root": str(root), "team": a.team, "workspace": a.workspace,
                **({"home": home} if home else {})}
     if _upgrade_refused(manifest, root, options):
@@ -8449,7 +8480,7 @@ def _lake_sync(a: argparse.Namespace) -> int:
     except ImportError as err:
         # pyiceberg imported, but a module the lake also needs, such as pyarrow, did not.
         return _lake_refuse(a, f"the Iceberg lake needs the optional extra `lake`; {err.name or err} is missing: "
-                               "pip install 'coxswain-tools[lake]'")
+                               "pip install 'coxswain[lake]'")
     return _lake_sync_outcome(a, outcome)
 
 
@@ -8464,7 +8495,7 @@ def _lake_config_for(a: argparse.Namespace) -> tuple[lake_config.LakeConfig | No
 def _lake_extra_missing(a: argparse.Namespace, err: ImportError) -> int:
     # pyiceberg or a module the lake also needs, such as duckdb or pyarrow, did not import.
     return _lake_refuse(a, f"the Iceberg lake needs the optional extra `lake`; {err.name or err} is missing: "
-                           "pip install 'coxswain-tools[lake]'")
+                           "pip install 'coxswain[lake]'")
 
 
 def _lake_query(a: argparse.Namespace) -> int:
@@ -9997,7 +10028,7 @@ def _chair_service_host_steps(a: argparse.Namespace, profile: Mapping, runs_dir:
     root = str(Path(profile["workspace_dir"]).expanduser().parent)
     workspace_remote = _origin_url(str(Path(profile["workspace_dir"]).expanduser())) or ""
     return chair_service_host.install_steps(
-        str(row["ssh"]), root, _chair_service_host_repos(profile), workspace_remote, _holder_label(a),
+        str(row["ssh"]), root, _chair_service_host_repos(profile), workspace_remote, _holder_label(a), _chair_heads(profile),
     )
 
 
@@ -10684,6 +10715,16 @@ def _host_doctor(a: argparse.Namespace) -> int:
     return code
 
 
+def _chair_heads(profile: Mapping) -> dict[str, host_cmd.ChairHead]:
+    """Edge. `{checkout name: the commit it runs}` for this machine's checkouts (`_host_repos`), the commits
+    `cox host sync` brings a lane host to; a checkout git cannot read is left out."""
+    def head(path: str) -> host_cmd.ChairHead | None:
+        sha = _git_out(Path(path), "rev-parse", "HEAD")
+        return host_cmd.ChairHead(sha, _git_out(Path(path), "branch", "--show-current") or None) if sha else None
+    heads = {Path(p).name: head(p) for p in _host_repos(profile)}
+    return {name: h for name, h in heads.items() if h is not None}
+
+
 def _host_sync(a: argparse.Namespace) -> int:
     profile, runs_dir, rc = _leader_runs_dir_or_refuse(a)
     if rc is not None:
@@ -10696,7 +10737,7 @@ def _host_sync(a: argparse.Namespace) -> int:
     repos = host_cmd.recorded_repos(row)
     if not repos:
         print(f"paths: this machine's, since {a.name} has not beaten with its own; run `cox host beat {a.name}` there")
-    code, lines = host_cmd.sync_host(host.ssh, repos or _host_repos(profile), _run_ssh)
+    code, lines = host_cmd.sync_host(host.ssh, repos or _host_repos(profile), _run_ssh, _chair_heads(profile))
     print("\n".join(lines))
     return code
 
@@ -10751,7 +10792,7 @@ HOST_COMMANDS = [
     ),
     commands.Command("doctor", "host", "the table's line for a host, then its doctor over ssh", (commands.Arg(("name",)),), "agent_tools.cli:_host_doctor", False, ()),
     commands.Command(
-        "sync", "host", "git pull --ff-only in the harness, cartridges and tools checkouts on a host",
+        "sync", "host", "bring a host's checkouts to the commits this machine runs (fetch, then fast-forward or check out)",
         (commands.Arg(("name",)),), "agent_tools.cli:_host_sync", False, (),
     ),
 ]

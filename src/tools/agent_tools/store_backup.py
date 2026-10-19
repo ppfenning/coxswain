@@ -135,7 +135,7 @@ class ArrowGarage:
             from pyarrow.fs import S3FileSystem
         except ImportError as err:
             raise RuntimeError(
-                "store_backup reaches Garage through pyarrow: pip install 'coxswain-tools[parquet]'"
+                "store_backup reaches Garage through pyarrow: pip install 'coxswain[parquet]'"
             ) from err
         return cls(S3FileSystem(**s3_options(settings)), settings.bucket)
 

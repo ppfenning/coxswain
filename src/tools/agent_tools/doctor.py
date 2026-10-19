@@ -143,6 +143,14 @@ def _flag_row(check: str, facts: Mapping, key: str, cascade: bool, missing_detai
     return {"check": check, "ok": bool(val), "detail": "ok" if val else missing_detail}
 
 
+def _harness_venv_row(facts: Mapping, cascade: bool) -> dict:
+    """Names the interpreter `install_root.harness_python` chose (`harness_python`): the checkout's one venv on a
+    migrated host, the harness checkout's own on an unmigrated one."""
+    row = _flag_row("harness venv", facts, "harness_python_exists", cascade, "venv missing")
+    path = facts.get("harness_python")
+    return {**row, "detail": f"{row['detail']}: {path}"} if path and row["detail"] in ("ok", "venv missing") else row
+
+
 def _none_ok_row(check: str, facts: Mapping, key: str, cascade: bool) -> dict:
     if cascade:
         return _skip(check)
@@ -337,7 +345,7 @@ def checks(facts: Mapping) -> list[dict]:
         profile_row,
         *_unknown_key_rows(facts.get("profile_text"), parsed),
         *_paths_rows(facts, cascade, parsed),
-        _flag_row("harness venv", facts, "harness_python_exists", cascade, "venv missing"),
+        _harness_venv_row(facts, cascade),
         _none_ok_row("core importable", facts, "core_import", cascade),
         _none_ok_row("cartridge", facts, "cartridge_load", cascade),
         _overlay_row(facts, cascade),

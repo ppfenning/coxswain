@@ -750,13 +750,15 @@ _FS_ROOTS = frozenset({
 })
 
 
-# Top-level directories only one Coxswain repository has, by repository basename. `docs/` and `tests/` exist in
-# every repository, so they are deliberately absent: naming one is never a cross-repository reference.
+# Path prefixes only one Coxswain repository has, by repository basename. `docs/` and `tests/` exist in every
+# repository, so they are deliberately absent: naming one is never a cross-repository reference. `coxswain` is the
+# monorepo, whose components sit under `src/`; the old component names stay for tickets on an unmigrated checkout.
+# Bare `src/` is absent too (other repositories have one): only the monorepo's own component folders count.
 _REPO_ROOTS: dict[str, frozenset[str]] = {
     "coxswain-tools": frozenset({"agent_tools"}),
     "coxswain-graphs": frozenset({"harness", "runner", "graphs"}),
     "coxswain-cartridges": frozenset({"core", "providers", "cartridges", "skills-plugins"}),
-    "coxswain": frozenset({"devtools"}),
+    "coxswain": frozenset({"src/tools", "src/graphs", "src/cartridges", "devtools", "crew"}),
     "coxswain-plugins": frozenset({"coxswain_plugins"}),
 }
 _PATH_EDGE = "\x60\x27\x22(),."
@@ -786,14 +788,15 @@ def _home_paths(text: str, home: str) -> list[str]:
 
 
 def _cross_repo_paths(text: str, repo: str | None) -> list[tuple[str, str]]:
-    """`(path, owning repository)` for each relative token under another repository's own top-level directory.
+    """`(path, owning repository)` for each relative token under another repository's own path prefix.
     Stands down when `repo` is unset or its basename is not in `_REPO_ROOTS`. Order of first sight, no repeats."""
     home = os.path.basename(repo.rstrip("/")) if repo else ""
     if home not in _REPO_ROOTS:
         return []
     owner = {top: name for name, tops in _REPO_ROOTS.items() if name != home for top in tops}
     paths = dict.fromkeys(t.strip(_PATH_EDGE) for t in text.split())
-    return [(p, owner[p.split("/")[0]]) for p in paths if "/" in p and p.split("/")[0] in owner]
+    owned = ((p, next((owner[t] for t in owner if p.startswith(t + "/")), None)) for p in paths)
+    return [(p, name) for p, name in owned if name is not None]
 
 
 # A label opening a run context: a checks list or a Done line, at line start or after a sentence end.

@@ -111,6 +111,7 @@ def migrated(**over):
         "components": {TOOLS: "absent", GRAPHS: "absent", CART: "absent", CREW: "absent"},
         "worktrees": {},
         "venv_source": CO,
+        "venv_current": True,
         "install_bins": NEW_BINS,
         "settings": NEW_SETTINGS,
         "cartridge_links": NEW_LINKS,
@@ -143,6 +144,26 @@ def test_the_047_layout_plans_every_rule_in_order():
         ("move", f"{NEW}/{CART}"),
         ("print", ""),
     ]
+
+
+@pytest.mark.parametrize(("harness_dir", "folder"), [
+    ("/r/coxswain-graphs", "/r"), ("/r/coxswain/src/graphs/", "/r"), ("~/r/coxswain-graphs", "/u/r"), ("/r/graphs", None)])
+def test_the_profile_harness_dir_names_the_install_folder(harness_dir, folder):
+    assert setup_migrate.profile_install_folder(harness_dir, "/u") == folder
+
+
+def test_a_root_install_migrates_where_it_sits_only_when_its_umbrella_is_there():
+    assert setup_migrate.install_locations(LOCS, "/r", umbrella_present=True).installs == "/r"
+    assert setup_migrate.install_locations(LOCS, "/r", umbrella_present=False) == LOCS
+
+
+def test_a_root_install_retires_beside_itself_and_writes_no_home_record():
+    locs = replace(LOCS, installs="/r")
+    settings = {"harness_dir": "/r/coxswain-graphs", "umbrella_dir": "/r/coxswain"}
+    steps = migrate_plan(layout_047(checkout={"kind": "dir", "monorepo": True}, home_record=None, settings=settings,
+                                    cartridge_links={}), locs)
+    assert ("rewrite_profile_key", "harness_dir") in ops(steps) and ("move", "/r/coxswain-tools") in ops(steps)
+    assert not [s for s in steps if s["op"] in ("rewrite_setting", "checkout", "refuse")]
 
 
 def test_a_second_run_over_the_result_plans_one_skip():
@@ -193,6 +214,11 @@ def test_the_venv_is_synced_only_when_coxswain_is_not_editable_from_the_checkout
     assert not [s for s in migrate_plan(migrated(venv_source=CO), LOCS) if s.get("cwd") == CO]
     sync = [s for s in migrate_plan(migrated(venv_source=f"{NEW}/{TOOLS}"), LOCS) if s.get("cwd") == CO]
     assert sync == [setup_install.sync_step(CO)]
+
+
+def test_the_venv_is_synced_when_it_is_behind_the_lock_or_the_plan_touches_the_host():
+    assert ops(migrate_plan(migrated(venv_current=False), LOCS))[0] == ("run", "uv sync --frozen --all-extras -q")
+    assert ops(migrate_plan(migrated(home_record="/old/home"), LOCS))[0] == ("run", "uv sync --frozen --all-extras -q")
 
 
 def test_profile_keys_move_into_the_checkout_and_a_teams_own_provider_profile_stays():
@@ -249,6 +275,7 @@ def test_a_leftover_old_tool_is_uninstalled_even_when_coxswain_is_already_instal
     bins = {**NEW_BINS, "agent-cartridges": {"installed": True, "editable": None, "extras": ["x"]}}
     steps = [s["argv"] for s in migrate_plan(migrated(install_bins=bins), LOCS) if s["op"] == "run"]
     assert steps == [
+        ["uv", "sync", "--frozen", "--all-extras", "-q"],
         ["uv", "tool", "uninstall", "agent-cartridges"],
         ["uv", "tool", "install", "--force", "-q", "--editable", f"{CO}[traces,postgres,x]"],
     ]
@@ -280,13 +307,13 @@ OLD_PATH = f"Environment=PATH={NEW}/{TOOLS}/.venv/bin:{NEW}/{GRAPHS}/.venv/bin:/
 
 def test_a_unit_naming_a_component_checkout_is_regenerated():
     steps = migrate_plan(migrated(chair_unit="[Service]\n" + OLD_PATH), LOCS)
-    assert [s["op"] for s in steps] == ["chair_unit", "print"]
+    assert [s["op"] for s in steps] == ["run", "chair_unit", "print"]
 
 
 def test_a_dropin_naming_a_component_checkout_is_rewritten_to_the_one_venv():
     drop_ins = [("10-path.conf", "[Service]\n" + OLD_PATH)]
     steps = migrate_plan(migrated(chair_unit=BARE_UNIT, chair_unit_drop_ins=drop_ins, chair_active=True), LOCS)
-    step = steps[0]
+    step = next(s for s in steps if s["op"] == "chair_unit_dropin")
     assert (step["op"], step["dropin"], step["restart"]) == ("chair_unit_dropin", "10-path.conf", True)
     rewritten = setup_migrate.rewrite_dropin_path(OLD_PATH, tuple(tuple(p) for p in step["pairs"]))
     assert rewritten == f"Environment=PATH={CO}/.venv/bin:{CO}/.venv/bin:/usr/bin\n"
@@ -531,7 +558,7 @@ def test_module_imports_only_standard_library_and_home():
         if isinstance(node, (ast.Import, ast.ImportFrom))
         for alias in (node.names if isinstance(node, ast.Import) else [None])
     }
-    assert imported <= {"__future__", "collections", "json", "pathlib", "posixpath", "re", "tomllib", "typing", "agent_tools"}
+    assert imported <= {"__future__", "collections", "dataclasses", "json", "pathlib", "posixpath", "re", "tomllib", "typing", "agent_tools"}
     assert "agent_tools.home" in {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
 
 

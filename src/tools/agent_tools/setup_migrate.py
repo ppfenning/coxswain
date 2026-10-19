@@ -18,6 +18,7 @@ Observed host, a dict with these keys:
 - `worktrees`: for each component checkout present as a directory, its worktree paths other than the main one.
   Required for every such checkout; a missing one yields a refuse step.
 - `venv_source`: the editable source of `coxswain` in `<checkout>/.venv`, None when there is none.
+- `venv_current`: whether that venv matches the checkout's lock with every extra (`uv sync --check` exits 0).
 - `install_bins`: optional. Each uv tool receipt in TOOL_RECEIPTS plus `coxswain`, as `observe_install_bins`
   returns it. When the key is absent the uv tool dir was unknown and no tool step is planned.
 - `settings`: profile field to its current value, for SETTING_KEYS and `repo_map`.
@@ -38,7 +39,10 @@ Rules, in plan order:
    has no observed worktrees.
 2. A checkout that is not yet the monorepo is cloned (absent) or fetched and checked out (present) at the
    target tag. A monorepo checkout is never moved here: that is `cox upgrade`'s job.
-3. The venv is synced when `coxswain` in `<checkout>/.venv` is not editable from the checkout.
+3. The venv is synced (`uv sync --frozen --all-extras`) whenever the plan touches the host at all, and also when
+   `coxswain` in `<checkout>/.venv` is not editable from the checkout or the venv does not match the checkout's
+   lock (`venv_current`, from `uv sync --check`; unobserved counts as behind). A host with nothing left to do and
+   a venv at its lock plans the one skip, so a second run stays a skip and `--finish` can pass its gate.
 4. Profile keys naming a component checkout are rewritten into the checkout (`harness_dir` to `src/graphs`,
    `skills_roots` and `provider_profile` under `src/cartridges`); a provider profile outside the components
    is the team's own and is kept. `umbrella_dir` is set to the checkout. A `repo_map` value naming a component
@@ -51,6 +55,9 @@ Rules, in plan order:
 9. Each component checkout present at `<installs>/<name>` moves to `<installs>/.retired-<today>/<name>`, and its
    worktrees are repaired there. Nothing is deleted.
 
+A 0.47 install made with `cox install --root <X>` is migrated where it sits: `install_locations` makes `<X>` the
+installs folder, and no home record is written, since that install is not under the home.
+
 A host already in the monorepo layout plans one skip step, so a second run plans nothing. Every step is a dict
 with `op`, a one-sentence `why`, and the fields of its op.
 """
@@ -62,6 +69,7 @@ import posixpath
 import re
 import tomllib
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -285,9 +293,10 @@ def _setting_steps(
                 new=mapped,
             )
         )
+    # An install migrated where it sits outside the home (`cox install --root`) is not the home's, so no record.
     record = (
         []
-        if home_record == locs.home
+        if home_record == locs.home or not _under(locs.installs, locs.home)
         else [
             _step(
                 "rewrite_setting",
@@ -431,6 +440,23 @@ def _prints(workspace: Mapping[str, Any] | None, moved: Mapping[str, str], locs:
     return [*notes, _step("print", f"The workspace stays {where} and is never moved.", item="workspace", path=path)]
 
 
+def profile_install_folder(harness_dir: Any, user_home: str) -> str | None:
+    """The folder the profile's `harness_dir` says holds the install: `<X>` for `<X>/coxswain-graphs` (the 0.47
+    layout) and for `<X>/coxswain/src/graphs` (the monorepo); None when it names neither."""
+    if not isinstance(harness_dir, str):
+        return None
+    path = _expand_all(harness_dir, user_home).rstrip("/")
+    suffixes = (f"/{GRAPHS}", f"/{UMBRELLA}/{SUBDIRS[GRAPHS]}")
+    return next((path[: -len(s)] for s in suffixes if path.endswith(s) and len(path) > len(s)), None)
+
+
+def install_locations(locs: Locations, folder: str | None, umbrella_present: bool) -> Locations:
+    """The locations the migration works in. A 0.47 install made with `cox install --root <X>` keeps its checkouts
+    under `<X>`, not the home: when the profile names such a folder and `<X>/coxswain` is there, the install is
+    migrated where it sits (`installs` becomes `<X>`). Anything else migrates the home's installs folder."""
+    return replace(locs, installs=folder) if folder and folder != locs.installs and umbrella_present else locs
+
+
 def migrate_plan(observed: dict[str, Any], locs: Locations, home_spellings: Sequence[str] = ()) -> list[Step]:
     """Ordered steps for the remaining migration; one skip when none remain, only refuses when any rule refuses.
     `home_spellings` are extra absolute spellings of the user home that a repo_map value may use."""
@@ -442,9 +468,8 @@ def migrate_plan(observed: dict[str, Any], locs: Locations, home_spellings: Sequ
     retired = retired_dir(locs.installs, str(observed.get("today", "")))
     moved = {posixpath.join(locs.installs, name): posixpath.join(retired, name) for name in present}
     market_runs, market_notes = _marketplace_steps(observed, paths.cartridges)
-    body = [
-        *_checkout_steps(observed.get("checkout") or {}, observed.get("target_tag"), paths.checkout),
-        *([] if observed.get("venv_source") == paths.checkout else [setup_install.sync_step(paths.checkout)]),
+    checkout_steps = _checkout_steps(observed.get("checkout") or {}, observed.get("target_tag"), paths.checkout)
+    rest = [
         *_setting_steps(
             observed.get("settings", {}), observed.get("home_record"), locs, paths.checkout, tuple(moved.items()),
             home_spellings,
@@ -461,6 +486,9 @@ def migrate_plan(observed: dict[str, Any], locs: Locations, home_spellings: Sequ
         ),
         *_retire_steps(present, locs.installs, retired, observed.get("worktrees", {})),
     ]
+    behind = observed.get("venv_source") != paths.checkout or not observed.get("venv_current", False)
+    sync = [setup_install.sync_step(paths.checkout)] if behind or checkout_steps or rest else []
+    body = [*checkout_steps, *sync, *rest]
     if not body:
         return [_step("skip", "The checkout, its venv, the tools, links, settings and profile keys are already final.")]
     return [*body, *_prints(observed.get("workspace"), moved, locs), *market_notes]

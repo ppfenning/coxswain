@@ -23,6 +23,17 @@ def checkout_spec(manifest: Mapping) -> dict:
             "ref": table.get("ref", "main"), "required": True}
 
 
+# `--with` flags of components that are folders of the checkout now and so always install. Accepted, with a note,
+# for one release so old scripts (and the rehearsal of a 0.47 install) keep working; then refused as unknown.
+RETIRED_FLAGS = {"crew": "--with crew does nothing now: crew is part of the checkout and always installs"}
+
+
+def drop_retired_flags(with_flags: list[str]) -> tuple[list[str], list[str]]:
+    """`(flags, notes)`: the flags without the retired ones, and one note per retired flag given, first sight order."""
+    retired = [f for f in dict.fromkeys(with_flags) if f in RETIRED_FLAGS]
+    return [f for f in with_flags if f not in RETIRED_FLAGS], [RETIRED_FLAGS[f] for f in retired]
+
+
 def _known_flags(manifest: Mapping) -> set[str]:
     return {spec["flag"] for spec in manifest.get("components", {}).values() if spec.get("flag")}
 
@@ -71,6 +82,16 @@ def _checkout_step(name: str, spec: Mapping, checkout: Mapping, channel: str = "
     return {"kind": "skip", "component": name, "detail": f"already at {pinned}"}
 
 
+def _own_checkout_step(spec: Mapping, checkout: Mapping, channel: str) -> dict:
+    """The one checkout holds the manifest, so on the release channel a clean checkout already present is the
+    release, at a tag or not (a candidate commit): installed as is. Moving it is `cox upgrade`'s job."""
+    if channel == "release" and checkout.get("present") and not checkout.get("dirty") \
+            and not _at_pin(checkout, _pinned(spec, channel), channel):
+        at = checkout.get("tag") or "an untagged commit"
+        return {"kind": "skip", "component": CHECKOUT, "detail": f"present at {at}; installed as is (cox upgrade moves it)"}
+    return _checkout_step(CHECKOUT, spec, checkout, channel)
+
+
 def _desktop_step(name: str, spec: Mapping) -> dict:
     return {"kind": "desktop", "component": name, "detail": f"desktop entry at {spec.get('path')}"}
 
@@ -103,7 +124,8 @@ def plan(manifest: Mapping, facts: Mapping, options: Mapping) -> list[dict]:
     if refusal:
         return [refusal]
     empty_checkout = {"present": False, "tag": None, "dirty": False}
-    checkout_steps = [_checkout_step(name, spec, checkouts.get(name, empty_checkout), channel)
+    checkout_steps = [(_own_checkout_step(spec, checkouts.get(name, empty_checkout), channel) if name == CHECKOUT
+                       else _checkout_step(name, spec, checkouts.get(name, empty_checkout), channel))
                       if _pinned(spec, channel) else
                       {"kind": "skip", "component": name, "detail": "the manifest names no [coxswain] version"}
                       for name, spec in requested]

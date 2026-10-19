@@ -78,8 +78,8 @@ def test_a_missing_extra_names_it_and_prints_no_traceback(lake_env, capsys, monk
     monkeypatch.setitem(sys.modules, "pyiceberg.catalog.sql", None)
     rc, out = _run(_argv(lake_env, "query", "SELECT 1"), capsys)
     assert rc == 2
-    assert "coxswain-tools[lake]" in out
+    assert "coxswain[lake]" in out
     assert "Traceback" not in out
     rc, out = _run(_argv(lake_env, "doctor"), capsys)
     assert rc == 1
-    assert "coxswain-tools[lake]" in out
+    assert "coxswain[lake]" in out

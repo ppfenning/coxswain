@@ -873,7 +873,7 @@ def _store_events(traces: Path, run_id: str, call_id: str) -> list[dict]:
     try:
         import zstandard
     except ImportError as exc:
-        raise TracesUnavailable("reading traces needs zstandard: install coxswain-tools[traces]") from exc
+        raise TracesUnavailable("reading traces needs zstandard: install coxswain[traces]") from exc
 
     def rows(path: Path) -> list[dict]:
         with path.open("rb") as fh:
@@ -885,7 +885,7 @@ def _store_events(traces: Path, run_id: str, call_id: str) -> list[dict]:
 
 
 _PARQUET_COLUMNS = ["call_id", "seq", "event"]
-_NEEDS_PYARROW = "reading Parquet traces needs pyarrow: pip install 'coxswain-tools[parquet]'"
+_NEEDS_PYARROW = "reading Parquet traces needs pyarrow: pip install 'coxswain[parquet]'"
 
 
 def _parquet_call_events(rows: Sequence[Mapping[str, Any]], call_id: str) -> list[dict]:

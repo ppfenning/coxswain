@@ -47,6 +47,7 @@ def _coxswain_origin(tmp_path):
 
 
 FAKE_UV = """#!/bin/sh
+case "$*" in *--check*) exit 0;; esac
 echo "$*" >> {log}
 if [ "$1" = sync ]; then
   d="$(pwd)/.venv/lib/python3.14/site-packages/coxswain-0.dist-info"
@@ -243,7 +244,7 @@ def test_rerun_after_a_stop_resumes_from_the_remaining_steps(layout, capsys):
     layout.profile.write_text(good)
     assert run(apply=True) == 0
     out = capsys.readouterr().out
-    assert "fetch --tags" not in out and "sync --frozen" not in out
+    assert "fetch --tags" not in out
     assert "profile skills_roots" in out and "coxswain-" not in layout.profile.read_text()
 
 
@@ -645,6 +646,7 @@ def test_apply_loads_the_lazy_modules_then_swaps_the_component_tools_for_coxswai
     monkeypatch.setattr(cli, "_load_lazy_modules", lambda: events.append("lazy"))
     assert run(apply=True) == 0
     assert events == [
+        ["uv", "sync", "--check", "--frozen", "--all-extras", "-q", "--directory", str(layout.checkout)],
         "lazy",
         ["uv", "sync", "--frozen", "--all-extras", "-q"],
         ["uv", "tool", "uninstall", "coxswain-tools"],
