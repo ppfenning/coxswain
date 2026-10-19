@@ -5520,17 +5520,48 @@ def _core_freshness(provider_profile: str | None) -> list[str] | None:
         return [f"model freshness not checked: could not evaluate the provider profile at {profile_path}"]
 
 
+_HARNESS_PLUGIN_GROUPS = ("coxswain.system_one", "coxswain.runners")
+_PLUGINS_PROBE_SCRIPT = (
+    "import json, sys\n"
+    "from importlib.metadata import entry_points\n"
+    "print(json.dumps({g: sorted(ep.name for ep in entry_points(group=g)) for g in sys.argv[1:]}))\n"
+)
+
+
+def plugins_probe_argv(python: str) -> list[str]:
+    """The harness interpreter listing its own plugin entry points: `cox` may run from another venv (a uv tool)."""
+    return [python, "-c", _PLUGINS_PROBE_SCRIPT, *_HARNESS_PLUGIN_GROUPS]
+
+
+def parse_plugins_probe(returncode: int, stdout: str) -> dict[str, list[str]] | None:
+    """`{group: [names]}` for every probed group, else None, which the doctor row reads as "not checked", never as empty."""
+    if returncode != 0:
+        return None
+    try:
+        parsed = json.loads(stdout)
+    except ValueError:
+        return None
+    if not isinstance(parsed, dict) or set(parsed) != set(_HARNESS_PLUGIN_GROUPS):
+        return None
+    if not all(isinstance(names, list) and all(isinstance(n, str) for n in names) for names in parsed.values()):
+        return None
+    return parsed
+
+
+def _harness_plugins(python: str) -> dict[str, list[str]] | None:
+    """Edge. The plugin entry points the harness interpreter sees; None when it cannot say."""
+    try:
+        done = subprocess.run(plugins_probe_argv(python), capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return parse_plugins_probe(done.returncode, done.stdout)
+
+
 def _core_probe(cartridges_dir: str, team: str, roots: list, overlay_text: str | None, provider_profile: str | None) -> dict:
     """Edge. The cartridge API, imported in-process (one venv: core sits beside agent_tools), as one JSON-shaped dict.
 
     Each step's failure lands in its own key and never raises; a failed import or skill index stops the walk there."""
     out: dict = {"import": None, "load": None, "indexed": {}, "resolved": None, "skill_index": {}, "layers": None}
-    try:
-        from importlib.metadata import entry_points
-        out["plugins"] = {g: sorted(ep.name for ep in entry_points(group=g))
-                          for g in ("coxswain.system_one", "coxswain.runners")}
-    except Exception:
-        pass  # left unset: the doctor row reads "not checked", never an empty claim
     try:
         from core.cartridge import load
         from core.skills import index_from_roots
@@ -5591,8 +5622,6 @@ def _run_core_probe(cartridges_dir: str, team: str, skills_roots: list, raw_root
         facts["overlay_errors"] = parsed["overlay_errors"]
     if "freshness" in parsed:
         facts["freshness_lines"] = parsed["freshness"]
-    if "plugins" in parsed:
-        facts["plugins_harness"] = parsed["plugins"]
     # Exactly one of `provenance`/`provenance_error` is set below, on every
     # path: a fact dict carrying neither would read as "nothing to report"
     # rather than "the walk never happened", which is the silent-mislabel
@@ -5765,6 +5794,9 @@ def _gather_doctor_facts(profile_path: Path, repo: Path) -> dict:
     harness_dir = expand(profile.get("harness_dir", ""))
     facts["harness_python_exists"] = bool(harness_dir) and install_root.harness_python(harness_dir).exists()
     if facts["harness_python_exists"]:
+        plugins = _harness_plugins(str(install_root.harness_python(harness_dir)))
+        if plugins is not None:
+            facts["plugins_harness"] = plugins
         overlay_text = _read_text_or_none(repo / ".agent" / "cartridge.yaml")
         facts.update(_run_core_probe(expand(profile.get("cartridges_dir", "")), profile.get("team", ""),
                                      [expand(r) for r in roots], raw_roots=roots, overlay_text=overlay_text,
