@@ -9,6 +9,21 @@ from pathlib import Path
 import yaml
 
 WORKFLOW = Path(__file__).parent.parent / ".github" / "workflows" / "docs.yml"
+CI = Path(__file__).parent.parent / ".github" / "workflows" / "ci.yml"
+
+
+def _pytest_steps(workflow: dict) -> list[tuple[str, str]]:
+    """(job name, command) for every step whose run starts with `uv run pytest`."""
+    return [
+        (job_name, step["run"])
+        for job_name, job in workflow["jobs"].items()
+        for step in job.get("steps", [])
+        if step.get("run", "").startswith("uv run pytest")
+    ]
+
+
+def _missing_xdist(steps: list[tuple[str, str]]) -> list[str]:
+    return [f"{job}: {run}" for job, run in steps if "-n auto" not in run]
 
 
 def _runs() -> list[str]:
@@ -26,3 +41,10 @@ def test_the_pull_runs_before_the_cli_reference_and_the_deploy():
     runs = _runs()
     pull = runs.index("uv run python docs/_pull.py")
     assert runs.index("uv sync --group dev") < pull < runs.index("uv run python docs/_cli.py")
+
+
+def test_every_ci_pytest_step_runs_in_parallel():
+    steps = _pytest_steps(yaml.safe_load(CI.read_text()))
+    assert len(steps) == 12
+    missing = _missing_xdist(steps)
+    assert not missing, "pytest steps without -n auto:\n" + "\n".join(missing)
