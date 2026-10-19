@@ -292,6 +292,34 @@ def test_cli_upgrade_to_picks_the_umbrella_and_the_lockstep_component_takes_its_
     assert ["git", "-C", str(root / "coxswain-harness"), "checkout", "v2.0.0"] in calls
 
 
+def test_cli_upgrade_moves_the_checkout_then_syncs_reinstalls_cox_and_links_the_crew_before_the_doctor(monkeypatch, tmp_path):
+    from agent_tools import cli
+
+    root = tmp_path / "root"
+    (root / "coxswain").mkdir(parents=True)
+    (root / "coxswain" / "manifest.toml").write_text('[coxswain]\nversion = "2.0.0"\n\n[providers.claude-code]\nstatus = "supported"\n')
+    monkeypatch.setattr(cli, "_checkout_facts", lambda path: {"present": True, "tag": "v1.0.0", "dirty": False})
+    monkeypatch.setattr(cli, "_load_lazy_modules", lambda: None)
+    monkeypatch.setattr(cli.setup_receipts, "read_tool_extras", lambda tool_dir, package: ())
+    calls = []
+
+    def fake_run(argv, cwd):
+        calls.append((argv, cwd))
+        return 0, ""
+
+    monkeypatch.setattr(cli, "_real_run", fake_run)
+    assert cli.main(["upgrade", "--root", str(root), "--provider", "claude-code", "--to", "2.0.0"]) == 0
+    checkout = str(root / "coxswain")
+    assert [argv for argv, _ in calls][:5] == [
+        ["git", "-C", checkout, "fetch", "--tags"],
+        ["git", "-C", checkout, "checkout", "v2.0.0"],
+        ["uv", "sync", "--frozen", "--all-extras", "-q"],
+        ["uv", "tool", "install", "--force", "-q", "--editable", checkout],
+        [f"{checkout}/crew/install.sh"],
+    ]
+    assert calls[2][1] == checkout and calls[-1][0] == ["cox", "setup", "doctor"]
+
+
 def _upgrade_with_moved_manifest(monkeypatch, tmp_path, pins, installed, offered, extra_args):
     """Runs `cox upgrade` whose moved umbrella manifest pins `pins` (component to tag). `installed` and
     `offered` map a component (the umbrella is `coxswain`) to its checkout tag and to the tags its remote offers."""

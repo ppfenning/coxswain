@@ -1,61 +1,58 @@
-"""Pure plan for moving an existing local layout to the coxswain home.
+"""Pure plan for moving a host to the monorepo layout: one checkout, one venv.
 
-The plan follows docs/design/coxswain-home.md, section 4. Nothing here executes a
-step: `migrate_plan` takes the observed layout as plain data and returns step dicts
-that a later executor applies. Only `observe_install_bins` reads files, and it is an edge.
+The source is the 0.47 layout: the component checkouts `<installs>/coxswain-{tools,graphs,cartridges}` (and
+`coxswain-crew` where crew was installed) beside the umbrella checkout `<installs>/coxswain`, with the uv tools
+`coxswain-tools` and `agent-cartridges`. The target is the layout `setup_install.layout` names: `<installs>/coxswain`
+is the monorepo at a release tag, `<checkout>/.venv` the one venv, `cox` the editable `coxswain` uv tool. The
+umbrella checkout already sits at the target path, so it becomes the monorepo by checking out the release tag.
 
-Observed layout, a dict with these keys:
+Nothing here executes a step: `migrate_plan` takes the observed host as plain data and returns step dicts that the
+cli edge applies. Only the `read_*` and `observe_*` functions read files, and they are edges.
 
-- `entries`: for each of coxswain-cartridges, coxswain-graphs and coxswain-tools, a dict
-  with `old` (the old path), `old_kind` and `new_kind` (each one of absent, dir,
-  symlink, file) and `old_target` (where the old path points when it is a symlink).
-  The new path is never observed. It is the checkout's name under `Locations.installs`. A symlink entry
-  may also hold `target_git`, true only when its target is a real directory with git metadata. A symlink
-  to such a target, with the new path absent, plans a move of the target (not the link) and two links to
-  the new path. `old_target` may be absolute or relative to the folder of `old`. Without `target_git` the
-  entry refuses as before.
-- `workspace`: a dict with `path`. The workspace is registered by location and is
-  never moved, so the planner only reports where it stays.
-- `settings`: profile field to its current value, a string or a list of strings. `repo_map` is the one
-  mapping, owner/name to checkout path, and is present only when the profile holds a mapping.
+Observed host, a dict with these keys:
+
+- `checkout`: what sits at `<installs>/coxswain`: `kind` (absent, dir, symlink, file), `monorepo` (its pyproject
+  names the `coxswain` distribution), `dirty`, and `url` (its origin, or the repository to clone when absent).
+- `target_tag`: the release tag a checkout that is not yet the monorepo moves to; None when none is offered.
+- `components`: for each name in RETIRED, the kind at `<installs>/<name>`.
+- `worktrees`: for each component checkout present as a directory, its worktree paths other than the main one.
+  Required for every such checkout; a missing one yields a refuse step.
+- `venv_source`: the editable source of `coxswain` in `<checkout>/.venv`, None when there is none.
+- `install_bins`: optional. Each uv tool receipt in TOOL_RECEIPTS plus `coxswain`, as `observe_install_bins`
+  returns it. When the key is absent the uv tool dir was unknown and no tool step is planned.
+- `settings`: profile field to its current value, for SETTING_KEYS and `repo_map`.
 - `home_record`: the current text of the home record, or None when it is absent.
 - `cartridge_links`: each workspace base and local link to its current lexical target.
-- `worktrees`: checkout name to the list of its worktree paths. Required for every
-  checkout that needs a repair; a missing one yields a refuse step.
-- `worktree_status`: checkout name to "clean" when `git worktree list` names no missing
-  path. A checkout at its new path with any other status, or none, is repaired and verified
-  again, because the planner cannot tell whether an earlier run finished that step.
-- `chair_unit`: the chair systemd unit file text, or None when there is none. The effective PATH is read
-  across the unit file and `chair_unit_drop_ins` as `agent_tools.chair_unit.effective_path` reads it. When it
-  still names the old checkout root and comes from the unit file, the plan ends with one `chair_unit` step.
-- `chair_unit_drop_ins`: optional. The `(file name, text)` of each `*.conf` drop-in of the chair unit. When the
-  effective PATH comes from one of them, the plan ends with one `chair_unit_dropin` step naming that drop-in.
-- `chair_active`: optional. Whether the chair service was active when observed. It becomes the `restart` field
-  of the `chair_unit_dropin` step; absent means not active.
+- `marketplace`, `marketplace_plugins`, `claude_on_path`: the path registered for the marketplace (None when
+  absent), the plugin ids installed from it, and whether `claude` is on PATH.
+- `chair_unit`, `chair_unit_drop_ins`, `chair_active`: the chair unit file text, its `*.conf` drop-ins as
+  (file name, text), and whether the chair service was active.
+- `workspace`: a dict with `path`. The workspace is registered by location and is never moved.
+- `today`: the date, `YYYY-MM-DD`, that names the folder the component checkouts retire into.
 
-- `install_bins`: optional. Where each editable install points, as `observe_install_bins` returns it.
-  `coxswain-graphs` and `coxswain-tools` hold `source`, read from the checkout venv. `tool:coxswain-tools`
-  and `tool:coxswain-cartridges` hold `editable` and `extras`, read from the uv tool receipts. A value of
-  None is an absent source. When any source differs from its checkout under `Locations.installs`, the plan
-  emits eight `run` steps that recreate the venvs and reinstall the tools. When the key is not observed,
-  the plan emits none.
+Rules, in plan order:
 
-- `marketplace`, `marketplace_plugins`, `claude_on_path`: the path registered for coxswain-cartridges
-  (None when absent), the plugin ids ending @coxswain-cartridges, and whether `claude` is on PATH. When
-  `claude` is on PATH and the registered path is not the checkout under `Locations.installs`, the plan ends
-  its body with the `run` steps of `setup_install.marketplace_steps`, then one `claude plugin install` per
-  plugin id, or for local-skills@coxswain-cartridges when none was observed. When `claude` is not on PATH
-  (or the key is missing) the plan emits one print saying the marketplace was not checked.
+1. Refuse, and plan nothing else, when the checkout path holds something other than a directory, when a
+   checkout that is not yet the monorepo is dirty or has no release tag to move to, when an absent checkout has
+   no repository to clone, when the cartridge links were not observed, or when a component checkout to retire
+   has no observed worktrees.
+2. A checkout that is not yet the monorepo is cloned (absent) or fetched and checked out (present) at the
+   target tag. A monorepo checkout is never moved here: that is `cox upgrade`'s job.
+3. The venv is synced when `coxswain` in `<checkout>/.venv` is not editable from the checkout.
+4. Profile keys naming a component checkout are rewritten into the checkout (`harness_dir` to `src/graphs`,
+   `skills_roots` and `provider_profile` under `src/cartridges`); a provider profile outside the components
+   is the team's own and is kept. `umbrella_dir` is set to the checkout. A `repo_map` value naming a component
+   checkout follows it to its retired folder. The home record names the resolved home.
+5. Each workspace base and local link is re-pointed at `<checkout>/src/cartridges/cartridges/<name>`.
+6. The plugin marketplace is re-registered at `<checkout>/src/cartridges` and its plugins reinstalled.
+7. The `coxswain-tools` and `agent-cartridges` uv tools are uninstalled, then `coxswain` is installed editable
+   from the checkout with the union of their extras.
+8. A chair unit whose effective PATH names a component checkout is regenerated, or its drop-in rewritten.
+9. Each component checkout present at `<installs>/<name>` moves to `<installs>/.retired-<today>/<name>`, and its
+   worktrees are repaired there. Nothing is deleted.
 
-Settings may hold tilde-form paths. They are expanded against the user home, taken as the
-parent of `Locations.config`, before they are compared with the checkout paths.
-
-A `repo_map` value is rewritten only when it equals an old checkout path exactly, in its absolute, tilde
-or `home_spellings` form. `home_spellings` are other absolute spellings of the user home, such as the
-path-parity home; the caller reads them from the environment and passes them in.
-
-Every step is a dict with `op`, a one-sentence `why`, and the fields of its op. The
-planner emits no step that deletes or replaces a real directory.
+A host already in the monorepo layout plans one skip step, so a second run plans nothing. Every step is a dict
+with `op`, a one-sentence `why`, and the fields of its op.
 """
 
 from __future__ import annotations
@@ -64,7 +61,7 @@ import json
 import posixpath
 import re
 import tomllib
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -78,15 +75,21 @@ Step = dict[str, Any]
 CARTRIDGES = "coxswain-cartridges"
 GRAPHS = "coxswain-graphs"
 TOOLS = "coxswain-tools"
+CREW = "coxswain-crew"
+# The component checkouts of the pre-home layout, whose compatibility links `--finish` removes.
 CHECKOUTS = (CARTRIDGES, GRAPHS, TOOLS)
-# Optional: planned only on a host where it is present at its old or final path.
-UMBRELLA = "coxswain"
-# uv tool receipt folder for each tool install, keyed by the checkout it installs.
+# The component checkouts the monorepo retires from the installs folder, and where each one's content now lives.
+RETIRED = (TOOLS, GRAPHS, CARTRIDGES, CREW)
+SUBDIRS = {TOOLS: "src/tools", GRAPHS: "src/graphs", CARTRIDGES: "src/cartridges", CREW: "crew"}
+RETIRED_PREFIX = ".retired-"
+# The umbrella checkout, which becomes the monorepo checkout in place.
+UMBRELLA = setup_install.CHECKOUT
+# The uv tools of the component layout, by the checkout each one installed; the monorepo replaces both.
 TOOL_RECEIPTS = {TOOLS: "coxswain-tools", CARTRIDGES: "agent-cartridges"}
-# Order of the venv steps: tools, graphs, cartridges.
-REINSTALL_ORDER = (TOOLS, GRAPHS, CARTRIDGES)
+DEFAULT_PLUGIN = setup_install.DEFAULT_PLUGIN
 OPS = frozenset(
     {
+        "checkout",
         "move",
         "symlink",
         "rewrite_setting",
@@ -101,7 +104,7 @@ OPS = frozenset(
         "run",
     }
 )
-SETTING_KEYS = ("skills_roots", "provider_profile", "harness_dir")
+SETTING_KEYS = ("skills_roots", "provider_profile", "harness_dir", "umbrella_dir")
 # Not in SETTING_KEYS: its value is a mapping, which the string and list helpers below do not handle.
 REPO_MAP_KEY = "repo_map"
 WORKTREES_CLEAN = "no worktree names a missing path"
@@ -118,55 +121,49 @@ def _refuse(name: str, reason: str) -> Step:
     return _step("refuse", f"{name} {reason}, so nothing is moved.", checkout=name)
 
 
-def _linked_target(entry: dict[str, Any], new: str) -> str | None:
-    """The git checkout a symlinked old path points at, when it can be moved to `new`; else None."""
-    old, target = entry.get("old", ""), entry.get("old_target")
-    if entry.get("old_kind") != "symlink" or entry.get("new_kind", "absent") != "absent":
-        return None
-    if not entry.get("target_git") or not target:
-        return None
-    resolved = posixpath.normpath(posixpath.join(posixpath.dirname(old), target))
-    return None if resolved in (new, posixpath.normpath(old)) else resolved
+def retired_dir(installs: str, today: str) -> str:
+    """The folder the component checkouts retire into: `<installs>/.retired-<today>`."""
+    return posixpath.join(installs, f"{RETIRED_PREFIX}{today}")
 
 
-def _checkout(name: str, entry: dict[str, Any] | None, new: str) -> tuple[str, tuple[Step, ...]]:
-    """Classify one checkout as moved (steps remain), final (none) or refuse."""
-    if not entry or "old" not in entry:
-        return "refuse", (_refuse(name, "is missing from the observed entries"),)
-    old, old_kind, new_kind = entry["old"], entry.get("old_kind", "absent"), entry.get("new_kind", "absent")
-    link = _step(
-        "symlink", f"{name} stays reachable at its old path through a link to the new one.", path=old, target=new
-    )
-    if old_kind == "dir" and new_kind == "absent":
-        return "moved", (
-            _step("move", f"{name} belongs under the installs folder of the home.", src=old, dst=new),
-            link,
-        )
-    if old_kind == "dir":
-        return "refuse", (_refuse(name, f"has a real directory at {old} and something already at {new}"),)
-    if old_kind == "absent" and new_kind == "dir":
-        return "moved", (link,)
-    if old_kind == "absent":
-        return "refuse", (_refuse(name, f"is absent at {old} and at {new}"),)
-    if old_kind == "symlink" and new_kind == "dir" and entry.get("old_target") == new:
-        return "final", ()
-    if (target := _linked_target(entry, new)) is not None:
-        return "moved", (
-            _step(
-                "move",
-                f"{name} is a link, so its target belongs under the installs folder of the home.",
-                src=target,
-                dst=new,
-            ),
-            link,
-            _step(
-                "symlink",
-                f"The old spelling {target} stays reachable through a link to the new path.",
-                path=target,
-                target=new,
-            ),
-        )
-    return "refuse", (_refuse(name, f"has {old_kind} at {old} and {new_kind} at {new}, which no step can reconcile"),)
+def _refusals(observed: Mapping[str, Any], checkout_path: str) -> list[Step]:
+    checkout = observed.get("checkout") or {}
+    kind, monorepo = checkout.get("kind", "absent"), bool(checkout.get("monorepo"))
+    if kind not in ("dir", "absent"):
+        return [_refuse(UMBRELLA, f"has a {kind} at {checkout_path}, not a checkout")]
+    if kind == "dir" and not monorepo and checkout.get("dirty"):
+        return [_refuse(UMBRELLA, f"is dirty at {checkout_path}; commit or stash before it becomes the monorepo")]
+    if not monorepo and not observed.get("target_tag"):
+        return [_refuse(UMBRELLA, "has no release tag to move to; pass --to")]
+    if kind == "absent" and not checkout.get("url"):
+        return [_refuse(UMBRELLA, f"is absent at {checkout_path} and no repository was named to clone")]
+    if "cartridge_links" not in observed:
+        why = "The workspace cartridge links were not observed, so their state is unknown and nothing is moved."
+        return [_step("refuse", why, checkout="cartridge_links")]
+    worktrees = observed.get("worktrees", {})
+    return [
+        _refuse(name, "needs its worktrees repaired but their paths were not observed")
+        for name in _present(observed)
+        if name not in worktrees
+    ]
+
+
+def _present(observed: Mapping[str, Any]) -> list[str]:
+    """The component checkouts still sitting in the installs folder as directories."""
+    components = observed.get("components", {})
+    return [name for name in RETIRED if components.get(name) == "dir"]
+
+
+def _checkout_steps(checkout: Mapping[str, Any], tag: str | None, path: str) -> list[Step]:
+    if checkout.get("monorepo"):
+        return []
+    if checkout.get("kind") == "absent":
+        argvs = [["git", "clone", "--branch", tag, checkout["url"], path]]
+        why = f"The monorepo checkout is cloned at {tag}."
+    else:
+        argvs = [["git", "-C", path, "fetch", "--tags"], ["git", "-C", path, "checkout", tag]]
+        why = f"The umbrella checkout becomes the monorepo by checking out {tag}."
+    return [_step("checkout", why, path=path, tag=tag, argvs=argvs)]
 
 
 def _repair_steps(name: str, new: str, worktrees: list[str]) -> tuple[Step, Step]:
@@ -241,37 +238,48 @@ def stale_script_lines(files: Mapping[str, str], old_checkouts: Sequence[str], u
 def _remap_repo_map(
     repo_map: Mapping[str, Any], pairs: tuple[tuple[str, str], ...], user_home: str, home_spellings: Sequence[str]
 ) -> dict[str, Any]:
-    """A new map in the same key order; a value equal to an old checkout path becomes its path under the installs folder."""
+    """A new map in the same key order; a value equal to an old checkout path becomes its new path."""
     new_for = {spelling: new for old, new in pairs for spelling in _old_spellings(old, user_home, home_spellings)}
     return {key: new_for.get(value, value) if isinstance(value, str) else value for key, value in repo_map.items()}
 
 
 def _setting_steps(
-    settings: dict[str, Any],
+    settings: Mapping[str, Any],
     home_record: str | None,
-    pairs: tuple[tuple[str, str], ...],
     locs: Locations,
+    checkout: str,
+    retired: tuple[tuple[str, str], ...],
     home_spellings: Sequence[str] = (),
 ) -> list[Step]:
+    """Profile keys under a component checkout move into the checkout; `umbrella_dir` names the checkout; a
+    `repo_map` value naming a retired checkout follows it; the home record names the home."""
     user_home = posixpath.dirname(locs.config)
-    repo_map = settings.get(REPO_MAP_KEY)
-    mapped = _remap_repo_map(repo_map, pairs, user_home, home_spellings) if isinstance(repo_map, Mapping) else None
+    pairs = tuple((posixpath.join(locs.installs, name), posixpath.join(checkout, SUBDIRS[name])) for name in RETIRED)
     keys = [
         _step(
             "rewrite_profile_key",
-            f"{key} still points at the old checkout location.",
+            f"{key} still points into a component checkout.",
             key=key,
             old=settings[key],
             new=new,
         )
         for key in SETTING_KEYS
-        if key in settings and (new := _remap(expanded := _expand_all(settings[key], user_home), pairs)) != expanded
+        if key != "umbrella_dir"
+        and key in settings
+        and (new := _remap(expanded := _expand_all(settings[key], user_home), pairs)) != expanded
     ]
+    umbrella = settings.get("umbrella_dir")
+    if _expand_all(umbrella, user_home) != checkout:
+        keys.append(
+            _step("rewrite_profile_key", "umbrella_dir must name the checkout.", key="umbrella_dir", old=umbrella, new=checkout)
+        )
+    repo_map = settings.get(REPO_MAP_KEY)
+    mapped = _remap_repo_map(repo_map, retired, user_home, home_spellings) if isinstance(repo_map, Mapping) else None
     if mapped is not None and mapped != dict(repo_map):
         keys.append(
             _step(
                 "rewrite_profile_key",
-                f"{REPO_MAP_KEY} still names the old checkout folders.",
+                f"{REPO_MAP_KEY} names component checkouts that retire.",
                 key=REPO_MAP_KEY,
                 old=dict(repo_map),
                 new=mapped,
@@ -295,17 +303,18 @@ def _setting_steps(
 
 
 def cartridge_link_target(path: str, locs: Locations) -> str:
-    """Expected lexical target of a base or local link: <installs>/coxswain-cartridges/cartridges/<entry name>, relative to the folder holding the link."""
-    entry = posixpath.join(locs.installs, CARTRIDGES, "cartridges", posixpath.basename(path))
+    """Expected lexical target of a base or local link: <checkout>/src/cartridges/cartridges/<entry name>,
+    relative to the folder holding the link."""
+    entry = posixpath.join(setup_install.layout(locs.installs).cartridges, "cartridges", posixpath.basename(path))
     return posixpath.relpath(entry, posixpath.dirname(path))
 
 
-def _link_steps(links: dict[str, str], locs: Locations) -> list[Step]:
+def _link_steps(links: Mapping[str, str], locs: Locations) -> list[Step]:
     wanted = {path: cartridge_link_target(path, locs) for path in links}
     return [
         _step(
             "symlink",
-            "The relative link must reach its cartridges subfolder in the checkout under the home.",
+            "The relative link must reach its cartridges subfolder in the checkout.",
             path=path,
             target=wanted[path],
             old_target=links[path],
@@ -315,32 +324,11 @@ def _link_steps(links: dict[str, str], locs: Locations) -> list[Step]:
     ]
 
 
-def _prints(workspace: dict[str, Any] | None, pairs: dict[str, tuple[str, str]], locs: Locations) -> list[Step]:
-    moved = {name: {"old": old, "new": new} for name, (old, new) in pairs.items()}
-    notes = [
-        _step(
-            "print",
-            FINISH_HINT,
-            item="repo paths",
-            checkouts=moved,
-        ),
-    ]
-    if not workspace:
-        return notes
-    path = workspace["path"]
-    where = "under the workspaces folder" if path.startswith(locs.workspaces + "/") else "where it is registered"
-    return [*notes, _step("print", f"The workspace stays {where} and is never moved.", item="workspace", path=path)]
-
-
-DEFAULT_PLUGIN = f"local-skills@{CARTRIDGES}"
-
-
-def _marketplace_steps(observed: dict[str, Any], locs: Locations) -> tuple[list[Step], list[Step]]:
+def _marketplace_steps(observed: Mapping[str, Any], target: str) -> tuple[list[Step], list[Step]]:
     """Run steps that re-register the marketplace and its plugins, and the one print when claude was not checked."""
     if not observed.get("claude_on_path", False):
         why = "The Claude marketplace was not checked because claude is not on PATH."
         return [], [_step("print", why, item="marketplace not checked")]
-    target = posixpath.join(locs.installs, CARTRIDGES)
     registered = observed.get("marketplace")
     if registered == target:
         return [], []
@@ -354,6 +342,30 @@ def _marketplace_steps(observed: dict[str, Any], locs: Locations) -> tuple[list[
         for plugin in plugins
     ]
     return [*setup_install.marketplace_steps(target, registered), *installs], []
+
+
+def _tool_steps(bins: Mapping[str, Any] | None, checkout: str) -> list[Step]:
+    """Uninstall each component uv tool still installed, then install `coxswain` editable from the checkout with
+    the union of every receipt's extras; none when the coxswain tool already is that and no old tool is left."""
+    if bins is None:
+        return []
+    olds = [tool for tool in TOOL_RECEIPTS.values() if (bins.get(tool) or {}).get("installed")]
+    current = bins.get(setup_install.TOOL) or {}
+    if current.get("editable") == checkout and not olds:
+        return []
+    extras = tuple(
+        dict.fromkeys(x for tool in (setup_install.TOOL, *TOOL_RECEIPTS.values()) for x in (bins.get(tool) or {}).get("extras") or ())
+    )
+    uninstall = [
+        _step("run", f"The {tool} uv tool is replaced by {setup_install.TOOL}.", argv=["uv", "tool", "uninstall", tool])
+        for tool in olds
+    ]
+    install = {
+        **setup_install.tool_step(checkout, extras),
+        "warn_only": False,
+        "why": f"The {setup_install.TOOL} uv tool must be editable from the checkout, so cox runs the monorepo.",
+    }
+    return [*uninstall, install]
 
 
 _PATH_LINE = re.compile(r'\s*Environment=\s*"?PATH=')
@@ -374,26 +386,103 @@ def rewrite_dropin_path(text: str, pairs: Sequence[tuple[str, str]]) -> str:
 
 
 def _chair_unit_steps(
-    unit: str | None,
-    drop_ins: Sequence[tuple[str, str]],
-    active: bool,
-    old_root: str,
-    pairs: Sequence[tuple[str, str]],
+    unit: str | None, drop_ins: Sequence[tuple[str, str]], active: bool, installs: str, checkout: str
 ) -> list[Step]:
-    """One step when the effective PATH still names `old_root/coxswain-`: the unit file regenerated, or its drop-in rewritten."""
+    """One step when the effective PATH still names a component checkout: the unit file regenerated, or its
+    drop-in rewritten so each component venv becomes the checkout's one venv."""
     seen = chair_unit.effective_path(unit, drop_ins)
-    if seen is None or old_root + "/coxswain-" not in seen.path:
-        return []
-    if not any(old != new for old, new in pairs):  # after the move the old root is the installs folder: nothing to rewrite
+    olds = {name: posixpath.join(installs, name) for name in RETIRED}
+    if seen is None or not any(_names(seen.path, old) for old in olds.values()):
         return []
     if seen.source == chair_unit.UNIT_NAME:
-        why = "The chair systemd unit still names the old checkout root in its PATH, so it is regenerated."
+        why = "The chair systemd unit still names a component checkout in its PATH, so it is regenerated."
         return [_step("chair_unit", why)]
-    why = "A chair unit drop-in still names the old checkout root in its PATH, so its old folders are rewritten."
-    return [_step("chair_unit_dropin", why, dropin=seen.source, pairs=[list(pair) for pair in pairs], restart=active)]
+    pairs = [
+        *([f"{old}/.venv", f"{checkout}/.venv"] for old in olds.values()),
+        *([old, posixpath.join(checkout, SUBDIRS[name])] for name, old in olds.items()),
+    ]
+    why = "A chair unit drop-in still names a component checkout in its PATH, so those folders are rewritten."
+    return [_step("chair_unit_dropin", why, dropin=seen.source, pairs=pairs, restart=active)]
 
 
-def _venv_source(checkout: str, dist: str) -> str | None:
+def _retire_steps(present: Sequence[str], installs: str, retired: str, worktrees: Mapping[str, list[str]]) -> list[Step]:
+    """Each component checkout moves aside, never deleted, and its worktrees are repaired where it now sits."""
+    return [
+        step
+        for name in present
+        for step in (
+            _step(
+                "move",
+                f"{name} is part of the monorepo now, so its checkout retires; nothing deletes it.",
+                src=posixpath.join(installs, name),
+                dst=posixpath.join(retired, name),
+            ),
+            *(_repair_steps(name, posixpath.join(retired, name), worktrees[name]) if worktrees.get(name) else ()),
+        )
+    ]
+
+
+def _prints(workspace: Mapping[str, Any] | None, moved: Mapping[str, str], locs: Locations) -> list[Step]:
+    notes = [_step("print", FINISH_HINT, item="retired checkouts", checkouts=dict(moved))]
+    if not workspace:
+        return notes
+    path = workspace["path"]
+    where = "under the workspaces folder" if path.startswith(locs.workspaces + "/") else "where it is registered"
+    return [*notes, _step("print", f"The workspace stays {where} and is never moved.", item="workspace", path=path)]
+
+
+def migrate_plan(observed: dict[str, Any], locs: Locations, home_spellings: Sequence[str] = ()) -> list[Step]:
+    """Ordered steps for the remaining migration; one skip when none remain, only refuses when any rule refuses.
+    `home_spellings` are extra absolute spellings of the user home that a repo_map value may use."""
+    paths = setup_install.layout(locs.installs)
+    refusals = _refusals(observed, paths.checkout)
+    if refusals:
+        return refusals
+    present = _present(observed)
+    retired = retired_dir(locs.installs, str(observed.get("today", "")))
+    moved = {posixpath.join(locs.installs, name): posixpath.join(retired, name) for name in present}
+    market_runs, market_notes = _marketplace_steps(observed, paths.cartridges)
+    body = [
+        *_checkout_steps(observed.get("checkout") or {}, observed.get("target_tag"), paths.checkout),
+        *([] if observed.get("venv_source") == paths.checkout else [setup_install.sync_step(paths.checkout)]),
+        *_setting_steps(
+            observed.get("settings", {}), observed.get("home_record"), locs, paths.checkout, tuple(moved.items()),
+            home_spellings,
+        ),
+        *_link_steps(observed["cartridge_links"], locs),
+        *market_runs,
+        *_tool_steps(observed.get("install_bins"), paths.checkout),
+        *_chair_unit_steps(
+            observed.get("chair_unit"),
+            tuple((name, text) for name, text in observed.get("chair_unit_drop_ins", ())),
+            bool(observed.get("chair_active", False)),
+            locs.installs,
+            paths.checkout,
+        ),
+        *_retire_steps(present, locs.installs, retired, observed.get("worktrees", {})),
+    ]
+    if not body:
+        return [_step("skip", "The checkout, its venv, the tools, links, settings and profile keys are already final.")]
+    return [*body, *_prints(observed.get("workspace"), moved, locs), *market_notes]
+
+
+def is_monorepo_pyproject(text: str | None) -> bool:
+    """True when pyproject text names the `coxswain` distribution."""
+    try:
+        return tomllib.loads(text or "").get("project", {}).get("name") == setup_install.TOOL
+    except tomllib.TOMLDecodeError:
+        return False
+
+
+def read_is_monorepo(checkout: str) -> bool:
+    """Edge. Whether `<checkout>/pyproject.toml` names the coxswain distribution."""
+    try:
+        return is_monorepo_pyproject((Path(checkout) / "pyproject.toml").read_text())
+    except OSError:
+        return False
+
+
+def read_venv_source(checkout: str, dist: str = setup_install.TOOL) -> str | None:
     """Edge. The editable source in the dist-info direct_url.json of `checkout`'s .venv, without file://."""
     pattern = f".venv/lib/python*/site-packages/{dist}-*.dist-info/direct_url.json"
     for path in sorted(Path(checkout).glob(pattern)):
@@ -406,48 +495,9 @@ def _venv_source(checkout: str, dist: str) -> str | None:
     return None
 
 
-def _normalise(name: str) -> str:
-    return re.sub(r"[-_.]+", "-", name).lower()
-
-
-def _dist_name(requirement: str) -> str:
-    """The distribution name leading a requirement string; empty when it has none."""
-    found = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", requirement)
-    return found.group(1) if found else ""
-
-
-def venv_extras(groups: Mapping[str, Sequence[str]], installed: Collection[str]) -> list[str]:
-    """Sorted optional-dependency groups whose every distribution is installed, plus dev; a group naming none is skipped."""
-    present = {_normalise(name) for name in installed}
-    satisfied = [
-        group for group, dists in groups.items() if dists and all(_normalise(dist) in present for dist in dists)
-    ]
-    return sorted({*satisfied, "dev"})
-
-
-def _installed_names(checkout: str) -> set[str]:
-    """Edge. Distribution names from the dist-info folders of the checkout's .venv; raises OSError when there are none."""
-    folders = sorted(Path(checkout).glob(".venv/lib/python*/site-packages/*.dist-info"))
-    if not folders:
-        raise OSError(f"no dist-info folders under {checkout}/.venv")
-    return {folder.name.removesuffix(".dist-info").rpartition("-")[0] for folder in folders}
-
-
-def read_venv_extras(repo: str, checkout: str) -> list[str]:
-    """Edge. The extras `venv_extras` finds satisfied in `checkout`'s venv; ["dev"] and a printed note when unreadable."""
-    try:
-        data = tomllib.loads((Path(checkout) / "pyproject.toml").read_text())
-        table = data.get("project", {}).get("optional-dependencies", {})
-        groups = {group: [_dist_name(r) for r in reqs] for group, reqs in table.items()}
-        return venv_extras(groups, _installed_names(checkout))
-    except (OSError, ValueError, AttributeError, TypeError):
-        print(f"migrate: {repo} venv extras unknown; installed .[dev] only")
-        return ["dev"]
-
-
 def _receipt_entry(tool_dir: str, tool: str) -> dict[str, Any]:
-    """Edge. The editable value and extras of `tool`'s uv receipt; None and [] when absent or unreadable."""
-    absent: dict[str, Any] = {"editable": None, "extras": []}
+    """Edge. Whether `tool` is installed, and the editable value and extras of its uv receipt."""
+    absent: dict[str, Any] = {"installed": False, "editable": None, "extras": []}
     try:
         data = tomllib.loads((Path(tool_dir) / tool / "uv-receipt.toml").read_text())
         requirements = data["tool"]["requirements"]
@@ -455,147 +505,33 @@ def _receipt_entry(tool_dir: str, tool: str) -> dict[str, Any]:
         return absent
     found = [r for r in requirements if isinstance(r, dict) and r.get("name") == tool]
     if not found:
-        return absent
+        return {**absent, "installed": True}
     editable, extras = found[0].get("editable"), found[0].get("extras")
     return {
+        "installed": True,
         "editable": editable if isinstance(editable, str) else None,
         "extras": [x for x in extras if isinstance(x, str)] if isinstance(extras, list) else [],
     }
 
 
-def observe_install_bins(locs: Locations, tool_dir: str) -> dict[str, Any]:
-    """Edge. The `install_bins` observation: venv sources of graphs and tools, uv tool receipts of tools and cartridges.
+def observe_install_bins(tool_dir: str) -> dict[str, Any]:
+    """Edge. The `install_bins` observation: the receipt of each component uv tool and of `coxswain`.
 
-    A missing or unreadable file is recorded as None, never raised. `tool_dir` is the output of `uv tool dir`.
-    """
-    return {
-        GRAPHS: {"source": _venv_source(posixpath.join(locs.installs, GRAPHS), "agent_graphs")},
-        TOOLS: {"source": _venv_source(posixpath.join(locs.installs, TOOLS), "coxswain_tools")},
-        **{f"tool:{name}": _receipt_entry(tool_dir, folder) for name, folder in TOOL_RECEIPTS.items()},
-    }
-
-
-def _tool_install(name: str, new: str, extras: list[str]) -> Step:
-    target = f"{new}[{','.join(extras)}]" if extras else new
-    return _step(
-        "run",
-        f"The {name} uv tool must be editable from its checkout under the installs folder.",
-        argv=["uv", "tool", "install", "--force", "-q", "-e", target],
-    )
-
-
-def _reinstall_steps(
-    install_bins: dict[str, Any] | None, news: dict[str, str], locs: Locations, where: Mapping[str, str]
-) -> list[Step]:
-    """Eight run steps when any observed editable source differs from its checkout; none when all match or none was observed.
-
-    `where` is the path each checkout sits at now, whose old venv names the extras to keep.
-    """
-    if install_bins is None:
-        return []
-    tools_receipt = install_bins.get(f"tool:{TOOLS}") or {}
-    carts_receipt = install_bins.get(f"tool:{CARTRIDGES}") or {}
-    sources = {
-        GRAPHS: (install_bins.get(GRAPHS) or {}).get("source"),
-        TOOLS: (install_bins.get(TOOLS) or {}).get("source"),
-        f"tool:{TOOLS}": tools_receipt.get("editable"),
-        f"tool:{CARTRIDGES}": carts_receipt.get("editable"),
-    }
-    wanted = {GRAPHS: news[GRAPHS], TOOLS: news[TOOLS], f"tool:{TOOLS}": news[TOOLS], f"tool:{CARTRIDGES}": news[CARTRIDGES]}
-    if all(sources[key] == wanted[key] for key in sources):
-        return []
-    venvs = [
-        {**step, "why": step["why"] + " because its editable source is not the checkout under the installs folder."}
-        for name in REINSTALL_ORDER
-        for step in setup_install.venv_steps(
-            name, locs.installs, news[CARTRIDGES], True, read_venv_extras(name, where[name])
-        )
-    ]
-    return [
-        *venvs,
-        _tool_install(TOOLS, news[TOOLS], list(tools_receipt.get("extras") or [])),
-        _tool_install(CARTRIDGES, news[CARTRIDGES], list(carts_receipt.get("extras") or [])),
-    ]
-
-
-def _planned(entries: Mapping[str, Any]) -> tuple[str, ...]:
-    """The required checkouts, plus the umbrella when it is present at its old or final path."""
-    umbrella = entries.get(UMBRELLA)
-    present = (
-        bool(umbrella)
-        and "old" in umbrella
-        and (umbrella.get("old_kind", "absent") != "absent" or umbrella.get("new_kind", "absent") != "absent")
-    )
-    return (*CHECKOUTS, UMBRELLA) if present else CHECKOUTS
-
-
-def migrate_plan(observed: dict[str, Any], locs: Locations, home_spellings: Sequence[str] = ()) -> list[Step]:
-    """Ordered steps for the remaining migration; one skip when none remain, only refuses when any checkout refuses.
-    `home_spellings` are extra absolute spellings of the user home that a repo_map value may use."""
-    entries = observed.get("entries", {})
-    names = _planned(entries)
-    news = {name: posixpath.join(locs.installs, name) for name in names}
-    verdicts = {name: _checkout(name, entries.get(name), news[name]) for name in names}
-    refusals = [step for name in names if verdicts[name][0] == "refuse" for step in verdicts[name][1]]
-    if refusals:
-        return refusals
-    if "cartridge_links" not in observed:
-        why = "The workspace cartridge links were not observed, so their state is unknown and nothing is moved."
-        return [_step("refuse", why, checkout="cartridge_links")]
-    moved = [name for name in names if verdicts[name][0] == "moved"]
-    worktrees = observed.get("worktrees", {})
-    status = observed.get("worktree_status", {})
-    repaired = [name for name in names if name in moved or status.get(name) != "clean"]
-    unseen = [
-        _refuse(name, "needs its worktrees repaired but their paths were not observed")
-        for name in repaired
-        if name not in worktrees
-    ]
-    if unseen:
-        return unseen
-    user_home = posixpath.dirname(locs.config)
-    pairs = {name: (_expand_all(entries[name]["old"], user_home), news[name]) for name in names}
-    market_runs, market_notes = _marketplace_steps(observed, locs)
-    # A checkout still a real directory at its old path has not moved yet, so its old venv is there.
-    # A linked checkout's venv is at its link target until the move runs.
-    where = {
-        name: pairs[name][0]
-        if entries[name].get("old_kind") == "dir"
-        else _linked_target(entries[name], news[name]) or news[name]
-        for name in names
-    }
-    body = [
-        *(step for name in moved for step in verdicts[name][1]),
-        *_link_steps(observed["cartridge_links"], locs),
-        *(step for name in repaired for step in _repair_steps(name, news[name], worktrees[name])),
-        *_reinstall_steps(observed.get("install_bins"), news, locs, where),
-        *_setting_steps(
-            observed.get("settings", {}), observed.get("home_record"), tuple(pairs.values()), locs, home_spellings
-        ),
-        *market_runs,
-    ]
-    # The old root is the parent folder of the old coxswain-cartridges checkout.
-    unit = _chair_unit_steps(
-        observed.get("chair_unit"),
-        tuple((name, text) for name, text in observed.get("chair_unit_drop_ins", ())),
-        bool(observed.get("chair_active", False)),
-        posixpath.dirname(pairs[CARTRIDGES][0]),
-        tuple(pairs.values()),
-    )
-    if not body:
-        return unit or [_step("skip", "Every checkout, link, setting and profile key is already final.")]
-    return [*body, *_prints(observed.get("workspace"), pairs, locs), *market_notes, *unit]
+    A missing or unreadable receipt is recorded as not installed, never raised. `tool_dir` is `uv tool dir`."""
+    return {tool: _receipt_entry(tool_dir, tool) for tool in (*TOOL_RECEIPTS.values(), setup_install.TOOL)}
 
 
 def _detail(step: Step) -> str:
     op = step["op"]
+    if op == "checkout":
+        return f"{step['path']} at {step['tag']}"
     if op == "move":
         return f"{step['src']} -> {step['dst']}"
     if op == "symlink":
         return f"{step['path']} -> {step['target']}"
     if op in ("rewrite_setting", "rewrite_profile_key"):
         return f"{step['key']} {step['old']} -> {step['new']}"
-    if op in ("worktree_repair", "verify"):
+    if op in ("worktree_repair", "verify", "run"):
         return " ".join(step["argv"])
     return step.get("checkout") or step.get("item") or step.get("dropin") or ""
 

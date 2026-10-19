@@ -1,7 +1,6 @@
 import argparse
 import json
 import os
-import re
 import shutil
 import subprocess
 import types
@@ -15,44 +14,92 @@ from agent_tools.setup_migrate_hosts import ObservedHost
 ORIGINAL_OBSERVE_HOSTS = cli._migrate_observe_hosts
 ORIGINAL_TOOL_DIR = cli._migrate_tool_dir
 NAMES = ("coxswain-cartridges", "coxswain-graphs", "coxswain-tools")
+TAG = "v2026.10.0"
 
 
 def git(*argv, cwd):
-    subprocess.run(["git", *argv], cwd=cwd, check=True, capture_output=True)
+    subprocess.run(["git", "-c", "user.email=t@example.com", "-c", "user.name=t", *argv], cwd=cwd, check=True,
+                   capture_output=True)
+
+
+def _coxswain_origin(tmp_path):
+    """A bare coxswain repository: the umbrella at v0.47.0, then the monorepo at v2026.10.0."""
+    work, origin = tmp_path / "work", tmp_path / "origin.git"
+    work.mkdir()
+    git("init", "-q", "-b", "main", cwd=work)
+    (work / "manifest.toml").write_text('[coxswain]\nversion = "0.47.0"\n')
+    git("add", "-A", cwd=work)
+    git("commit", "-q", "-m", "umbrella", cwd=work)
+    git("tag", "v0.47.0", cwd=work)
+    (work / ".gitignore").write_text(".venv/\n")
+    (work / "pyproject.toml").write_text('[project]\nname = "coxswain"\n')
+    for link in ("base", "local"):
+        (work / "src" / "cartridges" / "cartridges" / link).mkdir(parents=True)
+        (work / "src" / "cartridges" / "cartridges" / link / "cartridge.yaml").write_text("name: x\n")
+    (work / "src" / "cartridges" / "providers").mkdir()
+    (work / "src" / "cartridges" / "providers" / "claude-code.yaml").write_text("# files mode\n")
+    git("add", "-A", cwd=work)
+    git("commit", "-q", "-m", "monorepo", cwd=work)
+    git("tag", TAG, cwd=work)
+    git("init", "-q", "--bare", str(origin), cwd=tmp_path)
+    git("push", "-q", str(origin), "main", "--tags", cwd=work)
+    return origin
+
+
+FAKE_UV = """#!/bin/sh
+echo "$*" >> {log}
+if [ "$1" = sync ]; then
+  d="$(pwd)/.venv/lib/python3.14/site-packages/coxswain-0.dist-info"
+  /bin/mkdir -p "$d"
+  printf '{{"url": "file://%s"}}' "$(pwd)" > "$d/direct_url.json"
+fi
+exit 0
+"""
 
 
 @pytest.fixture
 def layout(tmp_path, monkeypatch):
-    """An old layout: three git checkouts under repos/, relative cartridge links, and a profile naming them."""
+    """The 0.47 layout: the umbrella checkout at <installs>/coxswain on v0.47.0, three component checkouts beside
+    it, relative cartridge links into coxswain-cartridges, and a profile naming them."""
     user = tmp_path / "user"
-    repos, cartridges = user / "repos", user / "ws" / "cartridges"
+    installs = tmp_path / "coxhome" / "installs"
+    cartridges = user / "ws" / "cartridges"
+    origin = _coxswain_origin(tmp_path)
+    installs.mkdir(parents=True)
+    git("clone", "-q", str(origin), str(installs / "coxswain"), cwd=tmp_path)
+    git("checkout", "-q", "v0.47.0", cwd=installs / "coxswain")
     for name in NAMES:
-        (repos / name).mkdir(parents=True)
-        git("init", "-q", cwd=repos / name)
+        (installs / name).mkdir()
+        git("init", "-q", cwd=installs / name)
     cartridges.mkdir(parents=True)
     for link in ("base", "local"):
-        (repos / "coxswain-cartridges" / "cartridges" / link).mkdir(parents=True)
-        (cartridges / link).symlink_to(f"../../repos/coxswain-cartridges/cartridges/{link}")
+        (installs / "coxswain-cartridges" / "cartridges" / link).mkdir(parents=True)
+        (cartridges / link).symlink_to(os.path.relpath(installs / "coxswain-cartridges" / "cartridges" / link, cartridges))
     profile = user / ".config" / "agent-tools" / "profile.yaml"
     profile.parent.mkdir(parents=True)
     profile.write_text(
         "team: demo\n"
         f"cartridges_dir: {cartridges}\n"
-        f"skills_roots: [{repos}/coxswain-cartridges/skills]\n"
-        f"provider_profile: {repos}/coxswain-cartridges/provider.yaml\n"
-        f"harness_dir: {repos}/coxswain-graphs\n"
+        f"skills_roots: [{installs}/coxswain-cartridges/skills-plugins]\n"
+        f"provider_profile: {installs}/coxswain-cartridges/providers/claude-code.yaml\n"
+        f"harness_dir: {installs}/coxswain-graphs\n"
         f"workspace_dir: {user}/ws\n"
+        f"umbrella_dir: {installs}/coxswain\n"
     )
+    (user / ".config" / "agent-tools" / "home").write_text(f"{installs.parent}\n")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     (bin_dir / "git").symlink_to(shutil.which("git"))
+    uv_log = tmp_path / "uv.log"
+    (bin_dir / "uv").write_text(FAKE_UV.format(log=uv_log))
+    (bin_dir / "uv").chmod(0o755)
     monkeypatch.setenv("PATH", str(bin_dir))
     monkeypatch.setenv("HOME", str(user))
     monkeypatch.setenv("COXSWAIN_HOME", str(tmp_path / "coxhome"))
     for var in ("AGENT_TOOLS_PROFILE", "XDG_DATA_HOME", "XDG_STATE_HOME"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(cli, "_migrate_observe_hosts", lambda locs: [])
-    monkeypatch.setattr(cli, "_migrate_tool_dir", lambda: None)  # never let a test reach the real uv
+    monkeypatch.setattr(cli, "_migrate_tool_dir", lambda: None)  # never let a test reach the real uv tool dir
     calls = []
 
     def acquire(runs_dir, repo, holder, ttl):
@@ -71,11 +118,12 @@ def layout(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_migrate_operator_files", lambda locs: {})
     return types_ns(
         user=user,
-        repos=repos,
         cartridges=cartridges,
         profile=profile,
-        installs=tmp_path / "coxhome" / "installs",
+        installs=installs,
+        checkout=installs / "coxswain",
         bin=bin_dir,
+        uv_log=uv_log,
         calls=calls,
     )
 
@@ -84,62 +132,70 @@ def types_ns(**fields):
     return argparse.Namespace(**fields)
 
 
-def run(dry_run=False, apply=False, hosts=False, finish=False, old_root=None):
+def run(dry_run=False, apply=False, hosts=False, finish=False, old_root=None, to=None):
     return cli._setup_migrate(
-        argparse.Namespace(home=None, dry_run=dry_run, apply=apply, hosts=hosts, finish=finish, old_root=old_root)
+        argparse.Namespace(home=None, dry_run=dry_run, apply=apply, hosts=hosts, finish=finish, old_root=old_root, to=to)
     )
 
 
 def tree(root: Path):
-    return sorted((str(p), os.readlink(p) if p.is_symlink() else p.is_dir()) for p in root.rglob("*"))
+    return sorted((str(p), os.readlink(p) if p.is_symlink() else p.is_dir()) for p in root.rglob("*") if ".git" not in p.parts)
+
+
+def retired(layout):
+    return [p for p in layout.installs.iterdir() if p.name.startswith(".retired-")]
 
 
 CLOSING = "no changes made; run with --apply to migrate"
 
 
 def test_bare_command_changes_nothing_and_prints_the_closing_line(layout, capsys):
-    before = tree(layout.user)
+    before = tree(layout.installs.parent)
     assert run() == 0
     out = capsys.readouterr().out
-    assert "1. move" in out and "rewrite_profile_key" in out
+    assert f"1. checkout {layout.checkout} at {TAG}" in out and "rewrite_profile_key" in out
     assert out.rstrip().endswith(CLOSING)
-    assert tree(layout.user) == before and not layout.installs.exists()
+    assert tree(layout.installs.parent) == before and not layout.uv_log.exists()
 
 
 def test_dry_run_behaves_like_the_bare_command(layout, capsys):
-    before = tree(layout.user)
     assert run() == 0
     bare = capsys.readouterr().out
     assert run(dry_run=True) == 0
     assert capsys.readouterr().out == bare
-    assert tree(layout.user) == before and not layout.installs.exists()
 
 
-def test_apply_moves_the_layout_and_leaves_nothing_dangling(layout, capsys):
+def test_apply_makes_the_umbrella_the_monorepo_and_retires_the_components(layout, capsys):
     assert run(apply=True) == 0
     out = capsys.readouterr().out
     assert out.rstrip().endswith("verify with: cox setup doctor")
+    assert cli.setup_migrate.read_is_monorepo(str(layout.checkout))
+    assert cli._checkout_facts(layout.checkout)["tag"] == TAG
+    [folder] = retired(layout)
     for name in NAMES:
-        assert (layout.installs / name).is_dir() and (layout.repos / name).is_symlink()
+        assert not (layout.installs / name).exists() and (folder / name / ".git").is_dir()
     for link in ("base", "local"):
         assert (layout.cartridges / link).resolve() == (
-            layout.installs / "coxswain-cartridges" / "cartridges" / link
+            layout.checkout / "src" / "cartridges" / "cartridges" / link
         ).resolve()
-    for path in layout.user.rglob("*"):
-        assert path.exists(), f"dangling: {path}"
     text = layout.profile.read_text()
-    assert f"harness_dir: {layout.installs}/coxswain-graphs" in text
-    assert str(layout.repos) not in text
-    assert (layout.user / ".config" / "agent-tools" / "home").read_text().strip() == str(layout.installs.parent)
+    assert f"harness_dir: {layout.checkout}/src/graphs" in text
+    assert f"provider_profile: {layout.checkout}/src/cartridges/providers/claude-code.yaml" in text
+    assert "coxswain-" not in text
+    assert layout.uv_log.read_text().splitlines() == ["sync --frozen --all-extras -q"]
 
 
 def test_apply_lists_a_stale_script_then_the_beat_then_the_verify_line(layout, monkeypatch, capsys):
     script = str(layout.user / "start.sh")
-    monkeypatch.setattr(cli, "_migrate_operator_files", lambda locs: {script: f"cd {layout.repos}/coxswain-tools\n"})
+    old = layout.user / "repos"
+    monkeypatch.setattr(cli, "_migrate_operator_files", lambda locs: {script: f"cd {old}/coxswain-tools\n"})
+    state = Path(cli.home_paths.resolve_here(None).state)
+    state.mkdir(parents=True)
+    (state / "migrate.json").write_text(json.dumps({"old_root": str(old)}))
     assert run(apply=True) == 0
     lines = capsys.readouterr().out.rstrip().splitlines()
     assert lines[-3:] == [
-        f"migrate: {script} still names {layout.repos}/coxswain-tools; edit it by hand",
+        f"migrate: {script} still names {old}/coxswain-tools; edit it by hand",
         "beat: ok",
         "verify with: cox setup doctor",
     ]
@@ -148,19 +204,24 @@ def test_apply_lists_a_stale_script_then_the_beat_then_the_verify_line(layout, m
 def test_second_apply_has_nothing_to_do(layout, capsys):
     assert run(apply=True) == 0
     capsys.readouterr()
-    after = tree(layout.user)
+    after = tree(layout.installs.parent)
     assert run(apply=True) == 0
     assert "nothing to do" in capsys.readouterr().out
-    assert tree(layout.user) == after
+    assert tree(layout.installs.parent) == after
 
 
-def test_conflicting_destination_stops_nonzero_and_keeps_the_source(layout, capsys):
-    (layout.installs / "coxswain-graphs").mkdir(parents=True)
+def test_a_dirty_umbrella_refuses_and_nothing_moves(layout, capsys):
+    (layout.checkout / "manifest.toml").write_text("edited\n")
+    before = tree(layout.installs.parent)
     assert run(apply=True) == 1
-    out = capsys.readouterr().out
-    assert "FAILED step 1 refuse" in out and "coxswain-graphs" in out
-    assert (layout.repos / "coxswain-graphs" / ".git").is_dir()
-    assert not (layout.repos / "coxswain-graphs").is_symlink()
+    assert "FAILED step 1 refuse" in capsys.readouterr().out
+    assert tree(layout.installs.parent) == before
+
+
+def test_a_tag_that_is_not_the_monorepo_stops_before_anything_else(layout, capsys):
+    assert run(apply=True, to="0.47.0") == 1
+    assert "v0.47.0 is not a monorepo release" in capsys.readouterr().out
+    assert all((layout.installs / name).is_dir() for name in NAMES) and not layout.uv_log.exists()
 
 
 def test_move_onto_an_existing_destination_fails_without_touching_the_source(tmp_path):
@@ -170,6 +231,39 @@ def test_move_onto_an_existing_destination_fails_without_touching_the_source(tmp
     reason = cli._migrate_exec({"op": "move", "src": str(src), "dst": str(dst), "why": "x"}, None)
     assert reason is not None and "already exists" in reason
     assert (src / "keep").is_dir()
+
+
+def test_rerun_after_a_stop_resumes_from_the_remaining_steps(layout, capsys):
+    good = layout.profile.read_text()
+    roots = f"skills_roots: [{layout.installs}/coxswain-cartridges/skills-plugins]\n"
+    layout.profile.write_text(good.replace(roots, f"skills_roots:\n  - {layout.installs}/coxswain-cartridges/skills-plugins\n"))
+    assert run(apply=True) == 1
+    assert "FAILED step" in capsys.readouterr().out
+    assert all((layout.installs / n).is_dir() for n in NAMES)
+    layout.profile.write_text(good)
+    assert run(apply=True) == 0
+    out = capsys.readouterr().out
+    assert "fetch --tags" not in out and "sync --frozen" not in out
+    assert "profile skills_roots" in out and "coxswain-" not in layout.profile.read_text()
+
+
+def test_edit_key_replaces_one_line_appends_a_missing_one_and_refuses_block_lists():
+    edited, _ = cli._migrate_edit_key("a: 1\nroots: [/o]\nb: 2\n", "roots", ["/n", "/m"])
+    assert edited == "a: 1\nroots: [/n, /m]\nb: 2\n"
+    assert cli._migrate_edit_key("roots:\n  - /o\n", "roots", ["/n"])[0] is None
+    assert cli._migrate_edit_key("a: 1\n", "roots", ["/n"])[0] is None
+    assert cli._migrate_edit_key("a: 1", "umbrella_dir", "/c", add=True)[0] == "a: 1\numbrella_dir: /c\n"
+
+
+def test_a_profile_without_umbrella_dir_gets_one(layout):
+    text = layout.profile.read_text()
+    layout.profile.write_text("".join(line for line in text.splitlines(keepends=True) if not line.startswith("umbrella_dir")))
+    assert run(apply=True) == 0
+    assert f"umbrella_dir: {layout.checkout}\n" in layout.profile.read_text()
+
+
+def test_to_parses_on_setup_migrate():
+    assert cli.build_parser().parse_args(["setup", "migrate", "--to", "2026.10.0"]).to == "2026.10.0"
 
 
 def test_each_host_is_reported_and_one_failure_does_not_hide_the_others(layout, monkeypatch, capsys):
@@ -194,7 +288,7 @@ def test_each_host_is_reported_and_one_failure_does_not_hide_the_others(layout, 
 
 
 def test_a_failed_local_step_runs_no_host_step(layout, monkeypatch):
-    (layout.installs / "coxswain-graphs").mkdir(parents=True)
+    (layout.checkout / "manifest.toml").write_text("edited\n")
     hosts = [ObservedHost("a", "ssh-a", "/w", {"coxswain-tools": "/old/coxswain-tools"}, "/w", "beat")]
     monkeypatch.setattr(cli, "_migrate_observe_hosts", lambda locs: hosts)
     monkeypatch.setattr(cli, "_migrate_run_host_step", lambda step, locs: pytest.fail("host step ran"))
@@ -266,7 +360,7 @@ LANES = "lane_hosts:\n  - name: h\n    ssh: ssh-h\n    workspace_dir: /old/ws\n 
 
 def test_lane_host_workspace_is_repointed_through_the_real_runner(layout, monkeypatch):
     layout.profile.write_text(layout.profile.read_text() + LANES)
-    moved = {"coxswain-tools": "/new/installs/coxswain-tools"}
+    moved = {"coxswain": "/new/installs/coxswain"}
     hosts = [ObservedHost("h", "ssh-h", "/new/ws", moved, "/old/ws", "beat")]
     monkeypatch.setattr(cli, "_migrate_observe_hosts", lambda locs: hosts)
     assert run(apply=True, hosts=True) == 0
@@ -299,35 +393,6 @@ def test_observed_hosts_fall_back_to_the_profile_when_the_table_is_empty(layout,
     ]
 
 
-def test_rerun_after_a_stop_resumes_from_the_remaining_steps(layout, capsys):
-    good = layout.profile.read_text()
-    old_roots = f"skills_roots: [{layout.repos}/coxswain-cartridges/skills]\n"
-    layout.profile.write_text(
-        good.replace(old_roots, f"skills_roots:\n  - {layout.repos}/coxswain-cartridges/skills\n")
-    )
-    assert run(apply=True) == 1
-    assert "FAILED step" in capsys.readouterr().out
-    assert all((layout.installs / n).is_dir() for n in NAMES)
-    layout.profile.write_text(good)
-    assert run(apply=True) == 0
-    out = capsys.readouterr().out
-    assert f"move {layout.repos}" not in out and "profile skills_roots" in out
-    assert str(layout.repos) not in layout.profile.read_text()
-
-
-def test_rerun_rewrites_a_setting_left_pointing_at_the_old_path(layout, capsys):
-    assert run(apply=True) == 0
-    text = layout.profile.read_text()
-    new_provider = f"provider_profile: {layout.installs}/coxswain-cartridges/provider.yaml\n"
-    layout.profile.write_text(
-        text.replace(new_provider, f"provider_profile: {layout.repos}/coxswain-cartridges/provider.yaml\n")
-    )
-    capsys.readouterr()
-    assert run(apply=True) == 0
-    assert "profile provider_profile" in capsys.readouterr().out
-    assert layout.profile.read_text() == text
-
-
 def test_apply_flag_parses_for_the_remote_argv():
     args = cli.build_parser().parse_args(["setup", "migrate", "--apply"])
     assert args.apply is True and args.dry_run is False and args.hosts is False
@@ -346,12 +411,12 @@ def test_a_live_local_lane_refuses_and_releases_every_lease(layout, monkeypatch,
     assert run(apply=True) == 1
     assert "migrate: refusing, live lane run-7 holds a run on this machine" in capsys.readouterr().out
     assert tree(layout.user) == before
-    assert len(taken(layout, "acquire")) == 3
+    assert len(taken(layout, "acquire")) == 4
     assert sorted(c[1] for c in taken(layout, "release")) == sorted(c[2] for c in taken(layout, "acquire"))
     assert not (Path(cli.home_paths.resolve_here(None).state) / "migrate.json").exists()
 
 
-def test_a_refused_lease_releases_the_other_two(layout, monkeypatch, capsys):
+def test_a_refused_lease_releases_the_others(layout, monkeypatch, capsys):
     def acquire(runs_dir, repo, holder, ttl):
         layout.calls.append(("acquire", runs_dir, repo, holder, ttl))
         if repo.endswith("coxswain-graphs"):
@@ -361,9 +426,9 @@ def test_a_refused_lease_releases_the_other_two(layout, monkeypatch, capsys):
     monkeypatch.setattr(cli.land_repo_lease, "acquire", acquire)
     before = tree(layout.user)
     assert run(apply=True) == 1
-    assert f"migrate: refusing, land@other:9 holds {layout.repos}/coxswain-graphs" in capsys.readouterr().out
+    assert f"migrate: refusing, land@other:9 holds {layout.installs}/coxswain-graphs" in capsys.readouterr().out
     released = sorted(c[1] for c in taken(layout, "release"))
-    assert released == [f"{layout.repos}/{n}" for n in NAMES if n != "coxswain-graphs"]
+    assert released == sorted(f"{layout.installs}/{n}" for n in (*NAMES, "coxswain") if n != "coxswain-graphs")
     assert tree(layout.user) == before
 
 
@@ -376,20 +441,18 @@ def test_an_acquire_that_raises_is_an_error_outcome_not_a_crash(layout, monkeypa
     assert "lease error: OSError: no store" in capsys.readouterr().out
 
 
-def test_a_clean_preflight_writes_migrate_json_and_releases_after_the_last_step(layout, monkeypatch):
+def test_a_clean_preflight_leases_every_checkout_and_releases_after_the_last_step(layout, monkeypatch):
     seen = []
     real = cli._migrate_exec
     monkeypatch.setattr(
         cli, "_migrate_exec", lambda step, locs: seen.append(len(taken(layout, "release"))) or real(step, locs)
     )
     assert run(apply=True) == 0
-    locs = cli.home_paths.resolve_here(None)
-    written = json.loads((Path(locs.state) / "migrate.json").read_text())
-    assert written == {"old_root": str(layout.repos), "new_root": str(layout.installs)}
     acquires = taken(layout, "acquire")
-    assert len(acquires) == 3 and all(c[2].startswith(str(layout.repos)) and c[4] == 3600 for c in acquires)
+    assert [c[2] for c in acquires] == [f"{layout.installs}/{n}" for n in ("coxswain-tools", "coxswain-graphs", "coxswain-cartridges", "coxswain")]
+    assert all(c[4] == 3600 for c in acquires)
     assert acquires[0][1] == layout.user / "ws" / "runs" and acquires[0][3] == f"migrate@here:{os.getpid()}"
-    assert seen and all(n == 0 for n in seen) and len(taken(layout, "release")) == 3
+    assert seen and all(n == 0 for n in seen) and len(taken(layout, "release")) == 4
 
 
 def test_leases_are_released_when_a_local_step_raises(layout, monkeypatch):
@@ -399,7 +462,7 @@ def test_leases_are_released_when_a_local_step_raises(layout, monkeypatch):
     monkeypatch.setattr(cli, "_migrate_exec", boom)
     with pytest.raises(RuntimeError):
         run(apply=True)
-    assert len(taken(layout, "release")) == 3
+    assert len(taken(layout, "release")) == 4
 
 
 def test_a_plan_of_only_skip_steps_takes_no_lease(layout):
@@ -422,7 +485,7 @@ def test_needs_preflight_ignores_skip_and_print_steps():
 
 @pytest.fixture
 def chair_unit(layout, monkeypatch):
-    """An installed chair unit whose PATH names the old checkout root, with `which cox` and systemctl faked."""
+    """An installed chair unit whose PATH names a component checkout, with `which cox` and systemctl faked."""
     monkeypatch.setattr(cli.shutil, "which", lambda _name: "/usr/local/bin/cox")
     monkeypatch.setattr(cli.sys, "platform", "linux")
     path = cli.chair_service.unit_path(layout.user)
@@ -434,7 +497,7 @@ def chair_unit(layout, monkeypatch):
         60,
         None,
         str(layout.profile),
-        f"{layout.repos}/coxswain-tools/.venv/bin:/usr/bin",
+        f"{layout.installs}/coxswain-tools/.venv/bin:/usr/bin",
     )
     path.write_text(old, encoding="utf-8")
     calls = []
@@ -553,104 +616,57 @@ def test_a_refused_unit_is_left_alone_and_nothing_is_run(layout, chair_unit, mon
     assert chair_unit.path.read_text(encoding="utf-8") == chair_unit.old
     assert chair_unit.calls == []
     assert "chair service: cox is not on PATH" in capsys.readouterr().out
-def uv_recorder(monkeypatch, tmp_path, events):
-    """Fake `uv tool dir` to an empty folder, so every editable source reads as absent, and record each other uv call."""
+
+
+def uv_tools(monkeypatch, tmp_path, events, receipts):
+    """Fake `uv tool dir` holding `receipts` (tool -> editable path) and record every uv call."""
     real = subprocess.run
     tool_dir = tmp_path / "uvtools"
-    tool_dir.mkdir(exist_ok=True)
+    for tool, editable in receipts.items():
+        (tool_dir / tool).mkdir(parents=True)
+        requirement = f'{{ name = "{tool}", editable = "{editable}", extras = ["lake"] }}'
+        (tool_dir / tool / "uv-receipt.toml").write_text(f"[tool]\nrequirements = [{requirement}]\n")
 
     def fake(argv, **kw):
         if argv[0] != "uv":
             return real(argv, **kw)
-        events.append((argv, kw.get("cwd")))
-        return subprocess.CompletedProcess(argv, 0, "", "")
+        events.append(argv)
+        return real(argv, **kw) if argv[1] == "sync" else subprocess.CompletedProcess(argv, 0, "", "")
 
     monkeypatch.setattr(cli, "_migrate_tool_dir", lambda: str(tool_dir))
     monkeypatch.setattr(cli.subprocess, "run", fake)
     return tool_dir
 
 
-def reinstall_calls(installs):
-    pip = ["uv", "pip", "install", "-q", "-e", ".[dev]"]
-    venv = ["uv", "venv", "--clear", "-q"]
-    tools, graphs, carts = (f"{installs}/coxswain-{n}" for n in ("tools", "graphs", "cartridges"))
-    return [
-        (venv, tools), (pip, tools),
-        (venv, graphs), ([*pip, "-e", carts], graphs),
-        (venv, carts), (pip, carts),
-        (["uv", "tool", "install", "--force", "-q", "-e", tools], None),
-        (["uv", "tool", "install", "--force", "-q", "-e", carts], None),
+def test_apply_loads_the_lazy_modules_then_swaps_the_component_tools_for_coxswain(layout, monkeypatch, tmp_path):
+    events = []
+    old = {"coxswain-tools": f"{layout.installs}/coxswain-tools", "agent-cartridges": f"{layout.installs}/coxswain-cartridges"}
+    uv_tools(monkeypatch, tmp_path, events, old)
+    monkeypatch.setattr(cli, "_load_lazy_modules", lambda: events.append("lazy"))
+    assert run(apply=True) == 0
+    assert events == [
+        "lazy",
+        ["uv", "sync", "--frozen", "--all-extras", "-q"],
+        ["uv", "tool", "uninstall", "coxswain-tools"],
+        ["uv", "tool", "uninstall", "agent-cartridges"],
+        ["uv", "tool", "install", "--force", "-q", "--editable", f"{layout.checkout}[lake]"],
     ]
 
 
-def test_apply_loads_the_lazy_modules_then_runs_the_eight_reinstall_steps_in_order(layout, monkeypatch, tmp_path, capsys):
+def test_a_failing_tool_install_stops_the_apply_before_any_checkout_retires(layout, monkeypatch, tmp_path, capsys):
     events = []
-    uv_recorder(monkeypatch, tmp_path, events)
-    monkeypatch.setattr(cli, "_load_lazy_modules", lambda: events.append("lazy"))
-    assert run(apply=True) == 0
-    assert events[0] == "lazy" and events.count("lazy") == 1
-    assert events[1:] == reinstall_calls(layout.installs)
-    assert "run: uv venv --clear -q" in capsys.readouterr().out
-
-
-def test_a_failing_reinstall_step_stops_the_apply(layout, monkeypatch, tmp_path, capsys):
-    events = []
-    uv_recorder(monkeypatch, tmp_path, events)
+    uv_tools(monkeypatch, tmp_path, events, {"coxswain-tools": f"{layout.installs}/coxswain-tools"})
     recording = cli.subprocess.run
 
-    def fail_pip(argv, **kw):
-        if argv[:2] == ["uv", "pip"]:
+    def fail_install(argv, **kw):
+        if argv[:3] == ["uv", "tool", "install"]:
             return subprocess.CompletedProcess(argv, 3, "", "boom")
         return recording(argv, **kw)
 
-    monkeypatch.setattr(cli.subprocess, "run", fail_pip)
+    monkeypatch.setattr(cli.subprocess, "run", fail_install)
     assert run(apply=True) == 1
     assert "FAILED step" in capsys.readouterr().out
-    assert [argv[1] for argv, _ in events] == ["venv"]
-
-
-def test_a_bare_command_prints_the_reinstall_steps_and_runs_none(layout, monkeypatch, tmp_path, capsys):
-    events = []
-    uv_recorder(monkeypatch, tmp_path, events)
-    monkeypatch.setattr(cli, "_load_lazy_modules", lambda: events.append("lazy"))
-    assert run() == 0
-    out = capsys.readouterr().out
-    assert sum(bool(re.match(r"\d+\. run ", line)) for line in out.splitlines()) == 8 and out.rstrip().endswith(CLOSING)
-    assert events == []
-
-
-def link_install(layout, git_checkout=True):
-    """A 0.40 install: coxswain-tools is a symlink to the bare-name tools checkout."""
-    (layout.repos / "coxswain-tools").rename(layout.repos / "tools")
-    if not git_checkout:
-        shutil.rmtree(layout.repos / "tools" / ".git")
-    (layout.repos / "coxswain-tools").symlink_to("tools")
-
-
-def test_a_link_to_a_git_checkout_moves_the_target_and_links_both_names(layout, monkeypatch, tmp_path, capsys):
-    events = []
-    uv_recorder(monkeypatch, tmp_path, events)
-    link_install(layout)
-    new = layout.installs / "coxswain-tools"
-    assert run(dry_run=True) == 0
-    out = capsys.readouterr().out
-    assert f"move {layout.repos}/tools -> {new}" in out
-    assert f"symlink {layout.repos}/coxswain-tools -> {new}" in out
-    assert f"symlink {layout.repos}/tools -> {new}" in out
-    assert (layout.repos / "tools" / ".git").is_dir() and events == []
-    assert run(apply=True) == 0
-    assert (new / ".git").is_dir()
-    for name in ("coxswain-tools", "tools"):
-        assert (layout.repos / name).is_symlink() and (layout.repos / name).resolve() == new.resolve()
-    assert events == reinstall_calls(layout.installs)
-
-
-def test_a_link_to_a_directory_that_is_not_a_git_checkout_refuses_and_moves_nothing(layout, capsys):
-    link_install(layout, git_checkout=False)
-    before = tree(layout.repos)
-    assert run(apply=True) == 1
-    assert "FAILED step 1 refuse" in capsys.readouterr().out
-    assert tree(layout.repos) == before and not (layout.installs / "coxswain-tools").exists()
+    assert all((layout.installs / n).is_dir() for n in NAMES)
 
 
 def test_uv_tool_dir_is_none_when_uv_fails_or_is_missing(monkeypatch):
@@ -666,47 +682,23 @@ def test_uv_tool_dir_is_none_when_uv_fails_or_is_missing(monkeypatch):
 
 
 def test_no_tool_dir_observes_no_install_bins(layout):
-    assert cli._migrate_install_bins(cli.home_paths.resolve_here(None)) is None
+    assert cli._migrate_install_bins() is None
+    assert "install_bins" not in cli._migrate_observe(cli.home_paths.resolve_here(None))
 
 
-def final_install_bins(installs, tool_dir):
-    for name, dist in (("coxswain-graphs", "agent_graphs"), ("coxswain-tools", "coxswain_tools")):
-        info = Path(installs) / name / ".venv" / "lib" / "python3.13" / "site-packages" / f"{dist}-0.1.dist-info"
-        info.mkdir(parents=True)
-        (info / "direct_url.json").write_text(json.dumps({"url": f"file://{installs}/{name}"}))
-    for name, folder in (("coxswain-tools", "coxswain-tools"), ("coxswain-cartridges", "agent-cartridges")):
-        receipt = tool_dir / folder
-        receipt.mkdir(parents=True)
-        requirement = f'{{ name = "{folder}", editable = "{installs}/{name}" }}'
-        (receipt / "uv-receipt.toml").write_text(f"[tool]\nrequirements = [{requirement}]\n")
-
-
-def test_a_final_layout_with_matching_install_bins_runs_no_step(layout, monkeypatch, tmp_path, capsys):
-    assert run(apply=True) == 0
-    events = []
-    tool_dir = uv_recorder(monkeypatch, tmp_path, events)
-    final_install_bins(layout.installs, tool_dir)
-    monkeypatch.setattr(cli, "_load_lazy_modules", lambda: events.append("lazy"))
-    capsys.readouterr()
-    assert run(apply=True) == 0
-    assert "nothing to do" in capsys.readouterr().out
-    assert events == []
-
-
-def test_the_doctor_reports_the_install_bins_row(layout, monkeypatch, tmp_path, capsys):
-    uv_recorder(monkeypatch, tmp_path, [])
+def test_the_doctor_reports_the_install_bins_row_against_the_checkout(layout, monkeypatch, tmp_path):
+    uv_tools(monkeypatch, tmp_path, [], {"coxswain": f"{layout.installs}/coxswain-tools"})
     monkeypatch.setattr(cli.shutil, "which", lambda name: None)
     rows = {row["check"]: row for row in cli._doctor_home_rows(cli._migrate_profile(cli.home_paths.resolve_here(None)))}
-    assert rows["install bins"]["warn"] is True  # this layout is not migrated yet, so a stale source warns
-    assert "missing graphs venv, tools venv, tools receipt, cartridges receipt" in rows["install bins"]["detail"]
+    assert rows["install bins"]["ok"] is False
+    assert rows["install bins"]["detail"] == (
+        f"missing venv; tool receipt -> {layout.installs}/coxswain-tools; expected {layout.checkout}")
 
 
-def test_the_doctor_flattens_the_observation_into_the_four_named_sources():
-    bins = {"coxswain-graphs": {"source": "/g"}, "coxswain-tools": {"source": None},
-            "tool:coxswain-tools": {"editable": "/t", "extras": []}, "tool:coxswain-cartridges": {"editable": None, "extras": []}}
-    assert cli._doctor_install_sources(bins) == {
-        "graphs venv": "/g", "tools venv": None, "tools receipt": "/t", "cartridges receipt": None}
-    assert cli._doctor_install_sources(None) is None
+def test_the_doctor_flattens_the_observation_into_the_two_sources():
+    bins = {"coxswain": {"installed": True, "editable": "/c", "extras": []}}
+    assert cli._doctor_install_sources(bins, "/v") == {"venv": "/v", "tool receipt": "/c"}
+    assert cli._doctor_install_sources(None, "/v") is None
 
 
 MARKET = "coxswain-cartridges"
@@ -736,11 +728,11 @@ def fake_claude(layout):
         queries = ("plugin marketplace list --json", "plugin list --json")
         return [line for line in log.read_text().splitlines() if line not in queries] if log.exists() else []
 
-    return types_ns(install=install, argvs=argvs, new=str(layout.installs / MARKET))
+    return types_ns(install=install, argvs=argvs, new=str(layout.checkout / "src" / "cartridges"))
 
 
 def test_apply_re_registers_the_marketplace_and_reinstalls_the_plugin_in_order(layout, fake_claude):
-    fake_claude.install(f"{layout.repos}/{MARKET}")
+    fake_claude.install(f"{layout.installs}/{MARKET}")
     assert run(apply=True) == 0
     assert fake_claude.argvs() == [
         f"plugin marketplace remove {MARKET}",
@@ -750,10 +742,10 @@ def test_apply_re_registers_the_marketplace_and_reinstalls_the_plugin_in_order(l
 
 
 def test_without_apply_the_marketplace_steps_are_printed_and_not_run(layout, fake_claude, capsys):
-    fake_claude.install(f"{layout.repos}/{MARKET}")
+    fake_claude.install(f"{layout.installs}/{MARKET}")
     assert run() == 0
     assert fake_claude.argvs() == []
-    assert "run - register coxswain-cartridges as a plugin marketplace" in capsys.readouterr().out
+    assert f"run claude plugin marketplace add {fake_claude.new} - register coxswain-cartridges" in capsys.readouterr().out
 
 
 def test_a_marketplace_at_the_final_path_runs_no_remove_add_or_install(layout, fake_claude):
@@ -776,10 +768,10 @@ def test_claude_absent_from_path_prints_the_not_checked_line_and_runs_no_claude(
 
 
 def test_observe_reports_the_marketplace_keys(layout, fake_claude):
-    fake_claude.install(f"{layout.repos}/{MARKET}")
+    fake_claude.install(f"{layout.installs}/{MARKET}")
     seen = cli._migrate_observe(cli.home_paths.resolve_here(None))
     assert (seen["claude_on_path"], seen["marketplace"], seen["marketplace_plugins"]) == (
-        True, f"{layout.repos}/{MARKET}", [f"base@{MARKET}"])
+        True, f"{layout.installs}/{MARKET}", [f"base@{MARKET}"])
 
 
 def test_observe_without_claude_reports_nothing_registered(layout):
@@ -800,21 +792,27 @@ def test_plugin_ids_keep_only_this_marketplace_in_order():
     assert cli._marketplace_plugin_ids({"id": f"a@{MARKET}"}) == []
 
 
-def host(under="installs"):
-    return ObservedHost("mac", "mac.local", "/m/ws", {"coxswain-tools": f"/m/{under}/coxswain-tools"}, "/m/ws", "beat")
+def host(where="installs/coxswain"):
+    return ObservedHost("mac", "mac.local", "/m/ws", {"coxswain": f"/m/{where}"}, "/m/ws", "beat")
 
 
 @pytest.fixture
 def migrated(layout, monkeypatch):
-    """The layout after a plain apply: the old paths are links, the marker names the old root, one task file names an old path."""
+    """The layout with the pre-home compatibility links at repos/ and their marker, after a plain apply: the links
+    now name retired checkouts, and one task file names an old path."""
+    repos = layout.user / "repos"
+    repos.mkdir()
+    for name in NAMES:
+        (repos / name).symlink_to(layout.installs / name)
     task = layout.user / "ws" / "work" / "demo" / "1-build" / "task.md"
     task.parent.mkdir(parents=True)
-    task.write_text(f"---\nstate: ready\ntitle: Do it\nrepo: {layout.repos}/coxswain-tools\n---\n\nDo it\n")
-    (layout.repos / "coxswain-cartridges" / "provider.yaml").write_text("# files mode\n")
+    task.write_text(f"---\nstate: ready\ntitle: Do it\nrepo: {repos}/coxswain-tools\n---\n\nDo it\n")
+    marker = layout.user / ".local" / "state" / "coxswain" / "migrate.json"
+    marker.parent.mkdir(parents=True)
+    marker.write_text(json.dumps({"old_root": str(repos), "new_root": str(layout.installs)}))
     assert run(apply=True) == 0
     monkeypatch.setattr(cli, "_migrate_observe_hosts", lambda locs: [host()])
-    layout.task = task
-    layout.marker = layout.user / ".local" / "state" / "coxswain" / "migrate.json"
+    layout.task, layout.marker, layout.repos = task, marker, repos
     return layout
 
 
@@ -824,7 +822,7 @@ def test_finish_without_a_marker_or_old_root_exits_two(layout, capsys):
 
 
 def test_finish_with_an_unmigrated_host_exits_one_and_touches_nothing(migrated, monkeypatch, capsys):
-    monkeypatch.setattr(cli, "_migrate_observe_hosts", lambda locs: [host(under="repos")])
+    monkeypatch.setattr(cli, "_migrate_observe_hosts", lambda locs: [host("installs/coxswain-tools")])
     before, text = tree(migrated.user), migrated.task.read_text()
     capsys.readouterr()
     assert run(finish=True, apply=True) == 1
@@ -839,7 +837,7 @@ def test_finish_apply_rewrites_rows_and_removes_only_the_links(migrated, capsys)
     assert f"finish: remove {migrated.repos}/coxswain-tools" in out
     assert f"repo: {migrated.installs}/coxswain-tools\n" in migrated.task.read_text()
     for name in NAMES:
-        assert not (migrated.repos / name).exists() and (migrated.installs / name).is_dir()
+        assert not (migrated.repos / name).is_symlink() and (retired(migrated)[0] / name).is_dir()
     assert not migrated.marker.exists()
 
 
@@ -849,7 +847,7 @@ def test_finish_keeps_a_real_directory_at_the_old_path_and_prints_it(migrated, c
     capsys.readouterr()
     assert run(finish=True, apply=True) == 0
     assert f"finish: kept {migrated.repos}/coxswain-graphs: a real directory" in capsys.readouterr().out
-    assert (migrated.repos / "coxswain-graphs").is_dir() and not (migrated.repos / "coxswain-tools").exists()
+    assert (migrated.repos / "coxswain-graphs").is_dir() and not (migrated.repos / "coxswain-tools").is_symlink()
 
 
 def test_finish_without_apply_changes_nothing(migrated, capsys):
@@ -868,68 +866,6 @@ def test_finish_rerun_has_nothing_to_do(migrated, capsys):
     assert capsys.readouterr().out.strip() == "finish: nothing to do"
 
 
-@pytest.fixture
-def umbrella(layout, monkeypatch):
-    """The three-checkout layout plus the umbrella checkout beside the tools checkout, every host already migrated."""
-    (layout.repos / "coxswain-cartridges" / "provider.yaml").write_text("# files mode\n")
-    monkeypatch.setattr(cli, "_migrate_observe_hosts", lambda locs: [host()])
-    (layout.repos / "coxswain").mkdir()
-    git("init", "-q", cwd=layout.repos / "coxswain")
-    return layout
-
-
-def umbrella_steps(plan):
-    return [s for s in plan if any(str(s.get(k, "")).endswith("/coxswain") for k in ("src", "dst", "path", "link", "target"))]
-
-
-def test_observe_reports_the_umbrella_like_the_other_checkouts(umbrella):
-    locs = cli.home_paths.resolve_here()
-    observed = cli._migrate_observe(locs)
-    entries = observed["entries"]
-    assert entries["coxswain"].keys() == entries["coxswain-tools"].keys()
-    assert entries["coxswain"]["old"] == str(umbrella.repos / "coxswain")
-    assert (entries["coxswain"]["old_kind"], entries["coxswain"]["new_kind"]) == ("dir", "absent")
-    steps = umbrella_steps(cli.setup_migrate.migrate_plan(observed, locs))
-    assert [s["op"] for s in steps] == ["move", "symlink"]
-    assert (steps[0]["src"], steps[0]["dst"]) == (str(umbrella.repos / "coxswain"), str(umbrella.installs / "coxswain"))
-
-
-def test_an_absent_umbrella_is_not_observed(layout):
-    locs = cli.home_paths.resolve_here()
-    assert "coxswain" not in cli._migrate_observe(locs)["entries"]
-
-
-def test_a_folder_named_coxswain_does_not_move_the_old_root(layout):
-    locs = cli.home_paths.resolve_here()
-    odd = {"skills_roots": [str(layout.user / ".config" / "coxswain" / "skills")], "harness_dir": f"{layout.repos}/coxswain-graphs"}
-    assert cli._migrate_old_root(odd, locs) == str(layout.repos)
-
-
-def test_a_final_umbrella_layout_has_nothing_to_do(umbrella):
-    assert run(apply=True) == 0
-    locs = cli.home_paths.resolve_here()
-    assert umbrella_steps(cli.setup_migrate.migrate_plan(cli._migrate_observe(locs), locs)) == []
-
-
-def test_apply_links_the_umbrella_and_only_finish_removes_the_link(umbrella, capsys):
-    assert run(apply=True) == 0
-    link = umbrella.repos / "coxswain"
-    assert link.is_symlink() and os.readlink(link) == str(umbrella.installs / "coxswain")
-    capsys.readouterr()
-    assert run(finish=True, apply=True) == 0
-    assert f"finish: remove {link}" in capsys.readouterr().out
-    assert not link.exists() and (umbrella.installs / "coxswain").is_dir()
-
-
-def test_finish_keeps_a_real_directory_at_the_umbrella_old_path(umbrella, capsys):
-    assert run(apply=True) == 0
-    (umbrella.repos / "coxswain").unlink()
-    (umbrella.repos / "coxswain").mkdir()
-    capsys.readouterr()
-    assert run(finish=True, apply=True) == 0
-    assert f"finish: kept {umbrella.repos}/coxswain: a real directory" in capsys.readouterr().out
-
-
 def test_finish_refuses_to_mix_with_hosts(layout, capsys):
     before = tree(layout.user)
     assert run(finish=True, apply=True, hosts=True) == 2
@@ -946,7 +882,7 @@ def test_finish_dry_run_plans_even_with_apply(migrated, capsys):
 
 
 def test_finish_with_an_unusable_provider_profile_exits_two_and_keeps_every_link(migrated, capsys):
-    (migrated.installs / "coxswain-cartridges" / "provider.yaml").unlink()
+    (migrated.checkout / "src" / "cartridges" / "providers" / "claude-code.yaml").unlink()
     before = tree(migrated.user)
     capsys.readouterr()
     assert run(finish=True, apply=True) == 2
@@ -989,7 +925,7 @@ def test_finish_in_store_mode_upserts_the_rows_then_removes_the_links(migrated, 
     capsys.readouterr()
     assert run(finish=True, apply=True) == 0
     assert row["extra"]["repo"] == f"{migrated.installs}/coxswain-tools"
-    assert state["upserts"] and not (migrated.repos / "coxswain-tools").exists()
+    assert state["upserts"] and not (migrated.repos / "coxswain-tools").is_symlink()
     assert not migrated.marker.exists()
 
 

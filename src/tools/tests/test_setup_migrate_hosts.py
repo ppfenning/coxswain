@@ -11,7 +11,7 @@ LINUX_MIGRATED = ObservedHost(
     name="linux1",
     ssh="linux1",
     workspace_dir="/home/user/.local/share/coxswain/workspaces/main",
-    checkouts={"coxswain-tools": "/home/user/.local/share/coxswain/installs/coxswain-tools"},
+    checkouts={"coxswain": "/home/user/.local/share/coxswain/installs/coxswain"},
     profile_workspace_dir="/home/user/.local/share/coxswain/workspaces/main",
     source="beat",
 )
@@ -29,15 +29,15 @@ def ops(plan):
     return [[step.op for step in group] for group in plan]
 
 
-def test_is_migrated_is_true_when_every_checkout_sits_under_installs():
+def test_is_migrated_is_true_when_every_checkout_is_the_monorepo_checkout():
     assert is_migrated(LINUX_MIGRATED) is True
 
 
-def test_a_folder_inside_a_checkout_under_installs_counts_as_migrated():
-    inside = {"coxswain-cartridges": "/home/user/.local/share/coxswain/installs/coxswain-cartridges/providers"}
-    old = {"coxswain-cartridges": "/home/user/repos/coxswain-cartridges/providers"}
+def test_a_folder_inside_the_checkout_counts_and_a_component_checkout_under_installs_does_not():
+    inside = {"providers": "/home/user/.local/share/coxswain/installs/coxswain/src/cartridges/providers"}
+    component = {"coxswain-tools": "/home/user/.local/share/coxswain/installs/coxswain-tools"}
     assert is_migrated(ObservedHost(**{**LINUX_MIGRATED.__dict__, "checkouts": inside})) is True
-    assert is_migrated(ObservedHost(**{**LINUX_MIGRATED.__dict__, "checkouts": old})) is False
+    assert is_migrated(ObservedHost(**{**LINUX_MIGRATED.__dict__, "checkouts": component})) is False
 
 
 def test_is_migrated_is_false_when_a_checkout_sits_outside_installs():
@@ -51,7 +51,7 @@ def test_linux_migrated_and_macos_not():
 
 
 def test_host_before_and_after_beat_reports_installs():
-    after = dataclasses.replace(MAC_OLD, checkouts={"coxswain-tools": "/Volumes/data/coxswain/installs/coxswain-tools"})
+    after = dataclasses.replace(MAC_OLD, checkouts={"coxswain": "/Volumes/data/coxswain/installs/coxswain"})
     assert ops(host_migrate_plan([MAC_OLD], LOCATIONS)) == [["remote_migrate"]]
     assert ops(host_migrate_plan([after], LOCATIONS)) == [["skip"]]
 
@@ -63,7 +63,7 @@ def test_stale_profile_entry_is_rewritten_with_beat_values():
     assert step.argv == []
     assert step.payload == {
         "workspace_dir": "/home/user/.local/share/coxswain/workspaces/main",
-        "checkouts": {"coxswain-tools": "/home/user/.local/share/coxswain/installs/coxswain-tools"},
+        "checkouts": {"coxswain": "/home/user/.local/share/coxswain/installs/coxswain"},
     }
 
 

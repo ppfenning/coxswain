@@ -5864,7 +5864,11 @@ _DOCTOR_HOME_CHECKS = (
 
 
 def _doctor_legacy_path(profile: Mapping, locs) -> str | None:
-    """Edge. The old checkout folder when it is not the installs folder and holds a real coxswain-graphs directory."""
+    """Edge. A component checkout still a real directory in the installs folder, else the pre-home checkout folder
+    when it is not the installs folder and holds a real coxswain-graphs directory."""
+    left = [p for p in (Path(locs.installs) / name for name in setup_migrate.RETIRED) if p.is_dir() and not p.is_symlink()]
+    if left:
+        return str(left[0])
     old = _migrate_old_root(profile, locs)
     graphs = Path(old) / setup_migrate.GRAPHS if old else None
     return old if old and old != locs.installs and graphs.is_dir() and not graphs.is_symlink() else None
@@ -5878,7 +5882,7 @@ def _doctor_home_rows(profile: dict | None) -> list[dict]:
     if isinstance(locs, home_paths.Refused):
         return [{"check": "home root", "ok": False, "detail": locs.reason}]
     listing = _marketplace_listing()
-    source = (listing or {}).get("coxswain-cartridges")
+    source = (listing or {}).get(setup_install.MARKETPLACE)
     workspace = profile.get("workspace_dir")
     in_project = bool(source and workspace and Path(source).parent == Path(workspace).expanduser().parent)
     record = _read_text_or_none(Path(locs.record))
@@ -5890,7 +5894,7 @@ def _doctor_home_rows(profile: dict | None) -> list[dict]:
         _doctor_legacy_path(profile, locs),
         in_project,
         _migrate_cartridge_links(profile),
-        _doctor_install_sources(_migrate_install_bins(locs)),
+        _doctor_install_sources(_migrate_install_bins(), setup_migrate.read_venv_source(setup_install.layout(locs.installs).checkout)),
         home_record=(record or "").strip() or None,
         skills_roots=profile.get("skills_roots") or (),
         provider_profile=profile.get("provider_profile") or "",
@@ -6129,25 +6133,6 @@ def _migrate_kind(path: Path) -> str:
     return "file" if path.exists() else "absent"
 
 
-def _migrate_entry(root: str, name: str, locs) -> dict:
-    old, new = Path(root) / name, Path(locs.installs) / name
-    if old == new:  # the profile already names the installs folder, so the old path is no longer known
-        return {"old": str(old), "old_kind": "symlink", "new_kind": _migrate_kind(new), "old_target": str(new)}
-    target = os.readlink(old) if old.is_symlink() else None
-    return {
-        "old": str(old),
-        "old_kind": _migrate_kind(old),
-        "new_kind": _migrate_kind(new),
-        "old_target": target,
-        "target_git": _migrate_target_git(old),
-    }
-
-
-def _migrate_target_git(old: Path) -> bool:
-    """Edge. True when `old` is a symlink whose target is a directory holding a .git entry."""
-    return old.is_symlink() and (old / ".git").exists() and old.resolve().is_dir()
-
-
 def _migrate_worktrees(checkout: Path) -> list[str] | None:
     """Edge. Every path `git worktree list` names for the checkout, main one first; None when git cannot list."""
     try:
@@ -6175,18 +6160,6 @@ def _migrate_checkouts() -> tuple[str, ...]:
     return tuple(dict.fromkeys((*setup_migrate.CHECKOUTS, setup_migrate.UMBRELLA)))
 
 
-def _migrate_entries(root: str, locs) -> dict:
-    """Edge. One entry per checkout. The umbrella is optional, so it is left out when nothing sits at its old or final path."""
-    entries = {name: _migrate_entry(root, name, locs) for name in _migrate_checkouts()}
-    return {
-        name: e
-        for name, e in entries.items()
-        if name in setup_migrate.CHECKOUTS
-        or e["new_kind"] != "absent"
-        or (e["old_kind"] != "absent" and Path(e["old"]) != Path(locs.installs) / name)
-    }
-
-
 def _migrate_old_root(profile: Mapping, locs) -> str | None:
     """Pure. The folder holding the old checkouts: the parent of the first checkout-named path component in a
     profile setting that lies outside the installs folder, else the installs folder when every setting is already
@@ -6212,39 +6185,43 @@ def _migrate_tool_dir() -> str | None:
     return done.stdout.strip() or None if done.returncode == 0 else None
 
 
-def _migrate_install_bins(locs) -> dict | None:
+def _migrate_install_bins() -> dict | None:
     """Edge. `setup_migrate.observe_install_bins` for this machine; None when the uv tool dir is unknown."""
     tool_dir = _migrate_tool_dir()
-    return None if tool_dir is None else setup_migrate.observe_install_bins(locs, tool_dir)
+    return None if tool_dir is None else setup_migrate.observe_install_bins(tool_dir)
 
 
-def _doctor_install_sources(bins: Mapping | None) -> dict[str, str | None] | None:
-    """Pure. The `install_bins` observation flattened to the four named sources `doctor.home_rows` compares."""
+def _doctor_install_sources(bins: Mapping | None, venv_source: str | None) -> dict[str, str | None] | None:
+    """Pure. The two editable sources `doctor.home_rows` compares with the checkout: the venv's `coxswain` and the
+    `coxswain` uv tool's receipt. None when the uv tool dir is unknown."""
     if bins is None:
         return None
-    tools, carts = setup_migrate.TOOLS, setup_migrate.CARTRIDGES
-    return {
-        "graphs venv": (bins.get(setup_migrate.GRAPHS) or {}).get("source"),
-        "tools venv": (bins.get(tools) or {}).get("source"),
-        "tools receipt": (bins.get(f"tool:{tools}") or {}).get("editable"),
-        "cartridges receipt": (bins.get(f"tool:{carts}") or {}).get("editable"),
-    }
+    return {"venv": venv_source, "tool receipt": (bins.get(setup_install.TOOL) or {}).get("editable")}
 
 
-def _migrate_observe(locs) -> dict:
-    """Edge. The old layout as the plain dict `setup_migrate.migrate_plan` takes. When every setting already names
-    the installs folder no old path is recorded anywhere, so each checkout is reported as a link to its new path."""
+def _migrate_checkout_url(checkout: Path) -> str:
+    """Edge. The checkout's origin, else the coxswain repository on GitHub."""
+    return (_origin_url(str(checkout)) if checkout.is_dir() else None) or f"https://github.com/{install.CHECKOUT_REPO}.git"
+
+
+def _migrate_target_tag(checkout: Path, url: str, to: str | None) -> str | None:
+    """Edge. `--to` as a release tag, else the newest release the checkout's remote offers."""
+    if to:
+        return upgrade_plan.release_tag(to)
+    return upgrade_exec.newest_release(_offered_tags(checkout, None if checkout.is_dir() else url))
+
+
+def _migrate_observe(locs, to: str | None = None) -> dict:
+    """Edge. The host as the plain dict `setup_migrate.migrate_plan` takes. The remote is asked for a release tag
+    only while the checkout is not yet the monorepo."""
     profile = _migrate_profile(locs)
-    root = _migrate_old_root(profile, locs)
-    entries = _migrate_entries(root, locs) if root else {}
-    seen = {}
-    for name, entry in entries.items():
-        new, old = Path(locs.installs) / name, Path(entry["old"])
-        linked = old if entry.get("target_git") else None  # a link to a git checkout: git reads it through the link
-        where = new if _migrate_kind(new) == "dir" else old if _migrate_kind(old) == "dir" else linked
-        listed = _migrate_worktrees(where) if where is not None else None
-        if listed is not None:
-            seen[name] = listed
+    installs = Path(locs.installs)
+    checkout = Path(setup_install.layout(locs.installs).checkout)
+    kind = _migrate_kind(checkout)
+    monorepo = kind == "dir" and setup_migrate.read_is_monorepo(str(checkout))
+    url = _migrate_checkout_url(checkout)
+    components = {name: _migrate_kind(installs / name) for name in setup_migrate.RETIRED}
+    listed = {name: _migrate_worktrees(installs / name) for name, k in components.items() if k == "dir"}
     record = _read_text_or_none(Path(locs.record))
     links = _migrate_cartridge_links(profile)
     linux = sys.platform.startswith("linux")
@@ -6252,19 +6229,24 @@ def _migrate_observe(locs) -> dict:
     unit = _read_text_or_none(unit_file) if linux else None
     drop_ins = _migrate_chair_drop_ins(unit_file.parent) if linux else ()
     claude_on_path = shutil.which("claude") is not None
+    bins = _migrate_install_bins()
     return {
+        "checkout": {"kind": kind, "monorepo": monorepo, "url": url,
+                     "dirty": kind == "dir" and bool(_checkout_facts(checkout).get("dirty"))},
+        "target_tag": None if monorepo else _migrate_target_tag(checkout, url, to),
+        "components": components,
+        "worktrees": {name: paths[1:] for name, paths in listed.items() if paths is not None},
+        "venv_source": setup_migrate.read_venv_source(str(checkout)),
         "claude_on_path": claude_on_path,
-        "marketplace": (_marketplace_listing() or {}).get("coxswain-cartridges"),
+        "marketplace": (_marketplace_listing() or {}).get(setup_install.MARKETPLACE),
         "marketplace_plugins": _marketplace_plugins(),
         "chair_unit": unit,
         "chair_unit_drop_ins": drop_ins,
         "chair_active": bool(drop_ins) and _migrate_chair_active(),
-        "entries": entries,
-        "settings": {key: profile[key] for key in setup_migrate.SETTING_KEYS if key in profile},
+        "settings": {key: profile[key] for key in (*setup_migrate.SETTING_KEYS, setup_migrate.REPO_MAP_KEY) if key in profile},
         "home_record": record.strip() if record and record.strip() else None,
-        "worktrees": {name: paths[1:] for name, paths in seen.items()},
-        "worktree_status": {name: "clean" for name, paths in seen.items() if all(Path(p).exists() for p in paths)},
-        "install_bins": _migrate_install_bins(locs),
+        "today": datetime.datetime.now(datetime.UTC).date().isoformat(),
+        **({"install_bins": bins} if bins is not None else {}),
         **({"cartridge_links": links} if links is not None else {}),
         **({"workspace": {"path": profile["workspace_dir"]}} if isinstance(profile.get("workspace_dir"), str) else {}),
     }
@@ -6327,14 +6309,18 @@ def _migrate_profile_value(value) -> str:
     return "[" + ", ".join(str(v) for v in value) + "]" if isinstance(value, list) else str(value)
 
 
-def _migrate_edit_key(text: str, key: str, new) -> tuple[str | None, str]:
-    """Pure. (edited text, "") with the one top-level `key:` line replaced, or (None, reason) when no one-line
-    edit reads back as `new`."""
+def _migrate_edit_key(text: str, key: str, new, add: bool = False) -> tuple[str | None, str]:
+    """Pure. (edited text, "") with the one top-level `key:` line replaced, or appended when `add` and the profile
+    has none, or (None, reason) when no one-line edit reads back as `new`."""
     lines = text.splitlines(keepends=True)
     hits = [i for i, line in enumerate(lines) if line.startswith(f"{key}:")]
-    if len(hits) != 1:
+    line = f"{key}: {_migrate_profile_value(new)}\n"
+    if add and not hits:
+        edited = text + ("" if not text or text.endswith("\n") else "\n") + line
+    elif len(hits) != 1:
         return None, f"the profile has {len(hits)} top-level {key} lines, and one is needed"
-    edited = "".join([*lines[: hits[0]], f"{key}: {_migrate_profile_value(new)}\n", *lines[hits[0] + 1 :]])
+    else:
+        edited = "".join([*lines[: hits[0]], line, *lines[hits[0] + 1 :]])
     try:
         parsed = yaml.safe_load(edited)
     except yaml.YAMLError:
@@ -6344,16 +6330,27 @@ def _migrate_edit_key(text: str, key: str, new) -> tuple[str | None, str]:
     return edited, ""
 
 
-def _migrate_rewrite_line(path: Path, key: str, new) -> str | None:
+def _migrate_rewrite_line(path: Path, key: str, new, add: bool = False) -> str | None:
     """Edge. Writes `_migrate_edit_key`'s result; the file is untouched when it refuses."""
     text = _read_text_or_none(path)
     if text is None:
         return f"cannot read the profile at {path}"
-    edited, reason = _migrate_edit_key(text, key, new)
+    edited, reason = _migrate_edit_key(text, key, new, add)
     if edited is None:
         return f"{path}: {reason}"
     path.write_text(edited, encoding="utf-8")
     print(f"profile {key} -> {_migrate_profile_value(new)}")
+    return None
+
+
+def _migrate_checkout(step: dict) -> str | None:
+    """Edge. Runs the step's git commands in order, then checks the checkout now holds the monorepo."""
+    for argv in step["argvs"]:
+        failure = _install_run({"argv": argv})
+        if failure is not None:
+            return failure
+    if not setup_migrate.read_is_monorepo(step["path"]):
+        return f"{step['tag']} is not a monorepo release (its pyproject names no coxswain distribution); pass --to"
     return None
 
 
@@ -6381,7 +6378,9 @@ def _migrate_exec(step: dict, locs) -> str | None:
     if op == "symlink":
         return _migrate_link(step)
     if op == "rewrite_profile_key":
-        return _migrate_rewrite_line(Path(locs.profile), step["key"], step["new"])
+        return _migrate_rewrite_line(Path(locs.profile), step["key"], step["new"], add=step["old"] is None)
+    if op == "checkout":
+        return _migrate_checkout(step)
     if op == "rewrite_setting":
         record = Path(step["path"])
         record.parent.mkdir(parents=True, exist_ok=True)
@@ -6768,7 +6767,7 @@ def _setup_migrate(a: argparse.Namespace) -> int:
         return 2
     if a.finish:
         return _migrate_finish(a, locs)
-    observed = _migrate_observe(locs)
+    observed = _migrate_observe(locs, getattr(a, "to", None))
     plan = setup_migrate.migrate_plan(observed, locs)
     host_plan = setup_migrate_hosts.host_migrate_plan(_migrate_observe_hosts(locs), locs)
     if not a.apply:
@@ -6781,7 +6780,8 @@ def _setup_migrate(a: argparse.Namespace) -> int:
     holder = f"migrate@{socket.gethostname()}:{os.getpid()}"
     try:
         if _migrate_needs_preflight(plan, host_plan, a.hosts):
-            taken = _migrate_acquire(runs_dir, [observed["entries"][name]["old"] for name in _migrate_checkouts() if name in observed["entries"]], holder)
+            leased = (*(n for n in setup_migrate.RETIRED if observed["components"].get(n) == "dir"), setup_migrate.UMBRELLA)
+            taken = _migrate_acquire(runs_dir, [str(Path(locs.installs) / name) for name in leased], holder)
             lanes, chair_lease, host_rows = _migrate_read_holders(runs_dir, socket.gethostname())
             refusals = setup_migrate.preflight_refusals(tuple(o for o, _ in taken), lanes, socket.gethostname(), chair_lease, host_rows)
             if refusals:
@@ -7133,8 +7133,12 @@ def _manifest_provider_command(manifest: dict, provider: str) -> str:
 
 def _real_run(argv: list, cwd: str | None) -> tuple:
     """The subprocess wrapper `install_exec.execute` calls at the edge;
-    stdout and stderr are folded together since the caller only prints."""
-    result = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
+    stdout and stderr are folded together since the caller only prints. A command that cannot start (a missing
+    program or working folder) is exit 127 with the reason, never a traceback."""
+    try:
+        result = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
+    except OSError as exc:
+        return 127, f"{argv[0]}: {exc}"
     return result.returncode, result.stdout + result.stderr
 
 
@@ -9106,7 +9110,7 @@ SETUP_COMMANDS = [
         "agent_tools.cli:_setup_doctor_row", False, (),
     ),
     commands.Command(
-        "install", "setup", "clone components and write a profile for this machine",
+        "install", "setup", "sync the checkout's venv, install cox and write a profile for this machine",
         (
             commands.Arg(("--root",)), commands.Arg(("--team",), {"required": True}), commands.Arg(("--workspace",)),
             commands.Arg(("--home",), {"help": "absolute path of the coxswain home; used when --root is omitted"}),
@@ -9119,7 +9123,7 @@ SETUP_COMMANDS = [
         "agent_tools.cli:_setup_install", False, (),
     ),
     commands.Command(
-        "migrate", "setup", "plan moving a layout under the home; --apply migrates",
+        "migrate", "setup", "plan moving this host to the one monorepo checkout; --apply migrates",
         (
             commands.Arg(("--home",), {"help": "absolute path of the coxswain home to migrate to"}),
             commands.Arg(("--dry-run",), {"action": "store_true", "help": "same as the default: print the plans; change nothing"}),
@@ -9127,6 +9131,7 @@ SETUP_COMMANDS = [
             commands.Arg(("--hosts",), {"action": "store_true", "help": "with --apply, also run the host steps; use it on the chair's machine"}),
             commands.Arg(("--finish",), {"action": "store_true", "help": "own mode, after every host migrated: rewrite queue paths, remove old links"}),
             commands.Arg(("--old-root",), {"metavar": "PATH", "help": "with --finish, the old checkout root when no marker names it"}),
+            commands.Arg(("--to",), {"metavar": "VERSION", "help": "the release the umbrella checkout becomes; default the newest"}),
         ),
         "agent_tools.cli:_setup_migrate", False, (),
     ),
@@ -9907,10 +9912,12 @@ def _chair_unit_inputs(label: str | None, env_file: str | None, profile_path: Pa
     if not profile.get("workspace_dir", ""):
         return _ChairUnitRefusal(f"routing: workspace_dir not set in profile {profile_path}")
     harness_dir = profile.get("harness_dir")
+    checkout = _profile_checkout(profile)
+    venv_bin = str(Path(checkout) / ".venv" / "bin") if checkout else ""
     unit_path_value = chair_service.path_value(
         os.path.abspath(cox),
-        str(Path(__file__).resolve().parents[1] / ".venv" / "bin"),
-        str(Path(harness_dir).expanduser() / ".venv" / "bin") if harness_dir else "",
+        venv_bin or str(Path(__file__).resolve().parents[1] / ".venv" / "bin"),
+        venv_bin or (str(Path(harness_dir).expanduser() / ".venv" / "bin") if harness_dir else ""),
         os.environ.get("PATH", ""),
     )
     # systemd does not expand `~/` in WorkingDirectory=, and the unit does not inherit this shell's
@@ -10543,6 +10550,16 @@ def _host_list(a: argparse.Namespace) -> int:
     return 0
 
 
+def _profile_checkout(profile: Mapping) -> str | None:
+    """Pure. The one checkout of a monorepo profile: `umbrella_dir` when `harness_dir` lies inside it; None for a
+    profile of the component layout, whose umbrella held no code."""
+    umbrella, harness = profile.get("umbrella_dir"), profile.get("harness_dir")
+    if not umbrella or not harness:
+        return None
+    root, inner = Path(umbrella).expanduser(), Path(harness).expanduser()
+    return str(root) if inner.is_relative_to(root) and inner != root else None
+
+
 def _cartridges_checkout(profile: Mapping) -> str:
     """The checkout that holds `provider_profile`; `cartridges_dir` when the profile names no provider profile."""
     provider, cartridges = profile.get("provider_profile"), profile.get("cartridges_dir")
@@ -10552,7 +10569,11 @@ def _cartridges_checkout(profile: Mapping) -> str:
 
 
 def _host_repos(profile: Mapping) -> list[str]:
-    """Edge: the harness, cartridges and tools checkouts, the three paths the chair itself runs from."""
+    """Edge: the checkouts the chair itself runs from: the one monorepo checkout, or on a host not yet migrated
+    the harness, cartridges and tools checkouts."""
+    checkout = _profile_checkout(profile)
+    if checkout:
+        return [checkout]
     harness = str(Path(profile["harness_dir"]).expanduser()) if profile.get("harness_dir") else ""
     return [p for p in (harness, _cartridges_checkout(profile), str(Path(__file__).resolve().parents[1])) if p]
 

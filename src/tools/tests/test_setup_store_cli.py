@@ -149,7 +149,7 @@ def test_output_and_error_never_carry_a_secret(home, capsys, argv, probes):
 def test_install_plan_starts_no_service(tmp_path):
     steps = setup_install.install_plan(
         root="/r", team="t", workspace="/w", provider_profile="/r/p.yaml", skills_root="/r/s",
-        uv_on_path=True, python_exists=dict.fromkeys(setup_install.REPOS, True), claude_on_path=True,
+        uv_on_path=True, claude_on_path=True,
         profile_exists=False, force_profile=False, plugins=True, hook=True,
         config_dir=str(tmp_path), claude_settings_path=str(tmp_path / "settings.json"),
     )
