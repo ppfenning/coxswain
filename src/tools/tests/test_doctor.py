@@ -174,6 +174,12 @@ def test_a_path_the_profile_configures_but_the_edge_never_gathered_fails_profile
     assert "/s1" in rows[0]["detail"]
 
 
+def test_the_harness_venv_row_names_the_interpreter_it_checked():
+    facts = {**_good_facts(), "harness_python": "/h/installs/coxswain/.venv/bin/python", "harness_python_exists": False}
+    row = _rows_by_check(doctor.checks(facts))["harness venv"]
+    assert (row["ok"], row["detail"]) == (False, "venv missing: /h/installs/coxswain/.venv/bin/python")
+
+
 def test_missing_harness_venv_fails_that_row():
     facts = _good_facts()
     facts["harness_python_exists"] = False

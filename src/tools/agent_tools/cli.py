@@ -5792,9 +5792,11 @@ def _gather_doctor_facts(profile_path: Path, repo: Path) -> dict:
     expand = lambda p: str(Path(p).expanduser()) if p else ""  # noqa: E731
     facts["paths_exist"] = {p: Path(expand(p)).exists() for p in (*singles, *roots) if p}
     harness_dir = expand(profile.get("harness_dir", ""))
-    facts["harness_python_exists"] = bool(harness_dir) and install_root.harness_python(harness_dir).exists()
+    python = install_root.harness_python(harness_dir) if harness_dir else None
+    facts["harness_python"] = str(python) if python else None
+    facts["harness_python_exists"] = bool(python) and python.exists()
     if facts["harness_python_exists"]:
-        plugins = _harness_plugins(str(install_root.harness_python(harness_dir)))
+        plugins = _harness_plugins(str(python))
         if plugins is not None:
             facts["plugins_harness"] = plugins
         overlay_text = _read_text_or_none(repo / ".agent" / "cartridge.yaml")
