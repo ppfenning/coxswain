@@ -5,10 +5,10 @@ A release is cut only after a rehearsal has passed on the exact commit it is cut
 The rehearsal runs three scenarios. Each scenario is a job in the workflow, on a fresh `debian:stable-slim` container.
 
 - **fresh**: clone the repository into the default coxswain home, move the checkout to the candidate commit, install `cox` editable from it, run `cox install --team rehearse --with dash`, and check that `cox setup doctor` passes.
-- **upgrade**: install the previous release the way its own install page said (for `v0.47.0`, the `coxswain-tools` package and its component checkouts), put real work items in a workspace, move the checkout to the candidate commit, run `cox setup migrate --apply`, and check that `cox route lint` still reads the work items.
-- **migrate**: the same start as upgrade, then run each migration the release declares against the workspace, linting after each one.
+- **upgrade**: install the previous release the way its own install page said, put real work items in a workspace, move the checkout to the candidate commit, run `cox setup migrate --apply`, and check that `cox route lint` still reads the work items. For a CalVer tag such as `v2026.10.0` that is `uv tool install --python 3.14 coxswain==2026.10.0`, a clone of the tag, and `cox install --with dash`. For `v0.47.0` it is the `coxswain-tools` package of the old multi-repository line, with `--with crew --with dash`.
+- **migrate**: the same start as upgrade, then run each migration the release declares against the workspace, linting after each one. The script runs a migration as `cox migrate <id> --workspace <workspace>`. `cox` has no `migrate` command yet, so a release that declares a migration fails this scenario until one exists; no release has declared one so far.
 
-Every scenario ends by reading back the install: the checkout must be at the candidate commit and `cox` must be installed from that checkout. A green run therefore proves what its title names.
+The scenarios are `scripts/release_rehearsal.py`. Each job installs `git`, `curl`, `python3`, uv, Node and Claude Code in the container, then runs the script with `--scenario <name>` and the four inputs. Every scenario ends by reading back the install: the checkout must be at the candidate commit and `cox` must be installed from that checkout. A green run therefore proves what its title names.
 
 The migrate scenario may not skip when migrations are declared. It may skip only when the release declares none.
 
@@ -18,16 +18,31 @@ The workflow is `.github/workflows/release-rehearsal.yml`. It runs on `workflow_
 
 - `sha`: the full 40 character commit SHA of coxswain.
 - `dash_sha`: the full SHA of coxswain-dash when the release tags dash; empty when dash keeps its pinned tag.
-- `previous_tag`: the last release tag, such as `v0.47.0`. It feeds the upgrade and migrate scenarios.
+- `previous_tag`: the last release tag, such as `v2026.10.0`. It feeds the upgrade and migrate scenarios. A `v0.x` tag is installed as the old `coxswain-tools` line; a CalVer tag as `coxswain`.
 - `migrations`: the declared migration list from section 2, as a comma separated string; empty when the release declares none.
 
 A branch name or a short SHA is refused, because a branch can move between the rehearsal and the tag. Dispatch it from the coxswain checkout:
 
 ```sh
-gh workflow run release-rehearsal.yml -f sha=$(git rev-parse origin/main) -f previous_tag=v0.47.0
+gh workflow run release-rehearsal.yml -f sha=$(git rev-parse origin/main) -f previous_tag=v2026.10.0 -f migrations=
 ```
 
+Add `-f dash_sha=<sha>` when the release tags dash, and pass the declared migrations as `-f migrations=<id>,<id>`.
+
 The workflow imports no release-command code. It does not read the manifest, the release notes or `devtools`. We chose inputs over a shared module so that the rehearsal tests what a user gets, not what the release tooling believes.
+
+### A clean-machine rehearsal
+
+The hosted run proves the scenarios on GitHub's runners. You can run the same scenarios on a machine of your own, in a throwaway container, before you dispatch. Start a fresh Debian container, install the same packages the workflow does, copy `scripts/release_rehearsal.py` in, and run it with the same inputs (`--dash-sha` and `--migrations` are optional):
+
+```sh
+apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git python3 nodejs npm
+curl -LsSf https://astral.sh/uv/install.sh | sh && export PATH="$HOME/.local/bin:$PATH"
+npm install -g @anthropic-ai/claude-code
+python3 release_rehearsal.py --sha <sha> --previous-tag v2026.10.0
+```
+
+With no `--scenario`, the script runs all three and prints one result line each. Throw the container away afterwards. The release gate does not read this run; only the hosted run's title counts (section 3). It is extra evidence for the notes.
 
 ## 2. Where a release declares its migrations
 
