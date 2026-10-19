@@ -2085,6 +2085,16 @@ def test_lint_items_never_counts_tests_or_docs_as_cross_repo():
     assert route.lint_items(items, "/home/user/coxswain-tools", ()) == []
 
 
+def test_lint_items_flags_a_monorepo_component_path_named_from_an_old_component_repository():
+    problems = route.lint_items(_cross_item("edit src/tools/agent_tools/cli.py"), "/home/user/coxswain-graphs", ())
+    assert [(p.rule, p.detail) for p in problems] == [("cross_repo", "names src/tools/agent_tools/cli.py, which lives in coxswain")]
+
+
+def test_lint_items_lets_a_monorepo_ticket_name_any_of_its_components():
+    items = _cross_item("edit src/graphs/harness/epic.py and src/tools/agent_tools/cli.py and crew/install.sh")
+    assert route.lint_items(items, "/home/user/coxswain", ()) == []
+
+
 def test_lint_items_reports_one_cross_repo_problem_for_a_path_named_twice():
     items = _cross_item("edit `harness/cli.py`, then harness/cli.py again", ["harness/cli.py"])
     problems = route.lint_items(items, "/home/user/coxswain-tools/", ())
