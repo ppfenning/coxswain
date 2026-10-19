@@ -18,6 +18,7 @@ Observed host, a dict with these keys:
 - `worktrees`: for each component checkout present as a directory, its worktree paths other than the main one.
   Required for every such checkout; a missing one yields a refuse step.
 - `venv_source`: the editable source of `coxswain` in `<checkout>/.venv`, None when there is none.
+- `venv_current`: whether that venv matches the checkout's lock with every extra (`uv sync --check` exits 0).
 - `install_bins`: optional. Each uv tool receipt in TOOL_RECEIPTS plus `coxswain`, as `observe_install_bins`
   returns it. When the key is absent the uv tool dir was unknown and no tool step is planned.
 - `settings`: profile field to its current value, for SETTING_KEYS and `repo_map`.
@@ -38,7 +39,10 @@ Rules, in plan order:
    has no observed worktrees.
 2. A checkout that is not yet the monorepo is cloned (absent) or fetched and checked out (present) at the
    target tag. A monorepo checkout is never moved here: that is `cox upgrade`'s job.
-3. The venv is synced when `coxswain` in `<checkout>/.venv` is not editable from the checkout.
+3. The venv is synced (`uv sync --frozen --all-extras`) whenever the plan touches the host at all, and also when
+   `coxswain` in `<checkout>/.venv` is not editable from the checkout or the venv does not match the checkout's
+   lock (`venv_current`, from `uv sync --check`; unobserved counts as behind). A host with nothing left to do and
+   a venv at its lock plans the one skip, so a second run stays a skip and `--finish` can pass its gate.
 4. Profile keys naming a component checkout are rewritten into the checkout (`harness_dir` to `src/graphs`,
    `skills_roots` and `provider_profile` under `src/cartridges`); a provider profile outside the components
    is the team's own and is kept. `umbrella_dir` is set to the checkout. A `repo_map` value naming a component
@@ -464,9 +468,8 @@ def migrate_plan(observed: dict[str, Any], locs: Locations, home_spellings: Sequ
     retired = retired_dir(locs.installs, str(observed.get("today", "")))
     moved = {posixpath.join(locs.installs, name): posixpath.join(retired, name) for name in present}
     market_runs, market_notes = _marketplace_steps(observed, paths.cartridges)
-    body = [
-        *_checkout_steps(observed.get("checkout") or {}, observed.get("target_tag"), paths.checkout),
-        *([] if observed.get("venv_source") == paths.checkout else [setup_install.sync_step(paths.checkout)]),
+    checkout_steps = _checkout_steps(observed.get("checkout") or {}, observed.get("target_tag"), paths.checkout)
+    rest = [
         *_setting_steps(
             observed.get("settings", {}), observed.get("home_record"), locs, paths.checkout, tuple(moved.items()),
             home_spellings,
@@ -483,6 +486,9 @@ def migrate_plan(observed: dict[str, Any], locs: Locations, home_spellings: Sequ
         ),
         *_retire_steps(present, locs.installs, retired, observed.get("worktrees", {})),
     ]
+    behind = observed.get("venv_source") != paths.checkout or not observed.get("venv_current", False)
+    sync = [setup_install.sync_step(paths.checkout)] if behind or checkout_steps or rest else []
+    body = [*checkout_steps, *sync, *rest]
     if not body:
         return [_step("skip", "The checkout, its venv, the tools, links, settings and profile keys are already final.")]
     return [*body, *_prints(observed.get("workspace"), moved, locs), *market_notes]

@@ -6242,6 +6242,15 @@ def _migrate_locations(locs):
     return setup_migrate.install_locations(locs, folder, present)
 
 
+def _migrate_venv_current(checkout: Path) -> bool:
+    """Edge. Whether the checkout's venv matches its lock with every extra: `uv sync --check` exits 0, changing nothing."""
+    argv = [*setup_install.SYNC_ARGV[:2], "--check", *setup_install.SYNC_ARGV[2:], "--directory", str(checkout)]
+    try:
+        return subprocess.run(argv, capture_output=True, text=True).returncode == 0
+    except OSError:
+        return False
+
+
 def _migrate_observe(locs, to: str | None = None) -> dict:
     """Edge. The host as the plain dict `setup_migrate.migrate_plan` takes. The remote is asked for a release tag
     only while the checkout is not yet the monorepo."""
@@ -6268,6 +6277,7 @@ def _migrate_observe(locs, to: str | None = None) -> dict:
         "components": components,
         "worktrees": {name: paths[1:] for name, paths in listed.items() if paths is not None},
         "venv_source": setup_migrate.read_venv_source(str(checkout)),
+        "venv_current": kind == "dir" and _migrate_venv_current(checkout),
         "claude_on_path": claude_on_path,
         "marketplace": (_marketplace_listing() or {}).get(setup_install.MARKETPLACE),
         "marketplace_plugins": _marketplace_plugins(),
