@@ -1,0 +1,101 @@
+from agent_tools import chair_housekeeping as hk
+
+PYTHON = "/venv/bin/python"
+
+
+def _runner(fail=None, boom=None):
+    seen: list[list[str]] = []
+
+    def run(argv):
+        seen.append(argv)
+        if boom and boom in argv:
+            raise OSError("no such file")
+        return (1, "sync exploded\nmore") if fail and fail in argv else (0, "fine\nmore")
+
+    return run, seen
+
+
+def test_failed_sync_does_not_stop_prune():
+    run, seen = _runner(fail="lake")
+    status, reason = hk.run_housekeeping(run, "/t", lambda: True, PYTHON)
+    assert seen == [hk.sync_argv(), hk.prune_argv("/t", 7, PYTHON)]
+    assert status == "failed"
+    assert reason == (
+        "lake sync: FAILED exit 1 sync exploded; prune: ok fine; "
+        f"clean skipped: {hk.CLEAN_MISSING}"
+    )
+
+
+def test_all_ok_is_done():
+    run, _ = _runner()
+    status, reason = hk.run_housekeeping(run, "/t", lambda: True, PYTHON)
+    assert status == "done"
+    assert reason.startswith("lake sync: ok fine; prune: ok fine; clean skipped: ")
+
+
+def test_prune_unavailable_is_skipped_not_failed():
+    run, seen = _runner()
+    status, reason = hk.run_housekeeping(run, "/t", lambda: False, PYTHON)
+    assert status == "done"
+    assert "prune skipped: subcommand not available" in reason
+    assert hk.prune_argv("/t", 7, PYTHON) not in seen
+
+
+def test_prune_raising_is_reported_for_prune_only():
+    run, seen = _runner(boom="prune")
+    status, reason = hk.run_housekeeping(run, "/t", lambda: True, PYTHON)
+    assert status == "failed"
+    assert "prune: FAILED exit 1 OSError: no such file" in reason
+    assert reason.startswith("lake sync: ok")
+    assert "clean skipped:" in reason
+
+
+def test_prune_argv_literal():
+    assert hk.prune_argv("/traces", 7, "/venv/bin/python") == [
+        "/venv/bin/python", "-m", "harness.store_backfill_traces", "prune", "/traces", "--older-than", "7",
+    ]
+
+
+def test_clean_argv_runs_nothing_destructive():
+    assert hk.clean_argv() is None
+
+
+def test_join_reason_keeps_failed_names():
+    lines = [f"{n}: FAILED exit 1 " + "x" * 80 for n in ("lake sync", "prune", "clean")]
+    reason = hk.join_reason(lines)
+    assert len(reason) <= 200
+    assert all(f"{n}: FAILED" in reason for n in ("lake sync", "prune", "clean"))
+
+
+def test_the_trace_prune_keeps_the_configured_number_of_days():
+    assert hk.prune_argv("/t", 14, PYTHON)[-2:] == ["--older-than", "14"]
+
+
+def test_s3_traces_root_skips_prune_without_failing():
+    run, seen = _runner()
+    root = "s3://coxswain/traces"
+    status, reason = hk.run_housekeeping(run, root, lambda: True, PYTHON)
+    assert status == "done"
+    assert reason.split("; ")[1] == "prune: skipped, traces in object storage"
+    assert hk.prune_argv(root, 7, PYTHON) not in seen
+    assert seen == [hk.sync_argv()]
+
+
+def test_failed_sync_traceback_keeps_the_exception_line():
+    trace = (
+        "Traceback (most recent call last):\n"
+        '  File "x.py", line 1, in <module>\n'
+        "FileNotFoundError: s3://coxswain/lake/metadata/v1.json\n"
+    )
+
+    def run(argv):
+        return (1, trace) if argv == hk.sync_argv() else (0, "fine")
+
+    status, reason = hk.run_housekeeping(run, "/t", lambda: True, PYTHON)
+    assert status == "failed"
+    assert reason.startswith("lake sync: FAILED exit 1 FileNotFoundError: s3://coxswain/lake/metadata/v1.json; ")
+
+
+def test_step_line_failed_picks_last_non_empty_line():
+    out = "Traceback (most recent call last):\nValueError: bad\n\n"
+    assert hk.step_line("lake sync", 1, out) == "lake sync: FAILED exit 1 ValueError: bad"

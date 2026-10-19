@@ -1,0 +1,601 @@
+"""The contract every chair-loop planner reads: the facts a tick takes and the actions it returns.
+
+Pure shapes and two pure helpers. No I/O and no harness or store imports. The edge gathers
+the facts and executes the actions; the planners in between are pure. `stale_candidates` is
+filled in by the facts edge and consumed by the stale planner; `stall_candidates` likewise,
+consumed by the stall planner. `tuning` likewise, consumed by the lane-tuning and tier-proposal planners.
+"""
+from datetime import datetime
+from typing import Literal, NotRequired, Protocol, TypedDict
+from zoneinfo import ZoneInfo
+
+from agent_tools.chair_decompose_streak import DecomposeStreak
+from agent_tools.chair_land_backoff import LandRefusal
+from agent_tools.chair_land_conflict import LandConflict
+
+EASTERN = ZoneInfo("America/New_York")  # every time the chair prints for an operator is shown in this zone
+STALE_CHECKOUT_CAUSE = "stale_checkout"  # the needs_chair cause for a lane host whose checkout environment is stale
+REVIEW_CLOSED_CAUSE = "review_closed"  # the needs_chair cause for a task whose review PR was closed without merging
+HELD_FILE_CAUSE = "held_file"  # the needs_chair cause for a ticket or intake file the export held as edited by hand
+QUARANTINED_CAUSE = "quarantined"  # the cause an open quarantine reports when no attempt names one
+
+
+class LeaseFacts(TypedDict):
+    holder: str
+    host: str
+    epoch: int
+    mine: bool
+    released: bool
+    stale: bool
+    expired: bool  # another holder's takeover window has passed
+    until: str  # that window's end, ISO; empty when the holder set none
+
+
+class SmokeCommandResult(TypedDict):
+    """One post-land smoke command's outcome. ok is True when the process exited 0 and 'Traceback'
+    does not appear in its combined output; a 120-second timeout counts as not ok, and timed_out marks
+    it so the verdict can treat it as inconclusive rather than as evidence the land broke anything."""
+
+    command: list[str]
+    ok: bool
+    tail: str  # the last lines of the command's combined output
+    timed_out: bool
+
+
+class LandTrigger(TypedDict):
+    """A land that qualifies for a post-land smoke: the repo, PR number, and the new origin/main commit."""
+
+    repo: str
+    pr: int
+    commit: str
+
+
+class HoldRecord(TypedDict):
+    """Recorded when a post-land smoke fails; cause is always 'smoke_failed'."""
+
+    land: LandTrigger
+    failing_command: list[str]  # the argv that failed
+    tail: str  # the failing command's last 20 lines
+    cause: str
+
+
+class LimitsFacts(TypedDict):
+    """Filled in by the edge from a pacing.assess result; nothing here is computed. launch_cap is the verdict tier ceiling."""
+
+    hard_stop: bool
+    weekly_fraction: float
+    hard_stop_fraction: float
+    launch_cap: int
+    go_degraded: bool
+    five_hour_fraction: float | None
+    window_start_day: str | None  # the weekly window's start in EASTERN, as `Sun 04:00 EDT`; None when there is no weekly window
+    window_source: str  # "meter" when the five-hour figure came from a fresh status-line meter entry, else "est"
+    weekly_source: str  # the same reading as window_source, for the weekly figure
+    smoke_hold: HoldRecord | None  # a held post-land smoke failure, read without importing chair_smoke.py
+    lane_fraction: NotRequired[float]  # the weekly pace verdict's share of max_in_flight; 1.0 when not judged
+    weekly_target_fraction: NotRequired[float | None]  # the weekly spend target at this moment; None when not judged
+    weekly_pace: NotRequired[str]  # the weekly verdict word: full, reduced, hold or not_judged
+
+
+class HostLanes(TypedDict):
+    name: str
+    live_runs: int
+    capacity: NotRequired[int]
+    weight: NotRequired[int]  # a host's share of new placements; absent means 1
+    capabilities: NotRequired[list[str]]  # what the host can run, for example ["go"]; absent means none
+    # login_ok and login_checked_at mirror the host row's own login state, read from the store's
+    # `hosts` table; on the real row they live inside that row's `versions_json`, never as new
+    # `hosts` columns, since that table's own columns belong to a different repository.
+    login_ok: NotRequired[bool | None]  # None when never checked
+    login_checked_at: NotRequired[str]  # ISO UTC of the last check_login attempt; absent means never
+
+
+class DispatchFacts(TypedDict):
+    """live_runs counts the local machine's live lanes; hosts holds each lane host in order, a capacity replacing max_in_flight for that host.
+    local_lanes "decompose" reserves the local lanes for intake decomposes; absent means "any"."""
+
+    max_in_flight: int
+    live_runs: int
+    hosts: list[HostLanes]
+    local_lanes: NotRequired[str]
+
+
+class ApprovedTask(TypedDict):
+    id: str
+    initiative: str
+    repo: str
+    phase: str
+    phase_done: bool
+    needs: list[str]
+    run: str  # the newest run whose task record is approved and unlanded; empty when none is
+    needs_fetch: bool  # the run is remote and not yet fetched; False without a run
+
+
+class LandingFact(TypedDict):
+    """A land the worker is running now, from the action it was submitted with; a key the action lacked is empty."""
+
+    initiative: str
+    phase: str
+    repo: str
+
+
+class ReviewPr(TypedDict):
+    """An approved task whose review PR the forge is asked about; state is "unknown" when the forge said nothing."""
+
+    initiative: str
+    phase: str
+    task_id: str
+    repo: str
+    url: str
+    state: Literal["open", "merged", "closed", "unknown"]
+    merged_at: str | None
+
+
+class CarryTask(TypedDict):
+    """One approved task commit to cherry-pick; run_seq is higher for a newer run."""
+
+    task: str
+    run: str
+    host: str
+    branch: str  # the run's agents branch
+    commit: str  # the newest commit recorded for that task in that run
+    needs: list[str]  # task ids it depends on, for ordering
+    run_seq: int
+
+
+class StrandedPhase(TypedDict):
+    """A phase with approved work that has not landed."""
+
+    initiative: str
+    phase: str
+    phase_branch: str
+    # One row per approved-but-not-landed task per run holding an approved commit, so a task approved in two runs appears twice.
+    approved: list[CarryTask]
+    pending: list[str]  # task ids of the phase not yet approved
+
+
+class PhaseBranch(TypedDict):
+    initiative: str
+    phase: str
+    branch: str
+    ahead: int  # commits on the branch that main lacks
+    behind: int  # commits on main that the branch lacks
+    tip: str
+
+
+class ReadyTask(TypedDict):
+    id: str
+    phase: str
+    needs: list[str]
+    requires: list[str]  # capabilities the ticket's own `requires:` frontmatter field names; empty when it names none
+
+
+class RunningInitiative(TypedDict):
+    """A live initiative or one with approved tasks not yet landed; surfaces is the union of the tasks it holds."""
+
+    id: str
+    repo: str
+    surfaces: list[str]
+
+
+class InitiativeFacts(TypedDict):
+    id: str
+    started: bool
+    ready_tasks: list[ReadyTask]
+    waiting_tasks: NotRequired[list[ReadyTask]]  # state ready, held back by a need not in `landed`
+    landed: set[str]
+    repo: NotRequired[str]  # the repository the initiative launches into; absent means unknown
+    # The directory name of `repo`, the key of a host's checkout_env record; absent or "" means unknown.
+    repo_dir: NotRequired[str]
+    ready_surfaces: NotRequired[list[str]]  # the union of the surfaces of its ready tasks; absent means none
+
+
+class QuarantineFacts(TypedDict):
+    task_id: str
+    initiative: str
+    cause: str
+    harness_failures: int  # counted from run history by the edge
+    has_patch: bool  # the task record in the store holds a non-blank build.patch
+    rescue_failed: bool  # an earlier rescue_failed attempt exists for this task on the current ticket version
+    reason: NotRequired[str]  # the newest attempt's stored reason, uncut; absent means none
+    causes: NotRequired[list[str]]  # every quarantine cause on the current body, oldest attempt first; absent means just `cause`
+    run: NotRequired[str]  # the run the remedy command names; absent means unknown
+    repo: NotRequired[str]  # the repository the remedy command names; absent means unknown
+
+
+class EmptyDecomposeFacts(TypedDict):
+    """A decomposed intake whose newest decompose run has ended and left the initiative with no stored task items."""
+
+    initiative: str
+    run: str  # the initiative's most recent decompose run id
+    refusal: NotRequired[str]  # the refusal line from that run's decompose log; absent means none was found
+
+
+class TodoInitiative(TypedDict):
+    """A todo initiative and the state of each of its task rows; an initiative with no task rows has an empty list."""
+
+    id: str
+    task_states: list[str]
+
+
+class PidProbeFact(TypedDict):
+    """One remote run's pid probe against a host with a fresh beat."""
+
+    alive: bool
+    last_beat_at: str  # ISO-8601 of the host's newest beat
+
+
+class StaleCandidate(TypedDict):
+    """One task the edge has gathered evidence for; matches chair_stale.stale_reason's parameters exactly."""
+
+    initiative: str
+    task_id: str
+    state: str
+    last_file_change: str | None  # ISO timestamp of the newest file touch under the task, or None
+    last_run: str | None  # ISO timestamp of the newest run for the task, or None
+    last_chair_action: str | None  # ISO timestamp of the newest chair action recorded for the task, or None
+    quarantine_non_harness_count: int  # count of non-harness quarantine causes recorded for the task
+
+
+class HandoffStop(TypedDict):
+    """One ticket whose newest attempt stopped on a handoff; the widen planner reads it."""
+
+    initiative: str
+    task_id: str
+    state: str
+    reason: str  # the newest attempt's reason on the ticket's current body
+    surfaces: list[str]  # the ticket's surfaces
+    widenings: int  # how many widening notes the ticket's body already carries
+
+
+class LastCall(TypedDict):
+    role: str
+    task: str
+    ts: str
+
+
+class StallCandidate(TypedDict):
+    """One live run, local or remote; matches chair_stall's idle_minutes/started_minutes parameters."""
+
+    run: str
+    initiative: str
+    local: bool
+    started_at: str
+    last_call: LastCall | None
+    usr1_sent: bool  # a stalled_usr1 action was already recorded for this run
+
+
+class HostCheck(TypedDict):
+    host: str
+    ok: bool
+    detail: str
+
+
+class LandWait(TypedDict):
+    run: str
+    pr: str
+    waiting_since: str  # ISO UTC
+    checks_started: bool
+    forge_status: str | None
+
+
+class BlockedReady(TypedDict):
+    task: str
+    unlanded_needs: list[str]  # approved-but-unlanded tasks that are the only unmet needs
+
+
+class IdleStallInputs(TypedDict):
+    free_lanes: int
+    ready: int
+    queued: int
+    last_progress_at: str | None  # ISO UTC of the newest launch, land or node call
+    stall_minutes: int
+    hosts: list[HostCheck]
+    empty_stubs: list[str]  # initiative ids with a stub and no tasks
+    lands_waiting: list[LandWait]
+    blocked_ready: list[BlockedReady]
+    open_signature: str | None  # signature of the idle-stall needs_chair item still open
+    open_diagnosis: str | None  # that item's diagnosis text
+
+
+class HostTuning(TypedDict):
+    """One lane host's current lanes and the cartridge's bounds for it."""
+
+    lanes: int  # the host's current lane count
+    min_lanes: int  # the cartridge's floor for this host
+    max_lanes: int  # the cartridge's ceiling for this host
+
+
+class MeterFacts(TypedDict):
+    """The weekly meter reading the tuning rules compare; nothing here is computed."""
+
+    weekly_fraction_used: float  # the fraction of the weekly allowance used so far
+    week_elapsed_fraction: float  # the fraction of the weekly window already elapsed
+
+
+class TuningFacts(TypedDict):
+    """Filled in by the facts edge for the lane-tuning and tier-proposal rules; nothing here is computed."""
+
+    stats: list[dict[str, object]]  # the 7-day stats rows the two rules take
+    meter: MeterFacts
+    hosts: dict[str, HostTuning]  # host name to its current lanes and the cartridge's min and max
+    last_tuned_at: str | None  # ISO of the newest recorded tune_lanes or propose_tiers chair action; None when none
+
+
+class LandWatch(TypedDict):
+    initiative: str
+    phase: str
+    repo: str
+    pr: int
+    commit: str  # the new main commit of the land
+
+
+class LandedMain(LandWatch):
+    ci: Literal["pending", "green", "red", "infra"]  # infra: the main run failed with no job past setup
+    ci_output: str
+    smoke: Literal["pending", "ok", "failed"]
+    smoke_output: str
+    green_after: NotRequired[bool]  # a green main run exists at or after this land's commit; absent means False
+
+
+class LaunchRecord(TypedDict):
+    at: str  # ISO UTC timestamp of a launch
+    kind: str  # "launch_epic" or "relaunch"
+
+
+class RunRecord(TypedDict, total=False):
+    """One run's outcome, newest first in its list; a missing key reads as "" or False."""
+
+    run_id: str
+    quarantined: bool
+    reason: str
+    body: str
+    main_head: str
+
+
+class LaunchHistory(TypedDict, total=False):
+    launches: list[LaunchRecord]
+    runs: list[RunRecord]
+    body: str  # the initiative's current body hash; absent means ""
+    main_head: str  # the current main head; absent means ""
+
+
+class QueueFile(TypedDict):
+    """One exported task ticket: its store hash from the last export, and the text of its file on disk. Either may be None."""
+
+    task_id: str
+    stored_hash: str | None
+    file_text: str | None
+
+
+class HeldFile(TypedDict):
+    """One file the last board export held as edited by hand: its workspace path, the initiative its path names ("" for
+    an intake), the reason, and the blob id of the text it holds, as `queue_export.read_held_record` reads them."""
+
+    path: str
+    initiative: str
+    reason: str
+    blob: str
+
+
+class PhaseTasks(TypedDict):
+    """Every task of a phase that holds an approved or a quarantined task, as (id, state) in the phase's order."""
+
+    initiative: str
+    phase: str
+    tasks: list[tuple[str, str]]
+
+
+class Facts(TypedDict):
+    lease: LeaseFacts
+    limits: LimitsFacts
+    stale_days: int  # resolved chair.stale_days profile value, default 7; filled in by the edge
+    dispatch: DispatchFacts
+    approved: list[ApprovedTask]
+    initiatives: list[InitiativeFacts]
+    quarantines: list[QuarantineFacts]
+    stale_candidates: list[StaleCandidate]  # gathered by the facts edge, consumed by the stale planner
+    stall_candidates: list[StallCandidate]  # one entry per currently live run, local and remote; a later task fills it
+    intake: list[str]  # oldest first
+    work_store_ready: bool
+    sources_configured: bool
+    profile_stale: NotRequired[bool]  # this tick's profile re-read failed and the last good value was kept; absent means False
+    drafts: int  # initiatives waiting for approval
+    # An initiative's newest run is remote and unfetched: a `<run>.remote.json` beside the runs
+    # directory with no local run directory or log for that run id. Maps the initiative id to
+    # that run id. Absent when the newest run is local, is a fetched remote run, or there is no run.
+    remote_unfetched: dict[str, str]
+    missing_repos: NotRequired[list[str]]  # sorted repository paths newly seen missing this tick
+    last_housekeeping_at: str | None  # ISO UTC of the newest recorded housekeeping action; None when the store has none
+    housekeeping_hours: float  # period in hours; the edge fills it from profile chair.housekeeping_hours, default 24
+    run_exited: dict[str, bool]  # initiative to whether its newest run is exited or quarantined in the run store; absent is False
+    schema_deaths: dict[str, list[str]]  # initiative to its newest two run ids, present only when both exited and died on the schema-version cause
+    # An entry means that run's host has been unreachable for at least ten minutes and the run has no exit record in the store.
+    lost_runs: dict[str, str]
+    # An entry only for a remote run whose host has a fresh beat and whose pid was probed; a stale host or a failed or timed-out probe has none.
+    pid_probe: dict[str, PidProbeFact]
+    empty_decompose: list[EmptyDecomposeFacts]  # decomposed intakes whose ended decompose run left zero stored task items
+    # An intake path, as it appears in `intake`, to its empty-decompose streak; only intakes at the limit. Absent means {}.
+    decompose_streaks: NotRequired[dict[str, DecomposeStreak]]
+    # `<initiative>|<newest run id>` of each decompose_stalled needs_chair already in the action log. Absent means [].
+    decompose_stalled_reported: NotRequired[list[str]]
+    # Host name to the checkout_env record in that host's versions_json; {} for a host whose beat lacks it. Absent means {}.
+    host_env: NotRequired[dict[str, dict]]
+    # `<host>|<repo>` of each stale_checkout needs_chair already in the action log. Absent means [].
+    env_stale_reported: NotRequired[list[str]]
+    # Each initiative's newest run's host, "" meaning the local machine; an initiative absent here has no run yet.
+    newest_run_host: dict[str, str]
+    # An initiative with unfinished work from its newest run (a carried partial phase or an approved task not yet
+    # landed) maps to that run's host, "" meaning this machine; nothing consumes this yet.
+    home: dict[str, str]
+    run_hosts: NotRequired[dict[str, str]]  # run id to the host name that ran it; a local run is absent; absent means {}
+    review_prs: NotRequired[list[ReviewPr]]  # approved tasks awaiting a review PR; absent means none
+    landing: NotRequired[list[LandingFact]]  # lands in progress on the land worker; absent means none
+    running: NotRequired[list[RunningInitiative]]  # initiatives with a live lane on any machine; absent means none
+    # Keyed `<candidate>|<other>`: the count of consecutive prior deferrals for that ordered pair; absent means 0.
+    steer_streaks: NotRequired[dict[str, int]]
+    # Each initiative's newest waiting row as `<phase>|<quarantined>|<awaiting_land>`, until a later launch of it.
+    waiting_reported: NotRequired[dict[str, str]]  # absent means {}
+    pull_age_s: NotRequired[float | None]  # seconds since the newest `pull` chair action; None or absent means no pull yet
+    stranded: NotRequired[list[StrandedPhase]]  # phases with approved work not landed; absent means none
+    phase_branches: NotRequired[list[PhaseBranch]]  # phase branches against main; absent means none
+    idle_stall: IdleStallInputs  # idle-lanes stall inputs; a later task fills it
+    tuning: NotRequired[TuningFacts]  # filled in later by the facts edge; absent means no tuning inputs
+    landed_main: NotRequired[list[LandedMain]]  # lands whose main commit is being watched; absent means none
+    # Keyed by initiative, oldest first, each entry "reverted" or "held"; absent means {}.
+    land_outcomes: NotRequired[dict[str, list[str]]]
+    # The facts edge fills it, the widen planner consumes it, and the widen_ticket executor consumes the action.
+    handoff_stops: NotRequired[list[HandoffStop]]  # tickets stopped on a handoff; absent means none
+    queue_files: NotRequired[list[QueueFile]]  # exported task tickets with their stored hash and file text; absent means none
+    held_files: NotRequired[list[HeldFile]]  # files the last board export held; absent means none
+    # `<path>|<blob>` of each held_file needs_chair already in the action log, so each held text is reported once. Absent means [].
+    held_reported: NotRequired[list[str]]
+    # The launch budget's inputs, keyed by initiative id; absent means no history. The default limit applies when
+    # max_launches_per_hour is absent.
+    launch_history: NotRequired[dict[str, LaunchHistory]]
+    max_launches_per_hour: NotRequired[int]
+    # `<run1>|<run2>` of each relaunch_loop needs_chair already in the action log. Absent means [].
+    relaunch_loop_reported: NotRequired[list[str]]
+    # Land refusals still counted: refused or failed land_phase rows since the key's last landed row. Absent means [].
+    land_refusals: NotRequired[list[LandRefusal]]
+    # Squash conflicts a retry would repeat: the run's newest squash_phase stop, its branch and main unmoved. Absent means [].
+    land_conflicts: NotRequired[list[LandConflict]]
+    land_heads: NotRequired[dict[str, str]]  # `<initiative>/<phase>` to the phase branch tip, for refused phases only. Absent means {}.
+    phase_tasks: NotRequired[list[PhaseTasks]]  # per phase with an approved or a quarantined task, every task's state; absent means none
+    # `<run>:<phase>` of each approved task's run and phase that has a phase record. Absent means unknown: plan land_phase.
+    phase_records: NotRequired[list[str]]
+    # Each initiative row in state todo with its task rows' states, in row order; absent means none. `plan_close_initiatives` plans a close_initiative for each finished one.
+    todo_initiatives: NotRequired[list[TodoInitiative]]
+
+
+ActionKind = Literal[
+    "standby",
+    "take_lease",
+    "fetch",
+    "fetch_exit",
+    "land",
+    "land_phase",
+    "clear_branches",
+    "relaunch",
+    "retry",
+    "rescue",
+    "needs_chair",
+    "launch_epic",
+    "launch_decompose",
+    "pull",
+    "housekeeping",
+    "stale_to_draft",
+    "mark_lost",
+    "check_login",
+    "stalled_usr1",
+    "stalled_stop",
+    "review_landed",
+    "steer_clear",
+    "carry_phase",
+    "rebase_phase",
+    "tune_lanes",
+    "propose_tiers",
+    "revert_land",
+    "rerun_main",
+    "widen_ticket",
+    "partial_land",
+    "pull_workspace",
+    "waiting",
+    "close_initiative",
+]
+
+
+class Action(TypedDict, total=False):
+    """mark_lost only records the loss to the chair's own action log: it is never an attempt against a
+    task, and by construction never touches the attempts table, so it never counts toward
+    harness_failures or any retry cap. check_login carries host, performs an ssh call and a store
+    write, and like mark_lost never touches the attempts table. needs_chair carries either
+    initiative and cause, or host and cause when the entry names a lane host rather than an
+    initiative; when host is present cause is "login_lapsed" or "stale_checkout" and there is no initiative key.
+    A stale_checkout needs_chair also carries repo, the repo directory name keyed in the host's checkout_env record.
+    review_landed carries initiative, phase, task_id, repo, url and merged_at. steer_clear carries
+    initiative, other and paths: the launch of initiative is deferred because it shares paths with other.
+    carry_phase carries initiative, phase, pr_branch and picks; rebase_phase carries initiative, phase, branch,
+    tip and base. tune_lanes carries host, from_lanes, to_lanes, reason and evidence. propose_tiers carries
+    proposals and body and is propose-only: no action kind applies a tier or model change.
+    revert_land carries initiative, phase, repo, pr, commit and reason.
+    rerun_main carries initiative, phase, repo and commit.
+    widen_ticket carries initiative, task_id, paths, additions and reason. partial_land carries initiative, phase,
+    task_ids and quarantined: the approved tasks of a phase whose other tasks are all quarantined, done or dropped;
+    the plan adds repo, task_runs and run (the newest of task_runs) for the loop's task lands. A relaunch_loop needs_chair carries
+    initiative, cause and a reason naming both quarantined run ids. waiting carries initiative, phase, quarantined and
+    awaiting_land and runs no command. close_initiative carries initiative and state (done or dropped)."""
+
+    kind: ActionKind
+    epoch: int
+    task_id: str
+    repo: str
+    run: str  # a land or fetch names the run that holds the approved record; a fetch_exit or mark_lost names the lost run; a land_phase names the run whose phase-mode land command performs it
+    initiative: str  # retry, rescue and land_phase carry initiative (land_phase carries no task_id); a stale_to_draft, mark_lost, carry_phase or rebase_phase names the initiative
+    phase: str  # a land_phase names the phase it lands; a carry_phase or rebase_phase names the phase it works on
+    cause: str
+    intake_ids: list[str]
+    holder: str
+    host: str
+    until: str  # a standby names when the holder's takeover window ends
+    reason: str  # a take_lease over an expired takeover says so; a stale_to_draft carries its stale_reason string; a quarantine needs_chair or a widen_ticket carries the trimmed reason, at most 600 characters
+    remedy: str  # a quarantine needs_chair names the remedy kind choose_remedy picks for its cause
+    command: list[str]  # a quarantine needs_chair carries the argv remedy_for returns for that remedy
+    stale_tasks: list[str]  # a stale_to_draft names the task ids found stale
+    since: str  # a stale_to_draft names the ISO timestamp the staleness was detected
+    carry: list[str]  # the phases a clear_branches keeps and merges main into
+    url: str  # a review_landed names the review PR
+    merged_at: str | None  # a review_landed names when that PR merged
+    other: str  # a steer_clear names the running initiative it steers clear of
+    paths: list[str]  # a steer_clear names the shared paths; a widen_ticket names the repo-relative files to add to surfaces
+    task_ids: list[str]  # a partial_land names the approved task ids it would land, in phase order
+    quarantined: int  # a partial_land or waiting counts the phase's quarantined tasks
+    awaiting_land: int  # a waiting counts the phase's approved tasks not yet landed
+    task_runs: dict[str, str]  # a partial_land or land_phase maps each approved task id to the run holding its approved record; "" when unknown
+    pr_branch: str  # a carry_phase names the branch its pull request is opened from
+    picks: list[CarryTask]  # a carry_phase lists the commits to cherry-pick, in order
+    branch: str  # a rebase_phase names the phase branch it rebases
+    tip: str  # a rebase_phase names the tip being replaced, for the backup ref
+    base: str  # a rebase_phase names the commit or ref it rebases onto
+    from_lanes: int  # a tune_lanes names the host's lane count before the change
+    to_lanes: int  # a tune_lanes names the lane count it sets
+    evidence: dict[str, object]  # a tune_lanes carries the stats and meter figures that justify the change
+    proposals: list[dict[str, object]]  # a propose_tiers lists one entry per role
+    body: str  # a propose_tiers carries the rendered inbox text
+    pr: int  # a revert_land names the pull request whose land turned main red
+    commit: str  # a revert_land names the new main commit of that land
+    additions: list[str]  # a widen_ticket names the addition for each path, same order and length as paths
+    state: str  # a close_initiative names the state to move the initiative to: done or dropped
+
+
+class PlanLands(Protocol):
+    def __call__(self, facts: Facts) -> list[Action]:
+        """plan_lands(facts) -> list[action]: land and clear_branches for approved tasks."""
+        ...
+
+
+class PlanRecover(Protocol):
+    def __call__(self, facts: Facts) -> list[Action]:
+        """plan_recover(facts) -> list[action]: relaunch, retry, rescue and needs_chair for quarantines."""
+        ...
+
+
+class PlanFill(Protocol):
+    def __call__(self, facts: Facts, free_lanes: int, withheld: frozenset[str] = frozenset()) -> list[Action]:
+        """plan_fill(facts, free_lanes, withheld) -> list[action]: launch_epic, launch_decompose and pull; withheld launch no epic."""
+        ...
+
+
+class PlanTick(Protocol):
+    def __call__(self, facts: Facts, now: datetime | None = None) -> list[Action]:
+        """plan_tick(facts, now) -> list[action]: the whole tick, lease first, then lands, recover and fill, then at most one housekeeping when now is given."""
+        ...
+
+
+def stamp(action: Action, epoch: int) -> Action:
+    return {**action, "epoch": epoch}
+
+
+def is_fenced(action: Action, current_epoch: int) -> bool:
+    """True when the action was planned under a different lease epoch, or carries none."""
+    return action.get("epoch") != current_epoch

@@ -1,0 +1,703 @@
+"""Pure core for `agent-tools setup doctor`: judges gathered Facts, never
+gathers them. No file reads, no subprocess, no clock — the CLI edge (next
+phase) builds a Facts mapping and hands it to `checks`."""
+
+from __future__ import annotations
+
+import posixpath
+import re
+from collections.abc import Callable, Mapping, Sequence
+
+from agent_tools import records, route, schema, store_dialect
+from agent_tools.home import Locations
+from agent_tools.setup_migrate import cartridge_link_target
+from agent_tools.setup_migrate_hosts import ObservedHost, is_migrated
+from agent_tools.store_probe import OBJECT_STORE, POSTGRES, ProbeResult
+
+__all__ = ["checks", "exit_code", "freshness_rows", "home_rows", "lane_host_paths_row", "parquet_line", "render", "store_rows", "unit_path_entries"]
+
+_MISSING = object()
+_SKIPPED = "skipped: no profile"
+_NOT_CHECKED = "not checked"
+_NEXT_STEP = "next: run `cox setup` to write a profile, or `cox install` to fetch every component"
+
+
+def _skip(check: str) -> dict:
+    return {"check": check, "ok": False, "detail": _SKIPPED}
+
+
+def _not_checked(check: str) -> dict:
+    return {"check": check, "ok": False, "detail": _NOT_CHECKED}
+
+
+def _git_row(facts: Mapping) -> dict:
+    version = facts.get("git_version", _MISSING)
+    if version is _MISSING:
+        return _not_checked("git")
+    if isinstance(version, str) and version:
+        return {"check": "git", "ok": True, "detail": version}
+    return {"check": "git", "ok": False,
+            "detail": "missing: install git (coxswain needs git; gh is needed only for the github forge)"}
+
+
+def _forge_row(facts: Mapping) -> dict:
+    name = facts.get("forge", _MISSING)
+    if name is _MISSING:
+        return _not_checked("forge")
+    if name == "local":
+        return {"check": "forge", "ok": True, "detail": "local: plain git, no pull-request host"}
+    if name == "github":
+        auth = facts.get("gh_auth", _MISSING)
+        if auth is _MISSING:
+            return _not_checked("forge")
+        if auth is True:
+            return {"check": "forge", "ok": True, "detail": "github: gh authenticated"}
+        return {"check": "forge", "ok": False,
+                "detail": "github: gh missing or not logged in (run `gh auth login`), or set forge: local in the profile"}
+    if name == "auto":
+        auth = facts.get("gh_auth", _MISSING)
+        if auth is _MISSING:
+            return _not_checked("forge")
+        if auth is True:
+            return {"check": "forge", "ok": True, "detail": "auto: github-origin repos through gh (authenticated), the rest local"}
+        return {"check": "forge", "ok": False,
+                "detail": "auto: gh missing or not logged in, so github-origin repos cannot land (run `gh auth login`)"}
+    found = facts.get("forge_found", _MISSING)
+    if found is _MISSING:
+        return _not_checked("forge")
+    if found is True:
+        return {"check": "forge", "ok": True, "detail": f"{name}: installed"}
+    return {"check": "forge", "ok": False, "detail": f"no forge named {name} installed"}
+
+
+def _profile_row(facts: Mapping) -> tuple[dict, bool, dict | None]:
+    """Returns the row, whether the profile itself failed (as opposed to
+    simply not having been checked, which is what triggers the cascade), and
+    the parsed profile (or None) so later rows can check against what the
+    profile actually configures rather than only what got gathered."""
+    path = facts.get("profile_path", "<profile>")
+    text = facts.get("profile_text", _MISSING)
+    if text is _MISSING:
+        return _not_checked("profile"), False, None
+    if text is None:
+        return {"check": "profile", "ok": False, "detail": f"missing: {path}"}, True, None
+    try:
+        parsed = route.parse_profile(text)
+    except route.ProfileError as err:
+        return {"check": "profile", "ok": False, "detail": str(err)}, True, None
+    return {"check": "profile", "ok": True, "detail": path}, False, parsed
+
+
+def _unknown_key_rows(text: str | None, parsed: dict | None) -> list[dict]:
+    """One passing row flagged `warn` per unknown top-level key. None when the profile did not parse."""
+    if parsed is None or text is None:
+        return []
+    return [
+        {"check": "profile", "ok": True, "warn": True, "detail": f"unknown key {key} at line {lineno}"}
+        for key, lineno in route.unknown_keys(text)
+    ]
+
+
+def _expected_paths(parsed: Mapping) -> set[str]:
+    """The path strings the profile configures: the same keys `paths_exist`
+    is meant to carry, per Facts. Used to catch a path the profile names
+    that the edge never gathered, not just one it gathered and found missing.
+
+    Contract the edge must honour: `paths_exist` is keyed by the exact string
+    the profile carries (e.g. a literal `~/foo`), not a normalised or
+    expanded form. `cli.py`'s existing `Path(...).expanduser()` convention
+    must not be used to build these keys, or an installed machine whose
+    profile uses `~` will show every one of its own paths as "not checked"
+    here."""
+    singles = (parsed.get(k) for k in ("cartridges_dir", "provider_profile", "harness_dir", "workspace_dir", "umbrella_dir"))
+    roots = parsed.get("skills_roots") or []
+    return {p for p in (*singles, *roots) if p}
+
+
+def _paths_rows(facts: Mapping, cascade: bool, parsed: dict | None) -> list[dict]:
+    """One row per configured path that is missing or never gathered; a
+    single ok row naming the count when every configured path is present."""
+    if cascade:
+        return [_skip("profile paths")]
+    paths = facts.get("paths_exist", _MISSING)
+    if paths is _MISSING:
+        return [_not_checked("profile paths")]
+    if not paths:
+        return [{"check": "profile paths", "ok": False, "detail": "no paths were configured to check"}]
+    missing = sorted(p for p, exists in paths.items() if not exists)
+    if missing:
+        return [{"check": "profile paths", "ok": False, "detail": f"missing: {p}"} for p in missing]
+    if parsed is not None:
+        ungathered = sorted(_expected_paths(parsed) - set(paths))
+        if ungathered:
+            return [{"check": "profile paths", "ok": False, "detail": f"not checked: {p}"} for p in ungathered]
+    return [{"check": "profile paths", "ok": True, "detail": f"{len(paths)} paths present"}]
+
+
+def _flag_row(check: str, facts: Mapping, key: str, cascade: bool, missing_detail: str) -> dict:
+    if cascade:
+        return _skip(check)
+    val = facts.get(key, _MISSING)
+    if val is _MISSING:
+        return _not_checked(check)
+    return {"check": check, "ok": bool(val), "detail": "ok" if val else missing_detail}
+
+
+def _none_ok_row(check: str, facts: Mapping, key: str, cascade: bool) -> dict:
+    if cascade:
+        return _skip(check)
+    val = facts.get(key, _MISSING)
+    if val is _MISSING:
+        return _not_checked(check)
+    if val is None:
+        return {"check": check, "ok": True, "detail": "ok"}
+    return {"check": check, "ok": False, "detail": str(val)}
+
+
+def _overlay_row(facts: Mapping, cascade: bool) -> dict:
+    if cascade:
+        return _skip("project overlay")
+    errors = facts.get("overlay_errors", _MISSING)
+    if errors is _MISSING:
+        return _not_checked("project overlay")
+    if errors is None:
+        return {"check": "project overlay", "ok": True, "detail": "no project overlay"}
+    if not errors:
+        return {"check": "project overlay", "ok": True, "detail": "ok"}
+    return {"check": "project overlay", "ok": False, "detail": str(errors[0])}
+
+
+def _skills_row(facts: Mapping, cascade: bool, parsed: dict | None) -> dict:
+    if cascade:
+        return _skip("skills")
+    counts = facts.get("skill_roots_indexed", _MISSING)
+    if counts is _MISSING:
+        return _not_checked("skills")
+    if not counts:
+        return {"check": "skills", "ok": False, "detail": "no skill roots were configured to check"}
+    empty = sorted(root for root, n in counts.items() if not n)
+    if empty:
+        return {"check": "skills", "ok": False, "detail": "0 skills: " + ", ".join(empty)}
+    if parsed is not None:
+        ungathered = sorted(set(parsed.get("skills_roots") or []) - set(counts))
+        if ungathered:
+            return {"check": "skills", "ok": False, "detail": "not indexed: " + ", ".join(ungathered)}
+    return {"check": "skills", "ok": True, "detail": f"{len(counts)} roots indexed"}
+
+
+def _provider_row(facts: Mapping, cascade: bool) -> dict:
+    if cascade:
+        return _skip("provider")
+    on_path = facts.get("provider_on_path", _MISSING)
+    if on_path is _MISSING:
+        return _not_checked("provider")
+    # `command` distinguishes three gathered states: an explicit None means
+    # the edge tried to read `command:` from the provider profile and could
+    # not; `_MISSING` means that fact simply was not gathered, which is not
+    # the same claim and must not be reported as "unreadable".
+    command = facts.get("provider_command", _MISSING)
+    if command is None:
+        return {"check": "provider", "ok": False, "detail": "provider command unreadable from provider profile"}
+    display_command = command if command is not _MISSING else "<command>"
+    if on_path is None:
+        return {"check": "provider", "ok": False, "detail": f"provider on PATH unknown: {display_command}"}
+    if not on_path:
+        return {"check": "provider", "ok": False, "detail": f"not on PATH: {display_command}"}
+    version = facts.get("provider_version") or display_command
+    return {"check": "provider", "ok": True, "detail": version}
+
+
+_TOOLS_PLUGIN_GROUPS = ("sources", "forges", "trackers")
+_HARNESS_PLUGIN_GROUPS = ("system_one", "runners")
+
+
+def _plugin_parts(found: Mapping | None, groups: tuple) -> list[str]:
+    """One `group: a, b` part per group: `none` when empty, `not checked` when
+    the whole fact is absent. Keys in `found` carry the `coxswain.` prefix."""
+    return [
+        f"{g}: not checked" if found is None
+        else f"{g}: " + (", ".join(found.get(f"coxswain.{g}") or ()) or "none")
+        for g in groups
+    ]
+
+
+def _plugins_row(facts: Mapping) -> dict:
+    """Informs, never judges: always ok, and never skipped by a profile failure."""
+    parts = [
+        *_plugin_parts(facts.get("plugins_tools"), _TOOLS_PLUGIN_GROUPS),
+        *_plugin_parts(facts.get("plugins_harness"), _HARNESS_PLUGIN_GROUPS),
+    ]
+    return {"check": "plugins", "ok": True, "detail": "; ".join(parts)}
+
+
+def _store_row(facts: Mapping, cascade: bool) -> dict:
+    if cascade:
+        return _skip("store")
+    store = facts.get("store", _MISSING)
+    if store is _MISSING:
+        return _not_checked("store")
+    if store.get("reachable"):
+        return {"check": "store", "ok": True, "detail": f"{store.get('kind')}, {store.get('runs')} runs"}
+    if store.get("fresh"):
+        return {"check": "store", "ok": True, "detail": f"{store.get('kind')}, no runs yet (the first run creates it)"}
+    return {"check": "store", "ok": False, "detail": store.get("error") or "the store did not answer"}
+
+
+def _workspace_row(facts: Mapping, cascade: bool) -> dict:
+    if cascade:
+        return _skip("workspace")
+    dirs = facts.get("workspace_dirs", _MISSING)
+    if dirs is _MISSING:
+        return _not_checked("workspace")
+    if not dirs:
+        return {"check": "workspace", "ok": False, "detail": "no workspace dirs were configured to check"}
+    missing = sorted(d for d, exists in dirs.items() if not exists)
+    if missing:
+        return {"check": "workspace", "ok": False, "detail": "missing: " + ", ".join(missing)}
+    return {"check": "workspace", "ok": True, "detail": f"{len(dirs)} dirs present"}
+
+
+def _schema_row(facts: Mapping, cascade: bool) -> dict:
+    if cascade:
+        return _skip("schema")
+    state, detail = schema.status(facts.get("schema_versions", {}))
+    return {"check": "schema", "ok": state == "ok", "detail": detail}
+
+
+def _cast_row(facts: Mapping, cascade: bool) -> dict:
+    """A `cast_seats` fact absent from `facts` passes rather than fails,
+    unlike every row above it: the edge that gathers it is not yet wired,
+    and every real invocation today omits it."""
+    if cascade:
+        return _skip("cast")
+    seats = facts.get("cast_seats", _MISSING)
+    if seats is _MISSING:
+        return {"check": "cast", "ok": True, "detail": "not gathered"}
+    if not seats:
+        return {"check": "cast", "ok": True, "detail": "0 seats"}
+    missing = sorted(seat for seat, s in seats.items() if s.get("enabled", True) and not s.get("installed"))
+    if missing:
+        return {"check": "cast", "ok": False, "detail": "missing: " + ", ".join(missing)}
+    present = sorted(seat for seat, s in seats.items() if not s.get("enabled", True) and s.get("installed"))
+    if present:
+        return {"check": "cast", "ok": False, "detail": "present: " + ", ".join(present)}
+    return {"check": "cast", "ok": True, "detail": f"{len(seats)} seats"}
+
+
+_UNIT_PATH_LINE = "Environment=PATH="
+_UNIT_TOOLS = ("cox", "claude", "uv", "pytest")
+
+
+def unit_path_entries(path: str) -> list[str]:
+    """The `:`-split entries of an effective PATH value."""
+    return path.split(":")
+
+
+def _unit_path_row(facts: Mapping) -> dict:
+    """Independent of the profile, so it never cascades. `chair_unit_text` says whether the unit is installed;
+    `chair_unit_path` is the `chair_unit.PathObservation` (or None) across the unit and its drop-ins.
+    systemd does not expand `~`, so a non-absolute entry fails."""
+    text = facts.get("chair_unit_text", _MISSING)
+    if text is _MISSING:
+        return {"check": "chair unit PATH", "ok": True, "detail": "not gathered"}
+    if text is None:
+        return {"check": "chair unit PATH", "ok": True, "detail": "not installed"}
+    observed = facts.get("chair_unit_path")
+    if observed is None:
+        return {"check": "chair unit PATH", "ok": False,
+                "detail": f"no {_UNIT_PATH_LINE} line in the unit or any drop-in (both checked)"}
+    entries = unit_path_entries(observed.path)
+    origin = f" (from {observed.source})"
+    relative = [entry for entry in entries if not entry.startswith("/")]
+    if relative:
+        return {"check": "chair unit PATH", "ok": False,
+                "detail": "not an absolute entry (systemd does not expand `~`): "
+                + ", ".join(repr(e) for e in relative) + origin}
+    tools = facts.get("chair_unit_tools") or {}
+    missing = [name for name in _UNIT_TOOLS if not any(name in tools.get(entry, ()) for entry in entries)]
+    if missing:
+        return {"check": "chair unit PATH", "ok": False,
+                "detail": "not found on the unit PATH: " + ", ".join(missing) + origin}
+    return {"check": "chair unit PATH", "ok": True, "detail": f"{len(entries)} entries{origin}"}
+
+
+def checks(facts: Mapping) -> list[dict]:
+    """Judge a Facts mapping. Returns rows `{"check", "ok", "detail"}` in a
+    fixed check order: git, forge, profile, profile paths, harness venv, core
+    importable, cartridge, project overlay, skills, provider, plugins,
+    store, workspace, schema, cast, chair unit PATH. A fact that was never gathered fails as "not checked",
+    except `cast` which passes when ungathered; a profile that fails to parse
+    fails every row after it as "skipped: no profile"; an empty collection
+    where paths, skill roots or workspace dirs belong fails naming that
+    nothing was configured to check, rather than passing vacuously."""
+    profile_row, cascade, parsed = _profile_row(facts)
+    return [
+        _git_row(facts),
+        _forge_row(facts),
+        profile_row,
+        *_unknown_key_rows(facts.get("profile_text"), parsed),
+        *_paths_rows(facts, cascade, parsed),
+        _flag_row("harness venv", facts, "harness_python_exists", cascade, "venv missing"),
+        _none_ok_row("core importable", facts, "core_import", cascade),
+        _none_ok_row("cartridge", facts, "cartridge_load", cascade),
+        _overlay_row(facts, cascade),
+        _skills_row(facts, cascade, parsed),
+        _provider_row(facts, cascade),
+        _plugins_row(facts),
+        _store_row(facts, cascade),
+        _workspace_row(facts, cascade),
+        _schema_row(facts, cascade),
+        _cast_row(facts, cascade),
+        _unit_path_row(facts),
+    ]
+
+
+_FRESHNESS_CHECK = "model freshness"
+_FRESHNESS_SKIPPED = "skipped: cartridges core too old for the model freshness check"
+
+
+def _warn_row(detail: str) -> dict:
+    return {"check": _FRESHNESS_CHECK, "ok": True, "warn": True, "detail": detail}
+
+
+def freshness_rows(
+    profile: Mapping,
+    catalog: Mapping,
+    vendor_ids: list[str] | None,
+    freshness_fn: Callable[..., list[str]] | None,
+) -> list[dict]:
+    """Warning rows keep `ok` True so `exit_code` ignores them; a None `freshness_fn` gives one skip row."""
+    if freshness_fn is None:
+        return [_warn_row(_FRESHNESS_SKIPPED)]
+    lines = freshness_fn(profile, catalog) if vendor_ids is None else freshness_fn(profile, catalog, vendor_ids)
+    return [_warn_row(line) for line in lines]
+
+
+_MARKETPLACE = "coxswain-cartridges"
+
+
+def _home_root_row(locations: Locations, root_exists: bool, root_writable: bool) -> dict:
+    root = locations.home
+    if not root_exists:
+        return {"check": "home root", "ok": False, "detail": f"{root} does not exist; run `cox setup install` to create it"}
+    if not root_writable:
+        return {"check": "home root", "ok": False, "detail": f"{root} exists but is not writable by this user"}
+    return {"check": "home root", "ok": True, "detail": f"{root} exists and is writable"}
+
+
+_NO_CLAUDE = "not checked: claude is not on PATH"
+_NOT_MIGRATED = "not migrated: run cox setup migrate"
+
+
+def _unmigrated_row(row: dict) -> dict:
+    """On a machine not yet migrated a failing home row is expected, so it warns instead: a release that adds the home
+    must not fail the doctor of every install made before it."""
+    return row if row["ok"] else _home_warn_row(row["check"], f"{_NOT_MIGRATED}; {row['detail']}")
+
+
+def _home_warn_row(check: str, detail: str) -> dict:
+    """Not checked is not failed: `ok` stays True so `exit_code` ignores the row."""
+    return {"check": check, "ok": True, "warn": True, "detail": detail}
+
+
+def _marketplace_registered_row(listing: Mapping[str, str] | None) -> dict:
+    """`listing` maps marketplace name to source text from `claude plugin marketplace list`; None when claude is absent."""
+    if listing is None:
+        return _home_warn_row("marketplace registered", _NO_CLAUDE)
+    if _MARKETPLACE in listing:
+        return {"check": "marketplace registered", "ok": True, "detail": f"{_MARKETPLACE} is listed"}
+    # The plugins step of `cox setup install` is optional and provider-specific (`--plugins`), so an install without it
+    # is not broken: the row warns. A marketplace registered at the wrong path still fails, on "marketplace location".
+    return _home_warn_row(
+        "marketplace registered", f"{_MARKETPLACE} is not in the claude marketplace list; run `cox setup install --plugins`")
+
+
+def _marketplace_location_row(locations: Locations, listing: Mapping[str, str] | None, in_project: bool) -> dict:
+    """Text compare against the checkout under the resolved installs folder; no link is followed."""
+    if listing is None:
+        return _home_warn_row("marketplace location", _NO_CLAUDE)
+    source = listing.get(_MARKETPLACE)
+    if source is None:
+        return _home_warn_row("marketplace location", f"no {_MARKETPLACE} entry to compare with the home")
+    expected = posixpath.join(locations.installs, _MARKETPLACE)
+    if source == expected:
+        return {"check": "marketplace location", "ok": True, "detail": f"{source} equals the checkout under the home"}
+    where = "inside a user project folder" if in_project else "not the checkout under the home"
+    return {"check": "marketplace location", "ok": False, "detail": f"{source} is {where}; expected {expected}"}
+
+
+def _legacy_layout_row(legacy_path: str | None) -> dict:
+    """A warn row keeps `ok` True so `exit_code` ignores it; `legacy_path` is the old checkout location when still present."""
+    if legacy_path is None:
+        return {"check": "old layout", "ok": True, "detail": "no old-layout checkout found"}
+    return {"check": "old layout", "ok": True, "warn": True,
+            "detail": f"old layout still present at {legacy_path}; run `cox setup migrate` to move it"}
+
+
+def _expand_tilde(path: str, user_home: str) -> str:
+    return user_home + path[1:] if path == "~" or path.startswith("~/") else path
+
+
+def _home_paths_row(
+    locations: Locations,
+    skills_roots: Sequence[str],
+    provider_profile: str,
+    harness_dir: str,
+    user_home: str,
+    workspace_dir: str = "",
+) -> dict:
+    """Every path, tilde expanded against `user_home`, must sit under `<home>/`; text compare only.
+    The provider profile may also sit under `workspace_dir`, which is never moved; empty adds nothing."""
+    prefix = f"{locations.home}/"
+    profile_prefixes = (prefix, *([f"{_expand_tilde(workspace_dir, user_home)}/"] if workspace_dir else []))
+    offender = next(
+        (
+            p
+            for p, allowed in (
+                *((s, (prefix,)) for s in skills_roots),
+                (provider_profile, profile_prefixes),
+                (harness_dir, (prefix,)),
+            )
+            if not _expand_tilde(p, user_home).startswith(allowed)
+        ),
+        None,
+    )
+    if offender is None:
+        return {
+            "check": "home paths",
+            "ok": True,
+            "detail": f"skills roots, provider profile and harness dir sit under {locations.home}",
+        }
+    return {"check": "home paths", "ok": False, "detail": f"{offender} is not under {locations.home}"}
+
+
+def _home_recorded_row(locations: Locations, home_record: str | None) -> dict:
+    if home_record == locations.home:
+        return {"check": "home recorded", "ok": True, "detail": f"home record equals {locations.home}"}
+    seen = "absent" if home_record is None else home_record
+    return {"check": "home recorded", "ok": False, "detail": f"home record is {seen}; expected {locations.home}"}
+
+
+def _cartridge_links_row(locations: Locations, links: Mapping[str, str]) -> dict:
+    """Text compare of each base and local link target with `cartridge_link_target`; no link is followed."""
+    if not links:
+        return {
+            "check": "cartridge links",
+            "ok": False,
+            "detail": "no base or local link found to compare with the home",
+        }
+    stale = [
+        f"{path} -> {target}; expected {expected}"
+        for path, target in sorted(links.items())
+        if target
+        not in (
+            (expected := cartridge_link_target(path, locations)),
+            posixpath.join(locations.installs, "coxswain-cartridges", "cartridges", posixpath.basename(path)),
+        )
+    ]
+    if stale:
+        return {"check": "cartridge links", "ok": False, "detail": "; ".join(stale)}
+    return {
+        "check": "cartridge links",
+        "ok": True,
+        "detail": f"{len(links)} links reach their subfolder of the checkout under the home",
+    }
+
+
+_INSTALL_BIN_REPOS = {
+    "graphs venv": "coxswain-graphs",
+    "tools venv": "coxswain-tools",
+    "tools receipt": "coxswain-tools",
+    "cartridges receipt": _MARKETPLACE,
+}
+
+
+def install_bins_row(locations: Locations, sources: Mapping[str, str | None]) -> dict:
+    """Each source must equal its own repo's checkout under `locations.installs`; None or an absent key is missing."""
+    expected = {name: posixpath.join(locations.installs, repo) for name, repo in _INSTALL_BIN_REPOS.items()}
+    missing = [name for name in expected if sources.get(name) is None]
+    stale = [
+        f"{name} -> {sources[name]}; expected {path}"
+        for name, path in expected.items()
+        if sources.get(name) not in (None, path)
+    ]
+    problems = [*([f"missing {', '.join(missing)}"] if missing else []), *stale]
+    if problems:
+        return {"check": "install bins", "ok": False, "detail": "; ".join(problems)}
+    return {"check": "install bins", "ok": True, "detail": "all 4 sources reach their checkout under the home"}
+
+
+def home_rows(
+    locations: Locations,
+    listing: Mapping[str, str] | None,
+    root_exists: bool,
+    root_writable: bool,
+    legacy_path: str | None,
+    in_project: bool,
+    cartridge_links: Mapping[str, str] | None = None,
+    install_bins: Mapping[str, str | None] | None = None,
+    *,
+    home_record: str | None = None,
+    skills_roots: Sequence[str] = (),
+    provider_profile: str = "",
+    harness_dir: str = "",
+    user_home: str = "",
+    workspace_dir: str = "",
+) -> list[dict]:
+    """Rows for the coxswain home: home root, marketplace registered, marketplace location, old layout,
+    home paths, home recorded, cartridge links, and install bins when `install_bins` was gathered.
+    `cartridge_links` maps link path to lexical target; its row is omitted when None unless the machine is unmigrated.
+    `home_record` is the record text, None when absent: an unmigrated machine warns on old layout,
+    home paths, home recorded and cartridge links. `user_home` expands a leading `~` in the path inputs.
+    `workspace_dir` is the profile's workspace folder, where a provider profile may also sit.
+    The edge gathers every input; nothing here reads the filesystem, environment or clock."""
+    root = [
+        _home_root_row(locations, root_exists, root_writable),
+        _marketplace_registered_row(listing),
+        _marketplace_location_row(locations, listing, in_project),
+    ]
+    bins = [] if install_bins is None else [install_bins_row(locations, install_bins)]
+    if home_record is None:
+        unmigrated = ("old layout", "home paths", "home recorded", "cartridge links")
+        return [
+            *(_unmigrated_row(row) for row in root),
+            *(_home_warn_row(check, _NOT_MIGRATED) for check in unmigrated),
+            *(_unmigrated_row(row) for row in bins),
+        ]
+    return [
+        *root,
+        _legacy_layout_row(legacy_path),
+        _home_paths_row(locations, skills_roots, provider_profile, harness_dir, user_home, workspace_dir),
+        _home_recorded_row(locations, home_record),
+        *([] if cartridge_links is None else [_cartridge_links_row(locations, cartridge_links)]),
+        *bins,
+    ]
+
+
+def _host_findings(host: ObservedHost) -> list[str]:
+    return [
+        *([f"{host.name} has no beat row"] if host.source == "fallback" else []),
+        *(
+            []
+            if is_migrated(host)
+            else [f"{host.name} reports checkouts outside an installs folder; run cox setup migrate --apply on it"]
+        ),
+        *(
+            [
+                f"{host.name}: lane_hosts workspace_dir {host.profile_workspace_dir}, host reports "
+                f"{host.workspace_dir}; run cox setup migrate --apply --hosts"
+            ]
+            if host.profile_workspace_dir and host.profile_workspace_dir != host.workspace_dir
+            else []
+        ),
+    ]
+
+
+def lane_host_paths_row(hosts: Sequence[ObservedHost]) -> dict:
+    """Warn-only: a lane host off the installs paths is advice, never a failure."""
+    check = "lane host paths"
+    if not hosts:
+        return {"check": check, "ok": True, "detail": "no lane hosts"}
+    findings = [f for host in hosts for f in _host_findings(host)]
+    if findings:
+        return {"check": check, "ok": True, "warn": True, "detail": "; ".join(findings)}
+    return {"check": check, "ok": True, "detail": f"{len(hosts)} hosts on installs paths"}
+
+
+_STORE_CHECK = "shared store"
+
+
+def _shared_row(ok: bool, detail: str, check: str = _STORE_CHECK, warn: bool = False) -> dict:
+    row = {"check": check, "ok": ok, "detail": detail}
+    return {**row, "warn": True} if warn else row
+
+
+_HOST = re.compile(r"[A-Za-z0-9._-]+|\[[0-9A-Fa-f:.]+\]")
+_BUCKET = re.compile(r"[A-Za-z0-9._-]+")
+_DSN_KEY = re.compile(r"(^|\s)(host|hostaddr|dbname|user|password|port|sslmode)=")
+_REQUIRED_PROBES = (POSTGRES, OBJECT_STORE)
+
+
+def _authority(url: str) -> str:
+    """Text after the last `@`, so a `/` inside a password cannot end the userinfo early, up to the path."""
+    return re.split(r"[/?#]", url.partition("://")[2].rpartition("@")[2], maxsplit=1)[0]
+
+
+def _host_of(url: str) -> str:
+    """The bare host, or "" unless it is a plain hostname or IP literal."""
+    authority = _authority(url)
+    host = authority.partition("]")[0] + "]" if authority.startswith("[") else authority.partition(":")[0]
+    return host if _HOST.fullmatch(host) else ""
+
+
+def _traces_phrase(traces_url: str) -> str:
+    if not traces_url.lower().startswith("s3://"):
+        return "traces are local files"
+    bucket = _authority(traces_url)
+    return f"traces bucket {bucket if _BUCKET.fullmatch(bucket) else 'unnamed'}"
+
+
+def _is_dsn(url: str) -> bool:
+    return "://" not in url and _DSN_KEY.search(url) is not None
+
+
+def store_rows(mode: str, store_url: str, traces_url: str, probe_results: list[ProbeResult]) -> list[dict]:
+    """Rows for the chosen store. Warnings keep `ok` True. A row never holds a URL, user, password or key."""
+    if _is_dsn(store_url):
+        return [_shared_row(False, "the storage setting is a connection string, not a URL; use a postgres URL")]
+    try:
+        shared_url = store_dialect.is_postgres(store_url)
+    except ValueError:
+        return [_shared_row(False, "the storage URL could not be parsed; check its format")]
+    if mode == "files":
+        if shared_url:
+            return [_shared_row(True, "the profile points at a shared store while the setting says files", warn=True)]
+        return [_shared_row(True, "the run store and traces are local files, which is the default")]
+    if mode == "shared":
+        if not shared_url:
+            return [_shared_row(True, "the setting says shared while the profile still points at local files", warn=True)]
+        seen = {r.component for r in probe_results}
+        problems = [_shared_row(False, r.detail, check=f"{_STORE_CHECK} {r.component}") for r in probe_results if not r.ok]
+        unprobed = [_shared_row(False, _NOT_CHECKED, check=f"{_STORE_CHECK} {c}") for c in _REQUIRED_PROBES if c not in seen]
+        if problems or unprobed:
+            return problems + unprobed
+        host = _host_of(store_url) or "unnamed"
+        return [_shared_row(True, f"shared store reachable: postgres host {host}, {_traces_phrase(traces_url)}")]
+    return [_shared_row(False, "the store setting is neither files nor shared; set it to one of those")]
+
+
+def exit_code(rows: list[dict]) -> int:
+    """0 when every row is ok, else 1."""
+    return 0 if all(row["ok"] for row in rows) else 1
+
+
+_PARQUET_FIXES = {
+    "pyarrow missing": "install the parquet extra",
+    # Only reported after pyarrow imported, so installing the extra would change nothing.
+    "root unreachable": "create the traces directory, or correct traces_url in the provider profile",
+}
+
+
+def parquet_line(readable: bool, reason: str, endpoint: str | None = None) -> str:
+    """The one informational line for Parquet trace reads. Never a row, so it never affects `exit_code`.
+    The fix is chosen by `reason`; an unknown reason is shown with no fix rather than a wrong one.
+    An `endpoint`, the object_store block's, is named after the state."""
+    via = f" via {endpoint}" if endpoint else ""
+    if readable:
+        return f"parquet traces: readable{via}"
+    fix = _PARQUET_FIXES.get(reason)
+    state = f"parquet traces: not readable ({reason}){via}"
+    return f"{state}; fix: {fix}" if fix else state
+
+
+def render(rows: list[dict]) -> str:
+    """A text table plus a one-line summary of how many rows passed. A `warn` row passes and is counted apart."""
+    display = [{"check": r["check"], "ok": "warn" if r.get("warn") else "ok" if r["ok"] else "FAIL", "detail": r["detail"]} for r in rows]
+    n_warn = sum(1 for r in rows if r.get("warn"))
+    n_ok = sum(1 for r in rows if r["ok"]) - n_warn
+    n_fail = sum(1 for r in rows if not r["ok"])
+    table = records.format_table(display, ["check", "ok", "detail"])
+    warned = f", {n_warn} warning" if n_warn else ""
+    summary = f"{table}\ndoctor: {n_ok} ok, {n_fail} failing{warned}"
+    profile_missing = any(r["check"] == "profile" and not r["ok"] and r["detail"].startswith("missing:") for r in rows)
+    return f"{summary}\n{_NEXT_STEP}" if profile_missing else summary

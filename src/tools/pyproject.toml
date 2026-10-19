@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coxswain-tools"
+# Version is set by hand ahead of each release tag; `cox release` bumps the
+# coxswain manifest, not this file. 0.1.0b1 is the PEP 440 form of v0.1.0-beta.1.
+version = "0.47.0"
+description = "The coxswain's operator tools behind the `cox` command; `agent-tools` is a deprecated alias for one release."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.14"
+# zstandard reads the trace store; since the 0.17 cutover a run's traces live only there.
+dependencies = ["pyyaml>=6", "zstandard>=0.23"]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff==0.16.6", "zstandard>=0.23"]
+# Kept so `coxswain-tools[traces]` still installs; zstandard is now a base dependency.
+traces = ["zstandard>=0.23"]
+# Reads a Postgres run store; the name matches the extra graphs uses.
+postgres = ["psycopg[binary]>=3.2"]
+# Optional on purpose: pyarrow is a heavy C++ build and the Homebrew formula builds from source, so it is not a base dependency.
+parquet = ["pyarrow"]
+# The Iceberg lake: a SQL catalog on sqlite or Postgres, queried with duckdb; pyiceberg-core does the day partitioning. Never a base dependency.
+lake = ["pyiceberg[sql-sqlite,sql-postgres,pyiceberg-core]>=0.9", "duckdb>=1.0"]
+
+# Optional on purpose: `analytics_snapshot.query` falls back to the Postgres query when duckdb is absent.
+analytics = ["duckdb>=1.0"]
+
+[project.scripts]
+cox = "agent_tools.cli:main"
+agent-tools = "agent_tools.cli:main"
+
+[project.urls]
+Repository = "https://github.com/ppfenning/coxswain-tools"
+
+[tool.setuptools.packages.find]
+include = ["agent_tools*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The harness runs `pytest -q` in a worktree of this repo with an interpreter
+# that has the main checkout installed editable. Without this the worktree's
+# tests would import the main checkout's package, not the patched one.
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 120
+# Ruff runs over the repo in CI and in pre-commit. The set leans on the
+# charter (pure core, no rebinding, no side doors): E/F correctness, I imports,
+# UP modern syntax, B bugbear, SIM, RET, C4, DTZ clocks, RUF. Ignored on purpose:
+# E501/E701/E702 (the codebase uses dense one-liners at the edge), E741 (single
+# letters in short comprehensions), PLW1510 (edges read subprocess returncodes
+# deliberately), RUF005/RUF043/RUF059/B905/ISC004 (style calls, not defects).
+
+[tool.ruff.lint]
+# Pydocstyle codes are picked one at a time, never the bare `D` family: D100-D107
+# demand a docstring on every module/class/function, which inverts the charter
+# this repo works to (the signature is the documentation; a docstring only where
+# the signature cannot say it). D200 (fits on one line), D210 (no surrounding
+# whitespace) and D400 (first line ends in a period) agree with that charter and
+# are selected. D205 and D209 were tried and dropped: agent_tools/notify.py has
+# multi-line docstrings that run the summary straight into the next line with no
+# blank line, and close the triple quotes on that same last line (e.g.
+# `chair_notifications`'s critical-notice docstring) — one deliberate, compact
+# thought, not the two-paragraph shape D205/D209 want, and splitting it across
+# three lines buys the reader nothing. D403 is left out too: this sandbox has
+# no ruff to run, so nothing here confirms what it would flag, and selecting it
+# on a guess is how a code gets added for the wrong reason.
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "DTZ", "ISC", "RET", "C4", "PLW", "D200", "D210", "D400"]
+ignore = ["E501", "E701", "E702", "E741", "PLW1510", "RUF005", "RUF043", "RUF059", "B905", "ISC004"]

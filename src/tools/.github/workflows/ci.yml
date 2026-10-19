@@ -1,0 +1,75 @@
+name: ci
+on:
+  # a pull request's branch runs once, on pull_request; push runs only for main
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.14" }
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+      - name: nothing names the operator, their homelab, an employer or a vendor (tests included)
+        env:
+          # the names rule's regex lives only in this secret; without it the step says the rule was skipped
+          COXSWAIN_CLEAN_DENY: ${{ secrets.COXSWAIN_CLEAN_DENY }}
+        run: python3 .github/check_clean.py .
+      - name: ruff (rules in pyproject.toml; pre-commit mirrors it)
+        run: pip install ruff==0.16.6 && ruff check .
+  py315:
+    # The suite on Python 3.15, a canary ahead of the 3.14 floor. Not in the branch ruleset, which
+    # requires `test` by name, so a red run here is a finding, not a merge block.
+    runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.15", allow-prereleases: true }
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+  extras:
+    # The lake, Parquet and Postgres tests import-skip in `test`, which installs only `dev`.
+    # This job installs the extras and a Postgres 16, so those tests run.
+    runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        # a random host port, so two of these jobs can share a self-hosted runner's host (graphs #691)
+        ports:
+          - 5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Point the store tests at the service's host port
+        run: echo "COX_TEST_POSTGRES_URL=postgresql://postgres:postgres@localhost:${{ job.services.postgres.ports['5432'] }}/postgres" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.14" }
+      - run: pip install -e ".[dev,postgres,parquet,lake]"
+      # Fails here, with the import error, rather than as a pytest run that skipped them all.
+      - run: python -c "import psycopg, pyarrow, pyiceberg, duckdb"
+      - run: pytest -q -rs
+  readme-commands:
+    # README.md's Commands block is rendered from this repo's command table by the umbrella's
+    # devtools, and the umbrella's CI checks it against this repo's main. Check it here too,
+    # so a new command cannot merge with a stale block.
+    runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      # the umbrella's dev group installs coxswain-tools from ../coxswain-tools, which is this checkout
+      # a self-hosted runner keeps its work dir between runs, so the last run's clone goes first
+      - run: rm -rf ../coxswain && git clone --depth 1 https://github.com/ppfenning/coxswain ../coxswain
+      - run: uv sync --group dev
+        working-directory: ../coxswain
+      - run: uv run pytest -q tests/devtools/test_commands_render.py
+        working-directory: ../coxswain

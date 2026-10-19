@@ -1,0 +1,306 @@
+"""Pure core for `agent-tools setup install`: the ordered plan, the
+profile text it writes, and the hook entry it merges. No file reads, no
+env access, no subprocess calls — every function here takes plain
+arguments and returns plain values; the edge (built in a later phase)
+executes the steps this module returns.
+
+`route.parse_profile` never unquotes a scalar it reads. Whatever
+`profile_text` writes must be readable back bare, verbatim. A value that
+itself looks like a flow list/map (`[a]`, `{a: b}`) or that carries an
+inline space-then-`#` would round-trip to something other than what was
+written, so `profile_text` refuses those with `ValueError`.
+"""
+
+from __future__ import annotations
+
+import posixpath
+import re
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from agent_tools.home import Locations
+
+REPOS = ("coxswain-cartridges", "coxswain-graphs", "coxswain-tools")
+_HOOK_COMMAND = "agent-tools route context 2>/dev/null || true"
+_MARKETPLACE = "coxswain-cartridges"
+
+
+def profile_path(config_dir: str) -> str:
+    """Where the profile lives under `config_dir`. The one place this path
+    is formatted; the edge asks here rather than restating it."""
+    return f"{config_dir}/agent-tools/profile.yaml"
+
+
+def _unsafe_scalar(value: str) -> bool:
+    stripped = value.strip()
+    bracketed = (stripped.startswith("[") and stripped.endswith("]")) or (
+        stripped.startswith("{") and stripped.endswith("}")
+    )
+    return bracketed or bool(re.search(r"\s#", value))
+
+
+def profile_text(
+    team: str,
+    cartridges_dir: str,
+    skills_root: str,
+    provider_profile: str,
+    harness_dir: str,
+    workspace: str,
+    assume: str = "a",
+    window_ceiling_usd: float | None = None,
+    weekly_ceiling_usd: float | None = None,
+) -> str:
+    """profile.yaml text that round-trips through `route.parse_profile`.
+    Every value is emitted bare; one that parse_profile would read back
+    as something else raises ValueError instead of being written.
+    `window_ceiling_usd` and `weekly_ceiling_usd`, when given, are written
+    into the `spend:` block `route.parse_profile` reads back as floats."""
+    fields = {
+        "team": team,
+        "cartridges_dir": cartridges_dir,
+        "skills_root": skills_root,
+        "provider_profile": provider_profile,
+        "harness_dir": harness_dir,
+        "workspace_dir": workspace,
+        "assume": assume,
+    }
+    unsafe = [key for key, value in fields.items() if _unsafe_scalar(value)]
+    if unsafe:
+        raise ValueError(f"cannot round-trip through parse_profile: {unsafe}")
+    lines = [
+        "# Written by agent-tools setup install — rerun with --force-profile to rewrite",
+        f"team: {team}",
+        f"cartridges_dir: {cartridges_dir}",
+        f"skills_roots: [{skills_root}]",
+        f"provider_profile: {provider_profile}",
+        f"harness_dir: {harness_dir}",
+        f"workspace_dir: {workspace}",
+        f"assume: {assume}",
+    ]
+    if window_ceiling_usd is not None or weekly_ceiling_usd is not None:
+        lines.append("spend:")
+        if window_ceiling_usd is not None:
+            lines.append(f"  window_ceiling_usd: {window_ceiling_usd}")
+        if weekly_ceiling_usd is not None:
+            lines.append(f"  weekly_ceiling_usd: {weekly_ceiling_usd}")
+    return "\n".join(lines) + "\n"
+
+
+_DEFAULT_EXTRAS = ("dev",)
+
+
+def venv_steps(
+    repo: str, installs: str, cartridges_dir: str, clear: bool, extras: Sequence[str] = _DEFAULT_EXTRAS
+) -> list:
+    """The venv step then the editable install of `installs/repo` with `extras`.
+    `clear` adds `--clear -q` to the venv step; the graphs repo also installs
+    `cartridges_dir` editable."""
+    cwd = f"{installs}/{repo}"
+    if clear:
+        venv = {"op": "run", "argv": ["uv", "venv", "--clear", "-q"], "cwd": cwd,
+                "why": f"recreate the {repo} virtualenv"}
+    else:
+        venv = {"op": "run", "argv": ["uv", "venv", "-q"], "cwd": cwd,
+                "why": f"{repo} has no virtualenv yet"}
+    groups = ",".join(extras)
+    install_argv = ["uv", "pip", "install", "-q", "-e", f".[{groups}]"]
+    if repo == "coxswain-graphs":
+        install_argv = install_argv + ["-e", cartridges_dir]
+    install = {"op": "run", "argv": install_argv, "cwd": cwd, "why": f"install {repo} and its {groups} extras"}
+    return [venv, install]
+
+
+def _repo_steps(repo: str, root: str, python_exists: dict, cartridges_dir: str) -> list:
+    built = venv_steps(repo, root, cartridges_dir, False)
+    return built[1:] if python_exists.get(repo, False) else built
+
+
+def _agent_steps(cast: dict) -> list:
+    """A `write` step for each seat whose `enabled` is true or absent, a
+    `remove` step for each seat whose `enabled` is false."""
+    steps = []
+    for seat, cfg in cast.items():
+        if cfg.get("enabled", True):
+            steps.append({"op": "write", "path": cfg["path"], "text": cfg["text"],
+                          "why": f"install the {seat} seat"})
+        else:
+            steps.append({"op": "remove", "path": cfg["path"],
+                          "why": f"{seat} seat is disabled"})
+    return steps
+
+
+def marketplace_steps(cartridges_dir: str, registered: str | None) -> list:
+    """Registry-only, per docs/design/coxswain-home.md section 3. `registered`
+    is the source text `claude plugin marketplace list` shows for the
+    cartridges marketplace, or None when none is listed."""
+    add = {"op": "run", "argv": ["claude", "plugin", "marketplace", "add", cartridges_dir],
+           "why": "register coxswain-cartridges as a plugin marketplace"}
+    if registered is None:
+        return [add]
+    if registered == cartridges_dir:
+        return [{"op": "skip", "what": "marketplace",
+                 "why": "already registered at the resolved location"}]
+    remove = {"op": "run", "argv": ["claude", "plugin", "marketplace", "remove", _MARKETPLACE],
+              "why": f"marketplace points at {registered}, not {cartridges_dir}"}
+    return [remove, add]
+
+
+def _tool_target(checkout: str, extras: tuple[str, ...]) -> str:
+    """The `-e` install target: the checkout, with `[a,b]` appended when extras are given."""
+    return f"{checkout}[{','.join(extras)}]" if extras else checkout
+
+
+def _workspace_steps(workspace: str) -> list:
+    folders = (workspace, *(f"{workspace}/{name}" for name in ("work", "runs", "intake", "cartridges")))
+    return [{"op": "mkdir", "path": path, "why": "create the workspace folder"} for path in folders]
+
+
+def install_plan(
+    *,
+    root: str,
+    team: str,
+    workspace: str,
+    provider_profile: str,
+    skills_root: str,
+    uv_on_path: bool,
+    python_exists: dict,
+    claude_on_path: bool,
+    profile_exists: bool,
+    force_profile: bool,
+    plugins: bool,
+    hook: bool,
+    config_dir: str,
+    claude_settings_path: str,
+    assume: str = "a",
+    cast: dict | None = None,
+    window_ceiling_usd: float | None = None,
+    weekly_ceiling_usd: float | None = None,
+    locations: Locations | None = None,
+    registered_marketplace: str | None = None,
+    workspace_exists: bool = False,
+    tool_extras: tuple[str, ...] = (),
+    cartridge_extras: tuple[str, ...] = (),
+) -> list:
+    """Ordered setup steps. With `locations`, every checkout, venv and the
+    profile path come from the resolved record (`installs`, `profile`) and
+    `root` and `config_dir` are ignored. Without it the old `root` and
+    `config_dir` apply; the subcommand wiring task removes that fallback.
+    `claude_settings_path` is pre-resolved by the caller; this core never
+    expands `~` or touches the filesystem.
+    `cartridges_dir` here is the checkout `-e` installs and the plugin
+    marketplace registers; the profile's own `cartridges_dir` field is a
+    workspace path (`profile_cartridges_dir`), a different thing that
+    happens to share a name in the field the routing layer reads.
+    With `locations` and an empty `workspace`, the workspace is
+    `<workspaces>/main` and its folders are made unless `workspace_exists`.
+    With `locations`, the last write records `<home>` at `locations.record`.
+    `tool_extras` are the extras of the coxswain-tools checkout, already read
+    from the receipt by the caller; they ride on its `uv tool install` target.
+    `cartridge_extras` do the same for the cartridges checkout."""
+    default_workspace = locations is not None and not workspace
+    if locations is not None and default_workspace:
+        workspace = posixpath.join(locations.workspaces, "main")
+    installs = locations.installs if locations else root
+    profile_file = locations.profile if locations else profile_path(config_dir)
+    cartridges_dir = f"{installs}/coxswain-cartridges"
+    harness_dir = f"{installs}/coxswain-graphs"
+    profile_cartridges_dir = f"{workspace}/cartridges"
+    steps: list = []
+
+    if default_workspace and not workspace_exists:
+        steps.extend(_workspace_steps(workspace))
+
+    if not uv_on_path:
+        steps.append({"op": "skip", "what": "venvs",
+                      "why": "uv is not on PATH; install it from https://astral.sh/uv"})
+    else:
+        for repo in REPOS:
+            steps.extend(_repo_steps(repo, installs, python_exists, cartridges_dir))
+        steps.append({"op": "run",
+                      "argv": ["uv", "tool", "install", "--force", "-q", "-e",
+                               _tool_target(f"{installs}/coxswain-tools", tool_extras)],
+                      "why": "put cox on PATH", "warn_only": True})
+        steps.append({"op": "run",
+                      "argv": ["uv", "tool", "install", "--force", "-q", "-e",
+                               _tool_target(cartridges_dir, cartridge_extras)],
+                      "why": "puts the `cartridge` command on PATH beside cox",
+                      "warn_only": True})
+
+    if not profile_exists or force_profile:
+        text = profile_text(team=team, cartridges_dir=profile_cartridges_dir,
+                             skills_root=skills_root, provider_profile=provider_profile,
+                             harness_dir=harness_dir, workspace=workspace, assume=assume,
+                             window_ceiling_usd=window_ceiling_usd, weekly_ceiling_usd=weekly_ceiling_usd)
+        steps.append({"op": "write", "path": profile_file, "text": text,
+                      "why": "write the routing layer's profile"})
+    else:
+        steps.append({"op": "skip", "what": "profile",
+                      "why": "exists; pass --force-profile to rewrite"})
+
+    steps.extend(_agent_steps(cast or {}))
+
+    if plugins:
+        if claude_on_path:
+            steps.extend(marketplace_steps(cartridges_dir, registered_marketplace))
+            steps.append({"op": "run",
+                          "argv": ["claude", "plugin", "install", "local-skills@coxswain-cartridges"],
+                          "why": "install the local-skills plugin"})
+        else:
+            steps.append({"op": "skip", "what": "plugins",
+                          "why": "claude is not on PATH; this step is provider-specific"})
+
+    if locations is not None:
+        steps.append({"op": "write", "path": locations.record, "text": f"{locations.home}\n",
+                      "why": "record the coxswain home"})
+
+    if hook:
+        steps.append({"op": "hook", "path": claude_settings_path,
+                      "why": "add a SessionStart hook that prints route context"})
+
+    steps.append({"op": "print", "text": "verify with: agent-tools setup doctor"})
+    return steps
+
+
+def hook_settings(existing: dict) -> tuple:
+    """(new_settings, changed): `existing` with a SessionStart hook entry
+    running the route-context command appended under hooks.SessionStart,
+    unless an entry with that exact command is already present. Never
+    mutates `existing`."""
+    entry = {"matcher": "", "hooks": [{"type": "command", "command": _HOOK_COMMAND}]}
+    hooks = dict(existing.get("hooks", {}))
+    session_start = list(hooks.get("SessionStart", []))
+    for item in session_start:
+        for sub in item.get("hooks", []):
+            if sub.get("command") == _HOOK_COMMAND:
+                return existing, False
+    new_settings = dict(existing)
+    hooks["SessionStart"] = session_start + [entry]
+    new_settings["hooks"] = hooks
+    return new_settings, True
+
+
+def render_plan(steps: list) -> str:
+    """One line per step, for `--dry-run`."""
+    lines = []
+    for step in steps:
+        op = step["op"]
+        if op == "run":
+            cwd = f" ({step['cwd']})" if "cwd" in step else ""
+            lines.append(f"run{cwd} {' '.join(step['argv'])}")
+        elif op == "write":
+            lines.append(f"write {step['path']}")
+        elif op == "mkdir":
+            lines.append(f"mkdir {step['path']}")
+        elif op == "remove":
+            lines.append(f"remove {step['path']}")
+        elif op == "skip":
+            lines.append(f"skip {step['what']} — {step['why']}")
+        elif op == "hook":
+            lines.append(f"hook {step['path']}")
+        elif op == "print":
+            lines.append(f"print {step['text']}")
+        else:
+            lines.append(f"{op} {step}")
+    return "\n".join(lines)

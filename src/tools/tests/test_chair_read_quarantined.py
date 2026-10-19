@@ -1,0 +1,147 @@
+from agent_tools import run_store
+from agent_tools.chair_read_quarantined import (
+    RUNAWAY_CAUSE,
+    attempts_on_current_body,
+    body_sha,
+    quarantined_from_rows,
+    quarantined_rows,
+    read_quarantined,
+)
+
+BODY = "body\n"
+ON_BODY = {"run": "i-1", "ts": "2026-09-25T01:00:00Z", "body_sha": body_sha(BODY)}
+PATH = "work/a/p1/t1.md"
+
+
+def test_a_ready_item_with_one_attempt_on_its_body_is_a_quarantine_row_with_that_run():
+    assert quarantined_rows([(PATH, "ready", BODY, [ON_BODY])]) == [
+        {"initiative": "a", "phase": "p1", "task": "t1", "run": "i-1", "reason": ""}
+    ]
+
+
+def test_a_row_carries_the_reason_of_the_newest_attempt_on_its_body():
+    older = {**ON_BODY, "reason": "first verdict"}
+    newer = {**ON_BODY, "run": "i-2", "ts": "2026-09-26T01:00:00Z", "reason": "second verdict"}
+    assert quarantined_rows([(PATH, "ready", BODY, [newer, older])])[0]["reason"] == "second verdict"
+
+
+def test_a_newer_attempt_on_an_older_body_does_not_supply_the_reason():
+    stale = {**ON_BODY, "ts": "2026-09-27T01:00:00Z", "body_sha": "0" * 12, "reason": "stale verdict"}
+    current = {**ON_BODY, "reason": "current verdict"}
+    assert quarantined_rows([(PATH, "ready", BODY, [current, stale])])[0]["reason"] == "current verdict"
+
+
+def test_an_item_with_no_reason_text_gives_an_empty_reason():
+    assert quarantined_rows([(PATH, "ready", BODY, [{**ON_BODY, "reason": None}])])[0]["reason"] == ""
+
+
+def test_a_long_reason_is_not_cut():
+    long = "x" * 700
+    assert quarantined_rows([(PATH, "ready", BODY, [{**ON_BODY, "reason": long}])])[0]["reason"] == long
+
+
+def test_an_attempt_whose_body_sha_differs_gives_no_row():
+    assert quarantined_rows([(PATH, "ready", BODY, [{**ON_BODY, "body_sha": "0" * 12}])]) == []
+
+
+def test_a_row_carries_the_run_of_the_newest_attempt():
+    newer = {**ON_BODY, "run": "i-2", "ts": "2026-09-26T01:00:00Z"}
+    assert quarantined_rows([(PATH, "blocked", BODY, [newer, ON_BODY])])[0]["run"] == "i-2"
+
+
+def test_an_attempt_with_no_body_sha_counts_as_on_the_body():
+    assert attempts_on_current_body([{"run": "i-1"}, {"run": "i-2", "body_sha": "0" * 12}], BODY) == [{"run": "i-1"}]
+
+
+def test_the_body_sha_is_twelve_hex_digits_of_the_stripped_body():
+    assert body_sha("  hi\n") == "8f434346648f"
+
+
+def test_an_item_in_any_other_state_gives_no_row():
+    assert [quarantined_rows([(PATH, state, BODY, [ON_BODY])]) for state in ("done", "approved", "in_progress")] == [[]] * 3
+
+
+def test_a_quarantined_item_gives_a_row_with_or_without_an_attempt_on_its_body():
+    stale = {**ON_BODY, "body_sha": "0" * 12}
+    assert [quarantined_rows([(PATH, "quarantined", BODY, attempts)]) for attempts in ([ON_BODY], [stale], None)] == [
+        [{"initiative": "a", "phase": "p1", "task": "t1", "run": "i-1", "reason": ""}],
+        [{"initiative": "a", "phase": "p1", "task": "t1", "run": "", "reason": ""}],
+        [{"initiative": "a", "phase": "p1", "task": "t1", "run": "", "reason": ""}],
+    ]
+
+
+def test_a_path_not_shaped_work_initiative_phase_task_md_gives_no_row():
+    items = [("work/a/t1.md", "ready", BODY, [ON_BODY]), ("work/a/p1/t1.txt", "ready", BODY, [ON_BODY])]
+    assert quarantined_rows(items) == []
+
+
+def _world(tmp_path, monkeypatch, store_rows):
+    item = tmp_path / "work" / "a" / "p1" / "t1.md"
+    item.parent.mkdir(parents=True)
+    item.write_text(f"---\nstate: ready\nattempts:\n  - run: i-1\n    ts: t\n    body_sha: {body_sha(BODY)}\n---\n{BODY}")
+    calls = []
+    monkeypatch.setattr(run_store, "work_items", lambda runs_dir, initiative=None: calls.append(runs_dir) or store_rows)
+    return calls
+
+
+def test_under_files_mode_the_file_state_holds_and_the_store_is_not_read(tmp_path, monkeypatch):
+    calls = _world(tmp_path, monkeypatch, [{"initiative": "a", "task_id": "t1", "state": "done"}])
+    row = {"initiative": "a", "phase": "p1", "task": "t1", "run": "i-1", "reason": ""}
+    assert (read_quarantined(tmp_path, "files"), calls) == ([row], [])
+
+
+def test_under_store_mode_a_done_store_row_hides_a_file_once_quarantined(tmp_path, monkeypatch):
+    _world(tmp_path, monkeypatch, [{"initiative": "a", "task_id": "t1", "state": "done"}])
+    assert read_quarantined(tmp_path, "store") == []
+
+
+def test_regression_under_store_mode_a_quarantined_store_row_surfaces_whatever_its_file_says(tmp_path, monkeypatch):
+    # 2026-10-13: the driver set the store row to quarantined while the held ticket file still said ready with no
+    # attempt on its body. The store-state override dropped the row (only ready/blocked counted), so the status line
+    # read "needs chair: none" for an hour.
+    item = tmp_path / "work" / "a" / "p1" / "t1.md"
+    item.parent.mkdir(parents=True)
+    item.write_text(f"---\nstate: ready\n---\n{BODY}")
+    store = [{"initiative": "a", "task_id": "t1", "phase": "p1", "state": "quarantined"}]
+    monkeypatch.setattr(run_store, "work_items", lambda runs_dir, initiative=None: store)
+    assert read_quarantined(tmp_path, "store") == [{"initiative": "a", "phase": "p1", "task": "t1", "run": "", "reason": ""}]
+
+
+def test_under_store_mode_a_quarantined_store_row_with_no_file_still_surfaces(tmp_path, monkeypatch):
+    store = [
+        {"initiative": "a", "task_id": "gone", "phase": "p2", "state": "quarantined"},
+        {"initiative": "a", "task_id": "other", "phase": "p2", "state": "ready"},
+    ]
+    monkeypatch.setattr(run_store, "work_items", lambda runs_dir, initiative=None: store)
+    assert (read_quarantined(tmp_path, "store"), read_quarantined(tmp_path, "files")) == (
+        [{"initiative": "a", "phase": "p2", "task": "gone", "run": "", "reason": ""}], [],
+    )
+
+
+ROW = {
+    "kind": "task", "initiative": "a", "task_id": "t1", "phase": "p1", "state": "quarantined",
+    "needs": [], "title": "", "surfaces": [], "body": BODY,
+    "extra": {"attempts": [{"run": "i-1", "ts": "2026-09-25T01:00:00Z", "cause": "harness", "body_sha": body_sha(BODY)}]},
+}
+
+
+def test_a_quarantined_row_gives_its_fact_with_body_sha_and_cause_from_the_newest_attempt():
+    assert quarantined_from_rows([ROW]) == [
+        {"initiative": "a", "phase": "p1", "task": "t1", "run": "i-1", "body_sha": body_sha(BODY), "cause": "harness"}
+    ]
+
+
+def test_a_row_in_any_other_state_gives_no_fact():
+    assert quarantined_from_rows([{**ROW, "state": "ready"}]) == []
+
+
+def test_a_runaway_ceiling_reason_classifies_as_the_runaway_cause():
+    runaway_row = {
+        **ROW,
+        "extra": {"attempts": [{**ROW["extra"]["attempts"][0], "cause": "runaway ceiling $6.00 reached"}]},
+    }
+    assert quarantined_from_rows([runaway_row])[0]["cause"] == RUNAWAY_CAUSE
+
+
+def test_an_ordinary_reason_keeps_its_existing_cause():
+    assert quarantined_from_rows([ROW])[0]["cause"] == "harness"

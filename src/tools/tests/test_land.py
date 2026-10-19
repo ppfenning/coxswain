@@ -1,0 +1,2578 @@
+import datetime
+import importlib.metadata
+import json
+import os
+import subprocess as sp
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from test_run_store import phases_table, run_row, runs_table, with_record
+
+from agent_tools import chair, cleanup, cli, forge_github, land, store_cli
+
+_STEP_ORDER = ["pick_branch", "cherry_pick", "checks", "push", "pr_create", "wait_checks", "merge", "clean", "mark_done"]
+_ENV = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e"}
+
+
+@pytest.fixture(autouse=True)
+def _own_tempdir(tmp_path, monkeypatch):
+    """Land worktrees live under the temp dir; give each test its own so none sees another's."""
+    (tmp_path / "tmp").mkdir()
+    monkeypatch.setattr(cli.tempfile, "tempdir", str(tmp_path / "tmp"))
+
+
+def _record(**overrides):
+    base = {
+        "run": "epic-x-5",
+        "task": "seams-task",
+        "phase": "seams",
+        "initiative": "x",
+        "proposals": [{"kind": "draft_pr_create", "title": "Add seams"}],
+        "review": {"verdict": "approve"},
+        "arbitration": {"verdict": "approve"},
+        "change_facts": {"fix_loop_attempts": 1, "checks": "pytest -q"},
+        "build": {"summary": "Added the seams module."},
+    }
+    base.update(overrides)
+    return base
+
+
+# --- land_plan: pure ---
+
+def test_refuse_without_approval():
+    assert land.land_plan(_record(proposals=[]), {}, "main") == [{"kind": "refuse", "reason": "no draft_pr_create proposal in record"}]
+    assert land.land_plan(_record(arbitration={"verdict": "revise"}), {}, "main") == [
+        {"kind": "refuse", "reason": "arbitration verdict is 'revise', not 'approve'"}
+    ]
+
+
+def test_arbitration_verdict_of_a_null_arbitration_is_none():
+    assert land.arbitration_verdict({"arbitration": None}) is None
+
+
+def test_arbitration_verdict_of_a_dict_is_its_verdict():
+    assert land.arbitration_verdict({"arbitration": {"verdict": "revise"}}) == "revise"
+
+
+def test_arbitration_verdict_of_the_arbiter_skip_string_is_approve():
+    assert land.arbitration_verdict({"arbitration": "arbiter: skipped (both approved)"}) == "approve"
+
+
+def test_land_plan_over_the_arbiter_skip_string_plans_a_normal_land():
+    branches = {"agents/epic-x-5/seams-task": ["Add seams module"]}
+    steps = land.land_plan(_record(arbitration="arbiter: skipped (both approved)"), branches, "main")
+    assert steps[0] == {"kind": "pick_branch", "branch": "agents/epic-x-5/seams-task", "commit_subject": "Add seams module"}
+
+
+def test_branch_choice_scratch_branch():
+    branches = {"agents/epic-x-5/seams-task": ["Add seams module"], "epic/x/seams": ["Add seams module", "Add other thing"]}
+    steps = land.land_plan(_record(), branches, "main")
+    assert steps[0] == {"kind": "pick_branch", "branch": "agents/epic-x-5/seams-task", "commit_subject": "Add seams module"}
+
+
+def test_branch_choice_phase_branch():
+    branches = {"agents/epic-x-5/seams-task": ["c1", "c2"], "epic/x/seams": ["Add seams module"]}
+    steps = land.land_plan(_record(), branches, "main")
+    assert steps[0] == {"kind": "pick_branch", "branch": "epic/x/seams", "commit_subject": "Add seams module"}
+
+
+def test_branch_choice_ambiguous_refuses_naming_what_was_found():
+    branches = {"agents/epic-x-5/seams-task": ["c1", "c2"], "epic/x/seams": ["c1", "c2"]}
+    steps = land.land_plan(_record(), branches, "main")
+    assert steps == [{
+        "kind": "refuse",
+        "reason": "no branch is exactly one commit ahead of main",
+        "found": {"agents/epic-x-5/seams-task": 2, "epic/x/seams": 2},
+    }]
+
+
+def test_step_order():
+    branches = {"agents/epic-x-5/seams-task": ["Add seams module"]}
+    steps = land.land_plan(_record(), branches, "main")
+    assert [s["kind"] for s in steps] == _STEP_ORDER
+
+
+def test_a_record_silent_on_initiative_still_lands_off_the_scratch_branch():
+    branches = {"agents/epic-x-5/seams-task": ["Add seams module"]}
+    steps = land.land_plan(_record(initiative=None), branches, "main")
+    assert steps[0]["kind"] == "pick_branch"
+
+
+def test_a_record_silent_on_initiative_refuses_cleanly_when_only_a_phase_branch_is_offered():
+    branches = {"epic/x/seams": ["one commit"]}
+    steps = land.land_plan(_record(initiative=None), branches, "main")
+    assert steps == [{"kind": "refuse", "reason": "no branch is exactly one commit ahead of main", "found": {"epic/x/seams": 1}}]
+
+
+# --- gate_steps, gate_stop: pure ---
+
+_GATED_STEPS = [
+    {"kind": "pick_branch", "branch": "agents/epic-x-5/seams-task", "commit_subject": "Add seams module"},
+    {"kind": "cherry_pick", "branch": "agents/epic-x-5/seams-task", "commit_subject": "Add seams module",
+     "onto": "pr/seams-task", "from": "main"},
+    {"kind": "checks", "checks": [("tests", ["pytest", "-q"])]},
+    {"kind": "push", "branch": "pr/seams-task"},
+    {"kind": "pr_create", "title": "Add seams", "body": "Run: epic-x-5"},
+    {"kind": "wait_checks"},
+    {"kind": "merge", "squash": True, "delete_branch": True},
+    {"kind": "clean", "run": "epic-x-5", "task": "seams-task", "branch": "agents/epic-x-5/seams-task"},
+    {"kind": "mark_done", "task": "seams-task"},
+]
+_TICKET_NOTE = {"kind": "note", "reason": "gate: ticket — the pull request is open and waits for a person"}
+
+
+def test_gate_steps_ticket_truncates_after_pr_create_and_appends_a_note():
+    assert land.gate_steps(_GATED_STEPS, "ticket") == _GATED_STEPS[:5] + [_TICKET_NOTE]
+
+
+def test_gate_steps_phase_truncates_before_a_merge_with_no_target():
+    assert land.gate_steps(_GATED_STEPS, "phase") == _GATED_STEPS[:6]
+
+
+def test_gate_steps_epic_truncates_before_a_merge_with_no_target():
+    assert land.gate_steps(_GATED_STEPS, "epic") == _GATED_STEPS[:6]
+
+
+def test_gate_steps_phase_keeps_a_merge_into_its_own_phase_branch():
+    steps = _GATED_STEPS[:6] + [{"kind": "merge", "source": "agents/epic-x-5/seams-task", "target": "epic/x/seams"}]
+    assert land.gate_steps(steps, "phase") == steps
+
+
+def test_gate_steps_full_returns_the_steps_unchanged():
+    assert land.gate_steps(_GATED_STEPS, "full") == _GATED_STEPS
+
+
+def test_gate_steps_leaves_a_refusal_untouched_at_every_level():
+    refusal = [{"kind": "refuse", "reason": "no draft_pr_create proposal in record"}]
+    assert [land.gate_steps(refusal, level) for level in ("ticket", "phase", "epic", "full")] == [refusal] * 4
+
+
+def test_gate_steps_an_unrecognized_level_fails_safe_to_ticket_not_full():
+    assert land.gate_steps(_GATED_STEPS, "bogus") == _GATED_STEPS[:5] + [_TICKET_NOTE]
+
+
+def test_gate_stop_names_the_level_the_last_step_and_the_open_pr():
+    gated = land.gate_steps(_GATED_STEPS, "phase")
+    assert land.gate_stop(_GATED_STEPS, gated, "phase", "https://x/pull/7") == (
+        "gate: phase stopped after wait_checks; pull request https://x/pull/7 left open, unmerged"
+    )
+
+
+def test_gate_stop_at_ticket_names_pr_create_not_the_note():
+    gated = land.gate_steps(_GATED_STEPS, "ticket")
+    assert land.gate_stop(_GATED_STEPS, gated, "ticket", "https://x/pull/7").startswith("gate: ticket stopped after pr_create;")
+
+
+def test_gate_stop_is_none_when_the_plan_runs_to_completion():
+    assert land.gate_stop(_GATED_STEPS, land.gate_steps(_GATED_STEPS, "full"), "full", "https://x/pull/7") is None
+
+
+# --- recover_plan: pure ---
+
+def test_recover_plan_resolves_the_scratch_branch_into_the_phase_branch():
+    branches = {"agents/epic-x-5/seams-task": ["Add seams module"]}
+    steps = land.recover_plan(_record(), branches)
+    assert steps == [{
+        "kind": "merge",
+        "source": "agents/epic-x-5/seams-task",
+        "target": "epic/x/seams",
+        "commit_subject": "Add seams module",
+    }]
+
+
+def test_recover_plan_a_commit_already_on_the_phase_branch_plans_nothing():
+    branches = {"agents/epic-x-5/seams-task": []}
+    steps = land.recover_plan(_record(), branches)
+    assert steps == [{
+        "kind": "already_recovered",
+        "branch": "epic/x/seams",
+        "reason": "agents/epic-x-5/seams-task has no commits ahead of epic/x/seams",
+    }]
+
+
+def test_recover_plan_an_unresolvable_task_refuses_rather_than_a_partial_plan():
+    assert land.recover_plan(_record(), {}) == [{
+        "kind": "refuse",
+        "reason": "no candidate branch found for seams-task: tried agents/epic-x-5/seams-task, epic/x/seams--seams-task",
+    }]
+    assert land.recover_plan(_record(initiative=None), {"agents/epic-x-5/seams-task": ["x"]}) == [{
+        "kind": "refuse",
+        "reason": "seams-task: record names no initiative/phase, cannot resolve a phase branch",
+    }]
+
+
+# --- recover_record: pure ---
+
+def test_recover_record_reads_run_phase_and_task_off_the_path():
+    assert land.recover_record("runs/r-2/tasks/p/t.json", "t", "i") == {"run": "r-2", "task": "t", "phase": "p", "initiative": "i"}
+
+
+def test_recover_record_refuses_a_path_without_the_tasks_segment():
+    step = land.recover_record("runs/r-2/p/t.json", "t", "i")
+    assert step["kind"] == "refuse"
+    assert "expected <run>/tasks/<phase>/<task>.json" in step["reason"]
+
+
+def test_recover_record_refuses_a_ticket_that_disagrees_with_the_filename():
+    step = land.recover_record("runs/r-2/tasks/p/t.json", "other", "i")
+    assert step["kind"] == "refuse"
+    assert "disagrees with its filename" in step["reason"]
+
+
+def test_recover_record_refuses_a_record_with_no_ticket():
+    assert land.recover_record("runs/r-2/tasks/p/t.json", None, "i")["kind"] == "refuse"
+
+
+# --- pr_body: pure ---
+
+def test_pr_body_contains_verdicts_and_run_id():
+    body = land.pr_body(_record())
+    assert "epic-x-5" in body
+    assert "Review verdict: approve" in body
+    assert "Arbitration verdict: approve" in body
+
+
+def test_pr_body_cost_line_survives_a_string_cost():
+    assert "Cost: $1.50" in land.pr_body(_record(cost_usd="1.5"))
+
+
+def test_pr_body_omits_the_cost_line_rather_than_raising_on_an_unparseable_cost():
+    assert "Cost:" not in land.pr_body(_record(cost_usd="n/a"))
+
+
+def test_pr_body_keeps_closes_and_ends_with_the_footer_naming_its_run():
+    body = land.pr_body(_record(), issue="7")
+    assert body.endswith("\n\nCloses #7\n\n🚣 Built with [coxswain](https://github.com/ppfenning/coxswain) · run epic-x-5")
+
+
+def test_pr_footer_with_a_run_ends_in_the_run():
+    assert land.pr_footer("epic-x-5") == "🚣 Built with [coxswain](https://github.com/ppfenning/coxswain) · run epic-x-5"
+
+
+def test_pr_footer_without_a_run_ends_at_the_link():
+    footer = land.pr_footer(None)
+    assert footer == "🚣 Built with [coxswain](https://github.com/ppfenning/coxswain)"
+    assert not footer.endswith(" · ")
+    assert "run" not in footer
+
+
+@pytest.mark.parametrize("installed", ["9.9.9", None])
+def test_pr_footer_carries_no_version_whatever_is_installed(monkeypatch, installed):
+    def version(name):
+        if installed is None:
+            raise importlib.metadata.PackageNotFoundError(name)
+        return installed
+    monkeypatch.setattr(importlib.metadata, "version", version)
+    for run in ("epic-x-5", None):
+        footer = land.pr_footer(run)
+        assert "9.9.9" not in footer
+        assert "unknown" not in footer
+    assert land.pr_footer("epic-x-5") == "🚣 Built with [coxswain](https://github.com/ppfenning/coxswain) · run epic-x-5"
+    assert land.pr_footer(None) == "🚣 Built with [coxswain](https://github.com/ppfenning/coxswain)"
+
+
+# --- route sync hooks: pure plan, then the edge ---
+
+_ONE_COMMIT = {"agents/epic-x-5/seams-task": ["Add seams module"]}
+
+
+def _pr_body_of(steps):
+    return next(s for s in steps if s["kind"] == "pr_create")["body"]
+
+
+@pytest.mark.parametrize("issue", ["7", "#7", "owner/name#7", "owner/7", 7])
+def test_issue_closes_is_the_bare_number_whatever_shape_it_arrived_in(issue):
+    assert land.issue_closes(issue) == "Closes #7"
+
+
+@pytest.mark.parametrize("issue", [None, "", "seven", "owner/name#"])
+def test_issue_closes_is_none_for_no_issue_or_an_unparseable_one(issue):
+    assert land.issue_closes(issue) is None
+
+
+_PRESYNCED = _STEP_ORDER[:4] + ["route_sync"] + _STEP_ORDER[4:]
+
+
+def test_the_plan_carries_route_sync_after_mark_done():
+    steps = land.land_plan(_record(), _ONE_COMMIT, "main", tracker="github-projects", issue="7")
+    assert [s["kind"] for s in steps] == _STEP_ORDER + ["route_sync"]
+    assert steps[-1] == {"kind": "route_sync", "item": "seams-task"}
+
+
+def test_an_item_with_no_issue_is_synced_before_the_pr_opens_and_one_with_an_issue_is_not():
+    steps = land.land_plan(_record(), _ONE_COMMIT, "main", tracker="github-projects")
+    assert [s["kind"] for s in steps] == _PRESYNCED + ["route_sync"]
+    assert steps[4] == {"kind": "route_sync", "item": "seams-task", "before": "pr_create"}
+    assert steps[-1] == {"kind": "route_sync", "item": "seams-task"}
+    assert [s["kind"] for s in land.land_plan(_record(), _ONE_COMMIT, "main", tracker="none")] == _STEP_ORDER + ["note"]
+
+
+def test_with_issue_rebuilds_only_the_pr_body_and_leaves_no_issue_alone():
+    steps = land.land_plan(_record(), _ONE_COMMIT, "main", tracker="github-projects")
+    assert "Closes" not in _pr_body_of(steps)
+    closed = land.with_issue(steps, _record(), "9")
+    body = _pr_body_of(closed)
+    assert "\n\nCloses #9" in body
+    assert body.endswith(land.pr_footer("epic-x-5"))
+    assert [s for s in closed if s["kind"] != "pr_create"] == [s for s in steps if s["kind"] != "pr_create"]
+    assert land.with_issue(steps, _record(), None) == steps
+
+
+def test_the_pr_body_closes_the_issue_and_never_emits_an_owner():
+    for issue in ("7", "owner/name#7"):
+        body = _pr_body_of(land.land_plan(_record(), _ONE_COMMIT, "main", tracker="github-projects", issue=issue))
+        assert "\n\nCloses #7" in body
+        assert body.endswith(land.pr_footer("epic-x-5"))
+        assert "owner" not in body
+
+
+def test_the_pr_body_has_no_closes_line_without_an_issue():
+    assert "Closes" not in _pr_body_of(land.land_plan(_record(), _ONE_COMMIT, "main", tracker="github-projects"))
+
+
+def test_tracker_none_plans_neither_the_sync_nor_the_closes_line_and_says_so():
+    steps = land.land_plan(_record(), _ONE_COMMIT, "main", tracker="none", issue="7")
+    assert [s["kind"] for s in steps] == _STEP_ORDER + ["note"]
+    assert steps[-1]["reason"] == "route sync skipped: tracker is none"
+    assert "Closes" not in _pr_body_of(steps)
+
+
+def test_an_unresolved_tracker_leaves_the_plan_as_it_was():
+    steps = land.land_plan(_record(), _ONE_COMMIT, "main")
+    assert [s["kind"] for s in steps] == _STEP_ORDER
+
+
+def test_a_skip_note_is_not_a_step_the_gate_reports_as_left_unrun():
+    steps = land.land_plan(_record(), _ONE_COMMIT, "main", tracker="none")
+    assert land.gate_stop(steps, land.gate_steps(steps, "full"), "full", "") is None
+
+
+def _sync_step(tmp_path, tracker="github-projects"):
+    """A route_sync step whose own profile and runs dir resolve `tracker`."""
+    runs = tmp_path / "step-runs"; runs.mkdir(exist_ok=True)
+    (runs / "policy.tracker.json").write_text(json.dumps({"tracker": tracker}), encoding="utf-8")
+    return {"kind": "route_sync", "item": "seams-task", "workspace": "/w",
+            "profile": str(tmp_path / "step-profile.yaml"), "runs_dir": str(runs)}
+
+
+@pytest.mark.parametrize("outcome", [1, RuntimeError("boom")])
+def test_execute_route_sync_calls_the_sync_in_process_and_a_failure_never_fails_the_land(monkeypatch, tmp_path, outcome):
+    seen = []
+
+    def fake(ns):
+        seen.append(ns)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+    monkeypatch.setattr(cli, "_route_sync", fake)
+    ok, detail = cli._execute_land_step(tmp_path, _sync_step(tmp_path))
+    assert ok is True and "failed after the merge" in detail
+    ns = seen[0]
+    assert (ns.item, ns.workspace, ns.dry_run, ns.project, ns.profile, ns.runs_dir) == (
+        "seams-task", "/w", False, None, str(tmp_path / "step-profile.yaml"), str(tmp_path / "step-runs"))
+
+
+def test_execute_route_sync_reports_success(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "_route_sync", lambda ns: 0)
+    assert cli._execute_land_step(tmp_path, _sync_step(tmp_path)) == (True, "synced seams-task")
+
+
+def test_execute_route_sync_under_tracker_none_reports_a_skip_and_never_calls_the_sync(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "_route_sync", lambda ns: pytest.fail("the sync ran under tracker none"))
+    assert cli._execute_land_step(tmp_path, _sync_step(tmp_path, "none")) == (
+        True, "sync of seams-task skipped after the merge: tracker is none")
+
+
+def test_land_enrich_gives_route_sync_its_workspace_the_items_own_id_and_the_lands_profile():
+    steps = cli._land_enrich([{"kind": "route_sync", "item": "seams-task"}], path="p", worktree_root="r",
+                             workspace="/w", item_id="SEAM-1", profile="/p.yaml", runs_dir="/r")
+    assert steps == [{"kind": "route_sync", "item": "SEAM-1", "workspace": "/w", "profile": "/p.yaml", "runs_dir": "/r"}]
+
+
+def test_land_item_facts_reads_id_and_issue_from_the_frontmatter(tmp_path):
+    item = tmp_path / "t.md"
+    item.write_text("---\nid: SEAM-1\nissue: 243\n---\nbody\n")
+    assert cli._land_item_facts(str(item)) == ("SEAM-1", "243")
+    assert cli._land_item_facts(str(tmp_path / "missing.md")) == (None, None)
+    assert cli._land_item_facts(None) == (None, None)
+
+
+def test_resolved_tracker_reads_the_profile_and_the_policy_file_wins(tmp_path):
+    profile = {"tracker": "github-projects"}
+    assert cli._resolved_tracker(profile, tmp_path) == "github-projects"
+    (tmp_path / "policy.tracker.json").write_text('{"tracker": "none"}')
+    assert cli._resolved_tracker(profile, tmp_path) == "none"
+    (tmp_path / "policy.tracker.json").write_text("{not json")
+    assert cli._resolved_tracker(profile, tmp_path) == "github-projects"
+
+
+# --- cli._land_branches: the edge asks git, not prose, about merges ---
+
+def test_land_branches_asks_git_for_no_merges_rather_than_sniffing_subjects(monkeypatch):
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    cli._land_branches(Path("/nonexistent"), _record(), "main")
+    assert calls and all("--no-merges" in c for c in calls)
+
+
+def _git(root, *argv):
+    sp.run(["git", "-C", str(root), *argv], check=True, capture_output=True, env=_ENV)
+
+
+def _stacked_repo(tmp_path, *, parent_on_main):
+    """main, plus a scratch branch carrying a parent commit then its own commit.
+    With `parent_on_main` the parent's patch was squash-landed onto main."""
+    root = tmp_path / "stacked"; root.mkdir()
+    _git(root, "init", "-q", "-b", "main")
+    (root / "f").write_text("x"); _git(root, "add", "-A"); _git(root, "commit", "-qm", "init")
+    _git(root, "checkout", "-qb", "agents/epic-x-5/seams-task")
+    (root / "parent").write_text("p"); _git(root, "add", "-A"); _git(root, "commit", "-qm", "parent commit")
+    (root / "own").write_text("o"); _git(root, "add", "-A"); _git(root, "commit", "-qm", "own commit")
+    _git(root, "checkout", "-q", "main")
+    if parent_on_main:
+        (root / "parent").write_text("p"); _git(root, "add", "-A"); _git(root, "commit", "-qm", "parent squashed")
+    return root
+
+
+def test_land_branches_drops_a_commit_whose_patch_is_already_on_main(tmp_path):
+    root = _stacked_repo(tmp_path, parent_on_main=True)
+    branches = cli._land_branches(root, _record(), "main")
+    assert branches["agents/epic-x-5/seams-task"] == ["own commit"]
+    step = land.land_plan(_record(), branches, "main")[0]
+    assert (step["kind"], step["branch"]) == ("pick_branch", "agents/epic-x-5/seams-task")
+
+
+def test_land_branches_keeps_a_parent_commit_that_is_not_on_main(tmp_path):
+    root = _stacked_repo(tmp_path, parent_on_main=False)
+    branches = cli._land_branches(root, _record(), "main")
+    assert branches["agents/epic-x-5/seams-task"] == ["own commit", "parent commit"]
+    steps = land.land_plan(_record(), branches, "main")
+    assert steps[0]["kind"] == "refuse" and "exactly one commit" in steps[0]["reason"]
+
+
+# --- cli._execute_land_step: the git-only arms, for real, no gh ---
+
+@pytest.fixture
+def repo(tmp_path):
+    root = tmp_path / "repo"; root.mkdir()
+    sp.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
+    sp.run(["git", "-C", str(root), "config", "user.email", "test@example.com"], check=True)
+    sp.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
+    (root / "f").write_text("x"); sp.run(["git", "-C", str(root), "add", "-A"], check=True, env=_ENV)
+    sp.run(["git", "-C", str(root), "commit", "-qm", "init"], check=True, env=_ENV)
+    sp.run(["git", "-C", str(root), "checkout", "-qb", "agents/epic-x-5/seams-task"], check=True, env=_ENV)
+    (root / "f").write_text("y"); sp.run(["git", "-C", str(root), "commit", "-aqm", "Add seams module"], check=True, env=_ENV)
+    sp.run(["git", "-C", str(root), "checkout", "-q", "main"], check=True, env=_ENV)
+    return root
+
+
+def test_execute_cherry_pick_lands_the_one_commit_on_a_fresh_branch(repo):
+    ok, detail = cli._execute_land_step(repo, {
+        "kind": "cherry_pick", "branch": "agents/epic-x-5/seams-task", "commit_subject": "Add seams module",
+        "onto": "pr/seams-task", "from": "main",
+    })
+    assert ok, detail
+    assert "pr/seams-task" in cleanup.git_branches(repo)
+    assert cli._git_out(repo, "show", "pr/seams-task:f") == "y"
+    assert (repo / "f").read_text() == "x"
+    assert cli._git_out(repo, "rev-parse", "--abbrev-ref", "HEAD") == "main"
+
+
+def test_execute_cherry_pick_resolves_by_commit_range_not_by_subject_text(repo):
+    # main already has an old commit with the same subject as the scratch
+    # branch's one real commit; a --grep lookup could match the wrong one.
+    sp.run(["git", "-C", repo, "commit", "--allow-empty", "-qm", "Add seams module"], check=True, env=_ENV)
+    ok, detail = cli._execute_land_step(repo, {
+        "kind": "cherry_pick", "branch": "agents/epic-x-5/seams-task", "commit_subject": "Add seams module",
+        "onto": "pr/seams-task", "from": "main",
+    })
+    assert ok, detail
+    assert cli._git_out(repo, "show", "pr/seams-task:f") == "y"
+
+
+def test_execute_cherry_pick_lands_a_child_whose_stacked_parent_already_merged_as_a_squash(repo):
+    # The child branch carries its parent's commit and its own; main has the parent's patch under another message.
+    sp.run(["git", "-C", repo, "checkout", "-qb", "agents/epic-x-6/child", "agents/epic-x-5/seams-task"], check=True, env=_ENV)
+    (repo / "g").write_text("child"); sp.run(["git", "-C", repo, "add", "-A"], check=True, env=_ENV)
+    sp.run(["git", "-C", repo, "commit", "-qm", "Add child"], check=True, env=_ENV)
+    sp.run(["git", "-C", repo, "checkout", "-q", "main"], check=True, env=_ENV)
+    (repo / "f").write_text("y"); sp.run(["git", "-C", repo, "commit", "-aqm", "Add seams module (#90)"], check=True, env=_ENV)
+    ok, detail = cli._execute_land_step(repo, {
+        "kind": "cherry_pick", "branch": "agents/epic-x-6/child", "commit_subject": "Add child",
+        "onto": "pr/child", "from": "main",
+    })
+    assert ok, detail
+    assert cli._git_out(repo, "show", "pr/child:g") == "child"
+
+
+def test_execute_cherry_pick_replaces_a_stale_land_worktree_directory(repo):
+    stale = cli._land_worktree(repo, "pr/seams-task")
+    stale.mkdir(); (stale / "junk").write_text("left by a crashed land")
+    ok, detail = cli._execute_land_step(repo, {
+        "kind": "cherry_pick", "branch": "agents/epic-x-5/seams-task", "commit_subject": "Add seams module",
+        "onto": "pr/seams-task", "from": "main",
+    })
+    assert ok, detail
+    assert not (stale / "junk").exists()
+
+
+def test_execute_cherry_pick_conflict_reports_failure_without_raising_and_leaves_the_repo_clean(repo):
+    sp.run(["git", "-C", repo, "commit", "--allow-empty", "-qm", "noop"], check=True, env=_ENV)
+    (repo / "f").write_text("conflicting"); sp.run(["git", "-C", repo, "commit", "-aqm", "unrelated main change"], check=True, env=_ENV)
+    ok, detail = cli._execute_land_step(repo, {
+        "kind": "cherry_pick", "branch": "agents/epic-x-5/seams-task", "commit_subject": "Add seams module",
+        "onto": "pr/seams-task", "from": "main",
+    })
+    assert not ok
+    assert detail
+    status = sp.run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True).stdout
+    assert status.strip() == ""
+
+
+def test_execute_checks_reports_pass_and_fail(tmp_path):
+    assert cli._execute_land_step(tmp_path, {"kind": "checks", "checks": [("tests", ["true"])]}) == (True, "1 checks passed")
+    ok, _ = cli._execute_land_step(tmp_path, {"kind": "checks", "checks": [("tests", ["false"])]})
+    assert not ok
+
+
+def test_execute_checks_with_a_branch_runs_in_a_worktree_and_removes_it(repo, tmp_path, monkeypatch):
+    wt = tmp_path / "checks-wt"
+    monkeypatch.setattr(cli.tempfile, "mkdtemp", lambda prefix="": str(wt))
+    ok, detail = cli._execute_land_step(repo, {"kind": "checks", "checks": [("tests", ["true"])], "branch": "agents/epic-x-5/seams-task"})
+    assert ok, detail
+    assert not wt.exists()
+    current = sp.run(["git", "-C", str(repo), "branch", "--show-current"], capture_output=True, text=True).stdout.strip()
+    assert current == "main"
+
+
+def test_execute_checks_runs_every_check_in_order_on_a_passing_fixture(tmp_path):
+    ok, detail = cli._execute_land_step(tmp_path, {
+        "kind": "checks", "checks": [("lint", ["true"]), ("tests", ["true"])],
+    })
+    assert ok
+    assert detail == "2 checks passed"
+
+
+def test_execute_checks_stops_at_the_first_failing_check_and_names_it_not_its_command(tmp_path, monkeypatch):
+    calls = []
+    real_run = cli.subprocess.run
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        return real_run(argv, **kw)
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    ok, detail = cli._execute_land_step(tmp_path, {
+        "kind": "checks", "checks": [("lint", ["false"]), ("tests", ["true"])],
+    })
+    assert not ok
+    assert detail.startswith("lint:")
+    assert calls == [["false"]]
+
+
+# --- land.phase_landable: pure, no I/O (§7) ---
+
+def _item(id_, status):
+    return {"id": id_, "status": status}
+
+
+def test_phase_landable_all_done():
+    items = [_item("a", "done"), _item("b", "done")]
+    records = {"a": _record(task="a"), "b": _record(task="b")}
+    assert land.phase_landable(items, records) is None
+
+
+def test_phase_landable_all_approved():
+    items = [_item("a", "approved"), _item("b", "approved")]
+    records = {"a": _record(task="a"), "b": _record(task="b")}
+    assert land.phase_landable(items, records) is None
+
+
+def test_phase_landable_one_item_not_ready():
+    items = [_item("a", "in_progress"), _item("b", "done")]
+    records = {"b": _record(task="b")}
+    assert land.phase_landable(items, records) == "a is 'in_progress', not approved, done or dropped"
+
+
+def test_phase_landable_one_dropped_rest_done():
+    items = [_item("a", "dropped"), _item("b", "done")]
+    records = {"b": _record(task="b")}
+    assert land.phase_landable(items, records) is None
+
+
+def test_phase_landable_one_done_but_unapproved():
+    items = [_item("a", "done"), _item("b", "done")]
+    records = {"a": _record(task="a", arbitration={"verdict": "revise"}), "b": _record(task="b")}
+    assert land.phase_landable(items, records) == "a: arbitration verdict is 'revise', not 'approve'"
+
+
+def test_phase_landable_a_done_item_with_no_filed_task_record_is_satisfied():
+    items = [_item("a", "done"), _item("b", "done")]
+    records = {"b": _record(task="b")}
+    assert land.phase_landable(items, records) is None
+
+
+def test_phase_landable_a_done_item_without_a_record_beside_an_approved_one_with_a_record():
+    items = [_item("a", "done"), _item("b", "approved")]
+    records = {"b": _record(task="b")}
+    assert land.phase_landable(items, records) is None
+    phase_record = {"run": "epic-x-5", "phase": "seams", "initiative": "x"}
+    task_records = [{**_record(task="b"), "status": "approved"}]
+    steps = land.land_plan(phase_record, {}, "main", items=items, task_records=task_records)
+    assert [s for s in steps if s["kind"] == "mark_done"] == [{"kind": "mark_done", "task": "b"}]
+    assert next(s for s in steps if s["kind"] == "clean_phase")["tasks"] == ["b"]
+
+
+def test_phase_landable_an_approved_item_with_no_task_record_still_refuses():
+    assert land.phase_landable([_item("a", "approved")], {}) == "a has no task record"
+
+
+# --- land_plan: phase mode (§1, §7) ---
+
+def test_phase_plan_step_list_and_clean_phase_scoping():
+    phase_record = {"run": "epic-x-5", "phase": "seams", "initiative": "x", "phase_verdict": {"reasoning": "solid"}}
+    task_records = [{
+        "task": "seams-task", "run": "epic-x-5", "phase": "seams", "status": "done",
+        "review": {"verdict": "approve"}, "arbitration": {"verdict": "approve"},
+        "change_facts": {"fix_loop_attempts": 1, "files_touched": ["a.py"]},
+    }]
+    items = [{"id": "seams-task", "status": "done"}]
+    steps = land.land_plan(phase_record, {}, "main", items=items, task_records=task_records)
+    assert [s["kind"] for s in steps] == [
+        "pick_branch", "squash_phase", "checks", "push", "pr_create", "wait_checks", "merge", "clean_phase", "mark_done",
+    ]
+    assert next(s for s in steps if s["kind"] == "checks")["worktree_of"] == "pr/x--seams"
+    assert next(s for s in steps if s["kind"] == "clean_phase") == {
+        "kind": "clean_phase", "run": "epic-x-5", "phase_branch": "epic/x/seams", "pr_branch": "pr/x--seams",
+        "tasks": ["seams-task"],
+    }
+
+
+def test_phase_plan_squash_phase_step_for_a_two_task_phase():
+    phase_record = {"run": "epic-x-5", "phase": "seams", "initiative": "x", "phase_verdict": {"reasoning": "solid"}}
+    task_records = [
+        {"task": "seams-a", "run": "epic-x-5", "phase": "seams", "status": "done",
+         "review": {"verdict": "approve"}, "arbitration": {"verdict": "approve"},
+         "change_facts": {"fix_loop_attempts": 0, "files_touched": ["a.py"]}},
+        {"task": "seams-b", "run": "epic-x-5", "phase": "seams", "status": "done",
+         "review": {"verdict": "approve"}, "arbitration": {"verdict": "approve"},
+         "change_facts": {"fix_loop_attempts": 1, "files_touched": ["b.py"]}},
+    ]
+    items = [{"id": "seams-a", "status": "done"}, {"id": "seams-b", "status": "done"}]
+    steps = land.land_plan(phase_record, {}, "main", items=items, task_records=task_records)
+    assert next(s for s in steps if s["kind"] == "squash_phase") == {
+        "kind": "squash_phase", "branch": "epic/x/seams", "onto": "pr/x--seams",
+        "from": "main", "subject": "epic x: seams",
+    }
+
+
+def _resume_plan(phase_pr):
+    phase_record = {"run": "epic-x-5", "phase": "seams", "initiative": "x", "phase_verdict": {"reasoning": "solid"}}
+    task_records = [{
+        "task": "seams-task", "run": "epic-x-5", "phase": "seams", "status": "done",
+        "review": {"verdict": "approve"}, "arbitration": {"verdict": "approve"},
+        "change_facts": {"fix_loop_attempts": 0, "files_touched": ["a.py"]},
+    }]
+    return land.land_plan(phase_record, {}, "main", items=[{"id": "seams-task", "status": "done"}],
+                          task_records=task_records, phase_pr=phase_pr)
+
+
+def test_phase_plan_with_an_open_pr_starts_at_wait_checks():
+    steps = _resume_plan({"local_tip": None, "remote_tip": "abc", "pr": 7, "pr_head": "abc"})
+    assert [s["kind"] for s in steps] == ["wait_checks", "merge", "clean_phase", "mark_done"]
+    assert steps[0] == {"kind": "wait_checks", "branch": "origin/pr/x--seams", "pr": 7}
+
+
+def test_phase_plan_with_a_stale_local_branch_and_no_pr_recreates_it_with_worktree_add_dash_b():
+    steps = _resume_plan({"local_tip": "abc", "remote_tip": None, "pr": None, "pr_head": None})
+    assert next(s for s in steps if s["kind"] == "squash_phase")["worktree_flag"] == "-B"
+
+
+def test_phase_plan_refuses_a_local_branch_that_diverges_from_the_open_pr_head():
+    steps = _resume_plan({"local_tip": "def", "remote_tip": "abc", "pr": 7, "pr_head": "abc"})
+    assert steps == [{"kind": "refuse",
+                      "reason": "local branch pr/x--seams at def differs from open pull request #7 head abc"}]
+
+
+def test_append_only_paths_all_under_tests():
+    assert land.append_only_paths(["tests/test_a.py", "tests/sub/test_b.py"]) is True
+
+
+def test_append_only_paths_mixed_with_a_non_test_path():
+    assert land.append_only_paths(["tests/test_a.py", "agent_tools/land.py"]) is False
+
+
+def test_append_only_paths_empty():
+    assert land.append_only_paths([]) is False
+
+
+def test_phase_pr_title_renders_id_phase_and_title():
+    assert land.phase_pr_title("I412", "t1", "Widget") == "epic I412: t1 - Widget"
+
+
+def test_phase_pr_title_drops_the_suffix_when_no_title_is_known():
+    assert land.phase_pr_title("x", "seams", "") == "epic x: seams"
+
+
+def test_phase_plan_pr_create_title_carries_the_initiative_title_from_the_record():
+    phase_record = {
+        "run": "I412-5", "phase": "t1", "initiative": "I412", "initiative_title": "Widget",
+        "phase_verdict": {"reasoning": "solid"},
+    }
+    items = [{"id": "t1-task", "status": "done"}]
+    task_records = [{
+        "task": "t1-task", "run": "I412-5", "phase": "t1", "status": "done",
+        "review": {"verdict": "approve"}, "arbitration": {"verdict": "approve"},
+        "change_facts": {"fix_loop_attempts": 0, "files_touched": ["a.py"]},
+    }]
+    steps = land.land_plan(phase_record, {}, "main", items=items, task_records=task_records)
+    pr = next(s for s in steps if s["kind"] == "pr_create")
+    assert pr["title"] == "epic I412: t1 - Widget"
+
+
+def test_phase_plan_of_only_done_and_dropped_items_is_a_no_op_that_records_done():
+    phase_record = {"run": "epic-x-5", "phase": "seams", "initiative": "x"}
+    items = [_item("a", "done"), _item("b", "dropped")]
+    steps = land.land_plan(phase_record, {}, "main", items=items, task_records=[])
+    assert steps == [{"kind": "note", "reason": "phase seams done: every item is done or dropped, nothing to land"}]
+
+
+def _gather_record(task, run, **extra):
+    return {"task": task, "run": run, "phase": "seams", "status": "approved",
+            "review": {"verdict": "approve"}, "arbitration": {"verdict": "approve"},
+            "build": {"files_touched": [f"{task}.py"], "patch": f"diff --git a/{task}.py b/{task}.py"},
+            "change_facts": {"fix_loop_attempts": 0, "files_touched": [f"{task}.py"]}, **extra}
+
+
+def _gather_plan(records, branches, **kw):
+    phase_record = {"run": "epic-x-5", "phase": "seams", "initiative": "x", "phase_verdict": {"reasoning": "solid"}}
+    items = [{"id": r["task"], "status": "approved"} for r in records]
+    return land.land_plan(phase_record, branches, "main", items=items, task_records=records, **kw)
+
+
+_EMPTY_PHASE = {"epic/x/seams": []}
+
+
+def test_phase_plan_gathers_a_cherry_pick_per_record_in_task_order_for_an_empty_phase_branch():
+    records = [_gather_record("seams-a", "epic-x-1"), _gather_record("seams-b", "epic-x-2")]
+    branches = {**_EMPTY_PHASE, "agents/epic-x-1/seams-a": ["add a"], "agents/epic-x-2/seams-b": ["add b"]}
+    steps = _gather_plan(records, branches, repo="/r")
+    assert [s["kind"] for s in steps] == ["cherry_pick", "cherry_pick", "checks", "push", "pr_create", "wait_checks",
+                                          "merge", "clean_phase", "mark_done", "mark_done"]
+    assert steps[0] == {"kind": "cherry_pick", "branch": "agents/epic-x-1/seams-a", "commit_subject": "add a",
+                        "onto": "pr/x--seams", "from": "main", "repo": "/r", "task": "seams-a",
+                        "files_touched": ["seams-a.py"]}
+    assert (steps[1]["branch"], steps[1]["files_touched"]) == ("agents/epic-x-2/seams-b", ["seams-b.py"])
+
+
+def test_phase_plan_gathers_a_patch_apply_for_a_record_whose_branch_is_gone_everywhere():
+    steps = _gather_plan([_gather_record("seams-a", "epic-x-1")], _EMPTY_PHASE, repo="/r")
+    assert steps[0] == {"kind": "patch_apply", "branch": "agents/epic-x-1/seams-a",
+                        "patch": "diff --git a/seams-a.py b/seams-a.py", "onto": "pr/x--seams", "from": "main",
+                        "repo": "/r", "task": "seams-a", "files_touched": ["seams-a.py"]}
+    assert steps[1]["kind"] == "checks"
+
+
+def test_phase_plan_gathers_fetch_then_cherry_pick_for_a_branch_only_on_a_host():
+    steps = _gather_plan([_gather_record("seams-a", "epic-x-1")], _EMPTY_PHASE, repo="/r",
+                         run_hosts={"epic-x-1": "box"})
+    assert steps[0] == {"kind": "fetch", "run": "epic-x-1", "repo": "/r", "initiative": "x", "epoch": None, "host": "box"}
+    assert (steps[1]["kind"], steps[1]["branch"]) == ("cherry_pick", "agents/epic-x-1/seams-a")
+
+
+def test_phase_plan_gathers_a_patch_apply_when_the_fetch_found_nothing():
+    steps = _gather_plan([_gather_record("seams-a", "epic-x-1")], _EMPTY_PHASE, repo="/r",
+                         run_hosts={"epic-x-1": "box"}, fetched_missing={"seams-a"})
+    assert [s["kind"] for s in steps[:2]] == ["patch_apply", "checks"]
+
+
+def test_phase_plan_gather_takes_every_steps_repo_from_the_land_never_the_record():
+    records = [_gather_record("seams-a", "epic-x-1"), _gather_record("seams-b", "epic-x-2", repo="/elsewhere"),
+               _gather_record("seams-c", "epic-x-3", repo="/elsewhere")]
+    branches = {**_EMPTY_PHASE, "agents/epic-x-1/seams-a": ["a"]}
+    steps = _gather_plan(records, branches, repo="/r", run_hosts={"epic-x-2": "box"})
+    gathered = steps[:4]
+    assert [s["kind"] for s in gathered] == ["cherry_pick", "fetch", "cherry_pick", "patch_apply"]
+    assert {s["repo"] for s in gathered} == {"/r"}
+
+
+def test_phase_plan_gather_refuses_a_record_with_no_branch_and_no_patch():
+    record = _gather_record("seams-a", "epic-x-1", build={"files_touched": ["a.py"]})
+    steps = _gather_plan([record], _EMPTY_PHASE, repo="/r")
+    assert steps == [{"kind": "refuse",
+                      "reason": "seams-a: agents/epic-x-1/seams-a is gone and the record holds no build.patch to apply"}]
+
+
+def test_phase_plan_with_commits_on_the_phase_branch_keeps_the_squash():
+    records = [_gather_record("seams-a", "epic-x-1")]
+    steps = _gather_plan(records, {"epic/x/seams": ["add a"], "agents/epic-x-1/seams-a": ["add a"]}, repo="/r")
+    assert [s["kind"] for s in steps[:2]] == ["pick_branch", "squash_phase"]
+    assert steps[1] == {"kind": "squash_phase", "branch": "epic/x/seams", "onto": "pr/x--seams", "from": "main",
+                        "subject": "epic x: seams", "approved_files": [{"task": "seams-a", "files_touched": ["seams-a.py"]}]}
+
+
+def test_phase_plan_with_an_empty_phase_branch_and_no_approved_records_keeps_the_squash_path():
+    phase_record = {"run": "epic-x-5", "phase": "seams", "initiative": "x"}
+    done = [{"task": "seams-a", "run": "epic-x-1", "phase": "seams", "status": "done",
+             "review": {"verdict": "approve"}, "arbitration": {"verdict": "approve"}}]
+    steps = land.land_plan(phase_record, _EMPTY_PHASE, "main", items=[{"id": "seams-a", "status": "done"}],
+                           task_records=done)
+    assert [s["kind"] for s in steps[:2]] == ["pick_branch", "squash_phase"]
+
+
+def test_phase_plan_refuses_on_an_unlandable_item():
+    phase_record = {"run": "epic-x-5", "phase": "seams", "initiative": "x"}
+    items = [{"id": "seams-task", "status": "in_progress"}]
+    steps = land.land_plan(phase_record, {}, "main", items=items, task_records=[])
+    assert steps == [{"kind": "refuse", "reason": "seams-task is 'in_progress', not approved, done or dropped"}]
+
+
+# --- land_plan: phase mode refuses to land over a squash missing an approved task's files ---
+
+def _phase_squash_repo(tmp_path, include_b=True):
+    root = tmp_path / "repo"; root.mkdir()
+    sp.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
+    sp.run(["git", "-C", str(root), "config", "user.email", "test@example.com"], check=True)
+    sp.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
+    (root / "base").write_text("base"); sp.run(["git", "-C", str(root), "add", "-A"], check=True, env=_ENV)
+    sp.run(["git", "-C", str(root), "commit", "-qm", "init"], check=True, env=_ENV)
+    sp.run(["git", "-C", str(root), "checkout", "-qb", "epic/x/seams"], check=True, env=_ENV)
+    (root / "a.py").write_text("a"); sp.run(["git", "-C", str(root), "add", "-A"], check=True, env=_ENV)
+    sp.run(["git", "-C", str(root), "commit", "-qm", "seams-a"], check=True, env=_ENV)
+    if include_b:
+        (root / "b.py").write_text("b"); sp.run(["git", "-C", str(root), "add", "-A"], check=True, env=_ENV)
+        sp.run(["git", "-C", str(root), "commit", "-qm", "seams-b"], check=True, env=_ENV)
+    sp.run(["git", "-C", str(root), "checkout", "-q", "main"], check=True, env=_ENV)
+    return root
+
+
+def _phase_two_task_fixture(tmp_path):
+    (tmp_path / "runs").mkdir(exist_ok=True)
+    (tmp_path / "runs/epic-x-5:seams.json").write_text(
+        json.dumps({"run": "epic-x-5", "phase": "seams", "initiative": "x", "phase_verdict": {"reasoning": "solid"}}),
+        encoding="utf-8")
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    for task, files in (("seams-a", ["a.py"]), ("seams-b", ["b.py"])):
+        (task_dir / f"{task}.json").write_text(json.dumps(_record(
+            task=task, proposals=[{"kind": "draft_pr_create", "title": task}], build={"files_touched": files},
+        )), encoding="utf-8")
+    item_dir = tmp_path / "work/x/seams"; item_dir.mkdir(parents=True)
+    for task in ("seams-a", "seams-b"):
+        (item_dir / f"{task}.md").write_text(f"---\nid: {task}\nstate: approved\n---\n\nBody.\n", encoding="utf-8")
+    return item_dir
+
+
+def test_phase_land_proceeds_when_the_squash_carries_every_approved_tasks_files(tmp_path, capsys, monkeypatch):
+    repo = _phase_squash_repo(tmp_path, include_b=True)
+    item_dir = _phase_two_task_fixture(tmp_path)
+    monkeypatch.setattr(cli, "_run_checks", lambda checks, cwd: (True, "1 checks passed"))
+    rc = cli.main(["runs", "land", "epic-x-5", "--phase", "seams", "--repo", str(repo),
+                   "--apply", "--gate", "full", "--runs-dir", str(tmp_path / "runs")])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "push:" in out and "mark_done:" in out
+    assert cli._git_out(repo, "show", "main:a.py") == "a"
+    assert cli._git_out(repo, "show", "main:b.py") == "b"
+    assert "state: done" in (item_dir / "seams-a.md").read_text()
+    assert "state: done" in (item_dir / "seams-b.md").read_text()
+
+
+def test_phase_land_refuses_when_the_squash_is_missing_an_approved_tasks_files(tmp_path, capsys, monkeypatch):
+    repo = _phase_squash_repo(tmp_path, include_b=False)
+    item_dir = _phase_two_task_fixture(tmp_path)
+    monkeypatch.setattr(cli, "_run_checks", lambda checks, cwd: (True, "1 checks passed"))
+    rc = cli.main(["runs", "land", "epic-x-5", "--phase", "seams", "--repo", str(repo),
+                   "--apply", "--gate", "full", "--runs-dir", str(tmp_path / "runs")])
+    out = capsys.readouterr().out
+    assert rc != 0, out
+    assert "push:" not in out and "mark_done:" not in out
+    assert "seams-b: none of b.py is in the squash" in out
+    assert cli._git_out(repo, "show", "main:a.py") is None
+    assert "state: approved" in (item_dir / "seams-a.md").read_text()
+    assert "state: approved" in (item_dir / "seams-b.md").read_text()
+
+
+# --- land_plan: --task mode's clean step is narrowed to its own branch (§7) ---
+
+def test_task_mode_clean_step_names_only_this_tasks_branch():
+    branches = {"agents/epic-x-5/seams-task": ["Add seams module"]}
+    steps = land.land_plan(_record(), branches, "main")
+    assert next(s for s in steps if s["kind"] == "clean") == {
+        "kind": "clean", "run": "epic-x-5", "task": "seams-task", "branch": "agents/epic-x-5/seams-task",
+    }
+
+
+# --- land.phase_pr_body: pure, no I/O (§2, §7) ---
+
+def test_phase_pr_body_ends_with_the_footer_naming_its_run():
+    phase_record = {"phase": "seams", "run": "epic-x-5", "phase_verdict": {"reasoning": "Both tickets landed cleanly."}}
+    body = land.phase_pr_body(phase_record, [])
+    assert body.endswith("\n\n🚣 Built with [coxswain](https://github.com/ppfenning/coxswain) · run epic-x-5")
+
+
+def test_phase_pr_body_two_tickets_one_arbitrated_one_unanimous():
+    phase_record = {"phase": "seams", "phase_verdict": {"reasoning": "Both tickets landed cleanly."}}
+    task_records = [
+        {"task": "seams-a", "title": "Add seams", "status": "done",
+         "review": {"verdict": "approve"}, "adversary": {"verdict": "approve"}, "arbitration": {"verdict": "approve"},
+         "change_facts": {"fix_loop_attempts": 0, "files_touched": ["a.py"]}},
+        {"task": "seams-b", "title": "Wire seams", "status": "done",
+         "review": {"verdict": "approve"}, "adversary": {"verdict": "approve"},
+         "change_facts": {"fix_loop_attempts": 1, "files_touched": ["b.py", "c.py"]}},
+    ]
+    body = land.phase_pr_body(phase_record, task_records)
+    assert body == "\n".join([
+        "Phase: seams",
+        "Both tickets landed cleanly.",
+        "",
+        "- seams-a: Add seams",
+        "  Review: approve",
+        "  Adversary: approve",
+        "  Arbitration: approve",
+        "  Fix-loop attempts: 0",
+        "  Files touched: a.py",
+        "",
+        "- seams-b: Wire seams",
+        "  Review: approve",
+        "  Adversary: approve",
+        "  Arbitration: unanimous",
+        "  Fix-loop attempts: 1",
+        "  Files touched: b.py, c.py",
+        "",
+        land.pr_footer(None),
+    ])
+
+
+# --- cli._execute_land_step: the narrowed clean and the new clean_phase (§7) ---
+
+def test_execute_clean_deletes_only_the_named_branch_not_a_sibling(repo):
+    sp.run(["git", "-C", str(repo), "branch", "agents/epic-x-5/other-task", "main"], check=True, env=_ENV)
+    ok, detail = cli._execute_land_step(repo, {
+        "kind": "clean", "run": "epic-x-5", "task": "seams-task",
+        "branch": "agents/epic-x-5/seams-task", "worktree_root": str(repo.parent / "wt"),
+    })
+    assert ok, detail
+    branches = cleanup.git_branches(repo)
+    assert "agents/epic-x-5/seams-task" not in branches
+    assert "agents/epic-x-5/other-task" in branches
+
+
+def test_execute_clean_phase_deletes_only_this_phases_branches(repo):
+    sp.run(["git", "-C", str(repo), "branch", "epic/x/seams", "main"], check=True, env=_ENV)
+    sp.run(["git", "-C", str(repo), "branch", "epic/x/other-phase", "main"], check=True, env=_ENV)
+    ok, detail = cli._execute_land_step(repo, {
+        "kind": "clean_phase", "run": "epic-x-5", "phase_branch": "epic/x/seams",
+        "tasks": ["seams-task"], "worktree_root": str(repo.parent / "wt"),
+    })
+    assert ok, detail
+    branches = cleanup.git_branches(repo)
+    assert "epic/x/seams" not in branches
+    assert "agents/epic-x-5/seams-task" not in branches
+    assert "epic/x/other-phase" in branches
+
+
+# --- land.checks_argv: pure, one (name, argv) pair per resolved check (§4, §7) ---
+
+def test_checks_argv_returns_one_pair_per_configured_check_in_order():
+    facts = {"checks": [{"name": "lint", "cmd": "ruff check ."}, {"name": "tests", "cmd": "pytest -q"}]}
+    assert land.checks_argv(facts) == [("lint", ["ruff", "check", "."]), ("tests", ["pytest", "-q"])]
+
+
+def test_checks_argv_with_no_checks_key_returns_todays_single_pair_named_tests():
+    assert land.checks_argv({}) == [("tests", ["pytest", "-q"])]
+    assert land.checks_argv({"checks": []}) == [("tests", ["pytest", "-q"])]
+
+
+def test_checks_argv_with_no_checks_key_still_prefers_the_repos_own_venv():
+    assert land.checks_argv({"venv_python": True, "uv_lock": True}) == [("tests", [".venv/bin/python", "-m", "pytest", "-q"])]
+    assert land.checks_argv({"venv_python": False, "uv_lock": True}) == [("tests", ["uv", "run", "pytest", "-q"])]
+
+
+def test_land_plan_checks_step_carries_the_configured_checks():
+    branches = {"agents/epic-x-5/seams-task": ["Add seams module"]}
+    repo_facts = {"checks": [{"name": "lint", "cmd": "ruff check ."}, {"name": "tests", "cmd": "pytest -q"}]}
+    steps = land.land_plan(_record(), branches, "main", repo_facts)
+    checks = next(s for s in steps if s["kind"] == "checks")
+    assert checks == {"kind": "checks", "checks": [("lint", ["ruff", "check", "."]), ("tests", ["pytest", "-q"])],
+                      "worktree_of": "pr/seams-task"}
+
+
+def test_execute_push_reaches_a_real_remote(repo, tmp_path):
+    origin = tmp_path / "origin.git"
+    sp.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+    sp.run(["git", "-C", str(repo), "remote", "add", "origin", str(origin)], check=True)
+    ok, detail = cli._execute_land_step(repo, {"kind": "push", "branch": "main"})
+    assert ok, detail
+    show = sp.run(["git", "-C", str(origin), "show-ref", "refs/heads/main"], capture_output=True, text=True)
+    assert show.returncode == 0
+
+
+def test_execute_clean_uses_the_given_worktree_root_not_a_hardcoded_one(tmp_path):
+    root = tmp_path / "r"; root.mkdir()
+    sp.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
+    (root / "f").write_text("x"); sp.run(["git", "-C", str(root), "add", "-A"], check=True, env=_ENV)
+    sp.run(["git", "-C", str(root), "commit", "-qm", "init"], check=True, env=_ENV)
+    sp.run(["git", "-C", str(root), "branch", "epic/x/seams"], check=True)
+    sp.run(["git", "-C", str(root), "branch", "agents/epic-x-5/seams-task"], check=True)
+    wt = tmp_path / "wt/epic-x-5/seams-task"; wt.parent.mkdir(parents=True)
+    sp.run(["git", "-C", str(root), "worktree", "add", "-q", str(wt), "agents/epic-x-5/seams-task"], check=True)
+    ok, detail = cli._execute_land_step(root, {
+        "kind": "clean", "run": "epic-x-5", "task": "seams-task",
+        "branch": "agents/epic-x-5/seams-task", "worktree_root": str(tmp_path / "wt"),
+    })
+    assert ok, detail
+    assert "agents/epic-x-5/seams-task" not in cleanup.git_branches(root)
+    assert "epic/x/seams" in cleanup.git_branches(root)
+    assert not wt.exists()
+
+
+def test_execute_mark_done_writes_landed_true_to_the_record(tmp_path):
+    path = tmp_path / "task.json"
+    path.write_text(json.dumps(_record()), encoding="utf-8")
+    ok, detail = cli._execute_land_step(tmp_path, {"kind": "mark_done", "task": "seams-task", "path": str(path)})
+    assert ok, detail
+    assert json.loads(path.read_text())["landed"] is True
+
+
+def _mark_done_step(tmp_path, item_text):
+    task_path = tmp_path / "task.json"
+    task_path.write_text(json.dumps(_record()), encoding="utf-8")
+    item_path = tmp_path / "seams-task.md"
+    item_path.write_text(item_text, encoding="utf-8")
+    return item_path, {"kind": "mark_done", "task": "seams-task", "path": str(task_path), "item": str(item_path)}
+
+
+def test_execute_mark_done_moves_an_approved_item_to_done(tmp_path):
+    item_path, step = _mark_done_step(tmp_path, "---\nid: seams-task\nstate: approved\n---\n\nBody text.\n")
+    ok, detail = cli._execute_land_step(tmp_path, step)
+    assert ok, detail
+    assert item_path.read_text() == "---\nid: seams-task\nstate: done\n---\n\nBody text.\n"
+
+
+def test_execute_mark_done_leaves_a_done_item_untouched(tmp_path):
+    text = "---\nid: seams-task\nstate: done\n---\n\nBody text.\n"
+    item_path, step = _mark_done_step(tmp_path, text)
+    ok, detail = cli._execute_land_step(tmp_path, step)
+    assert ok, detail
+    assert item_path.read_text() == text
+
+
+def test_execute_mark_done_leaves_a_non_approved_item_untouched_and_prints_it(tmp_path, capsys):
+    text = "---\nid: seams-task\nstate: blocked\n---\n\nBody text.\n"
+    item_path, step = _mark_done_step(tmp_path, text)
+    ok, detail = cli._execute_land_step(tmp_path, step)
+    assert ok, detail
+    assert item_path.read_text() == text
+    assert "blocked" in capsys.readouterr().out
+
+
+def test_execute_mark_done_moves_a_ready_item_to_done_and_prints_the_note(tmp_path, capsys):
+    item_path, step = _mark_done_step(tmp_path, "---\nid: seams-task\nstate: ready\n---\n\nBody text.\n")
+    ok, detail = cli._execute_land_step(tmp_path, step)
+    assert ok, detail
+    assert item_path.read_text() == "---\nid: seams-task\nstate: done\n---\n\nBody text.\n"
+    assert "merged, so done" in capsys.readouterr().out
+
+
+_READY = "---\nid: t\nstate: ready\n---\n\nBody.\n"
+
+
+def test_approve_to_done_moves_ready_to_done_with_a_note_when_merged():
+    assert land.approve_to_done(_READY, merged=True) == (
+        "---\nid: t\nstate: done\n---\n\nBody.\n",
+        "land: work item was still ready (quarantined after approval, or run on another machine); merged, so done",
+    )
+
+
+def test_approve_to_done_refuses_ready_when_not_merged():
+    assert land.approve_to_done(_READY) == (None, "land: work item state is 'ready', not moving to done")
+
+
+def test_approve_to_done_refuses_blocked_even_when_merged():
+    text = "---\nid: t\nstate: blocked\n---\n\nBody.\n"
+    assert land.approve_to_done(text, merged=True) == (None, "land: work item state is 'blocked', not moving to done")
+
+
+def test_approve_to_done_moves_approved_to_done_without_a_note():
+    text = "---\nid: t\nstate: approved\n---\n\nBody.\n"
+    done = "---\nid: t\nstate: done\n---\n\nBody.\n"
+    assert land.approve_to_done(text) == (done, None)
+    assert land.approve_to_done(text, merged=True) == (done, None)
+
+
+# --- cli end to end: dry-run default, and the dirty-checkout refusal ---
+
+def _full_gate(tmp_path):
+    (tmp_path / "runs/policy.gate.json").write_text(json.dumps({"level": "full"}), encoding="utf-8")
+
+
+def test_cli_dry_run_is_the_default_and_prints_the_plan(repo, tmp_path, capsys, monkeypatch):
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    _full_gate(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs")])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert '"kind": "pick_branch"' in out
+    assert "agents/epic-x-5/seams-task" in out
+    assert all(kind in out for kind in _STEP_ORDER)
+
+
+def test_cli_dry_run_plan_carries_the_item_path(repo, tmp_path, capsys, monkeypatch):
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    item_dir = tmp_path / "work/x/seams"; item_dir.mkdir(parents=True)
+    item_path = item_dir / "seams-task.md"
+    item_path.write_text("---\nid: seams-task\nstate: approved\n---\n\nBody.\n", encoding="utf-8")
+    _full_gate(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs")])
+    steps = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    mark_done = next(s for s in steps if s["kind"] == "mark_done")
+    assert mark_done["item"] == str(item_path)
+    assert mark_done["from"] == "approved"
+    assert mark_done["to"] == "done"
+
+
+# --- cli end to end: phase land resolves the initiative from the work store ---
+
+def _phase_land_dry_run(repo, tmp_path, capsys, monkeypatch, work_dirs, with_record=True):
+    (tmp_path / "runs").mkdir()
+    (tmp_path / "runs/epic-x-5:seams.json").write_text(json.dumps({"phase_verdict": {"reasoning": "solid"}}), encoding="utf-8")
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    if with_record:
+        (task_dir / "seams-task.json").write_text(json.dumps(_record(status="done")), encoding="utf-8")
+    for d in work_dirs:
+        (tmp_path / "work" / d).mkdir(parents=True)
+        (tmp_path / "work" / d / "seams-task.md").write_text("---\nid: seams-task\nstate: done\n---\n\nBody.\n", encoding="utf-8")
+    _full_gate(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    rc = cli.main(["runs", "land", "epic-x-5", "--phase", "seams", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs")])
+    return rc, capsys.readouterr().out
+
+
+def test_phase_land_finds_the_initiative_in_the_work_store_when_the_record_names_none(repo, tmp_path, capsys, monkeypatch):
+    rc, out = _phase_land_dry_run(repo, tmp_path, capsys, monkeypatch, ("x/seams",))
+    assert rc == 0
+    assert next(s for s in json.loads(out) if s["kind"] == "pick_branch")["branch"] == "epic/x/seams"
+
+
+def test_phase_land_of_an_all_done_phase_runs_the_cli_edge_as_a_no_op(repo, tmp_path, capsys, monkeypatch):
+    rc, out = _phase_land_dry_run(repo, tmp_path, capsys, monkeypatch, ("x/seams",), with_record=False)
+    assert rc == 0
+    assert json.loads(out) == [{"kind": "note", "reason": "phase seams done: every item is done or dropped, nothing to land"}]
+
+
+def test_phase_land_refuses_when_two_initiatives_hold_the_phase(repo, tmp_path, capsys, monkeypatch):
+    rc, out = _phase_land_dry_run(repo, tmp_path, capsys, monkeypatch, ("x/seams", "y/seams"))
+    assert rc == 2
+    assert "no single initiative holds phase seams" in out
+
+
+# --- cli end to end: recover closes the work item too ---
+
+def _on_disk_record(**overrides):
+    """The task record as the harness writes it: `ticket` and a truncated
+    composite `run_id`, with no run, task, phase or initiative key."""
+    return {"run_id": "epic-x-5:seams:seams-t", "ticket": "seams-task", "review": {"verdict": "approve"}, "proposals": [], **overrides}
+
+
+def _recover_dry_run(repo, tmp_path, record, capsys, work_dirs=("x/seams",)):
+    sp.run(["git", "-C", str(repo), "branch", "epic/x/seams", "main"], check=True, env=_ENV)
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(record), encoding="utf-8")
+    for d in work_dirs:
+        (tmp_path / "work" / d).mkdir(parents=True)
+        (tmp_path / "work" / d / "seams-task.md").write_text("---\nid: seams-task\nstate: approved\n---\n\nBody.\n", encoding="utf-8")
+    rc = cli.main(["runs", "recover", "epic-x-5", "seams-task", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs"), "--dry-run"])
+    return rc, capsys.readouterr().out
+
+
+def test_cli_recover_resolves_a_record_with_only_the_on_disk_keys(repo, tmp_path, capsys):
+    rc, out = _recover_dry_run(repo, tmp_path, _on_disk_record(), capsys)
+    assert rc == 0, out
+    assert "would merge agents/epic-x-5/seams-task into epic/x/seams" in out
+
+
+def test_cli_recover_refuses_when_the_record_ticket_disagrees_with_its_filename(repo, tmp_path, capsys):
+    rc, out = _recover_dry_run(repo, tmp_path, _on_disk_record(ticket="other-task"), capsys)
+    assert rc == 2
+    assert "disagrees with its filename" in out
+
+
+def test_cli_recover_refuses_when_no_initiative_holds_the_task(repo, tmp_path, capsys):
+    rc, out = _recover_dry_run(repo, tmp_path, _on_disk_record(), capsys, work_dirs=())
+    assert rc == 2
+    assert "no single initiative" in out
+
+
+def test_cli_recover_refuses_when_two_initiatives_hold_the_task(repo, tmp_path, capsys):
+    rc, out = _recover_dry_run(repo, tmp_path, _on_disk_record(), capsys, work_dirs=("x/seams", "y/seams"))
+    assert rc == 2
+    assert "no single initiative" in out
+
+
+def test_initiative_of_takes_the_id_from_frontmatter_and_falls_back_to_the_stem(tmp_path):
+    (tmp_path / "a/p").mkdir(parents=True)
+    (tmp_path / "b/p").mkdir(parents=True)
+    (tmp_path / "a/p/renamed.md").write_text("---\nid: from-frontmatter\n---\n\nBody.\n", encoding="utf-8")
+    (tmp_path / "b/p/from-stem.md").write_text("---\nstate: approved\n---\n\nBody.\n", encoding="utf-8")
+    assert cli._initiative_of(tmp_path, "from-frontmatter") == "a"
+    assert cli._initiative_of(tmp_path, "renamed") is None
+    assert cli._initiative_of(tmp_path, "from-stem") == "b"
+
+
+def test_cli_recover_merges_and_closes_an_approved_item(repo, tmp_path, capsys):
+    sp.run(["git", "-C", str(repo), "branch", "epic/x/seams", "main"], check=True, env=_ENV)
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_on_disk_record()), encoding="utf-8")
+    item_dir = tmp_path / "work/x/seams"; item_dir.mkdir(parents=True)
+    item_path = item_dir / "seams-task.md"
+    item_path.write_text("---\nid: seams-task\nstate: approved\n---\n\nBody.\n", encoding="utf-8")
+    rc = cli.main(["runs", "recover", "epic-x-5", "seams-task", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs")])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "epic/x/seams" in out
+    assert item_path.read_text() == "---\nid: seams-task\nstate: done\n---\n\nBody.\n"
+
+
+def test_cli_recover_dry_run_leaves_an_approved_item_byte_identical(repo, tmp_path, capsys):
+    sp.run(["git", "-C", str(repo), "branch", "epic/x/seams", "agents/epic-x-5/seams-task"], check=True, env=_ENV)
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_on_disk_record()), encoding="utf-8")
+    item_dir = tmp_path / "work/x/seams"; item_dir.mkdir(parents=True)
+    item_path = item_dir / "seams-task.md"
+    original = "---\nid: seams-task\nstate: approved\n---\n\nBody.\n"
+    item_path.write_text(original, encoding="utf-8")
+    rc = cli.main(["runs", "recover", "epic-x-5", "seams-task", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs"), "--dry-run"])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "already contains the commit" in out
+    assert item_path.read_text() == original
+
+
+def test_cli_recover_closes_an_approved_item_even_when_already_recovered(repo, tmp_path, capsys):
+    sp.run(["git", "-C", str(repo), "branch", "epic/x/seams", "agents/epic-x-5/seams-task"], check=True, env=_ENV)
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_on_disk_record()), encoding="utf-8")
+    item_dir = tmp_path / "work/x/seams"; item_dir.mkdir(parents=True)
+    item_path = item_dir / "seams-task.md"
+    item_path.write_text("---\nid: seams-task\nstate: approved\n---\n\nBody.\n", encoding="utf-8")
+    rc = cli.main(["runs", "recover", "epic-x-5", "seams-task", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs")])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "already contains the commit" in out
+    assert item_path.read_text() == "---\nid: seams-task\nstate: done\n---\n\nBody.\n"
+
+
+def test_cli_recover_leaves_a_ready_item_ready_when_already_recovered(repo, tmp_path, capsys):
+    sp.run(["git", "-C", str(repo), "branch", "epic/x/seams", "agents/epic-x-5/seams-task"], check=True, env=_ENV)
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_on_disk_record()), encoding="utf-8")
+    item_dir = tmp_path / "work/x/seams"; item_dir.mkdir(parents=True)
+    item_path = item_dir / "seams-task.md"
+    original = "---\nid: seams-task\nstate: ready\n---\n\nBody.\n"
+    item_path.write_text(original, encoding="utf-8")
+    rc = cli.main(["runs", "recover", "epic-x-5", "seams-task", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs")])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "already contains the commit" in out
+    assert "not moving to done" in out
+    assert item_path.read_text() == original
+
+
+def _apply_gated(repo, tmp_path, monkeypatch, *gate):
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    (tmp_path / "runs/policy.tracker.json").write_text('{"tracker": "github-projects"}', encoding="utf-8")
+    ran = []
+    monkeypatch.setattr(cli, "_execute_land_step", lambda _repo, step, _forge=None: (ran.append(step["kind"]) or True, "https://x/pull/7"))
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs"), *gate])
+    return rc, ran
+
+
+def test_cli_apply_at_phase_level_prints_the_truncation_line_and_exits_3(repo, tmp_path, capsys, monkeypatch):
+    rc, ran = _apply_gated(repo, tmp_path, monkeypatch, "--gate", "phase")
+    assert rc == 3
+    assert ran[-1] == "wait_checks"
+    assert capsys.readouterr().out.splitlines()[-1] == (
+        "gate: phase stopped after wait_checks; pull request https://x/pull/7 left open, unmerged"
+    )
+
+
+def test_cli_apply_at_full_level_merges_and_exits_0(repo, tmp_path, capsys, monkeypatch):
+    rc, ran = _apply_gated(repo, tmp_path, monkeypatch, "--gate", "full")
+    assert rc == 0
+    assert ran == _PRESYNCED + ["route_sync"]
+    assert "left open" not in capsys.readouterr().out
+
+
+def _apply_with_repo_lease(repo, tmp_path, monkeypatch, acquire_result, walked_result=None):
+    """Sets up a task ready to land, then stubs the repo lease and `_land_walked` so these tests exercise
+    only the lease wiring in `_runs_land`, not the step machinery covered above. `_repo_is_dirty` and
+    `_sync_default_branch` still run for real against the clean, synced `repo` fixture ahead of the lease;
+    they are not stubbed, only silent because the fixture never gives them a reason to refuse."""
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    (tmp_path / "runs/policy.tracker.json").write_text('{"tracker": "github-projects"}', encoding="utf-8")
+    calls = {"acquire": [], "release": [], "walked": 0}
+
+    def fake_acquire(runs_dir, repo_str, holder, ttl):
+        calls["acquire"].append((runs_dir, repo_str, holder, ttl))
+        return acquire_result
+
+    def fake_release(runs_dir, repo_str, holder, epoch):
+        calls["release"].append((runs_dir, repo_str, holder, epoch))
+        return store_cli.LeaseReleased()
+
+    def fake_land_walked(*_args, **_kwargs):
+        calls["walked"] += 1
+        if walked_result == "raise":
+            raise RuntimeError("boom")
+        return walked_result
+
+    monkeypatch.setattr(cli.land_repo_lease, "acquire", fake_acquire)
+    monkeypatch.setattr(cli.land_repo_lease, "release", fake_release)
+    monkeypatch.setattr(cli, "_land_walked", fake_land_walked)
+    return calls
+
+
+def test_cli_apply_refuses_when_the_repo_lease_is_held_by_another_land(repo, tmp_path, monkeypatch, capsys):
+    calls = _apply_with_repo_lease(repo, tmp_path, monkeypatch, store_cli.LeaseRefused(epoch=3, holder="other@host:1"))
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs")])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert calls["walked"] == 0
+    assert f"land: refusing, other@host:1 is landing in {repo}" in out
+
+
+def test_cli_apply_releases_the_repo_lease_by_its_epoch_even_when_the_walk_raises(repo, tmp_path, monkeypatch):
+    calls = _apply_with_repo_lease(repo, tmp_path, monkeypatch, store_cli.LeaseGranted(epoch=7, holder="me@host:2"),
+                                    walked_result="raise")
+    with pytest.raises(RuntimeError):
+        cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs")])
+    assert calls["walked"] == 1
+    [(runs_dir, repo_str, holder, epoch)] = calls["release"]
+    assert (repo_str, epoch) == (str(repo), 7)
+    assert holder == calls["acquire"][0][2]
+
+
+def test_cli_apply_walks_without_a_lease_when_the_store_is_not_available(repo, tmp_path, monkeypatch):
+    calls = _apply_with_repo_lease(repo, tmp_path, monkeypatch, store_cli.NotAvailable(),
+                                    walked_result=(0, ["mark_done"], "https://x/pull/7"))
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs")])
+    assert rc == 0
+    assert calls["walked"] == 1
+    assert calls["release"] == []
+
+
+def _apply_presynced(repo, tmp_path, monkeypatch, sync_writes_issue):
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    item = tmp_path / "work/x/seams/seams-task.md"; item.parent.mkdir(parents=True)
+    item.write_text("---\nid: seams-task\nstate: approved\n---\nBody.\n", encoding="utf-8")
+    (tmp_path / "runs/policy.tracker.json").write_text('{"tracker": "github-projects"}', encoding="utf-8")
+    ran = []
+
+    def fake(_repo, step, _forge=None):
+        ran.append(step)
+        if step["kind"] == "route_sync" and step.get("before") and sync_writes_issue:
+            item.write_text("---\nid: seams-task\nstate: approved\nissue: 9\n---\nBody.\n", encoding="utf-8")
+        return True, "https://x/pull/7"
+    monkeypatch.setattr(cli, "_execute_land_step", fake)
+    cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs")])
+    return ran
+
+
+def test_cli_apply_syncs_before_the_pr_and_the_body_carries_the_new_issue(repo, tmp_path, monkeypatch):
+    ran = _apply_presynced(repo, tmp_path, monkeypatch, sync_writes_issue=True)
+    assert [s["kind"] for s in ran][3:6] == ["push", "route_sync", "pr_create"]
+    assert ran[4]["workspace"] == str(tmp_path) and ran[4]["item"] == "seams-task"
+    assert "\n\nCloses #9" in ran[5]["body"]
+    assert ran[5]["body"].endswith(land.pr_footer("epic-x-5"))
+
+
+def test_cli_apply_opens_the_pr_without_closes_when_the_sync_wrote_no_issue(repo, tmp_path, monkeypatch):
+    ran = _apply_presynced(repo, tmp_path, monkeypatch, sync_writes_issue=False)
+    assert ran[-1]["kind"] == "pr_create" and "Closes" not in ran[-1]["body"]
+
+
+def test_execute_presync_failure_says_the_pr_opens_without_closes_and_never_fails_the_land(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "_route_sync", lambda ns: 1)
+    ok, detail = cli._execute_land_step(tmp_path, {**_sync_step(tmp_path), "before": "pr_create"})
+    assert ok is True and detail == "sync of seams-task failed before the PR (exit 1); the PR opens without Closes"
+
+
+def test_cli_apply_with_no_policy_stops_at_ticket_after_pr_create(repo, tmp_path, monkeypatch):
+    rc, ran = _apply_gated(repo, tmp_path, monkeypatch)
+    assert (rc, ran[-1]) == (3, "pr_create")
+
+
+def test_cli_apply_refuses_on_a_dirty_checkout(repo, tmp_path, capsys):
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    (repo / "f").write_text("dirty")
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs")])
+    assert rc == 2
+    assert "dirty" in capsys.readouterr().out
+
+
+def test_cli_apply_refuses_when_the_pr_branch_already_exists(repo, tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(cli, "_remote_branch_exists", lambda _repo, _branch: True)  # a local-only leftover is rebuilt instead
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    sp.run(["git", "-C", str(repo), "branch", "pr/seams-task"], check=True, capture_output=True)
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs")])
+    assert rc == 2
+    assert "already exists" in capsys.readouterr().out
+
+
+def test_cli_apply_refuses_a_checks_launch_failure_before_push(repo, tmp_path, capsys, monkeypatch):
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    calls = []
+    real_run = cli.subprocess.run
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        if argv[:1] == ["pytest"]:
+            raise FileNotFoundError(2, "No such file or directory: 'pytest'")
+        return real_run(argv, **kw)
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs")])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "refuse checks: tests:" in out
+    assert not any("push" in c for c in calls)
+
+
+# --- §1 paths: runs/ resolves against workspace_dir, --runs-dir overrides, refusal names dir+count ---
+
+def test_land_default_resolves_against_the_profiles_workspace_dir(repo, tmp_path, capsys, monkeypatch):
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    profile_path = tmp_path / "profile.yaml"
+    profile_path.write_text(f"workspace_dir: {tmp_path}\n", encoding="utf-8")
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--profile", str(profile_path)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert '"kind": "pick_branch"' in out
+
+
+def test_land_runs_dir_flag_overrides_the_profile(repo, tmp_path, capsys):
+    empty_workspace = tmp_path / "empty"; empty_workspace.mkdir()
+    profile_path = tmp_path / "profile.yaml"
+    profile_path.write_text(f"workspace_dir: {empty_workspace}\n", encoding="utf-8")
+    real_runs = tmp_path / "elsewhere/runs"
+    task_dir = real_runs / "epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--profile", str(profile_path), "--runs-dir", str(real_runs)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert '"kind": "pick_branch"' in out
+
+
+def test_land_refusal_names_the_absolute_dir_and_the_count(repo, tmp_path, capsys):
+    runs_dir = tmp_path / "runs"
+    task_dir = runs_dir / "epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--runs-dir", str(runs_dir)])
+    out = capsys.readouterr().out
+    assert rc == 2
+    expected = task_dir.parent.resolve()
+    assert f"land: looked in {expected}, found 0 task records, expected 1" in out
+
+    # Two records, but in two different phase directories — no single phase
+    # holds more than one, so this stays ambiguous for task mode rather than
+    # auto-selecting a phase.
+    (task_dir / "a.json").write_text(json.dumps(_record()), encoding="utf-8")
+    other_dir = runs_dir / "epic-x-5/tasks/other"; other_dir.mkdir(parents=True)
+    (other_dir / "b.json").write_text(json.dumps(_record()), encoding="utf-8")
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--runs-dir", str(runs_dir)])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert f"land: looked in {expected}, found 2 task records, expected 1" in out
+
+
+def test_cli_apply_checks_the_leader_guard_against_the_resolved_runs_dir(repo, tmp_path, capsys):
+    runs_dir = tmp_path / "runs"
+    task_dir = runs_dir / "epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    now = datetime.datetime.now(datetime.UTC).isoformat()
+    chair.write(runs_dir, {"session": "loop-a", "pid": 999999, "host": "some-other-host", "taken_at": now, "heartbeat_at": now})
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(runs_dir)])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "held by loop-a" in out
+
+
+def test_wait_decision_retries_only_while_no_check_has_registered():
+    from agent_tools.land import wait_decision
+
+    assert wait_decision(0, "all checks pass", 0, 300) == "green"
+    assert wait_decision(1, "no checks reported on the 'pr/x' branch", 5, 300) == "retry"
+    assert wait_decision(1, "no checks reported on the 'pr/x' branch", 301, 300) == "timeout"
+    assert wait_decision(1, "test: fail", 5, 300) == "failed"
+
+
+def test_unanimous_approval_lands_without_an_arbitration_verdict():
+    branches = {"agents/epic-x-5/seams-task": ["Add seams module"]}
+    record = _record(arbitration={}, review={"verdict": "approve"}, adversary={"verdict": "approve"})
+    assert land.land_plan(record, branches, "main")[0]["kind"] != "refuse"
+
+
+def test_no_arbitration_and_a_dissenting_reviewer_still_refuses():
+    record = _record(arbitration={}, review={"verdict": "approve"}, adversary={"verdict": "revise"})
+    assert land.land_plan(record, {}, "main") == [
+        {"kind": "refuse", "reason": "no arbitration, and the reviewers were ['approve', 'revise']"}
+    ]
+
+
+# --- resume: an existing pr/<task> branch with the cherry-picked tree is reused ---
+
+_CHERRY = {"kind": "cherry_pick", "branch": "agents/epic-x-5/seams-task", "commit_subject": "Add seams module",
+           "onto": "pr/seams-task", "from": "main"}
+
+
+def test_resume_decision_is_fresh_when_neither_side_exists():
+    assert land.resume_decision("T", None, None, []) == {"kind": "fresh"}
+
+
+def test_resume_decision_resumes_on_a_matching_local_branch_alone():
+    assert land.resume_decision("T", "T", None, []) == {"kind": "resume", "local": True, "remote": False}
+
+
+def test_resume_decision_resumes_on_a_matching_remote_branch_alone():
+    assert land.resume_decision("T", None, "T", []) == {"kind": "resume", "local": False, "remote": True}
+
+
+def test_resume_decision_resumes_when_both_sides_match():
+    assert land.resume_decision("T", "T", "T", []) == {"kind": "resume", "local": True, "remote": True}
+
+
+def test_resume_decision_refuses_a_differing_side_naming_both_trees():
+    assert land.resume_decision("T", "T", "U", []) == {
+        "kind": "refuse", "reason": "remote tree U differs from the cherry-picked tree T"}
+
+
+def test_resume_decision_adopts_the_first_open_pr():
+    assert land.resume_decision("T", "T", "T", [7, 9]) == {"kind": "adopt", "pr": 7}
+
+
+def test_resume_decision_adopts_an_open_pr_before_the_differing_tree_refusal():
+    assert land.resume_decision("T", "T", "U", [7]) == {"kind": "adopt", "pr": 7}
+
+
+def test_resume_steps_adopt_drops_the_build_steps_and_pins_wait_checks():
+    steps = land.land_plan(_record(), {"agents/epic-x-5/seams-task": ["Add seams module"]}, "main")
+    adopted = land.resume_steps(steps, {"kind": "adopt", "pr": 7}, "pr/seams-task")
+    assert [s["kind"] for s in adopted if s["kind"] in ("cherry_pick", "checks", "push", "pr_create")] == []
+    wait = next(s for s in adopted if s["kind"] == "wait_checks")
+    assert (wait["pr"], wait["branch"]) == (7, "origin/pr/seams-task")
+    assert [s["kind"] for s in adopted if s["kind"] in ("merge", "clean", "mark_done")] == ["merge", "clean", "mark_done"]
+
+
+def test_resume_steps_swaps_only_the_cherry_pick_and_leaves_a_non_resume_alone():
+    steps = land.land_plan(_record(), {"agents/epic-x-5/seams-task": ["Add seams module"]}, "main")
+    resumed = land.resume_steps(steps, {"kind": "resume", "local": True, "remote": False}, "pr/seams-task")
+    assert [s["kind"] for s in resumed] == [k if k != "cherry_pick" else "reuse_branch" for k in _STEP_ORDER]
+    assert resumed[1] == {"kind": "reuse_branch", "branch": "pr/seams-task", "local": True, "remote": False}
+    assert land.resume_steps(steps, {"kind": "fresh"}, "pr/seams-task") == steps
+
+
+def _apply_resume(repo, tmp_path, monkeypatch, prs=()):
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    (tmp_path / "runs/policy.tracker.json").write_text('{"tracker": "github-projects"}', encoding="utf-8")
+    ran = []
+    monkeypatch.setattr(cli, "_execute_land_step", lambda _repo, step, _forge=None: (ran.append(step["kind"]) or True, "https://x/pull/7"))
+    monkeypatch.setattr(cli, "_open_prs_for", lambda _repo, _branch, _forge=None: list(prs))
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs"), "--gate", "full"])
+    return rc, ran
+
+
+def test_cli_apply_resumes_on_a_local_pr_branch_with_the_cherry_picked_tree(repo, tmp_path, capsys, monkeypatch):
+    sp.run(["git", "-C", str(repo), "branch", "pr/seams-task", "agents/epic-x-5/seams-task"], check=True, env=_ENV)
+    rc, ran = _apply_resume(repo, tmp_path, monkeypatch)
+    assert rc == 0, capsys.readouterr().out
+    assert ran[:10] == [k if k != "cherry_pick" else "reuse_branch" for k in _PRESYNCED]
+
+
+def test_cli_apply_adopts_a_pr_branch_that_has_an_open_pr(repo, tmp_path, capsys, monkeypatch):
+    sp.run(["git", "-C", str(repo), "branch", "pr/seams-task", "agents/epic-x-5/seams-task"], check=True, env=_ENV)
+    rc, ran = _apply_resume(repo, tmp_path, monkeypatch, prs=[7])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "land: adopting open pull request #7 on pr/seams-task" in out
+    assert not {"cherry_pick", "reuse_branch", "checks", "push", "pr_create"} & set(ran)
+    assert ran.index("merge") < ran.index("mark_done")
+
+
+def test_cli_apply_refuses_a_differing_pr_branch_naming_the_diff(repo, tmp_path, capsys, monkeypatch):
+    sp.run(["git", "-C", str(repo), "branch", "pr/seams-task", "main"], check=True, env=_ENV)
+    rc, ran = _apply_resume(repo, tmp_path, monkeypatch, prs=[])  # a local-only leftover is backed up instead: test_cli_land_leftover.py
+    out = capsys.readouterr().out
+    assert (rc, ran) == (2, [])
+    assert "already exists" in out and "local tree" in out and "files differing: f" in out
+
+
+def test_execute_reuse_branch_checks_out_the_existing_local_branch(repo):
+    sp.run(["git", "-C", str(repo), "branch", "pr/seams-task", "agents/epic-x-5/seams-task"], check=True, env=_ENV)
+    ok, detail = cli._execute_land_step(repo, {"kind": "reuse_branch", "branch": "pr/seams-task", "local": True, "remote": False})
+    assert (ok, detail) == (True, "reusing pr/seams-task")
+    assert cli._git_out(cli._land_worktree(repo, "pr/seams-task"), "rev-parse", "--abbrev-ref", "HEAD") == "pr/seams-task"
+    assert cli._git_out(repo, "rev-parse", "--abbrev-ref", "HEAD") == "main"
+
+
+def _with_origin_holding_the_pr_branch(repo, tmp_path):
+    origin = tmp_path / "origin.git"
+    sp.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+    sp.run(["git", "-C", str(repo), "remote", "add", "origin", str(origin)], check=True)
+    sp.run(["git", "-C", str(repo), "push", "-q", "origin", "agents/epic-x-5/seams-task:refs/heads/pr/seams-task"], check=True, env=_ENV)
+
+
+def test_execute_reuse_branch_creates_the_local_branch_from_origin_when_only_the_remote_has_it(repo, tmp_path):
+    _with_origin_holding_the_pr_branch(repo, tmp_path)
+    sp.run(["git", "-C", str(repo), "fetch", "-q", "origin"], check=True, env=_ENV)
+    ok, detail = cli._execute_land_step(repo, {"kind": "reuse_branch", "branch": "pr/seams-task", "local": False, "remote": True})
+    assert (ok, detail) == (True, "reusing pr/seams-task")
+    assert cli._git_out(cli._land_worktree(repo, "pr/seams-task"), "rev-parse", "--abbrev-ref", "HEAD") == "pr/seams-task"
+    assert cli._git_out(repo, "rev-parse", "--abbrev-ref", "HEAD") == "main"
+
+
+def test_land_resume_finds_a_remote_only_branch_with_the_cherry_picked_tree(repo, tmp_path, monkeypatch):
+    _with_origin_holding_the_pr_branch(repo, tmp_path)
+    monkeypatch.setattr(cli, "_open_prs_for", lambda _repo, _branch, _forge=None: [])
+    assert cli._land_resume(repo, _CHERRY) == {"kind": "resume", "local": False, "remote": True}
+
+
+def _run_row(name, status="completed", conclusion="success"):
+    return {"name": name, "status": status, "conclusion": conclusion}
+
+
+def test_rest_checks_argvs_are_paginated_gh_api_calls_for_check_runs_and_status():
+    runs, status = land.rest_checks_argvs("abc123")
+    assert runs == ["gh", "api", "--paginate", "repos/{owner}/{repo}/commits/abc123/check-runs?per_page=100"]
+    assert status == ["gh", "api", "--paginate", "repos/{owner}/{repo}/commits/abc123/status?per_page=100"]
+
+
+def test_merge_pages_joins_back_to_back_pages_and_refuses_garbage():
+    text = '{"total_count": 3, "check_runs": [1, 2]}\n{"total_count": 3, "check_runs": [3]}'
+    assert land.merge_pages(text, "check_runs") == {"total_count": 3, "check_runs": [1, 2, 3]}
+    assert land.merge_pages("", "check_runs") is None
+    assert land.merge_pages('{"check_runs": []} not json', "check_runs") is None
+
+
+def test_check_poll_result_maps_green_failed_pending_and_empty():
+    green_status = {"state": "success", "statuses": [{"context": "ci", "state": "success"}]}
+    assert land.check_poll_result({"check_runs": [_run_row("a"), _run_row("b", conclusion="skipped")]}, green_status, ()) == (0, "")
+    mixed = {"check_runs": [_run_row("a", conclusion="failure"), _run_row("b", "in_progress", None)]}
+    assert land.check_poll_result(mixed, {"statuses": []}, ()) == (1, "failing checks: a")
+    assert land.check_poll_result({"check_runs": []}, {"statuses": [{"context": "ci", "state": "error"}]}, ()) == (1, "failing checks: ci")
+    queued = {"check_runs": [_run_row("a", "queued", None)]}
+    assert land.check_poll_result(queued, {"state": "pending", "statuses": []}, ()) == (land.PENDING_RC, "checks pending: a")
+    assert land.check_poll_result({"check_runs": []}, {"state": "pending", "statuses": []}, ()) == (1, "no checks reported")
+
+
+def test_check_poll_result_is_never_green_when_fewer_rows_than_total_count_were_read():
+    hundred_green = {"total_count": 101, "check_runs": [_run_row(f"r{i}") for i in range(100)]}
+    assert land.check_poll_result(hundred_green, {"statuses": []}, ()) == (land.PENDING_RC, "checks pending: 100 of 101 check runs read")
+    statuses = {"total_count": 2, "state": "success", "statuses": [{"context": "ci", "state": "success"}]}
+    assert land.check_poll_result({"check_runs": []}, statuses, ())[0] == land.PENDING_RC
+    combined_failure = {"total_count": 101, "state": "failure", "statuses": [{"context": "ci", "state": "success"}]}
+    assert land.check_poll_result({"check_runs": []}, combined_failure, ()) == (1, "failing checks: combined status")
+
+
+def test_check_poll_result_holds_a_required_name_absent_from_runs_and_statuses_as_pending():
+    assert land.check_poll_result({"check_runs": [_run_row("lint")]}, {"statuses": []}, ("test",)) == (land.PENDING_RC, "checks pending: test")
+
+
+def test_check_poll_result_is_green_when_every_required_name_is_a_passing_run_or_status():
+    status = {"state": "success", "statuses": [{"context": "ci", "state": "success"}]}
+    assert land.check_poll_result({"check_runs": [_run_row("lint")]}, status, ("lint", "ci")) == (0, "")
+
+
+def test_check_poll_result_keeps_a_failing_required_check_a_failure_and_beats_a_missing_one():
+    assert land.check_poll_result({"check_runs": [_run_row("test", conclusion="failure")]}, {"statuses": []}, ("test",)) == (1, "failing checks: test")
+    assert land.check_poll_result({"check_runs": [_run_row("test", conclusion="failure")]}, {"statuses": []}, ("test", "lint")) == (1, "failing checks: test")
+
+
+def test_check_poll_result_with_unreadable_required_follows_the_old_rule_and_says_so():
+    note = land._REQUIRED_UNREADABLE
+    green = {"check_runs": [_run_row("lint")]}
+    assert land.check_poll_result(green, {"statuses": []}) == (0, note)
+    assert land.check_poll_result(green, {"statuses": []}, None) == (0, note)
+    failing = {"check_runs": [_run_row("a", conclusion="failure")]}
+    assert land.check_poll_result(failing, {"statuses": []}) == (1, f"failing checks: a\n{note}")
+    queued = {"check_runs": [_run_row("a", "queued", None)]}
+    assert land.check_poll_result(queued, {"statuses": []}) == (land.PENDING_RC, f"checks pending: a\n{note}")
+    assert land.wait_decision(*land.check_poll_result({"check_runs": []}, {"statuses": []}), 5, 300) == "retry"
+
+
+def test_check_poll_result_with_an_empty_required_tuple_is_green_without_the_note():
+    assert land.check_poll_result({"check_runs": [_run_row("lint")]}, {"statuses": []}, ()) == (0, "")
+
+
+def test_wait_decision_retries_pending_by_returncode_alone_and_reads_no_phrase():
+    assert land.wait_decision(land.PENDING_RC, "", 5, 180) == "retry"
+    assert land.wait_decision(land.PENDING_RC, "", 999999, 180) == "retry"
+    assert land.wait_decision(1, "failing checks: a", 5, 300) == "failed"
+    assert land.wait_decision(1, "1 failing, 1 successful, and 1 pending checks", 5, 300) == "failed"
+    assert land.wait_decision(8, "checks pending: a", 5, 300) == "failed"
+
+
+def test_unreadable_poll_retries_below_the_limit_and_fails_at_it():
+    assert land.unreadable_poll(1, "HTTP 502")[0] == land.PENDING_RC
+    assert land.unreadable_poll(land.POLL_ERROR_LIMIT, "HTTP 502") == (1, "checks unreadable 5 polls in a row: HTTP 502")
+
+
+def test_poll_backoff_doubles_from_thirty_seconds_and_caps():
+    assert [land.poll_backoff_s(n) for n in (1, 2, 3, 4, 5)] == [30.0, 60.0, 120.0, 240.0, 240.0]
+
+
+def _rest_run(calls, check_runs_answers):
+    answers = iter(check_runs_answers)
+
+    def run(argv, **kw):
+        calls.append(argv)
+        if argv[0] == "git":
+            return sp.CompletedProcess(argv, 0, "abc123\n", "")
+        if "/check-runs" not in argv[-1]:
+            return sp.CompletedProcess(argv, 0, json.dumps({"total_count": 0, "statuses": []}), "")
+        answer = next(answers)
+        return answer if isinstance(answer, sp.CompletedProcess) else sp.CompletedProcess(argv, 0, json.dumps(answer), "")
+    return run
+
+
+_GREEN = {"total_count": 1, "check_runs": [_run_row("a")]}
+_RATE_LIMITED = sp.CompletedProcess([], 1, "", "HTTP 403: secondary rate limit")
+
+
+@pytest.mark.parametrize("answers, expected", [
+    ([_GREEN], (True, "green")),
+    ([{"total_count": 1, "check_runs": [_run_row("a", conclusion="failure")]}], (False, f"failing checks: a\n{land._REQUIRED_UNREADABLE}")),
+    ([{"total_count": 1, "check_runs": [_run_row("a", "queued", None)]}, _GREEN], (True, "green")),
+    ([_RATE_LIMITED, _RATE_LIMITED, _GREEN], (True, "green")),
+    ([_RATE_LIMITED] * 5, (False, "checks unreadable 5 polls in a row: HTTP 403: secondary rate limit")),
+])
+def test_wait_checks_polls_rest_and_never_gh_pr_checks(monkeypatch, tmp_path, answers, expected):
+    calls = []
+    monkeypatch.setattr(cli.subprocess, "run", _rest_run(calls, answers))
+    assert cli._wait_checks(tmp_path, 180.0, sleep=lambda s: None) == expected
+    assert any(c[:3] == ["gh", "api", "--paginate"] and "/check-runs" in c[-1] for c in calls)
+    assert not any(c[:3] == ["gh", "pr", "checks"] for c in calls)
+
+
+def test_wait_checks_waits_out_a_long_pending_run_as_gh_watch_did(monkeypatch, tmp_path):
+    t = [0.0]
+    queued = {"total_count": 1, "check_runs": [_run_row("a", "queued", None)]}
+    monkeypatch.setattr(cli.subprocess, "run", _rest_run([], [queued] * 500 + [_GREEN]))
+    result = cli._wait_checks(tmp_path, 180.0, sleep=lambda s: t.__setitem__(0, t[0] + s), now=lambda: t[0])
+    assert result == (True, "green") and t[0] == 500 * 15
+
+
+def test_wait_checks_backs_off_after_each_unreadable_poll_before_failing(monkeypatch, tmp_path):
+    slept = []
+    monkeypatch.setattr(cli.subprocess, "run", _rest_run([], [_RATE_LIMITED] * 5))
+    ok, _ = cli._wait_checks(tmp_path, 180.0, sleep=slept.append)
+    assert ok is False
+    assert slept == [30.0, 15, 60.0, 15, 120.0, 15, 240.0, 15]
+
+
+def test_wait_checks_reads_the_sha_of_the_repos_own_head_and_runs_gh_there(monkeypatch, tmp_path):
+    real_run = sp.run
+    for args in (["init", "-q", "-b", "main"], ["config", "user.email", "a@b.c"], ["config", "user.name", "n"],
+                 ["commit", "--allow-empty", "-qm", "one"], ["checkout", "-qb", "pr-branch"],
+                 ["commit", "--allow-empty", "-qm", "two"]):
+        real_run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True)
+    def sha(ref):
+        return real_run(["git", "-C", str(tmp_path), "rev-parse", ref], capture_output=True, text=True).stdout.strip()
+
+    head, main = sha("HEAD"), sha("main")
+    gh_calls = []
+
+    def run(argv, **kw):
+        if argv[0] == "git":
+            return real_run(argv, **kw)
+        gh_calls.append((argv, kw.get("cwd")))
+        body = _GREEN if "/check-runs" in argv[-1] else {"total_count": 0, "statuses": []}
+        return sp.CompletedProcess(argv, 0, json.dumps(body), "")
+
+    monkeypatch.setattr(cli.subprocess, "run", run)
+    assert cli._wait_checks(tmp_path, 180.0, sleep=lambda s: None) == (True, "green")
+    # Every gh call, the required-checks reads included, runs in the repo; only the `/commits/` reads name a sha.
+    sha_reads = [argv for argv, _ in gh_calls if "/commits/" in argv[-1]]
+    assert all(cwd == tmp_path for _, cwd in gh_calls)
+    assert head != main and len(sha_reads) == 2
+    assert all(head in argv[-1] and main not in argv[-1] for argv in sha_reads)
+    gh_calls.clear()
+    assert cli._wait_checks(tmp_path, 180.0, sleep=lambda s: None, ref="main") == (True, "green")
+    sha_reads = [argv for argv, _ in gh_calls if "/commits/" in argv[-1]]
+    assert all(cwd == tmp_path for _, cwd in gh_calls)
+    assert len(sha_reads) == 2
+    assert all(main in argv[-1] and head not in argv[-1] for argv in sha_reads)
+
+
+# --- land.jsonl: one row per applied land that reached its steps ---
+
+def test_land_log_row_is_the_six_keys_and_an_empty_pr_is_null():
+    row = land.land_log_row("2026-09-24T10:00:00+00:00", "epic-x-5", "seams-task", ["push", "merge"], 0, "https://x/pull/7")
+    assert row == {"ts": "2026-09-24T10:00:00+00:00", "run": "epic-x-5", "task": "seams-task",
+                   "steps_reached": ["push", "merge"], "exit": 0, "pr": "https://x/pull/7"}
+    assert land.land_log_row("t", "r", None, [], 2, "")["pr"] is None
+
+
+def _land_log(tmp_path):
+    return [json.loads(line) for line in (tmp_path / "runs/land.jsonl").read_text(encoding="utf-8").splitlines()]
+
+
+def test_a_successful_land_writes_one_row_reaching_merge_with_exit_0(repo, tmp_path, monkeypatch):
+    rc, ran = _apply_gated(repo, tmp_path, monkeypatch, "--gate", "full")
+    (row,) = _land_log(tmp_path)
+    assert rc == 0
+    assert row["steps_reached"] == ran and "merge" in row["steps_reached"]
+    assert (row["exit"], row["run"], row["task"], row["pr"]) == (0, "epic-x-5", "seams-task", "https://x/pull/7")
+
+
+def test_a_refused_land_writes_a_row_with_its_exit_code_and_no_merge_and_a_rerun_appends(repo, tmp_path):
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record(proposals=[])), encoding="utf-8")
+    argv = ["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs")]
+    assert cli.main(argv) == 2
+    assert cli.main(argv) == 2
+    assert [(r["exit"], r["steps_reached"], r["pr"]) for r in _land_log(tmp_path)] == [(2, [], None)] * 2
+
+
+def test_a_land_with_no_tracker_configured_plans_no_route_sync(repo, tmp_path, capsys):
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(f"workspace_dir: {tmp_path}\n", encoding="utf-8")
+    argv = ["runs", "land", "epic-x-5", "--repo", str(repo), "--profile", str(profile)]
+    assert cli.main(argv) == 0
+    assert "route_sync" not in [s["kind"] for s in json.loads(capsys.readouterr().out)]
+    profile.write_text(f"workspace_dir: {tmp_path}\ntracker: github-projects\n", encoding="utf-8")
+    assert cli.main(argv) == 0
+    assert "route_sync" in [s["kind"] for s in json.loads(capsys.readouterr().out)]
+
+
+def test_a_lands_route_sync_step_reads_the_tracker_from_the_lands_own_profile_and_runs_dir(repo, tmp_path, capsys, monkeypatch):
+    runs = tmp_path / "custom-runs"
+    task_dir = runs / "epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(f"workspace_dir: {tmp_path}\ntracker: github-projects\n", encoding="utf-8")
+    monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(tmp_path / "no-default-profile.yaml"))
+    assert cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--profile", str(profile), "--runs-dir", str(runs),
+                     "--gate", "full"]) == 0
+    out = capsys.readouterr().out
+    step = next(s for s in json.loads(out[out.index("["):]) if s["kind"] == "route_sync" and not s.get("before"))
+    assert (step["profile"], step["runs_dir"]) == (str(profile), str(runs))
+    seen = []
+    monkeypatch.setattr(cli, "_route_sync", lambda ns: seen.append(ns.profile) or 0)
+    assert cli._execute_land_step(repo, step) == (True, "synced seams-task")
+    assert seen == [str(profile)]
+    (runs / "policy.tracker.json").write_text('{"tracker": "none"}', encoding="utf-8")
+    assert cli._execute_land_step(repo, step) == (True, "sync of seams-task skipped after the merge: tracker is none")
+    assert seen == [str(profile)]
+
+
+def test_a_dry_run_land_refuses_an_unreadable_profile_because_the_plan_reads_its_tracker(repo, tmp_path, capsys):
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    profile = tmp_path / "profile.yaml"
+    profile.write_text("not a key value line\n", encoding="utf-8")
+    argv = ["runs", "land", "epic-x-5", "--repo", str(repo), "--profile", str(profile), "--runs-dir", str(tmp_path / "runs")]
+    assert cli.main(argv) == 2
+    assert capsys.readouterr().out.startswith("land: profile unreadable:")
+
+
+def test_a_dry_run_writes_no_land_log(repo, tmp_path):
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    assert cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs")]) == 0
+    assert not (tmp_path / "runs/land.jsonl").exists()
+
+
+# --- the profile's forge chooses where the land's push, PR, checks and merge go ---
+
+def _forge_land(tmp_path, forge_line=""):
+    """An approved task record and open work item under `tmp_path`, plus a profile; returns the land argv."""
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    (tmp_path / "runs/policy.tracker.json").write_text('{"tracker": "none"}', encoding="utf-8")
+    item = tmp_path / "work/x/seams/seams-task.md"; item.parent.mkdir(parents=True)
+    item.write_text("---\nid: seams-task\nstate: approved\n---\nBody.\n", encoding="utf-8")
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(f"workspace_dir: {tmp_path}\n{forge_line}", encoding="utf-8")
+    return ["--apply", "--profile", str(profile), "--runs-dir", str(tmp_path / "runs")]
+
+
+def test_a_land_with_no_forge_in_the_profile_fast_forwards_main_and_calls_no_gh(repo, tmp_path, capsys, monkeypatch):
+    argv = _forge_land(tmp_path)
+    real_run = cli.subprocess.run
+
+    def no_gh(cmd, *a, **kw):
+        assert cmd[:1] != ["gh"], cmd
+        return real_run(cmd, *a, **kw)
+
+    monkeypatch.setattr(cli.subprocess, "run", no_gh)
+    monkeypatch.setattr(cli, "_run_checks", lambda checks, cwd: (True, "1 checks passed"))
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--gate", "full", *argv])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "forge: local" in out.splitlines()
+    assert cli._git_out(repo, "log", "-1", "--format=%s", "main") == "Add seams module"
+    assert cli._git_out(repo, "show", "main:f") == "y"
+    assert "pr/seams-task" not in cleanup.git_branches(repo)
+
+
+# --- a task land builds its pr branch in its own worktree; the checkout's HEAD never moves ---
+
+def _head(repo):
+    return cli._git_out(repo, "rev-parse", "--abbrev-ref", "HEAD")
+
+
+def _land_worktrees(repo):
+    return [line for line in cli._git_out(repo, "worktree", "list").splitlines() if "cox-land-" in line]
+
+
+def _land(repo, tmp_path, checks, capsys):
+    """Run a full-gate task land with the local forge; `checks` stands in for `_run_checks`."""
+    profile = tmp_path / "profile.yaml"
+    argv = ["--apply", "--profile", str(profile), "--runs-dir", str(tmp_path / "runs")] if profile.exists() else _forge_land(tmp_path)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(cli, "_run_checks", checks)
+        rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--gate", "full", *argv])
+    return rc, capsys.readouterr().out
+
+
+@pytest.mark.parametrize("start", ["main", "side"])
+def test_a_full_task_land_leaves_the_checkouts_head_where_it_was(repo, tmp_path, capsys, start):
+    if start == "side":
+        sp.run(["git", "-C", str(repo), "checkout", "-qb", "side"], check=True, env=_ENV)
+    seen = []
+    rc, out = _land(repo, tmp_path, lambda checks, cwd: (seen.append(cwd) or True, "1 checks passed"), capsys)
+    assert rc == 0, out
+    assert _head(repo) == start
+    assert cli._git_out(repo, "show", "main:f") == "y"
+    assert seen == [cli._land_worktree(repo, "pr/seams-task")]
+    assert _land_worktrees(repo) == [] and "pr/seams-task" not in cleanup.git_branches(repo)
+
+
+def test_a_land_whose_checks_fail_keeps_the_pr_branch_and_leaves_head_and_no_worktree(repo, tmp_path, capsys):
+    rc, out = _land(repo, tmp_path, lambda checks, cwd: (False, "tests: boom"), capsys)
+    assert rc == 1, out
+    assert _head(repo) == "main"
+    assert "pr/seams-task" in cleanup.git_branches(repo)
+    assert cli._git_out(repo, "show", "pr/seams-task:f") == "y"
+    assert _land_worktrees(repo) == []
+    assert cli._git_out(repo, "show", "main:f") == "x"
+
+
+@pytest.mark.parametrize("start", ["main", "side"])
+def test_a_resumed_land_works_the_same_way(repo, tmp_path, capsys, start):
+    rc, out = _land(repo, tmp_path, lambda checks, cwd: (False, "tests: boom"), capsys)
+    assert rc == 1, out
+    if start == "side":
+        sp.run(["git", "-C", str(repo), "checkout", "-qb", "side"], check=True, env=_ENV)
+    rc, out = _land(repo, tmp_path, lambda checks, cwd: (True, "1 checks passed"), capsys)
+    assert rc == 0, out
+    assert "reuse_branch: reusing pr/seams-task" in out
+    assert _head(repo) == start
+    assert cli._git_out(repo, "show", "main:f") == "y"
+    assert _land_worktrees(repo) == []
+
+
+def test_a_resumed_land_whose_checks_fail_again_keeps_the_branch_and_head(repo, tmp_path, capsys):
+    _land(repo, tmp_path, lambda checks, cwd: (False, "tests: boom"), capsys)
+    rc, out = _land(repo, tmp_path, lambda checks, cwd: (False, "tests: boom"), capsys)
+    assert rc == 1, out
+    assert "reuse_branch: reusing pr/seams-task" in out
+    assert _head(repo) == "main"
+    assert "pr/seams-task" in cleanup.git_branches(repo)
+    assert _land_worktrees(repo) == []
+
+
+def test_a_dry_run_land_touches_no_disk_for_the_land_worktree(repo, tmp_path):
+    (tmp_path / "runs/epic-x-5/tasks/seams").mkdir(parents=True)
+    (tmp_path / "runs/epic-x-5/tasks/seams/seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    assert cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs")]) == 0
+    assert not cli._land_worktree(repo, "pr/seams-task").exists()
+
+
+def test_a_profile_naming_github_routes_pr_create_to_the_github_forge(repo, tmp_path, capsys, monkeypatch):
+    argv = _forge_land(tmp_path, "forge: github\n")
+    calls = []
+    monkeypatch.setattr(cli, "_run_checks", lambda checks, cwd: (True, "1 checks passed"))
+    monkeypatch.setattr(forge_github, "find_open_prs", lambda repo, branch: [])
+    monkeypatch.setattr(forge_github, "push", lambda repo, branch: (calls.append("push") or True, branch))
+    monkeypatch.setattr(forge_github, "open_pr", lambda repo, title, body, **refs: (calls.append(("open_pr", refs)) or True, "https://x/pull/7"))
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), *argv])
+    out = capsys.readouterr().out
+    assert rc == 3, out
+    assert calls == ["push", ("open_pr", {"head": "pr/seams-task", "base": "main"})]
+    assert "forge: github" in out.splitlines()
+    assert "pr_create: https://x/pull/7" in out
+
+
+def test_a_profile_naming_an_unknown_forge_refuses_with_exit_2(repo, tmp_path, capsys):
+    argv = _forge_land(tmp_path, "forge: nope\n")
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), *argv])
+    assert rc == 2
+    assert capsys.readouterr().out.splitlines()[-1] == "land: no forge named nope (built in: local, github, auto)"
+    assert "pr/seams-task" not in cleanup.git_branches(repo)
+
+
+def test_a_github_land_hands_the_forge_the_planned_head_base_and_checks_ref(repo, tmp_path, capsys, monkeypatch):
+    argv = _forge_land(tmp_path, "forge: github\n")
+    calls = []
+    monkeypatch.setattr(cli, "_run_checks", lambda checks, cwd: (True, "1 checks passed"))
+    monkeypatch.setattr(forge_github, "find_open_prs", lambda repo, branch: [])
+    monkeypatch.setattr(forge_github, "push", lambda repo, branch: (True, branch))
+    monkeypatch.setattr(forge_github, "open_pr", lambda repo, title, body, *, head=None, base=None:
+                        (calls.append(("open_pr", head, base)) or True, "https://x/pull/7"))
+    monkeypatch.setattr(forge_github, "wait_checks", lambda repo, timeout_s, *, ref="HEAD":
+                        (calls.append(("wait_checks", ref)) or True, "green"))
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--gate", "phase", *argv])
+    out = capsys.readouterr().out
+    assert rc == 3, out
+    assert calls == [("open_pr", "pr/seams-task", "main"), ("wait_checks", "pr/seams-task")]
+
+
+def test_a_land_refuses_before_any_step_when_the_forge_predates_explicit_refs(repo, tmp_path, capsys, monkeypatch):
+    argv = _forge_land(tmp_path, "forge: github\n")
+    pushed = []
+    monkeypatch.setattr(forge_github, "find_open_prs", lambda repo, branch: [])
+    monkeypatch.setattr(forge_github, "push", lambda repo, branch: (pushed.append(branch) or True, branch))
+    monkeypatch.setattr(forge_github, "open_pr", lambda repo, title, body: (True, "https://x/pull/7"))
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), *argv])
+    out = capsys.readouterr().out
+    assert rc == 2 and pushed == []
+    assert "land: refusing, forge github does not accept open_pr(head), open_pr(base)" in out
+
+
+def test_the_ticket_plans_merge_step_carries_what_the_local_forge_reads():
+    steps = land.land_plan(_record(), {"agents/epic-x-5/seams-task": ["Add seams module"]}, "trunk")
+    assert next(s for s in steps if s["kind"] == "merge") == {
+        "kind": "merge", "squash": True, "delete_branch": True,
+        "branch": "pr/seams-task", "default_branch": "trunk", "subject": "Add seams module",
+    }
+
+
+def test_the_phase_plans_merge_step_carries_what_the_local_forge_reads():
+    phase_record = {"run": "epic-x-5", "phase": "seams", "initiative": "x"}
+    steps = land.land_plan(phase_record, {}, "trunk", items=[{"id": "seams-task", "status": "done"}],
+                           task_records=[_record(status="done")])
+    assert next(s for s in steps if s["kind"] == "merge") == {
+        "kind": "merge", "squash": True, "delete_branch": True,
+        "branch": "pr/x--seams", "default_branch": "trunk", "subject": "epic x: seams",
+    }
+
+
+def test_the_ticket_plans_pr_and_checks_steps_name_their_branch_and_base():
+    steps = land.land_plan(_record(), {"agents/epic-x-5/seams-task": ["Add seams module"]}, "trunk")
+    pr = next(s for s in steps if s["kind"] == "pr_create")
+    assert (pr["head"], pr["base"]) == ("pr/seams-task", "trunk")
+    assert next(s for s in steps if s["kind"] == "wait_checks") == {"kind": "wait_checks", "branch": "pr/seams-task"}
+
+
+def test_the_phase_plans_pr_and_checks_steps_name_their_branch_and_base():
+    phase_record = {"run": "epic-x-5", "phase": "seams", "initiative": "x"}
+    steps = land.land_plan(phase_record, {}, "trunk", items=[{"id": "seams-task", "status": "done"}],
+                           task_records=[_record(status="done")])
+    pr = next(s for s in steps if s["kind"] == "pr_create")
+    assert (pr["head"], pr["base"]) == ("pr/x--seams", "trunk")
+    assert next(s for s in steps if s["kind"] == "wait_checks") == {"kind": "wait_checks", "branch": "pr/x--seams"}
+
+
+def test_land_phase_record_reads_the_store_manifest_when_no_file_exists(tmp_path):
+    runs_table(tmp_path, run_row("epic-x-5"))
+    phases_table(tmp_path, with_record("epic-x-5", "seams", "2026-09-25T04:40:00+00:00"), with_record("epic-x-5", "other", "2026-09-25T04:41:00+00:00"))
+    record, tasks, paths, _ = cli._land_phase_record(tmp_path, "epic-x-5", "seams")
+    assert not (tmp_path / "epic-x-5:seams.json").exists()
+    assert record["run_id"] == "epic-x-5:seams" and record["phase"] == "seams" and (tasks, paths) == ([], {})
+
+
+def test_land_phase_record_names_the_missing_file_when_neither_file_nor_store_has_it(tmp_path):
+    record, tasks, paths, searched = cli._land_phase_record(tmp_path, "epic-x-5", "seams")
+    assert (record, tasks, paths) == (None, [], {}) and searched == str((tmp_path / "epic-x-5:seams.json").resolve())
+
+
+def test_a_task_lands_checks_find_the_repos_venv_in_the_land_worktree(repo, tmp_path):
+    """The land's default check is `.venv/bin/python -m pytest -q`, relative to where it runs."""
+    bin_dir = repo / ".venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    check = bin_dir / "check"
+    check.write_text(f"#!/bin/sh\npwd > {tmp_path / 'ran-in'}\n", encoding="utf-8")
+    check.chmod(0o755)
+    ok, detail = cli._execute_land_step(repo, {
+        "kind": "cherry_pick", "branch": "agents/epic-x-5/seams-task", "commit_subject": "Add seams module",
+        "onto": "pr/seams-task", "from": "main",
+    })
+    assert ok, detail
+    ok, detail = cli._execute_land_step(repo, {"kind": "checks", "checks": [("tests", [".venv/bin/check"])], "worktree_of": "pr/seams-task"})
+    assert ok, detail
+    assert (tmp_path / "ran-in").read_text().strip() == str(cli._land_worktree(repo, "pr/seams-task"))
+
+
+# --- cli._land_worktree: the pid keeps two lands apart ---
+
+
+def test_land_worktree_is_stable_within_one_process(tmp_path):
+    assert cli._land_worktree(tmp_path, "pr/seams-task") == cli._land_worktree(tmp_path, "pr/seams-task")
+
+
+def test_land_worktree_differs_between_two_pids(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli.os, "getpid", lambda: 111)
+    first = cli._land_worktree(tmp_path, "pr/seams-task")
+    monkeypatch.setattr(cli.os, "getpid", lambda: 222)
+    second = cli._land_worktree(tmp_path, "pr/seams-task")
+    assert first != second
+
+
+def test_land_worktree_name_still_starts_with_repo_and_branch(tmp_path):
+    wt = cli._land_worktree(tmp_path, "pr/seams-task")
+    assert wt.name.startswith(f"cox-land-{tmp_path.resolve().name}-pr-seams-task-")
+
+
+# --- resolve_add_add_conflicts: pure diff3 add/add hunk resolver ---
+
+
+def test_resolve_add_add_conflicts_resolves_empty_base_to_ours_then_theirs():
+    text = "<<<<<<< HEAD\nours line\n||||||| base\n=======\ntheirs line\n>>>>>>> theirs\n"
+    assert land.resolve_add_add_conflicts(text) == "ours line\ntheirs line\n"
+
+
+def test_resolve_add_add_conflicts_refuses_a_non_empty_base():
+    text = "<<<<<<< HEAD\nours line\n||||||| base\nbase line\n=======\ntheirs line\n>>>>>>> theirs\n"
+    assert land.resolve_add_add_conflicts(text) is None
+
+
+def test_resolve_add_add_conflicts_keeps_identical_ours_and_theirs_once():
+    text = "<<<<<<< HEAD\nsame line\n||||||| base\n=======\nsame line\n>>>>>>> theirs\n"
+    assert land.resolve_add_add_conflicts(text) == "same line\n"
+
+
+def test_resolve_add_add_conflicts_refuses_the_whole_file_when_one_hunk_has_a_base():
+    text = (
+        "<<<<<<< HEAD\nours one\n||||||| base\n=======\ntheirs one\n>>>>>>> theirs\n"
+        "middle\n"
+        "<<<<<<< HEAD\nours two\n||||||| base\nbase two\n=======\ntheirs two\n>>>>>>> theirs\n"
+    )
+    assert land.resolve_add_add_conflicts(text) is None
+
+
+# --- _cherry_pick_generated: auto-resolves add/add conflicts via resolve_add_add_conflicts ---
+
+
+
+def _git_identity(monkeypatch):
+    """`_cherry_pick_generated` commits in the worktree; CI has no global git identity."""
+    for var in ("GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"):
+        monkeypatch.setenv(var, "t")
+    for var in ("GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"):
+        monkeypatch.setenv(var, "t@e")
+
+def _init_diverging_branches(root, ours_text, theirs_text, base_text="base\n"):
+    """A repo at `root` with `f` at `base_text` on `main`, then `main` and `theirs` each committing
+    their own text over it. Returns the sha of the `theirs` commit, with `main` left checked out."""
+    sp.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
+    (root / "f").write_text(base_text)
+    sp.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@e", "add", "-A"], check=True)
+    sp.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@e", "commit", "-qm", "base"], check=True)
+    sp.run(["git", "-C", str(root), "checkout", "-qb", "theirs"], check=True)
+    (root / "f").write_text(theirs_text)
+    sp.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@e", "commit", "-aqm", "theirs"], check=True)
+    sha = sp.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    sp.run(["git", "-C", str(root), "checkout", "-q", "main"], check=True)
+    (root / "f").write_text(ours_text)
+    sp.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@e", "commit", "-aqm", "ours"], check=True)
+    return sha
+
+
+def test_cherry_pick_generated_resolves_an_append_append_conflict_to_hold_both_lines(tmp_path, monkeypatch):
+    _git_identity(monkeypatch)
+    root = tmp_path / "repo"
+    root.mkdir()
+    sha = _init_diverging_branches(root, ours_text="base\nours line\n", theirs_text="base\ntheirs line\n")
+    monkeypatch.setattr(cli, "_generate_and_amend", lambda wt, umbrella, echo: (True, ""))
+    ok, detail = cli._cherry_pick_generated(root, sha, None, echo=lambda _: None)
+    assert ok, detail
+    text = (root / "f").read_text()
+    assert "ours line" in text and "theirs line" in text
+
+
+def test_cherry_pick_generated_leaves_a_same_line_conflict_unresolved_and_the_tree_clean(tmp_path, monkeypatch):
+    _git_identity(monkeypatch)
+    root = tmp_path / "repo"
+    root.mkdir()
+    sha = _init_diverging_branches(root, ours_text="ours value\n", theirs_text="theirs value\n")
+    monkeypatch.setattr(cli, "_generate_and_amend", lambda wt, umbrella, echo: (True, ""))
+    ok, detail = cli._cherry_pick_generated(root, sha, None, echo=lambda _: None)
+    assert not ok
+    assert detail.splitlines()[0] == f"cherry-pick of {sha[:8]} conflicts in: f" and "could not apply" in detail
+    assert not (root / ".git" / "CHERRY_PICK_HEAD").exists()
+    status = sp.run(["git", "-C", str(root), "status", "--porcelain"], capture_output=True, text=True).stdout
+    assert status.strip() == ""
+
+
+def _init_both_adding(root, name, ours_bytes, theirs_bytes):
+    """A repo at `root` whose `main` and `theirs` each create `name`, absent from their common base, with
+    different bytes. Returns the sha of the `theirs` commit, with `main` left checked out."""
+    git = ["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@e"]
+    sp.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
+    sp.run([*git, "commit", "--allow-empty", "-qm", "base"], check=True)
+    sp.run([*git, "checkout", "-qb", "theirs"], check=True)
+    (root / name).write_bytes(theirs_bytes)
+    sp.run([*git, "add", "-A"], check=True)
+    sp.run([*git, "commit", "-qm", "theirs"], check=True)
+    sha = sp.run([*git, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    sp.run([*git, "checkout", "-q", "main"], check=True)
+    (root / name).write_bytes(ours_bytes)
+    sp.run([*git, "add", "-A"], check=True)
+    sp.run([*git, "commit", "-qm", "ours"], check=True)
+    return sha
+
+
+def test_cherry_pick_generated_resolves_a_both_added_file_whose_path_holds_a_space(tmp_path, monkeypatch):
+    _git_identity(monkeypatch)
+    root = tmp_path / "repo"
+    root.mkdir()
+    sha = _init_both_adding(root, "new file.txt", b"ours line\n", b"theirs line\n")
+    sp.run(["git", "-C", str(root), "cherry-pick", sha], capture_output=True)
+    status = sp.run(["git", "-C", str(root), "status", "--porcelain", "-z"], capture_output=True, text=True).stdout
+    assert status.split("\0")[0] == "AA new file.txt"
+    sp.run(["git", "-C", str(root), "cherry-pick", "--abort"], check=True)
+    monkeypatch.setattr(cli, "_generate_and_amend", lambda wt, umbrella, echo: (True, ""))
+    echoed = []
+    ok, detail = cli._cherry_pick_generated(root, sha, None, echo=echoed.append)
+    assert ok, detail
+    assert (root / "new file.txt").read_text() == "ours line\ntheirs line\n"
+    assert echoed == ["resolved add/add: new file.txt"]
+
+
+def test_cherry_pick_generated_refuses_a_binary_add_add_without_raising(tmp_path, monkeypatch):
+    _git_identity(monkeypatch)
+    root = tmp_path / "repo"
+    root.mkdir()
+    sha = _init_both_adding(root, "blob", b"\x00\xffours", b"\x00\xfetheirs")
+    monkeypatch.setattr(cli, "_generate_and_amend", lambda wt, umbrella, echo: (True, ""))
+    ok, detail = cli._cherry_pick_generated(root, sha, None, echo=lambda _: None)
+    assert not ok and detail
+    assert not (root / ".git" / "CHERRY_PICK_HEAD").exists()
+    status = sp.run(["git", "-C", str(root), "status", "--porcelain"], capture_output=True, text=True).stdout
+    assert status.strip() == ""
+
+
+# --- merge refused for an expected required check: back to wait_checks once ---
+
+EXPECTED = 'Required status check "test" is expected.'
+CONFLICT = "Pull request is not mergeable: the merge commit cannot be cleanly created"
+
+
+def test_merge_expects_check_accepts_the_github_message_whatever_the_check_name():
+    assert land.merge_expects_check(EXPECTED)
+    assert land.merge_expects_check(EXPECTED.replace("test", "lint / build (3.12)"))
+
+
+def test_merge_expects_check_rejects_a_merge_conflict_message():
+    assert not land.merge_expects_check(CONFLICT)
+
+
+def _walk_merge(tmp_path, merges):
+    calls: list[str] = []
+    results = iter(merges)
+
+    def wait_checks(repo, timeout_s, ref="HEAD"):
+        calls.append("wait_checks")
+        return True, "green"
+
+    def merge(repo, step):
+        calls.append("merge")
+        return next(results)
+
+    forge = SimpleNamespace(wait_checks=wait_checks, merge=merge)
+    steps = [{"kind": "wait_checks", "branch": "pr/x"}, {"kind": "merge", "branch": "pr/x"}]
+    rc, reached, _ = cli._land_walk(tmp_path, steps, steps, None, None, "full", False, forge, [])
+    return rc, calls, reached
+
+
+def test_an_expected_check_refusal_waits_once_more_then_merges(tmp_path):
+    rc, calls, reached = _walk_merge(tmp_path, [(False, EXPECTED), (True, "merged")])
+    assert (rc, calls) == (0, ["wait_checks", "merge", "wait_checks", "merge"])
+    assert reached == calls
+
+
+def test_a_second_expected_check_refusal_stops_the_land(tmp_path):
+    rc, calls, _ = _walk_merge(tmp_path, [(False, EXPECTED), (False, EXPECTED)])
+    assert (rc, calls) == (1, ["wait_checks", "merge", "wait_checks", "merge"])
+
+
+def test_a_different_merge_failure_does_not_loop(tmp_path):
+    rc, calls, _ = _walk_merge(tmp_path, [(False, CONFLICT)])
+    assert (rc, calls) == (1, ["wait_checks", "merge"])
+
+
+class _WaitWorld:
+    """A fake clock and a fake repo lease store: sleeping advances time, a renewal is recorded at the time it is made."""
+
+    def __init__(self, wait_s, ttl=1200, other_holder_at=None):
+        self.t, self.wait_s, self.ttl, self.other_holder_at = 0.0, wait_s, ttl, other_holder_at
+        self.renewals, self.polls = [], 0
+
+    def now(self):
+        return self.t
+
+    def sleep(self, seconds):
+        self.t += seconds
+
+    def poll(self):
+        self.polls += 1
+        return (0, "all passed") if self.t >= self.wait_s else (land.PENDING_RC, "pending")
+
+    def renew(self):
+        if self.other_holder_at is not None and self.t >= self.other_holder_at:
+            return store_cli.LeaseRefused(epoch=4, holder="other@host:9")
+        self.renewals.append(self.t)
+        return store_cli.LeaseGranted(epoch=3, holder="me@host:1")
+
+    def run(self):
+        return land.await_checks(self.poll, 180.0, self.sleep, self.now, renewal=land.LeaseRenewal(self.renew, self.ttl))
+
+
+def test_renew_due_at_one_third_of_the_ttl_and_not_before():
+    assert land.renew_due(0, 400, 1200) is True
+    assert land.renew_due(0, 399, 1200) is False
+    assert land.renew_due(0, 50, 1200, every=50) is True
+
+
+def test_a_wait_longer_than_the_ttl_renews_the_lease_and_lets_the_merge_proceed():
+    world = _WaitWorld(wait_s=3000)
+    assert world.run() == (True, "green")
+    gaps = [b - a for a, b in zip([0.0, *world.renewals], [*world.renewals, world.t])]
+    assert len(world.renewals) >= 2
+    assert max(gaps) <= 1200
+    assert land.renew_due(world.renewals[-1], world.renewals[-1] + 400, 1200)
+
+
+def test_a_lease_taken_by_another_holder_mid_wait_stops_before_the_merge_naming_the_holder():
+    world = _WaitWorld(wait_s=3000, other_holder_at=1000)
+    ok, detail = world.run()
+    assert ok is False
+    assert "other@host:9" in detail
+    assert world.t < 3000
+
+
+def test_a_short_wait_under_a_third_of_the_ttl_makes_no_renewal():
+    world = _WaitWorld(wait_s=300)
+    assert world.run() == (True, "green")
+    assert world.renewals == []
+
+
+def test_a_transient_renewal_failure_stops_the_wait_without_naming_a_holder():
+    world = _WaitWorld(wait_s=3000)
+    world.renew = lambda: store_cli.LeaseError(detail="store timed out")
+    ok, detail = world.run()
+    assert (ok, "store timed out" in detail) == (False, True)
+
+
+@pytest.mark.parametrize("how", ["green", "holder_lost", "poll_raises"])
+def test_no_renewal_happens_once_the_wait_has_ended(how):
+    world = _WaitWorld(wait_s=3000, other_holder_at=1000 if how == "holder_lost" else None)
+    if how == "poll_raises":
+        real_poll = world.poll
+        world.poll = lambda: (_ for _ in ()).throw(RuntimeError("gh down")) if world.t >= 900 else real_poll()
+        with pytest.raises(RuntimeError):
+            world.run()
+    else:
+        world.run()
+    renewed, polled = list(world.renewals), world.polls
+    world.sleep(5000)
+    assert (world.renewals, world.polls) == (renewed, polled)
+
+
+# --- review PRs closed after mark_done ---
+
+
+class _ReviewForge:
+    """A forge module whose merge reports a sha and whose review PRs live in memory."""
+
+    def __init__(self, prs, merge=(True, "merged pr/seams-task into main at abc1234"), close_fails=(), delete_fails=()):
+        self.open, self.merge_result = dict(prs), merge
+        self.close_fails, self.delete_fails = set(close_fails), set(delete_fails)
+        self.comments, self.deleted, self.listed = {}, [], []
+
+    def merge(self, _repo, _step):
+        return self.merge_result
+
+    def list_open_prs_by_prefix(self, _repo, prefix):
+        self.listed.append(prefix)
+        return [{"number": n, "head": h} for n, h in self.open.items() if h.startswith(prefix)]
+
+    def close_pr(self, _repo, number, comment):
+        if number in self.close_fails:
+            raise RuntimeError("forge down")
+        self.comments[number] = comment
+        self.open.pop(number, None)
+        return True, "closed"
+
+    def delete_branch(self, _repo, branch):
+        if branch in self.delete_fails:
+            return False, "no permission"
+        self.deleted.append(branch)
+        return True, "deleted"
+
+
+def _land_steps(tmp_path, task="seams-task"):
+    path = tmp_path / "runs/epic-x-5/tasks/seams" / f"{task}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(_record(task=task)), encoding="utf-8")
+    return path, [{"kind": "merge", "squash": True, "branch": f"pr/{task}", "default_branch": "main"},
+                  {"kind": "mark_done", "task": task, "path": str(path)}]
+
+
+def _no_subprocess(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError(f"subprocess in the land path: {a}")
+
+    monkeypatch.setattr(sp, "run", boom)
+
+
+def test_review_close_targets_keep_only_the_exact_review_branch():
+    prs = [{"number": 1, "head": "review/x/seams-task"}, {"number": 2, "head": "review/x/seams-task-2"},
+           {"number": 3, "head": "review/x/other"}]
+    assert cli.review_close_targets("x", "seams-task", prs) == ([(1, "review/x/seams-task")], [])
+
+
+def test_a_malformed_review_pr_row_is_a_warning_never_an_exception():
+    prs = [{"number": "x7", "head": "review/x/seams-task"}, {"head": "review/x/seams-task"}, "junk",
+           {"number": 8, "head": "review/x/seams-task"}]
+    targets, bad = cli.review_close_targets("x", "seams-task", prs)
+    assert targets == [(8, "review/x/seams-task")]
+    assert len(bad) == 2 and all("unreadable; not closed" in line for line in bad)
+
+
+def test_landing_ref_is_the_local_sha_else_the_pr_url_else_the_pinned_pr_else_the_merge():
+    assert cli._landing_ref("merged pr/a into main at abc1234", "https://h/pull/3", 3, "main") == "abc1234"
+    assert cli._landing_ref("Squashed and merged pull request #3", "https://h/pull/3", 3, "main") == "https://h/pull/3"
+    assert cli._landing_ref("Squashed and merged\nUpdating 1234567..89abcde\nmoved at deadbeef", "", 42, "main") == "PR #42"
+    assert cli._landing_ref("Squashed and merged", "", None, "trunk") == "the merge into trunk"
+
+
+def test_a_landed_tasks_review_prs_are_closed_naming_the_sha_and_their_branches_deleted(tmp_path, monkeypatch, capsys):
+    forge = _ReviewForge({7: "review/x/seams-task", 8: "review/x/seams-task", 9: "review/x/sibling-task"})
+    path, steps = _land_steps(tmp_path)
+    _no_subprocess(monkeypatch)
+    _, reached, _ = cli._land_execute(tmp_path, steps, [], None, None, "full", False, forge)
+    assert reached == ["merge", "mark_done"]
+    assert forge.listed == ["review/x/seams-task"]
+    assert forge.comments == {7: "Landed seams-task as abc1234.", 8: "Landed seams-task as abc1234."}
+    assert forge.deleted == ["review/x/seams-task", "review/x/seams-task"]
+    assert forge.open == {9: "review/x/sibling-task"}
+    assert json.loads(path.read_text())["landed"] is True
+    assert "closed review PR #7 and deleted review/x/seams-task" in capsys.readouterr().out
+
+
+def test_a_forge_error_on_one_review_pr_blocks_neither_the_others_nor_mark_done(tmp_path, monkeypatch, capsys):
+    forge = _ReviewForge({7: "review/x/seams-task", 8: "review/x/seams-task"}, close_fails={7})
+    path, steps = _land_steps(tmp_path)
+    _no_subprocess(monkeypatch)
+    _, reached, _ = cli._land_execute(tmp_path, steps, [], None, None, "full", False, forge)
+    assert reached == ["merge", "mark_done"]
+    assert json.loads(path.read_text())["landed"] is True
+    assert list(forge.comments) == [8]
+    assert "review PR #7 of seams-task failed (RuntimeError: forge down)" in capsys.readouterr().out
+
+
+def test_a_branch_that_will_not_delete_is_logged_and_the_next_pr_is_still_closed(tmp_path, monkeypatch, capsys):
+    forge = _ReviewForge({7: "review/x/seams-task", 8: "review/x/seams-task"}, delete_fails={"review/x/seams-task"})
+    _, steps = _land_steps(tmp_path)
+    _no_subprocess(monkeypatch)
+    cli._land_execute(tmp_path, steps, [], None, None, "full", False, forge)
+    assert sorted(forge.comments) == [7, 8]
+    assert "branch review/x/seams-task not deleted: no permission" in capsys.readouterr().out
+
+
+def test_an_unlistable_forge_leaves_the_land_done_and_closes_nothing(tmp_path, capsys):
+    forge = _ReviewForge({7: "review/x/seams-task"})
+    forge.list_open_prs_by_prefix = lambda _repo, _prefix: "could not list open pull requests: gh down"
+    path, steps = _land_steps(tmp_path)
+    cli._land_execute(tmp_path, steps, [], None, None, "full", False, forge)
+    assert forge.comments == {}
+    assert json.loads(path.read_text())["landed"] is True
+    assert "gh down; land not undone" in capsys.readouterr().out
+
+
+def test_a_failed_merge_stops_before_mark_done_and_touches_no_review_pr(tmp_path):
+    forge = _ReviewForge({7: "review/x/seams-task"}, merge=(False, "not mergeable"))
+    path, steps = _land_steps(tmp_path)
+    rc, reached, _ = cli._land_execute(tmp_path, steps, [], None, None, "full", False, forge)
+    assert (rc, reached) == (1, ["merge"])
+    assert (forge.listed, forge.open) == ([], {7: "review/x/seams-task"})
+    assert "landed" not in json.loads(path.read_text())
+
+
+def test_rerunning_the_land_of_a_done_task_with_its_prs_already_closed_does_not_error(tmp_path, capsys):
+    forge = _ReviewForge({7: "review/x/seams-task"})
+    _, steps = _land_steps(tmp_path)
+    assert cli._land_execute(tmp_path, steps, [], None, None, "full", False, forge)[1] == ["merge", "mark_done"]
+    assert forge.open == {}
+    # A stale listing still names #7: the forge answers "already closed" and "already gone", as forge_github does.
+    forge.list_open_prs_by_prefix = lambda _repo, _prefix: [{"number": 7, "head": "review/x/seams-task"}]
+    forge.close_pr = lambda _repo, _number, _comment: (True, "already closed")
+    forge.delete_branch = lambda _repo, _branch: (True, "already gone")
+    assert cli._land_execute(tmp_path, steps, [], None, None, "full", False, forge)[1] == ["merge", "mark_done"]
+    out = capsys.readouterr().out
+    assert "warning: review" not in out and "not closed" not in out
+
+
+class _GithubShapedForge(_ReviewForge):
+    """A github-shaped forge: the merge reports no sha, and an open PR is read and waited on by number."""
+
+    def __init__(self, prs):
+        super().__init__(prs, merge=(True, "Squashed and merged pull request #42\nUpdating 1234567..89abcde\nFast-forward"))
+        self.waited = []
+
+    def merge_state(self, number, repo=None):
+        return "CLEAN"
+
+    def wait_checks(self, _repo, _timeout, ref="HEAD"):
+        self.waited.append(ref)
+        return True, "checks green"
+
+
+def test_an_adopted_github_land_closes_the_review_prs_naming_the_adopted_pr(tmp_path, monkeypatch, capsys):
+    forge = _GithubShapedForge({7: "review/x/seams-task", 9: "review/x/sibling-task"})
+    path, tail = _land_steps(tmp_path)
+    planned = [{"kind": "cherry_pick", "branch": "agents/epic-x-5/seams-task", "onto": "pr/seams-task", "from": "main"},
+               {"kind": "checks", "checks": [], "worktree_of": "pr/seams-task"},
+               {"kind": "push", "branch": "pr/seams-task"},
+               {"kind": "pr_create", "title": "t", "body": "b", "head": "pr/seams-task", "base": "main"},
+               {"kind": "wait_checks", "branch": "pr/seams-task"}, *tail]
+    steps = land.resume_steps(planned, {"kind": "adopt", "pr": 42}, "pr/seams-task")
+    assert [s["kind"] for s in steps] == ["wait_checks", "merge", "mark_done"]
+    _no_subprocess(monkeypatch)
+    rc, reached, pr = cli._land_execute(tmp_path, steps, steps, None, None, "full", False, forge)
+    assert (rc, reached, pr) == (0, ["wait_checks", "merge", "mark_done"], "")
+    assert json.loads(path.read_text())["landed"] is True
+    assert forge.comments == {7: "Landed seams-task as PR #42."}
+    assert forge.deleted == ["review/x/seams-task"]
+    assert forge.open == {9: "review/x/sibling-task"}
+    assert "closed review PR #7 and deleted review/x/seams-task" in capsys.readouterr().out
+
+
+def test_a_mark_done_with_no_merge_in_the_land_says_why_nothing_was_closed(tmp_path, capsys):
+    forge = _ReviewForge({7: "review/x/seams-task"})
+    _, steps = _land_steps(tmp_path)
+    cli._land_execute(tmp_path, steps[1:], [], None, None, "full", False, forge)
+    assert forge.open == {7: "review/x/seams-task"}
+    assert "review PRs of seams-task not closed: no merge ran in this land" in capsys.readouterr().out

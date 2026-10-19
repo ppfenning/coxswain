@@ -1,0 +1,173 @@
+"""The `quarantined` reader for `chair_facts.FactsDeps`: open quarantined work items as rows.
+
+A quarantine is a ready or blocked item with an attempt on its current body, or any item whose state is
+`quarantined`. Under work_state store the driver moves the store row to `quarantined` and the row's state
+overrides the file's, so that row is a quarantine whatever its ticket file says, attempts or none, and even
+with no file at all."""
+import hashlib
+from collections.abc import Iterable, Mapping, Sequence
+from pathlib import Path, PurePosixPath
+
+from agent_tools import route, run_store
+from agent_tools.stats_chair import frontmatter_item
+
+OPEN_STATES = ("ready", "blocked")
+QUARANTINED = "quarantined"
+RUNAWAY_CAUSE = "runaway"
+
+Row = dict[str, str]
+Attempt = Mapping[str, object]
+Item = tuple[str, str, str, Sequence[Attempt] | None]
+
+
+def _row(path: str) -> Row | None:
+    """Only `work/<initiative>/<phase>/<task>.md` has a row; the task is the file stem."""
+    p = PurePosixPath(path)
+    if len(p.parts) == 4 and p.parts[0] == "work" and p.suffix == ".md":
+        return {"initiative": p.parts[1], "phase": p.parts[2], "task": p.stem}
+    return None
+
+
+def body_sha(body: str) -> str:
+    """The rule cartridges uses to name a work item's body: 12 hex digits of the stripped body's sha256."""
+    return hashlib.sha256(body.strip().encode()).hexdigest()[:12]
+
+
+def attempts_on_current_body(attempts: Iterable[Attempt], body: str) -> list[Attempt]:
+    """The attempts made on `body`, plus those that recorded no `body_sha`."""
+    sha = body_sha(body)
+    return [a for a in attempts if not a.get("body_sha") or a.get("body_sha") == sha]
+
+
+def item_body(text: str) -> str:
+    """The text after the closing `---` of the frontmatter; the whole text when it has none."""
+    close = text.find("\n---", 4) if text.startswith("---\n") else -1
+    return text[close + 4 :] if close != -1 else text
+
+
+def newest_reason(attempts: Sequence[Attempt]) -> str:
+    """The stored `reason` text of the newest attempt by `ts`, uncut; empty with no attempt or no text."""
+    newest = max(attempts, key=lambda a: str(a.get("ts") or ""), default={})
+    return str(newest.get("reason") or "")
+
+
+def quarantined_rows(items: Iterable[Item]) -> list[Row]:
+    """Rows for (path, state, body, attempts) items in state ready or blocked with an attempt on the current body, or
+    in state quarantined with or without one, in input order.
+
+    The row carries `run` and `reason` from the newest attempt on the current body by `ts`, both empty with none."""
+    rows = []
+    for path, state, body, attempts in items:
+        on_body = attempts_on_current_body([a for a in attempts or [] if isinstance(a, Mapping)], body)
+        row = _row(path) if (state in OPEN_STATES and on_body) or state == QUARANTINED else None
+        if row is not None:
+            newest = max(on_body, key=lambda a: str(a.get("ts") or ""), default={})
+            rows.append({**row, "run": str(newest.get("run") or ""), "reason": newest_reason(on_body)})
+    return rows
+
+
+def store_only_quarantined(store_rows: Iterable[Mapping], seen: Iterable[Row]) -> list[Row]:
+    """Pure: a row per store row in state quarantined whose ticket file was not read, in input order, `run` and
+    `reason` empty: the store names the quarantine, so a missing file cannot hide it."""
+    named = {(r["initiative"], r["task"]) for r in seen}
+    return [
+        {"initiative": str(r.get("initiative") or ""), "phase": str(r.get("phase") or ""), "task": str(r.get("task_id") or ""), "run": "", "reason": ""}
+        for r in store_rows
+        if r.get("state") == QUARANTINED and (r.get("initiative"), r.get("task_id")) not in named
+    ]
+
+
+def _classify_cause(cause: str) -> str:
+    """The fact's cause for an attempt's raw cause text: `RUNAWAY_CAUSE` when it names a runaway-ceiling
+    stop, ahead of every other rule; the text unchanged otherwise."""
+    return RUNAWAY_CAUSE if "runaway ceiling" in cause else cause
+
+
+def quarantined_from_rows(rows: Iterable[Mapping[str, object]]) -> list[Row]:
+    """Quarantine facts for rows whose `state` is "quarantined": one row per queue row, in input order.
+
+    A row already names its own quarantine, so no state or attempt-matching gate is needed to find one; the
+    newest attempt in `extra["attempts"]` on the row's current `body` supplies `run` and `cause`, by the same
+    `body_sha`/`attempts_on_current_body` rule `quarantined_rows` uses. A row with no such attempt still gets
+    a fact, with `run` and `cause` empty."""
+    facts = []
+    for row in rows:
+        if row.get("state") != "quarantined":
+            continue
+        body = str(row.get("body") or "")
+        attempts = [a for a in (row.get("extra") or {}).get("attempts") or [] if isinstance(a, Mapping)]
+        on_body = attempts_on_current_body(attempts, body)
+        newest = max(on_body, key=lambda a: str(a.get("ts") or "")) if on_body else {}
+        facts.append(
+            {
+                "initiative": str(row.get("initiative") or ""),
+                "phase": str(row.get("phase") or ""),
+                "task": str(row.get("task_id") or ""),
+                "run": str(newest.get("run") or ""),
+                "body_sha": body_sha(body),
+                "cause": _classify_cause(str(newest.get("cause") or "")),
+            }
+        )
+    return facts
+
+
+WorkFiles = Mapping[Path, str]
+
+
+def read_work_files(root: Path) -> WorkFiles:
+    """Edge. Path to text for every `work/*/*/*.md` and `work/*/initiative.md` under `root`, in path order.
+
+    An unreadable file is left out, as the docket and approved readers already leave it out."""
+    paths = sorted([*root.glob("work/*/*/*.md"), *root.glob("work/*/initiative.md")])
+    texts = {}
+    for p in paths:
+        try:
+            texts[p] = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+    return texts
+
+
+def task_files(root: Path, files: WorkFiles) -> dict[Path, str]:
+    """The `work/<initiative>/<phase>/<task>.md` entries of `files`; `work/<initiative>/initiative.md` is not one."""
+    return {p: t for p, t in files.items() if len(p.relative_to(root).parts) == 4}
+
+
+def initiative_files(root: Path, files: WorkFiles) -> dict[Path, str]:
+    """The `work/<initiative>/initiative.md` entries of `files`."""
+    return {p: t for p, t in files.items() if len(p.relative_to(root).parts) == 3}
+
+
+def read_work_items(
+    root: Path, mode: str, files: WorkFiles | None = None, store_rows: Sequence[Mapping] | None = None,
+) -> list[tuple[Path, str, dict]]:
+    """Edge. Every `work/<initiative>/<phase>/<task>.md` under `root` as (path, text, work item), in path order.
+
+    The store is read, and overrides file state, only under mode "store", as `cli._stored_work_items` does.
+    `files` and `store_rows` stand in for those two reads when a tick already holds them."""
+    texts = task_files(root, files) if files is not None else {p: p.read_text() for p in sorted(root.glob("work/*/*/*.md"))}
+    items = [
+        route.work_item(route.parse_frontmatter(text)[0], initiative=p.parts[-3], phase_dir=p.parts[-2], stem=p.stem)
+        for p, text in texts.items()
+    ]
+    rows = store_rows if store_rows is not None else (run_store.work_items(root / "runs") if mode == "store" else [])
+    stored = route.with_store_states(items, rows, mode)
+    return [(p, text, item) for (p, text), item in zip(texts.items(), stored, strict=True)]
+
+
+def read_quarantined(
+    root: Path, mode: str, files: WorkFiles | None = None, store_rows: Sequence[Mapping] | None = None,
+) -> list[Row]:
+    """Edge. The open quarantines among `read_work_items(root, mode, files, store_rows)`, then, under mode "store",
+    each store row in state quarantined that has no ticket file."""
+    rows = store_rows if store_rows is not None else (run_store.work_items(root / "runs") if mode == "store" else [])
+    found = quarantined_rows(
+        (
+            f"work/{item['initiative']}/{item['file']}",
+            item["state"],
+            item_body(text),
+            frontmatter_item(text, p.stem).get("attempts"),
+        )
+        for p, text, item in read_work_items(root, mode, files, rows)
+    )
+    return [*found, *(store_only_quarantined(rows, found) if mode == "store" else [])]

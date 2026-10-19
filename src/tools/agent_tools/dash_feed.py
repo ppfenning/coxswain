@@ -1,0 +1,998 @@
+"""Pure assembly of the versioned dash feed snapshot shape, plus the edge that
+gathers a live one from the fleet's existing readers: `console_screen.gather`
+for chair/spend/machines/runs, `run_store.read_queue` for the initiative
+queue, and `courier.inbox` for the unacknowledged bus.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import socket
+import subprocess
+from collections.abc import Collection, Mapping, Sequence
+from datetime import UTC, datetime, timedelta, timezone
+from pathlib import Path
+
+from agent_tools import (
+    chair,
+    chair_activity,
+    chair_activity_read,
+    chair_capacity,
+    chair_login_check,
+    console_screen,
+    courier,
+    decisions,
+    pacing,
+    route,
+    run_store,
+    usage_meter,
+    usage_window,
+)
+from agent_tools import (
+    events as events_module,
+)
+from agent_tools.chair_read_exits import exit_rows
+from agent_tools.chair_read_housekeeping import latest_housekeeping, read_last_housekeeping
+from agent_tools.chair_read_record import ACTION_LOG
+from agent_tools.chair_read_review_prs import read_review_prs
+from agent_tools.chair_read_schema_deaths import log_tail
+from agent_tools.chair_types import EASTERN, ReviewPr
+from agent_tools.dash_chair_action import read_current_action
+from agent_tools.dash_chair_attention import chair_attention
+from agent_tools.dash_chair_beat import beat_age_s, read_status_record, status_from_store
+from agent_tools.dash_chair_counters import chair_counters
+from agent_tools.dash_chair_store import chair_from_store, read_chair_rows
+from agent_tools.dash_chair_today import _ts, chair_today, local_midnight
+from agent_tools.dash_cost_series import run_cost_series
+from agent_tools.dash_finished_runs import LIMIT, finished_runs
+from agent_tools.dash_history import _is_landed, _record, build_history
+from agent_tools.dash_history import history_today as _history_today
+from agent_tools.dash_history_store import RECENT_ENDED, read_history_rows
+from agent_tools.dash_run_end import End, run_end
+from agent_tools.dash_spend_series import spend_series as _spend_series
+from agent_tools.draft_list import read_drafts
+from agent_tools.runs_detail import NODE_ORDER
+from agent_tools.runs_top_screen import calls_from_usage
+
+__all__ = ["gather_feed", "snapshot"]
+
+_LANDED_STATES = ("done", "dropped")
+_LOGIN_CHECK_TIMEOUT_S = 15
+_DEFAULT_PROFILE_PATH = Path.home() / ".config" / "agent-tools" / "profile.yaml"
+_MAX_ROWS = 50
+_LOG_TAIL_BYTES = 4096
+_DECISION_PREFIX = "coxswain://decision/"
+_ASK_KEYS = ("options", "context", "asked_at", "note")
+# The graphs `cox route launch` starts (cli.py's route launch commands); courier `to` labels name graphs too.
+_GRAPH_NAMES = ("epic", "decompose", "rescue", "cos", "sweep")
+# Every seat that is neither the chair nor a person: each node in the graph roster, and each graph.
+_SEATS = frozenset((*NODE_ORDER, *_GRAPH_NAMES))
+_ZERO_HISTORY_TODAY = {"lands": 0, "quarantines": 0, "cost_usd": 0.0, "runs": 0}
+# The default of `--projects-dir` on the stats chair command in cli.py.
+_PROJECTS_DIR = "~/.claude/projects"
+_ZERO_SPLIT_WINDOW = {
+    "chair_session_usd": 0.0, "chair_agents_usd": 0.0, "cox_seats_usd": 0.0, "total_usd": 0.0,
+    "chair_session_share": 0.0, "chair_agents_share": 0.0, "cox_seats_share": 0.0,
+    "meter_fraction": 0.0, "resets_at": "", "cost_per_landed_task": 0.0,
+}
+
+
+def snapshot(
+    at, chair, spend, machines, runs, queue, queue_total, inbox, inbox_total, watch, decisions=(), spend_series=(),
+    history=(), history_today=None, *, chair_agents=None, spend_split=None,
+) -> dict:
+    """Assemble the schema-1 dash feed snapshot from its sections. `queue_total`/`inbox_total` are each
+    section's filtered count before the 50-row cap, for coxtop to render "50 of N". `decisions` is the open
+    decision asks, newest first. `spend_series` is today's cumulative lane spend as `[at, cumulative_usd]` pairs.
+    `history` is the ended-run rows and `history_today` the counts since local midnight; zeroed when not given.
+    `chair_agents` is the chair's background agent rows, empty when not given; `spend_split` is the three-way
+    spend split per window, all zero when not given."""
+    # coxswain-dash carries its own copy of tests/fixtures/dash_feed_v1.json and will need these two fields too.
+    return {
+        "schema": 1,
+        "at": at,
+        "chair": chair,
+        "spend": spend,
+        "spend_series": [list(point) for point in spend_series],
+        "machines": machines,
+        "runs": runs,
+        "queue": queue,
+        "queue_total": queue_total,
+        "inbox": inbox,
+        "inbox_total": inbox_total,
+        "decisions": list(decisions),
+        "watch": watch,
+        "history": list(history),
+        "history_today": dict(_ZERO_HISTORY_TODAY) if history_today is None else history_today,
+        "chair_agents": list(chair_agents or []),
+        "spend_split": (
+            {name: {**_ZERO_SPLIT_WINDOW, "by_node": []} for name in ("five_hour", "weekly")}
+            if spend_split is None
+            else spend_split
+        ),
+    }
+
+
+def _parse_now(now: str) -> datetime:
+    return datetime.fromisoformat(str(now).replace("Z", "+00:00"))
+
+
+def _fraction(spent: float, ceiling: float | None) -> float | None:
+    return None if not ceiling or ceiling <= 0 else spent / ceiling
+
+
+def _profile_path() -> Path:
+    """`$AGENT_TOOLS_PROFILE` when set, else `~/.config/agent-tools/profile.yaml`."""
+    override = os.environ.get("AGENT_TOOLS_PROFILE")
+    return Path(override).expanduser() if override else _DEFAULT_PROFILE_PATH
+
+
+def _profile_ceilings() -> tuple[float | None, float | None]:
+    """`(window_ceiling_usd, weekly_ceiling_usd)` from the routing profile; `(None, None)` when the file is
+    missing, unreadable, or fails to parse."""
+    try:
+        text = _profile_path().read_text(encoding="utf-8")
+    except OSError:
+        return None, None
+    try:
+        profile = route.parse_profile(text)
+    except route.ProfileError:
+        return None, None
+    return profile.get("window_ceiling_usd"), profile.get("weekly_ceiling_usd")
+
+
+def _pacing_policy(runs_dir: Path) -> pacing.Policy:
+    """The pacing policy the chair loop enforces, from the loader it uses on the same runs directory."""
+    # Deferred: cli.py imports this module, so a top-level import of cli is circular.
+    from agent_tools import cli
+
+    return cli._resolved_pacing_policy(Path(runs_dir))
+
+
+def _hard_stop_fraction(runs_dir: Path) -> float:
+    """The weekly hard stop the chair loop enforces."""
+    return _pacing_policy(runs_dir).weekly_hard_stop_fraction
+
+
+def _weekly_pace_keys(weekly: pacing.Window | None, policy: pacing.Policy, at: datetime) -> dict:
+    """The spend header's weekly target and verdict. The target reads 0.0 whenever the pace is not judged."""
+    pace = pacing.weekly_pace(weekly, policy, at)
+    judged = pace.verdict != "not_judged" and pace.target_fraction is not None
+    return {
+        "weekly_target_fraction": pace.target_fraction if judged else 0.0,
+        "weekly_pace": pace.verdict,
+    }
+
+
+def _profile_weekly_reset() -> usage_window.WeeklyReset | None:
+    """Edge. The routing profile's `weekly_reset`, parsed as the chair parses it; None when the profile is
+    missing, unreadable or unparseable, or sets no reset."""
+    try:
+        profile = route.parse_profile(_profile_path().read_text(encoding="utf-8"))
+    except (OSError, route.ProfileError):
+        return None
+    return usage_window.parse_weekly_reset(profile.get("weekly_reset"))
+
+
+def _store_meter(read_store, runs_dir: Path) -> usage_meter.Meter | None:
+    """Edge. The newest meter the store holds, through `read_store` (`run_store.latest_chair_meter`, the reader
+    the standby chair's "(meter, store)" label uses). None for no row, a store error, or a naive `observed_at`,
+    which `usage_meter.fresh` cannot compare with an aware clock."""
+    try:
+        doc = read_store(Path(runs_dir))
+    except (*run_store._db_errors(), ValueError, TypeError, RuntimeError):  # RuntimeError: psycopg not installed
+        return None
+    meter = usage_meter.parse(doc) if doc else None
+    return meter if meter is not None and meter.observed_at.tzinfo is not None else None
+
+
+def _newest_meter(*meters: usage_meter.Meter | None) -> usage_meter.Meter | None:
+    """The meter with the latest `observed_at`, even a stale one; None when there is none."""
+    seen = [m for m in meters if m is not None and m.observed_at.tzinfo is not None]
+    return max(seen, key=lambda m: m.observed_at, default=None)
+
+
+def _meter_week(meter: usage_meter.Meter) -> pacing.Window:
+    """The seven days ending at the meter's weekly reset, spent as a fraction of a ceiling of 1.0."""
+    reset = meter.seven_day.resets_at
+    return pacing.Window(
+        start=reset - timedelta(days=7), end=reset, spent_usd=meter.seven_day.used_percentage / 100,
+        ceiling_usd=1.0, burn_usd_per_hour=0.0, runs_in_flight=0,
+    )
+
+
+def _from_meter(
+    meter: usage_meter.Meter, label: str, spend_source: str, at: datetime, hard_stop: float, policy: pacing.Policy,
+) -> dict:
+    return {
+        "five_hour_fraction": meter.five_hour.used_percentage / 100,
+        "five_hour_source": label,
+        "five_hour_resets_at": meter.five_hour.resets_at.isoformat(),
+        "weekly_fraction": meter.seven_day.used_percentage / 100,
+        "weekly_source": label,
+        "weekly_resets_at": meter.seven_day.resets_at.isoformat(),
+        "hard_stop_fraction": hard_stop,
+        "spend_source": spend_source,
+        "spend_age_s": _age_s(meter.observed_at.isoformat(), at),
+        **_weekly_pace_keys(_meter_week(meter), policy, at),
+    }
+
+
+def _spend(runs_dir: Path, now: str, *, read_local=None, read_store=None, read_reset=None) -> dict:
+    """The spend header, from the first of three sources: a fresh local usage meter; else the newest meter in
+    the store when fresh; else an estimate ceilinged by an implied ceiling the meter has recorded, falling back
+    to the routing profile's own ceilings. The weekly estimate starts at the newest meter's reset (even a stale
+    one), else the profile's configured reset; the five-hour estimate keeps its rolling window.
+    `spend_source` is "local meter", "meter store" or "estimate"; `spend_age_s` is the age of the meter that
+    answered, or of the newest stale one an estimate went on, and None when no meter exists.
+    `weekly_target_fraction` and `weekly_pace` are the pacing policy's weekly verdict: over the seven days ending
+    at the meter's reset on the meter paths, over the gathered weekly window on the estimate path.
+    `read_local`, `read_store` and `read_reset` default to the real readers, looked up at call time."""
+    at = _parse_now(now)
+    policy = _pacing_policy(runs_dir)
+    hard_stop_fraction = _hard_stop_fraction(runs_dir)
+    local = (usage_meter.read if read_local is None else read_local)()
+    if local is not None and usage_meter.fresh(local, at):
+        return _from_meter(local, "meter", "local meter", at, hard_stop_fraction, policy)
+    stored = _store_meter(run_store.latest_chair_meter if read_store is None else read_store, runs_dir)
+    if stored is not None and usage_meter.fresh(stored, at):
+        return _from_meter(stored, "meter, store", "meter store", at, hard_stop_fraction, policy)
+    newest = _newest_meter(local, stored)
+    reset = (_profile_weekly_reset if read_reset is None else read_reset)()
+    start = usage_window.weekly_start_from_reset(
+        None if newest is None else newest.seven_day.resets_at,
+        None if reset is None else usage_window.weekly_window_start(at, reset),
+        at,
+    )
+    profile_window_ceiling, profile_weekly_ceiling = _profile_ceilings()
+    window_ceiling = usage_meter.implied_ceiling("five_hour", at)
+    if window_ceiling is None:
+        window_ceiling = profile_window_ceiling
+    weekly_ceiling = usage_meter.implied_ceiling("weekly", at)
+    if weekly_ceiling is None:
+        weekly_ceiling = profile_weekly_ceiling
+    window = usage_window.gather(runs_dir, at, ceiling_usd=window_ceiling)
+    weekly = usage_window.gather_weekly(runs_dir, at, weekly_ceiling_usd=weekly_ceiling, start=start)
+    return {
+        "five_hour_fraction": _fraction(window.spent_usd, window.ceiling_usd),
+        "five_hour_source": "est",
+        "five_hour_resets_at": None,
+        "weekly_fraction": _fraction(weekly.spent_usd, weekly.ceiling_usd),
+        "weekly_source": "est",
+        "weekly_resets_at": None,
+        "hard_stop_fraction": hard_stop_fraction,
+        "spend_source": "estimate",
+        "spend_age_s": None if newest is None else _age_s(newest.observed_at.isoformat(), at),
+        **_weekly_pace_keys(weekly, policy, at),
+    }
+
+
+def _window_starts(spend: Mapping, at: datetime) -> tuple[datetime, datetime]:
+    """The five-hour and weekly window starts: 5 hours and 7 days before each `resets_at`, or before `at` with none."""
+    five = (_utc(spend.get("five_hour_resets_at")) or at) - timedelta(hours=5)
+    weekly = (_utc(spend.get("weekly_resets_at")) or at) - timedelta(days=7)
+    return five, weekly
+
+
+def _landed_at(task: Mapping, ended: Mapping[str, datetime | None]) -> datetime | None:
+    """When a landed task record landed: its `landed.at`, else the end of its run."""
+    landed = _record(task.get("record_json")).get("landed")
+    stamp = landed.get("at") if isinstance(landed, Mapping) else None
+    return _utc(stamp) or ended.get(str(task.get("run_id")))
+
+
+def _window_node_inputs(rows: Mapping, windows: Mapping[str, Mapping]) -> tuple[dict[str, list], dict[str, int]]:
+    """Each window's `node_calls` rows at or after its `start`, and its landed task records likewise.
+    `rows` holds ended runs only, so a run still in flight is not counted."""
+    ended = {str(run.get("run_id")): _utc(run.get("ended_at")) for run in rows.get("runs", ())}
+    calls = [(_utc(call.get("ts")), call) for call in rows.get("node_calls", ())]
+    lands = [_landed_at(task, ended) for task in rows.get("task_records", ()) if _is_landed(task)]
+    starts = {name: _utc(window["start"]) for name, window in windows.items()}
+    node_rows = {name: [call for ts, call in calls if ts and start and ts >= start] for name, start in starts.items()}
+    done = {name: sum(1 for ts in lands if ts and start and ts >= start) for name, start in starts.items()}
+    return node_rows, done
+
+
+def _activity(
+    runs_dir: Path, profile: dict, session: str, spend: Mapping, at: datetime, store_rows: Mapping | None = None,
+) -> dict:
+    """Edge: the chair's background agent rows and the three-way spend split. Each window starts five hours (weekly:
+    seven days) before its `resets_at`, or before `at` when the spend section has no reset time to read. The per-node
+    rows and done counts are cut from `store_rows`, the one store read, which reaches back to the weekly start."""
+    projects_dir = Path(_PROJECTS_DIR).expanduser()
+    five_start, weekly_start = _window_starts(spend, at)
+    windows = {
+        "five_hour": {
+            "start": five_start.isoformat(),
+            "seat_usd": usage_window.gather(runs_dir, at, ceiling_usd=None).spent_usd,
+            "meter_fraction": float(spend.get("five_hour_fraction") or 0.0),
+            "resets_at": spend.get("five_hour_resets_at") or "",
+        },
+        "weekly": {
+            "start": weekly_start.isoformat(),
+            "seat_usd": usage_window.gather_weekly(
+                runs_dir, at, weekly_ceiling_usd=None, start=weekly_start,
+            ).spent_usd,
+            "meter_fraction": float(spend.get("weekly_fraction") or 0.0),
+            "resets_at": spend.get("weekly_resets_at") or "",
+        },
+    }
+    node_rows, done_counts = _window_node_inputs(store_rows or {}, windows)
+    return chair_activity.gather_activity(
+        chair_activity_read.read_session_lines(projects_dir, session),
+        chair_activity_read.read_agents(projects_dir, session),
+        chair_activity_read.prices_for_profile(profile),
+        at,
+        windows,
+        node_rows=node_rows,
+        done_counts=done_counts,
+    )
+
+
+def _local_identity(runs_dir: Path, profile: dict) -> tuple[str, int]:
+    """This machine's own name and the lane capacity `cox chair run` enforces, from `chair_capacity`."""
+    return socket.gethostname(), chair_capacity.chair_max_in_flight(Path(runs_dir), profile)
+
+
+def _run_capturing(argv: list[str]) -> tuple[int, str]:
+    """Edge. `(exit code, stdout and stderr joined)`; `(1, "")` when the command is missing or times out."""
+    try:
+        done = subprocess.run(
+            argv, capture_output=True, text=True, timeout=_LOGIN_CHECK_TIMEOUT_S, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return 1, ""
+    return done.returncode, done.stdout + done.stderr
+
+
+def _local_login(local_name: str) -> bool | None:
+    """Edge. Whether `claude auth status` says this machine is logged in, as `chair_login_check` reads it for
+    a host named `socket.gethostname()`: True or False when the reply says so, None when it cannot be read."""
+    return chair_login_check._login_ok(local_name, "", _run_capturing)
+
+
+def _local_versions(login_ok: bool | None, now: str) -> dict | None:
+    """The local row's `versions_json` after a login check at `now`; None when the check could not tell, so
+    the row stays unchecked and reads as unknown."""
+    return None if login_ok is None else {"login_ok": login_ok, "login_checked_at": now}
+
+
+def _initiative_progress(rows: list[dict], initiative: str) -> tuple[int, int, str | None]:
+    """`(phases_landed, phases_total, current_phase)` for one initiative's task rows: a phase is landed when
+    every one of its items is `done` or `dropped`, the same rule `console_screen._phase_progress` uses.
+    `current_phase` is the first not-yet-landed phase in sorted order, or the last phase once all have landed."""
+    by_phase: dict[str, list[str]] = {}
+    for row in rows:
+        if row.get("kind") == "task" and row.get("initiative") == initiative:
+            by_phase.setdefault(row.get("phase"), []).append(row.get("state"))
+    phases = sorted(by_phase)
+    landed_flags = {phase: bool(states) and all(s in _LANDED_STATES for s in states) for phase, states in by_phase.items()}
+    landed = sum(1 for ok in landed_flags.values() if ok)
+    current = next((phase for phase in phases if not landed_flags[phase]), phases[-1] if phases else None)
+    return landed, len(phases), current
+
+
+def _priority(rows: list[dict], initiative: str):
+    """The first `priority` an initiative's own rows carry in `extra` (arbitrary frontmatter passed through
+    by `queue_rows.parse_item`); `None` when no row names one."""
+    return next(
+        (
+            row["extra"]["priority"]
+            for row in rows
+            if row.get("initiative") == initiative and isinstance(row.get("extra"), dict) and "priority" in row["extra"]
+        ),
+        None,
+    )
+
+
+def _priority_key(priority) -> tuple[int, int]:
+    """Sort key for a `priority` value: numeric values ascending (1 first), anything absent or non-numeric last."""
+    try:
+        return (0, int(priority))
+    except (TypeError, ValueError):
+        return (1, 0)
+
+
+def _queue(runs_dir: Path) -> tuple[list[dict], int]:
+    """Initiatives the store's queue names with at least one phase not landed (a fully landed initiative drops
+    out entirely), ordered by priority, then by first appearance in `read_queue`'s row order. Capped at
+    `_MAX_ROWS`; the second element is the filtered count before the cap."""
+    # Not a verified age. Queue rows carry no timestamp (`run_store._QUEUE_COLUMNS`), and the
+    # `harness.store_queue read` contract (run_store.py:1009) promises no row order. Row order is age only
+    # if the harness returns rows in insertion order, and that is unknown from this repository.
+    rows = run_store.read_queue(runs_dir)
+    # Walked backwards, so the last write for each initiative is its first index.
+    first_seen = {row["initiative"]: index for index, row in reversed(list(enumerate(rows))) if row.get("initiative")}
+    progress = {initiative: _initiative_progress(rows, initiative) for initiative in first_seen}
+    priorities = {initiative: _priority(rows, initiative) for initiative in first_seen}
+    open_initiatives = sorted(
+        (initiative for initiative in first_seen if progress[initiative][0] < progress[initiative][1]),
+        key=lambda initiative: (_priority_key(priorities[initiative]), first_seen[initiative]),
+    )
+    queue = [
+        {
+            "initiative": initiative,
+            "priority": priorities[initiative],
+            "phases_landed": progress[initiative][0],
+            "phases_total": progress[initiative][1],
+            "current_phase": progress[initiative][2],
+        }
+        for initiative in open_initiatives
+    ]
+    return queue[:_MAX_ROWS], len(queue)
+
+
+def _reaches_a_person(to: str) -> bool:
+    """True for `chair` (or a `chair-*` label, docs/design/courier.md's Labels section) or a person; false for
+    any node or graph in `_SEATS`. Courier keeps no person registry, so a label outside `_SEATS` reads as a person."""
+    return to == "chair" or to.startswith("chair-") or to not in _SEATS
+
+
+def _courier_blob(work_dir: Path) -> str:
+    """The raw courier.jsonl; "" when it cannot be read."""
+    try:
+        return (Path(work_dir) / "courier.jsonl").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def _inbox(entries: list[dict]) -> tuple[list[dict], int]:
+    """The `entries` addressed to `chair` or to a person, newest first (any other seat drops out entirely).
+    With no label `courier.inbox` never consults the lock holder, so the chair lock is not read. Capped at
+    `_MAX_ROWS`; the second element is the filtered count before the cap."""
+    # `courier.inbox` preserves each id's first-appearance (oldest-first) order; reverse for newest first.
+    reached = [e for e in entries if _reaches_a_person(str(e.get("to") or ""))][::-1]
+    return reached[:_MAX_ROWS], len(reached)
+
+
+def _is_decision(entry: dict) -> bool:
+    return str(entry.get("ref") or "").startswith(_DECISION_PREFIX)
+
+
+def _open_decisions(entries: list[dict], blob: str) -> list[dict]:
+    """Unacknowledged asks in `entries` with no answer anywhere in `blob`, newest first. An answer carries
+    `answer`; an ask carries `_ASK_KEYS`, and a decision entry with neither is left out."""
+    asks = [e for e in entries if _is_decision(e) and "answer" not in e and all(key in e for key in _ASK_KEYS)]
+    # An acked answer drops out of `courier.inbox`, so answers come from every line of the blob, acked or not.
+    lines = [json.loads(line) for line in blob.splitlines() if line.strip()]
+    answers = [e for e in lines if _is_decision(e) and "answer" in e]
+    return decisions.open_decisions_newest_first(decisions.merge_decisions(asks, answers))
+
+
+def _age_s(text, at: datetime) -> int:
+    """Whole seconds from an ISO `text` to `at`, never negative; 0 when `text` is missing or unreadable."""
+    try:
+        return max(0, int((at - _parse_now(text)).total_seconds()))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _tick_age_s(last_tick_at: str | None, at: datetime) -> int | None:
+    """Whole seconds from the status line's stamp (`MM-DD HH:MM TZ`, Eastern, no year) to `at`; None when absent or unreadable.
+
+    The stamp carries no year, so it reads in `at`'s year, or the year before when that would be later than `at`."""
+    local = at.astimezone(EASTERN)
+    for year in (local.year, local.year - 1):
+        try:
+            then = datetime.strptime(f"{year} {(last_tick_at or '')[:11]}", "%Y %m-%d %H:%M").replace(tzinfo=EASTERN)
+        except ValueError:
+            continue
+        if then <= at:
+            return int((at - then).total_seconds())
+    return None
+
+
+def _chair_v1(
+    row: dict, lease: dict, record: dict, at: datetime,
+    status: tuple[str | None, str | None] = (None, None),
+    action: dict | None = None,
+    action_rows: list[dict] | None = None,
+    needs_chair_open: int = 0,
+    last_housekeeping_at: str | None = None,
+    inbox_entries: list[dict] | None = None,
+    drafts: list | None = None,
+) -> dict:
+    """The console's chair row (holder, state), the lease file, the chair.json record and the edge's reads
+    (status line, open action, action-log rows, inbox entries, drafts) as the schema-1 chair. Pure: `at` is
+    the one clock.
+
+    `current_action` is the one null the feed allows: no action is running. Day boundaries are Eastern, the
+    zone the status line prints in.
+    """
+    holder = str(row.get("holder") or lease.get("holder") or "")
+    # The console row carries the label alone; the lease's holder carries `label@host:pid`.
+    full = next((str(h) for h in (row.get("holder"), lease.get("holder")) if h and "@" in str(h)), "")
+    host = full.split("@", 1)[1].split(":", 1)[0] if full else ""
+    age = beat_age_s(record.get("heartbeat_at"), at)
+    last_tick_at, last_status = status
+    offset = at.astimezone(EASTERN).utcoffset()
+    rows = action_rows or []
+    extras = {
+        **chair_counters(_as_results(rows, at, offset), rows, last_housekeeping_at, at, offset),
+        **chair_attention(inbox_entries, drafts),
+    }
+    return {
+        "holder": holder,
+        "host": host,
+        "epoch": int(lease.get("epoch") or 0),
+        "liveness": str(row.get("state") or "unknown"),
+        "beat_age_s": max(0, age) if age is not None else 0,
+        # Neither the console row nor chair.lease.json (holder and epoch only) carries `claude_session`;
+        # chair.json does, written by `chair.take` and kept by `chair.beat`.
+        "session": str(record.get("claude_session") or "")[:8],
+        "last_tick_at": last_tick_at or "",
+        "last_status": last_status or "",
+        "tick_age_s": _tick_age_s(last_tick_at, at),
+        "current_action": action,
+        "today": chair_today(rows, needs_chair_open, at, offset),
+        **{key: int(value or 0) for key, value in extras.items()},
+    }
+
+
+def _as_results(action_rows: list[dict], at: datetime, utc_offset: timedelta) -> list[dict]:
+    """Today's action-log rows in the `Result` shape `lands_this_tick` reads; the feed holds no per-tick results."""
+    start = local_midnight(at, utc_offset)
+    return [
+        {"action": {"kind": row.get("kind")}, "status": row.get("status")}
+        for row in action_rows
+        if (stamp := _ts(row)) is not None and stamp >= start
+    ]
+
+
+def _spend_v1(spend: dict) -> dict:
+    """An unknown fraction reads 0.0 and an unknown reset time "": the feed's consumers take no nulls."""
+    return {
+        key: (value if value is not None else (0.0 if key.endswith("_fraction") else ""))
+        for key, value in spend.items()
+    }
+
+
+def _machine_v1(row: dict, at: datetime) -> dict:
+    """A hosts-table row (with the console's `in_use`) as the schema-1 machine."""
+    versions = row.get("versions_json") or {}
+    if isinstance(versions, str):
+        try:
+            versions = json.loads(versions)
+        except ValueError:
+            versions = {}
+    return {
+        "name": str(row.get("name") or ""),
+        "state": str(row.get("state") or ""),
+        "lanes_in_use": int(row.get("in_use") or 0),
+        "capacity": int(row.get("capacity") or 0),
+        "login_ok": versions.get("login_ok"),
+        "login_checked_at": str(versions.get("login_checked_at") or ""),
+        "beat_age_s": _age_s(row.get("beat_at"), at),
+        "checkouts": {},
+    }
+
+
+def _run_v1(lane: console_screen.LaneRow, local_name: str) -> dict:
+    """A live lane as the schema-1 run; a lane with no host of its own runs on this machine."""
+    return {
+        "run": lane.run,
+        "machine": lane.host or local_name,
+        "phase": lane.phase or "",
+        "node": lane.node or "",
+        "attempt": int(lane.attempt or 0),
+        "turns": int(lane.turns or 0),
+        "cost": float(lane.cost_usd or 0.0),
+        "verdict": "",
+        "status": "running",
+    }
+
+
+def _finished_status(row: Mapping) -> str:
+    """An ended run is approved, landed or quarantined when the store says so, and exited otherwise."""
+    return row["status"] if row.get("status") in ("approved", "landed", "quarantined") else "exited"
+
+
+def _finished_record(row: Mapping, calls: Sequence[Mapping], phases: Sequence[str], events: Sequence) -> dict:
+    """A `runs` row with its calls, phases and events as the record `finished_runs` takes. `machine` is empty: the row carries no host."""
+    verdicts = [e.detail["verdict"] for e in events if e.kind == "verdict"]
+    return {
+        "run": row["run_id"],
+        "machine": "",
+        "phase": phases[-1] if phases else "",
+        "node": calls[-1]["node"] if calls else "",
+        "attempt": calls[-1]["attempt"] if calls else 0,
+        "turns": sum(int(c["turns"] or 0) for c in calls),
+        "cost": round(sum(float(c["cost_usd"] or 0.0) for c in calls), 4),
+        "verdict": verdicts[-1] if verdicts else "",
+        "status": _finished_status(row),
+        "ended_at": row["ended_at"],
+        # Carried so `gather_feed` reads each run's calls once; `finished_runs` drops keys it does not know.
+        "calls": list(calls),
+    }
+
+
+def _finished_records(runs_dir: Path, live_ids: Collection[str]) -> list[dict]:
+    """Edge: the newest `LIMIT` ended runs outside `live_ids`, each read the way `runs_top_screen._fact` reads a run."""
+    ended = [r for r in exit_rows(runs_dir) if r["ended_at"] is not None and r["run_id"] not in live_ids]
+    records = []
+    for row in sorted(ended, key=lambda r: str(r["ended_at"]), reverse=True)[:LIMIT]:
+        run = str(row["run_id"])
+        try:
+            lines = (runs_dir / f"{run}.log").read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            lines = []
+        calls = calls_from_usage((run_store.usage(runs_dir, run) or {}).get("calls") or [])
+        records.append(
+            _finished_record(row, calls, run_store.phase_names(runs_dir, run), events_module.from_log(run, lines))
+        )
+    return records
+
+
+def _run_calls(runs_dir: Path, run: str) -> list[dict]:
+    """Edge: a run's calls as `calls_from_usage` rows. `run_store.usage` reads `<run>.usage.json` beside the pidfile for a local run and the shared store rows for a remote one; `[]` when neither has any."""
+    return calls_from_usage((run_store.usage(runs_dir, run) or {}).get("calls") or [])
+
+
+def _call_points(calls: Sequence[Mapping]) -> list[dict]:
+    """`calls_from_usage` rows as the `{at, cost_usd, node}` calls `run_cost_series` takes; a call with no `ts` is dropped."""
+    return [
+        {"at": call["ts"], "cost_usd": float(call.get("cost_usd") or 0.0), "node": call["node"]}
+        for call in calls
+        if call.get("ts")
+    ]
+
+
+def _utc(text) -> datetime | None:
+    """An ISO `text` as an aware datetime, a naive one read as UTC; None when it cannot be read."""
+    try:
+        parsed = _parse_now(text)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _spend_points(calls_by_run: Mapping[str, Sequence[Mapping]]) -> list[tuple[datetime, float]]:
+    """Every run's calls as the `(time, cost_usd)` pairs `spend_series` takes; a call with no readable `ts` is dropped."""
+    stamped = [(_utc(call.get("ts")), call) for calls in calls_by_run.values() for call in calls if call.get("ts")]
+    return [(ts, float(call.get("cost_usd") or 0.0)) for ts, call in stamped if ts is not None]
+
+
+def _short_id(slug: str | None, ids: Mapping[str, str]) -> str | None:
+    """The short id `ids` holds for an initiative slug; None for no slug or a slug `ids` lacks."""
+    return ids.get(slug) if slug else None
+
+
+def _projects(rows: Sequence[Mapping]) -> dict[str, str | None]:
+    """Initiative slug to the basename of its repository; None for a missing or empty repo."""
+    def basename(row: Mapping) -> str | None:
+        extra = row.get("extra")
+        repo = extra.get("repo") if isinstance(extra, Mapping) else None
+        return os.path.basename(str(repo).rstrip("/")) or None if repo else None
+
+    return {row["initiative"]: basename(row) for row in rows if row.get("initiative")}
+
+
+def _project(slug: str | None, projects: Mapping[str, str | None]) -> str | None:
+    """The project `projects` holds for an initiative slug; None for no slug or a slug `projects` lacks."""
+    return projects.get(slug) if slug else None
+
+
+def _run_slug(run: str) -> str:
+    """The initiative slug of a run key: the key with its trailing `-<digits>` removed."""
+    return re.sub(r"-\d+$", "", run)
+
+
+def _task_slug(target: str, ids: Mapping[str, str]) -> str | None:
+    """The longest slug in `ids` that `target` starts with, followed by `-`; None when none does."""
+    return max((slug for slug in ids if target.startswith(f"{slug}-")), key=len, default=None)
+
+
+def _runs_v1(
+    lanes: Sequence[console_screen.LaneRow], local_name: str, records: Sequence[Mapping], now: datetime,
+    calls_by_run: Mapping[str, Sequence[Mapping]] | None = None, short_ids: Mapping[str, str] | None = None,
+    projects: Mapping[str, str | None] | None = None, ends: Mapping[str, End] | None = None,
+) -> list[dict]:
+    """The live lanes as running rows, then the newest finished runs; a finished record of a live lane is dropped.
+    Each row gains `cost_series` from its run's entry in `calls_by_run`; a run with no entry gets `[]`.
+    Each row gains `short_id` from `short_ids` and `project` from `projects`, by its run key's initiative slug.
+    Each row gains `end`: `running` for a lane, else its entry in `ends`, else `idle`. `status` is unchanged."""
+    aware = now if now.tzinfo else now.replace(tzinfo=UTC)
+    live = {lane.run for lane in lanes}
+    rows = [*(_run_v1(lane, local_name) for lane in lanes), *finished_runs(records, live, aware)]
+    ended = ends or {}
+    by_run = calls_by_run or {}
+    ids = short_ids or {}
+    named = projects or {}
+    return [
+        {
+            **row,
+            "cost_series": run_cost_series(_call_points(by_run.get(row["run"], ()))),
+            "short_id": _short_id(_run_slug(row["run"]), ids),
+            "project": _project(_run_slug(row["run"]), named),
+            "end": "running" if row["run"] in live else ended.get(row["run"], "idle"),
+        }
+        for row in rows
+    ]
+
+
+def _queue_v1(row: dict, ids: Mapping[str, str], projects: Mapping[str, str | None]) -> dict:
+    return {
+        **row, "priority": int(row.get("priority") or 0), "current_phase": str(row.get("current_phase") or ""),
+        "short_id": _short_id(row.get("initiative"), ids),
+        "project": _project(row.get("initiative"), projects),
+    }
+
+
+_REF = re.compile(r"coxswain://([^/]+)/(.*)")
+
+
+def _inbox_v1(entry: dict, ids: Mapping[str, str]) -> dict:
+    """A courier entry as the schema-1 inbox row: the reference's kind and id, and the note as the reason.
+    A `task` row takes `short_id` by its target's longest slug prefix; courier entries carry no initiative."""
+    match = _REF.fullmatch(str(entry.get("ref") or ""))
+    kind, target = match.groups() if match else ("", str(entry.get("ref") or ""))
+    slug = _task_slug(target, ids) if kind == "task" else None
+    return {"kind": kind, "target": target, "reason": str(entry.get("note") or ""), "short_id": _short_id(slug, ids)}
+
+
+def _review_inbox_v1(review_prs: Sequence[ReviewPr], ids: Mapping[str, str]) -> list[dict]:
+    """One `review_pr` inbox row per awaiting review PR, whatever its state; `target` is the task id."""
+    return [
+        {
+            "kind": "review_pr", "initiative": pr["initiative"], "target": pr["task_id"], "url": pr["url"],
+            "reason": "awaiting review", "short_id": _short_id(pr["initiative"], ids),
+        }
+        for pr in review_prs
+    ]
+
+
+def _lease(runs_dir: Path) -> dict:
+    try:
+        raw = json.loads((runs_dir / "chair.lease.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _chair_record(runs_dir: Path) -> dict:
+    """runs/chair.json via `chair.read`; {} when absent or unreadable, as `runs_top_screen.chair_now` does."""
+    try:
+        record = chair.read(runs_dir)
+    except (OSError, json.JSONDecodeError):
+        record = None
+    return record if isinstance(record, dict) else {}
+
+
+def _action_rows(runs_dir: Path) -> list[dict]:
+    """The chair action log's lines as dicts; [] when it is missing, blank lines and malformed ones skipped."""
+    try:
+        lines = (runs_dir / ACTION_LOG).read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return []
+    rows = []
+    for line in lines:
+        try:
+            value = json.loads(line) if line.strip() else None
+        except ValueError:
+            value = None
+        if isinstance(value, dict):
+            rows.append(value)
+    return rows
+
+
+def open_needs_chair_ids(entries: list[dict]) -> list[str]:
+    """The ids of unacknowledged courier entries that reach a person and are `needs_chair` refs, before the inbox cap."""
+    refs = (_REF.fullmatch(str(e.get("ref") or "")) for e in entries if _reaches_a_person(str(e.get("to") or "")))
+    return [m.group(2) for m in refs if m and m.group(1) == "needs_chair"]
+
+
+def _needs_chair_open(entries: list[dict]) -> int:
+    return len(open_needs_chair_ids(entries))
+
+
+def _chair_edge(runs_dir: Path) -> dict:
+    """Edge: the new chair reads as `_chair_v1` keyword arguments.
+
+    The status line is the newest `status` row in the store; chair-loop.log's last line only when the store has none.
+    """
+    stored = status_from_store(run_store.latest_chair_status(runs_dir))
+    action_rows = _action_rows(runs_dir)
+    return {
+        "status": stored if stored != (None, None) else read_status_record(runs_dir / "chair-loop.log"),
+        "action": read_current_action(runs_dir),
+        "action_rows": action_rows,
+        "last_housekeeping_at": latest_housekeeping(action_rows),
+    }
+
+
+def _stamp(tick_at: str | None) -> str:
+    """The status line's stamp (`MM-DD HH:MM TZ`, Eastern) for an ISO `tick_at`; `tick_at` as given when it is not aware ISO."""
+    try:
+        then = datetime.fromisoformat(tick_at) if tick_at else None
+    except ValueError:
+        return tick_at or ""
+    return f"{then.astimezone(EASTERN):%m-%d %H:%M %Z}" if then is not None and then.tzinfo else tick_at or ""
+
+
+def _chair_from_store_v1(
+    lease: dict, rows: list[dict], record: dict, at: datetime, needs_chair_open: int,
+    last_housekeeping_at: str | None, inbox_entries: list[dict], drafts: list,
+) -> dict:
+    """The schema-1 chair from the store's lease row and `chair_actions` rows. Pure: `at` is the one clock.
+
+    `chair_from_store` has no session, counter or attention keys, and its `last_tick_at` is ISO where the feed prints
+    the status line's Eastern stamp, so those come from `record`, `rows` and the inbox here. The store's values win.
+    """
+    offset = at.astimezone(EASTERN).utcoffset()
+    stored = chair_from_store(lease, rows, needs_chair_open, at, offset)
+    extras = {
+        **chair_counters(_as_results(rows, at, offset), rows, last_housekeeping_at, at, offset),
+        **chair_attention(inbox_entries, drafts),
+    }
+    return {
+        "session": str(record.get("claude_session") or "")[:8],
+        **{key: int(value or 0) for key, value in extras.items()},
+        **stored,
+        "last_tick_at": _stamp(stored["last_tick_at"]),
+        "last_status": stored["last_status"] or "",
+    }
+
+
+def _iso_ts(row: dict) -> dict:
+    """`row` with a Postgres `datetime` ts as ISO text, the form `chair_today` reads."""
+    ts = row.get("ts")
+    return {**row, "ts": ts.isoformat()} if isinstance(ts, datetime) else row
+
+
+def _chair_section(runs_dir: Path, row: dict, entries: list[dict], drafts: list, at: datetime) -> dict:
+    """Edge: the chair from the store, and from the local record files only when the store fetch returns None."""
+    offset = at.astimezone(EASTERN).utcoffset()
+    needs_chair_open = _needs_chair_open(entries)
+    # Other seats drop out as in `_inbox`; `chair_attention` drops `chair` itself.
+    people = [e for e in entries if _reaches_a_person(str(e.get("to") or ""))]
+    fetched = read_chair_rows(runs_dir, at, offset)
+    if fetched is None:
+        return _chair_v1(
+            row, _lease(runs_dir), _chair_record(runs_dir), at,
+            needs_chair_open=needs_chair_open, inbox_entries=people, drafts=drafts, **_chair_edge(runs_dir),
+        )
+    lease, raw_rows = fetched
+    rows = [_iso_ts(r) for r in raw_rows]
+    # The fetch reaches back about a day, so a housekeeping row older than that is read whole from the store.
+    last_housekeeping_at = latest_housekeeping(rows) or read_last_housekeeping(runs_dir)
+    return _chair_from_store_v1(lease, rows, _chair_record(runs_dir), at, needs_chair_open, last_housekeeping_at, people, drafts)
+
+
+def _history_v1(
+    rows: Mapping, at: datetime, ids: Mapping[str, str], projects: Mapping[str, str | None],
+) -> tuple[list[dict], dict]:
+    """`history` and `history_today` from store rows, counting a day in the chair's zone.
+    Each history row gains `short_id` and `project` by its `initiative`."""
+    offset = at.astimezone(EASTERN).utcoffset() or timedelta(0)
+    args = (rows["runs"], rows["task_records"], rows["node_calls"])
+    history = [
+        {
+            **row,
+            "short_id": _short_id(row.get("initiative"), ids),
+            "project": _project(row.get("initiative"), projects),
+        }
+        for row in build_history(*args)
+    ]
+    return history, _history_today(*args, at, timezone(offset))
+
+
+def _history_rows(rows: Mapping, at: datetime) -> Mapping:
+    """`rows` cut back to what the history reads: runs ended since local midnight or among the newest `RECENT_ENDED`
+    (the reader returns runs newest first), with those runs' records and calls."""
+    if not rows:
+        return rows
+    offset = at.astimezone(EASTERN).utcoffset() or timedelta(0)
+    midnight = local_midnight(at, offset)
+    runs = [
+        run
+        for index, run in enumerate(rows.get("runs", ()))
+        if index < RECENT_ENDED or (_utc(run.get("ended_at")) or midnight) >= midnight
+    ]
+    ids = {run.get("run_id") for run in runs}
+    return {**rows, "runs": runs, **{t: [r for r in rows.get(t, ()) if r.get("run_id") in ids] for t in ("task_records", "node_calls")}}
+
+
+def _store_rows(runs_dir: Path, at: datetime, spend: Mapping) -> Mapping:
+    """Edge: the ended runs since the earliest of local midnight and the spend windows' starts, or the newest ones,
+    with their task records and calls. Read once, wide enough for the weekly spend split; `_history_rows` narrows it.
+    An unreadable store gives no rows."""
+    offset = at.astimezone(EASTERN).utcoffset() or timedelta(0)
+    starts = [local_midnight(at, offset), *_window_starts(spend, at)]
+    since = min(start.astimezone(UTC) for start in starts).isoformat()
+    try:
+        return read_history_rows(runs_dir, since)
+    except Exception:  # the history and ends are garnish: a store failure must not take the feed down
+        return {}
+
+
+def _history_edge(
+    rows: Mapping, at: datetime, ids: Mapping[str, str], projects: Mapping[str, str | None],
+) -> tuple[list[dict], dict]:
+    """The feed's history from the store rows. Rows that cannot be read give no history and zero counts."""
+    try:
+        return _history_v1(rows, at, ids, projects)
+    except Exception:  # the history is garnish: a store failure must not take the feed down
+        return [], dict(_ZERO_HISTORY_TODAY)
+
+
+def _ends_v1(rows: Mapping, log_tails: Mapping[str, str]) -> dict[str, End]:
+    """Each ended run's id mapped to `run_end` over its task records and its log tail."""
+    tasks: dict[str, list[Mapping]] = {}
+    for record in rows.get("task_records", ()):
+        tasks.setdefault(str(record.get("run_id")), []).append(record)
+    return {
+        str(run["run_id"]): run_end(run, tasks.get(str(run["run_id"]), ()), log_tails.get(str(run["run_id"]), ""))
+        for run in rows.get("runs", ())
+        if run.get("run_id")
+    }
+
+
+def _ends_edge(runs_dir: Path, rows: Mapping) -> dict[str, End]:
+    """Edge: the ends of the store's ended runs, reading each run's log tail. A failure gives no ends."""
+    try:
+        tails = {
+            str(run["run_id"]): log_tail(runs_dir, str(run["run_id"]), _LOG_TAIL_BYTES) for run in rows.get("runs", ())
+        }
+        return _ends_v1(rows, tails)
+    except Exception:  # the ends are garnish: a store failure must not take the feed down
+        return {}
+
+
+def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None = None) -> dict:
+    """Edge: the live schema-1 snapshot from the fleet's existing readers, every section mapped to the shape
+    tests/fixtures/dash_feed_v1.json fixes (the contract coxtop parses), with no nulls and nothing json can't write,
+    except a machine's `login_ok`, which is null while its login is unchecked, a row's `short_id`, which is
+    null when its initiative has none, and a row's `project`, which is null when its initiative has no known
+    repository. `profile` is the parsed profile
+    the capacity chain reads the team cartridge from."""
+    runs_dir, work_dir = Path(runs_dir), Path(work_dir)
+    at = _parse_now(now)
+    local_name, local_capacity = _local_identity(runs_dir, profile or {})
+    local_versions = _local_versions(_local_login(local_name), now)
+    spend = _spend(runs_dir, now)
+    sections = console_screen.gather(
+        runs_dir, work_dir, now, local_name, local_capacity, spend, local_versions=local_versions,
+    )
+    chair_row = sections["chair"][0] if sections["chair"] else {}
+    queue, queue_total = _queue(runs_dir)
+    blob = _courier_blob(work_dir)
+    entries = courier.inbox(blob)
+    inbox, inbox_total = _inbox(entries)
+    # A state callable that answers nothing: the feed lists each awaiting PR with its url and never asks the forge.
+    review_prs = read_review_prs(runs_dir, lambda url: {})
+    lane_ids = {lane.run for lane in sections["lanes"]}
+    records = _finished_records(runs_dir, lane_ids)
+    calls_by_run = {
+        **{run: _run_calls(runs_dir, run) for run in lane_ids},
+        **{record["run"]: record["calls"] for record in records},
+    }
+    short_ids = run_store.initiative_short_ids(runs_dir)
+    projects = _projects(run_store.read_queue(runs_dir, kind="initiative"))
+    spend_block = _spend_v1(sections["spend"])
+    wide_rows = _store_rows(runs_dir, at, spend_block)
+    store_rows = _history_rows(wide_rows, at)
+    history, today = _history_edge(store_rows, at, short_ids, projects)
+    chair_block = _chair_section(runs_dir, chair_row, entries, read_drafts(work_dir, now), at)
+    activity = _activity(runs_dir, profile or {}, chair_block["session"], spend_block, at, wide_rows)
+    return snapshot(
+        now,
+        chair_block,
+        spend_block,
+        [_machine_v1(row, at) for row in sections["hosts"]],
+        _runs_v1(
+            sections["lanes"], local_name, records, at, calls_by_run, short_ids, projects, _ends_edge(runs_dir, store_rows),
+        ),
+        [_queue_v1(row, short_ids, projects) for row in queue],
+        queue_total,
+        [*(_inbox_v1(entry, short_ids) for entry in inbox), *_review_inbox_v1(review_prs, short_ids)],
+        inbox_total + len(review_prs),
+        [],
+        _open_decisions(entries, blob),
+        _spend_series(_spend_points(calls_by_run), at),
+        history=history,
+        history_today=today,
+        chair_agents=activity["chair_agents"],
+        spend_split=activity["spend_split"],
+    )

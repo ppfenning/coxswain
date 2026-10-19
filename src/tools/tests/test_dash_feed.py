@@ -1,0 +1,976 @@
+import json
+from datetime import UTC, datetime
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from test_dash_detail_initiative import _INITIATIVE, _RAW_INITIATIVE
+from test_dash_detail_machine import HOST_ROW, RUNS
+from test_dash_detail_machine import NOW as _MACHINE_NOW
+from test_dash_detail_run import _BASE_RAW
+
+from agent_tools import console_screen, dash_feed, run_store, runs_top_screen, usage_meter, usage_window
+from agent_tools.dash_detail_initiative import build_initiative_detail
+from agent_tools.dash_detail_machine import build_machine_detail
+from agent_tools.dash_detail_run import build_run_detail
+from agent_tools.dash_feed import snapshot
+
+_FIXTURES_DIR = Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture(autouse=True)
+def _no_real_claude(monkeypatch):
+    """`gather_feed` asks `claude auth status`; no test here may start that process."""
+    monkeypatch.setattr(dash_feed, "_local_login", lambda local_name: None)
+    monkeypatch.setattr(dash_feed.run_store, "initiative_short_ids", lambda runs_dir: {})
+
+
+def _assert_matches_fixture_keys_and_nulls(output, fixture, path="root"):
+    """`output` carries exactly `fixture`'s keys at every dict level `fixture` shows, and
+    every value that is null in `output` is also null in `fixture` at the same path."""
+    if isinstance(fixture, dict):
+        assert isinstance(output, dict), path
+        assert output.keys() == fixture.keys(), path
+        for key, fixture_value in fixture.items():
+            _assert_matches_fixture_keys_and_nulls(output[key], fixture_value, f"{path}.{key}")
+    elif isinstance(fixture, list):
+        assert isinstance(output, list), path
+        for index, (output_item, fixture_item) in enumerate(zip(output, fixture, strict=True)):
+            _assert_matches_fixture_keys_and_nulls(output_item, fixture_item, f"{path}[{index}]")
+    elif output is None:
+        assert fixture is None, path
+
+
+def _fixture_inputs() -> tuple[tuple, dict]:
+    """The sections, positionally, and the history keywords that `snapshot` takes to build tests/fixtures/dash_feed_v1.json."""
+    at = "2026-09-29T00:00:00Z"
+    chair = {
+        "holder": "chair",
+        "host": "host-b",
+        "epoch": 7,
+        "liveness": "live",
+        "beat_age_s": 4,
+        "session": "a1b2c3d4",
+        "last_tick_at": "09-28 19:59 EDT",
+        "last_status": "chair 09-28 19:59 EDT | landed 2, launched 1",
+        "tick_age_s": 60,
+        "current_action": {"kind": "land", "target": "dash-feed/p2-feed", "since": "2026-09-28T23:59:50Z"},
+        "today": {"lands": 2, "launches": 1, "refused_or_failed": 1, "needs_chair_open": 1},
+        "lands_today": 2,
+        "phases_today": 1,
+        "needs_you": 1,
+        "drafts": 2,
+        "housekeeping_age_s": 3600,
+    }
+    spend = {
+        "five_hour_fraction": 0.16,
+        "five_hour_source": "meter",
+        "weekly_fraction": 0.35,
+        "weekly_source": "meter",
+        "hard_stop_fraction": 0.93,
+        "five_hour_resets_at": "2026-09-29T02:00:00Z",
+        "weekly_resets_at": "2026-10-04T04:00:00Z",
+        "weekly_target_fraction": 0.0,
+        "weekly_pace": "not_judged",
+    }
+    machines = [
+        {
+            "name": "host-b",
+            "state": "active",
+            "lanes_in_use": 2,
+            "capacity": 3,
+            "login_ok": True,
+            "login_checked_at": "2026-09-28T23:50:00Z",
+            "beat_age_s": 12,
+            "checkouts": {"coxswain-tools": {"behind_main": 0}},
+        }
+    ]
+    runs = [
+        {
+            "run": "dash-feed-1",
+            "machine": "host-b",
+            "phase": "p1-foundations",
+            "node": "build",
+            "attempt": 1,
+            "turns": 12,
+            "cost": 0.84,
+            "verdict": "approve",
+            "status": "running",
+            "cost_series": [["2026-09-28T23:40:00Z", 0.42, "plan"], ["2026-09-28T23:55:00Z", 0.84, "build"]],
+            "short_id": "I412",
+            "project": "coxswain-tools",
+            "end": "running",
+        },
+        {
+            "run": "dash-feed-0",
+            "machine": "host-b",
+            "phase": "p1-foundations",
+            "node": "build",
+            "attempt": 2,
+            "turns": 31,
+            "cost": 2.15,
+            "verdict": "approve",
+            "status": "landed",
+            "cost_series": [],
+            "short_id": "I412",
+            "project": "coxswain-tools",
+            "end": "landed",
+        },
+        {
+            "run": "dash-feed-9",
+            "machine": "host-b",
+            "phase": "p2-feed",
+            "node": "review",
+            "attempt": 1,
+            "turns": 8,
+            "cost": 0.42,
+            "verdict": "reject",
+            "status": "quarantined",
+            "cost_series": [],
+            "short_id": None,
+            "project": None,
+            "end": {"kind": "quarantined", "cause": "review rejected twice"},
+        },
+        {
+            "run": "dash-feed-7",
+            "machine": "host-b",
+            "phase": "p2-feed",
+            "node": "build",
+            "attempt": 1,
+            "turns": 3,
+            "cost": 0.1,
+            "verdict": "none",
+            "status": "exited",
+            "cost_series": [],
+            "short_id": None,
+            "project": None,
+            "end": {"kind": "died", "cause": "schema_version"},
+        },
+    ]
+    queue = [
+        {
+            "initiative": "dash-feed-streams-a-versioned-json-snapshot-of",
+            "priority": 1,
+            "phases_landed": 0,
+            "phases_total": 3,
+            "current_phase": "p1-foundations",
+            "short_id": "I412",
+            "project": "example-repo",
+        },
+        {
+            "initiative": "unnumbered-initiative",
+            "priority": 2,
+            "phases_landed": 0,
+            "phases_total": 1,
+            "current_phase": "p1-foundations",
+            "short_id": None,
+            "project": None,
+        },
+    ]
+    inbox = [
+        {
+            "kind": "needs_chair",
+            "target": "some-task",
+            "reason": "budget stop after 2 attempts",
+            "short_id": None,
+        },
+        {
+            "kind": "review_pr",
+            "initiative": "dash-feed",
+            "target": "p2-feed-task",
+            "url": "https://github.com/example-org/coxswain-tools/pull/42",
+            "reason": "awaiting review",
+            "short_id": "I412",
+        },
+    ]
+    watch = []
+    decisions = [
+        {
+            "id": "d-1",
+            "question": "Ship 0.27 with the dash decisions pane?",
+            "options": ["ship", "hold"],
+            "context": "The pane is behind a flag and the fixture is already in coxswain-dash.",
+            "asked_at": "2026-09-29T00:00:00Z",
+        }
+    ]
+
+    spend_series = [["2026-09-28T23:40:00Z", 0.42], ["2026-09-28T23:50:00Z", 0.84]]
+
+    history = [
+        {
+            "run": "dash-feed-0", "machine": "host-b", "initiative": "dash-feed",
+            "ended_at": "2026-09-28T23:50:00Z", "outcome": "landed", "cost_usd": 2.15,
+            "landed": [{"task": "p1-foundations-task", "pr": 41}], "short_id": "I412",
+            "project": "coxswain-tools",
+        },
+        {
+            "run": "dash-feed-9", "machine": "host-b", "initiative": "dash-feed",
+            "ended_at": "2026-09-28T23:40:00Z", "outcome": "quarantined", "cost_usd": 0.42,
+            "landed": [], "cause": "review rejected twice", "short_id": None,
+            "project": None,
+        },
+    ]
+    history_today = {"lands": 1, "quarantines": 1, "cost_usd": 2.57, "runs": 2}
+
+    args = (at, chair, spend, machines, runs, queue, 2, inbox, 2, watch, decisions, spend_series)
+    return args, {"history": history, "history_today": history_today}
+
+
+def test_snapshot_matches_committed_fixture():
+    args, kwargs = _fixture_inputs()
+    with open("tests/fixtures/dash_activity_v1.json") as f:
+        activity = json.load(f)
+
+    result = snapshot(*args, **kwargs, chair_agents=activity["chair_agents"], spend_split=activity["spend_split"])
+
+    with open("tests/fixtures/dash_feed_v1.json") as f:
+        expected = json.load(f)
+
+    assert result == expected
+    assert result["history"] == kwargs["history"] and result["history_today"] == kwargs["history_today"]
+
+
+def test_snapshot_without_activity_carries_an_empty_list_and_the_all_zero_split():
+    with open("tests/fixtures/dash_activity_v1.json") as f:
+        window_keys = set(json.load(f)["spend_split"]["five_hour"])
+    assert {"by_node", "cost_per_landed_task"} <= window_keys
+
+    result = snapshot("2026-10-16T00:00:00Z", {}, {}, [], [], [], 0, [], 0, [])
+
+    assert result["chair_agents"] == []
+    assert set(result["spend_split"]) == {"five_hour", "weekly"}
+    for window in result["spend_split"].values():
+        assert set(window) == window_keys
+        assert window["by_node"] == []
+        assert window["resets_at"] == ""
+        zeros = window_keys - {"resets_at", "by_node"}
+        assert {key: window[key] for key in zeros} == dict.fromkeys(zeros, 0.0)
+    assert result["spend_split"]["five_hour"]["by_node"] is not result["spend_split"]["weekly"]["by_node"]
+
+
+def _node_rows_of(group: dict) -> list[dict]:
+    """`group.calls` node_calls rows that `group_spend_nodes` sums back to `group`: the first carries every total."""
+    first = {
+        "role": group["role"], "tier": group["tier"], "model_alias": group["model"], "turns": group["turns"],
+        "input_total": group["tokens"], "output_tokens": 0, "cost_usd": group["cost_usd"],
+    }
+    rest = {**first, "turns": 0, "input_total": 0, "cost_usd": 0.0}
+    return [first, *[rest] * (group["calls"] - 1)]
+
+
+_SPEND = {
+    "five_hour_fraction": 0.12, "five_hour_resets_at": "2026-10-16T22:00:00Z",
+    "weekly_fraction": 0.57, "weekly_resets_at": "2026-10-18T08:00:00Z",
+}
+_ACTIVITY_AT = datetime(2026, 10, 16, 18, tzinfo=UTC)  # the windows then start 2026-10-16T17:00Z and 2026-10-11T08:00Z
+
+
+def _stub_activity_readers(monkeypatch, chair_usd, five_seat_usd, weekly_seat_usd):
+    """Stand in for the transcript and seat-cost readers; `chair_cost` reads the (line, day) pair `lines_since` returns."""
+    reader = dash_feed.chair_activity_read
+    monkeypatch.setattr(reader, "read_session_lines", lambda projects_dir, session: ["session"])
+    monkeypatch.setattr(reader, "read_agents", lambda projects_dir, session: [{"lines": ["agent"]}])
+    monkeypatch.setattr(reader, "prices_for_profile", lambda profile: {})
+    monkeypatch.setattr(dash_feed.usage_window, "gather", lambda *a, **k: SimpleNamespace(spent_usd=five_seat_usd))
+    monkeypatch.setattr(dash_feed.usage_window, "gather_weekly", lambda *a, **k: SimpleNamespace(spent_usd=weekly_seat_usd))
+    monkeypatch.setattr(dash_feed.chair_activity, "lines_since", lambda lines, day: (lines[0], day))
+    monkeypatch.setattr(dash_feed.chair_activity, "chair_cost", lambda pair, prices: chair_usd.get(pair, 0.0))
+    monkeypatch.setattr(dash_feed.chair_activity, "agent_rows", lambda agents, prices, now: [])
+
+
+def test_the_feed_built_from_the_fixtures_inputs_equals_the_fixture(monkeypatch, tmp_path):
+    # The fixture's five-hour groups are not a subset of its weekly groups, so no one store read cuts into it; the
+    # per-window rows and done counts are handed in at `_window_node_inputs`, and the cut itself is tested below.
+    with open("tests/fixtures/dash_feed_v1.json") as f:
+        fixture = json.load(f)
+    with open("tests/fixtures/dash_activity_v1.json") as f:
+        activity = json.load(f)
+    split = fixture["spend_split"]
+    node_rows = {name: [row for group in split[name]["by_node"] for row in _node_rows_of(group)] for name in split}
+    chair_usd = {("session", "2026-10-16"): 3.1, ("agent", "2026-10-16"): 1.2, ("session", "2026-10-11"): 41.2, ("agent", "2026-10-11"): 18.4}
+    _stub_activity_readers(monkeypatch, chair_usd, 2.0, 96.9)
+    monkeypatch.setattr(dash_feed, "_window_node_inputs", lambda rows, windows: (node_rows, {"five_hour": 2, "weekly": 6}))
+    args, kwargs = _fixture_inputs()
+
+    built = dash_feed._activity(tmp_path, {}, "sess", _SPEND, _ACTIVITY_AT, {})
+    result = snapshot(*args, **kwargs, chair_agents=activity["chair_agents"], spend_split=built["spend_split"])
+
+    assert result == fixture
+
+
+def test_activity_cuts_the_store_rows_into_each_windows_by_node_and_cost_per_landed_task(monkeypatch, tmp_path):
+    _stub_activity_readers(monkeypatch, {}, 2.0, 5.0)
+    build = {"role": "build", "tier": "standard", "model_alias": "claude-sonnet-5-5", "output_tokens": 10}
+    review = {"role": "review", "tier": "premium", "model_alias": "claude-opus-5", "output_tokens": 20}
+    store_rows = {
+        "runs": [
+            {"run_id": "r-a", "ended_at": "2026-10-16T17:30:00Z"},
+            {"run_id": "r-b", "ended_at": "2026-10-12T12:00:00Z"},
+            {"run_id": "r-c", "ended_at": "2026-10-05T12:00:00Z"},
+        ],
+        "node_calls": [
+            {**build, "run_id": "r-a", "ts": "2026-10-16T17:10:00Z", "cost_usd": 1.0, "turns": 4, "input_total": 100},
+            {**build, "run_id": "r-a", "ts": "2026-10-16T17:20:00Z", "cost_usd": 0.5, "turns": 2, "input_total": 10},
+            {**review, "run_id": "r-b", "ts": "2026-10-12T11:00:00Z", "cost_usd": 3.0, "turns": 1, "input_total": 200},
+            {**build, "run_id": "r-c", "ts": "2026-10-05T11:00:00Z", "cost_usd": 9.0, "turns": 9, "input_total": 9},
+        ],
+        "task_records": [
+            {"run_id": "r-a", "task_id": "a", "record_json": '{"landed": {"at": "2026-10-16T17:25:00Z", "pr": 1}}'},
+            {"run_id": "r-b", "task_id": "b", "record_json": '{"landed": {"at": "2026-10-12T11:30:00Z", "pr": 2}}'},
+            {"run_id": "r-c", "task_id": "c", "record_json": '{"landed": {"at": "2026-10-05T11:30:00Z", "pr": 3}}'},
+        ],
+    }
+
+    split = dash_feed._activity(tmp_path, {}, "sess", _SPEND, _ACTIVITY_AT, store_rows)["spend_split"]
+
+    built_group = {"role": "build", "tier": "standard", "model": "claude-sonnet-5-5", "calls": 2, "turns": 6, "tokens": 130, "cost_usd": 1.5}
+    review_group = {"role": "review", "tier": "premium", "model": "claude-opus-5", "calls": 1, "turns": 1, "tokens": 220, "cost_usd": 3.0}
+    assert split["five_hour"]["by_node"] == [built_group]
+    assert split["five_hour"]["cost_per_landed_task"] == 2.0
+    assert split["weekly"]["by_node"] == [review_group, built_group]
+    assert split["weekly"]["cost_per_landed_task"] == 2.5
+
+
+def test_history_rows_keep_the_runs_the_history_reads_and_drop_the_rest_of_the_week():
+    # 2026-09-29T21:00Z is 17:00 EDT; local midnight is 04:00Z. The reader returns runs newest first.
+    at = datetime(2026, 9, 29, 21, tzinfo=UTC)
+    runs = [{"run_id": "today", "ended_at": "2026-09-29T15:00:00Z"}] + [
+        {"run_id": f"old-{i}", "ended_at": f"2026-09-28T{23 - i // 2:02d}:00:00Z"} for i in range(31)
+    ]
+    rows = {
+        "runs": runs,
+        "task_records": [{"run_id": r["run_id"]} for r in runs],
+        "node_calls": [{"run_id": r["run_id"]} for r in runs],
+    }
+
+    cut = dash_feed._history_rows(rows, at)
+
+    assert [r["run_id"] for r in cut["runs"]] == ["today", *[f"old-{i}" for i in range(29)]]
+    assert [r["run_id"] for r in cut["task_records"]] == [r["run_id"] for r in cut["runs"]]
+    assert [r["run_id"] for r in cut["node_calls"]] == [r["run_id"] for r in cut["runs"]]
+    assert dash_feed._history_rows({}, at) == {}
+
+
+def test_window_node_inputs_cut_calls_and_landed_tasks_at_each_window_start():
+    windows = {"five_hour": {"start": "2026-10-16T17:00:00+00:00"}, "weekly": {"start": "2026-10-11T08:00:00+00:00"}}
+    rows = {
+        "runs": [{"run_id": "r-2", "ended_at": "2026-10-16T17:30:00Z"}],
+        "node_calls": [
+            {"run_id": "r-1", "ts": "2026-10-16T16:59:00Z", "role": "build"},
+            {"run_id": "r-1", "ts": "2026-10-16T17:00:00Z", "role": "review"},
+            {"run_id": "r-1", "ts": "2026-10-10T00:00:00Z", "role": "plan"},
+            {"run_id": "r-1", "ts": None, "role": "plan"},
+        ],
+        "task_records": [
+            {"run_id": "r-1", "task_id": "a", "record_json": '{"landed": {"at": "2026-10-12T00:00:00Z", "pr": 3}}'},
+            {"run_id": "r-2", "task_id": "b", "record_json": '{"landed": true}'},
+            {"run_id": "r-2", "task_id": "c", "record_json": '{"attempts": []}'},
+            {"run_id": "r-3", "task_id": "d", "record_json": '{"landed": true}'},
+        ],
+    }
+
+    node_rows, done = dash_feed._window_node_inputs(rows, windows)
+
+    assert [row["role"] for row in node_rows["five_hour"]] == ["review"]
+    assert [row["role"] for row in node_rows["weekly"]] == ["build", "review"]
+    assert done == {"five_hour": 1, "weekly": 2}
+
+
+def test_a_store_reader_returning_no_rows_leaves_by_node_empty_and_cost_per_landed_task_zero(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        dash_feed, "read_history_rows", lambda store, since: {"runs": [], "task_records": [], "node_calls": []},
+    )
+
+    feed = _built_feed(monkeypatch, tmp_path)
+
+    assert set(feed["spend_split"]) == {"five_hour", "weekly"}
+    for window in feed["spend_split"].values():
+        assert window["by_node"] == []
+        assert window["cost_per_landed_task"] == 0.0
+
+
+def _meter(five_pct: float, seven_pct: float, observed_at: datetime) -> usage_meter.Meter:
+    return usage_meter.Meter(
+        five_hour=usage_meter.MeterEntry(used_percentage=five_pct, resets_at=datetime(2026, 9, 29, 2, tzinfo=UTC)),
+        seven_day=usage_meter.MeterEntry(used_percentage=seven_pct, resets_at=datetime(2026, 10, 4, 4, tzinfo=UTC)),
+        observed_at=observed_at,
+    )
+
+
+def test_spend_fresh_meter_wins(monkeypatch, tmp_path):
+    now = "2026-09-29T00:10:00Z"
+    meter = _meter(8, 58, datetime(2026, 9, 29, 0, 5, tzinfo=UTC))
+    monkeypatch.setattr(dash_feed.usage_meter, "read", lambda: meter)
+
+    spend = dash_feed._spend(tmp_path, now)
+
+    assert spend["five_hour_fraction"] == 0.08
+    assert spend["five_hour_source"] == "meter"
+    assert spend["weekly_fraction"] == 0.58
+    assert spend["weekly_source"] == "meter"
+
+
+def _spy_readers(monkeypatch, window_spent: float, weekly_spent: float) -> dict:
+    """Stand-ins for the two spend readers that take their real keyword names, keyword-only, and answer with the
+    ceiling they were handed: a fraction can then only come from a ceiling that reached the reader."""
+    seen: dict = {}
+
+    def gather(runs_dir, now, *, ceiling_usd=None):
+        seen["ceiling_usd"] = ceiling_usd
+        return usage_window.Window(
+            start=now, end=now, spent_usd=window_spent, ceiling_usd=ceiling_usd, burn_usd_per_hour=0.0, runs_in_flight=0,
+        )
+
+    def gather_weekly(runs_dir, now, *, weekly_ceiling_usd=None, start=None):
+        seen["weekly_ceiling_usd"] = weekly_ceiling_usd
+        return usage_window.Window(
+            start=now, end=now, spent_usd=weekly_spent, ceiling_usd=weekly_ceiling_usd, burn_usd_per_hour=0.0,
+            runs_in_flight=0,
+        )
+
+    monkeypatch.setattr(dash_feed.usage_window, "gather", gather)
+    monkeypatch.setattr(dash_feed.usage_window, "gather_weekly", gather_weekly)
+    return seen
+
+
+def test_spend_estimate_uses_profile_ceiling(monkeypatch, tmp_path):
+    now = "2026-09-29T00:00:00Z"
+    stale = _meter(1, 1, datetime(2026, 9, 28, 0, 0, tzinfo=UTC))
+    monkeypatch.setattr(dash_feed.usage_meter, "read", lambda: stale)
+    monkeypatch.setattr(dash_feed.usage_meter, "implied_ceiling", lambda kind, now: None)
+    profile_path = tmp_path / "profile.yaml"
+    profile_path.write_text("spend:\n  window_ceiling_usd: 200\n  weekly_ceiling_usd: 400\n")
+    monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(profile_path))
+    seen = _spy_readers(monkeypatch, window_spent=50.0, weekly_spent=100.0)
+
+    spend = dash_feed._spend(tmp_path, now)
+
+    assert seen == {"ceiling_usd": 200.0, "weekly_ceiling_usd": 400.0}
+    assert spend["five_hour_fraction"] == 0.25
+    assert spend["five_hour_source"] == "est"
+    assert spend["weekly_fraction"] == 0.25
+    assert spend["weekly_source"] == "est"
+
+
+def test_spend_estimate_no_meter_no_profile(monkeypatch, tmp_path):
+    now = "2026-09-29T00:00:00Z"
+    monkeypatch.setattr(dash_feed.usage_meter, "read", lambda: None)
+    monkeypatch.setattr(dash_feed.usage_meter, "implied_ceiling", lambda kind, now: None)
+    monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(tmp_path / "missing.yaml"))
+    seen = _spy_readers(monkeypatch, window_spent=50.0, weekly_spent=100.0)
+
+    spend = dash_feed._spend(tmp_path, now)
+
+    assert seen == {"ceiling_usd": None, "weekly_ceiling_usd": None}
+    assert spend["five_hour_fraction"] is None
+    assert spend["five_hour_source"] == "est"
+    assert spend["weekly_fraction"] is None
+    assert spend["weekly_source"] == "est"
+
+
+def test_spend_reports_the_pacing_policys_weekly_hard_stop_fraction(monkeypatch, tmp_path):
+    (tmp_path / "policy.pacing.json").write_text(json.dumps({"weekly_hard_stop_fraction": 0.98}))
+    now = "2026-09-29T00:10:00Z"
+    monkeypatch.setattr(dash_feed.usage_meter, "implied_ceiling", lambda kind, now: None)
+    monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(tmp_path / "missing.yaml"))
+    _spy_readers(monkeypatch, window_spent=0.0, weekly_spent=0.0)
+
+    fresh = _meter(8, 58, datetime(2026, 9, 29, 0, 5, tzinfo=UTC))
+    monkeypatch.setattr(dash_feed.usage_meter, "read", lambda: fresh)
+    from_meter = dash_feed._spend(tmp_path, now)
+    monkeypatch.setattr(dash_feed.usage_meter, "read", lambda: None)
+    from_estimate = dash_feed._spend(tmp_path, now)
+
+    assert (from_meter["weekly_source"], from_estimate["weekly_source"]) == ("meter", "est")
+    assert from_meter["hard_stop_fraction"] == 0.98
+    assert from_estimate["hard_stop_fraction"] == 0.98
+
+
+def test_gather_feed_calls_each_reader_once(monkeypatch, tmp_path):
+    calls = {"console": 0, "queue": 0, "inbox": 0}
+
+    def fake_console_gather(runs_dir, work_dir, now, local_name, local_capacity, spend, local_versions=None):
+        calls["console"] += 1
+        return {
+            "hosts": [{"name": "host-b"}],
+            "lanes": [console_screen.LaneRow("dash-feed-1", None, "", "p1", "build", 1, 2, 0.1, 0, 2)],
+            "chair": [{"holder": "chair@host-b:1"}],
+            "spend": spend,
+        }
+
+    def fake_read_queue(runs_dir, initiative=None, kind=None):
+        calls["queue"] += 1
+        return [
+            {"kind": "task", "initiative": "dash-feed", "phase": "p1", "state": "done", "extra": {"priority": 1}},
+            {"kind": "task", "initiative": "dash-feed", "phase": "p2", "state": "todo", "extra": {}},
+        ]
+
+    def fake_inbox(blob, label=None, holder=None):
+        calls["inbox"] += 1
+        return [{"id": "m1", "from": "chair", "to": "operator", "note": "n", "ref": "coxswain://task/x", "ack": False}]
+
+    monkeypatch.setattr(dash_feed, "_spend", lambda runs_dir, now: {"five_hour_fraction": 0.1})
+    monkeypatch.setattr(dash_feed, "_activity", lambda *args: {"chair_agents": [], "spend_split": None})
+    monkeypatch.setattr(dash_feed.console_screen, "gather", fake_console_gather)
+    monkeypatch.setattr(dash_feed.run_store, "read_queue", fake_read_queue)
+    monkeypatch.setattr(dash_feed.courier, "inbox", fake_inbox)
+
+    result = dash_feed.gather_feed(tmp_path, tmp_path, "2026-09-29T00:00:00Z")
+
+    assert calls == {"console": 1, "queue": 2, "inbox": 1}
+    assert result["runs"][0]["run"] == "dash-feed-1"
+    assert result["queue"][0]["initiative"] == "dash-feed"
+    assert result["inbox"][0]["target"] == "x"
+
+def test_the_live_feed_has_the_fixture_s_keys_no_nulls_and_serializes(monkeypatch, tmp_path):
+    with open("tests/fixtures/dash_feed_v1.json") as f:
+        fixture = json.load(f)
+    (tmp_path / "chair.lease.json").write_text('{"holder": "chair-loop@host-b:42", "epoch": 7}')
+    (tmp_path / "chair.json").write_text('{"heartbeat_at": "2026-09-29T20:59:00+00:00"}')
+    lane = console_screen.LaneRow(
+        run="r-1", host=None, heartbeat_at="", phase="p1", node="build", attempt=1, turns=3, cost_usd=0.5,
+        phases_landed=0, phases_total=2,
+    )
+    sections = {
+        "chair": [{"holder": "chair-loop", "state": "live", "minutes_ago": 1}],
+        "spend": dict.fromkeys(fixture["spend"]),
+        "hosts": [{
+            "name": "host-a", "state": "draining", "capacity": 1, "in_use": 0, "beat_at": "2026-09-29T20:59:00Z",
+            "versions_json": {"login_ok": True, "login_checked_at": "2026-09-29T20:41:15Z"},
+        }],
+        "lanes": [lane],
+    }
+    monkeypatch.setattr(dash_feed.console_screen, "gather", lambda *args, **kwargs: sections)
+    monkeypatch.setattr(dash_feed, "_spend", lambda *args: {})
+    # The activity readers would run ccusage and read ~/.claude; the fixture's two keys stand in for them.
+    monkeypatch.setattr(
+        dash_feed, "_activity", lambda *args: {key: fixture[key] for key in ("chair_agents", "spend_split")},
+    )
+    monkeypatch.setattr(dash_feed, "_local_identity", lambda runs_dir, profile: ("host-b", 3))
+    monkeypatch.setattr(dash_feed, "_queue", lambda runs_dir: ([
+        {"initiative": "x", "priority": None, "phases_landed": 0, "phases_total": 1, "current_phase": None},
+    ], 1))
+    monkeypatch.setattr(dash_feed, "_inbox", lambda work_dir: ([
+        {"ref": "coxswain://task/t1", "from": "chair-loop", "to": "chair", "note": "land it", "id": "m1", "ack": False},
+    ], 1))
+
+    feed = json.loads(json.dumps(dash_feed.gather_feed(tmp_path, tmp_path, "2026-09-29T21:00:00Z")))
+
+    assert set(feed["chair"]) == set(fixture["chair"]) and set(feed["spend"]) == set(fixture["spend"])
+    for section in ("machines", "runs", "queue", "inbox"):
+        assert set(feed[section][0]) == set(fixture[section][0]), section
+    rows = [feed["chair"], feed["spend"], *feed["machines"], *feed["runs"], *feed["queue"], *feed["inbox"]]
+    # `current_action` is null when nothing is running, `tick_age_s` when no tick was read, `short_id` when its initiative has none.
+    nullable = ("current_action", "tick_age_s", "short_id", "project")
+    assert all(value is not None for row in rows for key, value in row.items() if key not in nullable)
+    assert (feed["chair"]["host"], feed["chair"]["epoch"], feed["chair"]["beat_age_s"]) == ("host-b", 7, 60)
+    assert (feed["runs"][0]["machine"], feed["runs"][0]["cost"]) == ("host-b", 0.5)
+    assert feed["machines"][0]["beat_age_s"] == 60
+    assert feed["inbox"][0] == {"kind": "task", "target": "t1", "reason": "land it", "short_id": None}
+
+    run_raw = {
+        **_BASE_RAW,
+        "timeline": [
+            {"node": "plan", "attempt": 1, "turns": 4, "cost_usd": 0.12, "verdict": "approve"},
+            {"node": "build", "attempt": 1, "turns": 12, "cost_usd": 0.84, "verdict": ""},
+        ],
+        "files": ["src/feed.rs", "tests/fixtures/dash_feed_v1.json"],
+        "tool_calls": [
+            {"tool": "bash", "summary": "cargo test", "at": "2026-09-29T11:58:00Z"},
+            {"tool": "edit", "summary": "src/feed.rs", "at": "2026-09-29T11:55:00Z"},
+        ],
+        "log_tail": ["running 4 tests", "test feed::tests::parses_fixture ... ok", "test result: ok. 4 passed"],
+    }
+    run_output = build_run_detail(run_raw)
+    run_fixture = json.loads((_FIXTURES_DIR / "dash_detail_run_v1.json").read_text(encoding="utf-8"))
+    _assert_matches_fixture_keys_and_nulls(run_output, run_fixture)
+    json.dumps(run_output)
+
+    initiative_output = build_initiative_detail(_RAW_INITIATIVE, _INITIATIVE)
+    initiative_fixture = json.loads((_FIXTURES_DIR / "dash_detail_initiative_v1.json").read_text(encoding="utf-8"))
+    _assert_matches_fixture_keys_and_nulls(initiative_output, initiative_fixture)
+    json.dumps(initiative_output)
+
+    machine_output = build_machine_detail(HOST_ROW, RUNS, _MACHINE_NOW)
+    machine_fixture = json.loads((_FIXTURES_DIR / "dash_detail_machine_v1.json").read_text(encoding="utf-8"))
+    _assert_matches_fixture_keys_and_nulls(machine_output, machine_fixture)
+    json.dumps(machine_output)
+
+
+def _remote_feed_run(monkeypatch, calls, phases):
+    """The feed's run row for one remote lane, with the store's usage and phase readers faked."""
+    now = datetime(2026, 10, 4, 12, 0, 0, tzinfo=UTC)
+    lane = run_store.Lane("x-3", "host-b", "2026-10-04T11:40:00Z", "2026-10-04T11:59:50Z")
+    monkeypatch.setattr(run_store, "usage", lambda root, run: {"calls": calls} if calls else None)
+    monkeypatch.setattr(run_store, "phase_names", lambda root, run: phases)
+    row = runs_top_screen._remote_rows(Path("/nonexistent"), [lane], now)[0]
+    return dash_feed._run_v1(console_screen._lane_rows([lane], {"x-3": row}, [])[0], "chair-host")
+
+
+def test_the_feed_row_of_a_remote_run_with_two_calls_reports_the_second_and_the_summed_cost(monkeypatch):
+    calls = [
+        {"role": "plan", "cost_usd": 0.25, "turns": 2, "ts": "2026-10-04T11:45:00Z"},
+        {"role": "build", "cost_usd": 0.5, "turns": 5, "ts": "2026-10-04T11:50:00Z"},
+    ]
+
+    assert _remote_feed_run(monkeypatch, calls, ["p1", "p2"]) == {
+        "run": "x-3", "machine": "host-b", "phase": "p2", "node": "build", "attempt": 1, "turns": 7, "cost": 0.75,
+        "verdict": "", "status": "running",
+    }
+
+
+def test_the_feed_row_of_a_remote_run_with_no_calls_says_starting(monkeypatch):
+    row = _remote_feed_run(monkeypatch, [], [])
+
+    assert (row["phase"], row["node"], row["attempt"], row["turns"], row["cost"]) == ("", "starting", 0, 0, 0.0)
+
+
+def test_the_feed_row_of_a_local_lane_is_what_the_console_gave_it():
+    lane = console_screen.LaneRow("r-1", None, "", "p1", "build", 1, 3, 0.5, 0, 2)
+
+    assert dash_feed._run_v1(lane, "host-b") == {
+        "run": "r-1", "machine": "host-b", "phase": "p1", "node": "build", "attempt": 1, "turns": 3, "cost": 0.5,
+        "verdict": "", "status": "running",
+    }
+
+
+def test_queue_drops_a_fully_landed_initiative(monkeypatch, tmp_path):
+    rows = [
+        {"kind": "task", "initiative": "landed-one", "phase": "p1", "state": "done", "extra": {}},
+        {"kind": "task", "initiative": "open-one", "phase": "p1", "state": "todo", "extra": {}},
+    ]
+    monkeypatch.setattr(dash_feed.run_store, "read_queue", lambda runs_dir: rows)
+
+    queue, total = dash_feed._queue(tmp_path)
+
+    assert [row["initiative"] for row in queue] == ["open-one"]
+    assert total == 1
+
+
+def test_inbox_drops_an_entry_addressed_to_another_seat(monkeypatch, tmp_path):
+    entries = [
+        {"id": "1", "to": "chair", "note": "a", "ref": "coxswain://task/x", "ack": False, "from": "s"},
+        {"id": "2", "to": "operator", "note": "b", "ref": "coxswain://task/y", "ack": False, "from": "s"},
+        {"id": "3", "to": "build", "note": "c", "ref": "coxswain://task/z", "ack": False, "from": "s"},
+        {"id": "4", "to": "arbitrate", "note": "d", "ref": "coxswain://task/z", "ack": False, "from": "s"},
+        {"id": "5", "to": "review_adversary", "note": "e", "ref": "coxswain://task/z", "ack": False, "from": "s"},
+        {"id": "6", "to": "cos", "note": "f", "ref": "coxswain://task/z", "ack": False, "from": "s"},
+        {"id": "7", "to": "chair-2026-09-29", "note": "g", "ref": "coxswain://task/z", "ack": False, "from": "s"},
+    ]
+    monkeypatch.setattr(dash_feed.courier, "inbox", lambda blob: entries)
+
+    inbox, total = dash_feed._inbox(dash_feed.courier.inbox(""))
+
+    assert [entry["id"] for entry in inbox] == ["7", "2", "1"]
+    assert total == 3
+
+
+def test_queue_and_inbox_cap_at_fifty_rows_with_the_full_total(monkeypatch, tmp_path):
+    rows = [
+        {"kind": "task", "initiative": f"init-{i:02d}", "phase": "p1", "state": "todo", "extra": {}}
+        for i in range(51)
+    ]
+    monkeypatch.setattr(dash_feed.run_store, "read_queue", lambda runs_dir: rows)
+    entries = [
+        {"id": str(i), "to": "chair", "note": "n", "ref": f"coxswain://task/t{i}", "ack": False, "from": "s"}
+        for i in range(55)
+    ]
+    monkeypatch.setattr(dash_feed.courier, "inbox", lambda blob: entries)
+
+    queue, queue_total = dash_feed._queue(tmp_path)
+    inbox, inbox_total = dash_feed._inbox(dash_feed.courier.inbox(""))
+
+    assert (len(queue), queue_total) == (50, 51)
+    assert [row["initiative"] for row in queue] == [f"init-{i:02d}" for i in range(50)]
+    assert (len(inbox), inbox_total) == (50, 55)
+    assert inbox[0]["id"] == "54"
+
+
+def _built_feed(monkeypatch, tmp_path):
+    sections = {
+        "chair": [{"holder": "chair-loop", "state": "live", "minutes_ago": 1}],
+        "spend": {},
+        "hosts": [],
+        "lanes": [],
+    }
+    monkeypatch.setattr(dash_feed.console_screen, "gather", lambda *args, **kwargs: sections)
+    monkeypatch.setattr(dash_feed, "_spend", lambda *args: {})
+    monkeypatch.setattr(dash_feed, "_local_identity", lambda runs_dir, profile: ("host-b", 3))
+    monkeypatch.setattr(dash_feed, "_queue", lambda runs_dir: ([], 0))
+    return dash_feed.gather_feed(tmp_path, tmp_path, "2026-09-29T21:00:00Z")
+
+
+def test_gather_feed_lists_only_the_open_decision(monkeypatch, tmp_path):
+    bus = {"from": "chair", "to": "operator", "ack": False, "options": ["ship", "hold"]}
+    entries = [
+        bus | {"ref": "coxswain://decision/d-1", "id": "d-1", "note": "Ship it?", "context": "0.27 preview", "asked_at": "2026-09-29T20:00:00Z"},
+        bus | {"ref": "coxswain://decision/d-2", "id": "d-2", "note": "Hold it?", "context": "0.26 preview", "asked_at": "2026-09-29T19:00:00Z"},
+        {"ref": "coxswain://decision/d-2", "id": "a-2", "from": "operator", "to": "chair", "note": "answer: hold", "ack": False, "answer": "hold", "asked_at": "2026-09-29T20:30:00Z"},
+    ]
+    (tmp_path / "courier.jsonl").write_text("".join(json.dumps(entry) + "\n" for entry in entries))
+
+    feed = _built_feed(monkeypatch, tmp_path)
+
+    assert feed["decisions"] == [
+        {
+            "id": "d-1",
+            "question": "Ship it?",
+            "options": ["ship", "hold"],
+            "context": "0.27 preview",
+            "asked_at": "2026-09-29T20:00:00Z",
+        }
+    ]
+
+
+def test_an_acked_answer_still_closes_its_unacked_ask():
+    ask = {"ref": "coxswain://decision/d-2", "id": "d-2", "from": "chair", "to": "operator", "note": "Hold it?",
+           "ack": False, "options": ["ship", "hold"], "context": "c", "asked_at": "2026-09-29T19:00:00Z"}
+    answer = {"ref": "coxswain://decision/d-2", "id": "a-2", "from": "operator", "to": "chair", "note": "answer: hold",
+              "ack": True, "answer": "hold", "asked_at": "2026-09-29T20:30:00Z"}
+    blob = "".join(json.dumps(entry) + "\n" for entry in (ask, answer))
+
+    assert dash_feed._open_decisions(dash_feed.courier.inbox(blob), blob) == []
+
+
+def test_the_chair_section_carries_the_first_eight_characters_of_claude_session(monkeypatch, tmp_path):
+    (tmp_path / "chair.lease.json").write_text('{"holder": "chair-loop@host-b:42", "epoch": 7}')
+    (tmp_path / "chair.json").write_text(json.dumps({
+        "session": "chair-loop", "pid": 42, "host": "host-b", "taken_at": "2026-09-29T20:00:00+00:00",
+        "heartbeat_at": "2026-09-29T20:59:00+00:00", "runs": [], "claude_session": "0123456789abcdef",
+    }))
+
+    assert _built_feed(monkeypatch, tmp_path)["chair"]["session"] == "01234567"
+
+
+def test_a_chair_record_with_no_claude_session_yields_an_empty_session(monkeypatch, tmp_path):
+    (tmp_path / "chair.lease.json").write_text('{"holder": "chair-loop@host-b:42", "epoch": 7}')
+    (tmp_path / "chair.json").write_text(json.dumps({
+        "session": "chair-loop", "pid": 42, "host": "host-b", "taken_at": "2026-09-29T20:00:00+00:00",
+        "heartbeat_at": "2026-09-29T20:59:00+00:00", "runs": [],
+    }))
+
+    assert _built_feed(monkeypatch, tmp_path)["chair"]["session"] == ""
+
+
+_CHECKED = "2026-10-04T00:00:00Z"
+
+
+def _local_machine(login_ok):
+    versions = dash_feed._local_versions(login_ok, _CHECKED)
+    row = console_screen.with_local_host([], "host-b", 1, versions)[0]
+    return dash_feed._machine_v1({**row, "in_use": 0}, datetime(2026, 10, 4, tzinfo=UTC))
+
+
+def test_the_local_row_reads_login_unknown_before_a_check():
+    machine = _local_machine(None)
+
+    assert (machine["login_ok"], machine["login_checked_at"]) == (None, "")
+
+
+def test_the_local_row_reads_login_true_after_a_passing_check():
+    machine = _local_machine(True)
+
+    assert (machine["login_ok"], machine["login_checked_at"]) == (True, _CHECKED)
+
+
+def test_a_check_that_says_not_logged_in_reads_false():
+    assert _local_machine(False)["login_ok"] is False
+
+
+def test_local_login_is_true_false_or_unknown_by_what_claude_auth_status_said(monkeypatch):
+    def says(code, output):
+        monkeypatch.setattr(dash_feed, "_run_capturing", lambda argv: (code, output))
+        return dash_feed.chair_login_check._login_ok("m", "", dash_feed._run_capturing)
+
+    assert [says(0, '{"loggedIn": true}'), says(0, '{"loggedIn": false}'), says(1, ""), says(0, "x")] == [
+        True, False, None, None,
+    ]
+
+
+def test_gather_feed_seats_the_local_login_check_on_the_local_row(monkeypatch, tmp_path):
+    def fake_gather(runs_dir, work_dir, now, local_name, local_capacity, spend, local_versions=None):
+        hosts = console_screen.with_local_host([], local_name, local_capacity, local_versions)
+        return {"hosts": hosts, "lanes": [], "chair": [], "spend": {}}
+
+    monkeypatch.setattr(dash_feed.console_screen, "gather", fake_gather)
+    monkeypatch.setattr(dash_feed, "_spend", lambda *args: {})
+    monkeypatch.setattr(dash_feed, "_queue", lambda runs_dir: ([], 0))
+
+    unchecked = dash_feed.gather_feed(tmp_path, tmp_path, _CHECKED)["machines"][0]
+    monkeypatch.setattr(dash_feed, "_local_login", lambda local_name: True)
+    checked = dash_feed.gather_feed(tmp_path, tmp_path, _CHECKED)["machines"][0]
+
+    assert (unchecked["login_ok"], checked["login_ok"], checked["login_checked_at"]) == (None, True, _CHECKED)
+
+
+def test_the_feeds_local_capacity_follows_the_cartridge_not_the_pacing_default(tmp_path):
+    runs_dir, cartridges = tmp_path / "runs", tmp_path / "cartridges"
+    (cartridges / "example-team").mkdir(parents=True)
+    runs_dir.mkdir()
+    (cartridges / "example-team" / "cartridge.yaml").write_text("policy:\n  dispatch:\n    max_in_flight: 1\n")
+    (runs_dir / "policy.pacing.json").write_text('{"max_in_flight": 5}')
+    profile = {"cartridges_dir": str(cartridges), "team": "example-team"}
+
+    assert dash_feed._local_identity(runs_dir, profile)[1] == 1
+    assert dash_feed._local_identity(runs_dir, {})[1] == 5
+
+
+_NO_HISTORY_TODAY = {"lands": 0, "quarantines": 0, "cost_usd": 0.0, "runs": 0}
+
+
+def test_a_failing_store_reader_leaves_the_feed_with_no_history_and_zero_counts(monkeypatch, tmp_path):
+    def broken(store, since):
+        raise OSError("store unreachable")
+
+    monkeypatch.setattr(dash_feed, "read_history_rows", broken)
+
+    feed = _built_feed(monkeypatch, tmp_path)
+
+    assert (feed["history"], feed["history_today"]) == ([], _NO_HISTORY_TODAY)
+
+
+def test_an_absent_store_leaves_the_feed_with_no_history_and_zero_counts(monkeypatch, tmp_path):
+    feed = _built_feed(monkeypatch, tmp_path)
+
+    assert (feed["history"], feed["history_today"]) == ([], _NO_HISTORY_TODAY)
+
+
+def test_the_feed_reads_history_since_eastern_midnight_and_builds_it_from_the_rows(monkeypatch, tmp_path):
+    seen = []
+    rows = {
+        "runs": [
+            {"run_id": "r-1", "host": "host-b", "status": "landed", "ended_at": "2026-09-29T15:00:00Z"},
+            {"run_id": "r-2", "host": "host-b", "status": "quarantined", "ended_at": "2026-09-29T14:00:00Z"},
+        ],
+        "task_records": [
+            {"run_id": "r-1", "phase_id": "p1", "task_id": "t1", "record_json": '{"landed": true, "ticket": "t-1", "pr": 7}'},
+            {"run_id": "r-2", "phase_id": "p1", "task_id": "t2", "record_json": '{"attempts": [{"cause": "budget"}]}'},
+        ],
+        "node_calls": [{"run_id": "r-1", "cost_usd": 1.5}, {"run_id": "r-2", "cost_usd": 0.5}],
+    }
+    monkeypatch.setattr(dash_feed, "read_history_rows", lambda store, since: seen.append(since) or rows)
+
+    feed = _built_feed(monkeypatch, tmp_path)
+
+    # One read, from the weekly window's start (seven days before `at`, as the spend section here has no reset time).
+    assert seen == ["2026-09-22T21:00:00+00:00"]
+    assert [(r["run"], r["outcome"], r.get("cause")) for r in feed["history"]] == [
+        ("r-1", "landed", None), ("r-2", "quarantined", "budget"),
+    ]
+    assert feed["history"][0]["landed"] == [{"task": "t-1", "pr": 7}]
+    assert feed["history_today"] == {"lands": 1, "quarantines": 1, "cost_usd": 2.0, "runs": 2}
+
+
+_IDS = {"dash-feed": "I412", "dash-feed-streams": "I7"}
+
+
+def test_a_run_key_with_a_numeric_suffix_maps_to_its_initiatives_short_id():
+    lane = console_screen.LaneRow("dash-feed-37", None, "", "p1", "build", 1, 4, 0.5, 0, 3)
+    unknown = console_screen.LaneRow("gone-3", None, "", "p1", "build", 1, 4, 0.5, 0, 3)
+    now = datetime(2026, 10, 5, tzinfo=UTC)
+
+    rows = dash_feed._runs_v1([lane, unknown], "host-b", [], now, None, _IDS)
+
+    assert [r["short_id"] for r in rows] == ["I412", None]
+    assert dash_feed._run_slug("listings-and-the-dash-feed-show-short-ids-and-37") == (
+        "listings-and-the-dash-feed-show-short-ids-and"
+    )
+
+
+def test_a_courier_task_row_maps_by_the_longest_matching_slug_prefix():
+    task = {"ref": "coxswain://task/dash-feed-streams-p2-feed", "note": "n"}
+    shorter = {"ref": "coxswain://task/dash-feed-p2-feed", "note": "n"}
+
+    assert dash_feed._inbox_v1(task, _IDS)["short_id"] == "I7"
+    assert dash_feed._inbox_v1(shorter, _IDS)["short_id"] == "I412"
+
+
+def test_a_review_pr_row_uses_its_initiative():
+    pr = {"initiative": "dash-feed-streams", "phase": "p2", "task_id": "other-task", "repo": "r", "url": "u",
+          "state": "unknown", "merged_at": None}
+
+    assert dash_feed._review_inbox_v1([pr], _IDS)[0]["short_id"] == "I7"
+
+
+def test_an_unknown_slug_and_a_non_task_courier_row_give_null():
+    pr = {"initiative": "gone", "phase": "p2", "task_id": "t", "repo": "r", "url": "u", "state": "unknown",
+          "merged_at": None}
+    non_task = {"ref": "coxswain://needs_chair/dash-feed-p2-feed", "note": "n"}
+    unknown_task = {"ref": "coxswain://task/gone-p2", "note": "n"}
+
+    assert dash_feed._review_inbox_v1([pr], _IDS)[0]["short_id"] is None
+    assert dash_feed._inbox_v1(non_task, _IDS)["short_id"] is None
+    assert dash_feed._inbox_v1(unknown_task, _IDS)["short_id"] is None
+    assert dash_feed._queue_v1({"initiative": "gone"}, _IDS, {})["short_id"] is None
+
+
+def test_queue_and_history_rows_use_their_initiative_field(monkeypatch):
+    rows = [{"run": "a-1", "initiative": "dash-feed"}, {"run": "b-1", "initiative": "gone"}]
+    monkeypatch.setattr(dash_feed, "build_history", lambda *args: rows)
+    monkeypatch.setattr(dash_feed, "_history_today", lambda *args: {})
+    store_rows = {"runs": [], "task_records": [], "node_calls": []}
+
+    history, _ = dash_feed._history_v1(store_rows, datetime(2026, 10, 5, tzinfo=UTC), _IDS, {})
+
+    assert [r["short_id"] for r in history] == ["I412", None]
+    assert dash_feed._queue_v1({"initiative": "dash-feed"}, _IDS, {})["short_id"] == "I412"
+
+
+_REPOS = [
+    {"initiative": "dash-feed", "extra": {"repo": "work/example-repo"}},
+    {"initiative": "dash-feed-streams", "extra": {"repo": "work/coxswain-tools/"}},
+    {"initiative": "no-repo", "extra": {}},
+]
+_PROJECTS = dash_feed._projects(_REPOS)
+
+
+def test_a_run_key_maps_to_the_project_of_its_initiative():
+    lane = console_screen.LaneRow("dash-feed-37", None, "", "p1", "build", 1, 4, 0.5, 0, 3)
+    now = datetime(2026, 10, 5, tzinfo=UTC)
+
+    rows = dash_feed._runs_v1([lane], "host-b", [], now, None, _IDS, _PROJECTS)
+
+    assert rows[0]["project"] == "example-repo"
+    assert _PROJECTS == {"dash-feed": "example-repo", "dash-feed-streams": "coxswain-tools", "no-repo": None}
+
+
+def test_a_queue_row_maps_to_the_project_of_its_initiative():
+    assert dash_feed._queue_v1({"initiative": "dash-feed-streams"}, _IDS, _PROJECTS)["project"] == "coxswain-tools"
+
+
+def test_a_history_row_maps_to_the_project_of_its_initiative(monkeypatch):
+    monkeypatch.setattr(dash_feed, "build_history", lambda *args: [{"run": "a-1", "initiative": "dash-feed"}])
+    monkeypatch.setattr(dash_feed, "_history_today", lambda *args: {})
+    store_rows = {"runs": [], "task_records": [], "node_calls": []}
+
+    history, _ = dash_feed._history_v1(store_rows, datetime(2026, 10, 5, tzinfo=UTC), _IDS, _PROJECTS)
+
+    assert history[0]["project"] == "example-repo"
+
+
+def test_an_unknown_initiative_gives_a_null_project():
+    assert dash_feed._queue_v1({"initiative": "gone"}, _IDS, _PROJECTS)["project"] is None
+    assert dash_feed._queue_v1({"initiative": "no-repo"}, _IDS, _PROJECTS)["project"] is None
+
+
+def test_gather_feed_reads_the_short_ids_once_and_puts_them_on_run_queue_and_inbox_rows(monkeypatch, tmp_path):
+    reads = []
+    sections = {
+        "chair": [], "spend": {}, "hosts": [],
+        "lanes": [console_screen.LaneRow("dash-feed-1", None, "", "p1", "build", 1, 2, 0.1, 0, 2)],
+    }
+    monkeypatch.setattr(dash_feed.run_store, "initiative_short_ids", lambda runs_dir: reads.append(runs_dir) or _IDS)
+    monkeypatch.setattr(dash_feed.run_store, "read_queue", lambda runs_dir, initiative=None, kind=None: _REPOS)
+    monkeypatch.setattr(dash_feed.console_screen, "gather", lambda *args, **kwargs: sections)
+    monkeypatch.setattr(dash_feed, "_spend", lambda *args: {})
+    monkeypatch.setattr(dash_feed, "_local_identity", lambda runs_dir, profile: ("host-b", 3))
+    monkeypatch.setattr(dash_feed, "_queue", lambda runs_dir: ([{"initiative": "dash-feed"}], 1))
+    monkeypatch.setattr(dash_feed, "_inbox", lambda entries: ([{"ref": "coxswain://task/dash-feed-p1", "note": "n"}], 1))
+
+    feed = dash_feed.gather_feed(tmp_path, tmp_path, "2026-09-29T21:00:00Z")
+
+    assert reads == [tmp_path]
+    assert feed["runs"][0]["short_id"] == "I412"
+    assert feed["queue"][0]["short_id"] == "I412"
+    assert feed["inbox"][0]["short_id"] == "I412"
+    assert feed["runs"][0]["project"] == feed["queue"][0]["project"] == "example-repo"

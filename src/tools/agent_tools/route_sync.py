@@ -1,0 +1,176 @@
+"""The pure planner for the one-way GitHub Projects mirror: work-store items
+in, `gh` steps out. No subprocess, filesystem or clock; the edge hands in plain data."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+_STATE_LABEL = {
+    "intake": "Queued",
+    "queued": "Queued",
+    "decomposed": "Decomposed",
+    "ready": "Ready",
+    "in_flight": "Running",
+    "running": "Running",
+    "quarantined": "Quarantined",
+    "done": "Landed",
+    "landed": "Landed",
+}
+
+_LABEL = "coxswain"
+
+# States with no board label whose issue still syncs: `approved` is what an item is when `runs land`
+# syncs it before the PR opens, `dropped` is closed. Any other unlabelled state stays a refusal.
+_ISSUE_ONLY = frozenset({"approved", "dropped"})
+_CLOSING = frozenset({"done", "dropped"})
+
+
+@dataclass(frozen=True)
+class Item:
+    id: str
+    title: str
+    body: str
+    repo: str
+    state: str
+    phase: str
+    run: str
+    cost_usd: float
+    gate: str
+    issue: str | None
+    parent: str | None = None
+    parent_issue: str | None = None
+    initiative: bool = False
+    pr_url: str = ""
+
+    def __post_init__(self) -> None:
+        # Frozen dataclass: the one write is the normalised issue, so every reader sees the bare number.
+        parsed = parse_issue(self.issue)
+        if isinstance(parsed, int):
+            object.__setattr__(self, "issue", str(parsed))
+
+
+@dataclass(frozen=True)
+class IssueError:
+    raw: str
+
+
+def parse_issue(raw: str | int | None) -> int | IssueError:
+    """The issue number in a front-matter value. One pair of matching quotes around digits is stripped,
+    because `route.parse_frontmatter` unquotes only double quotes. Anything else is an `IssueError`,
+    and `Item` leaves that value for `gh` to refuse with its own message."""
+    text = str(raw).strip() if raw is not None and not isinstance(raw, bool) else ""
+    unquoted = text[1:-1] if len(text) >= 2 and text[0] == text[-1] and text[0] in "'\"" else text
+    return int(unquoted) if unquoted.isascii() and unquoted.isdigit() else IssueError(str(raw))
+
+
+def _fields(item: Item) -> dict | None:
+    """The board's six field values, or `None` for an unrecognized
+    `item.state` — a step-less refusal, not a `KeyError` three calls up."""
+    label = _STATE_LABEL.get(item.state)
+    if label is None:
+        return None
+    return {
+        "State": label,
+        "Phase": item.phase,
+        "Run": item.run,
+        "Cost": f"${item.cost_usd:.2f}",
+        "Gate": item.gate,
+        "PR": item.pr_url,
+    }
+
+
+def _issue_steps(item: Item, issues: dict) -> tuple[list[dict], str | None]:
+    """`issue_create` with no issue key, `issue_edit` when the labelled issue
+    on file has drifted, no step when `item.issue` is not in `issues` (it
+    lost the `coxswain` label, or is gone — nothing on file to edit against).
+    The paired key is the item's own issue key, or `None` for a fresh item —
+    not a work-store id standing in for one — that the edge fills in once
+    `issue_create` runs."""
+    if item.issue is None:
+        step = {"kind": "issue_create", "repo": item.repo, "title": item.title,
+                 "body": item.body, "label": _LABEL, "item_id": item.id}
+        return [step], None
+    stored = issues.get(item.issue)
+    if stored is not None and (stored.get("title") != item.title or stored.get("body") != item.body):
+        return [{"kind": "issue_edit", "issue": item.issue, "title": item.title, "body": item.body}], item.issue
+    return [], item.issue
+
+
+def _project_steps(key: str | None, wanted: dict, project_items: dict) -> list[dict]:
+    """`project_add` when no project item exists yet, then a `project_set`
+    per differing field. A `None` key (fresh item) never matches, so both
+    always plan, carrying `issue: None` for the edge to resolve. A card value
+    that is non-empty and differs is carried as `was`, so the report shows it lost."""
+    current = project_items.get(key)
+    known = current or {}
+    add_step = [{"kind": "project_add", "issue": key}] if current is None else []
+    set_steps = [{"kind": "project_set", "issue": key, "field": field, "value": value,
+                  **({"was": known[field]} if known.get(field) else {})}
+                 for field, value in wanted.items() if (known.get(field) or "") != value]
+    return add_step + set_steps
+
+
+def _close_steps(item: Item, issues: dict) -> list[dict]:
+    """`issue_close` when the item is `done` or `dropped` and its labelled issue on file is open.
+    An initiative card reads Done on the board, but closing its issue is not this sync's call."""
+    if item.initiative:
+        return []
+    stored = issues.get(item.issue) if item.issue else None
+    is_open = stored is not None and str(stored.get("state", "")).upper() == "OPEN"
+    return [{"kind": "issue_close", "issue": item.issue}] if item.state in _CLOSING and is_open else []
+
+
+def _link_steps(item: Item, key: str | None, planned_ids: frozenset) -> list[dict]:
+    """`sub_issue_link` of the item's issue under its initiative's issue, when that
+    issue is on file or the initiative is planned in this same run. A `None` issue
+    is filled in by the edge once `issue_create` has run."""
+    if item.parent is None or not (item.parent_issue or item.parent in planned_ids):
+        return []
+    return [{"kind": "sub_issue_link", "repo": item.repo, "parent_item": item.parent,
+             "parent_issue": item.parent_issue, "child_item": item.id, "child_issue": key}]
+
+
+def _item_steps(item: Item, issues: dict, project_items: dict, planned_ids: frozenset) -> list[dict]:
+    wanted = _fields(item)
+    if wanted is None and item.state not in _ISSUE_ONLY:
+        return [{"kind": "refuse", "item_id": item.id, "detail": f"unknown state: {item.state!r}"}]
+    if not item.repo and item.issue is None:
+        return [{"kind": "refuse", "item_id": item.id, "detail": "no repository resolves for this item"}]
+    issue_steps, key = _issue_steps(item, issues)
+    project_steps = [] if wanted is None else _project_steps(key, wanted, project_items)
+    writeback = [{"kind": "writeback", "item_id": item.id, "issue": key}] if item.issue is None else []
+    return issue_steps + project_steps + writeback + _link_steps(item, key, planned_ids) + _close_steps(item, issues)
+
+
+def plan(items: list[Item], issues: dict, project_items: dict, tracker: str) -> list[dict]:
+    """Steps grouped per item, create/edit then add then sets then writeback,
+    so the edge runs them top to bottom. Empty unless tracker is `github-projects`."""
+    if tracker != "github-projects":
+        return []
+    planned_ids = frozenset(item.id for item in items)
+    return [step for item in items for step in _item_steps(item, issues, project_items, planned_ids)]
+
+
+def _line(step: dict) -> str:
+    kind = step["kind"]
+    if kind == "issue_create":
+        return f"issue_create {step['repo']}: {step['title']!r}"
+    if kind == "issue_edit":
+        return f"issue_edit {step['issue']}: {step['title']!r}"
+    if kind == "project_add":
+        return f"project_add {step['issue'] or '(new issue)'}"
+    if kind == "project_set":
+        line = f"project_set {step['issue'] or '(new issue)'} {step['field']}={step['value']}"
+        return f"{line} overwrote {step['was']!r}" if "was" in step else line
+    if kind == "issue_close":
+        return f"issue_close {step['issue']}"
+    if kind == "sub_issue_link":
+        return f"sub_issue_link {step['child_issue'] or '(new issue)'} under {step['parent_item']}"
+    if kind == "writeback":
+        return f"writeback {step['item_id']} -> {step['issue'] or '(new issue)'}"
+    return f"refuse {step['item_id']}: {step['detail']}"
+
+
+def render(steps: list[dict]) -> list[str]:
+    """One line per step, for `--dry-run`."""
+    return [_line(step) for step in steps]

@@ -1,0 +1,357 @@
+"""Pure aggregation and rendering for the stats store's query surface (spec §5).
+
+Every function takes already-fetched `calls`/`tasks`/`runs` rows as plain
+sequences of mappings and returns plain data; opening a sqlite3.Connection and
+CLI wiring are out of scope here. `roles_report`, `explain_report` and
+`series_report` are the full structured data a `--json` path serializes
+directly; `render_capped` is only the default-text path's cap.
+"""
+
+from __future__ import annotations
+
+import itertools
+import sqlite3
+from collections import defaultdict
+from collections.abc import Callable, Collection, Mapping, Sequence
+from typing import Any
+
+from agent_tools import stats_derive
+from agent_tools.stats_schema import FAILURE_CLASSES
+
+__all__ = [
+    "bounds_report",
+    "coverage_report",
+    "explain_report",
+    "gates_inputs",
+    "render_capped",
+    "render_gates",
+    "roles_report",
+    "series_report",
+    "spend_mix_report",
+    "tier_call_rows",
+]
+
+
+def _joined(calls: Sequence[Mapping[str, Any]], tasks: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Each call plus `task_outcome`/`task_attempt`/`task_cost_usd`/`task_outcome_kind`, None where `join_confidence` is 'none'/absent or `task_id` names no task."""
+    by_id = {t["task_id"]: t for t in tasks if t.get("task_id") is not None}
+    rows = []
+    for call in calls:
+        task = by_id.get(call.get("task_id")) if call.get("join_confidence") not in (None, "none") else None
+        rows.append({
+            **call,
+            "task_outcome": task.get("outcome") if task else None,
+            "task_attempt": task.get("attempt") if task else None,
+            "task_cost_usd": task.get("cost_usd") if task else None,
+            "task_outcome_kind": task.get("outcome_kind") if task else None,
+        })
+    return rows
+
+
+def _regime_map(runs: Sequence[Mapping[str, Any]]) -> dict[Any, tuple[Any, Any]]:
+    """Each run's `(cartridge_sha, provider_profile)` regime, keyed by `run_id`."""
+    return {run.get("run_id"): (run.get("cartridge_sha"), run.get("provider_profile")) for run in runs}
+
+
+def _regime_matches(regime: tuple[Any, Any], cartridge_sha: str | None, provider_profile: str | None) -> bool:
+    sha, profile = regime
+    return (cartridge_sha is None or sha == cartridge_sha) and (provider_profile is None or profile == provider_profile)
+
+
+def roles_report(
+    calls: Sequence[Mapping[str, Any]],
+    tasks: Sequence[Mapping[str, Any]],
+    runs: Sequence[Mapping[str, Any]] = (),
+    *,
+    cartridge_sha: str | None = None,
+    provider_profile: str | None = None,
+    landed: Collection[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Landed rate, attempts-to-land and $/landed per (role, model), with sample size
+    and coverage (spec §5). `runs` supplies each call's `(cartridge_sha,
+    provider_profile)` regime by `run_id`; `cartridge_sha`/`provider_profile` narrow
+    calls (and their tasks) to runs matching the given value(s) before grouping.
+    Every row carries `regimes`, the distinct regimes among its calls' runs — more
+    than one means the row averages across a configuration change, and the row says
+    so rather than presenting a single silent number.
+
+    Rows are further split by `challenger`: a role/model with both standard and
+    challenger calls yields two rows, each with its own `n_calls`/`landed_rate`, so
+    a challenger row never inflates the standard row's sample size or its landed
+    rate (router-steward.md §3 — a challenger outcome is never read as a
+    regression).
+
+    When `landed` is given, a joined call's task counts as landed when its `task_id`
+    is in `landed`, whatever its outcome; None tests the task's `outcome == "landed"`."""
+    regime_by_run = _regime_map(runs)
+    filtering = cartridge_sha is not None or provider_profile is not None
+    matching_run_ids = {
+        run_id for run_id, regime in regime_by_run.items() if _regime_matches(regime, cartridge_sha, provider_profile)
+    }
+    matching_calls = [c for c in calls if c.get("run_id") in matching_run_ids] if filtering else calls
+    matching_tasks = [t for t in tasks if t.get("run_id") in matching_run_ids] if filtering else tasks
+
+    def is_landed(r: Mapping[str, Any]) -> bool:
+        return r["task_id"] in landed if landed is not None else r["task_outcome"] == "landed"
+
+    groups: dict[tuple[Any, Any, bool], list[dict[str, Any]]] = defaultdict(list)
+    for row in _joined(matching_calls, matching_tasks):
+        groups[(row.get("role"), row.get("model"), bool(row.get("challenger")))].append(row)
+
+    report = []
+    for (role, model, challenger), rows in groups.items():
+        joined = [r for r in rows if r["task_outcome"] is not None]
+        joined_task_ids = {r["task_id"] for r in joined}
+        landed_rows = [r for r in joined if is_landed(r)]
+        landed_task_ids = {r["task_id"] for r in landed_rows}
+        seen_landed: set[Any] = set()
+        landed_attempts = []
+        attempts_unknown = 0
+        landed_cost = 0.0
+        landed_costed = 0
+        cost_unknown = 0
+        for r in landed_rows:
+            task_id = r["task_id"]
+            if task_id in seen_landed:
+                continue
+            seen_landed.add(task_id)
+            if r["task_attempt"] is not None:
+                landed_attempts.append(r["task_attempt"])
+            else:
+                attempts_unknown += 1
+            if r["task_cost_usd"] is not None:
+                landed_cost += r["task_cost_usd"]
+                landed_costed += 1
+            else:
+                cost_unknown += 1
+        regimes = sorted(
+            {regime_by_run[r["run_id"]] for r in rows if r.get("run_id") in regime_by_run},
+            key=lambda pair: (pair[0] or "", pair[1] or ""),
+        )
+        kind_task_ids: dict[str, set[Any]] = defaultdict(set)
+        for r in joined:
+            if r["task_outcome_kind"] is not None:
+                kind_task_ids[r["task_outcome_kind"]].add(r["task_id"])
+        report.append({
+            "role": role,
+            "model": model,
+            "challenger": challenger,
+            "n_calls": len(rows),
+            "n_joined": len(joined),
+            "landed_rate": round(len(landed_task_ids) / len(joined_task_ids), 4) if joined_task_ids else None,
+            "attempts_to_land": round(sum(landed_attempts) / len(landed_attempts), 2) if landed_attempts else None,
+            "attempts_unknown": attempts_unknown,
+            "cost_per_landed": round(landed_cost / landed_costed, 2) if landed_costed else None,
+            "cost_unknown": cost_unknown,
+            "coverage": round(len(joined) / len(rows), 4) if rows else 0.0,
+            "regimes": [{"cartridge_sha": sha, "provider_profile": profile} for sha, profile in regimes],
+            "refused_tasks": len(kind_task_ids["refused"]),
+            "unverified_tasks": len(kind_task_ids["unverified"]),
+            "infra_tasks": len(kind_task_ids["infra"]),
+        })
+    return report
+
+
+def explain_report(calls: Sequence[Mapping[str, Any]], tasks: Sequence[Mapping[str, Any]], role: str) -> dict[str, Any]:
+    """The failure-class breakdown behind one role (spec §5), unclassified calls kept out of the 'unknown' enum bucket."""
+    rows = [c for c in calls if c.get("role") == role]
+    by_failure_class: dict[str, int] = defaultdict(int)
+    unclassified = 0
+    for call in rows:
+        failure_class = call.get("failure_class")
+        if failure_class is None:
+            unclassified += 1
+        elif failure_class in FAILURE_CLASSES:
+            by_failure_class[failure_class] += 1
+        else:
+            unclassified += 1
+    return {
+        "role": role,
+        "n_calls": len(rows),
+        "by_failure_class": dict(by_failure_class),
+        "unclassified": unclassified,
+        "coverage": round((len(rows) - unclassified) / len(rows), 4) if rows else 0.0,
+    }
+
+
+def series_report(
+    runs: Sequence[Mapping[str, Any]],
+    tasks: Sequence[Mapping[str, Any]],
+    *,
+    cartridge_sha: str | None = None,
+    provider_profile: str | None = None,
+) -> list[dict[str, Any]]:
+    """One row per run from the runs/tasks tables, `cost_per_landed` matching
+    agent_tools.records.series_row's formula. `cartridge_sha`/`provider_profile`
+    narrow the rows to runs matching the given value(s); each row already carries
+    its own regime, so no aggregate here ever spans one silently."""
+    filtering = cartridge_sha is not None or provider_profile is not None
+    matching_runs = (
+        [r for r in runs if _regime_matches((r.get("cartridge_sha"), r.get("provider_profile")), cartridge_sha, provider_profile)]
+        if filtering else runs
+    )
+    by_run: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for task in tasks:
+        by_run[task["run_id"]].append(task)
+
+    rows = []
+    for run in matching_runs:
+        run_id = run["run_id"]
+        run_tasks = by_run.get(run_id, [])
+        tasks_landed = sum(1 for t in run_tasks if t.get("outcome") == "landed")
+        quarantined = sum(1 for t in run_tasks if t.get("outcome") == "quarantined")
+        resolved = sum(1 for t in run_tasks if t.get("outcome") not in (None, "unknown"))
+        cost_usd = round(sum(float(t.get("cost_usd") or 0.0) for t in run_tasks), 4)
+        landed_cost_known = any(t.get("outcome") == "landed" and t.get("cost_usd") is not None for t in run_tasks)
+        rows.append({
+            "run_id": run_id,
+            "cartridge_sha": run.get("cartridge_sha"),
+            "provider_profile": run.get("provider_profile"),
+            "tasks_landed": tasks_landed,
+            "quarantined": quarantined,
+            "cost_usd": cost_usd,
+            "cost_per_landed": round(cost_usd / tasks_landed, 2) if tasks_landed and landed_cost_known else None,
+            "coverage": round(resolved / len(run_tasks), 4) if run_tasks else 0.0,
+        })
+    return sorted(rows, key=lambda r: r["run_id"])
+
+
+def coverage_report(
+    calls: Sequence[Mapping[str, Any]],
+    tasks: Sequence[Mapping[str, Any]],
+    runs: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Seven provenance rows, `known`/`total` plus their `fraction`, in the fixed order of spec §4: runs with
+    provider_profile, runs with host, runs with cartridge_sha, calls with a task, calls with a failure_class,
+    tasks with a known outcome, tasks with an outcome_kind (ticket body, RETURNED note)."""
+
+    def _row(question: str, known: int, total: int) -> dict[str, Any]:
+        return {"question": question, "known": known, "total": total, "fraction": round(known / total, 4) if total else 0.0}
+
+    return [
+        _row("runs_with_provider_profile", sum(1 for r in runs if r.get("provider_profile") is not None), len(runs)),
+        _row("runs_with_host", sum(1 for r in runs if r.get("host") is not None), len(runs)),
+        _row("runs_with_cartridge_sha", sum(1 for r in runs if r.get("cartridge_sha") is not None), len(runs)),
+        _row("calls_with_a_task", sum(1 for c in calls if c.get("task_id") is not None), len(calls)),
+        _row("calls_with_a_failure_class", sum(1 for c in calls if c.get("failure_class") is not None), len(calls)),
+        _row("tasks_with_a_known_outcome", sum(1 for t in tasks if t.get("outcome") not in (None, "unknown")), len(tasks)),
+        _row("tasks_with_an_outcome_kind", sum(1 for t in tasks if t.get("outcome_kind") is not None), len(tasks)),
+    ]
+
+
+def bounds_report(
+    calls: Sequence[Mapping[str, Any]],
+    ceiling_for: Callable[[Any, Any], float | None],
+) -> list[dict[str, Any]]:
+    """Per (role, model): `ceiling` from `ceiling_for(role, model)`, `censored`
+    when the group's max cost sits within 5% of a known ceiling or any call
+    carries `failure_class: "budget_stop"` (cost-bounds.md §2/§6 rule 3), plus
+    n/p50/p95/max/strict/moderate/liberal from `stats_derive.bounds_for_costs`.
+    Resolving `ceiling_for` from a provider profile file is the caller's job;
+    this function opens no file and no db connection."""
+    groups: dict[tuple[Any, Any], list[Mapping[str, Any]]] = defaultdict(list)
+    for call in calls:
+        groups[(call.get("role"), call.get("model"))].append(call)
+
+    report = []
+    for (role, model), rows in groups.items():
+        ceiling = ceiling_for(role, model)
+        costs = [r["cost_usd"] for r in rows if r.get("cost_usd") is not None]
+        budget_stopped = any(r.get("failure_class") == "budget_stop" for r in rows)
+        near_ceiling = ceiling is not None and bool(costs) and max(costs) >= 0.95 * ceiling
+        report.append({
+            "role": role,
+            "model": model,
+            "ceiling": ceiling,
+            "censored": near_ceiling or budget_stopped,
+            **stats_derive.bounds_for_costs(costs),
+        })
+    return report
+
+
+def spend_mix_report(calls: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Per-model token counts and cost share by class, plus the build-only
+    split, from `stats_derive.spend_mix_for_model` (cost-bounds.md §4). Groups
+    `calls` by `model` the same way `bounds_report` groups by `(role, model)`."""
+    groups: dict[Any, list[Mapping[str, Any]]] = defaultdict(list)
+    for call in calls:
+        groups[call.get("model")].append(call)
+    return [
+        stats_derive.spend_mix_for_model(rows, model)
+        for model, rows in sorted(groups.items(), key=lambda kv: kv[0] or "")
+    ]
+
+
+def render_capped(rows: Sequence[Mapping[str, Any]], cap_tokens: int = 300) -> str:
+    """Default text for a report, one line per row plus a summary line, held under `cap_tokens` via a len(text)//4 proxy (no tokenizer in this repo)."""
+    lines = [" | ".join(f"{k}={'-' if v is None else v}" for k, v in row.items()) for row in rows]
+    summary = f"{len(rows)} rows"
+
+    def render(kept: list[str]) -> str:
+        dropped = len(lines) - len(kept)
+        marked = kept if not dropped else [*kept, f"... {dropped} more rows"]
+        return "\n".join([*marked, summary])
+
+    kept = lines
+    while kept and len(render(kept)) // 4 > cap_tokens:
+        kept = kept[:-1]
+    return render(kept)
+
+
+def _fetch(conn: sqlite3.Connection, sql: str, params: tuple[str, ...]) -> list[dict[str, Any]]:
+    """Rows as dicts through sqlite3.Row, as cli._stats_fetch reads them, set on the cursor so the caller's connection is not changed."""
+    cursor = conn.cursor()
+    cursor.row_factory = sqlite3.Row
+    return [dict(row) for row in cursor.execute(sql, params).fetchall()]
+
+
+_SINCE_JOIN = "{alias} JOIN runs r ON r.run_id = {alias}.run_id WHERE substr(r.started_at, 1, 10) >= ?"
+
+
+def gates_inputs(conn: sqlite3.Connection, since: str | None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """(tasks, calls) rows for `gate_rows`. Neither table carries a timestamp, so `since` (YYYY-MM-DD) keeps rows whose run's `started_at` date is on or after it; a row with no run row or no `started_at` is dropped."""
+    if since is None:
+        return _fetch(conn, "SELECT * FROM tasks", ()), _fetch(conn, "SELECT * FROM calls", ())
+    return (
+        _fetch(conn, "SELECT t.* FROM tasks " + _SINCE_JOIN.format(alias="t"), (since,)),
+        _fetch(conn, "SELECT c.* FROM calls " + _SINCE_JOIN.format(alias="c"), (since,)),
+    )
+
+
+def _run_key(row: Mapping[str, Any]) -> str:
+    return row.get("run_id") or ""
+
+
+def _by_run(rows: Sequence[Mapping[str, Any]]) -> dict[str, list[Mapping[str, Any]]]:
+    return {key: list(group) for key, group in itertools.groupby(sorted(rows, key=_run_key), key=_run_key)}
+
+
+def tier_call_rows(conn: sqlite3.Connection, since: str | None) -> list[dict[str, Any]]:
+    """`_joined` per run: a task_id relaunched in another run must not lend a call that run's outcome. `since` as in `gates_inputs`."""
+    tasks, calls = gates_inputs(conn, since)
+    tasks_by_run = _by_run(tasks)
+    return [row for run, run_calls in _by_run(calls).items() for row in _joined(run_calls, tasks_by_run.get(run, []))]
+
+
+def _gate_cell(value: Any) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, dict):
+        return " ".join(f"{k}:{n}" for k, n in sorted(value.items()))
+    return f"{value:.4f}" if isinstance(value, float) else str(value)
+
+
+GATE_COLUMNS = (
+    ("role", "role"), ("calls", "calls"), ("cost", "cost"), ("cost/task", "cost_per_task"),
+    ("verdict mix", "verdict_mix"), ("changed", "changed"), ("caught", "caught"),
+    ("agreed", "agreed"), ("$/changed", "cost_per_changed"),
+)
+
+
+def render_gates(rows: Sequence[Mapping[str, Any]], verdicts: Sequence[str]) -> str:
+    """Fixed-width table, one line per role, then one verdict line per role; None renders `-`."""
+    cells = [[_gate_cell(row[key]) for _, key in GATE_COLUMNS] for row in rows]
+    heads = [head for head, _ in GATE_COLUMNS]
+    widths = [max([len(h), *(len(c[i]) for c in cells)]) for i, h in enumerate(heads)]
+    table = [" | ".join(v.ljust(w) for v, w in zip(line, widths)).rstrip() for line in [heads, *cells]]
+    return "\n".join([*table, "", *verdicts])
