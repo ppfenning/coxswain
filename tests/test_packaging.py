@@ -30,6 +30,11 @@ def test_pyproject_and_manifest_versions_denote_the_same_release():
     assert pep440(manifest["coxswain"]["version"]) == pyproject["project"]["version"]
 
 
+def test_dev_group_names_pytest_xdist():
+    dev = _load_toml("pyproject.toml")["dependency-groups"]["dev"]
+    assert "pytest-xdist>=3.6" in dev
+
+
 def _guard():
     spec = importlib.util.spec_from_file_location("check_release_tag", ROOT / ".github" / "check_release_tag.py")
     module = importlib.util.module_from_spec(spec)

@@ -26,6 +26,7 @@ Repository = "https://github.com/ppfenning/coxswain"
 [dependency-groups]
 dev = [
     "pytest>=8",
+    "pytest-xdist>=3.6",
     "ruff==0.16.6",
     "mkdocs-material>=9.5",
     "mike>=2.1",
