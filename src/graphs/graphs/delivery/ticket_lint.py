@@ -26,12 +26,15 @@ _CORPUS_DENYLIST = ("workspace/", "runs/", "*.usage.json", "ledger.jsonl", "~/.l
 _CORPUS_CORRECTION = "route this to `cox stats` or the chair; the build seat sees one repository worktree"
 
 # Top-level directories only one Coxswain repository has. `docs/` and `tests/` exist everywhere and are absent on purpose.
+# `coxswain` is the monorepo: every component sits under its `src/`, so one ticket there may name any of them. It is
+# last so an old component repository's name (`coxswain-graphs`) still keys to that component's roots, which stay
+# for tickets that target an unmigrated component checkout.
 _OTHER_REPO_ROOTS: Mapping[str, tuple[str, ...]] = {
     "tools": ("agent_tools/",),
     "graphs": ("harness/", "runner/", "graphs/"),
     "cartridges": ("core/", "providers/", "cartridges/", "skills-plugins/"),
-    "umbrella": ("devtools/",),
     "plugins": ("coxswain_plugins/",),
+    "coxswain": ("src/tools/", "src/graphs/", "src/cartridges/", "devtools/", "crew/"),
 }
 _PATH_PUNCTUATION = "`,.()\"':;"
 _CROSS_REPO_CORRECTION = "paste the code the build needs into the ticket: a build reads only its own repository"

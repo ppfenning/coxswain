@@ -1360,7 +1360,8 @@ def _escalate(land: Action, result: Result) -> Result:
     return _result(raised, "escalated", f"land {_land_subject(land)} {result['status']}" + (f": {why}" if why else ""))
 
 
-_SMOKE_REPOS = frozenset({"coxswain-tools", "coxswain-graphs"})
+# The monorepo `coxswain` carries tools and graphs now; the component names stay for an unmigrated chair.
+_SMOKE_REPOS = frozenset({"coxswain", "coxswain-tools", "coxswain-graphs"})
 _PR_URL_RE = re.compile(r"^pr_create: \S*/pull/(\d+)\s*$", re.MULTILINE)  # only the step line, never a stray /pull/ elsewhere
 
 
@@ -1373,8 +1374,8 @@ def _pr_from_reason(reason: str) -> int:
 
 
 def smoke_targets(results: list[Result]) -> list[LandTrigger]:
-    """A `LandTrigger` for every landed result in coxswain-tools or coxswain-graphs, for the tick wiring's
-    post-land smoke; any other repo, including an umbrella/meta one, is skipped. An action's repo is a checkout
+    """A `LandTrigger` for every landed result in coxswain (or the old coxswain-tools/-graphs), for the tick wiring's
+    post-land smoke; any other repo is skipped. An action's repo is a checkout
     path, not a bare name, so the match is on its last component and the trigger keeps the full path for `git -C`."""
     return [
         {"repo": r["action"].get("repo", ""), "pr": _pr_from_reason(r["reason"]), "commit": r.get("commit", "")}

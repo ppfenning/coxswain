@@ -211,6 +211,54 @@ def test_extra_entries_extend_the_list_without_replacing_it() -> None:
     assert hits == ["harness/cli.py", "ops/runbook.md"]
 
 
+# ── the monorepo layout: the same scope as each component checkout had ──────
+
+
+def test_a_monorepo_cartridge_is_guarded() -> None:
+    path = "src/cartridges/cartridges/base/cartridge.yaml"
+    assert governance_hits([path], ledger_path=ELSEWHERE) == [path]
+
+
+def test_a_monorepo_skill_is_guarded() -> None:
+    path = "src/cartridges/skills-plugins/local-skills/skills/plan-task/SKILL.md"
+    assert governance_hits([path], ledger_path=ELSEWHERE) == [path]
+
+
+def test_the_monorepo_policy_is_guarded() -> None:
+    assert governance_hits(["src/cartridges/core/policy.py"], ledger_path=ELSEWHERE) == ["src/cartridges/core/policy.py"]
+
+
+def test_the_monorepo_ledger_module_is_guarded() -> None:
+    assert governance_hits(["src/cartridges/core/ledger.py"], ledger_path=ELSEWHERE) == ["src/cartridges/core/ledger.py"]
+
+
+def test_the_monorepo_harness_is_guarded() -> None:
+    assert governance_hits(["src/graphs/harness/escalate.py"], ledger_path=ELSEWHERE) == ["src/graphs/harness/escalate.py"]
+
+
+def test_the_monorepo_router_is_not_governance() -> None:
+    assert governance_hits(["src/cartridges/core/router.py"], ledger_path=ELSEWHERE) == []
+
+
+def test_the_monorepo_cartridges_tests_are_not_governance() -> None:
+    assert governance_hits(["src/cartridges/tests/test_router.py"], ledger_path=ELSEWHERE) == []
+
+
+def test_the_monorepo_cartridges_docs_are_not_governance() -> None:
+    assert governance_hits(["src/cartridges/docs/policy.md"], ledger_path=ELSEWHERE) == []
+
+
+def test_a_monorepo_tools_file_is_not_governance() -> None:
+    assert governance_hits(["src/tools/agent_tools/route.py"], ledger_path=ELSEWHERE) == []
+
+
+def test_a_monorepo_patch_to_the_harness_escalates(cart) -> None:
+    patch = GOVERNANCE_PATCH.replace("harness/gate.py", "src/graphs/harness/gate.py")
+    out, hits = escalate_self_modification([build_proposal()], patch=patch, cartridge=cart, ledger_path=ELSEWHERE)
+    assert hits == ["src/graphs/harness/gate.py"]
+    assert out[0]["kind"] == "self_modification"
+
+
 # ── escalate_self_modification ───────────────────────────────────────────────
 
 

@@ -3,35 +3,10 @@
 from __future__ import annotations
 
 import os
-import pathlib
 import uuid
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import pytest
-
-# The graphs never import the substrate; only the harness does. That seam is what
-# lets CI run without agent-cartridges (a private sibling repo needing a token
-# the fork of a PR will not have) — but only if the tests that DO need it are
-# skipped rather than failing at collection.
-#
-# Discovered by reading, not by a hand-maintained list: a list drifts the moment
-# someone adds a test, which is exactly what happened when test_phase_runner.py
-# arrived and CI still only knew about test_shell_autonomy.py.
-try:  # pragma: no cover - depends on what is installed
-    import core  # noqa: F401
-
-    collect_ignore: list[str] = []
-except ImportError:  # pragma: no cover
-    _here = pathlib.Path(__file__).parent
-    collect_ignore = [
-        path.name
-        for path in sorted(_here.glob("test_*.py"))
-        if any(
-            marker in path.read_text(encoding="utf-8")
-            # the harness imports the substrate; the graphs never do
-            for marker in ("from shell import", "import shell", "from harness", "import harness")
-        )
-    ]
 
 CARTRIDGE = {
     "team": "acme",
@@ -63,10 +38,8 @@ def _courier_sends_are_recorded(request, monkeypatch):
     """
     if request.node.get_closest_marker("real_courier") is not None:
         return None
-    try:
-        from harness import courier_adapter, epic
-    except ImportError:  # pragma: no cover - the harness needs the substrate
-        return None
+    from harness import courier_adapter, epic
+
     calls: list[tuple[str, str, str]] = []
 
     def record(ref: str, to: str, note: str) -> bool:

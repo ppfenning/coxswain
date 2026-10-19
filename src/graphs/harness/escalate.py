@@ -40,6 +40,7 @@ from typing import Any
 
 __all__ = [
     "GOVERNANCE_PATHS",
+    "MONOREPO_COMPONENTS",
     "PATCH_KINDS",
     "SELF_MODIFICATION",
     "escalate_self_modification",
@@ -52,6 +53,14 @@ __all__ = [
 # judged by, policy.py is the judgment itself, ledger.py is the record the
 # judgment reads, and harness/ is every hand that touches any of them —
 # including this file.
+#
+# The entries are a component checkout's own paths. In the monorepo each
+# component sits under `src/<component>/`, and a path there is judged by what
+# follows that prefix, exactly as it was judged in the component's own checkout:
+# `src/cartridges/core/policy.py` hits, `src/cartridges/core/router.py` and
+# `src/cartridges/tests/...` do not. Matching the entries at any depth of the
+# whole path would let `cartridges/` swallow all of `src/cartridges/`, widening
+# the gate; anchoring at the component keeps its scope where it was.
 GOVERNANCE_PATHS: tuple[str, ...] = (
     "cartridges/",
     "skills-plugins/",
@@ -59,6 +68,9 @@ GOVERNANCE_PATHS: tuple[str, ...] = (
     "core/ledger.py",
     "harness/",
 )
+
+# The monorepo folders that each hold one former component checkout.
+MONOREPO_COMPONENTS: frozenset[str] = frozenset({"cartridges", "graphs", "tools"})
 
 # The kinds that carry the patch. These are what a governance edit actually
 # rides in on; a scoping `item_create` or a `comment_add` emitted by the same
@@ -146,6 +158,13 @@ def _segments_match(path_segments: Sequence[str], entry_segments: Sequence[str])
     )
 
 
+def _component_segments(segments: Sequence[str]) -> Sequence[str]:
+    """A monorepo path `src/<component>/<rest>` as `<rest>`, the path its component's own checkout gave it; any other path as it is."""
+    if len(segments) > 2 and segments[0] == "src" and segments[1] in MONOREPO_COMPONENTS:
+        return segments[2:]
+    return segments
+
+
 def governance_hits(
     paths: Iterable[str],
     *,
@@ -175,7 +194,7 @@ def governance_hits(
         if ledger_name and segments[-1] == ledger_name:
             hits.add(path)
             continue
-        if any(_segments_match(segments, entry) for entry in entries):
+        if any(_segments_match(_component_segments(segments), entry) for entry in entries):
             hits.add(path)
     return sorted(hits)
 

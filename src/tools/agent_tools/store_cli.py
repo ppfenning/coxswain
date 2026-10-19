@@ -1,7 +1,7 @@
 """Wrapper for graphs' `python -m harness.store_cli`: pure argv builders, pure parsers, one thin edge.
 
 The contract, from graphs-store-write-cli. Every command runs as
-`<harness_dir>/.venv/bin/python -m harness.store_cli <command...>` and prints one JSON
+`<harness python> -m harness.store_cli <command...>` (`install_root.harness_python`) and prints one JSON
 object on stdout. Exit 0 is success, 3 a refused precondition, 2 bad arguments or an
 unreadable store. `--store-url <url>` is optional; every edge below that takes a `runs_dir`
 always passes the store `run_store` resolves for it, so both sides use one store (without it

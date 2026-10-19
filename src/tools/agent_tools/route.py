@@ -666,15 +666,16 @@ def surface_candidates(body: str, repo: str) -> list[str]:
     return found
 
 
-def harness_argv(profile: dict, graph: str, run_id: str, **needs) -> list:
+def harness_argv(profile: dict, graph: str, run_id: str, *, python: str | None = None, **needs) -> list:
     """Build the harness command line, spec §4, from a parsed `profile`
     and the graph-specific `needs` (`initiative`/`repo` for `epic`, plus
     `task` for `rescue`; `idea`/`initiative_id`, plus an optional `task_ids` and `repo`, for `decompose`). Pure: no Popen, no env reads.
+    `python` is the interpreter `install_root.harness_python` chose; without it, the harness checkout's own venv.
     """
     harness_dir = profile["harness_dir"]
     workspace_dir = profile["workspace_dir"]
     argv = [
-        f"{harness_dir}/.venv/bin/python",
+        python or f"{harness_dir}/.venv/bin/python",
         f"{harness_dir}/shell.py",
         graph,
         "--team",
@@ -2058,10 +2059,10 @@ def status_entries(runs: list, summaries: dict) -> list:
 
 
 def child_env(
-    environ: dict, *, harness_dir: str = "", repo: str = "", trace_dir: str = "", chair_model: str = "",
+    environ: dict, *, harness_bin: str = "", repo: str = "", trace_dir: str = "", chair_model: str = "",
 ) -> dict:
     """The harness child's environment, spec §4: `environ` with
-    `<repo>/.venv/bin` and `<harness_dir>/.venv/bin` prepended to `PATH`
+    `<repo>/.venv/bin` and `harness_bin` (the folder of the harness python) prepended to `PATH`
     when given, in that order. Every other key is untouched; `environ`
     itself is never mutated. When `trace_dir` is given, `AGENT_GRAPHS_TRACE_DIR`
     is set to it, replacing any value already in `environ`; when omitted, the
@@ -2070,7 +2071,7 @@ def child_env(
     """
     env = dict(environ)
     prefixes = [p for p in (f"{repo}/.venv/bin" if repo else "",
-                             f"{harness_dir}/.venv/bin" if harness_dir else "") if p]
+                             harness_bin) if p]
     if prefixes:
         rest = env.get("PATH", "")
         env["PATH"] = os.pathsep.join(prefixes + ([rest] if rest else []))

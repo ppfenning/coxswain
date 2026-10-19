@@ -142,6 +142,7 @@ home_paths = _LazyModule("agent_tools.home")
 host_cmd = _LazyModule("agent_tools.host_cmd")
 install = _LazyModule("agent_tools.install")
 install_exec = _LazyModule("agent_tools.install_exec")
+install_root = _LazyModule("agent_tools.install_root")
 intake_state = _LazyModule("agent_tools.intake_state")
 lake_config = _LazyModule("agent_tools.lake_config")
 lake_lease = _LazyModule("agent_tools.lake_lease")
@@ -1269,7 +1270,7 @@ def _runs_move_harness_python(a: argparse.Namespace) -> str:
     except route.ProfileError:
         profile = {}
     harness_dir = profile.get("harness_dir", "")
-    return str(Path(harness_dir) / ".venv" / "bin" / "python") if harness_dir else "python"
+    return str(install_root.harness_python(harness_dir)) if harness_dir else "python"
 
 
 def _runs_move(a: argparse.Namespace) -> int:
@@ -4496,7 +4497,7 @@ def _harness_ready_or_refuse(harness_dir: str):
     the reason, or `None` when the venv is ready.
     """
     shell_py = Path(harness_dir) / "shell.py"
-    venv_python = Path(harness_dir) / ".venv" / "bin" / "python"
+    venv_python = install_root.harness_python(harness_dir)
     if not shell_py.exists() or not venv_python.exists():
         print(f"routing: harness venv missing at {harness_dir}; install it (see the harness README)")
         return 2
@@ -4814,15 +4815,20 @@ def _route_launch(a: argparse.Namespace) -> int:
     if overlaid_provider_profile is not None:
         overlaid_path = runs_dir / f"{run_id}.provider-profile.yaml"
         launch_profile = {**profile, "provider_profile": str(overlaid_path)}
-    argv = route.harness_argv(launch_profile, a.graph, run_id, **needs)
+    harness_python = str(install_root.harness_python(harness_dir)) if harness_dir else None
+    argv = route.harness_argv(launch_profile, a.graph, run_id, python=harness_python, **needs)
     log_path = runs_dir / f"{run_id}.log"
     pid_path = runs_dir / f"{run_id}.pid"
     trace_dir = runs_dir / f"{run_id}-trace"
     env = route.child_env(
-        dict(os.environ), harness_dir=harness_dir, repo=env_repo, trace_dir=str(trace_dir), chair_model=chair_model,
+        dict(os.environ), harness_bin=str(Path(harness_python).parent) if harness_python else "", repo=env_repo,
+        trace_dir=str(trace_dir), chair_model=chair_model,
     )
 
-    launch_harness = str(Path(harness_dir).expanduser()) if harness_dir else None
+    # The lane host syncs the git checkout that holds the harness: the coxswain checkout once migrated (harness_dir
+    # is its src/graphs, not a checkout root), else the harness checkout itself. The host's own `cox route launch`
+    # then picks its interpreter with the same install_root rule.
+    launch_harness = str(install_root.checkout_root(harness_dir) or Path(harness_dir).expanduser()) if harness_dir else None
     if host is not None and a.dry_run:
         checkouts = _host_checkouts(run_store.hosts(runs_dir), host.name)
         # The sync steps are listed only for a host with recorded checkouts: test_cli_launch_on pins the bare rsync + ssh plan otherwise.
@@ -5485,111 +5491,125 @@ def _route_launch_sweep(a: argparse.Namespace) -> int:
     return 2
 
 
-_CORE_PROBE_SCRIPT = '''
-import json, os, sys
-
-cartridges_dir, team, *roots = sys.argv[1:]
-out = {"import": None, "load": None, "indexed": {}, "resolved": None, "skill_index": {}, "layers": None}
-try:
-    from importlib.metadata import entry_points
-    out["plugins"] = {g: sorted(ep.name for ep in entry_points(group=g))
-                      for g in ("coxswain.system_one", "coxswain.runners")}
-except Exception:
-    pass  # left unset: the doctor row reads "not checked", never an empty claim
-try:
-    from core.cartridge import load
-    from core.skills import index_from_roots
-except Exception as exc:
-    out["import"] = f"{type(exc).__name__}: {exc}"
-    print(json.dumps(out)); raise SystemExit(0)
-try:
-    index = index_from_roots(roots)
-    out["indexed"] = {root: len(index_from_roots([root])) for root in roots}
-    out["skill_index"] = {name: [str(p) for p in paths] for name, paths in index.items()}
-except Exception as exc:
-    # An empty mapping would read downstream as "no roots configured"; a zero
-    # per root fails the skills row honestly, and the cartridge row names why.
-    out["indexed"] = {root: 0 for root in roots}
-    out["load"] = f"skill index failed: {type(exc).__name__}: {exc}"
-    print(json.dumps(out)); raise SystemExit(0)
-try:
-    out["resolved"] = load(team, cartridges_dir, skill_index=index)
-except Exception as exc:
-    out["load"] = f"{type(exc).__name__}: {exc}"
-try:
-    from core.cartridge import layers
-    out["layers"] = [[label, resolved] for label, resolved in layers(team, cartridges_dir, skill_index=index)]
-except Exception as exc:
-    # Never an empty list: a chain one layer short must be visibly unknown,
-    # not silently read as "nothing set anything".
-    out["layers"] = None
-    out["layers_error"] = f"{type(exc).__name__}: {exc}"
-overlay_text = os.environ.get("AGENT_TOOLS_OVERLAY_TEXT")
-if overlay_text is None:
-    out["overlay_errors"] = None
-else:
-    try:
-        from core.cartridge import overlay_errors
-        out["overlay_errors"] = overlay_errors(overlay_text)
-    except Exception as exc:
-        out["overlay_errors"] = [f"{type(exc).__name__}: {exc}"]
-provider_profile = os.environ.get("AGENT_TOOLS_PROVIDER_PROFILE")
-if not provider_profile:
-    out["freshness"] = ["model freshness not checked: AGENT_TOOLS_PROVIDER_PROFILE is unset"]
-else:
+def _core_freshness(provider_profile: str | None) -> list[str] | None:
+    """The model freshness lines for `provider_profile`; None for a core too old for the check (the doctor prints one skip row)."""
+    if not provider_profile:
+        return ["model freshness not checked: AGENT_TOOLS_PROVIDER_PROFILE is unset"]
     try:
         from core.model_freshness import freshness_warnings
     except ImportError:
-        out["freshness"] = None  # a core too old for the check: the doctor prints one skip row
-    else:
-        from pathlib import Path
-        # load_profile reads the file with Path.read_text, so it takes a Path, never the raw env str.
-        profile_path = Path(provider_profile).expanduser()
-        try:
-            import core
-            from core.catalog import load_catalog
-            from core.profile import load_profile
-            if not profile_path.is_file():
-                out["freshness"] = [f"model freshness not checked: provider profile not found at {profile_path}"]
-            elif not os.access(profile_path, os.R_OK):
-                out["freshness"] = [f"model freshness not checked: provider profile unreadable at {profile_path}"]
-            else:
-                catalog_path = Path(core.__file__).resolve().parent.parent / "providers" / "catalog.yaml"
-                catalog = load_catalog(catalog_path)
-                profile = catalog if isinstance(catalog, list) else load_profile(profile_path, catalog_path)
-                errors = catalog if isinstance(catalog, list) else profile if isinstance(profile, list) else None
-                if errors is None:
-                    out["freshness"] = list(freshness_warnings(profile, catalog))
-                else:
-                    out["freshness"] = ["model freshness not checked: " + str(errors[0] if errors else "unknown error")]
-        except Exception:
-            out["freshness"] = [f"model freshness not checked: could not evaluate the provider profile at {profile_path}"]
-print(json.dumps(out))
-'''
+        return None
+    # load_profile reads the file with Path.read_text, so it takes a Path, never the raw str.
+    profile_path = Path(provider_profile).expanduser()
+    try:
+        import core
+        from core.catalog import load_catalog
+        from core.profile import load_profile
+        if not profile_path.is_file():
+            return [f"model freshness not checked: provider profile not found at {profile_path}"]
+        if not os.access(profile_path, os.R_OK):
+            return [f"model freshness not checked: provider profile unreadable at {profile_path}"]
+        catalog_path = Path(core.__file__).resolve().parent.parent / "providers" / "catalog.yaml"
+        catalog = load_catalog(catalog_path)
+        profile = catalog if isinstance(catalog, list) else load_profile(profile_path, catalog_path)
+        errors = catalog if isinstance(catalog, list) else profile if isinstance(profile, list) else None
+        if errors is None:
+            return list(freshness_warnings(profile, catalog))
+        return ["model freshness not checked: " + str(errors[0] if errors else "unknown error")]
+    except Exception:
+        return [f"model freshness not checked: could not evaluate the provider profile at {profile_path}"]
 
 
-def _run_core_probe(python_path: str, cartridges_dir: str, team: str, skills_roots: list, raw_roots: list | None = None,
-                     overlay_text: str | None = None, provider_profile: str | None = None) -> dict:
-    """One `python -c` call into the harness venv (spec: setup doctor). Any
-    failure to get parseable JSON back is folded into `core_import` as the
-    stderr tail, never raised."""
-    env = dict(os.environ)
-    if overlay_text is not None:
-        env["AGENT_TOOLS_OVERLAY_TEXT"] = overlay_text
-    if provider_profile is not None:
-        env["AGENT_TOOLS_PROVIDER_PROFILE"] = provider_profile
+_HARNESS_PLUGIN_GROUPS = ("coxswain.system_one", "coxswain.runners")
+_PLUGINS_PROBE_SCRIPT = (
+    "import json, sys\n"
+    "from importlib.metadata import entry_points\n"
+    "print(json.dumps({g: sorted(ep.name for ep in entry_points(group=g)) for g in sys.argv[1:]}))\n"
+)
+
+
+def plugins_probe_argv(python: str) -> list[str]:
+    """The harness interpreter listing its own plugin entry points: `cox` may run from another venv (a uv tool)."""
+    return [python, "-c", _PLUGINS_PROBE_SCRIPT, *_HARNESS_PLUGIN_GROUPS]
+
+
+def parse_plugins_probe(returncode: int, stdout: str) -> dict[str, list[str]] | None:
+    """`{group: [names]}` for every probed group, else None, which the doctor row reads as "not checked", never as empty."""
+    if returncode != 0:
+        return None
     try:
-        proc = subprocess.run(
-            [python_path, "-c", _CORE_PROBE_SCRIPT, cartridges_dir, team, *skills_roots],
-            capture_output=True, text=True, timeout=60, env=env,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return {"core_import": str(exc)}
-    try:
-        parsed = json.loads(proc.stdout)
+        parsed = json.loads(stdout)
     except ValueError:
-        tail = (proc.stderr or "").strip().splitlines()
-        return {"core_import": tail[-1] if tail else f"core probe exited {proc.returncode} with no JSON"}
+        return None
+    if not isinstance(parsed, dict) or set(parsed) != set(_HARNESS_PLUGIN_GROUPS):
+        return None
+    if not all(isinstance(names, list) and all(isinstance(n, str) for n in names) for names in parsed.values()):
+        return None
+    return parsed
+
+
+def _harness_plugins(python: str) -> dict[str, list[str]] | None:
+    """Edge. The plugin entry points the harness interpreter sees; None when it cannot say."""
+    try:
+        done = subprocess.run(plugins_probe_argv(python), capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return parse_plugins_probe(done.returncode, done.stdout)
+
+
+def _core_probe(cartridges_dir: str, team: str, roots: list, overlay_text: str | None, provider_profile: str | None) -> dict:
+    """Edge. The cartridge API, imported in-process (one venv: core sits beside agent_tools), as one JSON-shaped dict.
+
+    Each step's failure lands in its own key and never raises; a failed import or skill index stops the walk there."""
+    out: dict = {"import": None, "load": None, "indexed": {}, "resolved": None, "skill_index": {}, "layers": None}
+    try:
+        from core.cartridge import load
+        from core.skills import index_from_roots
+    except Exception as exc:
+        out["import"] = f"{type(exc).__name__}: {exc}"
+        return out
+    try:
+        index = index_from_roots(roots)
+        out["indexed"] = {root: len(index_from_roots([root])) for root in roots}
+        out["skill_index"] = {name: [str(p) for p in paths] for name, paths in index.items()}
+    except Exception as exc:
+        # An empty mapping would read downstream as "no roots configured"; a zero
+        # per root fails the skills row honestly, and the cartridge row names why.
+        out["indexed"] = dict.fromkeys(roots, 0)
+        out["load"] = f"skill index failed: {type(exc).__name__}: {exc}"
+        return out
+    try:
+        out["resolved"] = load(team, cartridges_dir, skill_index=index)
+    except Exception as exc:
+        out["load"] = f"{type(exc).__name__}: {exc}"
+    try:
+        from core.cartridge import layers
+        out["layers"] = [[label, resolved] for label, resolved in layers(team, cartridges_dir, skill_index=index)]
+    except Exception as exc:
+        # Never an empty list: a chain one layer short must be visibly unknown,
+        # not silently read as "nothing set anything".
+        out["layers"] = None
+        out["layers_error"] = f"{type(exc).__name__}: {exc}"
+    if overlay_text is None:
+        out["overlay_errors"] = None
+    else:
+        try:
+            from core.cartridge import overlay_errors
+            out["overlay_errors"] = overlay_errors(overlay_text)
+        except Exception as exc:
+            out["overlay_errors"] = [f"{type(exc).__name__}: {exc}"]
+    out["freshness"] = _core_freshness(provider_profile)
+    return out
+
+
+def _run_core_probe(cartridges_dir: str, team: str, skills_roots: list, raw_roots: list | None = None,
+                     overlay_text: str | None = None, provider_profile: str | None = None) -> dict:
+    """The core probe's facts (spec: setup doctor). Any failure the probe did not
+    catch itself is folded into `core_import`, never raised."""
+    try:
+        parsed = _core_probe(cartridges_dir, team, list(skills_roots), overlay_text, provider_profile)
+    except Exception as exc:
+        return {"core_import": f"{type(exc).__name__}: {exc}"}
     indexed = parsed.get("indexed", {}) or {}
     if raw_roots and len(raw_roots) == len(skills_roots):
         # The probe saw expanded paths; the core keys its skills row by the
@@ -5602,8 +5622,6 @@ def _run_core_probe(python_path: str, cartridges_dir: str, team: str, skills_roo
         facts["overlay_errors"] = parsed["overlay_errors"]
     if "freshness" in parsed:
         facts["freshness_lines"] = parsed["freshness"]
-    if "plugins" in parsed:
-        facts["plugins_harness"] = parsed["plugins"]
     # Exactly one of `provenance`/`provenance_error` is set below, on every
     # path: a fact dict carrying neither would read as "nothing to report"
     # rather than "the walk never happened", which is the silent-mislabel
@@ -5774,11 +5792,13 @@ def _gather_doctor_facts(profile_path: Path, repo: Path) -> dict:
     expand = lambda p: str(Path(p).expanduser()) if p else ""  # noqa: E731
     facts["paths_exist"] = {p: Path(expand(p)).exists() for p in (*singles, *roots) if p}
     harness_dir = expand(profile.get("harness_dir", ""))
-    venv_python = Path(harness_dir) / ".venv" / "bin" / "python" if harness_dir else Path("/nonexistent")
-    facts["harness_python_exists"] = venv_python.exists()
+    facts["harness_python_exists"] = bool(harness_dir) and install_root.harness_python(harness_dir).exists()
     if facts["harness_python_exists"]:
+        plugins = _harness_plugins(str(install_root.harness_python(harness_dir)))
+        if plugins is not None:
+            facts["plugins_harness"] = plugins
         overlay_text = _read_text_or_none(repo / ".agent" / "cartridge.yaml")
-        facts.update(_run_core_probe(str(venv_python), expand(profile.get("cartridges_dir", "")), profile.get("team", ""),
+        facts.update(_run_core_probe(expand(profile.get("cartridges_dir", "")), profile.get("team", ""),
                                      [expand(r) for r in roots], raw_roots=roots, overlay_text=overlay_text,
                                      provider_profile=expand(profile.get("provider_profile", "")) or None))
     if profile.get("provider_profile"):
@@ -7332,8 +7352,9 @@ def _upgrade(a: argparse.Namespace) -> int:
 def _schema_versions(harness_dir: str = "", provider_profile: str = "", skills_roots: list[str] | None = None
                       ) -> dict[str, str | None]:
     """The schema each of the three tools was built against, read from the
-    profile's (or `--root`'s) checkouts rather than imported, since graphs
-    and cartridges are not installed in this venv."""
+    profile's (or `--root`'s) checkouts first: on an unmigrated host graphs and
+    cartridges are not installed in this venv, and on a migrated one the
+    profile's checkout is the one the harness runs."""
     return {
         "cartridges": schema.cartridges_schema(provider_profile, skills_roots or []),
         "graphs": schema.graphs_schema(harness_dir),
@@ -9281,7 +9302,7 @@ def _chair_perform_with_smoke(
     tickets: Callable[[], Sequence[Mapping]] = lambda: [],
 ) -> chair_run.Perform:
     """Wraps `perform` with the post-land watch and smoke. A live run records a watch for every landed commit, then a
-    landed coxswain-tools/-graphs PR runs the fixed smoke commands once against the first triggering land's repo.
+    landed coxswain (or coxswain-tools/-graphs) PR runs the fixed smoke commands once against the first triggering land's repo.
     A failure holds a `HoldRecord` and opens no revert PR: the hold makes `landed_main` report smoke failed for that
     commit, so the next tick's plan emits `revert_land`. A pass clears an existing hold. `held` runs last, to resolve
     the watches whose main went green. A dry run calls neither `watch` nor `held`.
@@ -9426,7 +9447,7 @@ def _chair_run_deps(
     ws = runs_dir.parent
     home = os.path.expanduser("~")
     harness_dir = profile.get("harness_dir", "")
-    harness_python = str(Path(harness_dir) / ".venv" / "bin" / "python") if harness_dir else "python"
+    harness_python = str(install_root.harness_python(harness_dir)) if harness_dir else "python"
 
     def now() -> datetime.datetime:
         return datetime.datetime.now(datetime.UTC)
@@ -9881,10 +9902,12 @@ def _chair_unit_inputs(label: str | None, env_file: str | None, profile_path: Pa
     if not profile.get("workspace_dir", ""):
         return _ChairUnitRefusal(f"routing: workspace_dir not set in profile {profile_path}")
     harness_dir = profile.get("harness_dir")
+    # The tools venv: the coxswain checkout's, else (an unmigrated host) the tools checkout's own.
+    tools_root = install_root.checkout_root(Path(__file__).parent) or Path(__file__).resolve().parents[1]
     unit_path_value = chair_service.path_value(
         os.path.abspath(cox),
-        str(Path(__file__).resolve().parents[1] / ".venv" / "bin"),
-        str(Path(harness_dir).expanduser() / ".venv" / "bin") if harness_dir else "",
+        str(install_root.venv_python(tools_root).parent),
+        str(install_root.harness_python(harness_dir).parent) if harness_dir else "",
         os.environ.get("PATH", ""),
     )
     # systemd does not expand `~/` in WorkingDirectory=, and the unit does not inherit this shell's
@@ -10526,9 +10549,11 @@ def _cartridges_checkout(profile: Mapping) -> str:
 
 
 def _host_repos(profile: Mapping) -> list[str]:
-    """Edge: the harness, cartridges and tools checkouts, the three paths the chair itself runs from."""
+    """Edge: the harness, cartridges and tools checkouts, the three paths the chair itself runs from; on a migrated
+    host they are folders of one coxswain checkout, named once, at its root."""
     harness = str(Path(profile["harness_dir"]).expanduser()) if profile.get("harness_dir") else ""
-    return [p for p in (harness, _cartridges_checkout(profile), str(Path(__file__).resolve().parents[1])) if p]
+    paths = [p for p in (harness, _cartridges_checkout(profile), str(Path(__file__).resolve().parents[1])) if p]
+    return install_root.collapse_to_checkouts(paths, {p: install_root.checkout_root(p) for p in paths})
 
 
 def _origin_url(path: str) -> str | None:

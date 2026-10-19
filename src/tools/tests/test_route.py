@@ -634,7 +634,7 @@ def test_overlay_never_raises_on_off_ladder_values():
 
 def test_child_env_prepends_both_venv_bins_and_leaves_other_keys_untouched():
     environ = {"PATH": "/usr/bin:/bin", "HOME": "/home/user", "LANG": "C.UTF-8"}
-    env = route.child_env(environ, harness_dir="/opt/coxswain-graphs", repo="/repos/widget")
+    env = route.child_env(environ, harness_bin="/opt/coxswain-graphs/.venv/bin", repo="/repos/widget")
     assert env["PATH"] == "/repos/widget/.venv/bin:/opt/coxswain-graphs/.venv/bin:/usr/bin:/bin"
     assert env["HOME"] == "/home/user"
     assert env["LANG"] == "C.UTF-8"
@@ -643,13 +643,13 @@ def test_child_env_prepends_both_venv_bins_and_leaves_other_keys_untouched():
 
 def test_child_env_omits_a_prefix_that_is_not_given():
     environ = {"PATH": "/usr/bin"}
-    env = route.child_env(environ, harness_dir="/opt/coxswain-graphs", repo="")
+    env = route.child_env(environ, harness_bin="/opt/coxswain-graphs/.venv/bin", repo="")
     assert env["PATH"] == "/opt/coxswain-graphs/.venv/bin:/usr/bin"
 
 
 def test_child_env_sets_trace_dir_and_still_prepends_path():
     environ = {"PATH": "/usr/bin"}
-    env = route.child_env(environ, harness_dir="/opt/coxswain-graphs", trace_dir="/runs/x-1-trace")
+    env = route.child_env(environ, harness_bin="/opt/coxswain-graphs/.venv/bin", trace_dir="/runs/x-1-trace")
     assert env["AGENT_GRAPHS_TRACE_DIR"] == "/runs/x-1-trace"
     assert env["PATH"] == "/opt/coxswain-graphs/.venv/bin:/usr/bin"
 
@@ -668,7 +668,7 @@ def test_child_env_replaces_a_callers_pre_set_trace_dir():
 
 
 def test_child_env_exports_the_chair_model_and_still_prepends_path():
-    env = route.child_env({"PATH": "/usr/bin"}, harness_dir="/opt/coxswain-graphs", chair_model="sonnet")
+    env = route.child_env({"PATH": "/usr/bin"}, harness_bin="/opt/coxswain-graphs/.venv/bin", chair_model="sonnet")
     assert env["COXSWAIN_CHAIR_MODEL"] == "sonnet"
     assert env["PATH"] == "/opt/coxswain-graphs/.venv/bin:/usr/bin"
 
@@ -680,7 +680,7 @@ def test_child_env_with_an_empty_chair_model_keeps_a_pre_set_value_and_adds_none
 
 def test_child_env_leaves_the_input_mapping_unchanged():
     environ = {"PATH": "/usr/bin", "COXSWAIN_CHAIR_MODEL": "haiku"}
-    route.child_env(environ, harness_dir="/h", repo="/r", trace_dir="/t", chair_model="opus")
+    route.child_env(environ, harness_bin="/h", repo="/r", trace_dir="/t", chair_model="opus")
     assert environ == {"PATH": "/usr/bin", "COXSWAIN_CHAIR_MODEL": "haiku"}
 
 

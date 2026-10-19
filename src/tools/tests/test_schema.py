@@ -77,3 +77,20 @@ def test_the_fallback_import_reads_the_constant_from_an_importable_module(monkey
     monkeypatch.setitem(sys.modules, "fake_schema_module", module)
     assert schema._fallback_import("fake_schema_module", "SCHEMA_VERSION") == "9.9"
     assert schema._fallback_import("no_such_module_for_schema_test", "SCHEMA_VERSION") is None
+
+
+def test_cartridges_schema_resolves_in_the_monorepo_layout(tmp_path):
+    """The default provider profile sits at <checkout>/src/cartridges/providers, beside src/cartridges/core."""
+    cartridges = tmp_path / "coxswain" / "src" / "cartridges"
+    (cartridges / "core").mkdir(parents=True)
+    (cartridges / "core" / "__init__.py").write_text('SCHEMA_VERSION = "1.3"\n')
+    (cartridges / "providers").mkdir()
+    assert schema.cartridges_schema(cartridges / "providers" / "claude-code.yaml") == "1.3"
+
+
+def test_graphs_schema_resolves_in_the_monorepo_layout(tmp_path):
+    """harness_dir is <checkout>/src/graphs, which holds the harness package."""
+    harness_dir = tmp_path / "coxswain" / "src" / "graphs"
+    (harness_dir / "harness").mkdir(parents=True)
+    (harness_dir / "harness" / "__init__.py").write_text('CORE_SCHEMA = "1.1"\n')
+    assert schema.graphs_schema(harness_dir) == "1.1"

@@ -252,6 +252,18 @@ def test_a_cross_repo_root_the_tree_lists_is_the_repositorys_own():
     assert lint_tickets([_task(body="edit graphs/delivery/ticket_lint.py")], tree, [], "graphs") == []
 
 
+def test_a_monorepo_ticket_naming_another_component_gets_no_cross_repo_advisory():
+    tree = [{"path": "src/tools/agent_tools/route.py", "repo": "coxswain"}]
+    tasks = [_task(body="edit src/graphs/harness/cli.py and src/cartridges/core/policy.py")]
+    assert lint_tickets(tasks, tree, [], "~/repos/coxswain") == []
+
+
+def test_a_monorepo_path_named_from_another_repo_is_flagged_as_coxswain():
+    tree = [{"path": "coxswain_plugins/x.py", "repo": "plugins"}]
+    problems = lint_tickets([_task(body="edit src/graphs/harness/cli.py")], tree, [], "plugins")
+    assert [p.detail for p in problems] == ["names src/graphs/harness/cli.py, which lives in coxswain"]
+
+
 def _contract_problems(tasks):
     return [p for p in lint_tickets(tasks, [], [], "") if p.rule == "contract"]
 

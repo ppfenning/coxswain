@@ -81,7 +81,8 @@ def launch_plan(
     `route launch` reads --initiative as a path from its cwd, and an ssh command starts in the home directory.
     `repo` may be tilde-prefixed or recorded under another machine's home, so with `home` given it is mapped
     per use: home-relative for the ssh sync, tilde form for the push destination, expanded for the local side.
-    Without `home` it is passed through unchanged. `harness_dir` and `repo` each sync at the entry of
+    Without `home` it is passed through unchanged. `harness_dir` is the git checkout holding the harness (on a
+    migrated host the coxswain checkout, whose `src/graphs` is the profile's harness_dir). It and `repo` each sync at the entry of
     `host_checkouts` with the same basename when there is one, and the repo is pushed to that entry too."""
     place = locate if locate is not None else (lambda path: f"{host.ssh}:{path}")
     src = f"work/{initiative}"
