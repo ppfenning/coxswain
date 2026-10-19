@@ -1993,8 +1993,13 @@ def _landed_result(repo: str, pr_url: str, commit: str) -> dict:
 def test_smoke_targets_keeps_only_the_named_repos() -> None:
     # An action's repo is the initiative frontmatter's checkout path, e.g. `repo: /home/user/repos/coxswain-tools`.
     tools = _landed_result("/x/coxswain-tools", "https://github.com/org/coxswain-tools/pull/42", "abc123")
-    umbrella = _landed_result("/x/coxswain", "https://github.com/org/coxswain/pull/9", "def456")
-    assert smoke_targets([tools, umbrella]) == [{"repo": "/x/coxswain-tools", "pr": 42, "commit": "abc123"}]
+    other = _landed_result("/x/widget", "https://github.com/org/widget/pull/9", "def456")
+    assert smoke_targets([tools, other]) == [{"repo": "/x/coxswain-tools", "pr": 42, "commit": "abc123"}]
+
+
+def test_smoke_targets_include_the_monorepo() -> None:
+    monorepo = _landed_result("/x/coxswain", "https://github.com/org/coxswain/pull/9", "def456")
+    assert smoke_targets([monorepo]) == [{"repo": "/x/coxswain", "pr": 9, "commit": "def456"}]
 
 
 def test_smoke_targets_matches_graphs_by_checkout_path_with_a_trailing_slash() -> None:

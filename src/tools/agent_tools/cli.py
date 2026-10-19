@@ -9270,7 +9270,7 @@ def _chair_perform_with_smoke(
     tickets: Callable[[], Sequence[Mapping]] = lambda: [],
 ) -> chair_run.Perform:
     """Wraps `perform` with the post-land watch and smoke. A live run records a watch for every landed commit, then a
-    landed coxswain-tools/-graphs PR runs the fixed smoke commands once against the first triggering land's repo.
+    landed coxswain (or coxswain-tools/-graphs) PR runs the fixed smoke commands once against the first triggering land's repo.
     A failure holds a `HoldRecord` and opens no revert PR: the hold makes `landed_main` report smoke failed for that
     commit, so the next tick's plan emits `revert_land`. A pass clears an existing hold. `held` runs last, to resolve
     the watches whose main went green. A dry run calls neither `watch` nor `held`.
