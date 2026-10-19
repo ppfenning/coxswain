@@ -1,0 +1,51 @@
+name: ci
+
+# This repo is private, so Actions minutes are billable. Docs-only pushes to
+# main skip a run, a superseded run is cancelled rather than finishing, and pip
+# is cached. Pull requests always run: the branch-protection ruleset requires
+# the `test` check before a merge, and a markdown-only PR with no check can
+# never merge without an administrator override.
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', '.gitignore', 'LICENSE']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+      - name: ruff (rules in pyproject.toml; pre-commit mirrors it)
+        run: pip install ruff==0.16.6 && ruff check .
+      - name: no operator, host or personal repo named (names come from a secret, never committed)
+        run: python .github/check_clean.py .
+        env:
+          COXSWAIN_CLEAN_DENY: ${{ secrets.COXSWAIN_CLEAN_DENY }}
+
+  # The suite on Python 3.15, a canary ahead of the 3.14 floor. Not in the branch ruleset,
+  # which requires `test` by name, so a red run here is a finding, not a merge block.
+  py315:
+    runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.15"
+          allow-prereleases: true
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: pytest -q

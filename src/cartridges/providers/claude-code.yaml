@@ -1,0 +1,256 @@
+# Provider profile — headless Claude Code as the runner.
+#
+# Same vendor axis as anthropic-default.yaml, different execution: every node
+# is a `claude -p` session on the local login, so there is no API key and the
+# subscription pays. Tiers name Claude Code's model aliases, which track the
+# current model of each class; pin a full model id here to stop that.
+#
+# This profile also grants TOOLS per role, which the API runner cannot. The
+# rule that decides the table below: roles that read the world get a read-only
+# view of the repository; the apply arms — and only they — may write, and only
+# into the work store under the runner's working directory. The harness still
+# applies every diff itself, in a worktree it owns. A role not listed runs
+# with no tools at all, which is the API runner's contract exactly.
+#
+# Changing anything here resets autonomy streaks (see base policy): a track
+# record earned on one runner is not a track record on another.
+profile: claude-code
+description: Headless Claude Code (`claude -p`) on the local login; per-role tool grants
+runner: claude-code
+command: claude            # the binary; must be on PATH and logged in
+
+tiers:
+  cheap:     haiku          # bulk classification, enumeration
+  standard:  sonnet         # most nodes
+  deep:      opus           # verification, adversarial review, arbitration
+
+# Capability classes -> ordered catalog ids or aliases, first entry preferred.
+# The defaults block below names these classes. The tiers map above still
+# stands for tier-keyed readers such as effort and budgets.
+classes:
+  extract:  [haiku]
+  reason:   [sonnet]
+  judge:    [opus]
+  frontier: [fable, opus]
+
+# Effort per tier. Deep stays high, not xhigh: the verifier seats keep the
+# strongest model, and the extra thinking budget above `high` was the one
+# cost lever with no measured quality return on a review of a small diff.
+effort:
+  cheap:     low
+  standard:  high
+  deep:      high
+
+# Dollar ceilings per node session, by tier, with per-role exceptions. Measured
+# on the run that prompted this: builds ran 79–101 turns at $1.1–$1.8 each and
+# failed anyway; a plan node that finishes cheaply does so in ~10 turns for
+# under $0.10. The ceiling turns an unbounded session into a quarantined task
+# with a named reason (`error_max_budget_usd`).
+#
+# A budget stop is a shape constraint, not a price. When a node hits its
+# ceiling the documented response is to split the task — one file, one
+# behaviour, roughly 200 lines — never to raise the number here. Raising it
+# buys the same unbounded session at a higher price; splitting buys two
+# sessions that each finish.
+budget_usd:
+  cheap:     0.15
+  standard:  0.35
+  deep:      0.80
+role_budget_usd:
+  # A review reads a whole patch and the charter, which the standard tier's
+  # $0.35 does not cover: moving the reviewers off the deep tier (they run the
+  # standard MODEL now, since the arbiter is where deep was measured to pay)
+  # also moved them onto the standard BUDGET, and four tasks in one run died at
+  # it — two of them in review_charter and review_adversary. The model tier and
+  # the dollar ceiling are separate choices; this keeps the ceiling they had.
+  review_charter:   1.20
+  review_adversary: 1.20
+  triage:    0.80          # a classification seat reading several task records and
+                           # traces; measured later by `cox stats bounds`.
+  build:     1.50          # it edits, tests and diffs — and a fix-loop retry re-applies
+                           # the previous patch before amending it, which is not free.
+                           # Measured: a clean first build lands around $0.50 in ~40 turns.
+                           # A retry that hits the ceiling discards nothing the harness
+                           # has already recorded; a build that never finishes has no
+                           # patch to record at all, which is the other reason to keep
+                           # tasks small.
+  # THE PROBLEM IS VARIANCE, not a uniformly dearer seat. Measured 2026-09-07,
+  # three runs of the SAME decompose on the same idea body: $0.4454, $0.3936,
+  # $0.2200. Standard's $0.35 sat almost exactly on that spread's mean, so it
+  # failed about two runs in three while the third would have passed it. An
+  # earlier revision of this comment cited only the two failures and implied a
+  # systematically more expensive role; the third sample does not support that
+  # reading, and this corrects it.
+  #
+  # The failures are expensive to mistake for anything else: the $0.4454 run
+  # hit the ceiling AFTER emitting correct structured output, which was then
+  # discarded — exit 0, empty log, no work items, a silent failure that reads
+  # as success. Cost splits roughly half output/thinking, half cache creation,
+  # over ~15 turns and 9 tool calls, so it is not runaway exploration; it is a
+  # seat whose thinking length swings by 2x on identical input. Trimming the
+  # idea body from 729 to 184 words moved cost only $0.45 -> $0.39, which is
+  # what ruled out "the input was too long".
+  #
+  # 0.60 is therefore chosen to clear the observed SPREAD, not a mean. It is
+  # not a licence for an unbounded session: a decompose that cannot finish
+  # under it is decomposing an idea that should have been filed as several.
+  #
+  # Three samples changed this conclusion, and only because someone looked.
+  # That is the argument for the run stats store (P0) in one line.
+  # Measured 2026-09-08 over 310 recorded plan calls: median $0.123, mean $0.151,
+  # p95 $0.317 — and a maximum of $0.345 against a $0.35 ceiling. A distribution
+  # that stops $0.005 short of its limit is CENSORED, not comfortable: a plan
+  # that would have cost more died on the ceiling and wrote no usage.json, so
+  # the tail is invisible in the very data used to set the number.
+  #
+  # Four such deaths in one night, all on integration tasks whose traces show
+  # NO wandering — the ingest-cli plan read the design doc, the spike verdict,
+  # both modules it composes, events.py's shape and cli.py's subparser
+  # convention, in 13 turns. That is the work, not a seat exploring.
+  #
+  # This does not loosen the typical plan: at a $0.123 median, 92% of calls are
+  # under $0.30 and unaffected. It stops the ceiling from killing the class of
+  # plan that must read several modules to compose them. A plan that cannot
+  # finish under 0.60 is planning a task that should have been split.
+  plan:      1.00
+  plan_alternative: 0.50   # censored at 0.35: max $0.342 against a $0.35 ceiling (n=63, 2026-09-16)
+  plan_arbitrate:  1.20   # censored at 0.80: max $0.794 (n=73)
+  plan_adversary:  1.20   # censored at 0.80: max $0.792, p95 $0.782 (n=56)
+  validate_phase:  0.50   # censored at 0.35: p95 $0.362, max $0.561 (n=218)
+  # RAISED to 2.00 on 2026-09-08, and the argument is leverage rather than size.
+  # decompose runs ONCE PER INITIATIVE; every other seat runs once per task. It is
+  # structurally the cheapest place to be generous and the most expensive place to
+  # be tight, because its output shapes every downstream call. The leader->chair
+  # rename cost $53 across 22 runs substantially because its DAG split runs_top.py
+  # from runs_top_screen.py when they share a test, and left on-screen copy owned by
+  # no ticket. A better decomposition would have cost cents more and saved dollars.
+  #
+  # Measured over 16 recorded calls: median $0.2097, mean $0.2555, max $0.5064.
+  # But the four most expensive all have output_tokens NULL — they were recovered
+  # from traces, meaning they DIED on budget. The top of that distribution is
+  # entirely deaths, so the successful range ($0.19-$0.31, 2-6 turns) is what the
+  # ceiling was actually sampling. Deaths ran 10-21 turns.
+  #
+  # A spec is the largest input any seat receives, and it should not be the
+  # operator's job to pre-trim it so the node survives — which is exactly what the
+  # chair had been doing, keeping intake bodies to 184-437 words to dodge this.
+  decompose: 2.00
+  # Raised 2026-09-08 after a work_item_arm budget stop KILLED A WHOLE RUN.
+  # `cartridges-work-shape-3` finished its build, review, adversary and arbitration —
+  # all three approved — and then died at $0.35 in the arm that writes the work item,
+  # 23 turns in, with an uncaught BudgetStop traceback out of `run_epic`. An arm is not
+  # a judgment seat: it reads the item file, edits frontmatter, and writes it back, and
+  # its cost scales with how many items an initiative holds, not with the difficulty of
+  # the task. Killing a completed, thrice-approved task over the bookkeeping step that
+  # follows it is the worst possible place to be tight. The arms get the reviewers'
+  # ceiling; the graph-level fix (an arm failure quarantines the phase, it does not
+  # crash the run) is filed separately.
+  work_item_arm:    0.80
+  work_state_arm:   0.80
+  docs_apply_arm:   0.80
+  style_pass: 1.20          # higher than a reviewer's $0.80: a review reads a diff, this
+                           # seat reads every file the diff touched, in full. In the
+                           # operator's words: "those may need to have a different buffer level, as
+                           # docstrings and full line reads may require higher context."
+  # A sweep node replaces twenty narrow ones, so its ceiling is measured
+  # against the sweep, not against a narrow task.
+  sweep_plan:  1.50
+  sweep_build: 2.00
+
+# Roles a graph asks "standard" for that are extraction, not judgment. The
+# profile may run them cheap; changing this resets streaks like any profile edit.
+# A runaway failsafe per role: "The $6 hard cap is a failsafe more than anything, periodic checks
+# should be made well before that limit, and multiple times to allow for go/no-go." Each slice still stops at the role
+# or tier budget above (or the measured bounds row), the guide, where the harness judges go/no-go and resumes; this
+# number caps the session's cumulative spend across slices (graphs `role_ceiling_usd`). The weekly cap bounds the rest,
+# and decomposition keeps builds well below it.
+role_ceiling_usd:
+  build: 6.0
+
+tier_overrides:
+  # The build never escalates to the judge model; judges stay on opus (operator 2026-10-14, cost/throughput comparison pending).
+  build: standard
+  scope_epic: cheap
+
+# Where the deep tier actually pays. Measured over 2026-09-05/06, about 75
+# runs: the arbiter was right nearly every time it overturned a review — the
+# orphan flag that fired on every run, a row ordering duplicated between the
+# renderer and its cursor, PR citations reported as drift when `gh` was never
+# asked, a decompose that silently dropped the tasks it could not resolve.
+# The two reviewers that feed it were not the scarce part: they find and state
+# the candidate defects, and one arbitration call decides which one carries.
+# So the reviewers run standard and the arbiter stays deep — one deep call per
+# attempt instead of three, for the judgment that was demonstrably load-bearing.
+defaults:
+  plan:            reason
+  build:           reason
+  review_charter:  reason
+  review_adversary: reason
+  arbitrate:       judge
+  triage_classify: extract
+  evidence_verify: judge
+  # The plan competition: a second plan is planning, the decision and the
+  # attack are judgment. Two short plans are a small document, which is why
+  # arbitrating here is affordable and arbitrating two diffs would not be.
+  plan_alternative: reason
+  plan_arbitrate:  judge
+  plan_adversary:  judge
+  # Recognition and rewriting against a stated rule, not judgment: judge is
+  # where arbitration was measured to pay, and nothing suggests it pays here.
+  style_pass:      reason
+  sweep_plan:      judge
+  sweep_build:     reason
+  decompose:       reason
+  dispatch:        reason
+  handoff:         reason
+  reconcile:       reason
+  retro:           judge
+  scope_epic:      reason
+  triage:          judge
+  validate_chunk:  reason
+  validate_phase:  judge
+
+# System one is off by default. The local kNN backend was removed on 2026-09-25:
+# measured offline over this workspace's decisions, it could not reach the graduation
+# bar (95% agreement, 1% costly) for handoff or review, even over the whole state.
+# A backend that registers by plugin (ppfenning/coxswain-plugins) is configured here
+# as a `system_one:` block, reading its key from its own `key_env`, and runs in
+# shadow until `cox stats system-one` says it has graduated.
+
+tools:
+  # Read the world, change nothing.
+  decompose:        [Read, Grep, Glob]
+  # NOT scope_epic: it decides epic-vs-ticket from the work item's own text
+  # and the digest it is shown. Given tools on the cheap tier it wandered the
+  # repository for 15 turns and hit its $0.10 ceiling on the ninth live run.
+  plan:             [Read, Grep, Glob]
+  plan_alternative: [Read, Grep, Glob]
+  plan_arbitrate:   [Read, Grep, Glob]   # checks a plan's named files exist before choosing it
+  plan_adversary:   [Read, Grep, Glob]   # attacks claims about the tree by reading the tree
+  sweep_plan:       [Read, Grep, Glob]
+  review_charter:   [Read, Grep, Glob]
+  review_adversary: [Read, Grep, Glob]
+  arbitrate:        [Read, Grep, Glob]
+  evidence_verify:  [Read, Grep, Glob]
+  reconcile:        [Read, Grep, Glob]
+  retro:            [Read, Grep, Glob]
+  # The builder is the one role that WRITES to produce its answer. It gets a
+  # disposable scratch worktree from the runner, edits real files there, runs
+  # the project's real commands, and returns the diff git computed. Nothing it
+  # writes survives the call; the harness still applies the patch itself.
+  build:            [Read, Write, Edit, Grep, Glob, Bash]
+  sweep_build:      [Read, Write, Edit, Grep, Glob, Bash]
+  # The second seat that WRITES. No Bash: it changes docstrings, comments and
+  # test shape, and it never needs to run anything. The harness applies its
+  # patch the same way it applies a build's.
+  style_pass:       [Read, Write, Edit, Grep, Glob]
+
+  # NOT handoff, validate_chunk or validate_phase. Those judge the artifact
+  # they are handed — a patch, a task record — against what the next step
+  # needs, and a patch is never applied in the checkout they could read. The
+  # first live epic gave them a view of the tree and they correctly reported
+  # that nothing had changed in it, quarantining every task. Blind is right.
+  # The arms. Write into the work store; nowhere else.
+  work_item_arm:    [Read, Write, Edit, Glob, Grep]
+  work_state_arm:   [Read, Edit, Glob, Grep]
+  docs_apply_arm:   [Read, Write, Edit, Glob, Grep]

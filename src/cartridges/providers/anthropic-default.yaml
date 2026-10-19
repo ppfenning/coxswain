@@ -1,0 +1,44 @@
+# Provider profile — maps abstract capability tiers to concrete models.
+#
+# The vendor axis. Graphs and cartridges name TIERS, never model IDs, so
+# swapping providers or upgrading a model is an edit to this file alone.
+# Changing anything here resets autonomy streaks (see base policy): a track
+# record earned on one model is not a track record on another.
+profile: anthropic-default
+description: Default tier -> model bindings
+
+auth_env: ANTHROPIC_API_KEY    # env var NAME. Never the value, in any file, ever.
+
+# Tiers name model families; core.profile.load_profile resolves each to the
+# newest catalog row in its family, so a new model needs only a catalog row
+# (always the latest model, never hardcoded).
+tiers:
+  cheap:     haiku                      # bulk classification, enumeration
+  standard:  sonnet                     # most nodes
+  deep:      opus                       # verification, adversarial review, arbitration
+
+# Capability classes -> ordered catalog ids or aliases, first entry preferred.
+# The defaults block below names these classes. The tiers map above still stands.
+classes:
+  extract:  [claude-haiku-4-5]
+  reason:   [claude-sonnet-5-5]
+  judge:    [claude-opus-5-5]
+  frontier: [claude-fable-5-1, claude-opus-5-5]
+
+defaults:
+  plan:            reason
+  build:           reason
+  review_charter:  judge
+  review_adversary: judge
+  arbitrate:       judge
+  triage_classify: extract
+  evidence_verify: judge
+  decompose:       reason
+  dispatch:        reason
+  handoff:         reason
+  reconcile:       reason
+  retro:           judge
+  scope_epic:      reason
+  triage:          judge
+  validate_chunk:  reason
+  validate_phase:  judge

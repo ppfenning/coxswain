@@ -1,0 +1,793 @@
+"""The work store, and the DAG it refuses to run."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from core.cartridge import load
+from core.skills import index_from_roots
+from core.workstore import (
+    WorkStoreError,
+    _coerce_priority,
+    attempts_on_current_body,
+    body_sha,
+    foreign_states,
+    phase_complete,
+    phases,
+    read_initiative,
+    read_item,
+    ready_tasks,
+    record_attempt,
+    resolve_surfaces,
+    set_state,
+    surface_problem,
+    validate_dag,
+    write_item,
+)
+
+REPO = Path(__file__).resolve().parent.parent
+
+
+def task(root: Path, phase: str, tid: str, *, needs=(), state="todo", surfaces=(), priority=None) -> Path:
+    return write_item(
+        {
+            "id": tid,
+            "phase": phase,
+            "state": state,
+            "needs": list(needs),
+            "surfaces": list(surfaces),
+            "title": tid.replace("-", " "),
+            **({"priority": priority} if priority is not None else {}),
+            "body": "What someone picking this up cold needs to know.",
+        },
+        root / phase / f"{tid}.md",
+    )
+
+
+def mark_ready(root: Path) -> None:
+    """Promote every todo task under `root` to ready, as the single writer would."""
+    for path in sorted(root.glob("*/*.md")):
+        if read_item(path)["state"] == "todo":
+            set_state(path, "ready")
+
+
+@pytest.fixture
+def initiative(tmp_path: Path) -> Path:
+    root = tmp_path / "work" / "arrow-migration"
+    (root).mkdir(parents=True)
+    (root / "initiative.md").write_text(
+        "---\nid: arrow-migration\ntitle: Arrow-native foundations\n---\n\nThe idea.\n", encoding="utf-8"
+    )
+    task(root, "p1-foundations", "t1-schema-probe")
+    task(root, "p1-foundations", "t2-bench-harness")
+    task(root, "p1-foundations", "t3-cutover", needs=["t1-schema-probe", "t2-bench-harness"])
+    task(root, "p2-rollout", "t4-migrate", needs=["t3-cutover"], surfaces=["migration"])
+    return root
+
+
+# ── round-trip ─────────────────────────────────────────────────────────────
+
+
+def test_an_item_round_trips(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1", needs=["t0"], surfaces=["schema"], state="ready")
+    item = read_item(path)
+    assert item["id"] == "t1"
+    assert item["needs"] == ["t0"]
+    assert item["surfaces"] == ["schema"]
+    assert item["state"] == "ready"
+    assert "picking this up cold" in item["body"]
+
+
+def test_the_body_survives_a_state_change(tmp_path: Path) -> None:
+    """The prose is the item. A state move must not eat it."""
+    path = task(tmp_path, "p1", "t1")
+    before = read_item(path)["body"]
+    set_state(path, "done")
+    after = read_item(path)
+    assert after["state"] == "done"
+    assert after["body"] == before
+
+
+def test_an_item_with_two_attempts_reads_back_in_order(tmp_path: Path) -> None:
+    entries = [
+        {"run": "run-1", "phase": "p1", "reason": "quarantined: timeout", "ts": "2026-09-01T00:00:00Z"},
+        {"run": "run-2", "phase": "p1", "reason": "quarantined: flaky test", "ts": "2026-09-02T00:00:00Z"},
+    ]
+    path = write_item(
+        {
+            "id": "t1",
+            "phase": "p1",
+            "state": "todo",
+            "needs": [],
+            "surfaces": [],
+            "title": "t1",
+            "attempts": entries,
+            "body": "body",
+        },
+        tmp_path / "p1" / "t1.md",
+    )
+    item = read_item(path)
+    assert item["attempts"] == entries
+
+
+def test_record_attempt_twice_yields_two_entries_and_preserves_the_rest(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1", needs=["t0"], surfaces=["schema"], state="ready")
+    before = read_item(path)
+
+    record_attempt(path, run="run-1", phase="p1", reason="quarantined: timeout", ts="2026-09-01T00:00:00Z")
+    after = record_attempt(path, run="run-2", phase="p1", reason="quarantined: flaky test", ts="2026-09-02T00:00:00Z")
+
+    assert [a["run"] for a in after["attempts"]] == ["run-1", "run-2"]
+    assert after["attempts"][0] == {
+        "run": "run-1",
+        "phase": "p1",
+        "reason": "quarantined: timeout",
+        "ts": "2026-09-01T00:00:00Z",
+        "body_sha": body_sha(before["body"]),
+    }
+    assert after["state"] == before["state"]
+    assert after["needs"] == before["needs"]
+    assert after["surfaces"] == before["surfaces"]
+    assert after["body"] == before["body"]
+    assert read_item(path)["attempts"] == after["attempts"]
+
+
+def test_record_attempt_with_kind_and_patch_kept_carries_both(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1")
+    after = record_attempt(path, run="run-1", phase="p1", reason="unverified", ts="t", kind="unverified", patch_kept=True)
+    assert after["attempts"][0] == {
+        "run": "run-1",
+        "phase": "p1",
+        "reason": "unverified",
+        "ts": "t",
+        "kind": "unverified",
+        "patch_kept": True,
+        "body_sha": body_sha(after["body"]),
+    }
+
+
+def test_record_attempt_with_no_kind_carries_neither_key(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1")
+    after = record_attempt(path, run="run-1", phase="p1", reason="quarantined: timeout", ts="t")
+    assert after["attempts"][0] == {
+        "run": "run-1",
+        "phase": "p1",
+        "reason": "quarantined: timeout",
+        "ts": "t",
+        "body_sha": body_sha(after["body"]),
+    }
+
+
+def test_record_attempt_with_an_unknown_kind_raises(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1")
+    with pytest.raises(WorkStoreError):
+        record_attempt(path, run="run-1", phase="p1", reason="x", ts="t", kind="bogus")
+
+
+def test_body_sha_is_twelve_hex_characters_of_the_stripped_sha256() -> None:
+    assert body_sha("abc") == "ba7816bf8f01"
+    assert body_sha("  abc\n") == body_sha("abc")
+
+
+def test_record_attempt_stamps_the_body_sha(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1")
+    after = record_attempt(path, run="run-1", phase="p1", reason="x", ts="t")
+    assert after["attempts"][0]["body_sha"] == body_sha(after["body"])
+
+
+def test_an_attempt_on_an_earlier_body_is_not_on_the_current_body(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1")
+    record_attempt(path, run="run-1", phase="p1", reason="old text", ts="t")
+    write_item({**read_item(path), "body": "A rewritten ticket."}, path)
+    record_attempt(path, run="run-2", phase="p1", reason="new text", ts="t")
+    item = read_item(path)
+    assert [a["run"] for a in item["attempts"]] == ["run-1", "run-2"]
+    assert [a["run"] for a in attempts_on_current_body(item)] == ["run-2"]
+
+
+def test_an_attempt_with_no_body_sha_is_on_the_current_body() -> None:
+    attempt = {"run": "r", "phase": "p", "reason": "r", "ts": "t"}
+    assert attempts_on_current_body({"body": "x", "attempts": [attempt]}) == [attempt]
+
+
+def test_an_item_with_no_attempts_writes_no_attempts_line(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1")
+    assert "attempts:" not in path.read_text(encoding="utf-8")
+
+
+def test_a_malformed_attempts_value_reads_as_empty_rather_than_raising(tmp_path: Path) -> None:
+    path = tmp_path / "p1" / "t1.md"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "---\nid: t1\nphase: p1\nstate: todo\nattempts: not-a-list\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    assert read_item(path)["attempts"] == []
+
+
+def test_an_item_with_patterns_reads_back_and_writes_the_line(tmp_path: Path) -> None:
+    path = write_item(
+        {
+            "id": "t1",
+            "phase": "p1",
+            "state": "todo",
+            "needs": [],
+            "surfaces": [],
+            "patterns": ["docs_only"],
+            "title": "t1",
+            "body": "body",
+        },
+        tmp_path / "p1" / "t1.md",
+    )
+    assert read_item(path)["patterns"] == ["docs_only"]
+    assert "patterns:" in path.read_text(encoding="utf-8")
+
+
+def test_an_item_with_no_patterns_reads_empty_and_writes_no_line(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1")
+    assert read_item(path)["patterns"] == []
+    assert "patterns:" not in path.read_text(encoding="utf-8")
+
+
+def test_a_non_list_patterns_value_reads_and_writes_as_empty(tmp_path: Path) -> None:
+    path = tmp_path / "p1" / "t1.md"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "---\nid: t1\nphase: p1\nstate: todo\npatterns: docs_only\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    assert read_item(path)["patterns"] == []
+
+    rewritten = write_item({**read_item(path), "patterns": "docs_only"}, path)
+    assert "patterns:" not in rewritten.read_text(encoding="utf-8")
+    assert read_item(rewritten)["patterns"] == []
+
+
+def _verify_file(tmp_path: Path, verify_line: str) -> Path:
+    path = tmp_path / "p1" / "t1.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"---\nid: t1\nphase: p1\nstate: todo\n{verify_line}---\n\nbody\n", encoding="utf-8")
+    return path
+
+
+def test_an_item_with_a_verify_list_reads_it_back(tmp_path: Path) -> None:
+    path = _verify_file(tmp_path, "verify:\n  - pytest tests -q\n  - ruff check .\n")
+    assert read_item(path)["verify"] == ["pytest tests -q", "ruff check ."]
+
+
+def test_an_item_with_no_verify_reads_empty_and_writes_no_line(tmp_path: Path) -> None:
+    path = _verify_file(tmp_path, "")
+    assert read_item(path)["verify"] == []
+    assert "verify:" not in write_item(read_item(path), path).read_text(encoding="utf-8")
+
+
+def test_a_single_verify_string_reads_as_one_command_and_blanks_are_dropped(tmp_path: Path) -> None:
+    assert read_item(_verify_file(tmp_path, "verify: '  make test '\n"))["verify"] == ["make test"]
+    assert read_item(_verify_file(tmp_path, "verify: ['a', '  ']\n"))["verify"] == ["a"]
+
+
+def test_verify_round_trips_and_survives_a_state_move(tmp_path: Path) -> None:
+    path = write_item({"id": "t1", "phase": "p1", "verify": ["pytest -q", "ruff check ."]}, tmp_path / "p1" / "t1.md")
+    assert "verify:" in path.read_text(encoding="utf-8")
+    assert read_item(path)["verify"] == ["pytest -q", "ruff check ."]
+    set_state(path, "in_progress")
+    assert read_item(path)["verify"] == ["pytest -q", "ruff check ."]
+
+
+@pytest.mark.parametrize("line", ["verify: 5\n", "verify: [1, 2]\n", "verify: {a: b}\n"])
+def test_a_verify_that_is_not_a_string_or_list_of_strings_raises(tmp_path: Path, line: str) -> None:
+    path = _verify_file(tmp_path, line)
+    with pytest.raises(WorkStoreError, match="t1.md"):
+        read_item(path)
+
+
+def test_a_tier_map_reads_back_round_trips_and_survives_a_state_move(tmp_path: Path) -> None:
+    path = _verify_file(tmp_path, "tier: {build: deep, review_adversary: deep}\n")
+    expected = {"build": "deep", "review_adversary": "deep"}
+    assert read_item(path)["tier"] == expected
+    rewritten = write_item(read_item(path), tmp_path / "out" / "t1.md")
+    assert "tier:" in rewritten.read_text(encoding="utf-8")
+    assert read_item(rewritten)["tier"] == expected
+    set_state(rewritten, "in_progress")
+    assert read_item(rewritten)["tier"] == expected
+
+
+def test_an_item_with_no_tier_reads_empty_and_writes_no_line(tmp_path: Path) -> None:
+    path = _verify_file(tmp_path, "")
+    assert read_item(path)["tier"] == {}
+    assert "tier:" not in write_item(read_item(path), path).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "tier: {build: premium}\n",
+        "tier: {'': deep}\n",
+        "tier: {5: deep}\n",
+        "tier: {build: 3}\n",
+        "tier: deep\n",
+        "tier: [build]\n",
+    ],
+)
+def test_a_bad_tier_raises_naming_the_path(tmp_path: Path, line: str) -> None:
+    path = _verify_file(tmp_path, line)
+    with pytest.raises(WorkStoreError, match="t1.md"):
+        read_item(path)
+
+
+def test_an_item_with_a_budget_reads_back_and_writes_the_line(tmp_path: Path) -> None:
+    path = write_item(
+        {
+            "id": "t1",
+            "phase": "p1",
+            "state": "todo",
+            "needs": [],
+            "surfaces": [],
+            "title": "t1",
+            "budget_usd": 2.5,
+            "body": "body",
+        },
+        tmp_path / "p1" / "t1.md",
+    )
+    assert read_item(path)["budget_usd"] == 2.5
+    assert "budget_usd:" in path.read_text(encoding="utf-8")
+
+
+def test_an_item_with_no_budget_has_no_key_and_writes_no_line(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1")
+    assert "budget_usd" not in read_item(path)
+    assert "budget_usd:" not in path.read_text(encoding="utf-8")
+
+
+def test_a_non_numeric_or_zero_budget_reads_as_absent(tmp_path: Path) -> None:
+    zero = tmp_path / "p1" / "t1.md"
+    zero.parent.mkdir(parents=True)
+    zero.write_text(
+        "---\nid: t1\nphase: p1\nstate: todo\nbudget_usd: 0\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    assert "budget_usd" not in read_item(zero)
+
+    non_numeric = tmp_path / "p2" / "t1.md"
+    non_numeric.parent.mkdir(parents=True)
+    non_numeric.write_text(
+        "---\nid: t1\nphase: p2\nstate: todo\nbudget_usd: soon\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    assert "budget_usd" not in read_item(non_numeric)
+
+
+def test_write_item_refuses_a_negative_budget_same_as_read_item(tmp_path: Path) -> None:
+    path = write_item(
+        {
+            "id": "t1",
+            "phase": "p1",
+            "state": "todo",
+            "needs": [],
+            "surfaces": [],
+            "title": "t1",
+            "budget_usd": -1,
+            "body": "body",
+        },
+        tmp_path / "p1" / "t1.md",
+    )
+    assert "budget_usd:" not in path.read_text(encoding="utf-8")
+    assert "budget_usd" not in read_item(path)
+
+
+def test_coerce_priority_defaults_absent_valid_and_invalid_input() -> None:
+    assert _coerce_priority(None) == 3
+    assert _coerce_priority(1) == 1
+    assert _coerce_priority(6) == 3
+    assert _coerce_priority(0) == 3
+    assert _coerce_priority("high") == 3
+
+
+def test_an_item_with_priority_reads_back_and_writes_the_line(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1", priority=1)
+    assert read_item(path)["priority"] == 1
+    assert "priority: 1" in path.read_text(encoding="utf-8")
+
+
+def test_write_item_omits_priority_that_equals_the_default(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1", priority=3)
+    assert "priority:" not in path.read_text(encoding="utf-8")
+    assert read_item(path)["priority"] == 3
+
+
+def test_an_item_with_no_priority_still_loads_as_it_does_today(tmp_path: Path) -> None:
+    path = tmp_path / "p1" / "t1.md"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "---\nid: t1\nphase: p1\nstate: ready\nneeds: [t0]\nsurfaces: [schema]\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    item = read_item(path)
+    assert item["priority"] == 3
+    assert item["id"] == "t1"
+    assert item["needs"] == ["t0"]
+    assert item["surfaces"] == ["schema"]
+    assert item["state"] == "ready"
+
+
+def test_an_item_with_no_priority_also_saves_unchanged(tmp_path: Path) -> None:
+    """The done-criterion: an item without `priority:` loads AND saves unchanged.
+
+    A state move round-trips through `read_item`/`write_item`, so this is
+    where a writer that stamps every item with its default would show up.
+    """
+    path = tmp_path / "p1" / "t1.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("---\nid: t1\nphase: p1\nstate: todo\n---\n\nbody\n", encoding="utf-8")
+    set_state(path, "done")
+    assert "priority:" not in path.read_text(encoding="utf-8")
+
+
+def test_unknown_states_are_refused(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1")
+    with pytest.raises(WorkStoreError, match="unknown state 'nearly'"):
+        set_state(path, "nearly")
+
+
+def test_base_cartridge_caps_the_build_budget_at_the_6_dollar_runaway_ceiling() -> None:
+    resolved = load("local", REPO / "cartridges", skill_index=index_from_roots([REPO / "skills-plugins"]))
+    assert resolved["policy"]["build_budget_usd_max"] == 6.0
+
+
+def test_frontmatter_must_be_present(tmp_path: Path) -> None:
+    stray = tmp_path / "p1" / "loose.md"
+    stray.parent.mkdir(parents=True)
+    stray.write_text("just prose, no header\n", encoding="utf-8")
+    with pytest.raises(WorkStoreError, match="must open with a '---' frontmatter block"):
+        read_item(stray)
+
+
+def test_unclosed_frontmatter_is_refused(tmp_path: Path) -> None:
+    stray = tmp_path / "p1" / "loose.md"
+    stray.parent.mkdir(parents=True)
+    stray.write_text("---\nid: x\nbody without a closing fence\n", encoding="utf-8")
+    with pytest.raises(WorkStoreError, match="never closed"):
+        read_item(stray)
+
+
+# ── the DAG ────────────────────────────────────────────────────────────────
+
+
+def test_reads_an_initiative_with_its_phases(initiative: Path) -> None:
+    read = read_initiative(initiative)
+    assert read["title"] == "Arrow-native foundations"
+    assert read["phases"] == ["p1-foundations", "p2-rollout"]
+    assert len(read["items"]) == 4
+
+
+def test_a_dangling_edge_is_refused(tmp_path: Path) -> None:
+    items = [{"id": "a", "needs": ["ghost"]}]
+    with pytest.raises(WorkStoreError, match="needs 'ghost', which does not exist"):
+        validate_dag(items)
+
+
+def test_a_cycle_is_refused(tmp_path: Path) -> None:
+    """A cycle means nothing in it can ever be ready; the phase would just stall."""
+    items = [{"id": "a", "needs": ["b"]}, {"id": "b", "needs": ["c"]}, {"id": "c", "needs": ["a"]}]
+    with pytest.raises(WorkStoreError, match="dependency cycle"):
+        validate_dag(items)
+
+
+def test_a_self_edge_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(WorkStoreError, match="dependency cycle"):
+        validate_dag([{"id": "a", "needs": ["a"]}])
+
+
+def test_duplicate_ids_are_refused(tmp_path: Path) -> None:
+    with pytest.raises(WorkStoreError, match="duplicate work item id 'a'"):
+        validate_dag([{"id": "a", "needs": []}, {"id": "a", "needs": []}])
+
+
+def test_a_valid_dag_passes(initiative: Path) -> None:
+    validate_dag(read_initiative(initiative)["items"])  # must not raise
+
+
+def test_the_dag_is_validated_at_read_not_at_run(initiative: Path) -> None:
+    task(initiative, "p1-foundations", "t9-broken", needs=["does-not-exist"])
+    with pytest.raises(WorkStoreError, match="does not exist"):
+        read_initiative(initiative)
+
+
+# ── needs across initiatives ───────────────────────────────────────────────
+
+FOREIGN = "graphs-model-router-decision-record-type"
+
+
+@pytest.fixture
+def store(tmp_path: Path) -> Path:
+    """A work store with a sibling initiative whose task the deciders initiative waits on."""
+    work = tmp_path / "work"
+    task(work / "graphs-model-router", "p1-record", FOREIGN, state="in_progress")
+    task(work / "graphs-system-one-deciders", "p1-log", "decision-log-fields", needs=[FOREIGN])
+    return work
+
+
+def test_foreign_states_holds_only_other_initiatives(store: Path) -> None:
+    assert foreign_states(store, "graphs-system-one-deciders") == {FOREIGN: "in_progress"}
+
+
+def test_a_foreign_need_resolves_and_a_missing_one_still_refuses() -> None:
+    validate_dag([{"id": "a", "needs": ["x"]}], {"x": "done"})
+    with pytest.raises(WorkStoreError, match="needs 'x', which does not exist"):
+        validate_dag([{"id": "a", "needs": ["x"]}])
+
+
+def test_the_unprefixed_foreign_id_resolves_and_the_prefixed_spelling_is_refused(store: Path) -> None:
+    deciders = store / "graphs-system-one-deciders"
+    assert read_initiative(deciders)["foreign"] == {FOREIGN: "in_progress"}
+    task(deciders, "p1-log", "decision-log-fields", needs=[f"graphs-system-one-deciders-{FOREIGN}"])
+    with pytest.raises(WorkStoreError, match="which does not exist"):
+        read_initiative(deciders)
+
+
+def test_a_store_scan_is_skipped_when_every_need_is_local(initiative: Path) -> None:
+    assert read_initiative(initiative)["foreign"] == {}
+
+
+@pytest.mark.parametrize(("state", "ready"), [("done", True), ("in_progress", False), ("dropped", False)])
+def test_a_foreign_need_is_met_only_by_done(state: str, ready: bool) -> None:
+    items = [{"id": "a", "state": "ready", "needs": ["x"]}]
+    assert bool(ready_tasks(items, foreign={"x": state})) is ready
+
+
+# ── what can run at once ───────────────────────────────────────────────────
+
+
+def test_ready_returns_everything_unblocked(initiative: Path) -> None:
+    """This set IS the parallelism — nothing in it depends on anything else in it."""
+    mark_ready(initiative)
+    items = read_initiative(initiative)["items"]
+    assert [t["id"] for t in ready_tasks(items)] == ["t1-schema-probe", "t2-bench-harness"]
+
+
+def test_finishing_a_dependency_unblocks_its_dependents(initiative: Path) -> None:
+    set_state(initiative / "p1-foundations" / "t1-schema-probe.md", "done")
+    set_state(initiative / "p1-foundations" / "t2-bench-harness.md", "done")
+    mark_ready(initiative)
+    items = read_initiative(initiative)["items"]
+    assert [t["id"] for t in ready_tasks(items)] == ["t3-cutover"]
+
+
+def test_ready_can_be_scoped_to_one_phase(initiative: Path) -> None:
+    mark_ready(initiative)
+    items = read_initiative(initiative)["items"]
+    assert [t["id"] for t in ready_tasks(items, phase="p2-rollout")] == []
+
+
+def test_done_work_is_never_ready(initiative: Path) -> None:
+    set_state(initiative / "p1-foundations" / "t1-schema-probe.md", "done")
+    items = read_initiative(initiative)["items"]
+    assert "t1-schema-probe" not in [t["id"] for t in ready_tasks(items)]
+
+
+def test_ready_is_ordered_so_a_run_is_replayable(initiative: Path) -> None:
+    mark_ready(initiative)
+    items = list(reversed(read_initiative(initiative)["items"]))
+    assert [t["id"] for t in ready_tasks(items)] == ["t1-schema-probe", "t2-bench-harness"]
+
+
+def test_ready_orders_by_priority_then_id(tmp_path: Path) -> None:
+    task(tmp_path, "p1", "t-low", priority=3, state="ready")
+    task(tmp_path, "p1", "t-high", priority=1, state="ready")
+    task(tmp_path, "p1", "t-mid", priority=2, state="ready")
+    items = [read_item(p) for p in sorted(tmp_path.glob("*/*.md"))]
+    assert [t["id"] for t in ready_tasks(items)] == ["t-high", "t-mid", "t-low"]
+
+
+@pytest.mark.parametrize("state", ["todo", "blocked", "approved", "in_progress"])
+def test_only_a_ready_task_is_returned(state: str) -> None:
+    assert ready_tasks([{"id": "a", "state": state, "needs": []}]) == []
+
+
+def test_a_todo_task_with_its_needs_done_is_not_returned() -> None:
+    items = [{"id": "a", "state": "done"}, {"id": "b", "state": "todo", "needs": ["a"]}]
+    assert ready_tasks(items) == []
+
+
+def test_a_ready_task_with_its_needs_done_is_returned() -> None:
+    items = [{"id": "a", "state": "done"}, {"id": "b", "state": "ready", "needs": ["a"]}]
+    assert [t["id"] for t in ready_tasks(items)] == ["b"]
+
+
+def test_a_ready_task_with_an_unmet_need_is_not_returned() -> None:
+    items = [{"id": "a", "state": "in_progress"}, {"id": "b", "state": "ready", "needs": ["a"]}]
+    assert ready_tasks(items) == []
+
+
+def test_phases_are_listed_in_order(initiative: Path) -> None:
+    assert phases(read_initiative(initiative)["items"]) == ["p1-foundations", "p2-rollout"]
+
+
+# ── dropped ────────────────────────────────────────────────────────────────
+
+
+def test_set_state_can_drop_an_item(initiative: Path) -> None:
+    path = initiative / "p1-foundations" / "t1-schema-probe.md"
+    dropped = set_state(path, "dropped")
+    assert dropped["state"] == "dropped"
+    assert read_item(path)["state"] == "dropped"
+
+
+def test_a_phase_of_done_and_dropped_items_is_complete(initiative: Path) -> None:
+    set_state(initiative / "p1-foundations" / "t1-schema-probe.md", "dropped")
+    set_state(initiative / "p1-foundations" / "t2-bench-harness.md", "done")
+    set_state(initiative / "p1-foundations" / "t3-cutover.md", "done")
+    items = read_initiative(initiative)["items"]
+    assert phase_complete(items, "p1-foundations") is True
+
+
+def test_a_dropped_items_dependents_become_ready(initiative: Path) -> None:
+    set_state(initiative / "p1-foundations" / "t1-schema-probe.md", "dropped")
+    set_state(initiative / "p1-foundations" / "t2-bench-harness.md", "done")
+    mark_ready(initiative)
+    items = read_initiative(initiative)["items"]
+    assert [t["id"] for t in ready_tasks(items)] == ["t3-cutover"]
+
+    task(initiative, "p2-rollout", "t5-only-needs-dropped", needs=["t1-schema-probe"], state="ready")
+    items = read_initiative(initiative)["items"]
+    assert "t5-only-needs-dropped" in [t["id"] for t in ready_tasks(items, phase="p2-rollout")]
+
+
+# ── approved ───────────────────────────────────────────────────────────────
+
+
+def test_an_approved_item_round_trips(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1", state="approved")
+    assert read_item(path)["state"] == "approved"
+
+
+def test_ready_can_move_to_approved(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1", state="ready")
+    assert set_state(path, "approved")["state"] == "approved"
+
+
+def test_in_progress_can_move_to_approved(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1", state="in_progress")
+    assert set_state(path, "approved")["state"] == "approved"
+
+
+def test_approved_can_move_to_done(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1", state="approved")
+    assert set_state(path, "done")["state"] == "done"
+
+
+def test_approved_can_relaunch_back_to_ready(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1", state="approved")
+    assert set_state(path, "ready")["state"] == "ready"
+
+
+def test_approved_to_in_progress_is_refused(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1", state="approved")
+    with pytest.raises(WorkStoreError, match="approved"):
+        set_state(path, "in_progress")
+
+
+def test_quarantined_can_be_released_to_ready(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1", state="quarantined")
+    assert set_state(path, "ready")["state"] == "ready"
+    assert read_item(path)["state"] == "ready"
+
+
+def test_quarantined_to_anything_but_ready_is_refused(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1", state="quarantined")
+    with pytest.raises(WorkStoreError, match="quarantined"):
+        set_state(path, "done")
+    assert read_item(path)["state"] == "quarantined"
+
+
+def test_an_approved_item_leaves_its_phase_incomplete(initiative: Path) -> None:
+    set_state(initiative / "p1-foundations" / "t1-schema-probe.md", "ready")
+    set_state(initiative / "p1-foundations" / "t1-schema-probe.md", "approved")
+    set_state(initiative / "p1-foundations" / "t2-bench-harness.md", "done")
+    set_state(initiative / "p1-foundations" / "t3-cutover.md", "done")
+    items = read_initiative(initiative)["items"]
+    assert phase_complete(items, "p1-foundations") is False
+
+
+# ── surfaces ───────────────────────────────────────────────────────────────
+
+
+def test_a_path_already_in_the_tree_resolves() -> None:
+    assert resolve_surfaces(["core/workstore.py"], frozenset({"core/workstore.py"})) == (["core/workstore.py"], [])
+
+
+def test_a_new_path_under_an_existing_directory_resolves() -> None:
+    tree = frozenset({"x/existing.py"})
+    assert resolve_surfaces(["x/y.py (new)"], tree) == (["x/y.py (new)"], [])
+
+
+def test_a_new_path_under_a_directory_that_does_not_exist_is_unresolved() -> None:
+    tree = frozenset({"x/existing.py"})
+    assert resolve_surfaces(["z/y.py (new)"], tree) == ([], ["z/y.py (new)"])
+
+
+def test_prose_is_unresolved() -> None:
+    tree = frozenset({"core/workstore.py"})
+    surface = "the cox route launch command"
+    assert resolve_surfaces([surface], tree) == ([], [surface])
+
+
+def test_an_empty_list_resolves_to_two_empty_lists() -> None:
+    assert resolve_surfaces([], frozenset()) == ([], [])
+
+
+def test_surface_problem_is_none_when_nothing_is_unresolved() -> None:
+    assert surface_problem([]) is None
+
+
+def test_surface_problem_names_every_unresolved_surface() -> None:
+    message = surface_problem(["tests/test_epic.py", "HUD config schema"])
+    assert "tests/test_epic.py" in message
+    assert "HUD config schema" in message
+
+
+def test_a_quarantined_item_reads_and_is_neither_runnable_nor_complete(tmp_path):
+    # The store's export writes `quarantined` into ticket files (2026-10-06); reading one must not raise.
+    from core.workstore import phase_complete, read_item, ready_tasks
+
+    path = tmp_path / "q.md"
+    path.write_text("---\nid: q\ntitle: Q\nphase: p\nstate: quarantined\nneeds: []\nsurfaces: []\n---\nBody.\n", encoding="utf-8")
+    item = read_item(path)
+    sibling = {"id": "r", "phase": "p", "state": "ready", "needs": []}
+    assert item["state"] == "quarantined"
+    assert [t["id"] for t in ready_tasks([item, sibling])] == ["r"]
+    assert not phase_complete([item, sibling], "p")
+
+
+def _literal(path: Path, text: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_an_unknown_state_in_an_own_item_reads_back_opaque(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    root = tmp_path / "own"
+    odd = _literal(root / "p1" / "odd.md", "---\nid: odd\nphase: p1\nstate: nearly\n---\n\nbody\n")
+    _literal(root / "p1" / "after.md", "---\nid: after\nphase: p1\nstate: ready\nneeds: [odd]\n---\n\nbody\n")
+    with caplog.at_level("WARNING", logger="core.workstore"):
+        item = read_item(odd)
+    assert item["state"] == "nearly"
+    assert str(odd) in caplog.text
+    assert "'nearly'" in caplog.text
+
+    items = read_initiative(root)["items"]
+    assert ready_tasks(items) == []
+    assert not phase_complete(items, "p1")
+    assert ready_tasks([item, {"id": "x", "phase": "p1", "state": "ready", "needs": ["odd"]}]) == []
+    with pytest.raises(WorkStoreError, match="unknown state 'nearly'"):
+        write_item(item, tmp_path / "out" / "odd.md")
+    assert not (tmp_path / "out" / "odd.md").exists()
+
+
+def test_an_unknown_state_in_a_foreign_item_does_not_stop_reads(tmp_path: Path) -> None:
+    store = tmp_path / "work"
+    _literal(store / "other" / "p1" / "new.md", "---\nid: new\nphase: p1\nstate: nearly\n---\n\nb\n")
+    _literal(store / "other" / "p1" / "fin.md", "---\nid: fin\nphase: p1\nstate: done\n---\n\nb\n")
+    _literal(store / "mine" / "p1" / "t.md", "---\nid: t\nphase: p1\nstate: ready\nneeds: [fin, new]\n---\n\nb\n")
+    assert foreign_states(store, "mine") == {"fin": "done", "new": "nearly"}
+    loaded = read_initiative(store / "mine")
+    assert loaded["foreign"] == {"fin": "done", "new": "nearly"}
+    assert ready_tasks(loaded["items"], foreign=loaded["foreign"]) == []
+
+
+def test_an_unreadable_foreign_file_is_skipped_with_a_warning(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    store = tmp_path / "work"
+    bare = _literal(store / "other" / "p1" / "bare.md", "just prose, no header\n")
+    binary = store / "other" / "p1" / "binary.md"
+    binary.write_bytes(b"---\nid: binary\n---\n\xff\xfe\n")
+    _literal(store / "other" / "p1" / "fin.md", "---\nid: fin\nphase: p1\nstate: done\n---\n\nb\n")
+    _literal(store / "mine" / "p1" / "t.md", "---\nid: t\nphase: p1\nstate: ready\nneeds: [fin, bare]\n---\n\nb\n")
+    with caplog.at_level("WARNING", logger="core.workstore"):
+        states = foreign_states(store, "mine")
+    assert states == {"fin": "done"}
+    assert str(bare) in caplog.text
+    assert str(binary) in caplog.text
+    with pytest.raises(WorkStoreError, match="'t' needs 'bare', which does not exist"):
+        read_initiative(store / "mine")

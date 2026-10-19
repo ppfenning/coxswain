@@ -1,0 +1,28 @@
+# Comfort 0 — everything proposes, nothing can graduate.
+#
+# A comfort level is not new machinery. It is a bundle of ramp tightenings, and
+# the one-way tighten rule already makes such a bundle legal and auditable: this
+# file can only make `local` stricter, never looser, and the loader enforces
+# that on every resolve.
+#
+# This is the level to start a team on, and the level to fall back to after
+# something goes wrong. Every earnable and deferred kind is pinned to `gated`,
+# so the ledger still fills up with real outcomes at the human gate — the track
+# record accumulates, it simply cannot be spent yet. Moving to comfort 1 later
+# is a cartridge change, which resets the streaks; that is the correct price.
+team: local-comfort0
+extends: local
+description: Local operation at comfort 0 — every write goes to the gate
+version: 1
+
+# Only `ramp` is overridden. Risk is a property of the act, not of how nervous
+# the team currently is, so it is left exactly as base declared it.
+write_kinds:
+  draft_pr_create:  {ramp: gated}
+  retry_idempotent: {ramp: gated}
+  merge_stack:      {ramp: gated}
+  stack_rebase:     {ramp: gated}
+  item_create:      {ramp: gated}
+  item_update:      {ramp: gated}
+  state_move:       {ramp: gated}
+  doc_update:       {ramp: gated}

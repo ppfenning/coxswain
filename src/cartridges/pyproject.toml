@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-cartridges"
+version = "0.40.0"
+description = "A portable substrate for running agent graphs against your team's rules"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = ["pyyaml>=6"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff==0.16.6"]
+
+[project.scripts]
+cartridge = "core.cartridge:_main"
+
+[tool.setuptools]
+packages = ["core"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The suite imports helpers from tests/conftest.py by name, which needs the repo
+# root importable. `python -m pytest` adds the cwd for you and bare `pytest` does
+# not, so without this the suite passes locally and fails in CI — which is
+# exactly what happened.
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 120
+# Ruff runs over the repos in CI and pre-commit. The set leans on the
+# charter (pure core, no rebinding, no side doors): E/F correctness, I imports,
+# UP modern syntax, B bugbear, SIM, RET, C4, DTZ clocks, RUF. Ignored on purpose:
+# E501/E701/E702 (the codebase uses dense one-liners at the edge), E741 (single
+# letters in short comprehensions), PLW1510 (edges read subprocess returncodes
+# deliberately), RUF005/RUF043/RUF059/B905/ISC004 (style calls, not defects).
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "DTZ", "ISC", "RET", "C4", "PLW"]
+ignore = ["E501", "E701", "E702", "E741", "PLW1510", "RUF005", "RUF043", "RUF059", "B905", "ISC004"]
