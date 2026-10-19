@@ -925,42 +925,14 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../graphs/coxswain/" class="md-nav__link">
+      <a href="../graphs/initiative-decompose/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    coxswain
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../graphs/epic-swarm/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    epic-swarm
+    initiative-decompose
   
 
     
@@ -1009,14 +981,98 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../graphs/initiative-decompose/" class="md-nav__link">
+      <a href="../graphs/phase-validate/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    initiative-decompose
+    phase-validate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graphs/review-diff/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    review-diff
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graphs/rescue-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    rescue-review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graphs/coxswain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    coxswain
   
 
     
@@ -1101,6 +1157,90 @@ Coxswain is in beta — versions may change between releases
     
   
     triage-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graphs/triage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    triage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graphs/sweep/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    sweep
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graphs/epic-driver/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The epic driver
   
 
     
@@ -1267,10 +1407,21 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
-  <a href="#pull-requests-are-where-a-human-decides" class="md-nav__link">
+  <a href="#checks-are-evidence" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Pull requests are where a human decides
+        Checks are evidence
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pull-requests-are-where-a-person-decides" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pull requests are where a person decides
       
     </span>
   </a>
@@ -3776,10 +3927,21 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
-  <a href="#pull-requests-are-where-a-human-decides" class="md-nav__link">
+  <a href="#checks-are-evidence" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Pull requests are where a human decides
+        Checks are evidence
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pull-requests-are-where-a-person-decides" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pull requests are where a person decides
       
     </span>
   </a>
@@ -3835,7 +3997,7 @@ Coxswain is in beta — versions may change between releases
 
 
 <h1 id="landing">Landing</h1>
-<p>This page settles how a run's change reaches a human: every governance
+<p>This page settles how a run's change reaches a person: every governance
 path ends the same way, on a branch, as a pull request, merged only on
 green.</p>
 <h2 id="every-path-ends-on-a-branch">Every path ends on a branch</h2>
@@ -3850,20 +4012,84 @@ away before a human ever sees it.</p>
 land on a shared phase branch rather than each opening its own pull
 request against the epic's target branch. This keeps the phase reviewable
 as one unit instead of as however many tasks happened to be in flight.</p>
-<h2 id="pull-requests-are-where-a-human-decides">Pull requests are where a human decides</h2>
-<p>From a branch, the change becomes a pull request. Nothing in the loop
-merges it. A human, or CI, or both, decide whether it merges — the run's
-job ends at handing over a reviewable diff with its evidence attached,
-not at getting the diff into the target branch.</p>
+<h2 id="checks-are-evidence">Checks are evidence</h2>
+<p>A build's tests are not something the build gets to assert. The harness
+runs the checks itself, in the run's worktree, after it applies the patch.
+Each command's exit code and output become an evidence row on the
+proposal, before review and the gate see it.</p>
+<p>Two lists make up the checks:</p>
+<ol>
+<li>The team cartridge's <code>landing_areas.checks</code>: a list of <code>{name, cmd}</code>
+   entries. An overlay's list replaces the one it inherits.</li>
+<li>The repository's own root <code>.agent-checks</code> file, if it has one. These
+   run on top of the cartridge's checks, never instead of them. A command
+   the cartridge already runs is not run twice.</li>
+</ol>
+<p><code>.agent-checks</code> holds one shell command per line. Blank lines and lines
+starting with <code>#</code> are skipped. Each line runs through a shell from the
+repository root, so <code>cd &lt;dir&gt; &amp;&amp; &lt;cmd&gt;</code> works. The check's name is the
+line's first word.</p>
+<p>The coxswain repository uses this to run every component suite. Its
+<code>.agent-checks</code> is:</p>
+<div class="highlight"><pre><span></span><code>cd src/tools &amp;&amp; pytest -q
+cd src/graphs &amp;&amp; pytest -q
+cd src/cartridges &amp;&amp; pytest -q
+</code></pre></div>
+<p>Each suite runs from its own folder. Its <code>pytest.ini</code> puts the sibling
+source folders on the path (<code>pythonpath = . ../graphs ../cartridges</code> in
+<code>src/tools</code>, and the same pattern in the others). So a change to
+<code>src/graphs</code> in a worktree is the code <code>src/tools</code>' tests import, not an
+installed copy.</p>
+<p>When the chair carries a stranded or split phase onto one <code>pr/carry-...</code>
+branch, it runs the same <code>.agent-checks</code> lines on that branch before it
+pushes it.</p>
+<h2 id="pull-requests-are-where-a-person-decides">Pull requests are where a person decides</h2>
+<p>From a branch, the change becomes a pull request. <code>cox runs land &lt;run&gt;
+--repo R --apply</code> cherry-picks the approved work onto a fresh branch off
+the default branch and opens the pull request. When the gate allows a
+merge, it waits for the checks and merges on green. The chair loop runs
+the same land.</p>
+<p>How far a land goes without a person is the team's <code>gate</code> policy:</p>
+<table>
+<thead>
+<tr>
+<th><code>gate</code></th>
+<th>Where a land stops</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ticket</code> (default)</td>
+<td>After it opens the pull request. A person merges it.</td>
+</tr>
+<tr>
+<td><code>phase</code></td>
+<td>It merges tickets into their phase branch, then stops before the default branch.</td>
+</tr>
+<tr>
+<td><code>epic</code></td>
+<td>The same as <code>phase</code>, until every phase is done.</td>
+</tr>
+<tr>
+<td><code>full</code></td>
+<td>It merges to the default branch on green.</td>
+</tr>
+</tbody>
+</table>
+<p>The level comes from the team cartridge, resolved into
+<code>&lt;runs&gt;/policy.gate.json</code>. <code>--gate</code> overrides it for one land. An
+unreadable or unknown level reads as <code>ticket</code>, never <code>full</code>.</p>
 <h2 id="merge-on-green">Merge on green</h2>
 <p>A pull request merges once its checks are green, not once a run has
-asserted that they are. This is the same evidence-over-assertion rule the
-review nodes already enforce, applied at the last step instead of the
-review steps: the checks that actually ran are what green means.</p>
+asserted that they are. The land polls the forge's own check results for
+the pull request. A failed check stops the land; nothing merges. This is
+the same evidence-over-assertion rule the review nodes enforce, applied at
+the last step: the checks that actually ran are what green means.</p>
 <h2 id="runs-clean">runs clean</h2>
-<p><code>runs clean</code> removes the worktrees and scratch branches left behind by
-runs that finished — landed, abandoned, or superseded — so a workspace
-doesn't accumulate disposable state that nobody is going to look at
+<p><code>cox runs clean &lt;run&gt; --repo R --apply</code> removes the worktree and
+branches a finished run left behind. Without <code>--apply</code> it shows what it
+would delete. It cleans up runs that finished (landed, abandoned or
+superseded), so a workspace doesn't accumulate disposable state that nobody is going to look at
 again. It never touches a run still in flight or a branch a pull request
 still points at.</p>
 

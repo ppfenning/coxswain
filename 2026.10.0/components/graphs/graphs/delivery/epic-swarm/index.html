@@ -914,42 +914,14 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../../../../../methodology/graphs/coxswain/" class="md-nav__link">
+      <a href="../../../../../methodology/graphs/initiative-decompose/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    coxswain
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../../../../methodology/graphs/epic-swarm/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    epic-swarm
+    initiative-decompose
   
 
     
@@ -998,14 +970,98 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../../../../../methodology/graphs/initiative-decompose/" class="md-nav__link">
+      <a href="../../../../../methodology/graphs/phase-validate/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    initiative-decompose
+    phase-validate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../methodology/graphs/review-diff/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    review-diff
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../methodology/graphs/rescue-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    rescue-review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../methodology/graphs/coxswain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    coxswain
   
 
     
@@ -1090,6 +1146,90 @@ Coxswain is in beta — versions may change between releases
     
   
     triage-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../methodology/graphs/triage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    triage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../methodology/graphs/sweep/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    sweep
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../../methodology/graphs/epic-driver/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The epic driver
   
 
     
@@ -3795,7 +3935,7 @@ invoke next from what came back, and does it concurrently. A graph is
 <code>run(args, runner) -&gt; dict</code> — pure, replayable, no clock, no disk. A driver that
 blocks on futures is none of those things.</p>
 <p>So <code>epic-swarm</code> is <strong>a harness capability plus two roles and a write kind</strong>, not
-a fifth graph. It is specified here, beside the graphs it drives, because this is
+one more graph. It is specified here, beside the graphs it drives, because this is
 where a reader looks for it — but it belongs in <code>harness/</code>, next to <code>phase.py</code>,
 and it must not acquire a <code>SPEC</code> or appear in the graph registry. If it ever
 does, <code>test_portability.py</code> will start asserting purity rules against something
@@ -3847,7 +3987,7 @@ under test), <code>repo</code> (required: stacking is real branches in a real re
 and there is no honest way to fake that), <code>max_parallel</code>, and the harness's usual
 <code>ledger_path</code> / <code>runs_dir</code> / <code>worktree_root</code> / <code>provider_profile</code> / <code>assume</code>.</p>
 <p>There is no <code>comfort</code> argument. A comfort level is a cartridge — <code>local-comfort0</code>
-and <code>local-comfort1</code> in <code>agent-cartridges</code> — and a flag that could override the
+and <code>local-comfort1</code> in <code>src/cartridges/cartridges</code> — and a flag that could override the
 resolved ramps would be a second source of truth about what a team has earned.</p>
 <p><strong>Returns:</strong> <code>{run_id, date, initiative, phases[], tasks[], quarantined[],
 proposals[], totals}</code> — where <code>totals</code> reports <code>phases_complete</code>,

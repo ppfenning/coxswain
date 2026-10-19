@@ -14,7 +14,7 @@
         <link rel="prev" href="../retro-propose/">
       
       
-        <link rel="next" href="../../review/">
+        <link rel="next" href="../triage/">
       
       
         
@@ -927,42 +927,14 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../coxswain/" class="md-nav__link">
+      <a href="../initiative-decompose/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    coxswain
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../epic-swarm/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    epic-swarm
+    initiative-decompose
   
 
     
@@ -1011,14 +983,98 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../initiative-decompose/" class="md-nav__link">
+      <a href="../phase-validate/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    initiative-decompose
+    phase-validate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../review-diff/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    review-diff
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rescue-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    rescue-review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../coxswain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    coxswain
   
 
     
@@ -1121,6 +1177,90 @@ Coxswain is in beta — versions may change between releases
 
       </a>
       
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../triage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    triage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sweep/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    sweep
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../epic-driver/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The epic driver
+  
+
+    
+  </span>
+  
+  
+
+      </a>
     </li>
   
 
@@ -3673,7 +3813,7 @@ Coxswain is in beta — versions may change between releases
   <a class="cox-page-nav__prev" href="../retro-propose/">← retro-propose</a>
   
   
-  <a class="cox-page-nav__next" href="../../review/">Review →</a>
+  <a class="cox-page-nav__next" href="../triage/">triage →</a>
   
 </nav>
 
@@ -3682,11 +3822,13 @@ Coxswain is in beta — versions may change between releases
 
 
 <h1 id="triage-propose">triage-propose</h1>
-<p>The coxswain dispatches triage-propose when a new ticket arrives
-unscoped: it reads the ticket and proposes which initiative it belongs
-to, or that it needs a new one. What lands is a filing proposal in the
-future-work landing area, not a ticket placed directly onto the active
-board.</p>
+<p>triage-propose is morning triage of an alert queue. The alerts arrive as
+an argument; the graph fetches nothing itself. It classifies each alert
+against the runbook, verifies the classification, and proposes
+<code>doc_update</code> corrections to the runbook it used. It writes nothing else.
+Alerts over the fetch cap are counted and deferred to the next run,
+never dropped. The coxswain can dispatch it when alerts are provided,
+and <code>shell.py triage</code> runs it directly.</p>
 <h1 id="triage-propose_1">triage-propose</h1>
 <p>Alerts arrive as an argument rather than being fetched here. A graph that reads a queue reads the world, and the contract puts both the filesystem and the clock on the far side of the graph boundary for the same reason: a graph that cannot be replayed cannot be debugged after the fact.</p>
 <pre class="mermaid"><code>flowchart LR
@@ -3895,13 +4037,13 @@ that fetches cannot be replayed. Both caps report their overflow in <code>totals
         
         
           
-          <a href="../../review/" class="md-footer__link md-footer__link--next" aria-label="Next: Review">
+          <a href="../triage/" class="md-footer__link md-footer__link--next" aria-label="Next: triage">
             <div class="md-footer__title">
               <span class="md-footer__direction">
                 Next
               </span>
               <div class="md-ellipsis">
-                Review
+                triage
               </div>
             </div>
             <div class="md-footer__button md-icon">

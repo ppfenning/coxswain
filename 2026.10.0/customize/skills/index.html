@@ -920,42 +920,14 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../../methodology/graphs/coxswain/" class="md-nav__link">
+      <a href="../../methodology/graphs/initiative-decompose/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    coxswain
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../methodology/graphs/epic-swarm/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    epic-swarm
+    initiative-decompose
   
 
     
@@ -1004,14 +976,98 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../../methodology/graphs/initiative-decompose/" class="md-nav__link">
+      <a href="../../methodology/graphs/phase-validate/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    initiative-decompose
+    phase-validate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/review-diff/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    review-diff
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/rescue-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    rescue-review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/coxswain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    coxswain
   
 
     
@@ -1096,6 +1152,90 @@ Coxswain is in beta — versions may change between releases
     
   
     triage-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/triage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    triage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/sweep/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    sweep
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/epic-driver/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The epic driver
   
 
     
@@ -1442,10 +1582,10 @@ Coxswain is in beta — versions may change between releases
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#binding-a-skill-to-a-seat-and-a-role" class="md-nav__link">
+  <a href="#two-keys-bind-skills" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Binding a skill to a seat and a role
+        Two keys bind skills
       
     </span>
   </a>
@@ -3743,10 +3883,10 @@ Coxswain is in beta — versions may change between releases
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#binding-a-skill-to-a-seat-and-a-role" class="md-nav__link">
+  <a href="#two-keys-bind-skills" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Binding a skill to a seat and a role
+        Two keys bind skills
       
     </span>
   </a>
@@ -3813,31 +3953,43 @@ Coxswain is in beta — versions may change between releases
 
 
 <h1 id="skills">Skills</h1>
-<p>This page settles how a skill gets attached to the crew: a skill binds
-to a seat and a role, and the skill's own body — not the seat, not the
-binding — is the source of truth for what an agent in that seat actually
-does.</p>
-<h2 id="binding-a-skill-to-a-seat-and-a-role">Binding a skill to a seat and a role</h2>
-<p>A binding says which skill fills which seat for which role: a builder
-seat on a Python repo binds a different skill body than a builder seat
-writing docs, even though both are "builder". The binding lives in the
-cartridge's <code>crew</code> key (see <a href="../../methodology/cartridges/">Cartridges</a>),
-not in the skill itself — the same skill can bind to more than one seat
-across different cartridges.</p>
+<p>This page settles how a skill gets attached to the work: a skill binds
+to a role, and the skill's own body (not the role, not the binding) is
+the source of truth for what an agent in that role actually does.</p>
+<h2 id="two-keys-bind-skills">Two keys bind skills</h2>
+<p>A cartridge binds skills in two places:</p>
+<ul>
+<li><strong><code>skills:</code></strong> binds the roles a graph's nodes ask for (<code>plan</code>, <code>build</code>,
+  <code>review_charter</code>, <code>work_state_arm</code> and so on) to one skill each. Base
+  lists the roles under <code>roles.required</code> and <code>roles.optional</code>; a required
+  role left unbound is refused at load.</li>
+<li><strong><code>crew:</code></strong> binds the seats a person delegates to (the crew members) to
+  the skills they route to. It is optional. A seat with no binding routes
+  to nothing team-specific.</li>
+</ul>
+<p>A skill is named <code>plugin:skill</code>. The <code>local</code> cartridge, for example,
+binds:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">skills</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">plan</span><span class="p">:</span><span class="w">           </span><span class="l l-Scalar l-Scalar-Plain">local-skills:plan-task</span>
+<span class="w">  </span><span class="nt">build</span><span class="p">:</span><span class="w">          </span><span class="l l-Scalar l-Scalar-Plain">local-skills:build-in-worktree</span>
+<span class="w">  </span><span class="nt">review_charter</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">local-skills:review-charter</span>
+</code></pre></div>
+<p>The same skill can bind to more than one role, and in more than one
+cartridge.</p>
 <h2 id="the-skill-body-is-the-source-of-truth">The skill body is the source of truth</h2>
-<p>Everything a bound seat does for its role comes from the skill's own
-body: its instructions, its discipline, its description of what "good"
-looks like for that job. The seat and the binding are just plumbing that
-gets the right body in front of the right agent for the right run. If a
-skill's behavior needs to change, the fix is in the skill body, not in a
-seat-specific patch layered on top of it.</p>
+<p>Everything a bound role does comes from the skill's own body: its
+instructions, its discipline, its description of what "good" looks like
+for that job. The role and the binding are plumbing that gets the right
+body in front of the right agent for the right run. If a skill's
+behavior needs to change, the fix is in the skill body, not in a
+role-specific patch layered on top of it.</p>
 <h2 id="where-bindings-and-bodies-live">Where bindings and bodies live</h2>
-<p>Skill bindings are a cartridge concern, layered the same way any other
-cartridge content is: base ships default bindings, local and team can
-add or override them, tighten-only where the binding governs something
-risk related. The skill bodies Coxswain ships live in the checkout under
-<code>src/cartridges/skills-plugins/</code> and move with its release tag — see
-<a href="../../methodology/cartridges/">Cartridges</a> for how provenance works.</p>
+<p>Bindings are cartridge keys, layered like any other: base binds nothing,
+<code>local</code> binds every required role, and a team overrides what it wants.
+The skill bodies Coxswain ships live in the checkout under
+<code>src/cartridges/skills-plugins/</code> and move with its release tag. The
+harness also reads every folder named in the profile's <code>skills_roots</code>.
+See <a href="../../methodology/cartridges/">Cartridges</a> for how provenance works.</p>
 <h2 id="writing-a-new-one">Writing a new one</h2>
 <p>If no existing skill does the job, see <a href="../write-a-skill/">Write a skill</a>
 for the shape a new one needs and how it gets bound once it exists.</p>

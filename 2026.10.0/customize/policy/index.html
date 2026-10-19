@@ -920,42 +920,14 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../../methodology/graphs/coxswain/" class="md-nav__link">
+      <a href="../../methodology/graphs/initiative-decompose/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    coxswain
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../methodology/graphs/epic-swarm/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    epic-swarm
+    initiative-decompose
   
 
     
@@ -1004,14 +976,98 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../../methodology/graphs/initiative-decompose/" class="md-nav__link">
+      <a href="../../methodology/graphs/phase-validate/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    initiative-decompose
+    phase-validate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/review-diff/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    review-diff
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/rescue-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    rescue-review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/coxswain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    coxswain
   
 
     
@@ -1096,6 +1152,90 @@ Coxswain is in beta — versions may change between releases
     
   
     triage-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/triage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    triage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/sweep/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    sweep
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/epic-driver/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The epic driver
   
 
     
@@ -1535,6 +1675,28 @@ Coxswain is in beta — versions may change between releases
     <span class="md-ellipsis">
       
         dispatch.max_in_flight
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#gate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gate
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pacing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        pacing
       
     </span>
   </a>
@@ -3786,6 +3948,28 @@ Coxswain is in beta — versions may change between releases
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#gate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gate
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pacing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        pacing
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -3814,34 +3998,73 @@ Coxswain is in beta — versions may change between releases
 
 <h1 id="policy">Policy</h1>
 <p>This page settles what each policy knob changes and what a sane default
-looks like, for the four values most teams touch first.</p>
+looks like, for the values most teams touch first. Every key here lives
+under <code>policy:</code> in a cartridge. The values quoted are base's.</p>
 <h2 id="review_tier">review_tier</h2>
-<p>Which provider tier fills the charter reviewer and adversary seats for
-this team's runs. Raising it spends more per review in exchange for a
-stronger read on harder changes. A sane default is the same tier the
-builder runs on — spending less on review than on the work it's
-checking usually means the review is the weaker of the two.</p>
+<p>How much review a change must survive. The harness puts each change in
+one of three tiers:</p>
+<table>
+<thead>
+<tr>
+<th>Tier</th>
+<th>Who reviews</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>The charter reviewer alone.</td>
+</tr>
+<tr>
+<td>1</td>
+<td>The charter reviewer and the adversary.</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Both, and the arbiter runs whether or not they disagree.</td>
+</tr>
+</tbody>
+</table>
+<p>The keys decide the tier:</p>
+<ul>
+<li><code>tier2_surfaces</code> (base: schema, migration, deletion, auth,
+  infrastructure, cross_repo, production_write_path). A change on any of
+  these is tier 2, whatever its size. This check runs first.</li>
+<li><code>tier0_patterns</code> (base: docs_only, rename_only, config_bump,
+  param_tweak). A change whose patterns are all in this list is tier 0.</li>
+<li><code>tier0_max_changed_lines</code> (base: 30). A change this small, in one
+  module, is tier 0. Unset or 0 turns this off.</li>
+<li><code>tier1_max_changed_lines</code> (base: 150) and <code>tier1_max_modules</code> (base: 1).
+  A change within both is tier 1. Anything bigger is tier 2.</li>
+</ul>
+<p>No tier skips review. Tier 0 is the cheapest review, not none.</p>
 <h2 id="plan_competitionmin_tier">plan_competition.min_tier</h2>
-<p>The minimum tier a candidate plan must have run on to be considered when
-more than one plan is generated for the same task. A sane default is
-whatever tier plan itself normally runs on — this knob exists for teams
-that want cheap draft plans filtered out before a human ever compares
-them, not to gate every team's planning step.</p>
+<p>The pre-build tier at which the plan competition runs: a second,
+independent plan, an arbiter that picks or merges the two, and an attacker
+that tests the chosen plan before anyone builds it. The tier is judged
+from the task's surfaces and patterns, since no diff exists yet. Base sets
+1. Set 0 to run the competition on every task, or 3 to never run it.</p>
 <h2 id="build_budget_usd_max">build_budget_usd_max</h2>
-<p>The ceiling <code>budget_usd</code> on a build node can't exceed, even for a team
-that wants to try raising it. This is the enforcement point for
-<a href="../../methodology/budgets/">Budgets</a>'s tighten-only rule at the team
-level: a team can set a build's own <code>budget_usd</code> lower than this, never
-higher. A sane default is the base tier's own build ceiling — a team
-wanting more room should be splitting the task, not raising this.</p>
+<p>The most a work item may ask for with its own <code>budget_usd:</code> field. Base
+sets 6.0, the runaway ceiling. A build without <code>budget_usd</code> uses its
+measured guide. The harness refuses an item that asks for more than this
+and quotes the number. See <a href="../../methodology/budgets/">Budgets</a>.</p>
 <h2 id="dispatchmax_in_flight">dispatch.max_in_flight</h2>
-<p>The cap on how many runs the coxswain will dispatch at once — the
-in-flight bound described in <a href="../../methodology/crew-and-seats/">Crew and
-seats</a>. A sane default is small enough
-that a human reviewing pull requests isn't handed more at once than they
-can actually read; raising it trades review attention for throughput,
-and that trade should be a deliberate policy choice, not a default
-nobody looked at.</p>
+<p>How many harness runs the chair may have alive at once on one machine.
+Base sets 3. It applies per machine; each lane host has its own capacity
+in the hosts table. A sane default is small enough that a person
+reviewing pull requests is not handed more at once than they can read.</p>
+<h2 id="gate">gate</h2>
+<p>How far a land goes without a person: <code>ticket</code> (base), <code>phase</code>, <code>epic</code> or
+<code>full</code>. See <a href="../../methodology/landing/#pull-requests-are-where-a-person-decides">Landing</a>.</p>
+<h2 id="pacing">pacing</h2>
+<p>How a launch reasons about the 5-hour window: <code>window_hours</code>,
+<code>spent_vs_elapsed_margin</code>, <code>late_threshold</code>, <code>min_headroom_usd</code>, and the
+<code>tier_ladder</code> and <code>effort_ladder</code> a launch degrades along.</p>
+<p>The hard stops are not cartridge keys. The chair reads
+<code>hard_stop_fraction</code> (default 0.99) and <code>weekly_hard_stop_fraction</code>
+(default 0.93) from <code>&lt;runs&gt;/policy.pacing.json</code> in the workspace. See
+<a href="../autonomous-chair/#limits">Autonomous chair</a>.</p>
 
 
 

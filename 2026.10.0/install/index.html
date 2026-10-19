@@ -748,10 +748,10 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
-  <a href="#where-personal-setup-goes" class="md-nav__link">
+  <a href="#the-provider-profile" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Where personal setup goes
+        The provider profile
       
     </span>
   </a>
@@ -1082,42 +1082,14 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../methodology/graphs/coxswain/" class="md-nav__link">
+      <a href="../methodology/graphs/initiative-decompose/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    coxswain
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../methodology/graphs/epic-swarm/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    epic-swarm
+    initiative-decompose
   
 
     
@@ -1166,14 +1138,98 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../methodology/graphs/initiative-decompose/" class="md-nav__link">
+      <a href="../methodology/graphs/phase-validate/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    initiative-decompose
+    phase-validate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../methodology/graphs/review-diff/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    review-diff
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../methodology/graphs/rescue-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    rescue-review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../methodology/graphs/coxswain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    coxswain
   
 
     
@@ -1258,6 +1314,90 @@ Coxswain is in beta — versions may change between releases
     
   
     triage-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../methodology/graphs/triage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    triage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../methodology/graphs/sweep/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    sweep
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../methodology/graphs/epic-driver/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The epic driver
   
 
     
@@ -3875,10 +4015,10 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
-  <a href="#where-personal-setup-goes" class="md-nav__link">
+  <a href="#the-provider-profile" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Where personal setup goes
+        The provider profile
       
     </span>
   </a>
@@ -3977,25 +4117,35 @@ The formula also installs <code>towpath</code>, the dashboard.</p>
 </code></pre></div>
 <p><code>uv</code> must already be on your <code>PATH</code>; get it from <a href="https://docs.astral.sh/uv/">https://docs.astral.sh/uv/</a>.
 The <code>--python 3.14</code> flag makes uv fetch a 3.14 interpreter when none is
-present. If your shell cannot find <code>cox</code> afterwards, run
+present. Add the extras the machine uses, for example
+<code>uv tool install --python 3.14 'coxswain[postgres,traces,lake]'</code>. A shared
+Postgres store needs <code>postgres</code>. The extras are <code>traces</code>, <code>postgres</code>,
+<code>parquet</code>, <code>lake</code>, <code>analytics</code> and <code>live</code>; <code>cox install</code> keeps the ones the
+tool already has. If your shell cannot find <code>cox</code> afterwards, run
 <code>uv tool update-shell</code> and open a new shell.</p>
 <h2 id="what-cox-install-does">What <code>cox install</code> does</h2>
 <ol>
 <li>Reads <code>manifest.toml</code> in the checkout of
    <a href="https://github.com/ppfenning/coxswain">ppfenning/coxswain</a> at
-   <code>&lt;home&gt;/installs/coxswain</code>, and checks that the checkout is at the release
-   tag it names.</li>
+   <code>&lt;home&gt;/installs/coxswain</code>. It refuses a checkout with uncommitted
+   changes, and refuses a <code>--provider</code> that the manifest does not mark
+   <code>supported</code>. A clean checkout is installed as it is; moving it to another
+   release is <code>cox upgrade</code>'s job.</li>
 <li>Creates one venv in that checkout, <code>&lt;checkout&gt;/.venv</code>, with <code>uv sync</code>.</li>
 <li>Installs <code>cox</code> editable from the checkout, so <code>cox</code> and the harness run
    the same code.</li>
-<li>Writes the profile for this machine, when it has none: <code>harness_dir</code> is
-   <code>&lt;checkout&gt;/src/graphs</code>, <code>skills_roots</code> is
-   <code>&lt;checkout&gt;/src/cartridges/skills-plugins</code>, and the provider profile is
-   the one <code>--provider</code> names.</li>
+<li>Writes the profile for this machine, <code>~/.config/agent-tools/profile.yaml</code>,
+   when it has none: <code>harness_dir</code> is <code>&lt;checkout&gt;/src/graphs</code>,
+   <code>skills_roots</code> is <code>&lt;checkout&gt;/src/cartridges/skills-plugins</code>, and
+   <code>provider_profile</code> is the shipped default,
+   <code>&lt;checkout&gt;/src/cartridges/providers/claude-code.yaml</code>. See
+   <a href="#the-provider-profile">The provider profile</a> for pointing it at your
+   team's own.</li>
 <li>Links the crew seats from <code>&lt;checkout&gt;/crew</code> into <code>~/.claude/agents</code>.</li>
 <li>Fetches dash when you pass <code>--with dash</code>. Dash is the only optional
    component; it lives in its own repository.</li>
-<li>Runs <code>cox setup doctor</code>.</li>
+<li>Runs <code>cox setup doctor</code>. It also checks that the <code>--provider</code> CLI
+   (<code>claude</code> by default) is on <code>PATH</code>.</li>
 </ol>
 <h2 id="channels">Channels</h2>
 <table>
@@ -4048,7 +4198,7 @@ page uses:</p>
 </tr>
 <tr>
 <td><code>--provider</code></td>
-<td>Which provider profile to configure (see <a href="providers/">Providers</a>).</td>
+<td>Which provider in <code>manifest.toml</code> to install for; <code>claude-code</code> by default, and only a <code>supported</code> one is accepted (see <a href="providers/">Providers</a>).</td>
 </tr>
 <tr>
 <td><code>--with dash</code></td>
@@ -4075,11 +4225,39 @@ and that the configured provider's CLI is on <code>PATH</code>.</p>
 installed, against <code>manifest.toml</code>.</p>
 <p><img alt="cox setup doctor confirming the install and the provider CLI" src="../assets/shots/doctor.svg"></p>
 <p><code>cox setup doctor</code> against a real install.</p>
-<h2 id="where-personal-setup-goes">Where personal setup goes</h2>
-<p>Personal setup never goes in a shipped repository. It lives in one of two homes.</p>
+<h2 id="the-provider-profile">The provider profile</h2>
+<p>A provider profile is team configuration: which CLI drives the seats, the
+model, effort and budget for each tier and role, the tools each role may
+call, and the shared store and trace locations (<code>storage_url</code>,
+<code>traces_url</code>, <code>lake_url</code>, <code>object_store</code>). The checkout ships default profiles in
+<code>&lt;checkout&gt;/src/cartridges/providers/</code>, and <code>cox install</code> points this
+machine at <code>claude-code.yaml</code> there. That is enough for one person trying
+Coxswain.</p>
+<p>A team keeps its own profile outside the code checkout, so <code>cox upgrade</code>
+never touches it and the checkout stays clean. Put it in one of two places:</p>
 <ul>
-<li><strong>The team cartridge</strong> holds the cast, the policy, the inline repos and the context packs. A cartridge named <code>example-team</code> is one such home.</li>
-<li><strong>The provider profile</strong> holds the operator, the store and the notifier. A profile named <code>example-provider</code> is one such home.</li>
+<li><code>&lt;home&gt;/providers/&lt;team&gt;.yaml</code>, one copy per machine;</li>
+<li>the workspace, for example <code>&lt;workspace&gt;/providers/&lt;team&gt;.yaml</code>, so it
+  travels with the workspace's git history.</li>
+</ul>
+<p>Start from the shipped one, and copy <code>catalog.yaml</code> beside it (prices are
+read from the <code>catalog.yaml</code> next to the profile):</p>
+<div class="highlight"><pre><span></span><code>mkdir<span class="w"> </span>-p<span class="w"> </span>&lt;home&gt;/providers
+cp<span class="w"> </span>&lt;home&gt;/installs/coxswain/src/cartridges/providers/claude-code.yaml<span class="w"> </span>&lt;home&gt;/providers/my-team.yaml
+cp<span class="w"> </span>&lt;home&gt;/installs/coxswain/src/cartridges/providers/catalog.yaml<span class="w"> </span>&lt;home&gt;/providers/
+</code></pre></div>
+<p>Then set <code>provider_profile</code> in <code>~/.config/agent-tools/profile.yaml</code> to
+that path, or pass <code>--provider-profile PATH</code> to <code>cox setup install</code>. The
+doctor's <code>home paths</code> row fails when <code>provider_profile</code> sits outside both
+<code>&lt;home&gt;</code> and the workspace.</p>
+<p>Personal setup never goes in the code checkout. It lives in three places:</p>
+<ul>
+<li><strong>The team cartridge</strong>, in <code>&lt;workspace&gt;/cartridges/&lt;team&gt;</code>, holds the
+  cast, the policy, the inline repos and the context packs.</li>
+<li><strong>The provider profile</strong> holds the tiers, budgets, tools and the store.</li>
+<li><strong>The machine profile</strong>, <code>~/.config/agent-tools/profile.yaml</code>, holds this
+  machine's paths, the forge and tracker, the operator (<code>operator:</code>) and the
+  notifier (<code>notify:</code>).</li>
 </ul>
 <h2 id="upgrade">Upgrade</h2>
 <p>Update <code>cox</code> itself, then the checkout:</p>

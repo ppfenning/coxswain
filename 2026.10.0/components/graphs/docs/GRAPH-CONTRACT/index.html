@@ -914,42 +914,14 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../../../../methodology/graphs/coxswain/" class="md-nav__link">
+      <a href="../../../../methodology/graphs/initiative-decompose/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    coxswain
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../../../methodology/graphs/epic-swarm/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    epic-swarm
+    initiative-decompose
   
 
     
@@ -998,14 +970,98 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../../../../methodology/graphs/initiative-decompose/" class="md-nav__link">
+      <a href="../../../../methodology/graphs/phase-validate/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    initiative-decompose
+    phase-validate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../methodology/graphs/review-diff/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    review-diff
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../methodology/graphs/rescue-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    rescue-review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../methodology/graphs/coxswain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    coxswain
   
 
     
@@ -1090,6 +1146,90 @@ Coxswain is in beta — versions may change between releases
     
   
     triage-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../methodology/graphs/triage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    triage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../methodology/graphs/sweep/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    sweep
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../methodology/graphs/epic-driver/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The epic driver
   
 
     
@@ -3799,7 +3939,8 @@ spelled out the last two:</p>
 <p><strong>1. Before the gate — measure, then escalate, then ask the policy.</strong> When
 <code>--repo</code> names the project a change targets, the harness applies the build
 patch in a real worktree of it and RUNS the cartridge's configured checks
-(<code>landing_areas.checks</code>), attaching pass/fail and parsed counts to the proposal
+(<code>landing_areas.checks</code>) plus each command in the target repository's root
+<code>.agent-checks</code> file (one per line, added after the cartridge's), attaching pass/fail and parsed counts to the proposal
 the way <code>change_facts</code> already work — counted from reality, never asked of a
 model. Then, from the diff's paths alone, it escalates any patch-bearing
 proposal whose change touches governance (<code>cartridges/</code>, <code>skills-plugins/</code>,
@@ -3893,7 +4034,7 @@ staying small, enforced at the seam where it actually matters.</p>
 </tr>
 <tr>
 <td><code>epic-reconcile</code></td>
-<td>compare (set arithmetic) → reconcile → emit. Declared state vs actual.</td>
+<td>compare (set arithmetic) → emit. Declared state vs actual.</td>
 </tr>
 <tr>
 <td><code>phase-validate</code></td>
@@ -3921,7 +4062,7 @@ staying small, enforced at the seam where it actually matters.</p>
 </tr>
 </tbody>
 </table>
-<p>All eight are specified in <code>graphs/</code> and implemented.</p>
+<p>All eleven are specified in <code>graphs/</code>, declare a <code>SPEC</code>, and are implemented. The table names each graph by its <code>GRAPH_NAME</code>; <code>shell.py</code> takes the subcommand its <code>SPEC</code> declares (for example <code>decompose</code>, <code>lifecycle</code>, <code>validate</code>, <code>cos</code>, <code>reconcile</code>, <code>retro</code>, and <code>triage-quarantine</code> for <code>triage</code>).</p>
 <p>Running a <em>phase</em> is not a graph: the shell runs <code>lifecycle-propose</code> once per
 unblocked task, concurrently. Sequence belongs to a graph; concurrency belongs
 to the I/O edge that already owns every side effect. Results are ordered by task
@@ -3932,7 +4073,7 @@ the coxswain driver (<code>harness/cos.py</code>). None of them carries a <code>
 and every child run records under the parent's run id.</p>
 <h2 id="none-of-this-needs-a-tracker">None of this needs a tracker</h2>
 <p>The roles and write kinds name work, not vendors: <code>work_state_arm</code>,
-<code>work_item_arm</code>, <code>item_create</code>, <code>state_move</code>. <code>cartridges/local/</code> binds every one
+<code>work_item_arm</code>, <code>item_create</code>, <code>state_move</code>. The <code>local</code> cartridge (<code>src/cartridges/cartridges/local/</code>) binds every one
 of them to the filesystem — work items are markdown files under <code>work/</code>, git is
 the audit trail — and resolves with no tracker, no workspace id, and no
 <code>auth_env</code>. If a graph needed a tracker, that cartridge could not resolve.</p>

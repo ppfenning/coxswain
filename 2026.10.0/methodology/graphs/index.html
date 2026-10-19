@@ -14,7 +14,7 @@
         <link rel="prev" href="../cartridges/">
       
       
-        <link rel="next" href="coxswain/">
+        <link rel="next" href="initiative-decompose/">
       
       
         
@@ -1025,10 +1025,21 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
-  <a href="#the-seven-graphs" class="md-nav__link">
+  <a href="#the-eleven-graphs" class="md-nav__link">
     <span class="md-ellipsis">
       
-        The seven graphs
+        The eleven graphs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#drivers-are-not-graphs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Drivers are not graphs
       
     </span>
   </a>
@@ -1062,42 +1073,14 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="coxswain/" class="md-nav__link">
+      <a href="initiative-decompose/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    coxswain
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="epic-swarm/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    epic-swarm
+    initiative-decompose
   
 
     
@@ -1146,14 +1129,98 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="initiative-decompose/" class="md-nav__link">
+      <a href="phase-validate/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    initiative-decompose
+    phase-validate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="review-diff/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    review-diff
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="rescue-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    rescue-review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="coxswain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    coxswain
   
 
     
@@ -1238,6 +1305,90 @@ Coxswain is in beta — versions may change between releases
     
   
     triage-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="triage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    triage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="sweep/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    sweep
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="epic-driver/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The epic driver
   
 
     
@@ -3855,10 +4006,21 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
-  <a href="#the-seven-graphs" class="md-nav__link">
+  <a href="#the-eleven-graphs" class="md-nav__link">
     <span class="md-ellipsis">
       
-        The seven graphs
+        The eleven graphs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#drivers-are-not-graphs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Drivers are not graphs
       
     </span>
   </a>
@@ -3894,7 +4056,7 @@ Coxswain is in beta — versions may change between releases
   <a class="cox-page-nav__prev" href="../cartridges/">← Cartridges</a>
   
   
-  <a class="cox-page-nav__next" href="coxswain/">coxswain →</a>
+  <a class="cox-page-nav__next" href="initiative-decompose/">initiative-decompose →</a>
   
 </nav>
 
@@ -3947,51 +4109,98 @@ task. Each task gets its own worktree: a disposable checkout that one run
 owns and nothing else touches, so a run that goes wrong costs nothing to
 throw away. See <a href="../records/">Records</a> for what a run id ties together.</p>
 <h2 id="how-to-read-the-diagrams">How to read the diagrams</h2>
-<p>Each graph's page below embeds two things pulled from the graphs
-repository at build time: a mermaid diagram of the nodes and edges, and a
-table listing every node with what it does. A solid edge is an
+<p>Each graph's page below embeds what the build pulls from <code>src/graphs</code>: a
+mermaid diagram of the nodes and edges, a table listing every node, and,
+for most graphs, the graph's own prose page. A solid edge is an
 unconditional handoff. A labeled edge is a branch the node before it
-decides. The diagram is generated from the graph's own definition, so it
-never drifts from what actually runs.</p>
-<h2 id="the-seven-graphs">The seven graphs</h2>
+decides. The diagram is generated from the graph module's docstring by
+<code>python -m harness.graphdoc</code>, so it changes when the graph does.</p>
+<h2 id="the-eleven-graphs">The eleven graphs</h2>
+<p>The registry is whatever <code>harness/registry.py</code> discovers: every module
+under <code>graphs/</code> that declares a <code>SPEC</code>. Today that is eleven graphs. The
+subcommand is what <code>shell.py</code> takes; the graph name is what the run
+records.</p>
 <table>
 <thead>
 <tr>
+<th>Subcommand</th>
 <th>Graph</th>
 <th>What it does</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><a href="coxswain/">coxswain</a></td>
-<td>The dispatch loop: reads the docket and starts the graph each task needs.</td>
-</tr>
-<tr>
-<td><a href="epic-swarm/">epic-swarm</a></td>
-<td>Fans an epic out into its tickets and runs them against the phase order.</td>
-</tr>
-<tr>
-<td><a href="lifecycle-propose/">lifecycle-propose</a></td>
-<td>Walks one ticket through its states, proposing each transition.</td>
-</tr>
-<tr>
+<td><code>decompose</code></td>
 <td><a href="initiative-decompose/">initiative-decompose</a></td>
-<td>Breaks an initiative into epics and tickets during scoping.</td>
+<td>Turns an idea into phases and a task DAG, attacks the dependency edges, and proposes one work item per task.</td>
 </tr>
 <tr>
+<td><code>lifecycle</code></td>
+<td><a href="lifecycle-propose/">lifecycle-propose</a></td>
+<td>The development loop for one task: scope, plan, build in a worktree, review, adversary, arbitrate.</td>
+</tr>
+<tr>
+<td><code>validate</code></td>
+<td><a href="phase-validate/">phase-validate</a></td>
+<td>Judges whether a phase's tasks, together, met the phase's goal. Advisory; emits no proposals.</td>
+</tr>
+<tr>
+<td><code>review-diff</code></td>
+<td><a href="review-diff/">review-diff</a></td>
+<td>Reviews an arbitrary diff outside any build's own run: verdict and findings out, nothing written.</td>
+</tr>
+<tr>
+<td><code>rescue-review</code></td>
+<td><a href="rescue-review/">rescue-review</a></td>
+<td>Reviews a patch that already exists against the harness's own check results.</td>
+</tr>
+<tr>
+<td><code>cos</code></td>
+<td><a href="coxswain/">coxswain</a></td>
+<td>One dispatch node: picks which graphs to run next from a docket the driver assembled.</td>
+</tr>
+<tr>
+<td><code>reconcile</code></td>
 <td><a href="epic-reconcile/">epic-reconcile</a></td>
-<td>Reconciles an epic's board state against what its tickets' records show.</td>
+<td>Compares an epic's declared state with its actual state and proposes corrections.</td>
 </tr>
 <tr>
+<td><code>retro</code></td>
 <td><a href="retro-propose/">retro-propose</a></td>
-<td>Drafts a retro from an epic's run records for a human to accept.</td>
+<td>Reads ledger rows back and proposes only doc updates it can cite.</td>
 </tr>
 <tr>
+<td><code>triage</code></td>
 <td><a href="triage-propose/">triage-propose</a></td>
-<td>Proposes where an unscoped ticket belongs before it is planned.</td>
+<td>Morning triage of an alert queue: read-only, proposes runbook corrections.</td>
+</tr>
+<tr>
+<td><code>triage-quarantine</code></td>
+<td><a href="triage/">triage</a></td>
+<td>Classifies a task stranded at its attempt cap and emits a write by class.</td>
+</tr>
+<tr>
+<td><code>sweep</code></td>
+<td><a href="sweep/">sweep</a></td>
+<td>Applies one rule everywhere it matches: plan, apply, verify, review.</td>
 </tr>
 </tbody>
 </table>
+<p><code>delivery</code> holds the first five, <code>ops</code> the other six.</p>
+<h2 id="drivers-are-not-graphs">Drivers are not graphs</h2>
+<p><code>shell.py</code> also takes three subcommands that are not graphs. They invoke
+graphs, block on them and write, which a graph may not do.</p>
+<ul>
+<li><code>phase</code> runs <code>lifecycle</code> once per unblocked task of one phase.</li>
+<li><code>epic</code> is <a href="epic-driver/">the epic driver</a>. <code>cox route launch epic</code>
+  starts it. It walks an initiative phase by phase: <code>lifecycle</code> per ready
+  task, <code>validate</code> per phase, <code>triage-quarantine</code> for a task at its attempt
+  cap.</li>
+<li><code>rescue</code> runs <code>rescue-review</code> on one quarantined task's kept patch.
+  <code>cox route launch rescue</code> starts it.</li>
+</ul>
+<p><code>cox route launch</code> also starts <code>decompose</code>, <code>cos</code> and <code>sweep</code> directly.
+<code>cox runs review --pr &lt;url&gt;</code> runs <code>review-diff</code> on a pull request.</p>
 <h2 id="where-a-graphs-shape-is-decided">Where a graph's shape is decided</h2>
 <p>The nodes and edges of a graph are the platform's own concern, not a
 team's. A team customizes what runs inside a node — which skills a seat
@@ -4045,13 +4254,13 @@ and isn't customizable here today.</p>
         
         
           
-          <a href="coxswain/" class="md-footer__link md-footer__link--next" aria-label="Next: coxswain">
+          <a href="initiative-decompose/" class="md-footer__link md-footer__link--next" aria-label="Next: initiative-decompose">
             <div class="md-footer__title">
               <span class="md-footer__direction">
                 Next
               </span>
               <div class="md-ellipsis">
-                coxswain
+                initiative-decompose
               </div>
             </div>
             <div class="md-footer__button md-icon">

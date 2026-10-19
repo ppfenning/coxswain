@@ -914,42 +914,14 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../../../../methodology/graphs/coxswain/" class="md-nav__link">
+      <a href="../../../../methodology/graphs/initiative-decompose/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    coxswain
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../../../methodology/graphs/epic-swarm/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    epic-swarm
+    initiative-decompose
   
 
     
@@ -998,14 +970,98 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../../../../methodology/graphs/initiative-decompose/" class="md-nav__link">
+      <a href="../../../../methodology/graphs/phase-validate/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    initiative-decompose
+    phase-validate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../methodology/graphs/review-diff/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    review-diff
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../methodology/graphs/rescue-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    rescue-review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../methodology/graphs/coxswain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    coxswain
   
 
     
@@ -1090,6 +1146,90 @@ Coxswain is in beta — versions may change between releases
     
   
     triage-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../methodology/graphs/triage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    triage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../methodology/graphs/sweep/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    sweep
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../../methodology/graphs/epic-driver/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The epic driver
   
 
     
@@ -3740,7 +3880,7 @@ Coxswain is in beta — versions may change between releases
 
 
 <h1 id="trust-is-earned-per-runbook-entry">Trust is earned per runbook entry</h1>
-<p><strong>Status:</strong> implemented (2026-09-01). <code>agent-cartridges/core/policy.py</code> counts
+<p><strong>Status:</strong> implemented (2026-09-01). <code>src/cartridges/core/policy.py</code> counts
 streaks per <code>subject</code> with a kind-level fallback and gates <code>subject_new</code>
 unconditionally; ledger rows carry the optional <code>subject</code>; triage's <code>doc_update</code>
 proposals name their entry; and the harness files a <code>failure</code> observation
@@ -3843,20 +3983,24 @@ after being wrong twice.</p>
 </ul>
 <h2 id="the-project-overlay-layer">The project overlay layer</h2>
 <p><strong>Status:</strong> implemented (2026-09-06). A fourth cartridge layer, read from the
-TARGET repository rather than from <code>agent-cartridges</code> itself:
+TARGET repository rather than from the cartridges folder itself:
 <code>&lt;repo&gt;/.agent/cartridge.yaml</code>. It has no <code>extends</code> — it is the last word, not
 another link in the chain — and it merges LAST, on top of whatever the
 profile's team cartridge already resolved to. Absent, the resolved cartridge
 is byte-identical to a run without one.</p>
-<p>Only four keys are read out of it:</p>
+<p>Only four top-level keys are read out of it:</p>
 <ul>
 <li><code>context</code> — concatenates onto the context list, as every layer does.</li>
 <li><code>policy.review_tier</code> — tighten only. An overlay may add a tier2 surface or
   lower a size threshold; it may not raise one or remove a surface the team
   already set.</li>
-<li><code>landing_areas.checks</code> — the run's checks. This subsumes <code>.agent-checks</code>:
-  that file is a shorthand that populates this key only when the overlay
-  itself does not set it. Each check entry takes <code>name</code> and <code>cmd</code>, and may
+<li><code>policy.cost.level</code> — tighten only: it may move toward <code>strict</code>, never
+  toward <code>liberal</code>. Any other key under <code>policy.cost</code> is refused.</li>
+<li><code>landing_areas.checks</code> — the run's checks. An overlay's list REPLACES the
+  team cartridge's list for that repository. The repository's root
+  <code>.agent-checks</code> file is separate: its commands, one per line, are ADDED
+  after the cartridge's (or overlay's) checks, skipping any <code>cmd</code> already
+  listed. Each check entry takes <code>name</code> and <code>cmd</code>, and may
   take an optional <code>timeout</code>: an integer number of seconds greater than zero,
   applied to that one check only. When <code>timeout</code> is absent the check runs
   under the harness-wide default of 600 seconds. A value that is not an
@@ -3877,18 +4021,12 @@ hand the target repository a second cast or a second set of write kinds.</p>
 overlay and a run without one are provably different runs. The resolved
 cartridge also carries <code>overlay_sha</code>: the sha256 of the overlay text when
 <code>&lt;repo&gt;/.agent/cartridge.yaml</code> was present, <code>None</code> when it was not.</p>
-<p><code>agent-graphs</code> writes <code>overlay_sha</code> beside <code>cartridge_sha</code> wherever it builds
-a per-run record from the resolved cartridge itself: today that is the
-entry-level observation <code>_observe_trap_failures</code> files when a <code>doc_update</code>
-trap did not hold (<code>harness/cli.py</code>). The phase manifest that <code>build_manifest</code>
-and <code>record_run</code> produce for every run does not yet carry <code>overlay_sha</code> — that
-function lives in <code>agent-cartridges</code>, and its current signature neither
-accepts the field as an argument nor reads it off the <code>cartridge</code> mapping it
-is already handed, confirmed by calling it directly with an <code>overlay_sha</code>-
-bearing cartridge and reading back its keys. Passing <code>cartridge</code> unchanged
-picks up <code>overlay_sha</code> automatically once <code>build_manifest</code> reads it the way it
-already reads <code>cartridge_sha</code>; landing that read is a change to
-<code>agent-cartridges</code>, not to <code>agent-graphs</code>.</p>
+<p>The harness writes <code>overlay_sha</code> beside <code>cartridge_sha</code> wherever it builds
+a per-run record from the resolved cartridge: the entry-level observation
+<code>_observe_trap_failures</code> files when a <code>doc_update</code> trap did not hold
+(<code>harness/cli.py</code>), and the phase manifest, because <code>build_manifest</code> in
+<code>src/cartridges/core/manifest.py</code> reads <code>overlay_sha</code> off the cartridge it is
+handed.</p>
 <h2 id="what-a-seat-can-see">What a seat can see</h2>
 <p>A build seat sees one repository worktree. It cannot analyse the platform's
 own operational record — the runs, ledgers, and usage accounting that the

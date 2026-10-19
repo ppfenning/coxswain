@@ -920,42 +920,14 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../../methodology/graphs/coxswain/" class="md-nav__link">
+      <a href="../../methodology/graphs/initiative-decompose/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    coxswain
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../methodology/graphs/epic-swarm/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    epic-swarm
+    initiative-decompose
   
 
     
@@ -1004,14 +976,98 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../../methodology/graphs/initiative-decompose/" class="md-nav__link">
+      <a href="../../methodology/graphs/phase-validate/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    initiative-decompose
+    phase-validate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/review-diff/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    review-diff
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/rescue-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    rescue-review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/coxswain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    coxswain
   
 
     
@@ -1096,6 +1152,90 @@ Coxswain is in beta — versions may change between releases
     
   
     triage-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/triage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    triage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/sweep/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    sweep
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/epic-driver/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The epic driver
   
 
     
@@ -3814,29 +3954,53 @@ Coxswain is in beta — versions may change between releases
 
 <h1 id="write-a-skill">Write a skill</h1>
 <p>This page settles the shape a new skill needs, where it goes, and how it
-gets bound once it exists. Anything the design hasn't named yet is
-marked <strong>planned</strong> below rather than guessed at.</p>
+gets bound once it exists.</p>
 <h2 id="the-shape">The shape</h2>
 <p>A skill is a body of instructions for one job: what a builder does, what
 a charter reviewer holds work to, what a validator checks. It describes
-discipline and judgment, not a script — the agent filling the seat still
-reasons about the specific task, using the skill body as its brief for
-the role. See <a href="../skills/">Skills</a> for how the body becomes the source of
-truth once it's bound.</p>
+discipline and judgment, not a script: the agent filling the role still
+reasons about the specific task, using the skill body as its brief. See
+<a href="../skills/">Skills</a> for how the body becomes the source of truth once
+it's bound.</p>
+<p>The file is <code>SKILL.md</code>, with a short front matter:</p>
+<div class="highlight"><pre><span></span><code>---
+name: plan-task
+<span class="gu">description: Turn one work item into an ordered, bounded plan another agent can execute without asking questions.</span>
+<span class="gu">---</span>
+
+<span class="gh"># Plan</span>
+
+You produce the plan for exactly one work item...
+</code></pre></div>
 <h2 id="where-it-goes">Where it goes</h2>
-<p><strong>Planned.</strong> The design has not yet named the directory layout or
-naming convention a new skill file follows, or which cartridge layer
-ships a new skill by default.</p>
+<p>A skill lives in a plugin: a folder with <code>.claude-plugin/plugin.json</code>
+(which carries the plugin's <code>name</code>) and a <code>skills/</code> folder. Each skill is
+<code>skills/&lt;skill&gt;/SKILL.md</code>, and its bound name is <code>&lt;plugin&gt;:&lt;skill&gt;</code>:</p>
+<div class="highlight"><pre><span></span><code>my-skills/
+  .claude-plugin/plugin.json      {"name": "my-skills", ...}
+  skills/
+    review-data/SKILL.md          -&gt; my-skills:review-data
+</code></pre></div>
+<p>Keep your team's plugin in your workspace, beside your cartridge, and add
+its folder (or the folder holding it) to the profile's <code>skills_roots</code>.
+The harness scans each root for plugins. The skills Coxswain ships are in
+<code>src/cartridges/skills-plugins/local-skills/</code>.</p>
 <h2 id="how-it-gets-bound">How it gets bound</h2>
-<p>Once a skill exists, it's attached to a seat and a role through a
-cartridge's <code>crew</code> key, the same mechanism any existing skill uses — see
-<a href="../skills/">Skills</a> and <a href="../../methodology/cartridges/">Cartridges</a>.
-Writing the skill and binding it are separate steps: the skill can exist
-and be versioned before any cartridge chooses to bind it to anything.</p>
+<p>Bind it in your team cartridge, under <code>skills:</code> for a graph role or under
+<code>crew:</code> for a seat:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">skills</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">review_charter</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-skills:review-data</span>
+</code></pre></div>
+<p>The cartridge loader refuses a bound name that resolves to no body, or to
+more than one. Resolve the cartridge to check:</p>
+<div class="highlight"><pre><span></span><code>cartridge<span class="w"> </span>--team<span class="w"> </span>my-team<span class="w"> </span>--cartridges-dir<span class="w"> </span>&lt;workspace&gt;/cartridges<span class="w"> </span>--skills-root<span class="w"> </span>&lt;path&gt;<span class="w"> </span>--json
+</code></pre></div>
+<p>Writing the skill and binding it are separate steps: the skill can exist
+and be versioned before any cartridge binds it.</p>
 <h2 id="what-to-check-before-writing-a-new-one">What to check before writing a new one</h2>
 <p>A new skill is worth writing when no existing skill's body actually
-covers the job — not when an existing skill's body could be edited to
-cover it too. Editing an existing skill changes it for every seat and
+covers the job, not when an existing skill's body could be edited to
+cover it too. Editing an existing skill changes it for every role and
 cartridge that already binds it; writing a new one doesn't.</p>
 
 

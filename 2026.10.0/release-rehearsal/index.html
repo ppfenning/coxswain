@@ -920,42 +920,14 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../methodology/graphs/coxswain/" class="md-nav__link">
+      <a href="../methodology/graphs/initiative-decompose/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    coxswain
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../methodology/graphs/epic-swarm/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    epic-swarm
+    initiative-decompose
   
 
     
@@ -1004,14 +976,98 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../methodology/graphs/initiative-decompose/" class="md-nav__link">
+      <a href="../methodology/graphs/phase-validate/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    initiative-decompose
+    phase-validate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../methodology/graphs/review-diff/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    review-diff
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../methodology/graphs/rescue-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    rescue-review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../methodology/graphs/coxswain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    coxswain
   
 
     
@@ -1096,6 +1152,90 @@ Coxswain is in beta — versions may change between releases
     
   
     triage-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../methodology/graphs/triage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    triage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../methodology/graphs/sweep/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    sweep
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../methodology/graphs/epic-driver/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The epic driver
   
 
     
@@ -2208,6 +2348,23 @@ Coxswain is in beta — versions may change between releases
       
     </span>
   </a>
+  
+    <nav class="md-nav" aria-label="1. How the candidate reaches the workflow">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#a-clean-machine-rehearsal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A clean-machine rehearsal
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -3751,6 +3908,23 @@ Coxswain is in beta — versions may change between releases
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="1. How the candidate reaches the workflow">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#a-clean-machine-rehearsal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A clean-machine rehearsal
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -3817,23 +3991,32 @@ Coxswain is in beta — versions may change between releases
 <p>The rehearsal runs three scenarios. Each scenario is a job in the workflow, on a fresh <code>debian:stable-slim</code> container.</p>
 <ul>
 <li><strong>fresh</strong>: clone the repository into the default coxswain home, move the checkout to the candidate commit, install <code>cox</code> editable from it, run <code>cox install --team rehearse --with dash</code>, and check that <code>cox setup doctor</code> passes.</li>
-<li><strong>upgrade</strong>: install the previous release the way its own install page said (for <code>v0.47.0</code>, the <code>coxswain-tools</code> package and its component checkouts), put real work items in a workspace, move the checkout to the candidate commit, run <code>cox setup migrate --apply</code>, and check that <code>cox route lint</code> still reads the work items.</li>
-<li><strong>migrate</strong>: the same start as upgrade, then run each migration the release declares against the workspace, linting after each one.</li>
+<li><strong>upgrade</strong>: install the previous release the way its own install page said, put real work items in a workspace, move the checkout to the candidate commit, run <code>cox setup migrate --apply</code>, and check that <code>cox route lint</code> still reads the work items. For a CalVer tag such as <code>v2026.10.0</code> that is <code>uv tool install --python 3.14 coxswain==2026.10.0</code>, a clone of the tag, and <code>cox install --with dash</code>. For <code>v0.47.0</code> it is the <code>coxswain-tools</code> package of the old multi-repository line, with <code>--with crew --with dash</code>.</li>
+<li><strong>migrate</strong>: the same start as upgrade, then run each migration the release declares against the workspace, linting after each one. The script runs a migration as <code>cox migrate &lt;id&gt; --workspace &lt;workspace&gt;</code>. <code>cox</code> has no <code>migrate</code> command yet, so a release that declares a migration fails this scenario until one exists; no release has declared one so far.</li>
 </ul>
-<p>Every scenario ends by reading back the install: the checkout must be at the candidate commit and <code>cox</code> must be installed from that checkout. A green run therefore proves what its title names.</p>
+<p>The scenarios are <code>scripts/release_rehearsal.py</code>. Each job installs <code>git</code>, <code>curl</code>, <code>python3</code>, uv, Node and Claude Code in the container, then runs the script with <code>--scenario &lt;name&gt;</code> and the four inputs. Every scenario ends by reading back the install: the checkout must be at the candidate commit and <code>cox</code> must be installed from that checkout. A green run therefore proves what its title names.</p>
 <p>The migrate scenario may not skip when migrations are declared. It may skip only when the release declares none.</p>
 <h2 id="1-how-the-candidate-reaches-the-workflow">1. How the candidate reaches the workflow</h2>
 <p>The workflow is <code>.github/workflows/release-rehearsal.yml</code>. It runs on <code>workflow_dispatch</code> only. Everything it needs arrives as a dispatch input:</p>
 <ul>
 <li><code>sha</code>: the full 40 character commit SHA of coxswain.</li>
 <li><code>dash_sha</code>: the full SHA of coxswain-dash when the release tags dash; empty when dash keeps its pinned tag.</li>
-<li><code>previous_tag</code>: the last release tag, such as <code>v0.47.0</code>. It feeds the upgrade and migrate scenarios.</li>
+<li><code>previous_tag</code>: the last release tag, such as <code>v2026.10.0</code>. It feeds the upgrade and migrate scenarios. A <code>v0.x</code> tag is installed as the old <code>coxswain-tools</code> line; a CalVer tag as <code>coxswain</code>.</li>
 <li><code>migrations</code>: the declared migration list from section 2, as a comma separated string; empty when the release declares none.</li>
 </ul>
 <p>A branch name or a short SHA is refused, because a branch can move between the rehearsal and the tag. Dispatch it from the coxswain checkout:</p>
-<div class="highlight"><pre><span></span><code>gh<span class="w"> </span>workflow<span class="w"> </span>run<span class="w"> </span>release-rehearsal.yml<span class="w"> </span>-f<span class="w"> </span><span class="nv">sha</span><span class="o">=</span><span class="k">$(</span>git<span class="w"> </span>rev-parse<span class="w"> </span>origin/main<span class="k">)</span><span class="w"> </span>-f<span class="w"> </span><span class="nv">previous_tag</span><span class="o">=</span>v0.47.0
+<div class="highlight"><pre><span></span><code>gh<span class="w"> </span>workflow<span class="w"> </span>run<span class="w"> </span>release-rehearsal.yml<span class="w"> </span>-f<span class="w"> </span><span class="nv">sha</span><span class="o">=</span><span class="k">$(</span>git<span class="w"> </span>rev-parse<span class="w"> </span>origin/main<span class="k">)</span><span class="w"> </span>-f<span class="w"> </span><span class="nv">previous_tag</span><span class="o">=</span>v2026.10.0<span class="w"> </span>-f<span class="w"> </span><span class="nv">migrations</span><span class="o">=</span>
 </code></pre></div>
+<p>Add <code>-f dash_sha=&lt;sha&gt;</code> when the release tags dash, and pass the declared migrations as <code>-f migrations=&lt;id&gt;,&lt;id&gt;</code>.</p>
 <p>The workflow imports no release-command code. It does not read the manifest, the release notes or <code>devtools</code>. We chose inputs over a shared module so that the rehearsal tests what a user gets, not what the release tooling believes.</p>
+<h3 id="a-clean-machine-rehearsal">A clean-machine rehearsal</h3>
+<p>The hosted run proves the scenarios on GitHub's runners. You can run the same scenarios on a machine of your own, in a throwaway container, before you dispatch. Start a fresh Debian container, install the same packages the workflow does, copy <code>scripts/release_rehearsal.py</code> in, and run it with the same inputs (<code>--dash-sha</code> and <code>--migrations</code> are optional):</p>
+<div class="highlight"><pre><span></span><code>apt-get<span class="w"> </span>update<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>--no-install-recommends<span class="w"> </span>ca-certificates<span class="w"> </span>curl<span class="w"> </span>git<span class="w"> </span>python3<span class="w"> </span>nodejs<span class="w"> </span>npm
+curl<span class="w"> </span>-LsSf<span class="w"> </span>https://astral.sh/uv/install.sh<span class="w"> </span><span class="p">|</span><span class="w"> </span>sh<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">export</span><span class="w"> </span><span class="nv">PATH</span><span class="o">=</span><span class="s2">"</span><span class="nv">$HOME</span><span class="s2">/.local/bin:</span><span class="nv">$PATH</span><span class="s2">"</span>
+npm<span class="w"> </span>install<span class="w"> </span>-g<span class="w"> </span>@anthropic-ai/claude-code
+python3<span class="w"> </span>release_rehearsal.py<span class="w"> </span>--sha<span class="w"> </span>&lt;sha&gt;<span class="w"> </span>--previous-tag<span class="w"> </span>v2026.10.0
+</code></pre></div>
+<p>With no <code>--scenario</code>, the script runs all three and prints one result line each. Throw the container away afterwards. The release gate does not read this run; only the hosted run's title counts (section 3). It is extra evidence for the notes.</p>
 <h2 id="2-where-a-release-declares-its-migrations">2. Where a release declares its migrations</h2>
 <p>A release declares its migrations in its release notes, not in the manifest. The notes are written once per release and read by the person who cuts it. The manifest outlives any one release, so a migration list there would go stale after the release ships.</p>
 <p>The declaration is one line in <code>docs/releases/&lt;version&gt;.md</code>:</p>

@@ -920,42 +920,14 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../methodology/graphs/coxswain/" class="md-nav__link">
+      <a href="../methodology/graphs/initiative-decompose/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    coxswain
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../methodology/graphs/epic-swarm/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    epic-swarm
+    initiative-decompose
   
 
     
@@ -1004,14 +976,98 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../methodology/graphs/initiative-decompose/" class="md-nav__link">
+      <a href="../methodology/graphs/phase-validate/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    initiative-decompose
+    phase-validate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../methodology/graphs/review-diff/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    review-diff
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../methodology/graphs/rescue-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    rescue-review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../methodology/graphs/coxswain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    coxswain
   
 
     
@@ -1096,6 +1152,90 @@ Coxswain is in beta — versions may change between releases
     
   
     triage-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../methodology/graphs/triage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    triage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../methodology/graphs/sweep/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    sweep
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../methodology/graphs/epic-driver/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The epic driver
   
 
     
@@ -5028,7 +5168,11 @@ sit; it defaults to the checkout's parent.</p>
    notes must carry the same reason.</li>
 <li><code>release-check</code> finds no drift between the CLI, the manifest, the docs
    and the notes. <code>--allow-doc-drift REASON</code> waives it.</li>
+<li>Every checkout the release tags is clean, on its default branch, and
+   level with <code>origin/&lt;default&gt;</code>.</li>
 </ol>
+<p>Freeze the chair's lands for the cut, so nothing merges under it:
+<code>cox chair freeze-lands --for 60 --reason "cutting &lt;version&gt;"</code>.</p>
 <p>Then the steps:</p>
 <ol>
 <li>When <code>&lt;version&gt;</code> is above the manifest's version, bump <code>pyproject.toml</code>,
@@ -5042,6 +5186,9 @@ sit; it defaults to the checkout's parent.</p>
 <li>Open the tap formula pull request, and run the install proof against it
    (below).</li>
 </ol>
+<p>After a cut, or a failed one, the command sends a <code>release_cut</code> or
+<code>release_failed</code> push to the profile's <code>notify.ntfy</code> topic, when one is
+set.</p>
 <p>Dash lives in its own repository. A release tags it at <code>v&lt;version&gt;</code> only when
 it has commits since the tag <code>manifest.toml</code> names; otherwise dash keeps its
 tag. Nothing else is pinned: the checkout is the release.</p>
@@ -5079,9 +5226,6 @@ every broken formula.</p>
 <p>A green proof means that formula installs and upgrades on those two platforms
 today. It does not mean the release is otherwise good.</p>
 <h2 id="2026100"><code>2026.10.0</code></h2>
-<p>Upcoming: the first monorepo release. It is not cut yet. See
-<a href="../monorepo/">From 0.47 to the monorepo</a>. The cut replaces this section
-with its own.</p>
 <table>
 <thead>
 <tr>
@@ -5100,6 +5244,7 @@ with its own.</p>
 </tr>
 </tbody>
 </table>
+<p>See the <a href="2026.10.0/">2026.10.0 release notes</a> for what landed in each component.</p>
 <h2 id="component-releases-0x">Component releases (0.x)</h2>
 <p>From 0.1.0-beta.1 to 0.47.0, Coxswain shipped as separate repositories —
 cartridges, graphs, tools, crew and dash — tagged together from the

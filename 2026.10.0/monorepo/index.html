@@ -920,42 +920,14 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../methodology/graphs/coxswain/" class="md-nav__link">
+      <a href="../methodology/graphs/initiative-decompose/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    coxswain
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../methodology/graphs/epic-swarm/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    epic-swarm
+    initiative-decompose
   
 
     
@@ -1004,14 +976,98 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../methodology/graphs/initiative-decompose/" class="md-nav__link">
+      <a href="../methodology/graphs/phase-validate/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    initiative-decompose
+    phase-validate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../methodology/graphs/review-diff/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    review-diff
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../methodology/graphs/rescue-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    rescue-review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../methodology/graphs/coxswain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    coxswain
   
 
     
@@ -1096,6 +1152,90 @@ Coxswain is in beta — versions may change between releases
     
   
     triage-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../methodology/graphs/triage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    triage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../methodology/graphs/sweep/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    sweep
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../methodology/graphs/epic-driver/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The epic driver
   
 
     
@@ -2160,6 +2300,17 @@ Coxswain is in beta — versions may change between releases
     <span class="md-ellipsis">
       
         Move a machine
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#known-issues-in-2026100" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Known issues in 2026.10.0
       
     </span>
   </a>
@@ -3793,6 +3944,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#known-issues-in-2026100" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Known issues in 2026.10.0
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#what-cox-setup-migrate-does" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3869,8 +4031,8 @@ Coxswain is in beta — versions may change between releases
 
 
 <h1 id="from-047-to-the-monorepo">From 0.47 to the monorepo</h1>
-<p>0.47.0 was the last component release. The next release is 2026.10.0, the
-first monorepo release. This page says what changed for you and how to move a
+<p>0.47.0 was the last component release. 2026.10.0 is the first monorepo
+release. This page says what changed for you and how to move a
 machine across.</p>
 <h2 id="what-changed">What changed</h2>
 <p><strong>One repository.</strong> Everything lives in
@@ -3914,6 +4076,11 @@ under <code>~/.local/share/coxswain/installs/</code> (<code>coxswain-tools</code
 <code>coxswain</code> checkout. Now there is one checkout,
 <code>~/.local/share/coxswain/installs/coxswain</code>, with one venv at
 <code>&lt;checkout&gt;/.venv</code>. <code>cox</code> is installed editable from that checkout.</p>
+<p><strong>Team provider profiles live outside the checkout.</strong> The checkout ships
+the default provider profiles under <code>src/cartridges/providers/</code>. Your team's
+own profile, the one with its store, notifier and operator, lives in the
+workspace or in <code>&lt;home&gt;/providers/</code>, and the machine profile's
+<code>provider_profile</code> names it. See <a href="../install/#the-provider-profile">Install</a>.</p>
 <p><strong>Crew is always linked.</strong> <code>cox install</code> and <code>cox upgrade</code> link the crew
 seats every time. There is no <code>--with crew</code> any more.</p>
 <p><strong>CalVer.</strong> Versions are <code>YYYY.M.N</code>: the year, the month, and a count of
@@ -3922,16 +4089,42 @@ release would be 2026.11.0. The number says when a release was cut, not
 whether it is compatible. Compatibility is carried by the store and workspace
 schema and by <code>cox setup migrate</code>.</p>
 <h2 id="move-a-machine">Move a machine</h2>
-<p>Do this on each machine: the chair's machine and every lane host.</p>
+<p>Do this on each machine: the chair's machine and every lane host. Stop the
+chair loop and let the lanes on a machine finish before you move it.</p>
 <ol>
+<li>
+<p>Drain the host, if it is in the hosts table and active.</p>
+<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>host<span class="w"> </span>drain<span class="w"> </span>&lt;host&gt;
+</code></pre></div>
+<p><code>cox setup migrate --apply</code> refuses an active host with
+<code>migrate: refusing, host &lt;host&gt; holds active state, run cox host drain &lt;host&gt; first</code>.</p>
+</li>
+<li>
+<p>Move a team provider profile out of the old cartridges checkout. If the
+   profile's <code>provider_profile</code> names your team's own file inside
+   <code>installs/coxswain-cartridges</code>, copy it (and <code>catalog.yaml</code> beside it)
+   to <code>&lt;home&gt;/providers/</code>, then point <code>provider_profile</code> at the copy.</p>
+<div class="highlight"><pre><span></span><code>mkdir<span class="w"> </span>-p<span class="w"> </span>&lt;home&gt;/providers
+cp<span class="w"> </span>&lt;home&gt;/installs/coxswain-cartridges/providers/&lt;team&gt;.yaml<span class="w"> </span>&lt;home&gt;/providers/
+cp<span class="w"> </span>&lt;home&gt;/installs/coxswain-cartridges/providers/catalog.yaml<span class="w"> </span>&lt;home&gt;/providers/
+</code></pre></div>
+<p>Migrate rewrites any <code>provider_profile</code> under the cartridges checkout to
+the same path under <code>&lt;checkout&gt;/src/cartridges</code>, and your team's file is
+not there. A profile outside the component checkouts is kept as it is.</p>
+</li>
 <li>
 <p>Update <code>cox</code> to the new package.</p>
 <div class="highlight"><pre><span></span><code>brew<span class="w"> </span>upgrade<span class="w"> </span>cox
 </code></pre></div>
-<p>Or, if you installed with uv:</p>
-<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>tool<span class="w"> </span>uninstall<span class="w"> </span>coxswain-tools
-uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span>coxswain
+<p>Or, if you installed with uv, remove both old tools first. The
+<code>agent-cartridges</code> tool owns a <code>cartridge</code> executable, and the new
+package refuses to install over it.</p>
+<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>tool<span class="w"> </span>uninstall<span class="w"> </span>coxswain-tools<span class="w"> </span>agent-cartridges
+uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span>--python<span class="w"> </span><span class="m">3</span>.14<span class="w"> </span><span class="s1">'coxswain[postgres,traces,parquet,lake]'</span>
 </code></pre></div>
+<p>Name the extras this machine uses. A Postgres store needs <code>postgres</code>;
+the extras are <code>traces</code>, <code>postgres</code>, <code>parquet</code>, <code>lake</code>, <code>analytics</code> and
+<code>live</code>. <code>--python 3.14</code> is needed when uv's default Python is older.</p>
 </li>
 <li>
 <p>See the plan. This changes nothing.</p>
@@ -3946,8 +4139,22 @@ uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </
 </code></pre></div>
 </li>
 <li>
-<p>Check the machine.</p>
+<p>Edit your own scripts by hand. Migrate does not rewrite operator
+   scripts, systemd units, drop-ins or launch agents that name an old
+   checkout path. When this machine's state folder holds a <code>migrate.json</code>
+   marker naming an old root, the apply lists them, one line each:
+   <code>migrate: &lt;file&gt; still names &lt;path&gt;; edit it by hand</code>. It looks only in
+   the home folder, <code>~/.config/systemd/user</code> and its <code>*.d</code> drop-ins,
+   <code>~/Library/LaunchAgents</code> and the state folders, at <code>.sh</code>, <code>.py</code>, <code>.zsh</code>,
+   <code>.service</code>, <code>.timer</code>, <code>.plist</code> and <code>.conf</code> files. Search anywhere else
+   yourself, for example:</p>
+<div class="highlight"><pre><span></span><code>grep<span class="w"> </span>-rlE<span class="w"> </span><span class="s1">'installs/coxswain-(tools|graphs|cartridges|crew)'</span><span class="w"> </span>~/bin<span class="w"> </span>~/.config<span class="w"> </span><span class="m">2</span>&gt;/dev/null
+</code></pre></div>
+</li>
+<li>
+<p>Check the machine, then put the host back to work.</p>
 <div class="highlight"><pre><span></span><code>cox<span class="w"> </span>setup<span class="w"> </span>doctor
+cox<span class="w"> </span>host<span class="w"> </span>activate<span class="w"> </span>&lt;host&gt;
 </code></pre></div>
 </li>
 <li>
@@ -3961,6 +4168,26 @@ cox<span class="w"> </span>setup<span class="w"> </span>migrate<span class="w"> 
 <code>cox setup migrate --apply</code> on each lane host over ssh. Update <code>cox</code> on those
 hosts first. Without <code>--hosts</code>, the apply prints
 <code>hosts: not touched; rerun with --apply --hosts on the chair's machine</code>.</p>
+<h2 id="known-issues-in-2026100">Known issues in 2026.10.0</h2>
+<p>Fixes are planned for 2026.10.1.</p>
+<ul>
+<li><strong><code>repo_map</code> written back in a form the profile reader rejects.</strong> The
+  profile reader takes <code>repo_map</code> as one line of JSON. If a command then
+  fails on that line, rewrite it as JSON:
+  <code>repo_map: {"&lt;name&gt;": "&lt;path&gt;"}</code>.</li>
+<li><strong>Migration leases not always released.</strong> The apply takes a lease on each
+  old checkout path. One left behind makes the next apply refuse with
+  <code>migrate: refusing, &lt;holder&gt; holds &lt;path&gt;</code>. It expires an hour after it
+  was taken; wait, then run the apply again.</li>
+<li>
+<p><strong>A shallow 0.47 umbrella clone.</strong> If the <code>coxswain</code> checkout was cloned
+  shallow, migrate may not find the release tag or may fail to sync. Fetch
+  the tags and sync the checkout first, then run migrate again:</p>
+<div class="highlight"><pre><span></span><code>git<span class="w"> </span>-C<span class="w"> </span>&lt;home&gt;/installs/coxswain<span class="w"> </span>fetch<span class="w"> </span>--tags
+<span class="o">(</span><span class="nb">cd</span><span class="w"> </span>&lt;home&gt;/installs/coxswain<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>uv<span class="w"> </span>sync<span class="o">)</span>
+</code></pre></div>
+</li>
+</ul>
 <h2 id="what-cox-setup-migrate-does">What <code>cox setup migrate</code> does</h2>
 <p>The plan comes from the machine as it is. In order:</p>
 <ol>
@@ -4001,10 +4228,17 @@ is safe.</p>
 <li>the workspace cartridge links, or a component checkout's worktrees, could
   not be read.</li>
 </ul>
-<p><code>--apply</code> also refuses while this machine is busy: a live lane holds a run
-here, the chair holds its lease here, or this host's row is active. For the
-last one, run <code>cox host drain &lt;name&gt;</code> first. Stop the loop and the lanes on a
-machine before you migrate it.</p>
+<p><code>--apply</code> also takes a lease on each old checkout path, and refuses while
+this machine is busy:</p>
+<ul>
+<li>another holder has one of those leases
+  (<code>migrate: refusing, &lt;holder&gt; holds &lt;path&gt;</code>);</li>
+<li>a live lane holds a run here;</li>
+<li>the chair holds its lease here;</li>
+<li>this host's row in the hosts table is active. Run <code>cox host drain &lt;name&gt;</code>
+  first, and <code>cox host activate &lt;name&gt;</code> after the move.</li>
+</ul>
+<p>Stop the loop and the lanes on a machine before you migrate it.</p>
 <h3 id="what-finish-does">What <code>--finish</code> does</h3>
 <p><code>--finish</code> waits until this machine's plan is a single <code>skip</code>, its home
 checks pass, and every active host has reported a beat from the new layout.

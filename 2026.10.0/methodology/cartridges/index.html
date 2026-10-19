@@ -912,10 +912,10 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
-  <a href="#the-crew-key" class="md-nav__link">
+  <a href="#the-skills-and-crew-keys" class="md-nav__link">
     <span class="md-ellipsis">
       
-        The crew key
+        The skills and crew keys
       
     </span>
   </a>
@@ -1027,42 +1027,14 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../graphs/coxswain/" class="md-nav__link">
+      <a href="../graphs/initiative-decompose/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    coxswain
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../graphs/epic-swarm/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    epic-swarm
+    initiative-decompose
   
 
     
@@ -1111,14 +1083,98 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../graphs/initiative-decompose/" class="md-nav__link">
+      <a href="../graphs/phase-validate/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    initiative-decompose
+    phase-validate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graphs/review-diff/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    review-diff
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graphs/rescue-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    rescue-review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graphs/coxswain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    coxswain
   
 
     
@@ -1203,6 +1259,90 @@ Coxswain is in beta — versions may change between releases
     
   
     triage-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graphs/triage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    triage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graphs/sweep/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    sweep
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graphs/epic-driver/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The epic driver
   
 
     
@@ -3787,10 +3927,10 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
-  <a href="#the-crew-key" class="md-nav__link">
+  <a href="#the-skills-and-crew-keys" class="md-nav__link">
     <span class="md-ellipsis">
       
-        The crew key
+        The skills and crew keys
       
     </span>
   </a>
@@ -3849,28 +3989,36 @@ applied in order:</p>
   base.</li>
 <li><strong>team</strong> — the specific team's own charter and thresholds, added last.</li>
 </ul>
+<p>Each layer names its parent with <code>extends:</code>, and the chain is merged
+parent-under-child. A repository can add a fourth, narrow layer of its own,
+<code>.agent/cartridge.yaml</code>; see <a href="../../customize/team-cartridge/#the-project-layer">Team
+cartridge</a>.</p>
 <p>Each layer can add to or narrow what the layer below it says. None of
-them can loosen it.</p>
+them can lower a risk or shorten a ramp.</p>
 <h2 id="fragments-live-in-cartridged">Fragments live in cartridge.d/</h2>
-<p>A layer is not one file; it is a directory of fragments,
-<code>cartridge.d/*.yaml</code>, read in sorted order. Each fragment is one piece of
-context — a convention, a charter section, a style note — that gets
-assembled into a seat's prompt for a run. Sorted order means the file
-name is part of the contract: rename a fragment and its place in the
-assembled prompt changes with it. See
+<p>A layer is its <code>cartridge.yaml</code> plus any fragments in <code>cartridge.d/*.yaml</code>,
+folded in sorted order after it. A fragment has the same keys as
+<code>cartridge.yaml</code>; a later value wins a scalar conflict, so the file name
+is part of the contract. Prose (a charter, conventions) lives in markdown
+files named by the <code>context:</code> list, which concatenates base-first: a team
+refines a base principle, it does not replace it. See
 <a href="../../customize/fragments/">Fragments</a> for how a team edits its own.</p>
 <h2 id="tighten-only">Tighten-only</h2>
-<p>Two fields carry this rule most often: a write kind's <strong>risk</strong> (how dangerous the write is) and its <strong>ramp</strong> (how many clean runs before the harness stops asking). A child layer or fragment may raise the risk or lengthen the ramp; it may never lower either, and the loader refuses the resolve if it tries, naming the layer or fragment file.</p>
-<p>A team layer can raise a risk threshold, shrink a budget, or add a
-required check. It cannot lower a threshold, raise a budget past base's
-ceiling, or drop a check a layer below already required. This is what
-makes layering safe to compose: a team pack can only make the substrate
-stricter for itself, never looser, so a reviewer reading the base pack
-still knows the floor every team stands on.</p>
-<h2 id="the-crew-key">The crew key</h2>
-<p>A cartridge's <code>crew</code> key is where a team names which skills bind to which
-seats and roles for its own runs — the mechanism <a href="../crew-and-seats/">Crew and
-seats</a> describes generically, made concrete per team.</p>
+<p>Two fields carry this rule: a write kind's <strong>risk</strong> (how dangerous the write is) and its <strong>ramp</strong> (how many clean runs before the harness stops asking). A child layer or fragment may raise the risk or lengthen the ramp; it may never lower either, and the loader refuses the resolve if it tries, naming the layer or fragment file.</p>
+<p>The loader enforces this for risk and ramp, and for a few other rules at
+load time: every required role is bound, every bound skill resolves to
+exactly one body, every context path exists. Other values (budgets,
+review tiers, <code>landing_areas.checks</code>) merge child-over-parent, so a team
+sets its own; a team's checks list replaces the one it inherits. Keeping
+risk and ramp tighten-only is what makes layering safe to compose: a
+reviewer reading the base pack still knows the floor every team stands on
+for what a write may do without a person.</p>
+<h2 id="the-skills-and-crew-keys">The skills and crew keys</h2>
+<p>A cartridge's <code>skills</code> key binds the roles a graph's nodes ask for (plan,
+build, review_charter and so on) to skill bodies. Its <code>crew</code> key binds the
+seats a person delegates to. Together they are the mechanism <a href="../crew-and-seats/">Crew and
+seats</a> describes generically, made concrete per team.
+See <a href="../../customize/skills/">Skills</a>.</p>
 <h2 id="provenance">Provenance</h2>
 <p>The base and local cartridges ship inside the coxswain checkout, under
 <code>src/cartridges/cartridges/</code>. A workspace's <code>cartridges/base</code> and

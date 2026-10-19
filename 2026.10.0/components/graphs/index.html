@@ -914,42 +914,14 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../../methodology/graphs/coxswain/" class="md-nav__link">
+      <a href="../../methodology/graphs/initiative-decompose/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    coxswain
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../methodology/graphs/epic-swarm/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    epic-swarm
+    initiative-decompose
   
 
     
@@ -998,14 +970,98 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../../methodology/graphs/initiative-decompose/" class="md-nav__link">
+      <a href="../../methodology/graphs/phase-validate/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    initiative-decompose
+    phase-validate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/review-diff/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    review-diff
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/rescue-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    rescue-review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/coxswain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    coxswain
   
 
     
@@ -1090,6 +1146,90 @@ Coxswain is in beta — versions may change between releases
     
   
     triage-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/triage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    triage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/sweep/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    sweep
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/epic-driver/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The epic driver
   
 
     
@@ -3745,8 +3885,10 @@ they ship as part of the one <code>coxswain</code> package. To install Coxswain,
 </table>
 <div class="highlight"><pre><span></span><code>harness/   the runtime. resolve, discover, run, gate, apply, record
 graphs/    the programs. pure functions of (args, runner)
-  delivery/   work that produces work: initiative-decompose, lifecycle-propose, phase-validate
-  ops/        keeping a running system honest: triage-propose, epic-reconcile, retro-propose, coxswain
+  delivery/   work that produces work: initiative-decompose, lifecycle-propose, phase-validate,
+              review-diff, rescue-review
+  ops/        keeping a running system honest: coxswain, epic-reconcile, retro-propose,
+              triage-propose, triage, sweep
 runner/    node execution: the protocol, a scripted runner, the live one
 shell.py   the harness entry point: `python shell.py &lt;graph&gt; ...`
 docs/      the contract every graph must satisfy, and one generated page per graph
@@ -3766,23 +3908,29 @@ worktree it created, after the gate approved it. See
 nodes.</p>
 <h2 id="running-one-offline">Running one offline</h2>
 <p>From this folder, against the cartridges beside it:</p>
-<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>run<span class="w"> </span>python<span class="w"> </span>shell.py<span class="w"> </span>triage<span class="w"> </span>--team<span class="w"> </span><span class="nb">local</span><span class="w"> </span><span class="se">\</span>
+<div class="highlight"><pre><span></span><code><span class="nv">scratch</span><span class="o">=</span><span class="s2">"</span><span class="k">$(</span>mktemp<span class="w"> </span>-d<span class="k">)</span><span class="s2">"</span>
+uv<span class="w"> </span>run<span class="w"> </span>python<span class="w"> </span>shell.py<span class="w"> </span>triage<span class="w"> </span>--team<span class="w"> </span><span class="nb">local</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--cartridges-dir<span class="w"> </span>../cartridges/cartridges<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--skills-root<span class="w"> </span>../cartridges/skills-plugins<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--alerts<span class="w"> </span>fixtures/alerts.json<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--scripted<span class="w"> </span>fixtures/triage-run.json<span class="w"> </span>--assume<span class="w"> </span>r<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--runs-dir<span class="w"> </span><span class="s2">"</span><span class="k">$(</span>mktemp<span class="w"> </span>-d<span class="k">)</span><span class="s2">"</span>
+<span class="w">  </span>--runs-dir<span class="w"> </span><span class="s2">"</span><span class="nv">$scratch</span><span class="s2">"</span><span class="w"> </span>--ledger<span class="w"> </span><span class="s2">"</span><span class="nv">$scratch</span><span class="s2">/ledger.jsonl"</span>
 </code></pre></div>
 <p><code>--scripted</code> replays canned nodes, so no key is needed. <code>--assume r</code> (or <code>a</code>)
-answers the gate without asking. Drop <code>--scripted</code> to run against the real
+answers the gate without asking. Pass <code>--ledger</code> as above for a throwaway run:
+without it the gate decisions are appended to the default ledger,
+<code>$XDG_STATE_HOME/agent-graphs/ledger.jsonl</code>, or <code>~/.local/state/agent-graphs/ledger.jsonl</code>
+when <code>XDG_STATE_HOME</code> is unset. Drop <code>--scripted</code> to run against the real
 model; the provider profile decides which model each tier means. A host's
 <code>cox route launch</code> starts the harness the same way, with <code>harness_dir</code> set to
 <code>&lt;checkout&gt;/src/graphs</code>.</p>
 <h2 id="the-graphs">The graphs</h2>
+<p>The registry is every module under <code>graphs/</code> that declares a <code>SPEC</code>; <code>harness/registry.py</code> discovers them. <code>shell.py</code> takes the subcommand.</p>
 <table>
 <thead>
 <tr>
 <th>Graph</th>
+<th>Subcommand</th>
 <th>Namespace</th>
 <th>Shape</th>
 </tr>
@@ -3790,61 +3938,73 @@ model; the provider profile decides which model each tier means. A host's
 <tbody>
 <tr>
 <td><code>initiative-decompose</code></td>
+<td><code>decompose</code></td>
 <td>delivery</td>
 <td>decompose → adversary-on-the-edges → emit. An idea into phases and a task DAG</td>
 </tr>
 <tr>
 <td><code>lifecycle-propose</code></td>
+<td><code>lifecycle</code></td>
 <td>delivery</td>
 <td>scope → plan → [alternative plan → arbitrate plans] → [attack the plan] → build (worktree) → handoff → review → adversary → arbitrate → emit</td>
 </tr>
 <tr>
-<td><code>triage</code></td>
-<td>ops</td>
-<td>facts (pure arithmetic over an item's attempts) → triage → emit. Classifies a stranded item at the attempt cap and emits by class, or escalates a repeated <code>(class, diagnosis)</code> pair</td>
-</tr>
-<tr>
-<td><code>triage-propose</code></td>
-<td>ops</td>
-<td>fetch → classify → verify → emit. Zero writes; proposes corrections to the runbook it just used</td>
-</tr>
-<tr>
-<td><code>epic-reconcile</code></td>
-<td>ops</td>
-<td>compare (set arithmetic) → reconcile → emit. Declared state vs actual</td>
-</tr>
-<tr>
 <td><code>phase-validate</code></td>
+<td><code>validate</code></td>
 <td>delivery</td>
 <td>validate_chunk per task → validate_phase against the phase's ORIGINAL goal. Invoked by the epic driver</td>
 </tr>
 <tr>
-<td><code>retro-propose</code></td>
-<td>ops</td>
-<td>stats (pure arithmetic over ledger rows) → retro → emit. Proposes only what it can cite</td>
-</tr>
-<tr>
-<td><code>sweep</code></td>
-<td>ops</td>
-<td>sweep_plan → sweep_apply → sweep_verify → [review pair]. One rule applied everywhere it matches; sweep_apply calls a model only when the rule can't be scripted, one build call, and sweep_verify runs no model at all</td>
-</tr>
-<tr>
-<td><code>coxswain</code></td>
-<td>ops</td>
-<td>one <code>dispatch</code> node over a driver-assembled docket. Selects; the harness invokes</td>
-</tr>
-<tr>
+<td><code>review-diff</code></td>
 <td><code>review-diff</code></td>
 <td>delivery</td>
 <td>review_charter → review_adversary → verify_evidence → [arbitrate]. Verdict and findings out, nothing written or pushed</td>
 </tr>
 <tr>
 <td><code>rescue-review</code></td>
+<td><code>rescue-review</code></td>
 <td>delivery</td>
 <td>handoff → review_charter → review_adversary → [arbitrate] → emit. A patch that already exists, reviewed with the harness's own check results</td>
 </tr>
+<tr>
+<td><code>coxswain</code></td>
+<td><code>cos</code></td>
+<td>ops</td>
+<td>one <code>dispatch</code> node over a driver-assembled docket. Selects; the harness invokes</td>
+</tr>
+<tr>
+<td><code>epic-reconcile</code></td>
+<td><code>reconcile</code></td>
+<td>ops</td>
+<td>compare (set arithmetic) → emit. Declared state vs actual</td>
+</tr>
+<tr>
+<td><code>retro-propose</code></td>
+<td><code>retro</code></td>
+<td>ops</td>
+<td>stats (pure arithmetic over ledger rows) → retro → emit. Proposes only what it can cite</td>
+</tr>
+<tr>
+<td><code>triage-propose</code></td>
+<td><code>triage</code></td>
+<td>ops</td>
+<td>fetch → classify → verify → emit. Zero writes; proposes corrections to the runbook it just used</td>
+</tr>
+<tr>
+<td><code>triage</code></td>
+<td><code>triage-quarantine</code></td>
+<td>ops</td>
+<td>facts (pure arithmetic over an item's attempts) → triage → emit. Classifies a stranded item at the attempt cap and emits by class, or escalates a repeated <code>(class, diagnosis)</code> pair</td>
+</tr>
+<tr>
+<td><code>sweep</code></td>
+<td><code>sweep</code></td>
+<td>ops</td>
+<td>sweep_plan → sweep_apply → sweep_verify → [review pair]. One rule applied everywhere it matches; sweep_apply calls a model only when the rule can't be scripted, one build call, and sweep_verify runs no model at all</td>
+</tr>
 </tbody>
 </table>
+<p><code>shell.py</code> also takes <code>phase</code>, <code>epic</code> and <code>rescue</code>. These are drivers, not graphs: they invoke graphs, block on them and own side effects, so they live in <code>harness/</code> and declare no <code>SPEC</code>. <code>epic</code> is the epic driver (<code>harness/epic.py</code>, specified in <a href="graphs/delivery/epic-swarm/"><code>graphs/delivery/epic-swarm.md</code></a>), which <code>cox route launch epic</code> starts.</p>
 <p>Each graph's diagram is generated from its own docstring by <code>python -m harness.graphdoc</code>; the committed pages live under <a href="docs/graphs/"><code>docs/graphs/</code></a>.</p>
 <h2 id="license">License</h2>
 <p>MIT. See <a href="https://github.com/ppfenning/coxswain/blob/main/src/graphs/LICENSE">LICENSE</a>.</p>

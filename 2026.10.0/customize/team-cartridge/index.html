@@ -920,42 +920,14 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../../methodology/graphs/coxswain/" class="md-nav__link">
+      <a href="../../methodology/graphs/initiative-decompose/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    coxswain
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../methodology/graphs/epic-swarm/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    epic-swarm
+    initiative-decompose
   
 
     
@@ -1004,14 +976,98 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../../methodology/graphs/initiative-decompose/" class="md-nav__link">
+      <a href="../../methodology/graphs/phase-validate/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    initiative-decompose
+    phase-validate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/review-diff/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    review-diff
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/rescue-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    rescue-review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/coxswain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    coxswain
   
 
     
@@ -1096,6 +1152,90 @@ Coxswain is in beta — versions may change between releases
     
   
     triage-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/triage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    triage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/sweep/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    sweep
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/epic-driver/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The epic driver
   
 
     
@@ -1401,6 +1541,28 @@ Coxswain is in beta — versions may change between releases
     <span class="md-ellipsis">
       
         The keys
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Checks
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-project-layer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The project layer
       
     </span>
   </a>
@@ -3765,6 +3927,28 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Checks
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-project-layer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The project layer
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#extending-local-or-base" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3816,29 +4000,50 @@ Coxswain is in beta — versions may change between releases
 <p>This page settles how a team gets its own cartridge: run <code>cartridge init
 &lt;team&gt;</code>, then decide whether you're extending <code>local</code> or <code>base</code>.</p>
 <h2 id="cartridge-init">cartridge init <team></h2>
-<p><code>cartridge init &lt;team&gt;</code> creates the directory structure for a new team
-cartridge: a place for your fragments, and the keys a cartridge needs to
-resolve. It does not populate your charter or conventions for you — those
-are yours to write, because they're supposed to say what your team
-actually believes, not fill in a generic placeholder.</p>
+<div class="highlight"><pre><span></span><code>cartridge<span class="w"> </span>init<span class="w"> </span>my-team<span class="w"> </span>--cartridges-dir<span class="w"> </span>&lt;workspace&gt;/cartridges
+</code></pre></div>
+<p>This creates <code>&lt;workspace&gt;/cartridges/my-team/</code> from the example team: a
+<code>cartridge.yaml</code> and a <code>context/</code> folder for your charter and
+conventions. It links <code>base</code> and <code>local</code> beside it, pointing into the
+checkout's <code>src/cartridges/cartridges/</code>. It then prints the profile lines
+that name the new team. <code>--extends base</code> makes it extend base instead of
+local; <code>--dry-run</code> prints the plan and writes nothing.</p>
+<p>It does not write your charter or conventions for you. Those are yours to
+write, because they say what your team actually believes.</p>
 <h2 id="the-keys">The keys</h2>
-<p>A team cartridge's top-level keys are the same shape as base's: risk and
-ramp thresholds, a <code>crew</code> key naming which skills bind to which seats,
-and whatever fragments the team adds under <code>cartridge.d/</code>. What differs
-is that a team's values can only tighten what <code>local</code> and <code>base</code> already
-set — see <a href="../../methodology/cartridges/">Cartridges</a> for the
-tighten-only rule this enforces.</p>
+<p>A team cartridge's top-level keys are the same shape as base's: write
+kinds with their risk and ramp, <code>policy</code>, <code>landing_areas</code>, <code>context</code>, and
+a <code>crew</code> key naming which skills bind to which seats. Fragments under
+<code>cartridge.d/</code> add to them; see <a href="../fragments/">Fragments</a>. A team may not
+lower a risk or shorten a ramp that <code>local</code> or <code>base</code> set; see
+<a href="../../methodology/cartridges/#tighten-only">Cartridges</a>.</p>
+<h2 id="checks">Checks</h2>
+<p><code>landing_areas.checks</code> lists the commands the harness runs on every
+build, as <code>{name, cmd}</code> entries, with an optional <code>timeout</code> (seconds) and
+<code>fix</code> (a command that repairs what the check found). A repository can add
+its own checks on top with a root <code>.agent-checks</code> file. See
+<a href="../../methodology/landing/#checks-are-evidence">Landing</a>.</p>
+<h2 id="the-project-layer">The project layer</h2>
+<p>A repository can also carry <code>.agent/cartridge.yaml</code>. The harness reads it
+for runs against that repository and folds it in last. It may set only
+<code>description</code>, <code>context</code>, <code>policy.review_tier</code>, <code>policy.cost.level</code> and
+<code>landing_areas.checks</code>. Its checks list replaces the team's list for that
+repository; <code>.agent-checks</code> still adds to it. Any other key is refused.</p>
+<p>The project layer may only tighten review: it may lower a <code>review_tier</code>
+threshold, add to <code>tier2_surfaces</code> and remove from <code>tier0_patterns</code>, never
+the reverse. It may move <code>policy.cost.level</code> toward <code>strict</code>, never toward
+<code>liberal</code>.</p>
 <h2 id="extending-local-or-base">Extending local or base</h2>
-<p>Most teams extend <code>local</code> — whatever this repository has already set up
-— rather than reaching past it to <code>base</code>. Extend <code>base</code> directly only
-when your change is genuinely independent of anything local has already
-decided; reaching past a layer that already narrowed something usually
-means you're fighting the layer instead of using it.</p>
+<p>Most teams extend <code>local</code> (the default) rather than reaching past it to
+<code>base</code>. Extend <code>base</code> directly only when your change is genuinely
+independent of anything local has already decided; reaching past a layer
+that already narrowed something usually means you're fighting the layer
+instead of using it.</p>
 <h2 id="what-lands-where">What lands where</h2>
 <p>A team cartridge doesn't replace base or local; it's resolved on top of
 them at run time, layer by layer. See <a href="../fragments/">Fragments</a> for how
-individual pieces inside your cartridge get assembled, and
-<a href="../policy/">Policy</a> for the specific values most teams change first.</p>
+the pieces inside your cartridge are folded, and <a href="../policy/">Policy</a> for
+the values most teams change first.</p>
 
 
 

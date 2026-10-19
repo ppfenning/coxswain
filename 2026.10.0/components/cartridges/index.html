@@ -914,42 +914,14 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../../methodology/graphs/coxswain/" class="md-nav__link">
+      <a href="../../methodology/graphs/initiative-decompose/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    coxswain
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../methodology/graphs/epic-swarm/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    epic-swarm
+    initiative-decompose
   
 
     
@@ -998,14 +970,98 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../../methodology/graphs/initiative-decompose/" class="md-nav__link">
+      <a href="../../methodology/graphs/phase-validate/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    initiative-decompose
+    phase-validate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/review-diff/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    review-diff
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/rescue-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    rescue-review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/coxswain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    coxswain
   
 
     
@@ -1090,6 +1146,90 @@ Coxswain is in beta — versions may change between releases
     
   
     triage-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/triage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    triage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/sweep/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    sweep
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/epic-driver/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The epic driver
   
 
     
@@ -3652,6 +3792,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#provider-profiles" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Provider profiles
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#tests" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3720,7 +3871,7 @@ providers is an edit to one file, not a rewrite.</p>
 cartridges/base/     the contract: roles, write-kind taxonomy, autonomy policy
 cartridges/local/    the filesystem-only cartridge every install starts from
 cartridges/&lt;name&gt;/   example-team, and the comfort presets local-comfort0 and local-comfort1
-providers/           tier -&gt; model, one profile per provider (claude-code.yaml is the default)
+providers/           the shipped provider profiles (tier -&gt; model) and catalog.yaml, the model price list
 skills-plugins/      the reference `local-skills` plugin and the `coxswain` session plugin
 context-templates/   starting points for a team's own context packs
 .claude-plugin/      the Claude Code plugin marketplace, named coxswain-cartridges
@@ -3729,6 +3880,20 @@ tests/               this folder's suite
 </code></pre></div>
 <p>A workspace's <code>cartridges/base</code> and <code>cartridges/local</code> are links into
 <code>cartridges/</code> here, so they move with the checkout's release.</p>
+<h2 id="provider-profiles">Provider profiles</h2>
+<p>A provider profile names the runner, maps each tier to a model, and sets the
+budget for each tier and role.
+The files in <code>providers/</code> are the shipped defaults: <code>claude-code.yaml</code>,
+<code>anthropic-default.yaml</code> and <code>local-oss.yaml</code>. A fresh <code>cox install</code> points
+the machine profile's <code>provider_profile</code> at
+<code>&lt;checkout&gt;/src/cartridges/providers/claude-code.yaml</code>.</p>
+<p>A profile your team edits is team configuration, not code. Keep it outside the
+checkout, in the workspace or in <code>&lt;home&gt;/providers/</code>, and point
+<code>provider_profile</code> in each machine's profile at it. An edited file inside the
+checkout makes it dirty, and <code>cox upgrade</code> refuses a dirty checkout. Copy
+<code>catalog.yaml</code> along with the profile: the chair reads model prices from the
+<code>catalog.yaml</code> beside <code>provider_profile</code> first. <code>cox setup migrate</code> leaves a
+profile that is already outside the checkout where it is.</p>
 <h2 id="tests">Tests</h2>
 <p>From this folder:</p>
 <div class="highlight"><pre><span></span><code><span class="nb">cd</span><span class="w"> </span>src/cartridges<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>-q

@@ -11,7 +11,7 @@
       
       
       
-        <link rel="prev" href="../initiative-decompose/">
+        <link rel="prev" href="../coxswain/">
       
       
         <link rel="next" href="../retro-propose/">
@@ -927,42 +927,14 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../coxswain/" class="md-nav__link">
+      <a href="../initiative-decompose/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    coxswain
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../epic-swarm/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    epic-swarm
+    initiative-decompose
   
 
     
@@ -1011,14 +983,98 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../initiative-decompose/" class="md-nav__link">
+      <a href="../phase-validate/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    initiative-decompose
+    phase-validate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../review-diff/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    review-diff
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rescue-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    rescue-review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../coxswain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    coxswain
   
 
     
@@ -1113,6 +1169,90 @@ Coxswain is in beta — versions may change between releases
     
   
     triage-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../triage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    triage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sweep/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    sweep
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../epic-driver/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The epic driver
   
 
     
@@ -3670,7 +3810,7 @@ Coxswain is in beta — versions may change between releases
                 
 <nav class="cox-page-nav" aria-label="Page navigation">
   
-  <a class="cox-page-nav__prev" href="../initiative-decompose/">← initiative-decompose</a>
+  <a class="cox-page-nav__prev" href="../coxswain/">← coxswain</a>
   
   
   <a class="cox-page-nav__next" href="../retro-propose/">retro-propose →</a>
@@ -3682,11 +3822,13 @@ Coxswain is in beta — versions may change between releases
 
 
 <h1 id="epic-reconcile">epic-reconcile</h1>
-<p>The coxswain dispatches epic-reconcile on a schedule, not on a ticket
-event: it compares an epic's board state against what its tickets'
-records actually show and proposes a correction where the two disagree.
-What lands is a reconciliation proposal, not a silent rewrite of the
-board.</p>
+<p>epic-reconcile compares an epic's declared state with its actual state.
+Both arrive as arguments (<code>--epic</code> and <code>--observed</code>); the graph reads no
+tracker itself, so a run can be replayed. Set arithmetic finds the
+drift first, then one node judges it. What lands is one correction
+proposal per drift, gated like any other write, never a silent rewrite
+of the board. It runs from <code>shell.py reconcile</code>; the coxswain does not
+dispatch it.</p>
 <h1 id="epic-reconcile_1">epic-reconcile</h1>
 <p><code>lifecycle-propose</code> scopes work <em>into</em> an epic. Nothing until now looked at whether the epic still describes reality afterwards, and epics drift: tickets get closed on the board and not in the epic, phases finish out of order, work gets added that nobody attached. An epic model that is only ever written and never checked degrades into a diagram of what someone once intended.</p>
 <pre class="mermaid"><code>flowchart LR
@@ -3801,7 +3943,7 @@ so, rather than silently getting a graph that does nothing.</p>
       <nav class="md-footer__inner md-grid" aria-label="Footer" >
         
           
-          <a href="../initiative-decompose/" class="md-footer__link md-footer__link--prev" aria-label="Previous: initiative-decompose">
+          <a href="../coxswain/" class="md-footer__link md-footer__link--prev" aria-label="Previous: coxswain">
             <div class="md-footer__button md-icon">
               
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
@@ -3811,7 +3953,7 @@ so, rather than silently getting a graph that does nothing.</p>
                 Previous
               </span>
               <div class="md-ellipsis">
-                initiative-decompose
+                coxswain
               </div>
             </div>
           </a>

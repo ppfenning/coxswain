@@ -914,42 +914,14 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../../methodology/graphs/coxswain/" class="md-nav__link">
+      <a href="../../methodology/graphs/initiative-decompose/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    coxswain
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../methodology/graphs/epic-swarm/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    epic-swarm
+    initiative-decompose
   
 
     
@@ -998,14 +970,98 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../../methodology/graphs/initiative-decompose/" class="md-nav__link">
+      <a href="../../methodology/graphs/phase-validate/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    initiative-decompose
+    phase-validate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/review-diff/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    review-diff
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/rescue-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    rescue-review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/coxswain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    coxswain
   
 
     
@@ -1090,6 +1146,90 @@ Coxswain is in beta — versions may change between releases
     
   
     triage-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/triage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    triage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/sweep/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    sweep
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/epic-driver/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The epic driver
   
 
     
@@ -3861,21 +4001,20 @@ cox setup store switch files|shared [--host HOST] [--port PORT] [--database DATA
 </code></pre></div>
 <!-- commands:end -->
 
-<p>These <code>route</code> subcommands are built by hand in <code>build_parser</code> and are not yet
-rows in the command table, so the renderer does not emit them:</p>
-<div class="highlight"><pre><span></span><code>cox route launch epic --initiative DIR [--repo PATH] [--fix-attempts N] [--dry-run]   start the harness detached with a pidfile and log, and AGENT_GRAPHS_TRACE_DIR set to `&lt;runs_dir&gt;/&lt;run-id&gt;-trace` so every node writes a trace; exit 2 on a missing profile or harness venv, a missing initiative.md, a dirty repo, or a live run of the same initiative
-cox route launch decompose --idea FILE --initiative-id ID [--dry-run]   start the harness detached; exit 2 on a missing profile, harness venv, or idea file
-cox route launch cos [--dry-run]   start the chief of staff detached: it reads intake and runs, dispatches within the bound, and consumes what it dispatched
-cox route sync [--item ID] [--project OWNER/N] [--dry-run]   one-way mirror of the work store onto a GitHub Projects board; exit 2 if gh is not authenticated
-cox route sync --project OWNER/N                accept an existing project instead of creating one named "Coxswain" under the repo's owner
-cox setup   a small terminal UI over setup doctor, setup install and cartridge init (needs a terminal)
-</code></pre></div>
+<p>Bare <code>cox setup</code> opens a small terminal UI over <code>setup doctor</code>, <code>setup
+install</code> and <code>cartridge init</code>; it needs a terminal.</p>
 <p>The <code>route</code> group reads one profile, <code>~/.config/agent-tools/profile.yaml</code> (the
 directory keeps the deprecated agent-tools name), or the path in
 <code>AGENT_TOOLS_PROFILE</code>, or <code>--profile PATH</code> for one command. <code>cox setup install</code>
-and <code>cox setup migrate</code> point its <code>harness_dir</code>, <code>skills_roots</code>,
-<code>provider_profile</code> and <code>umbrella_dir</code> into the checkout. <code>cox setup --store
-files|shared</code> picks the run store; see <a href="https://github.com/ppfenning/coxswain/blob/main/src/tools/docs/shared-store.md"><code>docs/shared-store.md</code></a>.</p>
+and <code>cox setup migrate</code> point its <code>harness_dir</code>, <code>skills_roots</code> and
+<code>umbrella_dir</code> into the checkout. <code>cox setup install</code> points
+<code>provider_profile</code> at the shipped <code>src/cartridges/providers/claude-code.yaml</code>
+unless <code>--provider-profile</code> names another; a team's own provider profile
+lives outside the checkout, in <code>&lt;home&gt;/providers/</code> or the workspace, and
+<code>cox setup migrate</code> keeps it. <code>cox setup store --store files|shared</code> picks
+the run store; see <a href="https://github.com/ppfenning/coxswain/blob/main/src/tools/docs/shared-store.md"><code>docs/shared-store.md</code></a>. New to
+the profile? <a href="https://github.com/ppfenning/coxswain/blob/main/src/tools/docs/getting-started.md"><code>docs/getting-started.md</code></a> walks
+through it.</p>
 <p>Integrations that name a vendor (intake sources, forges, trackers) live in
 <a href="https://github.com/ppfenning/coxswain-plugins">ppfenning/coxswain-plugins</a>.</p>
 <h2 id="maintainers">Maintainers</h2>

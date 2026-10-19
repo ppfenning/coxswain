@@ -11,10 +11,10 @@
       
       
       
-        <link rel="prev" href="../lifecycle-propose/">
+        <link rel="prev" href="../">
       
       
-        <link rel="next" href="../epic-reconcile/">
+        <link rel="next" href="../lifecycle-propose/">
       
       
         
@@ -924,17 +924,26 @@ Coxswain is in beta — versions may change between releases
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../coxswain/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
   <span class="md-ellipsis">
     
   
-    coxswain
+    initiative-decompose
   
 
     
@@ -943,34 +952,7 @@ Coxswain is in beta — versions may change between releases
   
 
       </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../epic-swarm/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    epic-swarm
-  
-
-    
-  </span>
-  
-  
-
-      </a>
+      
     </li>
   
 
@@ -1008,26 +990,17 @@ Coxswain is in beta — versions may change between releases
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../phase-validate/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    initiative-decompose
+    phase-validate
   
 
     
@@ -1036,7 +1009,90 @@ Coxswain is in beta — versions may change between releases
   
 
       </a>
-      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../review-diff/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    review-diff
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rescue-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    rescue-review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../coxswain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    coxswain
+  
+
+    
+  </span>
+  
+  
+
+      </a>
     </li>
   
 
@@ -1113,6 +1169,90 @@ Coxswain is in beta — versions may change between releases
     
   
     triage-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../triage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    triage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sweep/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    sweep
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../epic-driver/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The epic driver
   
 
     
@@ -3670,10 +3810,10 @@ Coxswain is in beta — versions may change between releases
                 
 <nav class="cox-page-nav" aria-label="Page navigation">
   
-  <a class="cox-page-nav__prev" href="../lifecycle-propose/">← lifecycle-propose</a>
+  <a class="cox-page-nav__prev" href="../">← Graphs</a>
   
   
-  <a class="cox-page-nav__next" href="../epic-reconcile/">epic-reconcile →</a>
+  <a class="cox-page-nav__next" href="../lifecycle-propose/">lifecycle-propose →</a>
   
 </nav>
 
@@ -3682,11 +3822,13 @@ Coxswain is in beta — versions may change between releases
 
 
 <h1 id="initiative-decompose">initiative-decompose</h1>
-<p>The coxswain dispatches initiative-decompose during scoping, before any
-ticket is planned: it reads an initiative and proposes the epics and
-tickets that would carry it. What lands is a draft decomposition for a
-human to accept, trim, or reshape, never tickets filed directly onto the
-active board.</p>
+<p>initiative-decompose turns an idea into phases, tasks and the dependency
+edges between them. An adversary then attacks the edges, because an edge
+that is not real serializes work that could run at once. What lands is
+one <code>item_create</code> proposal per task; the work store is written only by
+an apply arm after the gate clears them. <code>cox route launch decompose</code>
+starts it, and the coxswain can dispatch it when the intake queue holds
+items.</p>
 <h1 id="initiative-decompose_1">initiative-decompose</h1>
 <p>The front of the pipeline, and the step that makes everything after it parallelisable. An idea arrives as prose; what comes out is phases, tasks, and the dependency edges between them — and one <code>item_create</code> proposal per task.</p>
 <pre class="mermaid"><code>flowchart LR
@@ -3812,7 +3954,7 @@ number worth watching: it is how much of the phase can begin at once.</p>
       <nav class="md-footer__inner md-grid" aria-label="Footer" >
         
           
-          <a href="../lifecycle-propose/" class="md-footer__link md-footer__link--prev" aria-label="Previous: lifecycle-propose">
+          <a href="../" class="md-footer__link md-footer__link--prev" aria-label="Previous: Graphs">
             <div class="md-footer__button md-icon">
               
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
@@ -3822,20 +3964,20 @@ number worth watching: it is how much of the phase can begin at once.</p>
                 Previous
               </span>
               <div class="md-ellipsis">
-                lifecycle-propose
+                Graphs
               </div>
             </div>
           </a>
         
         
           
-          <a href="../epic-reconcile/" class="md-footer__link md-footer__link--next" aria-label="Next: epic-reconcile">
+          <a href="../lifecycle-propose/" class="md-footer__link md-footer__link--next" aria-label="Next: lifecycle-propose">
             <div class="md-footer__title">
               <span class="md-footer__direction">
                 Next
               </span>
               <div class="md-ellipsis">
-                epic-reconcile
+                lifecycle-propose
               </div>
             </div>
             <div class="md-footer__button md-icon">

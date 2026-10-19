@@ -935,42 +935,14 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../../methodology/graphs/coxswain/" class="md-nav__link">
+      <a href="../../methodology/graphs/initiative-decompose/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    coxswain
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../methodology/graphs/epic-swarm/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    epic-swarm
+    initiative-decompose
   
 
     
@@ -1019,14 +991,98 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../../methodology/graphs/initiative-decompose/" class="md-nav__link">
+      <a href="../../methodology/graphs/phase-validate/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    initiative-decompose
+    phase-validate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/review-diff/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    review-diff
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/rescue-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    rescue-review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/coxswain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    coxswain
   
 
     
@@ -1111,6 +1167,90 @@ Coxswain is in beta — versions may change between releases
     
   
     triage-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/triage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    triage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/sweep/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    sweep
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/epic-driver/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The epic driver
   
 
     
@@ -3680,9 +3820,12 @@ Coxswain is in beta — versions may change between releases
 
 
 <h1 id="providers">Providers</h1>
-<p>A provider profile tells <code>cox</code> which CLI to drive, which plugin to load, and
-what each crew tier is allowed to spend. <code>--provider</code> at install time
-selects one from <code>manifest.toml</code>'s <code>[providers]</code> table.</p>
+<p>A provider profile tells <code>cox</code> which CLI to drive and what each crew tier
+and role may spend and call. <code>manifest.toml</code>'s <code>[providers]</code> table lists
+the providers. <code>cox install --provider &lt;name&gt;</code> (default <code>claude-code</code>)
+checks the name against that table and checks that its CLI is on <code>PATH</code>;
+the profile it writes always names the shipped
+<code>src/cartridges/providers/claude-code.yaml</code>.</p>
 <table>
 <thead>
 <tr>
@@ -3695,7 +3838,7 @@ selects one from <code>manifest.toml</code>'s <code>[providers]</code> table.</p
 <tr>
 <td>Claude Code</td>
 <td>supported</td>
-<td>The <code>claude</code> CLI on <code>PATH</code>, the Coxswain plugin, and the per-tier model choice and budget ceiling for each seat.</td>
+<td>The <code>claude</code> CLI on <code>PATH</code>, and the per-tier model, effort and budget ceiling for each seat.</td>
 </tr>
 <tr>
 <td>Codex</td>
@@ -3714,8 +3857,10 @@ selects one from <code>manifest.toml</code>'s <code>[providers]</code> table.</p
 </tr>
 </tbody>
 </table>
-<p>Only Claude Code is installable today; the <code>--provider</code> flag accepts the
-others, but <code>cox setup doctor</code> will report their profile as unconfigured.</p>
+<p>Only Claude Code is installable today. <code>cox install --provider</code> refuses any
+other name: <code>provider 'codex' is 'planned', not supported</code>.</p>
+<p>A team's own profile lives outside the checkout, in <code>&lt;home&gt;/providers/</code> or
+the workspace; see <a href="../#the-provider-profile">The provider profile</a>.</p>
 
 
 

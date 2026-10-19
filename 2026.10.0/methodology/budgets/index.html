@@ -925,42 +925,14 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../graphs/coxswain/" class="md-nav__link">
+      <a href="../graphs/initiative-decompose/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    coxswain
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../graphs/epic-swarm/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    epic-swarm
+    initiative-decompose
   
 
     
@@ -1009,14 +981,98 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../graphs/initiative-decompose/" class="md-nav__link">
+      <a href="../graphs/phase-validate/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    initiative-decompose
+    phase-validate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graphs/review-diff/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    review-diff
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graphs/rescue-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    rescue-review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graphs/coxswain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    coxswain
   
 
     
@@ -1101,6 +1157,90 @@ Coxswain is in beta — versions may change between releases
     
   
     triage-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graphs/triage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    triage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graphs/sweep/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    sweep
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graphs/epic-driver/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The epic driver
   
 
     
@@ -3817,11 +3957,19 @@ Coxswain is in beta — versions may change between releases
 tier, enforced by one rule — split, never raise — and a record of exactly
 what happened when a task hit its ceiling.</p>
 <h2 id="ceilings-are-per-node-by-tier">Ceilings are per node, by tier</h2>
-<p>Every node in a graph — plan, build, review, and the rest — has a dollar
-ceiling for the provider tier it runs on. A cheap tier gets a smaller
-ceiling; a tier used for harder work gets more room, but still a fixed
-one. The ceiling is a property of the node and the tier, not something a
-single run negotiates for itself.</p>
+<p>Every node in a graph (plan, build, review and the rest) has a dollar
+ceiling for its session. The provider profile sets it: <code>budget_usd</code> per
+tier (the Claude Code profile: cheap $0.15, standard $0.35, deep $0.80),
+and <code>role_budget_usd</code> for roles that need a different number, such as the
+reviewers. The ceiling is a property of the node and the tier, not
+something a single run negotiates for itself.</p>
+<p>A build is the exception that proves the rule. Its budget is a guide for
+one slice, not a ceiling for the task. The guide is estimated from the
+repository's recent builds, clamped to $1.00 to $4.00. At the guide the
+harness judges go or no-go; a build that passes resumes. The provider
+profile's <code>role_ceiling_usd</code> (the Claude Code profile: build $6) is the
+failsafe on the build's cumulative spend. See
+<a href="../../customize/autonomous-chair/#build-checkpoints">Autonomous chair</a>.</p>
 <h2 id="split-never-raise">Split, never raise</h2>
 <p>When a task is going to exceed its ceiling, the answer is not a bigger
 number. It is a smaller task. A task that needs more budget than its
@@ -3830,13 +3978,11 @@ three pull requests was really three tickets. Raising the ceiling to fit
 the task hides the signal that the task should have been split before it
 ever ran.</p>
 <h2 id="budget_usd-on-an-item">budget_usd on an item</h2>
-<p>A work item can carry its own <code>budget_usd</code>, narrower than the tier
-ceiling if the team wants a tighter cap on a specific kind of task. This
-follows the same tighten-only rule cartridges use elsewhere: an item's
-budget can only be smaller than what its tier allows, never larger. See
-<a href="../cartridges/">Cartridges</a> for tighten-only in general and
-<a href="../../customize/policy/">Policy</a> for <code>build_budget_usd_max</code>, the knob a
-team sets to change the ceiling itself.</p>
+<p>A work item can carry its own <code>budget_usd</code>. It replaces the estimated
+build guide for that item. It may be higher than the estimate, but never
+higher than the cartridge's <code>build_budget_usd_max</code> (base: $6). The
+harness refuses an item that asks for more and quotes the cap. See
+<a href="../../customize/policy/#build_budget_usd_max">Policy</a>.</p>
 <h2 id="what-a-budget-stop-records">What a budget stop records</h2>
 <p>When a node hits its ceiling, the run stops there rather than continuing
 on credit. What gets recorded is the amount spent against the ceiling,

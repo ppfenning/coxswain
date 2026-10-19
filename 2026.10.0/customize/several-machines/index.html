@@ -920,42 +920,14 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../../methodology/graphs/coxswain/" class="md-nav__link">
+      <a href="../../methodology/graphs/initiative-decompose/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    coxswain
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../methodology/graphs/epic-swarm/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    epic-swarm
+    initiative-decompose
   
 
     
@@ -1004,14 +976,98 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../../methodology/graphs/initiative-decompose/" class="md-nav__link">
+      <a href="../../methodology/graphs/phase-validate/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    initiative-decompose
+    phase-validate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/review-diff/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    review-diff
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/rescue-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    rescue-review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/coxswain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    coxswain
   
 
     
@@ -1096,6 +1152,90 @@ Coxswain is in beta — versions may change between releases
     
   
     triage-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/triage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    triage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/sweep/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    sweep
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/epic-driver/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The epic driver
   
 
     
@@ -3989,9 +4129,10 @@ machines only run lanes.</p>
 <p>All machines share one run store. The store is a Postgres named by
 <code>storage_url</code> in the provider profile. Add the driver to <code>cox</code> with the
 <code>postgres</code> extra:</p>
-<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span>--force<span class="w"> </span>--editable<span class="w"> </span><span class="s2">"</span><span class="nv">$HOME</span><span class="s2">/.local/share/coxswain/installs/coxswain[postgres]"</span>
+<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span>--force<span class="w"> </span>--editable<span class="w"> </span><span class="s2">"&lt;home&gt;/installs/coxswain[postgres]"</span>
 </code></pre></div>
-<p>The install replaces the extras <code>cox</code> had, so name each one you use, such as
+<p><code>&lt;home&gt;</code> is the coxswain home, <code>~/.local/share/coxswain</code> by default. The
+install replaces the extras <code>cox</code> had, so name each one you use, such as
 <code>[postgres,lake]</code>.</p>
 <p>With a local SQLite store, everything stays on one machine.</p>
 <h2 id="set-up-a-lane-machine">Set up a lane machine</h2>
@@ -4001,8 +4142,10 @@ machines only run lanes.</p>
    at the same absolute path as on the chair, with its <code>.venv</code> and check
    tools. The lane reads the initiative's <code>repo:</code> path unchanged.</li>
 <li>Install cox with the postgres extra, as above.</li>
-<li>Use the same provider profile. Its <code>storage_url</code> names the shared
-   Postgres.</li>
+<li>Use the same provider profile as the chair. It is team configuration and
+   lives outside the code checkout, in <code>&lt;home&gt;/providers/</code> or the
+   workspace; copy it there and point the machine profile's
+   <code>provider_profile</code> at it. Its <code>storage_url</code> names the shared Postgres.</li>
 <li>Put <code>claude</code> on the PATH of a non-interactive ssh shell, and log in.
    Set a git <code>user.name</code> and <code>user.email</code>.</li>
 <li>Run <code>cox setup doctor</code>.</li>
@@ -4046,6 +4189,12 @@ it:</p>
 <p><code>--capacity</code> is the lanes the host may run at once. An optional <code>--weight</code>
 sets its share of new placements, and an optional <code>--capabilities</code> names
 the list it can be matched on.</p>
+<p>Once the table has rows, it decides: a host in the profile's <code>lane_hosts</code>
+but not in the table is not a lane host. <code>cox host add</code> and a launch with
+<code>--on</code> print a note naming such hosts. A launch
+takes the host's workspace from its own beat (<code>cox host beat</code> on that
+machine), else from the same-named <code>lane_hosts</code> entry. <code>cox setup doctor
+--host</code> reads only <code>lane_hosts</code>; <code>cox host doctor box2</code> uses the table.</p>
 <p><code>cox host drain box2</code> stops launching on the host while its live lanes
 finish; <code>cox host activate box2</code> makes it a lane host again. <code>cox host
 list</code> prints one line per host: its state, capacity, beat age, and login.</p>

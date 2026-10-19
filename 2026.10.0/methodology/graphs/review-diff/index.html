@@ -11,10 +11,10 @@
       
       
       
-        <link rel="prev" href="../coxswain/">
+        <link rel="prev" href="../phase-validate/">
       
       
-        <link rel="next" href="../lifecycle-propose/">
+        <link rel="next" href="../rescue-review/">
       
       
         
@@ -25,7 +25,7 @@
     
     
       
-        <title>epic-swarm - Coxswain</title>
+        <title>review-diff - Coxswain</title>
       
     
     
@@ -80,7 +80,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#epic-swarm" class="md-skip">
+        <a href="#review-diff" class="md-skip">
           Skip to content
         </a>
       
@@ -131,7 +131,7 @@ Coxswain is in beta — versions may change between releases
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              epic-swarm
+              review-diff
             
           </span>
         </div>
@@ -927,14 +927,14 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../coxswain/" class="md-nav__link">
+      <a href="../initiative-decompose/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    coxswain
+    initiative-decompose
   
 
     
@@ -943,44 +943,6 @@ Coxswain is in beta — versions may change between releases
   
 
       </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-    
-  
-  
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    epic-swarm
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-      
     </li>
   
 
@@ -1021,14 +983,108 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../initiative-decompose/" class="md-nav__link">
+      <a href="../phase-validate/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    initiative-decompose
+    phase-validate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    review-diff
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rescue-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    rescue-review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../coxswain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    coxswain
   
 
     
@@ -1113,6 +1169,90 @@ Coxswain is in beta — versions may change between releases
     
   
     triage-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../triage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    triage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sweep/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    sweep
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../epic-driver/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The epic driver
   
 
     
@@ -3670,10 +3810,10 @@ Coxswain is in beta — versions may change between releases
                 
 <nav class="cox-page-nav" aria-label="Page navigation">
   
-  <a class="cox-page-nav__prev" href="../coxswain/">← coxswain</a>
+  <a class="cox-page-nav__prev" href="../phase-validate/">← phase-validate</a>
   
   
-  <a class="cox-page-nav__next" href="../lifecycle-propose/">lifecycle-propose →</a>
+  <a class="cox-page-nav__next" href="../rescue-review/">rescue-review →</a>
   
 </nav>
 
@@ -3681,354 +3821,51 @@ Coxswain is in beta — versions may change between releases
 
 
 
-<h1 id="epic-swarm">epic-swarm</h1>
-<p>The coxswain dispatches epic-swarm when an epic moves from scoped to
-active: one run per ticket in the epic's current phase, in parallel where
-the phase allows it. What lands is one pull request per ticket and an
-updated epic board once every ticket in the phase reports back.</p>
-<p>pulled at build time</p>
-<h1 id="epic-swarm-specification">epic-swarm — specification</h1>
-<p>Runs a whole initiative to completion without supervision, and lands nothing.</p>
-<p><code>initiative-decompose</code> produces phases, tasks, and the edges between them.
-<code>run_phase</code> already runs one phase's unblocked tasks at once. What is missing is
-the thing above both: something that walks the phase graph, drives each phase in
-dependency order, decides when a phase is actually finished, and keeps going
-until the initiative is done or stuck.</p>
-<p>The vocabulary is the one already in the work store: <strong>initiative → phase →
-task</strong>. A task is the unit that gets a worktree and a draft PR. There is no
-fourth level and no synonym for <code>task</code>.</p>
-<h2 id="this-is-not-a-graph-and-that-matters">This is not a graph, and that matters</h2>
-<p>The contract already ruled on this, in <code>docs/GRAPH-CONTRACT.md</code>:</p>
-<blockquote>
-<p>Running a <em>phase</em> is not a graph: the shell runs <code>lifecycle-propose</code> once per
-unblocked task, concurrently. Sequence belongs to a graph; concurrency belongs
-to the I/O edge that already owns every side effect.</p>
-</blockquote>
-<p>Everything that argument says about a phase driver says the same about a swarm
-driver, only louder. This thing invokes graphs, waits on them, decides what to
-invoke next from what came back, and does it concurrently. A graph is
-<code>run(args, runner) -&gt; dict</code> — pure, replayable, no clock, no disk. A driver that
-blocks on futures is none of those things.</p>
-<p>So <code>epic-swarm</code> is <strong>a harness capability plus two roles and a write kind</strong>, not
-a fifth graph. It is specified here, beside the graphs it drives, because this is
-where a reader looks for it — but it belongs in <code>harness/</code>, next to <code>phase.py</code>,
-and it must not acquire a <code>SPEC</code> or appear in the graph registry. If it ever
-does, <code>test_portability.py</code> will start asserting purity rules against something
-that cannot satisfy them, and the honest answer will be to weaken the test.</p>
-<p>It shipped as <code>harness/epic.py</code>, and <code>run_epic</code> is the whole of it.</p>
-<p>The parts of this that <em>are</em> model calls — <code>validate_chunk</code>, <code>validate_phase</code> —
-are nodes, and nodes belong to graphs. They shipped as
-<code>graphs/delivery/phase_validate.py</code>, the <code>phase-validate</code> graph, which the driver
-invokes exactly the way it invokes <code>lifecycle-propose</code>. See <em>Decision 3</em>.</p>
-<h2 id="roles-and-kinds-this-needs">Roles and kinds this needs</h2>
+<h1 id="review-diff">review-diff</h1>
+<p>review-diff runs the charter reviewer, the adversary, verify-evidence and
+arbitration on a diff that is not a run's own build. It takes a diff, a
+repository and a ref, and returns the same verdict-and-findings shape a
+build's review step produces. Nothing is written to the repository and
+nothing is pushed. <code>verify_evidence</code> runs only when the cartridge
+configures checks. <code>cox runs review --pr &lt;url&gt;</code> runs it on a pull
+request and posts the verdict as a review.</p>
+<h1 id="review-diff_1">review-diff</h1>
+<p>Takes a diff, a repo and a ref — never a run's own build branch — and returns the same verdict-and-findings shape a build's own review step produces. Nothing is written to the repo and nothing is pushed.</p>
+<pre class="mermaid"><code>flowchart LR
+    n0["review_charter&lt;br/&gt;step · 1"]
+    n1["review_adversary&lt;br/&gt;step · 2"]
+    n2["verify_evidence&lt;br/&gt;step · 3"]
+    n3["arbitrate&lt;br/&gt;step · 4"]
+    n0 --&gt; n1
+    n1 --&gt; n2
+    n2 --&gt; n3
+    style n0 fill:#f96,stroke:#333,stroke-width:2px</code></pre>
 <table>
 <thead>
 <tr>
-<th>Name</th>
-<th>Kind</th>
-<th>Status</th>
-<th>Notes</th>
+<th>Node</th>
+<th>Step</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>validate_chunk</code></td>
-<td>role</td>
-<td><strong>shipped, optional</strong></td>
-<td>did this task actually satisfy its own description</td>
-</tr>
-<tr>
-<td><code>validate_phase</code></td>
-<td>role</td>
-<td><strong>shipped, optional</strong></td>
-<td>do these tasks, together, accomplish the phase</td>
-</tr>
-<tr>
-<td><code>stack_rebase</code></td>
-<td>write kind</td>
-<td><strong>shipped</strong></td>
-<td>rewriting a branch other work is stacked on</td>
-</tr>
-</tbody>
-</table>
-<p>All three landed in the base cartridge. The two roles are additions to
-<code>roles.optional</code>, which is ordinary. <code>stack_rebase</code> is an addition to
-<code>write_kinds</code>, also ordinary. What was <em>not</em> ordinary is discussed under
-<em>Comfort levels</em>, below, and it is the finding that most affected this design.</p>
-<p><strong>Args:</strong> <code>run_id</code>, <code>date</code>, <code>cartridge</code> (resolved, required, no fallback),
-<code>initiative</code> (the work store's own output, read by the CLI and passed in — a
-driver that read the store itself would put the filesystem back inside the thing
-under test), <code>repo</code> (required: stacking is real branches in a real repository,
-and there is no honest way to fake that), <code>max_parallel</code>, and the harness's usual
-<code>ledger_path</code> / <code>runs_dir</code> / <code>worktree_root</code> / <code>provider_profile</code> / <code>assume</code>.</p>
-<p>There is no <code>comfort</code> argument. A comfort level is a cartridge — <code>local-comfort0</code>
-and <code>local-comfort1</code> in <code>agent-cartridges</code> — and a flag that could override the
-resolved ramps would be a second source of truth about what a team has earned.</p>
-<p><strong>Returns:</strong> <code>{run_id, date, initiative, phases[], tasks[], quarantined[],
-proposals[], totals}</code> — where <code>totals</code> reports <code>phases_complete</code>,
-<code>phases_partial</code>, <code>tasks_quarantined</code>, and <code>stacks_rebased</code>.</p>
-<h2 id="the-central-claim-producing-is-not-landing">The central claim: producing is not landing</h2>
-<p>An unattended swarm and an autonomy policy that gates every write look like they
-cannot both be true. They can, because they are about different acts.</p>
-<p><strong>The swarm runs to completion producing draft PRs.</strong> A draft PR has no effect
-until a human opens it — that is why <code>draft_pr_create</code> carries <code>risk: low</code> in the
-base taxonomy while <code>merge_main</code> carries <code>never</code>. Producing work is cheap to undo:
-the artifact is a branch and a draft, and the cost of a wrong one is a branch
-nobody reads. Landing work is not, and landing is where the policy lives.</p>
-<p>So the terminal state of an unsupervised run is a stack of draft PRs across every
-phase, one per task, with nothing merged, nothing marked ready, and no row in any
-system of record that a human did not approve. The swarm never <em>needs</em> autonomy
-to finish. It needs autonomy only to save you clicks afterwards, which is exactly
-the thing that should have to be earned.</p>
-<p>This is the whole argument for why the swarm may default to running unattended.
-If a reviewer of this spec disagrees with one paragraph, it should be this one.</p>
-<h2 id="stacking-and-the-blast-radius-of-a-rebase">Stacking, and the blast radius of a rebase</h2>
-<p>Tasks within a phase are independent <strong>by construction</strong> — that independence is
-what <code>initiative-decompose</code>'s adversary exists to establish, and it is what makes
-them parallelisable at all. So every task in a phase branches from the same base
-and its draft PR merges independently. Tasks do not stack on each other.</p>
-<p>Only <strong>phase-to-phase</strong> relationships stack. A phase whose dependencies are
-satisfied takes its base ref from the parent phase's branch head rather than from
-the default branch. Phases with no parent branch from the default branch.</p>
-<p>This is a deliberate constraint, not a simplification. If tasks stacked on tasks,
-a change to any one of them would force a rebase of everything downstream inside
-the phase — N rebases, N possible conflicts, unattended and concurrent, which is
-how stacked-PR workflows already fail for humans. Restricting stacks to phase
-boundaries bounds the blast radius to exactly the places a human is most likely
-to be looking anyway.</p>
-<p><strong>A rebase is a write, so it is a kind.</strong> <code>stack_rebase</code> rewrites a branch that
-other work depends on; it can silently discard a commit, and it is not obviously
-reversible from the outside. Governing it through the same ramp as everything
-else costs nothing and buys the ability to say "rebase automatically, but only
-once you have done fifty of them cleanly."</p>
-<h2 id="two-validators-and-the-failure-the-second-one-exists-for">Two validators, and the failure the second one exists for</h2>
-<p><code>validate_chunk</code> asks whether one task satisfies its own description. It is
-cheap, it runs per task, and it is largely a restatement of the <code>done_criteria</code>
-the cartridge already carries.</p>
-<p><code>validate_phase</code> is the one that earns its place. It reads <strong>the phase's original
-goal</strong> — not the task list, the goal — and asks whether what now exists
-accomplishes it. Five tasks that each went green and do not add up is a real
-failure mode, and it is invisible to every check below it: each task passed its
-own review, each draft PR is defensible, and the phase is nonetheless not done. A
-<code>validate_phase</code> that only confirms every task finished is ceremony, and should
-be left unbound instead.</p>
-<p>Both are optional roles. A team that binds neither gets a swarm that reports
-task completion and makes no claim about phase completion, which is honest.
-Binding either one to a human is how a comfort level becomes a gate.</p>
-<h2 id="comfort-levels-and-what-is-actually-expressible">Comfort levels — and what is actually expressible</h2>
-<p>The intent was that comfort levels are named bundles of existing <code>write_kinds</code>
-ramps plus <code>caps</code> — presets, not new machinery. <strong>That is true for two of the
-four levels and false for the other two</strong>, and the reason is worth stating
-plainly because it is a governance question, not a coding one.</p>
-<p><code>cartridges/base/cartridge.yaml</code> says: <em>"A team may TIGHTEN a risk or ramp. A
-team may never loosen one."</em> Against the shipped taxonomy:</p>
-<table>
-<thead>
-<tr>
-<th>Level</th>
-<th>Intent</th>
-<th>Expressible as a preset?</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>0</td>
-<td>everything proposes</td>
-<td><strong>Yes.</strong> Tighten every relevant kind to <code>gated</code>. Ships as <code>local-comfort0</code></td>
-</tr>
-<tr>
+<td><code>review_charter</code></td>
 <td>1</td>
-<td>draft PRs auto-created</td>
-<td><strong>Yes, once earned.</strong> <code>draft_pr_create</code> is already <code>ramp: eligible</code>; it auto-applies after <code>graduation_n</code> clean outcomes, not on being switched on. Ships as <code>local-comfort1</code></td>
 </tr>
 <tr>
+<td><code>review_adversary</code></td>
 <td>2</td>
-<td>graduated kinds may mark ready</td>
-<td><strong>No, still.</strong> <code>pr_ready_flip</code> is <code>ramp: gated</code> in base. A team cannot loosen it, and nothing here justifies loosening it for everyone. Unshipped</td>
 </tr>
 <tr>
+<td><code>verify_evidence</code></td>
 <td>3</td>
-<td>graduated kinds merge within a phase</td>
-<td><strong>Yes, now</strong> — by narrowing the kind rather than loosening a ramp. See below</td>
+</tr>
+<tr>
+<td><code>arbitrate</code></td>
+<td>4</td>
 </tr>
 </tbody>
 </table>
-<p>Level 3 changed, and the way it changed is the point. The old row said <code>merge</code> is
-<code>ramp: never</code> and a team cannot loosen it, which was true and was the wrong
-question. One <code>merge</code> kind priced two unlike acts identically: joining a task
-branch to the phase branch above it, and putting code on the branch everyone else
-builds from. Only the second is irreversible in the way that argues for a
-permanent human. So <code>merge</code> split into <code>merge_stack</code> (<code>eligible</code>) and <code>merge_main</code>
-(<code>never</code>), and <em>within-initiative</em> stack merges became expressible without anyone
-loosening anything — <code>merge_main</code> inherited the old kind's posture, and
-<code>merge_stack</code> is a new, narrower act that never had a kind of its own.</p>
-<p>A team that does not want stack merges earnable tightens <code>merge_stack</code> to <code>gated</code>
-in its own cartridge, which is exactly what the comfort-1 bundle does. The
-one-way tighten rule is what makes that toggle legal, and it is why the split is
-not a loosening dressed up as a refactor.</p>
-<p>Level 1 carries a subtlety that reads as a bug if it surprises you: a preset
-cannot <em>grant</em> autonomy, only permit it to be earned. <code>autonomy_policy</code> returns
-<code>AUTO</code> for an <code>eligible</code> kind only after the streak clears the bar, and
-<code>graduation_n</code> lives in the cartridge's <code>policy</code> block, globally, not per kind.
-Setting <code>graduation_n: 0</code> to make level 1 immediate would make <em>every</em> eligible
-kind immediate. There is no per-kind graduation override, and adding one would be
-a change to the trust model rather than a preset.</p>
-<p>Level 2 still requires editing the base taxonomy — loosening <code>pr_ready_flip</code> for
-everyone — which the base forbids teams from doing and which nothing here
-justifies doing on their behalf. <strong>Levels 0 and 1 shipped as bundles; level 3
-became expressible through the split; level 2 remains unshipped.</strong> The swarm's
-value never depended on 2: clicking "ready" on work you were going to read anyway
-is not the expensive part of the job.</p>
-<h2 id="when-a-task-fails">When a task fails</h2>
-<p><code>on_task_failure</code> is a cartridge setting: <code>continue_independent</code> (default),
-<code>halt_phase</code>, or <code>quarantine</code>.</p>
-<p>The default is not a new behaviour — <code>harness/phase.py</code> already collects a failed
-task into <code>failures</code> and lets the rest of the phase finish, on the stated grounds
-that "one task failing must not take the phase with it." This spec names that
-policy and adds the ability to override it.</p>
-<p>Halting discards the parallelism the decomposition just bought, so it is the
-wrong default; it exists for phases where a partial result is worse than none.
-<code>quarantine</code> sets the failed task aside with its diagnosis and continues, which
-is <code>continue_independent</code> plus a place to look afterwards.</p>
-<p>A phase can therefore end <strong>partially complete</strong>, and <code>validate_phase</code> must have
-an opinion about that rather than treating a quarantined task as absent. A phase
-that is 4-of-5 done is a different fact from a phase that is done.</p>
-<pre class="mermaid"><code>flowchart TB
-    INIT["initiative, from initiative-decompose&lt;br/&gt;phases, tasks, dependency edges"]
-    INIT --&gt; SELECT
-
-    subgraph DRIVER["the swarm driver: an I/O edge, not a graph"]
-        SELECT{"phase ready?&lt;br/&gt;every dependency phase validated"}
-        BASE["base ref: parent phase branch,&lt;br/&gt;or the default branch when unparented"]
-        FANOUT["run_phase: lifecycle-propose per unblocked task,&lt;br/&gt;each in its own worktree"]
-        VCHUNK["validate_chunk&lt;br/&gt;role, once per task"]
-        VPHASE["validate_phase&lt;br/&gt;role, reads the phase goal"]
-        QUAR["quarantine&lt;br/&gt;per on_task_failure"]
-    end
-
-    SELECT -- "blocked" --&gt; WAIT(["wait for a dependency"])
-    SELECT -- "ready" --&gt; BASE
-    BASE --&gt; FANOUT
-    FANOUT -- "one draft PR per task" --&gt; VCHUNK
-    VCHUNK -- "task failed" --&gt; QUAR
-    VCHUNK -- "task satisfied" --&gt; VPHASE
-    QUAR --&gt; VPHASE
-    VPHASE -- "goal unmet, or partial" --&gt; SELECT
-    VPHASE -- "goal met" --&gt; DONE["unblock dependent phases"]
-    DONE --&gt; SELECT
-
-    FANOUT -. "proposals" .-&gt; POLICY{"autonomy_policy&lt;br/&gt;has this kind graduated?"}
-    POLICY -- "propose" --&gt; GATE{{"human gate"}}
-    POLICY -- "auto, graduated kinds only" --&gt; ARM["apply arm, a role"]
-
-    ARM -. "never reaches" .-&gt; MERGE["merge_main"]
-
-    style MERGE stroke-dasharray: 5 5</code></pre>
-<p>The dashed edge carries the same weight here as it does in <code>lifecycle-propose</code>,
-and the split is what made it precise rather than sweeping: no path through this
-driver reaches the default branch, at any comfort level, on any streak. Stack
-merges inside an initiative do happen, once <code>merge_stack</code> has been decided or
-earned. The swarm's output is branches and drafts, and the branch everyone else
-builds from is not one of them.</p>
-<h2 id="prerequisite-nested-invocation">Prerequisite: nested invocation</h2>
-<p>This needed one primitive the harness did not have — <strong>a graph invoking graphs
-and waiting on the results</strong>, with the invoked run's proposals flowing into the
-same policy, gate and ledger as everything else rather than into a side channel.
-It shipped as <code>harness/invoke.py</code>, and <code>run_phase</code> is now a thin wrapper over it.</p>
-<p>It is shared with two other pieces of deferred work: the bounded fix loop in
-<code>lifecycle-propose</code>, and the coxswain dispatcher. Building it once was the
-point. What this spec needed from it, specifically:</p>
-<ul>
-<li>invoke a named graph from the registry with constructed args</li>
-<li>bound concurrency, which <code>run_phase</code> already does</li>
-<li>collect proposals across invocations under <strong>one</strong> <code>run_id</code>, so the manifest
-  hashes one cartridge and <code>_require_single_scope</code> stays satisfiable</li>
-<li>surface a child's <code>ContractViolation</code> as a task failure, not a swarm failure</li>
-</ul>
-<p>All four hold. The driver invokes <code>lifecycle</code> and <code>validate</code> by registry name,
-bounds concurrency at <code>max_parallel</code>, records one manifest per phase under
-<code>run_id:phase</code> so the manifest hashes one cartridge, and takes a child's
-<code>ContractViolation</code> or <code>RunnerError</code> as a quarantined task.</p>
-<h2 id="decisions-2026-09-01">Decisions — 2026-09-01</h2>
-<p>The three open questions, closed.</p>
-<p><strong>1. Are phase boundaries ever ungated?</strong> <em>Decided: they are gated by
-<code>merge_stack</code>'s ramp, which is the same answer as "no" for every team that has
-not measured one.</em> A phase boundary is the last place a human can redirect the
-work cheaply — after it, the next phase's tasks branch from this phase's head and
-a change means rebasing them all. Since the split, that boundary has a kind of its
-own: <code>merge_stack</code> is <code>eligible</code>, so it gates until it is earned and can then be
-earned through the ordinary ramp, and a team that wants it permanently human pins
-it <code>gated</code> under the one-way tighten rule. The comfort-1 bundle does exactly that.
-<code>merge_main</code> stays <code>never</code>, at every comfort level and on every streak, and no
-path through this driver emits or executes it.</p>
-<p>The driver makes that gate load-bearing rather than decorative: <strong>a phase is
-complete only when its merges actually happened.</strong> A met goal on work that never
-reached the phase branch is a phase whose dependents would branch from nothing.</p>
-<p><strong>2. Can a partially-complete phase unblock its dependents?</strong> <em>Decided: blanket
-no.</em> A phase unblocks its dependents only when <code>validate_phase</code> says the goal is
-met. Blanket yes turns one quarantined task into a phase of work built on ground
-that is not there. The refinement — unblock when the quarantined tasks are not on
-the dependent path — asks <code>validate_phase</code> to reason about <em>which</em> task failed
-rather than how many, which is a heavier ask of that role than anything else here.
-So the validator <em>reports</em> it, as <code>quarantine_blocks_dependents</code>, and nothing acts
-on it yet. The field exists so the judgment can be measured before it is trusted,
-which is the same shape as every other ramp in this system.</p>
-<p><strong>3. Where do the validators live?</strong> <em>Decided: in a graph.</em> <code>phase-validate</code> is a
-two-node graph — <code>validate_chunk</code> per task, <code>validate_phase</code> once — and the driver
-invokes it through <code>invoke_graphs</code> like anything else. The ceremony buys the thing
-that matters: the nodes stay under the portability suite, the cartridge is
-required with no fallback, and the run is replayable. A driver calling the runner
-directly would have put the two judgments the phase boundary rests on outside
-every rule the rest of the system is held to.</p>
-<p>A budget stop (<code>error_max_budget_usd</code>) is a shape signal, not a ceiling to
-raise: the answer is to split the task into one file and one behaviour, on
-the order of two hundred lines, not to buy the build a bigger number. When a
-<code>lifecycle-propose</code> fix-loop retry hits it, the loop keeps the last reviewed
-build on the record rather than lose it to the exception, and marks
-<code>fix_loop.stopped == "budget"</code>. That record is not resumed automatically —
-a budget-stopped result's patch is kept on the record for whoever picks the
-task up next, but <code>harness/resume.py</code>'s <code>reusable</code> requires an approved
-<code>draft_pr_create</code> proposal and no <code>fix_loop.stopped</code>, and a budget-stopped
-result has neither, so the task still runs again from scratch on the next
-pass rather than being resumed as though it were approved. What it buys is
-the quarantine reason and the saved patch being visible to whoever picks the
-task up, in place of a run that recorded nothing at all.</p>
-<h2 id="what-the-implementation-deviates-on">What the implementation deviates on</h2>
-<p>Four places where the shipped driver is narrower or differently shaped than the
-text above, each recorded rather than quietly absorbed.</p>
-<p><strong>Validators run between the fan-out and the merges.</strong> The phase verdict judges
-the union of what the tasks produced, on their own branches, before any of it is
-joined to the phase branch. It is not a re-read of the merged branch. The verdict
-is therefore about work that exists and is checked, not about a state the driver
-already committed to — and a phase that does not add up is caught while nothing
-has moved.</p>
-<p><strong>A v1 stack supports one parent phase.</strong> A phase with two parent phases is not
-representable as a single git stack: one stack has one base ref. Such a phase is
-marked blocked with that diagnosis and does not run, rather than the driver
-picking a parent and silently building on half the ground.</p>
-<p><strong>Per-phase manifests, under <code>run_id:phase</code>.</strong> One phase, one cartridge, one
-scope, so <code>_require_single_scope</code> stays satisfiable and a phase's ledger rows are
-attributable to the phase that earned them.</p>
-<p><strong>A draft is a local branch until a forge arm exists.</strong> After the gate, the driver
-creates <code>epic/&lt;initiative&gt;/&lt;phase&gt;--&lt;task&gt;</code> from the scratch branch the work was
-built on. The <code>--</code> is not cosmetic: git cannot hold both <code>refs/heads/epic/i/p1</code>
-and <code>refs/heads/epic/i/p1/t1</code>, because one is a file where the other needs a
-directory. Nothing is pushed and nothing is opened, which is the same blast radius
-the taxonomy prices <code>draft_pr_create</code> at.</p>
-<p>One more, smaller: the work store's phases are bare directory names, so a phase
-goal is reconstructed from the phase name and the initiative's own prose when the
-store carries nothing better. Decompose-produced initiatives should eventually
-land per-phase goals in the store; <code>validate_phase</code> is only as good as the goal it
-is handed, and a reconstructed one is the weakest input in this design.</p>
-<p><strong>Deferred from v0:</strong> the bounded fix loop (a task that fails validation is
-quarantined, not retried), cross-initiative scheduling, cost and token budgets
-across a whole swarm (<code>policy.budgets</code> bounds a run, not a swarm), acting on
-<code>quarantine_blocks_dependents</code>, and comfort level 2.</p>
-<p><strong>Status:</strong> implemented. <code>harness/epic.py</code> is the driver — no <code>SPEC</code>, not in the
-registry, and it must stay that way. <code>graphs/delivery/phase_validate.py</code> is the
-<code>phase-validate</code> graph it invokes for the two judgments. <code>validate_chunk</code>,
-<code>validate_phase</code>, <code>merge_stack</code> and <code>stack_rebase</code> all exist in the base
-cartridge, so this resolves.</p>
 
 
 
@@ -4059,7 +3896,7 @@ cartridge, so this resolves.</p>
       <nav class="md-footer__inner md-grid" aria-label="Footer" >
         
           
-          <a href="../coxswain/" class="md-footer__link md-footer__link--prev" aria-label="Previous: coxswain">
+          <a href="../phase-validate/" class="md-footer__link md-footer__link--prev" aria-label="Previous: phase-validate">
             <div class="md-footer__button md-icon">
               
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
@@ -4069,20 +3906,20 @@ cartridge, so this resolves.</p>
                 Previous
               </span>
               <div class="md-ellipsis">
-                coxswain
+                phase-validate
               </div>
             </div>
           </a>
         
         
           
-          <a href="../lifecycle-propose/" class="md-footer__link md-footer__link--next" aria-label="Next: lifecycle-propose">
+          <a href="../rescue-review/" class="md-footer__link md-footer__link--next" aria-label="Next: rescue-review">
             <div class="md-footer__title">
               <span class="md-footer__direction">
                 Next
               </span>
               <div class="md-ellipsis">
-                lifecycle-propose
+                rescue-review
               </div>
             </div>
             <div class="md-footer__button md-icon">

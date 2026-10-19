@@ -920,42 +920,14 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../../methodology/graphs/coxswain/" class="md-nav__link">
+      <a href="../../methodology/graphs/initiative-decompose/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    coxswain
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../methodology/graphs/epic-swarm/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    epic-swarm
+    initiative-decompose
   
 
     
@@ -1004,14 +976,98 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../../methodology/graphs/initiative-decompose/" class="md-nav__link">
+      <a href="../../methodology/graphs/phase-validate/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    initiative-decompose
+    phase-validate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/review-diff/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    review-diff
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/rescue-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    rescue-review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/coxswain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    coxswain
   
 
     
@@ -1096,6 +1152,90 @@ Coxswain is in beta — versions may change between releases
     
   
     triage-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/triage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    triage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/sweep/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    sweep
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/epic-driver/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The epic driver
   
 
     
@@ -1485,6 +1625,17 @@ Coxswain is in beta — versions may change between releases
     <span class="md-ellipsis">
       
         Which providers exist
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-the-profile-lives" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where the profile lives
       
     </span>
   </a>
@@ -3765,6 +3916,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#where-the-profile-lives" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where the profile lives
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#the-operator" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3845,21 +4007,36 @@ local       = { status = "experimental", profile = "providers/local-oss.yaml" }
 its capabilities and puts the <code>cheap</code> tier on a local OpenAI-compatible
 endpoint, but no runner drives it yet. The others are <code>status = "planned"</code>
 and have no profile to point at.</p>
+<h2 id="where-the-profile-lives">Where the profile lives</h2>
+<p>A provider profile is team configuration, not code. The checkout ships
+defaults in <code>&lt;checkout&gt;/src/cartridges/providers/</code>; <code>cox install</code> points a
+new machine at <code>claude-code.yaml</code> there. A team keeps its own profile
+outside the checkout, in <code>&lt;home&gt;/providers/</code> or in the workspace, with
+<code>catalog.yaml</code> beside it, and the machine profile's <code>provider_profile</code>
+names it:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># ~/.config/agent-tools/profile.yaml</span>
+<span class="nt">provider_profile</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">&lt;home&gt;/providers/my-team.yaml</span>
+</code></pre></div>
+<p><code>cox setup doctor</code> fails its <code>home paths</code> row when <code>provider_profile</code> sits
+outside both <code>&lt;home&gt;</code> and the workspace. Every machine that runs lanes for
+the team uses the same profile, so the store it names is the same. See
+<a href="../../install/#the-provider-profile">Install</a> for the copy commands.</p>
 <h2 id="the-operator">The operator</h2>
-<p>The provider-profile key <code>operator</code> names the human the courier and
-decisions address. Its default is <code>operator</code>, so a profile that omits it
+<p>The machine profile's <code>operator</code> key names the human the courier and
+decisions address. It lives in <code>~/.config/agent-tools/profile.yaml</code>, not in
+the provider profile. Its default is <code>operator</code>, so a profile that omits it
 addresses "operator". Set it to a team role or a handle:</p>
-<div class="highlight"><pre><span></span><code><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">claude-code</span>
-<span class="nt">operator</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">reviewer-on-call</span>
+<div class="highlight"><pre><span></span><code><span class="nt">operator</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">reviewer-on-call</span>
 </code></pre></div>
 <p>The settings command flags operator-only rows with the field
-<code>operator_only</code>. The older field name <code>pat_only</code> is accepted as an alias
-for one release and then removed, so use <code>operator_only</code> in anything new.</p>
+<code>operator_only</code>. It also writes the older name <code>pat_only</code> with the same
+value, for one release, so use <code>operator_only</code> in anything new.</p>
 <h2 id="where-the-detail-lives">Where the detail lives</h2>
-<p>The full shape of a provider profile — the file format, every field a
-tier or role can set — is in <a href="../../install/providers/">Install:
-Providers</a>. This page is about what a profile
-is for; that one is about how to write one.</p>
+<p>The shipped profile, <code>src/cartridges/providers/claude-code.yaml</code>, is
+commented key by key: <code>tiers</code>, <code>classes</code>, <code>effort</code>, <code>budget_usd</code>,
+<code>role_budget_usd</code>, <code>role_ceiling_usd</code>, <code>tier_overrides</code>, <code>defaults</code> and
+<code>tools</code>. Copy it and change what your team needs. <a href="../../install/providers/">Install:
+Providers</a> lists the providers and their status.</p>
 
 
 

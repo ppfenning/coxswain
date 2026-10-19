@@ -920,42 +920,14 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../../methodology/graphs/coxswain/" class="md-nav__link">
+      <a href="../../methodology/graphs/initiative-decompose/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    coxswain
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../methodology/graphs/epic-swarm/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    epic-swarm
+    initiative-decompose
   
 
     
@@ -1004,14 +976,98 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../../methodology/graphs/initiative-decompose/" class="md-nav__link">
+      <a href="../../methodology/graphs/phase-validate/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    initiative-decompose
+    phase-validate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/review-diff/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    review-diff
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/rescue-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    rescue-review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/coxswain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    coxswain
   
 
     
@@ -1096,6 +1152,90 @@ Coxswain is in beta — versions may change between releases
     
   
     triage-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/triage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    triage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/sweep/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    sweep
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/epic-driver/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The epic driver
   
 
     
@@ -3814,8 +3954,7 @@ Coxswain is in beta — versions may change between releases
 
 <h1 id="write-a-graph">Write a graph</h1>
 <p>This page settles the shape a new graph needs, where it goes, and how a
-run picks it up. Anything the design hasn't named yet is marked
-<strong>planned</strong> below rather than guessed at.</p>
+run picks it up.</p>
 <h2 id="the-shape">The shape</h2>
 <p>A graph is the ordered set of nodes a run executes, with a DAG of real
 dependencies between the tasks it schedules — see
@@ -3823,13 +3962,37 @@ dependencies between the tasks it schedules — see
 new graph is a new course, not a new node: writing a new node type (a
 new kind of review, a new kind of validation) is a different, larger
 change than composing existing node types into a new order.</p>
+<p>In code, a graph is a module with a function <code>run(args, runner) -&gt; dict</code>.
+It reads its cartridge and date from <code>args</code>, asks the runner for roles
+and tiers, never skills or models, and returns proposals as data. It
+writes nothing. <code>src/graphs/docs/GRAPH-CONTRACT.md</code> lists the rules,
+and <code>tests/test_portability.py</code> in <code>src/graphs</code> enforces them.</p>
 <h2 id="where-it-goes">Where it goes</h2>
-<p><strong>Planned.</strong> The design has not yet named the directory layout or
-naming convention a new graph file follows, or which repository owns it.</p>
+<p>A graph is a module under <code>src/graphs/graphs/delivery/</code> (work that
+produces work) or <code>src/graphs/graphs/ops/</code> (keeping a running system
+honest). The module opens with a docstring that names the node chain
+right under its title line, such as <code>decompose -&gt; adversary -&gt; emit</code>; the
+diagram on the
+graph's docs page is generated from it by <code>python -m harness.graphdoc</code>.
+The module declares <code>GRAPH_NAME</code> and a module-level <code>SPEC</code>, a
+<code>graphs._spec.GraphSpec</code> naming the subcommand, the run function, a
+one-line summary and the <code>Need</code>s that become command-line flags.</p>
+<p>Graphs are platform code. They live in the coxswain repository, not in a
+team cartridge, and a new one lands as a pull request there.</p>
 <h2 id="how-a-run-picks-it-up">How a run picks it up</h2>
-<p><strong>Planned.</strong> The design does not yet say how a task or an epic selects
-which graph runs it, beyond that a graph is "defined once, reused by
-every run" — see <a href="../../start/">Start here</a>.</p>
+<p>Discovery is automatic. <code>harness/registry.py</code> imports every module under
+<code>graphs/</code> and collects each <code>SPEC</code>, so a new module is a new
+<code>shell.py &lt;subcommand&gt;</code> with no dispatch table to edit. Two names
+clashing is an error, not a silent shadow.</p>
+<p>Reaching it from <code>cox</code> is not automatic:</p>
+<ul>
+<li><code>cox route launch</code> starts a fixed set: <code>epic</code>, <code>decompose</code>, <code>rescue</code>,
+  <code>cos</code> and <code>sweep</code>.</li>
+<li>The coxswain dispatch graph can select only graphs its driver,
+  <code>harness/cos.py</code>, knows how to build arguments for (<code>_KNOWN_GRAPHS</code>).
+  A new graph joins dispatch by extending that list and its argument
+  builder.</li>
+</ul>
 <h2 id="what-to-check-before-writing-a-new-one">What to check before writing a new one</h2>
 <p>A new graph is worth writing when an existing one's phases and edges
 don't fit the work — not when a single task in the middle needs

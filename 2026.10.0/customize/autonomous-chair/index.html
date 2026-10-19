@@ -920,42 +920,14 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../../methodology/graphs/coxswain/" class="md-nav__link">
+      <a href="../../methodology/graphs/initiative-decompose/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    coxswain
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../methodology/graphs/epic-swarm/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    epic-swarm
+    initiative-decompose
   
 
     
@@ -1004,14 +976,98 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../../methodology/graphs/initiative-decompose/" class="md-nav__link">
+      <a href="../../methodology/graphs/phase-validate/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    initiative-decompose
+    phase-validate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/review-diff/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    review-diff
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/rescue-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    rescue-review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/coxswain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    coxswain
   
 
     
@@ -1096,6 +1152,90 @@ Coxswain is in beta — versions may change between releases
     
   
     triage-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/triage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    triage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/sweep/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    sweep
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/epic-driver/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The epic driver
   
 
     
@@ -1766,6 +1906,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#the-workspace-checkout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The workspace checkout
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#build-checkpoints" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1825,6 +1976,17 @@ Coxswain is in beta — versions may change between releases
     <span class="md-ellipsis">
       
         Drafts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#watching-the-loop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Watching the loop
       
     </span>
   </a>
@@ -3864,6 +4026,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#the-workspace-checkout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The workspace checkout
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#build-checkpoints" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3930,6 +4103,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#watching-the-loop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Watching the loop
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#what-it-records" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3974,6 +4158,8 @@ you have run Coxswain on one machine and know what the chair is.</p>
 things in order. The default tick is 60 seconds.</p>
 <ul>
 <li>It beats the chair lease.</li>
+<li>It pulls the workspace checkout from its upstream (see
+  <a href="#the-workspace-checkout">The workspace checkout</a>).</li>
 <li>It reads the 5-hour window and the weekly spend.</li>
 <li>It lands a completed phase as one squash onto a fresh main, from
   <code>pr/&lt;initiative&gt;--&lt;phase&gt;</code>, one repository at a time. An approved task in
@@ -3983,11 +4169,17 @@ things in order. The default tick is 60 seconds.</p>
 <li>It retries a quarantine caused by the harness once.</li>
 <li>It fills free lanes from the work store first, then decomposes intake in
   pairs.</li>
-<li>It fills lanes on the hosts named in <code>lane_hosts</code> too, after the local
-  lanes.</li>
+<li>It fills lanes on the lane hosts too, after the local lanes. The lane
+  hosts are the hosts table (<code>cox host add</code>), or the profile's <code>lane_hosts</code>
+  while that table is empty.</li>
 <li>It runs housekeeping on a period: a lake sync, a trace prune, and a run
   clean.</li>
+<li>At most once a day it tunes each host's lane count in the hosts table,
+  within that host's bounds, and sends any tier proposal to the inbox.</li>
 <li>It counts the drafts waiting for approval and never launches one.</li>
+<li>When the board lives in a shared store and the tick changed rows, it
+  exports the board to <code>work/</code> and <code>intake/</code>, commits, and pushes the
+  workspace.</li>
 <li>It prints one status line, and a <code>work state:</code> line naming its board when
   a shared store is configured.</li>
 </ul>
@@ -4066,14 +4258,53 @@ Lane hosts section below shows how the loop fills each host in turn.</p>
 seven days. The loop, the launch gate, <code>route context</code> and <code>usage assess</code>
 all count the same week, and the status line shows where the week began.</p>
 <p>Past the hard stop, the loop lands work but launches nothing. The hard stop
-is <code>weekly_hard_stop_fraction</code> of <code>weekly_ceiling_usd</code>. Both live in the
-spend settings of the routing profile.</p>
+is <code>weekly_hard_stop_fraction</code> of <code>weekly_ceiling_usd</code>.
+<code>weekly_ceiling_usd</code> lives in the profile's <code>spend</code> block.
+<code>weekly_hard_stop_fraction</code> is read from <code>&lt;runs&gt;/policy.pacing.json</code>, a
+JSON file you write in the workspace's runs directory; it is 0.93 when the
+file or the key is absent. The same file may set <code>hard_stop_fraction</code> (the
+5-hour window, default 0.99) and <code>max_in_flight</code>.</p>
 <p><code>role_ceiling_usd</code> is a separate failsafe on one build's own cumulative
 spend, not a hard bound on any single action. The Claude Code provider
 profile sets <code>role_ceiling_usd: {build: 6.0}</code>; the Build checkpoints section
 below shows how a build spends against it.</p>
 <p>The loop never cuts a release. It never merges a Homebrew tap PR. It never
-pushes the workspace. It never changes a profile or a tier.</p>
+edits a profile file and never applies a tier; it only proposes tiers. The
+one setting it writes is a host's lane count in the hosts table. It pushes
+only the workspace checkout, as described next.</p>
+<p>To hold every land while you cut a release, freeze lands. A freeze lifts
+itself when its minutes pass:</p>
+<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>chair<span class="w"> </span>freeze-lands<span class="w"> </span>--for<span class="w"> </span><span class="m">60</span><span class="w"> </span>--reason<span class="w"> </span><span class="s2">"cutting 2026.10.1"</span>
+cox<span class="w"> </span>chair<span class="w"> </span>freeze-lands<span class="w">            </span><span class="c1"># show the freeze</span>
+cox<span class="w"> </span>chair<span class="w"> </span>freeze-lands<span class="w"> </span>--off<span class="w">      </span><span class="c1"># lift it now</span>
+</code></pre></div>
+<h2 id="the-workspace-checkout">The workspace checkout</h2>
+<p>The workspace (<code>work/</code>, <code>intake/</code>, <code>runs/</code>) is a git checkout. The loop
+keeps it in step with its upstream on every live tick. A dry run does
+neither step.</p>
+<p><strong>Pull.</strong> Right after the beat, the loop runs
+<code>git pull --ff-only --autostash</code> in the workspace. Uncommitted changes are
+carried across. If re-applying them conflicts, the loop puts the checkout
+back where it was and restores the changes. A workspace that is not a git
+checkout, or a branch with no upstream, is skipped. A failed pull never
+stops the tick: the status line gains <code>workspace pull failed: &lt;reason&gt;</code>,
+and the store records one <code>pull_workspace</code> action per distinct reason.</p>
+<p><strong>Export, commit and push.</strong> This step runs only when the board lives in a
+shared store (<code>work state: store</code>) and the tick changed rows. The loop:</p>
+<ol>
+<li>writes the changed rows from the store to their files under <code>work/</code> and
+   <code>intake/</code>, leaving out files someone edited by hand (the export holds
+   them);</li>
+<li>stages <code>work/</code> and <code>intake/</code> (<code>git add -A</code>), without the held files;</li>
+<li>commits the staged files as <code>chair: export &lt;n&gt; changed row(s)</code>;</li>
+<li>pushes the current branch to its upstream
+   (<code>git push &lt;remote&gt; HEAD:&lt;branch&gt;</code>).</li>
+</ol>
+<p>Nothing else in the workspace is committed. No upstream, or no git
+checkout, means no push. A failed <code>git add</code> or <code>git commit</code> shows as
+<code>export failed: &lt;reason&gt;</code> on the status line; the rows stay changed in the
+store. A failed push shows as <code>workspace push failed: &lt;reason&gt;</code> and never
+fails the tick.</p>
 <h2 id="build-checkpoints">Build checkpoints</h2>
 <p>A build runs in slices. Each slice stops at the guide, the build's measured
 shape (about $1.90), where the harness judges go or no-go: the session can
@@ -4098,9 +4329,15 @@ does not know.</p>
 <h2 id="lane-hosts">Lane hosts</h2>
 <p>Each tick, the loop counts the live lanes on every host. It reads them from
 the leases in the store, in <code>runs.host</code>.</p>
+<p>The lane hosts are the active rows of the hosts table. Add one with
+<code>cox host add &lt;name&gt; --ssh &lt;dest&gt; --capacity &lt;n&gt; [--weight W]
+[--capabilities a,b]</code>. While the table is empty, the profile's <code>lane_hosts</code>
+list is used instead.</p>
 <p>The loop fills the local lanes first, up to <code>policy.dispatch.max_in_flight</code>.
-It then fills each <code>lane_hosts</code> entry in profile order, up to the same cap.
-Decomposes and pulls stay local.</p>
+It then places the remaining epics on lane hosts in proportion to each
+host's weight, up to each host's capacity, and only on a host whose
+capabilities cover the initiative's tasks. Decomposes and pulls stay
+local.</p>
 <p>The loop launches a remote lane with <code>--on</code>:</p>
 <div class="highlight"><pre><span></span><code>cox<span class="w"> </span>route<span class="w"> </span>launch<span class="w"> </span>epic<span class="w"> </span>--initiative<span class="w"> </span>work/&lt;id&gt;<span class="w"> </span>--on<span class="w"> </span>&lt;host&gt;
 </code></pre></div>
@@ -4143,8 +4380,8 @@ forgotten takeover cannot park the fleet.</p>
 chair. <a href="../several-machines/">Several machines</a> shows how to set that up.</p>
 <h2 id="rescue">Rescue</h2>
 <p>A build can be quarantined for a harness reason and still keep its patch.
-You can rescue it. Run this in the harness:</p>
-<div class="highlight"><pre><span></span><code>python<span class="w"> </span>shell.py<span class="w"> </span>rescue<span class="w"> </span>--initiative<span class="w"> </span>work/&lt;id&gt;<span class="w"> </span>--task<span class="w"> </span>&lt;task-id&gt;
+You can rescue it. Run this from <code>src/graphs</code> in the checkout:</p>
+<div class="highlight"><pre><span></span><code>python<span class="w"> </span>shell.py<span class="w"> </span>rescue<span class="w"> </span>--team<span class="w"> </span>&lt;team&gt;<span class="w"> </span>--initiative<span class="w"> </span>work/&lt;id&gt;<span class="w"> </span>--task<span class="w"> </span>&lt;task-id&gt;
 </code></pre></div>
 <p>The rescue re-applies the patch. It runs the configured checks itself, then
 runs the review round. On approve, the task lands as usual.</p>
@@ -4184,10 +4421,20 @@ that task.</p>
 <div class="highlight"><pre><span></span><code>drafts:
   my-initiative  steward  2h
 </code></pre></div>
+<h2 id="watching-the-loop">Watching the loop</h2>
+<p><code>cox chair attach</code> says whether a live loop holds the lease. It exits 0 if
+one does and 1 if not, and never touches the lease.</p>
+<p><code>cox chair watchdog</code> is a one-shot check for a five-minute timer. It reads
+only the store and sends an alert when the loop has been idle or has not
+beaten its lease for too long. <code>cox chair watchdog --install</code> writes the
+timer files for this platform and prints the lines that activate them;
+<code>--uninstall</code> removes them.</p>
 <h2 id="what-it-records">What it records</h2>
 <p>Some actions the loop only records, such as a "needs the chair" report.
 Each one is appended to <code>chair.actions.jsonl</code> in the runs directory. The
-line carries its time and the lease epoch.</p>
+line carries its time and the lease epoch. When the profile names a store,
+the same line is also written to the store's <code>chair_actions</code> table, so any
+machine can read it.</p>
 
 
 

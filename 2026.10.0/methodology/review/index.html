@@ -11,7 +11,7 @@
       
       
       
-        <link rel="prev" href="../graphs/triage-propose/">
+        <link rel="prev" href="../graphs/epic-driver/">
       
       
         <link rel="next" href="../budgets/">
@@ -925,42 +925,14 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../graphs/coxswain/" class="md-nav__link">
+      <a href="../graphs/initiative-decompose/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    coxswain
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../graphs/epic-swarm/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    epic-swarm
+    initiative-decompose
   
 
     
@@ -1009,14 +981,98 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
-      <a href="../graphs/initiative-decompose/" class="md-nav__link">
+      <a href="../graphs/phase-validate/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    initiative-decompose
+    phase-validate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graphs/review-diff/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    review-diff
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graphs/rescue-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    rescue-review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graphs/coxswain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    coxswain
   
 
     
@@ -1101,6 +1157,90 @@ Coxswain is in beta — versions may change between releases
     
   
     triage-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graphs/triage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    triage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graphs/sweep/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    sweep
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graphs/epic-driver/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The epic driver
   
 
     
@@ -1215,6 +1355,28 @@ Coxswain is in beta — versions may change between releases
     <span class="md-ellipsis">
       
         Arbitration sides with an argument, not a role
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-much-review-a-change-gets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How much review a change gets
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-checks-run-before-review" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The checks run before review
       
     </span>
   </a>
@@ -3787,6 +3949,28 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#how-much-review-a-change-gets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How much review a change gets
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-checks-run-before-review" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The checks run before review
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#validate_chunk-and-validate_phase-are-blind-by-design" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3823,7 +4007,7 @@ Coxswain is in beta — versions may change between releases
                 
 <nav class="cox-page-nav" aria-label="Page navigation">
   
-  <a class="cox-page-nav__prev" href="../graphs/triage-propose/">← triage-propose</a>
+  <a class="cox-page-nav__prev" href="../graphs/epic-driver/">← The epic driver</a>
   
   
   <a class="cox-page-nav__next" href="../budgets/">Budgets →</a>
@@ -3859,6 +4043,22 @@ independently.</p>
 both verdicts and sides with whichever one has the stronger argument, not
 with whichever role usually wins. Neither reviewer's seat carries
 authority by default; the reasoning does.</p>
+<h2 id="how-much-review-a-change-gets">How much review a change gets</h2>
+<p>Scrutiny follows what a mistake would cost, not the size of the diff.
+The team's <code>review_tier</code> policy puts each change in a tier:</p>
+<ul>
+<li><strong>Tier 0</strong>, trivial and self-evident: the charter reviewer alone.</li>
+<li><strong>Tier 1</strong>, small and contained: the charter reviewer and the adversary.</li>
+<li><strong>Tier 2</strong>, on a dangerous surface (a schema, a migration, auth and so
+  on) or simply big: both reviewers, and the arbiter runs whether or not
+  they disagree.</li>
+</ul>
+<p>No tier skips review. See <a href="../../customize/policy/#review_tier">Policy</a> for
+the keys.</p>
+<h2 id="the-checks-run-before-review">The checks run before review</h2>
+<p>Review reads the checks' results, not the builder's account of them. The
+harness runs the team's checks and the repository's <code>.agent-checks</code> in the
+worktree first; see <a href="../landing/#checks-are-evidence">Landing</a>.</p>
 <h2 id="validate_chunk-and-validate_phase-are-blind-by-design">validate_chunk and validate_phase are blind by design</h2>
 <p><code>validate_chunk</code> checks one task's result against the checks the project
 actually runs, and <code>validate_phase</code> checks a phase's tickets together the
@@ -3903,7 +4103,7 @@ same worktree, for the same task.</p>
       <nav class="md-footer__inner md-grid" aria-label="Footer" >
         
           
-          <a href="../graphs/triage-propose/" class="md-footer__link md-footer__link--prev" aria-label="Previous: triage-propose">
+          <a href="../graphs/epic-driver/" class="md-footer__link md-footer__link--prev" aria-label="Previous: The epic driver">
             <div class="md-footer__button md-icon">
               
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
@@ -3913,7 +4113,7 @@ same worktree, for the same task.</p>
                 Previous
               </span>
               <div class="md-ellipsis">
-                triage-propose
+                The epic driver
               </div>
             </div>
           </a>
