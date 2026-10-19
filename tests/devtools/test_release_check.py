@@ -35,33 +35,36 @@ def test_to_json_of_one_drift_is_a_plain_dict():
     }]
 
 
-def test_facts_plan_names_the_umbrella_component_dirs_and_docs_paths():
-    manifest = {"coxswain": {"version": "0.2.0"}, "components": {"cox": {"repo": "x"}}}
-    facts = facts_plan("/root", manifest)
-    assert facts["umbrella"] == "/root/coxswain"
-    assert facts["component_dirs"] == {"cox": "/root/cox"}
-    assert facts["component_docs"] == {"cox": "/root/coxswain/docs/components/cox.md"}
-    assert facts["release_notes"] == "/root/coxswain/docs/releases/0.2.0.md"
-    assert facts["readmes"] == {"cox": "/root/cox/README.md"}
+def test_facts_plan_reads_the_checkout_and_finds_dash_beside_it():
+    manifest = {"coxswain": {"version": "2026.10.0"}, "components": {"dash": {"repo": "x"}}}
+    facts = facts_plan("/repos/coxswain", manifest, {"dash": "/repos/dash"})
+    assert facts["umbrella"] == "/repos/coxswain"
+    assert facts["component_dirs"] == {"dash": "/repos/dash"}
+    assert facts["component_docs"] == {"dash": "/repos/coxswain/docs/components/dash.md"}
+    assert facts["release_notes"] == "/repos/coxswain/docs/releases/2026.10.0.md"
+    assert facts["readmes"] == {"tools": "/repos/coxswain/src/tools/README.md",
+                                "graphs": "/repos/coxswain/src/graphs/README.md",
+                                "cartridges": "/repos/coxswain/src/cartridges/README.md",
+                                "crew": "/repos/coxswain/crew/README.md", "dash": "/repos/dash/README.md"}
 
 
-def test_facts_plan_does_not_double_join_coxswain_when_the_root_is_already_the_umbrella_checkout():
-    manifest = {"coxswain": {"version": "0.2.0"}, "components": {"cox": {"repo": "x"}}}
-    facts = facts_plan("/repo/coxswain", manifest)
-    assert facts["umbrella"] == "/repo/coxswain"
-    assert facts["component_docs"] == {"cox": "/repo/coxswain/docs/components/cox.md"}
+def test_component_dirs_for_takes_an_override_else_the_checkouts_parent():
+    manifest = {"components": {"dash": {"repo": "x"}}}
+    assert release_check.component_dirs_for("/repos/coxswain", manifest) == {"dash": "/repos/dash"}
+    assert release_check.component_dirs_for("/repos/coxswain", manifest, {"dash": "/d"}) == {"dash": "/d"}
+    assert release_check.component_dirs_for("/repos/coxswain", manifest, None, "/elsewhere") == {"dash": "/elsewhere/dash"}
 
 
 def test_cli_release_check_with_a_component_missing_its_docs_finds_the_manifest_drift(tmp_path, capsys):
-    manifest_path = tmp_path / "manifest.toml"
-    manifest_path.write_text('[coxswain]\nversion = "0.1.0"\n[components.cox]\ntag = "v0.1.0"\n')
-    rc = cli.main(["release-check", "--root", str(tmp_path), "--manifest", str(manifest_path)])
+    umbrella = tmp_path / "coxswain"
+    umbrella.mkdir()
+    manifest_path = umbrella / "manifest.toml"
+    manifest_path.write_text('[coxswain]\nversion = "2026.10.0"\n[components.dash]\ntag = "v0.42.0"\n')
+    rc = cli.main(["release-check", "--manifest", str(manifest_path)])
     out = capsys.readouterr().out
     assert rc == 0
-    page_path = tmp_path / "coxswain" / "docs" / "components" / "cox.md"
-    notes_path = tmp_path / "coxswain" / "docs" / "releases" / "0.1.0.md"
-    assert f"add {page_path} for cox" in out
-    assert f"add {notes_path}" in out
+    assert f"add {umbrella / 'docs' / 'components' / 'dash.md'} for dash" in out
+    assert f"add {umbrella / 'docs' / 'releases' / '2026.10.0.md'}" in out
 
 
 def test_check_versions_is_silent_when_manifest_component_and_umbrella_all_agree():

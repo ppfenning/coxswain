@@ -203,7 +203,7 @@ _FAKE_PARSE_SUBCOMMANDS = (
 
 
 def _write_generator(root, source):
-    docs_dir = root / "coxswain" / "docs"
+    docs_dir = root / "docs"
     docs_dir.mkdir(parents=True)
     (docs_dir / "_cli.py").write_text(source)
 

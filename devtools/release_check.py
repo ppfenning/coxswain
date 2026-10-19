@@ -152,17 +152,33 @@ def to_json(drifts: list[Drift]) -> list[dict]:
     return [dataclasses.asdict(d) for d in drifts]
 
 
-def facts_plan(root: str, manifest: Mapping) -> dict:
+# The folders that were their own repositories through 0.47.0. They ship in this checkout now, never
+# pinned; release-check still reads their READMEs (and maps their pre-rename names) from here.
+IN_REPO_COMPONENTS = {"tools": "src/tools", "graphs": "src/graphs", "cartridges": "src/cartridges", "crew": "crew"}
+
+
+def component_dirs_for(umbrella: str, manifest: Mapping, overrides: Mapping[str, str] | None = None,
+                       root: str | None = None) -> dict[str, str]:
+    """The checkout of each `[components]` entry (dash): `overrides[name]`, else beside the coxswain checkout
+    (`root`, default the checkout's parent) as `release.component_dir` resolves it."""
+    base = root or str(Path(umbrella).resolve().parent)
+    return {name: release.component_dir(base, name, overrides) for name in manifest.get("components", {})}
+
+
+def facts_plan(umbrella: str, manifest: Mapping, component_dirs: Mapping[str, str] | None = None) -> dict:
+    """Where every fact lives for the coxswain checkout at `umbrella`. `component_dirs` holds the checkout of
+    each `[components]` entry (default: `component_dirs_for`); the in-repo folders are read from `umbrella`."""
     components = manifest.get("components", {})
     version = manifest.get("coxswain", {}).get("version")
-    umbrella = str(Path(root)) if Path(root).name == "coxswain" else str(Path(root) / "coxswain")
+    dirs = dict(component_dirs) if component_dirs is not None else component_dirs_for(umbrella, manifest)
+    in_repo = {name: str(Path(umbrella) / folder) for name, folder in IN_REPO_COMPONENTS.items()}
     return {
-        "root": root,
+        "root": umbrella,
         "umbrella": umbrella,
         "cli_docs_dir": str(Path(umbrella) / "docs" / "reference" / "cli"),
-        "component_dirs": {name: release.component_dir(root, name) for name in components},
+        "component_dirs": dirs,
         "component_docs": {name: str(Path(umbrella) / "docs" / "components" / f"{name}.md") for name in components},
         "release_notes": str(Path(umbrella) / "docs" / "releases" / f"{version}.md") if version else None,
-        "readmes": {name: str(Path(release.component_dir(root, name)) / "README.md") for name in components},
-        "pyprojects": {name: str(Path(release.component_dir(root, name)) / "pyproject.toml") for name in components},
+        "readmes": {name: str(Path(d) / "README.md") for name, d in {**in_repo, **dirs}.items()},
+        "pyprojects": {name: str(Path(d) / "pyproject.toml") for name, d in dirs.items()},
     }

@@ -1,8 +1,7 @@
 from devtools import release_rehearsal_gate as gate
 
-SHAS = {name: letter * 40 for name, letter in zip(gate.COMPONENTS, "abcde")}
-TITLE = ("rehearsal cartridges=" + "a" * 40 + " graphs=" + "b" * 40 + " tools=" + "c" * 40 + " crew=" + "d" * 40
-         + " dash=" + "e" * 40 + " previous=v0.40.0 migrations=none")
+SHAS = {"coxswain": "a" * 40}
+TITLE = "rehearsal sha=" + "a" * 40 + " dash=pinned previous=v0.47.0 migrations=none"
 GREEN = [{"name": "fresh", "conclusion": "success"}, {"name": "upgrade", "conclusion": "success"},
          {"name": "migrate", "conclusion": "skipped"}]
 NOTES_LINE = "Cut with `--allow-no-rehearsal`: the runner image was unavailable."
@@ -12,17 +11,24 @@ def _run(id_, conclusion="success", title=TITLE, created="2026-10-01T10:00:00Z")
     return {"databaseId": id_, "displayTitle": title, "conclusion": conclusion, "createdAt": created}
 
 
-def _decide(runs, jobs=GREEN, declared=(), reason=None, notes="", previous="v0.40.0", shas=SHAS):
+def _decide(runs, jobs=GREEN, declared=(), reason=None, notes="", previous="v0.47.0", shas=SHAS):
     return gate.decide(runs, lambda run: jobs, shas, previous, declared, reason, notes)
 
 
-def test_run_title_is_the_section_3_string():
-    assert gate.run_title(SHAS, "v0.40.0", []) == TITLE
+def test_run_title_names_the_commit_dash_the_previous_tag_and_the_migrations():
+    assert gate.run_title("a" * 40, "pinned", "v0.47.0", []) == TITLE
+    assert gate.run_title("a" * 40, "", "v0.47.0", []) == TITLE
 
 
 def test_run_title_comma_joins_the_migrations():
-    assert gate.run_title(SHAS, "v0.40.0", ["split-lake-store", "rename-slot-keys"]).endswith(
-        "previous=v0.40.0 migrations=split-lake-store,rename-slot-keys")
+    assert gate.run_title("a" * 40, "pinned", "v0.47.0", ["split-lake-store", "rename-slot-keys"]).endswith(
+        "previous=v0.47.0 migrations=split-lake-store,rename-slot-keys")
+
+
+def test_a_release_that_tags_dash_looks_for_dashs_commit_in_the_title():
+    title = TITLE.replace("dash=pinned", "dash=" + "e" * 40)
+    assert _decide([_run(4, title=title)], shas={**SHAS, "dash": "e" * 40})[0]["kind"] == "note"
+    assert _decide([_run(4)], shas={**SHAS, "dash": "e" * 40})[0]["kind"] == "refuse"
 
 
 def test_a_matching_passing_run_permits_and_the_note_names_its_address():
@@ -114,5 +120,7 @@ def test_an_override_with_no_notes_line_refuses():
     assert _decide([_run(1)], reason="the runner image was unavailable", notes="## Known gaps\n")[0]["kind"] == "refuse"
 
 
-def test_a_component_with_no_resolved_commit_refuses():
-    assert "dash" in _decide([_run(1)], shas={k: v for k, v in SHAS.items() if k != "dash"})[0]["detail"]
+def test_a_repository_with_no_resolved_commit_refuses():
+    assert "dash" in _decide([_run(1)], shas={**SHAS, "dash": ""})[0]["detail"]
+    assert "coxswain" in _decide([_run(1)], shas={"coxswain": ""})[0]["detail"]
+    assert "coxswain" in _decide([_run(1)], shas={})[0]["detail"]

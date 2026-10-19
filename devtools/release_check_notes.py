@@ -8,6 +8,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from agent_tools import release_version
 from devtools import release
 
 _PR = re.compile(r"#(\d+)")
@@ -91,9 +92,9 @@ def landed_from_git(text: str) -> set[str]:
 
 
 def previous_version(version: str, versions: list[str]) -> str | None:
-    def key(v: str) -> tuple[int, ...]:
-        return tuple(map(int, re.findall(r"\d+", v)))
-    return max((v for v in versions if key(v) < key(version)), key=key, default=None)
+    """The greatest of `versions` below `version`, the legacy 0.x line below every CalVer release."""
+    found = release_version.previous(versions, version)
+    return found.removeprefix("v") if found is not None else None
 
 
 def _bullet_drift(notes_path: str, line_no: int, text: str, components: set[str],
@@ -146,13 +147,18 @@ def _component_landed(directory: str, run: Callable, version: str, previous: str
     return landed_from_git(log) | set(_PR.findall(log))
 
 
-def gather_notes_facts(root: str, manifest: Mapping, run: Callable) -> dict:
+def gather_notes_facts(umbrella: str, manifest: Mapping, run: Callable,
+                       component_dirs: Mapping[str, str] | None = None) -> dict:
+    """The notes page's bullets and what landed since the previous release, in the coxswain checkout at
+    `umbrella` and in each `[components]` checkout (`component_dirs`, default beside the checkout)."""
     components = manifest.get("components", {})
     version = manifest.get("coxswain", {}).get("version")
-    notes_path = Path(root) / "coxswain" / "docs" / "releases" / f"{version}.md" if version else None
-    umbrella_dir = str(Path(root) / "coxswain")
+    umbrella_dir = str(umbrella)
+    notes_path = Path(umbrella_dir) / "docs" / "releases" / f"{version}.md" if version else None
     stems = [p.stem for p in (Path(umbrella_dir) / "docs" / "releases").glob("*.md") if re.fullmatch(r"\d+(\.\d+)*", p.stem)]
     previous = previous_version(version, stems) if version else None
+    dirs = component_dirs if component_dirs is not None else {
+        name: release.component_dir(str(Path(umbrella_dir).resolve().parent), name) for name in components}
 
     def landed(directory: str) -> set[str]:
         return _component_landed(directory, run, version or "", previous)
@@ -161,6 +167,6 @@ def gather_notes_facts(root: str, manifest: Mapping, run: Callable) -> dict:
     return {
         "notes_bullets": bullets_from_notes(notes_text),
         "notes_sections": sections_from_notes(notes_text, set(components) | {"coxswain"}),
-        "landed": {name: landed(release.component_dir(root, name)) for name in components}
+        "landed": {name: landed(dirs[name]) for name in components if name in dirs}
         | {"coxswain": landed(umbrella_dir)},
     }

@@ -1,4 +1,4 @@
-"""The release refuses a component whose pinned tree names a person, a host or a home path.
+"""The release refuses a tree it pins (dash's, or the coxswain checkout's) that names a person, a host or a home path.
 
 The fixture trees are real git repositories, exported by the gate itself; only the
 remote-facing git calls (tags, counts, fetch) are faked. Every personal string is
@@ -9,17 +9,14 @@ import pytest
 
 from devtools import cli, release_clean
 
-_MANIFEST_TOML = """
+V = "2026.10.0"
+_MANIFEST_TOML = f"""
 [coxswain]
-version = "0.1.0"
+version = "{V}"
 
-[components.harness]
-repo = "org/harness"
-tag = "v0.1.0"
-
-[components.cartridges]
-repo = "org/cartridges"
-tag = "v0.1.0"
+[components.dash]
+repo = "org/dash"
+tag = "v0.42.0"
 """
 
 HOME = "/" + "home" + "/" + "someone" + "/repos"
@@ -35,6 +32,7 @@ def _clean_trees():
 def _offline(monkeypatch):
     monkeypatch.setattr(cli, "_maintainer_remote_url", lambda directory: "git@github.com:ppfenning/coxswain.git")
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
+    monkeypatch.setattr(cli, "_tap_state", lambda directory: "clean")
     monkeypatch.delenv("COXSWAIN_CLEAN_DENY", raising=False)
 
 
@@ -80,9 +78,8 @@ def _fake_run(pinned=()):
     return run
 
 
-def _checkouts(tmp_path, harness, cartridges=None):
-    _repo(tmp_path / "harness", harness, tag="v0.1.0")
-    _repo(tmp_path / "cartridges", cartridges or {"README.md": "cartridges\n"}, tag="v0.1.0")
+def _checkouts(tmp_path, dash):
+    _repo(tmp_path / "dash", dash, tag="v0.42.0")
     _repo(tmp_path / "coxswain", {"README.md": "umbrella\n"})
     (tmp_path / "manifest.toml").write_text(_MANIFEST_TOML)
 
@@ -91,12 +88,12 @@ def _dry_run(tmp_path, monkeypatch, pinned=()):
     run = _fake_run(pinned)
     monkeypatch.setattr(cli, "_real_run", run)
     monkeypatch.setattr(cli, "_stdout_run", run)
-    return cli.main(["release", "0.2.0", "--dry-run", "--manifest", str(tmp_path / "manifest.toml"),
+    return cli.main(["release", V, "--dry-run", "--manifest", str(tmp_path / "manifest.toml"),
                      "--root", str(tmp_path), "--umbrella", str(tmp_path / "coxswain")])
 
 
-def test_a_dry_run_passes_clean_components(tmp_path, monkeypatch, capsys):
-    _checkouts(tmp_path, {"README.md": "harness\n"})
+def test_a_dry_run_passes_clean_trees(tmp_path, monkeypatch, capsys):
+    _checkouts(tmp_path, {"README.md": "dash\n"})
     rc = _dry_run(tmp_path, monkeypatch)
     out = capsys.readouterr().out
     assert rc == 0, out
@@ -104,27 +101,27 @@ def test_a_dry_run_passes_clean_components(tmp_path, monkeypatch, capsys):
     assert "names rule skipped: COXSWAIN_CLEAN_DENY is not set" in out
 
 
-def test_a_dry_run_refuses_a_component_holding_a_home_path_naming_file_line_and_rule(tmp_path, monkeypatch, capsys):
-    _checkouts(tmp_path, {"README.md": "harness\n", "src/setup.sh": f"cd ~\ncd {HOME}/harness\n"})
+def test_a_dry_run_refuses_a_changed_dash_holding_a_home_path_naming_file_line_and_rule(tmp_path, monkeypatch, capsys):
+    _checkouts(tmp_path, {"README.md": "dash\n", "src/setup.sh": f"cd ~\ncd {HOME}/dash\n"})
     rc = _dry_run(tmp_path, monkeypatch)
     out = capsys.readouterr().out
     assert rc == 2
-    assert "refuse harness: personal reference at origin/main: src/setup.sh:2 home-path" in out
-    assert "refuse cartridges" not in out and "refuse coxswain" not in out
+    assert "refuse dash: personal reference at origin/main: src/setup.sh:2 home-path" in out
+    assert "refuse coxswain" not in out
 
 
-def test_a_pinned_component_is_checked_at_its_tag_not_at_main(tmp_path, monkeypatch, capsys):
-    _checkouts(tmp_path, {"README.md": "harness\n"}, cartridges={"notes.md": f"see {HOME}\n"})
-    _commit(tmp_path / "cartridges", {"notes.md": None, "README.md": "cleaned on main\n"})
-    rc = _dry_run(tmp_path, monkeypatch, pinned=("cartridges",))
+def test_a_pinned_dash_is_checked_at_its_tag_not_at_main(tmp_path, monkeypatch, capsys):
+    _checkouts(tmp_path, {"notes.md": f"see {HOME}\n"})
+    _commit(tmp_path / "dash", {"notes.md": None, "README.md": "cleaned on main\n"})
+    rc = _dry_run(tmp_path, monkeypatch, pinned=("dash",))
     out = capsys.readouterr().out
     assert rc == 2
-    assert "pinned cartridges: v0.1.0" in out
-    assert "refuse cartridges: personal reference at v0.1.0: notes.md:1 home-path" in out
+    assert "pinned dash: v0.42.0" in out
+    assert "refuse dash: personal reference at v0.42.0: notes.md:1 home-path" in out
 
 
-def test_the_umbrella_itself_is_checked(tmp_path, monkeypatch, capsys):
-    _checkouts(tmp_path, {"README.md": "harness\n"})
+def test_the_coxswain_checkout_itself_is_checked(tmp_path, monkeypatch, capsys):
+    _checkouts(tmp_path, {"README.md": "dash\n"})
     _commit(tmp_path / "coxswain", {"docs/hosts.md": "store at host-a" + ".lan\n"})
     rc = _dry_run(tmp_path, monkeypatch)
     out = capsys.readouterr().out
@@ -138,7 +135,7 @@ def test_the_names_rule_refuses_with_an_env_supplied_regex_and_never_prints_the_
     rc = _dry_run(tmp_path, monkeypatch)
     out = capsys.readouterr().out
     assert rc == 2
-    assert "refuse harness: personal reference at origin/main: README.md:1 names" in out
+    assert "refuse dash: personal reference at origin/main: README.md:1 names" in out
     assert NAME not in out
     assert "names rule skipped" not in out
 
@@ -152,7 +149,7 @@ def test_unset_env_skips_the_names_rule(tmp_path, monkeypatch, capsys):
 
 
 def test_an_unusable_regex_refuses(tmp_path, monkeypatch, capsys):
-    _checkouts(tmp_path, {"README.md": "harness\n"})
+    _checkouts(tmp_path, {"README.md": "dash\n"})
     monkeypatch.setenv("COXSWAIN_CLEAN_DENY", "(")
     rc = _dry_run(tmp_path, monkeypatch)
     assert rc == 2

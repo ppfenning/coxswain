@@ -1,14 +1,16 @@
-"""The pure planner over coxswain's release: what `cox release
-<version> --dry-run` prints, and the argv `cox release <version>` runs
-through an injected runner. No filesystem, subprocess or clock here —
-`cli.py` gathers the existing tags, resolves checkout directories, and
-runs the git commands at the edge.
+"""The pure planner over coxswain's release: what `python -m devtools release
+<version> --dry-run` prints, and the steps `release <version>` runs through an
+injected runner. No filesystem, subprocess or clock here — `cli.py` gathers the
+existing tags, resolves checkout directories, and runs the git commands at the edge.
 
-The rule: a `repo` component is tagged at the release version only when it
-has commits since its manifest tag. An unchanged component keeps its tag,
-and the manifest keeps naming it. The umbrella always tags the release
-version. The manifest's `lockstep` key is deprecated: it is read and
-ignored."""
+One repository, one distribution, one CalVer version (`YYYY.M.N`, tag
+`vYYYY.M.N`): the coxswain checkout is the release. A cut bumps the root
+pyproject.toml and the manifest's version on a release branch and lands it,
+tags the repository (the tag push publishes `coxswain` to PyPI), writes the
+GitHub release from docs/releases/<version>.md, and opens the tap formula PR.
+A `[components]` entry (only dash, its own repository) is tagged at the
+release version only when it has commits since its manifest tag; an unchanged
+one keeps its tag and the manifest keeps naming it."""
 
 from __future__ import annotations
 
@@ -20,27 +22,12 @@ from pathlib import Path
 
 import yaml
 
+from agent_tools.release_version import CALVER_RE, pep440, release_key
 from devtools.release_check_index import index_section
 from devtools.release_notes_blanks import find_blanks
 
-_VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?$")
-
-
-def _parse_semver(version: str) -> tuple[int, int, int, int | None] | None:
-    """`(major, minor, patch, beta_n)` with `beta_n` `None` for a release,
-    or `None` when `version` does not match `X.Y.Z` or `X.Y.Z-beta.N`."""
-    m = _VERSION_RE.match(version)
-    if not m:
-        return None
-    major, minor, patch, beta = m.groups()
-    return (int(major), int(minor), int(patch), int(beta) if beta is not None else None)
-
-
-def _sort_key(parsed: tuple[int, int, int, int | None]) -> tuple:
-    """A beta sorts below its own release: `None` (release) must compare
-    greater than any integer beta number at the same major.minor.patch."""
-    major, minor, patch, beta = parsed
-    return (major, minor, patch, 0 if beta is not None else 1, beta if beta is not None else 0)
+UMBRELLA = "coxswain"
+UMBRELLA_REPO = "ppfenning/coxswain"
 
 
 def _refuse(component: str | None, detail: str) -> list[dict]:
@@ -67,7 +54,7 @@ def _versions_drift_is_planned(d, plan_steps: Sequence[dict]) -> bool:
     """True when `plan_steps` already carries the bump that resolves `d`: a
     `bump_pyproject` step (`bump_cargo` when the drift names a Cargo.toml) for
     the same component landing at the version the drift wants, or — when `d`
-    names the umbrella's own pyproject.toml — a `bump_manifest` step landing
+    names the umbrella's own pyproject.toml — a `bump_version` step landing
     there. `d.correction`'s own wording
     (`"<label> <file> is <found>, manifest wants <wants>"`, written by
     `release_check.check_versions`) is the only place that names both the
@@ -77,7 +64,7 @@ def _versions_drift_is_planned(d, plan_steps: Sequence[dict]) -> bool:
         return False
     label, file, _found, wants = m.groups()
     if label == "umbrella":
-        return any(s["kind"] == "bump_manifest" and s.get("to") == wants for s in plan_steps)
+        return any(s["kind"] == "bump_version" and s.get("to") == wants for s in plan_steps)
     return any(s["kind"] == _BUMP_KIND_FOR_FILE[file] and s.get("component") == label and s.get("to") == wants
                for s in plan_steps)
 
@@ -123,9 +110,9 @@ def _gate_drifts(drifts: Sequence, allow_reason: str | None, plan_steps: Sequenc
 
 
 def is_maintainer_remote(url: str) -> bool:
-    """True when `url` names the ppfenning/coxswain umbrella — the one
-    checkout a lockstep release is allowed to run against."""
-    return "ppfenning/coxswain" in url
+    """True when `url` names the ppfenning/coxswain repository itself — the one
+    checkout a release is allowed to run against (not coxswain-dash, not the tap)."""
+    return re.search(rf"[/:]{re.escape(UMBRELLA_REPO)}(?:\.git)?/?$", url.strip()) is not None
 
 
 def parse_ls_remote(text: str) -> list[str]:
@@ -197,7 +184,7 @@ def _component_github_release_step(name: str, repo: str, tag: str, version: str,
 
 
 _TAP_REPO = "ppfenning/homebrew-coxswain"
-_PYPI_PACKAGE = "coxswain-tools"
+_PYPI_PACKAGE = "coxswain"
 
 
 TAP_CHECKOUT = "homebrew-coxswain"
@@ -206,51 +193,39 @@ TAP_CHECKOUT = "homebrew-coxswain"
 def towpath_version(repo_components: list[tuple[str, Mapping]], tagged: set[str] | list[str], version: str) -> str:
     """The dash release whose towpath tarballs the formula installs: `version` when this release tags dash (or the
     manifest already pins it at `v<version>`, or names no dash), else dash's pinned manifest tag without its `v`."""
-    spec = next((spec for name, spec in repo_components if spec.get("repo") == _DASH_REPO and name not in tagged), None)
+    spec = next((spec for name, spec in repo_components
+                 if (name == "dash" or spec.get("provides") == "towpath") and name not in tagged), None)
     tag = str(spec.get("tag") or "") if spec is not None else ""
     return tag.removeprefix("v") if tag and tag != f"v{version}" else version
 
 
-def _tap_formula_steps(steps: list[dict], version: str, tools_repository_url: str | None,
-                        umbrella_slug: str | None, tap_state: str, towpath: str | None = None) -> list[dict]:
-    """Nothing unless `steps` tags the tools repo, whose tag push runs the PyPI publish; a `refuse` when the tap checkout is not `clean`.
-    `towpath` is the dash release the formula's towpath resources point at (`towpath_version`), `version` when None."""
-    tools_slug = "/".join(tools_repository_url.rstrip("/").split("/")[-2:]) if tools_repository_url else None
-    publishing = tools_slug is not None and any(
-        (s["kind"] in ("tag", "rejoin") and s["repo"] == tools_slug)
-        or (s["kind"] == "tag_self" and umbrella_slug == tools_slug) for s in steps)
-    if not publishing:
-        return []
+def _tap_formula_steps(version: str, tap_state: str, towpath: str | None = None) -> list[dict]:
+    """The tap formula PR every release ends with, since every umbrella tag publishes `coxswain` to PyPI;
+    a `refuse` instead when the tap checkout is not `clean`. `towpath` is the dash release the formula's
+    towpath resources point at (`towpath_version`), `version` when None."""
     if tap_state != "clean":
         return _refuse("tap", f"tap checkout {_TAP_REPO} is {tap_state}; the formula bump needs a clean checkout")
-    pypi_version = re.sub(r"-beta\.(\d+)$", r"b\1", version)
     return [{"kind": "tap_formula_pr", "component": "tap", "repo": _TAP_REPO, "path": "Formula/cox.rb",
              "version": version, "branch": f"release/{version}", "title": f"cox {version}",
-             "index_url": f"https://pypi.org/pypi/{_PYPI_PACKAGE}/{pypi_version}/json",
+             "index_url": f"https://pypi.org/pypi/{_PYPI_PACKAGE}/{pep440(version)}/json",
              "towpath_version": towpath or version}]
 
 
 def _tap_only_plan(repo_components: list[tuple[str, Mapping]], changed: set[str], new_tag: str,
-                    existing_tags: Mapping[str, list[str] | None], version: str,
-                    tools_repository_url: str | None, umbrella_slug: str | None, tap_state: str) -> list[dict]:
-    """Just the tap step once `new_tag` is on every release repo and the umbrella, else one `refuse`.
+                    existing_tags: Mapping[str, list[str] | None], version: str, tap_state: str) -> list[dict]:
+    """Just the tap step once `new_tag` is on the umbrella and on every component this release tags, else one `refuse`.
 
-    A release repo has commits, is pinned at `new_tag` by the manifest, or is the tools repo.
+    A component holds the release when it has commits or the manifest already pins it at `new_tag`.
     Presence is required: an umbrella the caller did not look up is unknown, which refuses."""
-    tools_slug = "/".join(tools_repository_url.rstrip("/").split("/")[-2:]) if tools_repository_url else None
-    holders = [name for name, spec in repo_components
-               if name in changed or spec.get("tag") == new_tag or spec["repo"] == tools_slug]
-    checked = holders + ["coxswain"]
+    holders = [name for name, spec in repo_components if name in changed or spec.get("tag") == new_tag]
+    checked = holders + [UMBRELLA]
     unknown = sorted(name for name in checked if existing_tags.get(name) is None)
     if unknown:
         return _refuse(", ".join(unknown), f"tags unknown for {', '.join(unknown)} (remote unreadable); tap-only cannot confirm {new_tag}")
     missing = sorted(name for name in checked if new_tag not in existing_tags[name])
     if missing:
         return _refuse(", ".join(missing), f"tap-only needs tag {new_tag} on every repo; missing on {', '.join(missing)}")
-    tagged = [{"kind": "tag", "repo": spec["repo"]} for name, spec in repo_components if name in holders]
-    return (_tap_formula_steps(tagged + [{"kind": "tag_self"}], version, tools_repository_url, umbrella_slug, tap_state,
-                               towpath_version(repo_components, holders, version))
-            or _refuse("tap", "nothing to publish: the tools repo is not tagged by this release"))
+    return _tap_formula_steps(version, tap_state, towpath_version(repo_components, holders, version))
 
 
 def sdist_from_index(payload: Mapping) -> tuple[str, str] | None:
@@ -293,153 +268,105 @@ def _joins(spec: Mapping, version: str) -> bool:
     return str(spec.get("since", "")) == version
 
 
+def _component_steps(name: str, spec: Mapping, version: str, umbrella_slug: str | None,
+                     found: str | None, is_cargo: bool) -> list[dict]:
+    """A changed component's own release: `tag` and `github_release`, after a version bump landed first when its
+    checkout's `found` version (pyproject.toml, or Cargo.toml when `is_cargo`) is behind `version`."""
+    new_tag = "v" + version
+    tag_step = {"kind": "tag", "component": name, "repo": spec["repo"], "tag": new_tag}
+    gr_step = _component_github_release_step(name, spec["repo"], new_tag, version, umbrella_slug,
+                                               fallback_from=spec["tag"])
+    found_key = release_key(found) if found is not None else None
+    if found_key is None or found_key >= release_key(version):
+        return [tag_step, gr_step]
+    branch = f"release/{version}"
+    manifest_file = "Cargo.toml" if is_cargo else "pyproject.toml"
+    kind = "bump_cargo" if is_cargo else "bump_pyproject"
+    subject = f"{'cargo' if is_cargo else 'pyproject'}: bump to {version} to match the tag"
+    bump_step = {"kind": kind, "component": name, "repo": spec["repo"],
+                 "branch": branch, "commit_subject": subject, "from": found, "to": version}
+    body = f"Bumps {name}'s {manifest_file} version to {version} to match tag {new_tag}.\n\n{pr_footer(version)}"
+    return _bump_and_land(bump_step, branch, body) + [tag_step, gr_step]
+
+
 def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, list[str] | None],
                   component_versions: Mapping[str, str | None] | None = None,
                   pinned_commits: Mapping[str, int] | None = None,
-                  tools_repository_url: str | None = None,
+                  repository_url: str | None = None,
                   tap_state: str = "clean",
                   cargo_versions: Mapping[str, str | None] | None = None,
                   *, tap_only: bool = False) -> list[dict]:
-    """Steps in order: per `repo` component, one `pinned` step naming its own
-    manifest `tag` when `pinned_commits` shows no commits since that tag, or,
-    when it shows commits, a plain `tag` (its `component_versions` entry is
-    missing or already at `version`) or a `bump_pyproject`-and-land sequence
-    ending in `tag`; one `notes`; then either a plain `tag_self` or the
-    manifest's own `bump_manifest`-and-land sequence ending in `tag_self`.
-    A component missing from `pinned_commits` has 0 commits, so it is pinned:
-    the safe side, since it never re-tags. A component whose `since` is
-    `version` joins with this release and is tagged whatever its count. The manifest's `lockstep` key is
-    deprecated and ignored. The `rejoin` kind is still accepted by old
-    callers, but this planner emits `tag` for every changed component.
-    `component_versions` is the version each component's own checkout
-    pyproject.toml currently declares — a fact this pure function cannot read
-    itself, gathered by the edge the way `existing_tags` is. A component named
-    in `cargo_versions` instead (its checkout has a Cargo.toml and no
-    pyproject.toml) gets a `bump_cargo`-and-land sequence in place of
-    `bump_pyproject` when behind `version`; the two maps are checked
-    independently, so a `component_versions` entry's planning is unaffected.
-    A single `refuse` step, naming the reason, when `version` is not valid
-    semver-with-optional-beta, when the tag already exists on a component
-    this plan will tag (or on the umbrella, when `existing_tags` carries a
-    `"coxswain"` key), when the remote of a component this plan will tag
-    could not be read, or when `version` is strictly less than the
-    manifest's current version by semver-with-beta rules. A pinned
-    component's remote and tags are not this release's concern.
+    """Steps in order:
 
-    `version` equal to the current version is the first cut of the version
-    the manifest already declares: nothing is tagged yet, so the plan
-    proceeds with no `bump_manifest` step — the manifest already says so.
+    1. per `[components]` entry (only dash): `pinned` when `pinned_commits` shows no commits since its manifest
+       `tag`, else its own release (`_component_steps`). A missing count is 0, so pinned: the safe side. A
+       component whose `since` is `version` joins with this release and is tagged whatever its count;
+    2. `notes`: docs/releases/<version>.md must exist;
+    3. when `version` is above the manifest's: `bump_version` (root pyproject.toml, uv.lock and manifest.toml,
+       with the tag of each component tagged above) on `release/<version>`, then `push`, `pr_create`,
+       `wait_checks`, `merge`. Equal to the manifest's, it is the first cut of a version already declared:
+       nothing to bump;
+    4. `tag_self` `v<version>` on the repository, `wait_workflows` (the tag push publishes `coxswain` to
+       PyPI), `github_release` with the notes page;
+    5. `tap_formula_pr`, every release, or a `refuse` naming the tap when `tap_state` (`clean`, `dirty`,
+       `absent`) says the checkout is unfit.
 
-    A `github_release` step follows every step that actually tags a repo
-    this run — a `tag` or the umbrella's `tag_self` — naming
-    the `gh release` command `cli.py`'s executor runs through the idempotent
-    view-then-create-or-edit check; a `pinned` component gets none, since its
-    old release must never be rewritten by a later cut. `tools_repository_url`
-    is this package's own `Repository` URL, another fact gathered at the edge
-    (from installed package metadata) rather than read here, used only as a
-    fallback for the umbrella's slug when the manifest names none.
+    A single `refuse` names the reason when `version` is not CalVer `YYYY.M.N`, is below the manifest's
+    version (a legacy 0.x version is below every CalVer one), or `v<version>` already exists on the umbrella
+    (`existing_tags["coxswain"]`) or on a component this plan tags; or when a remote this plan tags could
+    not be read (None). `repository_url` is the installed `coxswain` package's `Repository` URL, the
+    umbrella's slug when the manifest names none. `component_versions`/`cargo_versions` are each
+    component checkout's pyproject.toml / Cargo.toml version, gathered at the edge.
 
-    A final `tap_formula_pr` step follows only when this plan tags the tools
-    repo (`tools_repository_url`) with a `tag`, `rejoin` or `tag_self`: that
-    tag push is what publishes to PyPI, so an unchanged tools repo never
-    triggers it. A `refuse` naming the tap replaces it when
-    `tap_state` (`clean`, `dirty` or `absent`) says the checkout is unfit.
-
-    `tap_only` returns exactly `[tap_formula_pr]` when `v<version>` already
-    exists on every release repo and on the umbrella (`existing_tags` must
-    carry a `"coxswain"` key), and a single `refuse` naming what is missing
-    or unreadable otherwise. A version below the manifest's is refused as in
-    a normal plan."""
-    parsed = _parse_semver(version)
-    if parsed is None:
-        return _refuse(version, f"{version!r} is not a valid version (expected X.Y.Z or X.Y.Z-beta.N)")
-
+    `tap_only` returns exactly `[tap_formula_pr]` when `v<version>` already exists on the umbrella and on
+    every component the release tagged, and a single `refuse` naming what is missing or unreadable otherwise."""
+    if not CALVER_RE.match(version):
+        return _refuse(version, f"{version!r} is not a valid version (expected CalVer YYYY.M.N, such as 2026.10.0)")
     component_versions = component_versions or {}
     cargo_versions = cargo_versions or {}
     new_tag = "v" + version
-    components = manifest.get("components", {})
-    repo_components = [(name, spec) for name, spec in components.items() if spec.get("repo")]
-
+    repo_components = [(name, spec) for name, spec in manifest.get("components", {}).items() if spec.get("repo")]
     commit_counts = {name: (pinned_commits or {}).get(name) or 0 for name, _ in repo_components}
     tagged = {name for name, spec in repo_components if commit_counts[name] or _joins(spec, version)}
-    changed = [(name, spec) for name, spec in repo_components if name in tagged]
+    current = manifest.get(UMBRELLA, {}).get("version")
+    current_key = release_key(str(current)) if current is not None else None
+    if current_key is not None and release_key(version) < current_key:
+        return _refuse(version, f"{version} is not greater than the current version {current}")
     if tap_only:
-        current_version = manifest.get("coxswain", {}).get("version")
-        current_semver = _parse_semver(current_version) if current_version is not None else None
-        if current_semver is not None and _sort_key(parsed) < _sort_key(current_semver):
-            return _refuse(version, f"{version} is not greater than the current version {current_version}")
-        return _tap_only_plan(repo_components, tagged, new_tag, existing_tags, version, tools_repository_url,
-                              umbrella_release_slug(manifest, tools_repository_url), tap_state)
+        return _tap_only_plan(repo_components, tagged, new_tag, existing_tags, version, tap_state)
 
-    # Three states per component: a list of tags, an empty list (reachable, no
-    # tags), or None (the remote could not be read). Unknown is not clean: a
-    # reused tag is the one thing a release must never risk, so None refuses.
-    # An unchanged component is never tagged here, so its remote's
-    # readability and its existing tags are not this release's concern.
-    unknown = sorted(name for name, _ in changed if existing_tags.get(name) is None)
+    # Three states per repository: a list of tags, an empty list (reachable, no tags), or None (the remote
+    # could not be read). Unknown is not clean: a reused tag is the one thing a release must never risk.
+    checked = [name for name, _ in repo_components if name in tagged] + [UMBRELLA]
+    unknown = sorted(name for name in checked if existing_tags.get(name) is None)
     if unknown:
         return _refuse(", ".join(unknown), f"tags unknown for {', '.join(unknown)} (remote unreadable); refusing rather than risk reusing {new_tag}")
-
-    collision_sources = [name for name, _ in changed] + (["coxswain"] if "coxswain" in existing_tags else [])
-    colliding = sorted(name for name in collision_sources if new_tag in (existing_tags.get(name) or []))
+    colliding = sorted(name for name in checked if new_tag in (existing_tags.get(name) or []))
     if colliding:
         return _refuse(", ".join(colliding), f"tag {new_tag} already exists on {', '.join(colliding)}")
 
-    current = manifest.get("coxswain", {}).get("version")
-    current_parsed = _parse_semver(current) if current is not None else None
-    umbrella_slug = umbrella_release_slug(manifest, tools_repository_url)
-    tag_steps = []
-    for name, spec in repo_components:
-        if name not in tagged:
-            tag_steps.append({"kind": "pinned", "component": name, "tag": spec["tag"]})
-            continue
-        tag_step = {"kind": "tag", "component": name, "repo": spec["repo"], "tag": new_tag}
-        gr_step = _component_github_release_step(name, spec["repo"], new_tag, version, umbrella_slug,
-                                                   fallback_from=spec["tag"])
-        is_cargo = name in cargo_versions
-        found = cargo_versions.get(name) if is_cargo else component_versions.get(name)
-        found_parsed = _parse_semver(found) if found is not None else None
-        if found_parsed is None or _sort_key(found_parsed) >= _sort_key(parsed):
-            tag_steps.extend([tag_step, gr_step])
-            continue
-        branch = f"release/{version}"
-        if is_cargo:
-            subject = f"cargo: bump to {version} to match the tag"
-            bump_step = {"kind": "bump_cargo", "component": name, "repo": spec["repo"],
-                         "branch": branch, "commit_subject": subject, "from": found, "to": version}
-            body = f"Bumps {name}'s Cargo.toml version to {version} to match tag {new_tag}.\n\n{pr_footer(version)}"
-        else:
-            subject = f"pyproject: bump to {version} to match the tag"
-            bump_step = {"kind": "bump_pyproject", "component": name, "repo": spec["repo"],
-                         "branch": branch, "commit_subject": subject, "from": found, "to": version}
-            body = f"Bumps {name}'s pyproject.toml version to {version} to match tag {new_tag}.\n\n{pr_footer(version)}"
-        tag_steps.extend(_bump_and_land(bump_step, branch, body) + [tag_step, gr_step])
-
-    # The release notes are a page of the docs site, so they live under `docs/`
-    # with every other page. A copy at the repository root would be a second
-    # source of truth for the same text and would drift on the first edit.
-    notes_step = {"kind": "notes", "component": "notes", "path": f"docs/releases/{version}.md"}
-    tag_self_step = {"kind": "tag_self", "component": "coxswain", "tag": new_tag}
-    umbrella_gr_step = {"kind": "github_release", "component": "coxswain", "repo": umbrella_slug, "tag": new_tag,
-                         "title": f"coxswain {version}", "notes_path": f"docs/releases/{version}.md", "heading": None}
-
-    if current_parsed is not None:
-        if _sort_key(parsed) < _sort_key(current_parsed):
-            return _refuse(version, f"{version} is not greater than the current version {current}")
-        if _sort_key(parsed) == _sort_key(current_parsed):
-            steps = tag_steps + [notes_step, tag_self_step, umbrella_gr_step]
-            return _with_wait_workflows(steps) + _tap_formula_steps(steps, version, tools_repository_url,
-                                                                    umbrella_slug, tap_state,
-                                                                    towpath_version(repo_components, tagged, version))
-
+    umbrella_slug = umbrella_release_slug(manifest, repository_url)
+    component_steps = [
+        step
+        for name, spec in repo_components
+        for step in ([{"kind": "pinned", "component": name, "tag": spec["tag"]}] if name not in tagged else
+                     _component_steps(name, spec, version, umbrella_slug,
+                                      cargo_versions.get(name) if name in cargo_versions else component_versions.get(name),
+                                      name in cargo_versions))
+    ]
+    # The release notes are a page of the docs site, so they live under `docs/` with every other page.
+    notes_path = f"docs/releases/{version}.md"
+    notes_step = {"kind": "notes", "component": "notes", "path": notes_path}
     branch = f"release/{version}"
-    subject = f"manifest: bump to {version} to match the tag"
-    bump_step = {"kind": "bump_manifest", "component": "manifest", "from": current, "to": version,
-                 "branch": branch, "commit_subject": subject}
-    body = f"Bumps manifest.toml version to {version} to match tag {new_tag}.\n\n{pr_footer(version)}"
-    steps = tag_steps + [notes_step] + _bump_and_land(bump_step, branch, body) + [tag_self_step, umbrella_gr_step]
-    return _with_wait_workflows(steps) + _tap_formula_steps(steps, version, tools_repository_url,
-                                                            umbrella_slug, tap_state,
+    bump_step = {"kind": "bump_version", "component": UMBRELLA, "from": current, "to": version,
+                 "branch": branch, "commit_subject": f"release: bump to {version} to match the tag"}
+    body = f"Bumps pyproject.toml and manifest.toml to {version} to match tag {new_tag}.\n\n{pr_footer(version)}"
+    bump = [] if current_key is not None and release_key(version) == current_key else _bump_and_land(bump_step, branch, body)
+    release_steps = [{"kind": "tag_self", "component": UMBRELLA, "tag": new_tag},
+                     {"kind": "github_release", "component": UMBRELLA, "repo": umbrella_slug, "tag": new_tag,
+                      "title": f"coxswain {version}", "notes_path": notes_path, "heading": None}]
+    steps = component_steps + [notes_step] + bump + release_steps
+    return _with_wait_workflows(steps) + _tap_formula_steps(version, tap_state,
                                                             towpath_version(repo_components, tagged, version))
 
 
@@ -477,22 +404,24 @@ def release_index_text(existing_index: str, version: str, manifest: Mapping,
 def _older_section(section: str, version: str) -> bool:
     """Is `section` headed by a version older than `version`?"""
     m = re.fullmatch(r"## `?([^`\s]+)`?", section.split("\n", 1)[0])
-    theirs, ours = (_parse_semver(m.group(1)) if m else None), _parse_semver(version)
-    return theirs is not None and ours is not None and _sort_key(theirs) < _sort_key(ours)
+    theirs, ours = (release_key(m.group(1)) if m else None), release_key(version)
+    return theirs is not None and ours is not None and theirs < ours
 
 
 def versions_oldest_first(versions: Iterable[str]) -> list[str]:
     """`versions` (bare, no `v` prefix) ordered oldest-first by the same
-    semver-with-beta rules `release_plan` sorts by; a name that doesn't parse
-    as a version sorts after every one that does, stable among themselves."""
-    parsed = [(v, _parse_semver(v)) for v in versions]
-    return [v for v, p in sorted(parsed, key=lambda vp: (1, ()) if vp[1] is None else (0, _sort_key(vp[1])))]
+    rules `release_plan` sorts by (the legacy 0.x line below every CalVer
+    release); a name that doesn't parse as a version sorts after every one
+    that does, stable among themselves."""
+    parsed = [(v, release_key(v)) for v in versions]
+    return [v for v, p in sorted(parsed, key=lambda vp: (1, ()) if vp[1] is None else (0, vp[1]))]
 
 
 def component_dir(root: str, name: str, overrides: Mapping[str, str] | None = None) -> str:
-    """The directory `cox install` would have cloned `name` into under
-    `root`, unless `overrides` names a different path for that component —
-    a developer machine's `--checkout name=path`."""
+    """The checkout of a repository the release touches besides the coxswain
+    checkout itself — dash, or the tap (`TAP_CHECKOUT`) — under `root` (the
+    directory beside the coxswain checkout), unless `overrides` names a
+    different path for it: a developer machine's `--checkout name=path`."""
     if overrides and name in overrides:
         return overrides[name]
     plain = Path(root) / name
@@ -718,24 +647,20 @@ def extract_release_notes(notes_path: str, heading: str) -> str | None:
     return "".join(lines[start:end])
 
 
-def umbrella_release_slug(manifest: Mapping, tools_repository_url: str | None = None) -> str | None:
-    """The umbrella's `org/repo`: `manifest["coxswain"]["repo"]` when the
-    manifest names one, else `tools_repository_url` (the tools package's own
-    `Repository` URL, gathered by the edge — `cli.py` reads it from installed
-    package metadata, the way `existing_tags` is gathered) with a trailing
-    `-tools` stripped from the repo name — `coxswain-tools` ships one name
-    away from the umbrella it releases. `None` when neither source is given."""
-    repo = manifest.get("coxswain", {}).get("repo")
+def umbrella_release_slug(manifest: Mapping, repository_url: str | None = None) -> str:
+    """The repository's `org/repo`: `manifest["coxswain"]["repo"]` when the
+    manifest names one, else the slug of `repository_url` (the installed
+    `coxswain` package's own `Repository` URL, gathered by the edge from
+    package metadata the way `existing_tags` is), else `ppfenning/coxswain`."""
+    repo = manifest.get(UMBRELLA, {}).get("repo")
     if repo:
         return repo
-    if not tools_repository_url:
-        return None
-    org, name = tools_repository_url.rstrip("/").split("/")[-2:]
-    return f"{org}/{name[:-len('-tools')] if name.endswith('-tools') else name}"
+    if repository_url:
+        return "/".join(repository_url.rstrip("/").removesuffix(".git").split("/")[-2:])
+    return UMBRELLA_REPO
 
 
 _MANIFEST_SECTION_RE = re.compile(r"^\[components\.([\w-]+)\]\s*$")
-_MANIFEST_LOCKSTEP_FALSE_RE = re.compile(r"^\s*lockstep\s*=\s*false\s*$", re.IGNORECASE)
 _MANIFEST_VERSION_RE = re.compile(r'(\s*version\s*=\s*")[^"]*(")')
 _MANIFEST_TAG_RE = re.compile(r'(\s*tag\s*=\s*")v[^"]*(")')
 # Any `[table]` or `[table.sub]` header, to know which table an inline-table
@@ -745,7 +670,6 @@ _MANIFEST_TAG_RE = re.compile(r'(\s*tag\s*=\s*")v[^"]*(")')
 _MANIFEST_TABLE_RE = re.compile(r"^\[([\w.-]+)\]\s*$")
 # An inline-table component opens on a `name = {` line and may close on a later one.
 _MANIFEST_INLINE_START_RE = re.compile(r"^\s*([\w-]+)\s*=\s*\{(.*)$")
-_MANIFEST_INLINE_LOCKSTEP_FALSE_RE = re.compile(r"\blockstep\s*=\s*false\b", re.IGNORECASE)
 _MANIFEST_INLINE_TAG_RE = re.compile(r'(\btag\s*=\s*")v[^"]*(")')
 
 
@@ -772,44 +696,24 @@ def _inline_owners(lines: list[str]) -> list[str | None]:
     return owners
 
 
-def _pinned_components(text: str) -> set[str]:
-    """Component names whose `[components.<name>]` section, or whose own
-    `name = { ... }` inline table directly under `[components]`, on one line
-    or several, declares `lockstep = false` anywhere in it."""
-    section = None
-    pinned = set()
-    lines = text.splitlines()
-    for line, owner in zip(lines, _inline_owners(lines)):
-        m = _MANIFEST_SECTION_RE.match(line)
-        t = _MANIFEST_TABLE_RE.match(line)
-        if m:
-            section = m.group(1)
-        elif t:
-            section = None
-        elif section and _MANIFEST_LOCKSTEP_FALSE_RE.match(line):
-            pinned.add(section)
-        elif owner and _MANIFEST_INLINE_LOCKSTEP_FALSE_RE.search(line):
-            pinned.add(owner)
-    return pinned
-
-
 def rejoined(steps: list[dict]) -> set[str]:
-    """Component names `release_plan` tagged this release, for `bumped_manifest_text`'s `rejoining`."""
+    """Component names `release_plan` tagged this release (dash, when it changed), for `bumped_manifest_text`'s `rejoining`."""
     return {s["component"] for s in steps if s["kind"] in ("tag", "rejoin")}
 
 
 def bumped_manifest_text(text: str, version: str, rejoining: Iterable[str] = ()) -> str:
-    """`text` with every `version = "..."` value rewritten to `version`, and
-    the `tag = "v..."` value of each component named in `rejoining` (the
+    """`text` with `[coxswain] version` rewritten to `version`, and the
+    `tag = "v..."` value of each component named in `rejoining` (the
     components this release tags) — whether the component is a
     `[components.<name>]` section or a `name = { ... }` inline table directly
     under `[components]`, on one line or several. Every other component's
-    `tag` stays exactly as it reads, whatever its `lockstep` key; comments,
-    blank lines and layout are untouched, and every other key on an inline
-    table's lines is kept byte-identical."""
+    `tag` stays exactly as it reads; a `version` key in any other table,
+    comments, blank lines and layout are untouched, and every other key on an
+    inline table's lines is kept byte-identical."""
     new_tag = "v" + version
     tagging = set(rejoining)
     section = None
+    table = None
     out = []
     lines = text.splitlines(keepends=True)
     for line, owner in zip(lines, _inline_owners(lines)):
@@ -820,7 +724,8 @@ def bumped_manifest_text(text: str, version: str, rejoining: Iterable[str] = ())
             section = m.group(1)
         elif t:
             section = None
-        if _MANIFEST_VERSION_RE.match(line):
+        table = t.group(1) if t else table
+        if table == UMBRELLA and _MANIFEST_VERSION_RE.match(line):
             out.append(_MANIFEST_VERSION_RE.sub(lambda m: f"{m.group(1)}{version}{m.group(2)}", line))
         elif owner:
             retag = owner in tagging
@@ -835,6 +740,8 @@ def bumped_manifest_text(text: str, version: str, rejoining: Iterable[str] = ())
 _FORMULA_URL_RE = re.compile(r'^(\s*url\s+")[^"]*(")')
 _FORMULA_SHA_RE = re.compile(r'^(\s*sha256\s+")[^"]*(")')
 _FORMULA_RESOURCE_RE = re.compile(r"^\s*resource\s")
+_FORMULA_HEAD_RE = re.compile(r'^(\s*head\s+")[^"]*(".*)$')
+HEAD_URL = f"https://github.com/{UMBRELLA_REPO}.git"
 
 
 TOWPATH_MACOS_ARM = "aarch64-apple-darwin"
@@ -954,7 +861,8 @@ def _with_towpath_block(text: str, towpath: TowpathAssets) -> str:
 
 
 def bumped_formula_text(text: str, version: str, sdist_url: str, sha256: str, *, towpath: TowpathAssets | None = None) -> str:
-    """`text` with the `url` and `sha256` lines before the first `resource` stanza rewritten; `version` is carried by `sdist_url`.
+    """`text` with the `url` and `sha256` lines before the first `resource` stanza rewritten, and the `head` url
+    pointed at the coxswain repository; `version` is carried by `sdist_url` (`coxswain-<version>.tar.gz`).
 
     `towpath` maps TOWPATH_MACOS_ARM and TOWPATH_LINUX_INTEL to (url, sha256). When given, an existing towpath block
     has its url and sha256 lines rewritten, and a formula without one gains the block, an install line and a test line.
@@ -972,7 +880,9 @@ def _bumped_sdist_text(text: str, sdist_url: str, sha256: str) -> str:
     in_resource = False
     for line in text.splitlines(keepends=True):
         in_resource = in_resource or _FORMULA_RESOURCE_RE.match(line) is not None
-        if not in_resource and _FORMULA_URL_RE.match(line):
+        if not in_resource and _FORMULA_HEAD_RE.match(line):
+            out.append(_FORMULA_HEAD_RE.sub(lambda m: f"{m.group(1)}{HEAD_URL}{m.group(2)}", line))
+        elif not in_resource and _FORMULA_URL_RE.match(line):
             out.append(_FORMULA_URL_RE.sub(lambda m: f"{m.group(1)}{sdist_url}{m.group(2)}", line))
         elif not in_resource and _FORMULA_SHA_RE.match(line):
             out.append(_FORMULA_SHA_RE.sub(lambda m: f"{m.group(1)}{sha256}{m.group(2)}", line))

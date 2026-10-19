@@ -25,8 +25,8 @@ def test_check_notes_resolves_against_facts_plans_own_component_dirs_and_release
         stdout = "abc1234 added retry (#42)" if cmd[1] == "log" else ""
         return type("Result", (), {"stdout": stdout})()
 
-    facts = release_check.facts_plan(str(tmp_path), manifest) | release_check_notes.gather_notes_facts(
-        str(tmp_path), manifest, fake_run
+    facts = release_check.facts_plan(str(tmp_path / "coxswain"), manifest) | release_check_notes.gather_notes_facts(
+        str(tmp_path / "coxswain"), manifest, fake_run
     )
     assert check_notes(facts) == []
 
@@ -42,8 +42,8 @@ def test_check_notes_has_no_drift_for_a_coxswain_bullet_citing_a_pr_in_the_umbre
         stdout = "abc1234 fixed releasable.yml (#101)" if cmd[1] == "log" else ""
         return type("Result", (), {"stdout": stdout})()
 
-    facts = release_check.facts_plan(str(tmp_path), manifest) | release_check_notes.gather_notes_facts(
-        str(tmp_path), manifest, fake_run
+    facts = release_check.facts_plan(str(tmp_path / "coxswain"), manifest) | release_check_notes.gather_notes_facts(
+        str(tmp_path / "coxswain"), manifest, fake_run
     )
     assert check_notes(facts) == []
 
@@ -59,8 +59,8 @@ def test_check_notes_drifts_for_a_coxswain_bullet_whose_citation_is_absent_from_
         stdout = "abc1234 other change (#7)" if cmd[1] == "log" else ""
         return type("Result", (), {"stdout": stdout})()
 
-    facts = release_check.facts_plan(str(tmp_path), manifest) | release_check_notes.gather_notes_facts(
-        str(tmp_path), manifest, fake_run
+    facts = release_check.facts_plan(str(tmp_path / "coxswain"), manifest) | release_check_notes.gather_notes_facts(
+        str(tmp_path / "coxswain"), manifest, fake_run
     )
     drifts = check_notes(facts)
     assert len(drifts) == 1
@@ -201,8 +201,8 @@ def test_landed_set_is_the_previous_tag_to_the_versions_own_tag_when_cut_else_to
             stdout = ("9f8e7d6" if cmd[-1] in tags else "") if cmd[1] == "rev-parse" else logs.get(cmd[-1], "")
             return type("Result", (), {"stdout": stdout})()
 
-        facts = release_check.facts_plan(str(tmp_path), manifest) | release_check_notes.gather_notes_facts(
-            str(tmp_path), manifest, fake_run
+        facts = release_check.facts_plan(str(tmp_path / "coxswain"), manifest) | release_check_notes.gather_notes_facts(
+            str(tmp_path / "coxswain"), manifest, fake_run
         )
         return [d.a_line for d in check_notes(facts)]
 
@@ -267,4 +267,4 @@ def test_gather_notes_facts_records_each_bullets_section(tmp_path):
     def run(cmd, cwd, capture_output, text):
         return type("Result", (), {"stdout": ""})()
 
-    assert release_check_notes.gather_notes_facts(str(tmp_path), manifest, run)["notes_sections"] == {3: "cox"}
+    assert release_check_notes.gather_notes_facts(str(tmp_path / "coxswain"), manifest, run)["notes_sections"] == {3: "cox"}

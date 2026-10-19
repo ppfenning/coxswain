@@ -1,5 +1,4 @@
 """The coxswain pointer package: name, version, and its trusted-publish workflow."""
-import re
 import shutil
 import subprocess
 import tomllib
@@ -9,31 +8,25 @@ from pathlib import Path
 import pytest
 import yaml
 
+from agent_tools.release_version import is_calver, pep440
+
 ROOT = Path(__file__).resolve().parent.parent
-# A release (0.2.0) or a pre-release of one (0.1.0b1). The beta suffix was
-# required until 0.2.0: a zero major already says the interface may move, so
-# saying it twice only cost pre-release resolution in pip and uv.
-PYPROJECT_VERSION = re.compile(r"^\d+\.\d+\.\d+(?:b\d+)?$")
 
 
 def _load_toml(name: str) -> dict:
     return tomllib.loads((ROOT / name).read_text())
 
 
-def _normalize(manifest_version: str) -> str:
-    return manifest_version.replace("-beta.", "b")
-
-
-def test_project_is_named_coxswain_with_a_release_version():
+def test_project_is_named_coxswain_with_a_calver_version():
     pyproject = _load_toml("pyproject.toml")
     assert pyproject["project"]["name"] == "coxswain"
-    assert PYPROJECT_VERSION.match(pyproject["project"]["version"])
+    assert is_calver(pyproject["project"]["version"])
 
 
 def test_pyproject_and_manifest_versions_denote_the_same_release():
     pyproject = _load_toml("pyproject.toml")
     manifest = _load_toml("manifest.toml")
-    assert _normalize(manifest["coxswain"]["version"]) == pyproject["project"]["version"]
+    assert pep440(manifest["coxswain"]["version"]) == pyproject["project"]["version"]
 
 
 def test_publish_workflow_is_a_trusted_publisher_on_tags():
