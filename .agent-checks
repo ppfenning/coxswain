@@ -1,0 +1,5 @@
+# The component suites, each from its own folder (their tests import sibling test modules by name).
+# Lanes run these on top of the team cartridge's checks (ruff at the root, the umbrella's own pytest).
+cd src/tools && pytest -q
+cd src/graphs && pytest -q
+cd src/cartridges && pytest -q
