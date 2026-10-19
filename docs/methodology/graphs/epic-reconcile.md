@@ -1,10 +1,12 @@
 # epic-reconcile
 
-The coxswain dispatches epic-reconcile on a schedule, not on a ticket
-event: it compares an epic's board state against what its tickets'
-records actually show and proposes a correction where the two disagree.
-What lands is a reconciliation proposal, not a silent rewrite of the
-board.
+epic-reconcile compares an epic's declared state with its actual state.
+Both arrive as arguments (`--epic` and `--observed`); the graph reads no
+tracker itself, so a run can be replayed. Set arithmetic finds the
+drift first, then one node judges it. What lands is one correction
+proposal per drift, gated like any other write, never a silent rewrite
+of the board. It runs from `shell.py reconcile`; the coxswain does not
+dispatch it.
 
 --8<-- "components/graphs/docs/graphs/epic-reconcile.md"
 

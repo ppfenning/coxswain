@@ -59,24 +59,51 @@ throw away. See [Records](records.md) for what a run id ties together.
 
 ## How to read the diagrams
 
-Each graph's page below embeds two things pulled from the graphs
-repository at build time: a mermaid diagram of the nodes and edges, and a
-table listing every node with what it does. A solid edge is an
+Each graph's page below embeds what the build pulls from `src/graphs`: a
+mermaid diagram of the nodes and edges, a table listing every node, and,
+for most graphs, the graph's own prose page. A solid edge is an
 unconditional handoff. A labeled edge is a branch the node before it
-decides. The diagram is generated from the graph's own definition, so it
-never drifts from what actually runs.
+decides. The diagram is generated from the graph module's docstring by
+`python -m harness.graphdoc`, so it changes when the graph does.
 
-## The seven graphs
+## The eleven graphs
 
-| Graph | What it does |
-| --- | --- |
-| [coxswain](graphs/coxswain.md) | The dispatch loop: reads the docket and starts the graph each task needs. |
-| [epic-swarm](graphs/epic-swarm.md) | Fans an epic out into its tickets and runs them against the phase order. |
-| [lifecycle-propose](graphs/lifecycle-propose.md) | Walks one ticket through its states, proposing each transition. |
-| [initiative-decompose](graphs/initiative-decompose.md) | Breaks an initiative into epics and tickets during scoping. |
-| [epic-reconcile](graphs/epic-reconcile.md) | Reconciles an epic's board state against what its tickets' records show. |
-| [retro-propose](graphs/retro-propose.md) | Drafts a retro from an epic's run records for a human to accept. |
-| [triage-propose](graphs/triage-propose.md) | Proposes where an unscoped ticket belongs before it is planned. |
+The registry is whatever `harness/registry.py` discovers: every module
+under `graphs/` that declares a `SPEC`. Today that is eleven graphs. The
+subcommand is what `shell.py` takes; the graph name is what the run
+records.
+
+| Subcommand | Graph | What it does |
+| --- | --- | --- |
+| `decompose` | [initiative-decompose](graphs/initiative-decompose.md) | Turns an idea into phases and a task DAG, attacks the dependency edges, and proposes one work item per task. |
+| `lifecycle` | [lifecycle-propose](graphs/lifecycle-propose.md) | The development loop for one task: scope, plan, build in a worktree, review, adversary, arbitrate. |
+| `validate` | [phase-validate](graphs/phase-validate.md) | Judges whether a phase's tasks, together, met the phase's goal. Advisory; emits no proposals. |
+| `review-diff` | [review-diff](graphs/review-diff.md) | Reviews an arbitrary diff outside any build's own run: verdict and findings out, nothing written. |
+| `rescue-review` | [rescue-review](graphs/rescue-review.md) | Reviews a patch that already exists against the harness's own check results. |
+| `cos` | [coxswain](graphs/coxswain.md) | One dispatch node: picks which graphs to run next from a docket the driver assembled. |
+| `reconcile` | [epic-reconcile](graphs/epic-reconcile.md) | Compares an epic's declared state with its actual state and proposes corrections. |
+| `retro` | [retro-propose](graphs/retro-propose.md) | Reads ledger rows back and proposes only doc updates it can cite. |
+| `triage` | [triage-propose](graphs/triage-propose.md) | Morning triage of an alert queue: read-only, proposes runbook corrections. |
+| `triage-quarantine` | [triage](graphs/triage.md) | Classifies a task stranded at its attempt cap and emits a write by class. |
+| `sweep` | [sweep](graphs/sweep.md) | Applies one rule everywhere it matches: plan, apply, verify, review. |
+
+`delivery` holds the first five, `ops` the other six.
+
+## Drivers are not graphs
+
+`shell.py` also takes three subcommands that are not graphs. They invoke
+graphs, block on them and write, which a graph may not do.
+
+- `phase` runs `lifecycle` once per unblocked task of one phase.
+- `epic` is [the epic driver](graphs/epic-driver.md). `cox route launch epic`
+  starts it. It walks an initiative phase by phase: `lifecycle` per ready
+  task, `validate` per phase, `triage-quarantine` for a task at its attempt
+  cap.
+- `rescue` runs `rescue-review` on one quarantined task's kept patch.
+  `cox route launch rescue` starts it.
+
+`cox route launch` also starts `decompose`, `cos` and `sweep` directly.
+`cox runs review --pr <url>` runs `review-diff` on a pull request.
 
 ## Where a graph's shape is decided
 

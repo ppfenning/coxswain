@@ -1,5 +1,9 @@
 # The observed record
 
+> Written when tools, graphs and cartridges were separate repositories (`coxswain-tools`, `coxswain-graphs`,
+> `coxswain-cartridges`). Since 2026.10.0 they are the folders `src/tools`, `src/graphs` and `src/cartridges` of
+> one repository, each with its own `docs/design/`. Read a repository name below as that folder.
+
 Status: approved by the chair 2026-09-08 under the operator's standing principle (2026-09-07): "the goal is to
 have nothing in the system become invisible." Groups intake items G1 from
 `workspace/plans/agent-platform/2026-09-08-intake-grouping.md`. This file is committed identically to

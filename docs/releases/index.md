@@ -46,6 +46,11 @@ The cut runs these gates first. Any one refuses it:
    notes must carry the same reason.
 4. `release-check` finds no drift between the CLI, the manifest, the docs
    and the notes. `--allow-doc-drift REASON` waives it.
+5. Every checkout the release tags is clean, on its default branch, and
+   level with `origin/<default>`.
+
+Freeze the chair's lands for the cut, so nothing merges under it:
+`cox chair freeze-lands --for 60 --reason "cutting <version>"`.
 
 Then the steps:
 
@@ -59,6 +64,10 @@ Then the steps:
 3. Create the GitHub release `coxswain <version>` from the notes page.
 4. Open the tap formula pull request, and run the install proof against it
    (below).
+
+After a cut, or a failed one, the command sends a `release_cut` or
+`release_failed` push to the profile's `notify.ntfy` topic, when one is
+set.
 
 Dash lives in its own repository. A release tags it at `v<version>` only when
 it has commits since the tag `manifest.toml` names; otherwise dash keeps its
@@ -106,13 +115,11 @@ today. It does not mean the release is otherwise good.
 
 ## `2026.10.0`
 
-Upcoming: the first monorepo release. It is not cut yet. See
-[From 0.47 to the monorepo](../monorepo.md). The cut replaces this section
-with its own.
-
 | Component | Repository or path | Tag | Required or flag |
 | --- | --- | --- | --- |
 | dash | `ppfenning/coxswain-dash` | `v0.42.0` | flag: `dash`, provides `towpath` (pinned) |
+
+See the [2026.10.0 release notes](2026.10.0.md) for what landed in each component.
 
 ## Component releases (0.x)
 

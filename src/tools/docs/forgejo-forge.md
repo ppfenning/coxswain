@@ -1,6 +1,6 @@
 # The forgejo forge
 
-This page is for someone adding a repository hosted on Forgejo to the profile. It covers what the forge does, the three profile keys that select it, the token the Forgejo side must issue, and how to keep a Forgejo repository next to a GitHub one. Read the section on keys that are not wired yet before you edit any profile.
+This page is for someone adding a repository hosted on Forgejo to the profile. It covers what the forge does, how it finds the server and the token, the token the Forgejo side must issue, and how to keep a Forgejo repository next to a GitHub one.
 
 ## What the forgejo forge does
 
@@ -18,29 +18,28 @@ It lands the pull request with a squash merge. The default branch gains one comm
 
 After the merge it asks Forgejo to delete the task's branch. A failed delete on the server does not fail the land. The result then carries a `branch not deleted` note and the land still counts as merged. The forge also deletes the task's local branch and updates the local default branch. When the task's branch is checked out, it switches the checkout to the default branch first.
 
-## Keys that are not wired yet
+## How it is configured
 
-Do not add `forgejo_base_url` or `forgejo_token_env` to a profile yet. The profile parser accepts only a fixed set of top-level keys. `forge` is in that set. The two Forgejo keys are not. A profile that carries either one raises a `ProfileError` on every command that reads the profile. The forgejo forge does not read them either. It contacts the host named by the repository's `origin` URL, and it reads the token from the fixed variable `FORGEJO_TOKEN`. Today the working setup is `forge: forgejo` and nothing else, with the token exported as `FORGEJO_TOKEN`. The rest of this page describes the intended contract, once the forge selection work makes the profile accept the keys.
+Set `forge: forgejo` in the profile, or `forge: auto` (see below). Nothing
+else in the profile configures this forge.
 
-## Profile keys
+- **The server** comes from the repository's `origin`. An `http://` or
+  `https://` origin names the server itself. An ssh origin, such as
+  `git@git.example.internal:team/app.git`, names only a host, so the API
+  address comes from the `FORGEJO_BASE_URL` variable, which must be on the
+  same host. With an ssh origin and no `FORGEJO_BASE_URL`, the land stops
+  and names the variable.
+- **The token** comes from the `FORGEJO_TOKEN` variable.
 
-These are the keys the forgejo forge is built to read. They are defined in `agent_tools/forgejo_api.py`.
-
-- `forge: forgejo` selects this forge.
-- `forgejo_base_url` is the address of the Forgejo server. It must start with `http://` or `https://`. A trailing slash is removed.
-- `forgejo_token_env` is the name of the environment variable that holds the API token. It is a name, never the token itself.
-
-When the keys are wired, both `forgejo_base_url` and `forgejo_token_env` are required. Each must be a string with something in it. A missing, non-string or empty value is refused with a message that names the key.
-
-Here is the intended shape for a server at `git.example.internal`. Do not paste it into a profile today, because the parser rejects the last two lines.
-
-```yaml
-forge: forgejo
-forgejo_base_url: https://git.example.internal
-forgejo_token_env: FORGEJO_TOKEN_EXAMPLE
+```bash
+export FORGEJO_BASE_URL=https://git.example.internal
+export FORGEJO_TOKEN=<token>
 ```
 
-The example shows the three keys and not where they sit in the profile. The forge selection work decides that placement. `FORGEJO_TOKEN_EXAMPLE` is a placeholder. Once the keys are wired, any variable name works, and you export it before you run `cox runs land`.
+The profile keys `forgejo_base_url` and `forgejo_token_env` are not read.
+The profile parser ignores them, as it ignores any unknown top-level key,
+with a `profile: ignoring unknown key ...` warning, and `cox setup doctor`
+shows a warning row for each.
 
 ## The token
 
@@ -49,12 +48,19 @@ Create the token in the Forgejo user settings, under applications. Forgejo group
 - repository read and write, which is `read:repository` and `write:repository` in Forgejo's scope list, to read the repository, read commit statuses and delete the branch
 - pull request read and write, which the repository scopes above already grant, to list, open and merge pull requests
 
-The token value is read from the environment. When the keys are wired, the variable is the one `forgejo_token_env` names, and requests go to `forgejo_base_url`. Until then, the variable is `FORGEJO_TOKEN` and requests go to the `origin` host. The token is not stored in the profile. It is sent only in the `Authorization` header of requests to the Forgejo server.
+The token value is read from `FORGEJO_TOKEN` in the environment. It is not stored in the profile. It is sent only in the `Authorization` header of requests to the Forgejo server.
 
 The token is never logged. Every error message that could carry it passes through a redaction step that replaces it with `***`, including the escaped forms that an HTTP library may quote. When the variable is missing or empty, the error names the variable and says nothing about a value.
 
 ## Choosing a forge per repository
 
-Today `forge` is one value for the whole profile. To land one repository through Forgejo and another through GitHub, keep two profile files and pick one per command with `--profile PATH`. The Forgejo file holds `forge: forgejo`, and the token is exported as `FORGEJO_TOKEN`. The GitHub file holds `forge: github`.
+`forge` is one value for the whole profile, but `forge: auto` picks per
+repository from its `origin`:
 
-The forge selection work is planned to let a repository's own profile entry choose `forge: forgejo`, so that one profile can hold a GitHub repository and a Forgejo repository. That is not built yet. Until it lands, use the two-file setup above and do not rely on any entry layout.
+- an origin on the host of `FORGEJO_BASE_URL` lands through `forgejo`;
+- an origin on github.com lands through `github`;
+- any other repository, including one with no remote, lands through `local`.
+
+So one profile can hold a GitHub repository and a Forgejo repository. Set
+`FORGEJO_BASE_URL` and `FORGEJO_TOKEN` in every shell that lands, and log
+`gh` in for the GitHub ones.

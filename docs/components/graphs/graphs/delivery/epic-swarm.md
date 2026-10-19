@@ -27,7 +27,7 @@ invoke next from what came back, and does it concurrently. A graph is
 blocks on futures is none of those things.
 
 So `epic-swarm` is **a harness capability plus two roles and a write kind**, not
-a fifth graph. It is specified here, beside the graphs it drives, because this is
+one more graph. It is specified here, beside the graphs it drives, because this is
 where a reader looks for it — but it belongs in `harness/`, next to `phase.py`,
 and it must not acquire a `SPEC` or appear in the graph registry. If it ever
 does, `test_portability.py` will start asserting purity rules against something
@@ -61,7 +61,7 @@ and there is no honest way to fake that), `max_parallel`, and the harness's usua
 `ledger_path` / `runs_dir` / `worktree_root` / `provider_profile` / `assume`.
 
 There is no `comfort` argument. A comfort level is a cartridge — `local-comfort0`
-and `local-comfort1` in `agent-cartridges` — and a flag that could override the
+and `local-comfort1` in `src/cartridges/cartridges` — and a flag that could override the
 resolved ramps would be a second source of truth about what a team has earned.
 
 **Returns:** `{run_id, date, initiative, phases[], tasks[], quarantined[],

@@ -1,6 +1,14 @@
 # Release discipline
 
 > The `cox dev` code this describes (release, release-check, commands render) moved to the coxswain repository's unshipped `devtools/` package; from 0.15.0 it runs as `uv run --frozen python -m devtools <command>` from the coxswain checkout.
+>
+> Written when tools, graphs and cartridges were separate repositories (`coxswain-tools`, `coxswain-graphs`,
+> `coxswain-cartridges`). Since 2026.10.0 they are the folders `src/tools`, `src/graphs` and `src/cartridges` of
+> one repository, each with its own `docs/design/`. Read a repository name below as that folder.
+>
+> A release is now one CalVer tag of that one repository, planned by `devtools/release.py`. The per-component
+> tags, `lockstep` and the umbrella's component pins below are history; only dash, its own repository, still has a
+> tag of its own in `manifest.toml`.
 
 Status: approved by the chair 2026-09-15 under the operator's standing order (2026-09-08). Groups intake G6 from
 `workspace/plans/agent-platform/2026-09-08-intake-grouping.md`:

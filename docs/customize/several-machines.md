@@ -15,10 +15,11 @@ All machines share one run store. The store is a Postgres named by
 `postgres` extra:
 
 ```sh
-uv tool install --force --editable "$HOME/.local/share/coxswain/installs/coxswain[postgres]"
+uv tool install --force --editable "<home>/installs/coxswain[postgres]"
 ```
 
-The install replaces the extras `cox` had, so name each one you use, such as
+`<home>` is the coxswain home, `~/.local/share/coxswain` by default. The
+install replaces the extras `cox` had, so name each one you use, such as
 `[postgres,lake]`.
 
 With a local SQLite store, everything stays on one machine.
@@ -31,8 +32,10 @@ Do these steps on each machine that will run lanes.
    at the same absolute path as on the chair, with its `.venv` and check
    tools. The lane reads the initiative's `repo:` path unchanged.
 2. Install cox with the postgres extra, as above.
-3. Use the same provider profile. Its `storage_url` names the shared
-   Postgres.
+3. Use the same provider profile as the chair. It is team configuration and
+   lives outside the code checkout, in `<home>/providers/` or the
+   workspace; copy it there and point the machine profile's
+   `provider_profile` at it. Its `storage_url` names the shared Postgres.
 4. Put `claude` on the PATH of a non-interactive ssh shell, and log in.
    Set a git `user.name` and `user.email`.
 5. Run `cox setup doctor`.
@@ -99,6 +102,13 @@ cox host add box2 --ssh me@box2 --capacity 3
 `--capacity` is the lanes the host may run at once. An optional `--weight`
 sets its share of new placements, and an optional `--capabilities` names
 the list it can be matched on.
+
+Once the table has rows, it decides: a host in the profile's `lane_hosts`
+but not in the table is not a lane host. `cox host add` and a launch with
+`--on` print a note naming such hosts. A launch
+takes the host's workspace from its own beat (`cox host beat` on that
+machine), else from the same-named `lane_hosts` entry. `cox setup doctor
+--host` reads only `lane_hosts`; `cox host doctor box2` uses the table.
 
 `cox host drain box2` stops launching on the host while its live lanes
 finish; `cox host activate box2` makes it a lane host again. `cox host

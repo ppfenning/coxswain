@@ -44,7 +44,7 @@ cartridge init my-team --cartridges-dir <workspace>/cartridges
 cox setup doctor
 ```
 
-`<tag>` is a release tag, such as `v2026.10.0`. That one checkout is the whole install: `cox install` reads its `manifest.toml`, creates one venv inside it, installs `cox` editable from it, writes this machine's profile and links the crew. `<workspace>` is `~/.local/share/coxswain/workspaces/main` unless you pass `--workspace`. The install's closing doctor may report the missing workspace and cartridge until the `mkdir`, `git init` and `cartridge init` steps are done.
+`<tag>` is a release tag, such as `v2026.10.0`. That one checkout is the whole install: `cox install` reads its `manifest.toml`, creates one venv inside it, installs `cox` editable from it, writes this machine's profile and links the crew. `<workspace>` is `~/.local/share/coxswain/workspaces/main` unless you pass `--workspace`. The profile starts on the shipped provider profile; a team keeps its own outside the checkout, in `<home>/providers/` or the workspace (see the [install guide](https://ppfenning.github.io/coxswain/latest/install/#the-provider-profile)). The install's closing doctor may report the missing workspace and cartridge until the `mkdir`, `git init` and `cartridge init` steps are done.
 
 `cox setup doctor` tells you whether this machine can run an epic and what is missing. The [install guide](https://ppfenning.github.io/coxswain/latest/install/) covers a fresh machine end to end.
 
@@ -57,7 +57,20 @@ cox upgrade
 
 The first updates `cox` itself. `cox upgrade` moves the checkout to the newest release, syncs its venv, reinstalls `cox` from it and relinks the crew.
 
-**Coming from 0.47 or earlier?** Those releases installed a checkout per component. Update `cox` (`brew upgrade cox`, or `uv tool uninstall coxswain-tools && uv tool install coxswain`), then run `cox setup migrate` to see the plan, `cox setup migrate --apply` to move, and `cox setup doctor`. Old checkouts are moved to `installs/.retired-<date>/`, never deleted. See [From 0.47 to the monorepo](https://ppfenning.github.io/coxswain/latest/monorepo/).
+**Coming from 0.47 or earlier?** Those releases installed a checkout per component. On each machine:
+
+```sh
+cox host drain <host>                                  # if the host is active in the hosts table
+brew upgrade cox                                       # Homebrew; with uv, the next two lines instead
+uv tool uninstall coxswain-tools agent-cartridges
+uv tool install --python 3.14 'coxswain[postgres,traces,parquet,lake]'   # the extras this machine uses
+cox setup migrate                                      # the plan; changes nothing
+cox setup migrate --apply
+cox setup doctor
+cox host activate <host>
+```
+
+Move a team provider profile out of the old cartridges checkout to `<home>/providers/` first, and edit by hand any of your own scripts that name an old checkout path. Old checkouts are moved to `installs/.retired-<date>/`, never deleted. [From 0.47 to the monorepo](https://ppfenning.github.io/coxswain/latest/monorepo/) has every step and the known issues in 2026.10.0.
 
 ## The loop, in one screen
 

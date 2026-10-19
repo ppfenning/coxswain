@@ -6,8 +6,8 @@ every change is planned, built under a budget, reviewed by two reviewers made
 to disagree, checked against the project's own tests, and handed to you as a
 pull request, with every stroke on the record. Coxswain is one repository
 and one package, `coxswain`, with one command, `cox`. Install it with
-`brew install ppfenning/coxswain/cox` or `uv tool install coxswain`, then run
-`cox install`.
+`brew install ppfenning/coxswain/cox` or
+`uv tool install --python 3.14 coxswain`, then run `cox install`.
 
 ![towpath's Regatta page: the chair, spend, machines, lanes, runs, queue, inbox and history frames](assets/towpath/regatta-light.png#only-light)
 ![towpath's Regatta page: the chair, spend, machines, lanes, runs, queue, inbox and history frames](assets/towpath/regatta-dark.png#only-dark)

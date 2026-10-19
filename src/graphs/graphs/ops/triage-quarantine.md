@@ -56,8 +56,9 @@ reasoning restated — so it escalates to a person, quoting both records,
 instead of clearing the cap again. This is why `emit` never sees a class it
 has already used on this exact diagnosis for this item.
 
-**Status:** `facts` and `check_citation` are implemented in
-[`triage_quarantine.py`](triage_quarantine.py) (docs/design/triage.md §1);
-`triage` and `emit` land in the same module. The additive-diff check on a
-`ticket_amend` proposal (§2) and `cox runs stranded` (§3) are separate,
-later work.
+**Status:** `facts`, `check_citation`, `triage` and `emit` are implemented in
+[`triage_quarantine.py`](triage_quarantine.py) (docs/design/triage.md §1). The
+graph runs as the `triage-quarantine` subcommand; the epic driver invokes it
+for a task at its attempt cap. The additive-diff check on a `ticket_amend`
+proposal (§2) lives in the epic driver, and `cox runs stranded` (§3) lists
+stranded items.

@@ -40,24 +40,44 @@ its capabilities and puts the `cheap` tier on a local OpenAI-compatible
 endpoint, but no runner drives it yet. The others are `status = "planned"`
 and have no profile to point at.
 
+## Where the profile lives
+
+A provider profile is team configuration, not code. The checkout ships
+defaults in `<checkout>/src/cartridges/providers/`; `cox install` points a
+new machine at `claude-code.yaml` there. A team keeps its own profile
+outside the checkout, in `<home>/providers/` or in the workspace, with
+`catalog.yaml` beside it, and the machine profile's `provider_profile`
+names it:
+
+```yaml
+# ~/.config/agent-tools/profile.yaml
+provider_profile: <home>/providers/my-team.yaml
+```
+
+`cox setup doctor` fails its `home paths` row when `provider_profile` sits
+outside both `<home>` and the workspace. Every machine that runs lanes for
+the team uses the same profile, so the store it names is the same. See
+[Install](../install/index.md#the-provider-profile) for the copy commands.
+
 ## The operator
 
-The provider-profile key `operator` names the human the courier and
-decisions address. Its default is `operator`, so a profile that omits it
+The machine profile's `operator` key names the human the courier and
+decisions address. It lives in `~/.config/agent-tools/profile.yaml`, not in
+the provider profile. Its default is `operator`, so a profile that omits it
 addresses "operator". Set it to a team role or a handle:
 
 ```yaml
-name: claude-code
 operator: reviewer-on-call
 ```
 
 The settings command flags operator-only rows with the field
-`operator_only`. The older field name `pat_only` is accepted as an alias
-for one release and then removed, so use `operator_only` in anything new.
+`operator_only`. It also writes the older name `pat_only` with the same
+value, for one release, so use `operator_only` in anything new.
 
 ## Where the detail lives
 
-The full shape of a provider profile — the file format, every field a
-tier or role can set — is in [Install:
-Providers](../install/providers.md). This page is about what a profile
-is for; that one is about how to write one.
+The shipped profile, `src/cartridges/providers/claude-code.yaml`, is
+commented key by key: `tiers`, `classes`, `effort`, `budget_usd`,
+`role_budget_usd`, `role_ceiling_usd`, `tier_overrides`, `defaults` and
+`tools`. Copy it and change what your team needs. [Install:
+Providers](../install/providers.md) lists the providers and their status.

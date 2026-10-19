@@ -2,8 +2,8 @@
 
 Dash is towpath, a terminal dashboard for the fleet: lanes, the chair, the
 queue and spend on one screen, with a drill-down into any run. It reads
-`cox dash --feed`, so it shows what the store shows. coxtop was its name
-through 0.34, and the coxtop alias lasts until 0.37.
+`cox dash --feed`, so it shows what the store shows. Its name through 0.34
+was coxtop.
 
 ## What it owns
 

@@ -6,11 +6,20 @@ what happened when a task hit its ceiling.
 
 ## Ceilings are per node, by tier
 
-Every node in a graph — plan, build, review, and the rest — has a dollar
-ceiling for the provider tier it runs on. A cheap tier gets a smaller
-ceiling; a tier used for harder work gets more room, but still a fixed
-one. The ceiling is a property of the node and the tier, not something a
-single run negotiates for itself.
+Every node in a graph (plan, build, review and the rest) has a dollar
+ceiling for its session. The provider profile sets it: `budget_usd` per
+tier (the Claude Code profile: cheap $0.15, standard $0.35, deep $0.80),
+and `role_budget_usd` for roles that need a different number, such as the
+reviewers. The ceiling is a property of the node and the tier, not
+something a single run negotiates for itself.
+
+A build is the exception that proves the rule. Its budget is a guide for
+one slice, not a ceiling for the task. The guide is estimated from the
+repository's recent builds, clamped to $1.00 to $4.00. At the guide the
+harness judges go or no-go; a build that passes resumes. The provider
+profile's `role_ceiling_usd` (the Claude Code profile: build $6) is the
+failsafe on the build's cumulative spend. See
+[Autonomous chair](../customize/autonomous-chair.md#build-checkpoints).
 
 ## Split, never raise
 
@@ -23,13 +32,11 @@ ever ran.
 
 ## budget_usd on an item
 
-A work item can carry its own `budget_usd`, narrower than the tier
-ceiling if the team wants a tighter cap on a specific kind of task. This
-follows the same tighten-only rule cartridges use elsewhere: an item's
-budget can only be smaller than what its tier allows, never larger. See
-[Cartridges](cartridges.md) for tighten-only in general and
-[Policy](../customize/policy.md) for `build_budget_usd_max`, the knob a
-team sets to change the ceiling itself.
+A work item can carry its own `budget_usd`. It replaces the estimated
+build guide for that item. It may be higher than the estimate, but never
+higher than the cartridge's `build_budget_usd_max` (base: $6). The
+harness refuses an item that asks for more and quotes the cap. See
+[Policy](../customize/policy.md#build_budget_usd_max).
 
 ## What a budget stop records
 

@@ -1,5 +1,9 @@
 # Triage and earned autonomy
 
+> Written when tools, graphs and cartridges were separate repositories (`coxswain-tools`, `coxswain-graphs`,
+> `coxswain-cartridges`). Since 2026.10.0 they are the folders `src/tools`, `src/graphs` and `src/cartridges` of
+> one repository, each with its own `docs/design/`. Read a repository name below as that folder.
+
 Status: approved by the chair 2026-09-15 under the operator's standing order (2026-09-08) and their direction of
 2026-09-08: "should fails pass through a new graph to get the work back into a queue? rather than you just
 picking up the fix?" and "removing human gates in places like that is the exact goal". Groups intake G7

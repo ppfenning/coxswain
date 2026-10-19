@@ -16,6 +16,9 @@ reference skills plugins and the Claude plugin marketplace. See
 
 Cartridges ships in every install. A workspace's `cartridges/base` and
 `cartridges/local` link into the checkout's `src/cartridges/cartridges/`.
+The shipped provider profiles are defaults in `src/cartridges/providers/`; a
+team's own profile lives outside the checkout, in the workspace or in
+`<home>/providers/`.
 
 ## Its own docs
 
