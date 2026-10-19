@@ -59,68 +59,54 @@ def _touched(calls: list) -> list:
     return [c for c in calls if c[0] != "record"]
 
 
-def test_a_fetch_runs_cox_runs_fetch_on_its_run():
-    assert argv_for({"kind": "fetch", "run": "r-1"}) == ["cox", "runs", "fetch", "r-1"]
+WIDEN = {
+    "kind": "widen_ticket", "initiative": "i", "task_id": "t1",
+    "paths": ["src/app.rs"], "additions": ["accessor"], "reason": "handoff", "epoch": 1,
+}
 
 
-def test_a_fetch_exit_runs_the_same_cox_runs_fetch_argv_as_fetch():
-    assert argv_for({"kind": "fetch_exit", "run": "r-1", "initiative": "i"}) == ["cox", "runs", "fetch", "r-1"]
+@pytest.mark.parametrize(
+    ("action", "expected"),
+    [
+        ({"kind": "fetch", "run": "r-1"}, ["cox", "runs", "fetch", "r-1"]),
+        ({"kind": "fetch_exit", "run": "r-1", "initiative": "i"}, ["cox", "runs", "fetch", "r-1"]),
+        (
+            {"kind": "land_phase", "run": "r-1", "phase": "p1", "repo": "r"},
+            ["cox", "runs", "land", "r-1", "--phase", "p1", "--repo", "r", "--apply", "--no-claim"],
+        ),
+        ({"kind": "land_phase", "run": "r-1", "repo": "r"}, None),
+        (WIDEN, None),
+    ],
+    ids=["fetch", "fetch_exit", "land_phase", "land_phase_without_phase", "widen_ticket"],
+)
+def test_argv_for_fetch_land_phase_and_in_process_kinds(action, expected) -> None:
+    assert argv_for(action) == expected
 
 
-def test_a_land_phase_runs_cox_runs_land_with_phase_not_task():
-    action = {"kind": "land_phase", "run": "r-1", "phase": "p1", "repo": "r"}
-    assert argv_for(action) == ["cox", "runs", "land", "r-1", "--phase", "p1", "--repo", "r", "--apply", "--no-claim"]
-
-
-def test_a_land_phase_missing_its_phase_returns_no_argv():
-    assert argv_for({"kind": "land_phase", "run": "r-1", "repo": "r"}) is None
-
-
-def test_a_fetch_exit_that_exits_zero_applies_approvals_and_carries_run_and_host(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("code", "output", "status", "reason"),
+    [
+        (0, "", "done", "fetched r-1; approved: t1, t2"),
+        (1, "boom", "failed", "boom"),
+        (2, "fetch: refuse: r-1 is still live on host-a: the lane has not ended", "skipped", "fetch: refuse: r-1 is still live on host-a: the lane has not ended"),
+        (2, "fetch: ssh: connection refused", "failed", "fetch: ssh: connection refused"),
+    ],
+    ids=["exit_zero", "exit_nonzero", "live_refusal", "fetch_error"],
+)
+def test_a_fetch_exit_applies_approvals_only_on_exit_zero_and_keeps_the_fetch_reason(tmp_path, monkeypatch, code, output, status, reason) -> None:
     remote_lane.remote_record_path(tmp_path, "r-1").write_text(
         json.dumps({"host": "host-a", "launched_at": "2026-09-26T00:00:00+00:00"}), encoding="utf-8"
     )
     calls: list = []
-
-    def fake_apply(runs_dir, work_dir, run, initiative):
-        calls.append((runs_dir, work_dir, run, initiative))
-        return ["t1", "t2"]
-
-    monkeypatch.setattr(chair_exec.chair_apply_fetch, "apply_fetched_approvals", fake_apply)
-    deps = replace(_deps([]), runs_dir=tmp_path, work_dir=tmp_path)
+    monkeypatch.setattr(chair_exec.chair_apply_fetch, "apply_fetched_approvals", lambda *a: calls.append(a) or ["t1", "t2"])
+    deps = replace(_deps([], code=code, output=output), runs_dir=tmp_path, work_dir=tmp_path)
     results = perform([{"kind": "fetch_exit", "run": "r-1", "initiative": "i", "epoch": 1}], deps, lambda: 1, False)
-    assert calls == [(tmp_path, tmp_path, "r-1", "i")]
-    assert (results[0]["status"], results[0]["run"], results[0]["host"]) == ("done", "r-1", "host-a")
-    assert results[0]["reason"] == "fetched r-1; approved: t1, t2"
-
-
-def test_a_fetch_exit_that_exits_nonzero_applies_nothing_and_fails(tmp_path, monkeypatch) -> None:
-    calls: list = []
-    monkeypatch.setattr(chair_exec.chair_apply_fetch, "apply_fetched_approvals", lambda *a: calls.append(a) or [])
-    deps = replace(_deps([], code=1, output="boom"), runs_dir=tmp_path, work_dir=tmp_path)
-    results = perform([{"kind": "fetch_exit", "run": "r-1", "initiative": "i", "epoch": 1}], deps, lambda: 1, False)
-    assert calls == []
-    assert results[0]["status"] == "failed"
-    assert "run" not in results[0] and "host" not in results[0]
-
-
-LIVE_REFUSAL = "fetch: refuse: r-1 is still live on host-a: the lane has not ended"
-
-
-def test_a_fetch_exit_refused_because_the_run_is_live_is_skipped_with_its_reason_unchanged(tmp_path, monkeypatch) -> None:
-    calls: list = []
-    monkeypatch.setattr(chair_exec.chair_apply_fetch, "apply_fetched_approvals", lambda *a: calls.append(a) or [])
-    deps = replace(_deps([], code=2, output=LIVE_REFUSAL), runs_dir=tmp_path, work_dir=tmp_path)
-    results = perform([{"kind": "fetch_exit", "run": "r-1", "initiative": "i", "epoch": 1}], deps, lambda: 1, False)
-    assert calls == []
-    assert (results[0]["status"], results[0]["reason"]) == ("skipped", LIVE_REFUSAL)
-
-
-def test_a_fetch_exit_whose_fetch_errors_still_fails_with_its_reason_unchanged(tmp_path) -> None:
-    output = "fetch: ssh: connection refused"
-    deps = replace(_deps([], code=2, output=output), runs_dir=tmp_path, work_dir=tmp_path)
-    results = perform([{"kind": "fetch_exit", "run": "r-1", "initiative": "i", "epoch": 1}], deps, lambda: 1, False)
-    assert (results[0]["status"], results[0]["reason"]) == ("failed", output)
+    assert calls == ([(tmp_path, tmp_path, "r-1", "i")] if code == 0 else [])
+    assert (results[0]["status"], results[0]["reason"]) == (status, reason)
+    if status == "done":
+        assert (results[0]["run"], results[0]["host"]) == ("r-1", "host-a")
+    else:
+        assert "run" not in results[0] and "host" not in results[0]
 
 
 VERDICT = "fetch: verify: r-1 has no approved tasks in the store"
@@ -128,76 +114,73 @@ LAST_BRANCH = "epic/alpha/t20 -> epic/alpha/t20"
 GIT_STDERR = "".join(f" * [new branch]      epic/alpha/t{n:02d} -> epic/alpha/t{n:02d}\n" for n in range(1, 21))
 
 
-def test_a_failed_reason_starts_with_the_stdout_verdict_and_ends_with_the_last_stderr_line() -> None:
-    reason = failed_reason(VERDICT + "\n", GIT_STDERR)
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "expected"),
+    [
+        ("", "one\ntwo\n", "one\ntwo"),
+        (f"\n{VERDICT}\nsecond line\n", "", VERDICT),
+        ("", "", ""),
+    ],
+    ids=["stderr_tail", "stdout_verdict", "both_empty"],
+)
+def test_failed_reason_is_the_stdout_verdict_else_the_stderr_tail(stdout, stderr, expected) -> None:
+    assert failed_reason(stdout, stderr) == expected
+
+
+@pytest.mark.parametrize("stdout", [VERDICT + "\n", ""], ids=["with_verdict", "stderr_only"])
+def test_failed_reason_cuts_long_stderr_to_600_chars_keeping_a_leading_verdict_and_the_last_line(stdout) -> None:
+    reason = failed_reason(stdout, GIT_STDERR)
     assert len(GIT_STDERR) > 600
-    assert reason.startswith(VERDICT + "\n")
+    assert reason.startswith(stdout)
     assert reason.endswith(LAST_BRANCH)
     assert len(reason) <= 600
 
 
-def test_a_failed_reason_with_empty_stdout_is_the_stderr_tail() -> None:
-    assert failed_reason("", "one\ntwo\n") == "one\ntwo"
-    assert failed_reason("", GIT_STDERR).endswith(LAST_BRANCH)
-    assert len(failed_reason("", GIT_STDERR)) <= 600
-
-
-def test_a_failed_reason_with_empty_stderr_is_the_stdout_verdict() -> None:
-    assert failed_reason(f"\n{VERDICT}\nsecond line\n", "") == VERDICT
-
-
-def test_a_failed_reason_with_both_empty_is_empty() -> None:
-    assert failed_reason("", "") == ""
-
-
-def test_a_failed_fetch_records_the_verdict_first_through_run_argv(monkeypatch) -> None:
-    done = chair_exec.ArgvResult(2, VERDICT + "\n", GIT_STDERR, VERDICT + "\n" + GIT_STDERR)
-    monkeypatch.setattr(chair_exec, "run_argv_split", lambda *a, **k: done)
-    code, output = run_argv(["cox", "runs", "fetch", "r-1"])
-    recorded = chair_exec._recorded({"action": {"kind": "fetch_exit", "run": "r-1"}, "status": "failed", "reason": output})
-    assert code == 2
-    assert recorded["reason"].startswith("fetch: verify:")
-    assert recorded["reason"].endswith(LAST_BRANCH)
-
-
+FETCH_ARGV = ["cox", "runs", "fetch", "r-1"]
 LAUNCH_ARGV = ["cox", "route", "launch", "epic", "--initiative", "work/i", "--no-claim", "--on", "host-a"]
 HELD_WARNINGS = "".join(f"warning: held export work/other-{n:03d}/export.json blocks nothing here\n" for n in range(50))
 USAGE_HOLD = "routing: usage hold: weekly 91% of the ceiling"
 
 
-def _failed_launch_reason(monkeypatch, stdout: str, stderr: str = HELD_WARNINGS) -> str:
+@pytest.mark.parametrize(
+    ("argv", "stdout", "stderr", "start", "end"),
+    [
+        (FETCH_ARGV, VERDICT + "\n", GIT_STDERR, "fetch: verify:", LAST_BRANCH),
+        (LAUNCH_ARGV, "routing: X\n", HELD_WARNINGS, "routing: X\n", "blocks nothing here"),
+        (
+            LAUNCH_ARGV,
+            "export: skipped 1 contentless row(s): x\nmerged: t1 + t2 -> t1 (shared a.py)\noverride: launching i despite blocked t0\n"
+            f"{USAGE_HOLD}\nrouting: advisory: usage go_degraded: window 80%\nrouting: i-3 is already running (pid 42)\n",
+            HELD_WARNINGS,
+            "routing: i-3 is already running (pid 42)\n",
+            "",
+        ),
+        (
+            LAUNCH_ARGV,
+            f"{USAGE_HOLD}\nrouting: /home/user/repo has uncommitted changes:\n M agent_tools/x.py\n?? notes.md\n\n",
+            HELD_WARNINGS,
+            "routing: /home/user/repo has uncommitted changes: M agent_tools/x.py; ?? notes.md\n",
+            "",
+        ),
+        (
+            LAUNCH_ARGV,
+            "export: skipped 1 contentless row(s): x\nrefusing: the landing loop is held by s-1 (live); pass --force to override\n",
+            "",
+            "refusing: the landing loop is held by s-1",
+            "",
+        ),
+    ],
+    ids=["fetch", "launch_verdict_before_warnings", "launch_refusal_after_notes", "launch_dirty_repo", "launch_leader_guard"],
+)
+def test_a_failed_command_records_its_stdout_verdict_before_its_stderr_noise(monkeypatch, argv, stdout, stderr, start, end) -> None:
     done = chair_exec.ArgvResult(2, stdout, stderr, stdout + stderr)
     monkeypatch.setattr(chair_exec, "run_argv_split", lambda *a, **k: done)
-    code, output = run_argv(LAUNCH_ARGV)
+    code, output = run_argv(argv)
+    reason = chair_exec._recorded({"action": {"kind": "fetch_exit", "run": "r-1"}, "status": "failed", "reason": output})["reason"]
     assert code == 2
-    return chair_exec._recorded({"action": {"kind": "launch_epic", "initiative": "i"}, "status": "failed", "reason": output})["reason"]
-
-
-def test_a_failed_launch_records_its_stdout_verdict_before_3kb_of_stderr_warnings(monkeypatch) -> None:
-    reason = _failed_launch_reason(monkeypatch, "routing: X\n")
-    assert len(HELD_WARNINGS) > 3000
-    assert reason.startswith("routing: X\n")
-    assert reason.endswith("blocks nothing here")
+    assert reason.startswith(start)
+    assert reason.endswith(end)
     assert len(reason) <= 600
-
-
-def test_a_failed_launch_records_the_refusal_not_the_usage_hold_and_notes_printed_before_it(monkeypatch) -> None:
-    stdout = (
-        "export: skipped 1 contentless row(s): x\nmerged: t1 + t2 -> t1 (shared a.py)\noverride: launching i despite blocked t0\n"
-        f"{USAGE_HOLD}\nrouting: advisory: usage go_degraded: window 80%\nrouting: i-3 is already running (pid 42)\n"
-    )
-    assert _failed_launch_reason(monkeypatch, stdout).startswith("routing: i-3 is already running (pid 42)\n")
-
-
-def test_a_dirty_repo_launch_records_the_refusal_with_its_porcelain_entries(monkeypatch) -> None:
-    stdout = f"{USAGE_HOLD}\nrouting: /home/user/repo has uncommitted changes:\n M agent_tools/x.py\n?? notes.md\n\n"
-    reason = _failed_launch_reason(monkeypatch, stdout)
-    assert reason.startswith("routing: /home/user/repo has uncommitted changes: M agent_tools/x.py; ?? notes.md\n")
-
-
-def test_a_launch_refused_by_the_leader_guard_records_its_refusing_line(monkeypatch) -> None:
-    stdout = "export: skipped 1 contentless row(s): x\nrefusing: the landing loop is held by s-1 (live); pass --force to override\n"
-    assert _failed_launch_reason(monkeypatch, stdout, "").startswith("refusing: the landing loop is held by s-1")
 
 
 def test_a_launch_verdict_is_the_last_routing_line_with_what_follows_else_the_last_line() -> None:
@@ -207,23 +190,17 @@ def test_a_launch_verdict_is_the_last_routing_line_with_what_follows_else_the_la
     assert launch_verdict("\n") == ""
 
 
-def test_a_launch_that_succeeds_times_out_or_cannot_run_keeps_the_mixed_text(monkeypatch) -> None:
-    for code in (0, 124, 127):
-        done = chair_exec.ArgvResult(code, f"{USAGE_HOLD}\nrun i-3\n", "warn\n", f"{USAGE_HOLD}\nrun i-3\nwarn\n")
-        monkeypatch.setattr(chair_exec, "run_argv_split", lambda *a, _done=done, **k: _done)
-        assert run_argv(LAUNCH_ARGV) == (code, done.mixed)
+@pytest.mark.parametrize("code", [0, 124, 127])
+def test_a_launch_that_succeeds_times_out_or_cannot_run_keeps_the_mixed_text(monkeypatch, code) -> None:
+    done = chair_exec.ArgvResult(code, f"{USAGE_HOLD}\nrun i-3\n", "warn\n", f"{USAGE_HOLD}\nrun i-3\nwarn\n")
+    monkeypatch.setattr(chair_exec, "run_argv_split", lambda *a, **k: done)
+    assert run_argv(LAUNCH_ARGV) == (code, done.mixed)
 
 
 def test_a_failed_land_keeps_the_mixed_text_so_the_conflict_line_survives(monkeypatch) -> None:
     done = chair_exec.ArgvResult(1, "merge: ok\n", "error: could not apply abc\n", "merge: ok\nerror: could not apply abc\n")
     monkeypatch.setattr(chair_exec, "run_argv_split", lambda *a, **k: done)
     assert run_argv(["cox", "runs", "land", "r-1"]) == (1, done.mixed)
-
-
-WIDEN = {
-    "kind": "widen_ticket", "initiative": "i", "task_id": "t1",
-    "paths": ["src/app.rs"], "additions": ["accessor"], "reason": "handoff", "epoch": 1,
-}
 
 
 def _widen_ticket_file(tmp_path: Path) -> Path:
@@ -241,7 +218,6 @@ def test_a_widen_ticket_widens_in_process_mirrors_ready_to_the_store_and_records
     rows: list = []
     deps = replace(_deps(calls), runs_dir=tmp_path / "runs", work_dir=tmp_path, record=rows.append)
     results = perform([WIDEN], deps, lambda: 1, False)
-    assert argv_for(WIDEN) is None
     assert _touched(calls) == []
     assert mirrored == [(tmp_path / "runs", "i", "t1", "ready", "chair")]
     assert (results[0]["status"], results[0]["reason"]) == ("done", "widened t1: src/app.rs")
@@ -249,21 +225,22 @@ def test_a_widen_ticket_widens_in_process_mirrors_ready_to_the_store_and_records
     assert [(r["status"], r["reason"]) for r in rows] == [("done", "widened t1: src/app.rs")]
 
 
-def test_a_widen_ticket_carries_a_store_mirror_warning_in_its_reason(tmp_path, monkeypatch) -> None:
-    _widen_ticket_file(tmp_path)
-    monkeypatch.setattr(chair_exec.store_cli, "mirror_state", lambda *a: "warning: store did not record i/t1 as ready")
-    results = perform([WIDEN], replace(_deps([]), work_dir=tmp_path), lambda: 1, False)
-    assert (results[0]["status"], results[0]["reason"]) == (
-        "done", "widened t1: src/app.rs; warning: store did not record i/t1 as ready"
-    )
-
-
-def test_a_widen_ticket_with_no_ticket_fails_and_mirrors_nothing(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("with_ticket", "mirror_result", "status", "reason"),
+    [
+        (True, "warning: store did not record i/t1 as ready", "done", "widened t1: src/app.rs; warning: store did not record i/t1 as ready"),
+        (False, None, "failed", "ticket not found"),
+    ],
+    ids=["mirror_warning", "no_ticket"],
+)
+def test_a_widen_ticket_carries_a_mirror_warning_and_fails_without_a_ticket(tmp_path, monkeypatch, with_ticket, mirror_result, status, reason) -> None:
+    if with_ticket:
+        _widen_ticket_file(tmp_path)
     mirrored: list = []
-    monkeypatch.setattr(chair_exec.store_cli, "mirror_state", lambda *a: mirrored.append(a) or None)
+    monkeypatch.setattr(chair_exec.store_cli, "mirror_state", lambda *a: mirrored.append(a) or mirror_result)
     results = perform([WIDEN], replace(_deps([]), work_dir=tmp_path), lambda: 1, False)
-    assert (results[0]["status"], results[0]["reason"]) == ("failed", "ticket not found")
-    assert mirrored == []
+    assert (results[0]["status"], results[0]["reason"]) == (status, reason)
+    assert len(mirrored) == (1 if with_ticket else 0)
 
 
 def _close(initiative: str, state: str | None) -> dict:
@@ -276,44 +253,41 @@ def _closing(monkeypatch, tmp_path, written: list, rows: list, result=None) -> D
     return replace(_deps([]), runs_dir=tmp_path / "runs", record=rows.append)
 
 
-def test_a_close_initiative_done_writes_done_by_chair_loop_for_that_initiative(tmp_path, monkeypatch) -> None:
-    written: list = []
-    results = perform([_close("alpha", "done")], _closing(monkeypatch, tmp_path, written, []), lambda: 1, False)
-    assert written == [(tmp_path / "runs", "alpha", "alpha", "done", "chair-loop")]
-    assert (results[0]["status"], results[0]["reason"]) == ("done", "closed alpha as done")
-
-
-def test_a_close_initiative_dropped_writes_dropped(tmp_path, monkeypatch) -> None:
-    written: list = []
-    perform([_close("beta", "dropped")], _closing(monkeypatch, tmp_path, written, []), lambda: 1, False)
-    assert written == [(tmp_path / "runs", "beta", "beta", "dropped", "chair-loop")]
-
-
-def test_a_close_initiative_is_recorded_like_its_neighbours(tmp_path, monkeypatch) -> None:
-    rows: list = []
-    perform([_close("alpha", "done")], _closing(monkeypatch, tmp_path, [], rows), lambda: 1, False)
-    assert rows == [{**_close("alpha", "done"), "status": "done", "reason": "closed alpha as done"}]
-
-
-@pytest.mark.parametrize("state", ["todo", "ready", "", None])
-def test_a_close_initiative_with_an_invalid_state_writes_nothing_and_is_recorded_failed(tmp_path, monkeypatch, state) -> None:
+@pytest.mark.parametrize(("initiative", "state"), [("alpha", "done"), ("beta", "dropped")])
+def test_a_close_initiative_writes_its_state_by_chair_loop_and_is_recorded_like_its_neighbours(tmp_path, monkeypatch, initiative, state) -> None:
     written: list = []
     rows: list = []
-    results = perform([_close("alpha", state)], _closing(monkeypatch, tmp_path, written, rows), lambda: 1, False)
-    assert written == []
+    results = perform([_close(initiative, state)], _closing(monkeypatch, tmp_path, written, rows), lambda: 1, False)
+    assert written == [(tmp_path / "runs", initiative, initiative, state, "chair-loop")]
+    assert (results[0]["status"], results[0]["reason"]) == ("done", f"closed {initiative} as {state}")
+    assert rows == [{**_close(initiative, state), "status": "done", "reason": f"closed {initiative} as {state}"}]
+
+
+@pytest.mark.parametrize(
+    ("state", "refused", "writes"),
+    [("todo", False, 0), ("ready", False, 0), ("", False, 0), (None, False, 0), ("done", True, 1)],
+    ids=["todo", "ready", "empty", "missing", "store_refuses"],
+)
+def test_a_close_initiative_that_is_invalid_or_refused_by_the_store_is_recorded_failed(tmp_path, monkeypatch, state, refused, writes) -> None:
+    written: list = []
+    rows: list = []
+    result = chair_exec.store_cli.StateRefused("no such row") if refused else None
+    results = perform([_close("alpha", state)], _closing(monkeypatch, tmp_path, written, rows, result), lambda: 1, False)
+    assert len(written) == writes
     assert results[0]["status"] == "failed"
     assert [(r["kind"], r["status"]) for r in rows] == [("close_initiative", "failed")]
 
 
-def test_a_close_initiative_the_store_refuses_is_recorded_failed(tmp_path, monkeypatch) -> None:
-    refused = chair_exec.store_cli.StateRefused("no such row")
-    results = perform([_close("alpha", "done")], _closing(monkeypatch, tmp_path, [], [], refused), lambda: 1, False)
-    assert results[0]["status"] == "failed"
-
-
-def test_the_close_state_problem_is_empty_only_for_done_and_dropped() -> None:
-    assert [chair_exec._close_state_problem(s) for s in ("done", "dropped")] == ["", ""]
-    assert chair_exec._close_state_problem("todo") == "close_initiative state must be done or dropped, not 'todo'"
+@pytest.mark.parametrize(
+    ("state", "problem"),
+    [
+        ("done", ""),
+        ("dropped", ""),
+        ("todo", "close_initiative state must be done or dropped, not 'todo'"),
+    ],
+)
+def test_the_close_state_problem_is_empty_only_for_done_and_dropped(state, problem) -> None:
+    assert chair_exec._close_state_problem(state) == problem
 
 
 def _land(task: str, repo: str) -> dict:
@@ -326,13 +300,6 @@ def _land_phase(phase: str, repo: str) -> dict:
 
 def _clear(initiative: str) -> dict:
     return {"kind": "clear_branches", "initiative": initiative, "epoch": 1}
-
-
-def test_a_fenced_action_is_refused_and_touches_nothing() -> None:
-    calls: list = []
-    results = perform([{"kind": "pull", "epoch": 1}], _deps(calls), lambda: 2, False)
-    assert [r["status"] for r in results] == ["fenced"]
-    assert calls == [("record", "pull")]
 
 
 def _carry(epoch: int = 1) -> dict:
@@ -362,32 +329,35 @@ def _wired(calls: list, monkeypatch) -> Deps:
     )
 
 
-def test_a_carry_phase_reaches_the_carry_executor_and_is_recorded_once(monkeypatch) -> None:
-    calls: list = []
-    results = perform([_carry()], _wired(calls, monkeypatch), lambda: 1, False)
+@pytest.mark.parametrize(
+    ("actions", "epoch", "dry_run", "status", "calls"),
+    [
+        ([{"kind": "pull", "epoch": 1}], 2, False, "fenced", [("record", "pull")]),
+        ([_carry(), _rebase()], 2, False, "fenced", [("record", "carry_phase"), ("record", "rebase_phase")]),
+        ([_carry(), _rebase()], 1, True, "dry_run", []),
+    ],
+    ids=["fenced_pull", "fenced_carry_and_rebase", "dry_run_carry_and_rebase"],
+)
+def test_a_fenced_or_dry_run_action_touches_nothing_and_only_a_fenced_one_is_recorded(monkeypatch, actions, epoch, dry_run, status, calls) -> None:
+    seen: list = []
+    results = perform(actions, _wired(seen, monkeypatch), lambda: epoch, dry_run)
+    assert [r["status"] for r in results] == [status] * len(actions)
+    assert seen == calls
+
+
+@pytest.mark.parametrize(
+    ("action", "calls"),
+    [
+        (_carry(), [("ports",), ("carry", "p1"), ("record", "carry_phase")]),
+        (_rebase(), [("port",), ("rebase", "epic/alpha/p1"), ("record", "rebase_phase")]),
+    ],
+    ids=["carry_phase", "rebase_phase"],
+)
+def test_a_carry_phase_and_a_rebase_phase_reach_their_executor_and_are_recorded_once(monkeypatch, action, calls) -> None:
+    seen: list = []
+    results = perform([action], _wired(seen, monkeypatch), lambda: 1, False)
     assert [r["status"] for r in results] == ["done"]
-    assert calls == [("ports",), ("carry", "p1"), ("record", "carry_phase")]
-
-
-def test_a_rebase_phase_reaches_the_rebase_executor_and_is_recorded(monkeypatch) -> None:
-    calls: list = []
-    results = perform([_rebase()], _wired(calls, monkeypatch), lambda: 1, False)
-    assert [r["status"] for r in results] == ["done"]
-    assert calls == [("port",), ("rebase", "epic/alpha/p1"), ("record", "rebase_phase")]
-
-
-def test_a_fenced_carry_phase_and_rebase_phase_call_nothing(monkeypatch) -> None:
-    calls: list = []
-    results = perform([_carry(), _rebase()], _wired(calls, monkeypatch), lambda: 2, False)
-    assert [r["status"] for r in results] == ["fenced", "fenced"]
-    assert calls == [("record", "carry_phase"), ("record", "rebase_phase")]
-
-
-def test_a_dry_run_of_a_carry_phase_and_a_rebase_phase_performs_nothing(monkeypatch) -> None:
-    calls: list = []
-    results = perform([_carry(), _rebase()], _wired(calls, monkeypatch), lambda: 1, True)
-    assert [r["status"] for r in results] == ["dry_run", "dry_run"]
-    assert calls == []
+    assert seen == calls
 
 
 def test_a_carry_conflict_is_surfaced_as_needs_chair_and_marks_nothing_landed() -> None:
@@ -425,19 +395,24 @@ def _store_edge(tmp_path, monkeypatch, pr_url: str) -> tuple[list, chair_exec._S
     return argvs, chair_exec._StoreEdge(tmp_path, tmp_path, _carry(), forge, lambda: "2026-10-05T00:00:00+00:00")
 
 
-def test_the_store_edge_stamps_the_pr_url_open_pr_returned(tmp_path, monkeypatch) -> None:
-    argvs, store = _store_edge(tmp_path, monkeypatch, "https://github.com/o/r/pull/7")
+@pytest.mark.parametrize(
+    ("pr_url", "expected"),
+    [
+        (
+            "https://github.com/o/r/pull/7",
+            [[
+                "py", "-m", "harness.store_cli", "mark-landed", "run-1", "p1", "t1",
+                "--pr", "https://github.com/o/r/pull/7", "--at", "2026-10-05T00:00:00+00:00",
+            ]],
+        ),
+        ("", []),
+    ],
+    ids=["pr_opened", "no_pr"],
+)
+def test_the_store_edge_stamps_the_pr_url_open_pr_returned_and_writes_nothing_without_one(tmp_path, monkeypatch, pr_url, expected) -> None:
+    argvs, store = _store_edge(tmp_path, monkeypatch, pr_url)
     store.mark_landed("t1", "run-1")
-    assert argvs == [[
-        "py", "-m", "harness.store_cli", "mark-landed", "run-1", "p1", "t1",
-        "--pr", "https://github.com/o/r/pull/7", "--at", "2026-10-05T00:00:00+00:00",
-    ]]
-
-
-def test_the_store_edge_writes_no_landed_record_when_no_pr_was_opened(tmp_path, monkeypatch) -> None:
-    argvs, store = _store_edge(tmp_path, monkeypatch, "")
-    store.mark_landed("t1", "run-1")
-    assert argvs == []
+    assert argvs == expected
 
 
 def test_the_forge_edge_keeps_only_the_url_gh_printed(monkeypatch) -> None:
