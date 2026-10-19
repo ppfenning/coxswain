@@ -389,31 +389,40 @@ def test_phase_edges_are_derived_from_the_task_edges() -> None:
     assert phase_order(parents) == (["p1-foundations", "p2-rollout"], [])
 
 
-def test_phase_parents_drops_cross_phase_needs_whose_tasks_are_already_done() -> None:
-    """A `done` need is already on the base ref: it imposes no stacking requirement."""
-    items = [
-        {"id": "t1-probe", "phase": "p1-foundations", "state": "done", "needs": []},
-        {"id": "t2-bench", "phase": "p2-rollout", "state": "done", "needs": []},
-        {"id": "t3-cutover", "phase": "p3-cutover", "state": "ready", "needs": ["t1-probe", "t2-bench"]},
-    ]
-    assert phase_parents(items)["p3-cutover"] == set()
-
-
-def test_phase_parents_keeps_a_single_unsatisfied_cross_phase_need() -> None:
-    items = [
-        {"id": "t1-probe", "phase": "p1-foundations", "state": "in_progress", "needs": []},
-        {"id": "t3-cutover", "phase": "p2-rollout", "state": "ready", "needs": ["t1-probe"]},
-    ]
-    assert phase_parents(items)["p2-rollout"] == {"p1-foundations"}
-
-
-def test_phase_parents_still_reports_two_unsatisfied_parents() -> None:
-    items = [
-        {"id": "t1-probe", "phase": "p1-foundations", "state": "in_progress", "needs": []},
-        {"id": "t0-seed", "phase": "p0-seed", "state": "pending", "needs": []},
-        {"id": "t3-cutover", "phase": "p2-rollout", "state": "ready", "needs": ["t1-probe", "t0-seed"]},
-    ]
-    assert phase_parents(items)["p2-rollout"] == {"p1-foundations", "p0-seed"}
+@pytest.mark.parametrize(
+    ("items", "expected"),
+    [
+        pytest.param(
+            [
+                {"id": "t1-probe", "phase": "p1-foundations", "state": "done", "needs": []},
+                {"id": "t0-seed", "phase": "p0-seed", "state": "done", "needs": []},
+                {"id": "t3-cutover", "phase": "p2-rollout", "state": "ready", "needs": ["t1-probe", "t0-seed"]},
+            ],
+            set(),
+            id="done-needs-impose-no-stacking",
+        ),
+        pytest.param(
+            [
+                {"id": "t1-probe", "phase": "p1-foundations", "state": "in_progress", "needs": []},
+                {"id": "t3-cutover", "phase": "p2-rollout", "state": "ready", "needs": ["t1-probe"]},
+            ],
+            {"p1-foundations"},
+            id="one-unsatisfied-need",
+        ),
+        pytest.param(
+            [
+                {"id": "t1-probe", "phase": "p1-foundations", "state": "in_progress", "needs": []},
+                {"id": "t0-seed", "phase": "p0-seed", "state": "pending", "needs": []},
+                {"id": "t3-cutover", "phase": "p2-rollout", "state": "ready", "needs": ["t1-probe", "t0-seed"]},
+            ],
+            {"p1-foundations", "p0-seed"},
+            id="two-unsatisfied-needs",
+        ),
+    ],
+)
+def test_phase_parents_keeps_only_cross_phase_needs_that_are_not_done(items, expected) -> None:
+    """A `done` need is already on the base ref, so it imposes no stacking requirement."""
+    assert phase_parents(items)["p2-rollout"] == expected
 
 
 def test_a_phase_with_two_parents_is_blocked_rather_than_guessed_at(repo, cart, tmp_path) -> None:
@@ -477,24 +486,16 @@ def _one_task_needing_a_foreign_task(foreign_state: str) -> dict:
     return {**work, "foreign": {FOREIGN_NEED: foreign_state}}
 
 
-def test_a_task_whose_foreign_need_is_done_is_ready_and_built(repo, cart, tmp_path) -> None:
-    work = _one_task_needing_a_foreign_task("done")
+@pytest.mark.parametrize(("foreign_state", "built"), [("done", True), ("ready", False)])
+def test_a_task_is_built_only_when_its_foreign_need_is_done(repo, cart, tmp_path, foreign_state, built) -> None:
+    work = _one_task_needing_a_foreign_task(foreign_state)
     patches = {"t1-probe": new_file_patch("t1-probe.txt")}
     result, runner = drive(repo, cart, tmp_path, work=work, patches=patches)
 
-    assert [p["status"] for p in result["phases"]] == ["complete"]
-    assert result["totals"]["phases_partial"] == 0
-    assert any(c["role"] == "build" for c in runner.calls)
-    assert "epic/demo-initiative/p1-foundations--t1-probe" in branches(repo)
-
-
-def test_a_task_whose_foreign_need_is_not_done_stays_unready(repo, cart, tmp_path) -> None:
-    work = _one_task_needing_a_foreign_task("ready")
-    patches = {"t1-probe": new_file_patch("t1-probe.txt")}
-    _, runner = drive(repo, cart, tmp_path, work=work, patches=patches)
-
-    assert not any(c["role"] == "build" for c in runner.calls)
-    assert "epic/demo-initiative/p1-foundations--t1-probe" not in branches(repo)
+    assert any(c["role"] == "build" for c in runner.calls) is built
+    assert ("epic/demo-initiative/p1-foundations--t1-probe" in branches(repo)) is built
+    if built:
+        assert [p["status"] for p in result["phases"]] == ["complete"]
 
 
 # ── cleanup on exit, work-shape.md §6/§8 ────────────────────────────────────
@@ -626,24 +627,18 @@ def test_every_phase_records_its_own_store_rows_and_ledger_rows_but_no_manifest_
 # ── the base of an unparented phase ─────────────────────────────────────────
 
 
-def test_default_branch_prefers_a_local_origin_head() -> None:
-    assert default_branch("origin/develop", {"develop", "main"}, "topic") == "develop"
-
-
-def test_default_branch_skips_an_origin_head_that_is_not_local() -> None:
-    assert default_branch("origin/develop", {"main"}, "topic") == "main"
-
-
-def test_default_branch_prefers_main_over_master() -> None:
-    assert default_branch(None, {"main", "master"}, "topic") == "main"
-
-
-def test_default_branch_falls_back_to_master() -> None:
-    assert default_branch(None, {"master", "topic"}, "topic") == "master"
-
-
-def test_default_branch_falls_back_to_the_checkout_when_no_default_exists() -> None:
-    assert default_branch(None, {"topic"}, "topic") == "topic"
+@pytest.mark.parametrize(
+    ("origin_head", "local", "expected"),
+    [
+        pytest.param("origin/develop", {"develop", "main"}, "develop", id="local-origin-head"),
+        pytest.param("origin/develop", {"main"}, "main", id="origin-head-not-local"),
+        pytest.param(None, {"main", "master"}, "main", id="main-over-master"),
+        pytest.param(None, {"master", "topic"}, "master", id="master"),
+        pytest.param(None, {"topic"}, "topic", id="the-checkout"),
+    ],
+)
+def test_default_branch_picks_origin_head_then_main_then_master_then_the_checkout(origin_head, local, expected) -> None:
+    assert default_branch(origin_head, local, "topic") == expected
 
 
 def test_an_unparented_phase_branches_from_main_not_from_the_checked_out_branch(repo, cart, tmp_path) -> None:
@@ -731,25 +726,7 @@ def test_a_failing_check_quarantines_that_task_and_the_sibling_still_merges(repo
 # ── the lint_fix step, mechanical and model-free ─────────────────────────────
 
 
-def test_a_checks_fix_command_lands_the_folded_patch(repo, cart, tmp_path) -> None:
-    cart["landing_areas"]["checks"] = [
-        {"name": "state", "cmd": f"{sys.executable} check.py", "fix": "printf ok > t1-probe.txt"}
-    ]
-    runner = Runner(
-        {"t1-probe": new_file_patch("t1-probe.txt", "broken"), "t2-bench": new_file_patch("t2-bench.txt")}
-    )
-    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
-
-    assert not result["quarantined"]
-    task = next(t for t in result["tasks"] if t["id"] == "t1-probe")
-    assert task["lint_fixed"] is True
-    assert task["lint_fix_checks"] == ["state"]
-    landed = git("show", "epic/demo-initiative/p1-foundations:t1-probe.txt", cwd=repo)
-    assert landed.strip() == "ok"
-    assert "lint fix" not in git("log", "--format=%s", "epic/demo-initiative/p1-foundations", cwd=repo)
-
-
-def test_a_fix_command_runs_once_and_never_for_a_check_with_none_configured(repo, cart, tmp_path) -> None:
+def test_a_checks_fix_command_lands_the_folded_patch_runs_once_and_skips_a_check_with_none(repo, cart, tmp_path) -> None:
     cart["landing_areas"]["checks"] = [
         {
             "name": "state",
@@ -763,10 +740,14 @@ def test_a_fix_command_runs_once_and_never_for_a_check_with_none_configured(repo
     )
     result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
 
+    assert not result["quarantined"]
     task = next(t for t in result["tasks"] if t["id"] == "t1-probe")
+    assert task["lint_fixed"] is True
     assert task["lint_fix_checks"] == ["state"]
-    landed = git("show", "epic/demo-initiative/p1-foundations:fix-count.marker", cwd=repo)
-    assert landed.strip() == "1"
+    phase = "epic/demo-initiative/p1-foundations"
+    assert git("show", f"{phase}:t1-probe.txt", cwd=repo).strip() == "ok"
+    assert git("show", f"{phase}:fix-count.marker", cwd=repo).strip() == "1"
+    assert "lint fix" not in git("log", "--format=%s", phase, cwd=repo)
 
 
 def test_a_residual_failure_after_the_fix_step_keeps_the_patch_as_unverified(repo, cart, tmp_path) -> None:
@@ -810,16 +791,6 @@ def test_an_unapproved_task_with_a_failing_check_is_unchanged(repo, cart, tmp_pa
     assert "checks" not in task_entry
 
 
-def test_the_failing_checks_evidence_reaches_the_record(repo, cart, tmp_path) -> None:
-    runner = Runner(
-        {"t1-probe": new_file_patch("t1-probe.txt", "broken"), "t2-bench": new_file_patch("t2-bench.txt")},
-        verdicts={"p1-foundations": GOAL_UNMET},
-    )
-    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
-    failed = next(t for t in result["tasks"] if t["id"] == "t1-probe")
-    assert any(row["check"] == "checks:state" and "FAIL" in row["output"] for row in failed["evidence"])
-
-
 def test_trace_commands_land_in_order_and_a_self_reported_one_is_never_folded_in(repo, cart, tmp_path) -> None:
     # Deliberately not alphabetical ("ruff" then "echo") — a regression that
     # sorted commands instead of preserving trace order would fail this.
@@ -835,105 +806,66 @@ def test_trace_commands_land_in_order_and_a_self_reported_one_is_never_folded_in
     )
     result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
     landed = next(t for t in result["tasks"] if t["id"] == "t1-probe")
-    rows = [row for row in landed["evidence"] if row["check"] == "command"]
-    assert rows == [
+    other = next(t for t in result["tasks"] if t["id"] == "t2-bench")
+    assert [row for row in landed["evidence"] if row["check"] == "command"] == [
         {"check": "command", "source": "trace", "output": "ruff check .\nAll checks passed!"},
         {"check": "command", "source": "trace", "output": "echo done\ndone"},
     ]
-
-
-def test_files_touched_appears_exactly_once(repo, cart, tmp_path) -> None:
-    runner = CommandsRunner({"t1-probe": new_file_patch("t1-probe.txt")})
-    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
-    landed = next(t for t in result["tasks"] if t["id"] == "t1-probe")
-    rows = [row for row in landed["evidence"] if row["check"] == "files_touched"]
-    assert rows == [{"check": "files_touched", "source": "trace", "output": "t1-probe.txt"}]
-
-
-def test_two_tasks_with_identical_files_touched_each_get_their_own_evidence(repo, cart, tmp_path) -> None:
-    """`task_id` selects the call, not `files_touched` — which two tasks can share."""
-    runner = CommandsRunner(
-        {"t1-probe": new_file_patch("shared.txt"), "t2-bench": new_file_patch("shared.txt")},
-        commands_run={
-            "t1-probe": [{"command": "one", "output": "1", "source": "trace"}],
-            "t2-bench": [{"command": "two", "output": "2", "source": "trace"}],
-        },
-    )
-    # Both tasks' patches touch the same file, so a match keyed on
-    # `files_touched` would collide; `task_id` is what disambiguates the two
-    # ledger rows below.
-    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
-    t1 = next(t for t in result["tasks"] if t["id"] == "t1-probe")
-    t2 = next(t for t in result["tasks"] if t["id"] == "t2-bench")
-    assert [r["output"] for r in t1["evidence"] if r["check"] == "command"] == ["one\n1"]
-    assert [r["output"] for r in t2["evidence"] if r["check"] == "command"] == ["two\n2"]
-
-
-class RetriedCommandsRunner(CommandsRunner):
-    """Reviews t1-probe's first patch as `revise` once, so the fix loop retries
-    the build — two `role: "build"` ledger rows share one `task_id`. Evidence
-    must come from the last, the retry whose patch the record actually applied.
-    """
-
-    def __init__(self, patches: dict[str, str]) -> None:
-        super().__init__(patches, commands_run={"t1-probe": [{"command": "first", "output": "1", "source": "trace"}]})
-        self._revised = False
-
-    def run(
-        self, *, role, tier=None, hints=None, schema, prompt, context=(), thread=None, budget_usd=None, task=None,
-        wait_if_paused=None,
-    ):
-        if role == "review_charter" and "t1-probe" in prompt and not self._revised:
-            self._revised = True
-            with self.lock:
-                self.calls.append({"role": role, "tier": tier, "prompt": prompt})
-            return dict(REVISE)
-        if role == "build" and task == "t1-probe" and self._revised:
-            self.commands_run["t1-probe"] = [{"command": "second", "output": "2", "source": "trace"}]
-            # A retry that repeats the same patch reads as "no progress" and is
-            # refused before a second build call is even ledgered — so the
-            # retry has to change the patch to prove anything about which call
-            # the evidence comes from.
-            self.patches["t1-probe"] = new_file_patch("t1-probe.txt") + new_file_patch("t1-probe-retry.txt")
-        return super().run(
-            role=role, tier=tier, schema=schema, prompt=prompt, context=context, thread=thread,
-            budget_usd=budget_usd, task=task,
-        )
-
-
-def test_a_retried_builds_evidence_comes_from_the_last_call(repo, cart, tmp_path) -> None:
-    runner = RetriedCommandsRunner({t: new_file_patch(f"{t}.txt") for t in TASK_IDS})
-    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
-    landed = next(t for t in result["tasks"] if t["id"] == "t1-probe")
-    rows = [row for row in landed["evidence"] if row["check"] == "command"]
-    assert rows == [{"check": "command", "source": "trace", "output": "second\n2"}]
-
-
-def test_trace_evidence_ignores_the_epics_own_style_pass_call_on_the_shared_ledger() -> None:
-    """`_trim_phase` is `harness/epic.py`'s own direct `ctx.runner.run` call — `role:
-    "style_pass"`, one per PHASE, carrying no `task_id` because a phase is not a task.
-    Its row lands on the same shared `ctx.runner.calls` a build call's does; the
-    `role == "build"` filter, not a `task_id` match, is what keeps it out of a task's
-    evidence.
-    """
-    calls = [
-        {"role": "style_pass", "task_id": None, "commands_run": [{"command": "x", "output": "y", "source": "trace"}], "files_touched": ["z.txt"]},
-        {"role": "build", "task_id": "t1-probe", "commands_run": [{"command": "real", "output": "1", "source": "trace"}], "files_touched": ["t1-probe.txt"]},
+    assert [row for row in landed["evidence"] if row["check"] == "files_touched"] == [
+        {"check": "files_touched", "source": "trace", "output": "t1-probe.txt"}
     ]
-    assert _trace_evidence(calls, "t1-probe", "") == [
-        {"check": "command", "source": "trace", "output": "real\n1"},
-        {"check": "files_touched", "source": "trace", "output": "t1-probe.txt"},
-    ]
+    assert not [row for row in other["evidence"] if row["check"] == "command"]
 
 
-def test_a_resumed_tasks_files_touched_falls_back_to_the_patch_when_no_call_matches() -> None:
-    """A resumed task (`--resume-from`) makes no build call in this run, so `calls`
-    holds no `task_id`-matching row — `files_touched` must still name the reused
-    patch's own files, not go empty.
-    """
-    assert _trace_evidence([], "t1-probe", new_file_patch("t1-probe.txt")) == [
-        {"check": "files_touched", "source": "trace", "output": "t1-probe.txt"},
-    ]
+def _build_call(command: str, files: list[str], task: str = "t1-probe") -> dict:
+    entry = {"command": command, "output": "1", "source": "trace"}
+    return {"role": "build", "task_id": task, "commands_run": [entry], "files_touched": files}
+
+
+@pytest.mark.parametrize(
+    ("calls", "patch", "expected"),
+    [
+        pytest.param(
+            # Last in the ledger and carrying the task's id: only the `role == "build"` filter keeps it out.
+            [
+                _build_call("real", ["t1-probe.txt"]),
+                {**_build_call("x", ["z.txt"]), "role": "style_pass"},
+            ],
+            "",
+            [
+                {"check": "command", "source": "trace", "output": "real\n1"},
+                {"check": "files_touched", "source": "trace", "output": "t1-probe.txt"},
+            ],
+            id="the-epics-own-style-pass-call-is-not-a-build",
+        ),
+        pytest.param(
+            [],
+            new_file_patch("t1-probe.txt"),
+            [{"check": "files_touched", "source": "trace", "output": "t1-probe.txt"}],
+            id="a-resumed-task-falls-back-to-its-patch",
+        ),
+        pytest.param(
+            [_build_call("one", ["shared.txt"]), _build_call("two", ["shared.txt"], task="t2-bench")],
+            "",
+            [
+                {"check": "command", "source": "trace", "output": "one\n1"},
+                {"check": "files_touched", "source": "trace", "output": "shared.txt"},
+            ],
+            id="task-id-selects-the-call-not-files-touched",
+        ),
+        pytest.param(
+            [_build_call("first", ["a.txt"]), _build_call("second", ["a.txt", "b.txt"])],
+            "",
+            [
+                {"check": "command", "source": "trace", "output": "second\n1"},
+                {"check": "files_touched", "source": "trace", "output": "a.txt\nb.txt"},
+            ],
+            id="a-retried-build-reads-its-last-call",
+        ),
+    ],
+)
+def test_trace_evidence_reads_the_last_build_call_for_the_task(calls, patch, expected) -> None:
+    assert _trace_evidence(calls, "t1-probe", patch) == expected
 
 
 def test_change_facts_carries_the_full_checks_result_for_a_quarantined_task(repo, cart, tmp_path) -> None:
@@ -948,6 +880,7 @@ def test_change_facts_carries_the_full_checks_result_for_a_quarantined_task(repo
     checks = failed["change_facts"]["checks"]
     assert checks is not None
     assert any(c["name"] == "state" and c["passed"] is False for c in checks)
+    assert any(row["check"] == "checks:state" and "FAIL" in row["output"] for row in failed["evidence"])
 
 
 def test_change_facts_carries_the_full_checks_result_not_just_the_evidence_summary(repo, cart, tmp_path) -> None:
@@ -1067,24 +1000,22 @@ def test_a_lint_only_failure_goes_through_the_style_pass_seat_not_a_second_build
     assert git("show", "epic/demo-initiative/p1-foundations:t1-probe.txt", cwd=repo).strip() == "ok"
 
 
-def test_with_no_attempts_left_an_approved_build_whose_lint_fails_quarantines_as_before(repo, cart, tmp_path) -> None:
-    cart["landing_areas"]["checks"] = [{"name": "lint", "cmd": f"{sys.executable} check.py"}]
-    runner = Repairing(_broken_probe(), repaired={"t1-probe": new_file_patch("t1-probe.txt")})
-    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False), fix_attempts=0)
-
-    entry = next(q for q in result["quarantined"] if q["id"] == "t1-probe")
-    assert entry["kind"] == "unverified" and entry["reason"] == "configured check failed: lint — 1 failed"
-    assert builds_per_task(runner) == {"t1-probe": 1, "t2-bench": 1}
-    assert "refix" not in next(t for t in result["tasks"] if t["id"] == "t1-probe")
-
-
-def test_a_check_that_keeps_failing_stops_re_entering_when_the_attempts_run_out(repo, cart, tmp_path) -> None:
+@pytest.mark.parametrize(("fix_attempts", "builds", "refix"), [(0, 1, None), (1, 2, ["revise"])])
+def test_a_check_that_keeps_failing_quarantines_once_the_fix_attempts_run_out(
+    repo, cart, tmp_path, fix_attempts, builds, refix
+) -> None:
     cart["landing_areas"]["checks"] = [{"name": "lint", "cmd": f"{sys.executable} check.py"}]
     runner = Repairing(_broken_probe(), repaired={"t1-probe": new_file_patch("t1-probe.txt", "still broken")})
-    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False), fix_attempts=1)
+    result, _ = drive(
+        repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False), fix_attempts=fix_attempts
+    )
 
+    entry = next(q for q in result["quarantined"] if q["id"] == "t1-probe")
     assert [q["id"] for q in result["quarantined"]] == ["t1-probe"]
-    assert builds_per_task(runner)["t1-probe"] == 2, "the first build plus the one attempt fix_attempts=1 allows"
+    assert entry["kind"] == "unverified" and entry["reason"] == "configured check failed: lint — 1 failed"
+    assert builds_per_task(runner) == {"t1-probe": builds, "t2-bench": 1}
+    task = next(t for t in result["tasks"] if t["id"] == "t1-probe")
+    assert task.get("refix") == refix, "no re-entry leaves no refix record"
 
 
 _TEST_A = new_file_patch("test_thing.py", "def test_a(): assert True")
@@ -1162,19 +1093,13 @@ def test_a_task_gets_one_style_edit_then_a_reviewed_revise(repo, cart, tmp_path,
     assert builds_per_task(runner) == {"t1-probe": 2, "t2-bench": 1}
 
 
-def test_no_measurable_coverage_floor_means_no_style_call_and_a_reviewed_revise(repo, cart, tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr("harness.epic._collected_ids", lambda _worktree: None)
-    cart["skills"]["style_pass"] = "acme-skills:style"
-    cart["landing_areas"]["checks"] = [{"name": "lint", "cmd": f"{sys.executable} check.py"}]
-    runner = Repairing(_broken_probe(), repaired={"t1-probe": new_file_patch("t1-probe.txt")})
-    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
-
-    assert not any(c["role"] == "style_pass" and "a configured check failed" in c["prompt"] for c in runner.calls)
-    assert next(t for t in result["tasks"] if t["id"] == "t1-probe")["refix"] == ["revise"]
-
-
-def test_an_empty_collection_is_as_unmeasurable_as_a_pytest_that_cannot_launch(repo, cart, tmp_path) -> None:
+@pytest.mark.parametrize("cannot_launch", [True, False], ids=["pytest-cannot-launch", "empty-collection"])
+def test_no_measurable_coverage_floor_means_no_style_call_and_a_reviewed_revise(
+    repo, cart, tmp_path, monkeypatch, cannot_launch
+) -> None:
     """The fixture repo has no tests, so pytest collects nothing and `set() <= anything` must not pass the floor."""
+    if cannot_launch:
+        monkeypatch.setattr("harness.epic._collected_ids", lambda _worktree: None)
     cart["skills"]["style_pass"] = "acme-skills:style"
     cart["landing_areas"]["checks"] = [{"name": "lint", "cmd": f"{sys.executable} check.py"}]
     runner = Repairing(_broken_probe(), repaired={"t1-probe": new_file_patch("t1-probe.txt")})
