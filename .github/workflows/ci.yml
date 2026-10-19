@@ -74,13 +74,15 @@ jobs:
         with: { python-version: "3.14" }
       - run: uv sync --group dev --all-extras
       # Fails here, with the import error, rather than as a pytest run that skipped them all.
+      # Serial on purpose: the Postgres store tests back the test database up with pg_dump before migrating it,
+      # which fails under xdist workers.
       - run: uv run python -c "import psycopg, pyarrow, pyiceberg, duckdb, harness.store_migrate"
-      - run: uv run pytest -q -n auto -rs
-      - run: uv run pytest -q -n auto -rs
+      - run: uv run pytest -q -rs
+      - run: uv run pytest -q -rs
         working-directory: src/tools
-      - run: uv run pytest -q -n auto -rs
+      - run: uv run pytest -q -rs
         working-directory: src/graphs
-      - run: uv run pytest -q -n auto -rs
+      - run: uv run pytest -q -rs
         working-directory: src/cartridges
 
   seats:

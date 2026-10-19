@@ -22,8 +22,12 @@ def _pytest_steps(workflow: dict) -> list[tuple[str, str]]:
     ]
 
 
+# The extras job runs the Postgres store tests, which back the test database up with pg_dump and fail under xdist.
+_SERIAL_JOBS = {"extras"}
+
+
 def _missing_xdist(steps: list[tuple[str, str]]) -> list[str]:
-    return [f"{job}: {run}" for job, run in steps if "-n auto" not in run]
+    return [f"{job}: {run}" for job, run in steps if job not in _SERIAL_JOBS and "-n auto" not in run]
 
 
 def _runs() -> list[str]:
