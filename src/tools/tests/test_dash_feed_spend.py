@@ -57,11 +57,11 @@ def _isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(usage_meter, "implied_ceiling", lambda kind, now, *a, **k: None)
     real_gather = usage_window.gather
 
-    def offline_gather(runs_dir, now, *, ceiling_usd=None):
+    def offline_gather(runs_dir, now, *, ceiling_usd=None, start=None):
         def no_ccusage(*args, **kwargs):
             raise OSError("no ccusage in tests")
 
-        return real_gather(runs_dir, now, run=no_ccusage, ceiling_usd=ceiling_usd)
+        return real_gather(runs_dir, now, run=no_ccusage, ceiling_usd=ceiling_usd, start=start)
 
     monkeypatch.setattr(dash_feed.usage_window, "gather", offline_gather)
 
@@ -180,7 +180,9 @@ def test_the_newest_of_a_stale_local_and_a_stale_store_meter_anchors_the_week(tm
     assert spend["spend_age_s"] == 3600
 
 
-def test_the_five_hour_estimate_keeps_its_rolling_window(tmp_path):
+def test_with_no_meter_the_five_hour_estimate_is_the_last_five_hours_over_the_profile_ceiling(tmp_path, monkeypatch):
+    implied = {"five_hour": 10.0, "weekly": None}
+    monkeypatch.setattr(usage_meter, "implied_ceiling", lambda kind, now, *a, **k: implied[kind])
     _usage_file(tmp_path, "six-hours-ago", NOW_DT - timedelta(hours=6), cost=30.0)
     _usage_file(tmp_path, "one-hour-ago", NOW_DT - timedelta(hours=1), cost=5.0)
 
@@ -190,6 +192,36 @@ def test_the_five_hour_estimate_keeps_its_rolling_window(tmp_path):
 
     assert spend["five_hour_fraction"] == 0.05
     assert spend["five_hour_resets_at"] is None
+
+
+def test_a_stale_meters_five_hour_reset_anchors_the_five_hour_estimate(tmp_path):
+    reset = datetime(2026, 10, 9, 21, tzinfo=UTC)
+    _usage_file(tmp_path, "before-reset", reset - timedelta(hours=1), cost=30.0)
+    _usage_file(tmp_path, "after-reset", reset + timedelta(minutes=30), cost=12.0)
+    stale = usage_meter.Meter(
+        five_hour=usage_meter.MeterEntry(used_percentage=0, resets_at=reset),
+        seven_day=usage_meter.MeterEntry(used_percentage=2, resets_at=datetime(2026, 10, 11, 4, tzinfo=UTC)),
+        observed_at=reset - timedelta(hours=2),
+    )
+
+    spend = dash_feed._spend(
+        tmp_path, "2026-10-09T22:00:00Z",
+        read_local=lambda: stale, read_store=lambda runs_dir: None, read_reset=_no_reset,
+    )
+
+    assert spend["five_hour_fraction"] == 0.12
+    assert spend["five_hour_source"] == "est"
+
+
+def test_a_recorded_implied_five_hour_ceiling_does_not_change_the_five_hour_estimate(tmp_path, monkeypatch):
+    monkeypatch.setattr(usage_meter, "implied_ceiling", lambda kind, now, *a, **k: 10.0)
+    _usage_file(tmp_path, "one-hour-ago", NOW_DT - timedelta(hours=1), cost=5.0)
+
+    spend = dash_feed._spend(
+        tmp_path, NOW, read_local=lambda: None, read_store=lambda runs_dir: None, read_reset=_no_reset,
+    )
+
+    assert spend["five_hour_fraction"] == 0.05
 
 
 def test_v1_spend_keeps_every_existing_key_and_blanks_an_absent_age(tmp_path):

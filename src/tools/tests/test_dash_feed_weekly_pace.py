@@ -33,7 +33,7 @@ def _isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(dash_feed, "_profile_ceilings", lambda: (100.0, 100.0))
     monkeypatch.setattr(usage_meter, "implied_ceiling", lambda kind, now, *a, **k: None)
 
-    def gather(runs_dir, now, *, ceiling_usd=None):
+    def gather(runs_dir, now, *, ceiling_usd=None, start=None):
         return usage_window.Window(
             start=now - timedelta(hours=5), end=now, spent_usd=0.0, ceiling_usd=ceiling_usd, burn_usd_per_hour=0.0,
             runs_in_flight=0,
