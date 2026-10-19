@@ -8,7 +8,11 @@ that needs that shape of work.
 
 The `src/graphs` folder holds the graphs, the harness that runs them (the
 gate, the budget, the checks, the records), and the runners that execute
-nodes. See [Graphs](../methodology/graphs.md) for the methodology behind the
+nodes. Eleven graphs register a subcommand: `decompose`, `lifecycle`,
+`validate`, `review-diff` and `rescue-review` for delivery, and `cos`,
+`reconcile`, `retro`, `triage`, `triage-quarantine` and `sweep` for
+operations. The epic driver, which runs an initiative phase by phase, is
+harness code, not a graph. See [Graphs](../methodology/graphs.md) for the methodology behind the
 shape.
 
 ## Installing it
