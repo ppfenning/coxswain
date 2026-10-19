@@ -31,6 +31,26 @@ both verdicts and sides with whichever one has the stronger argument, not
 with whichever role usually wins. Neither reviewer's seat carries
 authority by default; the reasoning does.
 
+## How much review a change gets
+
+Scrutiny follows what a mistake would cost, not the size of the diff.
+The team's `review_tier` policy puts each change in a tier:
+
+- **Tier 0**, trivial and self-evident: the charter reviewer alone.
+- **Tier 1**, small and contained: the charter reviewer and the adversary.
+- **Tier 2**, on a dangerous surface (a schema, a migration, auth and so
+  on) or simply big: both reviewers, and the arbiter runs whether or not
+  they disagree.
+
+No tier skips review. See [Policy](../customize/policy.md#review_tier) for
+the keys.
+
+## The checks run before review
+
+Review reads the checks' results, not the builder's account of them. The
+harness runs the team's checks and the repository's `.agent-checks` in the
+worktree first; see [Landing](landing.md#checks-are-evidence).
+
 ## validate_chunk and validate_phase are blind by design
 
 `validate_chunk` checks one task's result against the checks the project
