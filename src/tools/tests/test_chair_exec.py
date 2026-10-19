@@ -1270,11 +1270,22 @@ def test_a_missing_binary_is_an_exit_code_not_an_exception() -> None:
     assert "cox-binary-that-does-not-exist" in output
 
 
-def test_dry_run_performs_nothing() -> None:
+@pytest.mark.parametrize(
+    "action",
+    [
+        _land("t1", "r"),
+        {"kind": "pull", "epoch": 1},
+        {"kind": "rescue", "initiative": "a", "task_id": "t1", "epoch": 1},
+        {"kind": "mark_lost", "initiative": "i", "run": "r1", "epoch": 1},
+        {"kind": "standby", "epoch": -1},
+        {"kind": "housekeeping", "epoch": 1},
+    ],
+    ids=lambda action: action["kind"],
+)
+def test_a_dry_run_performs_and_records_nothing(action: dict) -> None:
     calls: list = []
-    actions = [_land("t1", "r"), {"kind": "pull", "epoch": 1}]
-    results = perform(actions, _deps(calls), lambda: 1, True)
-    assert [r["status"] for r in results] == ["dry_run", "dry_run"]
+    results = perform([action], _deps(calls), lambda: 1, True)  # type: ignore[list-item]
+    assert [r["status"] for r in results] == ["dry_run"]
     assert calls == []
 
 
@@ -1285,34 +1296,21 @@ def test_a_rescue_launches_through_cox_route_launch_rescue() -> None:
     assert [r["status"] for r in results] == ["done"]
 
 
-def test_a_rescue_under_a_stale_epoch_is_fenced_and_calls_nothing() -> None:
+@pytest.mark.parametrize(
+    "action",
+    [
+        {"kind": "rescue", "initiative": "a", "task_id": "t1", "epoch": 1},
+        {"kind": "mark_lost", "initiative": "i", "run": "r1", "epoch": 1},
+        {"kind": "check_login", "host": "shed", "epoch": 1},
+    ],
+    ids=lambda action: action["kind"],
+)
+def test_an_action_planned_under_a_stale_epoch_is_fenced_and_calls_nothing(action: dict) -> None:
     calls: list = []
-    results = perform([{"kind": "rescue", "initiative": "a", "task_id": "t1", "epoch": 1}], _deps(calls), lambda: 2, False)
+    deps = replace(_deps(calls), check_login=lambda host: calls.append(("check_login", host)) or {})
+    results = perform([action], deps, lambda: 2, False)  # type: ignore[list-item]
     assert [r["status"] for r in results] == ["fenced"]
     assert _touched(calls) == []
-
-
-def test_a_dry_run_rescue_performs_nothing() -> None:
-    calls: list = []
-    results = perform([{"kind": "rescue", "initiative": "a", "task_id": "t1", "epoch": 1}], _deps(calls), lambda: 1, True)
-    assert [r["status"] for r in results] == ["dry_run"]
-    assert calls == []
-
-
-def test_a_mark_lost_action_under_a_stale_epoch_is_fenced_and_calls_nothing() -> None:
-    calls: list = []
-    action = {"kind": "mark_lost", "initiative": "i", "run": "r1", "epoch": 1}
-    results = perform([action], _deps(calls), lambda: 2, False)
-    assert [r["status"] for r in results] == ["fenced"]
-    assert _touched(calls) == []
-
-
-def test_a_dry_run_mark_lost_performs_nothing() -> None:
-    calls: list = []
-    action = {"kind": "mark_lost", "initiative": "i", "run": "r1", "epoch": 1}
-    results = perform([action], _deps(calls), lambda: 1, True)
-    assert [r["status"] for r in results] == ["dry_run"]
-    assert calls == []
 
 
 def test_an_unlisted_kind_is_refused() -> None:
@@ -1322,20 +1320,20 @@ def test_an_unlisted_kind_is_refused() -> None:
     assert _touched(calls) == []
 
 
-def test_standby_and_needs_chair_are_recorded_without_running_anything() -> None:
+@pytest.mark.parametrize(
+    "action",
+    [
+        {"kind": "standby", "epoch": 1},
+        {"kind": "needs_chair", "epoch": 1, "initiative": "i"},
+        {"kind": "mark_lost", "epoch": 1, "initiative": "i", "run": "r1"},
+    ],
+    ids=lambda action: action["kind"],
+)
+def test_a_bookkeeping_action_is_recorded_without_running_anything(action: dict) -> None:
     calls: list = []
-    actions = [{"kind": "standby", "epoch": 1}, {"kind": "needs_chair", "epoch": 1, "initiative": "i"}]
-    results = perform(actions, _deps(calls), lambda: 1, False)
-    assert [r["status"] for r in results] == ["recorded", "recorded"]
-    assert calls == [("record", "standby"), ("record", "needs_chair")]
-
-
-def test_a_mark_lost_action_is_recorded_without_running_anything() -> None:
-    calls: list = []
-    action = {"kind": "mark_lost", "epoch": 1, "initiative": "i", "run": "r1"}
-    results = perform([action], _deps(calls), lambda: 1, False)
+    results = perform([action], _deps(calls), lambda: 1, False)  # type: ignore[list-item]
     assert [r["status"] for r in results] == ["recorded"]
-    assert calls == [("record", "mark_lost")]
+    assert calls == [("record", action["kind"])]
 
 
 def test_a_check_login_action_calls_the_injected_edge_with_its_host_and_is_recorded() -> None:
@@ -1349,19 +1347,6 @@ def test_a_check_login_action_calls_the_injected_edge_with_its_host_and_is_recor
     results = perform([{"kind": "check_login", "host": "shed", "epoch": 1}], deps, lambda: 1, False)
     assert hosts_seen == ["shed"]
     assert [r["status"] for r in results] == ["recorded"]
-
-
-def test_a_fenced_check_login_action_calls_nothing() -> None:
-    hosts_seen: list = []
-
-    def fake_check_login(host: str) -> dict:
-        hosts_seen.append(host)
-        return {}
-
-    deps = replace(_deps([]), check_login=fake_check_login)
-    results = perform([{"kind": "check_login", "host": "shed", "epoch": 0}], deps, lambda: 1, False)
-    assert hosts_seen == []
-    assert [r["status"] for r in results] == ["fenced"]
 
 
 def test_the_login_edge_passes_the_provider_profile_s_runner_and_env_names(monkeypatch, tmp_path) -> None:
@@ -1426,6 +1411,7 @@ def test_a_dry_run_chair_bundle_never_calls_fetch_for_a_remote_lane_and_reads_em
 
     deps = _chair_deps(monkeypatch, tmp_path, True, fetch_must_not_run)
     assert deps.facts_deps.pid_probe() == {}
+    assert deps.exec_deps.run(["ssh", "shed", "true"]) == (1, chair_exec.NOT_PROBED)
 
 
 def test_a_live_chair_bundle_still_calls_fetch_once_for_a_remote_lane(monkeypatch, tmp_path) -> None:
@@ -1440,27 +1426,23 @@ def test_a_live_chair_bundle_still_calls_fetch_once_for_a_remote_lane(monkeypatc
     assert len(dialled) == 1 and dialled[0][-2] == "me@h"
 
 
-def test_a_dry_run_chair_bundle_s_exec_door_refuses_a_lane_host(monkeypatch, tmp_path) -> None:
-    deps = _chair_deps(monkeypatch, tmp_path, True, lambda argv: None)
-    assert deps.exec_deps.run(["ssh", "shed", "true"]) == (1, chair_exec.NOT_PROBED)
-
-
-def test_a_standby_planned_at_epoch_minus_one_is_recorded_not_fenced() -> None:
-    recorded: list = []
-    deps = Deps(
-        run=lambda argv: (0, ""), delete_branches=lambda repo, pattern: ([], ""), acquire_lease=lambda holder, host: "",
-        record=recorded.append, run_id=lambda action: "", repo_for=lambda action: "",
-    )
-    results = perform([{"kind": "standby", "epoch": -1, "holder": "h"}], deps, lambda: 3, False)
-    assert [r["status"] for r in results] == ["recorded"]
-    assert [(a["kind"], a["status"]) for a in recorded] == [("standby", "recorded")]
-
-
-def test_take_lease_is_never_fenced() -> None:
-    calls: list = []
-    results = perform([{"kind": "take_lease", "epoch": -1, "holder": "h", "host": "x"}], _deps(calls), lambda: 3, False)
-    assert [r["status"] for r in results] == ["done"]
-    assert calls == [("lease", "h"), ("record", "take_lease")]
+@pytest.mark.parametrize(
+    ("action", "status", "calls"),
+    [
+        ({"kind": "standby", "epoch": -1, "holder": "h"}, "recorded", [("record", "standby")]),
+        (
+            {"kind": "take_lease", "epoch": -1, "holder": "h", "host": "x"},
+            "done",
+            [("lease", "h"), ("record", "take_lease")],
+        ),
+    ],
+    ids=["standby", "take_lease"],
+)
+def test_an_action_planned_at_epoch_minus_one_is_performed_not_fenced(action: dict, status: str, calls: list) -> None:
+    seen: list = []
+    results = perform([action], _deps(seen), lambda: 3, False)  # type: ignore[list-item]
+    assert [r["status"] for r in results] == [status]
+    assert seen == calls
 
 
 def test_every_result_is_recorded_with_its_status_and_a_reason_cut_to_600_chars() -> None:
@@ -1476,22 +1458,12 @@ def test_every_result_is_recorded_with_its_status_and_a_reason_cut_to_600_chars(
     assert recorded[0]["initiative"] == "a"
 
 
-def test_a_dry_run_records_nothing() -> None:
-    calls: list = []
-    perform([{"kind": "standby", "epoch": -1}], _deps(calls), lambda: 1, True)
-    assert calls == []
-
-
 @pytest.mark.parametrize("kind", ["relaunch", "retry", "launch_epic"])
 def test_an_epic_launch_names_the_initiative_by_its_work_path(kind: str) -> None:
     assert argv_for({"kind": kind, "initiative": "x"})[-3:] == ["--initiative", "work/x", "--no-claim"]  # type: ignore[typeddict-item,index]
     with_repo = argv_for({"kind": kind, "initiative": "x", "repo": "/r"})  # type: ignore[typeddict-item]
     assert with_repo[-5:] == ["--initiative", "work/x", "--no-claim", "--repo", "/r"]  # type: ignore[index]
-
-
-def test_a_launch_with_a_host_ends_with_on_that_host() -> None:
-    assert argv_for({"kind": "launch_epic", "initiative": "x", "host": "host-a"})[-2:] == ["--on", "host-a"]  # type: ignore[index]
-    assert argv_for({"kind": "launch_epic", "initiative": "x"}) == ["cox", "route", "launch", "epic", "--initiative", "work/x", "--no-claim"]
+    assert argv_for({"kind": kind, "initiative": "x", "host": "host-a"})[-2:] == ["--on", "host-a"]  # type: ignore[typeddict-item,index]
 
 
 def test_run_argv_runs_in_the_given_directory(tmp_path) -> None:
@@ -1519,7 +1491,7 @@ def test_the_loop_takes_the_lease_under_its_own_host_though_the_action_names_non
 
 
 def test_a_command_past_its_timeout_is_exit_124_not_an_exception() -> None:
-    assert run_argv(["sleep", "5"], timeout=0.2)[0] == 124
+    assert run_argv(["sleep", "5"], timeout=0.05)[0] == 124
 
 
 def test_a_lane_host_ssh_that_times_out_fails_with_its_partial_output_and_is_not_retried(monkeypatch) -> None:
@@ -1537,7 +1509,7 @@ def test_a_lane_host_ssh_that_times_out_fails_with_its_partial_output_and_is_not
 
 
 def test_a_hung_lane_host_child_is_cut_off_at_the_bound_not_awaited(monkeypatch) -> None:
-    monkeypatch.setattr(chair_exec, "LANE_HOST_TIMEOUT_S", 0.5)
+    monkeypatch.setattr(chair_exec, "LANE_HOST_TIMEOUT_S", 0.2)
     hung = ["sh", "-c", "echo partial; exec sleep 30"]
     started = time.monotonic()
     code, output = run_lane_host(hung)
@@ -1573,12 +1545,13 @@ def test_a_timed_out_branch_check_on_the_host_is_a_failure_not_an_absent_branch(
     assert "timed out after 30s" in error and "half a line" in error
 
 
-def test_an_intake_with_an_id_yields_that_id() -> None:
-    assert decompose_id("intake/x.md", "alpha") == "alpha"
-
-
-def test_an_intake_without_an_id_yields_its_stem() -> None:
-    assert decompose_id("intake/my-idea.md", "") == "my-idea"
+@pytest.mark.parametrize(
+    ("path", "intake_id", "expected"),
+    [("intake/x.md", "alpha", "alpha"), ("intake/my-idea.md", "", "my-idea")],
+    ids=["its_id", "its_stem"],
+)
+def test_an_intake_yields_its_id_else_its_stem(path: str, intake_id: str, expected: str) -> None:
+    assert decompose_id(path, intake_id) == expected
 
 
 @pytest.mark.parametrize("bad", ["a/b", "..", ".hidden", "a\\b"])
@@ -1591,31 +1564,24 @@ def test_a_long_traceback_keeps_its_last_lines_and_not_its_head() -> None:
     kept = tail("Traceback (most recent call last):\n" + frames + "ValueError: boom", 100)
     assert kept.endswith('  File "m49.py", line 49\nValueError: boom')
     assert "Traceback" not in kept and len(kept) <= 100
-
-
-def test_a_short_string_is_unchanged_by_tail() -> None:
     assert tail("short", 200) == "short"
 
 
-def test_a_decompose_argv_keeps_the_path_as_idea_and_uses_the_derived_id() -> None:
-    action = {"kind": "launch_decompose", "intake_ids": ["intake/x.md"]}
-    assert argv_for(action, "alpha") == ["cox", "route", "launch", "decompose", "--idea", "intake/x.md", "--initiative-id", "alpha", "--no-claim"]
-    assert argv_for(action) is None
+_DECOMPOSE = ["cox", "route", "launch", "decompose", "--idea", "intake/x.md", "--initiative-id"]
 
 
-def test_a_decompose_argv_under_sequence_ids_carries_initiative_id_and_task_ids_ordinal() -> None:
-    action = {"kind": "launch_decompose", "intake_ids": ["intake/x.md"]}
-    assert argv_for(action, "I412", "sequence") == [
-        "cox", "route", "launch", "decompose", "--idea", "intake/x.md",
-        "--initiative-id", "I412", "--task-ids", "ordinal", "--no-claim",
-    ]
-
-
-def test_a_decompose_argv_under_slug_ids_carries_no_task_ids_flag() -> None:
-    action = {"kind": "launch_decompose", "intake_ids": ["intake/x.md"]}
-    assert argv_for(action, "I412", "slug") == [
-        "cox", "route", "launch", "decompose", "--idea", "intake/x.md", "--initiative-id", "I412", "--no-claim",
-    ]
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        (("alpha",), [*_DECOMPOSE, "alpha", "--no-claim"]),
+        (("I412", "sequence"), [*_DECOMPOSE, "I412", "--task-ids", "ordinal", "--no-claim"]),
+        (("I412", "slug"), [*_DECOMPOSE, "I412", "--no-claim"]),
+        ((), None),
+    ],
+    ids=["derived_id", "sequence_ids", "slug_ids", "no_id"],
+)
+def test_a_decompose_argv_keeps_the_path_as_idea_and_carries_the_id_and_ids_mode(args: tuple, expected: list | None) -> None:
+    assert argv_for({"kind": "launch_decompose", "intake_ids": ["intake/x.md"]}, *args) == expected  # type: ignore[arg-type]
 
 
 def _ticket(tmp_path, initiative: str, phase: str, ticket_id: str, title: str, body: str, surfaces: list[str], state: str = "ready"):
@@ -1645,40 +1611,17 @@ def test_write_ticket_round_trips_through_initiative_tickets(tmp_path) -> None:
     assert (reread["title"], reread["state"], reread["merged_into"]) == ("Renamed", "dropped", "t2")
 
 
-def test_merge_and_write_collapses_two_same_phase_tickets_sharing_a_surface(tmp_path) -> None:
+@pytest.mark.parametrize("kind", ["launch_epic", "relaunch"])
+def test_an_epic_launch_merges_same_phase_tickets_sharing_a_surface_before_dispatching_the_merged_ticket(kind: str, tmp_path) -> None:
     _ticket(tmp_path, "alpha", "build", "t1", "First ticket", "First body.", ["agent_tools/shared.py"])
     _ticket(tmp_path, "alpha", "build", "t2", "Second ticket", "Second body.", ["agent_tools/shared.py"])
-    chair_exec._merge_and_write(tmp_path, "alpha")
+    calls: list = []
+    deps = replace(_deps(calls), work_dir=tmp_path)
+    perform([{"kind": kind, "initiative": "alpha", "epoch": 1}], deps, lambda: 1, False)  # type: ignore[list-item]
     merged_text = (tmp_path / "work" / "alpha" / "build" / "t1.md").read_text(encoding="utf-8")
     dropped_text = (tmp_path / "work" / "alpha" / "build" / "t2.md").read_text(encoding="utf-8")
     assert "title: First ticket; Second ticket" in merged_text
     assert "state: ready" in merged_text
-    assert "state: dropped" in dropped_text
-    assert "merged_into: t1" in dropped_text
-
-
-def test_launch_epic_merges_same_phase_tickets_before_dispatching_the_merged_ticket(tmp_path) -> None:
-    _ticket(tmp_path, "alpha", "build", "t1", "First ticket", "First body.", ["agent_tools/shared.py"])
-    _ticket(tmp_path, "alpha", "build", "t2", "Second ticket", "Second body.", ["agent_tools/shared.py"])
-    calls: list = []
-    deps = replace(_deps(calls), work_dir=tmp_path)
-    perform([{"kind": "launch_epic", "initiative": "alpha", "epoch": 1}], deps, lambda: 1, False)
-    merged_text = (tmp_path / "work" / "alpha" / "build" / "t1.md").read_text(encoding="utf-8")
-    dropped_text = (tmp_path / "work" / "alpha" / "build" / "t2.md").read_text(encoding="utf-8")
-    assert "title: First ticket; Second ticket" in merged_text
-    assert "state: dropped" in dropped_text and "merged_into: t1" in dropped_text
-    assert [c for c in calls if c[0] == "run"] == [("run", ["cox", "route", "launch", "epic", "--initiative", "work/alpha", "--no-claim"])]
-
-
-def test_relaunch_merges_same_phase_tickets_before_dispatching_the_merged_ticket(tmp_path) -> None:
-    _ticket(tmp_path, "alpha", "build", "t1", "First ticket", "First body.", ["agent_tools/shared.py"])
-    _ticket(tmp_path, "alpha", "build", "t2", "Second ticket", "Second body.", ["agent_tools/shared.py"])
-    calls: list = []
-    deps = replace(_deps(calls), work_dir=tmp_path)
-    perform([{"kind": "relaunch", "initiative": "alpha", "epoch": 1}], deps, lambda: 1, False)
-    merged_text = (tmp_path / "work" / "alpha" / "build" / "t1.md").read_text(encoding="utf-8")
-    dropped_text = (tmp_path / "work" / "alpha" / "build" / "t2.md").read_text(encoding="utf-8")
-    assert "title: First ticket; Second ticket" in merged_text
     assert "state: dropped" in dropped_text and "merged_into: t1" in dropped_text
     assert [c for c in calls if c[0] == "run"] == [("run", ["cox", "route", "launch", "epic", "--initiative", "work/alpha", "--no-claim"])]
 
@@ -1692,20 +1635,18 @@ def test_a_decompose_with_a_path_shaped_id_records_the_refusal_and_launches_noth
     assert (recorded[0]["status"], "path-shaped" in recorded[0]["reason"]) == ("refused", True)
 
 
-def test_a_decompose_without_an_id_field_launches_under_the_stem() -> None:
+@pytest.mark.parametrize(
+    ("path", "overrides", "tail_argv"),
+    [
+        ("intake/my-idea.md", {}, ["--initiative-id", "my-idea", "--no-claim"]),
+        ("intake/x.md", {"intake_id": lambda path: "I412", "ids_mode": "sequence"}, ["--initiative-id", "I412", "--task-ids", "ordinal", "--no-claim"]),
+    ],
+    ids=["stem_without_an_id", "sequence_ids_mode"],
+)
+def test_a_decompose_launches_under_its_derived_id_and_ids_mode(path: str, overrides: dict, tail_argv: list) -> None:
     calls: list = []
-    perform([{"kind": "launch_decompose", "intake_ids": ["intake/my-idea.md"], "epoch": 1}], _deps(calls), lambda: 1, False)
-    assert _touched(calls) == [("run", ["cox", "route", "launch", "decompose", "--idea", "intake/my-idea.md", "--initiative-id", "my-idea", "--no-claim"])]
-
-
-def test_a_decompose_under_sequence_ids_mode_launches_with_task_ids_ordinal() -> None:
-    calls: list = []
-    deps = replace(_deps(calls), intake_id=lambda path: "I412", ids_mode="sequence")
-    perform([{"kind": "launch_decompose", "intake_ids": ["intake/x.md"], "epoch": 1}], deps, lambda: 1, False)
-    assert _touched(calls) == [(
-        "run",
-        ["cox", "route", "launch", "decompose", "--idea", "intake/x.md", "--initiative-id", "I412", "--task-ids", "ordinal", "--no-claim"],
-    )]
+    perform([{"kind": "launch_decompose", "intake_ids": [path], "epoch": 1}], replace(_deps(calls), **overrides), lambda: 1, False)
+    assert _touched(calls) == [("run", ["cox", "route", "launch", "decompose", "--idea", path, *tail_argv])]
 
 
 def test_prune_available_probes_the_harness_python() -> None:
@@ -1739,46 +1680,27 @@ def _hk_deps(monkeypatch, calls: list, fail: tuple = ()) -> Deps:
     )
 
 
-def test_a_housekeeping_action_with_a_successful_runner_names_all_three_steps(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("fail", "status", "sync", "prune", "prune_ran"),
+    [
+        ((), "done", "lake sync: ok", "prune: ok", True),
+        ((_HK_SYNC,), "failed", "lake sync: FAILED", "prune: ok", True),
+        ((_HK_PROBE,), None, "lake sync: ok", chair_housekeeping.PRUNE_SKIPPED, False),
+    ],
+    ids=["all_ok", "lake_sync_fails", "prune_probe_fails"],
+)
+def test_a_housekeeping_action_reports_every_step_whatever_an_earlier_one_did(
+    monkeypatch, fail: tuple, status: str | None, sync: str, prune: str, prune_ran: bool
+) -> None:
     calls: list = []
-    deps = _hk_deps(monkeypatch, calls)
-    results = perform([{"kind": "housekeeping", "epoch": 1}], deps, lambda: 1, False)
-    assert results[0]["status"] == "done"
-    reason = results[0]["reason"]
-    assert "lake sync: ok" in reason
-    assert "prune: ok" in reason
-    assert f"clean skipped: {chair_housekeeping.CLEAN_MISSING}" in reason
-    assert _HK_PRUNE in calls
-
-
-def test_a_failed_lake_sync_still_reports_the_prune_and_clean_outcomes(monkeypatch) -> None:
-    calls: list = []
-    deps = _hk_deps(monkeypatch, calls, fail=(_HK_SYNC,))
-    results = perform([{"kind": "housekeeping", "epoch": 1}], deps, lambda: 1, False)
-    assert results[0]["status"] == "failed"
-    reason = results[0]["reason"]
-    assert "lake sync: FAILED" in reason
-    assert "prune: ok" in reason
-    assert f"clean skipped: {chair_housekeeping.CLEAN_MISSING}" in reason
-
-
-def test_a_dry_run_housekeeping_action_runs_no_step(monkeypatch) -> None:
-    calls: list = []
-    deps = _hk_deps(monkeypatch, calls)
-    results = perform([{"kind": "housekeeping", "epoch": 1}], deps, lambda: 1, True)
-    assert results[0]["status"] == "dry_run"
-    assert calls == []
-
-
-def test_a_prune_probe_that_fails_records_the_skip_reason(monkeypatch) -> None:
-    calls: list = []
-    deps = _hk_deps(monkeypatch, calls, fail=(_HK_PROBE,))
+    deps = _hk_deps(monkeypatch, calls, fail=fail)
     results = perform([{"kind": "housekeeping", "epoch": 1}], deps, lambda: 1, False)
     reason = results[0]["reason"]
-    assert chair_housekeeping.PRUNE_SKIPPED in reason
-    assert "lake sync: ok" in reason
+    assert status is None or results[0]["status"] == status
+    assert sync in reason
+    assert prune in reason
     assert f"clean skipped: {chair_housekeeping.CLEAN_MISSING}" in reason
-    assert _HK_PRUNE not in calls
+    assert (_HK_PRUNE in calls) is prune_ran
 
 
 def _write_stale_initiative(tmp_path, *, draft: str = "false") -> None:
