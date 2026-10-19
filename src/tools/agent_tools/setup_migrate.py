@@ -628,6 +628,13 @@ def preflight_refusals(
     ]
 
 
+def release_lines(outcomes: Sequence[tuple[str, bool, str]]) -> list[str]:
+    """One line per outcome whose lease was not released, in input order."""
+    return [
+        f"migrate: could not release the lease on {path}: {detail}" for path, released, detail in outcomes if not released
+    ]
+
+
 class LinkFact(NamedTuple):
     """What the edge saw at an old checkout path: kind is absent, dir, symlink or file; target is the raw link text."""
 
