@@ -162,6 +162,7 @@ _RELEASE_DETAIL = {
     "wait_checks": lambda step: "gh pr checks --watch",
     "merge": lambda step: "gh pr merge --squash, then pull the default branch",
     "notes": lambda step: step["path"],
+    "commit_index": lambda step: f"{' '.join(step['paths'])} on {step['branch']}",
     "tag_self": lambda step: step["tag"],
     "wait_workflows": lambda step: step["tag"],
     "pinned": lambda step: step["tag"],
@@ -653,6 +654,18 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                 print(f"FAILED bump_version {step['component']}: {detail}")
                 return 2
             print(f"bump_version {step['component']}: {step['from']} -> {step['to']}")
+        elif kind == "commit_index":
+            if not rewritten:
+                already_bumped[step["component"]] = version
+                print(f"commit_index {step['component']}: nothing changed")
+                continue
+            # The notes step already wrote the file; this only branches and commits it.
+            ok, detail = _release_bump(umbrella, step["branch"], step["commit_subject"], step["paths"],
+                                       lambda: None, run)
+            if not ok:
+                print(f"FAILED commit_index {step['component']}: {detail}")
+                return 2
+            print(f"commit_index {step['component']}: {' '.join(step['paths'])} on {step['branch']}")
         elif kind == "push":
             if step["component"] in already_bumped:
                 print(f"push {step['component']}: already at {already_bumped[step['component']]}")
@@ -1048,6 +1061,13 @@ def _checkouts(a: argparse.Namespace) -> tuple[Path, str, str, dict]:
     return manifest_path, umbrella, root, overrides
 
 
+def _index_changed(umbrella: str, version: str, manifest: dict, tagged: set[str]) -> bool:
+    """True when `tagged` renders a different index than the file on disk; an absent file reads as empty."""
+    index_path = Path(umbrella) / "docs" / "releases" / "index.md"
+    existing = index_path.read_text() if index_path.exists() else ""
+    return release.release_index_text(existing, version, manifest, tagged=tagged) != existing
+
+
 def _release(a: argparse.Namespace) -> int:
     manifest_path, umbrella, root, overrides = _checkouts(a)
     manifest = _load_manifest(manifest_path)
@@ -1103,11 +1123,19 @@ def _release(a: argparse.Namespace) -> int:
         found = release.component_version(pyproject_path.read_text())
         if found is not None:
             component_versions[name] = found
-    plan_steps = release.release_plan(
-        manifest, a.version, existing_tags, component_versions=component_versions, pinned_commits=pinned_commits,
-        repository_url=_repository_url(),
-        tap_state=_tap_state(release.component_dir(root, release.TAP_CHECKOUT, overrides)),
-        cargo_versions=cargo_versions, tap_only=a.tap_only)
+    repository_url = _repository_url()
+    tap_state = _tap_state(release.component_dir(root, release.TAP_CHECKOUT, overrides))
+
+    def plan_for(index_changed: bool) -> list[dict]:
+        return release.release_plan(
+            manifest, a.version, existing_tags, component_versions=component_versions, pinned_commits=pinned_commits,
+            repository_url=repository_url, tap_state=tap_state, cargo_versions=cargo_versions,
+            tap_only=a.tap_only, index_changed=index_changed)
+
+    # `rejoined` is the tagged set the executor's notes step renders with, so the two renderings agree.
+    plan_steps = plan_for(False)
+    if not a.tap_only and _index_changed(umbrella, a.version, manifest, release.rejoined(plan_steps)):
+        plan_steps = plan_for(True)
     # The drift gate guards a cut; a tap-only resume runs after the cut landed and reads only PyPI and the tap clone.
     steps = plan_steps if a.tap_only else (_rehearsal_steps(a, plan_steps, root, overrides, umbrella, _stdout_run)
                                            + release.gate(drifts, a.allow_doc_drift, plan_steps) + plan_steps)
