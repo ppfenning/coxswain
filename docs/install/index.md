@@ -46,26 +46,36 @@ uv tool install --python 3.14 coxswain
 
 `uv` must already be on your `PATH`; get it from <https://docs.astral.sh/uv/>.
 The `--python 3.14` flag makes uv fetch a 3.14 interpreter when none is
-present. If your shell cannot find `cox` afterwards, run
+present. Add the extras the machine uses, for example
+`uv tool install --python 3.14 'coxswain[postgres,traces,lake]'`. A shared
+Postgres store needs `postgres`. The extras are `traces`, `postgres`,
+`parquet`, `lake`, `analytics` and `live`; `cox install` keeps the ones the
+tool already has. If your shell cannot find `cox` afterwards, run
 `uv tool update-shell` and open a new shell.
 
 ## What `cox install` does
 
 1. Reads `manifest.toml` in the checkout of
    [ppfenning/coxswain](https://github.com/ppfenning/coxswain) at
-   `<home>/installs/coxswain`, and checks that the checkout is at the release
-   tag it names.
+   `<home>/installs/coxswain`. It refuses a checkout with uncommitted
+   changes, and refuses a `--provider` that the manifest does not mark
+   `supported`. A clean checkout is installed as it is; moving it to another
+   release is `cox upgrade`'s job.
 2. Creates one venv in that checkout, `<checkout>/.venv`, with `uv sync`.
 3. Installs `cox` editable from the checkout, so `cox` and the harness run
    the same code.
-4. Writes the profile for this machine, when it has none: `harness_dir` is
-   `<checkout>/src/graphs`, `skills_roots` is
-   `<checkout>/src/cartridges/skills-plugins`, and the provider profile is
-   the one `--provider` names.
+4. Writes the profile for this machine, `~/.config/agent-tools/profile.yaml`,
+   when it has none: `harness_dir` is `<checkout>/src/graphs`,
+   `skills_roots` is `<checkout>/src/cartridges/skills-plugins`, and
+   `provider_profile` is the shipped default,
+   `<checkout>/src/cartridges/providers/claude-code.yaml`. See
+   [The provider profile](#the-provider-profile) for pointing it at your
+   team's own.
 5. Links the crew seats from `<checkout>/crew` into `~/.claude/agents`.
 6. Fetches dash when you pass `--with dash`. Dash is the only optional
    component; it lives in its own repository.
-7. Runs `cox setup doctor`.
+7. Runs `cox setup doctor`. It also checks that the `--provider` CLI
+   (`claude` by default) is on `PATH`.
 
 ## Channels
 
@@ -85,7 +95,7 @@ page uses:
 | `--workspace` | The workspace the crew works in; `<home>/workspaces/main` by default. Required with `--root`. |
 | `--home` | Absolute path of the coxswain home, used when `--root` is omitted. |
 | `--root` | Use the checkout at `<root>/coxswain` instead of `<home>/installs/coxswain`. |
-| `--provider` | Which provider profile to configure (see [Providers](providers.md)). |
+| `--provider` | Which provider in `manifest.toml` to install for; `claude-code` by default, and only a `supported` one is accepted (see [Providers](providers.md)). |
 | `--with dash` | Also install dash (`towpath`). |
 | `--edge` | Follow `main` instead of the release tag. |
 | `--dry-run` | Print the plan and change nothing. |
@@ -110,12 +120,45 @@ installed, against `manifest.toml`.
 
 `cox setup doctor` against a real install.
 
-## Where personal setup goes
+## The provider profile
 
-Personal setup never goes in a shipped repository. It lives in one of two homes.
+A provider profile is team configuration: which CLI drives the seats, the
+model, effort and budget for each tier and role, the tools each role may
+call, and the shared store and trace locations (`storage_url`,
+`traces_url`, `lake_url`, `object_store`). The checkout ships default profiles in
+`<checkout>/src/cartridges/providers/`, and `cox install` points this
+machine at `claude-code.yaml` there. That is enough for one person trying
+Coxswain.
 
-- **The team cartridge** holds the cast, the policy, the inline repos and the context packs. A cartridge named `example-team` is one such home.
-- **The provider profile** holds the operator, the store and the notifier. A profile named `example-provider` is one such home.
+A team keeps its own profile outside the code checkout, so `cox upgrade`
+never touches it and the checkout stays clean. Put it in one of two places:
+
+- `<home>/providers/<team>.yaml`, one copy per machine;
+- the workspace, for example `<workspace>/providers/<team>.yaml`, so it
+  travels with the workspace's git history.
+
+Start from the shipped one, and copy `catalog.yaml` beside it (prices are
+read from the `catalog.yaml` next to the profile):
+
+```sh
+mkdir -p <home>/providers
+cp <home>/installs/coxswain/src/cartridges/providers/claude-code.yaml <home>/providers/my-team.yaml
+cp <home>/installs/coxswain/src/cartridges/providers/catalog.yaml <home>/providers/
+```
+
+Then set `provider_profile` in `~/.config/agent-tools/profile.yaml` to
+that path, or pass `--provider-profile PATH` to `cox setup install`. The
+doctor's `home paths` row fails when `provider_profile` sits outside both
+`<home>` and the workspace.
+
+Personal setup never goes in the code checkout. It lives in three places:
+
+- **The team cartridge**, in `<workspace>/cartridges/<team>`, holds the
+  cast, the policy, the inline repos and the context packs.
+- **The provider profile** holds the tiers, budgets, tools and the store.
+- **The machine profile**, `~/.config/agent-tools/profile.yaml`, holds this
+  machine's paths, the forge and tracker, the operator (`operator:`) and the
+  notifier (`notify:`).
 
 ## Upgrade
 
