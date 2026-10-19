@@ -48,14 +48,12 @@ seats](crew-and-seats.md) describes generically, made concrete per team.
 
 ## Provenance
 
-The cartridges component is itself a pinned dependency, not something a
-team edits in place:
+The base and local cartridges ship inside the coxswain checkout, under
+`src/cartridges/cartridges/`. A workspace's `cartridges/base` and
+`cartridges/local` are links into that folder, so they move with the
+checkout's release tag. A team does not edit them in place.
 
-```
-cartridges = { repo = "ppfenning/coxswain-cartridges", tag = "v0.1.0-beta.1", required = true }
-```
-
-Every fragment a run assembles can be traced back to the cartridge tag
-that shipped it. A team pack that wants something different extends base
+Every fragment a run assembles can be traced back to the release that
+shipped it. A team pack that wants something different extends base
 or local (see [Team cartridge](../customize/team-cartridge.md)); it does
-not patch the pinned component directly.
+not patch the shipped cartridges directly.

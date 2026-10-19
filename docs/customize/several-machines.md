@@ -11,12 +11,15 @@ holds your tickets and task records. It also does all landing. Other
 machines only run lanes.
 
 All machines share one run store. The store is a Postgres named by
-`storage_url` in the provider profile. Install the driver with the postgres
-extra:
+`storage_url` in the provider profile. Add the driver to `cox` with the
+`postgres` extra:
 
 ```sh
-pip install 'coxswain-tools[postgres]'
+uv tool install --force --editable "$HOME/.local/share/coxswain/installs/coxswain[postgres]"
 ```
+
+The install replaces the extras `cox` had, so name each one you use, such as
+`[postgres,lake]`.
 
 With a local SQLite store, everything stays on one machine.
 
@@ -24,7 +27,7 @@ With a local SQLite store, everything stays on one machine.
 
 Do these steps on each machine that will run lanes.
 
-1. Clone the component repos. Also clone each repo your initiatives target,
+1. Install Coxswain as in [Install](../install/index.md). Also clone each repo your initiatives target,
    at the same absolute path as on the chair, with its `.venv` and check
    tools. The lane reads the initiative's `repo:` path unchanged.
 2. Install cox with the postgres extra, as above.

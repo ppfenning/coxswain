@@ -1,34 +1,37 @@
 # Release rehearsal gate
 
-A release is cut only after a rehearsal has passed on the exact commits it will tag. The rehearsal is a GitHub Actions workflow. The release command only looks up its result. This page decides how the pieces connect.
+A release is cut only after a rehearsal has passed on the exact commit it is cut from: `origin/main` of the coxswain checkout. The rehearsal is a GitHub Actions workflow in the coxswain repository. You dispatch it; the release command only looks up its result. This page says how the pieces connect.
 
-The rehearsal runs three scenarios. Each scenario is a job in the workflow.
+The rehearsal runs three scenarios. Each scenario is a job in the workflow, on a fresh `debian:stable-slim` container.
 
-- **fresh**: install the candidate commits on a clean machine by the documented install command and check that `cox doctor` passes. The candidate installs fresh into the default coxswain home, with no root or workspace flag. It does so after the candidate tools are installed at the pinned sha.
-- **upgrade**: install the previous release, populate a workspace with real work items, upgrade to the candidate commits and check that the workspace still reads. The older install is migrated into that home by the apply form of the setup migrate command. The migration runs after the pin step and before lint.
-- **migrate**: run each migration the release declares against a populated workspace and check that each one leaves it valid.
+- **fresh**: clone the repository into the default coxswain home, move the checkout to the candidate commit, install `cox` editable from it, run `cox install --team rehearse --with dash`, and check that `cox setup doctor` passes.
+- **upgrade**: install the previous release the way its own install page said (for `v0.47.0`, the `coxswain-tools` package and its component checkouts), put real work items in a workspace, move the checkout to the candidate commit, run `cox setup migrate --apply`, and check that `cox route lint` still reads the work items.
+- **migrate**: the same start as upgrade, then run each migration the release declares against the workspace, linting after each one.
+
+Every scenario ends by reading back the install: the checkout must be at the candidate commit and `cox` must be installed from that checkout. A green run therefore proves what its title names.
 
 The migrate scenario may not skip when migrations are declared. It may skip only when the release declares none.
 
-## 1. How the candidate refs reach the workflow
+## 1. How the candidate reaches the workflow
 
-The workflow is `.github/workflows/release-rehearsal.yml`. It runs on `workflow_dispatch` only. Everything it needs arrives as a dispatch input. The inputs are:
+The workflow is `.github/workflows/release-rehearsal.yml`. It runs on `workflow_dispatch` only. Everything it needs arrives as a dispatch input:
 
-- `cartridges_sha`
-- `graphs_sha`
-- `tools_sha`
-- `crew_sha`
-- `dash_sha`
-- `previous_tag`
-- `migrations`
+- `sha`: the full 40 character commit SHA of coxswain.
+- `dash_sha`: the full SHA of coxswain-dash when the release tags dash; empty when dash keeps its pinned tag.
+- `previous_tag`: the last release tag, such as `v0.47.0`. It feeds the upgrade and migrate scenarios.
+- `migrations`: the declared migration list from section 2, as a comma separated string; empty when the release declares none.
 
-Each `*_sha` input is a full 40 character commit SHA. There is one per component in `manifest.toml`. A branch name or a short SHA is refused, because a branch can move between the rehearsal and the tag. `previous_tag` is the last release tag, such as `v0.40.0`, and feeds the upgrade scenario. `migrations` is the declared migration list from section 2, as a comma separated string. It is empty when the release declares none.
+A branch name or a short SHA is refused, because a branch can move between the rehearsal and the tag. Dispatch it from the coxswain checkout:
 
-The workflow names its run after these inputs, as section 3 shows. The workflow imports no release-command code. It does not read the manifest, the release notes or `devtools`. The release command resolves the refs and dispatches the workflow with them. We chose inputs over a shared module so that the rehearsal tests what a user gets, not what the release tooling believes. It also means the workflow can be dispatched by hand with the same inputs.
+```sh
+gh workflow run release-rehearsal.yml -f sha=$(git rev-parse origin/main) -f previous_tag=v0.47.0
+```
+
+The workflow imports no release-command code. It does not read the manifest, the release notes or `devtools`. We chose inputs over a shared module so that the rehearsal tests what a user gets, not what the release tooling believes.
 
 ## 2. Where a release declares its migrations
 
-A release declares its migrations in its release notes, not in the manifest. The notes are written once per release and read by the person who cuts it. The manifest pins versions and outlives any one release, so a migration list there would go stale after the release ships.
+A release declares its migrations in its release notes, not in the manifest. The notes are written once per release and read by the person who cuts it. The manifest outlives any one release, so a migration list there would go stale after the release ships.
 
 The declaration is one line in `docs/releases/<version>.md`:
 
@@ -36,7 +39,7 @@ The declaration is one line in `docs/releases/<version>.md`:
 Migrations: <id>, <id>
 ```
 
-Each id is a single token with no spaces. Ids are separated by a comma and one space. For example, in `docs/releases/0.41.0.md`:
+Each id is a single token of letters, digits, hyphens and underscores. Ids are separated by a comma and one space. For example:
 
 ```
 Migrations: split-lake-store, rename-slot-keys
@@ -48,13 +51,13 @@ An absent `Migrations:` line means the release has no migrations. The migrate sc
 
 ## 3. How the gate finds a passing run
 
-The workflow sets its run name from every input that changes what is rehearsed: the five SHAs in manifest order, the previous tag and the migration list.
+The workflow sets its run name from every input that changes what is rehearsed: the coxswain SHA, dash's SHA, the previous tag and the migration list.
 
 ```
-rehearsal cartridges=<sha> graphs=<sha> tools=<sha> crew=<sha> dash=<sha> previous=<tag> migrations=<list>
+rehearsal sha=<sha> dash=<dash sha or pinned> previous=<tag> migrations=<list>
 ```
 
-Every `<sha>` is the full 40 character SHA. `<tag>` is the `previous_tag` input. `<list>` is the `migrations` input as passed, or `none` when that input is empty. The gate builds the same string from the commits it is about to tag, the previous release tag and the `Migrations:` line in the notes. A run dispatched with a different previous tag or a different migration list therefore has a different title and never matches. The gate then lists dispatched runs of the workflow:
+Each SHA is the full 40 character SHA; `dash=pinned` means the release keeps dash's tag. `<tag>` is the `previous_tag` input. `<list>` is the `migrations` input as passed, or `none` when that input is empty. The gate builds the same string from the checkout's `origin/main` commit (and dash's when the release tags dash), the previous release tag in the checkout and the `Migrations:` line in the notes. A run dispatched with a different previous tag or a different migration list therefore has a different title and never matches. The gate then lists dispatched runs of the workflow:
 
 ```
 gh run list --workflow release-rehearsal.yml --event workflow_dispatch --limit 200 --json databaseId,displayTitle,conclusion,createdAt
@@ -72,7 +75,7 @@ If no run matches, or the newest match does not pass, the gate refuses and print
 
 An override lets a release go out without a passing rehearsal. It needs a named reason, given to the release command as `--allow-no-rehearsal REASON`. It is recorded in the release notes, in the `## Known gaps` section, where the existing `--allow-doc-drift` override is recorded.
 
-The existing override is free prose that the author writes by hand, and nothing in the release command reads the notes for it. The rehearsal override is stricter. It is one fixed line that the gate can match. Building that matching is work for the gate ticket, not for this page. The line is:
+The existing override is free prose that the author writes by hand, and nothing in the release command reads the notes for it. The rehearsal override is stricter. It is one fixed line that the gate matches. The line is:
 
 ```
 Cut with `--allow-no-rehearsal`: <reason>.
@@ -81,7 +84,7 @@ Cut with `--allow-no-rehearsal`: <reason>.
 The reason says what was not rehearsed and why. For example:
 
 ```
-Cut with `--allow-no-rehearsal`: the runner image was unavailable and the install path is unchanged since 0.40.0.
+Cut with `--allow-no-rehearsal`: the runner image was unavailable and the install path is unchanged since 2026.10.0.
 ```
 
 The line starts with `Cut with ` and the backtick-quoted flag, then a colon and one space, then the reason, then a final full stop. To compare reasons, the gate takes the text after the colon and space and before the final full stop, trims leading and trailing spaces from it, and tests it for equality with the trimmed command-line reason. A reason that itself ends in a full stop is written with that full stop followed by the line's own full stop.

@@ -7,22 +7,17 @@ changing any code.
 
 ## What it owns
 
-The cartridge repository owns the fragments a seat's prompt is assembled
-from, and the top-level cartridge files — `conventions.md`, `charter.md`,
-`epic-model.md`, `prose-style.md` — that every run in this substrate loads.
-See [Cartridges](../methodology/cartridges.md) for how a run picks one.
+The `src/cartridges` folder holds the `core` package (merge, policy, ledger,
+work store), the base and local cartridges, the provider profiles, the
+reference skills plugins and the Claude plugin marketplace. See
+[Cartridges](../methodology/cartridges.md) for how a run picks one.
 
 ## Installing it
 
-Cartridges is required. It installs by default with `cox install`, no
-`--with` flag needed.
+Cartridges ships in every install. A workspace's `cartridges/base` and
+`cartridges/local` link into the checkout's `src/cartridges/cartridges/`.
 
 ## Its own docs
 
-The cartridges repository's own README and docs live at
-[github.com/ppfenning/coxswain-cartridges](https://github.com/ppfenning/coxswain-cartridges).
-
-## Reference
-
-The component's README at the pinned tag is included below when the site is
-built from a release.
+The folder's README and docs live at
+[src/cartridges](https://github.com/ppfenning/coxswain/tree/main/src/cartridges).

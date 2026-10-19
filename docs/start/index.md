@@ -1,10 +1,11 @@
 # Start here
 
-Coxswain is the umbrella for the agent platform. It is not itself an agent:
-this repository holds the docs you're reading, `manifest.toml` (the file that
-pins every other component to the same version, in lockstep), the one-line
-installer, and the release notes. The components it pins do the work: a
-cartridges repo, a graphs repo, the `cox` CLI, and an optional crew add-on.
+Coxswain is an agent platform in one repository,
+[ppfenning/coxswain](https://github.com/ppfenning/coxswain), shipped as one
+package, `coxswain`, with one command, `cox`. The repository holds the `cox`
+CLI (`src/tools`), the graphs and the harness that runs them (`src/graphs`),
+the cartridges (`src/cartridges`), the crew seats (`crew`), and the docs you
+are reading. The dashboard, `towpath`, is a separate, optional install.
 
 Coxswain is **beta**. See [What beta means](#what-beta-means) below before
 you rely on it for anything you can't afford to redo by hand.
@@ -44,8 +45,7 @@ it. See [conventions: single writer](../methodology/index.md) for why.
 - **coxswain** — the component that dispatches work to the crew and enforces
   the in-flight bound. It never does the crew's work itself.
 - **cartridge** — a packaged bundle of context for a team or a repo: its
-  conventions, its charter, its thresholds. Pinned in `manifest.toml` like
-  everything else.
+  conventions, its charter, its thresholds.
 - **fragment** — one piece of context text — a convention, a charter, a
   style note — that gets assembled into a seat's prompt for a run.
 - **graph** — the ordered set of nodes a run executes: plan, build, review,
@@ -63,8 +63,9 @@ it. See [conventions: single writer](../methodology/index.md) for why.
 
 ## What beta means
 
-Versions may change between releases — a flag, a file layout, a component's
-shape can move without a deprecation cycle. What doesn't move is the pin:
-every component in a given Coxswain release is tagged with that release's
-version, so `manifest.toml` always tells you exactly what you have, even
-while beta is still settling.
+Things may change between releases — a flag, a file layout, a command's
+shape can move without a deprecation cycle. What doesn't move is the version:
+a release is one tag, `vYYYY.M.N`, on one repository, and your checkout sits
+at that tag, so `cox versions` always tells you exactly what you have. When a
+release changes the layout on disk or the store's schema, `cox setup migrate`
+moves you across.
