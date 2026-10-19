@@ -1,6 +1,6 @@
 # Plugins
 
-Coxswain's core repositories name no vendor. Anything that talks to a
+Coxswain's core repository names no vendor. Anything that talks to a
 particular tracker, forge, model vendor or hosted service is a plugin:
 a Python package that registers under an entry-point group, which core
 looks up by name. The public
@@ -47,18 +47,24 @@ and nothing else queued, so it reads every configured source.
 
 ## Installing
 
-`cox` loads sources, forges and trackers from its own environment:
+`cox` loads sources, forges and trackers from its own environment. `cox` is
+installed editable from the coxswain checkout, so add the plugins to that
+install:
 
 ```sh
-uv tool install coxswain-tools --with "coxswain-plugins @ git+https://github.com/ppfenning/coxswain-plugins"
+uv tool install --force --editable ~/.local/share/coxswain/installs/coxswain \
+  --with "coxswain-plugins @ git+https://github.com/ppfenning/coxswain-plugins"
 ```
 
-The harness loads system-one backends and runners from its own virtual
-environment, the `harness_dir` in your profile:
+The harness loads system-one backends and runners from the checkout's venv:
 
 ```sh
-uv pip install --python <harness_dir>/.venv/bin/python "coxswain-plugins[jev] @ git+https://github.com/ppfenning/coxswain-plugins"
+uv pip install --python ~/.local/share/coxswain/installs/coxswain/.venv/bin/python \
+  "coxswain-plugins[jev] @ git+https://github.com/ppfenning/coxswain-plugins"
 ```
+
+`cox upgrade` reinstalls `cox` and syncs the venv to the release's lock, which
+drops packages it does not name. Run both commands again after an upgrade.
 
 A plugin that needs a vendor's client library declares it as an extra,
 as `jev` does. Installing one plugin never pulls in another's

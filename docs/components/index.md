@@ -1,19 +1,25 @@
 # Components
 
-The repositories that make up a Coxswain release, pulled in from `manifest.toml`.
+The parts of Coxswain. Four are folders of the one repository,
+[ppfenning/coxswain](https://github.com/ppfenning/coxswain), and ship in every
+release. Dash is its own repository and is optional.
 
-Three are required: without them there is no CLI and nothing to run. Two are
-optional: crew, installed with `cox install --with crew`, and dash, installed
-with cargo (see its page). Each lives in its own
-repository, tagged with the same Coxswain version at release. Every component,
-required or not, is tagged with the same Coxswain version at release, so
-`manifest.toml` always tells you exactly what a given install has, in
-lockstep.
-
-| Name | Repository | Required or flag | What it does |
+| Name | Where | Installed | What it does |
 | --- | --- | --- | --- |
-| [Cartridges](cartridges.md) | [ppfenning/coxswain-cartridges](https://github.com/ppfenning/coxswain-cartridges) | required | Packages a team's or repo's context: conventions, charter, thresholds. |
-| [Graphs](graphs.md) | [ppfenning/coxswain-graphs](https://github.com/ppfenning/coxswain-graphs) | required | Defines the ordered nodes a run executes: plan, build, review, arbitrate, validate. |
-| [Tools](tools.md) | [ppfenning/coxswain-tools](https://github.com/ppfenning/coxswain-tools) | required, provides `cox` | The `cox` CLI: install, dispatch, and run the loop. |
-| [Crew](crew.md) | [ppfenning/coxswain-crew](https://github.com/ppfenning/coxswain-crew) | flag: `crew` | The agent seats that plan, build, review, and validate. |
-| [Dash](dash.md) | [ppfenning/coxswain-dash](https://github.com/ppfenning/coxswain-dash) | flag: `dash`, provides `towpath` | A terminal dashboard for the fleet (beta, from 0.26.0). |
+| [Tools](tools.md) | `src/tools` | always, provides `cox` | The `cox` CLI: install, dispatch, run the loop, land. |
+| [Graphs](graphs.md) | `src/graphs` | always | The graphs a run executes, and the harness that runs them. |
+| [Cartridges](cartridges.md) | `src/cartridges` | always | A team's or repo's context: roles, skills, policy, providers. |
+| [Crew](crew.md) | `crew` | always, linked into `~/.claude/agents` | The agent seats that plan, build, review, and validate. |
+| [Dash](dash.md) | [ppfenning/coxswain-dash](https://github.com/ppfenning/coxswain-dash) | `--with dash`, provides `towpath` | A terminal dashboard for the fleet. |
+
+The four folders are one checkout at one release tag, with one venv, so they
+always match. `manifest.toml` names only dash, at the tag a release pins it to.
+
+Each folder runs its own tests from inside it:
+
+```sh
+cd src/tools && uv run pytest -q
+```
+
+The same works for `src/graphs` and `src/cartridges`. The root suite runs from
+the repository root with `uv run pytest -q`.

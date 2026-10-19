@@ -14,7 +14,7 @@ what lets a human, or the next node, reconstruct what a given seat saw
 and returned, rather than trusting a paraphrase of it.
 
 A run on the edge channel is not reproducible from a version number
-alone, so its record names the commit each component was at.
+alone, so its record names the commit the checkout was at.
 
 From 0.17.0 the record lives in the run store (`runs/cox.db`, or the
 Postgres store a provider profile names). The run's totals, its phases,
@@ -48,7 +48,11 @@ that has failed validation twice looks different to the docket than one
 seeing its first attempt, even though both look identical from inside a
 single run's own trace.
 
-## releasable.yml
+## CI and the release rehearsal
 
-A green run of `releasable.yml` means the components pass together
-against current main tonight, not that any particular tag is good.
+A green CI run means the four suites — tools, graphs, cartridges and the
+root — pass together on that commit. It does not mean a release cut from it
+is good. That is what the [release rehearsal](../release-rehearsal.md) is
+for: it installs the exact commit fresh, upgrades an install of the previous
+release to it, and runs the release's migrations. A release is cut only after
+it passes.

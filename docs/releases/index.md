@@ -1,57 +1,126 @@
 # Releases
 
-What changes between versions and how the lockstep tag scheme works.
+Coxswain is one repository, [ppfenning/coxswain](https://github.com/ppfenning/coxswain),
+and one package, `coxswain`. A release is one tag on that repository, one
+PyPI publish, one GitHub release and one Homebrew formula update.
+
+## Versions
+
+From 2026.10.0, versions are CalVer: `YYYY.M.N`, tagged `vYYYY.M.N`.
+
+- `YYYY` is the year and `M` the month, without a leading zero.
+- `N` counts the releases cut in that month, from 0.
+- The first monorepo release is 2026.10.0. The next in October would be
+  2026.10.1. The first in November would be 2026.11.0, not 2026.11.00.
+
+The number says when a release was cut. It does not say whether it is
+compatible with the one before. Compatibility is carried by the store and
+workspace schema, which `cox setup doctor` checks, and by
+`cox setup migrate`, which moves a machine across a change in layout.
+
+0.47.0 was the last component release. Releases before it used SemVer-style
+`0.x` numbers across several repositories; they are listed below under
+[Component releases (0.x)](#component-releases-0x). See
+[From 0.47 to the monorepo](../monorepo.md) for what changed and how to move.
 
 ## How a release works
 
-From 0.15.0, a release is cut from the umbrella checkout with:
+A release is cut from the coxswain checkout:
 
 ```
-uv run --frozen python -m devtools release <version> --root ~/repos --manifest ~/repos/coxswain/manifest.toml --umbrella ~/repos/coxswain
+uv run --frozen python -m devtools release <version>
 ```
 
-0.14.x and earlier were cut with `cox dev release`. `--frozen` keeps `uv run` from rewriting
-`uv.lock` when a component's version moves, since a dirty umbrella refuses the cut.
+Add `--dry-run` first to print the plan without running it. `--frozen` keeps `uv run` from rewriting `uv.lock`, since a dirty checkout
+refuses the cut. `--root` is where the dash and `homebrew-coxswain` checkouts
+sit; it defaults to the checkout's parent.
 
-That one command tags every component repository and this repository at
-`<version>`, bumps `manifest.toml` to match, and publishes both the docs
-site at that version (via `mike`) and the `cox` package to PyPI (via
-trusted publishing — no long-lived token in this repository's secrets).
-Changed components are tagged `v<version>`; unchanged ones keep their
-tag. `manifest.toml` records the tag each component is pinned to.
+The cut runs these gates first. Any one refuses it:
+
+1. The notes page `docs/releases/<version>.md` exists and has no blank left
+   in it.
+2. Every tree the release tags passes the clean check
+   (`.github/check_clean.py`).
+3. A [release rehearsal](../release-rehearsal.md) passed on the checkout's
+   `origin/main` commit. `--allow-no-rehearsal REASON` waives it, and the
+   notes must carry the same reason.
+4. `release-check` finds no drift between the CLI, the manifest, the docs
+   and the notes. `--allow-doc-drift REASON` waives it.
+
+Then the steps:
+
+1. When `<version>` is above the manifest's version, bump `pyproject.toml`,
+   `uv.lock` and `manifest.toml` on `release/<version>`, open a pull request,
+   wait for its checks and merge it.
+2. Tag `v<version>` on the repository. The tag push runs `publish.yml`,
+   which publishes `coxswain` to PyPI by trusted publishing. It refuses a tag
+   that is not `v` plus the CalVer version in `pyproject.toml`. The release
+   waits for that workflow.
+3. Create the GitHub release `coxswain <version>` from the notes page.
+4. Open the tap formula pull request, and run the install proof against it
+   (below).
+
+Dash lives in its own repository. A release tags it at `v<version>` only when
+it has commits since the tag `manifest.toml` names; otherwise dash keeps its
+tag. Nothing else is pinned: the checkout is the release.
+
+The docs site is deployed by `docs.yml` on every push to `main`, under the
+manifest's version and `latest`.
 
 ### The tap pull request and the install proof
 
-A cut that tags the tools repository ends with the `tap_formula_pr` step. It bumps
-`Formula/cox.rb` in the `ppfenning/homebrew-coxswain` tap to the new PyPI sdist on a
-release branch and opens a pull request there. The tap is what `brew install` reads, so
-this pull request is the last gate between a tag and a Homebrew user.
+Every cut ends with the `tap_formula_pr` step. It bumps `Formula/cox.rb` in
+the `ppfenning/homebrew-coxswain` tap to the new PyPI sdist on a release
+branch and opens a pull request there. The tap is what `brew install` reads,
+so this pull request is the last gate between a tag and a Homebrew user.
+`--tap-only` runs this step alone, for a version already tagged.
 
 Before anyone merges it, the step dispatches `.github/workflows/install-proof.yml`
-against that branch as `tap_ref` and waits for the one run it started. The proof runs on
-two platforms: macOS arm64 on `macos-14`, and a Linux Homebrew container, `homebrew/brew`
-on `ubuntu-latest`. On each it runs `brew install ppfenning/coxswain/cox` to install the
-previous release and checks that the installed version is the one tagged just below the
-candidate. It stages the candidate formula from the tap branch, then runs
-`brew upgrade cox` and fails if the version did not move to the candidate. On a temporary
-profile, with `HOME` and the `XDG_*` directories pointed at a fresh directory, it runs
-`cox --version` and `cox setup doctor --json` and checks both outputs. Then it runs
-`brew uninstall cox` and `brew install ppfenning/coxswain/cox` again, and repeats the same
-two checks on the clean install.
+against that branch as `tap_ref` and waits for the one run it started. The
+proof is the clean-machine rehearsal. It runs on two platforms: macOS arm64
+on `macos-14`, and a Linux Homebrew container, `homebrew/brew` on
+`ubuntu-latest`. On each it runs `brew install ppfenning/coxswain/cox` to
+install the previous release and checks that the installed version is the one
+tagged just below the candidate. It stages the candidate formula from the tap
+branch, then runs `brew upgrade cox` and fails if the version did not move to
+the candidate. On a temporary profile, with `HOME` and the `XDG_*`
+directories pointed at a fresh directory, it runs `cox --version` and
+`cox setup doctor --json` and checks both outputs. Then it runs
+`brew uninstall cox` and `brew install ppfenning/coxswain/cox` again, and
+repeats the same two checks on the clean install.
 
-The release flow never merges the tap pull request. If the proof's conclusion is anything
-other than `success`, which is what `tap_may_merge` tests, the command prints the
-conclusion and the run URL, leaves the pull request open and exits non-zero. After a pass,
-you merge the tap pull request by hand.
+The release flow never merges the tap pull request. If the proof's conclusion
+is anything other than `success`, which is what `tap_may_merge` tests, the
+command prints the conclusion and the run URL, leaves the pull request open
+and exits non-zero. After a pass, you merge the tap pull request by hand.
 
-A proof that cannot fail proves nothing, so `.github/workflows/install-proof-negative.yml`
-runs weekly and on dispatch. It feeds the proof the deliberately broken formula
-`tests/devtools/broken_cox.rb`. Its own run is green only when the proof failed, so a
-green run there means the proof failed on that one formula. It does not show
-the proof catches every broken formula.
+A proof that cannot fail proves nothing, so
+`.github/workflows/install-proof-negative.yml` runs weekly and on dispatch. It
+feeds the proof the deliberately broken formula `tests/devtools/broken_cox.rb`.
+Its own run is green only when the proof failed, so a green run there means
+the proof failed on that one formula. It does not show the proof catches
+every broken formula.
 
-A green proof means that formula installs and upgrades on those two platforms today. It
-does not mean the release is otherwise good.
+A green proof means that formula installs and upgrades on those two platforms
+today. It does not mean the release is otherwise good.
+
+## `2026.10.0`
+
+Upcoming: the first monorepo release. It is not cut yet. See
+[From 0.47 to the monorepo](../monorepo.md). The cut replaces this section
+with its own.
+
+| Component | Repository or path | Tag | Required or flag |
+| --- | --- | --- | --- |
+| dash | `ppfenning/coxswain-dash` | `v0.42.0` | flag: `dash`, provides `towpath` (pinned) |
+
+## Component releases (0.x)
+
+From 0.1.0-beta.1 to 0.47.0, Coxswain shipped as separate repositories —
+cartridges, graphs, tools, crew and dash — tagged together from the
+`coxswain` repository and pinned by `manifest.toml`. Each table below lists
+the tag every component was pinned to in that release. A component marked
+"pinned" kept an earlier tag because it had not changed.
 
 ## `0.47.0`
 

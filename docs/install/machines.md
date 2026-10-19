@@ -2,9 +2,8 @@
 
 Every platform below needs `git` and `curl` before you run the installer.
 Coxswain needs Python 3.14 or newer; `uv` downloads a managed Python 3.14
-when the system one is older, so you don't need to install it yourself. You
-don't need to install `uv` either — the install script installs it if it
-isn't already on `PATH`.
+when the system one is older, so you don't need to install it yourself.
+Install `uv` itself first, or install `cox` with Homebrew.
 
 ## Arch and Omarchy
 
@@ -39,6 +38,6 @@ touching the host machine at all.
 
 ## What you'll see
 
-<img alt="cox install --dry-run printing the install plan without writing anything under --root" src="../assets/shots/install-dry-run.svg">
+<img alt="cox install --dry-run printing the install plan without writing anything" src="../assets/shots/install-dry-run.svg">
 
-`cox install --dry-run` prints the same plan the installer would run, before it writes anything under `--root`.
+`cox install --dry-run` prints the plan `cox install` would run, before it writes anything.
