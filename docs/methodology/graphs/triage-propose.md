@@ -1,10 +1,12 @@
 # triage-propose
 
-The coxswain dispatches triage-propose when a new ticket arrives
-unscoped: it reads the ticket and proposes which initiative it belongs
-to, or that it needs a new one. What lands is a filing proposal in the
-future-work landing area, not a ticket placed directly onto the active
-board.
+triage-propose is morning triage of an alert queue. The alerts arrive as
+an argument; the graph fetches nothing itself. It classifies each alert
+against the runbook, verifies the classification, and proposes
+`doc_update` corrections to the runbook it used. It writes nothing else.
+Alerts over the fetch cap are counted and deferred to the next run,
+never dropped. The coxswain can dispatch it when alerts are provided,
+and `shell.py triage` runs it directly.
 
 --8<-- "components/graphs/docs/graphs/triage-propose.md"
 

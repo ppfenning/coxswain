@@ -50,13 +50,18 @@ nav:
       - Cartridges: methodology/cartridges.md
       - Graphs:
           - Graphs: methodology/graphs.md
-          - coxswain: methodology/graphs/coxswain.md
-          - epic-swarm: methodology/graphs/epic-swarm.md
-          - lifecycle-propose: methodology/graphs/lifecycle-propose.md
           - initiative-decompose: methodology/graphs/initiative-decompose.md
+          - lifecycle-propose: methodology/graphs/lifecycle-propose.md
+          - phase-validate: methodology/graphs/phase-validate.md
+          - review-diff: methodology/graphs/review-diff.md
+          - rescue-review: methodology/graphs/rescue-review.md
+          - coxswain: methodology/graphs/coxswain.md
           - epic-reconcile: methodology/graphs/epic-reconcile.md
           - retro-propose: methodology/graphs/retro-propose.md
           - triage-propose: methodology/graphs/triage-propose.md
+          - triage: methodology/graphs/triage.md
+          - sweep: methodology/graphs/sweep.md
+          - The epic driver: methodology/graphs/epic-driver.md
       - Review: methodology/review.md
       - Budgets: methodology/budgets.md
       - Landing: methodology/landing.md

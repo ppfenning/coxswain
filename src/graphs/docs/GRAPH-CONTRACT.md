@@ -63,7 +63,8 @@ spelled out the last two:
 **1. Before the gate — measure, then escalate, then ask the policy.** When
 `--repo` names the project a change targets, the harness applies the build
 patch in a real worktree of it and RUNS the cartridge's configured checks
-(`landing_areas.checks`), attaching pass/fail and parsed counts to the proposal
+(`landing_areas.checks`) plus each command in the target repository's root
+`.agent-checks` file (one per line, added after the cartridge's), attaching pass/fail and parsed counts to the proposal
 the way `change_facts` already work — counted from reality, never asked of a
 model. Then, from the diff's paths alone, it escalates any patch-bearing
 proposal whose change touches governance (`cartridges/`, `skills-plugins/`,
@@ -129,7 +130,7 @@ staying small, enforced at the seam where it actually matters.
 | `lifecycle-propose` | scope → plan → [alternative plan → arbitrate plans] → [attack the plan] → build (worktree) → handoff → review → adversary → arbitrate → emit. One task. |
 | `triage` | facts (pure arithmetic over an item's attempts) → triage → emit. Classifies a stranded item at the attempt cap and emits by class, or escalates a repeated `(class, diagnosis)` pair. |
 | `triage-propose` | fetch → classify → verify → emit. Zero writes; proposes its own runbook corrections. |
-| `epic-reconcile` | compare (set arithmetic) → reconcile → emit. Declared state vs actual. |
+| `epic-reconcile` | compare (set arithmetic) → emit. Declared state vs actual. |
 | `phase-validate` | validate_chunk per task → validate_phase against the phase's ORIGINAL goal. Invoked by the epic driver. |
 | `retro-propose` | stats (pure arithmetic over ledger rows) → retro → emit. Proposes only what it can cite. |
 | `sweep` | sweep_plan → sweep_apply → sweep_verify → [review pair]. Ceilings on sweep_plan and, only where a rule can't be scripted, the one sweep_apply build call; verify is a grep, no model. |
@@ -137,7 +138,7 @@ staying small, enforced at the seam where it actually matters.
 | `review-diff` | review_charter → review_adversary → verify_evidence → [arbitrate]. Reviews an arbitrary diff, outside any build's own run. |
 | `rescue-review` | handoff → review_charter → review_adversary → [arbitrate] → emit. One review round over a patch that already exists. |
 
-All eight are specified in `graphs/` and implemented.
+All eleven are specified in `graphs/`, declare a `SPEC`, and are implemented. The table names each graph by its `GRAPH_NAME`; `shell.py` takes the subcommand its `SPEC` declares (for example `decompose`, `lifecycle`, `validate`, `cos`, `reconcile`, `retro`, and `triage-quarantine` for `triage`).
 
 Running a *phase* is not a graph: the shell runs `lifecycle-propose` once per
 unblocked task, concurrently. Sequence belongs to a graph; concurrency belongs
@@ -151,7 +152,7 @@ and every child run records under the parent's run id.
 ## None of this needs a tracker
 
 The roles and write kinds name work, not vendors: `work_state_arm`,
-`work_item_arm`, `item_create`, `state_move`. `cartridges/local/` binds every one
+`work_item_arm`, `item_create`, `state_move`. The `local` cartridge (`src/cartridges/cartridges/local/`) binds every one
 of them to the filesystem — work items are markdown files under `work/`, git is
 the audit trail — and resolves with no tracker, no workspace id, and no
 `auth_env`. If a graph needed a tracker, that cartridge could not resolve.
