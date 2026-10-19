@@ -1,0 +1,164 @@
+name: ci
+
+# These repos are private, so Actions minutes are billable. Three things keep
+# the bill down: docs-only pushes do not trigger a run, a superseded run is
+# cancelled rather than finishing, and pip is cached. The suite itself takes
+# well under a second — the runner startup and the installs were the whole cost.
+# Pull requests always run regardless of which paths changed, docs-only
+# included, because the branch ruleset requires the `test` check before
+# merge and a skipped run can never satisfy it.
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', '.gitignore', 'LICENSE']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 15
+    # Mapped here because the `secrets` context is not reliably readable from a
+    # step-level `if`, whereas `env` is.
+    env:
+      SUBSTRATE_TOKEN: ${{ secrets.SUBSTRATE_REPO_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+
+      # No operator, host, home path or employer may ship. The names live in a
+      # secret, never in the repo; without it the names rule is skipped and the
+      # fixed rules still run. Before the substrate checkout, so only this repo
+      # is scanned.
+      - name: No personal reference
+        run: python .github/check_clean.py .
+        env:
+          COXSWAIN_CLEAN_DENY: ${{ secrets.COXSWAIN_CLEAN_DENY }}
+
+      # agent-cartridges is a PRIVATE sibling repo and the default GITHUB_TOKEN
+      # is scoped to this repo alone, so it cannot read it — that 404 is what was
+      # failing every run. With a token the whole suite runs; without one the
+      # shell tests are skipped and the rest still runs, because the graphs never
+      # import the substrate. That seam is the reason this degrades cleanly.
+      - name: Check out the substrate (optional)
+        if: env.SUBSTRATE_TOKEN != ''
+        uses: actions/checkout@v5
+        with:
+          repository: ppfenning/agent-cartridges
+          path: .agent-cartridges
+          token: ${{ env.SUBSTRATE_TOKEN }}
+
+      - name: Install
+        run: |
+          pip install -e ".[dev]"
+          if [ -d .agent-cartridges ]; then
+            pip install ./.agent-cartridges
+          else
+            echo "::notice::SUBSTRATE_REPO_TOKEN is not set, so tests needing agent-cartridges are skipped. Add a fine-grained personal access token with read access to ppfenning/agent-cartridges to run the full suite."
+          fi
+
+      # No API key and no network: the scripted runner is what makes that work.
+      # Which tests to skip without the substrate is decided in tests/conftest.py
+      # by reading the imports, not by a list here — a list here drifts the
+      # moment someone adds a test, and did.
+      - run: pytest -q
+
+      - name: ruff (rules in pyproject.toml; pre-commit mirrors it)
+        run: pip install ruff==0.16.6 && ruff check .
+
+  # The suite on Python 3.15, a canary ahead of the 3.14 floor. Not in the branch
+  # ruleset, which requires `test` by name, so a red run here is a finding, not a
+  # merge block.
+  py315:
+    runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 15
+    env:
+      SUBSTRATE_TOKEN: ${{ secrets.SUBSTRATE_REPO_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.15"
+          allow-prereleases: true
+          cache: pip
+      - name: Check out the substrate (optional)
+        if: env.SUBSTRATE_TOKEN != ''
+        uses: actions/checkout@v5
+        with:
+          repository: ppfenning/agent-cartridges
+          path: .agent-cartridges
+          token: ${{ env.SUBSTRATE_TOKEN }}
+      - name: Install
+        run: |
+          pip install -e ".[dev]"
+          if [ -d .agent-cartridges ]; then pip install ./.agent-cartridges; fi
+      - run: pytest -q
+
+  # Runs the store tests against a real Postgres. Not in the branch ruleset, so a
+  # red run here is a finding to read, not a merge block. Only the store files
+  # run, to keep the extra runner minutes to the tests that have a Postgres param.
+  postgres:
+    runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 15
+    # `import harness` runs harness/__init__.py, which reaches `from core import
+    # ledger` in harness/autonomy.py. Without the substrate, tests/conftest.py
+    # drops every file that imports harness, which is all four store files. So
+    # unlike `test`, this job cannot degrade: no token means a red run.
+    env:
+      SUBSTRATE_TOKEN: ${{ secrets.SUBSTRATE_REPO_TOKEN }}
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        # a random host port, so two of these jobs can share a self-hosted runner's host
+        ports:
+          - 5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Point the store tests at the service's host port
+        run: echo "COXSWAIN_TEST_PG_URL=postgresql://postgres:postgres@localhost:${{ job.services.postgres.ports['5432'] }}/postgres" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+
+      - name: Require the substrate token
+        if: env.SUBSTRATE_TOKEN == ''
+        run: |
+          echo "::error::SUBSTRATE_REPO_TOKEN is not set. The store tests import harness, which needs agent-cartridges, so without it this job would collect nothing."
+          exit 1
+
+      - name: Check out the substrate
+        uses: actions/checkout@v5
+        with:
+          repository: ppfenning/agent-cartridges
+          path: .agent-cartridges
+          token: ${{ env.SUBSTRATE_TOKEN }}
+
+      - name: Install
+        run: |
+          pip install -e ".[postgres,dev]"
+          pip install ./.agent-cartridges
+
+      # Fails here, with the import error, rather than as a pytest run that
+      # silently collected none of the store files.
+      - name: The store tests' imports resolve
+        run: python -c "import core, psycopg, harness.store_migrate"
+
+      - run: pytest -rs -q tests/test_store_lease.py tests/test_store_write.py tests/test_store_read.py tests/test_store_migrate.py

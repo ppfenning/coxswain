@@ -1,0 +1,76 @@
+"""A runner that returns canned answers, so a whole graph is testable offline.
+
+This is not a mock in the apologetic sense — it is the reason the graphs can be
+tested at all. Every node in this system is a model call, and a test suite that
+needs a network and a key to run is a test suite nobody runs in CI.
+
+It is also deliberately strict. A scripted runner that invented a plausible
+answer for a node the test forgot to script would let a graph change shape
+without any test noticing.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any
+
+from runner.decision_log import RouterDecision
+from runner.protocol import NodeResult, RunnerError
+from runner.tier_resolution import Hints
+
+__all__ = ["ScriptedRunner"]
+
+
+class ScriptedRunner:
+    """Replays `{role: response}` (or `{role: [response, ...]}`) by role.
+
+    Records every call on `.calls` so a test can assert on what the graph asked
+    for — the tier it requested, the context it passed — and not merely on what
+    came back.
+    """
+
+    def __init__(self, responses: Mapping[str, Any]) -> None:
+        self._responses = {
+            role: list(value) if isinstance(value, list) else [value] for role, value in responses.items()
+        }
+        self.calls: list[dict[str, Any]] = []
+
+    def run(
+        self,
+        *,
+        role: str,
+        tier: str | None = None,
+        hints: Hints | None = None,
+        schema: Mapping[str, Any],
+        prompt: str,
+        context: Sequence[str] = (),
+        thread: str | None = None,
+        budget_usd: float | None = None,
+        task: str | None = None,
+        router_decision: RouterDecision | None = None,
+        wait_if_paused: Callable[[], None] | None = None,
+    ) -> NodeResult:
+        # `task` is not recorded on `.calls` — this double replays graphs whose
+        # existing assertions read that dict verbatim, and stamping `task_id`
+        # onto a call record is `ClaudeCodeRunner`'s own contract, not this one's.
+        record = {"role": role, "tier": tier, "prompt": prompt, "context": list(context), "thread": thread, "budget_usd": budget_usd}
+        if wait_if_paused is not None:
+            wait_if_paused()
+        record["wait_if_paused_given"] = wait_if_paused is not None
+        record["wait_if_paused_calls"] = 1 if wait_if_paused is not None else 0
+        self.calls.append({**record, "hints": hints} if hints is not None else record)
+        queued = self._responses.get(role)
+        if not queued:
+            raise RunnerError(
+                f"no scripted response for role '{role}'"
+                + (f" (call {len(self.calls)})" if role in self._responses else "")
+                + "; scripting every node a graph runs is how a test notices the graph changed shape"
+            )
+        # An entry may be an exception instance rather than a response, so a test
+        # can script a role that fails on a given call — a budget stop on a
+        # retry, say. Once it is the only entry left it repeats on every further
+        # call of that role, same as any other single-item entry repeats.
+        answer = queued.pop(0) if len(queued) > 1 else queued[0]
+        if isinstance(answer, BaseException):
+            raise answer
+        return NodeResult(answer)

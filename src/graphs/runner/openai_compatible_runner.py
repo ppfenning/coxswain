@@ -1,0 +1,581 @@
+"""A runner for models served by an OpenAI-compatible endpoint, such as a local server.
+
+The profile names the env var holding the endpoint's base URL. It never carries the URL.
+A `local/` model is served here, and so is any other prefix the profile marks
+`pass_through: true`, sent to the endpoint with no rewriting. Cost comes from the
+profile's `prices` map; a model absent from that map records `cost_usd: None`, never
+`0.0`. A profile `budget_usd` caps `max_tokens` before the call and raises `BudgetStop`
+once cumulative spend on a thread passes it. An `anthropic/` model is handed to an
+AnthropicRunner built on first use, which owns that call's records and store writes.
+"""
+
+from __future__ import annotations
+
+import itertools
+import json
+import os
+import uuid
+import warnings
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from runner.anthropic_runner import (
+    DEFAULT_TIER,
+    ROUTER_ON_WARNING,
+    AnthropicRunner,
+    _as_caller,
+    _class_model,
+    _classes_map,
+    _decision,
+    _router_mode,
+    _tier_map,
+)
+from runner.decision_log import CallDecision, RouterDecision, to_row
+from runner.openai_chat import (
+    ChatError,
+    ChatTransportError,
+    Reply,
+    build_request,
+    parse_response,
+    post_chat,
+    wire_model,
+)
+from runner.pricing import max_output_tokens_for_budget, price_call
+from runner.protocol import BudgetStop, NodeResult, RunnerError
+from runner.schema_answer import retry_prompt, schema_instruction, shape_answer
+from runner.tier_resolution import CLASSES, TIERS, Hints, resolve, to_class
+from runner.tool_loop import AdapterStep, FinalAnswer, ToolCall, run_tool_loop
+
+if TYPE_CHECKING:
+    from harness.store_write import Store
+
+__all__ = ["OpenAICompatibleRunner", "OpenAICompatibleToolLoopAdapter"]
+
+LOCAL_PREFIX = "local/"
+ANTHROPIC_PREFIX = "anthropic/"
+MAX_TOKENS = 4096
+BUILD_TURN_CAP = 40
+TEMPERATURE = 0.0
+TEXT_SCHEMA = {
+    "type": "object",
+    "properties": {"text": {"type": "string"}},
+    "required": ["text"],
+    "additionalProperties": False,
+}
+
+
+@dataclass(frozen=True)
+class _SharedSeqStore:
+    """The delegate's store, drawing `seq` from this runner's counter so a hybrid run keeps one sequence."""
+
+    store: Store
+    seq: Iterator[int]
+
+    def record_call(self, call: Mapping[str, Any], decision: Mapping[str, Any] | None = None, **kwargs: Any) -> int:
+        return self.store.record_call(call, decision, **{**kwargs, "seq": next(self.seq)})
+
+
+@dataclass(frozen=True)
+class _Ask:
+    """What one node call sends, fixed across the first attempt and the retry."""
+
+    role: str
+    task: str | None
+    tier: str
+    model_id: str
+    system: str | None
+    thread: str | None
+    wire_model_id: str
+
+
+def _wire_message(message: Mapping[str, Any]) -> dict[str, Any]:
+    """One tool_loop message after the system turn as one chat-completions message."""
+    if message["role"] == "assistant":
+        calls = [
+            {"id": c["id"], "type": "function", "function": {"name": c["name"], "arguments": json.dumps(c["arguments"])}}
+            for c in message["tool_calls"]
+        ]
+        return {"role": "assistant", "content": None, "tool_calls": calls}
+    if message["role"] == "tool":
+        return {"role": "tool", "tool_call_id": message["tool_call_id"], "content": message["content"]}
+    return {"role": "user", "content": message["content"]}
+
+
+def _wire_tool(tool: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {"name": tool["name"], "description": tool["description"], "parameters": tool["parameters"]},
+    }
+
+
+class OpenAICompatibleToolLoopAdapter:
+    """`ToolLoopAdapter` over chat completions; `answer` and `billed` outlive the loop, which returns neither."""
+
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        model: str,
+        max_tokens: int,
+        timeout: float,
+        prices: Mapping[str, Any],
+        bearer_token: str | None = None,
+        role: str = "build",
+    ) -> None:
+        self._base_url = base_url
+        self._model = model
+        self._max_tokens = max_tokens
+        self._timeout = timeout
+        self._prices = prices
+        self._bearer_token = bearer_token
+        self._role = role
+        self.answer: dict[str, Any] | None = None
+        self.billed: dict[str, float] = {}
+
+    def send(self, messages: list[dict], tools: list[dict]) -> AdapterStep:
+        head = messages[0]
+        schema = dict(head.get("schema") or {})
+        system = "\n\n".join(part for part in (head["content"], schema_instruction(schema) if schema else "") if part)
+        first = _wire_message(messages[1])
+        payload = {
+            **build_request(self._model, system or None, first["content"], self._max_tokens, TEMPERATURE),
+            "tools": [_wire_tool(t) for t in tools],
+        }
+        payload["messages"] = [*payload["messages"], *map(_wire_message, messages[2:])]
+        try:
+            reply = parse_response(
+                post_chat(self._base_url, payload, timeout=self._timeout, role=self._role, bearer_token=self._bearer_token)
+            )
+        except ChatTransportError as exc:
+            raise RunnerError(f"node '{self._role}' could not reach the endpoint: {exc}") from exc
+        if isinstance(reply, ChatError):
+            raise RunnerError(f"node '{self._role}' got an unusable reply: {reply.reason}")
+        cost = price_call(dict(self._prices), self._model, reply.prompt_tokens, reply.completion_tokens)
+        usage = {
+            "input_tokens": reply.prompt_tokens,
+            "output_tokens": reply.completion_tokens,
+            **({} if cost is None else {"cost_usd": cost}),
+        }
+        self.billed = {k: self.billed.get(k, 0) + usage.get(k, 0) for k in {*self.billed, *usage}}
+        try:
+            calls = [
+                ToolCall(c["id"], c["function"]["name"], dict(json.loads(c["function"]["arguments"] or "{}")))
+                for c in reply.tool_calls
+            ]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RunnerError(f"tool loop: a tool call in the reply is malformed: {exc}") from exc
+        if calls:
+            return AdapterStep(calls, None, usage)
+        data, errors = shape_answer(reply.text, schema)
+        if not isinstance(data, dict):
+            raise RunnerError(f"tool loop: the final reply does not match the schema: {'; '.join(errors) or 'not an object'}")
+        self.answer = data
+        return AdapterStep([], FinalAnswer(data), usage)
+
+
+class OpenAICompatibleRunner:
+    """Runs nodes against a chat-completions endpoint and shapes the reply to the node's schema."""
+
+    def __init__(
+        self,
+        profile: Mapping[str, Any],
+        *,
+        role_skills: Mapping[str, str],
+        env: Mapping[str, str] | None = None,
+        timeout: float = 120.0,
+        max_tokens: int = MAX_TOKENS,
+        store: Store | None = None,
+        run_id: str | None = None,
+        delegate_factory: Callable[..., Any] = AnthropicRunner,
+        cwd: Path | None = None,
+    ) -> None:
+        self.cwd = cwd
+        self.profile = dict(profile)
+        self.role_skills = dict(role_skills)
+        endpoint_env = self.profile.get("endpoint_env")
+        if not endpoint_env:
+            raise RunnerError("provider profile names no 'endpoint_env'")
+        base_url = (os.environ if env is None else env).get(str(endpoint_env))
+        if not base_url:
+            raise RunnerError(
+                f"${endpoint_env} is not set. The provider profile names the variable; it holds the endpoint's base URL."
+            )
+        self.base_url = base_url
+        self.timeout = timeout
+        self.max_tokens = max_tokens
+        self.store = store
+        self.run_id = run_id
+        self.capabilities = dict(self.profile.get("capabilities") or {})
+        self.tiers = dict(self.profile.get("tiers") or {})
+        if not self.tiers:
+            raise RunnerError("provider profile declares no tiers")
+        self.classes = _classes_map(self.profile)
+        self.tier_overrides = _tier_map(self.profile, "tier_overrides")
+        self.profile_defaults = _tier_map(self.profile, "defaults")
+        self.floor = str(self.profile.get("floor") or TIERS[0])
+        if to_class(self.floor) is None:
+            raise RunnerError(
+                f"provider profile 'floor' must be one of {', '.join(TIERS)} or {', '.join(CLASSES)}, not '{self.floor}'"
+            )
+        self.router_mode = _router_mode(self.profile)
+        self.prices = dict(self.profile.get("prices") or {})
+        # A flat ceiling, unlike the Claude Code runner's per-tier `budget_usd` dict
+        # (runner/claude_code_runner.py:622): this runner has no shape/session model,
+        # so one float per thread is enough.
+        self.budget_usd = self.profile.get("budget_usd")
+        self.pass_through = bool(self.profile.get("pass_through"))
+        auth_env = self.profile.get("auth_env")
+        self.auth_token = None if not auth_env else (os.environ if env is None else env).get(str(auth_env))
+        self._spent: dict[str | None, float] = {}
+        self.calls: list[dict[str, Any]] = []
+        self._store_seq = itertools.count(1)
+        self._delegate_factory = delegate_factory
+        self._delegate: Any = None
+
+    def close(self) -> None:
+        """Close the delegate if one was built and has a `close`; AnthropicRunner has none. A second call does nothing."""
+        delegate, self._delegate = self._delegate, None
+        closer = getattr(delegate, "close", None)
+        if closer is not None:
+            closer()
+
+    def _delegate_run(self, record: Mapping[str, Any], **kwargs: Any) -> NodeResult:
+        """One call on the delegate, built on first use. The delegate writes the store row; `record` joins `calls`."""
+        if self._delegate is None:
+            store = None if self.store is None else _SharedSeqStore(self.store, self._store_seq)
+            self._delegate = self._delegate_factory(
+                self.profile, role_skills=self.role_skills, store=store, run_id=self.run_id
+            )
+        try:
+            result = self._delegate.run(**kwargs)
+        except Exception:
+            self.calls.append(dict(record))
+            raise
+        self.calls.append({**record, "ok": True})
+        return result
+
+    def _model_for(self, tier: str) -> str:
+        model = self.tiers.get(tier)
+        if not model:
+            raise RunnerError(
+                f"provider profile has no model for tier '{tier}'; it declares: {', '.join(sorted(self.tiers))}"
+            )
+        return str(model)
+
+    def _record_to_store(self, call: Mapping[str, Any], decision: CallDecision | None) -> None:
+        """Write one finished call to the store; no decision means the call did not stand. A store error is warned about, never raised."""
+        if self.store is None or not self.run_id:
+            return
+        from harness.store_write import split_phase_id  # here, not at the top: harness imports the runners
+
+        run_id, phase_id = split_phase_id(self.run_id)
+        try:
+            self.store.record_call(
+                {**call, "ok": decision is not None},
+                None if decision is None else to_row(decision),
+                run_id=run_id,
+                seq=next(self._store_seq),
+                phase_id=phase_id or None,
+            )
+        except Exception as exc:
+            warnings.warn(f"store write failed for call {call['id']}: {exc}", RuntimeWarning, stacklevel=2)
+
+    def _post(self, ask: _Ask, prompt: str) -> tuple[dict[str, Any], Reply]:
+        """One HTTP call and its record. A transport or chat failure is recorded, stored as failed, and raised.
+
+        A success that pushes cumulative spend on `ask.thread` past `self.budget_usd` is still recorded — the
+        call already happened and was billed — then raises `BudgetStop` so the caller stops, not `_post`.
+        """
+        record = {
+            "id": str(uuid.uuid4()),
+            "role": ask.role,
+            "task_id": ask.task,
+            "tier": ask.tier,
+            "model": ask.model_id,
+            "ts": datetime.now(UTC).isoformat(),
+            "ok": False,
+            "cost_usd": 0.0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+        }
+        max_tokens = self.max_tokens
+        if self.budget_usd is not None:
+            budget_left = self.budget_usd - self._spent.get(ask.thread, 0.0)
+            cap = max_output_tokens_for_budget(self.prices, ask.wire_model_id, budget_left)
+            if cap is not None:
+                max_tokens = min(max_tokens, cap)
+        payload = build_request(ask.wire_model_id, ask.system, prompt, max_tokens, TEMPERATURE)
+        try:
+            reply = parse_response(
+                post_chat(self.base_url, payload, timeout=self.timeout, role=ask.role, bearer_token=self.auth_token)
+            )
+        except (ChatTransportError, RunnerError) as exc:
+            self.calls.append(record)
+            self._record_to_store(record, None)
+            # LimitStop subclasses RunnerError. Re-raise it unwrapped, or a rate limit reads as a node failure.
+            if isinstance(exc, RunnerError):
+                raise
+            raise RunnerError(f"node '{ask.role}' could not reach the endpoint: {exc}") from exc
+        if isinstance(reply, ChatError):
+            self.calls.append(record)
+            self._record_to_store(record, None)
+            raise RunnerError(f"node '{ask.role}' got an unusable reply: {reply.reason}")
+        cost = price_call(self.prices, ask.wire_model_id, reply.prompt_tokens, reply.completion_tokens)
+        counted = {
+            **record,
+            "ok": True,
+            "cost_usd": cost,
+            "input_tokens": reply.prompt_tokens,
+            "output_tokens": reply.completion_tokens,
+        }
+        self.calls.append(counted)
+        if self.budget_usd is not None and cost is not None:
+            spent = self._spent.get(ask.thread, 0.0) + cost
+            self._spent[ask.thread] = spent
+            if spent > self.budget_usd:
+                self._record_to_store(counted, None)
+                raise BudgetStop(
+                    role=ask.role,
+                    thread=ask.thread,
+                    session=None,
+                    spent_usd=spent,
+                    detail=f"node '{ask.role}' spent ${spent:.4f}, over budget ${self.budget_usd:.4f}",
+                )
+        return counted, reply
+
+    def _shaped(
+        self, ask: _Ask, prompt: str, schema: Mapping[str, Any]
+    ) -> tuple[dict[str, Any], Reply, dict[str, Any] | None, list[str]]:
+        record, reply = self._post(ask, prompt)
+        data, errors = shape_answer(reply.text, dict(schema))
+        problems = errors or ([] if isinstance(data, dict) else [f"$: expected an object, got {type(data).__name__}"])
+        return record, reply, data if isinstance(data, dict) else None, problems
+
+    def run(
+        self,
+        *,
+        role: str,
+        tier: str | None = None,
+        hints: Hints | None = None,
+        schema: Mapping[str, Any] | None = None,
+        prompt: str,
+        context: Sequence[str] = (),
+        thread: str | None = None,
+        budget_usd: float | None = None,
+        task: str | None = None,
+        router_decision: RouterDecision | None = None,
+        wait_if_paused: Callable[[], None] | None = None,
+        # The commands `run_check` may run in the build's worktree. Only the tool-loop build path uses them.
+        checks: Sequence[str] = (),
+    ) -> NodeResult:
+        # `thread` names the bucket `self._spent` accumulates against for a profile `budget_usd`; the call
+        # itself is still stateless, with no session or scratch to resume.
+        # `budget_usd` here is the per-call ceiling recorded on the decision below, distinct from the
+        # profile's own `self.budget_usd`, which `_post` enforces against cumulative spend.
+        requested_tier = tier or DEFAULT_TIER
+        if to_class(requested_tier) is None:
+            raise RunnerError(
+                f"node '{role}' asked for tier '{requested_tier}'; the tiers are {', '.join(TIERS)} or a capability class"
+            )
+        resolution = _as_caller(
+            resolve(role, hints, self.tier_overrides, self.profile_defaults, requested_tier, self.floor)
+        )
+        class_model = _class_model(self.classes, resolution.chosen_class)
+        model_id = class_model or self._model_for(resolution.tier)
+        recorded = replace(resolution, tier=resolution.chosen_class) if class_model else resolution
+        if model_id.startswith(ANTHROPIC_PREFIX):
+            # AnthropicRunner keeps no `calls` list and exposes no usage, so its record here carries no cost or tokens.
+            record = {
+                "id": str(uuid.uuid4()),
+                "role": role,
+                "task_id": task,
+                "tier": recorded.tier,
+                "model": model_id,
+                "ts": datetime.now(UTC).isoformat(),
+                "ok": False,
+            }
+            # The delegate resolves the tier itself and sends `model` to the API as given, so the prefix is stripped here.
+            # It requires a schema; a schemaless call gets the local path's `{"text": ...}` shape.
+            return self._delegate_run(
+                record,
+                role=role,
+                tier=tier,
+                hints=hints,
+                schema=schema or TEXT_SCHEMA,
+                prompt=prompt,
+                context=context,
+                thread=thread,
+                budget_usd=budget_usd,
+                task=task,
+                router_decision=router_decision,
+                wait_if_paused=wait_if_paused,
+                model=model_id.removeprefix(ANTHROPIC_PREFIX),
+            )
+        if not model_id.startswith(LOCAL_PREFIX) and not self.pass_through:
+            raise RunnerError(
+                f"node '{role}' resolved tier '{recorded.tier}' to model '{model_id}'; "
+                f"this runner serves only '{LOCAL_PREFIX}' and '{ANTHROPIC_PREFIX}' models"
+            )
+        if self.router_mode == "on" and router_decision is not None:
+            warnings.warn(ROUTER_ON_WARNING, RuntimeWarning, stacklevel=1)
+        shadow = router_decision if self.router_mode in ("shadow", "on") else None
+        body = self.role_skills.get(role)
+        packs = [body, *context] if body else list(context)
+        # A `local/` model still has its vendor prefix stripped for the wire; a `pass_through`
+        # model reaches the endpoint exactly as the profile names it, with no rewriting.
+        wire_model_id = wire_model(model_id) if model_id.startswith(LOCAL_PREFIX) else model_id
+        ask = _Ask(
+            role, task, recorded.tier, model_id, AnthropicRunner._read_context(packs) or None, thread, wire_model_id
+        )
+        decision = replace(
+            _decision(
+                role=role,
+                requested_tier=requested_tier,
+                resolution=recorded,
+                model_id=model_id,
+                effort="",
+                budget_usd=budget_usd,
+                task=task,
+                router_decision=shadow,
+            ),
+            effort=None,
+        )
+        # A paused run waits before the request and before its one retry, as it does before a Claude Code call.
+        wait = wait_if_paused or (lambda: None)
+        wait()
+        if role == "build" and self.cwd is not None:
+            return self._build_through_tool_loop(
+                ask, decision, prompt, schema or TEXT_SCHEMA, checks, budget_usd, wait_if_paused
+            )
+        if not schema:
+            record, reply = self._post(ask, prompt)
+            self._record_to_store(record, decision)
+            result = NodeResult({"text": reply.text})
+            result.decision = decision
+            return result
+        asked = f"{prompt}\n\n{schema_instruction(dict(schema))}"
+        first_record, first, data, errors = self._shaped(ask, asked, schema)
+        if not errors:
+            return self._answer(first_record, data, decision)
+        self._record_to_store(first_record, None)
+        wait()
+        second_record, _, data, errors = self._shaped(ask, retry_prompt(asked, first.text, errors), schema)
+        if errors:
+            self._record_to_store(second_record, None)
+            raise RunnerError(f"node '{role}' returned no valid answer after one retry: {'; '.join(errors)}")
+        return self._answer(second_record, data, decision)
+
+    def _build_through_tool_loop(
+        self,
+        ask: _Ask,
+        decision: CallDecision,
+        prompt: str,
+        schema: Mapping[str, Any],
+        checks: Sequence[str],
+        budget_usd: float | None,
+        wait_if_paused: Callable[[], None] | None,
+    ) -> NodeResult:
+        """A build call driven through the worktree tool loop.
+
+        The loop's ceiling is the smaller of the per-call `budget_usd` and what the profile's cumulative
+        `self.budget_usd` has left on the thread; the per-call figure never replaces the profile's.
+        """
+        spent_before = self._spent.get(ask.thread, 0.0)
+        left = None if self.budget_usd is None else self.budget_usd - spent_before
+        if left is not None and left <= 0:
+            raise BudgetStop(
+                role=ask.role,
+                thread=ask.thread,
+                session=None,
+                spent_usd=spent_before,
+                detail=f"node '{ask.role}' has spent ${spent_before:.4f} of its ${self.budget_usd:.4f} budget",
+            )
+        ceilings = [c for c in (budget_usd, left) if c is not None]
+        max_tokens = self.max_tokens
+        if left is not None:
+            cap = max_output_tokens_for_budget(self.prices, ask.wire_model_id, left)
+            if cap is not None:
+                max_tokens = max(1, min(max_tokens, cap))
+        adapter = OpenAICompatibleToolLoopAdapter(
+            self.base_url,
+            model=ask.wire_model_id,
+            max_tokens=max_tokens,
+            timeout=self.timeout,
+            prices=self.prices,
+            bearer_token=self.auth_token,
+            role=ask.role,
+        )
+        try:
+            loop = run_tool_loop(
+                adapter,
+                worktree=self.cwd,
+                system_prompt=ask.system or "",
+                user_prompt=prompt,
+                schema=dict(schema),
+                checks=checks,
+                turn_cap=BUILD_TURN_CAP,
+                budget_usd=min(ceilings) if ceilings else None,
+                wait_if_paused=wait_if_paused,
+            )
+        except RunnerError as exc:
+            # BudgetStop and LimitStop are RunnerErrors: every turn billed before the raise is charged and recorded.
+            spent = self._charge_loop(ask.thread, adapter.billed)
+            self._record_loop(ask, adapter.billed, ok=False, decision=None)
+            if isinstance(exc, BudgetStop):
+                raise BudgetStop(
+                    role=ask.role,
+                    thread=ask.thread,
+                    session=None,
+                    spent_usd=spent,
+                    detail=exc.detail,
+                    partial_patch=exc.partial_patch,
+                    num_turns=exc.num_turns,
+                ) from exc
+            raise
+        self._charge_loop(ask.thread, adapter.billed)
+        if loop.stop_reason != "final":
+            self._record_loop(ask, adapter.billed, ok=False, decision=None)
+            raise RunnerError(
+                f"node '{ask.role}' used all {BUILD_TURN_CAP} tool-loop turns without a final answer; "
+                f"the worktree {self.cwd} holds its unfinished change ({len(loop.patch)} characters of diff)"
+            )
+        self._record_loop(ask, adapter.billed, ok=True, decision=decision)
+        result = NodeResult(
+            {**(adapter.answer or {}), "patch": loop.patch, **({"patch_error": loop.patch_error} if loop.patch_error else {})}
+        )
+        result.decision = decision
+        return result
+
+    def _charge_loop(self, thread: str | None, billed: Mapping[str, float]) -> float:
+        """Add a loop's spend to the thread's cumulative total and return that total."""
+        total = self._spent.get(thread, 0.0) + billed.get("cost_usd", 0.0)
+        self._spent[thread] = total
+        return total
+
+    def _record_loop(
+        self, ask: _Ask, billed: Mapping[str, float], *, ok: bool, decision: CallDecision | None
+    ) -> None:
+        """One aggregated call record for a whole tool loop; no per-turn rows."""
+        record = {
+            "id": str(uuid.uuid4()),
+            "role": ask.role,
+            "task_id": ask.task,
+            "tier": ask.tier,
+            "model": ask.model_id,
+            "ts": datetime.now(UTC).isoformat(),
+            "ok": ok,
+            "cost_usd": billed.get("cost_usd"),
+            "input_tokens": int(billed.get("input_tokens", 0)),
+            "output_tokens": int(billed.get("output_tokens", 0)),
+        }
+        self.calls.append(record)
+        self._record_to_store(record, decision)
+
+    def _answer(self, record: Mapping[str, Any], data: dict[str, Any] | None, decision: CallDecision) -> NodeResult:
+        self._record_to_store(record, decision)
+        result = NodeResult(data or {})
+        result.decision = decision
+        return result

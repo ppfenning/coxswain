@@ -1,0 +1,3974 @@
+"""The swarm driver, against real repositories, real branches and real checks.
+
+The spec's central claim is that producing is not landing: an unattended run
+ends as a stack of branches and a pile of proposals, and every merge is a
+decision somebody made. That claim is only testable against git, so these tests
+build actual repositories in tmp_path, apply actual patches, and read the
+branches afterwards rather than the driver's account of itself.
+
+The other property under test is the phase boundary: a phase unblocks its
+dependents only when the validator says the goal is met AND the merges that
+carry the work onto the phase branch actually happened.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import sqlite3
+import subprocess
+import sys
+import threading
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import ClassVar
+
+import pytest
+from core import ledger, workstore
+
+from graphs._spec import GraphSpec
+from graphs.delivery import lifecycle_propose, phase_validate
+from graphs.ops import triage_quarantine
+from harness import epic as epic_module
+from harness.epic import (
+    EXIT_AWAITING_LAND,
+    EXIT_PAUSED,
+    _attempt_cap_for,
+    _invoke_failure_kind,
+    _is_append_only,
+    _lifecycle_invocation,
+    _ticket_amend_ramp,
+    _trace_evidence,
+    _unapproved,
+    branch_action,
+    build_outcome,
+    classify_unlanded,
+    default_branch,
+    phase_order,
+    phase_parents,
+    run_epic,
+    task_outcome,
+)
+from harness.resume import load_result, save_result
+from harness.store_lease import acquire, release
+from harness.store_migrate import open_store
+from harness.store_pause import clear_paused, is_paused, set_paused
+from harness.store_write import Store, ledger_row
+from runner.claude_code_runner import files_touched_from_patch
+from runner.protocol import BudgetStop, LimitStop, RunnerError
+
+SHA = "sha-fixture"
+PROFILE = "anthropic-default"
+
+TASK_IDS = ("t1-probe", "t2-bench", "t3-cutover")
+PHASE_IDS = ("p1-foundations", "p2-rollout")
+
+APPROVE = {"verdict": "approve", "findings": [], "rationale": "matches the charter"}
+CHUNK_OK = {"satisfied": True, "gaps": [], "reasoning": "the description is satisfied"}
+CHUNK_BAD = {
+    "satisfied": False,
+    "gaps": ["the probe reads nothing"],
+    "reasoning": "not done",
+    "defects": [{"claim": "the probe reads nothing", "where": {"file": "t1-probe.txt"}}],
+}
+GOAL_MET = {
+    "goal_met": True,
+    "partial": False,
+    "missing": [],
+    "quarantine_blocks_dependents": False,
+    "reasoning": "the pieces add up",
+}
+GOAL_UNMET = {
+    "goal_met": False,
+    "partial": True,
+    "missing": ["the bench harness never landed"],
+    "quarantine_blocks_dependents": True,
+    "reasoning": "one task is quarantined and the dependent path needs it",
+}
+
+# The check every task's work has to survive: a committed script in the repo, so
+# it runs in whichever worktree the harness made, against the state on disk.
+CHECK_SCRIPT = """\
+import pathlib
+import sys
+
+bad = sorted(p.name for p in pathlib.Path(".").glob("*.txt") if p.read_text().strip() != "ok")
+print(f"{len(bad)} failed" if bad else "1 passed")
+sys.exit(1 if bad else 0)
+"""
+
+
+def git(*args: str, cwd: Path) -> str:
+    proc = subprocess.run(
+        ["git", "-c", "user.email=t@invalid", "-c", "user.name=t", *args],
+        cwd=cwd, capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, f"git {' '.join(args)} failed: {proc.stderr or proc.stdout}"
+    return proc.stdout.strip()
+
+
+def is_ancestor(repo: Path, older: str, newer: str) -> bool:
+    return subprocess.run(
+        ["git", "-C", str(repo), "merge-base", "--is-ancestor", older, newer],
+        capture_output=True,
+    ).returncode == 0
+
+
+def branches(repo: Path) -> list[str]:
+    return sorted(git("branch", "--format=%(refname:short)", cwd=repo).splitlines())
+
+
+def new_file_patch(name: str, content: str = "ok") -> str:
+    return (
+        f"diff --git a/{name} b/{name}\n"
+        "new file mode 100644\n"
+        "--- /dev/null\n"
+        f"+++ b/{name}\n"
+        "@@ -0,0 +1 @@\n"
+        f"+{content}\n"
+    )
+
+
+@pytest.fixture
+def repo(tmp_path) -> Path:
+    """A real repository with a committed check script and one file to change."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    git("init", "-q", "-b", "main", cwd=root)
+    (root / "check.py").write_text(CHECK_SCRIPT, encoding="utf-8")
+    (root / "README.md").write_text("# demo\n", encoding="utf-8")
+    git("add", "-A", cwd=root)
+    git("commit", "-qm", "base", cwd=root)
+    return root
+
+
+@pytest.fixture
+def cart(tmp_path) -> dict:
+    """A cartridge with the kinds this driver actually proposes, and their arms.
+
+    Built here rather than extended from the shared fixture because the driver
+    needs a taxonomy the shared one does not carry: the branch kinds, the
+    escalation kind, and a policy block for the ramp to be read against.
+    """
+    return {
+        "team": "acme",
+        "cartridge_sha": SHA,
+        "context": [],
+        "skills": {
+            "plan": "acme-skills:plan",
+            "build": "acme-skills:build",
+            "review_charter": "acme-skills:review",
+            "validate_chunk": "acme-skills:validate-chunk",
+            "validate_phase": "acme-skills:validate-phase",
+            "work_state_arm": "acme-skills:work-state",
+        },
+        "write_kinds": {
+            "draft_pr_create": {"risk": "low", "ramp": "eligible", "apply_arm": "shell"},
+            "merge_stack": {"risk": "high", "ramp": "eligible", "apply_arm": "shell"},
+            "stack_rebase": {"risk": "high", "ramp": "eligible", "apply_arm": "shell"},
+            "state_move": {"risk": "low", "ramp": "deferred", "apply_arm": "work_state_arm"},
+            "self_modification": {"risk": "high", "ramp": "never", "apply_arm": "pr"},
+            "consolidate": {"risk": "low", "ramp": "deferred"},
+        },
+        "policy": {"graduation_n": 3, "regraduation_multiplier": 2, "caps": {}},
+        "landing_areas": {
+            "worktree_root": str(tmp_path / "worktrees"),
+            "checks": [{"name": "state", "cmd": f"{sys.executable} check.py"}],
+        },
+    }
+
+
+def initiative(*, two_phases: bool = True, done: tuple[str, ...] = ()) -> dict:
+    """A synthetic initiative: p1 with two independent tasks, p2 with a dependent."""
+    items = [
+        {"id": "t1-probe", "phase": "p1-foundations", "state": "ready", "needs": [], "surfaces": [],
+         "title": "schema probe", "body": "read the vendor schema"},
+        {"id": "t2-bench", "phase": "p1-foundations", "state": "ready", "needs": [], "surfaces": [],
+         "title": "bench harness", "body": "time the join"},
+    ]
+    if two_phases:
+        items.append(
+            {"id": "t3-cutover", "phase": "p2-rollout", "state": "ready", "needs": ["t1-probe"],
+             "surfaces": [], "title": "cutover", "body": "move traffic"}
+        )
+    for item in items:
+        if item["id"] in done:
+            item["state"] = "done"
+    return {
+        "id": "demo-initiative",
+        "title": "demo",
+        "body": "make the vendor join measurable end to end",
+        "phases": sorted({i["phase"] for i in items}),
+        "items": items,
+    }
+
+
+class Runner:
+    """Scripted by role, and by task where a role runs once per task.
+
+    Declares tool use, as an API runner that can edit files does; the gate refuses an undeclared one.
+
+    Keyed off the prompt rather than a call counter: the fan-out is concurrent,
+    so a positional script would be answering whichever task happened to get
+    there first. A role with nothing scripted for the task in front of it raises
+    — which is exactly how a task gets quarantined without the test faking one.
+    """
+
+    capabilities: ClassVar[dict[str, bool]] = {"tool_use": True}
+
+    def __init__(self, patches: dict[str, str], *, chunk=None, verdicts=None, style=None, review=None) -> None:
+        self.patches = patches
+        self.chunk = chunk or {}
+        self.verdicts = verdicts or {}
+        self.style = style or {}
+        self.review = review or {}
+        self.calls: list[dict] = []
+        self.lock = threading.Lock()
+
+    def _subject(self, prompt: str, candidates) -> str | None:
+        return next((c for c in candidates if c in prompt), None)
+
+    def run(
+        self, *, role, tier=None, hints=None, schema, prompt, context=(), thread=None, budget_usd=None, task=None,
+        wait_if_paused=None,
+    ):
+        with self.lock:
+            self.calls.append({"role": role, "tier": tier, "prompt": prompt, "budget_usd": budget_usd})
+
+        if role == "plan":
+            return {"steps": ["do it"], "files_expected": ["x.txt"], "out_of_scope": []}
+        if role == "build":
+            task = self._subject(prompt, TASK_IDS)
+            if task not in self.patches:
+                raise RunnerError(f"no build scripted for {task}")
+            return {
+                "patch": self.patches[task],
+                "summary": f"built {task}",
+                "files_touched": files_touched_from_patch(self.patches[task]),
+                "commands_run": [],
+            }
+        if role == "review_charter":
+            return dict(self.review.get(self._subject(prompt, TASK_IDS), APPROVE))
+        if role == "validate_chunk":
+            return dict(self.chunk.get(self._subject(prompt, TASK_IDS), CHUNK_OK))
+        if role == "validate_phase":
+            return dict(self.verdicts.get(self._subject(prompt, PHASE_IDS), GOAL_MET))
+        if role == "work_state_arm":
+            return {"applied": True, "detail": "state moved"}
+        if role == "style_pass":
+            return {"patch": self.style.get(self._subject(prompt, PHASE_IDS), "")}
+        raise RunnerError(f"no scripted response for role '{role}'")
+
+
+class CommandsRunner(Runner):
+    """Like `Runner`, but appends a `ClaudeCodeRunner`-shaped ledger row per build call.
+
+    `harness/epic._trace_evidence` reads `runner.calls` for a `role: "build"` row whose
+    `task_id` matches the task — never `files_touched`, which two tasks can share. This
+    double stamps `task_id` from the `task=` kwarg the graph now passes, same as
+    `ClaudeCodeRunner.run` does, so the harness's own selection is what is under test.
+    """
+
+    def __init__(self, patches: dict[str, str], *, commands_run: dict[str, list[dict]] | None = None) -> None:
+        super().__init__(patches)
+        self.commands_run = commands_run or {}
+
+    def run(
+        self, *, role, tier=None, hints=None, schema, prompt, context=(), thread=None, budget_usd=None, task=None,
+        wait_if_paused=None,
+    ):
+        result = super().run(
+            role=role, tier=tier, schema=schema, prompt=prompt, context=context, thread=thread, budget_usd=budget_usd
+        )
+        if role == "build":
+            with self.lock:
+                self.calls.append({
+                    "role": "build",
+                    "task_id": task,
+                    "files_touched": [f"{task}.txt"],
+                    "commands_run": self.commands_run.get(task, []),
+                })
+        return result
+
+
+class BudgetStopArm(Runner):
+    """Like `Runner`, but the `work_state_arm` bookkeeping call for one named task stops on budget."""
+
+    def __init__(self, patches: dict[str, str], *, stops: str) -> None:
+        super().__init__(patches)
+        self.stops = stops
+
+    def run(
+        self, *, role, tier=None, hints=None, schema, prompt, context=(), thread=None, budget_usd=None, task=None,
+        wait_if_paused=None,
+    ):
+        if role == "work_state_arm" and self.stops in prompt:
+            raise BudgetStop(role="work_state_arm", thread=None, session=None, spent_usd=0.0, detail="budget")
+        return super().run(
+            role=role, tier=tier, schema=schema, prompt=prompt, context=context, thread=thread, budget_usd=budget_usd
+        )
+
+
+class LimitStopArm(Runner):
+    """Like `BudgetStopArm`, but the CLI's own session limit stopped the call."""
+
+    def __init__(self, patches: dict[str, str], *, stops: str, detail: str) -> None:
+        super().__init__(patches)
+        self.stops = stops
+        self.detail = detail
+
+    def run(
+        self, *, role, tier=None, hints=None, schema, prompt, context=(), thread=None, budget_usd=None, task=None,
+        wait_if_paused=None,
+    ):
+        if role == "work_state_arm" and self.stops in prompt:
+            raise LimitStop(detail=self.detail)
+        return super().run(
+            role=role, tier=tier, schema=schema, prompt=prompt, context=context, thread=thread, budget_usd=budget_usd
+        )
+
+
+class LimitStopBuild(Runner):
+    """Like `Runner`, but the `build` node itself stops on the CLI's session limit."""
+
+    def __init__(self, patches: dict[str, str], *, detail: str) -> None:
+        super().__init__(patches)
+        self.detail = detail
+
+    def run(
+        self, *, role, tier=None, hints=None, schema, prompt, context=(), thread=None, budget_usd=None, task=None,
+        wait_if_paused=None,
+    ):
+        if role == "build":
+            raise LimitStop(detail=self.detail)
+        return super().run(
+            role=role, tier=tier, schema=schema, prompt=prompt, context=context, thread=thread, budget_usd=budget_usd
+        )
+
+
+SPECS = {
+    "lifecycle": GraphSpec(name="lifecycle", graph_name="lifecycle-propose", run=lifecycle_propose.run),
+    "validate": phase_validate.SPEC,
+}
+
+
+def drive(
+    repo, cart, tmp_path, *, runner=None, work=None, assume="a", run_id="epic-1", patches=None, fix_attempts=None,
+    keep_worktrees=False, specs=None, **extra,
+):
+    runner = runner or Runner(patches if patches is not None else {t: new_file_patch(f"{t}.txt") for t in TASK_IDS})
+    if "store" not in extra:
+        extra["store"] = Store(open_store("sqlite:///:memory:", datetime.now(UTC).isoformat()))
+    result = run_epic(
+        initiative=work if work is not None else initiative(),
+        repo=repo,
+        cartridge=cart,
+        runner=runner,
+        specs=specs if specs is not None else SPECS,
+        run_id=run_id,
+        date="2026-09-01",
+        max_parallel=3,
+        ledger_path=tmp_path / "ledger.jsonl",
+        provider_profile=PROFILE,
+        runs_dir=tmp_path / "runs",
+        worktree_root=cart["landing_areas"]["worktree_root"],
+        assume=assume,
+        fix_attempts=fix_attempts,
+        keep_worktrees=keep_worktrees,
+        **extra,
+    )
+    return result, runner
+
+
+# ── the phase graph, before anything runs ───────────────────────────────────
+
+
+def test_phase_edges_are_derived_from_the_task_edges() -> None:
+    parents = phase_parents(initiative()["items"])
+    assert parents == {"p1-foundations": set(), "p2-rollout": {"p1-foundations"}}
+    assert phase_order(parents) == (["p1-foundations", "p2-rollout"], [])
+
+
+def test_phase_parents_drops_cross_phase_needs_whose_tasks_are_already_done() -> None:
+    """A `done` need is already on the base ref: it imposes no stacking requirement."""
+    items = [
+        {"id": "t1-probe", "phase": "p1-foundations", "state": "done", "needs": []},
+        {"id": "t2-bench", "phase": "p2-rollout", "state": "done", "needs": []},
+        {"id": "t3-cutover", "phase": "p3-cutover", "state": "ready", "needs": ["t1-probe", "t2-bench"]},
+    ]
+    assert phase_parents(items)["p3-cutover"] == set()
+
+
+def test_phase_parents_keeps_a_single_unsatisfied_cross_phase_need() -> None:
+    items = [
+        {"id": "t1-probe", "phase": "p1-foundations", "state": "in_progress", "needs": []},
+        {"id": "t3-cutover", "phase": "p2-rollout", "state": "ready", "needs": ["t1-probe"]},
+    ]
+    assert phase_parents(items)["p2-rollout"] == {"p1-foundations"}
+
+
+def test_phase_parents_still_reports_two_unsatisfied_parents() -> None:
+    items = [
+        {"id": "t1-probe", "phase": "p1-foundations", "state": "in_progress", "needs": []},
+        {"id": "t0-seed", "phase": "p0-seed", "state": "pending", "needs": []},
+        {"id": "t3-cutover", "phase": "p2-rollout", "state": "ready", "needs": ["t1-probe", "t0-seed"]},
+    ]
+    assert phase_parents(items)["p2-rollout"] == {"p1-foundations", "p0-seed"}
+
+
+def test_a_phase_with_two_parents_is_blocked_rather_than_guessed_at(repo, cart, tmp_path) -> None:
+    """One stack has one base ref; picking a parent would build on half the ground."""
+    work = initiative()
+    work["items"].append(
+        {"id": "t0-seed", "phase": "p0-seed", "state": "ready", "needs": [], "surfaces": [],
+         "title": "seed", "body": "seed"}
+    )
+    work["items"][-2]["needs"] = ["t1-probe", "t0-seed"]  # t3 now has two parent phases
+    result, _ = drive(repo, cart, tmp_path, work=work)
+    blocked = next(p for p in result["phases"] if p["phase"] == "p2-rollout")
+    assert blocked["status"] == "blocked"
+    assert "multiple parent phases" in blocked["reason"]
+
+
+# ── the happy path ──────────────────────────────────────────────────────────
+
+
+def test_the_happy_path_stacks_the_second_phase_on_the_first(repo, cart, tmp_path) -> None:
+    result, _ = drive(repo, cart, tmp_path)
+
+    p1, p2 = result["phases"]
+    assert (p1["status"], p2["status"]) == ("complete", "complete")
+    assert result["totals"]["phases_complete"] == 2
+    assert result["totals"]["tasks_quarantined"] == 0
+
+    # Both merged into the phase branch, and both read `approved` — nothing in
+    # a run writes `done` — but p2's task still sees t1-probe ready to build
+    # on: `_ready_view` presents a merged parent as satisfied for `needs`.
+    assert {b for b in branches(repo) if b.startswith("epic/demo-initiative/p1-foundations--")} == {
+        "epic/demo-initiative/p1-foundations--t1-probe",
+        "epic/demo-initiative/p1-foundations--t2-bench",
+    }
+    for task in ("t1-probe", "t2-bench"):
+        assert is_ancestor(repo, f"epic/demo-initiative/p1-foundations--{task}", "epic/demo-initiative/p1-foundations")
+
+    # The stack: p2 is branched from p1's head, which is the whole topology claim.
+    assert is_ancestor(repo, "epic/demo-initiative/p1-foundations", "epic/demo-initiative/p2-rollout")
+    assert is_ancestor(repo, "epic/demo-initiative/p2-rollout--t3-cutover", "epic/demo-initiative/p2-rollout")
+
+    # Nothing reached the default branch, at any point, on any streak.
+    assert git("rev-parse", "main", cwd=repo) == git("rev-parse", "main~0", cwd=repo)
+    assert git("rev-list", "--count", "main", cwd=repo) == "1", "main has not moved"
+    assert not is_ancestor(repo, "epic/demo-initiative/p1-foundations", "main")
+
+
+# ── a need on a task in another initiative ──────────────────────────────────
+
+FOREIGN_NEED = "other-initiative/t9-upstream"
+
+
+def _one_task_needing_a_foreign_task(foreign_state: str) -> dict:
+    """One task whose only need lives in another initiative, in `foreign_state`."""
+    work = initiative(two_phases=False)
+    work["items"] = [
+        {**item, "needs": [FOREIGN_NEED]} if item["id"] == "t1-probe" else item
+        for item in work["items"]
+        if item["id"] != "t2-bench"
+    ]
+    return {**work, "foreign": {FOREIGN_NEED: foreign_state}}
+
+
+def test_a_task_whose_foreign_need_is_done_is_ready_and_built(repo, cart, tmp_path) -> None:
+    work = _one_task_needing_a_foreign_task("done")
+    patches = {"t1-probe": new_file_patch("t1-probe.txt")}
+    result, runner = drive(repo, cart, tmp_path, work=work, patches=patches)
+
+    assert [p["status"] for p in result["phases"]] == ["complete"]
+    assert result["totals"]["phases_partial"] == 0
+    assert any(c["role"] == "build" for c in runner.calls)
+    assert "epic/demo-initiative/p1-foundations--t1-probe" in branches(repo)
+
+
+def test_a_task_whose_foreign_need_is_not_done_stays_unready(repo, cart, tmp_path) -> None:
+    work = _one_task_needing_a_foreign_task("ready")
+    patches = {"t1-probe": new_file_patch("t1-probe.txt")}
+    _, runner = drive(repo, cart, tmp_path, work=work, patches=patches)
+
+    assert not any(c["role"] == "build" for c in runner.calls)
+    assert "epic/demo-initiative/p1-foundations--t1-probe" not in branches(repo)
+
+
+# ── cleanup on exit, work-shape.md §6/§8 ────────────────────────────────────
+
+
+class RaisingCloseRunner(Runner):
+    """A build that succeeds, then a close that does not — the exception a
+    `finally` has to survive, raised only after a worktree already exists."""
+
+    def close(self) -> None:
+        raise RuntimeError("close blew up")
+
+
+def test_a_normal_run_removes_its_worktree_directory_and_registration(repo, cart, tmp_path) -> None:
+    result, _ = drive(repo, cart, tmp_path, run_id="epic-clean")
+
+    assert result["totals"]["phases_complete"] == 2
+    assert not (Path(cart["landing_areas"]["worktree_root"]) / "epic-clean").exists()
+    assert "epic-clean" not in git("worktree", "list", cwd=repo)
+
+
+def test_a_run_that_raises_still_cleans_up_because_finally_fires(repo, cart, tmp_path) -> None:
+    runner = RaisingCloseRunner({t: new_file_patch(f"{t}.txt") for t in TASK_IDS})
+
+    with pytest.raises(RuntimeError, match="close blew up"):
+        drive(repo, cart, tmp_path, runner=runner, run_id="epic-raise")
+
+    assert not (Path(cart["landing_areas"]["worktree_root"]) / "epic-raise").exists()
+    assert "epic-raise" not in git("worktree", "list", cwd=repo)
+
+
+class SecondPhaseCloseRaises(Runner):
+    """A close that fails only after the second phase, so phase 1 finished cleanly and phase 2 raised."""
+
+    closes = 0
+
+    def close(self) -> None:
+        self.closes += 1
+        if self.closes == 2:
+            raise RuntimeError("phase two blew up")
+
+
+def _spy_on_run_exit(monkeypatch) -> list[tuple[str, dict | None]]:
+    exits: list[tuple[str, dict | None]] = []
+    real = epic_module._record_run_exit
+
+    def spy(store, run_id, status, retry, result=None):
+        exits.append((status, result))
+        return real(store, run_id, status, retry, result)
+
+    monkeypatch.setattr(epic_module, "_record_run_exit", spy)
+    return exits
+
+
+def test_a_raise_in_phase_two_keeps_phase_one_s_courier_note_and_exit_result(
+    repo, cart, tmp_path, monkeypatch, _courier_sends_are_recorded
+) -> None:
+    exits = _spy_on_run_exit(monkeypatch)
+    runner = SecondPhaseCloseRaises({t: new_file_patch(f"{t}.txt") for t in TASK_IDS})
+
+    with pytest.raises(RuntimeError, match="phase two blew up"):
+        drive(repo, cart, tmp_path, runner=runner, run_id="epic-keep-p1")
+
+    assert [ref for ref, _, _ in _courier_sends_are_recorded] == [
+        "coxswain://task/t1-probe", "coxswain://task/t2-bench"
+    ]
+    [(status, result)] = exits
+    assert status == "error"
+    assert [p["phase"] for p in result["phases"]] == ["p1-foundations"]
+    assert [t["id"] for t in result["tasks"]] == ["t1-probe", "t2-bench"]
+    assert result["totals"]["approved_not_landed"] == 2
+    assert any("t1-probe" in line for line in result["exit_summary"])
+
+
+def test_a_failure_building_the_partial_result_is_logged_and_the_original_raise_survives(
+    repo, cart, tmp_path, monkeypatch, caplog
+) -> None:
+    exits = _spy_on_run_exit(monkeypatch)
+
+    def broken(**_kwargs):
+        raise ValueError("cannot build")
+
+    monkeypatch.setattr(epic_module, "_build_result", broken)
+    runner = SecondPhaseCloseRaises({t: new_file_patch(f"{t}.txt") for t in TASK_IDS})
+
+    with (
+        caplog.at_level(logging.WARNING, logger=epic_module.__name__),
+        pytest.raises(RuntimeError, match="phase two blew up"),
+    ):
+        drive(repo, cart, tmp_path, runner=runner, run_id="epic-keep-bad")
+
+    assert exits == [("error", None)]
+    assert any("partial result for epic-keep-bad not built" in r.getMessage() for r in caplog.records)
+
+
+def test_keep_worktrees_moves_the_run_dir_under_kept_run_id_instead_of_deleting_it(repo, cart, tmp_path) -> None:
+    drive(repo, cart, tmp_path, run_id="epic-keep", keep_worktrees=True)
+
+    root = Path(cart["landing_areas"]["worktree_root"])
+    assert not (root / "epic-keep").exists(), "the emptied run directory should not survive the move"
+    kept = root / "_kept" / "epic-keep"
+    for phase in ("p1-foundations", "p2-rollout"):
+        phase_dir = kept / phase
+        assert phase_dir.is_dir(), f"{phase_dir} missing: §6 kept shape is _kept/<run_id>/<phase>"
+        assert any(phase_dir.rglob("*")), "the moved directory carried its contents, not an empty shell"
+    assert not (kept / "epic-keep").exists(), "the run id must not be doubled into the kept path"
+    assert "epic-keep" not in git("worktree", "list", cwd=repo)
+
+
+def test_every_phase_records_its_own_store_rows_and_ledger_rows_but_no_manifest_file(
+    repo, cart, tmp_path, store
+) -> None:
+    drive(repo, cart, tmp_path, store=store)
+    assert list((tmp_path / "runs").glob("*.json")) == []
+    assert store.total_rows("phases") == 2
+    assert store.total_rows("gate_decisions") > 0
+    task_records = sorted(p.name for p in (tmp_path / "runs" / "epic-1" / "tasks").glob("*/*.json"))
+    assert task_records == [f"{t}.json" for t in TASK_IDS]
+
+    rows = ledger.read(tmp_path / "ledger.jsonl")
+    assert {row["principal"] for row in rows} == {"epic-swarm(lifecycle-propose)"}
+    assert {row["cartridge_sha"] for row in rows} == {SHA}
+    merges = [row for row in rows if row["kind"] == "merge_stack"]
+    assert len(merges) == 3 and {row["outcome"] for row in merges} == {"clean"}
+    drafts = [row for row in rows if row["kind"] == "draft_pr_create"]
+    assert len(drafts) == 3 and {row["outcome"] for row in drafts} == {"clean"}
+
+
+# ── the base of an unparented phase ─────────────────────────────────────────
+
+
+def test_default_branch_prefers_a_local_origin_head() -> None:
+    assert default_branch("origin/develop", {"develop", "main"}, "topic") == "develop"
+
+
+def test_default_branch_skips_an_origin_head_that_is_not_local() -> None:
+    assert default_branch("origin/develop", {"main"}, "topic") == "main"
+
+
+def test_default_branch_prefers_main_over_master() -> None:
+    assert default_branch(None, {"main", "master"}, "topic") == "main"
+
+
+def test_default_branch_falls_back_to_master() -> None:
+    assert default_branch(None, {"master", "topic"}, "topic") == "master"
+
+
+def test_default_branch_falls_back_to_the_checkout_when_no_default_exists() -> None:
+    assert default_branch(None, {"topic"}, "topic") == "topic"
+
+
+def test_an_unparented_phase_branches_from_main_not_from_the_checked_out_branch(repo, cart, tmp_path) -> None:
+    git("checkout", "-q", "-b", "side", cwd=repo)
+    (repo / "side.txt").write_text("ok\n", encoding="utf-8")
+    git("add", "-A", cwd=repo)
+    git("commit", "-qm", "side", cwd=repo)
+    side_tip = git("rev-parse", "side", cwd=repo)
+
+    drive(repo, cart, tmp_path)
+
+    phase = "epic/demo-initiative/p1-foundations"
+    assert git("merge-base", phase, "main", cwd=repo) == git("rev-parse", "main", cwd=repo)
+    assert not is_ancestor(repo, side_tip, phase)
+
+
+# ── day one: the terminal state is branches and proposals ───────────────────
+
+
+def test_gated_day_one_produces_branches_and_proposals_and_lands_nothing(repo, cart, tmp_path) -> None:
+    """The spec's central claim, as an assertion about refs."""
+    result, _ = drive(repo, cart, tmp_path, assume="r")
+
+    drafts = [b for b in branches(repo) if "--" in b]
+    assert drafts == [], "a refused gate must leave no draft branch behind"
+    scratch = [b for b in branches(repo) if b.startswith("agents/epic-1/")]
+    assert sorted(scratch) == ["agents/epic-1/t1-probe", "agents/epic-1/t2-bench"]
+
+    assert result["totals"]["phases_complete"] == 0
+    p1 = result["phases"][0]
+    assert p1["status"] == "partial" and "nothing was merged" in p1["reason"]
+    # p2 depends on p1, so it is reported blocked rather than run.
+    assert result["phases"][1]["status"] == "blocked"
+    assert result["proposals"], "the run still produced work to decide on"
+    # The phase branch exists and is exactly where it started: the work is on
+    # the scratch branches, and the gate is what would have moved it.
+    assert git("rev-parse", "epic/demo-initiative/p1-foundations", cwd=repo) == git("rev-parse", "main", cwd=repo)
+
+
+def test_a_refused_draft_takes_its_own_merge_with_it(repo, cart, tmp_path) -> None:
+    result, _ = drive(repo, cart, tmp_path, assume="r")
+    rows = ledger.read(tmp_path / "ledger.jsonl")
+    assert {row["outcome"] for row in rows} == {"reversal"}
+    assert all(not task["merged"] and task["draft"] is None for task in result["tasks"])
+
+
+# ── quarantine, at task grain and its effect at phase grain ─────────────────
+
+
+def test_a_failing_check_quarantines_that_task_and_the_sibling_still_merges(repo, cart, tmp_path) -> None:
+    runner = Runner(
+        {
+            "t1-probe": new_file_patch("t1-probe.txt", "broken"),  # the check reads this
+            "t2-bench": new_file_patch("t2-bench.txt"),
+            "t3-cutover": new_file_patch("t3-cutover.txt"),
+        },
+        verdicts={"p1-foundations": GOAL_UNMET},
+    )
+    result, _ = drive(repo, cart, tmp_path, runner=runner)
+
+    quarantined = result["quarantined"]
+    assert [q["id"] for q in quarantined] == ["t1-probe"]
+    assert "check failed" in quarantined[0]["reason"]
+    # No `fix` is configured on this check, so the lint_fix step is a no-op
+    # and the failure is a non-functional finding on an approved patch: kept,
+    # not discarded.
+    assert quarantined[0]["kind"] == "unverified"
+    assert quarantined[0]["patch_kept"] is True
+    assert result["totals"]["tasks_quarantined"] == 1
+
+    # The sibling's work is untouched by its neighbour's failure.
+    assert is_ancestor(repo, "epic/demo-initiative/p1-foundations--t2-bench", "epic/demo-initiative/p1-foundations")
+    assert "epic/demo-initiative/p1-foundations--t1-probe" not in branches(repo)
+
+    # The validator was told about the quarantine, and its verdict is what
+    # decides the phase — which then does not unblock its dependent.
+    prompt = next(c["prompt"] for c in runner.calls if c["role"] == "validate_phase")
+    assert "t1-probe" in prompt and "check failed" in prompt
+    assert result["phases"][0]["status"] == "partial"
+    assert result["phases"][1]["status"] == "blocked"
+    assert "did not meet its goal" in result["phases"][1]["reason"]
+    assert result["totals"]["phases_complete"] == 0
+
+
+# ── the lint_fix step, mechanical and model-free ─────────────────────────────
+
+
+def test_a_checks_fix_command_lands_the_folded_patch(repo, cart, tmp_path) -> None:
+    cart["landing_areas"]["checks"] = [
+        {"name": "state", "cmd": f"{sys.executable} check.py", "fix": "printf ok > t1-probe.txt"}
+    ]
+    runner = Runner(
+        {"t1-probe": new_file_patch("t1-probe.txt", "broken"), "t2-bench": new_file_patch("t2-bench.txt")}
+    )
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
+
+    assert not result["quarantined"]
+    task = next(t for t in result["tasks"] if t["id"] == "t1-probe")
+    assert task["lint_fixed"] is True
+    assert task["lint_fix_checks"] == ["state"]
+    landed = git("show", "epic/demo-initiative/p1-foundations:t1-probe.txt", cwd=repo)
+    assert landed.strip() == "ok"
+    assert "lint fix" not in git("log", "--format=%s", "epic/demo-initiative/p1-foundations", cwd=repo)
+
+
+def test_a_fix_command_runs_once_and_never_for_a_check_with_none_configured(repo, cart, tmp_path) -> None:
+    cart["landing_areas"]["checks"] = [
+        {
+            "name": "state",
+            "cmd": f"{sys.executable} check.py",
+            "fix": "printf ok > t1-probe.txt && printf 1 >> fix-count.marker",
+        },
+        {"name": "style", "cmd": "true"},
+    ]
+    runner = Runner(
+        {"t1-probe": new_file_patch("t1-probe.txt", "broken"), "t2-bench": new_file_patch("t2-bench.txt")}
+    )
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
+
+    task = next(t for t in result["tasks"] if t["id"] == "t1-probe")
+    assert task["lint_fix_checks"] == ["state"]
+    landed = git("show", "epic/demo-initiative/p1-foundations:fix-count.marker", cwd=repo)
+    assert landed.strip() == "1"
+
+
+def test_a_residual_failure_after_the_fix_step_keeps_the_patch_as_unverified(repo, cart, tmp_path) -> None:
+    """The fix ran, something else is still wrong: a non-functional finding never discards an approved patch."""
+    cart["landing_areas"]["checks"] = [
+        {"name": "state", "cmd": f"{sys.executable} check.py", "fix": "printf ok > unrelated.txt"}
+    ]
+    runner = Runner(
+        {"t1-probe": new_file_patch("t1-probe.txt", "broken"), "t2-bench": new_file_patch("t2-bench.txt")},
+        verdicts={"p1-foundations": GOAL_UNMET},
+    )
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
+
+    entry = next(q for q in result["quarantined"] if q["id"] == "t1-probe")
+    assert entry["kind"] == "unverified"
+    assert entry["patch_kept"] is True
+
+    task = next(t for t in result["tasks"] if t["id"] == "t1-probe")
+    assert task["lint_fixed"] is True
+    assert "check failed" in task["quarantine"]
+
+
+def test_an_unapproved_task_with_a_failing_check_is_unchanged(repo, cart, tmp_path) -> None:
+    """The fix step and the checks gate are never reached for a task the loop refused."""
+    cart["landing_areas"]["checks"] = [
+        {"name": "state", "cmd": f"{sys.executable} check.py", "fix": "printf ok > t1-probe.txt"}
+    ]
+    runner = RefusedRunner(
+        {"t1-probe": new_file_patch("t1-probe.txt", "broken"), "t2-bench": new_file_patch("t2-bench.txt")},
+        refused="t1-probe",
+    )
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
+
+    quarantined = [q for q in result["quarantined"] if q["grain"] == "task"]
+    assert [q["id"] for q in quarantined] == ["t1-probe"]
+    assert quarantined[0]["kind"] == "refused"
+    assert "patch_kept" not in quarantined[0]
+
+    task_entry = next(t for t in result["tasks"] if t["id"] == "t1-probe")
+    assert "lint_fixed" not in task_entry
+    assert "checks" not in task_entry
+
+
+def test_the_failing_checks_evidence_reaches_the_record(repo, cart, tmp_path) -> None:
+    runner = Runner(
+        {"t1-probe": new_file_patch("t1-probe.txt", "broken"), "t2-bench": new_file_patch("t2-bench.txt")},
+        verdicts={"p1-foundations": GOAL_UNMET},
+    )
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
+    failed = next(t for t in result["tasks"] if t["id"] == "t1-probe")
+    assert any(row["check"] == "checks:state" and "FAIL" in row["output"] for row in failed["evidence"])
+
+
+def test_trace_commands_land_in_order_and_a_self_reported_one_is_never_folded_in(repo, cart, tmp_path) -> None:
+    # Deliberately not alphabetical ("ruff" then "echo") — a regression that
+    # sorted commands instead of preserving trace order would fail this.
+    runner = CommandsRunner(
+        {"t1-probe": new_file_patch("t1-probe.txt"), "t2-bench": new_file_patch("t2-bench.txt")},
+        commands_run={
+            "t1-probe": [
+                {"command": "ruff check .", "output": "All checks passed!", "source": "trace"},
+                {"command": "echo done", "output": "done", "source": "trace"},
+                {"command": "pytest -q --cov", "output": "not run", "source": "self_report"},
+            ]
+        },
+    )
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
+    landed = next(t for t in result["tasks"] if t["id"] == "t1-probe")
+    rows = [row for row in landed["evidence"] if row["check"] == "command"]
+    assert rows == [
+        {"check": "command", "source": "trace", "output": "ruff check .\nAll checks passed!"},
+        {"check": "command", "source": "trace", "output": "echo done\ndone"},
+    ]
+
+
+def test_files_touched_appears_exactly_once(repo, cart, tmp_path) -> None:
+    runner = CommandsRunner({"t1-probe": new_file_patch("t1-probe.txt")})
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
+    landed = next(t for t in result["tasks"] if t["id"] == "t1-probe")
+    rows = [row for row in landed["evidence"] if row["check"] == "files_touched"]
+    assert rows == [{"check": "files_touched", "source": "trace", "output": "t1-probe.txt"}]
+
+
+def test_two_tasks_with_identical_files_touched_each_get_their_own_evidence(repo, cart, tmp_path) -> None:
+    """`task_id` selects the call, not `files_touched` — which two tasks can share."""
+    runner = CommandsRunner(
+        {"t1-probe": new_file_patch("shared.txt"), "t2-bench": new_file_patch("shared.txt")},
+        commands_run={
+            "t1-probe": [{"command": "one", "output": "1", "source": "trace"}],
+            "t2-bench": [{"command": "two", "output": "2", "source": "trace"}],
+        },
+    )
+    # Both tasks' patches touch the same file, so a match keyed on
+    # `files_touched` would collide; `task_id` is what disambiguates the two
+    # ledger rows below.
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
+    t1 = next(t for t in result["tasks"] if t["id"] == "t1-probe")
+    t2 = next(t for t in result["tasks"] if t["id"] == "t2-bench")
+    assert [r["output"] for r in t1["evidence"] if r["check"] == "command"] == ["one\n1"]
+    assert [r["output"] for r in t2["evidence"] if r["check"] == "command"] == ["two\n2"]
+
+
+class RetriedCommandsRunner(CommandsRunner):
+    """Reviews t1-probe's first patch as `revise` once, so the fix loop retries
+    the build — two `role: "build"` ledger rows share one `task_id`. Evidence
+    must come from the last, the retry whose patch the record actually applied.
+    """
+
+    def __init__(self, patches: dict[str, str]) -> None:
+        super().__init__(patches, commands_run={"t1-probe": [{"command": "first", "output": "1", "source": "trace"}]})
+        self._revised = False
+
+    def run(
+        self, *, role, tier=None, hints=None, schema, prompt, context=(), thread=None, budget_usd=None, task=None,
+        wait_if_paused=None,
+    ):
+        if role == "review_charter" and "t1-probe" in prompt and not self._revised:
+            self._revised = True
+            with self.lock:
+                self.calls.append({"role": role, "tier": tier, "prompt": prompt})
+            return dict(REVISE)
+        if role == "build" and task == "t1-probe" and self._revised:
+            self.commands_run["t1-probe"] = [{"command": "second", "output": "2", "source": "trace"}]
+            # A retry that repeats the same patch reads as "no progress" and is
+            # refused before a second build call is even ledgered — so the
+            # retry has to change the patch to prove anything about which call
+            # the evidence comes from.
+            self.patches["t1-probe"] = new_file_patch("t1-probe.txt") + new_file_patch("t1-probe-retry.txt")
+        return super().run(
+            role=role, tier=tier, schema=schema, prompt=prompt, context=context, thread=thread,
+            budget_usd=budget_usd, task=task,
+        )
+
+
+def test_a_retried_builds_evidence_comes_from_the_last_call(repo, cart, tmp_path) -> None:
+    runner = RetriedCommandsRunner({t: new_file_patch(f"{t}.txt") for t in TASK_IDS})
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
+    landed = next(t for t in result["tasks"] if t["id"] == "t1-probe")
+    rows = [row for row in landed["evidence"] if row["check"] == "command"]
+    assert rows == [{"check": "command", "source": "trace", "output": "second\n2"}]
+
+
+def test_trace_evidence_ignores_the_epics_own_style_pass_call_on_the_shared_ledger() -> None:
+    """`_trim_phase` is `harness/epic.py`'s own direct `ctx.runner.run` call — `role:
+    "style_pass"`, one per PHASE, carrying no `task_id` because a phase is not a task.
+    Its row lands on the same shared `ctx.runner.calls` a build call's does; the
+    `role == "build"` filter, not a `task_id` match, is what keeps it out of a task's
+    evidence.
+    """
+    calls = [
+        {"role": "style_pass", "task_id": None, "commands_run": [{"command": "x", "output": "y", "source": "trace"}], "files_touched": ["z.txt"]},
+        {"role": "build", "task_id": "t1-probe", "commands_run": [{"command": "real", "output": "1", "source": "trace"}], "files_touched": ["t1-probe.txt"]},
+    ]
+    assert _trace_evidence(calls, "t1-probe", "") == [
+        {"check": "command", "source": "trace", "output": "real\n1"},
+        {"check": "files_touched", "source": "trace", "output": "t1-probe.txt"},
+    ]
+
+
+def test_a_resumed_tasks_files_touched_falls_back_to_the_patch_when_no_call_matches() -> None:
+    """A resumed task (`--resume-from`) makes no build call in this run, so `calls`
+    holds no `task_id`-matching row — `files_touched` must still name the reused
+    patch's own files, not go empty.
+    """
+    assert _trace_evidence([], "t1-probe", new_file_patch("t1-probe.txt")) == [
+        {"check": "files_touched", "source": "trace", "output": "t1-probe.txt"},
+    ]
+
+
+def test_change_facts_carries_the_full_checks_result_for_a_quarantined_task(repo, cart, tmp_path) -> None:
+    """The task record a failing check actually reaches — it never becomes a survivor."""
+    runner = Runner(
+        {"t1-probe": new_file_patch("t1-probe.txt", "broken"), "t2-bench": new_file_patch("t2-bench.txt")},
+        verdicts={"p1-foundations": GOAL_UNMET},
+    )
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
+    failed = next(t for t in result["tasks"] if t["id"] == "t1-probe")
+    assert failed["status"] == "quarantined"
+    checks = failed["change_facts"]["checks"]
+    assert checks is not None
+    assert any(c["name"] == "state" and c["passed"] is False for c in checks)
+
+
+def test_change_facts_carries_the_full_checks_result_not_just_the_evidence_summary(repo, cart, tmp_path) -> None:
+    """The validator sees the whole per-check result object, not only the terse evidence line."""
+    runner = Runner({"t1-probe": new_file_patch("t1-probe.txt"), "t2-bench": new_file_patch("t2-bench.txt")})
+    _, runner = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
+    prompt = next(c["prompt"] for c in runner.calls if c["role"] == "validate_phase")
+    assert "'id': 't1-probe'" in prompt
+    assert "'name': 'state'" in prompt and "'passed': True" in prompt and "'exit_code': 0" in prompt
+
+
+def test_a_failing_checks_detail_reaches_the_stored_attempt_and_the_next_ticket_body(repo, cart, tmp_path) -> None:
+    """The stored attempt carries the check's name, command and tail — the terse quarantine reason does not."""
+    wi = tmp_path / "wi"
+    (wi / "p1-foundations").mkdir(parents=True)
+    (wi / "initiative.md").write_text(
+        "---\nid: demo-initiative\ntitle: demo\n---\n\nmake the vendor join measurable end to end\n"
+    )
+    (wi / "p1-foundations" / "t1-probe.md").write_text(
+        "---\nid: t1-probe\nphase: p1-foundations\nstate: ready\nneeds: []\nsurfaces: []\n"
+        "title: schema probe\n---\n\nread the vendor schema\n"
+    )
+    work = workstore.read_initiative(wi)
+
+    runner = Runner({"t1-probe": new_file_patch("t1-probe.txt", "broken")})
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=work, run_id="epic-checkfail")
+
+    terse = result["quarantined"][0]["reason"]
+    assert terse == "configured check failed: state — 1 failed"
+
+    item = workstore.read_item(wi / "p1-foundations" / "t1-probe.md")
+    stored = item["attempts"][0]["reason"]
+    assert "state" in stored and "check.py" in stored and "exit 1" in stored and "1 failed" in stored
+    assert stored != terse
+
+    work2 = workstore.read_initiative(wi)
+    runner2 = Runner({"t1-probe": new_file_patch("t1-probe.txt")})
+    drive(repo, cart, tmp_path, runner=runner2, work=work2, run_id="epic-checkfail-2")
+    prompt = next(c["prompt"] for c in runner2.calls if c["role"] == "build" and "t1-probe" in c["prompt"])
+    assert "check.py" in prompt and "1 failed" in prompt
+
+
+# ── a check that fails after approval re-enters the fix loop ─────────────────
+
+_LINT_EDIT = (
+    "diff --git a/t1-probe.txt b/t1-probe.txt\n"
+    "--- a/t1-probe.txt\n"
+    "+++ b/t1-probe.txt\n"
+    "@@ -1 +1 @@\n"
+    "-broken\n"
+    "+ok\n"
+)
+
+
+class Repairing(Runner):
+    """Builds a broken patch until the ticket body carries a failed check, then the good one.
+
+    Also answers the re-entry `style_pass` call, if any, with the lint edit.
+    """
+
+    def __init__(self, patches: dict[str, str], *, repaired: dict[str, str], style_edit: str = _LINT_EDIT) -> None:
+        super().__init__(patches)
+        self.repaired = repaired
+        self.style_edit = style_edit
+
+    def run(
+        self, *, role, tier=None, hints=None, schema, prompt, context=(), thread=None, budget_usd=None, task=None,
+        wait_if_paused=None,
+    ):
+        if role == "build" and "failed its configured checks" in prompt:
+            task = self._subject(prompt, TASK_IDS)
+            with self.lock:
+                self.calls.append({"role": role, "tier": tier, "prompt": prompt})
+            patch = self.repaired[task]
+            return {"patch": patch, "summary": f"built {task}", "files_touched": files_touched_from_patch(patch), "commands_run": []}
+        if role == "style_pass" and "a configured check failed" in prompt:
+            with self.lock:
+                self.calls.append({"role": role, "tier": tier, "prompt": prompt})
+            return {"patch": self.style_edit}
+        return super().run(
+            role=role, tier=tier, schema=schema, prompt=prompt, context=context, budget_usd=budget_usd, task=task
+        )
+
+
+def _broken_probe() -> dict[str, str]:
+    return {"t1-probe": new_file_patch("t1-probe.txt", "broken"), "t2-bench": new_file_patch("t2-bench.txt")}
+
+
+def test_an_approved_build_whose_lint_fails_re_enters_the_fix_loop_with_the_lint_output(repo, cart, tmp_path) -> None:
+    cart["landing_areas"]["checks"] = [{"name": "lint", "cmd": f"{sys.executable} check.py"}]
+    runner = Repairing(_broken_probe(), repaired={"t1-probe": new_file_patch("t1-probe.txt")})
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
+
+    assert not result["quarantined"]
+    assert builds_per_task(runner) == {"t1-probe": 2, "t2-bench": 1}
+    retry = next(c["prompt"] for c in runner.calls if c["role"] == "build" and "failed its configured checks" in c["prompt"])
+    assert "lint: " in retry and "check.py" in retry and "1 failed" in retry
+    task = next(t for t in result["tasks"] if t["id"] == "t1-probe")
+    assert task["refix"] == ["revise"]
+    assert {"check": "fix loop re-entry", "output": "revise after lint: attempts spent 2 of 3"} in task["evidence"]
+    assert git("show", "epic/demo-initiative/p1-foundations:t1-probe.txt", cwd=repo).strip() == "ok"
+
+
+def test_a_lint_only_failure_goes_through_the_style_pass_seat_not_a_second_build(repo, cart, tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("harness.epic._collected_ids", lambda _worktree: {"test_x.py::test_a"})
+    cart["skills"]["style_pass"] = "acme-skills:style"
+    cart["landing_areas"]["checks"] = [{"name": "lint", "cmd": f"{sys.executable} check.py"}]
+    runner = Repairing(_broken_probe(), repaired={})
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
+
+    assert not result["quarantined"]
+    assert builds_per_task(runner) == {"t1-probe": 1, "t2-bench": 1}
+    styled = next(c["prompt"] for c in runner.calls if c["role"] == "style_pass" and "a configured check failed" in c["prompt"])
+    assert "check.py" in styled and "1 failed" in styled
+    task = next(t for t in result["tasks"] if t["id"] == "t1-probe")
+    assert task["refix"] == ["style_pass"]
+    assert git("show", "epic/demo-initiative/p1-foundations:t1-probe.txt", cwd=repo).strip() == "ok"
+
+
+def test_with_no_attempts_left_an_approved_build_whose_lint_fails_quarantines_as_before(repo, cart, tmp_path) -> None:
+    cart["landing_areas"]["checks"] = [{"name": "lint", "cmd": f"{sys.executable} check.py"}]
+    runner = Repairing(_broken_probe(), repaired={"t1-probe": new_file_patch("t1-probe.txt")})
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False), fix_attempts=0)
+
+    entry = next(q for q in result["quarantined"] if q["id"] == "t1-probe")
+    assert entry["kind"] == "unverified" and entry["reason"] == "configured check failed: lint — 1 failed"
+    assert builds_per_task(runner) == {"t1-probe": 1, "t2-bench": 1}
+    assert "refix" not in next(t for t in result["tasks"] if t["id"] == "t1-probe")
+
+
+def test_a_check_that_keeps_failing_stops_re_entering_when_the_attempts_run_out(repo, cart, tmp_path) -> None:
+    cart["landing_areas"]["checks"] = [{"name": "lint", "cmd": f"{sys.executable} check.py"}]
+    runner = Repairing(_broken_probe(), repaired={"t1-probe": new_file_patch("t1-probe.txt", "still broken")})
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False), fix_attempts=1)
+
+    assert [q["id"] for q in result["quarantined"]] == ["t1-probe"]
+    assert builds_per_task(runner)["t1-probe"] == 2, "the first build plus the one attempt fix_attempts=1 allows"
+
+
+_TEST_A = new_file_patch("test_thing.py", "def test_a(): assert True")
+_LINT_EDIT_DROPPING_A_TEST = _LINT_EDIT + (
+    "diff --git a/test_thing.py b/test_thing.py\n"
+    "deleted file mode 100644\n"
+    "--- a/test_thing.py\n"
+    "+++ /dev/null\n"
+    "@@ -1 +0,0 @@\n"
+    "-def test_a(): assert True\n"
+)
+
+
+def test_a_style_edit_that_drops_a_collected_test_is_refused_and_falls_back_to_a_revise(repo, cart, tmp_path) -> None:
+    """The lint goes green if the model deletes the test; the coverage floor is what says no."""
+    cart["skills"]["style_pass"] = "acme-skills:style"
+    cart["landing_areas"]["checks"] = [{"name": "lint", "cmd": f"{sys.executable} check.py"}]
+    broken = {"t1-probe": new_file_patch("t1-probe.txt", "broken") + _TEST_A, "t2-bench": new_file_patch("t2-bench.txt")}
+    runner = Repairing(
+        broken,
+        repaired={"t1-probe": new_file_patch("t1-probe.txt") + _TEST_A},
+        style_edit=_LINT_EDIT_DROPPING_A_TEST,
+    )
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
+
+    assert not result["quarantined"]
+    assert any(c["role"] == "style_pass" and "a configured check failed" in c["prompt"] for c in runner.calls)
+    assert builds_per_task(runner) == {"t1-probe": 2, "t2-bench": 1}, "the refused edit fell back to a reviewed revise"
+    assert next(t for t in result["tasks"] if t["id"] == "t1-probe")["refix"] == ["revise"]
+    landed = git("ls-tree", "-r", "--name-only", "epic/demo-initiative/p1-foundations", cwd=repo).splitlines()
+    assert "test_thing.py" in landed
+
+
+def test_a_style_edit_commits_only_the_paths_it_names_never_a_check_byproduct(repo, cart, tmp_path, monkeypatch) -> None:
+    """Checks drop files into the worktree; an `add -A` after them would carry those to the merge."""
+    monkeypatch.setattr("harness.epic._collected_ids", lambda _worktree: {"test_x.py::test_a"})
+    (repo / "check_bp.py").write_text(
+        "import pathlib, sys\n"
+        "pathlib.Path('byproduct.dat').write_text('x')\n"
+        "probe = pathlib.Path('t1-probe.txt')\n"
+        "sys.exit(0 if not probe.exists() or probe.read_text().strip() == 'ok' else 1)\n",
+        encoding="utf-8",
+    )
+    git("add", "-A", cwd=repo)
+    git("commit", "-qm", "byproduct check", cwd=repo)
+    cart["skills"]["style_pass"] = "acme-skills:style"
+    cart["landing_areas"]["checks"] = [{"name": "lint", "cmd": f"{sys.executable} check_bp.py"}]
+    runner = Repairing(_broken_probe(), repaired={})
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
+
+    assert not result["quarantined"]
+    task = next(t for t in result["tasks"] if t["id"] == "t1-probe")
+    assert task["refix"] == ["style_pass"]
+    assert {"check": "style_pass", "output": "edit applied after approval, not reviewed: t1-probe.txt"} in task["evidence"]
+    landed = git("ls-tree", "-r", "--name-only", "epic/demo-initiative/p1-foundations", cwd=repo).splitlines()
+    assert "byproduct.dat" not in landed
+    assert "t1-probe.txt" in landed
+
+
+_LINT_EDIT_STILL_BROKEN = _LINT_EDIT.replace("+ok", "+still broken")
+
+
+def test_a_task_gets_one_style_edit_then_a_reviewed_revise(repo, cart, tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("harness.epic._collected_ids", lambda _worktree: {"test_x.py::test_a"})
+    cart["skills"]["style_pass"] = "acme-skills:style"
+    cart["landing_areas"]["checks"] = [{"name": "lint", "cmd": f"{sys.executable} check.py"}]
+    runner = Repairing(
+        _broken_probe(), repaired={"t1-probe": new_file_patch("t1-probe.txt")}, style_edit=_LINT_EDIT_STILL_BROKEN
+    )
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
+
+    assert not result["quarantined"]
+    assert sum(1 for c in runner.calls if c["role"] == "style_pass" and "a configured check failed" in c["prompt"]) == 1
+    assert next(t for t in result["tasks"] if t["id"] == "t1-probe")["refix"] == ["style_pass", "revise"]
+    assert builds_per_task(runner) == {"t1-probe": 2, "t2-bench": 1}
+
+
+def test_no_measurable_coverage_floor_means_no_style_call_and_a_reviewed_revise(repo, cart, tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("harness.epic._collected_ids", lambda _worktree: None)
+    cart["skills"]["style_pass"] = "acme-skills:style"
+    cart["landing_areas"]["checks"] = [{"name": "lint", "cmd": f"{sys.executable} check.py"}]
+    runner = Repairing(_broken_probe(), repaired={"t1-probe": new_file_patch("t1-probe.txt")})
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
+
+    assert not any(c["role"] == "style_pass" and "a configured check failed" in c["prompt"] for c in runner.calls)
+    assert next(t for t in result["tasks"] if t["id"] == "t1-probe")["refix"] == ["revise"]
+
+
+def test_an_empty_collection_is_as_unmeasurable_as_a_pytest_that_cannot_launch(repo, cart, tmp_path) -> None:
+    """The fixture repo has no tests, so pytest collects nothing and `set() <= anything` must not pass the floor."""
+    cart["skills"]["style_pass"] = "acme-skills:style"
+    cart["landing_areas"]["checks"] = [{"name": "lint", "cmd": f"{sys.executable} check.py"}]
+    runner = Repairing(_broken_probe(), repaired={"t1-probe": new_file_patch("t1-probe.txt")})
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
+
+    assert not any(c["role"] == "style_pass" and "a configured check failed" in c["prompt"] for c in runner.calls)
+    assert next(t for t in result["tasks"] if t["id"] == "t1-probe")["refix"] == ["revise"]
+
+
+# ── outcome and the exit line: an approved build that does not land ─────────
+
+
+def test_task_outcome_names_all_four_cases() -> None:
+    assert task_outcome("approve", None, None, True) == "landed"
+    assert task_outcome("approve", None, "configured checks failed: state — see evidence", False) == "approved_not_landed"
+    assert task_outcome(None, "approve", "harness fault: check 'state' could not run: boom", False) == "harness_fault"
+    assert task_outcome("revise", None, None, False) == "rejected"
+
+
+def test_unapproved_names_the_arbitration_verdict_and_its_first_sentence() -> None:
+    result = {
+        "fix_loop": {"stopped": "attempts_exhausted", "attempts": 2},
+        "review": {"verdict": "approve"},
+        "arbitration": {
+            "verdict": "revise",
+            "sided_with": "adversary",
+            "reasoning": "The adversary is right. The reviewer missed the null case.",
+        },
+    }
+    assert _unapproved(result) == (
+        "the fix loop stopped: attempts_exhausted after 2 build attempts; the last review "
+        "verdict was 'revise', sided_with adversary: The adversary is right and no build "
+        "was approved"
+    )
+
+
+def test_unapproved_names_the_review_verdict_when_no_arbitration_ran() -> None:
+    result = {
+        "fix_loop": {"stopped": "attempts_exhausted", "attempts": 2},
+        "review": {"verdict": "revise"},
+    }
+    assert _unapproved(result) == (
+        "the fix loop stopped: attempts_exhausted after 2 build attempts; the last review "
+        "verdict was 'revise' and no build was approved"
+    )
+
+
+def test_an_approved_and_quarantined_task_names_itself_in_the_exit_summary(repo, cart, tmp_path) -> None:
+    runner = Runner(
+        {"t1-probe": new_file_patch("t1-probe.txt", "broken"), "t2-bench": new_file_patch("t2-bench.txt")},
+        verdicts={"p1-foundations": GOAL_UNMET},
+    )
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
+
+    failed = next(t for t in result["tasks"] if t["id"] == "t1-probe")
+    assert failed["outcome"] == "approved_not_landed"
+    assert "check failed" in failed["reason"]
+    # t1-probe is quarantined; t2-bench merged clean but nothing in this run
+    # writes `done` — both are unlanded, and `land` handles both cases.
+    assert result["totals"]["approved_not_landed"] == 2
+    assert (
+        f"approved but not landed: t1-probe — cox runs land epic-1 --repo {repo} --task t1-probe --apply"
+        in result["exit_summary"]
+    )
+    assert (
+        f"approved but not landed: t2-bench — cox runs land epic-1 --repo {repo} --task t2-bench --apply"
+        in result["exit_summary"]
+    )
+
+
+def test_an_apply_arms_budgetstop_quarantines_the_task_as_infra_and_the_run_ends_clean(repo, cart, tmp_path) -> None:
+    """A `RunnerError` from the bookkeeping arm is quarantined, not a traceback."""
+    runner = BudgetStopArm({t: new_file_patch(f"{t}.txt") for t in TASK_IDS}, stops="t1-probe")
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
+
+    entry = next(q for q in result["quarantined"] if q["id"] == "t1-probe")
+    assert entry["kind"] == "infra"
+    assert entry["patch_kept"] is True
+    assert "work_state_arm" in entry["reason"] and "BudgetStop" in entry["reason"]
+
+    # The task's own record agrees: merged but quarantined earns `approved_not_landed`, never `landed`.
+    task_record = next(t for t in result["tasks"] if t["id"] == "t1-probe")
+    assert task_record["status"] == "quarantined"
+    assert task_record["quarantine"] == entry["reason"]
+    assert task_record["merged"] is True
+    assert task_record["outcome"] == "approved_not_landed"
+    # t2-bench merged clean too, and is unlanded the same way — nothing in
+    # this run writes `done`.
+    assert result["totals"]["approved_not_landed"] == 2
+
+    # The sibling task still merged into the phase stack, and the run wrote a phase record and exited normally.
+    assert is_ancestor(repo, "epic/demo-initiative/p1-foundations--t2-bench", "epic/demo-initiative/p1-foundations")
+    assert (tmp_path / "ledger.jsonl").exists()
+    assert not (tmp_path / "runs" / "epic-1:p1-foundations.json").exists()
+
+
+def test_a_successful_arm_call_is_unchanged(repo, cart, tmp_path) -> None:
+    """The new try/except around `auto_apply` in `_execute` leaves a clean run untouched."""
+    result, _ = drive(repo, cart, tmp_path, work=initiative(two_phases=False))
+
+    assert result["quarantined"] == []
+    for task in ("t1-probe", "t2-bench"):
+        assert is_ancestor(repo, f"epic/demo-initiative/p1-foundations--{task}", "epic/demo-initiative/p1-foundations")
+        task_record = next(t for t in result["tasks"] if t["id"] == task)
+        assert task_record["merged"] is True
+        assert task_record["outcome"] == "landed"
+
+
+def test_a_limitstop_from_the_apply_arm_pauses_the_run_with_no_quarantine_or_attempt(repo, cart, tmp_path) -> None:
+    """The session-limit banner stops the run in place; it is not the task's failure."""
+    wi = tmp_path / "wi"
+    (wi / "p1-foundations").mkdir(parents=True)
+    (wi / "initiative.md").write_text(
+        "---\nid: demo-initiative\ntitle: demo\n---\n\nmake the vendor join measurable end to end\n"
+    )
+    (wi / "p1-foundations" / "t1-probe.md").write_text(
+        "---\nid: t1-probe\nphase: p1-foundations\nstate: ready\nneeds: []\nsurfaces: []\n"
+        "title: schema probe\n---\n\nread the vendor schema\n"
+    )
+    work = workstore.read_initiative(wi)
+    banner = "You've hit your session limit · resets 10:50am (America/New_York)"
+    runner = LimitStopArm({"t1-probe": new_file_patch("t1-probe.txt")}, stops="t1-probe", detail=banner)
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=work, run_id="epic-limit")
+
+    assert result["quarantined"] == []
+    assert result["paused_until"] == "10:50am (America/New_York)"
+    assert result["exit_code"] == EXIT_PAUSED
+    assert "paused: account session limit, resets 10:50am (America/New_York)" in result["exit_summary"]
+    item = workstore.read_item(wi / "p1-foundations" / "t1-probe.md")
+    assert not item.get("attempts")
+
+
+def test_a_limitstop_halts_the_phase_before_the_next_task_in_batch_order(repo, cart, tmp_path) -> None:
+    """Unlike an infra quarantine, a paused run never reaches a later task's own merge."""
+    wi = tmp_path / "wi"
+    (wi / "p1-foundations").mkdir(parents=True)
+    (wi / "initiative.md").write_text(
+        "---\nid: demo-initiative\ntitle: demo\n---\n\nmake the vendor join measurable end to end\n"
+    )
+    for task, body in (("t1-probe", "read the vendor schema"), ("t2-bench", "time the join")):
+        (wi / "p1-foundations" / f"{task}.md").write_text(
+            f"---\nid: {task}\nphase: p1-foundations\nstate: ready\nneeds: []\nsurfaces: []\n"
+            f"title: {task}\n---\n\n{body}\n"
+        )
+    work = workstore.read_initiative(wi)
+    banner = "You've hit your session limit · resets 10:50am (America/New_York)"
+    runner = LimitStopArm(
+        {"t1-probe": new_file_patch("t1-probe.txt"), "t2-bench": new_file_patch("t2-bench.txt")},
+        stops="t1-probe", detail=banner,
+    )
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=work, run_id="epic-limit-batch")
+
+    assert result["quarantined"] == []
+    t2_item = workstore.read_item(wi / "p1-foundations" / "t2-bench.md")
+    # `work_state_arm` runs in task-id order: t1-probe's pause happens before
+    # t2-bench's own turn, which an infra quarantine (below) would still take.
+    assert t2_item["state"] == "ready"
+    assert not t2_item.get("attempts")
+
+
+def test_a_limitstop_from_the_build_node_pauses_the_run_with_no_quarantine_or_attempt(repo, cart, tmp_path) -> None:
+    """A session limit inside a fan-out node is not the task's failure: no `no_work` quarantine, no attempt."""
+    wi = tmp_path / "wi"
+    (wi / "p1-foundations").mkdir(parents=True)
+    (wi / "initiative.md").write_text(
+        "---\nid: demo-initiative\ntitle: demo\n---\n\nmake the vendor join measurable end to end\n"
+    )
+    (wi / "p1-foundations" / "t1-probe.md").write_text(
+        "---\nid: t1-probe\nphase: p1-foundations\nstate: ready\nneeds: []\nsurfaces: []\n"
+        "title: schema probe\n---\n\nread the vendor schema\n"
+    )
+    work = workstore.read_initiative(wi)
+    banner = "You've hit your session limit · resets 10:50am (America/New_York)"
+    runner = LimitStopBuild({"t1-probe": new_file_patch("t1-probe.txt")}, detail=banner)
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=work, run_id="epic-limit-build")
+
+    assert result["paused_until"] == "10:50am (America/New_York)"
+    assert result["exit_code"] == EXIT_PAUSED
+    assert result["quarantined"] == []
+    item = workstore.read_item(wi / "p1-foundations" / "t1-probe.md")
+    assert not item.get("attempts")
+
+
+def test_an_ordinary_runnererror_from_the_build_node_still_quarantines_no_work_and_records_an_attempt(
+    repo, cart, tmp_path
+) -> None:
+    """Nothing is scripted for the build, so `Runner` raises a plain `RunnerError` there."""
+    wi = tmp_path / "wi"
+    (wi / "p1-foundations").mkdir(parents=True)
+    (wi / "initiative.md").write_text(
+        "---\nid: demo-initiative\ntitle: demo\n---\n\nmake the vendor join measurable end to end\n"
+    )
+    (wi / "p1-foundations" / "t1-probe.md").write_text(
+        "---\nid: t1-probe\nphase: p1-foundations\nstate: ready\nneeds: []\nsurfaces: []\n"
+        "title: schema probe\n---\n\nread the vendor schema\n"
+    )
+    work = workstore.read_initiative(wi)
+    result, _ = drive(repo, cart, tmp_path, runner=Runner({}), work=work, run_id="epic-build-fail")
+
+    assert "paused_until" not in result
+    entry = next(q for q in result["quarantined"] if q["id"] == "t1-probe")
+    assert entry["kind"] == "no_work"
+    item = workstore.read_item(wi / "p1-foundations" / "t1-probe.md")
+    assert len(item["attempts"]) == 1
+
+
+class AuthFailRunner(Runner):
+    """Every invocation fails the way a lapsed Claude login does."""
+
+    def run(self, *, role, **_):
+        raise RunnerError(
+            f"node '{role}' failed in claude: "
+            '{"subtype": "success", "result": "Failed to authenticate: OAuth session expired and could not '
+            'be refreshed", "num_turns": 1, "duration_ms": 40}'
+        )
+
+
+def test_a_phase_that_cannot_authenticate_stops_the_run_and_leaves_later_phases_alone(
+    repo, cart, tmp_path, capsys
+) -> None:
+    wi = tmp_path / "wi"
+    for phase, task, needs in (("p1-foundations", "t1-probe", "[]"), ("p2-rollout", "t3-cutover", "[t1-probe]")):
+        (wi / phase).mkdir(parents=True)
+        (wi / phase / f"{task}.md").write_text(
+            f"---\nid: {task}\nphase: {phase}\nstate: ready\nneeds: {needs}\nsurfaces: []\n"
+            f"title: {task}\n---\n\nbody of {task}\n"
+        )
+    (wi / "initiative.md").write_text(
+        "---\nid: demo-initiative\ntitle: demo\n---\n\nmake the vendor join measurable end to end\n"
+    )
+    work = workstore.read_initiative(wi)
+    result, _ = drive(repo, cart, tmp_path, runner=AuthFailRunner({}), work=work, run_id="epic-auth")
+
+    assert [p["phase"] for p in result["phases"]] == ["p1-foundations"]
+    assert result["phases"][0]["stopped"].startswith("the runner cannot authenticate: t1-probe: ")
+    assert [q["id"] for q in result["quarantined"]] == ["t1-probe"]
+    assert workstore.read_item(wi / "p2-rollout" / "t3-cutover.md")["state"] == "ready"
+    assert any(line.startswith("  run stopped:") for line in capsys.readouterr().out.splitlines())
+
+
+def test_an_ordinary_runnererror_still_quarantines_and_records_an_attempt(repo, cart, tmp_path) -> None:
+    """`LimitStop`'s new catch does not change how any other `RunnerError` is handled."""
+    wi = tmp_path / "wi"
+    (wi / "p1-foundations").mkdir(parents=True)
+    (wi / "initiative.md").write_text(
+        "---\nid: demo-initiative\ntitle: demo\n---\n\nmake the vendor join measurable end to end\n"
+    )
+    (wi / "p1-foundations" / "t1-probe.md").write_text(
+        "---\nid: t1-probe\nphase: p1-foundations\nstate: ready\nneeds: []\nsurfaces: []\n"
+        "title: schema probe\n---\n\nread the vendor schema\n"
+    )
+    work = workstore.read_initiative(wi)
+    runner = BudgetStopArm({"t1-probe": new_file_patch("t1-probe.txt")}, stops="t1-probe")
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=work, run_id="epic-ordinary-fail")
+
+    entry = next(q for q in result["quarantined"] if q["id"] == "t1-probe")
+    assert entry["kind"] == "infra"
+    item = workstore.read_item(wi / "p1-foundations" / "t1-probe.md")
+    assert item["attempts"][0]["kind"] == "infra"
+
+
+class FailOnceRunner(Runner):
+    """The first build call raises `message`; every later call is the scripted `Runner`."""
+
+    def __init__(self, patches: dict[str, str], *, message: str) -> None:
+        super().__init__(patches)
+        self.message = message
+        self.failed = False
+
+    def run(self, *, role, **kw):
+        if role == "build":
+            with self.lock:
+                first, self.failed = not self.failed, True
+            if first:
+                raise RunnerError(self.message)
+        return super().run(role=role, **kw)
+
+
+def _one_task_initiative(tmp_path):
+    wi = tmp_path / "wi"
+    (wi / "p1-foundations").mkdir(parents=True)
+    (wi / "initiative.md").write_text(
+        "---\nid: demo-initiative\ntitle: demo\n---\n\nmake the vendor join measurable end to end\n"
+    )
+    (wi / "p1-foundations" / "t1-probe.md").write_text(
+        "---\nid: t1-probe\nphase: p1-foundations\nstate: ready\nneeds: []\nsurfaces: []\n"
+        "title: schema probe\n---\n\nread the vendor schema\n"
+    )
+    return wi, workstore.read_initiative(wi)
+
+
+def test_an_oauth_refresh_collision_is_quarantined_as_infra_and_spends_no_attempt(repo, cart, tmp_path) -> None:
+    wi, work = _one_task_initiative(tmp_path)
+    runner = FailOnceRunner(
+        {"t1-probe": new_file_patch("t1-probe.txt")}, message="Failed to refresh OAuth token: refresh token reused"
+    )
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=work, run_id="epic-collide-1")
+
+    assert not result["phases"][0].get("stopped")
+    entry = next(q for q in result["quarantined"] if q["id"] == "t1-probe")
+    assert entry["kind"] == "infra"
+    item = workstore.read_item(wi / "p1-foundations" / "t1-probe.md")
+    assert [a["kind"] for a in item["attempts"]] == ["infra"]
+
+    # The next run builds it: the collision spent nothing against ATTEMPT_CAP.
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=workstore.read_initiative(wi), run_id="epic-collide-2")
+    assert not any("attempt cap" in q["reason"] for q in result["quarantined"])
+    assert is_ancestor(repo, "epic/demo-initiative/p1-foundations--t1-probe", "epic/demo-initiative/p1-foundations")
+
+
+def test_an_unrelated_runnererror_from_the_invoke_still_counts_as_an_attempt(repo, cart, tmp_path) -> None:
+    wi, work = _one_task_initiative(tmp_path)
+    runner = FailOnceRunner({"t1-probe": new_file_patch("t1-probe.txt")}, message="provider-side safeguard error")
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=work, run_id="epic-unrelated-1")
+
+    entry = next(q for q in result["quarantined"] if q["id"] == "t1-probe")
+    assert entry["kind"] == "no_work"
+    item = workstore.read_item(wi / "p1-foundations" / "t1-probe.md")
+    assert [a["kind"] for a in item["attempts"]] == ["no_work"]
+
+
+def test_invoke_failure_kind_matches_the_collision_text_case_insensitively() -> None:
+    assert _invoke_failure_kind("t1: node 'build' failed: FAILED TO REFRESH OAUTH TOKEN") == "infra"
+    assert _invoke_failure_kind("t1: provider-side safeguard error") == "no_work"
+
+
+def test_two_infra_attempts_do_not_trip_the_attempt_cap(repo, cart, tmp_path) -> None:
+    """`ATTEMPT_CAP` is 2: two real failures refuse a third run. Two `infra` ones must not."""
+    work = initiative(two_phases=False)
+    task = next(item for item in work["items"] if item["id"] == "t1-probe")
+    task["attempts"] = [
+        {
+            "run": f"epic-prior-{n}",
+            "phase": "p1-foundations",
+            "reason": "apply arm 'work_state_arm' raised BudgetStop: budget",
+            "kind": "infra",
+            "patch_kept": True,
+            "ts": "2026-09-01T00:00:00+00:00",
+        }
+        for n in (1, 2)
+    ]
+    result, _ = drive(repo, cart, tmp_path, work=work)
+
+    assert not any(q["id"] == "t1-probe" and "attempt cap" in q["reason"] for q in result["quarantined"])
+    assert is_ancestor(repo, "epic/demo-initiative/p1-foundations--t1-probe", "epic/demo-initiative/p1-foundations")
+
+
+# ── ticket_amend's additive check, and the attempt cap launching triage ─────
+
+
+def test_additive_ticket_amend_diff_stays_eligible() -> None:
+    old = "---\nid: t1\n---\nOriginal text."
+    new = old + "\n\n## 2026-09-16\nAppended note."
+    assert _ticket_amend_ramp(old, new) == "eligible"
+
+
+def test_a_removed_line_forces_the_amendment_gated() -> None:
+    old = "---\nid: t1\n---\nLine one.\nLine two."
+    new = "---\nid: t1\n---\nLine one."
+    assert _ticket_amend_ramp(old, new) == "gated"
+
+
+def test_a_frontmatter_change_forces_the_amendment_gated() -> None:
+    old = "---\nid: t1\nstate: ready\n---\nBody text."
+    new = "---\nid: t1\nstate: done\n---\nBody text.\n\nAppended."
+    assert _ticket_amend_ramp(old, new) == "gated"
+
+
+class TriageAttemptRunner(Runner):
+    """Like `Runner`, but scripts `role="triage"` with a `ticket_defect` classification."""
+
+    action: ClassVar[str] = "add a note describing the missing fixture"
+
+    def run(
+        self, *, role, tier=None, hints=None, schema, prompt, context=(), thread=None, budget_usd=None, task=None,
+        wait_if_paused=None,
+    ):
+        if role == "triage":
+            with self.lock:
+                self.calls.append({"role": role, "tier": tier, "prompt": prompt, "budget_usd": budget_usd})
+            return {
+                "class": "ticket_defect",
+                "diagnosis": "the earlier attempts hit check failed: bad output",
+                "cites": ["attempt-1|reason"],
+                "action": self.action,
+            }
+        return super().run(
+            role=role, tier=tier, schema=schema, prompt=prompt, context=context, thread=thread,
+            budget_usd=budget_usd, task=task,
+        )
+
+
+def test_the_attempt_cap_launches_triage_instead_of_a_plain_quarantine(repo, cart, tmp_path) -> None:
+    work = initiative(two_phases=False)
+    task = next(item for item in work["items"] if item["id"] == "t1-probe")
+    task["attempts"] = [
+        {"run": f"epic-prior-{n}", "phase": "p1-foundations", "reason": "check failed: bad output",
+         "kind": "refused", "ts": f"2026-09-0{n}T00:00:00+00:00"}
+        for n in (1, 2)
+    ]
+    local_cart = {**cart, "write_kinds": {**cart["write_kinds"], "ticket_amend": {
+        "risk": "low", "ramp": "eligible", "apply_arm": "work_state_arm",
+    }}}
+    runner = TriageAttemptRunner({"t2-bench": new_file_patch("t2-bench.txt")})
+    result, _ = drive(
+        repo, local_cart, tmp_path, runner=runner, work=work,
+        specs={**SPECS, "triage-quarantine": triage_quarantine.SPEC},
+    )
+
+    assert any(call["role"] == "triage" for call in runner.calls)
+    assert not any(q["id"] == "t1-probe" for q in result["quarantined"])
+    amend = next(p for p in result["proposals"] if p["target"] == "t1-probe")
+    assert amend["kind"] == "ticket_amend"
+    assert amend["ramp"] == "eligible"
+
+
+@pytest.mark.parametrize(
+    ("attempts", "cap"),
+    [
+        ([{"cause": "ticket"}], 1),
+        ([{"cause": "code"}], 1),
+        ([{"cause": "harness"}], 2),
+        ([{"cause": "ticket"}, {"cause": "harness"}], 2),
+        ([{"cause": "harness"}, {"cause": "code"}], 1),
+        ([{"cause": "code", "ts": "2026-09-02"}, {"cause": "harness", "ts": "2026-09-01"}], 1),
+        ([{"cause": "harness", "ts": "2026-09-02"}, {"cause": "ticket", "ts": "2026-09-01"}], 2),
+        ([{}], 2),
+        ([{"cause": ""}], 2),
+        ([{"cause": "weather"}], 2),
+        ([], 2),
+    ],
+)
+def test_the_cap_follows_the_cause_of_the_newest_attempt(attempts, cap) -> None:
+    assert _attempt_cap_for(attempts) == cap
+
+
+OLDER_BODY = "sha-of-the-body-before-the-amend"
+
+
+def _drive_with_attempts(repo, cart, tmp_path, attempts, *, stored=()):
+    """Drive `t1-probe` with `attempts` as file attempts on its current body unless one sets `body_sha`.
+
+    `stored` is (run, cause) pairs written to the store as `refused` attempts on `p1-foundations`.
+    """
+    work = initiative(two_phases=False)
+    task = next(item for item in work["items"] if item["id"] == "t1-probe")
+    task["attempts"] = [
+        {"run": f"epic-prior-{n}", "phase": "p1-foundations", "reason": "check failed: bad output", "kind": "refused",
+         "body_sha": workstore.body_sha(task["body"]), "ts": f"2026-09-0{n}T00:00:00+00:00", **attempt}
+        for n, attempt in enumerate(attempts, start=1)
+    ]
+    store = Store(open_store("sqlite:///:memory:", datetime.now(UTC).isoformat()))
+    for n, (run, cause) in enumerate(stored, start=1):
+        store.record_attempt(run, "t1-probe", n, "p1-foundations", "refused", "check failed: bad output",
+                             "2026-09-01T00:00:00+00:00", cause=cause, cause_why="seeded")
+    local_cart = {**cart, "write_kinds": {**cart["write_kinds"], "ticket_amend": {
+        "risk": "low", "ramp": "eligible", "apply_arm": "work_state_arm",
+    }}}
+    runner = TriageAttemptRunner({"t1-probe": new_file_patch("t1-probe.txt"), "t2-bench": new_file_patch("t2-bench.txt")})
+    result, _ = drive(
+        repo, local_cart, tmp_path, runner=runner, work=work, store=store,
+        specs={**SPECS, "triage-quarantine": triage_quarantine.SPEC},
+    )
+    return result, runner
+
+
+def _triaged(runner) -> bool:
+    return any(call["role"] == "triage" for call in runner.calls) and "t1-probe" not in builds_per_task(runner)
+
+
+def _rebuilt(result, runner) -> bool:
+    quarantined = any(q["id"] == "t1-probe" for q in result["quarantined"])
+    return not any(c["role"] == "triage" for c in runner.calls) and builds_per_task(runner)["t1-probe"] == 1 and not quarantined
+
+
+@pytest.mark.parametrize("cause", ["ticket", "code"])
+def test_one_ticket_or_code_caused_quarantine_sends_the_task_to_triage_on_relaunch(repo, cart, tmp_path, cause) -> None:
+    result, runner = _drive_with_attempts(repo, cart, tmp_path, [{"cause": cause}])
+
+    assert _triaged(runner)
+    assert any(p["target"] == "t1-probe" for p in result["proposals"])
+
+
+def test_one_harness_caused_quarantine_is_rebuilt_and_not_triaged(repo, cart, tmp_path) -> None:
+    result, runner = _drive_with_attempts(repo, cart, tmp_path, [{"cause": "harness"}])
+
+    assert _rebuilt(result, runner)
+
+
+def test_two_harness_caused_quarantines_are_triaged_as_before(repo, cart, tmp_path) -> None:
+    _, runner = _drive_with_attempts(repo, cart, tmp_path, [{"cause": "harness"}, {"cause": "harness"}])
+
+    assert _triaged(runner)
+
+
+def test_a_ticket_caused_quarantine_on_an_older_body_does_not_lower_the_cap(repo, cart, tmp_path) -> None:
+    """The older-body ticket attempt is the newest by `ts` and last in the list: only the body filter can ignore it."""
+    attempts = [{"cause": "harness"}, {"cause": "ticket", "body_sha": OLDER_BODY, "ts": "2026-09-09T00:00:00+00:00"}]
+    result, runner = _drive_with_attempts(repo, cart, tmp_path, attempts)
+
+    assert _rebuilt(result, runner)
+
+
+@pytest.mark.parametrize("cause", ["ticket", "code"])
+def test_a_stored_ticket_or_code_cause_on_a_causeless_file_attempt_sends_the_task_to_triage(repo, cart, tmp_path, cause) -> None:
+    _, runner = _drive_with_attempts(repo, cart, tmp_path, [{}], stored=[("epic-prior-1", cause)])
+
+    assert _triaged(runner)
+
+
+@pytest.mark.parametrize("stored", [[("epic-prior-1", "harness")], [("epic-prior-1", "weather")], []])
+def test_a_stored_harness_or_unknown_cause_or_none_keeps_the_cap_at_two(repo, cart, tmp_path, stored) -> None:
+    result, runner = _drive_with_attempts(repo, cart, tmp_path, [{}], stored=stored)
+
+    assert _rebuilt(result, runner)
+
+
+AMEND_ACTION = "add a note describing the missing fixture"  # what `TriageAttemptRunner` scripts as the triage action
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "expected"),
+    [
+        ("body", "body\n\nnote", True),
+        ("body", "body note", True),
+        ("", "note", True),
+        ("body", "body", False),
+        ("body", "body\n\n  ", False),
+        ("body", "", False),
+        ("body\n", "body", False),
+        ("body one", "body two", False),
+        ("body one", "note\nbody one", False),
+    ],
+)
+def test_the_append_only_check_on_literal_strings(old, new, expected) -> None:
+    assert _is_append_only(old, new) is expected
+
+
+class AmendArmRunner(TriageAttemptRunner):
+    """The `work_state_arm` answers a `ticket_amend`.
+
+    `write` appends the action; `dated` appends it under a dated heading, as docs/design/triage.md §2 says the real arm
+    does; `rewrite` edits a word in place and appends; `silent` claims success and writes nothing; `refuse` reports failure.
+    """
+
+    def __init__(self, patches, *, path, mode) -> None:
+        super().__init__(patches)
+        self.path, self.mode = path, mode
+
+    def run(self, **kwargs):
+        if kwargs["role"] != "work_state_arm" or "ticket_amend" not in kwargs["prompt"]:
+            return super().run(**kwargs)
+        with self.lock:
+            self.calls.append({"role": "work_state_arm", "prompt": kwargs["prompt"]})
+        if self.mode == "refuse":
+            return {"applied": False, "detail": "refused"}
+        item = workstore.read_item(self.path)
+        appended = {"write": self.action, "dated": f"## 2026-10-17\n{self.action}", "rewrite": self.action}
+        if self.mode in appended:
+            body = item["body"].replace("vendor", "supplier") if self.mode == "rewrite" else item["body"]
+            workstore.write_item({**item, "body": f"{body}\n\n{appended[self.mode]}"}, self.path)
+        return {"applied": True, "detail": "done"}
+
+
+def _drive_on_disk(repo, cart, tmp_path, mode, *, body="read the vendor schema", arm="work_state_arm"):
+    """Drive a file-backed `t1-probe` capped by two attempts; the triage amendment goes through `AmendArmRunner`."""
+    wi = tmp_path / "wi"
+    (wi / "p1-foundations").mkdir(parents=True)
+    (wi / "initiative.md").write_text("---\nid: demo-initiative\ntitle: demo\n---\n\nmake the join measurable\n")
+    path = wi / "p1-foundations" / "t1-probe.md"
+    path.write_text(
+        "---\nid: t1-probe\nphase: p1-foundations\nstate: ready\nneeds: []\nsurfaces: []\n"
+        f"title: schema probe\n---\n\n{body}\n"
+    )
+    for n in (1, 2):
+        workstore.record_attempt(
+            path, run=f"epic-prior-{n}", phase="p1-foundations", reason="check failed: bad output",
+            ts=f"2026-09-0{n}T00:00:00+00:00",
+        )
+    kind = {"risk": "low", "ramp": "eligible", **({"apply_arm": arm} if arm else {})}
+    local_cart = {**cart, "write_kinds": {**cart["write_kinds"], "ticket_amend": kind}}
+    runner = AmendArmRunner({"t1-probe": new_file_patch("t1-probe.txt")}, path=path, mode=mode)
+    result, _ = drive(
+        repo, local_cart, tmp_path, runner=runner, work=workstore.read_initiative(wi),
+        specs={**SPECS, "triage-quarantine": triage_quarantine.SPEC},
+    )
+    return result, runner, path
+
+
+def _amend_arm_calls(runner) -> list[dict]:
+    return [c for c in runner.calls if c["role"] == "work_state_arm" and "ticket_amend" in c["prompt"]]
+
+
+def test_an_append_only_ticket_amend_is_applied_without_the_gate_and_the_task_is_built_on_it(repo, cart, tmp_path) -> None:
+    result, runner, path = _drive_on_disk(repo, cart, tmp_path, "write")
+
+    assert len(_amend_arm_calls(runner)) == 1
+    assert not any(p["kind"] == "ticket_amend" for p in result["proposals"])
+    ledger_file = tmp_path / "ledger.jsonl"
+    assert "ticket_amend" not in (ledger_file.read_text() if ledger_file.exists() else "")
+    assert workstore.read_item(path)["body"].endswith(AMEND_ACTION)
+    assert builds_per_task(runner)["t1-probe"] == 1
+    build = next(c for c in runner.calls if c["role"] == "build" and "t1-probe" in c["prompt"])
+    assert "read the vendor schema" in build["prompt"] and AMEND_ACTION in build["prompt"]
+    assert not any(q["id"] == "t1-probe" for q in result["quarantined"])
+
+
+def test_the_task_is_rebuilt_on_the_body_the_arm_wrote_when_it_adds_a_dated_heading(repo, cart, tmp_path) -> None:
+    result, runner, path = _drive_on_disk(repo, cart, tmp_path, "dated")
+
+    assert len(_amend_arm_calls(runner)) == 1
+    assert not any(p["kind"] == "ticket_amend" for p in result["proposals"])
+    assert workstore.read_item(path)["body"].endswith(f"## 2026-10-17\n{AMEND_ACTION}")
+    build = next(c for c in runner.calls if c["role"] == "build" and "t1-probe" in c["prompt"])
+    assert f"## 2026-10-17\n{AMEND_ACTION}" in build["prompt"]
+    assert not any(q["id"] == "t1-probe" for q in result["quarantined"])
+
+
+@pytest.mark.parametrize("mode", ["silent", "rewrite"])
+def test_an_arm_that_wrote_nothing_or_edited_in_place_quarantines_the_task_and_is_not_applied_twice(
+    repo, cart, tmp_path, mode
+) -> None:
+    result, runner, path = _drive_on_disk(repo, cart, tmp_path, mode)
+
+    entries = [q for q in result["quarantined"] if q["id"] == "t1-probe"]
+    assert len(entries) == 1 and "does not hold the old body with text appended" in entries[0]["reason"]
+    assert workstore.read_item(path)["body"] == "read the vendor schema"
+    assert not any(p["kind"] == "ticket_amend" for p in result["proposals"])
+    assert len(_amend_arm_calls(runner)) == 1
+    assert "t1-probe" not in builds_per_task(runner)
+
+
+def test_an_arm_that_reports_failure_quarantines_the_task_once_and_does_not_rebuild(repo, cart, tmp_path) -> None:
+    result, runner, path = _drive_on_disk(repo, cart, tmp_path, "refuse")
+
+    entries = [q for q in result["quarantined"] if q["id"] == "t1-probe"]
+    assert len(entries) == 1 and "applying it failed: refused" in entries[0]["reason"]
+    assert workstore.read_item(path)["body"] == "read the vendor schema"
+    assert not any(p["kind"] == "ticket_amend" for p in result["proposals"])
+    assert "t1-probe" not in builds_per_task(runner)
+
+
+def test_a_cartridge_with_no_apply_arm_for_ticket_amend_leaves_it_to_the_gate(repo, cart, tmp_path) -> None:
+    result, runner, _ = _drive_on_disk(repo, cart, tmp_path, "write", arm=None)
+
+    assert [p["target"] for p in result["proposals"] if p["kind"] == "ticket_amend"] == ["t1-probe"]
+    assert not _amend_arm_calls(runner)
+    assert not any("applying it failed" in q["reason"] for q in result["quarantined"])
+
+
+def test_an_item_with_no_ticket_file_leaves_the_amendment_to_the_gate(repo, cart, tmp_path) -> None:
+    result, runner = _drive_with_attempts(repo, cart, tmp_path, [{"cause": "ticket"}])
+
+    amend = [p for p in result["proposals"] if p["kind"] == "ticket_amend"]
+    assert [p["target"] for p in amend] == ["t1-probe"] and amend[0]["ramp"] == "eligible"
+    assert "t1-probe" not in builds_per_task(runner)
+
+
+def test_an_append_only_amendment_the_ramp_forces_gated_still_goes_to_the_gate(monkeypatch, repo, cart, tmp_path) -> None:
+    old = "---\nread the vendor schema"
+    new = f"{old}\n---\nnote"
+    assert _is_append_only(old, new) and _ticket_amend_ramp(old, new) == "gated"
+    monkeypatch.setattr(epic_module, "_amended_body", lambda old_body, action: f"{old_body}\n---\nnote")
+    result, runner, _ = _drive_on_disk(repo, cart, tmp_path, "write", body=old)
+
+    assert [p["ramp"] for p in result["proposals"] if p["kind"] == "ticket_amend"] == ["gated"]
+    assert len(_amend_arm_calls(runner)) == 1
+    assert "t1-probe" not in builds_per_task(runner)
+
+
+@pytest.mark.parametrize(
+    "rewrite",
+    [
+        pytest.param(lambda old, action: old[:-1], id="removes-text"),
+        pytest.param(lambda old, action: old.replace("vendor", "supplier") + f"\n\n{action}", id="rewrites-in-place"),
+        pytest.param(lambda old, action: f"{action}\n{old}", id="prepends"),
+    ],
+)
+def test_an_amendment_that_removes_rewrites_or_prepends_goes_to_the_gate_and_the_task_is_not_rebuilt(
+    monkeypatch, repo, cart, tmp_path, rewrite
+) -> None:
+    monkeypatch.setattr(epic_module, "_amended_body", rewrite)
+    result, runner, _ = _drive_on_disk(repo, cart, tmp_path, "silent")
+
+    assert [p["target"] for p in result["proposals"] if p["kind"] == "ticket_amend"] == ["t1-probe"]
+    assert len(_amend_arm_calls(runner)) == 1  # the gate's approval, not a direct apply
+    assert not any(q["id"] == "t1-probe" for q in result["quarantined"])
+    assert "t1-probe" not in builds_per_task(runner)
+
+
+def test_the_cli_exit_line_names_an_approved_and_unlanded_task(monkeypatch, tmp_path, capsys) -> None:
+    from harness import cli
+
+    monkeypatch.setattr(cli, "resolve_cartridge", lambda *a, **k: ({"skills": {}}, {}))
+    monkeypatch.setattr(cli, "build_runner", lambda **k: object())
+    monkeypatch.setattr(workstore, "read_initiative", lambda path: {"id": "demo", "phases": [], "items": []})
+    monkeypatch.setattr(
+        "harness.epic.run_epic",
+        lambda **k: {
+            "totals": {"approved_not_landed": 1},
+            "quarantined": [],
+            "exit_summary": ["approved but not landed: t1-probe — cox runs recover epic-1 t1-probe --repo /repo"],
+        },
+    )
+
+    profile = tmp_path / "provider.yaml"
+    profile.write_text("provider: acme\n", encoding="utf-8")
+
+    exit_code = cli.main(
+        [
+            "epic", "--team", "acme", "--unverified-skills",
+            "--initiative", str(tmp_path / "initiative"), "--repo", "/repo",
+            "--run-id", "epic-1", "--runs-dir", str(tmp_path / "runs"),
+            "--provider-profile", str(profile),
+        ]
+    )
+
+    assert exit_code == 0
+    err = capsys.readouterr().err
+    assert "approved but not landed: t1-probe — cox runs recover epic-1 t1-probe --repo /repo" in err
+
+
+# ── repo-declared checks, from a root `.agent-checks` file ──────────────────
+
+
+def test_a_repo_declared_check_runs_alongside_the_cartridges(repo, cart, tmp_path) -> None:
+    cmd = f'{sys.executable} -c "pass"'
+    (repo / ".agent-checks").write_text(cmd + "\n", encoding="utf-8")
+    result, _ = drive(repo, cart, tmp_path, work=initiative(two_phases=False))
+    landed = next(t for t in result["tasks"] if t["id"] == "t1-probe")
+    seen = {row["check"] for row in landed["evidence"]}
+    assert "checks:state" in seen  # the cartridge's own check still ran
+    assert f"checks:{sys.executable}" in seen  # and the repo's is merged in beside it
+
+
+def test_a_bom_prefixed_agent_checks_file_does_not_mangle_the_command(repo, cart, tmp_path) -> None:
+    """A BOM would otherwise land inside the first name and cmd, and no shell resolves it."""
+    cmd = f'{sys.executable} -c "pass"'
+    (repo / ".agent-checks").write_bytes(b"\xef\xbb\xbf" + (cmd + "\n").encode("utf-8"))
+    result, _ = drive(repo, cart, tmp_path, work=initiative(two_phases=False))
+    landed = next(t for t in result["tasks"] if t["id"] == "t1-probe")
+    assert landed["status"] == "built"
+    assert f"checks:{sys.executable}" in {row["check"] for row in landed["evidence"]}
+
+
+def test_an_undecodable_agent_checks_file_falls_back_to_no_repo_checks(repo, cart, tmp_path) -> None:
+    """A malformed file degrades to no repo checks, never to a run that dies on it."""
+    (repo / ".agent-checks").write_bytes(b"\xff\xfe\x00bad")
+    result, _ = drive(repo, cart, tmp_path, work=initiative(two_phases=False))
+    landed = next(t for t in result["tasks"] if t["id"] == "t1-probe")
+    assert landed["status"] == "built"
+
+
+def test_a_failing_repo_declared_check_quarantines_naming_it(repo, cart, tmp_path) -> None:
+    (repo / ".agent-checks").write_text("false\n", encoding="utf-8")
+    runner = Runner(
+        {"t1-probe": new_file_patch("t1-probe.txt"), "t2-bench": new_file_patch("t2-bench.txt")},
+        verdicts={"p1-foundations": GOAL_UNMET},
+    )
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
+    quarantined = result["quarantined"]
+    reason = next(q["reason"] for q in quarantined if q["id"] == "t1-probe")
+    assert "configured check failed" in reason and "false" in reason
+
+
+def test_a_build_budget_under_the_cap_reaches_the_build_call(repo, cart, tmp_path) -> None:
+    cart["policy"]["build_budget_usd_max"] = 3.0
+    work = initiative(two_phases=False)
+    next(i for i in work["items"] if i["id"] == "t1-probe")["budget_usd"] = 2.0
+    result, runner = drive(repo, cart, tmp_path, work=work)
+    build_calls = [c for c in runner.calls if c["role"] == "build" and "t1-probe" in c["prompt"]]
+    assert build_calls and build_calls[0]["budget_usd"] == 2.0
+    assert not any(q["id"] == "t1-probe" for q in result["quarantined"])
+
+
+def test_a_build_budget_over_the_cap_is_quarantined_and_the_sibling_still_lands(repo, cart, tmp_path) -> None:
+    cart["policy"]["build_budget_usd_max"] = 3.0
+    work = initiative(two_phases=False)
+    next(i for i in work["items"] if i["id"] == "t1-probe")["budget_usd"] = 5.0
+    result, runner = drive(repo, cart, tmp_path, work=work)
+    reason = next(q["reason"] for q in result["quarantined"] if q["id"] == "t1-probe")
+    assert "budget_usd 5.0 exceeds the cartridge cap build_budget_usd_max 3.0" in reason
+    assert not any(c["role"] == "build" and "t1-probe" in c["prompt"] for c in runner.calls)
+    assert is_ancestor(repo, "epic/demo-initiative/p1-foundations--t2-bench", "epic/demo-initiative/p1-foundations")
+
+
+def test_surface_passes_checks_a_plain_path_itself_and_a_new_path_by_its_parent() -> None:
+    from harness.epic import _surface_passes
+
+    present = {Path("/r/a.py"), Path("/r/src")}
+    root = Path("/r")
+    assert _surface_passes(present.__contains__, root, "a.py")
+    assert not _surface_passes(present.__contains__, root, "b.py")
+    assert _surface_passes(present.__contains__, root, "src/b.py (new)")
+    assert not _surface_passes(present.__contains__, root, "lib/b.py (new)")
+    assert not _surface_passes(present.__contains__, root, "src/b.py")
+
+
+def test_a_task_whose_only_surface_is_a_new_path_with_no_parent_is_refused_before_any_model_call(
+    repo, cart, tmp_path
+) -> None:
+    import harness.store_read as read
+    from harness.store_write import task_cause
+
+    work = initiative(two_phases=False)
+    next(i for i in work["items"] if i["id"] == "t1-probe")["surfaces"] = ["nowhere/new_file.py (new)"]
+    store = Store(open_store("sqlite:///:memory:", datetime.now(UTC).isoformat()))
+    result, runner = drive(repo, cart, tmp_path, work=work, store=store)
+    entry = next(q for q in result["quarantined"] if q["id"] == "t1-probe")
+    assert entry["reason"] == f"surfaces not in {repo}: nowhere/new_file.py (new); wrong repository?"
+    assert entry["kind"] == "no_work"
+    assert task_cause(read.task_record(store.conn, "epic-1", "p1-foundations", "t1-probe"))[0] == "ticket"
+    assert store.conn.query_all("SELECT 1 FROM attempts WHERE task_id = 't1-probe'", ()) == []
+    assert not any(c["role"] in ("plan", "build", "review_charter") and "t1-probe" in c["prompt"] for c in runner.calls)
+    assert is_ancestor(repo, "epic/demo-initiative/p1-foundations--t2-bench", "epic/demo-initiative/p1-foundations")
+
+
+def test_a_new_file_under_an_existing_directory_proceeds_to_the_model(repo, cart, tmp_path) -> None:
+    (repo / "docs").mkdir()
+    work = initiative(two_phases=False)
+    next(i for i in work["items"] if i["id"] == "t1-probe")["surfaces"] = ["docs/notes.md (new)"]
+    result, runner = drive(repo, cart, tmp_path, work=work)
+    assert any(c["role"] == "build" and "t1-probe" in c["prompt"] for c in runner.calls)
+    assert not any(q["id"] == "t1-probe" for q in result["quarantined"])
+
+
+def _budget_ctx(repo, cart, store=None, *, date="2026-09-28"):
+    from harness.epic import _Ctx
+
+    return _Ctx(
+        repo=repo, cartridge=cart, runner=None, specs={}, run_id="r", date=date,
+        max_parallel=1, ledger_path=Path("/tmp/ledger.jsonl"), provider_profile="p",
+        runs_dir=Path("/tmp/runs"), worktree_root=Path("/tmp/worktrees"), assume=None,
+        fix_attempts=None, initiative_id="i", default_ref="HEAD", store=store,
+    )
+
+
+def test_a_tickets_own_budget_reaches_the_lifecycle_and_never_consults_history(repo, cart, monkeypatch) -> None:
+    from harness import store_read
+
+    read_calls: list[tuple] = []
+    monkeypatch.setattr(store_read, "build_task_history", lambda *a: read_calls.append(a) or [])
+    store = Store(open_store("sqlite:///:memory:", datetime.now(UTC).isoformat()))
+    ctx = _budget_ctx(repo, cart, store)
+    inv = _lifecycle_invocation(
+        ctx, {"id": "t1-probe", "surfaces": ["a.py"], "budget_usd": 2.0}, body="", fix_attempts=None
+    )
+    assert read_calls == []
+    assert inv.args["build_budget_usd"] == 2.0
+    assert inv.args["build_budget_source"] == "ticket"
+
+
+def test_an_unbudgeted_item_gets_a_history_backed_estimate(repo, cart) -> None:
+    from graphs.delivery.budget_estimate import estimate_budget
+
+    store = Store(open_store("sqlite:///:memory:", datetime.now(UTC).isoformat()))
+    history = [(str(repo), 1, round(1.00 + 0.10 * i, 2)) for i in range(10)]
+    for i, (_repo_name, surfaces_count, cost) in enumerate(history):
+        store.record_task_record(
+            "past-run", "p1", f"t{i}",
+            {
+                "scope": {"repos": [str(repo)]},
+                "change_facts": {"files_touched": [f"f{j}.py" for j in range(surfaces_count)]},
+            },
+            "2026-09-01T00:00:00+00:00",
+        )  # fmt: skip
+        p = store.conn.dialect.placeholder
+        cols = "call_id, run_id, seq, phase_id, task_id, role, model_alias, tier, cost_usd, turns, ok, ts"
+        marks = ", ".join(p for _ in range(12))
+        store.conn.execute(
+            f"INSERT INTO node_calls ({cols}) VALUES ({marks})",
+            (f"c{i}", "past-run", i, "p1", f"t{i}", "build", "sonnet", "mid", cost, 1, 1, "2026-09-01T00:00:00Z"),
+        )
+    ctx = _budget_ctx(repo, cart, store, date="2026-09-28")
+    inv = _lifecycle_invocation(ctx, {"id": "t1-probe", "surfaces": ["a.py"]}, body="", fix_attempts=None)
+    expected, _ = estimate_budget(history, str(repo), 1)
+    assert inv.args["build_budget_usd"] == expected
+    assert inv.args["build_budget_source"] == "estimate"
+
+
+def test_a_repo_without_the_file_gets_only_the_cartridges_checks(repo, cart) -> None:
+    from harness.epic import _Ctx
+
+    ctx = _Ctx(
+        repo=repo, cartridge=cart, runner=None, specs={}, run_id="r", date="d",
+        max_parallel=1, ledger_path=Path("/tmp/ledger.jsonl"), provider_profile="p",
+        runs_dir=Path("/tmp/runs"), worktree_root=Path("/tmp/worktrees"), assume=None,
+        fix_attempts=None, initiative_id="i", default_ref="HEAD",
+    )
+    assert ctx.checks == cart["landing_areas"]["checks"]
+
+
+def test_a_task_the_lifecycle_could_not_run_is_quarantined_not_fatal(repo, cart, tmp_path) -> None:
+    runner = Runner({"t2-bench": new_file_patch("t2-bench.txt")}, verdicts={"p1-foundations": GOAL_UNMET})
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
+    assert [q["id"] for q in result["quarantined"]] == ["t1-probe"]
+    assert is_ancestor(repo, "epic/demo-initiative/p1-foundations--t2-bench", "epic/demo-initiative/p1-foundations")
+
+
+def test_an_unsatisfied_chunk_verdict_quarantines_before_the_gate(repo, cart, tmp_path) -> None:
+    runner = Runner(
+        {t: new_file_patch(f"{t}.txt") for t in TASK_IDS},
+        chunk={"t1-probe": CHUNK_BAD},
+        verdicts={"p1-foundations": GOAL_UNMET},
+    )
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
+
+    assert [q["id"] for q in result["quarantined"]] == ["t1-probe"]
+    assert "validate_chunk unsatisfied" in result["quarantined"][0]["reason"]
+    assert result["quarantined"][0]["kind"] == "unverified"
+    assert result["quarantined"][0]["patch_kept"] is True
+    # No merge was even proposed for it: a task the validator says did not do
+    # what it said is not a task whose merge should be up for a decision.
+    assert not any("t1-probe" in p["target"] for p in result["proposals"] if p["kind"] == "merge_stack")
+    assert "epic/demo-initiative/p1-foundations--t1-probe" not in branches(repo)
+
+
+def test_an_unverified_quarantine_keeps_the_patch_and_records_it_kept(repo, cart, tmp_path) -> None:
+    """`validate_chunk` unsatisfied is `unverified`: the patch stays, on both records."""
+    wi = tmp_path / "wi"
+    (wi / "p1-foundations").mkdir(parents=True)
+    (wi / "initiative.md").write_text(
+        "---\nid: demo-initiative\ntitle: demo\n---\n\nmake the vendor join measurable end to end\n"
+    )
+    (wi / "p1-foundations" / "t1-probe.md").write_text(
+        "---\nid: t1-probe\nphase: p1-foundations\nstate: ready\nneeds: []\nsurfaces: []\n"
+        "title: schema probe\n---\n\nread the vendor schema\n"
+    )
+    work = workstore.read_initiative(wi)
+
+    runner = Runner({"t1-probe": new_file_patch("t1-probe.txt")}, chunk={"t1-probe": CHUNK_BAD})
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=work, run_id="epic-unverified")
+
+    entry = next(q for q in result["quarantined"] if q["id"] == "t1-probe")
+    assert entry["kind"] == "unverified"
+    assert entry["patch_kept"] is True
+
+    item = workstore.read_item(wi / "p1-foundations" / "t1-probe.md")
+    attempt = item["attempts"][0]
+    assert attempt["kind"] == "unverified"
+    assert attempt["patch_kept"] is True
+
+
+def test_a_worktree_that_cannot_be_opened_fails_the_phase_not_a_task(repo, cart, tmp_path, monkeypatch) -> None:
+    """`infra` is the caller's own branch: no task-grain entry, the phase itself is marked."""
+    monkeypatch.setattr("harness.epic._open_phase_worktree", lambda ctx, phase, base_ref: (False, "boom", False))
+    result, _ = drive(repo, cart, tmp_path, work=initiative(two_phases=False))
+
+    p1 = result["phases"][0]
+    assert p1["status"] == "blocked"
+    assert p1["phase_failed_to_start"] == p1["reason"]
+    assert "boom" in p1["phase_failed_to_start"]
+    assert not any(q["grain"] == "task" for q in result["quarantined"])
+
+
+def test_open_phase_worktree_prunes_a_stale_registration_before_opening(repo, cart, tmp_path) -> None:
+    """A crashed prior run's leftover admin entry must not block the next open.
+
+    2026-09-08 `tools-chair-rename-18`: the worktree directory was gone but the
+    registration was not, and the next `worktree add` failed on the phantom.
+    """
+    import shutil
+
+    from harness.epic import _Ctx, _open_phase_worktree
+
+    ctx = _Ctx(
+        repo=repo, cartridge=cart, runner=None, specs={}, run_id="r", date="d",
+        max_parallel=1, ledger_path=tmp_path / "ledger.jsonl", provider_profile="p",
+        runs_dir=tmp_path / "runs", worktree_root=tmp_path / "worktrees", assume=None,
+        fix_attempts=None, initiative_id="demo-initiative", default_ref="main",
+    )
+    ok, detail, _ = _open_phase_worktree(ctx, "p1-foundations", "main")
+    assert ok, detail
+    shutil.rmtree(ctx.phase_worktree("p1-foundations"))
+
+    ok, detail, reused = _open_phase_worktree(ctx, "p1-foundations", "main")
+    assert ok, detail
+    assert reused is True
+
+
+# ── governance ──────────────────────────────────────────────────────────────
+
+
+def test_a_governance_patch_cannot_earn_its_merge(repo, cart, tmp_path) -> None:
+    """Escalation reaches the MERGE too, or the escalation is decoration."""
+    runner = Runner(
+        {
+            "t1-probe": new_file_patch("cartridges/x.yaml", "ok"),
+            "t2-bench": new_file_patch("t2-bench.txt"),
+        }
+    )
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
+
+    escalated = [p for p in result["proposals"] if p["kind"] == "self_modification"]
+    assert {p.get("escalated_from") for p in escalated} == {"draft_pr_create", "merge_stack"}
+    assert not any("t1-probe" in p["target"] for p in result["proposals"] if p["kind"] == "merge_stack")
+
+    # Approved at the gate and still not executed: the arm is `pr`, and there is
+    # no path in the driver that merges a governance change.
+    assert "epic/demo-initiative/p1-foundations--t1-probe" not in branches(repo)
+    assert not is_ancestor(repo, "agents/epic-1/t1-probe", "epic/demo-initiative/p1-foundations")
+    assert is_ancestor(repo, "epic/demo-initiative/p1-foundations--t2-bench", "epic/demo-initiative/p1-foundations")
+
+    rows = [row for row in ledger.read(tmp_path / "ledger.jsonl") if row["kind"] == "self_modification"]
+    assert {row["outcome"] for row in rows} == {"skipped"}, "approved, never executed — neither win nor reversal"
+
+
+def test_an_escalated_tasks_state_move_lands_on_approved_not_done(repo, cart, tmp_path) -> None:
+    """A merge that was never applied cannot read `done` — only `approved`."""
+    runner = Runner(
+        {
+            "t1-probe": new_file_patch("harness/x.py", "ok"),
+            "t2-bench": new_file_patch("t2-bench.txt"),
+        }
+    )
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
+
+    escalated = next(t for t in result["tasks"] if t["id"] == "t1-probe")
+    assert escalated["merged"] is False
+    assert escalated["outcome"] == "approved_not_landed"
+    assert escalated["status"] == "approved"
+
+    landed = next(t for t in result["tasks"] if t["id"] == "t2-bench")
+    assert landed["merged"] is True
+    assert landed["outcome"] == "landed"
+
+    # The saved record is what `cox runs land`/`recover` read back, and both
+    # resolve a phase branch as `epic/<initiative>/<phase>` — so the record
+    # needs both fields, not just the ones the graph itself produced.
+    saved = load_result(tmp_path / "runs", "epic-1", "p1-foundations", "t1-probe")
+    assert saved["initiative"] == "demo-initiative"
+    assert saved["phase"] == "p1-foundations"
+
+    # `recover` needs the phase branch the merge never reached; `land` never
+    # does, so it is the command named here for an escalated, unmerged task.
+    assert (
+        f"approved but not landed: t1-probe — cox runs land epic-1 --repo {repo} --task t1-probe --apply"
+        in result["exit_summary"]
+    )
+
+
+def test_the_state_move_proposal_names_approved_never_done(repo, cart, tmp_path) -> None:
+    """The apply arm writes the state the proposal names; `done` belongs to `cox runs land` alone."""
+    result, _ = drive(repo, cart, tmp_path, work=initiative(two_phases=False))
+
+    moves = [p for p in result["proposals"] if p["kind"] == "state_move"]
+    assert moves
+    assert all(p["suggested_action"] == f"mark {p['target']} approved" for p in moves)
+
+
+def test_a_normally_merged_task_reads_approved_never_done_until_cox_lands_it(repo, cart, tmp_path) -> None:
+    """Merging into the phase stack is not landing — only `cox runs land` writes `done`."""
+    result, _ = drive(repo, cart, tmp_path, work=initiative(two_phases=False))
+
+    task = next(t for t in result["tasks"] if t["id"] == "t1-probe")
+    assert task["merged"] is True
+    assert task["outcome"] == "landed"
+    assert task["status"] == "built"
+    assert task["state"] == "approved"
+    assert (
+        f"approved but not landed: t1-probe — cox runs land epic-1 --repo {repo} --task t1-probe --apply"
+        in result["exit_summary"]
+    )
+
+
+def test_a_dependent_phase_builds_in_run_off_a_merged_but_unlanded_parent(repo, cart, tmp_path) -> None:
+    """`_ready_view` lets p2 build on p1 in one run even though p1 reads `approved`, not `done`."""
+    result, _ = drive(repo, cart, tmp_path)
+
+    parent = next(t for t in result["tasks"] if t["id"] == "t1-probe")
+    assert parent["merged"] is True
+    assert parent["state"] == "approved"
+
+    dependent = next(t for t in result["tasks"] if t["id"] == "t3-cutover")
+    assert dependent["merged"] is True
+    assert result["phases"][1]["status"] == "complete"
+
+
+def test_a_dependent_phase_stays_blocked_on_an_escalated_parent_in_the_same_run(repo, cart, tmp_path) -> None:
+    """`approved`, never `done`, is what keeps a dependent from reading its parent as ready."""
+    runner = Runner(
+        {
+            "t1-probe": new_file_patch("harness/x.py", "ok"),
+            "t2-bench": new_file_patch("t2-bench.txt"),
+            "t3-cutover": new_file_patch("t3-cutover.txt"),
+        }
+    )
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=True))
+
+    p1, p2 = result["phases"]
+    assert p1["status"] == "partial"
+    assert p2["status"] == "blocked"
+    assert "did not meet its goal" in p2["reason"]
+    assert not any(c["role"] == "build" and "t3-cutover" in c["prompt"] for c in runner.calls), (
+        "p2 never ran, so its own task was never built off ground p1 never actually landed"
+    )
+
+    escalated = next(t for t in result["tasks"] if t["id"] == "t1-probe")
+    assert escalated["status"] == "approved"
+    assert escalated["merged"] is False
+
+
+# ── the branch-action decision, on literals ─────────────────────────────────
+
+
+def test_branch_action_recreates_or_blocks_only_a_stale_reused_branch() -> None:
+    assert branch_action(reused=False, head_moved=True, has_own_commits=True) == "proceed"
+    assert branch_action(reused=True, head_moved=False, has_own_commits=True) == "proceed"
+    assert branch_action(reused=True, head_moved=True, has_own_commits=False) == "recreate"
+    assert branch_action(reused=True, head_moved=True, has_own_commits=True) == "block"
+
+
+# ── re-entrancy: recreate, block, and the stack rebase ──────────────────────
+
+
+def test_no_rebase_is_proposed_when_the_stack_is_still_on_its_base(repo, cart, tmp_path) -> None:
+    work = initiative(two_phases=False)
+    drive(repo, cart, tmp_path, work=work, run_id="epic-1")
+    done = initiative(two_phases=False, done=("t1-probe", "t2-bench"))
+    second, _ = drive(repo, cart, tmp_path, work=done, run_id="epic-2")
+    assert [p for p in second["proposals"] if p["kind"] == "stack_rebase"] == []
+    assert second["totals"]["stacks_rebased"] == 0
+    assert second["phases"][0]["status"] == "complete"
+
+
+# ── `dropped` is terminal, the same way `done` is ───────────────────────────
+
+
+def test_a_dropped_task_is_never_selected_for_build_or_review(repo, cart, tmp_path) -> None:
+    work = initiative(two_phases=False)
+    work["items"][1]["state"] = "dropped"
+    result, runner = drive(repo, cart, tmp_path, work=work)
+    assert not any(c["role"] == "build" and "t2-bench" in c["prompt"] for c in runner.calls)
+    assert result["phases"][0]["status"] == "complete"
+
+
+def test_a_phase_of_done_and_dropped_records_is_complete(repo, cart, tmp_path) -> None:
+    work = initiative(two_phases=False, done=("t1-probe",))
+    work["items"][1]["state"] = "dropped"
+    result, runner = drive(repo, cart, tmp_path, work=work)
+    assert result["phases"][0]["status"] == "complete"
+    assert runner.calls == [], "every item was already done or dropped — nothing to build or review"
+
+
+def test_a_stale_empty_reused_branch_is_recreated_before_any_task_builds(repo, cart, tmp_path) -> None:
+    """Refused day one leaves the branch equal to its base — nothing of its own to lose."""
+    work = initiative(two_phases=False)
+    first, _ = drive(repo, cart, tmp_path, work=work, run_id="epic-1", assume="r")
+    assert first["phases"][0]["status"] == "partial"
+    assert git("rev-parse", "epic/demo-initiative/p1-foundations", cwd=repo) == git("rev-parse", "main", cwd=repo)
+
+    (repo / "moved.md").write_text("moved\n", encoding="utf-8")
+    git("add", "-A", cwd=repo)
+    git("commit", "-qm", "advance main", cwd=repo)
+    assert not is_ancestor(repo, "main", "epic/demo-initiative/p1-foundations")
+
+    second, _ = drive(repo, cart, tmp_path, work=work, run_id="epic-2")
+    assert second["phases"][0]["status"] == "complete"
+    assert is_ancestor(repo, "main", "epic/demo-initiative/p1-foundations")
+    assert [p for p in second["proposals"] if p["kind"] == "stack_rebase"] == []
+
+
+def test_a_stale_reused_branch_with_its_own_commits_blocks_rather_than_building(repo, cart, tmp_path) -> None:
+    work = initiative(two_phases=False)
+    first, _ = drive(repo, cart, tmp_path, work=work, run_id="epic-1")
+    assert first["phases"][0]["status"] == "complete"
+    before = git("rev-parse", "epic/demo-initiative/p1-foundations", cwd=repo)
+
+    (repo / "moved.md").write_text("moved\n", encoding="utf-8")
+    git("add", "-A", cwd=repo)
+    git("commit", "-qm", "advance main", cwd=repo)
+
+    second, runner = drive(repo, cart, tmp_path, work=work, run_id="epic-2")
+    assert second["phases"][0]["status"] == "blocked"
+    reason = second["phases"][0]["reason"]
+    assert "epic/demo-initiative/p1-foundations" in reason and "main" in reason
+    assert not any(c["role"] == "build" for c in runner.calls)
+    assert git("rev-parse", "epic/demo-initiative/p1-foundations", cwd=repo) == before
+
+    # The gate has something to decide on: the same kind of proposal the
+    # quiet path files, not a phase quarantined with nothing to act on.
+    rebases = [p for p in second["proposals"] if p["kind"] == "stack_rebase"]
+    assert len(rebases) == 1 and rebases[0]["target"] == "epic/demo-initiative/p1-foundations"
+
+    # The branch is released, not wedged: a third run can open it again.
+    third, _ = drive(repo, cart, tmp_path, work=work, run_id="epic-3")
+    assert third["phases"][0]["status"] == "blocked"
+    assert "rebase it through the gate" in third["phases"][0]["reason"]
+
+
+def test_classify_unlanded_reads_the_task_states_of_the_plus_commits() -> None:
+    t1, t2 = "+ a1 epic r-1: t1", "+ b2 epic r-1: t2"
+    assert classify_unlanded([], {}) == "landed"
+    assert classify_unlanded(["- a1 epic r-1: t1", "+ c3 epic r-1: merge t1 into p1"], {}) == "landed"
+    assert classify_unlanded([t1, t2], {"t1": "done", "t2": "done"}) == "landed"
+    assert classify_unlanded([t1, t2], {"t1": "approved", "t2": "approved"}) == "awaiting_land"
+    assert classify_unlanded([t1, t2], {"t1": "done", "t2": "approved"}) == "rebase"
+    assert classify_unlanded([t1, t2], {"t1": "done", "t2": "ready"}) == "block"
+    assert classify_unlanded([t1], {}) == "block"
+    assert classify_unlanded(["+ a1 fix the thing"], {"t1": "approved"}) == "block"
+
+
+BRANCH = "epic/demo-initiative/p1-foundations"
+
+
+def _stale_branch_with_two_task_commits(repo, cart, tmp_path, *, main_adds=("moved.md",)) -> str:
+    """Run epic-1 so the phase branch carries both tasks' commits, then move main underneath it."""
+    first, _ = drive(repo, cart, tmp_path, work=initiative(two_phases=False), run_id="epic-1")
+    assert first["phases"][0]["status"] == "complete"
+    for name in main_adds:
+        (repo / name).write_text("different\n" if name.endswith(".txt") else "moved\n", encoding="utf-8")
+    git("add", "-A", cwd=repo)
+    git("commit", "-qm", "advance main", cwd=repo)
+    return git("rev-parse", BRANCH, cwd=repo)
+
+
+def _with_states(**states: str) -> dict:
+    work = initiative(two_phases=False)
+    for item in work["items"]:
+        item["state"] = states[item["id"].replace("-", "_").split("_")[0]]
+    return work
+
+
+def test_a_phase_whose_unlanded_commits_are_all_approved_awaits_their_land(repo, cart, tmp_path) -> None:
+    before = _stale_branch_with_two_task_commits(repo, cart, tmp_path)
+    result, runner = drive(repo, cart, tmp_path, work=_with_states(t1="approved", t2="approved"), run_id="epic-2")
+    assert result["phases"][0]["status"] == "awaiting_land"
+    assert result["exit_code"] == EXIT_AWAITING_LAND == 4
+    assert result["quarantined"] == []
+    assert build_outcome(result)["blocked_kind"] == "awaiting_land"
+    assert not any(c["role"] == "build" for c in runner.calls)
+    assert git("rev-parse", BRANCH, cwd=repo) == before
+
+
+def test_a_phase_whose_unlanded_commits_are_all_done_is_recreated_not_rebased(repo, cart, tmp_path, monkeypatch) -> None:
+    _stale_branch_with_two_task_commits(repo, cart, tmp_path)
+    rebases: list[str] = []
+    monkeypatch.setattr(epic_module, "_rebase", lambda *a: rebases.append("called") or (True, ""))
+    result, _ = drive(repo, cart, tmp_path, work=_with_states(t1="done", t2="done"), run_id="epic-2")
+    assert "recreated" in result["phases"][0]
+    assert rebases == [] and "exit_code" not in result
+    assert is_ancestor(repo, "main", BRANCH)
+
+
+def test_a_phase_of_done_and_approved_commits_is_rebased_and_proceeds(repo, cart, tmp_path, monkeypatch) -> None:
+    _stale_branch_with_two_task_commits(repo, cart, tmp_path)
+    rebases: list[str] = []
+    real = epic_module._rebase
+    monkeypatch.setattr(epic_module, "_rebase", lambda *a: rebases.append("called") or real(*a))
+    result, _ = drive(repo, cart, tmp_path, work=_with_states(t1="done", t2="approved"), run_id="epic-2")
+    assert rebases == ["called"]
+    assert result["phases"][0]["rebased"] is True
+    assert result["phases"][0]["status"] != "blocked"
+    assert [q for q in result["quarantined"] if q["grain"] == "phase"] == []
+    assert "exit_code" not in result
+    assert is_ancestor(repo, "main", BRANCH)
+
+
+def test_a_rebase_conflict_aborts_and_quarantines_the_phase(repo, cart, tmp_path) -> None:
+    before = _stale_branch_with_two_task_commits(repo, cart, tmp_path, main_adds=("moved.md", "t1-probe.txt"))
+    result, runner = drive(repo, cart, tmp_path, work=_with_states(t1="done", t2="approved"), run_id="epic-2")
+    assert result["phases"][0]["status"] == "blocked"
+    [entry] = [q for q in result["quarantined"] if q["grain"] == "phase"]
+    assert entry["reason"].startswith("rebase conflict")
+    assert not any(c["role"] == "build" for c in runner.calls)
+    assert git("rev-parse", BRANCH, cwd=repo) == before
+    assert git("status", "--porcelain", cwd=repo) == ""
+
+
+def test_a_merge_conflict_quarantines_as_infra_with_a_harness_cause(repo, cart, tmp_path, store, monkeypatch) -> None:
+    real = epic_module._git
+    monkeypatch.setattr(
+        epic_module, "_git",
+        lambda *a, **k: (False, "CONFLICT (content)") if "merge" in a and "--no-ff" in a else real(*a, **k),
+    )
+    result, _ = drive(repo, cart, tmp_path, work=initiative(two_phases=False), store=store)
+
+    [entry] = [q for q in result["quarantined"] if q["id"] == "t1-probe"]
+    assert entry["reason"].startswith("merge conflict") and entry["kind"] == "infra"
+    attempt = store.conn.query_one("SELECT seq, kind, cause, cause_why FROM attempts WHERE task_id = 't1-probe'")
+    assert tuple(attempt) == (0, "infra", "harness", "merge conflict")
+
+
+def test_a_stale_branch_whose_commits_cancel_out_still_blocks(repo, cart, tmp_path) -> None:
+    """Two of its own commits, net zero lines — patch-id sees two real, unlanded commits and blocks."""
+    branch = "epic/demo-initiative/p1-foundations"
+    git("checkout", "-b", branch, cwd=repo)
+    (repo / "temp.txt").write_text("x\n", encoding="utf-8")
+    git("add", "-A", cwd=repo)
+    git("commit", "-qm", "add temp", cwd=repo)
+    (repo / "temp.txt").unlink()
+    git("add", "-A", cwd=repo)
+    git("commit", "-qm", "remove temp", cwd=repo)
+    git("checkout", "main", cwd=repo)
+
+    (repo / "moved.md").write_text("moved\n", encoding="utf-8")
+    git("add", "-A", cwd=repo)
+    git("commit", "-qm", "advance main", cwd=repo)
+
+    result, _ = drive(repo, cart, tmp_path, work=initiative(two_phases=False), run_id="epic-2")
+    assert result["phases"][0]["status"] == "blocked"
+
+
+def test_a_stale_branch_squash_merged_onto_main_is_recreated_not_blocked(repo, cart, tmp_path) -> None:
+    """A commit whose patch-id already landed on main (via squash-merge) is not 'its own' anymore."""
+    branch = "epic/demo-initiative/p1-foundations"
+    git("checkout", "-b", branch, cwd=repo)
+    (repo / "keep.txt").write_text("ok\n", encoding="utf-8")
+    git("add", "-A", cwd=repo)
+    git("commit", "-qm", "add keep", cwd=repo)
+    git("checkout", "main", cwd=repo)
+
+    # Stand-in for the epic's own squash-merge: the identical change lands on
+    # main directly, so the branch's commit has no `+` in `git cherry main branch`.
+    (repo / "keep.txt").write_text("ok\n", encoding="utf-8")
+    git("add", "-A", cwd=repo)
+    git("commit", "-qm", "squash: add keep", cwd=repo)
+
+    cherry = git("cherry", "main", branch, cwd=repo)
+    assert not any(line.startswith("+") for line in cherry.splitlines())
+
+    main_before_tasks = git("rev-parse", "main", cwd=repo)
+    before = git("rev-parse", branch, cwd=repo)
+    result, _ = drive(repo, cart, tmp_path, work=initiative(two_phases=False), run_id="epic-2")
+    assert result["phases"][0]["status"] == "complete"
+    assert "recreated" in result["phases"][0]
+    # The new branch is stacked on main's tip, not on the deleted branch's own commit.
+    assert is_ancestor(repo, main_before_tasks, branch)
+    assert not is_ancestor(repo, before, branch)
+    assert [p for p in result["proposals"] if p["kind"] == "stack_rebase"] == []
+
+
+def test_a_stale_branch_whose_diff_adds_a_line_still_blocks(repo, cart, tmp_path) -> None:
+    branch = "epic/demo-initiative/p1-foundations"
+    git("checkout", "-b", branch, cwd=repo)
+    (repo / "keep.txt").write_text("ok\n", encoding="utf-8")
+    git("add", "-A", cwd=repo)
+    git("commit", "-qm", "add keep", cwd=repo)
+    git("checkout", "main", cwd=repo)
+
+    (repo / "moved.md").write_text("moved\n", encoding="utf-8")
+    git("add", "-A", cwd=repo)
+    git("commit", "-qm", "advance main", cwd=repo)
+
+    result, runner = drive(repo, cart, tmp_path, work=initiative(two_phases=False), run_id="epic-2")
+    assert result["phases"][0]["status"] == "blocked"
+    assert not any(c["role"] == "build" for c in runner.calls)
+
+
+class Revising(Runner):
+    """Reviews everything as `revise`, so the fix loop is the only thing running."""
+
+    def run(
+        self, *, role, tier=None, hints=None, schema, prompt, context=(), thread=None, budget_usd=None, task=None,
+        wait_if_paused=None,
+    ):
+        if role == "review_charter":
+            with self.lock:
+                self.calls.append({"role": role, "tier": tier, "prompt": prompt})
+            return {"verdict": "revise", "findings": [], "rationale": "not yet"}
+        return super().run(role=role, tier=tier, schema=schema, prompt=prompt, context=context, budget_usd=budget_usd)
+
+
+def builds_per_task(runner) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for call in runner.calls:
+        if call["role"] == "build":
+            task = next(t for t in TASK_IDS if t in call["prompt"])
+            counts[task] = counts.get(task, 0) + 1
+    return counts
+
+
+def test_fix_attempts_reaches_the_lifecycle_graph(repo, cart, tmp_path) -> None:
+    """The driver's one knob over the loop, and the only way to see it is to count."""
+    work = initiative(two_phases=False)
+    patches = {t: new_file_patch(f"{t}.txt") for t in TASK_IDS}
+
+    _, capped = drive(
+        repo, cart, tmp_path, runner=Revising(patches, verdicts={"p1-foundations": GOAL_UNMET}),
+        work=work, fix_attempts=0,
+    )
+    assert set(builds_per_task(capped).values()) == {1}, "fix_attempts=0 must not retry"
+
+    _, default = drive(
+        repo, cart, tmp_path, runner=Revising(patches, verdicts={"p1-foundations": GOAL_UNMET}),
+        work=work, run_id="epic-2",
+    )
+    assert set(builds_per_task(default).values()) == {2}, "the default loop retries once, then sees no progress"
+
+
+# ── the autonomy seam ───────────────────────────────────────────────────────
+
+
+def seed(path: Path, kind: str, risk: str, n: int, outcome: str = "clean") -> None:
+    ledger.append(
+        [
+            {
+                "run_id": f"seed-{i}",
+                "ts": "2026-08-30T00:00:00Z",
+                "principal": "epic-swarm(lifecycle-propose)",
+                "kind": kind,
+                "risk": risk,
+                "outcome": outcome,
+                "cartridge_sha": SHA,
+                "provider_profile": PROFILE,
+            }
+            for i in range(n)
+        ],
+        path,
+    )
+
+
+def test_a_graduated_merge_auto_applies_and_records_no_ledger_row(repo, cart, tmp_path) -> None:
+    """Autonomy is spent by acting: an auto-apply never reached a gate.
+
+    The run has a store, so the streak the policy reads is the store's; the host file is seeded too and only exported to.
+    """
+    path = tmp_path / "ledger.jsonl"
+    seed(path, "merge_stack", "high", 3)
+    before = len(ledger.read(path))
+    store = Store(open_store("sqlite:///:memory:", datetime.now(UTC).isoformat()))
+    for row in ledger.read(path):
+        store.record_ledger(row)
+
+    result, _ = drive(repo, cart, tmp_path, work=initiative(two_phases=False), store=store)
+
+    rows = ledger.read(path)
+    assert [row for row in rows[before:] if row["kind"] == "merge_stack"] == [], (
+        "an auto-applied merge must not extend its own streak"
+    )
+    # It really did merge, without a human and without a row.
+    assert all(task["merged"] for task in result["tasks"])
+    assert result["phases"][0]["totals"]["auto_applied"] == 2
+
+
+# ── determinism ─────────────────────────────────────────────────────────────
+
+
+def test_proposals_and_tasks_come_back_in_task_id_order(repo, cart, tmp_path) -> None:
+    result, _ = drive(repo, cart, tmp_path)
+    assert [task["id"] for task in result["tasks"]] == ["t1-probe", "t2-bench", "t3-cutover"]
+
+    merges = [p["target"] for p in result["proposals"] if p["kind"] == "merge_stack"]
+    assert merges == [
+        "epic/demo-initiative/p1-foundations--t1-probe -> epic/demo-initiative/p1-foundations",
+        "epic/demo-initiative/p1-foundations--t2-bench -> epic/demo-initiative/p1-foundations",
+        "epic/demo-initiative/p2-rollout--t3-cutover -> epic/demo-initiative/p2-rollout",
+    ]
+    moves = [p["target"] for p in result["proposals"] if p["kind"] == "state_move"]
+    assert moves == ["t1-probe", "t2-bench", "t3-cutover"]
+
+
+def test_two_runs_over_the_same_work_propose_the_same_things(repo, cart, tmp_path) -> None:
+    first, _ = drive(repo, cart, tmp_path, assume="r", run_id="epic-1")
+    second, _ = drive(repo, cart, tmp_path, assume="r", run_id="epic-2")
+    shape = lambda result: [(p["kind"], p["target"].replace("epic-2", "epic-1")) for p in result["proposals"]]  # noqa: E731
+    assert shape(first) == shape(second)
+
+
+# ── §4 consolidate ────────────────────────────────────────────────────────
+
+
+def _two_task_initiative(*, t2_surfaces: list[str]) -> dict:
+    """t1-probe and t2-bench, one phase, no dependency between them.
+
+    `surfaces` is the field `docs/design/work-shape.md` §3's coupling rule
+    already reads to decide who owns what; §4's ownership check reuses it.
+    """
+    items = [
+        {"id": "t1-probe", "phase": "p1-foundations", "state": "ready", "needs": [], "surfaces": [],
+         "title": "schema probe", "body": "read the vendor schema"},
+        {"id": "t2-bench", "phase": "p1-foundations", "state": "ready", "needs": [], "surfaces": t2_surfaces,
+         "title": "bench harness", "body": "time the join"},
+    ]
+    return {
+        "id": "demo-initiative", "title": "demo", "body": "make the vendor join measurable end to end",
+        "phases": ["p1-foundations"], "items": items,
+    }
+
+
+def test_a_finding_citing_a_file_the_other_task_owns_emits_one_consolidate_proposal(
+    repo, cart, tmp_path
+) -> None:
+    patches = {t: new_file_patch(f"{t}.txt") for t in ("t1-probe", "t2-bench")}
+    # Ordinary reviewer prose, not the taxonomy's own words: no "cannot satisfy",
+    # no "without touching", no literal "t2-bench" id — only the required `file`
+    # field naming a surface t2-bench actually claims.
+    blocked = {
+        "verdict": "approve",
+        "findings": [
+            {
+                "charter_principle": "cross-ticket reach",
+                "detail": "Landing this cleanly also needs an edit here, and that belongs to the bench ticket.",
+                "file": "README.md",
+            }
+        ],
+        "rationale": "the patch is fine on its own terms",
+    }
+    runner = Runner(patches, review={"t1-probe": blocked})
+    work = _two_task_initiative(t2_surfaces=["README.md"])
+    result, _ = drive(repo, cart, tmp_path, work=work, runner=runner)
+
+    consolidate = [p for p in result["proposals"] if p["kind"] == "consolidate"]
+    assert len(consolidate) == 1
+    assert consolidate[0]["target"] == "t1-probe and t2-bench"
+    assert consolidate[0]["evidence"][0]["output"] == blocked["findings"][0]["detail"]
+
+
+def test_a_run_with_no_such_finding_emits_no_consolidate_proposal(repo, cart, tmp_path) -> None:
+    # t2-bench owns t2-bench.txt, same as the positive case, but nothing t1-probe's
+    # review says ever names it: ownership alone never fires the proposal.
+    work = _two_task_initiative(t2_surfaces=["README.md"])
+    result, _ = drive(repo, cart, tmp_path, work=work)
+    assert [p for p in result["proposals"] if p["kind"] == "consolidate"] == []
+
+
+# ── a build the fix loop refused never reaches a validator ──────────────────
+
+REVISE = {
+    "verdict": "revise",
+    "findings": [{"charter_principle": "evidence", "detail": "the status line does not match the code", "file": "t1-probe.txt"}],
+    "rationale": "the claim and the code disagree",
+}
+
+
+class RefusedRunner(Runner):
+    """One task whose reviewer says revise and whose fix build changes nothing.
+
+    The builder returns the same patch on the retry — which is what a real
+    no-progress fix build does — so `lifecycle-propose` stops the loop with
+    `no_progress`, emits no `draft_pr_create`, and leaves `review.verdict` at
+    `revise`. That is the exact shape of the record this driver used to apply,
+    check, and then hand to a chunk validator as though the verdict were live.
+    """
+
+    def __init__(self, patches: dict[str, str], *, refused: str, **kw) -> None:
+        super().__init__(patches, **kw)
+        self.refused = refused
+
+    def run(
+        self, *, role, tier=None, hints=None, schema, prompt, context=(), thread=None, budget_usd=None, task=None,
+        wait_if_paused=None,
+    ):
+        if role == "review_charter" and self.refused in prompt:
+            with self.lock:
+                self.calls.append({"role": role, "tier": tier, "prompt": prompt})
+            return dict(REVISE)
+        return super().run(role=role, tier=tier, schema=schema, prompt=prompt, context=context, thread=thread, budget_usd=budget_usd)
+
+
+def test_a_build_the_fix_loop_refused_is_quarantined_with_the_loop_s_own_reason(repo, cart, tmp_path) -> None:
+    runner = RefusedRunner(
+        {t: new_file_patch(f"{t}.txt") for t in TASK_IDS}, refused="t1-probe"
+    )
+    result, runner = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
+
+    quarantined = [q for q in result["quarantined"] if q["grain"] == "task"]
+    assert [q["id"] for q in quarantined] == ["t1-probe"]
+    reason = quarantined[0]["reason"]
+    assert quarantined[0]["kind"] == "refused"
+
+    # The loop's diagnosis, not a validator's restatement of a stale verdict.
+    assert "no_progress" in reason, reason
+    assert "validate_chunk" not in reason, reason
+    assert "'revise'" in reason, reason
+
+
+# ── a node failure mid-review writes the task record on the way out ────────
+
+
+ADVERSARY_DISAGREES = {"verdict": "revise", "objections": [], "strongest_objection": "disagrees"}
+
+
+class ArbitrateFailsRunner(Runner):
+    """Charter and adversary both answer; arbitrate then raises — the exact
+    shape the ticket names: build complete, charter review ran, then
+    arbitrate failed with a provider-side error."""
+
+    def run(
+        self, *, role, tier=None, hints=None, schema, prompt, context=(), thread=None, budget_usd=None, task=None,
+        wait_if_paused=None,
+    ):
+        if role == "review_adversary":
+            with self.lock:
+                self.calls.append({"role": role, "tier": tier, "prompt": prompt})
+            # The dangerous task's adversary disagrees with the approving charter: two approvals skip the arbiter.
+            return dict(ADVERSARY_DISAGREES if "t1-probe" in prompt else APPROVE)
+        if role == "arbitrate":
+            raise RunnerError("provider-side safeguard error")
+        return super().run(role=role, tier=tier, schema=schema, prompt=prompt, context=context, thread=thread, budget_usd=budget_usd)
+
+
+def test_a_non_build_node_failure_quarantines_as_infra_with_the_patch_kept(repo, cart, tmp_path) -> None:
+    cart = dict(cart)
+    cart["skills"] = {**cart["skills"], "review_adversary": "acme-skills:review-adversary", "arbitrate": "acme-skills:arbitrate"}
+    cart["policy"] = {**cart["policy"], "review_tier": {"tier2_surfaces": ["README.md"]}}
+    work = initiative(two_phases=False)
+    work["items"][0]["surfaces"] = ["README.md"]
+    runner = ArbitrateFailsRunner({t: new_file_patch(f"{t}.txt") for t in TASK_IDS})
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=work, run_id="epic-infra")
+
+    quarantined = [q for q in result["quarantined"] if q["grain"] == "task"]
+    assert [q["id"] for q in quarantined] == ["t1-probe"]
+    assert quarantined[0]["kind"] == "infra"
+    assert quarantined[0]["patch_kept"] is True
+    assert "arbitrate" in quarantined[0]["reason"]
+
+    task_record = next(t for t in result["tasks"] if t["id"] == "t1-probe")
+    # Nothing was judged, so this is a harness fault, never "rejected" — the
+    # label a patch two reviewers actually declined gets.
+    assert task_record["outcome"] == "harness_fault"
+
+    saved = load_result(tmp_path / "runs", "epic-infra", "p1-foundations", "t1-probe")
+    assert saved is not None
+    assert saved["build"]["patch"].strip()
+    assert saved["failed_node"] == "arbitrate"
+
+
+class ArbitrateBudgetStopRunner(Runner):
+    """arbitrate hits its budget ceiling — a resumable stop, not a node
+    failure, so it must NOT convert to `infra`; it falls through to the
+    pre-existing `no_work` path exactly like any other `RunnerError` from a
+    non-build node did before this ticket."""
+
+    def run(
+        self, *, role, tier=None, hints=None, schema, prompt, context=(), thread=None, budget_usd=None, task=None,
+        wait_if_paused=None,
+    ):
+        if role == "review_adversary":
+            with self.lock:
+                self.calls.append({"role": role, "tier": tier, "prompt": prompt})
+            return dict(ADVERSARY_DISAGREES if "t1-probe" in prompt else APPROVE)
+        if role == "arbitrate":
+            raise BudgetStop(role="arbitrate", thread=None, session=None, spent_usd=1.0, detail="budget ceiling hit")
+        return super().run(role=role, tier=tier, schema=schema, prompt=prompt, context=context, thread=thread, budget_usd=budget_usd)
+
+
+def test_a_budget_stop_from_a_non_build_node_is_not_converted_to_infra(repo, cart, tmp_path) -> None:
+    cart = dict(cart)
+    cart["skills"] = {**cart["skills"], "review_adversary": "acme-skills:review-adversary", "arbitrate": "acme-skills:arbitrate"}
+    cart["policy"] = {**cart["policy"], "review_tier": {"tier2_surfaces": ["README.md"]}}
+    work = initiative(two_phases=False)
+    work["items"][0]["surfaces"] = ["README.md"]
+    runner = ArbitrateBudgetStopRunner({t: new_file_patch(f"{t}.txt") for t in TASK_IDS})
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=work, run_id="epic-budget-arb")
+
+    quarantined = [q for q in result["quarantined"] if q["grain"] == "task"]
+    assert [q["id"] for q in quarantined] == ["t1-probe"]
+    assert quarantined[0]["kind"] == "no_work"
+    assert "patch_kept" not in quarantined[0]
+    assert "t1-probe" not in [t["id"] for t in result["tasks"]]
+
+
+class AdversaryFailsRunner(Runner):
+    """Charter answers; the adversary then raises for one task only. The
+    charter's own verdict was already in hand when the adversary node
+    failed, so it must survive onto the saved result rather than being
+    dropped with the traceback."""
+
+    def __init__(self, patches: dict[str, str], *, fails_for: str, **kw) -> None:
+        super().__init__(patches, **kw)
+        self.fails_for = fails_for
+
+    def run(
+        self, *, role, tier=None, hints=None, schema, prompt, context=(), thread=None, budget_usd=None, task=None,
+        wait_if_paused=None,
+    ):
+        if role == "review_adversary":
+            if self.fails_for in prompt:
+                raise RunnerError("provider-side safeguard error")
+            return dict(APPROVE)
+        return super().run(role=role, tier=tier, schema=schema, prompt=prompt, context=context, thread=thread, budget_usd=budget_usd)
+
+
+def test_the_charter_verdict_already_in_hand_survives_an_adversary_failure(repo, cart, tmp_path) -> None:
+    # tier1_max_changed_lines defaults to 150, so every small fixture patch
+    # already sits at tier 1 — binding review_adversary is enough to call it.
+    cart = dict(cart)
+    cart["skills"] = {**cart["skills"], "review_adversary": "acme-skills:review-adversary"}
+    runner = AdversaryFailsRunner({t: new_file_patch(f"{t}.txt") for t in TASK_IDS}, fails_for="t1-probe")
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False), run_id="epic-adv-infra")
+
+    quarantined = [q for q in result["quarantined"] if q["grain"] == "task"]
+    assert [q["id"] for q in quarantined] == ["t1-probe"]
+    assert quarantined[0]["kind"] == "infra"
+    assert "review_adversary" in quarantined[0]["reason"]
+
+    saved = load_result(tmp_path / "runs", "epic-adv-infra", "p1-foundations", "t1-probe")
+    assert saved is not None
+    assert saved["failed_node"] == "review_adversary"
+    assert saved["review"]["verdict"] == "approve"
+
+
+def test_a_build_node_failure_is_still_quarantined_as_no_work(repo, cart, tmp_path) -> None:
+    """Unchanged: a build that never produced a patch has nothing to keep."""
+    runner = Runner({"t2-bench": new_file_patch("t2-bench.txt")})
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
+
+    quarantined = [q for q in result["quarantined"] if q["grain"] == "task"]
+    assert [q["id"] for q in quarantined] == ["t1-probe"]
+    assert quarantined[0]["kind"] == "no_work"
+    assert "patch_kept" not in quarantined[0]
+
+    assert "t1-probe" not in [t["id"] for t in result["tasks"]]
+
+
+def test_a_quarantined_task_records_an_attempt_on_its_own_work_item(repo, cart, tmp_path) -> None:
+    """The item file, not just the phase record, remembers the quarantine."""
+    wi = tmp_path / "wi"
+    (wi / "p1-foundations").mkdir(parents=True)
+    (wi / "initiative.md").write_text(
+        "---\nid: demo-initiative\ntitle: demo\n---\n\nmake the vendor join measurable end to end\n"
+    )
+    (wi / "p1-foundations" / "t1-probe.md").write_text(
+        "---\nid: t1-probe\nphase: p1-foundations\nstate: ready\nneeds: []\nsurfaces: []\n"
+        "title: schema probe\n---\n\nread the vendor schema\n"
+    )
+    (wi / "p1-foundations" / "t2-bench.md").write_text(
+        "---\nid: t2-bench\nphase: p1-foundations\nstate: ready\nneeds: []\nsurfaces: []\n"
+        "title: bench harness\n---\n\ntime the join\n"
+    )
+    work = workstore.read_initiative(wi)
+
+    # No patch scripted for t2-bench, so its build raises and it is quarantined
+    # by the `invoke_graphs` failure loop — a different call site from t1-probe's
+    # fix-loop refusal, and both tasks are file-backed so both writes are live.
+    runner = RefusedRunner({"t1-probe": new_file_patch("t1-probe.txt")}, refused="t1-probe")
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=work, run_id="epic-attempt")
+
+    quarantined = {q["id"]: q for q in result["quarantined"] if q["grain"] == "task"}
+    assert set(quarantined) == {"t1-probe", "t2-bench"}
+
+    # t1-probe: the fix loop's own refusal. t2-bench: no build was ever
+    # scripted for it, so `invoke_graphs` reports it as a swarm failure.
+    expected_kind = {"t1-probe": "refused", "t2-bench": "no_work"}
+    for task in ("t1-probe", "t2-bench"):
+        entry = quarantined[task]
+        assert set(entry) == {"id", "phase", "grain", "reason", "kind"}
+        assert entry["kind"] == expected_kind[task]
+        item = workstore.read_item(wi / "p1-foundations" / f"{task}.md")
+        assert len(item["attempts"]) == 1
+        attempt = item["attempts"][0]
+        assert attempt["run"] == "epic-attempt"
+        assert attempt["phase"] == "p1-foundations"
+        assert attempt["reason"] == entry["reason"]
+        assert attempt["kind"] == expected_kind[task]
+        assert attempt["ts"]
+
+    # The round trip that matters: re-reading the store (not a hand-built dict)
+    # after the write, so the second run's task dicts are whatever
+    # `read_initiative` actually produces, attempts included.
+    work2 = workstore.read_initiative(wi)
+    runner2 = Runner({"t1-probe": new_file_patch("t1-probe.txt"), "t2-bench": new_file_patch("t2-bench.txt")})
+    drive(repo, cart, tmp_path, runner=runner2, work=work2, run_id="epic-attempt-2")
+
+    for task in ("t1-probe", "t2-bench"):
+        prompt = next(c["prompt"] for c in runner2.calls if c["role"] == "plan" and task in c["prompt"])
+        assert quarantined[task]["reason"] in prompt
+
+
+# ── the previous attempt's reasons and patch, carried into the ticket body ──
+
+
+def test_a_recorded_attempt_carries_its_reason_and_last_patch_into_both_prompts(repo, cart, tmp_path) -> None:
+    """What worked by hand seven times: the reference implementation and the objections, in the body."""
+    work = initiative()
+    work["items"][0]["attempts"] = [
+        {"run": "epic-0", "phase": "p1-foundations", "reason": "checks failed: state 1 failed", "ts": "t"}
+    ]
+    save_result(
+        {"ticket": "t1-probe", "build": {"patch": new_file_patch("t1-probe-old.txt", "distinctive-marker")}},
+        runs_dir=tmp_path / "runs", run_id="epic-0", phase="p1-foundations", task="t1-probe",
+    )
+
+    result, runner = drive(repo, cart, tmp_path, work=work)
+
+    for role in ("plan", "build"):
+        prompt = next(c["prompt"] for c in runner.calls if c["role"] == role and "t1-probe" in c["prompt"])
+        assert "checks failed: state 1 failed" in prompt
+        assert "distinctive-marker" in prompt
+        assert "NOT approved" in prompt
+
+    # The sibling with no attempts carries nothing.
+    sibling = next(c["prompt"] for c in runner.calls if c["role"] == "plan" and "t2-bench" in c["prompt"])
+    assert "## Previous attempts" not in sibling
+    assert "```diff" not in sibling
+
+
+def test_a_recorded_attempt_with_no_saved_result_still_carries_its_reason(repo, cart, tmp_path) -> None:
+    """A run that never got as far as a build has nothing to load — the reason still rides along."""
+    work = initiative()
+    work["items"][0]["attempts"] = [
+        {"run": "epic-missing", "phase": "p1-foundations", "reason": "the fix loop gave up: no_progress", "ts": "t"}
+    ]
+
+    result, runner = drive(repo, cart, tmp_path, work=work)
+
+    for role in ("plan", "build"):
+        prompt = next(c["prompt"] for c in runner.calls if c["role"] == role and "t1-probe" in c["prompt"])
+        assert "the fix loop gave up: no_progress" in prompt
+        assert "```diff" not in prompt
+
+
+def test_a_task_with_no_attempts_is_planned_exactly_as_before(repo, cart, tmp_path) -> None:
+    """No history to carry, so the body reaching the planner is unchanged."""
+    result, runner = drive(repo, cart, tmp_path)
+
+    prompt = next(c["prompt"] for c in runner.calls if c["role"] == "plan" and "t1-probe" in c["prompt"])
+    assert "## Previous attempts" not in prompt
+    assert "read the vendor schema" in prompt
+
+
+def test_a_task_at_the_attempt_cap_is_refused_and_its_sibling_still_lands(repo, cart, tmp_path) -> None:
+    """Two recorded attempts and a third run is refused outright, for a person to decide."""
+    wi = tmp_path / "wi"
+    (wi / "p1-foundations").mkdir(parents=True)
+    (wi / "initiative.md").write_text(
+        "---\nid: demo-initiative\ntitle: demo\n---\n\nmake the vendor join measurable end to end\n"
+    )
+    (wi / "p1-foundations" / "t1-probe.md").write_text(
+        "---\nid: t1-probe\nphase: p1-foundations\nstate: ready\nneeds: []\nsurfaces: []\n"
+        "title: schema probe\n"
+        "attempts:\n"
+        "  - {run: epic-0, phase: p1-foundations, reason: 'first refusal', ts: '2026-01-01T00:00:00+00:00'}\n"
+        "  - {run: epic-1, phase: p1-foundations, reason: 'second refusal', ts: '2026-01-02T00:00:00+00:00'}\n"
+        "---\n\nread the vendor schema\n"
+    )
+    (wi / "p1-foundations" / "t2-bench.md").write_text(
+        "---\nid: t2-bench\nphase: p1-foundations\nstate: ready\nneeds: []\nsurfaces: []\n"
+        "title: bench harness\n---\n\ntime the join\n"
+    )
+    work = workstore.read_initiative(wi)
+
+    # `cart` declares no `notify` write kind, so a `genuine_reject` classification's
+    # proposal is itself refused — triage runs, but cannot turn this into a write,
+    # and the task still ends up quarantined, plainly, for a person to decide.
+    class TriageRejectRunner(Runner):
+        def run(
+            self, *, role, tier=None, hints=None, schema, prompt, context=(), thread=None, budget_usd=None,
+            task=None, wait_if_paused=None,
+        ):
+            if role == "triage":
+                with self.lock:
+                    self.calls.append({"role": role, "tier": tier, "prompt": prompt, "budget_usd": budget_usd})
+                return {
+                    "class": "genuine_reject",
+                    "diagnosis": "the record shows first refusal already happened once",
+                    "cites": ["attempt-1|reason"],
+                    "action": "no further action",
+                }
+            return super().run(
+                role=role, tier=tier, schema=schema, prompt=prompt, context=context, thread=thread,
+                budget_usd=budget_usd, task=task,
+            )
+
+    runner = TriageRejectRunner({"t2-bench": new_file_patch("t2-bench.txt")})
+    result, _ = drive(
+        repo, cart, tmp_path, runner=runner, work=work, run_id="epic-cap",
+        specs={**SPECS, "triage-quarantine": triage_quarantine.SPEC},
+    )
+
+    assert not any(call["role"] in ("plan", "build") and "t1-probe" in call["prompt"] for call in runner.calls)
+    assert any(call["role"] == "triage" for call in runner.calls)
+
+    quarantined = {q["id"]: q for q in result["quarantined"] if q["grain"] == "task"}
+    assert set(quarantined) == {"t1-probe"}
+    reason = quarantined["t1-probe"]["reason"]
+    assert "attempt cap" in reason
+    assert "first refusal" in reason
+    assert "second refusal" in reason
+    # Attempt cap is "nothing produced", not a reviewer's rejection of a
+    # patch — docs/design/observed-record.md §3 puts it under `no_work`.
+    assert quarantined["t1-probe"]["kind"] == "no_work"
+
+    assert is_ancestor(repo, "epic/demo-initiative/p1-foundations--t2-bench", "epic/demo-initiative/p1-foundations")
+    assert "epic/demo-initiative/p1-foundations--t1-probe" not in branches(repo)
+
+    # A refusal past the cap is not itself an attempt: the item still shows
+    # only the two earlier ones, neither of which grew a third entry.
+    item = workstore.read_item(wi / "p1-foundations" / "t1-probe.md")
+    assert len(item["attempts"]) == 2
+
+
+def test_a_task_with_one_recorded_attempt_still_runs(repo, cart, tmp_path) -> None:
+    """One attempt is short of the cap, so the task runs like any other."""
+    wi = tmp_path / "wi"
+    (wi / "p1-foundations").mkdir(parents=True)
+    (wi / "initiative.md").write_text(
+        "---\nid: demo-initiative\ntitle: demo\n---\n\nmake the vendor join measurable end to end\n"
+    )
+    (wi / "p1-foundations" / "t1-probe.md").write_text(
+        "---\nid: t1-probe\nphase: p1-foundations\nstate: ready\nneeds: []\nsurfaces: []\n"
+        "title: schema probe\n"
+        "attempts:\n"
+        "  - {run: epic-0, phase: p1-foundations, reason: 'first refusal', ts: '2026-01-01T00:00:00+00:00'}\n"
+        "---\n\nread the vendor schema\n"
+    )
+    work = workstore.read_initiative(wi)
+
+    runner = Runner({"t1-probe": new_file_patch("t1-probe.txt")})
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=work, run_id="epic-one")
+
+    assert any(call["role"] == "build" and "t1-probe" in call["prompt"] for call in runner.calls)
+    assert not any(q["id"] == "t1-probe" for q in result["quarantined"])
+    assert is_ancestor(repo, "epic/demo-initiative/p1-foundations--t1-probe", "epic/demo-initiative/p1-foundations")
+
+
+def test_a_refused_build_is_never_applied_and_never_shown_to_a_validator(repo, cart, tmp_path) -> None:
+    """The saving, and the correctness, are the same change.
+
+    A patch the reviewers rejected should cost nothing further: no scratch
+    branch, no check run, and above all no chunk validator paid to adjudicate a
+    `review_verdict` the fix loop already settled.
+    """
+    runner = RefusedRunner(
+        {t: new_file_patch(f"{t}.txt") for t in TASK_IDS}, refused="t1-probe"
+    )
+    result, runner = drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False))
+
+    # No validator was ever asked about the refused task.
+    chunk_prompts = [c["prompt"] for c in runner.calls if c["role"] == "validate_chunk"]
+    assert all("t1-probe" not in p for p in chunk_prompts), chunk_prompts
+    assert any("t2-bench" in p for p in chunk_prompts), "the healthy sibling is still validated"
+
+    # The patch was never applied: no scratch branch and no draft branch for it.
+    assert "agents/epic-1/t1-probe" not in branches(repo)
+    assert "epic/demo-initiative/p1-foundations--t1-probe" not in branches(repo)
+
+    # The sibling is unaffected and still merges.
+    assert is_ancestor(
+        repo, "epic/demo-initiative/p1-foundations--t2-bench", "epic/demo-initiative/p1-foundations"
+    )
+
+    # The run's task record says quarantined, with the loop's reason attached.
+    refused = next(t for t in result["tasks"] if t["id"] == "t1-probe")
+    assert refused["status"] == "quarantined"
+    assert refused["evidence"] == [{"check": "fix_loop", "output": refused["quarantine"]}]
+    assert "no_progress" in refused["quarantine"]
+
+
+# ── trim, once validate_phase is satisfied (docs/design/landing-model.md §5) ─
+
+_TRIM_PHASE = "p1-foundations"
+_TRIM_BRANCH = "epic/demo-initiative/p1-foundations"
+_TEST_FILE_PATCH = new_file_patch("test_thing.py", "def test_a(): assert True")
+
+_DELETE_BENCH_TXT = (
+    "diff --git a/t2-bench.txt b/t2-bench.txt\n"
+    "deleted file mode 100644\n"
+    "--- a/t2-bench.txt\n"
+    "+++ /dev/null\n"
+    "@@ -1 +0,0 @@\n"
+    "-ok\n"
+)
+
+_DROP_TEST_ID = (
+    "diff --git a/test_thing.py b/test_thing.py\n"
+    "deleted file mode 100644\n"
+    "--- a/test_thing.py\n"
+    "+++ /dev/null\n"
+    "@@ -1 +0,0 @@\n"
+    "-def test_a(): assert True\n"
+)
+
+_BREAK_CHECK = (
+    "diff --git a/t2-bench.txt b/t2-bench.txt\n"
+    "--- a/t2-bench.txt\n"
+    "+++ b/t2-bench.txt\n"
+    "@@ -1 +1 @@\n"
+    "-ok\n"
+    "+not-ok\n"
+)
+
+
+def _with_style(cart: dict) -> dict:
+    return {**cart, "skills": {**cart["skills"], "style_pass": "acme-skills:style-pass"}}
+
+
+def _trim_patches() -> dict[str, str]:
+    return {"t1-probe": _TEST_FILE_PATCH, "t2-bench": new_file_patch("t2-bench.txt")}
+
+
+def test_style_pass_is_invoked_exactly_once_per_phase_completion(repo, cart, tmp_path) -> None:
+    runner = Runner(_trim_patches(), style={_TRIM_PHASE: ""})
+    result, runner = drive(repo, _with_style(cart), tmp_path, runner=runner, work=initiative(two_phases=False))
+    assert result["phases"][0]["status"] == "complete"
+    assert sum(1 for c in runner.calls if c["role"] == "style_pass") == 1
+    assert "trim" not in result["phases"][0]
+
+
+def test_a_trim_that_keeps_every_id_and_passes_checks_is_applied_and_counted(repo, cart, tmp_path) -> None:
+    runner = Runner(_trim_patches(), style={_TRIM_PHASE: _DELETE_BENCH_TXT})
+    result, _ = drive(repo, _with_style(cart), tmp_path, runner=runner, work=initiative(two_phases=False))
+    assert result["phases"][0]["status"] == "complete"
+    assert result["phases"][0]["trim"] == "trim: 1 lines removed"
+    files = git("ls-tree", "-r", "--name-only", _TRIM_BRANCH, cwd=repo).splitlines()
+    assert "t2-bench.txt" not in files
+    assert "test_thing.py" in files
+
+
+def test_the_trim_commit_never_stages_a_nested_task_worktree_as_a_gitlink(repo, cart, tmp_path) -> None:
+    """`ctx.phase_worktree(phase)` still holds each task's own build worktree when the trim commits."""
+    runner = Runner(_trim_patches(), style={_TRIM_PHASE: _DELETE_BENCH_TXT})
+    result, _ = drive(repo, _with_style(cart), tmp_path, runner=runner, work=initiative(two_phases=False))
+    assert result["phases"][0]["trim"] == "trim: 1 lines removed"
+    assert "160000" not in git("ls-tree", "-r", _TRIM_BRANCH, cwd=repo)
+
+
+def test_a_trim_that_drops_a_collected_id_is_refused_and_the_branch_is_untouched(repo, cart, tmp_path) -> None:
+    runner = Runner(_trim_patches(), style={_TRIM_PHASE: _DROP_TEST_ID})
+    result, _ = drive(repo, _with_style(cart), tmp_path, runner=runner, work=initiative(two_phases=False))
+    assert result["phases"][0]["status"] == "complete"
+    assert result["phases"][0]["trim"] == "trim: refused (coverage floor)"
+    assert git("show", f"{_TRIM_BRANCH}:test_thing.py", cwd=repo) == "def test_a(): assert True"
+
+
+def test_a_trim_that_fails_a_configured_check_is_refused_and_the_branch_is_untouched(repo, cart, tmp_path) -> None:
+    runner = Runner(_trim_patches(), style={_TRIM_PHASE: _BREAK_CHECK})
+    result, _ = drive(repo, _with_style(cart), tmp_path, runner=runner, work=initiative(two_phases=False))
+    assert result["phases"][0]["status"] == "complete"
+    assert result["phases"][0]["trim"] == "trim: refused (coverage floor)"
+    assert git("show", f"{_TRIM_BRANCH}:t2-bench.txt", cwd=repo) == "ok"
+
+
+def test_a_tasks_tier_map_rides_the_lifecycle_invocation_and_no_map_is_empty() -> None:
+    ctx = type("Ctx", (), {"date": "2026-09-24", "cartridge": {}})()
+    tiered = _lifecycle_invocation(ctx, {"id": "t1", "tier": {"build": "deep"}}, body="", fix_attempts=None)
+    plain = _lifecycle_invocation(ctx, {"id": "t2"}, body="", fix_attempts=None)
+    assert tiered.args["tier"] == {"build": "deep"}
+    assert plain.args["tier"] == {}
+
+
+# ── the run store, and the lease fence ──────────────────────────────────────
+
+LEASE = "chair"
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+@pytest.fixture
+def store():
+    conn = open_store("sqlite:///:memory:", _now())
+    yield Store(conn)
+    conn.close()
+
+
+def _hand_to_b(store: Store, epoch: int) -> int:
+    """Holder `a` releases the lease at `epoch` and holder `b` takes it over. Returns b's epoch."""
+    assert release(store.conn, LEASE, "a", epoch)
+    return acquire(store.conn, LEASE, "b", _now(), 3600).epoch
+
+
+def _taken_over_during(monkeypatch, store: Store, name: str, epoch: int) -> None:
+    """Hand the lease to `b` the first time the driver calls `harness.epic.<name>`, then let the call run."""
+    original = getattr(epic_module, name)
+    done: list[bool] = []
+
+    def wrapper(*args, **kwargs):
+        if not done:
+            done.append(_hand_to_b(store, epoch) > epoch)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(epic_module, name, wrapper)
+
+
+class _FakeTime:
+    """Stands in for the `time` module `_wait_if_paused` reaches through: `sleep` never blocks for real."""
+
+    def __init__(self, on_sleep) -> None:
+        self._on_sleep = on_sleep
+        self.calls = 0
+
+    def sleep(self, seconds: float) -> None:
+        self.calls += 1
+        self._on_sleep()
+
+
+def test_the_next_node_waits_while_the_store_pause_flag_is_set(repo, cart, tmp_path, store, monkeypatch) -> None:
+    """A pause set before the run starts holds the first node call until `clear_paused` runs."""
+    run_id = "epic-pause"
+    store.conn.execute(f"INSERT INTO runs (run_id, status) VALUES ('{run_id}', 'queued')")
+    lease = acquire(store.conn, LEASE, run_id, _now(), 3600)
+    set_paused(store.conn, run_id, _now())
+    order: list[str] = []
+
+    def on_sleep() -> None:
+        order.append("sleep")
+        clear_paused(store.conn, run_id)
+
+    monkeypatch.setattr(epic_module, "time", _FakeTime(on_sleep))
+    runner = Runner({t: new_file_patch(f"{t}.txt") for t in TASK_IDS})
+    original_run = runner.run
+
+    def tracking_run(**kwargs):
+        order.append(f"call:{kwargs.get('role')}")
+        return original_run(**kwargs)
+
+    monkeypatch.setattr(runner, "run", tracking_run)
+
+    drive(
+        repo, cart, tmp_path, work=initiative(two_phases=False), runner=runner, store=store,
+        epoch=lease.epoch, lease_name=LEASE, run_id=run_id,
+    )
+
+    assert "sleep" in order
+    first_call = next(i for i, entry in enumerate(order) if entry.startswith("call:"))
+    assert order.index("sleep") < first_call
+
+
+def test_an_unpaused_run_never_sleeps(repo, cart, tmp_path, store, monkeypatch) -> None:
+    """A run whose pause flag is never set never touches `sleep`, and its build still runs."""
+    run_id = "epic-nopause"
+    store.conn.execute(f"INSERT INTO runs (run_id, status) VALUES ('{run_id}', 'queued')")
+    lease = acquire(store.conn, LEASE, run_id, _now(), 3600)
+    fake_time = _FakeTime(lambda: None)
+    monkeypatch.setattr(epic_module, "time", fake_time)
+
+    result, runner = drive(
+        repo, cart, tmp_path, work=initiative(two_phases=False), store=store,
+        epoch=lease.epoch, lease_name=LEASE, run_id=run_id,
+    )
+
+    assert fake_time.calls == 0
+    assert any(c["role"] == "build" for c in runner.calls)
+
+
+def test_a_pause_set_just_before_the_apply_arm_holds_its_own_runner_call(repo, cart, tmp_path, store, monkeypatch) -> None:
+    """The apply arm's own `runner.run` (`auto_apply`, dispatched from `_execute`) waits too.
+
+    The lifecycle batch's pre-dispatch wait (proven above) is not the only boundary: `_execute`
+    runs once per batch item, gated proposal or auto-cleared, and its own apply-arm call must
+    honor a pause set right at that boundary, not only one set before the batch started.
+    """
+    run_id = "epic-pause-arm"
+    store.conn.execute(f"INSERT INTO runs (run_id, status) VALUES ('{run_id}', 'queued')")
+    lease = acquire(store.conn, LEASE, run_id, _now(), 3600)
+    order: list[str] = []
+
+    def on_sleep() -> None:
+        order.append("sleep")
+        clear_paused(store.conn, run_id)
+
+    monkeypatch.setattr(epic_module, "time", _FakeTime(on_sleep))
+
+    # The pause is set the first time `_execute` runs, i.e. at the batch's own node
+    # boundary — well after the lifecycle build/review graphs have already finished —
+    # so only `_execute`'s own wait, not the earlier pre-batch one, can be what holds it.
+    original_execute = epic_module._execute
+    armed: list[bool] = []
+
+    def armed_execute(*args, **kwargs):
+        if not armed:
+            armed.append(True)
+            set_paused(store.conn, run_id, _now())
+        return original_execute(*args, **kwargs)
+
+    monkeypatch.setattr(epic_module, "_execute", armed_execute)
+
+    runner = Runner({t: new_file_patch(f"{t}.txt") for t in TASK_IDS})
+    original_run = runner.run
+
+    def tracking_run(**kwargs):
+        order.append(f"call:{kwargs.get('role')}")
+        return original_run(**kwargs)
+
+    monkeypatch.setattr(runner, "run", tracking_run)
+
+    drive(
+        repo, cart, tmp_path, work=initiative(two_phases=False), runner=runner, store=store,
+        epoch=lease.epoch, lease_name=LEASE, run_id=run_id,
+    )
+
+    assert "sleep" in order
+    arm_calls = [i for i, entry in enumerate(order) if entry == "call:work_state_arm"]
+    assert arm_calls, "the apply arm's own runner.run must have been reached for this to prove anything"
+    assert order.index("sleep") < arm_calls[0]
+
+
+def test_a_lost_lease_ends_the_pause_wait_instead_of_looping(monkeypatch) -> None:
+    """A paused renew that returns False raises the SIGTERM exit on the first pass, with no sleep."""
+    monkeypatch.setattr(epic_module, "is_paused", lambda conn, run_id: True)
+    monkeypatch.setattr(epic_module, "renew", lambda *args, **kwargs: False)
+    sleeps: list[float] = []
+
+    with pytest.raises(SystemExit) as exit_info:
+        epic_module._wait_while_paused(object(), "r", LEASE, 1, _now, 120, sleep=sleeps.append)
+
+    assert exit_info.value.code == 143
+    assert sleeps == []
+
+
+def test_a_store_error_in_the_pause_wait_is_retried_not_fatal(monkeypatch) -> None:
+    """`is_paused` raising a store error once is retried after `retry_wait`, then the wait ends normally."""
+    answers = iter([sqlite3.OperationalError("database is locked"), False])
+
+    def flaky(conn, run_id):
+        answer = next(answers)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(epic_module, "is_paused", flaky)
+    monkeypatch.setattr(epic_module, "renew", lambda *args, **kwargs: True)
+    sleeps: list[float] = []
+
+    epic_module._wait_while_paused(object(), "r", LEASE, 1, _now, 120, sleep=sleeps.append, retry_wait=0.5)
+
+    assert sleeps == [0.5]
+
+
+def test_a_store_down_for_every_attempt_ends_the_pause_wait_with_the_sigterm_exit(monkeypatch) -> None:
+    """Three store errors in a row exhaust the retries and end the run with 143, chained from the last error."""
+
+    def down(conn, run_id):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(epic_module, "is_paused", down)
+    sleeps: list[float] = []
+
+    with pytest.raises(SystemExit) as exit_info:
+        epic_module._wait_while_paused(object(), "r", LEASE, 1, _now, 120, sleep=sleeps.append, retry_wait=0.5)
+
+    assert exit_info.value.code == 143
+    assert isinstance(exit_info.value.__cause__, sqlite3.OperationalError)
+    assert sleeps == [0.5, 0.5]
+
+
+def test_a_bug_in_the_pause_wait_is_not_retried_or_turned_into_a_stop(monkeypatch) -> None:
+    """A non-store exception propagates on the first call with its own type."""
+
+    def broken(conn, run_id):
+        raise TypeError("bug")
+
+    monkeypatch.setattr(epic_module, "is_paused", broken)
+    sleeps: list[float] = []
+
+    with pytest.raises(TypeError):
+        epic_module._wait_while_paused(object(), "r", LEASE, 1, _now, 120, sleep=sleeps.append)
+
+    assert sleeps == []
+
+
+def test_the_fence_is_re_checked_after_the_pause_wait_and_a_lost_lease_blocks_the_apply(
+    repo, cart, tmp_path, store, monkeypatch
+) -> None:
+    """A lease released during the first `_execute`'s wait refuses that very apply: no draft branch is created.
+
+    The pre-wait fence passed for that call, so only the post-wait re-check can stop its draft. Every later
+    `_execute` call already fails the pre-wait fence, so the draft branch list is what discriminates.
+    """
+    run_id = "epic-pause-fence"
+    store.conn.execute(f"INSERT INTO runs (run_id, status) VALUES ('{run_id}', 'queued')")
+    lease = acquire(store.conn, LEASE, run_id, _now(), 3600)
+    order: list[str] = []
+
+    def on_sleep() -> None:
+        order.append("sleep")
+        clear_paused(store.conn, run_id)
+        assert release(store.conn, LEASE, run_id, lease.epoch)
+
+    monkeypatch.setattr(epic_module, "time", _FakeTime(on_sleep))
+    original_execute = epic_module._execute
+    armed: list[bool] = []
+
+    def armed_execute(*args, **kwargs):
+        if not armed:
+            armed.append(True)
+            set_paused(store.conn, run_id, _now())
+        return original_execute(*args, **kwargs)
+
+    monkeypatch.setattr(epic_module, "_execute", armed_execute)
+    runner = Runner({t: new_file_patch(f"{t}.txt") for t in TASK_IDS})
+    original_run = runner.run
+
+    def tracking_run(**kwargs):
+        order.append(f"call:{kwargs.get('role')}")
+        return original_run(**kwargs)
+
+    monkeypatch.setattr(runner, "run", tracking_run)
+
+    drive(
+        repo, cart, tmp_path, work=initiative(two_phases=False), runner=runner, store=store,
+        epoch=lease.epoch, lease_name=LEASE, run_id=run_id,
+    )
+
+    assert armed and order.count("sleep") == 1
+    drafts = subprocess.run(
+        ["git", "-C", str(repo), "branch", "--list", "epic/*--*"], capture_output=True, text=True, check=True
+    ).stdout
+    assert drafts.strip() == ""
+    assert "call:work_state_arm" not in order
+
+
+def _drive_to_a_signal_exit(repo, cart, tmp_path, store, monkeypatch, run_id: str, *, steal: bool):
+    """Drive a paused run whose first wait exits as a SIGTERM; with `steal`, another holder took the lease first."""
+    store.conn.execute(f"INSERT INTO runs (run_id, status) VALUES ('{run_id}', 'queued')")
+    lease = acquire(store.conn, LEASE, run_id, _now(), 3600)
+    set_paused(store.conn, run_id, _now())
+
+    def signalled(ctx) -> None:
+        if steal:
+            assert acquire(store.conn, LEASE, "other", _now(), 3600, steal=True).ok
+        raise SystemExit(143)
+
+    monkeypatch.setattr(epic_module, "_wait_if_paused", signalled)
+    with pytest.raises(SystemExit):
+        drive(
+            repo, cart, tmp_path, work=initiative(two_phases=False), store=store,
+            epoch=lease.epoch, lease_name=LEASE, run_id=run_id,
+        )
+
+
+def test_a_signal_exit_still_holding_the_lease_clears_the_pause_flag(repo, cart, tmp_path, store, monkeypatch) -> None:
+    """A rerun of the same run id must not stop at its first boundary again."""
+    _drive_to_a_signal_exit(repo, cart, tmp_path, store, monkeypatch, "epic-pause-clear", steal=False)
+
+    assert not is_paused(store.conn, "epic-pause-clear")
+
+
+def test_an_exit_after_losing_the_lease_leaves_the_new_holder_s_pause_flag(
+    repo, cart, tmp_path, store, monkeypatch
+) -> None:
+    """The run id now belongs to another holder, so its pause flag is not this driver's to clear."""
+    _drive_to_a_signal_exit(repo, cart, tmp_path, store, monkeypatch, "epic-pause-kept", steal=True)
+
+    assert is_paused(store.conn, "epic-pause-kept")
+
+
+def test_the_pause_wait_ttl_matches_the_cli_s_own_lease_ttl() -> None:
+    """`_PAUSE_LEASE_TTL`'s comment claims it matches `cli._LEASE_TTL`; this is what proves it.
+
+    A paused run's own renew heartbeat must not ask for a shorter lease than the one the CLI
+    acquired, or a long pause would let the lease expire out from under a still-live run. If a
+    future edit changes either constant without the other, this fails instead of the drift going
+    unnoticed until a pause outlives its lease.
+    """
+    from harness.cli import _LEASE_TTL
+
+    assert epic_module._PAUSE_LEASE_TTL == _LEASE_TTL
+
+
+def _store_rows(store: Store) -> list[int]:
+    return [store.total_rows(t) for t in ("phases", "tasks", "attempts", "ledger", "gate_decisions")]
+
+
+def _assert_stale(entry: dict) -> None:
+    assert entry["reason"].startswith("stale epoch")
+    assert "epoch 1" in entry["reason"] and "epoch 2" in entry["reason"]
+
+
+def test_a_two_task_phase_leaves_one_phase_row_two_task_rows_and_its_attempt(repo, cart, tmp_path, store) -> None:
+    patches = {"t1-probe": new_file_patch("t1-probe.txt", "broken"), "t2-bench": new_file_patch("t2-bench.txt")}
+    drive(repo, cart, tmp_path, work=initiative(two_phases=False), patches=patches, store=store)
+
+    assert [store.total_rows(t) for t in ("phases", "tasks", "attempts")] == [1, 2, 1]
+    quarantined = store.conn.query_one("SELECT state FROM tasks WHERE task_id = 't1-probe'")
+    assert tuple(quarantined) == ("quarantined",)
+    attempt = store.conn.query_one("SELECT run_id, phase_id, seq, kind FROM attempts WHERE task_id = 't1-probe'")
+    assert tuple(attempt) == ("epic-1", "p1-foundations", 0, "unverified")
+
+
+def test_each_phase_row_carries_its_manifest_record_and_no_manifest_file_is_written(
+    repo, cart, tmp_path, store
+) -> None:
+    drive(repo, cart, tmp_path, work=initiative(), store=store)
+
+    rows = store.conn.query_all("SELECT phase_id, record_json FROM phases")
+    assert len(rows) == 2
+    for phase_id, record_json in rows:
+        record = json.loads(record_json)
+        assert record["manifest"] == f"epic-1:{phase_id}"
+        assert list((tmp_path / "runs").glob(f"*{phase_id}*.json")) == []
+        assert record["manifest_record"]["run_id"] == f"epic-1:{phase_id}"
+        assert set(record["manifest_record"]) == {
+            "cartridge_sha", "cartridge_team", "gate_diffs", "human_minutes", "overlay_sha", "principal",
+            "proposals", "provider_profile", "run_id", "totals", "ts",
+        }
+
+
+def test_a_landing_under_the_held_epoch_proceeds_and_its_ledger_rows_carry_it(repo, cart, tmp_path, store) -> None:
+    lease = acquire(store.conn, LEASE, "a", _now(), 3600)
+    result, _ = drive(
+        repo, cart, tmp_path, work=initiative(two_phases=False), store=store, epoch=lease.epoch, lease_name=LEASE
+    )
+
+    assert result["phases"][0]["status"] == "complete"
+    assert result["quarantined"] == []
+    rows = store.conn.query_one("SELECT COUNT(*), MIN(epoch), MAX(epoch) FROM ledger")
+    # Every distinct row the file got is in the store. The store's row_hash leaves out
+    # `target` and `subject` (harness/store_write.py), so rows differing only there are one row.
+    distinct = {ledger_row(row)["row_hash"] for row in ledger.read(tmp_path / "ledger.jsonl")}
+    assert rows[0] == len(distinct) > 0
+    assert tuple(rows)[1:] == (lease.epoch, lease.epoch)
+    gates = store.conn.query_one("SELECT COUNT(*), MIN(epoch), MAX(epoch) FROM gate_decisions")
+    assert gates[0] > 0 and tuple(gates)[1:] == (lease.epoch, lease.epoch)
+
+
+def test_a_driver_whose_lease_was_taken_before_the_phase_builds_nothing_and_records_nothing(
+    repo, cart, tmp_path, store
+) -> None:
+    held = acquire(store.conn, LEASE, "a", _now(), 3600).epoch
+    assert _hand_to_b(store, held) == 2
+    result, runner = drive(
+        repo, cart, tmp_path, work=initiative(two_phases=False), store=store, epoch=held, lease_name=LEASE
+    )
+
+    assert runner.calls == []
+    assert result["phases"][0]["status"] == "blocked"
+    assert [q["grain"] for q in result["quarantined"]] == ["phase"]
+    _assert_stale(result["quarantined"][0])
+    assert _store_rows(store) == [0, 0, 0, 0, 0]
+
+
+def test_a_landing_after_the_lease_is_taken_over_is_refused_and_records_no_ledger_row(
+    repo, cart, tmp_path, store, monkeypatch
+) -> None:
+    held = acquire(store.conn, LEASE, "a", _now(), 3600).epoch
+    _taken_over_during(monkeypatch, store, "gate", held)
+    result, _ = drive(
+        repo, cart, tmp_path, work=initiative(two_phases=False), store=store, epoch=held, lease_name=LEASE
+    )
+
+    assert {q["grain"] for q in result["quarantined"]} == {"task", "phase"}
+    for entry in result["quarantined"]:
+        _assert_stale(entry)
+    assert result["phases"][0]["status"] == "blocked"
+    assert _store_rows(store) == [0, 0, 0, 0, 0]
+    assert not (tmp_path / "ledger.jsonl").exists()
+    assert [b for b in branches(repo) if "--" in b] == [], "no draft branch was created"
+    assert all(not task["merged"] for task in result["tasks"])
+
+
+def test_a_stale_epoch_phase_records_no_manifest_record(repo, cart, tmp_path, store, monkeypatch) -> None:
+    held = acquire(store.conn, LEASE, "a", _now(), 3600).epoch
+    _taken_over_during(monkeypatch, store, "gate", held)
+    result, _ = drive(
+        repo, cart, tmp_path, work=initiative(two_phases=False), store=store, epoch=held, lease_name=LEASE
+    )
+
+    assert "manifest_record" not in result["phases"][0]
+    assert _store_rows(store) == [0, 0, 0, 0, 0]
+
+
+def test_a_quarantine_after_the_lease_is_taken_over_records_no_attempt(repo, cart, tmp_path, store, monkeypatch) -> None:
+    held = acquire(store.conn, LEASE, "a", _now(), 3600).epoch
+    _taken_over_during(monkeypatch, store, "_build_task", held)
+    patches = {"t1-probe": new_file_patch("t1-probe.txt", "broken"), "t2-bench": new_file_patch("t2-bench.txt")}
+    result, _ = drive(
+        repo, cart, tmp_path, work=initiative(two_phases=False), patches=patches, store=store, epoch=held,
+        lease_name=LEASE,
+    )
+
+    probe = next(q for q in result["quarantined"] if q["id"] == "t1-probe")
+    _assert_stale(probe)
+    assert "not recorded: " in probe["reason"] and probe["kind"] == "no_work"
+    assert _store_rows(store) == [0, 0, 0, 0, 0]
+
+
+def test_a_lease_lost_at_the_ledger_tail_blocks_the_phase_and_its_dependents(
+    repo, cart, tmp_path, store, monkeypatch
+) -> None:
+    held = acquire(store.conn, LEASE, "a", _now(), 3600).epoch
+    _taken_over_during(monkeypatch, store, "_phase_status", held)
+    result, _ = drive(repo, cart, tmp_path, store=store, epoch=held, lease_name=LEASE)
+
+    p1, p2 = result["phases"]
+    assert p1["status"] == "blocked"
+    _assert_stale(p1)
+    assert [q for q in result["quarantined"] if q["grain"] == "phase"] == [
+        {"id": "p1-foundations", "phase": "p1-foundations", "grain": "phase", "reason": p1["reason"], "kind": "no_work"}
+    ]
+    assert p2["status"] == "blocked" and "did not meet its goal" in p2["reason"]
+    # The landing ran under the live lease; only what came after the takeover is refused.
+    assert all(task["merged"] for task in result["tasks"])
+    assert [store.total_rows(t) for t in ("phases", "ledger", "gate_decisions")] == [0, 0, 0]
+    assert not (tmp_path / "ledger.jsonl").exists()
+
+
+def test_with_no_epoch_no_fence_is_checked_even_when_a_store_is_given(repo, cart, tmp_path, store) -> None:
+    result, _ = drive(repo, cart, tmp_path, work=initiative(two_phases=False), store=store)
+
+    assert result["phases"][0]["status"] == "complete"
+    unfenced = store.conn.query_one("SELECT COUNT(*) FROM ledger WHERE epoch IS NULL")
+    assert unfenced[0] == store.total_rows("ledger") > 0
+
+
+def test_an_epoch_without_a_store_is_refused_up_front(repo, cart, tmp_path) -> None:
+    with pytest.raises(ValueError, match="needs a store"):
+        drive(repo, cart, tmp_path, store=None, epoch=1)
+
+
+def test_a_driver_without_a_store_is_refused_at_construction(repo, cart, tmp_path) -> None:
+    with pytest.raises(ValueError, match="the epic driver needs a store"):
+        drive(repo, cart, tmp_path, store=None)
+    assert not (tmp_path / "ledger.jsonl").exists()
+    assert not (tmp_path / "runs").exists()
+
+
+def test_a_quarantined_task_still_gets_its_attempt_in_its_frontmatter_with_no_manifest_file(
+    repo, cart, tmp_path
+) -> None:
+    wi = tmp_path / "wi"
+    (wi / "p1-foundations").mkdir(parents=True)
+    (wi / "initiative.md").write_text("---\nid: demo-initiative\ntitle: demo\n---\n\nmake the join measurable\n")
+    (wi / "p1-foundations" / "t1-probe.md").write_text(
+        "---\nid: t1-probe\nphase: p1-foundations\nstate: ready\nneeds: []\nsurfaces: []\n"
+        "title: schema probe\n---\n\nread the vendor schema\n"
+    )
+    runner = Runner({"t1-probe": new_file_patch("t1-probe.txt", "broken")})
+    drive(repo, cart, tmp_path, runner=runner, work=workstore.read_initiative(wi))
+
+    item = workstore.read_item(wi / "p1-foundations" / "t1-probe.md")
+    assert len(item["attempts"]) == 1
+    assert list((tmp_path / "runs").glob("*.json")) == []
+
+
+# ── the end-of-run store writes, across a lost connection ────────────────────
+
+# Shaped like psycopg's class so `is_connection_error` retries it; a real subclass when the extra is installed,
+# so `_STORE_ERRORS` also catches it.
+try:
+    from psycopg import OperationalError as _PsycopgError
+except ImportError:  # pragma: no cover - depends on what is installed
+    _PsycopgError = Exception
+_ConnectionLost = type("OperationalError", (_PsycopgError,), {"__module__": "psycopg"})
+
+
+class _FakeClock:
+    """A clock that only `sleep` moves, so a five-minute window costs no real time."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+        self.sleeps: list[float] = []
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+def _lost() -> Exception:
+    return _ConnectionLost("server closed the connection unexpectedly")
+
+
+def _flaky_store_writes(monkeypatch, *, exit_fails=0, mirror_fails=0, pause_fails=0):
+    """Make the three end-of-run writes fail with a lost connection that many times (-1: always).
+
+    Returns the ordered list of (write, failed) attempts.
+    """
+    events: list[tuple[str, bool]] = []
+    remaining = {"exit": exit_fails, "mirror": mirror_fails, "pause": pause_fails}
+    real = {"exit": Store.finish_run, "mirror": Store.record_task_record, "pause": clear_paused}
+
+    def attempt(name: str, *args, **kwargs):
+        failing = remaining[name] != 0
+        events.append((name, failing))
+        if failing:
+            remaining[name] -= remaining[name] > 0
+            raise _lost()
+        return real[name](*args, **kwargs)
+
+    monkeypatch.setattr(Store, "finish_run", lambda self, *a: attempt("exit", self, *a))
+    monkeypatch.setattr(Store, "record_task_record", lambda self, *a: attempt("mirror", self, *a))
+    monkeypatch.setattr(epic_module, "clear_paused", lambda *a: attempt("pause", *a))
+    return events
+
+
+def _exit_row(store: Store, run_id: str):
+    return store.conn.query_one(
+        f"SELECT ended_at, status FROM runs WHERE run_id = {store.conn.dialect.placeholder}", (run_id,)
+    )
+
+
+def test_a_connection_dropped_at_exit_that_recovers_inside_the_window_records_ended_at(
+    repo, cart, tmp_path, store, monkeypatch
+) -> None:
+    store.record_run({"run_id": "epic-exit"}, {})
+    events = _flaky_store_writes(monkeypatch, exit_fails=2)
+    clock, reconnects = _FakeClock(), []
+    retry = epic_module._StoreRetry(reconnect=lambda: reconnects.append(1), clock=clock, sleep=clock.sleep)
+
+    result, _ = drive(
+        repo, cart, tmp_path, work=initiative(two_phases=False), store=store, run_id="epic-exit", retry=retry
+    )
+
+    assert result["phases"][0]["status"] == "complete"
+    assert [e for e in events if e[0] == "exit"] == [("exit", True), ("exit", True), ("exit", False)]
+    assert (len(reconnects), clock.sleeps) == (2, [1.0, 2.0])
+    ended_at, status = _exit_row(store, "epic-exit")
+    assert ended_at is not None and status == "ok"
+
+
+def test_a_connection_that_never_recovers_gives_up_after_the_window_with_the_exit_record_last(
+    repo, cart, tmp_path, store, monkeypatch, caplog
+) -> None:
+    events = _flaky_store_writes(monkeypatch, exit_fails=-1)
+    clock = _FakeClock()
+    retry = epic_module._StoreRetry(clock=clock, sleep=clock.sleep)
+
+    with caplog.at_level(logging.WARNING, logger=epic_module.__name__):
+        result, _ = drive(
+            repo, cart, tmp_path, work=initiative(two_phases=False), store=store, run_id="epic-gone", retry=retry
+        )
+
+    assert result["phases"][0]["status"] == "complete"
+    exits = [e for e in events if e[0] == "exit"]
+    assert len(exits) > 1 and all(failed for _, failed in exits)
+    assert events[-1] == ("exit", True)
+    assert sum(clock.sleeps) == epic_module._EXIT_WINDOW_S
+    assert any("run exit for epic-gone not recorded" in r.getMessage() for r in caplog.records)
+
+
+def test_a_task_mirror_that_exhausts_its_window_still_leads_to_an_exit_record_attempt(
+    repo, cart, tmp_path, store, monkeypatch, caplog
+) -> None:
+    store.record_run({"run_id": "epic-mirror"}, {})
+    events = _flaky_store_writes(monkeypatch, mirror_fails=-1)
+    clock = _FakeClock()
+    retry = epic_module._StoreRetry(clock=clock, sleep=clock.sleep)
+
+    with caplog.at_level(logging.WARNING, logger=epic_module.__name__):
+        result, _ = drive(
+            repo, cart, tmp_path, work=initiative(two_phases=False), store=store, run_id="epic-mirror", retry=retry
+        )
+
+    assert result["phases"][0]["status"] == "complete"
+    assert any("not mirrored into the store" in r.getMessage() for r in caplog.records)
+    assert events[-1] == ("exit", False)
+    assert ("mirror", True) in events
+    assert max(i for i, e in enumerate(events) if e[0] == "mirror") < events.index(("exit", False))
+    assert _exit_row(store, "epic-mirror")[0] is not None
+
+
+def test_a_pause_clear_that_exhausts_its_window_does_not_skip_the_exit_record(
+    repo, cart, tmp_path, store, monkeypatch
+) -> None:
+    pytest.importorskip("psycopg")  # `_clear_pause_if_held` only swallows the driver's own error classes
+    store.record_run({"run_id": "epic-pause"}, {})
+    events = _flaky_store_writes(monkeypatch, pause_fails=-1)
+    clock = _FakeClock()
+    retry = epic_module._StoreRetry(clock=clock, sleep=clock.sleep)
+
+    drive(repo, cart, tmp_path, work=initiative(two_phases=False), store=store, run_id="epic-pause", retry=retry)
+
+    names = [name for name, _ in events]
+    assert names.index("pause") < names.index("exit") and events[-1] == ("exit", False)
+    assert _exit_row(store, "epic-pause")[0] is not None
+
+
+def _fail_each_write_once(monkeypatch) -> list[tuple[str, bool]]:
+    """Make each distinct attempt, phase and task write raise a lost connection on its first call only.
+
+    A write is keyed by method and its task or phase, so a retry of the same write succeeds.
+    Returns the ordered (key, failed) calls.
+    """
+    events: list[tuple[str, bool]] = []
+    seen: set[str] = set()
+
+    def flaky(method: str, key_of):
+        real = getattr(Store, method)
+
+        def call(self, *args, **kwargs):
+            key = f"{method}:{key_of(*args)}"
+            failed = key not in seen
+            seen.add(key)
+            events.append((key, failed))
+            if failed:
+                raise _lost()
+            return real(self, *args, **kwargs)
+
+        monkeypatch.setattr(Store, method, call)
+
+    flaky("record_attempt", lambda run_id, task, *_: task)
+    flaky("record_phase", lambda row: row["phase"])
+    flaky("record_task", lambda run_id, phase, task, *_: task)
+    # `row_hash` leaves out `target` and `subject`, so rows differing only there need them in the key.
+    flaky("record_ledger", lambda entry, *_: f"{ledger_row(entry)['row_hash']}:{entry.get('target')}:{entry.get('subject')}")
+    flaky("record_gate_decisions", lambda run_id, phase, *_: phase)
+    return events
+
+
+def test_a_quarantine_and_a_phase_survive_one_lost_connection_per_store_write(
+    repo, cart, tmp_path, store, monkeypatch
+) -> None:
+    events = _fail_each_write_once(monkeypatch)
+    clock = _FakeClock()
+    retry = epic_module._StoreRetry(clock=clock, sleep=clock.sleep)
+    patches = {"t1-probe": new_file_patch("t1-probe.txt", "broken"), "t2-bench": new_file_patch("t2-bench.txt")}
+
+    drive(repo, cart, tmp_path, work=initiative(two_phases=False), patches=patches, store=store, retry=retry)
+
+    for key in ("record_attempt:t1-probe", "record_phase:p1-foundations", "record_task:t1-probe", "record_task:t2-bench"):
+        assert [failed for k, failed in events if k == key] == [True, False], key
+    assert clock.sleeps
+    assert [store.total_rows(t) for t in ("phases", "tasks", "attempts")] == [1, 2, 1]
+    attempt = store.conn.query_one("SELECT run_id, phase_id, seq, kind FROM attempts WHERE task_id = 't1-probe'")
+    assert tuple(attempt) == ("epic-1", "p1-foundations", 0, "unverified")
+    states = dict(store.conn.query_all("SELECT task_id, state FROM tasks"))
+    assert states["t1-probe"] == "quarantined" and set(states) == {"t1-probe", "t2-bench"}
+
+
+def test_a_full_epic_survives_one_lost_connection_per_write_and_the_host_ledger_gets_one_row(
+    repo, cart, tmp_path, store, monkeypatch
+) -> None:
+    events = _fail_each_write_once(monkeypatch)
+    fence_calls: list[int] = []
+    real_assert_epoch = epic_module.assert_epoch
+
+    def flaky_fence(conn, name, epoch, now):
+        fence_calls.append(len(fence_calls))
+        if not fence_calls[1:]:
+            raise _lost()
+        return real_assert_epoch(conn, name, epoch, now)
+
+    monkeypatch.setattr(epic_module, "assert_epoch", flaky_fence)
+    clock = _FakeClock()
+    retry = epic_module._StoreRetry(clock=clock, sleep=clock.sleep)
+    lease = acquire(store.conn, LEASE, "a", _now(), 3600)
+
+    patches = {"t1-probe": new_file_patch("t1-probe.txt", "broken"), "t2-bench": new_file_patch("t2-bench.txt")}
+
+    result, _ = drive(
+        repo, cart, tmp_path, work=initiative(two_phases=False), patches=patches, store=store, retry=retry,
+        epoch=lease.epoch, lease_name=LEASE,
+    )
+
+    assert len(result["phases"]) == 1
+    assert len(fence_calls) > 1 and clock.sleeps
+    keys = {key for key, _ in events}
+    assert any(k.startswith("record_ledger:") for k in keys) and "record_gate_decisions:p1-foundations" in keys
+    for key in keys:
+        # Ledger rows identical outside `target` and `subject` share a key and the store keeps one of them.
+        failures = [failed for k, failed in events if k == key]
+        assert failures[0] and len(failures) >= 2 and not any(failures[1:]), key
+    assert store.total_rows("phases") == 1 and store.total_rows("attempts") >= 1
+    assert store.total_rows("gate_decisions") > 0
+    host = ledger.read(tmp_path / "ledger.jsonl")
+    phase_rows = [row for row in host if row.get("run_id") == "epic-1:p1-foundations"]
+    # One host row per gate decision; a retry that re-ran `append_ledger` would double it.
+    assert len(phase_rows) == store.total_rows("gate_decisions") > 0
+    stored = store.conn.query_all("SELECT row_hash FROM ledger WHERE run_id = 'epic-1:p1-foundations'")
+    assert {r[0] for r in stored} == {ledger_row(row)["row_hash"] for row in phase_rows}
+
+
+def test_reopening_a_sqlite_connection_swaps_the_driver_connection_and_keeps_the_data(tmp_path) -> None:
+    conn = open_store(f"sqlite:///{tmp_path / 'cox.db'}", _now())
+    store = Store(conn)
+    store.record_run({"run_id": "r1"}, {})
+    old = conn.raw
+
+    epic_module.reopen_connection(conn)
+
+    assert conn.raw is not old
+    with pytest.raises(sqlite3.ProgrammingError):
+        old.execute("SELECT 1")
+    assert conn.query_one("SELECT run_id FROM runs") == ("r1",)
+    conn.close()
+
+
+def test_reopening_a_postgres_connection_connects_with_the_password_and_swaps_only_once_connected(
+    monkeypatch,
+) -> None:
+    item = lambda k, v: type("Info", (), {"keyword": k.encode(), "val": v.encode() if v else None})()  # noqa: E731
+    closed: list[str] = []
+    old = type("Raw", (), {"close": lambda self: closed.append("old")})()
+    old.pgconn = type("PG", (), {"info": [item("host", "db"), item("password", "s3 cret"), item("sslmode", None)]})()
+    conn = type("Conn", (), {"raw": old})()
+    urls: list[str] = []
+
+    def down(url: str):
+        urls.append(url)
+        raise _lost()
+
+    monkeypatch.setattr(epic_module, "connect", down)
+    with pytest.raises(Exception, match="server closed"):
+        epic_module.reopen_connection(conn)
+    assert (conn.raw is old, closed) == (True, [])
+
+    fresh = object()
+    monkeypatch.setattr(epic_module, "connect", lambda url: (urls.append(url), type("C", (), {"raw": fresh})())[1])
+    epic_module.reopen_connection(conn)
+
+    assert urls[-1] == "postgresql:///?host=db&password=s3+cret"
+    assert (conn.raw is fresh, closed) == (True, ["old"])
+
+
+def test_a_store_retry_for_a_store_reconnects_that_stores_own_connection(monkeypatch, store) -> None:
+    reopened: list[object] = []
+    monkeypatch.setattr(epic_module, "reopen_connection", reopened.append)
+
+    epic_module._StoreRetry.for_store(store).reconnect()
+
+    assert reopened == [store.conn]
