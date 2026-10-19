@@ -8,3 +8,4 @@ deploy/superset/.env
 
 # setuptools build scratch
 build/
+*.egg-info/

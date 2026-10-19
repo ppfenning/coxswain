@@ -1,4 +1,0 @@
-[console_scripts]
-agent-tools = agent_tools.cli:main
-cartridge = core.cartridge:_main
-cox = agent_tools.cli:main

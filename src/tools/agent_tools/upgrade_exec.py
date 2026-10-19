@@ -1,7 +1,6 @@
 """Runs an upgrade Plan: git fetch and checkout per step, then the steps that follow the checkout's move
 (its venv sync, the cox tool, the crew links). The only side effects are the injected
 `run(argv, cwd) -> (exit, output)` and print."""
-import re
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
