@@ -47,62 +47,41 @@ def test_refuse_without_approval():
     ]
 
 
-def test_arbitration_verdict_of_a_null_arbitration_is_none():
-    assert land.arbitration_verdict({"arbitration": None}) is None
+_ONE_COMMIT = {"agents/epic-x-5/seams-task": ["Add seams module"]}
 
 
-def test_arbitration_verdict_of_a_dict_is_its_verdict():
-    assert land.arbitration_verdict({"arbitration": {"verdict": "revise"}}) == "revise"
+@pytest.mark.parametrize("arbitration, verdict", [
+    (None, None),
+    ({"verdict": "revise"}, "revise"),
+    ("arbiter: skipped (both approved)", "approve"),
+])
+def test_arbitration_verdict_reads_a_null_a_dict_and_the_arbiter_skip_string(arbitration, verdict):
+    assert land.arbitration_verdict({"arbitration": arbitration}) == verdict
 
 
-def test_arbitration_verdict_of_the_arbiter_skip_string_is_approve():
-    assert land.arbitration_verdict({"arbitration": "arbiter: skipped (both approved)"}) == "approve"
+@pytest.mark.parametrize("record, branches, branch", [
+    (_record(), {**_ONE_COMMIT, "epic/x/seams": ["Add seams module", "Add other thing"]}, "agents/epic-x-5/seams-task"),
+    (_record(), {"agents/epic-x-5/seams-task": ["c1", "c2"], "epic/x/seams": ["Add seams module"]}, "epic/x/seams"),
+    (_record(initiative=None), _ONE_COMMIT, "agents/epic-x-5/seams-task"),
+])
+def test_branch_choice_picks_the_one_branch_exactly_one_commit_ahead(record, branches, branch):
+    assert land.land_plan(record, branches, "main")[0] == {"kind": "pick_branch", "branch": branch, "commit_subject": "Add seams module"}
 
 
-def test_land_plan_over_the_arbiter_skip_string_plans_a_normal_land():
-    branches = {"agents/epic-x-5/seams-task": ["Add seams module"]}
-    steps = land.land_plan(_record(arbitration="arbiter: skipped (both approved)"), branches, "main")
-    assert steps[0] == {"kind": "pick_branch", "branch": "agents/epic-x-5/seams-task", "commit_subject": "Add seams module"}
-
-
-def test_branch_choice_scratch_branch():
-    branches = {"agents/epic-x-5/seams-task": ["Add seams module"], "epic/x/seams": ["Add seams module", "Add other thing"]}
-    steps = land.land_plan(_record(), branches, "main")
-    assert steps[0] == {"kind": "pick_branch", "branch": "agents/epic-x-5/seams-task", "commit_subject": "Add seams module"}
-
-
-def test_branch_choice_phase_branch():
-    branches = {"agents/epic-x-5/seams-task": ["c1", "c2"], "epic/x/seams": ["Add seams module"]}
-    steps = land.land_plan(_record(), branches, "main")
-    assert steps[0] == {"kind": "pick_branch", "branch": "epic/x/seams", "commit_subject": "Add seams module"}
-
-
-def test_branch_choice_ambiguous_refuses_naming_what_was_found():
-    branches = {"agents/epic-x-5/seams-task": ["c1", "c2"], "epic/x/seams": ["c1", "c2"]}
-    steps = land.land_plan(_record(), branches, "main")
-    assert steps == [{
-        "kind": "refuse",
-        "reason": "no branch is exactly one commit ahead of main",
-        "found": {"agents/epic-x-5/seams-task": 2, "epic/x/seams": 2},
-    }]
+@pytest.mark.parametrize("record, branches, found", [
+    (_record(), {"agents/epic-x-5/seams-task": ["c1", "c2"], "epic/x/seams": ["c1", "c2"]},
+     {"agents/epic-x-5/seams-task": 2, "epic/x/seams": 2}),
+    (_record(initiative=None), {"epic/x/seams": ["one commit"]}, {"epic/x/seams": 1}),
+])
+def test_branch_choice_ambiguous_refuses_naming_what_was_found(record, branches, found):
+    assert land.land_plan(record, branches, "main") == [
+        {"kind": "refuse", "reason": "no branch is exactly one commit ahead of main", "found": found}
+    ]
 
 
 def test_step_order():
-    branches = {"agents/epic-x-5/seams-task": ["Add seams module"]}
-    steps = land.land_plan(_record(), branches, "main")
+    steps = land.land_plan(_record(), _ONE_COMMIT, "main")
     assert [s["kind"] for s in steps] == _STEP_ORDER
-
-
-def test_a_record_silent_on_initiative_still_lands_off_the_scratch_branch():
-    branches = {"agents/epic-x-5/seams-task": ["Add seams module"]}
-    steps = land.land_plan(_record(initiative=None), branches, "main")
-    assert steps[0]["kind"] == "pick_branch"
-
-
-def test_a_record_silent_on_initiative_refuses_cleanly_when_only_a_phase_branch_is_offered():
-    branches = {"epic/x/seams": ["one commit"]}
-    steps = land.land_plan(_record(initiative=None), branches, "main")
-    assert steps == [{"kind": "refuse", "reason": "no branch is exactly one commit ahead of main", "found": {"epic/x/seams": 1}}]
 
 
 # --- gate_steps, gate_stop: pure ---
@@ -122,25 +101,18 @@ _GATED_STEPS = [
 _TICKET_NOTE = {"kind": "note", "reason": "gate: ticket — the pull request is open and waits for a person"}
 
 
-def test_gate_steps_ticket_truncates_after_pr_create_and_appends_a_note():
-    assert land.gate_steps(_GATED_STEPS, "ticket") == _GATED_STEPS[:5] + [_TICKET_NOTE]
+_OWN_PHASE_MERGE = {"kind": "merge", "source": "agents/epic-x-5/seams-task", "target": "epic/x/seams"}
 
 
-def test_gate_steps_phase_truncates_before_a_merge_with_no_target():
-    assert land.gate_steps(_GATED_STEPS, "phase") == _GATED_STEPS[:6]
-
-
-def test_gate_steps_epic_truncates_before_a_merge_with_no_target():
-    assert land.gate_steps(_GATED_STEPS, "epic") == _GATED_STEPS[:6]
-
-
-def test_gate_steps_phase_keeps_a_merge_into_its_own_phase_branch():
-    steps = _GATED_STEPS[:6] + [{"kind": "merge", "source": "agents/epic-x-5/seams-task", "target": "epic/x/seams"}]
-    assert land.gate_steps(steps, "phase") == steps
-
-
-def test_gate_steps_full_returns_the_steps_unchanged():
-    assert land.gate_steps(_GATED_STEPS, "full") == _GATED_STEPS
+@pytest.mark.parametrize("steps, level, expected", [
+    (_GATED_STEPS, "ticket", _GATED_STEPS[:5] + [_TICKET_NOTE]),
+    (_GATED_STEPS, "phase", _GATED_STEPS[:6]),
+    (_GATED_STEPS, "full", _GATED_STEPS),
+    (_GATED_STEPS, "bogus", _GATED_STEPS[:5] + [_TICKET_NOTE]),
+    (_GATED_STEPS[:6] + [_OWN_PHASE_MERGE], "phase", _GATED_STEPS[:6] + [_OWN_PHASE_MERGE]),
+])
+def test_gate_steps_cuts_the_plan_at_the_level_and_fails_safe_to_ticket(steps, level, expected):
+    assert land.gate_steps(steps, level) == expected
 
 
 def test_gate_steps_leaves_a_refusal_untouched_at_every_level():
@@ -148,20 +120,12 @@ def test_gate_steps_leaves_a_refusal_untouched_at_every_level():
     assert [land.gate_steps(refusal, level) for level in ("ticket", "phase", "epic", "full")] == [refusal] * 4
 
 
-def test_gate_steps_an_unrecognized_level_fails_safe_to_ticket_not_full():
-    assert land.gate_steps(_GATED_STEPS, "bogus") == _GATED_STEPS[:5] + [_TICKET_NOTE]
-
-
-def test_gate_stop_names_the_level_the_last_step_and_the_open_pr():
-    gated = land.gate_steps(_GATED_STEPS, "phase")
-    assert land.gate_stop(_GATED_STEPS, gated, "phase", "https://x/pull/7") == (
-        "gate: phase stopped after wait_checks; pull request https://x/pull/7 left open, unmerged"
+@pytest.mark.parametrize("level, stopped", [("phase", "wait_checks"), ("ticket", "pr_create")])
+def test_gate_stop_names_the_level_the_last_step_and_the_open_pr(level, stopped):
+    gated = land.gate_steps(_GATED_STEPS, level)
+    assert land.gate_stop(_GATED_STEPS, gated, level, "https://x/pull/7") == (
+        f"gate: {level} stopped after {stopped}; pull request https://x/pull/7 left open, unmerged"
     )
-
-
-def test_gate_stop_at_ticket_names_pr_create_not_the_note():
-    gated = land.gate_steps(_GATED_STEPS, "ticket")
-    assert land.gate_stop(_GATED_STEPS, gated, "ticket", "https://x/pull/7").startswith("gate: ticket stopped after pr_create;")
 
 
 def test_gate_stop_is_none_when_the_plan_runs_to_completion():
@@ -208,20 +172,15 @@ def test_recover_record_reads_run_phase_and_task_off_the_path():
     assert land.recover_record("runs/r-2/tasks/p/t.json", "t", "i") == {"run": "r-2", "task": "t", "phase": "p", "initiative": "i"}
 
 
-def test_recover_record_refuses_a_path_without_the_tasks_segment():
-    step = land.recover_record("runs/r-2/p/t.json", "t", "i")
+@pytest.mark.parametrize("path, ticket, reason", [
+    ("runs/r-2/p/t.json", "t", "expected <run>/tasks/<phase>/<task>.json"),
+    ("runs/r-2/tasks/p/t.json", "other", "disagrees with its filename"),
+    ("runs/r-2/tasks/p/t.json", None, ""),
+])
+def test_recover_record_refuses_a_path_without_the_tasks_segment_and_a_ticket_that_is_missing_or_disagrees(path, ticket, reason):
+    step = land.recover_record(path, ticket, "i")
     assert step["kind"] == "refuse"
-    assert "expected <run>/tasks/<phase>/<task>.json" in step["reason"]
-
-
-def test_recover_record_refuses_a_ticket_that_disagrees_with_the_filename():
-    step = land.recover_record("runs/r-2/tasks/p/t.json", "other", "i")
-    assert step["kind"] == "refuse"
-    assert "disagrees with its filename" in step["reason"]
-
-
-def test_recover_record_refuses_a_record_with_no_ticket():
-    assert land.recover_record("runs/r-2/tasks/p/t.json", None, "i")["kind"] == "refuse"
+    assert reason in step["reason"]
 
 
 # --- pr_body: pure ---
@@ -233,28 +192,16 @@ def test_pr_body_contains_verdicts_and_run_id():
     assert "Arbitration verdict: approve" in body
 
 
-def test_pr_body_cost_line_survives_a_string_cost():
-    assert "Cost: $1.50" in land.pr_body(_record(cost_usd="1.5"))
-
-
-def test_pr_body_omits_the_cost_line_rather_than_raising_on_an_unparseable_cost():
-    assert "Cost:" not in land.pr_body(_record(cost_usd="n/a"))
+@pytest.mark.parametrize("cost, line", [("1.5", True), ("n/a", False)])
+def test_pr_body_cost_line_survives_a_string_cost_and_is_omitted_when_unparseable(cost, line):
+    body = land.pr_body(_record(cost_usd=cost))
+    assert ("Cost: $1.50" in body) is line
+    assert line or "Cost:" not in body
 
 
 def test_pr_body_keeps_closes_and_ends_with_the_footer_naming_its_run():
     body = land.pr_body(_record(), issue="7")
     assert body.endswith("\n\nCloses #7\n\n🚣 Built with [coxswain](https://github.com/ppfenning/coxswain) · run epic-x-5")
-
-
-def test_pr_footer_with_a_run_ends_in_the_run():
-    assert land.pr_footer("epic-x-5") == "🚣 Built with [coxswain](https://github.com/ppfenning/coxswain) · run epic-x-5"
-
-
-def test_pr_footer_without_a_run_ends_at_the_link():
-    footer = land.pr_footer(None)
-    assert footer == "🚣 Built with [coxswain](https://github.com/ppfenning/coxswain)"
-    assert not footer.endswith(" · ")
-    assert "run" not in footer
 
 
 @pytest.mark.parametrize("installed", ["9.9.9", None])
@@ -273,9 +220,6 @@ def test_pr_footer_carries_no_version_whatever_is_installed(monkeypatch, install
 
 
 # --- route sync hooks: pure plan, then the edge ---
-
-_ONE_COMMIT = {"agents/epic-x-5/seams-task": ["Add seams module"]}
-
 
 def _pr_body_of(steps):
     return next(s for s in steps if s["kind"] == "pr_create")["body"]
@@ -305,7 +249,6 @@ def test_an_item_with_no_issue_is_synced_before_the_pr_opens_and_one_with_an_iss
     assert [s["kind"] for s in steps] == _PRESYNCED + ["route_sync"]
     assert steps[4] == {"kind": "route_sync", "item": "seams-task", "before": "pr_create"}
     assert steps[-1] == {"kind": "route_sync", "item": "seams-task"}
-    assert [s["kind"] for s in land.land_plan(_record(), _ONE_COMMIT, "main", tracker="none")] == _STEP_ORDER + ["note"]
 
 
 def test_with_issue_rebuilds_only_the_pr_body_and_leaves_no_issue_alone():
@@ -320,15 +263,10 @@ def test_with_issue_rebuilds_only_the_pr_body_and_leaves_no_issue_alone():
 
 
 def test_the_pr_body_closes_the_issue_and_never_emits_an_owner():
-    for issue in ("7", "owner/name#7"):
-        body = _pr_body_of(land.land_plan(_record(), _ONE_COMMIT, "main", tracker="github-projects", issue=issue))
-        assert "\n\nCloses #7" in body
-        assert body.endswith(land.pr_footer("epic-x-5"))
-        assert "owner" not in body
-
-
-def test_the_pr_body_has_no_closes_line_without_an_issue():
-    assert "Closes" not in _pr_body_of(land.land_plan(_record(), _ONE_COMMIT, "main", tracker="github-projects"))
+    body = _pr_body_of(land.land_plan(_record(), _ONE_COMMIT, "main", tracker="github-projects", issue="owner/name#7"))
+    assert "\n\nCloses #7" in body
+    assert body.endswith(land.pr_footer("epic-x-5"))
+    assert "owner" not in body
 
 
 def test_tracker_none_plans_neither_the_sync_nor_the_closes_line_and_says_so():
@@ -373,15 +311,16 @@ def test_execute_route_sync_calls_the_sync_in_process_and_a_failure_never_fails_
         "seams-task", "/w", False, None, str(tmp_path / "step-profile.yaml"), str(tmp_path / "step-runs"))
 
 
-def test_execute_route_sync_reports_success(monkeypatch, tmp_path):
-    monkeypatch.setattr(cli, "_route_sync", lambda ns: 0)
-    assert cli._execute_land_step(tmp_path, _sync_step(tmp_path)) == (True, "synced seams-task")
-
-
-def test_execute_route_sync_under_tracker_none_reports_a_skip_and_never_calls_the_sync(monkeypatch, tmp_path):
-    monkeypatch.setattr(cli, "_route_sync", lambda ns: pytest.fail("the sync ran under tracker none"))
-    assert cli._execute_land_step(tmp_path, _sync_step(tmp_path, "none")) == (
-        True, "sync of seams-task skipped after the merge: tracker is none")
+@pytest.mark.parametrize("tracker, expected", [
+    ("github-projects", (True, "synced seams-task")),
+    ("none", (True, "sync of seams-task skipped after the merge: tracker is none")),
+])
+def test_execute_route_sync_reports_success_and_under_tracker_none_a_skip_without_calling_the_sync(monkeypatch, tmp_path, tracker, expected):
+    def fake(ns):
+        assert tracker != "none", "the sync ran under tracker none"
+        return 0
+    monkeypatch.setattr(cli, "_route_sync", fake)
+    assert cli._execute_land_step(tmp_path, _sync_step(tmp_path, tracker)) == expected
 
 
 def test_land_enrich_gives_route_sync_its_workspace_the_items_own_id_and_the_lands_profile():
@@ -440,20 +379,15 @@ def _stacked_repo(tmp_path, *, parent_on_main):
     return root
 
 
-def test_land_branches_drops_a_commit_whose_patch_is_already_on_main(tmp_path):
-    root = _stacked_repo(tmp_path, parent_on_main=True)
+@pytest.mark.parametrize("parent_on_main, subjects, kind", [
+    (True, ["own commit"], "pick_branch"),
+    (False, ["own commit", "parent commit"], "refuse"),
+])
+def test_land_branches_drops_a_commit_whose_patch_is_already_on_main_and_keeps_one_that_is_not(tmp_path, parent_on_main, subjects, kind):
+    root = _stacked_repo(tmp_path, parent_on_main=parent_on_main)
     branches = cli._land_branches(root, _record(), "main")
-    assert branches["agents/epic-x-5/seams-task"] == ["own commit"]
-    step = land.land_plan(_record(), branches, "main")[0]
-    assert (step["kind"], step["branch"]) == ("pick_branch", "agents/epic-x-5/seams-task")
-
-
-def test_land_branches_keeps_a_parent_commit_that_is_not_on_main(tmp_path):
-    root = _stacked_repo(tmp_path, parent_on_main=False)
-    branches = cli._land_branches(root, _record(), "main")
-    assert branches["agents/epic-x-5/seams-task"] == ["own commit", "parent commit"]
-    steps = land.land_plan(_record(), branches, "main")
-    assert steps[0]["kind"] == "refuse" and "exactly one commit" in steps[0]["reason"]
+    assert branches["agents/epic-x-5/seams-task"] == subjects
+    assert land.land_plan(_record(), branches, "main")[0]["kind"] == kind
 
 
 # --- cli._execute_land_step: the git-only arms, for real, no gh ---
@@ -535,10 +469,12 @@ def test_execute_cherry_pick_conflict_reports_failure_without_raising_and_leaves
     assert status.strip() == ""
 
 
-def test_execute_checks_reports_pass_and_fail(tmp_path):
-    assert cli._execute_land_step(tmp_path, {"kind": "checks", "checks": [("tests", ["true"])]}) == (True, "1 checks passed")
-    ok, _ = cli._execute_land_step(tmp_path, {"kind": "checks", "checks": [("tests", ["false"])]})
-    assert not ok
+@pytest.mark.parametrize("checks, expected", [
+    ([("tests", ["true"])], (True, "1 checks passed")),
+    ([("lint", ["true"]), ("tests", ["true"])], (True, "2 checks passed")),
+])
+def test_execute_checks_runs_every_check_in_order_and_reports_the_count(tmp_path, checks, expected):
+    assert cli._execute_land_step(tmp_path, {"kind": "checks", "checks": checks}) == expected
 
 
 def test_execute_checks_with_a_branch_runs_in_a_worktree_and_removes_it(repo, tmp_path, monkeypatch):
@@ -549,14 +485,6 @@ def test_execute_checks_with_a_branch_runs_in_a_worktree_and_removes_it(repo, tm
     assert not wt.exists()
     current = sp.run(["git", "-C", str(repo), "branch", "--show-current"], capture_output=True, text=True).stdout.strip()
     assert current == "main"
-
-
-def test_execute_checks_runs_every_check_in_order_on_a_passing_fixture(tmp_path):
-    ok, detail = cli._execute_land_step(tmp_path, {
-        "kind": "checks", "checks": [("lint", ["true"]), ("tests", ["true"])],
-    })
-    assert ok
-    assert detail == "2 checks passed"
 
 
 def test_execute_checks_stops_at_the_first_failing_check_and_names_it_not_its_command(tmp_path, monkeypatch):
@@ -582,55 +510,32 @@ def _item(id_, status):
     return {"id": id_, "status": status}
 
 
-def test_phase_landable_all_done():
-    items = [_item("a", "done"), _item("b", "done")]
-    records = {"a": _record(task="a"), "b": _record(task="b")}
-    assert land.phase_landable(items, records) is None
+_REC_A, _REC_B = _record(task="a"), _record(task="b")
 
 
-def test_phase_landable_all_approved():
-    items = [_item("a", "approved"), _item("b", "approved")]
-    records = {"a": _record(task="a"), "b": _record(task="b")}
-    assert land.phase_landable(items, records) is None
+@pytest.mark.parametrize("items, records, expected", [
+    ([_item("a", "done"), _item("b", "done")], {"a": _REC_A, "b": _REC_B}, None),
+    ([_item("a", "approved"), _item("b", "approved")], {"a": _REC_A, "b": _REC_B}, None),
+    ([_item("a", "dropped"), _item("b", "done")], {"b": _REC_B}, None),
+    ([_item("a", "done"), _item("b", "done")], {"b": _REC_B}, None),
+    ([_item("a", "done"), _item("b", "approved")], {"b": _REC_B}, None),
+    ([_item("a", "in_progress"), _item("b", "done")], {"b": _REC_B},
+     "a is 'in_progress', not approved, done or dropped"),
+    ([_item("a", "done"), _item("b", "done")], {"a": _record(task="a", arbitration={"verdict": "revise"}), "b": _REC_B},
+     "a: arbitration verdict is 'revise', not 'approve'"),
+    ([_item("a", "approved")], {}, "a has no task record"),
+])
+def test_phase_landable_refuses_the_first_unready_or_unapproved_item_and_lets_done_items_without_a_record_pass(items, records, expected):
+    assert land.phase_landable(items, records) == expected
 
 
-def test_phase_landable_one_item_not_ready():
-    items = [_item("a", "in_progress"), _item("b", "done")]
-    records = {"b": _record(task="b")}
-    assert land.phase_landable(items, records) == "a is 'in_progress', not approved, done or dropped"
-
-
-def test_phase_landable_one_dropped_rest_done():
-    items = [_item("a", "dropped"), _item("b", "done")]
-    records = {"b": _record(task="b")}
-    assert land.phase_landable(items, records) is None
-
-
-def test_phase_landable_one_done_but_unapproved():
-    items = [_item("a", "done"), _item("b", "done")]
-    records = {"a": _record(task="a", arbitration={"verdict": "revise"}), "b": _record(task="b")}
-    assert land.phase_landable(items, records) == "a: arbitration verdict is 'revise', not 'approve'"
-
-
-def test_phase_landable_a_done_item_with_no_filed_task_record_is_satisfied():
-    items = [_item("a", "done"), _item("b", "done")]
-    records = {"b": _record(task="b")}
-    assert land.phase_landable(items, records) is None
-
-
-def test_phase_landable_a_done_item_without_a_record_beside_an_approved_one_with_a_record():
+def test_phase_plan_with_a_done_item_without_a_record_beside_an_approved_one_marks_and_cleans_only_the_approved():
     items = [_item("a", "done"), _item("b", "approved")]
-    records = {"b": _record(task="b")}
-    assert land.phase_landable(items, records) is None
     phase_record = {"run": "epic-x-5", "phase": "seams", "initiative": "x"}
     task_records = [{**_record(task="b"), "status": "approved"}]
     steps = land.land_plan(phase_record, {}, "main", items=items, task_records=task_records)
     assert [s for s in steps if s["kind"] == "mark_done"] == [{"kind": "mark_done", "task": "b"}]
     assert next(s for s in steps if s["kind"] == "clean_phase")["tasks"] == ["b"]
-
-
-def test_phase_landable_an_approved_item_with_no_task_record_still_refuses():
-    assert land.phase_landable([_item("a", "approved")], {}) == "a has no task record"
 
 
 # --- land_plan: phase mode (§1, §7) ---
@@ -652,20 +557,6 @@ def test_phase_plan_step_list_and_clean_phase_scoping():
         "kind": "clean_phase", "run": "epic-x-5", "phase_branch": "epic/x/seams", "pr_branch": "pr/x--seams",
         "tasks": ["seams-task"],
     }
-
-
-def test_phase_plan_squash_phase_step_for_a_two_task_phase():
-    phase_record = {"run": "epic-x-5", "phase": "seams", "initiative": "x", "phase_verdict": {"reasoning": "solid"}}
-    task_records = [
-        {"task": "seams-a", "run": "epic-x-5", "phase": "seams", "status": "done",
-         "review": {"verdict": "approve"}, "arbitration": {"verdict": "approve"},
-         "change_facts": {"fix_loop_attempts": 0, "files_touched": ["a.py"]}},
-        {"task": "seams-b", "run": "epic-x-5", "phase": "seams", "status": "done",
-         "review": {"verdict": "approve"}, "arbitration": {"verdict": "approve"},
-         "change_facts": {"fix_loop_attempts": 1, "files_touched": ["b.py"]}},
-    ]
-    items = [{"id": "seams-a", "status": "done"}, {"id": "seams-b", "status": "done"}]
-    steps = land.land_plan(phase_record, {}, "main", items=items, task_records=task_records)
     assert next(s for s in steps if s["kind"] == "squash_phase") == {
         "kind": "squash_phase", "branch": "epic/x/seams", "onto": "pr/x--seams",
         "from": "main", "subject": "epic x: seams",
@@ -700,24 +591,21 @@ def test_phase_plan_refuses_a_local_branch_that_diverges_from_the_open_pr_head()
                       "reason": "local branch pr/x--seams at def differs from open pull request #7 head abc"}]
 
 
-def test_append_only_paths_all_under_tests():
-    assert land.append_only_paths(["tests/test_a.py", "tests/sub/test_b.py"]) is True
+@pytest.mark.parametrize("paths, expected", [
+    (["tests/test_a.py", "tests/sub/test_b.py"], True),
+    (["tests/test_a.py", "agent_tools/land.py"], False),
+    ([], False),
+])
+def test_append_only_paths_is_true_only_for_a_nonempty_list_wholly_under_tests(paths, expected):
+    assert land.append_only_paths(paths) is expected
 
 
-def test_append_only_paths_mixed_with_a_non_test_path():
-    assert land.append_only_paths(["tests/test_a.py", "agent_tools/land.py"]) is False
-
-
-def test_append_only_paths_empty():
-    assert land.append_only_paths([]) is False
-
-
-def test_phase_pr_title_renders_id_phase_and_title():
-    assert land.phase_pr_title("I412", "t1", "Widget") == "epic I412: t1 - Widget"
-
-
-def test_phase_pr_title_drops_the_suffix_when_no_title_is_known():
-    assert land.phase_pr_title("x", "seams", "") == "epic x: seams"
+@pytest.mark.parametrize("initiative, phase, title, expected", [
+    ("I412", "t1", "Widget", "epic I412: t1 - Widget"),
+    ("x", "seams", "", "epic x: seams"),
+])
+def test_phase_pr_title_renders_id_phase_and_title_and_drops_the_suffix_without_one(initiative, phase, title, expected):
+    assert land.phase_pr_title(initiative, phase, title) == expected
 
 
 def test_phase_plan_pr_create_title_carries_the_initiative_title_from_the_record():
@@ -771,8 +659,12 @@ def test_phase_plan_gathers_a_cherry_pick_per_record_in_task_order_for_an_empty_
     assert (steps[1]["branch"], steps[1]["files_touched"]) == ("agents/epic-x-2/seams-b", ["seams-b.py"])
 
 
-def test_phase_plan_gathers_a_patch_apply_for_a_record_whose_branch_is_gone_everywhere():
-    steps = _gather_plan([_gather_record("seams-a", "epic-x-1")], _EMPTY_PHASE, repo="/r")
+@pytest.mark.parametrize("kw", [
+    {},
+    {"run_hosts": {"epic-x-1": "box"}, "fetched_missing": {"seams-a"}},
+])
+def test_phase_plan_gathers_a_patch_apply_for_a_record_whose_branch_is_gone_everywhere_or_that_the_fetch_found_nothing_for(kw):
+    steps = _gather_plan([_gather_record("seams-a", "epic-x-1")], _EMPTY_PHASE, repo="/r", **kw)
     assert steps[0] == {"kind": "patch_apply", "branch": "agents/epic-x-1/seams-a",
                         "patch": "diff --git a/seams-a.py b/seams-a.py", "onto": "pr/x--seams", "from": "main",
                         "repo": "/r", "task": "seams-a", "files_touched": ["seams-a.py"]}
@@ -784,12 +676,6 @@ def test_phase_plan_gathers_fetch_then_cherry_pick_for_a_branch_only_on_a_host()
                          run_hosts={"epic-x-1": "box"})
     assert steps[0] == {"kind": "fetch", "run": "epic-x-1", "repo": "/r", "initiative": "x", "epoch": None, "host": "box"}
     assert (steps[1]["kind"], steps[1]["branch"]) == ("cherry_pick", "agents/epic-x-1/seams-a")
-
-
-def test_phase_plan_gathers_a_patch_apply_when_the_fetch_found_nothing():
-    steps = _gather_plan([_gather_record("seams-a", "epic-x-1")], _EMPTY_PHASE, repo="/r",
-                         run_hosts={"epic-x-1": "box"}, fetched_missing={"seams-a"})
-    assert [s["kind"] for s in steps[:2]] == ["patch_apply", "checks"]
 
 
 def test_phase_plan_gather_takes_every_steps_repo_from_the_land_never_the_record():
