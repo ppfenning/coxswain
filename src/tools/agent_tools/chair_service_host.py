@@ -3,24 +3,38 @@
 from __future__ import annotations
 
 import shlex
+from collections.abc import Mapping
 
+from agent_tools.host_cmd import ChairHead, sync_argvs
 from agent_tools.setup_install import CHECKOUT, SYNC_ARGV
 
 Step = tuple[list[str], bool]
 
 
-def install_steps(ssh: str, root: str, repos: dict[str, str], workspace_remote: str, label: str) -> list[Step]:
+def sync_or_clone(path: str, url: str, head: ChairHead | None) -> str:
+    """The remote shell line for one checkout: present, it is brought to `head` the way `cox host sync` does
+    (`host_cmd.sync_argvs`: fetch, then fast-forward the branch or check out the commit detached, as at a release
+    tag; with no head, `pull --ff-only`); absent, it is cloned. A failed sync fails the line, never falls to a clone."""
+    sync = " && ".join(shlex.join(argv) for argv in sync_argvs(path, head))
+    return f"if test -d {path}; then {sync}; else git clone {url} {path}; fi"
+
+
+def install_steps(
+    ssh: str, root: str, repos: dict[str, str], workspace_remote: str, label: str,
+    heads: Mapping[str, ChairHead] | None = None,
+) -> list[Step]:
     """Argv and a run flag (False means print it for a person) for installing a resident chair on `ssh`.
 
     The workspace clone (`{root}/workspace` from `workspace_remote`) refuses when the host already has a plain
     directory there instead of a git checkout; that step is still listed, never dropped, so the person sees the
-    failure and clears the directory themselves. The one checkout, `{root}/coxswain`, gets its venv synced and
+    failure and clears the directory themselves. Each checkout in `repos` follows the chair's commit for the
+    checkout of its name in `heads` (`sync_or_clone`). The one checkout, `{root}/coxswain`, gets its venv synced and
     becomes the editable `cox` tool.
     """
     checkout = f"{root}/{CHECKOUT}"
 
     def _sync(name: str, url: str) -> Step:
-        return (["ssh", ssh, f"test -d {root}/{name} && git -C {root}/{name} pull --ff-only || git clone {url} {root}/{name}"], True)
+        return (["ssh", ssh, sync_or_clone(f"{root}/{name}", url, (heads or {}).get(name))], True)
 
     return [
         *(_sync(name, url) for name, url in repos.items()),

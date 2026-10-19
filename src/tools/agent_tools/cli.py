@@ -10018,7 +10018,7 @@ def _chair_service_host_steps(a: argparse.Namespace, profile: Mapping, runs_dir:
     root = str(Path(profile["workspace_dir"]).expanduser().parent)
     workspace_remote = _origin_url(str(Path(profile["workspace_dir"]).expanduser())) or ""
     return chair_service_host.install_steps(
-        str(row["ssh"]), root, _chair_service_host_repos(profile), workspace_remote, _holder_label(a),
+        str(row["ssh"]), root, _chair_service_host_repos(profile), workspace_remote, _holder_label(a), _chair_heads(profile),
     )
 
 
