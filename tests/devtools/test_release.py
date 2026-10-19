@@ -138,9 +138,15 @@ def _fake_git_run(dirty=(), fail=None, off_branch=(), gh_conclusion="success", c
     return calls, run
 
 
-def _cut(tmp_path, monkeypatch, version=V0, *flags, fake=None, manifest_toml=_MANIFEST_TOML, notes="notes"):
-    """`cli.main(["release", version, ...])` against `_checkout`, the remotes reachable with no tags."""
+def _cut(tmp_path, monkeypatch, version=V0, *flags, fake=None, manifest_toml=_MANIFEST_TOML, notes="notes",
+         index_tagged=None):
+    """`cli.main(["release", version, ...])` against `_checkout`, the remotes reachable with no tags.
+    `index_tagged`, when given, pre-writes the releases index as the executor would render it with those
+    components tagged, so the cut at the declared version has no index to land."""
     umbrella = _checkout(tmp_path, manifest_toml, notes, version)
+    if index_tagged is not None:
+        rendered = release.release_index_text("", version, tomllib.loads(manifest_toml), tagged=index_tagged)
+        (umbrella / "docs" / "releases" / "index.md").write_text(rendered)
     calls, run = fake or _fake_git_run()
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
     monkeypatch.setattr(cli, "_real_run", run)
@@ -791,7 +797,7 @@ def test_cli_release_dry_run_prints_every_step_and_touches_no_file(tmp_path, cap
 
 
 def test_cli_release_tags_and_pushes_the_checkout_then_writes_its_github_release(tmp_path, monkeypatch, no_tap):
-    rc, calls, umbrella = _cut(tmp_path, monkeypatch)
+    rc, calls, umbrella = _cut(tmp_path, monkeypatch, index_tagged=set())
     assert rc == 0
     assert [c for c in calls if c[3] in ("tag", "push")] == [release.tag_argv(str(umbrella), V0),
                                                            release.push_argv(str(umbrella), V0)]
@@ -801,7 +807,7 @@ def test_cli_release_tags_and_pushes_the_checkout_then_writes_its_github_release
 
 
 def test_cli_release_tags_a_changed_dash_before_the_checkout(tmp_path, monkeypatch, no_tap, capsys):
-    rc, calls, umbrella = _cut(tmp_path, monkeypatch, fake=_fake_git_run(commits=1))
+    rc, calls, umbrella = _cut(tmp_path, monkeypatch, fake=_fake_git_run(commits=1), index_tagged={"dash"})
     assert rc == 0
     dash = str(tmp_path / "dash")
     assert [c for c in calls if c[3] in ("tag", "push")] == [
