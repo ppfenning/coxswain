@@ -222,9 +222,10 @@ def _from_meter(
 
 def _spend(runs_dir: Path, now: str, *, read_local=None, read_store=None, read_reset=None) -> dict:
     """The spend header, from the first of three sources: a fresh local usage meter; else the newest meter in
-    the store when fresh; else an estimate ceilinged by an implied ceiling the meter has recorded, falling back
-    to the routing profile's own ceilings. The weekly estimate starts at the newest meter's reset (even a stale
-    one), else the profile's configured reset; the five-hour estimate keeps its rolling window.
+    the store when fresh; else an estimate. The weekly estimate is ceilinged by an implied ceiling the meter has
+    recorded, falling back to the routing profile's own, and starts at the newest meter's reset (even a stale
+    one), else the profile's configured reset. The five-hour estimate starts at the newest meter's five-hour
+    window (the five hours before now with no meter) and is always ceilinged by the profile's window ceiling.
     `spend_source` is "local meter", "meter store" or "estimate"; `spend_age_s` is the age of the meter that
     answered, or of the newest stale one an estimate went on, and None when no meter exists.
     `weekly_target_fraction` and `weekly_pace` are the pacing policy's weekly verdict: over the seven days ending
@@ -246,14 +247,12 @@ def _spend(runs_dir: Path, now: str, *, read_local=None, read_store=None, read_r
         None if reset is None else usage_window.weekly_window_start(at, reset),
         at,
     )
-    profile_window_ceiling, profile_weekly_ceiling = _profile_ceilings()
-    window_ceiling = usage_meter.implied_ceiling("five_hour", at)
-    if window_ceiling is None:
-        window_ceiling = profile_window_ceiling
+    five_start = usage_window.five_hour_start(None if newest is None else newest.five_hour.resets_at, at)
+    window_ceiling, profile_weekly_ceiling = _profile_ceilings()
     weekly_ceiling = usage_meter.implied_ceiling("weekly", at)
     if weekly_ceiling is None:
         weekly_ceiling = profile_weekly_ceiling
-    window = usage_window.gather(runs_dir, at, ceiling_usd=window_ceiling)
+    window = usage_window.gather(runs_dir, at, ceiling_usd=window_ceiling, start=five_start)
     weekly = usage_window.gather_weekly(runs_dir, at, weekly_ceiling_usd=weekly_ceiling, start=start)
     return {
         "five_hour_fraction": _fraction(window.spent_usd, window.ceiling_usd),

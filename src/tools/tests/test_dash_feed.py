@@ -415,7 +415,7 @@ def _spy_readers(monkeypatch, window_spent: float, weekly_spent: float) -> dict:
     ceiling they were handed: a fraction can then only come from a ceiling that reached the reader."""
     seen: dict = {}
 
-    def gather(runs_dir, now, *, ceiling_usd=None):
+    def gather(runs_dir, now, *, ceiling_usd=None, start=None):
         seen["ceiling_usd"] = ceiling_usd
         return usage_window.Window(
             start=now, end=now, spent_usd=window_spent, ceiling_usd=ceiling_usd, burn_usd_per_hour=0.0, runs_in_flight=0,
