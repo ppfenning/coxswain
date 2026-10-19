@@ -1,48 +1,39 @@
-# Getting started: from three clones to a verified first run
+# Getting started: from one checkout to a verified first run
 
-The routing layer spans three repositories and one profile file. This is the
-order a person on a machine that is not the author's follows, top to bottom,
-to a first verified run.
+Coxswain is one repository, one package and one profile file. This is the
+order a person on a new machine follows, top to bottom, to a first verified
+run. `<home>` is the coxswain home, `~/.local/share/coxswain` by default.
 
 ## 1. What you are installing
 
-`agent-cartridges` holds each team's rules and the skill bodies a run reads,
-and doubles as a local plugin marketplace for skill-aware providers.
-`agent-graphs` is the harness that runs a graph; it depends on
-agent-cartridges as a path dependency, so a working agent-graphs checkout
-needs a resolvable agent-cartridges checkout beside it.
-`agent-tools` is the CLI a seat runs instead of reasoning by hand; its
-`route` group is the entry point that files work and launches the harness.
-Clone them in dependency order: cartridges, then graphs, then tools, side
-by side under one checkout root.
+One checkout of [ppfenning/coxswain](https://github.com/ppfenning/coxswain)
+at `<home>/installs/coxswain`, with one venv inside it. The folders that
+matter here:
 
-## 2. Clone and create the environments
+- `src/tools`: the `cox` CLI. Its `route` group files work and launches the
+  harness.
+- `src/graphs`: the harness that runs a graph (`harness_dir` in the profile).
+- `src/cartridges`: the shipped cartridges, the skill bodies a run reads,
+  the default provider profiles, and a local plugin marketplace for Claude
+  Code.
+- `crew`: the seats, linked into `~/.claude/agents`.
 
-```bash
-git clone https://github.com/ppfenning/agent-cartridges <checkout root>/agent-cartridges
-git clone https://github.com/ppfenning/agent-graphs <checkout root>/agent-graphs
-git clone https://github.com/ppfenning/agent-tools <checkout root>/agent-tools
-```
+The `coxswain` package puts two commands on `PATH`: `cox` and `cartridge`.
 
-In each of the three, create the environment:
+## 2. Install
 
 ```bash
-cd <checkout root>/agent-cartridges && uv venv && uv pip install -e ".[dev]"
-cd <checkout root>/agent-tools && uv venv && uv pip install -e ".[dev]"
+uv tool install --python 3.14 coxswain        # or: brew install ppfenning/coxswain/cox
+git clone --branch <tag> https://github.com/ppfenning/coxswain <home>/installs/coxswain
+cox install --team <team>
 ```
 
-agent-graphs depends on agent-cartridges as a path dependency, so `uv sync`
-fails there; the form that works installs both in one call:
-
-```bash
-cd <checkout root>/agent-graphs && uv venv && uv pip install -e ".[dev]" -e <checkout root>/agent-cartridges
-```
-
-Then put `agent-tools` on PATH for every seat:
-
-```bash
-uv tool install -e <checkout root>/agent-tools
-```
+`<tag>` is a release tag, such as `v2026.10.0`. `cox install` syncs the
+checkout's venv (`uv sync --frozen --all-extras`), installs `cox` editable
+from the checkout, writes the profile in section 4 when there is none,
+links the crew and runs the doctor. Add the extras this machine needs to
+the first command, for example `'coxswain[postgres]'` for a shared store.
+`cox install --dry-run` prints the plan first.
 
 ## 3. The two interactive logins
 
@@ -53,39 +44,58 @@ headless:
   Claude Code provider profile, that's `claude`. Run it once interactively
   and log in, because the harness runs it headless later and cannot answer a
   login prompt.
-- `gh auth login`. The harness itself never pushes and never opens a pull
-  request: a finished run leaves branches in the target repository. Opening
-  the pull request from a landed branch is a step a person or a seat runs
-  afterwards with the forge CLI, so it needs to be logged in too.
+- `gh auth login`, when the profile's `forge` is `github` or `auto`. The
+  harness itself never pushes and never opens a pull request: a finished
+  run leaves branches in the target repository. `cox runs land` opens the
+  pull request and merges it through `gh`, so `gh` needs to be logged in.
 
 ## 4. The profile
 
-The route group reads one profile, `~/.config/agent-tools/profile.yaml`,
-with these keys:
+The route group reads one profile, `~/.config/agent-tools/profile.yaml`.
+`cox install` writes it with these keys:
 
 ```yaml
 team: <team>
-cartridges_dir: <checkout root>/workspace/cartridges
-skills_roots: [<checkout root>/agent-cartridges/skills-plugins]
-provider_profile: <checkout root>/agent-cartridges/providers/claude-code.yaml
-harness_dir: <checkout root>/agent-graphs
-workspace_dir: <checkout root>/workspace
+cartridges_dir: <workspace>/cartridges
+skills_roots: [<home>/installs/coxswain/src/cartridges/skills-plugins]
+provider_profile: <home>/installs/coxswain/src/cartridges/providers/claude-code.yaml
+harness_dir: <home>/installs/coxswain/src/graphs
+workspace_dir: <workspace>
 assume: a
-forge: local
-tracker: none
+umbrella_dir: <home>/installs/coxswain
 ```
 
+Add `forge:` and `tracker:` lines when you need them. `<workspace>` is
+`<home>/workspaces/main` unless you passed `--workspace`.
+
 `cartridges_dir` is where the TEAM's cartridge lives (the workspace's
-`cartridges/`, see section 5), not the agent-cartridges checkout;
-`skills_roots` and `provider_profile` point into that checkout. `assume` is
+`cartridges/`, see section 5), not the checkout's `src/cartridges`.
+`skills_roots` and `harness_dir` point into the checkout.
+
+`provider_profile` starts at the shipped default. A provider profile is team
+configuration: tiers, budgets, tools and the store. A team keeps its own
+copy outside the checkout, in `<home>/providers/` or in the workspace, with
+`catalog.yaml` beside it, and points `provider_profile` there:
+
+```bash
+mkdir -p <home>/providers
+cp <home>/installs/coxswain/src/cartridges/providers/{claude-code,catalog}.yaml <home>/providers/
+```
+
+The doctor's `home paths` row fails when `provider_profile` is outside both
+`<home>` and the workspace. `assume` is
 the gate answer detached runs start with (`a` approves what the gate would
 ask, `r` refuses); it defaults to `a` when the key is absent and is passed
 through unchanged to the harness. `forge` is how `cox runs land` lands a
 task: `local` (the default when the key is absent) needs only git: the task's
 commit fast-forwards the default branch once the land's own checks pass, and is
 pushed when the repository has an `origin`. `github` opens a pull request,
-waits for its checks and squash-merges it through `gh`; `cox setup doctor`
-checks `gh auth status` only for that forge. `tracker` is where `cox route
+waits for its checks and squash-merges it through `gh`. `forgejo` does the
+same on a Forgejo server (see [forgejo-forge.md](forgejo-forge.md)). `auto`
+picks per repository from its `origin`: github.com lands through `github`,
+the `FORGEJO_BASE_URL` host through `forgejo`, anything else through
+`local`. `cox setup doctor` checks `gh` authentication only for `github` and
+`auto`. `tracker` is where `cox route
 sync` mirrors the work store: `none` (the default when the key is absent)
 mirrors nothing, and `github-projects` syncs a GitHub Project through `gh`. A
 run can pause sync by writing `runs/policy.tracker.json`, which wins over the
@@ -103,27 +113,36 @@ profile.
   manifest files a run leaves behind.
 - `intake/`: tickets filed but not yet scoped onto a board.
 - `cartridges/<team>/`: this team's cartridge, extending `local`, beside
-  symlinks to `base` and `local` from the agent-cartridges checkout.
+  symlinks to `base` and `local` in the checkout's
+  `src/cartridges/cartridges/`.
 
-Create the workspace once, then the team cartridge with agent-cartridges'
-own command, which also prints the two profile lines for section 4:
+`cox install` creates the default workspace's folders. Make it a git
+repository, then create the team cartridge with `cartridge init`, which
+also prints the two profile lines for section 4:
 
 ```bash
-mkdir -p <checkout root>/workspace/{work,runs,intake,cartridges}
-cd <checkout root>/workspace && git init
-<checkout root>/agent-cartridges/.venv/bin/cartridge init <team> --cartridges-dir <checkout root>/workspace/cartridges
+mkdir -p <workspace>/{work,runs,intake,cartridges}
+git -C <workspace> init
+cartridge init <team> --cartridges-dir <workspace>/cartridges
 ```
 
-See agent-cartridges' README for what a cartridge is; it is not repeated
-here.
+See [`src/cartridges/README.md`](../../cartridges/README.md) for what a
+cartridge is; it is not repeated here.
 
 ## 6. The skills as a plugin (optional but recommended)
 
-Provider-specific, and only for the Claude Code provider:
+Provider-specific, and only for the Claude Code provider. Either rerun
+setup with `--plugins`:
 
 ```bash
-claude plugin marketplace add <checkout root>/agent-cartridges
-claude plugin install local-skills@agent-cartridges
+cox setup install --team <team> --plugins
+```
+
+or register the marketplace by hand:
+
+```bash
+claude plugin marketplace add <home>/installs/coxswain/src/cartridges
+claude plugin install local-skills@coxswain-cartridges
 ```
 
 ## 7. Verify
@@ -151,7 +170,7 @@ resolves its argument against the current directory, and `runs usage` and
 `runs series` default `--runs-dir` to the relative path `runs`.
 
 ```bash
-cd <checkout root>/workspace
+cd <workspace>
 cox route file --repo <path> --title "..." --body FILE
 cox route launch epic --initiative work/<slug> --fix-attempts 2
 cox route status
@@ -169,90 +188,10 @@ Under `runs/` it also leaves a pidfile, a log, a `<run-id>-trace` directory,
 and the usage and manifest files that `runs usage` and `runs series` read
 back.
 
-## Running lanes on a second machine
-
-A second machine can launch lanes against the same run store as the first.
-Set it up in this order.
-
-1. Clone the component repositories, as in section 2.
-2. Install cox, with the `postgres` extra so it can talk to a shared
-   Postgres: `pip install 'coxswain-tools[postgres]'`.
-3. Copy the routing profile from the first machine and adjust its paths.
-4. In the provider profile, set `storage_url` to the shared Postgres URL.
-   Without it each machine writes its own local SQLite store.
-5. Run `cox setup doctor` and check the `store` row. It shows the store's
-   kind and run count, for example `postgresql, 12 runs`. It fails with the
-   reason when the store does not answer, after at most 5 seconds for an
-   unreachable host. The row never shows the URL or its credentials.
-6. Launch as in section 8.
-
-The store lease enforces one live run per epic across machines, so a second
-machine cannot start an epic that the first is already running. Two things
-stay per machine for now (roadmap 0.18.0): traces, and the workspace. The
-workspace holds the work items and the task records under `runs/`. Land a
-lane from the machine that ran it. A lane started with `--on` is the one
-exception. Fetch it to the chair first, as described below.
-
-### Launch from the chair
-
-The chair can start a lane on a second machine and land it afterwards. The
-lane runs on the other machine. The chair alone lands.
-
-Name each lane host in the routing profile under `lane_hosts`. Each entry has
-three fields.
-
-```yaml
-lane_hosts:
-  - name: big
-    ssh: big.example.net
-    workspace_dir: /home/user/workspace
-```
-
-`name` is what you pass to `--host` and `--on`. `ssh` is the destination that
-ssh is given. `workspace_dir` is an absolute path to the workspace on that
-machine. The profile holds no keys or passwords. Your ssh config resolves the
-destination. An entry with any other key is refused.
-
-Check the host first with `cox setup doctor --host <name>`. It runs the doctor
-on that lane host. `--json` is ignored with `--host`.
-
-Launch with `cox route launch epic --initiative work/<id> --on <name>`. It
-copies `work/<id>` to `workspace_dir` on the host and keeps the same
-`work/<id>` layout. It then starts the lane there over ssh. On success it
-writes one file on the chair, `runs/<run>.remote.json`. That file holds the
-host name and the launch time. When the copy or the start fails, nothing is
-recorded.
-
-`cox runs land` refuses a run that has only that file. It tells you to fetch.
-Wait until the lane has ended. Its lease must be released and it must have an
-`ended_at`. A lane that has not ended is refused before anything is copied.
-Then run `cox runs fetch <run>`. It copies the run directory and the log into
-the chair's `runs/`. It fetches the `agents/<run>/*` branches into each chair
-repo. A fetch that brings no branch is an error. So is a run whose task
-records name no repo.
-
-The repo path rule decides which chair repo to fetch into. A task record may
-hold a host path or a chair path, because the lane writes the path it saw. A
-path under the host `workspace_dir` maps to the same relative path under the
-chair workspace. A path outside both workspaces is the same path on both
-machines. Matching is on a whole path component, so `/ws-other` is not under
-`/ws`.
-
-After the fetch, `cox runs land` works unchanged. Its flags and gates are the
-same as for a local run.
-
-```bash
-cox setup doctor --host big
-cox route launch epic --initiative work/my-epic --on big
-# wait for the lane to end, then bring it home
-cox runs fetch run-7
-cox runs land run-7 --repo ~/repos/app
-```
-
 ## 9. Edit your cartridge
 
-`cox setup` opens a menu; choose `edit cartridge`. It needs `root`,
-`team`, and `workspace` filled in first, because the probe that reads your
+`cox setup` opens a menu; choose `edit cartridge`. It needs `root` (the
+installs folder, `<home>/installs`), `team`, and `workspace` filled in first, because the probe that reads your
 cartridge builds its interpreter path from `root`.
 
 The screen lists one row per editable key of your RESOLVED cartridge: its
@@ -282,3 +221,38 @@ touches disk.
 
 Starting from no team cartridge at all? Run `cartridge init <team>` first
 (section 5).
+
+## Running lanes on a second machine
+
+A second machine can run lanes against the same run store as the first.
+In short:
+
+1. Install as in section 2, with the `postgres` extra:
+   `uv tool install --python 3.14 'coxswain[postgres]'`.
+2. Use the team's provider profile (section 4), with `storage_url` set to
+   the shared Postgres. Without it each machine writes its own local SQLite
+   store.
+3. Clone each repository your work targets at the same absolute path as on
+   the first machine.
+4. Run `cox setup doctor` and check the `store` row, for example
+   `postgresql, 12 runs`. The row never shows the URL or its credentials.
+   Then run `cox host beat <name>` there: the beat records the host's
+   workspace, which a launch on it needs.
+5. On the chair, add the host to the hosts table and check it over ssh:
+
+    ```bash
+    cox host add <name> --ssh <ssh destination> --capacity 2
+    cox host doctor <name>
+    ```
+
+6. Launch on it with `--on`, then fetch and land on the chair:
+
+    ```bash
+    cox route launch epic --initiative work/<id> --on <name>
+    cox runs fetch <run>
+    cox runs land <run> --repo <path>
+    ```
+
+The store lease allows one live run per epic across machines.
+[Several machines](https://ppfenning.github.io/coxswain/latest/customize/several-machines/)
+covers lane hosts, shared traces and landing from any machine in full.

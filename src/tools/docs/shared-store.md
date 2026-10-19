@@ -5,9 +5,9 @@ It is the default so that brew and CI installs stay light and non-interactive.
 The choice is recorded in settings, not in the brew formula, so changing it never means reinstalling.
 
 The other choice is shared. It keeps run records in Postgres and traces in an S3-compatible object store, which is Garage in the recipe below.
-You pick one with `cox setup --store files` or `cox setup --store shared`.
+You pick one with `cox setup store --store files` or `cox setup store --store shared`.
 You move between them later with `cox setup store switch files` or `cox setup store switch shared`.
-A Postgres store needs the extra: `pip install 'coxswain-tools[postgres]'`.
+A Postgres store needs the `postgres` extra on `cox`: `uv tool install --python 3.14 'coxswain[postgres]'`. Name every extra the machine uses, since a reinstall replaces them.
 
 ## Why choose shared on one machine
 
@@ -51,7 +51,7 @@ It leaves the source in place. Nothing is deleted or truncated in the store you 
 A repeated switch is safe. The copy never drops anything, so running a switch again after an interrupted one is safe, and a second complete run reports zero newly copied.
 If the store is already on the backend you name, the switch prints that there is nothing to do.
 
-The same choice is available when you first set up, through `cox setup --store files` and `cox setup --store shared`.
+The same choice is available when you first set up, through `cox setup store --store files` and `cox setup store --store shared`.
 
 ## Checking the choice with the setup doctor
 
@@ -146,5 +146,5 @@ docker compose exec garage /garage bucket allow --read --write --owner cox-trace
 ```
 
 `key create` prints a key id and a secret once. Export them as `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, the two names the profile points at.
-For `cox setup --store shared`, give setup the Postgres host, port and database from the compose file, the bucket `cox-traces`, the region `garage`, and the endpoint on the loopback address at port 3900.
+For `cox setup store --store shared`, give setup the Postgres host, port and database from the compose file, the bucket `cox-traces`, the region `garage`, and the endpoint on the loopback address at port 3900.
 Tell setup the names of the environment variables that hold the Postgres password and the S3 keys, not their values.
