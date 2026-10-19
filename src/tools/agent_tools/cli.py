@@ -6269,6 +6269,21 @@ def _migrate_profile_tracked(installs: Path, provider_profile: str | None) -> bo
     return {0: True, 1: False}.get(code)
 
 
+def _migrate_checkout_shallow(checkout: Path) -> bool:
+    """Edge. Whether git calls the checkout shallow; an absent checkout or a failed git call is False."""
+    argv = ["git", "-C", str(checkout), "rev-parse", "--is-shallow-repository"]
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True)
+    except OSError:
+        return False
+    return proc.returncode == 0 and proc.stdout.strip() == "true"
+
+
+def _migrate_harness_in_checkout(harness_dir: object, checkout: Path) -> bool:
+    """Whether the profile's harness_dir, tilde expanded, lies under the checkout path followed by a slash."""
+    return isinstance(harness_dir, str) and os.path.expanduser(harness_dir).startswith(f"{checkout}/")
+
+
 def _migrate_observe(locs, to: str | None = None) -> dict:
     """Edge. The host as the plain dict `setup_migrate.migrate_plan` takes. The remote is asked for a release tag
     only while the checkout is not yet the monorepo."""
@@ -6289,8 +6304,14 @@ def _migrate_observe(locs, to: str | None = None) -> dict:
     claude_on_path = shutil.which("claude") is not None
     bins = _migrate_install_bins()
     return {
-        "checkout": {"kind": kind, "monorepo": monorepo, "url": url,
-                     "dirty": kind == "dir" and bool(_checkout_facts(checkout).get("dirty"))},
+        "checkout": {
+            "kind": kind,
+            "monorepo": monorepo,
+            "url": url,
+            "dirty": kind == "dir" and bool(_checkout_facts(checkout).get("dirty")),
+            "shallow": kind == "dir" and _migrate_checkout_shallow(checkout),
+        },
+        "harness_in_checkout": _migrate_harness_in_checkout(profile.get("harness_dir"), checkout),
         "target_tag": None if monorepo else _migrate_target_tag(checkout, url, to),
         "components": components,
         "worktrees": {name: paths[1:] for name, paths in listed.items() if paths is not None},
@@ -6873,7 +6894,24 @@ def _setup_migrate(a: argparse.Namespace) -> int:
     taken: list = []
     runs_dir = _migrate_runs_dir(locs)
     holder = f"migrate@{socket.gethostname()}:{os.getpid()}"
+    # split_pre_lease is added by the sibling task in setup_migrate.py; until it lands the whole plan runs after the lease.
+    split = getattr(setup_migrate, "split_pre_lease", None)
+    pre_lease, rest = split(plan, observed.get("harness_in_checkout", False)) if split else ([], plan)
+
+    def run_steps(steps, first: int) -> int | None:
+        for number, step in enumerate(steps, first):
+            failure = _migrate_exec(step, locs)
+            if failure is not None:
+                print(f"FAILED step {number} {step['op']}: {failure}")
+                return 1
+        return None
+
     try:
+        if any(step["op"] == "run" for step in plan):
+            _load_lazy_modules()  # the reinstall replaces this tool's own environment, so import everything first
+        stopped = run_steps(pre_lease, 1)
+        if stopped is not None:
+            return stopped
         if _migrate_needs_preflight(plan, host_plan, a.hosts):
             leased = (*(n for n in setup_migrate.RETIRED if observed["components"].get(n) == "dir"), setup_migrate.UMBRELLA)
             taken = _migrate_acquire(runs_dir, [str(Path(locs.installs) / name) for name in leased], holder)
@@ -6888,13 +6926,9 @@ def _setup_migrate(a: argparse.Namespace) -> int:
                 state.mkdir(parents=True, exist_ok=True)
                 (state / "migrate.json").write_text(
                     json.dumps({"old_root": old_root, "new_root": locs.installs}), encoding="utf-8")
-        if any(step["op"] == "run" for step in plan):
-            _load_lazy_modules()  # the reinstall replaces this tool's own environment, so import everything first
-        for number, step in enumerate(plan, 1):
-            failure = _migrate_exec(step, locs)
-            if failure is not None:
-                print(f"FAILED step {number} {step['op']}: {failure}")
-                return 1
+        stopped = run_steps(rest, len(pre_lease) + 1)
+        if stopped is not None:
+            return stopped
         failed = 0
         if not a.hosts:
             print("hosts: not touched; rerun with --apply --hosts on the chair's machine")
