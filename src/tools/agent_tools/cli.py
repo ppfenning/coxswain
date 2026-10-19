@@ -7320,8 +7320,9 @@ def _upgrade(a: argparse.Namespace) -> int:
 def _schema_versions(harness_dir: str = "", provider_profile: str = "", skills_roots: list[str] | None = None
                       ) -> dict[str, str | None]:
     """The schema each of the three tools was built against, read from the
-    profile's (or `--root`'s) checkouts rather than imported, since graphs
-    and cartridges are not installed in this venv."""
+    profile's (or `--root`'s) checkouts first: on an unmigrated host graphs and
+    cartridges are not installed in this venv, and on a migrated one the
+    profile's checkout is the one the harness runs."""
     return {
         "cartridges": schema.cartridges_schema(provider_profile, skills_roots or []),
         "graphs": schema.graphs_schema(harness_dir),
