@@ -1,6 +1,6 @@
 # Vendor axis
 
-Status: design. Specifies the target shape only; no code in this repo implements it yet.
+Status: design, partly implemented. The runner contract in §1 is `runner/protocol.py` (`RunnerError`, `BudgetStop`, `LimitStop`, `NodeResult`), and `runner/` holds runners for Claude Code, the Anthropic API and OpenAI-compatible APIs. The later sections describe the target shape; read the code for what has landed.
 
 ## 1. The runner contract
 
