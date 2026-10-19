@@ -82,6 +82,16 @@ def plan(manifest: Mapping, facts: Mapping, options: Mapping) -> list[dict]:
     `path`. An unknown `--with` flag or an unsupported provider refuses the
     whole plan down to the one step naming why."""
     provider = options.get("provider")
+def _own_checkout_step(spec: Mapping, checkout: Mapping, channel: str) -> dict:
+    """The one checkout holds the manifest, so on the release channel a clean checkout already present is the
+    release, at a tag or not (a candidate commit): installed as is. Moving it is `cox upgrade`'s job."""
+    if channel == "release" and checkout.get("present") and not checkout.get("dirty") \
+            and not _at_pin(checkout, _pinned(spec, channel), channel):
+        at = checkout.get("tag") or "an untagged commit"
+        return {"kind": "skip", "component": CHECKOUT, "detail": f"present at {at}; installed as is (cox upgrade moves it)"}
+    return _checkout_step(CHECKOUT, spec, checkout, channel)
+
+
     providers = manifest.get("providers", {})
     status = providers.get(provider, {}).get("status")
     if status != "supported":
@@ -103,7 +113,8 @@ def plan(manifest: Mapping, facts: Mapping, options: Mapping) -> list[dict]:
     if refusal:
         return [refusal]
     empty_checkout = {"present": False, "tag": None, "dirty": False}
-    checkout_steps = [_checkout_step(name, spec, checkouts.get(name, empty_checkout), channel)
+    checkout_steps = [(_own_checkout_step(spec, checkouts.get(name, empty_checkout), channel) if name == CHECKOUT
+                       else _checkout_step(name, spec, checkouts.get(name, empty_checkout), channel))
                       if _pinned(spec, channel) else
                       {"kind": "skip", "component": name, "detail": "the manifest names no [coxswain] version"}
                       for name, spec in requested]

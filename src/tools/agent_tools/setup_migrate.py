@@ -51,6 +51,9 @@ Rules, in plan order:
 9. Each component checkout present at `<installs>/<name>` moves to `<installs>/.retired-<today>/<name>`, and its
    worktrees are repaired there. Nothing is deleted.
 
+A 0.47 install made with `cox install --root <X>` is migrated where it sits: `install_locations` makes `<X>` the
+installs folder, and no home record is written, since that install is not under the home.
+
 A host already in the monorepo layout plans one skip step, so a second run plans nothing. Every step is a dict
 with `op`, a one-sentence `why`, and the fields of its op.
 """
@@ -62,6 +65,7 @@ import posixpath
 import re
 import tomllib
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -285,9 +289,10 @@ def _setting_steps(
                 new=mapped,
             )
         )
+    # An install migrated where it sits outside the home (`cox install --root`) is not the home's, so no record.
     record = (
         []
-        if home_record == locs.home
+        if home_record == locs.home or not _under(locs.installs, locs.home)
         else [
             _step(
                 "rewrite_setting",
@@ -429,6 +434,23 @@ def _prints(workspace: Mapping[str, Any] | None, moved: Mapping[str, str], locs:
     path = workspace["path"]
     where = "under the workspaces folder" if path.startswith(locs.workspaces + "/") else "where it is registered"
     return [*notes, _step("print", f"The workspace stays {where} and is never moved.", item="workspace", path=path)]
+
+
+def profile_install_folder(harness_dir: Any, user_home: str) -> str | None:
+    """The folder the profile's `harness_dir` says holds the install: `<X>` for `<X>/coxswain-graphs` (the 0.47
+    layout) and for `<X>/coxswain/src/graphs` (the monorepo); None when it names neither."""
+    if not isinstance(harness_dir, str):
+        return None
+    path = _expand_all(harness_dir, user_home).rstrip("/")
+    suffixes = (f"/{GRAPHS}", f"/{UMBRELLA}/{SUBDIRS[GRAPHS]}")
+    return next((path[: -len(s)] for s in suffixes if path.endswith(s) and len(path) > len(s)), None)
+
+
+def install_locations(locs: Locations, folder: str | None, umbrella_present: bool) -> Locations:
+    """The locations the migration works in. A 0.47 install made with `cox install --root <X>` keeps its checkouts
+    under `<X>`, not the home: when the profile names such a folder and `<X>/coxswain` is there, the install is
+    migrated where it sits (`installs` becomes `<X>`). Anything else migrates the home's installs folder."""
+    return replace(locs, installs=folder) if folder and folder != locs.installs and umbrella_present else locs
 
 
 def migrate_plan(observed: dict[str, Any], locs: Locations, home_spellings: Sequence[str] = ()) -> list[Step]:

@@ -52,6 +52,12 @@ def test_the_checkout_comes_first_pinned_at_the_manifests_own_version():
     assert install.rows(_manifest(), _facts(at_pin))[0] == ("coxswain", "v0.1.0", "v0.1.0", "ok")
 
 
+def test_a_clean_checkout_off_its_pin_is_installed_as_is():
+    candidate = {"coxswain": {"present": True, "tag": None, "dirty": False}}
+    assert install.plan(_manifest(), _facts(candidate), _options())[0] == {
+        "kind": "skip", "component": "coxswain", "detail": "present at an untagged commit; installed as is (cox upgrade moves it)"}
+
+
 def test_fresh_root_clones_required_only():
     steps = install.plan(_manifest(), _facts(), _options())
     kinds = _kinds(steps)

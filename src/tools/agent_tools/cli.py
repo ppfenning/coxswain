@@ -16,6 +16,7 @@ import io
 import json
 import math
 import os
+import posixpath
 import re
 import secrets
 import shlex
@@ -6233,6 +6234,14 @@ def _migrate_target_tag(checkout: Path, url: str, to: str | None) -> str | None:
     return upgrade_exec.newest_release(_offered_tags(checkout, None if checkout.is_dir() else url))
 
 
+def _migrate_locations(locs):
+    """Edge. The locations the migration works in: the folder of a `cox install --root` install, read from the
+    profile's harness_dir and holding the umbrella checkout, else the home's (`setup_migrate.install_locations`)."""
+    folder = setup_migrate.profile_install_folder(_migrate_profile(locs).get("harness_dir"), posixpath.dirname(locs.config))
+    present = bool(folder) and Path(folder, setup_migrate.UMBRELLA).is_dir()
+    return setup_migrate.install_locations(locs, folder, present)
+
+
 def _migrate_observe(locs, to: str | None = None) -> dict:
     """Edge. The host as the plain dict `setup_migrate.migrate_plan` takes. The remote is asked for a release tag
     only while the checkout is not yet the monorepo."""
@@ -6787,6 +6796,7 @@ def _setup_migrate(a: argparse.Namespace) -> int:
     if a.old_root and not a.finish:
         print("refusing: --old-root belongs to --finish; pass --finish or drop --old-root")
         return 2
+    locs = _migrate_locations(locs)
     if a.finish:
         return _migrate_finish(a, locs)
     observed = _migrate_observe(locs, getattr(a, "to", None))

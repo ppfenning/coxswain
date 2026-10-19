@@ -145,6 +145,26 @@ def test_the_047_layout_plans_every_rule_in_order():
     ]
 
 
+@pytest.mark.parametrize(("harness_dir", "folder"), [
+    ("/r/coxswain-graphs", "/r"), ("/r/coxswain/src/graphs/", "/r"), ("~/r/coxswain-graphs", "/u/r"), ("/r/graphs", None)])
+def test_the_profile_harness_dir_names_the_install_folder(harness_dir, folder):
+    assert setup_migrate.profile_install_folder(harness_dir, "/u") == folder
+
+
+def test_a_root_install_migrates_where_it_sits_only_when_its_umbrella_is_there():
+    assert setup_migrate.install_locations(LOCS, "/r", umbrella_present=True).installs == "/r"
+    assert setup_migrate.install_locations(LOCS, "/r", umbrella_present=False) == LOCS
+
+
+def test_a_root_install_retires_beside_itself_and_writes_no_home_record():
+    locs = replace(LOCS, installs="/r")
+    settings = {"harness_dir": "/r/coxswain-graphs", "umbrella_dir": "/r/coxswain"}
+    steps = migrate_plan(layout_047(checkout={"kind": "dir", "monorepo": True}, home_record=None, settings=settings,
+                                    cartridge_links={}), locs)
+    assert ("rewrite_profile_key", "harness_dir") in ops(steps) and ("move", "/r/coxswain-tools") in ops(steps)
+    assert not [s for s in steps if s["op"] in ("rewrite_setting", "checkout", "refuse")]
+
+
 def test_a_second_run_over_the_result_plans_one_skip():
     assert [s["op"] for s in migrate_plan(migrated(), LOCS)] == ["skip"]
 
@@ -531,7 +551,7 @@ def test_module_imports_only_standard_library_and_home():
         if isinstance(node, (ast.Import, ast.ImportFrom))
         for alias in (node.names if isinstance(node, ast.Import) else [None])
     }
-    assert imported <= {"__future__", "collections", "json", "pathlib", "posixpath", "re", "tomllib", "typing", "agent_tools"}
+    assert imported <= {"__future__", "collections", "dataclasses", "json", "pathlib", "posixpath", "re", "tomllib", "typing", "agent_tools"}
     assert "agent_tools.home" in {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
 
 
