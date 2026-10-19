@@ -164,6 +164,29 @@ def test_first_cut_of_the_declared_version_tags_the_repository_with_no_bump():
                         "heading": None}
 
 
+def test_a_changed_index_at_the_declared_version_is_committed_and_landed_before_the_tag():
+    steps = release.release_plan(_manifest(), V0, _no_tags(_manifest()), index_changed=True)
+    kinds = _kinds(steps)
+    assert kinds[kinds.index("notes") + 1:kinds.index("tag_self")] == [
+        "commit_index", "push", "pr_create", "wait_checks", "merge"]
+    commit = steps[kinds.index("commit_index")]
+    assert commit == {"kind": "commit_index", "component": "coxswain", "branch": f"release/{V0}",
+                      "commit_subject": f"release: land the {V0} releases index",
+                      "paths": ["docs/releases/index.md"]}
+    assert steps[kinds.index("push")]["branch"] == f"release/{V0}"
+    assert steps[kinds.index("pr_create")]["body"] == release.pr_footer(V0)
+
+
+def test_an_unchanged_index_at_the_declared_version_plans_no_commit():
+    steps = release.release_plan(_manifest(), V0, _no_tags(_manifest()), index_changed=False)
+    assert _kinds(steps) == ["pinned", "notes", "tag_self", "wait_workflows", "github_release", "tap_formula_pr"]
+
+
+def test_a_bump_plan_ignores_index_changed():
+    assert (release.release_plan(_manifest(), V1, _no_tags(_manifest()), index_changed=True)
+            == release.release_plan(_manifest(), V1, _no_tags(_manifest())))
+
+
 def test_a_later_version_bumps_pyproject_and_manifest_on_a_release_branch_and_lands_it_before_the_tag():
     steps = release.release_plan(_manifest(), V1, _no_tags(_manifest()))
     assert _kinds(steps) == ["pinned", "notes", "bump_version", "push", "pr_create", "wait_checks", "merge",

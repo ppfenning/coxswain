@@ -295,7 +295,7 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
                   repository_url: str | None = None,
                   tap_state: str = "clean",
                   cargo_versions: Mapping[str, str | None] | None = None,
-                  *, tap_only: bool = False) -> list[dict]:
+                  *, tap_only: bool = False, index_changed: bool = False) -> list[dict]:
     """Steps in order:
 
     1. per `[components]` entry (only dash): `pinned` when `pinned_commits` shows no commits since its manifest
@@ -305,7 +305,10 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
     3. when `version` is above the manifest's: `bump_version` (root pyproject.toml, uv.lock and manifest.toml,
        with the tag of each component tagged above) on `release/<version>`, then `push`, `pr_create`,
        `wait_checks`, `merge`. Equal to the manifest's, it is the first cut of a version already declared:
-       nothing to bump;
+       nothing to bump, unless `index_changed` (the caller found that rendering `docs/releases/index.md` for
+       `version` differs from the file on disk): then `commit_index` (that file, on `release/<version>`) in
+       the bump's place, landed by the same `push`, `pr_create`, `wait_checks`, `merge`. A plan with a
+       bump ignores `index_changed`: the bump commit already carries the rewritten index;
     4. `tag_self` `v<version>` on the repository, `wait_workflows` (the tag push publishes `coxswain` to
        PyPI), `github_release` with the notes page;
     5. `tap_formula_pr`, every release, or a `refuse` naming the tap when `tap_state` (`clean`, `dirty`,
@@ -361,7 +364,12 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
     bump_step = {"kind": "bump_version", "component": UMBRELLA, "from": current, "to": version,
                  "branch": branch, "commit_subject": f"release: bump to {version} to match the tag"}
     body = f"Bumps pyproject.toml and manifest.toml to {version} to match tag {new_tag}.\n\n{pr_footer(version)}"
-    bump = [] if current_key is not None and release_key(version) == current_key else _bump_and_land(bump_step, branch, body)
+    at_current = current_key is not None and release_key(version) == current_key
+    index_step = {"kind": "commit_index", "component": UMBRELLA, "branch": branch,
+                  "commit_subject": f"release: land the {version} releases index",
+                  "paths": ["docs/releases/index.md"]}
+    bump = (_bump_and_land(index_step, branch, pr_footer(version)) if at_current and index_changed else
+            [] if at_current else _bump_and_land(bump_step, branch, body))
     release_steps = [{"kind": "tag_self", "component": UMBRELLA, "tag": new_tag},
                      {"kind": "github_release", "component": UMBRELLA, "repo": umbrella_slug, "tag": new_tag,
                       "title": f"coxswain {version}", "notes_path": notes_path, "heading": None}]
