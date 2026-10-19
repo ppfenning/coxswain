@@ -6644,14 +6644,30 @@ def _migrate_acquire(runs_dir: Path, paths, holder: str) -> list:
     return taken
 
 
+def _release_lines(outcomes) -> list[str]:
+    """Pure. Stands in for `setup_migrate.release_lines` until that lands: one line per outcome not released."""
+    return [f"migrate: could not release the lease on {path}: {detail}" for path, released, detail in outcomes if not released]
+
+
 def _migrate_release(runs_dir: Path, taken, holder: str) -> None:
     """Edge. Releases every granted lease; one failed release does not stop the rest."""
+    # The release spawns the interpreter the profile names now; the one cached at acquire time may have been moved.
+    run_store._harness_python_for.cache_clear()
+    outcomes = []
     for outcome, epoch in taken:
         if outcome.granted and epoch is not None:
             try:
-                land_repo_lease.release(runs_dir, outcome.path, holder, epoch)
+                result = land_repo_lease.release(runs_dir, outcome.path, holder, epoch)
             except Exception as exc:  # the lease expires on its ttl, and the other releases still matter
-                print(f"migrate: could not release the lease on {outcome.path}: {exc}")
+                outcomes.append((outcome.path, False, str(exc)))
+                continue
+            if isinstance(result, (store_cli.LeaseGranted, store_cli.LeaseReleased)):
+                outcomes.append((outcome.path, True, ""))
+            else:
+                detail = getattr(result, "detail", None) or getattr(result, "reason", None) or type(result).__name__
+                outcomes.append((outcome.path, False, str(detail)))
+    for line in _release_lines(outcomes):
+        print(line)
 
 
 def _migrate_read_holders(runs_dir: Path, hostname: str) -> tuple:
