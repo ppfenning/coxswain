@@ -211,7 +211,7 @@ def test_extra_entries_extend_the_list_without_replacing_it() -> None:
     assert hits == ["harness/cli.py", "ops/runbook.md"]
 
 
-# ── the monorepo layout is guarded, one test per rule ────────────────────────
+# ── the monorepo layout: the same scope as each component checkout had ──────
 
 
 def test_a_monorepo_cartridge_is_guarded() -> None:
@@ -236,15 +236,27 @@ def test_the_monorepo_harness_is_guarded() -> None:
     assert governance_hits(["src/graphs/harness/escalate.py"], ledger_path=ELSEWHERE) == ["src/graphs/harness/escalate.py"]
 
 
+def test_the_monorepo_router_is_not_governance() -> None:
+    assert governance_hits(["src/cartridges/core/router.py"], ledger_path=ELSEWHERE) == []
+
+
+def test_the_monorepo_cartridges_tests_are_not_governance() -> None:
+    assert governance_hits(["src/cartridges/tests/test_router.py"], ledger_path=ELSEWHERE) == []
+
+
+def test_the_monorepo_cartridges_docs_are_not_governance() -> None:
+    assert governance_hits(["src/cartridges/docs/policy.md"], ledger_path=ELSEWHERE) == []
+
+
+def test_a_monorepo_tools_file_is_not_governance() -> None:
+    assert governance_hits(["src/tools/agent_tools/route.py"], ledger_path=ELSEWHERE) == []
+
+
 def test_a_monorepo_patch_to_the_harness_escalates(cart) -> None:
     patch = GOVERNANCE_PATCH.replace("harness/gate.py", "src/graphs/harness/gate.py")
     out, hits = escalate_self_modification([build_proposal()], patch=patch, cartridge=cart, ledger_path=ELSEWHERE)
     assert hits == ["src/graphs/harness/gate.py"]
     assert out[0]["kind"] == "self_modification"
-
-
-def test_a_monorepo_tools_file_is_not_governance() -> None:
-    assert governance_hits(["src/tools/agent_tools/route.py"], ledger_path=ELSEWHERE) == []
 
 
 # ── escalate_self_modification ───────────────────────────────────────────────
