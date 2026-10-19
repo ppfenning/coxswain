@@ -99,6 +99,7 @@ OPS = frozenset(
     {
         "checkout",
         "move",
+        "copy",
         "symlink",
         "rewrite_setting",
         "rewrite_profile_key",
@@ -251,6 +252,33 @@ def _remap_repo_map(
     return {key: new_for.get(value, value) if isinstance(value, str) else value for key, value in repo_map.items()}
 
 
+def _key_steps(
+    key: str, value: Any, pairs: tuple[tuple[str, str], ...], locs: Locations, tracked: bool | None
+) -> list[Step]:
+    """The steps for one profile key. A `provider_profile` under the cartridges install folder follows `tracked`:
+    True maps into the checkout, False is copied to <home>/providers first, None is left for the operator."""
+    expanded = _expand_all(value, posixpath.dirname(locs.config))
+    cartridges = posixpath.join(locs.installs, CARTRIDGES)
+    if key == "provider_profile" and isinstance(expanded, str) and _under(expanded, cartridges) and tracked is not True:
+        if tracked is False:
+            dst = posixpath.join(locs.home, "providers", posixpath.basename(expanded))
+            return [
+                _step("copy", "The provider profile is not in the cartridges checkout; keep a copy.", src=expanded, dst=dst),
+                _step("rewrite_profile_key", "provider_profile must follow its copy.", key=key, old=value, new=dst),
+            ]
+        return [
+            _step(
+                "print",
+                f"provider_profile {expanded} was not checked against the cartridges checkout; move it by hand.",
+                item=key,
+            )
+        ]
+    new = _remap(expanded, pairs)
+    if new == expanded:
+        return []
+    return [_step("rewrite_profile_key", f"{key} still points into a component checkout.", key=key, old=value, new=new)]
+
+
 def _setting_steps(
     settings: Mapping[str, Any],
     home_record: str | None,
@@ -258,23 +286,17 @@ def _setting_steps(
     checkout: str,
     retired: tuple[tuple[str, str], ...],
     home_spellings: Sequence[str] = (),
+    profile_tracked: bool | None = None,
 ) -> list[Step]:
     """Profile keys under a component checkout move into the checkout; `umbrella_dir` names the checkout; a
     `repo_map` value naming a retired checkout follows it; the home record names the home."""
     user_home = posixpath.dirname(locs.config)
     pairs = tuple((posixpath.join(locs.installs, name), posixpath.join(checkout, SUBDIRS[name])) for name in RETIRED)
     keys = [
-        _step(
-            "rewrite_profile_key",
-            f"{key} still points into a component checkout.",
-            key=key,
-            old=settings[key],
-            new=new,
-        )
+        step
         for key in SETTING_KEYS
-        if key != "umbrella_dir"
-        and key in settings
-        and (new := _remap(expanded := _expand_all(settings[key], user_home), pairs)) != expanded
+        if key != "umbrella_dir" and key in settings
+        for step in _key_steps(key, settings[key], pairs, locs, profile_tracked)
     ]
     umbrella = settings.get("umbrella_dir")
     if _expand_all(umbrella, user_home) != checkout:
@@ -472,7 +494,7 @@ def migrate_plan(observed: dict[str, Any], locs: Locations, home_spellings: Sequ
     rest = [
         *_setting_steps(
             observed.get("settings", {}), observed.get("home_record"), locs, paths.checkout, tuple(moved.items()),
-            home_spellings,
+            home_spellings, observed.get("provider_profile_tracked"),
         ),
         *_link_steps(observed["cartridge_links"], locs),
         *market_runs,
@@ -553,7 +575,7 @@ def _detail(step: Step) -> str:
     op = step["op"]
     if op == "checkout":
         return f"{step['path']} at {step['tag']}"
-    if op == "move":
+    if op in ("move", "copy"):
         return f"{step['src']} -> {step['dst']}"
     if op == "symlink":
         return f"{step['path']} -> {step['target']}"

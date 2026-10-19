@@ -13,6 +13,7 @@ from agent_tools.setup_migrate_hosts import ObservedHost
 
 ORIGINAL_OBSERVE_HOSTS = cli._migrate_observe_hosts
 ORIGINAL_TOOL_DIR = cli._migrate_tool_dir
+ORIGINAL_OBSERVE = cli._migrate_observe
 NAMES = ("coxswain-cartridges", "coxswain-graphs", "coxswain-tools")
 TAG = "v2026.10.0"
 
@@ -115,6 +116,11 @@ def layout(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.run_store, "hosts", lambda runs_dir: [])
     monkeypatch.setattr(cli.chair_read_lease, "read_lease", lambda runs_dir, now: dict(chair_read_lease.ABSENT))
     monkeypatch.setattr(cli.socket, "gethostname", lambda: "here")
+    # The fixture's profile lives in a tracked cartridges checkout. The real observer fills this fact in a sibling
+    # task; until then the fixture states it, so the planner maps the profile into the checkout instead of printing.
+    monkeypatch.setattr(
+        cli, "_migrate_observe", lambda locs, to=None: {**ORIGINAL_OBSERVE(locs, to), "provider_profile_tracked": True}
+    )
     monkeypatch.setattr(cli, "_migrate_beat", lambda locs: "beat: ok")  # never beat the real machine
     monkeypatch.setattr(cli, "_migrate_operator_files", lambda locs: {})
     return types_ns(
@@ -232,6 +238,53 @@ def test_move_onto_an_existing_destination_fails_without_touching_the_source(tmp
     reason = cli._migrate_exec({"op": "move", "src": str(src), "dst": str(dst), "why": "x"}, None)
     assert reason is not None and "already exists" in reason
     assert (src / "keep").is_dir()
+
+
+def test_copy_creates_an_absent_destination_and_its_parents(tmp_path):
+    src, dst = tmp_path / "src.yaml", tmp_path / "deep" / "er" / "dst.yaml"
+    src.write_bytes(b"tier: 1\n")
+    assert cli._migrate_exec({"op": "copy", "src": str(src), "dst": str(dst)}, None) is None
+    assert dst.read_bytes() == b"tier: 1\n"
+
+
+def test_copy_onto_identical_bytes_does_nothing(tmp_path):
+    src, dst = tmp_path / "src.yaml", tmp_path / "dst.yaml"
+    src.write_bytes(b"tier: 1\n")
+    dst.write_bytes(b"tier: 1\n")
+    assert cli._migrate_exec({"op": "copy", "src": str(src), "dst": str(dst)}, None) is None
+    assert dst.read_bytes() == b"tier: 1\n"
+
+
+def test_copy_onto_different_bytes_fails_and_leaves_the_destination(tmp_path):
+    src, dst = tmp_path / "src.yaml", tmp_path / "dst.yaml"
+    src.write_bytes(b"tier: 1\n")
+    dst.write_bytes(b"tier: 2\n")
+    reason = cli._migrate_exec({"op": "copy", "src": str(src), "dst": str(dst)}, None)
+    assert reason == f"{dst} already exists and differs from {src}; nothing was copied"
+    assert dst.read_bytes() == b"tier: 2\n"
+
+
+def test_profile_tracked_is_none_outside_the_cartridges_checkout(tmp_path):
+    assert cli._migrate_profile_tracked(tmp_path, str(tmp_path / "elsewhere" / "p.yaml")) is None
+    assert cli._migrate_profile_tracked(tmp_path, None) is None
+
+
+def test_profile_tracked_follows_git_ls_files(layout):
+    checkout = layout.installs / "coxswain-cartridges"
+    tracked, untracked = checkout / "providers" / "a.yaml", checkout / "providers" / "b.yaml"
+    tracked.parent.mkdir(parents=True)
+    tracked.write_text("a: 1\n")
+    untracked.write_text("b: 1\n")
+    git("add", "providers/a.yaml", cwd=checkout)
+    assert cli._migrate_profile_tracked(layout.installs, str(tracked)) is True
+    assert cli._migrate_profile_tracked(layout.installs, str(untracked)) is False
+
+
+def test_profile_tracked_is_none_when_the_checkout_is_not_a_repository(tmp_path):
+    profile = tmp_path / "coxswain-cartridges" / "providers" / "a.yaml"
+    profile.parent.mkdir(parents=True)
+    profile.write_text("a: 1\n")
+    assert cli._migrate_profile_tracked(tmp_path, str(profile)) is None
 
 
 def test_rerun_after_a_stop_resumes_from_the_remaining_steps(layout, capsys):

@@ -6251,6 +6251,24 @@ def _migrate_venv_current(checkout: Path) -> bool:
         return False
 
 
+def _migrate_profile_tracked(installs: Path, provider_profile: str | None) -> bool | None:
+    """Edge. Whether git tracks the provider profile in the cartridges checkout: True when `git ls-files
+    --error-unmatch` exits 0, False when it exits 1 (untracked), None when the profile is outside that checkout or git
+    cannot answer (missing, not a repository, timeout)."""
+    if not provider_profile:
+        return None
+    checkout = installs / "coxswain-cartridges"
+    path = Path(provider_profile).expanduser()
+    if not path.is_relative_to(checkout):
+        return None
+    argv = ["git", "-C", str(checkout), "ls-files", "--error-unmatch", str(path.relative_to(checkout))]
+    try:
+        code = subprocess.run(argv, capture_output=True, text=True, timeout=10).returncode
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return {0: True, 1: False}.get(code)
+
+
 def _migrate_observe(locs, to: str | None = None) -> dict:
     """Edge. The host as the plain dict `setup_migrate.migrate_plan` takes. The remote is asked for a release tag
     only while the checkout is not yet the monorepo."""
@@ -6286,6 +6304,7 @@ def _migrate_observe(locs, to: str | None = None) -> dict:
         "chair_active": bool(drop_ins) and _migrate_chair_active(),
         "settings": {key: profile[key] for key in (*setup_migrate.SETTING_KEYS, setup_migrate.REPO_MAP_KEY) if key in profile},
         "home_record": record.strip() if record and record.strip() else None,
+        "provider_profile_tracked": _migrate_profile_tracked(installs, profile.get("provider_profile")),
         "today": datetime.datetime.now(datetime.UTC).date().isoformat(),
         **({"install_bins": bins} if bins is not None else {}),
         **({"cartridge_links": links} if links is not None else {}),
@@ -6330,6 +6349,22 @@ def _migrate_move(step: dict) -> str | None:
     except OSError as exc:
         return f"cannot move {src} to {dst}: {exc}"
     print(f"move {src} -> {dst}")
+    return None
+
+
+def _migrate_copy(step: dict) -> str | None:
+    src, dst = Path(step["src"]), Path(step["dst"])
+    if dst.exists():
+        if dst.read_bytes() == src.read_bytes():
+            print(f"nothing to do: {dst} already holds the bytes of {src}")
+            return None
+        return f"{dst} already exists and differs from {src}; nothing was copied"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.copyfile(src, dst)
+    except OSError as exc:
+        return f"cannot copy {src} to {dst}: {exc}"
+    print(f"copy {src} -> {dst}")
     return None
 
 
@@ -6416,6 +6451,8 @@ def _migrate_exec(step: dict, locs) -> str | None:
     op = step["op"]
     if op == "move":
         return _migrate_move(step)
+    if op == "copy":
+        return _migrate_copy(step)
     if op == "symlink":
         return _migrate_link(step)
     if op == "rewrite_profile_key":
