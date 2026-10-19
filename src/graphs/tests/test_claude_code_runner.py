@@ -118,9 +118,6 @@ ENVIRON = {"SHELL": "/usr/bin/zsh", "PATH": "p"}
 def test_child_env_sets_shell_to_bash_and_keeps_the_rest() -> None:
     assert child_env(ENVIRON, "/bin/bash") == {"SHELL": "/bin/bash", "PATH": "p"}
     assert ENVIRON == {"SHELL": "/usr/bin/zsh", "PATH": "p"}
-
-
-def test_child_env_without_bash_returns_the_environ_unchanged() -> None:
     assert child_env(ENVIRON, None) == {"SHELL": "/usr/bin/zsh", "PATH": "p"}
 
 
@@ -134,57 +131,50 @@ def test_the_child_sees_bash_as_its_shell(fake_claude, tmp_path, monkeypatch) ->
 # ── the invocation ───────────────────────────────────────────────────────────
 
 
-def test_tier_becomes_model_and_effort(fake_claude, tmp_path) -> None:
+def test_the_invocation_carries_the_tier_the_prompt_the_schema_and_an_isolated_session(fake_claude, tmp_path) -> None:
+    """Measured: ~52k input tokens per node with the login's MCP schemas loaded, ~1k without."""
     runner = runner_for(fake_claude, tmp_path)
-    runner.run(role="plan", tier="deep", schema=SCHEMA, prompt="go")
-    argv = recorded(fake_claude)["argv"]
+    runner.run(role="plan", tier="deep", schema=SCHEMA, prompt="the prompt, verbatim")
+    rec = recorded(fake_claude)
+    argv = rec["argv"]
     assert argv[argv.index("--model") + 1] == "opus"
     assert argv[argv.index("--effort") + 1] == "xhigh"
     assert "-p" in argv and "--no-session-persistence" in argv
     assert argv[argv.index("--output-format") + 1] == "json"
+    assert rec["stdin"] == "the prompt, verbatim"
+    assert json.loads(argv[argv.index("--json-schema") + 1]) == SCHEMA
+    assert "--strict-mcp-config" in argv
+    assert json.loads(argv[argv.index("--mcp-config") + 1]) == {"mcpServers": {}}
+    assert argv[argv.index("--setting-sources") + 1] == ""
 
 
-def test_a_task_kwarg_is_stamped_onto_the_call_as_task_id(fake_claude, tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("role", "tools_after_flag", "permission_mode"),
+    [
+        pytest.param("plan", [""], None, id="no-grant-no-tools"),
+        pytest.param("build", ["Read", "Grep", "Glob"], None, id="read-only-grant-needs-no-permission-mode"),
+        pytest.param("work_item_arm", None, "acceptEdits", id="write-tools-accept-edits"),
+    ],
+)
+def test_a_role_gets_its_granted_tools_last_and_edits_accepted_only_for_write_tools(
+    fake_claude, tmp_path, role, tools_after_flag, permission_mode
+) -> None:
+    runner_for(fake_claude, tmp_path).run(role=role, schema=SCHEMA, prompt="go")
+    argv = recorded(fake_claude)["argv"]
+    if tools_after_flag is not None:
+        assert argv[argv.index("--tools") + 1 :] == tools_after_flag
+    if permission_mode is None:
+        assert "--permission-mode" not in argv
+    else:
+        assert argv[argv.index("--permission-mode") + 1] == permission_mode
+
+
+def test_a_task_kwarg_is_stamped_onto_the_call_as_task_id_and_none_without_one(fake_claude, tmp_path) -> None:
     runner = runner_for(fake_claude, tmp_path)
     runner.run(role="build", schema=SCHEMA, prompt="go", task="t1-probe")
     assert runner.calls[-1]["task_id"] == "t1-probe"
-
-
-def test_no_task_kwarg_stamps_task_id_none(fake_claude, tmp_path) -> None:
-    runner = runner_for(fake_claude, tmp_path)
     runner.run(role="build", schema=SCHEMA, prompt="go")
     assert runner.calls[-1]["task_id"] is None
-
-
-def test_the_prompt_travels_on_stdin_and_the_schema_on_argv(fake_claude, tmp_path) -> None:
-    runner = runner_for(fake_claude, tmp_path)
-    runner.run(role="plan", schema=SCHEMA, prompt="the prompt, verbatim")
-    rec = recorded(fake_claude)
-    assert rec["stdin"] == "the prompt, verbatim"
-    assert json.loads(rec["argv"][rec["argv"].index("--json-schema") + 1]) == SCHEMA
-
-
-def test_a_role_without_a_grant_gets_no_tools(fake_claude, tmp_path) -> None:
-    runner = runner_for(fake_claude, tmp_path)
-    runner.run(role="plan", schema=SCHEMA, prompt="go")
-    argv = recorded(fake_claude)["argv"]
-    assert argv[-2:] == ["--tools", ""], "an ungranted role runs with no tools, like the API runner"
-    assert "--permission-mode" not in argv
-
-
-def test_a_granted_role_gets_exactly_its_tools_last(fake_claude, tmp_path) -> None:
-    runner = runner_for(fake_claude, tmp_path)
-    runner.run(role="build", schema=SCHEMA, prompt="go")
-    argv = recorded(fake_claude)["argv"]
-    assert argv[argv.index("--tools") + 1 :] == ["Read", "Grep", "Glob"]
-    assert "--permission-mode" not in argv, "read-only tools need nothing accepted up front"
-
-
-def test_an_arm_with_write_tools_has_edits_accepted(fake_claude, tmp_path) -> None:
-    runner = runner_for(fake_claude, tmp_path)
-    runner.run(role="work_item_arm", schema=SCHEMA, prompt="go")
-    argv = recorded(fake_claude)["argv"]
-    assert argv[argv.index("--permission-mode") + 1] == "acceptEdits"
 
 
 def test_the_skill_body_and_context_lead_the_system_prompt(fake_claude, tmp_path) -> None:
@@ -201,6 +191,7 @@ def test_the_skill_body_and_context_lead_the_system_prompt(fake_claude, tmp_path
 
 
 def test_repo_dir_is_added_and_named(fake_claude, tmp_path) -> None:
+    """Handoff once quarantined every task for 'no changes present in the repo'."""
     repo = tmp_path / "repo"
     repo.mkdir()
     runner = runner_for(fake_claude, tmp_path, repo_dir=repo)
@@ -208,6 +199,9 @@ def test_repo_dir_is_added_and_named(fake_claude, tmp_path) -> None:
     argv = recorded(fake_claude)["argv"]
     assert argv[argv.index("--add-dir") + 1] == str(repo.resolve())
     assert str(repo.resolve()) in argv[argv.index("--system-prompt") + 1]
+    runner.run(role="handoff", schema=SCHEMA, prompt="go")
+    system = recorded(fake_claude)["argv"]
+    assert "NOT applied in that checkout" in system[system.index("--system-prompt") + 1]
 
 
 def test_repo_dir_is_a_plain_attribute_the_driver_may_move(fake_claude, tmp_path) -> None:
@@ -231,41 +225,50 @@ def test_a_missing_context_pack_is_named(fake_claude, tmp_path) -> None:
 # ── what comes back ──────────────────────────────────────────────────────────
 
 
-def test_structured_output_is_the_result(fake_claude, tmp_path) -> None:
+def test_structured_output_is_the_result_and_result_text_is_the_fallback(fake_claude, tmp_path) -> None:
+    _, _, set_output = fake_claude
     runner = runner_for(fake_claude, tmp_path)
     assert dict(runner.run(role="plan", schema=SCHEMA, prompt="go")) == {"ok": True}
     assert runner.calls[-1]["model"] == "sonnet" and runner.calls[-1]["cost_usd"] == 0.01
-
-
-def test_result_text_is_the_fallback_when_no_structured_output(fake_claude, tmp_path) -> None:
-    _, _, set_output = fake_claude
     set_output({"is_error": False, "structured_output": None, "result": json.dumps({"ok": False})})
-    runner = runner_for(fake_claude, tmp_path)
     assert dict(runner.run(role="plan", schema=SCHEMA, prompt="go")) == {"ok": False}
 
 
-def test_claude_error_is_a_runner_error_carrying_the_reason(fake_claude, tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("payload", "reason"),
+    [
+        pytest.param({"is_error": False, "structured_output": [1, 2, 3]}, "expected an object", id="non-object"),
+        pytest.param(
+            {"is_error": False, "structured_output": None, "result": "I could not decide."}, "not JSON", id="prose"
+        ),
+    ],
+)
+def test_an_answer_that_is_not_a_json_object_is_refused(fake_claude, tmp_path, payload, reason) -> None:
     _, _, set_output = fake_claude
-    set_output({"is_error": True, "result": "Not logged in · Please run /login"})
-    runner = runner_for(fake_claude, tmp_path)
-    with pytest.raises(RunnerError, match="Not logged in"):
-        runner.run(role="plan", schema=SCHEMA, prompt="go")
+    set_output(payload)
+    with pytest.raises(RunnerError, match=reason):
+        runner_for(fake_claude, tmp_path).run(role="plan", schema=SCHEMA, prompt="go")
 
 
-def test_a_non_object_answer_is_refused(fake_claude, tmp_path) -> None:
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param({"is_error": True, "result": "Not logged in · Please run /login"}, id="reason"),
+        pytest.param({"is_error": True, "subtype": "error_max_turns", "result": None, "num_turns": 40}, id="subtype"),
+    ],
+)
+def test_a_claude_error_is_a_plain_runner_error_carrying_its_cause_and_records_no_decision(
+    fake_claude, tmp_path, payload
+) -> None:
     _, _, set_output = fake_claude
-    set_output({"is_error": False, "structured_output": [1, 2, 3]})
+    set_output(payload)
     runner = runner_for(fake_claude, tmp_path)
-    with pytest.raises(RunnerError, match="expected an object"):
-        runner.run(role="plan", schema=SCHEMA, prompt="go")
-
-
-def test_prose_with_no_structured_output_is_refused(fake_claude, tmp_path) -> None:
-    _, _, set_output = fake_claude
-    set_output({"is_error": False, "structured_output": None, "result": "I could not decide."})
-    runner = runner_for(fake_claude, tmp_path)
-    with pytest.raises(RunnerError, match="not JSON"):
-        runner.run(role="plan", schema=SCHEMA, prompt="go")
+    cause = payload.get("subtype") or "Not logged in"
+    with pytest.raises(RunnerError, match=cause) as exc_info:
+        runner.run(role="build", schema=SCHEMA, prompt="go")
+    assert not isinstance(exc_info.value, LimitStop)
+    assert "failed in claude" in str(exc_info.value)
+    assert all("decision" not in call for call in runner.calls)
 
 
 def test_an_unknown_tier_is_named(fake_claude, tmp_path) -> None:
@@ -285,13 +288,9 @@ def test_a_profile_without_tiers_is_refused() -> None:
         ClaudeCodeRunner({"runner": "claude-code"})
 
 
-def test_the_runner_declares_the_full_capability_set() -> None:
-    runner = ClaudeCodeRunner(PROFILE)
-    assert set(runner.capabilities) == {c.value for c in Capability}
-    assert runner.capabilities["resume"] is True
-
-
-def test_a_role_needing_resume_resolves_on_claude_code_with_no_fallback() -> None:
+def test_the_runner_declares_the_full_capability_set_so_a_resume_role_resolves_with_no_fallback() -> None:
+    assert set(ClaudeCodeRunner(PROFILE).capabilities) == {c.value for c in Capability}
+    assert ClaudeCodeRunner(PROFILE).capabilities["resume"] is True
     profile = ProviderProfile(capabilities=ClaudeCodeRunner(PROFILE).capabilities, tiers=PROFILE["tiers"])
     resolved, fallback = resolve_profile(profile, role="build", tier="cheap", required=[Capability.RESUME])
     assert resolved is profile
@@ -315,16 +314,6 @@ def test_build_runner_picks_this_runner_from_the_profile(tmp_path) -> None:
 # ── isolation and cost ───────────────────────────────────────────────────────
 
 
-def test_every_session_starts_with_no_mcp_servers_and_no_user_settings(fake_claude, tmp_path) -> None:
-    """Measured: ~52k input tokens per node with the login's MCP schemas loaded, ~1k without."""
-    runner = runner_for(fake_claude, tmp_path)
-    runner.run(role="plan", schema=SCHEMA, prompt="go")
-    argv = recorded(fake_claude)["argv"]
-    assert "--strict-mcp-config" in argv
-    assert json.loads(argv[argv.index("--mcp-config") + 1]) == {"mcpServers": {}}
-    assert argv[argv.index("--setting-sources") + 1] == ""
-
-
 def test_the_profile_may_set_effort_per_tier(fake_claude, tmp_path) -> None:
     script, _, _ = fake_claude
     runner = ClaudeCodeRunner({**PROFILE, "effort": {"deep": "high"}}, claude_bin=str(script), cwd=tmp_path)
@@ -342,9 +331,10 @@ def test_usage_is_recorded_per_call_and_summarised(fake_claude, tmp_path) -> Non
     set_output({"is_error": False, "structured_output": {"ok": True}, "total_cost_usd": 0.02, "num_turns": 3,
                 "usage": {"input_tokens": 100, "cache_read_input_tokens": 900, "output_tokens": 50}})
     runner = runner_for(fake_claude, tmp_path)
-    runner.run(role="plan", schema=SCHEMA, prompt="go")
+    first = runner.run(role="plan", schema=SCHEMA, prompt="go")
     runner.run(role="review_charter", tier="deep", schema=SCHEMA, prompt="go")
     call = runner.calls[0]
+    assert call["decision"] == to_row(first.decision) and call["decision"]["role"] == "plan"
     assert (call["input_tokens"], call["cache_read_tokens"], call["input_total"], call["output_tokens"]) == (100, 900, 1000, 50)
     summary = summarize(runner.calls)
     assert summary["calls"] == 2 and summary["cost_usd"] == 0.04 and summary["input_total"] == 2000
@@ -353,13 +343,6 @@ def test_usage_is_recorded_per_call_and_summarised(fake_claude, tmp_path) -> Non
     out = record_usage(runner, runs_dir=tmp_path / "runs", run_id="r1")
     assert out == summary
     assert json.loads((tmp_path / "runs" / "r1.usage.json").read_text())["summary"]["calls"] == 2
-
-
-def test_a_successful_call_records_its_decision_row_in_calls(fake_claude, tmp_path) -> None:
-    runner = runner_for(fake_claude, tmp_path)
-    result = runner.run(role="plan", schema=SCHEMA, prompt="go")
-    assert runner.calls[-1]["decision"] == to_row(result.decision)
-    assert runner.calls[-1]["decision"]["role"] == "plan"
 
 
 def test_a_shadow_tagged_decision_reaches_the_ledger_and_usage_json(fake_claude, tmp_path, conn) -> None:
@@ -449,15 +432,6 @@ def test_a_raising_tag_hook_records_the_untagged_decision(fake_claude, tmp_path)
     assert result.decision.role == "plan"
 
 
-def test_a_failed_call_records_no_decision_row(fake_claude, tmp_path) -> None:
-    _, _, set_output = fake_claude
-    set_output({"is_error": True, "result": "Not logged in"})
-    runner = runner_for(fake_claude, tmp_path)
-    with pytest.raises(RunnerError):
-        runner.run(role="plan", schema=SCHEMA, prompt="go")
-    assert all("decision" not in call for call in runner.calls)
-
-
 def test_a_limit_banner_with_is_error_true_raises_limit_stop(fake_claude, tmp_path) -> None:
     _, _, set_output = fake_claude
     set_output({"is_error": True, "result": "You've hit your session limit · resets 3pm"})
@@ -465,16 +439,6 @@ def test_a_limit_banner_with_is_error_true_raises_limit_stop(fake_claude, tmp_pa
     with pytest.raises(LimitStop) as exc_info:
         runner.run(role="plan", schema=SCHEMA, prompt="go")
     assert "session limit" in exc_info.value.detail
-
-
-def test_a_non_banner_is_error_payload_still_raises_a_plain_runner_error(fake_claude, tmp_path) -> None:
-    _, _, set_output = fake_claude
-    set_output({"is_error": True, "result": "Not logged in"})
-    runner = runner_for(fake_claude, tmp_path)
-    with pytest.raises(RunnerError) as exc_info:
-        runner.run(role="plan", schema=SCHEMA, prompt="go")
-    assert not isinstance(exc_info.value, LimitStop)
-    assert "failed in claude" in str(exc_info.value)
 
 
 def test_a_runner_with_nothing_to_count_records_nothing(tmp_path) -> None:
@@ -485,24 +449,6 @@ def test_a_runner_with_nothing_to_count_records_nothing(tmp_path) -> None:
 
     assert record_usage(Mute(), runs_dir=tmp_path, run_id="r") is None
     assert not (tmp_path / "r.usage.json").exists()
-
-
-def test_the_node_is_told_patches_are_not_applied_in_the_checkout(fake_claude, tmp_path) -> None:
-    """Handoff once quarantined every task for 'no changes present in the repo'."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    runner = runner_for(fake_claude, tmp_path, repo_dir=repo)
-    runner.run(role="handoff", schema=SCHEMA, prompt="go")
-    system = recorded(fake_claude)["argv"]
-    assert "NOT applied in that checkout" in system[system.index("--system-prompt") + 1]
-
-
-def test_a_claude_error_names_its_subtype(fake_claude, tmp_path) -> None:
-    _, _, set_output = fake_claude
-    set_output({"is_error": True, "subtype": "error_max_turns", "result": None, "num_turns": 40})
-    runner = runner_for(fake_claude, tmp_path)
-    with pytest.raises(RunnerError, match="error_max_turns"):
-        runner.run(role="build", schema=SCHEMA, prompt="go")
 
 
 # ── the builder's scratch worktree ───────────────────────────────────────────
@@ -523,33 +469,23 @@ def repo(tmp_path: Path) -> Path:
     return root
 
 
-def test_the_builder_gets_a_scratch_worktree_and_runs_in_it(fake_claude, tmp_path, repo) -> None:
+def test_a_builder_works_in_a_scratch_worktree_and_sees_it_instead_of_the_repo(fake_claude, tmp_path, repo) -> None:
     runner = runner_for(fake_claude, tmp_path, repo_dir=repo)
     runner.tools["build"] = ["Read", "Write", "Edit", "Bash"]
-    runner.run(role="build", schema=SCHEMA, prompt="go")
-    argv = recorded(fake_claude)["argv"]
+    runner.run(role="build", schema=SCHEMA, prompt=f"edit {repo.resolve()}/f.txt then cd {repo.resolve()}")
+    rec = recorded(fake_claude)
+    argv = rec["argv"]
     system = argv[argv.index("--system-prompt") + 1]
     assert "scratch checkout" in system and "git add -A && git diff --cached" in system
     assert "VERBATIM" in system, "the patch is transcribed from git, never authored"
     assert "Read files with the Read tool" in system and "`verify:` commands" in system
-    scratch = [argv[i + 1] for i, a in enumerate(argv) if a == "--add-dir" and "agent-graphs-build-" in argv[i + 1]]
-    assert scratch, "the scratch is readable by the node"
+    added = [argv[i + 1] for i, a in enumerate(argv) if a == "--add-dir"]
+    assert len(added) == 1 and "agent-graphs-build-" in added[0], "the scratch is readable, the repo is not granted"
+    assert str(repo.resolve()) not in system
+    assert rec["stdin"] == f"edit {added[0]}/f.txt then cd {added[0]}"
 
 
-def test_the_scratch_is_removed_afterwards(fake_claude, tmp_path, repo) -> None:
-    import subprocess as sp
-
-    runner = runner_for(fake_claude, tmp_path, repo_dir=repo)
-    runner.tools["build"] = ["Read", "Write", "Edit", "Bash"]
-    runner.run(role="build", schema=SCHEMA, prompt="go")
-    argv = recorded(fake_claude)["argv"]
-    scratch = next(argv[i + 1] for i, a in enumerate(argv) if a == "--add-dir" and "agent-graphs-build-" in argv[i + 1])
-    assert not Path(scratch).exists()
-    listed = sp.run(["git", "-C", str(repo), "worktree", "list"], capture_output=True, text=True).stdout
-    assert "agent-graphs-build-" not in listed, "no worktree is left registered"
-
-
-def test_two_builders_never_share_a_scratch(fake_claude, tmp_path, repo) -> None:
+def test_each_builder_gets_its_own_scratch_and_it_is_removed_afterwards(fake_claude, tmp_path, repo) -> None:
     runner = runner_for(fake_claude, tmp_path, repo_dir=repo)
     runner.tools["build"] = ["Read", "Write", "Edit", "Bash"]
     seen = []
@@ -558,28 +494,22 @@ def test_two_builders_never_share_a_scratch(fake_claude, tmp_path, repo) -> None
         argv = recorded(fake_claude)["argv"]
         seen.append(next(argv[i + 1] for i, a in enumerate(argv) if a == "--add-dir" and "agent-graphs-build-" in argv[i + 1]))
     assert seen[0] != seen[1], "parallel tasks in one phase must not edit the same tree"
+    assert not any(Path(scratch).exists() for scratch in seen)
+    listed = subprocess.run(["git", "-C", str(repo), "worktree", "list"], capture_output=True, text=True).stdout
+    assert "agent-graphs-build-" not in listed, "no worktree is left registered"
 
 
 # ── the patch is computed from the scratch, not recalled ────────────────────
 
 
-def test_reconcile_patch_prefers_the_scratchs_diff_over_a_differing_report() -> None:
+def test_reconcile_patch_trusts_the_scratch_over_the_report() -> None:
     assert reconcile_patch("diff --git a/x\n-a\n+b\n", "diff --git a/y\n-c\n+d\n") == ("diff --git a/y\n-c\n+d\n", None)
-
-
-def test_reconcile_patch_is_patch_outside_scratch_when_the_scratch_is_clean_but_the_model_reported_something() -> None:
     assert reconcile_patch("diff --git a/x\n-a\n+b\n", "") == ("", "patch_outside_scratch")
-
-
-def test_reconcile_patch_is_patch_empty_when_both_are_empty() -> None:
     assert reconcile_patch("", "") == ("", "patch_empty")
-
-
-def test_reconcile_patch_passes_through_an_identical_report() -> None:
     assert reconcile_patch("same\n", "same\n") == ("same\n", None)
 
 
-def test_a_successful_build_returns_the_scratchs_diff_not_the_models(fake_claude, tmp_path, repo) -> None:
+def test_a_successful_build_returns_and_records_the_scratchs_diff_not_the_models(fake_claude, tmp_path, repo) -> None:
     _, _, set_output = fake_claude
     set_output({"is_error": False, "total_cost_usd": 0.01, "num_turns": 1,
                 "structured_output": {"summary": "did the thing", "files_touched": ["f.txt"],
@@ -589,32 +519,8 @@ def test_a_successful_build_returns_the_scratchs_diff_not_the_models(fake_claude
     out = runner.run(role="build", schema=SCHEMA, prompt="go")
     assert "built.txt" in out["patch"] and "test.txt" not in out["patch"]
     assert out["summary"] == "did the thing" and out["files_touched"] == ["f.txt"]
-
-
-def test_the_recorded_calls_files_touched_comes_from_the_scratchs_diff_not_the_model(fake_claude, tmp_path, repo) -> None:
-    _, _, set_output = fake_claude
-    set_output({"is_error": False, "total_cost_usd": 0.01, "num_turns": 1,
-                "structured_output": {"files_touched": ["f.txt"], "patch": "diff --git a/test.txt\n-a\n+b\n"}})
-    runner = runner_for(fake_claude, tmp_path, repo_dir=repo)
-    runner.tools["build"] = ["Read", "Write", "Edit", "Bash"]
-    runner.run(role="build", schema=SCHEMA, prompt="go")
     assert runner.calls[-1]["files_touched"] == ["built.txt"], "derived from the reconciled patch, not the model's report"
-
-
-def test_a_build_that_edited_nothing_but_reported_a_patch_is_refused_as_patch_outside_scratch(tmp_path, repo) -> None:
-    """A bare `cat` of the canned output: no `.git` write, so the scratch stays clean."""
-    output = tmp_path / "output.json"
-    output.write_text(
-        json.dumps({"is_error": False, "total_cost_usd": 0.01, "num_turns": 1,
-                    "structured_output": {"patch": "diff --git a/test.txt\n-a\n+b\n"}}),
-        encoding="utf-8",
-    )
-    script = tmp_path / "claude"
-    script.write_text(f"#!/bin/sh\ncat {output}\n", encoding="utf-8")
-    script.chmod(script.stat().st_mode | stat.S_IXUSR)
-    runner = ClaudeCodeRunner(PROFILE, claude_bin=str(script), cwd=tmp_path, repo_dir=repo)
-    with pytest.raises(RunnerError, match="patch_outside_scratch"):
-        runner.run(role="build", schema=SCHEMA, prompt="go")
+    assert runner.calls[-1]["patch_source"] == "computed"
 
 
 def _reporting_claude(tmp_path: Path, patch: str) -> Path:
@@ -648,22 +554,13 @@ def test_a_clean_scratch_with_an_applicable_reported_patch_is_recovered_and_mark
     assert runner.calls[-1]["files_touched"] == ["f.txt"]
 
 
-def test_a_scratch_edit_is_marked_computed(fake_claude, tmp_path, repo) -> None:
-    runner = runner_for(fake_claude, tmp_path, repo_dir=repo)
-    runner.run(role="build", schema=SCHEMA, prompt="go")
-    assert runner.calls[-1]["patch_source"] == "computed"
-
-
-def test_run_verify_returns_a_row_per_command_with_output_and_exit_code_and_never_raises(tmp_path) -> None:
+def test_run_verify_returns_a_row_per_command_and_names_a_timeout_instead_of_raising(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("runner.claude_code_runner._VERIFY_TIMEOUT_S", 0.2)
     rows = _run_verify(tmp_path, ["echo one", "false"])
     assert rows[0] == {"command": "echo one", "output": "one\n(exit 0)", "source": "harness_verify"}
     assert rows[1]["output"].endswith("(exit 1)") and rows[1]["source"] == "harness_verify"
     assert _run_verify(tmp_path, []) == []
     assert _run_verify(tmp_path / "missing", ["echo x"])[0]["output"].startswith("could not start")
-
-
-def test_run_verify_names_a_timeout_instead_of_raising(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr("runner.claude_code_runner._VERIFY_TIMEOUT_S", 0.2)
     assert _run_verify(tmp_path, ["sleep 5"])[0]["output"] == "timed out after 0.2s"
 
 
@@ -674,22 +571,15 @@ def test_run_verify_skips_commands_once_the_total_budget_is_spent(tmp_path, monk
     assert rows[1] == {"command": "echo never", "output": "skipped: the 0.3s verify budget is spent", "source": "harness_verify"}
 
 
-def test_a_build_that_will_fail_reconciliation_is_not_verified(tmp_path, repo) -> None:
-    """A clean scratch with a reported patch that does not apply raises next, so no verify command should run."""
-    marker = tmp_path / "ran"
-    script = _reporting_claude(tmp_path, F_PATCH.replace("-one", "-absent"))
-    runner = ClaudeCodeRunner(PROFILE, claude_bin=str(script), cwd=tmp_path, repo_dir=repo, runs_dir=tmp_path, run_id="r1")
-    runner.verify_by_task = {"t1": [f"touch {marker}"]}
-    with pytest.raises(RunnerError, match="patch_outside_scratch"):
-        runner.run(role="build", schema=SCHEMA, prompt="go", task="t1")
-    assert not marker.exists()
-
-
-def test_a_build_with_verify_commands_gets_their_rows_after_the_builders_own(fake_claude, tmp_path, repo) -> None:
+def test_a_build_with_verify_commands_gets_their_rows_after_the_builders_own_and_others_get_none(fake_claude, tmp_path, repo) -> None:
     _, _, set_output = fake_claude
+    runner = runner_for(fake_claude, tmp_path, repo_dir=repo)
+    assert runner.verify_by_task == {}
+    assert "commands_run" not in runner.run(role="build", schema=SCHEMA, prompt="go", task="t1")
+    runner.verify_by_task = {"t2": ["echo other"]}
+    assert "commands_run" not in runner.run(role="build", schema=SCHEMA, prompt="go", task="t1")
     set_output({"is_error": False, "total_cost_usd": 0.01, "num_turns": 1,
                 "structured_output": {"summary": "s", "commands_run": ["pytest -q"], "patch": ""}})
-    runner = runner_for(fake_claude, tmp_path, repo_dir=repo)
     runner.verify_by_task = {"t1": ["cat built.txt"]}
     out = runner.run(role="build", schema=SCHEMA, prompt="go", task="t1")
     assert out["commands_run"] == [
@@ -699,18 +589,14 @@ def test_a_build_with_verify_commands_gets_their_rows_after_the_builders_own(fak
     assert runner.calls[-1]["commands_run"] == [{"command": "pytest -q", "source": "self_report"}]
 
 
-def test_a_threaded_build_runs_its_verify_commands_in_the_thread_scratch(fake_claude, tmp_path, repo) -> None:
+def test_a_verify_command_runs_in_the_threads_scratch_and_leaves_nothing_in_it_for_the_next_attempt(fake_claude, tmp_path, repo) -> None:
     runner = runner_for(fake_claude, tmp_path, repo_dir=repo)
-    runner.verify_by_task = {"t1": ["cat built.txt"]}
-    out = runner.run(role="build", schema=SCHEMA, prompt="go", thread="T-1", task="t1")
-    assert out["commands_run"][-1]["output"] == "edited\n(exit 0)"
-
-
-def test_a_verify_command_that_writes_leaves_nothing_in_the_threads_scratch_for_the_next_attempt(fake_claude, tmp_path, repo) -> None:
-    runner = runner_for(fake_claude, tmp_path, repo_dir=repo)
-    runner.verify_by_task = {"t1": ["echo junk > artifact.txt", "echo more >> built.txt", "echo x > staged.txt && git add staged.txt"]}
+    runner.verify_by_task = {
+        "t1": ["cat built.txt", "echo junk > artifact.txt", "echo more >> built.txt", "echo x > staged.txt && git add staged.txt"]
+    }
     first = runner.run(role="build", schema=SCHEMA, prompt="go", thread="T-1", task="t1")
     scratch = runner._threads["T-1"]["scratch"]
+    assert first["commands_run"][0]["output"] == "edited\n(exit 0)", "verify ran in the thread scratch"
     assert [row["output"] for row in first["commands_run"]][-1].endswith("(exit 0)")
     assert not (scratch / "artifact.txt").exists() and not (scratch / "staged.txt").exists()
     assert (scratch / "built.txt").read_text(encoding="utf-8") == "edited\n"
@@ -738,22 +624,18 @@ def test_a_threaded_transient_retry_verifies_only_the_attempt_that_stands(sequen
     assert marker.read_text(encoding="utf-8") == "ran\n"
 
 
-def test_a_build_without_verify_commands_or_for_another_task_gets_no_rows(fake_claude, tmp_path, repo) -> None:
-    runner = runner_for(fake_claude, tmp_path, repo_dir=repo)
-    assert runner.verify_by_task == {}
-    assert "commands_run" not in runner.run(role="build", schema=SCHEMA, prompt="go", task="t1")
-    runner.verify_by_task = {"t2": ["echo other"]}
-    assert "commands_run" not in runner.run(role="build", schema=SCHEMA, prompt="go", task="t1")
-
-
-def test_a_reported_patch_that_does_not_apply_is_patch_outside_scratch(tmp_path, repo, conn) -> None:
+def test_a_reported_patch_that_does_not_apply_is_patch_outside_scratch_and_is_not_verified(tmp_path, repo, conn) -> None:
+    """A clean scratch with a reported patch that does not apply raises, so no verify command runs."""
+    marker = tmp_path / "ran"
     script = _reporting_claude(tmp_path, F_PATCH.replace("-one", "-absent"))
     runner = ClaudeCodeRunner(
         PROFILE, claude_bin=str(script), cwd=tmp_path, repo_dir=repo, runs_dir=tmp_path, run_id="r1", store=Store(conn)
     )
+    runner.verify_by_task = {"t1": [f"touch {marker}"]}
     with pytest.raises(RunnerError, match="patch_outside_scratch"):
-        runner.run(role="build", schema=SCHEMA, prompt="go")
+        runner.run(role="build", schema=SCHEMA, prompt="go", task="t1")
     assert [row["ok"] for row in _ledger_lines(conn, "r1")] == [False]
+    assert not marker.exists()
 
 
 def test_apply_reported_patch_applies_a_valid_diff_and_refuses_a_bad_one(repo) -> None:
@@ -771,35 +653,12 @@ def test_redirect_paths_moves_paths_under_the_repo_and_leaves_lookalikes() -> No
     assert redirect_paths("nothing here", repo_dir, scratch) == "nothing here"
 
 
-def test_a_builders_argv_grants_the_scratch_and_not_the_repo(fake_claude, tmp_path, repo) -> None:
-    runner = runner_for(fake_claude, tmp_path, repo_dir=repo)
-    runner.tools["build"] = ["Read", "Write", "Edit", "Bash"]
-    runner.run(role="build", schema=SCHEMA, prompt="go")
-    argv = recorded(fake_claude)["argv"]
-    added = [argv[i + 1] for i, a in enumerate(argv) if a == "--add-dir"]
-    assert len(added) == 1 and "agent-graphs-build-" in added[0]
-    assert str(repo.resolve()) not in argv[argv.index("--system-prompt") + 1]
-
-
-def test_a_builders_prompt_has_the_repo_paths_rewritten_to_its_scratch(fake_claude, tmp_path, repo) -> None:
-    runner = runner_for(fake_claude, tmp_path, repo_dir=repo)
-    runner.run(role="build", schema=SCHEMA, prompt=f"edit {repo.resolve()}/f.txt then cd {repo.resolve()}")
-    rec = recorded(fake_claude)
-    scratch = next(rec["argv"][i + 1] for i, a in enumerate(rec["argv"]) if a == "--add-dir")
-    assert rec["stdin"] == f"edit {scratch}/f.txt then cd {scratch}"
-
-
-def test_a_reading_role_keeps_the_repo_and_its_prompt(fake_claude, tmp_path, repo) -> None:
+def test_a_reading_role_keeps_the_repo_and_its_prompt_and_gets_no_scratch(fake_claude, tmp_path, repo) -> None:
     runner = runner_for(fake_claude, tmp_path, repo_dir=repo)
     runner.run(role="review_charter", schema=SCHEMA, prompt=f"read {repo.resolve()}/f.txt")
     rec = recorded(fake_claude)
-    assert str(repo.resolve()) in rec["argv"] and rec["stdin"] == f"read {repo.resolve()}/f.txt"
-
-
-def test_a_reading_role_gets_no_scratch(fake_claude, tmp_path, repo) -> None:
-    runner = runner_for(fake_claude, tmp_path, repo_dir=repo)
-    runner.run(role="review_charter", schema=SCHEMA, prompt="go")
-    argv = recorded(fake_claude)["argv"]
+    argv = rec["argv"]
+    assert str(repo.resolve()) in argv and rec["stdin"] == f"read {repo.resolve()}/f.txt"
     assert "agent-graphs-build-" not in " ".join(argv)
     assert "scratch checkout" not in argv[argv.index("--system-prompt") + 1]
     assert "never edit it" in argv[argv.index("--system-prompt") + 1]
