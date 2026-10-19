@@ -769,7 +769,7 @@ def test_render_shows_warn_and_counts_warnings_apart_from_ok_and_failing():
 
 
 _LOCATIONS = home.resolve({}, "/u", "linux", flag="/h")
-_CHECKOUT = "/h/installs/coxswain-cartridges"
+_CHECKOUT = "/h/installs/coxswain/src/cartridges"
 
 
 _PATHS = {"skills_roots": ("/h/skills", "/h/more"), "provider_profile": "/h/profile.yaml", "harness_dir": "/h/harness"}
@@ -892,7 +892,7 @@ def test_unmigrated_machine_warns_on_four_rows_and_produces_no_failure():
 
 
 def test_unmigrated_machine_warns_instead_of_failing_on_the_home_root_marketplace_and_install_bins():
-    bins = {"graphs venv": None, "tools venv": None, "tools receipt": "/u/repos/coxswain-tools", "cartridges receipt": None}
+    bins = {"venv": None, "tool receipt": "/u/repos/coxswain-tools"}
     rows = doctor.home_rows(
         _LOCATIONS, {"coxswain-cartridges": "/u/proj/coxswain-cartridges"}, False, False, "/u/old", True, None, bins)
     by = {r["check"]: r for r in rows}
@@ -925,9 +925,9 @@ def test_marketplace_location_compares_text_without_following_links():
 
 
 def test_legacy_layout_present_is_a_warn_naming_setup_migrate():
-    row = _home(legacy="/u/repos/coxswain-cartridges")[3]
+    row = _home(legacy="/h/installs/coxswain-tools")[3]
     assert (row["ok"], row["warn"]) == (True, True)
-    assert row["detail"] == "old layout still present at /u/repos/coxswain-cartridges; run `cox setup migrate` to move it"
+    assert row["detail"] == "old layout still present at /h/installs/coxswain-tools; run `cox setup migrate` to retire it"
     assert doctor.exit_code([row]) == 0
 
 
@@ -937,7 +937,7 @@ def test_legacy_layout_absent_is_ok_without_warn():
 
 
 _LINK_BASE, _LINK_LOCAL = "/u/ws/cartridges/base", "/u/ws/cartridges/local"
-_ROOT_LINK = "../../../h/installs/coxswain-cartridges"
+_ROOT_LINK = "../../../h/installs/coxswain/src/cartridges"
 
 
 def _links_row(links):
@@ -980,7 +980,7 @@ def test_cartridge_links_compare_text_without_following_links():
     row = _links_row(
         {
             _LINK_BASE: f"{_ROOT_LINK}/cartridges/base",
-            _LINK_LOCAL: "../../../h/installs/../installs/coxswain-cartridges/cartridges/local",
+            _LINK_LOCAL: "../../../h/installs/../installs/coxswain/src/cartridges/cartridges/local",
         }
     )
     assert row["ok"] is False and _LINK_BASE not in row["detail"]
@@ -990,13 +990,8 @@ def test_cartridge_links_fail_when_none_were_found():
     assert _links_row({})["ok"] is False
 
 
-_BIN_GRAPHS, _BIN_TOOLS = "/h/installs/coxswain-graphs", "/h/installs/coxswain-tools"
-_BINS = {
-    "graphs venv": _BIN_GRAPHS,
-    "tools venv": _BIN_TOOLS,
-    "tools receipt": _BIN_TOOLS,
-    "cartridges receipt": _CHECKOUT,
-}
+_BIN_CHECKOUT = "/h/installs/coxswain"
+_BINS = {"venv": _BIN_CHECKOUT, "tool receipt": _BIN_CHECKOUT}
 
 
 def _bins_row(sources):
@@ -1012,49 +1007,21 @@ def test_install_bins_row_comes_last_after_cartridge_links():
     assert [r["check"] for r in rows][-2:] == ["cartridge links", "install bins"]
 
 
-def test_install_bins_pass_when_each_source_equals_its_own_checkout():
+def test_install_bins_pass_when_the_venv_and_the_tool_are_editable_from_the_checkout():
     row = _bins_row(_BINS)
     assert (row["check"], row["ok"], row["detail"]) == (
-        "install bins",
-        True,
-        "all 4 sources reach their checkout under the home",
-    )
+        "install bins", True, f"the venv and the cox tool are editable from {_BIN_CHECKOUT}")
 
 
-def test_install_bins_each_source_fails_alone_when_stale():
-    for name in _BINS:
-        row = _bins_row(dict(_BINS, **{name: "/old/checkout"}))
-        assert (row["ok"], row["detail"]) == (False, f"{name} -> /old/checkout; expected {_BINS[name]}")
+def test_install_bins_name_a_component_checkout_as_stale_and_compare_text_only():
+    row = _bins_row(dict(_BINS, **{"tool receipt": "/h/installs/coxswain-tools"}))
+    assert (row["ok"], row["detail"]) == (False, f"tool receipt -> /h/installs/coxswain-tools; expected {_BIN_CHECKOUT}")
+    assert _bins_row(dict(_BINS, venv="/h/installs/../installs/coxswain"))["ok"] is False
 
 
-def test_install_bins_fail_when_a_source_points_at_another_repos_checkout():
-    row = _bins_row(dict(_BINS, **{"tools receipt": _CHECKOUT}))
-    assert (row["ok"], row["detail"]) == (False, f"tools receipt -> {_CHECKOUT}; expected {_BIN_TOOLS}")
-
-
-def test_install_bins_compare_text_without_following_links():
-    row = _bins_row(dict(_BINS, **{"graphs venv": "/h/installs/../installs/coxswain-graphs"}))
-    assert row["ok"] is False and row["detail"].startswith("graphs venv -> ")
-
-
-def test_install_bins_fail_naming_a_missing_receipt():
-    row = _bins_row(dict(_BINS, **{"tools receipt": None}))
-    assert (row["ok"], row["detail"]) == (False, "missing tools receipt")
-
-
-def test_install_bins_fail_when_a_key_is_absent_from_the_mapping():
-    row = _bins_row({k: v for k, v in _BINS.items() if k != "cartridges receipt"})
-    assert (row["ok"], row["detail"]) == (False, "missing cartridges receipt")
-
-
-def test_install_bins_name_every_missing_source_in_order():
-    row = _bins_row({"tools venv": _BIN_TOOLS, "cartridges receipt": _CHECKOUT})
-    assert row["detail"] == "missing graphs venv, tools receipt"
-
-
-def test_install_bins_report_a_stale_source_beside_a_missing_one():
-    row = _bins_row(dict(_BINS, **{"tools receipt": None, "graphs venv": "/old/graphs"}))
-    assert row["detail"] == f"missing tools receipt; graphs venv -> /old/graphs; expected {_BIN_GRAPHS}"
+def test_install_bins_report_a_missing_source_beside_a_stale_one():
+    row = _bins_row({"tool receipt": "/old"})
+    assert row["detail"] == f"missing venv; tool receipt -> /old; expected {_BIN_CHECKOUT}"
 
 
 def test_a_profile_naming_umbrella_dir_the_edge_never_gathered_fails_profile_paths():
@@ -1069,7 +1036,7 @@ def _lane_host(**over):
         "name": "h1",
         "ssh": "h1",
         "workspace_dir": "/w",
-        "checkouts": {"coxswain-tools": "/home/user/installs/coxswain-tools"},
+        "checkouts": {"coxswain": "/home/user/installs/coxswain"},
         "profile_workspace_dir": "/w",
         "source": "beat",
     }
@@ -1082,7 +1049,7 @@ def test_lane_host_paths_with_no_hosts_is_ok_and_says_so():
 
 def test_lane_host_paths_with_a_clean_host_counts_it():
     assert doctor.lane_host_paths_row([_lane_host()]) == {
-        "check": "lane host paths", "ok": True, "detail": "1 hosts on installs paths",
+        "check": "lane host paths", "ok": True, "detail": "1 hosts on the monorepo checkout",
     }
 
 
@@ -1091,10 +1058,10 @@ def test_lane_host_paths_warns_on_a_fallback_host():
     assert (row["ok"], row["warn"], row["detail"]) == (True, True, "h1 has no beat row")
 
 
-def test_lane_host_paths_warns_on_checkouts_outside_installs():
-    row = doctor.lane_host_paths_row([_lane_host(checkouts={"coxswain-tools": "/srv/repos/coxswain-tools"})])
+def test_lane_host_paths_warns_on_component_checkouts():
+    row = doctor.lane_host_paths_row([_lane_host(checkouts={"coxswain-tools": "/home/user/installs/coxswain-tools"})])
     assert (row["ok"], row["warn"], row["detail"]) == (
-        True, True, "h1 reports checkouts outside an installs folder; run cox setup migrate --apply on it",
+        True, True, "h1 reports checkouts outside the monorepo checkout; run cox setup migrate --apply on it",
     )
 
 
