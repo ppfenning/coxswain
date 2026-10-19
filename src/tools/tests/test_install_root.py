@@ -39,3 +39,14 @@ def test_without_a_harness_venv_the_checkout_venv_runs_the_harness():
 def test_with_neither_the_missing_harness_venv_is_named():
     chosen = install_root.choose_python(HARNESS, legacy_exists=False, checkout=None)
     assert chosen == HARNESS / ".venv" / "bin" / "python"
+
+
+def test_paths_inside_one_checkout_collapse_to_its_root_once():
+    paths = [f"{HARNESS}", f"{CHECKOUT}/src/cartridges/providers", f"{CHECKOUT}/src/tools"]
+    roots = dict.fromkeys(paths, CHECKOUT)
+    assert install_root.collapse_to_checkouts(paths, roots) == [str(CHECKOUT)]
+
+
+def test_paths_outside_a_checkout_are_kept_as_they_are():
+    paths = ["/h/installs/coxswain-graphs", "/h/installs/coxswain-tools"]
+    assert install_root.collapse_to_checkouts(paths, {}) == paths

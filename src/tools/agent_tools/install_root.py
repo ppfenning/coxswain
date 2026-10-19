@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import os
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 __all__ = [
     "DISTRIBUTION",
     "checkout_root",
     "choose_python",
+    "collapse_to_checkouts",
     "harness_python",
     "legacy_python",
     "nearest_checkout",
@@ -59,6 +60,14 @@ def choose_python(harness_dir: Path, *, legacy_exists: bool, checkout: Path | No
     if legacy_exists or checkout is None:
         return legacy_python(harness_dir)
     return venv_python(checkout)
+
+
+def collapse_to_checkouts(paths: Sequence[str], roots: Mapping[str, Path | None]) -> list[str]:
+    """Each path, or the coxswain checkout `roots` says holds it, once each and in order.
+
+    On a migrated host the harness, cartridges and tools paths are three folders of one git checkout,
+    and a host sync or a lock-hash stamp must see that checkout once, at its root."""
+    return list(dict.fromkeys(str(roots.get(p) or p) for p in paths))
 
 
 def _read_name(directory: Path) -> str | None:

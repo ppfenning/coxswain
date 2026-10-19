@@ -10517,9 +10517,11 @@ def _cartridges_checkout(profile: Mapping) -> str:
 
 
 def _host_repos(profile: Mapping) -> list[str]:
-    """Edge: the harness, cartridges and tools checkouts, the three paths the chair itself runs from."""
+    """Edge: the harness, cartridges and tools checkouts, the three paths the chair itself runs from; on a migrated
+    host they are folders of one coxswain checkout, named once, at its root."""
     harness = str(Path(profile["harness_dir"]).expanduser()) if profile.get("harness_dir") else ""
-    return [p for p in (harness, _cartridges_checkout(profile), str(Path(__file__).resolve().parents[1])) if p]
+    paths = [p for p in (harness, _cartridges_checkout(profile), str(Path(__file__).resolve().parents[1])) if p]
+    return install_root.collapse_to_checkouts(paths, {p: install_root.checkout_root(p) for p in paths})
 
 
 def _origin_url(path: str) -> str | None:
