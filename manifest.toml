@@ -17,11 +17,11 @@
 #                under src/cartridges/ } for the provider profiles a host may pick.
 
 [coxswain]
-version = "2026.10.0"
+version = "2026.10.1"
 status  = "beta"
 
 [components]
-dash = { repo = "ppfenning/coxswain-dash", tag = "v0.42.0", flag = "dash", provides = "towpath", since = "0.26.0", docs = ["README.md"] }
+dash = { repo = "ppfenning/coxswain-dash", tag = "v2026.10.1", flag = "dash", provides = "towpath", since = "0.26.0", docs = ["README.md"] }
 
 [providers]
 claude-code = { status = "supported", profile = "providers/claude-code.yaml" }
