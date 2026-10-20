@@ -439,6 +439,29 @@ def test_edit_key_replaces_one_line_and_refuses_block_lists():
     assert cli._migrate_edit_key("a: 1\n", "roots", ["/n"])[0] is None
 
 
+def test_edit_key_writes_a_dict_as_one_line_of_json():
+    edited, reason = cli._migrate_edit_key('a: 1\nrepo_map: {"x": "/o"}\n', "repo_map", {"x": "/n"})
+    assert reason == ""
+    assert 'repo_map: {"x": "/n"}' in edited.splitlines()
+
+
+def test_a_dict_written_by_edit_key_reads_back_through_parse_profile():
+    edited, _ = cli._migrate_edit_key('a: 1\nrepo_map: {"x": "/o"}\n', "repo_map", {"x": "/n"})
+    assert cli.route.parse_profile(edited)["repo_map"] == {"x": "/n"}
+
+
+def test_edit_key_still_writes_a_list_in_bracket_form():
+    edited, _ = cli._migrate_edit_key("a: 1\nroots: [/o]\n", "roots", ["/n", "/m"])
+    assert "roots: [/n, /m]" in edited.splitlines()
+
+
+def test_edit_key_refuses_a_json_key_whose_value_is_not_json():
+    assert cli._migrate_edit_key("repo_map: {}\n", "repo_map", ["/n"]) == (
+        None,
+        "repo_map cannot be written as one line of JSON that reads back as ['/n']",
+    )
+
+
 def test_observed_hosts_fall_back_to_the_profile_when_the_table_is_empty(layout, monkeypatch):
     layout.profile.write_text(layout.profile.read_text() + LANES)
     locs = cli.home_paths.resolve_here(None)

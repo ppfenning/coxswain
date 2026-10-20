@@ -6403,6 +6403,8 @@ def _migrate_link(step: dict) -> str | None:
 
 
 def _migrate_profile_value(value) -> str:
+    if isinstance(value, Mapping):
+        return json.dumps(value, ensure_ascii=False)
     return "[" + ", ".join(str(v) for v in value) + "]" if isinstance(value, list) else str(value)
 
 
@@ -6424,6 +6426,13 @@ def _migrate_edit_key(text: str, key: str, new, add: bool = False) -> tuple[str 
         parsed = None
     if not isinstance(parsed, Mapping) or parsed.get(key) != new:
         return None, f"{key} cannot be written as one line that reads back as {new!r}"
+    if key in route._JSON_KEYS:
+        try:
+            read_back = json.loads(_migrate_profile_value(new))
+        except json.JSONDecodeError:
+            read_back = None
+        if read_back != new:
+            return None, f"{key} cannot be written as one line of JSON that reads back as {new!r}"
     return edited, ""
 
 
