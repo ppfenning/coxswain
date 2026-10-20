@@ -586,12 +586,10 @@ _INSTALL_PAGE = ROOT / "docs" / "install" / "index.md"
 _INSTALL_FLAGS = {"--root", "--home", "--manifest", "--provider", "--with", "--team", "--workspace", "--edge", "--dry-run"}
 
 
-def test_install_page_first_code_block_clones_the_umbrella_into_the_home():
+def test_install_page_first_code_block_has_no_manual_clone_and_keeps_team_install():
     first_block = re.search(r"```sh\n(.*?)```", _INSTALL_PAGE.read_text(), re.DOTALL).group(1)
     assert "cox install --team" in first_block
-    assert "<home>/installs/coxswain" in first_block
-    assert "git clone --branch" in first_block
-    assert "https://github.com/ppfenning/coxswain " in first_block
+    assert "git clone" not in first_block
 
 
 def test_install_page_first_code_block_pins_python_3_14():

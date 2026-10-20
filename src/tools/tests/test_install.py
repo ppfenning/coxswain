@@ -1,7 +1,7 @@
 import subprocess
 import sys
 
-from agent_tools import cli, install, install_exec
+from agent_tools import cli, install, install_exec, version_info
 
 
 def _fake_schema_package(tmp_path, monkeypatch, *, cartridges, graphs):
@@ -487,13 +487,35 @@ def test_cli_install_home_flag_overrides_the_environment(tmp_path, monkeypatch, 
     assert rc == 0 and "clone harness" in capsys.readouterr().out
 
 
-def test_cli_install_home_default_without_a_manifest_names_the_path_and_exits_two(tmp_path, monkeypatch, capsys):
+def test_cli_install_home_default_without_a_checkout_dry_run_names_the_release_clone(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("COXSWAIN_HOME", str(tmp_path))
     rc = cli.main(["install", "--dry-run", *_HOME_ARGS])
     out = capsys.readouterr().out
-    assert rc == 2
-    assert "no manifest at " + str(tmp_path / "installs" / "coxswain" / "manifest.toml") + ";" in out
-    assert out.rstrip().endswith("; clone the umbrella there first")
+    assert rc == 0
+    assert f"clone coxswain: v{version_info._installed()}" in out
+
+
+def test_cli_install_home_default_without_a_checkout_clones_through_real_run(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("COXSWAIN_HOME", str(tmp_path))
+    calls = []
+    monkeypatch.setattr(cli, "_real_run", lambda argv, cwd: calls.append(argv) or (0, ""))
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("real process")))
+    rc = cli.main(["install", *_HOME_ARGS])
+    out = capsys.readouterr().out
+    checkout = str(tmp_path / "installs" / "coxswain")
+    assert calls == [["git", "clone", "--branch", f"v{version_info._installed()}",
+                      "https://github.com/ppfenning/coxswain.git", checkout]]
+    assert rc == 2 and out.rstrip().endswith("; clone the umbrella there first")
+
+
+def test_cli_install_root_flag_without_a_manifest_keeps_the_refusal(tmp_path, monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(cli, "_real_run", lambda argv, cwd: calls.append(argv) or (0, ""))
+    rc = cli.main(["install", "--dry-run", "--root", str(tmp_path / "R"), *_HOME_ARGS])
+    out = capsys.readouterr().out
+    assert rc == 2 and calls == []
+    assert "no manifest at " + str(tmp_path / "R" / "coxswain" / "manifest.toml") + ";" in out
+    assert "clone coxswain:" not in out and "clone the umbrella" not in out
 
 
 def test_cli_install_relative_home_refuses_and_exits_two(capsys):

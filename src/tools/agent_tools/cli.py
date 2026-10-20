@@ -7339,12 +7339,38 @@ def _with_flags(a: argparse.Namespace) -> list[str]:
     return flags
 
 
+def _install_clone(a: argparse.Namespace, home: str | None, manifest_path: Path) -> int | None:
+    """Edge. Clone the checkout at its release tag when the home default points at none. None means fall through
+    to the manifest handling; an int is the exit code."""
+    if not home or a.manifest or manifest_path.exists():
+        return None
+    from agent_tools.version_info import _installed
+    checkout = manifest_path.parent
+    argv = install.clone_argv(_migrate_kind(checkout), _installed(), install.CHECKOUT_REPO, str(checkout))
+    if isinstance(argv, str):
+        print(argv)
+        return 2
+    if not argv:
+        return None
+    print(f"clone coxswain: {argv[argv.index('--branch') + 1]}")
+    if a.dry_run:
+        return 0
+    code, output = _real_run(argv, None)
+    if code != 0:
+        print(f"refusing: git clone failed with exit {code}: {output.strip()}")
+        return 2
+    return None
+
+
 def _install(a: argparse.Namespace) -> int:
     resolved = _install_root(a)
     if resolved is None:
         return 2
     root, home = resolved
     manifest_path = Path(a.manifest) if a.manifest else _checkout_path(root) / "manifest.toml"
+    cloned = _install_clone(a, home, manifest_path)
+    if cloned is not None:
+        return cloned
     manifest = _load_manifest(manifest_path)
     if manifest is None:
         print((_NO_HOME_MANIFEST if home and not a.manifest else _NO_MANIFEST).format(manifest_path))
