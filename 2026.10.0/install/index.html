@@ -4088,20 +4088,19 @@ Coxswain is in beta — versions may change between releases
 <p>Coxswain is one package, <code>coxswain</code>, and one command, <code>cox</code>. Install <code>cox</code>,
 then let <code>cox install</code> set up the rest.</p>
 <div class="highlight"><pre><span></span><code>brew<span class="w"> </span>install<span class="w"> </span>ppfenning/coxswain/cox<span class="w">          </span><span class="c1"># or: uv tool install --python 3.14 coxswain</span>
-git<span class="w"> </span>clone<span class="w"> </span>--branch<span class="w"> </span>&lt;tag&gt;<span class="w"> </span>https://github.com/ppfenning/coxswain<span class="w"> </span>&lt;home&gt;/installs/coxswain
 cox<span class="w"> </span>install<span class="w"> </span>--team<span class="w"> </span>my-team
 mkdir<span class="w"> </span>-p<span class="w"> </span>&lt;workspace&gt;/work<span class="w"> </span>&lt;workspace&gt;/runs<span class="w"> </span>&lt;workspace&gt;/intake<span class="w"> </span>&lt;workspace&gt;/cartridges
 git<span class="w"> </span>-C<span class="w"> </span>&lt;workspace&gt;<span class="w"> </span>init
 cartridge<span class="w"> </span>init<span class="w"> </span>my-team<span class="w"> </span>--cartridges-dir<span class="w"> </span>&lt;workspace&gt;/cartridges
 cox<span class="w"> </span>setup<span class="w"> </span>doctor
 </code></pre></div>
-<p><code>&lt;tag&gt;</code> is a release tag, such as <code>v2026.10.0</code>. <code>&lt;home&gt;</code> is the coxswain
-home: <code>--home</code>, else <code>COXSWAIN_HOME</code>, else <code>$XDG_DATA_HOME/coxswain</code>, else
-<code>~/.local/share/coxswain</code>. <code>&lt;workspace&gt;</code> is <code>&lt;home&gt;/workspaces/main</code> unless
-you pass <code>--workspace</code>.</p>
-<p><code>cox install</code> reads <code>manifest.toml</code> from the checkout at
-<code>&lt;home&gt;/installs/coxswain</code>, which is why the repository is cloned there first.
-That checkout is the whole install: there is one, with one venv.</p>
+<p><code>&lt;home&gt;</code> is the coxswain home: <code>--home</code>, else <code>COXSWAIN_HOME</code>, else
+<code>$XDG_DATA_HOME/coxswain</code>, else <code>~/.local/share/coxswain</code>. <code>&lt;workspace&gt;</code> is
+<code>&lt;home&gt;/workspaces/main</code> unless you pass <code>--workspace</code>.</p>
+<p>When the home has no checkout, <code>cox install</code> clones one at the release tag
+matching its own version into <code>&lt;home&gt;/installs/coxswain</code>, then reads
+<code>manifest.toml</code> from it. That checkout is the whole install: there is one,
+with one venv.</p>
 <p>The doctor that <code>cox install</code> runs at its close may report the missing
 workspace and cartridge until the <code>mkdir</code>, <code>git init</code> and <code>cartridge init</code>
 steps are done.</p>
