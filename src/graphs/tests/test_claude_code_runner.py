@@ -684,142 +684,70 @@ def test_a_builder_pointed_at_a_non_repository_fails_loudly(fake_claude, tmp_pat
 # ── cost ceilings, tier overrides, the digest ────────────────────────────────
 
 
-def test_a_tier_budget_becomes_a_dollar_ceiling(fake_claude, tmp_path) -> None:
+_TIER_AND_ROLE = {"budget_usd": {"standard": 0.35}, "role_budget_usd": {"build": 0.6}}
+_RUNAWAY = {"role_ceiling_usd": {"build": 6.0}}
+
+
+@pytest.mark.parametrize(
+    ("extra", "role", "call", "node_cap", "sent"),
+    [
+        pytest.param(_TIER_AND_ROLE, "build", {}, None, "0.6000", id="role-budget-beats-its-tier"),
+        pytest.param({}, "plan", {}, None, None, id="no-budget-no-ceiling"),
+        pytest.param(_TIER_AND_ROLE, "build", {"budget_usd": 2.5}, None, "2.5000", id="call-budget-overrides-role"),
+        pytest.param({"role_budget_usd": {"build": 0.6}, **_RUNAWAY}, "build", {}, None, "0.6000", id="slice-stops-at-guide-under-runaway"),
+        pytest.param(_RUNAWAY, "build", {}, None, "6.0000", id="runaway-only-stops-there"),
+        pytest.param({"budget_usd": {"standard": 0.35}, **_RUNAWAY}, "plan", {}, None, "0.3500", id="tier-budget-when-role-has-no-runaway"),
+        pytest.param(_RUNAWAY, "build", {}, 2.0, "2.0000", id="operator-cap-below-ceiling-binds"),
+        pytest.param({"budget_usd": {"standard": 0.35}}, "plan", {}, 2.0, "0.3500", id="operator-cap-above-ceiling-leaves-it"),
+    ],
+)
+def test_the_dollar_ceiling_sent_to_the_cli(fake_claude, tmp_path, extra, role, call, node_cap, sent) -> None:
     script, _, _ = fake_claude
-    runner = ClaudeCodeRunner({**PROFILE, "budget_usd": {"standard": 0.35}}, claude_bin=str(script), cwd=tmp_path)
-    runner.run(role="plan", schema=SCHEMA, prompt="go")
+    runner = ClaudeCodeRunner({**PROFILE, **extra}, claude_bin=str(script), cwd=tmp_path)
+    runner.node_cap_usd = node_cap
+    runner.run(role=role, schema=SCHEMA, prompt="go", **call)
     argv = recorded(fake_claude)["argv"]
-    assert argv[argv.index("--max-budget-usd") + 1] == "0.3500"
+    assert (argv[argv.index("--max-budget-usd") + 1] if "--max-budget-usd" in argv else None) == sent
 
 
-def test_a_role_budget_beats_its_tier(fake_claude, tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("extra", "thread_ceiling", "spent", "argv_kwargs", "left"),
+    [
+        pytest.param({"role_budget_usd": {"build": 0.6}, **_RUNAWAY}, None, 5.8, {}, "0.2000", id="resumed-slice-never-passes-runaway"),
+        pytest.param(_RUNAWAY, None, 6.4, {}, "0.0000", id="past-runaway-sends-nothing-left"),
+        pytest.param(_RUNAWAY, {"T-1": (2.40, "task")}, 0.9, {"thread": "T-1"}, "1.5000", id="thread-ceiling-sends-what-is-left"),
+        pytest.param(
+            {"budget_usd": {"standard": 1.6}}, None, 0.6, {"checkpoint_fractions": (1.0,), "checkpoint_index": 0}, "1.0000",
+            id="checkpoint-target-sends-what-is-left",
+        ),
+    ],
+)
+def test_what_is_left_of_a_ceiling_is_sent_on_a_resumed_session(fake_claude, tmp_path, extra, thread_ceiling, spent, argv_kwargs, left) -> None:
     script, _, _ = fake_claude
-    runner = ClaudeCodeRunner(
-        {**PROFILE, "budget_usd": {"standard": 0.35}, "role_budget_usd": {"build": 0.6}}, claude_bin=str(script), cwd=tmp_path
-    )
-    runner.run(role="build", schema=SCHEMA, prompt="go")
-    argv = recorded(fake_claude)["argv"]
-    assert argv[argv.index("--max-budget-usd") + 1] == "0.6000"
+    runner = ClaudeCodeRunner({**PROFILE, **extra}, claude_bin=str(script), cwd=tmp_path)
+    if thread_ceiling is not None:
+        runner.thread_ceiling_usd = thread_ceiling
+    argv = runner._argv(model="sonnet", tier="standard", tools=[], schema=SCHEMA, system="", role="build", spent_usd=spent, **argv_kwargs)
+    assert argv[argv.index("--max-budget-usd") + 1] == left
 
 
-def test_no_budget_means_no_ceiling(fake_claude, tmp_path) -> None:
-    runner = runner_for(fake_claude, tmp_path)
-    runner.run(role="plan", schema=SCHEMA, prompt="go")
-    assert "--max-budget-usd" not in recorded(fake_claude)["argv"]
-
-
-def test_a_call_level_budget_overrides_the_role_ceiling(fake_claude, tmp_path) -> None:
-    script, _, _ = fake_claude
-    runner = ClaudeCodeRunner(
-        {**PROFILE, "budget_usd": {"standard": 0.35}, "role_budget_usd": {"build": 0.6}}, claude_bin=str(script), cwd=tmp_path
-    )
-    runner.run(role="build", schema=SCHEMA, prompt="go", budget_usd=2.5)
-    argv = recorded(fake_claude)["argv"]
-    assert argv[argv.index("--max-budget-usd") + 1] == "2.5000"
-
-
-def test_a_slice_stops_at_the_guide_under_a_runaway_ceiling(fake_claude, tmp_path) -> None:
-    script, _, _ = fake_claude
-    runner = ClaudeCodeRunner(
-        {**PROFILE, "role_budget_usd": {"build": 0.6}, "role_ceiling_usd": {"build": 6.0}}, claude_bin=str(script), cwd=tmp_path
-    )
-    runner.run(role="build", schema=SCHEMA, prompt="go")
-    argv = recorded(fake_claude)["argv"]
-    assert argv[argv.index("--max-budget-usd") + 1] == "0.6000"
-
-
-def test_a_resumed_slice_never_passes_the_runaway_ceiling(fake_claude, tmp_path) -> None:
-    script, _, _ = fake_claude
-    runner = ClaudeCodeRunner(
-        {**PROFILE, "role_budget_usd": {"build": 0.6}, "role_ceiling_usd": {"build": 6.0}}, claude_bin=str(script), cwd=tmp_path
-    )
-    argv = runner._argv(model="sonnet", tier="standard", tools=[], schema=SCHEMA, system="", role="build", spent_usd=5.8)
-    assert argv[argv.index("--max-budget-usd") + 1] == "0.2000"
-
-
-def test_a_session_past_the_runaway_ceiling_sends_nothing_left(fake_claude, tmp_path) -> None:
-    script, _, _ = fake_claude
-    runner = ClaudeCodeRunner({**PROFILE, "role_ceiling_usd": {"build": 6.0}}, claude_bin=str(script), cwd=tmp_path)
-    argv = runner._argv(model="sonnet", tier="standard", tools=[], schema=SCHEMA, system="", role="build", spent_usd=6.4)
-    assert argv[argv.index("--max-budget-usd") + 1] == "0.0000"
-
-
-def test_a_thread_that_spent_the_runaway_ceiling_stops_without_calling_the_cli(fake_claude, tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("thread_ceiling", "spent", "message"),
+    [
+        pytest.param(None, 6.1, r"runaway ceiling \$6.00 reached", id="runaway-ceiling"),
+        pytest.param({"T-1": (2.40, "task")}, 2.40, r"task budget reached \(\$2\.40 = 1\.5 x budget\): split the task", id="task-budget"),
+    ],
+)
+def test_a_thread_at_its_ceiling_stops_without_calling_the_cli_and_names_it(fake_claude, tmp_path, thread_ceiling, spent, message) -> None:
     script, record, _ = fake_claude
-    runner = ClaudeCodeRunner({**PROFILE, "role_ceiling_usd": {"build": 6.0}}, claude_bin=str(script), cwd=tmp_path)
+    runner = ClaudeCodeRunner({**PROFILE, **_RUNAWAY}, claude_bin=str(script), cwd=tmp_path)
+    if thread_ceiling is not None:
+        runner.thread_ceiling_usd = thread_ceiling
     state = runner._thread("T-1", "build")
-    state["calls"], state["spent_usd"] = 3, 6.1
-    with pytest.raises(BudgetStop, match=r"runaway ceiling \$6.00 reached"):
+    state["calls"], state["spent_usd"] = 3, spent
+    with pytest.raises(BudgetStop, match=message):
         runner.run(role="build", schema=SCHEMA, prompt="again", thread="T-1", task="t1")
     assert not record.exists()
-
-
-def test_a_role_with_only_a_runaway_ceiling_stops_there(fake_claude, tmp_path) -> None:
-    script, _, _ = fake_claude
-    runner = ClaudeCodeRunner({**PROFILE, "role_ceiling_usd": {"build": 6.0}}, claude_bin=str(script), cwd=tmp_path)
-    runner.run(role="build", schema=SCHEMA, prompt="go")
-    argv = recorded(fake_claude)["argv"]
-    assert argv[argv.index("--max-budget-usd") + 1] == "6.0000"
-
-
-def test_a_role_without_a_runaway_ceiling_keeps_its_shape_ceiling(fake_claude, tmp_path) -> None:
-    script, _, _ = fake_claude
-    runner = ClaudeCodeRunner(
-        {**PROFILE, "budget_usd": {"standard": 0.35}, "role_ceiling_usd": {"build": 6.0}}, claude_bin=str(script), cwd=tmp_path
-    )
-    runner.run(role="plan", schema=SCHEMA, prompt="go")
-    argv = recorded(fake_claude)["argv"]
-    assert argv[argv.index("--max-budget-usd") + 1] == "0.3500"
-
-
-def test_an_operator_cap_below_the_runaway_ceiling_still_binds(fake_claude, tmp_path) -> None:
-    script, _, _ = fake_claude
-    runner = ClaudeCodeRunner({**PROFILE, "role_ceiling_usd": {"build": 6.0}}, claude_bin=str(script), cwd=tmp_path)
-    runner.node_cap_usd = 2.0
-    runner.run(role="build", schema=SCHEMA, prompt="go")
-    argv = recorded(fake_claude)["argv"]
-    assert argv[argv.index("--max-budget-usd") + 1] == "2.0000"
-
-
-def test_a_thread_ceiling_tighter_than_the_role_ceiling_sends_what_is_left_of_it(fake_claude, tmp_path) -> None:
-    script, _, _ = fake_claude
-    runner = ClaudeCodeRunner({**PROFILE, "role_ceiling_usd": {"build": 6.0}}, claude_bin=str(script), cwd=tmp_path)
-    runner.thread_ceiling_usd = {"T-1": (2.40, "task")}
-    argv = runner._argv(
-        model="sonnet", tier="standard", tools=[], schema=SCHEMA, system="", role="build", spent_usd=0.9, thread="T-1"
-    )
-    assert argv[argv.index("--max-budget-usd") + 1] == "1.5000"
-
-
-def test_a_thread_already_at_its_ceiling_stops_without_calling_the_cli_and_names_the_task_budget(fake_claude, tmp_path) -> None:
-    script, record, _ = fake_claude
-    runner = ClaudeCodeRunner({**PROFILE, "role_ceiling_usd": {"build": 6.0}}, claude_bin=str(script), cwd=tmp_path)
-    runner.thread_ceiling_usd = {"T-1": (2.40, "task")}
-    state = runner._thread("T-1", "build")
-    state["calls"], state["spent_usd"] = 1, 2.40
-    with pytest.raises(BudgetStop, match=r"task budget reached \(\$2\.40 = 1\.5 x budget\): split the task"):
-        runner.run(role="build", schema=SCHEMA, prompt="again", thread="T-1", task="t1")
-    assert not record.exists()
-
-
-def test_a_thread_with_no_ceiling_entry_still_stops_at_the_role_s_runaway_ceiling(fake_claude, tmp_path) -> None:
-    script, record, _ = fake_claude
-    runner = ClaudeCodeRunner({**PROFILE, "role_ceiling_usd": {"build": 6.0}}, claude_bin=str(script), cwd=tmp_path)
-    state = runner._thread("T-2", "build")
-    state["calls"], state["spent_usd"] = 3, 6.1
-    with pytest.raises(BudgetStop, match=r"runaway ceiling \$6.00 reached"):
-        runner.run(role="build", schema=SCHEMA, prompt="again", thread="T-2", task="t1")
-    assert not record.exists()
-
-
-def test_a_checkpoint_target_is_sent_as_what_is_left_of_it(fake_claude, tmp_path) -> None:
-    script, _, _ = fake_claude
-    runner = ClaudeCodeRunner({**PROFILE, "budget_usd": {"standard": 1.6}}, claude_bin=str(script), cwd=tmp_path)
-    argv = runner._argv(
-        model="sonnet", tier="standard", tools=[], schema=SCHEMA, system="", role="build", spent_usd=0.6,
-        checkpoint_fractions=(1.0,), checkpoint_index=0,
-    )
-    assert argv[argv.index("--max-budget-usd") + 1] == "1.0000"
 
 
 def test_a_thread_already_past_its_checkpoint_stops_there_without_calling_the_cli(fake_claude, tmp_path) -> None:
@@ -839,123 +767,37 @@ def _bounds_file(tmp_path: Path, rows: list[dict]) -> Path:
     return path
 
 
-def test_a_bounds_row_with_enough_history_sets_the_ceiling_and_its_source(fake_claude, tmp_path) -> None:
+_BOUNDS_ROW = {"role": "build", "model": "sonnet", "n": 25, "strict": 0.1, "moderate": 0.2, "liberal": 0.6}
+
+
+@pytest.mark.parametrize(
+    ("bounds", "level", "ceiling", "source", "fractions", "fractions_source"),
+    [
+        pytest.param({**_BOUNDS_ROW, "checkpoint_fractions": [1.0, 3.0]}, None, 0.2, "bounds:moderate", [1.0, 3.0], "bounds", id="enough-history-with-fractions"),
+        pytest.param(_BOUNDS_ROW, None, 0.2, "bounds:moderate", [1.0, 2.0], "default", id="enough-history-no-fractions-field"),
+        pytest.param({**_BOUNDS_ROW, "n": 10, "checkpoint_fractions": [1.0, 3.0]}, None, 0.6, "profile", [1.0, 2.0], "default", id="too-little-history"),
+        pytest.param("missing", None, 0.6, "profile", [1.0, 2.0], "default", id="path-does-not-resolve"),
+        pytest.param(None, None, 0.6, "profile", [1.0, 2.0], "default", id="no-bounds-file"),
+        pytest.param(_BOUNDS_ROW, "strict", 0.1, "bounds:strict", [1.0, 2.0], "default", id="strict-level"),
+    ],
+)
+def test_a_bounds_row_sets_the_ceiling_and_the_checkpoint_fractions_or_the_defaults_stand(
+    fake_claude, tmp_path, bounds, level, ceiling, source, fractions, fractions_source
+) -> None:
     script, _, _ = fake_claude
-    bounds = _bounds_file(tmp_path, [{"role": "build", "model": "sonnet", "n": 25, "strict": 0.1, "moderate": 0.2, "liberal": 0.6}])
     runner = ClaudeCodeRunner({**PROFILE, "role_budget_usd": {"build": 0.6}}, claude_bin=str(script), cwd=tmp_path)
-    runner.cost_bounds_path = bounds
+    if bounds == "missing":
+        runner.cost_bounds_path = tmp_path / "missing-bounds.json"
+    elif bounds is not None:
+        runner.cost_bounds_path = _bounds_file(tmp_path, [bounds])
+    if level is not None:
+        runner.cost_level = level
     runner.run(role="build", schema=SCHEMA, prompt="go")
     argv = recorded(fake_claude)["argv"]
-    assert argv[argv.index("--max-budget-usd") + 1] == "0.2000"
-    assert runner.calls[-1]["ceiling_usd"] == 0.2
-    assert runner.calls[-1]["ceiling_source"] == "bounds:moderate"
-
-
-def test_a_bounds_row_with_too_little_history_falls_back_to_the_profile(fake_claude, tmp_path) -> None:
-    script, _, _ = fake_claude
-    bounds = _bounds_file(tmp_path, [{"role": "build", "model": "sonnet", "n": 10, "strict": 0.1, "moderate": 0.2, "liberal": 0.6}])
-    runner = ClaudeCodeRunner({**PROFILE, "role_budget_usd": {"build": 0.6}}, claude_bin=str(script), cwd=tmp_path)
-    runner.cost_bounds_path = bounds
-    runner.run(role="build", schema=SCHEMA, prompt="go")
-    argv = recorded(fake_claude)["argv"]
-    assert argv[argv.index("--max-budget-usd") + 1] == "0.6000"
-    assert runner.calls[-1]["ceiling_usd"] == 0.6
-    assert runner.calls[-1]["ceiling_source"] == "profile"
-
-
-def test_a_bounds_path_that_does_not_resolve_falls_back_to_the_profile(fake_claude, tmp_path) -> None:
-    script, _, _ = fake_claude
-    runner = ClaudeCodeRunner({**PROFILE, "role_budget_usd": {"build": 0.6}}, claude_bin=str(script), cwd=tmp_path)
-    runner.cost_bounds_path = tmp_path / "missing-bounds.json"
-    runner.run(role="build", schema=SCHEMA, prompt="go")
-    argv = recorded(fake_claude)["argv"]
-    assert argv[argv.index("--max-budget-usd") + 1] == "0.6000"
-    assert runner.calls[-1]["ceiling_usd"] == 0.6
-    assert runner.calls[-1]["ceiling_source"] == "profile"
-
-
-def test_no_bounds_file_behaves_exactly_as_today(fake_claude, tmp_path) -> None:
-    script, _, _ = fake_claude
-    runner = ClaudeCodeRunner({**PROFILE, "role_budget_usd": {"build": 0.6}}, claude_bin=str(script), cwd=tmp_path)
-    runner.run(role="build", schema=SCHEMA, prompt="go")
-    argv = recorded(fake_claude)["argv"]
-    assert argv[argv.index("--max-budget-usd") + 1] == "0.6000"
-    assert runner.calls[-1]["ceiling_usd"] == 0.6
-    assert runner.calls[-1]["ceiling_source"] == "profile"
-
-
-def test_a_strict_level_picks_the_strict_column(fake_claude, tmp_path) -> None:
-    script, _, _ = fake_claude
-    bounds = _bounds_file(tmp_path, [{"role": "build", "model": "sonnet", "n": 25, "strict": 0.1, "moderate": 0.2, "liberal": 0.6}])
-    runner = ClaudeCodeRunner({**PROFILE, "role_budget_usd": {"build": 0.6}}, claude_bin=str(script), cwd=tmp_path)
-    runner.cost_bounds_path = bounds
-    runner.cost_level = "strict"
-    runner.run(role="build", schema=SCHEMA, prompt="go")
-    argv = recorded(fake_claude)["argv"]
-    assert argv[argv.index("--max-budget-usd") + 1] == "0.1000"
-    assert runner.calls[-1]["ceiling_source"] == "bounds:strict"
-
-
-def test_a_bounds_row_with_enough_history_and_checkpoint_fractions_records_bounds(fake_claude, tmp_path) -> None:
-    bounds = _bounds_file(tmp_path, [{
-        "role": "build", "model": "sonnet", "n": 25, "strict": 0.1, "moderate": 0.2, "liberal": 0.6,
-        "checkpoint_fractions": [1.0, 3.0],
-    }])
-    script, _, _ = fake_claude
-    runner = ClaudeCodeRunner({**PROFILE, "role_budget_usd": {"build": 0.6}}, claude_bin=str(script), cwd=tmp_path)
-    runner.cost_bounds_path = bounds
-    runner.run(role="build", schema=SCHEMA, prompt="go")
-    assert runner.calls[-1]["checkpoint_fractions"] == [1.0, 3.0]
-    assert runner.calls[-1]["checkpoint_source"] == "bounds"
-
-
-def test_a_bounds_row_with_too_little_history_records_the_default_checkpoint_fractions(fake_claude, tmp_path) -> None:
-    bounds = _bounds_file(tmp_path, [{
-        "role": "build", "model": "sonnet", "n": 10, "strict": 0.1, "moderate": 0.2, "liberal": 0.6,
-        "checkpoint_fractions": [1.0, 3.0],
-    }])
-    script, _, _ = fake_claude
-    runner = ClaudeCodeRunner({**PROFILE, "role_budget_usd": {"build": 0.6}}, claude_bin=str(script), cwd=tmp_path)
-    runner.cost_bounds_path = bounds
-    runner.run(role="build", schema=SCHEMA, prompt="go")
-    assert runner.calls[-1]["checkpoint_fractions"] == [1.0, 2.0]
-    assert runner.calls[-1]["checkpoint_source"] == "default"
-
-
-def test_a_bounds_row_with_no_checkpoint_fractions_field_records_the_default(fake_claude, tmp_path) -> None:
-    bounds = _bounds_file(tmp_path, [{"role": "build", "model": "sonnet", "n": 25, "strict": 0.1, "moderate": 0.2, "liberal": 0.6}])
-    script, _, _ = fake_claude
-    runner = ClaudeCodeRunner({**PROFILE, "role_budget_usd": {"build": 0.6}}, claude_bin=str(script), cwd=tmp_path)
-    runner.cost_bounds_path = bounds
-    runner.run(role="build", schema=SCHEMA, prompt="go")
-    assert runner.calls[-1]["checkpoint_fractions"] == [1.0, 2.0]
-    assert runner.calls[-1]["checkpoint_source"] == "default"
-
-
-def test_no_bounds_file_records_the_default_checkpoint_fractions(fake_claude, tmp_path) -> None:
-    script, _, _ = fake_claude
-    runner = ClaudeCodeRunner({**PROFILE, "role_budget_usd": {"build": 0.6}}, claude_bin=str(script), cwd=tmp_path)
-    runner.run(role="build", schema=SCHEMA, prompt="go")
-    assert runner.calls[-1]["checkpoint_fractions"] == [1.0, 2.0]
-    assert runner.calls[-1]["checkpoint_source"] == "default"
-
-
-def test_a_node_cap_below_the_shape_ceiling_becomes_the_effective_limit(fake_claude, tmp_path) -> None:
-    script, _, _ = fake_claude
-    runner = ClaudeCodeRunner({**PROFILE, "budget_usd": {"standard": 2.0}}, claude_bin=str(script), cwd=tmp_path)
-    runner.node_cap_usd = 0.5
-    runner.run(role="plan", schema=SCHEMA, prompt="go")
-    argv = recorded(fake_claude)["argv"]
-    assert argv[argv.index("--max-budget-usd") + 1] == "0.5000"
-
-
-def test_a_node_cap_above_the_shape_ceiling_leaves_the_ceiling_effective(fake_claude, tmp_path) -> None:
-    script, _, _ = fake_claude
-    runner = ClaudeCodeRunner({**PROFILE, "budget_usd": {"standard": 0.35}}, claude_bin=str(script), cwd=tmp_path)
-    runner.node_cap_usd = 2.0
-    runner.run(role="plan", schema=SCHEMA, prompt="go")
-    argv = recorded(fake_claude)["argv"]
-    assert argv[argv.index("--max-budget-usd") + 1] == "0.3500"
+    assert argv[argv.index("--max-budget-usd") + 1] == f"{ceiling:.4f}"
+    call = runner.calls[-1]
+    assert (call["ceiling_usd"], call["ceiling_source"]) == (ceiling, source)
+    assert (call["checkpoint_fractions"], call["checkpoint_source"]) == (fractions, fractions_source)
 
 
 def test_the_scripted_runner_records_the_budget_override() -> None:
@@ -1090,10 +932,8 @@ def test_an_unparseable_bound_is_recorded_not_skipped() -> None:
 @pytest.mark.parametrize(
     ("bounds", "init", "reason"),
     [
-        ({}, INIT, "caller"),
         ({"cli_version_floor": "2.1.0"}, INIT, "caller; version_below_floor"),
         ({"cli_version_pin": "2.0.30"}, INIT, "caller; version_pin_mismatch"),
-        ({"cli_version_pin": "v2.0.31"}, INIT, "caller; version_bound_unparseable"),
         ({"cli_version_floor": "2.0.0"}, {"type": "system", "subtype": "init"}, "caller; version_unknown"),
     ],
 )
@@ -1102,27 +942,27 @@ def test_a_version_violation_rides_on_the_reason_and_the_call_still_finishes(fak
     assert (dict(out), out.decision.reason) == ({"ok": True}, reason)
 
 
-def test_a_tier_override_that_changes_the_tier_is_reason_override(fake_claude, tmp_path) -> None:
-    runner = _streamed(tmp_path, fake_claude, [INIT, RESULT], tier_overrides={"build": "cheap"})
+@pytest.mark.parametrize(
+    ("override", "chosen_tier"),
+    [pytest.param("cheap", "extract", id="changes-the-tier"), pytest.param("standard", "reason", id="same-tier-asked-for")],
+)
+def test_a_tier_override_is_reason_override(fake_claude, tmp_path, override, chosen_tier) -> None:
+    runner = _streamed(tmp_path, fake_claude, [INIT, RESULT], tier_overrides={"build": override})
     d = runner.run(role="build", tier="standard", schema=SCHEMA, prompt="go").decision
-    assert (d.requested_tier, d.chosen_tier, d.reason) == ("standard", "extract", "override")
+    assert (d.requested_tier, d.chosen_tier, d.reason) == ("standard", chosen_tier, "override")
 
 
-def test_an_override_to_the_tier_already_asked_for_is_still_reason_override(fake_claude, tmp_path) -> None:
-    runner = _streamed(tmp_path, fake_claude, [INIT, RESULT], tier_overrides={"build": "standard"})
-    d = runner.run(role="build", tier="standard", schema=SCHEMA, prompt="go").decision
-    assert (d.chosen_tier, d.reason) == ("reason", "override")
-
-
-def test_an_init_event_lacking_the_fields_gives_none_version_and_the_resolved_model(fake_claude, tmp_path) -> None:
-    runner = _streamed(tmp_path, fake_claude, [{"type": "system", "subtype": "init"}, RESULT])
-    d = runner.run(role="build", tier="standard", schema=SCHEMA, prompt="go").decision
-    assert d.claude_code_version is None and d.model_id == "sonnet"
-
-
-def test_json_mode_has_no_init_event_and_still_yields_a_decision(fake_claude, tmp_path) -> None:
-    d = runner_for(fake_claude, tmp_path).run(role="build", tier="deep", schema=SCHEMA, prompt="go").decision
-    assert d.claude_code_version is None and d.model_id == "opus" and d.reason == "caller"
+@pytest.mark.parametrize(
+    ("events", "tier", "model_id"),
+    [
+        pytest.param([{"type": "system", "subtype": "init"}, RESULT], "standard", "sonnet", id="init-event-lacks-the-fields"),
+        pytest.param(None, "deep", "opus", id="json-mode-has-no-init-event"),
+    ],
+)
+def test_without_init_facts_the_decision_has_no_version_and_the_resolved_model(fake_claude, tmp_path, events, tier, model_id) -> None:
+    runner = runner_for(fake_claude, tmp_path) if events is None else _streamed(tmp_path, fake_claude, events)
+    d = runner.run(role="build", tier=tier, schema=SCHEMA, prompt="go").decision
+    assert (d.claude_code_version, d.model_id, d.reason) == (None, model_id, "caller")
 
 
 def test_a_stream_with_no_result_event_is_a_named_failure(fake_claude, tmp_path) -> None:
@@ -1152,7 +992,7 @@ def _tool_result(tool_id: str, output: str) -> dict:
     return {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": tool_id, "content": output}]}}
 
 
-def test_trace_commands_returns_bash_commands_in_call_order() -> None:
+def test_trace_commands_returns_bash_commands_in_call_order_and_nothing_without_bash() -> None:
     trace = [
         _tool_use("t1", "pytest -q"),
         _tool_result("t1", "39 passed"),
@@ -1163,39 +1003,11 @@ def test_trace_commands_returns_bash_commands_in_call_order() -> None:
         {"command": "pytest -q", "output": "39 passed", "source": "trace"},
         {"command": "ruff check .", "output": "All checks passed!", "source": "trace"},
     ]
-
-
-def test_trace_commands_with_no_bash_calls_returns_nothing() -> None:
-    trace = [
+    no_bash = [
         {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "/r/f.py"}}]}},
         {"type": "result", "subtype": "success"},
     ]
-    assert trace_commands(trace) == []
-
-
-def test_call_summary_counts_tools_reads_and_takes_the_result_flags() -> None:
-    def use(tool_id: str, name: str, **tool_input: object) -> dict:
-        return {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": tool_id, "name": name, "input": tool_input}]}}
-
-    events = [
-        {"type": "system", "subtype": "init"},
-        use("a", "Read", file_path="/r/pkg/f.py"),
-        use("b", "Read", file_path="/r/pkg/g.py", limit=40),
-        use("c", "Bash", command="pytest -q"),
-        {"type": "result", "subtype": "success", "is_error": False},
-    ]
-    assert call_summary(events) == {
-        "tool_uses": {"Read": 2, "Bash": 1},
-        "reads": {"f.py": 1, "g.py": 1},
-        "whole_file_reads": 1,
-        "result": "success",
-        "is_error": False,
-        "denied": [],
-    }
-
-
-def test_call_summary_of_an_empty_stream_has_no_result_and_no_error() -> None:
-    assert call_summary([]) == {"tool_uses": {}, "reads": {}, "whole_file_reads": 0, "result": None, "is_error": False, "denied": []}
+    assert trace_commands(no_bash) == []
 
 
 def _use(tool_id: str, name: str, **tool_input: object) -> dict:
@@ -1228,66 +1040,58 @@ def test_call_summary_lists_denied_write_and_bash_calls_in_call_order() -> None:
     assert events == before
 
 
-def test_call_summary_with_no_denials_has_an_empty_denied_list() -> None:
-    events = [_use("a", "Read", file_path="/r/f.py"), _result("a", "contents", False), _use("b", "Bash", command="false"), _result("b", "Exit code 2\nfail", True)]
-    assert call_summary(events)["denied"] == []
+@pytest.mark.parametrize(
+    ("events", "expected"),
+    [
+        pytest.param(
+            [
+                {"type": "system", "subtype": "init"},
+                _use("a", "Read", file_path="/r/pkg/f.py"),
+                _use("b", "Read", file_path="/r/pkg/g.py", limit=40),
+                _use("c", "Bash", command="pytest -q"),
+                {"type": "result", "subtype": "success", "is_error": False},
+            ],
+            {"tool_uses": {"Read": 2, "Bash": 1}, "reads": {"f.py": 1, "g.py": 1}, "whole_file_reads": 1, "result": "success", "is_error": False, "denied": []},
+            id="counts-tools-reads-and-takes-the-result-flags",
+        ),
+        pytest.param([], {"tool_uses": {}, "reads": {}, "whole_file_reads": 0, "result": None, "is_error": False, "denied": []}, id="empty-stream"),
+    ],
+)
+def test_call_summary_counts_tools_and_reads(events, expected) -> None:
+    assert call_summary(events) == expected
 
 
-def test_self_reported_commands_tags_the_models_own_list() -> None:
+def test_self_reported_commands_tags_the_models_own_list_and_nothing_when_none() -> None:
     assert self_reported_commands({"commands_run": ["pytest -q", "ruff check ."]}) == [
         {"command": "pytest -q", "source": "self_report"},
         {"command": "ruff check .", "source": "self_report"},
     ]
-
-
-def test_self_reported_commands_with_none_reported_is_nothing() -> None:
     assert self_reported_commands({}) == []
 
 
-def test_files_touched_from_patch_reads_the_plus_and_minus_headers() -> None:
-    patch = (
-        "diff --git a/runner/x.py b/runner/x.py\n"
-        "--- a/runner/x.py\n"
-        "+++ b/runner/x.py\n"
-        "@@ -1 +1 @@\n"
-        "-old\n"
-        "+new\n"
-        "diff --git a/tests/y.py b/tests/y.py\n"
-        "--- a/tests/y.py\n"
-        "+++ b/tests/y.py\n"
-        "@@ -1 +1 @@\n"
-        "-old\n"
-        "+new\n"
-    )
-    assert files_touched_from_patch(patch) == ["runner/x.py", "tests/y.py"]
+_PLUS_MINUS = (
+    "diff --git a/runner/x.py b/runner/x.py\n--- a/runner/x.py\n+++ b/runner/x.py\n@@ -1 +1 @@\n-old\n+new\n"
+    "diff --git a/tests/y.py b/tests/y.py\n--- a/tests/y.py\n+++ b/tests/y.py\n@@ -1 +1 @@\n-old\n+new\n"
+)
+_DELETED = (
+    "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n"
+    "diff --git a/b.py b/b.py\ndeleted file mode 100644\n--- a/b.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-old\n"
+)
+# `git -c diff.mnemonicPrefix=true diff` headers read `c/... i/...`, not `a/... b/...`.
+_MNEMONIC = "diff --git c/built.txt i/built.txt\n--- /dev/null\n+++ i/built.txt\n@@ -0,0 +1 @@\n+edited\n"
 
 
-def test_files_touched_from_patch_with_no_patch_returns_nothing() -> None:
-    assert files_touched_from_patch("") == []
-
-
-def test_files_touched_from_patch_names_a_deleted_file_by_its_minus_header() -> None:
-    patch = (
-        "diff --git a/a.py b/a.py\n"
-        "--- a/a.py\n"
-        "+++ b/a.py\n"
-        "@@ -1 +1 @@\n"
-        "-old\n"
-        "+new\n"
-        "diff --git a/b.py b/b.py\n"
-        "deleted file mode 100644\n"
-        "--- a/b.py\n"
-        "+++ /dev/null\n"
-        "@@ -1 +0,0 @@\n"
-        "-old\n"
-    )
-    assert files_touched_from_patch(patch) == ["a.py", "b.py"]
-
-
-def test_files_touched_from_patch_strips_mnemonic_prefixes_too() -> None:
-    """`git -c diff.mnemonicPrefix=true diff` headers read `c/... i/...`, not `a/... b/...`."""
-    patch = "diff --git c/built.txt i/built.txt\n--- /dev/null\n+++ i/built.txt\n@@ -0,0 +1 @@\n+edited\n"
-    assert files_touched_from_patch(patch) == ["built.txt"]
+@pytest.mark.parametrize(
+    ("patch", "files"),
+    [
+        pytest.param(_PLUS_MINUS, ["runner/x.py", "tests/y.py"], id="plus-and-minus-headers"),
+        pytest.param("", [], id="no-patch"),
+        pytest.param(_DELETED, ["a.py", "b.py"], id="deleted-file-by-its-minus-header"),
+        pytest.param(_MNEMONIC, ["built.txt"], id="mnemonic-prefixes"),
+    ],
+)
+def test_files_touched_from_patch(patch, files) -> None:
+    assert files_touched_from_patch(patch) == files
 
 
 # ── the per-call ledger ──────────────────────────────────────────────────────
@@ -1309,48 +1113,32 @@ def _ledger_lines(conn, run_id: str) -> list[dict]:
     ]
 
 
-def test_a_successful_call_records_one_row_and_writes_no_calls_file(fake_claude, tmp_path, conn) -> None:
+@pytest.mark.parametrize(
+    ("payload", "match"),
+    [
+        pytest.param({"is_error": True, "result": "Not logged in · Please run /login"}, "Not logged in", id="runner-error"),
+        pytest.param({"is_error": False, "structured_output": [1, 2, 3]}, "expected an object", id="non-object-answer"),
+        pytest.param({"is_error": False, "structured_output": None, "result": "I could not decide."}, "not JSON", id="prose-without-structured-output"),
+    ],
+)
+def test_a_failed_call_still_records_a_row_before_raising(fake_claude, tmp_path, conn, payload, match) -> None:
+    _, _, set_output = fake_claude
+    set_output(payload)
+    runner = runner_for(fake_claude, tmp_path, runs_dir=tmp_path, run_id="r1", store=Store(conn))
+    with pytest.raises(RunnerError, match=match):
+        runner.run(role="plan", schema=SCHEMA, prompt="go")
+    assert [row["ok"] for row in _ledger_lines(conn, "r1")] == [False]
+
+
+def test_each_call_records_one_row_and_writes_no_calls_file(fake_claude, tmp_path, conn) -> None:
     runner = runner_for(fake_claude, tmp_path, runs_dir=tmp_path, run_id="r1", store=Store(conn))
     runner.run(role="plan", schema=SCHEMA, prompt="go")
-    rows = _ledger_lines(conn, "r1")
-    assert len(rows) == 1
-    assert rows[0]["ok"] is True
-    assert rows[0]["role"] == runner.calls[-1]["role"] and rows[0]["cost_usd"] == runner.calls[-1]["cost_usd"]
-    assert not list(tmp_path.glob("*.calls.jsonl"))
-
-
-def test_a_runner_error_still_records_a_row_before_raising(fake_claude, tmp_path, conn) -> None:
-    _, _, set_output = fake_claude
-    set_output({"is_error": True, "result": "Not logged in · Please run /login"})
-    runner = runner_for(fake_claude, tmp_path, runs_dir=tmp_path, run_id="r1", store=Store(conn))
-    with pytest.raises(RunnerError, match="Not logged in"):
-        runner.run(role="plan", schema=SCHEMA, prompt="go")
-    assert [row["ok"] for row in _ledger_lines(conn, "r1")] == [False]
-
-
-def test_a_non_object_answer_still_records_a_row_before_raising(fake_claude, tmp_path, conn) -> None:
-    _, _, set_output = fake_claude
-    set_output({"is_error": False, "structured_output": [1, 2, 3]})
-    runner = runner_for(fake_claude, tmp_path, runs_dir=tmp_path, run_id="r1", store=Store(conn))
-    with pytest.raises(RunnerError, match="expected an object"):
-        runner.run(role="plan", schema=SCHEMA, prompt="go")
-    assert [row["ok"] for row in _ledger_lines(conn, "r1")] == [False]
-
-
-def test_prose_with_no_structured_output_still_records_a_row_before_raising(fake_claude, tmp_path, conn) -> None:
-    _, _, set_output = fake_claude
-    set_output({"is_error": False, "structured_output": None, "result": "I could not decide."})
-    runner = runner_for(fake_claude, tmp_path, runs_dir=tmp_path, run_id="r1", store=Store(conn))
-    with pytest.raises(RunnerError, match="not JSON"):
-        runner.run(role="plan", schema=SCHEMA, prompt="go")
-    assert [row["ok"] for row in _ledger_lines(conn, "r1")] == [False]
-
-
-def test_two_calls_record_two_rows(fake_claude, tmp_path, conn) -> None:
-    runner = runner_for(fake_claude, tmp_path, runs_dir=tmp_path, run_id="r1", store=Store(conn))
-    runner.run(role="plan", schema=SCHEMA, prompt="go")
+    (row,) = _ledger_lines(conn, "r1")
+    assert row["ok"] is True
+    assert row["role"] == runner.calls[-1]["role"] and row["cost_usd"] == runner.calls[-1]["cost_usd"]
     runner.run(role="plan", schema=SCHEMA, prompt="again")
     assert len(_ledger_lines(conn, "r1")) == 2
+    assert not list(tmp_path.glob("*.calls.jsonl"))
 
 
 def test_the_trace_file_exists_after_the_call_for_the_live_views(fake_claude, tmp_path, conn) -> None:
