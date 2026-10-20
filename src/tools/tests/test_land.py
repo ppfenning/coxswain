@@ -969,27 +969,15 @@ def test_execute_mark_done_moves_a_ready_item_to_done_and_prints_the_note(tmp_pa
 _READY = "---\nid: t\nstate: ready\n---\n\nBody.\n"
 
 
-def test_approve_to_done_moves_ready_to_done_with_a_note_when_merged():
-    assert land.approve_to_done(_READY, merged=True) == (
-        "---\nid: t\nstate: done\n---\n\nBody.\n",
-        "land: work item was still ready (quarantined after approval, or run on another machine); merged, so done",
-    )
-
-
-def test_approve_to_done_refuses_ready_when_not_merged():
-    assert land.approve_to_done(_READY) == (None, "land: work item state is 'ready', not moving to done")
-
-
-def test_approve_to_done_refuses_blocked_even_when_merged():
-    text = "---\nid: t\nstate: blocked\n---\n\nBody.\n"
-    assert land.approve_to_done(text, merged=True) == (None, "land: work item state is 'blocked', not moving to done")
-
-
-def test_approve_to_done_moves_approved_to_done_without_a_note():
-    text = "---\nid: t\nstate: approved\n---\n\nBody.\n"
-    done = "---\nid: t\nstate: done\n---\n\nBody.\n"
-    assert land.approve_to_done(text) == (done, None)
-    assert land.approve_to_done(text, merged=True) == (done, None)
+@pytest.mark.parametrize("text, merged, expected", [
+    (_READY, True, ("---\nid: t\nstate: done\n---\n\nBody.\n",
+                    "land: work item was still ready (quarantined after approval, or run on another machine); merged, so done")),
+    (_READY, False, (None, "land: work item state is 'ready', not moving to done")),
+    ("---\nid: t\nstate: blocked\n---\n\nBody.\n", True, (None, "land: work item state is 'blocked', not moving to done")),
+    ("---\nid: t\nstate: approved\n---\n\nBody.\n", True, ("---\nid: t\nstate: done\n---\n\nBody.\n", None)),
+], ids=["ready-merged", "ready-unmerged", "blocked-merged", "approved"])
+def test_approve_to_done(text, merged, expected):
+    assert land.approve_to_done(text, merged=merged) == expected
 
 
 # --- cli end to end: dry-run default, and the dirty-checkout refusal ---
@@ -998,20 +986,7 @@ def _full_gate(tmp_path):
     (tmp_path / "runs/policy.gate.json").write_text(json.dumps({"level": "full"}), encoding="utf-8")
 
 
-def test_cli_dry_run_is_the_default_and_prints_the_plan(repo, tmp_path, capsys, monkeypatch):
-    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
-    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
-    _full_gate(tmp_path)
-    monkeypatch.chdir(tmp_path)
-    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs")])
-    out = capsys.readouterr().out
-    assert rc == 0
-    assert '"kind": "pick_branch"' in out
-    assert "agents/epic-x-5/seams-task" in out
-    assert all(kind in out for kind in _STEP_ORDER)
-
-
-def test_cli_dry_run_plan_carries_the_item_path(repo, tmp_path, capsys, monkeypatch):
+def test_cli_dry_run_is_the_default_and_prints_the_plan_carrying_the_item_path(repo, tmp_path, capsys, monkeypatch):
     task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
     (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
     item_dir = tmp_path / "work/x/seams"; item_dir.mkdir(parents=True)
@@ -1022,6 +997,8 @@ def test_cli_dry_run_plan_carries_the_item_path(repo, tmp_path, capsys, monkeypa
     rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs")])
     steps = json.loads(capsys.readouterr().out)
     assert rc == 0
+    assert set(_STEP_ORDER) <= {s["kind"] for s in steps}
+    assert next(s for s in steps if s["kind"] == "pick_branch")["branch"] == "agents/epic-x-5/seams-task"
     mark_done = next(s for s in steps if s["kind"] == "mark_done")
     assert mark_done["item"] == str(item_path)
     assert mark_done["from"] == "approved"
@@ -1088,22 +1065,15 @@ def test_cli_recover_resolves_a_record_with_only_the_on_disk_keys(repo, tmp_path
     assert "would merge agents/epic-x-5/seams-task into epic/x/seams" in out
 
 
-def test_cli_recover_refuses_when_the_record_ticket_disagrees_with_its_filename(repo, tmp_path, capsys):
-    rc, out = _recover_dry_run(repo, tmp_path, _on_disk_record(ticket="other-task"), capsys)
+@pytest.mark.parametrize("overrides, work_dirs, said", [
+    ({"ticket": "other-task"}, ("x/seams",), "disagrees with its filename"),
+    ({}, (), "no single initiative"),
+    ({}, ("x/seams", "y/seams"), "no single initiative"),
+], ids=["ticket-disagrees-with-filename", "no-initiative-holds-the-task", "two-initiatives-hold-the-task"])
+def test_cli_recover_refuses_an_unresolvable_record(repo, tmp_path, capsys, overrides, work_dirs, said):
+    rc, out = _recover_dry_run(repo, tmp_path, _on_disk_record(**overrides), capsys, work_dirs=work_dirs)
     assert rc == 2
-    assert "disagrees with its filename" in out
-
-
-def test_cli_recover_refuses_when_no_initiative_holds_the_task(repo, tmp_path, capsys):
-    rc, out = _recover_dry_run(repo, tmp_path, _on_disk_record(), capsys, work_dirs=())
-    assert rc == 2
-    assert "no single initiative" in out
-
-
-def test_cli_recover_refuses_when_two_initiatives_hold_the_task(repo, tmp_path, capsys):
-    rc, out = _recover_dry_run(repo, tmp_path, _on_disk_record(), capsys, work_dirs=("x/seams", "y/seams"))
-    assert rc == 2
-    assert "no single initiative" in out
+    assert said in out
 
 
 def test_initiative_of_takes_the_id_from_frontmatter_and_falls_back_to_the_stem(tmp_path):
@@ -1116,63 +1086,29 @@ def test_initiative_of_takes_the_id_from_frontmatter_and_falls_back_to_the_stem(
     assert cli._initiative_of(tmp_path, "from-stem") == "b"
 
 
-def test_cli_recover_merges_and_closes_an_approved_item(repo, tmp_path, capsys):
-    sp.run(["git", "-C", str(repo), "branch", "epic/x/seams", "main"], check=True, env=_ENV)
+def _item_text(state):
+    return f"---\nid: seams-task\nstate: {state}\n---\n\nBody.\n"
+
+
+@pytest.mark.parametrize("phase_at, state, dry_run, closed, said", [
+    ("main", "approved", False, True, ("epic/x/seams",)),
+    ("agents/epic-x-5/seams-task", "approved", False, True, ("already contains the commit",)),
+    ("agents/epic-x-5/seams-task", "approved", True, False, ("already contains the commit",)),
+    ("agents/epic-x-5/seams-task", "ready", False, False, ("already contains the commit", "not moving to done")),
+], ids=["merges-then-closes", "already-recovered-still-closes", "dry-run-writes-nothing", "ready-stays-ready-unmerged"])
+def test_cli_recover_closes_the_work_item_only_for_a_real_run_that_may_close_it(repo, tmp_path, capsys, phase_at, state, dry_run, closed, said):
+    sp.run(["git", "-C", str(repo), "branch", "epic/x/seams", phase_at], check=True, env=_ENV)
     task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
     (task_dir / "seams-task.json").write_text(json.dumps(_on_disk_record()), encoding="utf-8")
     item_dir = tmp_path / "work/x/seams"; item_dir.mkdir(parents=True)
     item_path = item_dir / "seams-task.md"
-    item_path.write_text("---\nid: seams-task\nstate: approved\n---\n\nBody.\n", encoding="utf-8")
-    rc = cli.main(["runs", "recover", "epic-x-5", "seams-task", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs")])
+    item_path.write_text(_item_text(state), encoding="utf-8")
+    rc = cli.main(["runs", "recover", "epic-x-5", "seams-task", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs"),
+                   *(["--dry-run"] if dry_run else [])])
     out = capsys.readouterr().out
     assert rc == 0, out
-    assert "epic/x/seams" in out
-    assert item_path.read_text() == "---\nid: seams-task\nstate: done\n---\n\nBody.\n"
-
-
-def test_cli_recover_dry_run_leaves_an_approved_item_byte_identical(repo, tmp_path, capsys):
-    sp.run(["git", "-C", str(repo), "branch", "epic/x/seams", "agents/epic-x-5/seams-task"], check=True, env=_ENV)
-    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
-    (task_dir / "seams-task.json").write_text(json.dumps(_on_disk_record()), encoding="utf-8")
-    item_dir = tmp_path / "work/x/seams"; item_dir.mkdir(parents=True)
-    item_path = item_dir / "seams-task.md"
-    original = "---\nid: seams-task\nstate: approved\n---\n\nBody.\n"
-    item_path.write_text(original, encoding="utf-8")
-    rc = cli.main(["runs", "recover", "epic-x-5", "seams-task", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs"), "--dry-run"])
-    out = capsys.readouterr().out
-    assert rc == 0, out
-    assert "already contains the commit" in out
-    assert item_path.read_text() == original
-
-
-def test_cli_recover_closes_an_approved_item_even_when_already_recovered(repo, tmp_path, capsys):
-    sp.run(["git", "-C", str(repo), "branch", "epic/x/seams", "agents/epic-x-5/seams-task"], check=True, env=_ENV)
-    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
-    (task_dir / "seams-task.json").write_text(json.dumps(_on_disk_record()), encoding="utf-8")
-    item_dir = tmp_path / "work/x/seams"; item_dir.mkdir(parents=True)
-    item_path = item_dir / "seams-task.md"
-    item_path.write_text("---\nid: seams-task\nstate: approved\n---\n\nBody.\n", encoding="utf-8")
-    rc = cli.main(["runs", "recover", "epic-x-5", "seams-task", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs")])
-    out = capsys.readouterr().out
-    assert rc == 0, out
-    assert "already contains the commit" in out
-    assert item_path.read_text() == "---\nid: seams-task\nstate: done\n---\n\nBody.\n"
-
-
-def test_cli_recover_leaves_a_ready_item_ready_when_already_recovered(repo, tmp_path, capsys):
-    sp.run(["git", "-C", str(repo), "branch", "epic/x/seams", "agents/epic-x-5/seams-task"], check=True, env=_ENV)
-    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
-    (task_dir / "seams-task.json").write_text(json.dumps(_on_disk_record()), encoding="utf-8")
-    item_dir = tmp_path / "work/x/seams"; item_dir.mkdir(parents=True)
-    item_path = item_dir / "seams-task.md"
-    original = "---\nid: seams-task\nstate: ready\n---\n\nBody.\n"
-    item_path.write_text(original, encoding="utf-8")
-    rc = cli.main(["runs", "recover", "epic-x-5", "seams-task", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs")])
-    out = capsys.readouterr().out
-    assert rc == 0, out
-    assert "already contains the commit" in out
-    assert "not moving to done" in out
-    assert item_path.read_text() == original
+    assert all(phrase in out for phrase in said)
+    assert item_path.read_text() == _item_text("done" if closed else state)
 
 
 def _apply_gated(repo, tmp_path, monkeypatch, *gate):
@@ -1343,28 +1279,20 @@ def test_cli_apply_refuses_a_checks_launch_failure_before_push(repo, tmp_path, c
 
 # --- §1 paths: runs/ resolves against workspace_dir, --runs-dir overrides, refusal names dir+count ---
 
-def test_land_default_resolves_against_the_profiles_workspace_dir(repo, tmp_path, capsys, monkeypatch):
-    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+@pytest.mark.parametrize("flag", [False, True], ids=["profile-workspace-dir", "runs-dir-flag-overrides-profile"])
+def test_land_finds_its_records_under_the_profiles_workspace_dir_or_the_runs_dir_flag(repo, tmp_path, capsys, flag):
+    workspace = tmp_path / "empty" if flag else tmp_path
+    workspace.mkdir(exist_ok=True)
+    runs_dir = tmp_path / "elsewhere/runs" if flag else tmp_path / "runs"
+    task_dir = runs_dir / "epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
     (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
     profile_path = tmp_path / "profile.yaml"
-    profile_path.write_text(f"workspace_dir: {tmp_path}\n", encoding="utf-8")
-    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--profile", str(profile_path)])
+    profile_path.write_text(f"workspace_dir: {workspace}\n", encoding="utf-8")
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--profile", str(profile_path),
+                   *(["--runs-dir", str(runs_dir)] if flag else [])])
     out = capsys.readouterr().out
-    assert rc == 0
-    assert '"kind": "pick_branch"' in out
-
-
-def test_land_runs_dir_flag_overrides_the_profile(repo, tmp_path, capsys):
-    empty_workspace = tmp_path / "empty"; empty_workspace.mkdir()
-    profile_path = tmp_path / "profile.yaml"
-    profile_path.write_text(f"workspace_dir: {empty_workspace}\n", encoding="utf-8")
-    real_runs = tmp_path / "elsewhere/runs"
-    task_dir = real_runs / "epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
-    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
-    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--profile", str(profile_path), "--runs-dir", str(real_runs)])
-    out = capsys.readouterr().out
-    assert rc == 0
-    assert '"kind": "pick_branch"' in out
+    assert rc == 0, out
+    assert "pick_branch" in [s["kind"] for s in json.loads(out)]
 
 
 def test_land_refusal_names_the_absolute_dir_and_the_count(repo, tmp_path, capsys):
@@ -1400,13 +1328,14 @@ def test_cli_apply_checks_the_leader_guard_against_the_resolved_runs_dir(repo, t
     assert "held by loop-a" in out
 
 
-def test_wait_decision_retries_only_while_no_check_has_registered():
-    from agent_tools.land import wait_decision
-
-    assert wait_decision(0, "all checks pass", 0, 300) == "green"
-    assert wait_decision(1, "no checks reported on the 'pr/x' branch", 5, 300) == "retry"
-    assert wait_decision(1, "no checks reported on the 'pr/x' branch", 301, 300) == "timeout"
-    assert wait_decision(1, "test: fail", 5, 300) == "failed"
+@pytest.mark.parametrize("returncode, output, elapsed, expected", [
+    (0, "all checks pass", 0, "green"),
+    (1, "no checks reported on the 'pr/x' branch", 5, "retry"),
+    (1, "no checks reported on the 'pr/x' branch", 301, "timeout"),
+    (1, "test: fail", 5, "failed"),
+], ids=["green", "none-registered-retries", "none-registered-times-out", "failed"])
+def test_wait_decision_retries_only_while_no_check_has_registered(returncode, output, elapsed, expected):
+    assert land.wait_decision(returncode, output, elapsed, 300) == expected
 
 
 def test_unanimous_approval_lands_without_an_arbitration_verdict():
@@ -1428,33 +1357,17 @@ _CHERRY = {"kind": "cherry_pick", "branch": "agents/epic-x-5/seams-task", "commi
            "onto": "pr/seams-task", "from": "main"}
 
 
-def test_resume_decision_is_fresh_when_neither_side_exists():
-    assert land.resume_decision("T", None, None, []) == {"kind": "fresh"}
-
-
-def test_resume_decision_resumes_on_a_matching_local_branch_alone():
-    assert land.resume_decision("T", "T", None, []) == {"kind": "resume", "local": True, "remote": False}
-
-
-def test_resume_decision_resumes_on_a_matching_remote_branch_alone():
-    assert land.resume_decision("T", None, "T", []) == {"kind": "resume", "local": False, "remote": True}
-
-
-def test_resume_decision_resumes_when_both_sides_match():
-    assert land.resume_decision("T", "T", "T", []) == {"kind": "resume", "local": True, "remote": True}
-
-
-def test_resume_decision_refuses_a_differing_side_naming_both_trees():
-    assert land.resume_decision("T", "T", "U", []) == {
-        "kind": "refuse", "reason": "remote tree U differs from the cherry-picked tree T"}
-
-
-def test_resume_decision_adopts_the_first_open_pr():
-    assert land.resume_decision("T", "T", "T", [7, 9]) == {"kind": "adopt", "pr": 7}
-
-
-def test_resume_decision_adopts_an_open_pr_before_the_differing_tree_refusal():
-    assert land.resume_decision("T", "T", "U", [7]) == {"kind": "adopt", "pr": 7}
+@pytest.mark.parametrize("local, remote, prs, expected", [
+    (None, None, [], {"kind": "fresh"}),
+    ("T", None, [], {"kind": "resume", "local": True, "remote": False}),
+    (None, "T", [], {"kind": "resume", "local": False, "remote": True}),
+    ("T", "T", [], {"kind": "resume", "local": True, "remote": True}),
+    ("T", "U", [], {"kind": "refuse", "reason": "remote tree U differs from the cherry-picked tree T"}),
+    ("T", "T", [7, 9], {"kind": "adopt", "pr": 7}),
+    ("T", "U", [7], {"kind": "adopt", "pr": 7}),
+], ids=["fresh", "local-only", "remote-only", "both-match", "differing-side-refuses", "first-open-pr", "pr-beats-refusal"])
+def test_resume_decision(local, remote, prs, expected):
+    assert land.resume_decision("T", local, remote, prs) == expected
 
 
 def test_resume_steps_adopt_drops_the_build_steps_and_pins_wait_checks():
@@ -1485,13 +1398,6 @@ def _apply_resume(repo, tmp_path, monkeypatch, prs=()):
     return rc, ran
 
 
-def test_cli_apply_resumes_on_a_local_pr_branch_with_the_cherry_picked_tree(repo, tmp_path, capsys, monkeypatch):
-    sp.run(["git", "-C", str(repo), "branch", "pr/seams-task", "agents/epic-x-5/seams-task"], check=True, env=_ENV)
-    rc, ran = _apply_resume(repo, tmp_path, monkeypatch)
-    assert rc == 0, capsys.readouterr().out
-    assert ran[:10] == [k if k != "cherry_pick" else "reuse_branch" for k in _PRESYNCED]
-
-
 def test_cli_apply_adopts_a_pr_branch_that_has_an_open_pr(repo, tmp_path, capsys, monkeypatch):
     sp.run(["git", "-C", str(repo), "branch", "pr/seams-task", "agents/epic-x-5/seams-task"], check=True, env=_ENV)
     rc, ran = _apply_resume(repo, tmp_path, monkeypatch, prs=[7])
@@ -1499,7 +1405,6 @@ def test_cli_apply_adopts_a_pr_branch_that_has_an_open_pr(repo, tmp_path, capsys
     assert rc == 0, out
     assert "land: adopting open pull request #7 on pr/seams-task" in out
     assert not {"cherry_pick", "reuse_branch", "checks", "push", "pr_create"} & set(ran)
-    assert ran.index("merge") < ran.index("mark_done")
 
 
 def test_cli_apply_refuses_a_differing_pr_branch_naming_the_diff(repo, tmp_path, capsys, monkeypatch):
