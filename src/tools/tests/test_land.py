@@ -1482,18 +1482,17 @@ def test_check_poll_result_is_never_green_when_fewer_rows_than_total_count_were_
     assert land.check_poll_result({"check_runs": []}, combined_failure, ()) == (1, "failing checks: combined status")
 
 
-def test_check_poll_result_holds_a_required_name_absent_from_runs_and_statuses_as_pending():
-    assert land.check_poll_result({"check_runs": [_run_row("lint")]}, {"statuses": []}, ("test",)) == (land.PENDING_RC, "checks pending: test")
+_CI_PASSING = {"state": "success", "statuses": [{"context": "ci", "state": "success"}]}
 
 
-def test_check_poll_result_is_green_when_every_required_name_is_a_passing_run_or_status():
-    status = {"state": "success", "statuses": [{"context": "ci", "state": "success"}]}
-    assert land.check_poll_result({"check_runs": [_run_row("lint")]}, status, ("lint", "ci")) == (0, "")
-
-
-def test_check_poll_result_keeps_a_failing_required_check_a_failure_and_beats_a_missing_one():
-    assert land.check_poll_result({"check_runs": [_run_row("test", conclusion="failure")]}, {"statuses": []}, ("test",)) == (1, "failing checks: test")
-    assert land.check_poll_result({"check_runs": [_run_row("test", conclusion="failure")]}, {"statuses": []}, ("test", "lint")) == (1, "failing checks: test")
+@pytest.mark.parametrize("runs, status, required, expected", [
+    ([_run_row("lint")], {"statuses": []}, ("test",), (land.PENDING_RC, "checks pending: test")),
+    ([_run_row("lint")], _CI_PASSING, ("lint", "ci"), (0, "")),
+    ([_run_row("test", conclusion="failure")], {"statuses": []}, ("test",), (1, "failing checks: test")),
+    ([_run_row("test", conclusion="failure")], {"statuses": []}, ("test", "lint"), (1, "failing checks: test")),
+])
+def test_check_poll_result_judges_each_required_name_by_its_own_run_or_status(runs, status, required, expected):
+    assert land.check_poll_result({"check_runs": runs}, status, required) == expected
 
 
 def test_check_poll_result_with_unreadable_required_follows_the_old_rule_and_says_so():
@@ -1506,10 +1505,6 @@ def test_check_poll_result_with_unreadable_required_follows_the_old_rule_and_say
     queued = {"check_runs": [_run_row("a", "queued", None)]}
     assert land.check_poll_result(queued, {"statuses": []}) == (land.PENDING_RC, f"checks pending: a\n{note}")
     assert land.wait_decision(*land.check_poll_result({"check_runs": []}, {"statuses": []}), 5, 300) == "retry"
-
-
-def test_check_poll_result_with_an_empty_required_tuple_is_green_without_the_note():
-    assert land.check_poll_result({"check_runs": [_run_row("lint")]}, {"statuses": []}, ()) == (0, "")
 
 
 def test_wait_decision_retries_pending_by_returncode_alone_and_reads_no_phrase():
@@ -1686,13 +1681,6 @@ def test_a_dry_run_land_refuses_an_unreadable_profile_because_the_plan_reads_its
     assert capsys.readouterr().out.startswith("land: profile unreadable:")
 
 
-def test_a_dry_run_writes_no_land_log(repo, tmp_path):
-    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
-    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
-    assert cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs")]) == 0
-    assert not (tmp_path / "runs/land.jsonl").exists()
-
-
 # --- the profile's forge chooses where the land's push, PR, checks and merge go ---
 
 def _forge_land(tmp_path, forge_line=""):
@@ -1759,9 +1747,12 @@ def test_a_full_task_land_leaves_the_checkouts_head_where_it_was(repo, tmp_path,
     assert _land_worktrees(repo) == [] and "pr/seams-task" not in cleanup.git_branches(repo)
 
 
-def test_a_land_whose_checks_fail_keeps_the_pr_branch_and_leaves_head_and_no_worktree(repo, tmp_path, capsys):
-    rc, out = _land(repo, tmp_path, lambda checks, cwd: (False, "tests: boom"), capsys)
+@pytest.mark.parametrize("attempts", [1, 2])
+def test_a_land_whose_checks_fail_keeps_the_pr_branch_and_leaves_head_and_no_worktree(repo, tmp_path, capsys, attempts):
+    for _ in range(attempts):
+        rc, out = _land(repo, tmp_path, lambda checks, cwd: (False, "tests: boom"), capsys)
     assert rc == 1, out
+    assert ("reuse_branch: reusing pr/seams-task" in out) == (attempts == 2)
     assert _head(repo) == "main"
     assert "pr/seams-task" in cleanup.git_branches(repo)
     assert cli._git_out(repo, "show", "pr/seams-task:f") == "y"
@@ -1783,36 +1774,12 @@ def test_a_resumed_land_works_the_same_way(repo, tmp_path, capsys, start):
     assert _land_worktrees(repo) == []
 
 
-def test_a_resumed_land_whose_checks_fail_again_keeps_the_branch_and_head(repo, tmp_path, capsys):
-    _land(repo, tmp_path, lambda checks, cwd: (False, "tests: boom"), capsys)
-    rc, out = _land(repo, tmp_path, lambda checks, cwd: (False, "tests: boom"), capsys)
-    assert rc == 1, out
-    assert "reuse_branch: reusing pr/seams-task" in out
-    assert _head(repo) == "main"
-    assert "pr/seams-task" in cleanup.git_branches(repo)
-    assert _land_worktrees(repo) == []
-
-
-def test_a_dry_run_land_touches_no_disk_for_the_land_worktree(repo, tmp_path):
+def test_a_dry_run_land_writes_no_land_log_and_touches_no_disk_for_the_land_worktree(repo, tmp_path):
     (tmp_path / "runs/epic-x-5/tasks/seams").mkdir(parents=True)
     (tmp_path / "runs/epic-x-5/tasks/seams/seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
     assert cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs")]) == 0
+    assert not (tmp_path / "runs/land.jsonl").exists()
     assert not cli._land_worktree(repo, "pr/seams-task").exists()
-
-
-def test_a_profile_naming_github_routes_pr_create_to_the_github_forge(repo, tmp_path, capsys, monkeypatch):
-    argv = _forge_land(tmp_path, "forge: github\n")
-    calls = []
-    monkeypatch.setattr(cli, "_run_checks", lambda checks, cwd: (True, "1 checks passed"))
-    monkeypatch.setattr(forge_github, "find_open_prs", lambda repo, branch: [])
-    monkeypatch.setattr(forge_github, "push", lambda repo, branch: (calls.append("push") or True, branch))
-    monkeypatch.setattr(forge_github, "open_pr", lambda repo, title, body, **refs: (calls.append(("open_pr", refs)) or True, "https://x/pull/7"))
-    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), *argv])
-    out = capsys.readouterr().out
-    assert rc == 3, out
-    assert calls == ["push", ("open_pr", {"head": "pr/seams-task", "base": "main"})]
-    assert "forge: github" in out.splitlines()
-    assert "pr_create: https://x/pull/7" in out
 
 
 def test_a_profile_naming_an_unknown_forge_refuses_with_exit_2(repo, tmp_path, capsys):
@@ -1823,12 +1790,12 @@ def test_a_profile_naming_an_unknown_forge_refuses_with_exit_2(repo, tmp_path, c
     assert "pr/seams-task" not in cleanup.git_branches(repo)
 
 
-def test_a_github_land_hands_the_forge_the_planned_head_base_and_checks_ref(repo, tmp_path, capsys, monkeypatch):
+def test_a_profile_naming_github_routes_the_land_to_it_handing_the_planned_head_base_and_checks_ref(repo, tmp_path, capsys, monkeypatch):
     argv = _forge_land(tmp_path, "forge: github\n")
     calls = []
     monkeypatch.setattr(cli, "_run_checks", lambda checks, cwd: (True, "1 checks passed"))
     monkeypatch.setattr(forge_github, "find_open_prs", lambda repo, branch: [])
-    monkeypatch.setattr(forge_github, "push", lambda repo, branch: (True, branch))
+    monkeypatch.setattr(forge_github, "push", lambda repo, branch: (calls.append(("push", branch)) or True, branch))
     monkeypatch.setattr(forge_github, "open_pr", lambda repo, title, body, *, head=None, base=None:
                         (calls.append(("open_pr", head, base)) or True, "https://x/pull/7"))
     monkeypatch.setattr(forge_github, "wait_checks", lambda repo, timeout_s, *, ref="HEAD":
@@ -1836,7 +1803,9 @@ def test_a_github_land_hands_the_forge_the_planned_head_base_and_checks_ref(repo
     rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--gate", "phase", *argv])
     out = capsys.readouterr().out
     assert rc == 3, out
-    assert calls == [("open_pr", "pr/seams-task", "main"), ("wait_checks", "pr/seams-task")]
+    assert "forge: github" in out.splitlines()
+    assert "pr_create: https://x/pull/7" in out.splitlines()  # chair_exec._PR_URL_RE parses this exact line
+    assert calls == [("push", "pr/seams-task"), ("open_pr", "pr/seams-task", "main"), ("wait_checks", "pr/seams-task")]
 
 
 def test_a_land_refuses_before_any_step_when_the_forge_predates_explicit_refs(repo, tmp_path, capsys, monkeypatch):
@@ -1851,38 +1820,19 @@ def test_a_land_refuses_before_any_step_when_the_forge_predates_explicit_refs(re
     assert "land: refusing, forge github does not accept open_pr(head), open_pr(base)" in out
 
 
-def test_the_ticket_plans_merge_step_carries_what_the_local_forge_reads():
-    steps = land.land_plan(_record(), {"agents/epic-x-5/seams-task": ["Add seams module"]}, "trunk")
-    assert next(s for s in steps if s["kind"] == "merge") == {
-        "kind": "merge", "squash": True, "delete_branch": True,
-        "branch": "pr/seams-task", "default_branch": "trunk", "subject": "Add seams module",
-    }
-
-
-def test_the_phase_plans_merge_step_carries_what_the_local_forge_reads():
-    phase_record = {"run": "epic-x-5", "phase": "seams", "initiative": "x"}
-    steps = land.land_plan(phase_record, {}, "trunk", items=[{"id": "seams-task", "status": "done"}],
-                           task_records=[_record(status="done")])
-    assert next(s for s in steps if s["kind"] == "merge") == {
-        "kind": "merge", "squash": True, "delete_branch": True,
-        "branch": "pr/x--seams", "default_branch": "trunk", "subject": "epic x: seams",
-    }
-
-
-def test_the_ticket_plans_pr_and_checks_steps_name_their_branch_and_base():
-    steps = land.land_plan(_record(), {"agents/epic-x-5/seams-task": ["Add seams module"]}, "trunk")
-    pr = next(s for s in steps if s["kind"] == "pr_create")
-    assert (pr["head"], pr["base"]) == ("pr/seams-task", "trunk")
-    assert next(s for s in steps if s["kind"] == "wait_checks") == {"kind": "wait_checks", "branch": "pr/seams-task"}
-
-
-def test_the_phase_plans_pr_and_checks_steps_name_their_branch_and_base():
-    phase_record = {"run": "epic-x-5", "phase": "seams", "initiative": "x"}
-    steps = land.land_plan(phase_record, {}, "trunk", items=[{"id": "seams-task", "status": "done"}],
-                           task_records=[_record(status="done")])
-    pr = next(s for s in steps if s["kind"] == "pr_create")
-    assert (pr["head"], pr["base"]) == ("pr/x--seams", "trunk")
-    assert next(s for s in steps if s["kind"] == "wait_checks") == {"kind": "wait_checks", "branch": "pr/x--seams"}
+@pytest.mark.parametrize("level, branch, subject", [("ticket", "pr/seams-task", "Add seams module"),
+                                                      ("phase", "pr/x--seams", "epic x: seams")])
+def test_the_plans_merge_pr_and_checks_steps_carry_their_branch_base_and_what_the_local_forge_reads(level, branch, subject):
+    if level == "ticket":
+        steps = land.land_plan(_record(), {"agents/epic-x-5/seams-task": ["Add seams module"]}, "trunk")
+    else:
+        steps = land.land_plan({"run": "epic-x-5", "phase": "seams", "initiative": "x"}, {}, "trunk",
+                               items=[{"id": "seams-task", "status": "done"}], task_records=[_record(status="done")])
+    by_kind = {s["kind"]: s for s in steps}
+    assert by_kind["merge"] == {"kind": "merge", "squash": True, "delete_branch": True,
+                                "branch": branch, "default_branch": "trunk", "subject": subject}
+    assert (by_kind["pr_create"]["head"], by_kind["pr_create"]["base"]) == (branch, "trunk")
+    assert by_kind["wait_checks"] == {"kind": "wait_checks", "branch": branch}
 
 
 def test_land_phase_record_reads_the_store_manifest_when_no_file_exists(tmp_path):
@@ -1918,48 +1868,29 @@ def test_a_task_lands_checks_find_the_repos_venv_in_the_land_worktree(repo, tmp_
 # --- cli._land_worktree: the pid keeps two lands apart ---
 
 
-def test_land_worktree_is_stable_within_one_process(tmp_path):
-    assert cli._land_worktree(tmp_path, "pr/seams-task") == cli._land_worktree(tmp_path, "pr/seams-task")
-
-
-def test_land_worktree_differs_between_two_pids(tmp_path, monkeypatch):
+def test_land_worktree_is_stable_within_a_process_differs_between_pids_and_starts_with_repo_and_branch(tmp_path, monkeypatch):
+    wt = cli._land_worktree(tmp_path, "pr/seams-task")
+    assert wt == cli._land_worktree(tmp_path, "pr/seams-task")
+    assert wt.name.startswith(f"cox-land-{tmp_path.resolve().name}-pr-seams-task-")
     monkeypatch.setattr(cli.os, "getpid", lambda: 111)
     first = cli._land_worktree(tmp_path, "pr/seams-task")
     monkeypatch.setattr(cli.os, "getpid", lambda: 222)
-    second = cli._land_worktree(tmp_path, "pr/seams-task")
-    assert first != second
-
-
-def test_land_worktree_name_still_starts_with_repo_and_branch(tmp_path):
-    wt = cli._land_worktree(tmp_path, "pr/seams-task")
-    assert wt.name.startswith(f"cox-land-{tmp_path.resolve().name}-pr-seams-task-")
+    assert first != cli._land_worktree(tmp_path, "pr/seams-task")
 
 
 # --- resolve_add_add_conflicts: pure diff3 add/add hunk resolver ---
 
 
-def test_resolve_add_add_conflicts_resolves_empty_base_to_ours_then_theirs():
-    text = "<<<<<<< HEAD\nours line\n||||||| base\n=======\ntheirs line\n>>>>>>> theirs\n"
-    assert land.resolve_add_add_conflicts(text) == "ours line\ntheirs line\n"
-
-
-def test_resolve_add_add_conflicts_refuses_a_non_empty_base():
-    text = "<<<<<<< HEAD\nours line\n||||||| base\nbase line\n=======\ntheirs line\n>>>>>>> theirs\n"
-    assert land.resolve_add_add_conflicts(text) is None
-
-
-def test_resolve_add_add_conflicts_keeps_identical_ours_and_theirs_once():
-    text = "<<<<<<< HEAD\nsame line\n||||||| base\n=======\nsame line\n>>>>>>> theirs\n"
-    assert land.resolve_add_add_conflicts(text) == "same line\n"
-
-
-def test_resolve_add_add_conflicts_refuses_the_whole_file_when_one_hunk_has_a_base():
-    text = (
-        "<<<<<<< HEAD\nours one\n||||||| base\n=======\ntheirs one\n>>>>>>> theirs\n"
-        "middle\n"
-        "<<<<<<< HEAD\nours two\n||||||| base\nbase two\n=======\ntheirs two\n>>>>>>> theirs\n"
-    )
-    assert land.resolve_add_add_conflicts(text) is None
+@pytest.mark.parametrize("text, expected", [
+    ("<<<<<<< HEAD\nours line\n||||||| base\n=======\ntheirs line\n>>>>>>> theirs\n", "ours line\ntheirs line\n"),
+    ("<<<<<<< HEAD\nours line\n||||||| base\nbase line\n=======\ntheirs line\n>>>>>>> theirs\n", None),
+    ("<<<<<<< HEAD\nsame line\n||||||| base\n=======\nsame line\n>>>>>>> theirs\n", "same line\n"),
+    ("<<<<<<< HEAD\nours one\n||||||| base\n=======\ntheirs one\n>>>>>>> theirs\n"
+     "middle\n"
+     "<<<<<<< HEAD\nours two\n||||||| base\nbase two\n=======\ntheirs two\n>>>>>>> theirs\n", None),
+], ids=["empty-base-ours-then-theirs", "non-empty-base-refused", "identical-kept-once", "one-based-hunk-refuses-whole-file"])
+def test_resolve_add_add_conflicts_resolves_only_empty_base_hunks(text, expected):
+    assert land.resolve_add_add_conflicts(text) == expected
 
 
 # --- _cherry_pick_generated: auto-resolves add/add conflicts via resolve_add_add_conflicts ---
@@ -2070,13 +2001,11 @@ EXPECTED = 'Required status check "test" is expected.'
 CONFLICT = "Pull request is not mergeable: the merge commit cannot be cleanly created"
 
 
-def test_merge_expects_check_accepts_the_github_message_whatever_the_check_name():
-    assert land.merge_expects_check(EXPECTED)
-    assert land.merge_expects_check(EXPECTED.replace("test", "lint / build (3.12)"))
-
-
-def test_merge_expects_check_rejects_a_merge_conflict_message():
-    assert not land.merge_expects_check(CONFLICT)
+@pytest.mark.parametrize("message, expected", [
+    (EXPECTED, True), (EXPECTED.replace("test", "lint / build (3.12)"), True), (CONFLICT, False),
+])
+def test_merge_expects_check_matches_the_github_message_whatever_the_check_name(message, expected):
+    assert land.merge_expects_check(message) is expected
 
 
 def _walk_merge(tmp_path, merges):
@@ -2097,20 +2026,13 @@ def _walk_merge(tmp_path, merges):
     return rc, calls, reached
 
 
-def test_an_expected_check_refusal_waits_once_more_then_merges(tmp_path):
-    rc, calls, reached = _walk_merge(tmp_path, [(False, EXPECTED), (True, "merged")])
-    assert (rc, calls) == (0, ["wait_checks", "merge", "wait_checks", "merge"])
-    assert reached == calls
-
-
-def test_a_second_expected_check_refusal_stops_the_land(tmp_path):
-    rc, calls, _ = _walk_merge(tmp_path, [(False, EXPECTED), (False, EXPECTED)])
-    assert (rc, calls) == (1, ["wait_checks", "merge", "wait_checks", "merge"])
-
-
-def test_a_different_merge_failure_does_not_loop(tmp_path):
-    rc, calls, _ = _walk_merge(tmp_path, [(False, CONFLICT)])
-    assert (rc, calls) == (1, ["wait_checks", "merge"])
+@pytest.mark.parametrize("merges, rc, calls", [
+    ([(False, EXPECTED), (True, "merged")], 0, ["wait_checks", "merge", "wait_checks", "merge"]),
+    ([(False, EXPECTED), (False, EXPECTED)], 1, ["wait_checks", "merge", "wait_checks", "merge"]),
+    ([(False, CONFLICT)], 1, ["wait_checks", "merge"]),
+], ids=["waits-once-more-then-merges", "second-refusal-stops", "other-failure-does-not-loop"])
+def test_an_expected_check_merge_refusal_goes_back_to_wait_checks_once(tmp_path, merges, rc, calls):
+    assert _walk_merge(tmp_path, merges)[:2] == (rc, calls)
 
 
 class _WaitWorld:
@@ -2155,25 +2077,21 @@ def test_a_wait_longer_than_the_ttl_renews_the_lease_and_lets_the_merge_proceed(
     assert land.renew_due(world.renewals[-1], world.renewals[-1] + 400, 1200)
 
 
-def test_a_lease_taken_by_another_holder_mid_wait_stops_before_the_merge_naming_the_holder():
-    world = _WaitWorld(wait_s=3000, other_holder_at=1000)
-    ok, detail = world.run()
-    assert ok is False
-    assert "other@host:9" in detail
-    assert world.t < 3000
-
-
 def test_a_short_wait_under_a_third_of_the_ttl_makes_no_renewal():
     world = _WaitWorld(wait_s=300)
     assert world.run() == (True, "green")
     assert world.renewals == []
 
 
-def test_a_transient_renewal_failure_stops_the_wait_without_naming_a_holder():
-    world = _WaitWorld(wait_s=3000)
-    world.renew = lambda: store_cli.LeaseError(detail="store timed out")
+@pytest.mark.parametrize("lost, needle", [("holder", "other@host:9"), ("error", "store timed out")])
+def test_a_renewal_that_is_refused_or_fails_mid_wait_stops_before_the_merge_naming_why(lost, needle):
+    world = _WaitWorld(wait_s=3000, other_holder_at=1000 if lost == "holder" else None)
+    if lost == "error":
+        world.renew = lambda: store_cli.LeaseError(detail="store timed out")
     ok, detail = world.run()
-    assert (ok, "store timed out" in detail) == (False, True)
+    assert ok is False
+    assert needle in detail
+    assert world.t < 3000
 
 
 @pytest.mark.parametrize("how", ["green", "holder_lost", "poll_raises"])
@@ -2238,18 +2156,16 @@ def _no_subprocess(monkeypatch):
     monkeypatch.setattr(sp, "run", boom)
 
 
-def test_review_close_targets_keep_only_the_exact_review_branch():
-    prs = [{"number": 1, "head": "review/x/seams-task"}, {"number": 2, "head": "review/x/seams-task-2"},
-           {"number": 3, "head": "review/x/other"}]
-    assert cli.review_close_targets("x", "seams-task", prs) == ([(1, "review/x/seams-task")], [])
-
-
-def test_a_malformed_review_pr_row_is_a_warning_never_an_exception():
-    prs = [{"number": "x7", "head": "review/x/seams-task"}, {"head": "review/x/seams-task"}, "junk",
-           {"number": 8, "head": "review/x/seams-task"}]
-    targets, bad = cli.review_close_targets("x", "seams-task", prs)
-    assert targets == [(8, "review/x/seams-task")]
-    assert len(bad) == 2 and all("unreadable; not closed" in line for line in bad)
+@pytest.mark.parametrize("prs, targets, bad_rows", [
+    ([{"number": 1, "head": "review/x/seams-task"}, {"number": 2, "head": "review/x/seams-task-2"},
+      {"number": 3, "head": "review/x/other"}], [(1, "review/x/seams-task")], 0),
+    ([{"number": "x7", "head": "review/x/seams-task"}, {"head": "review/x/seams-task"}, "junk",
+      {"number": 8, "head": "review/x/seams-task"}], [(8, "review/x/seams-task")], 2),
+], ids=["exact-branch-only", "malformed-rows-warn-never-raise"])
+def test_review_close_targets_keep_only_the_exact_review_branch_and_warn_on_a_malformed_row(prs, targets, bad_rows):
+    got, bad = cli.review_close_targets("x", "seams-task", prs)
+    assert got == targets
+    assert len(bad) == bad_rows and all("unreadable; not closed" in line for line in bad)
 
 
 def test_landing_ref_is_the_local_sha_else_the_pr_url_else_the_pinned_pr_else_the_merge():
@@ -2273,24 +2189,19 @@ def test_a_landed_tasks_review_prs_are_closed_naming_the_sha_and_their_branches_
     assert "closed review PR #7 and deleted review/x/seams-task" in capsys.readouterr().out
 
 
-def test_a_forge_error_on_one_review_pr_blocks_neither_the_others_nor_mark_done(tmp_path, monkeypatch, capsys):
-    forge = _ReviewForge({7: "review/x/seams-task", 8: "review/x/seams-task"}, close_fails={7})
+@pytest.mark.parametrize("fails, closed, message", [
+    ({"close_fails": {7}}, [8], "review PR #7 of seams-task failed (RuntimeError: forge down)"),
+    ({"delete_fails": {"review/x/seams-task"}}, [7, 8], "branch review/x/seams-task not deleted: no permission"),
+], ids=["close-error", "branch-will-not-delete"])
+def test_a_forge_failure_on_one_review_pr_blocks_neither_the_others_nor_mark_done(tmp_path, monkeypatch, capsys, fails, closed, message):
+    forge = _ReviewForge({7: "review/x/seams-task", 8: "review/x/seams-task"}, **fails)
     path, steps = _land_steps(tmp_path)
     _no_subprocess(monkeypatch)
     _, reached, _ = cli._land_execute(tmp_path, steps, [], None, None, "full", False, forge)
     assert reached == ["merge", "mark_done"]
     assert json.loads(path.read_text())["landed"] is True
-    assert list(forge.comments) == [8]
-    assert "review PR #7 of seams-task failed (RuntimeError: forge down)" in capsys.readouterr().out
-
-
-def test_a_branch_that_will_not_delete_is_logged_and_the_next_pr_is_still_closed(tmp_path, monkeypatch, capsys):
-    forge = _ReviewForge({7: "review/x/seams-task", 8: "review/x/seams-task"}, delete_fails={"review/x/seams-task"})
-    _, steps = _land_steps(tmp_path)
-    _no_subprocess(monkeypatch)
-    cli._land_execute(tmp_path, steps, [], None, None, "full", False, forge)
-    assert sorted(forge.comments) == [7, 8]
-    assert "branch review/x/seams-task not deleted: no permission" in capsys.readouterr().out
+    assert sorted(forge.comments) == closed
+    assert message in capsys.readouterr().out
 
 
 def test_an_unlistable_forge_leaves_the_land_done_and_closes_nothing(tmp_path, capsys):
