@@ -65,6 +65,17 @@ LOCAL_DOCS: dict[str, tuple[str, tuple[str, ...]]] = {
 }
 
 
+# A component's own README would land at docs/components/<name>/README.md, which MkDocs serves at the same URL as
+# the hand-written docs/components/<name>.md, so the README replaced the page in the nav and the page lost its
+# previous and next links (2026-10-23). It lands as readme.md instead, a page of its own beside the nav page.
+README_DEST = "readme.md"
+
+
+def dest_entry(entry: str) -> str:
+    """The path under docs/components/<name>/ for a component doc entry: its own path, except a top-level README."""
+    return README_DEST if entry == "README.md" else entry
+
+
 def local_plan(local_docs: dict[str, tuple[str, tuple[str, ...]]]) -> list[dict]:
     """Pure: one `copy` item per listed file and one `copy_glob` item per `dir/*.md` entry, each landing at
     docs/components/<name>/<entry>, the same destination a GitHub pull of that component used."""
@@ -72,7 +83,7 @@ def local_plan(local_docs: dict[str, tuple[str, tuple[str, ...]]]) -> list[dict]
         if entry.endswith("/*.md"):
             directory = entry[: -len("/*.md")]
             return {"kind": "copy_glob", "src_dir": f"{folder}/{directory}", "dest_dir": f"docs/components/{name}/{directory}"}
-        return {"kind": "copy", "src": f"{folder}/{entry}", "dest": f"docs/components/{name}/{entry}"}
+        return {"kind": "copy", "src": f"{folder}/{entry}", "dest": f"docs/components/{name}/{dest_entry(entry)}"}
     return [item(name, folder, entry) for name, (folder, entries) in local_docs.items() for entry in entries]
 
 
@@ -166,7 +177,7 @@ def _item(name: str, repo: str, tag: str, entry: str) -> dict:
         "entry": entry,
         "ref": tag,
         "url": raw_url(repo, tag, entry),
-        "dest": f"docs/components/{name}/{entry}",
+        "dest": f"docs/components/{name}/{dest_entry(entry)}",
     }
 
 

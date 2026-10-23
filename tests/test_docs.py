@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "docs"))
 
 import _cli  # noqa: E402
+import _nav_hook  # noqa: E402
 import _pull  # noqa: E402
 import _shots  # noqa: E402
 import _sprite  # noqa: E402
@@ -335,7 +336,7 @@ def test_plan_yields_listed_docs_with_dests_and_skips_path_components():
             "entry": "README.md",
             "ref": "v0.1.0-beta.1",
             "url": "https://raw.githubusercontent.com/ppfenning/coxswain-cartridges/v0.1.0-beta.1/README.md",
-            "dest": "docs/components/cartridges/README.md",
+            "dest": "docs/components/cartridges/readme.md",
         }
     ]
 
@@ -610,7 +611,7 @@ def test_install_flags_table_names_only_the_documented_flags():
 def test_local_plan_copies_the_in_repo_folders_docs_to_the_same_destinations():
     items = _pull.local_plan({"graphs": ("src/graphs", ("README.md", "docs/graphs/*.md"))})
     assert items == [
-        {"kind": "copy", "src": "src/graphs/README.md", "dest": "docs/components/graphs/README.md"},
+        {"kind": "copy", "src": "src/graphs/README.md", "dest": "docs/components/graphs/readme.md"},
         {"kind": "copy_glob", "src_dir": "src/graphs/docs/graphs", "dest_dir": "docs/components/graphs/docs/graphs"},
     ]
 
@@ -636,3 +637,52 @@ def test_copy_local_counts_a_missing_file_and_an_empty_glob_as_failures(tmp_path
 def test_the_manifest_leaves_only_dash_to_fetch():
     assert [item["repo"] for item in _pull.plan(tomllib.loads((ROOT / "manifest.toml").read_text()))] == [
         "ppfenning/coxswain-dash"]
+
+
+def test_a_component_readme_lands_beside_its_nav_page_never_on_its_url():
+    """components/<name>/README.md is served at the same URL as components/<name>.md and replaced it (2026-10-23)."""
+    assert _pull.dest_entry("README.md") == "readme.md"
+    assert _pull.dest_entry("docs/graphs/README.md") == "docs/graphs/README.md"
+    assert _pull.dest_entry("docs/GRAPH-CONTRACT.md") == "docs/GRAPH-CONTRACT.md"
+
+
+def test_the_nav_hook_nests_the_generated_cli_pages_under_the_cli_reference():
+    assert _nav_hook.generated_dir("reference/cli/index.md") == "reference/cli/"
+    assert _nav_hook.generated_dir("components/tools.md") == "components/tools/"
+    assert _nav_hook.generated_dir("index.md") is None
+
+
+def test_the_nav_hook_finds_each_component_page_and_orders_its_pulled_docs_readme_first():
+    assert _nav_hook.component_of("components/graphs.md") == "graphs"
+    assert _nav_hook.component_of("components/index.md") is None
+    assert _nav_hook.component_of("methodology/graphs.md") is None
+    uris = [
+        "components/graphs.md",
+        "components/graphs/docs/GRAPH-CONTRACT.md",
+        "components/graphs/readme.md",
+        "components/graphs/docs/graphs/coxswain.md",
+        "components/graphsx/readme.md",
+        "components/tools/readme.md",
+    ]
+    assert _nav_hook.pulled_order("graphs", uris) == [
+        "components/graphs/readme.md",
+        "components/graphs/docs/GRAPH-CONTRACT.md",
+        "components/graphs/docs/graphs/coxswain.md",
+    ]
+
+
+def test_every_component_doc_is_in_the_nav_after_the_hook_so_none_lacks_previous_and_next():
+    """Built nav, not just the hook in isolation: every page under docs/components/ is reachable by previous/next."""
+    from mkdocs.config import load_config
+    from mkdocs.structure.files import get_files
+    from mkdocs.structure.nav import get_navigation
+
+    config = load_config(str(ROOT / "mkdocs.yml"))
+    files = get_files(config)
+    nav = _nav_hook.on_nav(get_navigation(files, config), config, files)
+    in_nav = {page.file.src_uri for page in nav.pages}
+    generated = {f.src_uri for f in files.documentation_pages() if f.src_uri.startswith(("components/", "reference/cli/"))}
+    assert generated <= in_nav
+    assert all(page.previous_page is not None for page in nav.pages[1:])
+    assert all(page.next_page is not None for page in nav.pages[:-1])
+
