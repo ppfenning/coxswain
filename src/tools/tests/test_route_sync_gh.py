@@ -117,6 +117,15 @@ def test_auth_ok_reads_gh_auth_status_exit_code():
     assert route_sync_gh.auth_ok(lambda argv, **kw: _Result(returncode=1)) is False
 
 
+def test_auth_ok_falls_back_to_the_api_when_gh_predates_the_active_flag():
+    def run(argv, **kw):
+        if argv[:3] == ["gh", "auth", "status"]:
+            return _Result(returncode=1, stderr="unknown flag: --active")
+        return _Result(returncode=0, stdout="octocat\n")
+
+    assert route_sync_gh.auth_ok(run) is True
+
+
 def test_auth_ok_checks_the_active_login_only():
     seen = []
 

@@ -40,6 +40,17 @@ def test_a_folder_inside_the_checkout_counts_and_a_component_checkout_under_inst
     assert is_migrated(ObservedHost(**{**LINUX_MIGRATED.__dict__, "checkouts": component})) is False
 
 
+def test_the_homes_own_providers_folder_counts_as_migrated_but_another_homes_does_not():
+    """Every migrated host reports <home>/providers beside its checkout; no host ever read as migrated (2026-10-23)."""
+    checkout = "/home/user/.local/share/coxswain/installs/coxswain"
+    own = {"coxswain": checkout, "providers": "/home/user/.local/share/coxswain/providers"}
+    other = {"coxswain": checkout, "providers": "/srv/elsewhere/providers"}
+    alone = {"providers": "/home/user/.local/share/coxswain/providers"}
+    assert is_migrated(ObservedHost(**{**LINUX_MIGRATED.__dict__, "checkouts": own})) is True
+    assert is_migrated(ObservedHost(**{**LINUX_MIGRATED.__dict__, "checkouts": other})) is False
+    assert is_migrated(ObservedHost(**{**LINUX_MIGRATED.__dict__, "checkouts": alone})) is False
+
+
 def test_is_migrated_is_false_when_a_checkout_sits_outside_installs():
     assert is_migrated(MAC_OLD) is False
 

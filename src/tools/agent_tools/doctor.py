@@ -489,10 +489,12 @@ def _home_recorded_row(locations: Locations, home_record: str | None) -> dict:
 def _cartridge_links_row(locations: Locations, links: Mapping[str, str]) -> dict:
     """Text compare of each base and local link target with `cartridge_link_target`; no link is followed."""
     if not links:
+        # The cartridge loader reads base and local from the checkout's own src/cartridges/cartridges when the
+        # cartridges_dir lacks them (2026.10.2), so a workspace needs no links at all.
         return {
             "check": "cartridge links",
-            "ok": False,
-            "detail": "no base or local link found to compare with the home",
+            "ok": True,
+            "detail": "no base or local links; the checkout's shipped base and local are read",
         }
     stale = [
         f"{path} -> {target}; expected {expected}"
