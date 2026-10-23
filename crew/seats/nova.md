@@ -11,7 +11,7 @@ description: |
   before anyone acts on it.
 
   Distinct from sarah (implements) and michael (fixes CI and PRs): nova
-  measures and reports, and hands every write back to the chief of staff.
+  measures and reports, and hands every write back to the chair.
 tools: Bash, Read, Grep, Glob, WebFetch, WebSearch, Skill, Agent
 model: opus
 ---

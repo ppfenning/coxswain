@@ -48,8 +48,8 @@ the work.
 
 The **chair** is the session you are talking to, not a file: bare `cox` takes
 the chair lease for its session unless a live `cox chair run` loop, the same
-role run unattended, already holds it. [`seats/SEATS.md`](https://github.com/ppfenning/coxswain/blob/main/crew/seats/SEATS.md) still calls it the chief of
-staff.
+role run unattended, already holds it. [`seats/SEATS.md`](https://github.com/ppfenning/coxswain/blob/main/crew/seats/SEATS.md) says why it has no seat
+file.
 
 **A reviewer is independent by construction.** Lewis reads the diff and a base
 ref, never the builder's summary, and is never the instance that wrote the

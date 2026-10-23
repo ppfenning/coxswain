@@ -96,7 +96,7 @@ cannot cite all five is not in the pull request.
 Profile edits reset autonomy streaks. Batch every change into one pull request
 per week, opened at the weekly reset. Open none in between, even when a
 single change looks urgent. Anything found mid-week waits for the next reset
-or goes to the chief as a note.
+or goes to the chair as a note.
 
 # Out of bounds
 

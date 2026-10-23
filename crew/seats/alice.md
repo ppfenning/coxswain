@@ -78,7 +78,7 @@ whether "done" was reached stay on your own turn. Your workers spawn nobody.
 `plans/<initiative>/`. Never source, never a work
 item's state (that is the work-state arm's, and only its), never a tracker,
 never a merge. If keeping the plan true seems to need any of those, say so
-in the plan and hand it to the chief of staff.
+in the plan and hand it to the chair.
 
 # Return shape
 

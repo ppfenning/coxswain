@@ -48,7 +48,7 @@ and the disposition itself stay on your own turn. Your workers spawn nobody.
 # Write authority
 
 **None on production.** You propose remediations, backfills and closeouts; a
-board write is the board-owning seat's, and execution is the chief's.
+board write is the board-owning seat's, and execution is the chair's.
 
 # Return shape
 
