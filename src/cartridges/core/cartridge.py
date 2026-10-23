@@ -155,6 +155,22 @@ def _normalize_crew(raw: Mapping[str, Any], label: str) -> tuple[dict[str, Any],
     return normalized, f"{label}: rename cast to crew", None
 
 
+# The cartridges this checkout ships (base, local, example-team, ...). A workspace's cartridges_dir holds its own
+# team cartridge; one it does not hold is read from here, so a workspace never tracks a symlink into one machine's
+# install (2026-10-23: a workspace refreshed from another machine broke every run on this one).
+SHIPPED_DIR = Path(__file__).resolve().parent.parent / "cartridges"
+
+
+def cartridge_dir(name: str, cartridges_dir: Path, shipped_dir: Path = SHIPPED_DIR) -> Path:
+    """`cartridges_dir/<name>` when it holds a cartridge.yaml, else the shipped `<name>` when that does, else
+    `cartridges_dir/<name>` (so a missing cartridge is reported where the workspace expected it)."""
+    own = cartridges_dir / name
+    if (own / "cartridge.yaml").is_file():
+        return own
+    shipped = shipped_dir / name
+    return shipped if (shipped / "cartridge.yaml").is_file() else own
+
+
 def _chain(team: str, cartridges_dir: Path) -> list[tuple[str, Path, dict[str, Any]]]:
     """Resolve the `extends` chain, returned base-first (root ... team)."""
     seen: list[str] = []
@@ -166,10 +182,10 @@ def _chain(team: str, cartridges_dir: Path) -> list[tuple[str, Path, dict[str, A
         if name in seen:
             raise CartridgeError("cartridge inheritance cycle: " + " -> ".join([*seen, name]))
         seen.append(name)
-        directory = cartridges_dir / name
+        directory = cartridge_dir(name, cartridges_dir)
         manifest = directory / "cartridge.yaml"
         if not manifest.is_file():
-            raise CartridgeError(f"no cartridge for '{name}': expected {manifest}")
+            raise CartridgeError(f"no cartridge for '{name}': expected {manifest} (or a shipped one in {SHIPPED_DIR})")
         raw = _read_yaml(manifest)
         chain.append((name, directory, raw))
         name = raw.get("extends")

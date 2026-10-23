@@ -23,15 +23,25 @@ def _read_text_or_none(path: Path) -> str | None:
         return None
 
 
+# The checkout's shipped cartridges, the same fallback the cartridge loader uses for a name cartridges_dir lacks.
+_SHIPPED_DIR = Path(__file__).resolve().parents[2] / "cartridges" / "cartridges"
+
+
+def _cartridge_text(cartridges_dir: Path, name: str, shipped_dir: Path = _SHIPPED_DIR) -> str | None:
+    own = _read_text_or_none(cartridges_dir / name / "cartridge.yaml")
+    return own if own is not None else _read_text_or_none(shipped_dir / name / "cartridge.yaml")
+
+
 def _first_along_extends[T](cartridges_dir: Path, team: str, read: Callable[[str | None], T | None]) -> T | None:
-    """The first non-None `read` along the team cartridge and its `extends` chain, all read from `cartridges_dir`."""
+    """The first non-None `read` along the team cartridge and its `extends` chain, read from `cartridges_dir`, or
+    from the shipped cartridges for a name it lacks."""
     pending, seen = [team], set()
     while pending:
         name = pending.pop(0)
         if name in seen:
             continue
         seen.add(name)
-        text = _read_text_or_none(cartridges_dir / name / "cartridge.yaml")
+        text = _cartridge_text(cartridges_dir, name)
         value = read(text)
         if value is not None:
             return value
