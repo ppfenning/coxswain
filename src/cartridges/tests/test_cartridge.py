@@ -701,3 +701,30 @@ def test_overlay_errors_refuses_a_checks_entry_whose_cmd_is_blank():
     problems = overlay_errors({"landing_areas": {"checks": [{"name": "lint", "cmd": None}, {"name": "tests", "cmd": ""}]}})
     assert len(problems) == 2
     assert all("must be non-empty strings" in p for p in problems)
+
+
+def test_a_cartridge_the_workspace_lacks_is_read_from_the_shipped_ones(tmp_path: Path) -> None:
+    """A workspace holds only its own team cartridge; base and local come from this checkout (2026-10-23)."""
+    from core.cartridge import SHIPPED_DIR, cartridge_dir
+
+    workspace = tmp_path / "cartridges"
+    write_cartridge(workspace / "team", {"extends": "base"})
+    shipped = tmp_path / "shipped"
+    write_cartridge(shipped / "base", {})
+
+    assert cartridge_dir("team", workspace, shipped) == workspace / "team"
+    assert cartridge_dir("base", workspace, shipped) == shipped / "base"
+    assert cartridge_dir("nope", workspace, shipped) == workspace / "nope"
+    write_cartridge(workspace / "base", {})
+    assert cartridge_dir("base", workspace, shipped) == workspace / "base"  # the workspace's own copy wins
+    assert (SHIPPED_DIR / "base" / "cartridge.yaml").is_file() and (SHIPPED_DIR / "local" / "cartridge.yaml").is_file()
+
+
+def test_a_team_extending_a_shipped_cartridge_loads_with_no_symlink_in_the_workspace(tmp_path: Path) -> None:
+    from core.cartridge import SHIPPED_DIR, _chain
+
+    workspace = tmp_path / "cartridges"
+    write_cartridge(workspace / "team", {"extends": "local"})
+    chain = _chain("team", workspace)
+    assert [name for name, _, _ in chain][-2:] == ["local", "team"]
+    assert {name: directory for name, directory, _ in chain}["local"] == SHIPPED_DIR / "local"
