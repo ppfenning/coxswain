@@ -35,6 +35,10 @@ markdown_extensions:
           class: mermaid
           format: !!python/name:pymdownx.superfences.fence_code_format
 
+# Pulled component docs join the nav under their component, so they get previous and next links.
+hooks:
+  - docs/_nav_hook.py
+
 nav:
   - Home: index.md
   - Start here:
