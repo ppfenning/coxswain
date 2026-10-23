@@ -2203,7 +2203,7 @@ def test_route_lint_output_is_unchanged_when_the_repo_lists_no_files(tmp_path, m
 
 def test_file_refuses_body_text_passed_where_a_path_belongs_without_echoing_it(tmp_path, capsys):
     profile, ws = _write_file_profile(tmp_path)
-    text = "Pat 2026-10-23: a long ticket body\n\nwith paragraphs, passed as --body by mistake."
+    text = "A long ticket body\n\nwith paragraphs, passed as --body by mistake."
     rc = main(["route", "file", "--profile", str(profile), "--repo", _widget(tmp_path), "--title", "Fix it", "--body", text])
     out = capsys.readouterr().out
     assert rc == 2
