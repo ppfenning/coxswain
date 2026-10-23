@@ -992,8 +992,10 @@ def test_cartridge_links_compare_text_without_following_links():
     assert row["ok"] is False and _LINK_BASE not in row["detail"]
 
 
-def test_cartridge_links_fail_when_none_were_found():
-    assert _links_row({})["ok"] is False
+def test_no_cartridge_links_pass_since_the_shipped_cartridges_are_read():
+    """A workspace drops its base and local links once the loader reads the shipped ones (2026.10.2)."""
+    row = _links_row({})
+    assert (row["ok"], row["detail"]) == (True, "no base or local links; the checkout's shipped base and local are read")
 
 
 _BIN_CHECKOUT = "/h/installs/coxswain"

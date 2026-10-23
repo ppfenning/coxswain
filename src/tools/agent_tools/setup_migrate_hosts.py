@@ -44,10 +44,22 @@ def in_checkout(path: str) -> bool:
     return any(a == "installs" and b == "coxswain" for a, b in itertools.pairwise(parts))
 
 
+def _home_of(path: str) -> str | None:
+    """`<home>` for a path in `<home>/installs/coxswain`, else None."""
+    parts = posixpath.normpath(path).split("/")
+    found = next((i for i, (a, b) in enumerate(itertools.pairwise(parts)) if a == "installs" and b == "coxswain"), None)
+    return "/".join(parts[:found]) if found is not None else None
+
+
 def is_migrated(host: ObservedHost) -> bool:
-    """Reports a checkout, and every reported path lies in the monorepo checkout: the checkout itself, or a folder
-    inside it (an older beat reports `src/cartridges/providers` beside it)."""
-    return bool(host.checkouts) and all(in_checkout(path) for path in host.checkouts.values())
+    """Reports a checkout, and every reported path lies in the monorepo checkout (the checkout itself, or a folder
+    inside it: an older beat reports `src/cartridges/providers` beside it) or is that home's own `providers`
+    folder, where `setup migrate` copies a team provider profile. Every migrated host reports that folder, so
+    without it no host ever read as migrated (2026-10-23)."""
+    paths = list(host.checkouts.values())
+    homes = {home for home in map(_home_of, paths) if home is not None}
+    providers = {posixpath.join(home, "providers") for home in homes}
+    return bool(paths) and all(in_checkout(path) or posixpath.normpath(path) in providers for path in paths)
 
 
 def _host_steps(host: ObservedHost) -> list[Step]:

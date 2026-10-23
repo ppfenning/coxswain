@@ -35,8 +35,13 @@ _PARENT_QUERY = "query($id:ID!){node(id:$id){... on Issue{parent{id}}}}"
 
 
 def auth_ok(run) -> bool:
-    """Whether the active `gh` login works; plain `status` exits 1 when any stored login is bad."""
-    return run(["gh", "auth", "status", "--active"], capture_output=True, text=True).returncode == 0
+    """Whether the active `gh` login works; plain `status` exits 1 when any stored login is bad. A `gh` older than
+    `--active` (Ubuntu's 2.46 package) rejects the flag and exits 1 too, so a failed status falls back to asking
+    `gh api user`, which works on every version and proves the token itself (2026-10-23: every land on such a
+    host said "gh is not authenticated" while the login was fine)."""
+    if run(["gh", "auth", "status", "--active"], capture_output=True, text=True).returncode == 0:
+        return True
+    return api_login_ok(run)
 
 
 def api_login_ok(run) -> bool:
