@@ -117,7 +117,7 @@ today. It does not mean the release is otherwise good.
 
 | Component | Repository or path | Tag | Required or flag |
 | --- | --- | --- | --- |
-| dash |  | `v2026.10.2` |  |
+| dash | `ppfenning/coxswain-dash` | `v2026.10.2` | flag: `dash`, provides `towpath` |
 
 See the [2026.10.2 release notes](2026.10.2.md) for what landed in each component.
 
