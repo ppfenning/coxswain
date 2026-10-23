@@ -36,7 +36,6 @@ One package, `coxswain`. One command, `cox`.
 
 ```sh
 brew install ppfenning/coxswain/cox        # or: uv tool install --python 3.14 coxswain
-git clone --branch <tag> https://github.com/ppfenning/coxswain ~/.local/share/coxswain/installs/coxswain
 cox install --team my-team
 mkdir -p <workspace>/work <workspace>/runs <workspace>/intake <workspace>/cartridges
 git -C <workspace> init
@@ -44,7 +43,7 @@ cartridge init my-team --cartridges-dir <workspace>/cartridges
 cox setup doctor
 ```
 
-`<tag>` is a release tag, such as `v2026.10.0`. That one checkout is the whole install: `cox install` reads its `manifest.toml`, creates one venv inside it, installs `cox` editable from it, writes this machine's profile and links the crew. `<workspace>` is `~/.local/share/coxswain/workspaces/main` unless you pass `--workspace`. The profile starts on the shipped provider profile; a team keeps its own outside the checkout, in `<home>/providers/` or the workspace (see the [install guide](https://ppfenning.github.io/coxswain/latest/install/#the-provider-profile)). The install's closing doctor may report the missing workspace and cartridge until the `mkdir`, `git init` and `cartridge init` steps are done.
+When the home has no checkout, `cox install` clones one at the release tag matching its own version, such as `v2026.10.1`, into `~/.local/share/coxswain/installs/coxswain`. That one checkout is the whole install: `cox install` reads its `manifest.toml`, creates one venv inside it, installs `cox` editable from it, writes this machine's profile and links the crew. `<workspace>` is `~/.local/share/coxswain/workspaces/main` unless you pass `--workspace`. The profile starts on the shipped provider profile; a team keeps its own outside the checkout, in `<home>/providers/` or the workspace (see the [install guide](https://ppfenning.github.io/coxswain/latest/install/#the-provider-profile)). The install's closing doctor may report the missing workspace and cartridge until the `mkdir`, `git init` and `cartridge init` steps are done.
 
 `cox setup doctor` tells you whether this machine can run an epic and what is missing. The [install guide](https://ppfenning.github.io/coxswain/latest/install/) covers a fresh machine end to end.
 
@@ -70,7 +69,7 @@ cox setup doctor
 cox host activate <host>
 ```
 
-Move a team provider profile out of the old cartridges checkout to `<home>/providers/` first, and edit by hand any of your own scripts that name an old checkout path. Old checkouts are moved to `installs/.retired-<date>/`, never deleted. [From 0.47 to the monorepo](https://ppfenning.github.io/coxswain/latest/monorepo/) has every step and the known issues in 2026.10.0.
+`cox setup migrate` copies a team provider profile the old cartridges checkout does not track to `<home>/providers/` and points `provider_profile` at it; copy `catalog.yaml` beside it yourself, and edit by hand any of your own scripts that name an old checkout path. Old checkouts are moved to `installs/.retired-<date>/`, never deleted. [From 0.47 to the monorepo](https://ppfenning.github.io/coxswain/latest/monorepo/) has every step and the known issues in 2026.10.0.
 
 ## The loop, in one screen
 

@@ -72,9 +72,12 @@ chair loop and let the lanes on a machine finish before you move it.
     cp <home>/installs/coxswain-cartridges/providers/catalog.yaml <home>/providers/
     ```
 
-    Migrate rewrites any `provider_profile` under the cartridges checkout to
-    the same path under `<checkout>/src/cartridges`, and your team's file is
-    not there. A profile outside the component checkouts is kept as it is.
+    Since 2026.10.1, migrate does the profile part itself when the cartridges
+    checkout does not track your team's file: it copies the file to
+    `<home>/providers/` and points `provider_profile` at the copy. It does not
+    copy `catalog.yaml`. A file it could not check against the checkout is
+    left for you to move by hand. A profile outside the component checkouts
+    is kept as it is.
 
 3. Update `cox` to the new package.
 
@@ -145,7 +148,8 @@ hosts first. Without `--hosts`, the apply prints
 
 ## Known issues in 2026.10.0
 
-Fixes are planned for 2026.10.1.
+All three are fixed in 2026.10.1; they apply only to a migrate run with
+2026.10.0.
 
 - **`repo_map` written back in a form the profile reader rejects.** The
   profile reader takes `repo_map` as one line of JSON. If a command then

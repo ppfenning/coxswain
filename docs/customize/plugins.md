@@ -63,8 +63,9 @@ uv pip install --python ~/.local/share/coxswain/installs/coxswain/.venv/bin/pyth
   "coxswain-plugins[jev] @ git+https://github.com/ppfenning/coxswain-plugins"
 ```
 
-`cox upgrade` reinstalls `cox` and syncs the venv to the release's lock, which
-drops packages it does not name. Run both commands again after an upgrade.
+`cox upgrade` reinstalls `cox` with only the extras it had, which drops the
+`--with` package, so run the first command again after an upgrade. Its venv
+sync keeps packages the lock does not name, so the second survives.
 
 A plugin that needs a vendor's client library declares it as an extra,
 as `jev` does. Installing one plugin never pulls in another's
