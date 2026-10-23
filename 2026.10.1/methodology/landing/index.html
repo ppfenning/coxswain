@@ -5789,9 +5789,9 @@ repository root, so <code>cd &lt;dir&gt; &amp;&amp; &lt;cmd&gt;</code> works. Th
 line's first word.</p>
 <p>The coxswain repository uses this to run every component suite. Its
 <code>.agent-checks</code> is:</p>
-<div class="highlight"><pre><span></span><code>cd src/tools &amp;&amp; pytest -q
-cd src/graphs &amp;&amp; pytest -q
-cd src/cartridges &amp;&amp; pytest -q
+<div class="highlight"><pre><span></span><code>cd src/tools &amp;&amp; pytest -q -n auto
+cd src/graphs &amp;&amp; pytest -q -n auto
+cd src/cartridges &amp;&amp; pytest -q -n auto
 </code></pre></div>
 <p>Each suite runs from its own folder. Its <code>pytest.ini</code> puts the sibling
 source folders on the path (<code>pythonpath = . ../graphs ../cartridges</code> in

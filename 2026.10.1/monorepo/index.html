@@ -5866,9 +5866,12 @@ chair loop and let the lanes on a machine finish before you move it.</p>
 cp<span class="w"> </span>&lt;home&gt;/installs/coxswain-cartridges/providers/&lt;team&gt;.yaml<span class="w"> </span>&lt;home&gt;/providers/
 cp<span class="w"> </span>&lt;home&gt;/installs/coxswain-cartridges/providers/catalog.yaml<span class="w"> </span>&lt;home&gt;/providers/
 </code></pre></div>
-<p>Migrate rewrites any <code>provider_profile</code> under the cartridges checkout to
-the same path under <code>&lt;checkout&gt;/src/cartridges</code>, and your team's file is
-not there. A profile outside the component checkouts is kept as it is.</p>
+<p>Since 2026.10.1, migrate does the profile part itself when the cartridges
+checkout does not track your team's file: it copies the file to
+<code>&lt;home&gt;/providers/</code> and points <code>provider_profile</code> at the copy. It does not
+copy <code>catalog.yaml</code>. A file it could not check against the checkout is
+left for you to move by hand. A profile outside the component checkouts
+is kept as it is.</p>
 </li>
 <li>
 <p>Update <code>cox</code> to the new package.</p>
@@ -5927,7 +5930,8 @@ cox<span class="w"> </span>setup<span class="w"> </span>migrate<span class="w"> 
 hosts first. Without <code>--hosts</code>, the apply prints
 <code>hosts: not touched; rerun with --apply --hosts on the chair's machine</code>.</p>
 <h2 id="known-issues-in-2026100">Known issues in 2026.10.0</h2>
-<p>Fixes are planned for 2026.10.1.</p>
+<p>All three are fixed in 2026.10.1; they apply only to a migrate run with
+2026.10.0.</p>
 <ul>
 <li><strong><code>repo_map</code> written back in a form the profile reader rejects.</strong> The
   profile reader takes <code>repo_map</code> as one line of JSON. If a command then
