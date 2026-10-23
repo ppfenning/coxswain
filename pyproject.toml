@@ -1,6 +1,6 @@
 [project]
 name = "coxswain"
-version = "2026.10.2"
+version = "2026.10.3"
 description = "Coxswain: the agent platform. One package, one command: `cox`."
 readme = "README.md"
 license = { file = "LICENSE" }
