@@ -12,7 +12,7 @@ nodes. Eleven graphs register a subcommand: `decompose`, `lifecycle`,
 `validate`, `review-diff` and `rescue-review` for delivery, and `cos`,
 `reconcile`, `retro`, `triage`, `triage-quarantine` and `sweep` for
 operations. The epic driver, which runs an initiative phase by phase, is
-harness code, not a graph. See [Graphs](../methodology/graphs.md) for the methodology behind the
+harness code, not a graph. See [Graphs](../../methodology/graphs.md) for the methodology behind the
 shape.
 
 ## Installing it

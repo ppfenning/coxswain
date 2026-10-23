@@ -12,7 +12,7 @@ rest), and the dispatcher that enforces the in-flight bound.
 ## Installing it
 
 Tools is the `coxswain` package's command, so installing `coxswain` installs
-it. See [Install](../install/index.md).
+it. See [Install](../../install/index.md).
 
 ## Its own docs
 

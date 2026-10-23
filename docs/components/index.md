@@ -6,11 +6,11 @@ release. Dash is its own repository and is optional.
 
 | Name | Where | Installed | What it does |
 | --- | --- | --- | --- |
-| [Tools](tools.md) | `src/tools` | always, provides `cox` | The `cox` CLI: install, dispatch, run the loop, land. |
-| [Graphs](graphs.md) | `src/graphs` | always | The graphs a run executes, and the harness that runs them. |
-| [Cartridges](cartridges.md) | `src/cartridges` | always | A team's or repo's context: roles, skills, policy, providers. |
-| [Crew](crew.md) | `crew` | always, linked into `~/.claude/agents` | The agent seats that plan, build, review, and validate. |
-| [Dash](dash.md) | [ppfenning/coxswain-dash](https://github.com/ppfenning/coxswain-dash) | `--with dash`, provides `towpath` | A terminal dashboard for the fleet. |
+| [Tools](tools/index.md) | `src/tools` | always, provides `cox` | The `cox` CLI: install, dispatch, run the loop, land. |
+| [Graphs](graphs/index.md) | `src/graphs` | always | The graphs a run executes, and the harness that runs them. |
+| [Cartridges](cartridges/index.md) | `src/cartridges` | always | A team's or repo's context: roles, skills, policy, providers. |
+| [Crew](crew/index.md) | `crew` | always, linked into `~/.claude/agents` | The agent seats that plan, build, review, and validate. |
+| [Dash](dash/index.md) | [ppfenning/coxswain-dash](https://github.com/ppfenning/coxswain-dash) | `--with dash`, provides `towpath` | A terminal dashboard for the fleet. |
 
 The four folders are one checkout at one release tag, with one venv, so they
 always match. `manifest.toml` names only dash, at the tag a release pins it to.

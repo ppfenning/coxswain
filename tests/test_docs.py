@@ -648,27 +648,43 @@ def test_a_component_readme_lands_beside_its_nav_page_never_on_its_url():
 
 def test_the_nav_hook_nests_the_generated_cli_pages_under_the_cli_reference():
     assert _nav_hook.generated_dir("reference/cli/index.md") == "reference/cli/"
-    assert _nav_hook.generated_dir("components/tools.md") == "components/tools/"
+    assert _nav_hook.generated_dir("components/tools/index.md") == "components/tools/"
     assert _nav_hook.generated_dir("index.md") is None
 
 
-def test_the_nav_hook_finds_each_component_page_and_orders_its_pulled_docs_readme_first():
-    assert _nav_hook.component_of("components/graphs.md") == "graphs"
+def test_the_nav_hook_finds_each_component_index_and_orders_its_pulled_docs_readme_first():
+    assert _nav_hook.component_of("components/graphs/index.md") == "graphs"
     assert _nav_hook.component_of("components/index.md") is None
-    assert _nav_hook.component_of("methodology/graphs.md") is None
+    assert _nav_hook.component_of("components/graphs/docs/graphs/index.md") is None
     uris = [
-        "components/graphs.md",
+        "components/graphs/index.md",
         "components/graphs/docs/GRAPH-CONTRACT.md",
         "components/graphs/readme.md",
-        "components/graphs/docs/graphs/coxswain.md",
         "components/graphsx/readme.md",
-        "components/tools/readme.md",
     ]
-    assert _nav_hook.pulled_order("graphs", uris) == [
-        "components/graphs/readme.md",
-        "components/graphs/docs/GRAPH-CONTRACT.md",
-        "components/graphs/docs/graphs/coxswain.md",
+    assert _nav_hook.under("components/graphs/", uris)[:2] == ["components/graphs/readme.md", "components/graphs/docs/GRAPH-CONTRACT.md"]
+
+
+def test_graph_pages_are_grouped_so_a_graph_never_appears_twice_at_one_level():
+    """The Graphs component listed each graph's reference page and its specification side by side (2026-10-23)."""
+    prefix = "components/graphs/"
+    uris = [prefix + p for p in (
+        "readme.md", "docs/GRAPH-CONTRACT.md", "docs/graphs/coxswain.md", "docs/graphs/index.md",
+        "graphs/ops/coxswain.md",
+    )]
+    assert _nav_hook.grouped(prefix, uris) == [
+        (None, [prefix + "readme.md", prefix + "docs/GRAPH-CONTRACT.md"]),
+        ("Graph reference", [prefix + "docs/graphs/index.md", prefix + "docs/graphs/coxswain.md"]),
+        ("Specifications", [prefix + "graphs/ops/coxswain.md"]),
     ]
+
+
+def test_generated_pages_get_titles_that_do_not_repeat_their_section():
+    assert _nav_hook.page_title("components/tools/readme.md", "tools") == "README"
+    assert _nav_hook.page_title("components/graphs/docs/graphs/index.md", "Graphs") == "All graphs"
+    assert _nav_hook.page_title("components/graphs/graphs/ops/coxswain.md", "coxswain — specification") == "coxswain"
+    assert _nav_hook.page_title("components/graphs/docs/graphs/triage.md", "triage") is None
+    assert _nav_hook.page_title("reference/cli/chair.md", "cox chair") is None
 
 
 def test_every_component_doc_is_in_the_nav_after_the_hook_so_none_lacks_previous_and_next():
@@ -683,6 +699,8 @@ def test_every_component_doc_is_in_the_nav_after_the_hook_so_none_lacks_previous
     in_nav = {page.file.src_uri for page in nav.pages}
     generated = {f.src_uri for f in files.documentation_pages() if f.src_uri.startswith(("components/", "reference/cli/"))}
     assert generated <= in_nav
+    # navigation.indexes makes each section's index.md its link, so no section lists its own page as a child too.
+    assert "navigation.indexes" in config["theme"]["features"]
     assert all(page.previous_page is not None for page in nav.pages[1:])
     assert all(page.next_page is not None for page in nav.pages[:-1])
 

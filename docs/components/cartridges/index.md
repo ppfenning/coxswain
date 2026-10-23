@@ -10,7 +10,7 @@ changing any code.
 The `src/cartridges` folder holds the `core` package (merge, policy, ledger,
 work store), the base and local cartridges, the provider profiles, the
 reference skills plugins and the Claude plugin marketplace. See
-[Cartridges](../methodology/cartridges.md) for how a run picks one.
+[Cartridges](../../methodology/cartridges.md) for how a run picks one.
 
 ## Installing it
 

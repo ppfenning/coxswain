@@ -6,6 +6,7 @@ theme:
   custom_dir: docs/overrides
   features:
     - navigation.tabs
+    - navigation.indexes
     - navigation.footer
     - search.suggest
   palette:
@@ -87,11 +88,11 @@ nav:
       - Autonomous chair: customize/autonomous-chair.md
   - Components:
       - Components: components/index.md
-      - Cartridges: components/cartridges.md
-      - Graphs: components/graphs.md
-      - Tools: components/tools.md
-      - Crew: components/crew.md
-      - Dash: components/dash.md
+      - Cartridges: components/cartridges/index.md
+      - Graphs: components/graphs/index.md
+      - Tools: components/tools/index.md
+      - Crew: components/crew/index.md
+      - Dash: components/dash/index.md
   - Reference:
       - CLI reference: reference/cli/index.md
   - Releases:
