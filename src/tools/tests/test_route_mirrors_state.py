@@ -57,13 +57,13 @@ def test_a_filed_item_mirrors_ready_with_the_right_arguments_after_the_write(tmp
     seen = []
 
     def record(runs_dir, initiative, task, state, by):
-        seen.append((runs_dir, initiative, task, state, by, (ws / "work/fix-the-thing/build/fix-the-thing.md").read_text()))
+        seen.append((runs_dir, initiative, task, state, by, (ws / "work/fix-the-thing/build/fix-the-thing-task.md").read_text()))
 
     monkeypatch.setattr("agent_tools.store_cli.mirror_state", record)
     assert _file(profile) == 0
     repo = str(tmp_path / "widget")
-    task_text = route.initiative_files("Fix the thing", "", repo)["work/fix-the-thing/build/fix-the-thing.md"]
-    assert seen == [(ws / "runs", "fix-the-thing", "fix-the-thing", "ready", "leader-a", task_text)]
+    task_text = route.initiative_files("Fix the thing", "", repo)["work/fix-the-thing/build/fix-the-thing-task.md"]
+    assert seen == [(ws / "runs", "fix-the-thing", "fix-the-thing-task", "ready", "leader-a", task_text)]
 
 
 def test_exit_0_mirrors_and_prints_nothing_extra(tmp_path, harness, capsys):
@@ -71,7 +71,7 @@ def test_exit_0_mirrors_and_prints_nothing_extra(tmp_path, harness, capsys):
     assert _file(profile) == 0
     assert "set-state" in harness.calls[0]
     assert "warning" not in capsys.readouterr().out
-    assert (ws / "work/fix-the-thing/build/fix-the-thing.md").exists()
+    assert (ws / "work/fix-the-thing/build/fix-the-thing-task.md").exists()
 
 
 @pytest.mark.parametrize("code", [3, 2])
@@ -81,8 +81,8 @@ def test_exit_3_and_exit_2_print_one_warning_and_the_file_still_succeeds(tmp_pat
     assert _file(profile) == 0
     warnings = [line for line in capsys.readouterr().out.splitlines() if line.startswith("warning:")]
     assert len(warnings) == 1
-    assert "fix-the-thing/fix-the-thing as ready" in warnings[0]
-    assert (ws / "work/fix-the-thing/build/fix-the-thing.md").exists()
+    assert "fix-the-thing/fix-the-thing-task as ready" in warnings[0]
+    assert (ws / "work/fix-the-thing/build/fix-the-thing-task.md").exists()
 
 
 def test_a_missing_harness_prints_nothing_extra_and_the_file_succeeds(tmp_path, monkeypatch, capsys):
@@ -91,7 +91,7 @@ def test_a_missing_harness_prints_nothing_extra_and_the_file_succeeds(tmp_path, 
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("no harness, no subprocess"))
     assert _file(profile) == 0
     assert "warning" not in capsys.readouterr().out
-    assert (ws / "work/fix-the-thing/build/fix-the-thing.md").exists()
+    assert (ws / "work/fix-the-thing/build/fix-the-thing-task.md").exists()
 
 
 def test_an_intake_file_sets_no_state_and_mirrors_nothing(tmp_path, harness):
@@ -106,5 +106,5 @@ def test_two_work_items_in_one_write_mirror_twice_and_one_warning_hides_nothing(
     mapping = {**route.initiative_files("One", "", "/r"), **route.initiative_files("Two", "", "/r")}
     assert cli._write_mapping(mapping, ws, by="me") is None
     tasks = [argv[argv.index("set-state") + 1 : argv.index("set-state") + 4] for argv in harness.calls]
-    assert tasks == [["one", "one", "ready"], ["two", "two", "ready"]]
+    assert tasks == [["one", "one-task", "ready"], ["two", "two-task", "ready"]]
     assert len([line for line in capsys.readouterr().out.splitlines() if line.startswith("warning:")]) == 2

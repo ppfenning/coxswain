@@ -4120,11 +4120,14 @@ def _resolve_profile_or_refuse(a: argparse.Namespace):
 
 def _item_shape(rel: str) -> tuple[str, tuple[str, ...]] | None:
     """(`kind`, `path_parts`) `queue_rows.parse_item` wants for one `_write_mapping` key, or `None` for a
-    path with no queue row of its own — an `initiative.md`, or anything outside `work/`/`intake/` — the same
-    split `_sync_filed_items` already draws between a synced item and the initiative doc beside it."""
+    path with no queue row of its own (anything outside `work/`/`intake/`). A `work/<id>/initiative.md` is an
+    initiative row: launch reads it from the store and refused a one-task initiative filed without one
+    (2026-10-23)."""
     parts = Path(rel).parts
     if len(parts) == 4 and parts[0] == "work":
         return "task", parts[1:]
+    if len(parts) == 3 and parts[0] == "work" and parts[2] == "initiative.md":
+        return "initiative", parts[1:]
     if len(parts) in (2, 3) and parts[0] == "intake":
         return "intake", parts[1:]
     return None
@@ -4132,8 +4135,8 @@ def _item_shape(rel: str) -> tuple[str, tuple[str, ...]] | None:
 
 def _write_mapping(mapping: dict, ws: Path, by: str = _UNLABELED):
     """Write `mapping` (relative path -> text) under `ws`; `None` on success, else the refusal to print.
-    A `work/<initiative>/<phase>/<task>.md` or `intake/...md` path is filed store-first through
-    `route.write_filed_item`, which prints its own warning or error; anything else (an `initiative.md`) is
+    A `work/<initiative>/initiative.md`, `work/<initiative>/<phase>/<task>.md` or `intake/...md` path is filed
+    store-first through `route.write_filed_item`, which prints its own warning or error; anything else is
     written directly, as it always was. Each `work/<initiative>/<phase>/<task>.md` written with a `state:`
     is then mirrored to the store the same as today, one call per file."""
     targets = {rel: ws / rel for rel in mapping}
@@ -4254,6 +4257,19 @@ def _open_issues(ws: Path) -> list[dict]:
     ]
 
 
+def _could_be_path(value: str) -> bool:
+    """False for text that cannot name a file: a newline in it, or longer than any path."""
+    return "\n" not in value and len(value) <= 4096
+
+
+def _body_refusal(value: str) -> str:
+    """The refusal for an unreadable --body: a value that is plainly text says so, rather than echoing it back as a
+    file name (2026-10-23: a whole ticket body printed as `cannot read body file <body>`)."""
+    if not _could_be_path(value) or len(value) > 200:
+        return f"routing: --body takes a file path, or - for stdin, not the text itself (got {len(value)} characters of text)"
+    return f"routing: cannot read body file {value}"
+
+
 def _route_file(a: argparse.Namespace) -> int:
     profile, rc = _resolve_profile_or_refuse(a)
     if rc is not None:
@@ -4277,9 +4293,9 @@ def _route_file(a: argparse.Namespace) -> int:
     if a.body == "-":
         body = sys.stdin.read()
     elif a.body:
-        body = _read_text_or_none(Path(a.body))
+        body = _read_text_or_none(Path(a.body)) if _could_be_path(a.body) else None
         if body is None:
-            print(f"routing: cannot read body file {a.body}")
+            print(_body_refusal(a.body))
             return 2
     else:
         body = ""

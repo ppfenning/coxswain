@@ -1274,7 +1274,10 @@ def test_a_phase_that_cannot_authenticate_stops_the_run_and_leaves_later_phases_
 
     assert [p["phase"] for p in result["phases"]] == ["p1-foundations"]
     assert result["phases"][0]["stopped"].startswith("the runner cannot authenticate: t1-probe: ")
-    assert [q["id"] for q in result["quarantined"]] == ["t1-probe"]
+    # The login is the host's failure: no quarantine and no attempt, so a relaunch on a logged-in host builds it.
+    assert result["quarantined"] == []
+    probe = workstore.read_item(wi / "p1-foundations" / "t1-probe.md")
+    assert (probe["state"], probe.get("attempts") or []) == ("ready", [])
     assert workstore.read_item(wi / "p2-rollout" / "t3-cutover.md")["state"] == "ready"
     assert any(line.startswith("  run stopped:") for line in capsys.readouterr().out.splitlines())
 

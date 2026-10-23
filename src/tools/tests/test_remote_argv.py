@@ -36,8 +36,16 @@ _LOGIN_SCRIPT = "'exec \"${SHELL:-/bin/sh}\" -l -i -c \"$1\"'"
 def test_ssh_argv_runs_the_auth_status_command_in_the_login_shell():
     assert ssh_argv("me@box", auth_status_argv()) == [
         *_SSH_HEAD,
-        f"/bin/sh -c {_LOGIN_SCRIPT} login-shell 'claude auth status'",
+        f"/bin/sh -c {_LOGIN_SCRIPT} login-shell 'command claude auth status'",
     ]
+
+
+def test_a_remote_claude_call_skips_a_shell_function_named_claude_as_a_lane_does():
+    """A lane runs the claude binary from cox, never a startup file's claude() wrapper (2026-10-23)."""
+    inner = shlex.split(ssh_argv("me@box", auth_status_argv())[-1])[-1]
+    assert inner == "command claude auth status"
+    script = 'claude() { printf wrapped; }; ' + inner.replace("claude auth status", "printf binary")
+    assert subprocess.run(["sh", "-c", script], capture_output=True, text=True).stdout == "binary"
 
 
 def test_ssh_argv_runs_the_lane_launch_command_in_the_login_shell():
@@ -53,9 +61,9 @@ def test_ssh_argv_keeps_an_inner_command_with_spaces_and_quotes_intact_in_the_lo
     word = ssh_argv("me@box", inner)[-1]
     assert word == (
         f"/bin/sh -c {_LOGIN_SCRIPT} login-shell "
-        "'claude say '\"'\"'a b'\"'\"' '\"'\"'it'\"'\"'\"'\"'\"'\"'\"'\"'s'\"'\"''"
+        "'command claude say '\"'\"'a b'\"'\"' '\"'\"'it'\"'\"'\"'\"'\"'\"'\"'\"'s'\"'\"''"
     )
-    assert shlex.split(word)[-1] == shlex.join(inner)
+    assert shlex.split(word)[-1] == shlex.join(["command", *inner])
 
 
 def test_ssh_argv_leaves_a_non_claude_command_unwrapped():
