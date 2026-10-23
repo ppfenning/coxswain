@@ -5213,7 +5213,7 @@ def _fetch_one(runs_dir: Path, hosts, run_id: str, mode: str = "files", by: str 
         return "failed", [f"fetch: {hosts.message}"], ""
     host = lane_hosts.find_lane_host(hosts, record["host"])
     if host is None:
-        return "failed", [f"fetch: host {record['host']} is no longer in the profile lane_hosts",
+        return "failed", [f"fetch: host {record['host']} is in neither the hosts table nor the profile lane_hosts",
                           f"configured: {', '.join(h.name for h in hosts) or 'none'}"], ""
     lease_released, ended_at = _remote_fetch_facts(runs_dir, run_id)
     run, locate = _remote_edge(runs_dir.parent)
@@ -5271,6 +5271,13 @@ def _runs_fetch_all(runs_dir: Path, hosts, mode: str = "files", by: str = _UNLAB
     return 2 if failed else 0
 
 
+def _fetch_hosts(profile_text: str, rows: Sequence[Mapping]) -> tuple[lane_hosts.LaneHost, ...] | lane_hosts.LaneHostError:
+    """The hosts a remote run may be fetched from: the same table-then-profile hosts `route launch --on` picks from,
+    drained ones included, since a run launched before its host was drained still has to come back. Reading only
+    the profile's lane_hosts refused every run launched on a hosts-table host (2026-10-23)."""
+    return _lane_host_candidates(profile_text, [{**row, "state": "active"} for row in rows])
+
+
 def _runs_fetch(a: argparse.Namespace) -> int:
     """Pulls an ended remote run's records, log and branches to this machine; writes nothing in the store."""
     if bool(a.run_id) == bool(a.all):
@@ -5280,7 +5287,7 @@ def _runs_fetch(a: argparse.Namespace) -> int:
     if runs_dir is None:
         print(f"fetch: {reason}")
         return 2
-    hosts = _profile_lane_hosts(_read_text_or_none(_profile_path(a)) or "")
+    hosts = _fetch_hosts(_read_text_or_none(_profile_path(a)) or "", run_store.hosts(runs_dir))
     mode = work_state.work_state_mode(_lake_provider(a)[0])
     by = _holder_label(a)
     if a.all:

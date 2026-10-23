@@ -112,8 +112,20 @@ def test_fetch_when_the_host_left_the_profile_exits_non_zero_and_names_it(tmp_pa
     ws, profile, _ = _world(tmp_path, monkeypatch, host_in_profile=False)
     rc = main(["runs", "fetch", RUN, "--profile", str(profile)])
     assert rc == 2
-    assert "fetch: host box is no longer in the profile lane_hosts" in capsys.readouterr().out
+    assert "fetch: host box is in neither the hosts table nor the profile lane_hosts" in capsys.readouterr().out
     assert not (ws / "runs" / RUN).exists()
+
+
+@needs_tools
+def test_fetch_finds_a_host_only_the_hosts_table_names_even_once_drained(tmp_path, monkeypatch, capsys):
+    """`route launch --on` picks hosts from the table; fetch read only the profile and refused them (2026-10-23)."""
+    ws, profile, chair_repo = _world(tmp_path, monkeypatch, host_in_profile=False, lease_expires="2026-09-25T04:59:30Z")
+    row = {"name": "box", "ssh": "me@box", "state": "drained", "versions_json": json.dumps({"workspace_dir": str(tmp_path / "host")})}
+    monkeypatch.setattr(cli.run_store, "hosts", lambda runs_dir: [row])
+    rc = main(["runs", "fetch", RUN, "--profile", str(profile)])
+    assert rc == 0
+    assert capsys.readouterr().out.splitlines()[:2] == [f"run {RUN}", "host box"]
+    assert (ws / "runs" / RUN / "tasks" / "p1" / "t.json").exists()
 
 
 def test_fetch_of_a_live_lane_exits_non_zero_and_copies_nothing(tmp_path, monkeypatch, capsys):
