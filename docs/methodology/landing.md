@@ -44,9 +44,9 @@ The coxswain repository uses this to run every component suite. Its
 `.agent-checks` is:
 
 ```text
-cd src/tools && pytest -q
-cd src/graphs && pytest -q
-cd src/cartridges && pytest -q
+cd src/tools && pytest -q -n auto
+cd src/graphs && pytest -q -n auto
+cd src/cartridges && pytest -q -n auto
 ```
 
 Each suite runs from its own folder. Its `pytest.ini` puts the sibling

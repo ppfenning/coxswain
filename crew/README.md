@@ -13,7 +13,7 @@ binding you swap.
 ## What is here
 
 ```
-seats/          one agent definition per seat (eleven), and SEATS.md for the chief of staff
+seats/          one agent definition per seat (eleven), and SEATS.md for the chair
 install.sh      links every seat into ~/.claude/agents (SEATS.md is not linked)
 check_seats.py  checks every seat's frontmatter: name, description, tools, an explicit model
 ```
@@ -39,15 +39,17 @@ the work.
 | **Lewis** | `bm_lewis` | review — reads the diff, never the builder's account of it | none, and no merge |
 | **Sarah** | `af_sarah` | build — worktree, branch, tests, one pull request | code on its own branch |
 | **Michael** | `am_michael` | ops — CI, PR health, deploys, local tooling | its own PR branches |
-| **Emma** | `bf_emma` | the board — epics, phases, item bodies, dates, reconciliation | proposes; the chief writes |
+| **Emma** | `bf_emma` | the board — epics, phases, item bodies, dates, reconciliation | proposes; the chair writes |
 | **Echo** | `am_echo` | writing — docs, RFCs, outward-facing replies | drafts only |
 | **Alice** | `bf_alice` | scribe — the visual plan for a swarm, tracked to completion | `plans/` only |
 | **Daniel** | `bm_daniel` | steward — reads the run records and proposes what should change: skills, workflows, spend, hygiene | none; every change is a PR |
 | **Liam** | `am_liam` | courier — reads the courier inbox, resolves each reference, relays it to its owner | none; acks only |
 | **Model steward** | none declared | model choice — owns which model each role runs on, read off the run stats; not daniel, who changes skills and workflows | proposes, never applies; one weekly pull request to the provider profile |
 
-The **chief of staff** is the session you are talking to, not a file: see
-[`seats/SEATS.md`](seats/SEATS.md).
+The **chair** is the session you are talking to, not a file: bare `cox` takes
+the chair lease for its session unless a live `cox chair run` loop, the same
+role run unattended, already holds it. [`seats/SEATS.md`](seats/SEATS.md) says why it has no seat
+file.
 
 **A reviewer is independent by construction.** Lewis reads the diff and a base
 ref, never the builder's summary, and is never the instance that wrote the
@@ -90,7 +92,7 @@ in this repository names a company, a tracker, a board, or a person.
 
 Every seat is a plain agent definition and works in any session. In a voice
 session a seat reports in its own voice, which is how you hear that a finding
-came from an independent pair of eyes rather than from the chief restating
+came from an independent pair of eyes rather than from the chair restating
 itself. In a text session the voice line is dropped. The model steward declares
 no voice. The other ten voices ship with
 [Kokoro](https://github.com/remsky/Kokoro-FastAPI); none is required.

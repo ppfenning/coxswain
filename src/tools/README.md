@@ -36,10 +36,9 @@ Without it they are skipped.
 
 ## Commands
 
-Bare `cox` on a terminal opens towpath when it is installed, and otherwise
-starts `cox session`: a Claude Code session with the `coxswain` plugin loaded,
-in the profile's workspace. `agent-tools` still works as a deprecated alias for
-`cox`.
+Bare `cox` on a terminal starts `cox session`: a Claude Code session with the
+`coxswain` plugin loaded, in the profile's workspace. `cox home` opens towpath.
+`agent-tools` still works as a deprecated alias for `cox`, removed next release.
 
 The block below is generated from the command table; run
 `python -m devtools commands render` from the repository root to refresh it.
@@ -158,8 +157,8 @@ cox setup store switch files|shared [--host HOST] [--port PORT] [--database DATA
 ```
 <!-- commands:end -->
 
-Bare `cox setup` opens a small terminal UI over `setup doctor`, `setup
-install` and `cartridge init`; it needs a terminal.
+Bare `cox setup` opens towpath; it needs a terminal and towpath, and otherwise
+points you at `setup doctor` and `setup install`.
 
 The `route` group reads one profile, `~/.config/agent-tools/profile.yaml` (the
 directory keeps the deprecated agent-tools name), or the path in

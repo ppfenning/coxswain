@@ -9,7 +9,7 @@ Each seat is three layers, and only the first lives here:
 | Layer | What it is | Where it lives |
 |---|---|---|
 | **Seat** | surface, write authority, tiering, brief discipline, voice | this repository, `seats/*.md` |
-| **Role binding** | which skills this seat routes to *for a given team* | `agent-cartridges`, a team cartridge's `cast:` block |
+| **Role binding** | which skills this seat routes to *for a given team* | `src/cartridges`, a team cartridge's `cast:` block |
 | **Rendering** | the file a harness actually loads | generated into `~/.claude/agents/` by `install.sh` |
 
 ## Rules every seat obeys
@@ -43,10 +43,11 @@ Each seat is three layers, and only the first lives here:
 4. parse programmatically, never read wholesale
 5. a stop condition
 
-## The chief of staff is not a file here
+## The chair is not a file here
 
-The seat that routes, briefs, gates and synthesizes is the **session you are
-talking to**. It has no definition file because it is not a subagent. It runs
+The seat that routes, briefs, gates and synthesizes is the **chair**: the
+**session you are talking to**, which holds the chair lease (a live
+`cox chair run` loop holds it when no session does). It has no definition file because it is not a subagent. It runs
 on whatever model the session was started with, and that choice never reaches
 the cast: seats carry their own `model:`, and a graph run's models come from
 the provider profile's tier bindings.

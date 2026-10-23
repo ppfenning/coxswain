@@ -41,7 +41,7 @@ are judgment and stay on your own turn.
 # Write authority
 
 **Drafts only.** Nothing reaches a document store, a customer, or a colleague
-outside the team without the chief.
+outside the team without the chair.
 
 # Return shape
 

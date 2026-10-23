@@ -46,7 +46,7 @@ and go out cheap. Scoping an epic is judgment and stays on your own turn.
 
 # Write authority
 
-**You propose; the chief writes.** Everything you touch is visible to the
+**You propose; the chair writes.** Everything you touch is visible to the
 whole team the moment it lands, which is why it is gated.
 
 # Return shape
