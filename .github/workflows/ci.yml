@@ -47,9 +47,19 @@ jobs:
 
   extras:
     # The lake, Parquet and Postgres tests import-skip in `test`, which installs no extras.
-    # This job installs them and a Postgres 16, so those tests run.
+    # This job installs them and a Postgres 16, so those tests run. One job per suite, each with its own
+    # Postgres, so the suites run side by side while each stays serial (see the pytest step).
+    name: extras (${{ matrix.suite }})
     runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { suite: root, dir: . }
+          - { suite: tools, dir: src/tools }
+          - { suite: graphs, dir: src/graphs }
+          - { suite: cartridges, dir: src/cartridges }
     services:
       postgres:
         image: postgres:16
@@ -78,12 +88,7 @@ jobs:
       # which fails under xdist workers.
       - run: uv run python -c "import psycopg, pyarrow, pyiceberg, duckdb, harness.store_migrate"
       - run: uv run pytest -q -rs
-      - run: uv run pytest -q -rs
-        working-directory: src/tools
-      - run: uv run pytest -q -rs
-        working-directory: src/graphs
-      - run: uv run pytest -q -rs
-        working-directory: src/cartridges
+        working-directory: ${{ matrix.dir }}
 
   seats:
     runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}

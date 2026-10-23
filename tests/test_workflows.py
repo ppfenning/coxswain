@@ -49,6 +49,18 @@ def test_the_pull_runs_before_the_cli_reference_and_the_deploy():
 
 def test_every_ci_pytest_step_runs_in_parallel():
     steps = _pytest_steps(yaml.safe_load(CI.read_text()))
-    assert len(steps) == 12
+    assert len(steps) == 9
     missing = _missing_xdist(steps)
     assert not missing, "pytest steps without -n auto:\n" + "\n".join(missing)
+
+
+def test_the_extras_job_runs_each_suite_as_its_own_serial_job():
+    """Split per suite so they run side by side; each stays serial for the Postgres store tests (2026-10-23)."""
+    job = yaml.safe_load(CI.read_text())["jobs"]["extras"]
+    suites = {entry["suite"]: entry["dir"] for entry in job["strategy"]["matrix"]["include"]}
+    assert suites == {"root": ".", "tools": "src/tools", "graphs": "src/graphs", "cartridges": "src/cartridges"}
+    assert job["strategy"]["fail-fast"] is False
+    (pytest,) = [step for step in job["steps"] if step.get("run", "").startswith("uv run pytest")]
+    assert "-n auto" not in pytest["run"] and pytest["working-directory"] == "${{ matrix.dir }}"
+    assert "postgres" in job["services"]
+
