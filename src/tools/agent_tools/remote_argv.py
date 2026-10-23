@@ -28,9 +28,16 @@ def _wants_login_shell(remote_argv: list[str]) -> bool:
     return remote_argv[:1] == ["claude"] or remote_argv[:3] == ["cox", "route", "launch"]
 
 
+def _as_binary(remote_argv: list[str]) -> list[str]:
+    """claude run as the binary, past any shell function or alias of that name. A lane runs the binary as a
+    subprocess of cox, which inherits only exported variables; a startup file's `claude()` wrapper that injected
+    a token made the login check pass while every lane on the host failed to authenticate (2026-10-23)."""
+    return ["command", *remote_argv] if remote_argv[:1] == ["claude"] else remote_argv
+
+
 def ssh_argv(ssh: str, remote_argv: list[str]) -> list[str]:
     """`ssh` is a destination such as user@host; the remote shell sees one quoted command."""
-    inner = login_shell_argv(remote_argv) if _wants_login_shell(remote_argv) else remote_argv
+    inner = login_shell_argv(_as_binary(remote_argv)) if _wants_login_shell(remote_argv) else remote_argv
     return ["ssh", *_SSH_BOUND_OPTIONS, ssh, shlex.join(inner)]
 
 

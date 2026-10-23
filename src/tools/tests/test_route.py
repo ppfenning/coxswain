@@ -148,7 +148,7 @@ def test_initiative_files_returns_the_initiative_and_task_paths_and_text():
     )
     assert set(files) == {
         "work/fix-the-bug/initiative.md",
-        "work/fix-the-bug/build/fix-the-bug.md",
+        "work/fix-the-bug/build/fix-the-bug-task.md",
     }
     assert files["work/fix-the-bug/initiative.md"] == (
         "---\n"
@@ -159,9 +159,9 @@ def test_initiative_files_returns_the_initiative_and_task_paths_and_text():
         "\n"
         "Do the thing.\n"
     )
-    assert files["work/fix-the-bug/build/fix-the-bug.md"] == (
+    assert files["work/fix-the-bug/build/fix-the-bug-task.md"] == (
         "---\n"
-        "id: fix-the-bug\n"
+        "id: fix-the-bug-task\n"
         "phase: build\n"
         "state: ready\n"
         "needs: []\n"
@@ -186,7 +186,7 @@ def test_initiative_files_quotes_a_title_that_would_read_as_yaml(title, line):
     slug = route.slugify(title)
     files = route.initiative_files(title, "Ship it.", "repo-url")
     assert line in files[f"work/{slug}/initiative.md"]
-    assert line in files[f"work/{slug}/build/{slug}.md"]
+    assert line in files[f"work/{slug}/build/{slug}-task.md"]
 
 
 @pytest.mark.parametrize(
@@ -208,7 +208,7 @@ def test_initiative_files_writes_surfaces_budget_attempts_lint_and_a_given_slug(
         "Fix the Bug", "Do the thing.", "repo-url",
         surfaces=["a:b.py", "plain.py"], budget_usd=2.0, slug="custom-slug",
     )
-    task_text = files["work/custom-slug/build/custom-slug.md"]
+    task_text = files["work/custom-slug/build/custom-slug-task.md"]
     assert 'surfaces: ["a:b.py", plain.py]' in task_text
     assert "budget_usd: 2.0" in task_text
     assert "attempts: []" in task_text
@@ -217,7 +217,7 @@ def test_initiative_files_writes_surfaces_budget_attempts_lint_and_a_given_slug(
 
 def test_initiative_files_defaults_phase_to_build_and_body_to_title():
     files = route.initiative_files("Fix the Bug", "", "repo-url")
-    task_text = files["work/fix-the-bug/build/fix-the-bug.md"]
+    task_text = files["work/fix-the-bug/build/fix-the-bug-task.md"]
     assert "phase: build\n" in task_text
     assert task_text.endswith("\nFix the Bug\n")
 
@@ -951,7 +951,7 @@ def test_parse_frontmatter_recovers_the_body_after_the_closing_fence():
     # passes every test above (they only check `fields`), so this is the
     # one assertion that would catch that regression.
     files = route.initiative_files("Fix the Bug", "Ship it.", "repo-url")
-    task_text = files["work/fix-the-bug/build/fix-the-bug.md"]
+    task_text = files["work/fix-the-bug/build/fix-the-bug-task.md"]
     _, body = route.parse_frontmatter(task_text)
     assert body == "Ship it."
 
@@ -2046,3 +2046,12 @@ def test_allocate_intake_id_raises_when_the_harness_python_is_unavailable(monkey
     monkeypatch.setattr(route.run_store, "_harness_python", lambda: None)
     with pytest.raises(ValueError, match="id allocation failed"):
         route.allocate_intake_id()
+
+
+def test_a_one_task_initiatives_task_id_is_never_the_initiatives_own_id():
+    """The store keys rows by (initiative, task id): a shared id overwrote the initiative row (2026-10-23)."""
+    files = route.initiative_files("Fix the Bug", "Ship it.", "repo-url")
+    initiative = route.parse_frontmatter(files["work/fix-the-bug/initiative.md"])[0]["id"]
+    (task_path,) = [p for p in files if p != "work/fix-the-bug/initiative.md"]
+    task = route.parse_frontmatter(files[task_path])[0]["id"]
+    assert (initiative, task, task_path) == ("fix-the-bug", "fix-the-bug-task", "work/fix-the-bug/build/fix-the-bug-task.md")

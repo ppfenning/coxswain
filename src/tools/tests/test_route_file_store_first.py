@@ -124,12 +124,12 @@ def _write_file_profile(tmp_path):
 def test_cox_route_file_upserts_the_task_row_before_the_task_file_exists(tmp_path, monkeypatch):
     profile, ws = _write_file_profile(tmp_path)
     slug = route.slugify("Fix the thing")
-    task_path = ws / "work" / slug / "build" / f"{slug}.md"
+    task_path = ws / "work" / slug / "build" / f"{slug}-task.md"
     initiative_path = ws / "work" / slug / "initiative.md"
     calls = []
 
     def fake_upsert_row(runs_dir, row):
-        calls.append((row["kind"], task_path.exists()))
+        calls.append((row["kind"], row["task_id"], task_path.exists()))
         return True
 
     monkeypatch.setattr(run_store, "upsert_row", fake_upsert_row)
@@ -137,8 +137,9 @@ def test_cox_route_file_upserts_the_task_row_before_the_task_file_exists(tmp_pat
     rc = main(["route", "file", "--profile", str(profile), "--repo", _widget(tmp_path), "--title", "Fix the thing"])
 
     assert rc == 0
-    # Exactly one upsert: the task carries a queue row, the initiative doc beside it does not.
-    assert calls == [("task", False)]
+    # The initiative and its task each carry a row, under ids that never collide (2026-10-23: launch found no
+    # initiative row for a one-task initiative), both upserted before the task file is written.
+    assert calls == [("initiative", slug, False), ("task", f"{slug}-task", False)]
     assert task_path.exists()
     assert initiative_path.exists()
 
@@ -169,7 +170,7 @@ def test_cox_route_file_intake_upserts_the_intake_row_before_the_intake_file_exi
 def test_cox_route_file_still_files_the_task_when_the_store_is_unavailable(tmp_path, monkeypatch, capsys):
     profile, ws = _write_file_profile(tmp_path)
     slug = route.slugify("Fix the thing")
-    task_path = ws / "work" / slug / "build" / f"{slug}.md"
+    task_path = ws / "work" / slug / "build" / f"{slug}-task.md"
     monkeypatch.setattr(run_store, "upsert_row", lambda runs_dir, row: False)
 
     rc = main(["route", "file", "--profile", str(profile), "--repo", _widget(tmp_path), "--title", "Fix the thing"])

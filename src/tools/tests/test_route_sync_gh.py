@@ -526,7 +526,7 @@ def test_route_file_creates_the_items_issue_at_birth_and_writes_it_back(tmp_path
     rc = cli.main(["route", "file", "--profile", str(profile), "--repo", str(_checkout(tmp_path)), "--title", "Fix the thing"])
     assert rc == 0
     assert [c[c.index("--title") + 1] for c in _creates(calls)] == ["Fix the thing"]
-    assert "issue: 9" in (ws / "work" / "fix-the-thing" / "build" / "fix-the-thing.md").read_text()
+    assert "issue: 9" in (ws / "work" / "fix-the-thing" / "build" / "fix-the-thing-task.md").read_text()
     assert "synced fix-the-thing" in capsys.readouterr().out
 
 
@@ -537,8 +537,8 @@ def test_route_file_under_tracker_none_says_not_synced_and_calls_no_gh(tmp_path,
     rc = cli.main(["route", "file", "--profile", str(profile), "--repo", str(_checkout(tmp_path)), "--title", "Fix the thing"])
     out = capsys.readouterr().out
     assert rc == 0
-    assert (ws / "work" / "fix-the-thing" / "build" / "fix-the-thing.md").exists()
-    assert "route file: wrote fix-the-thing; not synced: tracker is none" in out.splitlines()
+    assert (ws / "work" / "fix-the-thing" / "build" / "fix-the-thing-task.md").exists()
+    assert "route file: wrote fix-the-thing-task; not synced: tracker is none" in out.splitlines()
     assert "synced fix-the-thing" not in out.splitlines()
     assert not any(c[:1] == ["gh"] for c in calls)
 
@@ -562,7 +562,7 @@ def test_route_file_from_intake_syncs_only_the_new_work_item(tmp_path, monkeypat
     rc = cli.main(["route", "file", "--profile", str(profile), "--from-intake", str(ws / "intake" / "2026-09-05-fresh.md")])
     assert rc == 0
     assert [c[c.index("--title") + 1] for c in _creates(calls)] == ["Fresh idea"]
-    assert "issue: 9" in (ws / "work" / "fresh-idea" / "build" / "fresh-idea.md").read_text()
+    assert "issue: 9" in (ws / "work" / "fresh-idea" / "build" / "fresh-idea-task.md").read_text()
     assert not (ws / "intake" / "2026-09-05-fresh.md").exists()
 
 
@@ -573,10 +573,10 @@ def test_route_file_still_writes_the_item_and_says_so_in_one_line_when_the_sync_
     rc = cli.main(["route", "file", "--profile", str(profile), "--repo", str(_checkout(tmp_path)), "--title", "Fix the thing"])
     out = capsys.readouterr().out
     assert rc == 0
-    assert (ws / "work" / "fix-the-thing" / "build" / "fix-the-thing.md").exists()
+    assert (ws / "work" / "fix-the-thing" / "build" / "fix-the-thing-task.md").exists()
     failures = [line for line in out.splitlines() if "issue sync failed" in line]
-    assert failures == ["route file: wrote fix-the-thing; issue sync failed (exit 1; issue_create: rate limited); "
-                        "run `route sync --item fix-the-thing`"]
+    assert failures == ["route file: wrote fix-the-thing-task; issue sync failed (exit 1; issue_create: rate limited); "
+                        "run `route sync --item fix-the-thing-task`"]
     assert "issue_create:" not in out.replace(failures[0], "")
 
 

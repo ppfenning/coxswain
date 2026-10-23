@@ -667,7 +667,7 @@ def test_file_from_intake_writes_surfaces_from_real_backticked_files_under_repo(
     assert rc == 0
     assert "surfaces: agent_tools/schema.py, tests/test_release.py" in out
     slug = route.slugify("Fix the thing")
-    task_text = (ws / "work" / slug / "build" / f"{slug}.md").read_text()
+    task_text = (ws / "work" / slug / "build" / f"{slug}-task.md").read_text()
     assert "surfaces: [agent_tools/schema.py, tests/test_release.py]" in task_text
     assert "budget_usd: 2.0" in task_text
     assert "attempts: []" in task_text
@@ -687,7 +687,7 @@ def test_file_from_intake_reports_no_surfaces_when_no_backticked_token_resolves(
     assert rc == 0
     assert "surfaces: none resolved from the intake body" in out
     slug = route.slugify("Fix the thing")
-    task_text = (ws / "work" / slug / "build" / f"{slug}.md").read_text()
+    task_text = (ws / "work" / slug / "build" / f"{slug}-task.md").read_text()
     assert "surfaces: []" in task_text
 
 
@@ -701,7 +701,7 @@ def test_file_from_intake_uses_the_slug_field_over_the_title(tmp_path, capsys):
     rc = main(["route", "file", "--profile", str(profile), "--from-intake", str(intake_path)])
     capsys.readouterr()
     assert rc == 0
-    assert (ws / "work" / "named-slug" / "build" / "named-slug.md").exists()
+    assert (ws / "work" / "named-slug" / "build" / "named-slug-task.md").exists()
 
 
 def test_file_from_intake_refuses_a_path_outside_the_workspace_intake_dir(tmp_path, capsys):
@@ -724,7 +724,7 @@ def test_status_reports_landed_once_the_linked_initiatives_one_task_is_done(tmp_
     capsys.readouterr()
     assert rc == 0
     slug = route.slugify("Fix the thing")
-    task_path = ws / "work" / slug / "build" / f"{slug}.md"
+    task_path = ws / "work" / slug / "build" / f"{slug}-task.md"
     text = task_path.read_text()
     task_path.write_text(text.replace("state: ready", "state: done"))
     rc = main(["route", "status", "--profile", str(profile)])
@@ -2199,3 +2199,14 @@ def test_route_lint_output_is_unchanged_when_the_repo_lists_no_files(tmp_path, m
             repo.chmod(0o755)
     assert after == before
     assert after[0] == 0 and " grant: " in after[1] and "surface_" not in after[1]
+
+
+def test_file_refuses_body_text_passed_where_a_path_belongs_without_echoing_it(tmp_path, capsys):
+    profile, ws = _write_file_profile(tmp_path)
+    text = "Pat 2026-10-23: a long ticket body\n\nwith paragraphs, passed as --body by mistake."
+    rc = main(["route", "file", "--profile", str(profile), "--repo", _widget(tmp_path), "--title", "Fix it", "--body", text])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "--body takes a file path, or - for stdin, not the text itself" in out
+    assert "with paragraphs" not in out
+    assert not (ws / "work").exists() or not any((ws / "work").iterdir())

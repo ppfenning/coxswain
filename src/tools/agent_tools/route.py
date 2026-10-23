@@ -425,6 +425,10 @@ def _slug_or_raise(title: str) -> str:
     return slug
 
 
+# A one-task initiative's task id is its initiative's id plus this, so the two store rows never share a key.
+ONE_TASK_SUFFIX = "-task"
+
+
 def initiative_files(
     title: str,
     body: str,
@@ -436,8 +440,11 @@ def initiative_files(
 ) -> dict:
     """Content for a one-task initiative (spec §3, `route file` without
     `--intake`): `work/<slug>/initiative.md` and
-    `work/<slug>/<phase>/<slug>.md`, keyed by path relative to the work
-    store. `body` falls back to `title` when empty. No filesystem writes
+    `work/<slug>/<phase>/<slug>-task.md`, keyed by path relative to the work
+    store. The task's id is `<slug>-task`, never the initiative's own id: the
+    store keys rows by (initiative, task id), so a task sharing its
+    initiative's id overwrote the initiative row, launch then found no
+    initiative, and `route edit` could not address the task (2026-10-23). `body` falls back to `title` when empty. No filesystem writes
     happen here — the caller applies the mapping.
 
     `slug`, given, is normalized through the same guard as `title` and used
@@ -454,8 +461,9 @@ def initiative_files(
         [("id", slug), ("title", title), ("repo", repo)], text
     )
     surfaces_raw = _Raw("[" + ", ".join(_yaml_scalar(s) for s in surfaces) + "]") if surfaces else _Raw("[]")
+    task_id = f"{slug}{ONE_TASK_SUFFIX}"
     task_fields = [
-        ("id", slug),
+        ("id", task_id),
         ("phase", phase),
         ("state", "ready"),
         ("needs", _Raw("[]")),
@@ -471,7 +479,7 @@ def initiative_files(
     task_text = _frontmatter(task_fields, text)
     return {
         f"work/{slug}/initiative.md": initiative_text,
-        f"work/{slug}/{phase}/{slug}.md": task_text,
+        f"work/{slug}/{phase}/{task_id}.md": task_text,
     }
 
 

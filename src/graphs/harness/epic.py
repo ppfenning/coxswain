@@ -2370,8 +2370,14 @@ def _run_phase(
             max_parallel=ctx.max_parallel,
         )
         # A child's failure is a quarantined task, not a failed swarm — the
-        # policy `invoke_graphs` names continue-and-quarantine.
+        # policy `invoke_graphs` names continue-and-quarantine. A lapsed login is
+        # the host's failure, not the task's: like the account session limit it
+        # records no attempt and leaves the task ready, so the next launch on a
+        # logged-in host builds it (2026-10-23: two tasks sat quarantined after an
+        # expired login, and `runs cause` could not reach an attempt to retry).
         for failure in failures:
+            if is_auth_failure(failure):
+                continue
             quarantined.append(
                 _quarantine_task(
                     ctx, by_id, phase=phase, task=failure.split(":", 1)[0], reason=failure,
