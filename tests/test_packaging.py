@@ -77,3 +77,12 @@ def test_the_built_wheel_never_ships_devtools(tmp_path):
     names = zipfile.ZipFile(wheel).namelist()
     assert any(n.startswith("coxswain/") for n in names)
     assert not [n for n in names if n.startswith("devtools/") or "/devtools/" in n]
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="needs uv to build the wheel")
+def test_the_built_wheel_ships_the_model_catalog(tmp_path):
+    subprocess.run(["uv", "build", "--wheel", "--out-dir", str(tmp_path)], cwd=ROOT, check=True, capture_output=True)
+    (wheel,) = tmp_path.glob("*.whl")
+    archive = zipfile.ZipFile(wheel)
+    assert "providers/catalog.yaml" in archive.namelist()
+    assert archive.read("providers/catalog.yaml") == (ROOT / "src/cartridges/providers/catalog.yaml").read_bytes()
