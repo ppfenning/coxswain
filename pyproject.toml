@@ -51,9 +51,6 @@ packages = [
     "providers",
 ]
 
-[tool.setuptools.package-data]
-agent_tools = ["extras-requirements.txt"]
-
 [tool.setuptools.package-dir]
 agent_tools = "src/tools/agent_tools"
 harness = "src/graphs/harness"
@@ -64,6 +61,7 @@ providers = "src/cartridges/providers"
 
 # The model freshness check reads providers/catalog.yaml beside the core package, so it ships at the wheel root.
 [tool.setuptools.package-data]
+agent_tools = ["extras-requirements.txt"]
 providers = ["catalog.yaml"]
 
 [tool.pytest.ini_options]
