@@ -69,7 +69,7 @@ cox runs triage TASK_ID [--json] [--profile PROFILE] [--repo PATH]   print a qua
 cox courier send REF --to TO --note NOTE [--profile PROFILE]   append a bus entry naming a courier reference
 cox courier inbox [--label LABEL] [--profile PROFILE]   list this label's unacknowledged bus entries
 cox courier ack ID [--profile PROFILE]   acknowledge one bus entry by id
-cox versions [--root ROOT] [--manifest MANIFEST]   component versions against the manifest
+cox versions [--root ROOT] [--home HOME] [--manifest MANIFEST]   component versions against the manifest
 cox console [--runs-dir RUNS_DIR] [--work-dir WORK_DIR] [--interval INTERVAL] [--once] [--profile PROFILE]   one screen of hosts, drafts, lanes and the chair; keys run cox commands after a y/n
 cox dash [--runs-dir RUNS_DIR] [--work-dir WORK_DIR] [--feed] [--once] [--interval INTERVAL] [--detail KIND]   a versioned JSON snapshot of the workspace: --feed streams it, --once prints one, --detail drills into one kind
 cox settings get [--json] [--profile PROFILE]   print every setting, grouped by section; unset keys appear as built-in defaults, which set can override

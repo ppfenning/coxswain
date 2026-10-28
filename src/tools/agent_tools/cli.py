@@ -7567,12 +7567,19 @@ def _schema_versions(harness_dir: str = "", provider_profile: str = "", skills_r
 
 
 def _versions(a: argparse.Namespace) -> int:
-    manifest_path = Path(a.manifest) if a.manifest else Path(a.root or ".") / "coxswain" / "manifest.toml"
+    if a.manifest and not a.root:
+        manifest_path = Path(a.manifest)
+        root = manifest_path.resolve().parent.parent
+    else:
+        resolved = _install_root(a)
+        if resolved is None:
+            return 2
+        root = resolved[0]
+        manifest_path = Path(a.manifest) if a.manifest else _checkout_path(root) / "manifest.toml"
     manifest = _load_manifest(manifest_path)
     if manifest is None:
         print(_NO_MANIFEST.format(manifest_path))
         return 2
-    root = Path(a.root) if a.root else manifest_path.resolve().parent.parent
     facts = {"root": str(root), "checkouts": _gather_checkout_facts(root, manifest.get("components", {})),
               "provider_cli_on_path": False}
     schema_versions = _checkout_schema_versions(root)
@@ -8111,7 +8118,12 @@ RUNS_COMMANDS = [
 
 VERSIONS_GROUP = commands.Group(
     name="versions", help="component versions against the manifest", description="", epilog="",
-    args=(commands.Arg(("--root",)), commands.Arg(("--manifest",))), fn="agent_tools.cli:_versions",
+    args=(
+        commands.Arg(("--root",)),
+        commands.Arg(("--home",), {"help": "absolute path of the coxswain home; used when --root is omitted"}),
+        commands.Arg(("--manifest",)),
+    ),
+    fn="agent_tools.cli:_versions",
 )
 
 CONSOLE_GROUP = commands.Group(
