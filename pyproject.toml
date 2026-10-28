@@ -48,6 +48,7 @@ packages = [
     "harness", "runner",
     "graphs", "graphs.delivery", "graphs.ops",
     "core",
+    "providers",
 ]
 
 [tool.setuptools.package-dir]
@@ -56,6 +57,11 @@ harness = "src/graphs/harness"
 runner = "src/graphs/runner"
 graphs = "src/graphs/graphs"
 core = "src/cartridges/core"
+providers = "src/cartridges/providers"
+
+# The model freshness check reads providers/catalog.yaml beside the core package, so it ships at the wheel root.
+[tool.setuptools.package-data]
+providers = ["catalog.yaml"]
 
 [tool.pytest.ini_options]
 # The umbrella's own tests. src/tools, src/graphs and src/cartridges each run their suite from their folder,
