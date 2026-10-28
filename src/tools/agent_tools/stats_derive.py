@@ -22,8 +22,12 @@ __all__ = [
     "LIST_RATES_USD_PER_MTOK",
     "attempt_numbers",
     "bounds_for_costs",
+    "call_cost",
+    "call_outcome",
     "extract_failure_class",
     "resolve_outcome",
+    "session_deltas",
+    "session_id_of",
     "spend_mix_for_model",
 ]
 
@@ -169,6 +173,51 @@ def _final_result(trace: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
         if entry.get("type") == "result":
             result = entry
     return result or {}
+
+
+def session_id_of(trace: Sequence[Mapping[str, Any]]) -> str | None:
+    """The session_id of the first `system` `init` event, else of the final `result` event, else None.
+
+    The init event is where graphs' harness/store_recost.py `session_id_of` reads it from a real trace."""
+    init = next((e for e in trace if e.get("type") == "system" and e.get("subtype") == "init"), {})
+    session = init.get("session_id") or _final_result(trace).get("session_id")
+    return session if isinstance(session, str) and session else None
+
+
+def call_cost(previous_reported: float, reported: float, resumed: bool) -> float:
+    """A resumed call's own cost is the rise in the session total; a fall means the session restarted.
+
+    A copy of graphs' runner/claude_code_runner.py `call_cost`, because tools does not import graphs.
+    tests/test_stats_derive.py runs both on one grid, so a change to the runner's copy fails this suite."""
+    return reported if not resumed or reported < previous_reported else reported - previous_reported
+
+
+def call_outcome(trace: Sequence[Mapping[str, Any]]) -> str:
+    """'ok', 'budget_stop' or 'failed' from the trace's final result line; no result line is 'failed'."""
+    result = _final_result(trace)
+    stopped = "budget_stop" if result.get("subtype") == "error_max_budget_usd" else "failed"
+    return "failed" if not result else ("ok" if not result.get("is_error") else stopped)
+
+
+def session_deltas(reports: Sequence[tuple[str | None, float | None, str]]) -> list[float | None]:
+    """Each call's own cost from `(session_id, total_cost_usd, call_outcome)` triples in execution order.
+
+    Prices as the runner's `thread_priced` does: every call against its session's last total, resumed
+    once an 'ok' call has landed. Only 'ok' and 'budget_stop' calls move that total; only 'ok' counts
+    toward resumed. A call with no session_id keeps its reported total; a missing total prices None."""
+
+    def step(
+        acc: tuple[Mapping[str, tuple[float, int]], tuple[float | None, ...]],
+        report: tuple[str | None, float | None, str],
+    ) -> tuple[Mapping[str, tuple[float, int]], tuple[float | None, ...]]:
+        seen, costs = acc
+        session, total, outcome = report
+        last, landed = seen.get(session, (0.0, 0))
+        cost = total if session is None or total is None else call_cost(last, total, landed > 0)
+        moved = (last if total is None or outcome == "failed" else total, landed + (outcome == "ok"))
+        return (seen if session is None else {**seen, session: moved}), (*costs, cost)
+
+    return list(reduce(step, reports, ({}, ()))[1])
 
 
 def _content_blocks(entry: Mapping[str, Any]) -> list[Mapping[str, Any]]:

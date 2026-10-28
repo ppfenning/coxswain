@@ -29,7 +29,15 @@ from agent_tools.land import _ARBITER_SKIPPED, arbitration_verdict
 from agent_tools.records import load_trace
 from agent_tools.route import parse_frontmatter
 from agent_tools.runs_detail import NODE_ORDER
-from agent_tools.stats_derive import _final_result, attempt_numbers, extract_failure_class, resolve_outcome
+from agent_tools.stats_derive import (
+    _final_result,
+    attempt_numbers,
+    call_outcome,
+    extract_failure_class,
+    resolve_outcome,
+    session_deltas,
+    session_id_of,
+)
 from agent_tools.stats_schema import CALLS_COLUMNS, RUNS_COLUMNS, TASKS_COLUMNS, connect
 
 __all__ = [
@@ -146,12 +154,22 @@ def recovered_call_rows(run_id: str, traces: Sequence[tuple[str, Sequence[Mappin
     `_node_sort_key` gives `<run>:<node>.json` records; `role` comes from the
     `<role>-<n>.jsonl` stem, and `_final_result` — the same parser `extract_failure_class`
     already uses — is the only place `total_cost_usd` and `num_turns` are read from.
-    Every row here carries `recovered_from_trace=1`, so a query can exclude or flag it
-    the way `join_confidence` already flags a heuristic task join. Token counts,
+    A resumed session reports its running total, so `cost_usd` is the rise in that total per
+    session (`session_deltas`), by the runner's rule, so a failed call does not move the session's
+    last total. The order is `_read_traces`' NODE_ORDER, which is execution order within a role
+    and for a session that crosses roles in NODE_ORDER (plan before build); a session that goes
+    back to an earlier role would be mis-priced. The session id is read from the trace's `system`
+    `init` event, else its result line (`session_id_of`); a call with no session id keeps its
+    reported total. Every row here carries `recovered_from_trace=1`,
+    so a query can exclude or flag it the way `join_confidence` already flags a heuristic
+    task join. Token counts,
     `duration_ms`, `tier`, `model` and `model_id` are unrecoverable from the result line and stay
     unset."""
     roles = [Path(path).stem.rsplit("-", 1)[0] for path, _ in traces]
     attempts = attempt_numbers([{"role": role} for role in roles])
+    costs = session_deltas(
+        [(session_id_of(events), _final_result(events).get("total_cost_usd"), call_outcome(events)) for _, events in traces]
+    )
     return [
         {
             "run_id": run_id,
@@ -161,7 +179,7 @@ def recovered_call_rows(run_id: str, traces: Sequence[tuple[str, Sequence[Mappin
             "tier": None,
             "model": None,
             "model_id": None,
-            "cost_usd": _final_result(events).get("total_cost_usd"),
+            "cost_usd": cost,
             "turns": _final_result(events).get("num_turns"),
             "duration_ms": None,
             "input_tokens": None,
@@ -176,7 +194,7 @@ def recovered_call_rows(run_id: str, traces: Sequence[tuple[str, Sequence[Mappin
             "join_confidence": None,
             "recovered_from_trace": 1,
         }
-        for seq, (role, attempt, (path, events)) in enumerate(zip(roles, attempts, traces))
+        for seq, (role, attempt, cost, (path, events)) in enumerate(zip(roles, attempts, costs, traces))
     ]
 
 

@@ -108,6 +108,43 @@ def test_recovered_call_rows_reads_cost_turns_and_failure_class_off_each_traces_
     assert rows[0]["task_id"] is None and rows[0]["join_confidence"] is None
 
 
+_ERRORS = {"ok": {}, "failed": {"is_error": True, "subtype": "error_during_execution"}, "budget_stop": {"is_error": True, "subtype": "error_max_budget_usd"}}
+
+
+def _result_trace(role, n, session, total, *, on="init", outcome="ok"):
+    """A trace shaped like a real call: `session_id` rides the `system` `init` event, not the result line."""
+    init = {"type": "system", "subtype": "init", **({"session_id": session} if session and on == "init" else {})}
+    result = {"type": "result", "total_cost_usd": total, "num_turns": 1, **_ERRORS[outcome], **({"session_id": session} if session and on == "result" else {})}
+    return (f"runs/r1-trace/{role}-{n}.jsonl", [init, {"type": "assistant"}, result])
+
+
+def test_recovered_call_rows_cost_resumed_sessions_by_delta_so_they_sum_to_the_session_total():
+    traces = [_result_trace("build", 1, "s1", 0.856), _result_trace("build", 2, "s1", 2.623), _result_trace("build", 3, "s1", 3.119)]
+    costs = [r["cost_usd"] for r in stats_ingest.recovered_call_rows("r1", traces)]
+    assert costs == pytest.approx([0.856, 1.767, 0.496])
+    assert sum(costs) == pytest.approx(3.119)
+
+
+def test_recovered_call_rows_read_the_session_id_off_the_result_line_when_the_trace_has_no_init_session():
+    traces = [_result_trace("plan", 1, "s1", 0.11, on="result"), _result_trace("build", 1, "s1", 0.95, on="result")]
+    assert [r["cost_usd"] for r in stats_ingest.recovered_call_rows("r1", traces)] == pytest.approx([0.11, 0.84])
+
+
+def test_recovered_call_rows_price_a_failed_call_against_the_last_total_without_moving_it():
+    traces = [_result_trace("build", 1, "s1", 1.0), _result_trace("build", 2, "s1", 1.5, outcome="failed"), _result_trace("build", 3, "s1", 2.0)]
+    assert [r["cost_usd"] for r in stats_ingest.recovered_call_rows("r1", traces)] == pytest.approx([1.0, 0.5, 1.0])
+
+
+def test_recovered_call_rows_treat_a_session_whose_total_falls_as_a_restart():
+    traces = [_result_trace("build", 1, "s1", 2.0), _result_trace("build", 2, "s1", 0.5)]
+    assert [r["cost_usd"] for r in stats_ingest.recovered_call_rows("r1", traces)] == [2.0, 0.5]
+
+
+def test_recovered_call_rows_leave_distinct_sessions_and_sessionless_calls_at_their_reported_total():
+    traces = [_result_trace("plan", 1, "s1", 0.11), _result_trace("build", 1, "s2", 0.95), _result_trace("review", 1, None, 0.3)]
+    assert [r["cost_usd"] for r in stats_ingest.recovered_call_rows("r1", traces)] == [0.11, 0.95, 0.3]
+
+
 def test_task_row_carries_the_records_own_composite_task_id():
     record = {"run_id": "r1:p1:t1", "ticket": "t1"}
     row = stats_ingest.task_row("r1", "p1", "t1", record, gate_diffs=(), log_events=())

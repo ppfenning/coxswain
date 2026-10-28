@@ -1,3 +1,6 @@
+import ast
+from pathlib import Path
+
 import pytest
 
 from agent_tools.events import Event
@@ -5,10 +8,69 @@ from agent_tools.stats_derive import (
     LIST_RATES_USD_PER_MTOK,
     attempt_numbers,
     bounds_for_costs,
+    call_cost,
+    call_outcome,
     extract_failure_class,
     resolve_outcome,
+    session_deltas,
+    session_id_of,
     spend_mix_for_model,
 )
+
+
+def test_call_cost_is_the_reported_total_unless_resumed_and_the_total_rose():
+    assert call_cost(0.0, 0.268, False) == 0.268
+    assert call_cost(0.268, 0.361, True) == pytest.approx(0.093)
+    assert call_cost(1.56, 0.67, True) == 0.67
+
+
+def test_call_cost_matches_the_runners_copy_on_every_rule():
+    """tools does not import graphs, so the runner's `call_cost` is read as source and run beside this one."""
+    runner = Path(__file__).resolve().parents[2] / "graphs" / "runner" / "claude_code_runner.py"
+    if not runner.exists():
+        pytest.skip("graphs is not checked out beside tools")
+    fn = next(n for n in ast.parse(runner.read_text()).body if isinstance(n, ast.FunctionDef) and n.name == "call_cost")
+    scope: dict = {}
+    exec(compile(ast.Module([fn], []), str(runner), "exec"), scope)
+    grid = [(p, r, resumed) for p in (0.0, 0.268, 1.56) for r in (0.268, 0.361, 0.67, 1.56) for resumed in (False, True)]
+    assert [scope["call_cost"](*args) for args in grid] == [call_cost(*args) for args in grid]
+
+
+def test_session_id_of_prefers_the_init_event_then_the_result_line_then_none():
+    init = {"type": "system", "subtype": "init", "session_id": "i"}
+    result = {"type": "result", "session_id": "r"}
+    assert session_id_of([{"type": "assistant"}, init, result]) == "i"
+    assert session_id_of([{"type": "system", "subtype": "init"}, result]) == "r"
+    assert session_id_of([{"type": "assistant"}]) is None
+
+
+def test_session_deltas_prices_each_call_by_the_rise_in_its_sessions_total():
+    reports = [("a", 0.856, "ok"), ("a", 2.623, "ok"), ("a", 3.119, "ok"), ("b", 0.5, "ok"), (None, 0.7, "ok"), ("a", None, "ok")]
+    deltas = session_deltas(reports)
+    assert deltas[:3] == pytest.approx([0.856, 1.767, 0.496])
+    assert sum(deltas[:3]) == pytest.approx(3.119)
+    assert deltas[3:] == [0.5, 0.7, None]
+
+
+def test_session_deltas_treats_a_fall_as_a_restart_and_prices_from_the_new_total():
+    assert session_deltas([("a", 2.0, "ok"), ("a", 0.5, "ok"), ("a", 0.8, "ok")]) == pytest.approx([2.0, 0.5, 0.3])
+
+
+def test_session_deltas_does_not_move_the_last_total_on_a_failed_call():
+    """The runner's `thread_priced` prices a failed call against the last total but only a success or budget stop moves it."""
+    assert session_deltas([("a", 1.0, "ok"), ("a", 1.5, "failed"), ("a", 2.0, "ok")]) == pytest.approx([1.0, 0.5, 1.0])
+
+
+def test_session_deltas_moves_the_last_total_on_a_budget_stop_but_counts_it_as_no_landed_call():
+    assert session_deltas([("a", 1.0, "ok"), ("a", 1.8, "budget_stop"), ("a", 2.5, "ok")]) == pytest.approx([1.0, 0.8, 0.7])
+    assert session_deltas([("a", 1.0, "budget_stop"), ("a", 1.5, "ok"), ("a", 2.0, "ok")]) == pytest.approx([1.0, 1.5, 0.5])
+
+
+def test_call_outcome_reads_the_final_result_line():
+    assert call_outcome([{"type": "result", "total_cost_usd": 1.0}]) == "ok"
+    assert call_outcome([{"type": "result", "is_error": True, "subtype": "error_max_budget_usd"}]) == "budget_stop"
+    assert call_outcome([{"type": "result", "is_error": True, "subtype": "error_during_execution"}]) == "failed"
+    assert call_outcome([{"type": "assistant"}]) == "failed"
 
 
 def test_bounds_for_costs_reports_strict_moderate_liberal_from_p50_and_p95():
