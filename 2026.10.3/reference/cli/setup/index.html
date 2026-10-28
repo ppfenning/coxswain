@@ -3944,6 +3944,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#extras" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        extras
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#migrate" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -5990,6 +6001,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#extras" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        extras
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#migrate" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6038,15 +6060,18 @@ Coxswain is in beta — versions may change between releases
 
 
 <h1 id="setup">setup</h1>
-<div class="highlight"><pre><span></span><code>usage: cox setup [-h] [--profile PROFILE] {doctor,install,migrate,store} ...
+<div class="highlight"><pre><span></span><code>usage: cox setup [-h] [--profile PROFILE]
+                 {doctor,install,extras,migrate,store} ...
 
 Does this machine's profile actually work.
 
 positional arguments:
-  {doctor,install,migrate,store}
+  {doctor,install,extras,migrate,store}
     doctor              check this machine's profile against what it needs
     install             sync the checkout's venv, install cox and write a
                         profile for this machine
+    extras              install the optional extras into this venv, pinned and
+                        hash-checked from uv.lock
     migrate             plan moving this host to the one monorepo checkout;
                         --apply migrates
     store               choose files or a shared store for run records
@@ -6099,6 +6124,16 @@ options:
                         write spend: window_ceiling_usd into the profile
   --weekly-ceiling-usd WEEKLY_CEILING_USD
                         write spend: weekly_ceiling_usd into the profile
+</code></pre></div>
+<h2 id="extras">extras</h2>
+<div class="highlight"><pre><span></span><code>usage: cox setup extras [-h] [--with EXTRA [EXTRA ...]] [--dry-run]
+
+options:
+  -h, --help            show this help message and exit
+  --with EXTRA [EXTRA ...]
+                        extras to install; default traces parquet lake
+                        postgres
+  --dry-run             print what would be installed; change nothing
 </code></pre></div>
 <h2 id="migrate">migrate</h2>
 <div class="highlight"><pre><span></span><code>usage: cox setup migrate [-h] [--home HOME] [--dry-run] [--apply] [--hosts]
