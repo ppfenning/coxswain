@@ -6898,6 +6898,11 @@ def _migrate_finish(a: argparse.Namespace, locs) -> int:
     return result.code
 
 
+def _setup_extras(a: argparse.Namespace) -> int:
+    from agent_tools import extras_lock  # deferred: only this command reads the lock data
+    return extras_lock.setup_extras(a.with_extras, a.dry_run)
+
+
 def _setup_migrate(a: argparse.Namespace) -> int:
     """Plans by default; --apply executes the local steps and --apply --hosts also the host steps. --dry-run is the default spelled out.
     Under --apply a plan with any real step first takes a repo lease per old checkout and refuses while a lane, the chair or this host is live.
@@ -9318,6 +9323,14 @@ SETUP_COMMANDS = [
             commands.Arg(("--weekly-ceiling-usd",), {"type": float, "default": None, "dest": "weekly_ceiling_usd", "help": "write spend: weekly_ceiling_usd into the profile"}),
         ),
         "agent_tools.cli:_setup_install", False, (),
+    ),
+    commands.Command(
+        "extras", "setup", "install the optional extras into this venv, pinned and hash-checked from uv.lock",
+        (
+            commands.Arg(("--with",), {"nargs": "+", "dest": "with_extras", "metavar": "EXTRA", "help": "extras to install; default traces parquet lake postgres"}),
+            commands.Arg(("--dry-run",), {"action": "store_true", "help": "print what would be installed; change nothing"}),
+        ),
+        "agent_tools.cli:_setup_extras", False, (),
     ),
     commands.Command(
         "migrate", "setup", "plan moving this host to the one monorepo checkout; --apply migrates",

@@ -136,7 +136,7 @@ def test_classify_failure_real_client_types_per_component():
         ('could not translate host name "db.example.internal" to address', "unreachable"),
         ("When getting information for bucket 'cox-traces': AWS Error ACCESS_DENIED during HeadBucket", "auth"),
         ("AWS Error NETWORK_CONNECTION during HeadBucket operation: curlCode: 7", "unreachable"),
-        ("a postgres store needs psycopg: pip install 'coxswain[postgres]'", "missing_client"),
+        ("a postgres store needs psycopg: run `cox setup extras` to install it", "missing_client"),
         ("something else entirely", None),
     ],
 )
