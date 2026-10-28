@@ -51,6 +51,9 @@ packages = [
     "providers",
 ]
 
+[tool.setuptools.package-data]
+agent_tools = ["extras-requirements.txt"]
+
 [tool.setuptools.package-dir]
 agent_tools = "src/tools/agent_tools"
 harness = "src/graphs/harness"

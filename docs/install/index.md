@@ -37,6 +37,15 @@ Current Homebrew refuses a formula from a third-party tap until you trust the
 tap. If it does, run `brew trust ppfenning/coxswain` once and install again.
 The formula also installs `towpath`, the dashboard.
 
+The formula carries no optional extras. After `brew install` and after every
+`brew upgrade cox`, run `cox setup extras`. It installs `traces`, `parquet`,
+`lake` and `postgres` into the venv `cox` runs from, at the versions this
+release's `uv.lock` pins, and pip checks the sha256 of every wheel. Without
+it `cox setup doctor` reports that the store needs psycopg. `--with EXTRA ...`
+picks a subset and `--dry-run` prints what would be installed. When the
+extras are already present at the locked versions it says so and changes
+nothing.
+
 **uv**:
 
 ```sh

@@ -24,7 +24,7 @@ _SENTENCES = {
     "timeout": "{c} did not answer in time; check the address and the network",
     "auth": "{c} rejected the credentials; check the user, password or keys",
     "bucket": "{c} has no such bucket; check the bucket name in the traces URL",
-    "missing_client": "{c} needs a client library that is not installed on this machine",
+    "missing_client": "{c} needs a client library that is not installed on this machine; run `cox setup extras` to install it",
     "misconfigured": "{c} settings are incomplete; check the endpoint and the credential environment variables",
     "pg_connect": "{c} could not connect; check the address, the network, the user and the password",
     "s3_request": "{c} request failed; check the endpoint, the credentials and the bucket name",
