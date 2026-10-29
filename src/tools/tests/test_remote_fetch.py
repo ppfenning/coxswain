@@ -17,10 +17,13 @@ from agent_tools.remote_fetch import (
     fetch_plan,
     fetch_run,
     host_repo_path,
+    localize_task_records,
     probe_argv,
     pull_argvs,
     refuse_unended,
+    rewrite_record_paths,
     store_task_records,
+    task_record_ids,
     task_repos,
     task_status,
 )
@@ -379,3 +382,23 @@ def test_fetch_writes_the_state_of_a_task_updated_before_the_run_started(tmp_pat
     assert facts == [{"id": "t1", "initiative": "x", "phase": "p", "run": "r1"}]
     assert [a[2:5] for a in written] == [("t1", "approved", "tester")]
     assert capsys.readouterr().out == ""
+
+
+def test_rewrite_record_paths_maps_host_paths_and_keeps_chair_paths_and_other_fields():
+    record = {"repo": "/h/ws/repo", "worktree": "/h/ws/wt", "checkout": "/c/ws/repo", "branch": "/h/ws/x", "n": 1}
+    assert rewrite_record_paths(record, "/c/ws", "/h/ws") == {
+        "repo": "/c/ws/repo", "worktree": "/c/ws/wt", "checkout": "/c/ws/repo", "branch": "/h/ws/x", "n": 1,
+    }
+
+
+def test_rewrite_record_paths_expands_a_tilde_path_under_the_chair_home():
+    assert rewrite_record_paths({"repo": "~/repos/cox"}, "/c/ws", "/h/ws", "/home/user") == {"repo": "/home/user/repos/cox"}
+
+
+def test_localize_task_records_rewrites_in_place_and_ids_list_them(tmp_path):
+    path = tmp_path / "tasks" / "p1" / "a.json"
+    path.parent.mkdir(parents=True)
+    path.write_text('{"repo": "/h/ws/repo"}')
+    localize_task_records(tmp_path, "/c/ws", "/h/ws")
+    assert json.loads(path.read_text()) == {"repo": "/c/ws/repo"}
+    assert task_record_ids(tmp_path) == ["p1/a"]

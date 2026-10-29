@@ -5155,13 +5155,6 @@ def _store_holds_every_record(pairs: list[tuple[str, str]], read: Callable[[str,
     return remote_lane.records_already_in_store([task for _, task in pairs], held)
 
 
-def _without_task_records(argv: list[str], run_dest: str) -> list[str]:
-    """Pure: the run-directory rsync (the one landing at `run_dest`) with `tasks/` excluded; any other argv is unchanged."""
-    if argv[:1] == ["rsync"] and argv[-1] == run_dest:
-        return [*argv[:2], "--exclude=/tasks/", *argv[2:]]
-    return argv
-
-
 def _store_task_records(runs_dir: Path, run_id: str, pairs: list[tuple[str, str]]) -> dict[tuple[str, str], dict | None]:
     """Edge: each pair's task record from the store; a pair the store cannot read maps to None."""
 
@@ -5290,7 +5283,8 @@ def _landed_elsewhere(
 def _fetch_one(runs_dir: Path, hosts, run_id: str, mode: str = "files", by: str = _UNLABELED) -> tuple[str, list[str], str]:
     """Edge. (outcome, lines, host name) for one remote run; outcome is fetched, live or failed.
 
-    Under `mode` "store" the task records are not copied when the store already holds every one of them; the
+    The task records are always copied, their host paths rewritten to this machine's, and the marker lists them.
+    Under `mode` "store", when the store already holds every one of them, the
     approved ones move their work item from ready to approved in the store instead, so an approved-task fact
     built from them carries this run. An ended run whose stored tasks are all done, and whose remote lists no
     task the store lacks, is marked fetched with nothing pulled. The remote is listed to check that, so an
@@ -5313,28 +5307,22 @@ def _fetch_one(runs_dir: Path, hosts, run_id: str, mode: str = "files", by: str 
         return "fetched", [remote_lane.landed_elsewhere_line(run_id)], host.name
     recorded = [record["repo"]] if record.get("repo") else []
     only = _branch_only_repos(runs_dir, host, locate, run_id, recorded) if mode == "store" else None
-    dest = f"{str(runs_dir).rstrip('/')}/{run_id}/"
-
-    def run_cmd(argv: list[str]) -> int:
-        return run(argv if only is None else _without_task_records(argv, dest))
 
     def repo_paths(run_dir: Path) -> list[str]:
         return (remote_fetch.task_repos(run_dir) or recorded) if only is None else only
 
-    result = remote_fetch.fetch_run(host, run_id, runs_dir, repo_paths, run_cmd, locate,
+    result = remote_fetch.fetch_run(host, run_id, runs_dir, repo_paths, run, locate,
                                     lease_released=lease_released, ended_at=ended_at, home=os.path.expanduser("~"))
     if isinstance(result, remote_fetch.FetchError):
         detail = f"{run_id} is still live on {host.name}: {result.message}" if result.step == "refuse" else result.message
         return ("live" if result.step == "refuse" else "failed"), [f"fetch: {result.step}: {detail}"], host.name
-    marker = {"fetched_at": _now_iso(), "repos": list(result)}
+    marker = {"fetched_at": _now_iso(), "repos": list(result), "tasks": remote_fetch.task_record_ids(runs_dir / run_id)}
     remote_lane.fetched_record_path(runs_dir, run_id).write_text(json.dumps(marker))
     if only is not None:
         records = _store_run_rows(runs_dir, run_id)
         moved = _store_approved_task_facts(runs_dir, runs_dir.parent / "work", run_id, records, by)
         if moved:
             print(f"{run_id}: {len(moved)} task(s) approved from the store")
-        else:
-            print(f"{run_id}: task records skipped, the store holds them")
     return "fetched", [f"run {run_id}", f"host {host.name}", "\n".join(f"repo {repo}" for repo in result)], host.name
 
 
