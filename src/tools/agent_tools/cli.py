@@ -184,6 +184,7 @@ run_store = _LazyModule("agent_tools.run_store")
 runs_bar = _LazyModule("agent_tools.runs_bar")
 runs_detail = _LazyModule("agent_tools.runs_detail")
 runs_detail_screen = _LazyModule("agent_tools.runs_detail_screen")
+runs_herdr = _LazyModule("agent_tools.runs_herdr")
 runs_module = _LazyModule("agent_tools.runs")
 runs_move = _LazyModule("agent_tools.runs_move")
 runs_stop = _LazyModule("agent_tools.runs_stop")
@@ -949,14 +950,37 @@ def _runs_top(a: argparse.Namespace) -> int:
     return 0
 
 
-def _runs_bar(a: argparse.Namespace) -> int:
-    rows = [
+def _bar_rows(runs_dir: str) -> list[dict]:
+    return [
         dataclasses.asdict(runs_top.row(f["run"], f["alive"], f["phases"], f["events"], f["calls"], f["ceiling"], f["launched_by"],
                                         host=socket.gethostname()))
-        for f in runs_top_screen.facts(a.runs_dir)
+        for f in runs_top_screen.facts(runs_dir)
     ]
+
+
+def _runs_bar(a: argparse.Namespace) -> int:
+    rows = _bar_rows(a.runs_dir)
     print(json.dumps(runs_bar.bar(rows, runs_bar.attention(rows))))
     return 0
+
+
+def _stranded_count(runs_dir: str) -> int:
+    """How many approved task records are not landed, the same set `cox runs stranded` lists. A record or
+    workspace that cannot be read counts as none, so a bad file never stops `cox runs herdr`."""
+    try:
+        task_records, items = _stranded_inputs(Path(runs_dir).expanduser())
+        return len(runs_stranded.stranded(task_records, items, os.path.isdir,
+                                          lambda repo, branch: _branch_exists(Path(repo), branch)))
+    except (OSError, ValueError, KeyError):
+        return 0
+
+
+def _runs_herdr(a: argparse.Namespace) -> int:
+    if not a.once:
+        runs_herdr.install_exit_handlers()
+    return runs_herdr.run_loop(lambda: _bar_rows(a.runs_dir), lambda: _stranded_count(a.runs_dir), os.environ,
+                               once=a.once, interval=a.interval, now=time.monotonic, sleep=time.sleep,
+                               seq_start=int(time.time()))
 
 
 def _resolved_notify_policy(runs_dir: Path) -> dict:
@@ -997,11 +1021,8 @@ def _runs_detail(a: argparse.Namespace) -> int:
     return 0
 
 
-def _runs_stranded(a: argparse.Namespace) -> int:
-    runs_dir, reason = _runs_dir_for_land(a)
-    if runs_dir is None:
-        print(f"stranded: {reason}")
-        return 2
+def _stranded_inputs(runs_dir: Path) -> tuple[list[dict], list[dict]]:
+    """Edge. The task records under `runs_dir` and the workspace's work items with their repo, as `runs_stranded` takes them."""
     task_records = []
     for path in sorted(runs_dir.glob("*/tasks/*/*.json")):
         record = json.loads(path.read_text(encoding="utf-8"))
@@ -1015,6 +1036,15 @@ def _runs_stranded(a: argparse.Namespace) -> int:
         {**item, "repo": route.parse_frontmatter(initiative_texts.get(item["initiative"], ""))[0].get("repo")}
         for item in _work_items(ws)
     ]
+    return task_records, items
+
+
+def _runs_stranded(a: argparse.Namespace) -> int:
+    runs_dir, reason = _runs_dir_for_land(a)
+    if runs_dir is None:
+        print(f"stranded: {reason}")
+        return 2
+    task_records, items = _stranded_inputs(runs_dir)
     rows = runs_stranded.stranded(task_records, items, os.path.isdir,
                                    lambda repo, branch: _branch_exists(Path(repo), branch))
     missing = runs_stranded.missing_repos(task_records, items, os.path.isdir)
@@ -8047,6 +8077,11 @@ RUNS_COMMANDS = [
         "bar", "runs", "one Waybar JSON line: busy lanes, cost, class idle|running|attention",
         (commands.Arg(("--runs-dir",), {"default": "runs"}),),
         "agent_tools.cli:_runs_bar", False, (),
+    ),
+    commands.Command(
+        "herdr", "runs", "report fleet state (idle|working|blocked) to the herdr pane this runs in; no-op outside herdr",
+        (commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--interval",), {"type": float, "default": 10}), commands.Arg(("--once",), {"action": "store_true"})),
+        "agent_tools.cli:_runs_herdr", False, (),
     ),
     commands.Command(
         "notify", "runs", "desktop notifications for exits, quarantines, budget stops and cost",
