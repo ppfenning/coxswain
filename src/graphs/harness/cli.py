@@ -233,6 +233,8 @@ def _build_parser(specs: dict[str, GraphSpec]) -> argparse.ArgumentParser:
             kwargs: dict[str, Any] = {"help": f"{spec.name}: {need.help}" if need.help else None}
             if need.kind == "int":
                 kwargs["type"] = int
+            if need.choices:
+                kwargs["choices"] = list(need.choices)
             parser.add_argument(need.flag, **{k: v for k, v in kwargs.items() if v is not None})
 
     parser.add_argument("--initiative", help="phase, epic, rescue: path to the work/<initiative> directory")
@@ -790,6 +792,8 @@ def _launch(
     if not lease.ok:
         print(f"run: {lease.holder} holds {name}; refusing to start {run_id}", file=sys.stderr)
         return _refuse_start(store, run_id, "refused", 2)
+    # `cox route launch` reads this line from the run log (its _LAUNCH_STARTED_MARKER); flushed because stdout is a file there.
+    print(f"graph started: {run_id}", flush=True)
 
     # The heartbeat renews on its own connection from the moment the lease is held, so a slow
     # setup cannot eat the ttl. The epoch fence, not this thread, stops a run that lost the lease.

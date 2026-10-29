@@ -1265,6 +1265,8 @@ SPEC = GraphSpec(
              help="the initiative, as prose or a path to a file holding it"),
         Need("initiative_id", flag="--initiative-id", required=False,
              help="directory name for the initiative under the work store (default: the store root itself)"),
+        Need("task_ids", flag="--task-ids", required=False, choices=("ordinal",),
+             help="`ordinal` names the graph's own tasks <initiative-id>-t1, -t2, ... (default: slugs from titles)"),
         Need("repo", flag="--target-repo", required=False,
              help="the repository the initiative targets, for initiative.md's frontmatter"),
         Need("budget_usd", flag="--budget-usd", required=False,
