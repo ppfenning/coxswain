@@ -1,4 +1,4 @@
-from agent_tools.route_sync import IssueError, Item, parse_issue, plan, render
+from agent_tools.route_sync import IssueError, Item, _fields, parse_issue, plan, render, run_id_of
 
 
 def _item(**over):
@@ -189,3 +189,18 @@ def test_items_with_a_bare_single_quoted_or_double_quoted_issue_sync_the_same_is
 
 def test_a_non_numeric_issue_is_left_unchanged_for_the_existing_refusal():
     assert _item(issue="1688abc").issue == "1688abc"
+
+
+_RECORD = {"run": "task-1", "phase": "build", "reason": "the fix loop stopped: x", "ts": "2026-10-29",
+           "body_sha": "3cb77492f2d4", "kind": "refused", "cause": "harness", "note": "n"}
+
+
+def test_the_run_field_is_the_id_for_a_plain_id_and_for_an_attempt_record():
+    assert _fields(_item(run="run-7"))["Run"] == "run-7"
+    assert _fields(_item(run=_RECORD))["Run"] == "task-1"
+
+
+def test_run_id_of_reads_the_record_text_the_front_matter_parser_returns():
+    text = "{run: task-1, phase: build, reason: 'the fix loop stopped: x', kind: refused}"
+    assert run_id_of(text) == "task-1"
+    assert run_id_of("") == run_id_of(None) == run_id_of({"kind": "refused"}) == run_id_of("{kind: refused}") == ""

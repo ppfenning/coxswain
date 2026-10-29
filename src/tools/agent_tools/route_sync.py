@@ -3,6 +3,7 @@ in, `gh` steps out. No subprocess, filesystem or clock; the edge hands in plain 
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 _STATE_LABEL = {
@@ -33,7 +34,7 @@ class Item:
     repo: str
     state: str
     phase: str
-    run: str
+    run: str | dict
     cost_usd: float
     gate: str
     issue: str | None
@@ -63,6 +64,22 @@ def parse_issue(raw: str | int | None) -> int | IssueError:
     return int(unquoted) if unquoted.isascii() and unquoted.isdigit() else IssueError(str(raw))
 
 
+_RECORD_RUN = re.compile(r"""[{,]\s*run:\s*(['"]?)([^\s,'"}]+)\1""")
+
+
+def run_id_of(value: object) -> str:
+    """The run id in an attempt value: a plain id, a dict with `run`, or the flow-mapping text
+    `{run: id, ...}` that `route.parse_frontmatter` hands back for a record. Never the record itself."""
+    if isinstance(value, dict):
+        run = value.get("run")
+        return run if isinstance(run, str) else ""
+    text = value.strip() if isinstance(value, str) else ""
+    if not text.startswith("{"):
+        return text
+    match = _RECORD_RUN.search(text)
+    return match.group(2) if match else ""
+
+
 def _fields(item: Item) -> dict | None:
     """The board's six field values, or `None` for an unrecognized
     `item.state` — a step-less refusal, not a `KeyError` three calls up."""
@@ -72,7 +89,7 @@ def _fields(item: Item) -> dict | None:
     return {
         "State": label,
         "Phase": item.phase,
-        "Run": item.run,
+        "Run": run_id_of(item.run),
         "Cost": f"${item.cost_usd:.2f}",
         "Gate": item.gate,
         "PR": item.pr_url,
