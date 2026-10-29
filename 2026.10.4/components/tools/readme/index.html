@@ -3063,6 +3063,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#reporting-to-herdr" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reporting to herdr
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#maintainers" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6040,6 +6051,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#reporting-to-herdr" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reporting to herdr
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#maintainers" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6130,6 +6152,7 @@ cox runs wait [--runs-dir RUNS_DIR] [--max-seconds MAX_SECONDS] [--interval INTE
 cox runs events [--runs-dir RUNS_DIR] [--follow] [--json]   poll a run's log for structured events
 cox runs top [--runs-dir RUNS_DIR] [--interval INTERVAL] [--once]   live table of busy lanes (runs in flight); --once prints it and exits
 cox runs bar [--runs-dir RUNS_DIR]   one Waybar JSON line: busy lanes, cost, class idle|running|attention
+cox runs herdr [--runs-dir RUNS_DIR] [--interval INTERVAL] [--once]   report fleet state (idle|working|blocked) to the herdr pane this runs in; no-op outside herdr
 cox runs notify [--runs-dir RUNS_DIR] [--once] [--interval INTERVAL] [--replay]   desktop notifications for exits, quarantines, budget stops and cost
 cox runs detail RUN_ID [--runs-dir RUNS_DIR] [--json]   one run's timeline, objection and last tool calls
 cox runs stranded [--runs-dir RUNS_DIR] [--profile PROFILE] [--json]   every approved task record whose work item is not done, with its remedy
@@ -6247,6 +6270,25 @@ the profile? <a href="https://github.com/ppfenning/coxswain/blob/main/src/tools/
 through it.</p>
 <p>Integrations that name a vendor (intake sources, forges, trackers) live in
 <a href="https://github.com/ppfenning/coxswain-plugins">ppfenning/coxswain-plugins</a>.</p>
+<h2 id="reporting-to-herdr">Reporting to herdr</h2>
+<p><code>cox runs herdr</code> is a sibling of <code>cox runs bar</code>. It reads the same
+idle|running|attention class and reports it to the herdr pane it runs in, so
+the fleet shows in herdr's agent sidebar and notifications. Running maps to
+<code>working</code>, attention to <code>blocked</code>, idle to <code>idle</code>. Attention is a quarantine,
+a budget stop, or approved work not yet landed (the set <code>cox runs stranded</code>
+lists). The agent name is <code>coxswain</code>. The command sends on a state change plus
+a keepalive no more often than <code>--interval</code>, and calls <code>pane release-agent</code>
+when it exits. Outside herdr, with <code>HERDR_ENV</code>, <code>HERDR_PANE_ID</code> or
+<code>HERDR_BIN_PATH</code> unset, it prints one line to stderr and exits 0, so it is safe
+in any shell startup. A herdr call that fails is logged and the loop goes on.</p>
+<p>Run this command in a pane, typed or as the pane's startup command in your
+herdr layout. herdr sets the three variables inside every pane:</p>
+<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>runs<span class="w"> </span>herdr<span class="w"> </span>--interval<span class="w"> </span><span class="m">10</span>
+</code></pre></div>
+<p><code>--once</code> reports a single time, releases and exits. A short label such as
+<code>2 in flight, 1 to land</code> is sent with <code>pane report-metadata</code> on a best-effort
+basis. If herdr refuses it, coxswain stops trying and the state reports go on.
+SIGTERM and SIGHUP, which a closing pane sends, release the pane like Ctrl-C.</p>
 <h2 id="maintainers">Maintainers</h2>
 <p>Release and docs commands live in <code>devtools/</code> at the repository root: run
 <code>uv run --frozen python -m devtools &lt;command&gt;</code> there. <code>cox dev</code> and

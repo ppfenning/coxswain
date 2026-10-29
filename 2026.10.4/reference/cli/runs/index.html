@@ -3970,6 +3970,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#herdr" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        herdr
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#notify" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6317,6 +6328,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#herdr" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        herdr
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#notify" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6443,12 +6465,12 @@ Coxswain is in beta — versions may change between releases
 
 <h1 id="runs">runs</h1>
 <div class="highlight"><pre><span></span><code>usage: cox runs [-h]
-                {usage,trace,clean,land,fetch,review,recover,series,wait,events,top,bar,notify,detail,stranded,cause,stop,pause,resume,move,triage} ...
+                {usage,trace,clean,land,fetch,review,recover,series,wait,events,top,bar,herdr,notify,detail,stranded,cause,stop,pause,resume,move,triage} ...
 
 What a harness run recorded, and cleaning up after it.
 
 positional arguments:
-  {usage,trace,clean,land,fetch,review,recover,series,wait,events,top,bar,notify,detail,stranded,cause,stop,pause,resume,move,triage}
+  {usage,trace,clean,land,fetch,review,recover,series,wait,events,top,bar,herdr,notify,detail,stranded,cause,stop,pause,resume,move,triage}
     usage               usage stats and cost for one run
     trace               the tool-call trace for one run
     clean               delete a run's worktree and branches locally
@@ -6467,6 +6489,8 @@ positional arguments:
                         prints it and exits
     bar                 one Waybar JSON line: busy lanes, cost, class
                         idle|running|attention
+    herdr               report fleet state (idle|working|blocked) to the herdr
+                        pane this runs in; no-op outside herdr
     notify              desktop notifications for exits, quarantines, budget
                         stops and cost
     detail              one run's timeline, objection and last tool calls
@@ -6649,6 +6673,16 @@ options:
 options:
   -h, --help           show this help message and exit
   --runs-dir RUNS_DIR
+</code></pre></div>
+<h2 id="herdr">herdr</h2>
+<div class="highlight"><pre><span></span><code>usage: cox runs herdr [-h] [--runs-dir RUNS_DIR] [--interval INTERVAL]
+                      [--once]
+
+options:
+  -h, --help           show this help message and exit
+  --runs-dir RUNS_DIR
+  --interval INTERVAL
+  --once
 </code></pre></div>
 <h2 id="notify">notify</h2>
 <div class="highlight"><pre><span></span><code>usage: cox runs notify [-h] [--runs-dir RUNS_DIR] [--once]
