@@ -57,6 +57,7 @@ cox runs wait [--runs-dir RUNS_DIR] [--max-seconds MAX_SECONDS] [--interval INTE
 cox runs events [--runs-dir RUNS_DIR] [--follow] [--json]   poll a run's log for structured events
 cox runs top [--runs-dir RUNS_DIR] [--interval INTERVAL] [--once]   live table of busy lanes (runs in flight); --once prints it and exits
 cox runs bar [--runs-dir RUNS_DIR]   one Waybar JSON line: busy lanes, cost, class idle|running|attention
+cox runs herdr [--runs-dir RUNS_DIR] [--interval INTERVAL] [--once]   report fleet state (idle|working|blocked) to the herdr pane this runs in; no-op outside herdr
 cox runs notify [--runs-dir RUNS_DIR] [--once] [--interval INTERVAL] [--replay]   desktop notifications for exits, quarantines, budget stops and cost
 cox runs detail RUN_ID [--runs-dir RUNS_DIR] [--json]   one run's timeline, objection and last tool calls
 cox runs stranded [--runs-dir RUNS_DIR] [--profile PROFILE] [--json]   every approved task record whose work item is not done, with its remedy
@@ -176,6 +177,31 @@ through it.
 
 Integrations that name a vendor (intake sources, forges, trackers) live in
 [ppfenning/coxswain-plugins](https://github.com/ppfenning/coxswain-plugins).
+
+## Reporting to herdr
+
+`cox runs herdr` is a sibling of `cox runs bar`. It reads the same
+idle|running|attention class and reports it to the herdr pane it runs in, so
+the fleet shows in herdr's agent sidebar and notifications. Running maps to
+`working`, attention to `blocked`, idle to `idle`. Attention is a quarantine,
+a budget stop, or approved work not yet landed (the set `cox runs stranded`
+lists). The agent name is `coxswain`. The command sends on a state change plus
+a keepalive no more often than `--interval`, and calls `pane release-agent`
+when it exits. Outside herdr, with `HERDR_ENV`, `HERDR_PANE_ID` or
+`HERDR_BIN_PATH` unset, it prints one line to stderr and exits 0, so it is safe
+in any shell startup. A herdr call that fails is logged and the loop goes on.
+
+Run this command in a pane, typed or as the pane's startup command in your
+herdr layout. herdr sets the three variables inside every pane:
+
+```sh
+cox runs herdr --interval 10
+```
+
+`--once` reports a single time, releases and exits. A short label such as
+`2 in flight, 1 to land` is sent with `pane report-metadata` on a best-effort
+basis. If herdr refuses it, coxswain stops trying and the state reports go on.
+SIGTERM and SIGHUP, which a closing pane sends, release the pane like Ctrl-C.
 
 ## Maintainers
 
