@@ -184,12 +184,27 @@ Integrations that name a vendor (intake sources, forges, trackers) live in
 idle|running|attention class and reports it to the herdr pane it runs in, so
 the fleet shows in herdr's agent sidebar and notifications. Running maps to
 `working`, attention to `blocked`, idle to `idle`. Attention is a quarantine,
-a budget stop, or approved work not yet landed (the set `cox runs stranded`
-lists). The agent name is `coxswain`. The command sends on a state change plus
-a keepalive no more often than `--interval`, and calls `pane release-agent`
-when it exits. Outside herdr, with `HERDR_ENV`, `HERDR_PANE_ID` or
-`HERDR_BIN_PATH` unset, it prints one line to stderr and exits 0, so it is safe
-in any shell startup. A herdr call that fails is logged and the loop goes on.
+a budget stop, a remote lane whose heartbeat is older than the chair's
+heartbeat window, or approved work not yet landed (the set `cox runs stranded`
+lists). The agent name is `coxswain`. The command sends on a state or label
+change plus a keepalive no more often than `--interval`, and calls
+`pane release-agent` with `--source coxswain --agent coxswain` when it exits.
+Outside herdr, with `HERDR_ENV`, `HERDR_PANE_ID` or `HERDR_BIN_PATH` unset, it
+prints one line to stderr and exits 0, so it is safe in any shell startup. A
+herdr call that fails is logged and the loop goes on.
+
+The rows are the ones `cox runs top` draws: local runs plus the remote lanes
+named by the shared store's leases and heartbeats. One adapter on the chair's
+machine therefore sees the whole fleet, and `cox runs bar` shares the same
+rows. Remote approved or quarantined runs show as `blocked` once the chair has
+fetched them. Do not run the adapter on lane hosts.
+
+A lane host that dies stops renewing its lease, and the lease lapses two
+minutes after the last beat, so the lane leaves the live set before its
+heartbeat looks ten minutes old. The rows therefore also include every lane
+whose lease lapsed without a release. Those rows read as attention, so the pane
+shows `blocked` until the lease is reclaimed or released. A clean exit releases
+the lease and drops the lane.
 
 Run this command in a pane, typed or as the pane's startup command in your
 herdr layout. herdr sets the three variables inside every pane:
@@ -199,9 +214,9 @@ cox runs herdr --interval 10
 ```
 
 `--once` reports a single time, releases and exits. A short label such as
-`2 in flight, 1 to land` is sent with `pane report-metadata` on a best-effort
-basis. If herdr refuses it, coxswain stops trying and the state reports go on.
-SIGTERM and SIGHUP, which a closing pane sends, release the pane like Ctrl-C.
+`2 in flight, 1 to land` travels as `--message` on `pane report-agent`, and a
+change of label alone sends a report. SIGTERM and SIGHUP, which a closing pane
+sends, release the pane like Ctrl-C.
 
 ## Maintainers
 

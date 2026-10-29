@@ -276,7 +276,21 @@ def live_lanes(runs_dir: Path, now: str) -> list[Lane]:
 
     A lease with no run row is skipped. Empty with no store or an unreadable one."""
     table = _lease_table(str(runs_dir), int(time.monotonic() // _LEASE_SNAPSHOT_S))
-    live = sorted((name, beat) for name, (_, expires, beat) in table.items() if name.startswith("runs:") and expires > now)
+    return _joined_lanes(runs_dir, sorted((n, beat) for n, (_, expires, beat) in table.items() if n.startswith("runs:") and expires > now))
+
+
+def lost_lanes(runs_dir: Path, now: str) -> list[Lane]:
+    """Edge. Every `runs:` lease that lapsed without a release: `expires_at` is at or before `now` but later than its `heartbeat_at`.
+
+    A release writes a 1970 `expires_at`, so a released lease is never listed. A lane whose host died stops renewing, and
+    its lease lapses a ttl after its last beat, so it is listed here and not in `live_lanes`."""
+    table = _lease_table(str(runs_dir), int(time.monotonic() // _LEASE_SNAPSHOT_S))
+    lapsed = sorted((n, beat) for n, (_, expires, beat) in table.items() if n.startswith("runs:") and beat < expires <= now)
+    return _joined_lanes(runs_dir, lapsed)
+
+
+def _joined_lanes(runs_dir: Path, live: list[tuple[str, str]]) -> list[Lane]:
+    """Edge. Each (lease name, heartbeat) joined to its prefix's newest run row; a lease with no run row is skipped."""
     opened = _open(runs_dir) if live else None
     if opened is None:
         return []

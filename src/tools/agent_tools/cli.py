@@ -951,16 +951,14 @@ def _runs_top(a: argparse.Namespace) -> int:
 
 
 def _bar_rows(runs_dir: str) -> list[dict]:
-    return [
-        dataclasses.asdict(runs_top.row(f["run"], f["alive"], f["phases"], f["events"], f["calls"], f["ceiling"], f["launched_by"],
-                                        host=socket.gethostname()))
-        for f in runs_top_screen.facts(runs_dir)
-    ]
+    """The rows `cox runs top` draws, local and remote, plus lanes whose lease lapsed unreleased, as dicts."""
+    rows = [*runs_top_screen.rows_now(runs_dir, _leader_heartbeat_minutes()), *runs_top_screen.lost_rows(runs_dir)]
+    return [dataclasses.asdict(r) for r in rows]
 
 
 def _runs_bar(a: argparse.Namespace) -> int:
     rows = _bar_rows(a.runs_dir)
-    print(json.dumps(runs_bar.bar(rows, runs_bar.attention(rows))))
+    print(json.dumps(runs_bar.bar(rows, runs_bar.attention(rows, _leader_heartbeat_minutes()))))
     return 0
 
 
@@ -979,8 +977,8 @@ def _runs_herdr(a: argparse.Namespace) -> int:
     if not a.once:
         runs_herdr.install_exit_handlers()
     return runs_herdr.run_loop(lambda: _bar_rows(a.runs_dir), lambda: _stranded_count(a.runs_dir), os.environ,
-                               once=a.once, interval=a.interval, now=time.monotonic, sleep=time.sleep,
-                               seq_start=int(time.time()))
+                               heartbeat_minutes=_leader_heartbeat_minutes(), once=a.once, interval=a.interval,
+                               now=time.monotonic, sleep=time.sleep, seq_start=int(time.time()))
 
 
 def _resolved_notify_policy(runs_dir: Path) -> dict:

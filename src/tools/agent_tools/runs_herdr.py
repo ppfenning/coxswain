@@ -11,7 +11,7 @@ import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
 
-from agent_tools import runs_bar
+from agent_tools import chair, runs_bar
 
 __all__ = ["decide", "env_ok", "fleet_state", "herdr_state", "install_exit_handlers", "label", "run_loop"]
 
@@ -42,9 +42,17 @@ def label(rows: Sequence[Mapping], stranded: int = 0) -> str:
     return ", ".join(parts)
 
 
-def decide(prev_state: str | None, state: str, last_sent_at: float | None, now: float, interval: float) -> bool:
-    """Send on a state change, or as a keepalive once a full interval has passed since the last send."""
-    if prev_state != state or last_sent_at is None:
+def decide(
+    prev_state: str | None,
+    state: str,
+    prev_label: str | None,
+    text: str,
+    last_sent_at: float | None,
+    now: float,
+    interval: float,
+) -> bool:
+    """Send on a state or label change, or as a keepalive once a full interval has passed since the last send."""
+    if prev_state != state or prev_label != text or last_sent_at is None:
         return True
     return now - last_sent_at >= interval
 
@@ -72,9 +80,9 @@ def _subprocess_runner(argv: Sequence[str]) -> int:
         return 127
 
 
-def _call(runner: Runner, argv: Sequence[str], err, quiet: bool = False) -> bool:
+def _call(runner: Runner, argv: Sequence[str], err) -> bool:
     code = runner(argv)
-    if code != 0 and not quiet:
+    if code != 0:
         print(f"runs herdr: {' '.join(argv[1:3])} failed ({code})", file=err)
     return code == 0
 
@@ -91,6 +99,7 @@ def run_loop(
     runner: Runner = _subprocess_runner,
     err=None,
     seq_start: int = 0,
+    heartbeat_minutes: int = chair.DEFAULT_HEARTBEAT_MINUTES,
 ) -> int:
     """`seq_start` seeds the counter so a restarted process never reuses a seq an earlier one sent."""
     err = sys.stderr if err is None else err
@@ -102,49 +111,21 @@ def run_loop(
     prev_state: str | None = None
     prev_label: str | None = None
     last_sent_at: float | None = None
-    label_ok = True
     try:
         while True:
             rows, stranded = rows_fn(), stranded_fn()
-            state = fleet_state(runs_bar.bar(rows, runs_bar.attention(rows))["class"], stranded)
-            t = now()
-            sent_ok = True
-            if decide(prev_state, state, last_sent_at, t, interval):
-                seq += 1
-                sent_ok = _call(
-                    runner,
-                    [
-                        herdr,
-                        "pane",
-                        "report-agent",
-                        pane,
-                        "--source",
-                        SOURCE,
-                        "--agent",
-                        AGENT,
-                        "--state",
-                        state,
-                        "--seq",
-                        str(seq),
-                    ],
-                    err,
-                )
-                if sent_ok:
-                    prev_state, last_sent_at = state, t
+            state = fleet_state(runs_bar.bar(rows, runs_bar.attention(rows, heartbeat_minutes))["class"], stranded)
             text = label(rows, stranded)
-            # The herdr CLI may not accept a label. A refusal is skipped silently and not retried.
-            if sent_ok and label_ok and text != prev_label:
-                label_ok = _call(
-                    runner,
-                    [herdr, "pane", "report-metadata", pane, "--source", SOURCE, "--label", text],
-                    err,
-                    quiet=True,
-                )
-                prev_label = text if label_ok else prev_label
+            t = now()
+            if decide(prev_state, state, prev_label, text, last_sent_at, t, interval):
+                seq += 1
+                argv = [herdr, "pane", "report-agent", pane, "--source", SOURCE, "--agent", AGENT]
+                if _call(runner, [*argv, "--state", state, "--seq", str(seq), "--message", text], err):
+                    prev_state, prev_label, last_sent_at = state, text, t
             if once:
                 return 0
             sleep(interval)
     except KeyboardInterrupt:
         return 0
     finally:
-        _call(runner, [herdr, "pane", "release-agent", pane, "--source", SOURCE], err)
+        _call(runner, [herdr, "pane", "release-agent", pane, "--source", SOURCE, "--agent", AGENT], err)
