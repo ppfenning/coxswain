@@ -95,9 +95,10 @@ def _live_launch(tmp_path, monkeypatch, *extra):
         if not kwargs.get("start_new_session"):
             return real(*args, **kwargs)
         started.append((args[0], kwargs["env"]))
-        return types.SimpleNamespace(pid=os.getpid())
+        return types.SimpleNamespace(pid=os.getpid(), poll=lambda: None)  # None: still running
 
     monkeypatch.setattr(cli.subprocess, "Popen", popen)
+    monkeypatch.setattr(cli, "_LAUNCH_SETTLE_S", 0)
     return main([*argv, *extra]), started
 
 

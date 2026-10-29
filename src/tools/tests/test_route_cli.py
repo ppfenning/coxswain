@@ -13,8 +13,9 @@ import yaml
 from test_run_store import ROW, leases_table, store
 
 from agent_tools import checkout as checkout_module
-from agent_tools import leader, pacing, route, run_store, usage_window
-from agent_tools.cli import main
+from agent_tools import cli, leader, pacing, route, run_store, usage_window
+from agent_tools.chair_exec import argv_for
+from agent_tools.cli import _LAUNCH_STARTED_MARKER, _idea_is_text, _wait_for_exit, main
 from agent_tools.pacing import Window
 
 # Fixed in the past so `_usage_assessment`'s own `datetime.now(UTC)` always
@@ -1483,6 +1484,227 @@ def test_launch_decompose_refuses_when_the_idea_file_is_missing(tmp_path, capsys
     out = capsys.readouterr().out
     assert rc == 2
     assert "no idea file" in out
+
+
+_PROSE_IDEAS = [
+    "some text",
+    "Fix the loader. It breaks",
+    "add v1.2 support",
+    "fix the a/b thing",
+    "refactor e.g. the loader",
+    "two\nlines",
+    "ship it\n",
+]
+
+
+@pytest.mark.parametrize("idea", _PROSE_IDEAS)
+def test_launch_decompose_refuses_prose_given_as_the_idea_path(tmp_path, capsys, idea):
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+    rc = main(["route", "launch", "decompose", "--profile", str(profile), "--idea", idea, "--initiative-id", "x"])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "routing: --idea takes a file path; got text (write it to a file or use route file --intake)" in out
+    assert "no idea file" not in out
+
+
+@pytest.mark.parametrize(
+    ("value", "exists", "expected"),
+    [
+        *[(idea, False, True) for idea in _PROSE_IDEAS],
+        ("my idea", True, False),
+        ("/tmp/my notes.md", False, False),
+        ("~/ideas/my notes.txt", False, False),
+        ("./notes", False, False),
+        ("idea.md", False, False),
+        ("ideas", False, False),
+    ],
+)
+def test_idea_is_text_only_for_prose_that_is_not_a_file(value, exists, expected):
+    assert _idea_is_text(value, exists) is expected
+
+
+def test_launch_decompose_still_names_a_missing_path_that_has_no_prose_in_it(tmp_path, capsys):
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+    rc = main(["route", "launch", "decompose", "--profile", str(profile), "--idea", "ideas.md", "--initiative-id", "x"])
+    assert rc == 2
+    assert "no idea file at ideas.md" in capsys.readouterr().out
+
+
+def _decompose_idea(tmp_path):
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    (ws / "intake").mkdir()
+    idea = ws / "intake" / "fix-thing.md"
+    idea.write_text("---\nid: fix-thing\ntitle: Fix thing\n---\n\nBody\n")
+    return ws, idea
+
+
+def test_launch_decompose_task_ids_ordinal_reaches_the_backend_argv(tmp_path, capsys):
+    harness_dir = _write_harness(tmp_path)
+    ws, idea = _decompose_idea(tmp_path)
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+    rc = main([
+        "route", "launch", "decompose", "--profile", str(profile), "--idea", str(idea),
+        "--initiative-id", "fix-thing", "--task-ids", "ordinal",
+    ])
+    assert rc == 0
+    recorded = harness_dir / "recorded_argv.json"
+    assert _wait_for(recorded)
+    argv = json.loads(recorded.read_text())
+    assert argv[argv.index("--task-ids") + 1] == "ordinal"
+
+
+def test_the_chair_sequence_argv_is_accepted_by_route_launch_decompose(tmp_path, capsys):
+    harness_dir = _write_harness(tmp_path)
+    ws, idea = _decompose_idea(tmp_path)
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+    chair_argv = argv_for({"kind": "launch_decompose", "intake_ids": [str(idea)]}, "fix-thing", "sequence")
+    assert chair_argv is not None
+    rc = main([*chair_argv[1:], "--profile", str(profile), "--dry-run"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "--task-ids ordinal" in out
+
+
+def test_a_launch_whose_backend_exits_at_once_is_reported_failed_not_started(tmp_path, capsys):
+    harness_dir = _write_harness(tmp_path)
+    (harness_dir / "shell.py").write_text(
+        "import sys\nprint('shell.py: error: unrecognized arguments: --task-ids ordinal', file=sys.stderr)\nsys.exit(2)\n"
+    )
+    ws, idea = _decompose_idea(tmp_path)
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+    rc = main(["route", "launch", "decompose", "--profile", str(profile), "--idea", str(idea), "--initiative-id", "fix-thing"])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "routing: launch failed: shell.py: error: unrecognized arguments: --task-ids ordinal" in out
+    assert "run fix-thing-1" not in out
+    assert "initiative.md" in out and "left in place" in out
+    assert not (ws / "runs" / "fix-thing-1.pid").exists()
+    assert not (ws / "runs" / "fix-thing-1.launched.json").exists()
+
+
+def test_launch_epic_whose_backend_exits_at_once_is_reported_failed_not_started(tmp_path, capsys):
+    harness_dir = _write_harness(tmp_path)
+    (harness_dir / "shell.py").write_text("import sys\nprint('boom', file=sys.stderr)\nsys.exit(2)\n")
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    initiative_dir = ws / "work" / "demo"
+    initiative_dir.mkdir(parents=True)
+    (initiative_dir / "initiative.md").write_text("---\nid: demo\ntitle: Demo\n---\n\nBody\n")
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+    rc = main(["route", "launch", "epic", "--profile", str(profile), "--initiative", str(initiative_dir), "--repo", str(repo)])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "routing: launch failed: boom" in out
+    assert "run demo-1" not in out
+
+
+def test_wait_for_exit_returns_the_code_of_a_finished_child_and_none_for_a_running_one():
+    done = types.SimpleNamespace(poll=lambda: 3)
+    running = types.SimpleNamespace(poll=lambda: None)
+    ticks = iter(range(100))
+    never = lambda: False  # noqa: E731
+    assert _wait_for_exit(done, never, 2.0, sleep=lambda s: None, clock=lambda: next(ticks)) == 3
+    assert _wait_for_exit(running, never, 2.0, sleep=lambda s: None, clock=lambda: next(ticks)) is None
+
+
+def test_wait_for_exit_stops_waiting_as_soon_as_the_log_shows_the_graph_started():
+    polls = []
+    running = types.SimpleNamespace(poll=lambda: polls.append(1))
+    ticks = iter(range(1000))
+    assert _wait_for_exit(running, lambda: len(polls) >= 3, 600.0, sleep=lambda s: None, clock=lambda: next(ticks)) is None
+    assert len(polls) == 3
+
+
+def test_a_backend_that_logs_the_started_marker_ends_the_wait_before_the_timeout(tmp_path, monkeypatch, capsys):
+    harness_dir = _write_harness(tmp_path)
+    (harness_dir / "shell.py").write_text(
+        f"import time\nprint({_LAUNCH_STARTED_MARKER!r} + 'x', flush=True)\ntime.sleep(4)\n"
+    )
+    ws, idea = _decompose_idea(tmp_path)
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+    monkeypatch.setattr(cli, "_LAUNCH_SETTLE_S", 30)
+    began = time.monotonic()
+    rc = main(["route", "launch", "decompose", "--profile", str(profile), "--idea", str(idea), "--initiative-id", "fix-thing"])
+    assert rc == 0
+    assert time.monotonic() - began < 3.5
+    assert "run fix-thing-1" in capsys.readouterr().out
+
+
+def test_the_harness_prints_the_marker_the_launcher_waits_for():
+    harness_cli = Path(__file__).resolve().parents[2] / "graphs" / "harness" / "cli.py"
+    assert f'print(f"{_LAUNCH_STARTED_MARKER}{{run_id}}", flush=True)' in harness_cli.read_text(encoding="utf-8")
+
+
+def test_the_chair_sequence_argv_is_parsed_by_the_real_harness_parser(tmp_path, capsys):
+    """The fake backend parses its argv with the harness's own parser, so a flag the front end takes and the backend refuses fails here."""
+    graphs_dir = Path(__file__).resolve().parents[2] / "graphs"
+    harness_dir = _write_harness(tmp_path)
+    (harness_dir / "shell.py").write_text(
+        "import sys, json\n"
+        "from pathlib import Path\n"
+        # The symlinked interpreter loses its venv's site-packages, so the child borrows this process's path.
+        f"sys.path[:0] = {[str(graphs_dir), str(graphs_dir.parent / 'cartridges'), *sys.path]!r}\n"
+        "import harness.cli as cli\n"
+        "parsed = cli._build_parser(cli.discover()).parse_args(sys.argv[1:])\n"
+        "Path(__file__).with_name('parsed.json').write_text(json.dumps({'task_ids': parsed.task_ids}))\n"
+    )
+    ws, idea = _decompose_idea(tmp_path)
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+    chair_argv = argv_for({"kind": "launch_decompose", "intake_ids": [str(idea)]}, "fix-thing", "sequence")
+    assert chair_argv is not None
+    rc = main([*chair_argv[1:], "--profile", str(profile)])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    parsed = harness_dir / "parsed.json"
+    assert _wait_for(parsed, timeout=20)
+    assert json.loads(parsed.read_text()) == {"task_ids": "ordinal"}
+
+
+def test_a_dead_epic_launch_removes_its_ceiling_files_and_names_the_loop_claim_it_took(tmp_path, capsys):
+    harness_dir = _write_harness(tmp_path)
+    (harness_dir / "shell.py").write_text("import sys\nprint('boom', file=sys.stderr)\nsys.exit(2)\n")
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    initiative_dir = ws / "work" / "demo"
+    initiative_dir.mkdir(parents=True)
+    (initiative_dir / "initiative.md").write_text("---\nid: demo\ntitle: Demo\n---\n\nBody\n")
+    provider = _write_provider_profile(tmp_path, tier="deep", effort="high")
+    profile = _write_launch_profile(tmp_path, harness_dir, ws, provider_profile=provider)
+    rc = main([
+        "route", "launch", "epic", "--profile", str(profile), "--initiative", str(initiative_dir),
+        "--repo", str(repo), "--tier-ceiling", "standard",
+    ])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "routing: launch failed: boom" in out
+    assert "loop claim this launch took is still held" in out
+    assert not list((ws / "runs").glob("*.provider-profile.yaml"))
+    assert not list((ws / "runs").glob("*.ceiling.json"))
+
+
+def test_a_dead_launch_with_no_claim_does_not_mention_a_loop_claim(tmp_path, capsys):
+    harness_dir = _write_harness(tmp_path)
+    (harness_dir / "shell.py").write_text("import sys\nprint('boom', file=sys.stderr)\nsys.exit(2)\n")
+    ws, idea = _decompose_idea(tmp_path)
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+    rc = main([
+        "route", "launch", "decompose", "--profile", str(profile), "--idea", str(idea),
+        "--initiative-id", "fix-thing", "--no-claim",
+    ])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "loop claim" not in out
 
 
 def test_launch_refuses_a_profile_missing_a_key_harness_argv_needs(tmp_path, capsys):

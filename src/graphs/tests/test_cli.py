@@ -203,6 +203,27 @@ def test_sweep_is_a_selectable_graph_choice_and_round_trips_through_parsing() ->
     assert parsed.graph == "sweep"
 
 
+def test_decompose_accepts_task_ids_ordinal_and_hands_it_to_the_graph_args() -> None:
+    specs = cli.discover()
+    parser = cli._build_parser(specs)
+
+    parsed = parser.parse_args(
+        ["decompose", "--team", "acme", "--idea", "x", "--initiative-id", "I1", "--task-ids", "ordinal", "--unverified-skills"]
+    )
+
+    assert cli._materialise(specs["decompose"], parsed, parser)["task_ids"] == "ordinal"
+
+
+def test_decompose_refuses_a_task_ids_value_it_does_not_know(capsys) -> None:
+    parser = cli._build_parser(cli.discover())
+
+    with pytest.raises(SystemExit) as exit_info:
+        parser.parse_args(["decompose", "--team", "acme", "--idea", "x", "--task-ids", "uuid", "--unverified-skills"])
+
+    assert exit_info.value.code == 2
+    assert "invalid choice: 'uuid'" in capsys.readouterr().err
+
+
 def test_sweep_refuses_cleanly_instead_of_crashing_on_a_missing_spec(monkeypatch, tmp_path) -> None:
     run_id = "runS"
     runner = SimpleNamespace(calls=[])
