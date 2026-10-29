@@ -56,6 +56,67 @@ def test_repo_of_falls_back_to_the_literal_value_when_nothing_resolves_on_disk()
     assert route_sync_gh._repo_of("") == ""
 
 
+def _home_checkout(tmp_path, monkeypatch):
+    """A fake HOME holding `repos/coxswain` with an origin url; returns the HOME."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    _write(tmp_path / "home" / "repos" / "coxswain" / ".git" / "config",
+           '[remote "origin"]\n\turl = git@github.com:ppfenning/coxswain.git\n')
+    return tmp_path / "home"
+
+
+def test_origin_slug_expands_a_home_relative_checkout(tmp_path, monkeypatch):
+    home = _home_checkout(tmp_path, monkeypatch)
+    assert route_sync_gh._origin_slug("~/repos/coxswain") == "ppfenning/coxswain"
+    assert route_sync_gh._origin_slug(str(home / "repos" / "coxswain")) == "ppfenning/coxswain"
+    assert route_sync_gh._origin_slug("~/repos/missing") == ""
+    assert route_sync_gh._origin_slug("") == ""
+
+
+def test_initiative_repo_expands_a_home_relative_checkout(tmp_path, monkeypatch):
+    home = _home_checkout(tmp_path, monkeypatch)
+    root = tmp_path / "ws"
+    _write(root / "work" / "tilde" / "initiative.md", "---\nrepo: ~/repos/coxswain\n---\n")
+    _write(root / "work" / "absolute" / "initiative.md", f"---\nrepo: {home}/repos/coxswain\n---\n")
+    assert route_sync_gh._initiative_repo(root, "tilde") == "ppfenning/coxswain"
+    assert route_sync_gh._initiative_repo(root, "absolute") == "ppfenning/coxswain"
+
+
+def test_items_from_store_resolves_home_relative_repos_for_intake_and_tasks(tmp_path, monkeypatch):
+    _home_checkout(tmp_path, monkeypatch)
+    root = tmp_path / "ws"
+    _write(root / "intake" / "2026-10-29-idea.md", "---\nid: idea\ntitle: Idea\nrepo: ~/repos/coxswain\n---\nb\n")
+    _write(root / "work" / "init1" / "initiative.md", "---\nrepo: ~/repos/coxswain\n---\n")
+    _write(root / "work" / "init1" / "build" / "task1.md", "---\ntitle: T\nstate: ready\n---\nb\n")
+    repos = {item.id: item.repo for item in route_sync_gh.items_from_store(root)}
+    assert repos["idea"] == "ppfenning/coxswain"
+    assert repos["task1"] == "ppfenning/coxswain"
+
+
+def test_cli_dry_run_resolves_the_owner_for_a_home_relative_repo(tmp_path, capsys, monkeypatch):
+    _home_checkout(tmp_path, monkeypatch)
+    root = tmp_path / "ws"
+    _mirror(root)
+    _write(root / "work" / "init1" / "initiative.md", "---\ntitle: Init\nrepo: ~/repos/coxswain\n---\n")
+    _write(root / "work" / "init1" / "build" / "task1.md", "---\ntitle: T\nstate: ready\n---\nb\n")
+    calls = []
+
+    def run(argv, **kw):
+        calls.append(argv)
+        if argv[:3] == ["gh", "project", "list"]:
+            return _Result(stdout=json.dumps({"projects": [{"title": "Coxswain", "number": 7}]}))
+        if argv[:3] == ["gh", "issue", "list"]:
+            return _Result(stdout="[]")
+        return _Result(stdout=json.dumps({"items": []}))
+
+    monkeypatch.setattr(subprocess, "run", run)
+    rc = cli.main(["route", "sync", "--dry-run", "--profile", str(tmp_path / "profile.yaml"), "--workspace", str(root)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "no repo to derive" not in out and "no repository resolves" not in out
+    assert "issue_create ppfenning/coxswain" in out
+    assert ["gh", "project", "list", "--owner", "ppfenning", "--format", "json"] in calls
+
+
 def test_rewrite_issue_line_is_pure_and_touches_only_that_line():
     before = "---\ntitle: T\nstate: ready\n---\nbody\n"
     after = route_sync_gh._rewrite_issue_line(before, "9")

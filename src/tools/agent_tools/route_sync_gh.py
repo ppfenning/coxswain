@@ -9,11 +9,12 @@ landing separately: read straight off the item's `gate:` frontmatter.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
 
-from agent_tools import epic, route, route_sync, run_store
+from agent_tools import epic, repo_path, route, route_sync, run_store
 
 __all__ = [
     "api_login_ok", "auth_ok", "create_project", "execute", "existing", "existing_item", "find_project",
@@ -54,9 +55,12 @@ def api_login_ok(run) -> bool:
 
 
 def _origin_slug(checkout: str) -> str:
-    """`owner/name` from `<checkout>/.git/config`'s origin url, or `""`."""
-    config = Path(checkout) / ".git" / "config"
-    if not checkout or not config.is_file():
+    """`owner/name` from `<checkout>/.git/config`'s origin url, or `""`. A record stores `~/repos/<name>`, so the
+    home is expanded first; a literal `~` directory never exists (2026-10-14: every sync refused for lack of a repo)."""
+    if not checkout:
+        return ""
+    config = Path(repo_path.expand(checkout, os.path.expanduser("~"))) / ".git" / "config"
+    if not config.is_file():
         return ""
     url = next((ln.split("=", 1)[1].strip() for ln in config.read_text().splitlines()
                 if ln.strip().startswith("url")), "")
