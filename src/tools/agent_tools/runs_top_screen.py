@@ -229,6 +229,15 @@ def rows_now(runs_dir, heartbeat_minutes: int = chair.DEFAULT_HEARTBEAT_MINUTES,
     return [*local, *_remote_rows(root, lanes, now)]
 
 
+def lost_rows(runs_dir, now: datetime.datetime | None = None) -> list[runs_top.Row]:
+    """Edge. Rows for lanes whose lease lapsed unreleased and whose run no local pidfile names: a dead host or a dropped lane.
+    `rows_now` leaves these out, because a lane stops being live a lease ttl after its last beat."""
+    now = now or datetime.datetime.now(datetime.UTC)
+    root = Path(runs_dir)
+    lanes = run_store.lost_lanes(root, now.astimezone(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    return _remote_rows(root, lanes, now)
+
+
 def _session_text(root: Path, run: str) -> str:
     """Edge: the newest trace file's assistant message text, one line per text item.
     Tool calls are left out; `facts_for`'s `tail` already carries those into the

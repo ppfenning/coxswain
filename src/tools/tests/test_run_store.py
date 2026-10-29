@@ -752,6 +752,21 @@ def test_live_lanes_is_empty_with_no_store(tmp_path):
     assert run_store.live_lanes(tmp_path, NOW) == []
 
 
+def test_lost_lanes_lists_a_lease_that_lapsed_after_its_last_beat_and_not_a_live_one(tmp_path):
+    lane_store(
+        tmp_path,
+        [lane_run("x-3", "2026-09-25T09:00:00Z"), lane_run("y-1", "2026-09-25T09:00:00Z")],
+        [("runs:x", "x-3", "2026-09-25T11:42:00Z", "2026-09-25T11:40:00Z"), ("runs:y", "y-1", LIVE, "2026-09-25T11:59:50Z")],
+    )
+    assert [lane.run for lane in run_store.lost_lanes(tmp_path, NOW)] == ["x-3"]
+    assert [lane.run for lane in run_store.live_lanes(tmp_path, NOW)] == ["y-1"]
+
+
+def test_lost_lanes_skips_a_released_lease(tmp_path):
+    lane_store(tmp_path, [lane_run("x-3", "2026-09-25T09:00:00Z")], [("runs:x", "x-3", "1970-01-01T00:00:00Z", "2026-09-25T11:40:00Z")])
+    assert run_store.lost_lanes(tmp_path, NOW) == []
+
+
 def test_newest_run_hosts_maps_each_initiative_to_its_newest_runs_host(tmp_path):
     lane_store(tmp_path, [lane_run("demo-1", "2026-09-25T09:00:00Z")], [], host_column=True)
     assert run_store.newest_run_hosts(tmp_path, ["demo"]) == {"demo": "h"}
