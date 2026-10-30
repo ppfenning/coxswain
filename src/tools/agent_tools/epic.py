@@ -12,7 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-__all__ = ["alive", "launched_epoch", "log_ended", "proc_start_epoch", "ps_lstart_epoch", "reused", "run_alive", "run_live", "summarize_log", "wait_lanes", "watch"]
+__all__ = ["alive", "launched_epoch", "live_runs", "log_ended", "proc_start_epoch", "process_alive", "ps_lstart_epoch", "reused", "run_alive", "run_live", "run_state", "summarize_log", "wait_lanes", "watch"]
 
 _LINE = re.compile(r"^\s*(quarantined task|quarantined phase|approved but not landed|reused|epic |  usage)", re.M)
 
@@ -106,15 +106,52 @@ def _mtime(path: Path) -> float | None:
         return None
 
 
+def _utc_now() -> str:
+    return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def run_live(pid: int | None, pidfile: Path | str, log: Path | str | None = None, now: str | None = None) -> bool:
-    """Edge. The store lease for the run whose pidfile is `<run>.pid` when one exists: live only while this run holds it unexpired. With no lease row, `run_alive` on the pid, reading its `.launched.json` and `.log` beside it; pid <= 0 is never signalled and a pid too large for pid_t reads as dead. `now` is `YYYY-MM-DDTHH:MM:SSZ` UTC."""
+    """Edge. The store lease for the run whose pidfile is `<run>.pid` when one exists: live only while this run holds it unexpired. With no lease row, `process_alive`. `now` is `YYYY-MM-DDTHH:MM:SSZ` UTC."""
     from agent_tools import run_store  # run_store imports epic at module level
 
     pidfile = Path(pidfile)
     row = run_store.lease(pidfile.parent, pidfile.stem)
     if row is not None:
         holder, expires_at, _heartbeat_at = row
-        return holder == pidfile.stem and expires_at > (now or datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        return holder == pidfile.stem and expires_at > (now or _utc_now())
+    return process_alive(pid, pidfile, log)
+
+
+def run_state(pid: int | None, pidfile: Path | str, log: Path | str | None = None, now: str | None = None) -> str:
+    """Edge. `running`, `fenced` or `exited`. A process that answers without a held lease is fenced, where `run_live` reads it as dead."""
+    from agent_tools import lease_standing, run_store  # run_store imports epic at module level
+
+    pidfile = Path(pidfile)
+    standing = lease_standing.standing(run_store.lease(pidfile.parent, pidfile.stem), pidfile.stem, now or _utc_now())
+    return lease_standing.status(process_alive(pid, pidfile, log), standing)
+
+
+_RUN_PIDFILE = re.compile(r"^(?P<prefix>.+)-\d+$")
+
+
+def live_runs(runs_dir: Path | str, prefix: str, now: str | None = None) -> list[dict[str, Any]]:
+    """Edge. `{"run", "pid", "state"}` for each `<prefix>-<digits>.pid` in `runs_dir` whose state is running or fenced, sorted by run."""
+    out = []
+    for pidfile in sorted(Path(runs_dir).glob(f"{prefix}-*.pid")):
+        match = _RUN_PIDFILE.match(pidfile.stem)
+        text = _read(pidfile)
+        if match is None or match["prefix"] != prefix or text is None or not text.strip().isdigit():
+            continue
+        pid = int(text.strip())
+        state = run_state(pid, pidfile, now=now)
+        if state != "exited":
+            out.append({"run": pidfile.stem, "pid": pid, "state": state})
+    return out
+
+
+def process_alive(pid: int | None, pidfile: Path | str, log: Path | str | None = None) -> bool:
+    """Edge. The process half of `run_live`, with the lease ignored: `run_alive` on the pid, reading its `.launched.json` and `.log` beside `pidfile`. pid <= 0 is never signalled and a pid too large for pid_t reads as dead."""
+    pidfile = Path(pidfile)
     if pid is None or pid <= 0:
         return False
     try:
@@ -155,14 +192,16 @@ def wait_lanes(busy: list[str], is_live: Callable[[str], bool], now: Callable[[]
         sleep(interval)
 
 
-def watch(pidfile: Path | str, *, log: Path | str | None = None, max_seconds: float = 570, interval: float = 20) -> dict[str, Any]:
-    """Wait for the pid in `pidfile` to exit, up to the cap. Returns whether it finished and the log's outcome lines."""
+def watch(pidfile: Path | str, *, log: Path | str | None = None, max_seconds: float = 570, interval: float = 20,
+          clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
+    """Wait for the pid in `pidfile` to exit, up to the cap. A fenced run is still running, so it never reads finished. Returns the state, whether it finished and the log's outcome lines."""
     pid = int(Path(pidfile).read_text().strip())
-    deadline = time.monotonic() + max_seconds
-    while run_live(pid, pidfile, log) and time.monotonic() < deadline:
-        time.sleep(interval)
-    finished = not run_live(pid, pidfile, log)
-    out: dict[str, Any] = {"pid": pid, "finished": finished}
+    deadline = clock() + max_seconds
+    state = run_state(pid, pidfile, log)
+    while state != "exited" and clock() < deadline:
+        sleep(interval)
+        state = run_state(pid, pidfile, log)
+    out: dict[str, Any] = {"pid": pid, "state": state, "finished": state == "exited"}
     if log and Path(log).exists():
         out.update(summarize_log(Path(log).read_text(encoding="utf-8", errors="replace")))
     return out

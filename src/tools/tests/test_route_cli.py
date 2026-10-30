@@ -2472,3 +2472,14 @@ def test_file_refuses_body_text_passed_where_a_path_belongs_without_echoing_it(t
     assert "--body takes a file path, or - for stdin, not the text itself" in out
     assert "with paragraphs" not in out
     assert not (ws / "work").exists() or not any((ws / "work").iterdir())
+
+
+def test_status_reads_a_live_pid_whose_lease_another_run_holds_as_fenced(tmp_path, capsys):
+    profile, ws = _write_runs_workspace(tmp_path)
+    (ws / "runs" / "fx-3.pid").write_text(str(os.getpid()))  # answers, but the fx lease belongs to fx-9
+    (ws / "runs" / "fx-4.pid").write_text("999999999")  # a dead pid still reads exited
+    leases_table(ws / "runs", ("runs:fx", "fx-9", _LIVE, _BEAT))
+    assert main(["route", "status", "--profile", str(profile), "--json"]) == 0
+    rows = {row["id"]: row for row in json.loads(capsys.readouterr().out)}
+    assert (rows["fx-3"]["state"], rows["fx-3"]["fenced"]) == ("fenced", True)
+    assert (rows["fx-4"]["state"], rows["fx-4"]["fenced"]) == ("exited", False)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from agent_tools import lease_standing
 from agent_tools.events import Event
 
 __all__ = ["NODE_ORDER", "Detail", "NodeCall", "detail", "render"]
@@ -58,13 +59,15 @@ def _first_failed_check(record: dict) -> dict:
     return next((c for c in checks if isinstance(c, dict) and not c.get("passed", True)), {})
 
 
-def _status(events: list[Event], alive: bool) -> str:
+def _status(events: list[Event], alive: bool, standing: str = lease_standing.NONE) -> str:
     if any(e.kind == "task_quarantined" for e in events):
         return "quarantined"
     if any(e.kind == "budget_stop" for e in events):
         return "budget"
     if not alive or any(e.kind == "run_exited" for e in events):
         return "exited"
+    if lease_standing.status(True, standing) == lease_standing.FENCED:
+        return "fenced"
     return "running"
 
 def _order_key(node: str) -> int:
@@ -130,7 +133,8 @@ def _quarantine_reason(events: list[Event]) -> str:
     return quarantined[-1].detail.get("reason", "") if quarantined else ""
 
 
-def detail(run: str, alive: bool, events: list[Event], calls: list[dict], record: dict, tail: list[str]) -> Detail:
+def detail(run: str, alive: bool, events: list[Event], calls: list[dict], record: dict, tail: list[str],
+           standing: str = lease_standing.NONE) -> Detail:
     """Pure: the one Detail a run's events, finished calls, task record and
     trace tail make. `record` may be `{}`; every derived field is then ""
     or empty, never a raise."""
@@ -138,7 +142,7 @@ def detail(run: str, alive: bool, events: list[Event], calls: list[dict], record
     return Detail(
         run=run,
         alive=alive,
-        status=_status(events, alive),
+        status=_status(events, alive, standing),
         timeline=_timeline(events, calls),
         objection=_objection(events, record),
         quarantine_reason=_quarantine_reason(events),

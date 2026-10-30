@@ -325,3 +325,86 @@ def test_wait_lanes_sleeps_the_interval_between_polls_on_a_fake_clock():
 
     assert epic.wait_lanes(["r"], lambda _r: next(polls), lambda: clock[0], sleep, 100, 15) == (["r"], [])
     assert slept == [15, 15]
+
+
+def _fenced_run(tmp_path):
+    """x-3 whose pid answers (this process) while the x lease is held by x-9."""
+    leases_table(tmp_path, ("runs:x", "x-9", "2999-01-01T00:00:00Z"))
+    pidfile = tmp_path / "x-3.pid"
+    pidfile.write_text(str(os.getpid()))
+    return pidfile
+
+
+def _fake_clock():
+    now, slept = [0.0], []
+
+    def sleep(seconds):
+        slept.append(seconds)
+        now[0] += seconds
+
+    return (lambda: now[0]), sleep, slept
+
+
+def test_process_alive_ignores_the_lease(tmp_path):
+    pidfile = _lease_case(tmp_path, "x-4", "2026-09-25T06:00:00Z")
+    assert epic.process_alive(os.getpid(), pidfile) and not epic.process_alive(DEAD_PID, pidfile)
+
+
+@pytest.mark.parametrize("answers, holder, expires_at, state", [
+    (True, "x-3", "2026-09-25T06:00:00Z", "running"),
+    (True, "x-4", "2026-09-25T06:00:00Z", "fenced"),
+    (True, "x-3", "2026-09-25T04:00:00Z", "fenced"),
+    (False, "x-3", "2026-09-25T06:00:00Z", "exited"),
+    (False, "x-4", "2026-09-25T06:00:00Z", "exited"),
+])
+def test_run_state_names_running_fenced_or_exited(tmp_path, answers, holder, expires_at, state):
+    pid = os.getpid() if answers else DEAD_PID
+    assert epic.run_state(pid, _lease_case(tmp_path, holder, expires_at), now=NOW) == state
+
+
+def test_run_state_without_a_lease_row_follows_the_pid(tmp_path):
+    assert epic.run_state(os.getpid(), tmp_path / "x-3.pid", now=NOW) == "running"
+    assert epic.run_state(DEAD_PID, tmp_path / "x-3.pid", now=NOW) == "exited"
+
+
+def test_live_runs_lists_running_and_fenced_prefix_runs_only(tmp_path):
+    leases_table(tmp_path, ("runs:x", "x-1", "2026-09-25T06:00:00Z"))
+    for name, pid in (("x-1", os.getpid()), ("x-2", os.getpid()), ("x-3", DEAD_PID), ("x-abc", os.getpid()), ("y-1", os.getpid())):
+        (tmp_path / f"{name}.pid").write_text(str(pid))
+    (tmp_path / "x-5.pid").write_text("junk")
+    assert epic.live_runs(tmp_path, "x", now=NOW) == [{"run": "x-1", "pid": os.getpid(), "state": "running"}, {"run": "x-2", "pid": os.getpid(), "state": "fenced"}]
+
+
+def test_watch_does_not_finish_a_fenced_run_and_stops_at_the_cap(tmp_path):
+    clock, sleep, slept = _fake_clock()
+    out = epic.watch(_fenced_run(tmp_path), max_seconds=30, interval=10, clock=clock, sleep=sleep)
+    assert (out["state"], out["finished"]) == ("fenced", False) and slept == [10, 10, 10]
+
+
+def test_watch_reports_a_dead_pid_as_finished_with_state_exited(tmp_path):
+    clock, sleep, slept = _fake_clock()
+    pidfile = tmp_path / "x-3.pid"
+    pidfile.write_text(str(DEAD_PID))
+    out = epic.watch(pidfile, max_seconds=30, interval=10, clock=clock, sleep=sleep)
+    assert (out["state"], out["finished"]) == ("exited", True) and slept == []
+
+
+def test_epic_watch_prints_fenced_and_exits_3_for_a_fenced_run(tmp_path, capsys):
+    args = argparse.Namespace(pidfile=_fenced_run(tmp_path), log=None, max_seconds=0, interval=0, json=False)
+    assert cli_module._epic_watch(args) == 3
+    out = capsys.readouterr().out
+    assert out.strip() == f"pid {os.getpid()}: fenced" and "finished" not in out
+
+
+def test_runs_wait_keeps_a_fenced_run_in_the_busy_list(tmp_path, capsys):
+    _fenced_run(tmp_path)
+    clock, sleep, slept = _fake_clock()
+    args = argparse.Namespace(runs_dir=str(tmp_path), max_seconds=30.0, interval=10.0, json=True)
+    assert cli_module._runs_wait(args, rows_fn=lambda _d: [], clock=clock, sleep=sleep) == 3
+    assert json.loads(capsys.readouterr().out) == {"exited": [], "busy": ["x-3"]} and slept == [10, 10, 10]
+
+
+def test_lane_live_counts_a_fenced_run_and_not_a_dead_one(tmp_path):
+    _fenced_run(tmp_path)
+    (tmp_path / "x-4.pid").write_text(str(DEAD_PID))
+    assert cli_module._lane_live(tmp_path, "x-3") and not cli_module._lane_live(tmp_path, "x-4")

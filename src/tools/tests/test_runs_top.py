@@ -232,3 +232,33 @@ def test_a_remote_row_shows_its_lane_host():
 
 def test_a_remote_row_with_no_host_shows_a_question_mark():
     assert render([remote_row("x-1", None, 5)], 200)[1].split()[:2] == ["x-1", "?"]
+
+
+def test_a_live_row_with_a_foreign_or_expired_lease_is_fenced_and_prominent():
+    for standing in ("fenced", "expired"):
+        r = row("r1", True, [], [], [], standing=standing)
+        assert r.status == "fenced"
+        assert highlight(r) == "fenced"
+
+
+def test_a_held_released_or_absent_lease_stays_running():
+    assert [row("r1", True, [], [], [], standing=s).status for s in ("held", "released", "none")] == ["running"] * 3
+
+
+def test_a_dead_process_stays_exited_whatever_the_lease_says():
+    assert _status([], False, standing="fenced") == "exited"
+
+
+def test_quarantined_and_budget_win_over_fenced():
+    quarantined = [Event("r1", "task_quarantined", 0, {"task": "t1", "reason": "x"})]
+    assert _status(quarantined, True, standing="fenced") == "quarantined"
+    assert _status([Event("r1", "budget_stop", 0, {})], True, standing="fenced") == "budget"
+
+
+def test_fenced_outranks_orphaned_and_stalled():
+    assert _status([], True, orphaned=True, heartbeat_age=500, node_call_stalled=True, standing="fenced") == "fenced"
+
+
+def test_the_rendered_status_cell_reads_fenced():
+    header, line = render([row("r1", True, [], [], [], host="host-a", standing="fenced")], 200)
+    assert line[header.index("STATUS"):].split()[0] == "fenced"

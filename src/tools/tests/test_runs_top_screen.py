@@ -7,7 +7,7 @@ import time
 
 from test_run_store import lane_run, lane_store, leases_table
 
-from agent_tools import cli, run_store, runs_top
+from agent_tools import cli, epic, run_store, runs_top
 from agent_tools.runs_top_screen import _accordion_detail, _fact, calls_from_usage, facts, rows_now
 
 _WRITTEN = datetime.datetime(2026, 9, 25, 5, 29, 0, tzinfo=datetime.UTC).timestamp()
@@ -369,3 +369,71 @@ def test_with_no_live_leases_the_rows_equal_the_local_only_rows(tmp_path):
 
     assert local_only
     assert rows_now(tmp_path, now=_NOW) == local_only
+
+
+def test_fact_lease_standing_is_fenced_for_a_foreign_holder(tmp_path):
+    leases_table(tmp_path, ("runs:x", "host-b-x-2", "2026-09-25T06:30:00Z", "2026-09-25T05:59:00Z"))
+
+    assert _fact(tmp_path, "x-3", True, _NOW)["lease_standing"] == "fenced"
+
+
+def test_fact_lease_standing_is_expired_for_an_own_lapsed_lease(tmp_path):
+    leases_table(tmp_path, ("runs:x", "x-3", "2026-09-25T05:59:30Z", "2026-09-25T05:50:00Z"))
+
+    assert _fact(tmp_path, "x-3", True, _NOW)["lease_standing"] == "expired"
+
+
+def test_fact_lease_standing_is_none_without_a_store(tmp_path):
+    assert _fact(tmp_path, "x-3", True, _NOW)["lease_standing"] == "none"
+
+
+def test_fact_lease_standing_is_held_for_an_unexpired_own_lease(tmp_path):
+    leases_table(tmp_path, ("runs:x", "x-3", "2026-09-25T06:00:30Z", "2026-09-25T05:59:50Z"))
+
+    assert _fact(tmp_path, "x-3", True, _NOW)["lease_standing"] == "held"
+
+
+def _rows_with_a_live_process(tmp_path, monkeypatch, lease):
+    # `epic.run_live` reads the lease itself, so a live pid under a foreign lease is stubbed to alive here.
+    monkeypatch.setattr(epic, "run_live", lambda pid, pidfile: True)
+    _write(tmp_path / "x-3.pid", "123")
+    leases_table(tmp_path, lease)
+    return [(r.run, r.status) for r in rows_now(tmp_path, now=_NOW) if not r.remote]
+
+
+def test_rows_now_reads_a_live_process_with_a_foreign_lease_holder_as_fenced(tmp_path, monkeypatch):
+    lease = ("runs:x", "host-a-x-1", "2026-09-25T06:30:00Z", "2026-09-25T05:59:00Z")
+
+    assert _rows_with_a_live_process(tmp_path, monkeypatch, lease) == [("x-3", "fenced")]
+
+
+def test_rows_now_reads_a_live_process_with_an_expired_own_lease_as_fenced(tmp_path, monkeypatch):
+    lease = ("runs:x", "x-3", "2026-09-25T05:59:30Z", "2026-09-25T05:50:00Z")
+
+    assert _rows_with_a_live_process(tmp_path, monkeypatch, lease) == [("x-3", "fenced")]
+
+
+def test_rows_now_keeps_a_held_lease_running(tmp_path, monkeypatch):
+    lease = ("runs:x", "x-3", "2026-09-25T06:30:00Z", "2026-09-25T05:59:50Z")
+
+    assert _rows_with_a_live_process(tmp_path, monkeypatch, lease) == [("x-3", "running")]
+
+
+def test_rows_now_keeps_a_dead_process_exited_under_a_foreign_lease(tmp_path, monkeypatch):
+    monkeypatch.setattr(epic, "run_live", lambda pid, pidfile: False)
+    _write(tmp_path / "x-3.pid", "123")
+    _write(tmp_path / "x-3.log", "")
+    os.utime(tmp_path / "x-3.log")
+    leases_table(tmp_path, ("runs:x", "host-b-x-1", "2026-09-25T06:30:00Z", "2026-09-25T05:59:00Z"))
+
+    assert [(r.run, r.status) for r in rows_now(tmp_path, now=_NOW) if not r.remote] == [("x-3", "exited")]
+
+
+def test_the_rendered_status_cell_of_a_fenced_row_reads_fenced(tmp_path, monkeypatch):
+    lease = ("runs:x", "host-a-x-1", "2026-09-25T06:30:00Z", "2026-09-25T05:59:00Z")
+    monkeypatch.setattr(epic, "run_live", lambda pid, pidfile: True)
+    _write(tmp_path / "x-3.pid", "123")
+    leases_table(tmp_path, lease)
+    header, line = runs_top.render([r for r in rows_now(tmp_path, now=_NOW) if not r.remote], 200)
+
+    assert line[header.index("STATUS"):].split()[0] == "fenced"

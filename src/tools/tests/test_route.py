@@ -808,6 +808,7 @@ def test_status_rows_covers_live_dead_and_no_pidfile_runs_in_order():
         "id": "widget-1",
         "pid": 4242,
         "state": "alive",
+        "fenced": False,
         "started": "14:02",
         "quarantined": [],
         "reused": [],
@@ -819,6 +820,7 @@ def test_status_rows_covers_live_dead_and_no_pidfile_runs_in_order():
         "id": "widget-2",
         "pid": 4300,
         "state": "exited",
+        "fenced": False,
         "started": "13:10",
         "quarantined": ["quarantined task foo"],
         "reused": [],
@@ -830,6 +832,7 @@ def test_status_rows_covers_live_dead_and_no_pidfile_runs_in_order():
         "id": "widget-3",
         "pid": None,
         "state": "no pidfile",
+        "fenced": False,
         "started": None,
         "quarantined": [],
         "reused": [],
@@ -837,6 +840,20 @@ def test_status_rows_covers_live_dead_and_no_pidfile_runs_in_order():
         "usage": None,
         "short_id": None,
     }
+
+
+def test_status_rows_reads_a_pid_that_answers_without_a_held_lease_as_fenced():
+    entries = [
+        {"id": "a", "pid": 1, "alive": False, "fenced": True},
+        {"id": "b", "pid": 2, "alive": False, "fenced": False},
+        {"id": "c", "pid": None, "alive": False, "fenced": True},
+    ]
+    assert [(r["state"], r["fenced"]) for r in route.status_rows(entries)] == [("fenced", True), ("exited", False), ("no pidfile", False)]
+
+
+def test_run_entries_carries_the_fenced_flag_only_for_a_readable_pidfile():
+    entries = route.run_entries({"r1": "1", "r2": "junk"}, {}, {}, None, {"r1": True, "r2": True})
+    assert [(e["id"], e["fenced"]) for e in entries] == [("r1", True), ("r2", False)]
 
 
 def test_status_rows_carries_short_id_from_the_dict_and_none_when_absent():
@@ -1026,9 +1043,9 @@ def test_run_entries_sorts_by_id_and_treats_a_non_integer_pidfile_as_dead():
     started = {"r1": "2026-09-04T00:00:00", "r2": "2026-09-04T00:01:00"}
     entries = route.run_entries(pids, alive, started)
     assert entries == [
-        {"id": "r1", "pid": None, "alive": False, "started": "2026-09-04T00:00:00", "heartbeat": None,
+        {"id": "r1", "pid": None, "alive": False, "fenced": False, "started": "2026-09-04T00:00:00", "heartbeat": None,
          "host": None, "remote": False},
-        {"id": "r2", "pid": 222, "alive": True, "started": "2026-09-04T00:01:00", "heartbeat": None,
+        {"id": "r2", "pid": 222, "alive": True, "fenced": False, "started": "2026-09-04T00:01:00", "heartbeat": None,
          "host": None, "remote": False},
     ]
 
@@ -1456,6 +1473,7 @@ _NOW = datetime.datetime(2026, 9, 25, 12, 0, tzinfo=datetime.UTC)
     [
         ([{"id": "old", "state": "exited", "started": "2026-09-24T11:59:00+00:00"}], [], 1),
         ([{"id": "live", "state": "alive", "started": "2026-08-01T00:00:00+00:00"}], ["live"], 0),
+        ([{"id": "fenced", "state": "fenced", "fenced": True, "started": "2026-08-01T00:00:00+00:00"}], ["fenced"], 0),
         ([{"id": "new", "state": "exited", "started": "2026-09-25T00:00:00+00:00"}], ["new"], 0),
         (
             [{"id": "none", "state": "no pidfile", "started": None},
@@ -1464,7 +1482,7 @@ _NOW = datetime.datetime(2026, 9, 25, 12, 0, tzinfo=datetime.UTC)
             2,
         ),
     ],
-    ids=["old-dead-hidden", "live-kept-however-old", "recent-dead-kept", "no-or-bad-started-counts-as-old"],
+    ids=["old-dead-hidden", "live-kept-however-old", "fenced-kept-however-old", "recent-dead-kept", "no-or-bad-started-counts-as-old"],
 )
 def test_recent_rows(rows, kept, hidden):
     shown, count = route.recent_rows(rows, _NOW)
