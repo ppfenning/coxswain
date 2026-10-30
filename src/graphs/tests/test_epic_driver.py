@@ -882,6 +882,14 @@ def test_change_facts_carries_the_full_checks_result_for_a_quarantined_task(repo
     checks = failed["change_facts"]["checks"]
     assert checks is not None
     assert any(c["name"] == "state" and c["passed"] is False for c in checks)
+    state = next(c for c in checks if c["name"] == "state")
+    assert "excerpt" in state and state["log"].endswith(".log")
+    # The file `runs detail` reads carries the same results, in the same place, and the log is keyed by task.
+    task_dir = Path("runs") / "epic-1"
+    saved = json.loads((tmp_path / task_dir / "tasks" / failed["phase"] / "t1-probe.json").read_text())
+    assert saved["change_facts"]["checks"] == checks
+    assert state["log"].startswith(f"checks/{failed['phase']}/t1-probe/")
+    assert (tmp_path / task_dir / state["log"]).is_file()
     assert any(row["check"] == "checks:state" and "FAIL" in row["output"] for row in failed["evidence"])
 
 
@@ -1746,7 +1754,7 @@ def test_a_repo_declared_check_runs_alongside_the_cartridges(repo, cart, tmp_pat
     landed = next(t for t in result["tasks"] if t["id"] == "t1-probe")
     seen = {row["check"] for row in landed["evidence"]}
     assert "checks:state" in seen  # the cartridge's own check still ran
-    assert f"checks:{sys.executable}" in seen  # and the repo's is merged in beside it
+    assert f"checks:{cmd}" in seen  # and the repo's is merged in beside it, named by its whole line
 
 
 def test_a_bom_prefixed_agent_checks_file_does_not_mangle_the_command(repo, cart, tmp_path) -> None:
@@ -1756,7 +1764,7 @@ def test_a_bom_prefixed_agent_checks_file_does_not_mangle_the_command(repo, cart
     result, _ = drive(repo, cart, tmp_path, work=initiative(two_phases=False))
     landed = next(t for t in result["tasks"] if t["id"] == "t1-probe")
     assert landed["status"] == "built"
-    assert f"checks:{sys.executable}" in {row["check"] for row in landed["evidence"]}
+    assert f"checks:{cmd}" in {row["check"] for row in landed["evidence"]}
 
 
 def test_an_undecodable_agent_checks_file_falls_back_to_no_repo_checks(repo, cart, tmp_path) -> None:

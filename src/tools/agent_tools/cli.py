@@ -3000,9 +3000,9 @@ def _land_repo_facts(repo: Path, profile: dict) -> dict:
 
 def _land_checks_lines(steps: list[dict]) -> list[str]:
     """The dry run's lines, one per checks step and labelled by what it checks, each check as its command (or
-    `name = command` when the name is not the command's first word); `none declared` for a step holding none."""
+    `name = command` when the name is neither the command nor its first word); `none declared` for a step holding none."""
     def show(name: str, line: str) -> str:
-        return line if line.split(None, 1)[:1] == [name] else f"{name} = {line}"
+        return line if name == line or line.split(None, 1)[:1] == [name] else f"{name} = {line}"
     return [f"checks ({s.get('worktree_of') or s.get('branch') or 'repo'}): "
             + ("; ".join(show(n, line) for n, line in s["checks"]) or "none declared")
             for s in steps if s["kind"] == "checks"]

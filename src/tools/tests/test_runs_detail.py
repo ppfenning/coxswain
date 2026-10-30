@@ -21,6 +21,31 @@ def test_timeline_orders_by_canonical_node_order_and_picks_up_verdicts():
     assert d.timeline[1].verdict == ""
 
 
+def test_the_failed_checks_excerpt_is_in_the_detail_and_rendered():
+    # The shape the epic driver writes: per-check results under change_facts.
+    record = {"change_facts": {"files_touched": ["a.py"], "checks": [
+        {"name": "ok", "passed": True, "excerpt": ""},
+        {"name": "t", "passed": False, "log": "checks/p1/t1/2.log",
+         "excerpt": "FAILED tests/t.py::test_a - boom\n1 failed"},
+    ]}}
+    d = detail("r1", False, [], [], record, [])
+    assert d.check_excerpt == "FAILED tests/t.py::test_a - boom\n1 failed"
+    assert d.check_log == "checks/p1/t1/2.log"
+    lines = render(d, 80)
+    assert "  FAILED tests/t.py::test_a - boom" in lines
+    assert "  full output: runs/r1/checks/p1/t1/2.log" in lines
+
+
+def test_no_check_excerpt_without_a_record():
+    assert detail("r1", False, [], [], {}, []).check_excerpt == ""
+    assert detail("r1", False, [], [], {"change_facts": {}}, []).check_excerpt == ""
+
+
+def test_a_top_level_checks_key_is_not_where_the_excerpt_lives():
+    record = {"checks": [{"name": "t", "passed": False, "excerpt": "FAILED t.py::a"}]}
+    assert detail("r1", False, [], [], record, []).check_excerpt == ""
+
+
 def test_objection_prefers_the_arbitration_over_the_adversary():
     events = [Event("r1", "verdict", 1000, {"node": "arbitrate", "verdict": "revise"})]
     record = {

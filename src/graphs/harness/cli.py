@@ -1454,7 +1454,9 @@ def _run_graph(
                 if not checks_config:
                     print("no checks configured; the gate decides on review evidence alone")
                 else:
-                    check_results = run_checks(worktree, checks_config)
+                    check_results = run_checks(
+                        worktree, checks_config, log_dir=Path(args.runs_dir) / run_id / "checks", log_prefix="checks/"
+                    )
                     result["checks"] = check_results
                     for r in check_results:
                         print(f"  check {r['name']}: {'pass' if r['passed'] else 'FAIL'} (exit {r['exit_code']})")

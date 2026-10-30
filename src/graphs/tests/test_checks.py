@@ -37,6 +37,7 @@ from harness.checks import (
     failed_test_files,
     fixable_checks,
     is_harness_fault,
+    output_excerpt,
     outside_surface_files,
     quarantine_reason,
     refix_route,
@@ -475,20 +476,53 @@ def test_quarantine_reason_does_not_hide_a_real_failure_behind_an_unrunnable_one
     assert not is_harness_fault(reason)
 
 
-def test_quarantine_reason_names_the_check_and_the_first_non_empty_tail_line() -> None:
+def test_quarantine_reason_names_the_check_and_the_last_line_that_is_not_progress() -> None:
     results = [{
         "name": "lint",
         "passed": False,
         "outcome": "failed",
-        "output_tail": "F401 harness/x.py:3 unused import\nF401 harness/y.py:9 unused import",
+        "output_tail": "F401 harness/x.py:3 unused import\nFound 1 error.\n",
     }]
     reason = quarantine_reason(results)
-    assert reason == "configured check failed: lint — F401 harness/x.py:3 unused import"
+    assert reason == "configured check failed: lint — Found 1 error."
     assert "see evidence" not in reason
 
 
+_DOTS = ".................................................. [ 98%]"
+
+
+def test_a_pytest_run_that_died_with_no_failed_line_never_reports_the_dots() -> None:
+    tail = f"{_DOTS}\nINTERNALERROR> worker 'gw0' crashed while running 'tests/t.py::test_a'"
+    reason = quarantine_reason([_failed(tail, name="cd src/tools && pytest -q -n auto")])
+    assert reason == (
+        "configured check failed: cd src/tools && pytest -q -n auto — "
+        "INTERNALERROR> worker 'gw0' crashed while running 'tests/t.py::test_a'"
+    )
+
+
+def test_output_that_is_only_progress_reports_the_exit_code() -> None:
+    result = {**_failed(_DOTS), "exit_code": -9}
+    assert quarantine_reason([result]) == "configured check failed: tests — exit -9"
+
+
+def test_a_pytest_error_line_stands_in_when_there_is_no_failed_line() -> None:
+    tail = _summary("ERROR tests/t.py - ImportError: no module named x")
+    assert quarantine_reason([_failed(tail)]) == "configured check failed: tests — ERROR tests/t.py - ImportError: no module named x"
+
+
+def test_a_non_pytest_error_line_does_not_cut_the_excerpt_down() -> None:
+    out = "ERROR build step 1\nstep 2 ok\nstep 3 broke"
+    assert output_excerpt(out) == out
+
+
+def test_a_timed_out_check_excerpt_says_so(tmp_path) -> None:
+    [result] = run_checks(tmp_path, [{"name": "slow", "cmd": "echo started; sleep 30"}], timeout=1)
+    assert result["excerpt"].splitlines()[-1] == "[timed out after 1s]"
+    assert "started" in result["excerpt"]
+
+
 _HEADER = "=========================== short test summary info ============================"
-_OLD = f"configured check failed: tests — {_HEADER}"
+_OLD = "configured check failed: tests — FAILED tests/test_other.py::test_a - x"
 
 
 def _summary(*lines: str) -> str:
@@ -530,11 +564,15 @@ def test_quarantine_reason_joins_several_outside_files_sorted() -> None:
 def test_quarantine_reason_keeps_the_old_text_with_the_default_arguments() -> None:
     tail = "FAILED tests/test_other.py::test_a - x"
     assert quarantine_reason([_failed(tail)]) == f"configured check failed: tests — {tail}"
-    assert quarantine_reason([_failed(_PYTEST_TAIL)]) == _OLD
+    assert quarantine_reason([_failed(_PYTEST_TAIL)]) == (
+        "configured check failed: tests — FAILED tests/test_other.py::test_a - assert 1 == 2"
+    )
 
 
 def test_quarantine_reason_falls_back_when_one_failing_file_is_inside_a_surface() -> None:
-    assert quarantine_reason([_failed(_PYTEST_TAIL)], ["tests/test_third.py"], []) == _OLD
+    assert quarantine_reason([_failed(_PYTEST_TAIL)], ["tests/test_third.py"], []) == (
+        "configured check failed: tests — FAILED tests/test_other.py::test_a - assert 1 == 2"
+    )
 
 
 def test_quarantine_reason_falls_back_when_the_failing_file_is_in_the_patch() -> None:
@@ -544,7 +582,7 @@ def test_quarantine_reason_falls_back_when_the_failing_file_is_in_the_patch() ->
 
 def test_quarantine_reason_falls_back_when_there_are_no_failed_lines() -> None:
     reason = quarantine_reason([_failed("boom\n1 failed in 0.1s")], ["harness"], [])
-    assert reason == "configured check failed: tests — boom"
+    assert reason == "configured check failed: tests — 1 failed in 0.1s"
 
 
 def test_quarantine_reason_falls_back_when_the_summary_header_was_truncated_away() -> None:
@@ -557,12 +595,14 @@ def test_quarantine_reason_falls_back_when_another_failing_check_has_no_pytest_s
     tail = _summary("FAILED tests/test_other.py::test_a - x")
     lint = _failed("F401 harness/checks.py:3 unused import", name="lint")
     reason = quarantine_reason([_failed(tail), lint], ["harness"], [])
-    assert reason == f"configured check failed: tests, lint — {_HEADER}"
+    assert reason == "configured check failed: tests, lint — FAILED tests/test_other.py::test_a - x"
 
 
 def test_quarantine_reason_matches_a_surface_as_a_directory_prefix() -> None:
     tail = _summary("FAILED tests/sub/test_x.py::test_a - x")
-    assert quarantine_reason([_failed(tail)], ["tests"], []) == _OLD
+    assert quarantine_reason([_failed(tail)], ["tests"], []) == (
+        "configured check failed: tests — FAILED tests/sub/test_x.py::test_a - x"
+    )
 
 
 def test_quarantine_reason_does_not_match_a_sibling_directory_by_string_prefix() -> None:
@@ -574,13 +614,16 @@ def test_quarantine_reason_does_not_match_a_sibling_directory_by_string_prefix()
 
 def test_quarantine_reason_normalises_dot_slash_and_dot_surfaces() -> None:
     tail = _summary("FAILED ./tests/test_x.py::test_a - x")
-    assert quarantine_reason([_failed(tail)], ["./tests/"], []) == _OLD
-    assert quarantine_reason([_failed(tail)], ["."], []) == _OLD
+    expected = "configured check failed: tests — FAILED ./tests/test_x.py::test_a - x"
+    assert quarantine_reason([_failed(tail)], ["./tests/"], []) == expected
+    assert quarantine_reason([_failed(tail)], ["."], []) == expected
 
 
 def test_quarantine_reason_falls_back_on_an_absolute_failing_path() -> None:
     tail = _summary("FAILED /repo/tests/test_x.py::test_a - x")
-    assert quarantine_reason([_failed(tail)], ["harness"], []) == _OLD
+    assert quarantine_reason([_failed(tail)], ["harness"], []) == (
+        "configured check failed: tests — FAILED /repo/tests/test_x.py::test_a - x"
+    )
 
 
 def test_outside_surface_files_round_trips_the_reason() -> None:
@@ -727,21 +770,97 @@ def test_repo_checks_ignores_comments_and_blanks_and_keeps_order():
         """
     )
     assert repo_checks(text) == [
-        {"name": "pytest", "cmd": "pytest -q"},
-        {"name": "ruff", "cmd": "ruff check ."},
+        {"name": "pytest -q", "cmd": "pytest -q"},
+        {"name": "ruff check .", "cmd": "ruff check ."},
     ]
 
 
 def test_repo_checks_collapses_a_duplicate_cmd_to_its_first_occurrence():
     text = "pytest -q\nruff check .\npytest -q\n"
     assert repo_checks(text) == [
-        {"name": "pytest", "cmd": "pytest -q"},
-        {"name": "ruff", "cmd": "ruff check ."},
+        {"name": "pytest -q", "cmd": "pytest -q"},
+        {"name": "ruff check .", "cmd": "ruff check ."},
     ]
 
 
-def test_repo_checks_names_are_the_first_word():
-    assert repo_checks("mypy src/ --strict") == [{"name": "mypy", "cmd": "mypy src/ --strict"}]
+def test_repo_checks_names_are_the_whole_line():
+    line = "cd src/tools && pytest -q -n auto"
+    assert repo_checks(line) == [{"name": line, "cmd": line}]
+
+
+def test_a_whole_line_ruff_name_still_routes_as_lint():
+    checks = [{"name": "ruff check .", "cmd": "ruff check ."}]
+    results = [{"name": "ruff check .", "passed": False, "outcome": "failed", "output_tail": "F401"}]
+    assert refix_route(results, checks, attempts_left=1, style_bound=True) == "style_pass"
+
+
+@pytest.mark.parametrize(
+    ("name", "route"),
+    [
+        ("cd src && ruff check .", "style_pass"),
+        ("ruff check . && pytest -q", "revise"),
+        ("cd src/tools && pytest -q -n auto", "revise"),
+    ],
+)
+def test_a_compound_check_name_routes_by_what_it_runs(name, route) -> None:
+    results = [{"name": name, "passed": False, "outcome": "failed", "output_tail": "x"}]
+    assert refix_route(results, [{"name": name, "cmd": name}], attempts_left=1, style_bound=True) == route
+
+
+def test_a_check_that_cannot_spawn_still_records_an_excerpt_and_a_log(tmp_path) -> None:
+    logs = tmp_path / "logs"
+    [result] = run_checks(tmp_path / "missing", [{"name": "x", "cmd": "true"}], log_dir=logs)
+    assert result["outcome"] == "unrunnable"
+    assert result["excerpt"] == result["error"] != ""
+    assert (logs / result["log"]).read_text() == result["error"] + "\n"
+
+
+def test_output_excerpt_keeps_pytest_failures_and_drops_the_dots() -> None:
+    dots = "." * 50 + " [ 98%]"
+    out = f"{dots}\n=== FAILURES ===\nlong traceback\n{_summary('FAILED tests/t.py::test_a - x', 'ERROR tests/u.py::test_b - y')}"
+    assert output_excerpt(out) == "\n".join(
+        [_HEADER, "FAILED tests/t.py::test_a - x", "ERROR tests/u.py::test_b - y", "1 failed in 0.12s"]
+    )
+
+
+def test_output_excerpt_keeps_only_failure_lines_when_the_summary_block_is_absent() -> None:
+    assert output_excerpt("....\nFAILED t.py::a - x\n1 failed") == "FAILED t.py::a - x"
+
+
+def test_output_excerpt_keeps_the_last_forty_lines_of_other_output() -> None:
+    out = "\n".join(f"line {i}" for i in range(100))
+    kept = output_excerpt(out).splitlines()
+    assert kept[0] == "line 60" and kept[-1] == "line 99" and len(kept) == 40
+
+
+def test_a_failing_pytest_check_records_its_failed_lines_in_the_result_and_the_reason(tmp_path) -> None:
+    script = tmp_path / "fake.sh"
+    script.write_text(
+        "printf '.................................................. [ 98%%]\\n'\n"
+        "printf '=== short test summary info ===\\nFAILED tests/t.py::test_a - boom\\n1 failed in 0.1s\\n'\n"
+        "exit 1\n"
+    )
+    cmd = f"cd {tmp_path} && sh fake.sh"
+    [result] = run_checks(tmp_path, [{"name": cmd, "cmd": cmd}])
+    assert "FAILED tests/t.py::test_a - boom" in result["excerpt"]
+    assert "[ 98%]" not in result["excerpt"]
+    assert quarantine_reason([result]) == f"configured check failed: {cmd} — FAILED tests/t.py::test_a - boom"
+
+
+def test_a_non_pytest_failure_records_its_tail(tmp_path) -> None:
+    cmd = "seq 1 100; exit 3"
+    [result] = run_checks(tmp_path, [{"name": cmd, "cmd": cmd}])
+    assert result["excerpt"].splitlines() == [str(i) for i in range(61, 101)]
+    assert quarantine_reason([result]) == f"configured check failed: {cmd} — 100"
+
+
+def test_the_whole_output_is_logged_beside_the_run(tmp_path) -> None:
+    logs = tmp_path / "checks"
+    checks = [{"name": "a", "cmd": "true"}, {"name": "b", "cmd": "seq 1 5000; exit 1"}]
+    results = run_checks(tmp_path, checks, log_dir=logs, log_prefix="checks/p1/t1/")
+    assert [r["log"] for r in results] == ["checks/p1/t1/1.log", "checks/p1/t1/2.log"]
+    assert (logs / "2.log").read_text() == "".join(f"{i}\n" for i in range(1, 5001))
+    assert len(results[1]["output_tail"]) < len((logs / "2.log").read_text())
 
 
 def test_repo_checks_never_raises_on_odd_input():

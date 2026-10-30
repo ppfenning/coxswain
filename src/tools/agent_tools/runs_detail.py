@@ -41,6 +41,14 @@ class Detail:
     files_touched: tuple[str, ...]
     changed_lines: int
     last_calls: tuple[str, ...]
+    check_excerpt: str = ""
+    check_log: str = ""
+
+
+def _first_failed_check(record: dict) -> dict:
+    """The first failed configured check; the harness stores them under `change_facts["checks"]`."""
+    checks = (record.get("change_facts") or {}).get("checks") or ()
+    return next((c for c in checks if isinstance(c, dict) and not c.get("passed", True)), {})
 
 
 def _status(events: list[Event], alive: bool) -> str:
@@ -130,6 +138,8 @@ def detail(run: str, alive: bool, events: list[Event], calls: list[dict], record
         files_touched=tuple(change_facts.get("files_touched") or ()),
         changed_lines=int(change_facts.get("changed_lines") or 0),
         last_calls=tuple(tail[-3:]),
+        check_excerpt=str(_first_failed_check(record).get("excerpt") or ""),
+        check_log=str(_first_failed_check(record).get("log") or ""),
     )
 
 
@@ -144,6 +154,10 @@ def render(detail: Detail, width: int) -> list[str]:
         lines.append(f"objection: {detail.objection}")
     if detail.quarantine_reason:
         lines.append(f"quarantine: {detail.quarantine_reason}")
+    if detail.check_excerpt:
+        lines.extend(f"  {ln}" for ln in detail.check_excerpt.splitlines())
+    if detail.check_log:
+        lines.append(f"  full output: runs/{detail.run}/{detail.check_log}")
     if detail.files_touched:
         lines.append(f"files: {', '.join(detail.files_touched)}")
     if detail.last_calls:
