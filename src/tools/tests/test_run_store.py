@@ -697,6 +697,94 @@ def test_lease_reads_the_leases_table_once_per_window(tmp_path, monkeypatch):
     assert len(opens) == 1
 
 
+def lease_rows_table(runs_dir, extra_columns, *rows):
+    """Rows are (name, holder, epoch, expires_at, heartbeat_at, *extra values)."""
+    conn = sqlite3.connect(runs_dir / "cox.db")
+    columns = "".join(f", {c} TEXT" for c in extra_columns)
+    conn.execute(f"CREATE TABLE leases (name TEXT PRIMARY KEY, holder TEXT, epoch INTEGER, expires_at TEXT, heartbeat_at TEXT{columns})")
+    marks = ", ".join("?" * (5 + len(extra_columns)))
+    conn.executemany(f"INSERT INTO leases VALUES ({marks})", rows)
+    conn.commit()
+    conn.close()
+
+
+def test_lease_row_reads_every_column(tmp_path):
+    lease_rows_table(
+        tmp_path, ("status", "progress"),
+        ("runs:x", "host-a", 4, "2026-09-25T06:00:00Z", "2026-09-25T05:59:48Z", "running", "build 3/5"),
+    )
+    assert run_store.lease_row(tmp_path, "x-3") == run_store.LeaseRow(
+        "runs:x", "host-a", 4, "2026-09-25T06:00:00Z", "2026-09-25T05:59:48Z", "running", "build 3/5"
+    )
+
+
+def test_lease_row_gives_none_progress_when_the_column_is_absent(tmp_path):
+    lease_rows_table(tmp_path, ("status",), ("runs:x", "host-b", 2, "2026-09-25T06:00:00Z", "2026-09-25T05:59:48Z", "running"))
+    row = run_store.lease_row(tmp_path, "x-1")
+    assert (row.epoch, row.status, row.progress) == (2, "running", None)
+
+
+def test_lease_row_gives_none_for_both_when_the_table_is_not_migrated(tmp_path):
+    lease_rows_table(tmp_path, (), ("runs:x", "host-a", 1, "2026-09-25T06:00:00Z", "2026-09-25T05:59:48Z"))
+    row = run_store.lease_row(tmp_path, "x-1")
+    assert (row.epoch, row.status, row.progress) == (1, None, None)
+
+
+def test_lease_row_is_none_with_no_store(tmp_path):
+    assert run_store.lease_row(tmp_path, "x-3") is None
+
+
+def test_lease_row_is_none_for_a_store_with_no_leases_table(tmp_path, monkeypatch):
+    store(tmp_path, ROW)
+    opens = []
+    real_open = run_store._open
+    monkeypatch.setattr(run_store, "_open", lambda runs_dir: opens.append(runs_dir) or real_open(runs_dir))
+    assert run_store.lease_row(tmp_path, "x-3") is None
+    assert len(opens) == 1
+
+
+class _ColumnsConn:
+    """Records the column query and answers it as Postgres's information_schema would."""
+
+    def __init__(self):
+        self.calls = []
+
+    def execute(self, sql, params=()):
+        self.calls.append((sql, params))
+        return types.SimpleNamespace(fetchall=lambda: [{"name": "epoch"}, {"name": "progress"}])
+
+
+def test_leases_columns_asks_postgres_for_the_leases_table_by_bind_parameter():
+    conn = _ColumnsConn()
+    assert run_store._leases_columns(conn, "%s") == {"epoch", "progress"}
+    sql, params = conn.calls[0]
+    assert "information_schema.columns WHERE table_name = %s" in sql
+    assert params == ("leases",)
+
+
+def test_lease_row_is_none_for_a_prefix_without_a_row(tmp_path):
+    lease_rows_table(tmp_path, (), ("runs:y", "host-a", 1, "2026-09-25T06:00:00Z", "2026-09-25T05:59:48Z"))
+    assert run_store.lease_row(tmp_path, "x-3") is None
+
+
+def test_lease_row_is_shared_by_x_2_and_x_3(tmp_path):
+    lease_rows_table(tmp_path, ("status", "progress"), ("runs:x", "host-a", 7, "2026-09-25T06:00:00Z", "2026-09-25T05:59:48Z", "running", "p"))
+    first = run_store.lease_row(tmp_path, "x-2")
+    assert first is not None
+    assert first == run_store.lease_row(tmp_path, "x-3")
+
+
+def test_lease_row_reads_the_leases_table_once_per_window(tmp_path, monkeypatch):
+    lease_rows_table(tmp_path, ("status", "progress"), ("runs:x", "host-a", 1, "2026-09-25T12:02:00Z", "2026-09-25T12:00:00Z", "running", "p"))
+    opens = []
+    real_open = run_store._open
+    monkeypatch.setattr(run_store, "_open", lambda runs_dir: opens.append(runs_dir) or real_open(runs_dir))
+    assert run_store.lease_row(tmp_path, "x-3") is not None
+    assert run_store.lease_row(tmp_path, "x-4") is not None
+    assert run_store.lease_row(tmp_path, "y-1") is None
+    assert len(opens) == 1
+
+
 NOW = "2026-09-25T12:00:00Z"
 LIVE = "2026-09-25T12:02:00Z"
 

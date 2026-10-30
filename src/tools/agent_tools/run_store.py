@@ -243,6 +243,53 @@ def _lease_table(runs_dir: str, _window: int) -> dict[str, tuple[str, str, str]]
 
 
 @dataclass(frozen=True)
+class LeaseRow:
+    """A store lease row. `name` is the lease name (`runs:x`). `status` and `progress` are None when the leases table lacks the column."""
+
+    name: str
+    holder: str
+    epoch: int
+    expires_at: str
+    heartbeat_at: str
+    status: str | None
+    progress: str | None
+
+
+def _leases_columns(conn: Any, token: str) -> set[str]:
+    """Edge. The column names of `leases`, asked of the backend: a failed SELECT would abort a Postgres transaction."""
+    if token == placeholder("postgres://"):
+        sql = "SELECT column_name AS name FROM information_schema.columns WHERE table_name = {p} AND table_schema = current_schema()"
+        return {r["name"] for r in conn.execute(_sql(sql, token), ("leases",)).fetchall()}
+    return {r["name"] for r in conn.execute("PRAGMA table_info(leases)").fetchall()}
+
+
+def lease_row(runs_dir: Path, run_id: str) -> LeaseRow | None:
+    """Edge. The full store lease row for `run_id`'s prefix; None with no store, no row, or an unreadable store."""
+    return _lease_rows(str(runs_dir), int(time.monotonic() // _LEASE_SNAPSHOT_S)).get(_lease_name(run_id))
+
+
+@functools.lru_cache(maxsize=8)
+def _lease_rows(runs_dir: str, _window: int) -> dict[str, LeaseRow]:
+    """Every lease row by name with its epoch, read once per `_LEASE_SNAPSHOT_S` window. `status` and `progress` are read only when the table has them."""
+    opened = _open(Path(runs_dir))
+    if opened is None:
+        return {}
+    conn, token = opened
+    try:
+        columns = _leases_columns(conn, token)
+        extra = ", ".join(c if c in columns else f"NULL AS {c}" for c in ("status", "progress"))
+        rows = conn.execute(f"SELECT name, holder, epoch, expires_at, heartbeat_at, {extra} FROM leases").fetchall()
+    except _db_errors():
+        return {}
+    finally:
+        conn.close()
+    return {
+        r["name"]: LeaseRow(r["name"], r["holder"], r["epoch"], r["expires_at"], r["heartbeat_at"], r["status"], r["progress"])
+        for r in rows
+    }
+
+
+@dataclass(frozen=True)
 class Lane:
     """A live lease joined to its newest run row. `host` is None when the store's `runs` table has no `host` column."""
 
