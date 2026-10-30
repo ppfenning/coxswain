@@ -209,6 +209,7 @@ stats_causes = _LazyModule("agent_tools.stats_causes")
 stats_chair = _LazyModule("agent_tools.stats_chair")
 stats_efficiency = _LazyModule("agent_tools.stats_efficiency")
 stats_examples = _LazyModule("agent_tools.stats_examples")
+stats_flaky = _LazyModule("agent_tools.stats_flaky")
 stats_gates = _LazyModule("agent_tools.stats_gates")
 stats_ingest = _LazyModule("agent_tools.stats_ingest")
 stats_lanes = _LazyModule("agent_tools.stats_lanes")
@@ -599,6 +600,25 @@ def _stats_examples(a: argparse.Namespace) -> int:
         print(f"read {len(records)}, {counts[0]}", file=sys.stderr)
     else:
         print(f"read {len(records)}; " + "; ".join(f"{r}: {c}" for (r, _), c in zip(built, counts)), file=sys.stderr)
+    return 0
+
+
+def _stats_flaky(a: argparse.Namespace) -> int:
+    if a.days < 1:
+        print("--days must be at least 1", file=sys.stderr)
+        return 2
+    dated = []
+    for p in sorted(Path(a.runs_dir).glob("*/tasks/*/*.json")):
+        text = _read_text_or_none(p)
+        try:
+            record = json.loads(text) if text is not None else None
+        except ValueError:
+            record = None
+        if isinstance(record, dict):
+            dated.append((_file_date(p), record))
+    today = datetime.datetime.now(datetime.UTC).date()
+    flaky = stats_flaky.flaky_tests(dated, today, a.days)
+    print(json.dumps(flaky, indent=2) if a.json else "\n".join(stats_flaky.render_lines(flaky, a.days)))
     return 0
 
 
@@ -1928,18 +1948,21 @@ def _run_checks(checks: list[tuple[str, str]], cwd: Path) -> tuple[bool, str]:
         return True, "none declared"
     env = _checks_env(cwd)
     skipped: list[str] = []
+    flaky: list[str] = []
     for name, line in checks:
         [result] = run_checks(Path(cwd), [{"name": name, "cmd": line}], env=env)
+        if result.get("note"):
+            flaky.append(result["note"])
         if result["outcome"] == "unrunnable":
             return False, land.checks_detail(f"{land.LAUNCH_ERROR}{name}: {result['error']}", skipped)
         if result["outcome"] == "timed_out":
             return False, land.checks_detail(f"{name}: {result['error']}", skipped)
         verdict = land.check_exit(line, result["exit_code"])
         if verdict == "fail":
-            return False, land.checks_detail(f"{name}: {result['output_tail'].strip()}", skipped)
+            return False, land.checks_detail(f"{name}: {result['output_tail'].strip()}", skipped, flaky)
         if verdict == "skip":
             skipped.append(name)
-    return True, land.checks_detail(f"{len(checks)} checks passed", skipped)
+    return True, land.checks_detail(f"{len(checks)} checks passed", skipped, flaky)
 
 
 def _land_worktree(repo: Path, branch: str) -> Path:
@@ -9214,6 +9237,15 @@ STATS_COMMANDS = [
             commands.Arg(("--since",), {"default": None, "help": "keep only records dated on or after DATE (YYYY-MM-DD)"}),
         ),
         "agent_tools.cli:_stats_examples", False, (),
+    ),
+    commands.Command(
+        "flaky", "stats", "tests that needed a serial rerun three times in a week, from task records",
+        (
+            commands.Arg(("runs_dir",), {"nargs": "?", "default": "runs"}),
+            commands.Arg(("--days",), {"type": int, "default": 7, "help": "the window, today included"}),
+            commands.Arg(("--json",), {"action": "store_true"}),
+        ),
+        "agent_tools.cli:_stats_flaky", False, (),
     ),
     commands.Command(
         "system-one", "stats", "shadow-to-on graduation report per role, and a proposal for the maintainer to approve",

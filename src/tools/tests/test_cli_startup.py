@@ -71,5 +71,8 @@ def test_help_startup_relative_to_baseline() -> None:
     _assert_relative_startup(_cox("--help"), HELP_TARGET_S)
 
 
+# serial: its startup time is compared with a baseline, and `-n auto` contention skews the two runs differently
+# (quarantined an approved task on 2026-10-30); it passed alone.
+@pytest.mark.serial
 def test_route_chair_status_startup_relative_to_baseline(profile: Path) -> None:
     _assert_relative_startup(_cox("route", "chair", "status", "--profile", str(profile)), CHAIR_STATUS_TARGET_S)
