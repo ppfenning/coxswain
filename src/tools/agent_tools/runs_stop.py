@@ -39,7 +39,10 @@ def stop_run(
             return {"ok": False, "run": run_id, "reason": "bad remote record"}
         host = lane_hosts.find_lane_host(hosts, record["host"])
         if host is None:
-            return {"ok": False, "run": run_id, "reason": f"host {record['host']} not configured"}
+            listed = f"; configured: {', '.join(h.name for h in hosts)}" if hosts else ""
+            return {"ok": False, "run": run_id, "reason": f"host {record['host']} not configured{listed}"}
+        if not host.workspace_dir:
+            return {"ok": False, "run": run_id, "reason": f"host {host.name} has no workspace_dir, so its pidfile cannot be found"}
         pidfile_path = f"{host.workspace_dir}/runs/{run_id}.pid"
         argv = stop_kill_argv(host.ssh, pidfile_path)
         run_remote(argv)

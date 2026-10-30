@@ -1125,13 +1125,25 @@ def _runs_stop_is_ended(runs_dir: Path) -> Callable[[str], bool]:
 
 
 def _runs_stop_hosts(a: argparse.Namespace) -> tuple[lane_hosts.LaneHost, ...]:
-    """The profile's `lane_hosts`, the way `_setup_doctor_host` reads them; a missing or
-    unreadable profile just leaves a local-only stop with nothing to look up."""
-    text = _read_text_or_none(_profile_path(a))
-    if text is None:
-        return ()
-    parsed = _profile_lane_hosts(text)
-    return () if isinstance(parsed, lane_hosts.LaneHostError) else parsed
+    """The hosts `route launch --on` picks from: the hosts table, else the profile's `lane_hosts`. Drained rows
+    count, since a run launched before its host was drained still has to be stopped (as `_fetch_hosts`). A missing
+    profile or an unreadable table just leaves a local-only stop with nothing to look up."""
+    rows = run_store.hosts(Path(a.runs_dir))
+    found = _lane_host_candidates(_read_text_or_none(_profile_path(a)) or "", [{**row, "state": "active"} for row in rows])
+    return () if isinstance(found, lane_hosts.LaneHostError) else found
+
+
+def _move_target_refusal(name: str, hosts: Sequence[lane_hosts.LaneHost], rows: Sequence[Mapping]) -> str | None:
+    """Why a relaunch on `name` would refuse, else None: the rule `_lane_host_or_refuse` applies, so a move
+    never pauses and stops a run that the relaunch then turns away."""
+    host = lane_hosts.find_lane_host(hosts, name)
+    if host is None:
+        return f"no such host {name}"
+    if any(r.get("name") == name and r.get("state") != "active" for r in rows):
+        return f"host {name} is not active"
+    if not host.workspace_dir:
+        return f"host {name} has no workspace_dir: run `cox host beat {name}` on it, or list it under lane_hosts in the profile"
+    return None
 
 
 def _runs_stop(a: argparse.Namespace) -> int:
@@ -1308,8 +1320,12 @@ def _runs_move_harness_python(a: argparse.Namespace) -> str:
 def _runs_move(a: argparse.Namespace) -> int:
     """`cox runs move <run_id> --to <host>`: pause, stop, clear_branches, relaunch, in order,
     stopping at the first step whose own result is not ok."""
-    if lane_hosts.find_lane_host(_runs_stop_hosts(a), a.to) is None:
-        return _runs_move_report(a, [], False, f"no such host {a.to}")
+    hosts = _runs_stop_hosts(a)
+    refusal = _move_target_refusal(a.to, hosts, run_store.hosts(Path(a.runs_dir)))
+    if refusal is not None:
+        if lane_hosts.find_lane_host(hosts, a.to) is None:
+            print(f"configured: {', '.join(h.name for h in hosts) or 'none'}", file=sys.stderr)
+        return _runs_move_report(a, [], False, refusal)
     initiative = chair_facts.run_initiative(a.run_id)
     runs_dir = Path(a.runs_dir)
     ws = runs_dir.parent
@@ -6432,7 +6448,12 @@ def _setup_doctor_host(a: argparse.Namespace, run) -> int:
     if text is None:
         print(f"cannot read profile: {path}")
         return 1
-    hosts = _profile_lane_hosts(text)
+    try:
+        workspace = route.parse_profile(text).get("workspace_dir", "")
+    except route.ProfileError:
+        workspace = ""
+    table = run_store.hosts(Path(workspace).expanduser() / "runs") if workspace else []
+    hosts = _lane_host_candidates(text, table)
     if isinstance(hosts, lane_hosts.LaneHostError):
         print(hosts.message)
         return 1
