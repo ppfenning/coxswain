@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from agent_tools import queue_export, queue_rows, route, route_guard, run_store, store_cli
+from agent_tools.land import LAND_CONFLICT_KEY, conflict_note
 
 DONE = route_guard.DONE
 REFUSED = route_guard.REFUSED
@@ -39,12 +40,17 @@ class EditResult(NamedTuple):
 
 def check_options(
     title: str | None, body: str | None, body_file: str | None, repo: str | None,
-    surfaces: str | None = None, state: str | None = None,
+    surfaces: str | None = None, state: str | None = None, rebuild: bool = False, force: bool = False,
 ) -> str | None:
     """The reason the options cannot be applied, or None. Body and body-file are mutually exclusive.
-    `surfaces` or `state` alone counts as a change; whether they are valid is `check_task_options`."""
+    `surfaces` or `state` alone counts as a change; whether they are valid is `check_task_options`.
+    `--rebuild` goes with `--state ready` and `--force` with `--rebuild`."""
     if body is not None and body_file is not None:
         return "give either --body or --body-file, not both"
+    if rebuild and state != "ready":
+        return "--rebuild applies only with --state ready"
+    if force and not rebuild:
+        return "--force applies only with --rebuild"
     if surfaces is None and state is None and title is None and body is None and body_file is None and repo is None:
         return "nothing to change: give --title, --body, --body-file, --repo, --surfaces or --state"
     if title == "" or repo == "":
@@ -156,15 +162,37 @@ _STATE_RANK = {"todo": 0, "ready": 0, "in_progress": 1, "approved": 2, "done": 3
 _FINAL_STATES = frozenset({"done", "dropped"})
 # The states `harness.store_cli set-state` takes, as its target and as its `--expect`.
 SET_STATES = ("ready", "approved", "done", "dropped")
-_CONTENT_FIELDS = ("title", "body", "surfaces")
+_CONTENT_FIELDS = ("title", "body", "surfaces", "extra")
 EDITED_BY = "cox route edit"
+_REBUILD_HINT = "; --rebuild needs a recorded land conflict, or --force"
 
 
-def check_state_move(current: str | None, new: str) -> str | None:
+def rebuild_allowed(state: str | None, extra: dict | None, *, rebuild: bool, force: bool) -> bool:
+    """Pure: `--rebuild` may send an approved task back to ready when its land recorded a conflict, or under `--force`.
+    A land that recorded a conflict already left the task ready; `--rebuild` then only files the note and clears the marker."""
+    marked = bool((extra or {}).get(LAND_CONFLICT_KEY))
+    return rebuild and ((state == "approved" and (force or marked)) or (state == "ready" and marked))
+
+
+def rebuild_note(conflict: str | None) -> str:
+    """Pure: the body note a rebuild appends, naming the recorded conflict (`land conflict with ...`) if there is one."""
+    if conflict:
+        return conflict_note(conflict)
+    return "Rebuild forced from approved with --force; no land conflict was recorded."
+
+
+def append_note(body: str, note: str) -> str:
+    """Pure: `body` (a stored body opens and ends with a newline) with `note` as a last paragraph, unless it is there already."""
+    if note in body:
+        return body
+    return (body.rstrip("\n") + "\n\n" if body.strip() else "\n") + note + "\n"
+
+
+def check_state_move(current: str | None, new: str, *, rebuild: bool = False) -> str | None:
     """Pure: the reason a hand move from `current` to `new` is refused, or None. Out of done or dropped is refused,
     and so is a move backward along ready -> in_progress -> approved -> done, and a move to a state the store's
-    single writer does not set."""
-    if current == new:
+    single writer does not set. `rebuild` (see `rebuild_allowed`) lets approved go back to ready."""
+    if current == new or (rebuild and (current, new) == ("approved", "ready")):
         return None
     if new not in SET_STATES:
         return f"--state {new!r} is not one the store sets by hand: use one of {', '.join(SET_STATES)}"
@@ -224,7 +252,7 @@ def _set_state(runs_dir: Path, row: dict, state: str) -> EditResult | None:
 
 def _edit_task(
     runs_dir: Path, ws: Path, row: dict, *, title: str | None, body: str | None, body_file: str | None,
-    surfaces: str | None, state: str | None, dry_run: bool, now: str | None,
+    surfaces: str | None, state: str | None, dry_run: bool, now: str | None, rebuild: bool = False, force: bool = False,
 ) -> EditResult:
     """Edge: a state move first, through `store_cli.set_state` with a compare-and-set on the state read; then the changed
     content fields only, as a partial row `upsert_row_detail` merges (never `state`); then the store's row as it now stands,
@@ -235,10 +263,17 @@ def _edit_task(
         return EditResult(f"cannot read: {exc}", FAILED)
     new_row = plan_task_row(row, title=title, body=new_body, surfaces=surfaces, state=state)
     moves = new_row.get("state") != row.get("state")
+    allowed = rebuild_allowed(row.get("state"), row.get("extra"), rebuild=rebuild, force=force)
     if moves:
-        problem = check_state_move(row.get("state"), new_row["state"]) or check_claim(row, now)
-        if problem is not None:
+        refusal = check_state_move(row.get("state"), new_row["state"], rebuild=allowed)
+        hint = _REBUILD_HINT if refusal and rebuild and row.get("state") == "approved" else ""
+        problem = (refusal and refusal + hint) or check_claim(row, now)
+        if problem:
             return EditResult(problem, REFUSED)
+    if allowed:
+        extra = dict(row.get("extra") or {})
+        note = rebuild_note(extra.pop(LAND_CONFLICT_KEY, None))
+        new_row = {**new_row, "body": append_note(new_row.get("body") or "", note), "extra": extra}
     if queue_export.is_contentless(new_row):
         return EditResult(f"task {row.get('task_id')!r} has no content to export", REFUSED)
     [(rel, new_text)] = queue_export.export_rows([new_row]).items()
@@ -283,11 +318,13 @@ def apply_edit(
     dry_run: bool = False,
     live_runs: Collection[str],
     now: str | None = None,
+    rebuild: bool = False,
+    force: bool = False,
 ) -> EditResult:
     """Edge: edit the queued intake, the initiative or the task ticket named `id`. Exit 0 returns the diff; exit 2 returns the
     reason and writes nothing, whether the options are wrong, the id is unknown, or the guard refuses. With
     `dry_run` the diff is returned and neither the file nor the store is written."""
-    problem = check_options(title, body, body_file, repo, surfaces, state)
+    problem = check_options(title, body, body_file, repo, surfaces, state, rebuild, force)
     if problem is not None:
         return EditResult(problem, REFUSED)
     rows: Sequence[dict] = run_store.read_queue(runs_dir)
@@ -306,7 +343,7 @@ def apply_edit(
             return EditResult(problem, REFUSED)
         return _edit_task(
             runs_dir, ws, dict(tickets[0]), title=title, body=body, body_file=body_file, surfaces=surfaces, state=state, dry_run=dry_run,
-            now=now,
+            now=now, rebuild=rebuild, force=force,
         )
     if surfaces is not None or state is not None:
         return EditResult("--surfaces and --state apply to a task ticket only", REFUSED)

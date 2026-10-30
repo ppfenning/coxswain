@@ -54,7 +54,10 @@ def read_missing_repos(records: list[dict], items: list[dict],
 def stranded_from_rows(rows: list[dict], records: list[dict]) -> list[dict]:
     """The same rule as `read_stranded`, with each task's state taken from `rows` (kind "task") instead of files."""
     items = [
-        {"id": row.get("task_id"), "initiative": row.get("initiative"), "phase": row.get("phase"), "state": row.get("state")}
+        {
+            "id": row.get("task_id"), "initiative": row.get("initiative"), "phase": row.get("phase"), "state": row.get("state"),
+            "land_conflict": (row.get("extra") or {}).get("land_conflict"),
+        }
         for row in rows
         if row.get("kind") == "task"
     ]
