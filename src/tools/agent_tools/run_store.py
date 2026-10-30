@@ -223,6 +223,11 @@ def lease(runs_dir: Path, run_id: str) -> tuple[str, str, str] | None:
     return _lease_table(str(runs_dir), int(time.monotonic() // _LEASE_SNAPSHOT_S)).get(_lease_name(run_id))
 
 
+def lease_row(runs_dir: Path, run_id: str) -> LeaseRow | None:
+    """Edge. The full lease row for `run_id`'s prefix, epoch always read; None with no store, no row, or an unreadable store."""
+    return _lease_rows(str(runs_dir), int(time.monotonic() // _LEASE_SNAPSHOT_S)).get(_lease_name(run_id))
+
+
 _LEASE_SNAPSHOT_S = 2  # one read of the leases table serves every liveness check within this window
 
 
@@ -240,6 +245,52 @@ def _lease_table(runs_dir: str, _window: int) -> dict[str, tuple[str, str, str]]
     finally:
         conn.close()
     return {r["name"]: (r["holder"], r["expires_at"], r["heartbeat_at"]) for r in rows}
+
+
+@dataclass(frozen=True)
+class LeaseRow:
+    """A full lease row. `status` and `progress` are None on a store whose `leases` table predates version 14."""
+
+    name: str
+    holder: str
+    epoch: int
+    expires_at: str
+    heartbeat_at: str
+    status: str | None = None
+    progress: str | None = None
+
+
+def _leases_columns(conn: Any, token: str) -> set[str]:
+    """Edge. The column names of `leases`, asked of the backend: a failed SELECT would abort a Postgres transaction."""
+    if token == placeholder("postgres://"):
+        sql = "SELECT column_name AS name FROM information_schema.columns WHERE table_name = {p} AND table_schema = current_schema()"
+        return {r["name"] for r in conn.execute(_sql(sql, token), ("leases",)).fetchall()}
+    return {r["name"] for r in conn.execute("PRAGMA table_info(leases)").fetchall()}
+
+
+@functools.lru_cache(maxsize=8)
+def _lease_rows(runs_dir: str, _window: int) -> dict[str, LeaseRow]:
+    """Every full lease row by name, read once per `_LEASE_SNAPSHOT_S` window."""
+    opened = _open(Path(runs_dir))
+    if opened is None:
+        return {}
+    conn, token = opened
+    try:
+        have = _leases_columns(conn, token)
+        optional = [c for c in ("status", "progress") if c in have]
+        cols = ", ".join(["name", "holder", "epoch", "expires_at", "heartbeat_at", *optional])
+        rows = conn.execute(f"SELECT {cols} FROM leases").fetchall()
+        return {
+            r["name"]: LeaseRow(
+                r["name"], r["holder"], r["epoch"], r["expires_at"], r["heartbeat_at"],
+                **{c: r[c] for c in optional},
+            )
+            for r in rows
+        }
+    except _db_errors():
+        return {}
+    finally:
+        conn.close()
 
 
 @dataclass(frozen=True)
