@@ -66,8 +66,7 @@ def test_resolved_checks_puts_the_cartridge_first_and_drops_a_repeated_cmd():
 
 def test_agent_checks_are_planned_and_a_stray_venv_changes_nothing(tmp_path):
     (tmp_path / ".agent-checks").write_text(_CARGO)
-    want = [("cargo", ["cargo", "fmt", "--check"]), ("cargo", ["cargo", "clippy", "--all-targets", "--", "-D", "warnings"]),
-            ("cargo", ["cargo", "test"])]
+    want = [("cargo", "cargo fmt --check"), ("cargo", "cargo clippy --all-targets -- -D warnings"), ("cargo", "cargo test")]
     assert _checks_of(tmp_path) == want
     (tmp_path / ".venv" / "bin").mkdir(parents=True)
     (tmp_path / ".venv" / "bin" / "python").write_text("")
@@ -76,18 +75,18 @@ def test_agent_checks_are_planned_and_a_stray_venv_changes_nothing(tmp_path):
 
 def test_a_python_project_without_agent_checks_keeps_venv_then_uv_then_bare_pytest(tmp_path):
     (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n")
-    assert _checks_of(tmp_path) == [("tests", ["pytest", "-q"])]
+    assert _checks_of(tmp_path) == [("tests", "pytest -q")]
     (tmp_path / "uv.lock").write_text("")
-    assert _checks_of(tmp_path) == [("tests", ["uv", "run", "pytest", "-q"])]
+    assert _checks_of(tmp_path) == [("tests", "uv run pytest -q")]
     (tmp_path / ".venv" / "bin").mkdir(parents=True)
     (tmp_path / ".venv" / "bin" / "python").write_text("")
-    assert _checks_of(tmp_path) == [("tests", [".venv/bin/python", "-m", "pytest", "-q"])]
+    assert _checks_of(tmp_path) == [("tests", ".venv/bin/python -m pytest -q")]
 
 
 @pytest.mark.parametrize("project_file", land.PYTHON_PROJECT_FILES)
 def test_each_python_project_file_keeps_pytest(tmp_path, project_file):
     (tmp_path / project_file).write_text("")
-    assert _checks_of(tmp_path) == [("tests", ["pytest", "-q"])]
+    assert _checks_of(tmp_path) == [("tests", "pytest -q")]
 
 
 def test_a_repo_with_neither_plans_no_checks_even_with_a_stray_venv(tmp_path):
@@ -118,13 +117,58 @@ def test_the_dry_run_lists_every_check_of_every_checks_step(tmp_path, capsys):
     _land(tmp_path, repo)
     captured = capsys.readouterr()
     assert ("checks (pr/seams-task): cargo fmt --check; cargo clippy --all-targets -- -D warnings; cargo test") in captured.err
-    assert '"cargo",\n          "test"' in captured.out
+    assert '"cargo test"' in captured.out
 
 
 def test_the_dry_run_names_a_check_whose_name_is_not_its_program():
-    steps = [{"kind": "checks", "checks": [("tests", ["pytest", "-q"])], "worktree_of": "pr/a"},
-             {"kind": "checks", "checks": [("cargo", ["cargo", "test"])], "branch": "epic/x/p"}]
+    steps = [{"kind": "checks", "checks": [("tests", "pytest -q")], "worktree_of": "pr/a"},
+             {"kind": "checks", "checks": [("cargo", "cargo test")], "branch": "epic/x/p"}]
     assert cli._land_checks_lines(steps) == ["checks (pr/a): tests = pytest -q", "checks (epic/x/p): cargo test"]
+
+
+def test_the_dry_run_prints_a_shell_line_as_written():
+    steps = [{"kind": "checks", "checks": [("cd", "cd src/tools && pytest -q -n auto")], "worktree_of": "pr/a"}]
+    assert cli._land_checks_lines(steps) == ["checks (pr/a): cd src/tools && pytest -q -n auto"]
+
+
+def test_a_shell_line_is_run_by_a_shell_so_cd_and_true_lands_and_cd_and_false_refuses_by_name(tmp_path):
+    (tmp_path / "sub").mkdir()
+    assert cli._run_checks([("cd", "cd sub && true")], tmp_path) == (True, "1 checks passed")
+    ok, detail = cli._run_checks([("cd", "cd sub && false")], tmp_path)
+    assert not ok and detail.startswith("cd:")
+
+
+def test_cd_sub_and_pytest_with_no_tests_in_sub_is_a_skip(tmp_path):
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "pytest").write_text("#!/bin/sh\nexit 5\n")
+    (tmp_path / "sub" / "pytest").chmod(0o755)
+    ok, detail = cli._run_checks([("cd", "cd sub && PATH=.:$PATH pytest -q")], tmp_path)
+    assert ok and "skipped" in detail
+
+
+def test_the_real_agent_checks_plan_three_checks_each_in_its_subdirectory():
+    root = Path(__file__).resolve().parents[3]
+    lines = [c for _, c in _checks_of(root)]
+    for sub in ("tools", "graphs", "cartridges"):
+        assert f"cd src/{sub} && pytest -q -n auto" in lines
+        assert (root / "src" / sub).is_dir()
+    assert len([c for c in lines if c.startswith("cd src/")]) == 3
+
+
+def test_the_worktree_venv_bin_is_first_on_path_and_without_a_venv_path_is_unchanged(tmp_path, monkeypatch):
+    other = tmp_path / "other"
+    other.mkdir()
+    for d, tag in ((other, "other"), ((tmp_path / "wt" / ".venv" / "bin"), "stub")):
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "pytest").write_text(f"#!/bin/sh\necho {tag} >> {tmp_path / 'log'}\n")
+        (d / "pytest").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{other}:{os.environ['PATH']}")
+    assert cli._run_checks([("tests", "pytest -q")], tmp_path / "wt")[0]
+    assert (tmp_path / "log").read_text() == "stub\n"
+    (tmp_path / "wt2").mkdir()
+    assert cli._checks_env(tmp_path / "wt2") is None
+    assert cli._run_checks([("tests", "pytest -q")], tmp_path / "wt2")[0]
+    assert (tmp_path / "log").read_text() == "stub\nother\n"
 
 
 def test_the_dry_run_with_a_broken_cartridge_warns_and_lists_the_short_list(tmp_path, capsys):

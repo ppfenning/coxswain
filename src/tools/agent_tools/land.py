@@ -61,6 +61,7 @@ __all__ = [
     "issue_closes",
     "land_log_row",
     "land_plan",
+    "last_command",
     "mark_done",
     "merge_pages",
     "phase_landable",
@@ -131,9 +132,11 @@ def resolved_checks(cartridge_checks: Sequence[dict[str, Any]], repo_checks: Seq
     return [*cartridge_checks, *(c for c in repo_checks if c.get("cmd") not in known)]
 
 
-def checks_argv(repo_facts: dict[str, Any]) -> list[tuple[str, list[str]]]:
-    """One `(name, argv)` pair per `repo_facts["checks"]` entry (`{name, cmd}`,
-    already resolved by the cartridge, §4), in the given order. With no `checks`
+def checks_argv(repo_facts: dict[str, Any]) -> list[tuple[str, str]]:
+    """One `(name, shell line)` pair per `repo_facts["checks"]` entry (`{name, cmd}`,
+    already resolved by the cartridge, §4), in the given order. The line is a
+    shell line exactly as written, as `.agent-checks` lines are (`cd x && y`),
+    never split into an argv. With no `checks`
     fact the single launch named `"tests"` stays: its own venv first, `uv run`
     next when the repo pins its dependencies with a lockfile, a bare `pytest -q`
     only when neither holds. A repo that says `python_project` is false (a key
@@ -141,16 +144,16 @@ def checks_argv(repo_facts: dict[str, Any]) -> list[tuple[str, list[str]]]:
     whatever stray `.venv` it holds."""
     checks = repo_facts.get("checks")
     if checks:
-        return [(c["name"], shlex.split(c["cmd"])) for c in checks]
+        return [(c["name"], c["cmd"]) for c in checks]
     if not repo_facts.get("python_project", True):
         return []
     if repo_facts.get("venv_python"):
-        argv = [".venv/bin/python", "-m", "pytest", "-q"]
+        line = ".venv/bin/python -m pytest -q"
     elif repo_facts.get("uv_lock"):
-        argv = ["uv", "run", "pytest", "-q"]
+        line = "uv run pytest -q"
     else:
-        argv = ["pytest", "-q"]
-    return [("tests", argv)]
+        line = "pytest -q"
+    return [("tests", line)]
 
 
 PYTEST_NO_TESTS = 5  # pytest's exit code when it collected no tests
@@ -163,11 +166,31 @@ def _is_pytest(argv: Sequence[str]) -> bool:
             or list(argv[:3]) == ["uv", "run", "pytest"])
 
 
-def check_exit(argv: Sequence[str], returncode: int) -> str:
-    """`pass`, `skip` or `fail`. Only a pytest check exiting 5 (no tests collected) is a skip."""
+_SEPARATORS = frozenset({"&&", "||", ";", "|", "&"})
+_ASSIGNMENT = re.compile(r"[A-Za-z_]\w*=")
+
+
+def last_command(line: str) -> list[str]:
+    """The words of a shell line's last simple command, past any `VAR=value` prefix: `cd x && A=1 pytest -q` is
+    `['pytest', '-q']`. `[]` for a line that will not tokenise (an open quote)."""
+    lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        words = list(lexer)
+    except ValueError:
+        return []
+    start = max((i + 1 for i, w in enumerate(words) if w in _SEPARATORS), default=0)
+    command = words[start:]
+    while command and _ASSIGNMENT.match(command[0]):
+        command = command[1:]
+    return command
+
+
+def check_exit(line: str, returncode: int) -> str:
+    """`pass`, `skip` or `fail`. Only a check whose last command is pytest, exiting 5 (no tests collected), is a skip."""
     if returncode == 0:
         return "pass"
-    return "skip" if returncode == PYTEST_NO_TESTS and _is_pytest(argv) else "fail"
+    return "skip" if returncode == PYTEST_NO_TESTS and _is_pytest(last_command(line)) else "fail"
 
 
 def skip_line(name: str) -> str:

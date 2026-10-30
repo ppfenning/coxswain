@@ -14,7 +14,7 @@ from agent_tools import install_root, land, route
 Runner = Callable[[list[str]], Any]
 
 _PR_URL = re.compile(r"^https://github\.com/([\w.-]+)/([\w.-]+)/pull/(\d+)/?$")
-_BARE_CHECKS = [("tests", ["pytest", "-q"])]
+_BARE_CHECKS = [("tests", "pytest -q")]
 
 
 def parse_pr_url(url: str) -> tuple[str, str, int] | None:
