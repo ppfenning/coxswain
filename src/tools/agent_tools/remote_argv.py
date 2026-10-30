@@ -96,6 +96,9 @@ def git_fetch_argv(repo_location: str, run: str) -> list[str]:
     return ["git", "fetch", repo_location, run_refspec, phase_refspec]
 
 
+# Wrong belief (2026-10-30): "this fast-forwards the lane's repo to main". It only follows origin's default branch
+# from a checkout already on it, and a chair repo detached at a release tag pinned the host there instead. The launcher
+# uses `base_sync_argv` below whenever it can resolve the chair's origin/<base>; this one is the fallback.
 # Each guard exits before any later line runs: a missing path must not fall through to
 # whatever repository the ssh session starts in. Untracked files are not "dirty" here.
 _SYNC_SCRIPT = "\n".join((
@@ -116,6 +119,29 @@ _SYNC_SCRIPT = "\n".join((
 def sync_argv(repo_path: str) -> list[str]:
     """Fast-forward `repo_path` to origin's default branch, or print one reason to stderr and exit 1."""
     return ["bash", "-c", _SYNC_SCRIPT, "sync", repo_path]
+
+
+# The repo sync behind the base guard. `sync_argv` stops at a detached HEAD and follows origin's default branch; a
+# checkout left detached at a release tag by an earlier harness sync therefore never reached main. This script goes
+# to the commit the chair resolved ($3, its origin/<base> after a fetch) and exits 1 unless HEAD is that commit.
+# Every exit after the checkout is found prints `head <sha>` on stdout; the reason is a `sync: ...` line on stderr.
+_BASE_SYNC_SCRIPT = "\n".join((
+    'cd "$1" 2>/dev/null || { echo "sync: cannot enter $1" >&2; exit 1; }',
+    'top=$(git rev-parse --show-toplevel 2>/dev/null)',
+    '[ "$top" = "$(pwd -P)" ] || { echo "sync: $1 is not the root of a git checkout" >&2; exit 1; }',
+    'fail() { echo "sync: $1" >&2; echo "head $(git rev-parse HEAD 2>/dev/null)"; exit 1; }',
+    '[ -z "$(git status --porcelain --untracked-files=no)" ] || fail "tracked changes in the working tree"',
+    'git fetch --tags origin >/dev/null 2>&1 || fail "git fetch origin failed"',
+    'git checkout -q "$2" >/dev/null 2>&1 || fail "cannot check out $2"',
+    'git merge --ff-only -q "$3" >/dev/null 2>&1 || fail "$2 cannot fast-forward to $3"',
+    '[ "$(git rev-parse HEAD)" = "$3" ] || fail "$2 is not at $3 after the fast-forward"',
+    'echo "head $3"',
+))
+
+
+def base_sync_argv(repo_path: str, base: str, sha: str) -> list[str]:
+    """Bring `repo_path` to `sha`, the chair's `origin/<base>` commit, on branch `base`; exit 1 with one reason if it cannot."""
+    return ["bash", "-c", _BASE_SYNC_SCRIPT, "sync", repo_path, base, sha]
 
 
 def epic_refspec(initiative: str) -> str:

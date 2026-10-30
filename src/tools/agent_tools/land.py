@@ -725,6 +725,13 @@ POLL_ERROR_LIMIT = 5
 _FAILED_CONCLUSIONS = frozenset({"failure", "cancelled", "timed_out", "action_required", "startup_failure", "stale"})
 
 
+def behind_warning(base_sha: str | None, commits_behind: int | None, limit: int, branch: str = "main") -> str | None:
+    """A warning line when the task's base is more than `limit` commits behind `branch`; None for no recorded base, no count, or within the limit."""
+    if base_sha is None or commits_behind is None or commits_behind <= limit:
+        return None
+    return f"land: warning, the task was built on {base_sha[:8]}, {commits_behind} commits behind {branch} (limit {limit}); the cherry-pick may conflict"
+
+
 def is_pending(returncode: int) -> bool:
     return returncode == PENDING_RC
 

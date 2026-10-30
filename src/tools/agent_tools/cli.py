@@ -2876,6 +2876,23 @@ def _land_checks_lines(steps: list[dict]) -> list[str]:
             for s in steps if s["kind"] == "checks"]
 
 
+def _base_behind_warning(runs_dir: Path, run_id: str, repo: Path, default_branch: str, limit: int) -> str | None:
+    """Edge. `land.behind_warning` for the base commit the run's remote record holds; a local run or an older record has none."""
+    path = remote_lane.remote_record_path(runs_dir, run_id)
+    record = remote_lane.parse_remote_record(path.read_text()) if path.exists() else None
+    base_sha = None if record is None else record.get("base_sha")
+    if base_sha is None:
+        return None
+    count = _git_out(repo, "rev-list", "--count", f"{base_sha}..{default_branch}")
+    return land.behind_warning(base_sha, int(count) if count and count.isdigit() else None, limit, default_branch)
+
+
+def _print_behind_warning(a: argparse.Namespace, runs_dir: Path, run_id: str, repo: Path, default_branch: str) -> None:
+    behind = _base_behind_warning(runs_dir, run_id, repo, default_branch, getattr(a, "behind_limit", 20))
+    if behind is not None:
+        print(behind, file=sys.stderr)
+
+
 def _runs_land(a: argparse.Namespace) -> int:
     repo = Path(a.repo).expanduser()
     runs_dir, reason = _runs_dir_for_land(a)
@@ -2963,6 +2980,7 @@ def _runs_land(a: argparse.Namespace) -> int:
         print(f"land: --gate {level} overrides the resolved level")
     planned, steps = steps, land.gate_steps(steps, level)
     if not a.apply:
+        _print_behind_warning(a, runs_dir, run_id, repo, default_branch)
         for line in _land_checks_lines(steps):
             print(line, file=sys.stderr)
         print(json.dumps(steps, indent=2))
@@ -2992,6 +3010,7 @@ def _runs_land(a: argparse.Namespace) -> int:
         print(f"land: refusing, {sync_detail}")
         return 2
     cherry_pick, rebuild, recreate = next((s for s in steps if s["kind"] == "cherry_pick"), None), None, None
+    _print_behind_warning(a, runs_dir, run_id, repo, default_branch)
     if cherry_pick is not None:
         # An existing pr/<task> is not necessarily stale or foreign: a retried
         # push can leave a same-tree branch behind, and the rerun should reuse it.
@@ -8337,6 +8356,7 @@ RUNS_COMMANDS = [
             commands.Arg(("--phase",), {"help": "land the whole phase off its own epic branch instead of one task"}), commands.Arg(("--label",)),
             commands.Arg(("--force",), {"action": "store_true", "help": "land despite a foreign live leader"}),
             commands.Arg(("--no-claim",), {"action": "store_true", "help": "land without taking an unheld or stale loop"}),
+            commands.Arg(("--behind-limit",), {"type": int, "default": 20, "help": "warn when the task's base is more than this many commits behind main"}),
             commands.Arg(("--worktree-root",), {"default": "~/worktrees"}), commands.Arg(("--apply",), {"action": "store_true"}), commands.Arg(("--no-merge",), {"action": "store_true"}),
             commands.Arg(("--runs-dir",), {"help": "override: resolve task records here instead of the profile's workspace_dir"}), commands.Arg(("--profile",)),
             commands.Arg(("--gate",), {"choices": ["ticket", "phase", "epic", "full"], "help": "override the resolved gate level for this invocation"}),

@@ -80,7 +80,7 @@ def test_a_host_checkout_at_the_release_tag_is_still_at_it_after_the_launch(tmp_
         return 0
 
     result = launch_on_host(
-        HOST, "init-x", "init-x-1", "l", "t", run, harness_dir=str(host), chair_head=lambda path: ChairHead(tagged)
+        HOST, "init-x", "init-x-1", "l", "t", run, harness_dir=str(host), chair_base=lambda path: None, chair_head=lambda path: ChairHead(tagged)
     )
     assert isinstance(result, dict)
     assert git(host, "rev-parse", "HEAD") == tagged and git(host, "branch", "--show-current") == ""
