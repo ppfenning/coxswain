@@ -125,7 +125,7 @@ cox route chair release [--profile PROFILE] [--label LABEL] [--pid PID]   releas
 cox route chair status [--profile PROFILE] [--json]   the chair lock's holder and computed state
 cox route chair clear [--profile PROFILE] [--force]   remove the chair lock file, refusing a live holder unless --force
 cox route chair chat [TEXT] [--profile PROFILE] [--read] [--since SINCE] [--json] [--as-leader]   append to or read the leader chat thread (runs/leader.chat.jsonl)
-cox route sync [--profile PROFILE] [--item ITEM] [--project PROJECT] [--workspace WORKSPACE] [--dry-run]   mirror the work store onto the profile's tracker
+cox route sync [--profile PROFILE] [--item ITEM] [--project PROJECT] [--workspace WORKSPACE] [--dry-run] [--prune-out-of-scope]   mirror the work store onto the profile's tracker
 cox route launch epic [--profile PROFILE] --initiative INITIATIVE [--repo REPO] [--fix-attempts FIX_ATTEMPTS] [--dry-run] [--run-id RUN_ID] [--on ON] [--local] [--include-blocked] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the epic graph against a filed initiative
 cox route launch decompose [--profile PROFILE] --idea PATH --initiative-id INITIATIVE_ID [--task-ids ordinal] [--local] [--dry-run] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the decompose graph against an idea
 cox route launch rescue [--profile PROFILE] --initiative INITIATIVE --task TASK [--repo REPO] [--dry-run] [--run-id RUN_ID] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the rescue graph against a task
@@ -197,6 +197,16 @@ with no `issue:` never gets one, and the run prints `route sync: left N
 settled item(s) without an issue`. An item that already has an issue, hand-set
 or not, keeps syncing as before. Set `tracker_backfill: true` in the profile
 to create issues for settled items too. `tracker_scope: all` is unchanged.
+
+`cox route sync --prune-out-of-scope --dry-run` lists the open task issues
+and cards outside a narrowed scope; without `--dry-run` it closes each issue
+as not planned with a one-line comment and removes its card. Only unsettled
+tasks whose issue carries the `coxswain` label in the task's own repo are
+listed. A card is listed while that issue is labelled, open or closed, so a
+card left by a failed delete goes on the next run. An epic's issue, a landed
+task, and a task linked by hand to an unlabelled issue are never touched.
+A hand-added `coxswain` label counts as made by sync, so that issue is pruned
+too. Under `all` nothing is out of scope.
 
 Under a narrowed scope each sync rewrites a marked checklist block in a synced
 initiative's issue body, one line per task with its state and landed PR; text

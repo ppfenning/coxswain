@@ -321,6 +321,31 @@ def existing(run, repo_names: list[str], project: str | None):
     return True, (issues, project_items, item_node_ids)
 
 
+def prune_candidates(run, repo_names: list[str], project: str | None):
+    """`(True, (issues, cards))` keyed `(repo, number)`, `(False, detail)` on the first failed `gh` call. `issues` holds
+    every `coxswain`-labelled issue, open or closed, per repo; `cards` maps `(repo, number)` to the card's node id.
+    Numbers repeat across repos, so neither map is keyed by number alone."""
+    issues: dict[tuple[str, str], dict] = {}
+    for repo in repo_names:
+        ok, result = existing(run, [repo], None)
+        if not ok:
+            return False, result
+        issues.update({(repo, number): row for number, row in result[0].items()})
+    cards: dict[tuple[str, str], str] = {}
+    if project is not None:
+        owner, _, number = project.partition("/")
+        result = run(["gh", "project", "item-list", number, "--owner", owner, "--format", "json", "--limit", _LIMIT],
+                     capture_output=True, text=True)
+        if result.returncode != 0:
+            return False, result.stderr.strip() or result.stdout.strip()
+        for row in json.loads(result.stdout or "{}").get("items", []):
+            content = row.get("content") or {}
+            repo = str(content.get("repository", "")).removeprefix("https://github.com/")
+            if content.get("number") and row.get("id"):
+                cards[(repo, str(content["number"]))] = row["id"]
+    return True, (issues, cards)
+
+
 def rollup_issue_number(run, rollup: route_sync.Item) -> str | None:
     """Edge. The number of the `<version> fixes` issue on file for `rollup`, None when there is none or `gh` fails."""
     ok, result = existing(run, [rollup.repo], None)
@@ -619,6 +644,16 @@ def _execute_step(step: dict, run, ctx: dict) -> tuple[bool, str]:
         return result.returncode == 0, (result.stdout.strip() or result.stderr.strip())
     if kind == "issue_close":
         result = run(["gh", "issue", "close", step["issue"], "--repo", _step_repo(step["issue"], ctx)],
+                     capture_output=True, text=True)
+        return result.returncode == 0, (result.stdout.strip() or result.stderr.strip())
+    if kind == "issue_prune":
+        comment = f"Closed by `cox route sync --prune-out-of-scope`: task issues are outside tracker_scope {step['scope']}."
+        result = run(["gh", "issue", "close", step["issue"], "--repo", step["repo"], "--reason", "not planned",
+                      "--comment", comment], capture_output=True, text=True)
+        return result.returncode == 0, (result.stdout.strip() or result.stderr.strip())
+    if kind == "card_remove":
+        owner, _, number = ctx["project"].partition("/")
+        result = run(["gh", "project", "item-delete", number, "--owner", owner, "--id", step["card"]],
                      capture_output=True, text=True)
         return result.returncode == 0, (result.stdout.strip() or result.stderr.strip())
     if kind == "project_add":

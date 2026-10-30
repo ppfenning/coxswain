@@ -5190,6 +5190,48 @@ def _route_sync_registered(a: argparse.Namespace, name: str, mirror: object, wor
     return 1 if not ok else 2 if skipped else 0
 
 
+def _route_sync_prune(a: argparse.Namespace, workspace: str, profile_path: Path) -> int:
+    """Edge. `--prune-out-of-scope`: `--dry-run` prints the steps `route_sync.prune_steps` plans, a real run executes
+    those same steps. Never creates a project; with none found, no card is listed."""
+    text = _read_text_or_none(profile_path)
+    profile = route.parse_profile(text) if text is not None else {}
+    scope, _, error = _tracker_scope(profile)
+    if error:
+        print(f"route sync: {error}; refusing rather than guessing a scope")
+        return 2
+    if a.item:
+        print("route sync: --prune-out-of-scope takes no --item")
+        return 2
+    items = [i for i in route_sync_gh.resolve_repos(route_sync_gh.items_from_store(workspace, lazy=True),
+                                                    profile.get("repo_aliases") or {})
+             if i.repo and not i.repo_error]
+    if not route_sync_gh.auth_ok(subprocess.run):
+        print("route sync: gh is not authenticated; run `gh auth login`")
+        return 2
+    # A copy with dry_run set, so resolving the project never creates one.
+    project, rc = _resolve_sync_project(argparse.Namespace(**{**vars(a), "dry_run": True}), items,
+                                        _route_sync_state_path(profile_path))
+    if rc is not None:
+        return rc
+    ok, result = route_sync_gh.prune_candidates(subprocess.run, sorted({i.repo for i in items}), project)
+    if not ok:
+        print(f"route sync: {result}")
+        return 2
+    issues, cards = result
+    steps = route_sync.prune_steps(items, issues, cards, scope)
+    if not steps:
+        print(f"route sync: nothing is out of scope under tracker_scope {scope}")
+        return 0
+    print("route sync: every open `coxswain`-labelled task issue counts as made by sync, one labelled by hand too")
+    if a.dry_run:
+        print("\n".join(route_sync.render(steps)))
+        return 0
+    log = route_sync_gh.execute(steps, subprocess.run, project or "", workspace, items)
+    for kind, _, detail in log:
+        print(f"{kind}: {detail}")
+    return 1 if any(not step_ok for _, step_ok, _ in log) else 0
+
+
 def _route_sync(a: argparse.Namespace) -> int:
     """Mirror the work store onto GitHub Projects: `--dry-run` renders the
     plan and touches nothing that outlives the run; otherwise `execute`
@@ -5214,8 +5256,14 @@ def _route_sync(a: argparse.Namespace) -> int:
         print(f"route sync: no tracker named {tracker_choice} (built in: none, github-projects)")
         return 2
     # `route_sync_gh` here is a lazy proxy, so the identity test runs against the real module.
+    prune = getattr(a, "prune_out_of_scope", False)
     if mirror is not importlib.import_module("agent_tools.route_sync_gh"):
+        if prune:
+            print(f"route sync: --prune-out-of-scope needs the github-projects tracker, not {tracker_choice}")
+            return 2
         return _route_sync_registered(a, tracker_choice, mirror, workspace)
+    if prune:
+        return _route_sync_prune(a, workspace, profile_path)
     # Items first: an unresolvable repo is refused by name before any `gh` call, `auth_ok` included.
     items, scope, rc, skipped = _sync_items(a, workspace)
     if rc is not None:
@@ -9981,6 +10029,7 @@ ROUTE_COMMANDS = [
         (
             commands.Arg(("--profile",)), commands.Arg(("--item",)), commands.Arg(("--project",)),
             commands.Arg(("--workspace",)), commands.Arg(("--dry-run",), {"action": "store_true"}),
+            commands.Arg(("--prune-out-of-scope",), {"action": "store_true", "help": "close open task issues outside tracker_scope as not planned and remove their cards; with --dry-run, list them only. A coxswain label added by hand counts as made by sync"}),
         ),
         "agent_tools.cli:_route_sync", False, (),
     ),
