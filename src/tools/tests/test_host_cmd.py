@@ -539,7 +539,7 @@ def test_host_doctor_exits_the_same_for_a_stale_host_as_for_a_fresh_one(monkeypa
         monkeypatch.setattr(cli, "_leader_runs_dir_or_refuse", lambda a: ({}, "runs", None))
         monkeypatch.setattr(cli.run_store, "hosts", lambda runs_dir: [_env_host({"repo-x": record})])
         monkeypatch.setattr(cli, "_host_ssh", lambda a, profile, runs_dir: LaneHost("host-a", "host-a", ""))
-        doctor = types.SimpleNamespace(doctor_on_host=lambda host, run, argv_for=None: (0, ["ok"]))
+        doctor = types.SimpleNamespace(doctor_on_host=lambda host, run, argv_for=None, checks=None: (0, ["ok"]))
         monkeypatch.setattr(cli, "remote_doctor", doctor)
         return cli._host_doctor(argparse.Namespace(name="host-a"))
 

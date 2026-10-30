@@ -4,7 +4,7 @@ Pure. The slots come from `chair_plan_fill.host_free_slots` and the choice from 
 this module holds no placement rule of its own. It only decides which rows are candidates: an active row, a
 fresh beat (`chair_read_lost.stale_hosts`) and a workspace_dir for every host but the local one.
 """
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, cast
@@ -38,8 +38,13 @@ def _capacity(row: Row | None, default: int) -> int:
     return default if row is None or row.get("capacity") is None else int(row["capacity"])
 
 
-def _why_not(row: Row, local: str, stale: Collection[str], reachable: Collection[str], blocked: Collection[str]) -> str:
+def _why_not(
+    row: Row, local: str, stale: Collection[str], reachable: Collection[str], blocked: Collection[str],
+    barred: Mapping[str, str] | None = None,
+) -> str:
     name = str(row["name"])
+    if barred and name in barred:
+        return barred[name]
     if row.get("state") != "active":
         return str(row.get("state"))
     if name != local and name in stale:
@@ -56,11 +61,13 @@ def format_refusal(refusal: Refusal) -> list[str]:
 
 def place(
     rows: Sequence[Row], live_by_host: Mapping[str, int], now: datetime, local: str = "", default_capacity: int = 1,
-    profile_hosts: Sequence[LaneHost] = (),
+    profile_hosts: Sequence[LaneHost] = (), barred: Mapping[str, str] | None = None,
 ) -> Placement | Refusal:
     """The host the chair tick would give one more lane, else a refusal naming every row's in-use/cap.
 
-    live_by_host is keyed by row name, this machine under `local`. default_capacity is the cap of a row without one."""
+    live_by_host is keyed by row name, this machine under `local`. default_capacity is the cap of a row without one.
+    `barred` maps a host to the reason it may not be chosen; the chooser skips it and the refusal quotes the reason."""
+    bars = barred or {}
     active = [r for r in rows if r.get("state") == "active"]
     stale = stale_hosts(active, now.isoformat())
     reachable = set(host_cmd.dispatchable(host_cmd.host_rows_to_lane_hosts(active, profile_hosts, local))[0])
@@ -73,16 +80,30 @@ def place(
         ),
         "login_hosts": list(rows),
     })
-    chosen = best_host(frozenset(), host_free_slots(facts))
+    chosen = best_host(frozenset(), host_free_slots(facts), bars)
     if chosen is not None:
         name = chosen[0]
         row = next(r for r in rows if str(r["name"]) == name)
         return Placement(name, live_by_host.get(name, 0), _capacity(row, default_capacity))
     return Refusal(tuple(
         (str(r["name"]), live_by_host.get(str(r["name"]), 0), _capacity(r, default_capacity),
-         _why_not(r, local, stale, reachable, blocked))
+         _why_not(r, local, stale, reachable, blocked, bars))
         for r in rows
     ))
+
+
+def place_checked(
+    place_with: Callable[[Mapping[str, str]], Placement | Refusal], refused: Callable[[str], str | None],
+    barred: Mapping[str, str] | None = None,
+) -> Placement | Refusal:
+    """`place_with(barred)` until `refused(host)` has no complaint about the chosen host. A refused host is barred with
+    its refusal line and the choice is re-run, so the next eligible host is picked; a refusal comes back only when none is left."""
+    bars = barred or {}
+    placed = place_with(bars)
+    if isinstance(placed, Refusal):
+        return placed
+    why = refused(placed.host)
+    return placed if why is None else place_checked(place_with, refused, {**bars, placed.host: why})
 
 
 def place_local(
