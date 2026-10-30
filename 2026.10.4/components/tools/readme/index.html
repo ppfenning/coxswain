@@ -6281,6 +6281,12 @@ value or its last path segment:</p>
 <span class="w">  </span><span class="nt">agent-tools</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ppfenning/coxswain</span>
 <span class="w">  </span><span class="nt">coxswain-graphs</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ppfenning/coxswain</span>
 </code></pre></div>
+<p>Under <code>tracker_scope: epics</code> or <code>initiatives</code> the board starts with open
+items only. A settled epic (done or dropped, or every task done or dropped)
+with no <code>issue:</code> never gets one, and the run prints <code>route sync: left N
+settled item(s) without an issue</code>. An item that already has an issue, hand-set
+or not, keeps syncing as before. Set <code>tracker_backfill: true</code> in the profile
+to create issues for settled items too. <code>tracker_scope: all</code> is unchanged.</p>
 <p>Integrations that name a vendor (intake sources, forges, trackers) live in
 <a href="https://github.com/ppfenning/coxswain-plugins">ppfenning/coxswain-plugins</a>.</p>
 <h2 id="reporting-to-herdr">Reporting to herdr</h2>
