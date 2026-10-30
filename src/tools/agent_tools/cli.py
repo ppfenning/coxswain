@@ -4111,6 +4111,20 @@ def _route_chair_status(a: argparse.Namespace) -> int:
     return 0
 
 
+def _route_leader_status(a: argparse.Namespace) -> int:
+    """The SessionStart line: one `chair:` line saying whether this session is the chair."""
+    _profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
+    if refuse_rc is not None:
+        return refuse_rc
+    record, read_rc = _leader_read_or_refuse(runs_dir)
+    if read_rc is not None:
+        return read_rc
+    host = socket.gethostname()
+    state = chair.liveness(record, _leader_pid_alive(record), datetime.datetime.now(datetime.UTC), host, _leader_heartbeat_minutes())
+    print(chair.session_line(record, state, os.environ, host))
+    return 0
+
+
 def _route_chair_clear(a: argparse.Namespace) -> int:
     """Holds `chair.locked` across the whole read-decide-unlink sequence, same as
     take/beat/release, so a `take` landing mid-clear cannot be discarded silently."""
@@ -9284,6 +9298,17 @@ ROUTE_COMMANDS = [
             commands.Arg(("--profile",)),
         ),
         "agent_tools.cli:_route_requeue", False, (), defaults={"runs_dir": None},
+    ),
+    commands.Command(
+        "leader", "route", "whether this session is the chair (the SessionStart line)", (), None, False, (),
+        subcommands=(
+            commands.Command(
+                "status", "route", "print one line: held by this session, taken over, or not the chair",
+                (commands.Arg(("--profile",)),),
+                "agent_tools.cli:_route_leader_status", False, (),
+            ),
+        ),
+        sub_dest="leader_cmd", sub_required=False,
     ),
     commands.Command(
         "chair", "route", "the chair lock for the landing loop (runs/chair.json)", (), None, False, (),

@@ -32,6 +32,7 @@ __all__ = [
     "extend",
     "guard",
     "hours_left",
+    "is_caller_holder",
     "leader_path",
     "lease_holder",
     "lease_verdict",
@@ -42,6 +43,7 @@ __all__ = [
     "release",
     "release_lease",
     "renew_lease",
+    "session_line",
     "take",
     "write",
 ]
@@ -144,6 +146,26 @@ def same_holder(record: dict[str, Any] | None, session: str, pid: int, host: str
 def claude_session_from_env(environ: Mapping[str, str]) -> str | None:
     """Edge helper. The chair's Claude session id from CLAUDE_CODE_SESSION_ID, else CLAUDE_SESSION_ID, else None; absence never fails."""
     return environ.get("CLAUDE_CODE_SESSION_ID") or environ.get("CLAUDE_SESSION_ID") or None
+
+
+def is_caller_holder(record: dict[str, Any] | None, environ: Mapping[str, str], host: str) -> bool:
+    """Pure. The caller holds `record` when it is on the record's host and its CLAUDE_PID equals the recorded pid, or its Claude session id equals the recorded one."""
+    if record is None or record.get("host") != host:
+        return False
+    pid_text = environ.get("CLAUDE_PID", "")
+    recorded_session = record.get("session_id") or record.get("claude_session")
+    by_pid = pid_text.isdigit() and int(pid_text) == record.get("pid")
+    return by_pid or (recorded_session is not None and recorded_session == claude_session_from_env(environ))
+
+
+def session_line(record: dict[str, Any] | None, state: str, environ: Mapping[str, str], host: str) -> str:
+    """Pure. The one SessionStart line: this session holds a live chair (`taken_over_from` on the lease, when present, names who it replaced), or it does not."""
+    if record is None:
+        return "chair: none"
+    if state == "live" and is_caller_holder(record, environ, host):
+        previous = record.get("taken_over_from")
+        return f"chair: taken over from {previous}" if previous else "chair: held by this session"
+    return f"chair: not the chair (held by {record.get('session', '?')})"
 
 
 def beat(

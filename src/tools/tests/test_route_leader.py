@@ -348,3 +348,42 @@ def test_cli_chat_as_leader_succeeds_when_the_caller_is_the_live_holder(tmp_path
     assert rc == 0
     thread = leader_chat.read_thread(leader_chat.chat_path(runs_dir).read_text(encoding="utf-8"), limit=10)
     assert thread == [{"at": thread[0]["at"], "from": "alice", "text": "reply"}]
+
+
+# -- route leader status: the SessionStart line -------------------------------------
+
+
+def _hold(tmp_path, **extra):
+    fresh = _fresh_iso()
+    chair.write(tmp_path / "runs", {**_LIVE_RECORD, "host": socket.gethostname(), "pid": os.getpid(), "taken_at": fresh, "heartbeat_at": fresh, **extra})
+
+
+def _leader_line(tmp_path, monkeypatch, capsys, claude_pid="", session_id=""):
+    monkeypatch.setenv("CLAUDE_PID", claude_pid)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", session_id)
+    assert main(["route", "leader", "status", "--profile", str(_profile(tmp_path))]) == 0
+    return capsys.readouterr().out
+
+
+def test_leader_status_says_held_by_this_session_when_claude_pid_is_the_lease_pid(tmp_path, monkeypatch, capsys):
+    _hold(tmp_path)
+    assert _leader_line(tmp_path, monkeypatch, capsys, claude_pid=str(os.getpid())) == "chair: held by this session\n"
+
+
+def test_leader_status_says_held_by_this_session_when_the_session_id_matches(tmp_path, monkeypatch, capsys):
+    _hold(tmp_path, claude_session="sess-1")
+    assert _leader_line(tmp_path, monkeypatch, capsys, claude_pid="1", session_id="sess-1") == "chair: held by this session\n"
+
+
+def test_leader_status_names_the_holder_taken_over_from_when_the_lease_records_it(tmp_path, monkeypatch, capsys):
+    _hold(tmp_path, taken_over_from="chair-old")
+    assert _leader_line(tmp_path, monkeypatch, capsys, claude_pid=str(os.getpid())) == "chair: taken over from chair-old\n"
+
+
+def test_leader_status_says_not_the_chair_for_a_foreign_pid_and_session(tmp_path, monkeypatch, capsys):
+    _hold(tmp_path, claude_session="sess-1")
+    assert _leader_line(tmp_path, monkeypatch, capsys, claude_pid="1", session_id="sess-2") == "chair: not the chair (held by alice)\n"
+
+
+def test_leader_status_with_no_lease_prints_chair_none(tmp_path, monkeypatch, capsys):
+    assert _leader_line(tmp_path, monkeypatch, capsys, claude_pid="1") == "chair: none\n"
