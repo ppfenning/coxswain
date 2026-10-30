@@ -5085,11 +5085,17 @@ def _sync_items(a: argparse.Namespace, workspace: str) -> tuple[list[route_sync.
     if refusal:
         print(refusal)
         return [], scope, 2, 0
-    kept = route_sync.scoped(everything, scope, threshold)
+    scoped_items = route_sync.scoped(everything, scope, threshold)
+    kept = route_sync.unbackfilled(scoped_items, everything, scope, profile.get("tracker_backfill") == "true")
     chosen = [item for item in kept if item.id == a.item] if a.item else kept
     if a.item and not chosen:
-        print(f"route sync: {a.item} is out of scope under tracker_scope {scope}; nothing to mirror")
+        why = ("is settled with no issue; tracker_backfill: true creates one" if any(i.id == a.item for i in scoped_items)
+               else f"is out of scope under tracker_scope {scope}")
+        print(f"route sync: {a.item} {why}; nothing to mirror")
         return [], scope, 0, 0
+    if not a.item and len(kept) < len(scoped_items):
+        print(f"route sync: left {len(scoped_items) - len(kept)} settled item(s) without an issue "
+              "(tracker_backfill: true creates them)")
     resolved = route_sync_gh.resolve_repos(chosen, profile.get("repo_aliases") or {})
     items, settled, unsettled = route_sync.split_unresolved(resolved, everything)
     if a.item and not items and not unsettled:

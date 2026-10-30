@@ -135,6 +135,87 @@ def test_profile_tracker_scope_parses_and_rejects():
         route.parse_profile("tracker_scope: bogus\n")
 
 
+def test_profile_tracker_backfill_parses_and_rejects():
+    assert route.parse_profile("tracker_backfill: true\n")["tracker_backfill"] == "true"
+    assert "tracker_backfill" not in route.parse_profile("tracker: none\n")
+    with pytest.raises(route.ProfileError):
+        route.parse_profile("tracker_backfill: maybe\n")
+
+
+@pytest.mark.parametrize("item, backfill, kept", [
+    (_item("landed", state="done"), False, False),
+    (_item("dropped", state="dropped"), False, False),
+    (_item("landed", state="done", issue="7"), False, True),
+    (_item("open"), False, True),
+    (_item("landed", state="done"), True, True),
+])
+def test_unbackfilled_drops_only_settled_items_with_no_issue(item, backfill, kept):
+    assert (item in route_sync.unbackfilled([item], [item], "epics", backfill)) is kept
+
+
+def test_unbackfilled_keeps_everything_under_all_and_settles_an_initiative_by_its_tasks():
+    landed = _item("initiative:a", initiative=True)
+    tasks = [_item("t1", parent="initiative:a", state="done"), _item("t2", parent="initiative:a", state="dropped")]
+    assert route_sync.unbackfilled([landed], [landed, *tasks], "all", False) == [landed]
+    assert route_sync.unbackfilled([landed], [landed, *tasks], "initiatives", False) == []
+    open_tasks = [*tasks, _item("t3", parent="initiative:a")]
+    assert route_sync.unbackfilled([landed], [landed, *open_tasks], "initiatives", False) == [landed]
+
+
+def _epic(tmp_path, name, task_state, issue=None):
+    link = f"issue: {issue}\n" if issue else ""
+    _write(tmp_path / "work" / name / "initiative.md", f"---\nid: {name}\ntitle: {name}\nrepo: acme/w\n{link}---\nb\n")
+    for phase in ("p1", "p2"):
+        _write(tmp_path / "work" / name / phase / f"{name}-{phase}.md",
+               f"---\nid: {name}-{phase}\ntitle: T\nstate: {task_state}\n---\nb\n")
+
+
+def _dry_plan(tmp_path, monkeypatch, profile_text):
+    monkeypatch.setattr(cli, "_team_cartridge", lambda profile, repo=None: ({"epic_threshold": THRESHOLD}, None))
+    items, _, rc, _ = cli._sync_items(_args(tmp_path, f"tracker: github-projects\n{profile_text}"), str(tmp_path))
+    assert rc is None
+    issues = {"900": {"state": "OPEN", "title": "old", "body": "old"}}
+    return route_sync.plan(items, issues, {}, "github-projects", "epics")
+
+
+def _store_of_three(tmp_path):
+    _epic(tmp_path, "landed-bare", "done")
+    _epic(tmp_path, "landed-linked", "done", issue="900")
+    _epic(tmp_path, "open-one", "todo")
+
+
+@pytest.mark.parametrize("scope", ["epics", "initiatives"])
+def test_dry_run_starts_the_board_with_open_epics_only(tmp_path, monkeypatch, capsys, scope):
+    _store_of_three(tmp_path)
+    steps = _dry_plan(tmp_path, monkeypatch, f"tracker_scope: {scope}\n")
+    assert [s["item_id"] for s in steps if s["kind"] == "issue_create"] == ["initiative:open-one"]
+    assert [s["issue"] for s in steps if s["kind"] == "issue_edit"] == ["900"]
+    assert "landed-bare" not in repr(steps)
+    assert "route sync: left 1 settled item(s) without an issue (tracker_backfill: true creates them)" in capsys.readouterr().out
+
+
+def test_a_landed_epic_with_an_issue_keeps_its_card_fields_syncing(tmp_path, monkeypatch):
+    _store_of_three(tmp_path)
+    steps = _dry_plan(tmp_path, monkeypatch, "tracker_scope: epics\n")
+    assert {"kind": "project_set", "issue": "900", "field": "State", "value": "Landed"} in steps
+
+
+def test_tracker_backfill_true_restores_the_creates(tmp_path, monkeypatch, capsys):
+    _store_of_three(tmp_path)
+    steps = _dry_plan(tmp_path, monkeypatch, "tracker_scope: epics\ntracker_backfill: true\n")
+    assert sorted(s["item_id"] for s in steps if s["kind"] == "issue_create") == ["initiative:landed-bare",
+                                                                                 "initiative:open-one"]
+    assert "settled item(s) without an issue" not in capsys.readouterr().out
+
+
+def test_item_naming_a_skipped_epic_exits_0_and_names_the_opt_in(tmp_path, monkeypatch, capsys):
+    _store_of_three(tmp_path)
+    monkeypatch.setattr(cli, "_team_cartridge", lambda profile, repo=None: ({"epic_threshold": THRESHOLD}, None))
+    args = _args(tmp_path, "tracker: github-projects\ntracker_scope: epics\n", item="initiative:landed-bare")
+    assert cli._sync_items(args, str(tmp_path)) == ([], "epics", 0, 0)
+    assert "tracker_backfill: true creates one" in capsys.readouterr().out
+
+
 class _Plugin:
     def sync(self, workspace, items, *, dry_run):
         raise AssertionError("sync must not run")
@@ -368,7 +449,8 @@ class _Recorder:
 @pytest.mark.parametrize("old_state", ["done", "dropped"])
 def test_a_settled_initiative_with_a_retired_repo_is_skipped_and_the_open_epic_syncs(tmp_path, capsys, old_state):
     _retired_store(tmp_path, old_state)
-    args = _args(tmp_path, "tracker: github-projects\ntracker_scope: epics\n")
+    # Only a backfilling sync reaches the retired repo of a settled epic; without it the epic is left out earlier.
+    args = _args(tmp_path, "tracker: github-projects\ntracker_scope: epics\ntracker_backfill: true\n")
     items, _, rc, skipped = cli._sync_items(args, str(tmp_path))
     assert (rc, skipped) == (None, 0)
     assert "initiative:big" in _ids(items) and "initiative:old" not in _ids(items)
