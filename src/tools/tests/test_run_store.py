@@ -697,6 +697,94 @@ def test_lease_reads_the_leases_table_once_per_window(tmp_path, monkeypatch):
     assert len(opens) == 1
 
 
+def wide_leases(runs_dir, columns, *rows):
+    """A leases table with the given extra columns; each row is (name, holder, epoch, heartbeat_at, expires_at, *extras)."""
+    conn = sqlite3.connect(runs_dir / "cox.db")
+    conn.execute(f"CREATE TABLE leases (name TEXT, holder TEXT, epoch INTEGER, heartbeat_at TEXT, expires_at TEXT{''.join(f', {c} TEXT' for c in columns)})")
+    conn.executemany(f"INSERT INTO leases VALUES ({', '.join('?' * (5 + len(columns)))})", rows)
+    conn.commit()
+    conn.close()
+
+
+def test_lease_row_reads_every_column(tmp_path):
+    wide_leases(tmp_path, ("status", "progress"), ("runs:x", "x-3", 7, "2026-09-25T05:59:48Z", "2026-09-25T06:00:00Z", "running", "build 2/5"))
+    assert run_store.lease_row(tmp_path, "x-3") == run_store.LeaseRow(
+        "runs:x", "x-3", 7, "2026-09-25T06:00:00Z", "2026-09-25T05:59:48Z", "running", "build 2/5"
+    )
+
+
+def test_lease_row_has_no_progress_when_the_table_lacks_the_column(tmp_path):
+    wide_leases(tmp_path, ("status",), ("runs:x", "x-3", 7, "2026-09-25T05:59:48Z", "2026-09-25T06:00:00Z", "running"))
+    row = run_store.lease_row(tmp_path, "x-3")
+    assert (row.epoch, row.status, row.progress) == (7, "running", None)
+
+
+def test_lease_row_has_no_status_or_progress_before_version_14(tmp_path):
+    leases_table(tmp_path, ("runs:x", "x-3", "2026-09-25T06:00:00Z", "2026-09-25T05:59:48Z"))
+    row = run_store.lease_row(tmp_path, "x-3")
+    assert (row.holder, row.epoch, row.status, row.progress) == ("x-3", 1, None, None)
+
+
+def test_lease_row_is_none_with_no_store(tmp_path):
+    assert run_store.lease_row(tmp_path, "x-3") is None
+
+
+def test_lease_row_is_none_for_a_store_with_no_leases_table(tmp_path):
+    store(tmp_path, ROW)
+    assert (tmp_path / "cox.db").exists()
+    assert run_store.lease_row(tmp_path, "x-3") is None
+
+
+def test_lease_row_is_none_for_a_run_without_a_row(tmp_path):
+    leases_table(tmp_path, ("runs:x", "x-3", "2026-09-25T06:00:00Z"))
+    assert run_store.lease_row(tmp_path, "z-1") is None
+
+
+def test_lease_row_is_shared_by_every_run_of_the_prefix(tmp_path):
+    wide_leases(tmp_path, ("status", "progress"), ("runs:x", "x-3", 2, "b", "e", "running", "p"))
+    assert run_store.lease_row(tmp_path, "x-2") == run_store.lease_row(tmp_path, "x-3")
+    assert run_store.lease_row(tmp_path, "x-2").name == "runs:x"
+
+
+def test_lease_row_reads_the_leases_table_once_per_window(tmp_path, monkeypatch):
+    wide_leases(tmp_path, ("status", "progress"), ("runs:x", "x-3", 2, "b", "e", "running", "p"))
+    monkeypatch.setattr(run_store, "time", types.SimpleNamespace(monotonic=lambda: 100.0))  # one window, however slow the test
+    opens = []
+    real_open = run_store._open
+    monkeypatch.setattr(run_store, "_open", lambda runs_dir: opens.append(runs_dir) or real_open(runs_dir))
+    run_store.lease_row(tmp_path, "x-2")
+    run_store.lease_row(tmp_path, "x-3")
+    assert run_store.lease_row(tmp_path, "y-1") is None
+    assert len(opens) == 1
+
+
+class _PgLeaseConn:
+    """Postgres's shape: a column list from information_schema, then dict rows from the SELECT."""
+
+    def __init__(self, columns, row):
+        self.calls = []
+        self.columns = columns
+        self.row = row
+
+    def execute(self, sql, params=()):
+        self.calls.append((sql, params))
+        rows = [{"name": c} for c in self.columns] if "information_schema" in sql else [self.row]
+        return types.SimpleNamespace(fetchall=lambda: rows)
+
+    def close(self):
+        pass
+
+
+def test_lease_row_asks_postgres_for_the_leases_columns_and_selects_only_those(monkeypatch, tmp_path):
+    row = {"name": "runs:x", "holder": "x-3", "epoch": 4, "expires_at": "e", "heartbeat_at": "b", "progress": "p"}
+    conn = _PgLeaseConn(("name", "holder", "epoch", "expires_at", "heartbeat_at", "progress"), row)
+    monkeypatch.setattr(run_store, "_open", lambda runs_dir: (conn, run_store.placeholder("postgres://")))
+    assert run_store.lease_row(tmp_path, "x-3") == run_store.LeaseRow("runs:x", "x-3", 4, "e", "b", None, "p")
+    (probe, params), (select, _) = conn.calls
+    assert "information_schema.columns" in probe and params == ("leases",)
+    assert select == "SELECT name, holder, epoch, expires_at, heartbeat_at, progress FROM leases"
+
+
 NOW = "2026-09-25T12:00:00Z"
 LIVE = "2026-09-25T12:02:00Z"
 
