@@ -50,9 +50,12 @@ def _remedy(record: dict, item: dict | None) -> str | None:
 
 
 def _row(record: dict, item: dict | None) -> dict:
+    # A land that conflicted left its reason on the item: the task needs a rebuild on current main, not a land.
+    # Only while the item is still `ready`: a rebuilt task that was approved again has a new run to land.
+    conflict = (item or {}).get("land_conflict") if (item or {}).get("state") == "ready" else None
     return {
         "run": record.get("run"), "task": record.get("task"), "phase": record.get("phase"),
-        "branch": record.get("branch"), "remedy": _remedy(record, item),
+        "branch": record.get("branch"), "remedy": f"rebuild: {conflict}" if conflict else _remedy(record, item),
     }
 
 

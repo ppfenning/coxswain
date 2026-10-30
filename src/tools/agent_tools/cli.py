@@ -3009,10 +3009,58 @@ def _runs_land(a: argparse.Namespace) -> int:
                                lambda: _land_store_stop(runs_dir, record, item_path) if record else None, walk)
     rc, reached, pr = walked if walked is not None else (2, [], "")  # a refused lease stops before any step, and is logged too
     task = record["task"] if record else None
+    _mark_stopped_land(repo, runs_dir, rc, record, item_path, stops, cherry_pick, _holder_label(a), land_mode)
     _append_land_log(runs_dir, land.land_log_row(datetime.datetime.now(datetime.UTC).isoformat(), run_id, task, reached, rc, pr,
                                                    stops[0] if stops else None))
     _lake_after_land(a, runs_dir, rc, reached)
     return rc
+
+
+def _mark_land_conflict(runs_dir: Path, record: dict, item_path: str | None, reason: str, by: str, mode: str) -> None:
+    """Edge. A land whose cherry-pick conflicted leaves the task `ready`, not `approved`, with `reason` as a `land_conflict`
+    marker and a body note, on the store row and the item file. The row is written first, so a crash before the state
+    move leaves an approved task with the marker, which `route edit --rebuild` accepts."""
+    initiative, task = record.get("initiative"), record.get("task")
+    if not initiative or not task:
+        return
+    stored = next((r for r in run_store.read_queue(runs_dir, initiative, kind="task") if r.get("task_id") == task), None)
+    key = {"initiative": initiative, "task_id": task}
+    failed = "no store row"
+    if stored is not None:
+        marked = {"extra": {**(stored.get("extra") or {}), land.LAND_CONFLICT_KEY: reason},
+                  "body": route_edit.append_note(stored.get("body") or "", land.conflict_note(reason))}
+        failed = run_store.upsert_row_detail(runs_dir, {**key, **marked})
+        if failed:
+            print(f"warning: the store did not take the land conflict of {task}: {failed}")
+    if mode == "store":
+        stop = land.set_state_stop(store_cli.set_state(runs_dir, initiative, task, "ready", by, expected="approved"))
+        if stop is not None:
+            print(stop)
+            if stored is not None and not failed:  # the task is not ours to mark: put the row back as it was
+                run_store.upsert_row_detail(runs_dir, {**key, "extra": stored.get("extra") or {}, "body": stored.get("body") or ""})
+            return
+    item = Path(item_path) if item_path else None
+    if item is not None and item.exists():
+        new_text = land.conflict_to_ready(item.read_text(encoding="utf-8"), reason)
+        if new_text is not None:
+            item.write_text(new_text, encoding="utf-8")
+            queue_export.record_written_paths(runs_dir.parent, [item.absolute()])
+    if mode != "store":
+        line = store_cli.mirror_state(runs_dir, initiative, task, "ready", by)
+        if line is not None:
+            print(line)
+    print(f"land: {task} is ready again, to be rebuilt: {reason}")
+
+
+def _mark_stopped_land(repo: Path, runs_dir: Path, rc: int, record: dict | None, item_path: str | None, stops: list[dict],
+                       cherry_pick: dict | None, by: str, mode: str) -> None:
+    """Edge. After a land that stopped (exit 1) on its cherry-pick conflicting, mark the task for a rebuild."""
+    if rc != 1 or record is None or not stops or cherry_pick is None:
+        return
+    base = f"{cherry_pick['from']}@{(_git_out(repo, 'rev-parse', cherry_pick['from']) or '')[:8]}"
+    reason = land.land_conflict_reason(stops[0]["stopped_step"], stops[0]["stop_detail"], base)
+    if reason is not None:
+        _mark_land_conflict(runs_dir, record, item_path, reason, by, mode)
 
 
 def _append_land_log(runs_dir: Path, row: dict) -> None:
@@ -3760,6 +3808,7 @@ def _route_edit(a: argparse.Namespace) -> int:
     result = route_edit.apply_edit(
         runs_dir, runs_dir.parent, _initiative_token(runs_dir, a.id), title=a.title, body=a.body, body_file=a.body_file, repo=a.repo,
         surfaces=a.surfaces, state=a.state, dry_run=a.dry_run, live_runs=_live_runs(runs_dir, _now_iso()), now=_now_iso(),
+        rebuild=getattr(a, "rebuild", False), force=getattr(a, "force", False),
     )
     if result.code != route_edit.DONE:
         print(f"edit: {'refused' if result.code == route_edit.REFUSED else 'failed'}: {result.text}")
@@ -9305,6 +9354,8 @@ ROUTE_COMMANDS = [
             commands.Arg(("--body",)), commands.Arg(("--body-file",)), commands.Arg(("--repo",)),
             commands.Arg(("--surfaces",), {"help": "task ticket only: comma-separated paths that replace the list"}),
             commands.Arg(("--state",), {"help": "task ticket only: ready, approved, done or dropped; never backward"}),
+            commands.Arg(("--rebuild",), {"action": "store_true", "help": "with --state ready: send an approved task back to build on current main; needs a recorded land conflict or --force"}),
+            commands.Arg(("--force",), {"action": "store_true", "help": "with --rebuild: allow it with no recorded land conflict"}),
             commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the diff and write nothing"}),
             commands.Arg(("--profile",)),
         ),

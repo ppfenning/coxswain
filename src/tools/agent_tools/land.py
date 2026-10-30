@@ -947,6 +947,35 @@ def stop_fields(kind: str, detail: str, branch_sha: str | None, from_sha: str | 
     return {**base, "conflict_paths": sorted(conflict["paths"].split(", ")), "branch_sha": branch_sha, "from_sha": from_sha}
 
 
+LAND_CONFLICT_KEY = "land_conflict"  # frontmatter and store `extra` key; its value is the reason, and it marks a rebuild
+_CHERRY_CONFLICT = re.compile(r"cherry-pick of \S+ conflicts in: (?P<paths>[^\n]+)")
+
+
+def land_conflict_reason(kind: str, detail: str, base: str) -> str | None:
+    """`land conflict with <base> in <files>` for a `cherry_pick` stop whose detail leads with the conflicted paths, else None."""
+    found = _CHERRY_CONFLICT.match(detail) if kind == "cherry_pick" else None
+    return None if found is None else f"land conflict with {base} in {found['paths']}"
+
+
+def conflict_note(reason: str) -> str:
+    """The body paragraph a land conflict leaves for the rebuild: the recorded reason, capitalised."""
+    return f"{reason[0].upper()}{reason[1:]}; rebuilding on current main."
+
+
+def conflict_to_ready(text: str, reason: str) -> str | None:
+    """`text` with `state: approved` rewritten to `state: ready`, a `land_conflict: <reason>` line under it and the
+    `conflict_note` as a last paragraph. None when the header has no `state: approved` line."""
+    if not text.startswith("---\n"):
+        return None
+    close = text.find("\n---\n", 4)
+    header = text[:close] if close != -1 else text
+    line = next((ln for ln in header.splitlines(keepends=True) if ln.strip() == "state: approved"), None)
+    if line is None:
+        return None
+    marked = text.replace(line, f"state: ready\n{LAND_CONFLICT_KEY}: {reason}" + ("\n" if line.endswith("\n") else ""), 1)
+    return f"{marked.rstrip(chr(10))}\n\n{conflict_note(reason)}\n"
+
+
 _READY_MERGED_NOTE = "land: work item was still ready (quarantined after approval, or run on another machine); merged, so done"
 
 
