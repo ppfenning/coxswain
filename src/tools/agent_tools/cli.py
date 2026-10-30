@@ -1950,6 +1950,7 @@ def _cherry_pick_generated(wt: Path, sha: str, umbrella: str | None, echo: Calla
     cp = subprocess.run(
         ["git", "-C", str(wt), "-c", "merge.conflictStyle=diff3", "cherry-pick", sha], capture_output=True, text=True
     )
+    regenerated: list[str] = []
     if cp.returncode != 0:
         conflicted = subprocess.run(
             ["git", "-C", str(wt), "diff", "--name-only", "--diff-filter=U"], capture_output=True, text=True
@@ -1963,16 +1964,21 @@ def _cherry_pick_generated(wt: Path, sha: str, umbrella: str | None, echo: Calla
             except (OSError, UnicodeDecodeError):
                 return None
 
-        resolved = {name: resolve(name) for name in conflicted}
-        if not conflicted or any(text is None for text in resolved.values()):
+        generated_only = land.generated_conflict_only(conflicted)
+        # A generated-only conflict is regenerated or it stops the land: it never reaches the add/add resolver.
+        failure = _regenerate_generated_conflicts(wt, conflicted) if generated_only else None
+        resolved = {} if generated_only else {name: resolve(name) for name in conflicted}
+        unresolvable = not generated_only and (not conflicted or any(text is None for text in resolved.values()))
+        if failure is not None or unresolvable:
             subprocess.run(["git", "-C", str(wt), "cherry-pick", "--abort"], capture_output=True, text=True)
             # The conflicts line leads, so the land prints it as `cherry_pick: ... conflicts in: ...` (what
             # `partial_land.conflicting_paths` reads); git's own "could not apply" line follows for `land_refusal`.
             named = f"cherry-pick of {sha[:8]} conflicts in: {', '.join(sorted(conflicted))}" if conflicted else ""
-            return False, "\n".join(filter(None, [named, cp.stderr.strip() or cp.stdout.strip()]))
+            return False, "\n".join(filter(None, [named, failure, cp.stderr.strip() or cp.stdout.strip()]))
         for name, text in resolved.items():
             (wt / name).write_text(text)
-        subprocess.run(["git", "-C", str(wt), "add", *sorted(resolved)], capture_output=True, text=True)
+        staged = sorted(conflicted) if generated_only else sorted(resolved)
+        subprocess.run(["git", "-C", str(wt), "add", *staged], capture_output=True, text=True)
         cont = subprocess.run(
             ["git", "-C", str(wt), "-c", "core.editor=true", "cherry-pick", "--continue"],
             capture_output=True, text=True,
@@ -1980,8 +1986,39 @@ def _cherry_pick_generated(wt: Path, sha: str, umbrella: str | None, echo: Calla
         if cont.returncode != 0:
             subprocess.run(["git", "-C", str(wt), "cherry-pick", "--abort"], capture_output=True, text=True)
             return False, cont.stderr.strip() or cont.stdout.strip()
-        echo(f"resolved add/add: {', '.join(sorted(resolved))}")
-    return _generate_and_amend(wt, umbrella, echo)
+        if generated_only:
+            regenerated = staged
+        else:
+            echo(f"resolved add/add: {', '.join(staged)}")
+    ok, detail = _generate_and_amend(wt, umbrella, echo)
+    # Named once the land has got past the step that could still stop it, so the line is never printed for a failed land.
+    if ok:
+        for name in regenerated:
+            echo(f"cherry_pick: regenerated {name} after a conflict in generated files only")
+    return ok, detail
+
+
+def _regenerate_generated_conflicts(wt: Path, conflicted: Sequence[str]) -> str | None:
+    """Edge. Resolve each of `conflicted`, all declared in `land.GENERATED_FILES`, to ours inside its generated
+    span, then rewrite the file with its generator run in `wt` so it sees the cherry-picked code.
+
+    None when every file was regenerated; otherwise why it was not, for the caller to abort the cherry-pick
+    with: a conflict outside the generated span, an unreadable file, or the generator's exit code and output."""
+    for name in conflicted:
+        spec = land.GENERATED_FILES[name]
+        try:
+            text = land.resolve_block_conflicts((wt / name).read_text(encoding="utf-8"), spec.begin, spec.end)
+        except (OSError, UnicodeDecodeError):
+            return f"{name} cannot be read as text"
+        if text is None:
+            return f"{name} conflicts outside its generated block"
+        (wt / name).write_text(text, encoding="utf-8")
+        # Run from the worktree's own tree: `python -m` puts the cwd first on sys.path, ahead of any install.
+        run = subprocess.run([sys.executable, *spec.command, str(wt / name)], cwd=wt / spec.cwd,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        if run.returncode != 0:
+            return f"generator {' '.join(spec.command)} for {name} exited {run.returncode}: {run.stdout.strip()}"
+    return None
 
 
 def _generated_tree(repo: Path, branch: str, base: str, sha: str, umbrella: str | None) -> tuple[str | None, str]:

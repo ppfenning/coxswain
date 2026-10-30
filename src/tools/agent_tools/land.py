@@ -27,8 +27,9 @@ import time
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import PurePath
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
+from agent_tools import readme_commands
 from agent_tools.card_commits import card_commit_steps
 from agent_tools.card_pr import card_pr_steps
 from agent_tools.chair_plan_land import fetch_action
@@ -37,8 +38,10 @@ if TYPE_CHECKING:
     from agent_tools import store_cli
 
 __all__ = [
+    "GENERATED_FILES",
     "LAUNCH_ERROR",
     "MERGE_UPDATE_ATTEMPTS",
+    "GeneratedFile",
     "LeaseRenewal",
     "approve_to_done",
     "approved_state",
@@ -52,6 +55,7 @@ __all__ = [
     "close_to_done",
     "gate_steps",
     "gate_stop",
+    "generated_conflict_only",
     "is_behind_refusal",
     "is_pending",
     "issue_closes",
@@ -69,6 +73,7 @@ __all__ = [
     "recover_record",
     "renew_due",
     "renewal_stop",
+    "resolve_block_conflicts",
     "rest_checks_argvs",
     "set_state_stop",
     "skip_line",
@@ -1085,3 +1090,48 @@ def resolve_add_add_conflicts(text: str) -> str | None:
             return None
         resolved.append("".join(ours if ours == theirs else ours + theirs))
     return "".join(resolved)
+
+
+class GeneratedFile(NamedTuple):
+    """How to regenerate one file: the directory to run in, the `python` arguments that rewrite the file given
+    its path as a last argument, and the markers around the span the generator owns."""
+
+    cwd: str
+    command: tuple[str, ...]
+    begin: str
+    end: str
+
+
+# Files a cherry-pick conflict may be resolved by regenerating, each repo-relative path mapped to its generator.
+# Declared, not guessed from names: the README's generator is `python -m agent_tools.readme_commands`, the one
+# `test_readme_commands` compares the README against.
+GENERATED_FILES: dict[str, GeneratedFile] = {
+    "src/tools/README.md": GeneratedFile(
+        "src/tools", ("-m", "agent_tools.readme_commands", "--readme"), readme_commands.BEGIN, readme_commands.END
+    ),
+}
+
+
+def generated_conflict_only(conflicted: Sequence[str]) -> bool:
+    """True when something conflicted and every conflicted path is a declared generated file."""
+    return bool(conflicted) and all(name in GENERATED_FILES for name in conflicted)
+
+
+def resolve_block_conflicts(text: str, begin: str, end: str) -> str | None:
+    """`text`, a worktree file left by `git -c merge.conflictStyle=diff3 cherry-pick`, with every conflict hunk
+    resolved to ours. None when a hunk lies outside the `begin`..`end` span or holds a marker line, or the markers
+    do not parse: a conflict outside the generated span is a real one."""
+    segments = _parse_conflict_hunks(text)
+    if segments is None:
+        return None
+    resolved = ""
+    for segment in segments:
+        if isinstance(segment, str):
+            resolved += segment
+            continue
+        ours, base, theirs = segment
+        inside = resolved.rfind(begin) > resolved.rfind(end)
+        if not inside or any(begin in ln or end in ln for ln in (*ours, *base, *theirs)):
+            return None
+        resolved += "".join(ours)
+    return resolved
