@@ -55,6 +55,12 @@ You are a dispatcher for that one case, not a second doer.
   with `routing: no initiative.md at <id>/initiative.md`. When the chair is
   held by your own session, `route launch epic` refuses unless you pass
   `--label <chair label>`, the label that `chair status` shows.
+  - **Let the launch place the lane.** Launch without `--on`. The launch
+    places the lane by the hosts table and prints `placed on <host> (<in
+    use>/<cap>)`. Trust that line. Do not default to your own machine. When
+    no host has room, the launch refuses rather than overfill.
+  - **Pin only on purpose.** `--on <host>` still pins a host. `--on local`
+    with `--force` is the only way to exceed this machine's capacity.
 - **Detach, watch, report.** Once a run is launched, arm `agent-tools epic
   watch PIDFILE --log LOG` in the background, and re-arm it while the pid
   is still alive and the chair lock still names you. When it exits, report
