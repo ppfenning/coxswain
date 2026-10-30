@@ -15,7 +15,7 @@ from agent_tools import chair, chair_stall, epic, run_store, runs_top
 from agent_tools import events as events_module
 from agent_tools.records import ceiling_for, load_trace
 
-__all__ = ["chair_now", "facts", "rows_now"]
+__all__ = ["chair_now", "facts", "remote_run_ids", "rows_now", "waitable"]
 
 _STALE_SECONDS = 600
 _TRACE_NAME = re.compile(r"^([A-Za-z0-9_]+)-(\d+)$")
@@ -236,6 +236,16 @@ def lost_rows(runs_dir, now: datetime.datetime | None = None) -> list[runs_top.R
     root = Path(runs_dir)
     lanes = run_store.lost_lanes(root, now.astimezone(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
     return _remote_rows(root, lanes, now)
+
+
+def waitable(rows: list[runs_top.Row]) -> list[str]:
+    """Run ids `runs wait` blocks on: every live row, local or remote. A just-exited local row has `alive` false."""
+    return sorted(r.run for r in rows if r.alive)
+
+
+def remote_run_ids(rows: list[runs_top.Row]) -> set[str]:
+    """Run ids of the rows that live on another machine, whose files are not here until fetched."""
+    return {r.run for r in rows if r.remote}
 
 
 def _session_text(root: Path, run: str) -> str:

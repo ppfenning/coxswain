@@ -3271,14 +3271,45 @@ def _lane_outcome(runs_dir: Path, run: str, at: str) -> dict:
     return {"run": run, "at": at, "approved": s["approved"], "quarantined": s["quarantined"], "summary": s["summary"]}
 
 
-def _runs_wait(a: argparse.Namespace) -> int:
+def _wait_fetch(a: argparse.Namespace, runs_dir: Path, run_id: str) -> tuple[str, list[str], str]:
+    """Edge. `runs fetch <run>` for a remote run that exited while `runs wait` watched it."""
+    ns = argparse.Namespace(**{"profile": None, **vars(a)})  # `runs wait` takes no --profile; `_lake_provider` reads one
+    hosts = _profile_lane_hosts(_read_text_or_none(_profile_path(ns)) or "")
+    mode = work_state.work_state_mode(_lake_provider(ns)[0])
+    return _fetch_one(runs_dir, hosts, run_id, mode, _holder_label(ns))
+
+
+def _poll_live(rows_fn, runs_dir: Path, busy: list[str]):
+    """A liveness probe over `rows_fn`. `epic.wait_lanes` asks about `busy` in order once per poll, so the rows
+    are read once per poll, when it asks about the first run, and not once per run."""
+    live: set[str] = set()
+
+    def is_live(run: str) -> bool:
+        nonlocal live
+        if run == busy[0]:
+            live = set(runs_top_screen.waitable(rows_fn(runs_dir)))
+        return run in live
+
+    return is_live
+
+
+def _runs_wait(a: argparse.Namespace, *, rows_fn=None, clock=None, sleep=None, fetch=None) -> int:
+    """`rows_fn`, `clock`, `sleep` and `fetch` are test seams; each defaults to the real one at call time."""
     d = Path(a.runs_dir)
-    busy = [pf.stem for pf in sorted(d.glob("*.pid")) if _lane_live(d, pf.stem)]
+    rows_fn = rows_fn or runs_top_screen.rows_now
+    rows = rows_fn(d)
+    busy = runs_top_screen.waitable(rows)
     if not busy:
         print("all lanes clear")
         return 2
-    exited, still = epic.wait_lanes(busy, lambda r: _lane_live(d, r), time.monotonic, time.sleep, a.max_seconds, a.interval)
+    exited, still = epic.wait_lanes(busy, _poll_live(rows_fn, d, busy), clock or time.monotonic, sleep or time.sleep, a.max_seconds, a.interval)
     at = datetime.datetime.now(datetime.UTC).astimezone().strftime("%H:%M")  # when the exit was noticed, not when it happened
+    for run in sorted(set(exited) & runs_top_screen.remote_run_ids(rows)):
+        if remote_lane.fetched_record_path(d, run).exists():
+            continue
+        outcome, lines, _host = (fetch or (lambda r_dir, r: _wait_fetch(a, r_dir, r)))(d, run)
+        if outcome != "fetched":
+            print("\n".join([f"{run}: {lines[0]}", *lines[1:]]), file=sys.stderr if a.json else sys.stdout)
     outcomes = [_lane_outcome(d, r, at) for r in exited]
     if a.json:
         print(json.dumps({"exited": outcomes, "busy": still}, indent=2))
