@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from agent_tools import lease_standing
 from agent_tools.events import Event
 
 __all__ = ["UNSET", "Row", "chair_highlight", "column_widths", "highlight", "label", "order", "render", "row", "tail_lines"]
@@ -50,13 +51,15 @@ def label(r: Row) -> str:
 
 
 def _status(events: list[Event], alive: bool, orphaned: bool = False, heartbeat_age: int | None = None,
-            node_call_stalled: bool = False) -> str:
+            node_call_stalled: bool = False, standing: str = lease_standing.NONE) -> str:
     if any(e.kind == "task_quarantined" for e in events):
         return "quarantined"
     if any(e.kind == "budget_stop" for e in events):
         return "budget"
     if not alive or any(e.kind == "run_exited" for e in events):
         return "exited"
+    if lease_standing.status(True, standing) == lease_standing.FENCED:
+        return "fenced"
     if orphaned:
         return "orphaned"
     if (heartbeat_age is not None and heartbeat_age >= STALL_S) or node_call_stalled:
@@ -83,7 +86,7 @@ def _orphaned(alive: bool, launched_by: str, chair: dict | None) -> bool:
 
 def row(run: str, alive: bool, phases: list[str], events: list[Event], calls: list[dict], ceiling: dict | None = None,
         launched_by: str = "", chair: dict | None = None, heartbeat_age: int | None = None, host: str | None = None,
-        node_call_stalled: bool = False, short_id: str = "") -> Row:
+        node_call_stalled: bool = False, short_id: str = "", standing: str = lease_standing.NONE) -> Row:
     """Pure: the one row a run's events and finished calls make; `host` is the machine it runs on."""
     starts = [e for e in events if e.kind == "node_started"]
     verdicts = [e for e in events if e.kind == "verdict"]
@@ -99,7 +102,7 @@ def row(run: str, alive: bool, phases: list[str], events: list[Event], calls: li
         turns=sum(c["turns"] for c in calls),
         cost_usd=sum(c["cost_usd"] for c in calls),
         verdict=verdict,
-        status=_status(events, alive, _orphaned(alive, launched_by, chair), heartbeat_age, node_call_stalled),
+        status=_status(events, alive, _orphaned(alive, launched_by, chair), heartbeat_age, node_call_stalled, standing),
         ceiling=_ceiling_label(ceiling),
         launched_by=launched_by,
         heartbeat_age=heartbeat_age,
@@ -178,6 +181,8 @@ def highlight(row: Row) -> str:
     """Pure: the label the screen maps to a colour. Names no colour itself."""
     if row.status in ("quarantined", "budget", "orphaned"):
         return "alert"
+    if row.status == "fenced":
+        return "fenced"
     if row.status == "exited":
         return "dim"
     return "normal"

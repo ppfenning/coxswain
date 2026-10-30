@@ -11,7 +11,7 @@ import socket
 import time
 from pathlib import Path
 
-from agent_tools import chair, chair_stall, epic, run_store, runs_top
+from agent_tools import chair, chair_stall, epic, lease_standing, run_store, runs_top
 from agent_tools import events as events_module
 from agent_tools.records import ceiling_for, load_trace
 
@@ -149,25 +149,27 @@ def _fact(root: Path, run: str, alive: bool, now: datetime.datetime | None = Non
     events = events_module.from_log(run, lines) + events_module.from_trace_names(run, names)
     calls = [c for c in (_call(p) for p in trace_paths) if c is not None] or stored
     started_at = _stall_ts(run_store.run_started(root, run))
+    lease = run_store.lease(root, run)
     return {"run": run, "alive": alive, "phases": _phases(root, run), "events": events, "calls": calls,
             "ceiling": _ceiling(root, run), "launched_by": _launched_by(root, run),
-            "heartbeat_age": _heartbeat_age(run_store.lease(root, run), run, now),
+            "heartbeat_age": _heartbeat_age(lease, run, now),
+            "lease_standing": lease_standing.standing(lease, run, now.astimezone(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")),
             "node_call_stalled": _node_call_stalled(calls, started_at, now)}
 
 
-def facts(runs_dir, now_alive=None) -> list[dict]:
+def facts(runs_dir, now_alive=None, now: datetime.datetime | None = None) -> list[dict]:
     """Every run still worth a line on screen: a `.pid` that probes alive,
     plus a `.log` whose `.pid` is missing or dead but was touched in the
     last ten minutes, so a run that just exited stays on screen briefly."""
     root = Path(runs_dir)
     pids = {p.stem: _read_pid(p) for p in root.glob("*.pid")}
     alive = {run for run, pid in pids.items() if pid is not None and is_alive(now_alive, pid, root / f"{run}.pid")}
-    now = time.time()
+    wall = time.time()
     recent = {
         p.stem for p in root.glob("*.log")
-        if p.stem not in alive and now - p.stat().st_mtime <= _STALE_SECONDS
+        if p.stem not in alive and wall - p.stat().st_mtime <= _STALE_SECONDS
     }
-    return [_fact(root, run, run in alive) for run in sorted(alive | recent)]
+    return [_fact(root, run, run in alive, now) for run in sorted(alive | recent)]
 
 
 def _minutes_ago(heartbeat_at, now: datetime.datetime) -> int:
@@ -223,8 +225,8 @@ def rows_now(runs_dir, heartbeat_minutes: int = chair.DEFAULT_HEARTBEAT_MINUTES,
     chair_state = chair_now(runs_dir, heartbeat_minutes)
     host = socket.gethostname()
     local = [runs_top.row(f["run"], f["alive"], f["phases"], f["events"], f["calls"], f["ceiling"], f["launched_by"], chair_state,
-                          f["heartbeat_age"], host, f["node_call_stalled"])
-             for f in facts(runs_dir)]
+                          f["heartbeat_age"], host, f["node_call_stalled"], standing=f["lease_standing"])
+             for f in facts(runs_dir, now=now)]
     lanes = run_store.live_lanes(root, now.astimezone(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
     return [*local, *_remote_rows(root, lanes, now)]
 

@@ -113,3 +113,21 @@ def test_render_cuts_every_line_to_width():
     lines = render(d, 10)
     assert lines
     assert all(len(line) <= 10 for line in lines)
+
+
+def test_a_live_run_with_a_foreign_or_expired_lease_reads_fenced():
+    assert [detail("r1", True, [], [], {}, [], standing=s).status for s in ("fenced", "expired")] == ["fenced", "fenced"]
+
+
+def test_a_held_or_absent_lease_stays_running_and_the_default_is_none():
+    assert [detail("r1", True, [], [], {}, [], standing=s).status for s in ("held", "none")] == ["running", "running"]
+    assert detail("r1", True, [], [], {}, []).status == "running"
+
+
+def test_a_dead_process_stays_exited_under_a_fenced_lease():
+    assert detail("r1", False, [], [], {}, [], standing="fenced").status == "exited"
+
+
+def test_quarantined_still_wins_over_fenced():
+    events = [Event("r1", "task_quarantined", 0, {"task": "t1", "reason": "x"})]
+    assert detail("r1", True, events, [], {}, [], standing="fenced").status == "quarantined"

@@ -1980,8 +1980,11 @@ def status_rows(entries, short_ids: Mapping[str, str] | None = None) -> list:
     rows = []
     for entry in entries:
         pid = entry.get("pid")
+        fenced = bool(entry.get("fenced")) and pid is not None
         if pid is None:
             state = "no pidfile"
+        elif fenced:
+            state = "fenced"
         elif entry.get("alive"):
             state = "alive"
         else:
@@ -1991,6 +1994,7 @@ def status_rows(entries, short_ids: Mapping[str, str] | None = None) -> list:
                 "id": entry["id"],
                 "pid": pid,
                 "state": state,
+                "fenced": fenced,
                 "started": entry.get("started"),
                 "quarantined": entry.get("quarantined", []),
                 "reused": entry.get("reused", []),
@@ -2011,7 +2015,7 @@ def recent_rows(rows: list, now: datetime.datetime, hours: int = 24) -> tuple[li
 
 
 def _alive(row: dict) -> bool:
-    return bool(row.get("alive")) or row.get("state") == "alive"
+    return bool(row.get("alive")) or row.get("state") in ("alive", "fenced") or bool(row.get("fenced"))
 
 
 def _started_since(started, cutoff: datetime.datetime) -> bool:
@@ -2280,13 +2284,14 @@ def intake_groups(intake: list, initiatives: list) -> dict:
     }
 
 
-def _run_entry(run_id: str, pid_text: str, alive: dict, started: dict, heartbeats: dict) -> dict:
+def _run_entry(run_id: str, pid_text: str, alive: dict, started: dict, heartbeats: dict, fenced: Mapping[str, bool]) -> dict:
     stripped = pid_text.strip()
     pid = int(stripped) if stripped.isdigit() else None
     return {
         "id": run_id,
         "pid": pid,
         "alive": alive.get(run_id, False) if pid is not None else False,
+        "fenced": bool(fenced.get(run_id, False)) if pid is not None else False,
         "started": started.get(run_id),
         "heartbeat": heartbeats.get(run_id),
         "host": None,
@@ -2294,7 +2299,7 @@ def _run_entry(run_id: str, pid_text: str, alive: dict, started: dict, heartbeat
     }
 
 
-def run_entries(pids: dict, alive: dict, started: dict, heartbeats: dict | None = None) -> list:
+def run_entries(pids: dict, alive: dict, started: dict, heartbeats: dict | None = None, fenced: Mapping[str, bool] | None = None) -> list:
     """Rows for the runs list, the `runs` input `render_context` and
     `context_document` already accept: one `{"id", "pid", "alive",
     "started", "heartbeat"}` per run id in `pids` (pidfile text the caller
@@ -2303,9 +2308,10 @@ def run_entries(pids: dict, alive: dict, started: dict, heartbeats: dict | None 
     `heartbeat` `None`. A pidfile whose text is not a plain integer — a partial
     write, a stray hand edit — is treated as unreadable: `pid` comes back
     `None` and `alive` comes back `False` regardless of what the caller
-    passed in `alive` for that id.
+    passed in `alive` for that id. `fenced` maps a run id to whether its process
+    answers without a held lease; it is carried on the entry as a `fenced` flag, `False` by default.
     """
-    return [_run_entry(run_id, pids[run_id], alive, started, heartbeats or {}) for run_id in sorted(pids)]
+    return [_run_entry(run_id, pids[run_id], alive, started, heartbeats or {}, fenced or {}) for run_id in sorted(pids)]
 
 
 def remote_lane_entries(lanes: Sequence) -> list:

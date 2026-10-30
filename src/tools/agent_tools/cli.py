@@ -3592,13 +3592,22 @@ def _runs_recover(a: argparse.Namespace) -> int:
     return 0
 
 
-def _lane_live(runs_dir: Path, run: str) -> bool:
-    pidfile = runs_dir / f"{run}.pid"
+def _lane_pid(pidfile: Path) -> int | None:
     try:
-        pid = int(pidfile.read_text().strip())
+        return int(pidfile.read_text().strip())
     except (OSError, ValueError):
-        pid = None
-    return epic.run_live(pid, pidfile)
+        return None
+
+
+def _lane_live(runs_dir: Path, run: str) -> bool:
+    """Live, or fenced: a process that answers without a held lease still occupies its lane."""
+    pidfile = runs_dir / f"{run}.pid"
+    return epic.run_live(_lane_pid(pidfile), pidfile) or epic.run_state(_lane_pid(pidfile), pidfile) == "fenced"
+
+
+def _fenced_lanes(runs_dir: Path) -> set[str]:
+    """Edge. Local runs whose process answers but whose lease is not held; `runs_top_screen` rows read them as exited."""
+    return {pf.stem for pf in runs_dir.glob("*.pid") if epic.run_state(_lane_pid(pf), pf) == "fenced"}
 
 
 def _lane_outcome(runs_dir: Path, run: str, at: str) -> dict:
@@ -3626,7 +3635,7 @@ def _poll_live(rows_fn, runs_dir: Path, busy: list[str]):
     def is_live(run: str) -> bool:
         nonlocal live
         if run == busy[0]:
-            live = set(runs_top_screen.waitable(rows_fn(runs_dir)))
+            live = set(runs_top_screen.waitable(rows_fn(runs_dir))) | _fenced_lanes(runs_dir)
         return run in live
 
     return is_live
@@ -3637,7 +3646,7 @@ def _runs_wait(a: argparse.Namespace, *, rows_fn=None, clock=None, sleep=None, f
     d = Path(a.runs_dir)
     rows_fn = rows_fn or runs_top_screen.rows_now
     rows = rows_fn(d)
-    busy = runs_top_screen.waitable(rows)
+    busy = sorted({*runs_top_screen.waitable(rows), *_fenced_lanes(d)})
     if not busy:
         print("all lanes clear")
         return 2
@@ -3664,7 +3673,7 @@ def _runs_wait(a: argparse.Namespace, *, rows_fn=None, clock=None, sleep=None, f
 def _epic_watch(a: argparse.Namespace) -> int:
     out = epic.watch(a.pidfile, log=a.log, max_seconds=a.max_seconds, interval=a.interval)
     print(json.dumps(out, indent=2) if a.json else "\n".join(
-        [f"pid {out['pid']}: {'finished' if out['finished'] else 'still running'}",
+        [f"pid {out['pid']}: {'fenced' if out['state'] == 'fenced' else 'finished' if out['finished'] else 'still running'}",
          *out.get("quarantined", []), *out.get("reused", []), *(x for x in (out.get("summary"), out.get("usage")) if x)]))
     return 0 if out["finished"] else 3
 
@@ -3899,8 +3908,9 @@ def _intake_groups_for(ws: Path, items: list):
 def _status_rows_for(runs_dir: Path, short_ids: Mapping[str, str] | None = None) -> list:
     pids = {p.stem: t for p in sorted(runs_dir.glob("*.pid")) if (t := _read_text_or_none(p)) is not None}
     alive = {run_id: epic.run_live(route.parse_pid(t), runs_dir / f"{run_id}.pid") for run_id, t in pids.items()}
+    fenced = {run_id: epic.run_state(route.parse_pid(t), runs_dir / f"{run_id}.pid") == "fenced" for run_id, t in pids.items()}
     started = {run_id: _mtime_iso(runs_dir / f"{run_id}.pid") for run_id in pids}
-    runs = _with_remote_lanes(runs_dir, route.run_entries(pids, alive, started, _heartbeats(runs_dir, pids)))
+    runs = _with_remote_lanes(runs_dir, route.run_entries(pids, alive, started, _heartbeats(runs_dir, pids), fenced))
     summaries = {p.stem: epic.summarize_log(_read_text_or_none(p) or "") for p in runs_dir.glob("*.log")}
     entries = route.status_entries(runs, summaries)
     by_run = _run_short_ids([e["id"] for e in entries], short_ids or {})
