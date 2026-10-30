@@ -208,12 +208,13 @@ def _fixture_inputs() -> tuple[tuple, dict]:
             "ended_at": "2026-09-28T23:50:00Z", "outcome": "landed", "cost_usd": 2.15,
             "landed": [{"task": "p1-foundations-task", "pr": 41}], "short_id": "I412",
             "project": "coxswain-tools",
+            "tasks": [{"id": "p1-foundations-task", "state": "landed", "pr": 41}],
         },
         {
             "run": "dash-feed-9", "machine": "host-b", "initiative": "dash-feed",
             "ended_at": "2026-09-28T23:40:00Z", "outcome": "quarantined", "cost_usd": 0.42,
             "landed": [], "cause": "review rejected twice", "short_id": None,
-            "project": None,
+            "project": None, "tasks": [{"id": "p2-feed-task", "state": "quarantined", "pr": None}],
         },
     ]
     history_today = {"lands": 1, "quarantines": 1, "cost_usd": 2.57, "runs": 2}
@@ -523,7 +524,8 @@ def test_gather_feed_calls_each_reader_once(monkeypatch, tmp_path):
 
     result = dash_feed.gather_feed(tmp_path, tmp_path, "2026-09-29T00:00:00Z")
 
-    assert calls == {"console": 1, "queue": 2, "inbox": 1}
+    # The queue is read for the queue section, the projects, and the history rows' task states.
+    assert calls == {"console": 1, "queue": 3, "inbox": 1}
     assert result["runs"][0]["run"] == "dash-feed-1"
     assert result["queue"][0]["initiative"] == "dash-feed"
     assert result["inbox"][0]["target"] == "x"
@@ -869,6 +871,70 @@ def test_the_feed_reads_history_since_eastern_midnight_and_builds_it_from_the_ro
     ]
     assert feed["history"][0]["landed"] == [{"task": "t-1", "pr": 7}]
     assert feed["history_today"] == {"lands": 1, "quarantines": 1, "cost_usd": 2.0, "runs": 2}
+
+
+def _task_history_feed(monkeypatch, tmp_path, runs, records, queue):
+    """The feed built over `runs` and `records` (store rows) and `queue` (`read_queue` task rows)."""
+    rows = {"runs": runs, "task_records": records, "node_calls": []}
+    monkeypatch.setattr(dash_feed, "read_history_rows", lambda store, since: rows)
+    monkeypatch.setattr(
+        dash_feed.run_store, "read_queue", lambda runs_dir, initiative=None, kind=None: [] if kind else queue
+    )
+    return _built_feed(monkeypatch, tmp_path)
+
+
+def _queue_task(task_id, state):
+    return {"kind": "task", "initiative": "dash-feed", "phase": "p1", "task_id": task_id, "state": state, "needs": []}
+
+
+def _task_record(task_id, record):
+    return {"run_id": "dash-feed-1", "phase_id": "p1", "task_id": task_id, "record_json": json.dumps(record)}
+
+
+def test_an_approved_run_lists_its_tasks_current_state_and_landed_pr(monkeypatch, tmp_path):
+    runs = [{"run_id": "dash-feed-1", "host": "host-b", "status": "approved", "ended_at": "2026-09-29T15:00:00Z"}]
+    records = [_task_record("t-a", {"landed": {"at": "2026-09-29T16:00:00Z", "pr": 474}}), _task_record("t-b", {})]
+    queue = [_queue_task("t-a", "done"), _queue_task("t-b", "approved")]
+
+    feed = _task_history_feed(monkeypatch, tmp_path, runs, records, queue)
+
+    assert feed["history"][0]["outcome"] == "approved"
+    assert feed["history"][0]["tasks"] == [
+        {"id": "t-a", "state": "landed", "pr": 474}, {"id": "t-b", "state": "approved", "pr": None},
+    ]
+
+
+def test_a_quarantined_run_lists_its_task_as_quarantined(monkeypatch, tmp_path):
+    runs = [{"run_id": "dash-feed-1", "host": "host-b", "status": "quarantined", "ended_at": "2026-09-29T15:00:00Z"}]
+    feed = _task_history_feed(
+        monkeypatch, tmp_path, runs, [_task_record("t-a", {"cause": "budget"})], [_queue_task("t-a", "quarantined")],
+    )
+
+    assert feed["history"][0]["tasks"] == [{"id": "t-a", "state": "quarantined", "pr": None}]
+
+
+def test_a_task_the_queue_has_no_state_for_is_left_out_of_its_history_row(monkeypatch, tmp_path):
+    runs = [{"run_id": "dash-feed-1", "host": "host-b", "status": "approved", "ended_at": "2026-09-29T15:00:00Z"}]
+    feed = _task_history_feed(monkeypatch, tmp_path, runs, [_task_record("t-a", {})], [])
+
+    assert [(r["outcome"], r["tasks"]) for r in feed["history"]] == [("approved", [])]
+
+
+def test_an_unreadable_queue_leaves_the_history_rows_without_tasks(monkeypatch, tmp_path):
+    runs = [{"run_id": "dash-feed-1", "host": "host-b", "status": "approved", "ended_at": "2026-09-29T15:00:00Z"}]
+
+    def broken(runs_dir, initiative=None, kind=None):
+        if kind:
+            return []
+        raise OSError("store gone")
+
+    rows = {"runs": runs, "task_records": [_task_record("t-a", {})], "node_calls": []}
+    monkeypatch.setattr(dash_feed, "read_history_rows", lambda store, since: rows)
+    monkeypatch.setattr(dash_feed.run_store, "read_queue", broken)
+
+    feed = _built_feed(monkeypatch, tmp_path)
+
+    assert [(r["outcome"], r["tasks"]) for r in feed["history"]] == [("approved", [])]
 
 
 _IDS = {"dash-feed": "I412", "dash-feed-streams": "I7"}
