@@ -1124,14 +1124,12 @@ def _runs_stop_is_ended(runs_dir: Path) -> Callable[[str], bool]:
     return is_ended
 
 
-def _runs_stop_hosts(a: argparse.Namespace) -> tuple[lane_hosts.LaneHost, ...]:
-    """The profile's `lane_hosts`, the way `_setup_doctor_host` reads them; a missing or
-    unreadable profile just leaves a local-only stop with nothing to look up."""
-    text = _read_text_or_none(_profile_path(a))
-    if text is None:
-        return ()
-    parsed = _profile_lane_hosts(text)
-    return () if isinstance(parsed, lane_hosts.LaneHostError) else parsed
+def _runs_stop_hosts(a: argparse.Namespace) -> tuple[lane_hosts.LaneHost, ...] | lane_hosts.LaneHostError:
+    """The hosts `runs stop` and `runs move` resolve names against: the same table-then-profile hosts
+    `route launch --on` picks from, drained rows included, since a run launched before its host was
+    drained still has to be stopped. A missing profile leaves the table alone; a bad profile with an
+    empty table comes back as the LaneHostError."""
+    return _fetch_hosts(_read_text_or_none(_profile_path(a)) or "", run_store.hosts(Path(a.runs_dir)))
 
 
 def _runs_stop(a: argparse.Namespace) -> int:
@@ -1305,11 +1303,29 @@ def _runs_move_harness_python(a: argparse.Namespace) -> str:
     return str(install_root.harness_python(harness_dir)) if harness_dir else "python"
 
 
+def _runs_move_target_refusal(a: argparse.Namespace) -> str | None:
+    """Edge. Why `--to` cannot take the run, or None. It holds the host to the rule the relaunch applies
+    (`_lane_host_or_refuse`): an active table row with a workspace_dir. Checked before any step, so a host
+    the relaunch would refuse never costs the run a pause and a stop."""
+    hosts = _runs_stop_hosts(a)
+    if isinstance(hosts, lane_hosts.LaneHostError):
+        return hosts.message
+    host = lane_hosts.find_lane_host(hosts, a.to)
+    if host is None:
+        print(f"configured: {', '.join(h.name for h in hosts) or 'none'}", file=sys.stderr)
+        return f"no such host {a.to}"
+    row = next((r for r in run_store.hosts(Path(a.runs_dir)) if str(r["name"]) == a.to), None)
+    if row is not None and row.get("state") != "active":
+        return f"host {a.to} is {row.get('state')}, not active"
+    return None if host.workspace_dir else _no_workspace_dir_line(a.to)
+
+
 def _runs_move(a: argparse.Namespace) -> int:
     """`cox runs move <run_id> --to <host>`: pause, stop, clear_branches, relaunch, in order,
     stopping at the first step whose own result is not ok."""
-    if lane_hosts.find_lane_host(_runs_stop_hosts(a), a.to) is None:
-        return _runs_move_report(a, [], False, f"no such host {a.to}")
+    refusal = _runs_move_target_refusal(a)
+    if refusal is not None:
+        return _runs_move_report(a, [], False, refusal)
     initiative = chair_facts.run_initiative(a.run_id)
     runs_dir = Path(a.runs_dir)
     ws = runs_dir.parent
@@ -5435,9 +5451,13 @@ def _lane_host_or_refuse(a: argparse.Namespace, profile: Mapping) -> tuple[lane_
             print(note)
         return None, 2
     if not host.workspace_dir:
-        print(f"routing: host {name} has no workspace_dir: run `cox host beat {name}` on it, or list it under lane_hosts in the profile")
+        print(f"routing: {_no_workspace_dir_line(name)}")
         return None, 2
     return host, None
+
+
+def _no_workspace_dir_line(name: str) -> str:
+    return f"host {name} has no workspace_dir: run `cox host beat {name}` on it, or list it under lane_hosts in the profile"
 
 
 def _host_auth_output(argv: list[str]) -> str:
@@ -6342,7 +6362,12 @@ def _setup_doctor_host(a: argparse.Namespace, run) -> int:
     if text is None:
         print(f"cannot read profile: {path}")
         return 1
-    hosts = _profile_lane_hosts(text)
+    try:
+        workspace = route.parse_profile(text).get("workspace_dir", "")
+    except route.ProfileError:
+        workspace = ""
+    rows = run_store.hosts(Path(workspace).expanduser() / "runs") if workspace else []
+    hosts = _fetch_hosts(text, rows)  # a table-only host is a lane host to `route launch --on`, so to its doctor
     if isinstance(hosts, lane_hosts.LaneHostError):
         print(hosts.message)
         return 1

@@ -28,7 +28,7 @@ def stop_run(
     run_remote: Callable[[list[str]], Any],
     is_ended: Callable[[str], bool],
     sleep: Callable[[float], Any],
-    hosts: tuple[lane_hosts.LaneHost, ...] = (),
+    hosts: tuple[lane_hosts.LaneHost, ...] | lane_hosts.LaneHostError = (),
     max_seconds: float = 60,
     interval: float = 2,
 ) -> dict:
@@ -37,9 +37,13 @@ def stop_run(
         record = remote_lane.parse_remote_record(record_path.read_text())
         if record is None:
             return {"ok": False, "run": run_id, "reason": "bad remote record"}
+        if isinstance(hosts, lane_hosts.LaneHostError):
+            return {"ok": False, "run": run_id, "reason": hosts.message}
         host = lane_hosts.find_lane_host(hosts, record["host"])
         if host is None:
             return {"ok": False, "run": run_id, "reason": f"host {record['host']} not configured"}
+        if not host.workspace_dir:
+            return {"ok": False, "run": run_id, "reason": f"host {host.name} has no workspace_dir, so its pidfile cannot be found"}
         pidfile_path = f"{host.workspace_dir}/runs/{run_id}.pid"
         argv = stop_kill_argv(host.ssh, pidfile_path)
         run_remote(argv)
