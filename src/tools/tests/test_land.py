@@ -1260,6 +1260,8 @@ def test_cli_apply_refuses_when_the_pr_branch_already_exists(repo, tmp_path, cap
 def test_cli_apply_refuses_a_checks_launch_failure_before_push(repo, tmp_path, capsys, monkeypatch):
     task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
     (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    (repo / "pytest.ini").write_text("")  # a Python project, ignored so the repo stays clean
+    (repo / ".git" / "info" / "exclude").write_text("pytest.ini\n")
     calls = []
     real_run = cli.subprocess.run
 

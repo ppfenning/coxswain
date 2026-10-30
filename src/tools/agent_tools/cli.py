@@ -1880,6 +1880,8 @@ def _phase_needing_land(runs_dir: Path, run_id: str) -> str | None:
 def _run_checks(checks: list[tuple[str, list[str]]], cwd: Path) -> tuple[bool, str]:
     """Each `(name, argv)` pair in order, stopping at the first launch error
     or failure and naming it by `name`, never by its argv or shell command."""
+    if not checks:
+        return True, "none declared"
     skipped: list[str] = []
     for name, argv in checks:
         try:
@@ -2781,6 +2783,49 @@ def _land_done_before_fetch(runs_dir: Path, task: str | None, mode: str) -> bool
     return initiative is not None and run_store.task_state_of(runs_dir, initiative, task) == "done"
 
 
+def _cartridge_checks(repo: Path, profile: dict) -> tuple[list[dict], str | None]:
+    """Edge. The profile's team cartridge `landing_areas.checks`, resolved as the chair resolves it, and the error text
+    when it cannot be: a profile naming no team and no cartridges_dir has no cartridge, which is `([], None)`."""
+    team, cartridges_dir = profile.get("team"), profile.get("cartridges_dir")
+    if not team or not cartridges_dir:
+        return [], None
+    try:
+        from harness.resolve import overlay_path, resolve_cartridge
+        overlay_file = Path(overlay_path(str(repo)))
+        overlay = yaml.safe_load(overlay_file.read_text(encoding="utf-8")) if overlay_file.is_file() else None
+        cartridge, _ = resolve_cartridge(team, cartridges_dir=Path(cartridges_dir).expanduser(),
+                                         skills_root=[Path(r).expanduser() for r in profile.get("skills_roots") or []], overlay=overlay)
+    except Exception as exc:
+        return [], f"{type(exc).__name__}: {exc}"
+    return list((cartridge.get("landing_areas") or {}).get("checks") or []), None
+
+
+def _land_repo_facts(repo: Path, profile: dict) -> dict:
+    """Edge. What `land.checks_argv` needs: the cartridge's checks plus the repo's `.agent-checks` (parsed by
+    `harness.checks.repo_checks`, as the chair does), the files that say whether pytest belongs here, and
+    `cartridge_error`, set when the cartridge could not be resolved and the checks are therefore short."""
+    from harness.checks import repo_checks
+    try:
+        agent_checks = (repo / ".agent-checks").read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeDecodeError):
+        agent_checks = ""
+    cartridge_checks, cartridge_error = _cartridge_checks(repo, profile)
+    return {"venv_python": (repo / ".venv" / "bin" / "python").exists(), "uv_lock": (repo / "uv.lock").exists(),
+            "python_project": any((repo / name).exists() for name in land.PYTHON_PROJECT_FILES),
+            "checks": land.resolved_checks(cartridge_checks, repo_checks(agent_checks)), "cartridge_error": cartridge_error}
+
+
+def _land_checks_lines(steps: list[dict]) -> list[str]:
+    """The dry run's lines, one per checks step and labelled by what it checks, each check as its command (or
+    `name = command` when the name is not the command's first word); `none declared` for a step holding none."""
+    def show(name: str, argv: list[str]) -> str:
+        cmd = shlex.join(argv)
+        return cmd if argv and argv[0] == name else f"{name} = {cmd}"
+    return [f"checks ({s.get('worktree_of') or s.get('branch') or 'repo'}): "
+            + ("; ".join(show(n, argv) for n, argv in s["checks"]) or "none declared")
+            for s in steps if s["kind"] == "checks"]
+
+
 def _runs_land(a: argparse.Namespace) -> int:
     repo = Path(a.repo).expanduser()
     runs_dir, reason = _runs_dir_for_land(a)
@@ -2808,7 +2853,14 @@ def _runs_land(a: argparse.Namespace) -> int:
         print(f"land: profile unreadable: {exc}")
         return 2
     default_branch = "main"
-    repo_facts = {"venv_python": (repo / ".venv" / "bin" / "python").exists(), "uv_lock": (repo / "uv.lock").exists()}
+    repo_facts = _land_repo_facts(repo, profile)
+    if repo_facts["cartridge_error"]:
+        # The chair fails a run whose cartridge will not resolve; a land that went on would push after fewer checks than the build ran.
+        shortfall = f"cartridge checks unavailable ({repo_facts['cartridge_error']}); the land would run fewer checks than the build did"
+        if a.apply:
+            print(f"land: refusing, {shortfall}")
+            return 2
+        print(f"land: {shortfall}; the list below is short", file=sys.stderr)
     phase = getattr(a, "phase", None) or (None if a.task else _phase_needing_land(runs_dir, run_id))
     land_mode = work_state.work_state_mode(_lake_provider(a)[0]) if a.apply else "files"
     record, item_path, lease_task = None, None, None
@@ -2861,6 +2913,8 @@ def _runs_land(a: argparse.Namespace) -> int:
         print(f"land: --gate {level} overrides the resolved level")
     planned, steps = steps, land.gate_steps(steps, level)
     if not a.apply:
+        for line in _land_checks_lines(steps):
+            print(line, file=sys.stderr)
         print(json.dumps(steps, indent=2))
         return 2 if any(s["kind"] == "refuse" for s in steps) else 0
     forge_choice = forge.forge_name(profile)
