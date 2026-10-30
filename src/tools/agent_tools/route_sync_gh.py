@@ -12,6 +12,9 @@ import json
 import os
 import re
 import subprocess
+from collections.abc import Callable, Mapping
+from dataclasses import replace
+from functools import partial
 from pathlib import Path
 
 from agent_tools import epic, repo_path, route, route_sync, run_store
@@ -74,34 +77,45 @@ class RepoError(ValueError):
 
 
 _SLUG = re.compile(r"[\w.-]+/[\w.-]+")
+Resolver = Callable[[str], tuple[str, str]]
 
 
-def _repo_of(value: str) -> str:
+def _repo_of(value: str, aliases: Mapping[str, str] | None = None) -> str:
     """`value` may be a checkout path (`route file --repo PATH`'s own contract for intake items) or an
     `owner/name` slug: a checkout resolves to its origin slug, a slug passes through, and an empty value stays
-    empty. Anything else raises `RepoError` naming it, instead of reaching gh as an owner."""
+    empty. `aliases` is the profile's `repo_aliases`: it maps a retired repo to a slug, by the value itself or
+    by the last path segment of a value that is not already a slug. Anything else raises `RepoError` naming
+    it, instead of reaching gh as an owner."""
     slug = _origin_slug(value)
-    if slug or not value or _SLUG.fullmatch(value):
+    if slug or not value:
         return slug or value
+    table = aliases or {}
+    if value in table:
+        return table[value]
+    if _SLUG.fullmatch(value):
+        return value
+    named = table.get(Path(value.rstrip("/")).name)
+    if named:
+        return named
     raise RepoError(f"route sync: {value} is not a checkout with an origin remote nor an owner/name slug")
 
 
-def _checked_repo(value: str) -> tuple[str, str]:
+def _checked_repo(value: str, aliases: Mapping[str, str] | None = None) -> tuple[str, str]:
     """`(repo, error)`: `_repo_of(value)` and `""`, or `("", why)`. An item carries the error rather than raising it,
     so one bad repo stops only a sync that includes that item."""
     try:
-        return _repo_of(value), ""
+        return _repo_of(value, aliases), ""
     except RepoError as exc:
         return "", str(exc)
 
 
-def _initiative_repo(root: Path, initiative: str) -> tuple[str, str]:
+def _initiative_repo(root: Path, initiative: str, resolve: Resolver = _checked_repo) -> tuple[str, str]:
     """`(repo, error)` of the initiative's `repo:`: `("", "")` when there is no initiative file or no `repo:`."""
     meta = root / "work" / initiative / "initiative.md"
     if not meta.is_file():
         return "", ""
     fields, _ = route.parse_frontmatter(meta.read_text())
-    return _checked_repo(fields.get("repo", ""))
+    return resolve(fields.get("repo", ""))
 
 
 def _pid_alive(root: Path, run_id: str) -> bool:
@@ -182,14 +196,15 @@ def _item(fields: dict, body: str, stem: str, *, state: str, phase: str, run_id:
     )
 
 
-def _intake_item(path: Path) -> route_sync.Item:
+def _intake_item(path: Path, resolve: Resolver) -> route_sync.Item:
     fields, body = route.parse_frontmatter(path.read_text())
-    repo, repo_error = _checked_repo(fields.get("repo", ""))
+    repo, repo_error = resolve(fields.get("repo", ""))
     return _item(fields, body, path.stem, state="intake", phase="", run_id="", cost=0.0,
                  gate="", repo=repo, repo_error=repo_error)
 
 
-def _work_item(root: Path, path: Path, landing: dict[str, str], costs: dict[str, float]) -> route_sync.Item:
+def _work_item(root: Path, path: Path, landing: dict[str, str], costs: dict[str, float],
+               resolve: Resolver) -> route_sync.Item:
     fields, body = route.parse_frontmatter(path.read_text())
     initiative, phase_dir, stem = path.parts[-3], path.parts[-2], path.stem
     item_id = fields.get("id", stem)
@@ -198,7 +213,7 @@ def _work_item(root: Path, path: Path, landing: dict[str, str], costs: dict[str,
     in_flight = bool(latest) and _pid_alive(root, latest)
     state = "in_flight" if in_flight else fields.get("state", "todo")
     has_parent = (root / "work" / initiative / "initiative.md").is_file()
-    repo, repo_error = _initiative_repo(root, initiative)
+    repo, repo_error = _initiative_repo(root, initiative, resolve)
     return _item(fields, body, stem, state=state, phase=fields.get("phase", phase_dir),
                  run_id=landing.get(item_id) or latest,
                  cost=round(costs.get(item_id, 0.0), 4), gate=fields.get("gate", ""),
@@ -214,25 +229,39 @@ def _initiative_state(task_states: list[str]) -> str:
     return "in_flight" if "in_flight" in task_states else "ready"
 
 
-def _initiative_item(root: Path, path: Path, tasks: list[route_sync.Item]) -> route_sync.Item:
+def _initiative_item(root: Path, path: Path, tasks: list[route_sync.Item],
+                     resolve: Resolver) -> route_sync.Item:
     fields, body = route.parse_frontmatter(path.read_text())
     initiative = path.parent.name
-    repo, repo_error = _initiative_repo(root, initiative)
+    repo, repo_error = _initiative_repo(root, initiative, resolve)
     return _item({**fields, "id": _initiative_id(initiative)}, body, initiative,
                  state=_initiative_state([t.state for t in tasks]), phase="", run_id="", cost=0.0, gate="",
                  repo=repo, repo_error=repo_error, initiative=True,
                  release=route_sync.epic_release([t.release for t in tasks]))
 
 
-def items_from_store(workspace) -> list[route_sync.Item]:
+def _unresolved(value: str) -> tuple[str, str]:
+    return value, ""
+
+
+def resolve_repos(items: list[route_sync.Item], aliases: Mapping[str, str] | None = None) -> list[route_sync.Item]:
+    """The items with `repo` resolved, for items loaded `lazy`; one that fails keeps its value in `repo_named`."""
+    resolved = [(item, *_checked_repo(item.repo, aliases)) for item in items]
+    return [replace(item, repo=repo, repo_error=error, repo_named=item.repo if error else "")
+            for item, repo, error in resolved]
+
+
+def items_from_store(workspace, aliases: Mapping[str, str] | None = None, *, lazy: bool = False) -> list[route_sync.Item]:
     """Every `intake/*.md`, `work/*/initiative.md` and `work/*/*/*.md` item, as a
-    `route_sync.Item`. An initiative is listed before its tasks."""
+    `route_sync.Item`. An initiative is listed before its tasks. `aliases` is the profile's `repo_aliases`.
+    With `lazy` no repo is resolved and `repo` holds the value as written, for `resolve_repos` to settle later."""
     root = Path(workspace)
+    resolve = _unresolved if lazy else partial(_checked_repo, aliases=aliases)
     intake_dir = root / "intake"
-    intake = [_intake_item(p) for p in sorted(intake_dir.glob("*.md"))] if intake_dir.is_dir() else []
+    intake = [_intake_item(p, resolve) for p in sorted(intake_dir.glob("*.md"))] if intake_dir.is_dir() else []
     landing, costs = _landing_runs(root), _task_costs(root)
-    work = [_work_item(root, p, landing, costs) for p in sorted(root.glob("work/*/*/*.md"))]
-    initiatives = [_initiative_item(root, p, [t for t in work if t.parent == _initiative_id(p.parent.name)])
+    work = [_work_item(root, p, landing, costs, resolve) for p in sorted(root.glob("work/*/*/*.md"))]
+    initiatives = [_initiative_item(root, p, [t for t in work if t.parent == _initiative_id(p.parent.name)], resolve)
                    for p in sorted(root.glob("work/*/initiative.md"))]
     return intake + initiatives + work
 

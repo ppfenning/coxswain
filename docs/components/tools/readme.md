@@ -173,6 +173,21 @@ the run store; see [`docs/shared-store.md`](https://github.com/ppfenning/coxswai
 the profile? [`docs/getting-started.md`](https://github.com/ppfenning/coxswain/blob/main/src/tools/docs/getting-started.md) walks
 through it.
 
+`cox route sync` resolves a repo only for the items it will act on: in the
+profile's `tracker_scope` and not already `done` or `dropped`. A settled item
+whose `repo:` no longer resolves is left out without a refusal. An open item
+whose repo does not resolve is refused by name and the sync goes on with the
+rest. The run prints `route sync: skipped N item(s): <repo> (<count>)` and
+exits 2 only when an open item was skipped. To keep a retired repo
+resolving, map it to its new slug in the profile; a key matches the `repo:`
+value or its last path segment:
+
+```yaml
+repo_aliases:
+  agent-tools: ppfenning/coxswain
+  coxswain-graphs: ppfenning/coxswain
+```
+
 Integrations that name a vendor (intake sources, forges, trackers) live in
 [ppfenning/coxswain-plugins](https://github.com/ppfenning/coxswain-plugins).
 

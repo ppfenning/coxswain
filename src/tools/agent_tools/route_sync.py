@@ -47,6 +47,7 @@ class Item:
     initiative: bool = False
     pr_url: str = ""
     release: str = ""
+    repo_named: str = ""  # the `repo:` value as written, kept when it does not resolve
     repo_error: str = ""  # why `repo` is empty when the item named one that does not resolve; a sync refuses with it
 
     def __post_init__(self) -> None:
@@ -220,6 +221,21 @@ def scoped(items: list[Item], scope: str, threshold: Mapping[str, Any]) -> list[
     return [i for i in items
             if (i.issue is not None if not i.initiative
                 else scope == "initiatives" or is_epic(threshold, tasks_of[i.id]))]
+
+
+def split_unresolved(items: Sequence[Item], universe: Sequence[Item]) -> tuple[list[Item], list[Item], list[Item]]:
+    """`(actionable, settled, open)`: `items` whose repo resolves, then those whose repo does not, split by settled or open.
+
+    An initiative is settled when it has tasks and all of them, looked up in `universe` (the unscoped store, since a
+    narrowed scope drops issue-less tasks), are done or dropped; its own state stays `ready` once a task is dropped.
+    """
+    def settled(item: Item) -> bool:
+        tasks = [t for t in universe if t.parent == item.id]
+        return item.state in _CLOSING or (item.initiative and bool(tasks) and all(t.state in _CLOSING for t in tasks))
+
+    bad = [i for i in items if i.repo_error]
+    return ([i for i in items if not i.repo_error],
+            [i for i in bad if settled(i)], [i for i in bad if not settled(i)])
 
 
 def initiative_facts(items: list[Item], scope: str, threshold: Mapping[str, Any],

@@ -4966,30 +4966,39 @@ def _tracker_scope(profile: dict, repo: Path | None = None) -> tuple[str, dict, 
         return "epics", {}, str(exc)
 
 
-def _sync_items(a: argparse.Namespace, workspace: str) -> tuple[list[route_sync.Item], str, int | None]:
-    """Edge. `(items, scope, rc)`: the items this sync mirrors under the resolved `tracker_scope`, and an exit
-    code to stop with when `rc` is set, after printing why. An unresolvable repo is refused by name; `--item` naming an item the scope leaves out exits 0."""
+def _sync_items(a: argparse.Namespace, workspace: str) -> tuple[list[route_sync.Item], str, int | None, int]:
+    """Edge. `(items, scope, rc, skipped_open)`: the items this sync mirrors under the resolved `tracker_scope`, an
+    exit code to stop with when `rc` is set, after printing why, and how many open items it left out. Repos resolve
+    through the profile's `repo_aliases`. An item whose repo does not resolve is dropped when it is done or dropped,
+    and refused by name when open; the sync goes on without it. `--item` naming an item the scope leaves out exits 0."""
     text = _read_text_or_none(_profile_path(a))
-    scope, threshold, error = _tracker_scope(route.parse_profile(text) if text is not None else {})
+    profile = route.parse_profile(text) if text is not None else {}
+    scope, threshold, error = _tracker_scope(profile)
     if error:
         print(f"route sync: {error}; refusing rather than guessing a scope")
-        return [], scope, 2
-    everything = route_sync_gh.items_from_store(workspace)
+        return [], scope, 2, 0
+    everything = route_sync_gh.items_from_store(workspace, lazy=True)
     _, refusal = _only_item(everything, a.item)
     if refusal:
         print(refusal)
-        return [], scope, 2
+        return [], scope, 2, 0
     kept = route_sync.scoped(everything, scope, threshold)
-    items = [item for item in kept if item.id == a.item] if a.item else kept
-    if a.item and not items:
+    chosen = [item for item in kept if item.id == a.item] if a.item else kept
+    if a.item and not chosen:
         print(f"route sync: {a.item} is out of scope under tracker_scope {scope}; nothing to mirror")
-        return [], scope, 0
-    # Only the items this sync would touch can refuse it: a bad intake file stops its own sync, not another's.
-    bad = list(dict.fromkeys(item.repo_error for item in items if item.repo_error))
-    if bad:
-        print("\n".join(bad))
-        return [], scope, 2
-    return items, scope, None
+        return [], scope, 0, 0
+    resolved = route_sync_gh.resolve_repos(chosen, profile.get("repo_aliases") or {})
+    items, settled, unsettled = route_sync.split_unresolved(resolved, everything)
+    if a.item and not items and not unsettled:
+        print(f"route sync: {a.item} is settled and its repo does not resolve; nothing to mirror")
+        return [], scope, 0, 0
+    for line in dict.fromkeys(item.repo_error for item in unsettled):
+        print(line)
+    skipped = collections.Counter(item.repo_named for item in [*settled, *unsettled])
+    if skipped:
+        listed = ", ".join(f"{repo} ({count})" for repo, count in skipped.items())
+        print(f"route sync: skipped {sum(skipped.values())} item(s): {listed}")
+    return items, scope, (2 if unsettled and not items else None), len(unsettled)
 
 
 def _only_item(items: list[route_sync.Item], item_id: str | None) -> tuple[list[route_sync.Item], str | None]:
@@ -5009,7 +5018,7 @@ def _route_sync_registered(a: argparse.Namespace, name: str, mirror: object, wor
     if not callable(sync):
         print(f"route sync: tracker {name} has no sync(workspace, items, *, dry_run)")
         return 2
-    items, _, rc = _sync_items(a, workspace)
+    items, _, rc, skipped = _sync_items(a, workspace)
     if rc is not None:
         return rc
     try:
@@ -5019,7 +5028,7 @@ def _route_sync_registered(a: argparse.Namespace, name: str, mirror: object, wor
         return 1
     for line in lines:
         print(line)
-    return 0 if ok else 1
+    return 1 if not ok else 2 if skipped else 0
 
 
 def _route_sync(a: argparse.Namespace) -> int:
@@ -5049,7 +5058,7 @@ def _route_sync(a: argparse.Namespace) -> int:
     if mirror is not importlib.import_module("agent_tools.route_sync_gh"):
         return _route_sync_registered(a, tracker_choice, mirror, workspace)
     # Items first: an unresolvable repo is refused by name before any `gh` call, `auth_ok` included.
-    items, scope, rc = _sync_items(a, workspace)
+    items, scope, rc, skipped = _sync_items(a, workspace)
     if rc is not None:
         return rc
     if not route_sync_gh.auth_ok(subprocess.run):
@@ -5070,12 +5079,12 @@ def _route_sync(a: argparse.Namespace) -> int:
     steps = route_sync.plan(items, issues, project_items, "github-projects", scope)
     if a.dry_run:
         print("\n".join(route_sync.render(steps)))
-        return 0
+        return 2 if skipped else 0
     log = route_sync_gh.execute(steps, subprocess.run, project, workspace, items, item_node_ids)
     for kind, _, detail in log:
         print(f"{kind}: {detail}")
     hard_failure = any(not step_ok for kind, step_ok, _ in log if kind != "refuse")
-    return 1 if hard_failure else 0
+    return 1 if hard_failure else 2 if skipped else 0
 
 
 _LAUNCH_SETTLE_S = 2.0  # how long a fresh launch is watched for an immediate death before it is reported as started

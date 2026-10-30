@@ -167,6 +167,7 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
     in_spend = False
     in_chair = False
     in_store = False
+    in_aliases = False  # `repo_aliases:` block: indented `<retired repo>: <owner/name>` lines, kept as text
     in_hosts = False  # `lane_hosts:` is a list of mappings that cli reads from the YAML text; its lines are skipped here
     in_unknown = False  # an unknown top-level key's indented block is dropped with the key, not read as a stray nested line
     for lineno, raw_line in enumerate(text.splitlines(), start=1):
@@ -178,6 +179,13 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
         if (in_hosts or in_unknown) and line != line.lstrip():
             continue
         if line != line.lstrip():
+            if in_aliases:
+                key, _, value = _stripped_content(line).partition(":")
+                key, value = key.strip().strip("\"'"), value.strip().strip("\"'")
+                if not key or not value:
+                    raise ProfileError(f"line {lineno}: {raw_line}")
+                result.setdefault("repo_aliases", {})[key] = value
+                continue
             if in_store:
                 content = _stripped_content(line)
                 if ":" not in content:
@@ -224,6 +232,7 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
         in_spend = False
         in_chair = False
         in_store = False
+        in_aliases = False
         in_hosts = False
         in_unknown = False
         content = _stripped_content(line)
@@ -246,6 +255,11 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
             if value:
                 raise ProfileError(f"line {lineno}: {raw_line}")
             in_store = True
+            continue
+        if key == "repo_aliases":
+            if value:
+                raise ProfileError(f"line {lineno}: {raw_line}")
+            in_aliases = True
             continue
         if key == "lane_hosts":
             if value:
