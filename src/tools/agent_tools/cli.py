@@ -3395,8 +3395,10 @@ def _with_lane_fields(rows: list, runs: list, now: str) -> list:
     return [one(row) for row in rows]
 
 
-def _efficiency(runs_dir: Path, now: str) -> str | None:
-    """Edge. The `efficiency:` line for the UTC day of `now`; None with no store or one that fails to answer."""
+def _efficiency_figures(runs_dir: Path, now: str) -> dict | None:
+    """Edge. Today's (UTC day of `now`) cost, landed count, per-landed cost and first-try share; None with no store or one that fails to answer.
+
+    The one place both the docket's `efficiency:` line and the dash feed's `spend.today` read from."""
     today = now[:10]
     tomorrow = (datetime.date.fromisoformat(today) + datetime.timedelta(days=1)).isoformat()
     try:
@@ -3408,7 +3410,22 @@ def _efficiency(runs_dir: Path, now: str) -> str | None:
     except (*run_store._DB_ERRORS, OSError, RuntimeError, ValueError, TypeError):
         return None
     rate, measured = route.first_try(landed, counts)
-    return route.efficiency_line(spend, len(landed), rate, measured)
+    return {
+        "date": today,
+        "cost": spend,
+        "landed": len(landed),
+        "per_landed": spend / len(landed) if landed else None,
+        "first_try_rate": rate,
+        "measured": measured,
+    }
+
+
+def _efficiency(runs_dir: Path, now: str) -> str | None:
+    """Edge. The `efficiency:` line for the UTC day of `now`; None with no store or one that fails to answer."""
+    figures = _efficiency_figures(runs_dir, now)
+    if figures is None:
+        return None
+    return route.efficiency_line(figures["cost"], figures["landed"], figures["first_try_rate"], figures["measured"])
 
 
 def _gather_context(profile_path: Path, mode: str = "files"):

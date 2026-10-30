@@ -8,8 +8,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from test_run_store import ROW, store
 
-from agent_tools import dash_feed, usage_meter, usage_window
+from agent_tools import cli, dash_feed, route, usage_meter, usage_window
 
 NOW = "2026-10-09T12:00:00Z"
 NOW_DT = datetime(2026, 10, 9, 12, tzinfo=UTC)
@@ -234,3 +235,51 @@ def test_v1_spend_keeps_every_existing_key_and_blanks_an_absent_age(tmp_path):
         "weekly_resets_at", "hard_stop_fraction", "spend_source", "spend_age_s",
     } <= spend.keys()
     assert (spend["spend_source"], spend["spend_age_s"]) == ("estimate", "")
+
+
+TODAY_TS = "2026-10-30T12:00:00+00:00"
+TODAY_NOW = "2026-10-30T18:00:00Z"
+
+
+def _landed(run: str, task: str) -> str:
+    return json.dumps({"ts": TODAY_TS, "run": run, "task": task, "steps_reached": ["mark_done"], "exit": 0, "pr": None})
+
+
+def _build(call_id: str, cost: float, task_id: str) -> dict:
+    return {**ROW, "call_id": call_id, "ts": TODAY_TS, "cost_usd": cost, "role": "build", "task_id": task_id}
+
+
+def test_the_feeds_today_and_the_dockets_efficiency_line_agree(tmp_path):
+    store(
+        tmp_path,
+        _build("c0", 1.5, "epic-x-5:seams:seams-t"),
+        _build("c1", 1.5, "epic-x-5:wires:wires-t"),
+        _build("c2", 3.0, "epic-x-5:wires:wires-t"),
+    )
+    lines = [_landed("epic-x-5", t) for t in ("seams-task", "wires-task", "loose-task")]
+    (tmp_path / "land.jsonl").write_text("\n".join(lines) + "\n")
+
+    today = dash_feed._today_v1(tmp_path, TODAY_NOW)
+    line = cli._efficiency(tmp_path, TODAY_NOW)
+
+    assert today == {
+        "date": "2026-10-30", "cost": 6.0, "landed": 3, "per_landed": 2.0, "first_try_rate": 0.5, "measured": 2,
+    }
+    assert line == "efficiency: today $6.00 for 3 landed ($2.00 per landed task), first-try 50% of 2 measured"
+    assert line == route.efficiency_line(today["cost"], today["landed"], today["first_try_rate"], today["measured"])
+
+
+def test_nothing_landed_gives_a_null_per_landed_and_first_try_rate(tmp_path):
+    store(tmp_path, _build("c0", 0.5, "epic-x-5:seams:seams-t"))
+
+    today = dash_feed._today_v1(tmp_path, TODAY_NOW)
+
+    assert today == {
+        "date": "2026-10-30", "cost": 0.5, "landed": 0, "per_landed": None, "first_try_rate": None, "measured": 0,
+    }
+    assert cli._efficiency(tmp_path, TODAY_NOW) == "efficiency: today $0.50, nothing landed yet"
+
+
+def test_no_store_gives_a_null_today(tmp_path):
+    assert dash_feed._today_v1(tmp_path, TODAY_NOW) is None
+    assert cli._efficiency(tmp_path, TODAY_NOW) is None
