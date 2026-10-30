@@ -6690,6 +6690,7 @@ options:
 <h2 id="sync">sync</h2>
 <div class="highlight"><pre><span></span><code>usage: cox route sync [-h] [--profile PROFILE] [--item ITEM]
                       [--project PROJECT] [--workspace WORKSPACE] [--dry-run]
+                      [--prune-out-of-scope]
 
 options:
   -h, --help            show this help message and exit
@@ -6698,6 +6699,10 @@ options:
   --project PROJECT
   --workspace WORKSPACE
   --dry-run
+  --prune-out-of-scope  close open task issues outside tracker_scope as not
+                        planned and remove their cards; with --dry-run, list
+                        them only. A coxswain label added by hand counts as
+                        made by sync
 </code></pre></div>
 <h2 id="launch">launch</h2>
 <div class="highlight"><pre><span></span><code>usage: cox route launch [-h] {epic,decompose,rescue,cos,sweep} ...
