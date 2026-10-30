@@ -111,7 +111,9 @@ def test_any_other_error_kills_the_group_closes_the_pipes_and_reraises(tmp_path:
     started: list[subprocess.Popen[str]] = []
 
     class Interrupted(real):
-        def communicate(self, input=None, timeout=None):
+        def wait(self, timeout=None):
+            if started:
+                return super().wait(timeout)
             started.append(self)
             deadline = time.monotonic() + 5
             while not pidfile.exists() and time.monotonic() < deadline:

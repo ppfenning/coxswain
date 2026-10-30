@@ -870,6 +870,146 @@ def test_a_trace_dir_switches_to_stream_json_and_keeps_every_event(fake_claude, 
     assert (tmp_path / "trace" / "build-2.jsonl").is_file(), "one file per call, numbered per role"
 
 
+def _streaming_claude(tmp_path: Path, first: dict, last: dict) -> tuple[Path, Path]:
+    """A claude that prints `first`, waits for the gate file, then prints `last` and exits."""
+    gate = tmp_path / "gate"
+    script = tmp_path / "streaming-claude"
+    script.write_text(
+        f"#!/bin/sh\necho $$ > {tmp_path / 'claude.pid'}\nprintf '%s\\n' '{json.dumps(first)}'\n"
+        f"while [ ! -e {gate} ]; do sleep 0.05; done\nprintf '%s\\n' '{json.dumps(last)}'\n",
+        encoding="utf-8",
+    )
+    script.chmod(script.stat().st_mode | stat.S_IXUSR)
+    return script, gate
+
+
+def test_on_node_sees_started_each_event_in_order_then_finished_and_the_trace_grows_while_the_node_runs(tmp_path) -> None:
+    first = {"type": "system", "subtype": "init"}
+    last = {"type": "result", "subtype": "success", "is_error": False, "structured_output": {"ok": True}, "num_turns": 1}
+    script, gate = _streaming_claude(tmp_path, first, last)
+    runner = ClaudeCodeRunner(PROFILE, claude_bin=str(script), cwd=tmp_path, trace_dir=tmp_path / "trace", timeout=30)
+    trace = tmp_path / "trace" / "build-1.jsonl"
+    seen: list[tuple[str, dict, dict | None]] = []
+    partial: list[str] = []
+
+    def on_node(kind, info, event) -> None:
+        seen.append((kind, info, event))
+        if event == first:
+            partial.append(trace.read_text(encoding="utf-8"))
+            gate.write_text("go", encoding="utf-8")  # the process is still blocked on this file until now
+
+    runner.on_node = on_node
+    out = runner.run(role="build", schema=SCHEMA, prompt="go", task="T-1")
+
+    assert dict(out) == {"ok": True}
+    assert [(kind, event) for kind, _, event in seen] == [("started", None), ("event", first), ("event", last), ("finished", None)]
+    assert partial == [json.dumps(first) + "\n"], "the trace held the partial stream before the process exited"
+    assert {json.dumps(info, sort_keys=True) for _, info, _ in seen} == {
+        json.dumps({"role": "build", "attempt": 1, "task": "T-1", "tier": seen[0][1]["tier"], "cwd": str(runner.cwd)}, sort_keys=True)
+    }
+    assert trace.read_text(encoding="utf-8") == json.dumps(first) + "\n" + json.dumps(last) + "\n"
+
+
+def test_a_raising_on_node_callback_does_not_fail_the_call(fake_claude, tmp_path) -> None:
+    runner = runner_for(fake_claude, tmp_path, trace_dir=tmp_path / "trace")
+    kinds: list[str] = []
+
+    def boom(kind, info, event) -> None:
+        kinds.append(kind)
+        raise RuntimeError("observer broke")
+
+    runner.on_node = boom
+    assert dict(runner.run(role="build", schema=SCHEMA, prompt="go")) == {"ok": True}
+    assert kinds == ["started", "event", "finished"]
+
+
+def test_without_a_trace_dir_on_node_hears_started_and_finished_and_no_events(fake_claude, tmp_path) -> None:
+    runner = runner_for(fake_claude, tmp_path)
+    kinds: list[str] = []
+    runner.on_node = lambda kind, info, event: kinds.append(kind)
+    assert dict(runner.run(role="build", schema=SCHEMA, prompt="go")) == {"ok": True}
+    assert kinds == ["started", "finished"]
+
+
+def test_a_timeout_while_streaming_keeps_the_partial_trace_ends_with_finished_and_kills_the_group(tmp_path) -> None:
+    first = {"type": "system", "subtype": "init"}
+    script, _gate = _streaming_claude(tmp_path, first, {"type": "result"})  # the gate is never opened: claude hangs
+    runner = ClaudeCodeRunner(PROFILE, claude_bin=str(script), cwd=tmp_path, trace_dir=tmp_path / "trace", timeout=1)
+    kinds: list[str] = []
+    runner.on_node = lambda kind, info, event: kinds.append(kind)
+
+    with pytest.raises(RunnerError, match="did not finish within 1s"):
+        runner.run(role="build", schema=SCHEMA, prompt="go")
+
+    assert kinds == ["started", "event", "finished"]
+    assert (tmp_path / "trace" / "build-1.jsonl").read_text(encoding="utf-8") == json.dumps(first) + "\n"
+    with pytest.raises(ProcessLookupError):
+        os.kill(int((tmp_path / "claude.pid").read_text()), 0)
+
+
+def test_same_role_nodes_running_together_stream_to_their_own_trace_files(tmp_path) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    first = {"type": "system", "subtype": "init"}
+    last = {"type": "result", "subtype": "success", "is_error": False, "structured_output": {"ok": True}, "num_turns": 1}
+    script, gate = _streaming_claude(tmp_path, first, last)
+    runner = ClaudeCodeRunner(PROFILE, claude_bin=str(script), cwd=tmp_path, trace_dir=tmp_path / "trace", timeout=30)
+    arrived: list[int] = []
+
+    def on_node(kind, info, event) -> None:
+        if event == first:
+            arrived.append(1)
+            if len(arrived) == 2:  # both nodes are streaming at once before either may finish
+                gate.write_text("go", encoding="utf-8")
+
+    runner.on_node = on_node
+    with ThreadPoolExecutor(2) as pool:
+        list(pool.map(lambda _: runner.run(role="build", schema=SCHEMA, prompt="go"), range(2)))
+
+    traces = sorted(c["trace"] for c in runner.calls)
+    assert traces == [str(tmp_path / "trace" / "build-1.jsonl"), str(tmp_path / "trace" / "build-2.jsonl")]
+    for trace in traces:
+        assert Path(trace).read_text(encoding="utf-8") == json.dumps(first) + "\n" + json.dumps(last) + "\n"
+
+
+def test_a_failing_pipe_read_is_a_named_error_not_an_empty_output(fake_claude, tmp_path, monkeypatch) -> None:
+    real = os.read
+
+    def failing(fd, n):
+        if n == 65536:  # only the runner's own pipe reads ask for this size
+            raise OSError(5, "boom")
+        return real(fd, n)
+
+    monkeypatch.setattr(os, "read", failing)
+    with pytest.raises(RunnerError, match="reading claude's output failed: OSError"):
+        runner_for(fake_claude, tmp_path).run(role="plan", schema=SCHEMA, prompt="go")
+
+
+def test_the_reader_handles_a_pipe_numbered_past_the_select_ceiling() -> None:
+    import fcntl
+    import resource
+    import threading
+
+    from runner.claude_code_runner import _pump
+
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if hard != resource.RLIM_INFINITY and hard < 1200:
+        pytest.skip("the open-file limit cannot be raised past 1024")
+    resource.setrlimit(resource.RLIMIT_NOFILE, (max(soft, 1200), hard))
+    try:
+        read_end, write_end = os.pipe()
+        high = fcntl.fcntl(read_end, fcntl.F_DUPFD, 1100)
+        os.close(read_end)
+        os.write(write_end, b"a\nb")
+        os.close(write_end)
+        parts: list[str] = []
+        with os.fdopen(high, "r") as pipe:
+            _pump(pipe, threading.Event(), parts)
+        assert high >= 1024 and parts == ["a\n", "b"]
+    finally:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+
+
 # NOT a capture: no recorded stream exists in the repo and none could be made here. Keys follow the
 # documented Claude Code system/init message. Replace with a real `--output-format stream-json` line.
 INIT = {"type": "system", "subtype": "init", "claude_code_version": "2.0.31", "model": "claude-haiku-4-5-20251001"}
@@ -1922,18 +2062,19 @@ def _timing_out(monkeypatch, script) -> None:
     """Make the claude subprocess outlive its timeout; every other subprocess runs for real.
 
     The process is real, so the runner's group kill has a real pid to signal; only
-    its first `communicate` reports a timeout.
+    its first `wait` reports a timeout, after the process has finished.
     """
     real = subprocess.Popen
 
     class TimingOut(real):
         expired = False
 
-        def communicate(self, input=None, timeout=None):
+        def wait(self, timeout=None):
             if not self.expired:
                 self.expired = True
+                super().wait()
                 raise subprocess.TimeoutExpired(self.args, timeout)
-            return super().communicate(input, timeout)
+            return super().wait(timeout)
 
     def fake(argv, *args, **kwargs):
         return (TimingOut if argv and argv[0] == str(script) else real)(argv, *args, **kwargs)
@@ -1962,8 +2103,7 @@ def test_a_node_timeout_ledgers_one_failed_row_with_null_cost_and_still_raises(
 def test_a_node_timeout_with_a_trace_on_disk_ledgers_its_cost(fake_claude, tmp_path, conn, monkeypatch) -> None:
     _timing_out(monkeypatch, fake_claude[0])
     trace = tmp_path / "trace" / "plan-1.jsonl"
-    trace.parent.mkdir()
-    trace.write_text(json.dumps({"type": "result", "total_cost_usd": 0.42}) + "\n", encoding="utf-8")
+    fake_claude[2]({"type": "result", "total_cost_usd": 0.42})  # the node's own stream is the trace on disk
     runner = runner_for(fake_claude, tmp_path, runs_dir=tmp_path, run_id="r1", store=Store(conn), trace_dir=tmp_path / "trace")
 
     with pytest.raises(RunnerError, match="did not finish within 1800s"):
