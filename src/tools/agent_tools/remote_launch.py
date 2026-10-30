@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 from agent_tools import repo_path
+from agent_tools.host_cmd import ChairHead, sync_argvs
 from agent_tools.lane_hosts import LaneHost
 from agent_tools.remote_argv import (
     agent_refspec,
@@ -51,6 +53,32 @@ def _checkout(path: str, host_checkouts: Sequence[str]) -> str | None:
     return next((c for c in host_checkouts if c.rstrip("/").rsplit("/", 1)[-1] == name), None)
 
 
+def _git_out(path: str, *args: str) -> str:
+    done = subprocess.run(["git", "-C", path, *args], capture_output=True, text=True, check=False)
+    return done.stdout.strip() if done.returncode == 0 else ""
+
+
+def _local_head(path: str) -> ChairHead | None:
+    """Edge. The commit the chair's checkout at `path` runs, its branch None when detached; None when git cannot read it."""
+    try:
+        sha = _git_out(path, "rev-parse", "HEAD")
+        return ChairHead(sha, _git_out(path, "branch", "--show-current") or None) if sha else None
+    except OSError:
+        return None
+
+
+def _sync_argvs(path: str, head: ChairHead | None, *, detached_only: bool = False) -> list[list[str]]:
+    """`sync_argvs` for a known chair head, else the old default-branch `sync_argv`. With `detached_only`, a head on a
+    branch also keeps `sync_argv`: the repo moves to the chair's commit only at a release tag, since a branch or commit
+    the chair has not pushed is not on the host's origin."""
+    use_head = head is not None and not (detached_only and head.branch)
+    return sync_argvs(path, head) if use_head else [sync_argv(path)]
+
+
+def _sync_steps(ssh: str, path: str, head: ChairHead | None, *, detached_only: bool = False) -> list[list[str]]:
+    return [ssh_argv(ssh, argv) for argv in _sync_argvs(path, head, detached_only=detached_only)]
+
+
 def _sync_path(path: str, host_checkouts: Sequence[str], home: str | None) -> str:
     """The path to sync on the lane host: its matching checkout, else the home-relative form when `home` is given, else `path`."""
     found = _checkout(path, host_checkouts)
@@ -71,6 +99,8 @@ def launch_plan(
     *,
     home: str | None = None,
     host_checkouts: Sequence[str] = (),
+    harness_head: ChairHead | None = None,
+    repo_head: ChairHead | None = None,
 ) -> list[list[str]]:
     """The argv that `launch_on_host` runs in order: the rsync push, then, when `harness_dir` is
     given, the sync of the harness on the lane host, then, when `repo` is given, the sync of `repo`
@@ -83,7 +113,8 @@ def launch_plan(
     per use: home-relative for the ssh sync, tilde form for the push destination, expanded for the local side.
     Without `home` it is passed through unchanged. `harness_dir` is the git checkout holding the harness (on a
     migrated host the coxswain checkout, whose `src/graphs` is the profile's harness_dir). It and `repo` each sync at the entry of
-    `host_checkouts` with the same basename when there is one, and the repo is pushed to that entry too."""
+    `host_checkouts` with the same basename when there is one, and the repo is pushed to that entry too.
+    The harness follows `harness_head` (`sync_argvs`); the repo does so only when `repo_head` is detached (see `_sync_argvs`)."""
     place = locate if locate is not None else (lambda path: f"{host.ssh}:{path}")
     src = f"work/{initiative}"
     remote_dir = f"{host.workspace_dir.rstrip('/')}/{src}"
@@ -92,12 +123,16 @@ def launch_plan(
     rsync_step = rsync_push_argv(src, place(remote_dir), mirror=True)
     launch_step = ssh_argv(host.ssh, launch_argv(remote_dir, run_id, label))
     harness_steps = (
-        [] if harness_dir is None else [ssh_argv(host.ssh, sync_argv(_sync_path(harness_dir, host_checkouts, home)))]
+        [] if harness_dir is None else _sync_steps(host.ssh, _sync_path(harness_dir, host_checkouts, home), harness_head)
     )
     checkout = None if repo is None else _checkout(repo, host_checkouts)
     push_dest = checkout or (None if repo is None or home is None else repo_path.contract(repo, home))
     local_default = None if repo is None or home is None else repo_path.expand(repo, home)
-    repo_steps = [] if repo is None else [ssh_argv(host.ssh, sync_argv(_sync_path(repo, host_checkouts, home)))]
+    repo_steps = (
+        []
+        if repo is None
+        else _sync_steps(host.ssh, _sync_path(repo, host_checkouts, home), repo_head, detached_only=True)
+    )
     push_steps = (
         []
         if relaunch is None or repo is None
@@ -140,16 +175,23 @@ def launch_on_host(
     preflight: str | None = None,
     home: str | None = None,
     host_checkouts: Sequence[str] = (),
+    chair_head: Callable[[str], ChairHead | None] = _local_head,
 ) -> dict | LaunchError:
-    """`preflight` is a refusal line from a check made before anything is copied; None lets the launch go on."""
+    """`preflight` is a refusal line from a check made before anything is copied; None lets the launch go on.
+    `chair_head` reads the commit a chair checkout path runs; the host's harness and repo are brought to it."""
     if preflight is not None:
         return LaunchError("auth", preflight)
     if relaunch is not None and repo is None:
         return LaunchError(
             "push", f"a relocated relaunch to {host.name} has no repo to push epic/{initiative}/* into: nothing was run"
         )
+    given_local = None if relaunch is None else relaunch.local_repo
+    chair_repo = None if repo is None else given_local or (repo if home is None else repo_path.expand(repo, home))
+    harness_head = None if harness_dir is None else chair_head(harness_dir)
+    repo_head = None if chair_repo is None else chair_head(chair_repo)
     plan = launch_plan(
-        host, initiative, run_id, label, locate, repo, harness_dir, relaunch, home=home, host_checkouts=host_checkouts
+        host, initiative, run_id, label, locate, repo, harness_dir, relaunch,
+        home=home, host_checkouts=host_checkouts, harness_head=harness_head, repo_head=repo_head,
     )
     rsync_argv, ssh_cmd = plan[0], plan[-1]
     pushed = run(rsync_argv)
@@ -157,8 +199,9 @@ def launch_on_host(
         return LaunchError("rsync", f"rsync of work/{initiative} to {host.name} exited {pushed}")
     next_step = 1
     if harness_dir is not None:
-        updated = run(plan[next_step])
-        next_step += 1
+        steps = len(_sync_argvs(harness_dir, harness_head))
+        updated = next((code for code in map(run, plan[next_step : next_step + steps]) if code != 0), 0)
+        next_step += steps
         if updated != 0:
             return LaunchError(
                 "harness",
@@ -166,8 +209,9 @@ def launch_on_host(
                 "the lane would run an older harness than the store",
             )
     if repo is not None:
-        synced = run(plan[next_step])
-        next_step += 1
+        steps = len(_sync_argvs(repo, repo_head, detached_only=True))
+        synced = next((code for code in map(run, plan[next_step : next_step + steps]) if code != 0), 0)
+        next_step += steps
         if synced != 0:
             return LaunchError(
                 "sync", f"updating {repo} on {host.name} exited {synced}: the lane would build on a stale main"
