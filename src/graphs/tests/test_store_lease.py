@@ -35,6 +35,11 @@ def _status(conn):
     return None if row is None else row[0]
 
 
+def _progress(conn):
+    row = conn.query_one(f"SELECT progress FROM leases WHERE name = {conn.dialect.placeholder}", (NAME,))
+    return None if row is None else row[0]
+
+
 def test_expiry_adds_ttl_seconds_in_fixed_form():
     assert _expiry(T0, 30) == "2026-09-24T00:00:30Z"
 
@@ -115,6 +120,38 @@ def test_renew_with_no_status_argument_leaves_a_paused_status_untouched(conn):
     assert _status(conn) == "paused"
     assert renew(conn, NAME, "a", 1, T10, 30) is True
     assert _status(conn) == "paused"
+
+
+def test_renew_with_progress_writes_the_string_and_a_later_renew_with_none_clears_it(conn):
+    acquire(conn, NAME, "a", T0, 30)
+    assert renew(conn, NAME, "a", 1, T10, 30, progress="3/7 tasks") is True
+    assert _progress(conn) == "3/7 tasks"
+    assert _status(conn) is None
+    assert renew(conn, NAME, "a", 1, T10, 30, progress=None) is True
+    assert _progress(conn) is None
+
+
+def test_renew_with_no_progress_argument_leaves_a_stored_progress_untouched(conn):
+    acquire(conn, NAME, "a", T0, 30)
+    assert renew(conn, NAME, "a", 1, T10, 30, progress="3/7 tasks") is True
+    assert renew(conn, NAME, "a", 1, T10, 30) is True
+    assert _progress(conn) == "3/7 tasks"
+    assert renew(conn, NAME, "a", 1, T10, 30, status="paused") is True
+    assert (_status(conn), _progress(conn)) == ("paused", "3/7 tasks")
+
+
+def test_renew_writes_status_and_progress_together(conn):
+    acquire(conn, NAME, "a", T0, 30)
+    assert renew(conn, NAME, "a", 1, T10, 30, status="paused", progress="4/7 tasks") is True
+    assert (_status(conn), _progress(conn)) == ("paused", "4/7 tasks")
+    assert renew(conn, NAME, "a", 1, T10, 30, status=None, progress="5/7 tasks") is True
+    assert (_status(conn), _progress(conn)) == (None, "5/7 tasks")
+
+
+def test_a_refused_renew_does_not_write_progress(conn):
+    acquire(conn, NAME, "a", T0, 30)
+    assert renew(conn, NAME, "b", 1, T10, 30, progress="stolen") is False
+    assert _progress(conn) is None
 
 
 def test_acquire_on_a_fresh_lease_leaves_status_none(conn):
