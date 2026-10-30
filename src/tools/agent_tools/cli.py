@@ -152,6 +152,7 @@ land = _LazyModule("agent_tools.land")
 land_lease = _LazyModule("agent_tools.land_lease")
 land_repo_lease = _LazyModule("agent_tools.land_repo_lease")
 lane_hosts = _LazyModule("agent_tools.lane_hosts")
+lane_toolchain = _LazyModule("agent_tools.lane_toolchain")
 launch_place = _LazyModule("agent_tools.launch_place")
 leader_chat = _LazyModule("agent_tools.leader_chat")
 notify = _LazyModule("agent_tools.notify")
@@ -5221,7 +5222,20 @@ def _route_launch(a: argparse.Namespace) -> int:
         return 0
 
     if host is not None:
-        return _route_launch_on_host(a, host, runs_dir, run_id, env_repo or None, launch_harness, home=os.path.expanduser("~"))
+        # A placed host was probed by `_place_or_refuse`; only a host the caller named with --on is probed here.
+        pinned = bool(env_repo) and getattr(a, "on", None) is not None
+        return _route_launch_on_host(
+            a, host, runs_dir, run_id, env_repo or None, launch_harness, home=os.path.expanduser("~"),
+            tools=_repo_check_tools(env_repo).found if pinned else (),
+        )
+
+    local_tools = _repo_check_tools(env_repo).found if env_repo else ()
+    local_refusal = _toolchain_refusal(socket.gethostname(), None, local_tools)
+    if local_refusal is not None:
+        print(f"routing: {local_refusal}")
+        if not a.no_claim and _lock_snapshot(runs_dir) != lock_before:
+            print("routing: the loop claim this launch took is still held with no run behind it; release it with `cox route release`")
+        return 2
 
     if overlaid_path is not None:
         overlaid_path.write_text(yaml.safe_dump(overlaid_provider_profile, sort_keys=True), encoding="utf-8")
@@ -5307,6 +5321,30 @@ def _dropped_ceilings(a: argparse.Namespace) -> list[str]:
     ) if value is not None]
 
 
+def _repo_check_tools(repo: str) -> lane_toolchain.CheckTools:
+    """Edge. The tools the repo's `.agent-checks` run; `repo` is read here, as recorded, so a tilde or another machine's home is mapped."""
+    text = _read_text_or_none(Path(repo_path.expand(repo, os.path.expanduser("~"))) / ".agent-checks")
+    return lane_toolchain.parse_check_tools(lane_toolchain.check_lines(text or ""))
+
+
+def _toolchain_refusal(name: str, ssh: str | None, tools: Sequence[str]) -> str | None:
+    """Edge. The first tool `name`'s lane PATH lacks, as a refusal line. `ssh` None looks in the launching environment."""
+    argv = lane_toolchain.lookup_argv(tools) if ssh is None else remote_argv.ssh_argv(ssh, lane_toolchain.lane_argv(tools))
+    lines = lane_toolchain.refusals(name, tools, argv, _host_env_probe)
+    return lines[0] if lines else None
+
+
+def _epic_repo(a: argparse.Namespace, profile: Mapping) -> str | None:
+    """Edge. The repo an epic launch builds: `--repo`, else the initiative's `repo:` field."""
+    token = getattr(a, "initiative", None)
+    if not token:
+        return None
+    runs_dir = Path(profile.get("workspace_dir", "")).expanduser() / "runs"
+    text = _read_text_or_none(_initiative_path(runs_dir, token) / "initiative.md")
+    fields, _ = route.parse_frontmatter(text) if text is not None else ({}, "")
+    return getattr(a, "repo", None) or fields.get("repo") or None
+
+
 def _place_or_refuse(
     a: argparse.Namespace, profile: Mapping, forced_local: bool,
 ) -> tuple[lane_hosts.LaneHost | None, int | None]:
@@ -5328,8 +5366,25 @@ def _place_or_refuse(
     if forced_local or graph != "epic":
         placed = launch_place.place_local(local, rows, live, force, cap)
     else:
-        placed = launch_place.place(
-            rows, live, datetime.datetime.now(datetime.UTC), local, cap, () if isinstance(parsed, lane_hosts.LaneHostError) else parsed,
+        profile_hosts = () if isinstance(parsed, lane_hosts.LaneHostError) else parsed
+        candidates = _lane_host_candidates(profile_text, rows, local)
+        epic_repo = _epic_repo(a, profile)
+        tools = _repo_check_tools(epic_repo).found if epic_repo else ()
+
+        def refused(name: str) -> str | None:
+            host = None if isinstance(candidates, lane_hosts.LaneHostError) else lane_hosts.find_lane_host(candidates, name)
+            if name != local and host is None:
+                return None  # the unknown host is refused below
+            line = _toolchain_refusal(name, None if host is None else host.ssh, tools)
+            if line is not None:
+                print(f"routing: {line}")
+            return line
+
+        placed = launch_place.place_checked(
+            lambda barred: launch_place.place(
+                rows, live, datetime.datetime.now(datetime.UTC), local, cap, profile_hosts, barred,
+            ),
+            refused,
         )
     if isinstance(placed, launch_place.Refusal):
         print("routing: no host has room; pass --force to launch on this machine anyway" if forced_local else "routing: no host has room")
@@ -5426,9 +5481,10 @@ def _host_checkouts(rows: Sequence[Mapping[str, object]], name: str) -> tuple[st
 
 def _route_launch_on_host(
     a: argparse.Namespace, host: lane_hosts.LaneHost, runs_dir: Path, run_id: str, repo: str | None = None,
-    harness_dir: str | None = None, *, home: str | None = None,
+    harness_dir: str | None = None, *, home: str | None = None, tools: Sequence[str] = (),
 ) -> int:
-    """Copies the initiative to `host` and starts the lane there; writes only `<run>.remote.json`, and only on success."""
+    """Copies the initiative to `host` and starts the lane there; writes only `<run>.remote.json`, and only on success.
+    `tools` are probed on the host's lane PATH before the copy."""
     run, locate = _remote_edge(runs_dir.parent)
     launched_at = datetime.datetime.now(datetime.UTC).isoformat()
     provider, _ = _lake_provider(a)  # an unreadable profile is `{}`: runner unset, so the claude-code check as today
@@ -5443,7 +5499,7 @@ def _route_launch_on_host(
         )
     result = remote_launch.launch_on_host(
         host, _initiative_path(runs_dir, a.initiative).name, run_id, _holder_label(a), launched_at, run, locate, repo, harness_dir,
-        preflight=preflight, home=home, host_checkouts=_host_checkouts(run_store.hosts(runs_dir), host.name),
+        preflight=preflight, home=home, host_checkouts=_host_checkouts(run_store.hosts(runs_dir), host.name), tools=tools,
     )
     if isinstance(result, remote_launch.LaunchError):
         print(f"routing: launch on {host.name} failed at {result.step}: {result.message}")
@@ -11309,8 +11365,12 @@ def _host_doctor(a: argparse.Namespace) -> int:
     if host is None:
         print(f"unknown host: {a.name}")
         return 1
+    repo_checks = [_repo_check_tools(repo) for repo in _host_repos(profile)]
+    checks = lane_toolchain.CheckTools(
+        tuple(dict.fromkeys(t for c in repo_checks for t in c.found)), tuple(dict.fromkeys(u for c in repo_checks for u in c.unparsed)),
+    )
     code, rows = remote_doctor.doctor_on_host(
-        host, _run_ssh, argv_for=lambda argv: chair_login_check._remote_argv(host.name, host.ssh, argv)
+        host, _run_ssh, argv_for=lambda argv: chair_login_check._remote_argv(host.name, host.ssh, argv), checks=checks,
     )
     print(f"doctor on {host.name} ({host.ssh})")
     print("\n".join(rows))

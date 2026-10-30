@@ -19,6 +19,7 @@ def _recorded_doctor(monkeypatch, tmp_path, host_name, local_name):
     monkeypatch.setattr(cli.run_store, "hosts", lambda runs_dir: [])
     monkeypatch.setattr(cli, "_host_ssh", lambda a, profile, runs_dir: LaneHost(host_name, "operator@" + host_name, ""))
     monkeypatch.setattr(cli, "_run_ssh", run_ssh)
+    monkeypatch.setattr(cli, "_host_repos", lambda profile: [])  # no repo checks, so no toolchain probe among the argvs
     code = cli._host_doctor(argparse.Namespace(name=host_name))
     return code, argvs
 

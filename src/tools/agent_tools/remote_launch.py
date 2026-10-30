@@ -7,7 +7,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import NamedTuple
 
-from agent_tools import repo_path
+from agent_tools import lane_toolchain, repo_path
 from agent_tools.host_cmd import ChairHead, sync_argvs
 from agent_tools.lane_hosts import LaneHost
 from agent_tools.remote_argv import (
@@ -246,8 +246,11 @@ def launch_on_host(
     chair_head: Callable[[str], ChairHead | None] = _local_head,
     chair_base: Callable[[str], ChairBase | LaunchError | None] = _chair_base,
     probe: Callable[[list[str]], tuple[int, str]] = _probe,
+    tools: Sequence[str] = (),
 ) -> dict | LaunchError:
     """`preflight` is a refusal line from a check made before anything is copied; None lets the launch go on.
+    `tools` are the executables the repo's checks run: one `probe` of the host's lane PATH, before the copy, refuses
+    the launch naming the first one it lacks.
     `chair_base` fetches a chair checkout and reads its `origin/<base>` commit; the host's harness and repo are each
     brought to it and the launch is refused, naming both commits, unless each is there (`probe` runs that step).
     A chair path with no git checkout or no origin has no base: it keeps the old unguarded sync and records no `base_sha`.
@@ -259,6 +262,9 @@ def launch_on_host(
         return LaunchError(
             "push", f"a relocated relaunch to {host.name} has no repo to push epic/{initiative}/* into: nothing was run"
         )
+    missing = lane_toolchain.refusals(host.name, tools, ssh_argv(host.ssh, lane_toolchain.lane_argv(tools)), probe)
+    if missing:
+        return LaunchError("toolchain", missing[0])
     given_local = None if relaunch is None else relaunch.local_repo
     chair_repo = None if repo is None else given_local or (repo if home is None else repo_path.expand(repo, home))
     harness_head = None if harness_dir is None else chair_head(harness_dir)
