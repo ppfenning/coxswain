@@ -17,6 +17,8 @@ from dataclasses import replace
 from functools import partial
 from pathlib import Path
 
+import yaml
+
 from agent_tools import epic, repo_path, route, route_sync, run_store
 
 __all__ = [
@@ -187,12 +189,13 @@ def _initiative_issue(root: Path, initiative: str) -> str | None:
 def _item(fields: dict, body: str, stem: str, *, state: str, phase: str, run_id: str,
           cost: float, gate: str, repo: str, parent: str | None = None,
           parent_issue: str | None = None, initiative: bool = False,
-          release: str | None = None, repo_error: str = "") -> route_sync.Item:
+          release: str | None = None, repo_error: str = "", landed_pr: str = "") -> route_sync.Item:
     return route_sync.Item(
         id=fields.get("id", stem), title=fields.get("title", stem), body=body, repo=repo,
         state=state, phase=phase, run=run_id, cost_usd=cost, gate=gate, issue=fields.get("issue"),
         parent=parent, parent_issue=parent_issue, initiative=initiative,
         release=route_sync.parse_release(body) if release is None else release, repo_error=repo_error,
+        landed_pr=landed_pr,
     )
 
 
@@ -201,6 +204,18 @@ def _intake_item(path: Path, resolve: Resolver) -> route_sync.Item:
     repo, repo_error = resolve(fields.get("repo", ""))
     return _item(fields, body, path.stem, state="intake", phase="", run_id="", cost=0.0,
                  gate="", repo=repo, repo_error=repo_error)
+
+
+def _landed_of(text: str) -> object:
+    """The `landed` front-matter value read as yaml, None when absent or unreadable. `route.parse_frontmatter`
+    flattens a nested mapping into its values and drops the keys, so `{at, pr}` cannot be read through it."""
+    if not text.startswith("---\n") or "\nlanded:" not in text:
+        return None
+    try:
+        header = yaml.safe_load(text[4:].split("\n---\n", 1)[0])
+    except yaml.YAMLError:
+        return None
+    return header.get("landed") if isinstance(header, dict) else None
 
 
 def _work_item(root: Path, path: Path, landing: dict[str, str], costs: dict[str, float],
@@ -219,7 +234,8 @@ def _work_item(root: Path, path: Path, landing: dict[str, str], costs: dict[str,
                  cost=round(costs.get(item_id, 0.0), 4), gate=fields.get("gate", ""),
                  repo=repo, repo_error=repo_error,
                  parent=_initiative_id(initiative) if has_parent else None,
-                 parent_issue=_initiative_issue(root, initiative))
+                 parent_issue=_initiative_issue(root, initiative),
+                 landed_pr=route_sync.landed_pr_of(_landed_of(path.read_text())))
 
 
 def _initiative_state(task_states: list[str]) -> str:
@@ -303,6 +319,13 @@ def existing(run, repo_names: list[str], project: str | None):
             if row.get("id"):
                 item_node_ids[key] = row["id"]
     return True, (issues, project_items, item_node_ids)
+
+
+def rollup_issue_number(run, rollup: route_sync.Item) -> str | None:
+    """Edge. The number of the `<version> fixes` issue on file for `rollup`, None when there is none or `gh` fails."""
+    ok, result = existing(run, [rollup.repo], None)
+    linked = route_sync.link_rollups([rollup], result[0]) if ok else []
+    return linked[0].issue if linked else None
 
 
 # `gh issue view --json projectItems` carries only the project title and Status, not the

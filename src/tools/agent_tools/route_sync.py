@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 _RELEASE_LINE = re.compile(r"^Target release:[ \t]*(\d+(?:\.\d+)*)\.?[ \t]*$", re.MULTILINE)
@@ -49,6 +49,7 @@ class Item:
     release: str = ""
     repo_named: str = ""  # the `repo:` value as written, kept when it does not resolve
     repo_error: str = ""  # why `repo` is empty when the item named one that does not resolve; a sync refuses with it
+    landed_pr: str = ""  # the PR number a landed task records in `landed`, "" when none
 
     def __post_init__(self) -> None:
         # Frozen dataclass: the one write is the normalised issue, so every reader sees the bare number.
@@ -98,6 +99,125 @@ def epic_release(releases: list[str]) -> str:
     """The latest of `releases`, compared as dotted integers so 2026.10.10 follows 2026.10.5. `""` when none."""
     named = [r for r in releases if r]
     return max(named, key=lambda r: tuple(int(part) for part in r.split("."))) if named else ""
+
+
+_PR_NUMBER = re.compile(r"(\d+)/?$")
+
+
+def landed_pr_of(value: object) -> str:
+    """The PR number in a task's `landed` value, `""` when it names none. The store records the dict
+    `{"at": ..., "pr": N}`; `pr` may be a number or the PR's URL. Any other value (`true`, a list) names no PR."""
+    raw = str(value.get("pr") or "") if isinstance(value, dict) else ""
+    number = _PR_NUMBER.search(raw)
+    return number.group(1) if number else ""
+
+
+CHECKLIST_OPEN = "<!-- coxswain:tasks -->"
+CHECKLIST_CLOSE = "<!-- /coxswain:tasks -->"
+
+
+def checklist_line(task: Item) -> str:
+    """`- [x] <title>: done, PR #12`; the box is ticked only for a done task."""
+    pr = f", PR #{task.landed_pr}" if task.landed_pr else ""
+    return f"- [{'x' if task.state == 'done' else ' '}] {task.title}: {task.state}{pr}"
+
+
+def replace_block(body: str, lines: Sequence[str]) -> str:
+    """`body` with the marked checklist block replaced by `lines`, or appended when it has none.
+    Every character outside the two markers is returned unchanged."""
+    block = "\n".join([CHECKLIST_OPEN, *lines, CHECKLIST_CLOSE])
+    start = body.find(CHECKLIST_OPEN)
+    end = body.find(CHECKLIST_CLOSE, start + len(CHECKLIST_OPEN)) if start != -1 else -1
+    if end != -1:
+        return body[:start] + block + body[end + len(CHECKLIST_CLOSE) :]
+    return f"{body}\n\n{block}" if body.strip() else block
+
+
+def with_checklists(items: list[Item], universe: Sequence[Item], scope: str) -> list[Item]:
+    """`items` with each initiative that has tasks in `universe` carrying their checklist block in its body.
+    `all` is unchanged: its tasks have issues of their own, linked as sub-issues."""
+    if scope == "all":
+        return items
+    tasks_of = {i.id: [t for t in universe if t.parent == i.id] for i in items if i.initiative}
+    return [
+        replace(i, body=replace_block(i.body, [checklist_line(t) for t in tasks_of[i.id]]))
+        if i.initiative and tasks_of[i.id]
+        else i
+        for i in items
+    ]
+
+
+ROLLUP_PREFIX = "release-fixes:"
+
+
+def rollup_title(version: str) -> str:
+    return f"{version} fixes"
+
+
+def _fix_groups(
+    universe: Sequence[Item], scope: str, threshold: Mapping[str, Any]
+) -> dict[str, list[tuple[Item, Item]]]:
+    """`{version: [(initiative, task)]}` for the one-task initiatives below `threshold` that name a target
+    release, under `epics` only. A one-task initiative with no release is in no group: it stays in the store."""
+    if scope != "epics":
+        return {}
+    tasks_of = {i.id: [t for t in universe if t.parent == i.id] for i in universe if i.initiative and i.release}
+    groups: dict[str, list[tuple[Item, Item]]] = {}
+    for initiative in (i for i in universe if i.id in tasks_of):
+        tasks = tasks_of[initiative.id]
+        if len(tasks) == 1 and not is_epic(threshold, tasks):
+            groups.setdefault(initiative.release, []).append((initiative, tasks[0]))
+    return groups
+
+
+def rollup_items(universe: Sequence[Item], scope: str, threshold: Mapping[str, Any]) -> list[Item]:
+    """One `<version> fixes` initiative item per release, its body the checklist of that release's one-task
+    fixes. Its `issue` is None; `link_rollups` fills it from the issues on file."""
+    return [
+        Item(
+            id=f"{ROLLUP_PREFIX}{version}",
+            title=rollup_title(version),
+            body=replace_block("", [checklist_line(t) for t in sorted((t for _, t in pairs), key=lambda t: t.id)]),
+            repo=pairs[0][0].repo,
+            state="done" if all(t.state in _CLOSING for _, t in pairs) else "ready",
+            phase="",
+            run="",
+            cost_usd=0.0,
+            gate="",
+            issue=None,
+            initiative=True,
+            release=version,
+        )
+        for version, pairs in sorted(_fix_groups(universe, scope, threshold).items())
+    ]
+
+
+def rollup_for(universe: Sequence[Item], scope: str, threshold: Mapping[str, Any], member_id: str) -> Item | None:
+    """The roll-up item holding the one-task initiative or task `member_id`, None when it is in none."""
+    rollups = {r.id: r for r in rollup_items(universe, scope, threshold)}
+    return next(
+        (
+            rollups[f"{ROLLUP_PREFIX}{version}"]
+            for version, pairs in _fix_groups(universe, scope, threshold).items()
+            if any(member_id in (initiative.id, task.id) for initiative, task in pairs)
+        ),
+        None,
+    )
+
+
+def link_rollups(items: list[Item], issues: Mapping[str, Mapping[str, Any]]) -> list[Item]:
+    """`items` with each roll-up's `issue` set to the one on file titled `<version> fixes` (the lowest number
+    when there are several), so a sync never opens a second one. A settled roll-up with none is dropped."""
+    by_title = {}
+    for number in sorted(issues, key=lambda n: (len(n), n), reverse=True):
+        by_title[issues[number].get("title", "")] = number
+    linked = []
+    for item in items:
+        number = by_title.get(item.title) if item.id.startswith(ROLLUP_PREFIX) and item.issue is None else item.issue
+        if number is None and item.id.startswith(ROLLUP_PREFIX) and item.state == "done":
+            continue
+        linked.append(replace(item, issue=number))
+    return linked
 
 
 def _fields(item: Item) -> dict | None:

@@ -2443,9 +2443,12 @@ def _land_item_facts(item_path: str | None) -> tuple[str | None, str | None]:
 
 
 def _land_reference(profile: dict, workspace: str, record: dict, item_id: str | None,
-                    issue: str | None, repo: Path | None = None) -> tuple[str, str | None]:
+                    issue: str | None, repo: Path | None = None,
+                    sync: argparse.Namespace | None = None) -> tuple[str, str | None]:
     """Edge. `(scope, reference)` for a task land: the resolved `tracker_scope` and the PR's issue line under it.
-    `all` has no reference; the store is read only for a narrowed scope, and unreadable means no initiative issue."""
+    `all` has no reference; the store is read only for a narrowed scope, and unreadable means no initiative issue.
+    A one-task fix with a target release says `Part of` its `<version> fixes` issue; `sync`, when given, creates
+    that issue first if it is not on file yet."""
     scope, threshold, error = _tracker_scope(profile, repo)
     if error:
         print(f"land: {error}; landing under tracker_scope {scope}", file=sys.stderr)
@@ -2459,6 +2462,13 @@ def _land_reference(profile: dict, workspace: str, record: dict, item_id: str | 
         print(f"land: work store unreadable ({type(exc).__name__}: {exc}); the PR carries no issue reference",
               file=sys.stderr)
         items = []
+    rollup = route_sync.rollup_for(items, scope, threshold, _initiative_item_id(initiative) or "")
+    if rollup is not None:
+        number = route_sync_gh.rollup_issue_number(subprocess.run, rollup)
+        if number is None and sync is not None:
+            _route_sync(argparse.Namespace(**{**vars(sync), "item": item_id or record.get("task", "")}))
+            number = route_sync_gh.rollup_issue_number(subprocess.run, rollup)
+        return scope, land.pr_reference(issue, number, False)
     parent_issue, last = route_sync.initiative_facts(items, scope, threshold,
                                                      _initiative_item_id(initiative), item_id or record.get("task", ""))
     return scope, land.pr_reference(issue, parent_issue, last)
@@ -3102,7 +3112,19 @@ def _runs_land(a: argparse.Namespace) -> int:
         item_path = (str(runs_dir.parent / "work" / record["initiative"] / record["phase"] / f"{record['task']}.md")
                      if record.get("initiative") else None)
         item_id, issue = _land_item_facts(item_path)
-        scope, reference = _land_reference(profile, str(runs_dir.parent), record, item_id, issue, repo)
+        sync = (
+            argparse.Namespace(
+                item=None,
+                workspace=str(runs_dir.parent),
+                dry_run=False,
+                project=None,
+                profile=str(_profile_path(a)),
+                runs_dir=str(runs_dir),
+            )
+            if a.apply
+            else None
+        )
+        scope, reference = _land_reference(profile, str(runs_dir.parent), record, item_id, issue, repo, sync)
         plan_steps = land.land_plan(record, branches, default_branch, repo_facts,
                                     tracker=_resolved_tracker(profile, runs_dir), issue=issue,
                                     scope=scope, reference=reference)
@@ -5097,7 +5119,12 @@ def _sync_items(a: argparse.Namespace, workspace: str) -> tuple[list[route_sync.
         return [], scope, 2, 0
     scoped_items = route_sync.scoped(everything, scope, threshold)
     kept = route_sync.unbackfilled(scoped_items, everything, scope, profile.get("tracker_backfill") == "true")
-    chosen = [item for item in kept if item.id == a.item] if a.item else kept
+    if a.item:
+        rollup = route_sync.rollup_for(everything, scope, threshold, a.item)
+        chosen = [item for item in kept if item.id == a.item] or ([rollup] if rollup else [])
+    else:
+        chosen = kept + route_sync.rollup_items(everything, scope, threshold)
+    chosen = route_sync.with_checklists(chosen, everything, scope)
     if a.item and not chosen:
         why = ("is settled with no issue; tracker_backfill: true creates one" if any(i.id == a.item for i in scoped_items)
                else f"is out of scope under tracker_scope {scope}")
@@ -5187,14 +5214,15 @@ def _route_sync(a: argparse.Namespace) -> int:
     if rc is not None:
         return rc
     repo_names = sorted({item.repo for item in items if item.repo})
-    if a.item:
+    if a.item and not items[0].id.startswith(route_sync.ROLLUP_PREFIX):
         ok, result = route_sync_gh.existing_item(subprocess.run, items[0].repo, items[0].issue, project)
-    else:
+    else:  # a roll-up has no issue number of its own to view: it is found by title among the listed issues
         ok, result = route_sync_gh.existing(subprocess.run, repo_names, project)
     if not ok:
         print(f"route sync: {result}")
         return 2
     issues, project_items, item_node_ids = result
+    items = route_sync.link_rollups(items, issues)
     steps = route_sync.plan(items, issues, project_items, "github-projects", scope)
     if a.dry_run:
         print("\n".join(route_sync.render(steps)))
