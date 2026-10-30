@@ -8,10 +8,10 @@ from collections.abc import Collection, Mapping
 from pathlib import Path
 
 
-def remote_record(host: str, launched_at: str, repo: str | None = None) -> dict:
-    """`repo` is the chair repo the run was launched against; a record from before it was kept has none."""
+def remote_record(host: str, launched_at: str, repo: str | None = None, base_sha: str | None = None) -> dict:
+    """`repo` and `base_sha` (the commit the lane was verified at before the build) are absent from older records."""
     base = {"host": host, "launched_at": launched_at}
-    return base if repo is None else {**base, "repo": repo}
+    return {**base, **({} if repo is None else {"repo": repo}), **({} if base_sha is None else {"base_sha": base_sha})}
 
 
 def remote_record_path(runs_dir: Path, run: str) -> Path:
@@ -28,8 +28,11 @@ def parse_remote_record(text: str) -> dict | None:
     except ValueError:
         return None
     if isinstance(parsed, dict) and "host" in parsed and "launched_at" in parsed:
-        repo = parsed.get("repo")
-        return remote_record(parsed["host"], parsed["launched_at"], repo if isinstance(repo, str) else None)
+        repo, base_sha = parsed.get("repo"), parsed.get("base_sha")
+        return remote_record(
+            parsed["host"], parsed["launched_at"],
+            repo if isinstance(repo, str) else None, base_sha if isinstance(base_sha, str) else None,
+        )
     return None
 
 
