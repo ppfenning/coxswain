@@ -198,6 +198,14 @@ settled item(s) without an issue`. An item that already has an issue, hand-set
 or not, keeps syncing as before. Set `tracker_backfill: true` in the profile
 to create issues for settled items too. `tracker_scope: all` is unchanged.
 
+Under a narrowed scope each sync rewrites a marked checklist block in a synced
+initiative's issue body, one line per task with its state and landed PR; text
+outside the block is left alone and no sub-issues are made. Under `epics`, a
+one-task initiative below the threshold with a `Target release:` line appears
+on one `<version> fixes` issue per release, with the same block. Its land PR
+says `Part of #<that issue>`, and a sync finds that issue by title, so it never
+opens a second. A one-task initiative with no target release stays in the store.
+
 Integrations that name a vendor (intake sources, forges, trackers) live in
 [ppfenning/coxswain-plugins](https://github.com/ppfenning/coxswain-plugins).
 
