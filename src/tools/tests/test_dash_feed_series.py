@@ -34,7 +34,7 @@ def test_the_feed_carries_each_runs_cost_series_and_todays_spend_series(monkeypa
     monkeypatch.setattr(dash_feed.console_screen, "gather", lambda *args, **kwargs: sections)
     monkeypatch.setattr(dash_feed, "_spend", lambda *args: {})
     monkeypatch.setattr(dash_feed, "_local_identity", lambda runs_dir, profile: ("host-b", 3))
-    monkeypatch.setattr(dash_feed, "_queue", lambda runs_dir: ([], 0))
+    monkeypatch.setattr(dash_feed, "_queue", lambda runs_dir, live_runs=(): ([], 0))
 
     feed = json.loads(json.dumps(dash_feed.gather_feed(tmp_path, tmp_path, "2026-10-04T12:00:00Z")))
 

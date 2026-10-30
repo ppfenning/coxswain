@@ -27,6 +27,7 @@ from agent_tools import (
     pacing,
     route,
     run_store,
+    runs_stranded,
     usage_meter,
     usage_window,
 )
@@ -90,6 +91,7 @@ def snapshot(
     `chair_agents` is the chair's background agent rows, empty when not given; `spend_split` is the three-way
     spend split per window, all zero when not given."""
     # coxswain-dash carries its own copy of tests/fixtures/dash_feed_v1.json and will need these two fields too.
+    # `queue[].phases` is additive and the schema stays 1: a coxtop that does not know the field ignores it.
     return {
         "schema": 1,
         "at": at,
@@ -373,6 +375,93 @@ def _initiative_progress(rows: list[dict], initiative: str) -> tuple[int, int, s
     return landed, len(phases), current
 
 
+def _task_state(task: Mapping, landed: Collection[str], on_live_lane: bool, stranded: bool) -> str | None:
+    """The feed state of a queue task row, or `None` for a store state the feed has no word for (`todo`, unknown).
+    `blocked` is a ready task with a need outside `landed` (`route.TERMINAL`, the rule `chair_read_idle_backlog`
+    uses for the relaunch's "waits on" line) or a store-`blocked` hold. `running` needs a live lane over the
+    task's initiative and phase: an `in_progress` row with none is a dead build and reads `blocked`.
+    `stranded` marks a task `runs stranded` lists, which reads `approved` even while the store still says `ready`."""
+    state = task.get("state")
+    if state == "done":
+        return "landed"
+    if state in ("dropped", "quarantined"):
+        return state
+    if state == "approved" or stranded:
+        return "approved"
+    if state == "in_progress":
+        return "running" if on_live_lane else "blocked"
+    if state == "ready":
+        return "ready" if all(need in landed for need in task.get("needs") or ()) else "blocked"
+    return "blocked" if state == "blocked" else None
+
+
+def _initiative_phases(
+    rows: Sequence[Mapping], initiative: str, live_phases: Collection[tuple[str, str]],
+    stranded: Collection[tuple[str, str, str]],
+) -> list[dict]:
+    """The initiative's tasks as `[{"id": phase, "tasks": [{"id", "state"}, ...]}]`, phases in sorted order (the
+    order `_initiative_progress` uses) and tasks in row order. Dropped tasks stay listed, marked `dropped`; a task
+    with no feed state is left out. `live_phases` holds `(initiative, phase)` per live lane, a blank phase
+    covering the whole initiative (a lane that has not written a phase yet). `stranded` holds
+    `(initiative, phase, task)` per task `runs stranded` lists."""
+    own = [row for row in rows if row.get("kind") == "task" and row.get("initiative") == initiative]
+    landed = {row.get("task_id") for row in own if row.get("state") in route.TERMINAL}
+    lane_phases = {phase for lane_initiative, phase in live_phases if lane_initiative == initiative}
+    return [
+        {
+            "id": phase,
+            "tasks": [
+                {"id": row.get("task_id"), "state": state}
+                for row in own
+                if row.get("phase") == phase
+                and (
+                    state := _task_state(
+                        row, landed, bool(lane_phases) and ("" in lane_phases or phase in lane_phases),
+                        (initiative, phase, row.get("task_id")) in stranded,
+                    )
+                )
+                is not None
+            ],
+        }
+        for phase in sorted({row.get("phase") for row in own})
+    ]
+
+
+def _task_records(runs_dir: Path) -> list[dict]:
+    """Edge. The task records `cox runs stranded` reads (`cli._stranded_inputs`): `<run>/tasks/<phase>/<task>.json`,
+    with run, task and phase defaulted from the path. An unreadable record is skipped."""
+    records = []
+    for path in sorted(runs_dir.glob("*/tasks/*/*.json")):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(record, dict):
+            records.append({"run": path.parent.parent.parent.name, "task": path.stem, "phase": path.parent.name, **record})
+    return records
+
+
+def _stranded_tasks(records: Sequence[dict], rows: Sequence[Mapping]) -> frozenset[tuple[str, str, str]]:
+    """`(initiative, phase, task)` of every queue task `runs_stranded` pairs with an approved, unlanded record.
+    Uses its `_live_pairs` so the feed and `cox runs stranded` share one rule; the repo and branch filters of
+    `stranded` only decide the remedy line and are not applied. A record that names no one item is left out."""
+    items = [
+        {"id": row.get("task_id"), "initiative": row.get("initiative"), "phase": row.get("phase"), "state": row.get("state")}
+        for row in rows
+        if row.get("kind") == "task"
+    ]
+    return frozenset(
+        (item["initiative"], item["phase"], item["id"])
+        for _, item in runs_stranded._live_pairs(list(records), items)
+        if item is not None
+    )
+
+
+def _live_phases(lanes: Sequence[console_screen.LaneRow]) -> frozenset[tuple[str, str]]:
+    """`(initiative, phase)` per live lane, local or remote: a lane is live by its store lease heartbeat."""
+    return frozenset((_run_slug(lane.run), lane.phase) for lane in lanes)
+
+
 def _priority(rows: list[dict], initiative: str):
     """The first `priority` an initiative's own rows carry in `extra` (arbitrary frontmatter passed through
     by `queue_rows.parse_item`); `None` when no row names one."""
@@ -394,14 +483,16 @@ def _priority_key(priority) -> tuple[int, int]:
         return (1, 0)
 
 
-def _queue(runs_dir: Path) -> tuple[list[dict], int]:
+def _queue(runs_dir: Path, live_phases: Collection[tuple[str, str]] = ()) -> tuple[list[dict], int]:
     """Initiatives the store's queue names with at least one phase not landed (a fully landed initiative drops
     out entirely), ordered by priority, then by first appearance in `read_queue`'s row order. Capped at
-    `_MAX_ROWS`; the second element is the filtered count before the cap."""
+    `_MAX_ROWS`; the second element is the filtered count before the cap. Each row lists its `phases` with
+    every task's state; `live_phases` is `_live_phases` of the live lanes."""
     # Not a verified age. Queue rows carry no timestamp (`run_store._QUEUE_COLUMNS`), and the
     # `harness.store_queue read` contract (run_store.py:1009) promises no row order. Row order is age only
     # if the harness returns rows in insertion order, and that is unknown from this repository.
     rows = run_store.read_queue(runs_dir)
+    stranded = _stranded_tasks(_task_records(runs_dir), rows)
     # Walked backwards, so the last write for each initiative is its first index.
     first_seen = {row["initiative"]: index for index, row in reversed(list(enumerate(rows))) if row.get("initiative")}
     progress = {initiative: _initiative_progress(rows, initiative) for initiative in first_seen}
@@ -417,6 +508,7 @@ def _queue(runs_dir: Path) -> tuple[list[dict], int]:
             "phases_landed": progress[initiative][0],
             "phases_total": progress[initiative][1],
             "current_phase": progress[initiative][2],
+            "phases": _initiative_phases(rows, initiative, live_phases, stranded),
         }
         for initiative in open_initiatives
     ]
@@ -965,7 +1057,7 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
         runs_dir, work_dir, now, local_name, local_capacity, spend, local_versions=local_versions,
     )
     chair_row = sections["chair"][0] if sections["chair"] else {}
-    queue, queue_total = _queue(runs_dir)
+    queue, queue_total = _queue(runs_dir, _live_phases(sections["lanes"]))
     blob = _courier_blob(work_dir)
     entries = courier.inbox(blob)
     inbox, inbox_total = _inbox(entries)

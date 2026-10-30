@@ -27,7 +27,7 @@ def test_gather_feed_lists_an_awaiting_pr_with_its_url_and_never_asks_the_forge(
     monkeypatch.setattr(dash_feed, "_spend", lambda *args: {})
     monkeypatch.setattr(dash_feed, "_local_identity", lambda runs_dir, profile: ("host-b", 3))
     monkeypatch.setattr(dash_feed, "_local_login", lambda name: None)
-    monkeypatch.setattr(dash_feed, "_queue", lambda runs_dir: ([], 0))
+    monkeypatch.setattr(dash_feed, "_queue", lambda runs_dir, live_runs=(): ([], 0))
     monkeypatch.setattr(dash_feed, "_courier_blob", lambda work_dir: "")
     monkeypatch.setattr(dash_feed.run_store, "initiative_short_ids", lambda runs_dir: {})
 
