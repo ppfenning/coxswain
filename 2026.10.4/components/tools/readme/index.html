@@ -6269,6 +6269,18 @@ lives outside the checkout, in <code>&lt;home&gt;/providers/</code> or the works
 the run store; see <a href="https://github.com/ppfenning/coxswain/blob/main/src/tools/docs/shared-store.md"><code>docs/shared-store.md</code></a>. New to
 the profile? <a href="https://github.com/ppfenning/coxswain/blob/main/src/tools/docs/getting-started.md"><code>docs/getting-started.md</code></a> walks
 through it.</p>
+<p><code>cox route sync</code> resolves a repo only for the items it will act on: in the
+profile's <code>tracker_scope</code> and not already <code>done</code> or <code>dropped</code>. A settled item
+whose <code>repo:</code> no longer resolves is left out without a refusal. An open item
+whose repo does not resolve is refused by name and the sync goes on with the
+rest. The run prints <code>route sync: skipped N item(s): &lt;repo&gt; (&lt;count&gt;)</code> and
+exits 2 only when an open item was skipped. To keep a retired repo
+resolving, map it to its new slug in the profile; a key matches the <code>repo:</code>
+value or its last path segment:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">repo_aliases</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">agent-tools</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ppfenning/coxswain</span>
+<span class="w">  </span><span class="nt">coxswain-graphs</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ppfenning/coxswain</span>
+</code></pre></div>
 <p>Integrations that name a vendor (intake sources, forges, trackers) live in
 <a href="https://github.com/ppfenning/coxswain-plugins">ppfenning/coxswain-plugins</a>.</p>
 <h2 id="reporting-to-herdr">Reporting to herdr</h2>
