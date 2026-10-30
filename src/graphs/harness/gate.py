@@ -206,6 +206,9 @@ def apply_decisions(
         applied = False
         if decision == "approved":
             applied, detail = auto_apply(item, cartridge=cartridge, runner=runner)
+            # The arm's own words, kept per target: `gate_diff` carries none of it, and a model arm can
+            # report success for a file it never wrote.
+            print(f"  {item['kind']} {item['target']}: {'applied' if applied else 'not applied'}: {detail}", file=sys.stderr)
             if not applied:
                 print(f"  approved but not executed ({detail})", file=sys.stderr)
         diffs.append(gate_diff(item, decision, applied=applied, edited=edited))
