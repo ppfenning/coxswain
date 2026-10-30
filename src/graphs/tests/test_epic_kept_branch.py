@@ -41,6 +41,24 @@ def test_a_draft_that_never_landed_is_not_kept_and_the_reason_names_the_draft():
     assert kept_work_refusal(landed=False, merged=None, escalated=False, ahead=True) == "the draft did not land"
 
 
+def test_a_remote_lane_branch_that_exists_only_on_the_lane_host_keeps_the_task_approved():
+    note = epic.draft_skipped_note(
+        landed=False, merged=None, escalated=False, branch_kept=True, detail="the draft step did not run"
+    )
+    assert note == (
+        "approved without a draft branch: the draft step did not run."
+        " The work is on the task branch; `runs land` creates the PR."
+    )
+
+
+def test_no_note_when_the_branch_is_gone_the_draft_landed_or_a_merge_ran():
+    base = {"landed": False, "merged": None, "escalated": False, "branch_kept": True, "detail": "x"}
+    assert epic.draft_skipped_note(**{**base, "branch_kept": False}) is None
+    assert epic.draft_skipped_note(**{**base, "landed": True}) is None
+    assert epic.draft_skipped_note(**{**base, "merged": False}) is None
+    assert epic.draft_skipped_note(**{**base, "escalated": True}) is None
+
+
 # ── the driver ──────────────────────────────────────────────────────────────
 
 
@@ -73,7 +91,7 @@ def test_a_task_with_a_kept_branch_is_approved_and_stays_approved(repo, cart, tm
     assert [q for q in result["quarantined"] if q["id"] == TASK] == []
 
 
-def test_a_task_whose_draft_never_landed_ends_quarantined_with_no_move(repo, cart, tmp_path, store_conn, monkeypatch):  # noqa: F811
+def test_a_failed_draft_with_a_kept_branch_stays_approved_with_a_note(repo, cart, tmp_path, store_conn, monkeypatch):  # noqa: F811
     real_git = epic._git
     monkeypatch.setattr(
         epic, "_git", lambda *a, **k: (False, "no draft") if "branch" in a and DRAFT in a else real_git(*a, **k)
@@ -81,7 +99,42 @@ def test_a_task_whose_draft_never_landed_ends_quarantined_with_no_move(repo, car
     result, states, moves = _drive_store(repo, cart, tmp_path, store_conn, monkeypatch)
 
     task = next(t for t in result["tasks"] if t["id"] == TASK)
+    assert (task["state"], task["status"], task["merged"]) == ("approved", "approved", False)
+    assert task["reason"] == (
+        f"approved without a draft branch: draft branch {DRAFT} was not created (no draft)."
+        " The work is on the task branch; `runs land` creates the PR."
+    )
+    assert states[TASK] == "approved"
+    assert [q for q in result["quarantined"] if q["id"] == TASK] == []
+
+
+def test_a_draft_the_gate_never_approved_leaves_the_task_approved_with_a_note(repo, cart, tmp_path, store_conn, monkeypatch):  # noqa: F811
+    """A lane host has no one to answer the gate, so the draft step never runs; gate.py defaults that answer to refuse."""
+    monkeypatch.setattr(
+        epic,
+        "gate",
+        lambda items, *, assume: ([(i, "refused" if i["kind"] == "draft_pr_create" else "approved", False) for i in items], 0.0),
+    )
+    result, states, moves = _drive_store(repo, cart, tmp_path, store_conn, monkeypatch)
+
+    task = next(t for t in result["tasks"] if t["id"] == TASK)
+    assert (task["state"], task["merged"]) == ("approved", False)
+    assert task["reason"].startswith("approved without a draft branch: the draft step did not run or was not approved.")
+    assert states[TASK] == "approved"
+    assert [q for q in result["quarantined"] if q["id"] == TASK] == []
+
+
+def test_a_failed_draft_with_no_kept_branch_ends_quarantined_with_no_move(repo, cart, tmp_path, store_conn, monkeypatch):  # noqa: F811
+    real_git = epic._git
+    monkeypatch.setattr(
+        epic, "_git", lambda *a, **k: (False, "no draft") if "branch" in a and DRAFT in a else real_git(*a, **k)
+    )
+    monkeypatch.setattr(epic, "_branch_exists", lambda _ctx, branch: False)
+    result, states, moves = _drive_store(repo, cart, tmp_path, store_conn, monkeypatch)
+
+    task = next(t for t in result["tasks"] if t["id"] == TASK)
     assert (task["status"], task["merged"]) == ("quarantined", False)
+    assert task["reason"].startswith("work not on a surviving branch: the draft did not land")
     entry = next(q for q in result["quarantined"] if q["id"] == TASK)
     assert entry["kind"] == "infra"
     assert entry["reason"].startswith("work not on a surviving branch")
@@ -102,6 +155,7 @@ def test_an_unkept_task_already_quarantined_by_its_merge_is_not_quarantined_twic
     monkeypatch.setattr(epic, "_fenced", lambda _ctx: None)
     monkeypatch.setattr(epic, "_wait_if_paused", lambda _ctx: None)
     monkeypatch.setattr(epic, "_unkept_work", lambda *_: "the merge into the phase branch was refused or conflicted")
+    monkeypatch.setattr(epic, "_draft_note", lambda *_: None)
     prior = {"id": "t1", "phase": "p1", "grain": "task", "reason": "merge conflict: x", "kind": "infra"}
     state = epic._Execution(landed={"t1": True}, merged={"t1": False}, moved={}, quarantined=[prior])
     ok, _ = epic._execute(
