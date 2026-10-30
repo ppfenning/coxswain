@@ -69,20 +69,39 @@ def _origin_slug(checkout: str) -> str:
     return match.group(1) if match else ""
 
 
+class RepoError(ValueError):
+    """A work item names a repo that is neither a checkout with an origin remote nor an `owner/name` slug."""
+
+
+_SLUG = re.compile(r"[\w.-]+/[\w.-]+")
+
+
 def _repo_of(value: str) -> str:
-    """`value` may be a checkout path (`route file --repo PATH`'s own
-    contract for intake items) or an `owner/name` slug already: resolve it
-    as a checkout first, and fall back to the literal value when there is
-    nothing on disk to resolve, rather than assuming which shape it is."""
-    return _origin_slug(value) or value
+    """`value` may be a checkout path (`route file --repo PATH`'s own contract for intake items) or an
+    `owner/name` slug: a checkout resolves to its origin slug, a slug passes through, and an empty value stays
+    empty. Anything else raises `RepoError` naming it, instead of reaching gh as an owner."""
+    slug = _origin_slug(value)
+    if slug or not value or _SLUG.fullmatch(value):
+        return slug or value
+    raise RepoError(f"route sync: {value} is not a checkout with an origin remote nor an owner/name slug")
 
 
-def _initiative_repo(root: Path, initiative: str) -> str:
+def _checked_repo(value: str) -> tuple[str, str]:
+    """`(repo, error)`: `_repo_of(value)` and `""`, or `("", why)`. An item carries the error rather than raising it,
+    so one bad repo stops only a sync that includes that item."""
+    try:
+        return _repo_of(value), ""
+    except RepoError as exc:
+        return "", str(exc)
+
+
+def _initiative_repo(root: Path, initiative: str) -> tuple[str, str]:
+    """`(repo, error)` of the initiative's `repo:`: `("", "")` when there is no initiative file or no `repo:`."""
     meta = root / "work" / initiative / "initiative.md"
     if not meta.is_file():
-        return ""
+        return "", ""
     fields, _ = route.parse_frontmatter(meta.read_text())
-    return _origin_slug(fields.get("repo", ""))
+    return _checked_repo(fields.get("repo", ""))
 
 
 def _pid_alive(root: Path, run_id: str) -> bool:
@@ -154,19 +173,20 @@ def _initiative_issue(root: Path, initiative: str) -> str | None:
 def _item(fields: dict, body: str, stem: str, *, state: str, phase: str, run_id: str,
           cost: float, gate: str, repo: str, parent: str | None = None,
           parent_issue: str | None = None, initiative: bool = False,
-          release: str | None = None) -> route_sync.Item:
+          release: str | None = None, repo_error: str = "") -> route_sync.Item:
     return route_sync.Item(
         id=fields.get("id", stem), title=fields.get("title", stem), body=body, repo=repo,
         state=state, phase=phase, run=run_id, cost_usd=cost, gate=gate, issue=fields.get("issue"),
         parent=parent, parent_issue=parent_issue, initiative=initiative,
-        release=route_sync.parse_release(body) if release is None else release,
+        release=route_sync.parse_release(body) if release is None else release, repo_error=repo_error,
     )
 
 
 def _intake_item(path: Path) -> route_sync.Item:
     fields, body = route.parse_frontmatter(path.read_text())
+    repo, repo_error = _checked_repo(fields.get("repo", ""))
     return _item(fields, body, path.stem, state="intake", phase="", run_id="", cost=0.0,
-                 gate="", repo=_repo_of(fields.get("repo", "")))
+                 gate="", repo=repo, repo_error=repo_error)
 
 
 def _work_item(root: Path, path: Path, landing: dict[str, str], costs: dict[str, float]) -> route_sync.Item:
@@ -178,10 +198,11 @@ def _work_item(root: Path, path: Path, landing: dict[str, str], costs: dict[str,
     in_flight = bool(latest) and _pid_alive(root, latest)
     state = "in_flight" if in_flight else fields.get("state", "todo")
     has_parent = (root / "work" / initiative / "initiative.md").is_file()
+    repo, repo_error = _initiative_repo(root, initiative)
     return _item(fields, body, stem, state=state, phase=fields.get("phase", phase_dir),
                  run_id=landing.get(item_id) or latest,
                  cost=round(costs.get(item_id, 0.0), 4), gate=fields.get("gate", ""),
-                 repo=_initiative_repo(root, initiative),
+                 repo=repo, repo_error=repo_error,
                  parent=_initiative_id(initiative) if has_parent else None,
                  parent_issue=_initiative_issue(root, initiative))
 
@@ -196,9 +217,10 @@ def _initiative_state(task_states: list[str]) -> str:
 def _initiative_item(root: Path, path: Path, tasks: list[route_sync.Item]) -> route_sync.Item:
     fields, body = route.parse_frontmatter(path.read_text())
     initiative = path.parent.name
+    repo, repo_error = _initiative_repo(root, initiative)
     return _item({**fields, "id": _initiative_id(initiative)}, body, initiative,
                  state=_initiative_state([t.state for t in tasks]), phase="", run_id="", cost=0.0, gate="",
-                 repo=_initiative_repo(root, initiative), initiative=True,
+                 repo=repo, repo_error=repo_error, initiative=True,
                  release=route_sync.epic_release([t.release for t in tasks]))
 
 

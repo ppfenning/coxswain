@@ -103,6 +103,7 @@ _KNOWN_KEYS = {
     "repo_map",
     "forge",
     "tracker",
+    "tracker_scope",  # `all` (default), `epics` or `initiatives`: which items `route sync` mirrors; a cartridge's own `tracker_scope` wins
     "umbrella_dir",
     "log_retention_days",  # run logs and traces kept locally, in days; run_logs.DEFAULT_RETENTION_DAYS when absent
     "ids",  # `slug` (default) or `sequence`; `intake_file`'s own id source, spec's `route file --intake`
@@ -110,6 +111,8 @@ _KNOWN_KEYS = {
 }
 
 _JSON_KEYS = {"sources", "repo_map"}
+
+TRACKER_SCOPES = ("all", "epics", "initiatives")
 
 _SPEND_KEYS = {"window_ceiling_usd", "weekly_ceiling_usd", "node_cap_usd"}
 _SPEND_TEXT_KEYS = {"weekly_reset"}  # `Sun 04:00 America/New_York`, parsed by usage_window.parse_weekly_reset
@@ -268,6 +271,8 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
             inner = value[1:-1].strip()
             items = [item.strip() for item in inner.split(",")] if inner else []
             result[key] = items
+        elif key == "tracker_scope" and value not in TRACKER_SCOPES:
+            raise ProfileError(f"line {lineno}: {raw_line} (tracker_scope is one of {', '.join(TRACKER_SCOPES)})")
         else:
             result[key] = value
     # An `assume:` with no value is treated the same as an absent key, not

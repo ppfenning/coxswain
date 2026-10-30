@@ -527,8 +527,12 @@ def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_br
               issue: str | None = None, phase_pr: dict[str, Any] | None = None, repo: str = "",
               run_hosts: Mapping[str, str] | None = None,
               fetched_missing: Collection[str] = (),
-              task_facts: Sequence[Mapping[str, Any]] | None = None) -> list[dict[str, Any]]:
-    """The ordered steps to land `record`, or a one-step `refuse`. Phase mode
+              task_facts: Sequence[Mapping[str, Any]] | None = None, scope: str = "all",
+              reference: str | None = None) -> list[dict[str, Any]]:
+    """The ordered steps to land `record`, or a one-step `refuse`. Under a `scope` other than `all` (task mode),
+    the PR body carries `reference` alone, nothing syncs before the PR, and the closing sync runs only for a
+    task whose `issue` was set by hand. Phase mode carries no issue line under any scope (`phase_pr_body`
+    has none), so `Part of` and the last-task `Closes` apply to task-mode lands only. Phase mode
     (`items` given) lands the whole phase off its own branch instead of one
     task's commit; `phase_pr` there is `phase_resume`'s facts, `task_facts`
     is `task_gather_status`'s input, and `repo`,
@@ -567,17 +571,22 @@ def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_br
         sync = [{"kind": "note", "reason": "route sync skipped: tracker is none"}]
     elif tracker is None:
         sync = []
+    elif scope != "all" and issue is None:
+        sync = [{"kind": "note", "reason": f"route sync skipped: tracker_scope {scope} keeps tasks in the store"}]
     else:
         sync = [{"kind": "route_sync", "item": task}]
-    # No issue yet: sync before the PR opens so its body can say `Closes #n`.
-    presync = [{"kind": "route_sync", "item": task, "before": "pr_create"}] if mirrored and tracker is not None and issue is None else []
+    # No issue yet: sync before the PR opens so its body can say `Closes #n`. A narrowed scope never makes one.
+    presync = ([{"kind": "route_sync", "item": task, "before": "pr_create"}]
+               if mirrored and tracker is not None and issue is None and scope == "all" else [])
+    body = (pr_body(record, None, reference if mirrored else None) if scope != "all"
+            else pr_body(record, issue if mirrored else None))
     return [
         {"kind": "pick_branch", "branch": chosen, "commit_subject": subject},
         {"kind": "cherry_pick", "branch": chosen, "commit_subject": subject, "onto": pr_branch, "from": default_branch},
         {"kind": "checks", "checks": checks_argv(repo_facts or {}), "worktree_of": pr_branch},
         {"kind": "push", "branch": pr_branch},
         *presync,
-        {"kind": "pr_create", "title": draft.get("title", subject), "body": pr_body(record, issue if mirrored else None),
+        {"kind": "pr_create", "title": draft.get("title", subject), "body": body,
          "head": pr_branch, "base": default_branch},
         {"kind": "wait_checks", "branch": pr_branch},
         {"kind": "merge", "squash": True, "delete_branch": True, "branch": pr_branch,
@@ -929,14 +938,26 @@ def issue_closes(issue: str | int | None) -> str | None:
     return f"Closes #{m[1]}" if m else None
 
 
+def pr_reference(task_issue: str | int | None, initiative_issue: str | int | None, last_task: bool) -> str | None:
+    """The issue lines of a PR under a narrowed `tracker_scope`. A task in a synced initiative says `Part of` its
+    issue, or `Closes` it when this is the initiative's last task. An operator-linked task issue is also `Closes`.
+    None when neither issue exists (a task in an unsynced initiative)."""
+    linked = issue_closes(task_issue)
+    parent = issue_closes(initiative_issue)
+    parent_line = None if parent is None else parent if last_task else parent.replace("Closes", "Part of", 1)
+    lines = [line for line in (parent_line, linked) if line]
+    return "\n".join(lines) if lines else None
+
+
 def pr_footer(run: str | None) -> str:
     """The trailing line every PR body ends with; it carries no version, and `run` is appended only when set."""
     footer = "🚣 Built with [coxswain](https://github.com/ppfenning/coxswain)"
     return f"{footer} · run {run}" if run is not None else footer
 
 
-def pr_body(record: dict[str, Any], issue: str | int | None = None) -> str:
-    """The PR description: verdicts, fix-loop attempts, checks, and cost if present, then the `Closes` line for `issue`."""
+def pr_body(record: dict[str, Any], issue: str | int | None = None, reference: str | None = None) -> str:
+    """The PR description: verdicts, fix-loop attempts, checks, and cost if present, then the issue line:
+    `reference` as given when set, else the `Closes` line for `issue`."""
     lines = [f"Run: {record.get('run')}", f"Task: {record.get('task')}"]
     review, arbitration = _verdict(record, "review"), arbitration_verdict(record)
     if review:
@@ -958,7 +979,7 @@ def pr_body(record: dict[str, Any], issue: str | int | None = None) -> str:
         cost = None
     if cost is not None:
         lines.append(f"Cost: ${cost:.2f}")
-    closes = issue_closes(issue)
+    closes = reference or issue_closes(issue)
     lines = lines + ["", closes] if closes else lines
     return "\n".join(lines + ["", pr_footer(record.get("run"))])
 

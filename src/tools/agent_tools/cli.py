@@ -2425,6 +2425,32 @@ def _land_item_facts(item_path: str | None) -> tuple[str | None, str | None]:
     return (str(item_id) if item_id else None), (str(issue) if issue else None)
 
 
+def _land_reference(profile: dict, workspace: str, record: dict, item_id: str | None,
+                    issue: str | None, repo: Path | None = None) -> tuple[str, str | None]:
+    """Edge. `(scope, reference)` for a task land: the resolved `tracker_scope` and the PR's issue line under it.
+    `all` has no reference; the store is read only for a narrowed scope, and unreadable means no initiative issue."""
+    scope, threshold, error = _tracker_scope(profile, repo)
+    if error:
+        print(f"land: {error}; landing under tracker_scope {scope}", file=sys.stderr)
+        return scope, land.pr_reference(issue, None, False)
+    if scope == "all":
+        return scope, None
+    initiative = record.get("initiative")
+    try:
+        items = route_sync_gh.items_from_store(workspace)
+    except (OSError, ValueError) as exc:
+        print(f"land: work store unreadable ({type(exc).__name__}: {exc}); the PR carries no issue reference",
+              file=sys.stderr)
+        items = []
+    parent_issue, last = route_sync.initiative_facts(items, scope, threshold,
+                                                     _initiative_item_id(initiative), item_id or record.get("task", ""))
+    return scope, land.pr_reference(issue, parent_issue, last)
+
+
+def _initiative_item_id(initiative: str | None) -> str | None:
+    return f"initiative:{initiative}" if initiative else None
+
+
 def _pr_url(detail: str) -> str | None:
     """The `pr_create` detail as the PR, only when it is a URL; the local forge opens none."""
     url = detail.strip()
@@ -2972,8 +2998,10 @@ def _runs_land(a: argparse.Namespace) -> int:
         item_path = (str(runs_dir.parent / "work" / record["initiative"] / record["phase"] / f"{record['task']}.md")
                      if record.get("initiative") else None)
         item_id, issue = _land_item_facts(item_path)
+        scope, reference = _land_reference(profile, str(runs_dir.parent), record, item_id, issue, repo)
         plan_steps = land.land_plan(record, branches, default_branch, repo_facts,
-                                    tracker=_resolved_tracker(profile, runs_dir), issue=issue)
+                                    tracker=_resolved_tracker(profile, runs_dir), issue=issue,
+                                    scope=scope, reference=reference)
         steps = _land_enrich(plan_steps, path=searched, worktree_root=a.worktree_root, item_path=item_path,
                               workspace=str(runs_dir.parent), item_id=item_id,
                               profile=str(_profile_path(a)), runs_dir=str(runs_dir), umbrella=profile.get("umbrella_dir"))
@@ -4885,6 +4913,69 @@ def _sync_skipped(a: argparse.Namespace) -> bool:
     return not isinstance(context, str) and context[1] == "none"
 
 
+def _team_cartridge(profile: dict, repo: Path | None = None) -> tuple[dict, str | None]:
+    """Edge. The profile's team cartridge, with `repo`'s `.agent/cartridge.yaml` overlay when a repo is given (as
+    `_cartridge_checks` applies it), and `None`; or `({}, why)` when it cannot be resolved. A profile naming no
+    team and no cartridges_dir has no cartridge, which is `({}, None)`."""
+    team, cartridges_dir = profile.get("team"), profile.get("cartridges_dir")
+    if not team or not cartridges_dir:
+        return {}, None
+    try:
+        from harness.resolve import overlay_path, resolve_cartridge
+        overlay_file = Path(overlay_path(str(repo))) if repo is not None else None
+        overlay = yaml.safe_load(overlay_file.read_text(encoding="utf-8")) if overlay_file and overlay_file.is_file() else None
+        cartridge, _ = resolve_cartridge(team, cartridges_dir=Path(cartridges_dir).expanduser(),
+                                         skills_root=[Path(r).expanduser() for r in profile.get("skills_roots") or []],
+                                         overlay=overlay)
+    except Exception as exc:
+        return {}, f"cartridge {team} cannot be resolved: {type(exc).__name__}: {exc}"
+    return cartridge, None
+
+
+def _tracker_scope(profile: dict, repo: Path | None = None) -> tuple[str, dict, str | None]:
+    """Edge. `(scope, epic_threshold, error)`, the cartridge's `policy.tracker_scope` over the profile's.
+    An unresolvable cartridge changes nothing unless the profile itself narrows to `epics`, the one scope that
+    needs the cartridge's `epic_threshold`: then the scope stays `epics` and `error` carries the resolver's reason.
+    A cartridge naming a scope outside `route_sync.SCOPES` is also an `error`, with the scope fixed to `epics`.
+    Otherwise `error` is None; the scope is `all` when neither side names one."""
+    named = profile.get("tracker_scope")
+    cartridge, error = _team_cartridge(profile, repo)
+    if error is not None and named == "epics":
+        return "epics", {}, error
+    if error is not None:
+        return named or "all", {}, None
+    try:
+        return route_sync.resolve_scope(named, cartridge), cartridge.get("epic_threshold") or {}, None
+    except ValueError as exc:
+        return "epics", {}, str(exc)
+
+
+def _sync_items(a: argparse.Namespace, workspace: str) -> tuple[list[route_sync.Item], str, int | None]:
+    """Edge. `(items, scope, rc)`: the items this sync mirrors under the resolved `tracker_scope`, and an exit
+    code to stop with when `rc` is set, after printing why. An unresolvable repo is refused by name; `--item` naming an item the scope leaves out exits 0."""
+    text = _read_text_or_none(_profile_path(a))
+    scope, threshold, error = _tracker_scope(route.parse_profile(text) if text is not None else {})
+    if error:
+        print(f"route sync: {error}; refusing rather than guessing a scope")
+        return [], scope, 2
+    everything = route_sync_gh.items_from_store(workspace)
+    _, refusal = _only_item(everything, a.item)
+    if refusal:
+        print(refusal)
+        return [], scope, 2
+    kept = route_sync.scoped(everything, scope, threshold)
+    items = [item for item in kept if item.id == a.item] if a.item else kept
+    if a.item and not items:
+        print(f"route sync: {a.item} is out of scope under tracker_scope {scope}; nothing to mirror")
+        return [], scope, 0
+    # Only the items this sync would touch can refuse it: a bad intake file stops its own sync, not another's.
+    bad = list(dict.fromkeys(item.repo_error for item in items if item.repo_error))
+    if bad:
+        print("\n".join(bad))
+        return [], scope, 2
+    return items, scope, None
+
+
 def _only_item(items: list[route_sync.Item], item_id: str | None) -> tuple[list[route_sync.Item], str | None]:
     """The items, narrowed to `item_id` when given, and a refusal line unless that leaves exactly one."""
     if not item_id:
@@ -4902,10 +4993,9 @@ def _route_sync_registered(a: argparse.Namespace, name: str, mirror: object, wor
     if not callable(sync):
         print(f"route sync: tracker {name} has no sync(workspace, items, *, dry_run)")
         return 2
-    items, refusal = _only_item(route_sync_gh.items_from_store(workspace), a.item)
-    if refusal:
-        print(refusal)
-        return 2
+    items, _, rc = _sync_items(a, workspace)
+    if rc is not None:
+        return rc
     try:
         ok, lines = sync(workspace, items, dry_run=a.dry_run)
     except Exception as exc:
@@ -4942,12 +5032,12 @@ def _route_sync(a: argparse.Namespace) -> int:
     # `route_sync_gh` here is a lazy proxy, so the identity test runs against the real module.
     if mirror is not importlib.import_module("agent_tools.route_sync_gh"):
         return _route_sync_registered(a, tracker_choice, mirror, workspace)
+    # Items first: an unresolvable repo is refused by name before any `gh` call, `auth_ok` included.
+    items, scope, rc = _sync_items(a, workspace)
+    if rc is not None:
+        return rc
     if not route_sync_gh.auth_ok(subprocess.run):
         print("route sync: gh is not authenticated; run `gh auth login`")
-        return 2
-    items, refusal = _only_item(route_sync_gh.items_from_store(workspace), a.item)
-    if refusal:
-        print(refusal)
         return 2
     project, rc = _resolve_sync_project(a, items, _route_sync_state_path(profile_path))
     if rc is not None:
@@ -4961,7 +5051,7 @@ def _route_sync(a: argparse.Namespace) -> int:
         print(f"route sync: {result}")
         return 2
     issues, project_items, item_node_ids = result
-    steps = route_sync.plan(items, issues, project_items, "github-projects")
+    steps = route_sync.plan(items, issues, project_items, "github-projects", scope)
     if a.dry_run:
         print("\n".join(route_sync.render(steps)))
         return 0
@@ -10052,7 +10142,10 @@ def _chair_perform_with_smoke(
 
 def _gh_repo(repo: str) -> str:
     """`gh --repo` needs owner/name; a land watch carries a checkout path. An unresolvable value passes through."""
-    return route_sync_gh._repo_of(repo)
+    try:
+        return route_sync_gh._repo_of(repo)
+    except route_sync_gh.RepoError:
+        return repo
 
 
 def _main_ci_reader(runner: Callable[[list[str]], tuple[int, str]]) -> Callable[[str, str], tuple[str, str]]:
