@@ -44,7 +44,7 @@ def _rank(pair: tuple[int, HostSlot]) -> tuple[float, int, int]:
     return ((assigned + 1) / weight, -weight, idx)
 
 
-def _best_host(
+def best_host(
     required: frozenset[str], hosts: Sequence[HostSlot], barred: Collection[str] = ()
 ) -> tuple[str, list[HostSlot]] | None:
     """The best-ranked unbarred host whose capabilities cover required, and the hosts after one placement on it."""
@@ -54,6 +54,9 @@ def _best_host(
     idx, (name, weight, capabilities, free, assigned) = min(candidates, key=_rank)
     updated: HostSlot = (name, weight, capabilities, free - 1, assigned + 1)
     return name, [updated if i == idx else host for i, host in enumerate(hosts)]
+
+
+_best_host = best_host  # chair_plan.py still imports this name; it is outside the launch-placement change
 
 
 def _epic_action(initiative_id: str, host: str) -> Action:
@@ -73,7 +76,7 @@ def _place_on_hosts(
     if not rest:
         return []
     item_id, required = rest[0]
-    placed = _best_host(required, hosts)
+    placed = best_host(required, hosts)
     if placed is None:
         return _place_on_hosts(rest[1:], hosts, make)
     name, new_hosts = placed
@@ -135,7 +138,7 @@ def _walk_candidates(
     required = _required_capabilities(head)
     barred = {} if local_left > 0 else _barred_hosts(head, hosts, env)
     notes = _stale_needs_chair(head, barred, hosts, required, env)
-    placed = None if local_left > 0 else _best_host(required, hosts, barred)
+    placed = None if local_left > 0 else best_host(required, hosts, barred)
     if local_left <= 0 and placed is None:
         launches, steers = _walk_candidates(tail, running, streaks, local_left, hosts, env)
         return launches, [*notes, *steers]

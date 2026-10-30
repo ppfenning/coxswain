@@ -151,6 +151,7 @@ land = _LazyModule("agent_tools.land")
 land_lease = _LazyModule("agent_tools.land_lease")
 land_repo_lease = _LazyModule("agent_tools.land_repo_lease")
 lane_hosts = _LazyModule("agent_tools.lane_hosts")
+launch_place = _LazyModule("agent_tools.launch_place")
 leader_chat = _LazyModule("agent_tools.leader_chat")
 notify = _LazyModule("agent_tools.notify")
 notify_core = _LazyModule("agent_tools.notify_core")
@@ -5236,17 +5237,70 @@ def _shadowed_note(profile_text: str, table_names: Sequence[str]) -> str | None:
     return f"profile lane_hosts not in the hosts table are not lane hosts while it has rows: {', '.join(names)}; add them with `cox host add`" if names else None
 
 
-def _lane_host_or_refuse(a: argparse.Namespace, profile: Mapping) -> tuple[lane_hosts.LaneHost | None, int | None]:
-    """Exit code 2 after printing the refusal; no host when `--on` is absent."""
-    name = getattr(a, "on", None)
-    if name is None:
-        return None, None
-    # The remote command carries only the initiative, run id and label; a ceiling dropped silently would run uncapped.
-    dropped = [flag for flag, value in (
+def _dropped_ceilings(a: argparse.Namespace) -> list[str]:
+    """The flags the remote command does not carry; a ceiling dropped silently would run uncapped."""
+    return [flag for flag, value in (
         ("--tier-ceiling", getattr(a, "tier_ceiling", None)),
         ("--effort-ceiling", getattr(a, "effort_ceiling", None)),
         ("--fix-attempts", getattr(a, "fix_attempts", None)),
     ) if value is not None]
+
+
+def _place_or_refuse(
+    a: argparse.Namespace, profile: Mapping, forced_local: bool,
+) -> tuple[lane_hosts.LaneHost | None, int | None]:
+    """Edge. Place the lane by the hosts table and print `placed on <host> (<in use>/<cap>)`; a remote pick comes back
+    as its LaneHost. Only epic goes remote: the other graphs have no remote launch, so they place on this machine."""
+    graph = getattr(a, "graph", "epic")
+    if not forced_local and graph not in ("epic", "decompose"):
+        return None, None
+    runs_dir = Path(profile.get("workspace_dir", "")).expanduser() / "runs"
+    rows = run_store.hosts(runs_dir)
+    if not rows and not forced_local:
+        return None, None
+    local = socket.gethostname()
+    live = _live_by_host_name(run_store.live_lanes(runs_dir, _now_iso()), local)
+    cap = _local_max_in_flight(runs_dir, dict(profile), local)
+    force = bool(getattr(a, "force", False))
+    profile_text = _read_text_or_none(_profile_path(a)) or ""
+    parsed = _profile_lane_hosts(profile_text)
+    if forced_local or graph != "epic":
+        placed = launch_place.place_local(local, rows, live, force, cap)
+    else:
+        placed = launch_place.place(
+            rows, live, datetime.datetime.now(datetime.UTC), local, cap, () if isinstance(parsed, lane_hosts.LaneHostError) else parsed,
+        )
+    if isinstance(placed, launch_place.Refusal):
+        print("routing: no host has room; pass --force to launch on this machine anyway" if forced_local else "routing: no host has room")
+        for line in launch_place.format_refusal(placed):
+            print(line)
+        return None, 2
+    print(f"placed on {placed.host} ({placed.in_use}/{placed.capacity})")
+    if placed.host == local:
+        return None, None
+    dropped = _dropped_ceilings(a)
+    if dropped:
+        print(f"routing: placed on {placed.host}, which does not carry {', '.join(dropped)}; launch without them or pass --local")
+        return None, 2
+    hosts = _lane_host_candidates(profile_text, rows, local)
+    host = None if isinstance(hosts, lane_hosts.LaneHostError) else lane_hosts.find_lane_host(hosts, placed.host)
+    if host is None:
+        print(f"routing: unknown lane host: {placed.host}")
+        return None, 2
+    return host, None
+
+
+def _lane_host_or_refuse(a: argparse.Namespace, profile: Mapping) -> tuple[lane_hosts.LaneHost | None, int | None]:
+    """Exit code 2 after printing the refusal. No host means this machine.
+
+    `--on local` or `--local` forces this machine, refused at capacity without `--force`. `--on NAME` names a table host.
+    With neither, epic and decompose are placed by the hosts table; an empty table places nothing."""
+    name = getattr(a, "on", None)
+    if name == "local" or getattr(a, "local", False):
+        return _place_or_refuse(a, profile, forced_local=True)
+    if name is None:
+        return _place_or_refuse(a, profile, forced_local=False)
+    dropped = _dropped_ceilings(a)
     if dropped:
         print(f"routing: --on does not carry {', '.join(dropped)} to the host; launch without them")
         return None, 2
@@ -9315,7 +9369,7 @@ _CHAIR_PID_ARG = commands.Arg(("--pid",), {"type": int, "help": "the durable pid
 _LAUNCH_SHARED_ARGS = (
     commands.Arg(("--tier-ceiling",), {"choices": ("cheap", "standard", "deep")}),
     commands.Arg(("--effort-ceiling",), {"choices": ("low", "high")}),
-    commands.Arg(("--force",), {"action": "store_true", "help": "launch despite a usage stop or a foreign live leader"}),
+    commands.Arg(("--force",), {"action": "store_true", "help": "launch despite a usage stop, a foreign live leader or a full local host"}),
     commands.Arg(("--no-claim",), {"action": "store_true", "help": "launch without taking an unheld or stale loop"}),
     commands.Arg(("--label",)),
 )
@@ -9540,7 +9594,8 @@ ROUTE_COMMANDS = [
                     commands.Arg(("--fix-attempts",), {"type": int, "default": None}),
                     commands.Arg(("--dry-run",), {"action": "store_true"}),
                     commands.Arg(("--run-id",), {"help": "use this run id instead of the next free one; refused when taken"}),
-                    commands.Arg(("--on",), {"help": "start the lane on this profile lane_hosts entry instead of locally"}),
+                    commands.Arg(("--on",), {"help": "start the lane on this host from the hosts table; `local` is this machine. Without it the table places the lane"}),
+                    commands.Arg(("--local",), {"action": "store_true", "help": "start the lane on this machine, not where the hosts table places it"}),
                     commands.Arg(("--include-blocked",), {"action": "store_true", "help": "launch despite a ready task behind a blocked item (--force does not)"}),
                     *_LAUNCH_SHARED_ARGS,
                 ),
@@ -9553,6 +9608,7 @@ ROUTE_COMMANDS = [
                     commands.Arg(("--idea",), {"required": True, "metavar": "PATH", "help": "the intake/idea markdown file"}),
                     commands.Arg(("--initiative-id",), {"required": True}),
                     commands.Arg(("--task-ids",), {"choices": ["ordinal"], "help": "name the graph's own tasks <initiative-id>-t1, -t2, ..."}),
+                    commands.Arg(("--local",), {"action": "store_true", "help": "start the lane on this machine, not where the hosts table places it"}),
                     commands.Arg(("--dry-run",), {"action": "store_true"}),
                     *_LAUNCH_SHARED_ARGS,
                 ),
