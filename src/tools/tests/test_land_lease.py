@@ -1,9 +1,10 @@
+import argparse
 import inspect
 from pathlib import Path
 
 import pytest
 
-from agent_tools import land_lease, store_cli
+from agent_tools import cli, land_lease, store_cli
 
 RUNS = Path("/runs")
 GRANTED = store_cli.LeaseGranted(7, "sess-1")
@@ -45,6 +46,70 @@ def test_a_normal_exit_acquires_then_releases_the_same_epoch(monkeypatch):
     assert result == land_lease.Ran("done", 7, None)
     assert seen == [7]
     assert calls == [("acquire", RUNS, "land:t1", "sess-1", 60), ("release", RUNS, "land:t1", "sess-1", 7)]
+
+
+def test_a_body_that_reacquired_moves_the_release_to_its_new_epoch(monkeypatch):
+    calls = _fakes(monkeypatch, GRANTED, store_cli.LeaseReleased())
+    held = [0]
+
+    def body(epoch):
+        held[0] = epoch + 2
+        return "done"
+
+    result = land_lease.run_under_land_lease(RUNS, "t1", "sess-1", 60, body, epoch_now=lambda: held[0])
+    assert result == land_lease.Ran("done", 9, None)
+    assert calls[-1] == ("release", RUNS, "land:t1", "sess-1", 9)
+
+
+def _walked(monkeypatch, acquires, walk):
+    """Runs `cli._land_walked` in store mode over fake store leases. A renew is refused with no holder at its first call, as the
+    store does for a lapsed or taken lease, and granted after; `acquires` are the answers to each acquire in turn."""
+    calls, answers = [], iter(acquires)
+
+    def acquire(runs_dir, name, holder, ttl, steal=False):
+        calls.append(("acquire", name))
+        return next(answers)
+
+    def renew(runs_dir, name, holder, epoch, ttl):
+        calls.append(("renew", epoch))
+        return store_cli.LeaseRefused(None, None) if sum(c[0] == "renew" for c in calls) == 1 else store_cli.LeaseGranted(epoch, holder)
+
+    def release(runs_dir, name, holder, epoch):
+        calls.append(("release", epoch))
+        return store_cli.LeaseReleased()
+
+    monkeypatch.setattr(store_cli, "lease_acquire", acquire)
+    monkeypatch.setattr(store_cli, "lease_renew", renew)
+    monkeypatch.setattr(store_cli, "lease_release", release)
+    return cli._land_walked(argparse.Namespace(label="me"), RUNS, "store", "t1", lambda: None, walk), calls
+
+
+def test_the_task_lease_guard_reacquires_an_expired_lease_mid_wait_and_releases_the_new_epoch(monkeypatch, capsys):
+    def walk(guard):
+        assert guard.beat() is None  # the timer: renew refused, acquire granted at epoch 4
+        return (0 if guard("merge") is None else 2), ["merge"], ""
+
+    walked, calls = _walked(monkeypatch, [store_cli.LeaseGranted(3, "me"), store_cli.LeaseGranted(4, "me")], walk)
+    assert walked == (0, ["merge"], "")
+    assert calls == [("acquire", "land:t1"), ("renew", 3), ("acquire", "land:t1"), ("renew", 4), ("release", 4)]
+    assert "land: the land lease for t1 expired with no holder; re-acquired it at epoch 4, continuing" in capsys.readouterr().out
+
+
+def test_a_task_lease_taken_by_another_holder_mid_wait_stops_the_land_before_merge_but_not_before_other_steps(monkeypatch):
+    seen = []
+
+    def walk(guard):
+        seen.append(guard.beat())  # the timer: renew refused, acquire names the holder
+        seen.append(guard("push"))  # only merge and mark_done are guarded
+        seen.append(guard("merge"))
+        return (2 if seen[-1] else 0), [], ""
+
+    walked, calls = _walked(monkeypatch, [store_cli.LeaseGranted(3, "me"), store_cli.LeaseRefused(5, "other@h:9")], walk)
+    assert walked == (2, [], "")
+    assert seen[0] is not None
+    assert seen[1] is None
+    assert seen[2] == "land: refusing merge, the land lease for t1 could not be renewed: held by other@h:9 at epoch 5"
+    assert [c for c in calls if c[0] != "acquire"] == [("renew", 3), ("release", 3)]
 
 
 @pytest.mark.parametrize("stop", [ValueError("boom"), KeyboardInterrupt(), SystemExit(1)])

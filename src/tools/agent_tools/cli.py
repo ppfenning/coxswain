@@ -26,6 +26,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import tomllib
 import types
@@ -2782,11 +2783,8 @@ def _land_store_stop(runs_dir: Path, record: dict, item_path: str | None) -> str
     return _land_approval_stop("store", store_state, file_state)
 
 
-def _lease_kept(runs_dir: Path, task: str, holder: str, epoch: int, kind: str) -> str | None:
-    """Edge. None when the `land:<task>` lease renews at `epoch` before a guarded step, else the reason to stop."""
-    if kind not in _GUARDED_STEPS:
-        return None
-    result = store_cli.lease_renew(runs_dir, store_cli.land_lease_name(task), holder, epoch, _LAND_LEASE_TTL_SECONDS)
+def _task_lease_stop(task: str, kind: str, result: store_cli.LeaseResult) -> str | None:
+    """None when the `land:<task>` lease renewed, else the reason to stop before `kind`."""
     if isinstance(result, store_cli.LeaseGranted):
         return None
     lost = f"held by {result.holder} at epoch {result.epoch}" if isinstance(result, store_cli.LeaseRefused) else (
@@ -2794,7 +2792,31 @@ def _lease_kept(runs_dir: Path, task: str, holder: str, epoch: int, kind: str) -
     return f"land: refusing {kind}, the land lease for {task} could not be renewed: {lost}"
 
 
-_REPO_LEASE_TTL_SECONDS = 1200  # keep equal to the ttl `_land` passes to land_repo_lease.acquire; each renew restarts it
+# The ttl `_land` passes to land_repo_lease.acquire. A renew restarts it, but only when one runs: `_LeaseGuard.renewing`
+# renews every third of it for as long as the land runs, because a step such as wait_checks blocks for longer than it.
+_REPO_LEASE_TTL_SECONDS = 1200
+
+
+def _lease_standing(result: store_cli.LeaseResult) -> str:
+    """Pure. `kept` on a grant, `refused` on any refusal, else `unrenewable`.
+
+    A refused renew does not say whether the lease lapsed or another holder took it. The store answers both with no
+    holder and no epoch: harness/store_cli_lease.lease_renew returns `_result(<bool>, None, None)`, and `parse_lease`
+    turns exit 3 into `LeaseRefused(None, None)`, the `held by None at epoch None` of the 2026-10-30 land that waited on CI.
+    Only an acquire names a holder, and it refuses while another live holder has the lease. So a refused renew is settled
+    by acquiring: a grant means the lease had lapsed with no other holder, a refusal names who holds it."""
+    if isinstance(result, store_cli.LeaseGranted):
+        return "kept"
+    if isinstance(result, store_cli.LeaseRefused):
+        return "refused"
+    return "unrenewable"
+
+
+def _renew_loop(beat: Callable[[], None], interval: float, stop: threading.Event) -> None:
+    """Calls `beat` every `interval` seconds until `stop` is set. A beat that raises is dropped: the guard's own renew before the next step reports it."""
+    while not stop.wait(interval):
+        with contextlib.suppress(Exception):
+            beat()
 
 
 def _repo_lease_stop(repo: str, kind: str, result: store_cli.LeaseResult, renewed_at: float, now: float, ttl: int) -> str | None:
@@ -2813,24 +2835,76 @@ def _repo_lease_stop(repo: str, kind: str, result: store_cli.LeaseResult, renewe
     return f"land: refusing {kind}, the repo lease for {repo} could not be renewed: {why}"
 
 
+class _LeaseGuard:
+    """Edge. Keeps one lease renewed: before each step it guards, and every third of `ttl` while `renewing` is entered.
+
+    A refused renew is settled by `reacquire`, which only succeeds when no other live holder has the lease: a grant means it
+    lapsed untaken, and `say` notes it. A refusal from the acquire names the holder; with no `reacquire` the renew's own refusal stands.
+    Either refusal is final: it is remembered, appended to `lost` once, and every later call returns the stop.
+    A transient failure on the timer is not remembered; the next guarded step renews again and reports it."""
+
+    def __init__(self, label: str, renew: Callable[[], store_cli.LeaseResult], reacquire: Callable[[], store_cli.LeaseResult] | None,
+                 clock: Callable[[], float], ttl: int, stop_for: Callable[[str, store_cli.LeaseResult, float, float], str | None],
+                 lost: list[str] | None = None, only: Collection[str] | None = None,
+                 say: Callable[[str], None] = print, new_stop: Callable[[], threading.Event] = threading.Event) -> None:
+        self.interval = max(1, ttl // 3)
+        self._label, self._renew, self._reacquire, self._clock = label, renew, reacquire, clock
+        self._stop_for, self._lost, self._only, self._say, self._new_stop = stop_for, lost, only, say, new_stop
+        self._renewed = clock()
+        self._failed: tuple[store_cli.LeaseResult, float, float] | None = None  # the result, the last renewal, the time of failure
+        self._lock = threading.Lock()
+
+    def _attempt(self) -> store_cli.LeaseResult | None:
+        result = self._renew()
+        if _lease_standing(result) == "refused" and self._reacquire is not None:
+            result = self._reacquire()
+            if isinstance(result, store_cli.LeaseGranted):
+                self._say(f"land: the {self._label} expired with no holder; re-acquired it at epoch {result.epoch}, continuing")
+        return None if isinstance(result, store_cli.LeaseGranted) else result
+
+    def _check(self, kind: str, background: bool) -> str | None:
+        with self._lock:
+            if self._failed is None:
+                now = self._clock()
+                result = self._attempt()
+                if result is None:
+                    self._renewed = now
+                elif not background or isinstance(result, store_cli.LeaseRefused):
+                    self._failed = (result, self._renewed, now)
+                    if isinstance(result, store_cli.LeaseRefused) and self._lost is not None:
+                        self._lost.append(self._stop_for(kind, result, self._renewed, now) or "")
+            if self._failed is None:
+                return None
+            result, renewed, now = self._failed
+        return self._stop_for(kind, result, renewed, now)
+
+    def __call__(self, kind: str) -> str | None:
+        return None if self._only is not None and kind not in self._only else self._check(kind, False)
+
+    def beat(self) -> str | None:
+        """One timer renewal. Only a refusal is remembered; a store error is left for the next guarded step to renew again."""
+        return self._check("the wait", True)
+
+    @contextlib.contextmanager
+    def renewing(self):
+        """Renews on a background thread for the length of the `with`, so a step that blocks past the ttl still keeps the lease."""
+        stop = self._new_stop()
+        thread = threading.Thread(target=_renew_loop, args=(self.beat, self.interval, stop), daemon=True)
+        thread.start()
+        try:
+            yield self
+        finally:
+            stop.set()
+            thread.join()
+
+
 def _repo_lease_guard(repo: str, renew: Callable[[], store_cli.LeaseResult], clock: Callable[[], float], ttl: int,
-                      lost: list[str]) -> Callable[[str], str | None]:
+                      lost: list[str], reacquire: Callable[[], store_cli.LeaseResult] | None = None) -> _LeaseGuard:
     """Edge. A walk guard that renews the repo lease before every step, not only the guarded ones.
 
     A refusal means another holder owns the lease: it is appended to `lost` so the caller does not release it."""
-    renewed = [clock()]
-
-    def guard(kind: str) -> str | None:
-        now = clock()
-        result = renew()
-        stop = _repo_lease_stop(repo, kind, result, renewed[0], now, ttl)
-        if stop is None:
-            renewed[0] = now
-        elif isinstance(result, store_cli.LeaseRefused):
-            lost.append(stop)
-        return stop
-
-    return guard
+    return _LeaseGuard(f"repo lease for {repo}", renew, reacquire, clock, ttl,
+                       lambda kind, result, renewed, now: _repo_lease_stop(repo, kind, result, renewed, now, ttl), lost)
 
 
 def _first_stop(first: Callable[[str], str | None], then: Callable[[str], str | None] | None) -> Callable[[str], str | None]:
@@ -2851,11 +2925,25 @@ def _land_walked(a: argparse.Namespace, runs_dir: Path, mode: str, task: str | N
         return walk(None)
     holder = chair.lease_holder(_holder_label(a), os.getpid(), socket.gethostname())
 
-    def body(epoch: int) -> tuple[int, list[str], str] | str:
-        stop = recheck()
-        return stop if stop is not None else walk(lambda kind: _lease_kept(runs_dir, task, holder, epoch, kind))
+    held = [0]  # the epoch the lease is held at now: a re-acquire after an expiry moves it, and the release must follow
 
-    ran = land_lease.run_under_land_lease(runs_dir, task, holder, _LAND_LEASE_TTL_SECONDS, body)
+    def renew() -> store_cli.LeaseResult:
+        return store_cli.lease_renew(runs_dir, store_cli.land_lease_name(task), holder, held[0], _LAND_LEASE_TTL_SECONDS)
+
+    def reacquire() -> store_cli.LeaseResult:
+        again = store_cli.lease_acquire(runs_dir, store_cli.land_lease_name(task), holder, _LAND_LEASE_TTL_SECONDS)
+        if isinstance(again, store_cli.LeaseGranted):
+            held[0] = again.epoch
+        return again
+
+    def body(epoch: int) -> tuple[int, list[str], str] | str:
+        held[0] = epoch
+        stop = recheck()
+        guard = _LeaseGuard(f"land lease for {task}", renew, reacquire, time.monotonic, _LAND_LEASE_TTL_SECONDS,
+                            lambda kind, result, _renewed, _now: _task_lease_stop(task, kind, result), only=_GUARDED_STEPS)
+        return stop if stop is not None else walk(guard)
+
+    ran = land_lease.run_under_land_lease(runs_dir, task, holder, _LAND_LEASE_TTL_SECONDS, body, epoch_now=lambda: held[0])
     if isinstance(ran, land_lease.Refused):
         print(f"land: refusing, {task} is being landed by {ran.holder} (lease epoch {ran.epoch})")
         return None
@@ -3076,10 +3164,19 @@ def _runs_land(a: argparse.Namespace) -> int:
     repo_lost: list[str] = []
     stops: list[dict] = []
 
+    repo_epoch = [0]  # the epoch the repo lease is held at now: a re-acquire after an expiry moves it, and the release must follow
+
+    def reacquire_repo() -> store_cli.LeaseResult:
+        again = land_repo_lease.acquire(runs_dir, str(repo), repo_holder, _REPO_LEASE_TTL_SECONDS)
+        if isinstance(again, store_cli.LeaseGranted):
+            repo_epoch[0] = again.epoch
+        return again
+
     def walk(task_guard):
         repo_guard = _repo_lease_guard(
-            str(repo), lambda: land_repo_lease.renew(runs_dir, str(repo), repo_holder, got.epoch, _REPO_LEASE_TTL_SECONDS),
-            time.monotonic, _REPO_LEASE_TTL_SECONDS, repo_lost) if isinstance(got, store_cli.LeaseGranted) else None
+            str(repo), lambda: land_repo_lease.renew(runs_dir, str(repo), repo_holder, repo_epoch[0], _REPO_LEASE_TTL_SECONDS),
+            time.monotonic, _REPO_LEASE_TTL_SECONDS, repo_lost, reacquire_repo) if isinstance(got, store_cli.LeaseGranted) else None
+        keep = [g for g in (repo_guard, task_guard) if isinstance(g, _LeaseGuard)]
         # The repo lease is checked first: a lost repo lease stops the walk before the task lease is renewed.
         guard = task_guard if repo_guard is None else _first_stop(repo_guard, task_guard)
         # The leftover rebuild deletes a branch, so it runs only once the repo lease is held: a concurrent
@@ -3103,11 +3200,13 @@ def _runs_land(a: argparse.Namespace) -> int:
             print(f"land: {cherry_pick['onto']} at {recreate['old_tip'][:8]} holds nothing beyond {cherry_pick['from']}, "
                   f"recreating it")
         return _land_execute(repo, steps, planned, record, item_path, level, a.no_merge, forge_module, by=_holder_label(a),
-                             mode=land_mode, guard=guard, stops=stops)
+                             mode=land_mode, guard=guard, stops=stops, keep=keep)
 
     repo_holder = f"{_holder_label(a)}@{socket.gethostname()}:{os.getpid()}"
-    got = land_repo_lease.acquire(runs_dir, str(repo), repo_holder, 1200)
+    got = land_repo_lease.acquire(runs_dir, str(repo), repo_holder, _REPO_LEASE_TTL_SECONDS)
     leased = isinstance(got, store_cli.LeaseGranted)
+    if isinstance(got, store_cli.LeaseGranted):
+        repo_epoch[0] = got.epoch
     if isinstance(got, store_cli.LeaseRefused):
         print(land_repo_lease.refusal_message(str(repo), got.holder or "another land"))
         walked = None
@@ -3117,7 +3216,7 @@ def _runs_land(a: argparse.Namespace) -> int:
                                    lambda: _land_store_stop(runs_dir, record, item_path) if record else None, walk)
         finally:
             if not repo_lost:  # a refused renew means another land holds it now; releasing would not be ours to do
-                land_repo_lease.release(runs_dir, str(repo), repo_holder, got.epoch)
+                land_repo_lease.release(runs_dir, str(repo), repo_holder, repo_epoch[0])
     else:
         # A store outage (NotAvailable/LeaseError) must not block a land: walk without the repo lease.
         walked = _land_walked(a, runs_dir, land_mode, lease_task,
@@ -3225,16 +3324,20 @@ def _lake_after_land(a: argparse.Namespace, runs_dir: Path, rc: int, reached: Se
 def _land_execute(repo: Path, steps: list[dict], planned: list[dict], record: dict | None, item_path: str | None,
                   level: str, no_merge: bool, forge_module=forge_github, by: str = _UNLABELED,
                   mode: str = "files", guard: Callable[[str], str | None] | None = None,
-                  stops: list[dict] | None = None) -> tuple[int, list[str], str]:
+                  stops: list[dict] | None = None, keep: Sequence[_LeaseGuard] = ()) -> tuple[int, list[str], str]:
     """Walk `steps`; return the exit code, the step kinds run in order, and the PR url ("" when none opened).
 
     A pr branch's land worktree is dropped before `merge` and on every stop; the branch itself stays.
     `guard(kind)`, when given, runs before each step; a reason back stops the land with exit 2 before that step.
+    Each lease guard in `keep` also renews on a timer for the whole walk, so a step that blocks past the ttl keeps its lease.
     `stops`, when given, receives the land log keys of the step that stopped the land."""
     built: list[str] = []
     try:
-        return _land_walk(repo, steps, planned, record, item_path, level, no_merge, forge_module, built, by=by, mode=mode,
-                          guard=guard, stops=stops)
+        with contextlib.ExitStack() as renewing:
+            for kept in keep:
+                renewing.enter_context(kept.renewing())
+            return _land_walk(repo, steps, planned, record, item_path, level, no_merge, forge_module, built, by=by, mode=mode,
+                              guard=guard, stops=stops)
     finally:
         for branch in built:
             _remove_land_worktree(repo, branch)

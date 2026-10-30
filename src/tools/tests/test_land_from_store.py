@@ -60,16 +60,25 @@ def store(monkeypatch):
         fake.calls.append(("task_state", initiative, task))
         return fake.states.pop(0) if len(fake.states) > 1 else fake.states[0]
 
+    def refused_renew_as_the_store_answers(result):
+        """The store refuses a renew with no holder and no epoch; only an acquire names who holds the lease."""
+        return store_cli.LeaseRefused(None, None) if isinstance(result, store_cli.LeaseRefused) else result
+
     def acquire(runs_dir, name, holder, ttl):
+        again = ("acquire", name) in fake.calls  # a second acquire is the land re-acquiring after a refused renew
         fake.calls.append(("acquire", name))
-        return fake.repo_acquire if name.startswith("land:/") else fake.acquire
+        repo = name.startswith("land:/")
+        refused_renew = fake.repo_renew if repo else fake.renew
+        if again and isinstance(refused_renew, store_cli.LeaseRefused):
+            return refused_renew  # another holder has the lease: the acquire names it
+        return fake.repo_acquire if repo else fake.acquire
 
     def renew(runs_dir, name, holder, epoch, ttl):
         if name.startswith("land:/"):  # the repo lease renews before every step; kept out of `calls` so the task-lease order stays readable
             fake.repo_renews.append((name, epoch))
-            return fake.repo_renew
+            return refused_renew_as_the_store_answers(fake.repo_renew)
         fake.calls.append(("renew", name, epoch))
-        return fake.renew
+        return refused_renew_as_the_store_answers(fake.renew)
 
     def release(runs_dir, name, holder, epoch):
         fake.calls.append(("release", name, epoch))
@@ -176,7 +185,8 @@ def test_a_lease_lost_before_the_merge_stops_the_land_before_the_merge(repo, tmp
     rc, ran = _land(repo, tmp_path, monkeypatch, store)
     assert rc == 2 and "merge" not in ran
     assert "refusing merge, the land lease for seams-task could not be renewed: held by other@host:1 at epoch 9" in capsys.readouterr().out
-    assert store.calls[-3:] == [("renew", "land:seams-task", 7), ("release", "land:seams-task", 7), ("release", f"land:{repo}", 1)]
+    assert store.calls[-4:] == [("renew", "land:seams-task", 7), ("acquire", "land:seams-task"),
+                                ("release", "land:seams-task", 7), ("release", f"land:{repo}", 1)]
 
 
 def test_the_lease_is_released_after_a_merge_step_fails(repo, tmp_path, monkeypatch, store):
