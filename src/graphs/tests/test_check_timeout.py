@@ -110,6 +110,9 @@ def _wait_for_pid_file_first(monkeypatch, pid_file: Path, bound: float, started:
     monkeypatch.setattr("harness.checks.subprocess.Popen", Popen)
 
 
+# serial: it waits on real process teardown inside a time bound, which `-n auto` load can overrun
+# (quarantined an approved task on 2026-10-30); it passed alone.
+@pytest.mark.serial
 def test_a_timeout_kills_a_backgrounded_grandchild_holding_the_pipes(tmp_path, monkeypatch) -> None:
     timeout, bound = 1, 30
     pid_file = tmp_path / "grandchild.pid"

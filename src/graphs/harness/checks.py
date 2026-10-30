@@ -33,8 +33,10 @@ __all__ = [
     "collected_ids",
     "coverage_floor_holds",
     "failed_test_files",
+    "failed_test_ids",
     "failures_outside",
     "fixable_checks",
+    "flaky_note",
     "is_harness_fault",
     "output_excerpt",
     "outside_surface_files",
@@ -42,6 +44,7 @@ __all__ = [
     "refix_route",
     "repo_checks",
     "run_checks",
+    "serial_rerun_cmd",
 ]
 
 HARNESS_FAULT_PREFIX = "harness fault:"
@@ -228,6 +231,70 @@ def _kill_and_collect(proc: subprocess.Popen[str], first: subprocess.TimeoutExpi
     return collected if collected else _text(first.stdout) + _text(first.stderr)
 
 
+_FAILED_ID_RE = re.compile(r"^FAILED (\S+::.*?)(?: - .*)?$", re.MULTILINE)
+_COMMAND_SEPARATOR_RE = re.compile(r"&&|\|\||;|\|")
+_PYTEST_ERROR_RE = re.compile(r"^ERROR ", re.MULTILINE)
+
+
+def failed_test_ids(output: str) -> list[str]:
+    """Node ids from pytest `FAILED <id>` lines, in order and unique; `[]` when any `ERROR` line is present.
+
+    An error (collection, fixture setup) is not a test a rerun by id can cover, so it forbids the rerun.
+    """
+    if _PYTEST_ERROR_RE.search(output):
+        return []
+    return list(dict.fromkeys(_FAILED_ID_RE.findall(output)))
+
+
+def serial_rerun_cmd(cmd: str, ids: Sequence[str]) -> str | None:
+    """`cmd` with its last pytest command cut back to `pytest -q -n 0 <ids>`, or None without ids or a pytest.
+
+    Everything before that command (`cd src/tools &&`) is kept so the ids resolve from the same folder.
+    Everything after pytest on it is dropped, so no test path or `-n auto` of the original is carried.
+    `-n 0` runs in the one process, and keeps the `--dist` options a suite's ini may set legal.
+    """
+    separators = list(_COMMAND_SEPARATOR_RE.finditer(cmd))
+    cut = separators[-1].end() if separators else 0
+    try:
+        tokens = shlex.split(cmd[cut:])
+    except ValueError:
+        return None
+    program = next((i for i, t in enumerate(tokens) if Path(t).name == "pytest"), None)
+    if program is None or not ids:
+        return None
+    return f"{cmd[:cut]} {shlex.join([*tokens[: program + 1], '-q', '-n', '0', *ids])}".strip()
+
+
+def _serial_rerun_passes(
+    cmd: str, ids: Sequence[str], worktree: Path, env: Mapping[str, str] | None, limit: int
+) -> bool:
+    """Edge: run the serial rerun once; a launch error or a timeout is a failed rerun, never a pass."""
+    rerun = serial_rerun_cmd(cmd, ids)
+    if rerun is None:
+        return False
+    try:
+        proc = subprocess.Popen(
+            rerun, shell=True, cwd=worktree, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, start_new_session=True,
+        )
+    except OSError:
+        return False
+    try:
+        proc.communicate(timeout=limit)
+    except subprocess.TimeoutExpired as exc:
+        _kill_and_collect(proc, exc)
+        return False
+    except BaseException:
+        _kill_group(proc)
+        proc.wait()
+        raise
+    return proc.returncode == 0
+
+
+def flaky_note(ids: Sequence[str]) -> str:
+    return f"flaky: {', '.join(ids)} passed on serial rerun"
+
+
 def _write_log(log_dir: Path | None, prefix: str, number: int, text: str) -> dict[str, str]:
     """Edge: write check `number`'s whole output to `log_dir/<n>.log`; `{}` with no `log_dir`."""
     if log_dir is None:
@@ -332,8 +399,14 @@ def run_checks(
             and _is_pytest_cmd(cmd)
             and not _has_python_tests(worktree)
         )
-        passed = True if no_tests_ran else proc.returncode == 0
-        outcome = "skipped" if no_tests_ran else check_outcome(proc.returncode, error)
+        exit_code = proc.returncode
+        flaky = failed_test_ids(combined) if exit_code == 1 and error is None else []
+        if flaky and _serial_rerun_passes(cmd, flaky, worktree, env, limit):
+            exit_code = 0  # the check counts as passed; `flaky` and `note` keep the first failure visible
+        else:
+            flaky = []
+        passed = True if no_tests_ran else exit_code == 0
+        outcome = "skipped" if no_tests_ran else check_outcome(exit_code, error)
         results.append(
             {
                 "name": name,
@@ -341,7 +414,8 @@ def run_checks(
                 "passed": passed,
                 "outcome": outcome,
                 "error": error,
-                "exit_code": proc.returncode,
+                "exit_code": exit_code,
+                **({"flaky": flaky, "note": flaky_note(flaky)} if flaky else {}),
                 "counts": _parse_counts(combined),
                 "output_tail": combined[-_TAIL_CHARS:],
                 "excerpt": output_excerpt(combined),
@@ -383,6 +457,8 @@ def checks_evidence(
         tail = f"\ncmd: {result.get('cmd')}\n{_tail_lines(body)}"
         carries_tail = always_tail or not result.get("passed")
         output = summary + tail if carries_tail else summary
+        if result.get("note"):
+            output = f"{output}\n{result['note']}"
         rows.append({"check": f"{prefix}:{result['name']}", "output": output})
     return rows
 
