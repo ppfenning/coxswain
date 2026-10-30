@@ -59,8 +59,11 @@ def run_under_land_lease[T](
     body: Callable[[int], T],
     acquire: LeaseCall | None = None,
     release: LeaseCall | None = None,
+    epoch_now: Callable[[], int] | None = None,
 ) -> Ran[T] | Refused | Unavailable:
-    """Refused and Unavailable run no body; a release warning rides on Ran, or as a note on the body's exception."""
+    """Refused and Unavailable run no body; a release warning rides on Ran, or as a note on the body's exception.
+
+    `epoch_now`, when given, names the epoch to release at: a body that re-acquired an expired lease holds a newer one."""
     take = acquire or store_cli.lease_acquire
     give = release or store_cli.lease_release
     name = store_cli.land_lease_name(task)
@@ -73,11 +76,15 @@ def run_under_land_lease[T](
         return Refused(got.epoch, got.holder)
     if not isinstance(got, store_cli.LeaseGranted):
         return Unavailable(_reason(got))
+
+    def held() -> int:
+        return got.epoch if epoch_now is None else epoch_now()
+
     try:
         value = body(got.epoch)
     except BaseException as exc:
-        stuck = _release(give, runs_dir, name, holder, got.epoch)
+        stuck = _release(give, runs_dir, name, holder, held())
         if stuck is not None:
             exc.add_note(stuck)
         raise
-    return Ran(value, got.epoch, _release(give, runs_dir, name, holder, got.epoch))
+    return Ran(value, held(), _release(give, runs_dir, name, holder, held()))
