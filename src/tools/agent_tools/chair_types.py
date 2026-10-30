@@ -109,6 +109,7 @@ class ApprovedTask(TypedDict):
     needs: list[str]
     run: str  # the newest run whose task record is approved and unlanded; empty when none is
     needs_fetch: bool  # the run is remote and not yet fetched; False without a run
+    land_manual: NotRequired[bool]  # the repo sets `land: manual`: a person merges the PR, so no land is planned for the task
 
 
 class LandingFact(TypedDict):
@@ -502,6 +503,7 @@ ActionKind = Literal[
     "pull_workspace",
     "waiting",
     "close_initiative",
+    "finish_task",
 ]
 
 

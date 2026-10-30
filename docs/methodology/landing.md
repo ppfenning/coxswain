@@ -88,6 +88,29 @@ the pull request. A failed check stops the land; nothing merges. This is
 the same evidence-over-assertion rule the review nodes enforce, applied at
 the last step: the checks that actually ran are what green means.
 
+## Manual repos
+
+A repo whose overlay (`.agent/cartridge.yaml`) sets `land: manual` is one where a person merges the PR. The chair and
+`cox runs stranded` propose no `cox runs land` for it; the remedy line says the human merges the PR. Each tick the chair
+runs `git fetch origin <branch>` for the PR branches the land builds (`pr/<initiative>--<phase>` and `pr/<task>`), the
+base and the phase branch. It then asks whether a PR branch is an ancestor of `origin/<base>` or `origin/<phase>`, or
+merges into one of them with no change, which is what a squash merge leaves behind. A merge done on the forge never moves
+local refs, so only `origin/` refs count. When the answer is yes the approved task is marked done, through the same
+store write as `cox route edit --state done`, and its dependents start. A task whose merge is not yet on origin is
+rechecked every five minutes. A PR branch deleted on origin cannot be checked: the chair reports it as failed with the
+commands below.
+
+To finish a task by hand, run the merged-branch check first, then the escape hatch:
+
+```
+git fetch origin <base> <phase>
+git branch -r --merged origin/<base>
+cox route edit <task> --state done
+```
+
+Look for the PR branch in that list, or for its squash commit in `git log origin/<base>`, before `cox route edit <task>
+--state done` is run.
+
 ## runs clean
 
 `cox runs clean <run> --repo R --apply` removes the worktree and

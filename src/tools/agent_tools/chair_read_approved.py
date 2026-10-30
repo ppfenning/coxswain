@@ -5,12 +5,13 @@
 """
 import glob
 import json
+import os
 import re
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from agent_tools import epic, route, run_store
+from agent_tools import epic, land_manual, repo_path, route, run_store
 from agent_tools.chair_facts import run_initiative
 from agent_tools.chair_read_quarantined import WorkFiles, task_files
 from agent_tools.chair_read_remote_unfetched import is_remote_unfetched
@@ -229,7 +230,12 @@ def read_approved(
     items = _load_items(ws, files)
     rows = store_rows if store_rows is not None else (run_store.work_items(ws / "runs") if mode == "store" else [])
     merged = with_store_closed(route.with_store_states(items, list(rows), mode), list(rows))
-    return approved_rows(mark_landed(merged, read_landed_task_ids(ws / "runs")))
+    return with_land_mode(approved_rows(mark_landed(merged, read_landed_task_ids(ws / "runs"))))
+
+
+def with_land_mode(rows: Sequence[ApprovedTask], manual_of: Callable[[str], bool] = land_manual.is_manual) -> list[ApprovedTask]:
+    """Each row gains `land_manual`, True when `manual_of` says its repo sets `land: manual`; a row with no repo is False."""
+    return [{**r, "land_manual": bool(r["repo"]) and manual_of(repo_path.expand(r["repo"], os.path.expanduser("~")))} for r in rows]
 
 
 def _is_landed(path: Path) -> bool:

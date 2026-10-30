@@ -6,7 +6,7 @@ import os
 import subprocess
 from collections.abc import Callable
 
-from agent_tools import repo_path, runs_stranded
+from agent_tools import land_manual, repo_path, runs_stranded
 
 KEYS = ("run", "task", "phase", "branch", "remedy")
 
@@ -42,7 +42,8 @@ def read_stranded(records: list[dict], items: list[dict],
     reaches the chair planner as needs_chair; `branch_exists` defaults to a
     real git check so a task on a still-carried phase branch stops reaching
     the chair as a stranded quarantine; tests inject fakes for both."""
-    return keep_stranded_keys(runs_stranded.stranded(records, items, repo_exists, branch_exists))
+    return keep_stranded_keys(runs_stranded.stranded(
+        records, items, repo_exists, branch_exists, manual_of=lambda repo: land_manual.is_manual(_local_path(repo))))
 
 
 def read_missing_repos(records: list[dict], items: list[dict],

@@ -86,10 +86,24 @@ def awaiting_phases(facts: Facts) -> frozenset[tuple[str, str]]:
     return frozenset((r["initiative"], r["phase"]) for r in facts.get("review_prs", []))
 
 
+def manual_phases(facts: Facts) -> frozenset[tuple[str, str]]:
+    """The (initiative, phase) of every approved task in a `land: manual` repo: a person merges those, so none is landed."""
+    return frozenset((t["initiative"], t["phase"]) for t in facts["approved"] if t.get("land_manual"))
+
+
+def plan_finish(facts: Facts) -> list[Action]:
+    """A finish_task per approved task of a `land: manual` repo that has a run; the executor verifies the merge on origin."""
+    return [
+        {"kind": "finish_task", "initiative": t["initiative"], "phase": t["phase"], "task_id": t["id"], "repo": t["repo"], "run": t["run"], "epoch": None}  # type: ignore[typeddict-item]
+        for t in facts["approved"]
+        if t.get("land_manual") and t["run"]
+    ]
+
+
 def _land_groups(facts: Facts) -> dict[tuple[str, str], list[ApprovedTask]]:
     """The tasks this tick lands, grouped by (initiative, phase) in landing order."""
     # Awaiting phases leave before scheduling, so a task needing an awaiting task is deferred, not landed ahead of it.
-    awaiting = awaiting_phases(facts)
+    awaiting = awaiting_phases(facts) | manual_phases(facts)
     tasks = planned_tasks([t for t in facts["approved"] if (t["initiative"], t["phase"]) not in awaiting], facts["initiatives"])
     groups: dict[tuple[str, str], list[ApprovedTask]] = {}
     for t in tasks:
@@ -193,7 +207,7 @@ def _partial_lands(facts: Facts, whole: frozenset[tuple[str, str]], now: datetim
     Each gains the repo, `task_runs` (approved task id -> the run holding its record, from `approved`) and `run`, the
     newest of those runs; a fetch leads it when one of its runs is remote and unfetched. A phase inside its
     `land_refusals` backoff, or with a standing `land_conflicts` entry for its run, plans nothing, as a land_phase would."""
-    skip = whole | awaiting_phases(facts)
+    skip = whole | awaiting_phases(facts) | manual_phases(facts)
     approved = {(t["initiative"], t["phase"], t["id"]): t for t in facts["approved"]}
     actions: list[Action] = []
     fetched: set[str] = set()

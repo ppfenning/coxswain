@@ -37,6 +37,7 @@ from agent_tools import (
     epic,
     forge_auto,
     host_cmd,
+    land_manual,
     partial_land,
     remote_fetch,
     remote_lane,
@@ -837,6 +838,28 @@ def _close_initiative(action: Action, deps: Deps) -> Result:
     return _result(action, "failed", f"set-state {state} for {initiative}: {written}")
 
 
+def _finish_task(action: Action, deps: Deps) -> Result:
+    """A `land: manual` task is done once its branch is merged on origin; the check fetches, then reads `origin/` refs only."""
+    initiative, task, run = action.get("initiative", ""), action.get("task_id", ""), action.get("run", "")
+    repo = repo_path.expand(action.get("repo", ""), os.path.expanduser("~"))
+    stamp = deps.runs_dir / run / f"finish-{task}.checked"
+    if land_manual.checked_recently(stamp):
+        return _result(action, "skipped", f"{task} was checked less than {land_manual.RECHECK_S}s ago")
+    phase = action.get("phase", "")
+    branches = land_manual.pr_branches(initiative, phase, task, land_manual.record_branch(deps.runs_dir, run, task))
+    targets = land_manual.merge_targets(base_branch.base_name(repo, None, None, deps.run), initiative, phase)
+    verdict, why = land_manual.merged_on_origin(repo, branches, targets, deps.run)
+    if verdict != "merged":
+        land_manual.mark_checked(stamp)
+        if verdict == "unverifiable":
+            return _result(action, "failed", f"{why}; {land_manual.HATCH}")
+        return _result(action, "skipped", why)
+    written = store_cli.set_state(deps.runs_dir, initiative, task, "done", "chair-loop", "approved")
+    if isinstance(written, store_cli.StateSet):
+        return _result(action, "done", f"{task} done: {why}")
+    return _result(action, "failed", f"set-state done for {task}: {written}")
+
+
 def _prune_available(run: Run, harness_python: str) -> bool:
     """Edge. True only when `<harness_python> -m harness.store_backfill_traces prune --help` exits 0."""
     code, _ = run([harness_python, "-m", "harness.store_backfill_traces", "prune", "--help"])
@@ -1121,6 +1144,8 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
         return _widen_ticket(action, deps)
     if kind == "close_initiative":
         return _close_initiative(action, deps)
+    if kind == "finish_task":
+        return _finish_task(action, deps)
     if kind in LAUNCH_KINDS or kind in ("pull", "fetch"):
         return _launch(action, deps)
     if kind == "housekeeping":

@@ -194,6 +194,7 @@ runs_move = _LazyModule("agent_tools.runs_move")
 runs_stop = _LazyModule("agent_tools.runs_stop")
 runs_stranded = _LazyModule("agent_tools.runs_stranded")
 base_branch = _LazyModule("agent_tools.base_branch")
+land_manual = _LazyModule("agent_tools.land_manual")
 runs_top = _LazyModule("agent_tools.runs_top")
 runs_top_screen = _LazyModule("agent_tools.runs_top_screen")
 runs_triage = _LazyModule("agent_tools.runs_triage")
@@ -1069,7 +1070,8 @@ def _runs_stranded(a: argparse.Namespace) -> int:
         return 2
     task_records, items = _stranded_inputs(runs_dir)
     rows = runs_stranded.stranded(task_records, items, os.path.isdir,
-                                   lambda repo, branch: _branch_exists(Path(repo), branch), base_branch.base_name)
+                                   lambda repo, branch: _branch_exists(Path(repo), branch), base_branch.base_name,
+                                   land_manual.is_manual)
     missing = runs_stranded.missing_repos(task_records, items, os.path.isdir)
 
     def report_missing() -> None:
@@ -1096,7 +1098,7 @@ def _waiting_lines(runs_dir: Path, initiative: str, items: list) -> list[str]:
         task_records, stranded_items = _stranded_inputs(runs_dir)
         rows = runs_stranded.stranded(
             [r for r in task_records if r.get("initiative") in (None, initiative)], stranded_items, os.path.isdir,
-            lambda repo, branch: _branch_exists(Path(repo), branch), base_branch.base_name)
+            lambda repo, branch: _branch_exists(Path(repo), branch), base_branch.base_name, land_manual.is_manual)
     except (OSError, ValueError, KeyError):
         rows = []
     return route.waiting_lines(items, {row["task"]: row["remedy"] for row in rows if row["remedy"]}, initiative)
