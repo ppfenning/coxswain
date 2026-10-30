@@ -577,7 +577,7 @@ def _gh_for_file(calls, create_fails=False):
             return _Result(stdout=json.dumps({"projects": [{"title": "Coxswain", "number": 7}]}))
         if argv[:3] == ["gh", "project", "field-list"]:
             return _Result(stdout=json.dumps({"fields": [
-                {"name": n, "id": f"F_{n}", "options": [{"id": "O", "name": "Ready"}, {"id": "I", "name": "Intake"}]}
+                {"name": n, "id": f"F_{n}", "options": [{"id": "O", "name": "Ready"}, {"id": "Q", "name": "Queued"}]}
                 for n in ("State", "Phase", "Run", "Cost", "Gate")]}))
         if argv[:3] == ["gh", "project", "item-add"]:
             return _Result(stdout=json.dumps({"id": "PVTI_9"}))

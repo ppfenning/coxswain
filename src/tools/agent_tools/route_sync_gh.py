@@ -33,6 +33,7 @@ _SUB_ISSUE_MUTATION = (
     "{issue{id}}}"
 )
 _PARENT_QUERY = "query($id:ID!){node(id:$id){... on Issue{parent{id}}}}"
+_SINGLE_SELECT = ("State", "Release")
 
 
 def auth_ok(run) -> bool:
@@ -152,11 +153,13 @@ def _initiative_issue(root: Path, initiative: str) -> str | None:
 
 def _item(fields: dict, body: str, stem: str, *, state: str, phase: str, run_id: str,
           cost: float, gate: str, repo: str, parent: str | None = None,
-          parent_issue: str | None = None, initiative: bool = False) -> route_sync.Item:
+          parent_issue: str | None = None, initiative: bool = False,
+          release: str | None = None) -> route_sync.Item:
     return route_sync.Item(
         id=fields.get("id", stem), title=fields.get("title", stem), body=body, repo=repo,
         state=state, phase=phase, run=run_id, cost_usd=cost, gate=gate, issue=fields.get("issue"),
         parent=parent, parent_issue=parent_issue, initiative=initiative,
+        release=route_sync.parse_release(body) if release is None else release,
     )
 
 
@@ -195,7 +198,8 @@ def _initiative_item(root: Path, path: Path, tasks: list[route_sync.Item]) -> ro
     initiative = path.parent.name
     return _item({**fields, "id": _initiative_id(initiative)}, body, initiative,
                  state=_initiative_state([t.state for t in tasks]), phase="", run_id="", cost=0.0, gate="",
-                 repo=_initiative_repo(root, initiative), initiative=True)
+                 repo=_initiative_repo(root, initiative), initiative=True,
+                 release=route_sync.epic_release([t.release for t in tasks]))
 
 
 def items_from_store(workspace) -> list[route_sync.Item]:
@@ -213,7 +217,7 @@ def items_from_store(workspace) -> list[route_sync.Item]:
 
 # `gh` returns 30 rows unless told otherwise; a missed row is replanned as new on every sync.
 _LIMIT = "10000"
-_FIELD_TITLES = {t.lower(): t for t in ("State", "Phase", "Run", "Cost", "Gate")}
+_FIELD_TITLES = {t.lower(): t for t in ("State", "Phase", "Run", "Cost", "Gate", "Release")}
 
 
 def existing(run, repo_names: list[str], project: str | None):
@@ -471,6 +475,51 @@ def _link_sub_issue(step: dict, run, ctx: dict) -> tuple[bool, str]:
     return (True, f"{child} under {parent}") if ok else (False, data)
 
 
+def _ensure_milestone(run, repo: str, title: str) -> tuple[bool, str]:
+    """The repo's milestone `title`, created when absent. Closed ones count: GitHub refuses a duplicate title."""
+    listed = run(["gh", "api", f"repos/{repo}/milestones?state=all&per_page=100", "--paginate",
+                  "--jq", ".[].title"], capture_output=True, text=True)
+    if listed.returncode != 0:
+        return False, listed.stderr.strip() or listed.stdout.strip()
+    if title in listed.stdout.splitlines():
+        return True, f"milestone {title} exists"
+    made = run(["gh", "api", f"repos/{repo}/milestones", "-f", f"title={title}"], capture_output=True, text=True)
+    return made.returncode == 0, (f"milestone {title} created" if made.returncode == 0
+                                  else made.stderr.strip() or made.stdout.strip())
+
+
+def _missing_state_option(steps: list[dict], option_ids: dict) -> str | None:
+    """The first `State` value a step sets that the board has no option for, else `None`."""
+    return next((s["value"] for s in steps if s["kind"] == "project_set" and s["field"] == "State"
+                 and ("State", s["value"]) not in option_ids), None)
+
+
+def _add_release_options(run, project: str, meta: tuple, steps: list[dict]):
+    """`(True, meta)` once every Release value the steps set is an option on the board, `(False, detail)` on a
+    failed call. The field is created with the missing options when absent. Otherwise `updateProjectV2Field`
+    rewrites the option list: the existing names stay and the new ones follow, so option ids and colours are
+    reissued. Release names are coxswain's, so that is accepted. The meta is re-read, since the ids changed."""
+    _, field_ids, option_ids = meta
+    have = [name for field, name in option_ids if field == "Release"]
+    missing = sorted({s["value"] for s in steps if s["kind"] == "project_set" and s["field"] == "Release"} - set(have))
+    if not missing:
+        return True, meta
+    owner, _, number = project.partition("/")
+    if "Release" in field_ids:
+        options = ",".join(f"{{name:{json.dumps(n)},color:GRAY,description:\"\"}}" for n in have + missing)
+        ok, data = _graphql(run, f"mutation{{updateProjectV2Field(input:{{fieldId:{json.dumps(field_ids['Release'])},"
+                                 f"singleSelectOptions:[{options}]}}){{clientMutationId}}}}")
+        if not ok:
+            return False, data
+    else:
+        made = run(["gh", "project", "field-create", number, "--owner", owner, "--name", "Release",
+                    "--data-type", "SINGLE_SELECT", "--single-select-options", ",".join(missing)],
+                   capture_output=True, text=True)
+        if made.returncode != 0:
+            return False, made.stderr.strip() or made.stdout.strip()
+    return _project_meta(run, project)
+
+
 def _execute_step(step: dict, run, ctx: dict) -> tuple[bool, str]:
     """One step through `gh`, `(ok, detail)` — `land.py`'s own edge shape."""
     kind = step["kind"]
@@ -517,10 +566,10 @@ def _execute_step(step: dict, run, ctx: dict) -> tuple[bool, str]:
         field_id = ctx["field_ids"].get(step["field"], "")
         if not item_id or not field_id:
             return False, f"no project item/field id known for {step['field']!r} on issue {issue}"
-        if step["field"] == "State":
-            option_id = ctx["option_ids"].get(("State", step["value"]), "")
+        if step["field"] in _SINGLE_SELECT:
+            option_id = ctx["option_ids"].get((step["field"], step["value"]), "")
             if not option_id:
-                return False, f"no option id known for State={step['value']!r}"
+                return False, f"no option id known for {step['field']}={step['value']!r}"
             result = run(["gh", "api", "graphql", "-f", f"query={_STATE_MUTATION}",
                           "-f", f"project={ctx['project_node_id']}", "-f", f"item={item_id}",
                           "-f", f"field={field_id}", "-f", f"option={option_id}"],
@@ -531,6 +580,17 @@ def _execute_step(step: dict, run, ctx: dict) -> tuple[bool, str]:
             result = run(["gh", "project", "item-edit", "--id", item_id, "--project-id",
                           ctx["project_node_id"], "--field-id", field_id, *value],
                          capture_output=True, text=True)
+        return result.returncode == 0, (result.stdout.strip() or result.stderr.strip())
+    if kind == "milestone_set":
+        issue = _resolved_issue(step, ctx)
+        if not issue:
+            return False, "no issue to set the milestone on"
+        repo = step["repo"] or _step_repo(issue, ctx)
+        ok, detail = _ensure_milestone(run, repo, step["title"])
+        if not ok:
+            return False, detail
+        result = run(["gh", "issue", "edit", issue, "--repo", repo, "--milestone", step["title"]],
+                     capture_output=True, text=True)
         return result.returncode == 0, (result.stdout.strip() or result.stderr.strip())
     if kind == "sub_issue_link":
         return _link_sub_issue(step, run, ctx)
@@ -573,12 +633,21 @@ def execute(steps: list[dict], run, project: str, workspace, items=(), item_node
     failure left half-written — `land.py`'s own stop-on-failure shape. A
     `refuse` step (the planner's own "this item's state made no sense")
     never calls `gh` and never stops the rest of the run, since it touched
-    nothing to begin with."""
+    nothing to begin with. The board's options are checked first: a State value
+    with no option returns one `state_option` failure before any `gh` mutation,
+    and a missing Release option is created."""
     needs_meta = any(s["kind"] in ("project_add", "project_set") for s in steps)
     if needs_meta and project:
         ok, meta = _project_meta(run, project)
         if not ok:
             return [("project_meta", False, meta)]
+        # Every board check runs before the first step, so a refusal never follows an `issue_create`.
+        missing = _missing_state_option(steps, meta[2])
+        if missing is not None:
+            return [("state_option", False, f"the project has no State option {missing!r}; nothing was created")]
+        ok, meta = _add_release_options(run, project, meta, steps)
+        if not ok:
+            return [("release_option", False, meta)]
         project_node_id, field_ids, option_ids = meta
     else:
         project_node_id, field_ids, option_ids = "", {}, {}

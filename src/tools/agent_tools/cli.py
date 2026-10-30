@@ -4830,7 +4830,10 @@ def _route_sync(a: argparse.Namespace) -> int:
     runs it and stops at the first failed `gh` call. Refuses at once, exit
     2, when `gh` is not authenticated. The tracker is checked first: `none`
     exits 0, an unknown tracker exits 2, and a registered tracker is driven
-    through its own `sync`, never through `gh`."""
+    through its own `sync`, never through `gh`. An item's release is the line `Target release: <version>.`
+    in its body; a `release:` front-matter key is not read. It sets the board's Release field, and an epic's
+    release, the latest of its tasks', also sets the milestone of that name on the epic's issue. Before any
+    issue is created, a State value with no board option stops the run, exit 1, naming the option."""
     context = _sync_context(a)
     if isinstance(context, str):
         print(f"route sync: {context}")
