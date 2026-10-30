@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "run": "live-run-view-1",
+  "written_at": "2026-10-30T14:05:30Z",
+  "nodes": [
+    {"node": "plan", "attempt": 1, "task": "", "tier": "premium", "status": "done", "turns": 9, "cost_usd": 0.42, "started_at": "2026-10-30T14:00:00Z", "last_tool": "Read", "last_tool_at": "2026-10-30T14:02:10Z", "worktree": "/tmp/worktrees/live-run-view-1/plan", "branch": null},
+    {"node": "build", "attempt": 1, "task": "p1-foundations-task", "tier": "standard", "status": "running", "turns": 14, "cost_usd": null, "started_at": "2026-10-30T14:03:00Z", "last_tool": "Edit", "last_tool_at": "2026-10-30T14:05:12Z", "worktree": "/tmp/worktrees/live-run-view-1/build", "branch": "live-run-view-1/p1-foundations-task"}
+  ]
+}
