@@ -262,3 +262,94 @@ def test_fenced_outranks_orphaned_and_stalled():
 def test_the_rendered_status_cell_reads_fenced():
     header, line = render([row("r1", True, [], [], [], host="host-a", standing="fenced")], 200)
     assert line[header.index("STATUS"):].split()[0] == "fenced"
+
+
+def _cell(lines: list[str], index: int, column: str, nxt: str) -> str:
+    header = next(line for line in lines if line.startswith("RUN"))
+    return lines[index][header.index(column):header.index(nxt)].strip()
+
+
+def _right(lines: list[str], index: int, column: str) -> str:
+    """The cell of a right-aligned column: the token ending where its header ends."""
+    header = next(line for line in lines if line.startswith("RUN"))
+    return lines[index][: header.index(column) + len(column)].split(" ")[-1]
+
+
+def _lines(rows, width=200):
+    return [line for line in render(rows, width) if line]
+
+
+def test_a_held_row_shows_its_epoch():
+    lines = _lines([row("r1", True, [], [], [], lease_state="held", lease_epoch=3, heartbeat_age=4, elapsed_s=125)])
+    assert [_cell(lines, 1, "LEASE", "HB"), _right(lines, 1, "HB"), _right(lines, 1, "ELAPSED")] == ["held e3", "4s", "2m"]
+
+
+def test_a_fenced_row_shows_its_holder():
+    lines = _lines([row("r1", True, [], [], [], lease_state="fenced", lease_holder="host-b", lease_epoch=4)])
+    assert _cell(lines, 1, "LEASE", "HB") == "fenced by host-b"
+
+
+def test_an_expired_row_shows_expired_and_stands_out():
+    r = row("r1", True, [], [], [], lease_state="expired", lease_holder="host-a", lease_epoch=2)
+    assert _cell(_lines([r]), 1, "LEASE", "HB") == "expired"
+    assert (r.status, highlight(r)) == ("running", "fenced")
+
+
+def test_a_held_or_released_lease_does_not_stand_out():
+    assert [highlight(row("r1", True, [], [], [], lease_state=s)) for s in ("held", "released", "none", "")] == ["normal"] * 4
+
+
+def test_an_exited_row_with_an_expired_lease_stays_dim():
+    assert highlight(row("r1", False, [], [], [], lease_state="expired")) == "dim"
+
+
+def test_a_remote_row_carries_its_lane_host_as_holder_context():
+    r = remote_row("x-1", "h1", 5, lease_state="held", lease_epoch=2)
+    assert (r.host, r.lease_holder, r.lease_epoch) == ("h1", "h1", 2)
+    assert remote_row("x-1", "h1", 5, lease_state="fenced", lease_holder="h2").lease_holder == "h2"
+    assert remote_row("x-1", "h1", 5).lease_holder == ""
+    lines = _lines([r])
+    assert lines[1].split()[1] == "h1"
+    assert _cell(lines, 1, "LEASE", "HB") == "held e2"
+
+
+def test_the_heartbeat_age_reads_in_seconds_then_minutes():
+    rows = [row("a", True, [], [], [], heartbeat_age=45), row("b", True, [], [], [], heartbeat_age=300),
+            row("c", True, [], [], [], heartbeat_age=STALL_S)]
+    lines = _lines(rows)
+    assert [_right(lines, i, "HB") for i in (1, 2, 3)] == ["45s", "5m", "1m"]
+    assert [_cell(lines, i, "STATUS", "LEASE") for i in (1, 2, 3)] == ["running", "stalled", "stalled"]
+
+
+def test_a_row_without_a_lease_shows_a_dash_beside_one_with_a_lease():
+    lines = _lines([row("a", True, [], [], [], lease_state="held", lease_epoch=1), row("b", True, [], [], [])])
+    assert [_cell(lines, i, "LEASE", "HB") for i in (1, 2)] == ["held e1", "-"]
+    assert [_right(lines, i, "HB") for i in (1, 2)] == ["-", "-"]
+
+
+def test_a_default_row_renders_the_columns_it_always_did():
+    lines = render([row("r1", True, [], [], [])], 200)
+    assert [line.rstrip() for line in lines] == [
+        "RUN MACHINE PHASE NODE ATT TURNS  COST VERDICT STATUS  CEIL BY",
+        "r1  ?                    0     0 $0.00         running",
+    ]
+
+
+def test_the_once_text_carries_lease_and_heartbeat_columns_at_120_columns():
+    chair = {"holder": "c1", "state": "live", "minutes_ago": 1}
+    rows = [
+        row("held-1", True, ["build"], [], [], host="host-a", lease_state="held", lease_epoch=3, heartbeat_age=7, elapsed_s=900),
+        row("expd-1", True, ["build"], [], [], host="host-a", lease_state="expired", lease_epoch=2, heartbeat_age=200),
+        row("fnc-1", True, ["build"], [], [], host="host-a", lease_state="fenced", lease_holder="host-b", lease_epoch=5),
+        remote_row("rem-1", "host-c", 120, lease_state="held", lease_epoch=1),
+    ]
+    lines = render(rows, 120, chair)
+    assert lines[0] == "chair: c1 (live, beat 1m ago)"
+    header = lines[1]
+    assert "LEASE" in header and "HB" in header and "ELAPSED" in header
+    assert all(len(line) <= 120 for line in lines)
+    body = {line.split()[0]: line for line in lines[2:]}
+    assert "held e3" in body["held-1"] and "expired" in body["expd-1"] and "fenced by host-b" in body["fnc-1"]
+    once = lines[1:]  # header, then rows sorted by run: expd-1, fnc-1, held-1, rem-1
+    assert [_right(once, i, "HB") for i in (3, 1, 4)] == ["7s", "3m", "2m"]
+    assert _right(once, 3, "ELAPSED") == "15m"
