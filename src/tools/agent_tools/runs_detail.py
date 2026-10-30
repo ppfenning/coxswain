@@ -43,6 +43,13 @@ class Detail:
     last_calls: tuple[str, ...]
     check_excerpt: str = ""
     check_log: str = ""
+    flaky_notes: tuple[str, ...] = ()
+
+
+def _flaky_notes(record: dict) -> tuple[str, ...]:
+    """The `flaky: <ids> passed on serial rerun` notes of the checks that passed only on a serial rerun."""
+    checks = (record.get("change_facts") or {}).get("checks") or ()
+    return tuple(str(c["note"]) for c in checks if isinstance(c, dict) and c.get("note"))
 
 
 def _first_failed_check(record: dict) -> dict:
@@ -140,6 +147,7 @@ def detail(run: str, alive: bool, events: list[Event], calls: list[dict], record
         last_calls=tuple(tail[-3:]),
         check_excerpt=str(_first_failed_check(record).get("excerpt") or ""),
         check_log=str(_first_failed_check(record).get("log") or ""),
+        flaky_notes=_flaky_notes(record),
     )
 
 
@@ -158,6 +166,7 @@ def render(detail: Detail, width: int) -> list[str]:
         lines.extend(f"  {ln}" for ln in detail.check_excerpt.splitlines())
     if detail.check_log:
         lines.append(f"  full output: runs/{detail.run}/{detail.check_log}")
+    lines.extend(detail.flaky_notes)
     if detail.files_touched:
         lines.append(f"files: {', '.join(detail.files_touched)}")
     if detail.last_calls:

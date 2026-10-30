@@ -11,6 +11,9 @@ HARNESS_PYTHON = run_store._harness_python()
 pytestmark = pytest.mark.skipif(HARNESS_PYTHON is None, reason="the routing profile names no harness python")
 
 
+# serial: it spawns the real harness python, which misses the lease's timing under `-n auto` load
+# (quarantined three approved tasks on 2026-10-30); it passed alone.
+@pytest.mark.serial
 def test_a_lease_is_acquired_renewed_and_released_through_the_real_harness(monkeypatch, tmp_path):
     # Overrides the autouse `_no_real_harness` fixture here only, with the store pinned under tmp_path.
     monkeypatch.setattr(store_cli, "_harness_python", lambda: HARNESS_PYTHON)

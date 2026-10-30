@@ -3,6 +3,8 @@ import sys
 
 import pytest
 
+from harness.serial_tests import pytest_collection_modifyitems, pytest_sessionfinish  # noqa: F401  (hooks)
+
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
