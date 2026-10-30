@@ -1184,6 +1184,59 @@ def test_cli_apply_releases_the_repo_lease_by_its_epoch_even_when_the_walk_raise
     assert holder == calls["acquire"][0][2]
 
 
+def test_cli_apply_takes_over_a_repo_lease_held_by_a_dead_pid_on_this_host(repo, tmp_path, monkeypatch, capsys):
+    calls = _apply_with_repo_lease(repo, tmp_path, monkeypatch, store_cli.LeaseRefused(epoch=4, holder="chair-x@host-a:4242"),
+                                    walked_result=(0, ["mark_done"], "https://x/pull/7"))
+    monkeypatch.setattr(cli.socket, "gethostname", lambda: "host-a")
+    monkeypatch.setattr(cli.land_repo_lease, "pid_alive", lambda _pid: False)
+    monkeypatch.setattr(store_cli, "lease_acquire", lambda *_a, **_k: store_cli.LeaseGranted(5, "me@host-a:2"))
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs")])
+    assert rc == 0
+    assert calls["walked"] == 1
+    assert "land: taking over the repo lease from chair-x@host-a:4242 (pid gone)" in capsys.readouterr().out
+    assert [release[3] for release in calls["release"]] == [5]
+
+
+def test_cli_apply_refuses_a_repo_lease_held_by_a_holder_on_another_host(repo, tmp_path, monkeypatch, capsys):
+    calls = _apply_with_repo_lease(repo, tmp_path, monkeypatch, store_cli.LeaseRefused(epoch=4, holder="chair-x@host-b:4242"))
+    monkeypatch.setattr(cli.socket, "gethostname", lambda: "host-a")
+    monkeypatch.setattr(cli.land_repo_lease, "pid_alive", lambda _pid: False)
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs")])
+    assert rc == 2
+    assert calls["walked"] == 0
+    assert f"land: refusing, chair-x@host-b:4242 is landing in {repo}" in capsys.readouterr().out
+
+
+def test_cli_apply_releases_the_repo_lease_when_the_store_open_raises_and_keeps_that_error(repo, tmp_path, monkeypatch):
+    calls = _apply_with_repo_lease(repo, tmp_path, monkeypatch, store_cli.LeaseGranted(epoch=7, holder="me@host-a:2"))
+
+    def refused_open(*_args, **_kwargs):
+        raise RuntimeError("database is at schema version 14, newest known migration is 13")
+
+    def release_that_fails(*args):
+        calls["release"].append(args)
+        raise OSError("store gone")
+
+    monkeypatch.setattr(cli, "_land_walked", refused_open)
+    monkeypatch.setattr(cli.land_repo_lease, "release", release_that_fails)
+    with pytest.raises(RuntimeError, match="schema version 14"):
+        cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs")])
+    [(_runs_dir, repo_str, _holder, epoch)] = calls["release"]
+    assert (repo_str, epoch) == (str(repo), 7)
+
+
+def test_cli_apply_warns_on_stderr_when_the_refused_store_cannot_release_the_repo_lease(repo, tmp_path, monkeypatch, capsys):
+    _apply_with_repo_lease(repo, tmp_path, monkeypatch, store_cli.LeaseGranted(epoch=7, holder="me@host-a:2"),
+                           walked_result=(0, ["mark_done"], "https://x/pull/7"))
+    refusal = "database is at schema version 14, newest known migration is 13"
+    monkeypatch.setattr(cli.land_repo_lease, "release", lambda *_a: store_cli.LeaseError(refusal))
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs")])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert f"not released: {refusal}" in captured.err
+    assert "not released" not in captured.out
+
+
 def test_cli_apply_walks_without_a_lease_when_the_store_is_not_available(repo, tmp_path, monkeypatch):
     calls = _apply_with_repo_lease(repo, tmp_path, monkeypatch, store_cli.NotAvailable(),
                                     walked_result=(0, ["mark_done"], "https://x/pull/7"))
