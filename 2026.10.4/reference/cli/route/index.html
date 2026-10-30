@@ -3958,6 +3958,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#leader" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        leader
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#chair" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6339,6 +6350,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#leader" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        leader
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#chair" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6399,12 +6421,12 @@ Coxswain is in beta — versions may change between releases
 
 <h1 id="route">route</h1>
 <div class="highlight"><pre><span></span><code>usage: cox route [-h]
-                 {context,status,file,priority,pull,lint,groups,drift,import,paths,store-fill,approve,decline,edit,remove,requeue,chair,sync,launch} ...
+                 {context,status,file,priority,pull,lint,groups,drift,import,paths,store-fill,approve,decline,edit,remove,requeue,leader,chair,sync,launch} ...
 
 File work for the harness, and see what is queued or running.
 
 positional arguments:
-  {context,status,file,priority,pull,lint,groups,drift,import,paths,store-fill,approve,decline,edit,remove,requeue,chair,sync,launch}
+  {context,status,file,priority,pull,lint,groups,drift,import,paths,store-fill,approve,decline,edit,remove,requeue,leader,chair,sync,launch}
     context             the routing profile's resolved context
     status              what is queued or running for this profile
     file                file a new ticket for the harness
@@ -6429,6 +6451,8 @@ positional arguments:
                         live run
     requeue             requeue the intake of an initiative that has no live
                         tasks
+    leader              whether this session is the chair (the SessionStart
+                        line)
     chair               the chair lock for the landing loop (runs/chair.json)
     sync                mirror the work store onto the profile's tracker
     launch              run one of the harness's graphs directly
@@ -6628,6 +6652,17 @@ options:
   -h, --help         show this help message and exit
   --dry-run          print the plan and write nothing
   --profile PROFILE
+</code></pre></div>
+<h2 id="leader">leader</h2>
+<div class="highlight"><pre><span></span><code>usage: cox route leader [-h] {status} ...
+
+positional arguments:
+  {status}
+    status    print one line: held by this session, taken over, or not the
+              chair
+
+options:
+  -h, --help  show this help message and exit
 </code></pre></div>
 <h2 id="chair">chair</h2>
 <div class="highlight"><pre><span></span><code>usage: cox route chair [-h] {take,extend,beat,release,status,clear,chat} ...
