@@ -85,6 +85,7 @@ chair_decompose_runs = _LazyModule("agent_tools.chair_decompose_runs")
 chair_exec = _LazyModule("agent_tools.chair_exec")
 chair_facts = _LazyModule("agent_tools.chair_facts")
 chair_holder = _LazyModule("agent_tools.chair_holder")
+chair_resolve = _LazyModule("agent_tools.chair_resolve")
 chair_land_freeze = _LazyModule("agent_tools.chair_land_freeze")
 chair_login_check = _LazyModule("agent_tools.chair_login_check")
 chair_pid_probe = _LazyModule("agent_tools.chair_pid_probe")
@@ -2910,7 +2911,7 @@ def _runs_land(a: argparse.Namespace) -> int:
         print(f"land: {run_id} is a remote run; run cox runs fetch {run_id}, then cox runs land {run_id} again")
         return 2
     if a.apply:
-        guard_rc = _leader_guard_or_refuse(runs_dir, _holder_label(a), a.force, claim=not a.no_claim)
+        guard_rc = _leader_guard_or_refuse(runs_dir, _holder_label(a), a.force, claim=not a.no_claim, explicit_label=getattr(a, "label", None))
         if guard_rc is not None:
             return guard_rc
     profile_text = _read_text_or_none(_profile_path(a))
@@ -4064,7 +4065,7 @@ def _holder_label(a: argparse.Namespace) -> str:
     return getattr(a, "label", None) or os.environ.get("COX_SESSION_LABEL") or _UNLABELED
 
 
-def _leader_guard_or_refuse(runs_dir: Path, holder: str, force: bool, claim: bool = False) -> int | None:
+def _leader_guard_or_refuse(runs_dir: Path, holder: str, force: bool, claim: bool = False, explicit_label: str | None = None) -> int | None:
     """Exit code 2 with the refusal printed when another live session holds the loop;
     None to proceed. `claim` takes an unheld, stale or crashed lock for `holder` before
     proceeding, so launching or landing is what makes a session the leader."""
@@ -4072,6 +4073,7 @@ def _leader_guard_or_refuse(runs_dir: Path, holder: str, force: bool, claim: boo
     if rc is not None:
         return None
     state = chair.liveness(record, _leader_pid_alive(record), datetime.datetime.now(datetime.UTC), socket.gethostname(), _leader_heartbeat_minutes())
+    holder = chair.resolve_holder_label(record, state, os.environ, socket.gethostname(), explicit_label) or holder
     line = chair.guard(record, holder, state)
     if line is not None:
         print(f"override: {line}" if force else line)
@@ -4139,12 +4141,43 @@ def _retaken_chair(record: dict, now_iso: str, model: str | None, session: str, 
     return new_record, f"chair lease retaken: {session} (pid {pid}) on {host}{suffix}"
 
 
+def _read_key() -> str:
+    """Edge. One keypress, no Enter. Without a terminal nothing confirms an attach or a takeover, so the answer is b, a non-chair session."""
+    if not sys.stdin.isatty():
+        return "b"
+    import termios
+    import tty
+
+    fd = sys.stdin.fileno()
+    saved = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        return sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+
+
+def _caller_holder(runs_dir: Path, explicit_label: str | None) -> tuple[str, int] | None:
+    """Edge. The (label, pid) of the live lease this caller holds, or None; an explicit label opts out so a mismatch is still refused."""
+    if explicit_label:
+        return None
+    try:
+        record = chair.read(runs_dir)
+    except (OSError, ValueError):
+        return None
+    host = socket.gethostname()
+    state = chair.liveness(record, _leader_pid_alive(record), datetime.datetime.now(datetime.UTC), host, _leader_heartbeat_minutes())
+    label = chair.resolve_holder_label(record, state, os.environ, host, None)
+    return None if label is None else (label, record["pid"])
+
+
 def _route_chair_take(a: argparse.Namespace) -> int:
     _profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
     if refuse_rc is not None:
         return refuse_rc
-    session = a.label or "chair"
-    pid, host = _leader_identity(a.pid)
+    held = _caller_holder(runs_dir, a.label)
+    session = a.label or (held[0] if held else "chair")
+    pid, host = _leader_identity(a.pid or (held[1] if held else None))
     refuse_rc = _leader_refuse_dead_pid(a.pid)
     if refuse_rc is not None:
         return refuse_rc
@@ -4161,7 +4194,7 @@ def _route_chair_take(a: argparse.Namespace) -> int:
         alive = _leader_pid_alive(record)
         prior_state = chair.liveness(record, alive, now, host, heartbeat_minutes)
         _print_if_stale(record, prior_state)
-        new_record, reason = chair.take(record, session, pid, host, now, heartbeat_minutes, alive, steal=a.steal, claude_session=chair.claude_session_from_env(os.environ), hours=hours, model=getattr(a, "model", None))
+        new_record, reason = chair.take(record, session, pid, host, now, heartbeat_minutes, alive, steal=a.steal, claude_session=getattr(a, "claude_session", None) or chair.claude_session_from_env(os.environ), hours=hours, model=getattr(a, "model", None), cwd=getattr(a, "cwd", None) or os.getcwd())
         if new_record is None and a.steal and prior_state == "live" and chair.same_holder(record, session, pid, host):
             refusal = chair.acquire_lease(runs_dir, session, pid, host, steal=True)
             if refusal:
@@ -4209,8 +4242,9 @@ def _route_chair_beat(a: argparse.Namespace) -> int:
     _profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
     if refuse_rc is not None:
         return refuse_rc
-    session = a.label or "chair"
-    pid, host = _leader_identity(a.pid)
+    held = _caller_holder(runs_dir, a.label)
+    session = a.label or (held[0] if held else "chair")
+    pid, host = _leader_identity(a.pid or (held[1] if held else None))
     refuse_rc = _leader_refuse_dead_pid(a.pid)
     if refuse_rc is not None:
         return refuse_rc
@@ -4235,8 +4269,9 @@ def _route_chair_release(a: argparse.Namespace) -> int:
     _profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
     if refuse_rc is not None:
         return refuse_rc
-    session = a.label or "chair"
-    pid, host = _leader_identity(a.pid)
+    held = _caller_holder(runs_dir, a.label)
+    session = a.label or (held[0] if held else "chair")
+    pid, host = _leader_identity(a.pid or (held[1] if held else None))
     refuse_rc = _leader_refuse_dead_pid(a.pid)
     if refuse_rc is not None:
         return refuse_rc
@@ -4287,7 +4322,14 @@ def _route_leader_status(a: argparse.Namespace) -> int:
         return read_rc
     host = socket.gethostname()
     state = chair.liveness(record, _leader_pid_alive(record), datetime.datetime.now(datetime.UTC), host, _leader_heartbeat_minutes())
-    print(chair.session_line(record, state, os.environ, host))
+    with chair.locked(runs_dir):  # re-read under the lock: a beat or a takeover's release request may have landed since the read above
+        fresh = chair.read(runs_dir)
+        record = chair.adopt_session(fresh, state, os.environ, host)
+        line = chair.session_line(record, state, os.environ, host)
+        settled = chair.settle_resumed(record, state, os.environ, host)
+        if settled is not fresh:
+            chair.write(runs_dir, settled)
+    print(line)
     return 0
 
 
@@ -5008,7 +5050,7 @@ def _route_launch(a: argparse.Namespace) -> int:
     # Read before the guard: a claim replaces the record with one that has no `model` key.
     chair_model = _recorded_chair_model(runs_dir)
     lock_before = _lock_snapshot(runs_dir)
-    guard_rc = _leader_guard_or_refuse(runs_dir, _holder_label(a), a.force, claim=not a.no_claim)
+    guard_rc = _leader_guard_or_refuse(runs_dir, _holder_label(a), a.force, claim=not a.no_claim, explicit_label=getattr(a, "label", None))
     if guard_rc is not None:
         return guard_rc
     usage_code, usage_lines = route.launch_gate(
@@ -10426,7 +10468,7 @@ def _chair_run_deps(
     if not dry_run:
         # Lands run behind the tick on the land worker (tools #1287), which beats only the chair lease while one runs:
         # the tick's own `beat` also clears this tick's fact caches, which a worker thread must never touch.
-        sink = chair_run.land_sink(lambda: chair.renew_lease(runs_dir, session, pid, host))
+        sink = chair_run.land_sink(lambda: chair.renew_lease(runs_dir, session, pid, host), released=lambda: chair.honour_release_request(runs_dir, session, pid, host))
         exec_deps = dataclasses.replace(exec_deps, lands=sink)
         facts_deps = dataclasses.replace(facts_deps, landing=sink.landing)
         stop_lands = sink.stop
@@ -11510,14 +11552,39 @@ def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
     cwd = workspace
     if warning:
         print(warning)
+    runs_dir = Path(workspace).expanduser() / "runs"
+    host = socket.gethostname()
+    now = datetime.datetime.now(datetime.UTC)
+    try:
+        record = chair.read(runs_dir)
+    except (OSError, ValueError):
+        record = None
+    state = chair.liveness(record, _leader_pid_alive(record), now, host, _leader_heartbeat_minutes())
+    plan = chair_resolve.resolve_bare(record, state, host, now)
+    live_line = _live_holder_line(runs_dir)
+    action = "observer" if live_line is not None else {"take": "take", "resume": "resume"}.get(plan.kind, plan.default)
+    sid = None  # a take learns its session id from the SessionStart status call; claude's argv stays as it was
+    label = f"chair-{now:%Y-%m-%d}"
+    if plan.kind == "offer" and live_line is None:
+        print(chair_resolve.holder_line(record), file=sys.stderr if a.print_argv else sys.stdout)
+        print(chair_resolve.offer_line(plan), file=sys.stderr if a.print_argv else sys.stdout)
+        if not a.print_argv:
+            action = chair_resolve.choose(_read_key(), plan.default)
+    if action == "cancel":
+        print("chair: cancelled")
+        return 0
+    if action in ("resume", "attach"):
+        argv = chair_resolve.with_session(argv, "--resume", plan.session_id, extra_args)
+        cwd = plan.cwd if plan.cwd and Path(plan.cwd).is_dir() else cwd
+        label, sid = plan.label or label, plan.session_id
     if a.print_argv:
         print(argv)
         print(cwd)
+        print(chair_resolve.describe(action, plan), file=sys.stderr)  # stdout stays the argv and cwd alone
         return 0
-    live_line = _live_holder_line(Path(workspace).expanduser() / "runs")
     if live_line is not None:
-        # Observer: a live chair loop already holds the lease, so this session takes, steals and releases nothing and starts no loop.
-        print(live_line)
+        print(live_line)  # a live chair loop holds the lease: this session takes, steals and releases nothing
+    if action in ("observer", "attach"):
         os.chdir(cwd)
         os.execvp(argv[0], argv)
         return 0
@@ -11527,11 +11594,23 @@ def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
     # later invocation, while a LIVE foreign holder is still only printed.
     chair_a = argparse.Namespace(
         profile=a.launcher_profile,
-        label=f"chair-{datetime.datetime.now(datetime.UTC):%Y-%m-%d}",
+        label=label,
         pid=os.getpid(),
         steal=True,
+        cwd=cwd,
+        claude_session=sid,
     )
-    if _route_chair_take(chair_a) == 0:
+    if action == "takeover":
+        took, line = chair_resolve.takeover(runs_dir, label, chair_a.pid, host, sid, cwd, heartbeat_minutes=_leader_heartbeat_minutes())
+        print(line)
+    else:
+        took = _route_chair_take(chair_a) == 0
+        if took and action == "resume":
+            with chair.locked(runs_dir):  # the SessionStart line `chair: resumed <label>` reads this stamp
+                taken = chair.read(runs_dir)
+                if taken is not None:
+                    chair.write(runs_dir, {**taken, "resumed": True})
+    if took:
         runs_dir = Path(workspace).expanduser() / "runs"
         beater_argv = [
             sys.executable, "-m", "agent_tools.chair", "beat-loop",

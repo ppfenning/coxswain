@@ -280,10 +280,10 @@ class WorkerLands:
 
 def land_sink(
     beat: Callable[[], None], clock: Callable[[], float] = time.monotonic, wait: Callable[[float], None] = time.sleep,
-    stamp: Callable[[], float] = time.time,
+    stamp: Callable[[], float] = time.time, released: Callable[[], bool] | None = None,
 ) -> WorkerLands:
-    """Edge. The worker beats the chair lease through `beat` every LAND_BEAT_INTERVAL while any land runs."""
-    return WorkerLands(chair_land.LandWorker(beat, LAND_BEAT_INTERVAL, clock, wait), stamp)
+    """Edge. The worker beats the chair lease through `beat` every LAND_BEAT_INTERVAL while any land runs, and honours a takeover's release request through `released`."""
+    return WorkerLands(chair_land.LandWorker(beat, LAND_BEAT_INTERVAL, clock, wait, released), stamp)
 
 
 def error_line(exc: Exception, now: datetime, results: Sequence[Result] = ()) -> str:

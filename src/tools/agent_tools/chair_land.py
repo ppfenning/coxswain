@@ -84,9 +84,11 @@ Land = Callable[[], object]
 class LandWorker:
     def __init__(
         self, beat: Callable[[], None], interval: float, clock: Callable[[], float], wait: Callable[[float], None],
+        released: Callable[[], bool] | None = None,
     ) -> None:
-        """`beat` renews the chair lease once per `interval` while any land runs."""
-        self._beat, self._interval, self._clock, self._wait = beat, interval, clock, wait
+        """`beat` renews the chair lease once per `interval` while any land runs. `released` is `chair.honour_release_request` bound to this holder: once it returns True the beat stops."""
+        self._beat, self._interval, self._clock, self._wait, self._released = beat, interval, clock, wait, released
+        self.released = False
         self._mutex = threading.Lock()
         self._running: set[str] = set()
         self._queues: dict[str, deque[tuple[Land, LandHandle]]] = {}
@@ -176,6 +178,11 @@ class LandWorker:
                 if running == 0 or self._stopped:
                     self._beating = False
                     return
+            if self._released is not None and self._released():
+                self.released = True
+                with self._mutex:
+                    self._beating = False
+                return
             now = self._clock()
             if beat_due(now, last, self._interval, running):
                 try:
