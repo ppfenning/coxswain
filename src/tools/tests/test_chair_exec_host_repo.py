@@ -73,7 +73,7 @@ def test_a_carry_pushes_a_chair_only_branch_to_the_host_by_its_home_relative_pat
     calls: list[list[str]] = []
 
     def reply(command: list[str]) -> tuple[int, str]:
-        if "rev-parse" in command and HOST_REPO in command:  # only the host's verify names the home-relative path
+        if "rev-parse" in command and HOST_REPO in command and not command[-1].startswith("refs/remotes/"):  # only the host's branch verify names the home-relative path
             return 1, ""
         return (0, "/tmp/cox-carry-x\n") if command[0] == "mktemp" else (0, "")
 

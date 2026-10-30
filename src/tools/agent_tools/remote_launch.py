@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import NamedTuple
 
 from agent_tools import lane_toolchain, repo_path
+from agent_tools.base_branch import branch_name
 from agent_tools.host_cmd import ChairHead, sync_argvs
 from agent_tools.lane_hosts import LaneHost
 from agent_tools.remote_argv import (
@@ -79,7 +80,7 @@ class ChairBase(NamedTuple):
     sha: str
 
 
-def _chair_base(path: str) -> ChairBase | LaunchError | None:
+def _chair_base(path: str, repo_base: str | None = None) -> ChairBase | LaunchError | None:
     """Edge. Fetch the chair's checkout at `path`, then read `origin/<base>` (origin's default branch, else main).
     None only when `path` is no git checkout or has no origin. A failed fetch or an unresolved `origin/<base>` is a
     LaunchError: either would send the lane to a commit the chair did not choose."""
@@ -89,7 +90,7 @@ def _chair_base(path: str) -> ChairBase | LaunchError | None:
         fetched = subprocess.run(
             ["git", "-C", path, "fetch", "--tags", "origin"], capture_output=True, text=True, check=False, timeout=120
         )
-        branch = _git_out(path, "symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD").removeprefix("origin/") or "main"
+        branch = branch_name(path, None, repo_base)
         sha = _git_out(path, "rev-parse", "--verify", "-q", f"origin/{branch}")
     except (OSError, subprocess.SubprocessError):
         return LaunchError("sync", f"{_UNRESOLVED}; sync failed: the chair cannot run git in {path}")
@@ -247,6 +248,7 @@ def launch_on_host(
     chair_base: Callable[[str], ChairBase | LaunchError | None] = _chair_base,
     probe: Callable[[list[str]], tuple[int, str]] = _probe,
     tools: Sequence[str] = (),
+    repo_base: str | None = None,
 ) -> dict | LaunchError:
     """`preflight` is a refusal line from a check made before anything is copied; None lets the launch go on.
     `tools` are the executables the repo's checks run: one `probe` of the host's lane PATH, before the copy, refuses
@@ -269,7 +271,7 @@ def launch_on_host(
     chair_repo = None if repo is None else given_local or (repo if home is None else repo_path.expand(repo, home))
     harness_head = None if harness_dir is None else chair_head(harness_dir)
     repo_head = None if chair_repo is None else chair_head(chair_repo)
-    base = None if chair_repo is None else chair_base(chair_repo)
+    base = None if chair_repo is None else (chair_base(chair_repo, repo_base) if repo_base else chair_base(chair_repo))
     harness_base = None if harness_dir is None else chair_base(harness_dir)
     for resolved in (base, harness_base):
         if isinstance(resolved, LaunchError):

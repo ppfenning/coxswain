@@ -450,6 +450,66 @@ def test_the_git_edge_checks_a_pick_against_origin_main(monkeypatch) -> None:
     assert argvs[-1] == ["git", "-C", "/r", "merge-base", "--is-ancestor", "abc", "origin/main"]
 
 
+def test_a_repo_with_a_base_setting_cuts_its_phase_branch_from_origin_develop(tmp_path, monkeypatch) -> None:
+    argvs: list = []
+    monkeypatch.setattr(chair_exec, "run_argv", lambda argv, cwd=None, timeout=None: argvs.append(argv) or (0, ""))
+    monkeypatch.setattr(chair_exec.tempfile, "mkdtemp", lambda prefix: str(tmp_path))
+    git = chair_exec._GitEdge(tmp_path, tmp_path, "/r", None, "develop")
+    git.create_branch_from_main("carry/alpha-p1")
+    assert argvs[-1] == ["git", "-C", "/r", "worktree", "add", "-B", "carry/alpha-p1", str(tmp_path), "origin/develop"]
+    assert git.default_branch() == "develop"
+
+
+def test_a_repo_with_a_base_setting_carries_forward_onto_origin_develop() -> None:
+    argvs: list = []
+    run = _carry_run(argvs, f"{_MAIN_WORKTREE}\n\n{_P_WORKTREE}\n", {"epic/i/p"})
+    deps = replace(_deps([]), run=run, repo_for=lambda action: "/w/app", repo_base=lambda repo: "develop")
+    action = {**_clear("i"), "carry": ["p"], "repo": "/w/app"}
+    assert perform([action], deps, lambda: 1, False)[0]["status"] == "done"
+    assert any(a[-3:] == ["merge", "--no-edit", "origin/develop"] for a in argvs)
+    assert not any(a[-1] == "origin/main" for a in argvs)
+
+
+def test_a_carry_whose_checkout_lacks_origin_base_fails_without_merging_a_local_branch() -> None:
+    argvs: list = []
+    run = _carry_run(argvs, f"{_MAIN_WORKTREE}\n\n{_P_WORKTREE}\n", {"epic/i/p"}, remote_branches=frozenset({"origin/main"}))
+    deps = replace(_deps([]), run=run, repo_for=lambda action: "/w/app", repo_base=lambda repo: "develop")
+    action = {**_clear("i"), "carry": ["p"], "repo": "/w/app"}
+    result = perform([action], deps, lambda: 1, False)[0]
+    assert result["status"] == "failed" and "runs land: origin/develop not found in /w/app" in result["reason"]
+    assert not any("merge" in a or "add" in a for a in argvs)
+
+
+def test_a_carry_whose_fetch_of_origin_fails_stops_before_resolving_or_merging() -> None:
+    argvs: list = []
+    run = _carry_run(argvs, f"{_MAIN_WORKTREE}\n\n{_P_WORKTREE}\n", {"epic/i/p"}, fail=("fetch", "origin"))
+    deps = replace(_deps([]), run=run, repo_for=lambda action: "/w/app")
+    action = {**_clear("i"), "carry": ["p"], "repo": "/w/app"}
+    result = perform([action], deps, lambda: 1, False)[0]
+    assert result["status"] == "failed" and "git fetch origin in /w/app" in result["reason"]
+    assert not any("merge" in a or "symbolic-ref" in a for a in argvs)
+
+
+def test_a_landed_develop_repo_records_the_commit_of_origin_develop(tmp_path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run = lambda argv: subprocess.run(argv, cwd=repo, capture_output=True, text=True, check=True)  # noqa: E731
+    run(["git", "init", "-q", "-b", "develop"])
+    run(["git", "config", "user.email", "a@b.c"])
+    run(["git", "config", "user.name", "tester"])
+    (repo / "f.txt").write_text("one", encoding="utf-8")
+    run(["git", "add", "f.txt"])
+    run(["git", "commit", "-q", "-m", "first"])
+    run(["git", "update-ref", "refs/remotes/origin/develop", "HEAD"])
+    run(["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop"])
+    expected = run(["git", "rev-parse", "HEAD"]).stdout.strip()
+    assert land_commit(str(repo)) == expected
+    result = chair_exec._land_result({"kind": "land"}, str(repo), 0, "merge: ok\nmark_done: t\n")
+    assert result["status"] == "landed" and result["commit"] == expected
+    run(["git", "update-ref", "refs/remotes/origin/staging", "HEAD"])
+    assert land_commit(str(repo), "staging") == expected
+
+
 def test_a_failed_fetch_of_origin_fails_the_carry_before_any_worktree_is_added(monkeypatch) -> None:
     argvs: list = []
     monkeypatch.setattr(chair_exec, "run_argv", lambda argv, cwd=None, timeout=None: argvs.append(argv) or (1, "no route"))
@@ -1013,7 +1073,10 @@ def test_a_cleared_single_worktree_is_done_through_the_real_sweep_and_its_relaun
 _P_WORKTREE = "worktree /w/app/.worktrees/i-p\nHEAD ccc\nbranch refs/heads/epic/i/p"
 
 
-def _carry_run(argvs: list, listing: str, branches: set, conflict_branches: frozenset = frozenset(), fail: tuple = ()) -> Run:
+def _carry_run(
+    argvs: list, listing: str, branches: set, conflict_branches: frozenset = frozenset(), fail: tuple = (),
+    remote_branches: frozenset = frozenset({"origin/main", "origin/develop"}),
+) -> Run:
     """A stateful fake git: worktree list/add/remove, for-each-ref/branch -D, and a carried phase's merge/diff/abort.
 
     `fail`, when given, names the argv tokens (e.g. `("worktree", "add")`) whose exact command exits 1.
@@ -1027,6 +1090,8 @@ def _carry_run(argvs: list, listing: str, branches: set, conflict_branches: froz
         if "worktree" in argv and "list" in argv:
             return 0, listing
         if "rev-parse" in argv:
+            if argv[-1].removeprefix("refs/remotes/") in remote_branches:
+                return 0, ""
             return (0, "") if argv[-1].removeprefix("refs/heads/") in branches else (1, "")
         if argv[0] == "mktemp":
             return 0, "/tmp/cox-carry-abc\n"
@@ -1065,12 +1130,16 @@ def test_a_carried_phase_keeps_its_worktree_removed_branch_kept_then_merges_in_a
     assert argvs[0] == ["git", "-C", "/w/app", "worktree", "list", "--porcelain"]
     assert argvs[1] == ["git", "-C", "/w/app", "worktree", "remove", "--force", "/w/app/.worktrees/i-p"]
     assert argvs[2] == ["git", "-C", "/w/app", "for-each-ref", "--format=%(refname:short)", "refs/heads/epic/i/*"]
-    add = argvs[3]
+    assert argvs[3] == ["git", "-C", "/w/app", "fetch", "origin"]
+    assert argvs[4][:5] == ["git", "-C", "/w/app", "symbolic-ref", "--short"]
+    assert argvs[5] == ["git", "-C", "/w/app", "remote", "get-url", "origin"]
+    assert argvs[6] == ["git", "-C", "/w/app", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"]
+    add = argvs[7]
     tmp = add[-2]
     assert add == ["git", "-C", "/w/app", "worktree", "add", tmp, "epic/i/p"]
-    assert argvs[4] == ["git", "-C", tmp, "merge", "--no-edit", "main"]
-    assert argvs[5] == ["git", "-C", "/w/app", "worktree", "remove", "--force", tmp]
-    assert len(argvs) == 6
+    assert argvs[8] == ["git", "-C", tmp, "merge", "--no-edit", "origin/main"]
+    assert argvs[9] == ["git", "-C", "/w/app", "worktree", "remove", "--force", tmp]
+    assert len(argvs) == 10
     assert not any(a[0] == "ssh" for a in argvs)
     assert not any("checkout" in a or "switch" in a for a in argvs)
 
@@ -1158,7 +1227,8 @@ def test_a_host_homed_carry_runs_its_git_steps_on_that_host() -> None:
     results = _host_clear(_host_carry_run(argvs, {"epic/i/p"}))
     assert results[0]["status"] == "done"
     assert ssh_argv("me@host-a", sync_argv("/w/app")) in argvs
-    assert [*SSH_BOUND, "me@host-a", "git -C /tmp/cox-carry-abc merge --no-edit main"] in argvs
+    assert [*SSH_BOUND, "me@host-a", "git -C /tmp/cox-carry-abc merge --no-edit origin/main"] in argvs
+    assert [*SSH_BOUND, "me@host-a", "git -C /w/app fetch origin"] in argvs
     assert [*SSH_BOUND, "me@host-a", "git -C /w/app worktree remove --force /tmp/cox-carry-abc"] in argvs
     assert not any(a[0] == "git" and ("merge" in a or "add" in a) for a in argvs)
 

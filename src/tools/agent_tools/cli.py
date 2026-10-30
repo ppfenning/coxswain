@@ -1047,8 +1047,10 @@ def _runs_stranded(a: argparse.Namespace) -> int:
         print(f"stranded: {reason}")
         return 2
     task_records, items = _stranded_inputs(runs_dir)
+    profile = _profile_or_empty(a)
     rows = runs_stranded.stranded(task_records, items, os.path.isdir,
-                                   lambda repo, branch: _branch_exists(Path(repo), branch))
+                                   lambda repo, branch: _branch_exists(Path(repo), branch),
+                                   lambda repo: _non_main_base(repo, profile))
     missing = runs_stranded.missing_repos(task_records, items, os.path.isdir)
 
     def report_missing() -> None:
@@ -3074,7 +3076,15 @@ def _runs_land(a: argparse.Namespace) -> int:
     except route.ProfileError as exc:
         print(f"land: profile unreadable: {exc}")
         return 2
-    default_branch = "main"
+    from agent_tools import base_branch
+
+    # Every base is origin/<branch> after a fetch; a repo with no origin keeps the bare local name.
+    subprocess.run(["git", "-C", str(repo), "fetch", "origin"], capture_output=True, text=True, check=False)
+    try:
+        default_branch = base_branch.base_ref(str(repo), getattr(a, "base", None), base_branch.repo_base(profile, str(repo)))
+    except base_branch.BaseMissing as exc:
+        print(exc)
+        return 2
     repo_facts = _land_repo_facts(repo, profile)
     if repo_facts["cartridge_error"]:
         # The chair fails a run whose cartridge will not resolve; a land that went on would push after fewer checks than the build ran.
@@ -3172,7 +3182,7 @@ def _runs_land(a: argparse.Namespace) -> int:
     if _repo_is_dirty(repo):
         print(f"land: refusing, {repo} is dirty")
         return 2
-    sync, sync_detail = _sync_default_branch(repo, default_branch)
+    sync, sync_detail = _sync_default_branch(repo, default_branch.removeprefix("origin/"))
     if sync == "fast_forward":
         print(f"land: {sync_detail}")
     elif sync == "refuse":
@@ -3656,6 +3666,31 @@ DEFAULT_PROFILE = "~/.config/agent-tools/profile.yaml"
 
 def _profile_path(a: argparse.Namespace) -> Path:
     return Path(getattr(a, "profile", None) or os.environ.get("AGENT_TOOLS_PROFILE") or DEFAULT_PROFILE).expanduser()
+
+
+def _profile_or_empty(a: argparse.Namespace) -> dict:
+    """Edge. The routing profile, `{}` when it is unreadable."""
+    text = _read_text_or_none(_profile_path(a))
+    try:
+        return route.parse_profile(text) if text is not None else {}
+    except route.ProfileError as exc:
+        print(f"profile unreadable: {exc}; its repo_base entries are not applied", file=sys.stderr)
+        return {}
+
+
+def _repo_base_of(profile: dict, repo: str) -> str | None:
+    """Edge. The profile's `repo_base` entry for `repo`; the module loads only when a command needs it."""
+    from agent_tools import base_branch
+
+    return base_branch.repo_base(profile, repo)
+
+
+def _non_main_base(repo: str, profile: dict) -> str | None:
+    """Edge. `repo`'s integration branch when it is not `main`, else None."""
+    from agent_tools import base_branch
+
+    branch = base_branch.branch_name(str(Path(repo).expanduser()), None, base_branch.repo_base(profile, repo))
+    return None if branch == "main" else branch
 
 
 def _read_text_or_none(p: Path):
@@ -5826,6 +5861,7 @@ def _route_launch_on_host(
     result = remote_launch.launch_on_host(
         host, _initiative_path(runs_dir, a.initiative).name, run_id, _holder_label(a), launched_at, run, locate, repo, harness_dir,
         preflight=preflight, home=home, host_checkouts=_host_checkouts(run_store.hosts(runs_dir), host.name), tools=tools,
+        repo_base=_repo_base_of(_profile_or_empty(a), repo) if repo else None,
     )
     if isinstance(result, remote_launch.LaunchError):
         print(f"routing: launch on {host.name} failed at {result.step}: {result.message}")
@@ -8785,6 +8821,7 @@ RUNS_COMMANDS = [
             commands.Arg(("--phase",), {"help": "land the whole phase off its own epic branch instead of one task"}), commands.Arg(("--label",)),
             commands.Arg(("--force",), {"action": "store_true", "help": "land despite a foreign live leader"}),
             commands.Arg(("--no-claim",), {"action": "store_true", "help": "land without taking an unheld or stale loop"}),
+            commands.Arg(("--base",), {"help": "the repo's integration branch; default: its repo_base entry, then origin/HEAD, then main"}),
             commands.Arg(("--behind-limit",), {"type": int, "default": 20, "help": "warn when the task's base is more than this many commits behind main"}),
             commands.Arg(("--worktree-root",), {"default": "~/worktrees"}), commands.Arg(("--apply",), {"action": "store_true"}), commands.Arg(("--no-merge",), {"action": "store_true"}),
             commands.Arg(("--runs-dir",), {"help": "override: resolve task records here instead of the profile's workspace_dir"}), commands.Arg(("--profile",)),
@@ -10833,6 +10870,7 @@ def _chair_run_deps(
         log_retention_days=run_logs.retention_days(profile),
         ids_mode=profile.get("ids", "slug"),
         dry_run=dry_run,
+        repo_base=lambda repo: _repo_base_of(profile, repo),
     )
     exec_deps = dataclasses.replace(
         exec_deps,

@@ -94,7 +94,7 @@ def test_an_empty_leftover_is_recreated_and_the_land_continues_with_the_remote_u
     rc, ran = _land(repo, tmp_path, monkeypatch, store_cli.LeaseGranted(1, "me"))
     out = capsys.readouterr().out
     assert rc == 0, out
-    assert f"land: {_PR} at {old[:8]} holds nothing beyond main, recreating it\n" in out
+    assert f"land: {_PR} at {old[:8]} holds nothing beyond origin/main, recreating it\n" in out
     assert ran[:10] == _PRESYNCED
     assert not _has_ref(repo, f"refs/heads/{_PR}")
     assert _remote_refs(repo) == before

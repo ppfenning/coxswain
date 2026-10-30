@@ -86,6 +86,20 @@ def _launch(output, code=0, base=AT_CHAIR):
     return result, calls, probed
 
 
+def test_launch_on_host_resolves_the_chair_base_with_the_repos_setting_and_the_harness_without_it():
+    seen = []
+
+    def chair_base(path, repo_base=None):
+        seen.append((path, repo_base))
+        return AT_CHAIR
+
+    launch_on_host(
+        HOST, "init-x", "init-x-1", "l", "t", lambda argv: 0, repo="/r", harness_dir="/h",
+        chair_head=lambda _: None, chair_base=chair_base, probe=lambda argv: (0, f"head {CHAIR}\n"), repo_base="develop",
+    )
+    assert seen == [("/r", "develop"), ("/h", None)]
+
+
 def test_a_host_at_the_chairs_commit_launches_after_the_sync_and_the_record_carries_base_sha():
     result, calls, probed = _launch(f"head {CHAIR}\n")
     assert result == {"host": "box2", "launched_at": "t", "repo": "/r", "base_sha": CHAIR}
@@ -314,14 +328,14 @@ def test_runs_land_prints_the_far_behind_warning_before_the_first_cherry_pick_ca
     argv, seen = _land_world(tmp_path, monkeypatch, capsys)
     with pytest.raises(_AtCherryPick):
         cli.main([*argv, "--behind-limit", "0"])
-    assert len(seen) == 1 and "1 commits behind main (limit 0)" in seen[0]
+    assert len(seen) == 1 and "1 commits behind origin/main (limit 0)" in seen[0]
 
 
 def test_the_dry_run_land_shows_the_same_warning_so_the_operator_sees_it_before_deciding(tmp_path, monkeypatch, capsys):
     argv, _ = _land_world(tmp_path, monkeypatch, capsys)
     capsys.readouterr()
     assert cli.main([a for a in argv if a != "--apply"] + ["--behind-limit", "0"]) == 0
-    assert "1 commits behind main (limit 0)" in capsys.readouterr().err
+    assert "1 commits behind origin/main (limit 0)" in capsys.readouterr().err
 
 
 def test_a_land_with_no_cherry_pick_step_still_warns_before_it_takes_the_repo_lease(tmp_path, monkeypatch, capsys):
@@ -335,7 +349,7 @@ def test_a_land_with_no_cherry_pick_step_still_warns_before_it_takes_the_repo_le
     monkeypatch.setattr(cli.land_repo_lease, "acquire", at_lease)
     with pytest.raises(_AtCherryPick):
         cli.main([*argv, "--behind-limit", "0"])
-    assert len(seen) == 1 and "1 commits behind main (limit 0)" in seen[0]
+    assert len(seen) == 1 and "1 commits behind origin/main (limit 0)" in seen[0]
 
 
 def test_runs_land_is_silent_when_the_base_is_within_the_default_limit(tmp_path, monkeypatch, capsys):

@@ -44,6 +44,7 @@ from agent_tools import (
     stale_draft,
     store_cli,
 )
+from agent_tools.base_branch import base_ref, branch_name, resolve_base
 from agent_tools.chair_carry_exec import ForgePort, GitPort, StorePort, perform_carry
 from agent_tools.chair_facts import STRANDED_CAUSE
 from agent_tools.chair_read_land_conflicts import _rev_parse as rev_parse
@@ -168,6 +169,7 @@ class Deps:
     resolve_land: Callable[[str, str, str], None] | None = None  # (initiative, phase, outcome): the store's resolve write for a land
     rerun_main: Callable[[str, str], tuple[str, str]] | None = None  # a rerun_main's (repo, commit) -> chair_revert_ports.rerun_infra's (state, line); None refuses it
     rev_parse: Callable[[str, str], str | None] = rev_parse  # (repo, ref) -> the ref's tip, None when it does not resolve; the only door to a land_phase's head
+    repo_base: Callable[[str], str | None] = lambda repo: None  # a repo -> its profile `repo_base` entry; None when it has none
     phase_states: Callable[[str, str], list[str]] = lambda initiative, phase: []  # (initiative, phase) -> the store state of each of its tasks; [] when unknown
 
 
@@ -359,12 +361,12 @@ def _recorded(result: Result) -> Action:
     return {**result["action"], "status": result["status"], "reason": tail(result["reason"], _REASON_CAP)}  # type: ignore[typeddict-item]
 
 
-def _land_result(action: Action, repo: str, code: int, output: str) -> Result:
+def _land_result(action: Action, repo: str, code: int, output: str, repo_base: str | None = None) -> Result:
     """Same as `_result(action, "landed"/"not_landed", output)`, but a true `landed()` also carries the repo's
-    new origin/main commit from `land_commit`, run right after so nothing else has moved origin/main yet."""
+    new integration-branch commit from `land_commit`, run right after so nothing else has moved it yet."""
     if not landed(code, output):
         return _result(action, "not_landed", output)
-    return {**_result(action, "landed", output), "commit": land_commit(repo)}
+    return {**_result(action, "landed", output), "commit": land_commit(repo, repo_base)}
 
 
 def _run_land(deps: Deps, argv: list[str]) -> tuple[int, str]:
@@ -396,7 +398,7 @@ def _land(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
     refusal = land_refusal(action, code, output)
     if refusal is not None:
         return {"action": action, "status": "refused", "reason": output, "needs_chair": refusal}
-    return _land_result(action, repo, code, output)
+    return _land_result(action, repo, code, output, deps.repo_base(repo))
 
 
 def _land_async(action: Action, deps: Deps, sink: LandSink) -> Result:
@@ -481,6 +483,19 @@ def _branch_on_host(
     return (True, "") if code == 0 else (False, f"git push of {branch} to {ssh}:{repo}: {out.strip()}")
 
 
+def _host_base_ref(at_home: Run, home_repo: str, setting: str | None) -> tuple[str, str]:
+    """`base_ref` as the checkout at `home_repo` sees it, run through `at_home` so a host's checkout answers for itself:
+    (ref, ""), or ("", the refusal) when it has an origin without `origin/<branch>`. `setting` is the repo's `repo_base` entry."""
+    code, out = at_home(["git", "-C", home_repo, "symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"])
+    head = out.strip().splitlines()[-1].removeprefix("origin/") if code == 0 and out.strip() else None
+    branch = resolve_base(None, setting, head)
+    if at_home(["git", "-C", home_repo, "remote", "get-url", "origin"])[0] != 0:
+        return branch, ""
+    if at_home(["git", "-C", home_repo, "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}"])[0] != 0:
+        return "", f"runs land: origin/{branch} not found in {home_repo}"
+    return f"origin/{branch}", ""
+
+
 def _carry_forward(
     action: Action, deps: Deps, repo: str, initiative: str, phases: list[str], ssh: str = ""
 ) -> tuple[list[str], Action | None, Result | None]:
@@ -504,6 +519,15 @@ def _carry_forward(
         if code != 0:
             return [], None, _result(action, "failed", f"updating {repo} on {host} before the carry: {out.strip()}")
     merged: list[str] = []
+    base = ""
+    if phases:
+        # Resolved in the checkout the merge runs in (the host's, over ssh), after that checkout's own fetch.
+        code, out = at_home(["git", "-C", home_repo, "fetch", "origin"])
+        if code != 0:
+            return [], None, _result(action, "failed", f"git fetch origin in {repo}{f' on {host}' if ssh else ''}: {out.strip()}")
+        base, refusal = _host_base_ref(at_home, home_repo, deps.repo_base(repo))
+        if refusal:
+            return [], None, _result(action, "failed", refusal)
     for phase in phases:
         branch = f"epic/{initiative}/{phase}"
         present, error = _branch_on_host(deps, at_home, ssh, repo, branch, home_repo) if ssh else (True, "")
@@ -521,13 +545,13 @@ def _carry_forward(
         code, out = at_home(["git", "-C", home_repo, "worktree", "add", tmp, branch])
         if code != 0:
             return merged, None, _result(action, "failed", f"git worktree add {tmp} {branch} in {repo}: {out.strip()}")
-        code, out = at_home(["git", "-C", tmp, "merge", "--no-edit", "main"])
+        code, out = at_home(["git", "-C", tmp, "merge", "--no-edit", base])
         if code != 0:
             _, diff_out = at_home(["git", "-C", tmp, "diff", "--name-only", "--diff-filter=U"])
             conflicted = [line for line in diff_out.splitlines() if line.strip()]
             if not conflicted:
                 at_home(["git", "-C", home_repo, "worktree", "remove", "--force", tmp])
-                return merged, None, _result(action, "failed", f"git merge --no-edit main in {tmp} ({branch}): {out.strip()}")
+                return merged, None, _result(action, "failed", f"git merge --no-edit {base} in {tmp} ({branch}): {out.strip()}")
             at_home(["git", "-C", tmp, "merge", "--abort"])
             rcode, rout = at_home(["git", "-C", home_repo, "worktree", "remove", "--force", tmp])
             if rcode != 0:
@@ -575,7 +599,7 @@ def _land_phase(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Resu
     refusal = land_refusal(action, code, output)
     if refusal is not None:
         return {"action": action, "status": "refused", "reason": output, "needs_chair": refusal}
-    return _land_result(action, repo, code, output)
+    return _land_result(action, repo, code, output, deps.repo_base(repo))
 
 
 def _already_landed_result(action: Action, deps: Deps, output: str) -> Result | None:
@@ -1490,10 +1514,10 @@ def fenced_fetch(fetch: Fetch, dry_run: bool) -> Fetch:
     return _not_probed if dry_run else fetch
 
 
-def land_commit(repo_dir: str) -> str:
-    """Edge. `origin/main`'s commit hash in `repo_dir`, read right after a true `landed()` result so it reflects
-    the land that just happened before anything else can move origin/main; "" on any git failure."""
-    code, output = run_argv(["git", "-C", repo_dir, "log", "-1", "--format=%H", "origin/main"])
+def land_commit(repo_dir: str, repo_base: str | None = None) -> str:
+    """Edge. `origin/<integration branch>`'s commit hash in `repo_dir` (`repo_base` is the repo's setting), read right
+    after a true `landed()` result so it reflects the land that just happened before anything else can move it; "" on any git failure."""
+    code, output = run_argv(["git", "-C", repo_dir, "log", "-1", "--format=%H", f"origin/{branch_name(repo_dir, None, repo_base)}"])
     return output.strip() if code == 0 else ""
 
 
@@ -1572,17 +1596,16 @@ class _GitEdge:
 
     Every base is `origin/<default branch>` after a `git fetch origin`; local `main` is never read, so it cannot be stale."""
 
-    def __init__(self, runs_dir: Path, workspace: Path, repo: str, home: str | None = None) -> None:
+    def __init__(self, runs_dir: Path, workspace: Path, repo: str, home: str | None = None, repo_base: str | None = None) -> None:
         self.runs_dir, self.workspace, self.repo, self.tmp, self.home = runs_dir, workspace, repo, "", home
+        self.repo_base = repo_base  # the repo's profile `repo_base` entry
 
     def _git(self, *args: str) -> tuple[int, str]:
         return run_argv(["git", "-C", self.tmp or self.repo, *args])
 
     def default_branch(self) -> str:
-        """What `origin/HEAD` names; "main" when it names nothing."""
-        code, out = run_argv(["git", "-C", self.repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
-        name = out.strip().removeprefix("origin/") if code == 0 else ""
-        return name or "main"
+        """The repo's integration branch: its `repo_base` entry, else what `origin/HEAD` names, else "main"."""
+        return branch_name(self.repo, None, self.repo_base)
 
     def fetch_branch(self, host: str, branch: str) -> None:
         """The run's branch from its host, reached as `<ssh>:<repo on the host>` the way `remote_fetch` reaches it. An empty host is here."""
@@ -1597,7 +1620,7 @@ class _GitEdge:
     def create_branch_from_main(self, name: str) -> None:
         """Fetches origin, then cuts `name` from `origin/<default branch>` in a new worktree; a failed fetch raises."""
         _must(*run_argv(["git", "-C", self.repo, "fetch", "origin"]), "git fetch origin")
-        start = f"origin/{self.default_branch()}"
+        start = base_ref(self.repo, None, self.repo_base)
         tmp = tempfile.mkdtemp(prefix="cox-carry-")
         code, out = run_argv(["git", "-C", self.repo, "worktree", "add", "-B", name, tmp, start])
         if code != 0:
@@ -1630,7 +1653,7 @@ class _GitEdge:
         return [c for c in commands if run_argv(["bash", "-c", c], cwd=Path(self.tmp), timeout=_CHECK_COMMAND_TIMEOUT_S)[0] != 0]
 
     def already_on_main(self, commit: str) -> bool:
-        return self._git("merge-base", "--is-ancestor", commit, f"origin/{self.default_branch()}")[0] == 0
+        return self._git("merge-base", "--is-ancestor", commit, base_ref(self.repo, None, self.repo_base))[0] == 0
 
     def close(self) -> None:
         if self.tmp:
@@ -1727,8 +1750,10 @@ class _RebaseEdge:
 
 def _carry_ports(
     runs_dir: Path, workspace: Path, repo_for: Callable[[Action], str], now: Callable[[], str], home: str, action: Action,
+    repo_base: Callable[[str], str | None] = lambda repo: None,
 ) -> tuple[GitPort, ForgePort, StorePort]:
-    git = _GitEdge(runs_dir, workspace, action.get("repo") or repo_for(action), home)
+    repo = action.get("repo") or repo_for(action)
+    git = _GitEdge(runs_dir, workspace, repo, home, repo_base(repo))
     forge = _ForgeEdge(git)
     return git, forge, _StoreEdge(runs_dir, workspace, action, forge, now)
 
@@ -1747,6 +1772,7 @@ def edge_deps(
     ids_mode: str = "slug",
     provider_profile: Callable[[], dict] = lambda: {},
     dry_run: bool = False,
+    repo_base: Callable[[str], str | None] = lambda repo: None,
 ) -> Deps:
     """Edge. The real bundle: subprocess for cox and git, chair.acquire_lease for the lease.
 
@@ -1777,7 +1803,8 @@ def edge_deps(
         harness_python=harness_python,
         ids_mode=ids_mode,
         home=home,
-        carry_ports=partial(_carry_ports, runs_dir, workspace, repo_for, lambda: datetime.now(UTC).isoformat(), home),
+        carry_ports=partial(_carry_ports, runs_dir, workspace, repo_for, lambda: datetime.now(UTC).isoformat(), home, repo_base=repo_base),
+        repo_base=repo_base,
         rebase_port=lambda action: _RebaseEdge(action.get("repo") or repo_for(action)),
         phase_states=lambda initiative, phase: phase_task_states(run_store.work_items(runs_dir, initiative), phase),
     )

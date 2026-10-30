@@ -33,6 +33,15 @@ sources: {"github": {"repos": ["owner/repo"]}, "folder": {"repos": ["~/intake"]}
 repo_map: {"owner/repo": "/path/to/repo", "~/intake": "/path/to/repo"}
 ```
 
+A repo whose integration branch is not `main` can name it in the profile, by checkout path or directory name:
+
+```yaml
+repo_base: {"/path/to/repo": "develop"}
+```
+
+`cox runs land` takes the branch from `--base`, then this entry, then the repo's `origin/HEAD`, then `main`, and cuts,
+merges and opens its PR against `origin/<branch>` after a `git fetch origin`. A branch `origin` lacks is refused.
+
 - **github** files each issue labelled `intake` (`filter: label:<name>`
   picks another label), then swaps the label for `intake:taken` and
   comments the intake path. An open PR labelled `review` is reviewed

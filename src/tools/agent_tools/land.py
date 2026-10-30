@@ -357,6 +357,11 @@ def mark_done(tasks: Sequence[str], merged: Collection[str]) -> list[str]:
     return [t for t in tasks if t in merged]
 
 
+def _bare(ref: str) -> str:
+    """The branch name a forge call takes: `origin/develop` is `develop`; a bare local name is unchanged."""
+    return ref.removeprefix("origin/")
+
+
 def _card_phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_records: list[dict[str, Any]],
                      repo_facts: dict[str, Any] | None, repo: str, default_branch: str = "main") -> list[dict[str, Any]]:
     """apply_task per approved task of `repo` onto the record's `card_branch`, checks, push, mark_done; then one pr_create when the record has `last_phase`. Never a merge."""
@@ -375,7 +380,7 @@ def _card_phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], 
              "reason": f"{', '.join(skipped)}: approved item not applied to {branch}; left in current state"}] if skipped else []
     # `last_phase` is set by the caller on the initiative's final phase; the card finds the PR by its head branch.
     pr = card_pr_steps(phase_record.get("initiative"), {repo: {"task_ids": [s["task"] for s in applied],
-                                                             "default_branch": default_branch}}) if phase_record.get("last_phase") else []
+                                                             "default_branch": _bare(default_branch)}}) if phase_record.get("last_phase") else []
     return [
         *applied,
         {"kind": "checks", "checks": checks_argv(repo_facts or {}), "worktree_of": branch},
@@ -436,7 +441,7 @@ def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_
                  "reason": f"{', '.join(unmerged)}: work not in the merged PR; left in current state"}] if unmerged else []
         return [
             {"kind": "merge", "squash": True, "delete_branch": True, "branch": pr_branch,
-             "default_branch": default_branch, "subject": f"epic {initiative}: {phase}"},
+             "default_branch": _bare(default_branch), "subject": f"epic {initiative}: {phase}"},
             {"kind": "clean_phase", "run": run, "phase_branch": phase_branch, "pr_branch": pr_branch, "tasks": landed_tasks},
             *left,
             *[{"kind": "mark_done", "task": t} for t in marked],
@@ -490,7 +495,7 @@ def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_
         {"kind": "checks", "checks": checks_argv(repo_facts or {}), "worktree_of": pr_branch},
         {"kind": "push", "branch": pr_branch},
         {"kind": "pr_create", "title": phase_pr_title(initiative, phase, phase_record.get("initiative_title", "")),
-         "body": phase_pr_body(phase_record, task_records), "head": pr_branch, "base": default_branch},
+         "body": phase_pr_body(phase_record, task_records), "head": pr_branch, "base": _bare(default_branch)},
         {"kind": "wait_checks", "branch": pr_branch},
         # Without `task_facts` there is no merged set, so every landed task is marked as before. A task with no
         # fact (not approved) was never gathered and keeps being marked too.
@@ -587,10 +592,10 @@ def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_br
         {"kind": "push", "branch": pr_branch},
         *presync,
         {"kind": "pr_create", "title": draft.get("title", subject), "body": body,
-         "head": pr_branch, "base": default_branch},
+         "head": pr_branch, "base": _bare(default_branch)},
         {"kind": "wait_checks", "branch": pr_branch},
         {"kind": "merge", "squash": True, "delete_branch": True, "branch": pr_branch,
-         "default_branch": default_branch, "subject": subject},
+         "default_branch": _bare(default_branch), "subject": subject},
         {"kind": "clean", "run": run, "task": task, "branch": scratch_branch},
         {"kind": "mark_done", "task": task},
         *sync,

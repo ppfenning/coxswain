@@ -82,11 +82,14 @@ def test_lint_reads_the_checkout_of_a_recorded_home_repo(tmp_path, monkeypatch, 
     assert "t1 surface_missing: t1 surfaces agent_tools/b.py, which is not in the repository" in out
 
 
-def _live_launch(tmp_path, monkeypatch, *extra):
-    """A live `route launch epic` with the repo recorded as `~/repo`; returns (rc, [(argv, env)] of detached starts)."""
+def _live_launch(tmp_path, monkeypatch, *extra, profile_extra=""):
+    """A live `route launch epic` with the repo recorded as `~/repo`; returns (rc, [(argv, env)] of detached starts).
+    `profile_extra` is appended to the routing profile."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(cli, "_host_auth_output", lambda argv: '{"loggedIn": true}')
     _, _, argv = _setup(tmp_path)
+    with open(tmp_path / "profile.yaml", "a", encoding="utf-8") as handle:
+        handle.write(profile_extra)
     argv[argv.index("--repo") + 1] = "~/repo"
     started = []
     real = subprocess.Popen
@@ -125,3 +128,17 @@ def test_lane_host_launch_passes_the_recorded_repo_and_the_home_to_remote_launch
     [(args, kwargs)] = calls
     assert args[7] == "~/repo"
     assert kwargs["home"] == str(tmp_path)
+    assert kwargs["repo_base"] is None
+
+
+def test_lane_host_launch_hands_the_profile_repo_base_to_remote_launch(tmp_path, monkeypatch):
+    calls = []
+
+    def launch_on_host(*args, **kwargs):
+        calls.append(kwargs)
+        return {"host": "box", "launched_at": "2026-10-14T00:00:00Z", "repo": args[7]}
+
+    monkeypatch.setattr(remote_launch, "launch_on_host", launch_on_host)
+    rc, _ = _live_launch(tmp_path, monkeypatch, "--on", "box", profile_extra='repo_base: {"repo": "develop"}\n')
+    assert rc == 0
+    assert calls[0]["repo_base"] == "develop"

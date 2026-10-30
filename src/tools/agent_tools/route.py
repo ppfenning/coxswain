@@ -101,6 +101,7 @@ _KNOWN_KEYS = {
     "router",
     "sources",
     "repo_map",
+    "repo_base",  # JSON map of a repo's path or directory name to its integration branch; base_branch.repo_base reads it
     "forge",
     "tracker",
     "tracker_scope",  # `all` (default), `epics` or `initiatives`: which items `route sync` mirrors; a cartridge's own `tracker_scope` wins
@@ -111,7 +112,7 @@ _KNOWN_KEYS = {
     "operator",  # the human the courier and decisions address; settings_model.operator_name, "operator" when absent
 }
 
-_JSON_KEYS = {"sources", "repo_map"}
+_JSON_KEYS = {"sources", "repo_map", "repo_base"}
 
 TRACKER_SCOPES = ("all", "epics", "initiatives")
 
