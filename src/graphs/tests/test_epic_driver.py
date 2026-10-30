@@ -40,6 +40,8 @@ from harness.epic import (
     _ticket_amend_ramp,
     _trace_evidence,
     _unapproved,
+    blocked_line,
+    blocking_commits,
     branch_action,
     build_outcome,
     classify_unlanded,
@@ -2184,6 +2186,8 @@ def test_a_stale_reused_branch_with_its_own_commits_blocks_rather_than_building(
     git("add", "-A", cwd=repo)
     git("commit", "-qm", "advance main", cwd=repo)
 
+    # An approved task's commit is not ours to discard, and a ready one beside it does not make it so.
+    work = _with_states(t1="approved", t2="ready")
     second, runner = drive(repo, cart, tmp_path, work=work, run_id="epic-2")
     assert second["phases"][0]["status"] == "blocked"
     reason = second["phases"][0]["reason"]
@@ -2209,7 +2213,9 @@ def test_classify_unlanded_reads_the_task_states_of_the_plus_commits() -> None:
     assert classify_unlanded([t1, t2], {"t1": "done", "t2": "done"}) == "landed"
     assert classify_unlanded([t1, t2], {"t1": "approved", "t2": "approved"}) == "awaiting_land"
     assert classify_unlanded([t1, t2], {"t1": "done", "t2": "approved"}) == "rebase"
-    assert classify_unlanded([t1, t2], {"t1": "done", "t2": "ready"}) == "block"
+    assert classify_unlanded([t1, t2], {"t1": "done", "t2": "ready"}) == "rebuild"
+    assert classify_unlanded([t1, t2], {"t1": "ready", "t2": "ready"}) == "rebuild"
+    assert classify_unlanded([t1, t2], {"t1": "approved", "t2": "ready"}) == "block"
     assert classify_unlanded([t1], {}) == "block"
     assert classify_unlanded(["+ a1 fix the thing"], {"t1": "approved"}) == "block"
 
@@ -2254,6 +2260,40 @@ def test_a_phase_whose_unlanded_commits_are_all_done_is_recreated_not_rebased(re
     assert "recreated" in result["phases"][0]
     assert rebases == [] and "exit_code" not in result
     assert is_ancestor(repo, "main", BRANCH)
+
+
+def test_a_task_sent_back_with_rebuild_is_built_from_the_build_node(repo, cart, tmp_path) -> None:
+    """Approved, built on the phase branch, main moved (the land conflicted), then `--rebuild` set it ready."""
+    _stale_branch_with_two_task_commits(repo, cart, tmp_path)
+    result, runner = drive(repo, cart, tmp_path, work=_with_states(t1="done", t2="ready"), run_id="epic-2")
+    assert result["phases"][0]["status"] == "partial", "built and approved; the land is still to come"
+    assert "sent back to ready" in result["phases"][0]["recreated"]
+    assert is_ancestor(repo, "main", BRANCH)
+    roles = [c["role"] for c in runner.calls if "t2-bench" in c["prompt"]]
+    assert roles[0] == "plan" and "build" in roles, "a fresh ready task plans, then builds"
+    assert not any("t1-probe" in c["prompt"] for c in runner.calls)
+
+
+def test_a_blocked_phase_prints_the_task_and_the_state_it_read(repo, cart, tmp_path, capsys) -> None:
+    _stale_branch_with_two_task_commits(repo, cart, tmp_path)
+    result, _ = drive(repo, cart, tmp_path, work=_with_states(t1="approved", t2="ready"), run_id="epic-2")
+    phase = result["phases"][0]["phase"]
+    printed = [line for line in capsys.readouterr().out.splitlines() if line.startswith(f"phase {phase}: blocked: ")]
+    assert len(printed) == 1
+    assert "task t2-bench state=ready" in printed[0] and "task t1-probe state=approved" in printed[0]
+
+
+def test_blocked_line_names_the_reason_or_says_none_was_recorded() -> None:
+    assert blocked_line({"phase": "p1", "status": "blocked", "reason": "rebase conflict: x"}) == "phase p1: blocked: rebase conflict: x"
+    assert blocked_line({"phase": "p1", "status": "blocked"}) == "phase p1: blocked: no reason was recorded on the phase"
+    assert blocked_line({"phase": "p1", "status": "complete", "reason": "x"}) is None
+
+
+def test_blocking_commits_names_each_task_once_with_the_state_read() -> None:
+    cherry = ["+ a1 epic r-1: t1", "+ b2 epic r-1: t1", "+ c3 epic r-1: t2", "+ d4 hand fix"]
+    assert blocking_commits(cherry, {"t1": "approved"}) == [
+        "task t1 state=approved", "task t2 state=unknown", "commit 'hand fix'",
+    ]
 
 
 def test_a_phase_of_done_and_approved_commits_is_rebased_and_proceeds(repo, cart, tmp_path, monkeypatch) -> None:
