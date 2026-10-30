@@ -34,6 +34,7 @@ from agent_tools import (
     chair_plan_prune,
     courier,
     cox_settings,
+    epic,
     forge_auto,
     host_cmd,
     partial_land,
@@ -440,6 +441,12 @@ def _host_repo(deps: Deps, repo: str) -> str:
     return repo_path.host_form(repo, deps.home) if deps.home else repo
 
 
+def _live_runs_line(runs: Sequence[Mapping[str, Any]]) -> str:
+    """The refusal line naming each live run with its pid and state; "" when `runs` is empty."""
+    named = "; ".join(f"{r['run']} pid {r['pid']} {r['state']}" for r in runs)
+    return f"clear refused, a run of this initiative is live: {named}" if runs else ""
+
+
 def _pruned(
     deps: Deps, repo: str, initiative: str, pattern: str, carry: set[str], git_repo: str = ""
 ) -> tuple[list[str], str]:
@@ -448,6 +455,10 @@ def _pruned(
     `git_repo` is the path git runs in when it differs from `repo`, the name the lines carry; "" means `repo`.
     """
     where = git_repo or repo
+    # Local pidfiles only, for the host's prune too: a process on another machine is covered by its unexpired lease.
+    refused = _live_runs_line(epic.live_runs(deps.runs_dir, initiative))
+    if refused:
+        return [], refused
     code, listing = deps.run(["git", "-C", where, "worktree", "list", "--porcelain"])
     if code != 0:
         return [], f"git worktree list in {repo}: {listing.strip()}"

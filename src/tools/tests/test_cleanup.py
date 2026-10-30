@@ -242,3 +242,42 @@ def test_force_deletes_both_branches_of_a_refused_task(repo_refused):
     assert "deleted branch agents/epic-x-5/task (forced)" in lines
     branches = cleanup.git_branches(repo_refused)
     assert "agents/epic-x-5/task" not in branches and "epic/x/seams--task" not in branches
+
+
+def _plan(root, wtroot, **kw):
+    return cleanup.plan_cleanup(run_id="epic-x-5", worktrees=cleanup.git_worktrees(root), branches=cleanup.git_branches(root), worktree_root=str(wtroot), **kw)
+
+
+def test_a_live_plan_removes_nothing_even_with_force(repo):
+    root, wtroot = repo
+    plan = _plan(root, wtroot, live={"pid": 4242, "state": "running"})
+    assert plan["worktrees"] == [] and plan["branches"] == [] and plan["root"] is None
+    lines = cleanup.apply_cleanup(root, plan, dry_run=False, force=True, landed=["task"])
+    assert lines == ["skipped run epic-x-5: pid 4242 is running"]
+    assert "agents/epic-x-5/task" in cleanup.git_branches(root) and (wtroot / "epic-x-5/seams").exists()
+
+
+def test_a_fenced_owner_names_its_pid_in_the_skipped_line(repo):
+    root, wtroot = repo
+    lines = cleanup.apply_cleanup(root, _plan(root, wtroot, live={"pid": 4242, "state": "fenced"}))
+    assert lines == ["skipped run epic-x-5: pid 4242 is fenced"]
+
+
+def test_a_plan_with_no_live_owner_is_unchanged(repo):
+    root, wtroot = repo
+    plan = _plan(root, wtroot, live=None)
+    assert "skipped" not in plan and plan["worktrees"] == [str(wtroot / "epic-x-5/seams")]
+    assert plan == _plan(root, wtroot)
+
+
+@pytest.mark.parametrize("state,expected", [("running", {"pid": 77, "state": "running"}), ("fenced", {"pid": 77, "state": "fenced"}), ("exited", None)])
+def test_live_owner_counts_running_and_fenced_as_live(tmp_path, monkeypatch, state, expected):
+    (tmp_path / "epic-x-5.pid").write_text("77\n")
+    monkeypatch.setattr(cleanup.epic, "run_state", lambda pid, pidfile, *a, **k: state)
+    assert cleanup.live_owner(tmp_path, "epic-x-5") == expected
+
+
+def test_live_owner_is_none_without_a_readable_pidfile(tmp_path):
+    assert cleanup.live_owner(tmp_path, "epic-x-5") is None
+    (tmp_path / "epic-x-5.pid").write_text("not-a-pid")
+    assert cleanup.live_owner(tmp_path, "epic-x-5") is None

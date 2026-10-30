@@ -14,7 +14,9 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-__all__ = ["apply_cleanup", "git_branches", "git_worktrees", "plan_cleanup"]
+from agent_tools import epic
+
+__all__ = ["apply_cleanup", "git_branches", "git_worktrees", "live_owner", "plan_cleanup"]
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -29,6 +31,19 @@ def git_branches(repo: Path) -> list[str]:
     return [line.lstrip("*+ ").strip() for line in _git(repo, "branch", "--list").splitlines() if line.strip()]
 
 
+def live_owner(runs_dir: Path | str, run_id: str) -> dict[str, Any] | None:
+    """Edge. `{"pid", "state"}` when the run's pidfile names a process that is running or fenced, else None."""
+    pidfile = Path(runs_dir) / f"{run_id}.pid"
+    try:
+        text = pidfile.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not text.isdigit():
+        return None
+    state = epic.run_state(int(text), pidfile)
+    return {"pid": int(text), "state": state} if state in ("running", "fenced") else None
+
+
 def _task_of(branch: str) -> str | None:
     """The task name behind a doomed branch: third segment of `agents/<run>/<task>`,
     or the text after the last `--` of `epic/<init>/<phase>--<task>`."""
@@ -39,8 +54,13 @@ def _task_of(branch: str) -> str | None:
     return None
 
 
-def plan_cleanup(*, run_id: str, worktrees: Sequence[str], branches: Sequence[str], worktree_root: str) -> dict[str, Any]:
-    """Pure: what a run left behind. Phase branches are listed as kept, explicitly."""
+def plan_cleanup(*, run_id: str, worktrees: Sequence[str], branches: Sequence[str], worktree_root: str,
+                 live: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Pure: what a run left behind. Phase branches are listed as kept, explicitly.
+    A `live` owner (pid and state) empties the plan and adds a `skipped` line."""
+    if live is not None:
+        skipped = f"skipped run {run_id}: pid {live['pid']} is {live['state']}"
+        return {"run_id": run_id, "worktrees": [], "branches": [], "kept_phase_branches": [], "root": None, "skipped": skipped}
     root = str(Path(worktree_root).expanduser()) + "/" + run_id
     doomed_worktrees = [w for w in worktrees if w.startswith(root + "/") or w == root]
     doomed_branches = [b for b in branches if b.startswith(f"agents/{run_id}/") or ("--" in b and b.startswith("epic/"))]
@@ -54,6 +74,8 @@ def apply_cleanup(repo: Path | str, plan: dict[str, Any], *, dry_run: bool = Tru
     whose task is neither `landed` nor `dropped` is a draft and is kept,
     printed with its stop reason, unless `force`. The draft is the agents branch;
     a recorded task's `epic/...--<task>` is a private merge target and goes."""
+    if plan.get("skipped"):
+        return [plan["skipped"]]
     repo = Path(repo)
     reasons = reasons or {}
     lines = []
