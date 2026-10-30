@@ -1992,6 +1992,46 @@ def test_launch_epic_include_blocked_alone_does_not_lift_a_usage_stop(tmp_path, 
     assert not (ws / "runs" / "demo-1.pid").exists()
 
 
+def _waiting_initiative(tmp_path, dep_state, approved_record):
+    """An epic whose one ready task `child` needs `parent`, which is in `dep_state` and, when `approved_record`, has an approved run record."""
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    initiative_dir = ws / "work" / "demo"
+    (initiative_dir / "1-base").mkdir(parents=True)
+    (initiative_dir / "initiative.md").write_text(f"---\nid: demo\ntitle: Demo\nrepo: {repo}\n---\n\nBody\n")
+    (initiative_dir / "1-base" / "parent.md").write_text(f"---\nid: parent\nstate: {dep_state}\n---\n\nBody\n")
+    (initiative_dir / "1-base" / "child.md").write_text("---\nid: child\nstate: ready\nneeds: [parent]\n---\n\nBody\n")
+    tasks = ws / "runs" / "prior" / "tasks" / "1-base"
+    tasks.mkdir(parents=True)
+    if approved_record:
+        record = {"review": {"verdict": "approve"}, "arbitration": {"verdict": "approve"}, "landed": False, "branch": "b1"}
+        (tasks / "parent.json").write_text(json.dumps(record))
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+    return ws, ["route", "launch", "epic", "--profile", str(profile), "--initiative", str(initiative_dir), "--repo", str(repo)], repo
+
+
+def test_relaunch_blocked_on_an_approved_task_prints_the_wait_line_and_the_stranded_remedy(tmp_path, capsys):
+    ws, argv, repo = _waiting_initiative(tmp_path, "approved", approved_record=True)
+    rc = main(argv)
+    lines = capsys.readouterr().out.splitlines()
+    assert rc == 0
+    assert "child waits on parent (approved)" in lines
+    assert lines[lines.index("child waits on parent (approved)") + 1] == f"cox runs land prior --task parent --repo {repo}"
+    assert _wait_for(ws / "runs" / "demo-1.pid")
+
+
+def test_relaunch_blocked_on_a_quarantined_task_prints_the_wait_line_with_that_state(tmp_path, capsys):
+    ws, argv, _repo = _waiting_initiative(tmp_path, "quarantined", approved_record=False)
+    rc = main(argv)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "child waits on parent (quarantined)" in out.splitlines()
+    assert "cox runs land" not in out
+    assert _wait_for(ws / "runs" / "demo-1.pid")
+
+
 def test_gather_to_assess_seam_survives_an_aware_now_with_no_stub_on_gather():
     """Regression for the naive-clock bug: `window_from` builds an aware
     window from ccusage's own ISO timestamps, and `assess` must accept an

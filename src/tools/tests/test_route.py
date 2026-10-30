@@ -1197,6 +1197,31 @@ def test_launch_blockers_ignores_a_blocked_item_in_a_later_phase():
     assert route.launch_blockers([late, _HOOKS]) == []
 
 
+def _wait_item(task, state, needs=(), initiative="sync"):
+    return {"id": task, "initiative": initiative, "phase": "1-first", "state": state, "needs": list(needs), "file": f"1-first/{task}.md"}
+
+
+def test_waiting_lines_names_an_approved_dep_and_adds_its_remedy():
+    items = [_wait_item("a", "approved"), _wait_item("b", "ready", ["a"])]
+    assert route.waiting_lines(items, {"a": "cox runs land r1 --task a --repo /r"}, "sync") == [
+        "b waits on a (approved)", "cox runs land r1 --task a --repo /r"]
+
+
+def test_waiting_lines_names_the_state_of_any_other_unmet_dep_without_a_remedy():
+    items = [_wait_item("a", "quarantined"), _wait_item("b", "ready", ["a"])]
+    assert route.waiting_lines(items, {"a": "cox runs land r1 --task a --repo /r"}, "sync") == ["b waits on a (quarantined)"]
+
+
+def test_waiting_lines_reads_a_foreign_dep_by_id_and_an_unknown_one_as_missing():
+    items = [_wait_item("x", "todo", initiative="other"), _wait_item("b", "ready", ["x", "ghost"])]
+    assert route.waiting_lines(items, {}, "sync") == ["b waits on x (todo)", "b waits on ghost (missing)"]
+
+
+def test_waiting_lines_is_empty_when_every_need_is_done_or_dropped():
+    items = [_wait_item("a", "done"), _wait_item("c", "dropped"), _wait_item("b", "ready", ["a", "c"])]
+    assert route.waiting_lines(items, {}, "sync") == []
+
+
 def test_initiative_summaries_sorts_rows_by_initiative_id():
     # Six initiatives, each with one ready, unblocked task, supplied in
     # reverse order. Grouping them with a bare set (no `sorted`) would come

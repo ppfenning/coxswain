@@ -1068,6 +1068,19 @@ def _runs_stranded(a: argparse.Namespace) -> int:
     return 0
 
 
+def _waiting_lines(runs_dir: Path, initiative: str, items: list) -> list[str]:
+    """Edge. `route.waiting_lines` for `initiative`, with the remedy `cox runs stranded` prints for each task. A record
+    or workspace that cannot be read leaves the remedy out; it never stops a launch."""
+    try:
+        task_records, stranded_items = _stranded_inputs(runs_dir)
+        rows = runs_stranded.stranded(
+            [r for r in task_records if r.get("initiative") in (None, initiative)], stranded_items, os.path.isdir,
+            lambda repo, branch: _branch_exists(Path(repo), branch))
+    except (OSError, ValueError, KeyError):
+        rows = []
+    return route.waiting_lines(items, {row["task"]: row["remedy"] for row in rows if row["remedy"]}, initiative)
+
+
 def _pick_work_item(paths: list[str], task: str, initiative: str | None) -> tuple[str | None, int]:
     """The one `<initiative>/<phase>/<task>.md` among work-relative `paths`, with the match count.
     `initiative` None considers every initiative. The path is None unless exactly one matches."""
@@ -5291,7 +5304,8 @@ def _route_launch(a: argparse.Namespace) -> int:
     stub_written = None  # the initiative.md a decompose launch created, named in the report if the launch then dies
     if a.graph == "epic":
         initiative_id = launch_dir.name
-        if work_state.work_state_mode(_lake_provider(a)[0]) == "store":
+        mode = work_state.work_state_mode(_lake_provider(a)[0])
+        if mode == "store":
             # The chair is the machine the chair lease names; a lane host reads rows but never exports, since only the chair commits.
             lease = chair_read_lease.read_lease(runs_dir, datetime.datetime.now(datetime.UTC))
             is_chair = route.is_chair_machine(lease["host"], socket.gethostname())
@@ -5310,6 +5324,8 @@ def _route_launch(a: argparse.Namespace) -> int:
             return 2
         if held:
             print(f"override: launching {initiative_id} despite blocked {', '.join(held)} (--include-blocked)")
+        for line in _waiting_lines(runs_dir, initiative_id, _stored_work_items(runs_dir.parent, mode)):
+            print(line)
     # Read before the guard: a claim replaces the record with one that has no `model` key.
     chair_model = _recorded_chair_model(runs_dir)
     lock_before = _lock_snapshot(runs_dir)
