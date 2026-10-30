@@ -90,7 +90,7 @@ _GATED_STEPS = [
     {"kind": "pick_branch", "branch": "agents/epic-x-5/seams-task", "commit_subject": "Add seams module"},
     {"kind": "cherry_pick", "branch": "agents/epic-x-5/seams-task", "commit_subject": "Add seams module",
      "onto": "pr/seams-task", "from": "main"},
-    {"kind": "checks", "checks": [("tests", ["pytest", "-q"])]},
+    {"kind": "checks", "checks": [("tests", "pytest -q")]},
     {"kind": "push", "branch": "pr/seams-task"},
     {"kind": "pr_create", "title": "Add seams", "body": "Run: epic-x-5"},
     {"kind": "wait_checks"},
@@ -470,8 +470,8 @@ def test_execute_cherry_pick_conflict_reports_failure_without_raising_and_leaves
 
 
 @pytest.mark.parametrize("checks, expected", [
-    ([("tests", ["true"])], (True, "1 checks passed")),
-    ([("lint", ["true"]), ("tests", ["true"])], (True, "2 checks passed")),
+    ([("tests", "true")], (True, "1 checks passed")),
+    ([("lint", "true"), ("tests", "true")], (True, "2 checks passed")),
 ])
 def test_execute_checks_runs_every_check_in_order_and_reports_the_count(tmp_path, checks, expected):
     assert cli._execute_land_step(tmp_path, {"kind": "checks", "checks": checks}) == expected
@@ -480,7 +480,7 @@ def test_execute_checks_runs_every_check_in_order_and_reports_the_count(tmp_path
 def test_execute_checks_with_a_branch_runs_in_a_worktree_and_removes_it(repo, tmp_path, monkeypatch):
     wt = tmp_path / "checks-wt"
     monkeypatch.setattr(cli.tempfile, "mkdtemp", lambda prefix="": str(wt))
-    ok, detail = cli._execute_land_step(repo, {"kind": "checks", "checks": [("tests", ["true"])], "branch": "agents/epic-x-5/seams-task"})
+    ok, detail = cli._execute_land_step(repo, {"kind": "checks", "checks": [("tests", "true")], "branch": "agents/epic-x-5/seams-task"})
     assert ok, detail
     assert not wt.exists()
     current = sp.run(["git", "-C", str(repo), "branch", "--show-current"], capture_output=True, text=True).stdout.strip()
@@ -488,20 +488,12 @@ def test_execute_checks_with_a_branch_runs_in_a_worktree_and_removes_it(repo, tm
 
 
 def test_execute_checks_stops_at_the_first_failing_check_and_names_it_not_its_command(tmp_path, monkeypatch):
-    calls = []
-    real_run = cli.subprocess.run
-
-    def fake_run(argv, **kw):
-        calls.append(argv)
-        return real_run(argv, **kw)
-
-    monkeypatch.setattr(cli.subprocess, "run", fake_run)
     ok, detail = cli._execute_land_step(tmp_path, {
-        "kind": "checks", "checks": [("lint", ["false"]), ("tests", ["true"])],
+        "kind": "checks", "checks": [("lint", "echo ran >> log; false"), ("tests", "echo ran-tests >> log")],
     })
     assert not ok
     assert detail.startswith("lint:")
-    assert calls == [["false"]]
+    assert (tmp_path / "log").read_text() == "ran\n"
 
 
 # --- land.phase_landable: pure, no I/O (§7) ---
@@ -867,17 +859,22 @@ def test_execute_clean_phase_deletes_only_this_phases_branches(repo):
 
 def test_checks_argv_returns_one_pair_per_configured_check_in_order():
     facts = {"checks": [{"name": "lint", "cmd": "ruff check ."}, {"name": "tests", "cmd": "pytest -q"}]}
-    assert land.checks_argv(facts) == [("lint", ["ruff", "check", "."]), ("tests", ["pytest", "-q"])]
+    assert land.checks_argv(facts) == [("lint", "ruff check ."), ("tests", "pytest -q")]
+
+
+def test_checks_argv_keeps_a_shell_line_whole():
+    facts = {"checks": [{"name": "cd", "cmd": "cd src/tools && pytest -q -n auto"}]}
+    assert land.checks_argv(facts) == [("cd", "cd src/tools && pytest -q -n auto")]
 
 
 def test_checks_argv_with_no_checks_key_returns_todays_single_pair_named_tests():
-    assert land.checks_argv({}) == [("tests", ["pytest", "-q"])]
-    assert land.checks_argv({"checks": []}) == [("tests", ["pytest", "-q"])]
+    assert land.checks_argv({}) == [("tests", "pytest -q")]
+    assert land.checks_argv({"checks": []}) == [("tests", "pytest -q")]
 
 
 def test_checks_argv_with_no_checks_key_still_prefers_the_repos_own_venv():
-    assert land.checks_argv({"venv_python": True, "uv_lock": True}) == [("tests", [".venv/bin/python", "-m", "pytest", "-q"])]
-    assert land.checks_argv({"venv_python": False, "uv_lock": True}) == [("tests", ["uv", "run", "pytest", "-q"])]
+    assert land.checks_argv({"venv_python": True, "uv_lock": True}) == [("tests", ".venv/bin/python -m pytest -q")]
+    assert land.checks_argv({"venv_python": False, "uv_lock": True}) == [("tests", "uv run pytest -q")]
 
 
 def test_land_plan_checks_step_carries_the_configured_checks():
@@ -885,7 +882,7 @@ def test_land_plan_checks_step_carries_the_configured_checks():
     repo_facts = {"checks": [{"name": "lint", "cmd": "ruff check ."}, {"name": "tests", "cmd": "pytest -q"}]}
     steps = land.land_plan(_record(), branches, "main", repo_facts)
     checks = next(s for s in steps if s["kind"] == "checks")
-    assert checks == {"kind": "checks", "checks": [("lint", ["ruff", "check", "."]), ("tests", ["pytest", "-q"])],
+    assert checks == {"kind": "checks", "checks": [("lint", "ruff check ."), ("tests", "pytest -q")],
                       "worktree_of": "pr/seams-task"}
 
 
@@ -1267,11 +1264,13 @@ def test_cli_apply_refuses_a_checks_launch_failure_before_push(repo, tmp_path, c
 
     def fake_run(argv, **kw):
         calls.append(argv)
-        if argv[:1] == ["pytest"]:
-            raise FileNotFoundError(2, "No such file or directory: 'pytest'")
         return real_run(argv, **kw)
 
+    def unrunnable(worktree, checks, **kw):
+        return [{"outcome": "unrunnable", "error": "No such file or directory: 'sh'", "exit_code": None}]
+
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(importlib.import_module("harness.checks"), "run_checks", unrunnable)
     rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs")])
     out = capsys.readouterr().out
     assert rc == 2
@@ -1862,7 +1861,7 @@ def test_a_task_lands_checks_find_the_repos_venv_in_the_land_worktree(repo, tmp_
         "onto": "pr/seams-task", "from": "main",
     })
     assert ok, detail
-    ok, detail = cli._execute_land_step(repo, {"kind": "checks", "checks": [("tests", [".venv/bin/check"])], "worktree_of": "pr/seams-task"})
+    ok, detail = cli._execute_land_step(repo, {"kind": "checks", "checks": [("tests", ".venv/bin/check")], "worktree_of": "pr/seams-task"})
     assert ok, detail
     assert (tmp_path / "ran-in").read_text().strip() == str(cli._land_worktree(repo, "pr/seams-task"))
 

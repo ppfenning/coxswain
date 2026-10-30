@@ -1877,20 +1877,33 @@ def _phase_needing_land(runs_dir: Path, run_id: str) -> str | None:
     return candidates[0] if len(candidates) == 1 else None
 
 
-def _run_checks(checks: list[tuple[str, list[str]]], cwd: Path) -> tuple[bool, str]:
-    """Each `(name, argv)` pair in order, stopping at the first launch error
-    or failure and naming it by `name`, never by its argv or shell command."""
+def _checks_env(cwd: Path) -> dict[str, str] | None:
+    """Edge. The environment a check runs in: `cwd/.venv/bin` first on PATH when the worktree has one (the venv
+    `_link_venv` links), so a bare `pytest` is the project's, not a standalone tool's. None, the inherited
+    environment, when it has not."""
+    venv_bin = Path(cwd) / ".venv" / "bin"
+    if not venv_bin.is_dir():
+        return None
+    return {**os.environ, "PATH": os.pathsep.join([str(venv_bin), os.environ.get("PATH", "")])}
+
+
+def _run_checks(checks: list[tuple[str, str]], cwd: Path) -> tuple[bool, str]:
+    """Each `(name, shell line)` pair in order, run by a shell in `cwd` as the builders run it (`harness.checks`),
+    stopping at the first launch error or failure and naming it by `name`, never by its command."""
+    from harness.checks import run_checks
     if not checks:
         return True, "none declared"
+    env = _checks_env(cwd)
     skipped: list[str] = []
-    for name, argv in checks:
-        try:
-            r = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
-        except OSError as exc:
-            return False, land.checks_detail(f"{land.LAUNCH_ERROR}{name}: {exc}", skipped)
-        verdict = land.check_exit(argv, r.returncode)
+    for name, line in checks:
+        [result] = run_checks(Path(cwd), [{"name": name, "cmd": line}], env=env)
+        if result["outcome"] == "unrunnable":
+            return False, land.checks_detail(f"{land.LAUNCH_ERROR}{name}: {result['error']}", skipped)
+        if result["outcome"] == "timed_out":
+            return False, land.checks_detail(f"{name}: {result['error']}", skipped)
+        verdict = land.check_exit(line, result["exit_code"])
         if verdict == "fail":
-            return False, land.checks_detail(f"{name}: {(r.stderr or r.stdout).strip()}", skipped)
+            return False, land.checks_detail(f"{name}: {result['output_tail'].strip()}", skipped)
         if verdict == "skip":
             skipped.append(name)
     return True, land.checks_detail(f"{len(checks)} checks passed", skipped)
@@ -2855,11 +2868,10 @@ def _land_repo_facts(repo: Path, profile: dict) -> dict:
 def _land_checks_lines(steps: list[dict]) -> list[str]:
     """The dry run's lines, one per checks step and labelled by what it checks, each check as its command (or
     `name = command` when the name is not the command's first word); `none declared` for a step holding none."""
-    def show(name: str, argv: list[str]) -> str:
-        cmd = shlex.join(argv)
-        return cmd if argv and argv[0] == name else f"{name} = {cmd}"
+    def show(name: str, line: str) -> str:
+        return line if line.split(None, 1)[:1] == [name] else f"{name} = {line}"
     return [f"checks ({s.get('worktree_of') or s.get('branch') or 'repo'}): "
-            + ("; ".join(show(n, argv) for n, argv in s["checks"]) or "none declared")
+            + ("; ".join(show(n, line) for n, line in s["checks"]) or "none declared")
             for s in steps if s["kind"] == "checks"]
 
 

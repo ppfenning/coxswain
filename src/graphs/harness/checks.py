@@ -212,6 +212,7 @@ def run_checks(
     checks: Sequence[Mapping[str, Any]],
     *,
     timeout: int = 600,
+    env: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Execute each configured check in `worktree` and report what actually happened.
 
@@ -219,7 +220,8 @@ def run_checks(
     than silently skipped, because a check nobody ran is not a check, it is a
     gap wearing the shape of one. A command that never finishes is treated as a
     failure with no exit code — a check that hangs forever is not "still
-    pending", it is a check that did not pass.
+    pending", it is a check that did not pass. `env` is the child's whole
+    environment; None inherits this process's.
     """
     results: list[dict[str, Any]] = []
     for check in checks:
@@ -236,6 +238,7 @@ def run_checks(
                 cmd,
                 shell=True,
                 cwd=worktree,
+                env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,

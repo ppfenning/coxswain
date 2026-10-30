@@ -15,6 +15,7 @@ Offline throughout: real `git` and `sys.executable`, no network.
 from __future__ import annotations
 
 import io
+import os
 import shlex
 import signal
 import subprocess
@@ -108,6 +109,11 @@ def test_run_checks_failing_cmd_reports_both_counts_and_failure(tmp_path) -> Non
     assert result["exit_code"] == 1
     assert result["counts"] == {"failed": 1, "passed": 2}
     assert result["outcome"] == "failed"
+
+
+def test_run_checks_env_is_the_childs_environment(tmp_path) -> None:
+    [result] = run_checks(tmp_path, [{"name": "e", "cmd": "echo $FOO"}], env={**os.environ, "FOO": "bar"})
+    assert result["output_tail"].strip() == "bar"
 
 
 # This interpreter's own pytest by absolute path: a land runs the suite as `.venv/bin/python -m pytest`
