@@ -6188,6 +6188,7 @@ cox stats bounds [--db DB] [--json] [--level strict|moderate|liberal] [--profile
 cox stats spend-mix [--db DB] [--json]   per-model token counts and cost share by class, plus the build-only split
 cox stats chair [RUNS_DIR] [--since SINCE] [--json] [--session SESSION] [--work-store-root WORK_STORE_ROOT] [--projects-dir PROJECTS_DIR] [--profile PROFILE]   harness PRs and $, chair $ per PR, hand-finished lands and quarantine $ by cause
 cox stats examples [RUNS_DIR] --role ROLE [--out OUT] [--since SINCE]   the local system-one backend's training file (JSON lines) from task records
+cox stats flaky [RUNS_DIR] [--days DAYS] [--json]   tests that needed a serial rerun three times in a week, from task records
 cox stats system-one [RUNS_DIR] [--role ROLE] [--since SINCE] [--json] [--propose] [--plans-dir PLANS_DIR]   shadow-to-on graduation report per role, and a proposal for the maintainer to approve
 cox stats lanes [--runs-dir RUNS_DIR] [--hours HOURS] [--json]   per hour, the average and peak busy lanes and the idle minutes, from the store's run spans
 cox lake sync [--runs-dir RUNS_DIR] [--profile PROFILE] [--dry-run] [--json]   append new run-store rows and register new trace files; --dry-run writes nothing

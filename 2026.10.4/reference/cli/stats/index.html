@@ -4104,6 +4104,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#flaky" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        flaky
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#system-one" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6284,6 +6295,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#flaky" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        flaky
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#system-one" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6333,12 +6355,12 @@ Coxswain is in beta — versions may change between releases
 
 <h1 id="stats">stats</h1>
 <div class="highlight"><pre><span></span><code>usage: cox stats [-h]
-                 {ingest,roles,tiers,models,causes,efficiency,gates,explain,series,coverage,bounds,spend-mix,chair,examples,system-one,lanes} ...
+                 {ingest,roles,tiers,models,causes,efficiency,gates,explain,series,coverage,bounds,spend-mix,chair,examples,flaky,system-one,lanes} ...
 
 Load the run corpus into the stats store.
 
 positional arguments:
-  {ingest,roles,tiers,models,causes,efficiency,gates,explain,series,coverage,bounds,spend-mix,chair,examples,system-one,lanes}
+  {ingest,roles,tiers,models,causes,efficiency,gates,explain,series,coverage,bounds,spend-mix,chair,examples,flaky,system-one,lanes}
     ingest              load usage, task, node and launch records into
                         stats.db
     roles               landed rate, attempts-to-land and $/landed per role
@@ -6364,6 +6386,8 @@ positional arguments:
                         and quarantine $ by cause
     examples            the local system-one backend's training file (JSON
                         lines) from task records
+    flaky               tests that needed a serial rerun three times in a
+                        week, from task records
     system-one          shadow-to-on graduation report per role, and a
                         proposal for the maintainer to approve
     lanes               per hour, the average and peak busy lanes and the idle
@@ -6565,6 +6589,17 @@ options:
   --role ROLE    handoff or review_charter; repeat for several
   --out OUT      write the file to PATH (default: stdout)
   --since SINCE  keep only records dated on or after DATE (YYYY-MM-DD)
+</code></pre></div>
+<h2 id="flaky">flaky</h2>
+<div class="highlight"><pre><span></span><code>usage: cox stats flaky [-h] [--days DAYS] [--json] [runs_dir]
+
+positional arguments:
+  runs_dir
+
+options:
+  -h, --help   show this help message and exit
+  --days DAYS  the window, today included
+  --json
 </code></pre></div>
 <h2 id="system-one">system-one</h2>
 <div class="highlight"><pre><span></span><code>usage: cox stats system-one [-h] [--role ROLE] [--since SINCE] [--json]
