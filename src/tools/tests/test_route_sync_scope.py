@@ -3,6 +3,7 @@ import importlib
 import subprocess
 from dataclasses import replace
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -123,7 +124,7 @@ def test_an_unresolvable_initiative_repo_is_refused_by_name_with_no_gh_call(tmp_
     _bad_initiative(tmp_path)
     monkeypatch.setattr(tracker, "tracker_for", lambda name: importlib.import_module("agent_tools.route_sync_gh"))
     assert cli._route_sync(_args(tmp_path, "tracker: github-projects\n")) == 2
-    assert capsys.readouterr().out.splitlines() == [REFUSAL]
+    assert capsys.readouterr().out.splitlines() == [REFUSAL, "route sync: skipped 2 item(s): /nonexistent/x (2)"]
     assert gh_calls == []
 
 
@@ -140,6 +141,7 @@ class _Plugin:
 
 
 REFUSAL = "route sync: /nonexistent/x is not a checkout with an origin remote nor an owner/name slug"
+SKIPPED = "route sync: skipped 1 item(s): /nonexistent/x (1)"
 
 
 @pytest.fixture
@@ -176,7 +178,7 @@ def test_registered_path_refuses_an_unresolvable_intake_repo_by_name_with_no_gh_
     _bad_intake(tmp_path)
     monkeypatch.setattr(tracker, "tracker_for", lambda name: _Plugin())
     assert cli._route_sync(_args(tmp_path, "tracker: plug\n")) == 2
-    assert capsys.readouterr().out.splitlines() == [REFUSAL]
+    assert capsys.readouterr().out.splitlines() == [REFUSAL, SKIPPED]
     assert gh_calls == []
 
 
@@ -184,15 +186,16 @@ def test_gh_path_refuses_an_unresolvable_intake_repo_by_name_before_any_gh_call(
     _bad_intake(tmp_path)
     monkeypatch.setattr(tracker, "tracker_for", lambda name: importlib.import_module("agent_tools.route_sync_gh"))
     assert cli._route_sync(_args(tmp_path, "tracker: github-projects\n")) == 2
-    assert capsys.readouterr().out.splitlines() == [REFUSAL]
+    assert capsys.readouterr().out.splitlines() == [REFUSAL, SKIPPED]
     assert gh_calls == []
 
 
 def test_a_bad_intake_file_does_not_refuse_the_sync_of_another_item(tmp_path):
     _bad_intake(tmp_path)
     _write(tmp_path / "intake" / "good.md", "---\nid: good\ntitle: Good\nrepo: acme/w\n---\nb\n")
-    items, scope, rc = cli._sync_items(_args(tmp_path, "tracker: github-projects\n", item="good"), str(tmp_path))
-    assert (rc, scope, [i.id for i in items]) == (None, "all", ["good"])
+    args = _args(tmp_path, "tracker: github-projects\n", item="good")
+    items, scope, rc, skipped = cli._sync_items(args, str(tmp_path))
+    assert (rc, scope, [i.id for i in items], skipped) == (None, "all", ["good"], 0)
 
 
 def test_resolve_scope_lets_the_cartridge_win_and_refuses_an_unknown_value():
@@ -237,7 +240,7 @@ def test_sync_under_epics_refuses_with_the_resolver_error_and_makes_no_gh_call(t
 
 def test_sync_with_no_scope_set_and_an_unresolvable_cartridge_still_runs_under_all(tmp_path):
     args = _args(tmp_path, f"tracker: github-projects\nteam: acme\ncartridges_dir: {tmp_path}\n")
-    assert cli._sync_items(args, str(tmp_path)) == ([], "all", None)
+    assert cli._sync_items(args, str(tmp_path)) == ([], "all", None, 0)
 
 
 _SRC = Path(route.__file__).parents[2]
@@ -267,14 +270,14 @@ def test_a_repo_overlay_the_cartridge_loader_refuses_is_an_unresolved_cartridge(
 
 
 def test_sync_of_an_out_of_scope_item_exits_zero_with_no_gh_call(tmp_path, monkeypatch, capsys, gh_calls):
-    monkeypatch.setattr(route_sync_gh, "items_from_store", lambda workspace: _store(tasks=1, linked=None))
+    monkeypatch.setattr(route_sync_gh, "items_from_store", lambda workspace, *_, **__: _store(tasks=1, linked=None))
     assert cli._route_sync(_args(tmp_path, "tracker: github-projects\ntracker_scope: epics\n", item="t0")) == 0
     assert "t0 is out of scope under tracker_scope epics; nothing to mirror" in capsys.readouterr().out
     assert gh_calls == []
 
 
 def test_the_land_sync_step_reports_an_out_of_scope_task_as_synced_not_failed(tmp_path, monkeypatch, gh_calls):
-    monkeypatch.setattr(route_sync_gh, "items_from_store", lambda workspace: _store(tasks=1, linked=None))
+    monkeypatch.setattr(route_sync_gh, "items_from_store", lambda workspace, *_, **__: _store(tasks=1, linked=None))
     _args(tmp_path, "tracker: github-projects\ntracker_scope: epics\n")
     step = {"kind": "route_sync", "item": "t0", "workspace": str(tmp_path), "profile": str(tmp_path / "profile.yaml"),
             "runs_dir": None}
@@ -292,7 +295,7 @@ def test_issues_written_back_by_an_earlier_sync_count_as_linked():
 def _land_facts(monkeypatch, items, cartridge=None):
     monkeypatch.setattr(cli, "_team_cartridge",
                         lambda profile, repo=None: (cartridge or {"policy": {"tracker_scope": "epics"}}, None))
-    monkeypatch.setattr(route_sync_gh, "items_from_store", lambda workspace: items)
+    monkeypatch.setattr(route_sync_gh, "items_from_store", lambda workspace, *_: items)
 
 
 _LAND_RECORD = {"initiative": "big", "task": "t1"}
@@ -331,7 +334,7 @@ def test_land_reference_is_none_under_all(monkeypatch):
 def test_land_reference_says_so_when_the_store_is_unreadable(monkeypatch, capsys):
     monkeypatch.setattr(cli, "_team_cartridge", lambda profile, repo=None: ({"policy": {"tracker_scope": "epics"}}, None))
 
-    def unreadable(workspace):
+    def unreadable(workspace, *_):
         raise OSError("disk gone")
 
     monkeypatch.setattr(route_sync_gh, "items_from_store", unreadable)
@@ -343,3 +346,73 @@ def test_land_reference_fails_closed_to_epics_when_the_cartridge_is_unresolvable
     monkeypatch.setattr(cli, "_team_cartridge", lambda profile, repo=None: ({}, "cartridge acme cannot be resolved: boom"))
     assert cli._land_reference({"tracker_scope": "epics"}, "ws", _LAND_RECORD, "t1", "401") == ("epics", "Closes #401")
     assert "landing under tracker_scope epics" in capsys.readouterr().err
+
+
+def _retired_store(tmp_path, old_state="done", old_tasks=3):
+    _write(tmp_path / "work" / "old" / "initiative.md", "---\nid: old\ntitle: Old\nrepo: ~/repos/agent-tools\n---\nb\n")
+    _write(tmp_path / "work" / "big" / "initiative.md", "---\nid: big\ntitle: Big\nrepo: acme/w\n---\nb\n")
+    for n in range(1, old_tasks + 1):
+        _write(tmp_path / "work" / "old" / f"p{n}" / f"o{n}.md", f"---\nid: o{n}\ntitle: O{n}\nstate: {old_state}\n---\nb\n")
+    for n in (1, 2, 3):
+        _write(tmp_path / "work" / "big" / f"p{n}" / f"t{n}.md", f"---\nid: t{n}\ntitle: T{n}\n---\nb\n")
+
+
+class _Recorder:
+    seen: ClassVar[list] = []
+
+    def sync(self, workspace, items, *, dry_run):
+        type(self).seen = [i.id for i in items]
+        return True, []
+
+
+@pytest.mark.parametrize("old_state", ["done", "dropped"])
+def test_a_settled_initiative_with_a_retired_repo_is_skipped_and_the_open_epic_syncs(tmp_path, capsys, old_state):
+    _retired_store(tmp_path, old_state)
+    args = _args(tmp_path, "tracker: github-projects\ntracker_scope: epics\n")
+    items, _, rc, skipped = cli._sync_items(args, str(tmp_path))
+    assert (rc, skipped) == (None, 0)
+    assert "initiative:big" in _ids(items) and "initiative:old" not in _ids(items)
+    assert capsys.readouterr().out.splitlines() == ["route sync: skipped 1 item(s): ~/repos/agent-tools (1)"]
+    steps = route_sync.plan(items, {}, {}, "github-projects", "epics")
+    assert all("old" not in str(s.get("item_id", "")) for s in steps)
+
+
+def test_an_open_item_with_a_retired_repo_is_skipped_by_name_and_the_others_sync(tmp_path, monkeypatch, capsys):
+    _retired_store(tmp_path, old_state="todo")
+    monkeypatch.setattr(tracker, "tracker_for", lambda name: _Recorder())
+    assert cli._route_sync(_args(tmp_path, "tracker: plug\ntracker_scope: epics\n")) == 2
+    out = capsys.readouterr().out.splitlines()
+    assert out == ["route sync: ~/repos/agent-tools is not a checkout with an origin remote nor an owner/name slug",
+                   "route sync: skipped 1 item(s): ~/repos/agent-tools (1)"]
+    assert "initiative:big" in _Recorder.seen and "initiative:old" not in _Recorder.seen
+
+
+def test_a_repo_alias_resolves_a_retired_path(tmp_path):
+    profile = route.parse_profile("repo_aliases:\n  agent-tools: ppfenning/coxswain\ntracker: none\n")
+    assert profile["repo_aliases"] == {"agent-tools": "ppfenning/coxswain"}
+    aliases = profile["repo_aliases"]
+    assert route_sync_gh._repo_of("~/repos/agent-tools", aliases) == "ppfenning/coxswain"
+    assert route_sync_gh._repo_of("~/.local/share/coxswain/installs/agent-tools/", aliases) == "ppfenning/coxswain"
+    assert route_sync_gh._repo_of("acme/w", aliases) == "acme/w"
+    _retired_store(tmp_path, old_state="todo")
+    repos = {i.id: i.repo for i in route_sync_gh.items_from_store(tmp_path, aliases)}
+    assert repos["initiative:old"] == "ppfenning/coxswain"
+
+
+def test_a_retired_repo_outside_the_scope_is_never_resolved(tmp_path, monkeypatch, capsys):
+    _retired_store(tmp_path, old_tasks=1)
+    seen = []
+    monkeypatch.setattr(route_sync_gh, "_origin_slug", lambda value: seen.append(value) or "")
+    args = _args(tmp_path, "tracker: github-projects\ntracker_scope: epics\n")
+    _, _, rc, skipped = cli._sync_items(args, str(tmp_path))
+    assert (rc, skipped, capsys.readouterr().out) == (None, 0, "")
+    assert "~/repos/agent-tools" not in seen and "acme/w" in seen
+
+
+def test_split_unresolved_settles_an_initiative_from_all_its_tasks_not_only_the_scoped_ones():
+    bad = replace(_item("initiative:old", initiative=True), repo_error="e", repo_named="r")
+    done_and_dropped = [bad, _item("o1", parent="initiative:old", state="done"),
+                        _item("o2", parent="initiative:old", state="dropped")]
+    assert route_sync.split_unresolved([bad], done_and_dropped) == ([], [bad], [])
+    assert route_sync.split_unresolved([bad], [*done_and_dropped, _item("o3", parent="initiative:old")]) == ([], [], [bad])
+    assert route_sync.split_unresolved([bad], [bad]) == ([], [], [bad])
