@@ -240,3 +240,70 @@ def test_stop_is_safe_before_start_and_twice() -> None:
     beat.stop()
 
     assert not beat.alive
+
+
+def _progress_column(conn, name: str):
+    return conn.query_one("SELECT progress FROM leases WHERE name = ?", (name,))[0]
+
+
+def test_a_tick_stores_the_providers_string_in_the_lease_row(tmp_path) -> None:
+    url = default_url(tmp_path)
+    conn = open_store(url, _now())
+    name = lease_name("x-1")
+    result = acquire(conn, name, "x-1", _now(), 120)
+    beat = Heartbeat(url, name, "x-1", result.epoch, clock=_now, interval=0.05, progress=lambda: '{"nodes": []}')
+
+    beat.start()
+    stored = _wait_until(lambda: _progress_column(conn, name) == '{"nodes": []}')
+    beat.stop()
+
+    assert stored
+    conn.close()
+
+
+def test_a_raising_provider_overwrites_a_stored_string_with_none_and_the_thread_keeps_going(tmp_path, capsys) -> None:
+    url, calls, gate = default_url(tmp_path), [], threading.Event()
+    conn = open_store(url, _now())
+    name = lease_name("x-1")
+    result = acquire(conn, name, "x-1", _now(), 120)
+
+    def first_then_boom() -> str:
+        calls.append(1)
+        if len(calls) == 1:
+            return "first"
+        gate.wait(5)
+        raise RuntimeError("no snapshot")
+
+    beat = Heartbeat(url, name, "x-1", result.epoch, clock=_now, interval=0.02, progress=first_then_boom)
+
+    beat.start()
+    stored_first = _wait_until(lambda: _progress_column(conn, name) == "first")
+    gate.set()
+    cleared = _wait_until(lambda: _progress_column(conn, name) is None)
+    ticked_again = _wait_until(lambda: len(calls) >= 4)
+    alive = beat.alive
+    beat.stop()
+
+    assert stored_first
+    assert cleared
+    assert ticked_again
+    assert alive
+    assert capsys.readouterr().err == ""
+    conn.close()
+
+
+def test_a_stale_epoch_still_ends_the_thread_when_a_provider_is_set(tmp_path, capsys) -> None:
+    url = default_url(tmp_path)
+    conn = open_store(url, _now())
+    name = lease_name("x-1")
+    result = acquire(conn, name, "x-1", _now(), 120)
+    release(conn, name, "x-1", result.epoch)
+    beat = Heartbeat(url, name, "x-1", result.epoch, clock=_now, interval=0.05, progress=lambda: "{}")
+
+    beat.start()
+    ended = _wait_until(lambda: not beat.alive)
+    beat.stop()
+
+    assert ended
+    assert capsys.readouterr().err.splitlines() == [f"lease: heartbeat for {name} stopped: stale epoch {result.epoch}"]
+    conn.close()
