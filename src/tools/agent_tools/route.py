@@ -2352,6 +2352,27 @@ def launch_blockers(items: list) -> list[str]:
     })
 
 
+def waiting_lines(items: list, remedies: Mapping[str, str], initiative: str) -> list[str]:
+    """For each `ready` task of `initiative` with a need not done or dropped, `<task> waits on <dep> (<state>)`;
+    an `approved` dep with an entry in `remedies` adds that remedy line after it. A need in another initiative
+    is looked up by id, and one that names no item reads `missing`."""
+    states = {
+        **{item["id"]: item["state"] for item in items if item["initiative"] != initiative},
+        **{item["id"]: item["state"] for item in items if item["initiative"] == initiative},
+    }
+    return [
+        line
+        for item in items
+        if item["initiative"] == initiative and item["state"] == "ready"
+        for need in item["needs"]
+        if states.get(need) not in TERMINAL
+        for line in [
+            f"{item['id']} waits on {need} ({states.get(need, 'missing')})",
+            *([remedies[need]] if states.get(need) == "approved" and need in remedies else []),
+        ]
+    ]
+
+
 def state_problems(items: list) -> list[str]:
     """One `"<initiative>: <file>: unknown state '<value>'"` line per item
     whose `state` is not in `STATES` — a typo, or a value some other tool
