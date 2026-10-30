@@ -37,9 +37,16 @@ import core
 from core import ledger, workstore
 from core.cartridge import CartridgeError
 from core.manifest import append_ledger, build_manifest
-from graphs._contract import ContractViolation
+from graphs._contract import ContractViolation, landing_for
 from graphs.delivery.initiative_decompose import GRAPH_NAME as _DECOMPOSE_GRAPH_NAME
-from graphs.delivery.initiative_decompose import LintRefusal, first_problem_line, unexecuted_item_create_reason
+from graphs.delivery.initiative_decompose import (
+    LintRefusal,
+    approved_task_ids,
+    decompose_closing,
+    expected_task_files,
+    first_problem_line,
+    unexecuted_item_create_reason,
+)
 from harness import CORE_SCHEMA, run_lease, store_traces
 from harness.autonomy import split_by_policy
 from harness.checks import all_passed, checks_evidence, repo_checks, run_checks
@@ -939,6 +946,102 @@ def _launch(
                 print(f"worktree {'removed' if ok else 'FAILED to remove'}: {detail}", file=sys.stderr if not ok else sys.stdout)
 
 
+def _write_filed_task(runs_dir: Path, path: Path, parts: tuple[str, ...], text: str) -> int:
+    """Edge: `route file`'s own writer. The store row first, the file second, then the export baseline."""
+    from agent_tools import route  # imported here: the harness stays importable without the tools package
+
+    return route.write_filed_item(runs_dir, path, "task", parts, text)
+
+
+def _read_filed_rows(runs_dir: Path, initiative: str) -> list[dict[str, Any]]:
+    """Edge: the queue rows `route edit` would see, read by the same path `route file` writes them through."""
+    from agent_tools import run_store  # imported here: the harness stays importable without the tools package
+
+    return run_store.read_queue(runs_dir, initiative)
+
+
+def _settle_decompose(
+    proposals: Sequence[Mapping[str, Any]],
+    diffs: Sequence[Mapping[str, Any]],
+    auto_applied: Sequence[Mapping[str, Any]],
+    *,
+    cartridge: Mapping[str, Any],
+    graph_args: Mapping[str, Any],
+    runner: Any,
+    runs_dir: Path,
+) -> tuple[str, int]:
+    """Edge: settle every task `item_create` that was cleared, gated or auto-applied. `(closing line, missing count)`.
+
+    A cartridge that routes no `planned` landing cannot say where a task file went, so every cleared
+    task is reported missing with the routing error; it is never reported as zero tasks.
+    """
+    tasks = approved_task_ids(proposals, diffs, auto_applied)
+    initiative_id = graph_args.get("initiative_id")
+    root = Path(getattr(runner, "cwd", None) or Path.cwd())
+    try:
+        landing = landing_for(cartridge, "planned")
+    except ContractViolation as exc:
+        if tasks:
+            print(f"decompose: cannot place {len(tasks)} approved task(s): {exc}", file=sys.stderr)
+        return decompose_closing(tasks, (), ())
+    expected = expected_task_files(proposals, tasks, landing=landing, initiative_id=initiative_id)
+    in_store, on_disk = _settle_decompose_tasks(
+        expected, root=root, runs_dir=runs_dir, initiative=initiative_id or root.name
+    )
+    return decompose_closing(expected, in_store, on_disk)
+
+
+def _settle_decompose_tasks(
+    expected: Mapping[str, str],
+    *,
+    root: Path,
+    runs_dir: Path,
+    initiative: str,
+    write: Callable[[Path, Path, tuple[str, ...], str], int] | None = None,
+    read: Callable[[Path, str], Sequence[Mapping[str, Any]]] | None = None,
+) -> tuple[set[str], set[str]]:
+    """Edge: `(in_store, on_disk)` for the cleared tasks, after each file goes through `route file`'s writer.
+
+    The apply arm writes the file and nothing else, so a task could be on disk and absent from the
+    queue (`route edit` then says `no queued intake or initiative named <task>`). Each file the arm
+    left is handed to `write_filed_item`, which builds the row with `queue_rows.parse_item` (extra
+    frontmatter kept), rewrites the same text, and records the export baseline. That writer only
+    warns when it cannot reach the store, so the row is read back through the tools' own reader,
+    the one `route edit` uses, before the task counts as stored. A task already in the store keeps
+    its row, so a re-decompose never resets started work. Every task not in both places gets a stderr line.
+    """
+    write = write or _write_filed_task
+    read = read or _read_filed_rows
+    on_disk: set[str] = set()
+    in_store: set[str] = set()
+    kept = {r["task_id"]: r for r in read(runs_dir, initiative)}
+    for task, rel in sorted(expected.items()):
+        path = root / rel
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            print(f"decompose: {task} not written: {exc} (the apply line above carries the arm's own detail)", file=sys.stderr)
+            continue
+        on_disk.add(task)
+        if task in kept:
+            print(f"decompose: {task} was already in the store as '{kept[task].get('state')}'; its row is kept", file=sys.stderr)
+            in_store.add(task)
+            continue
+        try:
+            code = write(runs_dir, path, (initiative, Path(rel).parent.name, Path(rel).name), text)
+            stored = any(r["task_id"] == task for r in read(runs_dir, initiative))
+        except Exception as exc:  # the driver's errors differ by dialect; any one means the row is not in
+            print(f"decompose: {task} is on disk but the write failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+            continue
+        if code != 0:
+            print(f"decompose: {task} is in the store but its file write failed (exit {code})", file=sys.stderr)
+        elif stored:
+            in_store.add(task)
+        else:
+            print(f"decompose: {task} is on disk but the store has no row for it after the write", file=sys.stderr)
+    return in_store, on_disk
+
+
 def _record_run_to_store(
     store: Store,
     manifest: Mapping[str, Any],
@@ -1410,6 +1513,17 @@ def _run_graph(
     decisions, human_minutes = gate(gated, assume=args.assume)
     diffs = apply_decisions(decisions, cartridge=cartridge, runner=runner)
 
+    # Settled straight after the arms, before the patch, manifest and ledger work, so the window in which a
+    # task file exists and its row does not is as short as the run can make it. The closing line waits for the end.
+    closing, missing = (
+        _settle_decompose(
+            proposals, diffs, auto_applied,
+            cartridge=cartridge, graph_args=graph_args, runner=runner, runs_dir=Path(args.runs_dir),
+        )
+        if graph_name == _DECOMPOSE_GRAPH_NAME
+        else ("", 0)
+    )  # fmt: skip
+
     # A build patch is applied only after the gate approved the work it belongs
     # to. Skipped when --repo already ran the check arm above: the work is
     # already applied in a real worktree, and applying it again into the old
@@ -1460,9 +1574,12 @@ def _run_graph(
     # nothing executed it) means the intake was never decomposed, so the run
     # ends failed here rather than reporting the gate's approval as success.
     if graph_name == _DECOMPOSE_GRAPH_NAME:
+        print(closing, file=sys.stderr if missing else sys.stdout)
         reason = unexecuted_item_create_reason(diffs)
         if reason is not None:
             print(f"decompose failed: no task item_create was executed: {reason}", file=sys.stderr)
+            return 1
+        if missing:
             return 1
 
     print(f"\nrecorded {run_id}: {len(auto_applied)} auto-applied, {len(diffs)} gated decision(s), {len(proposals)} proposal(s)")

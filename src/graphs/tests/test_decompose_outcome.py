@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+import os
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from agent_tools.queue_rows import parse_item
 from graphs._contract import ContractViolation
 from graphs.delivery import initiative_decompose
 from graphs.delivery.initiative_decompose import GRAPH_NAME, LintRefusal, first_problem_line
 from harness import cli
 from harness.store_dialect import json_load
+from harness.store_queue import read as read_queue
+from harness.store_queue import upsert as upsert_queue
 from harness.store_write import Store
 from runner import ScriptedRunner
 
@@ -121,3 +127,154 @@ def test_the_real_lint_step_refuses_a_reach_problem_and_the_run_gains_refused(ca
         exit_code(store, lambda: initiative_decompose.run(args, ScriptedRunner({"decompose": REACH})), monkeypatch) == 1
     )
     assert stored(store) == {**RUN, "outcome": {"refused": first}}
+
+
+NOW = "2026-10-30T00:00:00Z"
+
+
+def filing(store):
+    """Stands in for `route file`'s writer on the test's own connection: same codec, `parse_item`, same row."""
+
+    def write(runs_dir, path, parts, text) -> int:
+        upsert_queue(store.conn, parse_item("task", parts, text))
+        return 0
+
+    return write
+
+
+def settle(expected, root, store, write=None):
+    return cli._settle_decompose_tasks(
+        expected,
+        root=root,
+        runs_dir=root / "runs",
+        initiative="demo",
+        write=write or filing(store),
+        read=lambda runs_dir, initiative: read_queue(store.conn, initiative),
+    )
+
+
+def task_file(root, rel: str, task: str) -> None:
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"---\nid: {task}\nphase: p1\nstate: ready\nneeds: []\nsurfaces: [a.py]\ntitle: Task {task}\n---\n\nbody {task}\n",
+        encoding="utf-8",
+    )
+
+
+def approved(*tasks: str) -> tuple[list[dict], list[dict]]:
+    proposals = [{"kind": "item_create", "target": t, "evidence": [{"check": "phase", "output": "p1"}]} for t in tasks]
+    proposals.append({"kind": "item_create", "target": "initiative", "evidence": []})
+    diffs = [{"kind": "item_create", "target": t, "decision": "approved"} for t in (*tasks, "initiative")]
+    return proposals, diffs
+
+
+def expected_for(*tasks: str) -> dict[str, str]:
+    proposals, diffs = approved(*tasks)
+    ids = initiative_decompose.approved_task_ids(proposals, diffs, [])
+    return initiative_decompose.expected_task_files(proposals, ids, landing="work", initiative_id="demo")
+
+
+def test_expected_task_files_names_each_approved_task_path_and_skips_the_initiative() -> None:
+    assert expected_for("t1", "t2") == {"t1": "work/demo/p1/t1.md", "t2": "work/demo/p1/t2.md"}
+    proposals, _ = approved("t1")
+    assert initiative_decompose.expected_task_files(proposals, [], landing="work", initiative_id=None) == {}
+
+
+def test_a_task_is_cleared_when_the_gate_approved_it_or_the_policy_applied_it() -> None:
+    proposals, _ = approved("t1", "t2", "t3")
+    gated = [{"kind": "item_create", "target": "t1", "decision": "approved"}]
+    rejected = [{"kind": "item_create", "target": "t3", "decision": "rejected"}]
+    auto = [proposals[1], proposals[3]]  # t2, and the initiative's own create
+    ids = initiative_decompose.approved_task_ids
+    assert ids(proposals, gated + rejected, auto) == {"t1", "t2"}
+    assert ids(proposals, [], []) == set()
+
+
+def test_the_closing_line_counts_a_task_written_only_when_it_is_in_both_places() -> None:
+    close = initiative_decompose.decompose_closing
+    assert close(["a", "b"], {"a", "b"}, {"a", "b"}) == ("decompose: 2 task(s) written, 0 missing:", 0)
+    assert close(["a", "b", "c"], {"a", "b"}, {"a", "c"}) == ("decompose: 1 task(s) written, 2 missing: b, c", 2)
+    assert close([], set(), set()) == ("decompose: 0 task(s) written, 0 missing:", 0)
+
+
+def test_three_approved_creates_leave_three_store_rows_and_three_files(store, tmp_path, capsys) -> None:
+    expected = expected_for("t1", "t2", "t3")
+    for task, rel in expected.items():
+        task_file(tmp_path, rel, task)
+    in_store, on_disk = settle(expected, tmp_path, store)
+    line = initiative_decompose.decompose_closing(expected, in_store, on_disk)
+    assert line == ("decompose: 3 task(s) written, 0 missing:", 0)
+    assert [r["task_id"] for r in read_queue(store.conn, "demo")] == ["t1", "t2", "t3"]
+    assert len(list(tmp_path.glob("work/demo/p1/*.md"))) == 3
+    assert capsys.readouterr().err == ""
+
+
+def test_a_create_whose_file_was_never_written_is_named_with_its_reason(store, tmp_path, capsys) -> None:
+    expected = expected_for("t1", "t2", "t3")
+    for task in ("t1", "t3"):
+        task_file(tmp_path, expected[task], task)
+    in_store, on_disk = settle(expected, tmp_path, store)
+    line = initiative_decompose.decompose_closing(expected, in_store, on_disk)
+    assert line == ("decompose: 2 task(s) written, 1 missing: t2", 1)
+    assert "decompose: t2 not written:" in capsys.readouterr().err
+
+
+def test_a_create_whose_store_write_fails_is_named_and_its_file_stays(store, tmp_path, monkeypatch, capsys) -> None:
+    expected = expected_for("t1", "t2")
+    for task, rel in expected.items():
+        task_file(tmp_path, rel, task)
+    good = filing(store)
+
+    def flaky(runs_dir, path, parts, text) -> int:
+        if path.stem == "t2":
+            raise RuntimeError("store down")
+        return good(runs_dir, path, parts, text)
+
+    in_store, on_disk = settle(expected, tmp_path, store, flaky)
+    line = initiative_decompose.decompose_closing(expected, in_store, on_disk)
+    assert line == ("decompose: 1 task(s) written, 1 missing: t2", 1)
+    assert on_disk == {"t1", "t2"}
+    assert "decompose: t2 is on disk but the write failed: RuntimeError: store down" in capsys.readouterr().err
+
+
+def test_a_task_file_with_extra_frontmatter_reaches_the_store_with_it(store, tmp_path) -> None:
+    expected = expected_for("t1")
+    task_file(tmp_path, expected["t1"], "t1")
+    path = tmp_path / expected["t1"]
+    path.write_text(path.read_text(encoding="utf-8").replace("title:", "budget_usd: 1.5\ntitle:"), encoding="utf-8")
+    settle(expected, tmp_path, store)
+    assert read_queue(store.conn, "demo")[0]["extra"]["budget_usd"] in (1.5, "1.5")
+
+
+def test_the_real_route_file_writer_and_reader_agree_on_a_file_backed_store(tmp_path, monkeypatch, capsys) -> None:
+    """No stand-ins: `route.write_filed_item` and `run_store.read_queue` run their harness subprocess against one sqlite file."""
+    from agent_tools import run_store
+    from harness.store_dialect import default_url
+    from harness.store_migrate import open_store
+
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    url = default_url(runs_dir)
+    open_store(url, NOW).close()
+    graphs_root = Path(cli.__file__).resolve().parent.parent
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join([str(graphs_root), str(graphs_root.parent / "cartridges")]))
+    monkeypatch.setattr(run_store, "_harness_python", lambda: Path(sys.executable))
+    monkeypatch.setattr(run_store, "_store_url", lambda _runs_dir: url)
+    expected = expected_for("t1", "t2", "t3")
+    for task, rel in expected.items():
+        task_file(tmp_path, rel, task)
+    in_store, on_disk = cli._settle_decompose_tasks(expected, root=tmp_path, runs_dir=runs_dir, initiative="demo")
+    assert (in_store, on_disk) == ({"t1", "t2", "t3"}, {"t1", "t2", "t3"})
+    assert sorted(r["task_id"] for r in run_store.read_queue(runs_dir, "demo")) == ["t1", "t2", "t3"]
+    assert capsys.readouterr().err == ""
+
+
+def test_a_task_already_in_the_store_keeps_its_row_on_a_second_decompose(store, tmp_path, capsys) -> None:
+    expected = expected_for("t1")
+    task_file(tmp_path, expected["t1"], "t1")
+    upsert_queue(store.conn, {**parse_item("task", ("demo", "p1", "t1.md"), (tmp_path / expected["t1"]).read_text()), "state": "running"})
+    in_store, on_disk = settle(expected, tmp_path, store)
+    assert (in_store, on_disk) == ({"t1"}, {"t1"})
+    assert read_queue(store.conn, "demo")[0]["state"] == "running"
+    assert "already in the store as 'running'" in capsys.readouterr().err
