@@ -191,6 +191,13 @@ repo_aliases:
   coxswain-graphs: ppfenning/coxswain
 ```
 
+Under `tracker_scope: epics` or `initiatives` the board starts with open
+items only. A settled epic (done or dropped, or every task done or dropped)
+with no `issue:` never gets one, and the run prints `route sync: left N
+settled item(s) without an issue`. An item that already has an issue, hand-set
+or not, keeps syncing as before. Set `tracker_backfill: true` in the profile
+to create issues for settled items too. `tracker_scope: all` is unchanged.
+
 Integrations that name a vendor (intake sources, forges, trackers) live in
 [ppfenning/coxswain-plugins](https://github.com/ppfenning/coxswain-plugins).
 

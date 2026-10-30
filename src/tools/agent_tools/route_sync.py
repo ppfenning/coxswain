@@ -223,19 +223,30 @@ def scoped(items: list[Item], scope: str, threshold: Mapping[str, Any]) -> list[
                 else scope == "initiatives" or is_epic(threshold, tasks_of[i.id]))]
 
 
+def is_settled(item: Item, universe: Sequence[Item]) -> bool:
+    """An item is settled when it is done or dropped. An initiative is settled when it has tasks in `universe`
+    (the unscoped store) and all of them are done or dropped; its own state stays `ready` once a task is dropped."""
+    tasks = [t for t in universe if t.parent == item.id]
+    return item.state in _CLOSING or (item.initiative and bool(tasks) and all(t.state in _CLOSING for t in tasks))
+
+
+def unbackfilled(items: list[Item], universe: Sequence[Item], scope: str, backfill: bool) -> list[Item]:
+    """`items` without the settled ones that have no `issue` yet, so a narrowed scope starts the board with open
+    items only. `all` and `backfill` keep every item; an item with an `issue`, hand-set or not, always stays."""
+    if scope == "all" or backfill:
+        return items
+    return [i for i in items if i.issue is not None or not is_settled(i, universe)]
+
+
 def split_unresolved(items: Sequence[Item], universe: Sequence[Item]) -> tuple[list[Item], list[Item], list[Item]]:
     """`(actionable, settled, open)`: `items` whose repo resolves, then those whose repo does not, split by settled or open.
 
     An initiative is settled when it has tasks and all of them, looked up in `universe` (the unscoped store, since a
     narrowed scope drops issue-less tasks), are done or dropped; its own state stays `ready` once a task is dropped.
     """
-    def settled(item: Item) -> bool:
-        tasks = [t for t in universe if t.parent == item.id]
-        return item.state in _CLOSING or (item.initiative and bool(tasks) and all(t.state in _CLOSING for t in tasks))
-
     bad = [i for i in items if i.repo_error]
     return ([i for i in items if not i.repo_error],
-            [i for i in bad if settled(i)], [i for i in bad if not settled(i)])
+            [i for i in bad if is_settled(i, universe)], [i for i in bad if not is_settled(i, universe)])
 
 
 def initiative_facts(items: list[Item], scope: str, threshold: Mapping[str, Any],

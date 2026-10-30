@@ -104,6 +104,7 @@ _KNOWN_KEYS = {
     "forge",
     "tracker",
     "tracker_scope",  # `all` (default), `epics` or `initiatives`: which items `route sync` mirrors; a cartridge's own `tracker_scope` wins
+    "tracker_backfill",  # `true` makes `route sync` create issues for settled items under a narrowed `tracker_scope`; absent or `false` starts the board with open items only
     "umbrella_dir",
     "log_retention_days",  # run logs and traces kept locally, in days; run_logs.DEFAULT_RETENTION_DAYS when absent
     "ids",  # `slug` (default) or `sequence`; `intake_file`'s own id source, spec's `route file --intake`
@@ -287,6 +288,8 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
             result[key] = items
         elif key == "tracker_scope" and value not in TRACKER_SCOPES:
             raise ProfileError(f"line {lineno}: {raw_line} (tracker_scope is one of {', '.join(TRACKER_SCOPES)})")
+        elif key == "tracker_backfill" and value not in ("true", "false"):
+            raise ProfileError(f"line {lineno}: {raw_line} (tracker_backfill is true or false)")
         else:
             result[key] = value
     # An `assume:` with no value is treated the same as an absent key, not
