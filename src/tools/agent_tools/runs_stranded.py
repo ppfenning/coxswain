@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from agent_tools.base_branch import DEFAULT_BASE
 from agent_tools.land import _approved as land_approved
 
 
@@ -40,22 +41,25 @@ def _approved_and_unlanded(record: dict) -> bool:
     )
 
 
-def _remedy(record: dict, item: dict | None) -> str | None:
+def _remedy(record: dict, item: dict | None, base_of: Callable[[str], str] | None = None) -> str | None:
     """The exact `cox runs land` line, or `None` when no repo path can be
-    resolved — a line that looks runnable and is not is worse than none."""
+    resolved — a line that looks runnable and is not is worse than none.
+    `base_of` names the repo's integration branch; one other than `main` is pinned with `--base`."""
     repo = record.get("repo") or (item.get("repo") if item else None)
     if not repo:
         return None
-    return f"cox runs land {record.get('run')} --task {record.get('task')} --repo {repo}"
+    base = base_of(repo) if base_of else DEFAULT_BASE
+    pin = "" if base == DEFAULT_BASE else f" --base {base}"
+    return f"cox runs land {record.get('run')} --task {record.get('task')} --repo {repo}{pin}"
 
 
-def _row(record: dict, item: dict | None) -> dict:
+def _row(record: dict, item: dict | None, base_of: Callable[[str], str] | None = None) -> dict:
     # A land that conflicted left its reason on the item: the task needs a rebuild on current main, not a land.
     # Only while the item is still `ready`: a rebuilt task that was approved again has a new run to land.
     conflict = (item or {}).get("land_conflict") if (item or {}).get("state") == "ready" else None
     return {
         "run": record.get("run"), "task": record.get("task"), "phase": record.get("phase"),
-        "branch": record.get("branch"), "remedy": f"rebuild: {conflict}" if conflict else _remedy(record, item),
+        "branch": record.get("branch"), "remedy": f"rebuild: {conflict}" if conflict else _remedy(record, item, base_of),
     }
 
 
@@ -101,7 +105,8 @@ def _carried(record: dict, item: dict | None, branch_exists: Callable[[str, str]
 
 def stranded(records: list[dict], items: list[dict],
              repo_exists: Callable[[str], bool] | None = None,
-             branch_exists: Callable[[str, str], bool] | None = None) -> list[dict]:
+             branch_exists: Callable[[str, str], bool] | None = None,
+             base_of: Callable[[str], str] | None = None) -> list[dict]:
     """Rows for approved, unlanded records whose matching item is `ready`
     or `approved`. `items` are expected to carry a resolved `repo` (the edge
     reads it from the initiative's own frontmatter, since a work item's
@@ -115,8 +120,8 @@ def stranded(records: list[dict], items: list[dict],
     present is skipped as not stranded but waiting on its phase's carried
     branch under the one-merge-per-phase relaunch rule, while `None`, any
     task-scoped branch, and a record with no resolvable repo behave exactly
-    as before."""
-    return [_row(record, item) for record, item in _live_pairs(records, items)
+    as before. `base_of` is injected too: it names a repo's integration branch for the remedy's `--base`."""
+    return [_row(record, item, base_of) for record, item in _live_pairs(records, items)
             if (repo_exists is None or not _missing(record, repo_exists))
             and (branch_exists is None or not _carried(record, item, branch_exists))]
 

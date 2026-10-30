@@ -193,6 +193,7 @@ runs_module = _LazyModule("agent_tools.runs")
 runs_move = _LazyModule("agent_tools.runs_move")
 runs_stop = _LazyModule("agent_tools.runs_stop")
 runs_stranded = _LazyModule("agent_tools.runs_stranded")
+base_branch = _LazyModule("agent_tools.base_branch")
 runs_top = _LazyModule("agent_tools.runs_top")
 runs_top_screen = _LazyModule("agent_tools.runs_top_screen")
 runs_triage = _LazyModule("agent_tools.runs_triage")
@@ -1068,7 +1069,7 @@ def _runs_stranded(a: argparse.Namespace) -> int:
         return 2
     task_records, items = _stranded_inputs(runs_dir)
     rows = runs_stranded.stranded(task_records, items, os.path.isdir,
-                                   lambda repo, branch: _branch_exists(Path(repo), branch))
+                                   lambda repo, branch: _branch_exists(Path(repo), branch), base_branch.base_name)
     missing = runs_stranded.missing_repos(task_records, items, os.path.isdir)
 
     def report_missing() -> None:
@@ -1095,7 +1096,7 @@ def _waiting_lines(runs_dir: Path, initiative: str, items: list) -> list[str]:
         task_records, stranded_items = _stranded_inputs(runs_dir)
         rows = runs_stranded.stranded(
             [r for r in task_records if r.get("initiative") in (None, initiative)], stranded_items, os.path.isdir,
-            lambda repo, branch: _branch_exists(Path(repo), branch))
+            lambda repo, branch: _branch_exists(Path(repo), branch), base_branch.base_name)
     except (OSError, ValueError, KeyError):
         rows = []
     return route.waiting_lines(items, {row["task"]: row["remedy"] for row in rows if row["remedy"]}, initiative)
@@ -3097,7 +3098,11 @@ def _runs_land(a: argparse.Namespace) -> int:
     except route.ProfileError as exc:
         print(f"land: profile unreadable: {exc}")
         return 2
-    default_branch = "main"
+    try:
+        default_branch = base_branch.base_ref(str(repo), getattr(a, "base", None)).removeprefix("origin/")
+    except base_branch.BaseError as exc:
+        print(f"land: refusing, {exc}")
+        return 2
     repo_facts = _land_repo_facts(repo, profile)
     if repo_facts["cartridge_error"]:
         # The chair fails a run whose cartridge will not resolve; a land that went on would push after fewer checks than the build ran.
@@ -8808,7 +8813,8 @@ RUNS_COMMANDS = [
             commands.Arg(("--phase",), {"help": "land the whole phase off its own epic branch instead of one task"}), commands.Arg(("--label",)),
             commands.Arg(("--force",), {"action": "store_true", "help": "land despite a foreign live leader"}),
             commands.Arg(("--no-claim",), {"action": "store_true", "help": "land without taking an unheld or stale loop"}),
-            commands.Arg(("--behind-limit",), {"type": int, "default": 20, "help": "warn when the task's base is more than this many commits behind main"}),
+            commands.Arg(("--behind-limit",), {"type": int, "default": 20, "help": "warn when the task's base is more than this many commits behind the base branch"}),
+            commands.Arg(("--base",), {"help": "branch to land onto; default: the repo's base: setting, then origin/HEAD, then main"}),
             commands.Arg(("--worktree-root",), {"default": "~/worktrees"}), commands.Arg(("--apply",), {"action": "store_true"}), commands.Arg(("--no-merge",), {"action": "store_true"}),
             commands.Arg(("--runs-dir",), {"help": "override: resolve task records here instead of the profile's workspace_dir"}), commands.Arg(("--profile",)),
             commands.Arg(("--gate",), {"choices": ["ticket", "phase", "epic", "full"], "help": "override the resolved gate level for this invocation"}),

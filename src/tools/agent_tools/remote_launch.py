@@ -7,7 +7,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import NamedTuple
 
-from agent_tools import lane_toolchain, repo_path
+from agent_tools import base_branch, lane_toolchain, repo_path
 from agent_tools.host_cmd import ChairHead, sync_argvs
 from agent_tools.lane_hosts import LaneHost
 from agent_tools.remote_argv import (
@@ -89,7 +89,7 @@ def _chair_base(path: str) -> ChairBase | LaunchError | None:
         fetched = subprocess.run(
             ["git", "-C", path, "fetch", "--tags", "origin"], capture_output=True, text=True, check=False, timeout=120
         )
-        branch = _git_out(path, "symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD").removeprefix("origin/") or "main"
+        branch = base_branch.base_name(path)
         sha = _git_out(path, "rev-parse", "--verify", "-q", f"origin/{branch}")
     except (OSError, subprocess.SubprocessError):
         return LaunchError("sync", f"{_UNRESOLVED}; sync failed: the chair cannot run git in {path}")

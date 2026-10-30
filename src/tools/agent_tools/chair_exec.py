@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Literal, NotRequired, Protocol, TypedDict
 
 from agent_tools import (
+    base_branch,
     chair,
     chair_apply_fetch,
     chair_apply_review,
@@ -504,6 +505,13 @@ def _carry_forward(
         if code != 0:
             return [], None, _result(action, "failed", f"updating {repo} on {host} before the carry: {out.strip()}")
     merged: list[str] = []
+    base = ""
+    if phases:
+        # Resolved in the host checkout after its fetch: `origin/<base>`, never a local branch that may be stale or absent.
+        try:
+            base = base_branch.base_ref(home_repo, None, base_branch.configured_base(repo), at_home)
+        except base_branch.BaseError as exc:
+            return [], None, _result(action, "failed", f"resolving the base to carry onto in {repo}{f' on {host}' if ssh else ''}: {exc}")
     for phase in phases:
         branch = f"epic/{initiative}/{phase}"
         present, error = _branch_on_host(deps, at_home, ssh, repo, branch, home_repo) if ssh else (True, "")
@@ -521,20 +529,20 @@ def _carry_forward(
         code, out = at_home(["git", "-C", home_repo, "worktree", "add", tmp, branch])
         if code != 0:
             return merged, None, _result(action, "failed", f"git worktree add {tmp} {branch} in {repo}: {out.strip()}")
-        code, out = at_home(["git", "-C", tmp, "merge", "--no-edit", "main"])
+        code, out = at_home(["git", "-C", tmp, "merge", "--no-edit", base])
         if code != 0:
             _, diff_out = at_home(["git", "-C", tmp, "diff", "--name-only", "--diff-filter=U"])
             conflicted = [line for line in diff_out.splitlines() if line.strip()]
             if not conflicted:
                 at_home(["git", "-C", home_repo, "worktree", "remove", "--force", tmp])
-                return merged, None, _result(action, "failed", f"git merge --no-edit main in {tmp} ({branch}): {out.strip()}")
+                return merged, None, _result(action, "failed", f"git merge --no-edit {base} in {tmp} ({branch}): {out.strip()}")
             at_home(["git", "-C", tmp, "merge", "--abort"])
             rcode, rout = at_home(["git", "-C", home_repo, "worktree", "remove", "--force", tmp])
             if rcode != 0:
                 return merged, None, _result(action, "failed", f"git worktree remove --force {tmp} in {repo}: {rout.strip()}")
             needs_chair: Action = {
                 "kind": "needs_chair", "initiative": initiative, "cause": "carry_conflict", "epoch": action.get("epoch", 0),
-                "reason": f"phase {phase} conflicts with main: {conflicted}",
+                "reason": f"phase {phase} conflicts with {base}: {conflicted}",
             }
             return merged, needs_chair, None
         rcode, rout = at_home(["git", "-C", home_repo, "worktree", "remove", "--force", tmp])

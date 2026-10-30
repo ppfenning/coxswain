@@ -1065,12 +1065,14 @@ def test_a_carried_phase_keeps_its_worktree_removed_branch_kept_then_merges_in_a
     assert argvs[0] == ["git", "-C", "/w/app", "worktree", "list", "--porcelain"]
     assert argvs[1] == ["git", "-C", "/w/app", "worktree", "remove", "--force", "/w/app/.worktrees/i-p"]
     assert argvs[2] == ["git", "-C", "/w/app", "for-each-ref", "--format=%(refname:short)", "refs/heads/epic/i/*"]
-    add = argvs[3]
+    assert argvs[3] == ["git", "-C", "/w/app", "symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"]
+    assert argvs[4] == ["git", "-C", "/w/app", "remote"]
+    add = argvs[5]
     tmp = add[-2]
     assert add == ["git", "-C", "/w/app", "worktree", "add", tmp, "epic/i/p"]
-    assert argvs[4] == ["git", "-C", tmp, "merge", "--no-edit", "main"]
-    assert argvs[5] == ["git", "-C", "/w/app", "worktree", "remove", "--force", tmp]
-    assert len(argvs) == 6
+    assert argvs[6] == ["git", "-C", tmp, "merge", "--no-edit", "main"]
+    assert argvs[7] == ["git", "-C", "/w/app", "worktree", "remove", "--force", tmp]
+    assert len(argvs) == 8
     assert not any(a[0] == "ssh" for a in argvs)
     assert not any("checkout" in a or "switch" in a for a in argvs)
 
