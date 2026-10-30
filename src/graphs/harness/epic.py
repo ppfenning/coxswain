@@ -2759,7 +2759,7 @@ def _run_phase(
             # not `landed` in the sense this outcome reports.
             task_record["merged"] and not task_record.get("quarantine"),
         )
-        task_record["reason"] = task_record.get("quarantine")
+        task_record["reason"] = task_record.get("quarantine") or state.notes.get(task)
 
     # An executed `state_move` is reflected in the driver's own copy of the work
     # so the next phase's tasks can become ready inside this run. `run_epic`
@@ -3198,6 +3198,8 @@ class _Execution:
     quarantined: list[dict[str, Any]]
     review_pr: dict[str, str] = field(default_factory=dict)
     escalated: frozenset[str] = frozenset()
+    notes: dict[str, str] = field(default_factory=dict)
+    draft_detail: dict[str, str] = field(default_factory=dict)
 
 
 def kept_work_refusal(landed: bool, merged: bool | None, escalated: bool, ahead: bool) -> str | None:
@@ -3231,6 +3233,31 @@ def _unkept_work(ctx: _Ctx, phase: str, subject: str, state: _Execution) -> str 
         merged=state.merged.get(subject),
         escalated=escalated,
         ahead=_branch_ahead(ctx, branch),
+    )
+
+
+def draft_skipped_note(*, landed: bool, merged: bool | None, escalated: bool, branch_kept: bool, detail: str) -> str | None:
+    """The note for an approved task whose draft did not land but whose scratch branch holds its work, else None.
+
+    A merge that ran and failed is not this case: that task is quarantined by its merge. `detail` is why the draft is absent.
+    """
+    if escalated or landed or merged is not None or not branch_kept:
+        return None
+    return f"approved without a draft branch: {detail}. The work is on the task branch; `runs land` creates the PR."
+
+
+def _draft_note(ctx: _Ctx, subject: str, state: _Execution) -> str | None:
+    """Read the scratch branch and the draft step's outcome, and return the note when the work is kept without a draft."""
+    scratch = ctx.scratch_branch(subject)
+    return draft_skipped_note(
+        landed=bool(state.landed.get(subject)),
+        merged=state.merged.get(subject),
+        escalated=subject in state.escalated,
+        branch_kept=kept_work_refusal(
+            landed=_branch_exists(ctx, scratch), merged=None, escalated=True, ahead=_branch_ahead(ctx, scratch)
+        )
+        is None,
+        detail=state.draft_detail.get(subject) or "the draft step did not run or was not approved",
     )
 
 
@@ -3358,6 +3385,8 @@ def _execute(
         draft = ctx.draft_branch(phase, subject)
         ok, detail = _git("-C", str(ctx.repo), "branch", draft, ctx.scratch_branch(subject))
         state.landed[subject] = ok
+        if not ok:
+            state.draft_detail[subject] = f"draft branch {draft} was not created ({detail})"
         return ok, detail or f"created {draft}"
 
     if kind == "merge_stack" and slot == "merge":
@@ -3433,6 +3462,12 @@ def _execute(
     if slot == "state_move":
         # Before any store or apply-arm write: `approved` is only true of work on a branch that survives the run.
         why = _unkept_work(ctx, phase, subject, state)
+        # A draft that did not land is not lost work: the task branch holds it and `runs land` opens the PR.
+        # On a lane host that branch is in the host's repo, so it counts there and is fetched to the chair later.
+        note = _draft_note(ctx, subject, state) if why is not None else None
+        if note is not None:
+            state.notes[subject] = note
+            why = None
         if why is not None:
             state.moved[subject] = False
             if not any(q.get("id") == subject and q.get("grain") == "task" for q in state.quarantined):
