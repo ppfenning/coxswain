@@ -88,3 +88,13 @@ def test_render_cuts_every_line_to_width():
     lines = render(d, 10)
     assert lines
     assert all(len(line) <= 10 for line in lines)
+
+
+def test_the_detail_header_reads_fenced_for_a_live_run_with_a_lapsed_or_lost_lease():
+    for standing in ("fenced", "expired"):
+        assert detail("r1", True, [], [], {}, [], standing=standing).status == "fenced"
+
+
+def test_the_detail_header_stays_running_when_held_and_exited_when_dead():
+    assert detail("r1", True, [], [], {}, [], standing="held").status == "running"
+    assert detail("r1", False, [], [], {}, [], standing="fenced").status == "exited"

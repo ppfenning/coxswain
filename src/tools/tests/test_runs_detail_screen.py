@@ -1,4 +1,5 @@
 import json
+import os
 
 from agent_tools import cli, run_store, runs_detail
 from agent_tools.runs_detail_screen import _tail, facts_for
@@ -148,3 +149,32 @@ def test_tail_with_no_trace_files_is_empty_when_the_trace_store_is_unavailable(t
     monkeypatch.setattr(run_store, "call_events", unavailable)
 
     assert _tail(tmp_path, "r1") == []
+
+
+def test_facts_for_reads_fenced_for_a_live_run_whose_lease_another_run_holds(tmp_path):
+    from test_run_store import leases_table
+
+    _write(tmp_path / "r-1.pid", str(os.getpid()))
+    leases_table(tmp_path, ("runs:r", "r-2", "2999-01-01T00:00:00Z", "2026-09-25T05:58:30Z"))
+    facts = facts_for(tmp_path, "r-1")
+
+    assert (facts["alive"], facts["standing"]) == (True, "fenced")
+    assert runs_detail.detail(**facts).status == "fenced"
+
+
+def test_facts_for_reads_exited_for_a_dead_pid_under_a_foreign_lease(tmp_path):
+    from test_run_store import leases_table
+
+    _write(tmp_path / "r-1.pid", "999999999")
+    leases_table(tmp_path, ("runs:r", "r-2", "2999-01-01T00:00:00Z", "2026-09-25T05:58:30Z"))
+
+    assert runs_detail.detail(**facts_for(tmp_path, "r-1")).status == "exited"
+
+
+def test_facts_for_reads_running_for_a_held_lease(tmp_path):
+    from test_run_store import leases_table
+
+    leases_table(tmp_path, ("runs:r", "r-1", "2999-01-01T00:00:00Z", "2026-09-25T05:58:30Z"))
+    facts = facts_for(tmp_path, "r-1", live_runs=lambda: {"r-1"})
+
+    assert runs_detail.detail(**facts).status == "running"

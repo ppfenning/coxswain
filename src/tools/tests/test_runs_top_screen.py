@@ -237,12 +237,15 @@ def test_the_row_names_the_node_written_last_not_the_last_one_alphabetically(tmp
     assert (rows[0].node, rows[0].attempt) == ("build", 4)
 
 
-def test_facts_default_probe_reads_the_lease_not_the_pid(tmp_path):
+def test_facts_default_probe_trusts_a_held_lease_and_still_sees_a_live_process_under_a_foreign_lease(tmp_path):
     _write(tmp_path / "x-3.pid", str(os.getpid()))
     _write(tmp_path / "y-1.pid", "999999999")
-    leases_table(tmp_path, ("runs:x", "x-4", "2026-09-25T06:00:00Z"), ("runs:y", "y-1", "2999-01-01T00:00:00Z"))
+    _write(tmp_path / "z-1.pid", "999999998")
+    leases_table(tmp_path, ("runs:x", "x-4", "2026-09-25T06:00:00Z"), ("runs:y", "y-1", "2999-01-01T00:00:00Z"),
+                 ("runs:z", "z-2", "2999-01-01T00:00:00Z"))
 
-    assert {f["run"]: f["alive"] for f in facts(tmp_path)} == {"y-1": True}
+    assert {f["run"]: (f["alive"], f["lease_standing"]) for f in facts(tmp_path)} == {
+        "x-3": (True, "fenced"), "y-1": (True, "held")}
 
 
 _NOW = datetime.datetime(2026, 9, 25, 6, 0, 0, tzinfo=datetime.UTC)
@@ -369,3 +372,56 @@ def test_with_no_live_leases_the_rows_equal_the_local_only_rows(tmp_path):
 
     assert local_only
     assert rows_now(tmp_path, now=_NOW) == local_only
+
+
+def test_fact_lease_standing_is_fenced_for_a_foreign_holder(tmp_path):
+    leases_table(tmp_path, ("runs:x", "x-2", "2026-09-25T07:00:00Z", "2026-09-25T05:58:30Z"))
+
+    assert _fact(tmp_path, "x-3", True, _NOW)["lease_standing"] == "fenced"
+
+
+def test_fact_lease_standing_is_expired_for_an_own_lease_past_its_expiry(tmp_path):
+    leases_table(tmp_path, ("runs:x", "x-3", "2026-09-25T05:59:00Z", "2026-09-25T05:00:00Z"))
+
+    assert _fact(tmp_path, "x-3", True, _NOW)["lease_standing"] == "expired"
+
+
+def test_fact_lease_standing_is_held_for_an_unexpired_own_lease(tmp_path):
+    leases_table(tmp_path, ("runs:x", "x-3", "2026-09-25T07:00:00Z", "2026-09-25T05:58:30Z"))
+
+    assert _fact(tmp_path, "x-3", True, _NOW)["lease_standing"] == "held"
+
+
+def test_fact_lease_standing_is_none_with_no_store(tmp_path):
+    assert _fact(tmp_path, "x-3", True, _NOW)["lease_standing"] == "none"
+
+
+def test_rows_now_reads_a_live_pid_with_a_foreign_lease_holder_as_fenced_through_the_default_probe(tmp_path):
+    _write(tmp_path / "x-3.pid", str(os.getpid()))
+    leases_table(tmp_path, ("runs:x", "x-2", "2999-01-01T00:00:00Z", "2026-09-25T05:58:30Z"))
+
+    assert [r.status for r in rows_now(tmp_path, now=_NOW)] == ["fenced"]
+
+
+def test_rows_now_reads_a_live_pid_with_an_expired_own_lease_as_fenced_through_the_default_probe(tmp_path):
+    _write(tmp_path / "x-3.pid", str(os.getpid()))
+    leases_table(tmp_path, ("runs:x", "x-3", "2026-09-25T05:59:00Z", "2026-09-25T05:00:00Z"))
+
+    assert [r.status for r in rows_now(tmp_path, now=_NOW)] == ["fenced"]
+
+
+def test_rows_now_keeps_a_held_lease_running_and_a_dead_pid_with_a_foreign_lease_off_the_screen(tmp_path):
+    _write(tmp_path / "x-3.pid", str(os.getpid()))
+    _write(tmp_path / "y-1.pid", "999999999")
+    leases_table(tmp_path, ("runs:x", "x-3", "2999-01-01T00:00:00Z", "2999-01-01T00:00:00Z"),
+                 ("runs:y", "y-2", "2999-01-01T00:00:00Z", "2999-01-01T00:00:00Z"))
+
+    assert [(r.run, r.status) for r in rows_now(tmp_path, now=_NOW)] == [("x-3", "running")]
+
+
+def test_rows_now_reads_a_dead_pid_with_a_foreign_lease_and_a_recent_log_as_exited(tmp_path):
+    _write(tmp_path / "y-1.pid", "999999999")
+    _write(tmp_path / "y-1.log", "")
+    leases_table(tmp_path, ("runs:y", "y-2", "2999-01-01T00:00:00Z", "2026-09-25T05:58:30Z"))
+
+    assert [(r.run, r.status) for r in rows_now(tmp_path, now=_NOW)] == [("y-1", "exited")]

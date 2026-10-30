@@ -84,4 +84,5 @@ def facts_for(runs_dir, run: str, now_alive=None, *, live_runs: Callable[[], set
         "calls": fact["calls"],
         "record": _record(root, run),
         "tail": _tail(root, run),
+        "standing": fact["lease_standing"],
     }

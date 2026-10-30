@@ -11,7 +11,7 @@ import socket
 import time
 from pathlib import Path
 
-from agent_tools import chair, chair_stall, epic, run_store, runs_top
+from agent_tools import chair, chair_stall, epic, lease_standing, run_store, runs_top
 from agent_tools import events as events_module
 from agent_tools.records import ceiling_for, load_trace
 
@@ -21,9 +21,25 @@ _STALE_SECONDS = 600
 _TRACE_NAME = re.compile(r"^([A-Za-z0-9_]+)-(\d+)$")
 
 
+def _process_live(pid: int, pidfile: Path) -> bool:
+    """Edge. The pid probe alone, as `epic.run_live` makes it with no lease row. `run_live` answers False for a foreign or expired lease before it probes the pid, so a live process with a stale lease needs this."""
+    if pid <= 0:
+        return False
+    try:
+        if not epic.alive(pid):
+            return False
+        logged_at = epic.launched_epoch(epic._read(pidfile.with_suffix(".launched.json")))
+        launched_at = logged_at if logged_at is not None else epic._mtime(pidfile)
+        return epic.run_alive(pid, launched_at, epic._read(pidfile.with_suffix(".log")))
+    except OverflowError:
+        return False
+
+
 def is_alive(now_alive, pid: int, pidfile: Path) -> bool:
-    """Edge. An injected `now_alive(pid)` probe when given; otherwise `epic.run_live`, so the screen agrees with route status."""
-    return epic.run_live(pid, pidfile) if now_alive is None else now_alive(pid)
+    """Edge. An injected `now_alive(pid)` probe when given. Otherwise `epic.run_live`, else the process itself, so a live process whose lease another run holds or whose own lease lapsed is alive here and reads fenced; route status still calls it not live."""
+    if now_alive is not None:
+        return now_alive(pid)
+    return epic.run_live(pid, pidfile) or _process_live(pid, pidfile)
 
 
 def _read_pid(path: Path):
@@ -149,9 +165,11 @@ def _fact(root: Path, run: str, alive: bool, now: datetime.datetime | None = Non
     events = events_module.from_log(run, lines) + events_module.from_trace_names(run, names)
     calls = [c for c in (_call(p) for p in trace_paths) if c is not None] or stored
     started_at = _stall_ts(run_store.run_started(root, run))
+    lease = run_store.lease(root, run)
     return {"run": run, "alive": alive, "phases": _phases(root, run), "events": events, "calls": calls,
             "ceiling": _ceiling(root, run), "launched_by": _launched_by(root, run),
-            "heartbeat_age": _heartbeat_age(run_store.lease(root, run), run, now),
+            "heartbeat_age": _heartbeat_age(lease, run, now),
+            "lease_standing": lease_standing.standing(lease, run, now.astimezone(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")),
             "node_call_stalled": _node_call_stalled(calls, started_at, now)}
 
 
@@ -223,7 +241,7 @@ def rows_now(runs_dir, heartbeat_minutes: int = chair.DEFAULT_HEARTBEAT_MINUTES,
     chair_state = chair_now(runs_dir, heartbeat_minutes)
     host = socket.gethostname()
     local = [runs_top.row(f["run"], f["alive"], f["phases"], f["events"], f["calls"], f["ceiling"], f["launched_by"], chair_state,
-                          f["heartbeat_age"], host, f["node_call_stalled"])
+                          f["heartbeat_age"], host, f["node_call_stalled"], standing=f["lease_standing"])
              for f in facts(runs_dir)]
     lanes = run_store.live_lanes(root, now.astimezone(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
     return [*local, *_remote_rows(root, lanes, now)]

@@ -232,3 +232,32 @@ def test_a_remote_row_shows_its_lane_host():
 
 def test_a_remote_row_with_no_host_shows_a_question_mark():
     assert render([remote_row("x-1", None, 5)], 200)[1].split()[:2] == ["x-1", "?"]
+
+
+def test_a_live_run_with_a_fenced_or_expired_lease_reads_fenced_with_its_own_highlight():
+    for standing in ("fenced", "expired"):
+        r = row("r1", True, ["build"], [], [], standing=standing)
+        assert r.status == "fenced"
+        assert highlight(r) == "fenced"
+    assert highlight(row("r1", True, [], [], [], standing="held")) == "normal"
+
+
+def test_a_held_or_absent_lease_stays_running():
+    assert row("r1", True, [], [], [], standing="held").status == "running"
+    assert row("r1", True, [], [], []).status == "running"
+
+
+def test_a_dead_process_stays_exited_whatever_the_lease_says():
+    assert row("r1", False, [], [], [], standing="fenced").status == "exited"
+
+
+def test_quarantined_and_budget_outrank_fenced_and_fenced_outranks_orphaned_and_stalled():
+    quarantined = [Event("r1", "task_quarantined", 0, {"task": "t1", "reason": "boom"})]
+    assert _status(quarantined, True, standing="fenced") == "quarantined"
+    assert _status([Event("r1", "budget_stop", 0, {})], True, standing="fenced") == "budget"
+    assert _status([], True, orphaned=True, heartbeat_age=STALL_S, standing="fenced") == "fenced"
+
+
+def test_the_rendered_status_cell_shows_fenced():
+    r = row("r1", True, ["build"], [], [], standing="fenced")
+    assert "fenced" in render([r], 200)[1]
