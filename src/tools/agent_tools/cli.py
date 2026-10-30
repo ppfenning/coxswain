@@ -5487,6 +5487,18 @@ def _route_launch(a: argparse.Namespace) -> int:
             needs["task"] = a.task
         elif a.fix_attempts is not None:
             needs["fix_attempts"] = a.fix_attempts
+        if host is None:
+            # A remote lane runs the host's own `cox route launch` on the synced repo, which resolves the repo's `base:`
+            # setting itself through this same branch; only an explicit `--base` is lost there, so `_dropped_ceilings` refuses it.
+            try:
+                base = base_branch.base_ref(str(local_repo), getattr(a, "base", None))
+            except base_branch.BaseError as exc:
+                print(f"routing: {exc}")
+                return 2
+            # A repo with no origin gets a bare name back. Pass it only when somebody chose it (`--base` or `base:`),
+            # since the default `main` would hide a repo whose local branch is `master` from the harness's own fallback.
+            if base.startswith("origin/") or getattr(a, "base", None) or base_branch.configured_base(str(local_repo)):
+                needs["base"] = base
         env_repo = needs["repo"]
     elif a.graph == "decompose":
         if _idea_is_text(a.idea, Path(a.idea).exists()):
@@ -5677,8 +5689,9 @@ def _shadowed_note(profile_text: str, table_names: Sequence[str]) -> str | None:
 
 
 def _dropped_ceilings(a: argparse.Namespace) -> list[str]:
-    """The flags the remote command does not carry; a ceiling dropped silently would run uncapped."""
+    """The flags the remote command does not carry; a ceiling dropped silently would run uncapped, a base dropped would cut from another branch."""
     return [flag for flag, value in (
+        ("--base", getattr(a, "base", None)),
         ("--tier-ceiling", getattr(a, "tier_ceiling", None)),
         ("--effort-ceiling", getattr(a, "effort_ceiling", None)),
         ("--fix-attempts", getattr(a, "fix_attempts", None)),
@@ -10090,6 +10103,7 @@ ROUTE_COMMANDS = [
                     commands.Arg(("--profile",)), commands.Arg(("--initiative",), {"required": True}),
                     commands.Arg(("--repo",)),
                     commands.Arg(("--fix-attempts",), {"type": int, "default": None}),
+                    commands.Arg(("--base",), {"help": "branch phase branches are cut from, as origin/<branch>; default: the repo's base: setting, then origin/HEAD, then main"}),
                     commands.Arg(("--dry-run",), {"action": "store_true"}),
                     commands.Arg(("--run-id",), {"help": "use this run id instead of the next free one; refused when taken"}),
                     commands.Arg(("--on",), {"help": "start the lane on this host from the hosts table; `local` is this machine. Without it the table places the lane"}),
@@ -10118,6 +10132,7 @@ ROUTE_COMMANDS = [
                     commands.Arg(("--profile",)), commands.Arg(("--initiative",), {"required": True}),
                     commands.Arg(("--task",), {"required": True}),
                     commands.Arg(("--repo",)),
+                    commands.Arg(("--base",), {"help": "branch the rescue checks against, as origin/<branch>; default: the repo's base: setting, then origin/HEAD, then main"}),
                     commands.Arg(("--dry-run",), {"action": "store_true"}),
                     commands.Arg(("--run-id",), {"help": "use this run id instead of the next free one; refused when taken"}),
                     *_LAUNCH_SHARED_ARGS,

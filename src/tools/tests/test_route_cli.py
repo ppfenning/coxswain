@@ -822,6 +822,97 @@ def test_launch_epic_starts_the_harness_detached_with_the_recorded_argv(tmp_path
     assert "--fix-attempts" in argv and "3" in argv
 
 
+def test_launch_epic_passes_the_repos_base_setting_to_the_harness_as_an_origin_ref(tmp_path):
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / ".agent").mkdir()
+    (repo / ".agent" / "cartridge.yaml").write_text("base: develop\n")
+    for args in (
+        ["add", "-A"], ["commit", "-q", "-m", "base setting"], ["branch", "develop"],
+        ["init", "-q", "--bare", str(tmp_path / "origin.git")],
+        ["remote", "add", "origin", str(tmp_path / "origin.git")], ["push", "-q", "origin", "develop"],
+    ):
+        subprocess.run(["git", *args], cwd=repo, check=True)
+    initiative_dir = ws / "work" / "demo"
+    initiative_dir.mkdir(parents=True)
+    (initiative_dir / "initiative.md").write_text("---\nid: demo\ntitle: Demo\n---\n\nBody\n")
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+
+    rc = main([
+        "route", "launch", "epic", "--profile", str(profile), "--initiative", str(initiative_dir), "--repo", str(repo),
+    ])
+
+    assert rc == 0
+    recorded = harness_dir / "recorded_argv.json"
+    assert _wait_for(recorded)
+    argv = json.loads(recorded.read_text())
+    assert argv[argv.index("--base") + 1] == "origin/develop"
+
+
+def test_launch_rescue_passes_an_explicit_base_to_the_harness(tmp_path):
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    for args in (
+        ["branch", "release"], ["init", "-q", "--bare", str(tmp_path / "origin.git")],
+        ["remote", "add", "origin", str(tmp_path / "origin.git")], ["push", "-q", "origin", "release"],
+    ):
+        subprocess.run(["git", *args], cwd=repo, check=True)
+    initiative_dir = ws / "work" / "demo"
+    initiative_dir.mkdir(parents=True)
+    (initiative_dir / "initiative.md").write_text("---\nid: demo\ntitle: Demo\n---\n\nBody\n")
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+
+    rc = main([
+        "route", "launch", "rescue", "--profile", str(profile), "--initiative", str(initiative_dir),
+        "--task", "t1", "--repo", str(repo), "--base", "release",
+    ])
+
+    assert rc == 0
+    recorded = harness_dir / "recorded_argv.json"
+    assert _wait_for(recorded)
+    argv = json.loads(recorded.read_text())
+    assert argv[argv.index("--base") + 1] == "origin/release"
+
+
+def test_launch_epic_passes_a_chosen_base_for_a_repo_with_no_origin_and_nothing_otherwise(tmp_path):
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    initiative_dir = ws / "work" / "demo"
+    initiative_dir.mkdir(parents=True)
+    (initiative_dir / "initiative.md").write_text("---\nid: demo\ntitle: Demo\n---\n\nBody\n")
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+    recorded = harness_dir / "recorded_argv.json"
+
+    assert main(["route", "launch", "epic", "--profile", str(profile), "--initiative", str(initiative_dir), "--repo", str(repo)]) == 0
+    assert _wait_for(recorded)
+    assert "--base" not in json.loads(recorded.read_text())
+
+    recorded.unlink()
+    assert main([
+        "route", "launch", "epic", "--profile", str(profile), "--initiative", str(initiative_dir), "--repo", str(repo),
+        "--base", "trunk",
+    ]) == 0
+    assert _wait_for(recorded)
+    argv = json.loads(recorded.read_text())
+    assert argv[argv.index("--base") + 1] == "trunk"
+
+
+def test_a_remote_launch_refuses_an_explicit_base_the_host_command_would_drop():
+    import argparse
+
+    assert cli._dropped_ceilings(argparse.Namespace(base="develop")) == ["--base"]
+    assert cli._dropped_ceilings(argparse.Namespace(base=None)) == []
+
+
 def test_launch_epic_merges_same_phase_ready_tickets_before_dispatch(tmp_path, capsys):
     # same-phase-tickets-that-share-a-file-are-merged-wire-merge-into-lint-and-launch:
     # the merge (and its file writes) must land before the detached harness

@@ -731,6 +731,8 @@ def harness_argv(profile: dict, graph: str, run_id: str, *, python: str | None =
             argv += ["--task", needs["task"]]
         if needs.get("fix_attempts") is not None:
             argv += ["--fix-attempts", str(needs["fix_attempts"])]
+        if needs.get("base"):
+            argv += ["--base", needs["base"]]
     elif graph == "decompose":
         argv += ["--idea", needs["idea"], "--initiative-id", needs["initiative_id"]]
         if needs.get("task_ids"):

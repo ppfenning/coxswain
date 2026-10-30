@@ -1520,6 +1520,43 @@ def test_the_epic_path_hands_run_epic_the_epoch_and_the_lease_name(monkeypatch, 
     assert seen == {"epoch": 1, "lease_name": "runs:runS"}
 
 
+def test_the_epic_path_hands_run_epic_the_base_the_launcher_passed(monkeypatch, tmp_path) -> None:
+    import harness.epic
+
+    seen = {}
+
+    def fake_run_epic(**kwargs):
+        seen.update(base=kwargs["base"])
+        return {}
+
+    args = _Args(tmp_path, "runS-2")
+    args.worktree_root = str(tmp_path)
+    args.graph = "epic"
+    args.initiative = "demo"
+    args.repo = str(tmp_path)
+    args.max_parallel = 1
+    args.ledger = tmp_path / "ledger.jsonl"
+    args.assume = False
+    args.fix_attempts = 0
+    args.resume_from = None
+    args.base = "origin/develop"
+    _patch_common(monkeypatch, args, ScriptedRunner({"plan": {}, "build": {}, "review": {}}))
+    monkeypatch.setattr(cli, "resolve_cartridge", lambda *a, **k: (_CARTRIDGE, {}))
+    monkeypatch.setattr(cli.workstore, "read_initiative", lambda name: {})
+    monkeypatch.setattr(cli, "_provider_profile_scope", lambda profile: "acme")
+    monkeypatch.setattr(harness.epic, "run_epic", fake_run_epic)
+
+    assert cli.main([]) == 0
+
+    assert seen == {"base": "origin/develop"}
+
+
+def test_the_parser_reads_base_as_a_string_and_defaults_it_to_none() -> None:
+    parser = cli._build_parser(cli.discover())
+    assert parser.parse_args(["epic", "--team", "acme", "--base", "origin/develop"]).base == "origin/develop"
+    assert parser.parse_args(["epic", "--team", "acme"]).base is None
+
+
 @pytest.mark.parametrize(
     ("result", "code", "status"),
     [
