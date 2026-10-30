@@ -932,7 +932,7 @@ _DECOMPOSE_ITEM = {
 }
 
 
-def _decompose_run(tmp_path: Path, *, target: Path) -> int:
+def _decompose_run(tmp_path: Path, *, target: Path, task: str | None = None) -> int:
     """One `item_create` proposal, approved at the gate, applied through the code `workstore` arm.
 
     `target` already existing makes the arm refuse (`applied=False`); a `target`
@@ -950,8 +950,8 @@ def _decompose_run(tmp_path: Path, *, target: Path) -> int:
                 {
                     "kind": "item_create",
                     "risk": "low",
-                    "target": str(target),
-                    "evidence": [{"check": "c", "output": "o"}],
+                    "target": task or str(target),
+                    "evidence": [{"check": "c", "output": "o"}, *([{"check": "phase", "output": "p1"}] if task else [])],
                     "rationale": "because",
                     "suggested_action": "create",
                     "apply": {"path": str(target), "item": dict(_DECOMPOSE_ITEM)},
@@ -976,30 +976,225 @@ def _decompose_run(tmp_path: Path, *, target: Path) -> int:
         cartridge={
             **_CARTRIDGE,
             "write_kinds": {"item_create": {"risk": "low", "ramp": "gated", "apply_arm": "workstore"}},
+            **({"work_routing": {"states": {"planned": "work"}}} if task else {}),
         },
         runner=ScriptedRunner({}),
         run_id="r1",
     )
 
 
-def test_a_decompose_run_with_an_approved_but_unapplied_item_create_returns_1_and_prints_the_reason(
-    tmp_path, capsys
+def _decompose_tasks_run(tmp_path: Path, store, tasks: dict[str, Path]) -> int:
+    """One approved `item_create` per task, each applied by the code `workstore` arm to the path given, with a real store."""
+    profile = tmp_path / "profile.yaml"
+    profile.write_text("provider: test\n", encoding="utf-8")
+    proposals = [
+        {
+            "kind": "item_create",
+            "risk": "low",
+            "target": task,
+            "evidence": [{"check": "phase", "output": "p1"}],
+            "rationale": "because",
+            "suggested_action": "create",
+            "apply": {"path": str(path), "item": {**_DECOMPOSE_ITEM, "id": task, "budget_usd": 1.5}},
+        }
+        for task, path in tasks.items()
+    ]
+    spec = SimpleNamespace(
+        name="decompose", graph_name=DECOMPOSE_GRAPH_NAME, needs=(), run=lambda graph_args, runner: {"proposals": proposals}
+    )
+    args = SimpleNamespace(
+        graph="decompose",
+        date="2026-10-30",
+        runs_dir=tmp_path / "runs",
+        ledger=tmp_path / "ledger.jsonl",
+        provider_profile=str(profile),
+        repo=None,
+        assume="a",
+        result_out=None,
+    )
+    store.record_run({"run_id": "r1", "ts": "2026-10-30T00:00:00Z", "principal": "decompose"})
+    return cli._run_graph(
+        specs={"decompose": spec},
+        parser=_FakeParser(args),
+        args=args,
+        cartridge={
+            **_CARTRIDGE,
+            "write_kinds": {"item_create": {"risk": "low", "ramp": "gated", "apply_arm": "workstore"}},
+            "work_routing": {"states": {"planned": "work"}},
+        },
+        runner=ScriptedRunner({}),
+        run_id="r1",
+        store=store,
+    )
+
+
+def _filing_in_memory(monkeypatch, *, fail: str | None = None) -> list[dict]:
+    """An in-memory queue behind the cli's writer and reader, built with the real `parse_item` codec.
+
+    `fail` names a task whose write raises. The real `route file` writer is run in
+    `test_decompose_outcome.py`; these tests are about the run's bookkeeping and exit code.
+    """
+    from agent_tools.queue_rows import parse_item
+
+    rows: list[dict] = []
+
+    def write(runs_dir, path, parts, text) -> int:
+        if path.stem == fail:
+            raise RuntimeError("store down")
+        rows.append(parse_item("task", parts, text))
+        return 0
+
+    monkeypatch.setattr(cli, "_write_filed_task", write)
+    monkeypatch.setattr(cli, "_read_filed_rows", lambda runs_dir, initiative: [r for r in rows if r["initiative"] == initiative])
+    return rows
+
+
+def test_a_decompose_with_three_approved_creates_leaves_three_store_rows_and_three_files(
+    tmp_path, store_conn, monkeypatch, capsys
 ) -> None:
+    from harness.store_write import Store
+
+    monkeypatch.chdir(tmp_path)
+    store = Store(store_conn)
+    rows = _filing_in_memory(monkeypatch)
+    tasks = {t: tmp_path / "work" / "p1" / f"{t}.md" for t in ("t1", "t2", "t3")}
+
+    assert _decompose_tasks_run(tmp_path, store, tasks) == 0
+
+    assert sorted(r["task_id"] for r in rows) == ["t1", "t2", "t3"]
+    assert all(path.exists() for path in tasks.values())
+    assert all(str(r["extra"]["budget_usd"]) == "1.5" for r in rows)
+    assert "decompose: 3 task(s) written, 0 missing:" in capsys.readouterr().out
+
+
+def test_a_decompose_create_whose_store_write_fails_is_named_in_the_closing_line_and_the_run_exits_1(
+    tmp_path, store_conn, monkeypatch, capsys
+) -> None:
+    from harness.store_write import Store
+
+    monkeypatch.chdir(tmp_path)
+    store = Store(store_conn)
+    _filing_in_memory(monkeypatch, fail="t2")
+    tasks = {t: tmp_path / "work" / "p1" / f"{t}.md" for t in ("t1", "t2", "t3")}
+
+    assert _decompose_tasks_run(tmp_path, store, tasks) == 1
+
+    err = capsys.readouterr().err
+    assert "decompose: 2 task(s) written, 1 missing: t2" in err
+    assert "decompose: t2 is on disk but the write failed: RuntimeError: store down" in err
+
+
+def test_a_decompose_create_whose_file_is_not_written_logs_the_arms_detail_and_exits_1(
+    tmp_path, store_conn, monkeypatch, capsys
+) -> None:
+    from harness.store_write import Store
+
+    monkeypatch.chdir(tmp_path)
+    store = Store(store_conn)
+    _filing_in_memory(monkeypatch)
+    tasks = {"t1": tmp_path / "work" / "p1" / "t1.md", "t2": tmp_path / "elsewhere" / "t2.md"}
+
+    assert _decompose_tasks_run(tmp_path, store, tasks) == 1
+
+    err = capsys.readouterr().err
+    assert "decompose: 1 task(s) written, 1 missing: t2" in err
+    assert "item_create t2: applied:" in err
+    assert "decompose: t2 not written:" in err
+
+
+def test_a_decompose_run_whose_applied_task_is_not_where_the_plan_said_names_it_and_returns_1(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _filing_in_memory(monkeypatch)
+
+    assert _decompose_run(tmp_path, target=tmp_path / "t9-new.md", task="t9-new") == 1
+
+    assert "decompose: 0 task(s) written, 1 missing: t9-new" in capsys.readouterr().err
+
+
+def test_a_decompose_run_whose_applied_task_is_where_the_plan_said_prints_the_closing_line_and_returns_0(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _filing_in_memory(monkeypatch)
+
+    assert _decompose_run(tmp_path, target=tmp_path / "work" / "p1" / "t9-new.md", task="t9-new") == 0
+
+    assert "decompose: 1 task(s) written, 0 missing:" in capsys.readouterr().out
+
+
+def test_a_decompose_run_with_an_approved_but_unapplied_item_create_returns_1_and_prints_the_reason(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _filing_in_memory(monkeypatch)
     existing = tmp_path / "t9-new.md"
     existing.write_text("already here", encoding="utf-8")
 
-    assert _decompose_run(tmp_path, target=existing) == 1
+    assert _decompose_run(tmp_path, target=existing, task="t9-new") == 1
 
     assert "decompose failed: no task item_create was executed: skipped" in capsys.readouterr().err
 
 
-def test_a_decompose_run_with_an_applied_item_create_returns_0(tmp_path, capsys) -> None:
-    new_task = tmp_path / "t9-new.md"
+def test_a_decompose_run_with_an_applied_item_create_returns_0(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.chdir(tmp_path)
+    _filing_in_memory(monkeypatch)
+    new_task = tmp_path / "work" / "p1" / "t9-new.md"
 
-    assert _decompose_run(tmp_path, target=new_task) == 0
+    assert _decompose_run(tmp_path, target=new_task, task="t9-new") == 0
 
     assert new_task.exists()
     assert "decompose failed" not in capsys.readouterr().err
+
+
+def test_a_decompose_run_on_a_cartridge_that_routes_no_landing_reports_the_approved_task_missing_and_exits_1(
+    tmp_path, store_conn, monkeypatch, capsys
+) -> None:
+    from harness.store_write import Store
+
+    monkeypatch.chdir(tmp_path)
+    _filing_in_memory(monkeypatch)
+    monkeypatch.setattr(cli, "landing_for", lambda cartridge, state: (_ for _ in ()).throw(cli.ContractViolation("no planned landing")))
+    tasks = {"t1": tmp_path / "work" / "p1" / "t1.md"}
+
+    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks) == 1
+
+    err = capsys.readouterr().err
+    assert "decompose: cannot place 1 approved task(s): no planned landing" in err
+    assert "decompose: 0 task(s) written, 1 missing: t1" in err
+
+
+def test_a_decompose_whose_creates_the_policy_auto_applies_is_settled_and_counted_too(
+    tmp_path, store_conn, monkeypatch, capsys
+) -> None:
+    from harness.store_write import Store
+
+    monkeypatch.chdir(tmp_path)
+    rows = _filing_in_memory(monkeypatch)
+    monkeypatch.setattr(cli, "split_by_policy", lambda proposals, **_: (list(proposals), []))
+    tasks = {t: tmp_path / "work" / "p1" / f"{t}.md" for t in ("t1", "t2", "t3")}
+
+    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks) == 0
+
+    assert sorted(r["task_id"] for r in rows) == ["t1", "t2", "t3"]
+    assert all(path.exists() for path in tasks.values())
+    assert "decompose: 3 task(s) written, 0 missing:" in capsys.readouterr().out
+
+
+def test_an_auto_applied_create_whose_write_fails_is_named_and_the_run_exits_1(
+    tmp_path, store_conn, monkeypatch, capsys
+) -> None:
+    from harness.store_write import Store
+
+    monkeypatch.chdir(tmp_path)
+    _filing_in_memory(monkeypatch, fail="t2")
+    monkeypatch.setattr(cli, "split_by_policy", lambda proposals, **_: (list(proposals), []))
+    tasks = {t: tmp_path / "work" / "p1" / f"{t}.md" for t in ("t1", "t2")}
+
+    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks) == 1
+
+    assert "decompose: 1 task(s) written, 1 missing: t2" in capsys.readouterr().err
 
 
 def test_the_parser_takes_result_out_and_defaults_it_to_none() -> None:

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +45,9 @@ from runner.tier_resolution import Hints
 __all__ = [
     "GRAPH_NAME",
     "LintRefusal",
+    "approved_task_ids",
+    "decompose_closing",
+    "expected_task_files",
     "first_problem_line",
     "idea_parts",
     "initiative_text",
@@ -717,6 +720,56 @@ def unexecuted_item_create_reason(diffs: Sequence[Mapping[str, Any]]) -> str | N
     if not all(d.get("decision") == "approved" for d in item_creates):
         return None
     return str(item_creates[0].get("outcome"))
+
+
+def _phase_of(proposal_: Mapping[str, Any]) -> str:
+    return next((str(e.get("output")) for e in proposal_["evidence"] if e.get("check") == "phase"), "")
+
+
+def approved_task_ids(
+    proposals: Sequence[Mapping[str, Any]],
+    diffs: Sequence[Mapping[str, Any]],
+    auto_applied: Sequence[Mapping[str, Any]],
+) -> set[str]:
+    """Targets of the task `item_create` proposals that were cleared: approved at the gate or applied by policy.
+
+    `diffs` holds only the gated decisions; a proposal the policy auto-applies never reaches it.
+    The initiative's own `item_create` (target `initiative`) is not a task.
+    """
+    gated = {d.get("target") for d in diffs if d.get("kind") == "item_create" and d.get("decision") == "approved"}
+    auto = {p.get("target") for p in auto_applied if p.get("kind") == "item_create"}
+    return {
+        str(p["target"])
+        for p in proposals
+        if p.get("kind") == "item_create" and p.get("target") != "initiative" and p.get("target") in gated | auto
+    }
+
+
+def expected_task_files(
+    proposals: Sequence[Mapping[str, Any]],
+    approved: Collection[str],
+    *,
+    landing: str,
+    initiative_id: str | None,
+) -> dict[str, str]:
+    """Task id to store-relative file path, for each task id in `approved`.
+
+    The phase is the one the proposal's `phase` evidence carries, which is the phase `_item_action` put in the path.
+    """
+    return {
+        str(p["target"]): "/".join(part for part in (landing, initiative_id, _phase_of(p), f"{p['target']}.md") if part)
+        for p in proposals
+        if p.get("kind") == "item_create" and p.get("target") in approved
+    }
+
+
+def decompose_closing(
+    expected: Collection[str], in_store: Collection[str], on_disk: Collection[str]
+) -> tuple[str, int]:
+    """The closing line and the missing count. A task is written only when it is in the store and on disk."""
+    missing = sorted(task for task in expected if task not in in_store or task not in on_disk)
+    line = f"decompose: {len(expected) - len(missing)} task(s) written, {len(missing)} missing: {', '.join(missing)}"
+    return line.rstrip(), len(missing)
 
 
 def _grant_sentence(grants: Sequence[str]) -> str:
