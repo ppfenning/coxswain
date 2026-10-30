@@ -40,11 +40,19 @@ _RENEW_KEEP = (
     "UPDATE leases SET heartbeat_at = ?, expires_at = ? "
     "WHERE name = ? AND holder = ? AND epoch = ? AND expires_at > ?"
 )
+_RENEW_PROGRESS = (
+    "UPDATE leases SET heartbeat_at = ?, expires_at = ?, progress = ? "
+    "WHERE name = ? AND holder = ? AND epoch = ? AND expires_at > ?"
+)
+_RENEW_BOTH = (
+    "UPDATE leases SET heartbeat_at = ?, expires_at = ?, status = ?, progress = ? "
+    "WHERE name = ? AND holder = ? AND epoch = ? AND expires_at > ?"
+)
 _RELEASE = "UPDATE leases SET expires_at = ? WHERE name = ? AND holder = ? AND epoch = ?"
 _READ = "SELECT name, holder, epoch, heartbeat_at, expires_at FROM leases WHERE name = ?"
 _FENCE = "SELECT 1 FROM leases WHERE name = ? AND epoch = ? AND expires_at > ?"
 
-SQL = (_TAKE, _STEAL, _RENEW, _RENEW_KEEP, _RELEASE, _READ, _FENCE)
+SQL = (_TAKE, _STEAL, _RENEW, _RENEW_KEEP, _RENEW_PROGRESS, _RENEW_BOTH, _RELEASE, _READ, _FENCE)
 
 
 @dataclass(frozen=True)
@@ -108,18 +116,30 @@ def acquire(conn: Connection, name: str, holder: str, now: str, ttl: int, steal:
 
 
 def renew(
-    conn: Connection, name: str, holder: str, epoch: int, now: str, ttl: int, status: str | None = _KEEP
+    conn: Connection,
+    name: str,
+    holder: str,
+    epoch: int,
+    now: str,
+    ttl: int,
+    status: str | None = _KEEP,
+    progress: str | None = _KEEP,
 ) -> bool:
     """Extend a live lease. An expired or released lease is not revived: the holder must acquire again.
 
-    `status` defaults to the `_KEEP` sentinel, which leaves the stored status column untouched.
-    An explicit value, including None, is written verbatim, so a caller clears a prior status
-    by passing `status=None` on purpose.
+    `status` and `progress` each default to the `_KEEP` sentinel, which leaves the stored column untouched.
+    An explicit value, including None, is written verbatim, so a caller clears a prior value
+    by passing None on purpose.
     """
     at = _stamp(now)
+    head, tail = (at, _expiry(now, ttl)), (name, holder, epoch, at)
+    if status is _KEEP and progress is _KEEP:
+        return conn.execute(_sql(conn.dialect, _RENEW_KEEP), (*head, *tail)) == 1
+    if progress is _KEEP:
+        return conn.execute(_sql(conn.dialect, _RENEW), (*head, status, *tail)) == 1
     if status is _KEEP:
-        return conn.execute(_sql(conn.dialect, _RENEW_KEEP), (at, _expiry(now, ttl), name, holder, epoch, at)) == 1
-    return conn.execute(_sql(conn.dialect, _RENEW), (at, _expiry(now, ttl), status, name, holder, epoch, at)) == 1
+        return conn.execute(_sql(conn.dialect, _RENEW_PROGRESS), (*head, progress, *tail)) == 1
+    return conn.execute(_sql(conn.dialect, _RENEW_BOTH), (*head, status, progress, *tail)) == 1
 
 
 def release(conn: Connection, name: str, holder: str, epoch: int) -> bool:
