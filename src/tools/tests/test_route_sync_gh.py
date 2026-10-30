@@ -795,3 +795,41 @@ def test_a_failed_add_sub_issue_is_reported(tmp_path):
             return _Result(stdout=json.dumps({"data": {"node": {"parent": None}}}))
         return _Result(stdout=json.dumps({"errors": [{"message": "sub-issues disabled"}]}))
     assert route_sync_gh.execute([_link_step()], run, "", tmp_path) == [("sub_issue_link", False, "sub-issues disabled")]
+
+
+_REFUSED = ("{run: tA-1, phase: build, reason: 'the fix loop stopped: x', ts: '2026-10-29', "
+            "body_sha: 3cb77492f2d4, kind: refused, cause: harness, note: 'n'}")
+
+
+def _refused_store(root):
+    _two_task_store(root)
+    checkout = root / "checkout"
+    _write(checkout / ".git" / "config", '[remote "origin"]\n\turl = git@github.com:acme/widgets.git\n')
+    _write(root / "work" / "init1" / "initiative.md", f"---\nrepo: {checkout}\n---\n")
+    _write(root / "work" / "init1" / "build" / "tA.md",
+           f"---\ntitle: tA\nstate: quarantined\nattempts:\n  - {_REFUSED}\n---\nb\n")
+
+
+def test_a_refused_attempt_record_reads_as_its_run_id_and_that_id_is_the_pid_lookup(tmp_path):
+    _refused_store(tmp_path)
+    _write(tmp_path / "runs" / "tA-1.pid", str(os.getpid()))
+    items = _by_id(tmp_path)
+    assert items["tA"].run == "tA-1" and items["tA"].state == "in_flight"
+    assert items["tB"].run == "run1"
+
+
+def test_cli_dry_run_prints_the_run_id_for_an_item_with_a_refused_attempt(tmp_path, capsys, monkeypatch):
+    _mirror(tmp_path)
+    _refused_store(tmp_path)
+
+    def run(argv, **kw):
+        if argv[:3] == ["gh", "auth", "status"]:
+            return _Result(returncode=0)
+        if argv[:3] == ["gh", "issue", "list"]:
+            return _Result(stdout="[]")
+        return _Result(stdout=json.dumps({"items": []}))
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert cli.main(["route", "sync", "--dry-run", "--project", "acme/7", "--workspace", str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    assert "Run=tA-1" in out and "Run={" not in out

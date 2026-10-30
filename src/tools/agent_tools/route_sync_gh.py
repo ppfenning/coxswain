@@ -171,11 +171,12 @@ def _work_item(root: Path, path: Path, landing: dict[str, str], costs: dict[str,
     initiative, phase_dir, stem = path.parts[-3], path.parts[-2], path.stem
     item_id = fields.get("id", stem)
     attempts = fields.get("attempts") or []
-    in_flight = bool(attempts) and _pid_alive(root, attempts[-1])
+    latest = route_sync.run_id_of(attempts[-1]) if attempts else ""
+    in_flight = bool(latest) and _pid_alive(root, latest)
     state = "in_flight" if in_flight else fields.get("state", "todo")
     has_parent = (root / "work" / initiative / "initiative.md").is_file()
     return _item(fields, body, stem, state=state, phase=fields.get("phase", phase_dir),
-                 run_id=landing.get(item_id) or (attempts[-1] if attempts else ""),
+                 run_id=landing.get(item_id) or latest,
                  cost=round(costs.get(item_id, 0.0), 4), gate=fields.get("gate", ""),
                  repo=_initiative_repo(root, initiative),
                  parent=_initiative_id(initiative) if has_parent else None,
