@@ -48,7 +48,7 @@ from agent_tools.dash_chair_store import chair_from_store, read_chair_rows
 from agent_tools.dash_chair_today import _ts, chair_today, local_midnight
 from agent_tools.dash_cost_series import run_cost_series
 from agent_tools.dash_finished_runs import LIMIT, finished_runs
-from agent_tools.dash_history import _is_landed, _record, build_history
+from agent_tools.dash_history import _by_run, _in_task_order, _is_landed, _landed_pr, _pr_number, _record, build_history
 from agent_tools.dash_history import history_today as _history_today
 from agent_tools.dash_history_store import RECENT_ENDED, read_history_rows
 from agent_tools.dash_run_end import End, run_end
@@ -395,36 +395,59 @@ def _task_state(task: Mapping, landed: Collection[str], on_live_lane: bool, stra
     return "blocked" if state == "blocked" else None
 
 
+def _own_tasks(rows: Sequence[Mapping], initiative: str) -> list[Mapping]:
+    """The queue's task rows for one initiative, in row order."""
+    return [row for row in rows if row.get("kind") == "task" and row.get("initiative") == initiative]
+
+
+def _task_states(
+    rows: Sequence[Mapping], initiative: str, live_phases: Collection[tuple[str, str]],
+    stranded: Collection[tuple[str, str, str]],
+) -> list[tuple[str, str, str]]:
+    """`(phase, task_id, state)` for each of the initiative's tasks in row order, the state `_task_state` gives.
+    A task with no feed state is left out. `live_phases` holds `(initiative, phase)` per live lane, a blank
+    phase covering the whole initiative (a lane that has not written a phase yet). `stranded` holds
+    `(initiative, phase, task)` per task `runs stranded` lists."""
+    own = _own_tasks(rows, initiative)
+    landed = {row.get("task_id") for row in own if row.get("state") in route.TERMINAL}
+    lane_phases = {phase for lane_initiative, phase in live_phases if lane_initiative == initiative}
+    return [
+        (row.get("phase"), row.get("task_id"), state)
+        for row in own
+        if (
+            state := _task_state(
+                row, landed, bool(lane_phases) and ("" in lane_phases or row.get("phase") in lane_phases),
+                (initiative, row.get("phase"), row.get("task_id")) in stranded,
+            )
+        )
+        is not None
+    ]
+
+
 def _initiative_phases(
     rows: Sequence[Mapping], initiative: str, live_phases: Collection[tuple[str, str]],
     stranded: Collection[tuple[str, str, str]],
 ) -> list[dict]:
     """The initiative's tasks as `[{"id": phase, "tasks": [{"id", "state"}, ...]}]`, phases in sorted order (the
     order `_initiative_progress` uses) and tasks in row order. Dropped tasks stay listed, marked `dropped`; a task
-    with no feed state is left out. `live_phases` holds `(initiative, phase)` per live lane, a blank phase
-    covering the whole initiative (a lane that has not written a phase yet). `stranded` holds
-    `(initiative, phase, task)` per task `runs stranded` lists."""
-    own = [row for row in rows if row.get("kind") == "task" and row.get("initiative") == initiative]
-    landed = {row.get("task_id") for row in own if row.get("state") in route.TERMINAL}
-    lane_phases = {phase for lane_initiative, phase in live_phases if lane_initiative == initiative}
+    with no feed state is left out (`_task_states`)."""
+    states = _task_states(rows, initiative, live_phases, stranded)
     return [
-        {
-            "id": phase,
-            "tasks": [
-                {"id": row.get("task_id"), "state": state}
-                for row in own
-                if row.get("phase") == phase
-                and (
-                    state := _task_state(
-                        row, landed, bool(lane_phases) and ("" in lane_phases or phase in lane_phases),
-                        (initiative, phase, row.get("task_id")) in stranded,
-                    )
-                )
-                is not None
-            ],
-        }
-        for phase in sorted({row.get("phase") for row in own})
+        {"id": phase, "tasks": [{"id": task, "state": state} for p, task, state in states if p == phase]}
+        for phase in sorted({row.get("phase") for row in _own_tasks(rows, initiative)})
     ]
+
+
+def _queue_states(
+    rows: Sequence[Mapping], live_phases: Collection[tuple[str, str]], stranded: Collection[tuple[str, str, str]],
+) -> dict[tuple[str, str, str], str]:
+    """Every queue task's feed state by `(initiative, phase, task_id)`, the state `phases[].tasks[].state` shows."""
+    initiatives = {row.get("initiative") for row in rows if row.get("kind") == "task"}
+    return {
+        (initiative, phase, task): state
+        for initiative in initiatives
+        for phase, task, state in _task_states(rows, initiative, live_phases, stranded)
+    }
 
 
 def _task_records(runs_dir: Path) -> list[dict]:
@@ -439,6 +462,15 @@ def _task_records(runs_dir: Path) -> list[dict]:
         if isinstance(record, dict):
             records.append({"run": path.parent.parent.parent.name, "task": path.stem, "phase": path.parent.name, **record})
     return records
+
+
+def _queue_states_edge(runs_dir: Path, live_phases: Collection[tuple[str, str]]) -> dict[tuple[str, str, str], str]:
+    """Edge: `_queue_states` over the store's queue. An unreadable store gives no states, so history rows list no tasks."""
+    try:
+        rows = run_store.read_queue(runs_dir)
+        return _queue_states(rows, live_phases, _stranded_tasks(_task_records(runs_dir), rows))
+    except Exception:  # the task states are garnish: a store failure must not take the feed down
+        return {}
 
 
 def _stranded_tasks(records: Sequence[dict], rows: Sequence[Mapping]) -> frozenset[tuple[str, str, str]]:
@@ -959,18 +991,35 @@ def _chair_section(runs_dir: Path, row: dict, entries: list[dict], drafts: list,
     return _chair_from_store_v1(lease, rows, _chair_record(runs_dir), at, needs_chair_open, last_housekeeping_at, people, drafts)
 
 
+def _history_tasks(
+    run_tasks: Sequence[Mapping], initiative: str, states: Mapping[tuple[str, str, str], str],
+) -> list[dict]:
+    """One `{id, state, pr}` per task record the run built, in phase then task order. `state` is the queue's
+    current state for the task (`_queue_states`), `pr` the PR number in the record's `landed` dict, else None.
+    A task the queue has no state for is left out rather than guessed."""
+    return [
+        {"id": row.get("task_id"), "state": state, "pr": _pr_number(_landed_pr(_record(row.get("record_json")).get("landed")))}
+        for row in _in_task_order(run_tasks)
+        if (state := states.get((initiative, row.get("phase_id"), row.get("task_id")))) is not None
+    ]
+
+
 def _history_v1(
     rows: Mapping, at: datetime, ids: Mapping[str, str], projects: Mapping[str, str | None],
+    states: Mapping[tuple[str, str, str], str] | None = None,
 ) -> tuple[list[dict], dict]:
     """`history` and `history_today` from store rows, counting a day in the chair's zone.
-    Each history row gains `short_id` and `project` by its `initiative`."""
+    Each history row gains `short_id` and `project` by its `initiative`, and `tasks`: its tasks' current state
+    and landed PR (`_history_tasks`). `outcome` still records how the run ended and is never rewritten."""
     offset = at.astimezone(EASTERN).utcoffset() or timedelta(0)
     args = (rows["runs"], rows["task_records"], rows["node_calls"])
+    by_run = _by_run(rows["task_records"])
     history = [
         {
             **row,
             "short_id": _short_id(row.get("initiative"), ids),
             "project": _project(row.get("initiative"), projects),
+            "tasks": _history_tasks(by_run.get(str(row["run"]), []), row["initiative"], states or {}),
         }
         for row in build_history(*args)
     ]
@@ -1008,10 +1057,11 @@ def _store_rows(runs_dir: Path, at: datetime, spend: Mapping) -> Mapping:
 
 def _history_edge(
     rows: Mapping, at: datetime, ids: Mapping[str, str], projects: Mapping[str, str | None],
+    states: Mapping[tuple[str, str, str], str] | None = None,
 ) -> tuple[list[dict], dict]:
     """The feed's history from the store rows. Rows that cannot be read give no history and zero counts."""
     try:
-        return _history_v1(rows, at, ids, projects)
+        return _history_v1(rows, at, ids, projects, states)
     except Exception:  # the history is garnish: a store failure must not take the feed down
         return [], dict(_ZERO_HISTORY_TODAY)
 
@@ -1046,7 +1096,8 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
     null when its initiative has none, a row's `project`, which is null when its initiative has no known
     repository, and `spend.today`, which is null when the run store is unavailable (its `per_landed` is null
     when nothing landed and its `first_try_rate` when nothing was measured). `spend.today` is a new key
-    under schema 1, as `weekly_pace` was: older towpath builds ignore a key they do not know. `profile` is the parsed profile
+    under schema 1, as `weekly_pace` was: older towpath builds ignore a key they do not know. So is `history[].tasks`,
+    one `{id, state, pr}` per task the run built: its current queue state and its landed PR number, or null. `profile` is the parsed profile
     the capacity chain reads the team cartridge from."""
     runs_dir, work_dir = Path(runs_dir), Path(work_dir)
     at = _parse_now(now)
@@ -1057,7 +1108,8 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
         runs_dir, work_dir, now, local_name, local_capacity, spend, local_versions=local_versions,
     )
     chair_row = sections["chair"][0] if sections["chair"] else {}
-    queue, queue_total = _queue(runs_dir, _live_phases(sections["lanes"]))
+    live_phases = _live_phases(sections["lanes"])
+    queue, queue_total = _queue(runs_dir, live_phases)
     blob = _courier_blob(work_dir)
     entries = courier.inbox(blob)
     inbox, inbox_total = _inbox(entries)
@@ -1075,7 +1127,7 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
     spend_block = {**_spend_v1(sections["spend"]), "today": _today_v1(runs_dir, now)}
     wide_rows = _store_rows(runs_dir, at, spend_block)
     store_rows = _history_rows(wide_rows, at)
-    history, today = _history_edge(store_rows, at, short_ids, projects)
+    history, today = _history_edge(store_rows, at, short_ids, projects, _queue_states_edge(runs_dir, live_phases))
     chair_block = _chair_section(runs_dir, chair_row, entries, read_drafts(work_dir, now), at)
     activity = _activity(runs_dir, profile or {}, chair_block["session"], spend_block, at, wide_rows)
     return snapshot(
