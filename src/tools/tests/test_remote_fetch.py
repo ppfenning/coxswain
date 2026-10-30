@@ -117,6 +117,17 @@ def test_fetch_run_brings_the_run_directory_log_and_branch_to_the_chair(tmp_path
 
 
 @needs_tools
+def test_fetch_run_brings_the_check_logs_of_a_remote_run(tmp_path):
+    host, runs_dir, _ = _world(tmp_path)
+    # The path the harness writes: checks/<phase>/<task>/<n>.log under the run directory.
+    log = tmp_path / "hostws" / "runs" / "r1" / "checks" / "p1" / "task" / "1.log"
+    log.parent.mkdir(parents=True)
+    log.write_text("FAILED tests/t.py::test_a\n")
+    fetch_run(host, "r1", runs_dir, task_repos, _real_run, lambda p: p, lease_released=True, ended_at="t")
+    assert (runs_dir / "r1" / "checks" / "p1" / "task" / "1.log").read_text() == "FAILED tests/t.py::test_a\n"
+
+
+@needs_tools
 def test_fetch_run_is_an_error_when_the_host_repo_has_no_branch_for_the_run(tmp_path):
     host, runs_dir, _ = _world(tmp_path, branch=False)
     result = fetch_run(host, "r1", runs_dir, task_repos, _real_run, lambda p: p, lease_released=True, ended_at="t")
