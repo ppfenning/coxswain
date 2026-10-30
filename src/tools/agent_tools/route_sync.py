@@ -402,8 +402,45 @@ def plan(items: list[Item], issues: dict, project_items: dict, tracker: str, sco
                          if scope == "all" or item.initiative else _linked_task_steps(item, issues, project_items))]
 
 
+def _sync_made_issue(item: Item, issues: Mapping[tuple[str, str], Mapping[str, Any]],
+                     initiative_keys: frozenset) -> Mapping[str, Any] | None:
+    """The `coxswain`-labelled row for an unsettled task's issue in its own repo, else None. `issues` is keyed
+    `(repo, number)`, so a labelled issue in another repo never stands in for an unlabelled one linked by hand."""
+    key = (item.repo, item.issue)
+    skip = (item.initiative or item.parent is None or not item.repo or bool(item.repo_error)
+            or item.state in _CLOSING or key in initiative_keys)
+    return None if skip else issues.get(key)
+
+
+def _task_prune_steps(item: Item, stored: Mapping[str, Any], cards: Mapping[tuple[str, str], str],
+                      scope: str) -> list[dict]:
+    """`issue_prune` while the issue is open, `card_remove` while it has a card. A closed issue keeps its card step,
+    so a card left by a failed delete is found again."""
+    is_open = str(stored.get("state", "")).upper() == "OPEN"
+    card = cards.get((item.repo, item.issue))
+    prune = [{"kind": "issue_prune", "issue": item.issue, "repo": item.repo, "title": item.title, "scope": scope}]
+    remove = [{"kind": "card_remove", "issue": item.issue, "repo": item.repo, "card": card}]
+    return (prune if is_open else []) + (remove if card else [])
+
+
+def prune_steps(items: Sequence[Item], issues: Mapping[tuple[str, str], Mapping[str, Any]],
+                cards: Mapping[tuple[str, str], str], scope: str) -> list[dict]:
+    """The steps that prune the sync-made task issues and cards outside `scope`. Empty under `all`. `items` is the
+    whole store, repos resolved; `issues` and `cards` are keyed `(repo, number)`. The dry run and the real run
+    both take this one list."""
+    if scope == "all":
+        return []
+    initiative_keys = frozenset((i.repo, i.issue) for i in items if i.initiative and i.issue)
+    found = [(item, _sync_made_issue(item, issues, initiative_keys)) for item in items]
+    return [step for item, stored in found if stored is not None for step in _task_prune_steps(item, stored, cards, scope)]
+
+
 def _line(step: dict) -> str:
     kind = step["kind"]
+    if kind == "issue_prune":
+        return f"issue_prune {step['issue']} {step['repo']}: {step['title']!r} (close as not planned)"
+    if kind == "card_remove":
+        return f"card_remove {step['issue']} {step['repo']}"
     if kind == "issue_create":
         return f"issue_create {step['repo']}: {step['title']!r}"
     if kind == "issue_edit":
