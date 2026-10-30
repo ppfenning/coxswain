@@ -47,7 +47,7 @@ from graphs.delivery.initiative_decompose import (
     first_problem_line,
     unexecuted_item_create_reason,
 )
-from harness import CORE_SCHEMA, run_lease, store_traces
+from harness import CORE_SCHEMA, node_progress, run_lease, store_traces
 from harness.autonomy import split_by_policy
 from harness.checks import all_passed, checks_evidence, repo_checks, run_checks
 from harness.digest import build_digest
@@ -759,6 +759,61 @@ def _main(argv: list[str] | None) -> int:
 _EXIT_RUN_STATUS = {0: "ok", 3: "paused", 4: "awaiting_land"}
 
 
+def _head_branch(cwd: str) -> str | None:
+    """The branch HEAD names in `cwd`, following a worktree's `.git` pointer file. None on a detached HEAD or any read failure."""
+    try:
+        git = Path(cwd) / ".git"
+        gitdir = git
+        if git.is_file():
+            pointer = git.read_text(encoding="utf-8").strip()
+            if not pointer.startswith("gitdir:"):
+                return None
+            gitdir = git.parent / pointer[len("gitdir:") :].strip()
+        head = (gitdir / "HEAD").read_text(encoding="utf-8").strip()
+    except (OSError, ValueError):
+        return None
+    prefix = "ref: refs/heads/"
+    return head[len(prefix) :] if head.startswith(prefix) else None
+
+
+def _is_running(tracker: node_progress.Tracker, run_id: str, node: str, attempt: int) -> bool:
+    return any(
+        n["node"] == node and n["attempt"] == attempt and n["status"] == "running"
+        for n in tracker.snapshot(run_id)["nodes"]
+    )
+
+
+def _write_progress(tracker: node_progress.Tracker, run_id: str, path: Path, lock: threading.Lock) -> str:
+    """Write the snapshot to `path` and return its JSON. The lock keeps an older snapshot from replacing a newer file."""
+    with lock:
+        snapshot = tracker.snapshot(run_id)
+        with contextlib.suppress(OSError):
+            node_progress.write_atomic(path, snapshot)
+    return json.dumps(snapshot)
+
+
+def _progress_observer(
+    tracker: node_progress.Tracker, run_id: str, path: Path, lock: threading.Lock, *, traced: bool
+) -> Callable[..., None]:
+    """The runner's `on_node`: start and finish rewrite the file, events only fold into the tracker."""
+
+    def on_node(kind: str, info: dict[str, Any], event: dict[str, Any] | None) -> None:
+        node, attempt = info["role"], info["attempt"]
+        if kind == "started":
+            tracker.start(node, attempt, info["task"], info["tier"], info["cwd"], _head_branch(info["cwd"]))
+            _write_progress(tracker, run_id, path, lock)
+        elif kind == "event" and event is not None:
+            tracker.observe(node, attempt, event)
+        elif kind == "finished":
+            # Traced, a result event has already closed the node, so one still running timed out or raised.
+            # Untraced, no event arrives and the outcome is unknown, so the node is left as it is.
+            if traced and _is_running(tracker, run_id, node, attempt):
+                tracker.fail(node, attempt)
+            _write_progress(tracker, run_id, path, lock)
+
+    return on_node
+
+
 def _launch(
     specs: dict[str, GraphSpec], parser: argparse.ArgumentParser, args: argparse.Namespace, *, report_out: TextIO
 ) -> int:
@@ -811,12 +866,22 @@ def _launch(
 
     # The heartbeat renews on its own connection from the moment the lease is held, so a slow
     # setup cannot eat the ttl. The epoch fence, not this thread, stops a run that lost the lease.
+    def clock() -> str:
+        return datetime.now(UTC).isoformat()
+
+    tracker = node_progress.Tracker(clock)
+    progress_path = Path(args.runs_dir) / f"{run_id}.progress.json"
+    # Set once the runner accepts `on_node`. Until then (and for a runner that never does) a tick
+    # stores no progress and writes no file.
+    reporting = threading.Event()
+    progress_lock = threading.Lock()
     heartbeat = run_lease.Heartbeat(
         _storage_url(_read_profile(args.provider_profile), args.runs_dir),
         name,
         run_id,
         lease.epoch,
-        clock=lambda: datetime.now(UTC).isoformat(),
+        clock=clock,
+        progress=lambda: _write_progress(tracker, run_id, progress_path, progress_lock) if reporting.is_set() else None,
     )
 
     # Setup can raise, or take a SIGTERM, between the lease and the run's own `finally`. That exit
@@ -841,6 +906,11 @@ def _launch(
             runner.store = store
         if hasattr(runner, "node_cap_usd"):
             runner.node_cap_usd = args.node_cap_usd
+        if hasattr(runner, "on_node"):
+            runner.on_node = _progress_observer(
+                tracker, run_id, progress_path, progress_lock, traced=getattr(runner, "trace_dir", None) is not None
+            )
+            reporting.set()
 
         # A runner whose nodes can read the world gets a tool-computed map of it
         # first, so no node pays turns to draw one. The epic driver refreshes it per

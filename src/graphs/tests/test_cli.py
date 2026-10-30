@@ -1436,6 +1436,162 @@ def test_a_setup_step_that_raises_after_the_lease_still_releases_it_and_ends_the
     assert cli.main([]) == 0
 
 
+def test_head_branch_reads_a_checkout_a_worktree_pointer_a_detached_head_and_a_missing_dir(tmp_path) -> None:
+    checkout = tmp_path / "checkout"
+    (checkout / ".git").mkdir(parents=True)
+    (checkout / ".git" / "HEAD").write_text("ref: refs/heads/feature/x\n", encoding="utf-8")
+    gitdir = tmp_path / "gitdirs" / "wt"
+    gitdir.mkdir(parents=True)
+    (gitdir / "HEAD").write_text("ref: refs/heads/wt-branch\n", encoding="utf-8")
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    (worktree / ".git").write_text(f"gitdir: {gitdir}\n", encoding="utf-8")
+    detached = tmp_path / "detached"
+    (detached / ".git").mkdir(parents=True)
+    (detached / ".git" / "HEAD").write_text("0123456789abcdef\n", encoding="utf-8")
+
+    assert cli._head_branch(str(checkout)) == "feature/x"
+    assert cli._head_branch(str(worktree)) == "wt-branch"
+    assert cli._head_branch(str(detached)) is None
+    assert cli._head_branch(str(tmp_path / "missing")) is None
+
+
+class _CallbackRunner(_StoreRunner):
+    """A scripted runner that also has `on_node` and fires it the way ClaudeCodeRunner does."""
+
+    on_node = None
+    cwd: Path
+    trace_dir: str | None = "traced"
+    events: tuple = (
+        {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Edit"}]}},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "done"}]}},
+        {"type": "result", "total_cost_usd": 0.5},
+    )
+
+    def run(self, **kwargs):
+        info = {"role": kwargs["role"], "attempt": 1, "task": "t-1", "tier": "build", "cwd": str(self.cwd)}
+        self.on_node("started", info, None)
+        for event in self.events:
+            self.on_node("event", info, event)
+        self.on_node("finished", info, None)
+        return super().run(**kwargs)
+
+
+class _UntracedRunner(_CallbackRunner):
+    """What ClaudeCodeRunner does without a trace_dir: "started" and "finished", no events."""
+
+    events = ()
+    trace_dir = None
+
+
+class _TimedOutRunner(_CallbackRunner):
+    """A traced node that streams events and then dies: no result event arrives before "finished"."""
+
+    events = _CallbackRunner.events[:2]
+
+
+def test_a_scripted_run_leaves_no_progress_file_and_no_error(monkeypatch, tmp_path, capsys) -> None:
+    _store_run(monkeypatch, tmp_path, graph=_three_calls)
+
+    assert cli.main([]) == 0
+
+    assert list(tmp_path.glob("*.progress.json")) == []
+    assert "Traceback" not in capsys.readouterr().err
+
+
+def test_a_runner_that_fires_on_node_leaves_a_progress_file_matching_its_events(monkeypatch, tmp_path) -> None:
+    work = tmp_path / "work"
+    (work / ".git").mkdir(parents=True)
+    (work / ".git" / "HEAD").write_text("ref: refs/heads/topic\n", encoding="utf-8")
+
+    def graph(runner) -> int:
+        runner.cwd = work
+        return _three_calls(runner)
+
+    _store_run(monkeypatch, tmp_path, graph=graph, runner_cls=_CallbackRunner)
+
+    assert cli.main([]) == 0
+
+    record = json.loads((tmp_path / "runS.progress.json").read_text(encoding="utf-8"))
+    assert (record["version"], record["run"]) == (1, "runS")
+    assert [(n["node"], n["status"], n["turns"], n["cost_usd"], n["branch"]) for n in record["nodes"]] == [
+        (role, "done", 2, 0.5, "topic") for role in ("plan", "build", "review")
+    ]
+    assert record["nodes"][0]["last_tool"] == "Edit"
+
+
+def test_a_node_that_finishes_with_no_events_is_not_recorded_as_failed(monkeypatch, tmp_path) -> None:
+    def graph(runner) -> int:
+        runner.cwd = tmp_path
+        return _three_calls(runner)
+
+    _store_run(monkeypatch, tmp_path, graph=graph, runner_cls=_UntracedRunner)
+
+    assert cli.main([]) == 0
+
+    record = json.loads((tmp_path / "runS.progress.json").read_text(encoding="utf-8"))
+    assert [(n["node"], n["status"], n["turns"]) for n in record["nodes"]] == [
+        (role, "running", 0) for role in ("plan", "build", "review")
+    ]
+
+
+def test_a_traced_node_that_finishes_without_a_result_is_recorded_as_failed(monkeypatch, tmp_path) -> None:
+    def graph(runner) -> int:
+        runner.cwd = tmp_path
+        return _three_calls(runner)
+
+    _store_run(monkeypatch, tmp_path, graph=graph, runner_cls=_TimedOutRunner)
+
+    assert cli.main([]) == 0
+
+    record = json.loads((tmp_path / "runS.progress.json").read_text(encoding="utf-8"))
+    assert [(n["node"], n["status"], n["turns"]) for n in record["nodes"]] == [
+        (role, "failed", 2) for role in ("plan", "build", "review")
+    ]
+
+
+def test_a_tick_without_on_node_stores_no_progress_and_writes_no_file(monkeypatch, tmp_path) -> None:
+    fast = cli.run_lease.Heartbeat
+    monkeypatch.setattr(cli.run_lease, "Heartbeat", lambda *a, **k: fast(*a, **{**k, "interval": 0.02}))
+
+    def slow_graph(runner) -> int:
+        time.sleep(0.3)
+        return 0
+
+    _store_run(monkeypatch, tmp_path, graph=slow_graph)
+
+    assert cli.main([]) == 0
+
+    assert _rows(tmp_path / "cox.db", "SELECT progress FROM leases WHERE name = 'runs:runS'") == [(None,)]
+    assert list(tmp_path.glob("*.progress.json")) == []
+
+
+def test_a_tick_with_on_node_rewrites_the_file_and_stores_the_snapshot_in_the_lease_row(monkeypatch, tmp_path) -> None:
+    fast = cli.run_lease.Heartbeat
+    monkeypatch.setattr(cli.run_lease, "Heartbeat", lambda *a, **k: fast(*a, **{**k, "interval": 0.02}))
+    path, db, seen = tmp_path / "runS.progress.json", tmp_path / "cox.db", {}
+
+    def lease_nodes() -> int:
+        stored = _rows(db, "SELECT progress FROM leases WHERE name = 'runs:runS'")[0][0]
+        return len(json.loads(stored)["nodes"]) if stored else 0
+
+    def graph(runner) -> int:
+        runner.cwd = tmp_path
+        _three_calls(runner)
+        path.unlink()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not (path.exists() and lease_nodes() == 3):
+            time.sleep(0.02)
+        seen["file"], seen["nodes"] = path.exists(), lease_nodes()
+        return 0
+
+    _store_run(monkeypatch, tmp_path, graph=graph, runner_cls=_CallbackRunner)
+
+    assert cli.main([]) == 0
+
+    assert seen == {"file": True, "nodes": 3}
+
+
 def _record_quiet_then_release(monkeypatch) -> list[str]:
     from harness import store_lease
 

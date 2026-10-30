@@ -36,6 +36,10 @@ class Heartbeat:
     the epoch fence is what stops a stale writer. A renew or open that raises is retried on a
     fresh connection, `attempts` tries in all with `retry_wait` seconds between them, and
     only the last failure warns and ends the thread.
+
+    `progress`, when given, is called once per tick and its string is stored in the lease row's
+    progress column. A provider that raises counts as one that returned None. Without a provider
+    the column is left as it is.
     """
 
     def __init__(
@@ -50,10 +54,12 @@ class Heartbeat:
         ttl: int = 120,
         attempts: int = 3,
         retry_wait: float = 2.0,
+        progress: Callable[[], str | None] | None = None,
     ) -> None:
         self._url, self._name, self._holder, self._epoch = url, name, holder, epoch
         self._clock, self._interval, self._ttl = clock, interval, ttl
         self._attempts, self._retry_wait = max(1, attempts), retry_wait
+        self._progress = progress
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, name=f"heartbeat-{name}", daemon=True)
 
@@ -96,6 +102,7 @@ class Heartbeat:
     def _tick(self, conn):
         """Renew once, retrying an error on a fresh connection. Returns the live connection, or None when the thread ends."""
         error = ""
+        extra = {} if self._progress is None else {"progress": self._progress_text()}
         for attempt in range(self._attempts):
             if attempt:
                 if self._stop.wait(self._retry_wait):
@@ -106,7 +113,7 @@ class Heartbeat:
                     error = " ".join(str(exc).split())
                     continue
             try:
-                if renew(conn, self._name, self._holder, self._epoch, self._clock(), self._ttl):
+                if renew(conn, self._name, self._holder, self._epoch, self._clock(), self._ttl, **extra):
                     return conn
                 self._warn(f"stale epoch {self._epoch}")
                 _close(conn)
@@ -116,6 +123,13 @@ class Heartbeat:
                 _close(conn)
         self._warn(f"{error} after {self._attempts} attempts")
         return None
+
+    def _progress_text(self) -> str | None:
+        assert self._progress is not None
+        try:
+            return self._progress()
+        except Exception:
+            return None
 
     def _warn(self, reason: str) -> None:
         print(f"lease: heartbeat for {self._name} stopped: {reason}", file=sys.stderr)
