@@ -23,6 +23,7 @@ __all__ = [
     "LEASE_FILENAME",
     "LEASE_NAME",
     "acquire_lease",
+    "adopt_session",
     "beat",
     "beat_loop",
     "chair_path",
@@ -31,6 +32,8 @@ __all__ = [
     "expired",
     "extend",
     "guard",
+    "holder_session_id",
+    "honour_release_request",
     "hours_left",
     "is_caller_holder",
     "leader_path",
@@ -42,8 +45,12 @@ __all__ = [
     "read",
     "release",
     "release_lease",
+    "release_requested",
     "renew_lease",
+    "request_release",
+    "resolve_holder_label",
     "session_line",
+    "settle_resumed",
     "take",
     "write",
 ]
@@ -123,8 +130,9 @@ def take(
     claude_session: str | None = None,
     hours: float | None = None,
     model: str | None = None,
+    cwd: str | None = None,
 ) -> tuple[dict[str, Any] | None, str]:
-    """Pure. A live record past its `until` is taken like a stale one. `hours` stamps the new record's `until`; a None `model` leaves the key absent."""
+    """Pure. A live record past its `until` is taken like a stale one. `hours` stamps the new record's `until`; a None `model`, `claude_session` or `cwd` leaves its key absent. `session_id` repeats `claude_session`, the key bare `cox` resumes by."""
     state = liveness(record, pid_alive_, now, host, heartbeat_minutes)
     lapsed = state == "live" and expired(record, now)
     if state == "live" and not lapsed:
@@ -134,7 +142,8 @@ def take(
         return None, f"chair: {_held_by_line(record)} ({why}; pass --steal to take over)"
     taken_at = now.isoformat()
     base = {"session": session, "pid": pid, "host": host, "taken_at": taken_at, "heartbeat_at": taken_at, "runs": [], "claude_session": claude_session}
-    new_record = base if model is None else {**base, "model": model}
+    extras = {**({"model": model} if model is not None else {}), **({"session_id": claude_session} if claude_session else {}), **({"cwd": cwd} if cwd else {})}
+    new_record = {**base, **extras}
     return (new_record if hours is None else extend(new_record, now, hours)), ""
 
 
@@ -158,14 +167,54 @@ def is_caller_holder(record: dict[str, Any] | None, environ: Mapping[str, str], 
     return by_pid or (recorded_session is not None and recorded_session == claude_session_from_env(environ))
 
 
+def resolve_holder_label(record: dict[str, Any] | None, state: str, environ: Mapping[str, str], host: str, explicit: str | None) -> str | None:
+    """Pure. An explicit label stands, so a mismatch still reaches `guard`. Without one, a live record the caller holds names its own session."""
+    if explicit:
+        return explicit
+    if record is not None and state == "live" and is_caller_holder(record, environ, host):
+        return record.get("session")
+    return None
+
+
+def adopt_session(record: dict[str, Any] | None, state: str, environ: Mapping[str, str], host: str) -> dict[str, Any] | None:
+    """Pure. A live lease the caller holds by pid but that recorded no session gets the caller's, so a later bare `cox` can resume it. Returns `record` itself when nothing changes."""
+    sid = claude_session_from_env(environ)
+    if record is None or state != "live" or sid is None or holder_session_id(record) or not is_caller_holder(record, environ, host):
+        return record
+    return {**record, "session_id": sid, "claude_session": sid}
+
+
+def holder_session_id(record: Mapping[str, Any]) -> str | None:
+    return record.get("session_id") or record.get("claude_session") or None
+
+
+def release_requested(record: dict[str, Any] | None) -> bool:
+    """Pure. A takeover has asked the record's holder to release."""
+    return record is not None and bool(record.get("release_requested_by"))
+
+
+def request_release(record: dict[str, Any], by: str, now: datetime.datetime) -> dict[str, Any]:
+    """Pure. A copy of `record` carrying the takeover's request; `beat` keeps unknown keys, so it stays until the holder honours it."""
+    return {**record, "release_requested_by": by, "release_requested_at": now.isoformat()}
+
+
 def session_line(record: dict[str, Any] | None, state: str, environ: Mapping[str, str], host: str) -> str:
     """Pure. The one SessionStart line: this session holds a live chair (`taken_over_from` on the lease, when present, names who it replaced), or it does not."""
     if record is None:
         return "chair: none"
     if state == "live" and is_caller_holder(record, environ, host):
         previous = record.get("taken_over_from")
-        return f"chair: taken over from {previous}" if previous else "chair: held by this session"
-    return f"chair: not the chair (held by {record.get('session', '?')})"
+        if previous:
+            return f"chair: taken over from {previous}"
+        return f"chair: resumed {record.get('session', '?')}" if record.get("resumed") else "chair: held by this session"
+    return f"chair: held by {record.get('session', '?')} on {record.get('host', '?')}; not the chair"
+
+
+def settle_resumed(record: dict[str, Any] | None, state: str, environ: Mapping[str, str], host: str) -> dict[str, Any] | None:
+    """Pure. The `resumed` stamp belongs to the one SessionStart line that announces it, so the holder's copy drops it. Returns `record` itself when nothing changes."""
+    if record is None or not record.get("resumed") or state != "live" or not is_caller_holder(record, environ, host):
+        return record
+    return {key: value for key, value in record.items() if key != "resumed"}
 
 
 def beat(
@@ -185,6 +234,20 @@ def beat(
     kept = claude_session if claude_session is not None else record.get("claude_session")
     return {**record, "heartbeat_at": now.isoformat(), "runs": runs, "claude_session": kept}, ""
 
+
+def honour_release_request(runs_dir: Path | str, session: str, pid: int, host: str) -> bool:
+    """Edge. The one helper every real holder's beat path calls: when a takeover asked this holder to release, ends its lease and lock and returns True."""
+    runs_dir = Path(runs_dir)
+    with locked(runs_dir):
+        record = read(runs_dir)
+        if not (release_requested(record) and _is_holder(record, session, pid, host)):
+            return False
+        release_lease(runs_dir, session, pid, host)
+        write(runs_dir, None)
+    return True
+
+
+RELEASE_POLL_SECONDS = 2.0
 
 BEAT_LOOP_DEPRECATION = "chair: beat-loop is deprecated; the chair loop now beats its own lease and this subcommand will be removed in the next release"
 
@@ -214,6 +277,9 @@ def beat_loop(
             return 0
         except PermissionError:
             pass
+        if honour_release_request(runs_dir, label, pid, host):
+            print(f"chair: {label} released at a takeover request")
+            return 0
         with locked(runs_dir):
             new_record, reason = beat(read(runs_dir), label, pid, host, datetime.datetime.now(datetime.UTC), claude_session=claude_session_from_env(environ))
             if new_record is None:
@@ -224,7 +290,16 @@ def beat_loop(
                 print(lost)
                 return 2
             write(runs_dir, new_record)
-        clock.sleep(tick)
+        remaining = tick
+        while True:
+            step = min(remaining, RELEASE_POLL_SECONDS)
+            clock.sleep(step)
+            remaining -= step
+            if remaining <= 0:
+                break
+            if honour_release_request(runs_dir, label, pid, host):
+                print(f"chair: {label} released at a takeover request")
+                return 0
 
 
 def release(record: dict[str, Any] | None, session: str, pid: int, host: str) -> tuple[dict[str, Any] | None, str]:

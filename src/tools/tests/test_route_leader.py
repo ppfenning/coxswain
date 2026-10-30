@@ -382,7 +382,7 @@ def test_leader_status_names_the_holder_taken_over_from_when_the_lease_records_i
 
 def test_leader_status_says_not_the_chair_for_a_foreign_pid_and_session(tmp_path, monkeypatch, capsys):
     _hold(tmp_path, claude_session="sess-1")
-    assert _leader_line(tmp_path, monkeypatch, capsys, claude_pid="1", session_id="sess-2") == "chair: not the chair (held by alice)\n"
+    assert _leader_line(tmp_path, monkeypatch, capsys, claude_pid="1", session_id="sess-2") == f"chair: held by alice on {socket.gethostname()}; not the chair\n"
 
 
 def test_leader_status_with_no_lease_prints_chair_none(tmp_path, monkeypatch, capsys):
