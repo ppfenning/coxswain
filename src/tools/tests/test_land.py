@@ -1176,6 +1176,59 @@ def test_cli_apply_refuses_when_the_repo_lease_is_held_by_another_land(repo, tmp
     assert f"land: refusing, other@host:1 is landing in {repo}" in out
 
 
+def _land_on_host(monkeypatch, calls, holder, alive, taken=None):
+    taken = taken if taken is not None else store_cli.LeaseGranted(epoch=9, holder="me@jarvis:2")
+    monkeypatch.setattr(cli.socket, "gethostname", lambda: "jarvis")
+    monkeypatch.setattr(cli.chair, "pid_alive", lambda pid: alive)
+    monkeypatch.setattr(cli.land_repo_lease, "take_over", lambda *args: calls.setdefault("take_over", []).append(args) or taken)
+
+
+def test_cli_apply_takes_over_a_repo_lease_whose_local_holder_pid_is_gone(repo, tmp_path, monkeypatch, capsys):
+    holder = "chair-2026-10-29@jarvis:659496"
+    calls = _apply_with_repo_lease(repo, tmp_path, monkeypatch, store_cli.LeaseRefused(epoch=3, holder=holder),
+                                    walked_result=(0, ["mark_done"], ""))
+    _land_on_host(monkeypatch, calls, holder, alive=False)
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs")])
+    assert f"land: taking over the repo lease from {holder} (pid gone)" in capsys.readouterr().out.splitlines()
+    assert rc == 0
+    assert calls["walked"] == 1
+    assert [c[1] for c in calls["take_over"]] == [str(repo)]
+    assert [c[3] for c in calls["release"]] == [9]
+
+
+def test_cli_apply_refuses_a_repo_lease_held_by_a_live_local_pid(repo, tmp_path, monkeypatch, capsys):
+    holder = "chair-2026-10-29@jarvis:659496"
+    calls = _apply_with_repo_lease(repo, tmp_path, monkeypatch, store_cli.LeaseRefused(epoch=3, holder=holder))
+    _land_on_host(monkeypatch, calls, holder, alive=True)
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs")])
+    assert rc == 2
+    assert f"land: refusing, {holder} is landing in {repo}" in capsys.readouterr().out
+    assert "take_over" not in calls and calls["walked"] == 0
+
+
+def test_cli_apply_refuses_a_repo_lease_held_on_another_host_even_when_its_pid_number_is_dead_here(repo, tmp_path, monkeypatch, capsys):
+    holder = "chair-2026-10-29@elsewhere:659496"
+    calls = _apply_with_repo_lease(repo, tmp_path, monkeypatch, store_cli.LeaseRefused(epoch=3, holder=holder))
+    _land_on_host(monkeypatch, calls, holder, alive=False)
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs")])
+    assert rc == 2
+    assert f"land: refusing, {holder} is landing in {repo}" in capsys.readouterr().out
+    assert "take_over" not in calls and calls["walked"] == 0
+
+
+def test_cli_apply_leaves_no_repo_lease_behind_when_the_store_open_raises(repo, tmp_path, monkeypatch):
+    calls = _apply_with_repo_lease(repo, tmp_path, monkeypatch, store_cli.LeaseGranted(epoch=7, holder="me@host:2"))
+
+    def refused_open(*_args, **_kwargs):
+        calls["walked"] += 1
+        raise RuntimeError("database is at schema version 14, newest known migration is 13")
+
+    monkeypatch.setattr(cli, "_land_walked", refused_open)
+    with pytest.raises(RuntimeError, match="schema version 14"):
+        cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs")])
+    assert [c[3] for c in calls["release"]] == [7]
+
+
 def test_cli_apply_releases_the_repo_lease_by_its_epoch_even_when_the_walk_raises(repo, tmp_path, monkeypatch):
     calls = _apply_with_repo_lease(repo, tmp_path, monkeypatch, store_cli.LeaseGranted(epoch=7, holder="me@host:2"),
                                     walked_result="raise")

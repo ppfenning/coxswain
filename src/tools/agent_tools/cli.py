@@ -2992,6 +2992,9 @@ def _runs_land(a: argparse.Namespace) -> int:
 
     repo_holder = f"{_holder_label(a)}@{socket.gethostname()}:{os.getpid()}"
     got = land_repo_lease.acquire(runs_dir, str(repo), repo_holder, 1200)
+    if isinstance(got, store_cli.LeaseRefused) and land_repo_lease.holder_pid_gone(got.holder, socket.gethostname(), chair.pid_alive):
+        print(land_repo_lease.takeover_message(got.holder))
+        got = land_repo_lease.take_over(runs_dir, str(repo), repo_holder, 1200)
     leased = isinstance(got, store_cli.LeaseGranted)
     if isinstance(got, store_cli.LeaseRefused):
         print(land_repo_lease.refusal_message(str(repo), got.holder or "another land"))

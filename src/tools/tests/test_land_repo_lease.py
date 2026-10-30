@@ -9,6 +9,42 @@ def test_refusal_message_is_the_exact_string():
     assert land_repo_lease.refusal_message("/repo", "pid 1 on host") == "land: refusing, pid 1 on host is landing in /repo"
 
 
+def test_holder_pid_gone_is_true_for_a_dead_pid_on_this_host():
+    assert land_repo_lease.holder_pid_gone("chair-2026-10-29@jarvis:659496", "jarvis", lambda pid: False)
+
+
+def test_holder_pid_gone_is_false_for_a_live_pid_on_this_host():
+    assert not land_repo_lease.holder_pid_gone("chair-2026-10-29@jarvis:659496", "jarvis", lambda pid: True)
+
+
+def test_holder_pid_gone_is_false_for_another_host_without_probing_the_pid():
+    def probe(pid):
+        raise AssertionError("a pid on another host is never probed")
+
+    assert not land_repo_lease.holder_pid_gone("chair@elsewhere:659496", "jarvis", probe)
+
+
+def test_holder_pid_gone_is_false_for_a_holder_it_cannot_parse():
+    gone = lambda pid: False  # noqa: E731
+    assert not any(land_repo_lease.holder_pid_gone(h, "jarvis", gone) for h in (None, "", "other", "a@jarvis", "a@jarvis:x", "a@jarvis:0"))
+
+
+def test_takeover_message_names_the_holder():
+    assert land_repo_lease.takeover_message("a@h:1") == "land: taking over the repo lease from a@h:1 (pid gone)"
+
+
+def test_take_over_acquires_the_repo_lease_with_steal(monkeypatch, tmp_path):
+    seen = []
+
+    def fake_acquire(runs_dir, name, holder, ttl, steal=False):
+        seen.append((runs_dir, name, holder, ttl, steal))
+        return store_cli.LeaseGranted(5, "me")
+
+    monkeypatch.setattr(store_cli, "lease_acquire", fake_acquire)
+    assert land_repo_lease.take_over(tmp_path, "/repo", "me", 60) == store_cli.LeaseGranted(5, "me")
+    assert seen == [(tmp_path, "land:/repo", "me", 60, True)]
+
+
 def test_acquire_calls_store_cli_lease_acquire_with_the_repo_lease_name(monkeypatch, tmp_path):
     seen = []
 
