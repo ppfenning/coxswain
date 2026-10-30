@@ -570,7 +570,8 @@ def classify_unlanded(cherry_lines: Sequence[str], task_states: Mapping[str, str
 
     `landed`: none left, or every one is a done task's (already squashed onto main).
     `awaiting_land`: every one is an approved task whose land is still in flight.
-    `rebase`: a mix of done and approved. `block`: any other commit or task state.
+    `rebase`: a mix of done and approved. `rebuild`: every one is a ready task's (sent back with
+    `route edit --rebuild`, so it builds again), beside any done ones. `block`: any other commit or task state.
     """
     tasks = [_task_of(s) for s in unlanded(cherry_lines, set())]
     states = {task_states.get(t, "") if t is not None else "" for t in tasks}
@@ -578,7 +579,23 @@ def classify_unlanded(cherry_lines: Sequence[str], task_states: Mapping[str, str
         return "landed"
     if states == {"approved"}:
         return "awaiting_land"
-    return "rebase" if states == {"approved", "done"} else "block"
+    if states == {"approved", "done"}:
+        return "rebase"
+    return "rebuild" if states <= {"ready", "done"} else "block"
+
+
+def blocking_commits(cherry_lines: Sequence[str], task_states: Mapping[str, str]) -> list[str]:
+    """One `task <id> state=<state>` per task whose unlanded commit is on the branch, in commit order, or `commit <subject>` when no task owns it."""
+    subjects = unlanded(cherry_lines, set())
+    found = [f"task {t} state={task_states.get(t) or 'unknown'}" if (t := _task_of(s)) is not None else f"commit {s!r}" for s in subjects]
+    return list(dict.fromkeys(found))
+
+
+def blocked_line(record: Mapping[str, Any]) -> str | None:
+    """`phase <p>: blocked: <reason>` for a blocked phase record, else None."""
+    if record.get("status") != "blocked":
+        return None
+    return f"phase {record.get('phase')}: blocked: {record.get('reason') or 'no reason was recorded on the phase'}"
 
 
 def open_in_phase(items: Sequence[Mapping[str, Any]], phase: str, in_run: Collection[str]) -> list[str]:
@@ -1160,6 +1177,8 @@ def run_epic(
         def add_phase(record: dict[str, Any]) -> None:
             phases.append(record)
             _record_phase(ctx, record)
+            if (line := blocked_line(record)) is not None:
+                print(line)
 
         for phase in cyclic:
             add_phase(
@@ -2061,7 +2080,7 @@ def _run_phase(
     task_states = {str(i["id"]): str(i.get("state")) for i in items}
     cherry = _phase_branch_cherry(ctx, phase) if head_moved else []
     unlanded_kind = classify_unlanded(cherry, task_states)
-    action = branch_action(reused, head_moved, unlanded_kind != "landed")
+    action = branch_action(reused, head_moved, unlanded_kind not in ("landed", "rebuild"))
 
     if action == "block" and unlanded_kind == "awaiting_land":
         # Their lands are in flight: nothing to quarantine and nothing to rebase. Wait.
@@ -2104,7 +2123,8 @@ def _run_phase(
         )
         record["status"] = "blocked"
         record["reason"] = (
-            f"phase branch {branch} is behind {base_ref} and carries its own commits; its tasks "
+            f"phase branch {branch} is behind {base_ref} and carries its own commits "
+            f"({'; '.join(blocking_commits(cherry, task_states))}); its tasks "
             "would build against a base missing landed work — rebase it through the gate"
         )
         quarantined.append({"id": phase, "phase": phase, "grain": "phase", "reason": record["reason"]})
@@ -2129,7 +2149,11 @@ def _run_phase(
             quarantined.append({"id": phase, "phase": phase, "grain": "phase", "reason": record["reason"]})
             return record
         record["reused_branch"] = reused
-        record["recreated"] = f"phase branch {branch} recreated from {base_ref}: its commits already landed there via squash-merge"
+        record["recreated"] = (
+            f"phase branch {branch} recreated from {base_ref}: its commits belonged to tasks sent back to ready, which build again"
+            if unlanded_kind == "rebuild"
+            else f"phase branch {branch} recreated from {base_ref}: its commits already landed there via squash-merge"
+        )
 
     # A runner whose nodes can read the world reads THIS phase's branch — not
     # whatever the repository happens to have checked out. Phase N+1 stacks on
