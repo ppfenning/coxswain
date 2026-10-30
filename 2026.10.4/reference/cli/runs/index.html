@@ -6562,7 +6562,7 @@ options:
 <h2 id="land">land</h2>
 <div class="highlight"><pre><span></span><code>usage: cox runs land [-h] --repo REPO [--task TASK] [--phase PHASE]
                      [--label LABEL] [--force] [--no-claim]
-                     [--behind-limit BEHIND_LIMIT]
+                     [--behind-limit BEHIND_LIMIT] [--base BASE]
                      [--worktree-root WORKTREE_ROOT] [--apply] [--no-merge]
                      [--runs-dir RUNS_DIR] [--profile PROFILE]
                      [--gate {ticket,phase,epic,full}]
@@ -6582,7 +6582,9 @@ options:
   --no-claim            land without taking an unheld or stale loop
   --behind-limit BEHIND_LIMIT
                         warn when the task's base is more than this many
-                        commits behind main
+                        commits behind the base branch
+  --base BASE           branch to land onto; default: the repo's base:
+                        setting, then origin/HEAD, then main
   --worktree-root WORKTREE_ROOT
   --apply
   --no-merge
