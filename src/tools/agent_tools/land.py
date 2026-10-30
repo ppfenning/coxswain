@@ -114,15 +114,31 @@ def _approved(record: dict[str, Any]) -> str | None:
     return f"no arbitration, and the reviewers were {reviews or 'silent'}"
 
 
+# The ticket names the first three; `setup.py`, `tox.ini` and `requirements.txt` mark the same Python repos, which
+# would otherwise drop from "pytest ran" to "nothing ran".
+PYTHON_PROJECT_FILES = ("pyproject.toml", "setup.cfg", "pytest.ini", "setup.py", "tox.ini", "requirements.txt")
+
+
+def resolved_checks(cartridge_checks: Sequence[dict[str, Any]], repo_checks: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The cartridge's checks, then the repo's `.agent-checks` entries whose `cmd` the cartridge does not already run.
+    The chair's rule (`_Ctx.checks` in harness/epic.py), so the land runs what the build was held to."""
+    known = {c.get("cmd") for c in cartridge_checks}
+    return [*cartridge_checks, *(c for c in repo_checks if c.get("cmd") not in known)]
+
+
 def checks_argv(repo_facts: dict[str, Any]) -> list[tuple[str, list[str]]]:
     """One `(name, argv)` pair per `repo_facts["checks"]` entry (`{name, cmd}`,
-    already resolved by the cartridge, §4), in the given order. A caller that
-    supplies no `checks` fact keeps getting today's single launch, named
-    `"tests"`: its own venv first, `uv run` next when the repo pins its
-    dependencies with a lockfile, a bare `pytest -q` only when neither holds."""
+    already resolved by the cartridge, §4), in the given order. With no `checks`
+    fact the single launch named `"tests"` stays: its own venv first, `uv run`
+    next when the repo pins its dependencies with a lockfile, a bare `pytest -q`
+    only when neither holds. A repo that says `python_project` is false (a key
+    absent reads as true) has no pytest to run, so it gets no checks at all,
+    whatever stray `.venv` it holds."""
     checks = repo_facts.get("checks")
     if checks:
         return [(c["name"], shlex.split(c["cmd"])) for c in checks]
+    if not repo_facts.get("python_project", True):
+        return []
     if repo_facts.get("venv_python"):
         argv = [".venv/bin/python", "-m", "pytest", "-q"]
     elif repo_facts.get("uv_lock"):
