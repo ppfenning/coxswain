@@ -76,7 +76,10 @@ def test_a_done_task_whose_landed_patch_differs_is_recreated_and_builds(repo, ca
 def test_a_task_not_done_still_blocks_the_phase(repo, cart, tmp_path) -> None:  # noqa: F811
     before = _branch_whose_t1_main_holds_as_a_different_patch(repo, cart, tmp_path)
 
-    result, runner = drive(repo, cart, tmp_path, work=initiative(two_phases=False), run_id="r-2")
+    # A ready t1 is a task sent back to build again, so its commit is discarded; one the store no longer holds is not.
+    work = initiative(two_phases=False)
+    work["items"] = work["items"][1:]
+    result, runner = drive(repo, cart, tmp_path, work=work, run_id="r-2")
 
     assert result["phases"][0]["status"] == "blocked"
     assert not any(c["role"] == "build" for c in runner.calls)
