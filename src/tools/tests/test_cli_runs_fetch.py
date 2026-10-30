@@ -156,8 +156,47 @@ def test_fetch_writes_the_marker_last_with_fetched_at_and_repos(tmp_path, monkey
     ws, profile, chair_repo = _world(tmp_path, monkeypatch, lease_expires="2026-09-25T04:59:30Z")
     main(["runs", "fetch", RUN, "--profile", str(profile)])
     marker = json.loads((ws / "runs" / f"{RUN}.fetched.json").read_text())
-    assert sorted(marker) == ["fetched_at", "repos"]
+    assert sorted(marker) == ["fetched_at", "repos", "tasks"]
     assert marker["repos"] == [str(chair_repo)]
+    assert marker["tasks"] == ["p1/t"]
+
+
+APPROVED = {"review": {"verdict": "approve"}, "adversary": {"verdict": "approve"}, "branch": f"agents/{RUN}/t"}
+
+
+def _approved_world(tmp_path, monkeypatch):
+    """A fetchable world whose one task record is approved, with a work item for it in the chair workspace."""
+    ws, profile, chair_repo = _world(tmp_path, monkeypatch, lease_expires="2026-09-25T04:59:30Z")
+    host_repo = tmp_path / "host" / "repo"
+    (tmp_path / "host" / "runs" / RUN / "tasks" / "p1" / "t.json").write_text(json.dumps({**APPROVED, "repo": str(host_repo)}))
+    item = ws / "work" / "demo" / "p1" / "t.md"
+    item.parent.mkdir(parents=True)
+    item.write_text("---\nid: t\nstate: ready\n---\nbody\n")
+    (ws / "work" / "demo" / "initiative.md").write_text("---\nid: demo\n---\n")
+    return ws, profile, chair_repo
+
+
+@needs_tools
+def test_fetch_rewrites_the_record_repo_to_the_chair_checkout_and_refetch_is_idempotent(tmp_path, monkeypatch):
+    ws, profile, chair_repo = _approved_world(tmp_path, monkeypatch)
+    record = ws / "runs" / RUN / "tasks" / "p1" / "t.json"
+    assert main(["runs", "fetch", RUN, "--profile", str(profile)]) == 0
+    first = record.read_text()
+    assert json.loads(first)["repo"] == str(chair_repo)
+    assert main(["runs", "fetch", RUN, "--profile", str(profile)]) == 0
+    assert record.read_text() == first
+    assert json.loads((ws / "runs" / f"{RUN}.fetched.json").read_text())["tasks"] == ["p1/t"]
+
+
+@needs_tools
+def test_stranded_and_cause_read_the_fetched_record(tmp_path, monkeypatch, capsys):
+    ws, profile, chair_repo = _approved_world(tmp_path, monkeypatch)
+    main(["runs", "fetch", RUN, "--profile", str(profile)])
+    capsys.readouterr()
+    assert main(["runs", "stranded", "--profile", str(profile)]) == 0
+    assert f"--repo {chair_repo}" in capsys.readouterr().out
+    main(["runs", "cause", RUN, "t", "code", "--profile", str(profile)])
+    assert "expected one task record" not in capsys.readouterr().out
 
 
 def test_land_of_a_remote_run_whose_task_records_are_here_carries_on(tmp_path, monkeypatch, capsys):

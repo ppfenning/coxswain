@@ -51,8 +51,11 @@ from agent_tools.remote_argv import git_fetch_argv, rsync_pull_argv
 
 __all__ = [
     "FetchError", "FetchPlan", "approved_without_branch", "branch_expected", "chair_repo_path", "fetch_plan", "fetch_run",
-    "host_repo_path", "probe_argv", "pull_argvs", "refuse_unended", "store_task_records", "task_repos", "task_status",
+    "host_repo_path", "localize_task_records", "probe_argv", "pull_argvs", "refuse_unended", "rewrite_record_paths",
+    "store_task_records", "task_record_ids", "task_repos", "task_status",
 ]
+
+_PATH_KEYS = ("repo", "worktree", "checkout")
 
 
 @dataclass(frozen=True)
@@ -144,6 +147,33 @@ def fetch_plan(
         runs = chair_runs_dir.rstrip("/")
         return FetchPlan([rsync_pull_argv(log_location, runs + "/")], False, ("fetched: no tasks ran",))
     return FetchPlan(pull_argvs(run_location, log_location, chair_runs_dir, run), True, None)
+
+
+def rewrite_record_paths(record: dict[str, Any], chair_ws: str, host_ws: str, home: str | None = None) -> dict[str, Any]:
+    """A copy of `record` whose host path fields (`repo`, `worktree`, `checkout`) name the chair's paths, by the `chair_repo_path` rule."""
+    return {
+        k: chair_repo_path(chair_ws, host_ws, v, home) if k in _PATH_KEYS and isinstance(v, str) and v else v
+        for k, v in record.items()
+    }
+
+
+def localize_task_records(run_dir: Path, chair_ws: str, host_ws: str, home: str | None = None) -> None:
+    """Edge: rewrite every `tasks/<phase>/<task>.json` under `run_dir` in place with `rewrite_record_paths`.
+
+    An unreadable record is left alone and an unchanged one is not written."""
+    for path in sorted(run_dir.glob("tasks/*/*.json")):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        local = rewrite_record_paths(record, chair_ws, host_ws, home) if isinstance(record, dict) else record
+        if local != record:
+            path.write_text(json.dumps(local), encoding="utf-8")
+
+
+def task_record_ids(run_dir: Path) -> list[str]:
+    """Sorted `<phase>/<task>` of every task record file under `run_dir/tasks/`."""
+    return [f"{p.parent.name}/{p.stem}" for p in sorted(run_dir.glob("tasks/*/*.json"))]
 
 
 def _repo_of(path: Path) -> str | None:
@@ -252,6 +282,7 @@ def fetch_run(
         (chair_runs_dir / run / "tasks").mkdir(parents=True, exist_ok=True)
         return plan.outcome
     chair_ws = str(chair_runs_dir.parent)
+    localize_task_records(chair_runs_dir / run, chair_ws, host_ws, home)
     repos = tuple(dict.fromkeys(chair_repo_path(chair_ws, host_ws, r, home) for r in repo_paths(chair_runs_dir / run)))
     if not repos:
         return FetchError("repos", f"no task record under {chair_runs_dir / run}/tasks names a repo")

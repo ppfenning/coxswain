@@ -53,14 +53,12 @@ def _branch_fetches(argvs):
     return [a for a in argvs if a[0] == "git" and "fetch" in a]
 
 
-def test_store_complete_skips_the_record_copy_and_fetches_branches(tmp_path, monkeypatch, capsys):
+def test_store_complete_still_copies_the_records_and_fetches_branches(tmp_path, monkeypatch, capsys):
     ws, profile, argvs, _ = _world(tmp_path, monkeypatch, mode="store")
     assert main(["runs", "fetch", RUN, "--profile", str(profile)]) == 0
-    assert not _copies_records(argvs, ws)
+    assert _copies_records(argvs, ws)
     assert [a[2] for a in _branch_fetches(argvs)] == [str(ws / "repo")]
-    assert capsys.readouterr().out.splitlines() == [
-        f"{RUN}: task records skipped, the store holds them", f"run {RUN}", "host box", f"repo {ws / 'repo'}",
-    ]
+    assert capsys.readouterr().out.splitlines() == [f"run {RUN}", "host box", f"repo {ws / 'repo'}"]
 
 
 def test_store_partial_fetches_records_and_branches(tmp_path, monkeypatch, capsys):
