@@ -325,6 +325,14 @@ def test_harness_argv_builds_the_epic_command_line():
     ]
 
 
+def test_harness_argv_passes_the_base_to_an_epic_only_when_given():
+    profile = route.parse_profile(VALID_PROFILE)
+    given = route.harness_argv(profile, "epic", "myinit-1", initiative="/w", repo="/r", base="origin/develop")
+    absent = route.harness_argv(profile, "epic", "myinit-1", initiative="/w", repo="/r")
+    assert given[given.index("--base") + 1] == "origin/develop"
+    assert "--base" not in absent
+
+
 def test_harness_argv_builds_the_decompose_command_line():
     profile = route.parse_profile(VALID_PROFILE)
     argv = route.harness_argv(

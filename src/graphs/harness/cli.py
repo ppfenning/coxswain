@@ -287,6 +287,13 @@ def _build_parser(specs: dict[str, GraphSpec]) -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--base",
+        help=(
+            "epic, rescue: the branch phase branches are cut from, as `origin/<branch>`; "
+            "the launcher resolves it, so the harness never looks the repo's setting up itself"
+        ),
+    )
+    parser.add_argument(
         "--workdir",
         default=REPO_ROOT,
         help=(
@@ -1099,7 +1106,7 @@ def _run_rescue(
 ) -> tuple[int, str]:
     """(exit, run status). Exit 0 with a JSON report for any answer, LimitStop included; 1 for a task not in the initiative."""
     # Not module-level: harness/epic imports this package (see the epic branch of `_run_graph`).
-    from harness.epic import _Ctx, _git, _mirror_read, default_branch, rescue_task, work_state_of
+    from harness.epic import _Ctx, _mirror_read, rescue_task, resolve_default_ref, work_state_of
 
     for flag, value in (("--initiative", args.initiative), ("--task", args.task), ("--repo", args.repo)):
         if not value:
@@ -1121,9 +1128,6 @@ def _run_rescue(
 
     # The default branch, read as `run_epic` reads it, so a rescue checks against the ground an epic run would.
     repo = Path(args.repo)
-    head_ok, head_out = _git("-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD")
-    origin_ok, origin_out = _git("-C", str(repo), "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
-    local_ok, local_out = _git("-C", str(repo), "for-each-ref", "--format=%(refname:short)", "refs/heads")
     try:
         agent_checks = (repo / ".agent-checks").read_text(encoding="utf-8-sig")
     except (OSError, UnicodeDecodeError):
@@ -1150,11 +1154,7 @@ def _run_rescue(
         lease_name=lease_name,
         work_state=work_state,
         initiative_id=str(initiative.get("id")),
-        default_ref=default_branch(
-            origin_out.strip() if origin_ok else None,
-            set(local_out.split()) if local_ok else set(),
-            head_out.strip() if head_ok else "HEAD",
-        ),
+        default_ref=resolve_default_ref(repo, getattr(args, "base", None)),
     )
     # As `run_epic` does before any work: under work_state store the row's state wins, so the move's compare-and-set holds.
     items = [dict(found)]
@@ -1247,6 +1247,7 @@ def _run_graph(
             epoch=epoch,
             lease_name=lease_name,
             work_state=work_state,
+            base=getattr(args, "base", None),
         )
         totals = result.get("totals") or {}
         print(
