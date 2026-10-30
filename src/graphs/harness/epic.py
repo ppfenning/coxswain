@@ -265,6 +265,38 @@ def default_branch(origin_head: str | None, local: set[str], head: str) -> str:
     return head
 
 
+def origin_ref(base: str | None, origin_head: str | None, known: set[str], head: str) -> str:
+    """`origin/<name>`: `base` when given (an `origin/` prefix dropped), else `default_branch` over `known`."""
+    return f"origin/{(base or '').removeprefix('origin/') or default_branch(origin_head, known, head)}"
+
+
+def resolve_default_ref(repo: Path, base: str | None) -> str:
+    """Edge. `origin/<name>` after `git fetch origin`, whether or not origin has the branch; a failed fetch raises.
+
+    The one bare local name is for a repo with no `origin` remote at all."""
+    git = ("-C", str(repo))
+    head_ok, head_out = _git(*git, "rev-parse", "--abbrev-ref", "HEAD")
+    origin_ok, origin_out = _git(*git, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+    local_ok, local_out = _git(*git, "for-each-ref", "--format=%(refname:short)", "refs/heads")
+    remotes_ok, remotes = _git(*git, "remote")
+    has_origin = remotes_ok and "origin" in remotes.split()
+    if has_origin:
+        fetched, detail = _git(*git, "fetch", "origin")
+        if not fetched:
+            raise RuntimeError(f"git fetch origin failed in {repo}: {detail[:200]}")
+    tracked_ok, tracked_out = _git(*git, "for-each-ref", "--format=%(refname:short)", "refs/remotes/origin")
+    known = (set(local_out.split()) if local_ok else set()) | (
+        {name.removeprefix("origin/") for name in tracked_out.split()} if tracked_ok else set()
+    )
+    ref = origin_ref(
+        base,
+        origin_out.strip() if origin_ok else None,
+        known,
+        head_out.strip() if head_ok else "HEAD",
+    )
+    return ref if has_origin else ref.removeprefix("origin/")
+
+
 # A mid-run mirror or a pause clear waits this long for a lost connection; the run's exit record gets the full five minutes.
 _END_WRITE_WINDOW_S = 60.0
 _EXIT_WINDOW_S = 300.0
@@ -1078,6 +1110,7 @@ def run_epic(
     epoch: int | None = None,
     lease_name: str | None = None,
     work_state: str = "files",
+    base: str | None = None,
     retry: _StoreRetry | None = None,
 ) -> dict[str, Any]:
     """Drive a whole initiative: every phase, in dependency order, landing nothing.
@@ -1123,9 +1156,6 @@ def run_epic(
     stacks_rebased = 0
     paused_until: str | None = None
     try:
-        head_ok, head_out = _git("-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD")
-        origin_ok, origin_out = _git("-C", str(repo), "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
-        local_ok, local_out = _git("-C", str(repo), "for-each-ref", "--format=%(refname:short)", "refs/heads")
         try:
             # `utf-8-sig` also strips a leading BOM, which would otherwise survive
             # into the first command's name and cmd and never resolve as a shell
@@ -1156,14 +1186,10 @@ def run_epic(
             work_state=work_state,
             retry=retry,
             initiative_id=str(initiative.get("id")),
-            # An unparented phase branches from the repository's default branch, read
+            # An unparented phase branches from `origin/<base>` after a fetch, read
             # once here so every phase in a run stacks on the same ground, whatever
             # branch the checkout has out.
-            default_ref=default_branch(
-                origin_out.strip() if origin_ok else None,
-                set(local_out.split()) if local_ok else set(),
-                head_out.strip() if head_ok else "HEAD",
-            ),
+            default_ref=resolve_default_ref(repo, base),
         )
 
         # The driver's own view of the work. `ready_tasks` answers from item state,
@@ -3446,7 +3472,8 @@ def _execute(
             title=f"[review] {ctx.initiative_id}: {by_id[subject]['title']}",
             body=body,
             head=f"review/{ctx.initiative_id}/{subject}",
-            base=ctx.default_ref,
+            # `gh pr create --base` takes a branch on the remote, not the `origin/` ref the phase branches are cut from.
+            base=ctx.default_ref.removeprefix("origin/"),
         )
         if not ok:
             return False, f"review PR failed: {detail}"
