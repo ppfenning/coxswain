@@ -155,6 +155,10 @@ def _fixture_inputs() -> tuple[tuple, dict]:
             "phases_landed": 0,
             "phases_total": 3,
             "current_phase": "p1-foundations",
+            "phases": [
+                {"id": "p1-foundations", "tasks": [{"id": "feed-schema", "state": "approved"}]},
+                {"id": "p2-feed", "tasks": [{"id": "feed-queue", "state": "blocked"}]},
+            ],
             "short_id": "I412",
             "project": "example-repo",
         },
@@ -164,6 +168,7 @@ def _fixture_inputs() -> tuple[tuple, dict]:
             "phases_landed": 0,
             "phases_total": 1,
             "current_phase": "p1-foundations",
+            "phases": [{"id": "p1-foundations", "tasks": [{"id": "only-task", "state": "ready"}]}],
             "short_id": None,
             "project": None,
         },
@@ -548,8 +553,11 @@ def test_the_live_feed_has_the_fixture_s_keys_no_nulls_and_serializes(monkeypatc
         dash_feed, "_activity", lambda *args: {key: fixture[key] for key in ("chair_agents", "spend_split")},
     )
     monkeypatch.setattr(dash_feed, "_local_identity", lambda runs_dir, profile: ("host-b", 3))
-    monkeypatch.setattr(dash_feed, "_queue", lambda runs_dir: ([
-        {"initiative": "x", "priority": None, "phases_landed": 0, "phases_total": 1, "current_phase": None},
+    monkeypatch.setattr(dash_feed, "_queue", lambda runs_dir, live_runs=(): ([
+        {
+            "initiative": "x", "priority": None, "phases_landed": 0, "phases_total": 1, "current_phase": None,
+            "phases": [],
+        },
     ], 1))
     monkeypatch.setattr(dash_feed, "_inbox", lambda work_dir: ([
         {"ref": "coxswain://task/t1", "from": "chair-loop", "to": "chair", "note": "land it", "id": "m1", "ack": False},
@@ -698,7 +706,7 @@ def _built_feed(monkeypatch, tmp_path):
     monkeypatch.setattr(dash_feed.console_screen, "gather", lambda *args, **kwargs: sections)
     monkeypatch.setattr(dash_feed, "_spend", lambda *args: {})
     monkeypatch.setattr(dash_feed, "_local_identity", lambda runs_dir, profile: ("host-b", 3))
-    monkeypatch.setattr(dash_feed, "_queue", lambda runs_dir: ([], 0))
+    monkeypatch.setattr(dash_feed, "_queue", lambda runs_dir, live_runs=(): ([], 0))
     return dash_feed.gather_feed(tmp_path, tmp_path, "2026-09-29T21:00:00Z")
 
 
@@ -796,7 +804,7 @@ def test_gather_feed_seats_the_local_login_check_on_the_local_row(monkeypatch, t
 
     monkeypatch.setattr(dash_feed.console_screen, "gather", fake_gather)
     monkeypatch.setattr(dash_feed, "_spend", lambda *args: {})
-    monkeypatch.setattr(dash_feed, "_queue", lambda runs_dir: ([], 0))
+    monkeypatch.setattr(dash_feed, "_queue", lambda runs_dir, live_runs=(): ([], 0))
 
     unchecked = dash_feed.gather_feed(tmp_path, tmp_path, _CHECKED)["machines"][0]
     monkeypatch.setattr(dash_feed, "_local_login", lambda local_name: True)
@@ -966,7 +974,7 @@ def test_gather_feed_reads_the_short_ids_once_and_puts_them_on_run_queue_and_inb
     monkeypatch.setattr(dash_feed.console_screen, "gather", lambda *args, **kwargs: sections)
     monkeypatch.setattr(dash_feed, "_spend", lambda *args: {})
     monkeypatch.setattr(dash_feed, "_local_identity", lambda runs_dir, profile: ("host-b", 3))
-    monkeypatch.setattr(dash_feed, "_queue", lambda runs_dir: ([{"initiative": "dash-feed"}], 1))
+    monkeypatch.setattr(dash_feed, "_queue", lambda runs_dir, live_runs=(): ([{"initiative": "dash-feed"}], 1))
     monkeypatch.setattr(dash_feed, "_inbox", lambda entries: ([{"ref": "coxswain://task/dash-feed-p1", "note": "n"}], 1))
 
     feed = dash_feed.gather_feed(tmp_path, tmp_path, "2026-09-29T21:00:00Z")
