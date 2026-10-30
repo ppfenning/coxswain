@@ -6287,6 +6287,13 @@ with no <code>issue:</code> never gets one, and the run prints <code>route sync:
 settled item(s) without an issue</code>. An item that already has an issue, hand-set
 or not, keeps syncing as before. Set <code>tracker_backfill: true</code> in the profile
 to create issues for settled items too. <code>tracker_scope: all</code> is unchanged.</p>
+<p>Under a narrowed scope each sync rewrites a marked checklist block in a synced
+initiative's issue body, one line per task with its state and landed PR; text
+outside the block is left alone and no sub-issues are made. Under <code>epics</code>, a
+one-task initiative below the threshold with a <code>Target release:</code> line appears
+on one <code>&lt;version&gt; fixes</code> issue per release, with the same block. Its land PR
+says <code>Part of #&lt;that issue&gt;</code>, and a sync finds that issue by title, so it never
+opens a second. A one-task initiative with no target release stays in the store.</p>
 <p>Integrations that name a vendor (intake sources, forges, trackers) live in
 <a href="https://github.com/ppfenning/coxswain-plugins">ppfenning/coxswain-plugins</a>.</p>
 <h2 id="reporting-to-herdr">Reporting to herdr</h2>
