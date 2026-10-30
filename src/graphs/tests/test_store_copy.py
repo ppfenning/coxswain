@@ -158,6 +158,24 @@ def test_the_runs_host_column_is_copied_including_null(src_url, dst_url):
         dst.close()
 
 
+def test_the_leases_progress_column_is_copied_including_null(src_url, dst_url):
+    src = open_store(src_url, T0)
+    try:
+        put(src, "leases", {"name": "lp1", "holder": "me", "epoch": 1, "progress": "3/7 tasks"})
+        put(src, "leases", {"name": "lp2", "holder": "me", "epoch": 1, "progress": None})
+    finally:
+        src.close()
+    sc.copy(src_url, dst_url, T0)
+    dst = open_store(dst_url, T0)
+    try:
+        assert dst.query_all("SELECT name, progress FROM leases WHERE name IN ('lp1', 'lp2') ORDER BY name") == [
+            ("lp1", "3/7 tasks"),
+            ("lp2", None),
+        ]
+    finally:
+        dst.close()
+
+
 def test_every_source_row_lands_in_the_destination(src_url, dst_url):
     report = sc.copy(src_url, dst_url, T0)
     assert report["node_calls"] == {"source": 2, "copied": 2, "refreshed": 0, "present": 0}
