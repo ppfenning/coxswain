@@ -3203,7 +3203,7 @@ def _runs_land(a: argparse.Namespace) -> int:
                              mode=land_mode, guard=guard, stops=stops, keep=keep)
 
     repo_holder = f"{_holder_label(a)}@{socket.gethostname()}:{os.getpid()}"
-    got = land_repo_lease.acquire(runs_dir, str(repo), repo_holder, _REPO_LEASE_TTL_SECONDS)
+    got = land_repo_lease.acquire_or_take_over(runs_dir, str(repo), repo_holder, _REPO_LEASE_TTL_SECONDS, socket.gethostname())
     leased = isinstance(got, store_cli.LeaseGranted)
     if isinstance(got, store_cli.LeaseGranted):
         repo_epoch[0] = got.epoch
@@ -3216,7 +3216,17 @@ def _runs_land(a: argparse.Namespace) -> int:
                                    lambda: _land_store_stop(runs_dir, record, item_path) if record else None, walk)
         finally:
             if not repo_lost:  # a refused renew means another land holds it now; releasing would not be ours to do
-                land_repo_lease.release(runs_dir, str(repo), repo_holder, repo_epoch[0])
+                # Release goes through the store, so a refused store can fail it too; that is warned, never raised
+                # over the walk's own error, and the TTL plus the dead-pid takeover clear the lease for the next land.
+                name = land_repo_lease.lease_name(str(repo))
+                try:
+                    freed = land_repo_lease.release(runs_dir, str(repo), repo_holder, repo_epoch[0])
+                    why = freed.detail if isinstance(freed, store_cli.LeaseError) else (
+                        "the store is not available" if isinstance(freed, store_cli.NotAvailable) else None)
+                except Exception as exc:
+                    why = f"{type(exc).__name__}: {exc}"
+                if why is not None:
+                    print(f"warning: repo lease {name} not released: {why}", file=sys.stderr)
     else:
         # A store outage (NotAvailable/LeaseError) must not block a land: walk without the repo lease.
         walked = _land_walked(a, runs_dir, land_mode, lease_task,
