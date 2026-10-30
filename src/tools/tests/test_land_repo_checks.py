@@ -66,7 +66,7 @@ def test_resolved_checks_puts_the_cartridge_first_and_drops_a_repeated_cmd():
 
 def test_agent_checks_are_planned_and_a_stray_venv_changes_nothing(tmp_path):
     (tmp_path / ".agent-checks").write_text(_CARGO)
-    want = [("cargo", "cargo fmt --check"), ("cargo", "cargo clippy --all-targets -- -D warnings"), ("cargo", "cargo test")]
+    want = [(line, line) for line in ("cargo fmt --check", "cargo clippy --all-targets -- -D warnings", "cargo test")]
     assert _checks_of(tmp_path) == want
     (tmp_path / ".venv" / "bin").mkdir(parents=True)
     (tmp_path / ".venv" / "bin" / "python").write_text("")

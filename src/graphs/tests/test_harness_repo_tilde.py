@@ -35,4 +35,4 @@ def test_run_epic_given_the_tilde_form_reads_agent_checks_from_the_repo_under_ho
     (repo / ".agent-checks").write_text(f'{sys.executable} -c "pass"\n', encoding="utf-8")
     result, _ = drive(_tilde(repo.name), cart, tmp_path, work=initiative(two_phases=False))
     landed = next(t for t in result["tasks"] if t["id"] == "t1-probe")
-    assert f"checks:{sys.executable}" in {row["check"] for row in landed["evidence"]}
+    assert f'checks:{sys.executable} -c "pass"' in {row["check"] for row in landed["evidence"]}

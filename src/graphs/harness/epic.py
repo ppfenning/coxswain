@@ -671,6 +671,11 @@ def _trace_evidence(calls: Sequence[Any], task: str, patch: str) -> list[dict[st
     return [*commands, {"check": "files_touched", "source": "trace", "output": "\n".join(files)}]
 
 
+def _checks_log(ctx: _Ctx, phase: str, task: str) -> dict[str, Any]:
+    """`run_checks` log arguments: `runs/<run>/checks/<phase>/<task>/<n>.log`, so tasks never overwrite each other."""
+    return {"log_dir": ctx.runs_dir / ctx.run_id / "checks" / phase / task, "log_prefix": f"checks/{phase}/{task}/"}
+
+
 def _build_task(
     ctx: _Ctx, *, phase: str, task: str, result: Mapping[str, Any], verify: Sequence[str] = ()
 ) -> dict[str, Any]:
@@ -741,7 +746,7 @@ def _build_task(
                     build_field["patch"] = folded + "\n"
 
     if ctx.checks:
-        results = run_checks(worktree, ctx.checks)
+        results = run_checks(worktree, ctx.checks, **_checks_log(ctx, phase, task))
         record["checks"] = results
         record["evidence"].extend(checks_evidence(results))
         reason = quarantine_reason(results)
@@ -873,7 +878,7 @@ def _style_fix(ctx: _Ctx, *, phase: str, task: str, result: Mapping[str, Any], b
     build_field = result.get("build")
     if isinstance(build_field, dict) and folded:
         build_field["patch"] = folded + "\n"
-    results = run_checks(worktree, ctx.checks)
+    results = run_checks(worktree, ctx.checks, **_checks_log(ctx, phase, task))
     build["checks"] = results
     # Only `checks:` rows are replaced; `verify:` rows stay as run before the style edit.
     build["evidence"] = [
@@ -2489,6 +2494,12 @@ def _run_phase(
         final, build = _refix(ctx, by_id, phase=phase, task=task, result=result, build=build)
         build["result"] = final
         built[task] = build
+        if "checks" in build:
+            # The result file was saved before the checks ran. `runs detail` reads that file, so the
+            # per-check results (excerpt and log name) go into it under `change_facts`, as the
+            # task record below carries them.
+            facts = {**(final.get("change_facts") or {}), "checks": build["checks"]}
+            _save_result(ctx, {**final, "change_facts": facts}, phase=phase, task=task)
 
         # Evidence first, escalation second — the same order `cli.py` uses, and
         # for the same reason: the gate should see the tests' opinion of a

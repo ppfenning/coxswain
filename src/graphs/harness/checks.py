@@ -36,6 +36,7 @@ __all__ = [
     "failures_outside",
     "fixable_checks",
     "is_harness_fault",
+    "output_excerpt",
     "outside_surface_files",
     "quarantine_reason",
     "refix_route",
@@ -56,6 +57,11 @@ _COUNT_RE = re.compile(r"(\d+)\s+(passed|failed|error|errors|skipped)\b", re.IGN
 _TAIL_CHARS = 2000
 _REAP_SECONDS = 5  # how long a killed check's pipes get to drain before they are abandoned
 _TAIL_LINES = 20
+_EXCERPT_LINES = 40
+_PYTEST_FAILURE_RE = re.compile(r"^(FAILED|ERROR) ", re.MULTILINE)
+_PYTEST_NODE_RE = re.compile(r"^(FAILED|ERROR) \S+::", re.MULTILINE)
+# A pytest progress line: dots and letters with an optional file name and percentage, or the percentage alone.
+_PROGRESS_RE = re.compile(r"^(\S+\.py\s+)?[.FEsxXR]+\s*(\[\s*\d+%\])?$|^\[\s*\d+%\]$")
 _TRUNCATION_MARKER = f"... [truncated to last {_TAIL_LINES} lines]"
 _LINT_NAMES = frozenset({"lint", "ruff"})
 
@@ -114,6 +120,21 @@ def _tail_lines(text: str, n: int = _TAIL_LINES) -> str:
     return "\n".join([_TRUNCATION_MARKER, *lines[-n:]])
 
 
+def _is_pytest_output(text: str) -> bool:
+    """pytest's own summary header, or a FAILED/ERROR line naming a test node (`file::test`)."""
+    return _SUMMARY_HEADER in text or bool(_PYTEST_NODE_RE.search(text))
+
+
+def output_excerpt(output: str, n: int = _EXCERPT_LINES) -> str:
+    """pytest output with failures: the short test summary, else the FAILED/ERROR lines. Else the last `n` lines."""
+    lines = output.splitlines()
+    if not (_is_pytest_output(output) and _PYTEST_FAILURE_RE.search(output)):
+        return "\n".join(lines[-n:])
+    start = next((i for i, ln in enumerate(lines) if _SUMMARY_HEADER in ln), None)
+    kept = lines[start:] if start is not None else [ln for ln in lines if _PYTEST_FAILURE_RE.match(ln)]
+    return "\n".join(kept[-n:])
+
+
 def collected_ids(output: str) -> set[str]:
     """Node ids from `pytest --collect-only -q` stdout, pure.
 
@@ -138,17 +159,17 @@ def repo_checks(text: str) -> list[dict]:
     """Parse a `.agent-checks` file: one shell command per line, pure.
 
     Blank lines and lines starting with `#` are ignored. Each surviving line,
-    stripped, becomes an entry whose `name` is its first whitespace-separated
-    word and whose `cmd` is the stripped line itself. A duplicate `cmd` keeps
-    only its first occurrence; order is otherwise preserved. Odd input
-    (`None`, or anything that is not a string) yields `[]` rather than raising
-    — a malformed file is a check that did not run, not a crash.
+    stripped, becomes an entry whose `name` and `cmd` are the stripped line
+    itself, so a failure names the whole command. A duplicate `cmd` keeps only
+    its first occurrence; order is otherwise preserved. Odd input (`None`, or
+    anything that is not a string) yields `[]` rather than raising — a
+    malformed file is a check that did not run, not a crash.
     """
     if not isinstance(text, str):
         return []
     lines = (stripped for stripped in (line.strip() for line in text.splitlines()) if stripped and not stripped.startswith("#"))
     unique = dict.fromkeys(lines)  # first occurrence wins, order preserved
-    return [{"name": line.split(None, 1)[0], "cmd": line} for line in unique]
+    return [{"name": line, "cmd": line} for line in unique]
 
 
 def fixable_checks(checks: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -207,14 +228,28 @@ def _kill_and_collect(proc: subprocess.Popen[str], first: subprocess.TimeoutExpi
     return collected if collected else _text(first.stdout) + _text(first.stderr)
 
 
+def _write_log(log_dir: Path | None, prefix: str, number: int, text: str) -> dict[str, str]:
+    """Edge: write check `number`'s whole output to `log_dir/<n>.log`; `{}` with no `log_dir`."""
+    if log_dir is None:
+        return {}
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / f"{number}.log").write_text(text)
+    return {"log": f"{prefix}{number}.log"}
+
+
 def run_checks(
     worktree: Path,
     checks: Sequence[Mapping[str, Any]],
     *,
     timeout: int = 600,
     env: Mapping[str, str] | None = None,
+    log_dir: Path | None = None,
+    log_prefix: str = "",
 ) -> list[dict[str, Any]]:
     """Execute each configured check in `worktree` and report what actually happened.
+
+    With `log_dir`, check n's whole output is written to `log_dir/<n>.log` and
+    its result's `log` is `log_prefix + "<n>.log"`, the path from the run directory.
 
     Each entry needs `name` and `cmd`; an entry missing either is refused rather
     than silently skipped, because a check nobody ran is not a check, it is a
@@ -224,7 +259,7 @@ def run_checks(
     environment; None inherits this process's.
     """
     results: list[dict[str, Any]] = []
-    for check in checks:
+    for number, check in enumerate(checks, 1):
         name = check.get("name")
         cmd = check.get("cmd")
         if not name or not cmd:
@@ -265,6 +300,8 @@ def run_checks(
                     "exit_code": None,
                     "counts": _parse_counts(partial),
                     "output_tail": (partial + f"\n[timed out after {limit}s]")[-_TAIL_CHARS:],
+                    "excerpt": "\n".join(filter(None, [output_excerpt(partial), f"[timed out after {limit}s]"])),
+                    **_write_log(log_dir, log_prefix, number, partial + f"\n[timed out after {limit}s]\n"),
                 }
             )
             continue
@@ -280,6 +317,8 @@ def run_checks(
                     "exit_code": None,
                     "counts": {},
                     "output_tail": "",
+                    "excerpt": error,
+                    **_write_log(log_dir, log_prefix, number, error + "\n"),
                 }
             )
             continue
@@ -305,6 +344,8 @@ def run_checks(
                 "exit_code": proc.returncode,
                 "counts": _parse_counts(combined),
                 "output_tail": combined[-_TAIL_CHARS:],
+                "excerpt": output_excerpt(combined),
+                **_write_log(log_dir, log_prefix, number, combined),
             }
         )
     return results
@@ -363,6 +404,16 @@ def check_feedback(results: Sequence[Mapping[str, Any]]) -> str:
     )
 
 
+def _is_lint_command(name: str) -> bool:
+    """Whether a check named by its whole line is lint: every `&&`/`;` step is a `cd` or a lint program.
+
+    `cd src && ruff check .` is lint; `ruff check . && pytest -q` is not.
+    """
+    steps = [s.split(None, 1)[0] for s in re.split(r"&&|;", name) if s.strip()]
+    programs = [s for s in steps if s != "cd"]
+    return bool(programs) and all(p in _LINT_NAMES for p in programs)
+
+
 def refix_route(
     results: Sequence[Mapping[str, Any]],
     checks: Sequence[Mapping[str, Any]],
@@ -379,7 +430,7 @@ def refix_route(
     reason = quarantine_reason(results)
     if reason is None or is_harness_fault(reason) or attempts_left <= 0:
         return "quarantine"
-    lint = {c["name"] for c in checks if c.get("fix") or c["name"] in _LINT_NAMES}
+    lint = {c["name"] for c in checks if c.get("fix") or _is_lint_command(c["name"])}
     if style_bound and all(r["name"] in lint for r in results if not r.get("passed")):
         return "style_pass"
     return "revise"
@@ -418,6 +469,24 @@ def outside_surface_files(reason: str) -> tuple[str, ...]:
     return tuple(f for f in reason[len(_OUTSIDE_SURFACES_PREFIX):].split(", ") if f)
 
 
+def _reason_detail(excerpt: str, exit_code: Any) -> str:
+    """The one line a quarantine reason carries: the first pytest FAILED (else ERROR) line.
+
+    Without one it is the last line that is not pytest progress, so dots never stand in for a cause.
+    Output that is all progress reports the exit code instead.
+    """
+    lines = [ln for ln in excerpt.splitlines() if ln.strip()]
+    if _is_pytest_output(excerpt):
+        for kind in ("FAILED ", "ERROR "):
+            hit = next((ln for ln in lines if ln.startswith(kind)), None)
+            if hit:
+                return hit
+    meaningful = [ln for ln in lines if not _PROGRESS_RE.match(ln.strip())]
+    if meaningful:
+        return meaningful[-1]
+    return f"exit {exit_code}" if lines and exit_code is not None else ""
+
+
 def quarantine_reason(
     results: Sequence[Mapping[str, Any]],
     surfaces: Sequence[str] = (),
@@ -441,6 +510,7 @@ def quarantine_reason(
     if outside:
         return f"{_OUTSIDE_SURFACES_PREFIX}{', '.join(outside)}"
     names = ", ".join(r["name"] for r in failing)
-    first_line = next((ln for ln in str(failing[0].get("output_tail") or "").splitlines() if ln.strip()), "")
-    detail = f" — {first_line}" if first_line else ""
+    excerpt = str(failing[0].get("excerpt") or output_excerpt(str(failing[0].get("output_tail") or "")))
+    summary = _reason_detail(excerpt, failing[0].get("exit_code"))
+    detail = f" — {summary}" if summary else ""
     return f"configured check failed: {names}{detail}"

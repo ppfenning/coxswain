@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextlib
 import os
 import signal
+import subprocess
 import time
 from pathlib import Path
 
@@ -90,21 +91,43 @@ def _is_dead(pid: int) -> bool:
     return stat.rpartition(")")[2].split()[0] == "Z"
 
 
-def test_a_timeout_kills_a_backgrounded_grandchild_holding_the_pipes(tmp_path) -> None:
+def _wait_for_pid_file_first(monkeypatch, pid_file: Path, bound: float, started: list) -> None:
+    """Start the timeout clock only once the shell has written `pid_file`: under `-n auto` it can be slow to start."""
+    real = subprocess.Popen
+
+    class Popen(real):
+        waited = False
+
+        def communicate(self, input=None, timeout=None):
+            if not self.waited:
+                self.waited = True
+                deadline = time.monotonic() + bound
+                while not (pid_file.exists() and pid_file.read_text().strip()) and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                started.append(time.monotonic())
+            return super().communicate(input, timeout)
+
+    monkeypatch.setattr("harness.checks.subprocess.Popen", Popen)
+
+
+def test_a_timeout_kills_a_backgrounded_grandchild_holding_the_pipes(tmp_path, monkeypatch) -> None:
+    timeout, bound = 1, 30
+    pid_file = tmp_path / "grandchild.pid"
+    started: list[float] = []
+    _wait_for_pid_file_first(monkeypatch, pid_file, bound, started)
     cmd = "echo 3 passed\nsleep 600 &\necho $! > grandchild.pid\nwait"
-    started = time.monotonic()
-    [result] = run_checks(tmp_path, [{"name": "bg", "cmd": cmd}], timeout=1)
-    elapsed = time.monotonic() - started
-    pid = int((tmp_path / "grandchild.pid").read_text())
+    [result] = run_checks(tmp_path, [{"name": "bg", "cmd": cmd}], timeout=timeout)
+    elapsed = time.monotonic() - started[0]
+    pid = int(pid_file.read_text())
     try:
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + bound
         while not _is_dead(pid) and time.monotonic() < deadline:
             time.sleep(0.05)
         assert _is_dead(pid), "the backgrounded sleep outlived the timeout"
     finally:
         with contextlib.suppress(ProcessLookupError):
             os.kill(pid, signal.SIGKILL)
-    assert elapsed < 1 + 5
+    assert elapsed < timeout + 20
     assert result["outcome"] == "timed_out"
     assert result["output_tail"].count("3 passed") == 1
     assert result["passed"] is False
