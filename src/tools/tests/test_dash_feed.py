@@ -72,6 +72,7 @@ def _fixture_inputs() -> tuple[tuple, dict]:
         "weekly_resets_at": "2026-10-04T04:00:00Z",
         "weekly_target_fraction": 0.0,
         "weekly_pace": "not_judged",
+        "today": {"date": "2026-09-29", "cost": 6.0, "landed": 3, "per_landed": 2.0, "first_try_rate": 0.5, "measured": 2},
     }
     machines = [
         {
@@ -533,7 +534,7 @@ def test_the_live_feed_has_the_fixture_s_keys_no_nulls_and_serializes(monkeypatc
     )
     sections = {
         "chair": [{"holder": "chair-loop", "state": "live", "minutes_ago": 1}],
-        "spend": dict.fromkeys(fixture["spend"]),
+        "spend": dict.fromkeys(k for k in fixture["spend"] if k != "today"),
         "hosts": [{
             "name": "host-a", "state": "draining", "capacity": 1, "in_use": 0, "beat_at": "2026-09-29T20:59:00Z",
             "versions_json": {"login_ok": True, "login_checked_at": "2026-09-29T20:41:15Z"},
@@ -559,7 +560,8 @@ def test_the_live_feed_has_the_fixture_s_keys_no_nulls_and_serializes(monkeypatc
     assert set(feed["chair"]) == set(fixture["chair"]) and set(feed["spend"]) == set(fixture["spend"])
     for section in ("machines", "runs", "queue", "inbox"):
         assert set(feed[section][0]) == set(fixture[section][0]), section
-    rows = [feed["chair"], feed["spend"], *feed["machines"], *feed["runs"], *feed["queue"], *feed["inbox"]]
+    assert feed["spend"]["today"] is None  # no run store under tmp_path
+    rows = [feed["chair"], {k: v for k, v in feed["spend"].items() if k != "today"}, *feed["machines"], *feed["runs"], *feed["queue"], *feed["inbox"]]
     # `current_action` is null when nothing is running, `tick_age_s` when no tick was read, `short_id` when its initiative has none.
     nullable = ("current_action", "tick_age_s", "short_id", "project")
     assert all(value is not None for row in rows for key, value in row.items() if key not in nullable)

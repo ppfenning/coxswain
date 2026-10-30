@@ -548,6 +548,14 @@ def _spend_v1(spend: dict) -> dict:
     }
 
 
+def _today_v1(runs_dir: Path, now: str) -> dict | None:
+    """Edge. `spend.today`: the figures the docket's `efficiency:` line prints, from the same function; None with no store."""
+    # Deferred: cli.py imports this module, so a top-level import of cli is circular.
+    from agent_tools import cli
+
+    return cli._efficiency_figures(Path(runs_dir), now)
+
+
 def _machine_v1(row: dict, at: datetime) -> dict:
     """A hosts-table row (with the console's `in_use`) as the schema-1 machine."""
     versions = row.get("versions_json") or {}
@@ -943,8 +951,10 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
     """Edge: the live schema-1 snapshot from the fleet's existing readers, every section mapped to the shape
     tests/fixtures/dash_feed_v1.json fixes (the contract coxtop parses), with no nulls and nothing json can't write,
     except a machine's `login_ok`, which is null while its login is unchecked, a row's `short_id`, which is
-    null when its initiative has none, and a row's `project`, which is null when its initiative has no known
-    repository. `profile` is the parsed profile
+    null when its initiative has none, a row's `project`, which is null when its initiative has no known
+    repository, and `spend.today`, which is null when the run store is unavailable (its `per_landed` is null
+    when nothing landed and its `first_try_rate` when nothing was measured). `spend.today` is a new key
+    under schema 1, as `weekly_pace` was: older towpath builds ignore a key they do not know. `profile` is the parsed profile
     the capacity chain reads the team cartridge from."""
     runs_dir, work_dir = Path(runs_dir), Path(work_dir)
     at = _parse_now(now)
@@ -969,7 +979,8 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
     }
     short_ids = run_store.initiative_short_ids(runs_dir)
     projects = _projects(run_store.read_queue(runs_dir, kind="initiative"))
-    spend_block = _spend_v1(sections["spend"])
+    # `today` is added after `_spend_v1`, which would blank its null into a string.
+    spend_block = {**_spend_v1(sections["spend"]), "today": _today_v1(runs_dir, now)}
     wide_rows = _store_rows(runs_dir, at, spend_block)
     store_rows = _history_rows(wide_rows, at)
     history, today = _history_edge(store_rows, at, short_ids, projects)
