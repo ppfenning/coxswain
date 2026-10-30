@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from agent_tools import lease_standing
 from agent_tools.events import Event
+from agent_tools.progress_read import TIME_FORMAT, NodeProgress, Progress
 
-__all__ = ["NODE_ORDER", "Detail", "NodeCall", "detail", "render"]
+__all__ = ["NODE_ORDER", "Detail", "NodeCall", "NodeView", "detail", "render"]
 
 NODE_ORDER = (
     "plan",
@@ -32,6 +34,21 @@ class NodeCall:
 
 
 @dataclass(frozen=True)
+class NodeView:
+    role: str
+    task: str
+    tier: str
+    status: str
+    attempt: int
+    turns: int
+    cost_usd: float | None
+    last_tool: str
+    last_tool_age_s: float | None
+    worktree: str
+    branch: str | None
+
+
+@dataclass(frozen=True)
 class Detail:
     run: str
     alive: bool
@@ -45,6 +62,7 @@ class Detail:
     check_excerpt: str = ""
     check_log: str = ""
     flaky_notes: tuple[str, ...] = ()
+    nodes: tuple[NodeView, ...] = ()
 
 
 def _flaky_notes(record: dict) -> tuple[str, ...]:
@@ -133,11 +151,50 @@ def _quarantine_reason(events: list[Event]) -> str:
     return quarantined[-1].detail.get("reason", "") if quarantined else ""
 
 
+def _age_s(timestamp: str, now: datetime | None) -> float | None:
+    """Seconds from `timestamp` to `now`; None when either is missing or the timestamp does not parse."""
+    if now is None:
+        return None
+    try:
+        then = datetime.strptime(timestamp, TIME_FORMAT).replace(tzinfo=UTC)
+    except (TypeError, ValueError):
+        return None
+    return (now - then).total_seconds()
+
+
+def _node_view(node: NodeProgress, events: list[Event], calls_by_key: dict, now: datetime | None) -> NodeView:
+    call = calls_by_key.get((node.node, node.attempt))
+    quarantined = any(e.kind == "task_quarantined" and e.detail.get("task") == node.task for e in events)
+    return NodeView(
+        role=node.node,
+        task=node.task,
+        tier=node.tier,
+        status="quarantined" if quarantined else node.status,
+        attempt=node.attempt,
+        turns=call["turns"] if call else node.turns,
+        cost_usd=call["cost_usd"] if call else node.cost_usd,
+        last_tool=node.last_tool,
+        last_tool_age_s=_age_s(node.last_tool_at, now),
+        worktree=node.worktree,
+        branch=node.branch,
+    )
+
+
+def _nodes(progress: Progress | None, events: list[Event], calls: list[dict],
+           now: datetime | None) -> tuple[NodeView, ...]:
+    if progress is None:
+        return ()
+    calls_by_key = {(c["node"], c["attempt"]): c for c in calls}
+    return tuple(_node_view(n, events, calls_by_key, now) for n in progress.nodes)
+
+
 def detail(run: str, alive: bool, events: list[Event], calls: list[dict], record: dict, tail: list[str],
-           standing: str = lease_standing.NONE) -> Detail:
+           standing: str = lease_standing.NONE, progress: Progress | None = None,
+           now: datetime | None = None) -> Detail:
     """Pure: the one Detail a run's events, finished calls, task record and
     trace tail make. `record` may be `{}`; every derived field is then ""
-    or empty, never a raise."""
+    or empty, never a raise. `nodes` is empty without `progress`; `now` is
+    passed in, and without it a node's last-tool age is None."""
     change_facts = record.get("change_facts") or {}
     return Detail(
         run=run,
@@ -152,6 +209,7 @@ def detail(run: str, alive: bool, events: list[Event], calls: list[dict], record
         check_excerpt=str(_first_failed_check(record).get("excerpt") or ""),
         check_log=str(_first_failed_check(record).get("log") or ""),
         flaky_notes=_flaky_notes(record),
+        nodes=_nodes(progress, events, calls, now),
     )
 
 
@@ -159,9 +217,17 @@ def _cut(line: str, width: int) -> str:
     return line[: max(width, 0)]
 
 
+def _node_line(n: NodeView) -> str:
+    cost = "-" if n.cost_usd is None else f"${n.cost_usd:.2f}"
+    age = "" if n.last_tool_age_s is None else f" {int(n.last_tool_age_s)}s ago"
+    tool = f"{n.last_tool}{age}" if n.last_tool else "-"
+    return f"  {n.role} {n.task} {n.tier} {n.status} {n.turns} {cost} {tool} {n.branch or n.worktree}"
+
+
 def render(detail: Detail, width: int) -> list[str]:
     lines = [f"run {detail.run} [{detail.status}]"]
     lines += [f"{nc.node}#{nc.attempt}  {nc.turns}  ${nc.cost_usd:.2f}  {nc.verdict}" for nc in detail.timeline]
+    lines += [_node_line(n) for n in detail.nodes]
     if detail.objection:
         lines.append(f"objection: {detail.objection}")
     if detail.quarantine_reason:

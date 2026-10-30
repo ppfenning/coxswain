@@ -1,6 +1,8 @@
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from agent_tools.events import Event, from_trace_names
+from agent_tools.progress_read import NodeProgress, Progress
 from agent_tools.runs_detail import Detail, NodeCall, detail, render
 
 
@@ -131,3 +133,47 @@ def test_a_dead_process_stays_exited_under_a_fenced_lease():
 def test_quarantined_still_wins_over_fenced():
     events = [Event("r1", "task_quarantined", 0, {"task": "t1", "reason": "x"})]
     assert detail("r1", True, events, [], {}, [], standing="fenced").status == "quarantined"
+
+
+NOW = datetime(2026, 10, 30, 12, 0, 30, tzinfo=UTC)
+
+
+def _node(**over):
+    base = {
+        "node": "build", "attempt": 1, "task": "t1", "tier": "mid", "status": "running", "turns": 3,
+        "cost_usd": None, "started_at": "2026-10-30T12:00:00Z", "last_tool": "Edit",
+        "last_tool_at": "2026-10-30T12:00:18Z", "worktree": "/w/t1", "branch": "feat/t1",
+    }
+    return NodeProgress(**{**base, **over})
+
+
+def _progress(*nodes):
+    return Progress(version=1, run="r1", written_at="2026-10-30T12:00:29Z", nodes=tuple(nodes))
+
+
+def test_a_running_build_shows_its_last_tool_age_and_a_dash_for_null_cost():
+    d = detail("r1", True, [], [], {}, [], progress=_progress(_node()), now=NOW)
+    assert d.nodes[0].last_tool_age_s == 12.0
+    assert d.nodes[0].cost_usd is None
+    assert render(d, 100)[-1] == "  build t1 mid running 3 - Edit 12s ago feat/t1"
+
+
+def test_a_done_plan_takes_turns_and_cost_from_its_finished_call():
+    plan = _node(node="plan", status="done", turns=1, cost_usd=0.0, branch=None)
+    calls = [{"node": "plan", "attempt": 1, "turns": 5, "cost_usd": 0.25}]
+    d = detail("r1", True, [], calls, {}, [], progress=_progress(plan), now=NOW)
+    assert (d.nodes[0].turns, d.nodes[0].cost_usd) == (5, 0.25)
+    assert render(d, 100)[-1] == "  plan t1 mid done 5 $0.25 Edit 12s ago /w/t1"
+
+
+def test_a_quarantined_task_overrides_the_records_status():
+    events = [Event("r1", "task_quarantined", 5, {"task": "t1", "reason": "boom"})]
+    d = detail("r1", True, events, [], {}, [], progress=_progress(_node(), _node(task="t2")), now=NOW)
+    assert [n.status for n in d.nodes] == ["quarantined", "running"]
+
+
+def test_no_progress_leaves_the_nodes_empty_and_the_render_unchanged():
+    calls = [{"node": "plan", "attempt": 1, "turns": 2, "cost_usd": 0.1}]
+    d = detail("r1", True, from_trace_names("r1", ["plan-1.jsonl"]), calls, {}, [])
+    assert d.nodes == ()
+    assert render(d, 80) == ["run r1 [running]", "plan#1  2  $0.10  "]
