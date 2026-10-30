@@ -6,6 +6,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+_RELEASE_LINE = re.compile(r"^Target release:[ \t]*(\d+(?:\.\d+)*)\.?[ \t]*$", re.MULTILINE)
+
 _STATE_LABEL = {
     "intake": "Queued",
     "queued": "Queued",
@@ -42,6 +44,7 @@ class Item:
     parent_issue: str | None = None
     initiative: bool = False
     pr_url: str = ""
+    release: str = ""
 
     def __post_init__(self) -> None:
         # Frozen dataclass: the one write is the normalised issue, so every reader sees the bare number.
@@ -80,8 +83,21 @@ def run_id_of(value: object) -> str:
     return match.group(2) if match else ""
 
 
+def parse_release(body: str) -> str:
+    """The version on a body line `Target release: <version>.`, or `""`. The body line is the only source;
+    a `release:` front-matter key is not read. The first matching line wins."""
+    match = _RELEASE_LINE.search(body)
+    return match.group(1) if match else ""
+
+
+def epic_release(releases: list[str]) -> str:
+    """The latest of `releases`, compared as dotted integers so 2026.10.10 follows 2026.10.5. `""` when none."""
+    named = [r for r in releases if r]
+    return max(named, key=lambda r: tuple(int(part) for part in r.split("."))) if named else ""
+
+
 def _fields(item: Item) -> dict | None:
-    """The board's six field values, or `None` for an unrecognized
+    """The board's six field values, plus `Release` when the item names one, or `None` for an unrecognized
     `item.state` — a step-less refusal, not a `KeyError` three calls up."""
     label = _STATE_LABEL.get(item.state)
     if label is None:
@@ -93,6 +109,7 @@ def _fields(item: Item) -> dict | None:
         "Cost": f"${item.cost_usd:.2f}",
         "Gate": item.gate,
         "PR": item.pr_url,
+        **({"Release": item.release} if item.release else {}),
     }
 
 
@@ -147,6 +164,13 @@ def _link_steps(item: Item, key: str | None, planned_ids: frozenset) -> list[dic
              "parent_issue": item.parent_issue, "child_item": item.id, "child_issue": key}]
 
 
+def _milestone_steps(item: Item, key: str | None) -> list[dict]:
+    """`milestone_set` on an epic's issue when its tasks name a release. Tasks get the Release field only."""
+    if not (item.initiative and item.release):
+        return []
+    return [{"kind": "milestone_set", "repo": item.repo, "issue": key, "title": item.release}]
+
+
 def _item_steps(item: Item, issues: dict, project_items: dict, planned_ids: frozenset) -> list[dict]:
     wanted = _fields(item)
     if wanted is None and item.state not in _ISSUE_ONLY:
@@ -156,7 +180,8 @@ def _item_steps(item: Item, issues: dict, project_items: dict, planned_ids: froz
     issue_steps, key = _issue_steps(item, issues)
     project_steps = [] if wanted is None else _project_steps(key, wanted, project_items)
     writeback = [{"kind": "writeback", "item_id": item.id, "issue": key}] if item.issue is None else []
-    return issue_steps + project_steps + writeback + _link_steps(item, key, planned_ids) + _close_steps(item, issues)
+    return (issue_steps + project_steps + writeback + _milestone_steps(item, key)
+            + _link_steps(item, key, planned_ids) + _close_steps(item, issues))
 
 
 def plan(items: list[Item], issues: dict, project_items: dict, tracker: str) -> list[dict]:
@@ -181,6 +206,8 @@ def _line(step: dict) -> str:
         return f"{line} overwrote {step['was']!r}" if "was" in step else line
     if kind == "issue_close":
         return f"issue_close {step['issue']}"
+    if kind == "milestone_set":
+        return f"milestone_set {step['issue'] or '(new issue)'} {step['title']}"
     if kind == "sub_issue_link":
         return f"sub_issue_link {step['child_issue'] or '(new issue)'} under {step['parent_item']}"
     if kind == "writeback":
