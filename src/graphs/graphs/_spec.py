@@ -40,6 +40,7 @@ class Need:
     kind: str = "str"
     required: bool = True
     help: str = ""
+    choices: tuple[str, ...] = ()  # when set, the flag refuses any other value at parse time
 
 
 @dataclass(frozen=True)

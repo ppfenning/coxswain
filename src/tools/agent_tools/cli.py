@@ -4692,6 +4692,47 @@ def _route_sync(a: argparse.Namespace) -> int:
     return 1 if hard_failure else 0
 
 
+_LAUNCH_SETTLE_S = 2.0  # how long a fresh launch is watched for an immediate death before it is reported as started
+
+
+# The line the harness prints once its run holds the lease (src/graphs/harness/cli.py); seeing it ends the wait early.
+_LAUNCH_STARTED_MARKER = "graph started: "
+_IDEA_FILE_SUFFIXES = frozenset({".md", ".markdown", ".txt"})
+
+
+def _idea_is_text(value: str, exists: bool) -> bool:
+    """True for prose passed where `--idea` wants a file path: a value that is not a file and spans lines, or
+    contains whitespace without looking like a path (a leading `/`, `~`, `./`, `../` or an idea-file suffix)."""
+    looks_like_path = value.startswith(("/", "~", "./", "../")) or Path(value).suffix.lower() in _IDEA_FILE_SUFFIXES
+    return not exists and ("\n" in value or (any(ch.isspace() for ch in value) and not looks_like_path))
+
+
+def _last_line(text: str) -> str:
+    """The last non-blank line of `text`, or "" when there is none."""
+    return next((line.strip() for line in reversed(text.splitlines()) if line.strip()), "")
+
+
+def _wait_for_exit(
+    proc: subprocess.Popen, started: Callable[[], bool], timeout_s: float, poll_s: float = 0.05,
+    sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic,
+) -> int | None:
+    """Edge: the child's exit code if it ends before `started()` turns true or `timeout_s` runs out, else None."""
+    deadline = clock() + timeout_s
+    code = proc.poll()
+    while code is None and not started() and clock() < deadline:
+        sleep(poll_s)
+        code = proc.poll()
+    return code
+
+
+def _lock_snapshot(runs_dir: Path) -> dict | None:
+    """The loop lock record as it stands, or None when there is none or it cannot be read."""
+    try:
+        return chair.read(runs_dir)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 def _route_launch(a: argparse.Namespace) -> int:
     profile, rc = _resolve_profile_or_refuse(a)
     if rc is not None:
@@ -4705,6 +4746,7 @@ def _route_launch(a: argparse.Namespace) -> int:
         return venv_rc
     runs_dir = Path(profile["workspace_dir"]).expanduser() / "runs"
     launch_dir = _initiative_path(runs_dir, a.initiative) if a.graph in ("epic", "rescue") else None
+    stub_written = None  # the initiative.md a decompose launch created, named in the report if the launch then dies
     if a.graph == "epic":
         initiative_id = launch_dir.name
         if work_state.work_state_mode(_lake_provider(a)[0]) == "store":
@@ -4728,6 +4770,7 @@ def _route_launch(a: argparse.Namespace) -> int:
             print(f"override: launching {initiative_id} despite blocked {', '.join(held)} (--include-blocked)")
     # Read before the guard: a claim replaces the record with one that has no `model` key.
     chair_model = _recorded_chair_model(runs_dir)
+    lock_before = _lock_snapshot(runs_dir)
     guard_rc = _leader_guard_or_refuse(runs_dir, _holder_label(a), a.force, claim=not a.no_claim)
     if guard_rc is not None:
         return guard_rc
@@ -4802,6 +4845,9 @@ def _route_launch(a: argparse.Namespace) -> int:
             needs["fix_attempts"] = a.fix_attempts
         env_repo = needs["repo"]
     elif a.graph == "decompose":
+        if _idea_is_text(a.idea, Path(a.idea).exists()):
+            print("routing: --idea takes a file path; got text (write it to a file or use route file --intake)")
+            return 2
         idea_path = Path(a.idea)
         if not idea_path.exists():
             print(f"routing: no idea file at {idea_path}")
@@ -4837,6 +4883,7 @@ def _route_launch(a: argparse.Namespace) -> int:
                 initiative_md.parent.mkdir(parents=True, exist_ok=True)
                 initiative_md.write_text(initiative_content, encoding="utf-8")
                 queue_export.record_written_paths(workspace_dir, [initiative_md])
+                stub_written = initiative_md
         run_id = route.next_run_id(_taken_run_names(runs_dir), a.initiative_id)
         needs = {"idea": a.idea, "initiative_id": a.initiative_id}
         if getattr(a, "task_ids", None):
@@ -4912,6 +4959,21 @@ def _route_launch(a: argparse.Namespace) -> int:
         proc = subprocess.Popen(
             argv, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
         )
+    exit_code = _wait_for_exit(
+        proc, lambda: _LAUNCH_STARTED_MARKER in (_read_text_or_none(log_path) or ""), _LAUNCH_SETTLE_S,
+    )
+    if exit_code:
+        print(f"routing: launch failed: {_last_line(_read_text_or_none(log_path) or '') or f'exit {exit_code}'}")
+        print(f"log {log_path}")
+        # Per-run files written for a run that never began; the log stays as the evidence.
+        for leftover in (runs_dir / f"{run_id}.provider-profile.yaml", runs_dir / f"{run_id}.ceiling.json"):
+            leftover.unlink(missing_ok=True)
+        # The initiative stub stays: queue_export has recorded it as written, so deleting it would leave a dangling record.
+        if stub_written is not None:
+            print(f"routing: {stub_written} was written before the launch and is left in place")
+        if not a.no_claim and _lock_snapshot(runs_dir) != lock_before:
+            print("routing: the loop claim this launch took is still held with no run behind it; release it with `cox route release`")
+        return 1
     pid_path.write_text(str(proc.pid))
     now = datetime.datetime.now(datetime.UTC)
     lock_record, lock_refuse_rc = _leader_read_or_refuse(runs_dir)
@@ -9269,7 +9331,8 @@ ROUTE_COMMANDS = [
             commands.Command(
                 "decompose", "route", "launch the decompose graph against an idea",
                 (
-                    commands.Arg(("--profile",)), commands.Arg(("--idea",), {"required": True}),
+                    commands.Arg(("--profile",)),
+                    commands.Arg(("--idea",), {"required": True, "metavar": "PATH", "help": "the intake/idea markdown file"}),
                     commands.Arg(("--initiative-id",), {"required": True}),
                     commands.Arg(("--task-ids",), {"choices": ["ordinal"], "help": "name the graph's own tasks <initiative-id>-t1, -t2, ..."}),
                     commands.Arg(("--dry-run",), {"action": "store_true"}),
