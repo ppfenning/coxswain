@@ -4,7 +4,9 @@ in, `gh` steps out. No subprocess, filesystem or clock; the edge hands in plain 
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 _RELEASE_LINE = re.compile(r"^Target release:[ \t]*(\d+(?:\.\d+)*)\.?[ \t]*$", re.MULTILINE)
 
@@ -45,6 +47,7 @@ class Item:
     initiative: bool = False
     pr_url: str = ""
     release: str = ""
+    repo_error: str = ""  # why `repo` is empty when the item named one that does not resolve; a sync refuses with it
 
     def __post_init__(self) -> None:
         # Frozen dataclass: the one write is the normalised issue, so every reader sees the bare number.
@@ -184,13 +187,72 @@ def _item_steps(item: Item, issues: dict, project_items: dict, planned_ids: froz
             + _link_steps(item, key, planned_ids) + _close_steps(item, issues))
 
 
-def plan(items: list[Item], issues: dict, project_items: dict, tracker: str) -> list[dict]:
+SCOPES = ("all", "epics", "initiatives")
+
+
+def resolve_scope(profile_scope: str | None, cartridge: Mapping[str, Any]) -> str:
+    """The cartridge's `policy.tracker_scope` over the profile's `tracker_scope`, `all` when neither names one.
+    Raises `ValueError` for a value outside `SCOPES`: a misspelt narrowing setting must not read as `all`."""
+    named = (cartridge.get("policy") or {}).get("tracker_scope") or profile_scope or "all"
+    if named not in SCOPES:
+        raise ValueError(f"tracker_scope {named!r} is not one of {', '.join(SCOPES)}")
+    return named
+
+
+def is_epic(threshold: Mapping[str, Any], tasks: Sequence[Item]) -> bool:
+    """True when an initiative with these `tasks` meets the cartridge's `epic_threshold`.
+    A copy of graphs' `_contract.epic_shape` epic test (src/graphs/graphs/_contract.py), because tools does not
+    import graphs; the defaults are that function's, and a change there must be made here too."""
+    return (len({t.phase for t in tasks}) >= int(threshold.get("phases_min", 2))
+            or len(tasks) >= int(threshold.get("tickets_min", 3))
+            or (bool(threshold.get("multi_repo", True)) and len({t.repo for t in tasks}) > 1))
+
+
+def scoped(items: list[Item], scope: str, threshold: Mapping[str, Any]) -> list[Item]:
+    """The items `scope` syncs. `all` keeps every item. `initiatives` keeps every initiative and `epics` only
+    those meeting `threshold`. Under both, any other item is kept only when it has an `issue`.
+    The store cannot tell a hand-set `issue:` from one an earlier sync wrote back, so the task issues this
+    sync made before the scope existed count as operator-linked: they keep syncing and closing. Removing them
+    from the board is the prune task, not this one."""
+    if scope == "all":
+        return items
+    tasks_of = {i.id: [t for t in items if t.parent == i.id] for i in items if i.initiative}
+    return [i for i in items
+            if (i.issue is not None if not i.initiative
+                else scope == "initiatives" or is_epic(threshold, tasks_of[i.id]))]
+
+
+def initiative_facts(items: list[Item], scope: str, threshold: Mapping[str, Any],
+                     initiative_id: str | None, task_id: str) -> tuple[str | None, bool]:
+    """`(issue, last)` for the task `task_id` in the initiative `initiative_id`: the initiative's issue when
+    the scope syncs it and it has one, and whether every other task of it is closed. `(None, False)` otherwise."""
+    kept = {i.id: i for i in scoped(items, scope, threshold) if i.initiative}
+    initiative = kept.get(initiative_id or "")
+    if initiative is None:
+        return None, False
+    others = [t for t in items if t.parent == initiative.id and t.id != task_id]
+    return initiative.issue, all(t.state in _CLOSING for t in others)
+
+
+def _linked_task_steps(item: Item, issues: dict, project_items: dict) -> list[dict]:
+    """An operator-linked task under a narrowed scope: its fields on a card that already exists, then its close.
+    No create, edit, project add, writeback or sub-issue link: sync never makes a task issue in this scope."""
+    wanted = _fields(item)
+    card = project_items.get(item.issue)
+    sets = _project_steps(item.issue, wanted, project_items) if wanted is not None and card is not None else []
+    return sets + _close_steps(item, issues)
+
+
+def plan(items: list[Item], issues: dict, project_items: dict, tracker: str, scope: str = "all") -> list[dict]:
     """Steps grouped per item, create/edit then add then sets then writeback,
-    so the edge runs them top to bottom. Empty unless tracker is `github-projects`."""
+    so the edge runs them top to bottom. Empty unless tracker is `github-projects`.
+    `items` are already narrowed by `scoped`; with a scope other than `all`, a task gets `_linked_task_steps`."""
     if tracker != "github-projects":
         return []
     planned_ids = frozenset(item.id for item in items)
-    return [step for item in items for step in _item_steps(item, issues, project_items, planned_ids)]
+    return [step for item in items
+            for step in (_item_steps(item, issues, project_items, planned_ids)
+                         if scope == "all" or item.initiative else _linked_task_steps(item, issues, project_items))]
 
 
 def _line(step: dict) -> str:

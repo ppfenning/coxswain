@@ -77,8 +77,8 @@ def test_initiative_repo_expands_a_home_relative_checkout(tmp_path, monkeypatch)
     root = tmp_path / "ws"
     _write(root / "work" / "tilde" / "initiative.md", "---\nrepo: ~/repos/coxswain\n---\n")
     _write(root / "work" / "absolute" / "initiative.md", f"---\nrepo: {home}/repos/coxswain\n---\n")
-    assert route_sync_gh._initiative_repo(root, "tilde") == "ppfenning/coxswain"
-    assert route_sync_gh._initiative_repo(root, "absolute") == "ppfenning/coxswain"
+    assert route_sync_gh._initiative_repo(root, "tilde") == ("ppfenning/coxswain", "")
+    assert route_sync_gh._initiative_repo(root, "absolute") == ("ppfenning/coxswain", "")
 
 
 def test_items_from_store_resolves_home_relative_repos_for_intake_and_tasks(tmp_path, monkeypatch):
@@ -474,7 +474,7 @@ def test_cli_item_sync_refuses_an_unknown_or_shared_id_without_listing_anything(
         rc = cli.main(["route", "sync", "--item", wanted, "--project", "acme/7", "--workspace", str(tmp_path)])
         assert rc == 2
         assert f"matches {count} work-store items, expected exactly one" in capsys.readouterr().out
-    assert calls == [["gh", "auth", "status", "--active"]] * 2
+    assert calls == []
 
 
 def test_cli_item_sync_issues_only_the_per_item_gh_calls(tmp_path, monkeypatch):
