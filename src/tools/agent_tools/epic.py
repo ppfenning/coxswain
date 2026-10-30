@@ -12,7 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-__all__ = ["alive", "launched_epoch", "log_ended", "proc_start_epoch", "ps_lstart_epoch", "reused", "run_alive", "run_live", "summarize_log", "wait_lanes", "watch"]
+__all__ = ["alive", "launched_epoch", "live_runs", "log_ended", "proc_start_epoch", "process_alive", "ps_lstart_epoch", "reused", "run_alive", "run_live", "run_state", "summarize_log", "wait_lanes", "watch"]
 
 _LINE = re.compile(r"^\s*(quarantined task|quarantined phase|approved but not landed|reused|epic |  usage)", re.M)
 
@@ -115,6 +115,12 @@ def run_live(pid: int | None, pidfile: Path | str, log: Path | str | None = None
     if row is not None:
         holder, expires_at, _heartbeat_at = row
         return holder == pidfile.stem and expires_at > (now or datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    return process_alive(pid, pidfile, log)
+
+
+def process_alive(pid: int | None, pidfile: Path | str, log: Path | str | None = None) -> bool:
+    """Edge. The process half of `run_live`, ignoring any lease: `run_alive` on the pid with its `.launched.json` and `.log` beside the pidfile. pid <= 0 is never signalled and a pid too large for pid_t reads as dead."""
+    pidfile = Path(pidfile)
     if pid is None or pid <= 0:
         return False
     try:
@@ -130,6 +136,31 @@ def run_live(pid: int | None, pidfile: Path | str, log: Path | str | None = None
         return run_alive(pid, launched_at, log_text)
     except OverflowError:
         return False
+
+
+def run_state(pid: int | None, pidfile: Path | str, log: Path | str | None = None, now: str | None = None) -> str:
+    """Edge. `running`, `fenced` or `exited`: the process verdict of `process_alive` joined with the run's lease standing. A live process whose lease is lapsed or held by another run is fenced. `now` is `YYYY-MM-DDTHH:MM:SSZ` UTC."""
+    from agent_tools import lease_standing, run_store  # run_store imports epic at module level
+
+    pidfile = Path(pidfile)
+    stamp = now or datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    held = lease_standing.standing(run_store.lease(pidfile.parent, pidfile.stem), pidfile.stem, stamp)
+    return lease_standing.status(process_alive(pid, pidfile, log), held)
+
+
+def live_runs(runs_dir: Path | str, prefix: str) -> list[dict[str, Any]]:
+    """Edge. One `{run, pid, state}` per `<prefix>-<digits>.pid` in `runs_dir` whose state is running or fenced, sorted by run."""
+    pattern = re.compile(rf"^{re.escape(prefix)}-\d+$")
+    out: list[dict[str, Any]] = []
+    for pidfile in sorted(Path(runs_dir).glob(f"{prefix}-*.pid")):
+        text = _read(pidfile)
+        if not pattern.match(pidfile.stem) or text is None or not text.strip().isdigit():
+            continue
+        pid = int(text.strip())
+        state = run_state(pid, pidfile)
+        if state != "exited":
+            out.append({"run": pidfile.stem, "pid": pid, "state": state})
+    return out
 
 
 def summarize_log(text: str) -> dict[str, Any]:
@@ -156,13 +187,13 @@ def wait_lanes(busy: list[str], is_live: Callable[[str], bool], now: Callable[[]
 
 
 def watch(pidfile: Path | str, *, log: Path | str | None = None, max_seconds: float = 570, interval: float = 20) -> dict[str, Any]:
-    """Wait for the pid in `pidfile` to exit, up to the cap. Returns whether it finished and the log's outcome lines."""
+    """Wait for the pid in `pidfile` to exit, up to the cap. Returns its `run_state` (a fenced run is not finished), whether it finished, and the log's outcome lines."""
     pid = int(Path(pidfile).read_text().strip())
     deadline = time.monotonic() + max_seconds
-    while run_live(pid, pidfile, log) and time.monotonic() < deadline:
+    while run_state(pid, pidfile, log) != "exited" and time.monotonic() < deadline:
         time.sleep(interval)
-    finished = not run_live(pid, pidfile, log)
-    out: dict[str, Any] = {"pid": pid, "finished": finished}
+    state = run_state(pid, pidfile, log)
+    out: dict[str, Any] = {"pid": pid, "state": state, "finished": state == "exited"}
     if log and Path(log).exists():
         out.update(summarize_log(Path(log).read_text(encoding="utf-8", errors="replace")))
     return out

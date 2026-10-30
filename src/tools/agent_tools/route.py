@@ -1947,9 +1947,10 @@ def set_initiative_priority(runs_dir: Path, ws: Path, initiative: str, flag: int
 def status_rows(entries, short_ids: Mapping[str, str] | None = None) -> list:
     """Format the rows `agent-tools route status` prints, spec §5, from a
     pre-gathered list of run entries. Each entry is
-    `{"id", "pid", "alive", "started", "quarantined", "reused", "summary",
-    "usage"}` — `pid`/`alive`/`started` from the CLI's own pidfile read,
+    `{"id", "pid", "alive", "fenced", "started", "quarantined", "reused", "summary",
+    "usage"}` — `pid`/`alive`/`fenced`/`started` from the CLI's own pidfile read,
     the rest already produced by `epic.summarize_log` on the run's log.
+    A run with a pid, not `alive` and `fenced` has state "fenced": its process runs but its lease is not held.
     `pid` is None for a run with no pidfile at all, which this renders as
     a distinct "no pidfile" state rather than a crash. Order is preserved
     from `entries`; no pidfile is read and `epic.alive` is not called here.
@@ -1962,6 +1963,8 @@ def status_rows(entries, short_ids: Mapping[str, str] | None = None) -> list:
             state = "no pidfile"
         elif entry.get("alive"):
             state = "alive"
+        elif entry.get("fenced"):
+            state = "fenced"
         else:
             state = "exited"
         rows.append(
@@ -1969,6 +1972,7 @@ def status_rows(entries, short_ids: Mapping[str, str] | None = None) -> list:
                 "id": entry["id"],
                 "pid": pid,
                 "state": state,
+                "fenced": state == "fenced",
                 "started": entry.get("started"),
                 "quarantined": entry.get("quarantined", []),
                 "reused": entry.get("reused", []),
@@ -1981,15 +1985,19 @@ def status_rows(entries, short_ids: Mapping[str, str] | None = None) -> list:
 
 
 def recent_rows(rows: list, now: datetime.datetime, hours: int = 24) -> tuple[list, int]:
-    """Rows that are alive or started within `hours` of `now`, and the count hidden.
+    """Rows that are alive, fenced or started within `hours` of `now`, and the count hidden.
     A dead row whose `started` is missing or unparseable counts as old; a naive `started` is UTC."""
     cutoff = now - datetime.timedelta(hours=hours)
-    kept = [row for row in rows if _alive(row) or _started_since(row.get("started"), cutoff)]
+    kept = [row for row in rows if _alive(row) or _fenced(row) or _started_since(row.get("started"), cutoff)]
     return kept, len(rows) - len(kept)
 
 
 def _alive(row: dict) -> bool:
     return bool(row.get("alive")) or row.get("state") == "alive"
+
+
+def _fenced(row: dict) -> bool:
+    return bool(row.get("fenced")) or row.get("state") == "fenced"
 
 
 def _started_since(started, cutoff: datetime.datetime) -> bool:
@@ -2059,10 +2067,10 @@ def status_entries(runs: list, summaries: dict) -> list:
     that id, `{}` where there was none. One entry per id in the union of
     both, sorted by id; an id with a log but no pidfile gets the pid-less
     shape `run_entries` would have given it: `pid` `None`, `alive`
-    `False`, `started` `None`.
+    `False`, `fenced` `False`, `started` `None`. A run's own `fenced` flag passes through.
     """
     by_id = {row["id"]: row for row in runs}
-    no_pidfile = {"pid": None, "alive": False, "started": None}
+    no_pidfile = {"pid": None, "alive": False, "fenced": False, "started": None}
     return [
         {"id": run_id, **by_id.get(run_id, no_pidfile), **summaries.get(run_id, {})}
         for run_id in sorted(set(by_id) | set(summaries))
@@ -2258,13 +2266,14 @@ def intake_groups(intake: list, initiatives: list) -> dict:
     }
 
 
-def _run_entry(run_id: str, pid_text: str, alive: dict, started: dict, heartbeats: dict) -> dict:
+def _run_entry(run_id: str, pid_text: str, alive: dict, started: dict, heartbeats: dict, fenced: dict) -> dict:
     stripped = pid_text.strip()
     pid = int(stripped) if stripped.isdigit() else None
     return {
         "id": run_id,
         "pid": pid,
         "alive": alive.get(run_id, False) if pid is not None else False,
+        "fenced": bool(fenced.get(run_id, False)) if pid is not None else False,
         "started": started.get(run_id),
         "heartbeat": heartbeats.get(run_id),
         "host": None,
@@ -2272,18 +2281,19 @@ def _run_entry(run_id: str, pid_text: str, alive: dict, started: dict, heartbeat
     }
 
 
-def run_entries(pids: dict, alive: dict, started: dict, heartbeats: dict | None = None) -> list:
+def run_entries(pids: dict, alive: dict, started: dict, heartbeats: dict | None = None, fenced: dict | None = None) -> list:
     """Rows for the runs list, the `runs` input `render_context` and
-    `context_document` already accept: one `{"id", "pid", "alive",
+    `context_document` already accept: one `{"id", "pid", "alive", "fenced",
     "started", "heartbeat"}` per run id in `pids` (pidfile text the caller
     already read), sorted by id. `heartbeats` maps a run id to its lease's
     `heartbeat_at`, only for runs that hold their lease; any other run gets
-    `heartbeat` `None`. A pidfile whose text is not a plain integer — a partial
-    write, a stray hand edit — is treated as unreadable: `pid` comes back
-    `None` and `alive` comes back `False` regardless of what the caller
-    passed in `alive` for that id.
+    `heartbeat` `None`. `fenced` maps a run id to whether its process runs
+    without its lease; a missing id reads `False`. A pidfile whose text is not
+    a plain integer — a partial write, a stray hand edit — is treated as
+    unreadable: `pid` comes back `None` and `alive` and `fenced` come back
+    `False` regardless of what the caller passed for that id.
     """
-    return [_run_entry(run_id, pids[run_id], alive, started, heartbeats or {}) for run_id in sorted(pids)]
+    return [_run_entry(run_id, pids[run_id], alive, started, heartbeats or {}, fenced or {}) for run_id in sorted(pids)]
 
 
 def remote_lane_entries(lanes: Sequence) -> list:

@@ -269,6 +269,68 @@ def test_run_live_falls_back_to_the_pid_when_the_store_has_no_row_for_the_run(tm
     assert not epic.run_live(DEAD_PID, tmp_path / "x-3.pid", now=NOW)
 
 
+def test_process_alive_ignores_the_lease(tmp_path):
+    pidfile = _lease_case(tmp_path, "x-4", "2026-09-25T06:00:00Z")
+    assert epic.process_alive(os.getpid(), pidfile)
+    assert not epic.process_alive(DEAD_PID, pidfile)
+
+
+@pytest.mark.parametrize("holder, expires_at, live, state", [
+    ("x-3", "2026-09-25T06:00:00Z", True, "running"),
+    ("x-4", "2026-09-25T06:00:00Z", True, "fenced"),
+    ("x-3", "2026-09-25T04:00:00Z", True, "fenced"),
+    ("x-4", "2026-09-25T06:00:00Z", False, "exited"),
+    ("x-3", "2026-09-25T06:00:00Z", False, "exited"),
+])
+def test_run_state_joins_the_lease_standing_with_the_process(tmp_path, holder, expires_at, live, state):
+    pidfile = _lease_case(tmp_path, holder, expires_at)
+    assert epic.run_state(os.getpid() if live else DEAD_PID, pidfile, now=NOW) == state
+
+
+def test_live_runs_lists_running_and_fenced_runs_of_the_prefix_only(tmp_path, monkeypatch):
+    leases_table(tmp_path, ("runs:x", "x-1", "2999-01-01T00:00:00Z"))
+    for name, pid in (("x-1", "11"), ("x-2", "22"), ("x-3", "33"), ("x-bad", "44"), ("x-4", "junk"), ("y-1", "55")):
+        (tmp_path / f"{name}.pid").write_text(pid)
+    monkeypatch.setattr(epic, "process_alive", lambda pid, pidfile, log=None: pid in (11, 22, 44, 55))
+    assert epic.live_runs(tmp_path, "x") == [
+        {"run": "x-1", "pid": 11, "state": "running"},
+        {"run": "x-2", "pid": 22, "state": "fenced"},
+    ]
+
+
+def test_watch_does_not_finish_a_fenced_run(tmp_path, monkeypatch):
+    leases_table(tmp_path, ("runs:x", "x-4", "2999-01-01T00:00:00Z"))
+    pidfile = tmp_path / "x-3.pid"
+    pidfile.write_text("11")
+    monkeypatch.setattr(epic, "process_alive", lambda pid, pidfile, log=None: True)
+    out = epic.watch(pidfile, max_seconds=0, interval=0)
+    assert (out["state"], out["finished"]) == ("fenced", False)
+
+
+def test_watch_reports_state_exited_for_a_dead_pid(tmp_path):
+    pf = tmp_path / "pid"
+    pf.write_text(str(DEAD_PID))
+    out = epic.watch(pf, max_seconds=1, interval=0.1)
+    assert (out["state"], out["finished"]) == ("exited", True)
+
+
+def test_epic_watch_prints_fenced_and_exits_3(tmp_path, monkeypatch, capsys):
+    leases_table(tmp_path, ("runs:x", "x-4", "2999-01-01T00:00:00Z"))
+    pidfile = tmp_path / "x-3.pid"
+    pidfile.write_text("11")
+    monkeypatch.setattr(epic, "process_alive", lambda pid, pidfile, log=None: True)
+    assert main(["epic", "watch", str(pidfile), "--max-seconds", "0"]) == 3
+    assert capsys.readouterr().out.strip() == "pid 11: fenced"
+
+
+def test_runs_wait_keeps_a_fenced_run_in_the_busy_list(tmp_path, monkeypatch, capsys):
+    leases_table(tmp_path, ("runs:x", "x-4", "2999-01-01T00:00:00Z"))
+    (tmp_path / "x-3.pid").write_text("11")
+    monkeypatch.setattr(epic, "process_alive", lambda pid, pidfile, log=None: True)
+    assert main(["runs", "wait", "--runs-dir", str(tmp_path), "--max-seconds", "0", "--json"]) == 3
+    assert json.loads(capsys.readouterr().out) == {"exited": [], "busy": ["x-3"]}
+
+
 def test_summarize_log_returns_the_approved_but_not_landed_lines():
     s = epic.summarize_log("  approved but not landed: t1 (run-2)\nepic run-2: done\n")
     assert s["approved"] == ["approved but not landed: t1 (run-2)"] and s["summary"] == "epic run-2: done"
@@ -283,9 +345,9 @@ def _lanes(tmp_path, monkeypatch, live_calls):
 
     def fake(pid, pidfile, log=None, now=None):
         seen[pidfile.stem] += 1
-        return seen[pidfile.stem] <= live_calls[pidfile.stem]
+        return "running" if seen[pidfile.stem] <= live_calls[pidfile.stem] else "exited"
 
-    monkeypatch.setattr(epic, "run_live", fake)
+    monkeypatch.setattr(epic, "run_state", fake)
     monkeypatch.setattr(cli_module.time, "sleep", lambda _s: None)
 
 

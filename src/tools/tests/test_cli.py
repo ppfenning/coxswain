@@ -7,9 +7,19 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from test_run_store import leases_table
 
-from agent_tools import cli
+from agent_tools import cli, epic
 from agent_tools.chair_plan_land import plan_lands
+
+
+def test_status_rows_for_reads_fenced_for_a_live_pid_whose_lease_another_run_holds(tmp_path, monkeypatch):
+    leases_table(tmp_path, ("runs:x", "x-4", "2999-01-01T00:00:00Z"))
+    (tmp_path / "x-3.pid").write_text("11")
+    (tmp_path / "x-2.pid").write_text("22")
+    monkeypatch.setattr(epic, "process_alive", lambda pid, pidfile, log=None: pid == 11)
+    rows = {r["id"]: r for r in cli._status_rows_for(tmp_path)}
+    assert [(rows[i]["state"], rows[i]["fenced"]) for i in ("x-2", "x-3")] == [("exited", False), ("fenced", True)]
 
 
 def _land_ns(**overrides):
