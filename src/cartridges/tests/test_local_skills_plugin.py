@@ -81,6 +81,17 @@ def test_route_work_launches_with_the_work_path_and_the_chair_label() -> None:
     assert "`--label <chair label>`" in text
 
 
+def test_route_work_names_placement_by_the_hosts_table() -> None:
+    raw = (PLUGIN / "skills" / "route-work" / "SKILL.md").read_text(encoding="utf-8")
+    text = " ".join(raw.split())
+    assert "Launch without `--on`" in text
+    assert "places the lane by the hosts table" in text
+    assert "`placed on <host> (<in use>/<cap>)`" in text
+    assert "refuses rather than overfill" in text
+    assert "`--on <host>` still pins a host" in text
+    assert "`--on local` with `--force` is the only way to exceed" in text
+
+
 def test_route_work_stops_rather_than_clearing_an_unavailable_leader_check() -> None:
     raw = (PLUGIN / "skills" / "route-work" / "SKILL.md").read_text(encoding="utf-8")
     text = " ".join(raw.split())
