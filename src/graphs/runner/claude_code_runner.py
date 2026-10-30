@@ -27,11 +27,14 @@ to change rather than whatever the repository happens to have checked out.
 
 from __future__ import annotations
 
+import codecs
+import io
 import json
 import logging
 import os
 import random
 import re
+import selectors
 import shutil
 import signal
 import subprocess
@@ -46,7 +49,7 @@ from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import IO, TYPE_CHECKING, Any
 
 from runner.decision_log import REASON_SEPARATOR, CallDecision, RouterDecision, joined_reasons, to_row
 from runner.protocol import BudgetStop, Capability, LimitStop, NodeResult, RunnerError
@@ -513,18 +516,126 @@ def _kill_group(proc: subprocess.Popen[str]) -> None:
         os.killpg(proc.pid, signal.SIGKILL)
 
 
-def _kill_and_reap(proc: subprocess.Popen[str]) -> None:
+def _trace_path(trace_dir: Path, role: str, n: int) -> Path:
+    return trace_dir / f"{role}-{n}.jsonl"
+
+
+def _json_object(line: str) -> dict[str, Any] | None:
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    return event if isinstance(event, dict) else None
+
+
+# How often a reader looks up from a quiet pipe to see whether it was told to stop.
+_POLL_SECONDS = 0.1
+
+
+def _pump(pipe: IO[str], stop: threading.Event, parts: list[str], on_line: Callable[[str], None] | None = None) -> None:
+    """Read `pipe` to EOF a line at a time; a read error raises, it is never taken for EOF.
+
+    Imperative edge code: `parts` and the pending tail are mutated on purpose. Wrong belief: closing a
+    pipe wakes its reader, so this polls the raw fd and leaves on `stop`. `select.select` is out: it
+    raises ValueError on any fd of 1024 or more.
+    """
+    fd = pipe.fileno()
+    decoder = io.IncrementalNewlineDecoder(codecs.getincrementaldecoder(pipe.encoding or "utf-8")(errors="replace"), translate=True)
+    pending = ""
+    with selectors.DefaultSelector() as ready:
+        ready.register(fd, selectors.EVENT_READ)
+        while not stop.is_set():
+            if not ready.select(_POLL_SECONDS):
+                continue
+            data = os.read(fd, 65536)
+            *whole, pending = (pending + decoder.decode(data, final=not data)).split("\n")
+            lines = [f"{line}\n" for line in whole] + ([pending] if not data and pending else [])
+            parts.extend(lines)
+            for line in lines:
+                if on_line is not None:
+                    try:
+                        on_line(line)
+                    except Exception:
+                        _log.debug("stream line handler failed", exc_info=True)
+            if not data:
+                return
+
+
+def _feed(pipe: IO[str], prompt: str) -> None:
+    """Write the prompt to claude's stdin and close it. A claude that stopped reading is not an error."""
+    with suppress(OSError, ValueError):
+        data, fd = prompt.encode(pipe.encoding or "utf-8"), pipe.fileno()
+        while data:
+            data = data[os.write(fd, data):]
+    with suppress(OSError, ValueError):
+        pipe.close()
+
+
+class _Streams:
+    """claude's three pipes, serviced by daemon threads so stdout is read while the node runs, not once it ends."""
+
+    def __init__(self, proc: subprocess.Popen[str], prompt: str, on_line: Callable[[str], None] | None) -> None:
+        self.proc = proc
+        self._stop = threading.Event()
+        self._out: list[str] = []
+        self._err: list[str] = []
+        self._failures: list[str] = []
+        assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
+        self._threads = [
+            threading.Thread(target=self._read, args=(proc.stdout, self._out, on_line), daemon=True),
+            threading.Thread(target=self._read, args=(proc.stderr, self._err), daemon=True),
+            threading.Thread(target=_feed, args=(proc.stdin, prompt), daemon=True),
+        ]
+        for thread in self._threads:
+            thread.start()
+
+    def _read(self, pipe: IO[str], parts: list[str], on_line: Callable[[str], None] | None = None) -> None:
+        try:
+            _pump(pipe, self._stop, parts, on_line)
+        except (OSError, ValueError) as exc:
+            if not self._stop.is_set():
+                _log.warning("reading claude's output failed: %s", exc)
+                self._failures.append(f"{type(exc).__name__}: {exc}")
+
+    def collect(self, timeout: float | None) -> tuple[str, str]:
+        """Wait for claude to exit and both pipes to reach EOF, as `communicate` did, inside one `timeout`."""
+        deadline = None if timeout is None else time.monotonic() + timeout
+
+        def left() -> float | None:
+            return None if deadline is None else max(0.0, deadline - time.monotonic())
+
+        self.proc.wait(timeout=left())
+        for thread in self._threads:
+            thread.join(left())
+            if thread.is_alive():
+                raise subprocess.TimeoutExpired(self.proc.args, timeout)
+        if self._failures:
+            raise RunnerError(f"reading claude's output failed: {'; '.join(self._failures)}")
+        return "".join(self._out), "".join(self._err)
+
+    def stop(self, drain: float = 0.0) -> None:
+        """Give the readers `drain` seconds to reach EOF, then tell them to leave."""
+        deadline = time.monotonic() + drain
+        for thread in self._threads:
+            thread.join(max(0.0, deadline - time.monotonic()))
+        self._stop.set()
+        for thread in self._threads:
+            thread.join(_POLL_SECONDS * 5)
+
+
+def _kill_and_reap(proc: subprocess.Popen[str], streams: _Streams) -> None:
     """Kill a timed-out claude's group and reap it without waiting on pipes forever.
 
     Wrong belief: killing claude closes its pipes. A tool it started keeps them
     open, so the drain is bounded and the pipes are closed by hand if it times out.
     """
     _kill_group(proc)
-    try:
-        proc.communicate(timeout=_REAP_SECONDS)
-    except subprocess.TimeoutExpired:
-        _close_pipes(proc)
-        proc.wait()
+    deadline = time.monotonic() + _REAP_SECONDS
+    with suppress(subprocess.TimeoutExpired):
+        proc.wait(timeout=_REAP_SECONDS)
+    streams.stop(drain=max(0.0, deadline - time.monotonic()))
+    _close_pipes(proc)
+    proc.wait()
 
 
 def _close_pipes(proc: subprocess.Popen[str]) -> None:
@@ -825,6 +936,15 @@ class ClaudeCodeRunner:
         # One row per node: what it cost and how many turns it took. Read by
         # whoever wants to know what a run spent; never by a graph.
         self.calls: list[dict[str, Any]] = []
+        # Called as on_node(kind, info, event) while a node runs: kind is "started", "event" or "finished",
+        # info names role, attempt, task, tier and cwd. event is the parsed stream object. Stream objects
+        # exist only when trace_dir is set (json mode prints one blob), so without it a node reports
+        # "started" and "finished" and no events. Callbacks run on the reader thread, one at a time, and a
+        # slow one holds back the pipe: keep them quick. No event follows "finished".
+        self.on_node: Callable[[str, dict[str, Any], dict[str, Any] | None], None] | None = None
+        # Trace files a running node has claimed, so two same-role nodes never stream into one file.
+        self._trace_lock = threading.Lock()
+        self._live_traces: set[Path] = set()
         # Holds `tag_decision` per thread: `invoke_graphs` shares this runner across a thread pool.
         self._local = threading.local()
 
@@ -1269,6 +1389,33 @@ class ClaudeCodeRunner:
         argv += ["--tools", *(tools or [""])]
         return argv
 
+    def _claim_trace(self, role: str) -> Path:
+        """Reserve the next trace file of `role`: past the files of calls that stood and of nodes still running."""
+        assert self.trace_dir is not None
+        with self._trace_lock:
+            stood = {c.get("trace") for c in self.calls}
+            n = sum(1 for c in self.calls if c["role"] == role) + 1
+            while (path := _trace_path(self.trace_dir, role, n)) in self._live_traces or str(path) in stood:
+                n += 1
+            self._live_traces.add(path)
+        self._local.trace = path
+        return path
+
+    def _take_trace(self, role: str) -> Path:
+        """The file this thread's node streamed to; `_payload` and `_ledger_timeout` must name the same one."""
+        assert self.trace_dir is not None
+        path, self._local.trace = getattr(self._local, "trace", None), None
+        return path or _trace_path(self.trace_dir, role, sum(1 for c in self.calls if c["role"] == role) + 1)
+
+    def _notify(self, kind: str, info: dict[str, Any], event: dict[str, Any] | None = None) -> None:
+        """Tell `on_node` what the node is doing. A callback that raises never fails the node."""
+        if self.on_node is None:
+            return
+        try:
+            self.on_node(kind, info, event)
+        except Exception:
+            _log.debug("on_node callback failed on %s", kind, exc_info=True)
+
     def _payload(self, role: str, stdout: str) -> dict[str, Any]:
         """The result object — the whole output in json mode, the last event in stream mode.
 
@@ -1283,8 +1430,7 @@ class ClaudeCodeRunner:
             return payload if isinstance(payload, dict) else {"is_error": True, "result": f"non-object output: {stdout[:200]}"}
 
         self.trace_dir.mkdir(parents=True, exist_ok=True)
-        n = sum(1 for c in self.calls if c["role"] == role) + 1
-        path = self.trace_dir / f"{role}-{n}.jsonl"
+        path = self._take_trace(role)
         path.write_text(stdout + "\n", encoding="utf-8")
         events: list[dict[str, Any]] = []
         last: dict[str, Any] | None = None
@@ -1314,6 +1460,7 @@ class ClaudeCodeRunner:
         packs: Sequence[str], scratch: Path | None, patches: bool, session: Sequence[str], budget_usd: float | None = None,
         spent_usd: float = 0.0, effort: str | None = None,
         checkpoint_fractions: tuple[float, ...] | None = None, checkpoint_index: int = 0, thread: str | None = None,
+        attempt: int = 1, task: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
         system = "\n\n".join(
             part for part in (self._read_context(packs), self._workspace(scratch, patches=patches, role=role), self.extra_system)
@@ -1345,16 +1492,51 @@ class ClaudeCodeRunner:
             )
         except FileNotFoundError as exc:
             raise RunnerError(f"'{self.claude_bin}' not found; is Claude Code installed and on PATH?") from exc
+        info = {"role": role, "attempt": attempt, "task": task, "tier": tier, "cwd": str(scratch or self.cwd)}
+        trace = self._claim_trace(role) if self.trace_dir else None
+        if trace is not None:
+            # The file exists, empty, from the first moment, so a lister sees the running node.
+            with suppress(OSError):
+                trace.parent.mkdir(parents=True, exist_ok=True)
+                trace.write_text("", encoding="utf-8")
+        gate, done = threading.Lock(), threading.Event()
+
+        def on_line(line: str) -> None:
+            if trace is None:
+                return
+            with suppress(OSError), trace.open("a", encoding="utf-8") as fh:
+                fh.write(line)
+            if (event := _json_object(line)) is not None:
+                with gate:
+                    if not done.is_set():
+                        self._notify("event", info, event)
+
+        self._notify("started", info)
+        streams = _Streams(proc, prompt, on_line)
         try:
-            out, err = proc.communicate(input=prompt, timeout=self.timeout)
-        except subprocess.TimeoutExpired as exc:
-            _kill_and_reap(proc)
-            raise _NodeTimeout(f"node '{role}' did not finish within {self.timeout}s") from exc
-        except BaseException:
-            _kill_group(proc)
-            proc.wait()
-            _close_pipes(proc)
-            raise
+            try:
+                out, err = streams.collect(self.timeout)
+                _close_pipes(proc)
+            except subprocess.TimeoutExpired as exc:
+                _kill_and_reap(proc, streams)
+                raise _NodeTimeout(f"node '{role}' did not finish within {self.timeout}s") from exc
+            except BaseException:
+                _kill_group(proc)
+                streams.stop()
+                proc.wait()
+                _close_pipes(proc)
+                raise
+        finally:
+            # Wait for an event callback still running, so "finished" is the last thing the observer hears.
+            done.set()
+            held = gate.acquire(timeout=_REAP_SECONDS)
+            try:
+                self._notify("finished", info)
+            finally:
+                if held:
+                    gate.release()
+                with self._trace_lock:
+                    self._live_traces.discard(trace)
         return subprocess.CompletedProcess(argv, proc.returncode, out, err)
 
     def _ledger_timeout(
@@ -1363,7 +1545,7 @@ class ClaudeCodeRunner:
         retry_extra: Mapping[str, Any],
     ) -> None:
         """Ledger a timed-out node as a failed call, in the one row shape every other failure path uses."""
-        trace = self.trace_dir / f"{role}-{sum(1 for c in self.calls if c['role'] == role) + 1}.jsonl" if self.trace_dir else None
+        trace = self._take_trace(role) if self.trace_dir else None
         cost = _trace_cost(trace) if trace is not None else None
         payload = {
             **({"total_cost_usd": cost} if cost is not None else {}),
@@ -1494,7 +1676,7 @@ class ClaudeCodeRunner:
                         scratch=state["scratch"], patches=role in _PATCH_ROLES, session=session, budget_usd=budget_usd,
                         spent_usd=state.get("spent_usd", 0.0), effort=effort,
                         checkpoint_fractions=resolved_fractions, checkpoint_index=state.get("checkpoint_index", 0),
-                        thread=thread,
+                        thread=thread, attempt=attempt, task=task,
                     )
                 except _NodeTimeout:
                     ledger_timeout()
@@ -1510,7 +1692,7 @@ class ClaudeCodeRunner:
                         proc = self._invoke(
                             role=role, tier=tier, model=used_model, tools=tools, schema=schema, prompt=prompt,
                             packs=packs, scratch=scratch, patches=True, session=(), budget_usd=budget_usd,
-                            effort=effort, checkpoint_fractions=resolved_fractions,
+                            effort=effort, checkpoint_fractions=resolved_fractions, attempt=attempt, task=task,
                         )
                     except _NodeTimeout:
                         ledger_timeout()
