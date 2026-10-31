@@ -437,3 +437,113 @@ def test_the_rendered_status_cell_of_a_fenced_row_reads_fenced(tmp_path, monkeyp
     header, line = runs_top.render([r for r in rows_now(tmp_path, now=_NOW) if not r.remote], 200)
 
     assert line[header.index("STATUS"):].split()[0] == "fenced"
+
+
+def _node(**over):
+    node = {"node": "build", "attempt": 1, "task": "t1", "tier": "high", "status": "running", "turns": 4, "cost_usd": 0.5,
+            "started_at": "2026-09-25T05:50:00Z", "last_tool": "Bash", "last_tool_at": "2026-09-25T05:59:30Z",
+            "worktree": "/wt/t1", "branch": "feat/t1"}
+    return {**node, **over}
+
+
+def _progress(run="x-3", *nodes):
+    return json.dumps({"version": 1, "run": run, "written_at": "2026-09-25T05:59:40Z", "nodes": list(nodes or [_node()])})
+
+
+def _lease_progress(runs_dir, text):
+    conn = sqlite3.connect(runs_dir / "cox.db")
+    conn.execute("ALTER TABLE leases ADD COLUMN progress TEXT")
+    conn.execute("UPDATE leases SET progress = ?", (text,))
+    conn.commit()
+    conn.close()
+
+
+def _local_run(tmp_path, monkeypatch, holder="x-3", progress=True):
+    monkeypatch.setattr(epic, "run_live", lambda pid, pidfile: True)
+    _write(tmp_path / "x-3.pid", "123")
+    lane_store(tmp_path, [lane_run("x-3", "2026-09-25T05:00:00Z")], [("runs:x", holder, "2026-09-25T06:30:00Z", "2026-09-25T05:59:50Z")])
+    if progress:
+        _write(tmp_path / "x-3.progress.json", _progress())
+    return [r for r in rows_now(tmp_path, now=_NOW) if not r.remote]
+
+
+def test_fact_reads_the_lease_row_pid_elapsed_and_progress_of_a_local_run(tmp_path, monkeypatch):
+    _local_run(tmp_path, monkeypatch)
+
+    fact = _fact(tmp_path, "x-3", True, _NOW)
+
+    assert (fact["lease_row"].holder, fact["lease_row"].epoch, fact["pid"], fact["elapsed_s"]) == ("x-3", 1, 123, 3600)
+    assert [n.task for n in fact["progress"].nodes] == ["t1"]
+
+
+def test_rows_now_carries_lease_state_holder_epoch_pid_and_elapsed_into_a_local_row(tmp_path, monkeypatch):
+    [row] = _local_run(tmp_path, monkeypatch)
+
+    assert (row.lease_state, row.lease_holder, row.lease_epoch, row.pid, row.elapsed_s) == ("held", "x-3", 1, 123, 3600)
+
+
+def test_a_fenced_local_run_shows_the_other_holder(tmp_path, monkeypatch):
+    [row] = _local_run(tmp_path, monkeypatch, holder="host-b-x-2")
+
+    assert (row.status, row.lease_state, row.lease_holder) == ("fenced", "fenced", "host-b-x-2")
+
+
+def test_a_local_run_with_no_progress_file_has_no_progress_and_still_has_a_row(tmp_path, monkeypatch):
+    [row] = _local_run(tmp_path, monkeypatch, progress=False)
+
+    assert _fact(tmp_path, "x-3", True, _NOW)["progress"] is None
+    assert (row.run, row.lease_state) == ("x-3", "held")
+
+
+def test_a_remote_lane_shows_lease_state_heartbeat_age_cost_and_nodes_from_its_progress_string(tmp_path):
+    _remote_store(tmp_path, "2026-09-25T05:59:50Z")
+    _lease_progress(tmp_path, _progress("x-3", _node(turns=3, cost_usd=0.25)))
+
+    [row] = rows_now(tmp_path, now=_NOW)
+
+    assert (row.remote, row.lease_state, row.lease_holder, row.lease_epoch, row.heartbeat_age) == (True, "held", "x-3", 1, 10)
+    assert (row.node, row.attempt, row.turns, row.cost_usd, row.elapsed_s, row.pid) == ("build", 1, 3, 0.25, 3600, None)
+
+
+def test_a_remote_lane_with_a_torn_progress_string_keeps_the_starting_row(tmp_path):
+    _remote_store(tmp_path, "2026-09-25T05:59:50Z")
+    _lease_progress(tmp_path, '{"version": 1, "nodes": [')
+
+    [row] = rows_now(tmp_path, now=_NOW)
+
+    assert (row.node, row.turns, row.cost_usd, row.lease_state) == ("starting", 0, 0.0, "held")
+
+
+def test_lease_and_progress_reads_that_raise_leave_the_fields_empty(tmp_path, monkeypatch):
+    def boom(*args):
+        raise RuntimeError("store down")
+
+    _remote_store(tmp_path, "2026-09-25T05:59:50Z")
+    monkeypatch.setattr(run_store, "lease_row", boom)
+    monkeypatch.setattr("agent_tools.progress_read.local", boom)
+    monkeypatch.setattr(epic, "run_live", lambda pid, pidfile: True)
+    _write(tmp_path / "y-1.pid", "123")
+
+    rows = rows_now(tmp_path, now=_NOW)
+
+    assert [(r.run, r.lease_holder, r.lease_epoch) for r in rows if not r.remote] == [("y-1", "", None)]
+    assert [(r.run, r.lease_state, r.lease_epoch) for r in rows if r.remote] == [("x-3", "", None)]
+    assert _fact(tmp_path, "y-1", True, _NOW)["progress"] is None
+
+
+def test_an_expanded_run_lists_its_nodes(tmp_path, monkeypatch):
+    _local_run(tmp_path, monkeypatch)
+
+    text = _accordion_detail(tmp_path, "x-3", 200, lambda pid: True, _NOW)
+
+    assert "  build t1 high running 4 $0.50 Bash 30s ago feat/t1" in text
+
+
+def test_an_expanded_run_with_no_progress_keeps_the_timeline_and_tail(tmp_path):
+    _write(tmp_path / "r1.pid", "123")
+    _write(tmp_path / "r1.log", "n1 verdict: land\n")
+
+    lines = _accordion_detail(tmp_path, "r1", 80, lambda pid: True, _NOW)
+
+    assert lines[0].startswith("run r1 [")
+    assert not any(" high " in ln for ln in lines)
