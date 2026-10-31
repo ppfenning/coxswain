@@ -11,7 +11,7 @@ import socket
 import time
 from pathlib import Path
 
-from agent_tools import chair, chair_stall, epic, lease_standing, run_store, runs_top
+from agent_tools import chair, chair_stall, epic, lease_standing, progress_read, run_store, runs_top
 from agent_tools import events as events_module
 from agent_tools.records import ceiling_for, load_trace
 
@@ -128,6 +128,26 @@ def _stall_ts(value: str | None) -> str | None:
     return aware.astimezone(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _elapsed_s(started_at: str | None, now: datetime.datetime) -> int | None:
+    """Whole seconds from `started_at` to `now`, never negative; None when absent or unparseable."""
+    stamp = _stall_ts(started_at)
+    if stamp is None:
+        return None
+    try:
+        began = datetime.datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.UTC)
+        return max(int((now - began).total_seconds()), 0)
+    except (TypeError, ValueError):
+        return None
+
+
+def _guarded(read, *args):
+    """Edge. `read(*args)`, or None when it raises: a lease or progress read must never break the screen."""
+    try:
+        return read(*args)
+    except Exception:  # store backends raise their own error types
+        return None
+
+
 def _node_call_stalled(calls: list[dict], started_at: str | None, now: datetime.datetime) -> bool:
     """True once the newest of the already-loaded `calls` (or the run's own start, with none yet) and the
     run's start both clear `chair_stall.STALL_MINUTES`; False outright with no stored `started_at`."""
@@ -154,7 +174,11 @@ def _fact(root: Path, run: str, alive: bool, now: datetime.datetime | None = Non
             "ceiling": _ceiling(root, run), "launched_by": _launched_by(root, run),
             "heartbeat_age": _heartbeat_age(lease, run, now),
             "lease_standing": lease_standing.standing(lease, run, now.astimezone(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")),
-            "node_call_stalled": _node_call_stalled(calls, started_at, now)}
+            "node_call_stalled": _node_call_stalled(calls, started_at, now),
+            "lease_row": _guarded(run_store.lease_row, root, run),
+            "pid": _read_pid(root / f"{run}.pid"),
+            "elapsed_s": _elapsed_s(started_at, now),
+            "progress": _guarded(progress_read.local, root, run)}
 
 
 def facts(runs_dir, now_alive=None, now: datetime.datetime | None = None) -> list[dict]:
@@ -211,11 +235,27 @@ def _remote_rows(root: Path, lanes: list[run_store.Lane], now: datetime.datetime
     return [_remote_row(root, lane, now) for lane in remote]
 
 
+def _progress_calls(progress: progress_read.Progress | None) -> list[dict]:
+    """The `_call` shape for each progress node, so a lane with no stored calls still shows node, turns and cost."""
+    nodes = progress.nodes if progress else ()
+    return [{"node": n.node, "attempt": n.attempt, "turns": n.turns, "cost_usd": n.cost_usd or 0.0, "ts": n.last_tool_at} for n in nodes]
+
+
 def _remote_row(root: Path, lane: run_store.Lane, now: datetime.datetime) -> runs_top.Row:
     # `run_store.usage` reads a pidless run's store rows as ended, so it serves a run still going on another host.
-    calls = calls_from_usage((run_store.usage(root, lane.run) or {}).get("calls") or [])
+    stored = calls_from_usage((run_store.usage(root, lane.run) or {}).get("calls") or [])
     phases = run_store.phase_names(root, lane.run)
-    return runs_top.remote_row(lane.run, lane.host, _lane_age(lane.heartbeat_at, now), calls, phases[-1] if phases else "")
+    lease = _guarded(run_store.lease_row, root, lane.run)
+    # The lane host writes its progress into the lease row; stored calls win, progress fills in when there are none.
+    progress = _guarded(progress_read.parse, lease.progress) if lease and lease.progress else None
+    state = lease_standing.standing((lease.holder, lease.expires_at, lease.heartbeat_at), lane.run, _stamp(now)) if lease else ""
+    return runs_top.remote_row(lane.run, lane.host, _lane_age(lane.heartbeat_at, now), stored or _progress_calls(progress),
+                               phases[-1] if phases else "", lease_state=state, lease_holder=lease.holder if lease else "",
+                               lease_epoch=lease.epoch if lease else None, elapsed_s=_elapsed_s(lane.launched_at, now))
+
+
+def _stamp(now: datetime.datetime) -> str:
+    return now.astimezone(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def rows_now(runs_dir, heartbeat_minutes: int = chair.DEFAULT_HEARTBEAT_MINUTES,
@@ -225,7 +265,9 @@ def rows_now(runs_dir, heartbeat_minutes: int = chair.DEFAULT_HEARTBEAT_MINUTES,
     chair_state = chair_now(runs_dir, heartbeat_minutes)
     host = socket.gethostname()
     local = [runs_top.row(f["run"], f["alive"], f["phases"], f["events"], f["calls"], f["ceiling"], f["launched_by"], chair_state,
-                          f["heartbeat_age"], host, f["node_call_stalled"], standing=f["lease_standing"])
+                          f["heartbeat_age"], host, f["node_call_stalled"], standing=f["lease_standing"],
+                          lease_state=f["lease_standing"], lease_holder=f["lease_row"].holder if f["lease_row"] else "",
+                          lease_epoch=f["lease_row"].epoch if f["lease_row"] else None, elapsed_s=f["elapsed_s"], pid=f["pid"])
              for f in facts(runs_dir, now=now)]
     lanes = run_store.live_lanes(root, now.astimezone(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
     return [*local, *_remote_rows(root, lanes, now)]
@@ -268,10 +310,12 @@ def _session_text(root: Path, run: str) -> str:
     return "\n".join(lines)
 
 
-def _accordion_detail(runs_dir, run: str, width: int, now_alive) -> list[str]:
+def _accordion_detail(runs_dir, run: str, width: int, now_alive, now: datetime.datetime | None = None) -> list[str]:
     from agent_tools import runs_detail, runs_detail_screen
 
     root = Path(runs_dir)
-    detail = runs_detail.detail(**runs_detail_screen.facts_for(runs_dir, run, now_alive=now_alive))
+    progress = _guarded(progress_read.local, root, run)
+    detail = runs_detail.detail(**runs_detail_screen.facts_for(runs_dir, run, now_alive=now_alive),
+                                progress=progress, now=now or datetime.datetime.now(datetime.UTC))
     tail = runs_top.tail_lines(_session_text(root, run), 3)
     return [*runs_detail.render(detail, width), *tail]
