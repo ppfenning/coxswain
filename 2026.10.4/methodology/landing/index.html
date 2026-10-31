@@ -1473,6 +1473,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#manual-repos" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Manual repos
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#runs-clean" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6071,6 +6082,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#manual-repos" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Manual repos
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#runs-clean" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6196,6 +6218,23 @@ asserted that they are. The land polls the forge's own check results for
 the pull request. A failed check stops the land; nothing merges. This is
 the same evidence-over-assertion rule the review nodes enforce, applied at
 the last step: the checks that actually ran are what green means.</p>
+<h2 id="manual-repos">Manual repos</h2>
+<p>A repo whose overlay (<code>.agent/cartridge.yaml</code>) sets <code>land: manual</code> is one where a person merges the PR. The chair and
+<code>cox runs stranded</code> propose no <code>cox runs land</code> for it; the remedy line says the human merges the PR. Each tick the chair
+runs <code>git fetch origin &lt;branch&gt;</code> for the PR branches the land builds (<code>pr/&lt;initiative&gt;--&lt;phase&gt;</code> and <code>pr/&lt;task&gt;</code>), the
+base and the phase branch. It then asks whether a PR branch is an ancestor of <code>origin/&lt;base&gt;</code> or <code>origin/&lt;phase&gt;</code>, or
+merges into one of them with no change, which is what a squash merge leaves behind. A merge done on the forge never moves
+local refs, so only <code>origin/</code> refs count. When the answer is yes the approved task is marked done, through the same
+store write as <code>cox route edit --state done</code>, and its dependents start. A task whose merge is not yet on origin is
+rechecked every five minutes. A PR branch deleted on origin cannot be checked: the chair reports it as failed with the
+commands below.</p>
+<p>To finish a task by hand, run the merged-branch check first, then the escape hatch:</p>
+<div class="highlight"><pre><span></span><code>git fetch origin &lt;base&gt; &lt;phase&gt;
+git branch -r --merged origin/&lt;base&gt;
+cox route edit &lt;task&gt; --state done
+</code></pre></div>
+<p>Look for the PR branch in that list, or for its squash commit in <code>git log origin/&lt;base&gt;</code>, before <code>cox route edit &lt;task&gt;
+--state done</code> is run.</p>
 <h2 id="runs-clean">runs clean</h2>
 <p><code>cox runs clean &lt;run&gt; --repo R --apply</code> removes the worktree and
 branches a finished run left behind. Without <code>--apply</code> it shows what it
