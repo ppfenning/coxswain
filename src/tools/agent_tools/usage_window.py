@@ -316,14 +316,13 @@ _FIVE_HOURS = timedelta(hours=5)
 
 
 def five_hour_start(resets_at: datetime | None, at: datetime) -> datetime | None:
-    """Pure. Start of the five-hour window the meter reports: `resets_at` minus five
-    hours while it is still ahead of `at`, `resets_at` itself once it has passed, and
-    None with no `resets_at`."""
+    """Pure. `resets_at` minus 5h while ahead of `at`, else `resets_at` rolled forward by whole 5h steps to under
+    5h old; None without `resets_at`."""
     if resets_at is None:
         return None
     if resets_at > at:
         return resets_at - _FIVE_HOURS
-    return resets_at
+    return resets_at + ((at - resets_at) // _FIVE_HOURS) * _FIVE_HOURS
 
 
 def weekly_window_from(

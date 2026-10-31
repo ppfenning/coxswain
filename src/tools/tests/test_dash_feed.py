@@ -305,6 +305,28 @@ def test_the_feed_built_from_the_fixtures_inputs_equals_the_fixture(monkeypatch,
     assert result == fixture
 
 
+def test_activity_does_not_copy_an_estimated_fraction_into_either_spend_pane(monkeypatch, tmp_path):
+    _stub_activity_readers(monkeypatch, {}, 2.0, 5.0)
+    estimate = {
+        **_SPEND, "five_hour_source": "est", "weekly_source": "est", "five_hour_resets_at": None, "weekly_resets_at": None,
+    }
+
+    split = dash_feed._activity(tmp_path, {}, "sess", estimate, _ACTIVITY_AT, {})["spend_split"]
+
+    assert split["five_hour"]["meter_fraction"] == 0.0
+    assert split["weekly"]["meter_fraction"] == 0.0
+
+
+def test_activity_copies_a_meters_fraction_into_each_spend_pane_by_its_own_source(monkeypatch, tmp_path):
+    _stub_activity_readers(monkeypatch, {}, 2.0, 5.0)
+    mixed = {**_SPEND, "five_hour_source": "meter", "weekly_source": "est"}
+
+    split = dash_feed._activity(tmp_path, {}, "sess", mixed, _ACTIVITY_AT, {})["spend_split"]
+
+    assert split["five_hour"]["meter_fraction"] == 0.12
+    assert split["weekly"]["meter_fraction"] == 0.0
+
+
 def test_activity_cuts_the_store_rows_into_each_windows_by_node_and_cost_per_landed_task(monkeypatch, tmp_path):
     _stub_activity_readers(monkeypatch, {}, 2.0, 5.0)
     build = {"role": "build", "tier": "standard", "model_alias": "claude-sonnet-5-5", "output_tokens": 10}

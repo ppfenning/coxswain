@@ -66,9 +66,16 @@ def test_five_hour_start_with_a_future_reset_is_five_hours_before_it():
     assert five_hour_start(resets_at, _NOW) == datetime(2026, 9, 5, 10, 0, 0, tzinfo=UTC)
 
 
-def test_five_hour_start_with_a_past_reset_is_the_reset_itself():
-    resets_at = datetime(2026, 9, 5, 9, 0, 0, tzinfo=UTC)
+def test_five_hour_start_with_a_reset_under_five_hours_old_is_the_reset_itself():
+    resets_at = _NOW - timedelta(hours=1)
     assert five_hour_start(resets_at, _NOW) == resets_at
+
+
+def test_five_hour_start_rolls_a_stale_reset_forward_by_whole_windows():
+    resets_at = _NOW - timedelta(hours=71)
+    start = five_hour_start(resets_at, _NOW)
+    assert start == resets_at + timedelta(hours=70)
+    assert timedelta(0) <= _NOW - start < timedelta(hours=5)
 
 
 def test_five_hour_start_with_no_reset_is_none():

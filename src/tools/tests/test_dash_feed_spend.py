@@ -6,6 +6,7 @@ import json
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from test_run_store import ROW, store
@@ -212,6 +213,79 @@ def test_a_stale_meters_five_hour_reset_anchors_the_five_hour_estimate(tmp_path)
 
     assert spend["five_hour_fraction"] == 0.12
     assert spend["five_hour_source"] == "est"
+
+
+def test_a_meter_three_days_stale_leaves_the_five_hour_estimate_on_the_active_ccusage_block(tmp_path):
+    for hours in range(1, 72, 5):
+        _usage_file(tmp_path, f"host-a-{hours}", NOW_DT - timedelta(hours=hours), cost=4.0)
+    block = {
+        "isActive": True, "startTime": (NOW_DT - timedelta(hours=2)).isoformat(),
+        "endTime": (NOW_DT + timedelta(hours=3)).isoformat(), "costUSD": 0.84,
+    }
+    (tmp_path / ".ccusage-block.json").write_text(json.dumps({"at": NOW_DT.isoformat(), "blocks": {"blocks": [block]}}))
+    stale = usage_meter.Meter(
+        five_hour=usage_meter.MeterEntry(used_percentage=0, resets_at=NOW_DT - timedelta(hours=71)),
+        seven_day=usage_meter.MeterEntry(used_percentage=2, resets_at=datetime(2026, 10, 11, 4, tzinfo=UTC)),
+        observed_at=NOW_DT - timedelta(hours=73),
+    )
+
+    spend = dash_feed._spend(
+        tmp_path, NOW, read_local=lambda: stale, read_store=lambda runs_dir: None, read_reset=_no_reset,
+    )
+
+    assert spend["five_hour_fraction"] == pytest.approx(0.0084)
+    assert spend["five_hour_source"] == "est"
+
+
+@pytest.mark.parametrize(
+    ("meter_age", "reset_age", "anchored"),
+    [
+        (timedelta(hours=4, minutes=59), timedelta(hours=71), True),
+        (timedelta(hours=5), timedelta(hours=71), False),
+        (timedelta(hours=73), timedelta(hours=71), False),
+        (timedelta(hours=73), timedelta(hours=-2), False),
+    ],
+)
+def test_the_five_hour_window_handed_to_gather_starts_under_five_hours_before_now_or_defers_to_ccusage(
+    tmp_path, monkeypatch, meter_age, reset_age, anchored,
+):
+    seen: list[datetime | None] = []
+
+    def recording_gather(runs_dir, now, *, ceiling_usd=None, start=None):
+        seen.append(start)
+        return SimpleNamespace(spent_usd=0.0, ceiling_usd=ceiling_usd)
+
+    monkeypatch.setattr(dash_feed.usage_window, "gather", recording_gather)
+    meter = usage_meter.Meter(
+        five_hour=usage_meter.MeterEntry(used_percentage=0, resets_at=NOW_DT - reset_age),
+        seven_day=usage_meter.MeterEntry(used_percentage=2, resets_at=datetime(2026, 10, 11, 4, tzinfo=UTC)),
+        observed_at=NOW_DT - meter_age,
+    )
+
+    dash_feed._spend(tmp_path, NOW, read_local=lambda: meter, read_store=lambda runs_dir: None, read_reset=_no_reset)
+
+    (start,) = seen
+    assert (start is not None) == anchored
+    assert start is None or timedelta(0) <= NOW_DT - start < timedelta(hours=5)
+
+
+def test_a_meter_just_under_five_hours_old_with_a_reset_days_gone_counts_from_a_window_under_five_hours_old(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(dash_feed, "_profile_ceilings", lambda: (60.0, 100.0))
+    _usage_file(tmp_path, "host-b-old", NOW_DT - timedelta(hours=30), cost=50.0)
+    _usage_file(tmp_path, "host-b-recent", NOW_DT - timedelta(minutes=30), cost=3.0)
+    meter = usage_meter.Meter(
+        five_hour=usage_meter.MeterEntry(used_percentage=0, resets_at=NOW_DT - timedelta(hours=71)),
+        seven_day=usage_meter.MeterEntry(used_percentage=2, resets_at=datetime(2026, 10, 11, 4, tzinfo=UTC)),
+        observed_at=NOW_DT - timedelta(hours=4),
+    )
+
+    spend = dash_feed._spend(
+        tmp_path, NOW, read_local=lambda: meter, read_store=lambda runs_dir: None, read_reset=_no_reset,
+    )
+
+    assert spend["five_hour_fraction"] == pytest.approx(3.0 / 60.0)
 
 
 def test_a_recorded_implied_five_hour_ceiling_does_not_change_the_five_hour_estimate(tmp_path, monkeypatch):

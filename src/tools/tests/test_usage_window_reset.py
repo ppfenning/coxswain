@@ -14,6 +14,11 @@ def test_start_is_resets_at_minus_seven_days_when_the_reset_is_three_days_ahead(
     assert weekly_start_from_reset(_NOW + timedelta(days=3), None, _NOW) == _NOW - timedelta(days=4)
 
 
+def test_start_rolls_a_reset_weeks_stale_forward_to_under_seven_days_old():
+    start = weekly_start_from_reset(_NOW - timedelta(days=20), None, _NOW)
+    assert timedelta(0) <= _NOW - start < _WEEK
+
+
 def test_gather_weekly_with_a_start_excludes_spend_before_it_and_includes_spend_after_it(tmp_path):
     start = weekly_start_from_reset(_NOW + timedelta(days=3), None, _NOW)
     usage = [
