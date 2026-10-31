@@ -98,6 +98,7 @@ nav:
   - Releases:
       - Releases: releases/index.md
       - From 0.47 to the monorepo: monorepo.md
+      - 2026.10.5: releases/2026.10.5.md
       - 2026.10.4: releases/2026.10.4.md
       - 2026.10.3: releases/2026.10.3.md
       - 2026.10.2: releases/2026.10.2.md
