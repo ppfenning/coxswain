@@ -227,7 +227,9 @@ def _spend(runs_dir: Path, now: str, *, read_local=None, read_store=None, read_r
     the store when fresh; else an estimate. The weekly estimate is ceilinged by an implied ceiling the meter has
     recorded, falling back to the routing profile's own, and starts at the newest meter's reset (even a stale
     one), else the profile's configured reset. The five-hour estimate starts at the newest meter's five-hour
-    window (the five hours before now with no meter) and is always ceilinged by the profile's window ceiling.
+    window, rolled forward to under five hours old, while that meter is under five hours old; with an older meter or
+    none it takes the active ccusage block (the five hours before now without one). It is always ceilinged by the
+    profile's window ceiling.
     `spend_source` is "local meter", "meter store" or "estimate"; `spend_age_s` is the age of the meter that
     answered, or of the newest stale one an estimate went on, and None when no meter exists.
     `weekly_target_fraction` and `weekly_pace` are the pacing policy's weekly verdict: over the seven days ending
@@ -249,7 +251,13 @@ def _spend(runs_dir: Path, now: str, *, read_local=None, read_store=None, read_r
         None if reset is None else usage_window.weekly_window_start(at, reset),
         at,
     )
-    five_start = usage_window.five_hour_start(None if newest is None else newest.five_hour.resets_at, at)
+    # A meter older than one five-hour window says nothing about the current one: let `gather` take the active
+    # ccusage block, as `cox usage assess` does, instead of summing from a reset hours or days gone.
+    five_start = (
+        None
+        if newest is None or at - newest.observed_at >= timedelta(hours=5)
+        else usage_window.five_hour_start(newest.five_hour.resets_at, at)
+    )
     window_ceiling, profile_weekly_ceiling = _profile_ceilings()
     weekly_ceiling = usage_meter.implied_ceiling("weekly", at)
     if weekly_ceiling is None:
@@ -296,6 +304,13 @@ def _window_node_inputs(rows: Mapping, windows: Mapping[str, Mapping]) -> tuple[
     return node_rows, done
 
 
+def _pane_meter_fraction(spend: Mapping, window: str) -> float:
+    """The meter's own fraction for `window` ("five_hour" or "weekly"); 0.0 when `spend` is an estimate, whose
+    fraction covers a different window than the pane's `start` and `seat_usd`. The feed has no nulls, and the
+    estimate's empty `resets_at` already tells a consumer no meter was read."""
+    return 0.0 if spend.get(f"{window}_source") == "est" else float(spend.get(f"{window}_fraction") or 0.0)
+
+
 def _activity(
     runs_dir: Path, profile: dict, session: str, spend: Mapping, at: datetime, store_rows: Mapping | None = None,
 ) -> dict:
@@ -308,7 +323,7 @@ def _activity(
         "five_hour": {
             "start": five_start.isoformat(),
             "seat_usd": usage_window.gather(runs_dir, at, ceiling_usd=None).spent_usd,
-            "meter_fraction": float(spend.get("five_hour_fraction") or 0.0),
+            "meter_fraction": _pane_meter_fraction(spend, "five_hour"),
             "resets_at": spend.get("five_hour_resets_at") or "",
         },
         "weekly": {
@@ -316,7 +331,7 @@ def _activity(
             "seat_usd": usage_window.gather_weekly(
                 runs_dir, at, weekly_ceiling_usd=None, start=weekly_start,
             ).spent_usd,
-            "meter_fraction": float(spend.get("weekly_fraction") or 0.0),
+            "meter_fraction": _pane_meter_fraction(spend, "weekly"),
             "resets_at": spend.get("weekly_resets_at") or "",
         },
     }
