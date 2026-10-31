@@ -20,7 +20,7 @@ from agent_tools.chair_plan_fill import (
     host_free_slots,
     plan_fill,
 )
-from agent_tools.chair_plan_land import backoff_held, fetch_action, newest_run, plan_lands
+from agent_tools.chair_plan_land import backoff_held, fetch_action, newest_run, plan_finish, plan_lands
 from agent_tools.chair_plan_recover import (
     _initiative_first_unmet_need,
     claimed_by,
@@ -752,7 +752,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     waiting = waiting_initiatives(facts)
     waiting_ids = frozenset(w.initiative for w in waiting)
     waiting_actions = _waiting_actions(waiting, facts.get("waiting_reported", {}))
-    closes = plan_close_initiatives(facts)
+    closes = [*plan_close_initiatives(facts), *plan_finish(facts)]
     # A blocked initiative's relaunch and its paired clear_branches go; the waiting action records why.
     recovered = [a for a in recoverable if not (a["kind"] in ("relaunch", "clear_branches") and a["initiative"] in waiting_ids)]
     if facts["limits"]["hard_stop"]:
