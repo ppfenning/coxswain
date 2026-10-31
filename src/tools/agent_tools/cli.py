@@ -1436,7 +1436,8 @@ def _runs_clean(a: argparse.Namespace) -> int:
     landed = {task for task, r in records.items() if r.get("landed")}
     dropped = {task for task, r in records.items() if r.get("status") == "dropped"}
     reasons = {task: r.get("reason", "unlanded") for task, r in records.items()}
-    p = cleanup.plan_cleanup(run_id=a.run_id, worktrees=cleanup.git_worktrees(repo), branches=cleanup.git_branches(repo), worktree_root=a.worktree_root)
+    p = cleanup.plan_cleanup(run_id=a.run_id, worktrees=cleanup.git_worktrees(repo), branches=cleanup.git_branches(repo), worktree_root=a.worktree_root,
+                             live=cleanup.live_owner(runs_dir, a.run_id))
     for line in cleanup.apply_cleanup(repo, p, dry_run=not a.apply, landed=landed, dropped=dropped, reasons=reasons, force=a.force):
         print(line)
     if not a.apply:
@@ -3856,15 +3857,16 @@ def _route_context(a: argparse.Namespace) -> int:
 def _refuse_if_already_running(runs_dir: Path, prefix: str):
     """spec: at most one live run per `prefix` — the single-writer rule
     applied to a run-id prefix. Returns the refusal line to print, or
-    None when no pidfile under `prefix` names a live pid."""
-    live_pattern = re.compile(rf"^{re.escape(prefix)}-(\d+)\.pid$")
-    for pidfile in sorted(runs_dir.glob(f"{prefix}-*.pid")):
-        if not live_pattern.fullmatch(pidfile.name):
-            continue
-        pid_text = _read_text_or_none(pidfile)
-        pid = route.parse_pid(pid_text) if pid_text is not None else None
-        if epic.run_live(pid, pidfile):
-            return f"routing: {pidfile.stem} is already running (pid {pid})"
+    None when no run under `prefix` has a live process. A fenced run
+    answers to its pid but lost its lease, so it refuses too."""
+    host = socket.gethostname()
+    for run in epic.live_runs(runs_dir, prefix):
+        if run["state"] == "fenced":
+            return (
+                f"routing: {run['run']} is fenced (pid {run['pid']} on {host}): its lease heartbeat stopped, "
+                f"so the epoch fence refuses its writes. Stop pid {run['pid']} on {host} before relaunching"
+            )
+        return f"routing: {run['run']} is already running (pid {run['pid']}) on {host}"
     return None
 
 

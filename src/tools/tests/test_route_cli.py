@@ -1473,7 +1473,7 @@ def test_launch_cos_refuses_while_a_held_lease_names_another_run_of_the_prefix(t
     harness_dir = _write_harness(tmp_path)
     ws = tmp_path / "workspace"
     (ws / "runs").mkdir(parents=True)
-    (ws / "runs" / "cos-4.pid").write_text("999999999")  # dead pid: the lease alone says it is running
+    (ws / "runs" / "cos-4.pid").write_text(str(os.getpid()))  # alive and holding the lease; a dead pid is exited whatever the lease says
     leases_table(ws / "runs", ("runs:cos", "cos-4", "2999-01-01T00:00:00Z"))
     profile = _write_launch_profile(tmp_path, harness_dir, ws)
     rc = main(["route", "launch", "cos", "--profile", str(profile)])
