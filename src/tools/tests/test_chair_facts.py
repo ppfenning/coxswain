@@ -432,14 +432,14 @@ def test_a_failed_retry_reads_two_and_the_planner_hands_it_to_the_chair():
 def test_dispatch_facts_split_the_local_lanes_from_each_lane_hosts():
     facts = dispatch_facts({"max_in_flight": 4}, ["host-a"], {"": 3, "host-a": 1})
     assert facts["live_runs"] == 3
-    assert facts["hosts"] == [{"name": "host-a", "live_runs": 1, "weight": 1, "capabilities": []}]
+    assert facts["hosts"] == [{"name": "host-a", "live_runs": 1, "capabilities": []}]
 
 
 def test_dispatch_facts_carry_a_hosts_own_capacity_only_when_it_has_one():
     facts = dispatch_facts({"max_in_flight": 4}, ["host-a", "pi"], {}, {"host-a": 8})
     assert facts["hosts"] == [
-        {"name": "host-a", "live_runs": 0, "capacity": 8, "weight": 1, "capabilities": []},
-        {"name": "pi", "live_runs": 0, "weight": 1, "capabilities": []},
+        {"name": "host-a", "live_runs": 0, "capacity": 8, "capabilities": []},
+        {"name": "pi", "live_runs": 0, "capabilities": []},
     ]
 
 
@@ -448,14 +448,14 @@ def test_dispatch_facts_carries_weight_and_capabilities_from_a_hosts_row():
     assert facts["hosts"] == [{"name": "h1", "live_runs": 0, "weight": 2, "capabilities": ["go"]}]
 
 
-def test_dispatch_facts_defaults_weight_and_capabilities_with_no_row():
+def test_dispatch_facts_carries_no_weight_key_and_no_capabilities_with_no_row():
     facts = dispatch_facts({"max_in_flight": 4}, ["h1"], {})
-    assert facts["hosts"] == [{"name": "h1", "live_runs": 0, "weight": 1, "capabilities": []}]
+    assert facts["hosts"] == [{"name": "h1", "live_runs": 0, "capabilities": []}]
 
 
 def test_dispatch_facts_never_places_the_local_host_among_the_hosts():
     facts = dispatch_facts({"max_in_flight": 4}, ["host-b", "host-a"], {}, local="host-b")
-    assert facts["hosts"] == [{"name": "host-a", "live_runs": 0, "weight": 1, "capabilities": []}]
+    assert facts["hosts"] == [{"name": "host-a", "live_runs": 0, "capabilities": []}]
 
 
 def test_dispatch_facts_carry_local_lanes_only_when_it_is_not_any():

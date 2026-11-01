@@ -1,3 +1,4 @@
+from agent_tools.chair_facts import dispatch_facts
 from agent_tools.chair_plan_fill import plan_fill
 from agent_tools.chair_types import Facts
 
@@ -201,6 +202,55 @@ def test_hosts_fill_in_proportion_to_weight_whatever_their_order():
         facts = _facts(dispatch=dispatch, initiatives=[_init("a"), _init("b"), _init("c"), _init("d")])
         hosts = [a["host"] for a in plan_fill(facts, 0)]
         assert (hosts.count("heavy"), hosts.count("light")) == (3, 1)
+
+
+def test_an_unweighted_bigger_host_is_chosen_over_a_smaller_one_at_equal_load():
+    small = {"name": "bp-macbook", "live_runs": 0, "capacity": 4}
+    big = {"name": "omarchy", "live_runs": 0, "capacity": 10}
+    dispatch = {"max_in_flight": 4, "live_runs": 0, "hosts": [small, big]}
+    actions = plan_fill(_facts(dispatch=dispatch, initiatives=[_init("a")]), 0)
+    assert [a["host"] for a in actions] == ["omarchy"]
+
+
+def test_unweighted_hosts_fill_in_proportion_to_capacity_whatever_their_order():
+    small = {"name": "small", "live_runs": 0, "capacity": 4}
+    big = {"name": "big", "live_runs": 0, "capacity": 10}
+    for order in ([small, big], [big, small]):
+        dispatch = {"max_in_flight": 4, "live_runs": 0, "hosts": order}
+        facts = _facts(dispatch=dispatch, initiatives=[_init(i) for i in "abcdefg"])
+        hosts = [a["host"] for a in plan_fill(facts, 0)]
+        assert (hosts.count("big"), hosts.count("small")) == (5, 2)
+
+
+def test_an_explicit_weight_overrides_capacity():
+    big = {"name": "big", "live_runs": 0, "capacity": 10, "weight": 1}
+    small = {"name": "small", "live_runs": 0, "capacity": 4, "weight": 3}
+    dispatch = {"max_in_flight": 4, "live_runs": 0, "hosts": [big, small]}
+    actions = plan_fill(_facts(dispatch=dispatch, initiatives=[_init("a")]), 0)
+    assert [a["host"] for a in actions] == ["small"]
+
+
+def test_hosts_built_by_the_facts_edge_without_a_weight_place_by_capacity():
+    dispatch = dispatch_facts({"max_in_flight": 4}, ["bp-macbook", "omarchy"], {}, {"bp-macbook": 4, "omarchy": 10})
+    actions = plan_fill(_facts(dispatch=dispatch, initiatives=[_init("a")]), 0)
+    assert [a["host"] for a in actions] == ["omarchy"]
+
+
+def test_hosts_built_by_the_facts_edge_with_a_weight_row_place_by_that_weight():
+    dispatch = dispatch_facts(
+        {"max_in_flight": 4}, ["big", "small"], {}, {"big": 10, "small": 4}, {"big": 1, "small": 3}
+    )
+    actions = plan_fill(_facts(dispatch=dispatch, initiatives=[_init("a")]), 0)
+    assert [a["host"] for a in actions] == ["small"]
+
+
+def test_a_mixed_fleet_compares_an_explicit_weight_and_a_capacity_in_lane_units():
+    weighted = {"name": "weighted", "live_runs": 0, "capacity": 10, "weight": 2}
+    unweighted = {"name": "unweighted", "live_runs": 0, "capacity": 4}
+    dispatch = {"max_in_flight": 4, "live_runs": 0, "hosts": [weighted, unweighted]}
+    facts = _facts(dispatch=dispatch, initiatives=[_init(i) for i in "abc"])
+    hosts = [a["host"] for a in plan_fill(facts, 0)]
+    assert (hosts.count("unweighted"), hosts.count("weighted")) == (2, 1)
 
 
 def test_a_required_capability_places_only_on_a_host_that_has_it():

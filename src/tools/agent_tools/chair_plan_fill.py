@@ -12,7 +12,7 @@ from agent_tools.chair_steer import steer_check
 from agent_tools.chair_types import Action, Facts, InitiativeFacts, RunningInitiative
 from agent_tools.checkout_env import blocks_launch, host_env_verdict, sync_instruction
 
-# name, weight (a host's share of new placements), capabilities, free lane count, assigned-so-far
+# name, weight (a host's share of new placements; defaults to its capacity), capabilities, free lanes, assigned-so-far
 HostSlot = tuple[str, int, frozenset[str], int, int]
 
 
@@ -39,7 +39,7 @@ def _eligible(host: HostSlot, required: frozenset[str]) -> bool:
 
 
 def _rank(pair: tuple[int, HostSlot]) -> tuple[float, int, int]:
-    """Share after one more placement, then heavier first, then list order: host order never skews the weighting."""
+    """Share after one more placement (weight defaults to capacity), then heavier first, then list order."""
     idx, (_, weight, _, _, assigned) = pair
     return ((assigned + 1) / weight, -weight, idx)
 
@@ -233,18 +233,24 @@ def _scaled_lanes(capacity: int, lane_fraction: float) -> int:
     return 0 if lane_fraction <= 0 else max(1, int(capacity * lane_fraction))
 
 
+def _host_weight(host: Mapping, capacity: int) -> int:
+    """An explicit weight wins; an unweighted host weighs its unscaled capacity, never below 1.
+
+    Both are in lane units, so a mixed fleet compares an explicit weight of 2 with a capacity of 4 as 1:2."""
+    return host["weight"] if "weight" in host else max(1, capacity)
+
+
 def host_free_slots(facts: Facts) -> list[HostSlot]:
     dispatch = facts["dispatch"]
     blocked = chair_login_watch.login_blocked(facts.get("login_hosts", []))
     fraction = facts.get("limits", {}).get("lane_fraction", 1.0)
+    capacities = {h["name"]: h.get("capacity", dispatch["max_in_flight"]) for h in dispatch["hosts"]}
     return [
         (
             h["name"],
-            h.get("weight", 1),
+            _host_weight(h, capacities[h["name"]]),
             frozenset(h.get("capabilities", [])),
-            0
-            if h["name"] in blocked
-            else max(0, _scaled_lanes(h.get("capacity", dispatch["max_in_flight"]), fraction) - h["live_runs"]),
+            0 if h["name"] in blocked else max(0, _scaled_lanes(capacities[h["name"]], fraction) - h["live_runs"]),
             0,
         )
         for h in dispatch["hosts"]
