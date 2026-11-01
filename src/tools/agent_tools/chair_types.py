@@ -81,7 +81,7 @@ class HostLanes(TypedDict):
     name: str
     live_runs: int
     capacity: NotRequired[int]
-    weight: NotRequired[int]  # a host's share of new placements; absent means 1
+    weight: NotRequired[int]  # a host's share of new placements; absent means the host's capacity
     capabilities: NotRequired[list[str]]  # what the host can run, for example ["go"]; absent means none
     # login_ok and login_checked_at mirror the host row's own login state, read from the store's
     # `hosts` table; on the real row they live inside that row's `versions_json`, never as new

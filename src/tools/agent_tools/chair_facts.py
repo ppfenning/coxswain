@@ -800,8 +800,8 @@ def dispatch_facts(
     local_lanes: str = "any",
 ) -> DispatchFacts:
     """live_by_host maps a host name to its live lanes; the local machine is under the empty name. A host in `capacity`
-    carries its own cap. `weight` and `capabilities` come from the same hosts table row; a name missing from either
-    mapping (an older store, or a profile-only host with no row at all) defaults to weight 1 and no capabilities.
+    carries its own cap. `weight` and `capabilities` come from the same hosts table row; a name missing from
+    `capabilities` has none, and a name missing from `weight` carries no weight, so placement weights it by capacity.
     `local` names the machine running this loop: an entry in `lane_hosts` equal to it is never added to the
     returned `hosts`, since the loop's own machine is never a remote lane-host candidate for itself.
     `local_lanes` is carried only when it is not "any", so the default facts stay as they were."""
@@ -816,7 +816,7 @@ def dispatch_facts(
                 "name": name,
                 "live_runs": live_by_host.get(name, 0),
                 **({"capacity": caps[name]} if name in caps else {}),
-                "weight": weights.get(name, 1),
+                **({"weight": weights[name]} if name in weights else {}),
                 "capabilities": list(abilities.get(name, [])),
             }
             for name in lane_hosts

@@ -12,7 +12,8 @@ from agent_tools.chair_steer import steer_check
 from agent_tools.chair_types import Action, Facts, InitiativeFacts, RunningInitiative
 from agent_tools.checkout_env import blocks_launch, host_env_verdict, sync_instruction
 
-# name, weight (a host's share of new placements), capabilities, free lane count, assigned-so-far
+# name, weight (a host's share of new placements; its capacity when the hosts table sets none),
+# capabilities, free lane count, assigned-so-far
 HostSlot = tuple[str, int, frozenset[str], int, int]
 
 
@@ -240,7 +241,7 @@ def host_free_slots(facts: Facts) -> list[HostSlot]:
     return [
         (
             h["name"],
-            h.get("weight", 1),
+            h["weight"] if "weight" in h else max(1, h.get("capacity", dispatch["max_in_flight"])),
             frozenset(h.get("capabilities", [])),
             0
             if h["name"] in blocked
