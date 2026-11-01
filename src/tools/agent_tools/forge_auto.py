@@ -15,10 +15,10 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from agent_tools import forge_forgejo, forge_github, forge_local
+from agent_tools import forge, forge_forgejo, forge_github, forge_local
 from agent_tools.forge import ForgeNotSupported
 
-__all__ = ["find_open_prs", "forge_of", "merge", "merge_state", "open_pr", "push", "update_branch", "wait_checks"]
+__all__ = ["find_branch_prs", "find_open_prs", "forge_of", "merge", "merge_state", "open_pr", "push", "update_branch", "wait_checks"]
 
 
 def _forge_for_url(url: str, env: Mapping[str, str]):
@@ -40,8 +40,13 @@ def find_open_prs(repo: Path | str, branch: str) -> list[int] | str:
     return forge_of(repo).find_open_prs(Path(repo), branch)
 
 
-def push(repo: Path | str, branch: str) -> tuple[bool, str]:
-    return forge_of(repo).push(Path(repo), branch)
+def find_branch_prs(repo: Path | str, branch: str) -> list[dict] | str:
+    return forge.branch_prs(forge_of(repo), Path(repo), branch)
+
+
+def push(repo: Path | str, branch: str, expected_tip: str | None = None) -> tuple[bool, str]:
+    lease = {"expected_tip": expected_tip} if expected_tip else {}
+    return forge_of(repo).push(Path(repo), branch, **lease)
 
 
 def open_pr(repo: Path | str, title: str, body: str, *, head: str | None = None, base: str | None = None) -> tuple[bool, str]:

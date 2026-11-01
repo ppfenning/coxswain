@@ -1749,6 +1749,21 @@ def _git_failure(repo: Path, *args: str) -> str | None:
     return None if done.returncode == 0 else done.stderr.strip() or f"git {args[0]} exited {done.returncode}"
 
 
+def _land_push(repo: Path, branch: str, forge_module=forge_github) -> tuple[bool, str]:
+    """Edge. Push `branch`. A rebuilt task pushes the name its closed PR left on origin with unrelated history, which
+    a plain push rejects; when every PR on that remote branch is closed, replace exactly the tip seen. A branch with
+    an open or merged PR, or whose PRs cannot be listed, gets the plain push and git's own refusal."""
+    listing = _git_out(repo, "ls-remote", "--heads", "origin", f"refs/heads/{branch}")
+    tip = listing.split()[0] if listing else None
+    prs = forge.branch_prs(forge_module, repo, branch) if tip else []
+    decision = land.push_lease(tip, [] if isinstance(prs, str) else prs)
+    if decision["kind"] != "lease":
+        return forge_module.push(repo, branch)
+    ok, detail = forge_module.push(repo, branch, expected_tip=decision["tip"])
+    closed = ", ".join(f"#{n}" for n in decision["prs"])
+    return (True, f"{detail} (replaced {decision['tip'][:8]} left by closed {closed})") if ok else (False, detail)
+
+
 def _land_rebuild(repo: Path, branch: str, rebuild: dict) -> str | None:
     """Edge. Point each `backup_refs` ref at its tip and push it to origin, a rerun finding the same ref already
     there. Only once every backup is safe, delete the remote `branch` if it still sits at `remote_tip`, then the
@@ -2389,7 +2404,7 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
             return _run_checks(step["checks"], _land_worktree(repo, step["worktree_of"]))
         return _run_checks(step["checks"], repo)
     if kind == "push":
-        return forge_module.push(repo, step["branch"])
+        return _land_push(repo, step["branch"], forge_module)
     if kind == "pr_create":
         return forge_module.open_pr(repo, step["title"], step["body"], head=step.get("head"), base=step.get("base"))
     if kind == "wait_checks":
