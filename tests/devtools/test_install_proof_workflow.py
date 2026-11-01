@@ -84,7 +84,7 @@ def rig(tmp_path: Path) -> Rig:
 
 def test_both_jobs_run_on_arm64_macos_and_the_homebrew_container():
     jobs = _workflow()["jobs"]
-    assert jobs["proof-macos"]["runs-on"] == "macos-14"
+    assert jobs["proof-macos"]["runs-on"] == "macos-15"
     assert jobs["proof-linux"]["runs-on"] == "ubuntu-latest"
     assert jobs["proof-linux"]["container"] == "homebrew/brew"
     assert jobs["proof-macos"]["steps"] == jobs["proof-linux"]["steps"]
