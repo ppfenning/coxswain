@@ -143,6 +143,8 @@ def test_a_blocked_task_waits_on_the_same_needs_blocked_ready_names(queue):
         (_task("i", "p", "t", "in_progress"), True, False, "running"),
         (_task("i", "p", "t", "in_progress"), False, False, "blocked"),
         (_task("i", "p", "t", "ready"), False, False, "ready"),
+        (_task("i", "p", "t", "ready"), True, False, "running"),
+        (_task("i", "p", "t", "ready", needs=["n"]), True, False, "blocked"),
         (_task("i", "p", "t", "ready", needs=["n"]), False, False, "blocked"),
         (_task("i", "p", "t", "ready", needs=["n"]), False, True, "approved"),
         (_task("i", "p", "t", "blocked"), False, False, "blocked"),
@@ -152,6 +154,24 @@ def test_a_blocked_task_waits_on_the_same_needs_blocked_ready_names(queue):
 )
 def test_task_state_rules(task, on_live_lane, stranded, state):
     assert dash_feed._task_state(task, set(), on_live_lane, stranded) == state
+
+
+def test_a_lane_turns_ready_tasks_with_landed_needs_running_and_leaves_unmet_needs_blocked():
+    rows = [
+        _task("i", "p1", "landed", "done"),
+        _task("i", "p1", "building", "ready", needs=["landed"]),
+        _task("i", "p1", "waiting", "ready", needs=["unlanded"]),
+        _task("i", "p2", "later", "ready"),
+        _task("other", "p1", "elsewhere", "ready"),
+    ]
+
+    def states(live):
+        return {task: state for _, task, state in dash_feed._task_states(rows, "i", live, set())}
+
+    assert states({("i", "p1")}) == {"landed": "landed", "building": "running", "waiting": "blocked", "later": "ready"}
+    assert states({("other", "p1")}) == {"landed": "landed", "building": "ready", "waiting": "blocked", "later": "ready"}
+    # unknown: a lane with no phase yet covers the whole initiative, so an idle ready task in a later phase reads running.
+    assert states({("i", "")}) == {"landed": "landed", "building": "running", "waiting": "blocked", "later": "running"}
 
 
 def test_task_records_default_run_task_and_phase_from_the_path_and_skip_a_bad_file(tmp_path):

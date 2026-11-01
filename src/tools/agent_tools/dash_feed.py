@@ -394,7 +394,9 @@ def _task_state(task: Mapping, landed: Collection[str], on_live_lane: bool, stra
     """The feed state of a queue task row, or `None` for a store state the feed has no word for (`todo`, unknown).
     `blocked` is a ready task with a need outside `landed` (`route.TERMINAL`, the rule `chair_read_idle_backlog`
     uses for the relaunch's "waits on" line) or a store-`blocked` hold. `running` needs a live lane over the
-    task's initiative and phase: an `in_progress` row with none is a dead build and reads `blocked`.
+    task's initiative and phase: an `in_progress` row with none is a dead build and reads `blocked`. A launched
+    task stays `ready` in the store for the whole run, so a `ready` row with every need landed reads `running`
+    on a live lane. The lane covers a phase, not one task, so its idle siblings read `running` as well.
     `stranded` marks a task `runs stranded` lists, which reads `approved` even while the store still says `ready`."""
     state = task.get("state")
     if state == "done":
@@ -406,7 +408,9 @@ def _task_state(task: Mapping, landed: Collection[str], on_live_lane: bool, stra
     if state == "in_progress":
         return "running" if on_live_lane else "blocked"
     if state == "ready":
-        return "ready" if all(need in landed for need in task.get("needs") or ()) else "blocked"
+        if not all(need in landed for need in task.get("needs") or ()):
+            return "blocked"
+        return "running" if on_live_lane else "ready"
     return "blocked" if state == "blocked" else None
 
 
