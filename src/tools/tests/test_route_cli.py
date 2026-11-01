@@ -2423,6 +2423,61 @@ def test_route_remove_on_a_remote_live_run_exits_2_and_names_the_stop(tmp_path, 
     assert "cox runs stop demo-1" in capsys.readouterr().out
 
 
+def _remove_demo_with_live_runs(tmp_path, monkeypatch, initiative, launched):
+    """Remove `initiative` while the runs in `launched` (run to its recorded initiative; no key means no record) are live."""
+    lanes = [run_store.Lane(run, "host-b", "2026-10-05T11:00:00Z", "2026-10-05T11:59:00Z") for run in launched]
+    rows = [{"kind": "task", "initiative": initiative, "task_id": "a", "state": "ready"}]
+    _edit_remove_workspace(tmp_path, monkeypatch, rows, lanes=lanes)
+    for run, recorded in launched.items():
+        if recorded != "unrecorded":
+            # a lane held by another host leaves `.remote.json` here, which is what `route launch --on` writes
+            record = {"host": "host-b", "launched_at": "t", "initiative": recorded}
+            (tmp_path / "runs" / f"{run}.remote.json").write_text(json.dumps(record), encoding="utf-8")
+    (tmp_path / "work" / initiative / "1-build").mkdir(parents=True)
+    (tmp_path / "work" / initiative / "initiative.md").write_text("---\ntitle: T\ndraft: false\n---\nProse\n", encoding="utf-8")
+    (tmp_path / "work" / initiative / "1-build" / "a.md").write_text("---\nstate: ready\n---\nA\n", encoding="utf-8")
+    return main(["route", "remove", initiative, "--reason", "stale"])
+
+
+@pytest.mark.parametrize("run, recorded", [("other-1", "other"), ("cos-1", None), ("demo-3", "demo-x")])
+def test_route_remove_ignores_a_live_run_recorded_on_another_initiative_or_none(tmp_path, monkeypatch, capsys, run, recorded):
+    assert _remove_demo_with_live_runs(tmp_path, monkeypatch, "demo", {run: recorded}) == 0
+    assert "cox runs stop" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("run", ["demo-retry", "foo-1", "demo-2"])
+def test_route_remove_refuses_for_a_run_recorded_on_it_whatever_the_run_id(tmp_path, monkeypatch, capsys, run):
+    assert _remove_demo_with_live_runs(tmp_path, monkeypatch, "demo", {run: "demo"}) == 2
+    assert f"cox runs stop {run}" in capsys.readouterr().out
+
+
+def test_route_remove_refuses_for_a_live_run_with_no_launched_record(tmp_path, monkeypatch, capsys):
+    assert _remove_demo_with_live_runs(tmp_path, monkeypatch, "demo", {"other-1": "unrecorded"}) == 2
+    assert "cox runs stop other-1" in capsys.readouterr().out
+
+
+def test_route_remove_refuses_when_the_recorded_initiative_is_not_a_string(tmp_path, monkeypatch, capsys):
+    assert _remove_demo_with_live_runs(tmp_path, monkeypatch, "demo", {"other-1": 7}) == 2
+    assert "cox runs stop other-1" in capsys.readouterr().out
+
+
+def test_route_remove_reads_the_initiative_from_a_local_launched_record(tmp_path, monkeypatch, capsys):
+    (tmp_path / "work" / "demo" / "1-build").mkdir(parents=True)
+    (tmp_path / "work" / "demo" / "initiative.md").write_text("---\ntitle: T\ndraft: false\n---\nProse\n", encoding="utf-8")
+    (tmp_path / "work" / "demo" / "1-build" / "a.md").write_text("---\nstate: ready\n---\nA\n", encoding="utf-8")
+    rows = [{"kind": "task", "initiative": "demo", "task_id": "a", "state": "ready"}]
+    _edit_remove_workspace(tmp_path, monkeypatch, rows, lanes=[run_store.Lane("other-1", "h", "2026-10-05T11:00:00Z", "2026-10-05T11:59:00Z")])
+    (tmp_path / "runs" / "other-1.launched.json").write_text(json.dumps({"initiative": "other", "at": "t"}), encoding="utf-8")
+    assert main(["route", "remove", "demo", "--reason", "stale"]) == 0
+
+
+def test_route_remove_of_a_hyphenated_initiative_refuses_only_for_its_own_run(tmp_path, monkeypatch, capsys):
+    assert _remove_demo_with_live_runs(tmp_path, monkeypatch, "demo-x", {"demo-x-2": "demo-x", "demo-3": "demo"}) == 2
+    out = capsys.readouterr().out
+    assert "cox runs stop demo-x-2" in out
+    assert "demo-3" not in out
+
+
 def test_route_remove_of_an_intake_moves_it_and_marks_its_row_done(tmp_path, monkeypatch):
     row = {"kind": "intake", "initiative": "intake", "task_id": "idea", "state": "queued", "extra": {}}
     upserts = _edit_remove_workspace(tmp_path, monkeypatch, [row])

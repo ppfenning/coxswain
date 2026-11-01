@@ -4116,10 +4116,36 @@ def _route_decline(a: argparse.Namespace) -> int:
 def _live_runs(runs_dir: Path, now: str) -> set[str]:
     """Edge. Every live run on any host: the store's live leases, which remote lanes hold, plus local pidfile lanes.
 
-    A lane carries no initiative, so `route edit` and `route remove` refuse on any of them (route_edit's contract).
+    A lane carries no initiative, so `route edit` refuses on any of them (route_edit's contract). `route remove`
+    narrows them with `_live_runs_on`. A run id says nothing reliable about its initiative (`--run-id` takes any name).
     `now` is `_now_iso()`'s form, which `live_lanes` compares as text."""
     leased = {lane.run for lane in run_store.live_lanes(runs_dir, now)}
     return leased | {pf.stem for pf in runs_dir.glob("*.pid") if _lane_live(runs_dir, pf.stem)}
+
+
+def _recorded_initiatives(runs_dir: Path, runs: Collection[str]) -> dict[str, str | None]:
+    """Edge. Run to the initiative its `<run>.launched.json` (local) or `<run>.remote.json` (`--on`) names, None for none.
+
+    A run with no such file, an unreadable one, or one without an `initiative` key is left out: its initiative is unknown.
+    Runs launched before the key existed are in that case."""
+    def read(run: str) -> dict:
+        for path in (runs_dir / f"{run}.launched.json", remote_lane.remote_record_path(runs_dir, run)):
+            try:
+                doc = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(doc, dict) and "initiative" in doc and isinstance(doc["initiative"], str | None):
+                return doc
+        return {}
+    docs = {run: read(run) for run in runs}
+    return {run: doc["initiative"] for run, doc in docs.items() if "initiative" in doc}
+
+
+def _live_runs_on(live: Collection[str], initiative: str, recorded: Mapping[str, str | None]) -> set[str]:
+    """Live runs that may be on `initiative`: every one except a run whose record names another initiative or none.
+
+    A run absent from `recorded` is unknown and stays, so removal refuses until it is stopped."""
+    return {run for run in live if run not in recorded or recorded[run] == initiative}
 
 
 def _route_edit(a: argparse.Namespace) -> int:
@@ -4152,7 +4178,8 @@ def _route_remove(a: argparse.Namespace) -> int:
     now, rows = datetime.datetime.now(datetime.UTC), run_store.read_queue(runs_dir)
     live = _live_runs(runs_dir, now.strftime("%Y-%m-%dT%H:%M:%SZ"))
     target_id = _initiative_token(runs_dir, a.id)
-    rc = route_remove.remove(runs_dir.parent, target_id, a.reason, a.by or getpass.getuser(), now, rows, live, store, dry_run=a.dry_run)
+    on_target = _live_runs_on(live, target_id, _recorded_initiatives(runs_dir, live))
+    rc = route_remove.remove(runs_dir.parent, target_id, a.reason, a.by or getpass.getuser(), now, rows, on_target, store, dry_run=a.dry_run)
     target = route_guard.resolve_target(rows, target_id)
     if rc == route_guard.DONE and not a.dry_run and isinstance(target, route_guard.QueuedIntake):
         _record_intake_done(runs_dir, runs_dir.parent / "intake" / "done" / f"{target.task_id}.md")
@@ -5652,8 +5679,10 @@ def _route_launch(a: argparse.Namespace) -> int:
     lock_record, lock_refuse_rc = _leader_read_or_refuse(runs_dir)
     launched_by = None if lock_refuse_rc is not None else _leader_launched_by(lock_record, _leader_pid_alive(lock_record), now, socket.gethostname(), _leader_heartbeat_minutes())
     launched_payload = {"launched_by": launched_by} if launched_by is not None else {}
+    # `route remove` reads this to tell which live runs are on the initiative it drops; null is a run on none (cos).
+    initiative = Path(needs["initiative"]).name if "initiative" in needs else needs.get("initiative_id")
     (runs_dir / f"{run_id}.launched.json").write_text(
-        json.dumps({**launched_payload, "at": now.isoformat()}), encoding="utf-8",
+        json.dumps({**launched_payload, "initiative": initiative, "at": now.isoformat()}), encoding="utf-8",
     )
     print(f"run {run_id}")
     print(f"pid {pid_path}")
@@ -5885,7 +5914,9 @@ def _route_launch_on_host(
     if isinstance(result, remote_launch.LaunchError):
         print(f"routing: launch on {host.name} failed at {result.step}: {result.message}")
         return 2
-    remote_lane.remote_record_path(runs_dir, run_id).write_text(json.dumps(result), encoding="utf-8")
+    # `route remove` reads the initiative back from here, as it does from `.launched.json` for a local run.
+    record = {**result, "initiative": _initiative_path(runs_dir, a.initiative).name}
+    remote_lane.remote_record_path(runs_dir, run_id).write_text(json.dumps(record), encoding="utf-8")
     print(f"run {run_id}")
     print(f"host {host.name}")
     return 0
