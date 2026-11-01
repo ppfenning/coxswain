@@ -670,6 +670,16 @@ def leftover_branch_decision(branch: str, remote_exists: bool, open_pr: bool, lo
             "old_commit": local_commit, "local_tip": local_commit, "remote_tip": remote_commit, "backup_refs": refs}
 
 
+def push_lease(remote_tip: str | None, prs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """How the `push` step publishes a branch, from the remote tip and the `{"number", "state"}` of every PR headed
+    there. `lease` (`tip`, `prs`) only when the remote branch exists and every PR on it is `closed`: a rebuild left it
+    behind, and only that tip may be replaced. Anything else is `plain`, which git refuses unless it fast-forwards;
+    an open, merged or unknown PR, or none at all, is never evidence enough to rewrite a remote branch."""
+    if remote_tip and prs and all(p.get("state") == "closed" for p in prs):
+        return {"kind": "lease", "tip": remote_tip, "prs": [p["number"] for p in prs]}
+    return {"kind": "plain"}
+
+
 def resume_steps(steps: Sequence[dict[str, Any]], decision: dict[str, Any], pr_branch: str) -> list[dict[str, Any]]:
     """`steps` with the `cherry_pick` replaced by a `reuse_branch` on a `resume`. On an `adopt` the steps that build
     and open the PR are dropped and `wait_checks` is pinned to the open PR; every other step keeps its place."""

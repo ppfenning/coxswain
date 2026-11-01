@@ -29,6 +29,11 @@ A forge is a module that defines these five functions. Each returns
     list_open_prs_by_prefix(repo: Path, prefix: str) -> list[dict] | str
         `{"number", "head"}` per open PR whose head starts with `prefix`, or the
         reason they could not be listed. A listing that may be cut off is a reason.
+    find_branch_prs(repo: Path, branch: str) -> list[dict] | str
+        `{"number", "state"}` per PR of any state headed at `branch`, `state` being
+        `open`, `merged` or `closed`; or the reason they could not be listed. A forge
+        with it also takes `push(repo, branch, expected_tip=...)`, a lease on that tip.
+        The land uses both to replace a branch only closed PRs left behind.
     close_pr(repo: Path, number: int, comment: str) -> (ok, detail)
         Post `comment`, then close PR `number`; `(True, "already closed")` when it is.
     delete_branch(repo: Path, branch: str) -> (ok, detail)
@@ -105,6 +110,12 @@ def list_open_prs_by_prefix(module, repo, prefix: str) -> list[dict] | str:
     """`module.list_open_prs_by_prefix(repo, prefix)`, or a reason for a forge that has no such function."""
     fn = getattr(module, "list_open_prs_by_prefix", None)
     return fn(repo, prefix) if fn else NOT_SUPPORTED
+
+
+def branch_prs(module, repo, branch: str) -> list[dict] | str:
+    """`module.find_branch_prs(repo, branch)`, or a reason for a forge that has no such function."""
+    fn = getattr(module, "find_branch_prs", None)
+    return fn(repo, branch) if fn else NOT_SUPPORTED
 
 
 def close_pr(module, repo, number: int, comment: str) -> tuple[bool, str]:

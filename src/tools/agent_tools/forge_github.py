@@ -38,6 +38,22 @@ def find_open_prs(repo: Path, branch: str) -> list[int] | str:
         return f"could not read the open pull requests for {branch}: {r.stdout.strip()}"
 
 
+def find_branch_prs(repo: Path, branch: str) -> list[dict] | str:
+    """`{"number", "state"}` per PR of any state whose head is `branch`, `state` being `open`, `merged` or `closed`
+    (anything else gh says is kept lower case), or the reason they could not be listed."""
+    argv = ["gh", "pr", "list", "--head", branch, "--state", "all", "--json", "number,state"]
+    try:
+        r = _run(argv, timeout=READ_TIMEOUT_S, cwd=repo)
+    except (OSError, ForgeError) as exc:
+        return f"could not list pull requests for {branch}: {exc}"
+    if r.returncode != 0:
+        return f"could not list pull requests for {branch}: {(r.stderr or r.stdout).strip()}"
+    try:
+        return [{"number": int(p["number"]), "state": str(p["state"]).lower()} for p in json.loads(r.stdout or "[]")]
+    except (ValueError, KeyError, TypeError):
+        return f"could not read the pull requests for {branch}: {r.stdout.strip()}"
+
+
 PR_LIST_LIMIT = 200  # more open PRs than a task can have; a listing that reaches it may be cut off
 
 
