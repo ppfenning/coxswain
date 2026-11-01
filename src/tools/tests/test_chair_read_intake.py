@@ -14,6 +14,35 @@ def _entry(path, initiative=None, done=False):
     return {"id": path, "title": path, "initiative": initiative, "done": done, "path": path}
 
 
+def test_intake_groups_parses_each_initiative_once_and_matches_the_per_entry_scan(monkeypatch):
+    from agent_tools import intake_state
+
+    initiatives = [
+        {"id": "x", "done": False, "text": "---\nid: x\nintake: intake/named.md\n---\n"},
+        {"id": "y", "done": True, "text": "---\nid: y\nintake: intake/landed.md\n---\n"},
+        {"id": "z", "done": False, "text": "see intake/cited.md"},
+    ]
+    entries = [
+        _entry("intake/fresh.md"),
+        _entry("intake/named.md"),
+        _entry("intake/landed.md"),
+        _entry("intake/with-id.md", initiative="x"),
+        _entry("intake/with-done-id.md", initiative="y"),
+        _entry("intake/cited.md", done=True),
+        _entry("intake/uncited.md", done=True),
+    ]
+    by_id = {i["id"]: i for i in initiatives}
+    expected = {
+        name: [e for e in entries if intake_state.intake_group(e, by_id, initiatives) == name]
+        for name in ("queued", "decomposed", "landed")
+    }
+    parsed: list[str] = []
+    real = intake_state.intake_field
+    monkeypatch.setattr(intake_state, "intake_field", lambda text: parsed.append(text) or real(text))
+    assert route.intake_groups(entries, initiatives) == expected
+    assert (len(parsed), sorted(len(v) for v in expected.values())) == (3, [1, 3, 3])
+
+
 def _intake_row(task_id, initiative=None, state="queued"):
     return {
         "kind": "intake",

@@ -1,9 +1,11 @@
 import json
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
 from agent_tools.chair_read_idle_lands import (
+    cached_checks,
     gh_checks,
     land_waits,
     read_lands_waiting,
@@ -141,7 +143,71 @@ def test_gh_checks_reads_both_bodies_for_the_pr_repo() -> None:
         return SimpleNamespace(returncode=0, stdout=out, stderr="")
 
     assert gh_checks(_PR, 3.0, run) == ({"check_runs": []}, {"statuses": []})
-    assert seen[1][-1] == "repos/o/r/commits/abc/check-runs?per_page=100"
+    assert "repos/o/r/commits/abc/check-runs?per_page=100" in [argv[-1] for argv in seen[1:]]
+
+
+def test_gh_checks_runs_the_two_api_calls_together() -> None:
+    barrier = threading.Barrier(2, timeout=5)
+
+    def run(argv: list[str], **kw: object) -> SimpleNamespace:
+        if argv[1] == "api":
+            barrier.wait()  # raises BrokenBarrierError unless both api calls are in flight at once
+        out = "abc\n" if argv[1] == "pr" else ('{"check_runs": []}' if "check-runs" in argv[-1] else '{"statuses": []}')
+        return SimpleNamespace(returncode=0, stdout=out, stderr="")
+
+    assert gh_checks(_PR, 3.0, run) == ({"check_runs": []}, {"statuses": []})
+
+
+def test_gh_checks_reports_a_failed_statuses_call() -> None:
+    def run(argv: list[str], **kw: object) -> SimpleNamespace:
+        if argv[1] == "pr":
+            return SimpleNamespace(returncode=0, stdout="abc\n", stderr="")
+        ok = "check-runs" in argv[-1]
+        return SimpleNamespace(returncode=0 if ok else 1, stdout='{"check_runs": []}' if ok else "", stderr="HTTP 502\n")
+
+    assert gh_checks(_PR, 3.0, run) == "gh api statuses failed: HTTP 502"
+
+
+def test_read_lands_waiting_reads_every_pr_together(tmp_path: Path) -> None:
+    barrier = threading.Barrier(3, timeout=5)
+    prs = [f"https://github.com/o/r/pull/{n}" for n in (1, 2, 3)]
+
+    def read(pr: str, timeout_s: float) -> tuple[dict, dict]:
+        barrier.wait()  # raises BrokenBarrierError unless all three reads are in flight at once
+        return _bodies("queued")
+
+    waits = read_lands_waiting(_log(tmp_path, *[dict(_ROW, pr=pr, run=f"r{n}", task=f"t{n}") for n, pr in enumerate(prs)]), _NOW, read)
+    assert sorted(w["pr"] for w in waits) == prs
+
+
+def test_cached_checks_reuses_a_success_within_the_ttl_and_rereads_after() -> None:
+    calls: list[str] = []
+    now = [0.0]
+
+    def read(pr: str, timeout_s: float) -> tuple[dict, dict]:
+        calls.append(pr)
+        return _bodies("queued")
+
+    cached = cached_checks(read, {}, clock=lambda: now[0], ttl_s=100.0)
+    first = cached(_PR, 1.0)
+    now[0] = 99.0
+    assert (cached(_PR, 1.0) == first, len(calls)) == (True, 1)
+    now[0] = 100.0
+    cached(_PR, 1.0)
+    assert len(calls) == 2
+
+
+def test_cached_checks_never_keeps_an_error() -> None:
+    calls: list[str] = []
+
+    def read(pr: str, timeout_s: float) -> str:
+        calls.append(pr)
+        return "gh pr view failed: HTTP 502"
+
+    cached = cached_checks(read, {}, clock=lambda: 0.0)
+    cached(_PR, 1.0)
+    cached(_PR, 1.0)
+    assert len(calls) == 2
 
 
 def test_gh_checks_gives_the_error_text_on_a_failed_call_or_a_foreign_url() -> None:

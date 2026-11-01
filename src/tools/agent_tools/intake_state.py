@@ -1,11 +1,12 @@
 """The rule for one intake entry's queue state: `queued`, `decomposed`, or `landed`.
 
-Pure core, no I/O. `route.intake_groups` calls `intake_group` per entry.
+Pure core, no I/O. `route.intake_groups` builds `intake_index` once and calls `intake_group` once per entry.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping, Sequence
 
 _FRONTMATTER = re.compile(r"\A---[ \t]*\n(.*?)^---[ \t]*$", re.DOTALL | re.MULTILINE)
 _INTAKE_LINE = re.compile(r"^intake:[ \t]*(.*?)[ \t]*$", re.MULTILINE)
@@ -18,12 +19,29 @@ def intake_field(text: str) -> str | None:
     return line.group(1).strip("\"'") if line else None
 
 
-def intake_group(entry: dict, initiatives_by_id: dict, initiatives: list) -> str:
+def intake_index(initiatives: Sequence[dict]) -> dict[str, list]:
+    """Intake path to the initiatives whose `intake:` line names it, in input order; parses each initiative once."""
+    index: dict[str, list] = {}
+    for initiative in initiatives:
+        path = intake_field(initiative.get("text", ""))
+        if path is not None:
+            index.setdefault(path, []).append(initiative)
+    return index
+
+
+def intake_group(
+    entry: dict, initiatives_by_id: dict, initiatives: list, naming_index: Mapping[str, list] | None = None
+) -> str:
+    """`naming_index` is `intake_index(initiatives)`; without it each call re-parses every initiative."""
     initiative_id = entry.get("initiative")
     if initiative_id is not None:
         initiative = initiatives_by_id.get(initiative_id)
         return "landed" if initiative and initiative["done"] else "decomposed"
-    naming = [i for i in initiatives if intake_field(i.get("text", "")) == entry["path"]]
+    naming = (
+        naming_index.get(entry["path"], [])
+        if naming_index is not None
+        else [i for i in initiatives if intake_field(i.get("text", "")) == entry["path"]]
+    )
     if naming:
         return "landed" if all(i["done"] for i in naming) else "decomposed"
     if not entry.get("done"):

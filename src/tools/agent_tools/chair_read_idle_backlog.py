@@ -1,6 +1,6 @@
 """The work-side fields of `IdleStallInputs`: free lanes, waiting work, stubs, blocked-by-needs and last progress."""
 
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TypedDict
@@ -145,14 +145,21 @@ def read_idle_backlog(
     ws: Path, mode: str, max_in_flight: int, now: datetime,
     files: WorkFiles | None = None, store_rows: Sequence[Mapping] | None = None,
     actions: Sequence[Item] | None = None,
+    queued: Sequence[str] | None = None, items: Sequence[Item] | None = None,
+    live: Callable[[Sequence[str]], list[str]] | None = None,
 ) -> IdleBacklog:
     """Edge. Never raises. An unreadable docket gives zero lanes, not every lane free.
 
     `files`, `store_rows` and `actions` stand in for the work-file, store and chair_actions reads when a tick already holds them.
+    `queued` (the round's intake paths), `items` (its work items) and `live` (probe ids to live ids) stand in for the intake,
+    work-item and live-run reads the same way; None reads them here.
     `actions` is the windowed `FactsDeps.actions()` rows: a land older than the window no longer counts as progress."""
     runs_dir = ws / "runs"
     now_text = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-    work = [item for _, _, item in _safe(lambda: read_work_items(ws, mode, files, store_rows), [])]
+    work = (
+        list(items) if items is not None
+        else [item for _, _, item in _safe(lambda: read_work_items(ws, mode, files, store_rows), [])]
+    )
     with_file = stub_candidates(_safe(lambda: _initiative_texts(ws, files), {}))
     # Under mode "store" the store holds a task's state; a pruned task file must not make its initiative a stub.
     stored = stored_initiatives(_safe(lambda: _store_rows(runs_dir, mode, store_rows), []))
@@ -167,13 +174,16 @@ def read_idle_backlog(
         {
             "docket": _safe(lambda: read_docket(ws, mode, max_in_flight, lambda: now, files, store_rows), None),
             "items": work,
-            "queued": _safe(lambda: read_intake(ws, initiative_files(ws, files) if files is not None else None), []),
+            "queued": (
+                queued if queued is not None
+                else _safe(lambda: read_intake(ws, initiative_files(ws, files) if files is not None else None), [])
+            ),
             "last_launch": _newest_action(rows, LAUNCH_KINDS),
             "last_land": _newest_action(rows, LAND_KINDS),
             "node_calls": [str(c) for c in calls],
             "with_file": with_file,
             "stored": stored,
             "decomposed": {},  # no caller wires `FactsDeps.decomposed_intake` yet
-            "live": _safe(lambda: read_live_initiatives(runs_dir, probe, now_text), []),
+            "live": _safe(lambda: live(probe) if live is not None else read_live_initiatives(runs_dir, probe, now_text), []),
         }
     )

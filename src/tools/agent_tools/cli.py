@@ -10615,6 +10615,9 @@ def _chair_run_deps(
 
     main_ci = _main_ci_reader(runner)  # edge state: `beat` clears its cache, one gh read per land per tick
     green_since = _green_since_reader(runner)  # edge state: `beat` clears its cache, one read per land per tick
+    # edge state for the whole process: each open land PR's check bodies, kept a few minutes so a round's `gh` reads are mostly hits
+    lands_checks = chair_read_idle_lands.cached_checks(chair_read_idle_lands.gh_checks, {})
+
     # edge state: `beat` empties it, so one tick's window, weekly and source readers share one meter read and verdict
     meter_snapshot: list[tuple[usage_meter.Meter | None, str]] = []
 
@@ -10853,13 +10856,30 @@ def _chair_run_deps(
     def weekly_source() -> str:
         return meter_fresh_now()[1]
 
+    def round_intake() -> Sequence[str]:
+        return once(  # type: ignore[return-value]
+            "intake", lambda: chair_read_intake.read_intake(ws, chair_read_quarantined.initiative_files(ws, work_files()))
+        )
+
+    def round_live_initiatives() -> list[str]:
+        return once("live_initiatives", live_initiatives)  # type: ignore[return-value]
+
+    def idle_live(probe: Sequence[str]) -> list[str]:
+        """Live ids among `probe`: the round's docket read answers for its initiatives, only the rest are probed."""
+        known = {row["id"] for row in docket()["initiatives"]}
+        wanted = set(probe)
+        extra = sorted(wanted - known)
+        found = wanted & set(round_live_initiatives())
+        return sorted(found | set(chair_read_live.read_live_initiatives(runs_dir, extra, now_text()) if extra else []))
+
     def idle_stall(n: datetime.datetime) -> chair_facts.IdleStallInputs:
         return chair_facts.idle_stall_inputs(
             chair_read_idle_backlog.read_idle_backlog(
                 ws, mode, _local_max_in_flight(runs_dir, profile, host), n, work_files(), store_rows(), actions(),
+                queued=round_intake(), items=ticket_items(), live=idle_live,
             ),
             chair_read_idle_hosts.read_idle_hosts(runs_dir, startup_hosts),
-            chair_read_idle_lands.read_lands_waiting(runs_dir, n),
+            chair_read_idle_lands.read_lands_waiting(runs_dir, n, lands_checks),
             chair_read_idle_open.read_idle_open(ws, actions()),
             chair_facts.resolve_idle_stall_minutes((profile.get("chair") or {}).get("idle_stall_minutes")),
         )
@@ -10885,7 +10905,7 @@ def _chair_run_deps(
         attempts=attempts,
         has_patch=has_patch,
         live_initiatives=live_initiatives,
-        intake=lambda: chair_read_intake.read_intake(ws, chair_read_quarantined.initiative_files(ws, work_files())),
+        intake=round_intake,
         work_store_ready=lambda: chair_read_docket.work_store_ready(docket()),
         sources_configured=sources_configured,
         profile_stale=profile_stale,
