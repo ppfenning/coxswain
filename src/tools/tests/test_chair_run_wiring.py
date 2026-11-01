@@ -204,13 +204,14 @@ def test_idle_stall_calls_the_four_readers_and_reads_the_configured_minutes(tmp_
     seen: dict = {}
     backlog = {"free_lanes": 2, "ready": 1, "queued": 0, "last_progress_at": None, "empty_stubs": [], "blocked_ready": []}
 
-    def fake_backlog(ws, mode, max_in_flight, now, *_held):
+    def fake_backlog(ws, mode, max_in_flight, now, *_held, **reused):
         seen["backlog"] = (ws, mode, now)
+        seen["reused"] = sorted(reused)  # the round's intake, work items and live runs, not a second read of each
         return backlog
 
     monkeypatch.setattr(cli.chair_read_idle_backlog, "read_idle_backlog", fake_backlog)
     monkeypatch.setattr(cli.chair_read_idle_hosts, "read_idle_hosts", lambda runs_dir, hosts: [{"host": "h2", "ok": False, "detail": "x"}])
-    monkeypatch.setattr(cli.chair_read_idle_lands, "read_lands_waiting", lambda runs_dir, now: [])
+    monkeypatch.setattr(cli.chair_read_idle_lands, "read_lands_waiting", lambda runs_dir, now, read_checks=None: [])
     monkeypatch.setattr(cli.chair_read_idle_open, "read_idle_open", lambda ws, actions=None: ("host:h2", "text"))
     runs = tmp_path / "runs"
     now = datetime(2026, 9, 27, 12, 0, tzinfo=UTC)
@@ -219,6 +220,7 @@ def test_idle_stall_calls_the_four_readers_and_reads_the_configured_minutes(tmp_
     inputs = configured.facts_deps.idle_stall(now)
     assert (inputs["stall_minutes"], inputs["free_lanes"], inputs["open_signature"], inputs["hosts"][0]["host"]) == (20, 2, "host:h2", "h2")
     assert seen["backlog"] == (tmp_path, "files", now)
+    assert seen["reused"] == ["items", "live", "queued"]
     assert unset.facts_deps.idle_stall(now)["stall_minutes"] == 15
 
 

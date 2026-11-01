@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from agent_tools import chair, decompose_empty, open_queue_priority, queue_rows, repo_path, run_store
-from agent_tools.intake_state import intake_group
+from agent_tools.intake_state import intake_group, intake_index
 from agent_tools.pacing import Assessment
 
 __all__ = [
@@ -2280,10 +2280,9 @@ def initiative_states(ids: list, items: list) -> dict:
 def intake_groups(intake: list, initiatives: list) -> dict:
     """queued has no `initiative`; decomposed names one not yet `done`, or predates the field but is cited by some initiative's text; landed names one `done`, or predates the field and is uncited. An intake named by an initiative's `intake` field is decomposed, or landed when every such initiative is done."""
     by_id = {i["id"]: i for i in initiatives}
-    return {
-        name: [entry for entry in intake if intake_group(entry, by_id, initiatives) == name]
-        for name in ("queued", "decomposed", "landed")
-    }
+    naming = intake_index(initiatives)
+    grouped = [(intake_group(entry, by_id, initiatives, naming), entry) for entry in intake]
+    return {name: [entry for group, entry in grouped if group == name] for name in ("queued", "decomposed", "landed")}
 
 
 def _run_entry(run_id: str, pid_text: str, alive: dict, started: dict, heartbeats: dict, fenced: Mapping[str, bool]) -> dict:

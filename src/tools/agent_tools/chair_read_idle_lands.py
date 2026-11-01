@@ -19,6 +19,7 @@ import re
 import subprocess
 import time
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,7 @@ Bodies = tuple[dict[str, Any], dict[str, Any]]
 CheckRead = Bodies | str  # a str is the failed read's error text
 RECENT = timedelta(days=2)
 MAX_ROWS = 10
+CHECKS_TTL_S = 180.0
 UNREADABLE = "checks unreadable"
 _PR_URL = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/pull/\d+$")
 _RUNNING = frozenset({"in_progress", "completed"})
@@ -123,21 +125,49 @@ def gh_checks(pr: str, timeout_s: float, run: Callable[..., Any] = subprocess.ru
         return f"not a github pull request url: {pr}"
     each = timeout_s / 3
     opts: dict[str, Any] = {"capture_output": True, "text": True, "timeout": each, "check": False}
+    repo = f"{match[1]}/{match[2]}"
+
+    def api(argv: list[str], key: str) -> dict[str, Any] | str:
+        reply = run([a.replace("{owner}/{repo}", repo) for a in argv], **opts)
+        body = land.merge_pages(reply.stdout or "", key) if reply.returncode == 0 else None
+        if body is None:
+            return _failure(f"gh api {key}", reply) if reply.returncode != 0 else f"gh api {key} gave no body"
+        return body
+
     try:
         view = run(["gh", "pr", "view", pr, "--json", "headRefOid", "--jq", ".headRefOid"], **opts)
         if view.returncode != 0 or not view.stdout.strip():
             return _failure("gh pr view", view)
         argvs = land.rest_checks_argvs(view.stdout.strip())
-        bodies: list[dict[str, Any]] = []
-        for argv, key in zip(argvs, ("check_runs", "statuses"), strict=True):
-            reply = run([a.replace("{owner}/{repo}", f"{match[1]}/{match[2]}") for a in argv], **opts)
-            body = land.merge_pages(reply.stdout or "", key) if reply.returncode == 0 else None
-            if body is None:
-                return _failure(f"gh api {key}", reply) if reply.returncode != 0 else f"gh api {key} gave no body"
-            bodies.append(body)
+        # The two api calls need only the head sha, so they run together; the first failure in key order is reported.
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            replies = list(pool.map(api, argvs, ("check_runs", "statuses")))
     except (OSError, subprocess.SubprocessError) as exc:
         return f"{type(exc).__name__}: {exc}"
-    return bodies[0], bodies[1]
+    failed = next((r for r in replies if isinstance(r, str)), None)
+    return failed if failed is not None else (replies[0], replies[1])  # type: ignore[return-value]
+
+
+def cached_checks(
+    read_checks: Callable[[str, float], CheckRead],
+    store: dict[str, tuple[float, Bodies]],
+    clock: Callable[[], float] = time.monotonic,
+    ttl_s: float = CHECKS_TTL_S,
+) -> Callable[[str, float], CheckRead]:
+    """`read_checks` that remembers each PR's successful bodies for `ttl_s`. Errors are never kept.
+
+    `store` is the caller's edge state, so the cache outlives one round; a pure read never owns it."""
+
+    def read(pr: str, timeout_s: float) -> CheckRead:
+        held = store.get(pr)
+        if held is not None and clock() - held[0] < ttl_s:
+            return held[1]
+        got = read_checks(pr, timeout_s)
+        if not isinstance(got, str):
+            store[pr] = (clock(), got)
+        return got
+
+    return read
 
 
 def _safely(call: Callable[[], Any]) -> Any:
@@ -163,9 +193,16 @@ def read_lands_waiting(
         return []
     rows = unmerged_lands(lines, now)
     deadline = clock() + budget_s
-    reads: dict[str, CheckRead] = {}
-    for r in rows:
-        got = _safely(lambda pr=r["pr"]: read_checks(pr, timeout_s)) if clock() < deadline else "budget exhausted"
-        reads[r["pr"]] = f"{type(got).__name__}: {got}" if isinstance(got, Exception) else got
+    # Every read is submitted before any is awaited, so the PRs are read together; the budget gates each start.
+    with ThreadPoolExecutor(max_workers=max(1, len(rows))) as pool:
+        started: dict[str, Future | str] = {
+            r["pr"]: pool.submit(_safely, lambda pr=r["pr"]: read_checks(pr, timeout_s)) if clock() < deadline
+            else "budget exhausted"
+            for r in rows
+        }
+        results = {pr: got.result() if isinstance(got, Future) else got for pr, got in started.items()}
+    reads: dict[str, CheckRead] = {
+        pr: f"{type(got).__name__}: {got}" if isinstance(got, Exception) else got for pr, got in results.items()
+    }
     status = _safely(lambda: status_call(timeout_s)) if status_call is not None and rows else None
     return land_waits(rows, reads, status if isinstance(status, str) else None)

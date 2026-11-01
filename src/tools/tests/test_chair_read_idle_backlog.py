@@ -128,6 +128,27 @@ def test_the_edge_leaves_out_an_initiative_whose_done_task_file_is_gone_under_st
     assert read_idle_backlog(tmp_path, "files", 4, NOW, store_rows=rows)["empty_stubs"] == ["live-stub", "stub"]
 
 
+def test_the_edge_reuses_the_rounds_intake_items_and_live_reads(tmp_path: Path, monkeypatch):
+    def boom(*_args, **_kwargs):
+        raise AssertionError("the round already read this")
+
+    _stub_workspace(tmp_path)
+    for name in ("read_intake", "read_work_items", "read_live_initiatives"):
+        monkeypatch.setattr(mod, name, boom)
+    monkeypatch.setattr(mod, "read_docket", lambda *_a, **_k: docket(ready=0))
+    probes: list[list[str]] = []
+
+    def live(probe):
+        probes.append(list(probe))
+        return ["live-stub"]
+
+    got = read_idle_backlog(
+        tmp_path, "files", 4, NOW, queued=["intake/a.md", "intake/b.md"], items=[item("t1", "ready", initiative="a")], live=live
+    )
+    assert (got["queued"], got["empty_stubs"]) == (2, ["stub"])
+    assert len(probes) == 1
+
+
 def test_an_unreadable_docket_frees_no_lanes_even_with_ready_items(tmp_path: Path, monkeypatch):
     def boom(*_args, **_kwargs):
         raise OSError("unreadable")
