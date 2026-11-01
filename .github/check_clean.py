@@ -9,20 +9,23 @@ Rules that need no names, so they are committed:
   lan-host   a host under the .lan pseudo-domain
   address    an address in the CGNAT (tailnet) range or the 192.168 private range
   vendor     a tracker or platform a tool must never assume
+  build-artifact  any committed file under the root-level build/ directory (a build/lib/ copy of the source)
 The names rule needs the names themselves, so they are never committed: it reads a regex from
 the COXSWAIN_CLEAN_DENY environment variable, and without it says so and skips.
 
-A line carrying the marker `clean: allow` is exempt from every rule; keep it to the lines that
+A line carrying the marker `clean: allow` is exempt from every line rule (not build-artifact); keep it to the lines that
 define the rules and the fixtures that test them.
 
-Usage: python .github/check_clean.py [root] [--skip RULE ...]. Stdlib only, so any repo can copy this file as is.
+Usage: python .github/check_clean.py [root] [--skip RULE ...] [--require-names]. Stdlib only, so any repo can copy this file as is.
 --skip drops a fixed rule for a repo whose purpose contradicts it (a vendor-plugin repo skips vendor).
-Exits 1 on any hit, 2 on an unusable COXSWAIN_CLEAN_DENY.
+--require-names refuses to run without COXSWAIN_CLEAN_DENY instead of skipping the names rule; lane checks use it, CI does not.
+Exits 1 on any hit, 2 on an unusable or, under --require-names, missing COXSWAIN_CLEAN_DENY.
 """
 import ipaddress
 import os
 import pathlib
 import re
+import subprocess
 import sys
 
 ALLOW = "clean: allow"
@@ -63,6 +66,22 @@ def address(line):
 def vendor(line):
     hit = VENDOR.search(line)
     return hit.group(0) if hit else None
+
+
+def build_hits(root):
+    # Root-level build/ only: a nested build/ can be a source folder; the committed artifact was at the root.
+    # In a git checkout only tracked files count: a local pip or uv build leaves an untracked build/ that CI never sees.
+    # Outside git (or without git) every file under build/ counts.
+    try:
+        listed = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--", "build"], capture_output=True, text=True)
+    except OSError:
+        listed = None
+    if listed and listed.returncode == 0:
+        names = sorted(name for name in listed.stdout.split("\0") if name)
+    else:
+        build = root / "build"
+        names = sorted(str(p.relative_to(root)) for p in build.rglob("*") if p.is_file()) if build.is_dir() else []
+    return [f"{name}: build-artifact: 'build/'" for name in names]
 
 
 def names_rule(pattern):
@@ -109,28 +128,32 @@ def hits(root, active):
 
 
 def parse_args(argv):
-    """(root, rule names to skip) from `[root] [--skip RULE ...]`."""
+    """(root, rule names to skip, whether the names rule is required) from `[root] [--skip RULE ...] [--require-names]`."""
     args = list(argv[1:])
     skip = {args[i + 1] for i, arg in enumerate(args[:-1]) if arg == "--skip"}
-    positional = [arg for i, arg in enumerate(args) if arg != "--skip" and (i == 0 or args[i - 1] != "--skip")]
-    return pathlib.Path(positional[0] if positional else "."), skip
+    flags = {"--skip", "--require-names"}
+    positional = [arg for i, arg in enumerate(args) if arg not in flags and (i == 0 or args[i - 1] != "--skip")]
+    return pathlib.Path(positional[0] if positional else "."), skip, "--require-names" in args
 
 
 def main(argv, environ):
-    root, skip = parse_args(argv)
+    root, skip, require_names = parse_args(argv)
+    if require_names and "names" not in skip and not environ.get("COXSWAIN_CLEAN_DENY"):
+        print("COXSWAIN_CLEAN_DENY is not set and --require-names was given: export it, or the names rule would be skipped")
+        return 2
     try:
         active, skipped = rules(environ)
     except re.error as error:
         print(f"COXSWAIN_CLEAN_DENY is not a usable regex: {error}")
         return 2
-    unknown = skip - set(active) - {"names"}
+    unknown = skip - set(active) - {"names", "build-artifact"}
     if unknown:
         print(f"--skip names no rule: {', '.join(sorted(unknown))}")
         return 2
     active = {name: rule for name, rule in active.items() if name not in skip}
     if skipped:
         print(skipped)
-    problems = list(hits(root, active))
+    problems = ([] if "build-artifact" in skip else list(build_hits(root))) + list(hits(root, active))
     print("\n".join(problems) if problems else "clean: no personal reference or vendor named")
     return 1 if problems else 0
 

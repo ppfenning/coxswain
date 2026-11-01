@@ -3,6 +3,7 @@
 Fixture lines that must trip a rule carry the `clean: allow` marker, so this file passes its own check.
 """
 import importlib.util
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -121,6 +122,48 @@ def test_skip_drops_a_fixed_rule(tmp_path, capsys):
 def test_skip_naming_no_rule_is_refused(tmp_path, capsys):
     assert check_clean.main(["check_clean.py", "--skip", "vendr", str(tmp_path)], NO_NAMES) == 2
     assert "vendr" in capsys.readouterr().out
+
+
+def test_a_nested_build_dir_is_not_a_hit(tmp_path, capsys):
+    code, out = run(tmp_path, {"src/build/x.py": "x = 1\n"}, NO_NAMES, capsys)
+    assert (code, out[-1].startswith("clean:")) == (0, True)
+
+
+def test_in_a_git_checkout_only_a_committed_build_file_is_a_hit(tmp_path, capsys):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "x.py").write_text("x = 1\n")
+    assert check_clean.main(["check_clean.py", str(tmp_path)], NO_NAMES) == 0
+    subprocess.run(["git", "-C", str(tmp_path), "add", "build/x.py"], check=True)
+    assert check_clean.main(["check_clean.py", str(tmp_path)], NO_NAMES) == 1
+    assert "build/x.py: build-artifact: 'build/'" in capsys.readouterr().out
+
+
+def test_require_names_fails_a_host_name_in_a_test_file(tmp_path, capsys):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_a.py").write_text("HOST = 'zelda'\n")
+    code = check_clean.main(["check_clean.py", str(tmp_path), "--require-names"], DENY)
+    assert (code, capsys.readouterr().out) == (1, "tests/test_a.py:1: names: 'zelda'\n")
+
+
+def test_require_names_without_the_variable_exits_two_instead_of_skipping(tmp_path, capsys):
+    (tmp_path / "a.py").write_text("# ask Zelda\n")
+    assert check_clean.main(["check_clean.py", str(tmp_path), "--require-names"], NO_NAMES) == 2
+    assert "--require-names" in capsys.readouterr().out
+
+
+def test_a_file_under_build_is_a_hit_even_when_binary_or_marked_allowed(tmp_path, capsys):
+    files = {"build/lib/x.py": "ok  # clean: allow\n", "build/blob.bin": b"\0"}
+    code, out = run(tmp_path, files, NO_NAMES, capsys)
+    assert code == 1
+    assert out[1:] == ["build/blob.bin: build-artifact: 'build/'", "build/lib/x.py: build-artifact: 'build/'"]
+
+
+def test_skip_drops_the_build_artifact_rule(tmp_path, capsys):
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "x.py").write_text("x = 1\n")
+    assert check_clean.main(["check_clean.py", str(tmp_path), "--skip", "build-artifact"], NO_NAMES) == 0
+    capsys.readouterr()
 
 
 def test_a_rust_target_dir_is_not_scanned(tmp_path, capsys):
