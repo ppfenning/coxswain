@@ -104,7 +104,7 @@ def test_on_copies_the_initiative_starts_the_lane_and_writes_only_the_remote_rec
     assert (remote / "work" / "demo" / "p1" / "t.md").exists()
     assert calls[3][0] == "ssh" and "--run-id demo-1" in calls[3][-1] and "--label lbl" in calls[3][-1]
     record = json.loads((ws / "runs" / "demo-1.remote.json").read_text())
-    assert set(record) == {"host", "launched_at", "repo"} and record["host"] == "box"
+    assert set(record) == {"host", "launched_at", "repo", "initiative"} and record["host"] == "box" and record["initiative"] == "demo"
     assert record["repo"] == argv[argv.index("--repo") + 1]
     assert _run_files(ws) == ["demo-1.remote.json"]
 
@@ -267,7 +267,7 @@ def test_the_production_edge_pushes_to_the_ssh_location_from_the_workspace(tmp_p
     assert remote_calls[0] == ([*RSYNC_BOUND, "--delete", "work/demo/", f"me@box:{remote}/work/demo/"], ws)
     ssh, cwd = remote_calls[3]  # [1] and [2] are the syncs that bring the lane host's harness and repo up to date
     assert ssh[:-1] == [*SSH_BOUND, "me@box"] and f"--initiative {remote}/work/demo" in ssh[-1] and cwd == ws
-    assert (ws / "runs" / "demo-1.remote.json").exists()
+    assert json.loads((ws / "runs" / "demo-1.remote.json").read_text())["initiative"] == "demo"
 
 
 def test_run_id_that_is_free_names_the_local_run(tmp_path, capsys):
@@ -277,7 +277,7 @@ def test_run_id_that_is_free_names_the_local_run(tmp_path, capsys):
     assert rc == 0
     assert "run demo-9" in out
     assert _wait_for(ws / "runs" / "demo-9.pid")
-    assert (ws / "runs" / "demo-9.launched.json").exists()
+    assert json.loads((ws / "runs" / "demo-9.launched.json").read_text())["initiative"] == "demo"
     assert not (ws / "runs" / "demo-9.remote.json").exists()
 
 
