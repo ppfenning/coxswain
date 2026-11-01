@@ -11,7 +11,7 @@ from typing import Any, cast
 
 from agent_tools import host_cmd
 from agent_tools.chair_facts import dispatch_facts
-from agent_tools.chair_login_watch import login_blocked
+from agent_tools.chair_login_watch import PLACEMENT_STALE_S, login_blocked
 from agent_tools.chair_plan_fill import best_host, host_free_slots
 from agent_tools.chair_read_lost import stale_hosts
 from agent_tools.chair_types import Facts
@@ -69,7 +69,7 @@ def place(
     `barred` maps a host to the reason it may not be chosen; the chooser skips it and the refusal quotes the reason."""
     bars = barred or {}
     active = [r for r in rows if r.get("state") == "active"]
-    stale = stale_hosts(active, now.isoformat())
+    stale = stale_hosts(active, now.isoformat(), threshold_s=PLACEMENT_STALE_S)
     reachable = set(host_cmd.dispatchable(host_cmd.host_rows_to_lane_hosts(active, profile_hosts, local))[0])
     blocked = login_blocked(rows)
     names = [str(r["name"]) for r in active if str(r["name"]) == local or (str(r["name"]) in reachable and str(r["name"]) not in stale)]

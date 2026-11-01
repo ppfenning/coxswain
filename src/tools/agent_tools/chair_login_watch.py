@@ -17,6 +17,8 @@ from typing import Any
 Row = Mapping[str, Any]
 
 DEFAULT_THRESHOLD_S = 1800
+# An idle host is beaten only by the login check, so placement must tolerate two missed check intervals.
+PLACEMENT_STALE_S = 2 * DEFAULT_THRESHOLD_S
 
 _HTTPS_URL = re.compile(r"https://[^\s<>\"']+")
 

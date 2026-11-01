@@ -56,6 +56,21 @@ def test_every_host_full_refuses_with_each_in_use_and_cap():
     assert format_refusal(refusal) == ["here 2/2", "a 1/1", "off 0/5  (draining)"]
 
 
+def test_idle_remote_host_beaten_by_the_scheduled_login_check_stays_placeable():
+    beat = (NOW - datetime.timedelta(minutes=25)).isoformat()
+    versions = json.dumps({"workspace_dir": "/srv/ws", "login_ok": True, "login_checked_at": beat})
+    rows = [_row("here", 1), _row("idle", 4, beat=beat, versions=versions)]
+    assert place(rows, {"here": 1}, NOW, local="here") == Placement("idle", 0, 4)
+
+
+def test_remote_host_two_login_check_intervals_overdue_is_refused_as_stale():
+    beat = (NOW - datetime.timedelta(minutes=61)).isoformat()
+    rows = [_row("here", 1), _row("idle", 4, beat=beat)]
+    refusal = place(rows, {"here": 1}, NOW, local="here")
+    assert isinstance(refusal, Refusal)
+    assert format_refusal(refusal)[-1] == "idle 0/4  (stale beat)"
+
+
 def _store(ws, local, capacity):
     conn = sqlite3.connect(ws / "runs" / "cox.db")
     conn.execute("CREATE TABLE hosts (name TEXT, ssh TEXT, capacity INTEGER, state TEXT, beat_at TEXT, versions_json TEXT)")
