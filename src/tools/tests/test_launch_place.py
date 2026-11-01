@@ -9,11 +9,12 @@ import pytest
 from test_cli_launch_on import _setup
 from test_route_cli import _unmeasured_window
 
-from agent_tools import cli, usage_window
+from agent_tools import cli, launch_place, usage_window
 from agent_tools.chair_facts import dispatch_facts
 from agent_tools.chair_plan_fill import best_host, host_free_slots
 from agent_tools.cli import main
 from agent_tools.launch_place import Placement, Refusal, format_refusal, place, place_local
+from agent_tools.remote_argv import launch_argv
 
 NOW = datetime.datetime(2026, 10, 30, 12, 0, tzinfo=datetime.UTC)
 FRESH = "2026-10-30T11:59:00+00:00"
@@ -115,3 +116,21 @@ def test_lane_host_or_refuse_forced_local_refuses_when_full_unless_force(tmp_pat
     assert f"{socket.gethostname()} 0/0" in capsys.readouterr().out
     args.force = True
     assert cli._lane_host_or_refuse(args, {"workspace_dir": str(ws)}) == (None, None)
+
+
+def test_the_remote_launch_argv_carries_local():
+    assert launch_argv("init-dir", "run-1", "lbl")[:5] == ["cox", "route", "launch", "epic", "--local"]
+
+
+def test_the_remote_route_launch_never_places_again(tmp_path, monkeypatch, capsys):
+    ws, _, argv = _setup(tmp_path)
+    _store(ws, socket.gethostname(), 5)
+    remote = launch_argv(argv[argv.index("--initiative") + 1], "run-1", "lbl")[1:]
+
+    def placed_again(*args, **kwargs):
+        raise AssertionError("the remote launch was placed a second time")
+
+    monkeypatch.setattr(launch_place, "place", placed_again)
+    code = main([*remote, "--profile", argv[argv.index("--profile") + 1], "--repo", argv[argv.index("--repo") + 1], "--dry-run"])
+    assert code == 0
+    assert f"placed on {socket.gethostname()} (0/5)" in capsys.readouterr().out

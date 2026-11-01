@@ -69,8 +69,10 @@ def env_check_argv(var: str) -> list[str]:
 
 
 def launch_argv(initiative: str, run_id: str, label: str) -> list[str]:
+    # Wrong belief: "the remote cox just runs the launch". Without --local it places the run again, so host-a can
+    # forward it to host-b while the chair records host-a as the host that ran it.
     return [
-        "cox", "route", "launch", "epic",
+        "cox", "route", "launch", "epic", "--local",
         "--initiative", initiative,
         "--run-id", run_id,
         "--label", label,
