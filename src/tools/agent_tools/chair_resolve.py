@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import re
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -26,18 +27,30 @@ class Plan:
     cwd: str | None = None
     host: str | None = None
     default: str = "observer"
+    note: str | None = None
 
 
-def resolve_bare(record: dict[str, Any] | None, state: str, host: str, now: datetime.datetime) -> Plan:
-    """Pure. A crashed holder resumes only when its lease recorded a session; a live local one with a session defaults to attaching; a remote one never does."""
+def transcript_path(config_dir: Path, cwd: str, session_id: str) -> Path:
+    """Pure. Claude Code's project slug replaces every non-alphanumeric of the cwd with `-`."""
+    return config_dir / "projects" / re.sub(r"[^A-Za-z0-9]", "-", cwd) / f"{session_id}.jsonl"
+
+
+def resolve_bare(
+    record: dict[str, Any] | None, state: str, host: str, now: datetime.datetime, transcript_exists: Callable[[str, str | None], bool],
+) -> Plan:
+    """Pure. Resume or attach only a recorded session whose transcript `transcript_exists(session_id, cwd)` finds; a remote holder is never checked or attached."""
     if record is None or state in ("none", "stale") or (state == "live" and chair.expired(record, now)):
         return Plan("take")
     sid = chair.holder_session_id(record)
     label, cwd, holder_host = record.get("session"), record.get("cwd"), record.get("host")
     if state == "crashed":
-        return Plan("resume", label, sid, cwd, holder_host) if sid else Plan("take")
-    local = holder_host == host
-    return Plan("offer", label, sid, cwd, holder_host, "attach" if local and sid else "observer")
+        if not sid:
+            return Plan("take")
+        if transcript_exists(sid, cwd):
+            return Plan("resume", label, sid, cwd, holder_host)
+        return Plan("take", note=f"chair: recorded session {sid} was not found; a fresh chair is starting")
+    attach = holder_host == host and bool(sid) and transcript_exists(sid, cwd)  # a remote holder's transcript is on its own machine
+    return Plan("offer", label, sid, cwd, holder_host, "attach" if attach else "observer")
 
 
 def holder_line(record: Mapping[str, Any]) -> str:

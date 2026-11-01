@@ -1,5 +1,6 @@
 import datetime
 import socket
+from pathlib import Path
 
 from agent_tools import chair, chair_land, chair_resolve
 from agent_tools.cli import main
@@ -35,15 +36,39 @@ def test_take_records_session_id_and_cwd_and_an_old_lease_has_neither():
     assert "session_id" not in bare and "cwd" not in bare
 
 
+def _saved(sid, cwd):
+    return True
+
+
+def _unsaved(sid, cwd):
+    return False
+
+
 def test_resolve_bare_branches():
-    assert chair_resolve.resolve_bare(None, "none", HOST, NOW).kind == "take"
-    assert chair_resolve.resolve_bare(_record(), "stale", HOST, NOW).kind == "take"
-    assert chair_resolve.resolve_bare(_record(), "crashed", HOST, NOW).kind == "take"
-    resumed = chair_resolve.resolve_bare(_record(session_id="s-1", cwd="/ws"), "crashed", HOST, NOW)
+    assert chair_resolve.resolve_bare(None, "none", HOST, NOW, _saved).kind == "take"
+    assert chair_resolve.resolve_bare(_record(), "stale", HOST, NOW, _saved).kind == "take"
+    assert chair_resolve.resolve_bare(_record(), "crashed", HOST, NOW, _saved).kind == "take"
+    resumed = chair_resolve.resolve_bare(_record(session_id="s-1", cwd="/ws"), "crashed", HOST, NOW, _saved)
     assert (resumed.kind, resumed.session_id, resumed.cwd) == ("resume", "s-1", "/ws")
-    assert chair_resolve.resolve_bare(_record(session_id="s-1"), "live", HOST, NOW).default == "attach"
-    assert chair_resolve.resolve_bare(_record(), "live", HOST, NOW).default == "observer"
-    assert chair_resolve.resolve_bare(_record(session_id="s-1", host="elsewhere"), "live", HOST, NOW).default == "observer"
+    assert chair_resolve.resolve_bare(_record(session_id="s-1"), "live", HOST, NOW, _saved).default == "attach"
+    assert chair_resolve.resolve_bare(_record(), "live", HOST, NOW, _saved).default == "observer"
+    assert chair_resolve.resolve_bare(_record(session_id="s-1", host="elsewhere"), "live", HOST, NOW, _saved).default == "observer"
+
+
+def test_resolve_bare_takes_when_the_recorded_session_has_no_transcript():
+    lost = chair_resolve.resolve_bare(_record(session_id="s-1", cwd="/ws"), "crashed", HOST, NOW, _unsaved)
+    assert lost.kind == "take" and lost.session_id is None
+    assert lost.note == "chair: recorded session s-1 was not found; a fresh chair is starting"
+    assert chair_resolve.resolve_bare(_record(), "crashed", HOST, NOW, _unsaved).note is None
+    offer = chair_resolve.resolve_bare(_record(session_id="s-1"), "live", HOST, NOW, _unsaved)
+    assert (offer.kind, offer.default, offer.note) == ("offer", "observer", None)
+    remote = chair_resolve.resolve_bare(_record(session_id="s-1", host="elsewhere"), "live", HOST, NOW, _unsaved)
+    assert (remote.default, remote.note) == ("observer", None)
+
+
+def test_transcript_path_slugs_the_cwd():
+    path = chair_resolve.transcript_path(Path("/h/.claude"), "/srv/a b/ws.x", "s-1")
+    assert path == Path("/h/.claude/projects/-srv-a-b-ws-x/s-1.jsonl")
 
 
 def test_choose_maps_one_keypress():
@@ -167,7 +192,15 @@ def test_the_holder_beats_and_releases_with_no_label_and_a_hand_typed_one_is_not
     assert chair.read(tmp_path) is None
 
 
+def _save_transcript(tmp_path, cwd, sid, config=None):
+    path = chair_resolve.transcript_path(config or tmp_path / "home" / ".claude", str(cwd), sid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{}\n")
+
+
 def _bare(tmp_path, monkeypatch, key):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.setattr("sys.stdout.isatty", lambda: True)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
     monkeypatch.setattr("os.chdir", lambda path: None)
@@ -209,6 +242,7 @@ def test_bare_cox_resumes_a_crashed_lease_in_its_cwd_and_the_session_line_says_r
     calls = _bare(tmp_path, monkeypatch, "")
     ws = tmp_path / "workspace"
     chair.write(ws / "runs", _record(pid=999999, session_id="s-9", cwd=str(ws)))
+    _save_transcript(tmp_path, ws, "s-9")
     assert main([]) == 0
     assert calls[0][1][:3] == ["claude", "--resume", "s-9"]
     record = chair.read(ws / "runs")
@@ -229,6 +263,27 @@ def test_bare_cox_resumes_a_crashed_lease_in_its_cwd_and_the_session_line_says_r
     assert "resumed" not in chair.read(ws / "runs")
 
 
+def test_bare_cox_takes_a_fresh_chair_when_the_crashed_session_was_never_saved(tmp_path, monkeypatch, capsys):
+    calls = _bare(tmp_path, monkeypatch, "")
+    ws = tmp_path / "workspace"
+    chair.write(ws / "runs", _record(pid=999999, session_id="s-9", cwd=str(ws), resumed=True))
+    assert main([]) == 0
+    out = capsys.readouterr().out
+    assert "chair: recorded session s-9 was not found; a fresh chair is starting" in out and "chair taken:" in out
+    assert "--resume" not in calls[0][1]
+    assert chair.read(ws / "runs").get("session_id") != "s-9"
+
+
+def test_bare_cox_looks_for_the_transcript_under_claude_config_dir_when_it_is_set(tmp_path, monkeypatch):
+    calls = _bare(tmp_path, monkeypatch, "")
+    ws = tmp_path / "workspace"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "cfg"))
+    chair.write(ws / "runs", _record(pid=999999, session_id="s-9", cwd=str(ws)))
+    _save_transcript(tmp_path, ws, "s-9", config=tmp_path / "cfg")
+    assert main([]) == 0
+    assert calls[0][1][:3] == ["claude", "--resume", "s-9"]
+
+
 def test_the_holder_retakes_with_no_label(tmp_path, monkeypatch, capsys):
     import argparse
 
@@ -245,19 +300,26 @@ def test_the_holder_retakes_with_no_label(tmp_path, monkeypatch, capsys):
 
 def test_print_argv_names_each_bare_cox_branch(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     ws = tmp_path / "workspace"
     ws.mkdir()
+    _save_transcript(tmp_path, ws, "s-9")
+    _save_transcript(tmp_path, ws, "s-8")
     profile = tmp_path / "profile.yaml"
     profile.write_text(f"workspace_dir: {ws}\nskills_roots: [{tmp_path / 'skills'}]\n")
     runs = ws / "runs"
     take = "chair: would take the chair as the session starts"
+    lost = "chair: recorded session s-7 was not found; a fresh chair is starting"
     offer = "(a) take over  (b) open a non-chair session  (c) cancel"
     cases = [
         (None, [take], "--resume"),
         (_record(pid=999999, session_id="s-9", cwd=str(ws)), ["chair: would resume chair-2026-10-29 with claude --resume s-9", "and take the lease"], "--resume"),
         (_record(pid=999999), [take], "--resume"),
+        (_record(pid=999999, session_id="s-7", cwd=str(ws)), [lost, take], "--resume"),
         (_record(pid=1, session_id="s-8"), ["chair: would attach to chair-2026-10-29's conversation with claude --resume s-8", offer, "[Enter: attach]"], "--resume"),
         (_record(pid=1), ["chair: would open a non-chair session", offer, "[Enter: open a non-chair session]"], "--resume"),
+        (_record(pid=1, session_id="s-6"), ["chair: would open a non-chair session", offer, "[Enter: open a non-chair session]"], "--resume"),
         (_record(pid=1, host="elsewhere", session_id="s-8"), ["chair: would open a non-chair session", offer, "elsewhere"], "--resume"),
     ]
     for record, expected, flag in cases:
@@ -265,5 +327,6 @@ def test_print_argv_names_each_bare_cox_branch(tmp_path, monkeypatch, capsys):
         assert main(["--profile", str(profile), "--print-argv"]) == 0
         out, err = capsys.readouterr()
         assert all(text in err for text in expected), err
+        assert ("was not found" in err) == (lost in expected), err  # only a crashed record names a missing session
         assert "chair:" not in out and out.splitlines()[-2].startswith("['claude'")  # stdout keeps the argv and cwd; the branch is named on stderr
         assert (flag in out) == any("claude --resume" in text for text in expected[:1])
