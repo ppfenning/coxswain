@@ -168,6 +168,7 @@ SET_STATES = ("ready", "approved", "done", "dropped")
 _CONTENT_FIELDS = ("title", "body", "surfaces", "extra")
 EDITED_BY = "cox route edit"
 _REBUILD_HINT = "; --rebuild needs a recorded land conflict, or --force"
+REBUILT_FROM_KEY = "rebuilt_from"  # `extra` key: every run id a rebuild superseded, kept across rebuilds
 
 
 def rebuild_allowed(state: str | None, extra: dict | None, *, rebuild: bool, force: bool) -> bool:
@@ -293,10 +294,16 @@ def _edit_task(
         problem = (refusal and refusal + hint) or check_claim(row, now)
         if problem:
             return EditResult(problem, REFUSED)
+    unmarked = ""
     if allowed:
         extra = dict(row.get("extra") or {})
         note = rebuild_note(extra.pop(LAND_CONFLICT_KEY, None))
-        new_row = {**new_row, "body": append_note(new_row.get("body") or "", note), "extra": extra}
+        runs = [run for run, _ in run_store.task_run_phases(runs_dir, row["initiative"], row["task_id"])]
+        superseded = list(dict.fromkeys([*(extra.get(REBUILT_FROM_KEY) or []), *runs]))
+        marked = {**extra, REBUILT_FROM_KEY: superseded} if superseded else extra
+        if not superseded and row.get("state") == "approved":
+            unmarked = f"note: no run holds {row.get('task_id')}; its old approval is not marked superseded\n"
+        new_row = {**new_row, "body": append_note(new_row.get("body") or "", note), "extra": marked}
     if queue_export.is_contentless(new_row):
         return EditResult(f"task {row.get('task_id')!r} has no content to export", REFUSED)
     [(rel, new_text)] = queue_export.export_rows([new_row]).items()
@@ -316,7 +323,7 @@ def _edit_task(
         refused = _set_state(runs_dir, row, new_row["state"])
         if refused is not None:
             return refused
-    note = _record_pr(runs_dir, row, pr, now) if new_row["state"] == "done" and (moves or backfill) else ""
+    note = unmarked + (_record_pr(runs_dir, row, pr, now) if new_row["state"] == "done" and (moves or backfill) else "")
     if unchanged:
         return EditResult(note or f"note: no merged PR found for {row.get('task_id')}; give --pr <url>\n", DONE)
     partial = content_row(row, new_row)

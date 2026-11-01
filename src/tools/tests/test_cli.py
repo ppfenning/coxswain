@@ -397,6 +397,25 @@ def test_a_store_held_approved_row_keeps_its_run_when_the_fetch_wrote_another_ta
     actions = plan_lands({"approved": approved, "initiatives": [{"id": "x", "started": True, "ready_tasks": [], "landed": set()}]})
     assert [(a["kind"], a.get("run")) for a in actions] == [("land_phase", _STORE_RUN)]
 
+
+def test_a_ready_task_file_naming_the_superseded_run_reaches_the_stranded_loader_and_is_not_stranded(tmp_path):
+    ws = tmp_path / "chair"
+    (ws / "work" / "ship" / "p1").mkdir(parents=True)
+    (ws / "work" / "ship" / "initiative.md").write_text("---\nid: ship\nrepo: /r\n---\n", encoding="utf-8")
+    task = ws / "work" / "ship" / "p1" / "t1.md"
+    task.write_text("---\nid: t1\nphase: p1\nstate: ready\nneeds: []\nrebuilt_from:\n- ship-1\n---\n\nbody\n", encoding="utf-8")
+    record = ws / "runs" / "ship-1" / "tasks" / "p1" / "t1.json"
+    record.parent.mkdir(parents=True)
+    record.write_text(json.dumps({"review": {"verdict": "approve"}, "arbitration": {"verdict": "approve"}, "landed": False}), encoding="utf-8")
+    records, items = cli._chair_stranded_inputs(ws, "files")
+    assert [i["rebuilt_from"] for i in items] == [["ship-1"]]
+    assert cli.chair_read_stranded.read_stranded(records, items, lambda repo: True, lambda repo, branch: False) == []
+    task.write_text(task.read_text(encoding="utf-8").replace("rebuilt_from:\n- ship-1\n", ""), encoding="utf-8")
+    records, items = cli._chair_stranded_inputs(ws, "files")
+    stranded = cli.chair_read_stranded.read_stranded(records, items, lambda repo: True, lambda repo, branch: False)
+    assert [r["run"] for r in stranded] == ["ship-1"]
+
+
 _METER_NOW = datetime(2026, 9, 28, 12, 0, 0, tzinfo=UTC)
 _DUMMY_ASSESSMENT = cli.pacing.Assessment(
     spent_fraction=0.0, elapsed_fraction=0.0, projected_total=0.0, headroom_usd=None,
