@@ -172,6 +172,7 @@ class Deps:
     rerun_main: Callable[[str, str], tuple[str, str]] | None = None  # a rerun_main's (repo, commit) -> chair_revert_ports.rerun_infra's (state, line); None refuses it
     rev_parse: Callable[[str, str], str | None] = rev_parse  # (repo, ref) -> the ref's tip, None when it does not resolve; the only door to a land_phase's head
     phase_states: Callable[[str, str], list[str]] = lambda initiative, phase: []  # (initiative, phase) -> the store state of each of its tasks; [] when unknown
+    label: str = ""  # the chair's own holder label; each guarded cox command it shells out to carries it as --label
 
 
 LAUNCH_KINDS = ("relaunch", "retry", "launch_epic", "launch_decompose", "rescue")
@@ -310,15 +311,18 @@ def failed_reason(stdout: str, stderr: str, cap: int = _REASON_CAP) -> str:
         return ""
 
 
-def argv_for(action: Action, initiative_id: str = "", ids_mode: str = "slug") -> list[str] | None:
+def argv_for(action: Action, initiative_id: str = "", ids_mode: str = "slug", label: str = "") -> list[str] | None:
     """The cox argv for a land, fetch, launch or pull action; None for any other kind or a missing required field.
 
     A decompose launch needs `initiative_id`, which `decompose_id` derives from the intake; it is never taken from the path.
     `ids_mode` is the routing profile's `ids:` key: "sequence" appends `--task-ids ordinal` so the graph's own
     tasks come out named `<initiative_id>-t1`, `<initiative_id>-t2`, ...; "slug" (or anything else) appends neither
     flag, today's behaviour.
+    `label` is the chair's own holder label. A land or launch is guarded by the loop lock and its subprocess has no
+    COX_SESSION_LABEL, so without `--label` it reads as unlabeled and the chair's own live lock refuses it.
     """
     kind = action.get("kind")
+    tag = ["--label", label] if label else []
     # The loop already holds the chair: a command it starts must never claim the loop lease itself (a land that
     # found the record stale took it with an empty host on 2026-09-27 and put the loop in standby).
     task, repo, initiative = action.get("task_id", ""), action.get("repo", ""), action.get("initiative", "")
@@ -326,24 +330,24 @@ def argv_for(action: Action, initiative_id: str = "", ids_mode: str = "slug") ->
     phase = action.get("phase", "")
     idea = (action.get("intake_ids") or [""])[0]
     if kind == "land":
-        return ["cox", "runs", "land", run, "--task", task, "--repo", repo, "--apply", "--no-claim"] if run and task and repo else None
+        return ["cox", "runs", "land", run, "--task", task, "--repo", repo, "--apply", "--no-claim", *tag] if run and task and repo else None
     if kind == "land_phase":
-        return ["cox", "runs", "land", run, "--phase", phase, "--repo", repo, "--apply", "--no-claim"] if run and phase and repo else None
+        return ["cox", "runs", "land", run, "--phase", phase, "--repo", repo, "--apply", "--no-claim", *tag] if run and phase and repo else None
     if kind in ("fetch", "fetch_exit"):
         return ["cox", "runs", "fetch", run] if run else None
     if kind == "launch_decompose":
         task_ids = ["--task-ids", "ordinal"] if ids_mode == "sequence" else []
         decompose_host = action.get("host", "")
         return [
-            "cox", "route", "launch", "decompose", "--idea", idea, "--initiative-id", initiative_id, *task_ids, "--no-claim",
+            "cox", "route", "launch", "decompose", "--idea", idea, "--initiative-id", initiative_id, *task_ids, "--no-claim", *tag,
             *(["--on", decompose_host] if decompose_host else []),
         ] if idea and initiative_id else None
     if kind == "rescue":
-        return ["cox", "route", "launch", "rescue", "--initiative", f"work/{initiative}", "--task", task, "--no-claim"] if initiative and task else None
+        return ["cox", "route", "launch", "rescue", "--initiative", f"work/{initiative}", "--task", task, "--no-claim", *tag] if initiative and task else None
     if kind in LAUNCH_KINDS:
         host = action.get("host", "")
         return [
-            "cox", "route", "launch", "epic", "--initiative", f"work/{initiative}", "--no-claim",
+            "cox", "route", "launch", "epic", "--initiative", f"work/{initiative}", "--no-claim", *tag,
             *(["--repo", repo] if repo else []), *(["--on", host] if host else []),
         ] if initiative else None
     if kind == "pull":
@@ -385,7 +389,7 @@ def _land_timed_out(action: Action, argv: list[str]) -> Result:
 
 def _land(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
     repo = action.get("repo", "")
-    argv = argv_for(action)
+    argv = argv_for(action, label=deps.label)
     if argv is None:
         return _result(action, "refused", "land needs a run id, a task_id and a repo")
     if repo in blocked:
@@ -575,7 +579,7 @@ def _land_phase(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Resu
     """Same shape as `_land`, one command for a whole phase: its own `mark_done:` lines mark every task in the
     phase done, so this only runs the command and reads its output."""
     repo = action.get("repo", "")
-    argv = argv_for(action)
+    argv = argv_for(action, label=deps.label)
     if argv is None:
         return _result(action, "refused", "land_phase needs a run id, a phase and a repo")
     if repo in blocked:
@@ -766,7 +770,7 @@ def _launch(action: Action, deps: Deps) -> Result:
         return _result(action, "refused", initiative_id.reason)
     if action.get("kind") in ("launch_epic", "relaunch") and action.get("initiative"):
         _merge_and_write(deps.work_dir, action["initiative"])
-    argv = argv_for(action, initiative_id, deps.ids_mode)
+    argv = argv_for(action, initiative_id, deps.ids_mode, deps.label)
     if argv is None:
         return _result(action, "refused", f"{action.get('kind')} names no initiative, task or intake id")
     code, output = deps.run(argv)
