@@ -68,9 +68,11 @@ def env_check_argv(var: str) -> list[str]:
     return ["printenv", var]
 
 
+# Wrong belief (2026-11-01): "the host the chair placed the lane on just runs it". Without --local its cox places the
+# launch a second time and can forward it on; omarchy sent the run to bp-macbook while the chair recorded omarchy.
 def launch_argv(initiative: str, run_id: str, label: str) -> list[str]:
     return [
-        "cox", "route", "launch", "epic",
+        "cox", "route", "launch", "epic", "--local",
         "--initiative", initiative,
         "--run-id", run_id,
         "--label", label,

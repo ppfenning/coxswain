@@ -100,3 +100,23 @@ def test_lane_host_or_refuse_forced_local_refuses_when_full_unless_force(tmp_pat
     assert f"{socket.gethostname()} 0/0" in capsys.readouterr().out
     args.force = True
     assert cli._lane_host_or_refuse(args, {"workspace_dir": str(ws)}) == (None, None)
+
+
+def test_lane_host_or_refuse_with_local_never_calls_placement_and_stays_here(tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    (ws / "runs").mkdir(parents=True)
+    _store(ws, socket.gethostname(), 5)
+    conn = sqlite3.connect(ws / "runs" / "cox.db")
+    conn.execute("INSERT INTO hosts VALUES ('omarchy', 'omarchy', 9, 'active', ?, ?)", (FRESH, WORKSPACE))
+    conn.commit()
+    conn.close()
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(f"workspace_dir: {ws}\n", encoding="utf-8")
+
+    def placed_again(*args, **kwargs):
+        raise AssertionError("a --local launch was placed by the hosts table")
+
+    monkeypatch.setattr(cli.launch_place, "place", placed_again)
+    monkeypatch.setattr(cli.launch_place, "place_checked", placed_again)
+    args = argparse.Namespace(profile=str(profile), on=None, local=True, force=False, graph="epic", tier_ceiling=None, effort_ceiling=None, fix_attempts=None)
+    assert cli._lane_host_or_refuse(args, {"workspace_dir": str(ws)}) == (None, None)
