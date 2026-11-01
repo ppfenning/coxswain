@@ -856,8 +856,19 @@ def _finish_task(action: Action, deps: Deps) -> Result:
         return _result(action, "skipped", why)
     written = store_cli.set_state(deps.runs_dir, initiative, task, "done", "chair-loop", "approved")
     if isinstance(written, store_cli.StateSet):
-        return _result(action, "done", f"{task} done: {why}")
+        return _result(action, "done", f"{task} done: {why}{_record_merged_pr(deps, repo, run, phase, task, branches)}")
     return _result(action, "failed", f"set-state done for {task}: {written}")
+
+
+def _record_merged_pr(deps: Deps, repo: str, run: str, phase: str, task: str, branches: list[str]) -> str:
+    """Edge. Mirror the merged PR onto the finished task's record; the text to add to the reason.
+    The task is already done, so a PR that cannot be found or recorded changes the reason only, never the status.
+    A miss names the `route edit --pr` command that records it later, since the finish is not retried."""
+    pr = land_manual.lookup_merged_pr(repo, branches, deps.run)
+    if pr is None:
+        return f"; no merged PR found by gh: record one with `cox route edit {task} --state done --pr <url>`"
+    warning = land_manual.record_landed(deps.runs_dir, run, phase, task, pr, deps.now())
+    return f"; {warning}" if warning else f"; recorded {pr}"
 
 
 def _prune_available(run: Run, harness_python: str) -> bool:

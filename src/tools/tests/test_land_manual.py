@@ -98,8 +98,9 @@ def deps(runs: Path) -> chair_exec.Deps:
                            record=lambda a: None, run_id=lambda a: "", repo_for=lambda a: "", runs_dir=runs)
 
 
-def finish(repo: Path, runs: Path, monkeypatch) -> tuple[dict, list[tuple]]:
-    """The planner's own finish_task action, run through the executor's dispatch. Only the store write is replaced."""
+def finish(repo: Path, runs: Path, monkeypatch, pr: str | None = None) -> tuple[dict, list[tuple]]:
+    """The planner's own finish_task action, run through the executor's dispatch. Only the store write and the `gh` lookup
+    (which finds `pr`) are replaced; a mark-landed call is appended to the writes."""
     writes: list[tuple] = []
 
     def set_state(runs_dir, initiative, task, state, by, expected=None):
@@ -107,8 +108,52 @@ def finish(repo: Path, runs: Path, monkeypatch) -> tuple[dict, list[tuple]]:
         return store_cli.StateSet({})
 
     monkeypatch.setattr(store_cli, "set_state", set_state)
+    monkeypatch.setattr(land_manual, "lookup_merged_pr", lambda repo, branches, run=None: pr)
+    monkeypatch.setattr(store_cli, "mark_landed", lambda runs_dir, run, phase, task, url, at: writes.append((run, phase, task, url)) or store_cli.Landed({}))
     [action] = plan_finish(facts(approved_task(repo)))
     return chair_exec._execute(action, deps(runs), {}), writes
+
+
+def test_a_manual_finish_records_the_merged_pr_on_the_task_record(tmp_path, monkeypatch):
+    url = "https://github.com/o/r/pull/259"
+    result, writes = finish(make_repo(tmp_path, "squash"), runs_dir_with_record(tmp_path), monkeypatch, pr=url)
+    assert result["status"] == "done", result
+    assert writes[1:] == [("init-1", "p1", "t1", url)]
+    assert f"recorded {url}" in result["reason"]
+
+
+def test_a_manual_finish_with_no_merged_pr_is_still_done_and_records_none(tmp_path, monkeypatch):
+    result, writes = finish(make_repo(tmp_path, "squash"), runs_dir_with_record(tmp_path), monkeypatch)
+    assert result["status"] == "done", result
+    assert writes == [("init", "t1", "done", "chair-loop", "approved")]
+    assert "no merged PR found by gh: record one with `cox route edit t1 --state done --pr <url>`" in result["reason"]
+
+
+def test_a_failed_mirror_leaves_the_finish_done_with_a_warning(tmp_path, monkeypatch):
+    repo, runs = make_repo(tmp_path, "squash"), runs_dir_with_record(tmp_path)
+    monkeypatch.setattr(land_manual, "lookup_merged_pr", lambda repo, branches, run=None: "https://x/pull/1")
+    monkeypatch.setattr(store_cli, "set_state", lambda *a, **k: store_cli.StateSet({}))
+    monkeypatch.setattr(store_cli, "mark_landed", lambda *a: store_cli.Failed(2, "boom"))
+    [action] = plan_finish(facts(approved_task(repo)))
+    result = chair_exec._execute(action, deps(runs), {})
+    assert result["status"] == "done" and "not recorded (exit 2: boom)" in result["reason"], result
+
+
+def test_the_gh_answer_is_parsed_and_every_failure_is_none():
+    assert land_manual.merged_pr_url('[{"url": "https://x/pull/9"}, {"url": "https://x/pull/8"}]') == "https://x/pull/9"
+    assert [land_manual.merged_pr_url(o) for o in ("[]", "not json", '{"url": "u"}', '[{"number": 1}]')] == [None] * 4
+
+
+def test_the_lookup_tries_each_branch_and_treats_a_failed_gh_as_no_pr():
+    asked: list[str] = []
+
+    def run(argv):
+        asked.append(argv[argv.index("--head") + 1])
+        return (0, '[{"url": "https://x/pull/4"}]') if asked[-1] == "pr/t1" else (1, "no")
+
+    assert land_manual.lookup_merged_pr("/r", ["pr/i--p", "pr/t1"], run) == "https://x/pull/4"
+    assert asked == ["pr/i--p", "pr/t1"]
+    assert land_manual.lookup_merged_pr("/r", ["pr/t1"], lambda argv: (127, "")) is None
 
 
 @pytest.mark.parametrize("how", ["squash", "merge"])

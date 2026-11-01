@@ -2414,6 +2414,19 @@ def test_route_edit_on_an_intake_exits_0_and_prints_the_diff(tmp_path, monkeypat
     assert "-title: Old\n+title: New\n" in capsys.readouterr().out
 
 
+def test_route_edit_pr_flag_reaches_apply_edit_through_the_real_argparse_table(tmp_path, monkeypatch, capsys):
+    from agent_tools import route_edit
+
+    _edit_remove_workspace(tmp_path, monkeypatch, [])
+    seen = []
+    monkeypatch.setattr(route_edit, "apply_edit", lambda *a, **k: seen.append(k) or route_edit.EditResult("", route_edit.DONE))
+    url = "https://github.com/o/r/pull/9"
+    assert main(["route", "edit", "t1", "--state", "done", "--pr", url]) == 0
+    assert (seen[0]["state"], seen[0]["pr"]) == ("done", url)
+    assert main(["route", "edit", "t1", "--state", "done"]) == 0
+    assert seen[1]["pr"] is None
+
+
 def test_route_remove_on_a_remote_live_run_exits_2_and_names_the_stop(tmp_path, monkeypatch, capsys):
     lane = run_store.Lane("demo-1", "host-b", "2026-10-05T11:00:00Z", "2026-10-05T11:59:00Z")
     rows = [{"kind": "task", "initiative": "demo", "task_id": "a", "state": "ready"}]
