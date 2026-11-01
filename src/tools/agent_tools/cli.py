@@ -12022,7 +12022,15 @@ def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
     except (OSError, ValueError):
         record = None
     state = chair.liveness(record, _leader_pid_alive(record), now, host, _leader_heartbeat_minutes())
-    plan = chair_resolve.resolve_bare(record, state, host, now)
+
+    def _transcript_exists(session_id: str, record_cwd: str | None) -> bool:
+        resume_cwd = record_cwd if record_cwd and Path(record_cwd).is_dir() else workspace  # where claude --resume will run
+        config = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+        return any(chair_resolve.transcript_path(config, c, session_id).is_file() for c in {resume_cwd, str(Path(resume_cwd).resolve())})
+
+    plan = chair_resolve.resolve_bare(record, state, host, now, _transcript_exists)
+    if plan.note:
+        print(plan.note, file=sys.stderr if a.print_argv else sys.stdout)
     live_line = _live_holder_line(runs_dir)
     action = "observer" if live_line is not None else {"take": "take", "resume": "resume"}.get(plan.kind, plan.default)
     sid = None  # a take learns its session id from the SessionStart status call; claude's argv stays as it was
