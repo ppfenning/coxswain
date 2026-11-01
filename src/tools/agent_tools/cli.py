@@ -10900,6 +10900,7 @@ def _chair_run_deps(
         log_retention_days=run_logs.retention_days(profile),
         ids_mode=profile.get("ids", "slug"),
         dry_run=dry_run,
+        label="" if session == _UNLABELED else session,
     )
     exec_deps = dataclasses.replace(
         exec_deps,

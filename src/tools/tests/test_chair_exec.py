@@ -593,6 +593,59 @@ def test_a_land_phase_runs_cox_runs_land_with_phase_repo_apply_no_claim() -> Non
     assert _touched(calls) == [("run", ["cox", "runs", "land", "run-1", "--phase", "p1", "--repo", "r", "--apply", "--no-claim"])]
 
 
+@pytest.mark.parametrize(
+    ("action", "tail"),
+    [
+        ({"kind": "land", "run": "r-1", "task_id": "t1", "repo": "r"}, ["--apply", "--no-claim", "--label", "chair-jarvis"]),
+        ({"kind": "land_phase", "run": "r-1", "phase": "p1", "repo": "r"}, ["--apply", "--no-claim", "--label", "chair-jarvis"]),
+        ({"kind": "rescue", "initiative": "x", "task_id": "t1"}, ["--no-claim", "--label", "chair-jarvis"]),
+        ({"kind": "launch_epic", "initiative": "x", "repo": "/r", "host": "h"}, ["--on", "h", "--label", "chair-jarvis"]),
+        ({"kind": "launch_decompose", "intake_ids": ["intake/x.md"], "host": "h"}, ["--on", "h", "--label", "chair-jarvis"]),
+    ],
+    ids=["land", "land_phase", "rescue", "launch_epic", "launch_decompose"],
+)
+def test_a_guarded_argv_ends_with_the_chair_s_own_label(action, tail) -> None:
+    argv = argv_for(action, "x-id", label="chair-jarvis")
+    assert argv is not None and argv[-len(tail):] == tail
+
+
+@pytest.mark.parametrize("kind", ["fetch", "fetch_exit"])
+def test_a_fetch_argv_carries_no_label(kind) -> None:
+    assert argv_for({"kind": kind, "run": "r-1"}, label="chair-jarvis") == ["cox", "runs", "fetch", "r-1"]
+
+
+def test_edge_deps_carries_the_chair_label_and_defaults_to_none(tmp_path) -> None:
+    assert _edge(tmp_path, label="chair-jarvis").label == "chair-jarvis"
+    assert _edge(tmp_path).label == ""
+
+
+def _guarded_run(calls: list, holder: str = "chair-jarvis"):
+    """A `cox runs land` that refuses an unlabeled caller while `holder` holds the landing lock, as chair.guard does."""
+    def run(argv):
+        calls.append(argv)
+        label = argv[argv.index("--label") + 1] if "--label" in argv else "unlabeled"
+        if label != holder:
+            return 1, f"refusing: the landing loop is held by {holder} (live); pass --force to override"
+        return 0, LANDED
+
+    return run
+
+
+@pytest.mark.parametrize("action", [_land("t1", "r"), _land_phase("p1", "r")], ids=["land", "land_phase"])
+def test_a_land_is_not_refused_by_the_chair_s_own_live_lock(action) -> None:
+    calls: list = []
+    deps = replace(_deps([]), run=_guarded_run(calls), label="chair-jarvis")
+    results = perform([action], deps, lambda: 1, False)
+    assert [r["status"] for r in results] == ["landed"]
+    assert calls[-1][-2:] == ["--label", "chair-jarvis"]
+
+
+def test_a_land_without_the_chair_label_is_refused_by_its_own_live_lock() -> None:
+    deps = replace(_deps([]), run=_guarded_run([]))
+    results = perform([_land_phase("p1", "r")], deps, lambda: 1, False)
+    assert results[0]["status"] == "refused" and "held by chair-jarvis (live)" in results[0]["reason"]
+
+
 def _recorded_land_phase_rows(tip: str | None) -> tuple[list[dict], list]:
     """The rows `perform` records for one land_phase whose phase branch tip is `tip`, and the calls in order."""
     calls: list = []

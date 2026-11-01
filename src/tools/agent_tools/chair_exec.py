@@ -161,6 +161,7 @@ class Deps:
     harness_python: str = "python"  # the interpreter the trace prune runs under; the harness venv's python when one is configured
     send_signal: Callable[[int, int], None] = os.kill  # a stalled_usr1/stalled_stop's (pid, signal) call; the only door to os.kill
     ids_mode: str = "slug"  # the routing profile's `ids:` key; "sequence" makes a launch_decompose carry --initiative-id/--task-ids
+    label: str = ""  # the chair's own session label; a land or launch passes it as --label so the guard knows its own lock. "" passes none
     lands: LandSink | None = None  # None runs a land in line, as before; a sink runs it behind the tick
     carry_ports: Callable[[Action], tuple[GitPort, ForgePort, StorePort]] | None = None  # a carry_phase's ports; None refuses it
     rebase_port: Callable[[Action], RebasePort] | None = None  # a rebase_phase's port; None refuses it
@@ -310,8 +311,11 @@ def failed_reason(stdout: str, stderr: str, cap: int = _REASON_CAP) -> str:
         return ""
 
 
-def argv_for(action: Action, initiative_id: str = "", ids_mode: str = "slug") -> list[str] | None:
+def argv_for(action: Action, initiative_id: str = "", ids_mode: str = "slug", label: str = "") -> list[str] | None:
     """The cox argv for a land, fetch, launch or pull action; None for any other kind or a missing required field.
+
+    `label` is the chair's own session label. A land or launch carries it as `--label`, so the landing guard sees the
+    live holder as the caller; without it the child is unlabeled and the guard refuses the chair's own lock. Empty adds nothing.
 
     A decompose launch needs `initiative_id`, which `decompose_id` derives from the intake; it is never taken from the path.
     `ids_mode` is the routing profile's `ids:` key: "sequence" appends `--task-ids ordinal` so the graph's own
@@ -325,10 +329,11 @@ def argv_for(action: Action, initiative_id: str = "", ids_mode: str = "slug") ->
     run = action.get("run", "")
     phase = action.get("phase", "")
     idea = (action.get("intake_ids") or [""])[0]
+    tag = ["--label", label] if label else []
     if kind == "land":
-        return ["cox", "runs", "land", run, "--task", task, "--repo", repo, "--apply", "--no-claim"] if run and task and repo else None
+        return ["cox", "runs", "land", run, "--task", task, "--repo", repo, "--apply", "--no-claim", *tag] if run and task and repo else None
     if kind == "land_phase":
-        return ["cox", "runs", "land", run, "--phase", phase, "--repo", repo, "--apply", "--no-claim"] if run and phase and repo else None
+        return ["cox", "runs", "land", run, "--phase", phase, "--repo", repo, "--apply", "--no-claim", *tag] if run and phase and repo else None
     if kind in ("fetch", "fetch_exit"):
         return ["cox", "runs", "fetch", run] if run else None
     if kind == "launch_decompose":
@@ -336,15 +341,15 @@ def argv_for(action: Action, initiative_id: str = "", ids_mode: str = "slug") ->
         decompose_host = action.get("host", "")
         return [
             "cox", "route", "launch", "decompose", "--idea", idea, "--initiative-id", initiative_id, *task_ids, "--no-claim",
-            *(["--on", decompose_host] if decompose_host else []),
+            *(["--on", decompose_host] if decompose_host else []), *tag,
         ] if idea and initiative_id else None
     if kind == "rescue":
-        return ["cox", "route", "launch", "rescue", "--initiative", f"work/{initiative}", "--task", task, "--no-claim"] if initiative and task else None
+        return ["cox", "route", "launch", "rescue", "--initiative", f"work/{initiative}", "--task", task, "--no-claim", *tag] if initiative and task else None
     if kind in LAUNCH_KINDS:
         host = action.get("host", "")
         return [
             "cox", "route", "launch", "epic", "--initiative", f"work/{initiative}", "--no-claim",
-            *(["--repo", repo] if repo else []), *(["--on", host] if host else []),
+            *(["--repo", repo] if repo else []), *(["--on", host] if host else []), *tag,
         ] if initiative else None
     if kind == "pull":
         return ["cox", "route", "pull"]
@@ -385,7 +390,7 @@ def _land_timed_out(action: Action, argv: list[str]) -> Result:
 
 def _land(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
     repo = action.get("repo", "")
-    argv = argv_for(action)
+    argv = argv_for(action, label=deps.label)
     if argv is None:
         return _result(action, "refused", "land needs a run id, a task_id and a repo")
     if repo in blocked:
@@ -575,7 +580,7 @@ def _land_phase(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Resu
     """Same shape as `_land`, one command for a whole phase: its own `mark_done:` lines mark every task in the
     phase done, so this only runs the command and reads its output."""
     repo = action.get("repo", "")
-    argv = argv_for(action)
+    argv = argv_for(action, label=deps.label)
     if argv is None:
         return _result(action, "refused", "land_phase needs a run id, a phase and a repo")
     if repo in blocked:
@@ -766,7 +771,7 @@ def _launch(action: Action, deps: Deps) -> Result:
         return _result(action, "refused", initiative_id.reason)
     if action.get("kind") in ("launch_epic", "relaunch") and action.get("initiative"):
         _merge_and_write(deps.work_dir, action["initiative"])
-    argv = argv_for(action, initiative_id, deps.ids_mode)
+    argv = argv_for(action, initiative_id, deps.ids_mode, deps.label)
     if argv is None:
         return _result(action, "refused", f"{action.get('kind')} names no initiative, task or intake id")
     code, output = deps.run(argv)
@@ -1791,8 +1796,12 @@ def edge_deps(
     ids_mode: str = "slug",
     provider_profile: Callable[[], dict] = lambda: {},
     dry_run: bool = False,
+    label: str = "",
 ) -> Deps:
     """Edge. The real bundle: subprocess for cox and git, chair.acquire_lease for the lease.
+
+    `label` is the chair loop's own label, passed to every land and launch it shells out to. `cox runs move` leaves it
+    empty: it is not the lock holder and must keep resolving its caller from the environment.
 
     A dry run drops every door to a lane host: `run` refuses an ssh or push argv unrun and `check_login` returns no row.
 
@@ -1820,6 +1829,7 @@ def edge_deps(
         log_retention_days=log_retention_days,
         harness_python=harness_python,
         ids_mode=ids_mode,
+        label=label,
         home=home,
         carry_ports=partial(_carry_ports, runs_dir, workspace, repo_for, lambda: datetime.now(UTC).isoformat(), home),
         rebase_port=lambda action: _RebaseEdge(action.get("repo") or repo_for(action)),
