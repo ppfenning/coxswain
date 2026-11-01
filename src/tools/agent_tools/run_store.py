@@ -406,6 +406,17 @@ def run_ids(runs_dir: Path) -> set[str]:
         conn.close()
 
 
+def task_run_phases(runs_dir: Path, initiative: str, task_id: str) -> list[tuple[str, str]]:
+    """Edge. `(run_id, phase_id)` of every record of `task_id` in a run of `initiative` (id `<initiative>-N`), newest run first.
+    Empty with no store or an unreadable one."""
+    sql = (
+        "SELECT t.run_id AS run_id, t.phase_id AS phase_id FROM task_records t LEFT JOIN runs r ON r.run_id = t.run_id"
+        " WHERE t.task_id = {p} ORDER BY r.started_at DESC, t.run_id DESC"
+    )
+    rows = _store_tuples(runs_dir, sql, (task_id,), ("run_id", "phase_id"))
+    return [(str(run), str(phase)) for run, phase in rows if str(run).rsplit("-", 1)[0] == initiative]
+
+
 _GATE_FACTS = ("handoff_verdict", "charter_verdict", "adversary_verdict", "arbiter_verdict", "fix_loop_attempts",
                "fix_loop_stopped", "plan_gate_verdict")
 

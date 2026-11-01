@@ -4156,7 +4156,7 @@ def _route_edit(a: argparse.Namespace) -> int:
     result = route_edit.apply_edit(
         runs_dir, runs_dir.parent, _initiative_token(runs_dir, a.id), title=a.title, body=a.body, body_file=a.body_file, repo=a.repo,
         surfaces=a.surfaces, state=a.state, dry_run=a.dry_run, live_runs=_live_runs(runs_dir, _now_iso()), now=_now_iso(),
-        rebuild=getattr(a, "rebuild", False), force=getattr(a, "force", False),
+        rebuild=getattr(a, "rebuild", False), force=getattr(a, "force", False), pr=getattr(a, "pr", None),
     )
     if result.code != route_edit.DONE:
         print(f"edit: {'refused' if result.code == route_edit.REFUSED else 'failed'}: {result.text}")
@@ -10022,6 +10022,7 @@ ROUTE_COMMANDS = [
             commands.Arg(("--body",)), commands.Arg(("--body-file",)), commands.Arg(("--repo",)),
             commands.Arg(("--surfaces",), {"help": "task ticket only: comma-separated paths that replace the list"}),
             commands.Arg(("--state",), {"help": "task ticket only: ready, approved, done or dropped; never backward"}),
+            commands.Arg(("--pr",), {"help": "with --state done: the merged PR url to record on the task, also on a task that is already done; without it the merged PR is looked up with gh"}),
             commands.Arg(("--rebuild",), {"action": "store_true", "help": "with --state ready: send an approved task back to build on current main; needs a recorded land conflict or --force"}),
             commands.Arg(("--force",), {"action": "store_true", "help": "with --rebuild: allow it with no recorded land conflict"}),
             commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the diff and write nothing"}),

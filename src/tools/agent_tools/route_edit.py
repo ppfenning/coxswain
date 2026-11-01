@@ -21,11 +21,12 @@ the row as the store now holds it and records the hash, so a hand-edited file is
 from __future__ import annotations
 
 import difflib
+import os
 from collections.abc import Collection, Sequence
 from pathlib import Path
 from typing import NamedTuple
 
-from agent_tools import queue_export, queue_rows, route, route_guard, run_store, store_cli
+from agent_tools import land_manual, queue_export, queue_rows, repo_path, route, route_guard, run_store, store_cli
 from agent_tools.land import LAND_CONFLICT_KEY, conflict_note
 
 DONE = route_guard.DONE
@@ -40,13 +41,15 @@ class EditResult(NamedTuple):
 
 def check_options(
     title: str | None, body: str | None, body_file: str | None, repo: str | None,
-    surfaces: str | None = None, state: str | None = None, rebuild: bool = False, force: bool = False,
+    surfaces: str | None = None, state: str | None = None, rebuild: bool = False, force: bool = False, pr: str | None = None,
 ) -> str | None:
     """The reason the options cannot be applied, or None. Body and body-file are mutually exclusive.
     `surfaces` or `state` alone counts as a change; whether they are valid is `check_task_options`.
-    `--rebuild` goes with `--state ready` and `--force` with `--rebuild`."""
+    `--rebuild` goes with `--state ready`, `--force` with `--rebuild` and `--pr` with `--state done`."""
     if body is not None and body_file is not None:
         return "give either --body or --body-file, not both"
+    if pr is not None and state != "done":
+        return "--pr applies only with --state done"
     if rebuild and state != "ready":
         return "--rebuild applies only with --state ready"
     if force and not rebuild:
@@ -250,9 +253,29 @@ def _set_state(runs_dir: Path, row: dict, state: str) -> EditResult | None:
     return EditResult(f"the store did not take the state of {row['task_id']}: {detail}", FAILED)
 
 
+def _record_pr(runs_dir: Path, row: dict, pr: str | None, now: str | None) -> str:
+    """Edge. After a task moved to done, mirror its merged PR onto the newest run's record of it: `pr` as given, else the merged
+    PR `gh` finds for the task's branches in its repo. The line to append to the output, "" when there is no PR to record.
+    The task is already done, so every failure here is a printed note and never changes the exit code."""
+    initiative, task = row["initiative"], row["task_id"]
+    runs = run_store.task_run_phases(runs_dir, initiative, task)
+    if not runs:
+        return f"note: no run holds {task}; PR not recorded\n" if pr else ""
+    run, phase = next((rp for rp in runs if rp[1] == row.get("phase")), runs[0])
+    if pr is None:
+        repo = repo_path.expand(str((row.get("extra") or {}).get("repo") or ""), os.path.expanduser("~"))
+        branches = land_manual.pr_branches(initiative, phase, task, land_manual.record_branch(runs_dir, run, task))
+        pr = land_manual.lookup_merged_pr(repo, branches) if repo else None
+        if pr is None:
+            return ""
+    warning = land_manual.record_landed(runs_dir, run, phase, task, pr, now or "")
+    return f"{warning}\n" if warning else f"recorded PR {pr} on {run}/{phase}/{task}\n"
+
+
 def _edit_task(
     runs_dir: Path, ws: Path, row: dict, *, title: str | None, body: str | None, body_file: str | None,
     surfaces: str | None, state: str | None, dry_run: bool, now: str | None, rebuild: bool = False, force: bool = False,
+    pr: str | None = None,
 ) -> EditResult:
     """Edge: a state move first, through `store_cli.set_state` with a compare-and-set on the state read; then the changed
     content fields only, as a partial row `upsert_row_detail` merges (never `state`); then the store's row as it now stands,
@@ -285,12 +308,17 @@ def _edit_task(
     diff = "".join(
         difflib.unified_diff(old_text.splitlines(keepends=True), new_text.splitlines(keepends=True), fromfile=f"a/{rel}", tofile=f"b/{rel}")
     )
-    if dry_run or (not diff and new_row == row):
+    backfill = state == "done" and row.get("state") == "done"  # already done: --state done only records the PR
+    unchanged = not diff and new_row == row
+    if dry_run or (unchanged and not backfill):
         return EditResult(diff, DONE)
     if moves:
         refused = _set_state(runs_dir, row, new_row["state"])
         if refused is not None:
             return refused
+    note = _record_pr(runs_dir, row, pr, now) if new_row["state"] == "done" and (moves or backfill) else ""
+    if unchanged:
+        return EditResult(note or f"note: no merged PR found for {row.get('task_id')}; give --pr <url>\n", DONE)
     partial = content_row(row, new_row)
     if partial is not None:
         reason = run_store.upsert_row_detail(runs_dir, partial)
@@ -301,7 +329,8 @@ def _edit_task(
         queue_export.export_file(ws, stored, force=True, hashes=queue_export.store_hashes(runs_dir))
     except OSError as exc:
         return EditResult(f"the store row was updated but {rel} could not be written: {exc}", FAILED)
-    return EditResult(diff or f"store row {row.get('task_id')} updated; {rel} already matched", DONE)
+    text = diff or f"store row {row.get('task_id')} updated; {rel} already matched"
+    return EditResult(f"{text.rstrip(chr(10))}\n{note}" if note else text, DONE)
 
 
 def apply_edit(
@@ -320,11 +349,13 @@ def apply_edit(
     now: str | None = None,
     rebuild: bool = False,
     force: bool = False,
+    pr: str | None = None,
 ) -> EditResult:
     """Edge: edit the queued intake, the initiative or the task ticket named `id`. Exit 0 returns the diff; exit 2 returns the
     reason and writes nothing, whether the options are wrong, the id is unknown, or the guard refuses. With
-    `dry_run` the diff is returned and neither the file nor the store is written."""
-    problem = check_options(title, body, body_file, repo, surfaces, state, rebuild, force)
+    `dry_run` the diff is returned and neither the file nor the store is written.
+    A move to done also records the task's merged PR on its newest run record: `pr`, else the one `gh` finds."""
+    problem = check_options(title, body, body_file, repo, surfaces, state, rebuild, force, pr)
     if problem is not None:
         return EditResult(problem, REFUSED)
     rows: Sequence[dict] = run_store.read_queue(runs_dir)
@@ -343,7 +374,7 @@ def apply_edit(
             return EditResult(problem, REFUSED)
         return _edit_task(
             runs_dir, ws, dict(tickets[0]), title=title, body=body, body_file=body_file, surfaces=surfaces, state=state, dry_run=dry_run,
-            now=now, rebuild=rebuild, force=force,
+            now=now, rebuild=rebuild, force=force, pr=pr,
         )
     if surfaces is not None or state is not None:
         return EditResult("--surfaces and --state apply to a task ticket only", REFUSED)

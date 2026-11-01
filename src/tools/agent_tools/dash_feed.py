@@ -1023,6 +1023,19 @@ def _history_tasks(
     ]
 
 
+def _inherit_prs(tasks_by_run: Sequence[list[dict]], initiatives: Sequence[str]) -> list[list[dict]]:
+    """`tasks_by_run` (newest run first) with each task's missing `pr` taken from the nearest later run of the same
+    initiative that has one for the same task id. A run's own `pr` always wins; none anywhere stays None."""
+    def later(index: int, task_id: object) -> int | None:
+        return next(
+            (t["pr"] for i in range(index - 1, -1, -1) if initiatives[i] == initiatives[index]
+             for t in tasks_by_run[i] if t["id"] == task_id and t["pr"] is not None),
+            None,
+        )
+
+    return [[t if t["pr"] is not None else {**t, "pr": later(i, t["id"])} for t in tasks] for i, tasks in enumerate(tasks_by_run)]
+
+
 def _history_v1(
     rows: Mapping, at: datetime, ids: Mapping[str, str], projects: Mapping[str, str | None],
     states: Mapping[tuple[str, str, str], str] | None = None,
@@ -1033,14 +1046,19 @@ def _history_v1(
     offset = at.astimezone(EASTERN).utcoffset() or timedelta(0)
     args = (rows["runs"], rows["task_records"], rows["node_calls"])
     by_run = _by_run(rows["task_records"])
+    built = build_history(*args)
+    tasks = _inherit_prs(
+        [_history_tasks(by_run.get(str(row["run"]), []), row["initiative"], states or {}) for row in built],
+        [row["initiative"] for row in built],
+    )
     history = [
         {
             **row,
             "short_id": _short_id(row.get("initiative"), ids),
             "project": _project(row.get("initiative"), projects),
-            "tasks": _history_tasks(by_run.get(str(row["run"]), []), row["initiative"], states or {}),
+            "tasks": row_tasks,
         }
-        for row in build_history(*args)
+        for row, row_tasks in zip(built, tasks, strict=True)
     ]
     return history, _history_today(*args, at, timezone(offset))
 

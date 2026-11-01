@@ -1,6 +1,8 @@
+import json
+
 import pytest
 
-from agent_tools import route_edit, run_store, store_cli
+from agent_tools import land_manual, route_edit, run_store, store_cli
 
 TICKET_FILE = "---\nstate: todo\ntitle: Old title\nneeds:\n- other\nsurfaces:\n- old.py\nid: t1\nphase: p1\nrepo: r\n---\n\nOld body\n"
 INTAKE = "---\nid: fix-it\ntitle: Old title\nrepo: r\n---\n\nOld body\n"
@@ -102,6 +104,146 @@ def test_a_hand_edited_file_is_overwritten_by_the_store_text(tmp_path, monkeypat
     assert result.code == route_edit.DONE and "-Hand edit" in result.text
     assert path.read_text(encoding="utf-8") == TICKET_FILE.replace("state: todo", "state: ready")
     assert [state for _, _, state, _, _ in store.states] == ["ready"] and store.upserts == [] and len(store.hashes) == 1
+
+
+def _finish_setup(tmp_path, monkeypatch, runs=(("ship-2", "p1"), ("ship-1", "p1"))):
+    """An approved ticket whose runs the store lists newest first; the `mark-landed` calls are returned in a list."""
+    store = _store(monkeypatch, [{**_ticket_row(), "state": "approved"}])
+    _file(tmp_path, "work/ship/p1/t1.md", TICKET_FILE)
+    marks: list[tuple] = []
+    monkeypatch.setattr(run_store, "task_run_phases", lambda runs_dir, initiative, task: list(runs))
+    monkeypatch.setattr(store_cli, "mark_landed", lambda runs_dir, run, phase, task, pr, at: marks.append((run, phase, task, pr, at)) or store_cli.Landed({}))
+    return store, marks
+
+
+def test_route_edit_state_done_with_pr_records_it_on_the_newest_run(tmp_path, monkeypatch):
+    store, marks = _finish_setup(tmp_path, monkeypatch)
+    url = "https://github.com/o/r/pull/259"
+    result = route_edit.apply_edit(tmp_path, tmp_path, "t1", state="done", pr=url, live_runs=(), now="2026-11-01T10:00:00Z")
+    assert result.code == route_edit.DONE and f"recorded PR {url} on ship-2/p1/t1" in result.text
+    assert [state for _, _, state, _, _ in store.states] == ["done"]
+    assert marks == [("ship-2", "p1", "t1", url, "2026-11-01T10:00:00Z")]
+
+
+def test_route_edit_state_done_without_pr_looks_the_merged_pr_up(tmp_path, monkeypatch):
+    _, marks = _finish_setup(tmp_path, monkeypatch)
+    asked: list[list[str]] = []
+    monkeypatch.setattr(land_manual, "lookup_merged_pr", lambda repo, branches, run=None: asked.append(branches) or "https://x/pull/7")
+    result = route_edit.apply_edit(tmp_path, tmp_path, "t1", state="done", live_runs=(), now="n")
+    assert result.code == route_edit.DONE
+    assert asked[0][:2] == ["pr/ship--p1", "pr/t1"] and marks == [("ship-2", "p1", "t1", "https://x/pull/7", "n")]
+
+
+def test_route_edit_state_done_with_no_pr_anywhere_still_finishes_the_task(tmp_path, monkeypatch):
+    store, marks = _finish_setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(land_manual, "lookup_merged_pr", lambda repo, branches, run=None: None)
+    result = route_edit.apply_edit(tmp_path, tmp_path, "t1", state="done", live_runs=(), now="n")
+    assert result.code == route_edit.DONE and marks == [] and "recorded" not in result.text
+    assert [state for _, _, state, _, _ in store.states] == ["done"]
+
+
+def test_route_edit_pr_without_a_run_is_a_note_not_a_failure(tmp_path, monkeypatch):
+    _, marks = _finish_setup(tmp_path, monkeypatch, runs=())
+    result = route_edit.apply_edit(tmp_path, tmp_path, "t1", state="done", pr="https://x/pull/1", live_runs=(), now="n")
+    assert result.code == route_edit.DONE and "no run holds t1" in result.text and marks == []
+
+
+def _done_row_setup(tmp_path, monkeypatch, file_state="done"):
+    """A task the store already holds as done, with its file; `mark-landed` calls are returned in a list."""
+    store = _store(monkeypatch, [{**_ticket_row(), "state": "done"}])
+    _file(tmp_path, "work/ship/p1/t1.md", TICKET_FILE.replace("state: todo", f"state: {file_state}"))
+    marks: list[tuple] = []
+    monkeypatch.setattr(run_store, "task_run_phases", lambda runs_dir, initiative, task: [("ship-2", "p1")])
+    monkeypatch.setattr(store_cli, "mark_landed", lambda runs_dir, run, phase, task, pr, at: marks.append((run, phase, task, pr, at)) or store_cli.Landed({}))
+    return store, marks
+
+
+def test_route_edit_state_done_pr_on_an_already_done_task_records_the_pr(tmp_path, monkeypatch):
+    store, marks = _done_row_setup(tmp_path, monkeypatch)
+    url = "https://github.com/o/r/pull/259"
+    result = route_edit.apply_edit(tmp_path, tmp_path, "t1", state="done", pr=url, live_runs=(), now="n")
+    assert result.code == route_edit.DONE and f"recorded PR {url} on ship-2/p1/t1" in result.text
+    assert marks == [("ship-2", "p1", "t1", url, "n")] and store.states == [] and store.upserts == []
+
+
+def test_route_edit_state_done_on_an_already_done_task_looks_the_pr_up_or_says_it_found_none(tmp_path, monkeypatch):
+    _, marks = _done_row_setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(land_manual, "lookup_merged_pr", lambda repo, branches, run=None: "https://x/pull/7")
+    result = route_edit.apply_edit(tmp_path, tmp_path, "t1", state="done", live_runs=(), now="n")
+    assert result.code == route_edit.DONE and marks == [("ship-2", "p1", "t1", "https://x/pull/7", "n")]
+    marks.clear()
+    monkeypatch.setattr(land_manual, "lookup_merged_pr", lambda repo, branches, run=None: None)
+    result = route_edit.apply_edit(tmp_path, tmp_path, "t1", state="done", live_runs=(), now="n")
+    assert result.code == route_edit.DONE and marks == [] and "no merged PR found for t1; give --pr <url>" in result.text
+
+
+def test_route_edit_dry_run_on_a_done_task_records_nothing(tmp_path, monkeypatch):
+    _, marks = _done_row_setup(tmp_path, monkeypatch)
+    result = route_edit.apply_edit(tmp_path, tmp_path, "t1", state="done", pr="https://x/pull/1", dry_run=True, live_runs=(), now="n")
+    assert result.code == route_edit.DONE and marks == []
+
+
+def test_a_task_finished_by_route_edit_shows_its_pr_in_the_feed(tmp_path, monkeypatch):
+    """The real `store_cli.mark_landed` builds the harness argv; only the harness process is replaced, by one that
+    stamps `landed` the way `harness.store_landed` does. The record it writes then goes through the real feed assembly."""
+    import subprocess
+    from datetime import UTC, datetime
+    from pathlib import Path
+
+    from agent_tools import dash_feed
+
+    store = _store(monkeypatch, [{**_ticket_row(), "state": "approved"}])
+    _file(tmp_path, "work/ship/p1/t1.md", TICKET_FILE)
+    monkeypatch.setattr(run_store, "task_run_phases", lambda runs_dir, initiative, task: [("ship-2", "p1")])
+    records = [{"run_id": "ship-2", "phase_id": "p1", "task_id": "t1", "record_json": "{}"}]
+    argvs: list[list[str]] = []
+
+    def harness(argv, **kwargs):
+        argvs.append(argv)
+        landed = {"pr": argv[argv.index("--pr") + 1], "at": argv[argv.index("--at") + 1]}
+        records[0]["record_json"] = json.dumps({"landed": landed})
+        return subprocess.CompletedProcess(argv, 0, json.dumps({"landed": True}), "")
+
+    monkeypatch.setattr("agent_tools.store_cli._harness_python", lambda: Path("/fake/python"))
+    monkeypatch.setattr(subprocess, "run", harness)
+    result = route_edit.apply_edit(tmp_path, tmp_path, "t1", state="done", pr="https://github.com/o/r/pull/259", live_runs=(), now="2026-11-01T10:00:00Z")
+    runs = [{"run_id": "ship-2", "initiative": "ship", "status": "approved", "host": "h", "ended_at": "2026-11-01T10:30:00+00:00"}]
+    rows = {"runs": runs, "task_records": records, "node_calls": []}
+
+    history, _ = dash_feed._history_v1(rows, datetime(2026, 11, 1, 12, tzinfo=UTC), {}, {}, {("ship", "p1", "t1"): "done"})
+
+    assert result.code == route_edit.DONE and store.states
+    assert [a[a.index("mark-landed") : a.index("mark-landed") + 4] for a in argvs] == [["mark-landed", "ship-2", "p1", "t1"]]
+    assert [row["tasks"] for row in history] == [[{"id": "t1", "state": "done", "pr": 259}]]
+
+
+def test_task_run_phases_lists_the_newest_run_first_and_only_of_the_initiative(tmp_path, monkeypatch):
+    import sqlite3
+
+    db = tmp_path / "store.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE runs (run_id TEXT, started_at TEXT)")
+        conn.execute("CREATE TABLE task_records (run_id TEXT, phase_id TEXT, task_id TEXT, record_json TEXT)")
+        conn.executemany("INSERT INTO runs VALUES (?, ?)", [("ship-1", "2026-10-01"), ("ship-2", "2026-10-02"), ("other-9", "2026-10-03")])
+        conn.executemany(
+            "INSERT INTO task_records VALUES (?, ?, ?, '{}')",
+            [("ship-1", "p1", "t1"), ("ship-2", "p2", "t1"), ("other-9", "p1", "t1"), ("ship-2", "p1", "t2")],
+        )
+
+    def opened(runs_dir):
+        conn = sqlite3.connect(db)
+        conn.row_factory = sqlite3.Row
+        return conn, "?"
+
+    monkeypatch.setattr(run_store, "_open", opened)
+    assert run_store.task_run_phases(tmp_path, "ship", "t1") == [("ship-2", "p2"), ("ship-1", "p1")]
+
+
+def test_pr_is_refused_without_state_done(tmp_path, monkeypatch):
+    store, marks = _finish_setup(tmp_path, monkeypatch)
+    result = route_edit.apply_edit(tmp_path, tmp_path, "t1", state="ready", pr="https://x/pull/1", live_runs=())
+    assert result.code == route_edit.REFUSED and "--pr applies only with --state done" in result.text
+    assert store.states == [] and marks == []
 
 
 def test_an_invalid_state_changes_nothing(tmp_path, monkeypatch):

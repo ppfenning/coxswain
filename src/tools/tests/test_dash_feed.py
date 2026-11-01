@@ -1014,6 +1014,42 @@ def test_queue_and_history_rows_use_their_initiative_field(monkeypatch):
     assert dash_feed._queue_v1({"initiative": "dash-feed"}, _IDS, {})["short_id"] == "I412"
 
 
+def _task(task_id, pr):
+    return {"id": task_id, "state": "done", "pr": pr}
+
+
+def test_a_task_without_a_pr_takes_the_nearest_later_runs_pr_of_the_same_initiative():
+    runs = [[_task("t1", 12)], [_task("t1", None), _task("t2", None)], [_task("t1", 7)]]  # newest run first
+
+    got = dash_feed._inherit_prs(runs, ["a", "a", "a"])
+
+    assert [[t["pr"] for t in tasks] for tasks in got] == [[12], [12, None], [7]]
+
+
+def test_a_runs_own_pr_wins_and_another_initiatives_pr_is_not_borrowed():
+    runs = [[_task("t1", 12)], [_task("t1", 5)], [_task("t1", None)]]
+
+    got = dash_feed._inherit_prs(runs, ["a", "a", "b"])
+
+    assert [tasks[0]["pr"] for tasks in got] == [12, 5, None]
+
+
+def test_history_tasks_fall_back_to_a_later_run_that_landed_the_task(monkeypatch):
+    built = [{"run": "a-2", "initiative": "a"}, {"run": "a-1", "initiative": "a"}]
+    monkeypatch.setattr(dash_feed, "build_history", lambda *args: built)
+    monkeypatch.setattr(dash_feed, "_history_today", lambda *args: {})
+    landed = json.dumps({"landed": {"pr": "https://github.com/o/r/pull/12", "at": "t"}})
+    records = [
+        {"run_id": "a-2", "phase_id": "p1", "task_id": "t1", "record_json": landed},
+        {"run_id": "a-1", "phase_id": "p1", "task_id": "t1", "record_json": json.dumps({"approved": True})},
+    ]
+    store_rows = {"runs": [], "task_records": records, "node_calls": []}
+
+    history, _ = dash_feed._history_v1(store_rows, datetime(2026, 10, 5, tzinfo=UTC), {}, {}, {("a", "p1", "t1"): "done"})
+
+    assert [row["tasks"] for row in history] == [[_task("t1", 12)], [_task("t1", 12)]]
+
+
 _REPOS = [
     {"initiative": "dash-feed", "extra": {"repo": "work/example-repo"}},
     {"initiative": "dash-feed-streams", "extra": {"repo": "work/coxswain-tools/"}},

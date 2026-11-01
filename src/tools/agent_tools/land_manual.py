@@ -19,6 +19,7 @@ from typing import Any
 
 import yaml
 
+from agent_tools import store_cli
 from agent_tools.base_branch import OVERLAY, Run, run_git
 
 MANUAL = "manual"
@@ -94,6 +95,46 @@ def merged_on_origin(repo: str, branches: list[str], targets: list[str], run: Ru
     live = [t for t in targets if not fetched[t]]
     merged = {b: next((t for t in live if _contained(repo, b, t, run)), None) for b in branches if not fetched[b]}
     return merged_verdict({b: fetched[b] for b in branches}, merged)
+
+
+def merged_pr_url(output: str) -> str | None:
+    """The first `url` of `gh pr list --json url` output; None for an empty list or output that is not that JSON."""
+    try:
+        found = json.loads(output)
+    except ValueError:
+        return None
+    urls = [e["url"] for e in found if isinstance(e, dict) and isinstance(e.get("url"), str) and e["url"]] if isinstance(found, list) else []
+    return urls[0] if urls else None
+
+
+def lookup_merged_pr(repo: str, branches: list[str], run: Run = run_git) -> str | None:
+    """Edge. The merged PR's url for the first of `branches` that has one, asked of `gh` from inside `repo`; None when none does.
+
+    `gh` has no `-C`, so the shell changes into the repo first. Any failure is None: the PR is a nicety on top of the finish."""
+    for branch in branches:
+        argv = ["gh", "pr", "list", "--head", branch, "--state", "merged", "--json", "url"]
+        try:
+            code, out = run(["sh", "-c", 'cd "$1" && shift && exec "$@"', "sh", repo, *argv])
+        except Exception:
+            continue
+        url = merged_pr_url(out) if code == 0 else None
+        if url:
+            return url
+    return None
+
+
+def record_landed(runs_dir: Path, run: str, phase: str, task: str, pr: str, at: str) -> str | None:
+    """Edge. Mirror `landed: {pr, at}` onto the task's store record; the warning to print, None when the store took it. Never raises."""
+    try:
+        result = store_cli.mark_landed(runs_dir, run, phase, task, pr, at)
+    except Exception as exc:
+        return f"warning: PR of {task} not recorded ({type(exc).__name__}: {exc})"
+    if isinstance(result, store_cli.Landed):
+        return None
+    if isinstance(result, store_cli.NotInStore):
+        return f"PR of {task} not recorded: the record predates the store"
+    detail = f"exit {result.code}: {result.detail}" if isinstance(result, store_cli.Failed) else "harness not available"
+    return f"warning: PR of {task} not recorded ({detail})"
 
 
 def record_branch(runs_dir: Path, run: str, task: str) -> str | None:
