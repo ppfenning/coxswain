@@ -72,6 +72,11 @@ def _row(record: dict, item: dict | None, base_of: Callable[[str], str] | None =
 _LIVE_STATES = frozenset({"ready", "approved"})
 
 
+def _rebuilt(record: dict, item: dict | None) -> bool:
+    """True when a `route edit --rebuild` listed this record's run in the item's `rebuilt_from`, whatever the item's state now."""
+    return bool(item) and record.get("run") in (item.get("rebuilt_from") or [])
+
+
 def _live_pairs(records: list[dict], items: list[dict]) -> list[tuple[dict, dict | None]]:
     """Approved, unlanded records paired with their resolved item. A record
     whose task names no item is left out; one whose item is ambiguous is
@@ -87,7 +92,7 @@ def _live_pairs(records: list[dict], items: list[dict]) -> list[tuple[dict, dict
         if not candidates:
             continue
         item = _scoped_item(record, candidates)
-        if item is not None and item.get("state") not in _LIVE_STATES:
+        if item is not None and (item.get("state") not in _LIVE_STATES or _rebuilt(record, item)):
             continue
         pairs.append((record, item))
     return pairs

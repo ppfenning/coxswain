@@ -1,6 +1,8 @@
 from datetime import UTC, datetime
 
+from agent_tools.chair_facts import quarantine_facts
 from agent_tools.chair_plan import plan_tick
+from agent_tools.chair_read_stranded import stranded_from_rows
 from agent_tools.chair_types import Facts
 
 _NOW = datetime(2026, 10, 7, 12, 0, tzinfo=UTC)
@@ -49,6 +51,24 @@ def test_a_started_initiative_in_a_landing_repo_gets_no_launch():
     landing = [{"initiative": "x", "phase": "p", "repo": "r1"}]
     facts = _facts(initiatives=[_initiative("a", "r1", started=True)], landing=landing)
     assert _launched(plan_tick(facts, _NOW)) == set()
+
+
+def _plan_after_a_rebuild(extra: dict) -> list[dict]:
+    record = {"run": "a-1", "task": "a-t", "phase": "p1", "branch": "b1", "review": {"verdict": "approve"},
+              "arbitration": {"verdict": "approve"}, "landed": False}
+    row = {"kind": "task", "task_id": "a-t", "initiative": "a", "phase": "p1", "state": "ready", "extra": extra}
+    quarantines = quarantine_facts([], stranded_from_rows([row], [record]), [], set(), lambda initiative, task: False)
+    return plan_tick(_facts(initiatives=[_initiative("a", "r1")], quarantines=quarantines), _NOW)
+
+
+def test_a_forced_rebuild_is_relaunched_and_raises_no_stranded_needs_chair():
+    actions = _plan_after_a_rebuild({"rebuilt_from": ["a-1"]})
+    assert [a["kind"] for a in actions if a["kind"] in {"launch_epic", "needs_chair"}] == ["launch_epic"]
+
+
+def test_the_same_ready_task_without_the_rebuild_marker_is_stranded_and_withheld():
+    actions = _plan_after_a_rebuild({})
+    assert [a["kind"] for a in actions if a["kind"] in {"launch_epic", "needs_chair"}] == ["needs_chair"]
 
 
 def test_the_same_initiative_launches_when_no_repo_is_landing():

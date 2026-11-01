@@ -36,6 +36,13 @@ def test_read_stranded_drops_a_row_whose_repo_the_predicate_rejects():
     ]
 
 
+def test_stranded_from_rows_reads_rebuilt_from_off_the_row_extra():
+    record = {**_stranded_record("x-1", "/here"), "task": "t1"}
+    row = {"kind": "task", "task_id": "t1", "initiative": "x", "phase": "p1", "state": "ready", "extra": {"rebuilt_from": ["x-1"]}}
+    assert stranded_from_rows([row], [record]) == []
+    assert [r["run"] for r in stranded_from_rows([{**row, "extra": {}}], [record])] == ["x-1"]
+
+
 def test_read_missing_repos_returns_the_rejected_repo_once():
     records = [_stranded_record("r1", "/gone"), _stranded_record("r2", "/here")]
     items = [_stranded_item("r1"), _stranded_item("r2")]

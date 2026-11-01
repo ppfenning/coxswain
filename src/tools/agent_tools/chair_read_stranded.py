@@ -58,6 +58,7 @@ def stranded_from_rows(rows: list[dict], records: list[dict]) -> list[dict]:
         {
             "id": row.get("task_id"), "initiative": row.get("initiative"), "phase": row.get("phase"), "state": row.get("state"),
             "land_conflict": (row.get("extra") or {}).get("land_conflict"),
+            "rebuilt_from": (row.get("extra") or {}).get("rebuilt_from"),
         }
         for row in rows
         if row.get("kind") == "task"
