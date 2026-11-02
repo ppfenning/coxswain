@@ -38,6 +38,7 @@ __all__ = [
 ]
 
 TAIL_LINES = 20
+_FINDINGS_CAP = 5
 _NEW_SUFFIX = "(new)"
 
 
@@ -53,6 +54,7 @@ class Attempt:
 class Review:
     verdict: str
     objection: str
+    findings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -86,6 +88,7 @@ class Triage:
     failed_check: FailedCheck | None
     land_refusal: LandRefusal | None
     surfaces: tuple[SurfaceStatus, ...]
+    checkpoint_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -97,7 +100,9 @@ class TriageError:
 class StoreReader(Protocol):
     def task_record(self, task_id: str) -> Mapping[str, Any] | None:
         """None for an unknown id. Keys: initiative, phase, state, surfaces (list of str),
-        review ({verdict, objection} or None), failed_check ({command, output} or None)."""
+        review ({verdict, objection} or None), failed_check ({command, output} or None).
+        Optional: review_findings (list of str, the review's finding details) and
+        checkpoint_reason (str or None, why the fix loop stopped); absent reads as none."""
         ...
 
     def attempts(self, task_id: str) -> Sequence[Mapping[str, Any]]:
@@ -130,7 +135,15 @@ def _review(record: Mapping[str, Any]) -> Review | None:
     row = record.get("review")
     if not row:
         return None
-    return Review(str(row["verdict"]), str(row["objection"]))
+    return Review(str(row["verdict"]), str(row["objection"]), _texts(record.get("review_findings")))
+
+
+def _texts(raw: object) -> tuple[str, ...]:
+    return tuple(s for s in raw if isinstance(s, str) and s.strip()) if isinstance(raw, (list, tuple)) else ()
+
+
+def _reason(raw: object) -> str | None:
+    return raw if isinstance(raw, str) and raw.strip() else None
 
 
 def _failed_check(record: Mapping[str, Any]) -> FailedCheck | None:
@@ -176,6 +189,7 @@ def triage_task(task_id: str, store: StoreReader, git: GitReader) -> Triage | Tr
         failed_check=_failed_check(record),
         land_refusal=_land_refusal(store.land_refusal(phase)),
         surfaces=tuple(_surface(str(s), git) for s in record.get("surfaces") or ()),
+        checkpoint_reason=_reason(record.get("checkpoint_reason")),
     )
 
 
@@ -195,9 +209,16 @@ def render_text(t: Triage) -> str:
         lines.append("attempts: none recorded")
     if t.review:
         lines.append(f"review: {t.review.verdict}")
-        lines.append(f"  objection: {t.review.objection}")
+        if t.review.objection or not t.review.findings:
+            lines.append(f"  objection: {t.review.objection}")
+        else:
+            lines += [f"  {' '.join(f.split())}" for f in t.review.findings[:_FINDINGS_CAP]]
+            if len(t.review.findings) > _FINDINGS_CAP:
+                lines.append(f"  ... and {len(t.review.findings) - _FINDINGS_CAP} more")
     else:
         lines.append("review: none recorded")
+    if t.checkpoint_reason:
+        lines.append(f"fix loop stopped: {t.checkpoint_reason}")
     if t.failed_check:
         lines.append(f"failed check: {t.failed_check.command}")
         lines += _indent(t.failed_check.output_tail)
@@ -224,7 +245,11 @@ def render_json(t: Triage) -> str:
         "state": t.state,
         "newest_run_id": t.newest_run_id,
         "attempts": [{"seq": a.seq, "kind": a.kind, "cause": a.cause, "reason": a.reason} for a in t.attempts],
-        "review": ({"verdict": t.review.verdict, "objection": t.review.objection} if t.review else None),
+        "review": (
+            {"verdict": t.review.verdict, "objection": t.review.objection, "findings": list(t.review.findings)}
+            if t.review
+            else None
+        ),
         "failed_check": (
             {"command": t.failed_check.command, "output_tail": t.failed_check.output_tail} if t.failed_check else None
         ),
@@ -234,6 +259,7 @@ def render_json(t: Triage) -> str:
             else None
         ),
         "surfaces": [{"path": s.path, "status": s.status} for s in t.surfaces],
+        "checkpoint_reason": t.checkpoint_reason,
     }
     return json.dumps(doc, ensure_ascii=False, separators=(", ", ": "))
 
@@ -294,7 +320,10 @@ def _objection(record: Mapping[str, Any]) -> str:
 
 
 def record_facts(record: Mapping[str, Any] | None) -> dict[str, Any]:
-    """The `review` and `failed_check` keys of a task record, as the StoreReader contract wants them.
+    """The `review`, `failed_check`, `review_findings` and `checkpoint_reason` keys of a task record, as the StoreReader contract wants them.
+
+    `review_findings` is the non-empty string `detail` of each `review.findings` entry; `checkpoint_reason` is
+    `fix_loop.checkpoint_reason` when it is a non-empty string.
 
     The failed check is the last entry of `build.commands_run` (`{command, output, source}`, docs/design/observed-record.md
     section 2) that states a failure: a nonzero `exit_code` or `returncode`, `ok` false, or `is_error` true.
@@ -304,11 +333,19 @@ def record_facts(record: Mapping[str, Any] | None) -> dict[str, Any]:
     verdict = review.get("verdict") if isinstance(review, Mapping) else None
     commands = build.get("commands_run") if isinstance(build, Mapping) else None
     failed = next((e for e in reversed(commands) if _check_failed(e)), None) if isinstance(commands, list) else None
+    raw_findings = review.get("findings") if isinstance(review, Mapping) else None
+    fix_loop = rec.get("fix_loop")
     return {
         "review": {"verdict": verdict, "objection": _objection(rec)} if isinstance(verdict, str) else None,
         "failed_check": (
             {"command": str(failed.get("command", "")), "output": str(failed.get("output") or "")} if failed else None
         ),
+        "review_findings": [
+            f["detail"]
+            for f in (raw_findings if isinstance(raw_findings, list) else [])
+            if isinstance(f, Mapping) and isinstance(f.get("detail"), str) and f["detail"].strip()
+        ],
+        "checkpoint_reason": _reason(fix_loop.get("checkpoint_reason") if isinstance(fix_loop, Mapping) else None),
     }
 
 
