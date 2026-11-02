@@ -983,8 +983,13 @@ def _decompose_run(tmp_path: Path, *, target: Path, task: str | None = None) -> 
     )
 
 
-def _decompose_tasks_run(tmp_path: Path, store, tasks: dict[str, Path]) -> int:
-    """One approved `item_create` per task, each applied by the code `workstore` arm to the path given, with a real store."""
+def _decompose_tasks_run(
+    tmp_path: Path, store, tasks: dict[str, Path], needs: dict[str, list[str]] | None = None
+) -> int:
+    """One approved `item_create` per task, each applied by the code `workstore` arm to the path given, with a real store.
+
+    `needs` gives a task the ids it needs; a task not in it needs nothing.
+    """
     profile = tmp_path / "profile.yaml"
     profile.write_text("provider: test\n", encoding="utf-8")
     proposals = [
@@ -995,7 +1000,10 @@ def _decompose_tasks_run(tmp_path: Path, store, tasks: dict[str, Path]) -> int:
             "evidence": [{"check": "phase", "output": "p1"}],
             "rationale": "because",
             "suggested_action": "create",
-            "apply": {"path": str(path), "item": {**_DECOMPOSE_ITEM, "id": task, "budget_usd": 1.5}},
+            "apply": {
+                "path": str(path),
+                "item": {**_DECOMPOSE_ITEM, "id": task, "needs": (needs or {}).get(task, []), "budget_usd": 1.5},
+            },
         }
         for task, path in tasks.items()
     ]
@@ -1033,6 +1041,7 @@ def _filing_in_memory(monkeypatch, *, fail: str | None = None) -> list[dict]:
 
     `fail` names a task whose write raises. The real `route file` writer is run in
     `test_decompose_outcome.py`; these tests are about the run's bookkeeping and exit code.
+    Withdrawal drops the named rows from the list and deletes the files, as the real edge does.
     """
     from agent_tools.queue_rows import parse_item
 
@@ -1044,7 +1053,15 @@ def _filing_in_memory(monkeypatch, *, fail: str | None = None) -> list[dict]:
         rows.append(parse_item("task", parts, text))
         return 0
 
+    def withdraw(runs_dir, root, initiative, rels, whole) -> list[str]:
+        gone = {Path(rel).stem for rel in rels}
+        rows[:] = [r for r in rows if r["task_id"] not in gone]
+        for rel in rels:
+            (root / rel).unlink(missing_ok=True)
+        return list(rels)
+
     monkeypatch.setattr(cli, "_write_filed_task", write)
+    monkeypatch.setattr(cli, "_withdraw_filed_tasks", withdraw)
     monkeypatch.setattr(cli, "_read_filed_rows", lambda runs_dir, initiative: [r for r in rows if r["initiative"] == initiative])
     return rows
 
@@ -1080,8 +1097,184 @@ def test_a_decompose_create_whose_store_write_fails_is_named_in_the_closing_line
     assert _decompose_tasks_run(tmp_path, store, tasks) == 1
 
     err = capsys.readouterr().err
-    assert "decompose: 2 task(s) written, 1 missing: t2" in err
+    assert "decompose: 0 task(s) written, 1 missing: t2" in err
     assert "decompose: t2 is on disk but the write failed: RuntimeError: store down" in err
+
+
+def test_a_decompose_with_one_failed_write_withdraws_the_other_tasks_so_no_needs_dangles(
+    tmp_path, store_conn, monkeypatch, capsys
+) -> None:
+    from harness.store_write import Store
+
+    monkeypatch.chdir(tmp_path)
+    rows = _filing_in_memory(monkeypatch, fail="t1")
+    tasks = {t: tmp_path / "work" / "p1" / f"{t}.md" for t in ("t1", "t2", "t3")}
+
+    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks, needs={"t2": ["t1"], "t3": ["t1"]}) == 1
+
+    err = capsys.readouterr().err
+    assert "decompose: missing t1; withdrew t1, t2, t3" in err
+    assert "decompose: 0 task(s) written, 1 missing: t1" in err
+    assert rows == []
+    assert not any(path.exists() for path in tasks.values())
+
+
+def test_a_decompose_keeps_a_task_already_in_the_store_when_another_task_fails(
+    tmp_path, store_conn, monkeypatch, capsys
+) -> None:
+    from agent_tools.queue_rows import parse_item
+    from harness.store_write import Store
+
+    monkeypatch.chdir(tmp_path)
+    rows = _filing_in_memory(monkeypatch, fail="t2")
+    tasks = {t: tmp_path / "work" / "p1" / f"{t}.md" for t in ("t1", "t2", "t3")}
+    tasks["t1"].parent.mkdir(parents=True)
+    tasks["t1"].write_text("---\nstate: started\ntitle: Old\n---\nbody\n", encoding="utf-8")
+    rows.append(parse_item("task", (tmp_path.name, "p1", "t1.md"), tasks["t1"].read_text(encoding="utf-8")))
+
+    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks, needs={"t3": ["t1"]}) == 1
+
+    err = capsys.readouterr().err
+    assert "decompose: missing t2; withdrew t2, t3" in err
+    assert "decompose: 1 task(s) written, 1 missing: t2" in err
+    assert [r["task_id"] for r in rows] == ["t1"]
+    assert tasks["t1"].exists()
+    assert not tasks["t2"].exists() and not tasks["t3"].exists()
+
+
+def test_a_decompose_retry_writes_a_withdrawn_task_afresh_instead_of_keeping_its_dropped_row(
+    tmp_path, store_conn, monkeypatch, capsys
+) -> None:
+    from agent_tools.queue_rows import parse_item
+    from harness.store_write import Store
+
+    monkeypatch.chdir(tmp_path)
+    rows = _filing_in_memory(monkeypatch)
+    tasks = {"t1": tmp_path / "work" / "p1" / "t1.md"}
+    tasks["t1"].parent.mkdir(parents=True)
+    tasks["t1"].write_text("---\nstate: dropped\n---\nbody\n", encoding="utf-8")
+    rows.append(parse_item("task", (tmp_path.name, "p1", "t1.md"), tasks["t1"].read_text(encoding="utf-8")))
+    tasks["t1"].unlink()
+
+    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks) == 0
+
+    captured = capsys.readouterr()
+    assert "its row is kept" not in captured.err
+    assert "decompose: 1 task(s) written, 0 missing:" in captured.out
+    assert [r["state"] for r in rows] == ["dropped", "ready"]
+
+
+def test_the_default_withdrawal_keeps_the_file_when_the_store_does_not_drop_the_row(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from agent_tools import run_store, store_cli
+
+    rel = "work/demo/p1/t1.md"
+    (tmp_path / rel).parent.mkdir(parents=True)
+    (tmp_path / rel).write_text("x", encoding="utf-8")
+    monkeypatch.setattr(run_store, "work_items", lambda runs_dir, initiative=None: [{"task_id": "t1"}])
+    monkeypatch.setattr(store_cli, "set_state", lambda *a, **k: store_cli.Failed(1, "down"))
+
+    assert cli._withdraw_filed_tasks(tmp_path / "runs", tmp_path, "demo", [rel], False) == []
+
+    assert (tmp_path / rel).exists()
+    assert "decompose: t1 not withdrawn" in capsys.readouterr().err
+
+
+def _whole_flag_passed(tmp_path: Path, monkeypatch, *, initiative_created: bool) -> bool:
+    """The `whole` argument `_settle_decompose` hands the withdraw callable when t2 is missing and t1 is new."""
+    _filing_in_memory(monkeypatch)
+    names = ["t1", "t2", *(["initiative"] if initiative_created else [])]
+    proposals = [{"kind": "item_create", "target": n, "evidence": [{"check": "phase", "output": "p1"}]} for n in names]
+    diffs = [{"kind": "item_create", "target": n, "decision": "approved"} for n in names]
+    (tmp_path / "work" / "demo" / "p1").mkdir(parents=True)
+    (tmp_path / "work" / "demo" / "p1" / "t1.md").write_text("---\nstate: ready\n---\nbody\n", encoding="utf-8")
+    calls: list[tuple] = []
+
+    def spy(runs_dir, root, initiative, rels, whole) -> list[str]:
+        calls.append((rels, whole))
+        return list(rels)
+
+    cli._settle_decompose(
+        proposals,
+        diffs,
+        [],
+        cartridge={**_CARTRIDGE, "work_routing": {"states": {"planned": "work"}}},
+        graph_args={"initiative_id": "demo"},
+        runner=SimpleNamespace(cwd=tmp_path),
+        runs_dir=tmp_path / "runs",
+        withdraw=spy,
+    )
+    assert [rels for rels, _ in calls] == [["work/demo/p1/t1.md", "work/demo/p1/t2.md"]]
+    return calls[0][1]
+
+
+def test_settle_decompose_asks_for_a_whole_withdrawal_only_when_this_run_created_the_initiative(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    assert _whole_flag_passed(tmp_path, monkeypatch, initiative_created=True) is True
+
+
+def test_settle_decompose_withdraws_task_by_task_when_the_initiative_was_not_created_by_this_run(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    assert _whole_flag_passed(tmp_path, monkeypatch, initiative_created=False) is False
+
+
+def test_the_whole_withdrawal_declines_the_initiative_through_draft_apply_and_deletes_the_files(
+    tmp_path, monkeypatch
+) -> None:
+    from agent_tools import draft_apply, run_store
+
+    rels = ["work/demo/p1/t1.md", "work/demo/p1/t2.md"]
+    (tmp_path / "work" / "demo" / "p1").mkdir(parents=True)
+    for rel in rels:
+        (tmp_path / rel).write_text("x", encoding="utf-8")
+    seen: list[tuple] = []
+    monkeypatch.setattr(
+        draft_apply, "remove", lambda work_dir, initiative, *rest: seen.append((work_dir, initiative)) or 0
+    )
+    monkeypatch.setattr(run_store, "work_items", lambda runs_dir, initiative=None: [])
+
+    assert cli._withdraw_filed_tasks(tmp_path / "runs", tmp_path, "demo", rels, True) == rels
+
+    assert seen == [(tmp_path / "work", "demo")]
+    assert not any((tmp_path / rel).exists() for rel in rels)
+
+
+def test_a_refused_whole_withdrawal_falls_back_to_dropping_each_row(tmp_path, monkeypatch) -> None:
+    from agent_tools import draft_apply, run_store, store_cli
+
+    rel = "work/demo/p1/t1.md"
+    (tmp_path / rel).parent.mkdir(parents=True)
+    (tmp_path / rel).write_text("x", encoding="utf-8")
+    dropped: list[str] = []
+    monkeypatch.setattr(draft_apply, "remove", lambda *a, **k: 2)
+    monkeypatch.setattr(run_store, "work_items", lambda runs_dir, initiative=None: [{"task_id": "t1"}])
+    monkeypatch.setattr(
+        store_cli, "set_state", lambda runs_dir, init, task, *a: dropped.append(task) or store_cli.StateSet({})
+    )
+
+    assert cli._withdraw_filed_tasks(tmp_path / "runs", tmp_path, "demo", [rel], True) == [rel]
+
+    assert dropped == ["t1"]
+    assert not (tmp_path / rel).exists()
+
+
+def test_the_default_withdrawal_drops_the_row_then_deletes_the_file(tmp_path, monkeypatch) -> None:
+    from agent_tools import run_store, store_cli
+
+    rel = "work/demo/p1/t1.md"
+    (tmp_path / rel).parent.mkdir(parents=True)
+    (tmp_path / rel).write_text("x", encoding="utf-8")
+    monkeypatch.setattr(run_store, "work_items", lambda runs_dir, initiative=None: [{"task_id": "t1"}])
+    monkeypatch.setattr(store_cli, "set_state", lambda *a, **k: store_cli.StateSet({}))
+
+    assert cli._withdraw_filed_tasks(tmp_path / "runs", tmp_path, "demo", [rel], False) == [rel]
+
+    assert not (tmp_path / rel).exists()
 
 
 def test_a_decompose_create_whose_file_is_not_written_logs_the_arms_detail_and_exits_1(
@@ -1097,7 +1290,7 @@ def test_a_decompose_create_whose_file_is_not_written_logs_the_arms_detail_and_e
     assert _decompose_tasks_run(tmp_path, store, tasks) == 1
 
     err = capsys.readouterr().err
-    assert "decompose: 1 task(s) written, 1 missing: t2" in err
+    assert "decompose: 0 task(s) written, 1 missing: t2" in err
     assert "item_create t2: applied:" in err
     assert "decompose: t2 not written:" in err
 
@@ -1194,7 +1387,7 @@ def test_an_auto_applied_create_whose_write_fails_is_named_and_the_run_exits_1(
 
     assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks) == 1
 
-    assert "decompose: 1 task(s) written, 1 missing: t2" in capsys.readouterr().err
+    assert "decompose: 0 task(s) written, 1 missing: t2" in capsys.readouterr().err
 
 
 def test_the_parser_takes_result_out_and_defaults_it_to_none() -> None:
