@@ -2491,6 +2491,61 @@ def test_route_remove_of_a_hyphenated_initiative_refuses_only_for_its_own_run(tm
     assert "demo-3" not in out
 
 
+def _edit_demo_with_live_runs(tmp_path, monkeypatch, initiative, launched):
+    """Edit `initiative`'s title while the runs in `launched` (run to its recorded initiative; "unrecorded" means no record) are live."""
+    lanes = [run_store.Lane(run, "host-b", "2026-10-05T11:00:00Z", "2026-10-05T11:59:00Z") for run in launched]
+    rows = [{"kind": "task", "initiative": initiative, "task_id": "a", "state": "ready"}]
+    _edit_remove_workspace(tmp_path, monkeypatch, rows, lanes=lanes)
+    for run, recorded in launched.items():
+        if recorded != "unrecorded":
+            record = {"host": "host-b", "launched_at": "t", "initiative": recorded}
+            (tmp_path / "runs" / f"{run}.remote.json").write_text(json.dumps(record), encoding="utf-8")
+    (tmp_path / "work" / initiative / "1-build").mkdir(parents=True)
+    (tmp_path / "work" / initiative / "initiative.md").write_text("---\ntitle: T\ndraft: false\n---\nProse\n", encoding="utf-8")
+    (tmp_path / "work" / initiative / "1-build" / "a.md").write_text("---\nstate: ready\n---\nA\n", encoding="utf-8")
+    return main(["route", "edit", initiative, "--title", "New"])
+
+
+def _initiative_title_line(tmp_path, initiative):
+    return (tmp_path / "work" / initiative / "initiative.md").read_text(encoding="utf-8").splitlines()[1]
+
+
+@pytest.mark.parametrize("run, recorded", [("other-1", "other"), ("cos-1", None), ("demo-3", "demo-x")])
+def test_route_edit_ignores_a_live_run_recorded_on_another_initiative_or_none(tmp_path, monkeypatch, capsys, run, recorded):
+    assert _edit_demo_with_live_runs(tmp_path, monkeypatch, "demo", {run: recorded}) == 0
+    assert "is live on this initiative" not in capsys.readouterr().out
+    assert _initiative_title_line(tmp_path, "demo") == "title: New"
+
+
+@pytest.mark.parametrize("run", ["demo-retry", "foo-1", "demo-2"])
+def test_route_edit_refuses_for_a_run_recorded_on_it_whatever_the_run_id(tmp_path, monkeypatch, capsys, run):
+    assert _edit_demo_with_live_runs(tmp_path, monkeypatch, "demo", {run: "demo"}) == 2
+    out = capsys.readouterr().out
+    assert run in out and "is live on this initiative" in out
+    assert _initiative_title_line(tmp_path, "demo") == "title: T"
+
+
+@pytest.mark.parametrize("initiative, run, recorded", [("demo", "demo-x-2", "demo-x"), ("demo-x", "demo-3", "demo")])
+def test_route_edit_of_a_prefix_sharing_initiative_is_not_blocked_by_the_other(tmp_path, monkeypatch, capsys, initiative, run, recorded):
+    assert _edit_demo_with_live_runs(tmp_path, monkeypatch, initiative, {run: recorded}) == 0
+    assert _initiative_title_line(tmp_path, initiative) == "title: New"
+
+
+def test_route_edit_of_a_hyphenated_initiative_refuses_only_for_its_own_run(tmp_path, monkeypatch, capsys):
+    assert _edit_demo_with_live_runs(tmp_path, monkeypatch, "demo-x", {"demo-x-2": "demo-x", "demo-3": "demo"}) == 2
+    out = capsys.readouterr().out
+    assert "demo-x-2" in out
+    assert "demo-3" not in out
+
+
+@pytest.mark.parametrize("recorded", ["unrecorded", 7])
+def test_route_edit_refuses_for_a_live_run_with_no_usable_record(tmp_path, monkeypatch, capsys, recorded):
+    assert _edit_demo_with_live_runs(tmp_path, monkeypatch, "demo", {"other-1": recorded}) == 2
+    out = capsys.readouterr().out
+    assert "other-1" in out and "is live on this initiative" in out
+    assert _initiative_title_line(tmp_path, "demo") == "title: T"
+
+
 def test_route_remove_of_an_intake_moves_it_and_marks_its_row_done(tmp_path, monkeypatch):
     row = {"kind": "intake", "initiative": "intake", "task_id": "idea", "state": "queued", "extra": {}}
     upserts = _edit_remove_workspace(tmp_path, monkeypatch, [row])

@@ -4131,8 +4131,8 @@ def _route_decline(a: argparse.Namespace) -> int:
 def _live_runs(runs_dir: Path, now: str) -> set[str]:
     """Edge. Every live run on any host: the store's live leases, which remote lanes hold, plus local pidfile lanes.
 
-    A lane carries no initiative, so `route edit` refuses on any of them (route_edit's contract). `route remove`
-    narrows them with `_live_runs_on`. A run id says nothing reliable about its initiative (`--run-id` takes any name).
+    A lane carries no initiative, so `route edit` and `route remove` both narrow the set with `_live_runs_on` to the
+    runs recorded on the target initiative. A run id says nothing reliable about its initiative (`--run-id` takes any name).
     `now` is `_now_iso()`'s form, which `live_lanes` compares as text."""
     leased = {lane.run for lane in run_store.live_lanes(runs_dir, now)}
     return leased | {pf.stem for pf in runs_dir.glob("*.pid") if _lane_live(runs_dir, pf.stem)}
@@ -4168,9 +4168,13 @@ def _route_edit(a: argparse.Namespace) -> int:
     if runs_dir is None:
         print(f"route: {reason}")
         return 2
+    now = _now_iso()
+    live = _live_runs(runs_dir, now)
+    target_id = _initiative_token(runs_dir, a.id)
+    on_target = _live_runs_on(live, target_id, _recorded_initiatives(runs_dir, live))
     result = route_edit.apply_edit(
-        runs_dir, runs_dir.parent, _initiative_token(runs_dir, a.id), title=a.title, body=a.body, body_file=a.body_file, repo=a.repo,
-        surfaces=a.surfaces, state=a.state, dry_run=a.dry_run, live_runs=_live_runs(runs_dir, _now_iso()), now=_now_iso(),
+        runs_dir, runs_dir.parent, target_id, title=a.title, body=a.body, body_file=a.body_file, repo=a.repo,
+        surfaces=a.surfaces, state=a.state, dry_run=a.dry_run, live_runs=on_target, now=now,
         rebuild=getattr(a, "rebuild", False), force=getattr(a, "force", False), pr=getattr(a, "pr", None),
     )
     if result.code != route_edit.DONE:
