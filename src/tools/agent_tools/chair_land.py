@@ -44,9 +44,9 @@ class LandRefused(Exception):
     pass
 
 
-def may_start(running_here: bool, queued: int, gate: CiGate = UNPAUSED) -> Started | Queued:
-    """Queue behind this worker's own land in the repository, or while the gate is paused; otherwise start."""
-    return Queued(queued + 1) if running_here or gate.paused else Started()
+def may_start(running: int, limit: int, queued: int, gate: CiGate = UNPAUSED) -> Started | Queued:
+    """Queue once `running` lands in the repository reach `limit`, behind earlier queued lands, or while the gate is paused."""
+    return Queued(queued + 1) if running >= limit or queued > 0 or gate.paused else Started()
 
 
 def beat_due(now: float, last_beat: float | None, interval: float, running: int) -> bool:
@@ -90,25 +90,27 @@ class LandWorker:
         self._beat, self._interval, self._clock, self._wait, self._released = beat, interval, clock, wait, released
         self.released = False
         self._mutex = threading.Lock()
-        self._running: set[str] = set()
+        self._running: dict[str, int] = {}
+        self._limits: dict[str, int] = {}
         self._queues: dict[str, deque[tuple[Land, LandHandle]]] = {}
         self._beating = False
         self._stopped = False
         self._gate = UNPAUSED
         self.beat_errors: tuple[BaseException, ...] = ()
 
-    def submit[T](self, repo: str, land: Callable[[], T], gate: CiGate = UNPAUSED) -> Submitted[T]:
-        """A paused `gate` holds the land queued: not an error, not a refusal, and no wait begins."""
+    def submit[T](self, repo: str, land: Callable[[], T], gate: CiGate = UNPAUSED, limit: int = 1) -> Submitted[T]:
+        """A paused `gate` holds the land queued: not an error, not a refusal, and no wait begins. `limit` lands may run at once in `repo`; below 1 reads as 1."""
         handle: LandHandle[T] = LandHandle()
         with self._mutex:
             if self._stopped:
                 return Submitted(Refused(None), None)
             self._gate = gate
+            self._limits[repo] = max(limit, 1)
             queue = self._queues.setdefault(repo, deque())
-            busy = repo in self._running
-            outcome = may_start(busy or bool(queue), len(queue), gate)
+            full = self._running.get(repo, 0) >= self._limits[repo]
+            outcome = may_start(self._running.get(repo, 0), self._limits[repo], len(queue), gate)
             queue.append((land, handle))
-            if busy or gate.paused:
+            if full or gate.paused:
                 return Submitted(outcome, handle)
             first = self._claim(repo)
             outcome = Started() if first[1] is handle else Queued(len(queue))
@@ -116,7 +118,7 @@ class LandWorker:
         return Submitted(outcome, handle)
 
     def tick(self, gate: CiGate = UNPAUSED) -> None:
-        """Start the oldest held land of every idle repository once `gate` is unpaused."""
+        """Start held lands of every repository, oldest first, up to its limit, once `gate` is unpaused."""
         with self._mutex:
             self._gate = gate
             if gate.paused or self._stopped:
@@ -124,15 +126,15 @@ class LandWorker:
             claimed = tuple(
                 (repo, *self._claim(repo))
                 for repo, queue in tuple(self._queues.items())
-                if queue and repo not in self._running
+                for _ in range(min(len(queue), self._limits.get(repo, 1) - self._running.get(repo, 0)))
             )
         for repo, land, handle in claimed:
             threading.Thread(target=self._land_loop, args=(repo, land, handle), daemon=True).start()
 
     def _claim(self, repo: str) -> tuple[Land, LandHandle]:
-        """Caller holds the mutex. Marks the repo running and returns its oldest held land."""
+        """Caller holds the mutex. Counts one more land running in the repo and returns its oldest held land."""
         land, handle = self._queues[repo].popleft()
-        self._running.add(repo)
+        self._running[repo] = self._running.get(repo, 0) + 1
         if not self._beating:
             self._beating = True
             threading.Thread(target=self._beat_loop, daemon=True).start()
@@ -146,12 +148,18 @@ class LandWorker:
     def _next_queued(self, repo: str) -> tuple[Land, LandHandle] | None:
         with self._mutex:
             queue = self._queues.get(repo)
+            others = self._running.get(repo, 0) - 1
             # A pause is not a refusal: a held land stays queued for the next unpaused tick.
-            if queue and not self._gate.paused:
+            if queue and not self._gate.paused and others < self._limits.get(repo, 1):
                 return queue.popleft()
             if not queue:
                 self._queues.pop(repo, None)
-            self._running.discard(repo)
+            if others > 0:
+                self._running[repo] = others
+            else:
+                self._running.pop(repo, None)
+                if not queue:
+                    self._limits.pop(repo, None)
             return None
 
     def _execute(self, land: Land) -> LandResult:
@@ -174,7 +182,7 @@ class LandWorker:
         last: float | None = None
         while True:
             with self._mutex:
-                running = len(self._running)
+                running = sum(self._running.values())
                 if running == 0 or self._stopped:
                     self._beating = False
                     return
