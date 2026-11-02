@@ -6737,7 +6737,8 @@ options:
 
 positional arguments:
   {take,extend,beat,release,status,clear,chat}
-    take                take the chair lock if no live chair holds it
+    take                take the chair lock; --steal overrides a live holder
+                        and names it
     extend              move the end of the chair takeover this session holds
     beat                refresh the chair lock's heartbeat
     release             release the chair lock this session holds
