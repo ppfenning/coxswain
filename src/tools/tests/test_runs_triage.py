@@ -14,6 +14,7 @@ from agent_tools.runs_triage import (
     TriageError,
     main_lookup_argv,
     pick_newest_run,
+    record_facts,
     refusal_row,
     render_json,
     render_text,
@@ -102,14 +103,14 @@ def test_full_json():
         '"newest_run_id": "run-9", "attempts": ['
         '{"seq": 1, "kind": "build", "cause": "check_failed", "reason": "pytest failed"}, '
         '{"seq": 2, "kind": "build", "cause": "review_revise", "reason": "adversary objected"}], '
-        '"review": {"verdict": "revise", "objection": "no test for the empty row"}, '
+        '"review": {"verdict": "revise", "objection": "no test for the empty row", "findings": []}, '
         '"failed_check": {"command": "pytest -q", "output_tail": '
         '"out 6\\nout 7\\nout 8\\nout 9\\nout 10\\nout 11\\nout 12\\nout 13\\nout 14\\nout 15\\n'
         'out 16\\nout 17\\nout 18\\nout 19\\nout 20\\nout 21\\nout 22\\nout 23\\nout 24\\nout 25"}, '
         '"land_refusal": {"time": "2026-10-16T10:00:00Z", "head": "abc123", "reason": "main moved"}, '
         '"surfaces": [{"path": "agent_tools/a.py", "status": "present"}, '
         '{"path": "agent_tools/b.py", "status": "missing"}, '
-        '{"path": "agent_tools/c.py", "status": "new"}]}'
+        '{"path": "agent_tools/c.py", "status": "new"}], "checkpoint_reason": null}'
     )
 
 
@@ -138,8 +139,92 @@ def test_empty_blocks_json():
     assert render_json(empty_triage()) == (
         '{"task_id": "t-1", "initiative": "init-b", "phase": "p2", "state": "planned", '
         '"newest_run_id": null, "attempts": [], "review": null, "failed_check": null, '
-        '"land_refusal": null, "surfaces": []}'
+        '"land_refusal": null, "surfaces": [], "checkpoint_reason": null}'
     )
+
+
+def triage_of(**facts):
+    record = {"initiative": "init-b", "phase": "p2", "state": "planned", "surfaces": [], **facts}
+    return triage_task("t-1", StubStore({"t-1": record}), StubGit(()))
+
+
+def revise(objection, findings):
+    return {"review": {"verdict": "revise", "objection": objection}, "review_findings": findings}
+
+
+REVIEW_TAIL = "failed check: none recorded\nland refusal: none recorded\nsurfaces: none listed"
+
+
+def test_findings_print_under_review_when_objection_is_empty():
+    text = render_text(triage_of(**revise("", ["first problem", "second\nproblem  here"])))
+    assert text.split("\n")[2:] == [
+        "review: revise",
+        "  first problem",
+        "  second problem here",
+        *REVIEW_TAIL.split("\n"),
+    ]
+
+
+def test_findings_are_capped_at_five_with_a_remainder_line():
+    findings = [f"finding {i}" for i in range(1, 8)]
+    lines = render_text(triage_of(**revise("", findings))).split("\n")
+    assert lines[3:9] == [f"  finding {i}" for i in range(1, 6)] + ["  ... and 2 more"]
+    assert "  finding 6" not in lines
+    assert json.loads(render_json(triage_of(**revise("", findings))))["review"]["findings"] == findings
+
+
+def test_exactly_five_findings_have_no_remainder_line():
+    text = render_text(triage_of(**revise("", [f"f{i}" for i in range(5)])))
+    assert "more" not in text
+
+
+def test_empty_objection_without_findings_keeps_today_line():
+    assert "review: revise\n  objection: \n" in render_text(triage_of(**revise("", [])))
+
+
+def test_checkpoint_reason_prints_and_is_in_json():
+    reason = "re-scope: partial work touches forge_github.py outside the task's surfaces"
+    triage = triage_of(checkpoint_reason=reason)
+    assert "review: none recorded\nfix loop stopped: " + reason + "\nfailed check:" in render_text(triage)
+    assert json.loads(render_json(triage))["checkpoint_reason"] == reason
+    with_review = render_text(triage_of(checkpoint_reason=reason, **revise("an objection", [])))
+    assert f"  objection: an objection\nfix loop stopped: {reason}\n" in with_review
+
+
+def test_nonempty_objection_hides_findings_and_matches_full_text():
+    record = {**FULL_RECORD, "review_findings": ["hidden one", "hidden two"]}
+    store = StubStore({"t-7": record}, ATTEMPTS, "run-9", {"p1": REFUSAL})
+    triage = triage_task("t-7", store, StubGit({"agent_tools/a.py"}))
+    assert render_text(triage) == render_text(full_triage())
+    assert "hidden" not in render_text(triage)
+
+
+def test_record_facts_maps_findings_and_checkpoint_reason():
+    facts = record_facts(
+        {
+            "review": {
+                "verdict": "revise",
+                "findings": [
+                    {"detail": "one"},
+                    {"detail": ""},
+                    {"detail": 3},
+                    {"other": "x"},
+                    "bare",
+                    {"detail": "two"},
+                ],
+            },
+            "fix_loop": {"checkpoint_reason": "re-scope: outside surfaces"},
+        }
+    )
+    assert facts["review_findings"] == ["one", "two"]
+    assert facts["checkpoint_reason"] == "re-scope: outside surfaces"
+    assert facts["review"] == {"verdict": "revise", "objection": ""}
+
+
+def test_record_facts_without_the_new_keys_yields_none_of_them():
+    facts = record_facts({"review": {"verdict": "approve"}, "fix_loop": "stopped"})
+    assert (facts["review_findings"], facts["checkpoint_reason"]) == ([], None)
+    assert record_facts(None)["checkpoint_reason"] is None
 
 
 def test_tail_keeps_last_twenty_lines():
