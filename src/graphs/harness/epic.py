@@ -623,6 +623,24 @@ def blocking_commits(cherry_lines: Sequence[str], task_states: Mapping[str, str]
     return list(dict.fromkeys(found))
 
 
+def waiting_tasks(cherry_lines: Sequence[str]) -> list[str]:
+    """Ids of the tasks owning an unlanded commit, once each, in commit order."""
+    ids = (_task_of(s) for s in unlanded(cherry_lines, set()))
+    return list(dict.fromkeys(t for t in ids if t is not None))
+
+
+def awaiting_land_lines(record: Mapping[str, Any], run_id: str, repo: Path | str) -> list[str]:
+    """The phase line, then one `cox runs land` per waiting task, for an awaiting_land record; else nothing.
+
+    The flags mirror the chair's land action (`chair_exec`); this layer does not import it.
+    """
+    if record.get("status") != "awaiting_land":
+        return []
+    tasks = list(record.get("awaiting_tasks") or [])
+    head = f"phase {record.get('phase')}: awaiting land of {len(tasks)} approved task(s): {', '.join(tasks)}"
+    return [head, *(f"cox runs land {run_id} --task {t} --repo {repo} --apply" for t in tasks)]
+
+
 def blocked_line(record: Mapping[str, Any]) -> str | None:
     """`phase <p>: blocked: <reason>` for a blocked phase record, else None."""
     if record.get("status") != "blocked":
@@ -1210,6 +1228,8 @@ def run_epic(
             _record_phase(ctx, record)
             if (line := blocked_line(record)) is not None:
                 print(line)
+            for line in awaiting_land_lines(record, run_id, repo):
+                print(line)
 
         for phase in cyclic:
             add_phase(
@@ -1248,12 +1268,18 @@ def run_epic(
                 # v1 is blanket no: a phase unblocks its dependents only when
                 # `validate_phase` says the goal is met. The validator reports
                 # `quarantine_blocks_dependents`; nothing acts on it yet.
+                parent_record = next((p for p in phases if p.get("phase") == parent), {})
+                waiting = len(parent_record.get("awaiting_tasks") or [])
                 add_phase(
                     {
                         "phase": phase,
                         "status": "blocked",
                         "parents": parent_phases,
-                        "reason": f"parent phase '{parent}' did not meet its goal; dependents do not run",
+                        "reason": (
+                            f"parent phase '{parent}' is awaiting the land of {waiting} approved task(s)"
+                            if parent_record.get("status") == "awaiting_land"
+                            else f"parent phase '{parent}' did not meet its goal; dependents do not run"
+                        ),
                     }
                 )
                 continue
@@ -1837,6 +1863,7 @@ def _build_result(
         "totals": {
             "phases_complete": sum(1 for p in phases if p["status"] == "complete"),
             "phases_partial": sum(1 for p in phases if p["status"] == "partial"),
+            "phases_awaiting_land": sum(1 for p in phases if p["status"] == "awaiting_land"),
             "phases_blocked": sum(1 for p in phases if p["status"] == "blocked"),
             "tasks_quarantined": sum(1 for q in quarantined if q.get("grain") == "task"),
             "approved_not_landed": len(unlanded),
@@ -2135,6 +2162,7 @@ def _run_phase(
     if action == "block" and unlanded_kind == "awaiting_land":
         # Their lands are in flight: nothing to quarantine and nothing to rebase. Wait.
         record["status"] = "awaiting_land"
+        record["awaiting_tasks"] = waiting_tasks(cherry)
         record["reason"] = (
             f"phase branch {branch} is behind {base_ref}; its unlanded commits belong to approved "
             "tasks whose lands are still in flight"
