@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
-from agent_tools import chair_facts, chair_report, chair_run, cli, host_cmd
+from agent_tools import chair_facts, chair_report, chair_resolve, chair_run, cli, host_cmd
 
 # Fields the dataclass carries as plain metadata, not as wired sources: never callable, never unwired.
 _FACTS_DEPS_METADATA_FIELDS = frozenset({"session", "pid", "host"})
@@ -613,3 +613,76 @@ def test_a_writer_that_raises_does_not_stop_the_tick(tmp_path) -> None:
 
     assert len(recorded) == 1
     assert len(echoed) == 2
+
+
+def test_a_live_run_wires_release_requested_and_a_dry_run_leaves_it_none(tmp_path) -> None:
+    live = cli._chair_run_deps(tmp_path / "runs", {}, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files")
+    dry = cli._chair_run_deps(tmp_path / "runs", {}, "chair", 1, "h", True, print, tmp_path / "profile.yaml", "files")
+
+    assert callable(live.release_requested)
+    assert dry.release_requested is None
+
+
+def _loop_on_disk(tmp_path, monkeypatch, *, release: bool):
+    """A live loop `chair-x` (pid 1, host h) with a record and a lease sidecar; optionally a takeover's release request stamped on the record."""
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    store = _FakeStore("chair-x@h:1")
+    monkeypatch.setattr(cli.chair.store_cli, "lease_renew", lambda runs_dir, name, who, epoch, ttl: store.renew(who, epoch))
+    monkeypatch.setattr(cli.chair.store_cli, "lease_release", lambda runs_dir, name, who, epoch: cli.chair.store_cli.LeaseReleased())
+    (runs / cli.chair.LEASE_FILENAME).write_text(json.dumps({"holder": "chair-x@h:1", "epoch": 3}), encoding="utf-8")
+    record = {"session": "chair-x", "pid": 1, "host": "h", "taken_at": _OLD, "heartbeat_at": _OLD, "runs": [], "claude_session": None}
+    cli.chair.write(runs, cli.chair.request_release(record, "taker", datetime.now(UTC)) if release else record)
+    deps = cli._chair_run_deps(runs, {}, "chair-x", 1, "h", False, print, tmp_path / "profile.yaml", "files")
+    quiet = dataclasses.replace(deps.report_deps, echo=lambda line: None)
+    return runs, store, dataclasses.replace(deps, report_deps=quiet)
+
+
+def test_a_tick_honours_a_stamped_release_request_and_drops_the_lease_and_the_lock(tmp_path, monkeypatch) -> None:
+    runs, _store, deps = _loop_on_disk(tmp_path, monkeypatch, release=True)
+
+    line = chair_run.tick(deps, False, datetime.now(UTC))
+
+    assert "released at takeover request" in line
+    assert not (runs / cli.chair.LEASE_FILENAME).exists()
+    assert not cli.chair.chair_path(runs).exists()
+    assert cli.chair.read(runs) is None
+
+
+def test_a_takeover_succeeds_inside_the_grace_once_the_loop_releases_on_its_tick(tmp_path, monkeypatch) -> None:
+    runs, _store, deps = _loop_on_disk(tmp_path, monkeypatch, release=False)
+    monkeypatch.setattr(cli.chair.store_cli, "lease_acquire", lambda runs_dir, name, who, ttl, steal: cli.chair.store_cli.LeaseGranted(4, who))
+    forced: list[str] = []
+    real_release = cli.chair.release_lease
+    monkeypatch.setattr(cli.chair, "release_lease", lambda runs_dir, session, pid, host: (forced.append(session), real_release(runs_dir, session, pid, host)))
+    now = [1000.0]
+    ticks: list[str] = []
+
+    def fake_sleep(seconds: float) -> None:
+        now[0] += seconds
+        ticks.append(chair_run.tick(deps, False, datetime.now(UTC)))
+
+    ok, message = chair_resolve.takeover(
+        runs, "taker", 2, "h", None, None, heartbeat_minutes=10, clock=lambda: now[0], sleep=fake_sleep,
+    )
+
+    assert ok, message
+    assert now[0] - 1000.0 < chair_resolve.TAKEOVER_GRACE_SECONDS
+    assert ["released at takeover request" in t for t in ticks] == [True]
+    assert forced == ["chair-x"]  # the loop's own release inside the tick; the fallback found no record and released nothing
+    record = cli.chair.read(runs)
+    assert record["session"] == "taker"
+    assert record["taken_over_from"] == "chair-x"
+
+
+def test_a_tick_with_no_release_request_still_beats_and_keeps_the_lease(tmp_path, monkeypatch) -> None:
+    runs, store, deps = _loop_on_disk(tmp_path, monkeypatch, release=False)
+
+    def stop_after_beat(*_args):
+        raise RuntimeError("beat done")
+
+    chair_run.run(True, 0, False, dataclasses.replace(deps, gather=stop_after_beat))
+
+    assert store.heartbeat == 1
+    assert (runs / cli.chair.LEASE_FILENAME).exists()
+    assert cli.chair.read(runs)["heartbeat_at"] > _OLD
