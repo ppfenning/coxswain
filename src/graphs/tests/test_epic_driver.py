@@ -1820,6 +1820,32 @@ def test_surface_passes_checks_a_plain_path_itself_and_a_new_path_by_its_parent(
     assert not _surface_passes(present.__contains__, root, "src/b.py")
 
 
+def test_refusal_reason_names_the_missing_new_marker_when_every_parent_exists() -> None:
+    from harness.epic import _surface_refusal_reason
+
+    present = {Path("/r/src")}
+    reason = _surface_refusal_reason(present.__contains__, Path("/r"), ["src/a.py", "src/b.py"])
+    assert "(new)" in reason
+    assert "not a wrong repository" in reason
+    assert "src/a.py, src/b.py" in reason
+
+
+def test_refusal_reason_keeps_the_old_text_when_a_parent_is_missing() -> None:
+    from harness.epic import _surface_refusal_reason
+
+    present = {Path("/r/src")}
+    old = "surfaces not in /r: lib/a.py, lib/b.py; wrong repository?"
+    assert _surface_refusal_reason(present.__contains__, Path("/r"), ["lib/a.py", "lib/b.py"]) == old
+
+
+def test_refusal_reason_keeps_the_old_text_for_a_mix_with_one_parent_missing() -> None:
+    from harness.epic import _surface_refusal_reason
+
+    present = {Path("/r/src")}
+    old = "surfaces not in /r: src/a.py, lib/b.py; wrong repository?"
+    assert _surface_refusal_reason(present.__contains__, Path("/r"), ["src/a.py", "lib/b.py"]) == old
+
+
 def test_a_task_whose_only_surface_is_a_new_path_with_no_parent_is_refused_before_any_model_call(
     repo, cart, tmp_path
 ) -> None:
