@@ -20,6 +20,7 @@ the work store is written by an apply arm after a human said yes.
 from __future__ import annotations
 
 import json
+import posixpath
 import re
 from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
@@ -785,6 +786,23 @@ def expected_task_files(
         for p in proposals
         if p.get("kind") == "item_create" and p.get("target") in approved
     }
+
+
+def phase_dirs(
+    proposals: Sequence[Mapping[str, Any]],
+    *,
+    landing: str,
+    initiative_id: str | None,
+) -> list[str]:
+    """Sorted store-relative directory of every task `item_create`, approved or not: it must exist before approval."""
+    tasks = {str(p["target"]) for p in proposals if p.get("kind") == "item_create" and p.get("target") != "initiative"}
+    paths = expected_task_files(proposals, tasks, landing=landing, initiative_id=initiative_id)
+    return sorted({posixpath.dirname(path) for path in paths.values()})
+
+
+def withdrawal(expected: Collection[str], in_store_before: Collection[str], missing: Collection[str]) -> list[str]:
+    """Task ids to withdraw after a failed decompose: those new to this run, so started work keeps its row and file."""
+    return sorted(task for task in expected if task not in in_store_before) if missing else []
 
 
 def decompose_closing(
