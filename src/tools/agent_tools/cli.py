@@ -1627,12 +1627,27 @@ def _phase_already_merged(prs: list[dict] | str, branch_exists: bool, adds_nothi
     return branch_exists and adds_nothing and not isinstance(prs, str) and any(p.get("state") == "merged" for p in prs) and not any(p.get("state") == "open" for p in prs)
 
 
-def _phase_already_landed(repo: Path, initiative: str, phase: str, default_branch: str, forge_module) -> bool:
-    """Edge. `_phase_already_merged` fed by the forge's PRs for `pr/<initiative>--<phase>` and by the branch's content against main."""
+ALREADY_MERGED_PREFIX = "merge: already merged"
+
+
+def already_merged_line(pr: dict) -> str:
+    """Pure. The one line a phase land prints when it skips the merge because the PR is already merged. `chair_exec.landed` reads the prefix."""
+    return f"{ALREADY_MERGED_PREFIX} (PR #{pr.get('number')})"
+
+
+def _phase_merged_pr(repo: Path, initiative: str, phase: str, default_branch: str, forge_module) -> dict | None:
+    """Edge. The first merged PR of `pr/<initiative>--<phase>` when `_phase_already_merged` holds, fed by the forge's PRs and by the branch's content against main; else None."""
     branch = f"epic/{initiative}/{phase}"
     exists = _branch_exists(repo, f"refs/heads/{branch}")
     prs = forge.branch_prs(forge_module, repo, f"pr/{initiative}--{phase}")
-    return _phase_already_merged(prs, exists, exists and _phase_adds_nothing(repo, branch, default_branch))
+    if not _phase_already_merged(prs, exists, exists and _phase_adds_nothing(repo, branch, default_branch)):
+        return None
+    return next(p for p in prs if p.get("state") == "merged")
+
+
+def _phase_already_landed(repo: Path, initiative: str, phase: str, default_branch: str, forge_module) -> bool:
+    """Edge. True when `_phase_merged_pr` finds a merged PR."""
+    return _phase_merged_pr(repo, initiative, phase, default_branch, forge_module) is not None
 
 
 def _phase_pr_facts(repo: Path, pr_branch: str, forge_module=forge_github) -> dict | str:
@@ -3153,6 +3168,7 @@ def _runs_land(a: argparse.Namespace) -> int:
     phase = getattr(a, "phase", None) or (None if a.task else _phase_needing_land(runs_dir, run_id))
     land_mode = work_state.work_state_mode(_lake_provider(a)[0]) if a.apply else "files"
     record, item_path, lease_task = None, None, None
+    merged_pr: dict | None = None
     if phase:
         if land_mode == "store":
             _backfill_phase_task_files(runs_dir, run_id, phase)
@@ -3174,7 +3190,8 @@ def _runs_land(a: argparse.Namespace) -> int:
                 print(f"land: refusing, {phase_pr}")
                 return 2
         read_forge = pr_forge or forge.forge_for(forge.forge_name(profile))
-        already_merged = read_forge is not None and _phase_already_landed(repo, initiative, phase, default_branch, read_forge)
+        merged_pr = _phase_merged_pr(repo, initiative, phase, default_branch, read_forge) if read_forge is not None else None
+        already_merged = merged_pr is not None
         plan_steps = land.land_plan(
             {**phase_record, "initiative": initiative, "initiative_title": initiative_title}, {}, default_branch,
             repo_facts, items=items, task_records=task_records, phase_pr=phase_pr,
@@ -3265,6 +3282,8 @@ def _runs_land(a: argparse.Namespace) -> int:
             print(f"land: adopting open pull request #{decision['pr']} on {cherry_pick['onto']}")
         steps = land.resume_steps(steps, decision, cherry_pick["onto"])
         planned = land.resume_steps(planned, decision, cherry_pick["onto"])
+    if merged_pr is not None:
+        print(already_merged_line(merged_pr))
     # Steps start here: every return from now on is logged. Earlier returns are not.
     repo_lost: list[str] = []
     stops: list[dict] = []
