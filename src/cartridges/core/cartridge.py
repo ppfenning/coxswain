@@ -303,7 +303,11 @@ def _as_mapping(value: Any) -> Mapping[str, Any]:
 # tree, because a project that runs `bash -n` does not also want `pytest`.
 # That is the opposite of the repo-root `.agent-checks` file, which ADDS
 # extra checks and is untouched by this key.
-_OVERLAY_NESTED_ALLOWED = {"policy": frozenset({"review_tier", "cost"}), "landing_areas": frozenset({"checks"})}
+# `landing_areas.land_checks` is a `ci` or `local` selector, not a list; absent means local.
+_OVERLAY_NESTED_ALLOWED = {
+    "policy": frozenset({"review_tier", "cost"}),
+    "landing_areas": frozenset({"checks", "land_checks"}),
+}
 
 # Which allowed nested subkeys hold a list of entries rather than a mapping;
 # `landing_areas.checks` is the one exception to the mapping shape the loop
@@ -330,6 +334,13 @@ def _checks_problems(checks: Any) -> list[str]:
             problems.append(f"project layer overlay refuses checks entry '{entry['name']}': duplicate name")
         seen.append(entry["name"])
     return problems
+
+
+def _land_checks_problems(value: Any) -> list[str]:
+    """`land_checks` must be the string `ci` or `local`."""
+    if isinstance(value, str) and value in ("ci", "local"):
+        return []
+    return [f"project layer overlay refuses landing_areas.land_checks: must be 'ci' or 'local', got {value!r}"]
 
 
 def _cost_overlay_problems(cost: Any) -> list[str]:
@@ -359,6 +370,8 @@ def overlay_errors(overlay: Mapping[str, Any]) -> list[str]:
                 continue
             if allowed_subkey in _OVERLAY_LIST_SUBKEYS:
                 problems += _checks_problems(sub_value)
+            elif allowed_subkey == "land_checks":
+                problems += _land_checks_problems(sub_value)
             elif allowed_subkey == "cost":
                 problems += _cost_overlay_problems(sub_value)
             elif not isinstance(sub_value, Mapping):
@@ -421,8 +434,9 @@ def apply_overlay(
     if "description" in overlay:
         merged["description"] = overlay["description"]
     landing_areas = _as_mapping(overlay.get("landing_areas"))
-    if "checks" in landing_areas:
-        merged["landing_areas"] = {**_as_mapping(resolved.get("landing_areas")), "checks": landing_areas["checks"]}
+    overlay_landing = {key: landing_areas[key] for key in ("checks", "land_checks") if key in landing_areas}
+    if overlay_landing:
+        merged["landing_areas"] = {**_as_mapping(resolved.get("landing_areas")), **overlay_landing}
     review_tier = _overlay_review_tier(overlay)
     if review_tier:
         base_policy = _as_mapping(resolved.get("policy"))

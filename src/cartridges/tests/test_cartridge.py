@@ -575,6 +575,37 @@ def test_overlay_errors_still_refuses_an_unknown_key_alongside_valid_checks() ->
     assert overlay_errors(overlay) == ["project layer overlay refuses key 'skills'"]
 
 
+@pytest.mark.parametrize("value", ["ci", "local"])
+def test_overlay_errors_accepts_a_lone_land_checks_of_ci_or_local(value: str) -> None:
+    assert overlay_errors({"landing_areas": {"land_checks": value}}) == []
+
+
+@pytest.mark.parametrize("value", ["maybe", "", "CI", True, 3, ["ci"]])
+def test_overlay_errors_refuses_land_checks_other_than_ci_or_local(value: object) -> None:
+    expected = f"project layer overlay refuses landing_areas.land_checks: must be 'ci' or 'local', got {value!r}"
+    assert overlay_errors({"landing_areas": {"land_checks": value}}) == [expected]
+
+
+def test_apply_overlay_carries_a_lone_land_checks_and_keeps_the_base_checks() -> None:
+    base_checks = [{"name": "lint", "cmd": "ruff check ."}]
+    resolved = {"landing_areas": {"checks": base_checks}}
+    merged = apply_overlay(resolved, {"landing_areas": {"land_checks": "ci"}})
+    assert merged["landing_areas"] == {"checks": base_checks, "land_checks": "ci"}
+
+
+def test_apply_overlay_without_land_checks_leaves_no_land_checks_key() -> None:
+    resolved = {"landing_areas": {"checks": [{"name": "lint", "cmd": "ruff check ."}]}}
+    merged = apply_overlay(resolved, {"landing_areas": {"checks": [{"name": "syntax", "cmd": "bash -n *.sh"}]}})
+    assert "land_checks" not in merged["landing_areas"]
+
+
+def test_apply_overlay_with_checks_and_land_checks_keeps_both() -> None:
+    project_checks = [{"name": "syntax", "cmd": "bash -n *.sh"}]
+    resolved = {"landing_areas": {"checks": [{"name": "lint", "cmd": "ruff check ."}]}}
+    merged = apply_overlay(resolved, {"landing_areas": {"checks": project_checks, "land_checks": "local"}})
+    assert merged["landing_areas"] == {"checks": project_checks, "land_checks": "local"}
+
+
 def test_apply_overlay_adds_a_context_file_and_a_tier2_surface() -> None:
     resolved = {"context": ["/repo/base.md"], "policy": {"review_tier": {"tier2_surfaces": ["schema"]}}}
     overlay = {"context": ["/repo/overlay.md"], "policy": {"review_tier": {"tier2_surfaces": ["schema", "auth"]}}}
