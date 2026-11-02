@@ -58,5 +58,5 @@ def test_a_value_the_chair_profile_parser_rejects_is_refused_with_its_message(tm
     before = profile.read_bytes()
     code = cox_settings.run_set(profile, "profile", "window_ceiling_usd", "abc", dry_run=False)
     assert code == 1
-    assert capsys.readouterr().out == "error: line 12:   window_ceiling_usd: abc\n"
+    assert capsys.readouterr().out == "error: profile:window_ceiling_usd: line 12:   window_ceiling_usd: abc\n"
     assert profile.read_bytes() == before
