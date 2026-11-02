@@ -13,6 +13,8 @@ from agent_tools.chair_plan import TickPlan, plan_tick
 from agent_tools.chair_run import (
     DEFAULT_INTERVAL,
     PROFILE_STALE_NOTE,
+    RELEASE_HOLD_OFF_SECONDS,
+    TAKEOVER_GRACE_SECONDS,
     RunDeps,
     _attempt,
     as_holder,
@@ -23,7 +25,9 @@ from agent_tools.chair_run import (
     overran,
     overrun_limit_hit,
     run,
+    start_lease_beat,
     tick,
+    tick_timed,
 )
 from agent_tools.ci_gate import CiGate
 from agent_tools.forge_status import StatusReader
@@ -733,3 +737,98 @@ def test_a_blocked_initiative_shows_on_a_dry_run_status_line():
 def test_no_blocked_initiative_leaves_no_waiting_part():
     _, deps = _blocked_rig(blocked=False)
     assert "waiting:" not in tick(deps, False, NOW)
+
+
+RELEASED = "released at takeover request"
+
+
+class Takeover:
+    """A fake clock and a release check that answers from `asked` and counts how often it is asked."""
+
+    def __init__(self, asked=True):
+        self.asked, self.checks, self.seconds = asked, 0, 1000.0
+
+    def clock(self):
+        return self.seconds
+
+    def check(self):
+        self.checks += 1
+        return self.asked
+
+
+def _released_deps(rig, takeover, **over):
+    calls = []
+
+    def plan(*args):
+        calls.append("plan")
+        return plan_tick(*args)
+
+    def perform(*args):
+        calls.append("perform")
+        return []
+
+    deps = replace(rig.deps(), plan=plan, perform=perform, release_requested=takeover.check, **over)
+    return deps, calls
+
+
+def test_a_tick_asked_to_release_does_nothing_else_and_returns_the_release_line():
+    rig, takeover = Rig(), Takeover()
+    deps, calls = _released_deps(rig, takeover)
+    line, stages, sources = tick_timed(deps, False, NOW, takeover.clock)
+    assert line == f"chair 09-26 14:05 EDT | {RELEASED}"
+    assert (stages, sources) == ({}, {})
+    assert rig.log == [] and calls == [] and rig.commands == []
+
+
+@pytest.mark.parametrize("asked", [False, None])
+def test_a_false_or_missing_release_check_ticks_as_before(asked):
+    rig, takeover = Rig(), Takeover(asked=asked)
+    deps, _ = _released_deps(rig, takeover)
+    deps = deps if asked is False else replace(deps, release_requested=None)
+    line, _, _ = tick_timed(deps, False, NOW, takeover.clock)
+    assert rig.log == ["beat", "gather"] and RELEASED not in line
+
+
+def test_a_release_sets_the_beat_threads_stop_event_and_a_false_check_leaves_it_clear():
+    rig, takeover = Rig(), Takeover(asked=False)
+    deps, _ = _released_deps(rig, takeover)
+    stop = start_lease_beat(deps, True)
+    assert deps.release_state.beating is stop
+    tick_timed(deps, False, NOW, takeover.clock)
+    assert not stop.is_set()
+    takeover.asked = True
+    tick_timed(deps, False, NOW, takeover.clock)
+    assert stop.is_set()
+
+
+def test_run_hands_the_beat_threads_own_event_to_the_release():
+    rig, takeover = Rig(), Takeover()
+    deps, _ = _released_deps(rig, takeover, lease_beat=lambda: "", lease_beat_interval=0.01)
+    run(True, 60, False, deps)
+    assert deps.release_state.beating is not None and deps.release_state.beating.is_set()
+    assert rig.log == [] and RELEASED in rig.lines[-1]
+
+
+def test_ticks_inside_the_hold_off_window_stand_by_and_one_after_it_beats():
+    rig, takeover = Rig(), Takeover()
+    deps, _ = _released_deps(rig, takeover)
+    tick_timed(deps, False, NOW, takeover.clock)
+    takeover.asked = False
+    takeover.seconds += RELEASE_HOLD_OFF_SECONDS - 1
+    line, stages, _ = tick_timed(deps, False, NOW, takeover.clock)
+    assert "standby: released at takeover request" in line and stages == {}
+    assert rig.log == [] and takeover.checks == 1
+    takeover.seconds += 1
+    tick_timed(deps, False, NOW, takeover.clock)
+    assert rig.log == ["beat", "gather"] and takeover.checks == 2
+
+
+def test_the_hold_off_window_is_at_least_twice_the_takeover_grace():
+    assert RELEASE_HOLD_OFF_SECONDS >= 2 * TAKEOVER_GRACE_SECONDS == 40.0
+
+
+def test_a_dry_run_never_asks_whether_a_release_was_requested():
+    rig, takeover = Rig(), Takeover()
+    deps, _ = _released_deps(rig, takeover)
+    line, _, _ = tick_timed(deps, True, NOW, takeover.clock)
+    assert takeover.checks == 0 and RELEASED not in line
