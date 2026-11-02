@@ -169,6 +169,7 @@ remote_doctor = _LazyModule("agent_tools.remote_doctor")
 remote_fetch = _LazyModule("agent_tools.remote_fetch")
 remote_lane = _LazyModule("agent_tools.remote_lane")
 remote_launch = _LazyModule("agent_tools.remote_launch")
+repo_clone = _LazyModule("agent_tools.repo_clone")
 repo_path = _LazyModule("agent_tools.repo_path")
 repo_path_migrate = _LazyModule("agent_tools.repo_path_migrate")
 review_pr = _LazyModule("agent_tools.review_pr")
@@ -4833,6 +4834,19 @@ def _not_a_checkout_message(value: str) -> str:
     return f"route file: refusing, {value} is not a git checkout on this machine"
 
 
+def _filing_repo_or_refusal(repo: str, profile: dict) -> tuple[str, str | None]:
+    """The repo to file against and None, or `repo` and a `routing: ...` refusal."""
+    chosen = repo_clone.filing_repo(repo, profile)
+    if chosen.startswith(repo_clone.REFUSAL_PREFIX):
+        return repo, f"routing: {chosen.removeprefix(repo_clone.REFUSAL_PREFIX)}"
+    return chosen, None
+
+
+def _intake_with_repo(intake_text: str, repo: str) -> str:
+    fields, body = route.parse_frontmatter(intake_text)
+    return route._frontmatter({**fields, "repo": repo}.items(), body)
+
+
 def _route_file_from_intake(a: argparse.Namespace, ws: Path, profile: dict) -> int:
     intake_path = Path(a.from_intake)
     if intake_path.parent.resolve() != (ws / "intake").resolve():
@@ -4844,17 +4858,28 @@ def _route_file_from_intake(a: argparse.Namespace, ws: Path, profile: dict) -> i
         return 2
     fields, intake_body = route.parse_frontmatter(intake_text)
     [entry] = route.intake_entries({intake_path.name: intake_text})
-    repo = fields.get("repo", "")
-    if not _is_git_checkout_path(repo, str(Path.home())):
+    typed = fields.get("repo", "")
+    repo, refusal = _filing_repo_or_refusal(typed, profile)
+    if refusal:
+        print(refusal)
+        return 2
+    home = str(Path.home())
+    if not _is_git_checkout_path(repo, home):
         print(_not_a_checkout_message(repo))
         return 2
+    if repo != typed:
+        # A redirected repo is written the way `route file --repo` writes it, in the initiative and the archived intake.
+        repo_text = route.repo_field(repo, home)
+        intake_text = _intake_with_repo(intake_text, repo_text)
+    else:
+        repo_text = repo
     candidates = route.surface_candidates(intake_body, repo)
     surfaces = [c for c in candidates if (Path(repo) / c).is_file()]
     print(f"surfaces: {', '.join(surfaces)}" if surfaces else "surfaces: none resolved from the intake body")
     budget_usd = profile.get("one_task_budget_usd", 2.0)
     try:
         mapping = route.initiative_files(
-            entry["title"], intake_body, repo, phase=a.phase,
+            entry["title"], intake_body, repo_text, phase=a.phase,
             surfaces=surfaces, budget_usd=budget_usd, slug=fields.get("slug"),
         )
     except ValueError as exc:
@@ -4917,8 +4942,13 @@ def _route_file(a: argparse.Namespace) -> int:
     if isinstance(repo, route.RepoRefused):
         print(repo.message)
         return 2
+    resolved = repo
+    repo, refusal = _filing_repo_or_refusal(resolved, profile)
+    if refusal:
+        print(refusal)
+        return 2
     if not _is_git_checkout_path(repo, home):
-        print(_not_a_checkout_message(a.repo))
+        print(_not_a_checkout_message(a.repo if repo == resolved else repo))
         return 2
     repo = route.repo_field(repo, home)
     if a.body == "-":
