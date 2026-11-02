@@ -6,6 +6,7 @@ import contextlib
 import datetime
 import fcntl
 import json
+import math
 import os
 import socket
 import sys
@@ -39,6 +40,7 @@ __all__ = [
     "is_caller_holder",
     "leader_path",
     "lease_holder",
+    "lease_ttl_for",
     "lease_verdict",
     "liveness",
     "locked",
@@ -65,6 +67,14 @@ LEASE_NAME = "chair"
 # Beside chair.json, never inside it: the lock file format is unchanged. Holds the holder and epoch that renew and release need.
 LEASE_FILENAME = "chair.lease.json"
 DEFAULT_LEASE_TTL_SECONDS = DEFAULT_HEARTBEAT_MINUTES * 60
+
+
+def lease_ttl_for(record: dict[str, Any] | None, now: datetime.datetime, margin_seconds: int = DEFAULT_LEASE_TTL_SECONDS) -> int:
+    """Pure: whole seconds from `now` to an aware, future `until` rounded up, plus the margin; never below the default TTL."""
+    until = _until(record)
+    if until is None or until <= now:
+        return DEFAULT_LEASE_TTL_SECONDS
+    return max(math.ceil((until - now).total_seconds()) + margin_seconds, DEFAULT_LEASE_TTL_SECONDS)
 
 
 def _is_holder(record: dict[str, Any], session: str, pid: int, host: str) -> bool:
