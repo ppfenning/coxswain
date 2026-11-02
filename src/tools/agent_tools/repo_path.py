@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__all__ = ["HOME_ROOTS", "contract", "expand", "host_form"]
+__all__ = ["HOME_ROOTS", "contract", "expand", "git_argv", "host_form"]
 
 # Linux home root, then macOS home root. A path under either, plus one user name, is some machine's home.
 HOME_ROOTS = ("/home", "/Users")
@@ -36,6 +36,11 @@ def expand(recorded: str, home: str) -> str:
             return recorded
         rest = found
     return f"{h}/{rest}" if rest else h
+
+
+def git_argv(recorded: str, home: str, *args: str) -> list[str]:
+    """A git command run in the recorded repository as it expands under `home`."""
+    return ["git", "-C", expand(recorded, home), *args]
 
 
 def contract(path: str, home: str) -> str:
