@@ -4517,6 +4517,9 @@ def _route_chair_take(a: argparse.Namespace) -> int:
             print(refusal)
             return 2
         chair.write(runs_dir, new_record)
+        displaced = a.steal and prior_state == "live" and not chair.expired(record, now)
+    if displaced:
+        print(chair.displaced_line(record))
     print(f"chair taken: {new_record['session']} (pid {new_record['pid']}) on {new_record['host']}")
     return 0
 
@@ -10108,10 +10111,10 @@ ROUTE_COMMANDS = [
         "chair", "route", "the chair lock for the landing loop (runs/chair.json)", (), None, False, (),
         subcommands=(
             commands.Command(
-                "take", "route", "take the chair lock if no live chair holds it",
+                "take", "route", "take the chair lock; --steal overrides a live holder and names it",
                 (
                     commands.Arg(("--profile",)), commands.Arg(("--label",)), _CHAIR_PID_ARG,
-                    commands.Arg(("--steal",), {"action": "store_true"}),
+                    commands.Arg(("--steal",), {"action": "store_true", "help": "override a live holder and name it"}),
                     commands.Arg(("--hours",), {"type": float, "default": _leader_takeover_hours(), "help": "how long the takeover lasts before the loop may steal it (default: policy.leader.takeover_hours)"}),
                     commands.Arg(("--model",), {"choices": ["sonnet", "opus", "haiku"], "default": None, "help": "the model alias this chair runs on, recorded in the chair record (default: not recorded)"}),
                 ),

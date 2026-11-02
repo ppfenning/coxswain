@@ -1792,6 +1792,28 @@ def _carry_ports(
     return git, forge, _StoreEdge(runs_dir, workspace, action, forge, now)
 
 
+def lease_guard(record: dict[str, Any] | None, own: tuple[str, int, str], pid_alive_: bool, now: datetime, host: str) -> str:
+    """Pure. The refusal line when a foreign holder is live and unexpired, else "". A passed `until` reads live in `chair.liveness`, so it is excluded here to keep the expired takeover working."""
+    if record is None or chair.same_holder(record, *own):
+        return ""
+    if chair.liveness(record, pid_alive_, now, host) != "live" or chair.expired(record, now):
+        return ""
+    return f"chair: held by {record.get('session', '?')} (live)"
+
+
+def _held_refusal(runs_dir: Path, session: str, pid: int, host: str) -> str:
+    """Edge. Reads chair.json; a missing, unreadable or non-object record falls through with no refusal."""
+    try:
+        record = chair.read(runs_dir)
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(record, dict):
+        return ""
+    held_pid = record.get("pid")
+    alive = isinstance(held_pid, int) and chair.pid_alive(held_pid)
+    return lease_guard(record, (session, pid, host), alive, datetime.now(UTC), host)
+
+
 def edge_deps(
     runs_dir: Path,
     workspace: Path,
@@ -1820,10 +1842,14 @@ def edge_deps(
     run = _local_only(workspace) if dry_run else _bounded_for_ssh(workspace)
     login_run = partial(run_argv_split, cwd=workspace, timeout=LANE_HOST_TIMEOUT_S)
     live_check = partial(_check_login_edge, runs_dir, login_run, provider_profile)
+
+    def acquire(_holder: str, _host: str, steal: bool = False) -> str:
+        return _held_refusal(runs_dir, session, pid, host) or chair.acquire_lease(runs_dir, session, pid, host, steal=steal)
+
     return Deps(
         run=run,
         delete_branches=lambda repo, pattern: delete_branches_with(run, repo, pattern),
-        acquire_lease=lambda _holder, _host, steal=False: chair.acquire_lease(runs_dir, session, pid, host, steal=steal),
+        acquire_lease=acquire,
         record=record,
         run_id=run_id,
         repo_for=repo_for,

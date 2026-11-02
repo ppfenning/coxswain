@@ -70,3 +70,78 @@ def test_the_edge_ignores_the_until_of_another_holders_chair_record(tmp_path):
     _store(tmp_path, ("chair", HOLDER, 4, "2026-09-26T12:05:00Z"))
     chair.write(tmp_path, {"session": "zed", "pid": 7, "host": "h", "until": "2026-09-26T11:00:00+00:00"})
     assert "expired" not in read_lease(tmp_path, NOW)
+
+
+def _held(runs_dir, *, session="s", pid=7, host="h", until="2026-09-26T18:00:00+00:00", expires_at="2026-09-26T11:00:00Z"):
+    """A store row past its expiry and the same holder's chair.json, last heartbeat an hour before NOW."""
+    _store(runs_dir, ("chair", lease_holder(session, pid, host), 4, expires_at))
+    record = {"session": session, "pid": pid, "host": host, "heartbeat_at": "2026-09-26T11:00:00+00:00"}
+    chair.write(runs_dir, {**record, **({"until": until} if until else {})})
+
+
+def _alive(pid):
+    return True
+
+
+def _dead(pid):
+    return False
+
+
+def _gate(lease):
+    return _lease_gate(lease_facts(lease, "other", 1, "h"))
+
+
+def test_a_live_holder_record_clears_a_stale_store_expiry_and_plans_standby(tmp_path):
+    _held(tmp_path)
+    lease = read_lease(tmp_path, NOW, pid_alive=_alive, host="h")
+    assert (lease["stale"], lease["expired"], lease["until"]) == (False, False, "2026-09-26T18:00:00+00:00")
+    assert _gate(lease) == [{"kind": "standby", "holder": HOLDER, "host": "h", "until": "2026-09-26T18:00:00+00:00"}]
+
+
+def test_a_dead_pid_leaves_the_store_expiry_stale(tmp_path):
+    _held(tmp_path)
+    lease = read_lease(tmp_path, NOW, pid_alive=_dead, host="h")
+    assert lease["stale"] is True
+    assert _gate(lease) == [{"kind": "take_lease"}]
+
+
+def test_a_passed_until_leaves_the_store_expiry_stale(tmp_path):
+    _held(tmp_path, until="2026-09-26T11:30:00+00:00")
+    lease = read_lease(tmp_path, NOW, pid_alive=_alive, host="h")
+    assert (lease["stale"], lease["expired"]) == (True, True)
+    assert _gate(lease)[0]["kind"] == "take_lease"
+
+
+def test_a_silent_record_from_another_host_leaves_the_store_expiry_stale(tmp_path):
+    _held(tmp_path, host="elsewhere")
+    lease = read_lease(tmp_path, NOW, pid_alive=_alive, host="h")
+    assert lease["stale"] is True
+    assert _gate(lease) == [{"kind": "take_lease"}]
+
+
+def test_a_released_lease_stays_released_beside_a_live_record(tmp_path):
+    _held(tmp_path, expires_at="1970-01-01T00:00:00Z")
+    lease = read_lease(tmp_path, NOW, pid_alive=_alive, host="h")
+    assert (lease["released"], lease["stale"]) == (True, True)
+    assert _gate(lease) == [{"kind": "take_lease"}]
+
+
+def test_the_store_expiry_alone_decides_with_no_record_or_no_until(tmp_path):
+    _held(tmp_path, until="")
+    assert read_lease(tmp_path, NOW, pid_alive=_alive, host="h")["stale"] is True
+    chair.write(tmp_path, None)
+    assert read_lease(tmp_path, NOW, pid_alive=_alive, host="h")["stale"] is True
+
+
+def test_another_holders_live_record_does_not_clear_the_store_expiry(tmp_path):
+    _held(tmp_path)
+    chair.write(tmp_path, {"session": "zed", "pid": 7, "host": "h", "until": "2026-09-26T18:00:00+00:00", "heartbeat_at": "2026-09-26T11:59:00+00:00"})
+    assert read_lease(tmp_path, NOW, pid_alive=_alive, host="h")["stale"] is True
+
+
+def test_a_thief_holding_the_lease_with_a_live_record_plans_standby_not_take(tmp_path):
+    _held(tmp_path, session="thief", pid=9)
+    thief = lease_holder("thief", 9, "h")
+    lease = read_lease(tmp_path, NOW, pid_alive=_alive, host="h")
+    assert lease["stale"] is False
+    assert _gate(lease) == [{"kind": "standby", "holder": thief, "host": "h", "until": "2026-09-26T18:00:00+00:00"}]
