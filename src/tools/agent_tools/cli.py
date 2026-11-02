@@ -10970,6 +10970,7 @@ def _chair_run_deps(
     )
     exec_deps = dataclasses.replace(
         exec_deps,
+        label=session,
         revert_ports=_revert_ports(runner),
         quarantine_phase=_quarantine_phase_with(
             lambda: chair_facts.read_ticket_items(ws, mode),
