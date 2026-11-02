@@ -70,13 +70,17 @@ def describe(action: str, plan: Plan) -> str:
 
 
 def offer_line(plan: Plan) -> str:
-    names = {"attach": "attach", "observer": "open a non-chair session"}
-    return f"chair: (a) take over  (b) open a non-chair session  (c) cancel  [Enter: {names[plan.default]}]"
+    attachable = plan.default == "attach"
+    keys = "(a) take over  (b) open a non-chair session  (c) cancel" + ("  (d) attach" if attachable else "")
+    return f"chair: {keys}  [Enter: {'attach' if attachable else 'open a non-chair session'}]"
 
 
 def choose(key: str, default: str) -> str:
-    """Pure. a takes over, b opens a non-chair session, c or anything else cancels; Enter takes the default."""
-    return {"a": "takeover", "b": "observer", "c": "cancel", "\r": default, "\n": default, "": default}.get(key.lower(), "cancel")
+    """Pure. a takes over, b opens a non-chair session, d attaches only when the default is attach, c or anything else cancels; Enter takes the default."""
+    return {
+        "a": "takeover", "b": "observer", "c": "cancel", "d": "attach" if default == "attach" else "cancel",
+        "\r": default, "\n": default, "": default,
+    }.get(key.lower(), "cancel")
 
 
 def with_session(argv: list[str], flag: str, value: str, extra_args: list[str]) -> list[str]:

@@ -71,8 +71,24 @@ def test_transcript_path_slugs_the_cwd():
     assert path == Path("/h/.claude/projects/-srv-a-b-ws-x/s-1.jsonl")
 
 
+def test_resolve_bare_never_defaults_to_attach_without_a_usable_session():
+    live = lambda record, exists: chair_resolve.resolve_bare(record, "live", HOST, NOW, exists).default  # noqa: E731
+    assert live(_record(), _saved) == "observer"  # the chair run service loop records no conversation
+    assert live(_record(session_id="s-1", host="elsewhere"), _saved) == "observer"
+    assert live(_record(session_id="s-1"), _unsaved) == "observer"
+    assert live(_record(claude_session="s-2"), _saved) == "attach"
+
+
+def test_offer_line_names_each_key_it_accepts():
+    prefix = "chair: (a) take over  (b) open a non-chair session  (c) cancel"
+    assert chair_resolve.offer_line(chair_resolve.Plan("offer", default="attach")) == f"{prefix}  (d) attach  [Enter: attach]"
+    assert chair_resolve.offer_line(chair_resolve.Plan("offer", default="observer")) == f"{prefix}  [Enter: open a non-chair session]"
+
+
 def test_choose_maps_one_keypress():
-    assert [chair_resolve.choose(k, "attach") for k in ("a", "b", "c", "\n", "x")] == ["takeover", "observer", "cancel", "attach", "cancel"]
+    keys = ("a", "b", "c", "d", "\n", "x")
+    assert [chair_resolve.choose(k, "attach") for k in keys] == ["takeover", "observer", "cancel", "attach", "attach", "cancel"]
+    assert [chair_resolve.choose(k, "observer") for k in keys] == ["takeover", "observer", "cancel", "cancel", "observer", "cancel"]
 
 
 class _Clock:
@@ -317,7 +333,7 @@ def test_print_argv_names_each_bare_cox_branch(tmp_path, monkeypatch, capsys):
         (_record(pid=999999, session_id="s-9", cwd=str(ws)), ["chair: would resume chair-2026-10-29 with claude --resume s-9", "and take the lease"], "--resume"),
         (_record(pid=999999), [take], "--resume"),
         (_record(pid=999999, session_id="s-7", cwd=str(ws)), [lost, take], "--resume"),
-        (_record(pid=1, session_id="s-8"), ["chair: would attach to chair-2026-10-29's conversation with claude --resume s-8", offer, "[Enter: attach]"], "--resume"),
+        (_record(pid=1, session_id="s-8"), ["chair: would attach to chair-2026-10-29's conversation with claude --resume s-8", offer, "(d) attach  [Enter: attach]"], "--resume"),
         (_record(pid=1), ["chair: would open a non-chair session", offer, "[Enter: open a non-chair session]"], "--resume"),
         (_record(pid=1, session_id="s-6"), ["chair: would open a non-chair session", offer, "[Enter: open a non-chair session]"], "--resume"),
         (_record(pid=1, host="elsewhere", session_id="s-8"), ["chair: would open a non-chair session", offer, "elsewhere"], "--resume"),
