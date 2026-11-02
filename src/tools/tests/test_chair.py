@@ -440,16 +440,18 @@ def test_take_without_steal_on_own_live_record_is_refused_and_leaves_the_lease(t
     assert seen == []
 
 
-def test_take_steal_on_another_sessions_live_record_is_refused(tmp_path, monkeypatch, capsys):
-    rc, seen, _runs_dir = _take_over_live_record(tmp_path, monkeypatch, "alice", "--steal")
-    assert rc == 2
-    assert capsys.readouterr().out.startswith("chair: held by alice")
-    assert seen == []
+def test_take_steal_on_another_sessions_live_record_takes_it(tmp_path, monkeypatch, capsys):
+    rc, seen, runs_dir = _take_over_live_record(tmp_path, monkeypatch, "alice", "--steal")
+    assert rc == 0
+    assert capsys.readouterr().out.startswith("chair taken: bob (pid ")
+    assert seen == [{"steal": True}]
+    assert chair.read(runs_dir)["session"] == "bob"
 
 
 _T0 = datetime.datetime(2026, 9, 26, 12, 0, tzinfo=datetime.UTC)
 _UNTIL = (_T0 + datetime.timedelta(hours=3)).isoformat()
 _HELD = {"session": "alice", "pid": 4242, "host": "h1", "taken_at": _T0.isoformat(), "heartbeat_at": _T0.isoformat(), "runs": [], "until": _UNTIL}
+_SILENT = {**_HELD, "heartbeat_at": (_T0 - datetime.timedelta(hours=1)).isoformat()}
 
 
 def test_take_with_hours_stamps_until_three_hours_after_now():
@@ -517,8 +519,42 @@ def test_take_without_steal_refuses_an_expired_live_record_naming_the_expiry():
 
 
 def test_take_refuses_an_unexpired_live_record_with_its_until():
-    record, reason = chair.take(_HELD, "bob", 7, "h2", _T0, 10, True, steal=True)
+    record, reason = chair.take(_HELD, "bob", 7, "h2", _T0, 10, True)
     assert (record, reason) == (None, f"chair: held by alice (pid 4242) on h1 until {_UNTIL}")
+
+
+def test_take_steal_over_ones_own_live_record_still_returns_none_and_the_held_by_line():
+    record, reason = chair.take(_HELD, "alice", 4242, "h1", _T0, 10, True, steal=True)
+    assert (record, reason) == (None, f"chair: held by alice (pid 4242) on h1 until {_UNTIL}")
+
+
+def test_take_steal_over_a_live_unexpired_holder_returns_the_thiefs_record():
+    record, reason = chair.take(_HELD, "bob", 7, "h2", _T0, 10, True, steal=True)
+    assert (record["session"], record["pid"], record["host"], reason) == ("bob", 7, "h2", "")
+
+
+def test_a_live_pid_with_a_future_until_and_an_old_heartbeat_reads_live():
+    assert chair.liveness(_SILENT, True, _T0, "h1", 10) == "live"
+
+
+def test_the_same_record_with_a_dead_pid_reads_crashed():
+    assert chair.liveness(_SILENT, False, _T0, "h1", 10) == "crashed"
+
+
+def test_the_same_record_with_a_passed_until_reads_stale():
+    assert chair.liveness(_SILENT, True, _T0 + datetime.timedelta(hours=4), "h1", 10) == "stale"
+
+
+def test_the_same_record_on_another_host_reads_stale():
+    assert chair.liveness(_SILENT, True, _T0, "h2", 10) == "stale"
+
+
+def test_a_silent_record_with_no_until_reads_stale():
+    assert chair.liveness({**_SILENT, "until": None}, True, _T0, "h1", 10) == "stale"
+
+
+def test_displaced_line_names_the_displaced_holder():
+    assert chair.displaced_line(_HELD) == "chair: displaced alice (pid 4242) on h1"
 
 
 def test_extend_moves_until_and_leaves_the_record_alone():
