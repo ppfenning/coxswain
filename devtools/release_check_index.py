@@ -53,6 +53,22 @@ def in_release(spec: Mapping, version: str) -> bool:
     return not spec.get("since") or _version_key(version) >= _version_key(str(spec["since"]))
 
 
+def _row(section: str, name: str) -> str | None:
+    """The section's table line for `name`, or None."""
+    return next((line for line in section.splitlines() if line.startswith(f"| {name} |")), None)
+
+
+def _row_drifts(section: str, name: str, tag: str | None, current: bool) -> bool:
+    """The current section must show the manifest tag. An older one needs the
+    row, and `tag` (`v<version>`) only when the row is not marked "(pinned)"."""
+    row = _row(section, name)
+    if row is None:
+        return True
+    if current:
+        return tag not in section
+    return tag is not None and "(pinned)" not in row and tag not in row
+
+
 def check_release_index(facts: Mapping) -> list[Drift]:
     from devtools.release_check import Drift
 
@@ -67,14 +83,15 @@ def check_release_index(facts: Mapping) -> list[Drift]:
             # The current version's row carries each component's manifest tag,
             # older than `v<version>` for a pinned component. An older section
             # expects `v<version>` only of a component tagged at the current
-            # version; a pinned one kept whatever it was at then, so only its row is required.
+            # version and not marked "(pinned)" in that section's own row: a
+            # release that shipped it pinned kept whatever tag it had then.
             name: (str(spec.get("tag")) if version == current
                    else (f"v{version}" if spec.get("tag") == f"v{current}" else None))
             for name, spec in components.items()
             if in_release(spec, version)
         }]
         if (section := _section_text(index_text, version)) is None
-        or any(f"| {name} |" not in section or (tag is not None and tag not in section) for name, tag in tags.items())
+        or any(_row_drifts(section, name, tag, version == current) for name, tag in tags.items())
     ]
 
 
