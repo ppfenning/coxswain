@@ -4,6 +4,16 @@ from devtools import cli, release
 
 _INDEX = {"urls": [{"packagetype": "sdist", "url": f"https://x/coxswain-{V0}.tar.gz", "digests": {"sha256": "b" * 64}}]}
 _URLS = release.towpath_asset_urls(V0)
+_PY_FORMULA = _TAP_FORMULA.replace("class Cox < Formula\n", 'class Cox < Formula\n  depends_on "python@3.13"\n', 1)
+_PINS = "psycopg==3.3.6 --hash=sha256:aa\npsycopg-binary==3.3.6 ; implementation_name != 'pypy' --hash=sha256:bb\n"
+_PSYCOPG_URL = "https://pypi.org/pypi/psycopg/3.3.6/json"
+_BINARY_URL = "https://pypi.org/pypi/psycopg-binary/3.3.6/json"
+_SDIST = "https://files/psycopg-3.3.6.tar.gz"
+_ARM = "https://files/psycopg_binary-3.3.6-cp313-cp313-macosx_11_0_arm64.whl"
+_X86 = "https://files/psycopg_binary-3.3.6-cp313-cp313-manylinux_2_17_x86_64.whl"
+_PSYCOPG = {"urls": [{"packagetype": "sdist", "url": _SDIST, "digests": {"sha256": "3" * 64}}]}
+_BINARY = {"urls": [{"packagetype": "bdist_wheel", "python_version": "cp313", "url": url, "digests": {"sha256": sha * 64}}
+                    for url, sha in ((_ARM, "4"), (_X86, "5"))]}
 _MACOS = _URLS[release.TOWPATH_MACOS_ARM]
 _LINUX = _URLS[release.TOWPATH_LINUX_INTEL]
 
@@ -28,17 +38,31 @@ def _tap_steps(dash_tag=None, dash_commits=0):
     return release.release_plan(manifest, V0, tags, pinned_commits={"dash": dash_commits})[-1:]
 
 
-def _run(tmp_path, formula_text=_TAP_FORMULA, fetch_text=_dash_text):
-    """The tap clone starts on `feature/x`, so a restore to it is observable."""
-    directory = tmp_path / "homebrew-coxswain"
-    formula = directory / "Formula" / "cox.rb"
+def _index(url, binary=_BINARY):
+    """The coxswain index, or the psycopg and psycopg-binary release documents at the pinned versions."""
+    return {_PSYCOPG_URL: _PSYCOPG, _BINARY_URL: binary}.get(url, _INDEX)
+
+
+def _tap_clone(tmp_path, formula_text=_PY_FORMULA):
+    """The tap clone with its formula, and the umbrella's extras pins."""
+    formula = tmp_path / "homebrew-coxswain" / "Formula" / "cox.rb"
     formula.parent.mkdir(parents=True)
     formula.write_text(formula_text)
-    calls, fake_run = _fake_git_run(off_branch={str(directory)})
+    pins = tmp_path / "src" / "tools" / "agent_tools" / "extras-requirements.txt"
+    pins.parent.mkdir(parents=True)
+    pins.write_text(_PINS)
+    return formula
+
+
+def _run(tmp_path, formula_text=_PY_FORMULA, fetch_text=_dash_text, fetch_index=_index):
+    """The tap clone starts on `feature/x`, so a restore to it is observable."""
+    formula = _tap_clone(tmp_path, formula_text)
+    directory = str(formula.parents[1])
+    calls, fake_run = _fake_git_run(off_branch={directory})
     rc = cli._release_execute(_tap_steps(), V0, str(tmp_path), {}, str(tmp_path), fake_run, {}, "",
                               sleep=lambda s: None, now=iter(range(0, 10**9, 60)).__next__,
-                              fetch_index=lambda url: _INDEX, fetch_text=fetch_text)
-    return rc, calls, fake_run, formula, str(directory)
+                              fetch_index=fetch_index, fetch_text=fetch_text)
+    return rc, calls, fake_run, formula, directory
 
 
 def test_a_full_asset_set_writes_both_towpath_urls_and_digests_beside_the_sdist(tmp_path):
@@ -70,7 +94,7 @@ def test_an_empty_sha256_asset_refuses_naming_it_before_any_git_call(tmp_path, c
 
 
 def test_a_formula_without_the_towpath_anchors_fails_cleanly_and_restores_the_branch(tmp_path, capsys):
-    unanchored = _TAP_FORMULA.replace("  def install", "  def setup")
+    unanchored = _PY_FORMULA.replace("  def install", "  def setup")
     rc, calls, fake_run, formula, directory = _run(tmp_path, formula_text=unanchored)
     out = capsys.readouterr().out
     assert rc == 2
@@ -101,14 +125,60 @@ def test_a_pinned_dash_fetches_and_writes_the_tarballs_of_its_own_release(tmp_pa
         fetched.append(url)
         return ("1" if "darwin" in url else "2") * 64 + "  asset\n"
 
-    directory = tmp_path / "homebrew-coxswain"
-    formula = directory / "Formula" / "cox.rb"
-    formula.parent.mkdir(parents=True)
-    formula.write_text(_TAP_FORMULA)
-    _, fake_run = _fake_git_run(off_branch={str(directory)})
+    formula = _tap_clone(tmp_path)
+    _, fake_run = _fake_git_run(off_branch={str(formula.parents[1])})
     rc = cli._release_execute(_tap_steps("v0.42.0"), V0, str(tmp_path), {}, str(tmp_path), fake_run, {}, "",
                               sleep=lambda s: None, now=iter(range(0, 10**9, 60)).__next__,
-                              fetch_index=lambda url: _INDEX, fetch_text=fetch)
+                              fetch_index=_index, fetch_text=fetch)
     assert rc == 0
     assert sorted(fetched) == sorted(f"{url}.sha256" for url in pinned.values())
     assert f'url "{pinned[release.TOWPATH_MACOS_ARM]}"' in formula.read_text()
+
+
+def test_a_full_run_writes_the_psycopg_and_psycopg_binary_resources_with_the_fetched_urls_and_digests(tmp_path):
+    rc, _, _, formula, _ = _run(tmp_path)
+    text = formula.read_text()
+    assert rc == 0
+    assert f'resource "psycopg" do\n    url "{_SDIST}"\n    sha256 "{"3" * 64}"' in text
+    assert f'resource "psycopg-binary" do\n        url "{_ARM}", using: :nounzip\n        sha256 "{"4" * 64}"' in text
+    assert f'resource "psycopg-binary" do\n        url "{_X86}", using: :nounzip\n        sha256 "{"5" * 64}"' in text
+
+
+def test_a_missing_psycopg_binary_wheel_refuses_naming_it_before_any_git_call(tmp_path, capsys):
+    arm_only = {"urls": _BINARY["urls"][:1]}
+    rc, calls, _, formula, _ = _run(tmp_path, fetch_index=lambda url: _index(url, binary=arm_only))
+    assert rc == 2
+    assert "FAILED tap_formula_pr tap: psycopg-binary release lists no cp313 wheel" in capsys.readouterr().out
+    assert calls == []
+    assert formula.read_text() == _PY_FORMULA
+
+
+def test_an_unreachable_index_for_psycopg_refuses_cleanly_before_any_git_call(tmp_path, capsys):
+    def down(url):
+        if url == _PSYCOPG_URL:
+            raise OSError("HTTP Error 503")
+        return _index(url)
+
+    rc, calls, _, _, _ = _run(tmp_path, fetch_index=down)
+    assert rc == 2
+    assert "FAILED tap_formula_pr tap: psycopg: HTTP Error 503" in capsys.readouterr().out
+    assert calls == []
+
+
+def test_a_base_formula_on_another_python_refuses_the_bump_and_restores_the_branch(tmp_path, capsys):
+    formula = _tap_clone(tmp_path)
+    directory = str(formula.parents[1])
+    _, inner = _fake_git_run(off_branch={directory})
+
+    def run(argv, cwd):
+        if argv[3:5] == ["checkout", "-b"]:
+            formula.write_text(_PY_FORMULA.replace("python@3.13", "python@3.14"))
+        return inner(argv, cwd)
+
+    rc = cli._release_execute(_tap_steps(), V0, str(tmp_path), {}, str(tmp_path), run, {}, "",
+                              sleep=lambda s: None, now=iter(range(0, 10**9, 60)).__next__,
+                              fetch_index=_index, fetch_text=_dash_text)
+    assert rc == 2
+    assert "the formula could not be bumped: the formula to bump depends on a different python" in capsys.readouterr().out
+    assert "psycopg-binary" not in formula.read_text()
+    assert inner.current_branch[directory] == "feature/x"

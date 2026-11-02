@@ -279,6 +279,17 @@ def _dirty_files(directory: str, run) -> list[str]:
     return [line.strip().split(None, 1)[-1] for line in out.splitlines() if line.strip()]
 
 
+_EXTRAS_REQUIREMENTS = "src/tools/agent_tools/extras-requirements.txt"
+
+
+def _pypi_release(package: str, pin: str, fetch: Callable[[str], dict], sleep: Callable[[float], object]) -> dict:
+    """The PyPI JSON of `package` at `pin`; the OSError or ValueError of a failed fetch is re-raised naming the package."""
+    try:
+        return _fetch_with_retry(fetch, f"https://pypi.org/pypi/{package}/{pin}/json", sleep)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"{package}: {exc}") from exc
+
+
 def _fetch_index(url: str) -> dict:
     with urllib.request.urlopen(url, timeout=30) as response:
         return json.load(response)
@@ -797,6 +808,30 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                 return 2
             directory = release.component_dir(root, release.TAP_CHECKOUT, overrides)
             formula = Path(directory) / step["path"]
+            # The psycopg wheel's CPython tag is the formula's own python dependency, read from the checkout as it
+            # stands: every refusal here comes before the first git call.
+            try:
+                pins = release.psycopg_pins((Path(umbrella) / _EXTRAS_REQUIREMENTS).read_text())
+                python_minor = release._formula_python_minor(formula.read_text())
+            except (OSError, ValueError) as exc:
+                print(f"FAILED tap_formula_pr tap: psycopg: {exc}")
+                return 2
+            psycopg_pin, binary_pin = pins
+            try:
+                psycopg = release.psycopg_assets(
+                    _pypi_release("psycopg", psycopg_pin, fetch_index, sleep),
+                    _pypi_release("psycopg-binary", binary_pin, fetch_index, sleep), python_minor)
+            except (KeyError, OSError, ValueError) as exc:
+                print(f"FAILED tap_formula_pr tap: {exc}")
+                return 2
+
+            def write_bumped(f=formula, s=sdist, t=towpath, p=psycopg, minor=python_minor):
+                text = f.read_text()
+                # The wheels were chosen for the working tree's python; the bump lands on origin's default branch.
+                if release._formula_python_minor(text) != minor:
+                    raise ValueError(f"the formula to bump depends on a different python than the psycopg wheels (3.{minor})")
+                f.write_text(release.bumped_formula_text(text, version, *s, towpath=t, psycopg=p))
+
             # The tap PR is left for the maintainer, so the checkout goes back to the branch it was on on every
             # path out of the step: the next cut refuses a tap clone that sits on an old release branch.
             rev_rc, before = run(["git", "-C", directory, "rev-parse", "--abbrev-ref", "HEAD"], None)
@@ -808,9 +843,7 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                 try:
                     ok, detail = _release_bump(
                         directory, step["branch"], step["title"], [step["path"]],
-                        lambda f=formula, s=sdist, t=towpath: f.write_text(
-                            release.bumped_formula_text(f.read_text(), version, *s, towpath=t)), run,
-                        start_point=base)
+                        write_bumped, run, start_point=base)
                 except (ValueError, KeyError) as exc:
                     ok, detail = False, f"the formula could not be bumped: {exc}"
                 if not ok:

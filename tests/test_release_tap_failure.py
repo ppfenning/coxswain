@@ -4,6 +4,13 @@ from devtools import cli, release
 
 _START = "feature/x"
 _INDEX = {"urls": [{"packagetype": "sdist", "url": "https://x/cox-0.2.0.tar.gz", "digests": {"sha256": "b" * 64}}]}
+_WHEELS = "https://files/psycopg_binary-3.3.6-cp313-cp313-"
+_PSYCOPG_DOCS = {
+    "https://pypi.org/pypi/psycopg/3.3.6/json": {"urls": [
+        {"packagetype": "sdist", "url": "https://files/psycopg-3.3.6.tar.gz", "digests": {"sha256": "3" * 64}}]},
+    "https://pypi.org/pypi/psycopg-binary/3.3.6/json": {"urls": [
+        {"packagetype": "bdist_wheel", "python_version": "cp313", "url": _WHEELS + tail, "digests": {"sha256": "4" * 64}}
+        for tail in ("macosx_11_0_arm64.whl", "manylinux_2_17_x86_64.whl")]}}
 _STEP = {"kind": "tap_formula_pr", "component": "tap", "index_url": "https://x/index.json",
          "path": "Formula/cox.rb", "branch": "release/0.2.0", "title": "cox 0.2.0"}
 
@@ -33,12 +40,16 @@ def _fake_run(directory, fail_on=None):
 def _execute(tmp_path, fail_on=None, fetch_index=lambda url: _INDEX, sleeps=None):
     directory = tmp_path / release.TAP_CHECKOUT
     (directory / "Formula").mkdir(parents=True)
-    (directory / "Formula" / "cox.rb").write_text("formula\n")
+    (directory / "Formula" / "cox.rb").write_text('depends_on "python@3.13"\n')
+    pins = tmp_path / "src" / "tools" / "agent_tools" / "extras-requirements.txt"
+    pins.parent.mkdir(parents=True)
+    pins.write_text("psycopg==3.3.6\npsycopg-binary==3.3.6 ; implementation_name != 'pypy'\n")
     calls, state, run = _fake_run(str(directory), fail_on)
     rc = cli._release_execute([_STEP], "0.2.0", str(tmp_path), {}, str(tmp_path), run, {}, "",
                               sleep=(sleeps.append if sleeps is not None else lambda s: None),
                               now=iter(range(0, 10**9, 60)).__next__,
-                              fetch_index=fetch_index, fetch_text=lambda url: "a" * 64 + "  asset\n")
+                              fetch_index=lambda url: _PSYCOPG_DOCS[url] if url in _PSYCOPG_DOCS else fetch_index(url),
+                              fetch_text=lambda url: "a" * 64 + "  asset\n")
     return rc, calls, state
 
 

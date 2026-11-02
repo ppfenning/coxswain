@@ -596,12 +596,25 @@ def _tap_step(version=V0):
     return release.release_plan(_manifest(), version, _no_tags(_manifest()))[-1]
 
 
+_TAP_FORMULA_PY = _TAP_FORMULA.replace("class Cox < Formula\n", 'class Cox < Formula\n  depends_on "python@3.13"\n', 1)
+_WHEELS = "https://files/psycopg_binary-3.3.6-cp313-cp313-"
+_PSYCOPG_DOCS = {
+    "https://pypi.org/pypi/psycopg/3.3.6/json": {"urls": [
+        {"packagetype": "sdist", "url": "https://files/psycopg-3.3.6.tar.gz", "digests": {"sha256": "3" * 64}}]},
+    "https://pypi.org/pypi/psycopg-binary/3.3.6/json": {"urls": [
+        {"packagetype": "bdist_wheel", "python_version": "cp313", "url": _WHEELS + tail, "digests": {"sha256": "4" * 64}}
+        for tail in ("macosx_11_0_arm64.whl", "manylinux_2_17_x86_64.whl")]}}
+
+
 def _run_tap_step(tmp_path, install_conclusion="success", override=None, version=V0):
     """`override(argv)` returns a `(rc, out)` that replaces the fake runner's answer, or None to keep it."""
     directory = tmp_path / "homebrew-coxswain"
     formula = directory / "Formula" / "cox.rb"
     formula.parent.mkdir(parents=True, exist_ok=True)
-    formula.write_text(_TAP_FORMULA)
+    formula.write_text(_TAP_FORMULA_PY)
+    pins = tmp_path / "src" / "tools" / "agent_tools" / "extras-requirements.txt"
+    pins.parent.mkdir(parents=True, exist_ok=True)
+    pins.write_text("psycopg==3.3.6\npsycopg-binary==3.3.6 ; implementation_name != 'pypy'\n")
     calls, inner = _fake_git_run(install_conclusion=install_conclusion)
     clock = iter(range(0, 10**9, 60))
 
@@ -614,7 +627,8 @@ def _run_tap_step(tmp_path, install_conclusion="success", override=None, version
 
     index = {"urls": [{"packagetype": "sdist", "url": f"https://x/coxswain-{version}.tar.gz", "digests": {"sha256": "b" * 64}}]}
     rc = cli._release_execute([_tap_step(version)], version, str(tmp_path), {}, str(tmp_path), fake_run, {}, "",
-                              sleep=lambda s: None, now=lambda: next(clock), fetch_index=lambda url: index,
+                              sleep=lambda s: None, now=lambda: next(clock),
+                              fetch_index=lambda url: _PSYCOPG_DOCS.get(url, index),
                               fetch_text=_dash_text)
     return rc, calls, formula, inner
 
@@ -654,7 +668,7 @@ def test_cli_release_execute_refuses_the_tap_pr_when_the_fetch_fails(tmp_path, c
     assert rc == 2
     assert "FAILED tap_formula_pr tap: fetch failed" in capsys.readouterr().out
     assert [c for c in calls if c[0] == "gh" or c[3] in ("checkout", "add", "commit", "push")] == []
-    assert formula.read_text() == _TAP_FORMULA
+    assert formula.read_text() == _TAP_FORMULA_PY
 
 
 def _merged(calls):
