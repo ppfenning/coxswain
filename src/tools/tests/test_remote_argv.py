@@ -49,7 +49,7 @@ def test_a_remote_claude_call_skips_a_shell_function_named_claude_as_a_lane_does
 
 
 def test_ssh_argv_runs_the_lane_launch_command_in_the_login_shell():
-    inner = "cox route launch epic --initiative /ws/work/init --run-id r1 --label lbl --no-claim"
+    inner = "cox route launch epic --local --initiative /ws/work/init --run-id r1 --label lbl --no-claim"
     assert ssh_argv("me@box", launch_argv("/ws/work/init", "r1", "lbl")) == [
         *_SSH_HEAD,
         f"/bin/sh -c {_LOGIN_SCRIPT} login-shell '{inner}'",
@@ -88,7 +88,7 @@ def test_env_check_argv_is_printenv_of_the_variable():
 
 def test_launch_argv_places_each_value_after_its_flag():
     assert launch_argv("init-x", "run-7", "lane-a") == [
-        "cox", "route", "launch", "epic",
+        "cox", "route", "launch", "epic", "--local",
         "--initiative", "init-x",
         "--run-id", "run-7",
         "--label", "lane-a",
