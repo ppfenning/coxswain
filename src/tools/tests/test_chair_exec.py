@@ -636,6 +636,42 @@ def test_a_land_phase_with_only_merge_is_not_counted_and_skips_its_repo_siblings
     assert _touched(calls) == [("run", ["cox", "runs", "land", "run-1", "--phase", "p1", "--repo", "r", "--apply", "--no-claim"])]
 
 
+ALREADY_MERGED = (
+    "forge: github\n"
+    "merge: already merged (PR #535)\n"
+    "clean_phase: removed epic/i/p\n"
+    "mark_done: a\n"
+    "mark_done: b\n"
+)
+
+
+def test_an_already_merged_phase_land_with_mark_done_is_landed_and_carries_the_commit(monkeypatch) -> None:
+    monkeypatch.setattr(chair_exec, "land_commit", lambda repo: "abc123")
+    results = perform([_land_phase("p1", "r")], _deps([], ALREADY_MERGED), lambda: 1, False)
+    assert [(r["status"], r.get("commit")) for r in results] == [("landed", "abc123")]
+
+
+def test_the_already_merged_line_alone_without_mark_done_is_not_landed() -> None:
+    assert not chair_exec.landed(0, "merge: already merged (PR #535)\nclean_phase: removed epic/i/p\n")
+
+
+def test_a_zero_exit_with_no_merge_and_no_mark_done_is_not_landed() -> None:
+    assert not chair_exec.landed(0, "forge: github\nclean_phase: removed epic/i/p\n")
+
+
+def test_mark_done_without_a_merge_line_or_the_already_merged_line_is_not_landed() -> None:
+    assert not chair_exec.landed(0, "clean_phase: removed epic/i/p\nmark_done: a\n")
+
+
+def test_a_nonzero_exit_with_the_already_merged_output_is_not_landed() -> None:
+    assert not chair_exec.landed(1, ALREADY_MERGED)
+
+
+def test_the_cli_and_the_chair_agree_on_the_already_merged_line() -> None:
+    assert cli.already_merged_line({"number": 535}) == "merge: already merged (PR #535)"
+    assert chair_exec._ALREADY_MERGED_PREFIX == cli.ALREADY_MERGED_PREFIX
+
+
 def test_an_uncounted_land_phase_skips_a_later_land_phase_in_its_repo() -> None:
     calls: list = []
     actions = [_land_phase("p1", "r"), _land_phase("p2", "r")]
