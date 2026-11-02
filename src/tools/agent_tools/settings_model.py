@@ -31,7 +31,7 @@ Keys by section, in section order:
   `chair.stale_days`, `analytics.snapshot_max_age_s`.
 - profile files: profile `team`, `cartridges_dir`, `skills_roots`,
   `provider_profile`, `harness_dir`, `workspace_dir`, `assume`, `router`,
-  `forge`, `tracker`, `umbrella_dir`, `ids`, `operator`.
+  `forge`, `tracker`, `umbrella_dir`, `umbrella_clone_dir`, `ids`, `operator`.
 
 unknown: `lane_hosts` is not in the parsed profile dict, so no row carries it.
 `landing_areas.checks`, `context`, `sources` and `repo_map` are not scalar
@@ -106,7 +106,7 @@ REGISTRY: tuple[Setting, ...] = (
          ("log_retention_days", "chair.housekeeping_hours", "chair.stale_days", "analytics.snapshot_max_age_s")),
     *_in("profile files", "profile", PROFILE_FILE,
          ("team", "cartridges_dir", "skills_roots", "provider_profile", "harness_dir",
-          "workspace_dir", "assume", "router", "forge", "tracker", "umbrella_dir", "ids")),
+          "workspace_dir", "assume", "router", "forge", "tracker", "umbrella_dir", "umbrella_clone_dir", "ids")),
     Setting("profile", "operator", "profile files", PROFILE_FILE, "operator", description=OPERATOR_DESCRIPTION),
     Setting("profile", "store.mode", "profile files", PROFILE_FILE, "store.mode", description=STORE_MODE_DESCRIPTION),
 )

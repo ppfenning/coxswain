@@ -106,6 +106,7 @@ _KNOWN_KEYS = {
     "tracker_scope",  # `all` (default), `epics` or `initiatives`: which items `route sync` mirrors; a cartridge's own `tracker_scope` wins
     "tracker_backfill",  # `true` makes `route sync` create issues for settled items under a narrowed `tracker_scope`; absent or `false` starts the board with open items only
     "umbrella_dir",
+    "umbrella_clone_dir",  # the working clone the umbrella's lands run in; `umbrella_dir` stays where the installed components live
     "log_retention_days",  # run logs and traces kept locally, in days; run_logs.DEFAULT_RETENTION_DAYS when absent
     "ids",  # `slug` (default) or `sequence`; `intake_file`'s own id source, spec's `route file --intake`
     "operator",  # the human the courier and decisions address; settings_model.operator_name, "operator" when absent
