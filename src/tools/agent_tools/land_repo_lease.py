@@ -76,3 +76,55 @@ def renew(runs_dir: Path, repo: str, holder: str, epoch: int, ttl: int) -> store
 
 def release(runs_dir: Path, repo: str, holder: str, epoch: int) -> store_cli.LeaseResult:
     return store_cli.lease_release(runs_dir, lease_name(repo), holder, epoch)
+
+
+def slot_lease_name(repo: str, slot: int) -> str:
+    """Slot 0 is `land:<repo>`, exactly `lease_name`; slot k above 0 is `land:<repo>#<k>`."""
+    return lease_name(repo) if slot == 0 else f"{lease_name(repo)}#{slot}"
+
+
+def slot_order(limit: int) -> range:
+    """Slots tried in order; a limit below 1 is read as 1."""
+    return range(max(limit, 1))
+
+
+def renew_slot(runs_dir: Path, repo: str, slot: int, holder: str, epoch: int, ttl: int) -> store_cli.LeaseResult:
+    if slot == 0:
+        return renew(runs_dir, repo, holder, epoch, ttl)
+    return store_cli.lease_renew(runs_dir, slot_lease_name(repo, slot), holder, epoch, ttl)
+
+
+def release_slot(runs_dir: Path, repo: str, slot: int, holder: str, epoch: int) -> store_cli.LeaseResult:
+    if slot == 0:
+        return release(runs_dir, repo, holder, epoch)
+    return store_cli.lease_release(runs_dir, slot_lease_name(repo, slot), holder, epoch)
+
+
+def _take_over_in_slot(runs_dir: Path, repo: str, slot: int, holder: str, ttl: int, this_host: str,
+                       alive: Callable[[int], bool]) -> store_cli.LeaseResult:
+    """`acquire_or_take_over` for a slot above 0, with the same epoch check on the steal."""
+    name = slot_lease_name(repo, slot)
+    got = store_cli.lease_acquire(runs_dir, name, holder, ttl)
+    if not (isinstance(got, store_cli.LeaseRefused) and pid_gone(got.holder, this_host, alive)):
+        return got
+    taken = store_cli.lease_acquire(runs_dir, name, holder, ttl, steal=True)
+    if not isinstance(taken, store_cli.LeaseGranted):
+        return taken
+    if got.epoch is None or taken.epoch != got.epoch + 1:
+        release_slot(runs_dir, repo, slot, holder, taken.epoch)
+        return store_cli.LeaseRefused(got.epoch, None)
+    print(f"land: taking over repo lease slot {slot} from {got.holder} (pid gone)")
+    return taken
+
+
+def acquire_in_slots(runs_dir: Path, repo: str, holder: str, ttl: int, this_host: str, limit: int,
+                     alive: Callable[[int], bool] = pid_alive) -> tuple[int, store_cli.LeaseResult]:
+    """First granted slot of `limit` wins. A store outage returns at once; all refused returns slot 0's refusal."""
+    first: store_cli.LeaseResult | None = None
+    for slot in slot_order(limit):
+        got = (acquire_or_take_over(runs_dir, repo, holder, ttl, this_host, alive) if slot == 0
+               else _take_over_in_slot(runs_dir, repo, slot, holder, ttl, this_host, alive))
+        if not isinstance(got, store_cli.LeaseRefused):
+            return slot, got
+        first = got if first is None else first
+    return 0, first

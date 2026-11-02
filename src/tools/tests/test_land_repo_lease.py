@@ -124,3 +124,106 @@ def test_a_granted_acquire_is_returned_without_a_probe(monkeypatch, tmp_path):
     calls = _acquire_script(monkeypatch, granted)
     assert land_repo_lease.acquire_or_take_over(tmp_path, "/repo", "me", 60, "host-a", lambda _pid: 1 / 0) == granted
     assert calls == [False]
+
+
+def test_slot_names_keep_slot_zero_as_today_and_suffix_the_rest():
+    assert land_repo_lease.slot_lease_name("/repo", 0) == land_repo_lease.lease_name("/repo") == "land:/repo"
+    assert land_repo_lease.slot_lease_name("/repo", 1) == "land:/repo#1"
+    assert land_repo_lease.slot_lease_name("/repo", 2) == "land:/repo#2"
+
+
+def test_slot_order_reads_a_limit_below_one_as_one():
+    assert [list(land_repo_lease.slot_order(n)) for n in (-1, 0, 1, 2, 3)] == [[0], [0], [0], [0, 1], [0, 1, 2]]
+
+
+def _slot_store(monkeypatch, state):
+    """Fake lease_acquire over `state`, a name to refusal-or-error map; names absent are granted. Returns the call log."""
+    calls = []
+
+    def fake_acquire(runs_dir, name, holder, ttl, steal=False):
+        calls.append((name, steal))
+        if steal:
+            return store_cli.LeaseGranted(state[name].epoch + 1, holder)
+        return state.get(name, store_cli.LeaseGranted(1, holder))
+
+    monkeypatch.setattr(store_cli, "lease_acquire", fake_acquire)
+    return calls
+
+
+def test_limit_one_returns_slot_zero_with_what_acquire_or_take_over_returns(monkeypatch, tmp_path, capsys):
+    for first in (store_cli.LeaseGranted(1, "me@host-a:9"), store_cli.LeaseRefused(4, "chair-x@host-a:4242"),
+                  store_cli.LeaseError("down")):
+        calls = _slot_store(monkeypatch, {"land:/repo": first})
+        got = land_repo_lease.acquire_in_slots(tmp_path, "/repo", "me@host-a:9", 60, "host-a", 1, lambda _pid: True)
+        assert got == (0, first)
+        assert calls == [("land:/repo", False)]
+    calls = _slot_store(monkeypatch, {"land:/repo": store_cli.LeaseRefused(4, "chair-x@host-a:4242")})
+    got = land_repo_lease.acquire_in_slots(tmp_path, "/repo", "me@host-a:9", 60, "host-a", 0, lambda _pid: False)
+    assert got == (0, store_cli.LeaseGranted(5, "me@host-a:9"))
+    assert calls == [("land:/repo", False), ("land:/repo", True)]
+    assert "taking over the repo lease from chair-x@host-a:4242" in capsys.readouterr().out
+
+
+def test_limit_one_goes_through_the_module_acquire(monkeypatch, tmp_path):
+    seen = []
+    monkeypatch.setattr(land_repo_lease, "acquire", lambda *a: (seen.append(a), store_cli.LeaseGranted(3, "me"))[1])
+    assert land_repo_lease.acquire_in_slots(tmp_path, "/repo", "me", 60, "host-a", 1) == (0, store_cli.LeaseGranted(3, "me"))
+    assert seen == [(tmp_path, "/repo", "me", 60)]
+
+
+def test_a_second_holder_gets_slot_one_while_slot_zero_is_held_live(monkeypatch, tmp_path):
+    calls = _slot_store(monkeypatch, {"land:/repo": store_cli.LeaseRefused(4, "chair-x@host-a:1")})
+    got = land_repo_lease.acquire_in_slots(tmp_path, "/repo", "me@host-a:9", 60, "host-a", 2, lambda _pid: True)
+    assert got == (1, store_cli.LeaseGranted(1, "me@host-a:9"))
+    assert calls == [("land:/repo", False), ("land:/repo#1", False)]
+
+
+def test_a_third_holder_is_refused_with_slot_zeros_refusal(monkeypatch, tmp_path):
+    state = {"land:/repo": store_cli.LeaseRefused(4, "chair-x@host-a:1"), "land:/repo#1": store_cli.LeaseRefused(7, "chair-y@host-a:2")}
+    calls = _slot_store(monkeypatch, state)
+    got = land_repo_lease.acquire_in_slots(tmp_path, "/repo", "me@host-a:9", 60, "host-a", 2, lambda _pid: True)
+    assert got == (0, store_cli.LeaseRefused(4, "chair-x@host-a:1"))
+    assert calls == [("land:/repo", False), ("land:/repo#1", False)]
+
+
+def test_a_dead_pid_in_slot_one_is_taken_over(monkeypatch, tmp_path, capsys):
+    state = {"land:/repo": store_cli.LeaseRefused(4, "chair-x@host-a:1"), "land:/repo#1": store_cli.LeaseRefused(7, "chair-y@host-a:2")}
+    calls = _slot_store(monkeypatch, state)
+    got = land_repo_lease.acquire_in_slots(tmp_path, "/repo", "me@host-a:9", 60, "host-a", 2, lambda pid: pid == 1)
+    assert got == (1, store_cli.LeaseGranted(8, "me@host-a:9"))
+    assert calls == [("land:/repo", False), ("land:/repo#1", False), ("land:/repo#1", True)]
+    assert "chair-y@host-a:2 (pid gone)" in capsys.readouterr().out
+
+
+def test_a_slot_one_takeover_past_the_refused_epoch_is_released_and_refused(monkeypatch, tmp_path):
+    released = []
+    monkeypatch.setattr(store_cli, "lease_acquire", lambda *a, steal=False: (
+        store_cli.LeaseGranted(9, a[2]) if steal else store_cli.LeaseRefused(7, "chair-y@host-a:2")))
+    monkeypatch.setattr(store_cli, "lease_release", lambda *a: (released.append(a), store_cli.LeaseReleased())[1])
+    got = land_repo_lease._take_over_in_slot(tmp_path, "/repo", 1, "me@host-a:9", 60, "host-a", lambda _pid: False)
+    assert got == store_cli.LeaseRefused(7, None)
+    assert released == [(tmp_path, "land:/repo#1", "me@host-a:9", 9)]
+
+
+def test_a_store_outage_returns_at_once_without_trying_the_next_slot(monkeypatch, tmp_path):
+    calls = _slot_store(monkeypatch, {"land:/repo": store_cli.LeaseError("down")})
+    got = land_repo_lease.acquire_in_slots(tmp_path, "/repo", "me", 60, "host-a", 3)
+    assert got == (0, store_cli.LeaseError("down"))
+    assert calls == [("land:/repo", False)]
+    calls = _slot_store(monkeypatch, {"land:/repo": store_cli.LeaseRefused(4, "chair-x@host-a:1"), "land:/repo#1": store_cli.LeaseError("down")})
+    got = land_repo_lease.acquire_in_slots(tmp_path, "/repo", "me", 60, "host-a", 3, lambda _pid: True)
+    assert got == (1, store_cli.LeaseError("down"))
+    assert calls == [("land:/repo", False), ("land:/repo#1", False)]
+
+
+def test_renew_and_release_address_the_named_slot(monkeypatch, tmp_path):
+    seen = []
+    monkeypatch.setattr(store_cli, "lease_renew", lambda *a: (seen.append(("renew",) + a), store_cli.LeaseGranted(a[3], a[2]))[1])
+    monkeypatch.setattr(store_cli, "lease_release", lambda *a: (seen.append(("release",) + a), store_cli.LeaseReleased())[1])
+    for slot in (0, 1):
+        assert land_repo_lease.renew_slot(tmp_path, "/repo", slot, "me", 4, 60) == store_cli.LeaseGranted(4, "me")
+        assert land_repo_lease.release_slot(tmp_path, "/repo", slot, "me", 4) == store_cli.LeaseReleased()
+    assert seen == [
+        ("renew", tmp_path, "land:/repo", "me", 4, 60), ("release", tmp_path, "land:/repo", "me", 4),
+        ("renew", tmp_path, "land:/repo#1", "me", 4, 60), ("release", tmp_path, "land:/repo#1", "me", 4),
+    ]
