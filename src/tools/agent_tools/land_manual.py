@@ -12,6 +12,7 @@ check fetches first and reads only `origin/` refs.
 from __future__ import annotations
 
 import json
+import os
 import time
 from collections.abc import Mapping
 from pathlib import Path
@@ -19,7 +20,7 @@ from typing import Any
 
 import yaml
 
-from agent_tools import store_cli
+from agent_tools import repo_path, store_cli
 from agent_tools.base_branch import OVERLAY, Run, run_git
 
 MANUAL = "manual"
@@ -41,7 +42,7 @@ def land_setting(overlay: Mapping[str, Any] | None, repo_name: str) -> str | Non
 
 def is_manual(repo: str) -> bool:
     """Edge. True when the repo's overlay sets `land: manual`; False when the file is absent, unreadable or silent."""
-    path = Path(repo).expanduser()
+    path = Path(repo_path.expand(repo, os.path.expanduser("~")))
     try:
         overlay = yaml.safe_load((path / OVERLAY).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, yaml.YAMLError):
@@ -88,6 +89,7 @@ def merged_on_origin(repo: str, branches: list[str], targets: list[str], run: Ru
     """Edge. Fetch the PR branches and the targets from origin, then ask git whether a branch is in a target.
 
     Only `refs/remotes/origin/` names are compared."""
+    repo = repo_path.expand(repo, os.path.expanduser("~"))
     fetched = {}
     for n in dict.fromkeys([*branches, *targets]):
         code, out = run(["git", "-C", repo, "fetch", "origin", f"+refs/heads/{n}:refs/remotes/origin/{n}"])
@@ -111,6 +113,7 @@ def lookup_merged_pr(repo: str, branches: list[str], run: Run = run_git) -> str 
     """Edge. The merged PR's url for the first of `branches` that has one, asked of `gh` from inside `repo`; None when none does.
 
     `gh` has no `-C`, so the shell changes into the repo first. Any failure is None: the PR is a nicety on top of the finish."""
+    repo = repo_path.expand(repo, os.path.expanduser("~"))
     for branch in branches:
         argv = ["gh", "pr", "list", "--head", branch, "--state", "merged", "--json", "url"]
         try:
