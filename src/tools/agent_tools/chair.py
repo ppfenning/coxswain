@@ -29,6 +29,7 @@ __all__ = [
     "chair_path",
     "claude_session_from_env",
     "clear",
+    "displaced_line",
     "expired",
     "extend",
     "guard",
@@ -72,7 +73,9 @@ def _is_holder(record: dict[str, Any], session: str, pid: int, host: str) -> boo
 
 
 def liveness(record: dict[str, Any] | None, pid_alive_: bool, now: datetime.datetime, host: str, heartbeat_minutes: int = DEFAULT_HEARTBEAT_MINUTES) -> str:
-    """Pure: pid_alive_ is consulted only when record's host is host; a fresh heartbeat from another host is live regardless."""
+    """Pure: pid_alive_ is consulted only when record's host is host; a fresh heartbeat from another host is live regardless.
+    A silent heartbeat on this host with an aware `until` not yet passed reads live while the pid is alive and crashed once it is dead.
+    Without such an `until`, or on another host, a silent heartbeat reads stale."""
     if record is None:
         return "none"
     try:
@@ -81,7 +84,10 @@ def liveness(record: dict[str, Any] | None, pid_alive_: bool, now: datetime.date
     except (KeyError, TypeError, ValueError):
         return "stale"
     if age > datetime.timedelta(minutes=heartbeat_minutes):
-        return "stale"
+        until = _until(record)
+        if record.get("host") != host or until is None or until < now:
+            return "stale"
+        return "live" if pid_alive_ else "crashed"
     if record.get("host") == host and not pid_alive_:
         return "crashed"
     return "live"
@@ -118,6 +124,11 @@ def _held_by_line(record: dict[str, Any]) -> str:
     return f"held by {record.get('session', '?')} (pid {record.get('pid', '?')}) on {record.get('host', '?')}{until}"
 
 
+def displaced_line(record: dict[str, Any]) -> str:
+    """Pure: one line naming the session, pid and host a take displaced."""
+    return f"chair: displaced {record.get('session', '?')} (pid {record.get('pid', '?')}) on {record.get('host', '?')}"
+
+
 def take(
     record: dict[str, Any] | None,
     session: str,
@@ -132,10 +143,10 @@ def take(
     model: str | None = None,
     cwd: str | None = None,
 ) -> tuple[dict[str, Any] | None, str]:
-    """Pure. A live record past its `until` is taken like a stale one. `hours` stamps the new record's `until`; a None `model`, `claude_session` or `cwd` leaves its key absent. `session_id` repeats `claude_session`, the key bare `cox` resumes by."""
+    """Pure. A live record past its `until` is taken like a stale one, and under `steal` a live holder other than the caller is taken too; the caller's own live record still returns None so the CLI retakes its lease. `hours` stamps the new record's `until`; a None `model`, `claude_session` or `cwd` leaves its key absent. `session_id` repeats `claude_session`, the key bare `cox` resumes by."""
     state = liveness(record, pid_alive_, now, host, heartbeat_minutes)
     lapsed = state == "live" and expired(record, now)
-    if state == "live" and not lapsed:
+    if state == "live" and not lapsed and (not steal or same_holder(record, session, pid, host)):
         return None, f"chair: {_held_by_line(record)}"
     if (lapsed or state in ("stale", "crashed")) and not steal:
         why = f"takeover expired at {record['until']}" if lapsed else state
