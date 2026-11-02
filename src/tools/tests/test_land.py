@@ -555,6 +555,35 @@ def test_phase_plan_step_list_and_clean_phase_scoping():
     }
 
 
+def _merged_fixture():
+    phase_record = {"run": "epic-x-5", "phase": "seams", "initiative": "x", "phase_verdict": {"reasoning": "solid"}}
+    task_records = [{
+        "task": "seams-task", "run": "epic-x-5", "phase": "seams", "status": "done",
+        "review": {"verdict": "approve"}, "arbitration": {"verdict": "approve"},
+        "change_facts": {"fix_loop_attempts": 1, "files_touched": ["a.py"]},
+    }]
+    return phase_record, [{"id": "seams-task", "status": "done"}], task_records
+
+
+def test_phase_plan_with_the_pr_already_merged_is_clean_phase_then_mark_done():
+    phase_record, items, task_records = _merged_fixture()
+    steps = land.land_plan(phase_record, {}, "main", items=items, task_records=task_records, already_merged=True)
+    assert steps == [
+        {"kind": "clean_phase", "run": "epic-x-5", "phase_branch": "epic/x/seams", "pr_branch": "pr/x--seams",
+         "tasks": ["seams-task"]},
+        {"kind": "mark_done", "task": "seams-task"},
+    ]
+
+
+def test_phase_plan_with_already_merged_unset_is_todays_plan():
+    phase_record, items, task_records = _merged_fixture()
+    unset = land.land_plan(phase_record, {}, "main", items=items, task_records=task_records)
+    assert unset == land.land_plan(phase_record, {}, "main", items=items, task_records=task_records, already_merged=False)
+    assert [s["kind"] for s in unset] == [
+        "pick_branch", "squash_phase", "checks", "push", "pr_create", "wait_checks", "merge", "clean_phase", "mark_done",
+    ]
+
+
 def _resume_plan(phase_pr):
     phase_record = {"run": "epic-x-5", "phase": "seams", "initiative": "x", "phase_verdict": {"reasoning": "solid"}}
     task_records = [{

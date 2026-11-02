@@ -175,6 +175,28 @@ def test_failed_covers_land_land_phase_and_fetch_exit():
     assert "fetched:" not in line
 
 
+def _failed_phase(reason):
+    return {**_result("land_phase", "not_landed", phase="p2", initiative="epic-a"), "reason": reason}
+
+
+def test_a_failed_land_phase_carries_the_last_line_of_its_reason():
+    line = format_status(_facts(), [], [_failed_phase("land: starting\nmerge conflict in x.py\n")], NOW)
+    assert "failed: land_phase:epic-a/p2: merge conflict in x.py" in line
+    assert "starting" not in line
+
+
+def test_a_failed_land_phase_with_an_empty_reason_keeps_the_bare_label():
+    line = format_status(_facts(), [], [_failed_phase("")], NOW)
+    assert "failed: land_phase:epic-a/p2" in line
+    assert "land_phase:epic-a/p2:" not in line
+
+
+def test_a_long_reason_is_cut_to_its_end_on_one_line():
+    line = format_status(_facts(), [], [_failed_phase("x" * 500 + "the end")], NOW)
+    assert "\n" not in line
+    assert line.count("x") <= 80 and "land_phase:epic-a/p2: " in line and line.split("failed: ")[1].split(" | ")[0].endswith("the end")
+
+
 def test_fetched_names_the_run_and_host():
     with_host = format_status(_facts(), [], [_result("fetch_exit", "done", run="epic-a-1", host="host-a")], NOW)
     no_host = format_status(_facts(), [], [_result("fetch_exit", "done", run="epic-a-1", host=None)], NOW)

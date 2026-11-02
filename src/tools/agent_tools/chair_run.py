@@ -300,9 +300,16 @@ def land_sink(
     return WorkerLands(chair_land.LandWorker(beat, LAND_BEAT_INTERVAL, clock, wait, released), stamp)
 
 
+def _performed(result: Result) -> str:
+    """`<kind>:<status>`, then the reason's last line for a refused, failed or not_landed result."""
+    text = f"{result['action'].get('kind')}:{result['status']}"
+    reason = chair_report.reason_tail(result.get("reason", "")) if result["status"] in ("refused", "failed", "not_landed") else ""
+    return f"{text} ({reason})" if reason else text
+
+
 def error_line(exc: Exception, now: datetime, results: Sequence[Result] = ()) -> str:
     """Eastern time, as `format_status` prints it; results already performed are named so none go unreported."""
-    done = ", ".join(f"{r['action'].get('kind')}:{r['status']}" for r in results)
+    done = ", ".join(_performed(r) for r in results)
     tail = f" | performed: {done}" if done else ""
     return f"chair {now.astimezone(EASTERN):%m-%d %H:%M %Z} | tick error: {type(exc).__name__}: {exc}{tail}"
 
