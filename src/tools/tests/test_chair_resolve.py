@@ -148,7 +148,7 @@ def test_beat_loop_honours_a_takeover_request_and_the_takeover_does_not_wait_the
 def test_land_worker_stops_beating_once_the_release_is_honoured():
     beats = []
     worker = chair_land.LandWorker(lambda: beats.append(1), 30.0, lambda: 0.0, lambda s: None, released=lambda: True)
-    worker._running.add("/repo")
+    worker._running["/repo"] = 1
     worker._beat_loop()
     assert worker.released and beats == []
 
