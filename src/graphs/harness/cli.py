@@ -45,6 +45,7 @@ from graphs.delivery.initiative_decompose import (
     decompose_closing,
     expected_task_files,
     first_problem_line,
+    phase_dirs,
     unexecuted_item_create_reason,
 )
 from harness import CORE_SCHEMA, node_progress, run_lease, store_traces
@@ -1037,6 +1038,31 @@ def _read_filed_rows(runs_dir: Path, initiative: str) -> list[dict[str, Any]]:
     return run_store.read_queue(runs_dir, initiative)
 
 
+def _make_phase_dirs(root: Path, dirs: Sequence[str]) -> None:
+    """Edge: the model `work_item_arm` writes with a plain Write, which fails ENOENT in a phase directory that is absent."""
+    for rel in dirs:
+        (root / rel).mkdir(parents=True, exist_ok=True)
+
+
+def _ensure_decompose_dirs(
+    proposals: Sequence[Mapping[str, Any]],
+    *,
+    cartridge: Mapping[str, Any],
+    graph_args: Mapping[str, Any],
+    runner: Any,
+) -> None:
+    """Create every task phase directory before an apply arm runs. An unroutable `planned` landing creates none.
+
+    `_settle_decompose` reports every task missing with the routing error in that case.
+    """
+    try:
+        landing = landing_for(cartridge, "planned")
+    except ContractViolation:
+        return
+    root = Path(getattr(runner, "cwd", None) or Path.cwd())
+    _make_phase_dirs(root, phase_dirs(proposals, landing=landing, initiative_id=graph_args.get("initiative_id")))
+
+
 def _settle_decompose(
     proposals: Sequence[Mapping[str, Any]],
     diffs: Sequence[Mapping[str, Any]],
@@ -1570,6 +1596,9 @@ def _run_graph(
     auto, gated = split_by_policy(
         proposals, cartridge=cartridge, ledger_path=args.ledger, provider_profile=provider_profile, store=store
     )
+
+    if graph_name == _DECOMPOSE_GRAPH_NAME:
+        _ensure_decompose_dirs(proposals, cartridge=cartridge, graph_args=graph_args, runner=runner)
 
     auto_applied: list[dict[str, Any]] = []
     for item in auto:

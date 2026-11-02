@@ -983,8 +983,10 @@ def _decompose_run(tmp_path: Path, *, target: Path, task: str | None = None) -> 
     )
 
 
-def _decompose_tasks_run(tmp_path: Path, store, tasks: dict[str, Path]) -> int:
-    """One approved `item_create` per task, each applied by the code `workstore` arm to the path given, with a real store."""
+def _decompose_tasks_run(
+    tmp_path: Path, store, tasks: dict[str, Path], *, apply_arm: str = "workstore", runner=None
+) -> int:
+    """One approved `item_create` per task, each applied by the arm named (the code `workstore` arm by default), with a real store."""
     profile = tmp_path / "profile.yaml"
     profile.write_text("provider: test\n", encoding="utf-8")
     proposals = [
@@ -1019,13 +1021,44 @@ def _decompose_tasks_run(tmp_path: Path, store, tasks: dict[str, Path]) -> int:
         args=args,
         cartridge={
             **_CARTRIDGE,
-            "write_kinds": {"item_create": {"risk": "low", "ramp": "gated", "apply_arm": "workstore"}},
+            "write_kinds": {"item_create": {"risk": "low", "ramp": "gated", "apply_arm": apply_arm}},
             "work_routing": {"states": {"planned": "work"}},
         },
-        runner=ScriptedRunner({}),
+        runner=runner or ScriptedRunner({}),
         run_id="r1",
         store=store,
     )
+
+
+class _PlainWriteArm(ScriptedRunner):
+    """A model `work_item_arm` stand-in: it writes each task file with a plain write and no mkdir, as the model's Write does."""
+
+    capabilities: ClassVar[dict[str, bool]] = {"tool_use": True}
+
+    def __init__(self, files: dict[str, tuple[Path, str]]) -> None:
+        super().__init__({})
+        self.files = files
+
+    def run(self, **kwargs):
+        task = next(line.split(": ", 1)[1] for line in kwargs["prompt"].splitlines() if line.startswith("target: "))
+        path, text = self.files[task]
+        try:
+            path.write_text(text, encoding="utf-8")
+        except OSError as exc:
+            return {"applied": False, "detail": str(exc)}
+        return {"applied": True, "detail": f"{path} written"}
+
+
+def _plain_write_arm(tmp_path: Path, tasks: dict[str, Path]) -> _PlainWriteArm:
+    """Task texts are rendered by `workstore` outside the work tree, so the arm's own write is the only thing under test."""
+    from core import workstore
+
+    def render(task: str) -> str:
+        scratch = tmp_path / "scratch" / f"{task}.md"
+        workstore.write_item({**_DECOMPOSE_ITEM, "id": task}, scratch)
+        return scratch.read_text(encoding="utf-8")
+
+    return _PlainWriteArm({task: (path, render(task)) for task, path in tasks.items()})
 
 
 def _filing_in_memory(monkeypatch, *, fail: str | None = None) -> list[dict]:
@@ -1163,6 +1196,45 @@ def test_a_decompose_run_on_a_cartridge_that_routes_no_landing_reports_the_appro
     err = capsys.readouterr().err
     assert "decompose: cannot place 1 approved task(s): no planned landing" in err
     assert "decompose: 0 task(s) written, 1 missing: t1" in err
+
+
+def test_a_decompose_task_in_a_phase_with_no_directory_is_written_by_a_model_arm_that_does_not_mkdir(
+    tmp_path, store_conn, monkeypatch, capsys
+) -> None:
+    from harness.store_write import Store
+
+    monkeypatch.chdir(tmp_path)
+    _filing_in_memory(monkeypatch)
+    tasks = {"t1": tmp_path / "work" / "p1" / "t1.md"}
+    assert not tasks["t1"].parent.exists()
+
+    code = _decompose_tasks_run(
+        tmp_path, Store(store_conn), tasks, apply_arm="work_item_arm", runner=_plain_write_arm(tmp_path, tasks)
+    )
+
+    assert code == 0
+    assert tasks["t1"].exists()
+    assert tasks["t1"].parent.is_dir()
+    assert "decompose: 1 task(s) written, 0 missing:" in capsys.readouterr().out
+
+
+def test_a_decompose_on_an_unroutable_planned_landing_creates_no_phase_directory(
+    tmp_path, store_conn, monkeypatch, capsys
+) -> None:
+    from harness.store_write import Store
+
+    monkeypatch.chdir(tmp_path)
+    _filing_in_memory(monkeypatch)
+    monkeypatch.setattr(cli, "landing_for", lambda cartridge, state: (_ for _ in ()).throw(cli.ContractViolation("no planned landing")))
+    tasks = {"t1": tmp_path / "work" / "p1" / "t1.md"}
+
+    code = _decompose_tasks_run(
+        tmp_path, Store(store_conn), tasks, apply_arm="work_item_arm", runner=_plain_write_arm(tmp_path, tasks)
+    )
+
+    assert code == 1
+    assert not (tmp_path / "work").exists()
+    assert "decompose: cannot place 1 approved task(s): no planned landing" in capsys.readouterr().err
 
 
 def test_a_decompose_whose_creates_the_policy_auto_applies_is_settled_and_counted_too(
