@@ -105,10 +105,14 @@ class Result(TypedDict):
 
 
 class LandSink(Protocol):
-    """Where a tick hands a land and moves on; one land runs per repository, and its result comes back through `collect`."""
+    """Where a tick hands a land and moves on; a repository runs up to its limit of lands, and each result comes back through `collect`."""
 
     def pending(self, repo: str) -> bool:
         """True while a land handed over for `repo` has not been collected."""
+        ...
+
+    def full(self, repo: str) -> bool:
+        """True while `repo` has as many uncollected lands as its limit admits."""
         ...
 
     def landing(self) -> list[dict[str, str]]:
@@ -412,9 +416,9 @@ def _land(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
 
 
 def _land_async(action: Action, deps: Deps, sink: LandSink) -> Result:
-    """Hand the land to the sink and return at once; a repo whose land is still out is left alone."""
+    """Hand the land to the sink and return at once; a repo already at its land limit is left alone."""
     repo = action.get("repo", "")
-    if sink.pending(repo):
+    if sink.full(repo):
         return _result(action, "in_progress", f"a land in {repo} is still running")
     land = {"land": _land, "partial_land": _partial_land}.get(action.get("kind", ""), _land_phase)
     return sink.submit(action, lambda: land(action, deps, {}))

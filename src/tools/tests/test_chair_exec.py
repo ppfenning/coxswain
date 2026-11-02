@@ -834,6 +834,9 @@ class _Sink:
     def pending(self, repo: str) -> bool:
         return False
 
+    def full(self, repo: str) -> bool:
+        return False
+
     def landing(self) -> list:
         return []
 
@@ -844,6 +847,21 @@ class _Sink:
     def collect(self) -> list:
         done, self.finished = self.finished, []
         return done
+
+
+class _FullSink(_Sink):
+    """A sink whose `full` answer is set by the test; it records each action it is handed instead of running it."""
+
+    def __init__(self, full: bool) -> None:
+        super().__init__()
+        self._full, self.submitted = full, []
+
+    def full(self, repo: str) -> bool:
+        return self._full
+
+    def submit(self, action: dict, work) -> dict:
+        self.submitted.append(action)
+        return {"action": action, "status": "in_progress", "reason": f"landing in {action.get('repo', '')}"}
 
 
 def _through_sink(output: str, states: list[str]) -> list:
@@ -870,6 +888,22 @@ def test_another_recorded_land_collected_from_the_land_sink_still_escalates() ->
     sink = _Sink([{"action": action, "status": "recorded", "reason": "no approved task of the phase has a known run yet"}])
     results = perform([], replace(_deps([], LANDED), lands=sink), lambda: 1, False)
     assert [r["status"] for r in results] == ["recorded", "escalated"]
+
+
+def test_a_land_in_a_repo_that_is_not_full_is_submitted_to_the_sink() -> None:
+    action = {**_land_phase("p1", "r"), "initiative": "alpha"}
+    sink = _FullSink(full=False)
+    results = perform([action], replace(_deps([], LANDED), lands=sink), lambda: 1, False)
+    assert sink.submitted == [action]
+    assert [(r["status"], r["reason"]) for r in results] == [("in_progress", "landing in r")]
+
+
+def test_a_land_in_a_full_repo_answers_in_progress_and_is_not_submitted() -> None:
+    action = {**_land_phase("p1", "r"), "initiative": "alpha"}
+    sink = _FullSink(full=True)
+    results = perform([action], replace(_deps([], LANDED), lands=sink), lambda: 1, False)
+    assert sink.submitted == []
+    assert [(r["status"], r["reason"]) for r in results] == [("in_progress", "a land in r is still running")]
 
 
 def test_a_wait_checks_stop_escalates_as_stranded_with_its_step_and_detail() -> None:

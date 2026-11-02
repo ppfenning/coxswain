@@ -17,6 +17,9 @@ class SlowLands:
     def pending(self, repo):
         return repo in self.held
 
+    def full(self, repo):
+        return self.pending(repo)
+
     def submit(self, action, work):
         self.held[action["repo"]] = (action, work)
         return {"action": action, "status": "in_progress", "reason": ""}

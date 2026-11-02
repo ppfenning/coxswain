@@ -314,9 +314,103 @@ def test_landing_lists_a_land_in_progress_and_drops_it_once_it_finishes():
     assert lands.submit(action, lambda: release.wait(5) and {"action": action, "status": "ok", "reason": ""})["status"] == "in_progress"
     assert lands.landing() == [{"initiative": "ind", "phase": "p1", "repo": "/repo"}]
     release.set()
-    assert lands._handles["/repo"][1].wait(5)
+    assert lands._handles["/repo"][0][1].wait(5)
     assert lands.landing() == []
     assert len(lands.collect()) == 1 and lands.landing() == []
+
+
+def _two_lands_sink(limit, stamp=time.time):
+    """A land sink for a repo admitting `limit` lands, the event that releases its blocked lands, and a land action per phase."""
+    release = threading.Event()
+    sink = land_sink(lambda: None, wait=lambda s: release.wait(0.01), stamp=stamp, limit_for=lambda repo: limit)
+
+    def land(phase):
+        return {"kind": "land_phase", "initiative": "ind", "phase": phase, "repo": "/repo", "run": "ind-1", "epoch": 1}
+
+    return release, sink, land
+
+
+def _submit_blocked(sink, release, action):
+    return sink.submit(action, lambda: release.wait(5) and {"action": action, "status": "ok", "reason": ""})
+
+
+def _until(condition):
+    deadline = time.monotonic() + 5
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(0.005)
+    return condition()
+
+
+def _perform_lands(limit, phases):
+    """The statuses, reasons and commands run when `phases` are performed in one tick against a repo with `limit`."""
+    release, sink, land = _two_lands_sink(limit)
+    rig = Rig()
+    exec_deps = replace(rig.deps().exec_deps, lands=sink, run=lambda argv: (rig.commands.append(argv), release.wait(5), (0, "merge: ok"))[2])
+    results = chair_exec.perform([land(p) for p in phases], exec_deps, lambda: 1, False)
+    _until(lambda: len(rig.commands) == min(limit, len(phases)))
+    started = len(rig.commands)
+    release.set()
+    return [(r["status"], r["reason"]) for r in results], started, len(sink._handles["/repo"])
+
+
+def test_two_lands_in_a_limit_two_repo_are_both_submitted_and_in_progress():
+    results, started, held = _perform_lands(2, ["p1", "p2"])
+    assert results == [("in_progress", "landing in /repo")] * 2
+    assert started == 2 and held == 2
+
+
+def test_a_third_land_in_a_limit_two_repo_is_still_running_and_not_submitted():
+    results, started, held = _perform_lands(2, ["p1", "p2", "p3"])
+    assert results[2] == ("in_progress", "a land in /repo is still running")
+    assert started == 2 and held == 2
+
+
+def test_a_second_land_in_a_limit_one_repo_is_still_running_and_not_submitted():
+    results, started, held = _perform_lands(1, ["p1", "p2"])
+    assert results == [("in_progress", "landing in /repo"), ("in_progress", "a land in /repo is still running")]
+    assert started == 1 and held == 1
+
+
+def test_full_is_true_only_once_a_repo_holds_as_many_lands_as_its_limit():
+    release, sink, land = _two_lands_sink(2)
+    assert not sink.pending("/repo") and not sink.full("/repo")
+    _submit_blocked(sink, release, land("p1"))
+    assert sink.pending("/repo") and not sink.full("/repo")
+    _submit_blocked(sink, release, land("p2"))
+    assert sink.full("/repo")
+    release.set()
+
+
+def test_collect_returns_both_finished_lands_of_one_repo_and_then_nothing():
+    release, sink, land = _two_lands_sink(2)
+    _submit_blocked(sink, release, land("p1"))
+    _submit_blocked(sink, release, land("p2"))
+    release.set()
+    assert all(handle.wait(5) for _, handle in sink._handles["/repo"])
+    assert len(sink.collect()) == 2
+    assert sink.collect() == [] and not sink.pending("/repo")
+
+
+def test_queued_since_lists_one_start_time_per_running_land_of_one_repo():
+    times = iter([10.0, 20.0])
+    release, sink, land = _two_lands_sink(2, stamp=lambda: next(times))
+    _submit_blocked(sink, release, land("p1"))
+    _submit_blocked(sink, release, land("p2"))
+    assert _until(lambda: len(sink.queued_since()) == 2)
+    assert sorted(sink.queued_since()) == [10.0, 20.0]
+    release.set()
+    assert _until(lambda: sink.queued_since() == ())
+
+
+def test_landing_lists_both_lands_in_progress_in_one_repo():
+    release, sink, land = _two_lands_sink(2)
+    _submit_blocked(sink, release, land("p1"))
+    _submit_blocked(sink, release, land("p2"))
+    assert sink.landing() == [
+        {"initiative": "ind", "phase": "p1", "repo": "/repo"},
+        {"initiative": "ind", "phase": "p2", "repo": "/repo"},
+    ]
+    release.set()
 
 
 def test_a_chair_with_no_land_worker_reports_no_landing():
@@ -425,7 +519,7 @@ def test_a_degraded_tick_holds_the_land_and_makes_no_merge_until_the_forge_recov
     assert rig.commands == [] and sink.pending("r")
     forge.down = False
     forge.tick(deps, 400)
-    sink._handles["r"][1].wait(5)
+    sink._handles["r"][0][1].wait(5)
     assert len(rig.commands) == 1
     assert len(_needs_chair(rig)) == 1
 

@@ -18,6 +18,7 @@ from agent_tools import (
     chair_tick_status,
     chair_timing,
     dash_chair_action,
+    land_limit,
     land_repo_lease,
     usage_meter,
 )
@@ -244,18 +245,23 @@ def _export_note(export: Callable[[tuple[str, ...]], str], ids: tuple[str, ...])
 
 
 class WorkerLands:
-    """Edge. Lands handed to a LandWorker, one handle per repository, held until the next tick collects them.
+    """Edge. Lands handed to a LandWorker, a list of handles per repository, held until the next tick collects them.
 
-    A land waits on checks from the moment its work starts until it returns, so `queued_since` lists the start
-    times, in epoch seconds, of the lands running now. A land held by a paused gate has not started and has none.
+    A repository holds up to `limit_for(repo)` lands at once. A land waits on checks from the moment its work starts
+    until it returns, so `queued_since` lists the start times, in epoch seconds, of the lands running now. A land held
+    by a paused gate has not started and has none.
     """
 
-    def __init__(self, worker: chair_land.LandWorker, stamp: Callable[[], float] = time.time) -> None:
+    def __init__(
+        self, worker: chair_land.LandWorker, stamp: Callable[[], float] = time.time,
+        limit_for: Callable[[str], int] = land_limit.repo_land_limit,
+    ) -> None:
         self._worker = worker
         self._stamp = stamp
-        self._handles: dict[str, tuple[Action, chair_land.LandHandle[Result]]] = {}
+        self._limit_for = limit_for
+        self._handles: dict[str, list[tuple[Action, chair_land.LandHandle[Result]]]] = {}
         self._gate = chair_land.UNPAUSED
-        self._since: dict[str, float] = {}
+        self._since: dict[object, float] = {}
         self._lock = threading.Lock()
 
     def set_gate(self, gate: CiGate) -> None:
@@ -271,33 +277,38 @@ class WorkerLands:
         """One dict per land still in progress, read from the action it was submitted with."""
         return [
             {"initiative": a.get("initiative", ""), "phase": a.get("phase", ""), "repo": a.get("repo", "")}
-            for a, h in list(self._handles.values())
+            for lands in list(self._handles.values())
+            for a, h in list(lands)
             if h.in_progress()
         ]
 
-    def _timed(self, repo: str, work: Callable[[], Result]) -> Callable[[], Result]:
+    def _timed(self, work: Callable[[], Result]) -> Callable[[], Result]:
         def timed() -> Result:
+            token = object()  # one key per running land, so two lands of one repo keep their own start times
             with self._lock:
-                self._since[repo] = self._stamp()
+                self._since[token] = self._stamp()
             try:
                 return work()
             finally:
                 with self._lock:
-                    self._since.pop(repo, None)
+                    self._since.pop(token, None)
 
         return timed
 
     def pending(self, repo: str) -> bool:
-        return repo in self._handles
+        return bool(self._handles.get(repo))
+
+    def full(self, repo: str) -> bool:
+        return len(self._handles.get(repo, ())) >= self._limit_for(repo)
 
     def submit(self, action: Action, work: Callable[[], Result]) -> Result:
         repo = action.get("repo", "")
-        submitted = self._worker.submit(repo, self._timed(repo, work), self._gate)
+        submitted = self._worker.submit(repo, self._timed(work), self._gate, self._limit_for(repo))
         if submitted.handle is None:
             holder = submitted.outcome.holder if isinstance(submitted.outcome, chair_land.Refused) else None
             reason = land_repo_lease.refusal_message(repo, holder or "another land")
             return {"action": action, "status": "busy", "reason": reason}
-        self._handles[repo] = (action, submitted.handle)
+        self._handles.setdefault(repo, []).append((action, submitted.handle))
         return {"action": action, "status": "in_progress", "reason": f"landing in {repo}"}
 
     def stop(self) -> None:
@@ -305,16 +316,23 @@ class WorkerLands:
         self._worker.stop()
 
     def collect(self) -> list[Result]:
-        done = [repo for repo, (_, handle) in self._handles.items() if not handle.in_progress()]
-        return [finished_land(action, handle.result()) for action, handle in (self._handles.pop(repo) for repo in done)]
+        finished = [
+            (repo, entry) for repo, lands in self._handles.items() for entry in lands if not entry[1].in_progress()
+        ]
+        for repo, entry in finished:
+            self._handles[repo].remove(entry)
+            if not self._handles[repo]:
+                del self._handles[repo]
+        return [finished_land(action, handle.result()) for _, (action, handle) in finished]
 
 
 def land_sink(
     beat: Callable[[], None], clock: Callable[[], float] = time.monotonic, wait: Callable[[float], None] = time.sleep,
     stamp: Callable[[], float] = time.time, released: Callable[[], bool] | None = None,
+    limit_for: Callable[[str], int] = land_limit.repo_land_limit,
 ) -> WorkerLands:
-    """Edge. The worker beats the chair lease through `beat` every LAND_BEAT_INTERVAL while any land runs, and honours a takeover's release request through `released`."""
-    return WorkerLands(chair_land.LandWorker(beat, LAND_BEAT_INTERVAL, clock, wait, released), stamp)
+    """Edge. The worker beats the chair lease through `beat` every LAND_BEAT_INTERVAL while any land runs, and honours a takeover's release request through `released`. `limit_for` is how many lands a repo admits at once."""
+    return WorkerLands(chair_land.LandWorker(beat, LAND_BEAT_INTERVAL, clock, wait, released), stamp, limit_for)
 
 
 def _performed(result: Result) -> str:
