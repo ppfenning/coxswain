@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_tools import chair_service, cli
+from agent_tools import chair_restart, chair_service, cli
 
 
 def test_unit_text_with_an_environment_file_loads_it_and_runs_the_labelled_chair() -> None:
@@ -16,6 +16,19 @@ def test_unit_text_with_an_environment_file_loads_it_and_runs_the_labelled_chair
 
 def test_unit_text_without_an_environment_file_has_no_such_line() -> None:
     assert "EnvironmentFile" not in chair_service.unit_text("/usr/local/bin/cox", "/ws", "chair", 60, None)
+
+
+def test_unit_text_names_the_restart_exit_code_beside_restart_on_failure() -> None:
+    texts = [
+        chair_service.unit_text("/usr/local/bin/cox", "/ws", "chair", 60, "/h/garage.env"),
+        chair_service.unit_text("/usr/local/bin/cox", "/ws", "chair", 60, None),
+        chair_service.unit_text("/usr/local/bin/cox", "/ws", "chair", 60, "/h/garage.env", profile="/p.yaml"),
+    ]
+    for text in texts:
+        lines = text.splitlines()
+        assert f"RestartForceExitStatus={chair_restart.RESTART_EXIT_CODE}" in lines
+        assert "Restart=on-failure" in lines
+        assert "RestartSec=30" in lines
 
 
 def test_path_value_orders_cox_dir_then_venv_bins_then_the_default() -> None:
