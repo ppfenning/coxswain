@@ -451,6 +451,11 @@ def _host_repo(deps: Deps, repo: str) -> str:
     return repo_path.host_form(repo, deps.home) if deps.home else repo
 
 
+def _local_repo(repo: str, home: str = "") -> str:
+    """`repo` as this machine names it, a leading tilde expanded; for argv that runs here, never on a lane host."""
+    return repo_path.expand(repo, home or os.path.expanduser("~"))
+
+
 def _live_runs_line(runs: Sequence[Mapping[str, Any]]) -> str:
     """The refusal line naming each live run with its pid and state; "" when `runs` is empty."""
     named = "; ".join(f"{r['run']} pid {r['pid']} {r['state']}" for r in runs)
@@ -491,7 +496,8 @@ def _branch_on_host(
 
     `host_repo` is `repo` as the host names it; "" means `repo`. Lines keep naming `repo`."""
     ref = f"refs/heads/{branch}"
-    verify = ["git", "-C", repo, "rev-parse", "--verify", "--quiet", ref]
+    here = _local_repo(repo, getattr(deps, "home", ""))  # `deps.run` is local; only `at_home` reaches the host
+    verify = ["git", "-C", here, "rev-parse", "--verify", "--quiet", ref]
     on_host, host_out = at_home(["git", "-C", host_repo or repo, "rev-parse", "--verify", "--quiet", ref])
     if on_host == 124:
         return False, f"git rev-parse of {branch} on {ssh}: {host_out.strip()}"
@@ -499,7 +505,7 @@ def _branch_on_host(
         return True, ""
     if deps.run(verify)[0] != 0:
         return False, ""
-    code, out = deps.run(["git", "-C", repo, "push", f"{ssh}:{host_repo or repo}", f"refs/heads/{branch}:refs/heads/{branch}"])
+    code, out = deps.run(["git", "-C", here, "push", f"{ssh}:{host_repo or repo}", f"refs/heads/{branch}:refs/heads/{branch}"])
     return (True, "") if code == 0 else (False, f"git push of {branch} to {ssh}:{repo}: {out.strip()}")
 
 
@@ -518,7 +524,9 @@ def _carry_forward(
     """
     host = action.get("host", "")
     at_home = _over_ssh(deps, ssh).run if ssh else deps.run
-    home_repo = _host_repo(deps, repo) if ssh else repo  # how `at_home` names the repo; lines keep `repo`
+    # How `at_home` names the repo: the home-relative form on a host, the expanded path here; lines keep `repo`.
+    # `getattr`: a caller may pass a bare stub with no `home`, and the expansion then uses this machine's HOME.
+    home_repo = _host_repo(deps, repo) if ssh else _local_repo(repo, getattr(deps, "home", ""))
     if ssh and phases:
         # The relaunch's own launch_on_host runs this same sync before starting the lane, so a host checkout that
         # is dirty or off main would fail that relaunch anyway; failing here says why one step earlier.
@@ -550,6 +558,7 @@ def _carry_forward(
         code, out = at_home(["git", "-C", home_repo, "worktree", "add", tmp, branch])
         if code != 0:
             return merged, None, _result(action, "failed", f"git worktree add {tmp} {branch} in {repo}: {out.strip()}")
+        # The `-C tmp` calls below name a mkdtemp path on whichever machine `at_home` runs on: already absolute.
         code, out = at_home(["git", "-C", tmp, "merge", "--no-edit", base])
         if code != 0:
             _, diff_out = at_home(["git", "-C", tmp, "diff", "--name-only", "--diff-filter=U"])
@@ -673,7 +682,8 @@ def _clear(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
     if host and not ssh:
         return _result(action, "failed", f"no ssh destination for host {host}: its clear cannot run there")
     carry = set(action.get("carry", []))
-    deleted, error = _pruned(deps, repo, initiative, pattern, carry)
+    # Expanded here, at the local call, because `_pruned` and `_swept_branches` also run over ssh on a host-form path.
+    deleted, error = _pruned(deps, repo, initiative, pattern, carry, _local_repo(repo, deps.home))
     if error:
         return _result(action, "failed", error)
     # A host-homed initiative's earlier runs left their worktrees and branches in the host's checkout, and git
@@ -1557,7 +1567,7 @@ def fenced_fetch(fetch: Fetch, dry_run: bool) -> Fetch:
 def land_commit(repo_dir: str) -> str:
     """Edge. `origin/main`'s commit hash in `repo_dir`, read right after a true `landed()` result so it reflects
     the land that just happened before anything else can move origin/main; "" on any git failure."""
-    code, output = run_argv(["git", "-C", repo_dir, "log", "-1", "--format=%H", "origin/main"])
+    code, output = run_argv(repo_path.git_argv(repo_dir, os.path.expanduser("~"), "log", "-1", "--format=%H", "origin/main"))
     return output.strip() if code == 0 else ""
 
 
@@ -1638,13 +1648,14 @@ class _GitEdge:
 
     def __init__(self, runs_dir: Path, workspace: Path, repo: str, home: str | None = None) -> None:
         self.runs_dir, self.workspace, self.repo, self.tmp, self.home = runs_dir, workspace, repo, "", home
+        self.local_repo = _local_repo(repo, home or "")  # every `-C` here runs on this machine; `self.repo` stays as recorded
 
     def _git(self, *args: str) -> tuple[int, str]:
-        return run_argv(["git", "-C", self.tmp or self.repo, *args])
+        return run_argv(["git", "-C", self.tmp or self.local_repo, *args])
 
     def default_branch(self) -> str:
         """What `origin/HEAD` names; "main" when it names nothing."""
-        code, out = run_argv(["git", "-C", self.repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+        code, out = run_argv(["git", "-C", self.local_repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
         name = out.strip().removeprefix("origin/") if code == 0 else ""
         return name or "main"
 
@@ -1660,10 +1671,10 @@ class _GitEdge:
 
     def create_branch_from_main(self, name: str) -> None:
         """Fetches origin, then cuts `name` from `origin/<default branch>` in a new worktree; a failed fetch raises."""
-        _must(*run_argv(["git", "-C", self.repo, "fetch", "origin"]), "git fetch origin")
+        _must(*run_argv(["git", "-C", self.local_repo, "fetch", "origin"]), "git fetch origin")
         start = f"origin/{self.default_branch()}"
         tmp = tempfile.mkdtemp(prefix="cox-carry-")
-        code, out = run_argv(["git", "-C", self.repo, "worktree", "add", "-B", name, tmp, start])
+        code, out = run_argv(["git", "-C", self.local_repo, "worktree", "add", "-B", name, tmp, start])
         if code != 0:
             Path(tmp).rmdir()
             raise RuntimeError(f"git worktree add {name} from {start}: {out.strip()}")
@@ -1698,7 +1709,7 @@ class _GitEdge:
 
     def close(self) -> None:
         if self.tmp:
-            run_argv(["git", "-C", self.repo, "worktree", "remove", "--force", self.tmp])
+            run_argv(["git", "-C", self.local_repo, "worktree", "remove", "--force", self.tmp])
 
 
 def _pr_url(detail: str) -> str:
@@ -1761,7 +1772,7 @@ class _RebaseEdge:
     """Edge. RebasePort over the remote: tips are read with ls-remote and pushes never check anything out."""
 
     def __init__(self, repo: str) -> None:
-        self.repo = repo
+        self.repo = _local_repo(repo)  # the remote's tips are read from this machine's checkout
 
     def _git(self, *args: str) -> tuple[int, str]:
         return run_argv(["git", "-C", self.repo, *args])
@@ -1862,7 +1873,7 @@ def edge_deps(
 
     return Deps(
         run=run,
-        delete_branches=lambda repo, pattern: delete_branches_with(run, repo, pattern),
+        delete_branches=lambda repo, pattern: delete_branches_with(run, _local_repo(repo, home), pattern),
         acquire_lease=acquire,
         record=record,
         run_id=run_id,
