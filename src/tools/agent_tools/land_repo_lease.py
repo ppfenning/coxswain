@@ -88,6 +88,13 @@ def slot_order(limit: int) -> range:
     return range(max(limit, 1))
 
 
+def acquire_slot(runs_dir: Path, repo: str, slot: int, holder: str, ttl: int) -> store_cli.LeaseResult:
+    """One plain acquire of `slot`, no takeover: a land that lost its lease takes back the slot it held."""
+    if slot == 0:
+        return acquire(runs_dir, repo, holder, ttl)
+    return store_cli.lease_acquire(runs_dir, slot_lease_name(repo, slot), holder, ttl)
+
+
 def renew_slot(runs_dir: Path, repo: str, slot: int, holder: str, epoch: int, ttl: int) -> store_cli.LeaseResult:
     if slot == 0:
         return renew(runs_dir, repo, holder, epoch, ttl)
