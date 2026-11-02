@@ -35,7 +35,8 @@ from agent_tools.notify_dispatch import dispatch
 from agent_tools.notify_events import events_from_tick
 
 __all__ = [
-    "DEFAULT_INTERVAL", "FACTS_BOUND_SECONDS", "LAND_BEAT_INTERVAL", "GateState", "LeaseRejected", "OverrunState", "RunDeps", "TickOverrun",
+    "DEFAULT_INTERVAL", "FACTS_BOUND_SECONDS", "LAND_BEAT_INTERVAL", "RELEASE_HOLD_OFF_SECONDS", "TAKEOVER_GRACE_SECONDS", "GateState",
+    "LeaseRejected", "OverrunState", "ReleaseState", "RunDeps", "TickOverrun",
     "WorkerLands", "as_holder", "error_line", "finished_land", "land_sink", "next_gate_record", "no_landing", "no_lands_to_stop", "overran",
     "overrun_limit_hit", "overrun_line", "run", "tick", "tick_timed",
 ]
@@ -44,6 +45,8 @@ DEFAULT_INTERVAL = 60.0
 PROFILE_STALE_NOTE = "profile re-read failed; keeping the last good profile"  # a segment of the one status line
 LAND_BEAT_INTERVAL = 30.0  # half a minute, so the chair lease is beaten at least once a minute while a land runs
 FACTS_BOUND_SECONDS = 180.0  # wall clock the facts stage may take before the tick is abandoned as an overrun
+TAKEOVER_GRACE_SECONDS = 20.0  # how long a takeover waits for the holder to release before it forces the lease
+RELEASE_HOLD_OFF_SECONDS = 3 * TAKEOVER_GRACE_SECONDS  # after a released chair, ticks skip the beat and lease take this long
 
 Gather = Callable[[FactsDeps, datetime], Facts]
 Perform = Callable[[list[Action], chair_exec.Deps, Callable[[], int], bool], list[Result]]
@@ -104,6 +107,14 @@ class OverrunState:
     """Facts-stage overruns in a row; reset by any tick that completes. Read by whatever decides to stop the loop."""
 
     consecutive: int = 0
+
+
+@dataclass
+class ReleaseState:
+    """Monotonic seconds of the last takeover release, and the beat thread's stop event so a release can silence it."""
+
+    released_at: float | None = None
+    beating: threading.Event | None = None
 
 
 @dataclass
@@ -179,6 +190,9 @@ class RunDeps:
     lease_beat_interval: float = LAND_BEAT_INTERVAL
     # Receives the ids of the rows a live tick changed, exports the board and commits it; returns a note for the tick line, "" for none.
     export_rows: Callable[[tuple[str, ...]], str] | None = None
+    # True when a takeover asked this holder to release and the lease and lock were just released; a live tick checks it first. None checks nothing.
+    release_requested: Callable[[], bool] | None = None
+    release_state: ReleaseState = field(default_factory=ReleaseState)
 
 
 def finished_land(action: Action, outcome: chair_land.LandResult[Result] | None) -> Result:
@@ -418,10 +432,34 @@ def tick(deps: RunDeps, dry_run: bool, now: datetime) -> str:
     return tick_timed(deps, dry_run, now)[0]
 
 
+def _release_step(deps: RunDeps, dry_run: bool, now: datetime, clock: chair_timing.Clock) -> str | None:
+    """Edge. The status line of a tick that released the chair or stands by after one; None for an ordinary tick.
+
+    A release also sets the beat thread's stop event, so the thread cannot retake the lease just released.
+    """
+    state = deps.release_state
+    if dry_run:
+        return None
+    stamp = f"chair {now.astimezone(EASTERN):%m-%d %H:%M %Z}"
+    if state.released_at is not None:
+        left = RELEASE_HOLD_OFF_SECONDS - (clock() - state.released_at)
+        if left > 0:
+            return f"{stamp} | standby: released at takeover request, holding off {left:.0f}s more"
+        state.released_at = None
+    if deps.release_requested is None or not deps.release_requested():
+        return None
+    state.released_at = clock()
+    if state.beating is not None:
+        state.beating.set()
+    return f"{stamp} | released at takeover request"
+
+
 def tick_timed(
     deps: RunDeps, dry_run: bool, now: datetime, clock: chair_timing.Clock = time.monotonic
 ) -> tuple[str, dict[str, float | None], dict[str, float]]:
     """Beat first, then gather, plan, perform and format; a failure after perform still names what was performed.
+
+    A live tick first asks `release_requested`; a release, or the hold-off after one, ends the tick before the beat.
 
     A live tick with `pull_workspace` set pulls right after the beat, so a take_lease has pulled before it runs.
     A failed pull never stops the tick; it adds a note to the line and one action per distinct reason.
@@ -433,6 +471,9 @@ def tick_timed(
     is remembered after perform, and only by a tick that acts as the holder, so a tick that fails records it again.
     A live tick that changed rows hands their ids to `export_rows`; its note or failure is appended to the line.
     """
+    released = _release_step(deps, dry_run, now, clock)
+    if released is not None:
+        return released, {}, {}
     sources: dict[str, float] = {}
     deps.beat()
     _publish_meter(deps, dry_run, now)
@@ -516,6 +557,7 @@ def start_lease_beat(deps: RunDeps, dry_run: bool) -> threading.Event:
     A rejected or raising beat sets the event, so the thread stops; `gather` then reads the lost lease on the next tick.
     """
     stop = threading.Event()
+    deps.release_state.beating = stop  # a takeover release sets it, so the thread cannot retake the lease
     if deps.lease_beat is not None and not dry_run:
         beat_in_thread(_fenced(deps.lease_beat), deps.lease_beat_interval, stop, lambda _exc: stop.set())
     return stop
