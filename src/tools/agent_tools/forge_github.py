@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import subprocess
@@ -178,20 +179,56 @@ def _update_local_default(repo: Path, default: str) -> str:
     return out if r.returncode == 0 else f"local {default} not updated: {out}"
 
 
-def merge(repo: Path, step: dict) -> tuple[bool, str]:
-    """Merge the PR of `step["branch"]`, then update the local default branch.
+def merge_verdict(exit_code: int, cli_text: str, pr: dict | None) -> tuple[bool, str]:
+    """Whether a `gh pr merge` merged. The server's state outranks the exit code: gh merges on the server,
+    then its local branch cleanup exits non-zero on a detached HEAD ("could not determine current branch").
+    A non-zero exit with the PR read as merged is ok, the CLI's text kept as a warning; any other state fails."""
+    if exit_code == 0:
+        return True, cli_text
+    if pr is not None and pr.get("state") == "merged":
+        return True, f"warning: {cli_text}" if cli_text else "warning: gh exited non-zero after the PR merged"
+    return False, cli_text
 
-    Once gh succeeds the PR has merged, so a failed local update is reported in
-    the detail and the result stays ok.
+
+def _branch_pr_state(repo: Path, branch: str) -> dict:
+    """Edge. `{"state", "merged_at"}` of the PR whose head is `branch`; unknown when the forge cannot say.
+    `gh pr view` may not resolve a branch the forge already deleted, so the listing of every PR of that head is the fallback."""
+    try:
+        r = _run(["gh", "pr", "view", branch, "--json", "state,mergedAt"], timeout=READ_TIMEOUT_S, cwd=repo)
+        state = parse_pr_state(r.stdout) if r.returncode == 0 else dict(UNKNOWN_PR_STATE)
+    except (OSError, ForgeError):
+        state = dict(UNKNOWN_PR_STATE)
+    if state["state"] != "unknown":
+        return state
+    prs = find_branch_prs(repo, branch)
+    if not isinstance(prs, str) and any(p["state"] == "merged" for p in prs) and not any(p["state"] == "open" for p in prs):
+        return {"state": "merged", "merged_at": None}
+    return state
+
+
+def merge(repo: Path, step: dict) -> tuple[bool, str]:
+    """Merge the PR of `step["branch"]`, then delete its remote and local head branch and update the local default branch.
+
+    gh's own `--delete-branch` is not used: its local cleanup needs a current branch and fails on a detached
+    HEAD after the server merged, so the head is deleted through the API instead, unless `step["delete_branch"]`
+    is false; a step that omits the key deletes, as `--delete-branch` always did. A non-zero gh exit is judged by the PR's server state (`merge_verdict`). Once the PR has merged,
+    a failed branch delete or local update is reported in the detail and the result stays ok.
     """
     try:
-        r = _run(["gh", "pr", "merge", step["branch"], "--squash", "--delete-branch"], timeout=WRITE_TIMEOUT_S, cwd=repo)
+        r = _run(["gh", "pr", "merge", step["branch"], "--squash"], timeout=WRITE_TIMEOUT_S, cwd=repo)
     except ForgeError as exc:
         return False, str(exc)
-    merged = r.stdout.strip() or r.stderr.strip()
-    if r.returncode != 0:
+    text = r.stdout.strip() or r.stderr.strip()
+    ok, merged = merge_verdict(r.returncode, text, None if r.returncode == 0 else _branch_pr_state(repo, step["branch"]))
+    if not ok:
         return False, merged
-    return True, "\n".join(filter(None, [merged, _update_local_default(repo, step["default_branch"])]))
+    deleted = []
+    if step.get("delete_branch", True):
+        gone, how = delete_branch(repo, step["branch"])
+        deleted = [f"remote branch {step['branch']} {how}" if gone else f"warning: remote branch {step['branch']} not deleted: {how}"]
+        with contextlib.suppress(OSError, ForgeError):  # gh's --delete-branch also removed the local branch; one a worktree holds or HEAD sits on stays
+            _run(["git", "-C", str(repo), "branch", "-D", step["branch"]], timeout=WRITE_TIMEOUT_S)
+    return True, "\n".join(filter(None, [merged, *deleted, _update_local_default(repo, step["default_branch"])]))
 
 
 def parse_merge_state(stdout: str) -> str:
