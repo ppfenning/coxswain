@@ -1266,6 +1266,121 @@ def test_cli_apply_warns_on_stderr_when_the_refused_store_cannot_release_the_rep
     assert "not released" not in captured.out
 
 
+class _SlotStore:
+    """An in-memory lease store keyed by lease name, recording every call as (operation, name, epoch)."""
+
+    def __init__(self, held):
+        self.held, self.log, self._epoch = dict(held), [], 10
+
+    def acquire(self, _runs_dir, name, holder, _ttl, steal=False):
+        if name in self.held:
+            other, epoch = self.held[name]
+            return store_cli.LeaseRefused(epoch, other)
+        self._epoch += 1
+        self.held[name] = (holder, self._epoch)
+        self.log.append(("acquire", name, self._epoch))
+        return store_cli.LeaseGranted(self._epoch, holder)
+
+    def renew(self, _runs_dir, name, holder, epoch, _ttl):
+        self.log.append(("renew", name, epoch))
+        if self.held.get(name) == (holder, epoch):
+            return store_cli.LeaseGranted(epoch, holder)
+        return store_cli.LeaseRefused(epoch, None)
+
+    def release(self, _runs_dir, name, holder, epoch):
+        self.log.append(("release", name, epoch))
+        if self.held.get(name) == (holder, epoch):
+            del self.held[name]
+        return store_cli.LeaseReleased()
+
+
+def _apply_with_slot_store(repo, tmp_path, monkeypatch, limit, held, expire_slot=None):
+    """Runs the walk for real up to `_land_execute`, which is stubbed, against `_SlotStore`. `expire_slot` drops that
+    slot's lease just before the walk's first guarded step, as an expiry would. Returns the store and the count of walks."""
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    (tmp_path / "runs/policy.tracker.json").write_text('{"tracker": "github-projects"}', encoding="utf-8")
+    store, walks = _SlotStore(held), []
+
+    def fake_execute(*_args, guard, **_kwargs):
+        if expire_slot is not None:
+            del store.held[cli.land_repo_lease.slot_lease_name(str(repo), expire_slot)]
+        walks.append(guard("merge"))
+        return 0, ["mark_done"], "https://x/pull/7"
+
+    monkeypatch.setattr(cli.socket, "gethostname", lambda: "host-a")
+    monkeypatch.setattr(cli.land_limit, "repo_land_limit", lambda _repo: limit)
+    monkeypatch.setattr(store_cli, "lease_acquire", store.acquire)
+    monkeypatch.setattr(store_cli, "lease_renew", store.renew)
+    monkeypatch.setattr(store_cli, "lease_release", store.release)
+    monkeypatch.setattr(cli, "_land_walked", lambda _a, _runs_dir, _mode, _task, _recheck, walk: walk(None))
+    monkeypatch.setattr(cli, "_land_execute", fake_execute)
+    return store, walks
+
+
+def _land_apply(repo, tmp_path):
+    return cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs")])
+
+
+def test_land_with_limit_2_takes_slot_1_while_slot_0_is_held_and_walks(repo, tmp_path, monkeypatch):
+    slot0 = cli.land_repo_lease.slot_lease_name(str(repo), 0)
+    slot1 = cli.land_repo_lease.slot_lease_name(str(repo), 1)
+    store, walks = _apply_with_slot_store(repo, tmp_path, monkeypatch, 2, {slot0: ("other@host-b:1", 3)})
+    assert _land_apply(repo, tmp_path) == 0
+    assert walks == [None]
+    assert [(op, name) for op, name, _epoch in store.log if op in ("acquire", "release")] == [("acquire", slot1), ("release", slot1)]
+    assert store.held == {slot0: ("other@host-b:1", 3)}
+
+
+def test_land_with_limit_2_and_both_slots_held_is_refused_with_the_busy_message(repo, tmp_path, monkeypatch, capsys):
+    held = {cli.land_repo_lease.slot_lease_name(str(repo), s): (f"other{s}@host-b:{s + 1}", 3) for s in (0, 1)}
+    store, walks = _apply_with_slot_store(repo, tmp_path, monkeypatch, 2, held)
+    assert _land_apply(repo, tmp_path) == 2
+    assert walks == []
+    assert f"land: refusing, other0@host-b:1 is landing in {repo}" in capsys.readouterr().out
+    assert store.log == [] and store.held == held
+
+
+def test_land_with_limit_1_holds_slot_0_and_reaches_acquire_and_release_with_todays_arguments(repo, tmp_path, monkeypatch):
+    calls = _apply_with_repo_lease(repo, tmp_path, monkeypatch, store_cli.LeaseGranted(epoch=7, holder="me@host:2"),
+                                    walked_result=(0, ["mark_done"], "https://x/pull/7"))
+    monkeypatch.setattr(cli.land_limit, "repo_land_limit", lambda _repo: 1)
+    assert _land_apply(repo, tmp_path) == 0
+    [(runs_dir, repo_str, holder, ttl)] = calls["acquire"]
+    assert (repo_str, ttl) == (str(repo), cli._REPO_LEASE_TTL_SECONDS)
+    assert calls["release"] == [(runs_dir, repo_str, holder, 7)]
+
+
+def test_land_with_limit_1_and_slot_0_held_is_refused_and_never_touches_slot_1(repo, tmp_path, monkeypatch):
+    slot0 = cli.land_repo_lease.slot_lease_name(str(repo), 0)
+    store, walks = _apply_with_slot_store(repo, tmp_path, monkeypatch, 1, {slot0: ("other@host-b:1", 3)})
+    assert _land_apply(repo, tmp_path) == 2
+    assert walks == [] and store.log == []
+
+
+def test_each_land_releases_the_slot_it_took(repo, tmp_path, monkeypatch):
+    slot0 = cli.land_repo_lease.slot_lease_name(str(repo), 0)
+    store, _walks = _apply_with_slot_store(repo, tmp_path, monkeypatch, 3, {slot0: ("other@host-b:1", 3)})
+    held_before = dict(store.held)
+    assert _land_apply(repo, tmp_path) == 0
+    taken = [(name, epoch) for op, name, epoch in store.log if op == "acquire"]
+    released = [(name, epoch) for op, name, epoch in store.log if op == "release"]
+    assert released == taken and [name for name, _epoch in taken] == [cli.land_repo_lease.slot_lease_name(str(repo), 1)]
+    assert store.held == held_before
+
+
+def test_a_reacquire_after_expiry_keeps_the_same_slot_and_releases_at_the_new_epoch(repo, tmp_path, monkeypatch, capsys):
+    slot0 = cli.land_repo_lease.slot_lease_name(str(repo), 0)
+    slot1 = cli.land_repo_lease.slot_lease_name(str(repo), 1)
+    store, walks = _apply_with_slot_store(repo, tmp_path, monkeypatch, 2, {slot0: ("other@host-b:1", 3)}, expire_slot=1)
+    assert _land_apply(repo, tmp_path) == 0
+    assert walks == [None]
+    assert "expired with no holder; re-acquired it at epoch 12, continuing" in capsys.readouterr().out
+    assert [(op, name, epoch) for op, name, epoch in store.log if op != "renew"] == [
+        ("acquire", slot1, 11), ("acquire", slot1, 12), ("release", slot1, 12)]
+    assert store.held == {slot0: ("other@host-b:1", 3)}
+
+
 def test_cli_apply_walks_without_a_lease_when_the_store_is_not_available(repo, tmp_path, monkeypatch):
     calls = _apply_with_repo_lease(repo, tmp_path, monkeypatch, store_cli.NotAvailable(),
                                     walked_result=(0, ["mark_done"], "https://x/pull/7"))

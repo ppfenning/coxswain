@@ -151,6 +151,7 @@ lake_config = _LazyModule("agent_tools.lake_config")
 lake_lease = _LazyModule("agent_tools.lake_lease")
 land = _LazyModule("agent_tools.land")
 land_lease = _LazyModule("agent_tools.land_lease")
+land_limit = _LazyModule("agent_tools.land_limit")
 land_repo_lease = _LazyModule("agent_tools.land_repo_lease")
 lane_hosts = _LazyModule("agent_tools.lane_hosts")
 lane_toolchain = _LazyModule("agent_tools.lane_toolchain")
@@ -3303,15 +3304,18 @@ def _runs_land(a: argparse.Namespace) -> int:
 
     repo_epoch = [0]  # the epoch the repo lease is held at now: a re-acquire after an expiry moves it, and the release must follow
 
+    repo_slot = [0]  # the slot of the repo lease this land holds: it keeps the same one through a re-acquire
+
     def reacquire_repo() -> store_cli.LeaseResult:
-        again = land_repo_lease.acquire(runs_dir, str(repo), repo_holder, _REPO_LEASE_TTL_SECONDS)
+        again = land_repo_lease.acquire_slot(runs_dir, str(repo), repo_slot[0], repo_holder, _REPO_LEASE_TTL_SECONDS)
         if isinstance(again, store_cli.LeaseGranted):
             repo_epoch[0] = again.epoch
         return again
 
     def walk(task_guard):
         repo_guard = _repo_lease_guard(
-            str(repo), lambda: land_repo_lease.renew(runs_dir, str(repo), repo_holder, repo_epoch[0], _REPO_LEASE_TTL_SECONDS),
+            str(repo),
+            lambda: land_repo_lease.renew_slot(runs_dir, str(repo), repo_slot[0], repo_holder, repo_epoch[0], _REPO_LEASE_TTL_SECONDS),
             time.monotonic, _REPO_LEASE_TTL_SECONDS, repo_lost, reacquire_repo) if isinstance(got, store_cli.LeaseGranted) else None
         keep = [g for g in (repo_guard, task_guard) if isinstance(g, _LeaseGuard)]
         # The repo lease is checked first: a lost repo lease stops the walk before the task lease is renewed.
@@ -3340,7 +3344,8 @@ def _runs_land(a: argparse.Namespace) -> int:
                              mode=land_mode, guard=guard, stops=stops, keep=keep)
 
     repo_holder = f"{_holder_label(a)}@{socket.gethostname()}:{os.getpid()}"
-    got = land_repo_lease.acquire_or_take_over(runs_dir, str(repo), repo_holder, _REPO_LEASE_TTL_SECONDS, socket.gethostname())
+    repo_slot[0], got = land_repo_lease.acquire_in_slots(
+        runs_dir, str(repo), repo_holder, _REPO_LEASE_TTL_SECONDS, socket.gethostname(), land_limit.repo_land_limit(str(repo)))
     leased = isinstance(got, store_cli.LeaseGranted)
     if isinstance(got, store_cli.LeaseGranted):
         repo_epoch[0] = got.epoch
@@ -3355,9 +3360,9 @@ def _runs_land(a: argparse.Namespace) -> int:
             if not repo_lost:  # a refused renew means another land holds it now; releasing would not be ours to do
                 # Release goes through the store, so a refused store can fail it too; that is warned, never raised
                 # over the walk's own error, and the TTL plus the dead-pid takeover clear the lease for the next land.
-                name = land_repo_lease.lease_name(str(repo))
+                name = land_repo_lease.slot_lease_name(str(repo), repo_slot[0])
                 try:
-                    freed = land_repo_lease.release(runs_dir, str(repo), repo_holder, repo_epoch[0])
+                    freed = land_repo_lease.release_slot(runs_dir, str(repo), repo_slot[0], repo_holder, repo_epoch[0])
                     why = freed.detail if isinstance(freed, store_cli.LeaseError) else (
                         "the store is not available" if isinstance(freed, store_cli.NotAvailable) else None)
                 except Exception as exc:
