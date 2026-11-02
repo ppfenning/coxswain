@@ -242,7 +242,7 @@ def test_the_dispatch_facts_offer_the_lane_hosts_named_in_the_profile_file(tmp_p
     profile.write_text("lane_hosts:\n  - name: host-a\n    ssh: host-a\n    workspace_dir: /w\n", encoding="utf-8")
     deps = cli._chair_run_deps(tmp_path / "runs", {}, "chair", 1, "h", False, print, profile, "files")
     assert deps.facts_deps.dispatch({"max_in_flight": 3}) == {  # type: ignore[misc]
-        "max_in_flight": 3, "live_runs": 0, "hosts": [{"name": "host-a", "live_runs": 0, "weight": 1, "capabilities": []}],
+        "max_in_flight": 3, "live_runs": 0, "hosts": [{"name": "host-a", "live_runs": 0, "capabilities": []}],
     }
 
 
@@ -311,7 +311,7 @@ def test_the_dispatch_facts_name_only_the_active_table_hosts_when_the_table_has_
     deps = cli._chair_run_deps(runs, {}, "chair", 1, "h", False, print, profile, "files")
     assert deps.facts_deps.dispatch({"max_in_flight": 3}) == {  # type: ignore[misc]
         "max_in_flight": 3, "live_runs": 0,
-        "hosts": [{"name": "host-a", "live_runs": 0, "capacity": 8, "weight": 1, "capabilities": []}],
+        "hosts": [{"name": "host-a", "live_runs": 0, "capacity": 8, "capabilities": []}],
     }
 
 
@@ -369,7 +369,7 @@ def test_the_dispatch_facts_fall_back_to_the_profile_host_when_the_table_has_no_
     _hosts_table(runs)
     deps = cli._chair_run_deps(runs, {}, "chair", 1, "h", False, print, profile, "files")
     assert deps.facts_deps.dispatch({"max_in_flight": 3})["hosts"] == [  # type: ignore[misc]
-        {"name": "other", "live_runs": 0, "weight": 1, "capabilities": []}
+        {"name": "other", "live_runs": 0, "capabilities": []}
     ]
 
 

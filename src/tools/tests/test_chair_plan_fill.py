@@ -203,6 +203,32 @@ def test_hosts_fill_in_proportion_to_weight_whatever_their_order():
         assert (hosts.count("heavy"), hosts.count("light")) == (3, 1)
 
 
+def _two_hosts(first: dict, second: dict, n: int) -> list[str]:
+    dispatch = {"max_in_flight": 4, "live_runs": 0, "hosts": [first, second]}
+    facts = _facts(dispatch=dispatch, initiatives=[_init(str(i)) for i in range(n)])
+    return [a["host"] for a in plan_fill(facts, 0)]
+
+
+def test_an_unweighted_host_with_more_capacity_is_chosen_over_a_smaller_one_at_equal_load():
+    small = {"name": "host-a", "live_runs": 0, "capacity": 4}
+    large = {"name": "host-b", "live_runs": 0, "capacity": 10}
+    assert _two_hosts(small, large, 1) == ["host-b"]
+
+
+def test_unweighted_hosts_fill_in_proportion_to_capacity():
+    small = {"name": "host-a", "live_runs": 0, "capacity": 4}
+    large = {"name": "host-b", "live_runs": 0, "capacity": 10}
+    for first, second in ((small, large), (large, small)):
+        hosts = _two_hosts(first, second, 7)
+        assert (hosts.count("host-a"), hosts.count("host-b")) == (2, 5)
+
+
+def test_an_explicit_weight_overrides_capacity():
+    big_cap = {"name": "host-a", "live_runs": 0, "capacity": 10, "weight": 1}
+    heavy = {"name": "host-b", "live_runs": 0, "capacity": 4, "weight": 3}
+    assert _two_hosts(big_cap, heavy, 1) == ["host-b"]
+
+
 def test_a_required_capability_places_only_on_a_host_that_has_it():
     facts = _facts(
         dispatch=_weighted_dispatch(),
