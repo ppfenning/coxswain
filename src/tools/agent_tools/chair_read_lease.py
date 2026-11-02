@@ -1,5 +1,6 @@
 """The `lease` source of `chair_facts.FactsDeps`: the store row named `chair.LEASE_NAME`, or `ABSENT` when there is none."""
-from collections.abc import Mapping
+import socket
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
@@ -47,8 +48,8 @@ def lease_record(row: Mapping[str, Any] | None, now: datetime) -> Row:
     }
 
 
-def read_lease(runs_dir: Path, now: datetime) -> Row:
-    """Edge. `ABSENT` with no store, no row, or an unreadable store."""
+def read_lease(runs_dir: Path, now: datetime, *, pid_alive: Callable[[int], bool] = chair.pid_alive, host: str | None = None) -> Row:
+    """Edge. `ABSENT` with no store, no row, or an unreadable store. `host` defaults to this machine's name."""
     # `run_store.lease` asks for a `runs:<prefix>` name, so the read reuses its private `_open`. Only holder and expires_at are
     # known columns (`run_store._lease_table` selects them); `SELECT *` keeps a missing epoch column from reading as no lease.
     opened = run_store._open(runs_dir)
@@ -61,11 +62,15 @@ def read_lease(runs_dir: Path, now: datetime) -> Row:
         return dict(ABSENT)
     finally:
         conn.close()
-    return _with_takeover(lease_record(None if row is None else dict(row), now), runs_dir, now)
+    return _with_takeover(lease_record(None if row is None else dict(row), now), runs_dir, now, pid_alive=pid_alive, host=host)
 
 
-def _with_takeover(lease: Row, runs_dir: Path, now: datetime) -> Row:
-    """Edge. Adds `until` and `expired` from chair.json when it is this lease holder's record and carries an `until`."""
+def _with_takeover(
+    lease: Row, runs_dir: Path, now: datetime, *, pid_alive: Callable[[int], bool] = chair.pid_alive, host: str | None = None
+) -> Row:
+    """Edge. Adds `until` and `expired` from chair.json when it is this lease holder's record and carries an `until`.
+    A session or thief holder never renews its store lease, so a record that reads live and unexpired clears `stale`.
+    The record carries no heartbeat window, so `chair.liveness` uses its default. A released lease stays released."""
     try:
         record = chair.read(runs_dir)
     except (OSError, ValueError):
@@ -74,4 +79,10 @@ def _with_takeover(lease: Row, runs_dir: Path, now: datetime) -> Row:
         return lease
     if chair.lease_holder(str(record.get("session")), record.get("pid"), str(record.get("host"))) != lease["holder"]:
         return lease
-    return {**lease, "until": str(record["until"]), "expired": chair.expired(record, now)}
+    expired = chair.expired(record, now)
+    taken = {**lease, "until": str(record["until"]), "expired": expired}
+    pid = record.get("pid")
+    if expired or lease["released"] or not isinstance(pid, int):
+        return taken
+    local = socket.gethostname() if host is None else host
+    return {**taken, "stale": False} if chair.liveness(record, pid_alive(pid), now, local) == "live" else taken

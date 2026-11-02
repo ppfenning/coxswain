@@ -443,7 +443,7 @@ def test_take_without_steal_on_own_live_record_is_refused_and_leaves_the_lease(t
 def test_take_steal_on_another_sessions_live_record_takes_it(tmp_path, monkeypatch, capsys):
     rc, seen, runs_dir = _take_over_live_record(tmp_path, monkeypatch, "alice", "--steal")
     assert rc == 0
-    assert capsys.readouterr().out.startswith("chair taken: bob (pid ")
+    assert capsys.readouterr().out.splitlines()[-1].startswith("chair taken: bob (pid ")
     assert seen == [{"steal": True}]
     assert chair.read(runs_dir)["session"] == "bob"
 
