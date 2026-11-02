@@ -1624,6 +1624,25 @@ def _surface_passes(exists: Callable[[Path], bool], root: Path, surface: str) ->
     return exists(target.parent) if is_new else exists(target)
 
 
+def _surface_refusal_reason(exists: Callable[[Path], bool], root: Path, surfaces: Sequence[str]) -> str:
+    """The reason a task is refused for surfaces missing from `root`.
+
+    When every surface's parent directory exists, the files are probably new and lack the `(new)` marker.
+    """
+    failed = ", ".join(str(s) for s in surfaces)
+    parents_exist = all(
+        bool(path) and exists((root / path).parent)
+        for path in (str(s).strip().removesuffix("(new)").strip() for s in surfaces)
+    )
+    if parents_exist:
+        return (
+            f"surfaces not found in {root}: {failed}; their parent directories exist, so these are probably "
+            "new files missing the (new) marker, not a wrong repository. "
+            "Add (new) to each file the task creates."
+        )
+    return f"surfaces not in {root}: {failed}; wrong repository?"
+
+
 def _quarantine_row(ctx: _Ctx, phase: str, task: str, *, approved_is_open: bool = False) -> None:
     """Under work_state store, move the task's row to quarantined, so the chair stops relaunching it. Errors are logged, never raised.
 
@@ -2380,7 +2399,7 @@ def _run_phase(
     for task in wrong_repo:
         task_id = str(task["id"])
         failed = ", ".join(str(s) for s in task["surfaces"])
-        reason = f"surfaces not in {ctx.repo}: {failed}; wrong repository?"
+        reason = _surface_refusal_reason(_exists, ctx.repo, task["surfaces"])
         quarantined.append({"id": task_id, "phase": phase, "grain": "task", "kind": "no_work", "reason": reason})
         _record_task_cause(ctx, phase, task_id, "ticket", "rule: surfaces not in the repository")
         _quarantine_row(ctx, phase, task_id)
