@@ -4082,12 +4082,42 @@ def _paths_lines(changes: Sequence[Mapping[str, str]]) -> list[str]:
     return [f"{c['key']}: {c['old']} -> {c['new']}" for c in changes] + [f"{len(changes)} change(s)"]
 
 
-def _paths_apply_rows(runs_dir: Path, rows: Sequence[Mapping], home: str, move: tuple[str, str] | None = None) -> int:
+def _open_files(files: Mapping[str, str]) -> dict[str, str]:
+    """Pure. `files` without done or dropped records. An `initiative.md` is done when it says so or when route's rule
+    does: it has task files and all are done or dropped. The file carries no state of its own, so its tasks decide."""
+    parts = {rel: rel.split("/") for rel in files}
+    states = {rel: route.parse_frontmatter(files[rel])[0].get("state") for rel, p in parts.items() if len(p) == 4 and p[0] == "work"}
+    tasks = [{"initiative": parts[rel][1], "state": s} for rel, s in states.items() if s is not None]  # a stateless file is no task
+    initiative_files = {rel: p[1] for rel, p in parts.items() if p[0] == "work" and p[2:] == ["initiative.md"]}
+    finished = route.initiative_states(sorted(set(initiative_files.values())), tasks)
+    return {
+        rel: text
+        for rel, text in files.items()
+        if repo_path_migrate._file_is_open(text) and not finished.get(initiative_files.get(rel), False)
+    }
+
+
+def _open_rows(rows: Sequence[Mapping]) -> list[Mapping]:
+    """Pure. `rows` without done or dropped records. An initiative row holds the default state, so it is done
+    when route's rule says so of its task rows: it has tasks and all are done or dropped."""
+    tasks = [{"initiative": r["initiative"], "state": r.get("state")} for r in rows if r.get("kind") == "task"]
+    finished = route.initiative_states(sorted({r["initiative"] for r in rows if r.get("kind") == "initiative"}), tasks)
+    return [
+        r
+        for r in rows
+        if repo_path_migrate._is_open(r.get("state")) and not (r.get("kind") == "initiative" and finished[r["initiative"]])
+    ]
+
+
+def _paths_apply_rows(
+    runs_dir: Path, rows: Sequence[Mapping], home: str, move: tuple[str, str] | None = None, open_only: bool = False
+) -> int:
     """Edge. Upsert only `extra` and `surfaces` of each changed row, then export once; exit 1 on a refusal or failed export.
-    The store owns state, needs and the claim columns, so a stale snapshot of them is never written back."""
+    The store owns state, needs and the claim columns, so a stale snapshot of them is never written back.
+    With `open_only`, done and dropped rows are skipped."""
     refused = 0
     taken = 0
-    for row in rows:
+    for row in _open_rows(rows) if open_only else rows:
         migrated = repo_path_migrate.migrate_row(row, home, move=move)
         if migrated is None:
             continue
@@ -4106,9 +4136,11 @@ def _paths_apply_rows(runs_dir: Path, rows: Sequence[Mapping], home: str, move: 
     return 1 if refused else 0
 
 
-def _paths_apply_files(ws: Path, files: Mapping[str, str], home: str, move: tuple[str, str] | None = None) -> int:
-    """Edge. Write each changed work file in place."""
-    for rel, text in files.items():
+def _paths_apply_files(
+    ws: Path, files: Mapping[str, str], home: str, move: tuple[str, str] | None = None, open_only: bool = False
+) -> int:
+    """Edge. Write each changed work file in place; with `open_only`, files of done and dropped records are left alone."""
+    for rel, text in (_open_files(files) if open_only else files).items():
         migrated = repo_path_migrate.migrate_text(text, home, move=move)
         if migrated is not None:
             (ws / rel).write_text(migrated, encoding="utf-8")
@@ -4135,15 +4167,24 @@ def _route_paths(a: argparse.Namespace) -> int:
         return 2
     files = {} if store_mode else {"/".join(parts): text for parts, text in store_fill._workspace_files(ws)}
     move = (repo_path.contract(a.move[0], home), repo_path.contract(a.move[1], home)) if a.move else None
-    print("\n".join(_paths_lines(repo_path_migrate.plan(rows, files, home, move=move))))
+    open_only = move is not None
+    if open_only:
+        print("route paths: only open records are moved; done and dropped records are left alone")
+    listed_rows, listed = (_open_rows(rows), _open_files(files)) if open_only else (rows, files)
+    print("\n".join(_paths_lines(repo_path_migrate.plan(listed_rows, listed, home, move=move, open_only=open_only))))
     if not a.apply:
         return 0
-    code = _paths_apply_rows(runs_dir, rows, home, move) if store_mode else _paths_apply_files(ws, files, home, move)
+    code = (
+        _paths_apply_rows(runs_dir, rows, home, move, open_only)
+        if store_mode
+        else _paths_apply_files(ws, files, home, move, open_only)
+    )
     if move is None:
         return code
     rows_after = run_store.read_queue(runs_dir) if store_mode else []
     files_after = {} if store_mode else {"/".join(parts): text for parts, text in store_fill._workspace_files(ws)}
-    left = len(repo_path_migrate.plan(rows_after, files_after, home, move=move))
+    left_rows, left_files = (_open_rows(rows_after), _open_files(files_after)) if open_only else (rows_after, files_after)
+    left = len(repo_path_migrate.plan(left_rows, left_files, home, move=move, open_only=open_only))
     print(f"route paths: {left} value(s) still under {a.move[0]}")
     return 1 if left else code
 
@@ -10097,7 +10138,7 @@ ROUTE_COMMANDS = [
         (
             commands.Arg(("--profile",)), commands.Arg(("--workspace",)),
             commands.Arg(("--apply",), {"action": "store_true", "help": "write the changes; the default only lists them"}),
-            commands.Arg(("--move",), {"nargs": 2, "metavar": ("OLD", "NEW"), "help": "swap repo prefix OLD for NEW"}),
+            commands.Arg(("--move",), {"nargs": 2, "metavar": ("OLD", "NEW"), "help": "swap repo prefix OLD for NEW in open records only; done and dropped records are left alone"}),
         ),
         "agent_tools.cli:_route_paths", False, (),
     ),

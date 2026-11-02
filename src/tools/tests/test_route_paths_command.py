@@ -197,3 +197,126 @@ def test_apply_without_move_prints_no_residue_line(tmp_path: Path, home: Path, c
 def test_a_workspace_without_work_or_intake_is_refused(tmp_path: Path, home: Path, capsys) -> None:
     assert main(["route", "paths", "--workspace", str(tmp_path)]) == 2
     assert "no work/ or intake/" in capsys.readouterr().out
+
+
+def _two_initiatives(tmp_path: Path, repo: str) -> Path:
+    ws = tmp_path / "ws"
+    for name, state in (("open", "ready"), ("shipped", "done")):
+        (ws / "work" / name / "1-build").mkdir(parents=True)
+        # A real initiative.md carries no state: its tasks decide whether the initiative is done.
+        (ws / "work" / name / "initiative.md").write_text(f"---\ntitle: {name}\nrepo: {repo}/{name}\n---\n\nAbout\n")
+        (ws / "work" / name / "1-build" / "task.md").write_text(f"---\nstate: {state}\ntitle: t\nrepo: {repo}/{name}\n---\n\nDo\n")
+    return ws
+
+
+def _snapshot(ws: Path, name: str) -> dict[Path, bytes]:
+    return {p: p.read_bytes() for p in (ws / "work" / name).rglob("*.md")}
+
+
+def test_move_dry_run_lists_only_the_open_initiative_and_writes_nothing(tmp_path: Path, home: Path, capsys) -> None:
+    ws = _two_initiatives(tmp_path, "~/repos/old")
+    before = {p: p.read_bytes() for p in ws.rglob("*.md")}
+    assert main(["route", "paths", "--workspace", str(ws), "--move", "~/repos/old", "~/repos/new"]) == 0
+    out = capsys.readouterr().out
+    assert out.splitlines()[0].startswith("route paths: only open records are moved")
+    assert len(_change_lines(out)) == 2
+    assert all("/open" in line for line in _change_lines(out))
+    assert "shipped" not in out
+    assert {p: p.read_bytes() for p in ws.rglob("*.md")} == before
+
+
+def test_move_apply_rewrites_the_open_initiative_and_leaves_the_done_one_untouched(
+    tmp_path: Path, home: Path, capsys
+) -> None:
+    ws = _two_initiatives(tmp_path, "~/repos/old")
+    done_before = _snapshot(ws, "shipped")
+    assert main(["route", "paths", "--workspace", str(ws), "--apply", "--move", "~/repos/old", "~/repos/new"]) == 0
+    out = capsys.readouterr().out
+    for rel in ("work/open/initiative.md", "work/open/1-build/task.md"):
+        assert "repo: ~/repos/new/open\n" in (ws / rel).read_text()
+    assert _snapshot(ws, "shipped") == done_before
+    assert out.splitlines()[-1] == "route paths: 0 value(s) still under ~/repos/old"
+
+
+def test_a_run_without_move_still_lists_both_initiatives(tmp_path: Path, home: Path, capsys) -> None:
+    ws = _two_initiatives(tmp_path, str(home / "repos"))
+    assert main(["route", "paths", "--workspace", str(ws)]) == 0
+    out = capsys.readouterr().out
+    assert len(_change_lines(out)) == 4
+    assert "only open records" not in out
+    assert "/open" in out and "/shipped" in out
+
+
+def test_move_apply_in_store_mode_skips_done_rows_and_does_not_count_them(
+    tmp_path: Path, home: Path, monkeypatch, capsys
+) -> None:
+    ws = _workspace(tmp_path, "~/repos/demo")
+    rows = [_row("a", "~/repos/old/a"), dict(_row("b", "~/repos/old/b"), state="done")]
+    upserted: list[dict] = []
+
+    def upsert(runs_dir: Path, row: dict) -> bool:
+        upserted.append(row)
+        rows[:] = [dict(r, **row) if r["task_id"] == row["task_id"] else r for r in rows]
+        return True
+
+    _store_mode(monkeypatch, rows, upsert)
+    assert main(["route", "paths", "--workspace", str(ws), "--apply", "--move", "~/repos/old", "~/repos/new"]) == 0
+    assert [u["task_id"] for u in upserted] == ["a"]
+    assert capsys.readouterr().out.splitlines()[-1] == "route paths: 0 value(s) still under ~/repos/old"
+
+
+def test_move_apply_in_store_mode_leaves_a_done_initiatives_row_alone(
+    tmp_path: Path, home: Path, monkeypatch, capsys
+) -> None:
+    ws = _workspace(tmp_path, "~/repos/demo")
+
+    def row(kind: str, initiative: str, task_id: str, state: str) -> dict:
+        return dict(_row(task_id, f"~/repos/old/{initiative}"), kind=kind, initiative=initiative, state=state)
+
+    rows = [
+        row("initiative", "live", "live", "todo"),
+        row("task", "live", "a", "ready"),
+        row("initiative", "shipped", "shipped", "todo"),  # the store gives an initiative row the default state
+        row("task", "shipped", "b", "done"),
+    ]
+    upserted: list[dict] = []
+
+    def upsert(runs_dir: Path, new: dict) -> bool:
+        upserted.append(new)
+        rows[:] = [dict(r, **new) if (r["initiative"], r["task_id"]) == (new["initiative"], new["task_id"]) else r for r in rows]
+        return True
+
+    _store_mode(monkeypatch, rows, upsert)
+    assert main(["route", "paths", "--workspace", str(ws), "--apply", "--move", "~/repos/old", "~/repos/new"]) == 0
+    out = capsys.readouterr().out
+    assert [(u["initiative"], u["task_id"]) for u in upserted] == [("live", "live"), ("live", "a")]
+    assert "shipped" not in out
+    assert out.splitlines()[-1] == "route paths: 0 value(s) still under ~/repos/old"
+
+
+def test_open_files_keeps_an_initiative_unless_it_has_tasks_and_all_are_terminal() -> None:
+    def task(state: str) -> str:
+        return f"---\nstate: {state}\n---\n\nbody\n"
+
+    head = "---\ntitle: x\n---\n\nAbout\n"
+    files = {
+        "work/all-done/initiative.md": head,
+        "work/all-done/1-a/t.md": task("done"),
+        "work/all-done/1-a/u.md": task("dropped"),
+        "work/mixed/initiative.md": head,
+        "work/mixed/1-a/t.md": task("done"),
+        "work/mixed/1-a/u.md": task("ready"),
+        "work/no-tasks/initiative.md": head,
+        "work/stated/initiative.md": "---\ntitle: x\nstate: done\n---\n\nAbout\n",
+        "intake/note.md": head,
+        "work/noted/initiative.md": head,
+        "work/noted/1-a/t.md": task("done"),
+        "work/noted/1-a/NOTES.md": "plain notes, no frontmatter\n",
+    }
+    assert sorted(cli._open_files(files)) == [
+        "intake/note.md",
+        "work/mixed/1-a/u.md",
+        "work/mixed/initiative.md",
+        "work/no-tasks/initiative.md",
+        "work/noted/1-a/NOTES.md",
+    ]
