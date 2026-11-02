@@ -116,3 +116,51 @@ def test_check_release_index_expects_the_row_from_the_since_version_on():
         Drift("release_index", "docs/releases/index.md", None,
               "docs/releases/index.md", None, "add its section for 0.26.0"),
     ]
+
+
+def _dash_facts(sections: list[str]) -> dict:
+    """Each older section holds only the dash row, as the real index's pinned sections do."""
+    return {
+        "release_versions": {"0.1.0", "0.2.0", "0.3.0"},
+        "releases_index": "\n\n".join(sections) + "\n",
+        "manifest": {"coxswain": {"version": "0.3.0"}, "components": {"dash": {"tag": "v0.3.0"}}},
+    }
+
+
+def test_check_release_index_accepts_older_sections_that_pinned_a_component_now_tagged_at_current():
+    facts = _dash_facts([
+        index_section("0.1.0", {"dash": "v0.0.5"}),
+        index_section("0.2.0", {"dash": "v0.2.0"}),
+        index_section("0.3.0", {"dash": "v0.3.0"}),
+    ])
+    assert check_release_index(facts) == []
+
+
+def test_check_release_index_still_flags_an_older_section_missing_the_components_row():
+    facts = _dash_facts([
+        index_section("0.1.0", {"dash": "v0.0.5"}),
+        index_section("0.2.0", {}),
+        index_section("0.3.0", {"dash": "v0.3.0"}),
+    ])
+    assert check_release_index(facts) == [
+        Drift("release_index", "docs/releases/index.md", None,
+              "docs/releases/index.md", None, "add its section for 0.2.0"),
+    ]
+
+
+def test_check_release_index_flags_an_unmarked_older_row_with_the_wrong_tag():
+    facts = _dash_facts([
+        index_section("0.1.0", {"dash": "v0.0.5"}),
+        "## `0.2.0`\n\n| dash | `v0.0.5` |",
+        index_section("0.3.0", {"dash": "v0.3.0"}),
+    ])
+    assert len(check_release_index(facts)) == 1
+
+
+def test_check_release_index_takes_a_pinned_older_row_at_whatever_tag_it_shows():
+    facts = _dash_facts([
+        index_section("0.1.0", {"dash": "v9.9.9"}),
+        index_section("0.2.0", {"dash": "v0.2.0"}),
+        index_section("0.3.0", {"dash": "v0.3.0"}),
+    ])
+    assert check_release_index(facts) == []
