@@ -26,6 +26,7 @@ from agent_tools.chair_exec import Result
 from agent_tools.chair_facts import FactsDeps, gather_facts
 from agent_tools.chair_plan import TickPlan, plan_tick, plan_tick_held, waiting_initiatives
 from agent_tools.chair_report import EASTERN, format_status, write_status
+from agent_tools.chair_restart import RESTART, CheckoutState, restart_decision, restart_line
 from agent_tools.chair_types import Action, Facts, PlanTick
 from agent_tools.ci_gate import DEFAULT_QUEUED_BOUND_SECONDS, CiGate, evaluate_gate
 from agent_tools.forge_status import StatusReader
@@ -36,8 +37,8 @@ from agent_tools.notify_events import events_from_tick
 
 __all__ = [
     "DEFAULT_INTERVAL", "FACTS_BOUND_SECONDS", "LAND_BEAT_INTERVAL", "RELEASE_HOLD_OFF_SECONDS", "TAKEOVER_GRACE_SECONDS", "GateState",
-    "LeaseRejected", "OverrunState", "ReleaseState", "RunDeps", "TickOverrun",
-    "WorkerLands", "as_holder", "error_line", "finished_land", "land_sink", "next_gate_record", "no_landing", "no_lands_to_stop", "overran",
+    "LeaseRejected", "OverrunState", "ReleaseState", "RestartState", "RunDeps", "TickOverrun",
+    "WorkerLands", "as_holder", "error_line", "finished_land", "land_sink", "next_gate_record", "no_landing", "no_lands_in_flight", "no_lands_to_stop", "overran",
     "overrun_limit_hit", "overrun_line", "run", "tick", "tick_timed",
 ]
 
@@ -66,6 +67,11 @@ def _read_meter_doc() -> dict | None:
 
 def no_lands_to_stop() -> None:
     """The stop hook of a chair with no land worker."""
+
+
+def no_lands_in_flight() -> bool:
+    """The in-flight source of a chair with no land worker."""
+    return False
 
 
 def no_landing() -> list[dict[str, str]]:
@@ -107,6 +113,13 @@ class OverrunState:
     """Facts-stage overruns in a row; reset by any tick that completes. Read by whatever decides to stop the loop."""
 
     consecutive: int = 0
+
+
+@dataclass
+class RestartState:
+    """The (old, new) heads when the loop stopped because its checkout moved; None otherwise. Read after `run` returns."""
+
+    moved: tuple[str, str] | None = None
 
 
 @dataclass
@@ -181,6 +194,10 @@ class RunDeps:
     pull_workspace: Callable[[], str] | None = None
     pull_state: PullState = field(default_factory=PullState)
     facts_bound: float = FACTS_BOUND_SECONDS
+    checkout_state: Callable[[], CheckoutState | None] | None = None  # None disables the restart check
+    started_checkout: CheckoutState | None = None
+    lands_in_flight: Callable[[], bool] = no_lands_in_flight
+    restart_state: RestartState = field(default_factory=RestartState)
     # Notifier: `notify` is `dispatch`'s call shape; `notify_config` None is the off state; no `workspace` skips the step.
     notify: Callable[[list, NotifyConfig | None, Path, float], list[str]] = dispatch
     notify_config: NotifyConfig | None = None
@@ -579,8 +596,29 @@ def _shutdown(deps: RunDeps, beating: threading.Event, restore: Callable[[], Non
         deps.release()
 
 
+def _moved_heads(deps: RunDeps) -> tuple[str, str] | None:
+    """The (old, new) heads when the checkout moved and no land is in flight; None to tick on. An unreadable state stays."""
+    if deps.checkout_state is None or deps.started_checkout is None:
+        return None
+    try:
+        current = deps.checkout_state()
+    except Exception:  # an unreadable checkout is no reason to restart
+        return None
+    decision = restart_decision(deps.started_checkout, current, deps.lands_in_flight())
+    return (deps.started_checkout.head, current.head) if decision.state == RESTART and current is not None else None
+
+
+def _restart(deps: RunDeps, moved: tuple[str, str]) -> None:
+    with contextlib.suppress(Exception):  # a broken echo must not keep the chair lease held
+        deps.report_deps.echo(restart_line(*moved))
+    deps.restart_state.moved = moved
+
+
 def run(once: bool, interval: float, dry_run: bool, deps: RunDeps, max_overruns: int = 3) -> None:
-    """Ticks until interrupted, SIGTERM or max_overruns overruns in a row, or once; a stop frees the lands, then the lease."""
+    """Ticks until interrupted, SIGTERM, max_overruns overruns in a row or a moved checkout, or once; a stop frees the lands, then the lease.
+
+    The checkout is read between ticks only, so a tick in progress finishes first; a land in flight defers the restart.
+    """
     restore = (lambda: None) if dry_run else deps.install_sigterm()
     beating = start_lease_beat(deps, dry_run)
     try:
@@ -592,6 +630,10 @@ def run(once: bool, interval: float, dry_run: bool, deps: RunDeps, max_overruns:
                 _shutdown(deps, beating, restore)
                 return
             deps.sleep(interval)
+            if not dry_run and (moved := _moved_heads(deps)) is not None:
+                _restart(deps, moved)
+                _shutdown(deps, beating, restore)
+                return
     except KeyboardInterrupt:
         _shutdown(deps, beating, restore)
     finally:
