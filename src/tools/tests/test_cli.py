@@ -48,8 +48,15 @@ def phase_runs_dir(tmp_path):
     return runs_dir
 
 
+def _land_repo(tmp_path):
+    """A repo on a branch: the land refuses a path that is no checkout or sits on a detached HEAD."""
+    repo = tmp_path / "repo"
+    sp.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+    return repo
+
+
 def test_phase_mode_dry_run_step_list_has_no_checkout_step(phase_runs_dir, tmp_path, capsys):
-    repo = tmp_path / "repo"; repo.mkdir()
+    repo = _land_repo(tmp_path)
     ns = _land_ns(repo=str(repo), phase="seams", runs_dir=str(phase_runs_dir))
     rc = cli._runs_land(ns)
     steps = json.loads(capsys.readouterr().out)
@@ -69,7 +76,7 @@ def test_phase_mode_dry_run_step_list_has_no_checkout_step(phase_runs_dir, tmp_p
 
 def test_phase_mode_resolves_a_short_id_to_the_run_the_phase_record_lives_under(phase_runs_dir, tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(cli.run_store, "resolve_id", lambda rd, token: {"run_id": "epic-x-5"} if token == "I999-1" else None)
-    repo = tmp_path / "repo"; repo.mkdir()
+    repo = _land_repo(tmp_path)
     ns = _land_ns(repo=str(repo), run_id="I999-1", phase="seams", runs_dir=str(phase_runs_dir))
     rc = cli._runs_land(ns)
     steps = json.loads(capsys.readouterr().out)
@@ -81,7 +88,7 @@ def test_phase_mode_resolves_a_short_id_to_the_run_the_phase_record_lives_under(
 def test_phase_mode_dry_run_never_touches_the_filesystem_for_its_checks_step(phase_runs_dir, tmp_path, capsys, monkeypatch):
     calls = []
     monkeypatch.setattr(cli.tempfile, "mkdtemp", lambda *a, **k: calls.append(1) or str(tmp_path / "unused"))
-    repo = tmp_path / "repo"; repo.mkdir()
+    repo = _land_repo(tmp_path)
     ns = _land_ns(repo=str(repo), phase="seams", runs_dir=str(phase_runs_dir))
     rc = cli._runs_land(ns)
     assert rc == 0
@@ -89,7 +96,7 @@ def test_phase_mode_dry_run_never_touches_the_filesystem_for_its_checks_step(pha
 
 
 def test_default_mode_selects_phase_when_neither_flag_is_given(phase_runs_dir, tmp_path, capsys):
-    repo = tmp_path / "repo"; repo.mkdir()
+    repo = _land_repo(tmp_path)
     ns = _land_ns(repo=str(repo), runs_dir=str(phase_runs_dir))
     rc = cli._runs_land(ns)
     steps = json.loads(capsys.readouterr().out)
@@ -100,8 +107,7 @@ def test_default_mode_selects_phase_when_neither_flag_is_given(phase_runs_dir, t
 
 
 def test_task_flag_forces_task_mode_even_when_the_phase_has_two_records(phase_runs_dir, tmp_path, capsys):
-    repo = tmp_path / "repo"; repo.mkdir()
-    sp.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+    repo = _land_repo(tmp_path)
     ns = _land_ns(repo=str(repo), task="seams-task", runs_dir=str(phase_runs_dir))
     rc = cli._runs_land(ns)
     steps = json.loads(capsys.readouterr().out)
@@ -131,7 +137,7 @@ def two_run_phase_dir(tmp_path):
 
 
 def test_phase_mode_lands_seven_tasks_split_across_an_earlier_and_the_current_run(two_run_phase_dir, tmp_path, capsys):
-    repo = tmp_path / "repo"; repo.mkdir()
+    repo = _land_repo(tmp_path)
     ns = _land_ns(run_id="x-3", repo=str(repo), phase="seams", runs_dir=str(two_run_phase_dir))
     rc = cli._runs_land(ns)
     steps = json.loads(capsys.readouterr().out)
@@ -156,7 +162,7 @@ def test_resolved_gate_level_reads_an_unknown_level_as_ticket_not_full(tmp_path)
 
 def test_absent_policy_truncates_the_dry_run_plan_at_ticket(phase_runs_dir, tmp_path, capsys):
     (phase_runs_dir / "policy.gate.json").unlink()
-    repo = tmp_path / "repo"; repo.mkdir()
+    repo = _land_repo(tmp_path)
     rc = cli._runs_land(_land_ns(repo=str(repo), runs_dir=str(phase_runs_dir)))
     steps = json.loads(capsys.readouterr().out)
     assert rc == 0
@@ -164,7 +170,7 @@ def test_absent_policy_truncates_the_dry_run_plan_at_ticket(phase_runs_dir, tmp_
 
 
 def test_gate_flag_overrides_the_resolved_level_and_prints_that_it_did(phase_runs_dir, tmp_path, capsys):
-    repo = tmp_path / "repo"; repo.mkdir()
+    repo = _land_repo(tmp_path)
     rc = cli._runs_land(_land_ns(repo=str(repo), runs_dir=str(phase_runs_dir), gate="ticket"))
     first_line, _, rest = capsys.readouterr().out.partition("\n")
     assert first_line == "land: --gate ticket overrides the resolved level"

@@ -195,6 +195,8 @@ runs_move = _LazyModule("agent_tools.runs_move")
 runs_stop = _LazyModule("agent_tools.runs_stop")
 runs_stranded = _LazyModule("agent_tools.runs_stranded")
 base_branch = _LazyModule("agent_tools.base_branch")
+land_checkout_guard = _LazyModule("agent_tools.land_checkout_guard")
+repo_clone = _LazyModule("agent_tools.repo_clone")
 land_manual = _LazyModule("agent_tools.land_manual")
 runs_top = _LazyModule("agent_tools.runs_top")
 runs_top_screen = _LazyModule("agent_tools.runs_top_screen")
@@ -3153,6 +3155,16 @@ def _runs_land(a: argparse.Namespace) -> int:
     except route.ProfileError as exc:
         print(f"land: profile unreadable: {exc}")
         return 2
+    checked = land_checkout_guard.verdict(
+        _repo_is_detached(repo),
+        land_checkout_guard.is_install_managed(str(repo), _install_roots(profile)),
+        repo_clone.working_clone(profile),
+    )
+    if checked.refusal:
+        print(f"land: refusing, {checked.refusal}")
+        return 2
+    if checked.notice:
+        print(f"land: {checked.notice}")
     try:
         default_branch = base_branch.base_ref(str(repo), getattr(a, "base", None)).removeprefix("origin/")
     except base_branch.BaseError as exc:
@@ -11837,6 +11849,17 @@ def _host_repos(profile: Mapping) -> list[str]:
     harness = str(Path(profile["harness_dir"]).expanduser()) if profile.get("harness_dir") else ""
     paths = [p for p in (harness, _cartridges_checkout(profile), str(Path(__file__).resolve().parents[1])) if p]
     return install_root.collapse_to_checkouts(paths, {p: install_root.checkout_root(p) for p in paths})
+
+
+def _repo_is_detached(repo: Path) -> bool:
+    """Edge: True when `git symbolic-ref -q HEAD` fails; a path that is no checkout reads as detached too."""
+    return subprocess.run(["git", "-C", str(repo), "symbolic-ref", "-q", "HEAD"], capture_output=True).returncode != 0
+
+
+def _install_roots(profile: Mapping) -> list[str]:
+    """Edge: the checkouts the chair runs from: `umbrella_dir`, the monorepo checkout, and the host repos."""
+    roots = [profile.get("umbrella_dir"), _profile_checkout(profile), *_host_repos(profile)]
+    return [str(r) for r in roots if r]
 
 
 def _origin_url(path: str) -> str | None:
