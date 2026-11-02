@@ -197,6 +197,17 @@ def _governance_line(hits: list[str], *, label: str = "") -> str:
     )
 
 
+def epic_summary_line(run_id: str, totals: Mapping[str, int]) -> str:
+    """The end-of-run epic line; a missing total counts as 0."""
+    return (
+        f"\nepic {run_id}: {totals.get('phases_complete', 0)} phase(s) complete, "
+        f"{totals.get('phases_partial', 0)} partial, {totals.get('phases_blocked', 0)} blocked, "
+        f"{totals.get('phases_awaiting_land', 0)} awaiting land, "
+        f"{totals.get('tasks_quarantined', 0)} task(s) quarantined, "
+        f"{totals.get('stacks_rebased', 0)} stack(s) rebased"
+    )
+
+
 def _build_parser(specs: dict[str, GraphSpec]) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="shell.py",
@@ -1320,12 +1331,7 @@ def _run_graph(
             base=getattr(args, "base", None),
         )
         totals = result.get("totals") or {}
-        print(
-            f"\nepic {run_id}: {totals.get('phases_complete', 0)} phase(s) complete, "
-            f"{totals.get('phases_partial', 0)} partial, {totals.get('phases_blocked', 0)} blocked, "
-            f"{totals.get('tasks_quarantined', 0)} task(s) quarantined, "
-            f"{totals.get('stacks_rebased', 0)} stack(s) rebased"
-        )
+        print(epic_summary_line(run_id, totals))
         for entry in result.get("quarantined") or []:
             print(f"  quarantined {entry.get('grain')}: {entry.get('id')} — {entry.get('reason')}", file=sys.stderr)
         print(f"  phases   : recorded in the run store under {run_id}")
