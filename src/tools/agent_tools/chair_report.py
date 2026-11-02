@@ -19,11 +19,13 @@ from agent_tools.notify import Notification
 from agent_tools.queue_export import is_ahead_of_store
 
 __all__ = [
-    "EASTERN", "Deps", "echo_line", "failed_items", "fetched_items", "file_ahead_items", "format_status",
+    "EASTERN", "REASON_LINE_CAP", "Deps", "echo_line", "failed_items", "fetched_items", "file_ahead_items", "format_status",
     "housekeeping_fragment",
-    "landing_items", "lands_this_tick", "launched_items", "mode_of", "needs_chair_items", "partial_land_text",
-    "steered_items", "waiting_item", "would_items", "write_status",
+    "landing_items", "lands_this_tick", "launched_items", "mode_of", "needs_chair_items",
+    "partial_land_text", "reason_tail", "steered_items", "waiting_item", "would_items", "write_status",
 ]
+
+REASON_LINE_CAP = 80  # characters of a failed result's reason the one status line carries
 
 
 @dataclass(frozen=True)
@@ -115,13 +117,24 @@ def launched_items(results: Sequence[Result]) -> list[str]:
     ]
 
 
+def reason_tail(reason: str) -> str:
+    """The last non-blank line of `reason`, cut to its last REASON_LINE_CAP characters; "" when there is none."""
+    lines = [line.strip() for line in reason.splitlines() if line.strip()]
+    return lines[-1][-REASON_LINE_CAP:] if lines else ""
+
+
+def _failed_item(result: Result) -> str:
+    label = f"{result['action'].get('kind')}:{_target(result['action'])}"
+    tail = reason_tail(result.get("reason", ""))
+    return f"{label}: {tail}" if tail else label
+
+
 def failed_items(results: Sequence[Result]) -> list[str]:
-    """`<kind>:<task or initiative>` for every refused, failed or not_landed result; a land_phase is `<initiative>/<phase>`."""
-    return [
-        f"{r['action'].get('kind')}:{_target(r['action'])}"
-        for r in results
-        if r["status"] in ("refused", "failed", "not_landed")
-    ]
+    """`<kind>:<task or initiative>` for every refused, failed or not_landed result; a land_phase is `<initiative>/<phase>`.
+
+    A result with a reason adds `: <last line of the reason>`, so the error text is readable.
+    """
+    return [_failed_item(r) for r in results if r["status"] in ("refused", "failed", "not_landed")]
 
 
 def steered_items(results: Sequence[Result]) -> list[str]:

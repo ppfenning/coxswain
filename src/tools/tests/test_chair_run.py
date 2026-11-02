@@ -228,6 +228,37 @@ def test_a_failure_after_perform_names_what_was_performed():
     assert rig.lines[1:] == ["chair 09-26 14:05 EDT | tick error: KeyError: 'dispatch' | performed: land:landed"]
 
 
+def _refused_land_rig(output):
+    rig = Rig()
+    rig._run = lambda argv: (1, output)
+    land = {"kind": "land_phase", "initiative": "ind", "phase": "p1", "repo": "r", "run": "ind-1", "epoch": 3}
+    deps = replace(rig.deps(), plan=lambda f, n: [land])
+    return rig, deps
+
+
+def test_a_failed_land_phase_puts_its_reason_in_the_journal_line_and_the_recorded_action():
+    rig, deps = _refused_land_rig("land: refusing, working tree is dirty")
+    run(True, 60, False, deps)
+    assert "land_phase:ind/p1: land: refusing, working tree is dirty" in rig.lines[1]
+    recorded = [r for r in rig.recorded if r.get("kind") == "land_phase"]
+    assert len(recorded) == 1 and "working tree is dirty" in recorded[0]["reason"]
+
+
+def test_the_recorded_reason_keeps_only_its_last_600_characters():
+    rig, deps = _refused_land_rig("a" * 2000 + "\nthe failing frame")
+    run(True, 60, False, deps)
+    recorded = next(r for r in rig.recorded if r.get("kind") == "land_phase")
+    assert len(recorded["reason"]) <= 600 and recorded["reason"].endswith("the failing frame")
+    assert "the failing frame" in rig.lines[1]
+
+
+def test_a_tick_error_names_the_reason_of_a_failed_result_it_performed():
+    failed = {"action": {"kind": "land_phase"}, "status": "not_landed", "reason": "boom\nmerge conflict"}
+    landed = {"action": {"kind": "land"}, "status": "landed", "reason": "merge: ok"}
+    line = error_line(ValueError("x"), NOW, [failed, landed])
+    assert line.endswith("| performed: land_phase:not_landed (merge conflict), land:landed")
+
+
 def test_a_raising_notify_is_echoed_and_the_next_tick_still_runs():
     rig = Rig(sleeps_before_interrupt=2)
 

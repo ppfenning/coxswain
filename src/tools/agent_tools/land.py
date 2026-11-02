@@ -392,7 +392,8 @@ def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_
                 pr_facts: dict[str, Any] | None = None, *, branches: Mapping[str, list[str]] | None = None,
                 repo: str = "", run_hosts: Mapping[str, str] | None = None,
                 fetched_missing: Collection[str] = (),
-                task_facts: Sequence[Mapping[str, Any]] | None = None) -> list[dict[str, Any]]:
+                task_facts: Sequence[Mapping[str, Any]] | None = None,
+                already_merged: bool = False) -> list[dict[str, Any]]:
     """§1's phase step list, or a one-step `refuse` from `phase_landable`. The
     phase branch is squashed onto a fresh `default_branch` in its own PR
     branch, the way a task land builds its PR, since a coxswain repo requires
@@ -406,7 +407,10 @@ def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_
     is unknown and squashes. `task_facts` (see `task_gather_status`), one per
     approved task, makes the plan refuse naming every `missing` task, and
     gathers each task the phase branch lacks onto the PR branch after the
-    squash of the ones it holds."""
+    squash of the ones it holds. `already_merged` is a fact the caller
+    supplies (the phase PR is merged, or its commit is on `default_branch` by
+    patch-id); nothing is read here. When set, the plan is `clean_phase`
+    then one `mark_done` per landed task, with no build or merge steps."""
     records = {r.get("task"): r for r in task_records}
     refusal = phase_landable(items, records)
     if refusal is not None:
@@ -420,6 +424,10 @@ def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_
     # A `note`, not a phase-level `mark_done`: cli `_land_enrich` reads `step["task"]` on every mark_done.
     if not landed_tasks and all(item.get("status") in ("done", "dropped") for item in items):
         return [{"kind": "note", "reason": f"phase {phase} done: every item is done or dropped, nothing to land"}]
+    if already_merged:
+        clean = {"kind": "clean_phase", "run": run, "phase_branch": phase_branch, "pr_branch": pr_branch,
+                 "tasks": landed_tasks}
+        return [clean, *[{"kind": "mark_done", "task": t} for t in landed_tasks]]
     squash_step = {"kind": "squash_phase", "branch": phase_branch, "onto": pr_branch, "from": default_branch,
                    "subject": f"epic {initiative}: {phase}"}
     approved_files = _phase_approved_files(items, records)
@@ -529,8 +537,9 @@ def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_br
               run_hosts: Mapping[str, str] | None = None,
               fetched_missing: Collection[str] = (),
               task_facts: Sequence[Mapping[str, Any]] | None = None, scope: str = "all",
-              reference: str | None = None) -> list[dict[str, Any]]:
-    """The ordered steps to land `record`, or a one-step `refuse`. Under a `scope` other than `all` (task mode),
+              reference: str | None = None, already_merged: bool = False) -> list[dict[str, Any]]:
+    """The ordered steps to land `record`, or a one-step `refuse`. Phase mode only: `already_merged` plans
+    just the clean and the mark_done steps. Under a `scope` other than `all` (task mode),
     the PR body carries `reference` alone, nothing syncs before the PR, and the closing sync runs only for a
     task whose `issue` was set by hand. Phase mode carries no issue line under any scope (`phase_pr_body`
     has none), so `Part of` and the last-task `Closes` apply to task-mode lands only. Phase mode
@@ -543,7 +552,8 @@ def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_br
     plans neither and says so in a note."""
     if items is not None:
         return _phase_plan(record, items, task_records or [], repo_facts, default_branch, phase_pr, branches=branches,
-                           repo=repo, run_hosts=run_hosts, fetched_missing=fetched_missing, task_facts=task_facts)
+                           repo=repo, run_hosts=run_hosts, fetched_missing=fetched_missing, task_facts=task_facts,
+                           already_merged=already_merged)
     if _proposal(record, "draft_pr_create") is None:
         return [{"kind": "refuse", "reason": "no draft_pr_create proposal in record"}]
     refusal = _approved(record)
