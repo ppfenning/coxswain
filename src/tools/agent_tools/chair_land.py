@@ -131,6 +131,11 @@ class LandWorker:
         for repo, land, handle in claimed:
             threading.Thread(target=self._land_loop, args=(repo, land, handle), daemon=True).start()
 
+    def in_flight(self) -> bool:
+        """True while any land runs or is queued, including one held by a paused gate: exiting would drop it."""
+        with self._mutex:
+            return bool(self._running) or any(self._queues.values())
+
     def _claim(self, repo: str) -> tuple[Land, LandHandle]:
         """Caller holds the mutex. Counts one more land running in the repo and returns its oldest held land."""
         land, handle = self._queues[repo].popleft()

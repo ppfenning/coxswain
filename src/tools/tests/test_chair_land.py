@@ -1,4 +1,5 @@
 import threading
+import time
 from pathlib import Path
 
 from agent_tools import chair_land, land_repo_lease, store_cli
@@ -184,6 +185,64 @@ def test_a_land_already_running_is_not_interrupted_by_a_pause_and_the_land_behin
     assert behind.handle.wait(5)
     fake_time.ticks.release(10)
     assert behind.handle.result() == chair_land.LandResult("behind", None, None)
+
+
+def test_a_fresh_worker_has_no_land_in_flight():
+    worker, _ = make_worker(lambda: None)
+    assert worker.in_flight() is False
+
+
+def test_a_submitted_land_blocked_on_an_event_is_in_flight():
+    worker, fake_time = make_worker(lambda: None)
+    release = threading.Event()
+    submitted = worker.submit("/repo", lambda: release.wait(5))
+    assert worker.in_flight() is True
+
+    release.set()
+    assert submitted.handle.wait(5)
+    fake_time.ticks.release(10)
+
+
+def test_a_land_queued_behind_a_running_one_keeps_the_worker_in_flight():
+    worker, fake_time = make_worker(lambda: None)
+    release = threading.Event()
+    running = worker.submit("/repo", lambda: release.wait(5))
+    behind = worker.submit("/repo", lambda: "behind")
+    assert behind.outcome == chair_land.Queued(1)
+    assert worker.in_flight() is True
+
+    release.set()
+    assert running.handle.wait(5) and behind.handle.wait(5)
+    fake_time.ticks.release(10)
+
+
+def test_a_land_held_by_a_paused_gate_is_in_flight():
+    worker, fake_time = make_worker(lambda: None)
+    held = worker.submit("/repo", lambda: "held", PAUSED)
+    assert held.outcome == chair_land.Queued(1)
+    assert worker.in_flight() is True
+
+    worker.tick(chair_land.UNPAUSED)
+    assert held.handle.wait(5)
+    fake_time.ticks.release(10)
+
+
+def test_in_flight_is_false_once_the_land_finishes_and_its_handle_resolves():
+    worker, fake_time = make_worker(lambda: None)
+    submitted = worker.submit("/repo", lambda: "landed")
+    assert submitted.handle.wait(5)
+    fake_time.ticks.release(10)
+    # The handle resolves before the worker clears its running count, so poll briefly.
+    deadline = time.monotonic() + 5
+    while worker.in_flight() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert worker.in_flight() is False
+
+
+def test_a_stopped_worker_with_nothing_running_is_not_in_flight():
+    worker, _ = make_worker(lambda: None)
+    worker.stop()
+    assert worker.in_flight() is False
 
 
 def test_two_lands_in_one_repo_with_limit_two_are_both_running_at_once():
