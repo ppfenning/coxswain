@@ -8,6 +8,8 @@ from itertools import pairwise
 from pathlib import Path
 from xml.sax.saxutils import escape
 
+from agent_tools.chair_restart import RESTART_EXIT_CODE
+
 UNIT_NAME = "coxswain-chair.service"
 WATCHDOG_SERVICE_NAME = "coxswain-chair-watchdog.service"
 WATCHDOG_TIMER_NAME = "coxswain-chair-watchdog.timer"
@@ -66,6 +68,7 @@ def unit_text(
         *path_lines,
         *env_lines,
         "Restart=on-failure",
+        f"RestartForceExitStatus={RESTART_EXIT_CODE}",
         "RestartSec=30",
         "",
         "[Install]",
