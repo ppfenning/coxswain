@@ -1708,6 +1708,28 @@ def test_lint_items_checks_surfaces_only_when_checkout_is_given():
     assert [p.rule for p in problems] == ["surface_missing"]
 
 
+def _lint_surfaces(*surfaces):
+    return route.lint_items(_surface_item(*surfaces), "acme/widgets", (), checkout=(_SURFACE_PATHS, _SURFACE_OTHERS))
+
+
+def test_lint_items_missing_plain_surface_fix_says_to_add_new_marker():
+    problems = _lint_surfaces("agent_tools/nope.py")
+    assert [p.rule for p in problems] == ["surface_missing"]
+    assert "add" in problems[0].fix and "(new)" in problems[0].fix
+
+
+def test_lint_items_new_marked_missing_surface_is_clean():
+    assert _lint_surfaces("agent_tools/nope.py (new)") == []
+
+
+def test_lint_items_plain_surface_in_listing_is_clean():
+    assert _lint_surfaces("agent_tools/route.py") == []
+
+
+def test_lint_items_missing_path_under_other_repo_directory_is_wrong_repo_only():
+    assert [p.rule for p in _lint_surfaces("harness/missing.py")] == ["surface_wrong_repo"]
+
+
 @pytest.mark.parametrize(
     ("first", "second", "surface"),
     [

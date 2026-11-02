@@ -631,6 +631,54 @@ def test_a_missing_non_test_surface_fails_the_node_as_invalid_output(cart) -> No
         )
 
 
+MARK_TREE = [{"repo": "g", "path": "pkg/a.py"}]
+
+
+def _surfaced(*surfaces: str) -> list[dict]:
+    return [{"id": "t1", "surfaces": list(surfaces)}]
+
+
+def test_a_missing_module_in_an_existing_directory_is_marked_new() -> None:
+    tasks = _surfaced("pkg/b.py")
+    marked, failures = initiative_decompose._validate_plan_surfaces(tasks, MARK_TREE)
+    assert marked[0]["surfaces"] == ["pkg/b.py (new)"]
+    assert failures == []
+    assert tasks == _surfaced("pkg/b.py")
+
+
+def test_a_missing_module_at_the_repository_root_is_marked_new() -> None:
+    marked, _ = initiative_decompose._validate_plan_surfaces(_surfaced("setup.py"), MARK_TREE)
+    assert marked[0]["surfaces"] == ["setup.py (new)"]
+
+
+def test_a_surface_under_an_absent_directory_names_its_missing_parent() -> None:
+    with pytest.raises(ContractViolation, match=r"t1.*nope/b\.py.*parent directory nope is missing"):
+        initiative_decompose._validate_plan_surfaces(_surfaced("nope/b.py"), MARK_TREE)
+
+
+def test_a_plain_surface_that_exists_is_unchanged() -> None:
+    marked, _ = initiative_decompose._validate_plan_surfaces(_surfaced("pkg/a.py"), MARK_TREE)
+    assert marked[0]["surfaces"] == ["pkg/a.py"]
+
+
+def test_a_surface_already_marked_new_is_unchanged_and_not_counted_as_prose() -> None:
+    marked, _ = initiative_decompose._validate_plan_surfaces(_surfaced("pkg/c.py (new)"), MARK_TREE)
+    assert marked[0]["surfaces"] == ["pkg/c.py (new)"]
+    assert initiative_decompose._unresolved_pairs(marked, MARK_TREE) == []
+
+
+def test_decompose_marks_a_missing_module_new_end_to_end(cart) -> None:
+    decomposition = {
+        **DECOMPOSITION,
+        "tasks": [{"id": "t1", "phase": "p1", "title": "a", "body": "b", "needs": [], "surfaces": ["pkg/b.py"]}],
+    }
+    result = initiative_decompose.run(
+        {"run_id": "r", "date": "d", "cartridge": cart, "idea": "x", "tree": MARK_TREE},
+        ScriptedRunner({"decompose": decomposition}),
+    )
+    assert result["tasks"][0]["surfaces"] == ["pkg/b.py (new)"]
+
+
 def test_a_needs_entry_naming_a_task_absent_from_the_plan_is_dropped(cart) -> None:
     decomposition = {
         **DECOMPOSITION,

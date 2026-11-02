@@ -2631,7 +2631,7 @@ def test_route_lint_refuses_chair_nope_in_the_task_rule_detail_fix_line_coupling
     rc, out = _lint(initiative_dir, repo, capsys)
     assert (rc, out.splitlines()) == (2, [
         "t1 surface_missing: t1 surfaces agent_tools/chair_nope.py, which is not in the repository"
-        " -> correct the path, or mark it ' (new)' if the build creates it",
+        " -> add '(new)' after the path if the task creates it, otherwise correct the path",
     ])
 
 

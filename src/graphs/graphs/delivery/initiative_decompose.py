@@ -63,8 +63,11 @@ __all__ = [
 _PATH_TOKEN = re.compile(r"^[\w.\-]+(?:/[\w.\-]+)*$")
 
 
+_NEW = " (new)"
+
+
 def _looks_like_a_surface(entry: str) -> bool:
-    body = entry[: -len(" (new)")] if entry.endswith(" (new)") else entry
+    body = entry[: -len(_NEW)] if entry.endswith(_NEW) else entry
     if not _PATH_TOKEN.match(body):
         return False
     return "/" in body or bool(re.search(r"\.[A-Za-z0-9]{1,5}$", body)) or body.isupper()
@@ -482,7 +485,7 @@ def _unresolved_pairs(tasks: Sequence[Mapping[str, Any]], tree: Sequence[Mapping
     return [
         f"{task['id']}: {surface}"
         for task in tasks
-        for surface in resolve_surfaces(task.get("surfaces") or [], tree)[1]
+        for surface in resolve_surfaces([s for s in task.get("surfaces") or [] if not s.endswith(_NEW)], tree)[1]
     ]
 
 
@@ -499,17 +502,39 @@ def _tests_replacement(surface: str, tree: Sequence[Mapping[str, Any]]) -> str |
     )
 
 
+def _mark_new_surfaces(
+    tasks: Sequence[Mapping[str, Any]], tree: Sequence[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    """New task dicts; a path-shaped surface matching no tree path gets ' (new)'.
+
+    The parent directory must exist in the tree (some path starts with it plus
+    a slash) or be the repository root. Otherwise the surface names the wrong
+    place, and ContractViolation says the parent directory is missing.
+    """
+    paths = [str(row.get("path")) for row in tree]
+
+    def mark(task_id: Any, surface: str) -> str:
+        if surface.endswith(_NEW) or not _looks_like_a_surface(surface) or not resolve_surfaces([surface], tree)[1]:
+            return surface
+        parent = surface.rsplit("/", 1)[0] if "/" in surface else ""
+        if not parent or any(path.startswith(parent + "/") for path in paths):
+            return surface + _NEW
+        raise ContractViolation(f"{task_id}: {surface}: not in the checkout and its parent directory {parent} is missing")
+
+    return [dict(task, surfaces=[mark(task["id"], s) for s in task.get("surfaces") or []]) for task in tasks]
+
+
 def _validate_plan_surfaces(
     tasks: list[dict[str, Any]], tree: Sequence[Mapping[str, Any]]
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """New task dicts with a real `tests/` path swapped in for a misplaced one; `(task, surface)` hard failures.
+    """New task dicts with a real `tests/` path swapped in for a misplaced one, then new files marked; `(task, surface)` failures.
 
     Runs ahead of the prose-oriented resolution below: a surface that is
     `(new)`, is not path-shaped, or already resolves against `tree` is left
     for that code to handle exactly as it does today. What is left is a
-    well-formed path that simply names the wrong location — a build defect,
-    not prose for the adversary to interpret, so a `tests/` rename is
-    corrected here and anything else fails the node outright.
+    well-formed path: a `tests/` rename is corrected here, and any other
+    unmatched path is marked `(new)` or, with no parent directory, refused.
+    The failure list is kept for the callers' signature and is always empty.
     """
     new_tasks: list[dict[str, Any]] = []
     failures: list[str] = []
@@ -531,13 +556,12 @@ def _validate_plan_surfaces(
                 continue
             replacement = _tests_replacement(candidate, tree)
             if replacement is None:
-                failures.append(f"{task['id']}: {surface}")
                 new_surfaces.append(surface)
                 continue
             fixes.append(f"{surface} -> {replacement}")
             new_surfaces.append(replacement)
         new_tasks.append(dict(task, surfaces=new_surfaces, surface_fixes=fixes))
-    return new_tasks, failures
+    return _mark_new_surfaces(new_tasks, tree), failures
 
 
 def _drop_foreign_needs(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
