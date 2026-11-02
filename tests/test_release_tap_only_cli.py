@@ -20,6 +20,13 @@ repo = "ppfenning/coxswain-dash"
 tag = "v0.42.0"
 """
 _INDEX = {"urls": [{"packagetype": "sdist", "url": f"https://x/coxswain-{V}.tar.gz", "digests": {"sha256": "b" * 64}}]}
+_WHEELS = "https://files/psycopg_binary-3.3.6-cp313-cp313-"
+_PSYCOPG_DOCS = {
+    "https://pypi.org/pypi/psycopg/3.3.6/json": {"urls": [
+        {"packagetype": "sdist", "url": "https://files/psycopg-3.3.6.tar.gz", "digests": {"sha256": "3" * 64}}]},
+    "https://pypi.org/pypi/psycopg-binary/3.3.6/json": {"urls": [
+        {"packagetype": "bdist_wheel", "python_version": "cp313", "url": _WHEELS + tail, "digests": {"sha256": "4" * 64}}
+        for tail in ("macosx_11_0_arm64.whl", "manylinux_2_17_x86_64.whl")]}}
 
 
 def _fake_run(fail_on=None):
@@ -62,7 +69,10 @@ def _release_tap_only(tmp_path, monkeypatch, umbrella_tags=(f"v{V}",), fail_on=N
     manifest_path.write_text(_MANIFEST)
     tap = tmp_path / release.TAP_CHECKOUT
     (tap / "Formula").mkdir(parents=True)
-    (tap / "Formula" / "cox.rb").write_text("formula\n")
+    (tap / "Formula" / "cox.rb").write_text('depends_on "python@3.13"\n')
+    pins = tmp_path / "coxswain" / "src" / "tools" / "agent_tools" / "extras-requirements.txt"
+    pins.parent.mkdir(parents=True)
+    pins.write_text("psycopg==3.3.6\npsycopg-binary==3.3.6 ; implementation_name != 'pypy'\n")
     calls, run = _fake_run(fail_on)
     events: list = []
     read = repos if repos is not None else []
@@ -75,7 +85,7 @@ def _release_tap_only(tmp_path, monkeypatch, umbrella_tags=(f"v{V}",), fail_on=N
     monkeypatch.setattr(cli, "_maintainer_remote_url", lambda directory: "git@github.com:ppfenning/coxswain.git")
     monkeypatch.setattr(cli, "_release_execute", lambda *a: execute(
         *a, sleep=lambda s: None, now=iter(range(0, 10**9, 60)).__next__,
-        fetch_index=lambda url: _INDEX, fetch_text=lambda url: "a" * 64 + "  asset\n"))
+        fetch_index=lambda url: _PSYCOPG_DOCS.get(url, _INDEX), fetch_text=lambda url: "a" * 64 + "  asset\n"))
     monkeypatch.setattr(release, "bumped_formula_text", lambda text, *a, **k: text)
     monkeypatch.setattr(cli, "_notify_config", lambda path: (NotifyConfig("http://unused"), tmp_path / "sent.json"))
     _spy_dispatch(monkeypatch, events)
