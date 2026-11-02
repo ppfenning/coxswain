@@ -151,6 +151,14 @@ def _row_changes(row: Mapping[str, Any], home: str, move: tuple[str, str] | None
     return repos + _moves(key, row.get("surfaces") or [], migrated.get("surfaces") or [])
 
 
+def _is_open(state: Any) -> bool:
+    return state not in route.TERMINAL
+
+
+def _file_is_open(text: str) -> bool:
+    return _is_open(route.parse_frontmatter(text)[0].get("state"))
+
+
 def _text_changes(path: str, text: str, home: str, move: tuple[str, str] | None) -> list[Change]:
     migrated = migrate_text(text, home, move=move)
     if migrated is None:
@@ -166,15 +174,27 @@ def plan(
     home: str,
     *,
     move: tuple[str, str] | None = None,
+    open_only: bool = False,
 ) -> list[Change]:
-    """Every value that would move: rows in the order given, then files by sorted path."""
-    from_rows = [c for row in rows for c in _row_changes(row, home, move)]
-    from_files = [c for path in sorted(files) for c in _text_changes(path, files[path], home, move)]
+    """Every value that would move: rows in the order given, then files by sorted path.
+
+    With `open_only`, records in a `route.TERMINAL` state contribute nothing; no state counts as open.
+    """
+    open_rows = [row for row in rows if not open_only or _is_open(row.get("state"))]
+    open_paths = [p for p in sorted(files) if not open_only or _file_is_open(files[p])]
+    from_rows = [c for row in open_rows for c in _row_changes(row, home, move)]
+    from_files = [c for path in open_paths for c in _text_changes(path, files[path], home, move)]
     return from_rows + from_files
 
 
 def move_changes(
-    rows: Sequence[Mapping[str, Any]], files: Mapping[str, str], home: str, old: str, new: str
+    rows: Sequence[Mapping[str, Any]],
+    files: Mapping[str, str],
+    home: str,
+    old: str,
+    new: str,
+    *,
+    open_only: bool = False,
 ) -> list[Change]:
     """What `plan` returns when tilde prefix `old` is swapped for `new` after contraction."""
-    return plan(rows, files, home, move=(old, new))
+    return plan(rows, files, home, move=(old, new), open_only=open_only)

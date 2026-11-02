@@ -175,3 +175,54 @@ def test_calls_without_move_return_the_same_changes():
     expected = [{"key": "task:init/t1", "old": ABS_TOOLS, "new": OLD}]
     assert m.plan(rows, files, HOME) == expected
     assert m.plan(rows, files, HOME, move=None) == expected
+
+
+STATES = ["ready", "building", "approved", "done", "dropped"]
+OPEN_STATES = STATES[:3]
+
+
+def _state_row(state):
+    return dict(_row(OLD, [OLD + "/" + TOOLS_FILE], task_id=state), state=state)
+
+
+def _state_ticket(state):
+    return _ticket(OLD + "/" + TOOLS_FILE).replace("state: ready", "state: " + state, 1)
+
+
+def _state_inputs(states):
+    rows = [_state_row(s) for s in states]
+    files = {f"i/{s}.md": _state_ticket(s) for s in states}
+    return rows, files
+
+
+def _keys(changes):
+    return {c["key"] for c in changes}
+
+
+def _expected_keys(states):
+    return {f"task:init/{s}" for s in states} | {f"i/{s}.md" for s in states}
+
+
+def test_open_only_skips_done_and_dropped():
+    rows, files = _state_inputs(STATES)
+    out = m.plan(rows, files, HOME, move=(OLD, NEW), open_only=True)
+    assert _keys(out) == _expected_keys(OPEN_STATES)
+
+
+def test_default_plan_still_lists_every_state():
+    rows, files = _state_inputs(STATES)
+    everything = m.plan(rows, files, HOME, move=(OLD, NEW))
+    assert _keys(everything) == _expected_keys(STATES)
+    assert m.plan(rows, files, HOME, move=(OLD, NEW), open_only=False) == everything
+    assert m.move_changes(rows, files, HOME, OLD, NEW) == everything
+    assert m.move_changes(rows, files, HOME, OLD, NEW, open_only=True) == m.plan(
+        rows, files, HOME, move=(OLD, NEW), open_only=True
+    )
+
+
+def test_open_only_counts_missing_state_as_open():
+    row = _row(OLD)
+    del row["state"]
+    files = {"i/initiative.md": _initiative(OLD)}
+    out = m.plan([row], files, HOME, move=(OLD, NEW), open_only=True)
+    assert _keys(out) == {"task:init/t1", "i/initiative.md"}
