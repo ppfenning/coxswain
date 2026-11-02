@@ -191,6 +191,30 @@ def test_a_task_is_cleared_when_the_gate_approved_it_or_the_policy_applied_it() 
     assert ids(proposals, [], []) == set()
 
 
+def test_phase_dirs_yields_each_phase_directory_once_for_unapproved_tasks() -> None:
+    proposals, _ = approved("t1", "t2")
+    proposals.append({"kind": "item_create", "target": "t3", "evidence": [{"check": "phase", "output": "p2"}]})
+    dirs = initiative_decompose.phase_dirs(proposals, landing="work", initiative_id="demo")
+    assert dirs == ["work/demo/p1", "work/demo/p2"]
+
+
+def test_phase_dirs_skips_the_initiative_proposal() -> None:
+    initiative = [{"kind": "item_create", "target": "initiative", "evidence": [{"check": "phase", "output": "p1"}]}]
+    assert initiative_decompose.phase_dirs(initiative, landing="work", initiative_id="demo") == []
+
+
+def test_phase_dirs_without_an_initiative_id_is_landing_relative() -> None:
+    proposals, _ = approved("t1")
+    assert initiative_decompose.phase_dirs(proposals, landing="work", initiative_id=None) == ["work/p1"]
+
+
+def test_withdrawal_returns_only_tasks_new_to_this_run_and_only_when_something_is_missing() -> None:
+    withdraw = initiative_decompose.withdrawal
+    assert withdraw(["a", "b", "c"], {"b"}, ["c"]) == ["a", "c"]
+    assert withdraw(["a", "b"], {"a", "b"}, ["a"]) == []
+    assert withdraw(["a", "b"], set(), []) == []
+
+
 def test_the_closing_line_counts_a_task_written_only_when_it_is_in_both_places() -> None:
     close = initiative_decompose.decompose_closing
     assert close(["a", "b"], {"a", "b"}, {"a", "b"}) == ("decompose: 2 task(s) written, 0 missing:", 0)
