@@ -7,7 +7,8 @@
 An initiative edit writes its title, body and frontmatter into the store's initiative row first, when there is one, then
 rewrites `work/<id>/initiative.md`. An initiative's task rows are not touched.
 `live_runs` is required, with no default, so a caller cannot skip the live-run check by omission. Build it as
-`{lane.run for lane in run_store.live_lanes(runs_dir, now)}`; a lane carries no initiative, so the guard refuses on any live run.
+`{lane.run for lane in run_store.live_lanes(runs_dir, now)}` and narrow it to the runs recorded on the edited initiative;
+a run with no readable record stays in the set, and the guard refuses on any run in it.
 A store that cannot take an intake's row is one printed warning from `route.write_filed_item` and the file is still written.
 A task ticket (a `work_items` row that `resolve_target` does not name) is edited store first. `--state` goes through
 `store_cli.set_state`, the single writer for work state, with a compare-and-set on the state the edit read; a move out of
