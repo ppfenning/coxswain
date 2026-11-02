@@ -10,6 +10,7 @@ import pytest
 
 from agent_tools import chair_exec, chair_report
 from agent_tools.chair_plan import TickPlan, plan_tick
+from agent_tools.chair_restart import CheckoutState
 from agent_tools.chair_run import (
     DEFAULT_INTERVAL,
     PROFILE_STALE_NOTE,
@@ -629,6 +630,77 @@ def test_a_limit_of_zero_never_stops_on_overruns():
     finally:
         release.set()
     assert (len(calls), deps.overrun_state.consecutive) == (5, 5)
+
+
+OLD, NEW = "a" * 40, "b" * 40
+ON_OLD = CheckoutState(OLD, True)
+
+
+def _checkout(rig, states, in_flight=None, started=ON_OLD, **over):
+    """Deps whose checkout read pops `states` in turn (the last one repeats); `reads` counts them."""
+    reads = []
+
+    def read():
+        reads.append(1)
+        state = states[min(len(reads) - 1, len(states) - 1)]
+        if isinstance(state, Exception):
+            raise state
+        return state
+
+    flight = in_flight or []
+    lands = lambda: flight.pop(0) if len(flight) > 1 else (flight[0] if flight else False)  # noqa: E731
+    deps = replace(rig.deps(), checkout_state=read, started_checkout=started, lands_in_flight=lands, **over)
+    return deps, reads
+
+
+def _restart_lines(rig):
+    return [line for line in rig.lines if "restarting" in line]
+
+
+def test_a_moved_head_on_a_branch_ends_the_loop_after_the_tick_that_finished_and_frees_the_lease():
+    rig = Rig(sleeps_before_interrupt=100)
+    deps, reads = _checkout(rig, [CheckoutState(NEW, True)])
+    assert run(False, 60, False, deps) is None
+    assert (rig.log.count("gather"), len(rig.sleeps), len(reads), rig.released) == (1, 1, 1, [True])
+    assert deps.restart_state.moved == (OLD, NEW)
+    assert _restart_lines(rig) == [f"chair restarting because the checkout moved from {OLD[:12]} to {NEW[:12]}"]
+
+
+def test_an_unmoved_head_keeps_ticking_and_never_sets_moved():
+    rig = Rig(sleeps_before_interrupt=4)
+    deps, reads = _checkout(rig, [CheckoutState(OLD, True)])
+    run(False, 60, False, deps)
+    assert (rig.log.count("gather"), len(reads), deps.restart_state.moved, _restart_lines(rig)) == (4, 3, None, [])
+
+
+def test_a_detached_start_never_ends_the_loop_even_when_the_head_differs():
+    rig = Rig(sleeps_before_interrupt=3)
+    deps, _ = _checkout(rig, [CheckoutState(NEW, True)], started=CheckoutState(OLD, False))
+    run(False, 60, False, deps)
+    assert (rig.log.count("gather"), deps.restart_state.moved) == (3, None)
+
+
+def test_a_moved_head_with_a_land_in_flight_ticks_again_and_ends_on_the_first_tick_after_it_finishes():
+    rig = Rig(sleeps_before_interrupt=100)
+    deps, reads = _checkout(rig, [CheckoutState(NEW, True)], in_flight=[True, True, False])
+    run(False, 60, False, deps)
+    assert (rig.log.count("gather"), len(reads), deps.restart_state.moved, rig.released) == (3, 3, (OLD, NEW), [True])
+
+
+def test_once_and_dry_run_never_consult_the_checkout():
+    for once, dry in ((True, False), (False, True)):
+        rig = Rig(sleeps_before_interrupt=2)
+        deps, reads = _checkout(rig, [CheckoutState(NEW, True)])
+        run(once, 60, dry, deps)
+        assert (reads, deps.restart_state.moved) == ([], None)
+
+
+@pytest.mark.parametrize("state", [None, RuntimeError("git gone")])
+def test_an_unreadable_checkout_ticks_as_usual(state):
+    rig = Rig(sleeps_before_interrupt=3)
+    deps, reads = _checkout(rig, [state])
+    run(False, 60, False, deps)
+    assert (rig.log.count("gather"), len(reads), deps.restart_state.moved) == (3, 2, None)
 
 
 def test_a_gather_that_raises_inside_the_bound_still_surfaces_its_exception():
