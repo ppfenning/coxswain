@@ -33,7 +33,7 @@ def test_parse_profile_accepts_a_forge_line():
     assert route.parse_profile("forge: github\n")["forge"] == "github"
 
 
-STEP = {"branch": "pr/t", "default_branch": "main"}
+STEP = {"branch": "pr/t", "default_branch": "main", "delete_branch": False}  # the delete calls have their own tests
 
 
 def _recording(monkeypatch, answers=()):
@@ -61,7 +61,7 @@ def test_github_open_pr_names_neither_ref_by_default(monkeypatch, tmp_path):
 
 
 def _merge_argvs(repo, update):
-    return [["gh", "pr", "merge", "pr/t", "--squash", "--delete-branch"],
+    return [["gh", "pr", "merge", "pr/t", "--squash"],
             ["git", "-C", str(repo), "symbolic-ref", "--short", "HEAD"],
             ["git", "-C", str(repo), *update]]
 
@@ -91,9 +91,10 @@ def test_github_merge_stays_ok_when_the_local_update_fails(monkeypatch, tmp_path
 
 
 def test_github_merge_fails_and_updates_nothing_when_gh_fails(monkeypatch, tmp_path):
-    calls = _recording(monkeypatch, [(1, "no such pr")])
+    calls = _recording(monkeypatch, [(1, "no such pr"), (1, "no pull requests found"), (0, "[]")])
     assert forge_github.merge(tmp_path, STEP) == (False, "no such pr")
-    assert calls == _merge_argvs(tmp_path, [])[:1]
+    assert calls == [*_merge_argvs(tmp_path, [])[:1], ["gh", "pr", "view", "pr/t", "--json", "state,mergedAt"],
+                     ["gh", "pr", "list", "--head", "pr/t", "--state", "all", "--json", "number,state"]]
 
 
 def test_github_read_checks_rev_parses_the_given_ref(monkeypatch, tmp_path):

@@ -1614,6 +1614,27 @@ def _open_prs_for(repo: Path, branch: str, forge_module=forge_github) -> list[in
     return forge_module.find_open_prs(repo, branch)
 
 
+def _phase_adds_nothing(repo: Path, phase_branch: str, default_branch: str) -> bool:
+    """Edge. True when merging `phase_branch` into origin's `default_branch` changes nothing, so its work is already there."""
+    ref = f"refs/remotes/origin/{default_branch}"
+    fetched = subprocess.run(["git", "-C", str(repo), "fetch", "--quiet", "origin", f"+refs/heads/{default_branch}:{ref}"], capture_output=True, text=True)
+    tree = _git_out(repo, "merge-tree", "--write-tree", ref, phase_branch) if fetched.returncode == 0 else None
+    return tree is not None and tree.splitlines()[0] == _git_out(repo, "rev-parse", f"{ref}^{{tree}}")
+
+
+def _phase_already_merged(prs: list[dict] | str, branch_exists: bool, adds_nothing: bool) -> bool:
+    """Pure. A PR of the phase's PR branch merged, none is open, and the surviving phase branch adds nothing over main; `prs` is a reason string when unread."""
+    return branch_exists and adds_nothing and not isinstance(prs, str) and any(p.get("state") == "merged" for p in prs) and not any(p.get("state") == "open" for p in prs)
+
+
+def _phase_already_landed(repo: Path, initiative: str, phase: str, default_branch: str, forge_module) -> bool:
+    """Edge. `_phase_already_merged` fed by the forge's PRs for `pr/<initiative>--<phase>` and by the branch's content against main."""
+    branch = f"epic/{initiative}/{phase}"
+    exists = _branch_exists(repo, f"refs/heads/{branch}")
+    prs = forge.branch_prs(forge_module, repo, f"pr/{initiative}--{phase}")
+    return _phase_already_merged(prs, exists, exists and _phase_adds_nothing(repo, branch, default_branch))
+
+
 def _phase_pr_facts(repo: Path, pr_branch: str, forge_module=forge_github) -> dict | str:
     """Edge. The plain facts `land.phase_resume` decides on, or the reason the open PRs could not be listed.
     The PR head is read as the fetched `origin/<pr_branch>` tip: the forge call returns PR numbers only,
@@ -3152,10 +3173,13 @@ def _runs_land(a: argparse.Namespace) -> int:
             if isinstance(phase_pr, str):
                 print(f"land: refusing, {phase_pr}")
                 return 2
+        read_forge = pr_forge or forge.forge_for(forge.forge_name(profile))
+        already_merged = read_forge is not None and _phase_already_landed(repo, initiative, phase, default_branch, read_forge)
         plan_steps = land.land_plan(
             {**phase_record, "initiative": initiative, "initiative_title": initiative_title}, {}, default_branch,
             repo_facts, items=items, task_records=task_records, phase_pr=phase_pr,
             task_facts=_phase_task_facts(repo, f"epic/{initiative}/{phase}", items, task_records),
+            already_merged=already_merged,
         )
         steps = _land_enrich(plan_steps, path=searched, worktree_root=a.worktree_root, task_paths=task_paths,
                               umbrella=profile.get("umbrella_dir"), task_items=_phase_task_items(items))
