@@ -40,6 +40,7 @@ from harness.epic import (
     _ticket_amend_ramp,
     _trace_evidence,
     _unapproved,
+    awaiting_land_lines,
     blocked_line,
     blocking_commits,
     branch_action,
@@ -50,6 +51,7 @@ from harness.epic import (
     phase_parents,
     run_epic,
     task_outcome,
+    waiting_tasks,
 )
 from harness.resume import load_result, save_result
 from harness.store_lease import acquire, release
@@ -2321,6 +2323,58 @@ def test_blocked_line_names_the_reason_or_says_none_was_recorded() -> None:
     assert blocked_line({"phase": "p1", "status": "blocked", "reason": "rebase conflict: x"}) == "phase p1: blocked: rebase conflict: x"
     assert blocked_line({"phase": "p1", "status": "blocked"}) == "phase p1: blocked: no reason was recorded on the phase"
     assert blocked_line({"phase": "p1", "status": "complete", "reason": "x"}) is None
+
+
+def test_an_awaiting_land_phase_prints_its_tasks_and_a_land_line_for_each(repo, cart, tmp_path, capsys) -> None:
+    _stale_branch_with_two_task_commits(repo, cart, tmp_path)
+    capsys.readouterr()
+    result, _ = drive(repo, cart, tmp_path, work=_with_states(t1="approved", t2="approved"), run_id="epic-2")
+    record = result["phases"][0]
+    assert record["awaiting_tasks"] == ["t1-probe", "t2-bench"]
+    lines = capsys.readouterr().out.splitlines()
+    assert "phase p1-foundations: awaiting land of 2 approved task(s): t1-probe, t2-bench" in lines
+    for task in ("t1-probe", "t2-bench"):
+        assert f"cox runs land epic-2 --task {task} --repo {repo} --apply" in lines
+
+
+def test_a_dependent_of_an_awaiting_land_phase_says_what_its_parent_waits_on(repo, cart, tmp_path, capsys) -> None:
+    _stale_branch_with_two_task_commits(repo, cart, tmp_path)
+    work = initiative()
+    for item in work["items"]:
+        item["state"] = "approved" if item["phase"] == "p1-foundations" else "ready"
+    capsys.readouterr()
+    result, _ = drive(repo, cart, tmp_path, work=work, run_id="epic-2")
+    reason = "parent phase 'p1-foundations' is awaiting the land of 2 approved task(s)"
+    assert [p["status"] for p in result["phases"]] == ["awaiting_land", "blocked"]
+    assert result["phases"][1]["reason"] == reason
+    assert f"phase p2-rollout: blocked: {reason}" in capsys.readouterr().out.splitlines()
+    assert result["totals"]["phases_awaiting_land"] == 1
+
+
+def test_waiting_tasks_names_each_task_once_in_commit_order() -> None:
+    assert waiting_tasks(["+ a1 epic r-1: t2", "+ b2 epic r-1: t1", "+ c3 epic r-1: t2", "+ d4 hand fix"]) == ["t2", "t1"]
+
+
+def test_awaiting_land_lines_speak_only_for_an_awaiting_land_record() -> None:
+    awaiting = {"phase": "p1", "status": "awaiting_land", "awaiting_tasks": ["t1", "t2"]}
+    assert awaiting_land_lines(awaiting, "r-1", "/repo") == [
+        "phase p1: awaiting land of 2 approved task(s): t1, t2",
+        "cox runs land r-1 --task t1 --repo /repo --apply",
+        "cox runs land r-1 --task t2 --repo /repo --apply",
+    ]
+    for status in ("complete", "partial", "blocked"):
+        assert awaiting_land_lines({"phase": "p1", "status": status, "awaiting_tasks": ["t1"]}, "r-1", "/repo") == []
+
+
+def test_a_dependent_of_a_plainly_blocked_parent_keeps_the_goal_text(repo, cart, tmp_path) -> None:
+    _stale_branch_with_two_task_commits(repo, cart, tmp_path)
+    work = initiative()
+    for item in work["items"]:
+        item["state"] = {"t1-probe": "approved", "t2-bench": "ready"}.get(item["id"], "ready")
+    result, _ = drive(repo, cart, tmp_path, work=work, run_id="epic-2")
+    assert [p["status"] for p in result["phases"]] == ["blocked", "blocked"]
+    assert result["phases"][1]["reason"] == "parent phase 'p1-foundations' did not meet its goal; dependents do not run"
+    assert result["totals"]["phases_awaiting_land"] == 0
 
 
 def test_blocking_commits_names_each_task_once_with_the_state_read() -> None:
