@@ -18,7 +18,7 @@ def test_files_and_shared_validate():
 
 def test_cluster_is_rejected_with_the_allowed_values():
     plan = plan_set("profile", "store.mode", "cluster", "")
-    assert plan == PlanError("store.mode must be one of files, shared, got 'cluster'")
+    assert plan == PlanError("profile:store.mode: store.mode must be one of files, shared, got 'cluster'")
 
 
 def test_shared_round_trips_through_parse_profile_without_a_warning(capsys):

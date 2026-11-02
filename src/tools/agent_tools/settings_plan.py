@@ -4,16 +4,18 @@ Pure: takes scope, key, the raw value string and the current text of the target 
 returns a `Plan` or a `PlanError`. Nothing is read, written or raised.
 
 The new text is checked with the loaders the chair uses. The profile goes through
-`route.parse_profile`, and a `ProfileError` message becomes the error reason verbatim.
-The cartridge goes through `chair_cap`, whose loader swallows parse errors and returns
+`route.parse_profile`, and a `ProfileError` message follows the `scope:key` of the setting
+in the error reason. The cartridge goes through `chair_cap`, whose loader swallows parse errors and returns
 None for a value it will not use, so it has no message; the reason names the rule instead.
 `validate`, when given, is an extra cartridge schema check, `text -> list of error strings`.
 
-A cartridge is rewritten with `yaml.safe_dump`. A profile is rewritten in the flat format
-`parse_profile` reads: one-line JSON for `sources` and `repo_map`, `[a, b]` lists, indented
-`spend:` and `chair:` blocks, and indented `lane_hosts` items. The registry names spend keys
-flat because `parse_profile` flattens them; the file keeps them under `spend:`.
-Either way comments and blank lines in the old text do not survive and the diff shows them.
+A cartridge is rewritten with `yaml.safe_dump`, so its comments and blank lines do not
+survive and the diff shows them. A profile keeps the old text: only the target key's lines
+are replaced, or added at the end of their block or of the file. Comments, blank lines and
+flow mappings such as `notify: {ntfy: ...}` stay byte for byte. The replacement lines use the
+flat format `parse_profile` reads: one-line JSON for `sources` and `repo_map`, `[a, b]` lists,
+and indented `lane_hosts` items. The registry names spend keys flat because `parse_profile`
+flattens them; the file keeps them under `spend:`. A profile refusal begins `profile:<key>:`.
 """
 
 from __future__ import annotations
@@ -119,10 +121,63 @@ def _profile_entry(key: str, value: object) -> str:
     return f"{key}: {_profile_scalar(value)}".rstrip() + "\n"
 
 
-def _dump(scope: str, doc: dict) -> str:
-    if scope == "profile":
-        return "".join(_profile_entry(k, v) for k, v in doc.items())
-    return yaml.safe_dump(doc, sort_keys=False)
+def _is_content(line: str) -> bool:
+    return bool(line.strip()) and not line.lstrip().startswith("#")
+
+
+def _is_top(line: str) -> bool:
+    """A top-level entry line: content that is neither indented nor a `- ` item."""
+    return _is_content(line) and line[0] not in " \t-"
+
+
+def _find(lines: list[str], lo: int, hi: int, key: str, top: bool) -> int | None:
+    """Index of the last line in `lines[lo:hi]` that holds `key`; None when there is none."""
+    hits = [
+        i for i in range(lo, hi)
+        if (_is_top(lines[i]) if top else _is_content(lines[i])) and lines[i].partition(":")[0].strip() == key
+    ]
+    return hits[-1] if hits else None
+
+
+def _entry_end(lines: list[str], start: int) -> int:
+    """Index just past the entry at `start`: its own line and the indented lines after it.
+    Trailing blank and comment lines belong to whatever follows."""
+    stop = next((i for i in range(start + 1, len(lines)) if _is_top(lines[i])), len(lines))
+    return max([start, *(i for i in range(start + 1, stop) if _is_content(lines[i]))]) + 1
+
+
+def _join(lines: list[str], lo: int, hi: int, new: list[str]) -> str:
+    """`lines` with `lines[lo:hi]` replaced by `new`; a last line lacking its newline gets one."""
+    before = [line if line.endswith("\n") else line + "\n" for line in lines[:lo]]
+    return "".join([*before, *new, *lines[hi:]])
+
+
+def _splice_profile(text: str, parts: list[str], value: object) -> str | PlanError:
+    """`text` with only the lines of the key at `parts` replaced, or added when it is absent."""
+    lines = text.splitlines(keepends=True)
+    head = parts[0]
+    start = _find(lines, 0, len(lines), head, True)
+    if len(parts) == 1:
+        entry = _profile_entry(head, value).splitlines(keepends=True)
+        if start is None:
+            return _join(lines, len(lines), len(lines), entry)
+        return _join(lines, start, _entry_end(lines, start), entry)
+    if len(parts) > 2:
+        return PlanError(f"{'.'.join(parts)} is nested deeper than one block")
+    leaf = parts[1]
+    if start is None:
+        return _join(lines, len(lines), len(lines), [f"{head}:\n", f"  {leaf}: {_profile_scalar(value)}\n"])
+    inline = lines[start].partition(":")[2].strip()
+    if inline and not inline.startswith("#"):
+        return PlanError(f"{head} is written inline, so {leaf} has no line of its own")
+    end = _entry_end(lines, start)
+    at = _find(lines, start + 1, end, leaf, False)
+    if at is not None:
+        indent = lines[at][: len(lines[at]) - len(lines[at].lstrip())]
+        return _join(lines, at, at + 1, [f"{indent}{leaf}: {_profile_scalar(value)}\n"])
+    last = lines[end - 1]
+    indent = last[: len(last) - len(last.lstrip())] if end > start + 1 else "  "
+    return _join(lines, end, end, [f"{indent}{leaf}: {_profile_scalar(value)}\n"])
 
 
 def _blocked(doc: dict, parts: list[str]) -> bool:
@@ -136,6 +191,11 @@ def _diff(old: str, new: str, name: str) -> str:
         old.splitlines(keepends=True), new.splitlines(keepends=True),
         fromfile=f"a/{name}", tofile=f"b/{name}",
     ))
+
+
+def _refusal(target: str) -> Callable[[str], PlanError]:
+    """A builder of refusals that lead with `target`; with no target the reason stands alone."""
+    return lambda reason: PlanError(f"{target}: {reason}" if target else reason)
 
 
 def _chair_error(setting: Setting, new_text: str) -> str | None:
@@ -158,21 +218,28 @@ def plan_set(
     setting = setting_for(scope, key)
     if setting is None:
         return PlanError(f"unknown setting {scope}:{key}")
+    is_profile = setting.scope == "profile"
+    refuse = _refusal(f"{scope}:{key}" if is_profile else "")
     doc = _load(text)
     if isinstance(doc, PlanError):
-        return doc
+        return refuse(doc.reason)
     parts = _parts(setting.scope, doc, setting.path)
     if _blocked(doc, parts):
-        return PlanError(f"{setting.path}: a parent key is not a mapping")
+        return refuse("a parent key is not a mapping" if is_profile else f"{setting.path}: a parent key is not a mapping")
     value = _coerce(_get(doc, ".".join(parts)), raw)
     if isinstance(value, PlanError):
         return PlanError(f"{scope}:{key}: {value.reason}")
-    if setting.scope == "profile" and setting.path == "store.mode" and value not in STORE_MODES:
-        return PlanError(f"store.mode must be one of {', '.join(STORE_MODES)}, got '{value}'")
-    new_text = _dump(setting.scope, _set_nested(doc, parts, value))
+    if is_profile and setting.path == "store.mode" and value not in STORE_MODES:
+        return refuse(f"store.mode must be one of {', '.join(STORE_MODES)}, got '{value}'")
+    if is_profile:
+        new_text = _splice_profile(text, parts, value)
+        if isinstance(new_text, PlanError):
+            return refuse(new_text.reason)
+    else:
+        new_text = yaml.safe_dump(_set_nested(doc, parts, value), sort_keys=False)
     chair_error = _chair_error(setting, new_text)
     if chair_error is not None:
-        return PlanError(chair_error)
+        return refuse(chair_error)
     errors = validate(new_text) if validate is not None and setting.scope == "cartridge" else []
     if errors:
         return PlanError(f"{setting.source_file} violates the schema: {'; '.join(errors)}")
