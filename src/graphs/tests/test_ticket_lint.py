@@ -191,6 +191,7 @@ def test_problem_severity_distinguishes_refusal_from_advisory():
     assert Problem("t1", "grant", "d", "f").severity == "advisory"
     assert Problem("t1", "size", "d", "f").severity == "advisory"
     assert Problem("t1", "cross_repo", "d", "f").severity == "advisory"
+    assert Problem("t1", "surface_missing", "d", "f").severity == "refusal"
 
 
 _TOOLS_TREE = [{"path": "agent_tools/run_store.py", "repo": "tools"}]
@@ -209,7 +210,8 @@ def test_a_tools_ticket_naming_its_own_package_gets_no_cross_repo_advisory():
 
 def test_docs_and_tests_paths_never_count_as_cross_repo():
     tasks = [_task(body="see tests/test_x.py and docs/x.md", surfaces=["tests/test_x.py", "docs/x.md"])]
-    assert lint_tickets(tasks, _TOOLS_TREE, [], "tools") == []
+    tree = [*_TOOLS_TREE, {"path": "tests/test_x.py", "repo": "tools"}, {"path": "docs/x.md", "repo": "tools"}]
+    assert lint_tickets(tasks, tree, [], "tools") == []
 
 
 def test_a_backticked_comma_terminated_token_still_names_the_other_repo():
@@ -224,7 +226,7 @@ def test_a_surface_naming_another_repo_is_flagged_once():
 
 def test_a_graphs_ticket_naming_a_new_file_under_its_own_roots_gets_no_cross_repo_advisory():
     tree = [{"path": "graphs/delivery/ticket_lint.py", "repo": "graphs"}]
-    tasks = [_task(body="create harness/x.py and runner/y.py", surfaces=["graphs/ops/z.py"])]
+    tasks = [_task(body="create harness/x.py and runner/y.py", surfaces=["graphs/ops/z.py (new)"])]
     assert lint_tickets(tasks, tree, [], "graphs") == []
 
 
@@ -262,6 +264,44 @@ def test_a_monorepo_path_named_from_another_repo_is_flagged_as_coxswain():
     tree = [{"path": "coxswain_plugins/x.py", "repo": "plugins"}]
     problems = lint_tickets([_task(body="edit src/graphs/harness/cli.py")], tree, [], "plugins")
     assert [p.detail for p in problems] == ["names src/graphs/harness/cli.py, which lives in coxswain"]
+
+
+_GRAPHS_TREE = [{"path": "graphs/delivery/ticket_lint.py", "repo": "graphs"}]
+
+
+def test_a_plain_surface_absent_from_the_tree_is_a_surface_missing_refusal_with_an_add_new_fix():
+    tasks = [_task(surfaces=["graphs/delivery/new_rule.py"])]
+    problems = lint_tickets(tasks, _GRAPHS_TREE, [], "graphs")
+    assert [(p.rule, p.severity) for p in problems] == [("surface_missing", "refusal")]
+    assert "add (new)" in problems[0].fix
+    assert "t1" in problems[0].detail
+    assert "graphs/delivery/new_rule.py" in problems[0].detail
+    assert "not in the repository" in problems[0].detail
+
+
+def test_the_same_surface_marked_new_is_not_flagged():
+    tasks = [_task(surfaces=["graphs/delivery/new_rule.py (new)"])]
+    assert lint_tickets(tasks, _GRAPHS_TREE, [], "graphs") == []
+
+
+def test_a_surface_the_tree_lists_is_not_flagged():
+    tasks = [_task(surfaces=["graphs/delivery/ticket_lint.py"])]
+    assert lint_tickets(tasks, _GRAPHS_TREE, [], "graphs") == []
+
+
+def test_a_directory_entry_is_not_a_surface_missing_problem():
+    tasks = [_task(surfaces=["graphs/delivery/"])]
+    assert lint_tickets(tasks, _GRAPHS_TREE, [], "graphs") == []
+
+
+def test_an_empty_tree_yields_no_surface_missing_problem():
+    tasks = [_task(surfaces=["graphs/delivery/new_rule.py"])]
+    assert lint_tickets(tasks, [], [], "graphs") == []
+
+
+def test_a_surface_under_another_repos_roots_is_cross_repo_and_not_surface_missing():
+    problems = lint_tickets([_task(surfaces=["core/x.py"])], _TOOLS_TREE, [], "tools")
+    assert [p.rule for p in problems] == ["cross_repo"]
 
 
 def _contract_problems(tasks):

@@ -1,7 +1,7 @@
 """lint_tickets — the static checks from docs/design/work-shape.md §3, plus `cross_repo`.
 
 Pure: plain data in, plain data out, no file I/O, no network, no clock.
-`reach`, `coupling` and `contract` are refusals; `grant`, `size` and `cross_repo` are advisory
+`reach`, `coupling`, `contract` and `surface_missing` are refusals; `grant`, `size` and `cross_repo` are advisory
 (`Problem.severity`) — the caller in `initiative_decompose.py` routes on that.
 `tree` rows may carry an optional `"imports"` list (paths that file imports),
 computed once at the edge, so the coupling rule's import disjunct stays pure.
@@ -16,7 +16,7 @@ from typing import Any
 
 __all__ = ["Problem", "idea_reach_problems", "lint_tickets"]
 
-_REFUSAL_RULES = frozenset({"reach", "coupling", "contract"})
+_REFUSAL_RULES = frozenset({"reach", "coupling", "contract", "surface_missing"})
 _ROOTED_PREFIXES = ("~/", "/")
 _RISKY_SINGLE = frozenset({"cox", "uv", "gh", "ruff"})
 _RISKY_TWO_WORD = frozenset({"git push"})
@@ -38,6 +38,8 @@ _OTHER_REPO_ROOTS: Mapping[str, tuple[str, ...]] = {
 }
 _PATH_PUNCTUATION = "`,.()\"':;"
 _CROSS_REPO_CORRECTION = "paste the code the build needs into the ticket: a build reads only its own repository"
+_SURFACE_MISSING_FIX = "add (new) after the path if the task creates it, otherwise correct the path"
+_NEW_SUFFIX = " (new)"
 _CONTRACT_CORRECTION = (
     "add a contract task in the producer repository that commits a JSON fixture of the interface, "
     "and add its id to this task's needs"
@@ -53,7 +55,7 @@ class Problem:
 
     @property
     def severity(self) -> str:
-        """`"refusal"` for reach/coupling/contract, `"advisory"` for grant/size/cross_repo."""
+        """`"refusal"` for reach/coupling/contract/surface_missing, `"advisory"` for grant/size/cross_repo."""
         return "refusal" if self.rule in _REFUSAL_RULES else "advisory"
 
 
@@ -216,6 +218,35 @@ def _cross_repo_problems(tasks: Sequence[Mapping[str, Any]], tree: Sequence[Mapp
             owner = _owner_of(path)
             if owner and owner not in own and path not in known_paths:
                 problems.append(Problem(str(task["id"]), "cross_repo", f"names {path}, which lives in {owner}", _CROSS_REPO_CORRECTION))
+    return problems
+
+
+def _is_plain_file_surface(surface: str) -> bool:
+    """A path-shaped surface naming an existing file: not notation, not rooted, not `(new)`, not a directory entry."""
+    if _is_notation(surface) or surface.startswith(_ROOTED_PREFIXES):
+        return False
+    if surface.endswith((_NEW_SUFFIX, "/")):
+        return False
+    return "/" in surface or re.search(r"\.\w+$", surface) is not None
+
+
+def _surface_missing_problems(tasks: Sequence[Mapping[str, Any]], tree: Sequence[Mapping[str, Any]], repo: str) -> list[Problem]:
+    """Silent on an empty tree. A surface in another repository's roots is `cross_repo`'s, so it is skipped here."""
+    if not tree:
+        return []
+    known_paths = {str(row.get("path")) for row in tree}
+    own = _own_repos(repo, tree)
+    problems: list[Problem] = []
+    for task in tasks:
+        for path in dict.fromkeys(str(s).strip() for s in task.get("surfaces") or []):
+            if not _is_plain_file_surface(path) or path in known_paths:
+                continue
+            owner = _owner_of(path)
+            if owner and owner not in own:
+                continue
+            problems.append(
+                Problem(str(task["id"]), "surface_missing", f"task {task['id']} names {path}, which is not in the repository", _SURFACE_MISSING_FIX)
+            )
     return problems
 
 
@@ -397,5 +428,6 @@ def lint_tickets(
         *_grant_problems(fixed_tasks, grants),
         *_size_problems(fixed_tasks),
         *_cross_repo_problems(fixed_tasks, tree, repo),
+        *_surface_missing_problems(fixed_tasks, tree, repo),
         *_contract_problems(fixed_tasks),
     ]

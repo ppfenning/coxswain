@@ -999,7 +999,7 @@ def _surface_problem(task: str, surface: str, paths, own_tops, other_repo_tops) 
     if not is_new and not present:
         return [Problem(task, "surface_missing",
                         f"{task} surfaces {path}, which is not in the repository",
-                        f"correct the path, or mark it '{_NEW_MARK}' if the build creates it")]
+                        f"add '{_NEW_MARK.strip()}' after the path if the task creates it, otherwise correct the path")]
     if is_new and present:
         return [Problem(task, "surface_exists",
                         f"{task} marks {path} as new, but it already exists",
