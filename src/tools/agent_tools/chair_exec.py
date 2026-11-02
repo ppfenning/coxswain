@@ -1806,17 +1806,25 @@ def lease_guard(record: dict[str, Any] | None, own: tuple[str, int, str], pid_al
     return f"chair: held by {record.get('session', '?')} (live)"
 
 
-def _held_refusal(runs_dir: Path, session: str, pid: int, host: str) -> str:
-    """Edge. Reads chair.json; a missing, unreadable or non-object record falls through with no refusal."""
+def foreign_holder_gone(record: dict[str, Any] | None, own: tuple[str, int, str], pid_alive_: bool, now: datetime) -> bool:
+    """Pure. A foreign holder is dead or expired: `until` passed, or its pid is dead on this host. A pid on another host says nothing."""
+    if record is None or chair.same_holder(record, *own):
+        return False
+    return chair.expired(record, now) or (record.get("host") == own[2] and not pid_alive_)
+
+
+def _lease_state(runs_dir: Path, session: str, pid: int, host: str) -> tuple[str, bool]:
+    """Edge. Reads chair.json once: (refusal line, take over a gone holder). A missing, unreadable or non-object record gives ("", False)."""
     try:
         record = chair.read(runs_dir)
     except (OSError, ValueError):
-        return ""
+        return "", False
     if not isinstance(record, dict):
-        return ""
+        return "", False
     held_pid = record.get("pid")
     alive = isinstance(held_pid, int) and chair.pid_alive(held_pid)
-    return lease_guard(record, (session, pid, host), alive, datetime.now(UTC), host)
+    own, now = (session, pid, host), datetime.now(UTC)
+    return lease_guard(record, own, alive, now, host), foreign_holder_gone(record, own, alive, now)
 
 
 def edge_deps(
@@ -1849,7 +1857,8 @@ def edge_deps(
     live_check = partial(_check_login_edge, runs_dir, login_run, provider_profile)
 
     def acquire(_holder: str, _host: str, steal: bool = False) -> str:
-        return _held_refusal(runs_dir, session, pid, host) or chair.acquire_lease(runs_dir, session, pid, host, steal=steal)
+        refusal, takeover = _lease_state(runs_dir, session, pid, host)
+        return refusal or chair.acquire_lease(runs_dir, session, pid, host, steal=steal or takeover)
 
     return Deps(
         run=run,

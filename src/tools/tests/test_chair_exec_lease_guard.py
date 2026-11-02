@@ -83,11 +83,11 @@ def test_the_closure_acquires_over_the_loops_own_record(tmp_path, monkeypatch) -
     assert calls == [False]
 
 
-def test_the_closure_acquires_over_a_dead_foreign_pid(tmp_path, monkeypatch) -> None:
+def test_the_closure_steals_over_a_dead_foreign_pid(tmp_path, monkeypatch) -> None:
     deps, calls = _deps(tmp_path, monkeypatch, alive=False)
     chair.write(tmp_path, _fresh())
     assert deps.acquire_lease("h", "host-a") == ""
-    assert calls == [False]
+    assert calls == [True]
 
 
 def test_the_closure_steals_over_a_live_but_lapsed_foreign_record(tmp_path, monkeypatch) -> None:
