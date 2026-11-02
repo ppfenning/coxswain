@@ -485,6 +485,37 @@ def test_duplicate_ids_are_refused(tmp_path: Path) -> None:
         validate_dag([{"id": "a", "needs": []}, {"id": "a", "needs": []}])
 
 
+def test_a_dropped_item_with_a_dangling_need_passes() -> None:
+    validate_dag([{"id": "a", "state": "dropped", "needs": ["ghost"]}, {"id": "b", "state": "ready", "needs": []}])
+
+
+def test_a_live_item_needing_a_dropped_one_is_refused() -> None:
+    items = [{"id": "a", "state": "dropped", "needs": []}, {"id": "b", "state": "ready", "needs": ["a"]}]
+    with pytest.raises(WorkStoreError, match="'b' needs 'a', which was dropped"):
+        validate_dag(items)
+
+
+def test_a_done_item_needing_a_dropped_one_passes() -> None:
+    validate_dag([{"id": "a", "state": "dropped", "needs": []}, {"id": "b", "state": "done", "needs": ["a"]}])
+
+
+def test_a_cycle_through_a_dropped_item_is_not_reported() -> None:
+    """`a` is done so its edge to the dropped `b` is not refused; only the cycle walk could report this."""
+    validate_dag(
+        [
+            {"id": "a", "state": "done", "needs": ["b"]},
+            {"id": "b", "state": "dropped", "needs": ["c"]},
+            {"id": "c", "state": "ready", "needs": ["a"]},
+        ]
+    )
+
+
+def test_a_duplicate_id_including_a_dropped_item_is_still_reported() -> None:
+    items = [{"id": "a", "state": "dropped", "needs": []}, {"id": "a", "state": "ready", "needs": []}]
+    with pytest.raises(WorkStoreError, match="duplicate work item id 'a'"):
+        validate_dag(items)
+
+
 def test_a_valid_dag_passes(initiative: Path) -> None:
     validate_dag(read_initiative(initiative)["items"])  # must not raise
 
@@ -493,6 +524,11 @@ def test_the_dag_is_validated_at_read_not_at_run(initiative: Path) -> None:
     task(initiative, "p1-foundations", "t9-broken", needs=["does-not-exist"])
     with pytest.raises(WorkStoreError, match="does not exist"):
         read_initiative(initiative)
+
+
+def test_a_dropped_task_with_a_dangling_need_still_loads(initiative: Path) -> None:
+    task(initiative, "p1-foundations", "t9-orphan", needs=["never-written"], state="dropped")
+    assert "t9-orphan" in [item["id"] for item in read_initiative(initiative)["items"]]
 
 
 # ── needs across initiatives ───────────────────────────────────────────────
@@ -623,16 +659,12 @@ def test_a_phase_of_done_and_dropped_items_is_complete(initiative: Path) -> None
     assert phase_complete(items, "p1-foundations") is True
 
 
-def test_a_dropped_items_dependents_become_ready(initiative: Path) -> None:
-    set_state(initiative / "p1-foundations" / "t1-schema-probe.md", "dropped")
-    set_state(initiative / "p1-foundations" / "t2-bench-harness.md", "done")
-    mark_ready(initiative)
-    items = read_initiative(initiative)["items"]
-    assert [t["id"] for t in ready_tasks(items)] == ["t3-cutover"]
-
-    task(initiative, "p2-rollout", "t5-only-needs-dropped", needs=["t1-schema-probe"], state="ready")
-    items = read_initiative(initiative)["items"]
-    assert "t5-only-needs-dropped" in [t["id"] for t in ready_tasks(items, phase="p2-rollout")]
+def test_ready_tasks_counts_a_dropped_need_as_met() -> None:
+    items = [
+        {"id": "t1", "phase": "p1", "state": "dropped", "needs": []},
+        {"id": "t3", "phase": "p1", "state": "ready", "needs": ["t1"]},
+    ]
+    assert [t["id"] for t in ready_tasks(items)] == ["t3"]
 
 
 # ── approved ───────────────────────────────────────────────────────────────

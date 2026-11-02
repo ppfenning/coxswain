@@ -405,16 +405,23 @@ def validate_dag(items: Iterable[Mapping[str, Any]], foreign: Mapping[str, str] 
 
     `foreign` maps ids of tasks in other initiatives to their state. A need
     found there is not dangling, and the cycle walk never enters it.
+
+    A dropped item's own needs are never read and it is left out of the cycle
+    walk. A not-yet-done item that needs a dropped one is refused.
     """
     items = list(items)
     foreign = foreign or {}
     by_id = {str(item["id"]): item for item in items}
+    dropped = {i for i, item in by_id.items() if item.get("state") == DROPPED}
+    live = {i: item for i, item in by_id.items() if i not in dropped}
 
     problems = [
-        f"'{item['id']}' needs '{need}', which does not exist"
-        for item in items
+        f"'{item['id']}' needs '{need}', which was dropped"
+        if need in dropped
+        else f"'{item['id']}' needs '{need}', which does not exist"
+        for item in live.values()
         for need in item.get("needs") or []
-        if need not in by_id and need not in foreign
+        if (need in dropped and item.get("state") != DONE) or (need not in by_id and need not in foreign)
     ]
     duplicates = sorted({i["id"] for i in items if sum(1 for j in items if j["id"] == i["id"]) > 1})
     problems.extend(f"duplicate work item id '{dup}'" for dup in duplicates)
@@ -423,12 +430,12 @@ def validate_dag(items: Iterable[Mapping[str, Any]], foreign: Mapping[str, str] 
     # it means nothing in it can ever become ready, so the phase would simply
     # stall with no explanation.
     WHITE, GREY, BLACK = 0, 1, 2
-    colour = dict.fromkeys(by_id, WHITE)
+    colour = dict.fromkeys(live, WHITE)
 
     def visit(node: str, trail: list[str]) -> None:
         colour[node] = GREY
-        for need in by_id[node].get("needs") or []:
-            if need not in by_id:
+        for need in live[node].get("needs") or []:
+            if need not in live:
                 continue
             if colour[need] == GREY:
                 loop = trail[trail.index(need) :] if need in trail else [need]
@@ -437,7 +444,7 @@ def validate_dag(items: Iterable[Mapping[str, Any]], foreign: Mapping[str, str] 
                 visit(need, [*trail, need])
         colour[node] = BLACK
 
-    for node in sorted(by_id):
+    for node in sorted(live):
         if colour[node] == WHITE:
             visit(node, [node])
 
