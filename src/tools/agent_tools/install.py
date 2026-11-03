@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from agent_tools import release_version
+from agent_tools import dash_binary, release_version
 from agent_tools.upgrade_plan import release_tag
 
 # The one checkout every install has. It is not a manifest component: the manifest lives inside it, so its pin
@@ -109,9 +109,21 @@ def _desktop_step(name: str, spec: Mapping) -> dict:
     return {"kind": "desktop", "component": name, "detail": f"desktop entry at {spec.get('path')}"}
 
 
+def _binary_step(name: str, spec: Mapping, facts: Mapping, channel: str) -> dict:
+    """Release binary step for a component that `provides` a command. Edge builds from source."""
+    command = spec["provides"]
+    if channel == "edge":
+        return {"kind": "skip", "component": name, "detail": f"edge installs build {command} from source"}
+    installed = (facts.get("binaries") or {}).get(command)
+    if "binaries" in facts and dash_binary.binary_status(spec["tag"], installed) == "ok":
+        return {"kind": "skip", "component": name, "detail": f"{command} already at the pin"}
+    return dash_binary.binary_step(name, dict(spec), facts.get("target"), facts.get("bin_dir", ""))
+
+
 def plan(manifest: Mapping, facts: Mapping, options: Mapping) -> list[dict]:
     """Steps in manifest order: `clone`/`fetch_checkout`/`skip`/`refuse` for
-    the checkout, then for each requested component, then one `setup_install`, one
+    the checkout, then for each requested component, then one `binary` (or `skip`) step per
+    requested component that `provides` a command, then one `setup_install`, one
     `doctor`, then `desktop` for each requested component that carries a
     `path`. An unknown `--with` flag or an unsupported provider refuses the
     whole plan down to the one step naming why."""
@@ -142,12 +154,13 @@ def plan(manifest: Mapping, facts: Mapping, options: Mapping) -> list[dict]:
                       if _pinned(spec, channel) else
                       {"kind": "skip", "component": name, "detail": "the manifest names no [coxswain] version"}
                       for name, spec in requested]
+    binary_steps = [_binary_step(name, spec, facts, channel) for name, spec in components if spec.get("provides")]
     setup_install_step = {"kind": "setup_install", "component": "setup_install",
                            "detail": f"channel={channel} team={options.get('team')} workspace={options.get('workspace')}"}
     doctor_step = {"kind": "doctor", "component": "doctor",
                    "detail": f"run cox setup doctor; provider CLI on PATH: {facts.get('provider_cli_on_path')}"}
     desktop_steps = [_desktop_step(name, spec) for name, spec in requested if spec.get("path")]
-    return checkout_steps + [setup_install_step, doctor_step] + desktop_steps
+    return checkout_steps + binary_steps + [setup_install_step, doctor_step] + desktop_steps
 
 
 def _component_row(name: str, spec: Mapping, checkouts: Mapping, channel: str = "release") -> tuple:
@@ -158,14 +171,23 @@ def _component_row(name: str, spec: Mapping, checkouts: Mapping, channel: str = 
     return (name, pinned, _installed(checkout, channel), "ok" if _at_pin(checkout, pinned, channel) else "drift")
 
 
+def _binary_row(spec: Mapping, binaries: Mapping) -> tuple:
+    installed = binaries.get(spec["provides"])
+    return (spec["provides"], spec["tag"], installed, dash_binary.binary_status(spec["tag"], installed))
+
+
 def rows(manifest: Mapping, facts: Mapping, channel: str = "release") -> list[tuple]:
     """`(component, pinned_tag, installed_tag, status)` for the checkout and every manifest
     component (`missing` absent, `drift` present off its pin, `ok` present at
     it) plus one `extra` row per checkout present in `facts` that the
-    manifest never declared. On `edge` the pin and installed columns hold branches."""
+    manifest never declared. On `edge` the pin and installed columns hold branches.
+    When `facts` carry `binaries`, one more row per component that `provides` a command,
+    named by that command, compares the installed binary version to the pinned tag."""
     components = {CHECKOUT: checkout_spec(manifest), **manifest.get("components", {})}
     checkouts = facts.get("checkouts", {})
     component_rows = [_component_row(name, spec, checkouts, channel) for name, spec in components.items()]
     extra_rows = [(name, None, checkout.get("tag"), "extra") for name, checkout in checkouts.items()
                   if name not in components and checkout.get("present")]
-    return component_rows + extra_rows
+    binary_rows = [_binary_row(spec, facts["binaries"]) for spec in components.values()
+                   if "binaries" in facts and spec.get("provides") and spec.get("tag")]
+    return component_rows + extra_rows + binary_rows
