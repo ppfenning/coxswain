@@ -727,11 +727,14 @@ def surface_candidates(body: str, repo: str) -> list[str]:
     return found
 
 
-def harness_argv(profile: dict, graph: str, run_id: str, *, python: str | None = None, **needs) -> list:
+def harness_argv(
+    profile: dict, graph: str, run_id: str, *, python: str | None = None, result_out: str | None = None, **needs,
+) -> list:
     """Build the harness command line, spec §4, from a parsed `profile`
     and the graph-specific `needs` (`initiative`/`repo` for `epic`, plus
     `task` for `rescue`; `idea`/`initiative_id`, plus an optional `task_ids` and `repo`, for `decompose`). Pure: no Popen, no env reads.
     `python` is the interpreter `install_root.harness_python` chose; without it, the harness checkout's own venv.
+    `result_out`, for `decompose` only, adds `--result-out <path>` so the graph result lands as JSON.
     """
     harness_dir = profile["harness_dir"]
     workspace_dir = profile["workspace_dir"]
@@ -771,6 +774,8 @@ def harness_argv(profile: dict, graph: str, run_id: str, *, python: str | None =
         # The intake's repository: its seats get it as a readable directory and a digest of it.
         if needs.get("repo"):
             argv += ["--repo", needs["repo"]]
+        if result_out:
+            argv += ["--result-out", str(result_out)]
     elif graph == "cos":
         # `_KNOWN_KEYS` carries no `max_parallel` field, so a profile can
         # never supply one; the bound is the literal default until the
@@ -1736,6 +1741,25 @@ def plan_writes(plan: Mapping, intake_row: Mapping, existing: Sequence[Mapping])
     planned = [{**r, "priority": value} if r["kind"] in inherit else r for r in queue_rows.plan_to_rows(plan, intake_row["task_id"])]
     built = [*planned, queue_rows.intake_stamp(dict(intake_row), plan["id"])]
     return [r for r in built if (r["kind"], r["task_id"]) not in started], None
+
+
+_TASK_FIELDS = ("id", "phase", "title", "body", "needs", "surfaces")
+
+
+def plan_from_result(result: Mapping, initiative_id: str, title: str, body: str) -> dict:
+    """The plan `decompose_into_rows` wants, from a decompose graph result; no tasks gives an empty tasks list."""
+    tasks = [
+        {k: (list(t[k]) if k in ("needs", "surfaces") else t[k]) for k in _TASK_FIELDS if k in t}
+        for t in result.get("tasks") or []
+    ]
+    return {
+        "id": initiative_id,
+        "title": title,
+        "body": body,
+        "phases": [dict(p) for p in result.get("phases") or []],
+        "tasks": tasks,
+        "lint": list(result.get("lint") or []),
+    }
 
 
 def decompose_into_rows(
