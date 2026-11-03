@@ -6122,6 +6122,22 @@ no explanation — so a decomposition containing one is <strong>refused before a
 is proposed</strong>, and refused again by the work store on read. Both checks exist
 because the failure is silent and the cost of finding it late is a stalled phase
 nobody can diagnose.</p>
+<h2 id="the-layout-check">The layout check</h2>
+<p><a href="https://github.com/ppfenning/coxswain/blob/main/src/graphs/graphs/delivery/decompose_layout.py"><code>decompose_layout.py</code></a> checks the proposed tasks before anything
+is proposed. It reads only the tasks, never the repository. Three things are reported.</p>
+<ul>
+<li>A task whose body does not name every path in its <code>surfaces</code>. This <strong>blocks</strong>, as a
+  <code>lint-refused</code> quarantine. A body that names no path at all was never written against its
+  surfaces, so that case is flagged and does not block.</li>
+<li>A migration, test or script filename in a body that is not among the task's surfaces. This
+  <strong>blocks</strong>. It catches a body that says <code>tests/test_widget_new.py</code> while the surface says
+  <code>tests/test_widget.py</code>. Absolute paths are outside the repository and are skipped.</li>
+<li>A <code>needs</code> edge whose body names no id, title or surface of the task it needs. This is
+  <strong>advisory</strong>: it lands on the ticket as a <code>lint:</code> entry for the human at the gate.</li>
+</ul>
+<p>The outcome carries <code>layout</code>: <code>findings</code>, <code>width</code> and <code>layers</code>. <code>width</code> is the most tasks
+with no <code>needs</code> path between them, from <code>max_width</code> in <code>harness/lanes.py</code>. It is reported
+and never enforced here.</p>
 <p><code>totals</code> reports <code>edges_dropped</code> and <code>immediately_startable</code>, which is the
 number worth watching: it is how much of the phase can begin at once.</p>
 <p><strong>Status:</strong> implemented in <a href="https://github.com/ppfenning/coxswain/blob/main/src/graphs/graphs/delivery/initiative_decompose.py"><code>initiative_decompose.py</code></a>.</p>
