@@ -71,12 +71,15 @@ __all__ = [
     "delete_branches_with",
     "edge_deps",
     "escalation",
+    "land_command",
     "land_commit",
+    "land_outcome",
     "land_refusal",
     "landed",
     "lane_writer",
     "perform",
     "phase_task_states",
+    "runs_as_process",
     "smoke_targets",
     "tail",
 ]
@@ -396,23 +399,51 @@ def _land_timed_out(action: Action, argv: list[str]) -> Result:
     return _result(action, "failed", f"{' '.join(argv)}: timed out after {int(LAND_TIMEOUT_S // 60)} min")
 
 
-def _land(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
+def runs_as_process(action: Action) -> bool:
+    """A partial_land, and a land_phase with task_runs, can fall back to per-task lands, so they stay on the thread path."""
+    kind = action.get("kind")
+    return kind == "land" or (kind == "land_phase" and not action.get("task_runs"))
+
+
+def land_command(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> tuple[Action, list[str]] | Result:
+    """The start half of a land: (action, argv), or the finished Result of an early exit. A land_phase action
+    comes back with its `head` applied, and that is the action `land_outcome` must be given."""
     repo = action.get("repo", "")
+    phase = action.get("kind") == "land_phase"
     argv = argv_for(action, label=deps.label)
     if argv is None:
-        return _result(action, "refused", "land needs a run id, a task_id and a repo")
+        need = "land_phase needs a run id, a phase and a repo" if phase else "land needs a run id, a task_id and a repo"
+        return _result(action, "refused", need)
     if repo in blocked:
         return _result(action, "skipped", f"an earlier land in {repo} ({blocked[repo].label}) was not counted")
-    code, output = _run_land(deps, argv)
+    return (_with_head(action, deps, repo) if phase else action), argv
+
+
+def land_outcome(action: Action, deps: Deps, code: int, output: str) -> Result:
+    """The classify half of a land: the Result for a finished command's exit code and output."""
+    argv = argv_for(action, label=deps.label) or []
     if code == TIMED_OUT:
         return _land_timed_out(action, argv)
     # Busy first: a repo-lease refusal exits non-zero like every other refusal, so `land_refusal` would escalate it.
     if _repo_busy(output):
         return _result(action, "busy", output)
+    if action.get("kind") == "land_phase":
+        gone = _already_landed_result(action, deps, output)
+        if gone is not None:
+            return gone
     refusal = land_refusal(action, code, output)
     if refusal is not None:
         return {"action": action, "status": "refused", "reason": output, "needs_chair": refusal}
-    return _land_result(action, repo, code, output)
+    return _land_result(action, action.get("repo", ""), code, output)
+
+
+def _land(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
+    command = land_command(action, deps, blocked)
+    if not isinstance(command, tuple):
+        return command
+    action, argv = command
+    code, output = _run_land(deps, argv)
+    return land_outcome(action, deps, code, output)
 
 
 def _land_async(action: Action, deps: Deps, sink: LandSink) -> Result:
@@ -596,28 +627,15 @@ def _with_head(action: Action, deps: Deps, repo: str) -> Action:
 def _land_phase(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
     """Same shape as `_land`, one command for a whole phase: its own `mark_done:` lines mark every task in the
     phase done, so this only runs the command and reads its output."""
-    repo = action.get("repo", "")
-    argv = argv_for(action, label=deps.label)
-    if argv is None:
-        return _result(action, "refused", "land_phase needs a run id, a phase and a repo")
-    if repo in blocked:
-        return _result(action, "skipped", f"an earlier land in {repo} ({blocked[repo].label}) was not counted")
-    action = _with_head(action, deps, repo)
+    command = land_command(action, deps, blocked)
+    if not isinstance(command, tuple):
+        return command
+    action, argv = command
     code, output = _run_land(deps, argv)
-    if code == TIMED_OUT:
-        return _land_timed_out(action, argv)
-    # Busy first: a repo-lease refusal exits non-zero like every other refusal, so `land_refusal` would escalate it.
-    if _repo_busy(output):
-        return _result(action, "busy", output)
-    if lacks_phase_record(code, output) and action.get("task_runs"):
+    # After the timeout and busy checks, before the rest: a missing phase record falls back to per-task lands.
+    if code != TIMED_OUT and not _repo_busy(output) and lacks_phase_record(code, output) and action.get("task_runs"):
         return _land_by_task(action, output, deps, blocked)
-    gone = _already_landed_result(action, deps, output)
-    if gone is not None:
-        return gone
-    refusal = land_refusal(action, code, output)
-    if refusal is not None:
-        return {"action": action, "status": "refused", "reason": output, "needs_chair": refusal}
-    return _land_result(action, repo, code, output)
+    return land_outcome(action, deps, code, output)
 
 
 def _already_landed_result(action: Action, deps: Deps, output: str) -> Result | None:
