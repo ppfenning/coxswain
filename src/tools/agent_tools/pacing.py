@@ -15,8 +15,9 @@ returns `stop` before headroom is even considered, so a temporary spike in
 one. The last combined rung (cheapest tier, lowest effort) is still
 `go_degraded`; `stop` only fires one threshold beyond that. The pace ratio
 is noise at the start of a window, so it is judged only once
-`elapsed_fraction >= policy.min_elapsed_fraction`; before that the hard stop
-and the absolute headroom still apply and pace does not.
+`elapsed_fraction >= policy.min_elapsed_fraction`; before that only the hard
+stop applies. The burn projection may hold only past `PROJECTION_MIN_ELAPSED`,
+and that hold carries no `hold_until`: it is re-assessed on every call.
 """
 
 from __future__ import annotations
@@ -27,6 +28,10 @@ from datetime import datetime
 __all__ = ["Assessment", "Policy", "WeeklyPace", "Window", "assess", "weekly_pace"]
 
 WEEKLY_MIN_ELAPSED = 0.05
+# A burn-rate projection is held on only once this share of the window has elapsed.
+PROJECTION_MIN_ELAPSED = 0.25
+# `usage_meter.as_window` builds percent-scale windows with exactly this ceiling; dollar windows come from `usage_window`.
+PERCENT_SCALE_CEILING = 100.0
 
 
 @dataclass(frozen=True)
@@ -92,6 +97,19 @@ def _elapsed_fraction(window: Window, now: datetime) -> float:
 def _projected_total(window: Window, now: datetime) -> float:
     hours_remaining = max(0.0, (window.end - now).total_seconds() / 3600)
     return window.spent_usd + window.burn_usd_per_hour * hours_remaining
+
+
+def _projection_holds(headroom: float, elapsed_fraction: float, policy: Policy) -> bool:
+    """Choice: the burn projection may hold only after PROJECTION_MIN_ELAPSED (never earlier than min_elapsed_fraction), when an early burst no longer dominates it."""
+    judged = elapsed_fraction >= max(policy.min_elapsed_fraction, PROJECTION_MIN_ELAPSED)
+    return judged and headroom < policy.min_headroom_usd
+
+
+def _amount(value: float, window: Window) -> str:
+    """Unit follows the window: a ceiling of PERCENT_SCALE_CEILING is a meter percentage, anything else is dollars. A dollar ceiling of exactly 100 is misread as percent."""
+    if window.ceiling_usd == PERCENT_SCALE_CEILING:
+        return f"{value:.2f}%"
+    return f"${value:.2f}"
 
 
 def _ratio(spent_fraction: float, elapsed_fraction: float) -> float:
@@ -244,13 +262,14 @@ def _assess_window(window: Window, policy: Policy, now: datetime, elapsed_fracti
 
     tier_ceiling, effort_ceiling = _ladder_ceilings(rung, policy)
 
-    if headroom_usd < policy.min_headroom_usd:
+    if _projection_holds(headroom_usd, elapsed_fraction, policy):
         return Assessment(
             spent_fraction=spent_fraction, elapsed_fraction=elapsed_fraction,
             projected_total=projected_total, headroom_usd=headroom_usd,
             verdict="hold", tier_ceiling=policy.tier_ladder[-1], effort_ceiling=policy.effort_ladder[-1],
-            hold_until=window.end,
-            reason=f"headroom ${headroom_usd:.2f} below minimum ${policy.min_headroom_usd:.2f}; holding until the window ends",
+            hold_until=None,
+            reason=(f"headroom {_amount(headroom_usd, window)} below minimum "
+                    f"{_amount(policy.min_headroom_usd, window)}; hold is re-assessed each tick"),
         )
 
     if rung == 0:
