@@ -11716,11 +11716,26 @@ def _attach_inputs(row: Mapping) -> tuple[object, datetime.datetime | None] | No
     return chair_holder.HolderLease(label, int(pid), host, expires_at, "status" not in row or last_tick is not None), last_tick
 
 
+def _is_chair_run_command(command: str) -> bool:
+    """Pure. True when the argv has `chair` directly followed by `run`, whatever the executable or the holder label."""
+    return " chair run " in f" {' '.join(command.split())} "
+
+
+def _pid_command(pid: int) -> str:
+    """Edge. The command line of `pid` from `ps`; empty when it cannot be read."""
+    try:
+        done = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True, timeout=5, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return done.stdout.strip() if done.returncode == 0 else ""
+
+
 def _chair_attach(
     a: argparse.Namespace,
     read_row: Callable[[Path], dict | None] | None = None,
     pid_alive: Callable[[int], bool] | None = None,
     clock: Callable[[], datetime.datetime] | None = None,
+    pid_command: Callable[[int], str] | None = None,
 ) -> int:
     """The explicit holder check. Reads the lease, this host, the clock and the pid; `chair_holder_verdict` decides.
 
@@ -11740,6 +11755,8 @@ def _chair_attach(
     lease, last_tick = held
     this_host = socket.gethostname()
     alive = (pid_alive or chair.pid_alive)(lease.pid) if lease.host == this_host else None
+    if not lease.is_loop and alive and _is_chair_run_command((pid_command or _pid_command)(lease.pid)):
+        lease = dataclasses.replace(lease, is_loop=True)  # a loop whose tick never landed: the process says what it is, not the label
     verdict = chair_holder.chair_holder_verdict(
         lease, this_host, (clock or (lambda: datetime.datetime.now(datetime.UTC)))(), last_tick, alive, 3 * _CHAIR_RUN_INTERVAL
     )

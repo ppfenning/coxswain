@@ -81,16 +81,16 @@ class FakeLeases:
         self.writes.append(("release", args))
 
 
-def _row(host=HERE, pid=4242, expires_at=FUTURE, tick=TICK):
+def _row(host=HERE, pid=4242, expires_at=FUTURE, tick=TICK, label="chair-run"):
     status = None if tick is None else json.dumps({"tick_at": tick.isoformat(), "status": "ok", "current_action": None})
-    return {"holder": f"chair-run@{host}:{pid}", "expires_at": expires_at.isoformat(), "epoch": 3, "status": status}
+    return {"holder": f"{label}@{host}:{pid}", "expires_at": expires_at.isoformat(), "epoch": 3, "status": status}
 
 
-def _attach(tmp_path, row, pid_alive=True):
+def _attach(tmp_path, row, pid_alive=True, command=""):
     profile = tmp_path / "profile.yaml"
     profile.write_text(f"workspace_dir: {tmp_path}\n")
     fake = FakeLeases(row)
-    rc = cli._chair_attach(argparse.Namespace(profile=str(profile)), fake.read, lambda pid: pid_alive, lambda: NOW)
+    rc = cli._chair_attach(argparse.Namespace(profile=str(profile)), fake.read, lambda pid: pid_alive, lambda: NOW, lambda pid: command)
     return rc, fake
 
 
@@ -127,6 +127,47 @@ def test_attach_holder_without_a_tick_is_not_a_loop(tmp_path, capsys):
     rc, _ = _attach(tmp_path, _row(tick=None))
     assert rc == 1
     assert capsys.readouterr().out.startswith("no live chair loop: not a loop (")
+
+
+def test_attach_unlabeled_loop_with_no_tick_yet_is_recognised_by_its_process(tmp_path, capsys):
+    rc, fake = _attach(tmp_path, _row(tick=None, label="unlabeled"), command="/usr/bin/python3 /opt/bin/cox chair run --interval 60")
+    assert rc == 0
+    assert capsys.readouterr().out == f"chair loop unlabeled pid 4242 on {HERE}, last tick never\n"
+    assert fake.writes == []
+
+
+def test_attach_chair_run_label_with_no_tick_yet_is_recognised_by_its_process(tmp_path, capsys):
+    rc, _ = _attach(tmp_path, _row(tick=None), command="cox chair run")
+    assert (rc, capsys.readouterr().out) == (0, f"chair loop chair-run pid 4242 on {HERE}, last tick never\n")
+
+
+def test_attach_unlabeled_session_with_no_tick_is_still_not_a_loop(tmp_path, capsys):
+    rc, _ = _attach(tmp_path, _row(tick=None, label="unlabeled"), command="claude --resume")
+    assert rc == 1
+    assert capsys.readouterr().out.startswith("no live chair loop: not a loop (unlabeled pid 4242")
+
+
+def test_attach_unlabeled_dead_pid_is_never_called_live(tmp_path, capsys):
+    rc, _ = _attach(tmp_path, _row(tick=None, label="unlabeled"), pid_alive=False, command="cox chair run")
+    assert rc == 1
+    assert capsys.readouterr().out.startswith("no live chair loop: not a loop (unlabeled pid 4242")
+    rc, _ = _attach(tmp_path, _row(label="unlabeled"), pid_alive=False, command="cox chair run")
+    assert rc == 1
+    assert capsys.readouterr().out.startswith("no live chair loop: dead (unlabeled pid 4242")
+
+
+def test_attach_unlabeled_no_tick_expired_still_reports_expired(tmp_path, capsys):
+    rc, _ = _attach(tmp_path, _row(tick=None, label="unlabeled", expires_at=PAST), command="cox chair run")
+    assert rc == 1
+    assert capsys.readouterr().out.startswith("no live chair loop: expired (unlabeled pid 4242")
+
+
+def test_is_chair_run_command():
+    assert cli._is_chair_run_command("cox chair run --interval 60")
+    assert cli._is_chair_run_command("python -m agent_tools.cli chair run")
+    assert not cli._is_chair_run_command("cox chair attach")
+    assert not cli._is_chair_run_command("claude")
+    assert not cli._is_chair_run_command("")
 
 
 def test_attach_no_lease_row_exits_non_zero(tmp_path, capsys):
