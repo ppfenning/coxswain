@@ -14,7 +14,7 @@ DROPPED = "dropped"
 
 @dataclass(frozen=True)
 class Plan:
-    writes: tuple[dict, ...]  # partial rows for run_store.upsert_row_detail; empty when nothing is left to do
+    writes: tuple[dict, ...]  # rows for run_store.upsert_row_detail; empty when nothing is left to do
     note: str
 
 
@@ -36,9 +36,18 @@ def _initiative_row(rows: Sequence[Mapping], name: str) -> Mapping | None:
     return next((r for r in rows if r.get("kind") == "initiative" and r.get("task_id") == name), None)
 
 
+def _intake_stem(initiative: Mapping) -> str:
+    return str(_extra(initiative).get("intake") or "").rsplit("/", 1)[-1].removesuffix(".md")
+
+
+def _initiative_of(rows: Sequence[Mapping], intake: Mapping) -> Mapping | None:
+    """The initiative whose `extra.intake` path names this intake; a requeued intake no longer names its initiative."""
+    return next((r for r in rows if r.get("kind") == "initiative" and _intake_stem(r) == intake.get("task_id")), None)
+
+
 def _intake_of(rows: Sequence[Mapping], initiative: Mapping) -> Mapping | None:
     """The intake that stamped this initiative: its `extra.initiative` names it, or the initiative's `extra.intake` path names the intake."""
-    stem = str(_extra(initiative).get("intake") or "").rsplit("/", 1)[-1].removesuffix(".md")
+    stem = _intake_stem(initiative)
     return next(
         (
             r
@@ -58,7 +67,10 @@ def find_pair(rows: Sequence[Mapping], id: str) -> tuple[Mapping, Mapping] | Non
     else:  # an empty initiative has no task rows, so resolve_target calls it NotFound; the initiative row is looked up by name
         intake = _intake_named(rows, target.task_id if isinstance(target, route_guard.QueuedIntake) else id)
         name = _extra(intake).get("initiative") if intake is not None else id
-    initiative = _initiative_row(rows, str(name))
+    if name:
+        initiative = _initiative_row(rows, str(name))
+    else:
+        initiative = _initiative_of(rows, intake) if intake is not None else None
     if intake is None and initiative is not None:
         intake = _intake_of(rows, initiative)
     return (intake, initiative) if intake is not None and initiative is not None else None
@@ -77,6 +89,16 @@ def _state_row(row: Mapping, state: str) -> dict:
     return {"initiative": row["initiative"], "task_id": row["task_id"], "state": state}
 
 
+def _cleared_row(row: Mapping) -> dict:
+    """The full row for the queued intake: the store replaces `extra` on upsert, so the trimmed `extra` is what drops the link."""
+    extra = {k: v for k, v in _extra(row).items() if k != "initiative"}
+    return {**_state_row(row, QUEUED), "extra": extra}
+
+
+def _is_requeued(intake: Mapping) -> bool:
+    return intake.get("state") == QUEUED and "initiative" not in _extra(intake)
+
+
 def intake_from_field(initiative_id: str, field: str, rows: Sequence[Mapping]) -> Mapping | Refused:
     """The queued intake that initiative.md's `intake:` value names, matched by file stem; Refused when it is unknown or not queued."""
     stem = field.rsplit("/", 1)[-1].removesuffix(".md")
@@ -92,6 +114,7 @@ def intake_from_field(initiative_id: str, field: str, rows: Sequence[Mapping]) -
 
 def plan_requeue(rows: Sequence[Mapping], id: str, field_intake: str | None = None) -> Plan | Refused:
     """Pure. Refuses an unknown id and an initiative with a task that is not dropped; otherwise the rows still to write.
+    The intake row is written whole with `initiative` removed from `extra`; the initiative row carries its state only.
 
     `field_intake` is initiative.md's `intake:` value; it is consulted only when no row links an intake to the initiative.
     """
@@ -110,8 +133,9 @@ def plan_requeue(rows: Sequence[Mapping], id: str, field_intake: str | None = No
     if live:
         named = ", ".join(f"{t.get('task_id')} ({t.get('state')})" for t in live)
         return Refused(f"initiative {initiative['task_id']} still has tasks that are not dropped: {named}")
-    writes = tuple(
-        _state_row(row, state) for row, state in ((intake, QUEUED), (initiative, DROPPED)) if row.get("state") != state
+    writes = (
+        *(() if _is_requeued(intake) else (_cleared_row(intake),)),
+        *(() if initiative.get("state") == DROPPED else (_state_row(initiative, DROPPED),)),
     )
     if not writes:
         return Plan(
