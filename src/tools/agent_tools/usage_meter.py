@@ -1,4 +1,5 @@
-"""Reads the claude-code status-line rate-limit JSON into a `Meter` and turns an entry into a `pacing.Window`."""
+"""Reads the claude-code status-line rate-limit JSON into a `Meter` and turns an entry into a `pacing.Window`.
+A `Meter.five_hour` of None means this plan has no five-hour limit, not a missing reading."""
 
 from __future__ import annotations
 
@@ -22,6 +23,7 @@ __all__ = [
     "prefer",
     "read",
     "record_implied_ceiling",
+    "unlimited_window",
     "usable_percentage",
 ]
 
@@ -44,7 +46,9 @@ class MeterEntry:
 
 @dataclass(frozen=True)
 class Meter:
-    five_hour: MeterEntry
+    """`five_hour` is None when this plan has no five-hour limit. It is not a missing reading."""
+
+    five_hour: MeterEntry | None
     seven_day: MeterEntry
     observed_at: datetime
 
@@ -57,9 +61,12 @@ def _entry(doc: dict) -> MeterEntry:
 
 
 def parse(doc: dict) -> Meter | None:
+    """A null or absent `five_hour` parses to `five_hour=None`: the plan has no five-hour limit.
+    A malformed non-null `five_hour`, a bad `seven_day` or a bad `observed_at` returns None."""
+    five_hour_doc = doc.get("five_hour")
     try:
         return Meter(
-            five_hour=_entry(doc["five_hour"]),
+            five_hour=None if five_hour_doc is None else _entry(five_hour_doc),
             seven_day=_entry(doc["seven_day"]),
             observed_at=datetime.fromisoformat(doc["observed_at"]),
         )
@@ -89,6 +96,18 @@ def as_window(entry: MeterEntry, now: datetime, span: timedelta) -> pacing.Windo
         spent_usd=entry.used_percentage,
         ceiling_usd=100.0,
         burn_usd_per_hour=_burn(entry.used_percentage, (now - start) / _HOUR),
+        runs_in_flight=0,
+    )
+
+
+def unlimited_window(now: datetime) -> pacing.Window:
+    """A plan with no five-hour limit: no ceiling and nothing spent, so `pacing.assess` reads it as unmeasured and says go."""
+    return pacing.Window(
+        start=now,
+        end=now + _SPANS["five_hour"],
+        spent_usd=0.0,
+        ceiling_usd=None,
+        burn_usd_per_hour=0.0,
         runs_in_flight=0,
     )
 

@@ -174,11 +174,14 @@ def would_items(results: Sequence[Result]) -> list[str]:
 
 
 def _five_hour(limits: dict) -> str:
-    """`5h <fraction> (<source>)`; `5h n/a` when the edge supplies no `five_hour_fraction`."""
+    """`5h <fraction> (<source>)`; with no fraction, `5h none (<source>)` when the source is a meter (the plan has no five-hour limit), else `5h n/a`."""
     fraction = limits.get("five_hour_fraction")
-    if fraction is None:
-        return "5h n/a"
-    return f"5h {fraction:.0%} ({limits.get('window_source', 'est')})"
+    source = limits.get("window_source")
+    if fraction is not None:
+        return f"5h {fraction:.0%} ({source if source is not None else 'est'})"
+    if source in ("meter", "meter, store"):
+        return f"5h none ({source})"
+    return "5h n/a"
 
 
 def _weekly_pace(limits: dict) -> str:

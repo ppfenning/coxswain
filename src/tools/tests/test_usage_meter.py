@@ -37,6 +37,35 @@ def test_parse_returns_none_when_resets_at_is_missing():
     assert usage_meter.parse(doc) is None
 
 
+_NULL_FIVE_HOUR_DOC = {**_VALID_DOC, "five_hour": None}
+_ABSENT_FIVE_HOUR_DOC = {k: v for k, v in _VALID_DOC.items() if k != "five_hour"}
+
+
+def test_parse_null_five_hour_keeps_the_seven_day_entry():
+    meter = usage_meter.parse(_NULL_FIVE_HOUR_DOC)
+    assert meter is not None
+    assert meter.five_hour is None
+    assert meter.seven_day.used_percentage == 35.0
+    assert meter.seven_day.resets_at == datetime.fromtimestamp(1791100800, tz=UTC)
+
+
+def test_parse_absent_five_hour_keeps_the_seven_day_entry():
+    meter = usage_meter.parse(_ABSENT_FIVE_HOUR_DOC)
+    assert meter is not None
+    assert meter.five_hour is None
+    assert meter.seven_day.used_percentage == 35.0
+
+
+def test_parse_returns_none_for_a_malformed_non_null_five_hour():
+    doc = {**_VALID_DOC, "five_hour": {"used_percentage": 16}}
+    assert usage_meter.parse(doc) is None
+
+
+def test_parse_returns_none_for_a_missing_seven_day_even_with_a_null_five_hour():
+    doc = {k: v for k, v in _NULL_FIVE_HOUR_DOC.items() if k != "seven_day"}
+    assert usage_meter.parse(doc) is None
+
+
 def test_parse_returns_none_when_resets_at_is_out_of_range():
     doc = {
         "five_hour": {"used_percentage": 16, "resets_at": 10**20},
@@ -141,6 +170,33 @@ def test_read_parses_a_valid_file_the_same_as_parse(tmp_path):
     path = tmp_path / "rate-limits.json"
     path.write_text(json.dumps(_VALID_DOC))
     assert usage_meter.read(path) == usage_meter.parse(_VALID_DOC)
+
+
+def test_read_returns_a_meter_for_a_file_holding_a_null_five_hour(tmp_path):
+    path = tmp_path / "rate-limits.json"
+    path.write_text(json.dumps(_NULL_FIVE_HOUR_DOC))
+    meter = usage_meter.read(path)
+    assert meter is not None
+    assert meter.five_hour is None
+    assert meter.seven_day.used_percentage == 35.0
+
+
+def test_unlimited_window_has_no_ceiling_and_nothing_spent():
+    now = datetime(2026, 11, 3, 12, 0, tzinfo=UTC)
+    window = usage_meter.unlimited_window(now)
+    assert window.ceiling_usd is None
+    assert window.spent_usd == 0
+
+
+def test_unlimited_window_reads_as_unmeasured_and_says_go():
+    now = datetime(2026, 11, 3, 12, 0, tzinfo=UTC)
+    policy = pacing.Policy(
+        pace_thresholds=(1.0, 1.5),
+        tier_ladder=("opus", "sonnet"),
+        effort_ladder=("high", "low"),
+        min_headroom_usd=1.0,
+    )
+    assert pacing.assess(usage_meter.unlimited_window(now), policy, now).verdict == "go"
 
 
 def test_record_implied_ceiling_writes_at_five_percent_floor(tmp_path, monkeypatch):
