@@ -1,0 +1,162 @@
+"""`route hold` and `route release` core: mark a queued intake held, or free it again. The edge writes; the name, date and reason come in as arguments."""
+
+import json
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+
+from agent_tools import queue_export, route_guard, run_store
+
+HELD_KEYS = ("held", "hold_reason")
+
+
+@dataclass(frozen=True)
+class Refused:
+    reason: str  # one line, names the id
+
+
+Plan = route_guard.QueuedIntake | Refused
+
+
+def hold_reason(by: str, date: str, reason: str) -> str:
+    """`date` is an ISO day. Whitespace in the reason collapses so the field stays one line."""
+    return f"held by {by} on {date}: {' '.join(reason.split())}"
+
+
+def _split(text: str) -> tuple[str, list[str], str] | None:
+    """(line ending, header lines, the text from the closing fence on), or None when there is no front matter."""
+    eol = "\r\n" if text.startswith("---\r\n") else "\n"
+    opening, closing = f"---{eol}", f"{eol}---{eol}"
+    close_index = text.find(closing, len(opening) - len(eol)) if text.startswith(opening) else -1
+    if close_index == -1:
+        return None
+    header = text[len(opening):close_index] if close_index >= len(opening) else ""
+    return eol, header.split(eol) if header else [], text[close_index:]
+
+
+def _join(eol: str, lines: list[str], rest: str) -> str:
+    return f"---{eol}{eol.join(lines)}{rest}" if lines else f"---{rest}"
+
+
+def _key_span(lines: list[str], key: str) -> tuple[int, int] | None:
+    """The key's line and any block-list continuation lines under it, as a slice, or None when the key is absent."""
+    start = next((i for i, line in enumerate(lines) if not line[:1].isspace() and line.split(":", 1)[0].strip() == key and ":" in line), None)
+    if start is None:
+        return None
+    end = next((i for i in range(start + 1, len(lines)) if not (lines[i][:1].isspace() or lines[i].startswith("- "))), len(lines))
+    return start, end
+
+
+def _with_line(lines: list[str], key: str, line: str) -> list[str]:
+    span = _key_span(lines, key)
+    return [*lines, line] if span is None else [*lines[: span[0]], line, *lines[span[1] :]]
+
+
+def _without_key(lines: list[str], key: str) -> list[str]:
+    span = _key_span(lines, key)
+    return lines if span is None else [*lines[: span[0]], *lines[span[1] :]]
+
+
+def held_text(text: str, reason: str, by: str, date: str) -> str:
+    """The intake text with `held: true` and `hold_reason` set; every other line, and the body, stay byte for byte."""
+    reason_line = f"hold_reason: {json.dumps(hold_reason(by, date, reason), ensure_ascii=False)}"
+    split = _split(text)
+    if split is None:
+        return f"---\nheld: true\n{reason_line}\n---\n{text}"
+    eol, lines, rest = split
+    return _join(eol, _with_line(_with_line(lines, "held", "held: true"), "hold_reason", reason_line), rest)
+
+
+def released_text(text: str) -> str:
+    """The intake text without `held` and `hold_reason`. An intake that is not held comes back unchanged."""
+    split = _split(text)
+    if split is None:
+        return text
+    eol, lines, rest = split
+    freed = _without_key(_without_key(lines, "held"), "hold_reason")
+    return text if freed == lines else _join(eol, freed, rest)
+
+
+def _plan(rows: Sequence[Mapping], target_id: str) -> Plan:
+    target = route_guard.resolve_target(rows, target_id)
+    if isinstance(target, route_guard.QueuedIntake):
+        return target
+    if isinstance(target, route_guard.InitiativeFound):
+        return Refused(f"{target_id} is an initiative, not a queued intake")
+    return Refused(f"no queued intake named {target_id}")
+
+
+def plan_hold(rows: Sequence[Mapping], target_id: str, reason: str) -> Plan:
+    """`rows` are queue rows. Only a queued intake is held; a decomposed or done intake resolves as not found."""
+    if not reason.strip():
+        return Refused(f"a hold on {target_id} needs a reason")
+    return _plan(rows, target_id)
+
+
+def plan_release(rows: Sequence[Mapping], target_id: str) -> Plan:
+    return _plan(rows, target_id)
+
+
+def _refuse(verb: str, reason: str) -> int:
+    print(f"{verb}: refused: {reason}")
+    return route_guard.REFUSED
+
+
+def _row_of(rows: Sequence[Mapping], task_id: str) -> Mapping:
+    return next(row for row in rows if row.get("kind") == "intake" and row.get("state") == "queued" and row.get("task_id") == task_id)
+
+
+def _row_without_held(row: Mapping) -> dict:
+    return {**row, "extra": {k: v for k, v in (row.get("extra") or {}).items() if k not in HELD_KEYS}}
+
+
+def _apply(verb: str, ws: Path, runs_dir: Path, plan: route_guard.QueuedIntake, rows: Sequence[Mapping], sent: dict, new_text, line: str, dry_run: bool) -> int:
+    path = ws / "intake" / f"{plan.task_id}.md"
+    if not path.is_file():
+        return _refuse(verb, f"no intake file at {path}")
+    text = path.read_bytes().decode("utf-8")
+    new = new_text(text)
+    if dry_run:
+        print(f"would {verb} intake {plan.task_id}: {line}")
+        return route_guard.DONE
+    if new == text and sent == dict(_row_of(rows, plan.task_id)):
+        print(f"{verb}: intake {plan.task_id}: nothing to change")
+        return route_guard.DONE
+    if not run_store.upsert_row(runs_dir, sent):
+        print(f"{verb}: the store did not take intake {plan.task_id}")
+        return 1
+    try:
+        path.write_bytes(new.encode("utf-8"))
+    except OSError as exc:
+        print(f"{verb}: could not write {path}: {exc}")
+        return 1
+    queue_export.record_written_paths(ws, [path])
+    print(f"{verb}: intake {plan.task_id}: {line}")
+    return route_guard.DONE
+
+
+def hold(
+    ws: Path, runs_dir: Path, id: str, reason: str, by: str, now: datetime, rows: Sequence[Mapping], *, dry_run: bool = False,
+) -> int:
+    """Edge. `rows` are queue rows; `runs_dir` is the store's, whose parent is `ws`. Exit 0 done, 1 a write failed, 2 refused with nothing written.
+
+    The store takes the row first and `intake/<id>.md` follows, as `route.set_intake_priority` does.
+    """
+    plan = plan_hold(rows, id, reason)
+    if isinstance(plan, Refused):
+        return _refuse("hold", plan.reason)
+    date = now.date().isoformat()
+    value = hold_reason(by, date, reason)
+    row = _row_of(rows, plan.task_id)
+    sent = {**row, "extra": {**(row.get("extra") or {}), "held": "true", "hold_reason": value}}
+    return _apply("hold", ws, runs_dir, plan, rows, sent, lambda text: held_text(text, reason, by, date), value, dry_run)
+
+
+def release(ws: Path, runs_dir: Path, id: str, rows: Sequence[Mapping], *, dry_run: bool = False) -> int:
+    """Edge. Exit codes as `hold`. Releasing an intake that is not held writes nothing."""
+    plan = plan_release(rows, id)
+    if isinstance(plan, Refused):
+        return _refuse("release", plan.reason)
+    sent = _row_without_held(_row_of(rows, plan.task_id))
+    return _apply("release", ws, runs_dir, plan, rows, sent, released_text, "held fields removed", dry_run)
