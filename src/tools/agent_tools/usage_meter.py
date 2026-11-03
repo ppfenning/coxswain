@@ -14,14 +14,17 @@ __all__ = [
     "DEFAULT_PATH",
     "IMPLIED_PATH",
     "STATE_DIR",
+    "LastMeter",
     "Meter",
     "MeterEntry",
     "as_window",
     "fresh",
     "implied_ceiling",
+    "kinds_to_drop",
     "parse",
     "prefer",
     "read",
+    "reconcile_implied_ceilings",
     "record_implied_ceiling",
     "unlimited_window",
     "usable_percentage",
@@ -30,6 +33,7 @@ __all__ = [
 _SPANS = {"five_hour": timedelta(hours=5), "weekly": timedelta(days=7)}
 _MIN_ELAPSED = {"five_hour": timedelta(hours=1), "weekly": timedelta(days=1)}
 _FRESH_AGE = timedelta(minutes=15)
+_DROP_TOLERANCE_PCT = 2.0  # a weekly fall this small is rounding noise, not a plan change
 
 STATE_DIR = Path.home() / ".local" / "state" / "coxswain"
 DEFAULT_PATH = STATE_DIR / "rate-limits.json"
@@ -172,6 +176,82 @@ def implied_ceiling(
     if now - observed_at <= max_age:
         return ceiling_usd
     return None
+
+
+@dataclass(frozen=True)
+class LastMeter:
+    """The previous reading, kept under `last_meter` in the implied-ceilings file."""
+
+    has_five_hour: bool
+    weekly_used: float
+    weekly_resets_at: datetime
+    observed_at: datetime
+
+
+def _last_meter_from_doc(doc: dict) -> LastMeter | None:
+    try:
+        record = doc["last_meter"]
+        return LastMeter(
+            has_five_hour=bool(record["has_five_hour"]),
+            weekly_used=float(record["weekly_used"]),
+            weekly_resets_at=datetime.fromisoformat(record["weekly_resets_at"]),
+            observed_at=datetime.fromisoformat(record["observed_at"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _last_meter_to_doc(last: LastMeter) -> dict:
+    return {
+        "has_five_hour": last.has_five_hour,
+        "weekly_used": last.weekly_used,
+        "weekly_resets_at": last.weekly_resets_at.isoformat(),
+        "observed_at": last.observed_at.isoformat(),
+    }
+
+
+def _last_meter_of(meter: Meter) -> LastMeter:
+    return LastMeter(
+        has_five_hour=meter.five_hour is not None,
+        weekly_used=meter.seven_day.used_percentage,
+        weekly_resets_at=meter.seven_day.resets_at,
+        observed_at=meter.observed_at,
+    )
+
+
+def kinds_to_drop(
+    previous: LastMeter | None,
+    meter: Meter,
+    spend_usd: float | None,
+    weekly_ceiling_usd: float | None,
+) -> frozenset[str]:
+    """Which learned ceilings a new reading invalidates. A five-hour window that appeared or vanished drops
+    `five_hour`. A weekly fall larger than the spend since `previous` explains, plus tolerance, drops both,
+    unless `previous.weekly_resets_at` had already passed at `meter.observed_at`: that is an ordinary reset."""
+    if previous is None:
+        return frozenset()
+    shape = frozenset({"five_hour"}) if previous.has_five_hour != (meter.five_hour is not None) else frozenset()
+    fall = previous.weekly_used - meter.seven_day.used_percentage
+    ordinary_reset = previous.weekly_resets_at <= meter.observed_at
+    explained = spend_usd / weekly_ceiling_usd * 100 if spend_usd is not None and weekly_ceiling_usd else 0.0
+    plan_change = not ordinary_reset and fall > explained + _DROP_TOLERANCE_PCT
+    return shape | frozenset({"five_hour", "weekly"}) if plan_change else shape
+
+
+def reconcile_implied_ceilings(
+    meter: Meter,
+    runs_dir: Path,
+    path: Path = IMPLIED_PATH,
+) -> frozenset[str]:
+    """Run before any ceiling is used. Drops what `kinds_to_drop` names and always records this reading
+    as `last_meter`. A missing or unreadable file counts as no prior reading. Returns the dropped kinds."""
+    doc = _load_json_object(path)
+    previous = _last_meter_from_doc(doc)
+    spend = None if previous is None else run_store.cost_since(runs_dir, previous.observed_at.isoformat())
+    dropped = kinds_to_drop(previous, meter, spend, implied_ceiling("weekly", meter.observed_at, path))
+    kept = {key: value for key, value in doc.items() if key not in dropped}
+    path.write_text(json.dumps({**kept, "last_meter": _last_meter_to_doc(_last_meter_of(meter))}))
+    return dropped
 
 
 def usable_percentage(
