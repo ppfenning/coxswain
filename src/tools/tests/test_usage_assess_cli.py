@@ -1,8 +1,15 @@
 import json
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from agent_tools import cli
 from agent_tools.pacing import Window
+
+# Taken at import, before conftest's autouse fixture replaces them for every test.
+_REAL_IMPLIED = cli.usage_meter.implied_ceiling
+_REAL_RECORD = cli.usage_meter.record_implied_ceiling
+_REAL_RECONCILE = cli.usage_meter.reconcile_implied_ceilings
 
 # Fixed in the past so `_usage_assess`'s own `datetime.now(UTC)` always falls
 # after `_END`, pinning `elapsed_fraction` at 1.0 regardless of wall-clock
@@ -134,6 +141,15 @@ def test_a_fresh_meter_calibrates_against_the_runs_dir(tmp_path, monkeypatch):
     assert seen == [("five_hour", _Path(tmp_path / "runs")), ("weekly", _Path(tmp_path / "runs"))]
 
 
+@pytest.fixture(autouse=True)
+def _reconcile_into_tmp(monkeypatch, tmp_path):
+    """A fresh reading reconciles, which writes the state file; no test here may write the box's real one."""
+    monkeypatch.setattr(
+        cli.usage_meter, "reconcile_implied_ceilings",
+        lambda meter, runs_dir: _REAL_RECONCILE(meter, runs_dir, tmp_path / "default-implied-ceilings.json"),
+    )
+
+
 def _chair_doc(age_minutes: float) -> dict:
     now = datetime.now(UTC)
     entry = {"used_percentage": 84.0, "resets_at": int((now + timedelta(hours=1)).timestamp())}
@@ -199,11 +215,14 @@ def _meter(five_hour_pct: float | None, weekly_pct: float, now: datetime):
 def _temp_ceilings(monkeypatch, tmp_path, doc: dict):
     path = tmp_path / "implied-ceilings.json"
     path.write_text(json.dumps(doc), encoding="utf-8")
-    real_implied, real_record = cli.usage_meter.implied_ceiling, cli.usage_meter.record_implied_ceiling
-    monkeypatch.setattr(cli.usage_meter, "implied_ceiling", lambda kind, now: real_implied(kind, now, path))
+    # `usable_percentage` and `reconcile_implied_ceilings` pass their own path, which this redirect replaces.
+    monkeypatch.setattr(cli.usage_meter, "implied_ceiling", lambda kind, now, *a: _REAL_IMPLIED(kind, now, path))
     monkeypatch.setattr(
         cli.usage_meter, "record_implied_ceiling",
-        lambda kind, entry, runs_dir, now: real_record(kind, entry, runs_dir, now, path),
+        lambda kind, entry, runs_dir, now: _REAL_RECORD(kind, entry, runs_dir, now, path),
+    )
+    monkeypatch.setattr(
+        cli.usage_meter, "reconcile_implied_ceilings", lambda meter, runs_dir: _REAL_RECONCILE(meter, runs_dir, path),
     )
     return path
 
@@ -229,7 +248,7 @@ def test_a_null_five_hour_is_no_limit_even_with_a_learned_ceiling_and_a_store_ro
     assert "below minimum" not in assessment.reason
     assert (assessment.tier_ceiling, assessment.effort_ceiling) == (policy.tier_ladder[0], policy.effort_ladder[0])
     assert "weekly 4%" in assessment.reason
-    assert json.loads(path.read_text(encoding="utf-8")) == learned
+    assert {k: v for k, v in json.loads(path.read_text(encoding="utf-8")).items() if k != "last_meter"} == learned
 
 
 def test_a_fresh_local_reading_wins_over_a_store_row_recorded_a_minute_earlier(monkeypatch, tmp_path):
@@ -252,3 +271,125 @@ def test_a_reading_with_a_five_hour_entry_relearns_the_five_hour_ceiling(monkeyp
     monkeypatch.setattr(cli.run_store, "latest_chair_meter", lambda runs_dir: None)
     cli._usage_assessment(tmp_path)
     assert json.loads(path.read_text(encoding="utf-8"))["five_hour"]["ceiling_usd"] == 50.0
+
+
+def _last_meter_doc(now: datetime, *, has_five_hour: bool, weekly_used: float) -> dict:
+    return {
+        "has_five_hour": has_five_hour,
+        "weekly_used": weekly_used,
+        "weekly_resets_at": (now + timedelta(hours=72)).isoformat(),
+        "observed_at": (now - timedelta(minutes=10)).isoformat(),
+    }
+
+
+def _ceiling(usd: float, now: datetime) -> dict:
+    return {"ceiling_usd": usd, "observed_at": now.isoformat()}
+
+
+def _capture_ceilings(monkeypatch) -> dict:
+    seen: dict = {}
+
+    def gather(runs_dir, now, ceiling_usd=None, **k):
+        seen["five_hour"] = ceiling_usd
+        return _unmeasured_window()
+
+    def gather_weekly(runs_dir, now, ceiling_usd=None, **k):
+        seen["weekly"] = ceiling_usd
+        return _unmeasured_window()
+
+    monkeypatch.setattr(cli.usage_window, "gather", gather)
+    monkeypatch.setattr(cli.usage_window, "gather_weekly", gather_weekly)
+    monkeypatch.setattr(cli.usage_meter.run_store, "cost_since", lambda runs_dir, since: 1.0)
+    monkeypatch.setattr(cli.run_store, "latest_chair_meter", lambda runs_dir: None)
+    return seen
+
+
+def test_a_lost_five_hour_window_drops_the_learned_five_hour_ceiling_and_the_verdict_is_go(monkeypatch, tmp_path):
+    now = datetime.now(UTC)
+    learned = {
+        "five_hour": _ceiling(52.81, now),
+        "last_meter": _last_meter_doc(now, has_five_hour=True, weekly_used=4.0),
+    }
+    path = _temp_ceilings(monkeypatch, tmp_path, learned)
+    _capture_ceilings(monkeypatch)
+    monkeypatch.setattr(cli.usage_meter, "read", lambda *a, **k: _meter(None, 4.0, now))
+    assert cli._usage_assessment(tmp_path, window_ceiling_usd=200.0).verdict == "go"
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    assert "five_hour" not in doc
+    assert doc["last_meter"]["has_five_hour"] is False
+
+
+def test_a_weekly_fall_beyond_the_spend_drops_both_ceilings_and_the_profile_ceiling_applies(monkeypatch, tmp_path):
+    now = datetime.now(UTC)
+    learned = {
+        "five_hour": _ceiling(52.81, now),
+        "weekly": _ceiling(1000.0, now),
+        "last_meter": _last_meter_doc(now, has_five_hour=True, weekly_used=25.0),
+    }
+    path = _temp_ceilings(monkeypatch, tmp_path, learned)
+    seen = _capture_ceilings(monkeypatch)
+    monkeypatch.setattr(cli.usage_meter, "read", lambda *a, **k: _meter(3.0, 4.0, now))
+    cli._usage_assessment(tmp_path, window_ceiling_usd=200.0, weekly_ceiling_usd=1380.0)
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    assert set(doc) == {"last_meter"}
+    assert seen == {"five_hour": 200.0, "weekly": 1380.0}
+
+
+def test_an_ordinary_reading_change_clears_no_ceiling(monkeypatch, tmp_path):
+    now = datetime.now(UTC)
+    learned = {
+        "five_hour": _ceiling(52.81, now),
+        "weekly": _ceiling(1000.0, now),
+        "last_meter": _last_meter_doc(now, has_five_hour=True, weekly_used=5.0),
+    }
+    path = _temp_ceilings(monkeypatch, tmp_path, learned)
+    seen = _capture_ceilings(monkeypatch)
+    # Both percentages stay under the 5% calibration floor, so only reconcile could change the file.
+    monkeypatch.setattr(cli.usage_meter, "read", lambda *a, **k: _meter(3.0, 4.0, now))
+    cli._usage_assessment(tmp_path, window_ceiling_usd=200.0, weekly_ceiling_usd=1380.0)
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    assert doc["five_hour"] == learned["five_hour"] and doc["weekly"] == learned["weekly"]
+    assert doc["last_meter"]["weekly_used"] == 4.0
+    assert seen == {"five_hour": 52.81, "weekly": 1000.0}
+
+
+def test_a_stale_local_reading_does_not_reconcile(monkeypatch, tmp_path):
+    now = datetime.now(UTC)
+    learned = {
+        "five_hour": _ceiling(52.81, now),
+        "last_meter": _last_meter_doc(now, has_five_hour=True, weekly_used=25.0),
+    }
+    path = _temp_ceilings(monkeypatch, tmp_path, learned)
+    _capture_ceilings(monkeypatch)
+    monkeypatch.setattr(cli.usage_meter, "read", lambda *a, **k: _meter(None, 4.0, now - timedelta(minutes=20)))
+    cli._usage_assessment(tmp_path)
+    assert json.loads(path.read_text(encoding="utf-8")) == learned
+
+
+def test_a_store_sourced_reading_does_not_reconcile(monkeypatch, tmp_path):
+    now = datetime.now(UTC)
+    learned = {
+        "five_hour": _ceiling(52.81, now),
+        "last_meter": _last_meter_doc(now, has_five_hour=True, weekly_used=25.0),
+    }
+    path = _temp_ceilings(monkeypatch, tmp_path, learned)
+    _capture_ceilings(monkeypatch)
+    monkeypatch.setattr(cli.usage_meter, "read", lambda *a, **k: None)
+    monkeypatch.setattr(cli.run_store, "latest_chair_meter", lambda runs_dir: _chair_doc(5))
+    cli._usage_assessment(tmp_path)
+    assert json.loads(path.read_text(encoding="utf-8")) == learned
+
+
+def test_the_chairs_window_and_weekly_reconcile_once_per_tick(monkeypatch, tmp_path):
+    now = datetime.now(UTC)
+    _temp_ceilings(monkeypatch, tmp_path, {})
+    _capture_ceilings(monkeypatch)
+    monkeypatch.setattr(cli.usage_meter, "read", lambda *a, **k: _meter(3.0, 4.0, now))
+    calls: list = []
+    monkeypatch.setattr(cli.usage_meter, "reconcile_implied_ceilings", lambda meter, runs_dir: calls.append(meter))
+    deps = cli._chair_run_deps(
+        tmp_path / "runs", {}, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files",
+    )
+    deps.facts_deps.window()
+    deps.facts_deps.weekly()
+    assert len(calls) == 1

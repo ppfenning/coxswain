@@ -9096,6 +9096,13 @@ def _chair_meter(
     return local, "est"
 
 
+def _reconcile_ceilings(meter: usage_meter.Meter | None, source: str, runs_dir) -> None:
+    """Edge. Run before any learned ceiling is read: a plan change drops the old plan's ceilings here. Only a fresh
+    local reading (source 'meter') may reconcile, the same reading that may calibrate."""
+    if meter is not None and source == "meter":
+        usage_meter.reconcile_implied_ceilings(meter, Path(runs_dir))
+
+
 def _tolerant_cost_since(runs_dir, since: str) -> float | None:
     """Edge. The store's spend since `since`, or None on any store error, so a broken store falls back to the usage
     files instead of failing the gate and every surface that narrates it (route context still prints its docket)."""
@@ -9117,6 +9124,7 @@ def _usage_assessment(
     reset = usage_window.parse_weekly_reset(weekly_reset)
     usage = usage_window.read_usage(runs_dir, now, reset)
     meter, source = _chair_meter(usage_meter.read(), now, runs_dir)
+    _reconcile_ceilings(meter, source, runs_dir)
     # Calibration divides spend up to `now` by the reading's percentage, so only a fresh local reading may write it.
     calibrate = source == "meter"
 
@@ -11175,7 +11183,9 @@ def _chair_run_deps(
         """One meter read and one source verdict per tick, shared by `window`, `weekly` and both source
         labels, so a label always names the side its figure was built from."""
         if not meter_snapshot:
-            meter_snapshot.append(_chair_meter(usage_meter.read(), now(), runs_dir))
+            chosen = _chair_meter(usage_meter.read(), now(), runs_dir)
+            _reconcile_ceilings(*chosen, runs_dir)  # once per tick, before `window` or `weekly` reads a ceiling
+            meter_snapshot.append(chosen)
         return meter_snapshot[0]
 
     def window() -> pacing.Window:

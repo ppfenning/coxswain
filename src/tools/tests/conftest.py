@@ -72,3 +72,4 @@ def _no_real_usage_meter(monkeypatch, request):
 
     monkeypatch.setattr(usage_meter, "read", lambda *a, **k: None)
     monkeypatch.setattr(usage_meter, "implied_ceiling", lambda *a, **k: None)
+    monkeypatch.setattr(usage_meter, "reconcile_implied_ceilings", lambda *a, **k: frozenset())
