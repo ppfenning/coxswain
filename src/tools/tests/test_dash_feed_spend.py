@@ -18,9 +18,13 @@ NOW_DT = datetime(2026, 10, 9, 12, tzinfo=UTC)
 SUNDAY_4AM_UTC = usage_window.WeeklyReset(weekday=6, hour=4, minute=0, tz="UTC")
 
 
-def _meter(five_pct: float, seven_pct: float, observed_at: datetime, weekly_resets_at: datetime | None = None):
+def _meter(five_pct: float | None, seven_pct: float, observed_at: datetime, weekly_resets_at: datetime | None = None):
+    """`five_pct` None is a plan with no five-hour limit."""
     return usage_meter.Meter(
-        five_hour=usage_meter.MeterEntry(used_percentage=five_pct, resets_at=NOW_DT + timedelta(hours=2)),
+        five_hour=(
+            None if five_pct is None
+            else usage_meter.MeterEntry(used_percentage=five_pct, resets_at=NOW_DT + timedelta(hours=2))
+        ),
         seven_day=usage_meter.MeterEntry(
             used_percentage=seven_pct, resets_at=weekly_resets_at or datetime(2026, 10, 11, 4, tzinfo=UTC),
         ),
@@ -31,7 +35,9 @@ def _meter(five_pct: float, seven_pct: float, observed_at: datetime, weekly_rese
 def _doc(meter: usage_meter.Meter) -> dict:
     """The store row's JSON shape: `usage_meter.parse` reads epoch seconds for `resets_at`."""
     return {
-        "five_hour": {"used_percentage": meter.five_hour.used_percentage, "resets_at": meter.five_hour.resets_at.timestamp()},
+        "five_hour": None if meter.five_hour is None else {
+            "used_percentage": meter.five_hour.used_percentage, "resets_at": meter.five_hour.resets_at.timestamp(),
+        },
         "seven_day": {"used_percentage": meter.seven_day.used_percentage, "resets_at": meter.seven_day.resets_at.timestamp()},
         "observed_at": meter.observed_at.isoformat(),
     }
@@ -106,6 +112,52 @@ def test_fresh_local_meter_wins_over_the_store(tmp_path):
     assert (spend["five_hour_source"], spend["weekly_source"]) == ("meter", "meter")
     assert spend["spend_source"] == "local meter"
     assert spend["spend_age_s"] == 120
+
+
+def test_fresh_local_meter_with_no_five_hour_limit_reports_a_zero_five_hour_and_the_weekly_fraction(tmp_path):
+    local = _meter(None, 4, NOW_DT - timedelta(minutes=2))
+
+    spend = dash_feed._spend(
+        tmp_path, NOW, read_local=lambda: local, read_store=lambda runs_dir: None, read_reset=_no_reset,
+    )
+
+    assert spend["weekly_fraction"] == 0.04
+    assert spend["five_hour_fraction"] == 0.0
+    assert spend["five_hour_source"] == "none"
+    assert spend["five_hour_resets_at"] == ""
+    assert spend["spend_source"] == "local meter"
+    assert spend["weekly_resets_at"] == local.seven_day.resets_at.isoformat()
+
+
+def test_fresh_local_meter_with_no_five_hour_limit_wins_over_an_older_store_row_with_one(tmp_path):
+    local = _meter(None, 4, NOW_DT - timedelta(minutes=2))
+    stored = _meter(84, 60, NOW_DT - timedelta(minutes=30))
+
+    spend = dash_feed._spend(
+        tmp_path, NOW, read_local=lambda: local, read_store=lambda runs_dir: _doc(stored), read_reset=_no_reset,
+    )
+
+    assert (spend["five_hour_fraction"], spend["five_hour_source"]) == (0.0, "none")
+    assert spend["weekly_fraction"] == 0.04
+    assert spend["spend_source"] == "local meter"
+
+
+@pytest.mark.parametrize("age", [timedelta(hours=3), timedelta(hours=6)])
+def test_stale_meter_with_no_five_hour_limit_falls_to_the_estimate_without_raising(tmp_path, age):
+    stale = _meter(None, 4, NOW_DT - age)
+
+    spend = dash_feed._spend(
+        tmp_path, NOW, read_local=lambda: stale, read_store=lambda runs_dir: None, read_reset=_no_reset,
+    )
+
+    assert spend["spend_source"] == "estimate"
+    assert spend["five_hour_source"] == "est"
+
+
+def test_an_empty_five_hour_reset_falls_back_to_five_hours_before_now_in_the_pane_windows():
+    five, weekly = dash_feed._window_starts({"five_hour_resets_at": "", "weekly_resets_at": ""}, NOW_DT)
+
+    assert (five, weekly) == (NOW_DT - timedelta(hours=5), NOW_DT - timedelta(days=7))
 
 
 def test_store_meter_with_a_naive_observed_at_is_not_adopted(tmp_path):

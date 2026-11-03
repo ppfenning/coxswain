@@ -9075,8 +9075,9 @@ def _resolved_pacing_policy(runs_dir: Path) -> pacing.Policy:
 def _chair_meter(
     local: usage_meter.Meter | None, now: datetime.datetime, runs_dir,
 ) -> tuple[usage_meter.Meter | None, str]:
-    """A fresh local reading is 'meter'; else a store row under 15 minutes old is 'meter, store'; else the local reading
-    (stale, or None) with 'est', so a stale local reading is still carried forward by `usable_percentage`."""
+    """A fresh local reading is 'meter' and beats any store row, including a newer-looking row from an older plan;
+    else a store row under 15 minutes old is 'meter, store'; else the local reading (stale, or None) with 'est',
+    so a stale local reading is still carried forward by `usable_percentage`."""
     if local is not None and usage_meter.fresh(local, now):
         return local, "meter"
     doc = run_store.latest_chair_meter(Path(runs_dir))
@@ -9114,25 +9115,29 @@ def _usage_assessment(
     # Calibration divides spend up to `now` by the reading's percentage, so only a fresh local reading may write it.
     calibrate = source == "meter"
 
-    five_hour_ceiling = usage_meter.implied_ceiling("five_hour", now)
-    if five_hour_ceiling is None:
-        five_hour_ceiling = window_ceiling_usd
-    estimate_window = usage_window.gather(runs_dir, now, ceiling_usd=five_hour_ceiling, usage=usage)
-    five_hour_usable = (
-        usage_meter.usable_percentage(
-            "five_hour", meter.five_hour, meter.observed_at, now, Path(runs_dir), five_hour_ceiling,
+    if meter is not None and meter.five_hour is None:
+        # This plan has no five-hour limit: no estimate fallback, no ceiling read, nothing to calibrate.
+        window = usage_meter.unlimited_window(now)
+    else:
+        five_hour_ceiling = usage_meter.implied_ceiling("five_hour", now)
+        if five_hour_ceiling is None:
+            five_hour_ceiling = window_ceiling_usd
+        estimate_window = usage_window.gather(runs_dir, now, ceiling_usd=five_hour_ceiling, usage=usage)
+        five_hour_usable = (
+            usage_meter.usable_percentage(
+                "five_hour", meter.five_hour, meter.observed_at, now, Path(runs_dir), five_hour_ceiling,
+            )
+            if meter is not None else None
         )
-        if meter is not None else None
-    )
-    meter_window = (
-        usage_meter.as_window(
-            dataclasses.replace(meter.five_hour, used_percentage=five_hour_usable), now, datetime.timedelta(hours=5),
+        meter_window = (
+            usage_meter.as_window(
+                dataclasses.replace(meter.five_hour, used_percentage=five_hour_usable), now, datetime.timedelta(hours=5),
+            )
+            if five_hour_usable is not None else None
         )
-        if five_hour_usable is not None else None
-    )
-    window = usage_meter.prefer(meter_window, estimate_window)
-    if calibrate:
-        usage_meter.record_implied_ceiling("five_hour", meter.five_hour, Path(runs_dir), now)
+        window = usage_meter.prefer(meter_window, estimate_window)
+        if calibrate:
+            usage_meter.record_implied_ceiling("five_hour", meter.five_hour, Path(runs_dir), now)
 
     weekly_ceiling = usage_meter.implied_ceiling("weekly", now)
     if weekly_ceiling is None:
@@ -11171,6 +11176,8 @@ def _chair_run_deps(
     def window() -> pacing.Window:
         meter, source = meter_fresh_now()
         now_ = now()
+        if meter is not None and meter.five_hour is None:
+            return usage_meter.unlimited_window(now_)  # no five-hour limit on this plan; the label still names the meter
         ceiling = usage_meter.implied_ceiling("five_hour", now_)
         if ceiling is None:
             ceiling = profile.get("window_ceiling_usd")

@@ -593,6 +593,28 @@ def test_a_fresh_meter_reading_is_recorded_once_with_the_docs_fields():
     )
 
 
+def test_a_fresh_reading_with_a_null_five_hour_records_a_meter_action_with_none():
+    rig, doc = Rig(), {**_meter_doc(5), "five_hour": None}
+    tick(replace(rig.deps(), meter_doc=lambda: doc), False, NOW)
+    (action,) = _meter_actions(rig)
+    assert action["five_hour"] is None
+    assert action["seven_day"] == doc["seven_day"]
+
+
+def test_a_fresh_reading_with_no_five_hour_key_records_a_meter_action_with_none():
+    rig, doc = Rig(), {k: v for k, v in _meter_doc(5).items() if k != "five_hour"}
+    tick(replace(rig.deps(), meter_doc=lambda: doc), False, NOW)
+    (action,) = _meter_actions(rig)
+    assert action["five_hour"] is None
+    assert action["seven_day"] == doc["seven_day"]
+
+
+def test_a_stale_reading_with_a_null_five_hour_records_nothing():
+    rig, doc = Rig(), {**_meter_doc(16), "five_hour": None}
+    tick(replace(rig.deps(), meter_doc=lambda: doc), False, NOW)
+    assert _meter_actions(rig) == []
+
+
 @pytest.mark.parametrize("reading", [None, _meter_doc(16)], ids=["missing", "16-minutes-old"])
 def test_a_missing_or_stale_meter_reading_records_no_meter_action(reading):
     rig = Rig()

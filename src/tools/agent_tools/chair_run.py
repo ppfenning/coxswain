@@ -368,7 +368,7 @@ def _publish_meter(deps: RunDeps, dry_run: bool, now: datetime) -> None:
         # `status` is required: the store's record-action refuses a line without ts, epoch, kind and status.
         deps.exec_deps.record({
             "kind": "meter", "status": "recorded",
-            "five_hour": doc["five_hour"], "seven_day": doc["seven_day"], "observed_at": doc["observed_at"],
+            "five_hour": doc.get("five_hour"), "seven_day": doc["seven_day"], "observed_at": doc["observed_at"],
         })
 
 
