@@ -20,6 +20,10 @@ def test_a_lease_held_here_or_by_nobody_leaves_this_machine_the_chair():
     assert route.is_chair_machine("", "lane-1") is True
 
 
+def _no_fill(workspace):
+    return None
+
+
 def _rows(runs_dir, initiative_id, repo):
     return 0, [], {"id": initiative_id}
 
@@ -34,6 +38,7 @@ def test_a_lane_host_launch_reads_rows_and_makes_no_export_call():
 
     code, lines = cli._launch_rows_then_export(
         Path("/ws/runs"), "demo", None, False, read_rows=read_rows, export=lambda *args: calls.append(args) or [],
+        fill=_no_fill,
     )
     assert (code, lines, reads, calls) == (0, [], ["demo"], [])
 
@@ -42,6 +47,7 @@ def test_a_chair_launch_exports_the_whole_board_and_reports_skipped_rows():
     calls = []
     code, lines = cli._launch_rows_then_export(
         Path("/ws/runs"), "demo", None, True, read_rows=_rows, export=lambda *args: calls.append(args) or ["t1"],
+        fill=_no_fill,
     )
     assert (code, lines, calls) == (0, ["export: skipped 1 contentless row(s): t1"], [(Path("/ws/runs"), Path("/ws"))])
 
@@ -51,5 +57,42 @@ def test_a_rows_error_returns_before_any_export():
     code, lines = cli._launch_rows_then_export(
         Path("/ws/runs"), "demo", None, True,
         read_rows=lambda *args: (2, ["routing: no rows"], None), export=lambda *args: calls.append(args) or [],
+        fill=_no_fill,
     )
     assert (code, lines, calls) == (2, ["routing: no rows"], [])
+
+
+_REFUSAL = "routing: no initiative row demo in the store, or the store is unavailable"
+
+
+def test_a_launch_whose_initiative_exists_only_as_files_fills_before_it_reads_rows():
+    order = []
+
+    def fill(workspace):
+        order.append(("fill", workspace))
+
+    def read_rows(runs_dir, initiative_id, repo):
+        order.append(("read", initiative_id))
+        if ("fill", Path("/ws")) not in order:
+            return 2, [_REFUSAL], None
+        return 0, [], {"id": initiative_id}
+
+    code, lines = cli._launch_rows_then_export(
+        Path("/ws/runs"), "demo", None, False, read_rows=read_rows, export=lambda *args: [], fill=fill,
+    )
+    assert (code, lines, order) == (0, [], [("fill", Path("/ws")), ("read", "demo")])
+
+
+def test_a_fill_that_cannot_read_the_store_refuses_before_rows_and_export():
+    calls = []
+
+    def fill(workspace):
+        raise RuntimeError("store unavailable")
+
+    code, lines = cli._launch_rows_then_export(
+        Path("/ws/runs"), "demo", None, True,
+        read_rows=lambda *args: calls.append(("read", args)) or (0, [], {}),
+        export=lambda *args: calls.append(("export", args)) or [],
+        fill=fill,
+    )
+    assert (code, lines, calls) == (2, [_REFUSAL], [])
