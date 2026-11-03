@@ -61,6 +61,7 @@ from graphs.delivery import rescue_review
 from graphs.delivery.budget_estimate import estimate_budget
 from graphs.delivery.lifecycle_propose import DEFAULT_FIX_ATTEMPTS
 from harness import rescue_checks, rescue_select, work_mirror
+from harness.assembly import assemble
 from harness.autonomy import split_by_policy
 from harness.cause_model import cause_evidence, classify_with_model, one_line
 from harness.cause_rule import _TRANSIENT_AUTH, classify_cause, is_auth_failure
@@ -538,7 +539,7 @@ def _run_alive(ctx: _Ctx) -> Callable[[str], bool]:
     return lambda run_id: run_id == ctx.run_id or pid_alive(ctx.runs_dir / f"{run_id}.pid")
 
 
-def _open_phase_worktree(ctx: _Ctx, phase: str, base_ref: str) -> _Opened:
+def _open_phase_worktree(ctx: _Ctx, phase: str, base_ref: str, parents: tuple[str, ...] = ()) -> _Opened:
     """Get a worktree on the phase branch. Returns (ok, detail, reused), with `.cleared` on the result.
 
     Re-entrancy is the point: a second driver run over the same initiative
@@ -551,6 +552,8 @@ def _open_phase_worktree(ctx: _Ctx, phase: str, base_ref: str) -> _Opened:
 
     A dead run can also leave its worktree in place holding the branch, so a
     reused branch first releases the holders whose run is no longer alive.
+
+    A new branch over several parents is assembled; a failure keeps the assembly cause.
     """
     prune_registrations(ctx.repo)
     branch = ctx.phase_branch(phase)
@@ -561,18 +564,38 @@ def _open_phase_worktree(ctx: _Ctx, phase: str, base_ref: str) -> _Opened:
         ok, detail = _git("-C", str(ctx.repo), "worktree", "add", str(worktree), branch)
         return _Opened(ok, detail, True, cleared)
     ok, detail = create_worktree(ctx.repo, worktree, branch=branch, base=base_ref)
+    if ok and len(parents) > 1:
+        assembled = assemble(ctx.repo, worktree, base_ref, [ctx.phase_branch(p) for p in parents], branch)
+        if not assembled.ok:
+            # Drop the half-made branch, or the next run reuses it as if it were assembled.
+            remove_worktree(ctx.repo, worktree)
+            _git("-C", str(ctx.repo), "branch", "-D", branch)
+            return _Opened(False, ASSEMBLY_FAILED + assembled.cause, False)
     return _Opened(ok, detail, False)
 
 
-def _parent_head_moved(ctx: _Ctx, phase: str, base_ref: str) -> bool:
-    """Is the phase branch still stacked on the parent's CURRENT head?
+ASSEMBLY_FAILED = "parent branches could not be assembled: "
 
-    `merge-base --is-ancestor` is the whole question: if the parent's head is no
+
+def _start_failure(detail: str, verb: str) -> str:
+    """The reason for a phase whose worktree did not open; a failed assembly keeps its cause as the reason."""
+    if detail.startswith(ASSEMBLY_FAILED):
+        return detail
+    return f"the phase worktree could not be {verb}: {detail}"
+
+
+def _parent_head_moved(ctx: _Ctx, phase: str, base_ref: str, parents: tuple[str, ...] = ()) -> bool:
+    """Is the phase branch still stacked on every parent's CURRENT head?
+
+    `merge-base --is-ancestor` is the whole question: if a parent's head is no
     longer an ancestor of this branch, the ground under the stack moved, and
     everything above it is building on a base that is no longer there.
     """
-    ok, _ = _git("-C", str(ctx.repo), "merge-base", "--is-ancestor", base_ref, ctx.phase_branch(phase))
-    return not ok
+    heads = [ctx.phase_branch(p) for p in parents] or [base_ref]
+    return any(
+        not _git("-C", str(ctx.repo), "merge-base", "--is-ancestor", head, ctx.phase_branch(phase))[0]
+        for head in heads
+    )
 
 
 def branch_action(reused: bool, head_moved: bool, has_own_commits: bool) -> str:
@@ -1245,26 +1268,8 @@ def run_epic(
 
         for phase in ordered:
             parent_phases = sorted(parents.get(phase) or ())
-
-            if len(parent_phases) > 1:
-                # Two parents is a merge of two stacks, and a v1 stack has one base
-                # ref. Refusing beats picking one parent and silently building on
-                # half the ground.
-                add_phase(
-                    {
-                        "phase": phase,
-                        "status": "blocked",
-                        "parents": parent_phases,
-                        "reason": (
-                            f"multiple parent phases ({', '.join(parent_phases)}); "
-                            "v1 stacks support one parent"
-                        ),
-                    }
-                )
-                continue
-
-            parent = parent_phases[0] if parent_phases else None
-            if parent is not None and parent not in complete:
+            parent = next((p for p in parent_phases if p not in complete), None)
+            if parent is not None:
                 # v1 is blanket no: a phase unblocks its dependents only when
                 # `validate_phase` says the goal is met. The validator reports
                 # `quarantine_blocks_dependents`; nothing acts on it yet.
@@ -1285,7 +1290,9 @@ def run_epic(
                 continue
 
             try:
-                record = _run_phase(ctx, initiative=initiative, phase=phase, parent=parent, items=items)
+                record = _run_phase(
+                    ctx, initiative=initiative, phase=phase, parents=tuple(parent_phases), items=items
+                )
             except LimitStop as exc:
                 # No quarantine, no attempt, every sibling task left as-is: stop now.
                 paused_until = exc.detail.split("resets", 1)[-1].strip()
@@ -1788,7 +1795,7 @@ def _clear_pause_if_held(
 def build_outcome(result: Mapping[str, Any]) -> dict[str, Any]:
     """The run's outcome from its epic result: totals, phase-grain quarantines, phases waiting on a parent.
 
-    A waiting phase is a blocked record with exactly one `parents` entry: the parent did not complete, so it built nothing.
+    A waiting phase is a blocked record with `parents` entries: a parent did not complete, so it built nothing.
     """
     blocked = [
         {"phase": q["phase"], "reason": q["reason"]}
@@ -1799,7 +1806,7 @@ def build_outcome(result: Mapping[str, Any]) -> dict[str, Any]:
     waiting = [
         p["phase"]
         for p in result.get("phases") or []
-        if p.get("status") == "blocked" and len(p.get("parents") or []) == 1 and p["phase"] not in blocked_ids
+        if p.get("status") == "blocked" and len(p.get("parents") or []) >= 1 and p["phase"] not in blocked_ids
     ]
     awaiting_land = any(p.get("status") == "awaiting_land" for p in result.get("phases") or [])
     return {
@@ -2114,16 +2121,22 @@ def _run_phase(
     *,
     initiative: Mapping[str, Any],
     phase: str,
-    parent: str | None,
+    parents: tuple[str, ...],
     items: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """One phase: branch, fan out, check, validate, gate, execute, record."""
+    """One phase: branch, fan out, check, validate, gate, execute, record.
+
+    One parent stacks the branch on that parent's branch. Several parents are merged by
+    `assemble` onto the default ref, so `base` is the default ref and `assembled_from` lists them.
+    """
     branch = ctx.phase_branch(phase)
+    parent = parents[0] if len(parents) == 1 else None
     base_ref = ctx.phase_branch(parent) if parent else ctx.default_ref
     quarantined: list[dict[str, Any]] = []
     record: dict[str, Any] = {
         "phase": phase,
         "parent": parent,
+        **({"assembled_from": list(parents)} if len(parents) > 1 else {}),
         "branch": branch,
         "base": base_ref,
         **({"card_branch": True} if card_mode(ctx.initiative_id, ctx.resume_from is None) else {}),
@@ -2140,24 +2153,37 @@ def _run_phase(
     if stale_start:
         return _stale_phase(record, stale_start)
 
-    opened = _open_phase_worktree(ctx, phase, base_ref)
+    opened = _open_phase_worktree(ctx, phase, base_ref, parents)
     ok, detail, reused = opened
     record["cleared_worktrees"] = list(getattr(opened, "cleared", ()))
     if not ok:
         record["status"] = "blocked"
-        record["reason"] = f"the phase worktree could not be created: {detail}"
-        record["phase_failed_to_start"] = record["reason"]
+        record["reason"] = _start_failure(detail, "created")
+        if not detail.startswith(ASSEMBLY_FAILED):
+            record["phase_failed_to_start"] = record["reason"]
         quarantined.append({"id": phase, "phase": phase, "grain": "phase", "reason": record["reason"]})
         return record
     record["reused_branch"] = reused
 
     # Decided before a single task builds: a reused branch behind its base is
     # either recreated (nothing of its own to lose) or blocked (something is).
-    head_moved = reused and _parent_head_moved(ctx, phase, base_ref)
+    head_moved = reused and _parent_head_moved(ctx, phase, base_ref, parents)
     task_states = {str(i["id"]): str(i.get("state")) for i in items}
     cherry = _phase_branch_cherry(ctx, phase) if head_moved else []
     unlanded_kind = classify_unlanded(cherry, task_states)
     action = branch_action(reused, head_moved, unlanded_kind not in ("landed", "rebuild"))
+
+    if action == "block" and len(parents) > 1:
+        # A branch assembled from several parents is re-assembled, never rebased onto the default ref.
+        assembled_from = ", ".join(ctx.phase_branch(p) for p in parents)
+        record["status"] = "blocked"
+        record["reason"] = (
+            f"phase branch {branch} was assembled from {assembled_from}, one of which has moved since, and it "
+            "carries its own commits; a rebase onto the default ref would drop that parent, so re-assemble it"
+        )
+        quarantined.append({"id": phase, "phase": phase, "grain": "phase", "reason": record["reason"]})
+        _git("-C", str(ctx.phase_worktree(phase)), "checkout", "--detach", "-q")
+        return record
 
     if action == "block" and unlanded_kind == "awaiting_land":
         # Their lands are in flight: nothing to quarantine and nothing to rebase. Wait.
@@ -2217,13 +2243,14 @@ def _run_phase(
         _git("-C", str(ctx.phase_worktree(phase)), "checkout", "--detach", "-q")
         _git("-C", str(ctx.repo), "worktree", "remove", "--force", str(ctx.phase_worktree(phase)))
         _git("-C", str(ctx.repo), "branch", "-D", branch)
-        reopened = _open_phase_worktree(ctx, phase, base_ref)
+        reopened = _open_phase_worktree(ctx, phase, base_ref, parents)
         ok, detail, reused = reopened
         record["cleared_worktrees"] = [*record["cleared_worktrees"], *getattr(reopened, "cleared", ())]
         if not ok:
             record["status"] = "blocked"
-            record["reason"] = f"the phase worktree could not be recreated: {detail}"
-            record["phase_failed_to_start"] = record["reason"]
+            record["reason"] = _start_failure(detail, "recreated")
+            if not detail.startswith(ASSEMBLY_FAILED):
+                record["phase_failed_to_start"] = record["reason"]
             quarantined.append({"id": phase, "phase": phase, "grain": "phase", "reason": record["reason"]})
             return record
         record["reused_branch"] = reused
