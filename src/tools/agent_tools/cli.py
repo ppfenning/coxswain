@@ -5258,10 +5258,10 @@ def _route_pull(a: argparse.Namespace) -> int:
     return max([_pull_source(a, profile, name, named=len(names) > 1) for name in names])
 
 
-def _known_issue_numbers(ws: Path) -> frozenset[str]:
-    """Issue numbers the store rows already hold; empty when the store is unreadable (`read_queue` returns no rows then)."""
-    keys = (card_keys.row_keys(row)[0] for row in run_store.read_queue(ws / "runs"))
-    return frozenset(str(issue) for issue in keys if issue is not None)
+def _held_issues(ws: Path, repo_map: dict) -> dict[tuple[str, str], str]:
+    """(repository, number) to `initiative/task_id` for the store rows that name both; empty when the store is unreadable."""
+    keyed = ((route.row_issue_key(row, repo_map), row) for row in run_store.read_queue(ws / "runs"))
+    return {key: f"{row.get('initiative')}/{row.get('task_id')}" for key, row in keyed if key is not None}
 
 
 def _pull_source(a: argparse.Namespace, profile: dict, source: str, *, named: bool) -> int:
@@ -5283,18 +5283,23 @@ def _pull_source(a: argparse.Namespace, profile: dict, source: str, *, named: bo
         found, run_store.read_queue(ws / "runs")
     )
     date = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
+    repo_map = profile.get("repo_map", {})
+    held = _held_issues(ws, repo_map)
     plan, reviews, refusals = route.pull_plan(
         tuple(found.values()),
         taken,
-        profile.get("repo_map", {}),
+        repo_map,
         date=date,
         source=source,
         ids=profile.get("ids", "slug"),
-        known_issues=_known_issue_numbers(ws),
+        known_issues=held,
     )
     problems = [*unreadable, *refusals]
     for line in problems:
         print(line)
+    if a.dry_run:
+        for candidate, label in route.held_candidates(tuple(found.values()), held):
+            print(f"routing: would skip {candidate.link}: already held by {label}")
     if not plan and not reviews:
         print(f"routing: pull wrote nothing{f' from {source}' if named else ''}: no eligible candidates")
     failed = [_pull_one(adapter, config, mapping, found, ws, a.dry_run) for mapping in plan]
