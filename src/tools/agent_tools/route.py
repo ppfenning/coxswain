@@ -600,6 +600,7 @@ def intake_file(
     link: str = "",
     ids: str = "slug",
     allocate: Callable[[], str] | None = None,
+    after: Sequence[str] = (),
 ) -> dict:
     """Content for `route file --intake` (spec §3):
     `intake/<date>-<slug>.md`, same frontmatter shape as the initiative
@@ -607,14 +608,16 @@ def intake_file(
     pure — no clock reads here. A pulled file also carries `source` and `link`.
 
     Under `ids="sequence"` the file is `intake/<id>.md` with the id from `allocate`; a failed allocation raises, never slugifies.
+    A non-empty `after` is written last as an `after: [a, b]` list; empty leaves the file as it was.
     """
     text = body if body else title
     origin = [("source", source), ("link", link)] if link else []
+    waits = [("after", _Raw("[" + ", ".join(_yaml_scalar(a) for a in after) + "]"))] if after else []
     if ids == "sequence":
         id_ = (allocate or allocate_intake_id)()
-        return {f"intake/{id_}.md": _frontmatter([("id", id_), ("title", title), *origin], text)}
+        return {f"intake/{id_}.md": _frontmatter([("id", id_), ("title", title), *origin, *waits], text)}
     slug = _slug_or_raise(title)
-    file_text = _frontmatter([("id", slug), ("title", title), ("repo", repo), *origin], text)
+    file_text = _frontmatter([("id", slug), ("title", title), ("repo", repo), *origin, *waits], text)
     return {f"intake/{date}-{slug}.md": file_text}
 
 
@@ -1901,7 +1904,8 @@ def intake_priority_rows(stored: Sequence[Mapping], intake: Mapping) -> list[ope
 
 def set_intake_priority(runs_dir: Path, ws: Path, intake: Mapping, flag: int | str) -> int:
     """Edge: `set_initiative_priority` for a queued intake row with no initiative yet. The store takes the new
-    priority first; `intake/<stem>.md` follows through `priority_text` only when it carries a `priority:` key."""
+    priority first; `intake/<stem>.md` follows through `priority_text`, which adds the `priority:` key when the
+    file has none, so the priority survives a queue export."""
     task_id = str(intake["task_id"])
     if isinstance(flag, int):
         value = flag
@@ -1919,7 +1923,7 @@ def set_intake_priority(runs_dir: Path, ws: Path, intake: Mapping, flag: int | s
     if not run_store.upsert_row(runs_dir, sent):
         print(f"routing: the store did not take the priority for intake {task_id}")
         return 1
-    if text is not None and "priority" in parse_frontmatter(text)[0]:
+    if text is not None:
         from agent_tools import queue_export  # imported here: route loads on every cox start
 
         try:
@@ -2044,14 +2048,23 @@ def _status_line(row: dict, short_id: str | None = None) -> str:
     return " ".join([head, *tails])
 
 
-def _intake_group_line(name: str, entries: list) -> str:
-    names = ", ".join(entry["id"] for entry in entries)
+def _intake_group_line(name: str, entries: list, waiting: Mapping[str, Sequence[str]] | None = None) -> str:
+    """`waiting` (intake id to the ids it waits on) annotates a queued entry as `id (waiting on a, b)`."""
+    waits = waiting or {}
+
+    def label(entry: Mapping) -> str:
+        on = waits.get(entry["id"]) if name == "queued" else None
+        return f"{entry['id']} (waiting on {', '.join(on)})" if on else entry["id"]
+
+    names = ", ".join(label(entry) for entry in entries)
     return f"intake {name}: {len(entries)}" + (f" — {names}" if entries else "")
 
 
 def render_status(rows: list, groups: dict | None = None, problems: list | None = None,
                   gate_level: str | None = None, hidden: int = 0,
-                  short_ids: Mapping[str, str] | None = None) -> str:
+                  short_ids: Mapping[str, str] | None = None,
+                  waiting: Mapping[str, Sequence[str]] | None = None,
+                  held: Sequence[Mapping] | None = None) -> str:
     """The human-readable text `agent-tools route status` prints, spec §5,
     from `status_rows`' output. One line per row: a run with no pidfile
     states only its id and state, since `pid` and `started` are both
@@ -2063,12 +2076,15 @@ def render_status(rows: list, groups: dict | None = None, problems: list | None 
     output, appends one line per entry last. `hidden`, when positive, adds
     one line after the rows saying that many older runs were left out.
     `short_ids` (slug to short id) shows `slug [short]` on a row whose slug is in it.
+    `waiting` (intake id to the ids it waits on) marks queued intake entries in the group lines. `held`, rows of
+    `{"id", "reason"}`, adds a `held:` heading after the groups with one `  id: reason` line each.
     """
     ids = short_ids or {}
     lines = [_status_line(row, ids.get(row["id"])) for row in rows]
     lines += [f"({hidden} older runs hidden; --all shows every run)"] if hidden > 0 else []
     if groups is not None:
-        lines += [_intake_group_line(name, groups[name]) for name in ("queued", "decomposed", "landed")]
+        lines += [_intake_group_line(name, groups[name], waiting) for name in ("queued", "decomposed", "landed")]
+    lines += ["held:", *(f"  {h['id']}: {h['reason']}" if h.get("reason") else f"  {h['id']}" for h in held)] if held else []
     lines += [f"problem: {p}" for p in problems or []]
     lines += [f"gate: {gate_level}"] if gate_level is not None else []
     return "\n".join(lines)
@@ -2234,6 +2250,13 @@ def parse_frontmatter(text: str) -> tuple:
     return fields, body
 
 
+def _after_list(value: object) -> list:
+    """A front-matter `after` as a list of ids: a list stays, a bare scalar is one id, absent or empty is none."""
+    if isinstance(value, list):
+        return list(value)
+    return [str(value)] if value else []
+
+
 def _intake_entry(filename: str, text: str) -> dict:
     fields, body = parse_frontmatter(text)
     stem = os.path.splitext(os.path.basename(filename))[0]
@@ -2246,13 +2269,16 @@ def _intake_entry(filename: str, text: str) -> dict:
         "initiative": fields.get("initiative"),
         "done": filename.startswith("done/"),
         "path": f"intake/{os.path.basename(filename)}",
+        "after": _after_list(fields.get("after")),
+        "held": str(fields.get("held", "")).strip().lower() == "true",
+        "priority": _int_or_zero(fields.get("priority")),
     }
 
 
 def intake_entries(files: dict) -> list:
     """Rows for the intake queue, the `intake` input `render_context` and
     `context_document` already accept: one `{"id", "title", "initiative",
-    "done", "path"}` per file in `files` (filename -> text, as the caller
+    "done", "path", "after", "held", "priority"}` per file in `files` (filename -> text, as the caller
     listed the intake dir), sorted by filename. A filename under a
     `consumed/` prefix has already been handled and is skipped. `id` comes
     from frontmatter's `id` field, or the filename's stem when frontmatter
