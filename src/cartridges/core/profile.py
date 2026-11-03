@@ -34,7 +34,7 @@ from core.catalog import (
     newest_in_family,
 )
 
-__all__ = ["Profile", "ResolvedModel", "load_profile", "resolve_entry", "resolve_profile"]
+__all__ = ["Profile", "ResolvedModel", "load_profile", "parse_max_parallel", "resolve_entry", "resolve_profile"]
 
 
 @dataclass(frozen=True)
@@ -48,6 +48,16 @@ class Profile:
     name: str
     tiers: Mapping[str, ResolvedModel]
     raw: Mapping[str, Any]
+    max_parallel: int | None = None
+
+
+def parse_max_parallel(value: Any) -> int | str | None:
+    """None when absent, the int when positive, else a message. A bool is refused: it is an int subclass."""
+    if value is None:
+        return None
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+        return value
+    return f"max_parallel must be a positive integer, got {value!r}"
 
 
 def _resolve_alias(name: str, catalog: Catalog) -> ResolvedModel | str:
@@ -77,7 +87,11 @@ def resolve_profile(raw: Any, catalog: Catalog) -> Profile | list[str]:
     if not isinstance(tiers, dict) or not tiers:
         return ["profile must have a non-empty 'tiers' mapping"]
     resolved = {tier: resolve_entry(str(name), catalog) for tier, name in tiers.items()}
-    errors = [f"tier {t!r}: {r}" for t, r in resolved.items() if isinstance(r, str)]
+    cap = parse_max_parallel(raw.get("max_parallel"))
+    errors = [
+        *(f"tier {t!r}: {r}" for t, r in resolved.items() if isinstance(r, str)),
+        *([cap] if isinstance(cap, str) else []),
+    ]
     return (
         errors
         if errors
@@ -85,6 +99,7 @@ def resolve_profile(raw: Any, catalog: Catalog) -> Profile | list[str]:
             name=str(raw.get("profile", "")),
             tiers=MappingProxyType({t: r for t, r in resolved.items() if isinstance(r, ResolvedModel)}),
             raw=MappingProxyType(dict(raw)),
+            max_parallel=cap if isinstance(cap, int) else None,
         )
     )
 
