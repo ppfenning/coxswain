@@ -74,8 +74,13 @@ _LEASE_COLS = ("name", "holder", "epoch", "heartbeat_at", "expires_at")
 _GRAPH_COLS = ("graph_id", "name", "version", "content_hash", "registered_at", "definition_json")
 _NODE_COLS = ("graph_id", "node_id", "ord", "role", "default_tier", "default_class", "output_schema_hash")
 _TASK_RECORD_COLS = ("run_id", "phase_id", "task_id", "record_json", "updated_at")
-_WORK_ITEM_COLS = ("initiative", "task_id", "phase", "state", "needs_json", "updated_at", "updated_by")
-_JSON_COLS = frozenset({"decision_json", "detail_json", "row_json", "definition_json", "record_json", "needs_json"})
+_WORK_ITEM_COLS = (
+    "initiative", "task_id", "phase", "state", "needs_json", "updated_at", "updated_by", "merged_commit", "handoff_json",
+)  # fmt: skip
+_JSON_COLS = frozenset(
+    {"decision_json", "detail_json", "row_json", "definition_json", "record_json", "needs_json", "handoff_json"}
+)
+_WORK_ITEM_RENAMED = {"needs_json": "needs", "handoff_json": "handoff"}
 
 
 class StoreVersionError(RuntimeError):
@@ -359,11 +364,17 @@ def build_task_history(conn: Connection, repo: str, since: str) -> list[tuple[st
 
 
 def work_items(conn: Connection, initiative: str) -> list[Row]:
-    """An initiative's work_items rows in task_id order, needs_json decoded and keyed as `needs`."""
+    """An initiative's work_items rows in task_id order.
+
+    needs_json and handoff_json are decoded and keyed as `needs` and `handoff`; `merged` is true when merged_commit is set.
+    """
     p = conn.dialect.placeholder
     sql = f"{_select(_WORK_ITEM_COLS, 'work_items')} WHERE initiative = {p} ORDER BY task_id"
     rows = (_dict(_WORK_ITEM_COLS, r) for r in conn.query_all(sql, (initiative,)))
-    return [{("needs" if k == "needs_json" else k): v for k, v in r.items()} for r in rows]
+    return [
+        {**{_WORK_ITEM_RENAMED.get(k, k): v for k, v in r.items()}, "merged": r["merged_commit"] is not None}
+        for r in rows
+    ]
 
 
 def read_trace(root: str | Path, run_id: str, call_id: str) -> list[Row]:
