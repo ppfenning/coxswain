@@ -34,6 +34,18 @@ ready — no run may pick it up — and NOT done — it does not complete its
 phase or initiative, the `done + dropped` completion rule from #58 is
 unchanged — and the land/recover tooling is what moves it on to `done`.
 
+`approved` plus `merged: true` means the change has landed on the target
+branch although the task has not yet been moved to `done`. `merged_commit`
+records the commit. `read_item` exposes both on every item (`False` and `None`
+when absent) and `write_item` writes them back only when set, so a state move
+never erases them. A merged approved task satisfies the needs of its dependents
+in the same initiative, so a parent approved in an earlier run no longer holds
+them back. It is still not ready and still does not complete its phase. A need
+in another initiative is met only by `done`.
+
+`initiative.md` may set `land_at` to `ticket`, `level` or `task`. `read_initiative`
+exposes it, `None` when absent, and raises `WorkStoreError` for any other value.
+
 `priority` is 1..5, 1 highest; an item that omits it defaults to 3. It is
 validated like `budget_usd`. Reading exposes it on every parsed item, never
 absent, unlike `budget_usd`. Writing omits the key once it equals the
@@ -97,6 +109,7 @@ _OUT_OF_QUARANTINED = frozenset({"ready"})
 DEFAULT_PRIORITY = 3
 ATTEMPT_KINDS = ("refused", "no_work", "unverified", "infra")
 TIERS = ("cheap", "standard", "deep")
+LAND_AT = ("ticket", "level", "task")
 
 _FRONTMATTER = "---"
 _NEW_SUFFIX = " (new)"
@@ -193,6 +206,24 @@ def _coerce_priority(raw: Any) -> int:
     return value if 1 <= value <= 5 else DEFAULT_PRIORITY
 
 
+def _coerce_merged(raw: Any) -> bool:
+    """True only for a real boolean true; the string 'false' must not read as merged."""
+    return raw is True
+
+
+def _coerce_merged_commit(raw: Any) -> str | None:
+    text = str(raw).strip() if raw is not None else ""
+    return text or None
+
+
+def _coerce_land_at(raw: Any, path: Path | str) -> str | None:
+    if raw is None:
+        return None
+    if raw not in LAND_AT:
+        raise WorkStoreError(f"{path}: land_at must be one of {list(LAND_AT)}, got {raw!r}")
+    return str(raw)
+
+
 def resolve_surfaces(surfaces: Sequence[str], tree: frozenset[str]) -> tuple[list[str], list[str]]:
     """Split surfaces into those that are real paths in `tree` and those that are not."""
     resolved: list[str] = []
@@ -238,6 +269,8 @@ def read_item(path: Path | str) -> dict[str, Any]:
         "attempts": _coerce_attempts(meta.get("attempts")),
         **({"budget_usd": budget_usd} if budget_usd is not None else {}),
         "priority": _coerce_priority(meta.get("priority")),
+        "merged": _coerce_merged(meta.get("merged")),
+        "merged_commit": _coerce_merged_commit(meta.get("merged_commit")),
         "body": body,
         "path": str(path),
     }
@@ -257,6 +290,8 @@ def write_item(item: Mapping[str, Any], path: Path | str) -> Path:
     verify = _coerce_verify(item.get("verify"), path)
     tier = _coerce_tier(item.get("tier"), path)
     priority = _coerce_priority(item.get("priority"))
+    merged = _coerce_merged(item.get("merged"))
+    merged_commit = _coerce_merged_commit(item.get("merged_commit"))
     meta = {
         "id": item["id"],
         "phase": item.get("phase", ""),
@@ -269,6 +304,8 @@ def write_item(item: Mapping[str, Any], path: Path | str) -> Path:
         "title": item.get("title", item["id"]),
         **({"budget_usd": budget_usd} if budget_usd is not None else {}),
         **({"priority": priority} if priority != DEFAULT_PRIORITY else {}),
+        **({"merged": True} if merged else {}),
+        **({"merged_commit": merged_commit} if merged_commit else {}),
         **({"attempts": attempts} if attempts else {}),
     }
     if meta["state"] not in STATES:
@@ -354,6 +391,7 @@ def read_initiative(root: Path | str) -> dict[str, Any]:
     body = ""
     if overview.is_file():
         meta, body = _split_frontmatter(overview.read_text(encoding="utf-8"), overview)
+    land_at = _coerce_land_at(meta.get("land_at"), overview)
 
     items = [read_item(p) for p in sorted(root.glob("*/*.md")) if p.name != "initiative.md"]
     own = {str(item["id"]) for item in items}
@@ -365,6 +403,7 @@ def read_initiative(root: Path | str) -> dict[str, Any]:
         "id": str(meta.get("id") or root.name),
         "title": str(meta.get("title") or root.name),
         "body": body,
+        "land_at": land_at,
         "root": str(root),
         "phases": phases(items),
         "items": items,
@@ -457,12 +496,15 @@ def validate_dag(items: Iterable[Mapping[str, Any]], foreign: Mapping[str, str] 
 def ready_tasks(
     items: Sequence[Mapping[str, Any]], *, phase: str | None = None, foreign: Mapping[str, str] | None = None
 ) -> list[dict[str, Any]]:
-    """Every task in state `ready` whose dependencies are all done.
+    """Every task in state `ready` whose dependencies are all met.
 
     `todo`, `blocked`, `approved` and `in_progress` are held. `in_progress` is
     held because the driver's resume behaviour was not checked when this was written.
 
-    A need in another initiative (`foreign`) is met only by state `done`; `dropped` does not satisfy it.
+    A need in this initiative is met by `done`, `dropped`, or `approved` with
+    `merged` true. An approved task is still never itself returned.
+
+    A need in another initiative (`foreign`) is met only by state `done`; `dropped` and merged `approved` do not satisfy it.
 
     This is the parallelism: whatever comes back can run at the same time,
     because nothing in the set depends on anything else in it. An edge that
@@ -470,7 +512,11 @@ def ready_tasks(
     keeps a task out of this list for no reason.
     """
     own = {str(item["id"]) for item in items}
-    done = {str(item["id"]) for item in items if item.get("state") in _TERMINAL}
+    done = {
+        str(item["id"])
+        for item in items
+        if item.get("state") in _TERMINAL or (item.get("state") == APPROVED and item.get("merged") is True)
+    }
     done |= {tid for tid, state in (foreign or {}).items() if state == DONE and tid not in own}
     return sorted(
         (
