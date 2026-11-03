@@ -197,3 +197,73 @@ def test_injected_callables_replace_the_wrappers(monkeypatch):
         {"runs_dir": RUNS, "name": "land:t1", "holder": "h", "ttl": 5},
         {"runs_dir": RUNS, "name": "land:t1", "holder": "h", "epoch": 2},
     ]
+
+
+DEAD = "label@host-a:4242"
+
+
+def _stealing(answers):
+    """Injected acquire and release fakes: `answers` are the acquire results in turn; every call is recorded."""
+    calls, queue = [], iter(answers)
+
+    def acquire(runs_dir, name, holder, ttl, steal=False):
+        calls.append(("acquire", steal))
+        return next(queue)
+
+    def release(runs_dir, name, holder, epoch):
+        calls.append(("release", holder, epoch))
+        return store_cli.LeaseReleased()
+
+    return calls, acquire, release
+
+
+def _takeover(answers, body, this_host="host-a", alive=lambda pid: False):
+    calls, acquire, release = _stealing(answers)
+    kwargs = {} if this_host is None else {"this_host": this_host, "alive": alive}
+    result = land_lease.run_under_land_lease(RUNS, "t1", "me", 60, body, acquire=acquire, release=release, **kwargs)
+    return result, calls
+
+
+def test_a_dead_pid_on_this_host_is_stolen_from_and_the_body_runs():
+    ran = []
+    result, calls = _takeover([store_cli.LeaseRefused(3, DEAD), store_cli.LeaseGranted(4, "me")], lambda epoch: ran.append(epoch) or "done")
+    assert result == land_lease.Ran("done", 4, None, DEAD)
+    assert ran == [4]
+    assert calls == [("acquire", False), ("acquire", True), ("release", "me", 4)]
+
+
+def test_a_live_pid_is_not_stolen_from():
+    result, calls = _takeover([store_cli.LeaseRefused(3, DEAD)], lambda epoch: "done", alive=lambda pid: True)
+    assert result == land_lease.Refused(3, DEAD)
+    assert calls == [("acquire", False)]
+
+
+def test_a_holder_on_another_host_is_not_stolen_from():
+    result, calls = _takeover([store_cli.LeaseRefused(3, "label@host-b:4242")], lambda epoch: "done")
+    assert result == land_lease.Refused(3, "label@host-b:4242")
+    assert calls == [("acquire", False)]
+
+
+def test_a_steal_granted_at_an_unexpected_epoch_is_released_and_refused_with_no_holder():
+    ran = []
+    result, calls = _takeover([store_cli.LeaseRefused(3, DEAD), store_cli.LeaseGranted(9, "me")], ran.append)
+    assert result == land_lease.Refused(3, None)
+    assert ran == []
+    assert calls == [("acquire", False), ("acquire", True), ("release", "me", 9)]
+
+
+def test_without_this_host_a_refusal_stays_refused_with_no_steal():
+    result, calls = _takeover([store_cli.LeaseRefused(3, DEAD)], lambda epoch: "done", this_host=None)
+    assert result == land_lease.Refused(3, DEAD)
+    assert calls == [("acquire", False)]
+
+
+@pytest.mark.parametrize("stolen, expected", [
+    (store_cli.LeaseRefused(4, "live@host-a:1"), land_lease.Refused(4, "live@host-a:1")),
+    (store_cli.NotAvailable(), land_lease.Unavailable("no harness")),
+    (store_cli.LeaseError("exit 2: bad"), land_lease.Unavailable("exit 2: bad")),
+])
+def test_a_steal_that_is_not_granted_is_handled_as_an_acquire_result(stolen, expected):
+    result, calls = _takeover([store_cli.LeaseRefused(3, DEAD), stolen], lambda epoch: "done")
+    assert result == expected
+    assert calls == [("acquire", False), ("acquire", True)]
