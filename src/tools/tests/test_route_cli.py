@@ -2269,6 +2269,36 @@ def test_a_pull_after_the_intake_file_is_decomposed_writes_nothing(tmp_path, mon
     assert list((ws / "intake").glob("*.md")) == []
 
 
+def _hold(monkeypatch, rows):
+    monkeypatch.setattr(run_store, "read_queue", lambda runs_dir, initiative=None, kind=None: rows)
+
+
+def test_a_row_holding_the_same_number_in_another_repo_does_not_stop_a_pull(tmp_path, monkeypatch):
+    profile, ws = _pull_setup(tmp_path, monkeypatch, [_issue("https://x/1")])
+    _hold(monkeypatch, [{"issue_number": 1, "initiative": "i", "task_id": "t", "link": "https://github.com/o/other/issues/1"}])
+    assert main(["route", "pull", "--profile", str(profile)]) == 0
+    assert len(list((ws / "intake").glob("*.md"))) == 1
+
+
+def test_a_row_holding_the_same_repo_and_number_skips_the_candidate_and_the_dry_run_names_it(tmp_path, monkeypatch, capsys):
+    profile, ws = _pull_setup(tmp_path, monkeypatch, [_issue("https://x/1")])
+    _hold(monkeypatch, [{"issue_number": 1, "initiative": "init", "task_id": "task-9", "repo": _widget(tmp_path)}])
+    assert main(["route", "pull", "--profile", str(profile), "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "would skip https://x/1: already held by init/task-9" in out
+    assert "pull wrote nothing" in out
+    assert main(["route", "pull", "--profile", str(profile)]) == 0
+    assert capsys.readouterr().out == "routing: pull wrote nothing: no eligible candidates\n"
+    assert not (ws / "intake").exists()
+
+
+def test_a_row_with_an_issue_number_and_no_resolvable_repo_skips_nothing(tmp_path, monkeypatch):
+    profile, ws = _pull_setup(tmp_path, monkeypatch, [_issue("https://x/1")])
+    _hold(monkeypatch, [{"issue_number": 1, "initiative": "i", "task_id": "t", "repo": "/nowhere/mapped"}])
+    assert main(["route", "pull", "--profile", str(profile)]) == 0
+    assert len(list((ws / "intake").glob("*.md"))) == 1
+
+
 _APPEND_ARGS = "import sys; open(sys.argv[1], 'a').write(' '.join(sys.argv[2:]) + chr(10))"
 
 
