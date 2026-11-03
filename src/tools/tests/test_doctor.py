@@ -1078,3 +1078,36 @@ def test_lane_host_paths_warns_when_the_profile_workspace_dir_differs():
     assert (row["ok"], row["warn"], row["detail"]) == (
         True, True, "h1: lane_hosts workspace_dir /old, host reports /w; run cox setup migrate --apply --hosts",
     )
+
+
+_DASH_WARN = {
+    "check": "dash build",
+    "ok": True,
+    "warn": True,
+    "detail": "Rust toolchain is missing; towpath cannot be built from the checkout; the release binary stays in use",
+}
+
+
+def test_dash_build_row_is_ok_when_the_install_is_not_a_development_install():
+    assert doctor.dash_build_row(False, True, False) == {"check": "dash build", "ok": True, "detail": "nothing to build"}
+
+
+def test_dash_build_row_is_ok_when_the_dash_checkout_is_absent():
+    assert doctor.dash_build_row(True, False, False) == {"check": "dash build", "ok": True, "detail": "nothing to build"}
+
+
+def test_dash_build_row_is_ok_when_the_toolchain_is_found():
+    assert doctor.dash_build_row(True, True, True) == {"check": "dash build", "ok": True, "detail": "Rust toolchain found"}
+
+
+def test_dash_build_row_warns_on_a_development_install_with_the_checkout_and_no_toolchain():
+    assert doctor.dash_build_row(True, True, False) == _DASH_WARN
+
+
+def test_dash_build_warning_contributes_to_exit_code_like_a_freshness_warning():
+    dash = [doctor.dash_build_row(True, True, False)]
+    fresh = doctor.freshness_rows(_PROFILE, _CATALOG, ["model-a"], lambda p, c, v: [_STALE])
+    base = doctor.checks(_good_facts())
+    failing = doctor.checks({})
+    assert doctor.exit_code(base + dash) == doctor.exit_code(base + fresh) == 0
+    assert doctor.exit_code(failing + dash) == doctor.exit_code(failing + fresh) == 1
