@@ -33,6 +33,9 @@ def test_only_the_initiatives_rows_come_back_in_task_id_order(conn):
             "needs": ["t0"],
             "updated_at": UPDATED,
             "updated_by": "bob",
+            "merged": False,
+            "merged_commit": None,
+            "handoff": None,
         },
         {
             "initiative": "i1",
@@ -42,6 +45,9 @@ def test_only_the_initiatives_rows_come_back_in_task_id_order(conn):
             "needs": [],
             "updated_at": UPDATED,
             "updated_by": "alice",
+            "merged": False,
+            "merged_commit": None,
+            "handoff": None,
         },
     ]
 

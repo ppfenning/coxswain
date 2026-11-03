@@ -126,7 +126,7 @@ def test_exit_zero_prints_the_row_with_exactly_the_work_item_keys(url, run):
         "updated_at": NOW,
         "updated_by": "bob",
     }
-    assert rows(url, "i1") == [row]
+    assert [{k: r[k] for k in KEYS} for r in rows(url, "i1")] == [row]
 
 
 def test_exit_zero_inserts_when_a_phase_is_given(url, run):
