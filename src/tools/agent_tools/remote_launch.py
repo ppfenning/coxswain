@@ -262,7 +262,10 @@ def launch_on_host(
         return LaunchError(
             "push", f"a relocated relaunch to {host.name} has no repo to push epic/{initiative}/* into: nothing was run"
         )
-    missing = lane_toolchain.refusals(host.name, tools, ssh_argv(host.ssh, lane_toolchain.lane_argv(tools)), probe)
+    lane_repo = repo_path.host_form(repo, home) if repo and home else ""
+    missing = lane_toolchain.refusals(
+        host.name, tools, ssh_argv(host.ssh, lane_toolchain.lane_argv(tools, lane_repo)), probe, lane_repo,
+    )
     if missing:
         return LaunchError("toolchain", missing[0])
     given_local = None if relaunch is None else relaunch.local_repo
