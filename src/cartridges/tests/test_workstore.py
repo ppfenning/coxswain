@@ -30,7 +30,9 @@ from core.workstore import (
 REPO = Path(__file__).resolve().parent.parent
 
 
-def task(root: Path, phase: str, tid: str, *, needs=(), state="todo", surfaces=(), priority=None) -> Path:
+def task(
+    root: Path, phase: str, tid: str, *, needs=(), state="todo", surfaces=(), priority=None, merged=False, commit=None
+) -> Path:
     return write_item(
         {
             "id": tid,
@@ -40,6 +42,8 @@ def task(root: Path, phase: str, tid: str, *, needs=(), state="todo", surfaces=(
             "surfaces": list(surfaces),
             "title": tid.replace("-", " "),
             **({"priority": priority} if priority is not None else {}),
+            **({"merged": True} if merged else {}),
+            **({"merged_commit": commit} if commit else {}),
             "body": "What someone picking this up cold needs to know.",
         },
         root / phase / f"{tid}.md",
@@ -571,6 +575,83 @@ def test_a_store_scan_is_skipped_when_every_need_is_local(initiative: Path) -> N
 def test_a_foreign_need_is_met_only_by_done(state: str, ready: bool) -> None:
     items = [{"id": "a", "state": "ready", "needs": ["x"]}]
     assert bool(ready_tasks(items, foreign={"x": state})) is ready
+
+
+# ── approved and merged ────────────────────────────────────────────────────
+
+
+def test_an_approved_and_merged_need_satisfies_its_dependent() -> None:
+    items = [
+        {"id": "a", "state": "approved", "merged": True, "needs": []},
+        {"id": "b", "state": "ready", "needs": ["a"]},
+    ]
+    assert [t["id"] for t in ready_tasks(items)] == ["b"]
+
+
+def test_an_approved_and_unmerged_need_does_not_satisfy_its_dependent() -> None:
+    items = [
+        {"id": "a", "state": "approved", "merged": False, "needs": []},
+        {"id": "b", "state": "ready", "needs": ["a"]},
+    ]
+    assert ready_tasks(items) == []
+
+
+def test_an_approved_merged_task_is_not_itself_ready_and_not_phase_complete() -> None:
+    items = [{"id": "a", "phase": "p1", "state": "approved", "merged": True, "needs": []}]
+    assert ready_tasks(items) == []
+    assert phase_complete(items, "p1") is False
+
+
+def test_a_foreign_approved_need_stays_unmet() -> None:
+    items = [{"id": "b", "state": "ready", "needs": ["x"]}]
+    assert ready_tasks(items, foreign={"x": "approved"}) == []
+
+
+def test_merged_and_merged_commit_round_trip_and_survive_a_state_move(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1", state="approved", merged=True, commit="abc1234")
+    item = read_item(path)
+    assert (item["merged"], item["merged_commit"]) == (True, "abc1234")
+    set_state(path, "done")
+    item = read_item(path)
+    assert (item["merged"], item["merged_commit"]) == (True, "abc1234")
+
+
+def test_an_item_without_merged_reads_false_and_none_and_writes_no_line(tmp_path: Path) -> None:
+    path = task(tmp_path, "p1", "t1")
+    item = read_item(path)
+    assert (item["merged"], item["merged_commit"]) == (False, None)
+    assert "merged" not in path.read_text(encoding="utf-8")
+
+
+def test_a_non_boolean_merged_value_reads_as_false(tmp_path: Path) -> None:
+    path = _literal(tmp_path / "p1" / "t1.md", "---\nid: t1\nstate: approved\nmerged: 'false'\n---\n\nbody\n")
+    assert read_item(path)["merged"] is False
+
+
+# ── land_at ────────────────────────────────────────────────────────────────
+
+
+def _initiative_with(tmp_path: Path, front: str) -> Path:
+    root = tmp_path / "work" / "init"
+    root.mkdir(parents=True)
+    (root / "initiative.md").write_text(f"---\nid: init\n{front}---\n\nThe idea.\n", encoding="utf-8")
+    task(root, "p1", "t1")
+    return root
+
+
+@pytest.mark.parametrize("value", ["ticket", "level", "task"])
+def test_land_at_reads_a_valid_value(tmp_path: Path, value: str) -> None:
+    assert read_initiative(_initiative_with(tmp_path, f"land_at: {value}\n"))["land_at"] == value
+
+
+def test_land_at_is_none_when_absent(tmp_path: Path) -> None:
+    assert read_initiative(_initiative_with(tmp_path, ""))["land_at"] is None
+
+
+@pytest.mark.parametrize("value", ["repo", "Ticket", "''", "5"])
+def test_land_at_refuses_any_other_value(tmp_path: Path, value: str) -> None:
+    with pytest.raises(WorkStoreError, match="land_at"):
+        read_initiative(_initiative_with(tmp_path, f"land_at: {value}\n"))
 
 
 # ── what can run at once ───────────────────────────────────────────────────

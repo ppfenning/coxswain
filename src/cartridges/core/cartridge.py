@@ -304,9 +304,10 @@ def _as_mapping(value: Any) -> Mapping[str, Any]:
 # That is the opposite of the repo-root `.agent-checks` file, which ADDS
 # extra checks and is untouched by this key.
 # `landing_areas.land_checks` is a `ci` or `local` selector, not a list; absent means local.
+# `landing_areas.land_at` is `ticket`, `level` or `task`, the granularity landing happens at; absent means ticket.
 _OVERLAY_NESTED_ALLOWED = {
     "policy": frozenset({"review_tier", "cost"}),
-    "landing_areas": frozenset({"checks", "land_checks"}),
+    "landing_areas": frozenset({"checks", "land_checks", "land_at"}),
 }
 
 # Which allowed nested subkeys hold a list of entries rather than a mapping;
@@ -343,6 +344,13 @@ def _land_checks_problems(value: Any) -> list[str]:
     return [f"project layer overlay refuses landing_areas.land_checks: must be 'ci' or 'local', got {value!r}"]
 
 
+def _land_at_problems(value: Any) -> list[str]:
+    """`land_at` must be the string `ticket`, `level` or `task`."""
+    if isinstance(value, str) and value in ("ticket", "level", "task"):
+        return []
+    return [f"project layer overlay refuses landing_areas.land_at: must be 'ticket', 'level' or 'task', got {value!r}"]
+
+
 def _cost_overlay_problems(cost: Any) -> list[str]:
     """Only `level` is overlayable under `policy.cost`; `bounds` is a base/team concern, never a project one."""
     if not isinstance(cost, Mapping):
@@ -372,6 +380,8 @@ def overlay_errors(overlay: Mapping[str, Any]) -> list[str]:
                 problems += _checks_problems(sub_value)
             elif allowed_subkey == "land_checks":
                 problems += _land_checks_problems(sub_value)
+            elif allowed_subkey == "land_at":
+                problems += _land_at_problems(sub_value)
             elif allowed_subkey == "cost":
                 problems += _cost_overlay_problems(sub_value)
             elif not isinstance(sub_value, Mapping):
@@ -434,7 +444,7 @@ def apply_overlay(
     if "description" in overlay:
         merged["description"] = overlay["description"]
     landing_areas = _as_mapping(overlay.get("landing_areas"))
-    overlay_landing = {key: landing_areas[key] for key in ("checks", "land_checks") if key in landing_areas}
+    overlay_landing = {key: landing_areas[key] for key in ("checks", "land_checks", "land_at") if key in landing_areas}
     if overlay_landing:
         merged["landing_areas"] = {**_as_mapping(resolved.get("landing_areas")), **overlay_landing}
     review_tier = _overlay_review_tier(overlay)

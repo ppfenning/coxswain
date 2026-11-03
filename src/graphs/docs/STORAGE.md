@@ -1,6 +1,6 @@
 # Storage
 
-This page describes where run data lives, which folder owns the schema, and how a chair moves historical records into the database by hand. Every table and column below is read from the migration modules `harness/store_ddl_0001.py` through `harness/store_ddl_0014.py`. A column those modules do not define is not documented here.
+This page describes where run data lives, which folder owns the schema, and how a chair moves historical records into the database by hand. Every table and column below is read from the migration modules `harness/store_ddl_0001.py` through `harness/store_ddl_0015.py`. A column those modules do not define is not documented here.
 
 ## The split
 
@@ -42,6 +42,7 @@ Each migration is one module and runs in its own transaction. `schema_version` g
 | 12 | `store_ddl_0012` | Adds `work_items.priority`. |
 | 13 | `store_ddl_0013` | Adds `work_items.issue_number`, `work_items.project_item_id` and `work_items.parent_item`. |
 | 14 | `store_ddl_0014` | Adds `leases.progress`. |
+| 15 | `store_ddl_0015` | Adds `work_items.merged_commit` and `work_items.handoff_json`. |
 
 Before `open_store` applies a pending migration it writes a backup: a SQLite copy, or `pg_dump -Fc` for Postgres, named `store-v<current>-to-v<newest>-<timestamp>.sqlite` or `.dump`. The backups go to `$COX_STORE_BACKUP_DIR`, else `~/.local/state/coxswain/backups`. A Postgres store needs `pg_dump` on the PATH. `COX_STORE_MIGRATE_WITHOUT_BACKUP=1` skips the backup and prints a warning.
 
@@ -138,6 +139,9 @@ Later migrations add:
 - `short_id` (0011), nullable TEXT.
 - `priority` (0012), INTEGER NOT NULL DEFAULT 0, higher first.
 - `issue_number` INTEGER, `project_item_id` TEXT and `parent_item` TEXT (0013), all nullable: the keys of the work item's card on a tracker.
+- `merged_commit` TEXT and `handoff_json` TEXT (0015), both nullable. `merged_commit` is the commit the task's branch was merged at, and NULL means not merged. `handoff_json` is the task's handoff record as JSON.
+
+`work_items` in `harness/store_read.py` exposes these as `merged` (true when `merged_commit` is set), `merged_commit` and `handoff` (decoded JSON, or None). `record_merge` and `record_handoff` in `harness/store_write.py` update an existing row only and never insert. `record_merge` raises `ValueError` for a row whose state is not `approved`. Repeating either call with the same value changes nothing, `updated_at` and `updated_by` included. The upsert that saves a work item leaves both columns alone.
 
 ### chair_actions
 
@@ -159,7 +163,7 @@ No table carries a foreign-key clause. `runs.graph_id` and `node_calls.node_id` 
 
 A migration is a module in the `harness` package named `store_ddl_NNNN`, four digits, contiguous from 0001. It exposes `VERSION`, `DESCRIPTION` and `statements(dialect)`. The number in the name and `VERSION` must agree, or the runner raises `MigrationError`. A gap or a duplicate number raises the same error.
 
-Adding one never edits `harness/store_migrate.py`, because `default_modules` finds the modules with `pkgutil`. The newest is 0014, so the next is `harness/store_ddl_0015.py` with `VERSION = 15`.
+Adding one never edits `harness/store_migrate.py`, because `default_modules` finds the modules with `pkgutil`. The newest is 0015, so the next is `harness/store_ddl_0016.py` with `VERSION = 16`.
 
 Test it two ways. From an empty database, it must reach the new version. From a database at the previous version, it must apply only the new migration. `tests/test_store_ddl_0002.py` does both and is the pattern to copy: see `test_an_empty_database_reaches_version_two` and `test_a_database_at_version_one_applies_only_0002`.
 

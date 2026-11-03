@@ -186,6 +186,43 @@ def upsert_work_item(
     return conn.execute(sql, _params(row))
 
 
+def record_merge(conn: Connection, initiative: str, task_id: str, commit: str, updated_at: str, updated_by: str) -> int:
+    """Stamp the commit an approved task was merged at; rows changed, 0 for no such row or the same commit again.
+
+    Raises ValueError when the row's state is not approved. Updates the existing row only, never inserts.
+    """
+    mark = conn.dialect.placeholder
+    with conn.transaction():
+        found = conn.query_one(
+            f"SELECT state FROM work_items WHERE initiative = {mark} AND task_id = {mark}", (initiative, task_id)
+        )
+        if found is None:
+            return 0
+        if found[0] != "approved":
+            raise ValueError(f"cannot record a merge for {initiative}/{task_id}: state is {found[0]!r}, not 'approved'")
+        sql = (
+            f"UPDATE work_items SET merged_commit = {mark}, updated_at = {mark}, updated_by = {mark} "
+            f"WHERE initiative = {mark} AND task_id = {mark} AND (merged_commit IS NULL OR merged_commit <> {mark})"
+        )
+        return conn.execute(sql, [commit, updated_at, updated_by, initiative, task_id, commit])
+
+
+def record_handoff(
+    conn: Connection, initiative: str, task_id: str, handoff: Any, updated_at: str, updated_by: str
+) -> int:
+    """Store a task's handoff record as JSON; rows changed, 0 for no such row or the same handoff again.
+
+    Updates the existing row only, never inserts.
+    """
+    mark = conn.dialect.placeholder
+    text = json_text(handoff)
+    sql = (
+        f"UPDATE work_items SET handoff_json = {mark}, updated_at = {mark}, updated_by = {mark} "
+        f"WHERE initiative = {mark} AND task_id = {mark} AND (handoff_json IS NULL OR handoff_json <> {mark})"
+    )
+    return conn.execute(sql, [text, updated_at, updated_by, initiative, task_id, text])
+
+
 def task_cause(record: Mapping[str, Any]) -> tuple[str | None, str | None]:
     """The (cause, cause_why) a task record carries; None for each one it does not."""
     return record.get("cause"), record.get("cause_why")
