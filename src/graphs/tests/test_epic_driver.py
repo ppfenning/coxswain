@@ -429,20 +429,6 @@ def test_phase_parents_keeps_only_cross_phase_needs_that_are_not_done(items, exp
     assert phase_parents(items)["p2-rollout"] == expected
 
 
-def test_a_phase_with_two_parents_is_blocked_rather_than_guessed_at(repo, cart, tmp_path) -> None:
-    """One stack has one base ref; picking a parent would build on half the ground."""
-    work = initiative()
-    work["items"].append(
-        {"id": "t0-seed", "phase": "p0-seed", "state": "ready", "needs": [], "surfaces": [],
-         "title": "seed", "body": "seed"}
-    )
-    work["items"][-2]["needs"] = ["t1-probe", "t0-seed"]  # t3 now has two parent phases
-    result, _ = drive(repo, cart, tmp_path, work=work)
-    blocked = next(p for p in result["phases"] if p["phase"] == "p2-rollout")
-    assert blocked["status"] == "blocked"
-    assert "multiple parent phases" in blocked["reason"]
-
-
 # ── the happy path ──────────────────────────────────────────────────────────
 
 
@@ -1995,7 +1981,9 @@ def test_an_unverified_quarantine_keeps_the_patch_and_records_it_kept(repo, cart
 
 def test_a_worktree_that_cannot_be_opened_fails_the_phase_not_a_task(repo, cart, tmp_path, monkeypatch) -> None:
     """`infra` is the caller's own branch: no task-grain entry, the phase itself is marked."""
-    monkeypatch.setattr("harness.epic._open_phase_worktree", lambda ctx, phase, base_ref: (False, "boom", False))
+    monkeypatch.setattr(
+        "harness.epic._open_phase_worktree", lambda ctx, phase, base_ref, parents=(): (False, "boom", False)
+    )
     result, _ = drive(repo, cart, tmp_path, work=initiative(two_phases=False))
 
     p1 = result["phases"][0]
