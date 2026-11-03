@@ -1236,6 +1236,84 @@ def test_cli_apply_refuses_a_repo_lease_held_by_a_holder_on_another_host(repo, t
     assert f"land: refusing, chair-x@host-b:4242 is landing in {repo}" in capsys.readouterr().out
 
 
+def _land_walked_over(monkeypatch, refused_holder, alive, steal_epoch=5, in_walk=lambda: None):
+    """Runs the real `_land_walked` in store mode against a land lease refused at epoch 4 for `refused_holder`; a steal
+    is granted at `steal_epoch` and `in_walk` runs inside the walk. Returns (result, steal flags, release epochs, walk count)."""
+    steals, releases, walks = [], [], []
+
+    def acquire(runs_dir, name, holder, ttl, steal=False):
+        steals.append(steal)
+        return store_cli.LeaseGranted(steal_epoch, holder) if steal else store_cli.LeaseRefused(4, refused_holder)
+
+    def release(runs_dir, name, holder, epoch):
+        releases.append(epoch)
+        return store_cli.LeaseReleased()
+
+    monkeypatch.setattr(cli.socket, "gethostname", lambda: "host-a")
+    monkeypatch.setattr(cli.land_repo_lease, "pid_alive", alive)
+    monkeypatch.setattr(store_cli, "lease_acquire", acquire)
+    monkeypatch.setattr(store_cli, "lease_release", release)
+
+    def walk(_guard):
+        walks.append(1)
+        in_walk()
+        return 0, ["mark_done"], "https://x/pull/7"
+
+    result = cli._land_walked(SimpleNamespace(label="me"), Path("/runs"), "store", "t1", lambda: None, walk)
+    return result, steals, releases, len(walks)
+
+
+def test_a_land_lease_held_by_a_dead_pid_on_this_host_is_taken_and_the_takeover_printed(monkeypatch, capsys):
+    result, steals, releases, walks = _land_walked_over(monkeypatch, "chair-x@host-a:4242", lambda _pid: False)
+    assert result == (0, ["mark_done"], "https://x/pull/7")
+    assert (walks, steals, releases) == (1, [False, True], [5])
+    assert capsys.readouterr().out.count("land: taking over the land lease for t1 from chair-x@host-a:4242 (pid gone)\n") == 1
+
+
+def test_the_takeover_line_prints_before_the_walks_own_output(monkeypatch, capsys):
+    _land_walked_over(monkeypatch, "chair-x@host-a:4242", lambda _pid: False, in_walk=lambda: print("walk output"))
+    out = capsys.readouterr().out
+    assert out.index("land: taking over the land lease for t1 from chair-x@host-a:4242") < out.index("walk output")
+
+
+def test_the_takeover_line_is_printed_even_when_the_walk_raises(monkeypatch, capsys):
+    def boom():
+        raise RuntimeError("forge down")
+
+    with pytest.raises(RuntimeError):
+        _land_walked_over(monkeypatch, "chair-x@host-a:4242", lambda _pid: False, in_walk=boom)
+    assert "land: taking over the land lease for t1 from chair-x@host-a:4242 (pid gone)" in capsys.readouterr().out
+
+
+def test_a_steal_that_took_a_live_lands_lease_is_released_and_refused_without_a_holder(monkeypatch, capsys):
+    result, steals, releases, walks = _land_walked_over(monkeypatch, "chair-x@host-a:4242", lambda _pid: False, steal_epoch=9)
+    out = capsys.readouterr().out
+    assert result is None
+    assert (walks, steals, releases) == (0, [False, True], [9])
+    assert "land: refusing, t1 was taken by a live land while taking over a dead holder's lease (refused at epoch 4)" in out
+    assert "None" not in out and "taking over the land lease for" not in out
+
+
+def test_a_land_lease_held_by_a_live_pid_on_this_host_is_still_refused(monkeypatch, capsys):
+    result, steals, releases, walks = _land_walked_over(monkeypatch, "chair-x@host-a:4242", lambda _pid: True)
+    assert result is None
+    assert (walks, steals, releases) == (0, [False], [])
+    assert "land: refusing, t1 is being landed by chair-x@host-a:4242 (lease epoch 4)" in capsys.readouterr().out
+
+
+def test_a_land_lease_held_by_a_dead_looking_pid_on_another_host_is_still_refused(monkeypatch, capsys):
+    result, steals, releases, walks = _land_walked_over(monkeypatch, "chair-x@host-b:4242", lambda _pid: False)
+    assert result is None
+    assert (walks, steals, releases) == (0, [False], [])
+    assert "taking over" not in capsys.readouterr().out
+
+
+def test_the_land_lease_refusal_prints_the_holder_verbatim_with_its_epoch(monkeypatch, capsys):
+    holder = "Chair X (me)@host-b.local:4242"
+    _land_walked_over(monkeypatch, holder, lambda _pid: False)
+    assert f"land: refusing, t1 is being landed by {holder} (lease epoch 4)\n" in capsys.readouterr().out
+
+
 def test_cli_apply_releases_the_repo_lease_when_the_store_open_raises_and_keeps_that_error(repo, tmp_path, monkeypatch):
     calls = _apply_with_repo_lease(repo, tmp_path, monkeypatch, store_cli.LeaseGranted(epoch=7, holder="me@host-a:2"))
 
