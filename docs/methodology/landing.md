@@ -88,6 +88,49 @@ the pull request. A failed check stops the land; nothing merges. This is
 the same evidence-over-assertion rule the review nodes enforce, applied at
 the last step: the checks that actually ran are what green means.
 
+## Concurrent lands per repository
+
+By default a repository admits one land at a time. The repo lease holds
+that single slot, so a second land of the same repository waits for the
+first to finish. The `land_limit` setting raises the number of slots. It
+lives in the repo's overlay file, `.agent/cartridge.yaml`, either at the top
+level or under `repos.<directory name>`, where the directory name is the
+last part of the repo's path:
+
+```
+land_limit: 2
+```
+
+The value is an integer of at least 1 and the default is 1. A valid value
+under `repos.<directory name>` wins over the top-level one. A value that is
+not an integer of at least 1 is skipped, so an invalid per-repo value falls
+through to a valid top-level value. The limit is 1 only when neither is
+valid, or when the file is missing or unreadable. The setting is independent
+of `land: manual`.
+
+With a limit N above 1, up to N lands of one repository plan, build and
+check at once, each from current main. Only the merge step is serialized.
+Each land takes a short per-repo merge lock, named `merge:<repo>` so it
+never collides with a land slot, for the state read and for each merge try.
+The lock is released before any branch update or wait for checks, because
+those take minutes. Its lease lasts two minutes, so a crashed holder frees
+it soon, and a land waits up to a minute for it. A land that cannot take
+the lock in that time stops and is retried on the next tick. When the wait
+timed out, the stop names the holder of the lock. When the store was
+unavailable, the stop gives that outage as its reason instead. No merge
+lock is taken with a limit of 1, because the repo lease already admits one
+land. None is taken either when the repo has no lease, because there is no
+store to take it in.
+
+A land whose branch conflicts with a sibling that merged first stops with
+that reason: the base moved under a merged sibling, and its pull request now
+conflicts with it. Nothing merges for that land. It is retried on the next
+tick, and a retry that still conflicts stops with the same reason.
+
+The forge's merge queue was not used. It may be unavailable on a repo owned
+by a personal account. It would also run CI twice per land on the single
+self-hosted runner.
+
 ## Manual repos
 
 A repo whose overlay (`.agent/cartridge.yaml`) sets `land: manual` is one where a person merges the PR. The chair and
