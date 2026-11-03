@@ -4613,19 +4613,18 @@ def _route_chair_take(a: argparse.Namespace) -> int:
         _print_if_stale(record, prior_state)
         new_record, reason = chair.take(record, session, pid, host, now, heartbeat_minutes, alive, steal=a.steal, claude_session=getattr(a, "claude_session", None) or chair.claude_session_from_env(os.environ), hours=hours, model=getattr(a, "model", None), cwd=getattr(a, "cwd", None) or os.getcwd())
         if new_record is None and a.steal and prior_state == "live" and chair.same_holder(record, session, pid, host):
-            lease_kwargs = {"steal": True, **({} if hours is None else {"ttl": int(hours * 3600)})}
-            refusal = chair.acquire_lease(runs_dir, session, pid, host, **lease_kwargs)
+            retaken, line = _retaken_chair(record, now.isoformat(), getattr(a, "model", None), session, pid, host, hours, now)
+            refusal = chair.acquire_lease(runs_dir, session, pid, host, ttl=chair.lease_ttl_for(retaken, now), steal=True)
             if refusal:
                 print(refusal)
                 return 2
-            retaken, line = _retaken_chair(record, now.isoformat(), getattr(a, "model", None), session, pid, host, hours, now)
             chair.write(runs_dir, retaken)
             print(line)
             return 0
         if new_record is None:
             print(reason)
             return 2
-        refusal = chair.acquire_lease(runs_dir, session, pid, host, steal=a.steal)
+        refusal = chair.acquire_lease(runs_dir, session, pid, host, ttl=chair.lease_ttl_for(new_record, now), steal=a.steal)
         if refusal:
             print(refusal)
             return 2
@@ -4673,11 +4672,12 @@ def _route_chair_beat(a: argparse.Namespace) -> int:
         record, read_rc = _leader_read_or_refuse(runs_dir)
         if read_rc is not None:
             return read_rc
-        new_record, reason = chair.beat(record, session, pid, host, datetime.datetime.now(datetime.UTC), run_id=a.run, claude_session=chair.claude_session_from_env(os.environ))
+        now = datetime.datetime.now(datetime.UTC)
+        new_record, reason = chair.beat(record, session, pid, host, now, run_id=a.run, claude_session=chair.claude_session_from_env(os.environ))
         if new_record is None:
             print(reason)
             return 2
-        lost = chair.renew_lease(runs_dir, session, pid, host)
+        lost = chair.renew_lease(runs_dir, session, pid, host, ttl=chair.lease_ttl_for(new_record, now))
         if lost:
             print(lost)
             return 2

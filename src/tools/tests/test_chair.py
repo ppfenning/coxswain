@@ -381,7 +381,7 @@ def test_take_steal_on_own_live_record_retakes_the_lease(tmp_path, monkeypatch, 
     rc, seen, runs_dir = _take_over_live_record(tmp_path, monkeypatch, "bob", "--steal")
     assert rc == 0
     assert capsys.readouterr().out.startswith("chair lease retaken: bob (pid ")
-    assert seen == [{"steal": True, "ttl": 10800}]  # the CLI's --hours defaults to 3, so main always passes hours
+    assert seen == [{"steal": True, "ttl": 10800 + chair.DEFAULT_LEASE_TTL_SECONDS}]  # the CLI's --hours defaults to 3, so main always passes hours
     assert chair.read(runs_dir)["runs"] == ["run-1"]
 
 
@@ -436,10 +436,10 @@ def test_take_steal_with_hours_on_own_live_record_moves_until_and_passes_the_ttl
     assert rc == 0
     assert datetime.datetime.fromisoformat(new_until) > datetime.datetime.fromisoformat(old_until) + datetime.timedelta(minutes=60)
     assert capsys.readouterr().out.strip().endswith(f" until {new_until}")
-    assert seen == [{"steal": True, "ttl": 7200}]
+    assert seen == [{"steal": True, "ttl": 7200 + chair.DEFAULT_LEASE_TTL_SECONDS}]
 
 
-def test_take_steal_without_hours_on_own_live_record_keeps_until_and_passes_no_ttl(tmp_path, monkeypatch, capsys):
+def test_take_steal_without_hours_on_own_live_record_keeps_until_and_passes_the_ttl_that_reaches_it(tmp_path, monkeypatch, capsys):
     """The bare launcher's namespace carries no `hours`; main always supplies one, so call the route directly."""
     old_until = (datetime.datetime.now(datetime.UTC) + datetime.timedelta(minutes=30)).isoformat()
     _rc, seen, runs_dir = _take_over_live_record(tmp_path, monkeypatch, "bob", "--steal")
@@ -451,7 +451,8 @@ def test_take_steal_without_hours_on_own_live_record_keeps_until_and_passes_no_t
     assert rc == 0
     assert chair.read(runs_dir)["until"] == old_until
     assert "until" not in capsys.readouterr().out.splitlines()[-1]
-    assert seen == [{"steal": True}]
+    assert [call["steal"] for call in seen] == [True]
+    assert 1800 < seen[0]["ttl"] <= 1800 + chair.DEFAULT_LEASE_TTL_SECONDS  # the kept until is about 30 minutes out, plus the margin
 
 
 def test_take_of_another_holders_live_lease_without_steal_is_refused_and_leaves_the_record(tmp_path, monkeypatch, capsys):
@@ -505,7 +506,7 @@ def test_take_steal_on_another_sessions_live_record_takes_it(tmp_path, monkeypat
     rc, seen, runs_dir = _take_over_live_record(tmp_path, monkeypatch, "alice", "--steal")
     assert rc == 0
     assert capsys.readouterr().out.splitlines()[-1].startswith("chair taken: bob (pid ")
-    assert seen == [{"steal": True}]
+    assert seen == [{"steal": True, "ttl": 10800 + chair.DEFAULT_LEASE_TTL_SECONDS}]
     assert chair.read(runs_dir)["session"] == "bob"
 
 
