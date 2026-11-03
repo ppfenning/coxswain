@@ -29,6 +29,7 @@ from typing import Any
 import yaml
 
 from graphs._contract import ContractViolation, epic_shape, landing_for, proposal, require, require_cartridge
+from graphs.delivery.decompose_layout import check_layout
 from graphs.delivery.decompose_size import (
     SizeError,
     SizeVerdict,
@@ -1203,6 +1204,23 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
     # id names real work, just ordered by landing rather than by an edge.
     tasks = _drop_foreign_needs(tasks)
 
+    # The layout check: a body that does not match its surfaces blocks like a lint
+    # refusal; an edge with no data flow in the body only lands as a `lint:` entry.
+    layout = check_layout(tasks)
+    if layout.blocking:
+        raise LintRefusal(
+            _refusal_reason([Problem(f.task, f.rule, f.detail, f.fix) for f in layout.blocking])
+        )
+    layout_notes: dict[str, list[str]] = {}
+    for f in layout.findings:
+        if f.rule != "edge_unsupported":
+            continue  # the other advisories ride in the outcome's `layout`, not on every ticket
+        layout_notes.setdefault(f.task, []).append(f"{f.rule}: {f.detail} ({f.fix})")
+    tasks = [
+        dict(t, lint=[*(t.get("lint") or []), *layout_notes[str(t["id"])]]) if str(t["id"]) in layout_notes else t
+        for t in tasks
+    ]
+
     # Validated before anything is proposed: a typo written the same way in
     # both the task and the plan reaches the work-item arm looking
     # consistent, and the arm rightly refuses to fix it silently. A
@@ -1332,6 +1350,7 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
         "tasks": sorted(tasks, key=lambda t: str(t["id"])),
         "moves": reported_moves,
         "challenge": challenge,
+        "layout": layout.as_outcome(),
         "proposals": proposals,
         "totals": {
             "phases": len({t["phase"] for t in tasks}),
