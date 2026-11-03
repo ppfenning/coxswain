@@ -40,6 +40,24 @@ is proposed**, and refused again by the work store on read. Both checks exist
 because the failure is silent and the cost of finding it late is a stalled phase
 nobody can diagnose.
 
+## The layout check
+
+[`decompose_layout.py`](decompose_layout.py) checks the proposed tasks before anything
+is proposed. It reads only the tasks, never the repository. Three things are reported.
+
+- A task whose body does not name every path in its `surfaces`. This **blocks**, as a
+  `lint-refused` quarantine. A body that names no path at all was never written against its
+  surfaces, so that case is flagged and does not block.
+- A migration, test or script filename in a body that is not among the task's surfaces. This
+  **blocks**. It catches a body that says `tests/test_widget_new.py` while the surface says
+  `tests/test_widget.py`. Absolute paths are outside the repository and are skipped.
+- A `needs` edge whose body names no id, title or surface of the task it needs. This is
+  **advisory**: it lands on the ticket as a `lint:` entry for the human at the gate.
+
+The outcome carries `layout`: `findings`, `width` and `layers`. `width` is the most tasks
+with no `needs` path between them, from `max_width` in `harness/lanes.py`. It is reported
+and never enforced here.
+
 `totals` reports `edges_dropped` and `immediately_startable`, which is the
 number worth watching: it is how much of the phase can begin at once.
 
