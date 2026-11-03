@@ -27,6 +27,7 @@ from pathlib import Path
 from agent_tools import release_version
 from devtools import (
     release,
+    release_arrow_formula,
     release_check,
     release_check_cli,
     release_check_index,
@@ -811,7 +812,8 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
             # The psycopg wheel's CPython tag is the formula's own python dependency, read from the checkout as it
             # stands: every refusal here comes before the first git call.
             try:
-                pins = release.psycopg_pins((Path(umbrella) / _EXTRAS_REQUIREMENTS).read_text())
+                extras = (Path(umbrella) / _EXTRAS_REQUIREMENTS).read_text()
+                pins = release.psycopg_pins(extras)
                 python_minor = release._formula_python_minor(formula.read_text())
             except (OSError, ValueError) as exc:
                 print(f"FAILED tap_formula_pr tap: psycopg: {exc}")
@@ -824,13 +826,23 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
             except (KeyError, OSError, ValueError) as exc:
                 print(f"FAILED tap_formula_pr tap: {exc}")
                 return 2
+            try:
+                arrow_pin = release_arrow_formula.pyarrow_pin(extras)
+                arrow = release.sdist_from_index(_pypi_release("pyarrow", arrow_pin, fetch_index, sleep))
+            except (KeyError, OSError, ValueError) as exc:
+                arrow, detail = None, str(exc)
+            else:
+                detail = "pyarrow release lists no sdist"
+            if arrow is None:
+                print(f"FAILED tap_formula_pr tap: {detail}")
+                return 2
 
-            def write_bumped(f=formula, s=sdist, t=towpath, p=psycopg, minor=python_minor):
+            def write_bumped(f=formula, s=sdist, t=towpath, p=psycopg, a=arrow, minor=python_minor):
                 text = f.read_text()
                 # The wheels were chosen for the working tree's python; the bump lands on origin's default branch.
                 if release._formula_python_minor(text) != minor:
                     raise ValueError(f"the formula to bump depends on a different python than the psycopg wheels (3.{minor})")
-                f.write_text(release.bumped_formula_text(text, version, *s, towpath=t, psycopg=p))
+                f.write_text(release.bumped_formula_text(text, version, *s, towpath=t, psycopg=p, pyarrow=a))
 
             # The tap PR is left for the maintainer, so the checkout goes back to the branch it was on on every
             # path out of the step: the next cut refuses a tap clone that sits on an old release branch.

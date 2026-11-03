@@ -603,7 +603,9 @@ _PSYCOPG_DOCS = {
         {"packagetype": "sdist", "url": "https://files/psycopg-3.3.6.tar.gz", "digests": {"sha256": "3" * 64}}]},
     "https://pypi.org/pypi/psycopg-binary/3.3.6/json": {"urls": [
         {"packagetype": "bdist_wheel", "python_version": "cp313", "url": _WHEELS + tail, "digests": {"sha256": "4" * 64}}
-        for tail in ("macosx_11_0_arm64.whl", "manylinux_2_17_x86_64.whl")]}}
+        for tail in ("macosx_11_0_arm64.whl", "manylinux_2_17_x86_64.whl")]},
+    "https://pypi.org/pypi/pyarrow/24.0.0/json": {"urls": [
+        {"packagetype": "sdist", "url": "https://files/pyarrow-24.0.0.tar.gz", "digests": {"sha256": "6" * 64}}]}}
 
 
 def _run_tap_step(tmp_path, install_conclusion="success", override=None, version=V0):
@@ -614,7 +616,7 @@ def _run_tap_step(tmp_path, install_conclusion="success", override=None, version
     formula.write_text(_TAP_FORMULA_PY)
     pins = tmp_path / "src" / "tools" / "agent_tools" / "extras-requirements.txt"
     pins.parent.mkdir(parents=True, exist_ok=True)
-    pins.write_text("psycopg==3.3.6\npsycopg-binary==3.3.6 ; implementation_name != 'pypy'\n")
+    pins.write_text("psycopg==3.3.6\npsycopg-binary==3.3.6 ; implementation_name != 'pypy'\npyarrow==24.0.0\n")
     calls, inner = _fake_git_run(install_conclusion=install_conclusion)
     clock = iter(range(0, 10**9, 60))
 

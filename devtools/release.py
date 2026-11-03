@@ -23,6 +23,7 @@ from pathlib import Path
 import yaml
 
 from agent_tools.release_version import CALVER_RE, pep440, release_key
+from devtools.release_arrow_formula import _PYARROW_RESOURCE_RE, pyarrow_resource, with_arrow_block, with_doctor_test
 from devtools.release_check_index import index_section
 from devtools.release_notes_blanks import find_blanks
 
@@ -1001,7 +1002,7 @@ def _with_psycopg_block(text: str, psycopg: PsycopgAssets) -> str:
 
 
 def bumped_formula_text(text: str, version: str, sdist_url: str, sha256: str, *, towpath: TowpathAssets | None = None,
-                        psycopg: PsycopgAssets | None = None) -> str:
+                        psycopg: PsycopgAssets | None = None, pyarrow: tuple[str, str] | None = None) -> str:
     """`text` with the `url` and `sha256` lines before the first `resource` stanza rewritten, and the `head` url
     pointed at the coxswain repository; `version` is carried by `sdist_url` (`coxswain-<version>.tar.gz`).
 
@@ -1010,6 +1011,9 @@ def bumped_formula_text(text: str, version: str, sdist_url: str, sha256: str, *,
     `psycopg` is `psycopg_assets` output. When given, existing psycopg resources have their url and sha256 lines
     rewritten, and a formula without them gains the resources, a wheel stage step after the venv line, and the wheel in
     the venv line's `without:`; that path needs a `depends_on "python@3.X"` line.
+    `pyarrow` is the `(url, sha256)` of the pyarrow sdist. When given, an existing `resource "pyarrow"` has only its url
+    and sha256 lines rewritten, and a formula without one gains the resource, the apache-arrow and cmake dependencies,
+    the install env and the doctor test lines; any of those already present is left alone.
     Every path raises KeyError or ValueError instead of returning a formula with a stale or missing pair."""
     bumped = _bumped_sdist_text(text, sdist_url, sha256)
     if towpath is not None:
@@ -1021,7 +1025,55 @@ def bumped_formula_text(text: str, version: str, sdist_url: str, sha256: str, *,
             raise ValueError(f"psycopg assets lack {', '.join(absent)}")
         has_psycopg = any(_PSYCOPG_RESOURCE_RE.match(line.rstrip("\r\n")) for line in bumped.splitlines())
         bumped = _rewritten_psycopg(bumped, psycopg) if has_psycopg else _with_psycopg_block(bumped, psycopg)
+    if pyarrow is not None:
+        bumped = _with_pyarrow(bumped, pyarrow)
     return bumped
+
+
+_PYARROW_URL_RE = re.compile(r'^(\s*url\s+")[^"]*(".*)$')
+_PYARROW_SHA_RE = re.compile(r'^(\s*sha256\s+")[^"]*(".*)$')
+
+
+def _pyarrow_span(text: str) -> tuple[list[str], int, int]:
+    """`text`'s lines, and the index range of its one `resource "pyarrow"` stanza; ValueError unless there is exactly one."""
+    lines = text.splitlines(keepends=True)
+    starts = [i for i, line in enumerate(lines) if _PYARROW_RESOURCE_RE.match(line)]
+    if len(starts) != 1:
+        raise ValueError(f"formula has {len(starts)} pyarrow resources, expected one")
+    start = starts[0]
+    closing = " " * (len(lines[start]) - len(lines[start].lstrip())) + "end"
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].rstrip() == closing), None)
+    if end is None:
+        raise ValueError("the pyarrow resource has no closing `end`")
+    return lines, start, end
+
+
+def _rewritten_pyarrow(text: str, pyarrow: tuple[str, str]) -> str:
+    """`text` with the url and sha256 lines inside its pyarrow resource replaced; ValueError unless each appears once."""
+    url, sha = pyarrow
+    lines, start, end = _pyarrow_span(text)
+    body = lines[start + 1:end]
+    for label, pattern in (("url", _PYARROW_URL_RE), ("sha256", _PYARROW_SHA_RE)):
+        if sum(pattern.match(line) is not None for line in body) != 1:
+            raise ValueError(f"the pyarrow resource does not have exactly one {label} line")
+    new = [_PYARROW_URL_RE.sub(lambda m: f"{m.group(1)}{url}{m.group(2)}", line) if _PYARROW_URL_RE.match(line)
+           else _PYARROW_SHA_RE.sub(lambda m: f"{m.group(1)}{sha}{m.group(2)}", line) for line in body]
+    return "".join([*lines[:start + 1], *new, *lines[end:]])
+
+
+def _with_pyarrow(text: str, pyarrow: tuple[str, str]) -> str:
+    """`text` carrying the pyarrow resource at `pyarrow`, its dependencies, install env and doctor test; no half-written result."""
+    if len(pyarrow) != 2 or not all(isinstance(part, str) and part for part in pyarrow):
+        raise ValueError("pyarrow must be a (url, sha256) pair of non-empty strings")
+    url, sha = pyarrow
+    present = _PYARROW_RESOURCE_RE.search(text) is not None
+    base = _rewritten_pyarrow(text, pyarrow) if present else text
+    result = with_doctor_test(with_arrow_block(base, pyarrow_resource(url, sha)))
+    lines, start, end = _pyarrow_span(result)
+    block = "".join(lines[start:end])
+    if f'url "{url}"' not in block or f'sha256 "{sha}"' not in block:
+        raise ValueError("pyarrow url and sha256 not written")
+    return result
 
 
 def _bumped_sdist_text(text: str, sdist_url: str, sha256: str) -> str:
