@@ -113,6 +113,7 @@ chair_read_stale = _LazyModule("agent_tools.chair_read_stale")
 chair_read_stall = _LazyModule("agent_tools.chair_read_stall")
 chair_read_stranded = _LazyModule("agent_tools.chair_read_stranded")
 chair_report = _LazyModule("agent_tools.chair_report")
+chair_restart = _LazyModule("agent_tools.chair_restart")
 chair_revert_green = _LazyModule("agent_tools.chair_revert_green")
 chair_revert_ports = _LazyModule("agent_tools.chair_revert_ports")
 chair_revert_watch = _LazyModule("agent_tools.chair_revert_watch")
@@ -10813,6 +10814,15 @@ def _task_item_counts(tickets: Sequence[Mapping], initiatives: Collection[str]) 
     return {**dict.fromkeys(initiatives, 0), **counts}
 
 
+def _chair_git(args: list[str]) -> str | None:
+    """Edge. Stdout of `git <args>`, or None on a non-zero exit, a timeout or a missing git."""
+    try:
+        done = subprocess.run(["git", *args], capture_output=True, text=True, timeout=5, check=False)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    return done.stdout if done.returncode == 0 else None
+
+
 def _chair_run_deps(
     runs_dir: Path, profile: dict, session: str, pid: int, host: str, dry_run: bool, echo: Callable[[str], None],
     profile_path: Path, mode: str,
@@ -11197,6 +11207,7 @@ def _chair_run_deps(
                 chair_revert_watch.resolve_watch(record, w["commit"], "held")
 
     stop_lands = chair_run.no_lands_to_stop
+    lands_in_flight = chair_run.no_lands_in_flight
     if not dry_run:
         # Lands run behind the tick on the land worker (tools #1287), which beats only the chair lease while one runs:
         # the tick's own `beat` also clears this tick's fact caches, which a worker thread must never touch.
@@ -11204,9 +11215,13 @@ def _chair_run_deps(
         exec_deps = dataclasses.replace(exec_deps, lands=sink)
         facts_deps = dataclasses.replace(facts_deps, landing=sink.landing)
         stop_lands = sink.stop
+        # WorkerLands has no in_flight method; `landing()` lists the lands still in progress.
+        lands_in_flight = lambda: bool(sink.landing())  # noqa: E731
     # A dry run never releases a real lease, so it passes no release check.
     release_requested = None if dry_run else (lambda: chair.honour_release_request(runs_dir, session, pid, host))
+    checkout_state = lambda: chair_restart.read_checkout_state(chair_restart.checkout_root(), _chair_git)  # noqa: E731
     return chair_run.RunDeps(
+        checkout_state=checkout_state, started_checkout=checkout_state(), lands_in_flight=lands_in_flight,
         stop_lands=stop_lands, facts_deps=facts_deps, exec_deps=exec_deps, report_deps=chair_report.Deps(echo=echo),
         beat=beat, current_epoch=epoch,
         lease_beat=lambda: chair.renew_lease(runs_dir, session, pid, host),
@@ -11250,6 +11265,8 @@ def _chair_run(a: argparse.Namespace) -> int:
     chair_run.run(a.once, a.interval, a.dry_run, deps, a.max_overruns)
     if a.once and deps.holds():  # a one-shot process exits here, so its lease must not outlive it
         deps.release()
+    if not a.once and deps.restart_state.moved is not None:
+        return chair_restart.RESTART_EXIT_CODE
     if not a.once and chair_run.overrun_limit_hit(deps.overrun_state.consecutive, a.max_overruns):
         print(f"chair run: stopping after {deps.overrun_state.consecutive} facts-stage overruns in a row; exit 3 for the supervisor")
         return 3
