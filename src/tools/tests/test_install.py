@@ -593,3 +593,69 @@ def test_cli_upgrade_home_default_without_a_manifest_names_the_path_and_exits_tw
     rc = cli.main(["upgrade", "--dry-run", "--provider", "claude-code"])
     out = capsys.readouterr().out
     assert rc == 2 and str(tmp_path / "installs" / "coxswain" / "manifest.toml") in out
+
+
+def _dash_manifest():
+    manifest = _manifest()
+    dash = {"repo": "org/dash", "tag": "v2026.11.1", "flag": "dash", "provides": "towpath"}
+    return {**manifest, "components": {**manifest["components"], "dash": dash}}
+
+
+_BIN_DIR = "/opt/tools/bin"
+
+
+def _dash_facts(binaries=None, target="x86_64-unknown-linux-gnu"):
+    facts = {**_facts(), "target": target, "bin_dir": _BIN_DIR}
+    return facts if binaries is None else {**facts, "binaries": binaries}
+
+
+def _dash_plan(facts, with_=("dash",)):
+    return install.plan(_dash_manifest(), facts, {**_options(with_=list(with_)), "channel": "release"})
+
+
+def _dash_step(steps):
+    return next(s for s in steps if s["component"] == "dash" and s["kind"] in ("binary", "skip"))
+
+
+def test_a_stale_binary_plans_a_binary_step_before_setup_install():
+    steps = _dash_plan(_dash_facts({"towpath": "2026.11.0"}))
+    kinds = [s["kind"] for s in steps]
+    assert kinds.index("binary") < kinds.index("setup_install")
+    assert _dash_step(steps)["bin_dir"] == _BIN_DIR
+
+
+def test_a_current_binary_plans_a_skip_at_the_pin():
+    step = _dash_step(_dash_plan(_dash_facts({"towpath": "2026.11.1"})))
+    assert step["kind"] == "skip" and "already at the pin" in step["detail"]
+
+
+def test_a_missing_target_plans_a_skip_naming_the_missing_asset():
+    step = _dash_step(_dash_plan(_dash_facts({}, target=None)))
+    assert step["kind"] == "skip" and "no release asset" in step["detail"]
+
+
+def test_a_plan_without_dash_has_no_binary_step():
+    steps = _dash_plan(_dash_facts({"towpath": "2026.11.0"}), with_=())
+    assert "binary" not in [s["kind"] for s in steps] and all(s["component"] != "dash" for s in steps)
+
+
+def test_the_edge_channel_skips_the_binary_and_builds_from_source():
+    dash = {"repo": "org/dash", "ref": "main", "flag": "dash", "provides": "towpath"}
+    edge = {**_manifest(), "components": {"dash": dash}}
+    steps = install.plan(edge, _dash_facts({}), {**_options(with_=["dash"]), "channel": "edge"})
+    step = _dash_step(steps)
+    assert step["kind"] == "skip" and "from source" in step["detail"]
+
+
+def test_rows_lists_a_towpath_row_as_ok_drift_and_missing():
+    def towpath(binaries):
+        return [r for r in install.rows(_dash_manifest(), _dash_facts(binaries)) if r[0] == "towpath"]
+    assert towpath({"towpath": "2026.11.1"}) == [("towpath", "v2026.11.1", "2026.11.1", "ok")]
+    assert towpath({"towpath": "2026.11.0"}) == [("towpath", "v2026.11.1", "2026.11.0", "drift")]
+    assert towpath({}) == [("towpath", "v2026.11.1", None, "missing")]
+
+
+def test_rows_without_a_binaries_key_is_unchanged():
+    without = install.rows(_dash_manifest(), _dash_facts())
+    assert all(r[0] != "towpath" for r in without)
+    assert install.rows(_dash_manifest(), _dash_facts({})) == [*without, ("towpath", "v2026.11.1", None, "missing")]

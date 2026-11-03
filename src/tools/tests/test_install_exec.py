@@ -5,7 +5,7 @@ import sys
 import types
 from pathlib import Path
 
-from agent_tools import install_exec
+from agent_tools import dash_binary, install_exec
 
 
 def _fake_run(scripted):
@@ -119,6 +119,62 @@ def test_a_failing_clone_stops_the_rest_and_marks_them_not_run():
     assert calls == [(argv, None)]
     assert results[0]["exit"] == 128
     assert results[1] == {"step": steps[1], "commands": [], "exit": None, "output": None}
+
+
+_BIN_DIR = "/home/user/.local/bin"
+_SCRATCH = f"{_BIN_DIR}/.towpath-x86_64-unknown-linux-gnu.tmp"
+_URL = "https://github.com/acme/coxswain-dash/releases/download/v1.2.3/towpath-v1.2.3-x86_64-unknown-linux-gnu.tar.gz"
+_ARCHIVE = f"{_SCRATCH}/towpath-v1.2.3-x86_64-unknown-linux-gnu.tar.gz"
+
+
+def _binary(target="x86_64-unknown-linux-gnu"):
+    return dash_binary.binary_step("dash", {"repo": "acme/coxswain-dash", "tag": "v1.2.3"}, target, _BIN_DIR)
+
+
+def test_binary_step_downloads_unpacks_then_copies_both_programs_in_order():
+    run, calls = _fake_run({})
+    results = install_exec.execute([_binary()], root="/root", run=run)
+    download = ["curl", "--fail", "--location", "--silent", "--show-error", "--create-dirs", "--output", _ARCHIVE, _URL]
+    unpack = ["tar", "-xzf", _ARCHIVE, "-C", _SCRATCH]
+    copy = ["cp", "-f", f"{_SCRATCH}/towpath", f"{_SCRATCH}/coxtop", _BIN_DIR]
+    assert calls == [(download, None), (unpack, None), (copy, None)]
+    assert results[0]["commands"] == [download, unpack, copy]
+    assert results[0]["exit"] == 0
+
+
+def test_binary_step_argvs_carry_the_url_and_the_bin_dir():
+    run, calls = _fake_run({})
+    install_exec.execute([_binary()], root="/root", run=run)
+    download, unpack, copy = (argv for argv, _ in calls)
+    assert _URL in download
+    assert copy[-1] == _BIN_DIR
+    assert {"towpath", "coxtop"} <= {Path(arg).name for arg in copy}
+
+
+def test_a_failing_binary_download_stops_before_any_copy_and_is_fatal():
+    steps = [_binary(), {"kind": "doctor"}]
+    download = ["curl", "--fail", "--location", "--silent", "--show-error", "--create-dirs", "--output", _ARCHIVE, _URL]
+    run, calls = _fake_run({tuple(download): (22, "curl: (22) 404")})
+    results = install_exec.execute(steps, root="/root", run=run)
+    assert calls == [(download, None)]
+    assert results[0]["exit"] == 22
+    assert results[0]["output"] == "curl: (22) 404"
+    assert install_exec.is_fatal(results[0])
+    assert results[1] == {"step": steps[1], "commands": [], "exit": None, "output": None}
+
+
+def test_a_binary_step_for_an_unsupported_machine_is_a_skip_that_runs_nothing():
+    step = _binary(target=None)
+    run, calls = _fake_run({})
+    results = install_exec.execute([step], root="/root", run=run)
+    assert step["kind"] == "skip"
+    assert calls == []
+    assert results[0]["exit"] == 0
+
+
+def test_from_plan_passes_a_binary_step_through_unchanged():
+    step = _binary()
+    assert install_exec.from_plan([step], manifest={"components": {}}, options={}) == [step]
 
 
 def test_setup_install_omits_flags_whose_value_is_none():

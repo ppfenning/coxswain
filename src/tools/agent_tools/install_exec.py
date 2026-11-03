@@ -19,7 +19,7 @@ def from_plan(steps: Sequence[Mapping], *, manifest: Mapping, options: Mapping) 
     a real command: `repo`/`tag` for `clone`/`fetch_checkout` from the
     manifest, `team`/`workspace` (and `home`, when supplied) for
     `setup_install` from the options.
-    Leaves `skip`, `refuse`, `doctor` and `desktop` steps as they arrived."""
+    Leaves `skip`, `refuse`, `doctor`, `desktop` and `binary` steps as they arrived."""
     components = {CHECKOUT: checkout_spec(manifest), **manifest.get("components", {})}
     return [_enrich(step, components, options) for step in steps]
 
@@ -81,10 +81,36 @@ def _setup_install_argv(step: Mapping, root: str) -> list:
     return argv
 
 
+def _binary_argvs(step: Mapping) -> list[list]:
+    """Download, unpack and copy argvs for a `binary` step, built from the step alone.
+    The scratch directory sits beside the destination, so no clock, environment or tempfile is read.
+    The release archive holds the binaries at its top level, as the dash readme's `tar -xzf` then `mv` shows."""
+    scratch = f"{step['bin_dir']}/.towpath-{step['target']}.tmp"
+    archive = f"{scratch}/{step['url'].rsplit('/', 1)[-1]}"
+    return [
+        ["curl", "--fail", "--location", "--silent", "--show-error", "--create-dirs", "--output", archive, step["url"]],
+        ["tar", "-xzf", archive, "-C", scratch],
+        ["cp", "-f", *(f"{scratch}/{name}" for name in step["binaries"]), step["bin_dir"]],
+    ]
+
+
+def _run_argvs(argvs: Sequence[list], run: Runner) -> tuple:
+    """Runs each argv in order and stops at the first non-zero exit; returns the argvs run, the last exit, all output."""
+    done, output, exit_code = [], "", 0
+    for argv in argvs:
+        exit_code, out = run(argv, None)
+        done, output = [*done, argv], output + out
+        if exit_code != 0:
+            break
+    return done, exit_code, output
+
+
 def _run_step(step: Mapping, root: str, run: Runner) -> tuple:
     """The commands run (always a list of argv, one or more) and the
     (exit, output) actually observed for one runnable step."""
     kind = step["kind"]
+    if kind == "binary":
+        return _run_argvs(_binary_argvs(step), run)
     if kind == "clone":
         argv = _clone_argv(step, root)
         exit_code, output = run(argv, None)
