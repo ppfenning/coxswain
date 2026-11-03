@@ -6719,6 +6719,19 @@ def _harness_plugins(python: str) -> dict[str, list[str]] | None:
     return parse_plugins_probe(done.returncode, done.stdout)
 
 
+def _overlay_mapping(text: str) -> tuple[dict | None, str | None]:
+    """Overlay YAML text as (mapping, None), or (None, one problem). An empty file is `{}`."""
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        return None, f"project overlay is not valid YAML: {str(exc).strip().splitlines()[0]}"
+    if data is None:
+        return {}, None
+    if not isinstance(data, dict):
+        return None, f"project overlay must be a mapping, got {type(data).__name__}"
+    return data, None
+
+
 def _core_probe(cartridges_dir: str, team: str, roots: list, overlay_text: str | None, provider_profile: str | None) -> dict:
     """Edge. The cartridge API, imported in-process (one venv: core sits beside agent_tools), as one JSON-shaped dict.
 
@@ -6757,7 +6770,8 @@ def _core_probe(cartridges_dir: str, team: str, roots: list, overlay_text: str |
     else:
         try:
             from core.cartridge import overlay_errors
-            out["overlay_errors"] = overlay_errors(overlay_text)
+            mapping, problem = _overlay_mapping(overlay_text)
+            out["overlay_errors"] = [problem] if problem else overlay_errors(mapping)
         except Exception as exc:
             out["overlay_errors"] = [f"{type(exc).__name__}: {exc}"]
     out["freshness"] = _core_freshness(provider_profile)

@@ -317,9 +317,58 @@ _FAKE_CORE_OVERLAY["core/cartridge.py"] = (
     "    return {'team': team}\n\n"
     "def layers(team, cartridges_dir, *, skill_index):\n"
     "    return [('base', {'policy': {'review_tier': '1'}})]\n\n"
-    "def overlay_errors(text):\n"
-    "    return ['skills'] if 'skills' in text else []\n"
+    "def overlay_errors(overlay):\n"
+    "    problems = [f\"project layer overlay refuses key '{k}'\" for k in overlay if k not in ('landing_areas',)]\n"
+    "    land_checks = overlay.get('landing_areas', {}).get('land_checks', 'local')\n"
+    "    if land_checks not in ('ci', 'local'):\n"
+    "        problems.append(f\"project layer overlay refuses landing_areas.land_checks: must be 'ci' or 'local', got {land_checks!r}\")\n"
+    "    return problems\n"
 )
+
+_LAND_CHECKS_REFUSAL = "project layer overlay refuses landing_areas.land_checks: must be 'ci' or 'local', got 'sometimes'"
+
+
+def _doctor_overlay_row(tmp_path, monkeypatch, capsys, overlay_text):
+    profile, *_ = _real_probe_setup(tmp_path, monkeypatch, _FAKE_CORE_OVERLAY)
+    repo = tmp_path / "repo"
+    (repo / ".agent").mkdir(parents=True)
+    (repo / ".agent" / "cartridge.yaml").write_text(overlay_text)
+    rc = main(["setup", "doctor", "--profile", str(profile), "--repo", str(repo), "--json"])
+    return _rows(capsys)["project overlay"], rc
+
+
+def test_a_valid_overlay_reads_ok(tmp_path, monkeypatch, capsys):
+    row, rc = _doctor_overlay_row(tmp_path, monkeypatch, capsys, "landing_areas: {land_checks: ci}\n")
+    assert row == {"check": "project overlay", "ok": True, "detail": "ok"}
+    assert rc == 0
+
+
+def test_an_empty_overlay_reads_ok(tmp_path, monkeypatch, capsys):
+    row, rc = _doctor_overlay_row(tmp_path, monkeypatch, capsys, "# nothing yet\n")
+    assert row["ok"] is True and row["detail"] == "ok"
+    assert rc == 0
+
+
+def test_a_refused_land_checks_value_reads_the_overlay_errors_text(tmp_path, monkeypatch, capsys):
+    row, rc = _doctor_overlay_row(tmp_path, monkeypatch, capsys, "landing_areas:\n  land_checks: sometimes\n")
+    assert row["ok"] is False
+    assert row["detail"] == _LAND_CHECKS_REFUSAL
+    assert rc == 1
+
+
+def test_an_overlay_holding_a_bare_string_is_one_overlay_error_not_an_exception(tmp_path, monkeypatch, capsys):
+    row, rc = _doctor_overlay_row(tmp_path, monkeypatch, capsys, "just a string\n")
+    assert row["ok"] is False
+    assert row["detail"] == "project overlay must be a mapping, got str"
+    assert rc == 1
+
+
+def test_an_overlay_that_is_not_valid_yaml_is_one_overlay_error_not_an_exception(tmp_path, monkeypatch, capsys):
+    row, rc = _doctor_overlay_row(tmp_path, monkeypatch, capsys, "key: [unclosed\n")
+    assert row["ok"] is False
+    assert row["detail"].startswith("project overlay is not valid YAML: ")
+    assert "AttributeError" not in row["detail"]
+    assert rc == 1
 
 
 def test_an_overlay_with_a_refused_key_fails_the_project_overlay_row_naming_it(tmp_path, monkeypatch, capsys):
@@ -330,7 +379,7 @@ def test_an_overlay_with_a_refused_key_fails_the_project_overlay_row_naming_it(t
     rc = main(["setup", "doctor", "--profile", str(profile), "--repo", str(repo), "--json"])
     rows = _rows(capsys)
     assert rows["project overlay"]["ok"] is False
-    assert rows["project overlay"]["detail"] == "skills"
+    assert rows["project overlay"]["detail"] == "project layer overlay refuses key 'skills'"
     assert rc == 1
 
 
