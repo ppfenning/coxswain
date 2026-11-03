@@ -109,7 +109,10 @@ def test_context_json_with_full_profile_lists_initiative_and_runs(tmp_path, caps
     assert runs["run1"]["pid"] == os.getpid() and runs["run1"]["alive"] is True
     assert runs["run2"]["pid"] is None and runs["run2"]["alive"] is False
     assert doc["intake"] == {
-        "queued": [{"id": "i1", "title": "Do the thing", "initiative": None, "done": False, "path": "intake/one.md"}],
+        "queued": [
+            {"id": "i1", "title": "Do the thing", "initiative": None, "done": False, "path": "intake/one.md",
+             "after": [], "held": False, "priority": 0}
+        ],
         "decomposed": [],
         "landed": [],
     }
@@ -366,7 +369,10 @@ def test_status_json_with_an_intake_dir_carries_runs_and_intake_groups(tmp_path,
     assert rc == 0
     assert doc["runs"] == _expected_status_rows(ws)
     assert doc["intake"] == {
-        "queued": [{"id": "q", "title": "Q", "initiative": None, "done": False, "path": "intake/2026-09-01-q.md"}],
+        "queued": [
+            {"id": "q", "title": "Q", "initiative": None, "done": False, "path": "intake/2026-09-01-q.md",
+             "after": [], "held": False, "priority": 0}
+        ],
         "decomposed": [],
         "landed": [],
     }

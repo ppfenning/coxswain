@@ -1010,6 +1010,9 @@ def test_parse_frontmatter_misparses_a_bare_value_that_happens_to_start_with_a_q
     assert fields["title"] != '"draft" ship it'
 
 
+_NO_QUEUE_CONTROL = {"after": [], "held": False, "priority": 0}
+
+
 def test_intake_entries_sorts_by_filename_and_skips_consumed_prefix():
     # Filenames supplied out of order and one already-consumed file: the
     # sort and the skip are both live rules, not accidents of dict order.
@@ -1020,8 +1023,10 @@ def test_intake_entries_sorts_by_filename_and_skips_consumed_prefix():
     }
     entries = route.intake_entries(files)
     assert entries == [
-        {"id": "earlier", "title": "Earlier", "initiative": None, "done": False, "path": "intake/2026-09-01-earlier.md"},
-        {"id": "later", "title": "Later", "initiative": None, "done": False, "path": "intake/2026-09-03-later.md"},
+        {"id": "earlier", "title": "Earlier", "initiative": None, "done": False, "path": "intake/2026-09-01-earlier.md",
+         **_NO_QUEUE_CONTROL},
+        {"id": "later", "title": "Later", "initiative": None, "done": False, "path": "intake/2026-09-03-later.md",
+         **_NO_QUEUE_CONTROL},
     ]
 
 
@@ -1030,7 +1035,7 @@ def test_intake_entries_falls_back_to_stem_and_first_body_line_when_frontmatter_
     entries = route.intake_entries(files)
     assert entries == [
         {"id": "2026-09-02-no-frontmatter", "title": "First real line.", "initiative": None, "done": False,
-         "path": "intake/2026-09-02-no-frontmatter.md"}
+         "path": "intake/2026-09-02-no-frontmatter.md", **_NO_QUEUE_CONTROL}
     ]
 
 
@@ -1038,7 +1043,8 @@ def test_intake_entries_reads_the_initiative_field_and_the_done_prefix():
     files = {"done/2026-09-01-old.md": "---\nid: old\ntitle: Old\ninitiative: old\n---\n\nBody.\n"}
     entries = route.intake_entries(files)
     assert entries == [
-        {"id": "old", "title": "Old", "initiative": "old", "done": True, "path": "intake/2026-09-01-old.md"}
+        {"id": "old", "title": "Old", "initiative": "old", "done": True, "path": "intake/2026-09-01-old.md",
+         **_NO_QUEUE_CONTROL}
     ]
 
 
@@ -1313,7 +1319,10 @@ def test_intake_entries_falls_back_to_id_when_frontmatter_has_no_title_and_body_
     # must fall back to id, not raise on an empty body_lines list.
     files = {"any-name.md": "---\nid: notitle\n---\n\n"}
     entries = route.intake_entries(files)
-    assert entries == [{"id": "notitle", "title": "notitle", "initiative": None, "done": False, "path": "intake/any-name.md"}]
+    assert entries == [
+        {"id": "notitle", "title": "notitle", "initiative": None, "done": False, "path": "intake/any-name.md",
+         **_NO_QUEUE_CONTROL}
+    ]
 
 
 @pytest.mark.parametrize(

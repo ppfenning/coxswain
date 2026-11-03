@@ -5,6 +5,7 @@ import pytest
 from agent_tools import chair, queue_rows, route, run_store
 
 NOW = "2026-09-27T00:00:00Z"
+_QUEUE_CONTROL = ("after", "held", "priority")
 
 _T0 = "---\nstate: done\ntitle: T0\n---\nTask zero.\n"
 _T1 = "---\nstate: ready\nneeds: [t0]\ntitle: T1\n---\nTask one.\n"
@@ -44,7 +45,9 @@ def _file_intake_groups(items: list) -> dict:
     files = {"done/old.md": _OLD, "idea.md": _IDEA, "linked.md": _LINKED}
     ids = sorted({item["initiative"] for item in items})
     initiatives = [{"id": iid, "done": done, "text": ""} for iid, done in route.initiative_states(ids, items).items()]
-    return route.intake_groups(route.intake_entries(files), initiatives)
+    groups = route.intake_groups(route.intake_entries(files), initiatives)
+    # The row reader does not carry after, held or priority yet (a later task owns it), so compare the original keys.
+    return {name: [{k: v for k, v in e.items() if k not in _QUEUE_CONTROL} for e in group] for name, group in groups.items()}
 
 
 def _queue_row(kind: str, path_parts: tuple, text: str, *, holder=None, epoch=0, expires_at=None) -> dict:

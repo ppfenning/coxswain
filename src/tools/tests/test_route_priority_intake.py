@@ -145,7 +145,7 @@ def test_the_store_row_is_taken_before_the_intake_file_changes(tmp_path, monkeyp
     assert parse_frontmatter(path.read_text())[0]["priority"] == "6"
 
 
-def test_an_intake_file_without_a_priority_key_is_left_alone(tmp_path, monkeypatch):
+def test_an_intake_file_without_a_priority_key_gains_it(tmp_path, monkeypatch):
     taken = _fake_store(monkeypatch, _seed())
     path = tmp_path / "intake" / "idea.md"
     path.parent.mkdir()
@@ -154,7 +154,7 @@ def test_an_intake_file_without_a_priority_key_is_left_alone(tmp_path, monkeypat
     assert route.set_initiative_priority(tmp_path / "runs", tmp_path, "idea", "top") == 0
 
     assert [r["priority"] for r in taken] == [6]
-    assert path.read_text() == "---\ntitle: idea\n---\nBody.\n"
+    assert path.read_text() == "---\ntitle: idea\npriority: 6\n---\nBody.\n"
 
 
 def test_a_store_that_refuses_the_row_fails_the_call(tmp_path, monkeypatch, capsys):
