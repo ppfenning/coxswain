@@ -5,6 +5,7 @@ import pytest
 from agent_tools.chair_read_quarantined import RUNAWAY_CAUSE
 from agent_tools.chair_report import (
     Deps,
+    _five_hour,
     echo_line,
     format_status,
     housekeeping_fragment,
@@ -119,6 +120,19 @@ def test_limit_fragments_name_their_source_and_the_since_day():
     assert "5h 42% (meter, store)" in store and "weekly 61%/90% (meter, store)" in store
     assert "weekly 61%/90% (meter) since Sun 04:00" in since
     assert "since" not in meter
+
+
+def test_a_missing_five_hour_fraction_reads_none_only_when_a_meter_backs_it():
+    def five(fraction, source):
+        return _five_hour({"five_hour_fraction": fraction, "window_source": source})
+
+    assert five(None, "meter") == "5h none (meter)"
+    assert five(None, "meter, store") == "5h none (meter, store)"
+    assert five(None, "est") == "5h n/a"
+    assert _five_hour({"five_hour_fraction": None}) == "5h n/a"
+    assert five(0.42, "meter") == "5h 42% (meter)"
+    line = format_status(_facts(five=None, five_hour_source="meter"), [], [], NOW)
+    assert "5h none (meter)" in line
 
 
 def test_pace_target_shows_only_when_judged():
