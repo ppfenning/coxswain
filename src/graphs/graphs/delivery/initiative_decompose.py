@@ -23,6 +23,7 @@ import json
 import posixpath
 import re
 from collections.abc import Collection, Mapping, Sequence
+from itertools import takewhile
 from pathlib import Path
 from typing import Any
 
@@ -651,6 +652,22 @@ def _gate_added_surfaces(
     return _split_cross_repo(merged, tree), [*failures, *_unresolved_pairs(checked, tree)]
 
 
+def _new_surface_repo(
+    task: Mapping[str, Any], surface: str, parts: Sequence[str], tree: Sequence[Mapping[str, Any]]
+) -> str:
+    """The part a `(new)` surface joins: the task's own repo, else the tree path sharing most parent directories, else the first part."""
+    if str(task.get("repo")) in parts:
+        return str(task["repo"])
+    wanted = surface.removesuffix(_NEW).split("/")[:-1]
+
+    def shared(row: Mapping[str, Any]) -> int:
+        have = str(row.get("path")).split("/")[:-1]
+        return sum(1 for _ in takewhile(lambda pair: pair[0] == pair[1], zip(wanted, have)))
+
+    best = max((row for row in tree if str(row.get("repo")) in parts), key=shared, default=None)
+    return str(best.get("repo")) if best is not None and shared(best) else parts[0]
+
+
 def _split_cross_repo(tasks: list[dict[str, Any]], tree: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """One task per repo when a task's resolved surfaces span more than one tree in the stack.
 
@@ -671,7 +688,16 @@ def _split_cross_repo(tasks: list[dict[str, Any]], tree: Sequence[Mapping[str, A
         new_ids = [f"{task['id']}--{repo}" for repo in repos]
         parts[str(task["id"])] = new_ids
         split.extend(
-            dict(task, id=new_id, surfaces=[s for s in task["surfaces"] if repo_of.get(s) == repo])
+            dict(
+                task,
+                id=new_id,
+                surfaces=[
+                    s
+                    for s in task["surfaces"]
+                    if repo_of.get(s) == repo
+                    or (s not in repo_of and s.endswith(_NEW) and _new_surface_repo(task, s, repos, tree) == repo)
+                ],
+            )
             for repo, new_id in zip(repos, new_ids, strict=True)
         )
     return [dict(t, needs=[n for need in t["needs"] for n in parts.get(need, [need])]) for t in split]
@@ -1168,7 +1194,7 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
         lint_problems = lint_tickets(tasks, tree, grants, repo_name, **allow_kwargs)
         refusals = [p for p in lint_problems if _is_refusal(p)]
         if refusals:
-            raise LintRefusal(_refusal_reason(refusals))
+            raise LintRefusal(_refusal_reason(refusals) + "\n" + _refused_surfaces(tasks, refusals))
 
     advisories = [p for p in lint_problems if not _is_refusal(p)]
     if advisories:

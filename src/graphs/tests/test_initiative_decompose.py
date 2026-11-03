@@ -1518,6 +1518,60 @@ def test_a_second_contract_refusal_fails_the_run_with_the_lint_text_and_no_third
     assert [c["role"] for c in runner.calls] == ["decompose", "decompose"]
 
 
+def test_a_refused_relint_names_the_surfaces_the_correction_returned(cart) -> None:
+    runner = ScriptedRunner({"decompose": [PROSE_CONTRACT_PLAN, NO_CHANGE]})
+    with pytest.raises(initiative_decompose.LintRefusal) as refused:
+        initiative_decompose.run(_unbound_contract_args(cart), runner)
+    lines = str(refused.value).splitlines()
+    assert lines[0].startswith("lint-refused: t0 contract")
+    assert "t0: agent_tools/settings.py" in lines
+
+
+SPLIT_TREE = [
+    {"path": "graphs/schema.py", "repo": "graphs-repo"},
+    {"path": "harness/epic.py", "repo": "harness-repo"},
+]
+
+
+def _split_task(surfaces, **extra):
+    return {"id": "t1", "needs": [], "surfaces": surfaces, **extra}
+
+
+def test_a_new_surface_stays_with_exactly_one_part_of_a_split() -> None:
+    task = _split_task(["graphs/schema.py", "harness/epic.py", "tests/fixtures/x_v1.json (new)"])
+    parts = initiative_decompose._split_cross_repo([task], SPLIT_TREE)
+    assert {p["id"]: p["surfaces"] for p in parts} == {
+        "t1--graphs-repo": ["graphs/schema.py", "tests/fixtures/x_v1.json (new)"],
+        "t1--harness-repo": ["harness/epic.py"],
+    }
+
+
+def test_a_new_surface_follows_the_tasks_own_repo_then_the_longest_shared_directory() -> None:
+    own = _split_task(["graphs/schema.py", "harness/epic.py", "z/x.json (new)"], repo="harness-repo")
+    near = _split_task(["graphs/schema.py", "harness/epic.py", "harness/new/x.json (new)"], repo="elsewhere")
+    by_own = {p["id"]: p["surfaces"] for p in initiative_decompose._split_cross_repo([own], SPLIT_TREE)}
+    by_near = {p["id"]: p["surfaces"] for p in initiative_decompose._split_cross_repo([near], SPLIT_TREE)}
+    assert by_own["t1--harness-repo"] == ["harness/epic.py", "z/x.json (new)"]
+    assert by_near["t1--harness-repo"] == ["harness/epic.py", "harness/new/x.json (new)"]
+
+
+def test_a_task_in_one_repo_is_not_split_by_a_new_surface() -> None:
+    task = _split_task(["graphs/schema.py", "tests/x.json (new)"])
+    assert initiative_decompose._split_cross_repo([task], SPLIT_TREE) == [task]
+
+
+def test_a_contract_correction_to_a_new_fixture_in_the_producer_repo_is_stored(cart) -> None:
+    new_fixture = f"{NAMED_PATH} (new)"
+    fix = {
+        "corrections": [{"task": "t0", "surface": "agent_tools/settings.py", "replacement": new_fixture}],
+        "tasks": [],
+        "summary": "gave the contract task a new fixture",
+    }
+    runner = ScriptedRunner({"decompose": [PROSE_CONTRACT_PLAN, fix]})
+    result = initiative_decompose.run(_unbound_contract_args(cart), runner)
+    assert {t["id"]: t for t in result["tasks"]}["t0"]["surfaces"] == [new_fixture]
+
+
 NAMED_PATH = "tests/fixtures/settings_v1.json"
 NAMED_JSON_FIX = {
     "corrections": [{"task": "t0", "surface": "agent_tools/settings.py", "replacement": NAMED_PATH}],
