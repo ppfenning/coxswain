@@ -597,13 +597,9 @@ def _tap_step(version=V0):
 
 
 _TAP_FORMULA_PY = _TAP_FORMULA.replace("class Cox < Formula\n", 'class Cox < Formula\n  depends_on "python@3.13"\n', 1)
-_WHEELS = "https://files/psycopg_binary-3.3.6-cp313-cp313-"
 _PSYCOPG_DOCS = {
     "https://pypi.org/pypi/psycopg/3.3.6/json": {"urls": [
         {"packagetype": "sdist", "url": "https://files/psycopg-3.3.6.tar.gz", "digests": {"sha256": "3" * 64}}]},
-    "https://pypi.org/pypi/psycopg-binary/3.3.6/json": {"urls": [
-        {"packagetype": "bdist_wheel", "python_version": "cp313", "url": _WHEELS + tail, "digests": {"sha256": "4" * 64}}
-        for tail in ("macosx_11_0_arm64.whl", "manylinux_2_17_x86_64.whl")]},
     "https://pypi.org/pypi/pyarrow/24.0.0/json": {"urls": [
         {"packagetype": "sdist", "url": "https://files/pyarrow-24.0.0.tar.gz", "digests": {"sha256": "6" * 64}}]}}
 
@@ -641,6 +637,7 @@ def test_cli_release_execute_opens_the_tap_pr_with_the_index_sdist_and_the_coxsw
     text = formula.read_text()
     assert f'url "https://x/coxswain-{V0}.tar.gz"' in text and "b" * 64 in text
     assert 'head "https://github.com/ppfenning/coxswain.git", branch: "main"' in text
+    assert 'depends_on "libpq"' in text and "psycopg-binary" not in text and "psycopg.pq.version()" in text
     assert ["gh", "pr", "create", "--title", f"cox {V0}", "--body",
             f"Bumps the formula to {V0} on PyPI.\n\n" + release.pr_footer(V0)] in calls
     assert run.current_branch[str(tmp_path / "homebrew-coxswain")] == "main"
@@ -808,6 +805,8 @@ def test_cli_release_dry_run_prints_every_step_and_touches_no_file(tmp_path, cap
                  f"tap_formula_pr tap: ppfenning/homebrew-coxswain Formula/cox.rb from https://pypi.org/pypi/coxswain/{V1}/json",
                  f"would run install-proof.yml with tap_ref=release/{V1} version={V1}"):
         assert line in out
+    assert "tap_formula_pr tap: formula depends on libpq; no psycopg-binary wheel is fetched" in out
+    assert "fetch psycopg-binary" not in out and "psycopg_binary" not in out
     assert (umbrella / "manifest.toml").read_text() == _MANIFEST_TOML
     assert [c for c in calls if c[0] == "gh" or c[3] in ("tag", "push", "checkout", "commit")] == []
 

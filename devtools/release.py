@@ -774,16 +774,29 @@ _TOWPATH_WITHOUT = ' without: resources.map(&:name) & ["towpath"]'
 _TOWPATH_TEST = '    system bin/"towpath", "--version" if (bin/"towpath").exist?\n'
 
 # psycopg2-binary is deliberately absent: no source imports psycopg2; it appears only behind pyiceberg's sql-postgres extra.
+# The formula carries pure psycopg and depends on libpq: Homebrew cannot relink the native libraries inside a
+# psycopg-binary wheel, so that wheel stays in extras-requirements.txt for pip and uv installs and out of the formula.
 PSYCOPG_SDIST = "psycopg"
 PsycopgAssets = Mapping[str, tuple[str, str]]
-_PSYCOPG_KEYS = (PSYCOPG_SDIST, TOWPATH_MACOS_ARM, TOWPATH_LINUX_INTEL)
-_PSYCOPG_PIN_RE = re.compile(r"^(psycopg(?:-binary)?)==([^\s;]+)", re.MULTILINE)
-_PYTHON_DEP_RE = re.compile(r'^\s*depends_on\s+"python@3\.(\d+)"', re.MULTILINE)
-_PSYCOPG_RESOURCE_RE = re.compile(r'^(\s*)resource\s+"(psycopg(?:-binary)?)"\s+do\b')
+_PSYCOPG_PIN_RE = re.compile(r"^psycopg==([^\s;]+)", re.MULTILINE)
+_PSYCOPG_RESOURCE_RE = re.compile(r'^(\s*)resource\s+"psycopg"\s+do\b')
+# Only the migration reads the old shape: the wheel resources, the stage-and-pip-install block and the pip exclusion.
+_OLD_WHEEL_RESOURCE_RE = re.compile(r'^(\s*)resource\s+"psycopg-binary"\s+do\b')
+_OLD_WHEEL_STAGE_RE = re.compile(r'^(\s*)if resources\.map\(&:name\)\.include\?\("psycopg-binary"\)\s*$')
 _VENV_WITHOUT_RE = re.compile(r'^(\s*virtualenv_install_with_resources)(?: without: resources\.map\(&:name\) & \[([^\]]*)\])?(\s*)$')
-# Wheels by platform: the macOS arm64 wheel, and the glibc x86_64 wheel (musllinux is not the Homebrew Linux runtime).
-_PSYCOPG_WHEELS = {TOWPATH_MACOS_ARM: lambda name: "macosx" in name and name.endswith("_arm64.whl"),
-                   TOWPATH_LINUX_INTEL: lambda name: "manylinux" in name and "x86_64" in name}
+_FORMULA_DEPENDS_RE = re.compile(r"^  depends_on\s")
+_LIBPQ_DEPENDS_RE = re.compile(r'^\s*depends_on\s+"libpq"', re.MULTILINE)
+# libpq is keg-only, so pure psycopg's ctypes lookup finds it only through the loader's library path.
+_LIBPQ_ENV = ('    libpq_env = if OS.mac?\n      { DYLD_FALLBACK_LIBRARY_PATH: Formula["libpq"].opt_lib.to_s }\n    else\n'
+              '      { LD_LIBRARY_PATH: Formula["libpq"].opt_lib.to_s }\n    end\n'
+              '    rm_f([bin/"cox", bin/"agent-tools", bin/"cartridge"])\n'
+              '    (bin/"cox").write_env_script libexec/"bin/cox", libpq_env\n'
+              '    (bin/"agent-tools").write_env_script libexec/"bin/agent-tools", libpq_env\n'
+              '    (bin/"cartridge").write_env_script libexec/"bin/cartridge", libpq_env\n')
+_LIBPQ_ENV_MARKER = "write_env_script"
+_LIBPQ_TEST = ('    ENV[OS.mac? ? "DYLD_FALLBACK_LIBRARY_PATH" : "LD_LIBRARY_PATH"] = Formula["libpq"].opt_lib.to_s\n'
+               '    system libexec/"bin/python", "-c", "import psycopg; print(psycopg.pq.version())"\n')
+_LIBPQ_TEST_MARKER = "psycopg.pq.version()"
 
 
 def _towpath_block(towpath: TowpathAssets) -> str:
@@ -881,124 +894,163 @@ def _with_towpath_block(text: str, towpath: TowpathAssets) -> str:
     return "".join(inserts.get(i, "") + extras.get(i, "") + line for i, line in enumerate([*body, ""]))
 
 
-def psycopg_pins(requirements_text: str) -> tuple[str, str]:
-    """The pinned `(psycopg, psycopg-binary)` versions in the text of extras-requirements.txt; ValueError names a missing pin."""
-    pins = {m.group(1): m.group(2) for m in _PSYCOPG_PIN_RE.finditer(requirements_text)}
-    missing = [name for name in ("psycopg", "psycopg-binary") if name not in pins]
-    if missing:
-        raise ValueError(f"extras requirements pin no {', '.join(missing)}")
-    return pins["psycopg"], pins["psycopg-binary"]
-
-
-def _formula_python_minor(text: str) -> str:
-    """The `X` of the formula's first `depends_on "python@3.X"` line; ValueError when it has none."""
-    found = _PYTHON_DEP_RE.search(text)
+def psycopg_pin(requirements_text: str) -> str:
+    """The pinned psycopg version in the text of extras-requirements.txt; ValueError names a missing pin."""
+    found = _PSYCOPG_PIN_RE.search(requirements_text)
     if found is None:
-        raise ValueError('formula has no `depends_on "python@3.X"` line to read the CPython tag from')
+        raise ValueError("extras requirements pin no psycopg")
     return found.group(1)
 
 
-def psycopg_assets(psycopg_payload: Mapping, binary_payload: Mapping, python_minor: str) -> PsycopgAssets:
-    """`(url, sha256)` for the psycopg sdist under PSYCOPG_SDIST, and for the psycopg-binary `cp3<python_minor>` wheel on
-    each of TOWPATH_MACOS_ARM and TOWPATH_LINUX_INTEL. Both payloads are PyPI `/pypi/<name>/<version>/json` bodies.
+def psycopg_assets(psycopg_payload: Mapping) -> PsycopgAssets:
+    """`(url, sha256)` for the psycopg sdist under PSYCOPG_SDIST, from a PyPI `/pypi/psycopg/<version>/json` body.
 
-    psycopg-binary publishes no sdist, so its pair is a wheel. ValueError names the first asset a payload lacks."""
+    ValueError when the payload lists no sdist."""
     sdist = sdist_from_index(psycopg_payload)
     if sdist is None:
         raise ValueError("psycopg release lists no sdist")
-    tag = f"cp3{python_minor}"
-    wheels = [(u["url"], u["digests"]["sha256"]) for u in binary_payload.get("urls", [])
-              if u.get("packagetype") == "bdist_wheel" and u.get("python_version") == tag]
-    found = {PSYCOPG_SDIST: sdist}
-    for key, wanted in _PSYCOPG_WHEELS.items():
-        match = next(((url, sha) for url, sha in wheels if wanted(url.rsplit("/", 1)[-1])), None)
-        if match is None:
-            raise ValueError(f"psycopg-binary release lists no {tag} wheel for {key}")
-        found[key] = match
-    return found
+    return {PSYCOPG_SDIST: sdist}
 
 
-def _psycopg_block(psycopg: PsycopgAssets) -> str:
-    """The top-level psycopg resource and the two platform-scoped psycopg-binary wheel resources, 2-space indented."""
-    def binary(scope: str, arch: str, key: str) -> str:
-        url, sha = psycopg[key]
-        return (f'  {scope} do\n    {arch} do\n      resource "psycopg-binary" do\n        url "{url}", using: :nounzip\n'
-                f'        sha256 "{sha}"\n      end\n    end\n  end\n')
-    url, sha = psycopg[PSYCOPG_SDIST]
-    sdist = f'  resource "psycopg" do\n    url "{url}"\n    sha256 "{sha}"\n  end\n'
-    return "\n".join([sdist, binary("on_macos", "on_arm", TOWPATH_MACOS_ARM), binary("on_linux", "on_intel", TOWPATH_LINUX_INTEL)])
+def _block_end(lines: Sequence[str], start: int) -> int:
+    """Index of the `end` that closes the block opened at `start`: the next `end` at the opener's indent."""
+    indent = len(lines[start]) - len(lines[start].lstrip())
+    closing = next((i for i in range(start + 1, len(lines)) if lines[i].rstrip() == " " * indent + "end"), None)
+    if closing is None:
+        raise ValueError(f"the block opened by `{lines[start].strip()}` has no closing `end`")
+    return closing
 
 
-def _psycopg_stage(minor: str) -> str:
-    """Install the staged wheel into libexec's venv with the Homebrew python's pip, after the venv exists."""
-    python = f'Formula["python@3.{minor}"].opt_bin/"python3.{minor}"'
-    return ('    if resources.map(&:name).include?("psycopg-binary")\n      resource("psycopg-binary").stage do\n'
-            f'        system {python}, "-m", "pip", "--python=#{{libexec}}/bin/python",\n'
-            '               "install", "--no-deps", "--no-index", Dir["*.whl"].first\n      end\n    end\n')
+def _scope_span(lines: Sequence[str], start: int, stop: int) -> tuple[int, int]:
+    """`start` and `stop` widened over every `on_*` scope that holds nothing but lines `start..stop`."""
+    opener = start > 0 and _FORMULA_SCOPE_RE.match(lines[start - 1].rstrip("\r\n"))
+    closer = stop + 1 < len(lines) and _FORMULA_END_RE.match(lines[stop + 1].rstrip("\r\n"))
+    if opener and closer and opener.group(1) == closer.group(1):
+        return _scope_span(lines, start - 1, stop + 1)
+    return start, stop
 
 
-def _rewritten_psycopg(text: str, psycopg: PsycopgAssets) -> str:
-    """`text` with each psycopg and psycopg-binary resource's url and sha256 replaced; raises rather than leave a stale pair.
+def _cut(lines: Sequence[str], start: int, stop: int) -> list[str]:
+    """`lines` without `start..stop`, dropping one blank line when the cut would leave two side by side."""
+    doubled = start > 0 and stop + 1 < len(lines) and not lines[start - 1].strip() and not lines[stop + 1].strip()
+    return [*lines[:start], *lines[stop + 1 + doubled:]]
 
-    ValueError: a psycopg-binary resource sits under scopes other than on_macos/on_arm or on_linux/on_intel, or a
-    resource's new url and sha256 did not land in any block."""
+
+def _without_old_wheel(lines: list[str]) -> list[str]:
+    """`lines` without the psycopg-binary resources (and the scopes they leave empty) and the stage-and-install block."""
+    resource = next((i for i, line in enumerate(lines) if _OLD_WHEEL_RESOURCE_RE.match(line.rstrip("\r\n"))), None)
+    if resource is not None:
+        return _without_old_wheel(_cut(lines, *_scope_span(lines, resource, _block_end(lines, resource))))
+    stage = next((i for i, line in enumerate(lines) if _OLD_WHEEL_STAGE_RE.match(line.rstrip("\r\n"))), None)
+    if stage is not None:
+        return _without_old_wheel(_cut(lines, stage, _block_end(lines, stage)))
+    return lines
+
+
+def _venv_line_without_old_wheel(line: str) -> str:
+    """The venv line with psycopg-binary dropped from its `without:` list, bare when nothing else is listed."""
+    found = _VENV_WITHOUT_RE.match(line)
+    if found is None or "psycopg-binary" not in (found.group(2) or ""):
+        return line
+    listed = ", ".join(f'"{name}"' for name in re.findall(r'"([^"]+)"', found.group(2)) if name != "psycopg-binary")
+    clause = f" without: resources.map(&:name) & [{listed}]" if listed else ""
+    return f"{found.group(1)}{clause}{found.group(3)}"
+
+
+def _migrated_from_old_wheel(text: str) -> str:
+    """`text` with every piece of the old psycopg-binary shape removed; a formula without them comes back unchanged."""
+    return "".join(_venv_line_without_old_wheel(line) for line in _without_old_wheel(text.splitlines(keepends=True)))
+
+
+def _rewritten_psycopg(text: str, url: str, sha: str) -> str:
+    """`text` with the psycopg resource's url and sha256 replaced; raises rather than leave a stale pair."""
     out = []
-    scopes: list[tuple[str, str]] = []
-    block: tuple[str, tuple[str, str]] | None = None
+    block: str | None = None
     for line in text.splitlines(keepends=True):
         bare = line.rstrip("\r\n")
-        end, scope, res = _FORMULA_END_RE.match(bare), _FORMULA_SCOPE_RE.match(bare), _PSYCOPG_RESOURCE_RE.match(bare)
+        end, res = _FORMULA_END_RE.match(bare), _PSYCOPG_RESOURCE_RE.match(bare)
         if block is not None:
-            indent, (url, sha) = block
-            if end and end.group(1) == indent:
+            if end and end.group(1) == block:
                 block = None
                 out.append(line)
             elif _FORMULA_URL_RE.match(line):
-                out.append(_FORMULA_URL_RE.sub(lambda m, value=url: f"{m.group(1)}{value}{m.group(2)}", line))
+                out.append(_FORMULA_URL_RE.sub(lambda m: f"{m.group(1)}{url}{m.group(2)}", line))
             elif _FORMULA_SHA_RE.match(line):
-                out.append(_FORMULA_SHA_RE.sub(lambda m, value=sha: f"{m.group(1)}{value}{m.group(2)}", line))
+                out.append(_FORMULA_SHA_RE.sub(lambda m: f"{m.group(1)}{sha}{m.group(2)}", line))
             else:
                 out.append(line)
             continue
-        if res:
-            names = tuple(name for _, name in scopes[-2:])
-            key = PSYCOPG_SDIST if res.group(2) == "psycopg" else _TOWPATH_PLATFORMS.get(names)
-            if key is None:
-                raise ValueError(f"psycopg-binary resource under unrecognised scopes {names}")
-            block = (res.group(1), psycopg[key])
-        elif scope:
-            scopes.append((scope.group(1), scope.group(2)))
-        elif end and scopes and scopes[-1][0] == end.group(1):
-            scopes.pop()
+        block = res.group(1) if res else None
         out.append(line)
     result = "".join(out)
-    stale = [key for key in _PSYCOPG_KEYS
-             if f'url "{psycopg[key][0]}"' not in result or f'sha256 "{psycopg[key][1]}"' not in result]
-    if stale:
-        raise ValueError(f"psycopg url and sha256 not rewritten for {', '.join(stale)}")
+    if f'url "{url}"' not in result or f'sha256 "{sha}"' not in result:
+        raise ValueError("psycopg url and sha256 not rewritten")
     return result
 
 
-def _with_psycopg_block(text: str, psycopg: PsycopgAssets) -> str:
-    """`text` with the psycopg resources, the wheel stage step and the pip exclusion added; ValueError if any has no anchor."""
-    minor = _formula_python_minor(text)
+def _with_psycopg_resource(text: str, url: str, sha: str) -> str:
+    """`text` with one top-level pure psycopg resource at `url` and `sha`; ValueError if a new one has no anchor."""
     lines = text.splitlines(keepends=True)
+    if any(_PSYCOPG_RESOURCE_RE.match(line.rstrip("\r\n")) for line in lines):
+        return _rewritten_psycopg(text, url, sha)
+    stanza = f'  resource "psycopg" do\n    url "{url}"\n    sha256 "{sha}"\n  end\n'
     resource_end = _top_resource_end(lines)
     installs = [i for i, line in enumerate(lines) if _FORMULA_INSTALL_RE.match(line)]
-    venvs = [i for i, line in enumerate(lines) if _VENV_WITHOUT_RE.match(line)]
+    if resource_end is not None:
+        at, added = resource_end + 1, "\n" + stanza
+    elif installs:
+        at, added = installs[0], stanza + "\n"
+    else:
+        raise ValueError("formula has no resource or `def install` to anchor the psycopg resource")
+    return "".join([*lines[:at], added, *lines[at:]])
+
+
+def _with_libpq_depends(text: str) -> str:
+    """`text` with `depends_on "libpq"` among its top-level dependencies, added once."""
+    if _LIBPQ_DEPENDS_RE.search(text):
+        return text
+    lines = text.splitlines(keepends=True)
+    depends = [i for i, line in enumerate(lines) if _FORMULA_DEPENDS_RE.match(line)]
+    anchor = next((i for i, line in enumerate(lines)
+                   if _FORMULA_TOP_RESOURCE_RE.match(line) or _FORMULA_INSTALL_RE.match(line)), None)
+    if depends:
+        at, added = depends[-1] + 1, '  depends_on "libpq"\n'
+    elif anchor is not None:
+        at, added = anchor, '  depends_on "libpq"\n\n'
+    else:
+        raise ValueError('formula has no depends_on, resource or `def install` to anchor `depends_on "libpq"`')
+    return "".join([*lines[:at], added, *lines[at:]])
+
+
+def _with_libpq_env(text: str) -> str:
+    """`text` with the cox, agent-tools and cartridge entry points rewritten as env scripts after the venv line."""
+    lines = text.splitlines(keepends=True)
+    installs = [i for i, line in enumerate(lines) if _FORMULA_INSTALL_RE.match(line)]
     if not installs:
-        raise ValueError("formula has no `def install` to stage the psycopg-binary wheel in")
+        raise ValueError("formula has no `def install` to write the libpq env scripts in")
+    venvs = [i for i in range(installs[0] + 1, len(lines)) if _VENV_WITHOUT_RE.match(lines[i])]
     if not venvs:
-        raise ValueError("formula has no `virtualenv_install_with_resources` line to exclude the psycopg-binary wheel from")
-    block = _psycopg_block(psycopg)
-    inserts = {resource_end + 1: "\n" + block} if resource_end is not None else {installs[0]: block + "\n"}
-    venv = _VENV_WITHOUT_RE.match(lines[venvs[0]])
-    names = [*dict.fromkeys([*re.findall(r'"([^"]+)"', venv.group(2) or ""), "psycopg-binary"])]
-    listed = ", ".join(f'"{name}"' for name in names)
-    body = [*lines]
-    body[venvs[0]] = f"{venv.group(1)} without: resources.map(&:name) & [{listed}]{venv.group(3)}"
-    stage = {} if 'resource("psycopg-binary")' in text else {venvs[0] + 1: _psycopg_stage(minor)}
-    return "".join(inserts.get(i, "") + stage.get(i, "") + line for i, line in enumerate([*body, ""]))
+        raise ValueError("formula has no `virtualenv_install_with_resources` line to write the libpq env scripts after")
+    if _LIBPQ_ENV_MARKER in text:
+        return text
+    return "".join([*lines[:venvs[0] + 1], _LIBPQ_ENV, *lines[venvs[0] + 1:]])
+
+
+def _with_libpq_test(text: str) -> str:
+    """`text` with a `test do` line that loads libpq through psycopg, added once."""
+    lines = text.splitlines(keepends=True)
+    tests = [i for i, line in enumerate(lines) if _FORMULA_TEST_RE.match(line)]
+    if not tests:
+        raise ValueError("formula has no `test do` to check psycopg.pq.version() in")
+    if _LIBPQ_TEST_MARKER in text:
+        return text
+    return "".join([*lines[:tests[0] + 1], _LIBPQ_TEST, *lines[tests[0] + 1:]])
+
+
+def _with_psycopg_shape(text: str, url: str, sha: str) -> str:
+    """`text` in the libpq shape: pure psycopg resource, libpq dependency, env scripts and test line, old wheel pieces gone."""
+    migrated = _migrated_from_old_wheel(text)
+    return _with_libpq_test(_with_libpq_env(_with_libpq_depends(_with_psycopg_resource(migrated, url, sha))))
 
 
 def bumped_formula_text(text: str, version: str, sdist_url: str, sha256: str, *, towpath: TowpathAssets | None = None,
@@ -1008,9 +1060,10 @@ def bumped_formula_text(text: str, version: str, sdist_url: str, sha256: str, *,
 
     `towpath` maps TOWPATH_MACOS_ARM and TOWPATH_LINUX_INTEL to (url, sha256). When given, an existing towpath block
     has its url and sha256 lines rewritten, and a formula without one gains the block, an install line and a test line.
-    `psycopg` is `psycopg_assets` output. When given, existing psycopg resources have their url and sha256 lines
-    rewritten, and a formula without them gains the resources, a wheel stage step after the venv line, and the wheel in
-    the venv line's `without:`; that path needs a `depends_on "python@3.X"` line.
+    `psycopg` is `psycopg_assets` output. When given, the formula takes the libpq shape: one pure psycopg resource
+    (its url and sha256 rewritten when present), `depends_on "libpq"`, env scripts for the three entry points after the
+    venv line, and a `test do` line loading libpq. An old-shape formula loses its psycopg-binary resources, stage step
+    and `without:` entry; each piece is added only when absent. The anchors are `def install`, the venv line and `test do`.
     `pyarrow` is the `(url, sha256)` of the pyarrow sdist. When given, an existing `resource "pyarrow"` has only its url
     and sha256 lines rewritten, and a formula without one gains the resource, the apache-arrow and cmake dependencies,
     the install env and the doctor test lines; any of those already present is left alone.
@@ -1020,11 +1073,9 @@ def bumped_formula_text(text: str, version: str, sdist_url: str, sha256: str, *,
         has_towpath = any(_TOWPATH_RESOURCE_RE.match(line.rstrip("\r\n")) for line in bumped.splitlines())
         bumped = _rewritten_towpath(bumped, towpath) if has_towpath else _with_towpath_block(bumped, towpath)
     if psycopg is not None:
-        absent = [key for key in _PSYCOPG_KEYS if key not in psycopg]
-        if absent:
-            raise ValueError(f"psycopg assets lack {', '.join(absent)}")
-        has_psycopg = any(_PSYCOPG_RESOURCE_RE.match(line.rstrip("\r\n")) for line in bumped.splitlines())
-        bumped = _rewritten_psycopg(bumped, psycopg) if has_psycopg else _with_psycopg_block(bumped, psycopg)
+        if PSYCOPG_SDIST not in psycopg:
+            raise ValueError(f"psycopg assets lack {PSYCOPG_SDIST}")
+        bumped = _with_psycopg_shape(bumped, *psycopg[PSYCOPG_SDIST])
     if pyarrow is not None:
         bumped = _with_pyarrow(bumped, pyarrow)
     return bumped
