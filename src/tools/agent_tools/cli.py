@@ -16,6 +16,7 @@ import io
 import json
 import math
 import os
+import platform
 import posixpath
 import re
 import secrets
@@ -127,6 +128,7 @@ checkout = _LazyModule("agent_tools.checkout")
 cleanup = _LazyModule("agent_tools.cleanup")
 console_screen = _LazyModule("agent_tools.console_screen")
 courier = _LazyModule("agent_tools.courier")
+dash_binary = _LazyModule("agent_tools.dash_binary")
 dash_detail_health = _LazyModule("agent_tools.dash_detail_health")
 dash_detail_initiative = _LazyModule("agent_tools.dash_detail_initiative")
 dash_detail_machine = _LazyModule("agent_tools.dash_detail_machine")
@@ -8490,6 +8492,8 @@ def _install_execute(steps: list, manifest: dict, options: dict, root: Path) -> 
         label = f"{step['kind']} {step.get('component', '')}".strip()
         if step["kind"] == "skip" or result["exit"] is None:
             print(f"skipped: {label}")
+            if step["kind"] == "skip" and manifest.get("components", {}).get(step.get("component"), {}).get("provides"):
+                print(f"    {step['detail']}")
         elif step["kind"] == "refuse":
             print(f"refused: {label}: {result['output']}")
         elif result["exit"] == 0:
@@ -8498,13 +8502,26 @@ def _install_execute(steps: list, manifest: dict, options: dict, root: Path) -> 
             print(f"FAILED: {label}")
             for line in (result["output"] or "").rstrip().splitlines():
                 print(f"    {line}")
-    post_facts = {"root": str(root), "checkouts": _gather_checkout_facts(root, manifest.get("components", {}))}
-    display = [{"component": c, "pinned_tag": p or "", "installed_tag": i or "", "status": s}
-               for c, p, i, s in install.rows(manifest, post_facts, options.get("channel", "release"))]
+    post_facts = {"root": str(root), "checkouts": _gather_checkout_facts(root, manifest.get("components", {})),
+                  "binaries": _host_binary_facts(manifest)["binaries"]}
+    table = install.rows(manifest, post_facts, options.get("channel", "release"))
+    display = [{"component": c, "pinned_tag": p or "", "installed_tag": i or "", "status": s} for c, p, i, s in table]
     print(records.format_table(display, ["component", "pinned_tag", "installed_tag", "status"]))
     if any(result["step"]["kind"] == "doctor" and result["exit"] not in (0, None) for result in results):
         print(_DOCTOR_FAILING_LINE)
-    return 2 if any(install_exec.is_fatal(result) for result in results) else 0
+    stale = _binary_rows_not_ok(steps, manifest, options, table)
+    return 2 if stale or any(install_exec.is_fatal(result) for result in results) else 0
+
+
+def _binary_rows_not_ok(steps: list, manifest: dict, options: dict, table: list) -> bool:
+    """True when a release install planned a binary (or skipped it for want of an asset) for a component and
+    that component's command row is not ok afterwards. Edge builds from source, so its rows never decide."""
+    if options.get("channel", "release") == "edge":
+        return False
+    components = manifest.get("components", {})
+    commands = {components[step["component"]]["provides"] for step in steps
+                if step["kind"] in ("binary", "skip") and components.get(step["component"], {}).get("provides")}
+    return any(status != "ok" for name, _, _, status in table if name in commands)
 
 
 _DOCTOR_FAILING_LINE = ("doctor reports failing rows: create your workspace folders and team cartridge "
@@ -8574,6 +8591,7 @@ def _install(a: argparse.Namespace) -> int:
         "root": str(root),
         "checkouts": _gather_checkout_facts(root, manifest.get("components", {}), fetch=a.edge),
         "provider_cli_on_path": shutil.which(_manifest_provider_command(manifest, a.provider)) is not None,
+        **_host_binary_facts(manifest),
     }
     with_flags = _with_flags(a)
     options = {"provider": a.provider, "with": with_flags, "root": str(root), "team": a.team,
@@ -8605,11 +8623,36 @@ def _clone_url(spec: dict) -> str | None:
     return f"https://github.com/{spec['repo']}.git" if spec.get("repo") else None
 
 
+def _binary_version(command: str, run: Callable, on_path: bool, bin_dir: str) -> str | None:
+    """What `<command> --version` prints, parsed; None when it will not run or exits non-zero. A command off PATH
+    is looked up in `bin_dir`, where an install just put it."""
+    code, output = run([command if on_path else os.path.join(bin_dir, command), "--version"], None)
+    return dash_binary.installed_version(output) if code == 0 else None
+
+
+def _binary_facts(manifest: dict, run: Callable, system: str, machine: str, which: Callable, home: str) -> dict:
+    """Plain data for `install.plan` and `install.rows`: the release target of this machine, the directory the
+    binary lives in (that of the first provided command on PATH, else `~/.local/bin`), and the version each
+    command a component `provides` reports now."""
+    provided = [spec["provides"] for spec in manifest.get("components", {}).values() if spec.get("provides")]
+    found = {command: which(command) for command in provided}
+    on_path = [path for path in found.values() if path]
+    bin_dir = os.path.dirname(on_path[0]) if on_path else os.path.join(home, ".local", "bin")
+    return {"target": dash_binary.host_target(system, machine), "bin_dir": bin_dir,
+            "binaries": {command: _binary_version(command, run, bool(found[command]), bin_dir) for command in provided}}
+
+
+def _host_binary_facts(manifest: dict) -> dict:
+    """Edge. `_binary_facts` for this machine."""
+    return _binary_facts(manifest, _real_run, platform.system(), platform.machine(), shutil.which, str(Path.home()))
+
+
 def _upgrade_facts(manifest: dict, root: Path, provider: str) -> dict:
     return {
         "root": str(root),
         "checkouts": _gather_checkout_facts(root, manifest.get("components", {})),
         "provider_cli_on_path": shutil.which(_manifest_provider_command(manifest, provider)) is not None,
+        **_host_binary_facts(manifest),
     }
 
 
@@ -8704,9 +8747,23 @@ def _upgrade(a: argparse.Namespace) -> int:
     code = upgrade_exec.run_plan(dataclasses.replace(plan, steps=plan.steps[1:]), root=root, run=_real_run, dry_run=False, clone_urls=urls)
     if code != 0:
         return code
-    tail = [step for step in install.plan(moved, _upgrade_facts(moved, root, a.provider), options)
-            if step["kind"] in ("doctor", "desktop")]
-    return _install_execute(tail, moved, options, root)
+    facts = _upgrade_facts(moved, root, a.provider)
+    tail_options = _with_present(moved, facts, options)
+    steps = install.plan(moved, facts, tail_options)
+    last = {step["component"]: at for at, step in enumerate(steps)}
+    tail = [step for at, step in enumerate(steps)
+            if step["kind"] in ("binary", "doctor", "desktop")
+            or (step["kind"] == "skip" and moved.get("components", {}).get(step["component"], {}).get("provides")
+                and last[step["component"]] == at)]
+    return _install_execute(tail, moved, tail_options, root)
+
+
+def _with_present(manifest: dict, facts: dict, options: dict) -> dict:
+    """`options` whose `with` also names the flag of every component whose checkout is present, so the planner
+    treats what `_upgrade_plan_for` moved as requested and plans its binary."""
+    present = [spec["flag"] for name, spec in manifest.get("components", {}).items()
+               if spec.get("flag") and facts["checkouts"].get(name, {}).get("present")]
+    return {**options, "with": list(dict.fromkeys([*options["with"], *present]))}
 
 
 def _checkout_schema_versions(root: Path) -> dict[str, str | None]:
