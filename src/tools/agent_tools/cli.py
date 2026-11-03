@@ -4546,13 +4546,15 @@ def _print_if_stale(record: dict | None, state: str) -> None:
         print(f"chair {state}: {record.get('session', '?')} (pid {record.get('pid', '?')}) on {record.get('host', '?')}")
 
 
-def _retaken_chair(record: dict, now_iso: str, model: str | None, session: str, pid: int, host: str) -> tuple[dict, str]:
+def _retaken_chair(record: dict, now_iso: str, model: str | None, session: str, pid: int, host: str, hours: float | None, now: datetime.datetime) -> tuple[dict, str]:
     """Pure. The record to write and the line to print when `--steal` retakes a lease its own holder holds.
-    A given `model` replaces the recorded one; none keeps it, and a record with none stays without the key."""
-    new_record = {**record, "heartbeat_at": now_iso, **({"model": model} if model else {})}
+    A given `model` replaces the recorded one, none keeps it; given `hours` set `until` to `now` plus hours, none keeps the recorded `until`."""
+    refreshed = {**record, "heartbeat_at": now_iso, **({"model": model} if model else {})}
+    new_record = refreshed if hours is None else chair.extend(refreshed, now, hours)
     recorded = new_record.get("model")
     suffix = f" (model {recorded})" if isinstance(recorded, str) and recorded else ""
-    return new_record, f"chair lease retaken: {session} (pid {pid}) on {host}{suffix}"
+    until = "" if hours is None else f" until {new_record['until']}"
+    return new_record, f"chair lease retaken: {session} (pid {pid}) on {host}{suffix}{until}"
 
 
 def _read_key() -> str:
@@ -4610,11 +4612,12 @@ def _route_chair_take(a: argparse.Namespace) -> int:
         _print_if_stale(record, prior_state)
         new_record, reason = chair.take(record, session, pid, host, now, heartbeat_minutes, alive, steal=a.steal, claude_session=getattr(a, "claude_session", None) or chair.claude_session_from_env(os.environ), hours=hours, model=getattr(a, "model", None), cwd=getattr(a, "cwd", None) or os.getcwd())
         if new_record is None and a.steal and prior_state == "live" and chair.same_holder(record, session, pid, host):
-            refusal = chair.acquire_lease(runs_dir, session, pid, host, steal=True)
+            lease_kwargs = {"steal": True, **({} if hours is None else {"ttl": int(hours * 3600)})}
+            refusal = chair.acquire_lease(runs_dir, session, pid, host, **lease_kwargs)
             if refusal:
                 print(refusal)
                 return 2
-            retaken, line = _retaken_chair(record, now.isoformat(), getattr(a, "model", None), session, pid, host)
+            retaken, line = _retaken_chair(record, now.isoformat(), getattr(a, "model", None), session, pid, host, hours, now)
             chair.write(runs_dir, retaken)
             print(line)
             return 0
