@@ -43,9 +43,11 @@ class EditResult(NamedTuple):
 def check_options(
     title: str | None, body: str | None, body_file: str | None, repo: str | None,
     surfaces: str | None = None, state: str | None = None, rebuild: bool = False, force: bool = False, pr: str | None = None,
+    after: Sequence[str] | None = None,
 ) -> str | None:
     """The reason the options cannot be applied, or None. Body and body-file are mutually exclusive.
-    `surfaces` or `state` alone counts as a change; whether they are valid is `check_task_options`.
+    `surfaces`, `state` or `after` alone counts as a change, an empty `after` included; whether they are valid is
+    `check_task_options` and `apply_edit`.
     `--rebuild` goes with `--state ready`, `--force` with `--rebuild` and `--pr` with `--state done`."""
     if body is not None and body_file is not None:
         return "give either --body or --body-file, not both"
@@ -55,7 +57,8 @@ def check_options(
         return "--rebuild applies only with --state ready"
     if force and not rebuild:
         return "--force applies only with --rebuild"
-    if surfaces is None and state is None and title is None and body is None and body_file is None and repo is None:
+    unchanged = (surfaces, state, title, body, body_file, repo, after)
+    if all(option is None for option in unchanged):
         return "nothing to change: give --title, --body, --body-file, --repo, --surfaces or --state"
     if title == "" or repo == "":
         return "--title and --repo must not be empty"
@@ -99,18 +102,43 @@ def _split(text: str) -> tuple[list[str], str] | None:
     return text[len(opening):close_index].split("\n"), text[close_index:]
 
 
+def clean_after(after: Sequence[str]) -> list[str]:
+    """`after` with each id stripped, empty ids dropped and repeats removed, first occurrence kept."""
+    return list(dict.fromkeys(stripped for stripped in (item.strip() for item in after) if stripped))
+
+
+def _without_header_key(header_lines: list[str], key: str) -> list[str]:
+    """`header_lines` without the `key` line and the block-list lines under it; every other line stays byte for byte."""
+    start = next((i for i, line in enumerate(header_lines) if route._is_key_line(line, key)), None)
+    if start is None:
+        return header_lines
+    end = next(
+        (i for i in range(start + 1, len(header_lines)) if not (header_lines[i][:1].isspace() or header_lines[i].startswith("- "))),
+        len(header_lines),
+    )
+    return [*header_lines[:start], *header_lines[end:]]
+
+
 def plan_edit(
-    text: str, *, title: str | None = None, body: str | None = None, repo: str | None = None, path: str = ""
+    text: str, *, title: str | None = None, body: str | None = None, repo: str | None = None, path: str = "",
+    after: Sequence[str] | None = None,
 ) -> tuple[str, str]:
     """`(new text, unified diff)` of `text` with the given overrides. A header line not named stays byte for byte.
     An empty `body` falls back to the title, as `route.intake_file` does. The diff is empty when nothing changed.
+    `after` sets the list in the order given, cleaned by `clean_after`; an empty one removes the key; None leaves it.
     `text` must carry frontmatter; one without it comes back unchanged."""
     parts = _split(text)
     if parts is None:
         return text, ""
     header_lines, rest = parts
-    changes = [(key, value) for key, value in (("title", title), ("repo", repo)) if value is not None]
-    header = "\n".join(route._with_header_fields(header_lines, changes))
+    cleaned = None if after is None else clean_after(after)
+    changes = [
+        (key, value)
+        for key, value in (("title", title), ("repo", repo), ("after", cleaned or None))
+        if value is not None
+    ]
+    kept = _without_header_key(header_lines, "after") if cleaned == [] else header_lines
+    header = "\n".join(route._with_header_fields(kept, changes))
     fields, _ = route.parse_frontmatter(text)
     new_body = None if body is None else (body or title or fields.get("title", ""))
     tail = rest if new_body is None else f"\n---\n\n{new_body}\n"
@@ -358,12 +386,14 @@ def apply_edit(
     rebuild: bool = False,
     force: bool = False,
     pr: str | None = None,
+    after: Sequence[str] | None = None,
 ) -> EditResult:
     """Edge: edit the queued intake, the initiative or the task ticket named `id`. Exit 0 returns the diff; exit 2 returns the
     reason and writes nothing, whether the options are wrong, the id is unknown, or the guard refuses. With
     `dry_run` the diff is returned and neither the file nor the store is written.
-    A move to done also records the task's merged PR on its newest run record: `pr`, else the one `gh` finds."""
-    problem = check_options(title, body, body_file, repo, surfaces, state, rebuild, force, pr)
+    A move to done also records the task's merged PR on its newest run record: `pr`, else the one `gh` finds.
+    `after` sets, or with an empty list clears, the ids a queued intake waits on; it is refused anywhere else."""
+    problem = check_options(title, body, body_file, repo, surfaces, state, rebuild, force, pr, after)
     if problem is not None:
         return EditResult(problem, REFUSED)
     rows: Sequence[dict] = run_store.read_queue(runs_dir)
@@ -377,6 +407,8 @@ def apply_edit(
             return EditResult(f"{id!r} names a task in several initiatives ({initiatives}); the id alone cannot pick one", REFUSED)
         if repo is not None:
             return EditResult("--repo applies to an intake or an initiative, not a task ticket", REFUSED)
+        if after is not None:
+            return EditResult("--after applies to a queued intake, not a task ticket", REFUSED)
         problem = check_task_options(state, surfaces)
         if problem is not None:
             return EditResult(problem, REFUSED)
@@ -386,6 +418,10 @@ def apply_edit(
         )
     if surfaces is not None or state is not None:
         return EditResult("--surfaces and --state apply to a task ticket only", REFUSED)
+    if after is not None and not isinstance(target, route_guard.QueuedIntake):
+        return EditResult("--after applies to a queued intake, not an initiative", REFUSED)
+    if after is not None and id in clean_after(after):
+        return EditResult(f"{id!r} cannot come after itself", REFUSED)
     if isinstance(target, route_guard.QueuedIntake):
         path, is_intake = ws / "intake" / f"{target.task_id}.md", True
     else:
@@ -401,7 +437,7 @@ def apply_edit(
         return EditResult(f"cannot read: {exc}", FAILED)
     if route.parse_frontmatter(text)[0] == {}:
         return EditResult(f"{path} has no frontmatter to edit", REFUSED)
-    new_text, diff = plan_edit(text, title=title, body=new_body, repo=repo, path=str(path.relative_to(ws)))
+    new_text, diff = plan_edit(text, title=title, body=new_body, repo=repo, path=str(path.relative_to(ws)), after=after)
     if dry_run or not diff:
         return EditResult(diff, DONE)
     failure = _rewrite(path, runs_dir, is_intake, new_text)
