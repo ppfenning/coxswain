@@ -12,6 +12,7 @@ import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
+from agent_tools import repo_path
 from agent_tools.chair_land_conflict import LandConflict
 
 Row = Mapping[str, object]
@@ -46,9 +47,8 @@ def land_conflicts(rows: Sequence[Row], current: Mapping[tuple[str, str], Commit
 
 
 def _rev_parse(repo: str, ref: str) -> str | None:
-    r = subprocess.run(
-        ["git", "-C", os.path.expanduser(repo), "rev-parse", "--verify", "--quiet", ref], capture_output=True, text=True
-    )
+    argv = repo_path.git_argv(repo, os.path.expanduser("~"), "rev-parse", "--verify", "--quiet", ref)
+    r = subprocess.run(argv, capture_output=True, text=True)
     return r.stdout.strip() or None if r.returncode == 0 else None
 
 
