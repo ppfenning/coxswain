@@ -154,6 +154,7 @@ land_lease = _LazyModule("agent_tools.land_lease")
 land_limit = _LazyModule("agent_tools.land_limit")
 land_repo_lease = _LazyModule("agent_tools.land_repo_lease")
 lane_hosts = _LazyModule("agent_tools.lane_hosts")
+lane_python = _LazyModule("agent_tools.lane_python")
 lane_toolchain = _LazyModule("agent_tools.lane_toolchain")
 launch_place = _LazyModule("agent_tools.launch_place")
 leader_chat = _LazyModule("agent_tools.leader_chat")
@@ -5752,10 +5753,10 @@ def _route_launch(a: argparse.Namespace) -> int:
     log_path = runs_dir / f"{run_id}.log"
     pid_path = runs_dir / f"{run_id}.pid"
     trace_dir = runs_dir / f"{run_id}-trace"
-    env = route.child_env(
-        dict(os.environ), harness_bin=str(Path(harness_python).parent) if harness_python else "", repo=env_repo,
-        trace_dir=str(trace_dir), chair_model=chair_model,
-    )
+    child_env_args = {
+        "harness_bin": str(Path(harness_python).parent) if harness_python else "", "repo": env_repo,
+        "trace_dir": str(trace_dir), "chair_model": chair_model,
+    }
 
     # The lane host syncs the git checkout that holds the harness: the coxswain checkout once migrated (harness_dir
     # is its src/graphs, not a checkout root), else the harness checkout itself. The host's own `cox route launch`
@@ -5789,13 +5790,20 @@ def _route_launch(a: argparse.Namespace) -> int:
             tools=_repo_check_tools(env_repo).found if pinned else (),
         )
 
+    lane = _local_lane_python(socket.gethostname(), os.environ.get("PATH", ""))
+    if isinstance(lane, lane_python.LaneRefusal):
+        print(f"routing: {lane.message}")
+        _print_held_claim_hint(a, runs_dir, lock_before)
+        return 2
     local_tools = _repo_check_tools(env_repo).found if env_repo else ()
-    local_refusal = _toolchain_refusal(socket.gethostname(), None, local_tools)
+    local_refusal = _toolchain_refusal(socket.gethostname(), None, local_tools, env={**os.environ, "PATH": lane.path})
     if local_refusal is not None:
         print(f"routing: {local_refusal}")
-        if not a.no_claim and _lock_snapshot(runs_dir) != lock_before:
-            print("routing: the loop claim this launch took is still held with no run behind it; release it with `cox route release`")
+        _print_held_claim_hint(a, runs_dir, lock_before)
         return 2
+    # `lane.path` puts the lane interpreter's folder first, so child_env's prefixes (spec §4: the repository venv
+    # bin, then the harness bin) land ahead of it and the interpreter's folder precedes the caller's own entries.
+    env = route.child_env({**os.environ, "PATH": lane.path}, **child_env_args)
 
     if overlaid_path is not None:
         overlaid_path.write_text(yaml.safe_dump(overlaid_provider_profile, sort_keys=True), encoding="utf-8")
@@ -5890,10 +5898,36 @@ def _repo_check_tools(repo: str) -> lane_toolchain.CheckTools:
     return lane_toolchain.parse_check_tools(lane_toolchain.check_lines(text or ""))
 
 
-def _toolchain_refusal(name: str, ssh: str | None, tools: Sequence[str]) -> str | None:
-    """Edge. The first tool `name`'s lane PATH lacks, as a refusal line. `ssh` None looks in the launching environment."""
+def _running_python() -> Path:
+    """Edge. The interpreter running this process."""
+    return Path(sys.executable)
+
+
+def _install_checkout() -> Path | None:
+    """Edge. The coxswain checkout this module was installed from, whose venv the install step built; None when there is none."""
+    return install_root.checkout_root(Path(__file__).parent)
+
+
+def _local_lane_python(host: str, caller_path: str) -> lane_python.LanePython | lane_python.LaneRefusal:
+    """Edge. The python a local lane runs: the running interpreter, else the install's venv python, whichever exists."""
+    running = _running_python()
+    root = _install_checkout()
+    existing = {c for c in lane_python.candidates(running, root) if c.is_file()}
+    return lane_python.resolve_lane_python(running, root, caller_path, existing, host=host)
+
+
+def _print_held_claim_hint(a: argparse.Namespace, runs_dir: Path, lock_before) -> None:
+    """Edge. After a refused launch, says so when the loop claim this launch took is still held."""
+    if not a.no_claim and _lock_snapshot(runs_dir) != lock_before:
+        print("routing: the loop claim this launch took is still held with no run behind it; release it with `cox route release`")
+
+
+def _toolchain_refusal(name: str, ssh: str | None, tools: Sequence[str], env: Mapping[str, str] | None = None) -> str | None:
+    """Edge. The first tool `name`'s lane PATH lacks, as a refusal line. `ssh` None looks in the launching environment,
+    under `env` when given; a remote lookup never takes `env`."""
     argv = lane_toolchain.lookup_argv(tools) if ssh is None else remote_argv.ssh_argv(ssh, lane_toolchain.lane_argv(tools))
-    lines = lane_toolchain.refusals(name, tools, argv, _host_env_probe)
+    probe = _host_env_probe if env is None or ssh is not None else lambda a: _host_env_probe(a, env)
+    lines = lane_toolchain.refusals(name, tools, argv, probe)
     return lines[0] if lines else None
 
 
@@ -6012,12 +6046,13 @@ def _host_auth_output(argv: list[str]) -> str:
     return done.stdout + done.stderr
 
 
-def _host_env_probe(argv: list[str]) -> tuple[int, str]:
+def _host_env_probe(argv: list[str], env: Mapping[str, str] | None = None) -> tuple[int, str]:
     """Edge: (exit code, text) of a `printenv` over ssh; text is stdout on 0, else stderr. An ssh that cannot run is (127, error).
 
+    `env` is the probe's environment for a local lookup; None inherits this process's, as ssh probes do.
     Not `_host_auth_output`: ssh stderr (a host-key warning) is never the variable's value."""
     try:
-        done = subprocess.run(argv, capture_output=True, text=True)
+        done = subprocess.run(argv, capture_output=True, text=True, env=env)
     except OSError as exc:
         return 127, f"{argv[0]}: {exc}"
     return done.returncode, done.stdout if done.returncode == 0 else done.stderr

@@ -111,6 +111,20 @@ def test_local_launch_hands_the_harness_the_expanded_repo_in_argv_and_env(tmp_pa
     assert env["PATH"].startswith(f"{tmp_path / 'repo'}/.venv/bin")
 
 
+def test_local_launch_path_order_is_repo_venv_harness_bin_interpreter_dir_then_the_callers_entries(tmp_path, monkeypatch):
+    caller = [e for e in os.environ["PATH"].split(os.pathsep) if e]
+    interpreter = tmp_path / "py" / "bin" / "python"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_text("")
+    monkeypatch.setattr(cli, "_running_python", lambda: interpreter)
+    rc, started = _live_launch(tmp_path, monkeypatch)
+    assert rc == 0
+    [(_, env)] = started
+    assert env["PATH"].split(os.pathsep) == [
+        str(tmp_path / "repo" / ".venv" / "bin"), str(tmp_path / "harness" / ".venv" / "bin"), str(interpreter.parent), *caller,
+    ]
+
+
 def test_lane_host_launch_passes_the_recorded_repo_and_the_home_to_remote_launch(tmp_path, monkeypatch):
     calls = []
 
