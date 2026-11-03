@@ -405,6 +405,33 @@ def _refused_surfaces(tasks: Sequence[Mapping[str, Any]], problems: Sequence[Pro
     return "Surfaces of the refused tasks as they stand. A correction names one of them exactly as written:\n" + "\n".join(lines)
 
 
+def _contract_fixture_rule(
+    tasks: Sequence[Mapping[str, Any]], problems: Sequence[Problem], tree: Sequence[Mapping[str, Any]]
+) -> str:
+    """The .json fixture rule and the path to use per refused interface; "" when no refusal is a contract one."""
+    refused = {p.task for p in problems if p.rule == "contract"}
+    if not refused:
+        return ""
+    interfaces = dict.fromkeys(str(t["interface"]) for t in tasks if str(t["id"]) in refused and t.get("interface"))
+    held = {(str(e.get("path")), e.get("repo")) for e in tree}
+    held_paths = {path for path, _ in held}
+
+    def line(name: str) -> str:
+        path = f"tests/fixtures/{name}_v1.json"
+        repos = {
+            t.get("repo") for t in tasks if t.get("interface") == name and t.get("side") == "producer" and t.get("repo")
+        }
+        # With no producer task the repository is unknown, so any repository holding the path counts.
+        present = any((path, r) in held for r in repos) if repos else path in held_paths
+        return f"{name}: {path}" + ("" if present else " (new)")
+
+    return (
+        "A contract task's surface is a fixture file ending in `.json`, committed in the producer "
+        "repository, as the dash feed's `dash_feed_v1.json` is. Give the contract task of each "
+        "interface this path:\n" + "\n".join(line(name) for name in interfaces)
+    )
+
+
 def _lint_refusal_text(problems: Sequence[Problem]) -> str | None:
     """One line per reach/coupling `Problem`; `None` when there is nothing to refuse."""
     if not problems:
@@ -1113,6 +1140,7 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
                     + (_lint_refusal_text(refusals) or "")
                     + "\n\n"
                     + _refused_surfaces(tasks, refusals)
+                    + "".join(f"\n\n{rule}" for rule in [_contract_fixture_rule(tasks, refusals, tree or [])] if rule)
                 ),
             )
         )
