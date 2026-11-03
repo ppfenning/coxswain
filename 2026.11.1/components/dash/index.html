@@ -6067,7 +6067,16 @@ its own beyond the view you left it on.</p>
 is tagged on its own: a Coxswain release tags dash only when dash changed,
 and <code>manifest.toml</code> names the tag a release uses. Install it one of these
 ways.</p>
-<p><strong>With <code>cox install</code>.</strong> Pass <code>--with dash</code>.</p>
+<p><strong>With <code>cox upgrade</code> or <code>cox install</code>.</strong> Run <code>cox upgrade</code>, or pass
+<code>--with dash</code> to <code>cox install</code>. Either one downloads the <code>towpath</code> and
+<code>coxtop</code> release binaries for the tag <code>manifest.toml</code> pins. It puts them in the
+bin directory already in use. It then runs <code>towpath --version</code> and checks the
+result against the pin. The status table shows a <code>towpath</code> row with the
+outcome.</p>
+<p>Release binaries exist for two targets: <code>aarch64-apple-darwin</code> and
+<code>x86_64-unknown-linux-gnu</code>. Any other machine gets a plain no-asset message
+and a <code>towpath</code> row that is not ok. Those machines build from source, as
+described under Cargo below.</p>
 <p><strong>Homebrew.</strong> The <code>cox</code> formula installs <code>towpath</code> along with <code>cox</code>:</p>
 <div class="highlight"><pre><span></span><code>brew<span class="w"> </span>install<span class="w"> </span>ppfenning/coxswain/cox
 </code></pre></div>
@@ -6076,8 +6085,10 @@ ways.</p>
 release page of
 <a href="https://github.com/ppfenning/coxswain-dash/releases">coxswain-dash</a> and put
 <code>towpath</code> on your <code>PATH</code>.</p>
-<p><strong>Cargo, as the fallback.</strong> Build from source at the tag <code>manifest.toml</code>
-names (the crate is <code>coxswain-dash</code>; it installs <code>towpath</code>):</p>
+<p><strong>Cargo, for other machines and for development.</strong> Building from source stays
+the path for any machine with no release binary and for work on dash itself.
+Build at the tag <code>manifest.toml</code> names. The crate is <code>coxswain-dash</code> and it
+installs <code>towpath</code>:</p>
 <div class="highlight"><pre><span></span><code>cargo<span class="w"> </span>install<span class="w"> </span>--git<span class="w"> </span>https://github.com/ppfenning/coxswain-dash<span class="w"> </span>--tag<span class="w"> </span>&lt;dash<span class="w"> </span>tag&gt;
 </code></pre></div>
 <h2 id="its-own-docs">Its own docs</h2>
