@@ -1,0 +1,4 @@
+# The self-hosted runner runs the same suites as the required test job,
+# so a land waits on CI instead of running them twice locally.
+landing_areas:
+  land_checks: ci
