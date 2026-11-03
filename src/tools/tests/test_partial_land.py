@@ -298,6 +298,55 @@ def test_no_known_run_is_recorded_and_lands_nothing():
     assert repo.events == []
 
 
+# --- a tilde repository ---
+
+
+def _tilde_action() -> dict:
+    return {**_action(("a",)), "repo": "~/repo"}
+
+
+def test_a_tilde_repo_is_expanded_in_every_git_argv(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    repo = FakeRepo({"agents/i-1/a": "aaa", "agents/i-1/q": "qqq"})
+    argvs: list[list[str]] = []
+
+    def git(argv):
+        argvs.append(argv)
+        return repo.git(argv)
+
+    result = perform_partial_land(_tilde_action(), git, _lander(repo))
+    assert result["status"] == "landed"
+    assert argvs and all(argv[:3] == ["git", "-C", f"{tmp_path}/repo"] for argv in argvs)
+    assert repo.events == [("backup", "q"), ("land", "a"), ("restore", "q")]
+    assert repo.branches["agents/i-1/q"] == "qqq"
+    assert repo.refs == {}
+
+
+def test_git_that_rejects_a_leading_tilde_still_lands_and_restores(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    repo = FakeRepo({"agents/i-1/a": "aaa", "agents/i-1/q": "qqq"})
+
+    def git(argv):
+        return (128, f"fatal: cannot change to '{argv[2]}'") if argv[2].startswith("~") else repo.git(argv)
+
+    result = perform_partial_land(_tilde_action(), git, _lander(repo))
+    assert result["status"] == "landed"
+    assert repo.branches["agents/i-1/q"] == "qqq"
+
+
+def test_a_failure_line_names_the_repo_as_recorded(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    repo = FakeRepo({"agents/i-1/a": "aaa", "agents/i-1/q": "qqq"})
+
+    def git(argv):
+        return (128, "fatal: no") if argv[3] == "for-each-ref" else repo.git(argv)
+
+    result = perform_partial_land(_tilde_action(), git, _lander(repo))
+    assert result["status"] == "failed"
+    assert "git for-each-ref in ~/repo:" in result["reason"]
+    assert str(tmp_path) not in result["reason"]
+
+
 # --- the loop: plan, then perform ---
 
 

@@ -6,10 +6,12 @@ list from the partial_land action and reads git's branch listing; `perform_parti
 and the task land through injected callables, so tests drive the core with literals and the edge with fakes.
 """
 
+import os
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Literal, TypedDict
 
 from agent_tools.chair_types import Action
+from agent_tools.repo_path import git_argv
 
 Run = Callable[[list[str]], tuple[int, str]]  # argv -> (exit code, output); the edge's only door to git
 Land = Callable[[Action], Mapping[str, Any]]  # a `land` action -> its result, with at least `status` and `reason`
@@ -92,50 +94,49 @@ def to_restore(backed: Mapping[str, str], branches: Mapping[str, str], run: str)
     return {task: sha for task, sha in backed.items() if prefix + task not in branches}
 
 
-def _listing(git: Run, repo: str, run: str) -> tuple[dict[str, str] | None, str]:
+def _listing(git: Run, repo: str, home: str, run: str) -> tuple[dict[str, str] | None, str]:
     code, out = git(
-        [
-            "git",
-            "-C",
+        git_argv(
             repo,
+            home,
             "for-each-ref",
             "--format=%(refname:short) %(objectname)",
             f"refs/heads/{agents_prefix(run)}",
-        ]
+        )
     )
     return (parse_branches(out), "") if code == 0 else (None, f"git for-each-ref in {repo}: {out.strip()}")
 
 
-def _backup(git: Run, repo: str, run: str, task: str) -> tuple[dict[str, str], str]:
+def _backup(git: Run, repo: str, home: str, run: str, task: str) -> tuple[dict[str, str], str]:
     """(sibling task -> sha, failure line or ""); each sibling's tip is written under `backup_ref` first."""
-    branches, error = _listing(git, repo, run)
+    branches, error = _listing(git, repo, home, run)
     if branches is None:
         return {}, error
     backed = siblings(run, task, branches)
     for sibling, sha in backed.items():
-        code, out = git(["git", "-C", repo, "update-ref", backup_ref(run, sibling), sha])
+        code, out = git(git_argv(repo, home, "update-ref", backup_ref(run, sibling), sha))
         if code != 0:
             return backed, f"backing up agents/{run}/{sibling} in {repo}: {out.strip()}"
     return backed, ""
 
 
-def _restore(git: Run, repo: str, run: str, backed: Mapping[str, str]) -> str:
+def _restore(git: Run, repo: str, home: str, run: str, backed: Mapping[str, str]) -> str:
     """Recreate every backed-up sibling the land removed, then drop the backup refs; "" or the failure line.
 
     A sibling whose recreate fails keeps its backup ref, so nothing the land removed is lost."""
-    branches, error = _listing(git, repo, run)
+    branches, error = _listing(git, repo, home, run)
     if branches is None:
         return error
     failures: dict[str, str] = {}
     for sibling, sha in to_restore(backed, branches, run).items():
-        code, out = git(["git", "-C", repo, "branch", f"{agents_prefix(run)}{sibling}", sha])
+        code, out = git(git_argv(repo, home, "branch", f"{agents_prefix(run)}{sibling}", sha))
         if code != 0:
             failures[sibling] = (
                 f"restoring agents/{run}/{sibling} in {repo} (kept at {backup_ref(run, sibling)}): {out.strip()}"
             )
     for sibling in backed:
         if sibling not in failures:
-            git(["git", "-C", repo, "update-ref", "-d", backup_ref(run, sibling)])
+            git(git_argv(repo, home, "update-ref", "-d", backup_ref(run, sibling)))
     return "; ".join(failures.values())
 
 
@@ -199,6 +200,7 @@ def perform_partial_land(action: Action, git: Run, land: Land) -> dict[str, Any]
     naming the task and the conflicting paths (`conflicting_paths`), and it is never retried here; `recorded` when no task has a known run, `failed` when a backup or restore failed.
     Whatever the status, `landed_commits` lists every task land that reached main this tick, one entry per commit."""
     repo = action.get("repo", "")
+    home = os.path.expanduser("~")  # read at call time; git itself never expands a leading tilde
     done: list[str] = []
     commits: list[LandedCommit] = []
     backed: dict[str, str] = {}
@@ -208,9 +210,9 @@ def perform_partial_land(action: Action, git: Run, land: Land) -> dict[str, Any]
     for step in steps(action):
         task, run = step["task_id"], step["run"]
         if step["kind"] == "backup":
-            backed, error = _backup(git, repo, run, task)
+            backed, error = _backup(git, repo, home, run, task)
             if error:
-                restore_error = _restore(git, repo, run, backed)
+                restore_error = _restore(git, repo, home, run, backed)
                 return _outcome(action, "failed", done, "; ".join(filter(None, [error, restore_error])), commits=commits)
         elif step["kind"] == "land":
             try:
@@ -219,7 +221,7 @@ def perform_partial_land(action: Action, git: Run, land: Land) -> dict[str, Any]
                 last = {"status": "failed", "reason": f"task land raised {type(exc).__name__}: {exc}"}
             commits += landed_commit(task, last)
         else:
-            restore_error = _restore(git, repo, run, backed)
+            restore_error = _restore(git, repo, home, run, backed)
             if already_done(last):
                 elsewhere.append(task)
             elif paths := conflicting_paths(last):
