@@ -6453,10 +6453,18 @@ def _export_board(runs_dir: Path, workspace: Path) -> list[str]:
 def _launch_rows_then_export(
     runs_dir: Path, initiative_id: str, repo: str | None, is_chair: bool,
     read_rows: Callable | None = None, export: Callable[[Path, Path], list[str]] | None = None,
+    fill: Callable[[Path], object] | None = None,
 ) -> tuple[int, list[str]]:
-    """Edge. Read the initiative's rows, then export the whole board only when `is_chair`; the exit code and the lines to print.
+    """Edge. Fill the store from the files, read the initiative's rows, then export the whole board only when `is_chair`.
 
-    A rows error returns before any export. A lane host reads the same rows and prints nothing about the export."""
+    The fill runs first for every host, since a decompose writes files and the rows read sees only the store. A fill that
+    cannot read the store refuses with code 2 before any rows read or export. A rows error returns before any export."""
+    from agent_tools import store_fill  # imported here: cli loads a command module only when it runs
+
+    try:
+        (fill or store_fill.fill_workspace)(runs_dir.parent)
+    except RuntimeError:
+        return 2, [f"routing: no initiative row {initiative_id} in the store, or the store is unavailable"]
     code, lines, _ = (read_rows or route.launch_from_rows)(runs_dir, initiative_id, repo)
     if code:
         return code, lines
