@@ -1,6 +1,6 @@
 """Edge: run `cox setup doctor` on a lane host over ssh; the caller prints what comes back."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 from agent_tools import lane_toolchain
 from agent_tools.lane_hosts import LaneHost
@@ -33,9 +33,11 @@ def doctor_on_host(
     env_names: tuple[str, ...] = (),
     argv_for: Callable[[list[str]], list[str]] | None = None,
     checks: CheckTools | None = None,
+    repo_checks: Sequence[tuple[CheckTools, str]] = (),
 ) -> tuple[int, list[str]]:
     """`run` takes an argv and returns (exit code, combined output); `argv_for` wraps each command, ssh by default.
-    `checks` are the tools the repo's checks run: each one the lane PATH lacks adds the refusal line a launch would give."""
+    `checks` are the tools the repo's checks run: each one the lane PATH lacks adds the refusal line a launch would give.
+    `repo_checks` pairs each repo's tools with its repo_dir; a tool in that repo's venv counts as found. Rows are de-duplicated."""
     wrap = argv_for if argv_for is not None else (lambda argv: ssh_argv(host.ssh, argv))
     code, output = run(wrap(doctor_argv()))
     if runner == "claude-code":
@@ -46,7 +48,16 @@ def doctor_on_host(
         verdict = env_verdict(env_names, lambda name: run(wrap(env_check_argv(name)))[1])
         row = "env vars      ok" if verdict is None else verdict
     wanted = checks or CheckTools((), ())
-    missing = lane_toolchain.refusals(host.name, wanted.found, wrap(lane_toolchain.lane_argv(wanted.found)), run)
-    unparsed = [f"checks: could not read tools from: {line}" for line in wanted.unparsed]
+    lane_missing = lane_toolchain.refusals(host.name, wanted.found, wrap(lane_toolchain.lane_argv(wanted.found)), run)
+    repo_missing = [
+        line
+        for tools, repo_dir in repo_checks
+        for line in lane_toolchain.refusals(
+            host.name, tools.found, wrap(lane_toolchain.lane_argv(tools.found, repo_dir)), run, repo_dir,
+        )
+    ]
+    missing = list(dict.fromkeys([*lane_missing, *repo_missing]))
+    unparsed_lines = dict.fromkeys([*wanted.unparsed, *(u for tools, _ in repo_checks for u in tools.unparsed)])
+    unparsed = [f"checks: could not read tools from: {line}" for line in unparsed_lines]
     failed = verdict is not None or bool(missing)
     return (1 if failed and code == 0 else code), [*output.splitlines(), row, *missing, *unparsed]
