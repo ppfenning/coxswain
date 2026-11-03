@@ -5870,7 +5870,9 @@ def _route_launch(a: argparse.Namespace) -> int:
         _print_held_claim_hint(a, runs_dir, lock_before)
         return 2
     local_tools = _repo_check_tools(env_repo).found if env_repo else ()
-    local_refusal = _toolchain_refusal(socket.gethostname(), None, local_tools, env={**os.environ, "PATH": lane.path})
+    local_refusal = _toolchain_refusal(
+        socket.gethostname(), None, local_tools, env={**os.environ, "PATH": lane.path}, repo=env_repo,
+    )
     if local_refusal is not None:
         print(f"routing: {local_refusal}")
         _print_held_claim_hint(a, runs_dir, lock_before)
@@ -5996,12 +5998,26 @@ def _print_held_claim_hint(a: argparse.Namespace, runs_dir: Path, lock_before) -
         print("routing: the loop claim this launch took is still held with no run behind it; release it with `cox route release`")
 
 
-def _toolchain_refusal(name: str, ssh: str | None, tools: Sequence[str], env: Mapping[str, str] | None = None) -> str | None:
-    """Edge. The first tool `name`'s lane PATH lacks, as a refusal line. `ssh` None looks in the launching environment,
-    under `env` when given; a remote lookup never takes `env`."""
-    argv = lane_toolchain.lookup_argv(tools) if ssh is None else remote_argv.ssh_argv(ssh, lane_toolchain.lane_argv(tools))
+def _lane_repo_dir(repo: str | None, remote: bool) -> str:
+    """Edge. The repo directory as the toolchain lookup sees it: absolute here, home-relative for a remote login shell."""
+    if not repo:
+        return ""
+    home = os.path.expanduser("~")
+    return repo_path.host_form(repo, home) if remote else repo_path.expand(repo, home)
+
+
+def _toolchain_refusal(
+    name: str, ssh: str | None, tools: Sequence[str], env: Mapping[str, str] | None = None, *, repo: str | None = None,
+) -> str | None:
+    """Edge. The first tool `name`'s lane PATH and `repo`'s venv both lack, as a refusal line. `ssh` None looks in the
+    launching environment, under `env` when given; a remote lookup never takes `env`."""
+    repo_dir = _lane_repo_dir(repo, ssh is not None)
+    argv = (
+        lane_toolchain.lookup_argv(tools, repo_dir) if ssh is None
+        else remote_argv.ssh_argv(ssh, lane_toolchain.lane_argv(tools, repo_dir))
+    )
     probe = _host_env_probe if env is None or ssh is not None else lambda a: _host_env_probe(a, env)
-    lines = lane_toolchain.refusals(name, tools, argv, probe)
+    lines = lane_toolchain.refusals(name, tools, argv, probe, repo_dir)
     return lines[0] if lines else None
 
 
@@ -6046,7 +6062,7 @@ def _place_or_refuse(
             host = None if isinstance(candidates, lane_hosts.LaneHostError) else lane_hosts.find_lane_host(candidates, name)
             if name != local and host is None:
                 return None  # the unknown host is refused below
-            line = _toolchain_refusal(name, None if host is None else host.ssh, tools)
+            line = _toolchain_refusal(name, None if host is None else host.ssh, tools, repo=epic_repo)
             if line is not None:
                 print(f"routing: {line}")
             return line
