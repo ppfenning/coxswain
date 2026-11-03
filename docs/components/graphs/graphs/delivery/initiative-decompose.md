@@ -41,7 +41,9 @@ and records the export baseline. It only warns when the store is unreachable, so
 back through the tools' own reader, the one `route edit` uses. A task already in the store keeps its
 row, so a second decompose never resets the state of work that has started. A task that is on disk
 but not in the store cannot be launched or edited, so it counts as missing. The run always ends with
-`decompose: <n> task(s) written, <m> missing: <ids>` and exits non-zero when `m > 0`. If the
+`decompose: <n> task(s) written, <m> missing: <ids>` and exits non-zero when `m > 0`. A partial
+result is withdrawn: when any task is missing, the tasks this run created are deleted and their rows
+dropped, a task already in the store keeps its row and file, and `n` counts what remains. If the
 cartridge routes no `planned` landing, every cleared task is reported missing with the routing error.
 
 Each missing task gets a stderr line saying which half is absent and why. The apply arm's own

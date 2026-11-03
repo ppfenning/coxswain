@@ -46,6 +46,7 @@ from graphs.delivery.initiative_decompose import (
     expected_task_files,
     first_problem_line,
     unexecuted_item_create_reason,
+    withdrawal,
 )
 from harness import CORE_SCHEMA, node_progress, run_lease, store_traces
 from harness.autonomy import split_by_policy
@@ -1048,6 +1049,35 @@ def _read_filed_rows(runs_dir: Path, initiative: str) -> list[dict[str, Any]]:
     return run_store.read_queue(runs_dir, initiative)
 
 
+def _withdraw_filed_tasks(runs_dir: Path, root: Path, initiative: str, rels: Sequence[str], whole: bool) -> list[str]:
+    """Edge: the `rels` actually withdrawn; a file goes only after its store row is dropped, else it is named and kept."""
+    # imported here: the harness stays importable without the tools package
+    from agent_tools import draft_apply, run_store, store_cli
+
+    if whole and rels:
+        store = draft_apply.Store(
+            "store",
+            lambda name: run_store.work_items(runs_dir, name),
+            lambda name, task, state, by, expected: store_cli.set_state(runs_dir, name, task, state, by, expected),
+        )
+        work_dir = root / Path(rels[0]).parent.parent.parent
+        if draft_apply.remove(work_dir, initiative, "decompose left a task missing", "decompose", store) == 0:
+            for rel in rels:
+                (root / rel).unlink(missing_ok=True)
+            return list(rels)
+    stored = {r["task_id"] for r in run_store.work_items(runs_dir, initiative)}
+    done: list[str] = []
+    for rel in rels:
+        task = Path(rel).stem
+        result = store_cli.set_state(runs_dir, initiative, task, "dropped", "decompose") if task in stored else None
+        if task in stored and not isinstance(result, store_cli.StateSet):
+            print(f"decompose: {task} not withdrawn: its store row was not dropped ({result})", file=sys.stderr)
+            continue
+        (root / rel).unlink(missing_ok=True)
+        done.append(rel)
+    return done
+
+
 def _settle_decompose(
     proposals: Sequence[Mapping[str, Any]],
     diffs: Sequence[Mapping[str, Any]],
@@ -1057,11 +1087,14 @@ def _settle_decompose(
     graph_args: Mapping[str, Any],
     runner: Any,
     runs_dir: Path,
+    withdraw: Callable[[Path, Path, str, Sequence[str], bool], Sequence[str]] | None = None,
 ) -> tuple[str, int]:
     """Edge: settle every task `item_create` that was cleared, gated or auto-applied. `(closing line, missing count)`.
 
     A cartridge that routes no `planned` landing cannot say where a task file went, so every cleared
     task is reported missing with the routing error; it is never reported as zero tasks.
+    When any task is missing, the tasks this run created are withdrawn so no initiative keeps a
+    `needs` on an absent task; a task already in the store keeps its row. The count is what remains.
     """
     tasks = approved_task_ids(proposals, diffs, auto_applied)
     initiative_id = graph_args.get("initiative_id")
@@ -1073,10 +1106,32 @@ def _settle_decompose(
             print(f"decompose: cannot place {len(tasks)} approved task(s): {exc}", file=sys.stderr)
         return decompose_closing(tasks, (), ())
     expected = expected_task_files(proposals, tasks, landing=landing, initiative_id=initiative_id)
+    initiative = initiative_id or root.name
+
+    # a dropped row is a withdrawn task, so a retry writes it afresh
+    def live(rd: Path, name: str) -> list[dict[str, Any]]:
+        return [r for r in _read_filed_rows(rd, name) if r.get("state") != "dropped"]
+
+    before = {r["task_id"] for r in live(runs_dir, initiative)}
     in_store, on_disk = _settle_decompose_tasks(
-        expected, root=root, runs_dir=runs_dir, initiative=initiative_id or root.name
+        expected, root=root, runs_dir=runs_dir, initiative=initiative, read=live
     )
-    return decompose_closing(expected, in_store, on_disk)
+    missing = sorted(task for task in expected if task not in in_store or task not in on_disk)
+    gone = withdrawal(expected, before, missing)
+    if not gone:
+        return decompose_closing(expected, in_store, on_disk)
+    # whole only when this run's own initiative item_create cleared and no task row existed before it
+    made = any(p.get("kind") == "item_create" and p.get("target") == "initiative" for p in auto_applied) or any(
+        d.get("kind") == "item_create" and d.get("target") == "initiative" and d.get("decision") == "approved"
+        for d in diffs
+    )
+    done = (withdraw or _withdraw_filed_tasks)(
+        runs_dir, root, initiative, [expected[t] for t in gone], made and not before
+    )
+    withdrawn = {Path(rel).stem for rel in done}
+    print(f"decompose: missing {', '.join(missing)}; withdrew {', '.join(sorted(withdrawn))}", file=sys.stderr)
+    kept = {task: rel for task, rel in expected.items() if task not in withdrawn or task in missing}
+    return decompose_closing(kept, in_store - withdrawn, on_disk - withdrawn)
 
 
 def _settle_decompose_tasks(
