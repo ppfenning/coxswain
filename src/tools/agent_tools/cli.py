@@ -12205,12 +12205,9 @@ def _host_doctor(a: argparse.Namespace) -> int:
     if host is None:
         print(f"unknown host: {a.name}")
         return 1
-    repo_checks = [_repo_check_tools(repo) for repo in _host_repos(profile)]
-    checks = lane_toolchain.CheckTools(
-        tuple(dict.fromkeys(t for c in repo_checks for t in c.found)), tuple(dict.fromkeys(u for c in repo_checks for u in c.unparsed)),
-    )
+    repo_checks = [(_repo_check_tools(repo), _lane_repo_dir(repo, remote=True)) for repo in _host_repos(profile)]
     code, rows = remote_doctor.doctor_on_host(
-        host, _run_ssh, argv_for=lambda argv: chair_login_check._remote_argv(host.name, host.ssh, argv), checks=checks,
+        host, _run_ssh, argv_for=lambda argv: chair_login_check._remote_argv(host.name, host.ssh, argv), repo_checks=repo_checks,
     )
     print(f"doctor on {host.name} ({host.ssh})")
     print("\n".join(rows))
