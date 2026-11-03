@@ -1518,6 +1518,76 @@ def test_a_second_contract_refusal_fails_the_run_with_the_lint_text_and_no_third
     assert [c["role"] for c in runner.calls] == ["decompose", "decompose"]
 
 
+NAMED_PATH = "tests/fixtures/settings_v1.json"
+NAMED_JSON_FIX = {
+    "corrections": [{"task": "t0", "surface": "agent_tools/settings.py", "replacement": NAMED_PATH}],
+    "tasks": [],
+    "summary": "gave the contract task the named fixture",
+}
+NAMED_TREE = [*SETTINGS_TREE, {"path": NAMED_PATH, "repo": "tools"}]
+FIXTURE_RULE = "a fixture file ending in `.json`, committed in the producer repository"
+
+
+def test_a_bound_adversary_is_told_the_fixture_rule_and_the_path(cart) -> None:
+    cart["skills"]["review_adversary"] = "acme-skills:review-adversary"
+    runner = ScriptedRunner({"decompose": PROSE_CONTRACT_PLAN, "review_adversary": [ACCEPTED, NAMED_JSON_FIX]})
+    initiative_decompose.run({**_unbound_contract_args(cart), "tree": NAMED_TREE}, runner)
+    prompt = runner.calls[-1]["prompt"]
+    assert [c["role"] for c in runner.calls] == ["decompose", "review_adversary", "review_adversary"]
+    assert NAMED_PATH in prompt
+    assert FIXTURE_RULE in prompt
+
+
+def test_the_unbound_decompose_seat_is_told_the_fixture_rule_and_the_path(cart) -> None:
+    runner = ScriptedRunner({"decompose": [PROSE_CONTRACT_PLAN, NAMED_JSON_FIX]})
+    initiative_decompose.run({**_unbound_contract_args(cart), "tree": NAMED_TREE}, runner)
+    prompt = runner.calls[1]["prompt"]
+    assert NAMED_PATH in prompt
+    assert FIXTURE_RULE in prompt
+
+
+def test_a_correction_naming_the_prompted_path_passes_the_relint(cart) -> None:
+    runner = ScriptedRunner({"decompose": [PROSE_CONTRACT_PLAN, NAMED_JSON_FIX]})
+    result = initiative_decompose.run({**_unbound_contract_args(cart), "tree": NAMED_TREE}, runner)
+    assert {t["id"]: t for t in result["tasks"]}["t0"]["surfaces"] == [NAMED_PATH]
+
+
+@pytest.mark.parametrize(
+    ("extra", "marked"),
+    [([], True), ([{"path": NAMED_PATH, "repo": "tools"}], False)],
+)
+def test_the_named_path_is_marked_new_only_when_the_tree_lacks_it(cart, extra, marked) -> None:
+    runner = ScriptedRunner({"decompose": [PROSE_CONTRACT_PLAN, NO_CHANGE]})
+    with pytest.raises(initiative_decompose.LintRefusal):
+        initiative_decompose.run({**_unbound_contract_args(cart), "tree": [*SETTINGS_TREE, *extra]}, runner)
+    line = next(ln for ln in runner.calls[1]["prompt"].splitlines() if NAMED_PATH in ln)
+    assert line.endswith("(new)") is marked
+
+
+def test_the_fixture_rule_names_each_refused_interface_once() -> None:
+    def task(task_id, interface, side, repo):
+        return {"id": task_id, "interface": interface, "side": side, "repo": repo}
+
+    tasks = [
+        task("a1", "settings", "consumer", "dash"),
+        task("a2", "settings", "consumer", "dash"),
+        task("a3", "settings", "producer", "tools"),
+        task("b1", "feed", "consumer", "dash"),
+        task("b2", "feed", "producer", "tools"),
+        task("c1", "other", "producer", "tools"),
+    ]
+    problems = [initiative_decompose.Problem(t, "contract", "d", "f") for t in ("a1", "a2", "b1")]
+    tree = [{"path": "tests/fixtures/feed_v1.json", "repo": "tools"}]
+    text = initiative_decompose._contract_fixture_rule(tasks, problems, tree)
+    assert text.splitlines()[1:] == [
+        "settings: tests/fixtures/settings_v1.json (new)",
+        "feed: tests/fixtures/feed_v1.json",
+    ]
+    assert FIXTURE_RULE in text
+    reach = [initiative_decompose.Problem("a1", "reach", "d", "f")]
+    assert initiative_decompose._contract_fixture_rule(tasks, reach, tree) == ""
+
+
 INTAKE_FILE = '---\ntitle: "Name the initiative: from intake"\nrepo: ~/repos/acme\n---\n\nThe why, in prose.\n'
 
 
