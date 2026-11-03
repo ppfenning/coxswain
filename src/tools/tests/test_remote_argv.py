@@ -10,6 +10,7 @@ from agent_tools.remote_argv import (
     doctor_argv,
     env_check_argv,
     git_fetch_argv,
+    git_fetch_phase_argv,
     launch_argv,
     rsync_pull_argv,
     rsync_push_argv,
@@ -133,6 +134,15 @@ def test_git_fetch_argv_also_brings_back_the_initiative_phase_branch():
         "git", "fetch", "host-a:/r",
         "refs/heads/agents/init-a-2/*:refs/heads/agents/init-a-2/*",
         "+refs/heads/epic/init-a/*:refs/heads/epic/init-a/*",
+    ]
+
+
+def test_git_fetch_phase_argv_fetches_one_branch_whose_initiative_differs_from_the_run_prefix():
+    assert git_fetch_phase_argv("host-a:/r", "epic/other-init/phase-2") == [
+        "git",
+        "fetch",
+        "host-a:/r",
+        "+refs/heads/epic/other-init/phase-2:refs/heads/epic/other-init/phase-2",
     ]
 
 
