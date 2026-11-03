@@ -264,3 +264,36 @@ def test_the_loops_lease_take_names_its_label_and_own_pid(monkeypatch, tmp_path)
     holder = json.loads((tmp_path / chair.LEASE_FILENAME).read_text(encoding="utf-8"))["holder"]
     assert holder == f"lane-a@h:{os.getpid()}"
     assert "unlabeled" not in holder and f":{os.getppid()}" not in holder
+
+
+def _run_with(monkeypatch, tmp_path, argv: list[str], fake_run) -> int:
+    deps = cli._chair_run_deps(tmp_path, {}, "chair", 1, "h", True, print, tmp_path / "p.yaml", "files")
+    monkeypatch.setattr(cli, "_leader_runs_dir_or_refuse", lambda _a: ({}, tmp_path, None))
+    monkeypatch.setattr(cli, "_chair_run_deps", lambda *_a: deps)
+    monkeypatch.setattr(cli, "_chair_unwired_sources", lambda _d: [])
+    monkeypatch.setattr(cli.chair_run, "run", lambda *_a: fake_run(deps))
+    args = cli.build_parser().parse_args(["chair", "run", *argv])
+    return args.fn(args)
+
+
+def test_chair_run_returns_the_restart_code_when_the_loop_stopped_on_a_moved_checkout(monkeypatch, tmp_path, capsys) -> None:
+    code = _run_with(monkeypatch, tmp_path, [], lambda d: setattr(d.restart_state, "moved", ("aaa", "bbb")))
+    assert code == cli.chair_restart.RESTART_EXIT_CODE == 75
+    assert capsys.readouterr().out == ""
+
+
+def test_chair_run_returns_zero_when_the_checkout_did_not_move(monkeypatch, tmp_path) -> None:
+    assert _run_with(monkeypatch, tmp_path, [], lambda _d: None) == 0
+
+
+def test_a_moved_checkout_wins_over_the_overrun_exit(monkeypatch, tmp_path) -> None:
+    def run(d) -> None:
+        d.overrun_state.consecutive = 2
+        d.restart_state.moved = ("aaa", "bbb")
+
+    assert _run_with(monkeypatch, tmp_path, ["--max-overruns", "2"], run) == 75
+
+
+def test_once_ignores_a_moved_checkout(monkeypatch, tmp_path) -> None:
+    code = _run_with(monkeypatch, tmp_path, ["--once"], lambda d: setattr(d.restart_state, "moved", ("aaa", "bbb")))
+    assert code != cli.chair_restart.RESTART_EXIT_CODE

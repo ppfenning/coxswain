@@ -3,6 +3,8 @@ from __future__ import annotations
 import dataclasses
 import json
 import sqlite3
+import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -621,6 +623,59 @@ def test_a_live_run_wires_release_requested_and_a_dry_run_leaves_it_none(tmp_pat
 
     assert callable(live.release_requested)
     assert dry.release_requested is None
+
+
+def _fake_git(head: str, branch: str = "refs/heads/main"):
+    def run(args: list[str]) -> str | None:
+        return head if "rev-parse" in args else branch
+
+    return run
+
+
+def _deps(tmp_path, dry_run: bool) -> chair_run.RunDeps:
+    return cli._chair_run_deps(tmp_path / "runs", {}, "chair", 1, "h", dry_run, print, tmp_path / "profile.yaml", "files")
+
+
+def test_the_built_deps_carry_the_checkout_read_once_at_startup(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cli, "_chair_git", _fake_git("abc123\n"))
+    deps = _deps(tmp_path, True)
+
+    assert deps.started_checkout == cli.chair_restart.CheckoutState(head="abc123", on_branch=True)
+
+    monkeypatch.setattr(cli, "_chair_git", _fake_git("def456\n"))
+    assert deps.started_checkout.head == "abc123"
+    assert deps.checkout_state().head == "def456"
+
+
+def test_an_unreadable_checkout_leaves_started_checkout_none(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cli, "_chair_git", lambda _args: None)
+    deps = _deps(tmp_path, True)
+
+    assert deps.started_checkout is None and deps.checkout_state() is None
+
+
+def test_the_git_edge_returns_none_on_failure_and_stdout_on_success(tmp_path) -> None:
+    assert cli._chair_git(["-C", str(tmp_path / "missing"), "rev-parse", "HEAD"]) is None
+    assert cli._chair_git(["--version"]).startswith("git version")
+
+
+def test_a_dry_run_keeps_the_default_lands_in_flight(tmp_path) -> None:
+    assert _deps(tmp_path, True).lands_in_flight is chair_run.no_lands_in_flight
+
+
+def test_a_live_chairs_lands_in_flight_reflects_the_land_worker(tmp_path) -> None:
+    deps = _deps(tmp_path, False)
+    release = threading.Event()
+    assert deps.lands_in_flight() is False
+
+    deps.exec_deps.lands.submit({"repo": "r"}, lambda: release.wait(5) and {"action": {}, "status": "done", "reason": ""})
+    assert deps.lands_in_flight() is True
+
+    release.set()
+    deadline = time.monotonic() + 5
+    while deps.lands_in_flight() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert deps.lands_in_flight() is False
 
 
 def _loop_on_disk(tmp_path, monkeypatch, *, release: bool):
