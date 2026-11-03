@@ -5652,6 +5652,7 @@ def _route_launch(a: argparse.Namespace) -> int:
     runs_dir = Path(profile["workspace_dir"]).expanduser() / "runs"
     launch_dir = _initiative_path(runs_dir, a.initiative) if a.graph in ("epic", "rescue") else None
     stub_written = None  # the initiative.md a decompose launch created, named in the report if the launch then dies
+    via_rows = False  # a decompose that runs to completion here and writes its plan as store rows
     if a.graph == "epic":
         initiative_id = launch_dir.name
         mode = work_state.work_state_mode(_lake_provider(a)[0])
@@ -5777,7 +5778,15 @@ def _route_launch(a: argparse.Namespace) -> int:
         initiative_md = initiative_dir / "initiative.md"
         idea_fields, idea_body = route.parse_frontmatter(idea_path.read_text(encoding="utf-8"))
         intake = os.path.relpath(idea_path, workspace_dir)
-        if initiative_md.exists() and any(initiative_dir.glob("*/*.md")):
+        store_mode = work_state.work_state_mode(_lake_provider(a)[0])
+        intake_row = (
+            route.select_intake_row(run_store.read_queue(runs_dir, kind="intake"), idea_path.stem)
+            if store_mode == "store" and not a.dry_run else None
+        )
+        via_rows = _decompose_via_rows(store_mode, a.dry_run, host, intake_row)
+        if via_rows:
+            pass  # the plan lands as rows after the run; the chair's export writes the files
+        elif initiative_md.exists() and any(initiative_dir.glob("*/*.md")):
             print("routing: initiative.md kept: tickets exist")
         elif initiative_md.exists():
             fields, body = route.parse_frontmatter(initiative_md.read_text(encoding="utf-8"))
@@ -5828,7 +5837,10 @@ def _route_launch(a: argparse.Namespace) -> int:
         overlaid_path = runs_dir / f"{run_id}.provider-profile.yaml"
         launch_profile = {**profile, "provider_profile": str(overlaid_path)}
     harness_python = str(install_root.harness_python(harness_dir)) if harness_dir else None
-    argv = route.harness_argv(launch_profile, a.graph, run_id, python=harness_python, **needs)
+    result_path = runs_dir / f"{run_id}.result.json"
+    argv = route.harness_argv(
+        launch_profile, a.graph, run_id, python=harness_python, result_out=str(result_path) if via_rows else None, **needs,
+    )
     log_path = runs_dir / f"{run_id}.log"
     pid_path = runs_dir / f"{run_id}.pid"
     trace_dir = runs_dir / f"{run_id}-trace"
@@ -5897,6 +5909,24 @@ def _route_launch(a: argparse.Namespace) -> int:
             encoding="utf-8",
         )
 
+    if via_rows:
+        (runs_dir / f"{run_id}.launched.json").write_text(
+            json.dumps({"initiative": a.initiative_id, "at": datetime.datetime.now(datetime.UTC).isoformat()}), encoding="utf-8",
+        )
+        exit_code, result = _run_decompose_for_result(argv, env, log_path, result_path, pid_path)
+        if exit_code or result is None:
+            # The harness writes the result before its own failure checks, so a failed run can leave a valid file: no rows then.
+            print(f"routing: decompose exited {exit_code}; no rows written" if exit_code else f"routing: decompose wrote no readable result at {result_path}")
+            print(f"log {log_path}")
+            if not a.no_claim and _lock_snapshot(runs_dir) != lock_before:
+                print("routing: the loop claim this launch took is still held with no run behind it; release it with `cox route release`")
+            return 1
+        plan = route.plan_from_result(result, a.initiative_id, idea_fields.get("title", ""), idea_body)
+        rows_code, rows_lines = route.decompose_into_rows(runs_dir, idea_path.stem, lambda _intake: plan)
+        for line in rows_lines:
+            print(line)
+        return rows_code
+
     with open(log_path, "ab") as log:
         proc = subprocess.Popen(
             argv, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
@@ -5930,6 +5960,41 @@ def _route_launch(a: argparse.Namespace) -> int:
     print(f"pid {pid_path}")
     print(f"log {log_path}")
     return 0
+
+
+def _decompose_via_rows(mode: str, dry_run: bool, host: object, intake_row: Mapping | None) -> bool:
+    """True when a decompose launch runs to completion here and writes rows: store mode, a real run, this machine, an intake row."""
+    return mode == "store" and not dry_run and host is None and intake_row is not None
+
+
+_DECOMPOSE_TIMEOUT_S = 3600
+
+
+def _run_decompose_for_result(
+    argv: list[str], env: Mapping[str, str], log_path: Path, result_path: Path, pid_path: Path,
+) -> tuple[int, dict | None]:
+    """Edge: run the decompose to completion, its pid in `pid_path` while it runs and its output in the log.
+
+    Returns `(exit code, result)`; the result is the `--result-out` JSON, None when missing, invalid or not an object.
+    A run past the timeout is killed and reports exit 124.
+    """
+    result_path.unlink(missing_ok=True)
+    with open(log_path, "ab") as log:
+        proc = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+        pid_path.write_text(str(proc.pid))
+        try:
+            code = proc.wait(timeout=_DECOMPOSE_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            code = 124
+    pid_path.unlink(missing_ok=True)
+    text = _read_text_or_none(result_path)
+    try:
+        parsed = json.loads(text) if text is not None else None
+    except json.JSONDecodeError:
+        return code, None
+    return code, parsed if isinstance(parsed, dict) else None
 
 
 def _remote_edge(cwd: Path) -> tuple[Callable[[list[str]], int], Callable[[str], str] | None]:
