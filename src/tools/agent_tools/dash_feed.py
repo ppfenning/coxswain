@@ -47,6 +47,7 @@ from agent_tools.dash_chair_counters import chair_counters
 from agent_tools.dash_chair_store import chair_from_store, read_chair_rows
 from agent_tools.dash_chair_today import _ts, chair_today, local_midnight
 from agent_tools.dash_cost_series import run_cost_series
+from agent_tools.dash_feed_tasks import counts, task_entries
 from agent_tools.dash_finished_runs import LIMIT, finished_runs
 from agent_tools.dash_history import _by_run, _in_task_order, _is_landed, _landed_pr, _pr_number, _record, build_history
 from agent_tools.dash_history import history_today as _history_today
@@ -92,6 +93,7 @@ def snapshot(
     spend split per window, all zero when not given."""
     # coxswain-dash carries its own copy of tests/fixtures/dash_feed_v1.json and will need these two fields too.
     # `queue[].phases` is additive and the schema stays 1: a coxtop that does not know the field ignores it.
+    # So are `runs[].tasks`, `runs[].landed` and `runs[].quarantined`, which `_runs_v1` adds to each run row.
     return {
         "schema": 1,
         "at": at,
@@ -485,10 +487,21 @@ def _task_records(runs_dir: Path) -> list[dict]:
     return records
 
 
-def _queue_states_edge(runs_dir: Path, live_phases: Collection[tuple[str, str]]) -> dict[tuple[str, str, str], str]:
-    """Edge: `_queue_states` over the store's queue. An unreadable store gives no states, so history rows list no tasks."""
+def _queue_rows_edge(runs_dir: Path) -> list[dict]:
+    """Edge: the store's queue rows, read once for the history's task states and the runs' task lists. An unreadable
+    store (`OSError`) gives none; any other error is a fault and is raised."""
     try:
-        rows = run_store.read_queue(runs_dir)
+        return run_store.read_queue(runs_dir)
+    except OSError:
+        return []
+
+
+def _queue_states_edge(
+    runs_dir: Path, live_phases: Collection[tuple[str, str]], rows: Sequence[dict],
+) -> dict[tuple[str, str, str], str]:
+    """Edge: `_queue_states` over the queue `rows` (read once by `gather_feed`, which also gives them to the runs' task
+    lists). An unreadable store gives no states, so history rows list no tasks."""
+    try:
         return _queue_states(rows, live_phases, _stranded_tasks(_task_records(runs_dir), rows))
     except Exception:  # the task states are garnish: a store failure must not take the feed down
         return {}
@@ -770,16 +783,22 @@ def _finished_records(runs_dir: Path, live_ids: Collection[str]) -> list[dict]:
             lines = (runs_dir / f"{run}.log").read_text(encoding="utf-8").splitlines()
         except (OSError, UnicodeDecodeError):
             lines = []
-        calls = calls_from_usage((run_store.usage(runs_dir, run) or {}).get("calls") or [])
+        calls = _calls_of(run_store.usage(runs_dir, run))
         records.append(
             _finished_record(row, calls, run_store.phase_names(runs_dir, run), events_module.from_log(run, lines))
         )
     return records
 
 
+def _calls_of(usage: Mapping | None) -> list[dict]:
+    """A usage record's calls as `calls_from_usage` rows, each with the stored `task_id` ("" when it has none), which `calls_from_usage` drops. The rows are 1:1 and in order with the stored calls."""
+    stored = (usage or {}).get("calls") or []
+    return [{**row, "task_id": str(call.get("task_id") or "")} for row, call in zip(calls_from_usage(stored), stored)]
+
+
 def _run_calls(runs_dir: Path, run: str) -> list[dict]:
-    """Edge: a run's calls as `calls_from_usage` rows. `run_store.usage` reads `<run>.usage.json` beside the pidfile for a local run and the shared store rows for a remote one; `[]` when neither has any."""
-    return calls_from_usage((run_store.usage(runs_dir, run) or {}).get("calls") or [])
+    """Edge: a run's calls as `_calls_of` rows. `run_store.usage` reads `<run>.usage.json` beside the pidfile for a local run and the shared store rows for a remote one; `[]` when neither has any."""
+    return _calls_of(run_store.usage(runs_dir, run))
 
 
 def _call_points(calls: Sequence[Mapping]) -> list[dict]:
@@ -836,15 +855,117 @@ def _task_slug(target: str, ids: Mapping[str, str]) -> str | None:
     return max((slug for slug in ids if target.startswith(f"{slug}-")), key=len, default=None)
 
 
+def _run_number(run: str) -> int:
+    """The trailing run number of a run key; -1 when it has none."""
+    found = re.search(r"-(\d+)$", run)
+    return int(found.group(1)) if found else -1
+
+
+def _attempts_by_task(attempts: Sequence[Mapping], slug: str) -> dict[str, list[Mapping]]:
+    """The attempts of runs of one initiative, by task id."""
+    grouped: dict[str, list[Mapping]] = {}
+    for attempt in attempts:
+        run, task = attempt.get("run_id"), attempt.get("task_id")
+        if run and task and _run_slug(str(run)) == slug:
+            grouped.setdefault(str(task), []).append(attempt)
+    return grouped
+
+
+def _latest_run(attempts: Sequence[Mapping]) -> str:
+    """The run of the highest run number among a task's attempts."""
+    return max((str(attempt["run_id"]) for attempt in attempts), key=_run_number)
+
+
+def _latest_by_task(
+    attempts_by_task: Mapping[str, Sequence[Mapping]], calls_by_run: Mapping[str, Sequence[Mapping]],
+) -> dict[str, dict]:
+    """Each task's latest run, with the node of its last call there and the turns and cost of its calls there.
+    Only calls stamped with the task's id count: a run's calls carry the task they built."""
+    latest = {task: _latest_run(rows) for task, rows in attempts_by_task.items()}
+    own = {task: [c for c in calls_by_run.get(run, ()) if c.get("task_id") == task] for task, run in latest.items()}
+    return {
+        task: {
+            "run": run,
+            "node": own[task][-1]["node"] if own[task] else "",
+            "turns": sum(int(c.get("turns") or 0) for c in own[task]),
+            "cost": round(sum(float(c.get("cost_usd") or 0.0) for c in own[task]), 4),
+        }
+        for task, run in latest.items()
+    }
+
+
+def _verdicts_by_task(
+    latest: Mapping[str, Mapping], run_verdicts: Mapping[str, tuple[str, frozenset[str]]],
+) -> dict[str, str]:
+    """A task's verdict is `quarantined` when its latest run's log quarantined it, else that run's last verdict;
+    a task whose run left no verdict has none."""
+    found = {
+        task: ("quarantined" if task in run_verdicts.get(l["run"], ("", frozenset()))[1] else run_verdicts.get(l["run"], ("",))[0])
+        for task, l in latest.items()
+    }
+    return {task: verdict for task, verdict in found.items() if verdict}
+
+
+def _run_tasks(
+    rows: Sequence[Mapping], attempts: Sequence[Mapping], calls_by_run: Mapping[str, Sequence[Mapping]],
+    run_verdicts: Mapping[str, tuple[str, frozenset[str]]], slug: str,
+) -> tuple[list[dict], dict]:
+    """`(task_entries, counts)` for one initiative's task rows; a row with no task id is left out."""
+    own = [row for row in _own_tasks(rows, slug) if row.get("task_id")]
+    by_task = _attempts_by_task(attempts, slug)
+    latest = _latest_by_task(by_task, calls_by_run)
+    entries = task_entries(own, by_task, latest, _verdicts_by_task(latest, run_verdicts))
+    return entries, counts(entries)
+
+
+def _run_verdicts(runs_dir: Path, run: str) -> tuple[str, frozenset[str]]:
+    """Edge: a run's last logged verdict ("" when none) and the tasks its log quarantined, read as `_finished_record` reads events."""
+    try:
+        lines = (runs_dir / f"{run}.log").read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        lines = []
+    events = events_module.from_log(run, lines)
+    verdicts = [e.detail["verdict"] for e in events if e.kind == "verdict"]
+    return (verdicts[-1] if verdicts else "", frozenset(e.detail["task"] for e in events if e.kind == "task_quarantined"))
+
+
+def _tasks_edge(
+    runs_dir: Path, rows: Sequence[Mapping], calls_by_run: Mapping[str, Sequence[Mapping]],
+) -> dict[str, tuple[list[dict], dict]] | None:
+    """Edge: `_run_tasks` for the initiative of every run in `calls_by_run`, keyed by slug. `rows` is the queue read once
+    for the history. A queue with any row is a readable queue, and then every run gets an entry: an initiative with no
+    task rows gets `[]` and zero counts. `None` only for an empty queue, which cannot be told from an unreadable
+    one, and for a store error while the attempts are read; the runs then carry no task keys, so an absent `tasks`
+    means "no task data was readable" and never "no tasks". Only store and file errors are caught: a fault in
+    the code raises. The attempts are those of every stored run of those initiatives, one query; each latest run's
+    log is read once, however many tasks share it."""
+    if not rows:
+        return None
+    slugs = {_run_slug(run) for run in calls_by_run}
+    try:
+        stored = {str(row["run_id"]) for row in exit_rows(runs_dir) if row.get("run_id")}
+        attempts = run_store.attempt_causes_for(
+            runs_dir, sorted(run for run in {*stored, *calls_by_run} if _run_slug(run) in slugs),
+        )
+        latest_runs = {_latest_run(grouped) for slug in slugs for grouped in _attempts_by_task(attempts, slug).values()}
+        verdicts = {run: _run_verdicts(runs_dir, run) for run in latest_runs}
+        return {slug: _run_tasks(rows, attempts, calls_by_run, verdicts, slug) for slug in slugs}
+    except (OSError, *run_store._db_errors()):  # a store failure must not take the feed down; a code fault must
+        return None
+
+
 def _runs_v1(
     lanes: Sequence[console_screen.LaneRow], local_name: str, records: Sequence[Mapping], now: datetime,
     calls_by_run: Mapping[str, Sequence[Mapping]] | None = None, short_ids: Mapping[str, str] | None = None,
     projects: Mapping[str, str | None] | None = None, ends: Mapping[str, End] | None = None,
+    tasks_by_slug: Mapping[str, tuple[list[dict], dict]] | None = None,
 ) -> list[dict]:
     """The live lanes as running rows, then the newest finished runs; a finished record of a live lane is dropped.
     Each row gains `cost_series` from its run's entry in `calls_by_run`; a run with no entry gets `[]`.
     Each row gains `short_id` from `short_ids` and `project` from `projects`, by its run key's initiative slug.
-    Each row gains `end`: `running` for a lane, else its entry in `ends`, else `idle`. `status` is unchanged."""
+    Each row gains `end`: `running` for a lane, else its entry in `ends`, else `idle`. `status` is unchanged.
+    When `tasks_by_slug` is given, each row gains `tasks`, `landed` and `quarantined` from its initiative's entry;
+    an initiative with no entry gets `[]`, 0 and 0. Without it the rows carry none of the three keys."""
     aware = now if now.tzinfo else now.replace(tzinfo=UTC)
     live = {lane.run for lane in lanes}
     rows = [*(_run_v1(lane, local_name) for lane in lanes), *finished_runs(records, live, aware)]
@@ -852,6 +973,12 @@ def _runs_v1(
     by_run = calls_by_run or {}
     ids = short_ids or {}
     named = projects or {}
+    empty: tuple[list[dict], dict] = ([], {"landed": 0, "quarantined": 0})
+
+    def task_keys(run: str) -> dict:
+        entries, tally = (empty if tasks_by_slug is None else tasks_by_slug.get(_run_slug(run), empty))
+        return {} if tasks_by_slug is None else {"tasks": entries, **tally}
+
     return [
         {
             **row,
@@ -859,6 +986,7 @@ def _runs_v1(
             "short_id": _short_id(_run_slug(row["run"]), ids),
             "project": _project(_run_slug(row["run"]), named),
             "end": "running" if row["run"] in live else ended.get(row["run"], "idle"),
+            **task_keys(row["run"]),
         }
         for row in rows
     ]
@@ -1136,7 +1264,11 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
     repository, and `spend.today`, which is null when the run store is unavailable (its `per_landed` is null
     when nothing landed and its `first_try_rate` when nothing was measured). `spend.today` is a new key
     under schema 1, as `weekly_pace` was: older towpath builds ignore a key they do not know. So is `history[].tasks`,
-    one `{id, state, pr}` per task the run built: its current queue state and its landed PR number, or null. `profile` is the parsed profile
+    one `{id, state, pr}` per task the run built: its current queue state and its landed PR number, or null. So are
+    `runs[].tasks`, `runs[].landed` and `runs[].quarantined`: every task of the run's initiative as `task_entries`
+    shapes it, and the `counts` over them. They are `[]`, 0 and 0 for an initiative with no task rows, and absent only
+    when the queue is empty or unreadable, or a store error hit while they were read: absent means no task data was
+    readable, never "no tasks". A task's `waiting_on` is a list of task ids. `profile` is the parsed profile
     the capacity chain reads the team cartridge from."""
     runs_dir, work_dir = Path(runs_dir), Path(work_dir)
     at = _parse_now(now)
@@ -1166,7 +1298,8 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
     spend_block = {**_spend_v1(sections["spend"]), "today": _today_v1(runs_dir, now)}
     wide_rows = _store_rows(runs_dir, at, spend_block)
     store_rows = _history_rows(wide_rows, at)
-    history, today = _history_edge(store_rows, at, short_ids, projects, _queue_states_edge(runs_dir, live_phases))
+    task_rows = _queue_rows_edge(runs_dir)
+    history, today = _history_edge(store_rows, at, short_ids, projects, _queue_states_edge(runs_dir, live_phases, task_rows))
     chair_block = _chair_section(runs_dir, chair_row, entries, read_drafts(work_dir, now), at)
     activity = _activity(runs_dir, profile or {}, chair_block["session"], spend_block, at, wide_rows)
     return snapshot(
@@ -1176,6 +1309,7 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
         [_machine_v1(row, at) for row in sections["hosts"]],
         _runs_v1(
             sections["lanes"], local_name, records, at, calls_by_run, short_ids, projects, _ends_edge(runs_dir, store_rows),
+            _tasks_edge(runs_dir, task_rows, calls_by_run),
         ),
         [_queue_v1(row, short_ids, projects) for row in queue],
         queue_total,
