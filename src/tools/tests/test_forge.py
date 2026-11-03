@@ -203,6 +203,36 @@ def test_read_required_is_none_when_the_base_cannot_be_read(monkeypatch, tmp_pat
     assert forge_github._read_required(tmp_path, "pr/t") is None
 
 
+def test_read_required_for_base_uses_the_ruleset_without_reading_a_pr(monkeypatch, tmp_path):
+    calls = _scripted(monkeypatch, {"rules/branches": [(0, RULESET)]})
+    assert forge_github.read_required_for_base(tmp_path, "main") == ("test", "lint")
+    assert calls == [["gh", "api", "repos/{owner}/{repo}/rules/branches/main"]]
+
+
+def test_read_required_for_base_falls_back_to_protection_when_the_ruleset_is_empty(monkeypatch, tmp_path):
+    calls = _scripted(monkeypatch, {"rules/branches": [(0, "[]")], "protection/required": [(0, PROTECTION)]})
+    assert forge_github.read_required_for_base(tmp_path, "main") == ("test", "build")
+    assert calls[1] == ["gh", "api", "repos/{owner}/{repo}/branches/main/protection/required_status_checks"]
+
+
+def test_read_required_for_base_is_empty_when_both_read_nothing(monkeypatch, tmp_path):
+    _scripted(monkeypatch, {"rules/branches": [(0, "[]")], "protection/required": [EMPTY_PROTECTION]})
+    assert forge_github.read_required_for_base(tmp_path, "main") == ()
+
+
+def test_read_required_for_base_is_none_when_the_ruleset_is_unparseable(monkeypatch, tmp_path):
+    calls = _scripted(monkeypatch, {"rules/branches": [(0, "not json")], "protection/required": [(0, PROTECTION)]})
+    assert forge_github.read_required_for_base(tmp_path, "main") is None
+    assert len(calls) == 1
+
+
+def test_read_required_for_base_is_none_when_a_call_fails(monkeypatch, tmp_path):
+    _scripted(monkeypatch, {"rules/branches": [(1, "502")], "protection/required": [(0, PROTECTION)]})
+    assert forge_github.read_required_for_base(tmp_path, "main") is None
+    _scripted(monkeypatch, {"rules/branches": [(0, "[]")], "protection/required": [(1, "502")]})
+    assert forge_github.read_required_for_base(tmp_path, "main") is None
+
+
 def test_rerun_run_ids_dedupes_and_skips_failures_without_a_run_url():
     body = json.loads(_runs(("a", "failure", RUN_URL.format(7)), ("b", "failure", RUN_URL.format(7)),
                             ("c", "cancelled", RUN_URL.format(8)), ("d", "success", RUN_URL.format(9)),

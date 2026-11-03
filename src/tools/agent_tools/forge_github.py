@@ -401,17 +401,24 @@ def _gh_text(argv: list[str], repo: Path, *, timeout: int) -> str | None:
     return r.stdout or "" if r.returncode == 0 else None
 
 
-def _read_required(repo: Path, ref: str) -> tuple[str, ...] | None:
-    """Required check names for the base of `ref`'s PR: the rulesets', else classic branch protection's. () means both were read and require nothing; None means a call failed or a body was unreadable."""
-    base = parse_base_ref(_gh_text(base_ref_argv(ref), repo, timeout=READ_TIMEOUT_S) or "")
-    if base is None:
-        return None
+def _required_for_base(repo: Path, base: str) -> tuple[str, ...] | None:
     root = "repos/{owner}/{repo}"
     ruleset = parse_ruleset_contexts(_gh_text(["gh", "api", f"{root}/rules/branches/{base}"], repo, timeout=READ_TIMEOUT_S) or "")
     if ruleset != ():  # names, or None for an unreadable ruleset: its contexts are unknown, so protection alone must not stand in
         return ruleset
     protection_argv = ["gh", "api", f"{root}/branches/{base}/protection/required_status_checks"]
     return parse_protection_contexts(_gh_text(protection_argv, repo, timeout=READ_TIMEOUT_S) or "")
+
+
+def read_required_for_base(repo: Path, base: str) -> tuple[str, ...] | None:
+    """Required check names for branch `base`, no PR needed: the rulesets', else classic protection's. () means both were read and require nothing; None means a call failed or a body was unreadable."""
+    return _required_for_base(repo, base)
+
+
+def _read_required(repo: Path, ref: str) -> tuple[str, ...] | None:
+    """Required check names for the base of `ref`'s PR: the rulesets', else classic branch protection's. () means both were read and require nothing; None means a call failed or a body was unreadable."""
+    base = parse_base_ref(_gh_text(base_ref_argv(ref), repo, timeout=READ_TIMEOUT_S) or "")
+    return None if base is None else _required_for_base(repo, base)
 
 
 def wait_checks(repo: Path, timeout_s: float, sleep=time.sleep, now=time.monotonic, *, ref: str = "HEAD") -> tuple[bool, str]:

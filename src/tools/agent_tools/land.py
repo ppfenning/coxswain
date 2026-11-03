@@ -156,6 +156,25 @@ def checks_argv(repo_facts: dict[str, Any]) -> list[tuple[str, str]]:
     return [("tests", line)]
 
 
+def checks_gate(repo_facts: dict[str, Any]) -> tuple[bool, str | None]:
+    """`(skip, reason)` for the checks step. `land_checks` ci skips only when `required_checks` is a non-empty tuple; an empty or unread one keeps the checks and says why. Absent or local gives `(False, None)`."""
+    if repo_facts.get("land_checks", "local") != "ci":
+        return False, None
+    required = repo_facts.get("required_checks")
+    if required is None:
+        return False, "checks kept locally: the required status checks on main could not be read"
+    if not required:
+        return False, "checks kept locally: main has no required status check"
+    return True, f"CI runs the required status checks on main: {', '.join(required)}"
+
+
+def checks_step(repo_facts: dict[str, Any], worktree_of: str) -> dict[str, Any]:
+    """The `checks` step; `skipped` or `kept` carries `checks_gate`'s reason, and a default land adds neither."""
+    skip, reason = checks_gate(repo_facts)
+    gate = {} if reason is None else {"skipped": reason} if skip else {"kept": reason}
+    return {"kind": "checks", "checks": checks_argv(repo_facts), "worktree_of": worktree_of, **gate}
+
+
 PYTEST_NO_TESTS = 5  # pytest's exit code when it collected no tests
 
 
@@ -379,7 +398,7 @@ def _card_phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], 
                                                              "default_branch": default_branch}}) if phase_record.get("last_phase") else []
     return [
         *applied,
-        {"kind": "checks", "checks": checks_argv(repo_facts or {}), "worktree_of": branch},
+        checks_step(repo_facts or {}, branch),
         {"kind": "push", "branch": branch},
         *[{"kind": "mark_done", "task": s["task"]} for s in applied],
         *left,
@@ -496,7 +515,7 @@ def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_
         build_steps = [{"kind": "pick_branch", "branch": phase_branch, "commit_subject": f"phase {phase}"}, squash_step]
     return [
         *build_steps,
-        {"kind": "checks", "checks": checks_argv(repo_facts or {}), "worktree_of": pr_branch},
+        checks_step(repo_facts or {}, pr_branch),
         {"kind": "push", "branch": pr_branch},
         {"kind": "pr_create", "title": phase_pr_title(initiative, phase, phase_record.get("initiative_title", "")),
          "body": phase_pr_body(phase_record, task_records), "head": pr_branch, "base": default_branch},
@@ -594,7 +613,7 @@ def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_br
     return [
         {"kind": "pick_branch", "branch": chosen, "commit_subject": subject},
         {"kind": "cherry_pick", "branch": chosen, "commit_subject": subject, "onto": pr_branch, "from": default_branch},
-        {"kind": "checks", "checks": checks_argv(repo_facts or {}), "worktree_of": pr_branch},
+        checks_step(repo_facts or {}, pr_branch),
         {"kind": "push", "branch": pr_branch},
         *presync,
         {"kind": "pr_create", "title": draft.get("title", subject), "body": body,

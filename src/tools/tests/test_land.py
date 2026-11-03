@@ -2476,3 +2476,85 @@ def test_a_mark_done_with_no_merge_in_the_land_says_why_nothing_was_closed(tmp_p
     cli._land_execute(tmp_path, steps[1:], [], None, None, "full", False, forge)
     assert forge.open == {7: "review/x/seams-task"}
     assert "review PRs of seams-task not closed: no merge ran in this land" in capsys.readouterr().out
+
+
+# --- checks_gate: the checks step skipped to CI, or kept with a reason ---
+
+_CI_REQUIRED = {"land_checks": "ci", "required_checks": ("build", "lint")}
+_CI_NONE_REQUIRED = {"land_checks": "ci", "required_checks": ()}
+_CI_UNREAD = {"land_checks": "ci", "required_checks": None}
+_UNREAD_REASON = "checks kept locally: the required status checks on main could not be read"
+
+
+@pytest.mark.parametrize("facts, skip, reason", [
+    ({}, False, None),
+    ({"land_checks": "local", "required_checks": ("build",)}, False, None),
+    ({"required_checks": ("build",)}, False, None),
+    (_CI_REQUIRED, True, "CI runs the required status checks on main: build, lint"),
+    (_CI_NONE_REQUIRED, False, "checks kept locally: main has no required status check"),
+    (_CI_UNREAD, False, _UNREAD_REASON),
+    ({"land_checks": "ci"}, False, _UNREAD_REASON),
+])
+def test_checks_gate_skips_only_for_ci_with_a_required_check(facts, skip, reason):
+    assert land.checks_gate(facts) == (skip, reason)
+
+
+def _task_steps(facts):
+    return land.land_plan(_record(), _ONE_COMMIT, "main", facts)
+
+
+def _phase_steps(facts):
+    phase_record, items, task_records = _merged_fixture()
+    return land.land_plan(phase_record, {}, "main", facts, items=items, task_records=task_records)
+
+
+def _card_steps(facts):
+    task = {"task": "a", "title": "Title a", "repo": "wire", "status": "approved", "review": {"verdict": "approve"}}
+    phase_record = {"run": "epic-x-5", "phase": "seams", "initiative": "x", "card_branch": "card/x/wire"}
+    return land.land_plan(phase_record, {}, "main", facts, items=[{"id": "a", "status": "approved"}],
+                          task_records=[task], repo="wire")
+
+
+_PLANS = [_task_steps, _phase_steps, _card_steps]
+
+
+def _checks_of(steps):
+    return next(s for s in steps if s["kind"] == "checks")
+
+
+@pytest.mark.parametrize("plan", _PLANS)
+def test_a_ci_land_with_a_required_check_plans_the_checks_step_skipped(plan):
+    steps = plan(_CI_REQUIRED)
+    step = _checks_of(steps)
+    assert step["skipped"] == "CI runs the required status checks on main: build, lint"
+    assert "kept" not in step
+    assert step["checks"] == land.checks_argv({})
+    assert "worktree_of" in step
+    assert [s["kind"] for s in steps] == [s["kind"] for s in plan({})]
+
+
+@pytest.mark.parametrize("plan", [_task_steps, _phase_steps])
+def test_a_skipped_checks_step_leaves_wait_checks_after_pr_create(plan):
+    kinds = [s["kind"] for s in plan(_CI_REQUIRED)]
+    assert kinds[kinds.index("pr_create") + 1] == "wait_checks"
+
+
+@pytest.mark.parametrize("plan", _PLANS)
+def test_a_ci_land_with_no_required_check_keeps_the_checks_and_says_why(plan):
+    step = _checks_of(plan(_CI_NONE_REQUIRED))
+    assert step["kept"] == "checks kept locally: main has no required status check"
+    assert "skipped" not in step
+
+
+@pytest.mark.parametrize("plan", _PLANS)
+def test_a_ci_land_whose_required_checks_could_not_be_read_keeps_the_checks_and_names_the_read(plan):
+    step = _checks_of(plan(_CI_UNREAD))
+    assert "could not be read" in step["kept"]
+    assert "skipped" not in step
+
+
+@pytest.mark.parametrize("plan", _PLANS)
+@pytest.mark.parametrize("facts", [{"land_checks": "local", "required_checks": ("build",)}, {"required_checks": ("build",)}])
+def test_a_local_or_absent_land_checks_plans_todays_steps(plan, facts):
+    assert plan(facts) == plan({})
+    assert {"skipped", "kept"}.isdisjoint(_checks_of(plan(facts)))
