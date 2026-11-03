@@ -336,3 +336,178 @@ def test_implied_ceiling_returns_none_for_a_missing_kind(tmp_path):
 def test_implied_ceiling_returns_none_for_a_missing_file(tmp_path):
     now = datetime(2026, 9, 28, 16, 41, 31, tzinfo=UTC)
     assert usage_meter.implied_ceiling("five_hour", now, path=tmp_path / "implied.json") is None
+
+
+_T0 = datetime(2026, 11, 3, 10, 0, tzinfo=UTC)
+_WEEK_RESET = datetime(2026, 11, 8, 10, 0, tzinfo=UTC)
+
+
+def _meter(*, five_hour, weekly_used, observed_at, weekly_resets_at=_WEEK_RESET):
+    return usage_meter.Meter(
+        five_hour=usage_meter.MeterEntry(20.0, observed_at + timedelta(hours=3)) if five_hour else None,
+        seven_day=usage_meter.MeterEntry(weekly_used, weekly_resets_at),
+        observed_at=observed_at,
+    )
+
+
+def _seed(path, *, had_five_hour, weekly_used=50.0, weekly_resets_at=_WEEK_RESET):
+    path.write_text(
+        json.dumps(
+            {
+                "five_hour": {"ceiling_usd": 60.0, "observed_at": _T0.isoformat()},
+                "weekly": {"ceiling_usd": 200.0, "observed_at": _T0.isoformat()},
+                "last_meter": {
+                    "has_five_hour": had_five_hour,
+                    "weekly_used": weekly_used,
+                    "weekly_resets_at": weekly_resets_at.isoformat(),
+                    "observed_at": _T0.isoformat(),
+                },
+            }
+        )
+    )
+
+
+def _kinds(path):
+    return {key for key in json.loads(path.read_text()) if key != "last_meter"}
+
+
+def test_reconcile_five_hour_disappearing_clears_only_the_five_hour_ceiling(tmp_path, monkeypatch):
+    path = tmp_path / "implied.json"
+    _seed(path, had_five_hour=True)
+    _fake_cost_since(monkeypatch, 0.0, [])
+    now = _T0 + timedelta(hours=1)
+
+    dropped = usage_meter.reconcile_implied_ceilings(
+        _meter(five_hour=False, weekly_used=50.0, observed_at=now), tmp_path, path
+    )
+
+    assert dropped == {"five_hour"}
+    assert _kinds(path) == {"weekly"}
+    assert usage_meter.implied_ceiling("weekly", now, path) == 200.0
+
+
+def test_reconcile_five_hour_appearing_clears_a_stale_five_hour_ceiling(tmp_path, monkeypatch):
+    path = tmp_path / "implied.json"
+    _seed(path, had_five_hour=False)
+    _fake_cost_since(monkeypatch, 0.0, [])
+    now = _T0 + timedelta(hours=1)
+
+    dropped = usage_meter.reconcile_implied_ceilings(
+        _meter(five_hour=True, weekly_used=50.0, observed_at=now), tmp_path, path
+    )
+
+    assert dropped == {"five_hour"}
+    assert _kinds(path) == {"weekly"}
+
+
+def test_reconcile_weekly_drop_larger_than_spend_explains_clears_both(tmp_path, monkeypatch):
+    path = tmp_path / "implied.json"
+    _seed(path, had_five_hour=True, weekly_used=50.0)
+    calls = []
+    _fake_cost_since(monkeypatch, 2.0, calls)  # $2 of a $200 ceiling is 1%
+    now = _T0 + timedelta(hours=1)
+
+    dropped = usage_meter.reconcile_implied_ceilings(
+        _meter(five_hour=True, weekly_used=10.0, observed_at=now), tmp_path, path
+    )
+
+    assert dropped == {"five_hour", "weekly"}
+    assert _kinds(path) == set()
+    assert calls == [_T0.isoformat()]
+
+
+def test_reconcile_weekly_drop_explained_by_spend_clears_nothing(tmp_path, monkeypatch):
+    path = tmp_path / "implied.json"
+    _seed(path, had_five_hour=True, weekly_used=50.0)
+    _fake_cost_since(monkeypatch, 80.0, [])  # $80 of a $200 ceiling is 40%
+    now = _T0 + timedelta(hours=1)
+
+    dropped = usage_meter.reconcile_implied_ceilings(
+        _meter(five_hour=True, weekly_used=10.0, observed_at=now), tmp_path, path
+    )
+
+    assert dropped == frozenset()
+    assert _kinds(path) == {"five_hour", "weekly"}
+
+
+def test_reconcile_weekly_drop_across_an_ordinary_reset_clears_nothing(tmp_path, monkeypatch):
+    path = tmp_path / "implied.json"
+    _seed(path, had_five_hour=True, weekly_used=90.0, weekly_resets_at=_T0 + timedelta(minutes=30))
+    _fake_cost_since(monkeypatch, 0.0, [])
+    now = _T0 + timedelta(hours=1)
+
+    dropped = usage_meter.reconcile_implied_ceilings(
+        _meter(five_hour=True, weekly_used=1.0, observed_at=now, weekly_resets_at=now + timedelta(days=7)),
+        tmp_path,
+        path,
+    )
+
+    assert dropped == frozenset()
+    assert _kinds(path) == {"five_hour", "weekly"}
+
+
+def test_kinds_to_drop_with_no_known_ceiling_counts_a_fall_beyond_tolerance():
+    previous = usage_meter.LastMeter(True, 50.0, _WEEK_RESET, _T0)
+    now = _T0 + timedelta(hours=1)
+
+    big = _meter(five_hour=True, weekly_used=40.0, observed_at=now)
+    small = _meter(five_hour=True, weekly_used=49.0, observed_at=now)
+    assert usage_meter.kinds_to_drop(previous, big, 5.0, None) == {"five_hour", "weekly"}
+    assert usage_meter.kinds_to_drop(previous, small, 5.0, None) == frozenset()
+
+
+def test_reconcile_first_reading_clears_nothing_and_writes_last_meter(tmp_path, monkeypatch):
+    path = tmp_path / "implied.json"
+    path.write_text(json.dumps({"five_hour": {"ceiling_usd": 60.0, "observed_at": _T0.isoformat()}}))
+
+    def fail(*args, **kwargs):
+        raise AssertionError("cost_since must not be called without a prior reading")
+
+    monkeypatch.setattr(run_store, "cost_since", fail)
+    now = _T0 + timedelta(hours=1)
+
+    dropped = usage_meter.reconcile_implied_ceilings(
+        _meter(five_hour=False, weekly_used=5.0, observed_at=now), tmp_path, path
+    )
+
+    assert dropped == frozenset()
+    doc = json.loads(path.read_text())
+    assert doc["five_hour"]["ceiling_usd"] == 60.0
+    assert doc["last_meter"] == {
+        "has_five_hour": False,
+        "weekly_used": 5.0,
+        "weekly_resets_at": _WEEK_RESET.isoformat(),
+        "observed_at": now.isoformat(),
+    }
+
+
+def test_reconcile_treats_a_missing_or_unreadable_file_as_no_prior_reading(tmp_path):
+    now = _T0 + timedelta(hours=1)
+    meter = _meter(five_hour=True, weekly_used=5.0, observed_at=now)
+    missing = tmp_path / "missing.json"
+    garbage = tmp_path / "garbage.json"
+    garbage.write_text("not json")
+
+    assert usage_meter.reconcile_implied_ceilings(meter, tmp_path, missing) == frozenset()
+    assert usage_meter.reconcile_implied_ceilings(meter, tmp_path, garbage) == frozenset()
+    assert _kinds(missing) == set()
+    assert "last_meter" in json.loads(missing.read_text())
+    assert "last_meter" in json.loads(garbage.read_text())
+
+
+def test_implied_ceiling_and_record_still_work_beside_last_meter(tmp_path, monkeypatch):
+    path = tmp_path / "implied.json"
+    _seed(path, had_five_hour=True)
+    _fake_cost_since(monkeypatch, 0.0, [])
+    now = _T0 + timedelta(hours=1)
+    usage_meter.reconcile_implied_ceilings(_meter(five_hour=True, weekly_used=50.0, observed_at=now), tmp_path, path)
+
+    assert usage_meter.implied_ceiling("five_hour", now, path) == 60.0
+
+    _fake_cost_since(monkeypatch, 3.0, [])
+    entry = usage_meter.MeterEntry(10.0, now + timedelta(hours=3))
+    usage_meter.record_implied_ceiling("five_hour", entry, tmp_path, now, path)
+
+    doc = json.loads(path.read_text())
+    assert doc["five_hour"]["ceiling_usd"] == 30.0
+    assert "last_meter" in doc
