@@ -3773,7 +3773,7 @@ def _lane_outcome(runs_dir: Path, run: str, at: str) -> dict:
 def _wait_fetch(a: argparse.Namespace, runs_dir: Path, run_id: str) -> tuple[str, list[str], str]:
     """Edge. `runs fetch <run>` for a remote run that exited while `runs wait` watched it."""
     ns = argparse.Namespace(**{"profile": None, **vars(a)})  # `runs wait` takes no --profile; `_lake_provider` reads one
-    hosts = _profile_lane_hosts(_read_text_or_none(_profile_path(ns)) or "")
+    hosts = _fetch_hosts(_read_text_or_none(_profile_path(ns)) or "", run_store.hosts(runs_dir))
     mode = work_state.work_state_mode(_lake_provider(ns)[0])
     return _fetch_one(runs_dir, hosts, run_id, mode, _holder_label(ns))
 
