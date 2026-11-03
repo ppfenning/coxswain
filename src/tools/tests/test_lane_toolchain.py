@@ -1,5 +1,6 @@
 import datetime
 import json
+import subprocess
 
 from agent_tools.lane_hosts import LaneHost
 from agent_tools.lane_toolchain import (
@@ -60,6 +61,32 @@ def test_the_lookup_runs_in_the_lane_login_shell():
     assert lane_argv(["git"])[-1] == "sh -c 'for t in \"$@\"; do command -v \"$t\" >/dev/null 2>&1 || echo \"$t\"; done' lane-toolchain git"
     assert lane_argv(["git"])[:3] == ["/bin/sh", "-c", 'exec "${SHELL:-/bin/sh}" -l -i -c "$1"']
     assert lookup_argv(["git"])[-2:] == ["lane-toolchain", "git"]
+
+
+def test_a_repo_dir_is_the_first_positional_argument_ahead_of_the_tools():
+    assert lookup_argv(["git", "ruff"], "/repo")[-4:] == ["lane-toolchain", "/repo", "git", "ruff"]
+    assert lookup_argv(["git"])[-2:] == ["lane-toolchain", "git"]
+    assert "/repo" in lane_argv(["git"], "/repo")[-1]
+
+
+def test_the_real_lookup_counts_an_executable_in_the_repo_venv_and_nothing_else(tmp_path):
+    venv_bin = tmp_path / "repo" / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    (venv_bin / "python").write_text("#!/bin/sh\n")
+    (venv_bin / "python").chmod(0o755)
+    (venv_bin / "ruff").write_text("not executable\n")
+    (venv_bin / "ruff").chmod(0o644)
+    (venv_bin / "pytest").mkdir()
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    argv = ["/bin/sh", *lookup_argv(["python", "ruff", "pytest", "nosuchtool"], str(tmp_path / "repo"))[1:]]
+    out = subprocess.run(argv, env={"PATH": str(empty)}, capture_output=True, text=True, check=True).stdout
+    assert out.split() == ["ruff", "pytest", "nosuchtool"]
+
+
+def test_a_refusal_with_a_repo_dir_names_the_lane_path_and_the_repo_venv():
+    assert refusals("box", ("pytest",), ["probe"], _lacking("pytest"), "/repo") == ["box: pytest not on the lane PATH or in the repo venv"]
+    assert refusals("box", ("pytest",), ["probe"], _lacking("pytest")) == ["box: pytest not on the lane PATH"]
 
 
 def test_a_missing_tool_refuses_before_any_copy_step_is_issued():

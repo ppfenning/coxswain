@@ -14,6 +14,13 @@ _SEGMENTS = re.compile(r"&&|;")
 _ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 _NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]*")
 _LOOKUP = 'for t in "$@"; do command -v "$t" >/dev/null 2>&1 || echo "$t"; done'
+# The check runner puts <repo>/.venv/bin first on PATH, so an executable file there counts as found. `-f` is needed
+# because `-x` alone is true for a directory.
+_LOOKUP_VENV = (
+    'r="$1"; shift; for t in "$@"; do '
+    'if [ -n "$r" ] && [ -f "$r/.venv/bin/$t" ] && [ -x "$r/.venv/bin/$t" ]; then continue; fi; '
+    'command -v "$t" >/dev/null 2>&1 || echo "$t"; done'
+)
 
 Probe = Callable[[list[str]], tuple[int, str]]
 
@@ -57,21 +64,25 @@ def parse_check_tools(lines: Sequence[str]) -> CheckTools:
     )
 
 
-def lane_argv(tools: Sequence[str]) -> list[str]:
+def lane_argv(tools: Sequence[str], repo_dir: str = "") -> list[str]:
     """The command that prints each of `tools` the lane's login shell cannot find, one per line. Run it on a remote
-    host through `ssh_argv`; for this machine run `lookup_argv` directly."""
-    return login_shell_argv(lookup_argv(tools))
+    host through `ssh_argv`; for this machine run `lookup_argv` directly. A tool that is an executable file in
+    `repo_dir`/.venv/bin counts as found; `repo_dir` is passed through as the shell will resolve it, never mapped."""
+    return login_shell_argv(lookup_argv(tools, repo_dir))
 
 
-def lookup_argv(tools: Sequence[str]) -> list[str]:
-    return ["sh", "-c", _LOOKUP, "lane-toolchain", *tools]
+def lookup_argv(tools: Sequence[str], repo_dir: str = "") -> list[str]:
+    if not repo_dir:
+        return ["sh", "-c", _LOOKUP, "lane-toolchain", *tools]
+    return ["sh", "-c", _LOOKUP_VENV, "lane-toolchain", repo_dir, *tools]
 
 
-def refuse_message(host: str, tool: str) -> str:
-    return f"{host}: {tool} not on the lane PATH"
+def refuse_message(host: str, tool: str, repo_dir: str = "") -> str:
+    where = "the lane PATH or in the repo venv" if repo_dir else "the lane PATH"
+    return f"{host}: {tool} not on {where}"
 
 
-def refusals(host: str, tools: Sequence[str], argv: list[str], probe: Probe) -> list[str]:
+def refusals(host: str, tools: Sequence[str], argv: list[str], probe: Probe, repo_dir: str = "") -> list[str]:
     """One refusal line per tool missing on `host`, in `tools` order; [] when none is missing or there is nothing to check.
 
     A login shell may print noise, so only an output line equal to a tool name counts. A probe that exits non-zero
@@ -82,4 +93,4 @@ def refusals(host: str, tools: Sequence[str], argv: list[str], probe: Probe) -> 
     if code != 0:
         return [f"{host}: toolchain probe exited {code}"]
     missing = {line.strip() for line in output.splitlines()}
-    return [refuse_message(host, tool) for tool in tools if tool in missing]
+    return [refuse_message(host, tool, repo_dir) for tool in tools if tool in missing]
