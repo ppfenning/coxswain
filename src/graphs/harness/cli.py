@@ -45,6 +45,7 @@ from graphs.delivery.initiative_decompose import (
     decompose_closing,
     expected_task_files,
     first_problem_line,
+    phase_dirs,
     unexecuted_item_create_reason,
     withdrawal,
 )
@@ -1078,6 +1079,23 @@ def _withdraw_filed_tasks(runs_dir: Path, root: Path, initiative: str, rels: Seq
     return done
 
 
+def _decompose_phase_dirs(
+    proposals: Sequence[Mapping[str, Any]], cartridge: Mapping[str, Any], initiative_id: str | None
+) -> list[str]:
+    """Store-relative task phase directories; none when no `planned` landing routes, as `_settle_decompose` reports."""
+    try:
+        landing = landing_for(cartridge, "planned")
+    except ContractViolation:
+        return []
+    return phase_dirs(proposals, landing=landing, initiative_id=initiative_id)
+
+
+def _make_phase_dirs(root: Path, rels: Sequence[str]) -> None:
+    """Edge: the model `work_item_arm` Write fails ENOENT on an absent phase directory, so create each first."""
+    for rel in rels:
+        (root / rel).mkdir(parents=True, exist_ok=True)
+
+
 def _settle_decompose(
     proposals: Sequence[Mapping[str, Any]],
     diffs: Sequence[Mapping[str, Any]],
@@ -1631,6 +1649,12 @@ def _run_graph(
     auto, gated = split_by_policy(
         proposals, cartridge=cartridge, ledger_path=args.ledger, provider_profile=provider_profile, store=store
     )
+
+    if graph_name == _DECOMPOSE_GRAPH_NAME:
+        _make_phase_dirs(
+            Path(getattr(runner, "cwd", None) or Path.cwd()),
+            _decompose_phase_dirs(proposals, cartridge, graph_args.get("initiative_id")),
+        )
 
     auto_applied: list[dict[str, Any]] = []
     for item in auto:
