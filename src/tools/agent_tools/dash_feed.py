@@ -208,10 +208,12 @@ def _meter_week(meter: usage_meter.Meter) -> pacing.Window:
 def _from_meter(
     meter: usage_meter.Meter, label: str, spend_source: str, at: datetime, hard_stop: float, policy: pacing.Policy,
 ) -> dict:
+    five = meter.five_hour
+    # No five-hour limit on this plan: the feed has no nulls, so it reads 0.0, source "none" and no reset time.
     return {
-        "five_hour_fraction": meter.five_hour.used_percentage / 100,
-        "five_hour_source": label,
-        "five_hour_resets_at": meter.five_hour.resets_at.isoformat(),
+        "five_hour_fraction": 0.0 if five is None else five.used_percentage / 100,
+        "five_hour_source": "none" if five is None else label,
+        "five_hour_resets_at": "" if five is None else five.resets_at.isoformat(),
         "weekly_fraction": meter.seven_day.used_percentage / 100,
         "weekly_source": label,
         "weekly_resets_at": meter.seven_day.resets_at.isoformat(),
@@ -255,7 +257,7 @@ def _spend(runs_dir: Path, now: str, *, read_local=None, read_store=None, read_r
     # ccusage block, as `cox usage assess` does, instead of summing from a reset hours or days gone.
     five_start = (
         None
-        if newest is None or at - newest.observed_at >= timedelta(hours=5)
+        if newest is None or newest.five_hour is None or at - newest.observed_at >= timedelta(hours=5)
         else usage_window.five_hour_start(newest.five_hour.resets_at, at)
     )
     window_ceiling, profile_weekly_ceiling = _profile_ceilings()

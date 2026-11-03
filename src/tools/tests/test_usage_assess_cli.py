@@ -184,3 +184,71 @@ def test_the_policy_files_weekly_hard_stop_applies_to_the_chair_reading(monkeypa
     (tmp_path / "policy.pacing.json").write_text(json.dumps({"weekly_hard_stop_fraction": 0.80}), encoding="utf-8")
     monkeypatch.setattr(cli.run_store, "latest_chair_meter", lambda runs_dir: _chair_doc(5))
     assert cli._usage_assessment(tmp_path).verdict == "stop"
+
+
+def _meter(five_hour_pct: float | None, weekly_pct: float, now: datetime):
+    def entry(pct: float, hours: int):
+        return cli.usage_meter.MeterEntry(used_percentage=pct, resets_at=now + timedelta(hours=hours))
+
+    return cli.usage_meter.Meter(
+        five_hour=None if five_hour_pct is None else entry(five_hour_pct, 1),
+        seven_day=entry(weekly_pct, 72), observed_at=now,
+    )
+
+
+def _temp_ceilings(monkeypatch, tmp_path, doc: dict):
+    path = tmp_path / "implied-ceilings.json"
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    real_implied, real_record = cli.usage_meter.implied_ceiling, cli.usage_meter.record_implied_ceiling
+    monkeypatch.setattr(cli.usage_meter, "implied_ceiling", lambda kind, now: real_implied(kind, now, path))
+    monkeypatch.setattr(
+        cli.usage_meter, "record_implied_ceiling",
+        lambda kind, entry, runs_dir, now: real_record(kind, entry, runs_dir, now, path),
+    )
+    return path
+
+
+def _no_five_hour_estimate(monkeypatch):
+    def refuse(*a, **k):
+        raise AssertionError("the five-hour estimate must not be gathered")
+
+    monkeypatch.setattr(cli.usage_window, "gather", refuse)
+    monkeypatch.setattr(cli.usage_window, "gather_weekly", lambda *a, **k: _unmeasured_window())
+
+
+def test_a_null_five_hour_is_no_limit_even_with_a_learned_ceiling_and_a_store_row(monkeypatch, tmp_path):
+    now = datetime.now(UTC)
+    learned = {"five_hour": {"ceiling_usd": 1.0, "observed_at": now.isoformat()}}
+    path = _temp_ceilings(monkeypatch, tmp_path, learned)
+    _no_five_hour_estimate(monkeypatch)
+    monkeypatch.setattr(cli.usage_meter, "read", lambda *a, **k: _meter(None, 4.0, now))
+    monkeypatch.setattr(cli.run_store, "latest_chair_meter", lambda runs_dir: _chair_doc(5))
+    assessment = cli._usage_assessment(tmp_path)
+    policy = cli._resolved_pacing_policy(tmp_path)
+    assert assessment.verdict == "go"
+    assert "below minimum" not in assessment.reason
+    assert (assessment.tier_ceiling, assessment.effort_ceiling) == (policy.tier_ladder[0], policy.effort_ladder[0])
+    assert "weekly 4%" in assessment.reason
+    assert json.loads(path.read_text(encoding="utf-8")) == learned
+
+
+def test_a_fresh_local_reading_wins_over_a_store_row_recorded_a_minute_earlier(monkeypatch, tmp_path):
+    now = datetime.now(UTC)
+    _temp_ceilings(monkeypatch, tmp_path, {})
+    _no_five_hour_estimate(monkeypatch)
+    monkeypatch.setattr(cli.usage_meter, "read", lambda *a, **k: _meter(None, 4.0, now))
+    monkeypatch.setattr(cli.run_store, "latest_chair_meter", lambda runs_dir: _chair_doc(1))
+    reason = cli._usage_assessment(tmp_path).reason
+    assert "weekly 4%" in reason and "84%" not in reason
+
+
+def test_a_reading_with_a_five_hour_entry_relearns_the_five_hour_ceiling(monkeypatch, tmp_path):
+    now = datetime.now(UTC)
+    path = _temp_ceilings(monkeypatch, tmp_path, {})
+    monkeypatch.setattr(cli.usage_window, "gather", lambda *a, **k: _unmeasured_window())
+    monkeypatch.setattr(cli.usage_window, "gather_weekly", lambda *a, **k: _unmeasured_window())
+    monkeypatch.setattr(cli.usage_meter.run_store, "cost_since", lambda runs_dir, since: 20.0)
+    monkeypatch.setattr(cli.usage_meter, "read", lambda *a, **k: _meter(40.0, 40.0, now))
+    monkeypatch.setattr(cli.run_store, "latest_chair_meter", lambda runs_dir: None)
+    cli._usage_assessment(tmp_path)
+    assert json.loads(path.read_text(encoding="utf-8"))["five_hour"]["ceiling_usd"] == 50.0
