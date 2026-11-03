@@ -50,7 +50,7 @@ def test_steal_over_a_live_holder_writes_the_thief_and_names_the_displaced(tmp_p
 def test_steal_over_a_live_holder_asks_the_store_lease_to_steal(tmp_path, lease_calls):
     _holder(tmp_path)
     assert _take(tmp_path, "--steal") == 0
-    assert lease_calls == [{"steal": True}]
+    assert lease_calls == [{"steal": True, "ttl": 10800 + chair.DEFAULT_LEASE_TTL_SECONDS}]
 
 
 def test_without_steal_a_live_holder_is_refused_and_the_lock_is_unchanged(tmp_path, capsys, lease_calls):

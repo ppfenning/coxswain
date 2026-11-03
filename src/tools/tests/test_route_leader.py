@@ -185,13 +185,13 @@ def _stub_acquire_lease(monkeypatch):
 def test_cli_take_steal_steals_the_store_lease_too(tmp_path, monkeypatch):
     seen = _stub_acquire_lease(monkeypatch)
     assert main(["route", "chair", "take", "--profile", str(_profile(tmp_path)), "--label", "bob", "--steal"]) == 0
-    assert seen == [{"steal": True}]
+    assert seen == [{"steal": True, "ttl": 10800 + chair.DEFAULT_LEASE_TTL_SECONDS}]
 
 
 def test_cli_take_without_steal_leaves_the_store_lease_alone(tmp_path, monkeypatch):
     seen = _stub_acquire_lease(monkeypatch)
     assert main(["route", "chair", "take", "--profile", str(_profile(tmp_path)), "--label", "bob"]) == 0
-    assert seen == [{"steal": False}]
+    assert seen == [{"steal": False, "ttl": 10800 + chair.DEFAULT_LEASE_TTL_SECONDS}]
 
 
 def test_cli_take_then_beat_prints_the_chair_worded_lines(tmp_path, capsys):
