@@ -5,7 +5,11 @@ from devtools import cli, release
 _INDEX = {"urls": [{"packagetype": "sdist", "url": f"https://x/coxswain-{V0}.tar.gz", "digests": {"sha256": "b" * 64}}]}
 _URLS = release.towpath_asset_urls(V0)
 _PY_FORMULA = _TAP_FORMULA.replace("class Cox < Formula\n", 'class Cox < Formula\n  depends_on "python@3.13"\n', 1)
-_PINS = "psycopg==3.3.6 --hash=sha256:aa\npsycopg-binary==3.3.6 ; implementation_name != 'pypy' --hash=sha256:bb\n"
+_PINS = ("psycopg==3.3.6 --hash=sha256:aa\npsycopg-binary==3.3.6 ; implementation_name != 'pypy' --hash=sha256:bb\n"
+         "pyarrow==24.0.0 --hash=sha256:cc\n")
+_ARROW_URL = "https://pypi.org/pypi/pyarrow/24.0.0/json"
+_ARROW_SDIST = "https://files/pyarrow-24.0.0.tar.gz"
+_PYARROW = {"urls": [{"packagetype": "sdist", "url": _ARROW_SDIST, "digests": {"sha256": "6" * 64}}]}
 _PSYCOPG_URL = "https://pypi.org/pypi/psycopg/3.3.6/json"
 _BINARY_URL = "https://pypi.org/pypi/psycopg-binary/3.3.6/json"
 _SDIST = "https://files/psycopg-3.3.6.tar.gz"
@@ -38,25 +42,25 @@ def _tap_steps(dash_tag=None, dash_commits=0):
     return release.release_plan(manifest, V0, tags, pinned_commits={"dash": dash_commits})[-1:]
 
 
-def _index(url, binary=_BINARY):
-    """The coxswain index, or the psycopg and psycopg-binary release documents at the pinned versions."""
-    return {_PSYCOPG_URL: _PSYCOPG, _BINARY_URL: binary}.get(url, _INDEX)
+def _index(url, binary=_BINARY, pyarrow=_PYARROW):
+    """The coxswain index, or the psycopg, psycopg-binary and pyarrow release documents at the pinned versions."""
+    return {_PSYCOPG_URL: _PSYCOPG, _BINARY_URL: binary, _ARROW_URL: pyarrow}.get(url, _INDEX)
 
 
-def _tap_clone(tmp_path, formula_text=_PY_FORMULA):
+def _tap_clone(tmp_path, formula_text=_PY_FORMULA, pins_text=_PINS):
     """The tap clone with its formula, and the umbrella's extras pins."""
     formula = tmp_path / "homebrew-coxswain" / "Formula" / "cox.rb"
     formula.parent.mkdir(parents=True)
     formula.write_text(formula_text)
     pins = tmp_path / "src" / "tools" / "agent_tools" / "extras-requirements.txt"
     pins.parent.mkdir(parents=True)
-    pins.write_text(_PINS)
+    pins.write_text(pins_text)
     return formula
 
 
-def _run(tmp_path, formula_text=_PY_FORMULA, fetch_text=_dash_text, fetch_index=_index):
+def _run(tmp_path, formula_text=_PY_FORMULA, fetch_text=_dash_text, fetch_index=_index, pins=_PINS):
     """The tap clone starts on `feature/x`, so a restore to it is observable."""
-    formula = _tap_clone(tmp_path, formula_text)
+    formula = _tap_clone(tmp_path, formula_text, pins)
     directory = str(formula.parents[1])
     calls, fake_run = _fake_git_run(off_branch={directory})
     rc = cli._release_execute(_tap_steps(), V0, str(tmp_path), {}, str(tmp_path), fake_run, {}, "",
@@ -162,6 +166,43 @@ def test_an_unreachable_index_for_psycopg_refuses_cleanly_before_any_git_call(tm
     rc, calls, _, _, _ = _run(tmp_path, fetch_index=down)
     assert rc == 2
     assert "FAILED tap_formula_pr tap: psycopg: HTTP Error 503" in capsys.readouterr().out
+    assert calls == []
+
+
+def test_a_full_run_writes_the_pyarrow_resource_the_apache_arrow_dependency_and_the_object_store_assertion(tmp_path):
+    rc, _, _, formula, _ = _run(tmp_path)
+    text = formula.read_text()
+    assert rc == 0
+    assert f'resource "pyarrow" do\n    url "{_ARROW_SDIST}"\n    sha256 "{"6" * 64}"' in text
+    assert 'depends_on "apache-arrow"' in text
+    test_block = text.split("  test do\n", 1)[1]
+    assert 'assert_match "object_store", doctor' in test_block.split("\n  end\n", 1)[0]
+
+
+def test_a_pyarrow_payload_with_no_sdist_refuses_before_any_git_call(tmp_path, capsys):
+    rc, calls, _, formula, _ = _run(tmp_path, fetch_index=lambda url: _index(url, pyarrow={"urls": []}))
+    assert rc == 2
+    assert "FAILED tap_formula_pr tap: pyarrow release lists no sdist" in capsys.readouterr().out
+    assert calls == []
+    assert formula.read_text() == _PY_FORMULA
+
+
+def test_an_unreachable_index_for_pyarrow_refuses_cleanly_before_any_git_call(tmp_path, capsys):
+    def down(url):
+        if url == _ARROW_URL:
+            raise OSError("HTTP Error 503")
+        return _index(url)
+
+    rc, calls, _, _, _ = _run(tmp_path, fetch_index=down)
+    assert rc == 2
+    assert "FAILED tap_formula_pr tap: pyarrow: HTTP Error 503" in capsys.readouterr().out
+    assert calls == []
+
+
+def test_a_missing_pyarrow_pin_refuses_before_any_git_call(tmp_path, capsys):
+    rc, calls, _, _, _ = _run(tmp_path, pins=_PINS.split("pyarrow==")[0])
+    assert rc == 2
+    assert "FAILED tap_formula_pr tap: extras requirements pin no pyarrow" in capsys.readouterr().out
     assert calls == []
 
 
