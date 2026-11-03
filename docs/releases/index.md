@@ -113,6 +113,14 @@ every broken formula.
 A green proof means that formula installs and upgrades on those two platforms
 today. It does not mean the release is otherwise good.
 
+## `2026.11.2`
+
+| Component | Repository or path | Tag | Required or flag |
+| --- | --- | --- | --- |
+| dash |  | `v2026.11.1` |  (pinned) |
+
+See the [2026.11.2 release notes](2026.11.2.md) for what landed in each component.
+
 ## `2026.11.1`
 
 | Component | Repository or path | Tag | Required or flag |
