@@ -2428,6 +2428,10 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
             _link_venv(repo, wt)
         return co.returncode == 0, (f"reusing {step['branch']}" if co.returncode == 0 else co.stderr.strip() or co.stdout.strip())
     if kind == "checks":
+        if "skipped" in step:
+            return True, f"checks: skipped ({step['skipped']})"
+        if "kept" in step:
+            print(step["kept"])
         if "branch" in step:
             # Phase mode: never check out the phase branch in the working
             # repo (that races anything else using it) — build it fresh in
@@ -3102,9 +3106,15 @@ def _land_done_before_fetch(runs_dir: Path, task: str | None, mode: str) -> bool
 def _cartridge_checks(repo: Path, profile: dict) -> tuple[list[dict], str | None]:
     """Edge. The profile's team cartridge `landing_areas.checks`, resolved as the chair resolves it, and the error text
     when it cannot be: a profile naming no team and no cartridges_dir has no cartridge, which is `([], None)`."""
+    landing, error = _cartridge_landing(repo, profile)
+    return list(landing.get("checks") or []), error
+
+
+def _cartridge_landing(repo: Path, profile: dict) -> tuple[dict, str | None]:
+    """Edge. The resolved team cartridge's `landing_areas` and the error text when it cannot be resolved; `({}, None)` when the profile names no cartridge."""
     team, cartridges_dir = profile.get("team"), profile.get("cartridges_dir")
     if not team or not cartridges_dir:
-        return [], None
+        return {}, None
     try:
         from harness.resolve import overlay_path, resolve_cartridge
         overlay_file = Path(overlay_path(str(repo)))
@@ -3112,33 +3122,61 @@ def _cartridge_checks(repo: Path, profile: dict) -> tuple[list[dict], str | None
         cartridge, _ = resolve_cartridge(team, cartridges_dir=Path(cartridges_dir).expanduser(),
                                          skills_root=[Path(r).expanduser() for r in profile.get("skills_roots") or []], overlay=overlay)
     except Exception as exc:
-        return [], f"{type(exc).__name__}: {exc}"
-    return list((cartridge.get("landing_areas") or {}).get("checks") or []), None
+        return {}, f"{type(exc).__name__}: {exc}"
+    return dict(cartridge.get("landing_areas") or {}), None
 
 
-def _land_repo_facts(repo: Path, profile: dict) -> dict:
+def _required_checks(repo: Path, default_branch: str | None, forge_module) -> tuple[str, ...] | None:
+    """Edge. The default branch's required check names, or None when the forge is unnamed, has no such read (the local
+    forge), no branch is given, or the read fails; a failure's cause goes to stderr, since the plan only says unreadable."""
+    read = getattr(forge_module, "read_required_for_base", None)
+    if not default_branch or read is None:
+        return None
+    try:
+        return read(repo, default_branch)
+    except Exception as exc:
+        print(f"land: required checks unreadable ({type(exc).__name__}: {exc})", file=sys.stderr)
+        return None
+
+
+def _land_repo_facts(repo: Path, profile: dict, default_branch: str | None = None, forge_module=None) -> dict:
     """Edge. What `land.checks_argv` needs: the cartridge's checks plus the repo's `.agent-checks` (parsed by
     `harness.checks.repo_checks`, as the chair does), the files that say whether pytest belongs here, and
-    `cartridge_error`, set when the cartridge could not be resolved and the checks are therefore short."""
+    `cartridge_error`, set when the cartridge could not be resolved and the checks are therefore short.
+    `land_checks` is the cartridge's; only `ci` reads the forge, for `required_checks`."""
     from harness.checks import repo_checks
     try:
         agent_checks = (repo / ".agent-checks").read_text(encoding="utf-8-sig")
     except (OSError, UnicodeDecodeError):
         agent_checks = ""
-    cartridge_checks, cartridge_error = _cartridge_checks(repo, profile)
-    return {"venv_python": (repo / ".venv" / "bin" / "python").exists(), "uv_lock": (repo / "uv.lock").exists(),
-            "python_project": any((repo / name).exists() for name in land.PYTHON_PROJECT_FILES),
-            "checks": land.resolved_checks(cartridge_checks, repo_checks(agent_checks)), "cartridge_error": cartridge_error}
+    landing, cartridge_error = _cartridge_landing(repo, profile)
+    cartridge_checks = list(landing.get("checks") or [])
+    facts = {"venv_python": (repo / ".venv" / "bin" / "python").exists(), "uv_lock": (repo / "uv.lock").exists(),
+             "python_project": any((repo / name).exists() for name in land.PYTHON_PROJECT_FILES),
+             "checks": land.resolved_checks(cartridge_checks, repo_checks(agent_checks)), "cartridge_error": cartridge_error}
+    land_checks = landing.get("land_checks")
+    if land_checks is None:
+        return facts
+    ci = {"required_checks": _required_checks(repo, default_branch, forge_module)} if land_checks == "ci" else {}
+    return {**facts, "land_checks": land_checks, **ci}
 
 
 def _land_checks_lines(steps: list[dict]) -> list[str]:
     """The dry run's lines, one per checks step and labelled by what it checks, each check as its command (or
-    `name = command` when the name is neither the command nor its first word); `none declared` for a step holding none."""
+    `name = command` when the name is neither the command nor its first word); `none declared` for a step holding none.
+    A skipped step says `skipped (<reason>)`; a kept step's line is followed by its reason."""
     def show(name: str, line: str) -> str:
         return line if name == line or line.split(None, 1)[:1] == [name] else f"{name} = {line}"
-    return [f"checks ({s.get('worktree_of') or s.get('branch') or 'repo'}): "
-            + ("; ".join(show(n, line) for n, line in s["checks"]) or "none declared")
-            for s in steps if s["kind"] == "checks"]
+    lines = []
+    for s in (s for s in steps if s["kind"] == "checks"):
+        label = f"checks ({s.get('worktree_of') or s.get('branch') or 'repo'}): "
+        if "skipped" in s:
+            lines.append(f"{label}skipped ({s['skipped']})")
+            continue
+        lines.append(label + ("; ".join(show(n, line) for n, line in s["checks"]) or "none declared"))
+        if "kept" in s:
+            lines.append(f"  {s['kept']}")
+    return lines
 
 
 def _base_behind_warning(runs_dir: Path, run_id: str, repo: Path, default_branch: str, limit: int) -> str | None:
@@ -3199,7 +3237,7 @@ def _runs_land(a: argparse.Namespace) -> int:
     except base_branch.BaseError as exc:
         print(f"land: refusing, {exc}")
         return 2
-    repo_facts = _land_repo_facts(repo, profile)
+    repo_facts = _land_repo_facts(repo, profile, default_branch, forge.forge_for(forge.forge_name(profile)))
     if repo_facts["cartridge_error"]:
         # The chair fails a run whose cartridge will not resolve; a land that went on would push after fewer checks than the build ran.
         shortfall = f"cartridge checks unavailable ({repo_facts['cartridge_error']}); the land would run fewer checks than the build did"
