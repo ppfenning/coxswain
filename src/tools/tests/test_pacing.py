@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from agent_tools.pacing import Policy, Window, assess
 
@@ -54,7 +54,7 @@ def test_hold_when_headroom_drops_just_below_the_minimum():
     result = assess(_window(spent_usd=60, ceiling_usd=100, burn_usd_per_hour=6.2), _policy(), now)
     assert result.headroom_usd == 9.0
     assert result.verdict == "hold"
-    assert result.hold_until == _END
+    assert result.hold_until is None
     assert result.tier_ceiling == "cheap"
     assert result.effort_ceiling == "low"
     assert "\n" not in result.reason
@@ -128,10 +128,63 @@ def test_the_hard_stop_still_fires_at_the_start_of_a_window():
     assert assess(_window(spent_usd=99, ceiling_usd=100), _policy(), now).verdict == "stop"
 
 
-def test_the_headroom_hold_still_applies_before_pace_is_judged():
+def test_the_headroom_projection_cannot_hold_before_pace_is_judged():
     now = _START.replace(minute=6)
     result = assess(_window(spent_usd=3, ceiling_usd=100, burn_usd_per_hour=10.0), _policy(), now)
+    assert result.verdict == "go"
+
+
+def _five_hour_window(spent_usd: float, burn_usd_per_hour: float, ceiling_usd: float = 100.0) -> Window:
+    return Window(start=_START, end=_START + timedelta(hours=5), spent_usd=spent_usd,
+                  ceiling_usd=ceiling_usd, burn_usd_per_hour=burn_usd_per_hour, runs_in_flight=0)
+
+
+def test_an_early_burst_projecting_an_overspend_goes_instead_of_holding():
+    now = _START + timedelta(minutes=23, seconds=6)  # elapsed_fraction 0.077
+    result = assess(_five_hour_window(spent_usd=10, burn_usd_per_hour=26.0), _policy(), now)
+    assert result.headroom_usd < 0  # the projection overspends, the incident's -29.8
+    assert result.verdict == "go"
+    assert result.hold_until is None
+    assert result.reason.endswith("pace not judged before 10% elapsed")
+
+
+def test_a_projection_between_the_pace_minimum_and_the_projection_minimum_does_not_hold():
+    now = _START + timedelta(minutes=45)  # elapsed_fraction 0.15
+    result = assess(_five_hour_window(spent_usd=15, burn_usd_per_hour=25.0), _policy(), now)
+    assert result.headroom_usd < 0
+    assert result.verdict == "go"
+
+
+def test_a_genuine_overspend_after_the_projection_minimum_still_holds():
+    now = _START.replace(hour=3)  # elapsed_fraction 0.3, on pace, projecting 30 + 11 * 7 = 107
+    result = assess(_window(spent_usd=30, ceiling_usd=100, burn_usd_per_hour=11.0), _policy(), now)
+    assert result.headroom_usd == -7.0
     assert result.verdict == "hold"
+
+
+def test_a_hold_lifts_on_the_next_assessment_when_the_burn_falls():
+    first = assess(_window(spent_usd=30, ceiling_usd=100, burn_usd_per_hour=11.0), _policy(), _START.replace(hour=3))
+    later = assess(_window(spent_usd=33, ceiling_usd=100, burn_usd_per_hour=2.0), _policy(), _START.replace(hour=4))
+    assert first.verdict == "hold"
+    assert first.hold_until is None
+    assert "re-assessed each tick" in first.reason
+    assert later.verdict in {"go", "go_degraded"}
+
+
+def test_the_hold_reason_prints_dollars_for_a_dollar_ceiling():
+    now = _START.replace(hour=5)  # headroom 200 - (120 + 15 * 5) = 5
+    result = assess(_window(spent_usd=120, ceiling_usd=200, burn_usd_per_hour=15.0), _policy(), now)
+    assert result.headroom_usd == 5.0
+    assert result.reason.startswith("headroom $5.00 below minimum $10.00;")
+    assert "%" not in result.reason
+
+
+def test_the_hold_reason_prints_percent_for_a_percent_scale_ceiling():
+    now = _START.replace(hour=5)  # headroom 100 - (60 + 6.2 * 5) = 9
+    result = assess(_window(spent_usd=60, ceiling_usd=100, burn_usd_per_hour=6.2), _policy(), now)
+    assert result.headroom_usd == 9.0
+    assert result.reason.startswith("headroom 9.00% below minimum 10.00%;")
+    assert "$" not in result.reason
 
 
 def test_elapsed_fraction_is_complete_for_a_zero_length_window():
