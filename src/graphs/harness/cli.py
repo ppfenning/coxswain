@@ -55,6 +55,7 @@ from harness.checks import all_passed, checks_evidence, repo_checks, run_checks
 from harness.digest import build_digest
 from harness.escalate import escalate_self_modification
 from harness.gate import apply_decisions, auto_apply, gate
+from harness.lanes import resolve_max_parallel
 from harness.phase import run_phase
 from harness.registry import GraphSpec, discover
 from harness.resolve import overlay_path, resolve_cartridge, role_skill_bodies
@@ -260,7 +261,12 @@ def _build_parser(specs: dict[str, GraphSpec]) -> argparse.ArgumentParser:
     parser.add_argument("--initiative", help="phase, epic, rescue: path to the work/<initiative> directory")
     parser.add_argument("--task", help="rescue: id of the quarantined task to rescue")
     parser.add_argument("--phase-name", help="phase: which phase to run (default: the first with ready work)")
-    parser.add_argument("--max-parallel", type=int, default=4, help="phase: how many tasks run at once")
+    parser.add_argument(
+        "--max-parallel",
+        type=int,
+        default=None,
+        help="phase, epic: how many tasks run at once (default: the provider profile's max_parallel, else the free lane count)",
+    )
     parser.add_argument("--scripted", metavar="JSON", help="run offline against canned node responses")
     parser.add_argument("--assume", choices=["a", "e", "r"], help="answer the gate non-interactively")
     parser.add_argument("--runs-dir", default=REPO_ROOT / "runs")
@@ -339,6 +345,18 @@ def _read_profile(path: Path | str) -> Mapping[str, Any]:
     except (OSError, yaml.YAMLError):
         return {}
     return data if isinstance(data, Mapping) else {}
+
+
+def _parallel_cap(parser: argparse.ArgumentParser, args: argparse.Namespace, free_lanes: int) -> int:
+    """The command-line cap, else the profile's max_parallel, else `free_lanes`. A bad profile value is a usage error."""
+    # Not module-level: a process importing this module must not need the cartridges package to carry the new name.
+    from core.profile import parse_max_parallel
+
+    path = getattr(args, "provider_profile", None)
+    from_profile = parse_max_parallel(_read_profile(path).get("max_parallel")) if path else None
+    if isinstance(from_profile, str):
+        parser.error(from_profile)
+    return resolve_max_parallel(args.max_parallel, from_profile, free_lanes)
 
 
 def _storage_url(profile: Mapping[str, Any], runs_dir: Path | str) -> str:
@@ -1388,7 +1406,7 @@ def _run_graph(
             specs=specs,
             run_id=run_id,
             date=args.date,
-            max_parallel=args.max_parallel,
+            max_parallel=_parallel_cap(parser, args, len(initiative.get("items") or [])),
             ledger_path=args.ledger,
             provider_profile=_provider_profile_scope(args.provider_profile),
             runs_dir=args.runs_dir,
@@ -1459,7 +1477,8 @@ def _run_graph(
             print(f"nothing ready in {initiative['id']}" + (f" phase {phase_name}" if phase_name else ""))
             return 0
 
-        print(f"phase {phase_name}: {len(ready)} task(s) ready, running up to {args.max_parallel} at once")
+        max_parallel = _parallel_cap(parser, args, len(ready))
+        print(f"phase {phase_name}: {len(ready)} task(s) ready, running up to {max_parallel} at once")
         print("  " + ", ".join(t["id"] for t in ready))
         results, proposals, failures = run_phase(
             lifecycle_run=specs["lifecycle"].run,
@@ -1468,7 +1487,7 @@ def _run_graph(
             runner=runner,
             run_id=run_id,
             date=args.date,
-            max_parallel=args.max_parallel,
+            max_parallel=max_parallel,
         )
         for failure in failures:
             print(f"task failed: {failure}", file=sys.stderr)
@@ -1506,7 +1525,7 @@ def _run_graph(
                 cartridge=cartridge,
                 run_id=run_id,
                 date=args.date,
-                max_parallel=args.max_parallel,
+                max_parallel=4 if args.max_parallel is None else args.max_parallel,  # cos keeps its old default of 4
                 intake_root=docket_args["intake_root"],
                 ledger_path=args.ledger,
                 alerts=alerts,
