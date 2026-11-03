@@ -332,6 +332,28 @@ def test_a_contract_task_with_only_a_py_surface_gets_one_problem():
     assert [p.task for p in _contract_problems([_PRODUCER, _CONSUMER, contract])] == ["c"]
 
 
+def test_a_new_json_fixture_surface_in_the_producer_repo_is_clean():
+    contract = {**_CONTRACT, "surfaces": ["tests/fixtures/verb_v1.json (new)"]}
+    assert _contract_problems([_PRODUCER, _CONSUMER, contract]) == []
+
+
+def test_the_same_json_fixture_surface_without_the_new_suffix_is_clean():
+    contract = {**_CONTRACT, "surfaces": ["tests/fixtures/verb_v1.json"]}
+    assert _contract_problems([_PRODUCER, _CONSUMER, contract]) == []
+
+
+def test_a_new_py_surface_alone_still_has_no_json_surface():
+    contract = {**_CONTRACT, "surfaces": ["agent_tools/verb.py (new)"]}
+    problems = _contract_problems([_PRODUCER, _CONSUMER, contract])
+    assert [(p.task, "has no .json surface" in p.detail) for p in problems] == [("c", True)]
+
+
+def test_a_new_non_json_surface_alone_still_has_no_json_surface():
+    contract = {**_CONTRACT, "surfaces": ["notes.txt (new)"]}
+    problems = _contract_problems([_PRODUCER, _CONSUMER, contract])
+    assert [(p.task, "has no .json surface" in p.detail) for p in problems] == [("c", True)]
+
+
 def test_two_tasks_with_one_interface_in_one_repo_give_no_contract_problem():
     assert _contract_problems([_PRODUCER, {**_CONSUMER, "repo": "tools", "needs": []}]) == []
 

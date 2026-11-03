@@ -363,7 +363,7 @@ def _size_problems(tasks: Sequence[Mapping[str, Any]]) -> list[Problem]:
 
 
 def _contract_flaws(contract: Mapping[str, Any], producer_repos: set[Any]) -> list[str]:
-    has_json = any(str(s).endswith(".json") for s in contract.get("surfaces") or [])
+    has_json = any(str(s).removesuffix(_NEW_SUFFIX).endswith(".json") for s in contract.get("surfaces") or [])
     wrong_repo = bool(producer_repos) and contract.get("repo") not in producer_repos
     return [
         *(["has no .json surface"] if not has_json else []),
