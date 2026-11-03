@@ -192,3 +192,144 @@ def test_apply_refuses_before_any_step_when_the_cartridge_cannot_be_resolved(tmp
     assert "the land would run fewer checks than the build did" in out
     assert ran == []
     assert _git(repo, "branch", "--list", "pr/*") == ""
+
+
+class _Forge:
+    """A forge stub that records every required-checks read."""
+
+    def __init__(self, required):
+        self.required, self.reads = required, []
+
+    def read_required_for_base(self, repo, base):
+        self.reads.append((repo, base))
+        if isinstance(self.required, Exception):
+            raise self.required
+        return self.required
+
+
+def _plan_steps(facts):
+    return land.land_plan(_record(), {"agents/epic-x-5/seams-task": [_TASK]}, "main", facts)
+
+
+def _ci_facts(tmp_path, monkeypatch, forge, land_checks="ci", base="main"):
+    monkeypatch.setattr(cli, "_cartridge_landing", lambda repo, profile: ({"land_checks": land_checks, "checks": []}, None))
+    return cli._land_repo_facts(tmp_path, {}, base, forge)
+
+
+def test_ci_with_a_required_check_plans_a_skipped_checks_step_and_the_executor_runs_nothing(tmp_path, monkeypatch):
+    forge = _Forge(("test",))
+    facts = _ci_facts(tmp_path, monkeypatch, forge)
+    assert (facts["land_checks"], facts["required_checks"], forge.reads) == ("ci", ("test",), [(tmp_path, "main")])
+    step = next(s for s in _plan_steps(facts) if s["kind"] == "checks")
+    assert step["skipped"] == "CI runs the required status checks on main: test"
+
+    def boom(*a, **k):
+        raise AssertionError("a skipped checks step ran a command")
+    monkeypatch.setattr(cli, "_run_checks", boom)
+    monkeypatch.setattr(cli.subprocess, "run", boom)
+    assert cli._execute_land_step(tmp_path, step) == (True, f"checks: skipped ({step['skipped']})")
+
+
+def test_ci_with_no_required_check_keeps_the_checks_and_the_dry_run_gives_the_reason(tmp_path, monkeypatch, capsys):
+    facts = _ci_facts(tmp_path, monkeypatch, _Forge(()))
+    step = next(s for s in _plan_steps(facts) if s["kind"] == "checks")
+    assert step["kept"] == "checks kept locally: main has no required status check"
+    assert cli._land_checks_lines([step])[-1] == "  checks kept locally: main has no required status check"
+    ran = []
+    monkeypatch.setattr(cli, "_run_checks", lambda checks, wt: ran.append(checks) or (True, "ok"))
+    assert cli._execute_land_step(tmp_path, step) == (True, "ok")
+    assert ran == [step["checks"]]
+    assert capsys.readouterr().out == "checks kept locally: main has no required status check\n"
+
+
+@pytest.mark.parametrize("forge", [None, _Forge(RuntimeError("gh down"))])
+def test_a_ci_forge_that_cannot_be_named_or_read_gives_required_checks_none(tmp_path, monkeypatch, forge):
+    assert _ci_facts(tmp_path, monkeypatch, forge)["required_checks"] is None
+    assert _ci_facts(tmp_path, monkeypatch, _Forge(("t",)), base=None)["required_checks"] is None
+
+
+@pytest.mark.parametrize("land_checks", ["local", None])
+def test_default_and_local_facts_plan_the_same_steps_and_make_no_forge_read(tmp_path, monkeypatch, land_checks):
+    forge = _Forge(("test",))
+    landing = {} if land_checks is None else {"land_checks": land_checks}
+    monkeypatch.setattr(cli, "_cartridge_landing", lambda repo, profile: (landing, None))
+    facts = cli._land_repo_facts(tmp_path, {}, "main", forge)
+    assert forge.reads == [] and "required_checks" not in facts
+    step = next(s for s in _plan_steps(facts) if s["kind"] == "checks")
+    assert "skipped" not in step and "kept" not in step
+    assert cli._land_checks_lines([step]) == [f"checks ({step['worktree_of']}): none declared"]
+
+
+def _ci_overlay(repo):
+    (repo / ".agent").mkdir()
+    (repo / ".agent" / "cartridge.yaml").write_text("landing_areas:\n  land_checks: ci\n")
+
+
+def test_land_checks_ci_in_the_repo_overlay_reaches_the_facts_through_the_real_cartridge(tmp_path):
+    _ci_overlay(tmp_path)
+    forge = _Forge(("test",))
+    profile = {"team": "local", "cartridges_dir": str(_CARTRIDGES / "cartridges"), "skills_roots": [str(_CARTRIDGES / "skills-plugins")]}
+    facts = cli._land_repo_facts(tmp_path, profile, "main", forge)
+    assert (facts["land_checks"], facts["required_checks"], facts["cartridge_error"]) == ("ci", ("test",), None)
+
+
+def test_a_failed_required_read_is_reported_on_stderr_with_its_cause(tmp_path, capsys):
+    assert cli._required_checks(tmp_path, "main", _Forge(RuntimeError("gh down"))) is None
+    assert "RuntimeError: gh down" in capsys.readouterr().err
+
+
+def test_a_land_on_the_default_local_forge_never_reads_github_and_keeps_the_checks(tmp_path, monkeypatch, capsys):
+    from agent_tools import forge_github
+
+    reads = []
+    monkeypatch.setattr(forge_github, "read_required_for_base", lambda repo, base: reads.append(base) or ("test",))
+    repo = _task_repo(tmp_path)
+    _ci_overlay(repo)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "overlay")
+    _land(tmp_path, repo, profile=_profile(tmp_path, "local"))
+    err = capsys.readouterr().err
+    assert reads == []
+    assert "skipped" not in err and "cargo test" in err
+    assert "checks kept locally: the required status checks on main could not be read" in err
+
+
+def test_a_land_on_the_github_forge_reads_the_default_branch_and_skips_the_checks(tmp_path, monkeypatch, capsys):
+    from agent_tools import forge_github
+
+    reads = []
+    monkeypatch.setattr(forge_github, "read_required_for_base", lambda repo, base: reads.append(base) or ("test",))
+    repo = _task_repo(tmp_path)
+    _ci_overlay(repo)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "overlay")
+    profile = _profile(tmp_path, "local")
+    profile.write_text(profile.read_text() + "forge: github\n")
+    _land(tmp_path, repo, profile=profile)
+    err = capsys.readouterr().err
+    assert reads == ["main"]
+    assert "skipped (CI runs the required status checks on main: test)" in err
+
+
+def test_the_dry_run_line_for_a_skipped_step_names_the_worktree_the_skip_and_its_reason():
+    step = {"kind": "checks", "checks": [("tests", "pytest -q")], "worktree_of": "pr/a", "skipped": "CI runs the required status checks on main: test"}
+    assert cli._land_checks_lines([step]) == ["checks (pr/a): skipped (CI runs the required status checks on main: test)"]
+
+
+def test_a_ci_land_whose_poll_reports_no_checks_still_fails_at_wait_checks(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from agent_tools import forge_github
+
+    real_wait = forge_github.wait_checks
+    steps = _plan_steps(_ci_facts(tmp_path, monkeypatch, _Forge(("test",))))
+    kinds = [s["kind"] for s in steps]
+    assert "skipped" in steps[kinds.index("checks")] and kinds.index("checks") < kinds.index("wait_checks")
+    monkeypatch.setattr(forge_github, "_run", lambda argv, *, timeout, cwd=None: SimpleNamespace(returncode=0, stdout="abc\n", stderr=""))
+    monkeypatch.setattr(forge_github, "_read_required", lambda repo, ref: ())
+    monkeypatch.setattr(forge_github, "_read_checks", lambda repo, ref="HEAD": (True, ({"check_runs": []}, {"statuses": []})))
+    monkeypatch.setattr(forge_github, "read_check_suites", lambda repo, sha: ())
+    clock = iter(range(0, 10_000, 30))
+    wait = steps[kinds.index("wait_checks")]
+    monkeypatch.setattr(forge_github, "wait_checks", lambda repo, timeout_s, ref="HEAD": real_wait(repo, timeout_s, sleep=lambda s: None, now=lambda: next(clock), ref=ref))
+    assert cli._execute_land_step(tmp_path, wait, forge_github) == (False, "no checks reported within 180s")
