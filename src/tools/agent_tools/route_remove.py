@@ -1,5 +1,6 @@
 """`route remove` core: retire a queued intake, or drop an initiative nothing has started. The edge writes; the name, date and reason come in as arguments."""
 
+import fnmatch
 from collections.abc import Collection, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
@@ -64,3 +65,57 @@ def remove(
     if isinstance(guard, route_guard.Refusal):
         return _refuse(guard.reason)
     return draft_apply.remove(ws / "work", target.initiative, reason, by, store, dry_run=dry_run, clock=lambda: now)
+
+
+def expand_targets(rows: Sequence[Mapping], ids: Sequence[str], match: str | None) -> tuple[list[str], str | None]:
+    """Explicit ids in order, then queued intakes whose file stem or frontmatter id matches the glob. A glob matching nothing gives [] and a reason.
+
+    A queued intake is listed once, under its file stem, however it was named.
+    """
+    queued = [row for row in rows if row.get("kind") == "intake" and row.get("state") == "queued"]
+    matched = [
+        row["task_id"]
+        for row in queued
+        if match is not None and any(fnmatch.fnmatchcase(name, match) for name in _names(row))
+    ]
+    if match is not None and not matched:
+        return [], f"no queued intake matches {match}"
+    targets = list(dict.fromkeys([*(_stem(rows, id) for id in ids), *matched]))
+    return targets, (None if targets else "no targets given")
+
+
+def _names(row: Mapping) -> list[str]:
+    """The names route_guard accepts for a queued intake: the file stem and the frontmatter id."""
+    return [name for name in (row["task_id"], (row.get("extra") or {}).get("id")) if isinstance(name, str)]
+
+
+def _stem(rows: Sequence[Mapping], id: str) -> str:
+    """A queued intake named by its frontmatter id becomes its file stem, so the same intake is not removed twice. Anything else passes through."""
+    target = route_guard.resolve_target(rows, id)
+    return target.task_id if isinstance(target, route_guard.QueuedIntake) else id
+
+
+def remove_many(
+    ws: Path,
+    ids: Sequence[str],
+    reason: str,
+    by: str,
+    now: datetime,
+    rows: Sequence[Mapping],
+    live_runs: Mapping[str, Collection[str]],
+    store: draft_apply.Store,
+    *,
+    match: str | None = None,
+    dry_run: bool = False,
+) -> int:
+    """Edge. `live_runs` maps an initiative to the ids of runs live on it; each target sees only its own. A refused target does not stop the rest. Returns the worst exit code."""
+    targets, why = expand_targets(rows, ids, match)
+    if not targets:
+        return _refuse(why or "no targets given")
+    codes = [
+        remove(ws, target, reason, by, now, rows, live_runs.get(target, ()), store, dry_run=dry_run)
+        for target in targets
+    ]
+    done = sum(1 for code in codes if code == route_guard.DONE)
+    print(f"{'would remove' if dry_run else 'removed'} {done} of {len(codes)}")
+    return max(codes)
