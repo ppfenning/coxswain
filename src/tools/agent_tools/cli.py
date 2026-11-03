@@ -3075,16 +3075,30 @@ def _land_walked(a: argparse.Namespace, runs_dir: Path, mode: str, task: str | N
             held[0] = again.epoch
         return again
 
+    refused_by: list[str | None] = []  # holders the first take was refused by; a body that runs after one ran on a takeover
+
+    def acquire(runs_dir: Path, name: str, holder: str, ttl: int, steal: bool = False) -> store_cli.LeaseResult:
+        got = store_cli.lease_acquire(runs_dir, name, holder, ttl, steal=True) if steal else store_cli.lease_acquire(runs_dir, name, holder, ttl)
+        if isinstance(got, store_cli.LeaseRefused) and not steal:
+            refused_by.append(got.holder)
+        return got
+
     def body(epoch: int) -> tuple[int, list[str], str] | str:
         held[0] = epoch
+        if refused_by:  # printed here so it lands before the walk's own output and survives a walk that raises
+            print(f"land: taking over the land lease for {task} from {refused_by[0]} (pid gone)")
         stop = recheck()
         guard = _LeaseGuard(f"land lease for {task}", renew, reacquire, time.monotonic, _LAND_LEASE_TTL_SECONDS,
                             lambda kind, result, _renewed, _now: _task_lease_stop(task, kind, result), only=_GUARDED_STEPS)
         return stop if stop is not None else walk(guard)
 
-    ran = land_lease.run_under_land_lease(runs_dir, task, holder, _LAND_LEASE_TTL_SECONDS, body, epoch_now=lambda: held[0])
+    ran = land_lease.run_under_land_lease(runs_dir, task, holder, _LAND_LEASE_TTL_SECONDS, body, acquire=acquire,
+                                          epoch_now=lambda: held[0], this_host=socket.gethostname(), alive=land_repo_lease.pid_alive)
     if isinstance(ran, land_lease.Refused):
-        print(f"land: refusing, {task} is being landed by {ran.holder} (lease epoch {ran.epoch})")
+        if ran.holder is None:  # a steal over a dead holder was granted at an unexpected epoch: a live land had taken it first
+            print(f"land: refusing, {task} was taken by a live land while taking over a dead holder's lease (refused at epoch {ran.epoch})")
+        else:
+            print(f"land: refusing, {task} is being landed by {ran.holder} (lease epoch {ran.epoch})")
         return None
     if isinstance(ran, land_lease.Unavailable):
         print(f"land: refusing, could not take the land lease for {task}: {ran.detail}")
