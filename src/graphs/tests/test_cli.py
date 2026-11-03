@@ -1317,6 +1317,89 @@ def test_a_decompose_run_whose_applied_task_is_where_the_plan_said_prints_the_cl
     assert "decompose: 1 task(s) written, 0 missing:" in capsys.readouterr().out
 
 
+class _PlainWriteArm(ScriptedRunner):
+    """A model `work_item_arm` that writes its file with a plain write and no mkdir, as the Write tool fails without one."""
+
+    capabilities: ClassVar[dict[str, bool]] = {"tool_use": True}
+
+    def __init__(self, path: Path) -> None:
+        super().__init__({})
+        self.path = path
+
+    def run(self, **kwargs):
+        try:
+            self.path.write_text("---\nstate: ready\n---\nbody\n", encoding="utf-8")
+        except OSError as exc:
+            return {"applied": False, "detail": f"ENOENT: {exc}"}
+        return {"applied": True, "detail": f"wrote {self.path}"}
+
+
+def _model_arm_decompose_run(tmp_path: Path, arm: _PlainWriteArm, *, routed: bool) -> int:
+    """One task of phase `p1`, approved at the gate and applied by the model arm, with or without a `planned` landing."""
+    profile = tmp_path / "profile.yaml"
+    profile.write_text("provider: test\n", encoding="utf-8")
+    proposal = {
+        "kind": "item_create",
+        "risk": "low",
+        "target": "t1",
+        "evidence": [{"check": "phase", "output": "p1"}],
+        "rationale": "because",
+        "suggested_action": "create",
+    }
+    spec = SimpleNamespace(
+        name="decompose", graph_name=DECOMPOSE_GRAPH_NAME, needs=(), run=lambda graph_args, runner: {"proposals": [proposal]}
+    )
+    args = SimpleNamespace(
+        graph="decompose",
+        date="2026-11-03",
+        runs_dir=tmp_path / "runs",
+        ledger=tmp_path / "ledger.jsonl",
+        provider_profile=str(profile),
+        repo=None,
+        assume="a",
+        result_out=None,
+    )
+    return cli._run_graph(
+        specs={"decompose": spec},
+        parser=_FakeParser(args),
+        args=args,
+        cartridge={
+            **_CARTRIDGE,
+            "write_kinds": {"item_create": {"risk": "low", "ramp": "gated", "apply_arm": "work_item_arm"}},
+            **({"work_routing": {"states": {"planned": "work"}}} if routed else {}),
+        },
+        runner=arm,
+        run_id="r1",
+    )
+
+
+def test_a_decompose_creates_the_phase_directory_before_a_model_arm_writes_into_it(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _filing_in_memory(monkeypatch)
+    task = tmp_path / "work" / "p1" / "t1.md"
+    assert not task.parent.exists()
+
+    assert _model_arm_decompose_run(tmp_path, _PlainWriteArm(task), routed=True) == 0
+
+    assert "decompose: 1 task(s) written, 0 missing:" in capsys.readouterr().out
+    assert task.exists()
+    assert task.parent.is_dir()
+
+
+def test_a_decompose_with_no_planned_landing_creates_no_phase_directory(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.chdir(tmp_path)
+    _filing_in_memory(monkeypatch)
+    task = tmp_path / "t1.md"
+
+    assert _model_arm_decompose_run(tmp_path, _PlainWriteArm(task), routed=False) == 1
+
+    assert "decompose: cannot place 1 approved task(s)" in capsys.readouterr().err
+    assert not (tmp_path / "work").exists()
+    assert not (tmp_path / "p1").exists()
+
+
 def test_a_decompose_run_with_an_approved_but_unapplied_item_create_returns_1_and_prints_the_reason(
     tmp_path, monkeypatch, capsys
 ) -> None:
