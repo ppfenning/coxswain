@@ -18,7 +18,17 @@ is tagged on its own: a Coxswain release tags dash only when dash changed,
 and `manifest.toml` names the tag a release uses. Install it one of these
 ways.
 
-**With `cox install`.** Pass `--with dash`.
+**With `cox upgrade` or `cox install`.** Run `cox upgrade`, or pass
+`--with dash` to `cox install`. Either one downloads the `towpath` and
+`coxtop` release binaries for the tag `manifest.toml` pins. It puts them in the
+bin directory already in use. It then runs `towpath --version` and checks the
+result against the pin. The status table shows a `towpath` row with the
+outcome.
+
+Release binaries exist for two targets: `aarch64-apple-darwin` and
+`x86_64-unknown-linux-gnu`. Any other machine gets a plain no-asset message
+and a `towpath` row that is not ok. Those machines build from source, as
+described under Cargo below.
 
 **Homebrew.** The `cox` formula installs `towpath` along with `cox`:
 
@@ -32,8 +42,10 @@ release page of
 [coxswain-dash](https://github.com/ppfenning/coxswain-dash/releases) and put
 `towpath` on your `PATH`.
 
-**Cargo, as the fallback.** Build from source at the tag `manifest.toml`
-names (the crate is `coxswain-dash`; it installs `towpath`):
+**Cargo, for other machines and for development.** Building from source stays
+the path for any machine with no release binary and for work on dash itself.
+Build at the tag `manifest.toml` names. The crate is `coxswain-dash` and it
+installs `towpath`:
 
 ```sh
 cargo install --git https://github.com/ppfenning/coxswain-dash --tag <dash tag>
