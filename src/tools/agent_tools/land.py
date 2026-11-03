@@ -796,6 +796,24 @@ def behind_stop(attempts: int, last: str) -> str:
     return f"still behind the base branch after {attempts} branch updates; last refusal: {last}"
 
 
+def is_conflict_error(text: str) -> bool:
+    """Whether a failed branch update's error says the branch conflicts with its base: gh's "due to conflicts" or GitHub's "merge conflict"."""
+    lowered = text.lower()
+    return "conflicts" in lowered or "merge conflict" in lowered
+
+
+def conflict_stop(number: int, detail: str) -> str:
+    """Why the land stops when updating pull request `number` fails: a sibling merged first and the branch now conflicts."""
+    return f"the base moved under a merged sibling; pull request #{number} now conflicts with it: {detail}"
+
+
+def lock_stop(holder: str | None, reason: str) -> str:
+    """Why the land stops when the merge lock is not taken in time; `holder` is who holds it, `reason` the lock's own answer."""
+    if holder:
+        return f"the merge lock for this repository is held by {holder}; retrying on the next tick"
+    return f"cannot take the merge lock ({reason}); retrying on the next tick"
+
+
 def rest_checks_argvs(sha: str) -> tuple[list[str], list[str]]:
     """`gh api --paginate` argvs for a commit's check runs and legacy statuses. REST, so off the GraphQL budget; `gh` fills `{owner}/{repo}` from the cwd's remote."""
     base = f"repos/{{owner}}/{{repo}}/commits/{sha}"

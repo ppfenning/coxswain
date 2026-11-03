@@ -152,6 +152,7 @@ lake_lease = _LazyModule("agent_tools.lake_lease")
 land = _LazyModule("agent_tools.land")
 land_lease = _LazyModule("agent_tools.land_lease")
 land_limit = _LazyModule("agent_tools.land_limit")
+land_merge_lock = _LazyModule("agent_tools.land_merge_lock")
 land_repo_lease = _LazyModule("agent_tools.land_repo_lease")
 lane_hosts = _LazyModule("agent_tools.lane_hosts")
 lane_python = _LazyModule("agent_tools.lane_python")
@@ -2697,30 +2698,24 @@ def _fetch_branch(repo: Path, branch: str) -> str | None:
 
 def _merge_updating(repo: Path, steps: Sequence[dict], i: int, pr_url: str, forge_module,
                     guard: Callable[[str], str | None] | None = None,
-                    attempts: int | None = None) -> tuple[bool, str, str | None]:
+                    attempts: int | None = None,
+                    lock: Callable[[], contextlib.AbstractContextManager] | None = None) -> tuple[bool, str, str | None]:
     """Edge. Run the `merge` at `steps[i]`, updating the PR branch first when it is BEHIND and again after each merge refused as behind.
 
     Each update is one pass: the repo lease is renewed through `guard`, the branch updated, its checks awaited again, the merge tried.
     At most `attempts` passes run, `land.MERGE_UPDATE_ATTEMPTS` when None (read at call time: `land` loads lazily). Returns `(ok, detail, halt)`: `halt` is the reason to stop at the merge, else the merge's own result.
-    No PR number, or a forge with no PRs, merges as before."""
+    No PR number, or a forge with no PRs, merges as before.
+    `lock`, when given, makes a `land_merge_lock.hold` for the repo. It is held for the first state read and each merge try only,
+    and released before every update and wait, which take minutes. A lock not taken in time stops the land naming its holder."""
     step = steps[i]
     attempts = land.MERGE_UPDATE_ATTEMPTS if attempts is None else attempts
     number = _pr_number(steps, i, pr_url)
-    if number is None:
-        return (*_execute_land_step(repo, step, forge_module), None)
     # Imported here: `agent_tools.cli` must not import a command module before one is dispatched.
     from agent_tools.forge import ForgeError, ForgeNotSupported
 
-    try:
-        decision, state = merge_gate(_settled_merge_state(lambda: forge_module.merge_state(number, repo=repo)))
-    except ForgeNotSupported:
-        return (*_execute_land_step(repo, step, forge_module), None)
-    except ForgeError as exc:
-        return False, "", f"merge: cannot read the state of pull request #{number}: {exc}"
-    if decision == "stop":
-        return False, "", f"merge: pull request #{number} is {state}; not merging"
     wait = next((s for s in reversed(steps[:i]) if s["kind"] == "wait_checks"), {"kind": "wait_checks"})
-    behind = decision == "update_then_merge"
+    behind = False
+    reading = number is not None  # the state is read once, on the first lock; a later merge refused as behind says the base moved
     refusal = ""
     used = 0
     while True:
@@ -2734,6 +2729,8 @@ def _merge_updating(repo: Path, steps: Sequence[dict], i: int, pr_url: str, forg
             try:
                 forge_module.update_branch(number, repo=repo)
             except ForgeError as exc:
+                if land.is_conflict_error(str(exc)):
+                    return False, "", land.conflict_stop(number, str(exc))
                 return False, "", f"merge: cannot update pull request #{number}: {exc}"
             print(f"land: pull request #{number} was BEHIND; updated its branch (update {used} of {attempts}), waiting for checks again")
             failed = _fetch_branch(repo, step["branch"])
@@ -2742,10 +2739,27 @@ def _merge_updating(repo: Path, steps: Sequence[dict], i: int, pr_url: str, forg
             ok, detail = _execute_land_step(repo, {**wait, "branch": f"origin/{step['branch']}"}, forge_module)
             if not ok:
                 return False, "", f"wait_checks: {detail}"
-        ok, refusal = _execute_land_step(repo, step, forge_module)
-        if ok or not land.is_behind_refusal(refusal):
-            return ok, refusal, None
-        behind = True
+            behind = False
+        with (lock() if lock is not None else contextlib.nullcontext()) as held:
+            if isinstance(held, land_merge_lock.NotHeld):
+                return False, "", land.lock_stop(held.holder, held.reason)
+            if reading:
+                reading = False
+                try:
+                    decision, state = merge_gate(_settled_merge_state(lambda: forge_module.merge_state(number, repo=repo)))
+                except ForgeNotSupported:
+                    return (*_execute_land_step(repo, step, forge_module), None)
+                except ForgeError as exc:
+                    return False, "", f"merge: cannot read the state of pull request #{number}: {exc}"
+                if decision == "stop":
+                    return False, "", f"merge: pull request #{number} is {state}; not merging"
+                if decision == "update_then_merge":
+                    behind = True
+                    continue  # leaves the `with`, releasing the lock before the update
+            ok, refusal = _execute_land_step(repo, step, forge_module)
+            if ok or not land.is_behind_refusal(refusal) or number is None:
+                return ok, refusal, None
+            behind = True
 
 
 def _resolved_tracker(profile: dict, runs_dir: Path) -> str:
@@ -2901,6 +2915,18 @@ def _task_lease_stop(task: str, kind: str, result: store_cli.LeaseResult) -> str
 # The ttl `_land` passes to land_repo_lease.acquire. A renew restarts it, but only when one runs: `_LeaseGuard.renewing`
 # renews every third of it for as long as the land runs, because a step such as wait_checks blocks for longer than it.
 _REPO_LEASE_TTL_SECONDS = 1200
+# The merge lock is held for one state read and one merge, not the waits between them, so its ttl is short and a land
+# that cannot take it within the timeout stops for the chair to retry.
+_MERGE_LOCK_TTL_SECONDS = 120
+_MERGE_LOCK_TIMEOUT_SECONDS = 60
+
+
+def _merge_lock_factory(runs_dir: Path, repo: str, holder: str, limit: int, leased: bool) -> Callable[[], contextlib.AbstractContextManager] | None:
+    """The merge lock for `repo`, or None. With a limit of 1 the repo lease already admits one land, so no lock is taken;
+    without a repo lease there is no store to take it in."""
+    if limit <= 1 or not leased:
+        return None
+    return lambda: land_merge_lock.hold(runs_dir, repo, holder, _MERGE_LOCK_TTL_SECONDS, _MERGE_LOCK_TIMEOUT_SECONDS)
 
 
 def _lease_standing(result: store_cli.LeaseResult) -> str:
@@ -3342,11 +3368,13 @@ def _runs_land(a: argparse.Namespace) -> int:
             print(f"land: {cherry_pick['onto']} at {recreate['old_tip'][:8]} holds nothing beyond {cherry_pick['from']}, "
                   f"recreating it")
         return _land_execute(repo, steps, planned, record, item_path, level, a.no_merge, forge_module, by=_holder_label(a),
-                             mode=land_mode, guard=guard, stops=stops, keep=keep)
+                             mode=land_mode, guard=guard, stops=stops, keep=keep,
+                             lock=_merge_lock_factory(runs_dir, str(repo), repo_holder, repo_limit, leased))
 
     repo_holder = f"{_holder_label(a)}@{socket.gethostname()}:{os.getpid()}"
+    repo_limit = land_limit.repo_land_limit(str(repo))
     repo_slot[0], got = land_repo_lease.acquire_in_slots(
-        runs_dir, str(repo), repo_holder, _REPO_LEASE_TTL_SECONDS, socket.gethostname(), land_limit.repo_land_limit(str(repo)))
+        runs_dir, str(repo), repo_holder, _REPO_LEASE_TTL_SECONDS, socket.gethostname(), repo_limit)
     leased = isinstance(got, store_cli.LeaseGranted)
     if isinstance(got, store_cli.LeaseGranted):
         repo_epoch[0] = got.epoch
@@ -3477,7 +3505,8 @@ def _lake_after_land(a: argparse.Namespace, runs_dir: Path, rc: int, reached: Se
 def _land_execute(repo: Path, steps: list[dict], planned: list[dict], record: dict | None, item_path: str | None,
                   level: str, no_merge: bool, forge_module=forge_github, by: str = _UNLABELED,
                   mode: str = "files", guard: Callable[[str], str | None] | None = None,
-                  stops: list[dict] | None = None, keep: Sequence[_LeaseGuard] = ()) -> tuple[int, list[str], str]:
+                  stops: list[dict] | None = None, keep: Sequence[_LeaseGuard] = (),
+                  lock: Callable[[], contextlib.AbstractContextManager] | None = None) -> tuple[int, list[str], str]:
     """Walk `steps`; return the exit code, the step kinds run in order, and the PR url ("" when none opened).
 
     A pr branch's land worktree is dropped before `merge` and on every stop; the branch itself stays.
@@ -3490,7 +3519,7 @@ def _land_execute(repo: Path, steps: list[dict], planned: list[dict], record: di
             for kept in keep:
                 renewing.enter_context(kept.renewing())
             return _land_walk(repo, steps, planned, record, item_path, level, no_merge, forge_module, built, by=by, mode=mode,
-                              guard=guard, stops=stops)
+                              guard=guard, stops=stops, lock=lock)
     finally:
         for branch in built:
             _remove_land_worktree(repo, branch)
@@ -3511,7 +3540,8 @@ def _note_stop(repo: Path, step: dict, detail: str, stops: list[dict] | None) ->
 def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict | None, item_path: str | None,
                level: str, no_merge: bool, forge_module, built: list[str], by: str = _UNLABELED,
                mode: str = "files", guard: Callable[[str], str | None] | None = None,
-               stops: list[dict] | None = None) -> tuple[int, list[str], str]:
+               stops: list[dict] | None = None,
+               lock: Callable[[], contextlib.AbstractContextManager] | None = None) -> tuple[int, list[str], str]:
     pr = ""
     landing = ""  # what a landed task's review PRs are closed against; "" until a merge succeeds
     reached: list[str] = []
@@ -3539,7 +3569,7 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
             # gh and git cannot delete a branch a worktree still holds.
             for branch in built:
                 _remove_land_worktree(repo, branch)
-            merged, merge_detail, halt = _merge_updating(repo, steps, i, pr, forge_module, guard)
+            merged, merge_detail, halt = _merge_updating(repo, steps, i, pr, forge_module, guard, lock=lock)
             if halt is not None:
                 # `_note_stop` prints the reason; printing it here too would say it twice.
                 print("stopped; remaining: " + ", ".join(s["kind"] for s in steps[i:]))
