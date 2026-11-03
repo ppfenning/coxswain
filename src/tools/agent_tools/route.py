@@ -17,9 +17,10 @@ import sys
 from collections.abc import Callable, Collection, Mapping, Sequence
 from itertools import accumulate
 from pathlib import Path
+from types import MappingProxyType
 from typing import NamedTuple
 
-from agent_tools import chair, decompose_empty, open_queue_priority, queue_rows, repo_path, run_store
+from agent_tools import card_keys, chair, decompose_empty, open_queue_priority, queue_rows, repo_path, run_store
 from agent_tools.intake_state import intake_group, intake_index
 from agent_tools.pacing import Assessment
 
@@ -625,6 +626,35 @@ def _issue_number(link: str) -> str:
     return link.rstrip("/").rsplit("/", 1)[-1]
 
 
+_ISSUE_URL = re.compile(r"^https?://[^/]+/([^/]+/[^/]+)/issues/\d+/?$")
+_PLACEHOLDER_HOME = "/home/user"
+
+
+def _same_form(path: str) -> str:
+    # Contract against a fixed home so a tilde path and any machine's absolute spelling of it compare equal.
+    return repo_path.contract(path, _PLACEHOLDER_HOME)
+
+
+def row_issue_key(row: Mapping, repo_map: Mapping[str, str]) -> tuple[str, str] | None:
+    """(owner/name, issue number) of a store row; None when the number or the repository cannot be told.
+
+    The repository is read from an issue-URL `link`, else the row's `repo` path inverted through `repo_map`.
+    """
+    number = card_keys.row_keys(row)[0]
+    link = row.get("link")
+    from_link = _ISSUE_URL.match(link) if isinstance(link, str) else None
+    path = row.get("repo")
+    by_path = {_same_form(p): name for name, p in repo_map.items()}
+    repo = from_link.group(1) if from_link else by_path.get(_same_form(path)) if isinstance(path, str) and path else None
+    return (repo, str(number)) if number is not None and repo else None
+
+
+def held_candidates(candidates: Sequence, known_issues: Mapping[tuple[str, str], str]) -> list[tuple]:
+    """(candidate, row label) for each issue candidate whose (repo, number) the store already holds."""
+    keyed = [(c, (c.repo, _issue_number(c.link))) for c in candidates if c.kind != "pr"]
+    return [(c, known_issues[key]) for c, key in keyed if key in known_issues]
+
+
 def pull_plan(
     candidates: Sequence,
     taken_links: frozenset[str],
@@ -633,18 +663,15 @@ def pull_plan(
     date: str,
     source: str,
     ids: str = "slug",
-    known_issues: frozenset[str] = frozenset(),
+    known_issues: Mapping[tuple[str, str], str] = MappingProxyType({}),
 ) -> tuple[list[dict], list[str], list[str]]:
     """Intake files, PR links to review, and refusals; an unmapped repo is refused, never guessed, and a second candidate on one path is refused, never dropped.
 
-    A candidate whose issue number is in `known_issues` (the store already holds it) is skipped like a taken link, without a refusal.
+    An issue is held only by repository and number together: a candidate whose (repo, number) is in `known_issues` is skipped like a taken link, without a refusal.
     """
     reviews = [c.link for c in candidates if c.kind == "pr"]
-    fresh = [
-        c
-        for c in candidates
-        if c.kind != "pr" and c.link not in taken_links and _issue_number(c.link) not in known_issues
-    ]
+    held = [c for c, _ in held_candidates(candidates, known_issues)]
+    fresh = [c for c in candidates if c.kind != "pr" and c.link not in taken_links and c not in held]
     unmapped = [_pull_refusal(c, f"repo {c.repo} has no mapping in the profile") for c in fresh if c.repo not in profile_repos]
     mapped = [c for c in fresh if c.repo in profile_repos]
     unnamed = [_pull_refusal(c, "title has no alphanumeric characters to slugify") for c in mapped if not slugify(c.title)]
