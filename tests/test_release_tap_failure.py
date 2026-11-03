@@ -4,13 +4,9 @@ from devtools import cli, release
 
 _START = "feature/x"
 _INDEX = {"urls": [{"packagetype": "sdist", "url": "https://x/cox-0.2.0.tar.gz", "digests": {"sha256": "b" * 64}}]}
-_WHEELS = "https://files/psycopg_binary-3.3.6-cp313-cp313-"
 _PSYCOPG_DOCS = {
     "https://pypi.org/pypi/psycopg/3.3.6/json": {"urls": [
         {"packagetype": "sdist", "url": "https://files/psycopg-3.3.6.tar.gz", "digests": {"sha256": "3" * 64}}]},
-    "https://pypi.org/pypi/psycopg-binary/3.3.6/json": {"urls": [
-        {"packagetype": "bdist_wheel", "python_version": "cp313", "url": _WHEELS + tail, "digests": {"sha256": "4" * 64}}
-        for tail in ("macosx_11_0_arm64.whl", "manylinux_2_17_x86_64.whl")]},
     "https://pypi.org/pypi/pyarrow/24.0.0/json": {"urls": [
         {"packagetype": "sdist", "url": "https://files/pyarrow-24.0.0.tar.gz", "digests": {"sha256": "6" * 64}}]}}
 _STEP = {"kind": "tap_formula_pr", "component": "tap", "index_url": "https://x/index.json",

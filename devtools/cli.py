@@ -809,20 +809,16 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                 return 2
             directory = release.component_dir(root, release.TAP_CHECKOUT, overrides)
             formula = Path(directory) / step["path"]
-            # The psycopg wheel's CPython tag is the formula's own python dependency, read from the checkout as it
-            # stands: every refusal here comes before the first git call.
+            # The formula carries pure psycopg on libpq, so only the psycopg pin and release document are read;
+            # every refusal here comes before the first git call.
             try:
                 extras = (Path(umbrella) / _EXTRAS_REQUIREMENTS).read_text()
-                pins = release.psycopg_pins(extras)
-                python_minor = release._formula_python_minor(formula.read_text())
+                psycopg_version = release.psycopg_pin(extras)
             except (OSError, ValueError) as exc:
                 print(f"FAILED tap_formula_pr tap: psycopg: {exc}")
                 return 2
-            psycopg_pin, binary_pin = pins
             try:
-                psycopg = release.psycopg_assets(
-                    _pypi_release("psycopg", psycopg_pin, fetch_index, sleep),
-                    _pypi_release("psycopg-binary", binary_pin, fetch_index, sleep), python_minor)
+                psycopg = release.psycopg_assets(_pypi_release("psycopg", psycopg_version, fetch_index, sleep))
             except (KeyError, OSError, ValueError) as exc:
                 print(f"FAILED tap_formula_pr tap: {exc}")
                 return 2
@@ -837,12 +833,8 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                 print(f"FAILED tap_formula_pr tap: {detail}")
                 return 2
 
-            def write_bumped(f=formula, s=sdist, t=towpath, p=psycopg, a=arrow, minor=python_minor):
-                text = f.read_text()
-                # The wheels were chosen for the working tree's python; the bump lands on origin's default branch.
-                if release._formula_python_minor(text) != minor:
-                    raise ValueError(f"the formula to bump depends on a different python than the psycopg wheels (3.{minor})")
-                f.write_text(release.bumped_formula_text(text, version, *s, towpath=t, psycopg=p, pyarrow=a))
+            def write_bumped(f=formula, s=sdist, t=towpath, p=psycopg, a=arrow):
+                f.write_text(release.bumped_formula_text(f.read_text(), version, *s, towpath=t, psycopg=p, pyarrow=a))
 
             # The tap PR is left for the maintainer, so the checkout goes back to the branch it was on on every
             # path out of the step: the next cut refuses a tap clone that sits on an old release branch.
@@ -1198,6 +1190,7 @@ def _release(a: argparse.Namespace) -> int:
                 print(f"tap_formula_pr {step['component']}: {_release_detail(step)}")
                 print(f"tap_formula_pr {step['component']}: would fetch origin, then branch {step['branch']} "
                       f"from origin/{default} (default branch {default})")
+                print("tap_formula_pr tap: formula depends on libpq; no psycopg-binary wheel is fetched")
                 print(f"tap_formula_pr tap: would run install-proof.yml with tap_ref={step['branch']} "
                       f"version={a.version}; any conclusion but success exits non-zero, and the tap PR is "
                       "left open for the maintainer to merge")

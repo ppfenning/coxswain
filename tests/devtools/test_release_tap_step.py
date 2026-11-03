@@ -13,11 +13,7 @@ _PYARROW = {"urls": [{"packagetype": "sdist", "url": _ARROW_SDIST, "digests": {"
 _PSYCOPG_URL = "https://pypi.org/pypi/psycopg/3.3.6/json"
 _BINARY_URL = "https://pypi.org/pypi/psycopg-binary/3.3.6/json"
 _SDIST = "https://files/psycopg-3.3.6.tar.gz"
-_ARM = "https://files/psycopg_binary-3.3.6-cp313-cp313-macosx_11_0_arm64.whl"
-_X86 = "https://files/psycopg_binary-3.3.6-cp313-cp313-manylinux_2_17_x86_64.whl"
 _PSYCOPG = {"urls": [{"packagetype": "sdist", "url": _SDIST, "digests": {"sha256": "3" * 64}}]}
-_BINARY = {"urls": [{"packagetype": "bdist_wheel", "python_version": "cp313", "url": url, "digests": {"sha256": sha * 64}}
-                    for url, sha in ((_ARM, "4"), (_X86, "5"))]}
 _MACOS = _URLS[release.TOWPATH_MACOS_ARM]
 _LINUX = _URLS[release.TOWPATH_LINUX_INTEL]
 
@@ -42,9 +38,9 @@ def _tap_steps(dash_tag=None, dash_commits=0):
     return release.release_plan(manifest, V0, tags, pinned_commits={"dash": dash_commits})[-1:]
 
 
-def _index(url, binary=_BINARY, pyarrow=_PYARROW):
-    """The coxswain index, or the psycopg, psycopg-binary and pyarrow release documents at the pinned versions."""
-    return {_PSYCOPG_URL: _PSYCOPG, _BINARY_URL: binary, _ARROW_URL: pyarrow}.get(url, _INDEX)
+def _index(url, pyarrow=_PYARROW, psycopg=_PSYCOPG):
+    """The coxswain index, or the psycopg and pyarrow release documents at the pinned versions."""
+    return {_PSYCOPG_URL: psycopg, _ARROW_URL: pyarrow}.get(url, _INDEX)
 
 
 def _tap_clone(tmp_path, formula_text=_PY_FORMULA, pins_text=_PINS):
@@ -139,22 +135,31 @@ def test_a_pinned_dash_fetches_and_writes_the_tarballs_of_its_own_release(tmp_pa
     assert f'url "{pinned[release.TOWPATH_MACOS_ARM]}"' in formula.read_text()
 
 
-def test_a_full_run_writes_the_psycopg_and_psycopg_binary_resources_with_the_fetched_urls_and_digests(tmp_path):
-    rc, _, _, formula, _ = _run(tmp_path)
+def test_a_full_run_writes_pure_psycopg_on_libpq_with_the_fetched_sdist_and_never_asks_for_the_binary_document(tmp_path):
+    asked = []
+    rc, _, _, formula, _ = _run(tmp_path, fetch_index=lambda url: asked.append(url) or _index(url))
     text = formula.read_text()
     assert rc == 0
     assert f'resource "psycopg" do\n    url "{_SDIST}"\n    sha256 "{"3" * 64}"' in text
-    assert f'resource "psycopg-binary" do\n        url "{_ARM}", using: :nounzip\n        sha256 "{"4" * 64}"' in text
-    assert f'resource "psycopg-binary" do\n        url "{_X86}", using: :nounzip\n        sha256 "{"5" * 64}"' in text
+    assert 'depends_on "libpq"' in text and "psycopg-binary" not in text and "psycopg.pq.version()" in text
+    assert all(f'(bin/"{name}").write_env_script' in text for name in ("cox", "agent-tools", "cartridge"))
+    assert "DYLD_FALLBACK_LIBRARY_PATH" in text and "LD_LIBRARY_PATH" in text
+    assert _PSYCOPG_URL in asked and not [url for url in asked if "psycopg-binary" in url]
 
 
-def test_a_missing_psycopg_binary_wheel_refuses_naming_it_before_any_git_call(tmp_path, capsys):
-    arm_only = {"urls": _BINARY["urls"][:1]}
-    rc, calls, _, formula, _ = _run(tmp_path, fetch_index=lambda url: _index(url, binary=arm_only))
+def test_a_psycopg_payload_with_no_sdist_refuses_before_any_git_call(tmp_path, capsys):
+    rc, calls, _, formula, _ = _run(tmp_path, fetch_index=lambda url: _index(url, psycopg={"urls": []}))
     assert rc == 2
-    assert "FAILED tap_formula_pr tap: psycopg-binary release lists no cp313 wheel" in capsys.readouterr().out
+    assert "FAILED tap_formula_pr tap: psycopg release lists no sdist" in capsys.readouterr().out
     assert calls == []
     assert formula.read_text() == _PY_FORMULA
+
+
+def test_a_missing_psycopg_pin_refuses_before_any_git_call(tmp_path, capsys):
+    rc, calls, _, _, _ = _run(tmp_path, pins="psycopg-binary==3.3.6\npyarrow==24.0.0\n")
+    assert rc == 2
+    assert "FAILED tap_formula_pr tap: psycopg: extras requirements pin no psycopg" in capsys.readouterr().out
+    assert calls == []
 
 
 def test_an_unreachable_index_for_psycopg_refuses_cleanly_before_any_git_call(tmp_path, capsys):
@@ -206,20 +211,11 @@ def test_a_missing_pyarrow_pin_refuses_before_any_git_call(tmp_path, capsys):
     assert calls == []
 
 
-def test_a_base_formula_on_another_python_refuses_the_bump_and_restores_the_branch(tmp_path, capsys):
-    formula = _tap_clone(tmp_path)
-    directory = str(formula.parents[1])
-    _, inner = _fake_git_run(off_branch={directory})
-
-    def run(argv, cwd):
-        if argv[3:5] == ["checkout", "-b"]:
-            formula.write_text(_PY_FORMULA.replace("python@3.13", "python@3.14"))
-        return inner(argv, cwd)
-
-    rc = cli._release_execute(_tap_steps(), V0, str(tmp_path), {}, str(tmp_path), run, {}, "",
-                              sleep=lambda s: None, now=iter(range(0, 10**9, 60)).__next__,
-                              fetch_index=_index, fetch_text=_dash_text)
-    assert rc == 2
-    assert "the formula could not be bumped: the formula to bump depends on a different python" in capsys.readouterr().out
-    assert "psycopg-binary" not in formula.read_text()
-    assert inner.current_branch[directory] == "feature/x"
+def test_a_base_formula_in_the_old_wheel_shape_is_migrated_by_the_run(tmp_path):
+    towpath = {key: (url, "e" * 64) for key, url in _URLS.items()}
+    bumped = release.bumped_formula_text(_PY_FORMULA, V0, f"https://x/coxswain-{V0}.tar.gz", "b" * 64, towpath=towpath)
+    old = bumped.replace('["towpath"]', '["towpath", "psycopg-binary"]', 1)
+    assert "psycopg-binary" in old
+    rc, _, _, formula, _ = _run(tmp_path, formula_text=old)
+    assert rc == 0
+    assert "psycopg-binary" not in formula.read_text() and formula.read_text().count('depends_on "libpq"') == 1
