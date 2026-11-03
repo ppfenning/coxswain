@@ -1,3 +1,4 @@
+import argparse
 import json
 import shutil
 import sqlite3
@@ -5,7 +6,7 @@ import subprocess
 
 import pytest
 
-from agent_tools import cli
+from agent_tools import cli, remote_lane, runs_top
 from agent_tools.cli import main
 
 needs_tools = pytest.mark.skipif(
@@ -126,6 +127,36 @@ def test_fetch_finds_a_host_only_the_hosts_table_names_even_once_drained(tmp_pat
     assert rc == 0
     assert capsys.readouterr().out.splitlines()[:2] == [f"run {RUN}", "host box"]
     assert (ws / "runs" / RUN / "tasks" / "p1" / "t.json").exists()
+
+
+def _wait_for_exit(ws, profile, monkeypatch):
+    """Runs `runs wait` over a remote lane that is live on the first poll and gone on the second; the real `_wait_fetch` runs."""
+    monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(profile))  # `runs wait` takes no --profile
+    polls = [[runs_top.remote_row(RUN, "box", 3)], []]
+    rows_fn = lambda _runs_dir: polls.pop(0) if len(polls) > 1 else polls[0]  # noqa: E731
+    args = argparse.Namespace(runs_dir=str(ws / "runs"), max_seconds=60.0, interval=1.0, json=False)
+    return cli._runs_wait(args, rows_fn=rows_fn, clock=lambda: 0.0, sleep=lambda _s: None)
+
+
+@needs_tools
+def test_wait_fetches_a_remote_run_whose_host_only_the_hosts_table_names(tmp_path, monkeypatch, capsys):
+    ws, profile, _ = _world(tmp_path, monkeypatch, host_in_profile=False, lease_expires="2026-09-25T04:59:30Z")
+    row = {"name": "box", "ssh": "me@box", "state": "active", "versions_json": json.dumps({"workspace_dir": str(tmp_path / "host")})}
+    monkeypatch.setattr(cli.run_store, "hosts", lambda runs_dir: [row])
+    assert _wait_for_exit(ws, profile, monkeypatch) == 0
+    out = capsys.readouterr()
+    assert remote_lane.fetched_record_path(ws / "runs", RUN).exists()
+    assert "fetch:" not in out.out + out.err
+    assert (ws / "runs" / RUN / "tasks" / "p1" / "t.json").exists()
+
+
+def test_wait_fetch_still_fails_for_a_host_in_neither_the_table_nor_the_profile(tmp_path, monkeypatch, capsys):
+    ws, profile, _ = _world(tmp_path, monkeypatch, host_in_profile=False, lease_expires="2026-09-25T04:59:30Z")
+    monkeypatch.setattr(cli.run_store, "hosts", lambda runs_dir: [])
+    _wait_for_exit(ws, profile, monkeypatch)
+    out = capsys.readouterr().out
+    assert f"{RUN}: fetch: host box is in neither the hosts table nor the profile lane_hosts" in out
+    assert not remote_lane.fetched_record_path(ws / "runs", RUN).exists()
 
 
 def test_fetch_of_a_live_lane_exits_non_zero_and_copies_nothing(tmp_path, monkeypatch, capsys):
