@@ -14,7 +14,9 @@ import types
 import pytest
 
 from agent_tools import chair, store_cli
-from agent_tools.cli import _retaken_chair, main
+from agent_tools.cli import _retaken_chair, _route_chair_take, main
+
+_RETAKE_NOW = datetime.datetime(2026, 9, 26, 12, 0, tzinfo=datetime.UTC)
 
 
 @pytest.fixture(autouse=True)
@@ -379,41 +381,100 @@ def test_take_steal_on_own_live_record_retakes_the_lease(tmp_path, monkeypatch, 
     rc, seen, runs_dir = _take_over_live_record(tmp_path, monkeypatch, "bob", "--steal")
     assert rc == 0
     assert capsys.readouterr().out.startswith("chair lease retaken: bob (pid ")
-    assert seen == [{"steal": True}]
+    assert seen == [{"steal": True, "ttl": 10800}]  # the CLI's --hours defaults to 3, so main always passes hours
     assert chair.read(runs_dir)["runs"] == ["run-1"]
 
 
 def test_retaken_chair_sets_the_given_model_and_names_it_without_mutating_the_record():
     record = {"session": "chair-loop", "heartbeat_at": "t0"}
-    new_record, line = _retaken_chair(record, "t1", "sonnet", "chair-loop", 1, "host")
+    new_record, line = _retaken_chair(record, "t1", "sonnet", "chair-loop", 1, "host", None, _RETAKE_NOW)
     assert new_record == {"session": "chair-loop", "heartbeat_at": "t1", "model": "sonnet"}
     assert line == "chair lease retaken: chair-loop (pid 1) on host (model sonnet)"
     assert record == {"session": "chair-loop", "heartbeat_at": "t0"}
 
 
 def test_retaken_chair_without_a_model_keeps_the_recorded_one():
-    new_record, line = _retaken_chair({"session": "c", "model": "opus"}, "t1", None, "c", 1, "host")
+    new_record, line = _retaken_chair({"session": "c", "model": "opus"}, "t1", None, "c", 1, "host", None, _RETAKE_NOW)
     assert new_record["model"] == "opus"
     assert line == "chair lease retaken: c (pid 1) on host (model opus)"
 
 
 def test_retaken_chair_with_no_model_anywhere_writes_no_model_key():
-    new_record, line = _retaken_chair({"session": "c"}, "t1", None, "c", 1, "host")
+    new_record, line = _retaken_chair({"session": "c"}, "t1", None, "c", 1, "host", None, _RETAKE_NOW)
     assert "model" not in new_record
     assert line == "chair lease retaken: c (pid 1) on host"
+
+
+def test_retaken_chair_with_hours_sets_until_to_now_plus_hours_without_mutating_the_record():
+    record = {"session": "c", "heartbeat_at": "t0", "until": "2026-09-26T12:30:00+00:00"}
+    new_record, line = _retaken_chair(record, "t1", None, "c", 1, "host", 2, _RETAKE_NOW)
+    assert new_record == {"session": "c", "heartbeat_at": "t1", "until": "2026-09-26T14:00:00+00:00"}
+    assert line == "chair lease retaken: c (pid 1) on host until 2026-09-26T14:00:00+00:00"
+    assert record == {"session": "c", "heartbeat_at": "t0", "until": "2026-09-26T12:30:00+00:00"}
+
+
+def test_retaken_chair_with_hours_and_model_names_the_until_after_the_model():
+    _record, line = _retaken_chair({"session": "c"}, "t1", "sonnet", "c", 1, "host", 0.5, _RETAKE_NOW)
+    assert line == "chair lease retaken: c (pid 1) on host (model sonnet) until 2026-09-26T12:30:00+00:00"
+
+
+def test_retaken_chair_without_hours_keeps_the_recorded_until():
+    new_record, line = _retaken_chair({"session": "c", "until": "2026-09-26T12:30:00+00:00"}, "t1", None, "c", 1, "host", None, _RETAKE_NOW)
+    assert new_record["until"] == "2026-09-26T12:30:00+00:00"
+    assert line == "chair lease retaken: c (pid 1) on host"
+
+
+def test_retaken_chair_without_hours_on_a_record_with_no_until_adds_none():
+    new_record, _line = _retaken_chair({"session": "c"}, "t1", None, "c", 1, "host", None, _RETAKE_NOW)
+    assert "until" not in new_record
+
+
+def test_take_steal_with_hours_on_own_live_record_moves_until_and_passes_the_ttl(tmp_path, monkeypatch, capsys):
+    old_until = (datetime.datetime.now(datetime.UTC) + datetime.timedelta(minutes=30)).isoformat()
+    rc, seen, runs_dir = _take_over_live_record(tmp_path, monkeypatch, "bob", "--steal", "--hours", "2", extra={"until": old_until})
+    new_until = chair.read(runs_dir)["until"]
+    assert rc == 0
+    assert datetime.datetime.fromisoformat(new_until) > datetime.datetime.fromisoformat(old_until) + datetime.timedelta(minutes=60)
+    assert capsys.readouterr().out.strip().endswith(f" until {new_until}")
+    assert seen == [{"steal": True, "ttl": 7200}]
+
+
+def test_take_steal_without_hours_on_own_live_record_keeps_until_and_passes_no_ttl(tmp_path, monkeypatch, capsys):
+    """The bare launcher's namespace carries no `hours`; main always supplies one, so call the route directly."""
+    old_until = (datetime.datetime.now(datetime.UTC) + datetime.timedelta(minutes=30)).isoformat()
+    _rc, seen, runs_dir = _take_over_live_record(tmp_path, monkeypatch, "bob", "--steal")
+    chair.write(runs_dir, {**chair.read(runs_dir), "until": old_until})  # the first retake stamped the default 3 hours; restore the older until
+    capsys.readouterr()
+    seen.clear()
+    args = types.SimpleNamespace(profile=str(tmp_path / "profile.yaml"), label="bob", pid=os.getpid(), steal=True, model=None)
+    rc = _route_chair_take(args)
+    assert rc == 0
+    assert chair.read(runs_dir)["until"] == old_until
+    assert "until" not in capsys.readouterr().out.splitlines()[-1]
+    assert seen == [{"steal": True}]
+
+
+def test_take_of_another_holders_live_lease_without_steal_is_refused_and_leaves_the_record(tmp_path, monkeypatch, capsys):
+    old_until = (datetime.datetime.now(datetime.UTC) + datetime.timedelta(minutes=30)).isoformat()
+    rc, seen, runs_dir = _take_over_live_record(tmp_path, monkeypatch, "alice", extra={"until": old_until})
+    record = chair.read(runs_dir)
+    assert rc == 2
+    assert capsys.readouterr().out.startswith("chair: held by alice")
+    assert seen == []
+    assert (record["session"], record["until"], record["heartbeat_at"]) == ("alice", old_until, record["taken_at"])
 
 
 def test_take_steal_with_model_records_it_on_the_retaken_record(tmp_path, monkeypatch, capsys):
     rc, _seen, runs_dir = _take_over_live_record(tmp_path, monkeypatch, "bob", "--steal", "--model", "sonnet")
     assert rc == 0
     assert chair.read(runs_dir)["model"] == "sonnet"
-    assert capsys.readouterr().out.strip().endswith("(model sonnet)")
+    assert " (model sonnet) until " in capsys.readouterr().out  # main always passes the default 3 hours, so the line ends with the until
 
 
 def test_take_steal_without_model_leaves_the_recorded_model_untouched(tmp_path, monkeypatch, capsys):
     _rc, _seen, runs_dir = _take_over_live_record(tmp_path, monkeypatch, "bob", "--steal", extra={"model": "opus"})
     assert chair.read(runs_dir)["model"] == "opus"
-    assert capsys.readouterr().out.strip().endswith("(model opus)")
+    assert " (model opus) until " in capsys.readouterr().out
 
 
 def test_take_steal_without_model_on_a_record_with_none_writes_no_model_key(tmp_path, monkeypatch, capsys):
