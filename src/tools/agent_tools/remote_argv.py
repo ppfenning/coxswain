@@ -98,6 +98,11 @@ def git_fetch_argv(repo_location: str, run: str) -> list[str]:
     return ["git", "fetch", repo_location, run_refspec, phase_refspec]
 
 
+def git_fetch_phase_argv(repo_location: str, branch: str) -> list[str]:
+    """`branch` is the full name, e.g. epic/<initiative>/<phase>; this reaches a phase outside the run id's prefix."""
+    return ["git", "fetch", repo_location, f"+refs/heads/{branch}:refs/heads/{branch}"]
+
+
 # Wrong belief (2026-10-30): "this fast-forwards the lane's repo to main". It only follows origin's default branch
 # from a checkout already on it, and a chair repo detached at a release tag pinned the host there instead. The launcher
 # uses `base_sync_argv` below whenever it can resolve the chair's origin/<base>; this one is the fallback.
