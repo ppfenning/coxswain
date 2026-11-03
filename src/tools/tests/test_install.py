@@ -647,6 +647,60 @@ def test_the_edge_channel_skips_the_binary_and_builds_from_source():
     assert step["kind"] == "skip" and "from source" in step["detail"]
 
 
+_PRESENT = {"present": True, "tag": None, "branch": "main", "branch_tip": True, "dirty": False}
+
+
+def _edge_dash_plan(checkouts, cargo, tag="v2026.11.1"):
+    dash = {"repo": "org/dash", "ref": "main", "flag": "dash", "provides": "towpath", **({"tag": tag} if tag else {})}
+    edge = {**_manifest(), "components": {"dash": dash}}
+    facts = {**_dash_facts({}), "checkouts": checkouts, "cargo": cargo}
+    return install.plan(edge, facts, {**_options(with_=["dash"]), "channel": "edge"})
+
+
+def _dash_kinds(steps):
+    """Kinds of the binary-side dash steps: every dash step after its checkout step."""
+    return [s["kind"] for s in steps if s["component"] == "dash"][1:]
+
+
+def test_edge_with_the_dash_checkout_and_cargo_plans_dev_build_then_dev_link():
+    steps = _edge_dash_plan({"dash": _PRESENT}, cargo=True)
+    assert [k for k in _dash_kinds(steps) if k.startswith("dev_")] == ["dev_build", "dev_link"]
+    assert not {"skip", "binary"} & set(_dash_kinds(steps))
+    link = next(s for s in steps if s["kind"] == "dev_link")
+    assert link["bin_dir"] == _BIN_DIR and "towpath" in link["detail"] and _BIN_DIR in link["detail"]
+    assert "cargo build" in next(s for s in steps if s["kind"] == "dev_build")["detail"]
+
+
+def test_edge_with_the_dash_checkout_and_no_cargo_falls_back_to_the_release_binary():
+    steps = _edge_dash_plan({"dash": _PRESENT}, cargo=False)
+    assert _dash_kinds(steps) == ["binary"]
+    assert next(s for s in steps if s["kind"] == "binary")["bin_dir"] == _BIN_DIR
+
+
+def test_edge_with_the_dash_checkout_and_no_cargo_and_no_tag_skips_instead_of_failing():
+    steps = _edge_dash_plan({"dash": _PRESENT}, cargo=False, tag=None)
+    assert _dash_kinds(steps) == ["skip"]
+
+
+def test_edge_with_no_dash_checkout_keeps_the_skip():
+    for checkouts in ({}, {"dash": {"present": False, "tag": None, "dirty": False}}):
+        step = _dash_step(_edge_dash_plan(checkouts, cargo=True))
+        assert step["kind"] == "skip" and "from source" in step["detail"]
+
+
+def test_edge_dev_steps_sit_between_the_checkouts_and_setup_install():
+    kinds = [s["kind"] for s in _edge_dash_plan({"dash": _PRESENT}, cargo=True)]
+    assert kinds[kinds.index("dev_build"):] == ["dev_build", "dev_link", "setup_install", "doctor"]
+    assert kinds.index("dev_build") > 0
+
+
+def test_a_release_plan_ignores_the_cargo_and_checkout_facts():
+    base = {**_dash_facts({"towpath": "2026.11.0"}), "checkouts": {"dash": _PRESENT}}
+    with_cargo = {**base, "cargo": True}
+    assert _dash_plan(with_cargo) == _dash_plan(base)
+    assert _dash_kinds(_dash_plan(with_cargo)) == ["binary"]
+
+
 def test_rows_lists_a_towpath_row_as_ok_drift_and_missing():
     def towpath(binaries):
         return [r for r in install.rows(_dash_manifest(), _dash_facts(binaries)) if r[0] == "towpath"]
