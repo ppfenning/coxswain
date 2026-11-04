@@ -729,6 +729,14 @@ def test_without_a_tree_only_path_shaped_surfaces_stay_declared(cart) -> None:
     assert t1["lint"] == ["dropped from surfaces: schema"]
 
 
+def test_a_directory_surface_is_kept_as_the_directory() -> None:
+    assert initiative_decompose._looks_like_a_surface("src/ui/snapshots/")
+    assert initiative_decompose._looks_like_a_surface("src/ui/snapshots/ (new)")
+    tree = [{"repo": "r", "path": "src/ui/snapshots/a.snap"}, {"repo": "r", "path": "src/ui/regatta.rs"}]
+    resolved, unresolved = initiative_decompose.resolve_surfaces(["src/ui/snapshots/", "regatta.rs"], tree)
+    assert resolved == ["src/ui/snapshots/", "src/ui/regatta.rs"] and unresolved == []
+
+
 def test_a_reach_problem_comes_back_through_apply_corrections_as_a_refusal(cart) -> None:
     decomposition = {
         **DECOMPOSITION,

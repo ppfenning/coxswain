@@ -63,7 +63,8 @@ __all__ = [
 # A `/` or a file suffix, no spaces, optional trailing `(new)` marker — the
 # same shape lifecycle_propose._PATH_TOKEN checks. An all-caps bare token
 # (LICENSE, README) has neither and is kept on the naming convention alone.
-_PATH_TOKEN = re.compile(r"^[\w.\-]+(?:/[\w.\-]+)*$")
+# An optional trailing `/` keeps a directory surface (a snapshots folder), which steering and the layout check both read.
+_PATH_TOKEN = re.compile(r"^[\w.\-]+(?:/[\w.\-]+)*/?$")
 
 
 _NEW = " (new)"
@@ -375,6 +376,9 @@ def resolve_surfaces(surfaces: Sequence[str], tree: Sequence[Mapping[str, Any]])
     resolved: list[str] = []
     unresolved: list[str] = []
     for surface in surfaces:
+        if surface.endswith("/") and any(str(row.get("path")).startswith(surface) for row in tree):
+            resolved.append(surface)  # a directory surface names the folder, not the first file found under it
+            continue
         hit = next((str(row.get("path")) for row in tree if surface == row.get("path") or surface in str(row.get("path"))), None)
         (resolved if hit else unresolved).append(hit or surface)
     return resolved, unresolved
