@@ -1,10 +1,13 @@
 import subprocess
 
 import pytest
+from test_chair_plan_withhold import _NOW, _facts, _initiative
 from test_route_edit_rebuild import CONFLICT, _approved_file, _approved_row
 from test_route_edit_task import _file, _store
 
-from agent_tools import cli, land, queue_export, route, route_edit, store_cli
+from agent_tools import chair_read_stranded, cli, land, queue_export, route, route_edit, store_cli
+from agent_tools.chair_facts import quarantine_facts
+from agent_tools.chair_plan import plan_tick
 
 HEAD = {
     "kind": "initiative", "initiative": "ship", "task_id": "ship", "phase": "", "state": "ready", "needs": [], "title": "Ship",
@@ -99,16 +102,28 @@ def test_a_relaunch_finds_nothing_before_the_land_conflict_and_the_task_after_it
     assert store.rows[1]["extra"]["land_conflict"] == CONFLICT
 
 
-def test_a_rebuilt_task_approved_again_is_stranded_for_a_land_not_a_rebuild(tmp_path, monkeypatch):
-    from agent_tools import chair_read_stranded
+_OLD_RUN = {"run": "r2", "task": "t1", "initiative": "ship", "phase": "p1", "branch": "b", "review": {"verdict": "approve"},
+            "arbitration": {"verdict": "approve"}, "landed": False, "repo": "/r"}
 
+
+def test_a_rebuilt_task_approved_again_is_stranded_for_a_land_not_a_rebuild(tmp_path, monkeypatch):
     store = _store(monkeypatch, [HEAD, {**_approved_row(), "needs": []}])
     cli._mark_land_conflict(tmp_path / "runs", RECORD, None, CONFLICT, "me", "store")
-    record = {"run": "r2", "task": "t1", "initiative": "ship", "phase": "p1", "branch": "b", "review": {"verdict": "approve"},
-              "arbitration": {"verdict": "approve"}, "landed": False, "repo": "/r"}
-    assert chair_read_stranded.stranded_from_rows(store.rows, [record])[0]["remedy"] == f"rebuild: {CONFLICT}"
+    assert chair_read_stranded.stranded_from_rows(store.rows, [_OLD_RUN]) == []
     store.rows[1]["state"] = "approved"  # the relaunch built it and it was approved again, marker untouched
-    assert chair_read_stranded.stranded_from_rows(store.rows, [record])[0]["remedy"].startswith("cox runs land ")
+    [row] = chair_read_stranded.stranded_from_rows(store.rows, [_OLD_RUN])
+    assert row["remedy"].startswith("cox runs land ")
+
+
+def test_a_task_a_land_conflict_sent_back_to_ready_does_not_withhold_its_initiative_from_launch(tmp_path, monkeypatch):
+    store = _store(monkeypatch, [HEAD, {**_approved_row(), "needs": []}])
+    cli._mark_land_conflict(tmp_path / "runs", RECORD, None, CONFLICT, "me", "store")
+    stranded = chair_read_stranded.stranded_from_rows(store.rows, [_OLD_RUN])
+    assert stranded == []
+    quarantines = quarantine_facts([], stranded, [], set(), lambda initiative, task: False)
+    assert [q for q in quarantines if q["initiative"] == "ship"] == []
+    actions = plan_tick(_facts(initiatives=[_initiative("ship", "r1")], quarantines=quarantines), _NOW)
+    assert [a["kind"] for a in actions if a["kind"] in {"launch_epic", "relaunch", "needs_chair"}] == ["launch_epic"]
 
 
 def test_rebuild_then_files_the_note_and_clears_the_marker_on_the_task_the_land_left_ready(tmp_path, monkeypatch):

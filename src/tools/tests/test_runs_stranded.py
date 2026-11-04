@@ -138,6 +138,12 @@ def test_an_approved_item_is_still_stranded():
                       "remedy": "cox runs land r1 --task t1 --repo /repo/acme"}]
 
 
+def test_a_ready_item_a_land_conflict_sent_back_is_not_stranded_and_names_no_repo():
+    item = _item("ready", land_conflict="land conflict with main@abc12345 in cli.py")
+    assert runs_stranded.stranded([_record()], [item]) == []
+    assert runs_stranded.missing_repos([_record(repo="/gone")], [item], lambda p: False) == []
+
+
 def test_a_record_with_a_missing_repo_is_skipped():
     record = _record(repo="/gone")
     assert runs_stranded.stranded([record], [_item("ready")], repo_exists=lambda p: False) == []
