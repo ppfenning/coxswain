@@ -864,8 +864,8 @@ def _fetch_exit(action: Action, deps: Deps) -> Result:
     code, output = deps.run(argv)
     if code != 0:
         return _result(action, fetch_status(code, output), output)
-    approved = chair_apply_fetch.apply_fetched_approvals(deps.runs_dir, deps.work_dir, run, initiative)
-    reason = f"fetched {run}; approved: {', '.join(approved)}"
+    approved, warnings = chair_apply_fetch.apply_fetched_approvals(deps.runs_dir, deps.work_dir, run, initiative)
+    reason = "; ".join([f"fetched {run}; approved: {', '.join(approved)}", *warnings])
     return {"action": action, "status": "done", "reason": reason, "run": run, "host": _fetched_host(deps.runs_dir, run)}
 
 
