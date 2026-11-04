@@ -55,7 +55,7 @@ def test_intake_row_in_plan_rows_out(store, tmp_path):
     assert (code, lines) == (0, ["routing: wrote 4 rows for init-a"])
     assert seen == [{"id": "I1", "body": "the idea", "state": "queued"}]
     assert _summary(store.upserts) == [
-        ("initiative", "init-a", "todo"), ("task", "t1", "ready"), ("task", "t2", "todo"), ("intake", "I1", "done"),
+        ("initiative", "init-a", "todo"), ("task", "t1", "ready"), ("task", "t2", "ready"), ("intake", "I1", "done"),
     ]
     assert store.upserts[-1]["extra"] == {"id": "I1", "initiative": "init-a"}
     assert not (tmp_path / "work").exists() and not (tmp_path / "intake").exists()
@@ -74,7 +74,7 @@ def test_ticket_past_ready_is_not_reset(store):
     store.upserts.clear()
     route.decompose_into_rows(Path("runs"), "I1", lambda data: PLAN)
     assert _summary(store.upserts) == [
-        ("initiative", "init-a", "todo"), ("task", "t2", "todo"), ("intake", "I1", "done"),
+        ("initiative", "init-a", "todo"), ("task", "t2", "ready"), ("intake", "I1", "done"),
     ]
     assert store.rows[("task", "t1")]["state"] == "in_progress"
 

@@ -57,7 +57,7 @@ def test_decompose_rows_give_the_launch_input_with_repo_from_the_intake(workspac
         "phases": [{"id": "p1", "goal": "g1"}, {"id": "p2", "goal": "g2"}],
         "tasks": [
             {"id": "t1", "phase": "p1", "state": "ready", "needs": [], "surfaces": ["a.py"], "body": "do one"},
-            {"id": "t2", "phase": "p2", "state": "todo", "needs": ["t1"], "surfaces": ["b.py", "c.py"], "body": "do two"},
+            {"id": "t2", "phase": "p2", "state": "ready", "needs": ["t1"], "surfaces": ["b.py", "c.py"], "body": "do two"},
         ],
         "ready": ["t1"],
     })
