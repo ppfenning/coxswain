@@ -418,6 +418,8 @@ class _Ctx:
     lease_name: str | None = None
     work_state: str = "files"
     retry: _StoreRetry = field(default_factory=_StoreRetry)
+    # The one mutable member of a frozen record: file listings by commit (see `_default_branch_paths`).
+    surface_paths: dict[str, frozenset[str]] = field(default_factory=dict, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         """Refuse a bad per-check timeout at build, before any model call; the ValueError names the check."""
@@ -1684,30 +1686,72 @@ def row_should_quarantine(work_state: str, current_state: str | None, *, approve
     return work_state == "store" and current_state is not None and current_state not in finished
 
 
-def _exists(path: Path) -> bool:
-    """The filesystem lookup `_surface_passes` is handed; the one place the check touches disk."""
-    return path.exists()
+def _git_stdout(*args: str) -> str | None:
+    """Edge. Stdout of one git command, byte for byte; None on a non-zero exit, a timeout or undecodable output.
+
+    `_git` returns stderr in place of stdout when stderr is non-empty, so it cannot carry a NUL-separated listing.
+    """
+    try:
+        proc = subprocess.run(["git", *args], capture_output=True, text=True, timeout=120)
+    except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
 
 
-def _surface_passes(exists: Callable[[Path], bool], root: Path, surface: str) -> bool:
-    """A plain path passes when it exists under `root`; a `(new)` path, when its parent directory does."""
+def _default_branch_paths(ctx: _Ctx) -> frozenset[str] | None:
+    """Edge. Repo-relative file paths on `ctx.default_ref`, the ref `resolve_default_ref` produced after its fetch.
+
+    Cached on `ctx` by the commit the ref names, so a phase reuses the listing until the ref moves.
+    None when the ref or its listing cannot be read; that is not cached.
+    """
+    repo = ("-C", str(ctx.repo))
+    named = _git_stdout(*repo, "rev-parse", "--verify", f"{ctx.default_ref}^{{commit}}")
+    if named is None:
+        return None
+    sha = named.strip()
+    if sha not in ctx.surface_paths:
+        listing = _git_stdout(*repo, "ls-tree", "-r", "-z", "--name-only", sha)
+        if listing is None:
+            return None
+        ctx.surface_paths[sha] = frozenset(p for p in listing.split("\0") if p)
+    return ctx.surface_paths[sha]
+
+
+def _working_tree_paths(root: Path) -> frozenset[str]:
+    """Edge. Repo-relative file paths in the working tree of `root`; the fallback when the branch listing is unreadable."""
+    return frozenset(
+        p.relative_to(root).as_posix()
+        for p in root.rglob("*")
+        if ".git" not in p.relative_to(root).parts and p.is_file()
+    )
+
+
+def _parent_has_files(paths: frozenset[str], path: str) -> bool:
+    """True when some file sits under the directory holding `path`; a top-level path's parent is the repo root."""
+    parent = path.rstrip("/").rpartition("/")[0]
+    return any(p.startswith(f"{parent}/") for p in paths) if parent else bool(paths)
+
+
+def _surface_passes(paths: frozenset[str], surface: str) -> bool:
+    """Plain path: in `paths`, or a directory with a path under it. `(new)`: its parent has a file."""
     text = surface.strip()
     is_new = text.endswith("(new)")
     path = text.removesuffix("(new)").strip()
     if not path:
         return False
-    target = root / path
-    return exists(target.parent) if is_new else exists(target)
+    if is_new:
+        return _parent_has_files(paths, path)
+    return path in paths or any(p.startswith(f"{path.rstrip('/')}/") for p in paths)
 
 
-def _surface_refusal_reason(exists: Callable[[Path], bool], root: Path, surfaces: Sequence[str]) -> str:
-    """The reason a task is refused for surfaces missing from `root`.
+def _surface_refusal_reason(paths: frozenset[str], root: Path, surfaces: Sequence[str]) -> str:
+    """The reason a task is refused for surfaces missing from `paths`; `root` only words the message.
 
-    When every surface's parent directory exists, the files are probably new and lack the `(new)` marker.
+    When every surface's parent directory has a file, the files are probably new and lack the `(new)` marker.
     """
     failed = ", ".join(str(s) for s in surfaces)
     parents_exist = all(
-        bool(path) and exists((root / path).parent)
+        bool(path) and _parent_has_files(paths, path)
         for path in (str(s).strip().removesuffix("(new)").strip() for s in surfaces)
     )
     if parents_exist:
@@ -2535,14 +2579,19 @@ def _run_phase(
     # A task whose every surface is missing from this repository is aimed at
     # the wrong one. Refused plainly, like the budget refusal above: not an
     # attempt, so never through `_quarantine_task`, and no model call is made.
+    # Judged against the fetched default branch, not the checkout, which may be stale.
+    surface_paths = frozenset[str]()
+    if any(task.get("surfaces") for task in within_budget):
+        listed = _default_branch_paths(ctx)
+        surface_paths = listed if listed is not None else _working_tree_paths(ctx.repo)
     wrong_repo = [
         task for task in within_budget
-        if task.get("surfaces") and not any(_surface_passes(_exists, ctx.repo, str(s)) for s in task["surfaces"])
+        if task.get("surfaces") and not any(_surface_passes(surface_paths, str(s)) for s in task["surfaces"])
     ]
     for task in wrong_repo:
         task_id = str(task["id"])
         failed = ", ".join(str(s) for s in task["surfaces"])
-        reason = _surface_refusal_reason(_exists, ctx.repo, task["surfaces"])
+        reason = _surface_refusal_reason(surface_paths, ctx.repo, task["surfaces"])
         quarantined.append({"id": task_id, "phase": phase, "grain": "task", "kind": "no_work", "reason": reason})
         _record_task_cause(ctx, phase, task_id, "ticket", "rule: surfaces not in the repository")
         _quarantine_row(ctx, phase, task_id)

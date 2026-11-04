@@ -19,6 +19,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import ClassVar
@@ -1799,20 +1800,42 @@ def test_a_build_budget_over_the_cap_is_quarantined_and_the_sibling_still_lands(
 def test_surface_passes_checks_a_plain_path_itself_and_a_new_path_by_its_parent() -> None:
     from harness.epic import _surface_passes
 
-    present = {Path("/r/a.py"), Path("/r/src")}
-    root = Path("/r")
-    assert _surface_passes(present.__contains__, root, "a.py")
-    assert not _surface_passes(present.__contains__, root, "b.py")
-    assert _surface_passes(present.__contains__, root, "src/b.py (new)")
-    assert not _surface_passes(present.__contains__, root, "lib/b.py (new)")
-    assert not _surface_passes(present.__contains__, root, "src/b.py")
+    paths = frozenset({"a.py", "src/a.py"})
+    assert _surface_passes(paths, "a.py")
+    assert not _surface_passes(paths, "b.py")
+    assert _surface_passes(paths, "src/b.py (new)")
+    assert not _surface_passes(paths, "lib/b.py (new)")
+    assert not _surface_passes(paths, "src/b.py")
+    assert _surface_passes(paths, "top.py (new)")
+
+
+def test_surface_passes_a_directory_surface_when_any_path_sits_under_it() -> None:
+    from harness.epic import _surface_passes
+
+    paths = frozenset({"src/deep/a.py", "srcother/b.py"})
+    assert _surface_passes(paths, "src/")
+    assert _surface_passes(paths, "src/deep/")
+    assert not _surface_passes(paths, "lib/")
+    assert not _surface_passes(paths, "sr/")
+    assert _surface_passes(paths, "src/deep")
+    assert not _surface_passes(paths, "sr")
+
+
+def test_a_new_directory_surface_passes_by_the_parent_of_the_directory() -> None:
+    from harness.epic import _surface_passes, _surface_refusal_reason
+
+    paths = frozenset({"src/ui/a.py"})
+    assert _surface_passes(paths, "src/ui/snapshots/ (new)")
+    assert _surface_passes(paths, "newdir/ (new)")
+    assert not _surface_passes(paths, "lib/snapshots/ (new)")
+    assert "wrong repository?" in _surface_refusal_reason(paths, Path("/r"), ["lib/snapshots/ (new)"])
 
 
 def test_refusal_reason_names_the_missing_new_marker_when_every_parent_exists() -> None:
     from harness.epic import _surface_refusal_reason
 
-    present = {Path("/r/src")}
-    reason = _surface_refusal_reason(present.__contains__, Path("/r"), ["src/a.py", "src/b.py"])
+    paths = frozenset({"src/other.py"})
+    reason = _surface_refusal_reason(paths, Path("/r"), ["src/a.py", "src/b.py"])
     assert "(new)" in reason
     assert "not a wrong repository" in reason
     assert "src/a.py, src/b.py" in reason
@@ -1821,17 +1844,106 @@ def test_refusal_reason_names_the_missing_new_marker_when_every_parent_exists() 
 def test_refusal_reason_keeps_the_old_text_when_a_parent_is_missing() -> None:
     from harness.epic import _surface_refusal_reason
 
-    present = {Path("/r/src")}
+    paths = frozenset({"src/other.py"})
     old = "surfaces not in /r: lib/a.py, lib/b.py; wrong repository?"
-    assert _surface_refusal_reason(present.__contains__, Path("/r"), ["lib/a.py", "lib/b.py"]) == old
+    assert _surface_refusal_reason(paths, Path("/r"), ["lib/a.py", "lib/b.py"]) == old
 
 
 def test_refusal_reason_keeps_the_old_text_for_a_mix_with_one_parent_missing() -> None:
     from harness.epic import _surface_refusal_reason
 
-    present = {Path("/r/src")}
+    paths = frozenset({"src/other.py"})
     old = "surfaces not in /r: src/a.py, lib/b.py; wrong repository?"
-    assert _surface_refusal_reason(present.__contains__, Path("/r"), ["src/a.py", "lib/b.py"]) == old
+    assert _surface_refusal_reason(paths, Path("/r"), ["src/a.py", "lib/b.py"]) == old
+
+
+def _repo_with_stale_checkout(repo: Path, tmp_path: Path) -> None:
+    """Give `repo` an origin that has moved on: origin's main holds `src/fresh.py`, the checkout does not."""
+    origin = tmp_path / "origin.git"
+    git("clone", "-q", "--bare", str(repo), str(origin), cwd=tmp_path)
+    git("remote", "add", "origin", str(origin), cwd=repo)
+    git("fetch", "-q", "origin", cwd=repo)
+    other = tmp_path / "other"
+    git("clone", "-q", str(origin), str(other), cwd=tmp_path)
+    (other / "src").mkdir()
+    (other / "src" / "fresh.py").write_text("x = 1\n", encoding="utf-8")
+    git("add", "-A", cwd=other)
+    git("commit", "-qm", "fresh", cwd=other)
+    git("push", "-q", "origin", "main", cwd=other)
+
+
+def test_a_file_on_origins_default_branch_but_absent_from_a_stale_checkout_passes(repo, cart, tmp_path) -> None:
+    from harness.epic import _default_branch_paths, _surface_passes, resolve_default_ref
+
+    _repo_with_stale_checkout(repo, tmp_path)
+    ctx = _budget_ctx(repo, cart)
+    ctx = replace(ctx, default_ref=resolve_default_ref(repo, None), surface_paths={})
+    assert ctx.default_ref == "origin/main"
+    assert not (repo / "src" / "fresh.py").exists()
+    paths = _default_branch_paths(ctx)
+    assert paths is not None
+    assert _surface_passes(paths, "src/fresh.py")
+    assert _surface_passes(paths, "src/other.py (new)")
+
+
+def test_a_file_in_neither_checkout_nor_origin_is_refused_with_the_new_hint(repo, cart, tmp_path) -> None:
+    from harness.epic import _default_branch_paths, _surface_passes, _surface_refusal_reason, resolve_default_ref
+
+    _repo_with_stale_checkout(repo, tmp_path)
+    ctx = _budget_ctx(repo, cart)
+    ctx = replace(ctx, default_ref=resolve_default_ref(repo, None), surface_paths={})
+    paths = _default_branch_paths(ctx)
+    assert paths is not None
+    assert not _surface_passes(paths, "src/missing.py")
+    reason = _surface_refusal_reason(paths, repo, ["src/missing.py"])
+    assert "(new)" in reason
+    assert "not a wrong repository" in reason
+
+
+def test_the_listing_is_read_once_for_several_tasks_across_phases(repo, cart, tmp_path, monkeypatch) -> None:
+    work = initiative()
+    for item in work["items"]:
+        item["surfaces"] = ["README.md"]
+    calls: list[tuple] = []
+    real = epic_module._git_stdout
+    monkeypatch.setattr(epic_module, "_git_stdout", lambda *a: calls.append(a) or real(*a))
+    result, runner = drive(repo, cart, tmp_path, work=work)
+    assert sum(1 for c in runner.calls if c["role"] == "build") == 3
+    assert len([c for c in calls if "ls-tree" in c]) == 1
+
+
+def test_the_listing_is_read_again_when_the_ref_moves(repo, cart) -> None:
+    from harness.epic import _default_branch_paths
+
+    ctx = replace(_budget_ctx(repo, cart), default_ref="main")
+    assert "later.py" not in _default_branch_paths(ctx)
+    (repo / "later.py").write_text("x = 1\n", encoding="utf-8")
+    git("add", "-A", cwd=repo)
+    git("commit", "-qm", "later", cwd=repo)
+    assert "later.py" in _default_branch_paths(ctx)
+
+
+def test_a_warning_on_stderr_does_not_replace_the_listing(repo, cart, monkeypatch) -> None:
+    from harness.epic import _default_branch_paths
+
+    def fake_run(argv, **kwargs):
+        out = "abc123\n" if "rev-parse" in argv else " lead.py\0src/b.py\0"
+        return subprocess.CompletedProcess(argv, 0, stdout=out, stderr="warning: something")
+
+    monkeypatch.setattr(epic_module.subprocess, "run", fake_run)
+    assert _default_branch_paths(replace(_budget_ctx(repo, cart), default_ref="main")) == {" lead.py", "src/b.py"}
+
+
+def test_an_unreadable_listing_falls_back_to_the_working_tree(repo, cart, tmp_path, monkeypatch) -> None:
+    (repo / "only_local.txt").write_text("x\n", encoding="utf-8")
+    work = initiative(two_phases=False)
+    next(i for i in work["items"] if i["id"] == "t1-probe")["surfaces"] = ["only_local.txt"]
+    with_listing, _ = drive(repo, cart, tmp_path / "a", work=work)
+    assert any(q["id"] == "t1-probe" and q["kind"] == "no_work" for q in with_listing["quarantined"])
+    monkeypatch.setattr(epic_module, "_default_branch_paths", lambda ctx: None)
+    without, runner = drive(repo, cart, tmp_path / "b", work=work, run_id="epic-2")
+    assert not any(q["id"] == "t1-probe" for q in without["quarantined"])
+    assert any(c["role"] == "build" and "t1-probe" in c["prompt"] for c in runner.calls)
 
 
 def test_a_task_whose_only_surface_is_a_new_path_with_no_parent_is_refused_before_any_model_call(
@@ -1855,6 +1967,9 @@ def test_a_task_whose_only_surface_is_a_new_path_with_no_parent_is_refused_befor
 
 def test_a_new_file_under_an_existing_directory_proceeds_to_the_model(repo, cart, tmp_path) -> None:
     (repo / "docs").mkdir()
+    (repo / "docs" / "index.md").write_text("# docs\n", encoding="utf-8")
+    git("add", "-A", cwd=repo)
+    git("commit", "-qm", "docs", cwd=repo)
     work = initiative(two_phases=False)
     next(i for i in work["items"] if i["id"] == "t1-probe")["surfaces"] = ["docs/notes.md (new)"]
     result, runner = drive(repo, cart, tmp_path, work=work)
