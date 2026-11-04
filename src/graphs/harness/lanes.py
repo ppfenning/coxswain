@@ -5,6 +5,7 @@ Pure and clock-free. Plain data in, plain data out, no I/O.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Collection, Mapping, Sequence
 from typing import Any
 
@@ -30,6 +31,25 @@ def resolve_max_parallel(cli_value: int | None, profile_value: int | None, ready
     """First of the command-line value, the profile value, then the ready count, floored at 1."""
     first = next((v for v in (cli_value, profile_value) if v is not None), ready_count)
     return max(1, first)
+
+
+def lane_bound(
+    max_lanes: int, in_flight: int, headroom_usd: float | None, est_task_usd: float | None
+) -> tuple[int, str]:
+    """Tasks that may start now and the limit that set it. `in_flight` is a count, not ids.
+
+    The usage limit applies only when both headroom and a positive per-task estimate are given.
+    The binding is 'usage ceiling' only when that limit is strictly below the lane limit.
+    """
+    by_lanes = max(0, max_lanes - in_flight)
+    by_usage = (
+        max(0, math.floor(headroom_usd / est_task_usd))
+        if headroom_usd is not None and est_task_usd is not None and est_task_usd > 0
+        else None
+    )
+    if by_usage is not None and by_usage < by_lanes:
+        return by_usage, "usage ceiling"
+    return by_lanes, "lanes"
 
 
 def _layers(needs: Mapping[str, tuple[str, ...]]) -> list[list[str]]:
