@@ -1,9 +1,18 @@
-import re
+import argparse
+from types import SimpleNamespace
 
 import pytest
 
 from devtools.release_check import Drift
-from devtools.release_check_cli import check_cli_surface, commands_in_doc, gather_cli_facts, walk_help
+from devtools.release_check_cli import (
+    HAND_BUILT,
+    check_cli_surface,
+    commands_in_doc,
+    gather_cli_facts,
+    table_commands,
+    table_suppressed,
+    walk_help,
+)
 
 _HELP = {
     "cox": (
@@ -225,30 +234,47 @@ def test_gather_cli_facts_reports_one_generator_error_when_parse_subcommands_rai
     assert "cli_commands" not in facts and "doc_commands" not in facts
 
 
-def _real_cox_help_texts():
-    """Walks the umbrella's own live argparse tree (not a fixture) so the
-    three shapes above are checked against the actual `cox --help` this
-    repo ships, the same text `cox dev release-check` would gather."""
-    build_parser = pytest.importorskip("agent_tools.cli").build_parser
-    # Python 3.14 argparse colours format_help() when the environment asks for it;
-    # `cox --help` piped to the release check is plain, so strip the escapes here.
-    ansi = re.compile(r"\x1b\[[0-9;]*m")
-
-    def texts_from(parser, prefix):
-        found = {prefix: ansi.sub("", parser.format_help())}
-        for group_action in parser._subparsers._group_actions if parser._subparsers else []:
-            for name, sub in group_action.choices.items():
-                found.update(texts_from(sub, f"{prefix} {name}"))
-        return found
-
-    return texts_from(build_parser(), "cox")
+def _group(name, help="a group"):
+    return SimpleNamespace(name=name, help=help)
 
 
-def test_walk_help_on_the_real_cox_parser_reaches_setup_and_dev_but_drops_release():
-    commands = walk_help(_real_cox_help_texts())
-    required = {"cox setup doctor", "cox dev"}  # `cox dev` is a bare leaf now: it only points at the checkout
-    assert required <= commands
-    assert not any(cmd.split()[:2] == ["cox", "release"] for cmd in commands)  # SUPPRESS-marked, so dropped
+def _row(name, summary="a row", subcommands=()):
+    return SimpleNamespace(name=name, summary=summary, subcommands=subcommands)
+
+
+def test_table_commands_on_the_real_command_table_reaches_setup_and_dev_but_not_release():
+    table = pytest.importorskip("agent_tools.cli").COMMAND_TABLE
+    commands = table_commands(table) | set(HAND_BUILT)
+    assert {"cox setup doctor", "cox dev"} <= commands
+    assert not any(cmd.split()[1] == "release" for cmd in commands)
+
+
+def test_table_commands_names_a_group_with_no_rows_as_one_leaf():
+    assert table_commands([(_group("dash"), [])]) == {"cox dash"}
+
+
+def test_table_commands_yields_one_command_per_row():
+    assert table_commands([(_group("setup"), [_row("doctor"), _row("profile")])]) == {
+        "cox setup doctor", "cox setup profile",
+    }
+
+
+def test_table_commands_replaces_a_row_with_its_subcommands():
+    table = [(_group("route"), [_row("launch", subcommands=(_row("epic"), _row("task")))])]
+    assert table_commands(table) == {"cox route launch epic", "cox route launch task"}
+
+
+def test_table_commands_leaves_out_a_suppressed_group_and_a_suppressed_row():
+    table = [
+        (_group("release", help=argparse.SUPPRESS), [_row("publish")]),
+        (_group("setup"), [_row("doctor"), _row("old", summary=argparse.SUPPRESS)]),
+    ]
+    assert table_commands(table) == {"cox setup doctor"}
+
+
+def test_table_suppressed_lists_the_groups_whose_help_is_suppressed():
+    table = [(_group("release", help=argparse.SUPPRESS), []), (_group("setup"), [])]
+    assert table_suppressed(table) == {"cox release"}
 
 
 def test_plain_env_forces_no_color_and_strips_force_color():
