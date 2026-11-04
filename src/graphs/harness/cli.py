@@ -68,6 +68,7 @@ from harness.store_read import calls as node_calls
 from harness.store_read import cost_by_model, run_summary
 from harness.store_write import Store
 from harness.traces_url import have_pyarrow, redact_url, resolve_traces_root
+from harness.usage import summarize
 from harness.worktree import apply_patch, create_worktree, keep_worktree, remove_worktree
 from runner.protocol import LimitStop, RunnerError
 
@@ -357,6 +358,35 @@ def _parallel_cap(parser: argparse.ArgumentParser, args: argparse.Namespace, fre
     if isinstance(from_profile, str):
         parser.error(from_profile)
     return resolve_max_parallel(args.max_parallel, from_profile, free_lanes)
+
+
+def _positive_number(key: str, value: object, default: float | None) -> float | str | None:
+    """`value` as a float when positive, `default` when absent, else the usage-error message naming `key`."""
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
+        return f"{key} must be a positive number, got {value}"
+    return float(value)
+
+
+def _usage_bound(
+    parser: argparse.ArgumentParser, args: argparse.Namespace, runner: Any
+) -> tuple[Callable[[], float | None], float]:
+    """`(headroom_usd, est_task_usd)` from the profile's run_ceiling_usd and task_estimate_usd. A bad value is a usage error."""
+    path = getattr(args, "provider_profile", None)
+    profile = _read_profile(path) if path else {}
+    ceiling = _positive_number("run_ceiling_usd", profile.get("run_ceiling_usd"), None)
+    estimate = _positive_number("task_estimate_usd", profile.get("task_estimate_usd"), 6.0)
+    for parsed in (ceiling, estimate):
+        if isinstance(parsed, str):
+            parser.error(parsed)
+
+    def headroom_usd() -> float | None:
+        if ceiling is None:
+            return None
+        return ceiling - summarize(list(getattr(runner, "calls", None) or []))["cost_usd"]
+
+    return headroom_usd, estimate
 
 
 def _storage_url(profile: Mapping[str, Any], runs_dir: Path | str) -> str:
@@ -1477,6 +1507,7 @@ def _run_graph(
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 1
+        headroom_usd, est_task_usd = _usage_bound(parser, args, runner)
 
         # Wired to stdout because that's the stream this branch's own status
         # lines (the "epic {run_id}: ..." summary below) already write to —
@@ -1492,6 +1523,8 @@ def _run_graph(
             run_id=run_id,
             date=args.date,
             max_parallel=_parallel_cap(parser, args, len(initiative.get("items") or [])),
+            headroom_usd=headroom_usd,
+            est_task_usd=est_task_usd,
             ledger_path=args.ledger,
             provider_profile=_provider_profile_scope(args.provider_profile),
             runs_dir=args.runs_dir,
