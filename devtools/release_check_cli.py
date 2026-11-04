@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import re
 import tempfile
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from devtools.release_check import Drift
@@ -38,6 +39,40 @@ def walk_help(help_texts: Mapping[str, str], choices: Callable[[str], set[str]] 
         for name in choices(text)
         if not choices(help_texts.get(f"{prefix} {name}", ""))
     }
+
+
+# build_parser registers `dev` by hand, so COMMAND_TABLE never lists it; `release` is hand-built too but SUPPRESS-help, so it stays out.
+HAND_BUILT: tuple[str, ...] = ("cox dev",)
+
+
+def _is_suppressed(item: Any) -> bool:
+    return argparse.SUPPRESS in (getattr(item, "help", None), getattr(item, "summary", None))
+
+
+def _leaves(rows: Sequence[Any]) -> list[tuple[Any, tuple[str, ...]]]:
+    """Each visible invocable row with its name path; a row with subcommands is replaced by them."""
+    return [
+        (leaf, path)
+        for r in rows
+        if not _is_suppressed(r)
+        for leaf, path in ([(s, (r.name, s.name)) for s in getattr(r, "subcommands", ())] or [(r, (r.name,))])
+        if not _is_suppressed(leaf)
+    ]
+
+
+def table_commands(table: Sequence[tuple[Any, Sequence[Any]]], program: str = "cox") -> set[str]:
+    """Full command strings of a (Group, rows) table; a group with no rows is one leaf."""
+    return {
+        " ".join([program, group.name, *path])
+        for group, rows in table
+        if not _is_suppressed(group)
+        for _, path in (_leaves(rows) if rows else [(group, ())])
+    }
+
+
+def table_suppressed(table: Sequence[tuple[Any, Sequence[Any]]], program: str = "cox") -> set[str]:
+    """Top-level groups whose own help is SUPPRESS, as `{program} {group}`."""
+    return {f"{program} {group.name}" for group, _ in table if _is_suppressed(group)}
 
 
 def commands_in_doc(text: str) -> set[str]:
