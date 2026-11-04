@@ -1056,7 +1056,7 @@ def test_launch_decompose_starts_the_harness_detached_with_the_recorded_argv(tmp
     (ws / "runs").mkdir(parents=True)
     (ws / "intake").mkdir(parents=True)
     idea = ws / "intake" / "2026-09-04-fix-thing.md"
-    idea.write_text("---\nid: fix-thing\ntitle: Fix thing\n---\n\nBody\n")
+    idea.write_text("---\nid: fix-thing\ntitle: Fix thing\nrepo: git@example.com:acme/widget.git\n---\n\nBody\n")
     profile = _write_launch_profile(tmp_path, harness_dir, ws)
 
     rc = main([
@@ -1073,7 +1073,7 @@ def test_launch_decompose_starts_the_harness_detached_with_the_recorded_argv(tmp
     argv = json.loads(recorded.read_text())
     expected = route.harness_argv(
         route.parse_profile(profile.read_text()), "decompose", "fix-thing-1",
-        idea=str(idea), initiative_id="fix-thing",
+        idea=str(idea), initiative_id="fix-thing", repo="git@example.com:acme/widget.git",
     )
     assert argv == expected[1:]
 
@@ -1136,7 +1136,7 @@ def test_launch_decompose_leaves_an_existing_initiative_md_untouched(tmp_path, c
     (ws / "runs").mkdir(parents=True)
     (ws / "intake").mkdir(parents=True)
     idea = ws / "intake" / "idea.md"
-    idea.write_text("---\nid: fix-thing\ntitle: Fix thing\n---\n\nBody\n")
+    idea.write_text("---\nid: fix-thing\ntitle: Fix thing\nrepo: git@example.com:acme/widget.git\n---\n\nBody\n")
     initiative_md = ws / "work" / "fix-thing" / "initiative.md"
     initiative_md.parent.mkdir(parents=True)
     initiative_md.write_text("---\nid: fix-thing\ntitle: Fix thing\n---\n\nBody\n")
@@ -1195,7 +1195,7 @@ def test_launch_decompose_keeps_initiative_md_when_tickets_exist(tmp_path, capsy
     (ws / "runs").mkdir(parents=True)
     (ws / "intake").mkdir(parents=True)
     idea = ws / "intake" / "idea.md"
-    idea.write_text("---\nid: fix-thing\ntitle: Fix thing\n---\n\nDo the new thing.\n")
+    idea.write_text("---\nid: fix-thing\ntitle: Fix thing\nrepo: git@example.com:acme/widget.git\n---\n\nDo the new thing.\n")
     initiative_md = ws / "work" / "fix-thing" / "initiative.md"
     initiative_md.parent.mkdir(parents=True)
     initiative_md.write_text("---\nid: fix-thing\ntitle: Fix thing\n---\n\nOld body.\n")
@@ -1222,7 +1222,7 @@ def test_launch_writes_launched_json_naming_the_lock_holder(tmp_path, capsys):
     (ws / "runs").mkdir(parents=True)
     (ws / "intake").mkdir(parents=True)
     idea = ws / "intake" / "idea.md"
-    idea.write_text("---\nid: fix-thing\ntitle: Fix thing\n---\n\nBody\n")
+    idea.write_text("---\nid: fix-thing\ntitle: Fix thing\nrepo: git@example.com:acme/widget.git\n---\n\nBody\n")
     profile = _write_launch_profile(tmp_path, harness_dir, ws)
     fresh = datetime.datetime.now(datetime.UTC).isoformat()
     leader.write(ws / "runs", {"session": "alice", "pid": 1, "host": "some-other-host", "taken_at": fresh, "heartbeat_at": fresh})
@@ -1245,7 +1245,7 @@ def test_launch_does_not_reuse_a_run_id_present_only_in_the_store(tmp_path, caps
     (ws / "runs").mkdir(parents=True)
     (ws / "intake").mkdir(parents=True)
     idea = ws / "intake" / "idea.md"
-    idea.write_text("---\nid: fix-thing\ntitle: Fix thing\n---\n\nBody\n")
+    idea.write_text("---\nid: fix-thing\ntitle: Fix thing\nrepo: git@example.com:acme/widget.git\n---\n\nBody\n")
     profile = _write_launch_profile(tmp_path, harness_dir, ws)
     conn = sqlite3.connect(ws / "runs" / "cox.db")
     conn.execute("CREATE TABLE runs (run_id TEXT PRIMARY KEY)")
@@ -1270,7 +1270,7 @@ def test_launch_with_no_claim_writes_launched_json_with_no_launched_by_key(tmp_p
     (ws / "runs").mkdir(parents=True)
     (ws / "intake").mkdir(parents=True)
     idea = ws / "intake" / "idea.md"
-    idea.write_text("---\nid: fix-thing\ntitle: Fix thing\n---\n\nBody\n")
+    idea.write_text("---\nid: fix-thing\ntitle: Fix thing\nrepo: git@example.com:acme/widget.git\n---\n\nBody\n")
     profile = _write_launch_profile(tmp_path, harness_dir, ws)
 
     rc = main([
@@ -1292,7 +1292,7 @@ def test_launch_dry_run_prints_argv_and_starts_nothing(tmp_path, capsys):
     (ws / "runs").mkdir(parents=True)
     (ws / "intake").mkdir(parents=True)
     idea = ws / "intake" / "idea.md"
-    idea.write_text("body\n")
+    idea.write_text("---\nrepo: git@example.com:acme/widget.git\n---\n\nbody\n")
     profile = _write_launch_profile(tmp_path, harness_dir, ws)
 
     rc = main([
@@ -1316,7 +1316,7 @@ def test_launch_decompose_dry_run_prints_the_initiative_path_and_writes_nothing(
     (ws / "runs").mkdir(parents=True)
     (ws / "intake").mkdir(parents=True)
     idea = ws / "intake" / "idea.md"
-    idea.write_text("---\nid: fix-thing\ntitle: Fix thing\n---\n\nBody\n")
+    idea.write_text("---\nid: fix-thing\ntitle: Fix thing\nrepo: git@example.com:acme/widget.git\n---\n\nBody\n")
     profile = _write_launch_profile(tmp_path, harness_dir, ws)
 
     rc = main([
@@ -1638,7 +1638,7 @@ def _decompose_idea(tmp_path):
     (ws / "runs").mkdir(parents=True)
     (ws / "intake").mkdir()
     idea = ws / "intake" / "fix-thing.md"
-    idea.write_text("---\nid: fix-thing\ntitle: Fix thing\n---\n\nBody\n")
+    idea.write_text("---\nid: fix-thing\ntitle: Fix thing\nrepo: git@example.com:acme/widget.git\n---\n\nBody\n")
     return ws, idea
 
 
@@ -1821,7 +1821,7 @@ def test_launch_refuses_a_tier_ceiling_above_the_profiles_own_ceiling(tmp_path, 
     (ws / "runs").mkdir(parents=True)
     (ws / "intake").mkdir(parents=True)
     idea = ws / "intake" / "idea.md"
-    idea.write_text("body\n")
+    idea.write_text("---\nrepo: git@example.com:acme/widget.git\n---\n\nbody\n")
     provider = _write_provider_profile(tmp_path, tier="standard", effort="high")
     profile = _write_launch_profile(tmp_path, harness_dir, ws, provider_profile=provider)
 
@@ -1883,7 +1883,7 @@ def test_launch_with_no_ceiling_flags_writes_no_ceiling_record(tmp_path, capsys)
     (ws / "runs").mkdir(parents=True)
     (ws / "intake").mkdir(parents=True)
     idea = ws / "intake" / "idea.md"
-    idea.write_text("body\n")
+    idea.write_text("---\nrepo: git@example.com:acme/widget.git\n---\n\nbody\n")
     provider = _write_provider_profile(tmp_path, tier="deep", effort="high")
     profile = _write_launch_profile(tmp_path, harness_dir, ws, provider_profile=provider)
 
@@ -1908,7 +1908,7 @@ def test_launch_with_only_a_tier_ceiling_leaves_effort_unset_in_the_ceiling_reco
     (ws / "runs").mkdir(parents=True)
     (ws / "intake").mkdir(parents=True)
     idea = ws / "intake" / "idea.md"
-    idea.write_text("body\n")
+    idea.write_text("---\nrepo: git@example.com:acme/widget.git\n---\n\nbody\n")
     provider = _write_provider_profile(tmp_path, tier="deep", effort="high")
     profile = _write_launch_profile(tmp_path, harness_dir, ws, provider_profile=provider)
 
@@ -1932,7 +1932,7 @@ def test_launch_dry_run_with_a_ceiling_writes_no_provider_profile_or_ceiling_fil
     (ws / "runs").mkdir(parents=True)
     (ws / "intake").mkdir(parents=True)
     idea = ws / "intake" / "idea.md"
-    idea.write_text("body\n")
+    idea.write_text("---\nrepo: git@example.com:acme/widget.git\n---\n\nbody\n")
     provider = _write_provider_profile(tmp_path, tier="deep", effort="high")
     profile = _write_launch_profile(tmp_path, harness_dir, ws, provider_profile=provider)
 
@@ -1957,7 +1957,7 @@ def test_launch_refuses_when_the_provider_profile_is_missing_and_a_ceiling_is_re
     (ws / "runs").mkdir(parents=True)
     (ws / "intake").mkdir(parents=True)
     idea = ws / "intake" / "idea.md"
-    idea.write_text("body\n")
+    idea.write_text("---\nrepo: git@example.com:acme/widget.git\n---\n\nbody\n")
     profile = _write_launch_profile(tmp_path, harness_dir, ws)  # default provider_profile path does not exist
 
     rc = main([
@@ -1979,7 +1979,7 @@ def test_launch_refuses_when_the_provider_profile_is_not_valid_yaml(tmp_path, ca
     (ws / "runs").mkdir(parents=True)
     (ws / "intake").mkdir(parents=True)
     idea = ws / "intake" / "idea.md"
-    idea.write_text("body\n")
+    idea.write_text("---\nrepo: git@example.com:acme/widget.git\n---\n\nbody\n")
     provider = tmp_path / "broken.yaml"
     provider.write_text("tier: [unterminated\n")
     profile = _write_launch_profile(tmp_path, harness_dir, ws, provider_profile=provider)
@@ -2154,7 +2154,7 @@ def test_launch_refuses_when_the_provider_profile_does_not_parse_to_a_mapping(tm
     (ws / "runs").mkdir(parents=True)
     (ws / "intake").mkdir(parents=True)
     idea = ws / "intake" / "idea.md"
-    idea.write_text("body\n")
+    idea.write_text("---\nrepo: git@example.com:acme/widget.git\n---\n\nbody\n")
     provider = tmp_path / "list.yaml"
     provider.write_text("- a\n- b\n")
     profile = _write_launch_profile(tmp_path, harness_dir, ws, provider_profile=provider)
