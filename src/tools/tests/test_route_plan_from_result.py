@@ -63,6 +63,17 @@ def test_plan_goes_through_plan_writes_to_rows():
     assert {r["task_id"] for r in rows if r["kind"] == "task"} == {"t1", "t2"}
 
 
+def test_task_with_needs_is_written_ready_and_initiative_stays_todo():
+    plan = route.plan_from_result(RESULT, "init-a", "A", "about A")
+    rows, failure = route.plan_writes(plan, INTAKE, [])
+    assert failure is None
+    tasks = {r["task_id"]: r for r in rows if r["kind"] == "task"}
+    assert set(tasks) == {"t1", "t2"}
+    assert tasks["t2"]["needs"] == ["t1"]
+    assert {t["state"] for t in tasks.values()} == {"ready"}
+    assert next(r for r in rows if r["kind"] == "initiative")["state"] == "todo"
+
+
 INITIATIVE = "---\nid: init-a\ntitle: A\nrepo: /old\nintake: intake/n.md\n---\n\nbody\n"
 
 
