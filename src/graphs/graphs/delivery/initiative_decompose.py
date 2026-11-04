@@ -40,7 +40,8 @@ from graphs.delivery.decompose_size import (
     single_ticket_initiative,
 )
 from graphs.delivery.phase_split import split_same_phase_needs
-from graphs.delivery.ticket_lint import Problem, idea_reach_problems, lint_tickets
+from graphs.delivery.ticket_lint import Problem, idea_reach_refusal, lint_tickets
+from graphs.delivery.ticket_lint import lint_refusal_text as _lint_refusal_text
 from runner.decision_log import RouterDecision
 from runner.decision_source import DecisionSource, NoDecisionSource, ask
 from runner.protocol import NodeRunner
@@ -504,13 +505,6 @@ def _contract_fixture_rule(
     )
 
 
-def _lint_refusal_text(problems: Sequence[Problem]) -> str | None:
-    """One line per reach/coupling `Problem`; `None` when there is nothing to refuse."""
-    if not problems:
-        return None
-    return "\n".join(f"{p.task}: {p.rule} — {p.detail} ({p.fix})" for p in problems)
-
-
 # ticket_lint reports these as advisory. Here they are refusals: a ticket naming a command the build
 # was not granted, or a file in another repository, must not be stored ready.
 _REWRITE_RULES = frozenset({"grant", "cross_repo"})
@@ -542,12 +536,6 @@ def _rewrite_correction(problems: Sequence[Problem], grants: Sequence[str]) -> s
         + "\n\n"
         + _grant_sentence(grants)
     )
-
-
-def _refusal_reason(refusals: Sequence[Problem]) -> str:
-    """`lint-refused: <task> <rule>, ...` on the first line, then one detail line per problem."""
-    heading = "lint-refused: " + ", ".join(dict.fromkeys(f"{p.task} {p.rule}" for p in refusals))
-    return heading + "\n" + (_lint_refusal_text(refusals) or "")
 
 
 def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
@@ -1021,9 +1009,9 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
     reach_allow = _reach_allow(args, idea_frontmatter)
     # An empty allow-list is lint_tickets' own default, so it is left unpassed.
     allow_kwargs = {"reach_allow": reach_allow} if reach_allow else {}
-    idea_problems = idea_reach_problems(idea_body, tree, repo_name, reach_allow)
-    if idea_problems:
-        raise LintRefusal(_refusal_reason(idea_problems))
+    idea_refusal = idea_reach_refusal(idea_body, tree, repo_name, reach_allow)
+    if idea_refusal is not None:
+        raise LintRefusal(idea_refusal)
 
     decompose_hints = Hints(judgment="high")
     decompose_prompt = (

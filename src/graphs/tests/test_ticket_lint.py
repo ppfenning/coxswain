@@ -1,4 +1,4 @@
-from graphs.delivery.ticket_lint import Problem, idea_reach_problems, lint_tickets
+from graphs.delivery.ticket_lint import Problem, idea_reach_problems, idea_reach_refusal, lint_tickets
 
 
 def _task(**over):
@@ -405,3 +405,18 @@ def test_idea_prose_naming_a_path_under_an_allowed_prefix_gives_no_problem(tmp_p
 def test_idea_prose_with_only_notation_gives_no_problem():
     idea = "cartridges 1.0 / graphs 1.0 and the record under `runs/<run>/tasks/<task>.json`"
     assert idea_reach_problems(idea, _TREE, "graphs") == []
+
+
+def test_idea_reach_refusal_for_a_tilde_path_leads_with_the_heading_and_names_the_repo():
+    text = idea_reach_refusal("ship the unit to ~/deploy/unit.service", _TREE, "graphs")
+    assert text is not None
+    assert text.startswith("lint-refused: idea reach")
+    assert "not inside" in text
+
+
+def test_idea_reach_refusal_is_none_for_a_tilde_path_under_an_allowed_prefix():
+    assert idea_reach_refusal("ship the unit to ~/deploy/unit.service", _TREE, "graphs", ["~/deploy"]) is None
+
+
+def test_idea_reach_refusal_is_none_for_a_clean_body():
+    assert idea_reach_refusal("tidy the parser and add a test", _TREE, "graphs") is None
