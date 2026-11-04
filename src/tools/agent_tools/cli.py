@@ -1694,6 +1694,25 @@ def _phase_merged_pr(repo: Path, initiative: str, phase: str, default_branch: st
     return None if number is None else {"number": number, "state": "merged", "carried": True}
 
 
+def _task_already_on_main(repo: Path, step: dict, record: dict | None) -> int | None:
+    """Edge. The PR number that carried a task branch onto the default branch, or None to run the step as planned.
+    Only the task form of `cherry_pick` (no `task` key) with files on its record qualifies; the branch must add
+    nothing over `from` yet hold a commit the fetched default branch lacks, and a subject must name the PR."""
+    files = ((record or {}).get("build") or {}).get("files_touched") or []
+    if step.get("kind") != "cherry_pick" or "task" in step or not files:
+        return None
+    if not (_phase_adds_nothing(repo, step["branch"], step["from"]) and _branch_has_own_commits(repo, step["branch"], step["from"])):
+        return None
+    return land.carrying_pr(_main_subjects_touching(repo, step["from"], step["branch"], files), None)
+
+
+def _carried_walk(steps: list[dict], planned: list[dict], number: int) -> tuple[list[dict], list[dict], str] | None:
+    """Pure. The closing steps of `steps` and of `planned`, and the running `pr`, for a task main already carries.
+    None when the gated steps keep no closing step, so the walk runs as planned."""
+    tail = land.landed_tail(steps)
+    return (tail, land.landed_tail(planned), f"#{number}") if tail else None
+
+
 def _carried_pr(merged_pr: dict | None) -> str:
     """Pure. The running `pr` a walk starts from: `#<n>` for a carried phase, `""` otherwise."""
     return f"#{merged_pr['number']}" if merged_pr is not None and merged_pr.get("carried") else ""
@@ -3723,6 +3742,13 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
             if step.get("unmerged"):
                 print(step["reason"])
             i += 1
+            continue
+        carried = _task_already_on_main(repo, step, record) if step["kind"] == "cherry_pick" else None
+        walk = None if carried is None else _carried_walk(steps[i:], planned, carried)
+        if walk is not None:
+            steps, planned, pr = walk
+            print(land.landed_via_line(pr))
+            i = 0
             continue
         held = guard(step["kind"]) if guard is not None else None
         if held is not None:
