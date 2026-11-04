@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 LAND_AT_VALUES = ("ticket", "level", "task")
@@ -27,3 +27,14 @@ def resolve_land_at(cartridge: Mapping[str, Any], initiative_land_at: str | None
 def land_gate_level(land_at: str) -> str:
     """The granularity at which the human approval gate applies: the `land_at` value itself."""
     return _checked(land_at, "gate")
+
+
+def phase_land_deferred(land_at: str, phase: str, phases: Sequence[str]) -> bool:
+    """True only at `ticket` for a phase that is not the last of `phases` (workstore.phases order)."""
+    return _checked(land_at, "phase") == "ticket" and bool(phases) and phase != phases[-1]
+
+
+def phase_counts_complete(land_at: str, states: Sequence[tuple[str, bool]]) -> bool:
+    """Every (state, merged) is done or dropped, or approved and merged unless `land_at` is `task`; empty is True."""
+    merged_counts = _checked(land_at, "phase") != "task"
+    return all(s in ("done", "dropped") or (merged_counts and s == "approved" and merged) for s, merged in states)

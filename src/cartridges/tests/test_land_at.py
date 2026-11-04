@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from core.cartridge import apply_overlay, overlay_errors
-from core.landing import land_gate_level, resolve_land_at
+from core.landing import land_gate_level, phase_counts_complete, phase_land_deferred, resolve_land_at
 
 REFUSAL = "must be 'ticket', 'level' or 'task'"
 
@@ -61,3 +61,32 @@ def test_land_gate_level_is_the_value_itself() -> None:
     assert [land_gate_level(v) for v in ("ticket", "level", "task")] == ["ticket", "level", "task"]
     with pytest.raises(ValueError, match="'ticket', 'level', 'task'"):
         land_gate_level("epic")
+
+
+def test_last_phase_is_never_deferred() -> None:
+    assert [phase_land_deferred(v, "p2", ["p1", "p2"]) for v in ("ticket", "level", "task")] == [False] * 3
+
+
+def test_non_last_phase_is_deferred_at_ticket_only() -> None:
+    assert [phase_land_deferred(v, "p1", ["p1", "p2"]) for v in ("ticket", "level", "task")] == [True, False, False]
+
+
+def test_approved_merged_counts_at_ticket_and_level_not_task() -> None:
+    assert [phase_counts_complete(v, [("approved", True)]) for v in ("ticket", "level", "task")] == [True, True, False]
+
+
+def test_approved_unmerged_never_counts() -> None:
+    assert [phase_counts_complete(v, [("approved", False)]) for v in ("ticket", "level", "task")] == [False] * 3
+
+
+def test_done_dropped_and_empty_count_everywhere() -> None:
+    for v in ("ticket", "level", "task"):
+        assert phase_counts_complete(v, [("done", False), ("dropped", False)])
+        assert phase_counts_complete(v, [])
+
+
+def test_unknown_land_at_raises_in_both_phase_rules() -> None:
+    with pytest.raises(ValueError, match="land_at"):
+        phase_land_deferred("epic", "p1", ["p1", "p2"])
+    with pytest.raises(ValueError, match="land_at"):
+        phase_counts_complete("epic", [])
