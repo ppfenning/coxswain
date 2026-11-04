@@ -3325,12 +3325,15 @@ def _runs_land(a: argparse.Namespace) -> int:
         earlier = [r for p in phases if p != phase for r in _land_phase_record(runs_dir, run_id, p)[1]
                    if r["task"] in ticket_items and r.get("status", "approved") == "approved"]
         ticket_present = _ticket_present(repo, phase_record.get("card_branch") or f"epic/{initiative}/{phase}", earlier)
+        from core.landing import phase_land_deferred  # lazy: core sits beside agent_tools in one venv
         plan_steps = land.land_plan(
             {**phase_record, "initiative": initiative, "initiative_title": initiative_title,
-             "last_phase": phase == phases[-1] if phases else bool(phase_record.get("last_phase"))}, {}, default_branch,
+             "last_phase": not phase_land_deferred(land_at, phase, phases) if phases else bool(phase_record.get("last_phase"))},
+            {}, default_branch,
             repo_facts, items=items, task_records=task_records, phase_pr=phase_pr,
             task_facts=_phase_task_facts(repo, f"epic/{initiative}/{phase}", items, task_records),
             already_merged=already_merged, ticket_tasks=ticket_tasks, ticket_present=ticket_present,
+            ticket_records=[r for r in earlier if r["task"] in ticket_present],
         )
         steps = _land_enrich(plan_steps, path=searched, worktree_root=a.worktree_root, task_paths=task_paths,
                               umbrella=profile.get("umbrella_dir"), task_items={**_phase_task_items(items), **ticket_items})

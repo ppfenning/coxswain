@@ -454,7 +454,8 @@ def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_
                 fetched_missing: Collection[str] = (),
                 task_facts: Sequence[Mapping[str, Any]] | None = None,
                 already_merged: bool = False, ticket_tasks: Sequence[str] = (),
-                ticket_present: Collection[str] = ()) -> list[dict[str, Any]]:
+                ticket_present: Collection[str] = (),
+                ticket_records: Sequence[dict[str, Any]] = ()) -> list[dict[str, Any]]:
     """§1's phase step list, or a one-step `refuse` from `phase_landable`. The
     phase branch is squashed onto a fresh `default_branch` in its own PR
     branch, the way a task land builds its PR, since a coxswain repo requires
@@ -569,7 +570,7 @@ def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_
         checks_step(repo_facts or {}, pr_branch),
         {"kind": "push", "branch": pr_branch},
         {"kind": "pr_create", "title": phase_pr_title(initiative, phase, phase_record.get("initiative_title", "")),
-         "body": phase_pr_body(phase_record, task_records), "head": pr_branch, "base": default_branch},
+         "body": phase_pr_body(phase_record, [*ticket_records, *task_records] if ticket else task_records), "head": pr_branch, "base": default_branch},
         {"kind": "wait_checks", "branch": pr_branch},
         # Without `task_facts` there is no merged set, so every landed task is marked as before. A task with no
         # fact (not approved) was never gathered and keeps being marked too.
@@ -611,7 +612,8 @@ def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_br
               fetched_missing: Collection[str] = (),
               task_facts: Sequence[Mapping[str, Any]] | None = None, scope: str = "all",
               reference: str | None = None, already_merged: bool = False,
-              ticket_tasks: Sequence[str] = (), ticket_present: Collection[str] = ()) -> list[dict[str, Any]]:
+              ticket_tasks: Sequence[str] = (), ticket_present: Collection[str] = (),
+              ticket_records: Sequence[dict[str, Any]] = ()) -> list[dict[str, Any]]:
     """The ordered steps to land `record`, or a one-step `refuse`. Phase mode only: `already_merged` plans
     just the clean and the mark_done steps. Under a `scope` other than `all` (task mode),
     the PR body carries `reference` alone, nothing syncs before the PR, and the closing sync runs only for a
@@ -623,11 +625,13 @@ def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_br
     `run_hosts` (run to host) and `fetched_missing` (task ids a fetch found
     nothing for) feed the gather. Task mode only: `tracker` other than None or `none` adds a
     closing `route_sync`, and `issue` adds `Closes #n` to the PR body; `none`
-    plans neither and says so in a note."""
+    plans neither and says so in a note. At ticket, `ticket_records` are the earlier phases' task records whose
+    work is in the PR; their blocks head the one PR body."""
     if items is not None:
         return _phase_plan(record, items, task_records or [], repo_facts, default_branch, phase_pr, branches=branches,
                            repo=repo, run_hosts=run_hosts, fetched_missing=fetched_missing, task_facts=task_facts,
-                           already_merged=already_merged, ticket_tasks=ticket_tasks, ticket_present=ticket_present)
+                           already_merged=already_merged, ticket_tasks=ticket_tasks, ticket_present=ticket_present,
+                           ticket_records=ticket_records)
     if _proposal(record, "draft_pr_create") is None:
         return [{"kind": "refuse", "reason": "no draft_pr_create proposal in record"}]
     refusal = _approved(record)

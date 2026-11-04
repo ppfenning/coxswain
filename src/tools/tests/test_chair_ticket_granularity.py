@@ -1,0 +1,120 @@
+from datetime import UTC, datetime
+
+from agent_tools.chair_plan import plan_tick
+from agent_tools.chair_plan_land import backoff_held, deferred_phases
+from agent_tools.chair_types import Facts
+
+_NOW = datetime(2026, 11, 4, 12, 0, tzinfo=UTC)
+_LAUNCH = {"launch_epic", "relaunch"}
+_LANDS = {"land_phase", "partial_land", "fetch"}
+
+
+def _facts(**overrides) -> Facts:
+    base = {
+        "lease": {"holder": "a", "host": "h", "epoch": 7, "mine": True, "released": False, "stale": False},
+        "limits": {
+            "hard_stop": False,
+            "weekly_fraction": 0.1,
+            "hard_stop_fraction": 0.9,
+            "launch_cap": 5,
+            "go_degraded": False,
+        },
+        "dispatch": {"max_in_flight": 5, "live_runs": 0, "hosts": []},
+        "approved": [],
+        "initiatives": [],
+        "quarantines": [],
+        "intake": [],
+        "work_store_ready": True,
+        "sources_configured": True,
+        "remote_unfetched": {},
+        "run_exited": {"a": True},
+        "schema_deaths": {},
+        "lost_runs": {},
+        "last_housekeeping_at": None,
+        "housekeeping_hours": 24.0,
+        "stale_days": 7,
+        "stale_candidates": [],
+        "stall_candidates": [],
+        "home": {},
+    }
+    return {**base, **overrides}  # type: ignore[return-value]
+
+
+def _initiative(land_at: str = "ticket", ready: list[dict] | None = None) -> dict:
+    ready = [{"id": "a-p2", "phase": "p2", "needs": []}] if ready is None else ready
+    return {"id": "a", "repo": "r", "started": False, "ready_tasks": ready, "landed": set(), "land_at": land_at}
+
+
+def _approved(task: str, phase: str) -> dict:
+    return {
+        "id": task,
+        "initiative": "a",
+        "repo": "r",
+        "phase": phase,
+        "phase_done": True,
+        "needs": [],
+        "run": "run-1",
+        "needs_fetch": False,
+        "merged": True,
+    }
+
+
+def _row(phase: str, *tasks: tuple[str, str]) -> dict:
+    return {"initiative": "a", "phase": phase, "tasks": list(tasks)}
+
+
+def _p1_facts(land_at: str = "ticket", **overrides) -> Facts:
+    return _facts(
+        initiatives=[_initiative(land_at)],
+        approved=[_approved("a-p1", "p1")],
+        phase_tasks=[_row("p1", ("a-p1", "merged"))],
+        **overrides,
+    )
+
+
+def _kinds(actions: list[dict], kinds: set[str]) -> list[dict]:
+    return [a for a in actions if a["kind"] in kinds]
+
+
+def test_a_non_last_phase_at_ticket_is_deferred_and_the_initiative_launches() -> None:
+    actions = plan_tick(_p1_facts(), _NOW)
+    assert [a["initiative"] for a in _kinds(actions, _LAUNCH)] == ["a"]
+    assert _kinds(actions, {"deferred"}) == [
+        {"kind": "deferred", "initiative": "a", "phase": "p1", "land_at": "ticket", "epoch": 7}
+    ]
+    assert _kinds(actions, _LANDS | {"needs_chair"}) == []
+
+
+def test_a_deferred_phase_is_not_held_from_launches_by_a_refusal() -> None:
+    refusal = {"initiative": "a", "phase": "p1", "run": "run-1", "at": _NOW.isoformat(), "reason": "note"}
+    facts = _p1_facts(land_refusals=[refusal])
+    assert backoff_held(facts, _NOW) == frozenset()
+    assert deferred_phases(facts) == {("a", "p1"): "ticket"}
+
+
+def test_the_last_phase_approved_plans_its_land_phase() -> None:
+    facts = _facts(
+        initiatives=[_initiative(ready=[])],
+        approved=[_approved("a-p1", "p1"), _approved("a-p2", "p2")],
+        phase_tasks=[_row("p1", ("a-p1", "merged")), _row("p2", ("a-p2", "merged"))],
+    )
+    actions = plan_tick(facts, _NOW)
+    assert [(a["phase"], a["run"]) for a in _kinds(actions, {"land_phase"})] == [("p2", "run-1")]
+    assert [a["phase"] for a in _kinds(actions, {"deferred"})] == ["p1"]
+
+
+def test_level_and_task_still_land_a_non_last_phase() -> None:
+    for land_at in ("level", "task"):
+        actions = plan_tick(_p1_facts(land_at), _NOW)
+        assert [a["phase"] for a in _kinds(actions, {"land_phase"})] == ["p1"]
+        assert _kinds(actions, {"deferred"}) == []
+
+
+def test_a_quarantined_sibling_keeps_the_phase_out_of_deferral() -> None:
+    facts = _facts(
+        initiatives=[_initiative()],
+        approved=[{**_approved("a-p1", "p1"), "phase_done": False}],
+        phase_tasks=[_row("p1", ("a-p1", "approved"), ("a-q", "quarantined"))],
+    )
+    assert deferred_phases(facts) == {}
+    assert [a["phase"] for a in _kinds(plan_tick(facts, _NOW), {"partial_land"})] == ["p1"]

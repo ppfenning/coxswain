@@ -112,7 +112,7 @@ def _git(repo, *args):
     subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", *args], check=True, capture_output=True)
 
 
-def _cli_steps(tmp_path, monkeypatch, capsys, stacked, *gate):
+def _cli_steps(tmp_path, monkeypatch, capsys, stacked, *gate, land_phase="p2-b"):
     repo, work, runs = tmp_path / "wire", tmp_path / "work" / "x", tmp_path / "runs"
     repo.mkdir()
     _git(repo, "init", "-q", "-b", "main")
@@ -132,7 +132,7 @@ def _cli_steps(tmp_path, monkeypatch, capsys, stacked, *gate):
     monkeypatch.setattr(cli, "_land_repo_facts", lambda *a, **k: {"cartridge_error": None, "checks": [], "cartridge_checks": []})
     monkeypatch.setattr(cli, "_land_refetch_phase_branch", lambda *a, **k: None)
     monkeypatch.setattr(cli, "_repo_is_detached", lambda *a, **k: False)
-    cli.main(["runs", "land", "x-1", "--phase", "p2-b", "--repo", str(repo), "--runs-dir", str(runs), *gate])
+    cli.main(["runs", "land", "x-1", "--phase", land_phase, "--repo", str(repo), "--runs-dir", str(runs), *gate])
     out = capsys.readouterr().out
     return json.loads(out[out.index("["):])
 
@@ -152,3 +152,19 @@ def test_cli_land_leaves_an_earlier_phase_task_whose_work_is_not_in_the_branch(t
 def test_cli_land_with_the_default_gate_stops_at_the_one_pull_request(tmp_path, monkeypatch, capsys):
     steps = _cli_steps(tmp_path, monkeypatch, capsys, True)
     assert _kinds(steps)[-2:] == ["pr_create", "note"] and _marked(steps) == []
+
+
+def test_cli_dry_run_for_a_deferred_phase_plans_no_pr_and_prints_the_note(tmp_path, monkeypatch, capsys):
+    steps = _cli_steps(tmp_path, monkeypatch, capsys, True, "--gate", "full", land_phase="p1-a")
+    assert not {"pr_create", "merge", "mark_done"} & set(_kinds(steps))
+    assert [s["reason"] for s in steps if s["kind"] == "note"] == [
+        "phase p1-a: ticket granularity, the one pull request opens at the last phase"]
+
+
+def test_cli_land_of_the_last_phase_opens_one_pr_covering_the_earlier_phases(tmp_path, monkeypatch, capsys):
+    steps = _cli_steps(tmp_path, monkeypatch, capsys, True, "--gate", "full")
+    assert _kinds(steps).count("pr_create") == 1
+    body = next(s["body"] for s in steps if s["kind"] == "pr_create")
+    assert "- early: early" in body and "- late: late" in body
+    assert sorted(_marked(steps)) == ["early", "late"]
+    assert _kinds(steps).index("merge") < _kinds(steps).index("mark_done")
