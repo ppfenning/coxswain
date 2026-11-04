@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -750,6 +751,28 @@ def test_a_named_path_the_tree_lacks_is_added_as_new() -> None:
 def test_an_ambiguous_or_unknown_bare_name_is_left_for_the_layout_check(body) -> None:
     task = _task(body, ["src/graphs/harness/epic.py"])
     assert initiative_decompose.with_named_artifacts(task, ARTIFACT_TREE) is task
+
+
+GENERATED = {"src/tools/README.md": SimpleNamespace(sources=("src/tools/agent_tools/cli.py",))}
+
+
+def test_a_generator_source_surface_adds_the_generated_file_and_a_note() -> None:
+    task = _task("Add a command.", ["src/tools/agent_tools/cli.py (new)"])
+    out = initiative_decompose.with_generated_files(task, GENERATED)
+    assert out["surfaces"] == ["src/tools/agent_tools/cli.py (new)", "src/tools/README.md"]
+    assert out["lint"] == [
+        "added to surfaces: src/tools/README.md (generated from src/tools/agent_tools/cli.py, which is a surface)"
+    ]
+
+
+def test_a_task_without_the_generator_source_is_returned_as_is() -> None:
+    task = _task("Edit epic.", ["src/graphs/harness/epic.py"])
+    assert initiative_decompose.with_generated_files(task, GENERATED) is task
+
+
+def test_a_task_that_already_lists_the_generated_file_is_returned_as_is() -> None:
+    task = _task("Add a command.", ["src/tools/agent_tools/cli.py", "src/tools/README.md"])
+    assert initiative_decompose.with_generated_files(task, GENERATED) is task
 
 
 def test_repo_listing_reads_a_checkouts_tracked_files_and_is_empty_elsewhere(tmp_path) -> None:
