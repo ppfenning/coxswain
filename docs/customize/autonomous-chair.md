@@ -136,6 +136,107 @@ longer needs a second terminal:
 cox console
 ```
 
+## Intake queue control
+
+The chair decomposes intake from the queue. You steer that queue with
+priority, dependencies, a hold and a removal. None of them needs a hand edit
+of an intake file.
+
+### The order of decomposition
+
+The chair decomposes queued intake by priority, highest first. Intake of equal
+priority goes oldest first. A missing or non-integer priority counts as 0.
+
+`cox route priority` orders a queued intake as well as an initiative. Name
+the intake and pass `--set`, `--up`, `--down`, `--top` or `--bottom`:
+
+```sh
+cox route priority fix-login-redirect --top
+```
+
+### Waiting on other work with after
+
+An intake can carry an `after` key. It lists the initiatives or intakes that
+must land first. Set it when you file the intake:
+
+```sh
+cox route file --intake --repo coxswain --title "Add retry to sync" --body - \
+  --after auth-rework,fix-login-redirect
+```
+
+Change it later with `cox route edit`:
+
+```sh
+cox route edit add-retry-to-sync --after auth-rework
+```
+
+Repeat `--after` or comma-separate the ids. On `route edit`, an empty value
+clears the list. `--after` applies to a queued intake only. `route file`
+refuses it without `--intake`.
+
+The chair neither decomposes nor launches the item until every named
+initiative or intake has landed. An initiative has landed when it has tasks
+and every one is `done` or `dropped`. An intake has landed when its initiative
+has landed. Once the last one lands, the chair decomposes the item on the
+next tick. You do not edit anything.
+
+An id that names nothing is unmet, so a typo holds the item back. A removed
+intake never counts as landed. An item waiting on a removed intake stays
+waiting until you clear or change its `after`.
+
+### Reading the queue in route status
+
+`cox route status` marks a waiting item in the queued intake group with the
+ids it still waits on:
+
+```text
+add-retry-to-sync (waiting on auth-rework, fix-login-redirect)
+```
+
+Held items get their own `held:` heading after the groups. Each line is the
+intake id and, when there is one, its hold reason. With `--json`, the output
+gains a `waiting` map and a `held` list whenever either is non-empty.
+
+### Hold and release
+
+Hold is the reversible way out of the queue. The chair skips a held intake
+until you release it. The reason is required:
+
+```sh
+cox route hold add-retry-to-sync --reason "waiting on the API freeze"
+cox route release add-retry-to-sync
+```
+
+A held intake stays in `intake/` with `held: true` and a `hold_reason` line
+that names who held it and when. The hold is written to the store row and to
+the intake file, so it survives ticks and board exports. `release` removes
+both keys. Only a queued intake can be held. Both commands take `--dry-run`,
+which prints the plan and writes nothing.
+
+### Removing an intake
+
+Use remove to retire an intake for good. It moves the file to `intake/done/`
+and records who removed it, when, and why. It takes several ids, or a
+`--match` glob over each queued intake's file stem or id. Both forms need
+`--reason`:
+
+```sh
+cox route remove old-spike another-spike --reason "superseded"
+cox route remove --match 'spike-*' --reason "superseded" --dry-run
+```
+
+With `--dry-run`, remove prints what it would do and writes nothing. A glob
+that matches nothing is refused. A refused target does not stop the rest, and
+the command prints `removed N of M` and exits with the worst code. An
+initiative with a live run is refused.
+
+### Where the file-only read differs
+
+The chair can also read intake from files alone, with no store rows. That read
+cannot tell whether a dependency has landed, so it skips an item that has any
+`after`. A held item is skipped too. The item runs through the store-backed
+read, which can judge landing.
+
 ## Limits
 
 The lane cap is `policy.dispatch.max_in_flight` in the team cartridge, and
