@@ -125,6 +125,14 @@ cox route launch epic --initiative work/<id> --on box2
 The command allocates the run id on the chair. It copies `work/<id>` to the
 host with rsync. It then starts the lane there over ssh.
 
+A remote epic or decompose launch also copies the workspace's cartridges
+directory to the host. The copy comes after the initiative copy and before the
+harness and repo sync. It is mirrored, so a file removed on the chair is
+removed on the host. The host's own copy is overwritten. After the copy the
+launch compares the two directories by checksum. If they still differ, the
+launch is refused and the message names the first differing file. A lane host
+does not keep its own cartridge, and you do not copy it to each host by hand.
+
 ## Watch the lanes
 
 The docket, `cox route status` and `cox runs top` list lanes that other
