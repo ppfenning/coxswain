@@ -94,6 +94,7 @@ from graphs.delivery.checkpoint import (
     checkpoint_ledger_line,
 )
 from graphs.delivery.phase_validate import _PLACEHOLDER_MARKERS
+from graphs.delivery.snapshot_surfaces import drop_pending_snapshots, is_surface_snapshot
 from runner.decision_log import RouterDecision
 from runner.decision_source import DecisionSource, ask
 from runner.protocol import BudgetStop, NodeResult, NodeRunner, RunnerError
@@ -688,14 +689,14 @@ def _touched_paths(patch: str) -> list[str]:
 
 
 def _is_test_path(path: str) -> bool:
-    """Whether `path` is a test, a test fixture or a test snapshot: under a `tests/` or `test/` directory, named
-    `test_*.py` or `*_test.py`, or an insta `.snap` file."""
+    """Whether `path` is a test or a test fixture: under a `tests/` or `test/` directory, or named `test_*.py` or
+    `*_test.py`. Insta snapshots are judged by `is_surface_snapshot`, not here."""
     parts = path.split("/")
     name = parts[-1]
     return (
         any(part in ("tests", "test") for part in parts[:-1])
         or (name.startswith("test_") and name.endswith(".py"))
-        or name.endswith(("_test.py", ".snap"))
+        or name.endswith("_test.py")
     )
 
 
@@ -705,13 +706,22 @@ def _files_outside_surfaces(touched: Sequence[str], surfaces: Sequence[str]) -> 
     A surface written `path (new)` names the path; the marker is the
     decompose's note that the file does not exist yet, not part of it. A
     surface ending in `/` covers everything under it. Tests go with any
-    change, so a test path is never outside; review still judges it.
+    change, so a test path is never outside; review still judges it. An insta
+    `.snap` is inside when its module is a surface; a pending `.snap.new` is
+    never a touched file of its own.
     """
     if not surfaces:
         return []
     declared = {re.sub(r"\s*\([^)]*\)\s*$", "", str(s_)) for s_ in surfaces}
     dirs = tuple(d for d in declared if d.endswith("/"))
-    return [path for path in touched if path not in declared and not path.startswith(dirs) and not _is_test_path(path)]
+    return [
+        path
+        for path in drop_pending_snapshots(touched)
+        if path not in declared
+        and not path.startswith(dirs)
+        and not _is_test_path(path)
+        and not is_surface_snapshot(path, declared)
+    ]
 
 
 _SCRATCH_SUFFIXES = (".diff", ".patch", ".out", ".log", ".orig", ".rej")
