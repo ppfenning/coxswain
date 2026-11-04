@@ -3947,6 +3947,28 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#hold" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        hold
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#release" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        release
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#requeue" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6459,6 +6481,28 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#hold" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        hold
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#release" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        release
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#requeue" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6541,12 +6585,12 @@ Coxswain is in beta — versions may change between releases
 
 <h1 id="route">route</h1>
 <div class="highlight"><pre><span></span><code>usage: cox route [-h]
-                 {context,status,file,priority,pull,lint,groups,drift,import,paths,store-fill,approve,decline,edit,remove,requeue,leader,chair,sync,launch} ...
+                 {context,status,file,priority,pull,lint,groups,drift,import,paths,store-fill,approve,decline,edit,remove,hold,release,requeue,leader,chair,sync,launch} ...
 
 File work for the harness, and see what is queued or running.
 
 positional arguments:
-  {context,status,file,priority,pull,lint,groups,drift,import,paths,store-fill,approve,decline,edit,remove,requeue,leader,chair,sync,launch}
+  {context,status,file,priority,pull,lint,groups,drift,import,paths,store-fill,approve,decline,edit,remove,hold,release,requeue,leader,chair,sync,launch}
     context             the routing profile's resolved context
     status              what is queued or running for this profile
     file                file a new ticket for the harness
@@ -6568,8 +6612,11 @@ positional arguments:
     decline             decline a draft initiative: its todo tickets become
                         dropped
     edit                change a queued intake, an initiative or a task ticket
-    remove              remove a queued intake or an initiative that has no
-                        live run
+    remove              remove queued intakes or initiatives that have no live
+                        run
+    hold                hold a queued intake so the chair skips it until
+                        released
+    release             release a held intake back to the queue
     requeue             requeue the intake of an initiative that has no live
                         tasks
     leader              whether this session is the chair (the SessionStart
@@ -6769,17 +6816,45 @@ options:
   --profile PROFILE
 </code></pre></div>
 <h2 id="remove">remove</h2>
-<div class="highlight"><pre><span></span><code>usage: cox route remove [-h] --reason REASON [--by BY] [--dry-run]
-                        [--profile PROFILE]
-                        id
+<div class="highlight"><pre><span></span><code>usage: cox route remove [-h] [--match GLOB] --reason REASON [--by BY]
+                        [--dry-run] [--profile PROFILE]
+                        [id ...]
 
 positional arguments:
-  id                 a queued intake or an initiative
+  id                 queued intakes or initiatives; repeat for several
+
+options:
+  -h, --help         show this help message and exit
+  --match GLOB       also remove every queued intake whose file stem or id
+                     matches
+  --reason REASON
+  --by BY            who removes; default the OS user
+  --dry-run          print the plan and write nothing
+  --profile PROFILE
+</code></pre></div>
+<h2 id="hold">hold</h2>
+<div class="highlight"><pre><span></span><code>usage: cox route hold [-h] --reason REASON [--by BY] [--dry-run]
+                      [--profile PROFILE]
+                      id
+
+positional arguments:
+  id                 a queued intake
 
 options:
   -h, --help         show this help message and exit
   --reason REASON
-  --by BY            who removes; default the OS user
+  --by BY            who holds; default the OS user
+  --dry-run          print the plan and write nothing
+  --profile PROFILE
+</code></pre></div>
+<h2 id="release">release</h2>
+<div class="highlight"><pre><span></span><code>usage: cox route release [-h] [--dry-run] [--profile PROFILE] id
+
+positional arguments:
+  id                 a held intake
+
+options:
+  -h, --help         show this help message and exit
   --dry-run          print the plan and write nothing
   --profile PROFILE
 </code></pre></div>
