@@ -80,6 +80,90 @@ The level comes from the team cartridge, resolved into
 `<runs>/policy.gate.json`. `--gate` overrides it for one land. An
 unreadable or unknown level reads as `ticket`, never `full`.
 
+## Landing granularity
+
+The `land_at` setting says at which size of unit a change lands. Its values are `ticket`, `level` and `task`. The
+default is `ticket`. An unset value reads as `ticket`, and any other value is refused with the place it came from.
+
+`land_at` is set in three places, and the narrowest one present wins:
+
+1. The team cartridge, as `landing_areas.land_at`.
+2. The repository overlay, `.agent/cartridge.yaml`, under the same key. It replaces the team value for that repository.
+3. One initiative, as `land_at:` in the frontmatter of its `initiative.md`. It overrides the cartridge and the overlay.
+
+```yaml
+landing_areas:
+  land_at: level
+```
+
+Every value given is checked, including a cartridge value that an initiative overrides, so a bad cartridge never hides.
+
+The approval gate applies only at that granularity. The gate level is the `land_at` value itself. At `ticket` a run
+asks nobody about its batch and clears it unless the caller passes an explicit `assume`, because the one pull request
+is where a person decides. At `level` and `task` the batch goes through the gate. The team `gate` policy above still
+applies, and the earlier stop wins. `ticket` stops at the rung of the one pull request, `level` at the phase rung, and
+`task` keeps the team's `gate` value.
+
+| `land_at` | Pull requests | When one opens |
+| --- | --- | --- |
+| `ticket` | One per initiative. | At the last level, once its tasks are merged and checked. |
+| `level` | One per level. | When that level is complete. |
+| `task` | One per task. | After the task is merged into its level branch. |
+
+### The hierarchy at ticket
+
+An initiative is one ticket. Its levels and its tasks open no pull request of their own. A task branch merges into the
+branch of its level. Levels stack, each on the branch of its parent level, and the stack is the single pull request.
+When that pull request merges, every task in the ticket is marked done. A task whose work is not in the merged pull
+request is left in its current state, and a note names it.
+
+A level is a set of tasks that can run together. It exists only to order tasks and to stack their branches, so it has
+no review or approval of its own. The harness names a level a phase, and its branch is `epic/<initiative>/<phase>`.
+A level with one parent is stacked on that parent's branch. A level with several parents is assembled from all of
+them onto the default branch, and its record lists them as `assembled_from`.
+
+At `level` each completed level opens its own pull request. A level stacked on a parent is based on the parent's pull
+request branch when that pull request exists, so it shows only its own commits. Otherwise it is based on the default
+branch. At `task` each merged task opens its own pull request against the default branch. A pull request that fails to
+open is a note on the task or level. It is not a quarantine, because the merge into the level branch already happened.
+
+### Status vocabulary
+
+A task row reads one of these words in the dashboard feed. The words are listed in the order a task moves through them.
+
+| Status | What it means |
+| --- | --- |
+| `ready` | The task is ready, every task it needs has landed, and no lane is building it. |
+| `building` | A live lane covers the task's initiative and phase. The lane covers a phase, so idle siblings read `building` too. |
+| `approved` | The work passed review and waits for its merge. A task `cox runs stranded` lists reads `approved` as well. |
+| `merged` | The work is merged but has not landed at the configured `land_at`. That is an approved task with the merge flag, or a done task written at another `land_at`. |
+| `landed` | The task is `done` at the configured `land_at`. |
+
+A task whose needs are not all landed reads `blocked`. A dropped or quarantined task reads as that state.
+
+### The merged state and restart
+
+The merge is stored. When a task merges into its level branch, its row in the work store keeps `approved` and records
+`merged` and the commit as `merged_commit`. Nothing in a run writes `done`. Only a land does that.
+
+A restart reads that stored state and does not rebuild a task that was approved and merged. A dependent level treats a
+merged parent as done for its `needs`, so it does not wait for a person to land the parent. Before it resumes, the run
+checks that `merged_commit` is an ancestor of the level branch. A task whose commit is gone is quarantined with that
+reason, and no other task is touched. At `task` a restart also opens the pull request for any stored merged task whose
+first attempt never made one. At `level` it finds the level's pull request, or opens the one a failed attempt missed.
+
+### Parallelism
+
+A level runs its ready tasks together, up to a cap. The cap is the `--max-parallel` option of the phase and epic
+commands. Without it, the cap is the `max_parallel` setting of the provider profile, a positive integer. Without that,
+it is the free lane count. A zero, a negative or a non-integer profile value is refused.
+
+A level still waits for its parent levels. The epic driver holds a level until every one of its parents is complete,
+and a parent that did not meet its goal blocks its dependents. A level with several parents waits for all of them.
+
+Running a ready task ahead of an unfinished earlier level is not current behaviour. It is planned work, tracked in
+#626. Until that ships, the scheduler in `lanes.py` is not wired in, and a level holds until every parent level is complete.
+
 ## Merge on green
 
 A pull request merges once its checks are green, not once a run has
