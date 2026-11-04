@@ -198,7 +198,7 @@ wheels = [
 
 [[package]]
 name = "coxswain"
-version = "2026.11.3"
+version = "2026.11.4"
 source = { editable = "." }
 dependencies = [
     { name = "pyyaml" },
