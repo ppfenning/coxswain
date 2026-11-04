@@ -167,6 +167,7 @@ def test_the_generated_list_is_the_readme_run_from_its_tools_directory():
     assert (spec.cwd, spec.command, spec.begin, spec.end) == (
         "src/tools", ("-m", "agent_tools.readme_commands", "--readme"), rc.BEGIN, rc.END
     )
+    assert spec.sources == ("src/tools/agent_tools/cli.py", "src/tools/agent_tools/readme_commands.py")
     assert land.generated_conflict_only(["src/tools/README.md"])
     assert not land.generated_conflict_only(["src/tools/README.md", "notes.txt"])
     assert not land.generated_conflict_only([])

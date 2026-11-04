@@ -1293,6 +1293,7 @@ class GeneratedFile(NamedTuple):
     command: tuple[str, ...]
     begin: str
     end: str
+    sources: tuple[str, ...] = ()
 
 
 # Files a cherry-pick conflict may be resolved by regenerating, each repo-relative path mapped to its generator.
@@ -1300,7 +1301,11 @@ class GeneratedFile(NamedTuple):
 # `test_readme_commands` compares the README against.
 GENERATED_FILES: dict[str, GeneratedFile] = {
     "src/tools/README.md": GeneratedFile(
-        "src/tools", ("-m", "agent_tools.readme_commands", "--readme"), readme_commands.BEGIN, readme_commands.END
+        "src/tools",
+        ("-m", "agent_tools.readme_commands", "--readme"),
+        readme_commands.BEGIN,
+        readme_commands.END,
+        ("src/tools/agent_tools/cli.py", "src/tools/agent_tools/readme_commands.py"),
     ),
 }
 
