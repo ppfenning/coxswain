@@ -458,9 +458,10 @@ def component_version(pyproject_toml_text: str) -> str | None:
     return found if found is not None else parsed.get("tool", {}).get("poetry", {}).get("version")
 
 
-def tag_argv(directory: str, version: str) -> list[str]:
-    """`git -C <directory> tag -a v<version> -m "coxswain <version>"`."""
-    return ["git", "-C", directory, "tag", "-a", "v" + version, "-m", f"coxswain {version}"]
+def tag_argv(directory: str, version: str, ref: str | None = None) -> list[str]:
+    """`git -C <directory> tag -a v<version> -m "coxswain <version>" [ref]`, on `ref` when given, else HEAD."""
+    argv = ["git", "-C", directory, "tag", "-a", "v" + version, "-m", f"coxswain {version}"]
+    return argv + [ref] if ref else argv
 
 
 def push_argv(directory: str, version: str) -> list[str]:
@@ -539,21 +540,68 @@ def pr_footer(version: str) -> str:
     return f"🚣 Built with [coxswain](https://github.com/ppfenning/coxswain) {version}"
 
 
-def pr_create_argv(title: str, body: str) -> list[str]:
+def pr_create_argv(title: str, body: str, base: str | None = None, head: str | None = None) -> list[str]:
     """`gh pr create --title "<title>" --body "<body>"`, run with `cwd` set
-    to the checkout the branch was pushed from."""
-    return ["gh", "pr", "create", "--title", title, "--body", body]
+    to the checkout the branch was pushed from; `--base` and `--head` only when given."""
+    argv = ["gh", "pr", "create", "--title", title, "--body", body]
+    return argv + (["--base", base] if base else []) + (["--head", head] if head else [])
 
 
-def pr_checks_argv() -> list[str]:
-    """`gh pr checks --watch --fail-fast`, run against the checkout's current
-    branch's own pull request."""
-    return ["gh", "pr", "checks", "--watch", "--fail-fast"]
+def pr_checks_argv(head: str | None = None) -> list[str]:
+    """`gh pr checks [head] --watch --fail-fast`, against the checkout's current
+    branch's own pull request unless `head` names one."""
+    return ["gh", "pr", "checks", *([head] if head else []), "--watch", "--fail-fast"]
 
 
-def pr_merge_argv() -> list[str]:
-    """`gh pr merge --squash --delete-branch`."""
-    return ["gh", "pr", "merge", "--squash", "--delete-branch"]
+def pr_merge_argv(head: str | None = None, method: str = "squash") -> list[str]:
+    """`gh pr merge [head] --<method> --delete-branch`, where `method` is squash or merge."""
+    return ["gh", "pr", "merge", *([head] if head else []), f"--{method}", "--delete-branch"]
+
+
+def release_branch_push_argv(directory: str, sha: str, branch: str) -> list[str]:
+    """`git -C <directory> push origin <sha>:refs/heads/<branch>` — creates the remote branch at `sha`, no local branch touched."""
+    return ["git", "-C", directory, "push", "origin", f"{sha}:refs/heads/{branch}"]
+
+
+def checkout_tracking_argv(directory: str, branch: str) -> list[str]:
+    """`git -C <directory> checkout -B <branch> origin/<branch>` — create-or-reset, so a stale local branch never blocks a resume."""
+    return ["git", "-C", directory, "checkout", "-B", branch, f"origin/{branch}"]
+
+
+def ls_remote_ref_argv(directory: str, ref: str) -> list[str]:
+    """`git -C <directory> ls-remote origin <ref> <ref>^{}` — the ref and, for an annotated tag, its peeled commit."""
+    return ["git", "-C", directory, "ls-remote", "origin", ref, f"{ref}^{{}}"]
+
+
+def parse_ls_remote_ref(text: str, ref: str) -> str | None:
+    """The commit sha for `ref` in `ls-remote` output, the peeled commit over the tag object; None when absent."""
+    found = {name: sha for sha, _, name in (line.partition("\t") for line in text.splitlines()) if name}
+    return found.get(f"{ref}^{{}}") or found.get(ref)
+
+
+def is_ancestor_argv(directory: str, ancestor: str, descendant: str) -> list[str]:
+    """`git -C <directory> merge-base --is-ancestor <ancestor> <descendant>` — exit 0 means yes, 1 means no."""
+    return ["git", "-C", directory, "merge-base", "--is-ancestor", ancestor, descendant]
+
+
+def show_file_argv(directory: str, ref: str, path: str) -> list[str]:
+    """`git -C <directory> show <ref>:<path>` — the file as it is at `ref`."""
+    return ["git", "-C", directory, "show", f"{ref}:{path}"]
+
+
+def merge_base_argv(directory: str, a: str, b: str) -> list[str]:
+    """`git -C <directory> merge-base <a> <b>` — prints the merge base."""
+    return ["git", "-C", directory, "merge-base", a, b]
+
+
+def release_branch_name(version: str) -> str:
+    """`release/<version>`, the branch a release is cut from."""
+    return f"release/{version}"
+
+
+def bump_branch_name(version: str) -> str:
+    """`release/<version>-bump`, the bump pull request's head, distinct from its base `release/<version>`."""
+    return f"release/{version}-bump"
 
 
 def tap_may_merge(conclusion: str | None) -> bool:
