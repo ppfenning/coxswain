@@ -18,12 +18,20 @@ is noise at the start of a window, so it is judged only once
 `elapsed_fraction >= policy.min_elapsed_fraction`; before that only the hard
 stop applies. The burn projection may hold only past `PROJECTION_MIN_ELAPSED`,
 and that hold carries no `hold_until`: it is re-assessed on every call.
+
+A calendar-month budget is a further limit, given as `month`. It stops at
+`policy.weekly_hard_stop_fraction`; short of that its own verdict maps on_track
+to go, over_pace to go_degraded at rung 1 and over_budget to stop. With no
+usable ceiling on either window the month alone decides. Otherwise every limit
+is judged and the strictest verdict wins: stop, hold, go_degraded, go.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime
+
+from agent_tools.budget import MonthBudget
 
 __all__ = ["Assessment", "Policy", "WeeklyPace", "Window", "assess", "weekly_pace"]
 
@@ -85,6 +93,9 @@ class Assessment:
     effort_ceiling: str
     hold_until: datetime | None
     reason: str
+    month_verdict: str | None = None
+    month_spent_usd: float | None = None
+    month_projected_usd: float | None = None
 
 
 def _elapsed_fraction(window: Window, now: datetime) -> float:
@@ -211,12 +222,70 @@ def weekly_pace(weekly: Window | None, policy: Policy, now: datetime) -> WeeklyP
     )
 
 
-def assess(window: Window, policy: Policy, now: datetime, weekly: Window | None = None) -> Assessment:
-    """Pure: the one verdict a window and a policy make at `now`. Reports an
+# verdict -> (combined ladder rung, or None for stop). Strictness order is in _STRICTNESS.
+_MONTH_VERDICTS: dict[str, int | None] = {"on_track": 0, "over_pace": 1, "over_budget": None}
+_STRICTNESS = {"stop": 3, "hold": 2, "go_degraded": 1, "go": 0}
+
+
+def _month_usable(month: MonthBudget | None) -> bool:
+    """A month with no budget, a zero budget (fraction None) or a verdict outside the mapped three is not judged."""
+    return month is not None and month.fraction is not None and month.verdict in _MONTH_VERDICTS
+
+
+def _month_assessment(month: MonthBudget, policy: Policy) -> Assessment:
+    fraction = month.fraction or 0.0
+    budget = month.budget_usd or 0.0
+    rung = _MONTH_VERDICTS[month.verdict]
+    narration = (f"month spent {fraction:.0%} of budget at {month.elapsed_fraction:.0%} elapsed, "
+                 f"projected ${month.projected_usd:.2f} of ${budget:.2f}")
+    if fraction >= policy.weekly_hard_stop_fraction:
+        verdict, reason = "stop", f"month spend {fraction:.0%} of monthly budget (hard stop at {policy.weekly_hard_stop_fraction:.0%})"
+    elif rung is None:
+        verdict, reason = "stop", f"{narration}; budget spent"
+    elif rung == 0:
+        verdict, reason = "go", f"{narration}; on track"
+    else:
+        verdict, reason = "go_degraded", f"{narration}; projected over budget"
+    if verdict == "stop":
+        tier_ceiling, effort_ceiling = policy.tier_ladder[-1], policy.effort_ladder[-1]
+    else:
+        tier_ceiling, effort_ceiling = _ladder_ceilings(rung or 0, policy)
+    return Assessment(
+        spent_fraction=fraction, elapsed_fraction=month.elapsed_fraction,
+        projected_total=month.projected_usd, headroom_usd=budget - month.projected_usd,
+        verdict=verdict, tier_ceiling=tier_ceiling, effort_ceiling=effort_ceiling,
+        hold_until=None, reason=reason,
+        month_verdict=month.verdict, month_spent_usd=month.spent_usd, month_projected_usd=month.projected_usd,
+    )
+
+
+def assess(window: Window, policy: Policy, now: datetime, weekly: Window | None = None,
+           month: MonthBudget | None = None) -> Assessment:
+    """Pure: the one verdict the limits and a policy make at `now`. Reports an
     unmeasured window rather than guessing a ceiling for it. `weekly`, when
     given and measured, can force `stop` on its own hard-stop fraction ahead
     of the window's own verdict; short of that, its fraction still rides
-    along in `reason` so every caller narrates both windows at once."""
+    along in `reason` so every caller narrates both windows at once. `month`,
+    when it has a budget, is judged too: it alone decides when neither window
+    has a usable ceiling, otherwise the strictest verdict wins and a tie keeps
+    the window's result, with the month appended to its reason."""
+    if not _month_usable(month):
+        return _assess_windows(window, policy, now, weekly)
+    month_result = _month_assessment(month, policy)
+    window_unusable = window.ceiling_usd is None or window.ceiling_usd <= 0
+    if window_unusable and _weekly_fraction(weekly) is None:
+        return month_result
+    windows_result = _assess_windows(window, policy, now, weekly)
+    winner = max((windows_result, month_result), key=lambda a: _STRICTNESS[a.verdict])
+    if winner is month_result:
+        return winner
+    return replace(
+        winner, reason=f"{winner.reason}; month {month_result.spent_fraction:.0%} of monthly budget, {month.verdict}",
+        month_verdict=month.verdict, month_spent_usd=month.spent_usd, month_projected_usd=month.projected_usd,
+    )
+
+
+def _assess_windows(window: Window, policy: Policy, now: datetime, weekly: Window | None) -> Assessment:
     elapsed_fraction = _elapsed_fraction(window, now)
     weekly_fraction = _weekly_fraction(weekly)
     if weekly_fraction is not None and weekly_fraction >= policy.weekly_hard_stop_fraction:
