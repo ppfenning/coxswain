@@ -7,6 +7,7 @@ advisory: an edge may be real with no data flow written down, so it is flagged f
 
 from __future__ import annotations
 
+import fnmatch
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -18,6 +19,8 @@ __all__ = ["LayoutFinding", "LayoutReport", "check_layout", "unlisted_artifacts"
 
 _NEW = " (new)"
 _TOKEN = re.compile(r"[\w./\-]+")
+# A wildcard path as a body writes it, like `src/ui/snapshots/*regatta*`: `*` and `?` kept, so it can be matched whole.
+_GLOB = re.compile(r"[\w./\-*?]*[*?][\w./\-*?]*")
 _ARTIFACT_NAME = re.compile(r"^(?:test_.+\.py|.+_test\.py|.+\.(?:test|spec)\.\w+|\d{3,}_.+\.(?:sql|py)|.+\.sh)$")
 _ARTIFACT_DIRS = frozenset({"migrations", "scripts"})
 _PATH_LIKE = re.compile(r"/|\w\.[A-Za-z]\w{0,4}$")
@@ -76,13 +79,34 @@ def _stem_named(surface: str, body: str) -> bool:
     return bool(stem) and re.search(rf"(?<!\w){re.escape(stem)}(?!\w)", body) is not None
 
 
+def _glob_named(surface: str, body: str) -> bool:
+    """A wildcard path in the body that matches the surface, whole or as a trailing part, names it."""
+    return any(
+        fnmatch.fnmatchcase(surface, glob) or fnmatch.fnmatchcase(surface, "*/" + glob)
+        for glob in (g.rstrip(".") for g in _GLOB.findall(body))
+        if "/" in glob or "." in glob
+    )
+
+
+def _under_named_directory(surface: str, tokens: Sequence[str]) -> bool:
+    """A directory the body names, whole or by a trailing part, names every file under it."""
+    return any(t.endswith("/") and len(t) > 1 and (surface.startswith(t) or ("/" + t) in surface) for t in tokens)
+
+
 def _named(surface: str, body: str, tokens: Sequence[str]) -> bool:
-    """The body names a surface in full, by a trailing part or stem, or by a path under a directory surface."""
+    """The body names a surface in full, by a trailing part or stem, by a wildcard that matches it, by a
+    directory it sits under, or by a path under a directory surface."""
     if surface in body:
         return True
     if surface.endswith("/"):
         return any(t.startswith(surface) or surface.rstrip("/").endswith("/" + t.rstrip("/")) for t in tokens)
-    return any(surface.endswith("/" + t) for t in tokens) or _stem_named(surface, body)
+    return (
+        any(surface.endswith("/" + t) for t in tokens)
+        or _stem_named(surface, body)
+        or _glob_named(surface, body)
+        # Wildcard paths are taken out first, so `snapshots/*history*` is not read as the directory `snapshots/`.
+        or _under_named_directory(surface, [t.rstrip(".") for t in _TOKEN.findall(_GLOB.sub(" ", body))])
+    )
 
 
 def _surface_findings(task: Mapping[str, Any]) -> list[LayoutFinding]:
