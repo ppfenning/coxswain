@@ -54,6 +54,7 @@ from typing import Any, Literal
 from urllib.parse import urlencode
 
 from core import ledger, workstore
+from core.landing import land_gate_level, resolve_land_at
 from core.manifest import append_ledger, build_manifest, gate_diff
 from core.workstore import WorkStoreError, record_attempt
 from graphs._contract import proposal
@@ -127,14 +128,9 @@ PRINCIPAL = "epic-swarm(lifecycle-propose)"
 # machine with no global git config, needs no setup to run this.
 _IDENTITY = ("-c", "user.email=epic-swarm@invalid", "-c", "user.name=epic-swarm")
 
-# The initiative that ships card-branch mode itself stays off it. The same rule lives in
-# coxswain-tools agent_tools/card_branch.py, because graphs does not import coxswain-tools.
-SHIPPING_INITIATIVE_ID = "builds-on-one-card-branch-and-opens-one-pr-per"
-
-
-def card_mode(initiative_id: str, fresh: bool) -> bool:
-    """True only for a fresh launch of an initiative other than the shipping one."""
-    return fresh and initiative_id != SHIPPING_INITIATIVE_ID
+def opens_pr(land_at: str, grain: str) -> bool:
+    """A review PR is opened for a `task` or a `level` only when it is the configured landing granularity."""
+    return land_at == grain
 
 
 _DRAFT_KINDS = frozenset({"draft_pr_create", "self_modification"})
@@ -237,10 +233,12 @@ def _git(*args: str, cwd: Path | None = None) -> tuple[bool, str]:
 
 def _push_review_branch(ctx: _Ctx, task: str) -> tuple[bool, str]:
     """Push the task's scratch branch to origin as `review/<initiative>/<task>`."""
-    return _git(
-        "-C", str(ctx.repo), "push", "origin",
-        f"{ctx.scratch_branch(task)}:refs/heads/review/{ctx.initiative_id}/{task}",
-    )
+    return _push_review_ref(ctx, ctx.scratch_branch(task), task)
+
+
+def _push_review_ref(ctx: _Ctx, local: str, name: str) -> tuple[bool, str]:
+    """Push the local branch `local` to origin as `review/<initiative>/<name>`."""
+    return _git("-C", str(ctx.repo), "push", "origin", f"{local}:refs/heads/review/{ctx.initiative_id}/{name}")
 
 
 def _open_review_pr(ctx: _Ctx, *, title: str, body: str, head: str, base: str) -> tuple[bool, str]:
@@ -253,6 +251,41 @@ def _open_review_pr(ctx: _Ctx, *, title: str, body: str, head: str, base: str) -
     except subprocess.TimeoutExpired:
         return False, "gh pr create timed out after 120s"
     return proc.returncode == 0, (proc.stdout if proc.returncode == 0 else proc.stderr or proc.stdout).strip()
+
+
+def _existing_pr(ctx: _Ctx, head: str) -> tuple[bool, str]:
+    """(known, url): known is False when the forge could not be asked, so "no PR" is never guessed from an error."""
+    try:
+        proc = subprocess.run(
+            ["gh", "pr", "view", head, "--json", "url", "--jq", ".url"],
+            cwd=ctx.repo, capture_output=True, text=True, timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    if proc.returncode == 0:
+        return True, proc.stdout.strip()
+    if "no pull requests found" in proc.stderr.lower():
+        return True, ""
+    return False, (proc.stderr or proc.stdout).strip()
+
+
+def _open_grain_pr(
+    ctx: _Ctx, *, grain: str, name: str, local: str, title: str, base: str
+) -> tuple[bool, str]:
+    """Push `local` and open the PR for a `task` or `level` that is the configured granularity; the detail is the URL."""
+    ok, detail = _push_review_ref(ctx, local, name)
+    if not ok:
+        return False, f"review branch push failed: {detail}"
+    # A restart meets the PR the first run opened: reuse it, and open the one a failed first attempt never made.
+    known, existing = _existing_pr(ctx, f"review/{ctx.initiative_id}/{name}")
+    if not known:
+        return False, f"could not check for an existing PR, so none was opened: {existing}"
+    if existing:
+        return True, existing
+    ok, detail = _open_review_pr(
+        ctx, title=title, body=f"Landing granularity: {grain}", head=f"review/{ctx.initiative_id}/{name}", base=base
+    )
+    return ok, detail if ok else f"review PR failed: {detail}"
 
 
 def default_branch(origin_head: str | None, local: set[str], head: str) -> str:
@@ -376,6 +409,7 @@ class _Ctx:
     fix_attempts: int | None
     initiative_id: str
     default_ref: str
+    land_at: str = "ticket"
     resume_from: str | None = None
     repo_checks: list = field(default_factory=list)
     store: Store | None = None
@@ -1228,6 +1262,8 @@ def run_epic(
             work_state=work_state,
             retry=retry,
             initiative_id=str(initiative.get("id")),
+            # Resolved before any phase starts, so a bad value refuses the run rather than a phase.
+            land_at=resolve_land_at(cartridge, initiative.get("land_at")),
             # An unparented phase branches from `origin/<base>` after a fetch, read
             # once here so every phase in a run stacks on the same ground, whatever
             # branch the checkout has out.
@@ -1322,7 +1358,7 @@ def run_epic(
         result = _build_result(
             run_id=run_id, date=date, initiative_id=ctx.initiative_id, phases=phases, tasks=tasks,
             quarantined=quarantined, proposals=proposals, stacks_rebased=stacks_rebased,
-            paused_until=paused_until, repo=repo, card_branch=card_mode(ctx.initiative_id, resume_from is None),
+            paused_until=paused_until, repo=repo, land_at=ctx.land_at,
         )
         return result
     finally:
@@ -1340,7 +1376,7 @@ def run_epic(
                         run_id=run_id, date=date, initiative_id=ctx.initiative_id, phases=phases, tasks=tasks,
                         quarantined=quarantined, proposals=proposals, stacks_rebased=stacks_rebased,
                         paused_until=paused_until, repo=repo,
-                        card_branch=card_mode(ctx.initiative_id, resume_from is None),
+                        land_at=ctx.land_at,
                     )
                 except Exception as exc:
                     _log.warning("partial result for %s not built: %s: %s", run_id, type(exc).__name__, exc)
@@ -1849,7 +1885,7 @@ def _build_result(
     stacks_rebased: int,
     paused_until: str | None,
     repo: Path | str,
-    card_branch: bool = False,
+    land_at: str | None = None,
 ) -> dict[str, Any]:
     """The epic result from the lists as they stand: whole at a normal end, partial when a phase raised."""
     unlanded = _unlanded(tasks, run_id, repo)
@@ -1857,7 +1893,7 @@ def _build_result(
         "run_id": run_id,
         "date": date,
         "initiative": initiative_id,
-        **({"card_branch": True} if card_branch else {}),
+        **({"land_at": land_at} if land_at else {}),
         "phases": phases,
         "tasks": tasks,
         "quarantined": quarantined,
@@ -2177,7 +2213,7 @@ def _run_phase(
         **({"assembled_from": list(parents)} if len(parents) > 1 else {}),
         "branch": branch,
         "base": base_ref,
-        **({"card_branch": True} if card_mode(ctx.initiative_id, ctx.resume_from is None) else {}),
+        "land_at": ctx.land_at,
         "status": "partial",
         "rebased": False,
         "task_records": [],
@@ -2848,8 +2884,12 @@ def _run_phase(
 
     # ── policy, then the gate, then execution in batch order ────────────────
     auto, gated = _policy_split(ctx, batch)
+    # At ticket, with no `assume` given, nobody is asked and nobody decides: the batch is auto-cleared. Auto-cleared
+    # work writes no gate diff and no ledger row, so unattended runs add nothing to a kind's graduation streak.
+    if land_gate_level(ctx.land_at) == "ticket" and ctx.assume is None:
+        auto, gated = [*auto, *gated], []
     auto_ids = {id(item) for item in auto}
-    decisions, human_minutes = gate(gated, assume=ctx.assume)
+    decisions, human_minutes = gate(gated, assume=ctx.assume) if gated else ([], 0.0)
     decided = {id(item): (decision, edited) for item, decision, edited in decisions}
 
     state = _Execution(
@@ -2877,6 +2917,26 @@ def _run_phase(
         # about a branch this driver created: `applied` is what actually
         # happened, so an approved merge that conflicted records `skipped`.
         diffs.append(gate_diff(item, decision, applied=applied, edited=edited))
+
+    # At `task` each task merged by this run gets its own PR; at `level` and `ticket` none does. A failed PR is a
+    # note on the task, not a quarantine: the merge into the phase branch already happened.
+    if opens_pr(ctx.land_at, "task"):
+        held = {q["id"] for q in state.quarantined if q.get("grain") == "task"}
+        # A restart also covers the tasks a first run merged and approved, whose PR may never have opened.
+        stored_merged = {str(i["id"]) for i in items if i.get("phase") == phase and i.get("state") == "approved" and i.get("merged")}
+        for task in sorted(({t for t in surviving if state.merged.get(t)} | stored_merged) - held):
+            ok, detail = _open_grain_pr(
+                ctx,
+                grain="task",
+                name=task,
+                local=ctx.draft_branch(phase, task),
+                title=f"{ctx.initiative_id}: {by_id[task]['title']}",
+                base=ctx.default_ref.removeprefix("origin/"),
+            )
+            if ok:
+                state.review_pr[task] = detail
+            else:
+                state.notes[task] = detail
 
     # `_execute` can quarantine a task after its merge already succeeded — the
     # apply arm failing on its own bookkeeping, not the code — so that failure
@@ -2948,6 +3008,23 @@ def _run_phase(
     )
     if reason:
         record.setdefault("reason", reason)
+
+    # At `level` a finished level gets one PR. A restart over a merged level finds the PR it already has, or opens
+    # the one a failed first attempt never made. A level stacked on one parent is based on that parent's PR branch when
+    # that PR exists, so it shows only its own commits; otherwise it falls back to the default branch.
+    if opens_pr(ctx.land_at, "level") and record["status"] == "complete":
+        default_base = ctx.default_ref.removeprefix("origin/")
+        parent_head = f"review/{ctx.initiative_id}/{parent}" if parent else None
+        parent_known, parent_pr = _existing_pr(ctx, parent_head) if parent_head else (False, "")
+        ok, detail = _open_grain_pr(
+            ctx,
+            grain="level",
+            name=phase,
+            local=branch,
+            title=f"{ctx.initiative_id}: {phase}",
+            base=parent_head if parent_head and parent_known and parent_pr else default_base,
+        )
+        record["review_pr" if ok else "review_pr_error"] = detail
 
     # docs/design/landing-model.md §5: one style_pass over the assembled phase
     # diff, run only once validate_phase itself has said the goal is met — a
@@ -3587,7 +3664,9 @@ def _execute(
         return ok, detail
 
     if kind == "self_modification" and slot == "draft" and item.get("escalated_from") == "draft_pr_create":
-        # A review PR a human reads, never a merge: no merge call runs here.
+        # A review PR a human reads, never a merge: no merge call runs here. It is a task PR, so it follows land_at.
+        if not opens_pr(ctx.land_at, "task"):
+            return False, f"escalated: its review PR opens only at land_at task, not {ctx.land_at}"
         ok, detail = _push_review_branch(ctx, subject)
         if not ok:
             return False, f"review branch push failed: {detail}"

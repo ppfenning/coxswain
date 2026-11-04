@@ -28,7 +28,7 @@ def _run(repo, cart, tmp_path, monkeypatch, *, push):
     runner = base.Runner(
         {"t1-probe": base.new_file_patch("harness/x.py"), "t2-bench": base.new_file_patch("t2-bench.txt")}
     )
-    result, _ = base.drive(repo, cart, tmp_path, runner=runner, work=base.initiative(two_phases=False))
+    result, _ = base.drive(repo, cart, tmp_path, runner=runner, work={**base.initiative(two_phases=False), "land_at": "task"})
     record = next(t for t in result["tasks"] if t["id"] == "t1-probe")
     return pushes, prs, record
 
