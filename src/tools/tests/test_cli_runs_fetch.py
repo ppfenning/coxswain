@@ -187,7 +187,8 @@ def test_fetch_writes_the_marker_last_with_fetched_at_and_repos(tmp_path, monkey
     ws, profile, chair_repo = _world(tmp_path, monkeypatch, lease_expires="2026-09-25T04:59:30Z")
     main(["runs", "fetch", RUN, "--profile", str(profile)])
     marker = json.loads((ws / "runs" / f"{RUN}.fetched.json").read_text())
-    assert sorted(marker) == ["fetched_at", "repos", "tasks"]
+    assert sorted(marker) == ["fetched_at", "phase_branches", "repos", "tasks"]
+    assert marker["phase_branches"] == []
     assert marker["repos"] == [str(chair_repo)]
     assert marker["tasks"] == ["p1/t"]
 
@@ -238,3 +239,29 @@ def test_land_of_a_remote_run_whose_task_records_are_here_carries_on(tmp_path, m
     task.write_text(json.dumps({"repo": str(chair_repo), "initiative": "demo", "phase": "p1", "task": "t", "run": RUN}))
     main(["runs", "land", RUN, "--repo", str(chair_repo), "--profile", str(profile)])
     assert "remote run" not in capsys.readouterr().out
+
+
+def _phase_record(ws, host_ws, *, on_host):
+    """A phase record in the chair's runs dir naming `epic/ini/p1`; the host repo holds that branch when `on_host`."""
+    (ws / "runs" / f"{RUN}:p1.json").write_text(json.dumps({"run_id": f"{RUN}:p1", "initiative": "ini", "phase": "p1"}))
+    if on_host:
+        _git(host_ws / "repo", "branch", "epic/ini/p1")
+
+
+@needs_tools
+def test_fetch_records_the_phase_branches_it_brought_in_the_marker(tmp_path, monkeypatch):
+    ws, profile, chair_repo = _world(tmp_path, monkeypatch, lease_expires="2026-09-25T04:59:30Z")
+    _phase_record(ws, tmp_path / "host", on_host=True)
+    assert main(["runs", "fetch", RUN, "--profile", str(profile)]) == 0
+    marker = json.loads(remote_lane.fetched_record_path(ws / "runs", RUN).read_text())
+    assert marker["phase_branches"] == ["epic/ini/p1"]
+    assert {"fetched_at", "repos", "tasks"} <= set(marker)
+    assert "epic/ini/p1" in _git(chair_repo, "branch", "--list")
+
+
+@needs_tools
+def test_fetch_lists_no_phase_branch_the_host_no_longer_has(tmp_path, monkeypatch):
+    ws, profile, _ = _world(tmp_path, monkeypatch, lease_expires="2026-09-25T04:59:30Z")
+    _phase_record(ws, tmp_path / "host", on_host=False)
+    assert main(["runs", "fetch", RUN, "--profile", str(profile)]) == 0
+    assert json.loads(remote_lane.fetched_record_path(ws / "runs", RUN).read_text())["phase_branches"] == []
