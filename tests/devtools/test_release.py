@@ -954,7 +954,9 @@ def test_cli_release_edits_an_existing_github_release_instead_of_creating_one(tm
         return inner(argv, cwd)
     rc, _, _ = _cut(tmp_path, monkeypatch, fake=(calls, run))
     assert rc == 0
-    assert [(c[2], c[3]) for c in calls if c[:2] == ["gh", "release"]] == [("view", f"v{V0}"), ("edit", f"v{V0}")]
+    # view, then view again for the body the step compares with its notes, then edit
+    assert [(c[2], c[3]) for c in calls if c[:2] == ["gh", "release"]] == [
+        ("view", f"v{V0}"), ("view", f"v{V0}"), ("edit", f"v{V0}")]
 
 
 def test_cli_release_writes_dashs_section_and_link_line_to_its_github_release(tmp_path, monkeypatch, no_tap):

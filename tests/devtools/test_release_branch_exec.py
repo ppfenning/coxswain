@@ -24,7 +24,8 @@ def _execute(tmp_path, steps, rehearsed=None):
     calls: list = []
 
     def run(argv, cwd):
-        calls.append(argv)
+        if argv[:1] != ["git"] or argv[3] != "ls-remote":  # the resume probes live in test_release_resume.py
+            calls.append(argv)
         if argv[:1] == ["git"] and argv[3:5] == ["rev-parse", "--abbrev-ref"]:
             return 0, "main\n"
         if argv[:1] == ["git"] and argv[3] == "rev-list":
@@ -141,11 +142,11 @@ def test_steps_without_the_new_fields_make_the_calls_they_always_made(tmp_path):
 
 def test_a_bump_that_is_already_done_still_no_ops_with_a_base(tmp_path, capsys):
     root, _, dash = _world(tmp_path)
-    (tmp_path / "dash" / "pyproject.toml").write_text('[project]\nname = "dash"\nversion = "1.1.0"\n')
     steps = _land(_BRANCH)
     calls: list = []
+    at_base = '[project]\nname = "dash"\nversion = "1.1.0"\n'
     rc = cli._release_execute(steps, _V, root, {}, str(tmp_path / "coxswain"),
-                              lambda argv, cwd: (calls.append(argv), (0, ""))[1], _MANIFEST, "")
+                              lambda argv, cwd: (calls.append(argv), (0, at_base))[1], _MANIFEST, "")
     assert rc == 0
-    assert calls == []
+    assert calls == [release.show_file_argv(dash, f"origin/{_BRANCH}", "pyproject.toml")]
     assert capsys.readouterr().out.count("already at 1.1.0") == 5
