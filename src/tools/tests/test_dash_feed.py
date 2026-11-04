@@ -156,7 +156,14 @@ def _fixture_inputs() -> tuple[tuple, dict]:
             "phases_total": 3,
             "current_phase": "p1-foundations",
             "phases": [
-                {"id": "p1-foundations", "tasks": [{"id": "feed-schema", "state": "approved"}]},
+                {
+                    "id": "p1-foundations",
+                    "tasks": [
+                        {"id": "feed-schema", "state": "approved"},
+                        {"id": "feed-merged", "state": "merged"},
+                        {"id": "feed-landed", "state": "landed"},
+                    ],
+                },
                 {"id": "p2-feed", "tasks": [{"id": "feed-queue", "state": "blocked"}]},
             ],
             "short_id": "I412",
