@@ -13,6 +13,7 @@ import socket
 import subprocess
 from collections.abc import Collection, Mapping, Sequence
 from datetime import UTC, datetime, timedelta, timezone
+from functools import reduce
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -630,6 +631,104 @@ def _live_phases(lanes: Sequence[console_screen.LaneRow]) -> frozenset[tuple[str
     return frozenset((_run_slug(lane.run), lane.phase) for lane in lanes)
 
 
+def _live_lanes(lanes: Sequence[console_screen.LaneRow]) -> dict[tuple[str, str], str]:
+    """`(initiative, phase)` to the run id of the live lane covering it. Its keys are `_live_phases`, so a reader of
+    plain pairs takes it unchanged; `_queue` adds the wave keys only when given this map. Two lanes on one pair keep the
+    lowest run id."""
+    return {(_run_slug(lane.run), lane.phase): lane.run for lane in sorted(lanes, key=lambda lane: lane.run, reverse=True)}
+
+
+# `_phase_parents` and `_compute_waves` repeat harness.waves.phase_parents and compute_waves (src/graphs/harness/waves.py).
+# agent_tools never imports harness at module level (cli.py imports it inside the commands that need it), and the feed
+# must not fail to start where harness is absent, so the few lines are copied. Change one, change the other.
+def _phase_parents(items: Sequence[Mapping]) -> dict[str, set[str]]:
+    """Phase B has parent A when a task in B needs a task in A that is not done; a done need adds none."""
+    phase_of = {str(item["id"]): str(item.get("phase") or "") for item in items}
+    state_of = {str(item["id"]): item.get("state") for item in items}
+    parents: dict[str, set[str]] = {phase: set() for phase in phase_of.values() if phase}
+    for item in items:
+        here = str(item.get("phase") or "")
+        for need in item.get("needs") or []:
+            there = phase_of.get(str(need))
+            if here and there and there != here and state_of.get(str(need)) != "done":
+                parents[here].add(there)
+    return parents
+
+
+def _compute_waves(parents: Mapping[str, set[str]]) -> tuple[list[list[str]], list[str]]:
+    """Wave n holds the phases whose parents all sit in earlier waves; phases in a cycle are returned apart."""
+    waves: list[list[str]] = []
+    placed: set[str] = set()
+    while True:
+        ready = sorted(p for p in parents if p not in placed and parents[p] <= placed)
+        if not ready:
+            return waves, sorted(set(parents) - placed)
+        waves = [*waves, ready]
+        placed = placed | set(ready)
+
+
+def _task_settled(row: Mapping) -> bool:
+    """Landed or merged: `done`, `dropped`, or `approved` with the merge flag (`_task_state` reads these as landed,
+    dropped or merged)."""
+    return row.get("state") in route.TERMINAL or (row.get("state") == "approved" and route.is_merged(row))
+
+
+def _phase_status(
+    tasks: Sequence[Mapping], lane: str | None, parents: Collection[str], parent_status: Mapping[str, str],
+) -> tuple[str, str | None]:
+    """`(status, reason)` of one phase from its task rows, its live lane's run id and its parents' statuses.
+    `running` while a lane is live. `blocked` for a quarantined task (the reason names it and its own `reason`) or,
+    once none of its own work remains, a blocked parent. `complete` when every task is settled. Else `waiting`,
+    whose reason names the parents not yet complete, or is None when there are none."""
+    quarantined = next((task for task in tasks if task.get("state") == "quarantined"), None)
+    blocked_parent = next((parent for parent in sorted(parents) if parent_status.get(parent) == "blocked"), None)
+    unfinished = [parent for parent in sorted(parents) if parent_status.get(parent) != "complete"]
+    if lane is not None:
+        return "running", None
+    if quarantined is not None:
+        why = str(quarantined.get("reason") or "")
+        return "blocked", f"task {quarantined.get('task_id')} is quarantined" + (f": {why}" if why else "")
+    if tasks and all(_task_settled(task) for task in tasks):
+        return "complete", None
+    if blocked_parent is not None:
+        return "blocked", f"parent {blocked_parent} is blocked"
+    return "waiting", (f"waiting on {', '.join(unfinished)}" if unfinished else None)
+
+
+def _waved(row: dict, rows: Sequence[Mapping], lanes: Mapping[tuple[str, str], str]) -> dict:
+    """The queue row with `waves` (`[{"n", "phases"}]`), `widest_wave`, and `wave`, `lane`, `status`, `reason` on each
+    of its phases. A phase in a dependency cycle has no wave (null). Statuses are settled wave by wave, so a phase
+    reads its parents' statuses. `lanes` is `_live_lanes`; a lane with a blank phase covers every phase."""
+    initiative = row["initiative"]
+    own = _own_tasks(rows, initiative)
+    parents = _phase_parents(
+        [{"id": r.get("task_id"), "phase": r.get("phase"), "state": r.get("state"), "needs": r.get("needs")} for r in own],
+    )
+    waves, cyclic = _compute_waves(parents)
+    wave_of = {phase: n for n, group in enumerate(waves, 1) for phase in group}
+    unplaced = [p["id"] for p in row["phases"] if p["id"] not in parents]
+    lane_of = {p["id"]: lanes.get((initiative, p["id"])) or lanes.get((initiative, "")) for p in row["phases"]}
+
+    def settle(done: Mapping[str, tuple[str, str | None]], phase: str) -> dict[str, tuple[str, str | None]]:
+        tasks = [r for r in own if r.get("phase") == phase]
+        status = _phase_status(tasks, lane_of.get(phase), parents.get(phase, ()), {p: s for p, (s, _) in done.items()})
+        return {**done, phase: status}
+
+    settled = reduce(settle, [*(p for group in waves for p in group), *cyclic, *unplaced], {})
+    return {
+        **row,
+        "waves": [{"n": n, "phases": group} for n, group in enumerate(waves, 1)],
+        "widest_wave": max(map(len, waves), default=0),
+        "phases": [
+            {
+                "id": p["id"], "wave": wave_of.get(p["id"]), "lane": lane_of[p["id"]],
+                "status": settled[p["id"]][0], "reason": settled[p["id"]][1], "tasks": p["tasks"],
+            }
+            for p in row["phases"]
+        ],
+    }
+
+
 def _priority(rows: list[dict], initiative: str):
     """The first `priority` an initiative's own rows carry in `extra` (arbitrary frontmatter passed through
     by `queue_rows.parse_item`); `None` when no row names one."""
@@ -655,7 +754,9 @@ def _queue(runs_dir: Path, live_phases: Collection[tuple[str, str]] = ()) -> tup
     """Initiatives the store's queue names with at least one phase not landed (a fully landed initiative drops
     out entirely), ordered by priority, then by first appearance in `read_queue`'s row order. Capped at
     `_MAX_ROWS`; the second element is the filtered count before the cap. Each row lists its `phases` with
-    every task's state; `live_phases` is `_live_phases` of the live lanes."""
+    every task's state; `live_phases` is `_live_phases` of the live lanes. Given `_live_lanes` instead (a mapping, whose
+    keys are those pairs) each row also carries `waves`, `widest_wave` and the per-phase wave keys (`_waved`); plain
+    pairs carry no run ids, so they give the rows as before."""
     # Not a verified age. Queue rows carry no timestamp (`run_store._QUEUE_COLUMNS`), and the
     # `harness.store_queue read` contract (run_store.py:1009) promises no row order. Row order is age only
     # if the harness returns rows in insertion order, and that is unknown from this repository.
@@ -680,7 +781,8 @@ def _queue(runs_dir: Path, live_phases: Collection[tuple[str, str]] = ()) -> tup
         }
         for initiative in open_initiatives
     ]
-    return queue[:_MAX_ROWS], len(queue)
+    shown = queue[:_MAX_ROWS]
+    return ([_waved(row, rows, live_phases) for row in shown] if isinstance(live_phases, Mapping) else shown), len(queue)
 
 
 def _reaches_a_person(to: str) -> bool:
@@ -1382,7 +1484,7 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
         runs_dir, work_dir, now, local_name, local_capacity, spend, local_versions=local_versions,
     )
     chair_row = sections["chair"][0] if sections["chair"] else {}
-    live_phases = _live_phases(sections["lanes"])
+    live_phases = _live_lanes(sections["lanes"])
     queue, queue_total = _queue(runs_dir, live_phases)
     blob = _courier_blob(work_dir)
     entries = courier.inbox(blob)
