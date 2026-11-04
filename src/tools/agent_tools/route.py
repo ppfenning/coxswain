@@ -1538,7 +1538,8 @@ def context_document(profile_or_none, intake, runs, initiatives, problems: list 
 def _task_items(rows: Sequence[Mapping]) -> list[dict]:
     """Task rows from the store's queue, in the item shape `initiative_summaries` takes. Mirrors `chair_read_docket._item_of`."""
     return [
-        {"id": r["task_id"], "initiative": r["initiative"], "phase": r["phase"], "state": r["state"], "needs": list(r["needs"])}
+        {"id": r["task_id"], "initiative": r["initiative"], "phase": r["phase"], "state": r["state"], "needs": list(r["needs"]),
+         **_merged_key(r)}
         for r in rows
         if r["kind"] == "task"
     ]
@@ -1567,7 +1568,7 @@ def _initiative_from_docket(entry: Mapping, items: list) -> dict | None:
     `phase` come from `entry["ready_tasks"]`, already less any task a live claim holds, so a claimed task is not
     offered again. `None` when the initiative has nothing to report, matching `_initiative_summary`."""
     own = [i for i in items if i["initiative"] == entry["id"]]
-    awaiting_merge = sum(1 for item in own if item["state"] == "approved")
+    awaiting_merge = sum(1 for item in own if is_awaiting_merge(item))
     ready = len(entry["ready_tasks"])
     if not ready and not awaiting_merge:
         return None
@@ -2356,8 +2357,28 @@ def intake_entries(files: dict) -> list:
 
 # `quarantined` is a store state since graphs #699: a quarantine on a lane host reaches the store. It is neither
 # ready nor done, so a quarantined task's siblings still show and its dependents wait.
-STATES = frozenset({"todo", "ready", "in_progress", "blocked", "done", "dropped", "approved", "quarantined"})
+STATES = frozenset({"todo", "ready", "in_progress", "blocked", "done", "dropped", "approved", "merged", "quarantined"})
 TERMINAL = frozenset({"done", "dropped"})
+
+
+def is_merged(row: Mapping) -> bool:
+    """A store row's merge flag, `extra["merged"]`: set on an `approved` task once its PR has merged."""
+    extra = row.get("extra")
+    return isinstance(extra, Mapping) and bool(extra.get("merged"))
+
+
+def _merged_key(row: Mapping) -> dict:
+    return {"merged": True} if is_merged(row) else {}
+
+
+def is_awaiting_merge(item: Mapping) -> bool:
+    """`approved` and not yet merged; a merged task is past the wait, whatever the store state still says."""
+    return item["state"] == "approved" and not item.get("merged")
+
+
+def state_word(item: Mapping) -> str:
+    """The word a status line shows: `merged` for an approved item carrying the merge flag, else its state."""
+    return "merged" if item["state"] == "approved" and item.get("merged") else item["state"]
 
 
 def initiative_states(ids: list, items: list) -> dict:
@@ -2453,8 +2474,8 @@ def waiting_lines(items: list, remedies: Mapping[str, str], initiative: str) -> 
     an `approved` dep with an entry in `remedies` adds that remedy line after it. A need in another initiative
     is looked up by id, and one that names no item reads `missing`."""
     states = {
-        **{item["id"]: item["state"] for item in items if item["initiative"] != initiative},
-        **{item["id"]: item["state"] for item in items if item["initiative"] == initiative},
+        **{item["id"]: state_word(item) for item in items if item["initiative"] != initiative},
+        **{item["id"]: state_word(item) for item in items if item["initiative"] == initiative},
     }
     return [
         line
@@ -2486,7 +2507,11 @@ def with_store_states(items: list, rows: list[dict], mode: str) -> list:
     if mode != "store":
         return items
     stored = [(item, run_store.task_state(rows, item["initiative"], item["id"])) for item in items]
-    return [item if state is None else {**item, "state": state} for item, state in stored]
+    return [item if state is None else {**item, "state": state, **_merged_key(_row_of(rows, item))} for item, state in stored]
+
+
+def _row_of(rows: list[dict], item: Mapping) -> dict:
+    return next((r for r in rows if r.get("initiative") == item["initiative"] and r.get("task_id") == item["id"]), {})
 
 
 def _initiative_summary(initiative_id: str, own_items: list):
@@ -2497,7 +2522,7 @@ def _initiative_summary(initiative_id: str, own_items: list):
     """
     if any(item["state"] not in STATES for item in own_items):
         return {"id": initiative_id, "phase": None, "ready": 0}
-    awaiting_merge = sum(1 for item in own_items if item["state"] == "approved")
+    awaiting_merge = sum(1 for item in own_items if is_awaiting_merge(item))
     done_ids = {item["id"] for item in own_items if item["state"] in TERMINAL}
 
     def counts_ready(item: dict) -> bool:

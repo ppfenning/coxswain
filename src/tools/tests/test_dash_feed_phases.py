@@ -65,7 +65,7 @@ def test_each_row_lists_phases_in_order_with_every_task_state(queue):
         ],
         "beta": [
             {"id": "p1", "tasks": [
-                {"id": "b-running", "state": "running"},
+                {"id": "b-running", "state": "building"},
                 {"id": "b-quarantined", "state": "quarantined"},
             ]},
             {"id": "p2", "tasks": [
@@ -90,8 +90,8 @@ def test_the_phase_counts_are_what_they_were(queue):
         (set(), "blocked"),
         ({("alpha", "p1")}, "blocked"),
         ({("beta", "p2")}, "blocked"),
-        ({("beta", "p1")}, "running"),
-        ({("beta", "")}, "running"),
+        ({("beta", "p1")}, "building"),
+        ({("beta", "")}, "building"),
     ],
 )
 def test_a_build_is_running_only_while_a_live_lane_covers_its_initiative_and_phase(live, state):
@@ -140,10 +140,10 @@ def test_a_blocked_task_waits_on_the_same_needs_blocked_ready_names(queue):
         (_task("i", "p", "t", "dropped"), False, False, "dropped"),
         (_task("i", "p", "t", "approved"), False, False, "approved"),
         (_task("i", "p", "t", "quarantined"), False, False, "quarantined"),
-        (_task("i", "p", "t", "in_progress"), True, False, "running"),
+        (_task("i", "p", "t", "in_progress"), True, False, "building"),
         (_task("i", "p", "t", "in_progress"), False, False, "blocked"),
         (_task("i", "p", "t", "ready"), False, False, "ready"),
-        (_task("i", "p", "t", "ready"), True, False, "running"),
+        (_task("i", "p", "t", "ready"), True, False, "building"),
         (_task("i", "p", "t", "ready", needs=["n"]), True, False, "blocked"),
         (_task("i", "p", "t", "ready", needs=["n"]), False, False, "blocked"),
         (_task("i", "p", "t", "ready", needs=["n"]), False, True, "approved"),
@@ -168,10 +168,10 @@ def test_a_lane_turns_ready_tasks_with_landed_needs_running_and_leaves_unmet_nee
     def states(live):
         return {task: state for _, task, state in dash_feed._task_states(rows, "i", live, set())}
 
-    assert states({("i", "p1")}) == {"landed": "landed", "building": "running", "waiting": "blocked", "later": "ready"}
+    assert states({("i", "p1")}) == {"landed": "landed", "building": "building", "waiting": "blocked", "later": "ready"}
     assert states({("other", "p1")}) == {"landed": "landed", "building": "ready", "waiting": "blocked", "later": "ready"}
-    # unknown: a lane with no phase yet covers the whole initiative, so an idle ready task in a later phase reads running.
-    assert states({("i", "")}) == {"landed": "landed", "building": "running", "waiting": "blocked", "later": "running"}
+    # unknown: a lane with no phase yet covers the whole initiative, so an idle ready task in a later phase reads building.
+    assert states({("i", "")}) == {"landed": "landed", "building": "building", "waiting": "blocked", "later": "building"}
 
 
 def test_task_records_default_run_task_and_phase_from_the_path_and_skip_a_bad_file(tmp_path):
