@@ -5779,10 +5779,26 @@ def _lock_snapshot(runs_dir: Path) -> dict | None:
         return None
 
 
+def _decompose_repo_refusal(a: argparse.Namespace) -> str | None:
+    """Edge. The refusal line for a decompose launch whose readable intake has no `repo:`; None otherwise.
+
+    An idea that is text or a missing file is left to the launch, which refuses it in its own words."""
+    if a.graph != "decompose" or _idea_is_text(a.idea, Path(a.idea).exists()):
+        return None
+    idea_path = Path(a.idea)
+    text = _read_text_or_none(idea_path)
+    return None if text is None else route.missing_repo_refusal(idea_path.stem, route.parse_frontmatter(text)[0])
+
+
 def _route_launch(a: argparse.Namespace) -> int:
     profile, rc = _resolve_profile_or_refuse(a)
     if rc is not None:
         return rc
+    # Before the host is placed, any claim or lease is taken, a run id is chosen or the stub is written.
+    repo_refusal = _decompose_repo_refusal(a)
+    if repo_refusal is not None:
+        print(repo_refusal)
+        return 2
     host, host_rc = _lane_host_or_refuse(a, profile)
     if host_rc is not None:
         return host_rc
@@ -6074,7 +6090,9 @@ def _route_launch(a: argparse.Namespace) -> int:
             if not a.no_claim and _lock_snapshot(runs_dir) != lock_before:
                 print("routing: the loop claim this launch took is still held with no run behind it; release it with `cox route release`")
             return 1
-        plan = route.plan_from_result(result, a.initiative_id, idea_fields.get("title", ""), idea_body)
+        plan = route.plan_from_result(
+            result, a.initiative_id, idea_fields.get("title", ""), idea_body, repo=idea_fields["repo"],
+        )
         rows_code, rows_lines = route.decompose_into_rows(runs_dir, idea_path.stem, lambda _intake: plan)
         for line in rows_lines:
             print(line)

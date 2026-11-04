@@ -11,6 +11,7 @@ INTAKE = {
     "kind": "intake", "initiative": "intake", "task_id": "fix-thing", "phase": "", "state": "queued",
     "needs": [], "title": "Fix thing", "surfaces": [], "body": "Body\n", "extra": {},
 }
+REPO = "git@example.com:acme/widget.git"
 RESULT = {
     "phases": [{"id": "p1", "goal": "g1"}],
     "tasks": [{"id": "t1", "phase": "p1", "title": "T1", "body": "do one", "needs": [], "surfaces": ["a.py"]}],
@@ -37,7 +38,7 @@ def _launch(tmp_path, monkeypatch, mode, intake_rows, edge, dry_run=False, extra
     (ws / "runs").mkdir(parents=True, exist_ok=True)
     (ws / "intake").mkdir(parents=True)
     idea = ws / "intake" / "fix-thing.md"
-    idea.write_text("---\nid: fix-thing\ntitle: Fix thing\n---\n\nBody\n")
+    idea.write_text(f"---\nid: fix-thing\ntitle: Fix thing\nrepo: {REPO}\n---\n\nBody\n")
     profile = _write_launch_profile(tmp_path, harness_dir, ws)
     argv = ["route", "launch", "decompose", "--profile", str(profile), "--idea", str(idea), "--initiative-id", "fix-thing"]
     argv += list(extra)
