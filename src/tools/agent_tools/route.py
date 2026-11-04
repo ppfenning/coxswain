@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+import zoneinfo
 from collections.abc import Callable, Collection, Mapping, Sequence
 from itertools import accumulate
 from pathlib import Path
@@ -117,8 +118,8 @@ _JSON_KEYS = {"sources", "repo_map"}
 
 TRACKER_SCOPES = ("all", "epics", "initiatives")
 
-_SPEND_KEYS = {"window_ceiling_usd", "weekly_ceiling_usd", "node_cap_usd"}
-_SPEND_TEXT_KEYS = {"weekly_reset"}  # `Sun 04:00 America/New_York`, parsed by usage_window.parse_weekly_reset
+_SPEND_KEYS = {"window_ceiling_usd", "weekly_ceiling_usd", "node_cap_usd", "monthly_budget_usd"}
+_SPEND_TEXT_KEYS = {"weekly_reset", "budget_timezone"}  # `Sun 04:00 America/New_York`, parsed by usage_window.parse_weekly_reset; an IANA zone name
 
 _CHAIR_KEYS = {"housekeeping_hours", "stale_days", "idle_stall_minutes", "launch_stagger_s", "max_launches_per_hour"}  # every key `cli._chair_run_deps` reads off `profile["chair"]`
 
@@ -127,6 +128,14 @@ _STORE_KEYS = {"mode"}  # the one key of the `store:` block, kept as text in `pr
 
 class ProfileError(Exception):
     """A profile file line is nested, malformed, or has a bad value. An unknown top-level key is not an error."""
+
+
+def _is_iana_zone(name: str) -> bool:
+    try:
+        zoneinfo.ZoneInfo(name)
+    except (zoneinfo.ZoneInfoNotFoundError, ValueError, KeyError, OSError):
+        return False
+    return True
 
 
 _NOTIFY_URL = re.compile(r"https?://\S+")
@@ -152,8 +161,10 @@ def _stripped_content(line: str) -> str:
 def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
     """Parse the flat `key: scalar` / `key: [a, b]` YAML subset in spec §1,
     plus two nested blocks: a bare `spend:` line followed by indented
-    `window_ceiling_usd:`/`weekly_ceiling_usd:`/`node_cap_usd:` lines, all optional, parsed as
-    floats onto the flat result, and a `weekly_reset:` line kept as text, quotes stripped;
+    `window_ceiling_usd:`/`weekly_ceiling_usd:`/`node_cap_usd:`/`monthly_budget_usd:` lines, all optional, parsed as
+    floats onto the flat result, and `weekly_reset:`/`budget_timezone:` lines kept as text, quotes stripped.
+    `monthly_budget_usd` must be above zero and `budget_timezone` must be an IANA zone name, else ProfileError
+    names the line; neither key appears in the result when absent, and the readers apply any default;
     and a bare `chair:` line followed by indented `housekeeping_hours:`/`stale_days:`/`idle_stall_minutes:`/`launch_stagger_s:`/`max_launches_per_hour:` lines,
     all optional, parsed as floats into `result["chair"]` (every key `cli._chair_run_deps`
     reads off `profile["chair"]`; `log_retention_days` stays a flat top-level key, not one of
@@ -223,14 +234,19 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
                 text_value = value.strip("\"'")
                 if not text_value:
                     raise ProfileError(f"line {lineno}: {raw_line}")
+                if key == "budget_timezone" and not _is_iana_zone(text_value):
+                    raise ProfileError(f"line {lineno}: {raw_line}")
                 result[key] = text_value
                 continue
             if key not in _SPEND_KEYS:
                 raise ProfileError(f"line {lineno}: {raw_line}")
             try:
-                result[key] = float(value)
+                amount = float(value)
             except ValueError:
                 raise ProfileError(f"line {lineno}: {raw_line}") from None
+            if key == "monthly_budget_usd" and not amount > 0:
+                raise ProfileError(f"line {lineno}: {raw_line}")
+            result[key] = amount
             continue
         in_spend = False
         in_chair = False

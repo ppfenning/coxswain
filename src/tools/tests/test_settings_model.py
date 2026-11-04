@@ -24,10 +24,13 @@ def test_lanes_and_machines():
 
 def test_spend_and_pacing():
     cartridge = {"policy": {"pacing": {"hard_stop_fraction": 0.95}}}
-    profile = {"window_ceiling_usd": 40.0, "weekly_reset": "Sun 04:00 UTC"}
+    profile = {"window_ceiling_usd": 40.0, "weekly_reset": "Sun 04:00 UTC",
+               "monthly_budget_usd": 200.0, "budget_timezone": "UTC"}
     assert rows(cartridge, profile, TRACKED)["spend and pacing"] == [
         _row("spend and pacing", "profile", "window_ceiling_usd", 40.0, False),
         _row("spend and pacing", "profile", "weekly_reset", "Sun 04:00 UTC", False),
+        _row("spend and pacing", "profile", "monthly_budget_usd", 200.0, False),
+        _row("spend and pacing", "profile", "budget_timezone", "UTC", False),
         _row("spend and pacing", "cartridge", "policy.pacing.hard_stop_fraction", 0.95, True),
     ]
 
