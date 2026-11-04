@@ -83,14 +83,14 @@ _ZERO_SPLIT_WINDOW = {
 
 def snapshot(
     at, chair, spend, machines, runs, queue, queue_total, inbox, inbox_total, watch, decisions=(), spend_series=(),
-    history=(), history_today=None, *, chair_agents=None, spend_split=None,
+    history=(), history_today=None, *, chair_agents=None, spend_split=None, spend_sources=None,
 ) -> dict:
     """Assemble the schema-1 dash feed snapshot from its sections. `queue_total`/`inbox_total` are each
     section's filtered count before the 50-row cap, for coxtop to render "50 of N". `decisions` is the open
     decision asks, newest first. `spend_series` is today's cumulative lane spend as `[at, cumulative_usd]` pairs.
     `history` is the ended-run rows and `history_today` the counts since local midnight; zeroed when not given.
     `chair_agents` is the chair's background agent rows, empty when not given; `spend_split` is the three-way
-    spend split per window, all zero when not given."""
+    spend split per window, all zero when not given. `spend_sources` is omitted from the feed when not given."""
     # coxswain-dash carries its own copy of tests/fixtures/dash_feed_v1.json and will need these two fields too.
     # `queue[].phases` is additive and the schema stays 1: a coxtop that does not know the field ignores it.
     # So are `runs[].tasks`, `runs[].landed` and `runs[].quarantined`, which `_runs_v1` adds to each run row.
@@ -116,6 +116,7 @@ def snapshot(
             if spend_split is None
             else spend_split
         ),
+        **({} if spend_sources is None else {"spend_sources": spend_sources}),
     }
 
 
