@@ -6673,6 +6673,40 @@ def _fetch_one(runs_dir: Path, hosts, run_id: str, mode: str = "files", by: str 
     return "fetched", [f"run {run_id}", f"host {host.name}", "\n".join(f"repo {repo}" for repo in result)], host.name
 
 
+def _repo_restore(pulled: str, intake: str | None) -> tuple[str, str] | None:
+    """Pure. (initiative text carrying the intake's repo, that repo), or None when the pulled text already has a repo or the intake gives none."""
+    held = route.parse_frontmatter(pulled)[0].get("repo")
+    found = route.parse_frontmatter(intake)[0].get("repo") if intake is not None else None
+    if (isinstance(held, str) and held) or not (isinstance(found, str) and found):
+        return None
+    return route.initiative_with_repo(pulled, found), found
+
+
+def _restore_intake_repo(workspace: Path, initiative_md: Path) -> str:
+    """Edge. Put the intake's repo on the pulled initiative.md and record the write; the repo restored, "" when nothing changed."""
+    pulled = _read_text_or_none(initiative_md)
+    if pulled is None:
+        return ""
+    named = route.parse_frontmatter(pulled)[0].get("intake")
+    intake = _read_text_or_none(workspace / named) if isinstance(named, str) and named else None
+    restored = _repo_restore(pulled, intake)
+    if restored is None:
+        return ""
+    initiative_md.write_text(restored[0], encoding="utf-8")
+    queue_export.record_written_paths(workspace, [initiative_md.absolute()])
+    return restored[1]
+
+
+def _store_initiative_repo(runs_dir: Path, initiative: str, repo: str) -> str:
+    """Edge. Set `extra.repo` on the initiative's stored row when it differs; "" when done or nothing to do, else the store's refusal.
+    The store fill leaves an existing row whose `extra` is not null alone, so a repo missing there is set here."""
+    row = next((r for r in run_store.read_queue(runs_dir, initiative, kind="initiative") if r.get("task_id") == initiative), None)
+    extra = (row or {}).get("extra") or {}
+    if row is None or extra.get("repo") == repo:
+        return ""
+    return run_store.upsert_row_detail(runs_dir, {**{k: v for k, v in row.items() if k not in ("holder", "epoch", "expires_at")}, "extra": {**extra, "repo": repo}})
+
+
 def _fetch_decompose(
     runs_dir: Path, host, initiative: object, run_id: str, lease_released: bool, ended_at: str | None,
     run: Callable[[list[str]], int],
@@ -6698,10 +6732,14 @@ def _fetch_decompose(
             return "failed", [f"fetch: rsync: {' '.join(argv)} exited {code}"], host.name
     pulled = sorted(p for p in work_dir.rglob("*.md") if p.is_file())
     queue_export.record_written_paths(workspace, [p.absolute() for p in pulled])
+    repo = _restore_intake_repo(workspace, work_dir / "initiative.md")
     try:
         store_fill.fill_workspace(workspace)
     except RuntimeError as exc:
         return "failed", [f"fetch: store: {exc}"], host.name
+    detail = _store_initiative_repo(runs_dir, initiative, repo) if repo else ""
+    if detail:
+        return "failed", [f"fetch: store: {detail}"], host.name
     tasks = [p.relative_to(work_dir).as_posix() for p in pulled if p != work_dir / "initiative.md"]
     marker = {"fetched_at": _now_iso(), "initiative": initiative, "tasks": tasks}
     remote_lane.fetched_record_path(runs_dir, run_id).write_text(json.dumps(marker))
