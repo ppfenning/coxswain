@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ from agent_tools.remote_argv import (
     decompose_launch_argv,
     epic_refspec,
     launch_argv,
+    rsync_check_argv,
     rsync_file_argv,
     rsync_push_argv,
     ssh_argv,
@@ -127,6 +129,15 @@ def base_refusal(host: str, chair_sha: str, code: int, output: str, what: str = 
     return f"{host}: {what} at {at or 'unknown'}, chair at {chair_sha}; sync failed: {reason}"
 
 
+_ITEMIZED = re.compile(r"(?:\*deleting|[<>ch.][fdLDS][.+?a-zA-Z]{9})\s+(\S.*)")
+
+
+def first_differing_path(output: str) -> str | None:
+    """The path of the first `rsync --itemize-changes` record in `output`; an ssh or rsync error line is not one."""
+    found = (_ITEMIZED.fullmatch(line.strip()) for line in output.splitlines())
+    return next((hit.group(1) for hit in found if hit), None)
+
+
 def _sync_argvs(path: str, head: ChairHead | None, *, detached_only: bool = False) -> list[list[str]]:
     """`sync_argvs` for a known chair head, else the old default-branch `sync_argv`. With `detached_only`, a head on a
     branch also keeps `sync_argv`: the repo moves to the chair's commit only at a release tag, since a branch or commit
@@ -165,10 +176,12 @@ def launch_plan(
     harness_base: ChairBase | None = None,
     graph: str = "epic",
     intake: str | None = None,
+    cartridges: str | None = None,
 ) -> list[list[str]]:
-    """The argv that `launch_on_host` runs in order: the rsync push, then, when `harness_dir` is
-    given, the sync of the harness on the lane host, then, when `repo` is given, the sync of `repo`
-    there, then, for a `relaunch` with a `repo`, a force push of the epic branches and of each task
+    """The argv that `launch_on_host` runs in order: the rsync push, then, when `cartridges` is given, a mirroring
+    rsync push of that directory (a path relative to the chair's workspace) and an rsync check that it now matches,
+    then, when `harness_dir` is given, the sync of the harness on the lane host, then, when `repo` is given, the
+    sync of `repo` there, then, for a `relaunch` with a `repo`, a force push of the epic branches and of each task
     branch of `relaunch.prior_run` to the lane host, then the launch ssh command.
 
     rsync needs the parent of the destination to exist; the copy keeps the local work/<id> layout.
@@ -202,6 +215,14 @@ def launch_plan(
         launch_step = ssh_argv(host.ssh, launch_argv(remote_dir, run_id, label))
     else:
         raise ValueError(f"unknown graph {graph!r}: a remote launch plan covers epic and decompose")
+    cartridge_steps = (
+        []
+        if cartridges is None
+        else [
+            rsync_push_argv(cartridges, place(f"{workspace}/{cartridges}"), mirror=True),
+            rsync_check_argv(cartridges, place(f"{workspace}/{cartridges}")),
+        ]
+    )
     harness_steps = (
         []
         if harness_dir is None
@@ -232,7 +253,7 @@ def launch_plan(
             for _, refspec in _relaunch_branches(initiative, relaunch)
         ]
     )
-    return [rsync_step, *harness_steps, *repo_steps, *push_steps, launch_step]
+    return [rsync_step, *cartridge_steps, *harness_steps, *repo_steps, *push_steps, launch_step]
 
 
 def env_preflight(names: tuple[str, ...], probes: Mapping[str, tuple[int, str]]) -> str | None:
@@ -267,6 +288,7 @@ def launch_on_host(
     tools: Sequence[str] = (),
     graph: str = "epic",
     intake: str | None = None,
+    cartridges: str | None = None,
 ) -> dict | LaunchError:
     """`preflight` is a refusal line from a check made before anything is copied; None lets the launch go on.
     `tools` are the executables the repo's checks run: one `probe` of the host's lane PATH, before the copy, refuses
@@ -305,7 +327,7 @@ def launch_on_host(
     plan = launch_plan(
         host, initiative, run_id, label, locate, repo, harness_dir, relaunch,
         home=home, host_checkouts=host_checkouts, harness_head=harness_head, repo_head=repo_head, base=base,
-        harness_base=harness_base, graph=graph, intake=intake,
+        harness_base=harness_base, graph=graph, intake=intake, cartridges=cartridges,
     )
     rsync_argv, ssh_cmd = plan[0], plan[-1]
     pushed = run(rsync_argv)
@@ -313,6 +335,17 @@ def launch_on_host(
         copied = f"work/{initiative}" if graph == "epic" else f"{intake}"
         return LaunchError("rsync", f"rsync of {copied} to {host.name} exited {pushed}")
     next_step = 1
+    if cartridges is not None:
+        other = "the lane would run a cartridge other than the chair's"
+        cartridges_pushed = run(plan[next_step])
+        if cartridges_pushed != 0:
+            return LaunchError("cartridges", f"rsync of {cartridges} to {host.name} exited {cartridges_pushed}: {other}")
+        code, found = probe(plan[next_step + 1])
+        next_step += 2
+        if code != 0 or found.strip():
+            path = first_differing_path(found)
+            where = f"differs at {path}" if path else f"check exited {code} without naming a file"
+            return LaunchError("cartridges", f"{host.name}: {cartridges} {where} after the sync: {other}")
     if harness_dir is not None and harness_base is not None:
         refused = base_refusal(host.name, harness_base.sha, *probe(plan[next_step]), what="harness")
         next_step += 1
