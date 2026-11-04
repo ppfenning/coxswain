@@ -83,6 +83,7 @@ class _LazyHandler:
 card_keys = _LazyModule("agent_tools.card_keys")
 chair = _LazyModule("agent_tools.chair")
 chair_capacity = _LazyModule("agent_tools.chair_capacity")
+chair_dash_sync = _LazyModule("agent_tools.chair_dash_sync")
 chair_decompose_runs = _LazyModule("agent_tools.chair_decompose_runs")
 chair_exec = _LazyModule("agent_tools.chair_exec")
 chair_facts = _LazyModule("agent_tools.chair_facts")
@@ -11007,16 +11008,41 @@ def _land_watches(results: list[chair_exec.Result], tickets: Callable[[], Sequen
     ]
 
 
+def _run_argv_output(argv: list[str]) -> tuple[int, str]:
+    code, out, err = _run_argv(argv)
+    return code, out or err
+
+
+def _rebuild_dash_after_land(
+    watches: Sequence[Mapping], dash_dir: str | None, bin_dir: str, toolchain_found: bool,
+    run: Callable[[list[str]], tuple[int, str]], echo: Callable[[str], None],
+) -> None:
+    """Edge. Pull, build and link towpath once per distinct landed repo that is the dash checkout. A failure is one
+    echoed line: it never raises, holds no land and does not touch the smoke."""
+    for repo in dict.fromkeys(w.get("repo", "") for w in watches):
+        try:
+            argvs = chair_dash_sync.rebuild_argvs(repo, dash_dir, bin_dir, toolchain_found)
+            code = chair_dash_sync.run_argvs(argvs, run) if argvs else 0
+            if code != 0:
+                echo(f"chair run: towpath rebuild failed (exit {code}) for {repo}")
+        except Exception as exc:
+            with contextlib.suppress(Exception):
+                echo(f"chair run: towpath rebuild failed for {repo}: {exc}")
+
+
 def _chair_perform_with_smoke(
     runs_dir: Path, perform: chair_run.Perform,
     watch: Callable[[Mapping], None] = lambda _w: None, held: Callable[[], None] = lambda: None,
     tickets: Callable[[], Sequence[Mapping]] = lambda: [],
+    *, dash_dir: str | None = None, bin_dir: str = "", toolchain_found: bool = False,
+    run: Callable[[list[str]], tuple[int, str]] = _run_argv_output, echo: Callable[[str], None] = lambda _l: None,
 ) -> chair_run.Perform:
     """Wraps `perform` with the post-land watch and smoke. A live run records a watch for every landed commit, then a
     landed coxswain (or coxswain-tools/-graphs) PR runs the fixed smoke commands once against the first triggering land's repo.
     A failure holds a `HoldRecord` and opens no revert PR: the hold makes `landed_main` report smoke failed for that
     commit, so the next tick's plan emits `revert_land`. A pass clears an existing hold. `held` runs last, to resolve
-    the watches whose main went green. A dry run calls neither `watch` nor `held`.
+    the watches whose main went green. A dry run calls neither `watch` nor `held`. With a `dash_dir`, a live run also
+    rebuilds towpath after a land in that checkout; the default `dash_dir` of None plans nothing.
     """
 
     def wrapped(
@@ -11024,8 +11050,10 @@ def _chair_perform_with_smoke(
     ) -> list[chair_exec.Result]:
         results = perform(actions, deps, current_epoch, dry_run_)
         if not dry_run_:
-            for w in _land_watches(results, tickets):
+            watches = _land_watches(results, tickets)
+            for w in watches:
                 watch(w)
+            _rebuild_dash_after_land(watches, dash_dir, bin_dir, toolchain_found, run, echo)
         triggers = chair_exec.smoke_targets(results)
         if triggers:
             land = triggers[0]
@@ -11633,8 +11661,17 @@ def _chair_run_deps(
                     with contextlib.suppress(Exception):
                         echo(f"chair run: checkout sync skipped: {exc}")
 
+    started_checkout = checkout_state()
+    dev_install = started_checkout is not None and started_checkout.on_branch  # the condition that arms the restart rule
+    towpath = shutil.which("towpath")
+    dash_wiring = {
+        "dash_dir": str(chair_restart.checkout_root().parent / "coxswain-dash"),
+        "bin_dir": os.path.dirname(towpath) if towpath else os.path.join(home, ".local", "bin"),
+        "toolchain_found": shutil.which("cargo") is not None,
+    } if dev_install else {}
+
     return chair_run.RunDeps(
-        checkout_state=checkout_state, started_checkout=checkout_state(), lands_in_flight=lands_in_flight,
+        checkout_state=checkout_state, started_checkout=started_checkout, lands_in_flight=lands_in_flight,
         stop_lands=stop_lands, facts_deps=facts_deps, exec_deps=exec_deps, report_deps=chair_report.Deps(echo=echo),
         beat=beat, current_epoch=epoch,
         lease_beat=lambda: chair.renew_lease(runs_dir, session, pid, host),
@@ -11644,7 +11681,7 @@ def _chair_run_deps(
         perform=_chair_perform_with_smoke(
             runs_dir, chair_exec.perform,
             watch=lambda w: chair_revert_watch.record_watch(record, w), held=held,
-            tickets=lambda: chair_facts.read_ticket_items(ws, mode),
+            tickets=lambda: chair_facts.read_ticket_items(ws, mode), echo=echo, **dash_wiring,
         ),
         export_rows=(lambda ids: _chair_export_hook(runs_dir, ids)) if mode == "store" and not dry_run else None,
         notify_config=notify_core.config_from_profile(profile), workspace=ws,
