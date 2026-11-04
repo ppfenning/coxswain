@@ -394,27 +394,54 @@ def _initiative_progress(rows: list[dict], initiative: str) -> tuple[int, int, s
     return landed, len(phases), current
 
 
-def _task_state(task: Mapping, landed: Collection[str], on_live_lane: bool, stranded: bool) -> str | None:
+def _configured_land_at(rows: Sequence[Mapping], initiative: str) -> str:
+    """The granularity landing is configured at for an initiative: its initiative row's `extra["land_at"]`, else `ticket`."""
+    return next(
+        (
+            row["extra"]["land_at"]
+            for row in rows
+            if row.get("kind") == "initiative" and row.get("initiative") == initiative
+            and isinstance(row.get("extra"), Mapping) and row["extra"].get("land_at")
+        ),
+        "ticket",
+    )
+
+
+def _landed_word(task: Mapping, land_at: str | None) -> str:
+    """A `done` row reads `landed` when its `extra["land_at"]` equals the configured one or it names none; a done row
+    written at another granularity is merged work that has not landed at the configured one, so it reads `merged`."""
+    extra = task.get("extra")
+    written = extra.get("land_at") if isinstance(extra, Mapping) else None
+    return "landed" if written is None or land_at is None or written == land_at else "merged"
+
+
+def _task_state(
+    task: Mapping, landed: Collection[str], on_live_lane: bool, stranded: bool, land_at: str | None = None,
+) -> str | None:
     """The feed state of a queue task row, or `None` for a store state the feed has no word for (`todo`, unknown).
     `blocked` is a ready task with a need outside `landed` (`route.TERMINAL`, the rule `chair_read_idle_backlog`
-    uses for the relaunch's "waits on" line) or a store-`blocked` hold. `running` needs a live lane over the
+    uses for the relaunch's "waits on" line) or a store-`blocked` hold. `building` needs a live lane over the
     task's initiative and phase: an `in_progress` row with none is a dead build and reads `blocked`. A launched
-    task stays `ready` in the store for the whole run, so a `ready` row with every need landed reads `running`
-    on a live lane. The lane covers a phase, not one task, so its idle siblings read `running` as well.
-    `stranded` marks a task `runs stranded` lists, which reads `approved` even while the store still says `ready`."""
+    task stays `ready` in the store for the whole run, so a `ready` row with every need landed reads `building`
+    on a live lane. The lane covers a phase, not one task, so its idle siblings read `building` as well.
+    `stranded` marks a task `runs stranded` lists, which reads `approved` even while the store still says `ready`.
+    `approved` with the merge flag (`route.is_merged`) reads `merged`. `done` reads `landed` only at the
+    configured `land_at` (`_landed_word`), else `merged`."""
     state = task.get("state")
     if state == "done":
-        return "landed"
+        return _landed_word(task, land_at)
     if state in ("dropped", "quarantined"):
         return state
+    if state == "approved" and route.is_merged(task):
+        return "merged"
     if state == "approved" or stranded:
         return "approved"
     if state == "in_progress":
-        return "running" if on_live_lane else "blocked"
+        return "building" if on_live_lane else "blocked"
     if state == "ready":
         if not all(need in landed for need in task.get("needs") or ()):
             return "blocked"
-        return "running" if on_live_lane else "ready"
+        return "building" if on_live_lane else "ready"
     return "blocked" if state == "blocked" else None
 
 
@@ -434,13 +461,14 @@ def _task_states(
     own = _own_tasks(rows, initiative)
     landed = {row.get("task_id") for row in own if row.get("state") in route.TERMINAL}
     lane_phases = {phase for lane_initiative, phase in live_phases if lane_initiative == initiative}
+    land_at = _configured_land_at(rows, initiative)
     return [
         (row.get("phase"), row.get("task_id"), state)
         for row in own
         if (
             state := _task_state(
                 row, landed, bool(lane_phases) and ("" in lane_phases or row.get("phase") in lane_phases),
-                (initiative, row.get("phase"), row.get("task_id")) in stranded,
+                (initiative, row.get("phase"), row.get("task_id")) in stranded, land_at,
             )
         )
         is not None
