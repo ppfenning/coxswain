@@ -122,6 +122,17 @@ def pull_argvs(run_location: str, log_location: str, chair_runs_dir: str, run: s
     ]
 
 
+def decompose_pull_argvs(
+    host: str, host_workspace: str, chair_workspace: str, initiative: str, run: str
+) -> list[list[str]]:
+    """A decompose leaves `work/<initiative>/` and a log, never a branch, so nothing here git-fetches or verifies a repo."""
+    host_ws, chair_ws = host_workspace.rstrip("/"), chair_workspace.rstrip("/")
+    return [
+        rsync_pull_argv(f"{host}:{host_ws}/work/{initiative}/", f"{chair_ws}/work/{initiative}/"),
+        rsync_pull_argv(f"{host}:{host_ws}/runs/{run}.log", f"{chair_ws}/runs/"),
+    ]
+
+
 def probe_argv(location: str) -> list[str]:
     """A bounded `rsync --list-only` of one location; the `.` destination is required by the builder and never written."""
     argv = rsync_pull_argv(location, ".")

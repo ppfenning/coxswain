@@ -14,8 +14,10 @@ from agent_tools.remote_argv import (
     agent_refspec,
     base_sync_argv,
     branch_push_argv,
+    decompose_launch_argv,
     epic_refspec,
     launch_argv,
+    rsync_file_argv,
     rsync_push_argv,
     ssh_argv,
     sync_argv,
@@ -161,6 +163,8 @@ def launch_plan(
     repo_head: ChairHead | None = None,
     base: ChairBase | None = None,
     harness_base: ChairBase | None = None,
+    graph: str = "epic",
+    intake: str | None = None,
 ) -> list[list[str]]:
     """The argv that `launch_on_host` runs in order: the rsync push, then, when `harness_dir` is
     given, the sync of the harness on the lane host, then, when `repo` is given, the sync of `repo`
@@ -176,14 +180,28 @@ def launch_plan(
     `host_checkouts` with the same basename when there is one, and the repo is pushed to that entry too.
     The harness goes to `harness_base` and the repo to `base`, each the chair's `origin/<base>` commit for that checkout, in
     one `base_sync_argv` step that also checks the result. With no `harness_base` the harness follows `harness_head`
-    (`sync_argvs`); with no `base` the repo follows `repo_head` only when detached (see `_sync_argvs`)."""
+    (`sync_argvs`); with no `base` the repo follows `repo_head` only when detached (see `_sync_argvs`).
+    With `graph="decompose"` the first step copies the one file `intake` (a path relative to the chair's work store)
+    to the same relative path under the host workspace, and the last starts `route launch decompose` on it."""
     place = locate if locate is not None else (lambda path: f"{host.ssh}:{path}")
+    workspace = host.workspace_dir.rstrip("/")
     src = f"work/{initiative}"
-    remote_dir = f"{host.workspace_dir.rstrip('/')}/{src}"
-    # The local work/<initiative> is the source: a ticket moved or dropped here must not linger on the lane host,
-    # where a second copy of one id fails the run's DAG check.
-    rsync_step = rsync_push_argv(src, place(remote_dir), mirror=True)
-    launch_step = ssh_argv(host.ssh, launch_argv(remote_dir, run_id, label))
+    remote_dir = f"{workspace}/{src}"
+    if graph == "decompose":
+        if intake is None:
+            raise ValueError("a decompose launch plan needs the intake file path")
+        # Chosen: no work/<initiative> mirror push. The graph reads only the intake file (`--idea`) and writes the
+        # initiative itself on the host, so the stub initiative.md need not arrive. Wrong belief: "a decompose launch
+        # needs the initiative directory there"; and `rsync --delete` of a stub would erase tickets already on the host.
+        rsync_step = rsync_file_argv(intake, place(workspace))
+        launch_step = ssh_argv(host.ssh, decompose_launch_argv(f"{workspace}/{intake}", initiative, run_id, label))
+    elif graph == "epic":
+        # The local work/<initiative> is the source: a ticket moved or dropped here must not linger on the lane host,
+        # where a second copy of one id fails the run's DAG check.
+        rsync_step = rsync_push_argv(src, place(remote_dir), mirror=True)
+        launch_step = ssh_argv(host.ssh, launch_argv(remote_dir, run_id, label))
+    else:
+        raise ValueError(f"unknown graph {graph!r}: a remote launch plan covers epic and decompose")
     harness_steps = (
         []
         if harness_dir is None
@@ -247,6 +265,8 @@ def launch_on_host(
     chair_base: Callable[[str], ChairBase | LaunchError | None] = _chair_base,
     probe: Callable[[list[str]], tuple[int, str]] = _probe,
     tools: Sequence[str] = (),
+    graph: str = "epic",
+    intake: str | None = None,
 ) -> dict | LaunchError:
     """`preflight` is a refusal line from a check made before anything is copied; None lets the launch go on.
     `tools` are the executables the repo's checks run: one `probe` of the host's lane PATH, before the copy, refuses
@@ -258,6 +278,11 @@ def launch_on_host(
     chair runs (`chair_head`), so a chair on a tagged harness can differ from its lane's harness."""
     if preflight is not None:
         return LaunchError("auth", preflight)
+    if graph not in ("epic", "decompose"):
+        return LaunchError("push", f"a remote launch of the {graph} graph to {host.name} is not supported: nothing was run")
+    if graph == "decompose" and (intake is None or relaunch is not None):
+        why = "has no intake file to copy" if intake is None else "cannot be a relocated relaunch"
+        return LaunchError("push", f"a decompose launch to {host.name} {why}: nothing was run")
     if relaunch is not None and repo is None:
         return LaunchError(
             "push", f"a relocated relaunch to {host.name} has no repo to push epic/{initiative}/* into: nothing was run"
@@ -280,12 +305,13 @@ def launch_on_host(
     plan = launch_plan(
         host, initiative, run_id, label, locate, repo, harness_dir, relaunch,
         home=home, host_checkouts=host_checkouts, harness_head=harness_head, repo_head=repo_head, base=base,
-        harness_base=harness_base,
+        harness_base=harness_base, graph=graph, intake=intake,
     )
     rsync_argv, ssh_cmd = plan[0], plan[-1]
     pushed = run(rsync_argv)
     if pushed != 0:
-        return LaunchError("rsync", f"rsync of work/{initiative} to {host.name} exited {pushed}")
+        copied = f"work/{initiative}" if graph == "epic" else f"{intake}"
+        return LaunchError("rsync", f"rsync of {copied} to {host.name} exited {pushed}")
     next_step = 1
     if harness_dir is not None and harness_base is not None:
         refused = base_refusal(host.name, harness_base.sha, *probe(plan[next_step]), what="harness")

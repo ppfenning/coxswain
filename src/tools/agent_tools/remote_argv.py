@@ -80,6 +80,23 @@ def launch_argv(initiative: str, run_id: str, label: str) -> list[str]:
     ]
 
 
+def decompose_launch_argv(intake: str, initiative: str, run_id: str, label: str) -> list[str]:
+    """The decompose twin of `launch_argv`; `intake` is the copied intake file's path on the host, its idea."""
+    return [
+        "cox", "route", "launch", "decompose", "--local",
+        "--idea", intake,
+        "--initiative-id", initiative,
+        "--run-id", run_id,
+        "--label", label,
+        "--no-claim",
+    ]
+
+
+def rsync_file_argv(src_file: str, dest_dir_location: str) -> list[str]:
+    """One file, copied to the same relative path under the destination directory; `--relative` creates the parents."""
+    return ["rsync", *_RSYNC_BOUND_OPTIONS, "--relative", src_file, dest_dir_location.rstrip("/") + "/"]
+
+
 def rsync_push_argv(src_dir: str, dest_location: str, *, mirror: bool = False) -> list[str]:
     """Trailing slashes on both ends copy directory contents; deletes at the destination only when `mirror`."""
     return ["rsync", *_RSYNC_BOUND_OPTIONS, *(["--delete"] if mirror else []), src_dir.rstrip("/") + "/", dest_location.rstrip("/") + "/"]
