@@ -102,6 +102,11 @@ def rsync_push_argv(src_dir: str, dest_location: str, *, mirror: bool = False) -
     return ["rsync", *_RSYNC_BOUND_OPTIONS, *(["--delete"] if mirror else []), src_dir.rstrip("/") + "/", dest_location.rstrip("/") + "/"]
 
 
+def rsync_check_argv(src_dir: str, dest_location: str) -> list[str]:
+    """Prints one itemized line per file that differs, is missing on the host, or exists only there; nothing when the trees match."""
+    return ["rsync", *_RSYNC_BOUND_OPTIONS, "--dry-run", "--checksum", "--itemize-changes", "--delete", src_dir.rstrip("/") + "/", dest_location.rstrip("/") + "/"]
+
+
 def rsync_pull_argv(src_location: str, dest: str) -> list[str]:
     """One directory or one file, exactly as the caller formed it."""
     return ["rsync", *_RSYNC_BOUND_OPTIONS, src_location, dest]
