@@ -173,7 +173,7 @@ def test_a_flag_without_an_initiative_is_one_line_and_non_zero(tmp_path, monkeyp
     profile, _path = _workspace(tmp_path, 0)
     _store(monkeypatch, OTHERS)
     assert _run(profile, "--top") != 0
-    assert capsys.readouterr().out.startswith("routing: an initiative is required")
+    assert capsys.readouterr().out.startswith("routing: an initiative or queued intake is required")
 
 
 @pytest.mark.parametrize("pair", [("--top", "--bottom"), ("--top", "--up"), ("--set", "3", "--bottom"), ("--down", "--bottom")])
