@@ -22,7 +22,7 @@ def _no_usage_gather(monkeypatch):
     monkeypatch.setattr(usage_window, "gather", _unmeasured_window)
 
 
-def _launch(tmp_path, monkeypatch, mode, intake_rows, edge, dry_run=False):
+def _launch(tmp_path, monkeypatch, mode, intake_rows, edge, dry_run=False, extra=()):
     """Run `route launch decompose` over a fake store; return (exit code, upserted rows, harness dir, workspace)."""
     upserts = []
     monkeypatch.setattr("agent_tools.work_state.work_state_mode", lambda _provider: mode)
@@ -34,14 +34,35 @@ def _launch(tmp_path, monkeypatch, mode, intake_rows, edge, dry_run=False):
     monkeypatch.setattr(cli, "_run_decompose_for_result", edge)
     harness_dir = _write_harness(tmp_path)
     ws = tmp_path / "workspace"
-    (ws / "runs").mkdir(parents=True)
+    (ws / "runs").mkdir(parents=True, exist_ok=True)
     (ws / "intake").mkdir(parents=True)
     idea = ws / "intake" / "fix-thing.md"
     idea.write_text("---\nid: fix-thing\ntitle: Fix thing\n---\n\nBody\n")
     profile = _write_launch_profile(tmp_path, harness_dir, ws)
     argv = ["route", "launch", "decompose", "--profile", str(profile), "--idea", str(idea), "--initiative-id", "fix-thing"]
+    argv += list(extra)
     code = main([*argv, "--dry-run"] if dry_run else argv)
     return code, upserts, harness_dir, ws
+
+
+def test_a_free_run_id_names_the_decompose_run(tmp_path, monkeypatch):
+    code, _, _, ws = _launch(tmp_path, monkeypatch, "files", [INTAKE], _must_not_run, extra=("--run-id", "fix-thing-7"))
+
+    assert code == 0
+    assert _wait_for(ws / "runs" / "fix-thing-7.pid")
+    assert not (ws / "runs" / "fix-thing-1.pid").exists()
+
+
+def test_a_taken_run_id_is_refused_and_starts_nothing(tmp_path, monkeypatch, capsys):
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    (ws / "runs" / "fix-thing-7.log").write_text("earlier\n")
+
+    code, _, _, _ = _launch(tmp_path, monkeypatch, "files", [INTAKE], _must_not_run, extra=("--run-id", "fix-thing-7"))
+
+    assert code == 2
+    assert not (ws / "runs" / "fix-thing-7.pid").exists()
+    assert "fix-thing-7" in capsys.readouterr().out
 
 
 def _must_not_run(*_args, **_kwargs):
