@@ -248,6 +248,8 @@ class FactsDeps:
     queue_files: Callable[[], list[QueueFile]] = lambda: []  # `read_queue_files` bound to the workspace and store; absent means []
     held_files: Callable[[], Sequence[HeldFile]] = lambda: []  # `queue_export.read_held_record` bound to the workspace; absent means []
     rev_parse: Callable[[str, str], str | None] = _rev_parse  # (repo, ref) to the commit sha or None; read by `read_land_heads` for refused phases only
+    cartridge: Callable[[], Mapping[str, Any]] = lambda: {}  # the resolved team cartridge; {} when unreadable, so land_at reads the default
+    land_at_values: Callable[[], Mapping[str, str | None]] = lambda: {}  # initiative to its initiative.md `land_at:`; absent means {}
 
 
 def read_queue_files(workspace: Path, rows: Sequence[Row], stored: Mapping[tuple[str, str], str]) -> list[QueueFile]:
@@ -710,15 +712,31 @@ def read_initiative_repos(ws: Path, home: str) -> dict[str, str]:
     return {name: repo_path.expand(f["repo"], home) for name, f in fields.items() if isinstance(f.get("repo"), str) and f["repo"]}
 
 
+def land_at_facts(cartridge: Mapping[str, Any], values: Mapping[str, str | None], ids: Sequence[str]) -> dict[str, str]:
+    """Initiative id to the land_at `core.landing.resolve_land_at` gives its cartridge and `initiative.md` value.
+
+    A value the resolver refuses reads `ticket`, the default, so one bad file never stops a tick."""
+    from core.landing import DEFAULT_LAND_AT, resolve_land_at  # lazy: core sits beside agent_tools in one venv
+
+    def resolved(initiative: str) -> str:
+        try:
+            return resolve_land_at(cartridge, values.get(initiative))
+        except ValueError:
+            return DEFAULT_LAND_AT
+
+    return {i: resolved(i) for i in ids}
+
+
 def initiative_facts(
     docket: Row,
     live: Collection[str],
     surfaces: Mapping[str, list[str]] | None = None,
     repos: Mapping[str, str] | None = None,
+    land_at: Mapping[str, str] | None = None,
 ) -> list[InitiativeFacts]:
     """The docket's initiatives with no live run, so a live run is never relaunched.
 
-    `repo` and `ready_surfaces` ride along only when their source was read."""
+    `repo`, `ready_surfaces` and `land_at` ride along only when their source was read."""
     return [
         {
             "id": i["id"],
@@ -738,6 +756,7 @@ def initiative_facts(
                 if repos is not None and i["id"] in repos
                 else {}
             ),
+            **({"land_at": land_at[i["id"]]} if land_at is not None and i["id"] in land_at else {}),
         }
         for i in docket["initiatives"]
         if i["id"] not in live
@@ -838,6 +857,7 @@ def approved_facts(rows: Sequence[Row]) -> list[ApprovedTask]:
             "needs": list(r["needs"]),
             "run": str(r["run"]),
             "needs_fetch": bool(r["needs_fetch"]),
+            "merged": bool(r.get("merged", False)),
         }
         for r in rows
     ]
@@ -1036,6 +1056,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
             {"initiatives": ready}, live,
             ticket_surfaces(items, ready_ids) if deps.tickets is not None else None,
             repos if deps.repos is not None else None,
+            land_at_facts(deps.cartridge(), deps.land_at_values(), [i["id"] for i in ready]),
         )
     ]
     newest_run_host = dict(deps.newest_run_host()) if deps.newest_run_host is not None else {}

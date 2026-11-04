@@ -109,6 +109,7 @@ class ApprovedTask(TypedDict):
     needs: list[str]
     run: str  # the newest run whose task record is approved and unlanded; empty when none is
     needs_fetch: bool  # the run is remote and not yet fetched; False without a run
+    merged: bool  # the task's PR has merged into the level branch; it still awaits its land
     land_manual: NotRequired[bool]  # the repo sets `land: manual`: a person merges the PR, so no land is planned for the task
 
 
@@ -190,6 +191,7 @@ class InitiativeFacts(TypedDict):
     repo_dir: NotRequired[str]
     ready_surfaces: NotRequired[list[str]]  # the union of the surfaces of its ready tasks; absent means none
     dag_problem: NotRequired[str]  # the first work-store DAG problem, e.g. "b needs x"; absent means valid
+    land_at: NotRequired[str]  # the land_at (ticket, level or task) resolved this tick; old fixtures omit it
 
 
 class QuarantineFacts(TypedDict):
@@ -503,6 +505,7 @@ ActionKind = Literal[
     "partial_land",
     "pull_workspace",
     "waiting",
+    "deferred",
     "close_initiative",
     "finish_task",
 ]
@@ -527,7 +530,8 @@ class Action(TypedDict, total=False):
     task_ids and quarantined: the approved tasks of a phase whose other tasks are all quarantined, done or dropped;
     the plan adds repo, task_runs and run (the newest of task_runs) for the loop's task lands. A relaunch_loop needs_chair carries
     initiative, cause and a reason naming both quarantined run ids. waiting carries initiative, phase, quarantined and
-    awaiting_land and runs no command. close_initiative carries initiative and state (done or dropped)."""
+    awaiting_land and runs no command. deferred carries initiative, phase and land_at and runs no command: the land waits for
+    the granularity land_at names. close_initiative carries initiative and state (done or dropped)."""
 
     kind: ActionKind
     epoch: int

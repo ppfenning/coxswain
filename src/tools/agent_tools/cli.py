@@ -11011,6 +11011,12 @@ def _initiative_repos(initiative_files: Mapping[Path, str], home: str) -> dict[s
     return {name: repo_path.expand(f["repo"], home) for name, f in fields.items() if isinstance(f.get("repo"), str) and f["repo"]}
 
 
+def _initiative_land_at(initiative_files: Mapping[Path, str]) -> dict[str, str | None]:
+    """Pure. Initiative id to the `land_at:` in its `initiative.md` text, None when the key is absent or not a string."""
+    fields = {p.parent.name: route.parse_frontmatter(text)[0] for p, text in initiative_files.items()}
+    return {name: f["land_at"] if isinstance(f.get("land_at"), str) else None for name, f in fields.items()}
+
+
 def _chair_reported_repos_path(runs_dir: Path) -> Path:
     """Beside `chair.lease.json`: the persisted set of repo paths already reported missing."""
     return runs_dir / "chair.reported_repos.json"
@@ -11646,6 +11652,8 @@ def _chair_run_deps(
         initiative_states=initiative_states,
         work_rows=work_rows,
         repos=lambda: _initiative_repos(chair_read_quarantined.initiative_files(ws, work_files()), home),
+        cartridge=lambda: _team_cartridge(profile)[0],  # {} when unreadable: land_at then reads the default
+        land_at_values=lambda: _initiative_land_at(chair_read_quarantined.initiative_files(ws, work_files())),
         actions=actions,
         land_watches=lambda: chair_revert_watch.pending_watches(actions),
         read_main_ci=main_ci,
