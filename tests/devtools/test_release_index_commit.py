@@ -6,6 +6,8 @@ from devtools import cli, release
 
 _VERSION = "2026.10.0"
 _MANIFEST = {"coxswain": {"version": _VERSION}, "components": {"dash": {"tag": "v2026.9.0"}}}
+_BUMP = f"release/{_VERSION}-bump"
+_REHEARSED = {"coxswain": "abc123"}
 _STALE = "# Releases\n\n## 2026.9.0\n\nolder\n"
 
 
@@ -36,7 +38,7 @@ def _execute(umbrella, steps):
         return 0, ""
 
     rc = cli._release_execute(steps, _VERSION, str(umbrella), {}, str(umbrella), run, _MANIFEST, "",
-                              sleep=lambda s: None, now=iter(range(0, 10**9, 60)).__next__)
+                              sleep=lambda s: None, now=iter(range(0, 10**9, 60)).__next__, rehearsed=_REHEARSED)
     return rc, calls
 
 
@@ -47,9 +49,9 @@ def _index_of(calls, *words):
 def test_a_stale_index_is_branched_committed_pushed_and_merged_before_the_tag(tmp_path):
     umbrella = _umbrella(tmp_path, _STALE)
     rc, calls = _execute(umbrella, _steps(index_changed=True))
-    branch = _index_of(calls, "checkout", "-b", "release/" + _VERSION)
+    branch = _index_of(calls, "checkout", "-b", _BUMP)
     commit = _index_of(calls, "commit", "docs/releases/index.md")
-    push = _index_of(calls, "push", "-u", "release/" + _VERSION)
+    push = _index_of(calls, "push", "-u", _BUMP)
     merge = _index_of(calls, "merge")
     tag = _index_of(calls, "tag", "v" + _VERSION)
     assert rc == 0
@@ -64,7 +66,8 @@ def test_a_matching_index_runs_no_branch_commit_or_push(tmp_path):
     rc, calls = _execute(umbrella, _steps(index_changed=False))
     assert rc == 0
     assert not [c for c in calls if "-b" in c or "commit" in c or "-u" in c or "merge" in c]
-    assert [c[3:5] for c in calls if "push" in c] == [["push", "origin"]]
+    # The release branch is pushed at its rehearsed commit, then the tag; neither is an index landing.
+    assert [c[3:5] for c in calls if "push" in c] == [["push", "origin"]] * 2
     assert (umbrella / "docs" / "releases" / "index.md").read_text() == current
 
 
@@ -94,10 +97,10 @@ def test_a_commit_failure_is_a_failed_commit_index_step(tmp_path, capsys):
         return (1, "") if argv[3:4] == ["symbolic-ref"] else (0, "")
 
     rc = cli._release_execute(steps, _VERSION, str(umbrella), {}, str(umbrella), run, _MANIFEST, "",
-                              sleep=lambda s: None, now=iter(range(0, 10**9, 60)).__next__)
+                              sleep=lambda s: None, now=iter(range(0, 10**9, 60)).__next__, rehearsed=_REHEARSED)
     assert rc == 2
     assert "FAILED commit_index coxswain: hook refused" in capsys.readouterr().out
-    assert not [c for c in calls if "push" in c]
+    assert not [c for c in calls if "push" in c and "-u" in c]
 
 
 def test_the_dry_run_detail_names_the_file_and_branch():

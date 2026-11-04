@@ -49,21 +49,29 @@ The cut runs these gates first. Any one refuses it:
 5. Every checkout the release tags is clean, on its default branch, and
    level with `origin/<default>`.
 
-Freeze the chair's lands for the cut, so nothing merges under it:
-`cox chair freeze-lands --for 60 --reason "cutting <version>"`.
+Main does not freeze for a cut. The cut runs on a short-lived
+`release/<version>` branch, and landing work onto main continues while it
+runs. The chair's freeze stays available for an emergency. It is not a step.
 
 Then the steps:
 
-1. When `<version>` is above the manifest's version, bump `pyproject.toml`,
-   `uv.lock` and `manifest.toml` on `release/<version>`, open a pull request,
-   wait for its checks and merge it.
-2. Tag `v<version>` on the repository. The tag push runs `publish.yml`,
-   which publishes `coxswain` to PyPI by trusted publishing. It refuses a tag
-   that is not `v` plus the CalVer version in `pyproject.toml`. The release
-   waits for that workflow.
-3. Create the GitHub release `coxswain <version>` from the notes page.
-4. Open the tap formula pull request, and run the install proof against it
-   (below).
+1. The command creates `release/<version>` in the coxswain checkout from the
+   rehearsed commit. When the release tags dash, it creates the same branch in
+   dash from dash's rehearsed commit.
+2. When `<version>` is above the manifest's version, bump `pyproject.toml`,
+   `uv.lock` and `manifest.toml` on `release/<version>`, open a pull request
+   against the release branch, not main, wait for its checks and merge it.
+3. Tag `v<version>` at the release branch head. The tag push runs
+   `publish.yml`, which publishes `coxswain` to PyPI by trusted publishing. It
+   refuses a tag that is not `v` plus the CalVer version in `pyproject.toml`.
+   The release waits for that workflow.
+4. Create the GitHub release `coxswain <version>` from the notes page, at the
+   release branch head.
+5. Open the tap formula pull request, and run the install proof against it
+   (below). It also reads the release branch head.
+6. After the tags, open a merge-back pull request from the release branch into
+   the default branch. Merge it on green with a merge commit. Delete the
+   release branch.
 
 After a cut, or a failed one, the command sends a `release_cut` or
 `release_failed` push to the profile's `notify.ntfy` topic, when one is
@@ -75,6 +83,23 @@ tag. Nothing else is pinned: the checkout is the release.
 
 The docs site is deployed by `docs.yml` on every push to `main`, under the
 manifest's version and `latest`.
+
+### A resumed cut
+
+A cut can stop part way. Rerun the same command to finish it. The command
+reports each finished step as done and skips it. A finished step is a merged
+bump, a pushed tag, an existing GitHub release or an existing release branch.
+The rerun does not refuse because the tag exists.
+
+On a resume, the rehearsal lookup uses the commit the branch was cut from. A
+main that has moved on does not fail the rehearsal gate.
+
+Once the merge-back is merged and the branch is deleted, the cut is complete.
+A rerun then refuses because the tag exists, and only the `--tap-only` mode
+applies.
+
+A merge-back conflict happens when main changed the same files as the bump.
+Resolve it by hand on the pull request.
 
 ### The tap pull request and the install proof
 

@@ -21,7 +21,7 @@ The workflow is `.github/workflows/release-rehearsal.yml`. It runs on `workflow_
 - `previous_tag`: the last release tag, such as `v2026.10.0`. It feeds the upgrade and migrate scenarios. A `v0.x` tag is installed as the old `coxswain-tools` line; a CalVer tag as `coxswain`.
 - `migrations`: the declared migration list from section 2, as a comma separated string; empty when the release declares none.
 
-A branch name or a short SHA is refused, because a branch can move between the rehearsal and the tag. Dispatch it from the coxswain checkout:
+A branch name or a short SHA is refused, because a branch can move between the rehearsal and the tag. The rehearsed commit is the one `release/<version>` is cut from. The SHA the rehearsal passed on is therefore the SHA the tag descends from. Main moving afterwards does not invalidate the rehearsal. Dispatch it from the coxswain checkout:
 
 ```sh
 gh workflow run release-rehearsal.yml -f sha=$(git rev-parse origin/main) -f previous_tag=v2026.10.0 -f migrations=
