@@ -78,6 +78,40 @@ def test_helper_is_true_only_for_a_real_store_run_here_with_an_intake_row():
     assert cli._decompose_via_rows("store", False, None, None) is False
 
 
+def test_detach_turns_the_rows_path_off_and_leaves_the_default_alone():
+    assert cli._decompose_via_rows("store", False, None, INTAKE, detach=True) is False
+    assert cli._decompose_via_rows("store", False, None, INTAKE) is True
+    assert cli._decompose_via_rows("store", False, None, INTAKE, detach=False) is True
+
+
+def test_detach_in_store_mode_starts_the_graph_and_returns_without_waiting(tmp_path, monkeypatch, capsys):
+    started = []
+
+    class _Proc:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+    def fake_popen(argv, **kwargs):
+        started.append((argv, kwargs))
+        return _Proc()
+
+    monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(cli, "_wait_for_exit", lambda *_a, **_k: None)
+    monkeypatch.setattr(route, "decompose_into_rows", _must_not_run)
+
+    code, upserts, _harness_dir, ws = _launch(tmp_path, monkeypatch, "store", [INTAKE], _must_not_run, extra=("--detach",))
+
+    runs = ws / "runs"
+    out = capsys.readouterr().out
+    assert (code, upserts) == (0, [])
+    assert len(started) == 1 and started[0][1]["start_new_session"] is True
+    assert (runs / "fix-thing-1.pid").read_text() == "4242"
+    assert json.loads((runs / "fix-thing-1.launched.json").read_text())["initiative"] == "fix-thing"
+    assert "run fix-thing-1" in out and f"pid {runs / 'fix-thing-1.pid'}" in out and f"log {runs / 'fix-thing-1.log'}" in out
+
+
 def test_store_mode_writes_the_plan_as_rows_and_no_ticket_file(tmp_path, monkeypatch, capsys):
     seen = []
 
