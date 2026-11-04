@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import posixpath
 import re
+import subprocess
 from collections.abc import Collection, Mapping, Sequence
 from itertools import takewhile
 from pathlib import Path
@@ -382,6 +383,20 @@ def resolve_surfaces(surfaces: Sequence[str], tree: Sequence[Mapping[str, Any]])
         hit = next((str(row.get("path")) for row in tree if surface == row.get("path") or surface in str(row.get("path"))), None)
         (resolved if hit else unresolved).append(hit or surface)
     return resolved, unresolved
+
+
+def repo_listing(repo: str) -> list[dict[str, str]]:
+    """Tracked files of the checkout at `repo` as tree rows; empty when it is not a readable git checkout."""
+    root = Path(repo).expanduser() if repo else None
+    if root is None or not root.is_dir():
+        return []
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(root), "ls-files"], capture_output=True, text=True, timeout=30, check=True
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [{"repo": repo, "path": line} for line in out.splitlines() if line]
 
 
 def with_named_artifacts(task: Mapping[str, Any], tree: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
@@ -1254,7 +1269,9 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
 
     # A test, migration or script the body names but surfaces omit is the most common layout refusal, and the fix is
     # mechanical when the name points at one file: add it, and say so on the ticket.
-    tasks = [with_named_artifacts(t, tree) for t in tasks]
+    # Launches pass no --tree, so a bare test name could never resolve; the checkout's own listing stands in, here only.
+    named_tree = tree or repo_listing(repo_name)
+    tasks = [with_named_artifacts(t, named_tree) for t in tasks]
 
     # The layout check: a body that does not match its surfaces blocks like a lint
     # refusal; an edge with no data flow in the body only lands as a `lint:` entry.
