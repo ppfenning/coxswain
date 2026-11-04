@@ -89,3 +89,34 @@ def test_a_stored_intake_both_filled_and_linked_yields_one_write():
 def test_plan_fill_keeps_a_done_intake_done():
     (write,) = store_fill.plan_fill([{**_INTAKE, "state": "done"}], [_INITIATIVE]).writes
     assert write["state"] == "done"
+
+
+_DROPPED = {**_INITIATIVE, "state": "dropped"}
+_DROPPED_BY_STEM = {**_DROPPED, "task_id": "alpha-2", "extra": {"intake": "intake/alpha.md", "id": "alpha-2"}}
+
+
+def test_a_dropped_initiative_is_not_an_initiative_id():
+    assert store_fill.initiative_ids([_DROPPED]) == frozenset()
+
+
+def test_a_parsed_intake_matching_a_dropped_initiative_stays_queued():
+    (write,) = store_fill.plan_fill([_INTAKE], [_DROPPED]).writes
+    assert (write["kind"], write["state"], "initiative" in write["extra"]) == ("intake", "queued", False)
+
+
+def test_a_stored_intake_matching_a_dropped_initiative_writes_no_link():
+    assert store_fill.plan_fill([_INTAKE], [_DROPPED, _INTAKE]).writes == ()
+    assert store_fill.intake_links([_INTAKE], [_DROPPED]) == ()
+
+
+def test_an_intake_matching_a_live_initiative_is_still_linked():
+    (parsed,) = store_fill.plan_fill([_INTAKE], [_INITIATIVE]).writes
+    (stored,) = store_fill.plan_fill([_INTAKE], [_INITIATIVE, _INTAKE]).writes
+    assert [(w["state"], w["extra"]["initiative"]) for w in (parsed, stored)] == [("decomposed", "alpha")] * 2
+
+
+def test_an_intake_whose_extra_intake_stem_matches_only_a_dropped_initiative_stays_queued():
+    assert store_fill.intake_links([_INTAKE], [_DROPPED_BY_STEM]) == ()
+    assert store_fill.plan_fill([_INTAKE], [_DROPPED_BY_STEM, _INTAKE]).writes == ()
+    (write,) = store_fill.plan_fill([_INTAKE], [_DROPPED_BY_STEM]).writes
+    assert (write["state"], "initiative" in write["extra"]) == ("queued", False)

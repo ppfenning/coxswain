@@ -2,6 +2,7 @@
 
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
+from itertools import count
 
 from agent_tools import draft_apply
 
@@ -56,6 +57,20 @@ def resolve_target(store: Sequence[Mapping], id: str) -> Target:
     if any(row.get("kind", "task") == "task" and row.get("initiative") == id for row in store):
         return InitiativeFound(id)
     return NotFound(id)
+
+
+def fresh_initiative_id(intake_id: str, rows: Sequence[Mapping]) -> str:
+    """`rows` are queue rows. Only a dropped initiative with the intake id forces a new id; a live one keeps it. The new id is the first `id-N`, N from 2, that no initiative row uses in any state."""
+    initiatives = [row for row in rows if row.get("kind") == "initiative"]
+    taken = frozenset(row.get("task_id") for row in initiatives)
+    dropped = any(row.get("task_id") == intake_id and row.get("state") == "dropped" for row in initiatives)
+    if not dropped:
+        return intake_id
+    return next(f"{intake_id}-{n}" for n in count(2) if f"{intake_id}-{n}" not in taken)
+
+
+def fresh_id_note(intake_id: str, fresh_id: str) -> str:
+    return "" if fresh_id == intake_id else f"initiative {intake_id} is dropped, so the next decompose uses {fresh_id}"
 
 
 def initiative_guard(tasks: Sequence[Mapping], runs: Collection[str]) -> Guard:
