@@ -377,6 +377,32 @@ def mark_done(tasks: Sequence[str], merged: Collection[str]) -> list[str]:
     return [t for t in tasks if t in merged]
 
 
+LANDED_VIA = "landed via"  # the chair counts a line starting with this as a landed report, so the prefix is fixed
+_SQUASH_SUFFIX = re.compile(r"\(#(\d+)\)\s*$")
+_TAIL_KINDS = frozenset({"clean", "clean_phase", "mark_done"})
+
+
+def landed_via_line(pr: str) -> str:
+    """`landed via PR #<number>` for a bare number or `#<number>`; `landed via <pr>` for a URL."""
+    return f"{LANDED_VIA} {pr}" if "://" in pr else f"{LANDED_VIA} PR #{pr.lstrip('#')}"
+
+
+def pr_number_of_subject(subject: str) -> int | None:
+    """The trailing `(#<number>)` a squash merge puts on a subject; a number elsewhere in it does not count."""
+    found = _SQUASH_SUFFIX.search(subject)
+    return int(found.group(1)) if found else None
+
+
+def carrying_pr(subjects: Sequence[str], parent_pr: int | None) -> int | None:
+    """The first PR number in `subjects` (newest first), else `parent_pr`, else None."""
+    return next((n for n in map(pr_number_of_subject, subjects) if n is not None), parent_pr)
+
+
+def landed_tail(steps: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Only the closing steps (clean, clean_phase, mark_done) of `steps`, in order."""
+    return [s for s in steps if s.get("kind") in _TAIL_KINDS]
+
+
 LAND_AT = ("ticket", "level", "task")
 _GATE_FOR = {"level": "phase", "ticket": "epic"}
 

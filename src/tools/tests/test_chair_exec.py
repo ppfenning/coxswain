@@ -667,6 +667,21 @@ def test_a_nonzero_exit_with_the_already_merged_output_is_not_landed() -> None:
     assert not chair_exec.landed(1, ALREADY_MERGED)
 
 
+LANDED_VIA = "landed via PR #785\nmark_done: a\n"
+
+
+def test_a_landed_via_line_with_mark_done_and_exit_zero_is_landed() -> None:
+    assert chair_exec.landed(0, LANDED_VIA)
+
+
+def test_a_nonzero_exit_with_a_landed_via_line_is_not_landed() -> None:
+    assert not chair_exec.landed(1, LANDED_VIA)
+
+
+def test_a_landed_via_line_without_mark_done_is_not_landed() -> None:
+    assert not chair_exec.landed(0, "landed via PR #785\nclean_phase: removed epic/i/p\n")
+
+
 def test_the_cli_and_the_chair_agree_on_the_already_merged_line() -> None:
     assert cli.already_merged_line({"number": 535}) == "merge: already merged (PR #535)"
     assert chair_exec._ALREADY_MERGED_PREFIX == cli.ALREADY_MERGED_PREFIX
