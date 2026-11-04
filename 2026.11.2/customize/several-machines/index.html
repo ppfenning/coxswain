@@ -6435,6 +6435,13 @@ list</code> prints one line per host: its state, capacity, beat age, and login.<
 </code></pre></div>
 <p>The command allocates the run id on the chair. It copies <code>work/&lt;id&gt;</code> to the
 host with rsync. It then starts the lane there over ssh.</p>
+<p>A remote epic or decompose launch also copies the workspace's cartridges
+directory to the host. The copy comes after the initiative copy and before the
+harness and repo sync. It is mirrored, so a file removed on the chair is
+removed on the host. The host's own copy is overwritten. After the copy the
+launch compares the two directories by checksum. If they still differ, the
+launch is refused and the message names the first differing file. A lane host
+does not keep its own cartridge, and you do not copy it to each host by hand.</p>
 <h2 id="watch-the-lanes">Watch the lanes</h2>
 <p>The docket, <code>cox route status</code> and <code>cox runs top</code> list lanes that other
 machines hold. Each one reads like this:</p>
