@@ -25,7 +25,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, datetime
 from datetime import date as date_type
 from pathlib import Path
@@ -1148,26 +1148,93 @@ def _settle_decompose(
     def live(rd: Path, name: str) -> list[dict[str, Any]]:
         return [r for r in _read_filed_rows(rd, name) if r.get("state") != "dropped"]
 
-    before = {r["task_id"] for r in live(runs_dir, initiative)}
+    before_rows = live(runs_dir, initiative)
+    before = {r["task_id"] for r in before_rows}
     in_store, on_disk = _settle_decompose_tasks(
         expected, root=root, runs_dir=runs_dir, initiative=initiative, read=live
     )
     missing = sorted(task for task in expected if task not in in_store or task not in on_disk)
     gone = withdrawal(expected, before, missing)
-    if not gone:
-        return decompose_closing(expected, in_store, on_disk)
-    # whole only when this run's own initiative item_create cleared and no task row existed before it
-    made = any(p.get("kind") == "item_create" and p.get("target") == "initiative" for p in auto_applied) or any(
-        d.get("kind") == "item_create" and d.get("target") == "initiative" and d.get("decision") == "approved"
-        for d in diffs
-    )
-    done = (withdraw or _withdraw_filed_tasks)(
-        runs_dir, root, initiative, [expected[t] for t in gone], made and not before
-    )
-    withdrawn = {Path(rel).stem for rel in done}
-    print(f"decompose: missing {', '.join(missing)}; withdrew {', '.join(sorted(withdrawn))}", file=sys.stderr)
+    withdraw_fn = withdraw or _withdraw_filed_tasks
+    withdrawn: set[str] = set()
+    if gone:
+        # whole only when this run's own initiative item_create cleared and no task row existed before it
+        made = any(p.get("kind") == "item_create" and p.get("target") == "initiative" for p in auto_applied) or any(
+            d.get("kind") == "item_create" and d.get("target") == "initiative" and d.get("decision") == "approved"
+            for d in diffs
+        )
+        done = withdraw_fn(runs_dir, root, initiative, [expected[t] for t in gone], made and not before)
+        withdrawn = {Path(rel).stem for rel in done}
+        print(f"decompose: missing {', '.join(missing)}; withdrew {', '.join(sorted(withdrawn))}", file=sys.stderr)
+    if missing:
+        # a stored row's needs win over the proposal's for a task this run did not create
+        needs = {**_task_needs(proposals, expected), **{r["task_id"]: list(r.get("needs") or []) for r in before_rows}}
+        # a withdrawn task is gone too, so a kept task that needs one dangles just as it would on a missing one
+        withdrawn |= _withdraw_dependents(
+            needs,
+            {*missing, *withdrawn},
+            [t for t in {*expected, *before} if t not in missing and t not in withdrawn],
+            before,
+            expected,
+            withdraw=lambda rels: withdraw_fn(runs_dir, root, initiative, rels, False),
+        )
+        print(f"decompose: partial: initiative {initiative} missing {', '.join(missing)}", file=sys.stderr)
     kept = {task: rel for task, rel in expected.items() if task not in withdrawn or task in missing}
     return decompose_closing(kept, in_store - withdrawn, on_disk - withdrawn)
+
+
+def _dependents_of_missing(
+    needs: Mapping[str, Sequence[str]], missing: Collection[str], candidates: Collection[str]
+) -> list[str]:
+    """Sorted candidates whose needs name a missing id, directly or through another such candidate."""
+
+    def grow(hit: frozenset[str]) -> frozenset[str]:
+        more = hit | {t for t in candidates if set(needs.get(t, ())) & (set(missing) | hit)}
+        return hit if more == hit else grow(more)
+
+    return sorted(grow(frozenset()))
+
+
+def _action_needs(action: str) -> list[str]:
+    """The `needs` in the frontmatter block of a decompose `suggested_action`; `[]` when it carries none."""
+    block = action.partition("\n")[2].rpartition("body = ")[0]
+    try:
+        data = yaml.safe_load(block)
+    except yaml.YAMLError:
+        return []
+    return [str(n) for n in (data.get("needs") if isinstance(data, dict) else None) or []]
+
+
+def _task_needs(proposals: Sequence[Mapping[str, Any]], expected: Collection[str]) -> dict[str, list[str]]:
+    """Task id to the ids named by `needs:` in its `item_create` proposal's `suggested_action`."""
+    return {
+        str(p["target"]): _action_needs(str(p.get("suggested_action") or ""))
+        for p in proposals
+        if p.get("kind") == "item_create" and str(p.get("target")) in expected
+    }
+
+
+def _withdraw_dependents(
+    needs: Mapping[str, Sequence[str]],
+    missing: Collection[str],
+    candidates: Collection[str],
+    before: Collection[str],
+    expected: Mapping[str, str],
+    *,
+    withdraw: Callable[[Sequence[str]], Sequence[str]],
+) -> set[str]:
+    """Edge: withdraw each kept task that needs a missing id, so none is left needing one; the ids withdrawn.
+
+    A task already in the store keeps its row and file and is named instead, as is any task the withdraw path refuses.
+    """
+    dependents = _dependents_of_missing(needs, missing, candidates)
+    for task in (t for t in dependents if t in before):
+        print(f"decompose: {task} was already in the store and needs a task that is missing or withdrawn; its row is kept", file=sys.stderr)
+    sweep = [t for t in dependents if t not in before]
+    done = {Path(rel).stem for rel in withdraw([expected[t] for t in sweep])} if sweep else set()
+    for task in (t for t in sweep if t not in done):
+        print(f"decompose: {task} needs a missing task and could not be withdrawn", file=sys.stderr)
+    return done
 
 
 def _settle_decompose_tasks(
@@ -1187,37 +1254,55 @@ def _settle_decompose_tasks(
     frontmatter kept), rewrites the same text, and records the export baseline. That writer only
     warns when it cannot reach the store, so the row is read back through the tools' own reader,
     the one `route edit` uses, before the task counts as stored. A task already in the store keeps
-    its row, so a re-decompose never resets started work. Every task not in both places gets a stderr line.
+    its row, so a re-decompose never resets started work. A task not in the store, or not on disk, is tried
+    once more; one still missing after the second try gets a stderr line for each failed try.
     """
     write = write or _write_filed_task
     read = read or _read_filed_rows
     on_disk: set[str] = set()
     in_store: set[str] = set()
     kept = {r["task_id"]: r for r in read(runs_dir, initiative)}
-    for task, rel in sorted(expected.items()):
+
+    def has_row(task: str) -> bool:
+        try:
+            return any(r["task_id"] == task for r in read(runs_dir, initiative))
+        except Exception:  # an unreadable store means no row can be vouched for
+            return False
+
+    def attempt(task: str, rel: str, retry: bool = False) -> tuple[bool, bool, str]:
+        """One read-and-write try: `(on_disk, in_store, stderr line)`; the line is empty when the task is in the store."""
         path = root / rel
         try:
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
-            print(f"decompose: {task} not written: {exc} (the apply line above carries the arm's own detail)", file=sys.stderr)
-            continue
-        on_disk.add(task)
+            return False, False, f"decompose: {task} not written: {exc} (the apply line above carries the arm's own detail)"
         if task in kept:
             print(f"decompose: {task} was already in the store as '{kept[task].get('state')}'; its row is kept", file=sys.stderr)
-            in_store.add(task)
-            continue
+            return True, True, ""
         try:
             code = write(runs_dir, path, (initiative, Path(rel).parent.name, Path(rel).name), text)
             stored = any(r["task_id"] == task for r in read(runs_dir, initiative))
         except Exception as exc:  # the driver's errors differ by dialect; any one means the row is not in
-            print(f"decompose: {task} is on disk but the write failed: {type(exc).__name__}: {exc}", file=sys.stderr)
-            continue
+            left = " (the first try left its row in the store)" if retry and has_row(task) else ""
+            return True, False, f"decompose: {task} is on disk but the write failed: {type(exc).__name__}: {exc}{left}"
         if code != 0:
-            print(f"decompose: {task} is in the store but its file write failed (exit {code})", file=sys.stderr)
-        elif stored:
+            return True, False, f"decompose: {task} is in the store but its file write failed (exit {code})"
+        if not stored:
+            return True, False, f"decompose: {task} is on disk but the store has no row for it after the write"
+        return True, True, ""
+
+    for task, rel in sorted(expected.items()):
+        tries = [attempt(task, rel)]
+        if not tries[0][1]:  # the one retry: a task still missing after the second try is missing
+            tries.append(attempt(task, rel, retry=True))
+        disk, stored, _ = tries[-1]
+        if disk:
+            on_disk.add(task)
+        if stored:
             in_store.add(task)
         else:
-            print(f"decompose: {task} is on disk but the store has no row for it after the write", file=sys.stderr)
+            for _, _, line in tries:
+                print(line, file=sys.stderr)
     return in_store, on_disk
 
 

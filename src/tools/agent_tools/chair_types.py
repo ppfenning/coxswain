@@ -189,6 +189,7 @@ class InitiativeFacts(TypedDict):
     # The directory name of `repo`, the key of a host's checkout_env record; absent or "" means unknown.
     repo_dir: NotRequired[str]
     ready_surfaces: NotRequired[list[str]]  # the union of the surfaces of its ready tasks; absent means none
+    dag_problem: NotRequired[str]  # the first work-store DAG problem, e.g. "b needs x"; absent means valid
 
 
 class QuarantineFacts(TypedDict):

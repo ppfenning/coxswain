@@ -21,6 +21,7 @@ from agent_tools.chair_land_freeze import LandFreeze, read_freeze
 from agent_tools.chair_launch_budget import DEFAULT_MAX_LAUNCHES_PER_HOUR, WINDOW
 from agent_tools.chair_plan import initiative_homes
 from agent_tools.chair_plan_land import planned_tasks
+from agent_tools.chair_read_dag import dag_problems
 from agent_tools.chair_read_docket import docket_from_rows
 from agent_tools.chair_read_intake import intake_from_rows
 from agent_tools.chair_read_land_conflicts import _rev_parse, read_land_conflicts
@@ -1028,11 +1029,15 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
     approved = approved_facts(deps.approved())
     repos = dict(deps.repos()) if deps.repos is not None else {}
     ready_ids = {i["id"]: {t["id"] for t in i["ready_tasks"]} for i in ready}
-    initiatives = initiative_facts(
-        {"initiatives": ready}, live,
-        ticket_surfaces(items, ready_ids) if deps.tickets is not None else None,
-        repos if deps.repos is not None else None,
-    )
+    problems = dag_problems(items) if deps.tickets is not None else {}
+    initiatives = [
+        {**i, "dag_problem": problems[i["id"]]} if i["id"] in problems else i
+        for i in initiative_facts(
+            {"initiatives": ready}, live,
+            ticket_surfaces(items, ready_ids) if deps.tickets is not None else None,
+            repos if deps.repos is not None else None,
+        )
+    ]
     newest_run_host = dict(deps.newest_run_host()) if deps.newest_run_host is not None else {}
     # An approved row is, by construction, an approved task not yet landed; `chair_plan_prune.phases_to_carry`
     # draws its carried-partial-phase set from these same rows, so their initiatives cover both cases home tracks.
