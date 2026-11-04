@@ -5,11 +5,7 @@ from devtools import cli, release
 _INDEX = {"urls": [{"packagetype": "sdist", "url": f"https://x/coxswain-{V0}.tar.gz", "digests": {"sha256": "b" * 64}}]}
 _URLS = release.towpath_asset_urls(V0)
 _PY_FORMULA = _TAP_FORMULA.replace("class Cox < Formula\n", 'class Cox < Formula\n  depends_on "python@3.13"\n', 1)
-_PINS = ("psycopg==3.3.6 --hash=sha256:aa\npsycopg-binary==3.3.6 ; implementation_name != 'pypy' --hash=sha256:bb\n"
-         "pyarrow==24.0.0 --hash=sha256:cc\n")
-_ARROW_URL = "https://pypi.org/pypi/pyarrow/24.0.0/json"
-_ARROW_SDIST = "https://files/pyarrow-24.0.0.tar.gz"
-_PYARROW = {"urls": [{"packagetype": "sdist", "url": _ARROW_SDIST, "digests": {"sha256": "6" * 64}}]}
+_PINS = "psycopg==3.3.6 --hash=sha256:aa\npsycopg-binary==3.3.6 ; implementation_name != 'pypy' --hash=sha256:bb\n"
 _PSYCOPG_URL = "https://pypi.org/pypi/psycopg/3.3.6/json"
 _BINARY_URL = "https://pypi.org/pypi/psycopg-binary/3.3.6/json"
 _SDIST = "https://files/psycopg-3.3.6.tar.gz"
@@ -38,9 +34,9 @@ def _tap_steps(dash_tag=None, dash_commits=0):
     return release.release_plan(manifest, V0, tags, pinned_commits={"dash": dash_commits})[-1:]
 
 
-def _index(url, pyarrow=_PYARROW, psycopg=_PSYCOPG):
-    """The coxswain index, or the psycopg and pyarrow release documents at the pinned versions."""
-    return {_PSYCOPG_URL: psycopg, _ARROW_URL: pyarrow}.get(url, _INDEX)
+def _index(url, psycopg=_PSYCOPG):
+    """The coxswain index, or the psycopg release document at the pinned version."""
+    return {_PSYCOPG_URL: psycopg}.get(url, _INDEX)
 
 
 def _tap_clone(tmp_path, formula_text=_PY_FORMULA, pins_text=_PINS):
@@ -156,7 +152,7 @@ def test_a_psycopg_payload_with_no_sdist_refuses_before_any_git_call(tmp_path, c
 
 
 def test_a_missing_psycopg_pin_refuses_before_any_git_call(tmp_path, capsys):
-    rc, calls, _, _, _ = _run(tmp_path, pins="psycopg-binary==3.3.6\npyarrow==24.0.0\n")
+    rc, calls, _, _, _ = _run(tmp_path, pins="psycopg-binary==3.3.6\n")
     assert rc == 2
     assert "FAILED tap_formula_pr tap: psycopg: extras requirements pin no psycopg" in capsys.readouterr().out
     assert calls == []
@@ -174,41 +170,13 @@ def test_an_unreachable_index_for_psycopg_refuses_cleanly_before_any_git_call(tm
     assert calls == []
 
 
-def test_a_full_run_writes_the_pyarrow_resource_the_apache_arrow_dependency_and_the_object_store_assertion(tmp_path):
-    rc, _, _, formula, _ = _run(tmp_path)
+def test_a_full_run_without_any_pyarrow_fixture_writes_a_formula_with_no_pyarrow_resource_and_no_cmake(tmp_path):
+    asked = []
+    rc, _, _, formula, _ = _run(tmp_path, fetch_index=lambda url: asked.append(url) or _index(url))
     text = formula.read_text()
     assert rc == 0
-    assert f'resource "pyarrow" do\n    url "{_ARROW_SDIST}"\n    sha256 "{"6" * 64}"' in text
-    assert 'depends_on "apache-arrow"' in text
-    test_block = text.split("  test do\n", 1)[1]
-    assert 'assert_match "object_store", doctor' in test_block.split("\n  end\n", 1)[0]
-
-
-def test_a_pyarrow_payload_with_no_sdist_refuses_before_any_git_call(tmp_path, capsys):
-    rc, calls, _, formula, _ = _run(tmp_path, fetch_index=lambda url: _index(url, pyarrow={"urls": []}))
-    assert rc == 2
-    assert "FAILED tap_formula_pr tap: pyarrow release lists no sdist" in capsys.readouterr().out
-    assert calls == []
-    assert formula.read_text() == _PY_FORMULA
-
-
-def test_an_unreachable_index_for_pyarrow_refuses_cleanly_before_any_git_call(tmp_path, capsys):
-    def down(url):
-        if url == _ARROW_URL:
-            raise OSError("HTTP Error 503")
-        return _index(url)
-
-    rc, calls, _, _, _ = _run(tmp_path, fetch_index=down)
-    assert rc == 2
-    assert "FAILED tap_formula_pr tap: pyarrow: HTTP Error 503" in capsys.readouterr().out
-    assert calls == []
-
-
-def test_a_missing_pyarrow_pin_refuses_before_any_git_call(tmp_path, capsys):
-    rc, calls, _, _, _ = _run(tmp_path, pins=_PINS.split("pyarrow==")[0])
-    assert rc == 2
-    assert "FAILED tap_formula_pr tap: extras requirements pin no pyarrow" in capsys.readouterr().out
-    assert calls == []
+    assert 'resource "pyarrow"' not in text and "cmake" not in text
+    assert not [url for url in asked if "pyarrow" in url]
 
 
 def test_a_base_formula_in_the_old_wheel_shape_is_migrated_by_the_run(tmp_path):
