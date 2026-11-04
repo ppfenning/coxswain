@@ -149,3 +149,32 @@ def test_a_ready_task_beside_an_approved_task_in_its_phase_launches(started: boo
     actions = plan_tick(facts, _NOW)
     assert [a["initiative"] for a in _kinds(actions, {"launch_epic", "relaunch"})] == ["a"]
     assert _waiting(actions) == []
+
+
+def _merged_row(id: str, phase: str, merged: int, approved: int = 0) -> dict:
+    tasks = [(f"{id}-m{n}", "merged") for n in range(merged)] + [(f"{id}-a{n}", "approved") for n in range(approved)]
+    return {"initiative": id, "phase": phase, "tasks": tasks}
+
+
+@pytest.mark.parametrize("land_at", ["ticket", "level"])
+def test_a_ready_task_behind_an_all_merged_phase_launches(land_at: str) -> None:
+    initiative = {**_initiative("a", "p2", False), "land_at": land_at}
+    facts = _facts(initiatives=[initiative], phase_tasks=[_merged_row("a", "p1", 3)])
+    actions = plan_tick(facts, _NOW)
+    assert [a["initiative"] for a in _kinds(actions, {"launch_epic"})] == ["a"]
+    assert _waiting(actions) == []
+    assert waiting_initiatives(facts) == []
+
+
+def test_a_merged_phase_at_land_at_task_still_waits() -> None:
+    initiative = {**_initiative("a", "p2", False), "land_at": "task"}
+    facts = _facts(initiatives=[initiative], phase_tasks=[_merged_row("a", "p1", 3)])
+    actions = plan_tick(facts, _NOW)
+    assert _kinds(actions, _LAUNCHES) == []
+    assert [(a["quarantined"], a["awaiting_land"]) for a in _waiting(actions)] == [(0, 3)]
+
+
+def test_an_approved_unmerged_task_beside_merged_ones_reports_awaiting_land_one() -> None:
+    initiative = {**_initiative("a", "p2", False), "land_at": "ticket"}
+    facts = _facts(initiatives=[initiative], phase_tasks=[_merged_row("a", "p1", 2, approved=1)])
+    assert waiting_initiatives(facts) == [WaitingInitiative("a", Blocking("p1", 0, 1))]

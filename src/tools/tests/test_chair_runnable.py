@@ -61,3 +61,29 @@ def test_ready_task_with_met_needs_shares_a_phase_with_an_approved_task():
 def test_ready_task_needing_the_approved_task_leaves_the_phase_blocking():
     tasks = (TaskView("a", "p1", "approved"), TaskView("b", "p1", "ready", ("a",)))
     assert runnable_verdict(tasks, PHASES) == Blocking("p1", 0, 1)
+
+
+def _merged_p1(count: int) -> tuple[TaskView, ...]:
+    return tuple(TaskView(f"m{n}", "p1", "merged") for n in range(count))
+
+
+def test_ready_after_an_all_merged_phase_is_runnable_at_ticket_and_level():
+    tasks = (*_merged_p1(3), TaskView("b", "p2", "ready"))
+    assert runnable_verdict(tasks, PHASES) == Runnable(("b",))
+    assert runnable_verdict(tasks, PHASES, land_at="level") == Runnable(("b",))
+
+
+def test_an_approved_unmerged_task_still_counts_awaiting_land_beside_merged_ones():
+    tasks = (*_merged_p1(2), TaskView("a", "p1", "approved"), TaskView("b", "p2", "ready"))
+    assert runnable_verdict(tasks, PHASES) == Blocking("p1", 0, 1)
+
+
+def test_a_merged_phase_still_blocks_at_land_at_task():
+    tasks = (*_merged_p1(3), TaskView("b", "p2", "ready"))
+    assert runnable_verdict(tasks, PHASES, land_at="task") == Blocking("p1", 0, 3)
+
+
+def test_a_merged_task_meets_needs_at_level_and_not_at_task():
+    tasks = (TaskView("a", "p1", "merged"), TaskView("b", "p1", "ready", ("a",)))
+    assert runnable_verdict(tasks, PHASES, land_at="level") == Runnable(("b",))
+    assert runnable_verdict(tasks, PHASES, land_at="task") == Blocking("p1", 0, 1)
