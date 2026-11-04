@@ -141,3 +141,11 @@ def test_waiting_initiatives_names_the_blocked_initiative_only() -> None:
     open_ = _facts(initiatives=[_initiative("a", "p1", True)], phase_tasks=[_row("a", "p2", "quarantined")])
     assert waiting_initiatives(open_) == []
     assert waiting_initiatives(_facts(initiatives=[_initiative("a", "p2", True)])) == []
+
+
+@pytest.mark.parametrize("started", [True, False])
+def test_a_ready_task_beside_an_approved_task_in_its_phase_launches(started: bool) -> None:
+    facts = _facts(initiatives=[_initiative("a", "p1", started)], phase_tasks=[_row("a", "p1", "approved")])
+    actions = plan_tick(facts, _NOW)
+    assert [a["initiative"] for a in _kinds(actions, {"launch_epic", "relaunch"})] == ["a"]
+    assert _waiting(actions) == []
