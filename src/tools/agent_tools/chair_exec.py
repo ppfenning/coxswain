@@ -207,7 +207,7 @@ def stagger_seconds(value: object) -> float:
     return seconds if math.isfinite(seconds) and seconds >= 0 else DEFAULT_LAUNCH_STAGGER_S
 
 
-_UNFENCED = ("standby", "take_lease", "steer_clear", "waiting")  # not writes, so a stale or missing epoch does not stop them
+_UNFENCED = ("standby", "take_lease", "steer_clear", "waiting", "deferred")  # not writes, so a stale or missing epoch does not stop them
 _LAND_KINDS = ("land", "land_phase", "partial_land")  # a partial_land is a run of task lands, blocked and escalated as one
 _REASON_CAP = 600
 LOCAL_ARGV_TIMEOUT_S = 900.0  # a local argv with no bound of its own; matches _CHECK_COMMAND_TIMEOUT_S
@@ -374,7 +374,7 @@ def argv_for(action: Action, initiative_id: str = "", ids_mode: str = "slug", la
         ] if initiative else None
     if kind == "pull":
         return ["cox", "route", "pull"]
-    if kind in ("steer_clear", "waiting"):  # recorded only; no command runs
+    if kind in ("steer_clear", "waiting", "deferred"):  # recorded only; no command runs
         return None
     return None
 
@@ -1164,6 +1164,11 @@ def _steer_reason(action: Action) -> str:
     return f"steer clear of {action.get('other', '')}: {','.join(action.get('paths', []))}"[:200]
 
 
+def _deferred_reason(action: Action) -> str:
+    """`deferred to the last phase (land_at <land_at>)`, naming the land_at the action carries."""
+    return f"deferred to the last phase (land_at {action.get('land_at', '?')})"
+
+
 # The kinds whose result may carry a needs_chair that is recorded as its own row after the result.
 _CARRIES_NEEDS_CHAIR = ("clear_branches", "review_landed", "carry_phase", "rebase_phase", "revert_land", "rerun_main")
 
@@ -1209,6 +1214,8 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
             "recorded",
             f"blocked by {action['phase']}: {action['quarantined']} quarantined, {action['awaiting_land']} awaiting land",
         )
+    if kind == "deferred":
+        return _result(action, "recorded", _deferred_reason(action))
     if kind == "fetch_exit":
         return _fetch_exit(action, deps)
     if kind == "widen_ticket":
