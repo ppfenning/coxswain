@@ -11762,6 +11762,7 @@ def _chair_run_deps(
         window_source=window_source,
         weekly_source=weekly_source,
         policy=lambda: _resolved_pacing_policy(runs_dir),
+        month=lambda: _profile_month(runs_dir, profile, now(), _resolved_pacing_policy(runs_dir).min_elapsed_fraction),
         docket=docket,
         approved=approved,
         phase_tasks=lambda: chair_read_approved.read_phase_tasks(ws, mode, work_files(), store_rows()),
