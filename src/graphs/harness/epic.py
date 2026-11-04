@@ -87,13 +87,14 @@ from harness.courier_adapter import send as send_to_courier
 from harness.digest import build_digest
 from harness.escalate import escalate_self_modification, touched_paths
 from harness.gate import apply_arm_for, auto_apply, gate
+from harness.handoff import build_handoff, plan_context
 from harness.invoke import Invocation, invoke_graphs
 from harness.resume import load_result, reusable, save_result
 from harness.store_dialect import Connection, connect
 from harness.store_lease import assert_epoch, renew
 from harness.store_pause import clear_paused, is_paused
 from harness.store_retry import retry_store_write
-from harness.store_write import Store, upsert_work_item
+from harness.store_write import Store, record_handoff, record_merge, upsert_work_item
 from harness.worktree import (
     apply_patch,
     create_worktree,
@@ -1568,6 +1569,11 @@ def _mirror_read_store(ctx: _Ctx, items: Sequence[dict[str, Any]], rows: Sequenc
         elif decision == work_mirror.USE_FILE_AND_UPSERT:
             new = work_mirror.item_row(ctx.initiative_id, item, times.get(str(task)) or _now(), _mirror_by(ctx))
             _upsert_row(ctx.store, new)
+        if row is not None:
+            # A merge and its handoff live only in the row, so `ready_tasks` sees a merged parent in any run.
+            item["merged"] = bool(row.get("merged"))
+            item["merged_commit"] = row.get("merged_commit")
+            item["handoff"] = row.get("handoff")
 
 
 def _mirror_read(ctx: _Ctx, items: Sequence[dict[str, Any]]) -> None:
@@ -2110,6 +2116,38 @@ def _ready_view(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def _merge_missing(ctx: _Ctx, phase: str, item: Mapping[str, Any]) -> str | None:
+    """Why an approved, merged task of this phase cannot be resumed from the store, or None when its commit is on the phase branch.
+
+    Only the store carries `merged_commit`, so a task merged under files is never checked.
+    """
+    commit = item.get("merged_commit")
+    if not (_store_authoritative(ctx) and item.get("phase") == phase and item.get("state") == "approved" and commit):
+        return None
+    branch = ctx.phase_branch(phase)
+    on_branch, _ = _git("-C", str(ctx.repo), "merge-base", "--is-ancestor", str(commit), branch)
+    if on_branch:
+        return None
+    return f"merged commit {commit} is not on {branch}; {item['id']} was approved and merged by an earlier run and is not rebuilt"
+
+
+def _quarantine_missing_merges(
+    ctx: _Ctx, phase: str, items: Sequence[dict[str, Any]], quarantined: list[dict[str, Any]]
+) -> None:
+    """Quarantine each merged task whose commit is gone, one by one. No other item, row or file is touched."""
+    by_id = {str(i["id"]): i for i in items}
+    for item in items:
+        why = _merge_missing(ctx, phase, item)
+        if why is not None:
+            quarantined.append(
+                _quarantine_task(
+                    ctx, by_id, phase=phase, task=str(item["id"]), reason=why, kind="infra",
+                    cause=("harness", "merged commit missing"), approved_is_open=True,
+                )
+            )  # fmt: skip
+            item["state"], item["merged"] = "quarantined", False
+
+
 def _invoke_failure_kind(failure: str) -> Literal["infra", "no_work"]:
     """`infra` for a transient OAuth refresh collision, which spends no attempt; `no_work` otherwise."""
     lowered = failure.lower()
@@ -2271,6 +2309,11 @@ def _run_phase(
         ctx.runner.repo_digest = build_digest(ctx.phase_worktree(phase)) or None
     if hasattr(ctx.runner, "check_commands"):
         ctx.runner.check_commands = [str(c.get("cmd")) for c in ctx.checks if c.get("cmd")]
+
+    # A task approved and merged in an earlier run is not rebuilt. Its commit must be on this phase's branch,
+    # and a task whose commit is gone is quarantined alone: no other task's row or state is touched.
+    _quarantine_missing_merges(ctx, phase, items, quarantined)
+    handoffs = {str(i["id"]): i["handoff"] for i in items if i.get("handoff")}
 
     # A dropped task is terminal like a done one: it never gets rebuilt or
     # re-reviewed, and never blocks the phase behind it.
@@ -2480,11 +2523,17 @@ def _run_phase(
             _lifecycle_invocation(
                 ctx,
                 task,
-                body=_carry_forward(
-                    task.get("body") or "",
-                    list(task.get("attempts") or []),
-                    patches_for_attempt.get(str(task["id"])),
-                    limit=PATCH_FOR_VALIDATION_CHARS,
+                body=plan_context(
+                    {
+                        **task,
+                        "body": _carry_forward(
+                            task.get("body") or "",
+                            list(task.get("attempts") or []),
+                            patches_for_attempt.get(str(task["id"])),
+                            limit=PATCH_FOR_VALIDATION_CHARS,
+                        ),
+                    },
+                    handoffs,
                 ),
                 fix_attempts=ctx.fix_attempts,
             )
@@ -2803,7 +2852,10 @@ def _run_phase(
     decisions, human_minutes = gate(gated, assume=ctx.assume)
     decided = {id(item): (decision, edited) for item, decision, edited in decisions}
 
-    state = _Execution(landed={}, merged={}, moved={}, quarantined=quarantined, escalated=frozenset(escalated))
+    state = _Execution(
+        landed={}, merged={}, moved={}, quarantined=quarantined, escalated=frozenset(escalated),
+        builds={task: (built[task]["result"].get("build") or {}) for task in surviving},
+    )  # fmt: skip
     diffs: list[dict[str, Any]] = []
 
     for item in batch:
@@ -2876,6 +2928,8 @@ def _run_phase(
                 if str(item["id"]) == task:
                     item["state"] = "approved"
                     item["merged"] = merged
+                    if task in state.handoffs:
+                        item["handoff"] = state.handoffs[task]
             for task_record in record["task_records"]:
                 if task_record["id"] == task:
                     task_record["state"] = "approved"
@@ -3300,6 +3354,9 @@ class _Execution:
     escalated: frozenset[str] = frozenset()
     notes: dict[str, str] = field(default_factory=dict)
     draft_detail: dict[str, str] = field(default_factory=dict)
+    commits: dict[str, str] = field(default_factory=dict)  # task -> the commit its merge made on the phase branch
+    builds: dict[str, Mapping[str, Any]] = field(default_factory=dict)  # task -> its build result, for the handoff
+    handoffs: dict[str, dict[str, Any]] = field(default_factory=dict)  # task -> the handoff stored with its merge
 
 
 def kept_work_refusal(landed: bool, merged: bool | None, escalated: bool, ahead: bool) -> str | None:
@@ -3515,6 +3572,10 @@ def _execute(
                 )
             )
         state.merged[subject] = ok
+        if ok:
+            head_ok, head = _git("-C", str(ctx.phase_worktree(phase)), "rev-parse", "HEAD")
+            if head_ok:
+                state.commits[subject] = head
         return ok, detail
 
     if kind == "stack_rebase" and slot == "rebase":
@@ -3593,6 +3654,7 @@ def _execute(
         if not _repair_file_state(by_id[subject], "approved"):
             _log.warning("store moved %s to approved; file state line not written, regenerate-states repairs it", subject)
         state.moved[subject] = True
+        _record_merge(ctx, state, subject)
         return True, "store moved to approved; file state line written"
     try:
         applied, detail = auto_apply(
@@ -3610,6 +3672,24 @@ def _execute(
         if applied:
             _mirror_write(ctx, by_id.get(subject), "approved")
     return applied, detail
+
+
+def _record_merge(ctx: _Ctx, state: _Execution, task: str) -> None:
+    """work_state: store. Stamp the merge commit and the handoff on the task's approved row. Errors are logged, never raised.
+
+    Runs after the move to approved, because `record_merge` refuses any other state.
+    """
+    commit = state.commits.get(task)
+    if commit is None or not state.merged.get(task):
+        return
+    try:
+        handoff = build_handoff(state.builds.get(task) or {}, ctx.scratch_branch(task), commit)
+        record_merge(ctx.store.conn, ctx.initiative_id, task, commit, _now(), _mirror_by(ctx))
+        record_handoff(ctx.store.conn, ctx.initiative_id, task, handoff, _now(), _mirror_by(ctx))
+    except Exception as exc:
+        _log.warning("merge and handoff not written to the store row: task=%s: %s: %s", task, type(exc).__name__, exc)
+        return
+    state.handoffs[task] = handoff
 
 
 def _rebase_base(item: Mapping[str, Any]) -> str:
