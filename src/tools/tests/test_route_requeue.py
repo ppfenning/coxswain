@@ -188,3 +188,52 @@ def test_the_row_link_wins_over_the_field(tmp_path, monkeypatch):
     code, _ = _requeue(tmp_path, "demo")
     assert code == 0
     assert writes[0] == {"initiative": "intake", "task_id": "idea", "state": "queued", "extra": {}}
+
+
+SAME_INTAKE = {
+    "kind": "intake",
+    "initiative": "intake",
+    "task_id": "demo",
+    "state": "decomposed",
+    "extra": {"initiative": "demo"},
+}
+SAME_INITIATIVE = {**INITIATIVE, "extra": {"intake": "intake/demo.md"}}
+
+
+def test_requeueing_an_intake_whose_id_is_its_initiative_id_names_the_fresh_id(tmp_path, monkeypatch):
+    writes = _store(monkeypatch, [SAME_INTAKE, SAME_INITIATIVE])
+    code, message = _requeue(tmp_path, "demo")
+    assert code == 0
+    assert "the next decompose uses demo-2" in message
+    assert writes == [
+        {"initiative": "intake", "task_id": "demo", "state": "queued", "extra": {}},
+        {"initiative": "demo", "task_id": "demo", "state": "dropped"},
+    ]
+
+
+def test_the_dry_run_message_names_the_fresh_id(tmp_path, monkeypatch):
+    writes = _store(monkeypatch, [SAME_INTAKE, SAME_INITIATIVE])
+    code, message = _requeue(tmp_path, "demo", dry_run=True)
+    assert (code, writes) == (0, [])
+    assert message.startswith("would requeue:")
+    assert "demo-2" in message
+
+
+def test_an_already_requeued_pair_names_the_fresh_id(tmp_path, monkeypatch):
+    queued = {**SAME_INTAKE, "state": "queued", "extra": {}}
+    writes = _store(monkeypatch, [queued, {**SAME_INITIATIVE, "state": "dropped"}])
+    code, message = _requeue(tmp_path, "demo")
+    assert (code, writes) == (0, [])
+    assert "already requeued" in message
+    assert "demo-2" in message
+
+
+def test_an_initiative_id_that_differs_from_the_intake_id_gets_no_fresh_id_sentence():
+    plan = route_requeue.plan_requeue([INTAKE, INITIATIVE], "demo")
+    assert plan.note == "intake idea queued, initiative demo dropped"
+
+
+def test_the_fresh_id_skips_an_initiative_id_already_taken():
+    taken = {**SAME_INITIATIVE, "task_id": "demo-2", "state": "dropped"}
+    plan = route_requeue.plan_requeue([SAME_INTAKE, SAME_INITIATIVE, taken], "demo")
+    assert "the next decompose uses demo-3" in plan.note

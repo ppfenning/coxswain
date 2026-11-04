@@ -99,6 +99,23 @@ def _is_requeued(intake: Mapping) -> bool:
     return intake.get("state") == QUEUED and "initiative" not in _extra(intake)
 
 
+def _after_drop(rows: Sequence[Mapping], initiative: Mapping) -> list[Mapping]:
+    """The rows as they will stand once `initiative` is dropped; `rows` itself is not changed."""
+    return [{**r, "state": DROPPED} if r is initiative else r for r in rows]
+
+
+def _fresh_note(rows: Sequence[Mapping], intake: Mapping, initiative: Mapping) -> str:
+    """The sentence naming the id the next decompose will use; empty when the intake id stays free."""
+    intake_id = str(intake["task_id"])
+    return route_guard.fresh_id_note(
+        intake_id, route_guard.fresh_initiative_id(intake_id, _after_drop(rows, initiative))
+    )
+
+
+def _with_note(note: str, extra: str) -> str:
+    return f"{note}; {extra}" if extra else note
+
+
 def intake_from_field(initiative_id: str, field: str, rows: Sequence[Mapping]) -> Mapping | Refused:
     """The queued intake that initiative.md's `intake:` value names, matched by file stem; Refused when it is unknown or not queued."""
     stem = field.rsplit("/", 1)[-1].removesuffix(".md")
@@ -137,12 +154,18 @@ def plan_requeue(rows: Sequence[Mapping], id: str, field_intake: str | None = No
         *(() if _is_requeued(intake) else (_cleared_row(intake),)),
         *(() if initiative.get("state") == DROPPED else (_state_row(initiative, DROPPED),)),
     )
+    fresh = _fresh_note(rows, intake, initiative)
     if not writes:
         return Plan(
             (),
-            f"already requeued: intake {intake['task_id']} is queued and initiative {initiative['task_id']} is dropped",
+            _with_note(
+                f"already requeued: intake {intake['task_id']} is queued and initiative {initiative['task_id']} is dropped",
+                fresh,
+            ),
         )
-    return Plan(writes, f"intake {intake['task_id']} queued, initiative {initiative['task_id']} dropped")
+    return Plan(
+        writes, _with_note(f"intake {intake['task_id']} queued, initiative {initiative['task_id']} dropped", fresh)
+    )
 
 
 def _read_intake_field(workspace: Path, initiative_id: str) -> str | None:
