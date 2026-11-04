@@ -334,7 +334,8 @@ def _release_bump(directory: str, branch: str, commit_subject: str, paths: list[
     return True, "committed"
 
 
-def _release_bump_cargo(directory: str, to: str, branch: str, commit_subject: str, run) -> tuple[bool, str]:
+def _release_bump_cargo(directory: str, to: str, branch: str, commit_subject: str, run,
+                         start_point: str | None = None) -> tuple[bool, str]:
     """`_release_bump` for a `bump_cargo` step: rewrites Cargo.toml's
     `[package]` version and, when Cargo.lock exists, that package's own
     `[[package]]` stanza, in one commit, only once `branch` is checked out.
@@ -349,20 +350,21 @@ def _release_bump_cargo(directory: str, to: str, branch: str, commit_subject: st
         if "Cargo.lock" in paths:
             lock_path.write_text(release.bumped_cargo_lock_text(lock_path.read_text(), package_name, to))
 
-    return _release_bump(directory, branch, commit_subject, paths, write, run)
+    return _release_bump(directory, branch, commit_subject, paths, write, run, start_point)
 
 
 def _release_bump_pyproject(directory: str, path: Path, to: str, branch: str, commit_subject: str,
-                             run) -> tuple[bool, str]:
+                             run, start_point: str | None = None) -> tuple[bool, str]:
     """`_release_bump` for a `bump_pyproject` step: rewrites `path`'s version
     line to `to`, only once `branch` is checked out."""
     def write():
         path.write_text(release.bumped_version_line(path.read_text(), to))
-    return _release_bump(directory, branch, commit_subject, ["pyproject.toml"], write, run)
+    return _release_bump(directory, branch, commit_subject, ["pyproject.toml"], write, run, start_point)
 
 
 def _release_bump_version(umbrella: str, manifest_file: Path, to: str, branch: str, commit_subject: str,
-                           rejoining: set, run, extra_paths: tuple[str, ...] = ()) -> tuple[bool, str]:
+                           rejoining: set, run, extra_paths: tuple[str, ...] = (),
+                           start_point: str | None = None) -> tuple[bool, str]:
     """`_release_bump` for a `bump_version` step: rewrites `manifest_file`'s
     version and the tags of the components this release tags, the root
     `pyproject.toml`'s version line and, when `uv.lock` also exists, the
@@ -389,7 +391,20 @@ def _release_bump_version(umbrella: str, manifest_file: Path, to: str, branch: s
         if "uv.lock" in paths:
             lock_path.write_text(release.bumped_uv_lock_text(lock_path.read_text(), package_name, to))
 
-    return _release_bump(umbrella, branch, commit_subject, paths, write, run)
+    return _release_bump(umbrella, branch, commit_subject, paths, write, run, start_point)
+
+
+def _base_start(step: dict) -> str | None:
+    """`origin/<base>` when the step carries a `base`, else None (cut from local HEAD)."""
+    return f"origin/{step['base']}" if step.get("base") else None
+
+
+def _fetch_tag_ref(directory: str, ref: str | None, run) -> tuple[bool, str]:
+    """Fetches origin in `directory` when a tag step names a `ref`; nothing otherwise."""
+    if not ref:
+        return True, ""
+    rc, out = run(release.fetch_argv(directory), None)
+    return rc == 0, out.strip() or "fetch failed"
 
 
 def _component_declares_tag_trigger(directory: str) -> bool:
@@ -535,7 +550,8 @@ def _tagged_checkouts(steps: list[dict], root: str, overrides: dict, umbrella: s
 def _release_execute(steps: list[dict], version: str, root: str, overrides: dict, umbrella: str, run,
                       manifest: dict, manifest_path: str, sleep=time.sleep, now=time.monotonic,
                       fetch_index=_fetch_index, fetch_text=_fetch_text,
-                      prefetched: frozenset = frozenset(), count_run=None) -> int:
+                      prefetched: frozenset = frozenset(), count_run=None,
+                      rehearsed: Mapping[str, str] | None = None) -> int:
     """Runs `steps` for real, through `run`. `prefetched` names the checkouts
     `_release` already fetched, which are not fetched again; `count_run` is the
     stdout-only runner for the sync gate's commit counts. Every checkout that will be
@@ -558,7 +574,21 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
     left checked out on `release/<version>` instead of what actually merged.
     A `github_release` step checks `gh release view` first and edits an
     existing release instead of creating one. One line per step; the first
-    failure stops the rest."""
+    failure stops the rest.
+    Release-branch fields, all optional; a step without them runs as above.
+    A `release_branch` step pushes the commit `rehearsed[component]` (keyed by
+    component name, `coxswain` for the umbrella) to `refs/heads/<branch>` on
+    origin, then fetches origin in that checkout; no rehearsed sha for the
+    component prints `FAILED release_branch` and returns 2. A `bump_pyproject`,
+    `bump_cargo`, `bump_version` or `commit_index` step carrying `base`
+    cuts its bump `branch` from `origin/<base>` instead of the local HEAD.
+    A `pr_create` step carrying `base` opens its pull request against that
+    branch (`push`, `wait_checks` and `merge` accept `base` and need nothing
+    from it), and a `merge` carrying `base` switches the checkout to `base`
+    and pulls it, rather than the default branch, so the local release branch
+    holds the squash commit. A `tag`, `tag_self` or `rejoin` step carrying
+    `ref` fetches origin first and tags `origin/<ref>` instead of HEAD; the
+    tag push is unchanged."""
     refused = [s for s in steps if s["kind"] == "refuse"]
     if refused:
         for refusal in refused:
@@ -589,7 +619,12 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
         kind = step["kind"]
         if kind in ("tag", "rejoin"):
             directory = release.component_dir(root, step["component"], overrides)
-            tag_rc, tag_out = run(release.tag_argv(directory, version), None)
+            fetched, fetch_out = _fetch_tag_ref(directory, step.get("ref"), run)
+            if not fetched:
+                print(f"FAILED tag {step['component']}: {fetch_out}")
+                return 2
+            tag_ref = f"origin/{step['ref']}" if step.get("ref") else None
+            tag_rc, tag_out = run(release.tag_argv(directory, version, tag_ref), None)
             if tag_rc != 0:
                 print(f"FAILED tag {step['component']}: {tag_out.strip()}")
                 return 2
@@ -598,6 +633,19 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                 print(f"FAILED push {step['component']}: {push_out.strip()}")
                 return 2
             print(f"{kind} {step['component']}: {step['tag']}")
+        elif kind == "release_branch":
+            sha = (rehearsed or {}).get(step["component"])
+            if not sha:
+                print(f"FAILED release_branch {step['component']}: no rehearsed sha for {step['component']}")
+                return 2
+            directory = _release_step_dir(step["component"], root, overrides, umbrella)
+            for argv in (release.release_branch_push_argv(directory, sha, step["branch"]),
+                         release.fetch_argv(directory)):
+                rb_rc, rb_out = run(argv, None)
+                if rb_rc != 0:
+                    print(f"FAILED release_branch {step['component']}: {rb_out.strip()}")
+                    return 2
+            print(f"release_branch {step['component']}: {step['branch']} at {sha}")
         elif kind == "notes":
             index_path = Path(umbrella) / "docs" / "releases" / "index.md"
             existing = index_path.read_text() if index_path.exists() else ""
@@ -618,7 +666,7 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                 print(f"bump_pyproject {step['component']}: already at {step['to']}")
                 continue
             ok, detail = _release_bump_pyproject(directory, path, step["to"], step["branch"],
-                                                  step["commit_subject"], run)
+                                                  step["commit_subject"], run, _base_start(step))
             if not ok:
                 print(f"FAILED bump_pyproject {step['component']}: {detail}")
                 return 2
@@ -630,7 +678,8 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                 already_bumped[step["component"]] = step["to"]
                 print(f"bump_cargo {step['component']}: already at {step['to']}")
                 continue
-            ok, detail = _release_bump_cargo(directory, step["to"], step["branch"], step["commit_subject"], run)
+            ok, detail = _release_bump_cargo(directory, step["to"], step["branch"], step["commit_subject"], run,
+                                              _base_start(step))
             if not ok:
                 print(f"FAILED bump_cargo {step['component']}: {detail}")
                 return 2
@@ -643,7 +692,7 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                 continue
             ok, detail = _release_bump_version(umbrella, manifest_file, step["to"], step["branch"],
                                                 step["commit_subject"], release.rejoined(steps), run,
-                                                tuple(rewritten))
+                                                tuple(rewritten), _base_start(step))
             if not ok:
                 print(f"FAILED bump_version {step['component']}: {detail}")
                 return 2
@@ -655,7 +704,7 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                 continue
             # The notes step already wrote the file; this only branches and commits it.
             ok, detail = _release_bump(umbrella, step["branch"], step["commit_subject"], step["paths"],
-                                       lambda: None, run)
+                                       lambda: None, run, _base_start(step))
             if not ok:
                 print(f"FAILED commit_index {step['component']}: {detail}")
                 return 2
@@ -675,7 +724,7 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                 print(f"pr_create {step['component']}: already at {already_bumped[step['component']]}")
                 continue
             directory = _release_step_dir(step["component"], root, overrides, umbrella)
-            pr_rc, pr_out = run(release.pr_create_argv(step["title"], step["body"]), directory)
+            pr_rc, pr_out = run(release.pr_create_argv(step["title"], step["body"], step.get("base")), directory)
             if pr_rc != 0:
                 print(f"FAILED pr_create {step['component']}: {pr_out.strip()}")
                 return 2
@@ -717,7 +766,10 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
             # would tag the stale pre-squash commit on the release branch,
             # not what actually landed, and leave the checkout parked off
             # the default branch for the next release to refuse.
-            default = _default_branch(directory, run)
+            # A step carrying `base` landed on that release branch instead, so
+            # the checkout switches to it and the local release branch holds
+            # the squash commit.
+            default = step.get("base") or _default_branch(directory, run)
             co_rc, co_out = run(release.checkout_ref_argv(directory, default), None)
             if co_rc != 0:
                 print(f"FAILED merge {step['component']}: {co_out.strip()}")
@@ -728,7 +780,12 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                 return 2
             print(f"merge {step['component']}: merged")
         elif kind == "tag_self":
-            self_tag_rc, self_tag_out = run(release.tag_argv(umbrella, version), None)
+            fetched, fetch_out = _fetch_tag_ref(umbrella, step.get("ref"), run)
+            if not fetched:
+                print(f"FAILED tag_self coxswain: {fetch_out}")
+                return 2
+            self_ref = f"origin/{step['ref']}" if step.get("ref") else None
+            self_tag_rc, self_tag_out = run(release.tag_argv(umbrella, version, self_ref), None)
             if self_tag_rc != 0:
                 print(f"FAILED tag_self coxswain: {self_tag_out.strip()}")
                 return 2
