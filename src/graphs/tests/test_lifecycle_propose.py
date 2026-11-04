@@ -633,8 +633,17 @@ def test_a_surface_marked_new_still_covers_the_partial_work_it_names() -> None:
 
 
 def test_a_test_file_is_never_outside_the_surfaces() -> None:
-    touched = ["agent_tools/route.py", "tests/test_route.py", "tests/fixtures/help/runs/runs-pause.txt", "src/ui/snapshots/a.snap"]
+    touched = ["agent_tools/route.py", "tests/test_route.py", "tests/fixtures/help/runs/runs-pause.txt"]
     assert lifecycle_propose._files_outside_surfaces(touched, ["agent_tools/route.py"]) == []
+
+
+def test_a_snapshot_naming_no_module_is_outside_the_surfaces() -> None:
+    assert lifecycle_propose._files_outside_surfaces(["src/ui/snapshots/a.snap"], ["src/ui/regatta.rs"]) == ["src/ui/snapshots/a.snap"]
+
+
+def test_a_surface_modules_snapshot_is_inside_and_its_pending_copy_is_not_reported() -> None:
+    snap = "src/ui/snapshots/coxtop__ui__regatta__tests__x.snap"
+    assert lifecycle_propose._files_outside_surfaces([snap, snap + ".new"], ["src/ui/regatta.rs"]) == []
 
 
 def test_a_surface_ending_in_a_slash_covers_the_files_under_it() -> None:
