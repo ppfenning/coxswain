@@ -721,6 +721,36 @@ def test_a_task_whose_surfaces_span_two_repos_is_split_one_per_repo(cart) -> Non
     assert sorted(t2["needs"]) == ["t1--graphs-repo", "t1--harness-repo"]
 
 
+ARTIFACT_TREE = [
+    {"repo": "r", "path": "src/graphs/tests/test_epic_driver.py"},
+    {"repo": "r", "path": "src/graphs/harness/epic.py"},
+    {"repo": "r", "path": "a/tests/test_twin.py"},
+    {"repo": "r", "path": "b/tests/test_twin.py"},
+]
+
+
+def _task(body: str, surfaces: list[str]) -> dict:
+    return {"id": "t1", "phase": "p1", "title": "t", "body": body, "surfaces": surfaces, "needs": []}
+
+
+def test_a_named_test_with_one_tree_path_is_added_to_surfaces_and_noted() -> None:
+    task = _task("Edit src/graphs/harness/epic.py; cover it in test_epic_driver.py.", ["src/graphs/harness/epic.py"])
+    out = initiative_decompose.with_named_artifacts(task, ARTIFACT_TREE)
+    assert out["surfaces"] == ["src/graphs/harness/epic.py", "src/graphs/tests/test_epic_driver.py"]
+    assert out["lint"] == ["added to surfaces: src/graphs/tests/test_epic_driver.py (named in the body)"]
+
+
+def test_a_named_path_the_tree_lacks_is_added_as_new() -> None:
+    out = initiative_decompose.with_named_artifacts(_task("Add tests/test_fresh.py for epic.py.", ["epic.py"]), ARTIFACT_TREE)
+    assert out["surfaces"] == ["epic.py", "tests/test_fresh.py (new)"]
+
+
+@pytest.mark.parametrize("body", ["Cover it in test_twin.py.", "Cover it in test_nowhere.py."])
+def test_an_ambiguous_or_unknown_bare_name_is_left_for_the_layout_check(body) -> None:
+    task = _task(body, ["src/graphs/harness/epic.py"])
+    assert initiative_decompose.with_named_artifacts(task, ARTIFACT_TREE) is task
+
+
 def test_without_a_tree_only_path_shaped_surfaces_stay_declared(cart) -> None:
     """No tree means nothing to resolve against, but a bare declared token still isn't a path."""
     result = decompose(cart)
