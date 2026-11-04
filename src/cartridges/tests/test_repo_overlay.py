@@ -20,8 +20,9 @@ def test_repo_overlay_has_no_errors() -> None:
     assert overlay_errors(_overlay()) == []
 
 
-def test_repo_overlay_sets_only_land_checks_ci() -> None:
-    assert _overlay() == {"landing_areas": {"land_checks": "ci"}}
+def test_repo_overlay_sets_land_checks_ci_and_lands_at_level() -> None:
+    # land_at level is a stop-gap until ticket granularity unblocks dependent phases; drop it with the overlay line.
+    assert _overlay() == {"landing_areas": {"land_checks": "ci", "land_at": "level"}}
 
 
 def test_local_team_without_overlay_leaves_land_checks_unset() -> None:
