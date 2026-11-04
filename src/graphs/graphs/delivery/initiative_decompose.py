@@ -31,7 +31,7 @@ from typing import Any
 import yaml
 
 from graphs._contract import ContractViolation, epic_shape, landing_for, proposal, require, require_cartridge
-from graphs.delivery.decompose_layout import check_layout, unlisted_artifacts
+from graphs.delivery.decompose_layout import check_layout, heal_layout, unlisted_artifacts
 from graphs.delivery.decompose_size import (
     SizeError,
     SizeVerdict,
@@ -519,6 +519,18 @@ _REWRITE_RULES = frozenset({"grant", "cross_repo"})
 def _is_refusal(problem: Problem) -> bool:
     """Reach, coupling and contract by severity; grant and cross_repo by rule name. Size stays advisory."""
     return problem.severity == "refusal" or problem.rule in _REWRITE_RULES
+
+
+def _noted(tasks: Sequence[Mapping[str, Any]], problems: Sequence[Problem], why: str) -> list[dict[str, Any]]:
+    """The tasks with each problem a `lint:` entry on its ticket instead of a refusal: lint never stops a decompose.
+    The human at the approval gate reads them there."""
+    notes: dict[str, list[str]] = {}
+    for p in problems:
+        notes.setdefault(p.task, []).append(f"{p.rule}: {p.detail} ({p.fix}) [unresolved {why}]")
+    return [
+        dict(t, lint=[*(t.get("lint") or []), *notes[str(t["id"])]]) if str(t["id"]) in notes else dict(t)
+        for t in tasks
+    ]
 
 
 def _rewrite_correction(problems: Sequence[Problem], grants: Sequence[str]) -> str:
@@ -1154,8 +1166,10 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
     rewrite = [p for p in lint_problems if p.rule in _REWRITE_RULES]
     if rewrite and single is not None:
         # The single ticket came from the intake, not from decompose; a decompose
-        # rewrite would replace it with an invented epic, so it quarantines as is.
-        raise LintRefusal(_refusal_reason(rewrite))
+        # rewrite would replace it with an invented epic, so it keeps its body and carries the problems as notes.
+        tasks = _noted(tasks, rewrite, "on the intake's single ticket")
+        lint_problems = [p for p in lint_problems if p not in rewrite]
+        rewrite = []
     if rewrite:
         # The adversary's corrections cannot reword a body, so decompose rewrites
         # the plan once. Its edges are challenged afresh: the first verdicts
@@ -1195,8 +1209,14 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
         # fall through to the adversary round below.
         still = [p for p in lint_problems if p.rule in _REWRITE_RULES]
         if still:
-            raise LintRefusal(_refusal_reason(still))
+            tasks = _noted(tasks, still, "after the rewrite")
+            lint_problems = [p for p in lint_problems if p not in still]
     refusals = [p for p in lint_problems if _is_refusal(p)]
+    if refusals and not ("review_adversary" in bound or all(p.rule == "contract" for p in refusals)):
+        # No seat can correct reach or coupling here: the problems ride on the tickets for the approval gate.
+        tasks = _noted(tasks, refusals, "with no adversary bound to correct them")
+        lint_problems = [p for p in lint_problems if p not in refusals]
+        refusals = []
     if refusals:
         # reach, coupling and contract block the run, same as an unresolved
         # surface does: quarantine outright with no adversary bound, otherwise
@@ -1218,7 +1238,7 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
         elif all(p.rule == "contract" for p in refusals):
             seat, seat_tier, seat_hints = "decompose", None, decompose_hints
             lead = f"Idea: {idea}\n\nYour task list was refused by ticket lint. Do not break the idea down again.\n\n"
-        else:
+        else:  # pragma: no cover - noted above; kept so a new branch cannot fall through unseated
             raise LintRefusal(_lint_refusal_text(refusals))
         correction = dict(
             runner.run(
@@ -1264,7 +1284,8 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
         lint_problems = lint_tickets(tasks, tree, grants, repo_name, **allow_kwargs)
         refusals = [p for p in lint_problems if _is_refusal(p)]
         if refusals:
-            raise LintRefusal(_refusal_reason(refusals) + "\n" + _refused_surfaces(tasks, refusals))
+            tasks = _noted(tasks, refusals, "after the correction")
+            lint_problems = [p for p in lint_problems if p not in refusals]
 
     advisories = [p for p in lint_problems if not _is_refusal(p)]
     if advisories:
@@ -1307,13 +1328,11 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
     named_tree = tree or repo_listing(str(args.get("checkout") or repo_name))
     tasks = [with_named_artifacts(t, named_tree) for t in tasks]
 
-    # The layout check: a body that does not match its surfaces blocks like a lint
-    # refusal; an edge with no data flow in the body only lands as a `lint:` entry.
+    # The layout check never stops a decompose: a body that does not match its surfaces is healed (the unnamed
+    # surface goes on a `Surfaces:` line, a named artifact joins the surfaces) and the repair rides as a `lint:`
+    # entry; an edge with no data flow in the body only lands as a `lint:` entry.
+    tasks = [heal_layout(t) for t in tasks]
     layout = check_layout(tasks)
-    if layout.blocking:
-        raise LintRefusal(
-            _refusal_reason([Problem(f.task, f.rule, f.detail, f.fix) for f in layout.blocking])
-        )
     layout_notes: dict[str, list[str]] = {}
     for f in layout.findings:
         if f.rule != "edge_unsupported":

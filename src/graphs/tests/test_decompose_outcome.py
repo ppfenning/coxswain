@@ -115,13 +115,14 @@ def test_a_successful_decompose_stores_no_refused(cart, store) -> None:
 
 
 def test_the_real_lint_step_refuses_a_reach_problem_and_the_run_gains_refused(cart, store, monkeypatch) -> None:
-    """No stub of `lint_tickets`: the decompose graph's own lint step raises, and the cli handler stores its first line."""
+    """No stub of the lint: an idea that reaches outside the repo is the one lint that still stops a decompose, before
+    any model call, and the cli handler stores its first line. A ticket's own reach hit only rides as a note."""
     runner = ScriptedRunner({"decompose": REACH})
-    args = {"run_id": "r1", "date": "d", "cartridge": cart, "idea": "x"}
+    args = {"run_id": "r1", "date": "d", "cartridge": cart, "idea": "notes live at ~/scratch/notes.md"}
     with pytest.raises(LintRefusal) as caught:
         initiative_decompose.run(args, runner)
     first = str(caught.value).splitlines()[0].strip()
-    assert first.startswith("t1: reach")
+    assert "reach" in first and runner.calls == []
 
     assert (
         exit_code(store, lambda: initiative_decompose.run(args, ScriptedRunner({"decompose": REACH})), monkeypatch) == 1

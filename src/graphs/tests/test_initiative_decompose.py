@@ -840,8 +840,8 @@ def test_a_reach_problem_comes_back_through_apply_corrections_as_a_refusal(cart)
     assert result["tasks"][0]["surfaces"] == ["graphs/notes.py"]
 
 
-def test_a_body_sourced_reach_problem_still_quarantines_even_with_a_correction(cart) -> None:
-    """The correction schema only rewrites `surfaces`; a path named in prose has nothing to match."""
+def test_a_body_sourced_reach_problem_rides_on_the_ticket_even_with_a_correction(cart) -> None:
+    """The correction schema only rewrites `surfaces`; a path named in prose has nothing to match, so it is a note."""
     decomposition = {
         **DECOMPOSITION,
         "tasks": [{"id": "t1", "phase": "p1", "title": "a", "body": "notes live at ~/scratch/notes.md", "needs": [], "surfaces": []}],
@@ -852,8 +852,8 @@ def test_a_body_sourced_reach_problem_still_quarantines_even_with_a_correction(c
     }
     cart["skills"]["review_adversary"] = "acme-skills:review-adversary"
     runner = ScriptedRunner({"decompose": decomposition, "review_adversary": [ACCEPTED, correction]})
-    with pytest.raises(ContractViolation, match="reach"):
-        initiative_decompose.run({"run_id": "r", "date": "d", "cartridge": cart, "idea": "x"}, runner)
+    result = initiative_decompose.run({"run_id": "r", "date": "d", "cartridge": cart, "idea": "x"}, runner)
+    assert any(n.startswith("reach:") and "[unresolved after the correction]" in n for n in _lint_of(result, "t1"))
 
 
 def test_a_coupling_problem_comes_back_through_apply_corrections_as_a_refusal(cart) -> None:
@@ -913,11 +913,10 @@ def test_a_cross_repo_refusal_is_rewritten_by_decompose_and_the_clean_rewrite_is
     assert not any("cross_repo" in entry for entry in task.get("lint") or [])
 
 
-def test_a_grant_refusal_that_survives_the_rewrite_stores_nothing_and_names_ticket_and_rule(cart) -> None:
+def test_a_grant_problem_that_survives_the_rewrite_rides_on_its_ticket(cart) -> None:
     runner = ScriptedRunner({"decompose": [_one_ticket(RUFF_BODY), _one_ticket(RUFF_BODY)]})
-    with pytest.raises(initiative_decompose.LintRefusal) as caught:
-        initiative_decompose.run({**GRANT_ARGS, "cartridge": cart}, runner)
-    assert str(caught.value).splitlines()[0] == "lint-refused: t1 grant"
+    result = initiative_decompose.run({**GRANT_ARGS, "cartridge": cart}, runner)
+    assert any(n.startswith("grant:") and "[unresolved after the rewrite]" in n for n in _lint_of(result, "t1"))
     assert len(runner.calls) == 2
 
 
@@ -942,11 +941,12 @@ def test_a_grant_and_a_reach_hit_go_to_the_rewrite_then_the_adversary_correction
     assert (task["body"], task["surfaces"]) == (PYTEST_BODY, ["graphs/notes.py"])
 
 
-def test_a_single_ticket_with_a_grant_hit_is_refused_without_a_decompose_rewrite(cart) -> None:
+def test_a_single_ticket_with_a_grant_hit_keeps_its_body_and_carries_the_note(cart) -> None:
     intake = {**INTAKE, "body": RUFF_BODY}
-    with pytest.raises(initiative_decompose.LintRefusal) as caught:
-        _sized(cart, {"size": TASK_VERDICT}, intake=intake)
-    assert str(caught.value).splitlines()[0] == "lint-refused: fix-parser grant"
+    result, runner = _sized(cart, {"size": TASK_VERDICT}, intake=intake)
+    assert "decompose" not in [c["role"] for c in runner.calls]
+    note = "[unresolved on the intake's single ticket]"
+    assert any(n.startswith("grant:") and note in n for n in _lint_of(result, "fix-parser"))
 
 
 def test_the_refusal_reason_names_each_refused_ticket_and_rule_once() -> None:
@@ -1029,14 +1029,12 @@ def test_a_graphs_ticket_naming_its_own_new_files_carries_no_cross_repo_lint(car
     assert "lint" not in task or not any(entry.startswith("cross_repo") for entry in task["lint"])
 
 
-def test_a_tools_ticket_naming_a_graphs_file_is_refused_with_the_cross_repo_reason(cart) -> None:
-    with pytest.raises(initiative_decompose.LintRefusal) as caught:
-        _decompose_for(cart, "coxswain-tools", ["harness/cli.py"])
-    assert str(caught.value).splitlines() == [
-        "lint-refused: t1 cross_repo",
-        "t1: cross_repo — names harness/cli.py, which lives in graphs "
-        "(paste the code the build needs into the ticket: a build reads only its own repository)",
-    ]
+def test_a_tools_ticket_naming_a_graphs_file_carries_the_cross_repo_reason(cart) -> None:
+    result = _decompose_for(cart, "coxswain-tools", ["harness/cli.py"])
+    assert any(
+        n.startswith("cross_repo: names harness/cli.py, which lives in graphs") and "[unresolved after the rewrite]" in n
+        for n in _lint_of(result, "t1")
+    )
 
 
 def test_a_title_carrying_a_colon_round_trips_through_yaml(cart) -> None:
@@ -1601,32 +1599,33 @@ def test_a_bound_adversary_still_gets_the_contract_refusal_with_the_surfaces(car
     assert {t["id"]: t for t in result["tasks"]}["t0"]["surfaces"] == ["fixtures/settings.v1.json"]
 
 
-def test_a_reach_refusal_with_no_adversary_still_quarantines_without_a_second_ask(cart) -> None:
+def test_a_reach_problem_with_no_adversary_rides_on_the_ticket_without_a_second_ask(cart) -> None:
     plan = {
         **DECOMPOSITION,
         "tasks": [{"id": "t1", "phase": "p1", "title": "a", "body": "b", "needs": [], "surfaces": ["~/scratch/notes.md"]}],
     }
     runner = ScriptedRunner({"decompose": plan})
-    with pytest.raises(initiative_decompose.LintRefusal, match="reach"):
-        initiative_decompose.run({"run_id": "r", "date": "d", "cartridge": cart, "idea": "x"}, runner)
+    result = initiative_decompose.run({"run_id": "r", "date": "d", "cartridge": cart, "idea": "x"}, runner)
+    assert any(n.startswith("reach:") and "no adversary bound" in n for n in _lint_of(result, "t1"))
     assert [c["role"] for c in runner.calls] == ["decompose"]
 
 
-def test_a_second_contract_refusal_fails_the_run_with_the_lint_text_and_no_third_ask(cart) -> None:
+def _lint_of(result, task_id):
+    return next(t for t in result["tasks"] if t["id"] == task_id).get("lint") or []
+
+
+def test_a_second_contract_refusal_rides_on_the_ticket_and_asks_no_third_time(cart) -> None:
+    """Lint never stops a decompose: a contract problem the correction did not fix is a note on its ticket."""
     runner = ScriptedRunner({"decompose": [PROSE_CONTRACT_PLAN, NO_CHANGE]})
-    with pytest.raises(initiative_decompose.LintRefusal) as refused:
-        initiative_decompose.run(_unbound_contract_args(cart), runner)
-    assert CONTRACT_REFUSAL in str(refused.value)
+    result = initiative_decompose.run(_unbound_contract_args(cart), runner)
+    assert any(n.startswith("contract:") and "[unresolved after the correction]" in n for n in _lint_of(result, "t0"))
     assert [c["role"] for c in runner.calls] == ["decompose", "decompose"]
 
 
-def test_a_refused_relint_names_the_surfaces_the_correction_returned(cart) -> None:
+def test_an_unresolved_relint_keeps_the_surfaces_the_correction_returned(cart) -> None:
     runner = ScriptedRunner({"decompose": [PROSE_CONTRACT_PLAN, NO_CHANGE]})
-    with pytest.raises(initiative_decompose.LintRefusal) as refused:
-        initiative_decompose.run(_unbound_contract_args(cart), runner)
-    lines = str(refused.value).splitlines()
-    assert lines[0].startswith("lint-refused: t0 contract")
-    assert "t0: agent_tools/settings.py" in lines
+    result = initiative_decompose.run(_unbound_contract_args(cart), runner)
+    assert "agent_tools/settings.py" in next(t for t in result["tasks"] if t["id"] == "t0")["surfaces"]
 
 
 SPLIT_TREE = [
@@ -1714,8 +1713,7 @@ def test_a_correction_naming_the_prompted_path_passes_the_relint(cart) -> None:
 )
 def test_the_named_path_is_marked_new_only_when_the_tree_lacks_it(cart, extra, marked) -> None:
     runner = ScriptedRunner({"decompose": [PROSE_CONTRACT_PLAN, NO_CHANGE]})
-    with pytest.raises(initiative_decompose.LintRefusal):
-        initiative_decompose.run({**_unbound_contract_args(cart), "tree": [*SETTINGS_TREE, *extra]}, runner)
+    initiative_decompose.run({**_unbound_contract_args(cart), "tree": [*SETTINGS_TREE, *extra]}, runner)
     line = next(ln for ln in runner.calls[1]["prompt"].splitlines() if NAMED_PATH in ln)
     assert line.endswith("(new)") is marked
 

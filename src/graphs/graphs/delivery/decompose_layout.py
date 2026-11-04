@@ -15,7 +15,7 @@ from typing import Any
 
 from harness.lanes import max_width
 
-__all__ = ["LayoutFinding", "LayoutReport", "check_layout", "unlisted_artifacts"]
+__all__ = ["LayoutFinding", "LayoutReport", "check_layout", "heal_layout", "unlisted_artifacts", "unnamed_surfaces"]
 
 _NEW = " (new)"
 _TOKEN = re.compile(r"[\w./\-]+")
@@ -125,6 +125,38 @@ def _surface_findings(task: Mapping[str, Any]) -> list[LayoutFinding]:
         for s in task.get("surfaces") or []
         if not _named(_bare(str(s)), body, tokens)
     ]
+
+
+def unnamed_surfaces(task: Mapping[str, Any]) -> list[str]:
+    """The task's surfaces its body does not name, bare (no `(new)`), in surface order."""
+    body = str(task.get("body") or "")
+    tokens = [t.rstrip(".") for t in _TOKEN.findall(body)]
+    return [b for b in (_bare(str(s)) for s in task.get("surfaces") or []) if not _named(b, body, tokens)]
+
+
+def heal_layout(task: Mapping[str, Any]) -> dict[str, Any]:
+    """The task with its layout mismatches repaired instead of refused, each repair said in its `lint`.
+
+    A surface the body does not name goes on a `Surfaces:` line at the end of the body, so the builder still reads
+    every file it may touch. A test, migration or script the body names that no surface covers joins the surfaces.
+    """
+    healed = dict(task)
+    notes: list[str] = []
+    artifacts = unlisted_artifacts(healed)
+    if artifacts:
+        healed["surfaces"] = [*(healed.get("surfaces") or []), *artifacts]
+        notes += [f"added to surfaces: {a} (named in the body, healed by the layout check)" for a in artifacts]
+    # A body that names no path at all was never written against its surfaces; check_layout keeps that advisory.
+    missing = unnamed_surfaces(healed) if _names_a_path(str(healed.get("body") or "")) else []
+    if missing:
+        line = "Surfaces: " + ", ".join(f"`{m}`" for m in missing) + "."
+        healed["body"] = str(healed.get("body") or "").rstrip() + "\n\n" + line
+        notes += [
+            f"named in the body: {m} (a surface the body did not name, healed by the layout check)" for m in missing
+        ]
+    if notes:
+        healed["lint"] = [*(healed.get("lint") or []), *notes]
+    return healed
 
 
 def unlisted_artifacts(task: Mapping[str, Any]) -> list[str]:
