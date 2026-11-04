@@ -47,7 +47,9 @@ def _feed(monkeypatch, root, rows, usage_calls=(), with_initiative=True):
         return [row for row in [*([INITIATIVE] if with_initiative else []), *rows] if kind is None or row["kind"] == kind]
 
     monkeypatch.setattr(dash_feed, "_spend", lambda runs_dir, now: {"five_hour_fraction": 0.1})
-    monkeypatch.setattr(dash_feed, "_activity", lambda *args: {"chair_agents": [], "spend_split": None})
+    monkeypatch.setattr(
+        dash_feed, "_activity", lambda *args: {"chair_agents": [], "spend_split": None, "spend_sources": None},
+    )
     monkeypatch.setattr(dash_feed, "_local_identity", lambda runs_dir, profile: ("host-b", 3))
     monkeypatch.setattr(dash_feed.console_screen, "gather", gather)
     monkeypatch.setattr(dash_feed.run_store, "read_queue", read_queue)
