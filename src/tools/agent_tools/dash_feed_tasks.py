@@ -37,7 +37,9 @@ def _entry(
         "reason": reason,
         **({"reason_full": reason_full} if reason_full is not None else {}),
         **({"run_verdict": verdict} if verdict and verdict != state else {}),
-        **({"waiting_on": pending} if pending else {}),
+        # The contract (both repos' dash_feed_tasks_v1.json) and towpath's `Option<String>` carry one task id:
+        # the first need still pending. A list here fails towpath's parse of the whole feed line.
+        **({"waiting_on": pending[0]} if pending else {}),
     }
 
 

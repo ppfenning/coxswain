@@ -22,7 +22,7 @@ def test_tries_counts_attempts_across_two_runs():
 def test_ready_task_shows_waiting_on_and_done_needs_do_not():
     rows = [_row("a", "approved"), _row("b", "done"), _row("c", "ready", needs=["a", "b"]), _row("d", "ready", needs=["b"])]
     got = {e["id"]: e for e in task_entries(rows, {}, {}, {})}
-    assert got["c"]["waiting_on"] == ["a"]
+    assert got["c"]["waiting_on"] == "a"
     assert "waiting_on" not in got["d"]
 
 
