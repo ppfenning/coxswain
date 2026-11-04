@@ -133,6 +133,7 @@ def test_the_review_pr_is_opened_against_the_branch_not_the_origin_ref(repo, car
     monkeypatch.setattr(epic_module, "_open_review_pr", fake_pr)
     runner = Runner({"t1-probe": new_file_patch("harness/x.py"), "t2-bench": new_file_patch("t2-bench.txt")})
 
-    drive(repo, cart, tmp_path, runner=runner, work=initiative(two_phases=False), base="origin/develop")
+    work = {**initiative(two_phases=False), "land_at": "task"}
+    drive(repo, cart, tmp_path, runner=runner, work=work, base="origin/develop")
 
-    assert prs == ["develop"]
+    assert prs and set(prs) == {"develop"}
