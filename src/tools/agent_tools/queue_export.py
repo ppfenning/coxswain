@@ -294,10 +294,13 @@ def export_rows(rows: list[Row]) -> dict[str, str]:
     return {row_path(row): render_item(_filled(row)) for row in rows if not is_contentless(row)}
 
 
-def plan_export(rows: list[Row], files_on_disk: dict[str, str]) -> tuple[list[tuple[str, str]], list[str]]:
+def plan_export(
+    rows: list[Row], files_on_disk: dict[str, str], *, protected: frozenset[str] = frozenset()
+) -> tuple[list[tuple[str, str]], list[str]]:
     """(writes, deletes) to bring `files_on_disk` to match `rows`. `render_item` is deterministic,
     so a path whose text already matches is left alone, and a board that changed nothing gives ([], []).
-    A contentless row is not written, but the path it names is kept, never deleted."""
+    A contentless row is not written, but the path it names is kept, never deleted.
+    A file under a `protected` initiative is never deleted."""
     target = export_rows(rows)
     kept = {_named_path(row) for row in rows if is_contentless(row)}
     writes = [(path, text) for path, text in target.items() if files_on_disk.get(path) != text]
@@ -308,6 +311,7 @@ def plan_export(rows: list[Row], files_on_disk: dict[str, str]) -> tuple[list[tu
         and path not in kept
         and Path(path).name != "initiative.md"
         and not path.startswith(_KEEP_PREFIXES)
+        and initiative_of(path) not in protected
     ]
     return writes, deletes
 
@@ -427,20 +431,22 @@ def export_file(workspace: Path, row: Row, *, force: bool = False, hashes: Hashe
     return Export(sorted(written), [])
 
 
-def export_files(workspace: Path, rows: list[Row], *, hashes: Hashes | None = None) -> Export:
+def export_files(
+    workspace: Path, rows: list[Row], *, hashes: Hashes | None = None, protected: frozenset[str] = frozenset()
+) -> Export:
     """Edge: write and delete files under `workspace` so intake/ and work/ match `rows`.
     Returns the sorted paths touched and the ids of contentless rows skipped. Nothing under
     intake/held/ or intake/done/ is deleted. Rows with no content to export mean the store was
     unavailable or degraded, not an empty board, so the tree is left unchanged.
     With `hashes`, a hand-edited file is left untouched and logged instead of rewritten; one merely behind this
     workspace's own baseline is rewritten, and the held files are listed in `runs/.export-held.json`, replacing the
-    last list, so a file no longer held drops out of it."""
+    last list, so a file no longer held drops out of it. Files of a `protected` initiative are never deleted."""
     skipped = skipped_ids(rows)
     if len(skipped) == len(rows):
         return Export([], skipped)
     workspace = Path(workspace)
     on_disk = _read_files(workspace)
-    writes, deletes = plan_export(rows, on_disk)
+    writes, deletes = plan_export(rows, on_disk, protected=protected)
     written, held = _write_guarded(
         workspace, export_rows(rows), writes, on_disk, _row_keys(rows), hashes, False, rows_by_path(rows)
     )
