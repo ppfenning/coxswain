@@ -6,6 +6,7 @@ Takes the same injected runner as chair_revert_ports. Nothing here spawns a proc
 from __future__ import annotations
 
 import json
+import os
 
 from agent_tools.chair_revert_ports import Runner
 
@@ -33,7 +34,10 @@ def _successful_shas(output: str) -> list[str]:
 
 
 def main_green_since(runner: Runner, repo: str, slug: str, commit: str) -> bool:
-    """True when a successful main run sits on `commit` or on a descendant of it. Any failure reads as False."""
+    """True when a successful main run sits on `commit` or on a descendant of it. Any failure reads as False.
+    `repo` is a land watch's checkout path, often in the tilde form: no shell expands it for `git -C`, so it is
+    expanded here, or every ancestor check fails and a main that went green after a red land never reads green."""
+    repo = os.path.expanduser(repo)
     try:
         code, output = runner(
             [

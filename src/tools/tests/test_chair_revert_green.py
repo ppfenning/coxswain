@@ -75,3 +75,12 @@ def test_runner_raising_reads_as_false() -> None:
         raise OSError("gh missing")
 
     assert main_green_since(boom, "/r", "o/r", "abc") is False
+
+
+def test_a_tilde_repo_path_is_expanded_for_the_ancestor_check(monkeypatch) -> None:
+    """A land watch carries `~/repos/x`; `git -C` gets no shell, so a literal tilde made every ancestor check fail."""
+    monkeypatch.setenv("HOME", "/home/op")
+    ancestor = ["git", "-C", "/home/op/repos/r", "merge-base", "--is-ancestor", "abc", "newer"]
+    runner = Fake({tuple(GH): _listed(_run("newer")), tuple(ancestor): (0, "")})
+    assert main_green_since(runner, "~/repos/r", "o/r", "abc") is True
+    assert runner.calls == [GH, ancestor]
