@@ -70,9 +70,19 @@ def _names_a_path(body: str) -> bool:
     return any(_PATH_LIKE.search(token.rstrip(".")) for token in _TOKEN.findall(body))
 
 
+def _named(surface: str, body: str, tokens: Sequence[str]) -> bool:
+    """The body names a surface in full, by a whole-segment trailing part, or by a path under a directory surface."""
+    if surface in body:
+        return True
+    if surface.endswith("/"):
+        return any(t.startswith(surface) or surface.rstrip("/").endswith("/" + t.rstrip("/")) for t in tokens)
+    return any(surface.endswith("/" + t) for t in tokens)
+
+
 def _surface_findings(task: Mapping[str, Any]) -> list[LayoutFinding]:
     """A body that names no path at all was never written against its surfaces: flagged, not blocking."""
     body = str(task.get("body") or "")
+    tokens = [t.rstrip(".") for t in _TOKEN.findall(body)]
     unassessed = not _names_a_path(body)
     return [
         LayoutFinding(
@@ -83,7 +93,7 @@ def _surface_findings(task: Mapping[str, Any]) -> list[LayoutFinding]:
             advisory=unassessed,
         )
         for s in task.get("surfaces") or []
-        if _bare(str(s)) not in body
+        if not _named(_bare(str(s)), body, tokens)
     ]
 
 
