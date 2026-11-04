@@ -50,6 +50,7 @@ def approved_rows(items: Sequence[Item]) -> list[ApprovedTask]:
             "needs": list(item.get("needs", [])),
             "run": "",
             "needs_fetch": False,
+            "merged": bool(item.get("merged")),
         }
         for item in items
         if item["state"] == "approved"
@@ -63,13 +64,15 @@ def with_store_closed(items: Sequence[Item], rows: list[dict]) -> list[Item]:
 
 
 def phase_task_rows(items: Sequence[Item]) -> list[PhaseTasks]:
-    """One row per (initiative, phase) holding an approved or a quarantined item, listing every item of the phase as (id, state)."""
+    """One row per (initiative, phase) holding an approved or a quarantined item, listing every item of the phase as (id, state).
+
+    An approved item with the merged flag reads `merged`; the rest read their own state."""
     keys = dict.fromkeys((i["initiative"], i["phase"]) for i in items if i["state"] in ("approved", "quarantined"))
     return [
         {
             "initiative": initiative,
             "phase": phase,
-            "tasks": [(i["id"], i["state"]) for i in items if (i["initiative"], i["phase"]) == (initiative, phase)],
+            "tasks": [(i["id"], route.state_word(i)) for i in items if (i["initiative"], i["phase"]) == (initiative, phase)],
         }
         for initiative, phase in keys
     ]
@@ -258,7 +261,7 @@ def read_phase_tasks(
     """Edge. The task states of every phase with approved work, from the same reads as `read_approved`.
 
     An approved task whose record already says landed reads `done`: the work-item state can lag the record, and the
-    land refuses a task another machine landed."""
+    land refuses a task another machine landed. A merged approved task reads `merged` unless its record says landed."""
     items = _load_items(ws, files)
     rows = store_rows if store_rows is not None else (run_store.work_items(ws / "runs") if mode == "store" else [])
     return phase_task_rows(mark_landed(route.with_store_states(items, rows, mode), read_landed_task_ids(ws / "runs")))
