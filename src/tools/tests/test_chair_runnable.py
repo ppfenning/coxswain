@@ -51,3 +51,13 @@ def test_earliest_blocking_phase_is_named_with_both_counts():
 
 def test_waiting_initiative_carries_blocking():
     assert WaitingInitiative("init", Blocking("p1", 1, 0)).blocking.phase == "p1"
+
+
+def test_ready_task_with_met_needs_shares_a_phase_with_an_approved_task():
+    tasks = (TaskView("a", "p1", "approved"), TaskView("b", "p1", "ready"))
+    assert runnable_verdict(tasks, PHASES) == Runnable(("b",))
+
+
+def test_ready_task_needing_the_approved_task_leaves_the_phase_blocking():
+    tasks = (TaskView("a", "p1", "approved"), TaskView("b", "p1", "ready", ("a",)))
+    assert runnable_verdict(tasks, PHASES) == Blocking("p1", 0, 1)

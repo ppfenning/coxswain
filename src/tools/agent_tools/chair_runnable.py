@@ -5,6 +5,8 @@ Pure. Takes plain task data and the ordered phase list; no file, store or clock 
 
 from dataclasses import dataclass
 
+from core.phase_hold import phase_holds
+
 READY = "ready"
 DONE = "done"
 QUARANTINED = "quarantined"
@@ -62,13 +64,12 @@ def runnable_verdict(tasks: tuple[TaskView, ...], phases: tuple[str, ...]) -> Ru
     """Runnable ids if any task is ready, has all needs done and no earlier blocking phase; else the earliest Blocking, else an empty Runnable."""
     order = {phase: n for n, phase in enumerate(phases)}
     blocking = _blocking_phases(tasks, phases)
-    cutoff = order[blocking[0].phase] if blocking else len(phases)
     done = frozenset(t.id for t in tasks if t.state == DONE)
-    ids = tuple(
-        t.id
-        for t in tasks
-        if t.state == READY and all(need in done for need in t.needs) and order.get(t.phase, len(phases)) <= cutoff
-    )
+    met = tuple(t for t in tasks if t.state == READY and all(need in done for need in t.needs))
+    first = blocking[0] if blocking else None
+    held = first is not None and phase_holds(first.awaiting_land, sum(1 for t in met if t.phase == first.phase))
+    cutoff = order[first.phase] - (1 if held else 0) if first else len(phases)
+    ids = tuple(t.id for t in met if order.get(t.phase, len(phases)) <= cutoff)
     if ids:
         return Runnable(ids)
     return blocking[0] if blocking else Runnable(())
