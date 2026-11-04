@@ -177,6 +177,65 @@ def test_from_plan_passes_a_binary_step_through_unchanged():
     assert install_exec.from_plan([step], manifest={"components": {}}, options={}) == [step]
 
 
+_BUILD = ["cargo", "build", "--release", "--manifest-path", "/r/coxswain-dash/Cargo.toml"]
+_LINK_TOWPATH = ["ln", "-sf", "/r/coxswain-dash/target/release/towpath", "/b/towpath"]
+_LINK_COXTOP = ["ln", "-sf", "/r/coxswain-dash/target/release/coxtop", "/b/coxtop"]
+_DEV_BUILD = {"kind": "dev_build", "component": "dash", "detail": "build"}
+_DEV_LINK = {"kind": "dev_link", "component": "dash", "detail": "link", "bin_dir": "/b"}
+
+
+def test_dev_build_runs_one_cargo_build_in_the_dash_checkout():
+    run, calls = _fake_run({})
+    results = install_exec.execute([_DEV_BUILD], root="/r", run=run)
+    assert calls == [(_BUILD, None)]
+    assert results == [{"step": _DEV_BUILD, "commands": [_BUILD], "exit": 0, "output": ""}]
+
+
+def test_dev_link_symlinks_towpath_then_coxtop_into_the_bin_dir():
+    run, calls = _fake_run({})
+    results = install_exec.execute([_DEV_LINK], root="/r", run=run)
+    assert calls == [(_LINK_TOWPATH, None), (_LINK_COXTOP, None)]
+    assert results[0]["commands"] == [_LINK_TOWPATH, _LINK_COXTOP]
+    assert results[0]["exit"] == 0
+
+
+def test_a_failing_dev_build_is_non_fatal_for_the_run_and_later_steps_still_run():
+    steps = [_DEV_BUILD, {"kind": "doctor"}]
+    run, calls = _fake_run({tuple(_BUILD): (101, "error: could not compile")})
+    results = install_exec.execute(steps, root="/r", run=run)
+    assert results[0]["exit"] == 101
+    assert results[0]["output"] == "error: could not compile"
+    assert not install_exec.is_fatal(results[0])
+    assert results[1]["exit"] == 0
+    assert [argv for argv, _ in calls] == [_BUILD, ["cox", "setup", "doctor"]]
+
+
+def test_a_failed_dev_build_skips_the_dev_link_after_it_and_no_ln_runs():
+    steps = [_DEV_BUILD, _DEV_LINK, {"kind": "doctor"}]
+    run, calls = _fake_run({tuple(_BUILD): (101, "error: could not compile")})
+    results = install_exec.execute(steps, root="/r", run=run)
+    assert [argv for argv, _ in calls] == [_BUILD, ["cox", "setup", "doctor"]]
+    assert results[1] == {"step": _DEV_LINK, "commands": [], "exit": None, "output": None}
+    assert results[2]["exit"] == 0
+
+
+def test_a_successful_dev_build_lets_the_dev_link_after_it_run():
+    run, calls = _fake_run({})
+    results = install_exec.execute([_DEV_BUILD, _DEV_LINK], root="/r", run=run)
+    assert [argv for argv, _ in calls] == [_BUILD, _LINK_TOWPATH, _LINK_COXTOP]
+    assert [r["exit"] for r in results] == [0, 0]
+
+
+def test_a_failing_dev_link_stops_at_the_first_link_and_is_fatal():
+    steps = [_DEV_LINK, {"kind": "doctor"}]
+    run, calls = _fake_run({tuple(_LINK_TOWPATH): (1, "ln: failed")})
+    results = install_exec.execute(steps, root="/r", run=run)
+    assert calls == [(_LINK_TOWPATH, None)]
+    assert results[0]["exit"] == 1
+    assert install_exec.is_fatal(results[0])
+    assert results[1] == {"step": steps[1], "commands": [], "exit": None, "output": None}
+
+
 def test_setup_install_omits_flags_whose_value_is_none():
     steps = [{"kind": "setup_install", "team": None, "workspace": None}]
     run, calls = _fake_run({})
