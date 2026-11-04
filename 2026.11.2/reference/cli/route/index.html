@@ -6604,7 +6604,7 @@ options:
 <h2 id="file">file</h2>
 <div class="highlight"><pre><span></span><code>usage: cox route file [-h] [--profile PROFILE] [--repo REPO] [--title TITLE]
                       [--body BODY] [--phase PHASE] [--intake]
-                      [--from-intake FROM_INTAKE] [--force]
+                      [--from-intake FROM_INTAKE] [--force] [--link LINK]
 
 options:
   -h, --help            show this help message and exit
@@ -6619,6 +6619,8 @@ options:
                         then retire it
   --force               file an intake even when its title duplicates an open
                         issue
+  --link LINK           with --intake: the issue url this intake is filed
+                        from, so a later pull skips it
 </code></pre></div>
 <h2 id="priority">priority</h2>
 <div class="highlight"><pre><span></span><code>usage: cox route priority [-h] [--profile PROFILE] [--set N | --up | --down |
@@ -6729,7 +6731,8 @@ options:
 <div class="highlight"><pre><span></span><code>usage: cox route edit [-h] [--title TITLE] [--body BODY]
                       [--body-file BODY_FILE] [--repo REPO]
                       [--surfaces SURFACES] [--state STATE] [--pr PR]
-                      [--rebuild] [--force] [--dry-run] [--profile PROFILE]
+                      [--rebuild] [--force] [--link LINK] [--dry-run]
+                      [--profile PROFILE]
                       id
 
 positional arguments:
@@ -6753,6 +6756,8 @@ options:
                         or --force
   --force               with --rebuild: allow it with no recorded land
                         conflict
+  --link LINK           queued intake only: set the issue url; an empty value
+                        clears the link
   --dry-run             print the diff and write nothing
   --profile PROFILE
 </code></pre></div>
