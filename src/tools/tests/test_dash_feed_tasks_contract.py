@@ -74,7 +74,7 @@ def test_tries_counts_attempts_recorded_across_two_runs(tmp_path):
 
 def test_a_ready_task_shows_waiting_on(tmp_path):
     got, _ = _tasks(tmp_path, [_row("a", "approved"), _row("c", "ready", needs=["a"])])
-    assert got["c"]["waiting_on"] == ["a"]
+    assert got["c"]["waiting_on"] == "a"
 
 
 def test_calls_of_keeps_each_stored_calls_task_id_in_order():
@@ -100,18 +100,16 @@ def test_the_feed_for_the_fixture_scenario_equals_the_fixture(monkeypatch, tmp_p
     # A live lane carries no verdict (`_run_v1`), where the fixture says "approve".
     assert (run["verdict"], fixture["verdict"]) == ("", "approve")
     assert {k: run[k] for k in fixture if k not in ("verdict", "tasks")} == {k: v for k, v in fixture.items() if k not in ("verdict", "tasks")}
-    # The fixture and `task_entries` disagree on two task fields. The feed gives what `task_entries` gives:
-    # `waiting_on` is the list ["feed-schema"], where the fixture has the string "feed-schema", and the cut task's
-    # `reason` is `cut_reason`'s first 120 characters, where the fixture has the short clause "review rejected twice".
-    # Both are for the towpath intake to settle; the test states them rather than normalising them away.
-    assert (fixture["tasks"][2]["waiting_on"], fixture["tasks"][1]["reason"]) == ("feed-schema", "review rejected twice")
+    # The fixture and `task_entries` disagree on one task field: the cut task's `reason` is `cut_reason`'s first
+    # 120 characters, where the fixture has the short clause "review rejected twice". That is for the towpath
+    # intake to settle; the test states it rather than normalising it away. `waiting_on` agrees: one task id.
+    assert fixture["tasks"][1]["reason"] == "review rejected twice"
     expected = [dict(task) for task in fixture["tasks"]]
     expected[1]["reason"] = LONG[:120]
-    expected[2]["waiting_on"] = ["feed-schema"]
     assert run["tasks"] == expected
 
 
-@pytest.mark.xfail(strict=True, reason="the fixture and task_entries disagree on waiting_on and reason; a live lane has no verdict")
+@pytest.mark.xfail(strict=True, reason="the fixture and task_entries disagree on reason; a live lane has no verdict")
 def test_the_feed_for_the_fixture_scenario_equals_the_fixture_exactly(monkeypatch, tmp_path):
     """The done condition as written. It fails today, so the contract mismatch stays visible and goes red-to-green
     (strict xfail) the moment the fixture and `task_entries` agree."""

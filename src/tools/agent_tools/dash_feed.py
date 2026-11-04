@@ -1370,7 +1370,7 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
     `runs[].tasks`, `runs[].landed` and `runs[].quarantined`: every task of the run's initiative as `task_entries`
     shapes it, and the `counts` over them. They are `[]`, 0 and 0 for an initiative with no task rows, and absent only
     when the queue is empty or unreadable, or a store error hit while they were read: absent means no task data was
-    readable, never "no tasks". A task's `waiting_on` is a list of task ids. `profile` is the parsed profile
+    readable, never "no tasks". A task's `waiting_on` is one task id, its first need not yet settled. `profile` is the parsed profile
     the capacity chain reads the team cartridge from. `budget` is the monthly block, with no nulls: period
     "none" and a zero limit and fraction when the profile sets no limit."""
     runs_dir, work_dir = Path(runs_dir), Path(work_dir)
