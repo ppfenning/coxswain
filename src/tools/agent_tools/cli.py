@@ -4611,7 +4611,7 @@ def _print_if_stale(record: dict | None, state: str) -> None:
 
 
 def _retaken_chair(record: dict, now_iso: str, model: str | None, session: str, pid: int, host: str, hours: float | None, now: datetime.datetime) -> tuple[dict, str]:
-    """Pure. The record to write and the line to print when `--steal` retakes a lease its own holder holds.
+    """Pure. The record to write and the line to print when a take retakes a lease its own holder holds.
     A given `model` replaces the recorded one, none keeps it; given `hours` set `until` to `now` plus hours, none keeps the recorded `until`."""
     refreshed = {**record, "heartbeat_at": now_iso, **({"model": model} if model else {})}
     new_record = refreshed if hours is None else chair.extend(refreshed, now, hours)
@@ -4675,9 +4675,9 @@ def _route_chair_take(a: argparse.Namespace) -> int:
         prior_state = chair.liveness(record, alive, now, host, heartbeat_minutes)
         _print_if_stale(record, prior_state)
         new_record, reason = chair.take(record, session, pid, host, now, heartbeat_minutes, alive, steal=a.steal, claude_session=getattr(a, "claude_session", None) or chair.claude_session_from_env(os.environ), hours=hours, model=getattr(a, "model", None), cwd=getattr(a, "cwd", None) or os.getcwd())
-        if new_record is None and a.steal and prior_state == "live" and chair.same_holder(record, session, pid, host):
+        if new_record is None and prior_state == "live" and not chair.expired(record, now) and chair.same_holder(record, session, pid, host):
             retaken, line = _retaken_chair(record, now.isoformat(), getattr(a, "model", None), session, pid, host, hours, now)
-            refusal = chair.acquire_lease(runs_dir, session, pid, host, ttl=chair.lease_ttl_for(retaken, now), steal=True)
+            refusal = chair.acquire_lease(runs_dir, session, pid, host, ttl=chair.lease_ttl_for(retaken, now), steal=a.steal)
             if refusal:
                 print(refusal)
                 return 2
@@ -10978,6 +10978,27 @@ def _record_beat_wanted(dry_run: bool, lost: str) -> bool:
     return lost == ""
 
 
+def _beat_record(runs_dir: Path, session: str, pid: int, host: str, now: datetime.datetime) -> None:
+    """Edge. One loop beat of chair.json under the lock: moves `heartbeat_at` and, through the record's window, `until`."""
+    with chair.locked(runs_dir):
+        record = chair.read(runs_dir)
+        moved, _ = chair.beat(record, session, pid, host, now, extend_window=True)
+        # `renew_lease` returning no refusal already proves this session, pid and host
+        # hold the store lease -- including right after a take_lease reclaim, which
+        # rewrites only the lease sidecar (agent_tools/chair_exec.py `_lease`) and never
+        # chair.json. `chair.beat` then refuses on a record that still names the prior
+        # holder, so `moved` reads None though the lease is genuinely ours; adopt the
+        # record here rather than leave heartbeat_at frozen behind a lease we hold.
+        if moved is None:
+            stamp = now.isoformat()
+            moved = {
+                "session": session, "pid": pid, "host": host,
+                "taken_at": stamp, "heartbeat_at": stamp,
+                "runs": [], "claude_session": chair.claude_session_from_env(os.environ),
+            }
+        chair.write(runs_dir, moved)
+
+
 def _landed_commits(result: chair_exec.Result) -> list[tuple[str, str, str]]:
     """(task id, commit, land output) for every commit a result put on main. A partial_land lists one per task land in
     `landed_commits`, whatever its own status (an earlier task can land before a later one fails); any other land is
@@ -11339,23 +11360,7 @@ def _chair_run_deps(
         meter_snapshot.clear()
         lost = "" if dry_run else chair.renew_lease(runs_dir, session, pid, host)
         if _record_beat_wanted(dry_run, lost):
-            with chair.locked(runs_dir):
-                record = chair.read(runs_dir)
-                moved, _ = chair.beat(record, session, pid, host, now())
-                # `renew_lease` returning no refusal already proves this session, pid and host
-                # hold the store lease -- including right after a take_lease reclaim, which
-                # rewrites only the lease sidecar (agent_tools/chair_exec.py `_lease`) and never
-                # chair.json. `chair.beat` then refuses on a record that still names the prior
-                # holder, so `moved` reads None though the lease is genuinely ours; adopt the
-                # record here rather than leave heartbeat_at frozen behind a lease we hold.
-                if moved is None:
-                    stamp = now().isoformat()
-                    moved = {
-                        "session": session, "pid": pid, "host": host,
-                        "taken_at": stamp, "heartbeat_at": stamp,
-                        "runs": [], "claude_session": chair.claude_session_from_env(os.environ),
-                    }
-                chair.write(runs_dir, moved)
+            _beat_record(runs_dir, session, pid, host, now())
         return lost
 
     def live_initiatives() -> list[str]:
