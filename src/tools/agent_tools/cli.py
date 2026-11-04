@@ -4031,6 +4031,7 @@ def _route_context(a: argparse.Namespace) -> int:
         _usage_assessment(
             Path(profile["workspace_dir"]).expanduser() / "runs",
             profile.get("window_ceiling_usd"), profile.get("weekly_ceiling_usd"), profile.get("weekly_reset"),
+            profile.get("monthly_budget_usd"), profile.get("budget_timezone"),
         ).reason
         if not reason and profile is not None else None
     )
@@ -5826,6 +5827,7 @@ def _route_launch(a: argparse.Namespace) -> int:
     usage_code, usage_lines = route.launch_gate(
         _usage_assessment(
             runs_dir, profile.get("window_ceiling_usd"), profile.get("weekly_ceiling_usd"), profile.get("weekly_reset"),
+            profile.get("monthly_budget_usd"), profile.get("budget_timezone"),
         ), a.force
     )
     for line in usage_lines:
@@ -9412,18 +9414,48 @@ def _reconcile_ceilings(meter: usage_meter.Meter | None, source: str, runs_dir) 
         usage_meter.reconcile_implied_ceilings(meter, Path(runs_dir))
 
 
-def _tolerant_cost_since(runs_dir, since: str) -> float | None:
-    """Edge. The store's spend since `since`, or None on any store error, so a broken store falls back to the usage
-    files instead of failing the gate and every surface that narrates it (route context still prints its docket)."""
+def _tolerant_cost_since(runs_dir, since: str, until: str | None = None) -> float | None:
+    """Edge. The store's spend since `since` (and before `until`, when given), or None on any store error, so a broken
+    store falls back to the usage files instead of failing the gate and every surface that narrates it (route context
+    still prints its docket)."""
     try:
-        return run_store.cost_since(Path(runs_dir), since)
+        bounds = (since,) if until is None else (since, until)
+        return run_store.cost_since(Path(runs_dir), *bounds)
     except (*run_store._db_errors(), ValueError, TypeError, RuntimeError):  # RuntimeError: psycopg not installed
         return None
 
 
+def _budget_zone(budget_timezone: str | None, weekly_reset: str | None) -> str:
+    """Pure. The month's zone: the budget's own, else the weekly reset's, else UTC."""
+    reset = usage_window.parse_weekly_reset(weekly_reset)
+    return budget_timezone or (reset.tz if reset is not None else "UTC")
+
+
+def _month_for(
+    runs_dir, now: datetime.datetime, monthly_budget_usd: float | None, budget_timezone: str | None,
+    weekly_reset: str | None, min_elapsed_fraction: float,
+):
+    """Edge. The month's spend against its budget, or None with no budget set. The store's spend wins."""
+    if monthly_budget_usd is None:
+        return None
+    return usage_window.gather_month(
+        runs_dir, now, _budget_zone(budget_timezone, weekly_reset), monthly_budget_usd,
+        cost_between=lambda since, until: _tolerant_cost_since(runs_dir, since, until),
+        min_elapsed_fraction=min_elapsed_fraction,
+    )
+
+
+def _profile_month(runs_dir, profile: dict, now: datetime.datetime, min_elapsed_fraction: float):
+    """Edge. `_month_for` read from a parsed profile's three keys, for every caller that holds a profile."""
+    return _month_for(
+        runs_dir, now, profile.get("monthly_budget_usd"), profile.get("budget_timezone"),
+        profile.get("weekly_reset"), min_elapsed_fraction,
+    )
+
+
 def _usage_assessment(
     runs_dir, window_ceiling_usd: float | None = None, weekly_ceiling_usd: float | None = None,
-    weekly_reset: str | None = None,
+    weekly_reset: str | None = None, monthly_budget_usd: float | None = None, budget_timezone: str | None = None,
 ) -> pacing.Assessment:
     """Computed once via the gatherer and shared by every surface that
     narrates it: `usage assess`, `route context`'s docket line, and `route
@@ -9431,9 +9463,18 @@ def _usage_assessment(
     """
     now = datetime.datetime.now(datetime.UTC)
     reset = usage_window.parse_weekly_reset(weekly_reset)
-    usage = usage_window.read_usage(runs_dir, now, reset)
     meter, source = _chair_meter(usage_meter.read(), now, runs_dir)
     _reconcile_ceilings(meter, source, runs_dir)
+    policy = _resolved_pacing_policy(Path(runs_dir))
+    month = _month_for(runs_dir, now, monthly_budget_usd, budget_timezone, weekly_reset, policy.min_elapsed_fraction)
+    if (
+        monthly_budget_usd is not None and meter is None
+        and window_ceiling_usd is None and weekly_ceiling_usd is None
+        and usage_meter.implied_ceiling("five_hour", now) is None and usage_meter.implied_ceiling("weekly", now) is None
+    ):
+        # The budget is the only limit: the five-hour and weekly windows are neither gathered, shown nor judged.
+        return pacing.assess(usage_meter.unlimited_window(now), policy, now, month=month)
+    usage = usage_window.read_usage(runs_dir, now, reset)
     # Calibration divides spend up to `now` by the reading's percentage, so only a fresh local reading may write it.
     calibrate = source == "meter"
 
@@ -9486,8 +9527,7 @@ def _usage_assessment(
     if calibrate:
         usage_meter.record_implied_ceiling("weekly", meter.seven_day, Path(runs_dir), now)
 
-    policy = _resolved_pacing_policy(Path(runs_dir))
-    return pacing.assess(window, policy, now, weekly=weekly)
+    return pacing.assess(window, policy, now, weekly=weekly, **({} if month is None else {"month": month}))
 
 
 def _usage_assess(a: argparse.Namespace) -> int:
@@ -9500,13 +9540,19 @@ def _usage_assess(a: argparse.Namespace) -> int:
         profile = {}
     result = _usage_assessment(
         a.runs_dir, profile.get("window_ceiling_usd"), profile.get("weekly_ceiling_usd"), profile.get("weekly_reset"),
+        profile.get("monthly_budget_usd"), profile.get("budget_timezone"),
     )
     if a.json:
         d = dataclasses.asdict(result)
         d["hold_until"] = result.hold_until.isoformat() if result.hold_until else None
         print(json.dumps(d, indent=2))
     else:
-        print(f"{result.verdict}: {result.reason}")
+        month_line = (
+            f" [month to date ${result.month_spent_usd:.2f}, projected ${result.month_projected_usd:.2f}, "
+            f"{result.month_verdict}]"
+            if result.month_verdict is not None else ""
+        )
+        print(f"{result.verdict}: {result.reason}{month_line}")
     return _USAGE_ASSESS_EXIT[result.verdict]
 
 
