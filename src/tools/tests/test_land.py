@@ -2636,3 +2636,48 @@ def test_a_ci_land_whose_required_checks_could_not_be_read_keeps_the_checks_and_
 def test_a_local_or_absent_land_checks_plans_todays_steps(plan, facts):
     assert plan(facts) == plan({})
     assert {"skipped", "kept"}.isdisjoint(_checks_of(plan(facts)))
+
+
+@pytest.mark.parametrize("pr, line", [
+    ("785", "landed via PR #785"),
+    ("#785", "landed via PR #785"),
+    ("https://github.com/o/r/pull/785", "landed via https://github.com/o/r/pull/785"),
+])
+def test_landed_via_line_names_a_number_or_carries_a_url(pr, line):
+    assert land.landed_via_line(pr) == line
+    assert line.startswith(land.LANDED_VIA)
+
+
+def test_pr_number_of_subject_reads_the_squash_suffix():
+    assert land.pr_number_of_subject("epic x: cut-on (#785)") == 785
+
+
+def test_pr_number_of_subject_is_none_without_a_suffix():
+    assert land.pr_number_of_subject("epic x: cut-on") is None
+
+
+def test_pr_number_of_subject_ignores_a_number_in_the_middle():
+    assert land.pr_number_of_subject("fix #12 in the parser") is None
+    assert land.pr_number_of_subject("fix (#12) in the parser") is None
+
+
+def test_carrying_pr_takes_the_newest_subject_with_a_number():
+    assert land.carrying_pr(["tidy", "a (#9)", "b (#4)"], 7) == 9
+
+
+def test_carrying_pr_falls_back_to_the_parent_pr():
+    assert land.carrying_pr(["tidy", "wip"], 7) == 7
+
+
+def test_carrying_pr_is_none_when_both_are_absent():
+    assert land.carrying_pr([], None) is None
+
+
+def test_landed_tail_keeps_only_the_closing_steps_in_order():
+    clean_phase = {"kind": "clean_phase", "run": "r"}
+    clean = {"kind": "clean", "task": "t"}
+    done = {"kind": "mark_done", "task": "t"}
+    steps = [{"kind": "cherry_pick"}, {"kind": "push"}, {"kind": "pr_create"}, {"kind": "wait_checks"}, {"kind": "merge"},
+             {"kind": "note", "reason": "x"}, {"kind": "refuse", "reason": "y"}, clean, done, clean_phase]
+    assert land.landed_tail(steps) == [clean, done, clean_phase]
+    assert len(steps) == 10

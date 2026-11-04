@@ -235,12 +235,14 @@ def lacks_phase_record(code: int, output: str) -> bool:
 
 # The line a phase land prints for a skipped merge; `cli.ALREADY_MERGED_PREFIX` is the same text, pinned by a test.
 _ALREADY_MERGED_PREFIX = "merge: already merged"
+_LANDED_VIA_PREFIX = "landed via"
 
 
 def landed(code: int, output: str) -> bool:
-    """A land counts only when it exits 0, shows `mark_done:`, and shows either `merge:` or the already-merged line."""
+    """A land counts only on exit 0 with `mark_done:` and one of `merge:`, the already-merged line or `landed via`."""
     skipped = any(line.startswith(_ALREADY_MERGED_PREFIX) for line in output.splitlines())
-    return code == 0 and "mark_done:" in output and ("merge:" in output or skipped)
+    landed_via = any(line.startswith(_LANDED_VIA_PREFIX) for line in output.splitlines())
+    return code == 0 and "mark_done:" in output and ("merge:" in output or skipped or landed_via)
 
 
 def land_refusal(action: Action, code: int, output: str) -> Action | None:
