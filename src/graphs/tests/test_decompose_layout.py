@@ -151,8 +151,27 @@ def test_the_run_outcome_carries_the_layout_and_width(cart):
     assert result["layout"]["findings"] == []
 
 
-def test_a_blocking_layout_finding_refuses_the_run(cart):
+def test_a_blocking_layout_finding_heals_the_ticket_instead_of_refusing_the_run(cart):
+    """Lint never stops a decompose: the unnamed surface goes on a Surfaces: line and the repair is a lint note."""
     bad = task("a", "Edit src/widget.py only.", ["src/widget.py", "src/other.py"])
     runner = ScriptedRunner({"decompose": [decomposition([bad])]})
-    with pytest.raises(initiative_decompose.LintRefusal, match="lint-refused: a surface_not_named"):
-        initiative_decompose.run({"run_id": "r", "date": "d", "idea": "x", "cartridge": cart}, runner)
+    result = initiative_decompose.run({"run_id": "r", "date": "d", "idea": "x", "cartridge": cart}, runner)
+    healed = next(t for t in result["tasks"] if t["id"] == "a")
+    assert healed["body"].endswith("Surfaces: `src/other.py`.")
+    assert any("src/other.py" in n and "healed by the layout check" in n for n in healed["lint"])
+
+
+def test_heal_layout_adds_a_named_test_file_to_surfaces_and_leaves_a_clean_task_alone():
+    from graphs.delivery.decompose_layout import heal_layout
+
+    healed = heal_layout(task("a", "Edit src/widget.py and cover it in tests/test_widget.py.", ["src/widget.py"]))
+    assert healed["surfaces"] == ["src/widget.py", "tests/test_widget.py"]
+    assert check_layout([healed]).blocking == ()
+    clean = CLEAN[0]
+    assert heal_layout(clean) == dict(clean)
+
+
+def test_heal_layout_leaves_a_body_that_names_no_path_for_the_advisory():
+    from graphs.delivery.decompose_layout import heal_layout
+
+    assert heal_layout(task("a", "Do the work.", ["src/widget.py"]))["body"] == "Do the work."
