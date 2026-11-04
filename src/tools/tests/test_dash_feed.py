@@ -235,10 +235,13 @@ def test_snapshot_matches_committed_fixture():
     with open("tests/fixtures/dash_activity_v1.json") as f:
         activity = json.load(f)
 
-    result = snapshot(*args, **kwargs, chair_agents=activity["chair_agents"], spend_split=activity["spend_split"])
-
     with open("tests/fixtures/dash_feed_v1.json") as f:
         expected = json.load(f)
+
+    result = snapshot(
+        *args, **kwargs, chair_agents=activity["chair_agents"], spend_split=activity["spend_split"],
+        spend_sources=expected["spend_sources"],
+    )
 
     assert result == expected
     assert result["history"] == kwargs["history"] and result["history_today"] == kwargs["history_today"]
@@ -252,6 +255,7 @@ def test_snapshot_without_activity_carries_an_empty_list_and_the_all_zero_split(
     result = snapshot("2026-10-16T00:00:00Z", {}, {}, [], [], [], 0, [], 0, [])
 
     assert result["chair_agents"] == []
+    assert "spend_sources" not in result
     assert set(result["spend_split"]) == {"five_hour", "weekly"}
     for window in result["spend_split"].values():
         assert set(window) == window_keys
@@ -307,7 +311,10 @@ def test_the_feed_built_from_the_fixtures_inputs_equals_the_fixture(monkeypatch,
     args, kwargs = _fixture_inputs()
 
     built = dash_feed._activity(tmp_path, {}, "sess", _SPEND, _ACTIVITY_AT, {})
-    result = snapshot(*args, **kwargs, chair_agents=activity["chair_agents"], spend_split=built["spend_split"])
+    result = snapshot(
+        *args, **kwargs, chair_agents=activity["chair_agents"], spend_split=built["spend_split"],
+        spend_sources=fixture["spend_sources"],
+    )
 
     assert result == fixture
 
