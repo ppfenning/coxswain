@@ -12,6 +12,7 @@ from agent_tools.remote_argv import (
     git_fetch_argv,
     git_fetch_phase_argv,
     launch_argv,
+    rsync_check_argv,
     rsync_pull_argv,
     rsync_push_argv,
     ssh_argv,
@@ -107,6 +108,19 @@ def test_rsync_push_argv_deletes_at_the_destination_only_when_mirroring():
     assert rsync_push_argv("/tmp/src", "me@box:/srv/dest", mirror=True) == [
         "rsync", "-a", "--timeout=30", "-e", "ssh -o ConnectTimeout=30", "--delete", "/tmp/src/", "me@box:/srv/dest/",
     ]
+
+
+def test_rsync_check_argv_is_a_dry_run_checksum_itemized_compare():
+    assert rsync_check_argv("/tmp/src/", "me@box:/srv/dest/") == [
+        "rsync", "-a", "--timeout=30", "-e", "ssh -o ConnectTimeout=30",
+        "--dry-run", "--checksum", "--itemize-changes", "--delete", "/tmp/src/", "me@box:/srv/dest/",
+    ]
+
+
+def test_rsync_check_argv_normalises_trailing_slashes_like_push():
+    expected = rsync_check_argv("/tmp/src/", "me@box:/srv/dest/")
+    assert rsync_check_argv("/tmp/src", "me@box:/srv/dest") == expected
+    assert rsync_check_argv("/tmp/src///", "me@box:/srv/dest//") == expected
 
 
 def test_rsync_pull_argv_passes_the_locations_through():
