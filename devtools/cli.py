@@ -1246,15 +1246,22 @@ def _origin_sha(directory: str, run) -> str:
 
 
 def _rehearsed_shas(plan_steps: list[dict], resuming: Collection[str], version: str, root: str, overrides: dict,
-                    umbrella: str, run) -> dict[str, str]:
+                    umbrella: str, run, existing_tags: Mapping[str, Collection[str] | None] | None = None
+                    ) -> dict[str, str]:
     """The commit each cut repo is rehearsed at: `origin/<default>`'s, or for a repo in `resuming` the merge base of
     that and `origin/release/<version>`, since the default branch has moved on since the branch was cut.
-    "" when git could not read it."""
+    A resuming component that already has `v<version>` on its remote is no longer tagged by the plan, so it is
+    rehearsed at the commit that tag points at. "" when git could not read it."""
+    tagged = {step["component"] for step in plan_steps if step["kind"] == "tag"}
+    peeled = {name for name in resuming
+              if name != release.UMBRELLA and name not in tagged and f"v{version}" in ((existing_tags or {}).get(name) or ())}
     directories = {release.UMBRELLA: umbrella} | {
-        step["component"]: release.component_dir(root, step["component"], overrides)
-        for step in plan_steps if step["kind"] == "tag"}
+        name: release.component_dir(root, name, overrides) for name in sorted(tagged | peeled)}
 
     def sha_of(name: str, directory: str) -> str:
+        if name in peeled:
+            rc, out = run(["git", "-C", directory, "rev-parse", f"v{version}^{{commit}}"], None)
+            return out.strip() if rc == 0 else ""
         if name not in resuming:
             return _origin_sha(directory, run)
         default = _default_branch(directory, run)
@@ -1391,7 +1398,7 @@ def _release(a: argparse.Namespace) -> int:
     # The drift gate guards a cut; a tap-only resume runs after the cut landed and reads only PyPI and the tap clone.
     # One lookup of the rehearsed commits feeds both the rehearsal gate and the executor's `release_branch` steps.
     rehearsed = {} if a.tap_only else _rehearsed_shas(plan_steps, resuming, a.version, root, overrides, umbrella,
-                                                     _stdout_run)
+                                                     _stdout_run, existing_tags)
     steps = plan_steps if a.tap_only else (_rehearsal_steps(a, plan_steps, root, overrides, umbrella, _stdout_run,
                                                             rehearsed)
                                            + release.gate(drifts, a.allow_doc_drift, plan_steps) + plan_steps)

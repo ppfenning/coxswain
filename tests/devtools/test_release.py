@@ -1172,9 +1172,12 @@ def _sha_of(directory):
     return hashlib.sha1(str(directory).encode()).hexdigest()
 
 
+_TAGGED_SHA = "ab" * 20
+
+
 def _rehearsal_edge(runs, jobs=()):
-    """A runner for the gate's edge: origin commits are a hash of the checkout path, the checkout's one tag is
-    v0.47.0, and the rehearsal workflow lists `runs`. Anything else is the clean fake git."""
+    """A runner for the gate's edge: origin commits are a hash of the checkout path, a tag peels to `_TAGGED_SHA`,
+    the checkout's one tag is v0.47.0, and the rehearsal workflow lists `runs`. Anything else is the clean fake git."""
     git = _fake_git_run()[1]
 
     def run(argv, cwd):
@@ -1182,6 +1185,8 @@ def _rehearsal_edge(runs, jobs=()):
             return 0, json.dumps(runs)
         if argv[:3] == ["gh", "run", "view"] and "jobs" in argv:
             return 0, json.dumps({"jobs": list(jobs)})
+        if argv[3:4] == ["rev-parse"] and argv[-1].endswith("^{commit}"):
+            return 0, _TAGGED_SHA + "\n"
         if argv[3:4] == ["rev-parse"] and argv[-1].startswith("origin/"):
             return 0, _sha_of(argv[2]) + "\n"
         if argv[3:5] == ["tag", "--list"]:
@@ -1250,6 +1255,33 @@ def test_rehearsal_steps_name_dashs_commit_when_the_release_tags_it(tmp_path, re
         version, allow_no_rehearsal = V0, None
     _REAL_REHEARSAL_STEPS(Args, plan, str(tmp_path), {}, str(umbrella), _rehearsal_edge([]))
     assert seen == {"coxswain": _sha_of(umbrella), "dash": _sha_of(tmp_path / "dash")}
+
+
+class _Args:
+    version, allow_no_rehearsal = V0, None
+
+
+def test_resumed_rehearsal_looks_for_the_commit_dashs_existing_tag_points_at(tmp_path):
+    umbrella = _checkout(tmp_path, notes="")
+    manifest = _manifest()
+    tags = {**_no_tags(manifest), "dash": [f"v{V0}"]}
+    plan = release.release_plan(manifest, V0, tags, pinned_commits={"dash": 0}, resuming={"dash"})
+    edge = _rehearsal_edge([])
+    shas = cli._rehearsed_shas(plan, {"dash"}, V0, str(tmp_path), {}, str(umbrella), edge, tags)
+    steps = _REAL_REHEARSAL_STEPS(_Args, plan, str(tmp_path), {}, str(umbrella), edge, shas)
+    title = release_rehearsal_gate.run_title(_sha_of(umbrella), _TAGGED_SHA, "v0.47.0", [])
+    assert shas == {"coxswain": _sha_of(umbrella), "dash": _TAGGED_SHA}
+    assert f"dash={_TAGGED_SHA}" in title
+    assert f"No rehearsal run matches. Looked for: {title}" in steps[0]["detail"]
+
+
+def test_fresh_rehearsal_with_dash_pinned_and_untagged_looks_for_dash_pinned(tmp_path):
+    umbrella = _checkout(tmp_path, notes="")
+    manifest = _manifest()
+    tags = _no_tags(manifest)
+    plan = release.release_plan(manifest, V0, tags, pinned_commits={"dash": 0})
+    steps = _REAL_REHEARSAL_STEPS(_Args, plan, str(tmp_path), {}, str(umbrella), _rehearsal_edge([]))
+    assert "dash=pinned" in steps[0]["detail"]
 
 
 # ---- backfill ----
