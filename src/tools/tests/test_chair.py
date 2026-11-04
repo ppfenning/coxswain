@@ -495,11 +495,11 @@ def test_take_of_a_free_chair_writes_the_record_as_before(tmp_path, monkeypatch,
     assert (record["session"], record["pid"], record["model"]) == ("bob", os.getpid(), "haiku")
 
 
-def test_take_without_steal_on_own_live_record_is_refused_and_leaves_the_lease(tmp_path, monkeypatch, capsys):
+def test_take_without_steal_on_own_live_record_renews_it_without_stealing_the_lease(tmp_path, monkeypatch, capsys):
     rc, seen, _runs_dir = _take_over_live_record(tmp_path, monkeypatch, "bob")
-    assert rc == 2
-    assert capsys.readouterr().out.startswith("chair: held by bob")
-    assert seen == []
+    assert rc == 0
+    assert capsys.readouterr().out.startswith("chair lease retaken: bob")
+    assert seen == [{"steal": False, "ttl": 10800 + chair.DEFAULT_LEASE_TTL_SECONDS}]
 
 
 def test_take_steal_on_another_sessions_live_record_takes_it(tmp_path, monkeypatch, capsys):
