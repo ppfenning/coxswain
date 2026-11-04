@@ -42,13 +42,18 @@ def _filled(parsed: Row, stored: Row) -> Row | None:
     return {**{k: v for k, v in stored.items() if k not in _CLAIM_KEYS}, **gaps}
 
 
+def _live(row: Row) -> bool:
+    """A dropped initiative is gone: it must not re-claim a requeued intake. No state, or any other state, is live."""
+    return row.get("state") != "dropped"
+
+
 def intake_state(intake_id: str, initiative_ids: frozenset[str]) -> tuple[str, dict[str, str]]:
     """An intake whose id names an existing initiative is decomposed and links to it; any other stays queued."""
     return ("decomposed", {"initiative": intake_id}) if intake_id in initiative_ids else ("queued", {})
 
 
 def initiative_ids(existing: list[Row]) -> frozenset[str]:
-    return frozenset(row["task_id"] for row in existing if row.get("kind") == "initiative")
+    return frozenset(row["task_id"] for row in existing if row.get("kind") == "initiative" and _live(row))
 
 
 def _linked(row: Row, ids: frozenset[str]) -> Row:
@@ -65,6 +70,7 @@ def _intake_match(row: Row, initiatives: Sequence[Row]) -> Row | None:
         (
             i for i in initiatives
             if i.get("kind") == "initiative"
+            and _live(i)
             and (
                 i["task_id"] == row["task_id"]
                 or Path(str((i.get("extra") or {}).get("intake") or "")).stem == row["task_id"]
