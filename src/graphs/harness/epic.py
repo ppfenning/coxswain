@@ -44,7 +44,9 @@ import logging
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
+import types
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -420,6 +422,8 @@ class _Ctx:
     retry: _StoreRetry = field(default_factory=_StoreRetry)
     # The one mutable member of a frozen record: file listings by commit (see `_default_branch_paths`).
     surface_paths: dict[str, frozenset[str]] = field(default_factory=dict, compare=False, repr=False)
+    # Guards writes to the shared `items` list and the lazy fill of `surface_paths`; `replace` shares it across per-phase copies.
+    items_lock: threading.Lock = field(default_factory=threading.Lock, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         """Refuse a bad per-check timeout at build, before any model call; the ValueError names the check."""
@@ -1351,10 +1355,6 @@ def run_epic(
                 # No quarantine, no attempt, every sibling task left as-is: stop now.
                 paused_until = exc.detail.split("resets", 1)[-1].strip()
                 break
-            # Threads live for a phase: every task's plan/build/retry is done by now.
-            close = getattr(ctx.runner, "close", None)
-            if callable(close):
-                close()
             phase_tasks = record.pop("task_records")
             tasks.extend(phase_tasks)
             # Noted as each phase ends, so a raise in a later phase cannot lose this phase's approvals.
@@ -1388,6 +1388,8 @@ def run_epic(
         try:
             _clear_pause_if_held(store, run_id, lease_name or LEASE_NAME, epoch, retry)
         finally:
+            # Once, after the phase loop has drained: a phase's threads stay open while any other phase can still use them.
+            close_error = _close_runner(ctx.runner) if ctx is not None else None
             # A raise leaves no result, so the outcome is built from the phases that finished. A failure
             # building it is logged and must not replace the exception already in flight.
             if result is None and ctx is not None:
@@ -1401,7 +1403,7 @@ def run_epic(
                 except Exception as exc:
                     _log.warning("partial result for %s not built: %s: %s", run_id, type(exc).__name__, exc)
             # A return leaves no exception in flight here; a raise, a signal or an exit leaves one.
-            _record_run_exit(store, run_id, "ok" if sys.exc_info()[0] is None else "error", retry, result)
+            _record_run_exit(store, run_id, "ok" if sys.exc_info()[0] is None and close_error is None else "error", retry, result)
         # Nothing before `ctx` exists can have made a worktree, so there is nothing to do yet.
         if ctx is not None:
             run_dir = ctx.worktree_root / ctx.run_id
@@ -1419,6 +1421,9 @@ def run_epic(
                         run_dir.rmdir()
             else:
                 remove_worktree(ctx.repo, run_dir)
+        # Raised last, so a failing close still leaves the exit record written and the worktrees cleaned up.
+        if close_error is not None:
+            raise close_error
 
 
 def _quarantine_task(
@@ -1726,12 +1731,13 @@ def _default_branch_paths(ctx: _Ctx) -> frozenset[str] | None:
     if named is None:
         return None
     sha = named.strip()
-    if sha not in ctx.surface_paths:
-        listing = _git_stdout(*repo, "ls-tree", "-r", "-z", "--name-only", sha)
-        if listing is None:
-            return None
-        ctx.surface_paths[sha] = frozenset(p for p in listing.split("\0") if p)
-    return ctx.surface_paths[sha]
+    with ctx.items_lock:
+        if sha not in ctx.surface_paths:
+            listing = _git_stdout(*repo, "ls-tree", "-r", "-z", "--name-only", sha)
+            if listing is None:
+                return None
+            ctx.surface_paths[sha] = frozenset(p for p in listing.split("\0") if p)
+        return ctx.surface_paths[sha]
 
 
 def _working_tree_paths(root: Path) -> frozenset[str]:
@@ -2238,8 +2244,10 @@ def _quarantine_missing_merges(
     ctx: _Ctx, phase: str, items: Sequence[dict[str, Any]], quarantined: list[dict[str, Any]]
 ) -> None:
     """Quarantine each merged task whose commit is gone, one by one. No other item, row or file is touched."""
-    by_id = {str(i["id"]): i for i in items}
-    for item in items:
+    with ctx.items_lock:
+        by_id = {str(i["id"]): i for i in items}
+        snapshot = list(items)
+    for item in snapshot:
         why = _merge_missing(ctx, phase, item)
         if why is not None:
             quarantined.append(
@@ -2248,7 +2256,8 @@ def _quarantine_missing_merges(
                     cause=("harness", "merged commit missing"), approved_is_open=True,
                 )
             )  # fmt: skip
-            item["state"], item["merged"] = "quarantined", False
+            with ctx.items_lock:
+                item["state"], item["merged"] = "quarantined", False
 
 
 def _invoke_failure_kind(failure: str) -> Literal["infra", "no_work"]:
@@ -2281,6 +2290,63 @@ def _earlier_merged(items: Sequence[Mapping[str, Any]], phase: str, in_run: Coll
         and item.get("handoff")
         and str(item["id"]) not in in_run
     ]
+
+
+def _close_runner(runner: Any) -> Exception | None:
+    """Close the shared runner's threads once, after every phase. The failure is returned, for the caller to raise last."""
+    close = getattr(runner, "close", None)
+    if not callable(close):
+        return None
+    try:
+        close()
+    except Exception as exc:
+        return exc
+    return None
+
+
+class _PhaseRunner:
+    """One phase's view of the shared runner: its own repo_dir, repo_digest and check_commands, nothing assigned to the shared one.
+
+    Every other attribute and call forwards to the shared runner, and its methods run with this view as `self`,
+    so the three values read per phase while counters and flags stay shared. A runner that delegates through
+    `_inner` gets a view of the inner runner too, and public names go there, as `_DelegatingFastPath` does.
+    A name the shared runner lacks stays absent, as the duck-typed `hasattr` checks expect.
+    """
+
+    def __init__(self, shared: Any, repo_dir: Path, repo_digest: str | None, check_commands: list[str]) -> None:
+        values = {"repo_dir": repo_dir, "repo_digest": repo_digest, "check_commands": check_commands}
+        inner = vars(shared).get("_inner") if hasattr(shared, "__dict__") else None
+        view = None if inner is None else _PhaseRunner(inner, repo_dir, repo_digest, check_commands)
+        own = {} if inner is not None else {n: v for n, v in values.items() if hasattr(shared, n)}
+        object.__setattr__(self, "_shared", shared)
+        object.__setattr__(self, "_own", own)
+        object.__setattr__(self, "_view", view)
+
+    @property
+    def __class__(self) -> type:  # so `super()` and `isinstance` inside the shared runner's methods accept this view
+        return type(self._shared)
+
+    def __getattr__(self, name: str) -> Any:
+        if name in ("_shared", "_own", "_view"):
+            raise AttributeError(name)
+        if name == "_inner" and self._view is not None:
+            return self._view
+        if name in self._own:
+            return self._own[name]
+        if self._view is not None and not name.startswith("_"):
+            return getattr(self._view, name)
+        value = getattr(self._shared, name)
+        if isinstance(value, types.MethodType) and value.__self__ is self._shared:
+            return types.MethodType(value.__func__, self)
+        return value
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in self._own:
+            self._own[name] = value
+        elif self._view is not None and not name.startswith("_"):
+            setattr(self._view, name, value)
+        else:
+            setattr(self._shared, name, value)
 
 
 def _run_phase(
@@ -2337,13 +2403,16 @@ def _run_phase(
     # Decided before a single task builds: a reused branch behind its base is
     # either recreated (nothing of its own to lose) or blocked (something is).
     head_moved = reused and _parent_head_moved(ctx, phase, base_ref, parents)
-    task_states = {str(i["id"]): str(i.get("state")) for i in items}
+    with ctx.items_lock:
+        task_states = {str(i["id"]): str(i.get("state")) for i in items}
     cherry = _phase_branch_cherry(ctx, phase) if head_moved else []
     unlanded_kind = classify_unlanded(cherry, task_states)
     action = branch_action(reused, head_moved, unlanded_kind not in ("landed", "rebuild"))
 
     foreign = initiative.get("foreign") or {}
-    holds = phase_holds(len(waiting_tasks(cherry)), len(_buildable(items, phase, foreign, only)))
+    with ctx.items_lock:
+        buildable_now = len(_buildable(items, phase, foreign, only))
+    holds = phase_holds(len(waiting_tasks(cherry)), buildable_now)
     if action == "block" and unlanded_kind == "awaiting_land" and not holds:
         # Approved lands in flight, but a ready task can build: leave the branch and its commits as they are.
         action = "proceed"
@@ -2440,21 +2509,25 @@ def _run_phase(
     # N, so a build that read the default branch would be patching ground that
     # is no longer there. Duck-typed: the API runner has no such attribute and
     # nothing to point anywhere.
-    if hasattr(ctx.runner, "repo_dir"):
-        ctx.runner.repo_dir = ctx.phase_worktree(phase)
-    if hasattr(ctx.runner, "repo_digest"):
-        ctx.runner.repo_digest = build_digest(ctx.phase_worktree(phase)) or None
-    if hasattr(ctx.runner, "check_commands"):
-        ctx.runner.check_commands = [str(c.get("cmd")) for c in ctx.checks if c.get("cmd")]
+    # The shared runner is never assigned: from here on this phase's `ctx` carries its own view of it.
+    worktree = ctx.phase_worktree(phase)
+    ctx = replace(
+        ctx,
+        runner=_PhaseRunner(
+            ctx.runner, worktree, build_digest(worktree) or None, [str(c.get("cmd")) for c in ctx.checks if c.get("cmd")]
+        ),
+    )
 
     # A task approved and merged in an earlier run is not rebuilt. Its commit must be on this phase's branch,
     # and a task whose commit is gone is quarantined alone: no other task's row or state is touched.
     _quarantine_missing_merges(ctx, phase, items, quarantined)
-    handoffs = {str(i["id"]): i["handoff"] for i in items if i.get("handoff")}
+    with ctx.items_lock:
+        handoffs = {str(i["id"]): i["handoff"] for i in items if i.get("handoff")}
 
     # A dropped task is terminal like a done one: it never gets rebuilt or
     # re-reviewed, and never blocks the phase behind it.
-    all_ready = _buildable(items, phase, foreign, only)
+    with ctx.items_lock:
+        all_ready = _buildable(items, phase, foreign, only)
 
     # A third run of the same task is refused outright rather than tried
     # again — quarantined here, plainly, never through `_quarantine_task`,
@@ -3104,12 +3177,13 @@ def _run_phase(
     for task, moved in state.moved.items():
         if moved:
             merged = bool(state.merged.get(task))
-            for item in items:
-                if str(item["id"]) == task:
-                    item["state"] = "approved"
-                    item["merged"] = merged
-                    if task in state.handoffs:
-                        item["handoff"] = state.handoffs[task]
+            with ctx.items_lock:
+                for item in items:
+                    if str(item["id"]) == task:
+                        item["state"] = "approved"
+                        item["merged"] = merged
+                        if task in state.handoffs:
+                            item["handoff"] = state.handoffs[task]
             for task_record in record["task_records"]:
                 if task_record["id"] == task:
                     task_record["state"] = "approved"

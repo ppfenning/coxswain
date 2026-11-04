@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 from pathlib import Path
 
 import harness.epic as epic
@@ -20,6 +21,7 @@ def _ctx(store_conn, repo: Path):
     fields = {
         "store": Store(store_conn), "initiative_id": INITIATIVE, "run_id": "run-1", "work_state": "store",
         "epoch": None, "cartridge": {}, "runner": None, "retry": epic._StoreRetry(), "repo": repo,
+        "items_lock": threading.Lock(),
         "phase_branch": staticmethod(lambda phase: "main"), "scratch_branch": staticmethod(lambda task: f"scratch/{task}"),
     }  # fmt: skip
     return type("Ctx", (), fields)()

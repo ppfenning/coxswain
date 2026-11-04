@@ -518,15 +518,17 @@ def test_a_run_that_raises_still_cleans_up_because_finally_fires(repo, cart, tmp
     assert "epic-raise" not in git("worktree", "list", cwd=repo)
 
 
-class SecondPhaseCloseRaises(Runner):
-    """A close that fails only after the second phase, so phase 1 finished cleanly and phase 2 raised."""
+def _runner_raising_in_phase_two(monkeypatch) -> Runner:
+    """Phase 1 runs for real and phase 2 raises. The runner closes once, after the loop, so close cannot be the failure."""
+    real = epic_module._run_phase
 
-    closes = 0
-
-    def close(self) -> None:
-        self.closes += 1
-        if self.closes == 2:
+    def run_phase(ctx, *, phase, **kwargs):
+        if phase == "p2-rollout":
             raise RuntimeError("phase two blew up")
+        return real(ctx, phase=phase, **kwargs)
+
+    monkeypatch.setattr(epic_module, "_run_phase", run_phase)
+    return Runner({t: new_file_patch(f"{t}.txt") for t in TASK_IDS})
 
 
 def _spy_on_run_exit(monkeypatch) -> list[tuple[str, dict | None]]:
@@ -545,7 +547,7 @@ def test_a_raise_in_phase_two_keeps_phase_one_s_courier_note_and_exit_result(
     repo, cart, tmp_path, monkeypatch, _courier_sends_are_recorded
 ) -> None:
     exits = _spy_on_run_exit(monkeypatch)
-    runner = SecondPhaseCloseRaises({t: new_file_patch(f"{t}.txt") for t in TASK_IDS})
+    runner = _runner_raising_in_phase_two(monkeypatch)
 
     with pytest.raises(RuntimeError, match="phase two blew up"):
         drive(repo, cart, tmp_path, runner=runner, run_id="epic-keep-p1")
@@ -570,7 +572,7 @@ def test_a_failure_building_the_partial_result_is_logged_and_the_original_raise_
         raise ValueError("cannot build")
 
     monkeypatch.setattr(epic_module, "_build_result", broken)
-    runner = SecondPhaseCloseRaises({t: new_file_patch(f"{t}.txt") for t in TASK_IDS})
+    runner = _runner_raising_in_phase_two(monkeypatch)
 
     with (
         caplog.at_level(logging.WARNING, logger=epic_module.__name__),
