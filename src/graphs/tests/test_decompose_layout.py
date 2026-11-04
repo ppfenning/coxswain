@@ -71,6 +71,31 @@ def test_a_directory_surface_is_named_by_a_path_under_it_or_its_trailing_part():
     assert under.findings == () and trailing.findings == ()
 
 
+SNAP = "src/ui/snapshots/coxtop__ui__regatta__tests__renders_regatta_snapshot_at_160x46.snap"
+
+
+@pytest.mark.parametrize(
+    "named", ["src/ui/snapshots/*regatta*", "`snapshots/*regatta*.snap`", "ui/snapshots/coxtop__ui__regatta__*."]
+)
+def test_a_wildcard_path_in_the_body_names_every_surface_it_matches(named):
+    assert check_layout([task("a", f"Update {named} for the new columns.", [SNAP])]).findings == ()
+
+
+def test_a_wildcard_that_does_not_match_the_surface_does_not_name_it():
+    report = check_layout([task("a", "Update src/ui/snapshots/*history* only.", [SNAP])])
+    assert rules(report) == [("a", "surface_not_named")]
+
+
+def test_a_bare_star_does_not_name_every_surface():
+    report = check_layout([task("a", "Change * in src/app.py.", ["src/app.py", "src/other.py"])])
+    assert rules(report) == [("a", "surface_not_named")]
+
+
+@pytest.mark.parametrize("named", ["src/ui/snapshots/", "ui/snapshots/"])
+def test_a_directory_named_in_the_body_names_the_files_under_it(named):
+    assert check_layout([task("a", f"Refresh {named} for the new columns.", [SNAP])]).findings == ()
+
+
 def test_a_body_that_names_no_path_is_flagged_without_blocking():
     report = check_layout([task("a", "Do the work.", ["src/widget.py"])])
     assert rules(report) == [("a", "surface_not_named")]
