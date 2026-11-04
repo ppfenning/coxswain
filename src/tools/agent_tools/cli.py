@@ -3316,7 +3316,7 @@ def _runs_land(a: argparse.Namespace) -> int:
         read_forge = pr_forge or forge.forge_for(forge.forge_name(profile))
         merged_pr = _phase_merged_pr(repo, initiative, phase, default_branch, read_forge) if read_forge is not None else None
         already_merged = merged_pr is not None
-        land_at = land.granularity(phase_record)
+        land_at = _phase_land_at(phase_record, profile, runs_dir.parent / "work", initiative)
         ticket_items, phases = _ticket_items(runs_dir.parent / "work", initiative, runs_dir, land_mode, (phase, items)) if land_at == "ticket" else ({}, [])
         ticket_tasks = list(ticket_items)
         for earlier_phase in (phases if land_mode == "store" else []):
@@ -11135,6 +11135,24 @@ def _initiative_land_at(initiative_files: Mapping[Path, str]) -> dict[str, str |
     """Pure. Initiative id to the `land_at:` in its `initiative.md` text, None when the key is absent or not a string."""
     fields = {p.parent.name: route.parse_frontmatter(text)[0] for p, text in initiative_files.items()}
     return {name: f["land_at"] if isinstance(f.get("land_at"), str) else None for name, f in fields.items()}
+
+
+def _phase_land_at(phase_record: Mapping, profile: dict, work_dir: Path, initiative: str) -> str:
+    """Edge. The phase record's `land_at` when its run wrote one, else what the chair plans the land with: the
+    initiative's `land_at:`, else the team cartridge's, else ticket. The run store's phase manifests carry no
+    `land_at`, so reading the record alone gave ticket while the chair planned at level: the chair asked for a
+    phase land, the land deferred it as ticket and exited 0 with nothing done, and the chair backed off."""
+    if phase_record.get("land_at") in land.LAND_AT:
+        return str(phase_record["land_at"])
+    from core.landing import resolve_land_at  # lazy: core sits beside agent_tools in one venv
+
+    path = work_dir / initiative / "initiative.md"
+    text = _read_text_or_none(path)
+    values = _initiative_land_at({path: text}) if text is not None else {}
+    try:
+        return resolve_land_at(_team_cartridge(profile)[0], values.get(initiative))
+    except ValueError:
+        return land.granularity(phase_record)
 
 
 def _chair_reported_repos_path(runs_dir: Path) -> Path:

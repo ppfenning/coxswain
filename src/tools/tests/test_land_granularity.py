@@ -168,3 +168,32 @@ def test_cli_land_of_the_last_phase_opens_one_pr_covering_the_earlier_phases(tmp
     assert "- early: early" in body and "- late: late" in body
     assert sorted(_marked(steps)) == ["early", "late"]
     assert _kinds(steps).index("merge") < _kinds(steps).index("mark_done")
+
+
+def _initiative(tmp_path, land_at=None):
+    folder = tmp_path / "work" / "x"
+    folder.mkdir(parents=True)
+    extra = f"land_at: {land_at}\n" if land_at else ""
+    (folder / "initiative.md").write_text(f"---\nid: x\n{extra}---\n", encoding="utf-8")
+    return tmp_path / "work"
+
+
+def test_phase_land_at_keeps_the_value_its_run_recorded(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "_team_cartridge", lambda profile, repo=None: ({"landing_areas": {"land_at": "level"}}, None))
+    assert cli._phase_land_at({"land_at": "task"}, {}, _initiative(tmp_path), "x") == "task"
+
+
+def test_phase_land_at_without_a_recorded_value_reads_the_cartridge_as_the_chair_does(tmp_path, monkeypatch):
+    """A run-store phase manifest carries no land_at: the land must not fall back to ticket when the chair plans at level."""
+    monkeypatch.setattr(cli, "_team_cartridge", lambda profile, repo=None: ({"landing_areas": {"land_at": "level"}}, None))
+    assert cli._phase_land_at({}, {}, _initiative(tmp_path), "x") == "level"
+
+
+def test_phase_land_at_prefers_the_initiative_value_over_the_cartridge(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "_team_cartridge", lambda profile, repo=None: ({"landing_areas": {"land_at": "level"}}, None))
+    assert cli._phase_land_at({}, {}, _initiative(tmp_path, "ticket"), "x") == "ticket"
+
+
+def test_phase_land_at_with_no_cartridge_and_no_initiative_value_is_ticket(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "_team_cartridge", lambda profile, repo=None: ({}, None))
+    assert cli._phase_land_at({}, {}, tmp_path / "work", "x") == "ticket"
