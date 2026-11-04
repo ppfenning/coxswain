@@ -8,10 +8,30 @@ from collections.abc import Collection, Mapping
 from pathlib import Path
 
 
-def remote_record(host: str, launched_at: str, repo: str | None = None, base_sha: str | None = None) -> dict:
-    """`repo` and `base_sha` (the commit the lane was verified at before the build) are absent from older records."""
+def remote_record(
+    host: str,
+    launched_at: str,
+    repo: str | None = None,
+    base_sha: str | None = None,
+    graph: str = "epic",
+) -> dict:
+    """`repo` and `base_sha` (the commit the lane was verified at before the build) are absent from older records.
+    `graph` is written only when it is not epic, so an absent key means epic."""
     base = {"host": host, "launched_at": launched_at}
-    return {**base, **({} if repo is None else {"repo": repo}), **({} if base_sha is None else {"base_sha": base_sha})}
+    return {
+        **base,
+        **({} if repo is None else {"repo": repo}),
+        **({} if base_sha is None else {"base_sha": base_sha}),
+        **({} if graph == "epic" else {"graph": graph}),
+    }
+
+
+def record_graph(record: Mapping) -> str:
+    return record.get("graph", "epic")
+
+
+def is_decompose_record(record: Mapping) -> bool:
+    return record_graph(record) == "decompose"
 
 
 def remote_record_path(runs_dir: Path, run: str) -> Path:
@@ -28,10 +48,13 @@ def parse_remote_record(text: str) -> dict | None:
     except ValueError:
         return None
     if isinstance(parsed, dict) and "host" in parsed and "launched_at" in parsed:
-        repo, base_sha = parsed.get("repo"), parsed.get("base_sha")
+        repo, base_sha, graph = parsed.get("repo"), parsed.get("base_sha"), parsed.get("graph")
         return remote_record(
-            parsed["host"], parsed["launched_at"],
-            repo if isinstance(repo, str) else None, base_sha if isinstance(base_sha, str) else None,
+            parsed["host"],
+            parsed["launched_at"],
+            repo if isinstance(repo, str) else None,
+            base_sha if isinstance(base_sha, str) else None,
+            graph if isinstance(graph, str) and graph else "epic",
         )
     return None
 
