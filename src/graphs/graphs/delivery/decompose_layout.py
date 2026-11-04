@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from harness.lanes import max_width
+from harness.waves import compute_waves, phase_parents, widest_wave
 
 __all__ = ["LayoutFinding", "LayoutReport", "check_layout", "heal_layout", "unlisted_artifacts", "unnamed_surfaces"]
 
@@ -40,6 +41,8 @@ class LayoutReport:
     findings: tuple[LayoutFinding, ...]
     width: int
     layers: tuple[tuple[str, ...], ...]
+    waves: tuple[tuple[str, ...], ...] = ()
+    widest_wave: int = 0
 
     @property
     def blocking(self) -> tuple[LayoutFinding, ...]:
@@ -207,6 +210,28 @@ def _flows(body: str, upstream: Mapping[str, Any]) -> bool:
     return any(name and name in body for name in names)
 
 
+def _is_fake_chain(tasks: Sequence[Mapping[str, Any]], width: int) -> bool:
+    """More than one task, one lane, and every needs edge already an unsupported one."""
+    by_id = {str(t["id"]): t for t in tasks}
+    edges = [(t, by_id[str(n)]) for t in tasks for n in t.get("needs") or [] if str(n) in by_id]
+    return (
+        len(tasks) > 1
+        and width == 1
+        and bool(edges)
+        and not any(_flows(str(t.get("body") or ""), up) for t, up in edges)
+    )
+
+
+def _chain_finding() -> LayoutFinding:
+    return LayoutFinding(
+        "",
+        "single_chain",
+        "the tasks have no real edges between them and the graph reads as a chain written from narrative order",
+        "drop the edges that carry no data or state what each task takes",
+        advisory=True,
+    )
+
+
 def check_layout(tasks: Sequence[Mapping[str, Any]]) -> LayoutReport:
     """Findings per task, then the largest set of tasks that can run at once. A cycle is a finding, with width 0."""
     findings = [f for t in tasks for f in (*_surface_findings(t), *_artifact_findings(t))] + _edge_findings(tasks)
@@ -218,4 +243,19 @@ def check_layout(tasks: Sequence[Mapping[str, Any]]) -> LayoutReport:
             0,
             (),
         )
-    return LayoutReport(tuple(findings), width, tuple(tuple(layer) for layer in layers))
+    waves, cyclic = compute_waves(phase_parents(tasks))
+    if cyclic:
+        findings = [
+            *findings,
+            LayoutFinding("", "cycle", f"phases {', '.join(cyclic)} wait on each other", "remove the phase cycle"),
+        ]
+        waves = []
+    if _is_fake_chain(tasks, width):
+        findings = [*findings, _chain_finding()]
+    return LayoutReport(
+        tuple(findings),
+        width,
+        tuple(tuple(layer) for layer in layers),
+        tuple(tuple(wave) for wave in waves),
+        widest_wave(waves),
+    )

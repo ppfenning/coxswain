@@ -3,12 +3,12 @@ from __future__ import annotations
 import pytest
 
 from graphs.delivery import initiative_decompose
-from graphs.delivery.decompose_layout import check_layout
+from graphs.delivery.decompose_layout import LayoutReport, check_layout
 from runner import ScriptedRunner
 
 
-def task(id_: str, body: str, surfaces: list[str], needs: list[str] | None = None) -> dict:
-    return {"id": id_, "phase": "p1", "title": id_, "body": body, "surfaces": surfaces, "needs": needs or []}
+def task(id_: str, body: str, surfaces: list[str], needs: list[str] | None = None, phase: str = "p1") -> dict:
+    return {"id": id_, "phase": phase, "title": id_, "body": body, "surfaces": surfaces, "needs": needs or []}
 
 
 CLEAN = [
@@ -118,8 +118,69 @@ def test_a_migration_and_a_script_in_the_body_must_be_surfaces():
 def test_a_needs_edge_with_no_data_flow_in_the_body_is_advisory():
     tasks = [task("a", "Add src/a.py.", ["src/a.py"]), task("b", "Add src/b.py.", ["src/b.py"], ["a"])]
     report = check_layout(tasks)
-    assert [(f.rule, f.advisory) for f in report.findings] == [("edge_unsupported", True)]
+    assert [(f.rule, f.advisory) for f in report.findings] == [("edge_unsupported", True), ("single_chain", True)]
     assert report.blocking == ()
+
+
+def phased(id_: str, phase: str, needs: list[str] | None = None) -> dict:
+    """A task whose body names each upstream id, so every edge carries a data flow."""
+    uses = "".join(f" Use {n}'s output." for n in needs or [])
+    return task(id_, f"Add src/{id_}.py.{uses}", [f"src/{id_}.py"], needs, phase)
+
+
+def test_two_independent_chains_over_four_phases_report_two_waves_of_two():
+    report = check_layout(
+        [phased("ant", "p1"), phased("bee", "p2", ["ant"]), phased("cat", "p3"), phased("dog", "p4", ["cat"])]
+    )
+    assert report.findings == ()
+    assert report.waves == (("p1", "p3"), ("p2", "p4"))
+    assert report.widest_wave == 2
+
+
+def test_a_diamond_reports_waves_of_one_two_one():
+    report = check_layout(
+        [
+            phased("top", "p1"),
+            phased("left", "p2", ["top"]),
+            phased("right", "p3", ["top"]),
+            phased("base", "p4", ["left", "right"]),
+        ]
+    )
+    assert [len(w) for w in report.waves] == [1, 2, 1]
+    assert report.widest_wave == 2
+
+
+def test_a_phase_cycle_with_no_task_cycle_leaves_waves_empty_and_is_a_finding():
+    report = check_layout(
+        [phased("ant", "p1", ["bee"]), phased("bee", "p2"), phased("cat", "p2", ["dog"]), phased("dog", "p1")]
+    )
+    assert ("", "cycle") in rules(report)
+    assert report.waves == ()
+    assert report.widest_wave == 0
+
+
+def test_a_report_built_with_three_arguments_has_no_waves():
+    report = LayoutReport((), 1, (("a",),))
+    assert (report.waves, report.widest_wave) == ((), 0)
+
+
+def test_a_chain_whose_bodies_never_name_their_upstream_is_a_single_chain():
+    tasks = [
+        task("alpha", "Add src/alpha.py.", ["src/alpha.py"]),
+        task("beta", "Add src/beta.py.", ["src/beta.py"], ["alpha"]),
+        task("gamma", "Add src/gamma.py.", ["src/gamma.py"], ["beta"]),
+    ]
+    report = check_layout(tasks)
+    chain = [f for f in report.findings if f.rule == "single_chain"]
+    assert [(f.advisory, f.task) for f in chain] == [(True, "")]
+    assert "narrative order" in chain[0].detail
+    assert report.blocking == ()
+
+
+def test_a_chain_whose_bodies_name_their_upstream_is_not_a_single_chain():
+    report = check_layout([phased("alpha", "p1"), phased("beta", "p1", ["alpha"]), phased("gamma", "p1", ["beta"])])
+    assert report.width == 1
+    assert report.findings == ()
 
 
 def test_a_wide_graph_reports_its_width():
