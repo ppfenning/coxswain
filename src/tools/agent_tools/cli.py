@@ -11538,11 +11538,23 @@ def _chair_run_deps(
         # Lands run behind the tick on the land worker (tools #1287), which beats only the chair lease while one runs:
         # the tick's own `beat` also clears this tick's fact caches, which a worker thread must never touch.
         sink = chair_run.land_sink(lambda: chair.renew_lease(runs_dir, session, pid, host), released=lambda: chair.honour_release_request(runs_dir, session, pid, host))
-        exec_deps = dataclasses.replace(exec_deps, lands=sink)
-        facts_deps = dataclasses.replace(facts_deps, landing=sink.landing)
-        stop_lands = sink.stop
-        # WorkerLands has no in_flight method; `landing()` lists the lands still in progress.
-        lands_in_flight = lambda: bool(sink.landing())  # noqa: E731
+        from agent_tools import chair_land_sink
+
+        def spawn_land(argv: list[str]) -> int:
+            return subprocess.Popen(
+                argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True
+            ).pid
+
+        lands = chair_land_sink.ProcessLands(
+            runs_dir / "chair-lands", sink,
+            lambda action, code, output: chair_exec.land_outcome(action, exec_deps, code, output),
+            land_limit.repo_land_limit, spawn_land, chair.pid_alive, host, time.time,
+        )
+        exec_deps = dataclasses.replace(exec_deps, lands=lands)
+        facts_deps = dataclasses.replace(facts_deps, landing=lands.landing)
+        stop_lands = sink.stop  # the thread sink only: a land process is never signalled
+        # Land processes outlive the chair and a new chair adopts them from the state dir; only thread lands die with it.
+        lands_in_flight = lambda: bool(lands.held_here())  # noqa: E731
     # A dry run never releases a real lease, so it passes no release check.
     release_requested = None if dry_run else (lambda: chair.honour_release_request(runs_dir, session, pid, host))
     checkout_state = lambda: chair_restart.read_checkout_state(chair_restart.checkout_root(), _chair_git)  # noqa: E731
