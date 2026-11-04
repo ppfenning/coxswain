@@ -11,6 +11,9 @@ check to remove verbose changes, we want what goes into main to have all the fat
 from `workspace/plans/agent-platform/2026-09-08-intake-grouping.md`. Committed identically to
 `coxswain-tools`, `coxswain-graphs` and `coxswain-cartridges` under `docs/design/` so any build seat can read it.
 
+> Superseded in part by §8. Sections 0 to 7 describe the phase as the unit of landing. The unit is now set by `land_at`,
+> and its default, `ticket`, lands one pull request per initiative. Read the phase text below as the `level` case.
+
 ## 0. The defect, once
 
 The epic builds a PHASE: every task branch is merged `--no-ff` into `epic/<initiative>/<phase>`
@@ -107,3 +110,55 @@ branches. §2 `phase_pr_body` on a two-ticket literal record with one arbitratio
 it complete. §4 `checks_argv` yields two argvs from a two-check config and the `checks` step stops at the
 first failure. §5 the floor accepts A ⊆ B and refuses a removed test id; a refused trim leaves the branch
 untouched.
+
+## 8. Landing granularity
+
+`landing_areas.land_at` is `ticket`, `level` or `task`. Absent means `ticket`. `core/landing.py resolve_land_at` picks
+the initiative's `land_at` first, then the cartridge or overlay value, then `ticket`, and checks every value given.
+It is set in three places. The team cartridge sets `landing_areas.land_at`. The repo overlay `.agent/cartridge.yaml`
+may set the same key and replaces the team value. An initiative sets `land_at:` in the frontmatter of `initiative.md`
+(`core/workstore.py read_initiative`), which wins over both.
+
+The approval gate applies only at that granularity. `land_gate_level` returns the `land_at` value. At `ticket`, with no
+`assume`, `harness/epic.py` clears the batch itself and writes no gate diff and no ledger row. The person decides on
+the one pull request. At `level` and `task` the batch goes through the gate. In `agent_tools/land.py`, `gate_level`
+takes the earlier stop of the team `gate` and the rung the PR opens: `level` maps to `phase`, `ticket` to `epic`, and
+`task` keeps the team value.
+
+What each value lands:
+
+- `ticket`: one pull request per initiative. Levels and tasks open none. A task branch merges into its level branch,
+  levels stack on their parent level's branch, and the stack is the single PR. `_card_phase_plan` opens it at the last
+  level, waits for checks, squash-merges, then marks every ticket task done. A task not in the merged PR is left in its
+  state with a note.
+- `level`: one PR per completed level, in `epic.py`. It is based on the parent level's PR branch when that PR exists,
+  else on the default branch.
+- `task`: one PR per merged task against the default branch. A failed PR is a note, not a quarantine.
+
+A level is a set of tasks that can run together. It exists to order tasks and stack their branches. The harness calls
+it a phase and names its branch `epic/<initiative>/<phase>`. A level with several parents is assembled from them onto
+the default ref by `harness/assembly.py assemble`, and its record carries `assembled_from`.
+
+Status vocabulary, from `agent_tools/dash_feed.py _task_state`:
+
+| Word | Source |
+| --- | --- |
+| `ready` | Store `ready`, every need landed, no live lane. |
+| `building` | A live lane covers the task's initiative and phase. |
+| `approved` | Store `approved`, or a task `runs stranded` lists. |
+| `merged` | `approved` with `extra["merged"]` (`route.is_merged`), or `done` written at another `land_at`. |
+| `landed` | `done` at the configured `land_at`. |
+
+The merged state is stored. A task merged into its level branch stays `approved` and its row keeps `merged` and
+`merged_commit`. Only a land writes `done`. On restart `_ready_view` presents a merged parent as `done` for `needs`, so
+a dependent level does not wait for a person. `_merge_missing` checks that `merged_commit` is an ancestor of the level
+branch, and quarantines the one task whose commit is gone. A merged task is not rebuilt. At `task` a restart opens the
+PR of any stored merged task that has none. At `level` it reuses the level's PR or opens the missing one.
+
+The task cap is `--max-parallel` on the phase and epic commands. Without it the cap is the provider profile's
+`max_parallel`, a positive integer, else the free lane count (`harness/lanes.py resolve_max_parallel`).
+
+A phase still waits for its parent phases. The epic driver holds a phase until every parent is complete, and a parent
+that missed its goal blocks its dependents. Running a ready task ahead of an unfinished earlier level is planned work in
+#626 and is not current behaviour. `next_launches` in `harness/lanes.py` exists with tests and is not called by the
+epic driver.

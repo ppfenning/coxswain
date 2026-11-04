@@ -36,13 +36,31 @@ build, as `{name, cmd}` entries, with an optional `timeout` (seconds) and
 its own checks on top with a root `.agent-checks` file. See
 [Landing](../methodology/landing.md#checks-are-evidence).
 
+## Landing granularity
+
+`landing_areas.land_at` sets where landing happens: `ticket`, `level` or `task`.
+The default is `ticket`, one pull request per initiative. The approval gate
+applies only at the chosen granularity.
+
+```yaml
+landing_areas:
+  land_at: level
+```
+
+A repository overlay may set the same key, and it replaces the team value for
+that repository. An initiative can override both with `land_at:` in the
+frontmatter of its `initiative.md`. See
+[Landing](../methodology/landing.md#landing-granularity) for what each value
+lands and when.
+
 ## The project layer
 
 A repository can also carry `.agent/cartridge.yaml`. The harness reads it
 for runs against that repository and folds it in last. It may set only
-`description`, `context`, `policy.review_tier`, `policy.cost.level` and
-`landing_areas.checks`. Its checks list replaces the team's list for that
-repository; `.agent-checks` still adds to it. Any other key is refused.
+`description`, `context`, `policy.review_tier`, `policy.cost.level`,
+`landing_areas.checks` and `landing_areas.land_at`. Its checks list replaces
+the team's list for that repository; `.agent-checks` still adds to it. Any
+other key is refused.
 
 The project layer may only tighten review: it may lower a `review_tier`
 threshold, add to `tier2_surfaces` and remove from `tier0_patterns`, never
