@@ -1648,19 +1648,65 @@ def already_merged_line(pr: dict) -> str:
     return f"{ALREADY_MERGED_PREFIX} (PR #{pr.get('number')})"
 
 
-def _phase_merged_pr(repo: Path, initiative: str, phase: str, default_branch: str, forge_module) -> dict | None:
-    """Edge. The first merged PR of `pr/<initiative>--<phase>` when `_phase_already_merged` holds, fed by the forge's PRs and by the branch's content against main; else None."""
+def _carried_files(items: list[dict], task_records: list[dict]) -> list[str]:
+    """Pure. Sorted files of the approved tasks, from each record's `build.files_touched`; the items carry no files."""
+    approved = {i["id"] for i in items if i.get("status") == "approved"}
+    return sorted({f for r in task_records if r.get("task") in approved for f in (r.get("build") or {}).get("files_touched") or []})
+
+
+def _main_subjects_touching(repo: Path, default_branch: str, branch: str, files: list[str]) -> list[str]:
+    """Edge. Subjects, newest first, of commits on the fetched default branch that touched `files` and left them as `branch` holds them.
+    A later commit that changed those files again does not match, so it cannot lend its PR number to this branch."""
+    log = _git_out(repo, "log", "--max-count=20", "--format=%H %s", f"refs/remotes/origin/{default_branch}", "--", *files) if files else None
+    same = lambda sha: subprocess.run(["git", "-C", str(repo), "diff", "--quiet", sha, branch, "--", *files], capture_output=True).returncode == 0  # noqa: E731
+    return [line.split(" ", 1)[1] for line in (log or "").splitlines() if " " in line and same(line.split(" ", 1)[0])]
+
+
+def _branch_has_own_commits(repo: Path, branch: str, default_branch: str) -> bool:
+    """Edge. True when `branch` holds a commit the fetched default branch does not reach; a branch level with main holds none."""
+    count = _git_out(repo, "rev-list", "--count", f"refs/remotes/origin/{default_branch}..{branch}")
+    return count is not None and int(count) > 0
+
+
+def _parent_merged_pr(repo: Path, initiative: str, parent: str | None, forge_module) -> int | None:
+    """Edge. Number of the first merged PR of the parent phase's PR branch, None without a parent or a merged PR."""
+    prs = forge.branch_prs(forge_module, repo, f"pr/{initiative}--{parent}") if parent else []
+    return None if isinstance(prs, str) else next((p["number"] for p in prs if p.get("state") == "merged"), None)
+
+
+def _phase_merged_pr(repo: Path, initiative: str, phase: str, default_branch: str, forge_module,
+                     files: list[str], parent: str | None) -> dict | None:
+    """Edge. The first merged PR of `pr/<initiative>--<phase>` when `_phase_already_merged` holds, else a `carried` dict
+    for the PR that put an unclaimed, non-empty branch onto main (see `_main_subjects_touching`, `_parent_merged_pr`); None without a number.
+    With no `files` and no `parent` there is nothing to find a carrier by, so only the own-PR case can hold."""
     branch = f"epic/{initiative}/{phase}"
     exists = _branch_exists(repo, f"refs/heads/{branch}")
     prs = forge.branch_prs(forge_module, repo, f"pr/{initiative}--{phase}")
-    if not _phase_already_merged(prs, exists, exists and _phase_adds_nothing(repo, branch, default_branch)):
+    adds_nothing = exists and _phase_adds_nothing(repo, branch, default_branch)
+    if _phase_already_merged(prs, exists, adds_nothing):
+        return next(p for p in prs if p.get("state") == "merged")
+    unclaimed = not isinstance(prs, str) and not any(p.get("state") in ("merged", "open") for p in prs)
+    if not (unclaimed and adds_nothing and (files or parent) and _branch_has_own_commits(repo, branch, default_branch)):
         return None
-    return next(p for p in prs if p.get("state") == "merged")
+    subjects = _main_subjects_touching(repo, default_branch, branch, files)
+    named = any(land.pr_number_of_subject(s) is not None for s in subjects)
+    number = land.carrying_pr(subjects, None if named else _parent_merged_pr(repo, initiative, parent, forge_module))
+    return None if number is None else {"number": number, "state": "merged", "carried": True}
+
+
+def _carried_pr(merged_pr: dict | None) -> str:
+    """Pure. The running `pr` a walk starts from: `#<n>` for a carried phase, `""` otherwise."""
+    return f"#{merged_pr['number']}" if merged_pr is not None and merged_pr.get("carried") else ""
+
+
+def _merged_line(merged_pr: dict) -> str:
+    """Pure. The report line for a phase land that skips the merge: `landed via PR #n` when main carried it, else the already-merged line."""
+    return land.landed_via_line(_carried_pr(merged_pr)) if merged_pr.get("carried") else already_merged_line(merged_pr)
 
 
 def _phase_already_landed(repo: Path, initiative: str, phase: str, default_branch: str, forge_module) -> bool:
     """Edge. True when `_phase_merged_pr` finds a merged PR."""
-    return _phase_merged_pr(repo, initiative, phase, default_branch, forge_module) is not None
+    return _phase_merged_pr(repo, initiative, phase, default_branch, forge_module, [], None) is not None
 
 
 def _phase_pr_facts(repo: Path, pr_branch: str, forge_module=forge_github) -> dict | str:
@@ -1980,10 +2026,31 @@ def _phase_items(work_root: Path, initiative: str, phase: str, runs_dir: Path | 
     return items, str(phase_dir)
 
 
+def _natural_key(name: str) -> list[int | str]:
+    """Pure. Sort key that orders `phase-2` before `phase-10`."""
+    return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", name)]
+
+
+def _sole_parent(phase_of: dict[str, str], needs: dict[str, list[str]], phase: str) -> str | None:
+    """Pure. The one other phase that tasks of `phase` need tasks of, whatever those tasks' state; None for none or several.
+    `waves.phase_parents` drops done needs, and a parent that already landed has all of its tasks done."""
+    parents = {phase_of[n] for t, ns in needs.items() if phase_of.get(t) == phase for n in ns if n in phase_of} - {phase}
+    return next(iter(parents)) if len(parents) == 1 else None
+
+
+def _parent_phase(work_root: Path, initiative: str, phase: str) -> str | None:
+    """Edge. The phase `phase` stacks on, read from the `needs` of its tickets; see `_sole_parent`."""
+    root = work_root / initiative
+    paths = sorted(root.glob("*/*.md")) if root.is_dir() else []
+    items = [route.work_item(route.parse_frontmatter(text)[0], initiative=initiative, phase_dir=p.parent.name, stem=p.stem)
+             for p in paths if (text := _read_text_or_none(p)) is not None]
+    return _sole_parent({str(i["id"]): str(i["phase"]) for i in items}, {str(i["id"]): [str(n) for n in i["needs"] or []] for i in items}, phase)
+
+
 def _ticket_items(work_root: Path, initiative: str, runs_dir: Path, land_mode: str, current: tuple[str, list[dict]]) -> tuple[dict[str, str], list[str]]:
     """Approved task id to ticket path across every phase of the initiative (`current` is already read), and the phases in natural order."""
     root = work_root / initiative
-    phases = sorted((d.name for d in root.iterdir() if d.is_dir()), key=lambda n: [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", n)]) if root.is_dir() else []
+    phases = sorted((d.name for d in root.iterdir() if d.is_dir()), key=_natural_key) if root.is_dir() else []
     found = [i for p in phases for i in (current[1] if p == current[0] else _phase_items(work_root, initiative, p, runs_dir, land_mode)[0] or [])]
     return {i["id"]: i["file"] for i in found if i["status"] == "approved"}, phases
 
@@ -3314,7 +3381,9 @@ def _runs_land(a: argparse.Namespace) -> int:
                 print(f"land: refusing, {phase_pr}")
                 return 2
         read_forge = pr_forge or forge.forge_for(forge.forge_name(profile))
-        merged_pr = _phase_merged_pr(repo, initiative, phase, default_branch, read_forge) if read_forge is not None else None
+        merged_pr = (_phase_merged_pr(repo, initiative, phase, default_branch, read_forge, _carried_files(items, task_records),
+                                      _parent_phase(runs_dir.parent / "work", initiative, phase))
+                     if read_forge is not None else None)
         already_merged = merged_pr is not None
         land_at = _phase_land_at(phase_record, profile, runs_dir.parent / "work", initiative)
         ticket_items, phases = _ticket_items(runs_dir.parent / "work", initiative, runs_dir, land_mode, (phase, items)) if land_at == "ticket" else ({}, [])
@@ -3421,7 +3490,7 @@ def _runs_land(a: argparse.Namespace) -> int:
         steps = land.resume_steps(steps, decision, cherry_pick["onto"])
         planned = land.resume_steps(planned, decision, cherry_pick["onto"])
     if merged_pr is not None:
-        print(already_merged_line(merged_pr))
+        print(_merged_line(merged_pr))
     # Steps start here: every return from now on is logged. Earlier returns are not.
     repo_lost: list[str] = []
     stops: list[dict] = []
@@ -3465,7 +3534,7 @@ def _runs_land(a: argparse.Namespace) -> int:
             print(f"land: {cherry_pick['onto']} at {recreate['old_tip'][:8]} holds nothing beyond {cherry_pick['from']}, "
                   f"recreating it")
         return _land_execute(repo, steps, planned, record, item_path, level, a.no_merge, forge_module, by=_holder_label(a),
-                             mode=land_mode, guard=guard, stops=stops, keep=keep,
+                             mode=land_mode, guard=guard, stops=stops, keep=keep, pr=_carried_pr(merged_pr),
                              lock=_merge_lock_factory(runs_dir, str(repo), repo_holder, repo_limit, leased))
 
     repo_holder = f"{_holder_label(a)}@{socket.gethostname()}:{os.getpid()}"
@@ -3603,8 +3672,10 @@ def _land_execute(repo: Path, steps: list[dict], planned: list[dict], record: di
                   level: str, no_merge: bool, forge_module=forge_github, by: str = _UNLABELED,
                   mode: str = "files", guard: Callable[[str], str | None] | None = None,
                   stops: list[dict] | None = None, keep: Sequence[_LeaseGuard] = (),
-                  lock: Callable[[], contextlib.AbstractContextManager] | None = None) -> tuple[int, list[str], str]:
+                  lock: Callable[[], contextlib.AbstractContextManager] | None = None, pr: str = "") -> tuple[int, list[str], str]:
     """Walk `steps`; return the exit code, the step kinds run in order, and the PR url ("" when none opened).
+
+    `pr` seeds the running PR, so a land that opens none still records the PR that carried its work.
 
     A pr branch's land worktree is dropped before `merge` and on every stop; the branch itself stays.
     `guard(kind)`, when given, runs before each step; a reason back stops the land with exit 2 before that step.
@@ -3616,7 +3687,7 @@ def _land_execute(repo: Path, steps: list[dict], planned: list[dict], record: di
             for kept in keep:
                 renewing.enter_context(kept.renewing())
             return _land_walk(repo, steps, planned, record, item_path, level, no_merge, forge_module, built, by=by, mode=mode,
-                              guard=guard, stops=stops, lock=lock)
+                              guard=guard, stops=stops, lock=lock, pr=pr)
     finally:
         for branch in built:
             _remove_land_worktree(repo, branch)
@@ -3638,8 +3709,7 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
                level: str, no_merge: bool, forge_module, built: list[str], by: str = _UNLABELED,
                mode: str = "files", guard: Callable[[str], str | None] | None = None,
                stops: list[dict] | None = None,
-               lock: Callable[[], contextlib.AbstractContextManager] | None = None) -> tuple[int, list[str], str]:
-    pr = ""
+               lock: Callable[[], contextlib.AbstractContextManager] | None = None, pr: str = "") -> tuple[int, list[str], str]:
     landing = ""  # what a landed task's review PRs are closed against; "" until a merge succeeds
     reached: list[str] = []
     looped = False
