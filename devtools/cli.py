@@ -633,7 +633,7 @@ def _merge_back(step: dict, directory: str, run, sleep, now) -> tuple[bool, str]
         list_runs=lambda: run(["gh", "run", "list", "--branch", branch, "--json", "conclusion,name,url"], directory),
         branch=branch)
     if not wc_ok:
-        return False, wc_out
+        return False, wc_out if branch in wc_out else f"{branch}: {wc_out}"
     for argv, cwd in ((release.pr_merge_argv(branch, "merge"), directory),
                       (release.checkout_ref_argv(directory, default), None),
                       (release.pull_argv(directory, default), None)):
