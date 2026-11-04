@@ -54,7 +54,7 @@ from typing import Any, Literal
 from urllib.parse import urlencode
 
 from core import ledger, workstore
-from core.landing import land_gate_level, resolve_land_at
+from core.landing import land_gate_level, phase_counts_complete, phase_land_deferred, resolve_land_at
 from core.manifest import append_ledger, build_manifest, gate_diff
 from core.phase_hold import phase_holds
 from core.workstore import WorkStoreError, record_attempt
@@ -486,6 +486,18 @@ def phase_parents(items: Sequence[Mapping[str, Any]]) -> dict[str, set[str]]:
     return parents
 
 
+def _items_complete(land_at: str, phase: str, items: Sequence[Mapping[str, Any]]) -> bool:
+    """The shared landing rule over the (state, merged) of one phase's items."""
+    return phase_counts_complete(
+        land_at, [(str(i.get("state")), bool(i.get("merged"))) for i in items if i.get("phase") == phase]
+    )
+
+
+def _land_deferred(land_at: str, phase: str, items: Sequence[Mapping[str, Any]]) -> bool:
+    """True when the phase's land is not due yet and its items already count complete."""
+    return phase_land_deferred(land_at, phase, workstore.phases(items)) and _items_complete(land_at, phase, items)
+
+
 def phase_order(parents: Mapping[str, set[str]]) -> tuple[list[str], list[str]]:
     """Phases in dependency order with ties broken by name, then the unorderable.
 
@@ -691,11 +703,11 @@ def waiting_tasks(cherry_lines: Sequence[str]) -> list[str]:
 
 
 def awaiting_land_lines(record: Mapping[str, Any], run_id: str, repo: Path | str) -> list[str]:
-    """The phase line, then one `cox runs land` per waiting task, for an awaiting_land record; else nothing.
+    """The phase line, then one `cox runs land` per waiting task, for an awaiting_land record whose land is due; else nothing.
 
     The flags mirror the chair's land action (`chair_exec`); this layer does not import it.
     """
-    if record.get("status") != "awaiting_land":
+    if record.get("status") != "awaiting_land" or record.get("land_deferred"):
         return []
     tasks = list(record.get("awaiting_tasks") or [])
     head = f"phase {record.get('phase')}: awaiting land of {len(tasks)} approved task(s): {', '.join(tasks)}"
@@ -1308,7 +1320,9 @@ def run_epic(
 
         for phase in ordered:
             parent_phases = sorted(parents.get(phase) or ())
-            parent = next((p for p in parent_phases if p not in complete), None)
+            # Only an awaiting_land record can count complete on its items; a partial or blocked one still blocks.
+            deferred = {r["phase"] for r in phases if r.get("land_deferred")}
+            parent = next((p for p in parent_phases if p not in complete and p not in deferred), None)
             if parent is not None:
                 # v1 is blanket no: a phase unblocks its dependents only when
                 # `validate_phase` says the goal is met. The validator reports
@@ -1349,6 +1363,9 @@ def run_epic(
             quarantined.extend(record.pop("quarantined"))
             proposals.extend(record.pop("batch"))
             stacks_rebased += 1 if record.get("rebased") else 0
+            # `land_deferred` marks an awaiting_land phase whose land is not due: it unblocks dependents and is not counted as waiting.
+            if record["status"] == "awaiting_land" and _land_deferred(ctx.land_at, phase, items):
+                record["land_deferred"] = True
             add_phase(record)
             if record.get("stopped"):
                 print(f"  run stopped: {record['stopped']}; later phases not run")
@@ -1879,6 +1896,11 @@ def _clear_pause_if_held(
         _log.warning("pause flag clear failed for %s: %s: %s", run_id, type(exc).__name__, exc)
 
 
+def _awaits_land(phase: Mapping[str, Any]) -> bool:
+    """A phase waiting on a land that is due now, not one whose land is deferred."""
+    return phase.get("status") == "awaiting_land" and not phase.get("land_deferred")
+
+
 def build_outcome(result: Mapping[str, Any]) -> dict[str, Any]:
     """The run's outcome from its epic result: totals, phase-grain quarantines, phases waiting on a parent.
 
@@ -1895,7 +1917,7 @@ def build_outcome(result: Mapping[str, Any]) -> dict[str, Any]:
         for p in result.get("phases") or []
         if p.get("status") == "blocked" and len(p.get("parents") or []) >= 1 and p["phase"] not in blocked_ids
     ]
-    awaiting_land = any(p.get("status") == "awaiting_land" for p in result.get("phases") or [])
+    awaiting_land = any(_awaits_land(p) for p in result.get("phases") or [])
     return {
         "totals": dict(result.get("totals") or {}),
         "blocked": blocked,
@@ -1946,7 +1968,7 @@ def _build_result(
         **({"paused_until": paused_until, "exit_code": EXIT_PAUSED} if paused_until else {}),
         **(
             {"exit_code": EXIT_AWAITING_LAND}
-            if not paused_until and any(p.get("status") == "awaiting_land" for p in phases)
+            if not paused_until and any(_awaits_land(p) for p in phases)
             else {}
         ),
         "exit_summary": (
@@ -1957,7 +1979,7 @@ def _build_result(
         "totals": {
             "phases_complete": sum(1 for p in phases if p["status"] == "complete"),
             "phases_partial": sum(1 for p in phases if p["status"] == "partial"),
-            "phases_awaiting_land": sum(1 for p in phases if p["status"] == "awaiting_land"),
+            "phases_awaiting_land": sum(1 for p in phases if _awaits_land(p)),
             "phases_blocked": sum(1 for p in phases if p["status"] == "blocked"),
             "tasks_quarantined": sum(1 for q in quarantined if q.get("grain") == "task"),
             "approved_not_landed": len(unlanded),
