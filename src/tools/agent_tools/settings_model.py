@@ -20,7 +20,7 @@ Keys by section, in section order:
 - lanes and machines: cartridge `policy.dispatch.max_in_flight`,
   `policy.dispatch.local_lanes`.
 - spend and pacing: profile `window_ceiling_usd`, `weekly_ceiling_usd`,
-  `node_cap_usd`, `weekly_reset`; cartridge `policy.pacing.hard_stop_fraction`,
+  `node_cap_usd`, `weekly_reset`, `monthly_budget_usd`, `budget_timezone`; cartridge `policy.pacing.hard_stop_fraction`,
   `policy.pacing.weekly_hard_stop_fraction`, `policy.pacing.min_elapsed_fraction`.
 - builds and budgets: cartridge `policy.build_budget_usd_max`, `epic_threshold`.
 - models and tiers (all operator_only): cartridge `policy.review_tier`,
@@ -60,6 +60,12 @@ PROFILE_FILE = "profile.yaml"
 DEFAULT_OPERATOR = "operator"
 OPERATOR_DESCRIPTION = "the name of the human the courier and decisions address"
 
+MONTHLY_BUDGET_DESCRIPTION = "the calendar-month spend budget in USD, above zero"
+BUDGET_TIMEZONE_DESCRIPTION = (
+    "IANA zone that sets the month boundary; defaults to the zone of weekly_reset when set, else UTC. "
+    "The default is applied by the readers, not by the profile parser"
+)
+
 STORE_MODES = ("files", "shared")
 DEFAULT_STORE_MODE = "files"
 STORE_MODE_DESCRIPTION = "where run state lives: files on this machine, or the shared store"
@@ -95,6 +101,10 @@ REGISTRY: tuple[Setting, ...] = (
          ("policy.dispatch.max_in_flight", "policy.dispatch.local_lanes")),
     *_in("spend and pacing", "profile", PROFILE_FILE,
          ("window_ceiling_usd", "weekly_ceiling_usd", "node_cap_usd", "weekly_reset")),
+    Setting("profile", "monthly_budget_usd", "spend and pacing", PROFILE_FILE, "monthly_budget_usd",
+            description=MONTHLY_BUDGET_DESCRIPTION),
+    Setting("profile", "budget_timezone", "spend and pacing", PROFILE_FILE, "budget_timezone",
+            description=BUDGET_TIMEZONE_DESCRIPTION),
     *_in("spend and pacing", "cartridge", CARTRIDGE_FILE,
          ("policy.pacing.hard_stop_fraction", "policy.pacing.weekly_hard_stop_fraction",
           "policy.pacing.min_elapsed_fraction")),
