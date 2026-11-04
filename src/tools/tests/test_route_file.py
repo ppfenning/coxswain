@@ -1,8 +1,10 @@
 """`route file` refuses a repository that is not a git checkout on this machine, before anything is written."""
 import pytest
 
-from agent_tools import run_store
+from agent_tools import route, run_store
 from agent_tools.cli import _is_git_checkout_path, _not_a_checkout_message, main
+
+_ISSUE = "https://github.com/acme/widgets/issues/12"
 
 
 @pytest.fixture(autouse=True)
@@ -101,3 +103,28 @@ def test_the_frontmatter_repo_gets_the_same_check(tmp_path, capsys, rows):
     assert capsys.readouterr().out == "route file: refusing, /no/such/repo is not a git checkout on this machine\n"
     assert _written(ws) == [intake]
     assert rows == []
+
+
+def test_link_fields_on_literals():
+    assert route.link_fields(_ISSUE) == [("link", _ISSUE), ("issue", "12"), ("issue_repo", "acme/widgets")]
+    assert route.link_fields("https://example.com/page") == [("link", "https://example.com/page")]
+    assert route.link_fields("") == []
+
+
+def test_an_intake_with_a_link_and_no_source_writes_the_issue_fields_and_no_source():
+    (text,) = route.intake_file("Fix it", "body", "repo", "2026-11-03", link=_ISSUE).values()
+
+    assert text == (
+        "---\nid: fix-it\ntitle: Fix it\nrepo: repo\n"
+        'link: "https://github.com/acme/widgets/issues/12"\nissue: 12\nissue_repo: acme/widgets\n---\n\nbody\n'
+    )
+    assert "source:" not in text
+
+
+def test_a_pulled_intake_is_byte_for_byte_the_old_form():
+    (text,) = route.intake_file("Fix it", "body", "repo", "2026-11-03", source="github", link=_ISSUE).values()
+
+    assert text == (
+        "---\nid: fix-it\ntitle: Fix it\nrepo: repo\n"
+        'source: github\nlink: "https://github.com/acme/widgets/issues/12"\n---\n\nbody\n'
+    )

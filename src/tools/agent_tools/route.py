@@ -591,6 +591,15 @@ def is_git_checkout(path: Path) -> bool:
     return path.is_dir() and (path / ".git").exists()
 
 
+def link_fields(link: str) -> list[tuple[str, str]]:
+    """`link`, then `issue` and `issue_repo` when the url is an issue url; empty for no link."""
+    if not link:
+        return []
+    found = _ISSUE_URL.match(link)
+    issue = [("issue", found.group(2)), ("issue_repo", found.group(1))] if found else []
+    return [("link", link), *issue]
+
+
 def intake_file(
     title: str,
     body: str,
@@ -612,7 +621,9 @@ def intake_file(
     A non-empty `after` is written last as an `after: [a, b]` list; empty leaves the file as it was.
     """
     text = body if body else title
-    origin = [("source", source), ("link", link)] if link else []
+    # A pulled file keeps its old form. Sync reads a frontmatter `issue` as the item's own mirror issue, so a pull
+    # must not write the source issue number there; `route_sync._issue_steps` would skip `issue_create` for it.
+    origin = [("source", source), ("link", link)] if source and link else link_fields(link)
     waits = [("after", _Raw("[" + ", ".join(_yaml_scalar(a) for a in after) + "]"))] if after else []
     if ids == "sequence":
         id_ = (allocate or allocate_intake_id)()
@@ -626,7 +637,7 @@ def _issue_number(link: str) -> str:
     return link.rstrip("/").rsplit("/", 1)[-1]
 
 
-_ISSUE_URL = re.compile(r"^https?://[^/]+/([^/]+/[^/]+)/issues/\d+/?$")
+_ISSUE_URL = re.compile(r"^https?://[^/]+/([^/]+/[^/]+)/issues/(\d+)/?$")
 _PLACEHOLDER_HOME = "/home/user"
 
 
