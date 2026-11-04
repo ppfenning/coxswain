@@ -43,6 +43,7 @@ from agent_tools import (
     remote_lane,
     repo_path,
     route,
+    route_guard,
     run_store,
     stale_draft,
     store_cli,
@@ -144,6 +145,10 @@ def _no_intake_id(path: str) -> str:
     return ""
 
 
+def _no_initiative_rows() -> tuple[()]:
+    return ()
+
+
 @dataclass(frozen=True)
 class Deps:
     run: Run  # (exit code, output); the only door to cox and git
@@ -154,6 +159,7 @@ class Deps:
     repo_for: Callable[[Action], str]  # the repository a clear_branches acts in; "" when unknown
     ssh_for: Callable[[str], str] = lambda host: ""  # a lane host's name -> its ssh destination; "" when the hosts table has none
     intake_id: Callable[[str], str] = _no_intake_id  # an intake path -> the id in its frontmatter; "" when it has none
+    initiative_rows: Callable[[], Sequence[Mapping]] = _no_initiative_rows  # queue rows, read at the edge
     runs_dir: Path = field(default_factory=lambda: Path("."))  # a fetch_exit's task records and remote record live here
     work_dir: Path = field(default_factory=lambda: Path("."))  # a fetch_exit's ticket files live under work_dir/work/<initiative>
     now: Callable[[], str] = lambda: datetime.now(UTC).isoformat()  # the tick's clock, passed to plan_stale_draft
@@ -811,12 +817,13 @@ def _merge_and_write(work_dir: Path, initiative: str) -> None:
 
 
 def _launch(action: Action, deps: Deps) -> Result:
-    initiative_id: str | Refusal = ""
+    initiative_id = ""
     if action.get("kind") == "launch_decompose" and action.get("intake_ids"):
         idea = action["intake_ids"][0]
-        initiative_id = decompose_id(idea, deps.intake_id(idea))
-    if isinstance(initiative_id, Refusal):
-        return _result(action, "refused", initiative_id.reason)
+        chosen_id = decompose_id(idea, deps.intake_id(idea))
+        if isinstance(chosen_id, Refusal):
+            return _result(action, "refused", chosen_id.reason)
+        initiative_id = route_guard.fresh_initiative_id(chosen_id, deps.initiative_rows())
     if action.get("kind") in ("launch_epic", "relaunch") and action.get("initiative"):
         _merge_and_write(deps.work_dir, action["initiative"])
     argv = argv_for(action, initiative_id, deps.ids_mode, deps.label)
@@ -1915,6 +1922,7 @@ def edge_deps(
         repo_for=repo_for,
         ssh_for=lambda name: str(_host_row(runs_dir, name).get("ssh", "")),
         intake_id=partial(read_intake_id, workspace),
+        initiative_rows=partial(run_store.read_queue, runs_dir),
         runs_dir=runs_dir,
         work_dir=workspace,
         check_login=(lambda name: {}) if dry_run else live_check,
