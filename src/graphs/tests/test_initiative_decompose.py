@@ -1050,6 +1050,15 @@ def test_duplicated_lint_entries_are_written_once(cart) -> None:
     assert yaml.safe_load(block)["lint"] == [lint_entry]
 
 
+def test_a_task_with_needs_is_written_ready() -> None:
+    task = {"id": "t2", "phase": "p1", "title": "b", "needs": ["t1"], "surfaces": []}
+    action = initiative_decompose._item_action(task, landing="work", initiative_id=None)
+    block = action.split("with frontmatter\n", 1)[1].rsplit("\nbody = ", 1)[0]
+    frontmatter = yaml.safe_load(block)
+    assert frontmatter["state"] == "ready"
+    assert frontmatter["needs"] == ["t1"]
+
+
 # ── tier routing: decompose declares hints, the adversary names its tier ─────
 
 
