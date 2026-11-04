@@ -183,13 +183,17 @@ def _epic_launches(
 ) -> list[Action]:
     """Started initiatives with ready tasks, then unstarted ones, each in docket order; withheld ids never launch.
 
+    An initiative with a `dag_problem` never launches either; `plan_recover` is the one place that reports it.
+
     With now, an initiative the launch budget refuses is left out like a withheld one; `budget_skips` names why.
 
     The first free_lanes launch locally. The rest fill host_free in proportion to weight, capped at each
     host's free count, and only onto a host whose capabilities cover the initiative's ready-task requires.
     One that overlaps a running, claimed or launched initiative in its repo yields its lane; steer actions follow.
     """
-    candidates = [i for i in facts["initiatives"] if i["ready_tasks"] and i["id"] not in withheld]
+    candidates = [
+        i for i in facts["initiatives"] if i["ready_tasks"] and i["id"] not in withheld and not i.get("dag_problem")
+    ]
     skips = budget_skips(facts, candidates, now)
     open_ = [i for i in candidates if i["id"] not in skips]
     ordered = [*(i for i in open_ if i["started"]), *(i for i in open_ if not i["started"])]

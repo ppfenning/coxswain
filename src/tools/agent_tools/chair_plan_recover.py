@@ -128,6 +128,7 @@ def _initiative_first_unmet_need(i: InitiativeFacts) -> str | None:
 def _can_relaunch(i: InitiativeFacts, blocked: set[str]) -> bool:
     return (
         i["started"]
+        and not i.get("dag_problem")
         and i["id"] not in blocked
         and bool(i["ready_tasks"])
         and _initiative_first_unmet_need(i) is None
@@ -233,7 +234,19 @@ def _waiting_actions(initiatives: list[InitiativeFacts], blocked: set[str]) -> l
     return [
         {"kind": "needs_chair", "initiative": i["id"], "cause": f"waiting on {need}"}
         for i in initiatives
-        if i["started"] and i["id"] not in blocked and (need := _initiative_first_unmet_need(i)) is not None
+        if i["started"]
+        and not i.get("dag_problem")
+        and i["id"] not in blocked
+        and (need := _initiative_first_unmet_need(i)) is not None
+    ]
+
+
+def _invalid_dag_actions(initiatives: list[InitiativeFacts]) -> list[Action]:
+    """One `invalid_dag (<problem>)` needs_chair per initiative whose task DAG is invalid, started or not."""
+    return [
+        {"kind": "needs_chair", "initiative": i["id"], "cause": f"invalid_dag ({i['dag_problem']})"}
+        for i in initiatives
+        if i.get("dag_problem")
     ]
 
 
@@ -369,6 +382,8 @@ def plan_recover(facts: Facts, now: datetime | None = None) -> list[Action]:
 
     An initiative whose repo has a land in `landing` gets no relaunch pair, so the pair never takes a launch slot.
 
+    An initiative with a `dag_problem` is never relaunched. It reaches the chair once, as `invalid_dag (<problem>)`.
+
     Every open quarantine blocks its initiative's relaunch except one whose recovery is "none" or "relaunch".
     A main_red quarantine recovers by relaunch until `land_outcomes` for its initiative ends in two reverts.
     Then its recovery is "none" and it keeps blocking.
@@ -399,6 +414,7 @@ def plan_recover(facts: Facts, now: datetime | None = None) -> list[Action]:
         + _relaunch_actions(
             facts["initiatives"], blocked, _landing_repos(facts), refused, facts.get("relaunch_loop_reported", [])
         )
+        + _invalid_dag_actions(facts["initiatives"])
         + _waiting_actions(facts["initiatives"], blocked),
         facts,
     )
