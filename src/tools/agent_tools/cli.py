@@ -6497,6 +6497,10 @@ def _fetch_one(runs_dir: Path, hosts, run_id: str, mode: str = "files", by: str 
                           f"configured: {', '.join(h.name for h in hosts) or 'none'}"], ""
     lease_released, ended_at = _remote_fetch_facts(runs_dir, run_id)
     run, locate = _remote_edge(runs_dir.parent)
+    if remote_lane.is_decompose_record(record):
+        # parse_remote_record keeps only the fields remote_record knows, so the initiative is read from the raw text.
+        initiative = json.loads(text).get("initiative")
+        return _fetch_decompose(runs_dir, host, initiative, run_id, lease_released, ended_at, run)
     ended = remote_fetch.refuse_unended(lease_released, ended_at) is None
     if mode == "store" and _landed_elsewhere(runs_dir, host, locate, run_id, ended):
         remote_lane.fetched_record_path(runs_dir, run_id).write_text(json.dumps(remote_lane.landed_elsewhere_marker(_now_iso())))
@@ -6524,6 +6528,41 @@ def _fetch_one(runs_dir: Path, hosts, run_id: str, mode: str = "files", by: str 
         if moved:
             print(f"{run_id}: {len(moved)} task(s) approved from the store")
     return "fetched", [f"run {run_id}", f"host {host.name}", "\n".join(f"repo {repo}" for repo in result)], host.name
+
+
+def _fetch_decompose(
+    runs_dir: Path, host, initiative: object, run_id: str, lease_released: bool, ended_at: str | None,
+    run: Callable[[list[str]], int],
+) -> tuple[str, list[str], str]:
+    """Edge. Fetch an ended remote decompose: its `work/<initiative>` files and log, then the store fill a local decompose gets.
+
+    A decompose leaves files and a log, never a branch, so no git runs and no task path is rewritten. The files are
+    recorded as written and the store filled before the marker, so a failed fill leaves the run unfetched for the next try."""
+    from agent_tools import store_fill  # imported here: cli loads a command module only when it runs
+
+    refusal = remote_fetch.refuse_unended(lease_released, ended_at)
+    if refusal is not None:
+        return "live", [f"fetch: refuse: {run_id} is still live on {host.name}: {refusal}"], host.name
+    if not isinstance(initiative, str) or not initiative or Path(initiative).name != initiative:
+        return "failed", [f"fetch: the {run_id} remote record names no initiative"], host.name
+    workspace = runs_dir.parent
+    work_dir = workspace / "work" / initiative
+    work_dir.mkdir(parents=True, exist_ok=True)
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    for argv in remote_fetch.decompose_pull_argvs(host.ssh, host.workspace_dir, str(workspace), initiative, run_id):
+        code = run(argv)
+        if code != 0:
+            return "failed", [f"fetch: rsync: {' '.join(argv)} exited {code}"], host.name
+    pulled = sorted(p for p in work_dir.rglob("*.md") if p.is_file())
+    queue_export.record_written_paths(workspace, [p.absolute() for p in pulled])
+    try:
+        store_fill.fill_workspace(workspace)
+    except RuntimeError as exc:
+        return "failed", [f"fetch: store: {exc}"], host.name
+    tasks = [p.relative_to(work_dir).as_posix() for p in pulled if p != work_dir / "initiative.md"]
+    marker = {"fetched_at": _now_iso(), "initiative": initiative, "tasks": tasks}
+    remote_lane.fetched_record_path(runs_dir, run_id).write_text(json.dumps(marker))
+    return "fetched", [f"run {run_id}", f"host {host.name}", f"initiative {initiative}"], host.name
 
 
 def _land_refetch_phase_branch(a: argparse.Namespace, runs_dir: Path, run_id: str, repo: Path, branch: str) -> str | None:
