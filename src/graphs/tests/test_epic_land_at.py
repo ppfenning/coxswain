@@ -6,10 +6,13 @@ import pytest
 
 from core import ledger
 from harness import epic as epic_module
-from harness.epic import opens_pr
+from harness.epic import EXIT_AWAITING_LAND, build_outcome, opens_pr
 from tests.test_epic_driver import (  # noqa: F401 -- cart and repo are fixtures
+    GOAL_UNMET,
+    Runner,
     cart,
     drive,
+    git,
     initiative,
     new_file_patch,
     repo,
@@ -188,3 +191,89 @@ def test_a_governance_task_opens_no_review_pr_at_ticket(repo, cart, tmp_path, pr
     record = next(t for t in result["tasks"] if t["id"] == "t1-probe")
     assert prs == []
     assert record["status"] == "approved" and "review_pr" not in record
+
+
+def _advance_main(repo) -> None:  # noqa: F811
+    (repo / "moved.md").write_text("moved\n", encoding="utf-8")
+    git("add", "-A", cwd=repo)
+    git("commit", "-qm", "advance main", cwd=repo)
+
+
+def _restart_work(land_at: str, *, levels: tuple[str, ...], unmerged: str | None = None) -> dict:
+    """The store a restart reads: every task of `levels` approved and merged, bar `unmerged`."""
+    work = land(land_at)
+    items = [
+        {**item, "state": "approved", "merged": item["id"] != unmerged} if item["phase"] in levels else item
+        for item in work["items"]
+    ]
+    return {**work, "items": items}
+
+
+def _first_run_then_move_main(repo, cart, tmp_path, land_at: str) -> None:  # noqa: F811
+    drive(repo, cart, tmp_path, work=land(land_at), run_id="epic-1")
+    _advance_main(repo)
+
+
+def _p2(result: dict) -> dict:
+    return next(p for p in result["phases"] if p["phase"] == "p2-rollout")
+
+
+def test_at_ticket_p2_builds_when_every_p1_task_is_approved_and_merged(repo, cart, tmp_path, prs, capsys) -> None:  # noqa: F811
+    _first_run_then_move_main(repo, cart, tmp_path, "ticket")
+    work = _restart_work("ticket", levels=("p1-foundations",))
+    capsys.readouterr()
+    result, runner = drive(repo, cart, tmp_path, work=work, run_id="epic-2")
+    assert any(c["role"] == "build" and "t3-cutover" in c["prompt"] for c in runner.calls)
+    assert _p2(result)["status"] != "blocked"
+    assert result["phases"][0]["land_deferred"] is True
+    assert "blocked_kind" not in build_outcome(result)
+    assert result.get("exit_code") != EXIT_AWAITING_LAND
+    assert result["totals"]["phases_awaiting_land"] == 0
+    assert "cox runs land epic-2 --task" not in capsys.readouterr().out
+
+
+def test_at_ticket_a_partial_p1_with_every_task_merged_still_blocks_p2(repo, cart, tmp_path, prs) -> None:  # noqa: F811
+    patches = {t: new_file_patch(f"{t}.txt") for t in ("t1-probe", "t2-bench", "t3-cutover")}
+    runner = Runner(patches, verdicts={"p1-foundations": GOAL_UNMET})
+    result, runner = drive(repo, cart, tmp_path, runner=runner, work=land("ticket"))
+    assert result["phases"][0]["status"] == "partial"
+    assert all(t["merged"] for t in result["tasks"] if t["id"] != "t3-cutover")
+    assert _p2(result)["status"] == "blocked" and "did not meet its goal" in _p2(result)["reason"]
+    assert not any(c["role"] == "build" and "t3-cutover" in c["prompt"] for c in runner.calls)
+
+
+def test_at_level_a_merged_p1_whose_land_is_due_still_blocks_p2(repo, cart, tmp_path, prs) -> None:  # noqa: F811
+    _first_run_then_move_main(repo, cart, tmp_path, "level")
+    work = _restart_work("level", levels=("p1-foundations",))
+    result, runner = drive(repo, cart, tmp_path, work=work, run_id="epic-2")
+    assert result["phases"][0]["status"] == "awaiting_land" and "land_deferred" not in result["phases"][0]
+    assert "awaiting the land" in _p2(result)["reason"]
+    assert build_outcome(result)["blocked_kind"] == "awaiting_land"
+    assert not any(c["role"] == "build" and "t3-cutover" in c["prompt"] for c in runner.calls)
+
+
+def test_at_ticket_p2_stays_blocked_when_one_p1_task_is_approved_unmerged(repo, cart, tmp_path, prs) -> None:  # noqa: F811
+    _first_run_then_move_main(repo, cart, tmp_path, "ticket")
+    work = _restart_work("ticket", levels=("p1-foundations",), unmerged="t2-bench")
+    result, runner = drive(repo, cart, tmp_path, work=work, run_id="epic-2")
+    assert _p2(result)["status"] == "blocked" and "parent phase 'p1-foundations'" in _p2(result)["reason"]
+    assert not any(c["role"] == "build" and "t3-cutover" in c["prompt"] for c in runner.calls)
+
+
+def test_at_task_a_merged_p1_does_not_unblock_p2(repo, cart, tmp_path, prs) -> None:  # noqa: F811
+    _first_run_then_move_main(repo, cart, tmp_path, "task")
+    work = _restart_work("task", levels=("p1-foundations",))
+    result, runner = drive(repo, cart, tmp_path, work=work, run_id="epic-2")
+    assert _p2(result)["status"] == "blocked" and "parent phase 'p1-foundations'" in _p2(result)["reason"]
+    assert not any(c["role"] == "build" and "t3-cutover" in c["prompt"] for c in runner.calls)
+
+
+def test_at_ticket_the_last_phase_approved_and_merged_still_awaits_its_land(repo, cart, tmp_path, prs) -> None:  # noqa: F811
+    only = {**initiative(two_phases=False), "land_at": "ticket"}
+    drive(repo, cart, tmp_path, work=only, run_id="epic-1")
+    _advance_main(repo)
+    approved = {**only, "items": [{**i, "state": "approved", "merged": True} for i in only["items"]]}
+    result, _ = drive(repo, cart, tmp_path, work=approved, run_id="epic-2")
+    assert [p["status"] for p in result["phases"]] == ["awaiting_land"]
+    assert build_outcome(result)["blocked_kind"] == "awaiting_land"
+    assert result["exit_code"] == EXIT_AWAITING_LAND
