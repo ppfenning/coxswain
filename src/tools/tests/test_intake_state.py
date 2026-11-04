@@ -54,6 +54,35 @@ def test_intake_group_falls_through_to_the_substring_rule_when_done_and_cited():
     assert intake_state.intake_group(entry, by_id, initiatives) == "decomposed"
 
 
+def test_intake_group_keeps_an_intake_queued_when_its_only_naming_initiative_is_dropped():
+    entry = {"id": "a", "title": "A", "initiative": None, "done": False, "path": "intake/a.md"}
+    initiatives = [{"id": "x", "done": False, "text": "---\nstate: dropped\nintake: intake/a.md\n---\n"}]
+    by_id = {i["id"]: i for i in initiatives}
+    index = intake_state.intake_index(initiatives)
+    assert intake_state.intake_group(entry, by_id, initiatives, index) == "queued"
+    assert intake_state.intake_group(entry, by_id, initiatives) == "queued"
+
+
+def test_intake_group_still_counts_a_naming_initiative_that_is_not_dropped():
+    entry = {"id": "a", "title": "A", "initiative": None, "done": False, "path": "intake/a.md"}
+    text = "---\nstate: open\nintake: intake/a.md\n---\n"
+    open_ = [{"id": "x", "done": False, "text": text}]
+    done = [{"id": "x", "done": True, "text": text}]
+    assert intake_state.intake_group(entry, {"x": open_[0]}, open_) == "decomposed"
+    assert intake_state.intake_group(entry, {"x": done[0]}, done) == "landed"
+
+
+def test_intake_group_lets_a_live_naming_initiative_decide_beside_a_dropped_one():
+    entry = {"id": "a", "title": "A", "initiative": None, "done": False, "path": "intake/a.md"}
+    dropped = {"id": "x", "done": False, "text": "---\nstate: dropped\nintake: intake/a.md\n---\n"}
+    live = {"id": "y", "done": True, "text": _INTAKE_NAMED}
+    initiatives = [dropped, live]
+    by_id = {i["id"]: i for i in initiatives}
+    index = intake_state.intake_index(initiatives)
+    assert intake_state.intake_group(entry, by_id, initiatives, index) == "landed"
+    assert intake_state.intake_group(entry, by_id, initiatives) == "landed"
+
+
 def test_intake_field_reads_the_first_intake_line_quotes_stripped():
     assert intake_state.intake_field('---\nintake: "intake/a.md"\n---\nbody\n') == "intake/a.md"
 
