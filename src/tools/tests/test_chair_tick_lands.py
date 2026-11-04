@@ -20,6 +20,9 @@ class SlowLands:
     def full(self, repo):
         return self.pending(repo)
 
+    def landing(self):
+        return [{"initiative": a["initiative"], "phase": a.get("phase", ""), "repo": a["repo"]} for a, _ in self.held.values()]
+
     def submit(self, action, work):
         self.held[action["repo"]] = (action, work)
         return {"action": action, "status": "in_progress", "reason": ""}
@@ -36,13 +39,23 @@ class SlowLands:
 def test_a_slow_land_does_not_hold_up_the_launch_into_a_free_lane():
     rig, lands = Rig(), SlowLands()
     deps = rig.deps()
-    deps = replace(deps, plan=lambda facts, now: [LAND, LAUNCH], exec_deps=replace(deps.exec_deps, lands=lands))
+    deps = replace(
+        deps,
+        plan=lambda facts, now: [LAND, LAUNCH],
+        exec_deps=replace(deps.exec_deps, lands=lands),
+        gather=lambda d, now: {**rig._gather(d, now), "landing": lands.landing()},
+    )
+    idle = replace(deps, plan=lambda facts, now: [])
 
     first = tick(deps, False, NOW)
     assert [argv[1:4] for argv in rig.commands] == [["route", "launch", "rescue"]]
-    assert "landing: t1 in r" in first and "lands 0" in first and "launched: " in first
+    # Facts are gathered before the land is submitted, so the tick that starts a land does not list it.
+    assert "landing" not in first and "lands 0" in first and "launched: " in first
+
+    held = tick(idle, False, NOW)
+    assert "landing 1 (1 r)" in held
 
     lands.finish()
-    second = tick(replace(deps, plan=lambda facts, now: []), False, NOW)
+    second = tick(idle, False, NOW)
     assert [a["status"] for a in rig.recorded if a["kind"] == "land"] == ["landed"]
     assert "lands 1" in second and "landing" not in second

@@ -275,6 +275,36 @@ def test_optional_sections_appear_only_when_present(extra, marker, present, afte
     assert after is None or line.index(after) < line.index(marker)
 
 
+def _land(repo):
+    return {"initiative": "epic-a", "phase": "p1", "repo": repo}
+
+
+def test_landing_fragment_counts_lands_in_flight_by_repo_name():
+    lands = [_land("/r/coxswain"), _land("/r/dash"), _land("/r/coxswain")]
+    line = format_status({**_facts(), "landing": lands}, [], [], NOW)
+    assert "landing 3 (2 coxswain, 1 dash)" in line
+
+
+def test_no_lands_in_flight_prints_no_landing_fragment():
+    assert "landing" not in format_status(_facts(), [], [], NOW)
+    assert "landing" not in format_status({**_facts(), "landing": []}, [], [], NOW)
+
+
+def test_landing_repo_with_a_trailing_slash_resolves_to_its_final_component():
+    lands = [_land("/r/coxswain/"), _land("/r/dash//")]
+    assert "landing 2 (1 coxswain, 1 dash)" in format_status({**_facts(), "landing": lands}, [], [], NOW)
+
+
+def test_landing_ties_order_by_name():
+    lands = [_land("/r/beta"), _land("/r/alpha")]
+    assert "landing 2 (1 alpha, 1 beta)" in format_status({**_facts(), "landing": lands}, [], [], NOW)
+
+
+def test_landing_without_a_repo_is_counted_under_a_question_mark():
+    lands = [{"initiative": "epic-a", "phase": "p1"}]
+    assert "landing 1 (1 ?)" in format_status({**_facts(), "landing": lands}, [], [], NOW)
+
+
 def test_standby_line_with_an_until_says_who_holds_the_chair_until_when():
     actions = [{"kind": "standby", "holder": "chair-7@box-1:42", "host": "box-1", "until": "2026-09-26T15:00:00+00:00"}]
     line = format_status(_facts(), actions, [_landed("standby", "recorded")], NOW)
