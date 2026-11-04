@@ -126,6 +126,10 @@ class LandSink(Protocol):
         """Start `work` in the background and return at once: `in_progress`, or `busy` when another process holds the repo."""
         ...
 
+    def start(self, action: Action, argv: list[str]) -> Result:
+        """Start the land as its own process and return `in_progress` at once. Optional: a sink without it takes `submit`."""
+        ...
+
     def collect(self) -> list[Result]:
         """The lands that finished since the last call, each once."""
         ...
@@ -447,10 +451,18 @@ def _land(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
 
 
 def _land_async(action: Action, deps: Deps, sink: LandSink) -> Result:
-    """Hand the land to the sink and return at once; a repo already at its land limit is left alone."""
+    """Hand the land to the sink and return at once; a repo already at its land limit is left alone.
+
+    A sink with `start` runs a `land` or a `land_phase` without task_runs as its own process; any other land goes to `submit`."""
     repo = action.get("repo", "")
     if sink.full(repo):
         return _result(action, "in_progress", f"a land in {repo} is still running")
+    if hasattr(sink, "start") and runs_as_process(action):
+        command = land_command(action, deps, {})
+        if not isinstance(command, tuple):
+            return command
+        started, argv = command
+        return sink.start(started, argv)
     land = {"land": _land, "partial_land": _partial_land}.get(action.get("kind", ""), _land_phase)
     return sink.submit(action, lambda: land(action, deps, {}))
 
@@ -1321,7 +1333,8 @@ def perform(
     Each land's start re-reads the land freeze at `deps.now()`; a live one skips the land, without an escalation, for
     a later tick to plan again. A land already running is never stopped.
     With a land sink, a land returns `in_progress` at once and the actions after it run in the same tick. The lands
-    that finished since the last tick are collected first, so their results lead this tick's.
+    that finished since the last tick are collected first, so their results lead this tick's. A collected result
+    comes from a land process read back from disk, not from a thread of this tick.
     """
     results: list[Result] = []
     blocked: dict[str, Blocker] = {}  # repo -> the uncounted land or land_phase that blocks its later lands and deletes

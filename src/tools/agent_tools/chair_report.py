@@ -5,6 +5,7 @@ notify callable is injected, sends the same line. Nothing here performs an actio
 """
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -21,7 +22,7 @@ from agent_tools.queue_export import is_ahead_of_store
 __all__ = [
     "EASTERN", "REASON_LINE_CAP", "Deps", "echo_line", "failed_items", "fetched_items", "file_ahead_items", "format_status",
     "housekeeping_fragment",
-    "landing_items", "lands_this_tick", "launched_items", "mode_of", "needs_chair_items",
+    "landing_fragment", "lands_this_tick", "launched_items", "mode_of", "needs_chair_items",
     "partial_land_text", "reason_tail", "steered_items", "waiting_item", "would_items", "write_status",
 ]
 
@@ -146,13 +147,13 @@ def steered_items(results: Sequence[Result]) -> list[str]:
     ]
 
 
-def landing_items(results: Sequence[Result]) -> list[str]:
-    """`<task or phase> in <repo>` for every land still running behind the tick."""
-    return [
-        f"{r['action'].get('task_id') or r['action'].get('phase', '')} in {r['action'].get('repo', '')}"
-        for r in results
-        if r["status"] == "in_progress"
-    ]
+def landing_fragment(landing: Sequence[Mapping[str, Any]]) -> str:
+    """Empty when none; else `landing N (2 coxswain, 1 dash)`, names being repo basenames (`?` for a land with no repo)."""
+    if not landing:
+        return ""
+    names = Counter(str(land.get("repo", "")).rstrip("/").rsplit("/", 1)[-1] or "?" for land in landing)
+    ordered = sorted(names.items(), key=lambda item: (-item[1], item[0]))
+    return f"landing {len(landing)} ({', '.join(f'{n} {name}' for name, n in ordered)})"
 
 
 def fetched_items(results: Sequence[Result]) -> list[str]:
@@ -259,10 +260,10 @@ def format_status(
         *needs_chair_items([*actions, *(r["action"] for r in results if r["status"] == "escalated")]),
         *file_ahead_items(facts.get("queue_files", [])),
     ]
-    launched, fetched, failed, would, landing = (
+    launched, fetched, failed, would = (
         launched_items(results), fetched_items(results), failed_items(results), would_items(results),
-        landing_items(results),
     )
+    landing = landing_fragment(facts.get("landing", []))
     steered = steered_items(results)
     drafts = facts.get("drafts", 0)
     review = review_fragment(facts.get("review_prs", []))
@@ -278,7 +279,7 @@ def format_status(
         *([freeze] if freeze else []),
         mode_of(actions, results),
         *([f"would: {', '.join(would)}"] if would else []),
-        *([f"landing: {', '.join(landing)}"] if landing else []),
+        *([landing] if landing else []),
         *([f"launched: {', '.join(launched)}"] if launched else []),
         *([f"fetched: {', '.join(fetched)}"] if fetched else []),
         *([f"failed: {', '.join(failed)}"] if failed else []),
