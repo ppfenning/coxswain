@@ -75,6 +75,8 @@ class LimitsFacts(TypedDict):
     lane_fraction: NotRequired[float]  # the weekly pace verdict's share of max_in_flight; 1.0 when not judged
     weekly_target_fraction: NotRequired[float | None]  # the weekly spend target at this moment; None when not judged
     weekly_pace: NotRequired[str]  # the weekly verdict word: full, reduced, hold or not_judged
+    month_fraction: NotRequired[float | None]  # month spend over the monthly budget; absent when the profile has no monthly budget
+    month_verdict: NotRequired[str]  # the month's budget.MonthBudget verdict; absent when the profile has no monthly budget
 
 
 class HostLanes(TypedDict):
