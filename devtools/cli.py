@@ -27,7 +27,6 @@ from pathlib import Path
 from agent_tools import release_version
 from devtools import (
     release,
-    release_arrow_formula,
     release_check,
     release_check_cli,
     release_check_index,
@@ -822,19 +821,9 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
             except (KeyError, OSError, ValueError) as exc:
                 print(f"FAILED tap_formula_pr tap: {exc}")
                 return 2
-            try:
-                arrow_pin = release_arrow_formula.pyarrow_pin(extras)
-                arrow = release.sdist_from_index(_pypi_release("pyarrow", arrow_pin, fetch_index, sleep))
-            except (KeyError, OSError, ValueError) as exc:
-                arrow, detail = None, str(exc)
-            else:
-                detail = "pyarrow release lists no sdist"
-            if arrow is None:
-                print(f"FAILED tap_formula_pr tap: {detail}")
-                return 2
 
-            def write_bumped(f=formula, s=sdist, t=towpath, p=psycopg, a=arrow):
-                f.write_text(release.bumped_formula_text(f.read_text(), version, *s, towpath=t, psycopg=p, pyarrow=a))
+            def write_bumped(f=formula, s=sdist, t=towpath, p=psycopg):
+                f.write_text(release.bumped_formula_text(f.read_text(), version, *s, towpath=t, psycopg=p))
 
             # The tap PR is left for the maintainer, so the checkout goes back to the branch it was on on every
             # path out of the step: the next cut refuses a tap clone that sits on an old release branch.
@@ -1191,6 +1180,8 @@ def _release(a: argparse.Namespace) -> int:
                 print(f"tap_formula_pr {step['component']}: would fetch origin, then branch {step['branch']} "
                       f"from origin/{default} (default branch {default})")
                 print("tap_formula_pr tap: formula depends on libpq; no psycopg-binary wheel is fetched")
+                print("tap_formula_pr tap: pyarrow is left out of the formula; caveats say traces are kept as "
+                      "JSON and the traces extra gives Parquet")
                 print(f"tap_formula_pr tap: would run install-proof.yml with tap_ref={step['branch']} "
                       f"version={a.version}; any conclusion but success exits non-zero, and the tap PR is "
                       "left open for the maintainer to merge")

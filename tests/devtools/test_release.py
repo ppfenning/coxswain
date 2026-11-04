@@ -599,9 +599,7 @@ def _tap_step(version=V0):
 _TAP_FORMULA_PY = _TAP_FORMULA.replace("class Cox < Formula\n", 'class Cox < Formula\n  depends_on "python@3.13"\n', 1)
 _PSYCOPG_DOCS = {
     "https://pypi.org/pypi/psycopg/3.3.6/json": {"urls": [
-        {"packagetype": "sdist", "url": "https://files/psycopg-3.3.6.tar.gz", "digests": {"sha256": "3" * 64}}]},
-    "https://pypi.org/pypi/pyarrow/24.0.0/json": {"urls": [
-        {"packagetype": "sdist", "url": "https://files/pyarrow-24.0.0.tar.gz", "digests": {"sha256": "6" * 64}}]}}
+        {"packagetype": "sdist", "url": "https://files/psycopg-3.3.6.tar.gz", "digests": {"sha256": "3" * 64}}]}}
 
 
 def _run_tap_step(tmp_path, install_conclusion="success", override=None, version=V0):
@@ -612,7 +610,7 @@ def _run_tap_step(tmp_path, install_conclusion="success", override=None, version
     formula.write_text(_TAP_FORMULA_PY)
     pins = tmp_path / "src" / "tools" / "agent_tools" / "extras-requirements.txt"
     pins.parent.mkdir(parents=True, exist_ok=True)
-    pins.write_text("psycopg==3.3.6\npsycopg-binary==3.3.6 ; implementation_name != 'pypy'\npyarrow==24.0.0\n")
+    pins.write_text("psycopg==3.3.6\npsycopg-binary==3.3.6 ; implementation_name != 'pypy'\n")
     calls, inner = _fake_git_run(install_conclusion=install_conclusion)
     clock = iter(range(0, 10**9, 60))
 
@@ -806,6 +804,8 @@ def test_cli_release_dry_run_prints_every_step_and_touches_no_file(tmp_path, cap
                  f"would run install-proof.yml with tap_ref=release/{V1} version={V1}"):
         assert line in out
     assert "tap_formula_pr tap: formula depends on libpq; no psycopg-binary wheel is fetched" in out
+    assert ("tap_formula_pr tap: pyarrow is left out of the formula; caveats say traces are kept as JSON "
+            "and the traces extra gives Parquet") in out
     assert "fetch psycopg-binary" not in out and "psycopg_binary" not in out
     assert (umbrella / "manifest.toml").read_text() == _MANIFEST_TOML
     assert [c for c in calls if c[0] == "gh" or c[3] in ("tag", "push", "checkout", "commit")] == []

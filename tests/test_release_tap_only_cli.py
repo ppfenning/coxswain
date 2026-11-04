@@ -22,9 +22,7 @@ tag = "v0.42.0"
 _INDEX = {"urls": [{"packagetype": "sdist", "url": f"https://x/coxswain-{V}.tar.gz", "digests": {"sha256": "b" * 64}}]}
 _PSYCOPG_DOCS = {
     "https://pypi.org/pypi/psycopg/3.3.6/json": {"urls": [
-        {"packagetype": "sdist", "url": "https://files/psycopg-3.3.6.tar.gz", "digests": {"sha256": "3" * 64}}]},
-    "https://pypi.org/pypi/pyarrow/24.0.0/json": {"urls": [
-        {"packagetype": "sdist", "url": "https://files/pyarrow-24.0.0.tar.gz", "digests": {"sha256": "6" * 64}}]}}
+        {"packagetype": "sdist", "url": "https://files/psycopg-3.3.6.tar.gz", "digests": {"sha256": "3" * 64}}]}}
 
 
 def _fake_run(fail_on=None):
@@ -70,7 +68,7 @@ def _release_tap_only(tmp_path, monkeypatch, umbrella_tags=(f"v{V}",), fail_on=N
     (tap / "Formula" / "cox.rb").write_text('depends_on "python@3.13"\n')
     pins = tmp_path / "coxswain" / "src" / "tools" / "agent_tools" / "extras-requirements.txt"
     pins.parent.mkdir(parents=True)
-    pins.write_text("psycopg==3.3.6\npsycopg-binary==3.3.6 ; implementation_name != 'pypy'\npyarrow==24.0.0\n")
+    pins.write_text("psycopg==3.3.6\npsycopg-binary==3.3.6 ; implementation_name != 'pypy'\n")
     calls, run = _fake_run(fail_on)
     events: list = []
     read = repos if repos is not None else []

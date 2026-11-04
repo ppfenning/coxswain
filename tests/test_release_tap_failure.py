@@ -6,9 +6,7 @@ _START = "feature/x"
 _INDEX = {"urls": [{"packagetype": "sdist", "url": "https://x/cox-0.2.0.tar.gz", "digests": {"sha256": "b" * 64}}]}
 _PSYCOPG_DOCS = {
     "https://pypi.org/pypi/psycopg/3.3.6/json": {"urls": [
-        {"packagetype": "sdist", "url": "https://files/psycopg-3.3.6.tar.gz", "digests": {"sha256": "3" * 64}}]},
-    "https://pypi.org/pypi/pyarrow/24.0.0/json": {"urls": [
-        {"packagetype": "sdist", "url": "https://files/pyarrow-24.0.0.tar.gz", "digests": {"sha256": "6" * 64}}]}}
+        {"packagetype": "sdist", "url": "https://files/psycopg-3.3.6.tar.gz", "digests": {"sha256": "3" * 64}}]}}
 _STEP = {"kind": "tap_formula_pr", "component": "tap", "index_url": "https://x/index.json",
          "path": "Formula/cox.rb", "branch": "release/0.2.0", "title": "cox 0.2.0"}
 
@@ -41,7 +39,7 @@ def _execute(tmp_path, fail_on=None, fetch_index=lambda url: _INDEX, sleeps=None
     (directory / "Formula" / "cox.rb").write_text('depends_on "python@3.13"\n')
     pins = tmp_path / "src" / "tools" / "agent_tools" / "extras-requirements.txt"
     pins.parent.mkdir(parents=True)
-    pins.write_text("psycopg==3.3.6\npsycopg-binary==3.3.6 ; implementation_name != 'pypy'\npyarrow==24.0.0\n")
+    pins.write_text("psycopg==3.3.6\npsycopg-binary==3.3.6 ; implementation_name != 'pypy'\n")
     calls, state, run = _fake_run(str(directory), fail_on)
     rc = cli._release_execute([_STEP], "0.2.0", str(tmp_path), {}, str(tmp_path), run, {}, "",
                               sleep=(sleeps.append if sleeps is not None else lambda s: None),
