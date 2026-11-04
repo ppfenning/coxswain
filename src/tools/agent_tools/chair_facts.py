@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_tools import chair_read_docket, chair_smoke, forge, pacing, repo_path, route
+from agent_tools.budget import MonthBudget
 from agent_tools.chair import lease_holder
 from agent_tools.chair_decompose_streak import DecomposeRun, DecomposeStreak, at_limit, streak
 from agent_tools.chair_idle_stall import IDLE_STALL_MINUTES
@@ -147,6 +148,8 @@ class FactsDeps:
         "est" for the estimate. Judged from the same per-tick meter read as `window`, so the label cannot
         disagree with the figure. Optional, and absent means "est".
     weekly_source: the same reading as `window_source`, for `weekly`. Optional, and absent means "est".
+    month: the month's `budget.MonthBudget`, or None when the profile sets no monthly budget. Optional, and absent
+        means None. `gather_facts` passes it to `pacing.assess` and `limits_facts` ORs its fraction into `hard_stop`.
     runs_dir: the runs directory `limits_facts` reads `chair.hold.json` from, via `chair_smoke.read_hold`.
         Optional, and absent means "", so no hold is ever read and `limits.smoke_hold` stays None.
     review_prs: the approved tasks awaiting a review PR, each with its forge state, as `forge_review_prs` builds
@@ -224,6 +227,7 @@ class FactsDeps:
     window_source: Callable[[], str] = lambda: "est"  # "meter" when `window` built from a fresh meter entry this tick
     weekly_source: Callable[[], str] = lambda: "est"  # "meter" when `weekly` built from a fresh meter entry this tick
     runs_dir: Callable[[], str] = lambda: ""  # the runs directory `limits_facts` reads chair.hold.json from; absent means no hold is ever read
+    month: Callable[[], MonthBudget | None] = lambda: None  # this month's budget standing; None means the profile has no monthly budget
     review_prs: Callable[[], list[ReviewPr]] = lambda: []  # forge_review_prs bound to the profile's forge; absent means []
     pid_probe: Callable[[], Mapping[str, PidProbeFact]] = lambda: {}  # initiative to its remote pid probe; absent means {}
     tickets: Callable[[], Sequence[Row]] | None = None  # `read_ticket_items` rows; absent means no surfaces and no running initiatives
@@ -334,6 +338,7 @@ def scaled_cap(max_in_flight: int, lane_fraction: float) -> int:
 def limits_facts(
     assessment: pacing.Assessment, policy: pacing.Policy, weekly: pacing.Window | None, max_in_flight: int,
     window_source: str = "est", weekly_source: str = "est", runs_dir: str = "", now: datetime | None = None,
+    month: MonthBudget | None = None,
 ) -> LimitsFacts:
     """`launch_cap` is the smaller of the 5-hour and weekly verdicts: none on a 5-hour `hold` or `stop`, otherwise
     `max_in_flight` scaled by the weekly lane fraction. The weekly verdict never raises the cap.
@@ -341,12 +346,17 @@ def limits_facts(
 
     `smoke_hold` comes from `chair_smoke.read_hold(runs_dir)`, so a caller such as `chair_plan._launch_cap`
     or the status line sees a held post-land smoke failure, cause and all, without reading the filesystem
-    itself. An empty `runs_dir` (the default) never touches the filesystem and reads as no hold."""
+    itself. An empty `runs_dir` (the default) never touches the filesystem and reads as no hold.
+
+    `hard_stop` is also true when `month`'s fraction reaches the weekly hard-stop fraction. With a `month`, the facts
+    carry `month_fraction` and `month_verdict`; with none, those keys are absent and the facts are as before."""
     fraction = weekly_fraction(weekly)
+    month_fraction = month.fraction if month is not None else None
+    month_stopped = month_fraction is not None and month_fraction >= policy.weekly_hard_stop_fraction
     pace = pacing.weekly_pace(weekly, policy, now) if now is not None else None
     lane_fraction = pace.lane_fraction if pace is not None else 1.0
     return {
-        "hard_stop": fraction >= policy.weekly_hard_stop_fraction,
+        "hard_stop": fraction >= policy.weekly_hard_stop_fraction or month_stopped,
         "weekly_fraction": fraction,
         "hard_stop_fraction": policy.weekly_hard_stop_fraction,
         "launch_cap": scaled_cap(max_in_flight, lane_fraction) if assessment.verdict in LAUNCHING_VERDICTS else 0,
@@ -359,6 +369,7 @@ def limits_facts(
         "window_source": window_source,
         "weekly_source": weekly_source,
         "smoke_hold": chair_smoke.read_hold(runs_dir) if runs_dir else None,
+        **({} if month is None else {"month_fraction": month_fraction, "month_verdict": month.verdict}),
     }
 
 
@@ -1034,7 +1045,8 @@ def landed_main_facts(
 def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
     policy = deps.policy()
     weekly = deps.weekly()
-    assessment = pacing.assess(deps.window(), policy, now, weekly)
+    month = deps.month()
+    assessment = pacing.assess(deps.window(), policy, now, weekly, month=month)
     docket = deps.docket()
     # Read once: `rows` drives ready, intake, quarantined and (with stranded_records) stranded below. An empty
     # read means the store has no queue table or harness yet, not that the board is empty, so each fact falls
@@ -1079,7 +1091,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "lease": lease_facts(deps.lease(), deps.session, deps.pid, deps.host),
         "limits": limits_facts(
             assessment, policy, weekly, dispatch["max_in_flight"], deps.window_source(), deps.weekly_source(),
-            deps.runs_dir(), now=now,
+            deps.runs_dir(), now=now, month=month,
         ),
         "dispatch": dispatch,
         "approved": approved,
