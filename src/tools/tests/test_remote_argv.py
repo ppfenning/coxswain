@@ -7,6 +7,7 @@ import pytest
 
 from agent_tools.remote_argv import (
     auth_status_argv,
+    decompose_launch_argv,
     doctor_argv,
     env_check_argv,
     git_fetch_argv,
@@ -96,6 +97,12 @@ def test_launch_argv_places_each_value_after_its_flag():
         "--label", "lane-a",
         "--no-claim",
     ]
+
+
+def test_decompose_launch_argv_detaches_right_after_local_and_the_epic_argv_does_not():
+    argv = decompose_launch_argv("/ws/intake.md", "init-x", "run-7", "lane-a")
+    assert argv[argv.index("--local") + 1] == "--detach"
+    assert "--detach" not in launch_argv("init-x", "run-7", "lane-a")
 
 
 def test_rsync_push_argv_has_one_trailing_slash_each_and_no_delete():

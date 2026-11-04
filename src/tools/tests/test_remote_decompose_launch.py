@@ -13,7 +13,7 @@ def test_a_decompose_plan_copies_the_intake_file_then_starts_the_decompose_launc
         ssh_argv(
             "me@box",
             [
-                "cox", "route", "launch", "decompose", "--local",
+                "cox", "route", "launch", "decompose", "--local", "--detach",
                 "--idea", "/srv/ws/work/intake/init-x.md",
                 "--initiative-id", "init-x",
                 "--run-id", "run-1",
