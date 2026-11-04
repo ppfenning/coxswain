@@ -7,6 +7,7 @@ the person who just drew the graph is the last person likely to spot one.
 from __future__ import annotations
 
 import json
+import subprocess
 
 import pytest
 import yaml
@@ -749,6 +750,17 @@ def test_a_named_path_the_tree_lacks_is_added_as_new() -> None:
 def test_an_ambiguous_or_unknown_bare_name_is_left_for_the_layout_check(body) -> None:
     task = _task(body, ["src/graphs/harness/epic.py"])
     assert initiative_decompose.with_named_artifacts(task, ARTIFACT_TREE) is task
+
+
+def test_repo_listing_reads_a_checkouts_tracked_files_and_is_empty_elsewhere(tmp_path) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_thing.py").write_text("")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+    rows = initiative_decompose.repo_listing(str(tmp_path))
+    assert rows == [{"repo": str(tmp_path), "path": "tests/test_thing.py"}]
+    assert initiative_decompose.repo_listing(str(tmp_path / "absent")) == []
+    assert initiative_decompose.repo_listing("") == []
 
 
 def test_without_a_tree_only_path_shaped_surfaces_stay_declared(cart) -> None:
