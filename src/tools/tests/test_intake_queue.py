@@ -26,10 +26,12 @@ def test_after_ids_list_string_absent_and_blank() -> None:
     assert after_ids({}) == []
 
 
-def test_is_held_only_for_true() -> None:
+def test_is_held_for_true_as_a_bool_or_the_string_the_store_writes() -> None:
     assert is_held({"held": True}) is True
+    assert is_held({"held": "true"}) is True
     assert is_held({}) is False
-    assert is_held({"held": "true"}) is False
+    assert is_held({"held": "false"}) is False
+    assert is_held({"held": False}) is False
 
 
 def test_intake_priority() -> None:

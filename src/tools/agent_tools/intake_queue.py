@@ -17,7 +17,9 @@ def after_ids(extra: Mapping[str, Any]) -> list[str]:
 
 
 def is_held(extra: Mapping[str, Any]) -> bool:
-    return extra.get("held") is True
+    """True for `held: true` as a bool or as the string the store loader and `route hold` write; `route.intake_entries` reads it the same way."""
+    value = extra.get("held")
+    return value is True or (isinstance(value, str) and value.strip().lower() == "true")
 
 
 def intake_priority(extra: Mapping[str, Any]) -> int:
