@@ -547,6 +547,100 @@ def _tagged_checkouts(steps: list[dict], root: str, overrides: dict, umbrella: s
     return tagged + ([("coxswain", umbrella)] if any(s["kind"] == "tag_self" for s in steps) else [])
 
 
+def _origin_ref_sha(directory: str, ref: str, run) -> tuple[bool, str | None, str]:
+    """`(ok, sha, detail)` for `ref` on origin: the peeled commit for a tag, None when origin does not list it."""
+    rc, out = run(release.ls_remote_ref_argv(directory, ref), None)
+    if rc != 0:
+        return False, None, out.strip() or f"ls-remote {ref} failed"
+    return True, release.parse_ls_remote_ref(out, ref), ""
+
+
+def _cargo_version(text: str) -> str | None:
+    return tomllib.loads(text).get("package", {}).get("version")
+
+
+def _manifest_version(text: str) -> str | None:
+    return tomllib.loads(text).get("coxswain", {}).get("version")
+
+
+def _version_at_base(step: dict, directory: str, path: str, read, run) -> str | None:
+    """The version `read` finds in `path` at `origin/<base>`; None when the file is absent or unparseable there."""
+    rc, out = run(release.show_file_argv(directory, f"origin/{step['base']}", path), None)
+    if rc != 0:
+        return None
+    try:
+        return read(out)
+    except tomllib.TOMLDecodeError:
+        return None
+
+
+def _existing_tag(step: dict, directory: str, version: str, run) -> tuple[str, str]:
+    """Resume check for a tag step carrying `ref`: `("tag", "")` when origin lacks the tag,
+    `("done", sha)` when it peels to the head of `origin/<ref>`, `("failed", detail)` otherwise."""
+    if not step.get("ref"):
+        return "tag", ""
+    tag = f"v{version}"
+    ok, tag_sha, detail = _origin_ref_sha(directory, f"refs/tags/{tag}", run)
+    if not ok:
+        return "failed", detail
+    if tag_sha is None:
+        return "tag", ""
+    ok, head, detail = _origin_ref_sha(directory, f"refs/heads/{step['ref']}", run)
+    if not ok:
+        return "failed", detail
+    if head == tag_sha:
+        return "done", tag_sha
+    return "failed", f"{tag} is at {tag_sha} but origin/{step['ref']} is at {head or 'nothing'}"
+
+
+def _same_notes(published: str, notes: str) -> bool:
+    """Release bodies compare equal ignoring CRLF line endings and trailing whitespace, which the forge adds or strips."""
+    return published.replace("\r\n", "\n").rstrip() == notes.replace("\r\n", "\n").rstrip()
+
+
+def _merge_back(step: dict, directory: str, run, sleep, now) -> tuple[bool, str]:
+    """Merges the release branch back into the default branch with a merge commit, so the tag stays an ancestor of it.
+    A branch origin no longer lists is already merged back and deleted."""
+    branch = step["branch"]
+    ok, head, detail = _origin_ref_sha(directory, f"refs/heads/{branch}", run)
+    if not ok:
+        return False, detail
+    if head is None:
+        return True, f"{branch} already merged back and deleted"
+    default = _default_branch(directory, run)
+    for argv, cwd in ((release.fetch_argv(directory), None), (release.checkout_tracking_argv(directory, branch), None)):
+        rc, out = run(argv, cwd)
+        if rc != 0:
+            return False, out.strip()
+    list_rc, list_out = run(["gh", "pr", "list", "--head", branch, "--base", default, "--state", "open",
+                              "--json", "number"], directory)
+    if list_rc != 0:
+        return False, list_out.strip()
+    try:
+        open_prs = json.loads(list_out or "[]")
+    except json.JSONDecodeError:
+        return False, f"unreadable gh pr list output: {list_out.strip()}"
+    if not open_prs:
+        title = f"Merge {branch} back into {default}"
+        body = f"Merges {branch} back into {default} so the release tag stays an ancestor of {default}."
+        pr_rc, pr_out = run(release.pr_create_argv(title, body, default, branch), directory)
+        if pr_rc != 0:
+            return False, pr_out.strip()
+    wc_ok, wc_out = _await_checks(
+        lambda: run(release.pr_checks_argv(branch), directory), sleep=sleep, now=now,
+        list_runs=lambda: run(["gh", "run", "list", "--branch", branch, "--json", "conclusion,name,url"], directory),
+        branch=branch)
+    if not wc_ok:
+        return False, wc_out
+    for argv, cwd in ((release.pr_merge_argv(branch, "merge"), directory),
+                      (release.checkout_ref_argv(directory, default), None),
+                      (release.pull_argv(directory, default), None)):
+        rc, out = run(argv, cwd)
+        if rc != 0:
+            return False, out.strip()
+    return True, f"{branch} merged into {default}"
+
+
 def _release_execute(steps: list[dict], version: str, root: str, overrides: dict, umbrella: str, run,
                       manifest: dict, manifest_path: str, sleep=time.sleep, now=time.monotonic,
                       fetch_index=_fetch_index, fetch_text=_fetch_text,
@@ -588,7 +682,16 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
     and pulls it, rather than the default branch, so the local release branch
     holds the squash commit. A `tag`, `tag_self` or `rejoin` step carrying
     `ref` fetches origin first and tags `origin/<ref>` instead of HEAD; the
-    tag push is unchanged."""
+    tag push is unchanged.
+    A rerun skips what is already done. A `release_branch` origin lists with the
+    rehearsed sha as an ancestor is done; listed without it, it fails. A
+    `bump_*` step with `base` whose file reads `to` at `origin/<base>` is
+    already bumped. A `tag`, `tag_self` or `rejoin` step with `ref` whose tag
+    origin lists is done when it peels to the head of `origin/<ref>` and fails
+    otherwise. A `github_release` whose body equals its notes is done.
+    A `merge_back` step merges `branch` into the default branch with a merge
+    commit and returns the checkout to the default branch, or is done when
+    origin no longer lists `branch`."""
     refused = [s for s in steps if s["kind"] == "refuse"]
     if refused:
         for refusal in refused:
@@ -623,6 +726,13 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
             if not fetched:
                 print(f"FAILED tag {step['component']}: {fetch_out}")
                 return 2
+            existing, existing_detail = _existing_tag(step, directory, version, run)
+            if existing == "failed":
+                print(f"FAILED tag {step['component']}: {existing_detail}")
+                return 2
+            if existing == "done":
+                print(f"{kind} {step['component']}: {step['tag']} already at {existing_detail}")
+                continue
             tag_ref = f"origin/{step['ref']}" if step.get("ref") else None
             tag_rc, tag_out = run(release.tag_argv(directory, version, tag_ref), None)
             if tag_rc != 0:
@@ -639,6 +749,23 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                 print(f"FAILED release_branch {step['component']}: no rehearsed sha for {step['component']}")
                 return 2
             directory = _release_step_dir(step["component"], root, overrides, umbrella)
+            listed, head, rb_detail = _origin_ref_sha(directory, f"refs/heads/{step['branch']}", run)
+            if not listed:
+                print(f"FAILED release_branch {step['component']}: {rb_detail}")
+                return 2
+            if head is not None:
+                fetch_rc, fetch_out = run(release.fetch_argv(directory), None)
+                if fetch_rc != 0:
+                    print(f"FAILED release_branch {step['component']}: {fetch_out.strip()}")
+                    return 2
+                anc_rc, anc_out = run(release.is_ancestor_argv(directory, sha, head), None)
+                if anc_rc == 0:
+                    print(f"release_branch {step['component']}: {step['branch']} already at {head}, which holds {sha}")
+                    continue
+                print(f"FAILED release_branch {step['component']}: {step['branch']} is at {head}, "
+                      f"which does not hold the rehearsed {sha}" if anc_rc == 1 else
+                      f"FAILED release_branch {step['component']}: {anc_out.strip()}")
+                return 2
             for argv in (release.release_branch_push_argv(directory, sha, step["branch"]),
                          release.fetch_argv(directory)):
                 rb_rc, rb_out = run(argv, None)
@@ -661,7 +788,9 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
         elif kind == "bump_pyproject":
             directory = release.component_dir(root, step["component"], overrides)
             path = Path(directory) / "pyproject.toml"
-            if release.component_version(path.read_text()) == step["to"]:
+            current = (_version_at_base(step, directory, "pyproject.toml", release.component_version, run)
+                       if step.get("base") else release.component_version(path.read_text()))
+            if current == step["to"]:
                 already_bumped[step["component"]] = step["to"]
                 print(f"bump_pyproject {step['component']}: already at {step['to']}")
                 continue
@@ -673,8 +802,9 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
             print(f"bump_pyproject {step['component']}: {step['from']} -> {step['to']}")
         elif kind == "bump_cargo":
             directory = release.component_dir(root, step["component"], overrides)
-            cargo_toml = tomllib.loads((Path(directory) / "Cargo.toml").read_text())
-            if cargo_toml.get("package", {}).get("version") == step["to"]:
+            current = (_version_at_base(step, directory, "Cargo.toml", _cargo_version, run)
+                       if step.get("base") else _cargo_version((Path(directory) / "Cargo.toml").read_text()))
+            if current == step["to"]:
                 already_bumped[step["component"]] = step["to"]
                 print(f"bump_cargo {step['component']}: already at {step['to']}")
                 continue
@@ -686,7 +816,9 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
             print(f"bump_cargo {step['component']}: {step['from']} -> {step['to']}")
         elif kind == "bump_version":
             manifest_file = Path(manifest_path)
-            if tomllib.loads(manifest_file.read_text()).get("coxswain", {}).get("version") == step["to"]:
+            current = (_version_at_base(step, umbrella, os.path.relpath(manifest_path, umbrella), _manifest_version, run)
+                       if step.get("base") else _manifest_version(manifest_file.read_text()))
+            if current == step["to"]:
                 already_bumped[step["component"]] = step["to"]
                 print(f"bump_version {step['component']}: already at {step['to']}")
                 continue
@@ -784,6 +916,13 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
             if not fetched:
                 print(f"FAILED tag_self coxswain: {fetch_out}")
                 return 2
+            existing, existing_detail = _existing_tag(step, umbrella, version, run)
+            if existing == "failed":
+                print(f"FAILED tag_self coxswain: {existing_detail}")
+                return 2
+            if existing == "done":
+                print(f"tag_self coxswain: {step['tag']} already at {existing_detail}")
+                continue
             self_ref = f"origin/{step['ref']}" if step.get("ref") else None
             self_tag_rc, self_tag_out = run(release.tag_argv(umbrella, version, self_ref), None)
             if self_tag_rc != 0:
@@ -817,6 +956,11 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                     tmp.write(text)
                 notes_path = tmp.name
             view_rc, _ = run(release.github_release_view_argv(step["tag"]), directory)
+            if view_rc == 0:
+                body_rc, body_out = run(release.github_release_body_argv(step["tag"]), directory)
+                if body_rc == 0 and _same_notes(body_out, Path(notes_path).read_text()):
+                    print(f"github_release {step['component']}: {step['tag']} already published")
+                    continue
             argv = (release.github_release_edit_argv(step["tag"], notes_path) if view_rc == 0 else
                     release.github_release_create_argv(step["tag"], step["title"], notes_path))
             gr_rc, gr_out = run(argv, directory)
@@ -824,6 +968,13 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                 print(f"FAILED github_release {step['component']}: {gr_out.strip()}")
                 return 2
             print(f"github_release {step['component']}: {step['tag']}")
+        elif kind == "merge_back":
+            directory = _release_step_dir(step["component"], root, overrides, umbrella)
+            mb_ok, mb_detail = _merge_back(step, directory, run, sleep, now)
+            if not mb_ok:
+                print(f"FAILED merge_back {step['component']}: {mb_detail}")
+                return 2
+            print(f"merge_back {step['component']}: {mb_detail}")
         elif kind == "tap_formula_pr":
             try:
                 sdist = release.sdist_from_index(_fetch_with_retry(fetch_index, step["index_url"], sleep))
