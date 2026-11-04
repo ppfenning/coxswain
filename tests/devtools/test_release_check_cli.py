@@ -1,4 +1,5 @@
 import argparse
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -11,43 +12,7 @@ from devtools.release_check_cli import (
     gather_cli_facts,
     table_commands,
     table_suppressed,
-    walk_help,
 )
-
-_HELP = {
-    "cox": (
-        "usage: cox [-h] {dev,runs} ...\n\n"
-        "positional arguments:\n"
-        "  {dev,runs}\n"
-        "    dev                 maintainer commands\n"
-        "    runs                inspect runs\n"
-    ),
-    "cox dev": (
-        "usage: cox dev [-h] {release-check} ...\n\n"
-        "positional arguments:\n"
-        "  {release-check}\n"
-        "    release-check       gather facts and print drifts\n"
-    ),
-    "cox dev release-check": "usage: cox dev release-check [-h]\n",
-    "cox runs": (
-        "usage: cox runs [-h] {top} ...\n\n"
-        "positional arguments:\n"
-        "  {top}\n"
-        "    top                 live table of runs in flight\n"
-    ),
-    "cox runs top": "usage: cox runs top [-h]\n",
-}
-
-_HELP_WITH_A_PLAIN_CHOICE = {
-}
-
-
-def test_walk_help_returns_only_leaf_commands_from_a_subparsers_choices_line():
-    assert walk_help(_HELP) == {"cox dev release-check", "cox runs top"}
-
-
-def test_walk_help_does_not_read_a_flags_or_a_plain_positionals_choice_list_as_a_subcommand():
-    assert walk_help(_HELP_WITH_A_PLAIN_CHOICE) == set()
 
 
 def test_commands_in_doc_matches_a_backticked_cox_mention_and_drops_a_trailing_flag():
@@ -178,60 +143,20 @@ def test_check_cli_surface_names_the_differing_command_on_a_genuine_mismatch():
     ]
 
 
-def _run_from(help_texts):
-    def run(cmd, root):
-        key = " ".join(cmd[:-1])
-        return (0, help_texts[key]) if key in help_texts else (1, "")
-
-    return run
-
-
-def test_gather_cli_facts_reports_one_generator_error_when_cox_is_not_on_path(tmp_path):
-    facts = gather_cli_facts(str(tmp_path), lambda cmd, root: (127, ""))
-    assert facts.get("generator_error")
-    assert "cli_commands" not in facts and "doc_commands" not in facts
+def test_gather_cli_facts_reads_the_real_command_table_into_group_labelled_pages(tmp_path):
+    pytest.importorskip("agent_tools.cli")
+    facts = gather_cli_facts(str(tmp_path))
+    assert "generator_error" not in facts
+    assert "cox setup doctor" in facts["cli_commands"]
+    assert set(facts["doc_commands"]) == {f"docs/reference/cli/{cmd.split()[1]}.md" for cmd in facts["cli_commands"]}
+    assert "cox setup doctor" in facts["doc_commands"]["docs/reference/cli/setup.md"]
 
 
-def test_gather_cli_facts_reports_one_generator_error_when_the_generator_module_is_missing(tmp_path):
-    facts = gather_cli_facts(str(tmp_path), _run_from(_HELP))
-    assert facts.get("generator_error")
-    assert "cli_commands" not in facts and "doc_commands" not in facts
-
-
-_FAKE_PARSE_SUBCOMMANDS = (
-    "import re\n\n"
-    "_POS = re.compile(r'positional arguments:\\n(.*?)(?:\\n\\n|\\Z)', re.DOTALL)\n"
-    "_SUB = re.compile(r'^( *)\\{([^}]+)\\}\\n(?:\\1 +\\S.*\\n?)+', re.MULTILINE)\n\n"
-    "def parse_subcommands(help_text):\n"
-    "    section = _POS.search(help_text)\n"
-    "    if section is None:\n"
-    "        return set()\n"
-    "    block = _SUB.search(section.group(1))\n"
-    "    return set(block.group(2).split(',')) if block else set()\n"
-)
-
-
-def _write_generator(root, source):
-    docs_dir = root / "docs"
-    docs_dir.mkdir(parents=True)
-    (docs_dir / "_cli.py").write_text(source)
-
-
-def test_gather_cli_facts_reads_doc_commands_from_parse_subcommands(tmp_path):
-    _write_generator(tmp_path, _FAKE_PARSE_SUBCOMMANDS)
-    facts = gather_cli_facts(str(tmp_path), _run_from(_HELP))
-    assert facts["cli_commands"] == {"cox dev release-check", "cox runs top"}
-    assert facts["doc_commands"] == {
-        "docs/reference/cli/dev.md": {"cox dev release-check"},
-        "docs/reference/cli/runs.md": {"cox runs top"},
-    }
-
-
-def test_gather_cli_facts_reports_one_generator_error_when_parse_subcommands_raises(tmp_path):
-    _write_generator(tmp_path, "def parse_subcommands(help_text):\n    raise ValueError('boom')\n")
-    facts = gather_cli_facts(str(tmp_path), _run_from(_HELP))
-    assert facts.get("generator_error")
-    assert "cli_commands" not in facts and "doc_commands" not in facts
+def test_gather_cli_facts_reports_only_a_generator_error_when_the_table_import_fails(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "agent_tools.cli", None)
+    facts = gather_cli_facts(str(tmp_path))
+    assert "COMMAND_TABLE" in facts["generator_error"]
+    assert set(facts) == {"generator_error", "readme_commands"}
 
 
 def _group(name, help="a group"):
@@ -277,21 +202,13 @@ def test_table_suppressed_lists_the_groups_whose_help_is_suppressed():
     assert table_suppressed(table) == {"cox release"}
 
 
-def test_plain_env_forces_no_color_and_strips_force_color():
-    from devtools.cli import _plain_env
-
-    assert _plain_env({"FORCE_COLOR": "1", "PATH": "/x"}) == {
-        "PATH": "/x", "NO_COLOR": "1", "PYTHON_COLORS": "0",
-    }
-
-
-def test_release_check_gathers_cli_facts_through_help_run_not_real_run(tmp_path, monkeypatch):
+def test_release_check_passes_only_the_root_to_gather_cli_facts(tmp_path, monkeypatch):
     from devtools import cli
 
-    recorded = {}
+    calls = []
 
-    def fake_gather_cli_facts(root, run):
-        recorded["run"] = run
+    def fake_gather_cli_facts(*args, **kwargs):
+        calls.append((args, kwargs))
         return {}
 
     monkeypatch.setattr(cli.release_check_cli, "gather_cli_facts", fake_gather_cli_facts)
@@ -309,4 +226,4 @@ def test_release_check_gathers_cli_facts_through_help_run_not_real_run(tmp_path,
     rc = cli.main(["release-check", "--manifest", str(manifest_path), "--root", str(tmp_path)])
 
     assert rc == 0
-    assert recorded["run"] is cli._help_run
+    assert calls == [((str(tmp_path.resolve()),), {})]

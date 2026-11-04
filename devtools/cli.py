@@ -124,23 +124,6 @@ def _real_run(argv: list, cwd: str | None) -> tuple:
     return result.returncode, result.stdout + result.stderr
 
 
-def _plain_env(env: dict) -> dict:
-    """`env`, minus whatever would colour argparse's help text. Python 3.14
-    colours `--help` by default, and a coloured line never matches the plain
-    one a doc or README names, so the release check must ask for plain text
-    itself rather than trust the ambient environment."""
-    forced = {**env, "NO_COLOR": "1", "PYTHON_COLORS": "0"}
-    return {k: v for k, v in forced.items() if k != "FORCE_COLOR"}
-
-
-def _help_run(argv: list, cwd: str | None) -> tuple:
-    """Like `_real_run`, but for walking `--help` text: the environment is
-    forced plain first, so Python 3.14's coloured argparse output never
-    reads as a cli_surface drift."""
-    result = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, env=_plain_env(os.environ))
-    return result.returncode, result.stdout + result.stderr
-
-
 def _remote_tags(repo: str) -> list[str] | None:
     """The tags on `repo`'s GitHub remote, or None when git could not read the
     remote. None is not `[]`: the planner refuses on None, so an unreachable or
@@ -1284,7 +1267,7 @@ def _release_check(a: argparse.Namespace) -> int:
     plan = release_check.facts_plan(umbrella, manifest, component_dirs)
     facts = {
         **plan,
-        **release_check_cli.gather_cli_facts(umbrella, _help_run),
+        **release_check_cli.gather_cli_facts(umbrella),
         **release_check_manifest.gather_manifest_facts(manifest, str(manifest_path), plan["component_docs"], plan["release_notes"]),
         **release_check_notes.gather_notes_facts(umbrella, manifest, subprocess.run, component_dirs),
         **release_check_pages.gather_page_facts(umbrella, manifest, subprocess.run, component_dirs),
