@@ -13,12 +13,14 @@ _PYPROJECT_AT_1_1 = '[project]\nname = "dash"\nversion = "1.1.0"\n'
 class Origin:
     """A recording runner that models origin: refs, files at refs, ancestry and published releases."""
 
-    def __init__(self, refs=None, files=None, ancestors=(), releases=None, merge_back_fails=False):
+    def __init__(self, refs=None, files=None, ancestors=(), releases=None, merge_back_fails=False,
+                 checks=None):
         self.refs = dict(refs or {})
         self.files = dict(files or {})
         self.ancestors = set(ancestors)
         self.releases = dict(releases or {})
         self.merge_back_fails = merge_back_fails
+        self.checks = list(checks or [(0, "build\tpass\t1s\thttps://example.test/1\n")])
         self.calls: list = []
 
     def __call__(self, argv, cwd):
@@ -31,7 +33,7 @@ class Origin:
         if argv[:3] == ["gh", "pr", "list"]:
             return 0, self.refs.get("open-prs", "[]")
         if argv[:3] == ["gh", "pr", "checks"]:
-            return 0, "build\tpass\t1s\thttps://example.test/1\n"
+            return self.checks.pop(0) if len(self.checks) > 1 else self.checks[0]
         if argv[:3] == ["gh", "pr", "merge"] and self.merge_back_fails:
             return 1, "merge blocked"
         return 0, ""
@@ -241,3 +243,23 @@ def test_a_merge_back_failure_returns_2(tmp_path, capsys):
     assert rc == 2
     assert capsys.readouterr().out.strip() == "FAILED merge_back dash: merge blocked"
     assert release.pull_argv(dash, "main") not in origin.calls
+
+
+def test_merge_back_merges_only_after_the_checks_report_green(tmp_path):
+    checks = [(1, "no checks reported on the branch"), (0, "build\tpass\t1s\thttps://example.test/1\n")]
+    origin = Origin(refs={f"refs/heads/{_BRANCH}": _SHA}, checks=checks)
+    rc, _, _ = _execute(tmp_path, [{"kind": "merge_back", "component": "dash", "branch": _BRANCH}], origin)
+    assert rc == 0
+    polls = [i for i, argv in enumerate(origin.calls) if argv == release.pr_checks_argv(_BRANCH)]
+    assert len(polls) == 2
+    assert polls[-1] < origin.calls.index(release.pr_merge_argv(_BRANCH, "merge"))
+
+
+def test_merge_back_with_a_red_check_does_not_merge(tmp_path, capsys):
+    origin = Origin(refs={f"refs/heads/{_BRANCH}": _SHA}, checks=[(1, "build\tfail\t1s\thttps://example.test/1\n")])
+    rc, dash, _ = _execute(tmp_path, [{"kind": "merge_back", "component": "dash", "branch": _BRANCH}], origin)
+    assert rc == 2
+    assert origin.verbs("gh", "pr", "merge") == []
+    assert origin.verbs("gh", "pr", "close") == []
+    assert release.pull_argv(dash, "main") not in origin.calls
+    assert capsys.readouterr().out.startswith(f"FAILED merge_back dash: {_BRANCH}: build")
