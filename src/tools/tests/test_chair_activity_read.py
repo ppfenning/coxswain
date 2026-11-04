@@ -1,6 +1,13 @@
 from pathlib import Path
 
-from agent_tools.chair_activity_read import prices_for_profile, read_agents, read_session_lines
+from agent_tools.chair_activity_read import (
+    catalog_status,
+    prices_for_profile,
+    read_agents,
+    read_session_lines,
+    resolve_session,
+    session_status,
+)
 
 CATALOG = "models:\n  m1:\n    price: {input: 1.0, output: 2.0}\n"
 OTHER = "models:\n  m2:\n    price: {input: 3.0, output: 4.0}\n"
@@ -109,3 +116,117 @@ def test_prices_default_reader_reads_file(tmp_path):
     (tmp_path / "catalog.yaml").write_text(CATALOG)
     profile = {"provider_profile": str(tmp_path / "profile.yaml")}
     assert prices_for_profile(profile) == {"m1": {"input": 1.0, "output": 2.0}}
+
+
+UUID = "1a2b3c4d-1111-2222-3333-444455556666"
+OTHER_UUID = "1a2b3c4d-9999-8888-7777-666655554444"
+
+
+def _uuid_tree(tmp_path: Path, *uuids: str, project: str = "proj") -> Path:
+    projects = tmp_path / "projects"
+    for uuid in uuids:
+        subagents = projects / project / uuid / "subagents"
+        subagents.mkdir(parents=True, exist_ok=True)
+        (projects / project / f"{uuid}.jsonl").write_text(f"line-{uuid[-4:]}\n")
+        (subagents / "agent-a.meta.json").write_text('{"kind": "x"}')
+        (subagents / "agent-a.jsonl").write_text("a1\n")
+    return projects
+
+
+def test_resolve_session_values():
+    assert resolve_session(["abc-1"], [], "") == ("none", "")
+    assert resolve_session([], [], "abc") == ("not_found", "")
+    assert resolve_session([], ["abc-1"], "abc") == ("not_found", "abc-1")
+    assert resolve_session([], ["abc-1", "abc-2"], "abc") == ("ambiguous", "")
+    assert resolve_session(["abc-1", "abc-1"], ["abc-1"], "abc") == ("ok", "abc-1")
+    assert resolve_session(["abc-1"], [], "abc") == ("ok", "abc-1")
+    assert resolve_session(["abc-1", "abc-2"], [], "abc") == ("ambiguous", "")
+    assert resolve_session(["abc-1"], ["abc-1", "abc-2"], "abc") == ("ambiguous", "")
+    assert resolve_session(["abc-1"], ["abc-2"], "abc") == ("ambiguous", "")
+
+
+def test_short_id_reads_full_uuid_transcript_and_subagent_folder(tmp_path):
+    projects = _uuid_tree(tmp_path, UUID)
+    assert read_session_lines(projects, "1a2b3c4d") == ["line-6666"]
+    agents = read_agents(projects, "1a2b3c4d")
+    assert [a["agent_id"] for a in agents] == ["a"]
+    assert agents[0]["lines"] == ["a1"]
+    assert session_status(projects, "1a2b3c4d") == "ok"
+
+
+def test_full_id_still_matches_itself(tmp_path):
+    projects = _uuid_tree(tmp_path, UUID, OTHER_UUID)
+    assert read_session_lines(projects, UUID) == ["line-6666"]
+    assert [a["agent_id"] for a in read_agents(projects, UUID)] == ["a"]
+    assert session_status(projects, UUID) == "ok"
+
+
+def test_shared_prefix_is_ambiguous_and_reads_nothing(tmp_path):
+    projects = _uuid_tree(tmp_path, UUID, OTHER_UUID)
+    assert session_status(projects, "1a2b3c4d") == "ambiguous"
+    assert read_session_lines(projects, "1a2b3c4d") == []
+    assert read_agents(projects, "1a2b3c4d") == []
+
+
+def test_ambiguous_subagent_folders_alone_make_session_ambiguous(tmp_path):
+    projects = _uuid_tree(tmp_path, UUID)
+    (projects / "proj" / OTHER_UUID / "subagents").mkdir(parents=True)
+    assert read_session_lines(projects, "1a2b3c4d") == []
+    assert read_agents(projects, "1a2b3c4d") == []
+    assert session_status(projects, "1a2b3c4d") == "ambiguous"
+
+
+def test_transcript_and_subagent_folder_of_different_sessions_is_ambiguous(tmp_path):
+    projects = _uuid_tree(tmp_path, UUID)
+    (projects / "proj" / f"{UUID}.jsonl").rename(projects / "proj" / f"{OTHER_UUID}.jsonl")
+    assert session_status(projects, "1a2b3c4d") == "ambiguous"
+    assert read_session_lines(projects, "1a2b3c4d") == []
+    assert read_agents(projects, "1a2b3c4d") == []
+
+
+def test_subagent_folder_without_transcript_still_reads_agents(tmp_path):
+    projects = _uuid_tree(tmp_path, UUID)
+    (projects / "proj" / f"{UUID}.jsonl").unlink()
+    for session in (UUID, "1a2b3c4d"):
+        assert [a["agent_id"] for a in read_agents(projects, session)] == ["a"]
+        assert session_status(projects, session) == "not_found"
+        assert read_session_lines(projects, session) == []
+
+
+def test_ambiguous_subagent_folders_without_transcript_are_ambiguous(tmp_path):
+    projects = _uuid_tree(tmp_path, UUID, OTHER_UUID)
+    for transcript in projects.glob("*/*.jsonl"):
+        transcript.unlink()
+    assert session_status(projects, "1a2b3c4d") == "ambiguous"
+    assert read_agents(projects, "1a2b3c4d") == []
+
+
+def test_dotted_neighbour_files_are_not_sessions(tmp_path):
+    projects = _uuid_tree(tmp_path, UUID)
+    (projects / "proj" / f"{UUID}.bak.jsonl").write_text("old\n")
+    (projects / "proj" / f"{UUID}.bak" / "subagents").mkdir(parents=True)
+    assert session_status(projects, "1a2b3c4d") == "ok"
+    assert read_session_lines(projects, "1a2b3c4d") == ["line-6666"]
+
+
+def test_same_session_in_two_projects_is_one_match_first_project_read(tmp_path):
+    projects = _uuid_tree(tmp_path, UUID, project="zzz")
+    _uuid_tree(tmp_path, UUID, project="aaa")
+    (projects / "aaa" / f"{UUID}.jsonl").write_text("first\n")
+    assert session_status(projects, "1a2b3c4d") == "ok"
+    assert read_session_lines(projects, "1a2b3c4d") == ["first"]
+
+
+def test_unknown_and_empty_session_status(tmp_path):
+    projects = _uuid_tree(tmp_path, UUID)
+    assert session_status(projects, "ffffffff") == "not_found"
+    assert session_status(projects, "") == "none"
+    assert read_agents(projects, "ffffffff") == []
+
+
+def test_catalog_status_ok_and_missing():
+    assert catalog_status(PROFILE, _reader({FIRST: CATALOG})) == "ok"
+    assert catalog_status(PROFILE, _reader({})) == "missing"
+    assert catalog_status(PROFILE, _reader({FIRST: "a: [unclosed"})) == "missing"
+    assert catalog_status(PROFILE, _reader({FIRST: "models: {}\n"})) == "missing"
+    assert catalog_status(None) == "missing"
