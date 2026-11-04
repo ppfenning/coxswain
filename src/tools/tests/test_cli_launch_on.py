@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import subprocess
 
@@ -122,6 +123,85 @@ def test_on_dry_run_prints_the_rsync_and_ssh_argvs_and_starts_nothing(tmp_path, 
     assert not [line for line in lines if line.split(" ")[0] in {"pid", "log", "trace"}]
     assert calls == []
     assert _run_files(ws) == []
+
+
+def _add_cartridge(ws, text="team: acme\n"):
+    """A cartridge in the chair's workspace, as `cartridges/<team>/cartridge.yaml`."""
+    path = ws / "cartridges" / "acme" / "cartridge.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return path
+
+
+def _dry_run_verbs(out):
+    """The printed `dry-run:` argv lines, in order; a decompose's `would write` line is not an argv."""
+    return [line.removeprefix("dry-run: ") for line in out.splitlines() if line.startswith(("dry-run: rsync", "dry-run: ssh"))]
+
+
+def test_on_dry_run_prints_the_cartridges_rsync_and_check_before_the_epic_launch(tmp_path, monkeypatch, capsys):
+    ws, _, argv = _setup(tmp_path)
+    _add_cartridge(ws)
+    calls = []
+    _fake_edge(monkeypatch, calls)
+    rc = main([*argv, "--on", "box", "--no-claim", "--dry-run"])
+    plan = _dry_run_verbs(capsys.readouterr().out)
+    assert rc == 0
+    assert [line.split()[0] for line in plan] == ["rsync", "rsync", "rsync", "ssh"]
+    assert "--delete" in plan[1] and "cartridges" in plan[1] and "cartridges" in plan[2]
+    assert "route launch epic" in plan[3]
+    assert calls == []
+
+
+def test_on_dry_run_of_a_decompose_prints_the_cartridges_rsync_and_check_before_the_launch(tmp_path, monkeypatch, capsys):
+    ws, _, argv = _setup(tmp_path)
+    _add_cartridge(ws)
+    (ws / "intake").mkdir()
+    idea = ws / "intake" / "idea.md"
+    idea.write_text(f"---\ntitle: Idea\nrepo: {tmp_path / 'repo'}\n---\n\nbody\n")
+    profile = argv[argv.index("--profile") + 1]
+    calls = []
+    _fake_edge(monkeypatch, calls)
+    box = cli.lane_hosts.LaneHost("box", "me@box", str(tmp_path / "remote"))
+    # A decompose has no --on: the hosts table places it, so the placement is the seam.
+    monkeypatch.setattr(cli, "_lane_host_or_refuse", lambda a, profile: (box, None))
+    rc = main([
+        "route", "launch", "decompose", "--profile", profile, "--idea", str(idea), "--initiative-id", "fix-thing",
+        "--no-claim", "--dry-run",
+    ])
+    out = capsys.readouterr().out
+    plan = _dry_run_verbs(out)
+    assert rc == 0, out
+    assert [line.split()[0] for line in plan] == ["rsync", "rsync", "rsync", "ssh"]
+    assert "cartridges" in plan[1] and "cartridges" in plan[2]
+    assert "route launch decompose" in plan[3]
+    assert calls == []
+
+
+@needs_rsync
+def test_on_copies_a_changed_cartridge_yaml_into_the_host_workspace(tmp_path, monkeypatch, capsys):
+    ws, remote, argv = _setup(tmp_path)
+    cartridge = _add_cartridge(ws, "team: acme\nversion: 1\n")
+    (remote / "cartridges" / "acme").mkdir(parents=True)
+    stale = remote / "cartridges" / "acme" / "cartridge.yaml"
+    stale.write_text("team: acme\nversion: 0\n")
+    os.utime(stale, (1_000_000_000, 1_000_000_000))  # rsync skips a same-size file with the same mtime; the host copy is older
+    cartridge.write_text("team: acme\nversion: 2\n")
+    _fake_edge(monkeypatch, [], real_rsync=True)
+    _no_local_process(monkeypatch)
+    rc = main([*argv, "--on", "box", "--label", "lbl"])
+    assert rc == 0, capsys.readouterr().out
+    assert (remote / "cartridges" / "acme" / "cartridge.yaml").read_text() == "team: acme\nversion: 2\n"
+
+
+def test_on_dry_run_without_a_cartridges_directory_prints_only_the_rsync_and_ssh_plan(tmp_path, monkeypatch, capsys):
+    ws, _, argv = _setup(tmp_path)
+    assert not (ws / "cartridges").exists()
+    _fake_edge(monkeypatch, [])
+    rc = main([*argv, "--on", "box", "--no-claim", "--dry-run"])
+    plan = _dry_run_verbs(capsys.readouterr().out)
+    assert rc == 0
+    assert [line.split()[0] for line in plan] == ["rsync", "ssh"]
+    assert not [line for line in plan if "cartridges" in line.split("route launch")[0]]
 
 
 def test_on_an_unknown_host_exits_non_zero_and_writes_nothing(tmp_path, monkeypatch, capsys):

@@ -6027,6 +6027,7 @@ def _route_launch(a: argparse.Namespace) -> int:
             (env_repo or None) if checkouts else None,
             launch_harness if checkouts else None, home=os.path.expanduser("~"), host_checkouts=checkouts,
             graph="decompose" if a.graph == "decompose" else "epic", intake=intake if a.graph == "decompose" else None,
+            cartridges=_workspace_cartridges(runs_dir),
         )
         for remote_argv in plan:
             print(f"dry-run: {shlex.join(remote_argv)}")
@@ -6424,12 +6425,31 @@ def _host_checkouts(rows: Sequence[Mapping[str, object]], name: str) -> tuple[st
     return next((tuple(host_cmd.recorded_repos(r)) for r in rows if r.get("name") == name), ())
 
 
+def _workspace_cartridges(runs_dir: Path) -> str | None:
+    """Edge. "cartridges" when the chair's workspace (`runs_dir.parent`, the rsync cwd of `_remote_edge`) holds one, else None."""
+    return "cartridges" if (runs_dir.parent / "cartridges").is_dir() else None
+
+
+def _workspace_probe(cwd: Path) -> Callable[[list[str]], tuple[int, str]]:
+    """Edge. `remote_launch`'s probe (exit code, stdout then stderr) run from `cwd`: the cartridges check names its source relative to the workspace."""
+
+    def probe(argv: list[str]) -> tuple[int, str]:
+        try:
+            done = subprocess.run(argv, capture_output=True, text=True, check=False, timeout=300, cwd=cwd)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return 127, f"sync: {argv[0]}: {exc}"
+        return done.returncode, done.stdout + done.stderr
+
+    return probe
+
+
 def _route_launch_on_host(
     a: argparse.Namespace, host: lane_hosts.LaneHost, runs_dir: Path, run_id: str, repo: str | None = None,
     harness_dir: str | None = None, *, home: str | None = None, tools: Sequence[str] = (),
     graph: str = "epic", intake: str | None = None,
 ) -> int:
-    """Copies the initiative to `host` and starts the lane there; writes only `<run>.remote.json`, and only on success.
+    """Copies the initiative to `host`, and the workspace's cartridges directory with it when there is one, and
+    starts the lane there; writes only `<run>.remote.json`, and only on success.
     `tools` are probed on the host's lane PATH before the copy. A decompose names its initiative by `a.initiative_id`
     and copies the one `intake` file; its record carries `graph: decompose`."""
     run, locate = _remote_edge(runs_dir.parent)
@@ -6448,7 +6468,7 @@ def _route_launch_on_host(
     result = remote_launch.launch_on_host(
         host, initiative, run_id, _holder_label(a), launched_at, run, locate, repo, harness_dir,
         preflight=preflight, home=home, host_checkouts=_host_checkouts(run_store.hosts(runs_dir), host.name), tools=tools,
-        graph=graph, intake=intake,
+        graph=graph, intake=intake, cartridges=_workspace_cartridges(runs_dir), probe=_workspace_probe(runs_dir.parent),
     )
     if isinstance(result, remote_launch.LaunchError):
         print(f"routing: launch on {host.name} failed at {result.step}: {result.message}")
