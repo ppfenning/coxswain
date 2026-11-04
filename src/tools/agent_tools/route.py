@@ -1774,8 +1774,11 @@ def plan_writes(plan: Mapping, intake_row: Mapping, existing: Sequence[Mapping])
 _TASK_FIELDS = ("id", "phase", "title", "body", "needs", "surfaces")
 
 
-def plan_from_result(result: Mapping, initiative_id: str, title: str, body: str) -> dict:
-    """The plan `decompose_into_rows` wants, from a decompose graph result; no tasks gives an empty tasks list."""
+def plan_from_result(result: Mapping, initiative_id: str, title: str, body: str, *, repo: str = "") -> dict:
+    """The plan `decompose_into_rows` wants, from a decompose graph result; no tasks gives an empty tasks list.
+
+    `repo` is the intake's repo, carried as `plan["repo"]`; empty when the caller has none.
+    """
     tasks = [
         {k: (list(t[k]) if k in ("needs", "surfaces") else t[k]) for k in _TASK_FIELDS if k in t}
         for t in result.get("tasks") or []
@@ -1787,7 +1790,29 @@ def plan_from_result(result: Mapping, initiative_id: str, title: str, body: str)
         "phases": [dict(p) for p in result.get("phases") or []],
         "tasks": tasks,
         "lint": list(result.get("lint") or []),
+        "repo": repo,
     }
+
+
+def initiative_with_repo(text: str, repo: str) -> str:
+    """`text`, an initiative.md, with its frontmatter `repo` line set to `repo`; an empty `repo` returns `text` as is."""
+    opening, closing = "---\n", "\n---\n"
+    close_index = text.find(closing, len(opening)) if text.startswith(opening) else -1
+    if not repo:
+        return text
+    if close_index == -1:
+        return _frontmatter([("repo", repo)], text)
+    header_lines = text[len(opening):close_index].split("\n")
+    header = "\n".join(_with_header_fields(header_lines, [("repo", repo)]))
+    return f"{opening}{header}{text[close_index:]}"
+
+
+def missing_repo_refusal(intake_name: str, fields: Mapping) -> str | None:
+    """None when `fields` holds a non-empty string `repo`, else the one-line refusal naming the intake."""
+    value = fields.get("repo")
+    if isinstance(value, str) and value:
+        return None
+    return f"routing: intake {intake_name} has no repo: field"
 
 
 def decompose_into_rows(

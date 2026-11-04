@@ -63,6 +63,42 @@ def test_plan_goes_through_plan_writes_to_rows():
     assert {r["task_id"] for r in rows if r["kind"] == "task"} == {"t1", "t2"}
 
 
+INITIATIVE = "---\nid: init-a\ntitle: A\nrepo: /old\nintake: intake/n.md\n---\n\nbody\n"
+
+
+def test_plan_carries_repo_and_defaults_to_empty():
+    assert route.plan_from_result(RESULT, "init-a", "A", "b", repo="/r/x")["repo"] == "/r/x"
+    assert route.plan_from_result(RESULT, "init-a", "A", "b")["repo"] == ""
+
+
+def test_initiative_with_repo_replaces_an_existing_line():
+    expected = "---\nid: init-a\ntitle: A\nrepo: /new\nintake: intake/n.md\n---\n\nbody\n"
+    assert route.initiative_with_repo(INITIATIVE, "/new") == expected
+    empty = INITIATIVE.replace("repo: /old", 'repo: ""')
+    assert route.initiative_with_repo(empty, "/new") == expected
+
+
+def test_initiative_with_repo_adds_a_missing_line():
+    bare = "---\nid: init-a\ntitle: A\n---\n\nbody\n"
+    out = route.initiative_with_repo(bare, "/new")
+    assert out == "---\nid: init-a\ntitle: A\nrepo: /new\n---\n\nbody\n"
+    assert route.parse_frontmatter(out) == ({"id": "init-a", "title": "A", "repo": "/new"}, "body")
+
+
+def test_initiative_with_repo_leaves_text_alone_for_an_empty_repo():
+    assert route.initiative_with_repo(INITIATIVE, "") == INITIATIVE
+
+
+def test_missing_repo_refusal_is_none_for_a_present_repo():
+    assert route.missing_repo_refusal("n", {"repo": "/r"}) is None
+
+
+def test_missing_repo_refusal_names_intake_and_field_for_empty_or_absent_repo():
+    line = "routing: intake n has no repo: field"
+    assert route.missing_repo_refusal("n", {"repo": ""}) == line
+    assert route.missing_repo_refusal("n", {}) == line
+
+
 def test_harness_argv_carries_result_out_for_decompose():
     argv = route.harness_argv(PROFILE, "decompose", "r1", result_out="/tmp/x.json", **NEEDS)
     assert argv[argv.index("--result-out"):argv.index("--result-out") + 2] == ["--result-out", "/tmp/x.json"]
