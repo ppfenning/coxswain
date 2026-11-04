@@ -158,7 +158,16 @@ PR of any stored merged task that has none. At `level` it reuses the level's PR 
 The task cap is `--max-parallel` on the phase and epic commands. Without it the cap is the provider profile's
 `max_parallel`, a positive integer, else the free lane count (`harness/lanes.py resolve_max_parallel`).
 
-A phase still waits for its parent phases. The epic driver holds a phase until every parent is complete, and a parent
-that missed its goal blocks its dependents. Running a ready task ahead of an unfinished earlier level is planned work in
-#626 and is not current behaviour. `next_launches` in `harness/lanes.py` exists with tests and is not called by the
-epic driver.
+An initiative runs as waves of phases. A wave is the set of phases at the same dependency depth. Independent phases
+run at once, each on its own branch `epic/<initiative>/<phase>` and in its own lane, up to the lane count.
+
+A task starts when its own needs are approved and merged. `plan_launches` in `harness/scheduler.py` and `next_launches`
+in `harness/lanes.py` choose the tasks to start. A task need not wait for the rest of an earlier level. A child branch
+is current when the merged commits of the tasks it needs are ancestors of it.
+
+Phases whose surfaces collide are serialised, and the reason is on the phase record. A quarantined task blocks only the
+phases that depend on it. Concurrent work is limited by the lane count and by the profile keys `run_ceiling_usd` and
+`task_estimate_usd`. The run result names which limit binds.
+
+Approval stays at the configured landing granularity, by default the ticket. Running phases and tasks in parallel does
+not add a gate.
