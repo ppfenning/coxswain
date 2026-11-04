@@ -187,6 +187,7 @@ route = _LazyModule("agent_tools.route")
 route_drift = _LazyModule("agent_tools.route_drift")
 route_edit = _LazyModule("agent_tools.route_edit")
 route_guard = _LazyModule("agent_tools.route_guard")
+route_hold = _LazyModule("agent_tools.route_hold")
 route_import = _LazyModule("agent_tools.route_import")
 route_remove = _LazyModule("agent_tools.route_remove")
 route_requeue = _LazyModule("agent_tools.route_requeue")
@@ -4428,6 +4429,9 @@ def _route_edit(a: argparse.Namespace) -> int:
 
 
 def _route_remove(a: argparse.Namespace) -> int:
+    if not a.id and a.match is None:
+        print("remove: give an id or --match")
+        return 2
     runs_dir, reason = _runs_dir_for_land(a)
     if runs_dir is None:
         print(f"route: {reason}")
@@ -4439,13 +4443,44 @@ def _route_remove(a: argparse.Namespace) -> int:
     )
     now, rows = datetime.datetime.now(datetime.UTC), run_store.read_queue(runs_dir)
     live = _live_runs(runs_dir, now.strftime("%Y-%m-%dT%H:%M:%SZ"))
-    target_id = _initiative_token(runs_dir, a.id)
-    on_target = _live_runs_on(live, target_id, _recorded_initiatives(runs_dir, live))
-    rc = route_remove.remove(runs_dir.parent, target_id, a.reason, a.by or getpass.getuser(), now, rows, on_target, store, dry_run=a.dry_run)
-    target = route_guard.resolve_target(rows, target_id)
-    if rc == route_guard.DONE and not a.dry_run and isinstance(target, route_guard.QueuedIntake):
-        _record_intake_done(runs_dir, runs_dir.parent / "intake" / "done" / f"{target.task_id}.md")
+    recorded = _recorded_initiatives(runs_dir, live)
+    by = a.by or getpass.getuser()
+    if len(a.id) == 1 and a.match is None:
+        target_id = _initiative_token(runs_dir, a.id[0])
+        rc = route_remove.remove(runs_dir.parent, target_id, a.reason, by, now, rows, _live_runs_on(live, target_id, recorded), store, dry_run=a.dry_run)
+        target = route_guard.resolve_target(rows, target_id)
+        if rc == route_guard.DONE and not a.dry_run and isinstance(target, route_guard.QueuedIntake):
+            _record_intake_done(runs_dir, runs_dir.parent / "intake" / "done" / f"{target.task_id}.md")
+        return rc
+    ids = [_initiative_token(runs_dir, token) for token in a.id]
+    targets, _why = route_remove.expand_targets(rows, ids, a.match)
+    live_on = {target: _live_runs_on(live, target, recorded) for target in targets}
+    resolved = [route_guard.resolve_target(rows, target) for target in targets]
+    intakes = [t.task_id for t in resolved if isinstance(t, route_guard.QueuedIntake)]
+    ws = runs_dir.parent
+    rc = route_remove.remove_many(ws, ids, a.reason, by, now, rows, live_on, store, match=a.match, dry_run=a.dry_run)
+    if not a.dry_run:
+        for task_id in intakes:
+            done = ws / "intake" / "done" / f"{task_id}.md"
+            if done.is_file() and not (ws / "intake" / f"{task_id}.md").exists():
+                _record_intake_done(runs_dir, done)
     return rc
+
+
+def _route_hold(a: argparse.Namespace) -> int:
+    runs_dir, reason = _runs_dir_for_land(a)
+    if runs_dir is None:
+        print(f"route: {reason}")
+        return 2
+    return route_hold.hold(runs_dir.parent, runs_dir, a.id, a.reason, a.by or getpass.getuser(), datetime.datetime.now(datetime.UTC), run_store.read_queue(runs_dir), dry_run=a.dry_run)
+
+
+def _route_release(a: argparse.Namespace) -> int:
+    runs_dir, reason = _runs_dir_for_land(a)
+    if runs_dir is None:
+        print(f"route: {reason}")
+        return 2
+    return route_hold.release(runs_dir.parent, runs_dir, a.id, run_store.read_queue(runs_dir), dry_run=a.dry_run)
 
 
 def _route_requeue(a: argparse.Namespace) -> int:
@@ -10664,15 +10699,36 @@ ROUTE_COMMANDS = [
         "agent_tools.cli:_route_edit", False, (), defaults={"runs_dir": None},
     ),
     commands.Command(
-        "remove", "route", "remove a queued intake or an initiative that has no live run",
+        "remove", "route", "remove queued intakes or initiatives that have no live run",
         (
-            commands.Arg(("id",), {"help": "a queued intake or an initiative"}),
+            commands.Arg(("id",), {"nargs": "*", "help": "queued intakes or initiatives; repeat for several"}),
+            commands.Arg(("--match",), {"metavar": "GLOB", "help": "also remove every queued intake whose file stem or id matches"}),
             commands.Arg(("--reason",), {"required": True}),
             commands.Arg(("--by",), {"help": "who removes; default the OS user"}),
             commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the plan and write nothing"}),
             commands.Arg(("--profile",)),
         ),
         "agent_tools.cli:_route_remove", False, (), defaults={"runs_dir": None},
+    ),
+    commands.Command(
+        "hold", "route", "hold a queued intake so the chair skips it until released",
+        (
+            commands.Arg(("id",), {"help": "a queued intake"}),
+            commands.Arg(("--reason",), {"required": True}),
+            commands.Arg(("--by",), {"help": "who holds; default the OS user"}),
+            commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the plan and write nothing"}),
+            commands.Arg(("--profile",)),
+        ),
+        "agent_tools.cli:_route_hold", False, (), defaults={"runs_dir": None},
+    ),
+    commands.Command(
+        "release", "route", "release a held intake back to the queue",
+        (
+            commands.Arg(("id",), {"help": "a held intake"}),
+            commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the plan and write nothing"}),
+            commands.Arg(("--profile",)),
+        ),
+        "agent_tools.cli:_route_release", False, (), defaults={"runs_dir": None},
     ),
     commands.Command(
         "requeue", "route", "requeue the intake of an initiative that has no live tasks",
