@@ -48,6 +48,7 @@ import threading
 import time
 import types
 from collections.abc import Callable, Collection, Mapping, Sequence
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -93,12 +94,15 @@ from harness.escalate import escalate_self_modification, touched_paths
 from harness.gate import apply_arm_for, auto_apply, gate
 from harness.handoff import build_handoff, plan_context
 from harness.invoke import Invocation, invoke_graphs
+from harness.lanes import lane_bound
 from harness.resume import load_result, reusable, save_result
+from harness.scheduler import plan_launches
 from harness.store_dialect import Connection, connect
 from harness.store_lease import assert_epoch, renew
 from harness.store_pause import clear_paused, is_paused
 from harness.store_retry import retry_store_write
 from harness.store_write import Store, record_handoff, record_merge, upsert_work_item
+from harness.waves import compute_waves, phase_parents, widest_wave
 from harness.worktree import (
     apply_patch,
     create_worktree,
@@ -467,27 +471,6 @@ class _Ctx:
 
 
 # ── the phase graph ─────────────────────────────────────────────────────────
-
-
-def phase_parents(items: Sequence[Mapping[str, Any]]) -> dict[str, set[str]]:
-    """Phase B depends on phase A iff some task in B needs a task in A.
-
-    Derived from the task edges rather than declared, because the task DAG is
-    the thing `initiative-decompose`'s adversary actually attacked. A separately
-    declared phase order would be a second source of truth that nobody checked.
-    """
-    phase_of = {str(item["id"]): str(item.get("phase") or "") for item in items}
-    state_of = {str(item["id"]): item.get("state") for item in items}
-    parents: dict[str, set[str]] = {phase: set() for phase in phase_of.values() if phase}
-    for item in items:
-        here = str(item.get("phase") or "")
-        for need in item.get("needs") or []:
-            there = phase_of.get(str(need))
-            # A `done` need is already on the base ref, so it imposes no stacking
-            # requirement — only an unsatisfied need makes its phase a parent.
-            if here and there and there != here and state_of.get(str(need)) != "done":
-                parents[here].add(there)
-    return parents
 
 
 def _items_complete(land_at: str, phase: str, items: Sequence[Mapping[str, Any]]) -> bool:
@@ -1207,8 +1190,13 @@ def run_epic(
     work_state: str = "files",
     base: str | None = None,
     retry: _StoreRetry | None = None,
+    headroom_usd: Callable[[], float | None] | None = None,
+    est_task_usd: float = 0.0,
 ) -> dict[str, Any]:
     """Drive a whole initiative: every phase, in dependency order, landing nothing.
+
+    Phases run as lanes: a phase opens once its parent phases are complete, and `plan_launches` starts the
+    ready tasks of every open phase, up to `max_parallel` or the usage `headroom_usd() / est_task_usd`.
 
     `initiative` is `core.workstore.read_initiative(...)` output — read by the
     CLI and passed in, because a driver that read the store itself would put the
@@ -1298,9 +1286,12 @@ def run_epic(
         _mirror_read(ctx, items)
 
         parents = phase_parents(items)
-        ordered, cyclic = phase_order(parents)
-
-        complete: set[str] = set()
+        waves, cyclic = compute_waves(parents)
+        _, binding = lane_bound(max_parallel, 0, headroom_usd() if headroom_usd else None, est_task_usd)
+        print(
+            f"  waves: {' | '.join(', '.join(w) for w in waves) or 'none'}; widest wave {widest_wave(waves)}; "
+            f"lane bound {max_parallel} ({binding})"
+        )
 
         def add_phase(record: dict[str, Any]) -> None:
             phases.append(record)
@@ -1322,63 +1313,22 @@ def run_epic(
                 }
             )
 
-        for phase in ordered:
-            parent_phases = sorted(parents.get(phase) or ())
-            # Only an awaiting_land record can count complete on its items; a partial or blocked one still blocks.
-            deferred = {r["phase"] for r in phases if r.get("land_deferred")}
-            parent = next((p for p in parent_phases if p not in complete and p not in deferred), None)
-            if parent is not None:
-                # v1 is blanket no: a phase unblocks its dependents only when
-                # `validate_phase` says the goal is met. The validator reports
-                # `quarantine_blocks_dependents`; nothing acts on it yet.
-                parent_record = next((p for p in phases if p.get("phase") == parent), {})
-                waiting = len(parent_record.get("awaiting_tasks") or [])
-                add_phase(
-                    {
-                        "phase": phase,
-                        "status": "blocked",
-                        "parents": parent_phases,
-                        "reason": (
-                            f"parent phase '{parent}' is awaiting the land of {waiting} approved task(s)"
-                            if parent_record.get("status") == "awaiting_land"
-                            else f"parent phase '{parent}' did not meet its goal; dependents do not run"
-                        ),
-                    }
-                )
-                continue
-
-            try:
-                record = _run_phase(
-                    ctx, initiative=initiative, phase=phase, parents=tuple(parent_phases), items=items
-                )
-            except LimitStop as exc:
-                # No quarantine, no attempt, every sibling task left as-is: stop now.
-                paused_until = exc.detail.split("resets", 1)[-1].strip()
-                break
-            phase_tasks = record.pop("task_records")
-            tasks.extend(phase_tasks)
-            # Noted as each phase ends, so a raise in a later phase cannot lose this phase's approvals.
-            for t, command in _unlanded(phase_tasks, run_id, repo):
-                send_to_courier(f"coxswain://task/{t['id']}", "chair", command)
-            quarantined.extend(record.pop("quarantined"))
-            proposals.extend(record.pop("batch"))
-            stacks_rebased += 1 if record.get("rebased") else 0
-            # `land_deferred` marks an awaiting_land phase whose land is not due: it unblocks dependents and is not counted as waiting.
-            if record["status"] == "awaiting_land" and _land_deferred(ctx.land_at, phase, items):
-                record["land_deferred"] = True
-            add_phase(record)
-            if record.get("stopped"):
-                print(f"  run stopped: {record['stopped']}; later phases not run")
-                break
-            if record["status"] == "complete":
-                complete.add(phase)
+        tally = _Tally()
+        _run_lanes(
+            ctx, initiative=initiative, items=items, parents=parents, waves=waves, add_phase=add_phase,
+            phases=phases, tasks=tasks, quarantined=quarantined, proposals=proposals, tally=tally,
+            headroom_usd=headroom_usd, est_task_usd=est_task_usd,
+        )
+        stacks_rebased, paused_until = tally.stacks_rebased, tally.paused_until
+        rank = {p: n for n, p in enumerate([*cyclic, *(p for w in waves for p in w)])}
+        phases.sort(key=lambda r: rank.get(str(r["phase"]), len(rank)))
 
         # A pause too: tasks approved before it can have lost their branch. The audit calls no model.
         _audit_approved_kept(ctx, {str(i["id"]): i for i in items}, tasks, quarantined)
         result = _build_result(
             run_id=run_id, date=date, initiative_id=ctx.initiative_id, phases=phases, tasks=tasks,
             quarantined=quarantined, proposals=proposals, stacks_rebased=stacks_rebased,
-            paused_until=paused_until, repo=repo, land_at=ctx.land_at,
+            paused_until=paused_until, repo=repo, land_at=ctx.land_at, waves=waves, lane=tally.lane,
         )
         return result
     finally:
@@ -1424,6 +1374,185 @@ def run_epic(
         # Raised last, so a failing close still leaves the exit record written and the worktrees cleaned up.
         if close_error is not None:
             raise close_error
+
+
+@dataclass
+class _Tally:
+    stacks_rebased: int = 0
+    paused_until: str | None = None
+    lane: dict[str, Any] = field(default_factory=dict)
+
+
+def _open_view(
+    items: Sequence[Mapping[str, Any]], parents: Mapping[str, set[str]], complete: set[str], launched: set[str]
+) -> list[dict[str, Any]]:
+    """`items` as the planner sees them: a ready task is held while its phase has an incomplete parent or it already launched."""
+    closed = {p for p, ps in parents.items() if not ps <= complete}
+
+    def state(item: Mapping[str, Any]) -> Any:
+        if item.get("state") != "ready":
+            return item.get("state")
+        if str(item["id"]) in launched:
+            return "in_progress"
+        return "blocked" if str(item.get("phase")) in closed else "ready"
+
+    return [{**item, "state": state(item)} for item in items]
+
+
+def _run_lanes(
+    ctx: _Ctx,
+    *,
+    initiative: Mapping[str, Any],
+    items: list[dict[str, Any]],
+    parents: Mapping[str, set[str]],
+    waves: Sequence[Sequence[str]],
+    add_phase: Callable[[dict[str, Any]], None],
+    phases: list[dict[str, Any]],
+    tasks: list[dict[str, Any]],
+    quarantined: list[dict[str, Any]],
+    proposals: list[dict[str, Any]],
+    tally: _Tally,
+    headroom_usd: Callable[[], float | None] | None,
+    est_task_usd: float,
+) -> None:
+    """Run phases as lanes until nothing runs and the planner starts nothing; every phase ends with one record."""
+    order = [p for w in waves for p in w]
+    wave_of = {p: n + 1 for n, w in enumerate(waves) for p in w}
+    phase_of = {str(i["id"]): str(i.get("phase") or "") for i in items}
+    running: dict[Future[dict[str, Any]], tuple[str, frozenset[str], int]] = {}
+    lane_of: dict[str, int] = {}
+    acc: dict[str, dict[str, Any]] = {}
+    launched: set[str] = set()
+    complete: set[str] = set()
+    recorded = {str(r["phase"]) for r in phases}
+    serialised: dict[str, str] = {}
+    why_stopped: list[str] = []
+
+    def settle(phase: str, record: dict[str, Any]) -> None:
+        record = {**record, "wave": wave_of.get(phase), "lane": lane_of.get(phase)}
+        if phase in serialised:
+            record["serialised"] = serialised[phase]
+        deferred = record["status"] == "awaiting_land" and _land_deferred(ctx.land_at, phase, items)
+        if deferred:
+            record["land_deferred"] = True
+        add_phase(record)
+        recorded.add(phase)
+        if record["status"] == "complete" or deferred:
+            complete.add(phase)
+
+    def parent_block(phase: str) -> dict[str, Any] | None:
+        bad = next((p for p in sorted(parents[phase]) if p in recorded and p not in complete), None)
+        if bad is None:
+            return None
+        parent_record = next((r for r in phases if r.get("phase") == bad), {})
+        waiting = len(parent_record.get("awaiting_tasks") or [])
+        return {
+            "phase": phase,
+            "status": "blocked",
+            "parents": sorted(parents[phase]),
+            "reason": (
+                f"parent phase '{bad}' is awaiting the land of {waiting} approved task(s)"
+                if parent_record.get("status") == "awaiting_land"
+                else f"parent phase '{bad}' did not meet its goal; dependents do not run"
+            ),
+        }
+
+    def fold(fut: Future[dict[str, Any]]) -> None:
+        phase, _ids, _lane = running.pop(fut)
+        try:
+            record = fut.result()
+        except LimitStop as exc:
+            tally.paused_until = exc.detail.split("resets", 1)[-1].strip()
+            why_stopped.append(f"account session limit, resets {tally.paused_until}")
+            return
+        phase_tasks = record.pop("task_records")
+        tasks.extend(phase_tasks)
+        for t, command in _unlanded(phase_tasks, ctx.run_id, ctx.repo):
+            send_to_courier(f"coxswain://task/{t['id']}", "chair", command)
+        quarantined.extend(record.pop("quarantined"))
+        proposals.extend(record.pop("batch"))
+        tally.stacks_rebased += 1 if record.get("rebased") else 0
+        acc[phase] = {**record, "rebased": bool(record.get("rebased") or acc.get(phase, {}).get("rebased"))}
+        if record.get("stopped"):
+            print(f"  run stopped: {record['stopped']}; later phases not run")
+            why_stopped.append(f"run stopped: {record['stopped']}")
+
+    with ThreadPoolExecutor(max_workers=max(1, len(parents))) as pool:
+
+        def launch(phase: str, ids: frozenset[str], only: frozenset[str] | None) -> None:
+            used = {lane for *_, lane in running.values()}
+            lane_of.setdefault(phase, next(n for n in range(1, len(used) + 2) if n not in used))
+            launched.update(ids)
+            future = pool.submit(
+                _run_phase, ctx, initiative=initiative, phase=phase,
+                parents=tuple(sorted(parents[phase])), items=items, only=only,
+            )
+            running[future] = (phase, ids, lane_of[phase])
+
+        while True:
+            hr = headroom_usd() if headroom_usd else None
+            by_phase = {p: ids for p, ids, _ in running.values()}
+            # Replan until settling a phase changes nothing, so a phase that just completed opens its children now.
+            while True:
+                with ctx.items_lock:
+                    view = _open_view(items, parents, complete, launched)
+                    plan = plan_launches(
+                        view, by_phase, ctx.max_parallel, initiative.get("foreign") or {}, hr, est_task_usd
+                    )
+                    cand = {str(t["phase"]) for t in workstore.ready_tasks(view, foreign=initiative.get("foreign") or {})}
+                before = len(recorded)
+                idle: list[str] = []
+                for tid, why in sorted(plan.held.items()):
+                    if " waits for phase " in why and phase_of[tid] not in serialised:
+                        serialised[phase_of[tid]] = why
+                        print(f"  {why}")
+                for phase in sorted(acc):
+                    if phase not in by_phase and phase not in cand:
+                        settle(phase, acc.pop(phase))
+                for phase in order:
+                    if phase in recorded or phase in lane_of or why_stopped:
+                        continue
+                    held = next(
+                        (w for t, w in sorted(plan.held.items()) if phase_of[t] == phase and "is quarantined" in w), None
+                    )
+                    if (block := parent_block(phase)) is not None:
+                        settle(phase, block)
+                    elif phase not in cand and parents[phase] <= complete:
+                        if held is not None:
+                            settle(phase, {"phase": phase, "status": "blocked", "parents": sorted(parents[phase]),
+                                           "reason": f"{held}, so the phase cannot run; dependents do not run"})
+                        else:
+                            idle.append(phase)
+                if len(recorded) == before:
+                    # Open phases with nothing ready get one call for their record, only once the view is current.
+                    for phase in idle if not why_stopped else []:
+                        launch(phase, frozenset(), None)
+                    break
+            free, binding = lane_bound(ctx.max_parallel, sum(len(ids) for ids in by_phase.values()), hr, est_task_usd)
+            tally.lane = {"free": free, "binding": binding}
+            if not why_stopped:
+                in_flight = {p for p, _, _ in running.values()}
+                for phase, ids in plan.start.items():
+                    if phase not in in_flight:
+                        launch(phase, frozenset(ids), frozenset(ids))
+            if not running:
+                break
+            done, _ = wait(running, return_when=FIRST_COMPLETED)
+            for future in done:
+                fold(future)
+
+    for phase in order:
+        if phase in recorded:
+            continue
+        if phase in acc:
+            settle(phase, acc.pop(phase))
+        elif why_stopped:
+            continue  # a stopped run leaves later phases without a record, as before
+        elif (block := parent_block(phase)) is not None:
+            settle(phase, block)
+        else:
+            reason = f"held by {tally.lane.get('binding')}: {tally.lane.get('free')} free slot(s)"
+            settle(phase, {"phase": phase, "status": "paused", "parents": sorted(parents[phase]), "reason": reason})
 
 
 def _quarantine_task(
@@ -1959,6 +2088,8 @@ def _build_result(
     paused_until: str | None,
     repo: Path | str,
     land_at: str | None = None,
+    waves: Sequence[Sequence[str]] = (),
+    lane: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The epic result from the lists as they stand: whole at a normal end, partial when a phase raised."""
     unlanded = _unlanded(tasks, run_id, repo)
@@ -1968,6 +2099,9 @@ def _build_result(
         "initiative": initiative_id,
         **({"land_at": land_at} if land_at else {}),
         "phases": phases,
+        "waves": [list(w) for w in waves],
+        "widest_wave": widest_wave(waves),
+        "lane_bound": dict(lane or {}),
         "tasks": tasks,
         "quarantined": quarantined,
         "proposals": proposals,
