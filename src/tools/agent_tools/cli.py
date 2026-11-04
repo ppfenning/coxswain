@@ -6838,7 +6838,9 @@ def _export_board(runs_dir: Path, workspace: Path) -> list[str]:
     from agent_tools import store_fill  # imported here: cli loads a command module only when it runs
 
     store_fill.fill_workspace(workspace)
-    return queue_export.export_files(workspace, run_store.read_queue(runs_dir), hashes=queue_export.store_hashes(runs_dir)).skipped
+    # A file with no row is not necessarily orphaned: it may be a live decompose's, whose rows are not written yet.
+    live = chair_decompose_runs.live_decompose_initiatives(runs_dir)
+    return queue_export.export_files(workspace, run_store.read_queue(runs_dir), hashes=queue_export.store_hashes(runs_dir), protected=live).skipped
 
 
 def _launch_rows_then_export(
