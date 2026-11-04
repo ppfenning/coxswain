@@ -1303,7 +1303,8 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
     # A test, migration or script the body names but surfaces omit is the most common layout refusal, and the fix is
     # mechanical when the name points at one file: add it, and say so on the ticket.
     # Launches pass no --tree, so a bare test name could never resolve; the checkout's own listing stands in, here only.
-    named_tree = tree or repo_listing(repo_name)
+    # `repo` (--target-repo) is often unset on a launch; `checkout` is the harness's own --repo, the seats' readable copy.
+    named_tree = tree or repo_listing(str(args.get("checkout") or repo_name))
     tasks = [with_named_artifacts(t, named_tree) for t in tasks]
 
     # The layout check: a body that does not match its surfaces blocks like a lint
