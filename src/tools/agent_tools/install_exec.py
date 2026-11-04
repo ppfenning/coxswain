@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 
+from agent_tools import dash_binary
 from agent_tools.install import CHECKOUT, checkout_spec
 
 Runner = Callable[[list, str | None], tuple]
@@ -19,7 +20,7 @@ def from_plan(steps: Sequence[Mapping], *, manifest: Mapping, options: Mapping) 
     a real command: `repo`/`tag` for `clone`/`fetch_checkout` from the
     manifest, `team`/`workspace` (and `home`, when supplied) for
     `setup_install` from the options.
-    Leaves `skip`, `refuse`, `doctor`, `desktop` and `binary` steps as they arrived."""
+    Leaves `skip`, `refuse`, `doctor`, `desktop`, `binary`, `dev_build` and `dev_link` steps as they arrived."""
     components = {CHECKOUT: checkout_spec(manifest), **manifest.get("components", {})}
     return [_enrich(step, components, options) for step in steps]
 
@@ -111,6 +112,10 @@ def _run_step(step: Mapping, root: str, run: Runner) -> tuple:
     kind = step["kind"]
     if kind == "binary":
         return _run_argvs(_binary_argvs(step), run)
+    if kind == "dev_build":
+        return _run_argvs([dash_binary.dev_build_argv(clone_dir(root, step["component"]))], run)
+    if kind == "dev_link":
+        return _run_argvs(dash_binary.dev_link_argvs(clone_dir(root, step["component"]), step["bin_dir"]), run)
     if kind == "clone":
         argv = _clone_argv(step, root)
         exit_code, output = run(argv, None)
@@ -135,15 +140,26 @@ def _run_step(step: Mapping, root: str, run: Runner) -> tuple:
 
 
 def is_fatal(result: Mapping) -> bool:
-    """True when a step result is a non-zero exit that must stop the run; a doctor step is the only exemption."""
-    return result["exit"] not in (0, None) and result["step"]["kind"] != "doctor"
+    """True when a step result is a non-zero exit that must stop the run.
+    A doctor step and a dev_build step are exempt: a failed build leaves the release binary already on disk in place."""
+    return result["exit"] not in (0, None) and result["step"]["kind"] not in ("doctor", "dev_build")
+
+
+def _build_failed(results: Sequence[Mapping], component: str) -> bool:
+    """True when a `dev_build` for `component` already ran and exited non-zero."""
+    return any(
+        r["step"]["kind"] == "dev_build" and r["step"]["component"] == component and r["exit"] not in (0, None)
+        for r in results
+    )
 
 
 def execute(steps: Sequence[Mapping], *, root: str, run: Runner) -> list[dict]:
     """Runs `steps` in order through the injected `run`, stopping at the
     first fatal non-zero exit or at a `refuse`; a non-zero `doctor` does not
-    stop the steps after it. `skip` runs nothing and reports
-    clean; `desktop` prints its no-op line instead of calling `run`. Every
+    stop the steps after it. A `dev_link` after a failed `dev_build` of the
+    same component is not run and carries `exit: None`, so `ln -sf` never
+    replaces the release binary with a link to a build that did not happen.
+    `skip` runs nothing and reports clean; `desktop` prints its no-op line instead of calling `run`. Every
     step gets one `{"step", "commands", "exit", "output"}` record (`commands` is
     always a list of argv, empty for a step that ran no command); steps after
     a stop carry `exit: None` because they never ran."""
@@ -151,7 +167,7 @@ def execute(steps: Sequence[Mapping], *, root: str, run: Runner) -> list[dict]:
     stopped = False
     for step in steps:
         kind = step["kind"]
-        if stopped:
+        if stopped or (kind == "dev_link" and _build_failed(results, step["component"])):
             results.append({"step": step, "commands": [], "exit": None, "output": None})
             continue
         if kind == "skip":
