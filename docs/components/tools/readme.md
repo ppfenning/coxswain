@@ -173,6 +173,48 @@ the run store; see [`docs/shared-store.md`](https://github.com/ppfenning/coxswai
 the profile? [`docs/getting-started.md`](https://github.com/ppfenning/coxswain/blob/main/src/tools/docs/getting-started.md) walks
 through it.
 
+`cox route hold ID --reason REASON` marks a queued intake held, so the chair
+skips it until it is released, and records the reason and `--by`. Holding an
+intake that is already held replaces its reason. An id that is an initiative,
+names no queued intake, or has no intake file is refused: it prints
+`hold: refused: <why>`, writes nothing and exits 2, under `--dry-run` too. A
+store or file write that fails exits 1. `cox route release ID` puts a held
+intake back in the queue and refuses the same targets with
+`release: refused: <why>` and exit 2. Releasing an intake that is not held
+changes nothing and exits 0. Both take `--dry-run`, which prints the plan and
+writes nothing.
+
+`cox route remove` takes several ids, and `--match GLOB` also removes every
+queued intake whose file stem or id matches the glob. `--dry-run` prints the
+plan and writes nothing, and `--reason` is required. A single id with no
+`--match` is removed or refused on its own, and exits 0 or 2. With several
+ids or `--match`, a refused target does not stop the others: the run ends with
+`removed N of M`, or `would remove N of M` under `--dry-run`, and exits with
+the worst code across targets, so 2 if any was refused. A `--match` that
+matches no queued intake refuses the whole call before any target is tried,
+so explicit ids given beside it are not removed, and it exits 2. With neither
+an id nor `--match` it prints `remove: give an id or --match` and exits 2.
+
+`cox route priority` takes a queued intake id as well as an initiative.
+`--top` puts it one above every other open item and `--bottom` one below
+every other, `--up` and `--down` pass the nearest neighbour, and `--set N`
+writes N. The five flags exclude one another. A flag with no id prints
+`routing: an initiative or queued intake is required with --set, --up,
+--down, --top or --bottom` and exits 2; with no flag it lists the open queue.
+A store or file write that fails exits 1.
+
+`cox route file --intake --after IDS` records the ids the new intake waits on;
+repeat the flag or separate the ids with commas. Without `--intake` it prints
+`routing: --after needs --intake, since only a queued intake waits` and exits
+2. `cox route edit ID --after IDS` sets the same list on a queued intake, and
+an empty value clears it. On an initiative or a task ticket, or with the
+intake's own id, it prints `edit: refused: <why>`, writes nothing and exits 2.
+
+`cox route status` prints a queued intake that waits on others as
+`id (waiting on a, b)`. A `held:` section after the intake groups lists each
+held intake as `  id: reason`, or the bare id when it has no reason. With
+`--json` the `waiting` and `held` keys appear only when either is non-empty.
+
 `cox route sync` resolves a repo only for the items it will act on: in the
 profile's `tracker_scope` and not already `done` or `dropped`. A settled item
 whose `repo:` no longer resolves is left out without a refusal. An open item
