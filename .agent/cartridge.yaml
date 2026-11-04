@@ -2,7 +2,3 @@
 # so a land waits on CI instead of running them twice locally.
 landing_areas:
   land_checks: ci
-  # One pull request per level until a merged-not-landed phase unblocks its dependents at ticket granularity
-  # (intake at-ticket-granularity-a-merged-phase-unblocks). At the ticket default every multi-phase initiative here
-  # waits on a phase land that never comes. Remove this line when that intake lands.
-  land_at: level
