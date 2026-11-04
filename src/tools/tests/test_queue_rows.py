@@ -125,7 +125,7 @@ def test_plan_to_rows_three_tasks() -> None:
             },
         },
         _task_row("a-1", "q", "ready", [], "First", ["agent_tools/a.py"], "One.\n"),
-        _task_row("a-2", "q", "todo", ["a-1"], "Second", [], "Two.\n"),
+        _task_row("a-2", "q", "ready", ["a-1"], "Second", [], "Two.\n"),
         _task_row("a-3", "r", "ready", [], "Third", ["x.py", "y.py"], "Three.\n"),
     ]
 
@@ -163,9 +163,9 @@ def test_intake_stamp_sets_initiative_and_keeps_original() -> None:
 
 def test_plan_row_equals_parsed_file_row() -> None:
     # Frontmatter as route.initiative_files writes it: id, phase, state, needs, surfaces, title.
-    todo = "---\nid: a-2\nphase: q\nstate: todo\nneeds:\n- a-1\nsurfaces: []\ntitle: Second\n---\nTwo.\n"
+    ready_with_needs = "---\nid: a-2\nphase: q\nstate: ready\nneeds:\n- a-1\nsurfaces: []\ntitle: Second\n---\nTwo.\n"
     ready = "---\nid: a-1\nphase: q\nstate: ready\nneeds: []\nsurfaces:\n- agent_tools/a.py\ntitle: First\n---\nOne.\n"
     rows = plan_to_rows(PLAN, "idea")
-    assert rows[2] == parse_item("task", ("queue", "q", "a-2.md"), todo)
+    assert rows[2] == parse_item("task", ("queue", "q", "a-2.md"), ready_with_needs)
     assert rows[1] == parse_item("task", ("queue", "q", "a-1.md"), ready)
     assert parse_item("task", ("queue", "q", "a-2.md"), render_item(rows[2])) == rows[2]

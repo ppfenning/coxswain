@@ -132,11 +132,6 @@ def render_item(row: Row) -> str:
     return f"---\n{header}---\n{row['body']}"
 
 
-def _task_state(needs: list[str]) -> str:
-    """Decompose's rule: `ready` with no needs, `todo` otherwise."""
-    return _TASK_DEFAULT_STATE if needs else "ready"
-
-
 def plan_to_rows(plan: Mapping[str, Any], intake_id: str) -> list[Row]:
     """The rows parse_item gives for the plan's initiative.md, then its task files, in plan order."""
     # A ticket's needs_json and surfaces_json are the `needs` and `surfaces` lists below: this row shape has no _json keys.
@@ -164,7 +159,7 @@ def plan_to_rows(plan: Mapping[str, Any], intake_id: str) -> list[Row]:
             "initiative": initiative,
             "task_id": t["id"],
             "phase": t["phase"],
-            "state": _task_state(_strs(t.get("needs"))),
+            "state": "ready",  # needs gate when a task can start, not its state
             "needs": _strs(t.get("needs")),
             "title": str(t["title"]),
             "surfaces": _strs(t.get("surfaces")),
