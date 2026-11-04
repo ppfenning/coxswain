@@ -417,6 +417,39 @@ def with_named_artifacts(task: Mapping[str, Any], tree: Sequence[Mapping[str, An
     )
 
 
+def _declared_generated_files() -> Mapping[str, Any]:
+    """Edge: the tools package's declaration of generated files; empty when that package is not installed."""
+    try:
+        from agent_tools.land import GENERATED_FILES  # imported here: the graphs package stays importable without it
+    except ImportError:
+        return {}
+    return GENERATED_FILES
+
+
+def with_generated_files(task: Mapping[str, Any], generated: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
+    """Adds each declared generated file whose generator source is a surface; the body never names it, by design."""
+    declared = _declared_generated_files() if generated is None else generated
+    surfaces = [str(s) for s in task.get("surfaces") or []]
+    listed = {s.removesuffix(_NEW) for s in surfaces}
+    added = [
+        (path, source)
+        for path, spec in declared.items()
+        if path not in listed
+        for source in [next((s for s in spec.sources if s in listed), None)]
+        if source is not None
+    ]
+    if not added:
+        return task
+    return dict(
+        task,
+        surfaces=[*surfaces, *(path for path, _ in added)],
+        lint=[
+            *(task.get("lint") or []),
+            *(f"added to surfaces: {path} (generated from {source}, which is a surface)" for path, source in added),
+        ],
+    )
+
+
 def surface_problem(unresolved: Sequence[str]) -> str | None:
     """One line per unresolved surface; `None` when there is nothing unbuildable."""
     if not unresolved:
@@ -1289,6 +1322,10 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
         dict(t, lint=[*(t.get("lint") or []), *layout_notes[str(t["id"])]]) if str(t["id"]) in layout_notes else t
         for t in tasks
     ]
+
+    # A generated file whose generator source is a surface changes with it. check_layout flags a surface the body
+    # does not name and this one is never named, so the step runs after the layout check, before surfaces are read.
+    tasks = [with_generated_files(t) for t in tasks]
 
     # Validated before anything is proposed: a typo written the same way in
     # both the task and the plan reaches the work-item arm looking
