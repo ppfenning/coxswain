@@ -38,7 +38,7 @@ which steps to run."""
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -47,7 +47,7 @@ from typing import Any
 from agent_tools import repo_path, run_store
 from agent_tools.land import _approved as land_approved
 from agent_tools.lane_hosts import LaneHost
-from agent_tools.remote_argv import git_fetch_argv, rsync_pull_argv
+from agent_tools.remote_argv import git_fetch_argv, git_fetch_phase_argv, rsync_pull_argv
 
 __all__ = [
     "FetchError", "FetchPlan", "approved_without_branch", "branch_expected", "chair_repo_path", "fetch_plan", "fetch_run",
@@ -223,6 +223,11 @@ def branch_expected(statuses: Sequence[str]) -> bool:
     return "approved" in statuses
 
 
+def phase_branches(manifests: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Sorted distinct `epic/<initiative>/<phase>` names; a record missing either key is skipped."""
+    return sorted({f"epic/{m['initiative']}/{m['phase']}" for m in manifests if m.get("initiative") and m.get("phase")})
+
+
 def store_task_records(runs_dir: Path, run: str) -> list[dict[str, Any]]:
     """Edge: the run's task records from the store, each carrying `task`.
 
@@ -316,3 +321,29 @@ def fetch_run(
         if found != 0:
             return FetchError("verify", f"no refs/heads/agents/{run}/* in {repo} after the fetch")
     return repos
+
+
+def fetch_phase_branches(
+    host: LaneHost,
+    run: str,
+    chair_runs_dir: Path,
+    repos: Sequence[str],
+    branches: Sequence[str],
+    run_cmd: Callable[[list[str]], int],
+    locate: Callable[[str], str] | None = None,
+    *,
+    home: str | None = None,
+) -> tuple[str, ...]:
+    """The `branches` that exist locally in some chair repo after fetching each. Nothing is raised.
+
+    A nonzero fetch is not an error: a phase landed and deleted on the host has no branch. `run` is unused."""
+    place = locate if locate is not None else (lambda path: f"{host.ssh}:{path}")
+    host_ws = host.workspace_dir.rstrip("/")
+    chair_ws = str(chair_runs_dir.parent)
+
+    def present(repo: str, branch: str) -> bool:
+        fetch = git_fetch_phase_argv(place(host_repo_path(chair_ws, host_ws, repo, home)), branch)
+        run_cmd(["git", "-C", repo, *fetch[1:]])
+        return run_cmd(["git", "-C", repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"]) == 0
+
+    return tuple(sorted({branch for repo in repos for branch in branches if present(repo, branch)}))

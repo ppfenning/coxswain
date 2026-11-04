@@ -14,10 +14,12 @@ from agent_tools.remote_fetch import (
     approved_without_branch,
     branch_expected,
     chair_repo_path,
+    fetch_phase_branches,
     fetch_plan,
     fetch_run,
     host_repo_path,
     localize_task_records,
+    phase_branches,
     probe_argv,
     pull_argvs,
     refuse_unended,
@@ -413,3 +415,42 @@ def test_localize_task_records_rewrites_in_place_and_ids_list_them(tmp_path):
     localize_task_records(tmp_path, "/c/ws", "/h/ws")
     assert json.loads(path.read_text()) == {"repo": "/c/ws/repo"}
     assert task_record_ids(tmp_path) == ["p1/a"]
+
+
+def test_phase_branches_names_each_phase_once_sorted_and_skips_records_missing_a_key():
+    manifests = [
+        {"initiative": "i2", "phase": "p1"},
+        {"initiative": "i1", "phase": "p2"},
+        {"initiative": "i2", "phase": "p1"},
+        {"phase": "p3"},
+        {"initiative": "i4"},
+    ]
+    assert phase_branches(manifests) == ["epic/i1/p2", "epic/i2/p1"]
+    assert phase_branches([]) == []
+
+
+def test_fetch_phase_branches_fetches_the_phase_a_record_names_and_returns_it(tmp_path):
+    calls = []
+    repo = str(tmp_path / "chairws" / "repo")
+    branches = phase_branches([{"initiative": "i1", "phase": "p1"}])
+    result = fetch_phase_branches(LaneHost("h", "u@h", "/hostws"), "r1", tmp_path / "chairws" / "runs", [repo],
+                                  branches, lambda argv: calls.append(argv) or 0)
+    assert result == ("epic/i1/p1",)
+    assert calls == [
+        ["git", "-C", repo, "fetch", "u@h:/hostws/repo", "+refs/heads/epic/i1/p1:refs/heads/epic/i1/p1"],
+        ["git", "-C", repo, "rev-parse", "--verify", "--quiet", "refs/heads/epic/i1/p1"],
+    ]
+
+
+def test_fetch_phase_branches_leaves_out_a_branch_whose_fetch_fails_and_goes_on(tmp_path):
+    calls = []
+
+    def run_cmd(argv):
+        calls.append(argv)
+        return 1 if "epic/i1/p1" in " ".join(argv) else 0
+
+    repo = str(tmp_path / "chairws" / "repo")
+    result = fetch_phase_branches(LaneHost("h", "u@h", "/hostws"), "r1", tmp_path / "chairws" / "runs", [repo],
+                                  ["epic/i1/p1", "epic/i1/p2"], run_cmd)
+    assert result == ("epic/i1/p2",)
+    assert [c[3] for c in calls] == ["fetch", "rev-parse", "fetch", "rev-parse"]
