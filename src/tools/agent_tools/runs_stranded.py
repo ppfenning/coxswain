@@ -60,12 +60,9 @@ def _remedy(record: dict, item: dict | None, base_of: Callable[[str], str] | Non
 
 def _row(record: dict, item: dict | None, base_of: Callable[[str], str] | None = None,
          manual_of: Callable[[str], bool] | None = None) -> dict:
-    # A land that conflicted left its reason on the item: the task needs a rebuild on current main, not a land.
-    # Only while the item is still `ready`: a rebuilt task that was approved again has a new run to land.
-    conflict = (item or {}).get("land_conflict") if (item or {}).get("state") == "ready" else None
     return {
         "run": record.get("run"), "task": record.get("task"), "phase": record.get("phase"),
-        "branch": record.get("branch"), "remedy": f"rebuild: {conflict}" if conflict else _remedy(record, item, base_of, manual_of),
+        "branch": record.get("branch"), "remedy": _remedy(record, item, base_of, manual_of),
     }
 
 
@@ -77,10 +74,15 @@ def _rebuilt(record: dict, item: dict | None) -> bool:
     return bool(item) and record.get("run") in (item.get("rebuilt_from") or [])
 
 
+def _awaiting_rebuild(item: dict | None) -> bool:
+    """True for a ready item a land conflict sent back: the relaunch rebuilds it, nothing is stranded."""
+    return bool(item) and item.get("state") == "ready" and bool(item.get("land_conflict"))
+
+
 def _live_pairs(records: list[dict], items: list[dict]) -> list[tuple[dict, dict | None]]:
     """Approved, unlanded records paired with their resolved item. A record
     whose task names no item is left out; one whose item is ambiguous is
-    kept with `None`; one whose item is not in a live state is left out."""
+    kept with `None`; one whose item is not live or awaits a rebuild is left out."""
     by_id: dict[str, list[dict]] = {}
     for item in items:
         by_id.setdefault(item.get("id"), []).append(item)
@@ -92,7 +94,7 @@ def _live_pairs(records: list[dict], items: list[dict]) -> list[tuple[dict, dict
         if not candidates:
             continue
         item = _scoped_item(record, candidates)
-        if item is not None and (item.get("state") not in _LIVE_STATES or _rebuilt(record, item)):
+        if item is not None and (item.get("state") not in _LIVE_STATES or _rebuilt(record, item) or _awaiting_rebuild(item)):
             continue
         pairs.append((record, item))
     return pairs
