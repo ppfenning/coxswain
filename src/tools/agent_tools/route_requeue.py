@@ -16,6 +16,8 @@ DROPPED = "dropped"
 class Plan:
     writes: tuple[dict, ...]  # rows for run_store.upsert_row_detail; empty when nothing is left to do
     note: str
+    intake: str = ""  # task_id of the resolved intake; names the intake file to clean
+    initiative: str = ""  # task_id of the resolved initiative; names the work folder to clean
 
 
 @dataclass(frozen=True)
@@ -155,6 +157,7 @@ def plan_requeue(rows: Sequence[Mapping], id: str, field_intake: str | None = No
         *(() if initiative.get("state") == DROPPED else (_state_row(initiative, DROPPED),)),
     )
     fresh = _fresh_note(rows, intake, initiative)
+    ids = {"intake": str(intake["task_id"]), "initiative": str(initiative["task_id"])}
     if not writes:
         return Plan(
             (),
@@ -162,10 +165,26 @@ def plan_requeue(rows: Sequence[Mapping], id: str, field_intake: str | None = No
                 f"already requeued: intake {intake['task_id']} is queued and initiative {initiative['task_id']} is dropped",
                 fresh,
             ),
+            **ids,
         )
     return Plan(
-        writes, _with_note(f"intake {intake['task_id']} queued, initiative {initiative['task_id']} dropped", fresh)
+        writes,
+        _with_note(f"intake {intake['task_id']} queued, initiative {initiative['task_id']} dropped", fresh),
+        **ids,
     )
+
+
+def without_initiative_line(text: str) -> str:
+    """Pure. `text` without its `initiative:` key line, looked for in the leading `---` frontmatter block only; every other byte is kept."""
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
+        return text
+    for index, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            return text
+        if line.startswith("initiative:"):
+            return "".join(lines[:index] + lines[index + 1 :])
+    return text
 
 
 def _read_intake_field(workspace: Path, initiative_id: str) -> str | None:
@@ -185,18 +204,44 @@ def _read_intake_field(workspace: Path, initiative_id: str) -> str | None:
     return None
 
 
+def _clean_intake_files(workspace: Path, intake_id: str) -> None:
+    """Edge. Drop the `initiative:` line from intake/<id>.md and intake/done/<id>.md; a missing file or line is skipped, an unchanged file is not written."""
+    for path in (workspace / "intake" / f"{intake_id}.md", workspace / "intake" / "done" / f"{intake_id}.md"):
+        try:
+            text = path.read_bytes().decode()
+        except (OSError, UnicodeDecodeError):
+            continue
+        cleaned = without_initiative_line(text)
+        if cleaned != text:
+            path.write_bytes(cleaned.encode())
+
+
+def _drop_initiative_file(workspace: Path, initiative_id: str) -> None:
+    """Edge. Delete work/<initiative>/initiative.md, then its folder if that left it empty; an absent file is skipped and a folder holding anything else stays."""
+    path = workspace / "work" / initiative_id / "initiative.md"
+    if not path.is_file():
+        return
+    path.unlink()
+    if not any(path.parent.iterdir()):
+        path.parent.rmdir()
+
+
 def requeue(workspace: Path, runs_dir: Path, id: str, *, dry_run: bool = False) -> tuple[int, str]:
-    """Edge. (0, message) done or already done, (2, message) refused. Writes store rows only: no file under `workspace` is touched."""
+    """Edge. (0, message) done or already done, (2, message) refused. Writes the store rows, then edits two files under `workspace`:
+    the intake file (intake/ and intake/done/) loses its `initiative:` line, and the dropped initiative's work/<id>/initiative.md is
+    deleted, with its folder when that leaves it empty. A dry run or a refusal touches no file; a plan with no rows left still cleans a stale file."""
     rows = run_store.read_queue(runs_dir)
     plan = plan_requeue(rows, id)
     if isinstance(plan, Refused):  # the row link is absent or unusable: try the field in initiative.md
         plan = plan_requeue(rows, id, _read_intake_field(workspace, id)) if _initiative_row(rows, id) else plan
     if isinstance(plan, Refused):
         return REFUSED, f"requeue: refused: {plan.reason}"
-    if not plan.writes or dry_run:
+    if dry_run:
         return DONE, plan.note if not plan.writes else f"would requeue: {plan.note}"
     for row in plan.writes:
         reason = run_store.upsert_row_detail(runs_dir, row)
         if reason:
             return REFUSED, f"requeue: the store did not take {row['task_id']}: {reason}"
-    return DONE, f"requeue: {plan.note}"
+    _clean_intake_files(workspace, plan.intake)
+    _drop_initiative_file(workspace, plan.initiative)
+    return DONE, plan.note if not plan.writes else f"requeue: {plan.note}"
