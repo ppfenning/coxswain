@@ -3,42 +3,16 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import re
 import tempfile
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from devtools.release_check import Drift
 
-_POSITIONAL_SECTION = re.compile(r"positional arguments:\n(.*?)(?:\n\n|\Z)", re.DOTALL)
-_SUBPARSER_BLOCK = re.compile(r"^( *)\{([^}]+)\}\n(?:\1 +\S.*\n?)+", re.MULTILINE)
-_SUPPRESSED_CHOICE = re.compile(r"^ *(\S+) +==SUPPRESS==", re.MULTILINE)
 _DOC_COMMAND = re.compile(r"`(cox(?: (?!-)[\w-]+)+)[^`]*`")
-_GENERATOR_ENTRY = "parse_subcommands"  # docs/_cli.py's pure core: parse_subcommands(help_text) -> Iterable[str]
-
-
-def _choices(help_text: str) -> set[str]:
-    """A `{a,b,c}` line only names subcommands when it is followed by an
-    indented per-choice list; a flag's or plain positional's choice list
-    never gets one, so it is left for the leaf's own value, not a group.
-    A choice marked `==SUPPRESS==` is dropped: never explored, never demanded."""
-    section = _POSITIONAL_SECTION.search(help_text)
-    if section is None:
-        return set()
-    block = _SUBPARSER_BLOCK.search(section.group(1))
-    return (set(block.group(2).split(",")) - set(_SUPPRESSED_CHOICE.findall(block.group(0)))) if block else set()
-
-
-def walk_help(help_texts: Mapping[str, str], choices: Callable[[str], set[str]] = _choices) -> set[str]:
-    return {
-        f"{prefix} {name}"
-        for prefix, text in help_texts.items()
-        for name in choices(text)
-        if not choices(help_texts.get(f"{prefix} {name}", ""))
-    }
 
 
 # build_parser registers `dev` by hand, so COMMAND_TABLE never lists it; `release` is hand-built too but SUPPRESS-help, so it stays out.
@@ -95,8 +69,8 @@ def _doc_target(doc_commands: Mapping[str, set[str]], command: str) -> str:
 
 
 def check_cli_surface(facts: Mapping) -> list[Drift]:
-    """Compares `cox --help` against what the umbrella's docs/_cli.py generator
-    would build from it, never against docs/reference/cli/*.md in the tree
+    """Compares the command table's commands against the pages built from that
+    same table, never against docs/reference/cli/*.md in the tree
     (only index.md is committed there; the per-group pages are build output).
     A `generator_error` fact short-circuits to one Drift, not one per symbol."""
     from devtools.release_check import Drift
@@ -140,73 +114,43 @@ def check_cli_surface(facts: Mapping) -> list[Drift]:
     return missing_docs + missing_readme + stray_docs + stray_readmes
 
 
-def _leaf_texts(
-    prefix: list[str], root: str, run: Callable[[list[str], str], tuple[int, str]]
-) -> tuple[dict[str, str], str | None]:
-    cmd = ["cox", *prefix, "--help"]
-    code, text = run(cmd, root)
-    if code != 0:
-        return {}, f"'{' '.join(cmd)}' exited {code}; is cox on PATH?"
-    texts = {" ".join(["cox", *prefix]): text}
-    for name in _choices(text):
-        child, error = _leaf_texts(prefix + [name], root, run)
-        if error:
-            return {}, error
-        texts.update(child)
-    return texts, None
+def _table_doc_commands(commands: set[str]) -> dict[str, set[str]]:
+    """One page per command group, written to a scratch directory and read back
+    with `commands_in_doc`, the same as a real docs build's output. Pages keep
+    the canonical docs/reference/cli/<group>.md label so a remediation message
+    still points somewhere that exists once the scratch directory is gone."""
+    groups: dict[str, set[str]] = {}
+    for command in commands:
+        groups.setdefault(_group(command), set()).add(command)
+    pages: dict[str, set[str]] = {}
+    with tempfile.TemporaryDirectory() as out_dir:
+        for group, group_commands in groups.items():
+            page = Path(out_dir) / f"{group}.md"
+            page.write_text("".join(f"- `{command}`\n" for command in sorted(group_commands)))
+            pages[f"docs/reference/cli/{group}.md"] = commands_in_doc(page.read_text())
+    return pages
 
 
-def _load_generator(root: str):
-    path = Path(root) / "docs" / "_cli.py"
-    spec = importlib.util.spec_from_file_location("_umbrella_docs_cli", path)
-    if spec is None or spec.loader is None:
-        raise ModuleNotFoundError(f"no generator at {path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def _generated_doc_commands(root: str, help_texts: Mapping[str, str]) -> tuple[dict[str, set[str]], str | None]:
-    """Runs the umbrella's docs/_cli.py: its pure core, `parse_subcommands`,
-    walks the already-fetched `cox --help` text into one page per command
-    group; those pages are written to a scratch directory and read back with
-    `commands_in_doc`, the same as a real docs build's output, so the check
-    diffs against the build, not the tree. Doc pages keep the canonical
-    docs/reference/cli/<group>.md label so a remediation message still points
-    somewhere that exists once the scratch directory is gone."""
-    try:
-        parse_subcommands = getattr(_load_generator(root), _GENERATOR_ENTRY)
-    except (OSError, ImportError, AttributeError) as exc:
-        return {}, f"docs/_cli.py generator unavailable: {exc}"
-    try:
-        groups: dict[str, set[str]] = {}
-        for command in walk_help(help_texts, parse_subcommands):
-            groups.setdefault(_group(command), set()).add(command)
-        pages: dict[str, set[str]] = {}
-        with tempfile.TemporaryDirectory() as out_dir:
-            for group, commands in groups.items():
-                page = Path(out_dir) / f"{group}.md"
-                page.write_text("".join(f"- `{command}`\n" for command in sorted(commands)))
-                pages[f"docs/reference/cli/{group}.md"] = commands_in_doc(page.read_text())
-    except Exception as exc:
-        return {}, f"docs/_cli.py generator failed: {exc}"
-    return pages, None
-
-
-def gather_cli_facts(root: str, run: Callable[[list[str], str], tuple[int, str]]) -> dict:
-    """`root` is the coxswain checkout: its docs/_cli.py builds the reference, and a top-level folder's
-    README named after a command group must list that group's commands."""
+def gather_cli_facts(root: str) -> dict:
+    """The commands come from `agent_tools.cli.COMMAND_TABLE`, imported at call time. `root` is the
+    coxswain checkout, where a top-level folder's README named after a command group must list that
+    group's commands."""
     readme_paths = sorted(Path(root).glob("*/README.md"))
     readme_commands = {p.parent.name: commands_in_doc(p.read_text()) for p in readme_paths}
-    help_texts, cox_error = _leaf_texts([], root, run)
-    if cox_error:
-        return {"generator_error": cox_error, "readme_commands": readme_commands}
-    doc_commands, generator_error = _generated_doc_commands(root, help_texts)
-    if generator_error:
-        return {"generator_error": generator_error, "readme_commands": readme_commands}
+    try:
+        from agent_tools.cli import COMMAND_TABLE
+
+        commands = table_commands(COMMAND_TABLE) | set(HAND_BUILT)
+        suppressed = table_suppressed(COMMAND_TABLE)
+        doc_commands = _table_doc_commands(commands)
+    except Exception as exc:
+        return {
+            "generator_error": f"agent_tools.cli COMMAND_TABLE unavailable: {exc}",
+            "readme_commands": readme_commands,
+        }
     return {
-        "cli_commands": walk_help(help_texts),
+        "cli_commands": commands,
         "doc_commands": doc_commands,
         "readme_commands": readme_commands,
-        "suppressed": {f"{p} {n}" for p, t in help_texts.items() for n in _SUPPRESSED_CHOICE.findall(t)},
+        "suppressed": suppressed,
     }
