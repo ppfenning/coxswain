@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from harness.epic import ASSEMBLY_FAILED, _open_phase_worktree, _parent_head_moved, _run_phase
+from harness.epic import ASSEMBLY_FAILED, _needs_missing, _open_phase_worktree, _required_refs, _run_phase
 from tests.test_epic_driver import (  # noqa: F401 -- cart and repo are fixtures
     cart,
     drive,
@@ -88,8 +88,8 @@ def test_a_conflicting_pair_is_blocked_with_the_assembly_cause(repo, cart, tmp_p
     assert join["status"] == "blocked"
     assert join["reason"].startswith(f"{ASSEMBLY_FAILED}merging {LEFT} after {RIGHT} conflicted in: README.md")
     assert "phase_failed_to_start" not in join
-    entries = [q for q in result["quarantined"] if q.get("grain") == "phase" and q["phase"] == "p2-rollout"]
-    assert len(entries) == 1
+    entries = [q for q in result["quarantined"] if q["phase"] == "p2-rollout"]
+    assert [(q["id"], q["grain"]) for q in entries] == [("t3-cutover", "task")]
     assert "conflicted in: README.md" in entries[0]["reason"]
     assert JOIN not in git("branch", "--format=%(refname:short)", cwd=repo).splitlines()
 
@@ -107,18 +107,27 @@ def test_a_one_parent_chain_is_unchanged(repo, cart, tmp_path) -> None:  # noqa:
     assert merges == ["epic epic-1: merge t3-cutover into p2-rollout"]
 
 
-def test_the_head_moved_check_covers_every_parent(repo, tmp_path) -> None:  # noqa: F811
+def test_the_needs_check_covers_every_parent(repo, tmp_path) -> None:  # noqa: F811
     ctx = _ctx(repo, tmp_path, "r1")
     parents = ("pa", "pb")
     trees = {name: tmp_path / f"parent-{name}" for name in parents}
     for name, tree in trees.items():
         git("worktree", "add", "-b", ctx.phase_branch(name), str(tree), "main", cwd=repo)
         commit_file(tree, f"{name}.md", name)
-    ok, detail, _ = _open_phase_worktree(ctx, PHASE, "main", parents)
+    items = [
+        {"id": f"t-{name}", "phase": name, "state": "approved", "merged": True, "needs": [],
+         "merged_commit": git("rev-parse", "HEAD", cwd=tree)}
+        for name, tree in trees.items()
+    ] + [{"id": "t3-cutover", "phase": PHASE, "state": "ready", "needs": ["t-pa", "t-pb"]}]
+    refs = _required_refs(items, PHASE, parents, ctx.phase_branch, "main")
+    assert sorted(refs) == sorted(i["merged_commit"] for i in items[:2])
+    ok, detail, _ = _open_phase_worktree(ctx, PHASE, "main", parents, refs)
     assert ok, detail
-    assert _parent_head_moved(ctx, PHASE, "main", parents) is False
+    assert _needs_missing(ctx, PHASE, refs) is False
     commit_file(trees["pb"], "more.md", "more")
-    assert _parent_head_moved(ctx, PHASE, "main", parents) is True
+    assert _needs_missing(ctx, PHASE, refs) is False
+    stale = [*refs, git("rev-parse", "HEAD", cwd=trees["pb"])]
+    assert _needs_missing(ctx, PHASE, stale) is True
 
 
 def test_a_reused_two_parent_branch_with_own_commits_is_blocked_not_rebased(repo, tmp_path) -> None:  # noqa: F811

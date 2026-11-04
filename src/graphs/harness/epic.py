@@ -576,7 +576,9 @@ def _run_alive(ctx: _Ctx) -> Callable[[str], bool]:
     return lambda run_id: run_id == ctx.run_id or pid_alive(ctx.runs_dir / f"{run_id}.pid")
 
 
-def _open_phase_worktree(ctx: _Ctx, phase: str, base_ref: str, parents: tuple[str, ...] = ()) -> _Opened:
+def _open_phase_worktree(
+    ctx: _Ctx, phase: str, base_ref: str, parents: tuple[str, ...] = (), refs: Sequence[str] | None = None
+) -> _Opened:
     """Get a worktree on the phase branch. Returns (ok, detail, reused), with `.cleared` on the result.
 
     Re-entrancy is the point: a second driver run over the same initiative
@@ -590,7 +592,8 @@ def _open_phase_worktree(ctx: _Ctx, phase: str, base_ref: str, parents: tuple[st
     A dead run can also leave its worktree in place holding the branch, so a
     reused branch first releases the holders whose run is no longer alive.
 
-    A new branch over several parents is assembled; a failure keeps the assembly cause.
+    A new branch under any parent is cut from `base_ref` and assembled from `refs`, the commits it needs;
+    `refs` defaults to every parent's branch. A failure keeps the assembly cause.
     """
     prune_registrations(ctx.repo)
     branch = ctx.phase_branch(phase)
@@ -601,8 +604,9 @@ def _open_phase_worktree(ctx: _Ctx, phase: str, base_ref: str, parents: tuple[st
         ok, detail = _git("-C", str(ctx.repo), "worktree", "add", str(worktree), branch)
         return _Opened(ok, detail, True, cleared)
     ok, detail = create_worktree(ctx.repo, worktree, branch=branch, base=base_ref)
-    if ok and len(parents) > 1:
-        assembled = assemble(ctx.repo, worktree, base_ref, [ctx.phase_branch(p) for p in parents], branch)
+    wanted = [ctx.phase_branch(p) for p in parents] if refs is None else list(refs)
+    if ok and parents and wanted:
+        assembled = assemble(ctx.repo, worktree, base_ref, wanted, branch)
         if not assembled.ok:
             # Drop the half-made branch, or the next run reuses it as if it were assembled.
             remove_worktree(ctx.repo, worktree)
@@ -621,17 +625,52 @@ def _start_failure(detail: str, verb: str) -> str:
     return f"the phase worktree could not be {verb}: {detail}"
 
 
-def _parent_head_moved(ctx: _Ctx, phase: str, base_ref: str, parents: tuple[str, ...] = ()) -> bool:
-    """Is the phase branch still stacked on every parent's CURRENT head?
+def _required_refs(
+    items: Sequence[Mapping[str, Any]],
+    phase: str,
+    parents: Collection[str],
+    branch_of: Callable[[str], str],
+    base_ref: str,
+    *,
+    cut: bool = False,
+) -> list[str]:
+    """The commits the phase branch must contain: what its tasks need, not where each parent's head is now.
 
-    `merge-base --is-ancestor` is the whole question: if a parent's head is no
-    longer an ancestor of this branch, the ground under the stack moved, and
-    everything above it is building on a base that is no longer there.
+    A phase with no parents needs `base_ref`. Under a parent, a need that is approved and merged
+    contributes its stored `merged_commit`, or the parent's branch when none is stored. A need that
+    is unbuilt, done or dropped contributes nothing. A parent no task needs anything from contributes its branch.
+    With `cut`, a parent whose tasks are all settled contributes its whole branch, so a branch cut after
+    the parent finished carries its phase-level commits too; the staleness check never asks for that.
     """
-    heads = [ctx.phase_branch(p) for p in parents] or [base_ref]
+    if not parents:
+        return [base_ref]
+    by_id = {str(i["id"]): i for i in items}
+    open_phases = {str(i.get("phase")) for i in items if i.get("state") in ("todo", "ready", "in_progress", "blocked")}
+    needed = [
+        by_id[str(n)] for i in items if i.get("phase") == phase for n in i.get("needs") or [] if str(n) in by_id
+    ]
+    refs: set[str] = set()
+    for parent in parents:
+        edges = [n for n in needed if n.get("phase") == parent]
+        if not edges or (cut and parent not in open_phases):
+            refs.add(branch_of(parent))
+            continue
+        refs.update(
+            str(n.get("merged_commit") or branch_of(parent))
+            for n in edges
+            if n.get("state") == "approved" and n.get("merged")
+        )
+    return sorted(refs)
+
+
+def _needs_missing(ctx: _Ctx, phase: str, refs: Sequence[str]) -> bool:
+    """Is any commit the phase branch needs absent from it?
+
+    `merge-base --is-ancestor` is the whole question. A parent that merges unrelated work moves its
+    head and changes nothing here, since only the commits the branch needs are asked about.
+    """
     return any(
-        not _git("-C", str(ctx.repo), "merge-base", "--is-ancestor", head, ctx.phase_branch(phase))[0]
-        for head in heads
+        not _git("-C", str(ctx.repo), "merge-base", "--is-ancestor", ref, ctx.phase_branch(phase))[0] for ref in refs
     )
 
 
@@ -1384,19 +1423,47 @@ class _Tally:
 
 
 def _open_view(
-    items: Sequence[Mapping[str, Any]], parents: Mapping[str, set[str]], complete: set[str], launched: set[str]
+    items: Sequence[Mapping[str, Any]],
+    parents: Mapping[str, set[str]],
+    complete: set[str],
+    launched: set[str],
+    failed: Collection[str] = (),
 ) -> list[dict[str, Any]]:
-    """`items` as the planner sees them: a ready task is held while its phase has an incomplete parent or it already launched."""
+    """`items` as the planner sees them: a ready task is held while its phase has an incomplete parent or it already launched.
+
+    A task whose needs are all merged is not held for an incomplete parent, unless a parent has finished without
+    meeting its goal (`failed`): its dependents do not run.
+    """
     closed = {p for p, ps in parents.items() if not ps <= complete}
+    shut = {p for p, ps in parents.items() if ps & set(failed)}
+    by_id = {str(i["id"]): i for i in items}
 
     def state(item: Mapping[str, Any]) -> Any:
         if item.get("state") != "ready":
             return item.get("state")
         if str(item["id"]) in launched:
             return "in_progress"
-        return "blocked" if str(item.get("phase")) in closed else "ready"
+        return "blocked" if str(item.get("phase")) in shut or (str(item.get("phase")) in closed and not _needs_merged(item, by_id)) else "ready"
 
     return [{**item, "state": state(item)} for item in items]
+
+
+def _needs_merged(item: Mapping[str, Any], by_id: Mapping[str, Mapping[str, Any]]) -> bool:
+    """Does the task have needs, each one done, dropped, or approved and merged with a stored commit?
+
+    Such a task starts before its phase's parents are complete. A need outside this initiative reads as met here;
+    the planner checks it. A task with no needs waits for the whole parent phase.
+    """
+    needs = [str(n) for n in item.get("needs") or []]
+    return bool(needs) and all(
+        n not in by_id or _need_met(by_id[n]) for n in needs
+    )
+
+
+def _need_met(need: Mapping[str, Any]) -> bool:
+    if need.get("state") in ("done", "dropped"):
+        return True
+    return need.get("state") == "approved" and bool(need.get("merged")) and bool(need.get("merged_commit"))
 
 
 def _run_lanes(
@@ -1495,7 +1562,7 @@ def _run_lanes(
             # Replan until settling a phase changes nothing, so a phase that just completed opens its children now.
             while True:
                 with ctx.items_lock:
-                    view = _open_view(items, parents, complete, launched)
+                    view = _open_view(items, parents, complete, launched, {p for p in recorded if p not in complete})
                     plan = plan_launches(
                         view, by_phase, ctx.max_parallel, initiative.get("foreign") or {}, hr, est_task_usd
                     )
@@ -2522,21 +2589,43 @@ def _run_phase(
     if stale_start:
         return _stale_phase(record, stale_start)
 
-    opened = _open_phase_worktree(ctx, phase, base_ref, parents)
+    # A branch under a parent is cut from the default ref and holds only the commits its tasks need.
+    with ctx.items_lock:
+        needed = _required_refs(items, phase, parents, ctx.phase_branch, base_ref)
+        cut_from = _required_refs(items, phase, parents, ctx.phase_branch, base_ref, cut=True)
+    # A lone parent that is settled is the stack itself: cut from it, with no merge commit.
+    cut_ref = base_ref if not parents or cut_from == [base_ref] else ctx.default_ref
+
+    def open_failed(detail: str, verb: str) -> dict[str, Any]:
+        record["status"] = "blocked"
+        record["reason"] = _start_failure(detail, verb)
+        if not detail.startswith(ASSEMBLY_FAILED):
+            record["phase_failed_to_start"] = record["reason"]
+        if detail.startswith(ASSEMBLY_FAILED) and only:
+            # A conflict between needed commits holds the starting tasks only; the phase's other tasks stay as they were.
+            with ctx.items_lock:
+                by_id = {str(i["id"]): i for i in items}
+            quarantined.extend(
+                _quarantine_task(
+                    ctx, by_id, phase=phase, task=tid, reason=record["reason"], kind="infra",
+                    cause=("harness", "assembly conflict"),
+                )
+                for tid in sorted(only)
+            )
+        else:
+            quarantined.append({"id": phase, "phase": phase, "grain": "phase", "reason": record["reason"]})
+        return record
+
+    opened = _open_phase_worktree(ctx, phase, cut_ref, parents, cut_from)
     ok, detail, reused = opened
     record["cleared_worktrees"] = list(getattr(opened, "cleared", ()))
     if not ok:
-        record["status"] = "blocked"
-        record["reason"] = _start_failure(detail, "created")
-        if not detail.startswith(ASSEMBLY_FAILED):
-            record["phase_failed_to_start"] = record["reason"]
-        quarantined.append({"id": phase, "phase": phase, "grain": "phase", "reason": record["reason"]})
-        return record
+        return open_failed(detail, "created")
     record["reused_branch"] = reused
 
-    # Decided before a single task builds: a reused branch behind its base is
-    # either recreated (nothing of its own to lose) or blocked (something is).
-    head_moved = reused and _parent_head_moved(ctx, phase, base_ref, parents)
+    # Decided before a single task builds: a reused branch missing a commit it
+    # needs is either recreated (nothing of its own to lose) or blocked (something is).
+    head_moved = reused and _needs_missing(ctx, phase, needed)
     with ctx.items_lock:
         task_states = {str(i["id"]): str(i.get("state")) for i in items}
     cherry = _phase_branch_cherry(ctx, phase) if head_moved else []
@@ -2621,16 +2710,11 @@ def _run_phase(
         _git("-C", str(ctx.phase_worktree(phase)), "checkout", "--detach", "-q")
         _git("-C", str(ctx.repo), "worktree", "remove", "--force", str(ctx.phase_worktree(phase)))
         _git("-C", str(ctx.repo), "branch", "-D", branch)
-        reopened = _open_phase_worktree(ctx, phase, base_ref, parents)
+        reopened = _open_phase_worktree(ctx, phase, cut_ref, parents, cut_from)
         ok, detail, reused = reopened
         record["cleared_worktrees"] = [*record["cleared_worktrees"], *getattr(reopened, "cleared", ())]
         if not ok:
-            record["status"] = "blocked"
-            record["reason"] = _start_failure(detail, "recreated")
-            if not detail.startswith(ASSEMBLY_FAILED):
-                record["phase_failed_to_start"] = record["reason"]
-            quarantined.append({"id": phase, "phase": phase, "grain": "phase", "reason": record["reason"]})
-            return record
+            return open_failed(detail, "recreated")
         record["reused_branch"] = reused
         record["recreated"] = (
             f"phase branch {branch} recreated from {base_ref}: its commits belonged to tasks sent back to ready, which build again"
@@ -3316,6 +3400,8 @@ def _run_phase(
                     if str(item["id"]) == task:
                         item["state"] = "approved"
                         item["merged"] = merged
+                        if merged and task in state.commits:
+                            item["merged_commit"] = state.commits[task]
                         if task in state.handoffs:
                             item["handoff"] = state.handoffs[task]
             for task_record in record["task_records"]:
