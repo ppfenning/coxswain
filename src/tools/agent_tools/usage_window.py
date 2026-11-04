@@ -17,17 +17,17 @@ import json
 import subprocess
 import zoneinfo
 from collections.abc import Callable, Mapping
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from agent_tools import run_store
+from agent_tools import budget, run_store
 from agent_tools.pacing import Policy, Window
 
 __all__ = [
     "CCUSAGE_CACHE_S", "DEFAULT_POLICY", "WeeklyReset", "block_remaining", "ceiling_remaining",
-    "five_hour_start", "gather", "gather_weekly", "parse_weekly_reset", "read_usage", "usage_cost_usd",
-    "weekly_start_from_reset", "weekly_window_from", "weekly_window_start", "window_from",
+    "five_hour_start", "gather", "gather_daily_costs", "gather_month", "gather_weekly", "parse_weekly_reset",
+    "read_usage", "usage_cost_usd", "weekly_start_from_reset", "weekly_window_from", "weekly_window_start", "window_from",
 ]
 
 # Every pacing check shells out to ccusage (a ~2.5 s Node process) and they run
@@ -383,3 +383,61 @@ def gather_weekly(
         if usage is None else usage,
         now, weekly_ceiling_usd, reset, start,
     )
+
+
+def _sum_usage(usage: list[tuple[datetime, dict[str, Any]]], since: datetime, until: datetime) -> float:
+    """Pure. Cost of the runs that started in `since <= start < until`, the store's own half-open bounds."""
+    return sum(usage_cost_usd(u) for ts, u in usage if since <= ts < until)
+
+
+def gather_month(
+    runs_dir: Path | str,
+    now: datetime,
+    tz_name: str,
+    budget_usd: float | None,
+    cost_between: Callable[[str, str], float | None] | None = None,
+    usage: list[tuple[datetime, dict[str, Any]]] | None = None,
+    *,
+    min_elapsed_fraction: float,
+) -> budget.MonthBudget:
+    """Impure edge. Spend from the start of `now`'s month in `tz_name` to `now`. The store wins
+    when `cost_between`, given the ISO text of both bounds in `now`'s tzinfo (the store compares
+    text), returns a number; otherwise the usage files, as `gather` reads them (or the given `usage`)."""
+    start, _ = budget.month_bounds(now, tz_name)
+    since = start.astimezone(now.tzinfo)
+    spent = None if cost_between is None else cost_between(since.isoformat(), now.isoformat())
+    if spent is None:
+        spent = _sum_usage(_read_usage_files(runs_dir, now, since=since) if usage is None else usage, since, now)
+    return budget.month_budget(spent, budget_usd, now, tz_name, min_elapsed_fraction)
+
+
+def gather_daily_costs(
+    runs_dir: Path | str,
+    now: datetime,
+    tz_name: str,
+    days: int,
+    cost_between: Callable[[str, str], float | None] | None = None,
+    usage: list[tuple[datetime, dict[str, Any]]] | None = None,
+) -> dict[date, float]:
+    """Impure edge. Local date to cost for the last `days` local days ending with today in `tz_name`.
+    Each day asks `cost_between` once, with its local midnight bounds as ISO text in `now`'s tzinfo; a day
+    it answers None for is summed from the usage files, which are read once for all such days."""
+    zone = zoneinfo.ZoneInfo(tz_name)
+    today = now.astimezone(zone).date()
+    dates = [today - timedelta(days=back) for back in range(days - 1, -1, -1)]
+
+    def bounds(day: date) -> tuple[datetime, datetime]:
+        first = datetime.combine(day, datetime.min.time(), tzinfo=zone)
+        after = datetime.combine(day + timedelta(days=1), datetime.min.time(), tzinfo=zone)
+        return first.astimezone(now.tzinfo), after.astimezone(now.tzinfo)
+
+    def from_store(day: date) -> float | None:
+        if cost_between is None:
+            return None
+        since, until = bounds(day)
+        return cost_between(since.isoformat(), until.isoformat())
+
+    stored = {day: from_store(day) for day in dates}
+    missing = [day for day, cost in stored.items() if cost is None]
+    files = _read_usage_files(runs_dir, now, since=bounds(missing[0])[0]) if missing and usage is None else usage or []
+    return {day: cost if cost is not None else _sum_usage(files, *bounds(day)) for day, cost in stored.items()}
