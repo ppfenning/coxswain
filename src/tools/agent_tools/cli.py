@@ -5869,7 +5869,15 @@ def _route_launch(a: argparse.Namespace) -> int:
                 initiative_md.write_text(initiative_content, encoding="utf-8")
                 queue_export.record_written_paths(workspace_dir, [initiative_md])
                 stub_written = initiative_md
-        run_id = route.next_run_id(_taken_run_names(runs_dir), a.initiative_id)
+        # A remote lane's `decompose_launch_argv` passes the run id the chair recorded; without the flag every one failed.
+        if getattr(a, "run_id", None) is None:
+            run_id = route.next_run_id(_taken_run_names(runs_dir), a.initiative_id)
+        else:
+            taken = remote_lane.refuse_taken_run_id(a.run_id, set(_taken_run_names(runs_dir)))
+            if taken is not None:
+                print(taken)
+                return 2
+            run_id = a.run_id
         needs = {"idea": a.idea, "initiative_id": a.initiative_id}
         if getattr(a, "task_ids", None):
             needs["task_ids"] = a.task_ids
@@ -10748,6 +10756,7 @@ ROUTE_COMMANDS = [
                     commands.Arg(("--task-ids",), {"choices": ["ordinal"], "help": "name the graph's own tasks <initiative-id>-t1, -t2, ..."}),
                     commands.Arg(("--local",), {"action": "store_true", "help": "start the lane on this machine, not where the hosts table places it"}),
                     commands.Arg(("--dry-run",), {"action": "store_true"}),
+                    commands.Arg(("--run-id",), {"help": "use this run id instead of the next free one; refused when taken"}),
                     *_LAUNCH_SHARED_ARGS,
                 ),
                 "agent_tools.cli:_route_launch", False, (), defaults={"graph": "decompose"},
