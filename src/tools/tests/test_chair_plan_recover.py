@@ -74,6 +74,17 @@ def test_a_started_initiative_with_all_needs_landed_is_cleared_then_relaunched()
     ]
 
 
+def test_a_started_initiative_with_a_dag_problem_plans_no_relaunch_and_one_invalid_dag_report():
+    initiative: InitiativeFacts = {**_initiative(), "dag_problem": "t2 needs t1"}
+    actions = plan_recover(_facts([initiative], []), datetime(2026, 11, 3, tzinfo=UTC))
+    assert [a for a in actions if a["kind"] in ("relaunch", "clear_branches")] == []
+    assert actions == [{"kind": "needs_chair", "initiative": "i", "cause": "invalid_dag (t2 needs t1)"}]
+
+
+def test_the_same_initiative_without_a_dag_problem_still_relaunches():
+    assert [a["kind"] for a in plan_recover(_facts([_initiative()], []))] == ["clear_branches", "relaunch"]
+
+
 def test_a_harness_quarantine_with_one_failure_gets_one_retry():
     assert plan_recover(_facts([], [_quarantine()])) == [{"kind": "retry", "task_id": "q1", "initiative": "i"}]
 
