@@ -36,6 +36,25 @@ def test_a_body_missing_a_surface_is_a_blocking_finding():
     assert report.blocking == report.findings
 
 
+@pytest.mark.parametrize("named", ["agent_tools/route_requeue.py", "route_requeue.py", "`route_requeue.py`."])
+def test_a_body_naming_a_surface_by_a_trailing_part_of_its_path_names_it(named):
+    body = f"Make {named} hand out a fresh id."
+    report = check_layout([task("a", body, ["src/tools/agent_tools/route_requeue.py"])])
+    assert report.findings == ()
+
+
+def test_a_partial_segment_does_not_name_a_surface():
+    report = check_layout([task("a", "Edit tools/requeue.py.", ["src/tools/agent_tools/route_requeue.py"])])
+    assert rules(report) == [("a", "surface_not_named")]
+    assert report.blocking == report.findings
+
+
+def test_a_directory_surface_is_named_by_a_path_under_it_or_its_trailing_part():
+    under = check_layout([task("a", "Add src/lib/snap/one.txt.", ["src/lib/snap/"])])
+    trailing = check_layout([task("a", "Refresh lib/snap/ for the new view.", ["src/lib/snap/"])])
+    assert under.findings == () and trailing.findings == ()
+
+
 def test_a_body_that_names_no_path_is_flagged_without_blocking():
     report = check_layout([task("a", "Do the work.", ["src/widget.py"])])
     assert rules(report) == [("a", "surface_not_named")]
