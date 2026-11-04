@@ -786,6 +786,26 @@ def test_repo_listing_reads_a_checkouts_tracked_files_and_is_empty_elsewhere(tmp
     assert initiative_decompose.repo_listing("") == []
 
 
+def test_a_run_resolves_a_bare_named_test_against_the_checkout_without_a_tree(cart, tmp_path) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "src" / "thing.py").write_text("")
+    (tmp_path / "tests" / "test_thing.py").write_text("")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+    body = "Edit src/thing.py and cover it in test_thing.py."
+    decomposition = {
+        **DECOMPOSITION,
+        "tasks": [{"id": "t1", "phase": "p1", "title": "a", "body": body, "needs": [], "surfaces": ["src/thing.py"]}],
+    }
+    runner = ScriptedRunner({"decompose": decomposition})
+    result = initiative_decompose.run(
+        {"run_id": "r", "date": "d", "cartridge": cart, "idea": "x", "checkout": str(tmp_path)}, runner
+    )
+    t1 = next(t for t in result["tasks"] if t["id"] == "t1")
+    assert t1["surfaces"] == ["src/thing.py", "tests/test_thing.py"]
+
+
 def test_without_a_tree_only_path_shaped_surfaces_stay_declared(cart) -> None:
     """No tree means nothing to resolve against, but a bare declared token still isn't a path."""
     result = decompose(cart)

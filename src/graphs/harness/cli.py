@@ -1663,6 +1663,8 @@ def _run_graph(
             args.ledger_rows = str(args.ledger)
         graph_args: dict[str, Any] = {"run_id": run_id, "date": args.date, "cartridge": cartridge}
         graph_args.update(_materialise(spec, args, parser))
+        if getattr(args, "repo", None):
+            graph_args.setdefault("checkout", str(Path(args.repo).expanduser()))  # the readable repo the seats get
         try:
             result = spec.run(graph_args, runner)
         except LintRefusal as exc:
