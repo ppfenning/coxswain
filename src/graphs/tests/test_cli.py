@@ -19,6 +19,7 @@ import pytest
 
 import harness.cli as cli
 from graphs.delivery.initiative_decompose import GRAPH_NAME as DECOMPOSE_GRAPH_NAME
+from graphs.delivery.initiative_decompose import _item_action
 from harness.invoke import Invocation, invoke_graphs
 from runner.scripted import ScriptedRunner
 
@@ -999,11 +1000,11 @@ def _decompose_tasks_run(
             "target": task,
             "evidence": [{"check": "phase", "output": "p1"}],
             "rationale": "because",
-            "suggested_action": "create",
-            "apply": {
-                "path": str(path),
-                "item": {**_DECOMPOSE_ITEM, "id": task, "needs": (needs or {}).get(task, []), "budget_usd": 1.5},
-            },
+            # the real decompose shape: needs ride in the `suggested_action` frontmatter, never in `apply`
+            "suggested_action": _item_action(
+                {"id": task, "phase": "p1", "needs": (needs or {}).get(task, [])}, landing="work", initiative_id=None
+            ),
+            "apply": {"path": str(path), "item": {**_DECOMPOSE_ITEM, "id": task, "budget_usd": 1.5}},
         }
         for task, path in tasks.items()
     ]
@@ -1140,6 +1141,150 @@ def test_a_decompose_keeps_a_task_already_in_the_store_when_another_task_fails(
     assert [r["task_id"] for r in rows] == ["t1"]
     assert tasks["t1"].exists()
     assert not tasks["t2"].exists() and not tasks["t3"].exists()
+
+
+def test_a_decompose_write_that_fails_once_is_retried_and_leaves_every_task_written(
+    tmp_path, store_conn, monkeypatch, capsys
+) -> None:
+    from harness.store_write import Store
+
+    monkeypatch.chdir(tmp_path)
+    rows = _filing_in_memory(monkeypatch)
+    real_write = cli._write_filed_task
+    calls: list[str] = []
+
+    def flaky(runs_dir, path, parts, text) -> int:
+        calls.append(path.stem)
+        if path.stem == "t2" and calls.count("t2") == 1:
+            raise RuntimeError("store down")
+        return real_write(runs_dir, path, parts, text)
+
+    monkeypatch.setattr(cli, "_write_filed_task", flaky)
+    tasks = {t: tmp_path / "work" / "p1" / f"{t}.md" for t in ("t1", "t2", "t3")}
+
+    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks) == 0
+
+    captured = capsys.readouterr()
+    assert calls.count("t2") == 2
+    assert sorted(r["task_id"] for r in rows) == ["t1", "t2", "t3"]
+    assert "decompose: 3 task(s) written, 0 missing:" in captured.out
+    assert "decompose: partial:" not in captured.err
+
+
+def test_a_decompose_task_that_fails_twice_is_swept_from_its_dependent_and_named_partial(
+    tmp_path, store_conn, monkeypatch, capsys
+) -> None:
+    from harness.store_write import Store
+
+    monkeypatch.chdir(tmp_path)
+    rows = _filing_in_memory(monkeypatch, fail="t2")
+    real_withdraw = cli._withdraw_filed_tasks
+    calls: list[list[str]] = []
+
+    def refuse_t3_once(runs_dir, root, initiative, rels, whole) -> list[str]:
+        calls.append(list(rels))
+        allowed = [rel for rel in rels if len(calls) > 1 or Path(rel).stem != "t3"]
+        return real_withdraw(runs_dir, root, initiative, allowed, whole)
+
+    monkeypatch.setattr(cli, "_withdraw_filed_tasks", refuse_t3_once)
+    tasks = {t: tmp_path / "work" / "p1" / f"{t}.md" for t in ("t1", "t2", "t3")}
+
+    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks, needs={"t3": ["t2"]}) == 1
+
+    err = capsys.readouterr().err
+    assert len(calls) == 2 and [Path(rel).stem for rel in calls[1]] == ["t3"]
+    assert not any("t2" in r["needs"] for r in rows)
+    assert rows == []
+    assert f"decompose: partial: initiative {tmp_path.name} missing t2" in err
+
+
+def test_a_decompose_dependent_sweep_keeps_a_task_already_in_the_store_and_names_it(
+    tmp_path, store_conn, monkeypatch, capsys
+) -> None:
+    from agent_tools.queue_rows import parse_item
+    from harness.store_write import Store
+
+    monkeypatch.chdir(tmp_path)
+    rows = _filing_in_memory(monkeypatch, fail="t2")
+    tasks = {t: tmp_path / "work" / "p1" / f"{t}.md" for t in ("t1", "t2")}
+    tasks["t1"].parent.mkdir(parents=True)
+    tasks["t1"].write_text("---\nstate: started\ntitle: Old\n---\nbody\n", encoding="utf-8")
+    rows.append({**parse_item("task", (tmp_path.name, "p1", "t1.md"), tasks["t1"].read_text(encoding="utf-8")), "needs": ["t2"]})
+
+    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks, needs={"t1": ["t2"]}) == 1
+
+    err = capsys.readouterr().err
+    assert [r["task_id"] for r in rows] == ["t1"]
+    assert tasks["t1"].exists()
+    assert "decompose: t1 was already in the store and needs a task that is missing or withdrawn; its row is kept" in err
+    assert f"decompose: partial: initiative {tmp_path.name} missing t2" in err
+
+
+def test_a_decompose_dependent_sweep_names_a_stored_task_that_needs_a_withdrawn_one(
+    tmp_path, store_conn, monkeypatch, capsys
+) -> None:
+    from agent_tools.queue_rows import parse_item
+    from harness.store_write import Store
+
+    monkeypatch.chdir(tmp_path)
+    rows = _filing_in_memory(monkeypatch, fail="t2")
+    tasks = {t: tmp_path / "work" / "p1" / f"{t}.md" for t in ("t1", "t2", "t3")}
+    tasks["t1"].parent.mkdir(parents=True)
+    tasks["t1"].write_text("---\nstate: started\n---\nbody\n", encoding="utf-8")
+    rows.append({**parse_item("task", (tmp_path.name, "p1", "t1.md"), tasks["t1"].read_text(encoding="utf-8")), "needs": ["t3"]})
+
+    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks) == 1
+
+    err = capsys.readouterr().err
+    assert [r["task_id"] for r in rows] == ["t1"]
+    assert "decompose: t1 was already in the store and needs a task that is missing or withdrawn" in err
+
+
+def test_a_decompose_retry_that_raises_after_a_first_try_left_its_row_says_so_and_withdraws_it(
+    tmp_path, store_conn, monkeypatch, capsys
+) -> None:
+    from harness.store_write import Store
+
+    monkeypatch.chdir(tmp_path)
+    rows = _filing_in_memory(monkeypatch)
+    real_write = cli._write_filed_task
+    calls: list[str] = []
+
+    def row_then_failure(runs_dir, path, parts, text) -> int:
+        calls.append(path.stem)
+        real_write(runs_dir, path, parts, text)
+        if len(calls) == 1:
+            return 1
+        raise RuntimeError("duplicate row")
+
+    monkeypatch.setattr(cli, "_write_filed_task", row_then_failure)
+    tasks = {"t1": tmp_path / "work" / "p1" / "t1.md"}
+
+    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks) == 1
+
+    err = capsys.readouterr().err
+    assert "decompose: t1 is in the store but its file write failed (exit 1)" in err
+    assert "duplicate row (the first try left its row in the store)" in err
+    assert rows == []
+
+
+def test_dependents_of_missing_follow_needs_through_other_dependents() -> None:
+    needs = {"t2": ["t1"], "t3": ["t2"], "t4": ["t9"]}
+
+    assert cli._dependents_of_missing(needs, ["t1"], ["t2", "t3", "t4"]) == ["t2", "t3"]
+
+
+def test_task_needs_reads_the_suggested_action_the_real_graph_emits_and_defaults_to_none() -> None:
+    def action(task: str, needs: list[str]) -> str:
+        return _item_action({"id": task, "title": "a: b", "phase": "p1", "needs": needs}, landing="work", initiative_id="i")
+
+    proposals = [
+        {"kind": "item_create", "target": "t1", "suggested_action": action("t1", ["t0"])},
+        {"kind": "item_create", "target": "t2", "suggested_action": action("t2", [])},
+        {"kind": "item_create", "target": "t4", "apply": {"item": {"needs": ["t1"]}}},
+    ]
+
+    assert cli._task_needs(proposals, {"t1", "t2", "t4"}) == {"t1": ["t0"], "t2": [], "t4": []}
 
 
 def test_a_decompose_retry_writes_a_withdrawn_task_afresh_instead_of_keeping_its_dropped_row(
