@@ -1,10 +1,20 @@
 import json
 
-from devtools.release_notes_prs import gather_component_prs, in_window, previous_tag, upgrade_facts
+from devtools.release_notes_prs import (
+    gather_component_prs,
+    in_window,
+    previous_tag,
+    upgrade_facts,
+    without_earlier_bumps,
+)
 
 
 def _pr(number, merged_at, base="main", component="tools"):
     return {"component": component, "number": number, "title": f"pr {number}", "merged_at": merged_at, "base": base}
+
+
+def _titled(number, title):
+    return {**_pr(number, "2026-11-01T00:00:00Z"), "title": title}
 
 
 def test_previous_tag_is_none_when_no_tag_is_below():
@@ -110,3 +120,60 @@ def test_gather_component_prs_with_no_previous_tag_keeps_every_main_pr():
     assert previous is None
     assert [p["number"] for p in prs] == [1]
     assert len(calls) == 2
+
+
+def test_without_earlier_bumps_drops_the_previous_release_bump_and_keeps_an_ordinary_pr():
+    prs = [_titled(1, "release: bump to 2026.11.3 to match the tag"), _titled(2, "fix a thing")]
+    assert [p["number"] for p in without_earlier_bumps(prs, "v2026.11.3")] == [2]
+
+
+def test_without_earlier_bumps_drops_cargo_pyproject_and_older_bumps():
+    prs = [
+        _titled(1, "cargo: bump to 2026.11.3 to match the tag"),
+        _titled(2, "pyproject: bump to 2026.11.3 to match the tag"),
+        _titled(3, "release: bump to 2026.11.2 to match the tag"),
+        _titled(4, "fix a thing"),
+    ]
+    assert [p["number"] for p in without_earlier_bumps(prs, "v2026.11.3")] == [4]
+
+
+def test_without_earlier_bumps_keeps_a_bump_above_the_previous_release():
+    prs = [_titled(1, "release: bump to 2026.11.4 to match the tag")]
+    assert without_earlier_bumps(prs, "v2026.11.3") == prs
+
+
+def test_without_earlier_bumps_keeps_a_bump_when_there_is_no_previous_release():
+    prs = [_titled(1, "pyproject: bump to 2026.11.3 to match the tag")]
+    assert without_earlier_bumps(prs, None) == prs
+
+
+def test_without_earlier_bumps_keeps_a_pr_that_only_mentions_a_bump():
+    prs = [_titled(1, "docs: explain bump to 2026.11.3")]
+    assert without_earlier_bumps(prs, "v2026.11.3") == prs
+
+
+def test_without_earlier_bumps_does_not_mutate_its_input():
+    prs = [_titled(1, "release: bump to 2026.11.3 to match the tag"), _titled(2, "fix a thing")]
+    before = [dict(p) for p in prs]
+    without_earlier_bumps(prs, "v2026.11.3")
+    assert prs == before
+
+
+def test_gather_component_prs_drops_the_previous_release_bump_pr():
+    gh_json = json.dumps([
+        {"number": 21, "title": "release: bump to 2026.11.3 to match the tag",
+         "mergedAt": "2026-11-02T00:00:00Z", "baseRefName": "main"},
+        {"number": 22, "title": "fix a thing", "mergedAt": "2026-11-03T00:00:00Z", "baseRefName": "main"},
+    ])
+
+    def run(argv):
+        if argv[3] == "tag":
+            return "v2026.11.2\nv2026.11.3\n"
+        if argv[3] == "log":
+            return "2026-11-01T00:00:00+00:00\n"
+        return gh_json
+
+    previous, prs = gather_component_prs(run, "tools", "ppfenning/coxswain-tools", "/w/tools", "2026.11.4")
+
+    assert previous == "v2026.11.3"
+    assert [p["number"] for p in prs] == [22]

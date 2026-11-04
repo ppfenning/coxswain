@@ -17,6 +17,8 @@ from datetime import UTC, datetime
 _VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$")
 # A first number this large is a year: every CalVer release sorts above every 0.x release.
 _YEAR_FLOOR = 1000
+# The whole title devtools/release.py gives a version-bump PR, for any of the three bumped files.
+_BUMP_RE = re.compile(r"^(?:pyproject|cargo|release): bump to (\S+) to match the tag$")
 
 
 def _sort_key(tag: str) -> tuple | None:
@@ -58,6 +60,18 @@ def in_window(prs: list[dict], after: str | None) -> list[dict]:
     return sorted(kept, key=lambda pr: pr["number"])
 
 
+def without_earlier_bumps(prs: list[dict], previous: str | None) -> list[dict]:
+    """A new list without version-bump PRs for `previous` or an older release; all PRs when `previous` is None."""
+    ceiling = None if previous is None else _sort_key(previous)
+
+    def is_earlier_bump(pr: dict) -> bool:
+        m = _BUMP_RE.match(pr["title"])
+        key = _sort_key(m.group(1)) if m else None
+        return ceiling is not None and key is not None and key <= ceiling
+
+    return [pr for pr in prs if not is_earlier_bump(pr)]
+
+
 def upgrade_facts(manifest: dict, migration_files: list[str]) -> dict:
     """`schema_version` is `manifest["coxswain"]["version"]`, the one version
     devtools/release.py reads from the manifest; the manifest has no separate
@@ -94,4 +108,4 @@ def gather_component_prs(
          "merged_at": r["mergedAt"], "base": r["baseRefName"]}
         for r in raw
     ]
-    return previous, in_window(prs, after)
+    return previous, without_earlier_bumps(in_window(prs, after), previous)
