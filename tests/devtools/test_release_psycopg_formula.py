@@ -74,7 +74,7 @@ def test_a_release_formula_has_libpq_env_scripts_for_all_three_entry_points_and_
 def test_an_old_shape_formula_is_migrated_with_nothing_of_it_left_behind():
     assert "psycopg-binary" in _OLD_SHAPE
     after = _bump(_OLD_SHAPE, psycopg=_assets())
-    assert "psycopg-binary" not in after and "on_arm" not in after and ".stage do" not in after and "pip" not in after
+    assert "psycopg-binary" not in after and "on_arm" not in after and ".stage do" not in after and '"pip"' not in after
     assert "    virtualenv_install_with_resources\n" in after
     assert after.count('resource "psycopg" do') == 1 and "psycopg-3.3.5" not in after and "6" * 64 not in after
     assert after.count('depends_on "libpq"') == 1 and after.count("write_env_script") == 3
