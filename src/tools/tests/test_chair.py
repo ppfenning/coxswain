@@ -408,7 +408,7 @@ def test_retaken_chair_with_no_model_anywhere_writes_no_model_key():
 def test_retaken_chair_with_hours_sets_until_to_now_plus_hours_without_mutating_the_record():
     record = {"session": "c", "heartbeat_at": "t0", "until": "2026-09-26T12:30:00+00:00"}
     new_record, line = _retaken_chair(record, "t1", None, "c", 1, "host", 2, _RETAKE_NOW)
-    assert new_record == {"session": "c", "heartbeat_at": "t1", "until": "2026-09-26T14:00:00+00:00"}
+    assert new_record == {"session": "c", "heartbeat_at": "t1", "until": "2026-09-26T14:00:00+00:00", "window_seconds": 7200.0}
     assert line == "chair lease retaken: c (pid 1) on host until 2026-09-26T14:00:00+00:00"
     assert record == {"session": "c", "heartbeat_at": "t0", "until": "2026-09-26T12:30:00+00:00"}
 
@@ -621,7 +621,7 @@ def test_displaced_line_names_the_displaced_holder():
 
 def test_extend_moves_until_and_leaves_the_record_alone():
     moved = chair.extend(_HELD, _T0, 5)
-    assert moved == {**_HELD, "until": "2026-09-26T17:00:00+00:00"}
+    assert moved == {**_HELD, "until": "2026-09-26T17:00:00+00:00", "window_seconds": 18000.0}
     assert _HELD["until"] == _UNTIL
 
 

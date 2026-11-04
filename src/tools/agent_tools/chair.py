@@ -112,6 +112,21 @@ def _until(record: dict[str, Any] | None) -> datetime.datetime | None:
     return parsed if parsed.tzinfo else None
 
 
+_NO_SPAN = datetime.timedelta(0)
+_MAX_SPAN = datetime.timedelta(days=365)
+
+
+def _window(record: dict[str, Any]) -> datetime.timedelta | None:
+    """The renewal span: `window_seconds` if numeric, else `until - taken_at`. None unless `until` and `taken_at` are aware and the span is positive and at most a year."""
+    stored = record.get("window_seconds")
+    try:
+        taken_at = datetime.datetime.fromisoformat(record["taken_at"])
+        span = datetime.timedelta(seconds=stored) if isinstance(stored, int | float) and not isinstance(stored, bool) else _until(record) - taken_at
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    return span if taken_at.tzinfo and _until(record) is not None and _NO_SPAN < span <= _MAX_SPAN else None
+
+
 def expired(record: dict[str, Any] | None, now: datetime.datetime) -> bool:
     """Pure: the record carries an `until` before `now`. No `until` never expires."""
     until = _until(record)
@@ -125,8 +140,9 @@ def hours_left(record: dict[str, Any] | None, now: datetime.datetime) -> float |
 
 
 def extend(record: dict[str, Any], now: datetime.datetime, hours: float) -> dict[str, Any]:
-    """Pure: a copy of `record` whose `until` is `hours` after `now`."""
-    return {**record, "until": (now + datetime.timedelta(hours=hours)).isoformat()}
+    """Pure: a copy of `record` whose `until` is `hours` after `now`; `window_seconds` records the span a loop beat renews."""
+    span = datetime.timedelta(hours=hours)
+    return {**record, "until": (now + span).isoformat(), "window_seconds": span.total_seconds()}
 
 
 def _held_by_line(record: dict[str, Any]) -> str:
@@ -246,14 +262,17 @@ def beat(
     now: datetime.datetime,
     run_id: str | None = None,
     claude_session: str | None = None,
+    extend_window: bool = False,
 ) -> tuple[dict[str, Any] | None, str]:
-    """Pure. A None `claude_session` keeps the recorded one, so a beat from a shell without the env var does not erase it."""
+    """Pure. A None `claude_session` keeps the recorded one, so a beat from a shell without the env var does not erase it. Under `extend_window` a usable window moves `until` to `now` plus that window."""
     if record is None or not _is_holder(record, session, pid, host):
         return None, f"chair: not held by {session} (pid {pid}) on {host}"
     existing_runs = record.get("runs", [])
     runs = existing_runs if run_id is None or run_id in existing_runs else [*existing_runs, run_id]
     kept = claude_session if claude_session is not None else record.get("claude_session")
-    return {**record, "heartbeat_at": now.isoformat(), "runs": runs, "claude_session": kept}, ""
+    window = _window(record) if extend_window else None
+    renewed = {} if window is None else {"until": (now + window).isoformat(), "window_seconds": window.total_seconds()}
+    return {**record, "heartbeat_at": now.isoformat(), "runs": runs, "claude_session": kept, **renewed}, ""
 
 
 def honour_release_request(runs_dir: Path | str, session: str, pid: int, host: str) -> bool:
