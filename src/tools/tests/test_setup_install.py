@@ -6,6 +6,7 @@ import pytest
 from agent_tools import home, route
 from agent_tools.setup_install import (
     _agent_steps,
+    catalog_link_step,
     hook_settings,
     install_plan,
     layout,
@@ -352,6 +353,32 @@ def test_an_existing_workspace_folder_gets_no_mkdir_but_still_the_record():
     steps = _plan(workspace="", workspace_exists=True)
     assert not [s for s in steps if s["op"] == "mkdir"]
     assert [s for s in steps if s["op"] == "write"][-1]["path"] == LOC.record
+
+
+LINK = f"{WORKSPACE}/cartridges/providers/catalog.yaml"
+LINK_TARGET = f"{CARTRIDGES}/providers/catalog.yaml"
+
+
+def test_catalog_link_step_points_the_workspace_catalog_into_the_checkout():
+    assert catalog_link_step(WORKSPACE, CARTRIDGES) == {
+        "op": "symlink", "path": LINK, "target": LINK_TARGET,
+        "why": "point the workspace price catalog at this install"}
+
+
+def test_the_plan_carries_the_catalog_link_just_before_the_closing_print():
+    steps = _plan()
+    assert [s for s in steps if s["op"] == "symlink"] == [catalog_link_step(WORKSPACE, CARTRIDGES)]
+    assert steps[-2]["op"] == "symlink"
+    assert steps[-1]["op"] == "print"
+
+
+def test_the_catalog_link_is_absent_when_no_workspace_is_known():
+    steps = _plan(locations=None, workspace="", profile_exists=True)
+    assert not [s for s in steps if s["op"] == "symlink"]
+
+
+def test_render_plan_prints_a_symlink_line():
+    assert render_plan([catalog_link_step(WORKSPACE, CARTRIDGES)]) == f"symlink {LINK} -> {LINK_TARGET}"
 
 
 def test_root_plan_has_neither_the_mkdir_steps_nor_the_record_write():
