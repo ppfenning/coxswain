@@ -303,3 +303,47 @@ def test_cli_lists_the_row_once_the_phase_branch_is_deleted(tmp_path, capsys):
     rows = json.loads(capsys.readouterr().out)
     assert rows == [{"run": "r1", "task": "t1", "phase": "p1", "branch": "epic/acme/p1",
                       "remedy": f"cox runs land r1 --task t1 --repo {repo}"}]
+
+
+def _line(task="t1", remedy="cox runs land r1 --task t1 --repo /repo/acme"):
+    return f"approved but not landed: {task} — {remedy}" if remedy else f"approved but not landed: {task}"
+
+
+def test_a_log_line_for_a_ready_item_yields_one_row_with_the_items_phase():
+    rows = runs_stranded.stranded_from_log("r1", [_line()], [_item("ready")], "/repo/acme")
+    assert rows == [{"run": "r1", "task": "t1", "phase": "p1", "branch": None,
+                      "remedy": "cox runs land r1 --task t1 --repo /repo/acme"}]
+
+
+def test_a_log_line_for_an_approved_item_yields_one_row():
+    rows = runs_stranded.stranded_from_log("r1", [_line()], [_item("approved")], "/repo/acme")
+    assert [r["task"] for r in rows] == ["t1"]
+
+
+def test_a_log_line_for_a_done_item_yields_no_row():
+    assert runs_stranded.stranded_from_log("r1", [_line()], [_item("done")], "/repo/acme") == []
+
+
+def test_a_log_line_for_an_unknown_task_id_yields_no_row():
+    assert runs_stranded.stranded_from_log("r1", [_line("zz")], [_item("ready")], "/repo/acme") == []
+
+
+def test_the_remedy_is_the_text_after_the_dash_and_none_when_absent():
+    items = [_item("ready"), _item("ready", id="t2")]
+    lines = [_line("t1", "merge the PR"), _line("t2", None)]
+    rows = runs_stranded.stranded_from_log("r1", lines, items, "/repo/acme")
+    assert [r["remedy"] for r in rows] == ["merge the PR", None]
+
+
+def test_an_ambiguous_task_id_yields_no_row():
+    items = [_item("ready"), _item("ready", initiative="other")]
+    assert runs_stranded.stranded_from_log("r1", [_line()], items, "/repo/acme") == []
+
+
+def test_an_item_in_another_repo_is_not_matched():
+    items = [_item("ready", repo="/repo/other")]
+    assert runs_stranded.stranded_from_log("r1", [_line()], items, "/repo/acme") == []
+
+
+def test_a_line_without_the_approved_prefix_yields_no_row():
+    assert runs_stranded.stranded_from_log("r1", ["t1 — something"], [_item("ready")], "/repo/acme") == []

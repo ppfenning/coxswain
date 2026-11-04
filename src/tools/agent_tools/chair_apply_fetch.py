@@ -3,8 +3,9 @@
 `chair_exec`'s `fetch_exit` action runs `cox runs fetch` for a remote run, then hands the run
 and its initiative here. The run's task records are already on disk under `runs/<run>/tasks/`;
 this reads them, decides which are approved by the same rule `land.py` applies before a land,
-and moves each approved task's ticket file from `ready` to `approved`. Writing to the SQL work
-store is out of bounds here: the ticket file's `state:` line is the record this task writes.
+and moves each approved task's ticket file from `ready` to `approved`. The store row is the board,
+so each approved task is also mirrored to `approved` through `store_cli.mirror_state`; a mirror
+warning is returned beside the ids and never raised.
 """
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
+from agent_tools import store_cli
 from agent_tools.land import _approved
 
 __all__ = ["apply_fetched_approvals", "apply_ready_to_approved", "approved_task_ids"]
@@ -67,23 +69,39 @@ def _ticket_path(work_dir: Path, initiative: str, task_id: str) -> Path | None:
     return next(iter(sorted((work_dir / "work" / initiative).glob(f"**/{task_id}.md"))), None)
 
 
-def apply_fetched_approvals(runs_dir: Path, work_dir: Path, run: str, initiative: str) -> list[str]:
-    """Edge. Move each approved task's ticket from ready to approved; the ids actually changed, in order.
+def _approve_ticket_file(work_dir: Path, initiative: str, task_id: str) -> tuple[bool, str | None]:
+    """Edge. Whether to mirror the task, and a warning when its ticket file could not be read or written.
 
-    A missing or malformed task record, or a ticket file that is not found, is skipped and never raises.
+    A missing ticket file is mirrored without a warning. Only a ticket whose state is neither ready, approved
+    nor done is not mirrored, since the file itself says the task is not approved.
     """
-    changed = []
-    for task_id in approved_task_ids(_task_records(runs_dir, run)):
-        path = _ticket_path(work_dir, initiative, task_id)
-        if path is None:
+    path = _ticket_path(work_dir, initiative, task_id)
+    if path is None:
+        return True, None
+    try:
+        new_text, refusal = apply_ready_to_approved(path.read_text(encoding="utf-8"))
+        if refusal is not None:
+            return False, None
+        if new_text is not None:
+            path.write_text(new_text, encoding="utf-8")
+    except OSError as exc:
+        return True, f"warning: {task_id}: ticket file not updated: {type(exc).__name__}: {exc}"
+    return True, None
+
+
+def apply_fetched_approvals(runs_dir: Path, work_dir: Path, run: str, initiative: str) -> tuple[list[str], list[str]]:
+    """Edge. Mirror every approved task to the store, moving its ticket file from ready first. Never raises.
+
+    Returns the ids mirrored, once each in record order, and the warnings from file errors and from `mirror_state`.
+    """
+    ids: list[str] = []
+    warnings: list[str] = []
+    for task_id in dict.fromkeys(approved_task_ids(_task_records(runs_dir, run))):
+        mirror, file_warning = _approve_ticket_file(work_dir, initiative, task_id)
+        warnings.extend([] if file_warning is None else [file_warning])
+        if not mirror:
             continue
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        new_text, _ = apply_ready_to_approved(text)
-        if new_text is None:
-            continue
-        path.write_text(new_text, encoding="utf-8")
-        changed.append(task_id)
-    return changed
+        mirror_warning = store_cli.mirror_state(runs_dir, initiative, task_id, "approved", "chair")
+        warnings.extend([] if mirror_warning is None else [mirror_warning])
+        ids.append(task_id)
+    return ids, warnings

@@ -141,6 +141,30 @@ def stranded(records: list[dict], items: list[dict],
             and (branch_exists is None or not _carried(record, item, branch_exists))]
 
 
+_APPROVED_PREFIX = "approved but not landed:"
+
+
+def _task_and_remedy(line: str) -> tuple[str, str | None] | None:
+    """Task id and remedy text of an `approved but not landed: <task> — <remedy>` line; the remedy is `None` when the line carries none, and the whole result is `None` for any other line."""
+    if not line.startswith(_APPROVED_PREFIX):
+        return None
+    task, dash, remedy = line[len(_APPROVED_PREFIX):].partition("—")
+    task, remedy = task.strip(), remedy.strip()
+    return (task, (remedy or None) if dash else None) if task else None
+
+
+def stranded_from_log(run: str, approved_lines: list[str], items: list[dict], repo: str) -> list[dict]:
+    """Rows for a run log's approved-but-not-landed lines. A line yields a row only when its task id names exactly one item in `repo` and that item is `ready` or `approved`; the remedy is the line's own text and `branch` is `None`."""
+    in_repo = [item for item in items if item.get("repo") == repo]
+    parsed = [p for p in map(_task_and_remedy, approved_lines) if p is not None]
+    matches = [(task, remedy, [i for i in in_repo if i.get("id") == task]) for task, remedy in parsed]
+    return [
+        {"run": run, "task": task, "phase": found[0].get("phase"), "branch": None, "remedy": remedy}
+        for task, remedy, found in matches
+        if len(found) == 1 and found[0].get("state") in _LIVE_STATES
+    ]
+
+
 def missing_repos(records: list[dict], items: list[dict],
                   repo_exists: Callable[[str], bool]) -> list[str]:
     """Sorted, de-duplicated repo paths of records `stranded` skips because

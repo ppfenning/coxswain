@@ -98,7 +98,7 @@ def test_a_fetch_exit_applies_approvals_only_on_exit_zero_and_keeps_the_fetch_re
         json.dumps({"host": "host-a", "launched_at": "2026-09-26T00:00:00+00:00"}), encoding="utf-8"
     )
     calls: list = []
-    monkeypatch.setattr(chair_exec.chair_apply_fetch, "apply_fetched_approvals", lambda *a: calls.append(a) or ["t1", "t2"])
+    monkeypatch.setattr(chair_exec.chair_apply_fetch, "apply_fetched_approvals", lambda *a: calls.append(a) or (["t1", "t2"], []))
     deps = replace(_deps([], code=code, output=output), runs_dir=tmp_path, work_dir=tmp_path)
     results = perform([{"kind": "fetch_exit", "run": "r-1", "initiative": "i", "epoch": 1}], deps, lambda: 1, False)
     assert calls == ([(tmp_path, tmp_path, "r-1", "i")] if code == 0 else [])
@@ -107,6 +107,16 @@ def test_a_fetch_exit_applies_approvals_only_on_exit_zero_and_keeps_the_fetch_re
         assert (results[0]["run"], results[0]["host"]) == ("r-1", "host-a")
     else:
         assert "run" not in results[0] and "host" not in results[0]
+
+
+def test_a_fetch_exit_appends_a_mirror_warning_to_the_reason_and_still_reports_done(tmp_path, monkeypatch) -> None:
+    remote_lane.remote_record_path(tmp_path, "r-1").write_text(
+        json.dumps({"host": "host-a", "launched_at": "2026-09-26T00:00:00+00:00"}), encoding="utf-8"
+    )
+    monkeypatch.setattr(chair_exec.chair_apply_fetch, "apply_fetched_approvals", lambda *a: (["t1"], ["warning: store refused"]))
+    deps = replace(_deps([], code=0, output=""), runs_dir=tmp_path, work_dir=tmp_path)
+    results = perform([{"kind": "fetch_exit", "run": "r-1", "initiative": "i", "epoch": 1}], deps, lambda: 1, False)
+    assert (results[0]["status"], results[0]["reason"]) == ("done", "fetched r-1; approved: t1; warning: store refused")
 
 
 VERDICT = "fetch: verify: r-1 has no approved tasks in the store"
