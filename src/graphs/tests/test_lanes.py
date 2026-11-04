@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from harness.lanes import max_width, next_launches, resolve_max_parallel
+from harness.lanes import lane_bound, max_width, next_launches, resolve_max_parallel
 
 
 def _task(tid: str, needs: list[str] | None = None, state: str = "ready", priority: int = 3, phase: str = "p1") -> dict:
@@ -113,3 +113,25 @@ def test_width_of_a_cycle_is_refused() -> None:
 
 def test_width_of_nothing_is_zero() -> None:
     assert max_width([]) == (0, [])
+
+
+def test_lane_bound_without_a_usage_limit_is_the_lane_limit() -> None:
+    assert lane_bound(5, 2, None, 4.0) == (3, "lanes")
+    assert lane_bound(5, 2, 10.0, None) == (3, "lanes")
+    assert lane_bound(5, 2, 10.0, 0.0) == (3, "lanes")
+
+
+def test_lane_bound_names_the_usage_ceiling_when_it_is_strictly_lower() -> None:
+    assert lane_bound(5, 0, 10.0, 4.0) == (2, "usage ceiling")
+
+
+def test_lane_bound_tie_reports_lanes() -> None:
+    assert lane_bound(2, 0, 8.0, 4.0) == (2, "lanes")
+
+
+def test_lane_bound_negative_headroom_gives_zero() -> None:
+    assert lane_bound(5, 0, -1.0, 4.0)[0] == 0
+
+
+def test_lane_bound_in_flight_above_max_lanes_gives_zero() -> None:
+    assert lane_bound(3, 5, 100.0, 4.0) == (0, "lanes")
