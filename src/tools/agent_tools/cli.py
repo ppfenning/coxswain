@@ -125,6 +125,7 @@ chair_smoke = _LazyModule("agent_tools.chair_smoke")
 chair_unit = _LazyModule("agent_tools.chair_unit")
 chair_watchdog = _LazyModule("agent_tools.chair_watchdog")
 checkout = _LazyModule("agent_tools.checkout")
+checkout_sync = _LazyModule("agent_tools.checkout_sync")
 cleanup = _LazyModule("agent_tools.cleanup")
 console_screen = _LazyModule("agent_tools.console_screen")
 courier = _LazyModule("agent_tools.courier")
@@ -11160,6 +11161,50 @@ def _chair_git(args: list[str]) -> str | None:
     return done.stdout if done.returncode == 0 else None
 
 
+class _CheckoutReports:
+    """Owned by one chair process: which (repo, kind) checkout notes were already printed."""
+
+    def __init__(self) -> None:
+        self._seen: set[tuple[str, str]] = set()
+
+    def first(self, repo: str, kind: str) -> bool:
+        """True the first time (repo, kind) is asked, False every time after."""
+        fresh = (repo, kind) not in self._seen
+        self._seen.add((repo, kind))
+        return fresh
+
+
+def _checkout_note(repo: Path, run: Callable[[Path, Sequence[str]], tuple[int, str]]) -> tuple[str, str | None]:
+    """Edge. Fetch origin's default branch, then sync the checkout: (kind, one-line report or None when silent)."""
+    code, out = run(repo, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+    default = out.strip().removeprefix("origin/") if code == 0 and out.strip() else "main"
+    code, out = run(repo, ["fetch", "--quiet", "origin", f"+refs/heads/{default}:refs/remotes/origin/{default}"])
+    if code != 0:
+        reason = next((line.strip() for line in out.splitlines() if line.strip()), f"exit code {code}")
+        return "fetch_failed", f"checkout not fast-forwarded: fetch of origin/{default} failed: {reason}"
+    verdict, line = checkout_sync.sync_checkout(repo, default, run)
+    if line is None:
+        return verdict, None
+    return ("fast_forward_failed" if verdict == "fast_forward" else verdict), line
+
+
+def _sync_chair_checkouts(
+    repos: Sequence[str], reports: _CheckoutReports, echo: Callable[[str], None],
+    run: Callable[[Path, Sequence[str]], tuple[int, str]] | None = None,
+) -> None:
+    """Edge, once per repo per tick. Silent for fast_forward and already_current; any other note prints once per
+    (repo, kind) for the life of `reports`. Nothing raised here leaves the tick."""
+    runner = run or checkout_sync.git_runner
+    for repo in dict.fromkeys(repos):
+        try:
+            kind, line = _checkout_note(Path(repo), runner)
+        except Exception as exc:
+            kind, line = "error", f"checkout sync of {repo} failed: {exc}"
+        if line is not None and reports.first(repo, kind):
+            with contextlib.suppress(Exception):
+                echo(f"chair run: {repo}: {line}")
+
+
 def _chair_run_deps(
     runs_dir: Path, profile: dict, session: str, pid: int, host: str, dry_run: bool, echo: Callable[[str], None],
     profile_path: Path, mode: str,
@@ -11573,6 +11618,21 @@ def _chair_run_deps(
     # A dry run never releases a real lease, so it passes no release check.
     release_requested = None if dry_run else (lambda: chair.honour_release_request(runs_dir, session, pid, host))
     checkout_state = lambda: chair_restart.read_checkout_state(chair_restart.checkout_root(), _chair_git)  # noqa: E731
+    checkout_reports = _CheckoutReports()  # edge state for the whole process: each note prints once per repo
+
+    def pull_and_sync() -> str:
+        """The live tick's pull, then the checkout sync of each repo the initiatives name; the sync never raises."""
+        try:
+            return workspace_sync.pull_workspace(ws)
+        finally:
+            try:
+                repos = _initiative_repos(chair_read_quarantined.initiative_files(ws, work_files()), home).values()
+                _sync_chair_checkouts([r for r in repos if Path(r).is_dir()], checkout_reports, echo)
+            except Exception as exc:
+                if checkout_reports.first("", "repos"):
+                    with contextlib.suppress(Exception):
+                        echo(f"chair run: checkout sync skipped: {exc}")
+
     return chair_run.RunDeps(
         checkout_state=checkout_state, started_checkout=checkout_state(), lands_in_flight=lands_in_flight,
         stop_lands=stop_lands, facts_deps=facts_deps, exec_deps=exec_deps, report_deps=chair_report.Deps(echo=echo),
@@ -11588,7 +11648,7 @@ def _chair_run_deps(
         ),
         export_rows=(lambda ids: _chair_export_hook(runs_dir, ids)) if mode == "store" and not dry_run else None,
         notify_config=notify_core.config_from_profile(profile), workspace=ws,
-        pull_workspace=None if dry_run else (lambda: workspace_sync.pull_workspace(ws)),
+        pull_workspace=None if dry_run else pull_and_sync,
     )
 
 
