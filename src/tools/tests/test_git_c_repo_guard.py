@@ -89,6 +89,8 @@ SITES: Sequence[tuple[str, str, int, str]] = [
     ("remote_fetch.py", 'code = run_cmd(["git", "-C", repo, *fetch[1:]])', 1, FETCH_EXPANDED),
     ("remote_fetch.py", 'if run_cmd(["git", "-C", repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{name}"]) == 0', 1, FETCH_EXPANDED),
     ("remote_fetch.py", 'found = run_cmd(["git", "-C", repo, "ls-remote", "--exit-code", ".", f"refs/heads/agents/{run}/*"])', 1, FETCH_EXPANDED),
+    ("remote_fetch.py", 'run_cmd(["git", "-C", repo, *fetch[1:]])', 1, FETCH_EXPANDED),
+    ("remote_fetch.py", 'return run_cmd(["git", "-C", repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"]) == 0', 1, FETCH_EXPANDED),
 ]
 # fmt: on
 
