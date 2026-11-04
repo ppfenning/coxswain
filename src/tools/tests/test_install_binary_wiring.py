@@ -16,8 +16,9 @@ MANIFEST = (
 
 
 def _host(monkeypatch, tmp_path, *, system="Darwin", machine="arm64", before="towpath 2026.11.0",
-          after="towpath 2026.11.1", on_path=True):
-    """Fake run and platform. `towpath --version` prints `before` until a `cp` runs, then `after`; None means it fails."""
+          after="towpath 2026.11.1", on_path=True, cargo=False):
+    """Fake run and platform. `towpath --version` prints `before` until a `cp` runs, then `after`; None means it fails.
+    `cargo` puts the Rust build tool on PATH."""
     bin_dir = tmp_path / "bin"
     state, calls = {"copied": False}, []
 
@@ -33,8 +34,9 @@ def _host(monkeypatch, tmp_path, *, system="Darwin", machine="arm64", before="to
     monkeypatch.setattr(cli, "_load_lazy_modules", lambda: None)
     monkeypatch.setattr(cli.platform, "system", lambda: system)
     monkeypatch.setattr(cli.platform, "machine", lambda: machine)
-    monkeypatch.setattr(shutil, "which", lambda name: str(bin_dir / name) if name == "towpath" and on_path else None)
-    monkeypatch.setattr(cli, "_checkout_facts", lambda path: {"present": True, "tag": "v2026.11.1", "dirty": False})
+    found = {"towpath": on_path, "cargo": cargo}
+    monkeypatch.setattr(shutil, "which", lambda name: str(bin_dir / name) if found.get(name) else None)
+    monkeypatch.setattr(cli, "_checkout_facts", lambda path, **_: {"present": True, "tag": "v2026.11.1", "dirty": False})
     return calls, bin_dir
 
 
@@ -123,3 +125,37 @@ def test_binary_facts_fall_back_to_the_local_bin_and_report_none_for_an_absent_o
                               lambda name: None, "/users/dev")
     assert facts == {"target": None, "bin_dir": "/users/dev/.local/bin", "binaries": {"towpath": None}}
     assert ran == [["/users/dev/.local/bin/towpath", "--version"]]
+
+
+def _edge_dry_run(tmp_path, capsys):
+    manifest = tmp_path / "manifest.toml"
+    manifest.write_text(MANIFEST)
+    rc = cli.main(["install", "--edge", "--dry-run", "--root", str(tmp_path / "root"), "--manifest", str(manifest),
+                   "--provider", "claude-code", "--with", "dash", "--team", "example-team",
+                   "--workspace", str(tmp_path / "ws")])
+    return rc, capsys.readouterr().out.splitlines()
+
+
+def test_edge_dry_run_with_the_dash_checkout_and_cargo_prints_dev_build_and_dev_link(monkeypatch, tmp_path, capsys):
+    _host(monkeypatch, tmp_path, cargo=True)
+    rc, lines = _edge_dry_run(tmp_path, capsys)
+    assert rc == 0
+    assert any(line.startswith("dev_build dash:") for line in lines)
+    assert any(line.startswith("dev_link dash:") for line in lines)
+    assert not any(line.startswith("binary dash:") for line in lines)
+
+
+def test_edge_dry_run_without_cargo_prints_the_binary_line_instead(monkeypatch, tmp_path, capsys):
+    _host(monkeypatch, tmp_path, cargo=False)
+    rc, lines = _edge_dry_run(tmp_path, capsys)
+    assert rc == 0
+    assert any(line.startswith("binary dash:") for line in lines)
+    assert not any(line.startswith(("dev_build", "dev_link")) for line in lines)
+
+
+def test_a_commit_suffixed_dev_version_never_fails_an_edge_install_but_does_fail_a_release_one():
+    manifest = {"components": {"dash": {"provides": "towpath"}}}
+    steps = [{"kind": "binary", "component": "dash"}]
+    table = [("towpath", "v2026.11.1", "2026.11.1-3-gabc1234", "drift")]
+    assert cli._binary_rows_not_ok(steps, manifest, {"channel": "edge"}, table) is False
+    assert cli._binary_rows_not_ok(steps, manifest, {"channel": "release"}, table) is True

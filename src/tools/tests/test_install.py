@@ -261,7 +261,7 @@ def test_cli_install_resolves_provider_cli_from_the_manifests_command_not_the_pr
     rc = cli.main(["install", "--dry-run", "--root", str(tmp_path), "--manifest", str(manifest_path),
                    "--provider", "claude-code"])
     assert rc == 0
-    assert seen == ["totally-fake-cli-xyz"]
+    assert "totally-fake-cli-xyz" in seen and "claude-code" not in seen
 
 
 def test_cli_versions_reports_ok_missing_and_extra_from_real_checkouts(tmp_path, capsys):

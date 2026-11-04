@@ -7308,6 +7308,20 @@ def _doctor_home_rows(profile: dict | None) -> list[dict]:
     return [*rows, doctor.lane_host_paths_row(_migrate_observe_hosts(locs))]
 
 
+def _doctor_dash_build_rows(profile: dict | None) -> list[dict]:
+    """Edge. The `dash build` row; none without a profile or a resolvable home. A development install is one whose
+    venv is editable from the checkout, the source the `install bins` row reads."""
+    if profile is None:
+        return []
+    locs = home_paths.resolve_here()
+    if isinstance(locs, home_paths.Refused):
+        return []
+    checkout = setup_install.layout(locs.installs).checkout
+    dev_install = setup_migrate.read_venv_source(checkout) == checkout
+    dash_present = Path(install_exec.clone_dir(locs.installs, "dash")).is_dir()
+    return [doctor.dash_build_row(dev_install, dash_present, shutil.which("cargo") is not None)]
+
+
 def _setup_doctor(a: argparse.Namespace) -> int:
     if getattr(a, "host", None):
         return _setup_doctor_host(a, _run_ssh)
@@ -7319,7 +7333,7 @@ def _setup_doctor(a: argparse.Namespace) -> int:
         fn = (lambda *_: lines) if isinstance(lines, list) else None
         rows = [*rows, *doctor.freshness_rows(None, None, None, fn)]
     profile = _doctor_profile(facts["profile_text"])
-    rows = [*rows, *_doctor_home_rows(profile), *_doctor_store_rows(profile)]
+    rows = [*rows, *_doctor_home_rows(profile), *_doctor_store_rows(profile), *_doctor_dash_build_rows(profile)]
     rc = doctor.exit_code(rows)
     # Informational: outside rows, so outside rc. Reuses the text the facts already read.
     parquet = _parquet_traces_line(profile)
@@ -8789,6 +8803,7 @@ def _install(a: argparse.Namespace) -> int:
         "root": str(root),
         "checkouts": _gather_checkout_facts(root, manifest.get("components", {}), fetch=a.edge),
         "provider_cli_on_path": shutil.which(_manifest_provider_command(manifest, a.provider)) is not None,
+        "cargo": shutil.which("cargo") is not None,
         **_host_binary_facts(manifest),
     }
     with_flags = _with_flags(a)
