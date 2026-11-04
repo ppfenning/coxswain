@@ -1941,6 +1941,89 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#intake-queue-control" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Intake queue control
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Intake queue control">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-order-of-decomposition" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The order of decomposition
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waiting-on-other-work-with-after" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Waiting on other work with after
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#reading-the-queue-in-route-status" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reading the queue in route status
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hold-and-release" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hold and release
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#removing-an-intake" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Removing an intake
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#where-the-file-only-read-differs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where the file-only read differs
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#limits" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6246,6 +6329,89 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#intake-queue-control" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Intake queue control
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Intake queue control">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-order-of-decomposition" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The order of decomposition
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waiting-on-other-work-with-after" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Waiting on other work with after
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#reading-the-queue-in-route-status" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reading the queue in route status
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hold-and-release" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hold and release
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#removing-an-intake" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Removing an intake
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#where-the-file-only-read-differs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where the file-only read differs
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#limits" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6479,6 +6645,73 @@ command after a y/n confirmation, so watching the fleet and acting on it no
 longer needs a second terminal:</p>
 <div class="highlight"><pre><span></span><code>cox<span class="w"> </span>console
 </code></pre></div>
+<h2 id="intake-queue-control">Intake queue control</h2>
+<p>The chair decomposes intake from the queue. You steer that queue with
+priority, dependencies, a hold and a removal. None of them needs a hand edit
+of an intake file.</p>
+<h3 id="the-order-of-decomposition">The order of decomposition</h3>
+<p>The chair decomposes queued intake by priority, highest first. Intake of equal
+priority goes oldest first. A missing or non-integer priority counts as 0.</p>
+<p><code>cox route priority</code> orders a queued intake as well as an initiative. Name
+the intake and pass <code>--set</code>, <code>--up</code>, <code>--down</code>, <code>--top</code> or <code>--bottom</code>:</p>
+<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>route<span class="w"> </span>priority<span class="w"> </span>fix-login-redirect<span class="w"> </span>--top
+</code></pre></div>
+<h3 id="waiting-on-other-work-with-after">Waiting on other work with after</h3>
+<p>An intake can carry an <code>after</code> key. It lists the initiatives or intakes that
+must land first. Set it when you file the intake:</p>
+<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>route<span class="w"> </span>file<span class="w"> </span>--intake<span class="w"> </span>--repo<span class="w"> </span>coxswain<span class="w"> </span>--title<span class="w"> </span><span class="s2">"Add retry to sync"</span><span class="w"> </span>--body<span class="w"> </span>-<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--after<span class="w"> </span>auth-rework,fix-login-redirect
+</code></pre></div>
+<p>Change it later with <code>cox route edit</code>:</p>
+<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>route<span class="w"> </span>edit<span class="w"> </span>add-retry-to-sync<span class="w"> </span>--after<span class="w"> </span>auth-rework
+</code></pre></div>
+<p>Repeat <code>--after</code> or comma-separate the ids. On <code>route edit</code>, an empty value
+clears the list. <code>--after</code> applies to a queued intake only. <code>route file</code>
+refuses it without <code>--intake</code>.</p>
+<p>The chair neither decomposes nor launches the item until every named
+initiative or intake has landed. An initiative has landed when it has tasks
+and every one is <code>done</code> or <code>dropped</code>. An intake has landed when its initiative
+has landed. Once the last one lands, the chair decomposes the item on the
+next tick. You do not edit anything.</p>
+<p>An id that names nothing is unmet, so a typo holds the item back. A removed
+intake never counts as landed. An item waiting on a removed intake stays
+waiting until you clear or change its <code>after</code>.</p>
+<h3 id="reading-the-queue-in-route-status">Reading the queue in route status</h3>
+<p><code>cox route status</code> marks a waiting item in the queued intake group with the
+ids it still waits on:</p>
+<div class="highlight"><pre><span></span><code>add-retry-to-sync (waiting on auth-rework, fix-login-redirect)
+</code></pre></div>
+<p>Held items get their own <code>held:</code> heading after the groups. Each line is the
+intake id and, when there is one, its hold reason. With <code>--json</code>, the output
+gains a <code>waiting</code> map and a <code>held</code> list whenever either is non-empty.</p>
+<h3 id="hold-and-release">Hold and release</h3>
+<p>Hold is the reversible way out of the queue. The chair skips a held intake
+until you release it. The reason is required:</p>
+<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>route<span class="w"> </span>hold<span class="w"> </span>add-retry-to-sync<span class="w"> </span>--reason<span class="w"> </span><span class="s2">"waiting on the API freeze"</span>
+cox<span class="w"> </span>route<span class="w"> </span>release<span class="w"> </span>add-retry-to-sync
+</code></pre></div>
+<p>A held intake stays in <code>intake/</code> with <code>held: true</code> and a <code>hold_reason</code> line
+that names who held it and when. The hold is written to the store row and to
+the intake file, so it survives ticks and board exports. <code>release</code> removes
+both keys. Only a queued intake can be held. Both commands take <code>--dry-run</code>,
+which prints the plan and writes nothing.</p>
+<h3 id="removing-an-intake">Removing an intake</h3>
+<p>Use remove to retire an intake for good. It moves the file to <code>intake/done/</code>
+and records who removed it, when, and why. It takes several ids, or a
+<code>--match</code> glob over each queued intake's file stem or id. Both forms need
+<code>--reason</code>:</p>
+<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>route<span class="w"> </span>remove<span class="w"> </span>old-spike<span class="w"> </span>another-spike<span class="w"> </span>--reason<span class="w"> </span><span class="s2">"superseded"</span>
+cox<span class="w"> </span>route<span class="w"> </span>remove<span class="w"> </span>--match<span class="w"> </span><span class="s1">'spike-*'</span><span class="w"> </span>--reason<span class="w"> </span><span class="s2">"superseded"</span><span class="w"> </span>--dry-run
+</code></pre></div>
+<p>With <code>--dry-run</code>, remove prints what it would do and writes nothing. A glob
+that matches nothing is refused. A refused target does not stop the rest, and
+the command prints <code>removed N of M</code> and exits with the worst code. An
+initiative with a live run is refused.</p>
+<h3 id="where-the-file-only-read-differs">Where the file-only read differs</h3>
+<p>The chair can also read intake from files alone, with no store rows. That read
+cannot tell whether a dependency has landed, so it skips an item that has any
+<code>after</code>. A held item is skipped too. The item runs through the store-backed
+read, which can judge landing.</p>
 <h2 id="limits">Limits</h2>
 <p>The lane cap is <code>policy.dispatch.max_in_flight</code> in the team cartridge, and
 it applies per machine, not across the fleet. A fleet gives each lane host
