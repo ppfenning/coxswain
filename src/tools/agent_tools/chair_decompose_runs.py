@@ -117,3 +117,14 @@ def decompose_refusals(runs_dir: Path, run_ids: Iterable[str]) -> dict[str, str]
     texts = {run_id: _read_log(runs_dir, run_id) for run_id in run_ids}
     reasons = {run_id: refusal_reason(text) for run_id, text in texts.items() if text is not None}
     return {run_id: reason for run_id, reason in reasons.items() if reason is not None}
+
+
+def live_decompose_initiatives(runs_dir: Path) -> frozenset[str]:
+    """Edge. Initiatives with a live `<run_id>.pid` process; epic-build pid files count too, holding conservatively."""
+    from agent_tools.chair_read_lost import _pid_alive  # lazy: chair_read_lost imports chair_facts
+
+    try:
+        pidfiles = sorted(runs_dir.glob("*.pid"))
+    except OSError:
+        return frozenset()
+    return frozenset(run_initiative(path.stem) for path in pidfiles if _pid_alive(path))
