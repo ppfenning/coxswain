@@ -184,7 +184,7 @@ def test_gather_version_facts_reads_each_components_cargo_toml_off_disk_empty_wh
 
 
 def test_cli_release_check_reports_a_real_versions_drift_from_disk(tmp_path, capsys, monkeypatch):
-    monkeypatch.setattr(release_check_cli, "gather_cli_facts", lambda root, run: {})
+    monkeypatch.setattr(release_check_cli, "gather_cli_facts", lambda root: {})
     monkeypatch.setattr(release_check_manifest, "gather_manifest_facts", lambda *a: {})
     monkeypatch.setattr(release_check_notes, "gather_notes_facts", lambda *a, **k: {})
     manifest_path = tmp_path / "manifest.toml"
@@ -200,7 +200,7 @@ def test_cli_release_check_reports_a_real_versions_drift_from_disk(tmp_path, cap
 
 
 def test_cli_release_check_with_a_valid_manifest_exits_zero_and_reports_no_drift(tmp_path, capsys, monkeypatch):
-    monkeypatch.setattr(release_check_cli, "gather_cli_facts", lambda root, run: {})
+    monkeypatch.setattr(release_check_cli, "gather_cli_facts", lambda root: {})
     manifest_path = tmp_path / "manifest.toml"
     manifest_path.write_text('[coxswain]\nversion = "0.1.0"\n[components.cox]\ntag = "v0.1.0"\n')
     monkeypatch.setattr(release_check_manifest, "gather_manifest_facts", lambda *a: {})
@@ -215,7 +215,7 @@ def test_cli_release_check_renders_a_drift_from_a_registered_check(tmp_path, cap
         return [Drift("stub", "a", 1, "b", 2, "fix it")]
 
     monkeypatch.setattr(release_check, "CHECKS", (stub,))
-    monkeypatch.setattr(release_check_cli, "gather_cli_facts", lambda root, run: {})
+    monkeypatch.setattr(release_check_cli, "gather_cli_facts", lambda root: {})
     manifest_path = tmp_path / "manifest.toml"
     manifest_path.write_text('[coxswain]\nversion = "0.1.0"\n')
     rc = cli.main(["release-check", "--root", str(tmp_path), "--manifest", str(manifest_path)])
@@ -233,7 +233,7 @@ def test_cli_release_check_with_a_missing_manifest_refuses_and_names_it(tmp_path
 
 
 def test_cli_release_check_json_flag_prints_a_json_list(tmp_path, capsys, monkeypatch):
-    monkeypatch.setattr(release_check_cli, "gather_cli_facts", lambda root, run: {})
+    monkeypatch.setattr(release_check_cli, "gather_cli_facts", lambda root: {})
     monkeypatch.setattr(release_check_manifest, "gather_manifest_facts", lambda *a: {})
     monkeypatch.setattr(release_check_notes, "gather_notes_facts", lambda *a, **k: {})
     manifest_path = tmp_path / "manifest.toml"
