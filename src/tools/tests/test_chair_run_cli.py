@@ -44,7 +44,7 @@ def test_chair_run_exits_three_and_names_the_count_when_the_overrun_limit_is_hit
 
 def test_a_live_chairs_exec_deps_carry_the_land_worker(tmp_path) -> None:
     deps = cli._chair_run_deps(tmp_path, {}, "chair", 1, "h", False, print, tmp_path / "p.yaml", "files")
-    assert isinstance(deps.exec_deps.lands, chair_run.WorkerLands)
+    assert isinstance(deps.exec_deps.lands._fallback, chair_run.WorkerLands)  # ProcessLands over the land worker
 
 
 def test_a_dry_runs_exec_deps_carry_no_land_worker(tmp_path) -> None:
