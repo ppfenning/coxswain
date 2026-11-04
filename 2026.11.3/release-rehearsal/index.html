@@ -6265,7 +6265,7 @@ Coxswain is in beta — versions may change between releases
 <li><code>previous_tag</code>: the last release tag, such as <code>v2026.10.0</code>. It feeds the upgrade and migrate scenarios. A <code>v0.x</code> tag is installed as the old <code>coxswain-tools</code> line; a CalVer tag as <code>coxswain</code>.</li>
 <li><code>migrations</code>: the declared migration list from section 2, as a comma separated string; empty when the release declares none.</li>
 </ul>
-<p>A branch name or a short SHA is refused, because a branch can move between the rehearsal and the tag. Dispatch it from the coxswain checkout:</p>
+<p>A branch name or a short SHA is refused, because a branch can move between the rehearsal and the tag. The rehearsed commit is the one <code>release/&lt;version&gt;</code> is cut from. The SHA the rehearsal passed on is therefore the SHA the tag descends from. Main moving afterwards does not invalidate the rehearsal. Dispatch it from the coxswain checkout:</p>
 <div class="highlight"><pre><span></span><code>gh<span class="w"> </span>workflow<span class="w"> </span>run<span class="w"> </span>release-rehearsal.yml<span class="w"> </span>-f<span class="w"> </span><span class="nv">sha</span><span class="o">=</span><span class="k">$(</span>git<span class="w"> </span>rev-parse<span class="w"> </span>origin/main<span class="k">)</span><span class="w"> </span>-f<span class="w"> </span><span class="nv">previous_tag</span><span class="o">=</span>v2026.10.0<span class="w"> </span>-f<span class="w"> </span><span class="nv">migrations</span><span class="o">=</span>
 </code></pre></div>
 <p>Add <code>-f dash_sha=&lt;sha&gt;</code> when the release tags dash, and pass the declared migrations as <code>-f migrations=&lt;id&gt;,&lt;id&gt;</code>.</p>

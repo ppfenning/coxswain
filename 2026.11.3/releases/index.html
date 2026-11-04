@@ -6076,6 +6076,17 @@ Coxswain is in beta — versions may change between releases
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#a-resumed-cut" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A resumed cut
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#the-tap-pull-request-and-the-install-proof" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6851,20 +6862,28 @@ sit; it defaults to the checkout's parent.</p>
 <li>Every checkout the release tags is clean, on its default branch, and
    level with <code>origin/&lt;default&gt;</code>.</li>
 </ol>
-<p>Freeze the chair's lands for the cut, so nothing merges under it:
-<code>cox chair freeze-lands --for 60 --reason "cutting &lt;version&gt;"</code>.</p>
+<p>Main does not freeze for a cut. The cut runs on a short-lived
+<code>release/&lt;version&gt;</code> branch, and landing work onto main continues while it
+runs. The chair's freeze stays available for an emergency. It is not a step.</p>
 <p>Then the steps:</p>
 <ol>
+<li>The command creates <code>release/&lt;version&gt;</code> in the coxswain checkout from the
+   rehearsed commit. When the release tags dash, it creates the same branch in
+   dash from dash's rehearsed commit.</li>
 <li>When <code>&lt;version&gt;</code> is above the manifest's version, bump <code>pyproject.toml</code>,
-   <code>uv.lock</code> and <code>manifest.toml</code> on <code>release/&lt;version&gt;</code>, open a pull request,
-   wait for its checks and merge it.</li>
-<li>Tag <code>v&lt;version&gt;</code> on the repository. The tag push runs <code>publish.yml</code>,
-   which publishes <code>coxswain</code> to PyPI by trusted publishing. It refuses a tag
-   that is not <code>v</code> plus the CalVer version in <code>pyproject.toml</code>. The release
-   waits for that workflow.</li>
-<li>Create the GitHub release <code>coxswain &lt;version&gt;</code> from the notes page.</li>
+   <code>uv.lock</code> and <code>manifest.toml</code> on <code>release/&lt;version&gt;</code>, open a pull request
+   against the release branch, not main, wait for its checks and merge it.</li>
+<li>Tag <code>v&lt;version&gt;</code> at the release branch head. The tag push runs
+   <code>publish.yml</code>, which publishes <code>coxswain</code> to PyPI by trusted publishing. It
+   refuses a tag that is not <code>v</code> plus the CalVer version in <code>pyproject.toml</code>.
+   The release waits for that workflow.</li>
+<li>Create the GitHub release <code>coxswain &lt;version&gt;</code> from the notes page, at the
+   release branch head.</li>
 <li>Open the tap formula pull request, and run the install proof against it
-   (below).</li>
+   (below). It also reads the release branch head.</li>
+<li>After the tags, open a merge-back pull request from the release branch into
+   the default branch. Merge it on green with a merge commit. Delete the
+   release branch.</li>
 </ol>
 <p>After a cut, or a failed one, the command sends a <code>release_cut</code> or
 <code>release_failed</code> push to the profile's <code>notify.ntfy</code> topic, when one is
@@ -6874,6 +6893,18 @@ it has commits since the tag <code>manifest.toml</code> names; otherwise dash ke
 tag. Nothing else is pinned: the checkout is the release.</p>
 <p>The docs site is deployed by <code>docs.yml</code> on every push to <code>main</code>, under the
 manifest's version and <code>latest</code>.</p>
+<h3 id="a-resumed-cut">A resumed cut</h3>
+<p>A cut can stop part way. Rerun the same command to finish it. The command
+reports each finished step as done and skips it. A finished step is a merged
+bump, a pushed tag, an existing GitHub release or an existing release branch.
+The rerun does not refuse because the tag exists.</p>
+<p>On a resume, the rehearsal lookup uses the commit the branch was cut from. A
+main that has moved on does not fail the rehearsal gate.</p>
+<p>Once the merge-back is merged and the branch is deleted, the cut is complete.
+A rerun then refuses because the tag exists, and only the <code>--tap-only</code> mode
+applies.</p>
+<p>A merge-back conflict happens when main changed the same files as the bump.
+Resolve it by hand on the pull request.</p>
 <h3 id="the-tap-pull-request-and-the-install-proof">The tap pull request and the install proof</h3>
 <p>Every cut ends with the <code>tap_formula_pr</code> step. It bumps <code>Formula/cox.rb</code> in
 the <code>ppfenning/homebrew-coxswain</code> tap to the new PyPI sdist on a release
