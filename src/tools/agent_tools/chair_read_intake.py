@@ -5,12 +5,16 @@ The core is pure. The edge lists intake with `route.intake_entries` and reads th
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
-from agent_tools import route
+from agent_tools import intake_queue, route
 
 
 def queued_oldest_first(groups: Mapping[str, Sequence[Mapping]], mtimes: Mapping[str, float]) -> list[str]:
-    """Paths of the `queued` group of `route.intake_groups`, oldest mtime first; equal mtimes fall back to path."""
-    return [path for _, path in sorted((mtimes[row["path"]], row["path"]) for row in groups["queued"])]
+    """Paths of the `queued` group of `route.intake_groups`: priority descending, then oldest mtime, then path.
+
+    A held entry is skipped. An entry with any non-empty `after` is skipped too: files and mtimes cannot say whether
+    its target has landed, so it waits for the row path, which can. This is the conservative choice."""
+    free = [row for row in groups["queued"] if not row.get("held") and not row.get("after")]
+    return [path for _, _, path in sorted((-row.get("priority", 0), mtimes[row["path"]], row["path"]) for row in free)]
 
 
 def has_sources(sources: Sequence[str]) -> bool:
@@ -18,11 +22,14 @@ def has_sources(sources: Sequence[str]) -> bool:
 
 
 def intake_from_rows(rows: Sequence[Mapping]) -> list[Mapping]:
-    """Queued intake rows naming no initiative. `route.intake_groups` never queues one that names an initiative, done or not.
+    """Runnable intake rows naming no initiative: `intake_queue.runnable_intake` over every row, then the initiative filter.
+
+    Held rows and rows with an unmet `after` are dropped; order is priority descending, then row order. All rows go in
+    because landing is judged from the task rows. `route.intake_groups` never queues one that names an initiative, done or not.
 
     unknown: an `initiative.md` whose `intake:` field names the entry also unqueues it; rows carry no initiative.md, so that is not checked.
     """
-    return [r for r in rows if r["kind"] == "intake" and r["state"] == "queued" and r["extra"].get("initiative") is None]
+    return [r for r in intake_queue.runnable_intake(list(rows)) if r["extra"].get("initiative") is None]
 
 
 def read_intake(ws: Path, initiative_texts: Mapping[Path, str] | None = None) -> list[str]:
