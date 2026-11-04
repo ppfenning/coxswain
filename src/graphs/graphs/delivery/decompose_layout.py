@@ -70,13 +70,19 @@ def _names_a_path(body: str) -> bool:
     return any(_PATH_LIKE.search(token.rstrip(".")) for token in _TOKEN.findall(body))
 
 
+def _stem_named(surface: str, body: str) -> bool:
+    """A file's stem as a whole identifier names it: `pacing.assess` names pacing.py, `dash_feed_v1` names the fixture."""
+    stem = surface.rsplit("/", 1)[-1].split(".", 1)[0]
+    return bool(stem) and re.search(rf"(?<!\w){re.escape(stem)}(?!\w)", body) is not None
+
+
 def _named(surface: str, body: str, tokens: Sequence[str]) -> bool:
-    """The body names a surface in full, by a whole-segment trailing part, or by a path under a directory surface."""
+    """The body names a surface in full, by a trailing part or stem, or by a path under a directory surface."""
     if surface in body:
         return True
     if surface.endswith("/"):
         return any(t.startswith(surface) or surface.rstrip("/").endswith("/" + t.rstrip("/")) for t in tokens)
-    return any(surface.endswith("/" + t) for t in tokens)
+    return any(surface.endswith("/" + t) for t in tokens) or _stem_named(surface, body)
 
 
 def _surface_findings(task: Mapping[str, Any]) -> list[LayoutFinding]:

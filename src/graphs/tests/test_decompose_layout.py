@@ -36,6 +36,22 @@ def test_a_body_missing_a_surface_is_a_blocking_finding():
     assert report.blocking == report.findings
 
 
+@pytest.mark.parametrize(
+    ("body", "surface"),
+    [
+        ("Add `pacing.monthly_pace` and extend `pacing.assess`.", "src/tools/agent_tools/pacing.py"),
+        ("Pin the shape in the dash_budget_v1 fixture.", "src/tools/tests/fixtures/dash_budget_v1.json"),
+    ],
+)
+def test_a_body_naming_a_file_by_its_stem_as_an_identifier_names_it(body, surface):
+    assert check_layout([task("a", body, [surface])]).findings == ()
+
+
+def test_a_stem_inside_a_longer_identifier_does_not_name_the_file():
+    report = check_layout([task("a", "Call pacing_policy from src/app.py.", ["src/app.py", "src/pacing.py"])])
+    assert rules(report) == [("a", "surface_not_named")]
+
+
 @pytest.mark.parametrize("named", ["agent_tools/route_requeue.py", "route_requeue.py", "`route_requeue.py`."])
 def test_a_body_naming_a_surface_by_a_trailing_part_of_its_path_names_it(named):
     body = f"Make {named} hand out a fresh id."
