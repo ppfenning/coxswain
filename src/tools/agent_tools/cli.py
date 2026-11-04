@@ -4370,6 +4370,7 @@ def _route_edit(a: argparse.Namespace) -> int:
         runs_dir, runs_dir.parent, target_id, title=a.title, body=a.body, body_file=a.body_file, repo=a.repo,
         surfaces=a.surfaces, state=a.state, dry_run=a.dry_run, live_runs=on_target, now=now,
         rebuild=getattr(a, "rebuild", False), force=getattr(a, "force", False), pr=getattr(a, "pr", None),
+        link=getattr(a, "link", None),
     )
     if result.code != route_edit.DONE:
         print(f"edit: {'refused' if result.code == route_edit.REFUSED else 'failed'}: {result.text}")
@@ -5089,6 +5090,10 @@ def _route_file(a: argparse.Namespace) -> int:
     if not a.title or not a.repo:
         print("routing: --title and --repo are required unless --from-intake is given")
         return 2
+    link = getattr(a, "link", None) or ""
+    if link and not a.intake:
+        print("routing: --link needs --intake, since only an intake carries a link")
+        return 2
     # Repos are siblings of the workspace: a bare name is resolved there, so the row never holds a name launch cannot read.
     home = str(Path.home())
     repo = route.resolve_repo(a.repo, ws.absolute().parent, route.is_git_checkout, home)
@@ -5120,7 +5125,7 @@ def _route_file(a: argparse.Namespace) -> int:
                 print(f"routing: refusing {a.title}: duplicate of issue {duplicate}; pass --force to file it anyway")
                 return 2
             date = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
-            mapping = route.intake_file(a.title, body, repo, date, ids=profile.get("ids", "slug"))
+            mapping = route.intake_file(a.title, body, repo, date, link=link, ids=profile.get("ids", "slug"))
         else:
             mapping = route.initiative_files(a.title, body, repo, phase=a.phase)
     except ValueError as exc:
@@ -10414,6 +10419,7 @@ ROUTE_COMMANDS = [
             commands.Arg(("--phase",), {"default": "build"}), commands.Arg(("--intake",), {"action": "store_true"}),
             commands.Arg(("--from-intake",), {"help": "link and file an existing intake file's initiative, then retire it"}),
             commands.Arg(("--force",), {"action": "store_true", "help": "file an intake even when its title duplicates an open issue"}),
+            commands.Arg(("--link",), {"default": None, "help": "with --intake: the issue url this intake is filed from, so a later pull skips it"}),
         ),
         "agent_tools.cli:_route_file", False, (),
     ),
@@ -10500,6 +10506,7 @@ ROUTE_COMMANDS = [
             commands.Arg(("--pr",), {"help": "with --state done: the merged PR url to record on the task, also on a task that is already done; without it the merged PR is looked up with gh"}),
             commands.Arg(("--rebuild",), {"action": "store_true", "help": "with --state ready: send an approved task back to build on current main; needs a recorded land conflict or --force"}),
             commands.Arg(("--force",), {"action": "store_true", "help": "with --rebuild: allow it with no recorded land conflict"}),
+            commands.Arg(("--link",), {"default": None, "help": "queued intake only: set the issue url; an empty value clears the link"}),
             commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the diff and write nothing"}),
             commands.Arg(("--profile",)),
         ),
