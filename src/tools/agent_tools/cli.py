@@ -5227,7 +5227,22 @@ def _route_file(a: argparse.Namespace) -> int:
         print(refusal)
         return 2
     _sync_filed_items(mapping, ws, a)
+    if a.intake:
+        _print_fresh_id_note(a, mapping, ws)
     return 0
+
+
+def _print_fresh_id_note(a: argparse.Namespace, mapping: dict, ws: Path) -> None:
+    """Edge. Prints the fresh-id note when a dropped initiative holds the intake id. `route file` has no dry run."""
+    if work_state.work_state_mode(_lake_provider(a)[0]) != "store":
+        return
+    rows = run_store.read_queue(ws / "runs")
+    for text in mapping.values():
+        intake_id = route.parse_frontmatter(text)[0].get("id")
+        if isinstance(intake_id, str) and intake_id:
+            note = route_guard.fresh_id_note(intake_id, route_guard.fresh_initiative_id(intake_id, rows))
+            if note:
+                print(note)
 
 
 def _route_priority(a: argparse.Namespace) -> int:
@@ -11330,6 +11345,22 @@ def _newest_run_ids(run_ids_by_initiative: Mapping[str, Sequence[str]]) -> dict[
     return {initiative: run_ids[-1] for initiative, run_ids in run_ids_by_initiative.items() if run_ids}
 
 
+def _decompose_initiative_id(intake_id: str, rows: Sequence[Mapping]) -> str:
+    """The initiative a decompose of this intake runs under. Once the fresh `id-N` initiative exists the newest live one wins, since `fresh_initiative_id` alone would step past it to `id-N+1`."""
+    fresh = route_guard.fresh_initiative_id(intake_id, rows)
+    if fresh == intake_id:
+        return intake_id
+    pattern = re.compile(re.escape(intake_id) + r"-(\d+)")
+    live = [
+        (int(m.group(1)), row["task_id"])
+        for row in rows
+        if row.get("kind") == "initiative" and row.get("state") != "dropped"
+        for m in [pattern.fullmatch(str(row.get("task_id")))]
+        if m
+    ]
+    return max(live)[1] if live else fresh
+
+
 def _task_item_counts(tickets: Sequence[Mapping], initiatives: Collection[str]) -> dict[str, int]:
     """Initiative id to its task count, a row with no `kind` being a task. Each id in `initiatives` carries an explicit 0, since a missing id reads as non-empty."""
     counts = collections.Counter(str(t["initiative"]) for t in tickets if t.get("kind", "task") == "task")
@@ -11455,9 +11486,14 @@ def _chair_run_deps(
     def ticket_items() -> list[dict]:
         return once("tickets", lambda: chair_read_docket._work_items(ws, mode, work_files(), store_rows()))  # type: ignore[return-value]
 
-    def decompose_runs_of(path: str) -> list:
+    def decompose_runs_of(path: str, initiative: str = "") -> list:
         iid = chair_exec.decompose_id(path, chair_exec.read_intake_id(ws, path))
-        return [] if isinstance(iid, chair_exec.Refusal) else chair_decompose_runs.read_decompose_runs(Path(runs_dir), iid)
+        if isinstance(iid, chair_exec.Refusal):
+            return []
+        # The launch decomposes under a fresh id when a dropped initiative holds the intake id. The dropped one asking
+        # for itself (`initiative == iid`) keeps its own runs.
+        under = iid if initiative == iid else _decompose_initiative_id(iid, work_rows())
+        return chair_decompose_runs.read_decompose_runs(Path(runs_dir), under)
 
     def initiative_intakes() -> dict[str, str]:
         return _initiative_intakes(chair_read_quarantined.initiative_files(ws, work_files()))
@@ -11476,7 +11512,7 @@ def _chair_run_deps(
         # tickets and live runs use; the run list is read under the intake's own decompose id, which may differ from it.
         intakes = initiative_intakes()
         empty = [initiative for initiative, count in item_counts().items() if count == 0]
-        return _newest_run_ids({i: [r.run_id for r in decompose_runs_of(intakes[i])] for i in empty})
+        return _newest_run_ids({i: [r.run_id for r in decompose_runs_of(intakes[i], i)] for i in empty})
 
     def docket() -> dict:
         if not snapshot:
