@@ -4,9 +4,25 @@ import subprocess
 import pytest
 
 from agent_tools.lane_hosts import LaneHost
-from agent_tools.remote_argv import branch_push_argv, epic_refspec, launch_argv, ssh_argv, sync_argv
+from agent_tools.remote_argv import (
+    branch_push_argv,
+    epic_refspec,
+    launch_argv,
+    rsync_check_argv,
+    rsync_file_argv,
+    rsync_push_argv,
+    ssh_argv,
+    sync_argv,
+)
 from agent_tools.remote_lane import remote_record
-from agent_tools.remote_launch import LaunchError, Relaunch, env_preflight, launch_on_host, launch_plan
+from agent_tools.remote_launch import (
+    LaunchError,
+    Relaunch,
+    env_preflight,
+    first_differing_path,
+    launch_on_host,
+    launch_plan,
+)
 
 needs_rsync = pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync is not installed")
 SSH_BOUND = ["ssh", "-o", "ConnectTimeout=30", "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3"]
@@ -319,3 +335,89 @@ def test_a_failing_harness_sync_names_the_path_it_synced():
     assert isinstance(result, LaunchError) and result.step == "harness"
     assert f"updating the harness at {checkout} on box2" in result.message
     assert chair_dir not in result.message
+
+
+CART_HOST = LaneHost("box2", "me@box2", "/ws")
+CART_PUSH = rsync_push_argv("cartridges", "me@box2:/ws/cartridges", mirror=True)
+CART_CHECK = rsync_check_argv("cartridges", "me@box2:/ws/cartridges")
+OTHER_CARTRIDGE = "a cartridge other than the chair's"
+UNGUARDED = {"chair_head": lambda path: None, "chair_base": lambda path: None}
+FULL = {"repo": "/r", "harness_dir": "/h", "relaunch": Relaunch("init-x-0", ("t1",)), "cartridges": "cartridges"}
+
+
+def _full_plan():
+    return launch_plan(CART_HOST, "init-x", "init-x-1", "l", **FULL)
+
+
+def test_an_epic_plan_with_cartridges_pushes_then_checks_them_ahead_of_the_harness_repo_and_launch():
+    plan = _full_plan()
+    assert plan[1:3] == [CART_PUSH, CART_CHECK]
+    assert plan[3] == ssh_argv("me@box2", sync_argv("/h"))
+    assert plan[4] == ssh_argv("me@box2", sync_argv("/r"))
+    assert plan[5][0] == "git" and "route launch epic" in plan[-1][-1]
+
+
+def test_a_decompose_plan_with_cartridges_pushes_then_checks_them_after_the_intake_copy():
+    plan = launch_plan(CART_HOST, "i", "i-1", "l", graph="decompose", intake="work/idea.md", cartridges="cartridges")
+    assert plan[0] == rsync_file_argv("work/idea.md", "me@box2:/ws")
+    assert plan[1:3] == [CART_PUSH, CART_CHECK]
+    assert len(plan) == 4 and "route launch decompose" in plan[-1][-1]
+
+
+def test_a_cartridge_that_differs_refuses_the_launch_before_the_harness_repo_push_and_ssh_steps():
+    calls, probed = [], []
+
+    def probe(argv):
+        probed.append(argv)
+        return 0, ">f.st...... cartridges/base/cartridge.yaml\n"
+
+    result = launch_on_host(
+        CART_HOST, "init-x", "init-x-1", "l", "t", lambda argv: calls.append(argv) or 0, probe=probe, **UNGUARDED, **FULL
+    )
+    assert isinstance(result, LaunchError) and result.step == "cartridges"
+    assert "box2" in result.message and "cartridges/base/cartridge.yaml" in result.message
+    assert OTHER_CARTRIDGE in result.message
+    assert calls == _full_plan()[:2] and probed == [CART_CHECK]
+
+
+def test_a_failing_cartridge_check_with_an_ssh_error_reports_the_exit_not_a_differing_file():
+    error = "ssh: connect to host box2 port 22: Connection refused\n"
+    result = launch_on_host(
+        CART_HOST, "init-x", "init-x-1", "l", "t", lambda argv: 0, probe=lambda argv: (255, error), cartridges="cartridges"
+    )
+    assert isinstance(result, LaunchError) and result.step == "cartridges"
+    assert "box2" in result.message and "exited 255" in result.message
+    assert "differs at" not in result.message and OTHER_CARTRIDGE in result.message
+
+
+def test_a_failing_cartridge_push_refuses_and_runs_nothing_after_it():
+    calls, probed = [], []
+
+    def run(argv):
+        calls.append(argv)
+        return 1 if argv == CART_PUSH else 0
+
+    result = launch_on_host(
+        CART_HOST, "init-x", "init-x-1", "l", "t", run, probe=lambda argv: probed.append(argv) or (0, ""), **UNGUARDED, **FULL
+    )
+    assert isinstance(result, LaunchError) and result.step == "cartridges"
+    assert "box2" in result.message and "exited 1" in result.message
+    assert calls == _full_plan()[:2] and probed == []
+
+
+def test_a_matching_cartridge_check_runs_the_rest_of_the_plan_at_the_shifted_indexes():
+    calls = []
+    result = launch_on_host(
+        CART_HOST, "init-x", "init-x-1", "l", "t", lambda argv: calls.append(argv) or 0, probe=lambda argv: (0, ""),
+        **UNGUARDED, **FULL,
+    )
+    assert calls == [argv for argv in _full_plan() if argv != CART_CHECK]
+    assert result == remote_record("box2", "t", "/r")
+
+
+def test_first_differing_path_reads_only_itemized_records():
+    assert first_differing_path(">f.st...... cartridges/a.yaml\n>f+++++++++ cartridges/b.yaml\n") == "cartridges/a.yaml"
+    assert first_differing_path("\n*deleting   cartridges/old.yaml\n") == "cartridges/old.yaml"
+    assert first_differing_path("ssh: connect to host box2 port 22: Connection refused\n") is None
+    assert first_differing_path("Warning: Permanently added 'box2'\n.d..t...... cartridges/\n") == "cartridges/"
+    assert first_differing_path("") is None
