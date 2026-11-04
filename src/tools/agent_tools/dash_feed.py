@@ -79,6 +79,8 @@ _ZERO_SPLIT_WINDOW = {
     "chair_session_share": 0.0, "chair_agents_share": 0.0, "cox_seats_share": 0.0,
     "meter_fraction": 0.0, "resets_at": "", "cost_per_landed_task": 0.0,
 }
+# What the feed says of its spend sources when the caller read none: no session named, no price catalog found.
+_UNKNOWN_SPEND_SOURCES = {"chair_session": "none", "price_catalog": "missing"}
 
 
 def snapshot(
@@ -90,7 +92,8 @@ def snapshot(
     decision asks, newest first. `spend_series` is today's cumulative lane spend as `[at, cumulative_usd]` pairs.
     `history` is the ended-run rows and `history_today` the counts since local midnight; zeroed when not given.
     `chair_agents` is the chair's background agent rows, empty when not given; `spend_split` is the three-way
-    spend split per window, all zero when not given. `spend_sources` is omitted from the feed when not given."""
+    spend split per window, all zero when not given. `spend_sources` says whether the chair session and the price
+    catalog were found; it reads none and missing when not given."""
     # coxswain-dash carries its own copy of tests/fixtures/dash_feed_v1.json and will need these two fields too.
     # `queue[].phases` is additive and the schema stays 1: a coxtop that does not know the field ignores it.
     # So are `runs[].tasks`, `runs[].landed` and `runs[].quarantined`, which `_runs_v1` adds to each run row.
@@ -116,7 +119,7 @@ def snapshot(
             if spend_split is None
             else spend_split
         ),
-        **({} if spend_sources is None else {"spend_sources": spend_sources}),
+        "spend_sources": dict(_UNKNOWN_SPEND_SOURCES) if spend_sources is None else spend_sources,
     }
 
 
@@ -319,9 +322,10 @@ def _pane_meter_fraction(spend: Mapping, window: str) -> float:
 def _activity(
     runs_dir: Path, profile: dict, session: str, spend: Mapping, at: datetime, store_rows: Mapping | None = None,
 ) -> dict:
-    """Edge: the chair's background agent rows and the three-way spend split. Each window starts five hours (weekly:
-    seven days) before its `resets_at`, or before `at` when the spend section has no reset time to read. The per-node
-    rows and done counts are cut from `store_rows`, the one store read, which reaches back to the weekly start."""
+    """Edge: the chair's background agent rows, the three-way spend split and `spend_sources`, which says whether the
+    session and the price catalog were found. Each window starts five hours (weekly: seven days) before its
+    `resets_at`, or before `at` when the spend section has no reset time to read. The per-node rows and done counts
+    are cut from `store_rows`, the one store read, which reaches back to the weekly start."""
     projects_dir = Path(_PROJECTS_DIR).expanduser()
     five_start, weekly_start = _window_starts(spend, at)
     windows = {
@@ -341,7 +345,7 @@ def _activity(
         },
     }
     node_rows, done_counts = _window_node_inputs(store_rows or {}, windows)
-    return chair_activity.gather_activity(
+    gathered = chair_activity.gather_activity(
         chair_activity_read.read_session_lines(projects_dir, session),
         chair_activity_read.read_agents(projects_dir, session),
         chair_activity_read.prices_for_profile(profile),
@@ -350,6 +354,11 @@ def _activity(
         node_rows=node_rows,
         done_counts=done_counts,
     )
+    sources = {
+        "chair_session": chair_activity_read.session_status(projects_dir, session),
+        "price_catalog": chair_activity_read.catalog_status(profile),
+    }
+    return {**gathered, "spend_sources": sources}
 
 
 def _local_identity(runs_dir: Path, profile: dict) -> tuple[str, int]:
@@ -1351,4 +1360,5 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
         history_today=today,
         chair_agents=activity["chair_agents"],
         spend_split=activity["spend_split"],
+        spend_sources=activity["spend_sources"],
     )

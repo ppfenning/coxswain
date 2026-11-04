@@ -255,7 +255,8 @@ def test_snapshot_without_activity_carries_an_empty_list_and_the_all_zero_split(
     result = snapshot("2026-10-16T00:00:00Z", {}, {}, [], [], [], 0, [], 0, [])
 
     assert result["chair_agents"] == []
-    assert "spend_sources" not in result
+    with open("tests/fixtures/dash_feed_v1.json") as f:
+        assert result["spend_sources"].keys() == json.load(f)["spend_sources"].keys()
     assert set(result["spend_split"]) == {"five_hour", "weekly"}
     for window in result["spend_split"].values():
         assert set(window) == window_keys
@@ -289,6 +290,8 @@ def _stub_activity_readers(monkeypatch, chair_usd, five_seat_usd, weekly_seat_us
     monkeypatch.setattr(reader, "read_session_lines", lambda projects_dir, session: ["session"])
     monkeypatch.setattr(reader, "read_agents", lambda projects_dir, session: [{"lines": ["agent"]}])
     monkeypatch.setattr(reader, "prices_for_profile", lambda profile: {})
+    monkeypatch.setattr(reader, "session_status", lambda projects_dir, session: "ok")
+    monkeypatch.setattr(reader, "catalog_status", lambda profile: "ok")
     monkeypatch.setattr(dash_feed.usage_window, "gather", lambda *a, **k: SimpleNamespace(spent_usd=five_seat_usd))
     monkeypatch.setattr(dash_feed.usage_window, "gather_weekly", lambda *a, **k: SimpleNamespace(spent_usd=weekly_seat_usd))
     monkeypatch.setattr(dash_feed.chair_activity, "lines_since", lambda lines, day: (lines[0], day))
@@ -313,10 +316,83 @@ def test_the_feed_built_from_the_fixtures_inputs_equals_the_fixture(monkeypatch,
     built = dash_feed._activity(tmp_path, {}, "sess", _SPEND, _ACTIVITY_AT, {})
     result = snapshot(
         *args, **kwargs, chair_agents=activity["chair_agents"], spend_split=built["spend_split"],
-        spend_sources=fixture["spend_sources"],
+        spend_sources=built["spend_sources"],
     )
 
+    assert built["spend_sources"] == fixture["spend_sources"]
     assert result == fixture
+
+
+_UUID = "3f2a9c1e-5b7d-4e08-9a61-0c4d8e7f1b22"
+_OTHER_UUID = _UUID[:8] + "-aaaa-4e08-9a61-0c4d8e7f1b22"
+_CATALOG = "models:\n  m1:\n    price: {input: 1.0, output: 2.0}\n"
+
+
+def _usage_line(message_id: str) -> str:
+    """One priced assistant line: 1M input tokens at $1 and 1M output tokens at $2 is $3."""
+    return json.dumps({
+        "type": "assistant", "timestamp": "2026-10-16T17:30:00Z",
+        "message": {"id": message_id, "model": "m1", "usage": {"input_tokens": 1_000_000, "output_tokens": 1_000_000}},
+    })
+
+
+def _projects_with(tmp_path, monkeypatch, *transcripts: str, agent_of: str | None = None) -> dict:
+    """A projects folder holding a transcript per full id and, for `agent_of`, a subagent folder with one agent;
+    `_PROJECTS_DIR` points at it. Returns a profile whose `cartridges_dir` holds a priced catalog."""
+    projects = tmp_path / "projects" / "proj"
+    projects.mkdir(parents=True)
+    for full in transcripts:
+        (projects / f"{full}.jsonl").write_text(_usage_line(f"msg-{full}") + "\n")
+    if agent_of:
+        subagents = projects / agent_of / "subagents"
+        subagents.mkdir(parents=True)
+        (subagents / "agent-abc.meta.json").write_text('{"description": "scan the repo"}')
+        (subagents / "agent-abc.jsonl").write_text(_usage_line("msg-agent") + "\n")
+    catalog = tmp_path / "cartridges" / "providers"
+    catalog.mkdir(parents=True)
+    (catalog / "catalog.yaml").write_text(_CATALOG)
+    monkeypatch.setattr(dash_feed, "_PROJECTS_DIR", str(tmp_path / "projects"))
+    return {"cartridges_dir": str(tmp_path / "cartridges")}
+
+
+def test_the_short_chair_id_prices_the_session_and_lists_its_agent_end_to_end(monkeypatch, tmp_path):
+    profile = _projects_with(tmp_path, monkeypatch, _UUID, agent_of=_UUID)
+
+    built = dash_feed._activity(tmp_path, profile, _UUID[:8], _SPEND, _ACTIVITY_AT, {})
+
+    assert built["spend_split"]["five_hour"]["chair_session_usd"] == 3.0
+    assert built["spend_split"]["weekly"]["chair_agents_usd"] == 3.0
+    assert [agent["agent_id"] for agent in built["chair_agents"]] == ["abc"]
+    assert built["spend_sources"] == {"chair_session": "ok", "price_catalog": "ok"}
+
+
+def test_a_short_id_with_no_transcript_reads_not_found_and_costs_nothing(monkeypatch, tmp_path):
+    profile = _projects_with(tmp_path, monkeypatch, _UUID)
+
+    built = dash_feed._activity(tmp_path, profile, "deadbeef", _SPEND, _ACTIVITY_AT, {})
+
+    assert built["spend_sources"] == {"chair_session": "not_found", "price_catalog": "ok"}
+    assert built["spend_split"]["five_hour"]["chair_session_usd"] == 0.0
+    assert built["spend_split"]["weekly"]["chair_session_usd"] == 0.0
+    assert built["chair_agents"] == []
+
+
+def test_two_sessions_sharing_the_prefix_read_ambiguous_and_cost_nothing(monkeypatch, tmp_path):
+    profile = _projects_with(tmp_path, monkeypatch, _UUID, _OTHER_UUID)
+
+    built = dash_feed._activity(tmp_path, profile, _UUID[:8], _SPEND, _ACTIVITY_AT, {})
+
+    assert built["spend_sources"] == {"chair_session": "ambiguous", "price_catalog": "ok"}
+    assert built["spend_split"]["five_hour"]["chair_session_usd"] == 0.0
+
+
+def test_a_profile_with_no_readable_catalog_reads_price_catalog_missing(monkeypatch, tmp_path):
+    _projects_with(tmp_path, monkeypatch, _UUID)
+
+    built = dash_feed._activity(tmp_path, {}, _UUID[:8], _SPEND, _ACTIVITY_AT, {})
+
+    assert built["spend_sources"] == {"chair_session": "ok", "price_catalog": "missing"}
+    assert built["spend_split"]["five_hour"]["chair_session_usd"] == 0.0
 
 
 def test_activity_does_not_copy_an_estimated_fraction_into_either_spend_pane(monkeypatch, tmp_path):
@@ -553,7 +629,9 @@ def test_gather_feed_calls_each_reader_once(monkeypatch, tmp_path):
         return [{"id": "m1", "from": "chair", "to": "operator", "note": "n", "ref": "coxswain://task/x", "ack": False}]
 
     monkeypatch.setattr(dash_feed, "_spend", lambda runs_dir, now: {"five_hour_fraction": 0.1})
-    monkeypatch.setattr(dash_feed, "_activity", lambda *args: {"chair_agents": [], "spend_split": None})
+    monkeypatch.setattr(
+        dash_feed, "_activity", lambda *args: {"chair_agents": [], "spend_split": None, "spend_sources": None},
+    )
     monkeypatch.setattr(dash_feed.console_screen, "gather", fake_console_gather)
     monkeypatch.setattr(dash_feed.run_store, "read_queue", fake_read_queue)
     monkeypatch.setattr(dash_feed.courier, "inbox", fake_inbox)
@@ -586,9 +664,10 @@ def test_the_live_feed_has_the_fixture_s_keys_no_nulls_and_serializes(monkeypatc
     }
     monkeypatch.setattr(dash_feed.console_screen, "gather", lambda *args, **kwargs: sections)
     monkeypatch.setattr(dash_feed, "_spend", lambda *args: {})
-    # The activity readers would run ccusage and read ~/.claude; the fixture's two keys stand in for them.
+    # The activity readers would run ccusage and read ~/.claude; the fixture's three keys stand in for them.
     monkeypatch.setattr(
-        dash_feed, "_activity", lambda *args: {key: fixture[key] for key in ("chair_agents", "spend_split")},
+        dash_feed, "_activity",
+        lambda *args: {key: fixture[key] for key in ("chair_agents", "spend_split", "spend_sources")},
     )
     monkeypatch.setattr(dash_feed, "_local_identity", lambda runs_dir, profile: ("host-b", 3))
     monkeypatch.setattr(dash_feed, "_queue", lambda runs_dir, live_runs=(): ([
@@ -604,6 +683,7 @@ def test_the_live_feed_has_the_fixture_s_keys_no_nulls_and_serializes(monkeypatc
     feed = json.loads(json.dumps(dash_feed.gather_feed(tmp_path, tmp_path, "2026-09-29T21:00:00Z")))
 
     assert set(feed["chair"]) == set(fixture["chair"]) and set(feed["spend"]) == set(fixture["spend"])
+    assert feed["spend_sources"] == fixture["spend_sources"]
     for section in ("machines", "runs", "queue", "inbox"):
         assert set(feed[section][0]) == set(fixture[section][0]), section
     assert feed["spend"]["today"] is None  # no run store under tmp_path
