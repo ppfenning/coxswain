@@ -433,14 +433,20 @@ def _dash_text(url):
     return "c" * 64 + "  " + url.rsplit("/", 1)[-1].removesuffix(".sha256") + "\n"
 
 
+_CAVEATS = ("  def caveats\n    <<~EOS\n      Traces are kept as JSON. Install the traces extra with pip for Parquet.\n"
+            "    EOS\n  end\n\n")
+
+
 def test_bumped_formula_text_moves_url_sha_and_head_to_coxswain_and_leaves_the_resource_stanza():
-    after = release.bumped_formula_text(_FORMULA, V0, f"https://x/coxswain-{V0}.tar.gz", "b" * 64)
-    assert after == (_FORMULA.replace("coxswain_tools-0.47.0", f"coxswain-{V0}").replace("0" * 64, "b" * 64)
-                     .replace("ppfenning/coxswain-tools.git", "ppfenning/coxswain.git"))
+    after = release.bumped_formula_text(_TAP_FORMULA, V0, f"https://x/coxswain-{V0}.tar.gz", "b" * 64)
+    assert after == (_TAP_FORMULA.replace("coxswain_tools-0.47.0", f"coxswain-{V0}").replace("0" * 64, "b" * 64)
+                     .replace("ppfenning/coxswain-tools.git", "ppfenning/coxswain.git")
+                     .replace("  test do\n", _CAVEATS + "  test do\n", 1))
 
 
-def test_bumped_formula_text_returns_unrecognised_text_verbatim():
-    assert release.bumped_formula_text("not a formula\n", V0, "u", "s") == "not a formula\n"
+def test_bumped_formula_text_raises_when_there_is_no_test_block_to_place_the_caveats_before():
+    with pytest.raises(ValueError, match="test do"):
+        release.bumped_formula_text("not a formula\n", V0, "u", "s")
 
 
 def test_sdist_from_index_picks_the_sdist_url_and_sha256():

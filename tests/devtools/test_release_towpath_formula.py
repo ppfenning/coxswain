@@ -1,3 +1,5 @@
+import re
+
 import pytest
 
 from devtools import release
@@ -63,6 +65,11 @@ def _bump(text: str, **kw) -> str:
     return release.bumped_formula_text(text, "0.2.0", NEW_URL, NEW_SHA, **kw)
 
 
+def _uncaveated(text: str) -> str:
+    """`text` without the `def caveats` block the formula always gains, so a towpath rewrite is compared on its own."""
+    return re.sub(r"  def caveats\n.*?\n  end\n\n", "", text, flags=re.DOTALL)
+
+
 def _bumped(text: str) -> str:
     return text.replace(OLD_URL, NEW_URL).replace(OLD_SHA, NEW_SHA)
 
@@ -73,7 +80,7 @@ def test_adds_towpath_block_install_line_and_test_line_to_a_formula_without_one(
         + "\n  def install\n" + STAGE + "    virtualenv_install_with_resources" + WITHOUT + "\n  end\n\n  test do\n"
         + TEST_LINE + '    system bin/"cox", "--version"\n  end\nend\n')
     out = _bump(PLAIN, towpath=ASSETS)
-    assert out == expected
+    assert _uncaveated(out) == expected
     assert out.count('resource "towpath"') == 2
     assert out.count('resource("towpath").stage') == 1
     assert out.count('"towpath", "--version"') == 1
@@ -103,7 +110,7 @@ def test_rewrites_an_existing_towpath_block_without_duplicating_anything():
     assert out.count('resource "towpath"') == 2
     assert out.count('resource("towpath").stage') == 1
     assert out.count('"towpath", "--version"') == 1
-    assert out == _bumped(WITH_BLOCK).replace(OLD_MAC[0], MAC_URL).replace(OLD_MAC[1], MAC_SHA).replace(
+    assert _uncaveated(out) == _bumped(WITH_BLOCK).replace(OLD_MAC[0], MAC_URL).replace(OLD_MAC[1], MAC_SHA).replace(
         OLD_LIN[0], LIN_URL).replace(OLD_LIN[1], LIN_SHA)
 
 
@@ -171,5 +178,5 @@ def test_sdist_lines_and_the_pyyaml_and_zstandard_resources_are_identical_before
 
 
 def test_none_returns_the_old_output():
-    assert _bump(PLAIN) == _bumped(PLAIN)
-    assert _bump(WITH_BLOCK, towpath=None) == _bumped(WITH_BLOCK)
+    assert _uncaveated(_bump(PLAIN)) == _bumped(PLAIN)
+    assert _uncaveated(_bump(WITH_BLOCK, towpath=None)) == _bumped(WITH_BLOCK)
