@@ -26,8 +26,8 @@ def _task(i: Row) -> dict[str, Any]:
 
 
 def _held_needs(task: Row, own: Sequence[Row]) -> list[str]:
-    """Ids in `task`'s needs that sit in the task's own phase and are approved but not done, in needs order."""
-    held = {i["id"] for i in own if i["phase"] == task["phase"] and i["state"] == "approved"}
+    """Ids in `task`'s needs that sit in the task's own phase and are approved, not merged and not done, in needs order."""
+    held = {i["id"] for i in own if i["phase"] == task["phase"] and i["state"] == "approved" and not i.get("merged")}
     return [n for n in task["needs"] if n in held]
 
 
@@ -37,7 +37,7 @@ def _held_task(i: Row, own: Sequence[Row]) -> dict[str, Any]:
 
 def _initiative_row(summary: Row, items: Sequence[Row]) -> dict[str, Any]:
     own = [i for i in items if i["initiative"] == summary["id"]]
-    landed = {i["id"] for i in own if i["state"] in route.TERMINAL}
+    landed = {i["id"] for i in own if route.is_met_need(i)}
     held = [i for i in own if i["state"] == "ready" and _held_needs(i, own)]
     held_ids = {i["id"] for i in held}
     ready = [
@@ -136,7 +136,7 @@ def _claimed(row: Row, now: str) -> bool:
 def _item_of(row: Row) -> dict[str, Any]:
     return {
         "id": row["task_id"], "initiative": row["initiative"], "phase": row["phase"], "state": row["state"],
-        "needs": list(row["needs"]), "requires": queue_rows.row_requires(row),
+        "merged": route.is_merged(row), "needs": list(row["needs"]), "requires": queue_rows.row_requires(row),
         "priority": row.get("priority", (row.get("extra") or {}).get("priority")),
         "updated_at": row.get("updated_at"),
     }

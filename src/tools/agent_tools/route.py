@@ -2392,6 +2392,11 @@ def is_awaiting_merge(item: Mapping) -> bool:
     return item["state"] == "approved" and not item.get("merged")
 
 
+def is_met_need(item: Mapping) -> bool:
+    """A need in the same initiative is met by `done`, `dropped`, or `approved` with `merged`; mirrors `workstore.ready_tasks`."""
+    return item["state"] in TERMINAL or (item["state"] == "approved" and bool(item.get("merged")))
+
+
 def state_word(item: Mapping) -> str:
     """The word a status line shows: `merged` for an approved item carrying the merge flag, else its state."""
     return "merged" if item["state"] == "approved" and item.get("merged") else item["state"]
@@ -2533,13 +2538,14 @@ def _row_of(rows: list[dict], item: Mapping) -> dict:
 def _initiative_summary(initiative_id: str, own_items: list):
     """`None` when nothing to report. An item outside `STATES` makes the
     whole initiative unlaunchable (`ready` 0) until fixed, regardless of
-    what its siblings are. Otherwise `approved` items count as neither
-    ready nor done and are surfaced as `awaiting_merge`.
+    what its siblings are. Otherwise an `approved` item counts as neither
+    ready nor done and is surfaced as `awaiting_merge`, unless it carries the
+    merge flag: then it is done for the needs of its own initiative.
     """
     if any(item["state"] not in STATES for item in own_items):
         return {"id": initiative_id, "phase": None, "ready": 0}
     awaiting_merge = sum(1 for item in own_items if is_awaiting_merge(item))
-    done_ids = {item["id"] for item in own_items if item["state"] in TERMINAL}
+    done_ids = {item["id"] for item in own_items if is_met_need(item)}
 
     def counts_ready(item: dict) -> bool:
         return _ready_unblocked(item, done_ids) and not _blockers_of(item, own_items)
