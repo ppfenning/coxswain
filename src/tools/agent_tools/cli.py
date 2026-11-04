@@ -3279,6 +3279,12 @@ def _runs_land(a: argparse.Namespace) -> int:
             print(f"land: no work items at {items_path}, expected the phase's tickets")
             return 2
         initiative_title = _initiative_title(runs_dir.parent / "work", initiative)
+        # An all-done phase is landed and its branch was deleted on purpose; only an unfinished phase needs the branch.
+        missing_on = (None if all(i["status"] == "done" for i in items)
+                      else _land_refetch_phase_branch(a, runs_dir, run_id, repo, f"epic/{initiative}/{phase}"))
+        if missing_on is not None:
+            print(f"land: stopped at fetch_phase_branch: phase branch not fetched from {missing_on}")
+            return 2
         phase_pr, pr_forge = None, forge.forge_for(forge.forge_name(profile)) if a.apply else None
         if pr_forge is not None:
             phase_pr = _phase_pr_facts(repo, f"pr/{initiative}--{phase}", pr_forge)
@@ -6478,7 +6484,11 @@ def _fetch_one(runs_dir: Path, hosts, run_id: str, mode: str = "files", by: str 
     if isinstance(result, remote_fetch.FetchError):
         detail = f"{run_id} is still live on {host.name}: {result.message}" if result.step == "refuse" else result.message
         return ("live" if result.step == "refuse" else "failed"), [f"fetch: {result.step}: {detail}"], host.name
-    marker = {"fetched_at": _now_iso(), "repos": list(result), "tasks": remote_fetch.task_record_ids(runs_dir / run_id)}
+    wanted = remote_fetch.phase_branches(run_store.phase_manifests(runs_dir, run_id))
+    brought = (remote_fetch.fetch_phase_branches(host, run_id, runs_dir, list(result), wanted, run, locate, home=os.path.expanduser("~"))
+               if wanted else ())
+    marker = {"fetched_at": _now_iso(), "repos": list(result), "tasks": remote_fetch.task_record_ids(runs_dir / run_id),
+              "phase_branches": list(brought)}
     remote_lane.fetched_record_path(runs_dir, run_id).write_text(json.dumps(marker))
     if only is not None:
         records = _store_run_rows(runs_dir, run_id)
@@ -6486,6 +6496,19 @@ def _fetch_one(runs_dir: Path, hosts, run_id: str, mode: str = "files", by: str 
         if moved:
             print(f"{run_id}: {len(moved)} task(s) approved from the store")
     return "fetched", [f"run {run_id}", f"host {host.name}", "\n".join(f"repo {repo}" for repo in result)], host.name
+
+
+def _land_refetch_phase_branch(a: argparse.Namespace, runs_dir: Path, run_id: str, repo: Path, branch: str) -> str | None:
+    """Edge. The remote host name when `branch` is missing here and one more fetch of the run does not bring it, else None.
+
+    A run with no remote record is never checked. The fetch runs in files mode so it moves nothing in the store."""
+    text = _read_text_or_none(remote_lane.remote_record_path(runs_dir, run_id))
+    record = remote_lane.parse_remote_record(text) if text is not None else None
+    if record is None or _branch_exists(repo, f"refs/heads/{branch}"):
+        return None
+    hosts = _fetch_hosts(_read_text_or_none(_profile_path(a)) or "", run_store.hosts(runs_dir))
+    _fetch_one(runs_dir, hosts, run_id, "files")
+    return None if _branch_exists(repo, f"refs/heads/{branch}") else record["host"]
 
 
 def _runs_fetch_all(runs_dir: Path, hosts, mode: str = "files", by: str = _UNLABELED) -> int:
