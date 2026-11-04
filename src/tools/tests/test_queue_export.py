@@ -211,6 +211,17 @@ def test_plan_export_spares_held_and_done() -> None:
     assert deletes == ["intake/stray.md"]
 
 
+def test_plan_export_spares_protected_initiative_file() -> None:
+    _, deletes = plan_export([TASK_ROW], {"work/a/launch/x.md": "z"}, protected=frozenset({"a"}))
+    assert "work/a/launch/x.md" not in deletes
+
+
+@pytest.mark.parametrize("protected", [frozenset(), frozenset({"b"})])
+def test_plan_export_deletes_unrowed_file_when_not_protected(protected: frozenset[str]) -> None:
+    _, deletes = plan_export([TASK_ROW], {"work/a/launch/x.md": "z"}, protected=protected)
+    assert "work/a/launch/x.md" in deletes
+
+
 def test_export_files_skips_contentless_row(tmp_path: Path) -> None:
     touched, skipped = export_files(tmp_path, [TASK_ROW, EMPTY_ROW])
     assert skipped == ["ghost"]
@@ -229,6 +240,18 @@ def test_export_files_keeps_held_and_done_deletes_stray(tmp_path: Path) -> None:
     assert (tmp_path / "intake" / "done" / "d.md").exists()
     assert not (tmp_path / "intake" / "stray.md").exists()
     assert "intake/stray.md" in touched
+
+
+def test_export_files_keeps_protected_initiative_deletes_other(tmp_path: Path) -> None:
+    for name in ("work/a/launch/x.md", "work/b/launch/y.md"):
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("---\ntitle: T\n---\n")
+
+    touched, _ = export_files(tmp_path, [TASK_ROW], protected=frozenset({"a"}))
+    assert (tmp_path / "work/a/launch/x.md").exists()
+    assert not (tmp_path / "work/b/launch/y.md").exists()
+    assert "work/b/launch/y.md" in touched
 
 
 # The hand-edit guard: a file is compared with this workspace's own baseline, never the store's per-row hash.
