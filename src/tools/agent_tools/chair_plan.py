@@ -50,6 +50,7 @@ from agent_tools.chair_types import (
     stamp,
 )
 from agent_tools.ci_gate import CiGate
+from core.landing import DEFAULT_LAND_AT
 
 _UNPAUSED = CiGate(False, "")
 _LAUNCHES = {"relaunch", "retry", "rescue"}
@@ -674,7 +675,8 @@ def _without_widened(actions: list[Action], widened: frozenset[tuple[str, str]])
 def _task_views(initiative: InitiativeFacts, rows: Sequence[Mapping]) -> tuple[tuple[TaskView, ...], tuple[str, ...]]:
     """The initiative's tasks for `runnable_verdict`, and the sorted phases they span.
 
-    A ready row task with no ready_tasks or waiting_tasks entry is claimed or held, so it is passed as `claimed`."""
+    A ready row task with no ready_tasks or waiting_tasks entry is claimed or held, so it is passed as `claimed`.
+    A `merged` row state passes through to the view unchanged."""
     entries = {t["id"]: t for t in [*initiative.get("waiting_tasks", []), *initiative["ready_tasks"]]}
     in_rows = {task_id for row in rows for task_id, _ in row["tasks"]}
     from_rows = tuple(
@@ -699,7 +701,7 @@ def waiting_initiatives(facts: Facts) -> list[WaitingInitiative]:
     """Initiatives with a phase_tasks row and no runnable task, by initiative id; one with no row is never blocked."""
     rows = facts.get("phase_tasks", [])
     verdicts = [
-        (initiative["id"], runnable_verdict(*_task_views(initiative, mine)))
+        (initiative["id"], runnable_verdict(*_task_views(initiative, mine), land_at=initiative.get("land_at", DEFAULT_LAND_AT)))
         for initiative in facts["initiatives"]
         for mine in [[row for row in rows if row["initiative"] == initiative["id"]]]
         if mine
