@@ -155,6 +155,7 @@ def plan_to_rows(plan: Mapping[str, Any], intake_id: str) -> list[Row]:
             "id": initiative,
             "intake": f"intake/{intake_id}.md",  # route.link_intake's form: the intake path, not its id
             "phases": [{"id": p["id"], "goal": p["goal"]} for p in plan["phases"]],
+            **({"repo": plan["repo"]} if isinstance(plan.get("repo"), str) and plan["repo"] else {}),
         },
     }
     tasks = [

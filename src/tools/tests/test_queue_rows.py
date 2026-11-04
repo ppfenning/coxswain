@@ -130,6 +130,17 @@ def test_plan_to_rows_three_tasks() -> None:
     ]
 
 
+def test_plan_to_rows_puts_repo_on_initiative_row() -> None:
+    rows = plan_to_rows({**PLAN, "repo": "coxswain-dash"}, "idea")
+    assert rows[0]["extra"]["repo"] == "coxswain-dash"
+    assert rows[1:] == plan_to_rows(PLAN, "idea")[1:]
+
+
+def test_plan_to_rows_without_repo_has_no_repo_key() -> None:
+    assert "repo" not in plan_to_rows(PLAN, "idea")[0]["extra"]
+    assert "repo" not in plan_to_rows({**PLAN, "repo": ""}, "idea")[0]["extra"]
+
+
 INITIATIVE = "---\ntitle: Queue\nid: queue\nintake: intake/idea.md\nphases:\n- id: q\n  goal: rows\n- id: r\n  goal: read\n---\nMove the queue.\n"
 
 
