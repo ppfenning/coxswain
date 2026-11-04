@@ -227,7 +227,9 @@ def _fixture_inputs() -> tuple[tuple, dict]:
     history_today = {"lands": 1, "quarantines": 1, "cost_usd": 2.57, "runs": 2}
 
     args = (at, chair, spend, machines, runs, queue, 2, inbox, 2, watch, decisions, spend_series)
-    return args, {"history": history, "history_today": history_today}
+    with open("tests/fixtures/dash_budget_v1.json") as budget_file:
+        budget = json.load(budget_file)["month"]
+    return args, {"history": history, "history_today": history_today, "budget": budget}
 
 
 def test_snapshot_matches_committed_fixture():

@@ -14,8 +14,10 @@ import subprocess
 from collections.abc import Collection, Mapping, Sequence
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from agent_tools import (
+    budget,
     chair,
     chair_activity,
     chair_activity_read,
@@ -79,13 +81,18 @@ _ZERO_SPLIT_WINDOW = {
     "chair_session_share": 0.0, "chair_agents_share": 0.0, "cox_seats_share": 0.0,
     "meter_fraction": 0.0, "resets_at": "", "cost_per_landed_task": 0.0,
 }
+# The feed's budget block when no budget is wired: every figure 0.0 or 0, period none (the feed has no nulls).
+_NONE_BUDGET = {
+    "period": "none", "spent_usd": 0.0, "budget_usd": 0.0, "fraction": 0.0, "daily_avg_usd": 0.0,
+    "projected_usd": 0.0, "days_left": 0, "daily_avg_7d_usd": 0.0, "daily_avg_14d_usd": 0.0,
+}
 # What the feed says of its spend sources when the caller read none: no session named, no price catalog found.
 _UNKNOWN_SPEND_SOURCES = {"chair_session": "none", "price_catalog": "missing"}
 
 
 def snapshot(
     at, chair, spend, machines, runs, queue, queue_total, inbox, inbox_total, watch, decisions=(), spend_series=(),
-    history=(), history_today=None, *, chair_agents=None, spend_split=None, spend_sources=None,
+    history=(), history_today=None, *, chair_agents=None, spend_split=None, spend_sources=None, budget=None,
 ) -> dict:
     """Assemble the schema-1 dash feed snapshot from its sections. `queue_total`/`inbox_total` are each
     section's filtered count before the 50-row cap, for coxtop to render "50 of N". `decisions` is the open
@@ -93,7 +100,8 @@ def snapshot(
     `history` is the ended-run rows and `history_today` the counts since local midnight; zeroed when not given.
     `chair_agents` is the chair's background agent rows, empty when not given; `spend_split` is the three-way
     spend split per window, all zero when not given. `spend_sources` says whether the chair session and the price
-    catalog were found; it reads none and missing when not given."""
+    catalog were found; it reads none and missing when not given. `budget` is the monthly budget block; it reads
+    the none block, every figure 0.0 or 0, when not given."""
     # coxswain-dash carries its own copy of tests/fixtures/dash_feed_v1.json and will need these two fields too.
     # `queue[].phases` is additive and the schema stays 1: a coxtop that does not know the field ignores it.
     # So are `runs[].tasks`, `runs[].landed` and `runs[].quarantined`, which `_runs_v1` adds to each run row.
@@ -120,6 +128,7 @@ def snapshot(
             else spend_split
         ),
         "spend_sources": dict(_UNKNOWN_SPEND_SOURCES) if spend_sources is None else spend_sources,
+        "budget": dict(_NONE_BUDGET) if budget is None else budget,
     }
 
 
@@ -149,6 +158,61 @@ def _profile_ceilings() -> tuple[float | None, float | None]:
     except route.ProfileError:
         return None, None
     return profile.get("window_ceiling_usd"), profile.get("weekly_ceiling_usd")
+
+
+def _profile_budget() -> tuple[float | None, str]:
+    """Edge. `(monthly_budget_usd, zone)` from the routing profile. The zone is `budget_timezone`, else the
+    `weekly_reset` zone, else UTC; the limit is None and the zone UTC when the profile is missing or unparseable."""
+    try:
+        profile = route.parse_profile(_profile_path().read_text(encoding="utf-8"))
+    except (OSError, route.ProfileError):
+        return None, "UTC"
+    reset = usage_window.parse_weekly_reset(profile.get("weekly_reset"))
+    zone = profile.get("budget_timezone") or (reset.tz if reset else "UTC")
+    try:
+        ZoneInfo(zone)
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        zone = "UTC"
+    return profile.get("monthly_budget_usd"), zone
+
+
+def _budget_v1(month: budget.MonthBudget, avg_7d: float, avg_14d: float) -> dict:
+    """The feed's budget block. USD figures round to cents and the fraction to four places. With no limit the
+    period is "none" and the limit and fraction read 0.0, but spend, projection and averages stay."""
+    limited = bool(month.budget_usd)
+    return {
+        "period": "month" if limited else "none",
+        "spent_usd": round(month.spent_usd, 2),
+        "budget_usd": round(month.budget_usd, 2) if limited else 0.0,
+        "fraction": round(month.fraction, 4) if limited and month.fraction is not None else 0.0,
+        "daily_avg_usd": round(month.daily_avg_usd, 2),
+        "projected_usd": round(month.projected_usd, 2),
+        "days_left": int(month.days_left),
+        "daily_avg_7d_usd": round(avg_7d, 2),
+        "daily_avg_14d_usd": round(avg_14d, 2),
+    }
+
+
+def _budget_edge(runs_dir: Path, at: datetime) -> dict:
+    """Edge. The budget block for `at`'s month, spend read from the store with the usage files as fallback.
+    Reads the profile file as `_spend` does, not `gather_feed`'s `profile` argument. A read failure yields the
+    none block: a secondary block must not take the whole feed down."""
+    limit, zone = _profile_budget()
+    runs_dir = Path(runs_dir)
+
+    def cost_between(since: str, until: str) -> float | None:
+        return run_store.cost_since(runs_dir, since, until)
+
+    try:
+        month = usage_window.gather_month(
+            runs_dir, at, zone, limit, cost_between,
+            min_elapsed_fraction=_pacing_policy(runs_dir).min_elapsed_fraction,
+        )
+        daily = usage_window.gather_daily_costs(runs_dir, at, zone, 14, cost_between)
+    except (OSError, ValueError, RuntimeError):
+        return dict(_NONE_BUDGET)
+    today = at.astimezone(ZoneInfo(zone)).date()
+    return _budget_v1(month, budget.rolling_daily_avg(daily, today, 7), budget.rolling_daily_avg(daily, today, 14))
 
 
 def _pacing_policy(runs_dir: Path) -> pacing.Policy:
@@ -1307,7 +1371,8 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
     shapes it, and the `counts` over them. They are `[]`, 0 and 0 for an initiative with no task rows, and absent only
     when the queue is empty or unreadable, or a store error hit while they were read: absent means no task data was
     readable, never "no tasks". A task's `waiting_on` is a list of task ids. `profile` is the parsed profile
-    the capacity chain reads the team cartridge from."""
+    the capacity chain reads the team cartridge from. `budget` is the monthly block, with no nulls: period
+    "none" and a zero limit and fraction when the profile sets no limit."""
     runs_dir, work_dir = Path(runs_dir), Path(work_dir)
     at = _parse_now(now)
     local_name, local_capacity = _local_identity(runs_dir, profile or {})
@@ -1361,4 +1426,5 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
         chair_agents=activity["chair_agents"],
         spend_split=activity["spend_split"],
         spend_sources=activity["spend_sources"],
+        budget=_budget_edge(runs_dir, at),
     )
