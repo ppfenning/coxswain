@@ -14,7 +14,7 @@ from typing import Any
 
 from harness.lanes import max_width
 
-__all__ = ["LayoutFinding", "LayoutReport", "check_layout"]
+__all__ = ["LayoutFinding", "LayoutReport", "check_layout", "unlisted_artifacts"]
 
 _NEW = " (new)"
 _TOKEN = re.compile(r"[\w./\-]+")
@@ -103,9 +103,18 @@ def _surface_findings(task: Mapping[str, Any]) -> list[LayoutFinding]:
     ]
 
 
-def _artifact_findings(task: Mapping[str, Any]) -> list[LayoutFinding]:
+def unlisted_artifacts(task: Mapping[str, Any]) -> list[str]:
+    """Test, migration and script files the body names that no surface covers, in body order."""
     surfaces = [_bare(str(s)) for s in task.get("surfaces") or []]
     named = dict.fromkeys(t.rstrip(".") for t in _TOKEN.findall(str(task.get("body") or "")))
+    return [
+        token
+        for token in named
+        if not token.startswith("/") and _is_artifact(token) and not any(_covers(s, token) for s in surfaces)
+    ]
+
+
+def _artifact_findings(task: Mapping[str, Any]) -> list[LayoutFinding]:
     return [
         LayoutFinding(
             str(task["id"]),
@@ -113,8 +122,7 @@ def _artifact_findings(task: Mapping[str, Any]) -> list[LayoutFinding]:
             f"body names {token}, which is not among the surfaces",
             "add the file to surfaces with the exact name the body uses, or correct the body",
         )
-        for token in named
-        if not token.startswith("/") and _is_artifact(token) and not any(_covers(s, token) for s in surfaces)
+        for token in unlisted_artifacts(task)
     ]
 
 

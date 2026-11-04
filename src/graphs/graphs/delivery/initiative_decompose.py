@@ -30,7 +30,7 @@ from typing import Any
 import yaml
 
 from graphs._contract import ContractViolation, epic_shape, landing_for, proposal, require, require_cartridge
-from graphs.delivery.decompose_layout import check_layout
+from graphs.delivery.decompose_layout import check_layout, unlisted_artifacts
 from graphs.delivery.decompose_size import (
     SizeError,
     SizeVerdict,
@@ -382,6 +382,24 @@ def resolve_surfaces(surfaces: Sequence[str], tree: Sequence[Mapping[str, Any]])
         hit = next((str(row.get("path")) for row in tree if surface == row.get("path") or surface in str(row.get("path"))), None)
         (resolved if hit else unresolved).append(hit or surface)
     return resolved, unresolved
+
+
+def with_named_artifacts(task: Mapping[str, Any], tree: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    """Adds each unlisted named artifact: its one tree path, or a path-shaped name as `(new)`; anything else stays."""
+    added: list[str] = []
+    for token in unlisted_artifacts(task):
+        hits = sorted({p for p in (str(r.get("path")) for r in tree) if p == token or p.endswith("/" + token)})
+        if len(hits) == 1:
+            added.append(hits[0])
+        elif not hits and "/" in token:
+            added.append(token + _NEW)
+    if not added:
+        return task
+    return dict(
+        task,
+        surfaces=[*(task.get("surfaces") or []), *added],
+        lint=[*(task.get("lint") or []), *(f"added to surfaces: {a} (named in the body)" for a in added)],
+    )
 
 
 def surface_problem(unresolved: Sequence[str]) -> str | None:
@@ -1233,6 +1251,10 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
     # This plan's own task ids are the only valid `needs` targets — a foreign
     # id names real work, just ordered by landing rather than by an edge.
     tasks = _drop_foreign_needs(tasks)
+
+    # A test, migration or script the body names but surfaces omit is the most common layout refusal, and the fix is
+    # mechanical when the name points at one file: add it, and say so on the ticket.
+    tasks = [with_named_artifacts(t, tree) for t in tasks]
 
     # The layout check: a body that does not match its surfaces blocks like a lint
     # refusal; an edge with no data flow in the body only lands as a `lint:` entry.
