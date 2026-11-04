@@ -624,3 +624,37 @@ def test_a_failing_home_row_exits_nonzero_and_a_warn_row_does_not(tmp_path, monk
     record.write_text(str(tmp_path / "elsewhere"), encoding="utf-8")  # a migrated machine: a missing home fails
     assert main(["setup", "doctor", "--profile", str(profile), "--json"]) == 1
     assert _rows(capsys)["home root"]["ok"] is False
+
+
+def _dash_build_row(tmp_path, monkeypatch, capsys, *, dev, dash, cargo):
+    """Runs the doctor with the venv editable from the checkout (`dev`), the dash checkout present (`dash`) and the
+    Rust build tool on PATH (`cargo`); returns the exit code and the `dash build` row."""
+    profile, *_ = _good_setup(tmp_path, monkeypatch)
+    installs = cli.home_paths.resolve_here(None).installs
+    checkout = cli.setup_install.layout(installs).checkout
+    monkeypatch.setattr(cli.setup_migrate, "read_venv_source", lambda path, *a: checkout if dev else None)
+    if dash:
+        Path(installs, "coxswain-dash").mkdir(parents=True)
+    if cargo:
+        _write_executable(tmp_path / "bin" / "cargo", "#!/bin/sh\n")
+    rc = main(["setup", "doctor", "--profile", str(profile), "--json"])
+    return rc, _rows(capsys)["dash build"]
+
+
+def test_a_development_install_with_the_dash_checkout_and_no_cargo_warns_without_failing(tmp_path, monkeypatch, capsys):
+    rc, row = _dash_build_row(tmp_path, monkeypatch, capsys, dev=True, dash=True, cargo=False)
+    assert rc == 0
+    assert row["ok"] is True and row["warn"] is True
+    assert "Rust toolchain is missing" in row["detail"]
+
+
+def test_a_development_install_with_the_dash_checkout_and_cargo_reads_ok_without_a_warning(tmp_path, monkeypatch, capsys):
+    _, row = _dash_build_row(tmp_path, monkeypatch, capsys, dev=True, dash=True, cargo=True)
+    assert row == {"check": "dash build", "ok": True, "detail": "Rust toolchain found"}
+
+
+@pytest.mark.parametrize("dev, dash", [(False, True), (True, False), (False, False)])
+def test_without_a_development_install_or_the_dash_checkout_the_dash_build_row_has_nothing_to_build(
+        tmp_path, monkeypatch, capsys, dev, dash):
+    _, row = _dash_build_row(tmp_path, monkeypatch, capsys, dev=dev, dash=dash, cargo=False)
+    assert row == {"check": "dash build", "ok": True, "detail": "nothing to build"}
