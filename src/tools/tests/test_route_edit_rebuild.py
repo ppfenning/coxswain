@@ -65,12 +65,11 @@ def test_a_rebuilt_task_is_what_a_relaunch_picks_up(tmp_path, monkeypatch):
     assert [row["task_id"] for row in route.ready_tasks(store.rows)] == ["t1"]
 
 
-def test_an_item_with_a_recorded_land_conflict_is_listed_as_a_rebuild_not_a_land():
+def test_a_ready_item_with_a_recorded_land_conflict_gives_no_row_until_it_is_approved_again():
     record = {"run": "r1", "task": "t1", "phase": "p1", "branch": "b1", "review": {"verdict": "approve"},
               "arbitration": {"verdict": "approve"}, "landed": False}
     item = {"id": "t1", "state": "ready", "initiative": "acme", "phase": "p1", "repo": "/repo/acme"}
-    [row] = runs_stranded.stranded([record], [{**item, "land_conflict": CONFLICT}])
-    assert row["remedy"] == f"rebuild: {CONFLICT}"
+    assert runs_stranded.stranded([record], [{**item, "land_conflict": CONFLICT}]) == []
     assert runs_stranded.stranded([record], [item])[0]["remedy"].startswith("cox runs land ")
     reapproved = {**item, "state": "approved", "land_conflict": CONFLICT}
     assert runs_stranded.stranded([record], [reapproved])[0]["remedy"].startswith("cox runs land ")
