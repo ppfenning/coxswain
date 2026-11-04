@@ -33,12 +33,32 @@ def test_installed_version_parse():
     assert db.installed_version("") is None
     assert db.installed_version("   \n") is None
     assert db.installed_version("towpath v") is None
+    assert db.installed_version("towpath 2026.11.1+14df4b9") == "2026.11.1+14df4b9"
 
 
 def test_binary_status():
     assert db.binary_status("v2026.11.1", "2026.11.1") == "ok"
     assert db.binary_status("v2026.11.1", "2026.10.5") == "drift"
     assert db.binary_status("v2026.11.1", None) == "missing"
+    assert db.binary_status("v2026.11.1", "2026.11.1+14df4b9") == "ok"
+    assert db.binary_status("v2026.11.1", "2026.10.5+14df4b9") == "drift"
+
+
+def test_dev_build_argv():
+    assert db.dev_build_argv("/src/dash") == [
+        "cargo",
+        "build",
+        "--release",
+        "--manifest-path",
+        "/src/dash/Cargo.toml",
+    ]
+
+
+def test_dev_link_argvs():
+    assert db.dev_link_argvs("/src/dash", "/opt/towpath/bin") == [
+        ["ln", "-sf", "/src/dash/target/release/towpath", "/opt/towpath/bin/towpath"],
+        ["ln", "-sf", "/src/dash/target/release/coxtop", "/opt/towpath/bin/coxtop"],
+    ]
 
 
 def test_binary_step_with_target():

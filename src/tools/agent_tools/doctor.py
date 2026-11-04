@@ -408,6 +408,21 @@ def _home_warn_row(check: str, detail: str) -> dict:
     return {"check": check, "ok": True, "warn": True, "detail": detail}
 
 
+_DASH_BUILD = "dash build"
+
+
+def dash_build_row(dev_install: bool, dash_present: bool, toolchain_found: bool) -> dict:
+    """A missing toolchain warns, never fails: `ok` stays True so `exit_code` ignores the row."""
+    if not dev_install or not dash_present:
+        return {"check": _DASH_BUILD, "ok": True, "detail": "nothing to build"}
+    if toolchain_found:
+        return {"check": _DASH_BUILD, "ok": True, "detail": "Rust toolchain found"}
+    return _home_warn_row(
+        _DASH_BUILD,
+        "Rust toolchain is missing; towpath cannot be built from the checkout; the release binary stays in use",
+    )
+
+
 def _marketplace_registered_row(listing: Mapping[str, str] | None) -> dict:
     """`listing` maps marketplace name to source text from `claude plugin marketplace list`; None when claude is absent."""
     if listing is None:

@@ -36,10 +36,23 @@ def installed_version(output: str) -> str | None:
     return version or None
 
 
+def _release_part(version: str) -> str:
+    """Version without a `+<commit>` suffix; a dev build reports `2026.11.1+14df4b9`."""
+    return version.split("+", 1)[0]
+
+
 def binary_status(pinned_tag: str, installed: str | None) -> str:
     if installed is None:
         return "missing"
-    return "ok" if installed == _bare(pinned_tag) else "drift"
+    return "ok" if _release_part(installed) == _bare(pinned_tag) else "drift"
+
+
+def dev_build_argv(dash_dir: str) -> list[str]:
+    return ["cargo", "build", "--release", "--manifest-path", f"{dash_dir}/Cargo.toml"]
+
+
+def dev_link_argvs(dash_dir: str, bin_dir: str) -> list[list[str]]:
+    return [["ln", "-sf", f"{dash_dir}/target/release/{name}", f"{bin_dir}/{name}"] for name in BINARIES]
 
 
 def binary_step(component: str, spec: dict, target: str | None, bin_dir: str) -> dict:

@@ -109,21 +109,35 @@ def _desktop_step(name: str, spec: Mapping) -> dict:
     return {"kind": "desktop", "component": name, "detail": f"desktop entry at {spec.get('path')}"}
 
 
-def _binary_step(name: str, spec: Mapping, facts: Mapping, channel: str) -> dict:
-    """Release binary step for a component that `provides` a command. Edge builds from source."""
+def _binary_step(name: str, spec: Mapping, facts: Mapping, channel: str) -> list[dict]:
+    """Steps for a component that `provides` a command. Release plans the pinned binary. Edge with a present
+    checkout and cargo plans `dev_build` then `dev_link`; without cargo it falls back to the release binary
+    (a skip when the spec pins no tag); without the checkout it skips."""
     command = spec["provides"]
     if channel == "edge":
-        return {"kind": "skip", "component": name, "detail": f"edge installs build {command} from source"}
+        if not ((facts.get("checkouts") or {}).get(name) or {}).get("present"):
+            return [{"kind": "skip", "component": name, "detail": f"edge installs build {command} from source"}]
+        bin_dir = facts.get("bin_dir", "")
+        if facts.get("cargo"):
+            return [{"kind": "dev_build", "component": name,
+                     "detail": f"cargo build --release in the {name} checkout, producing target/release/{command}"},
+                    {"kind": "dev_link", "component": name,
+                     "detail": f"link {name} checkout target/release/{command} to {bin_dir}/{command}",
+                     "bin_dir": bin_dir}]
+        if not spec.get("tag"):
+            return [{"kind": "skip", "component": name,
+                     "detail": f"no cargo and no release tag to fall back to for {command}"}]
     installed = (facts.get("binaries") or {}).get(command)
     if "binaries" in facts and dash_binary.binary_status(spec["tag"], installed) == "ok":
-        return {"kind": "skip", "component": name, "detail": f"{command} already at the pin"}
-    return dash_binary.binary_step(name, dict(spec), facts.get("target"), facts.get("bin_dir", ""))
+        return [{"kind": "skip", "component": name, "detail": f"{command} already at the pin"}]
+    return [dash_binary.binary_step(name, dict(spec), facts.get("target"), facts.get("bin_dir", ""))]
 
 
 def plan(manifest: Mapping, facts: Mapping, options: Mapping) -> list[dict]:
     """Steps in manifest order: `clone`/`fetch_checkout`/`skip`/`refuse` for
     the checkout, then for each requested component, then one `binary` (or `skip`) step per
-    requested component that `provides` a command, then one `setup_install`, one
+    requested component that `provides` a command (on edge with its checkout and cargo, a
+    `dev_build` and `dev_link` pair instead), then one `setup_install`, one
     `doctor`, then `desktop` for each requested component that carries a
     `path`. An unknown `--with` flag or an unsupported provider refuses the
     whole plan down to the one step naming why."""
@@ -154,7 +168,8 @@ def plan(manifest: Mapping, facts: Mapping, options: Mapping) -> list[dict]:
                       if _pinned(spec, channel) else
                       {"kind": "skip", "component": name, "detail": "the manifest names no [coxswain] version"}
                       for name, spec in requested]
-    binary_steps = [_binary_step(name, spec, facts, channel) for name, spec in components if spec.get("provides")]
+    binary_steps = [step for name, spec in components if spec.get("provides")
+                    for step in _binary_step(name, spec, facts, channel)]
     setup_install_step = {"kind": "setup_install", "component": "setup_install",
                            "detail": f"channel={channel} team={options.get('team')} workspace={options.get('workspace')}"}
     doctor_step = {"kind": "doctor", "component": "doctor",
