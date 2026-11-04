@@ -2,7 +2,7 @@
 
 import copy
 
-from agent_tools import chair_read_intake, queue_rows, route_requeue, run_store
+from agent_tools import chair_read_intake, intake_state, queue_rows, route, route_drift, route_requeue, run_store
 
 INTAKE = {
     "kind": "intake",
@@ -237,3 +237,102 @@ def test_the_fresh_id_skips_an_initiative_id_already_taken():
     taken = {**SAME_INITIATIVE, "task_id": "demo-2", "state": "dropped"}
     plan = route_requeue.plan_requeue([SAME_INTAKE, SAME_INITIATIVE, taken], "demo")
     assert "the next decompose uses demo-3" in plan.note
+
+
+STALE_MD = "---\nid: idea\ninitiative: demo\ntitle: Idea\n---\n\nBody.\ninitiative: in the body\n"
+CLEAN_MD = "---\nid: idea\ntitle: Idea\n---\n\nBody.\ninitiative: in the body\n"
+
+
+def _files(tmp_path, other=False, done=False):
+    intake = tmp_path / "intake" / "done" / "idea.md" if done else tmp_path / "intake" / "idea.md"
+    intake.parent.mkdir(parents=True)
+    intake.write_text(STALE_MD)
+    initiative = tmp_path / "work" / "demo" / "initiative.md"
+    initiative.parent.mkdir(parents=True)
+    initiative.write_text("---\nintake: intake/idea.md\n---\n")
+    if other:
+        (initiative.parent / "notes.md").write_text("keep\n")
+    return intake, initiative
+
+
+def test_without_initiative_line_edits_the_frontmatter_only():
+    assert route_requeue.without_initiative_line(STALE_MD) == CLEAN_MD
+    assert route_requeue.without_initiative_line(CLEAN_MD) == CLEAN_MD
+    assert route_requeue.without_initiative_line("initiative: demo\n") == "initiative: demo\n"
+
+
+def test_a_requeue_cleans_the_intake_file_and_removes_the_initiative_folder(tmp_path, monkeypatch):
+    _store(monkeypatch, [INTAKE, INITIATIVE])
+    intake, initiative = _files(tmp_path)
+    code, _ = _requeue(tmp_path, "demo")
+    assert code == 0
+    assert intake.read_text() == CLEAN_MD
+    assert not initiative.parent.exists()
+
+
+def test_a_requeue_cleans_the_done_copy_of_the_intake(tmp_path, monkeypatch):
+    _store(monkeypatch, [INTAKE, INITIATIVE])
+    intake, _ = _files(tmp_path, done=True)
+    _requeue(tmp_path, "demo")
+    assert intake.read_text() == CLEAN_MD
+
+
+def test_a_work_folder_holding_another_file_is_kept(tmp_path, monkeypatch):
+    _store(monkeypatch, [INTAKE, INITIATIVE])
+    _, initiative = _files(tmp_path, other=True)
+    _requeue(tmp_path, "demo")
+    assert not initiative.exists()
+    assert (initiative.parent / "notes.md").read_text() == "keep\n"
+
+
+def test_a_dry_run_leaves_the_files_untouched(tmp_path, monkeypatch):
+    _store(monkeypatch, [INTAKE, INITIATIVE])
+    intake, initiative = _files(tmp_path)
+    _requeue(tmp_path, "demo", dry_run=True)
+    assert (intake.read_text(), initiative.is_file()) == (STALE_MD, True)
+
+
+def test_a_refused_requeue_leaves_the_files_untouched(tmp_path, monkeypatch):
+    _store(monkeypatch, [INTAKE, INITIATIVE, READY])
+    intake, initiative = _files(tmp_path)
+    code, _ = _requeue(tmp_path, "demo")
+    assert (code, intake.read_text(), initiative.is_file()) == (2, STALE_MD, True)
+
+
+def test_a_requeue_with_the_files_absent_returns_zero(tmp_path, monkeypatch):
+    _store(monkeypatch, [INTAKE, INITIATIVE])
+    code, _ = _requeue(tmp_path, "demo")
+    assert code == 0
+
+
+def test_a_second_requeue_after_a_clean_first_is_a_no_op(tmp_path, monkeypatch):
+    queued = {**INTAKE, "state": "queued", "extra": {}}
+    writes = _store(monkeypatch, [queued, {**INITIATIVE, "state": "dropped"}])
+    intake, _ = _files(tmp_path)
+    intake.write_text(CLEAN_MD)
+    code, message = _requeue(tmp_path, "idea")
+    assert (code, writes, intake.read_text()) == (0, [], CLEAN_MD)
+    assert "already requeued" in message
+
+
+def test_a_requeue_with_no_rows_left_still_cleans_a_stale_file(tmp_path, monkeypatch):
+    queued = {**INTAKE, "state": "queued", "extra": {}}
+    writes = _store(monkeypatch, [queued, {**INITIATIVE, "state": "dropped"}])
+    intake, initiative = _files(tmp_path)
+    code, message = _requeue(tmp_path, "idea")
+    assert (code, writes, intake.read_text(), initiative.parent.exists()) == (0, [], CLEAN_MD, False)
+    assert "already requeued" in message
+
+
+def test_the_requeued_intake_reads_back_as_queued_and_shows_no_drift(tmp_path, monkeypatch):
+    _store(monkeypatch, [INTAKE, INITIATIVE])
+    _files(tmp_path)
+    _requeue(tmp_path, "demo")
+    files = {p.name: p.read_text() for p in (tmp_path / "intake").glob("*.md")}
+    (entry,) = route.intake_entries(files)
+    assert intake_state.intake_group(entry, {}, []) == "queued"
+    groups = route.intake_groups([entry], [])
+    assert [e["id"] for e in groups["queued"]] == ["idea"]
+    on_file = [(e["path"], name) for name, entries in groups.items() for e in entries]
+    stored = [{"task_id": "idea", "state": "queued"}]
+    assert route_drift.drift([], [], on_file, stored) == []
