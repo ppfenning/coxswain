@@ -7578,6 +7578,8 @@ def _execute_step(step: dict) -> str | None:
         else:
             print(f"hook already present in {path}")
         return None
+    if op == "symlink":
+        return _migrate_link(step)
     if op == "print":
         print(step["text"])
         return None

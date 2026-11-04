@@ -180,6 +180,13 @@ def _tool_target(checkout: str, extras: tuple[str, ...]) -> str:
     return f"{checkout}[{','.join(extras)}]" if extras else checkout
 
 
+def catalog_link_step(workspace: str, cartridges_dir: str) -> dict:
+    """The workspace price catalog is a link into the checkout; an upgrade can leave it dangling."""
+    return {"op": "symlink", "path": f"{workspace}/cartridges/providers/catalog.yaml",
+            "target": f"{cartridges_dir}/providers/catalog.yaml",
+            "why": "point the workspace price catalog at this install"}
+
+
 def _workspace_steps(workspace: str) -> list:
     folders = (workspace, *(f"{workspace}/{name}" for name in ("work", "runs", "intake", "cartridges")))
     return [{"op": "mkdir", "path": path, "why": "create the workspace folder"} for path in folders]
@@ -273,6 +280,9 @@ def install_plan(
         steps.append({"op": "hook", "path": claude_settings_path,
                       "why": "add a SessionStart hook that prints route context"})
 
+    if workspace:
+        steps.append(catalog_link_step(workspace, paths.cartridges))
+
     steps.append({"op": "print", "text": "verify with: agent-tools setup doctor"})
     return steps
 
@@ -309,6 +319,8 @@ def render_plan(steps: list) -> str:
             lines.append(f"mkdir {step['path']}")
         elif op == "remove":
             lines.append(f"remove {step['path']}")
+        elif op == "symlink":
+            lines.append(f"symlink {step['path']} -> {step['target']}")
         elif op == "skip":
             lines.append(f"skip {step['what']} — {step['why']}")
         elif op == "hook":

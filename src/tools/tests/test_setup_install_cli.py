@@ -5,7 +5,7 @@ import stat
 import pytest
 
 from agent_tools import route
-from agent_tools.cli import _marketplace_listing, _marketplace_paths, build_parser
+from agent_tools.cli import _execute_step, _marketplace_listing, _marketplace_paths, build_parser
 
 
 def _write_executable(path, body):
@@ -325,3 +325,22 @@ def test_marketplace_listing_none_on_nonzero_exit(tmp_path, monkeypatch):
 def test_marketplace_listing_none_when_claude_absent(tmp_path, monkeypatch):
     _only_claude_on_path(tmp_path, monkeypatch, None)
     assert _marketplace_listing() is None
+
+
+def test_the_symlink_step_repoints_a_dangling_catalog_link(tmp_path):
+    link = tmp_path / "ws" / "cartridges" / "providers" / "catalog.yaml"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(tmp_path / "gone" / "catalog.yaml")
+    target = tmp_path / "new" / "providers" / "catalog.yaml"
+    assert _execute_step({"op": "symlink", "path": str(link), "target": str(target)}) is None
+    assert os.readlink(link) == str(target)
+
+
+def test_the_symlink_step_leaves_a_real_catalog_file_and_reports_why(tmp_path):
+    link = tmp_path / "ws" / "cartridges" / "providers" / "catalog.yaml"
+    link.parent.mkdir(parents=True)
+    link.write_text("mine\n", encoding="utf-8")
+    reason = _execute_step({"op": "symlink", "path": str(link), "target": str(tmp_path / "t")})
+    assert reason is not None and str(link) in reason
+    assert not link.is_symlink()
+    assert link.read_text(encoding="utf-8") == "mine\n"
