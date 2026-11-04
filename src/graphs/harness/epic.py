@@ -2257,12 +2257,29 @@ def _invoke_failure_kind(failure: str) -> Literal["infra", "no_work"]:
     return "infra" if any(marker in lowered for marker in _TRANSIENT_AUTH) else "no_work"
 
 
-def _buildable(items: list[dict[str, Any]], phase: str, foreign: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """The phase's ready tasks with met needs, a dropped one excluded. A need on another initiative reads `foreign`."""
+def _buildable(
+    items: list[dict[str, Any]], phase: str, foreign: Mapping[str, Any], only: frozenset[str] | None = None
+) -> list[dict[str, Any]]:
+    """The phase's ready tasks with met needs, a dropped one excluded. A need on another initiative reads `foreign`.
+
+    With `only`, the ready set is narrowed to those ids.
+    """
     return [
         item
         for item in workstore.ready_tasks(_ready_view(items), phase=phase, foreign=foreign)
-        if item.get("state") != "dropped"
+        if item.get("state") != "dropped" and (only is None or str(item["id"]) in only)
+    ]
+
+
+def _earlier_merged(items: Sequence[Mapping[str, Any]], phase: str, in_run: Collection[str]) -> list[Mapping[str, Any]]:
+    """The phase's approved items that carry a stored handoff and are outside this run, in item order."""
+    return [
+        item
+        for item in items
+        if item.get("phase") == phase
+        and item.get("state") == "approved"
+        and item.get("handoff")
+        and str(item["id"]) not in in_run
     ]
 
 
@@ -2273,11 +2290,13 @@ def _run_phase(
     phase: str,
     parents: tuple[str, ...],
     items: list[dict[str, Any]],
+    only: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     """One phase: branch, fan out, check, validate, gate, execute, record.
 
     One parent stacks the branch on that parent's branch. Several parents are merged by
     `assemble` onto the default ref, so `base` is the default ref and `assembled_from` lists them.
+    With `only`, just those ready tasks build; the validator, once the phase is finished, sees the whole phase.
     """
     branch = ctx.phase_branch(phase)
     parent = parents[0] if len(parents) == 1 else None
@@ -2324,7 +2343,7 @@ def _run_phase(
     action = branch_action(reused, head_moved, unlanded_kind not in ("landed", "rebuild"))
 
     foreign = initiative.get("foreign") or {}
-    holds = phase_holds(len(waiting_tasks(cherry)), len(_buildable(items, phase, foreign)))
+    holds = phase_holds(len(waiting_tasks(cherry)), len(_buildable(items, phase, foreign, only)))
     if action == "block" and unlanded_kind == "awaiting_land" and not holds:
         # Approved lands in flight, but a ready task can build: leave the branch and its commits as they are.
         action = "proceed"
@@ -2435,7 +2454,7 @@ def _run_phase(
 
     # A dropped task is terminal like a done one: it never gets rebuilt or
     # re-reviewed, and never blocks the phase behind it.
-    all_ready = _buildable(items, phase, foreign)
+    all_ready = _buildable(items, phase, foreign, only)
 
     # A third run of the same task is refused outright rather than tried
     # again — quarantined here, plainly, never through `_quarantine_task`,
@@ -2853,8 +2872,14 @@ def _run_phase(
 
     # A phase is judged once, when it is finished: a run carrying only part of it
     # would be scored against a goal its siblings have not yet built toward.
+    # With `only`, a task an earlier call approved and merged counts as finished, and joins the validator's input.
+    earlier = _earlier_merged(items, phase, {str(r.get("ticket")) for r in results}) if only is not None else []
     open_ids = (
-        open_in_phase(items, phase, {str(r.get("ticket")) for r in results} | {str(q["id"]) for q in quarantined})
+        open_in_phase(
+            items,
+            phase,
+            {str(r.get("ticket")) for r in results} | {str(q["id"]) for q in quarantined} | {str(i["id"]) for i in earlier},
+        )
         if validated and results
         else []
     )
@@ -2892,6 +2917,21 @@ def _run_phase(
                     "worktree": str(ctx.task_worktree(phase, task)),
                 }
                 for task in surviving
+            ]
+            + [
+                {
+                    "id": str(item["id"]),
+                    "title": str(item.get("title") or item["id"]),
+                    "description": str(item.get("body") or ""),
+                    "evidence": [],
+                    "change_facts": {
+                        k: list(item["handoff"].get(k) or []) for k in ("files_changed", "interfaces_added", "decisions")
+                    },
+                    "review_verdict": "approve",
+                    "patch": "",
+                    "worktree": str(ctx.task_worktree(phase, str(item["id"]))),
+                }
+                for item in earlier
             ],
             "quarantined": [{"id": q["id"], "reason": q["reason"]} for q in quarantined],
         }
