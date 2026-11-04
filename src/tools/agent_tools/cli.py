@@ -5882,8 +5882,10 @@ def _route_launch(a: argparse.Namespace) -> int:
         checkouts = _host_checkouts(run_store.hosts(runs_dir), host.name)
         # The sync steps are listed only for a host with recorded checkouts: test_cli_launch_on pins the bare rsync + ssh plan otherwise.
         plan = remote_launch.launch_plan(
-            host, launch_dir.name, run_id, _holder_label(a), None, (env_repo or None) if checkouts else None,
+            host, a.initiative_id if a.graph == "decompose" else launch_dir.name, run_id, _holder_label(a), None,
+            (env_repo or None) if checkouts else None,
             launch_harness if checkouts else None, home=os.path.expanduser("~"), host_checkouts=checkouts,
+            graph="decompose" if a.graph == "decompose" else "epic", intake=intake if a.graph == "decompose" else None,
         )
         for remote_argv in plan:
             print(f"dry-run: {shlex.join(remote_argv)}")
@@ -5904,6 +5906,7 @@ def _route_launch(a: argparse.Namespace) -> int:
         return _route_launch_on_host(
             a, host, runs_dir, run_id, env_repo or None, launch_harness, home=os.path.expanduser("~"),
             tools=_repo_check_tools(env_repo).found if pinned else (),
+            graph="decompose" if a.graph == "decompose" else "epic", intake=intake if a.graph == "decompose" else None,
         )
 
     lane = _local_lane_python(socket.gethostname(), os.environ.get("PATH", ""))
@@ -6127,11 +6130,27 @@ def _epic_repo(a: argparse.Namespace, profile: Mapping) -> str | None:
     return getattr(a, "repo", None) or fields.get("repo") or None
 
 
+def _intake_repo(a: argparse.Namespace) -> str | None:
+    """Edge. The `repo:` field of the intake a decompose launch reads, as recorded; None when there is no readable idea file."""
+    idea = getattr(a, "idea", None)
+    if not idea:
+        return None
+    try:
+        text = _read_text_or_none(Path(idea))
+    except ValueError:
+        return None
+    fields, _ = route.parse_frontmatter(text) if text is not None else ({}, "")
+    repo = fields.get("repo")
+    return repo if isinstance(repo, str) and repo else None
+
+
 def _place_or_refuse(
     a: argparse.Namespace, profile: Mapping, forced_local: bool,
 ) -> tuple[lane_hosts.LaneHost | None, int | None]:
     """Edge. Place the lane by the hosts table and print `placed on <host> (<in use>/<cap>)`; a remote pick comes back
-    as its LaneHost. Only epic goes remote: the other graphs have no remote launch, so they place on this machine."""
+    as its LaneHost. Epic and decompose go remote, each probed for the toolchain of its repo (an epic's initiative or an
+    intake's `repo:`); the other graphs have no remote launch, so they place on this machine. A forced local launch
+    places on this machine, refused at capacity without `--force`."""
     graph = getattr(a, "graph", "epic")
     if not forced_local and graph not in ("epic", "decompose"):
         return None, None
@@ -6145,12 +6164,12 @@ def _place_or_refuse(
     force = bool(getattr(a, "force", False))
     profile_text = _read_text_or_none(_profile_path(a)) or ""
     parsed = _profile_lane_hosts(profile_text)
-    if forced_local or graph != "epic":
+    if forced_local:
         placed = launch_place.place_local(local, rows, live, force, cap)
     else:
         profile_hosts = () if isinstance(parsed, lane_hosts.LaneHostError) else parsed
         candidates = _lane_host_candidates(profile_text, rows, local)
-        epic_repo = _epic_repo(a, profile)
+        epic_repo = _intake_repo(a) if graph == "decompose" else _epic_repo(a, profile)
         tools = _repo_check_tools(epic_repo).found if epic_repo else ()
 
         def refused(name: str) -> str | None:
@@ -6265,10 +6284,13 @@ def _host_checkouts(rows: Sequence[Mapping[str, object]], name: str) -> tuple[st
 def _route_launch_on_host(
     a: argparse.Namespace, host: lane_hosts.LaneHost, runs_dir: Path, run_id: str, repo: str | None = None,
     harness_dir: str | None = None, *, home: str | None = None, tools: Sequence[str] = (),
+    graph: str = "epic", intake: str | None = None,
 ) -> int:
     """Copies the initiative to `host` and starts the lane there; writes only `<run>.remote.json`, and only on success.
-    `tools` are probed on the host's lane PATH before the copy."""
+    `tools` are probed on the host's lane PATH before the copy. A decompose names its initiative by `a.initiative_id`
+    and copies the one `intake` file; its record carries `graph: decompose`."""
     run, locate = _remote_edge(runs_dir.parent)
+    initiative = a.initiative_id if graph == "decompose" else _initiative_path(runs_dir, a.initiative).name
     launched_at = datetime.datetime.now(datetime.UTC).isoformat()
     provider, _ = _lake_provider(a)  # an unreadable profile is `{}`: runner unset, so the claude-code check as today
     # The one read of runner/auth_env/endpoint_env, shared with the chair's check_login. Move to the
@@ -6281,14 +6303,15 @@ def _route_launch_on_host(
             env_names, {name: _host_env_probe(remote_argv.ssh_argv(host.ssh, remote_argv.env_check_argv(name))) for name in env_names}
         )
     result = remote_launch.launch_on_host(
-        host, _initiative_path(runs_dir, a.initiative).name, run_id, _holder_label(a), launched_at, run, locate, repo, harness_dir,
+        host, initiative, run_id, _holder_label(a), launched_at, run, locate, repo, harness_dir,
         preflight=preflight, home=home, host_checkouts=_host_checkouts(run_store.hosts(runs_dir), host.name), tools=tools,
+        graph=graph, intake=intake,
     )
     if isinstance(result, remote_launch.LaunchError):
         print(f"routing: launch on {host.name} failed at {result.step}: {result.message}")
         return 2
     # `route remove` reads the initiative back from here, as it does from `.launched.json` for a local run.
-    record = {**result, "initiative": _initiative_path(runs_dir, a.initiative).name}
+    record = {**result, "initiative": initiative, **({"graph": "decompose"} if graph == "decompose" else {})}
     remote_lane.remote_record_path(runs_dir, run_id).write_text(json.dumps(record), encoding="utf-8")
     print(f"run {run_id}")
     print(f"host {host.name}")
