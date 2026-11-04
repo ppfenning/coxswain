@@ -56,6 +56,7 @@ from urllib.parse import urlencode
 from core import ledger, workstore
 from core.landing import land_gate_level, resolve_land_at
 from core.manifest import append_ledger, build_manifest, gate_diff
+from core.phase_hold import phase_holds
 from core.workstore import WorkStoreError, record_attempt
 from graphs._contract import proposal
 from graphs.delivery import rescue_review
@@ -2190,6 +2191,15 @@ def _invoke_failure_kind(failure: str) -> Literal["infra", "no_work"]:
     return "infra" if any(marker in lowered for marker in _TRANSIENT_AUTH) else "no_work"
 
 
+def _buildable(items: list[dict[str, Any]], phase: str, foreign: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The phase's ready tasks with met needs, a dropped one excluded. A need on another initiative reads `foreign`."""
+    return [
+        item
+        for item in workstore.ready_tasks(_ready_view(items), phase=phase, foreign=foreign)
+        if item.get("state") != "dropped"
+    ]
+
+
 def _run_phase(
     ctx: _Ctx,
     *,
@@ -2246,6 +2256,12 @@ def _run_phase(
     cherry = _phase_branch_cherry(ctx, phase) if head_moved else []
     unlanded_kind = classify_unlanded(cherry, task_states)
     action = branch_action(reused, head_moved, unlanded_kind not in ("landed", "rebuild"))
+
+    foreign = initiative.get("foreign") or {}
+    holds = phase_holds(len(waiting_tasks(cherry)), len(_buildable(items, phase, foreign)))
+    if action == "block" and unlanded_kind == "awaiting_land" and not holds:
+        # Approved lands in flight, but a ready task can build: leave the branch and its commits as they are.
+        action = "proceed"
 
     if action == "block" and len(parents) > 1:
         # A branch assembled from several parents is re-assembled, never rebased onto the default ref.
@@ -2353,14 +2369,7 @@ def _run_phase(
 
     # A dropped task is terminal like a done one: it never gets rebuilt or
     # re-reviewed, and never blocks the phase behind it.
-    # A need on a task in another initiative is met by the state the load
-    # recorded under `initiative["foreign"]`; without it that task is never ready.
-    foreign = initiative.get("foreign") or {}
-    all_ready = [
-        item
-        for item in workstore.ready_tasks(_ready_view(items), phase=phase, foreign=foreign)
-        if item.get("state") != "dropped"
-    ]
+    all_ready = _buildable(items, phase, foreign)
 
     # A third run of the same task is refused outright rather than tried
     # again — quarantined here, plainly, never through `_quarantine_task`,

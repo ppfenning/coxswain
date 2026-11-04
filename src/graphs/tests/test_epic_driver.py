@@ -2276,6 +2276,26 @@ def test_a_phase_whose_unlanded_commits_are_all_approved_awaits_their_land(repo,
     assert git("rev-parse", BRANCH, cwd=repo) == before
 
 
+def test_a_ready_task_builds_beside_an_approved_unlanded_sibling(repo, cart, tmp_path) -> None:
+    only_t1 = initiative(two_phases=False)
+    only_t1["items"] = only_t1["items"][:1]
+    first, _ = drive(repo, cart, tmp_path, work=only_t1, run_id="epic-1")
+    assert first["phases"][0]["status"] == "complete"
+    (repo / "moved.md").write_text("moved\n", encoding="utf-8")
+    git("add", "-A", cwd=repo)
+    git("commit", "-qm", "advance main", cwd=repo)
+    approved_commit = git("rev-parse", BRANCH, cwd=repo)
+
+    result, runner = drive(repo, cart, tmp_path, work=_with_states(t1="approved", t2="ready"), run_id="epic-2")
+    assert any(c["role"] == "build" and "t2-bench" in c["prompt"] for c in runner.calls)
+    assert not any("t1-probe" in c["prompt"] for c in runner.calls)
+    assert is_ancestor(repo, approved_commit, BRANCH)
+    assert not is_ancestor(repo, "main", BRANCH), "the stale branch is not rebased"
+    assert result["quarantined"] == []
+    assert result["phases"][0]["status"] != "awaiting_land"
+    assert result.get("exit_code") != EXIT_AWAITING_LAND
+
+
 def test_a_phase_whose_unlanded_commits_are_all_done_is_recreated_not_rebased(repo, cart, tmp_path, monkeypatch) -> None:
     _stale_branch_with_two_task_commits(repo, cart, tmp_path)
     rebases: list[str] = []
