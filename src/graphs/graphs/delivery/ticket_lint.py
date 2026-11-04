@@ -14,7 +14,14 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-__all__ = ["Problem", "idea_reach_problems", "lint_tickets"]
+__all__ = [
+    "Problem",
+    "idea_reach_problems",
+    "idea_reach_refusal",
+    "lint_refusal_text",
+    "lint_tickets",
+    "refusal_reason",
+]
 
 _REFUSAL_RULES = frozenset({"reach", "coupling", "contract", "surface_missing"})
 _ROOTED_PREFIXES = ("~/", "/")
@@ -184,6 +191,30 @@ def idea_reach_problems(
     known_paths = {str(row.get("path")) for row in tree}
     candidates = list(dict.fromkeys(t.strip("`,.()") for t in _tokens(idea) if _looks_rooted(t)))
     return _outside_problems("idea", candidates, known_paths, repo, reach_allow, ())
+
+
+def lint_refusal_text(problems: Sequence[Problem]) -> str | None:
+    """One line per reach/coupling `Problem`; `None` when there is nothing to refuse."""
+    if not problems:
+        return None
+    return "\n".join(f"{p.task}: {p.rule} — {p.detail} ({p.fix})" for p in problems)
+
+
+def refusal_reason(problems: Sequence[Problem]) -> str:
+    """`lint-refused: <task> <rule>, ...` on the first line, then one detail line per problem."""
+    heading = "lint-refused: " + ", ".join(dict.fromkeys(f"{p.task} {p.rule}" for p in problems))
+    return heading + "\n" + (lint_refusal_text(problems) or "")
+
+
+def idea_reach_refusal(
+    idea_body: str,
+    tree: Sequence[Mapping[str, Any]],
+    repo: str,
+    reach_allow: Sequence[str] = (),
+) -> str | None:
+    """The refusal text for an idea that names a path outside the repo; `None` when it names none."""
+    problems = idea_reach_problems(idea_body, tree, repo, reach_allow)
+    return refusal_reason(problems) if problems else None
 
 
 def _owner_of(path: str) -> str | None:

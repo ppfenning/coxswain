@@ -15,6 +15,7 @@ import yaml
 
 from graphs._contract import ContractViolation
 from graphs.delivery import initiative_decompose
+from graphs.delivery.ticket_lint import idea_reach_refusal, refusal_reason
 from runner import ScriptedRunner
 from runner.decision_log import RouterDecision
 from runner.tier_resolution import Hints
@@ -955,7 +956,7 @@ def test_the_refusal_reason_names_each_refused_ticket_and_rule_once() -> None:
         initiative_decompose.Problem("t1", "grant", "names `cox`, which is not granted", "fix"),
         initiative_decompose.Problem("t2", "cross_repo", "names harness/cli.py, which lives in graphs", "fix"),
     ]
-    first = initiative_decompose._refusal_reason(problems).splitlines()[0]
+    first = refusal_reason(problems).splitlines()[0]
     assert first == "lint-refused: t1 grant, t2 cross_repo"
 
 
@@ -1498,6 +1499,14 @@ def test_an_idea_naming_a_path_outside_the_repo_is_refused_before_any_model_call
         initiative_decompose.run({"run_id": "r", "date": "d", "cartridge": cart, "idea": idea}, runner)
     assert str(caught.value).startswith("lint-refused: idea reach")
     assert runner.calls == []
+
+
+def test_the_decompose_refusal_is_the_shared_idea_reach_refusal(cart, tmp_path) -> None:
+    runner = ScriptedRunner({"decompose": DECOMPOSITION})
+    idea = f"ship it with {_deploy_script(tmp_path)}"
+    with pytest.raises(initiative_decompose.LintRefusal) as caught:
+        initiative_decompose.run({"run_id": "r", "date": "d", "cartridge": cart, "idea": idea}, runner)
+    assert str(caught.value) == idea_reach_refusal(idea, [], "")
 
 
 def test_an_intake_reach_allow_prefix_lets_the_idea_reach_decompose_and_admits_a_ticket_under_it(cart, tmp_path) -> None:
