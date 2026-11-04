@@ -5941,7 +5941,7 @@ def _route_launch(a: argparse.Namespace) -> int:
             route.select_intake_row(run_store.read_queue(runs_dir, kind="intake"), idea_path.stem)
             if store_mode == "store" and not a.dry_run else None
         )
-        via_rows = _decompose_via_rows(store_mode, a.dry_run, host, intake_row)
+        via_rows = _decompose_via_rows(store_mode, a.dry_run, host, intake_row, detach=bool(getattr(a, "detach", False)))
         if via_rows:
             pass  # the plan lands as rows after the run; the chair's export writes the files
         elif initiative_md.exists() and any(initiative_dir.glob("*/*.md")):
@@ -6134,9 +6134,9 @@ def _route_launch(a: argparse.Namespace) -> int:
     return 0
 
 
-def _decompose_via_rows(mode: str, dry_run: bool, host: object, intake_row: Mapping | None) -> bool:
-    """True when a decompose launch runs to completion here and writes rows: store mode, a real run, this machine, an intake row."""
-    return mode == "store" and not dry_run and host is None and intake_row is not None
+def _decompose_via_rows(mode: str, dry_run: bool, host: object, intake_row: Mapping | None, *, detach: bool = False) -> bool:
+    """True when a decompose launch runs to completion here and writes rows: store mode, a real run, this machine, an intake row, not detached."""
+    return mode == "store" and not dry_run and host is None and intake_row is not None and not detach
 
 
 _DECOMPOSE_TIMEOUT_S = 3600
@@ -10988,6 +10988,7 @@ ROUTE_COMMANDS = [
                     commands.Arg(("--initiative-id",), {"required": True}),
                     commands.Arg(("--task-ids",), {"choices": ["ordinal"], "help": "name the graph's own tasks <initiative-id>-t1, -t2, ..."}),
                     commands.Arg(("--local",), {"action": "store_true", "help": "start the lane on this machine, not where the hosts table places it"}),
+                    commands.Arg(("--detach",), {"action": "store_true", "help": "start the decompose in the background and return once it has started"}),
                     commands.Arg(("--dry-run",), {"action": "store_true"}),
                     commands.Arg(("--run-id",), {"help": "use this run id instead of the next free one; refused when taken"}),
                     *_LAUNCH_SHARED_ARGS,
