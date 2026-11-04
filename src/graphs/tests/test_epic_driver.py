@@ -2099,7 +2099,7 @@ def test_an_unverified_quarantine_keeps_the_patch_and_records_it_kept(repo, cart
 def test_a_worktree_that_cannot_be_opened_fails_the_phase_not_a_task(repo, cart, tmp_path, monkeypatch) -> None:
     """`infra` is the caller's own branch: no task-grain entry, the phase itself is marked."""
     monkeypatch.setattr(
-        "harness.epic._open_phase_worktree", lambda ctx, phase, base_ref, parents=(): (False, "boom", False)
+        "harness.epic._open_phase_worktree", lambda ctx, phase, base_ref, parents=(), refs=None: (False, "boom", False)
     )
     result, _ = drive(repo, cart, tmp_path, work=initiative(two_phases=False))
 
