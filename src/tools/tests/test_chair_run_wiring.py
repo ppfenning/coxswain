@@ -741,3 +741,109 @@ def test_a_tick_with_no_release_request_still_beats_and_keeps_the_lease(tmp_path
     assert store.heartbeat == 1
     assert (runs / cli.chair.LEASE_FILENAME).exists()
     assert cli.chair.read(runs)["heartbeat_at"] > _OLD
+
+
+_DASH = "/w/coxswain-dash"
+_REBUILD = [
+    ["git", "-C", _DASH, "pull", "--ff-only"],
+    ["cargo", "build", "--release", "--manifest-path", f"{_DASH}/Cargo.toml"],
+    ["ln", "-sf", f"{_DASH}/target/release/towpath", "/b/towpath"],
+    ["ln", "-sf", f"{_DASH}/target/release/coxtop", "/b/coxtop"],
+]
+
+
+def _landed(repo: str, commit: str = "c1") -> dict:
+    return {
+        "action": {"kind": "land", "repo": repo}, "status": "landed",
+        "reason": "pr_create: https://x/y/pull/3\n", "commit": commit,
+    }
+
+
+def _rebuild_wrapper(tmp_path, results: list, run, echo=lambda _l: None):
+    return cli._chair_perform_with_smoke(
+        tmp_path, lambda *_a: results, dash_dir=_DASH, bin_dir="/b", toolchain_found=True, run=run, echo=echo,
+    )
+
+
+def test_a_landed_dash_checkout_runs_the_pull_build_and_link_argvs_once(tmp_path) -> None:
+    seen: list[list[str]] = []
+    results = [_landed(_DASH, "a"), _landed(_DASH, "b")]
+
+    _rebuild_wrapper(tmp_path, results, lambda argv: seen.append(argv) or (0, ""))([], object(), lambda: 1, False)
+
+    assert seen == _REBUILD
+
+
+def test_a_landed_coxswain_checkout_runs_no_rebuild(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cli.chair_smoke, "run_smoke_commands", lambda _repo: [])
+    seen: list[list[str]] = []
+
+    _rebuild_wrapper(tmp_path, [_landed("/w/coxswain")], lambda argv: seen.append(argv) or (0, ""))(
+        [], object(), lambda: 1, False,
+    )
+
+    assert seen == []
+
+
+def test_a_dry_run_runs_no_rebuild(tmp_path) -> None:
+    seen: list[list[str]] = []
+
+    _rebuild_wrapper(tmp_path, [_landed(_DASH)], lambda argv: seen.append(argv) or (0, ""))([], object(), lambda: 1, True)
+
+    assert seen == []
+
+
+def test_a_wrapper_with_no_dash_inputs_plans_nothing(tmp_path, monkeypatch) -> None:
+    ran: list[list[str]] = []
+    monkeypatch.setattr(cli, "_run_argv", lambda argv: ran.append(argv) or (0, "", ""))
+    results = [_landed(_DASH)]
+
+    assert cli._chair_perform_with_smoke(tmp_path, lambda *_a: results)([], object(), lambda: 1, False) == results
+    assert ran == []
+
+
+def test_a_failing_rebuild_is_one_echoed_line_and_the_smoke_still_runs(tmp_path, monkeypatch) -> None:
+    smoked: list[str] = []
+    monkeypatch.setattr(cli.chair_smoke, "run_smoke_commands", lambda repo: smoked.append(repo) or [])
+    lines: list[str] = []
+    results = [_landed(_DASH), _landed("/w/coxswain-tools")]
+
+    got = _rebuild_wrapper(tmp_path, results, lambda _argv: (1, "boom"), lines.append)([], object(), lambda: 1, False)
+
+    assert got == results
+    assert lines == [f"chair run: towpath rebuild failed (exit 1) for {_DASH}"]
+    assert smoked == ["/w/coxswain-tools"]
+    assert cli.chair_smoke.read_hold(str(tmp_path)) is None
+
+
+def test_a_runner_that_raises_does_not_raise_out_of_the_wrapper(tmp_path) -> None:
+    def explode(_argv: list[str]) -> tuple[int, str]:
+        raise OSError("no cargo")
+
+    lines: list[str] = []
+    results = [_landed(_DASH)]
+
+    assert _rebuild_wrapper(tmp_path, results, explode, lines.append)([], object(), lambda: 1, False) == results
+    assert lines == [f"chair run: towpath rebuild failed for {_DASH}: no cargo"]
+
+
+def _wired_kwargs(tmp_path, monkeypatch, branch: str) -> dict:
+    wired: dict = {}
+    monkeypatch.setattr(cli.shutil, "which", lambda name: f"/opt/bin/{name}")
+    monkeypatch.setattr(cli, "_chair_git", _fake_git("abc\n", branch=branch))
+    monkeypatch.setattr(cli, "_chair_perform_with_smoke", lambda _runs, _perform, **kw: wired.update(kw))
+    _deps(tmp_path, False)
+    return wired
+
+
+def test_a_development_install_passes_the_dash_inputs(tmp_path, monkeypatch) -> None:
+    wired = _wired_kwargs(tmp_path, monkeypatch, "refs/heads/main")
+
+    assert wired["dash_dir"] == str(cli.chair_restart.checkout_root().parent / "coxswain-dash")
+    assert (wired["bin_dir"], wired["toolchain_found"]) == ("/opt/bin", True)
+
+
+def test_a_detached_checkout_passes_no_dash_inputs(tmp_path, monkeypatch) -> None:
+    wired = _wired_kwargs(tmp_path, monkeypatch, "")
+
+    assert "dash_dir" not in wired
