@@ -83,7 +83,7 @@ def launch_argv(initiative: str, run_id: str, label: str) -> list[str]:
 def decompose_launch_argv(intake: str, initiative: str, run_id: str, label: str) -> list[str]:
     """The decompose twin of `launch_argv`; `intake` is the copied intake file's path on the host, its idea."""
     return [
-        "cox", "route", "launch", "decompose", "--local",
+        "cox", "route", "launch", "decompose", "--local", "--detach",
         "--idea", intake,
         "--initiative-id", initiative,
         "--run-id", run_id,
