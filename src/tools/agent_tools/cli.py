@@ -1978,6 +1978,23 @@ def _phase_items(work_root: Path, initiative: str, phase: str, runs_dir: Path | 
     return items, str(phase_dir)
 
 
+def _ticket_items(work_root: Path, initiative: str, runs_dir: Path, land_mode: str, current: tuple[str, list[dict]]) -> tuple[dict[str, str], list[str]]:
+    """Approved task id to ticket path across every phase of the initiative (`current` is already read), and the phases in natural order."""
+    root = work_root / initiative
+    phases = sorted((d.name for d in root.iterdir() if d.is_dir()), key=lambda n: [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", n)]) if root.is_dir() else []
+    found = [i for p in phases for i in (current[1] if p == current[0] else _phase_items(work_root, initiative, p, runs_dir, land_mode)[0] or [])]
+    return {i["id"]: i["file"] for i in found if i["status"] == "approved"}, phases
+
+
+def _ticket_present(repo: Path, head: str, records: list[dict]) -> set[str]:
+    """Edge. Ids of `records` whose work is in `head`: a `Task: <id>` trailer on it, else the task's agent branch an ancestor of it."""
+    def git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    log = git("log", "--format=%B", head)
+    trailers = set(re.findall(r"^Task: (.+)$", log.stdout, re.M)) if log.returncode == 0 else set()
+    return {r["task"] for r in records if r["task"] in trailers or git("merge-base", "--is-ancestor", f"agents/{r.get('run')}/{r['task']}", head).returncode == 0}
+
+
 def _phase_task_items(items: list[dict]) -> dict[str, str]:
     """Task id to ticket path, `approved` items only: `mark_done` moves an item approved to done, and a
     `done` item that `phase_landable` also admits would be refused by the store's `--expect approved`."""
@@ -3266,6 +3283,7 @@ def _runs_land(a: argparse.Namespace) -> int:
     phase = getattr(a, "phase", None) or (None if a.task else _phase_needing_land(runs_dir, run_id))
     land_mode = work_state.work_state_mode(_lake_provider(a)[0]) if a.apply else "files"
     record, item_path, lease_task = None, None, None
+    land_at, ticket_tasks = None, []
     merged_pr: dict | None = None
     if phase:
         if land_mode == "store":
@@ -3296,14 +3314,24 @@ def _runs_land(a: argparse.Namespace) -> int:
         read_forge = pr_forge or forge.forge_for(forge.forge_name(profile))
         merged_pr = _phase_merged_pr(repo, initiative, phase, default_branch, read_forge) if read_forge is not None else None
         already_merged = merged_pr is not None
+        land_at = land.granularity(phase_record)
+        ticket_items, phases = _ticket_items(runs_dir.parent / "work", initiative, runs_dir, land_mode, (phase, items)) if land_at == "ticket" else ({}, [])
+        ticket_tasks = list(ticket_items)
+        for earlier_phase in (phases if land_mode == "store" else []):
+            if earlier_phase != phase:
+                _backfill_phase_task_files(runs_dir, run_id, earlier_phase)
+        earlier = [r for p in phases if p != phase for r in _land_phase_record(runs_dir, run_id, p)[1]
+                   if r["task"] in ticket_items and r.get("status", "approved") == "approved"]
+        ticket_present = _ticket_present(repo, phase_record.get("card_branch") or f"epic/{initiative}/{phase}", earlier)
         plan_steps = land.land_plan(
-            {**phase_record, "initiative": initiative, "initiative_title": initiative_title}, {}, default_branch,
+            {**phase_record, "initiative": initiative, "initiative_title": initiative_title,
+             "last_phase": phase == phases[-1] if phases else bool(phase_record.get("last_phase"))}, {}, default_branch,
             repo_facts, items=items, task_records=task_records, phase_pr=phase_pr,
             task_facts=_phase_task_facts(repo, f"epic/{initiative}/{phase}", items, task_records),
-            already_merged=already_merged,
+            already_merged=already_merged, ticket_tasks=ticket_tasks, ticket_present=ticket_present,
         )
         steps = _land_enrich(plan_steps, path=searched, worktree_root=a.worktree_root, task_paths=task_paths,
-                              umbrella=profile.get("umbrella_dir"), task_items=_phase_task_items(items))
+                              umbrella=profile.get("umbrella_dir"), task_items={**_phase_task_items(items), **ticket_items})
         lease_task = f"phase:{initiative}/{phase}"
     else:
         record, searched, count, source = _land_load(runs_dir, run_id, a.task)
@@ -3338,7 +3366,8 @@ def _runs_land(a: argparse.Namespace) -> int:
     level = a.gate or _resolved_gate_level(runs_dir)
     if a.gate:
         print(f"land: --gate {level} overrides the resolved level")
-    planned, steps = steps, land.gate_steps(steps, level)
+    planned, steps = steps, (land.gate_steps(steps, level, land_at, ticket_tasks) if land_at else land.gate_steps(steps, level))
+    level = land.gate_level(level, land_at)
     if not a.apply:
         _print_behind_warning(a, runs_dir, run_id, repo, default_branch)
         for line in _land_checks_lines(steps):

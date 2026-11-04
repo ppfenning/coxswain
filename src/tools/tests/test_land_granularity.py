@@ -1,0 +1,154 @@
+import json
+import subprocess
+
+from agent_tools import cli, land
+
+BRANCH = "card/x/wire"
+
+
+def _phase(**extra):
+    return {"run": "epic-x-5", "phase": "seams", "initiative": "x", "card_branch": BRANCH, "last_phase": True, **extra}
+
+
+def _task(task, status="approved", repo="wire"):
+    return {"task": task, "title": task, "repo": repo, "status": status, "review": {"verdict": "approve"}}
+
+
+def _plan(record, ids, records=None, ticket_tasks=("a", "b", "z"), present=("z",)):
+    items = [{"id": t, "status": "approved"} for t in ids]
+    return land.land_plan(record, {}, "main", items=items, task_records=records or [_task(t) for t in ids],
+                          repo="wire", ticket_tasks=ticket_tasks, ticket_present=present)
+
+
+def _kinds(steps):
+    return [s["kind"] for s in steps]
+
+
+def _marked(steps):
+    return [s["task"] for s in steps if s["kind"] == "mark_done"]
+
+
+def test_granularity_defaults_to_ticket():
+    assert [land.granularity({"land_at": v}) for v in ("ticket", "level", "task", "bogus")] == ["ticket", "level", "task", "ticket"]
+    assert land.granularity({}) == "ticket"
+
+
+def test_ticket_plans_one_pr_and_marks_every_ticket_task_after_the_merge():
+    steps = _plan(_phase(), "ab")
+    assert _kinds(steps).count("pr_create") == 1
+    assert _marked(steps) == ["a", "b", "z"]
+    assert _kinds(steps).index("merge") < _kinds(steps).index("mark_done")
+    assert "pr_create" not in _kinds(_plan(_phase(last_phase=False), "ab"))
+    assert _marked(_plan(_phase(last_phase=False), "ab")) == []
+
+
+def test_ticket_without_a_card_branch_plans_one_pr_for_the_ticket_not_the_phase():
+    rec = {**_task("a"), "arbitration": {"verdict": "approve"}}
+    last = _plan(_phase(card_branch=""), "a", [rec], ("a", "z"))
+    early = _plan(_phase(card_branch="", last_phase=False), "a", [rec], ("a", "z"))
+    assert _kinds(last).count("pr_create") == 1 and _marked(last) == ["a", "z"]
+    assert "pr_create" not in _kinds(early) and _marked(early) == []
+
+
+def test_level_opens_one_pr_per_phase_and_marks_only_its_tasks():
+    steps = _plan(_phase(land_at="level", last_phase=False), "ab")
+    assert _kinds(steps).count("pr_create") == 1
+    assert _marked(steps) == ["a", "b"]
+
+
+def test_task_keeps_the_per_task_path():
+    steps = _plan(_phase(land_at="task", last_phase=False), "ab")
+    assert "pr_create" not in _kinds(steps)
+    assert _marked(steps) == ["a", "b"]
+
+
+def test_task_with_a_card_branch_on_the_last_phase_keeps_the_legacy_plan():
+    items = [{"id": t, "status": "approved"} for t in "ab"]
+    legacy = land.land_plan(_phase(land_at="task"), {}, "main", items=items, task_records=[_task("a"), _task("b")], repo="wire")
+    steps = _plan(_phase(land_at="task"), "ab")
+    assert steps == legacy and _kinds(steps).count("pr_create") == 1 and "merge" not in _kinds(steps)
+
+
+def test_gate_stops_at_the_one_pull_request_for_ticket():
+    steps = _plan(_phase(), "ab")
+    gated = land.gate_steps(steps, "ticket", "ticket", ["a", "b", "z"])
+    assert _kinds(gated)[-2:] == ["pr_create", "note"] and _marked(gated) == []
+    epic = land.gate_steps(steps, "epic", "ticket", ["a", "b", "z"])
+    assert _kinds(epic)[-2:] == ["wait_checks", "note"] and "merge" not in _kinds(epic) and _marked(epic) == []
+    assert _kinds(land.gate_steps(steps, "full", "ticket")) == _kinds(steps)
+
+
+def test_gate_stop_for_level_sits_at_the_pr_and_task_keeps_the_configured_level():
+    rec = {**_task("a"), "arbitration": {"verdict": "approve"}}
+    level = _plan(_phase(card_branch="", land_at="level"), "a", [rec])
+    task = _plan(_phase(card_branch="", land_at="task"), "a", [rec])
+    assert _kinds(level) == _kinds(task) and _kinds(level).count("pr_create") == 1
+    assert _kinds(land.gate_steps(level, "epic", "level"))[-1] == "wait_checks"
+    assert land.gate_steps(task, "phase", "task") == land.gate_steps(task, "phase")
+    assert land.gate_steps(task, "epic", "task") == land.gate_steps(task, "epic")
+
+
+def test_a_quarantined_task_in_the_ticket_set_is_not_marked_done():
+    steps = _plan(_phase(), "ab", [_task("a"), _task("b", "quarantined")], ("a", "b", "z"))
+    assert _marked(steps) == ["a", "z"]
+    assert [s["unmerged"] for s in steps if s["kind"] == "note"] == [["b"]]
+    assert "- b" not in steps[_kinds(steps).index("pr_create")]["body"]
+
+
+def test_a_skipped_task_in_the_ticket_set_is_not_marked_done():
+    steps = _plan(_phase(), "ab", [_task("a"), _task("b", repo="elsewhere")], ("a", "b", "z"))
+    assert _marked(steps) == ["a", "z"]
+
+
+def test_an_earlier_phase_task_whose_work_is_not_in_the_pr_is_not_marked_done():
+    for record in (_phase(), _phase(card_branch="")):
+        steps = _plan(record, "a", [{**_task("a"), "arbitration": {"verdict": "approve"}}], ("a", "y", "z"), present=("z",))
+        assert _marked(steps) == ["a", "z"]
+        assert [s["unmerged"] for s in steps if s["kind"] == "note"] == [["y"]]
+        assert _kinds(steps).index("merge") < _kinds(steps).index("mark_done")
+
+
+def _git(repo, *args):
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", *args], check=True, capture_output=True)
+
+
+def _cli_steps(tmp_path, monkeypatch, capsys, stacked, *gate):
+    repo, work, runs = tmp_path / "wire", tmp_path / "work" / "x", tmp_path / "runs"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "base")
+    _git(repo, "checkout", "-q", "-b", "agents/x-1/early")
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "early work")
+    _git(repo, "checkout", "-q", "-b", "epic/x/p2-b", "agents/x-1/early" if stacked else "main")
+    for phase, task in (("p1-a", "early"), ("p2-b", "late")):
+        (work / phase).mkdir(parents=True)
+        (work / phase / f"{task}.md").write_text(f"---\nid: {task}\nstate: approved\n---\nBody.\n")
+        (runs / "x-1" / "tasks" / phase).mkdir(parents=True)
+        record = {**_task(task), "run": "x-1", "build": {"files_touched": ["f"]}}
+        (runs / "x-1" / "tasks" / phase / f"{task}.json").write_text(json.dumps(record))
+    for phase in ("p1-a", "p2-b"):
+        (runs / f"x-1:{phase}.json").write_text(json.dumps({"initiative": "x"}))
+    monkeypatch.setattr(cli.base_branch, "base_ref", lambda *a, **k: "main")
+    monkeypatch.setattr(cli, "_land_repo_facts", lambda *a, **k: {"cartridge_error": None, "checks": [], "cartridge_checks": []})
+    monkeypatch.setattr(cli, "_land_refetch_phase_branch", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_repo_is_detached", lambda *a, **k: False)
+    cli.main(["runs", "land", "x-1", "--phase", "p2-b", "--repo", str(repo), "--runs-dir", str(runs), *gate])
+    out = capsys.readouterr().out
+    return json.loads(out[out.index("["):])
+
+
+def test_cli_land_marks_earlier_phase_tasks_done_when_their_work_is_in_the_stacked_branch(tmp_path, monkeypatch, capsys):
+    steps = _cli_steps(tmp_path, monkeypatch, capsys, True, "--gate", "full")
+    assert _kinds(steps).count("pr_create") == 1
+    assert _marked(steps) == ["early", "late"]
+
+
+def test_cli_land_leaves_an_earlier_phase_task_whose_work_is_not_in_the_branch(tmp_path, monkeypatch, capsys):
+    steps = _cli_steps(tmp_path, monkeypatch, capsys, False, "--gate", "full")
+    assert _marked(steps) == ["late"]
+    assert [s["unmerged"] for s in steps if s["kind"] == "note" and "unmerged" in s] == [["early"]]
+
+
+def test_cli_land_with_the_default_gate_stops_at_the_one_pull_request(tmp_path, monkeypatch, capsys):
+    steps = _cli_steps(tmp_path, monkeypatch, capsys, True)
+    assert _kinds(steps)[-2:] == ["pr_create", "note"] and _marked(steps) == []
