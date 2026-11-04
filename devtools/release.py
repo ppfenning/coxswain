@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import re
 import tomllib
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from pathlib import Path
 
 import yaml
@@ -156,14 +156,21 @@ def declares_tag_trigger(workflow_text: str) -> bool:
 def _bump_and_land(bump_step: dict, branch: str, body: str) -> list[dict]:
     """`bump_step` landed the way `cox runs land` lands: `push` the branch it
     was committed to, `pr_create`, `wait_checks`, `merge` — the kinds
-    `_execute_land_step` (`agent_tools/cli.py`) already knows how to run."""
+    `_execute_land_step` (`agent_tools/cli.py`) already knows how to run.
+    Each carries the bump's `base`, the release branch the pull request targets."""
     component = bump_step["component"]
     title = bump_step["commit_subject"]
+    base = bump_step["base"]
     return [bump_step,
-            {"kind": "push", "component": component, "branch": branch},
-            {"kind": "pr_create", "component": component, "title": title, "body": body},
-            {"kind": "wait_checks", "component": component},
-            {"kind": "merge", "component": component}]
+            {"kind": "push", "component": component, "branch": branch, "base": base},
+            {"kind": "pr_create", "component": component, "title": title, "body": body, "base": base},
+            {"kind": "wait_checks", "component": component, "base": base},
+            {"kind": "merge", "component": component, "base": base}]
+
+
+def _release_branch_step(component: str, version: str) -> dict:
+    """The step that cuts `release/<version>` from the rehearsed commit, before a repo's first bump or tag."""
+    return {"kind": "release_branch", "component": component, "branch": release_branch_name(version)}
 
 
 def _component_github_release_step(name: str, repo: str, tag: str, version: str, umbrella_slug: str | None,
@@ -269,25 +276,35 @@ def _joins(spec: Mapping, version: str) -> bool:
     return str(spec.get("since", "")) == version
 
 
+def tagged_components(manifest: Mapping, version: str, pinned_commits: Mapping[str, int] | None) -> set[str]:
+    """Names of the repo components a release of `version` tags: those with commits since their pin, or joining at `version`."""
+    counts = pinned_commits or {}
+    return {name for name, spec in manifest.get("components", {}).items()
+            if spec.get("repo") and (counts.get(name) or _joins(spec, version))}
+
+
 def _component_steps(name: str, spec: Mapping, version: str, umbrella_slug: str | None,
                      found: str | None, is_cargo: bool) -> list[dict]:
     """A changed component's own release: `tag` and `github_release`, after a version bump landed first when its
     checkout's `found` version (pyproject.toml, or Cargo.toml when `is_cargo`) is behind `version`."""
     new_tag = "v" + version
-    tag_step = {"kind": "tag", "component": name, "repo": spec["repo"], "tag": new_tag}
+    tag_step = {"kind": "tag", "component": name, "repo": spec["repo"], "tag": new_tag,
+                "ref": release_branch_name(version)}
+    cut = _release_branch_step(name, version)
     gr_step = _component_github_release_step(name, spec["repo"], new_tag, version, umbrella_slug,
                                                fallback_from=spec["tag"])
     found_key = release_key(found) if found is not None else None
     if found_key is None or found_key >= release_key(version):
-        return [tag_step, gr_step]
-    branch = f"release/{version}"
+        return [cut, tag_step, gr_step]
+    base = release_branch_name(version)
+    branch = bump_branch_name(version)
     manifest_file = "Cargo.toml" if is_cargo else "pyproject.toml"
     kind = "bump_cargo" if is_cargo else "bump_pyproject"
     subject = f"{'cargo' if is_cargo else 'pyproject'}: bump to {version} to match the tag"
     bump_step = {"kind": kind, "component": name, "repo": spec["repo"],
-                 "branch": branch, "commit_subject": subject, "from": found, "to": version}
+                 "branch": branch, "base": base, "commit_subject": subject, "from": found, "to": version}
     body = f"Bumps {name}'s {manifest_file} version to {version} to match tag {new_tag}.\n\n{pr_footer(version)}"
-    return _bump_and_land(bump_step, branch, body) + [tag_step, gr_step]
+    return [cut, *_bump_and_land(bump_step, branch, body), tag_step, gr_step]
 
 
 def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, list[str] | None],
@@ -296,7 +313,8 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
                   repository_url: str | None = None,
                   tap_state: str = "clean",
                   cargo_versions: Mapping[str, str | None] | None = None,
-                  *, tap_only: bool = False, index_changed: bool = False) -> list[dict]:
+                  *, tap_only: bool = False, index_changed: bool = False,
+                  resuming: Collection[str] = ()) -> list[dict]:
     """Steps in order:
 
     1. per `[components]` entry (only dash): `pinned` when `pinned_commits` shows no commits since its manifest
@@ -315,6 +333,12 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
     5. `tap_formula_pr`, every release, or a `refuse` naming the tap when `tap_state` (`clean`, `dirty`,
        `absent`) says the checkout is unfit.
 
+    Every repo is cut from a `release_branch` (`release/<version>`) before its first bump or tag: a bump lands
+    on `release/<version>-bump` and merges into `release/<version>`, each tag is made on `release/<version>`
+    (`ref`), and a `merge_back` per cut repo follows the last `github_release`, before `tap_formula_pr`.
+    `resuming` names the components (`coxswain` for the umbrella) whose origin already lists
+    `release/<version>`: a partial cut left their tag, so a collision on them is not a refusal.
+
     A single `refuse` names the reason when `version` is not CalVer `YYYY.M.N`, is below the manifest's
     version (a legacy 0.x version is below every CalVer one), or `v<version>` already exists on the umbrella
     (`existing_tags["coxswain"]`) or on a component this plan tags; or when a remote this plan tags could
@@ -330,8 +354,7 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
     cargo_versions = cargo_versions or {}
     new_tag = "v" + version
     repo_components = [(name, spec) for name, spec in manifest.get("components", {}).items() if spec.get("repo")]
-    commit_counts = {name: (pinned_commits or {}).get(name) or 0 for name, _ in repo_components}
-    tagged = {name for name, spec in repo_components if commit_counts[name] or _joins(spec, version)}
+    tagged = tagged_components(manifest, version, pinned_commits)
     current = manifest.get(UMBRELLA, {}).get("version")
     current_key = release_key(str(current)) if current is not None else None
     if current_key is not None and release_key(version) < current_key:
@@ -345,7 +368,8 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
     unknown = sorted(name for name in checked if existing_tags.get(name) is None)
     if unknown:
         return _refuse(", ".join(unknown), f"tags unknown for {', '.join(unknown)} (remote unreadable); refusing rather than risk reusing {new_tag}")
-    colliding = sorted(name for name in checked if new_tag in (existing_tags.get(name) or []))
+    colliding = sorted(name for name in checked
+                       if name not in resuming and new_tag in (existing_tags.get(name) or []))
     if colliding:
         return _refuse(", ".join(colliding), f"tag {new_tag} already exists on {', '.join(colliding)}")
 
@@ -361,22 +385,25 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
     # The release notes are a page of the docs site, so they live under `docs/` with every other page.
     notes_path = f"docs/releases/{version}.md"
     notes_step = {"kind": "notes", "component": "notes", "path": notes_path}
-    branch = f"release/{version}"
+    base = release_branch_name(version)
+    branch = bump_branch_name(version)
     bump_step = {"kind": "bump_version", "component": UMBRELLA, "from": current, "to": version,
-                 "branch": branch, "commit_subject": f"release: bump to {version} to match the tag"}
+                 "branch": branch, "base": base, "commit_subject": f"release: bump to {version} to match the tag"}
     body = f"Bumps pyproject.toml and manifest.toml to {version} to match tag {new_tag}.\n\n{pr_footer(version)}"
     at_current = current_key is not None and release_key(version) == current_key
-    index_step = {"kind": "commit_index", "component": UMBRELLA, "branch": branch,
+    index_step = {"kind": "commit_index", "component": UMBRELLA, "branch": branch, "base": base,
                   "commit_subject": f"release: land the {version} releases index",
                   "paths": ["docs/releases/index.md"]}
     bump = (_bump_and_land(index_step, branch, pr_footer(version)) if at_current and index_changed else
             [] if at_current else _bump_and_land(bump_step, branch, body))
-    release_steps = [{"kind": "tag_self", "component": UMBRELLA, "tag": new_tag},
+    release_steps = [{"kind": "tag_self", "component": UMBRELLA, "tag": new_tag, "ref": base},
                      {"kind": "github_release", "component": UMBRELLA, "repo": umbrella_slug, "tag": new_tag,
                       "title": f"coxswain {version}", "notes_path": notes_path, "heading": None}]
-    steps = component_steps + [notes_step] + bump + release_steps
-    return _with_wait_workflows(steps) + _tap_formula_steps(version, tap_state,
-                                                            towpath_version(repo_components, tagged, version))
+    steps = component_steps + [notes_step, _release_branch_step(UMBRELLA, version)] + bump + release_steps
+    cut_repos = [step["component"] for step in steps if step["kind"] == "release_branch"]
+    merge_backs = [{"kind": "merge_back", "component": name, "branch": base} for name in cut_repos]
+    return (_with_wait_workflows(steps) + merge_backs
+            + _tap_formula_steps(version, tap_state, towpath_version(repo_components, tagged, version)))
 
 
 def release_index_text(existing_index: str, version: str, manifest: Mapping,

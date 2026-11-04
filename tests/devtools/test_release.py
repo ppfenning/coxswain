@@ -160,32 +160,37 @@ def _cut(tmp_path, monkeypatch, version=V0, *flags, fake=None, manifest_toml=_MA
 
 def test_first_cut_of_the_declared_version_tags_the_repository_with_no_bump():
     steps = release.release_plan(_manifest(), V0, _no_tags(_manifest()), repository_url=_REPOSITORY_URL)
-    assert _kinds(steps) == ["pinned", "notes", "tag_self", "wait_workflows", "github_release", "tap_formula_pr"]
+    assert _kinds(steps) == ["pinned", "notes", "release_branch", "tag_self", "wait_workflows", "github_release",
+                             "merge_back", "tap_formula_pr"]
     assert steps[0] == {"kind": "pinned", "component": "dash", "tag": "v0.42.0"}
     assert steps[1] == {"kind": "notes", "component": "notes", "path": f"docs/releases/{V0}.md"}
-    assert steps[2] == {"kind": "tag_self", "component": "coxswain", "tag": f"v{V0}"}
-    assert steps[3] == {"kind": "wait_workflows", "component": "coxswain", "tag": f"v{V0}"}
-    assert steps[4] == {"kind": "github_release", "component": "coxswain", "repo": "ppfenning/coxswain",
+    assert steps[2] == {"kind": "release_branch", "component": "coxswain", "branch": f"release/{V0}"}
+    assert steps[3] == {"kind": "tag_self", "component": "coxswain", "tag": f"v{V0}", "ref": f"release/{V0}"}
+    assert steps[4] == {"kind": "wait_workflows", "component": "coxswain", "tag": f"v{V0}"}
+    assert steps[5] == {"kind": "github_release", "component": "coxswain", "repo": "ppfenning/coxswain",
                         "tag": f"v{V0}", "title": f"coxswain {V0}", "notes_path": f"docs/releases/{V0}.md",
                         "heading": None}
+    assert steps[6] == {"kind": "merge_back", "component": "coxswain", "branch": f"release/{V0}"}
 
 
 def test_a_changed_index_at_the_declared_version_is_committed_and_landed_before_the_tag():
     steps = release.release_plan(_manifest(), V0, _no_tags(_manifest()), index_changed=True)
     kinds = _kinds(steps)
     assert kinds[kinds.index("notes") + 1:kinds.index("tag_self")] == [
-        "commit_index", "push", "pr_create", "wait_checks", "merge"]
+        "release_branch", "commit_index", "push", "pr_create", "wait_checks", "merge"]
     commit = steps[kinds.index("commit_index")]
-    assert commit == {"kind": "commit_index", "component": "coxswain", "branch": f"release/{V0}",
-                      "commit_subject": f"release: land the {V0} releases index",
+    assert commit == {"kind": "commit_index", "component": "coxswain", "branch": f"release/{V0}-bump",
+                      "base": f"release/{V0}", "commit_subject": f"release: land the {V0} releases index",
                       "paths": ["docs/releases/index.md"]}
-    assert steps[kinds.index("push")]["branch"] == f"release/{V0}"
+    assert steps[kinds.index("push")]["branch"] == f"release/{V0}-bump"
+    assert {steps[kinds.index(k)]["base"] for k in ("push", "pr_create", "wait_checks", "merge")} == {f"release/{V0}"}
     assert steps[kinds.index("pr_create")]["body"] == release.pr_footer(V0)
 
 
 def test_an_unchanged_index_at_the_declared_version_plans_no_commit():
     steps = release.release_plan(_manifest(), V0, _no_tags(_manifest()), index_changed=False)
-    assert _kinds(steps) == ["pinned", "notes", "tag_self", "wait_workflows", "github_release", "tap_formula_pr"]
+    assert _kinds(steps) == ["pinned", "notes", "release_branch", "tag_self", "wait_workflows", "github_release",
+                             "merge_back", "tap_formula_pr"]
 
 
 def test_a_bump_plan_ignores_index_changed():
@@ -195,20 +200,23 @@ def test_a_bump_plan_ignores_index_changed():
 
 def test_a_later_version_bumps_pyproject_and_manifest_on_a_release_branch_and_lands_it_before_the_tag():
     steps = release.release_plan(_manifest(), V1, _no_tags(_manifest()))
-    assert _kinds(steps) == ["pinned", "notes", "bump_version", "push", "pr_create", "wait_checks", "merge",
-                             "tag_self", "wait_workflows", "github_release", "tap_formula_pr"]
-    assert steps[2] == {"kind": "bump_version", "component": "coxswain", "from": V0, "to": V1,
-                        "branch": f"release/{V1}", "commit_subject": f"release: bump to {V1} to match the tag"}
-    assert steps[3] == {"kind": "push", "component": "coxswain", "branch": f"release/{V1}"}
-    assert steps[4] == {"kind": "pr_create", "component": "coxswain", "title": f"release: bump to {V1} to match the tag",
+    base = f"release/{V1}"
+    assert _kinds(steps) == ["pinned", "notes", "release_branch", "bump_version", "push", "pr_create", "wait_checks",
+                             "merge", "tag_self", "wait_workflows", "github_release", "merge_back", "tap_formula_pr"]
+    assert steps[3] == {"kind": "bump_version", "component": "coxswain", "from": V0, "to": V1,
+                        "branch": f"release/{V1}-bump", "base": base,
+                        "commit_subject": f"release: bump to {V1} to match the tag"}
+    assert steps[4] == {"kind": "push", "component": "coxswain", "branch": f"release/{V1}-bump", "base": base}
+    assert steps[5] == {"kind": "pr_create", "component": "coxswain", "title": f"release: bump to {V1} to match the tag",
                         "body": f"Bumps pyproject.toml and manifest.toml to {V1} to match tag v{V1}.\n\n"
-                                + release.pr_footer(V1)}
-    assert steps[5:7] == [{"kind": "wait_checks", "component": "coxswain"}, {"kind": "merge", "component": "coxswain"}]
+                                + release.pr_footer(V1), "base": base}
+    assert steps[6:8] == [{"kind": "wait_checks", "component": "coxswain", "base": base},
+                          {"kind": "merge", "component": "coxswain", "base": base}]
 
 
 def test_the_first_calver_release_follows_the_last_semver_one():
     steps = release.release_plan(_manifest("0.47.0"), V0, _no_tags(_manifest()))
-    assert steps[2]["kind"] == "bump_version" and steps[2]["from"] == "0.47.0" and steps[2]["to"] == V0
+    assert steps[3]["kind"] == "bump_version" and steps[3]["from"] == "0.47.0" and steps[3]["to"] == V0
 
 
 @pytest.mark.parametrize("version", ["0.48.0", "2026.01.0", "2026.10.0-beta.1", "v2026.10.0", "not-a-version"])
@@ -243,9 +251,10 @@ def test_a_pinned_dashs_unreadable_remote_or_colliding_tag_does_not_refuse_the_r
 def test_a_changed_dash_is_tagged_at_the_release_version_with_its_own_github_release():
     steps = release.release_plan(_manifest(), V0, _no_tags(_manifest()), pinned_commits={"dash": 2},
                                  repository_url=_REPOSITORY_URL)
-    assert _kinds(steps)[:4] == ["tag", "wait_workflows", "github_release", "notes"]
-    assert steps[0] == {"kind": "tag", "component": "dash", "repo": "org/dash", "tag": f"v{V0}"}
-    assert steps[2] == {"kind": "github_release", "component": "dash", "repo": "org/dash", "tag": f"v{V0}",
+    assert _kinds(steps)[:5] == ["release_branch", "tag", "wait_workflows", "github_release", "notes"]
+    assert steps[0] == {"kind": "release_branch", "component": "dash", "branch": f"release/{V0}"}
+    assert steps[1] == {"kind": "tag", "component": "dash", "repo": "org/dash", "tag": f"v{V0}", "ref": f"release/{V0}"}
+    assert steps[3] == {"kind": "github_release", "component": "dash", "repo": "org/dash", "tag": f"v{V0}",
                         "title": f"coxswain-dash {V0}", "notes_path": f"docs/releases/{V0}.md",
                         "heading": "## coxswain-dash", "from": "v0.42.0",
                         "link": f"https://github.com/ppfenning/coxswain/releases/tag/v{V0}"}
@@ -256,23 +265,25 @@ def test_a_changed_dash_behind_the_version_gets_bump_cargo_and_the_land_sequence
     steps = release.release_plan(_manifest(), V0, _no_tags(_manifest()), pinned_commits={"dash": 1},
                                  cargo_versions={"dash": "0.42.0"})
     dash = [s for s in steps if s["component"] == "dash"]
-    assert _kinds(dash) == ["bump_cargo", "push", "pr_create", "wait_checks", "merge", "tag", "wait_workflows",
-                            "github_release"]
-    assert dash[0] == {"kind": "bump_cargo", "component": "dash", "repo": "org/dash", "branch": f"release/{V0}",
-                       "commit_subject": f"cargo: bump to {V0} to match the tag", "from": "0.42.0", "to": V0}
-    assert dash[2]["body"] == (f"Bumps dash's Cargo.toml version to {V0} to match tag v{V0}.\n\n"
+    assert _kinds(dash) == ["release_branch", "bump_cargo", "push", "pr_create", "wait_checks", "merge", "tag",
+                            "wait_workflows", "github_release", "merge_back"]
+    assert dash[1] == {"kind": "bump_cargo", "component": "dash", "repo": "org/dash", "branch": f"release/{V0}-bump",
+                       "base": f"release/{V0}", "commit_subject": f"cargo: bump to {V0} to match the tag",
+                       "from": "0.42.0", "to": V0}
+    assert dash[3]["body"] == (f"Bumps dash's Cargo.toml version to {V0} to match tag v{V0}.\n\n"
                                + release.pr_footer(V0))
 
 
 def test_a_changed_dash_already_at_the_version_gets_no_bump():
     steps = release.release_plan(_manifest(), V0, _no_tags(_manifest()), pinned_commits={"dash": 1},
                                  cargo_versions={"dash": V0})
-    assert _kinds([s for s in steps if s["component"] == "dash"]) == ["tag", "wait_workflows", "github_release"]
+    assert _kinds([s for s in steps if s["component"] == "dash"]) == [
+        "release_branch", "tag", "wait_workflows", "github_release", "merge_back"]
 
 
 def test_a_dash_joining_at_its_since_version_is_tagged_with_no_commit_count():
     steps = release.release_plan(_manifest(since=V0), V0, _no_tags(_manifest()))
-    assert {"kind": "tag", "component": "dash", "repo": "org/dash", "tag": f"v{V0}"} in steps
+    assert {"kind": "tag", "component": "dash", "repo": "org/dash", "tag": f"v{V0}", "ref": f"release/{V0}"} in steps
 
 
 def test_a_changed_dashs_existing_tag_refuses():
@@ -820,8 +831,9 @@ def test_cli_release_dry_run_prints_every_step_and_touches_no_file(tmp_path, cap
 def test_cli_release_tags_and_pushes_the_checkout_then_writes_its_github_release(tmp_path, monkeypatch, no_tap):
     rc, calls, umbrella = _cut(tmp_path, monkeypatch, index_tagged=set())
     assert rc == 0
-    assert [c for c in calls if c[3] in ("tag", "push")] == [release.tag_argv(str(umbrella), V0),
-                                                           release.push_argv(str(umbrella), V0)]
+    assert [c for c in calls if c[3] in ("tag", "push")] == [
+        release.release_branch_push_argv(str(umbrella), "main", f"release/{V0}"),
+        release.tag_argv(str(umbrella), V0, f"origin/release/{V0}"), release.push_argv(str(umbrella), V0)]
     assert [c for c in calls if c[:2] == ["gh", "run"]] == [
         ["gh", "run", "list", "--branch", f"v{V0}", "--json", "status,conclusion,name,url,event,headBranch"]]
     assert [(c[2], c[3]) for c in calls if c[:2] == ["gh", "release"]] == [("view", f"v{V0}"), ("create", f"v{V0}")]
@@ -831,9 +843,12 @@ def test_cli_release_tags_a_changed_dash_before_the_checkout(tmp_path, monkeypat
     rc, calls, umbrella = _cut(tmp_path, monkeypatch, fake=_fake_git_run(commits=1), index_tagged={"dash"})
     assert rc == 0
     dash = str(tmp_path / "dash")
+    cut = f"origin/release/{V0}"
     assert [c for c in calls if c[3] in ("tag", "push")] == [
-        release.tag_argv(dash, V0), release.push_argv(dash, V0),
-        release.tag_argv(str(umbrella), V0), release.push_argv(str(umbrella), V0)]
+        release.release_branch_push_argv(dash, "main", f"release/{V0}"),
+        release.tag_argv(dash, V0, cut), release.push_argv(dash, V0),
+        release.release_branch_push_argv(str(umbrella), "main", f"release/{V0}"),
+        release.tag_argv(str(umbrella), V0, cut), release.push_argv(str(umbrella), V0)]
     assert "tag dash: v0.42.0" not in capsys.readouterr().out
 
 
@@ -867,11 +882,12 @@ def test_cli_release_runs_the_bump_version_land_sequence_and_tags_what_merged(tm
     own = [c for c in calls if c[0] == "git" and c[2] == str(umbrella) and c[3] != "fetch" and "--count" not in c]
     # After `merge` the executor switches back to the default branch and pulls it before `tag_self` tags HEAD,
     # so the tag lands on the squash-merged commit rather than the stale one on release/<version>.
-    assert [c[3] for c in own] == ["status", "rev-parse", "symbolic-ref", "checkout", "add", "commit", "push", "status",
-                                   "symbolic-ref", "checkout", "pull", "tag", "push"]
-    assert own[3] == release.checkout_branch_argv(str(umbrella), f"release/{V1}")
-    assert own[4] == release.add_argv(str(umbrella), "manifest.toml", "docs/releases/index.md", "pyproject.toml", "uv.lock")
-    assert own[9:11] == [release.checkout_ref_argv(str(umbrella), "main"), release.pull_argv(str(umbrella), "main")]
+    kinds = [c[3] for c in own]
+    assert kinds.index("add") < kinds.index("commit") < kinds.index("pull") < kinds.index("tag") < len(kinds) - 1
+    assert "push" in kinds[kinds.index("tag"):]
+    assert release.add_argv(str(umbrella), "manifest.toml", "docs/releases/index.md", "pyproject.toml", "uv.lock") in own
+    assert own[kinds.index("pull") - 1:kinds.index("pull") + 1] == [
+        release.checkout_ref_argv(str(umbrella), f"release/{V1}"), release.pull_argv(str(umbrella), f"release/{V1}")]
     assert ["gh", "pr", "merge", "--squash", "--delete-branch"] in calls
     assert f'version = "{V1}"' in (umbrella / "manifest.toml").read_text()
     assert f'version = "{V1}"' in (umbrella / "pyproject.toml").read_text()
@@ -879,11 +895,93 @@ def test_cli_release_runs_the_bump_version_land_sequence_and_tags_what_merged(tm
     assert 'name = "colorama"\nversion = "0.4.6"' in (umbrella / "uv.lock").read_text()
 
 
+def _origin_cut(inner, *, branch=False, tag=False):
+    """`inner` with an origin that lists release/V0 once it was pushed (or from the start, `branch`) and v0 once
+    pushed (or from the start, `tag`)."""
+    listed = {f"refs/heads/release/{V0}": branch, f"refs/tags/v{V0}": tag}
+
+    def run(argv, cwd):
+        if argv[0] == "git" and argv[3] == "push":
+            for ref in listed:
+                listed[ref] = listed[ref] or argv[-1].endswith(ref.removeprefix("refs/heads/")) or argv[-1] == f"v{V0}"
+        if argv[0] == "git" and argv[3] == "ls-remote":
+            return (0, f"cafe\t{argv[5]}\n") if listed.get(argv[5]) else (0, "")
+        if argv[0] == "git" and argv[3] == "merge-base":
+            return 0, "abc123\n"
+        return inner(argv, cwd)
+    return run
+
+
+def _cut_with_origin(tmp_path, monkeypatch, **origin):
+    calls, inner = _fake_git_run()
+    rc, _, umbrella = _cut(tmp_path, monkeypatch, fake=(calls, _origin_cut(inner, **origin)), index_tagged=set())
+    return rc, calls, str(umbrella)
+
+
+def test_cut_the_bump_pull_request_has_the_release_branch_as_its_base(tmp_path, monkeypatch, no_tap):
+    umbrella = _checkout(tmp_path, notes="notes", version=V1)
+    (umbrella / "pyproject.toml").write_text(f'[project]\nname = "coxswain"\nversion = "{V0}"\n')
+    (umbrella / "uv.lock").write_text(f'version = 1\n\n[[package]]\nname = "coxswain"\nversion = "{V0}"\n')
+    rc, calls, _ = _cut(tmp_path, monkeypatch, V1)
+    create = next(c for c in calls if c[:3] == ["gh", "pr", "create"])
+    assert rc == 0 and create[create.index("--base") + 1] == f"release/{V1}"
+
+
+def test_cut_tags_origin_release_branch_not_head_and_pushes_the_tag_after_the_bump_merged(tmp_path, monkeypatch, no_tap):
+    umbrella = _checkout(tmp_path, notes="notes", version=V1)
+    (umbrella / "pyproject.toml").write_text(f'[project]\nname = "coxswain"\nversion = "{V0}"\n')
+    (umbrella / "uv.lock").write_text(f'version = 1\n\n[[package]]\nname = "coxswain"\nversion = "{V0}"\n')
+    rc, calls, _ = _cut(tmp_path, monkeypatch, V1)
+    tag = calls.index(release.tag_argv(str(umbrella), V1, f"origin/release/{V1}"))
+    merged = calls.index(["gh", "pr", "merge", "--squash", "--delete-branch"])
+    assert rc == 0 and release.tag_argv(str(umbrella), V1) not in calls
+    assert merged < tag < calls.index(release.push_argv(str(umbrella), V1))
+
+
+def test_cut_merges_the_release_branch_back_after_the_last_tag_push(tmp_path, monkeypatch, no_tap):
+    rc, calls, umbrella = _cut_with_origin(tmp_path, monkeypatch)
+    back = next(i for i, c in enumerate(calls) if c[:3] == ["gh", "pr", "create"])
+    create = calls[back]
+    assert rc == 0 and create[create.index("--base") + 1] == "main" and create[create.index("--head") + 1] == f"release/{V0}"
+    assert calls.index(release.push_argv(umbrella, V0)) < back
+
+
+def test_cut_rerun_with_the_tag_and_release_branch_on_origin_skips_the_tag(tmp_path, monkeypatch, no_tap, capsys):
+    calls, inner = _fake_git_run()
+    umbrella = _checkout(tmp_path, notes="notes")
+    (umbrella / "docs" / "releases" / "index.md").write_text(release.release_index_text("", V0, tomllib.loads(_MANIFEST_TOML)))
+    monkeypatch.setattr(cli, "_remote_tags", lambda repo: [f"v{V0}"])
+    monkeypatch.setattr(cli, "_real_run", _origin_cut(inner, branch=True, tag=True))
+    monkeypatch.setattr(cli, "_component_declares_tag_trigger", lambda directory: True)
+    rc = cli.main(["release", V0, "--manifest", str(umbrella / "manifest.toml")])
+    out = capsys.readouterr().out
+    assert rc == 0 and "already exists" not in out and f"tag_self coxswain: v{V0} already at cafe" in out
+    assert not [c for c in calls if c[3:4] == ["tag"]] and "github_release coxswain" in out
+
+
+def test_resuming_relaxes_a_tag_collision_only_on_the_listed_names():
+    tags = {"coxswain": [f"v{V0}"], "dash": [f"v{V0}"]}
+    plan = release.release_plan(_manifest(), V0, tags, pinned_commits={"dash": 1}, resuming={"coxswain"})
+    assert _kinds(plan) == ["refuse"] and "dash" in plan[0]["detail"] and "coxswain" not in plan[0]["detail"]
+    ok = release.release_plan(_manifest(), V0, tags, pinned_commits={"dash": 1}, resuming={"coxswain", "dash"})
+    assert "refuse" not in _kinds(ok)
+    only_self = release.release_plan(_manifest(), V0, {**tags, "dash": []}, resuming={"coxswain"})
+    assert "refuse" not in _kinds(only_self)
+    assert _kinds(release.release_plan(_manifest(), V0, {**tags, "dash": []})) == ["refuse"]
+
+
+def test_merge_back_follows_the_last_github_release_and_precedes_the_tap_pr_for_each_cut_repo():
+    kinds = _kinds(release.release_plan(_manifest(), V0, _no_tags(_manifest()), pinned_commits={"dash": 1}))
+    assert kinds[-3:] == ["merge_back", "merge_back", "tap_formula_pr"]
+    assert kinds.index("merge_back") > max(i for i, k in enumerate(kinds) if k == "github_release")
+    assert kinds.index("release_branch") < kinds.index("tag") and kinds.count("release_branch") == 2
+
+
 def test_release_execute_bump_version_leaves_the_files_untouched_when_checkout_fails(tmp_path):
     umbrella = _checkout(tmp_path)
     (umbrella / "pyproject.toml").write_text(f'[project]\nname = "coxswain"\nversion = "{V0}"\n')
     calls, fake_run = _fake_git_run(fail=(str(umbrella), "checkout"))
-    step = release.release_plan(_manifest(), V1, _no_tags(_manifest()))[2]
+    step = next(s for s in release.release_plan(_manifest(), V1, _no_tags(_manifest())) if s["kind"] == "bump_version")
     rc = cli._release_execute([step], V1, str(tmp_path), {}, str(umbrella), fake_run, {"components": {}},
                               str(umbrella / "manifest.toml"))
     assert rc == 2
@@ -898,7 +996,7 @@ def test_release_execute_bump_cargo_rewrites_cargo_toml_and_its_own_cargo_lock_s
     (dash / "Cargo.lock").write_text(
         'version = 3\n\n[[package]]\nname = "towpath"\nversion = "0.42.0"\n\n[[package]]\nname = "other"\nversion = "0.1.0"\n')
     step = release.release_plan(_manifest(), V0, _no_tags(_manifest()), pinned_commits={"dash": 1},
-                                cargo_versions={"dash": "0.42.0"})[0]
+                                cargo_versions={"dash": "0.42.0"})[1]
     calls, fake_run = _fake_git_run()
     rc = cli._release_execute([step], V0, str(tmp_path), {}, str(tmp_path / "coxswain"), fake_run,
                               {"components": {}}, str(tmp_path / "manifest.toml"))
@@ -913,7 +1011,11 @@ def test_release_execute_a_bump_already_at_the_version_no_ops_its_land_steps(tmp
     umbrella = _checkout(tmp_path, _manifest_toml_at(V1))
     steps = [s for s in release.release_plan(_manifest(), V1, _no_tags(_manifest()))
              if s["kind"] in ("bump_version", "push", "pr_create", "wait_checks", "merge")]
-    calls, fake_run = _fake_git_run()
+    calls, inner = _fake_git_run()
+
+    def fake_run(argv, cwd):
+        # The bump finds the version already on origin/<base>, so nothing is committed or landed.
+        return (0, _manifest_toml_at(V1)) if argv[3] == "show" else inner(argv, cwd)
     rc = cli._release_execute(steps, V1, str(tmp_path), {}, str(umbrella), fake_run, {"components": {}},
                               str(umbrella / "manifest.toml"))
     assert rc == 0 and calls == []
@@ -954,7 +1056,9 @@ def test_cli_release_edits_an_existing_github_release_instead_of_creating_one(tm
         return inner(argv, cwd)
     rc, _, _ = _cut(tmp_path, monkeypatch, fake=(calls, run))
     assert rc == 0
-    assert [(c[2], c[3]) for c in calls if c[:2] == ["gh", "release"]] == [("view", f"v{V0}"), ("edit", f"v{V0}")]
+    # view, then view again for the body the step compares with its notes, then edit
+    assert [(c[2], c[3]) for c in calls if c[:2] == ["gh", "release"]] == [
+        ("view", f"v{V0}"), ("view", f"v{V0}"), ("edit", f"v{V0}")]
 
 
 def test_cli_release_writes_dashs_section_and_link_line_to_its_github_release(tmp_path, monkeypatch, no_tap):
