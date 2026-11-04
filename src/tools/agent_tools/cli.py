@@ -151,6 +151,7 @@ host_cmd = _LazyModule("agent_tools.host_cmd")
 install = _LazyModule("agent_tools.install")
 install_exec = _LazyModule("agent_tools.install_exec")
 install_root = _LazyModule("agent_tools.install_root")
+intake_queue = _LazyModule("agent_tools.intake_queue")
 intake_state = _LazyModule("agent_tools.intake_state")
 lake_config = _LazyModule("agent_tools.lake_config")
 lake_lease = _LazyModule("agent_tools.lake_lease")
@@ -4388,6 +4389,22 @@ def _live_runs_on(live: Collection[str], initiative: str, recorded: Mapping[str,
     return {run for run in live if run not in recorded or recorded[run] == initiative}
 
 
+def _after_ids(values: Sequence[str] | None) -> list[str] | None:
+    """`--after` values as ids: None when the flag was absent, [] when every value was empty (clear the list)."""
+    return None if values is None else [part.strip() for value in values for part in value.split(",") if part.strip()]
+
+
+def _held_entries(rows: Sequence[Mapping]) -> list[dict]:
+    """`render_status`'s `held` rows from queue rows: the intake id and its `hold_reason` when it has one."""
+    return [{"id": row["task_id"], "reason": str(row["extra"].get("hold_reason") or "")} for row in rows]
+
+
+def _waiting_by_entry_id(queue: Sequence[Mapping], waiting: Mapping[str, Sequence[str]]) -> dict[str, Sequence[str]]:
+    """`waiting` (keyed by file stem) re-keyed by the `id:` the intake group lines print, which differs from the stem under slug ids."""
+    ids = {row["task_id"]: str(row["extra"].get("id") or row["task_id"]) for row in queue if row["kind"] == "intake"}
+    return {ids.get(task_id, task_id): names for task_id, names in waiting.items()}
+
+
 def _route_edit(a: argparse.Namespace) -> int:
     runs_dir, reason = _runs_dir_for_land(a)
     if runs_dir is None:
@@ -4401,7 +4418,7 @@ def _route_edit(a: argparse.Namespace) -> int:
         runs_dir, runs_dir.parent, target_id, title=a.title, body=a.body, body_file=a.body_file, repo=a.repo,
         surfaces=a.surfaces, state=a.state, dry_run=a.dry_run, live_runs=on_target, now=now,
         rebuild=getattr(a, "rebuild", False), force=getattr(a, "force", False), pr=getattr(a, "pr", None),
-        link=getattr(a, "link", None),
+        link=getattr(a, "link", None), after=_after_ids(getattr(a, "after", None)),
     )
     if result.code != route_edit.DONE:
         print(f"edit: {'refused' if result.code == route_edit.REFUSED else 'failed'}: {result.text}")
@@ -4477,21 +4494,25 @@ def _route_status(a: argparse.Namespace) -> int:
         items = _stored_work_items(ws, work_mode)
         groups = _intake_groups_for(ws, items)
         problems = route.state_problems(items)
+        queue = run_store.read_queue(ws / "runs")
+        waiting, held = intake_queue.waiting_on(queue), _held_entries(intake_queue.held_rows(queue))
         if a.json:
             # The bare rows list is the shape older callers read; it stays when there
             # is nothing else to say. A problem is never dropped for lack of an intake dir.
-            if groups is None and not problems:
+            queue_facts = {"waiting": waiting, "held": held} if waiting or held else {}
+            if groups is None and not problems and not queue_facts:
                 doc = rows
             elif groups is None:
-                doc = {"runs": rows, "problems": problems}
+                doc = {"runs": rows, "problems": problems, **queue_facts}
             else:
-                doc = {"runs": rows, "intake": groups, "problems": problems}
+                doc = {"runs": rows, "intake": groups, "problems": problems, **queue_facts}
             print(json.dumps(doc, indent=2))
         else:
             shown, hidden = (rows, 0) if a.all else route.recent_rows(rows, datetime.datetime.now(datetime.UTC))
             status = route.render_status(
                 shown, groups, problems, gate_level=_resolved_gate_level(ws / "runs"), hidden=hidden,
                 short_ids=_run_short_ids([r["id"] for r in rows], short_ids),
+                waiting=_waiting_by_entry_id(queue, waiting), held=held,
             )
             drafts = route.render_drafts(
                 draft_list.read_drafts(ws / "work", datetime.datetime.now(datetime.UTC).isoformat()), draft_list.format_age
@@ -5125,6 +5146,10 @@ def _route_file(a: argparse.Namespace) -> int:
     if link and not a.intake:
         print("routing: --link needs --intake, since only an intake carries a link")
         return 2
+    after = _after_ids(getattr(a, "after", None)) or []
+    if after and not a.intake:
+        print("routing: --after needs --intake, since only a queued intake waits")
+        return 2
     # Repos are siblings of the workspace: a bare name is resolved there, so the row never holds a name launch cannot read.
     home = str(Path.home())
     repo = route.resolve_repo(a.repo, ws.absolute().parent, route.is_git_checkout, home)
@@ -5156,7 +5181,7 @@ def _route_file(a: argparse.Namespace) -> int:
                 print(f"routing: refusing {a.title}: duplicate of issue {duplicate}; pass --force to file it anyway")
                 return 2
             date = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
-            mapping = route.intake_file(a.title, body, repo, date, link=link, ids=profile.get("ids", "slug"))
+            mapping = route.intake_file(a.title, body, repo, date, link=link, ids=profile.get("ids", "slug"), after=after)
         else:
             mapping = route.initiative_files(a.title, body, repo, phase=a.phase)
     except ValueError as exc:
@@ -5179,10 +5204,16 @@ def _route_priority(a: argparse.Namespace) -> int:
     if a.set is None and not named:
         return route.list_open_queue(ws / "runs")
     if not a.initiative:
-        print("routing: an initiative is required with --set, --up, --down, --top or --bottom")
+        print("routing: an initiative or queued intake is required with --set, --up, --down, --top or --bottom")
         return 2
     flag = a.set if a.set is not None else named[0]
-    return route.set_initiative_priority(ws / "runs", ws, _initiative_token(ws / "runs", a.initiative), flag)
+    runs_dir = ws / "runs"
+    queue = run_store.read_queue(runs_dir)
+    target = route_guard.resolve_target(queue, a.initiative)
+    if isinstance(target, route_guard.QueuedIntake):
+        intake = next(row for row in queue if row.get("kind") == "intake" and row["task_id"] == target.task_id)
+        return route.set_intake_priority(runs_dir, ws, intake, flag)
+    return route.set_initiative_priority(runs_dir, ws, _initiative_token(runs_dir, a.initiative), flag)
 
 
 def _run_argv(argv: list[str]) -> tuple[int, str, str]:
@@ -10536,13 +10567,14 @@ ROUTE_COMMANDS = [
             commands.Arg(("--from-intake",), {"help": "link and file an existing intake file's initiative, then retire it"}),
             commands.Arg(("--force",), {"action": "store_true", "help": "file an intake even when its title duplicates an open issue"}),
             commands.Arg(("--link",), {"default": None, "help": "with --intake: the issue url this intake is filed from, so a later pull skips it"}),
+            commands.Arg(("--after",), {"action": "append", "default": None, "help": "with --intake: ids this intake waits on; repeat the flag or comma-separate"}),
         ),
         "agent_tools.cli:_route_file", False, (),
     ),
     commands.Command(
-        "priority", "route", "move an initiative up or down the launch order",
+        "priority", "route", "move an initiative or a queued intake up or down the launch order",
         (
-            commands.Arg(("initiative",), {"nargs": "?", "help": "required with a flag; omit it to list the open queue"}),
+            commands.Arg(("initiative",), {"nargs": "?", "help": "an initiative or a queued intake; required with a flag, omit it to list the open queue"}),
             commands.Arg(("--profile",)),
             commands.Arg(("--set",), {"type": int, "default": None, "metavar": "N", "help": "write N on every item"}),
             commands.Arg(("--up",), {"action": "store_true", "help": "pass the nearest higher open initiative"}),
@@ -10623,6 +10655,7 @@ ROUTE_COMMANDS = [
             commands.Arg(("--rebuild",), {"action": "store_true", "help": "with --state ready: send an approved task back to build on current main; needs a recorded land conflict or --force"}),
             commands.Arg(("--force",), {"action": "store_true", "help": "with --rebuild: allow it with no recorded land conflict"}),
             commands.Arg(("--link",), {"default": None, "help": "queued intake only: set the issue url; an empty value clears the link"}),
+            commands.Arg(("--after",), {"action": "append", "default": None, "help": "queued intake only: ids it waits on, repeated or comma-separated; an empty value clears the list"}),
             commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the diff and write nothing"}),
             commands.Arg(("--profile",)),
         ),
