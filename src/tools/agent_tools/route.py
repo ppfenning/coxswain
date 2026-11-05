@@ -1840,9 +1840,25 @@ def decompose_into_rows(
     return 0, [f"routing: wrote {len(rows)} rows for {plan['id']}"]
 
 
-def ready_tasks(task_rows: Sequence[Mapping]) -> list[Mapping]:
-    """The `ready` task rows whose every need names a done or dropped row, in the order given."""
-    done_ids = {r["task_id"] for r in task_rows if r.get("state") in TERMINAL}
+# Not core.landing.DEFAULT_LAND_AT ("ticket"): callers such as chair_read_docket and cli.py do not pass land_at yet, and
+# `task` keeps their needs as strict as before. The wiring task passes the resolved value explicitly.
+DEFAULT_LAND_AT = "task"
+
+
+def _need_met(land_at: str, state: str | None, merged: bool) -> bool:
+    from core.landing import need_met  # lazy: core sits beside agent_tools in one venv
+
+    return need_met(land_at, state or "", merged)
+
+
+def _met_by_launch(land_at: str, state: str | None, merged: bool) -> bool:
+    """Readiness and waits-on lines: under `task` only done or dropped meets a need, as before; above it `need_met` decides."""
+    return state in TERMINAL or (land_at != "task" and _need_met(land_at, state, merged))
+
+
+def ready_tasks(task_rows: Sequence[Mapping], *, land_at: str = DEFAULT_LAND_AT) -> list[Mapping]:
+    """The `ready` task rows whose every need is met under `land_at` (`core.landing.need_met`), in the order given."""
+    done_ids = {r["task_id"] for r in task_rows if _met_by_launch(land_at, r.get("state"), is_merged(r))}
     return [r for r in task_rows if r.get("state") == "ready" and all(n in done_ids for n in r.get("needs") or [])]
 
 
@@ -1866,8 +1882,13 @@ def initiative_repo(initiative_row: Mapping, intake_rows: Sequence[Mapping]) -> 
     return str(extra.get("repo") or "") or linked_repo
 
 
-def launch_input(initiative_row: Mapping, task_rows: Sequence[Mapping], repo: str) -> dict:
-    """The plain data an epic launch takes in place of `work/<id>/`: repo, phases, every ticket, and the ids ready now."""
+def launch_input(
+    initiative_row: Mapping, task_rows: Sequence[Mapping], repo: str, *, land_at: str = DEFAULT_LAND_AT
+) -> dict:
+    """The plain data an epic launch takes in place of `work/<id>/`: repo, phases, every ticket, and the ids ready now.
+
+    The initiative row's `extra.land_at` wins over the `land_at` argument when present.
+    """
     extra = initiative_row.get("extra") or {}
     return {
         "initiative": initiative_row["task_id"],
@@ -1880,11 +1901,13 @@ def launch_input(initiative_row: Mapping, task_rows: Sequence[Mapping], repo: st
             }
             for r in task_rows
         ],
-        "ready": [r["task_id"] for r in ready_tasks(task_rows)],
+        "ready": [r["task_id"] for r in ready_tasks(task_rows, land_at=extra.get("land_at") or land_at)],
     }
 
 
-def launch_from_rows(runs_dir: Path, initiative_id: str, repo_flag: str | None = None) -> tuple[int, list[str], dict | None]:
+def launch_from_rows(
+    runs_dir: Path, initiative_id: str, repo_flag: str | None = None, *, land_at: str = DEFAULT_LAND_AT
+) -> tuple[int, list[str], dict | None]:
     """Edge for store mode: `(exit code, lines to print, launch input)` read from work_items rows only.
 
     A missing initiative row, or a repo named by neither the flag nor the rows, gives code 2 and no input.
@@ -1898,7 +1921,7 @@ def launch_from_rows(runs_dir: Path, initiative_id: str, repo_flag: str | None =
     repo = repo_flag or initiative_repo(head, run_store.read_queue(runs_dir, kind="intake"))
     if not repo:
         return 2, [f"routing: no --repo given and no repo in the rows for {initiative_id} or its intake"], None
-    return 0, [], launch_input(head, [r for r in rows if r.get("kind") == "task"], repo)
+    return 0, [], launch_input(head, [r for r in rows if r.get("kind") == "task"], repo, land_at=land_at)
 
 
 def next_priority(current: int, flag: int | str) -> int:
@@ -2420,9 +2443,9 @@ def is_awaiting_merge(item: Mapping) -> bool:
     return item["state"] == "approved" and not item.get("merged")
 
 
-def is_met_need(item: Mapping) -> bool:
-    """A need in the same initiative is met by `done`, `dropped`, or `approved` with `merged`; mirrors `workstore.ready_tasks`."""
-    return item["state"] in TERMINAL or (item["state"] == "approved" and bool(item.get("merged")))
+def is_met_need(item: Mapping, *, land_at: str = DEFAULT_LAND_AT) -> bool:
+    """A need in the same initiative is met per `core.landing.need_met`: `done`, `dropped`, or `approved` that is merged or above `land_at` task."""
+    return _need_met(land_at, item["state"], bool(item.get("merged")))
 
 
 def state_word(item: Mapping) -> str:
@@ -2518,20 +2541,30 @@ def launch_blockers(items: list) -> list[str]:
     })
 
 
-def waiting_lines(items: list, remedies: Mapping[str, str], initiative: str) -> list[str]:
-    """For each `ready` task of `initiative` with a need not done or dropped, `<task> waits on <dep> (<state>)`;
+def waiting_lines(
+    items: list, remedies: Mapping[str, str], initiative: str, *, land_at: str = DEFAULT_LAND_AT
+) -> list[str]:
+    """For each `ready` task of `initiative` with a need not met, `<task> waits on <dep> (<state>)`; a same-initiative need is met per `is_met_need`, a foreign one only by done or dropped;
     an `approved` dep with an entry in `remedies` adds that remedy line after it. A need in another initiative
     is looked up by id, and one that names no item reads `missing`."""
     states = {
         **{item["id"]: state_word(item) for item in items if item["initiative"] != initiative},
         **{item["id"]: state_word(item) for item in items if item["initiative"] == initiative},
     }
+    met = {
+        **{item["id"]: item["state"] in TERMINAL for item in items if item["initiative"] != initiative},
+        **{
+            item["id"]: _met_by_launch(land_at, item["state"], bool(item.get("merged")))
+            for item in items
+            if item["initiative"] == initiative
+        },
+    }
     return [
         line
         for item in items
         if item["initiative"] == initiative and item["state"] == "ready"
         for need in item["needs"]
-        if states.get(need) not in TERMINAL
+        if not met.get(need, False)
         for line in [
             f"{item['id']} waits on {need} ({states.get(need, 'missing')})",
             *([remedies[need]] if states.get(need) == "approved" and need in remedies else []),
@@ -2563,17 +2596,18 @@ def _row_of(rows: list[dict], item: Mapping) -> dict:
     return next((r for r in rows if r.get("initiative") == item["initiative"] and r.get("task_id") == item["id"]), {})
 
 
-def _initiative_summary(initiative_id: str, own_items: list):
+def _initiative_summary(initiative_id: str, own_items: list, land_at: str = DEFAULT_LAND_AT):
     """`None` when nothing to report. An item outside `STATES` makes the
     whole initiative unlaunchable (`ready` 0) until fixed, regardless of
     what its siblings are. Otherwise an `approved` item counts as neither
     ready nor done and is surfaced as `awaiting_merge`, unless it carries the
-    merge flag: then it is done for the needs of its own initiative.
+    merge flag: then it is done for the needs of its own initiative. Under
+    `land_at` ticket or level an unmerged approved need is met too.
     """
     if any(item["state"] not in STATES for item in own_items):
         return {"id": initiative_id, "phase": None, "ready": 0}
     awaiting_merge = sum(1 for item in own_items if is_awaiting_merge(item))
-    done_ids = {item["id"] for item in own_items if is_met_need(item)}
+    done_ids = {item["id"] for item in own_items if is_met_need(item, land_at=land_at)}
 
     def counts_ready(item: dict) -> bool:
         return _ready_unblocked(item, done_ids) and not _blockers_of(item, own_items)
@@ -2595,7 +2629,7 @@ def _initiative_summary(initiative_id: str, own_items: list):
     return summary
 
 
-def initiative_summaries(items: list) -> list:
+def initiative_summaries(items: list, *, land_at: str = DEFAULT_LAND_AT) -> list:
     """One row per initiative with a task ready to run, the `initiatives`
     input `render_context` and `context_document` already accept: `items`
     are work items with at least `id`, `initiative`, `phase`, `state`,
@@ -2603,7 +2637,7 @@ def initiative_summaries(items: list) -> list:
     `{"id": <initiative>, "phase": <sorted-first phase holding a ready,
     unblocked task>, "ready": <count of such tasks in that phase>}`.
     "Unblocked" means every id in `needs` names a task, anywhere in the same
-    initiative, whose state is "done" or "dropped". An initiative with no ready,
+    initiative, whose state meets the need under `land_at` (`is_met_need`). An initiative with no ready,
     unblocked task is omitted. Sorted by initiative id.
     """
     initiative_ids = sorted({item["initiative"] for item in items})
@@ -2611,6 +2645,7 @@ def initiative_summaries(items: list) -> list:
         _initiative_summary(
             initiative_id,
             [item for item in items if item["initiative"] == initiative_id],
+            land_at,
         )
         for initiative_id in initiative_ids
     ]
