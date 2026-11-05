@@ -218,18 +218,14 @@ def _p2(result: dict) -> dict:
     return next(p for p in result["phases"] if p["phase"] == "p2-rollout")
 
 
-def test_at_ticket_p2_builds_when_every_p1_task_is_approved_and_merged(repo, cart, tmp_path, prs, capsys) -> None:  # noqa: F811
+def test_at_ticket_a_merged_p1_is_an_ordinary_awaiting_land_phase_that_holds_p2(repo, cart, tmp_path, prs) -> None:  # noqa: F811
     _first_run_then_move_main(repo, cart, tmp_path, "ticket")
     work = _restart_work("ticket", levels=("p1-foundations",))
-    capsys.readouterr()
     result, runner = drive(repo, cart, tmp_path, work=work, run_id="epic-2")
-    assert any(c["role"] == "build" and "t3-cutover" in c["prompt"] for c in runner.calls)
-    assert _p2(result)["status"] != "blocked"
-    assert result["phases"][0]["land_deferred"] is True
-    assert "blocked_kind" not in build_outcome(result)
-    assert result.get("exit_code") != EXIT_AWAITING_LAND
-    assert result["totals"]["phases_awaiting_land"] == 0
-    assert "cox runs land epic-2 --task" not in capsys.readouterr().out
+    assert result["phases"][0]["status"] == "awaiting_land" and "land_deferred" not in result["phases"][0]
+    assert "awaiting the land" in _p2(result)["reason"]
+    assert build_outcome(result)["blocked_kind"] == "awaiting_land"
+    assert not any(c["role"] == "build" and "t3-cutover" in c["prompt"] for c in runner.calls)
 
 
 def test_at_ticket_a_partial_p1_with_every_task_merged_still_blocks_p2(repo, cart, tmp_path, prs) -> None:  # noqa: F811
