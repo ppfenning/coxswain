@@ -1,12 +1,14 @@
 # The epic driver
 
 The epic driver is not a graph. It is `harness/epic.py`, the code that
-`cox route launch epic` starts, and it holds no `SPEC`. It walks a filed
-initiative phase by phase. For each phase it branches from the parent
-phase's head, runs `lifecycle` once per ready task, applies and checks
-each patch in a worktree the harness owns, runs `validate` over the
-phase, gates the phase once, and records it. A task that reaches its
-attempt cap goes to `triage-quarantine`. Nothing it does merges to a
+`cox route launch epic` starts, and it holds no `SPEC`. It computes waves
+of phases from the phase graph of a filed initiative. A phase sits in a
+wave once all of its parent phases sit in earlier waves. Independent
+phases in a wave run together, one lane each. A phase opens only once
+every parent phase is complete, and it branches from its parent phase's
+head. Inside a phase, ready tasks run in parallel up to `max_parallel` or
+the usage headroom. Each phase ends with one record. A task that reaches
+its attempt cap goes to `triage-quarantine`. Nothing it does merges to a
 default branch: what lands is phase branches, task pull requests and
 proposals.
 
