@@ -41,6 +41,7 @@ import contextlib
 import difflib
 import json
 import logging
+import os
 import sqlite3
 import subprocess
 import sys
@@ -57,6 +58,7 @@ from typing import Any, Literal
 from urllib.parse import urlencode
 
 from core import ledger, workstore
+from core.cartridge import test_database_setting
 from core.landing import DEFAULT_LAND_AT, land_gate_level, phase_counts_complete, phase_land_deferred, resolve_land_at
 from core.manifest import append_ledger, build_manifest, gate_diff
 from core.phase_hold import phase_holds
@@ -94,6 +96,8 @@ from harness.escalate import escalate_self_modification, touched_paths
 from harness.gate import apply_arm_for, auto_apply, gate
 from harness.handoff import build_handoff, plan_context
 from harness.invoke import Invocation, invoke_graphs
+from harness.lane_database import database_name, lane_env
+from harness.lane_database_drop import drop_lane_database
 from harness.lanes import lane_bound
 from harness.resume import load_result, reusable, save_result
 from harness.scheduler import plan_launches
@@ -426,6 +430,11 @@ class _Ctx:
     lease_name: str | None = None
     work_state: str = "files"
     retry: _StoreRetry = field(default_factory=_StoreRetry)
+    # `landing_areas.test_database`, read once: each task lane runs its checks against its own database.
+    test_database: Mapping[str, str] | None = None
+    # Run-level and mutable, shared by `replace`: lanes holding a database, and the drop records (the cleanup list).
+    lane_names: dict[tuple[str, str], str] = field(default_factory=dict, compare=False, repr=False)
+    lane_drops: list[dict[str, Any]] = field(default_factory=list, compare=False, repr=False)
     # The one mutable member of a frozen record: file listings by commit (see `_default_branch_paths`).
     surface_paths: dict[str, frozenset[str]] = field(default_factory=dict, compare=False, repr=False)
     # Guards writes to the shared `items` list and the lazy fill of `surface_paths`; `replace` shares it across per-phase copies.
@@ -881,6 +890,22 @@ def _checks_log(ctx: _Ctx, phase: str, task: str) -> dict[str, Any]:
     return {"log_dir": ctx.runs_dir / ctx.run_id / "checks" / phase / task, "log_prefix": f"checks/{phase}/{task}/"}
 
 
+def _lane_checks_env(ctx: _Ctx, phase: str, task: str) -> dict[str, str] | None:
+    """The child environment for one lane's checks: the process environment with the lane variable over it, None with no setting."""
+    lane = lane_env(ctx.test_database, ctx.run_id, phase, task)
+    return {**os.environ, **lane} if lane else None
+
+
+def _drop_lane(ctx: _Ctx, phase: str, task: str) -> None:
+    """Drop the lane's database once its worktree is gone and list the outcome; a lane with no database does nothing."""
+    name = ctx.lane_names.pop((phase, task), None)
+    if name is None or ctx.test_database is None:
+        return
+    ctx.lane_drops.append(
+        drop_lane_database(ctx.test_database.get("drop"), name, lane_env(ctx.test_database, ctx.run_id, phase, task))
+    )
+
+
 def _build_task(
     ctx: _Ctx, *, phase: str, task: str, result: Mapping[str, Any], verify: Sequence[str] = ()
 ) -> dict[str, Any]:
@@ -902,6 +927,10 @@ def _build_task(
         record["quarantine"] = f"worktree {branch} could not be created: {detail}"
         return record
     link_venv(ctx.repo, worktree)
+    env = _lane_checks_env(ctx, phase, task)
+    if env is not None:
+        lane = lane_env(ctx.test_database, ctx.run_id, phase, task)
+        record["test_database"] = ctx.lane_names[(phase, task)] = database_name(next(iter(lane.values())))
 
     ok, detail = apply_patch(patch, worktree)
     record["evidence"].append(
@@ -938,7 +967,7 @@ def _build_task(
     record["lint_fix_checks"] = [c["name"] for c in fixable]
     record["lint_fixed"] = False
     if fixable:
-        run_checks(worktree, fixable)
+        run_checks(worktree, fixable, env=env)
         _, dirty = _git("-C", str(worktree), "status", "--porcelain")
         if dirty:
             _git(*_IDENTITY, "-C", str(worktree), "add", "-A")
@@ -951,7 +980,7 @@ def _build_task(
                     build_field["patch"] = folded + "\n"
 
     if ctx.checks:
-        results = run_checks(worktree, ctx.checks, **_checks_log(ctx, phase, task))
+        results = run_checks(worktree, ctx.checks, env=env, **_checks_log(ctx, phase, task))
         record["checks"] = results
         record["evidence"].extend(checks_evidence(results))
         reason = quarantine_reason(results)
@@ -962,7 +991,7 @@ def _build_task(
     # sandbox cannot. Their output is evidence for the reviewers; a failing one
     # never quarantines, so its results stay out of `quarantine_reason`.
     if verify:
-        ran = run_checks(worktree, [{"name": str(i), "cmd": cmd} for i, cmd in enumerate(verify, 1)])
+        ran = run_checks(worktree, [{"name": str(i), "cmd": cmd} for i, cmd in enumerate(verify, 1)], env=env)
         record["verify"] = ran
         record["evidence"].extend(checks_evidence(ran, prefix="verify", always_tail=True))
     return record
@@ -1083,7 +1112,9 @@ def _style_fix(ctx: _Ctx, *, phase: str, task: str, result: Mapping[str, Any], b
     build_field = result.get("build")
     if isinstance(build_field, dict) and folded:
         build_field["patch"] = folded + "\n"
-    results = run_checks(worktree, ctx.checks, **_checks_log(ctx, phase, task))
+    results = run_checks(
+        worktree, ctx.checks, env=_lane_checks_env(ctx, phase, task), **_checks_log(ctx, phase, task)
+    )
     build["checks"] = results
     # Only `checks:` rows are replaced; `verify:` rows stay as run before the style edit.
     build["evidence"] = [
@@ -1173,6 +1204,7 @@ def _refix(
         routes.append("revise")
         names = ", ".join(str(c["name"]) for c in build["checks"] if not c.get("passed"))
         remove_worktree(ctx.repo, ctx.task_worktree(phase, task))
+        _drop_lane(ctx, phase, task)
         _git("-C", str(ctx.repo), "branch", "-D", ctx.scratch_branch(task))
         build = _build_task(ctx, phase=phase, task=task, result=result, verify=_verify_of(by_id, task))
         build["evidence"].append(
@@ -1358,6 +1390,7 @@ def run_epic(
             fix_attempts=fix_attempts,
             resume_from=resume_from,
             repo_checks=repo_checks(agent_checks_text),
+            test_database=test_database_setting(cartridge),
             store=store,
             epoch=epoch,
             lease_name=lease_name,
@@ -1424,6 +1457,7 @@ def run_epic(
             run_id=run_id, date=date, initiative_id=ctx.initiative_id, phases=phases, tasks=tasks,
             quarantined=quarantined, proposals=proposals, stacks_rebased=stacks_rebased,
             paused_until=paused_until, repo=repo, land_at=ctx.land_at, waves=waves, lane=tally.lane,
+            lane_databases=ctx.lane_drops if ctx.test_database else None,
         )
         return result
     finally:
@@ -1443,7 +1477,7 @@ def run_epic(
                         run_id=run_id, date=date, initiative_id=ctx.initiative_id, phases=phases, tasks=tasks,
                         quarantined=quarantined, proposals=proposals, stacks_rebased=stacks_rebased,
                         paused_until=paused_until, repo=repo,
-                        land_at=ctx.land_at,
+                        land_at=ctx.land_at, lane_databases=ctx.lane_drops if ctx.test_database else None,
                     )
                 except Exception as exc:
                     _log.warning("partial result for %s not built: %s: %s", run_id, type(exc).__name__, exc)
@@ -1466,6 +1500,9 @@ def run_epic(
                         run_dir.rmdir()
             else:
                 remove_worktree(ctx.repo, run_dir)
+                # After the removal, into the list the result already holds, so a pending or failed entry is the cleanup list.
+                for phase, task in sorted(ctx.lane_names):
+                    _drop_lane(ctx, phase, task)
         # Raised last, so a failing close still leaves the exit record written and the worktrees cleaned up.
         if close_error is not None:
             raise close_error
@@ -2219,6 +2256,7 @@ def _build_result(
     land_at: str | None = None,
     waves: Sequence[Sequence[str]] = (),
     lane: Mapping[str, Any] | None = None,
+    lane_databases: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """The epic result from the lists as they stand: whole at a normal end, partial when a phase raised."""
     unlanded = _unlanded(tasks, run_id, repo)
@@ -2231,6 +2269,7 @@ def _build_result(
         "waves": [list(w) for w in waves],
         "widest_wave": widest_wave(waves),
         "lane_bound": dict(lane or {}),
+        **({"lane_databases": lane_databases} if lane_databases is not None else {}),
         "tasks": tasks,
         "quarantined": quarantined,
         "proposals": proposals,
@@ -3223,6 +3262,7 @@ def _run_phase(
                 "draft": None,
                 "merged": False,
                 "status": "quarantined" if build.get("quarantine") else "built",
+                **({"test_database": build["test_database"]} if "test_database" in build else {}),
                 "lint_fixed": build.get("lint_fixed", False),
                 "lint_fix_checks": build.get("lint_fix_checks", []),
                 "build_budget_source": budget_sources.get(task),
