@@ -411,6 +411,27 @@ def test_load_with_a_checks_overlay_replaces_locals_lint_and_tests() -> None:
     assert resolved["landing_areas"]["checks"] == [{"name": "syntax", "cmd": "bash -n *.sh"}]
 
 
+def test_load_with_level_and_ticket_checks_overlay_carries_both_and_keeps_task_checks() -> None:
+    level = [{"name": "integration", "cmd": "pytest -q integration"}]
+    ticket = [{"name": "e2e", "cmd": "pytest -q e2e", "timeout": 900}]
+    overlay = {"landing_areas": {"level_checks": level, "ticket_checks": ticket}}
+    skills = index_from_roots([REPO / "skills-plugins"])
+    plain = load("local", REPO / "cartridges", skill_index=skills)
+    resolved = load("local", REPO / "cartridges", skill_index=skills, overlay=overlay)
+    assert resolved["landing_areas"]["level_checks"] == level
+    assert resolved["landing_areas"]["ticket_checks"] == ticket
+    assert resolved["landing_areas"]["checks"] == plain["landing_areas"]["checks"]
+
+
+def test_load_without_level_or_ticket_checks_leaves_both_keys_absent() -> None:
+    overlay = {"landing_areas": {"checks": [{"name": "syntax", "cmd": "bash -n *.sh"}]}}
+    resolved = load(
+        "local", REPO / "cartridges", skill_index=index_from_roots([REPO / "skills-plugins"]), overlay=overlay
+    )
+    assert "level_checks" not in resolved["landing_areas"]
+    assert "ticket_checks" not in resolved["landing_areas"]
+
+
 def test_base_cartridge_declares_consolidate_as_low_risk_deferred() -> None:
     """Loads `local`, not `base`, for the same reason as above: `local`
     declares no `consolidate` entry of its own, so the value asserted here is `base`'s.
@@ -568,6 +589,30 @@ def test_overlay_errors_names_a_duplicate_checks_entry() -> None:
     checks = [{"name": "lint", "cmd": "ruff check ."}, {"name": "lint", "cmd": "bash -n"}]
     overlay = {"landing_areas": {"checks": checks}}
     assert overlay_errors(overlay) == ["project layer overlay refuses checks entry 'lint': duplicate name"]
+
+
+@pytest.mark.parametrize("key", ["level_checks", "ticket_checks"])
+def test_overlay_errors_accepts_a_valid_gate_checks_list(key: str) -> None:
+    assert overlay_errors({"landing_areas": {key: [{"name": "suite", "cmd": "pytest -q"}]}}) == []
+
+
+@pytest.mark.parametrize("key", ["level_checks", "ticket_checks"])
+def test_overlay_errors_refuses_a_gate_checks_value_that_is_not_a_list(key: str) -> None:
+    expected = f"project layer overlay refuses landing_areas.{key}: must be a list, got str"
+    assert overlay_errors({"landing_areas": {key: "pytest -q"}}) == [expected]
+
+
+@pytest.mark.parametrize("key", ["level_checks", "ticket_checks"])
+def test_overlay_errors_names_the_gate_checks_key_for_an_entry_missing_cmd(key: str) -> None:
+    problems = overlay_errors({"landing_areas": {key: [{"name": "suite"}]}})
+    assert problems == [f"project layer overlay refuses {key} entry {{'name': 'suite'}}: missing 'name' or 'cmd'"]
+
+
+@pytest.mark.parametrize("key", ["level_checks", "ticket_checks"])
+def test_overlay_errors_names_the_gate_checks_key_for_a_duplicate_name(key: str) -> None:
+    entries = [{"name": "suite", "cmd": "a"}, {"name": "suite", "cmd": "b"}]
+    problems = overlay_errors({"landing_areas": {key: entries}})
+    assert problems == [f"project layer overlay refuses {key} entry 'suite': duplicate name"]
 
 
 def test_overlay_errors_still_refuses_an_unknown_key_alongside_valid_checks() -> None:
