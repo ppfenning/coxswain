@@ -15,9 +15,13 @@ MANIFEST = (
 )
 
 
+KILLED = "killed"
+
+
 def _host(monkeypatch, tmp_path, *, system="Darwin", machine="arm64", before="towpath 2026.11.0",
           after="towpath 2026.11.1", on_path=True, cargo=False):
-    """Fake run and platform. `towpath --version` prints `before` until a `mv` runs, then `after`; None means it fails.
+    """Fake run and platform. `towpath --version` prints `before` until a `mv` runs, then `after`; None means it fails
+    with 127 and KILLED means a signal kill (-9).
     `cargo` puts the Rust build tool on PATH."""
     bin_dir = tmp_path / "bin"
     state, calls = {"copied": False}, []
@@ -26,6 +30,8 @@ def _host(monkeypatch, tmp_path, *, system="Darwin", machine="arm64", before="to
         calls.append(argv)
         if argv[-1] == "--version":
             shown = after if state["copied"] else before
+            if shown == KILLED:
+                return -9, ""
             return (0, shown) if shown is not None else (127, "not found")
         state["copied"] = state["copied"] or argv[0] == "mv"
         return (0, "abc\trefs/tags/v2026.11.1\n") if "ls-remote" in argv else (0, "")
@@ -131,6 +137,14 @@ def test_plain_upgrade_with_an_unreadable_towpath_version_still_prints_a_missing
     assert _towpath_row(out) == ["towpath", "v2026.11.1", "missing"]
 
 
+def test_plain_upgrade_with_a_killed_towpath_after_install_prints_the_killed_sentence_not_missing_and_exits_2(monkeypatch, tmp_path, capsys):
+    rc, out, _, _ = _plain_upgrade(monkeypatch, tmp_path, capsys, after=KILLED)
+    assert rc == 2
+    assert _towpath_row(out) == ["towpath", "v2026.11.1", "killed"]
+    assert "towpath: killed at launch, likely a stale code signature" in out.splitlines()
+    assert "missing" not in out
+
+
 def test_plain_upgrade_that_matches_the_pin_exits_0_prints_no_naming_line_and_shows_an_ok_row(monkeypatch, tmp_path, capsys):
     rc, out, _, _ = _plain_upgrade(monkeypatch, tmp_path, capsys)
     assert rc == 0
@@ -152,7 +166,8 @@ def test_binary_facts_take_bin_dir_from_the_command_on_path_and_version_from_its
         return 0, "towpath v2026.11.1\n"
 
     facts = cli._binary_facts(manifest, run, "Darwin", "arm64", lambda name: "/opt/bin/towpath", "/users/dev")
-    assert facts == {"target": "aarch64-apple-darwin", "bin_dir": "/opt/bin", "binaries": {"towpath": "2026.11.1"}}
+    assert facts == {"target": "aarch64-apple-darwin", "bin_dir": "/opt/bin", "binaries": {"towpath": "2026.11.1"},
+                     "killed_binaries": []}
 
 
 @pytest.mark.parametrize("code, output", [(127, "towpath: not found"), (1, "boom")])
@@ -161,8 +176,18 @@ def test_binary_facts_fall_back_to_the_local_bin_and_report_none_for_an_absent_o
     ran = []
     facts = cli._binary_facts(manifest, lambda argv, cwd: (ran.append(argv), (code, output))[1], "Plan9", "mips",
                               lambda name: None, "/users/dev")
-    assert facts == {"target": None, "bin_dir": "/users/dev/.local/bin", "binaries": {"towpath": None}}
+    assert facts == {"target": None, "bin_dir": "/users/dev/.local/bin", "binaries": {"towpath": None},
+                     "killed_binaries": []}
     assert ran == [["/users/dev/.local/bin/towpath", "--version"]]
+
+
+@pytest.mark.parametrize("code", [-9, 137])
+def test_binary_facts_name_a_signal_killed_command_and_keep_its_version_none(code):
+    manifest = {"components": {"dash": {"provides": "towpath"}}}
+    facts = cli._binary_facts(manifest, lambda argv, cwd: (code, ""), "Darwin", "arm64",
+                              lambda name: "/opt/bin/towpath", "/users/dev")
+    assert facts["binaries"] == {"towpath": None}
+    assert facts["killed_binaries"] == ["towpath"]
 
 
 def _edge_dry_run(tmp_path, capsys):

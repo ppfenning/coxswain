@@ -4,7 +4,7 @@ prints and `cox versions` tabulates. No filesystem, subprocess or clock here
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 
 from agent_tools import dash_binary, release_version
 from agent_tools.upgrade_plan import release_tag
@@ -186,9 +186,10 @@ def _component_row(name: str, spec: Mapping, checkouts: Mapping, channel: str = 
     return (name, pinned, _installed(checkout, channel), "ok" if _at_pin(checkout, pinned, channel) else "drift")
 
 
-def _binary_row(spec: Mapping, binaries: Mapping) -> tuple:
+def _binary_row(spec: Mapping, binaries: Mapping, killed: Collection[str] = ()) -> tuple:
     installed = binaries.get(spec["provides"])
-    return (spec["provides"], spec["tag"], installed, dash_binary.binary_status(spec["tag"], installed))
+    status = dash_binary.binary_status(spec["tag"], installed, killed=spec["provides"] in killed)
+    return (spec["provides"], spec["tag"], installed, status)
 
 
 def rows(manifest: Mapping, facts: Mapping, channel: str = "release") -> list[tuple]:
@@ -197,12 +198,14 @@ def rows(manifest: Mapping, facts: Mapping, channel: str = "release") -> list[tu
     it) plus one `extra` row per checkout present in `facts` that the
     manifest never declared. On `edge` the pin and installed columns hold branches.
     When `facts` carry `binaries`, one more row per component that `provides` a command,
-    named by that command, compares the installed binary version to the pinned tag."""
+    named by that command, compares the installed binary version to the pinned tag; a command in
+    `killed_binaries` with no readable version is `killed`, not `missing`."""
     components = {CHECKOUT: checkout_spec(manifest), **manifest.get("components", {})}
     checkouts = facts.get("checkouts", {})
     component_rows = [_component_row(name, spec, checkouts, channel) for name, spec in components.items()]
     extra_rows = [(name, None, checkout.get("tag"), "extra") for name, checkout in checkouts.items()
                   if name not in components and checkout.get("present")]
-    binary_rows = [_binary_row(spec, facts["binaries"]) for spec in components.values()
+    binary_rows = [_binary_row(spec, facts["binaries"], facts.get("killed_binaries") or ())
+                   for spec in components.values()
                    if "binaries" in facts and spec.get("provides") and spec.get("tag")]
     return component_rows + extra_rows + binary_rows

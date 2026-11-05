@@ -709,6 +709,15 @@ def test_rows_lists_a_towpath_row_as_ok_drift_and_missing():
     assert towpath({}) == [("towpath", "v2026.11.1", None, "missing")]
 
 
+def test_rows_shows_a_killed_towpath_as_killed_and_only_when_it_is_named_killed():
+    def towpath(killed):
+        facts = {**_dash_facts({"towpath": None}), **({"killed_binaries": killed} if killed is not None else {})}
+        return [r for r in install.rows(_dash_manifest(), facts) if r[0] == "towpath"]
+    assert towpath(["towpath"]) == [("towpath", "v2026.11.1", None, "killed")]
+    assert towpath(["coxtop"]) == [("towpath", "v2026.11.1", None, "missing")]
+    assert towpath(None) == [("towpath", "v2026.11.1", None, "missing")]
+
+
 def test_rows_without_a_binaries_key_is_unchanged():
     without = install.rows(_dash_manifest(), _dash_facts())
     assert all(r[0] != "towpath" for r in without)
