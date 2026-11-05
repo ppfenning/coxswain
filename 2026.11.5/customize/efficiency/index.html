@@ -1896,6 +1896,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#shadow-tier-trial" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Shadow tier trial
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#cox-stats-causes" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6270,6 +6281,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#shadow-tier-trial" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Shadow tier trial
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#cox-stats-causes" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6349,6 +6371,29 @@ first-try rate, and the cost per landed task.</p>
 model needs at least 20 tasks to count. It then shows what the pick would
 have saved.</p>
 <p>The command changes nothing. To apply a pick, edit your provider profile.</p>
+<h2 id="shadow-tier-trial">Shadow tier trial</h2>
+<p><code>shadow_tier</code> is a profile setting that trials a cheaper tier on a role
+without moving the role. It maps a role to the tier to try.</p>
+<div class="highlight"><pre><span></span><code><span class="nt">shadow_tier</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">handoff</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cheap</span>
+<span class="w">  </span><span class="nt">validate_chunk</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cheap</span>
+</code></pre></div>
+<p>Each call of a listed role makes one extra call at the named tier. The
+trial therefore costs more than not running it, and keeps costing more
+until you remove the entry. The extra verdict is recorded on the acting
+call and never used. The acting call alone decides the outcome.</p>
+<p>Only <code>handoff</code> and <code>validate_chunk</code> are accepted. A code-writing role is
+refused when the profile is read.</p>
+<p><code>cox stats shadow-tier</code> reads the recorded pairs and reports, for each
+role, the agreement between the two verdicts, the costly-disagreement
+rate, and the cost saved. It also says whether the role clears the bar.
+The bar is 95% agreement and at most 1% costly disagreements, over at
+least 100 calls. A role that clears it prints <code>READY</code>. A role that does
+not prints <code>NOT YET</code> with the numbers it missed by. Use <code>--role</code> to read
+one role.</p>
+<p>The wrong belief to drop is that the report is a switch. A <code>READY</code> line
+does not change any tier. Nothing moves a role to a cheaper tier until an
+operator edits the profile.</p>
 <h2 id="cox-stats-causes"><code>cox stats causes</code></h2>
 <p><code>cox stats causes</code> groups quarantined attempts by cause, with sample
 reasons. The causes are ticket, code, review, harness, and unknown.</p>
