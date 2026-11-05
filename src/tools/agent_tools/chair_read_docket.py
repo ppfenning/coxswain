@@ -35,9 +35,14 @@ def _held_task(i: Row, own: Sequence[Row]) -> dict[str, Any]:
     return {"id": i["id"], "phase": i["phase"], "needs": _held_needs(i, own)}
 
 
-def _initiative_row(summary: Row, items: Sequence[Row]) -> dict[str, Any]:
+def _land_at_of(land_at: Mapping[str, str] | None, initiative: str) -> str:
+    """No mapping keeps the strict `route.DEFAULT_LAND_AT`; a mapping that omits `initiative` reads as ticket."""
+    return route.DEFAULT_LAND_AT if land_at is None else land_at.get(initiative, "ticket")
+
+
+def _initiative_row(summary: Row, items: Sequence[Row], land_at: str = route.DEFAULT_LAND_AT) -> dict[str, Any]:
     own = [i for i in items if i["initiative"] == summary["id"]]
-    landed = {i["id"] for i in own if route.is_met_need(i)}
+    landed = {i["id"] for i in own if route.is_met_need(i, land_at=land_at)}
     held = [i for i in own if i["state"] == "ready" and _held_needs(i, own)]
     held_ids = {i["id"] for i in held}
     ready = [
@@ -46,7 +51,8 @@ def _initiative_row(summary: Row, items: Sequence[Row]) -> dict[str, Any]:
         and i["id"] not in held_ids
     ]
     # A ready task behind a need that has not landed is carried, not dropped, so the planner can report it.
-    # A held task stays here too: it waits on an unlanded need, so `waiting_tasks` keeps its meaning.
+    # A held task stays here only while its approved need is unlanded (land_at task). At ticket or level the need
+    # is landed, so the task shows in `held_tasks` alone.
     waiting = [i for i in own if i["state"] == "ready" and not set(i["needs"]) <= landed]
     return {
         "id": summary["id"],
@@ -104,22 +110,39 @@ def _by_priority(rows: Sequence[Row], items: Sequence[Row]) -> list[dict[str, An
     return sorted(rows, key=lambda r: (-_initiative_priority(r, items), _ready_age(r, items) or _NO_AGE, r["id"]))
 
 
-def _initiative_rows(summaries: Sequence[Row], items: Sequence[Row]) -> list[dict[str, Any]]:
+def _initiative_rows(
+    summaries: Sequence[Row], items: Sequence[Row], land_at: Mapping[str, str] | None = None
+) -> list[dict[str, Any]]:
     """One row per summary, then one per initiative `initiative_summaries` omitted that holds a waiting task.
 
     Wrong belief this guards: that an initiative missing from the summaries has nothing to report. The builder
     omits one whose only ready task waits on an unlanded need, and the chair must still say what it waits on."""
     listed = {s["id"] for s in summaries}
     omitted = sorted({i["initiative"] for i in items if i["state"] == "ready" and i["initiative"] not in listed})
-    held = [_initiative_row({"id": initiative, "phase": None, "ready": 0}, items) for initiative in omitted]
-    rows = [*(_initiative_row(s, items) for s in summaries), *(row for row in held if row["waiting_tasks"])]
+    held = [
+        _initiative_row({"id": initiative, "phase": None, "ready": 0}, items, _land_at_of(land_at, initiative))
+        for initiative in omitted
+    ]
+    rows = [
+        *(_initiative_row(s, items, _land_at_of(land_at, s["id"])) for s in summaries),
+        *(row for row in held if row["waiting_tasks"]),
+    ]
     return _by_priority(rows, items)
 
 
-def docket_from_builder(summaries: Sequence[Row], items: Sequence[Row], busy_lanes: int, max_in_flight: int) -> dict[str, Any]:
-    """`summaries` is `route.initiative_summaries(items)`; `items` are the work items it was built from."""
+def docket_from_builder(
+    summaries: Sequence[Row],
+    items: Sequence[Row],
+    busy_lanes: int,
+    max_in_flight: int,
+    land_at: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """`summaries` is `route.initiative_summaries(items)`; `items` are the work items it was built from.
+
+    `land_at` maps initiative id to its land_at; None keeps every initiative strict, and an id missing from a
+    given mapping reads as ticket."""
     return {
-        "initiatives": _initiative_rows(summaries, items),
+        "initiatives": _initiative_rows(summaries, items, land_at),
         "busy_lanes": busy_lanes,
         "max_in_flight": max_in_flight,
     }
