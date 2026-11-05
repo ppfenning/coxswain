@@ -94,6 +94,7 @@ from typing import Any
 import yaml
 
 from core.init import init_plan, render_plan
+from core.landing import valid_branch
 
 __all__ = ["CartridgeError", "load"]
 
@@ -305,9 +306,10 @@ def _as_mapping(value: Any) -> Mapping[str, Any]:
 # extra checks and is untouched by this key.
 # `landing_areas.land_checks` is a `ci` or `local` selector, not a list; absent means local.
 # `landing_areas.land_at` is `ticket`, `level` or `task`, the granularity landing happens at; absent means ticket.
+# `landing_areas.target_branch` is the default branch an initiative lands into; absent means the repository's default chain.
 _OVERLAY_NESTED_ALLOWED = {
     "policy": frozenset({"review_tier", "cost"}),
-    "landing_areas": frozenset({"checks", "land_checks", "land_at"}),
+    "landing_areas": frozenset({"checks", "land_checks", "land_at", "target_branch"}),
 }
 
 # Which allowed nested subkeys hold a list of entries rather than a mapping;
@@ -351,6 +353,15 @@ def _land_at_problems(value: Any) -> list[str]:
     return [f"project layer overlay refuses landing_areas.land_at: must be 'ticket', 'level' or 'task', got {value!r}"]
 
 
+def _target_branch_problems(value: Any) -> list[str]:
+    """`target_branch` must be a bare branch name under git's ref-name rules."""
+    try:
+        valid_branch(value, "overlay")
+    except ValueError:
+        return [f"project layer overlay refuses landing_areas.target_branch: must be a valid branch name, got {value!r}"]
+    return []
+
+
 def _cost_overlay_problems(cost: Any) -> list[str]:
     """Only `level` is overlayable under `policy.cost`; `bounds` is a base/team concern, never a project one."""
     if not isinstance(cost, Mapping):
@@ -382,6 +393,8 @@ def overlay_errors(overlay: Mapping[str, Any]) -> list[str]:
                 problems += _land_checks_problems(sub_value)
             elif allowed_subkey == "land_at":
                 problems += _land_at_problems(sub_value)
+            elif allowed_subkey == "target_branch":
+                problems += _target_branch_problems(sub_value)
             elif allowed_subkey == "cost":
                 problems += _cost_overlay_problems(sub_value)
             elif not isinstance(sub_value, Mapping):
@@ -444,7 +457,9 @@ def apply_overlay(
     if "description" in overlay:
         merged["description"] = overlay["description"]
     landing_areas = _as_mapping(overlay.get("landing_areas"))
-    overlay_landing = {key: landing_areas[key] for key in ("checks", "land_checks", "land_at") if key in landing_areas}
+    overlay_landing = {
+        key: landing_areas[key] for key in ("checks", "land_checks", "land_at", "target_branch") if key in landing_areas
+    }
     if overlay_landing:
         merged["landing_areas"] = {**_as_mapping(resolved.get("landing_areas")), **overlay_landing}
     review_tier = _overlay_review_tier(overlay)
