@@ -2373,6 +2373,14 @@ def _gather_worktree(repo: Path, step: dict) -> tuple[Path | None, str]:
     return wt, ""
 
 
+def _commit_count_refusal(step: dict, shas: list[str]) -> str | None:
+    """Why a `cherry_pick` step's `shas` are refused, or None. A step with no `commits` key accepts any positive count."""
+    ahead = f"ahead of {step['from']} on {step['branch']}, found {len(shas)}"
+    if "commits" in step and step["commits"] != len(shas):
+        return f"expected {step['commits']} commits {ahead}"
+    return None if shas else f"expected at least one commit {ahead}"
+
+
 def _gather_failed(wt: Path, what: str, abort: list[str], result: subprocess.CompletedProcess) -> tuple[bool, str]:
     """Name the unmerged files, run `abort` in `wt`, and report `what conflicts in: ...` like a squash does."""
     conflicted = subprocess.run(["git", "-C", str(wt), "diff", "--name-only", "--diff-filter=U"],
@@ -2387,15 +2395,18 @@ def _execute_gather_step(repo: Path, step: dict) -> tuple[bool, str]:
     if wt is None:
         return False, why
     if step["kind"] == "cherry_pick":
-        rev = subprocess.run(["git", "-C", str(repo), "rev-list", "--no-merges", "--cherry-pick", "--right-only",
+        rev = subprocess.run(["git", "-C", str(repo), "rev-list", "--reverse", "--no-merges", "--cherry-pick", "--right-only",
                               f"{step['from']}...{step['branch']}"], capture_output=True, text=True)
         shas = rev.stdout.split()
-        if rev.returncode != 0 or len(shas) != 1:
-            return False, f"expected exactly one commit ahead of {step['from']} on {step['branch']}, found {len(shas)}"
-        cp = subprocess.run(["git", "-C", str(wt), "cherry-pick", shas[0]], capture_output=True, text=True)
-        if cp.returncode != 0:
-            return _gather_failed(wt, f"cherry-pick of {step['branch']}", ["cherry-pick", "--abort"], cp)
-        return True, f"cherry-picked {shas[0][:8]} onto {step['onto']}"
+        refusal = _commit_count_refusal(step, shas)
+        if rev.returncode != 0 or refusal:
+            return False, refusal or rev.stderr.strip()
+        for sha in shas:
+            cp = subprocess.run(["git", "-C", str(wt), "cherry-pick", sha], capture_output=True, text=True)
+            if cp.returncode != 0:
+                _, detail = _gather_failed(wt, f"cherry-pick of {sha[:8]}", ["cherry-pick", "--abort"], cp)
+                return False, f"{detail}\nstopped at {sha[:8]} on {step['branch']}"
+        return True, f"cherry-picked {len(shas)} commits onto {step['onto']}"
     applied = subprocess.run(["git", "-C", str(wt), "apply", "--3way", "--index", "-"], input=step["patch"],
                              capture_output=True, text=True)
     if applied.returncode != 0:
@@ -2425,23 +2436,27 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
         if co.returncode != 0:
             return False, co.stderr.strip() or co.stdout.strip()
         _link_venv(repo, wt)
-        # The branch was chosen because it is exactly one commit ahead of
-        # `from`, counted as `_land_branches` counts it: merges and commits
-        # whose patch `from` already has (a stacked parent that merged as a
-        # squash) are left out. So the range names the one commit without
-        # matching on the subject text, which a second commit could share.
-        rev = subprocess.run(["git", "-C", str(repo), "rev-list", "--no-merges", "--cherry-pick", "--right-only",
+        # The branch is `commits` ahead of `from`, counted as `_land_branches` counts it: merges and commits
+        # whose patch `from` already has (a stacked parent that merged as a squash) are left out. The range
+        # names them without matching on subject text, and `--reverse` picks them oldest first. A step from
+        # an older plan has no `commits` key and accepts any positive count.
+        rev = subprocess.run(["git", "-C", str(repo), "rev-list", "--reverse", "--no-merges", "--cherry-pick", "--right-only",
                               f"{step['from']}...{step['branch']}"], capture_output=True, text=True)
         shas = [s for s in rev.stdout.split() if s]
-        if rev.returncode != 0 or len(shas) != 1:
-            return False, f"expected exactly one commit ahead of {step['from']} on {step['branch']}, found {len(shas)}"
-        ok, detail = _cherry_pick_generated(wt, shas[0], step.get("umbrella"))
+        refusal = _commit_count_refusal(step, shas)
+        if rev.returncode != 0 or refusal:
+            return False, refusal or rev.stderr.strip()
+        for sha in shas:
+            ok, detail = _cherry_pick_generated(wt, sha, step.get("umbrella"))
+            if not ok:
+                break
         if not ok and detail.startswith(_GENERATE_FAILED):
             # Keep the worktree, detached, for inspection; free the branch so a rerun starts fresh
             # instead of finding a pr branch that holds the un-generated tree and refusing on it.
             subprocess.run(["git", "-C", str(wt), "checkout", "-q", "--detach"], capture_output=True, text=True)
             subprocess.run(["git", "-C", str(repo), "branch", "-D", step["onto"]], capture_output=True, text=True)
-        return (True, f"cherry-picked {shas[0][:8]} onto {step['onto']}") if ok else (False, detail)
+        # The sha and branch follow the detail: `land_conflict_reason` reads a detail that leads with `cherry-pick of`.
+        return (True, f"cherry-picked {len(shas)} commits onto {step['onto']}") if ok else (False, f"{detail}\nstopped at {sha[:8]} on {step['branch']}")
     if kind == "squash_phase":
         # Built in its own worktree from `from`, exactly like `cherry_pick`, so `repo`'s HEAD never moves.
         wt = _land_worktree(repo, step["onto"])

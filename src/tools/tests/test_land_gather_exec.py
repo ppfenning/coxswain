@@ -73,7 +73,8 @@ def test_a_conflicting_cherry_pick_names_the_file_and_leaves_none_in_progress(tm
     ok, detail = cli._execute_land_step(repo, _pick("two"))
     wt = cli._land_worktree(repo, "pr/i--p")
     assert not ok
-    assert detail == "cherry-pick of agents/r/two conflicts in: a.txt"
+    sha = _git(repo, "rev-parse", "--short=8", "agents/r/two")
+    assert detail == f"cherry-pick of {sha} conflicts in: a.txt\nstopped at {sha} on agents/r/two"
     assert sp.run(["git", "-C", str(wt), "rev-parse", "-q", "--verify", "CHERRY_PICK_HEAD"]).returncode != 0
     assert _git(wt, "status", "--porcelain") == ""
     cli._remove_land_worktree(repo, "pr/i--p")
@@ -85,6 +86,8 @@ def test_a_conflict_stops_the_land_before_any_later_step(tmp_path, capsys):
     rc, reached, _ = cli._land_execute(repo, steps, [], None, None, "pr", False)
     out = capsys.readouterr().out
     assert rc == 1
-    assert "cherry_pick: cherry-pick of agents/r/two conflicts in: a.txt" in out
+    sha = _git(repo, "rev-parse", "--short=8", "agents/r/two")
+    assert f"cherry_pick: cherry-pick of {sha} conflicts in: a.txt" in out
+    assert f"stopped at {sha} on agents/r/two" in out
     assert "stopped; remaining: pick_branch" in out
     assert reached == ["cherry_pick", "cherry_pick"]
