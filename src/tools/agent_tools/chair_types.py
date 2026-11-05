@@ -16,6 +16,7 @@ from agent_tools.chair_land_conflict import LandConflict
 EASTERN = ZoneInfo("America/New_York")  # every time the chair prints for an operator is shown in this zone
 STALE_CHECKOUT_CAUSE = "stale_checkout"  # the needs_chair cause for a lane host whose checkout environment is stale
 REVIEW_CLOSED_CAUSE = "review_closed"  # the needs_chair cause for a task whose review PR was closed without merging
+DEADLOCK_CAUSE = "deferred_land_deadlock"  # the needs_chair cause for a task waiting on an approved task whose land land_at defers
 HELD_FILE_CAUSE = "held_file"  # the needs_chair cause for a ticket or intake file the export held as edited by hand
 QUARANTINED_CAUSE = "quarantined"  # the cause an open quarantine reports when no attempt names one
 

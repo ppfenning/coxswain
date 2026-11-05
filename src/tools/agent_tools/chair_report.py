@@ -15,7 +15,7 @@ from agent_tools.chair_exec import LAUNCH_KINDS, Result
 from agent_tools.chair_land_freeze import LandFreeze, status_text
 from agent_tools.chair_read_quarantined import RUNAWAY_CAUSE
 from agent_tools.chair_runnable import WaitingInitiative
-from agent_tools.chair_types import EASTERN, HELD_FILE_CAUSE, Action, Facts, QueueFile, ReviewPr
+from agent_tools.chair_types import DEADLOCK_CAUSE, EASTERN, HELD_FILE_CAUSE, Action, Facts, QueueFile, ReviewPr
 from agent_tools.notify import Notification
 from agent_tools.queue_export import is_ahead_of_store
 
@@ -74,14 +74,16 @@ def _needs_scope(action: Action) -> str:
 
 def needs_chair_items(actions: Sequence[Action]) -> list[str]:
     """Runaway-ceiling entries first, each bare (`RUNAWAY <scope>`); then `needs chair: <scope>:<cause>`, a held file's
-    scope being its path; then a `partial-land:` per partial_land."""
+    scope being its path; then one `needs chair: <scope>:deferred_land_deadlock <reason>` per deadlock; then a `partial-land:` per partial_land."""
     chair_actions = [a for a in actions if a.get("kind") == "needs_chair"]
     runaway = [a for a in chair_actions if a.get("cause") == RUNAWAY_CAUSE]
-    rest = [a for a in chair_actions if a.get("cause") != RUNAWAY_CAUSE]
+    rest = [a for a in chair_actions if a.get("cause") not in (RUNAWAY_CAUSE, DEADLOCK_CAUSE)]
+    deadlock = [a for a in chair_actions if a.get("cause") == DEADLOCK_CAUSE]
     partial = [a for a in actions if a.get("kind") == "partial_land"]
     return (
         [f"RUNAWAY {_scope(a)}" for a in runaway]
         + [f"needs chair: {_needs_scope(a)}:{a.get('cause', '?')}" for a in rest]
+        + [f"needs chair: {_scope(a)}:{DEADLOCK_CAUSE} {a.get('reason', '')}" for a in deadlock]
         + [partial_land_text(a) for a in partial]
     )
 
