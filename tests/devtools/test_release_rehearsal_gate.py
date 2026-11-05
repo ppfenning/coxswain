@@ -124,3 +124,84 @@ def test_a_repository_with_no_resolved_commit_refuses():
     assert "dash" in _decide([_run(1)], shas={**SHAS, "dash": ""})[0]["detail"]
     assert "coxswain" in _decide([_run(1)], shas={"coxswain": ""})[0]["detail"]
     assert "coxswain" in _decide([_run(1)], shas={})[0]["detail"]
+
+
+REC = gate.new_record("0.48.0", "a" * 40, "", 42, TITLE)
+REC_TEXT = ('{"coxswain": "' + "a" * 40 + '", "dash": "", "run_id": 42, "run_title": "' + TITLE
+            + '", "version": "0.48.0"}')
+
+
+def _recorded(run, jobs=GREEN, declared=(), reason=None, notes=""):
+    return gate.decide_recorded(REC, run, jobs, declared, reason, notes)
+
+
+def test_new_record_holds_the_five_fields_and_stores_a_pinned_dash_as_empty():
+    assert REC == {"version": "0.48.0", "coxswain": "a" * 40, "dash": "", "run_id": 42, "run_title": TITLE}
+    assert gate.new_record("0.48.0", "a" * 40, None, 42, TITLE)["dash"] == ""
+
+
+def test_record_text_is_one_sorted_line():
+    assert gate.record_text(REC) == REC_TEXT
+
+
+def test_a_record_round_trips_through_text():
+    assert gate.parse_record(gate.record_text(REC)) == REC
+
+
+def test_garbled_or_empty_text_parses_to_none():
+    assert gate.parse_record("{not json") is None
+    assert gate.parse_record("") is None
+    assert gate.parse_record("[1, 2]") is None
+
+
+def test_text_missing_a_key_or_with_a_wrong_type_parses_to_none():
+    assert gate.parse_record(REC_TEXT.replace('"run_id": 42, ', "")) is None
+    assert gate.parse_record(REC_TEXT.replace('"run_id": 42', '"run_id": "42"')) is None
+    assert gate.parse_record(REC_TEXT.replace('"run_id": 42', '"run_id": true')) is None
+    assert gate.parse_record(REC_TEXT.replace('"dash": ""', '"dash": null')) is None
+    assert gate.parse_record(REC_TEXT[:-1] + ', "extra": 1}') is None
+
+
+def test_decide_passing_note_carries_the_run_id():
+    assert _decide([_run(42)])[0]["run_id"] == 42
+
+
+def test_a_recorded_run_that_passed_gives_a_note_with_its_run_id():
+    assert _recorded(_run(42)) == [
+        {"kind": "note", "component": "rehearsal", "detail": "rehearsal passed: gh run view 42", "run_id": 42}]
+
+
+def test_a_recorded_run_passes_whatever_its_title_says():
+    assert _recorded(_run(42, title="something else entirely dash=pinned"))[0]["kind"] == "note"
+
+
+def test_a_recorded_run_that_failed_refuses():
+    steps = _recorded(_run(42, conclusion="failure"))
+    assert [s["kind"] for s in steps] == ["refuse"]
+    assert "gh run view 42" in steps[0]["detail"]
+
+
+def test_a_recorded_run_that_was_cancelled_refuses():
+    assert _recorded(_run(42, conclusion="cancelled"))[0]["kind"] == "refuse"
+
+
+def test_a_recorded_run_lacking_a_scenario_job_refuses():
+    assert "no upgrade job" in _recorded(_run(42), jobs=[GREEN[0], GREEN[2]])[0]["detail"]
+
+
+def test_a_recorded_run_with_a_skipped_migrate_and_declared_migrations_refuses():
+    assert _recorded(_run(42), declared=["split-lake-store"])[0]["kind"] == "refuse"
+
+
+def test_an_unreadable_recorded_run_refuses():
+    steps = _recorded(None)
+    assert steps[0]["kind"] == "refuse"
+    assert "could not be read" in steps[0]["detail"]
+
+
+def test_a_recorded_override_with_the_notes_line_permits_without_the_run():
+    assert _recorded(None, reason="the runner image was unavailable", notes=NOTES_LINE)[0]["kind"] == "note"
+
+
+def test_a_recorded_override_without_the_notes_line_refuses():
+    assert _recorded(_run(42), reason="the runner image was unavailable")[0]["kind"] == "refuse"

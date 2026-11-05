@@ -4,6 +4,7 @@ Every function here takes plain data and returns plain data. The edge in cli.py 
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable, Mapping, Sequence
 
@@ -47,8 +48,39 @@ def run_passes(run: Mapping, jobs: Sequence[Mapping], declared: Sequence[str]) -
     return None
 
 
+RECORD_KEYS = ("version", "coxswain", "dash", "run_id", "run_title")
+
+
+def new_record(version: str, coxswain: str, dash: str, run_id: int, run_title: str) -> dict:
+    """The rehearsal a release was gated on. `dash` is the empty string when dash is pinned."""
+    return {"version": version, "coxswain": coxswain, "dash": dash or "", "run_id": run_id, "run_title": run_title}
+
+
+def record_text(record: Mapping) -> str:
+    return json.dumps({key: record[key] for key in RECORD_KEYS}, sort_keys=True)
+
+
+def parse_record(text: str) -> Mapping | None:
+    """The record `text` holds, or None for anything that is not exactly a record."""
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict) or set(data) != set(RECORD_KEYS):
+        return None
+    run_id = data["run_id"]
+    texts = [data[key] for key in RECORD_KEYS if key != "run_id"]
+    if not all(isinstance(value, str) for value in texts) or isinstance(run_id, bool) or not isinstance(run_id, int):
+        return None
+    return dict(data)
+
+
 def _step(kind: str, detail: str) -> dict:
     return {"kind": kind, "component": "rehearsal", "detail": detail}
+
+
+def _passed(run_id: int) -> dict:
+    return {**_step("note", f"rehearsal passed: gh run view {run_id}"), "run_id": run_id}
 
 
 def _override(reason: str, notes_text: str) -> list[dict]:
@@ -80,4 +112,18 @@ def decide(runs: Sequence[Mapping], jobs_of: Callable[[Mapping], Sequence[Mappin
     failure = run_passes(run, jobs_of(run), declared)
     if failure is not None:
         return [_step("refuse", f"{failure} Run: gh run view {run['databaseId']}. Looked for: {title}")]
-    return [_step("note", f"rehearsal passed: gh run view {run['databaseId']}")]
+    return [_passed(run["databaseId"])]
+
+
+def decide_recorded(record: Mapping, run: Mapping | None, jobs: Sequence[Mapping], declared: Sequence[str],
+                    allow_reason: str | None, notes_text: str) -> list[dict]:
+    """Judge the one run `record` names, by id. No title is searched, so no title shape can cause a miss.
+    `run` is None when the edge could not read it."""
+    if allow_reason is not None:
+        return _override(allow_reason, notes_text)
+    if run is None:
+        return [_step("refuse", f"The recorded run could not be read. Run: gh run view {record['run_id']}.")]
+    failure = run_passes(run, jobs, declared)
+    if failure is not None:
+        return [_step("refuse", f"{failure} Run: gh run view {record['run_id']}. Recorded title: {record['run_title']}")]
+    return [_passed(record["run_id"])]
