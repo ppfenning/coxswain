@@ -697,6 +697,31 @@ def test_land_at_refuses_any_other_value(tmp_path: Path, value: str) -> None:
         read_initiative(_initiative_with(tmp_path, f"land_at: {value}\n"))
 
 
+# ── epic and target_branch ─────────────────────────────────────────────────
+
+
+def test_epic_and_target_branch_are_none_when_absent(tmp_path: Path) -> None:
+    initiative = read_initiative(_initiative_with(tmp_path, ""))
+    assert (initiative["epic"], initiative["target_branch"]) == (None, None)
+
+
+def test_epic_and_target_branch_read_valid_values(tmp_path: Path) -> None:
+    initiative = read_initiative(_initiative_with(tmp_path, "epic: my-epic\ntarget_branch: release/1.2\n"))
+    assert (initiative["epic"], initiative["target_branch"]) == ("my-epic", "release/1.2")
+
+
+@pytest.mark.parametrize("value", ["Bad_Epic", "''", "5"])
+def test_epic_refuses_a_bad_id_naming_the_path(tmp_path: Path, value: str) -> None:
+    with pytest.raises(WorkStoreError, match="initiative.md: epic"):
+        read_initiative(_initiative_with(tmp_path, f"epic: {value}\n"))
+
+
+@pytest.mark.parametrize("value", ["has space", "a..b", "-lead", "trail.lock"])
+def test_target_branch_refuses_a_bad_name_naming_the_path(tmp_path: Path, value: str) -> None:
+    with pytest.raises(WorkStoreError, match=r"initiative\.md target_branch"):
+        read_initiative(_initiative_with(tmp_path, f"target_branch: {value}\n"))
+
+
 # ── what can run at once ───────────────────────────────────────────────────
 
 
