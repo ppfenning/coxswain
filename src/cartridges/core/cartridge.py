@@ -85,6 +85,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 from collections.abc import Mapping, Sequence
 from functools import reduce
@@ -307,9 +308,10 @@ def _as_mapping(value: Any) -> Mapping[str, Any]:
 # `landing_areas.land_checks` is a `ci` or `local` selector, not a list; absent means local.
 # `landing_areas.land_at` is `ticket`, `level` or `task`, the granularity landing happens at; absent means ticket.
 # `landing_areas.target_branch` is the default branch an initiative lands into; absent means the repository's default chain.
+# `landing_areas.test_database` names a lane's test database (`env`, `template`) and optionally how to remove it (`drop`); absent means no per-lane test database.
 _OVERLAY_NESTED_ALLOWED = {
     "policy": frozenset({"review_tier", "cost"}),
-    "landing_areas": frozenset({"checks", "land_checks", "land_at", "target_branch"}),
+    "landing_areas": frozenset({"checks", "land_checks", "land_at", "target_branch", "test_database"}),
 }
 
 # Which allowed nested subkeys hold a list of entries rather than a mapping;
@@ -362,6 +364,28 @@ def _target_branch_problems(value: Any) -> list[str]:
     return []
 
 
+_TEST_DATABASE_KEYS = frozenset({"env", "template", "drop"})
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _test_database_problems(value: Any) -> list[str]:
+    """`test_database` is {env, template, drop?}: `template` holds one `{lane}` with a non-empty suffix, `drop` holds `{name}`."""
+    prefix = "project layer overlay refuses landing_areas.test_database"
+    if not isinstance(value, Mapping):
+        return [f"{prefix}: must be a mapping, got {type(value).__name__}"]
+    problems = [f"{prefix}: unknown key '{key}'" for key in value if key not in _TEST_DATABASE_KEYS]
+    env, template, drop = value.get("env"), value.get("template"), value.get("drop")
+    if not isinstance(env, str) or not _ENV_NAME.fullmatch(env):
+        problems.append(f"{prefix}: env must be a valid environment variable name, got {env!r}")
+    if not isinstance(template, str) or template.count("{lane}") != 1:
+        problems.append(f"{prefix}: template must be a string with exactly one '{{lane}}', got {template!r}")
+    elif not template.partition("{lane}")[2]:
+        problems.append(f"{prefix}: template must have text after '{{lane}}', got {template!r}")
+    if "drop" in value and (not isinstance(drop, str) or "{name}" not in drop):
+        problems.append(f"{prefix}: drop must be a string containing '{{name}}', got {drop!r}")
+    return problems
+
+
 def _cost_overlay_problems(cost: Any) -> list[str]:
     """Only `level` is overlayable under `policy.cost`; `bounds` is a base/team concern, never a project one."""
     if not isinstance(cost, Mapping):
@@ -395,6 +419,8 @@ def overlay_errors(overlay: Mapping[str, Any]) -> list[str]:
                 problems += _land_at_problems(sub_value)
             elif allowed_subkey == "target_branch":
                 problems += _target_branch_problems(sub_value)
+            elif allowed_subkey == "test_database":
+                problems += _test_database_problems(sub_value)
             elif allowed_subkey == "cost":
                 problems += _cost_overlay_problems(sub_value)
             elif not isinstance(sub_value, Mapping):
@@ -458,7 +484,9 @@ def apply_overlay(
         merged["description"] = overlay["description"]
     landing_areas = _as_mapping(overlay.get("landing_areas"))
     overlay_landing = {
-        key: landing_areas[key] for key in ("checks", "land_checks", "land_at", "target_branch") if key in landing_areas
+        key: landing_areas[key]
+        for key in ("checks", "land_checks", "land_at", "target_branch", "test_database")
+        if key in landing_areas
     }
     if overlay_landing:
         merged["landing_areas"] = {**_as_mapping(resolved.get("landing_areas")), **overlay_landing}
@@ -473,6 +501,11 @@ def apply_overlay(
         base_cost = _as_mapping(base_policy.get("cost"))
         merged["policy"] = {**base_policy, "cost": {**base_cost, "level": cost_level}}
     return merged
+
+
+def test_database_setting(cartridge: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """The `landing_areas.test_database` mapping of a resolved cartridge, or None when absent."""
+    return _as_mapping(cartridge.get("landing_areas")).get("test_database")
 
 
 def _merge_overlay(
