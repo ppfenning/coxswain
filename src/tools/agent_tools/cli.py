@@ -3408,8 +3408,15 @@ def _runs_land(a: argparse.Namespace) -> int:
         return 2
     if checked.notice:
         print(f"land: {checked.notice}")
+    base_flag = getattr(a, "base", None)
+    if not base_flag:
+        phase_of_land = getattr(a, "phase", None) or (None if a.task else _phase_needing_land(runs_dir, run_id))
+        base_flag, refusal = _initiative_target_branch(profile, repo, runs_dir.parent, _land_initiative(runs_dir, run_id, phase_of_land, a.task))
+        if refusal:
+            print(f"land: refusing, {refusal}")
+            return 2
     try:
-        default_branch = base_branch.base_ref(str(repo), getattr(a, "base", None)).removeprefix("origin/")
+        default_branch = base_branch.base_ref(str(repo), base_flag).removeprefix("origin/")
     except base_branch.BaseError as exc:
         print(f"land: refusing, {exc}")
         return 2
@@ -5690,10 +5697,11 @@ def _sync_skipped(a: argparse.Namespace) -> bool:
     return not isinstance(context, str) and context[1] == "none"
 
 
-def _team_cartridge(profile: dict, repo: Path | None = None) -> tuple[dict, str | None]:
+def _team_cartridge(profile: dict, repo: Path | None = None, overlay_keys: frozenset[str] | None = None) -> tuple[dict, str | None]:
     """Edge. The profile's team cartridge, with `repo`'s `.agent/cartridge.yaml` overlay when a repo is given (as
     `_cartridge_checks` applies it), and `None`; or `({}, why)` when it cannot be resolved. A profile naming no
-    team and no cartridges_dir has no cartridge, which is `({}, None)`."""
+    team and no cartridges_dir has no cartridge, which is `({}, None)`. `overlay_keys` keeps only those keys of the repo
+    overlay, since the same file also carries `base:`, which the cartridge overlay refuses."""
     team, cartridges_dir = profile.get("team"), profile.get("cartridges_dir")
     if not team or not cartridges_dir:
         return {}, None
@@ -5701,6 +5709,8 @@ def _team_cartridge(profile: dict, repo: Path | None = None) -> tuple[dict, str 
         from harness.resolve import overlay_path, resolve_cartridge
         overlay_file = Path(overlay_path(str(repo))) if repo is not None else None
         overlay = yaml.safe_load(overlay_file.read_text(encoding="utf-8")) if overlay_file and overlay_file.is_file() else None
+        if overlay_keys is not None and isinstance(overlay, dict):
+            overlay = {key: value for key, value in overlay.items() if key in overlay_keys}
         cartridge, _ = resolve_cartridge(team, cartridges_dir=Path(cartridges_dir).expanduser(),
                                          skills_root=[Path(r).expanduser() for r in profile.get("skills_roots") or []],
                                          overlay=overlay)
@@ -6084,14 +6094,20 @@ def _route_launch(a: argparse.Namespace) -> int:
         if host is None:
             # A remote lane runs the host's own `cox route launch` on the synced repo, which resolves the repo's `base:`
             # setting itself through this same branch; only an explicit `--base` is lost there, so `_dropped_ceilings` refuses it.
+            base_flag = getattr(a, "base", None)
+            if not base_flag:
+                base_flag, refusal = _initiative_target_branch(profile, Path(local_repo), runs_dir.parent, prefix)
+                if refusal:
+                    print(f"routing: {refusal}")
+                    return 2
             try:
-                base = base_branch.base_ref(str(local_repo), getattr(a, "base", None))
+                base = base_branch.base_ref(str(local_repo), base_flag)
             except base_branch.BaseError as exc:
                 print(f"routing: {exc}")
                 return 2
-            # A repo with no origin gets a bare name back. Pass it only when somebody chose it (`--base` or `base:`),
+            # A repo with no origin gets a bare name back. Pass it only when somebody chose it (`--base`, a target branch or `base:`),
             # since the default `main` would hide a repo whose local branch is `master` from the harness's own fallback.
-            if base.startswith("origin/") or getattr(a, "base", None) or base_branch.configured_base(str(local_repo)):
+            if base.startswith("origin/") or base_flag or base_branch.configured_base(str(local_repo)):
                 needs["base"] = base
         env_repo = needs["repo"]
     elif a.graph == "decompose":
@@ -11144,10 +11160,10 @@ ROUTE_COMMANDS = [
         "agent_tools.cli:_route_sync", False, (),
     ),
     commands.Command(
-        "launch", "route", "run one of the harness's graphs directly", (), None, False, (),
+        "launch", "route", "run one of the harness's graphs directly; `epic` is the run of one initiative", (), None, False, (),
         subcommands=(
             commands.Command(
-                "epic", "route", "launch the epic graph against a filed initiative",
+                "epic", "route", "launch the run of one filed initiative (the epic graph; epic is its historical name)",
                 (
                     commands.Arg(("--profile",)), commands.Arg(("--initiative",), {"required": True}),
                     commands.Arg(("--repo",)),
@@ -11390,6 +11406,124 @@ def _initiative_repos(initiative_files: Mapping[Path, str], home: str) -> dict[s
     """Pure. Initiative id to the `repo:` in its `initiative.md` text expanded under `home`, as `chair_facts.read_initiative_repos` reads it from disk."""
     fields = {p.parent.name: route.parse_frontmatter(text)[0] for p, text in initiative_files.items()}
     return {name: repo_path.expand(f["repo"], home) for name, f in fields.items() if isinstance(f.get("repo"), str) and f["repo"]}
+
+
+class _TargetBranchRefusal(Exception):
+    """A target branch is set and cannot be used; the message names the file, the value and the initiatives affected."""
+
+
+def _unusable_branch(text: str, path: Path) -> str | None:
+    """Pure. Why the `target_branch:` in one epic file's text is set and not a valid branch name, else None."""
+    from core.landing import valid_branch  # lazy: core sits beside agent_tools in one venv
+    from core.workstore import WorkStoreError, _split_frontmatter
+
+    try:
+        branch = _split_frontmatter(text, path)[0].get("target_branch")
+    except WorkStoreError:
+        return None
+    if branch is None:
+        return None
+    try:
+        valid_branch(branch, "epic")
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
+def _read_epics(ws: Path) -> tuple[dict[str, dict], dict[str, str], set[str]]:
+    """Edge. Each `<ws>/epics/*.md` read on its own, so one broken file never changes another epic:
+    `(definitions, refusals, unread)`. A file that cannot be read or parsed is a `note:` on stderr and its stem is in
+    `unread`. A file whose `target_branch` is set and not a valid branch name is in `refusals`, keyed by the epic id
+    (the file stem), with the file and the value in the message."""
+    from core.epic_files import parse_epic  # lazy: core sits beside agent_tools in one venv
+
+    definitions: dict[str, dict] = {}
+    refusals: dict[str, str] = {}
+    unread: set[str] = set()
+    directory = ws / "epics"
+    for path in sorted(directory.glob("*.md")) if directory.is_dir() else []:
+        text = ""
+        try:
+            text = path.read_text(encoding="utf-8")
+            definition = parse_epic(text, path.name)
+        except (OSError, ValueError) as exc:
+            reason = None if isinstance(exc, OSError) else _unusable_branch(text, path)
+            if reason is not None:
+                refusals[path.stem] = f"{path}: {reason}"
+            else:
+                first_line = (str(exc).splitlines() or [type(exc).__name__])[0]
+                print(f"note: epic file {path} not read ({first_line}); using the repo default for it", file=sys.stderr)
+                unread.add(path.stem)
+            continue
+        definitions[definition["id"]] = definition
+    return definitions, refusals, unread
+
+
+def _epic_users(ws: Path) -> dict[str, list[str]]:
+    """Edge. Epic id to the initiatives whose `initiative.md` names it in a string `epic:`."""
+    users: dict[str, list[str]] = {}
+    for path in sorted((ws / "work").glob("*/initiative.md")):
+        text = _read_text_or_none(path)
+        epic = route.parse_frontmatter(text)[0].get("epic") if text is not None else None
+        if isinstance(epic, str):
+            users.setdefault(epic, []).append(path.parent.name)
+    return users
+
+
+def _epic_definitions(ws: Path) -> dict[str, dict]:
+    """Edge. The valid epic definitions of `ws`, for the chair. A bad `target_branch` in the file of an epic that an
+    initiative names raises `_TargetBranchRefusal`, as `_initiative_target_branch` refuses that initiative. A bad file
+    no initiative names is a `note:`, so it cannot stop the chair for unrelated epics."""
+    definitions, refusals, _ = _read_epics(ws)
+    users = _epic_users(ws) if refusals else {}
+    for epic_id, message in refusals.items():
+        if epic_id in users:
+            raise _TargetBranchRefusal(f"{message} (epic of initiative {', '.join(users[epic_id])})")
+        print(f"note: epic target branch unusable ({message}); no initiative names that epic", file=sys.stderr)
+    return definitions
+
+
+def _initiative_target_branch(profile: dict, repo: Path | None, ws: Path, initiative: str | None) -> tuple[str | None, str | None]:
+    """Edge. `(branch, refusal)`: the initiative's resolved target branch (its own `target_branch:`, else its epic's,
+    else the cartridge's `landing_areas.target_branch`), None when none is set. `refusal` is the message when the
+    cartridge does not resolve or a set target branch is invalid; every other gap falls back to None with a `note:`."""
+    from core.cartridge import OVERLAY_ALLOWED_KEYS  # lazy: core sits beside agent_tools in one venv
+    from core.landing import resolve_target_branch
+
+    cartridge, error = _team_cartridge(profile, repo, OVERLAY_ALLOWED_KEYS)
+    if error:
+        return None, error
+    definitions, refusals, unread = _read_epics(ws)
+    try:
+        text = _read_text_or_none(ws / "work" / initiative / "initiative.md") if initiative else None
+        fields = route.parse_frontmatter(text)[0] if text is not None else {}
+        if text is not None and not fields:
+            print(f"note: work/{initiative}/initiative.md has no front matter; using the repo default", file=sys.stderr)
+        epic_id = fields.get("epic")
+        if "epic" in fields and not isinstance(epic_id, str):
+            print(f"note: work/{initiative}/initiative.md epic: is not a string; ignoring it", file=sys.stderr)
+            epic_id = None
+        if epic_id in refusals:
+            return None, refusals[epic_id]
+        epic = definitions.get(epic_id) if epic_id else None
+        if epic_id and epic is None and epic_id not in unread:
+            print(f"note: epic {epic_id} has no file under epics/; using the repo default", file=sys.stderr)
+        return resolve_target_branch(cartridge, epic["target_branch"] if epic else None, fields.get("target_branch")), None
+    except ValueError as exc:
+        return None, str(exc)
+
+
+def _land_initiative(runs_dir: Path, run_id: str, phase: str | None, task: str | None) -> str | None:
+    """Edge. The initiative a land is for: the phase's, else the task record's, else the run id's own."""
+    if phase:
+        return _initiative_of_phase(runs_dir.parent / "work", phase, run_id)
+    record = _land_load(runs_dir, run_id, task)[0]
+    return (record or {}).get("initiative") or chair_facts.run_initiative(run_id)
+
+
+def _chair_gather(ws: Path) -> chair_run.Gather:
+    """Pure. The chair's gatherer with the epic definitions of `ws` read on every tick through `_epic_definitions`."""
+    return lambda deps, now: chair_facts.gather_facts(deps, now, epic_definitions=_epic_definitions(ws))
 
 
 def _initiative_land_at(initiative_files: Mapping[Path, str]) -> dict[str, str | None]:
@@ -12189,7 +12323,7 @@ def _chair_run_deps(
 
     return chair_run.RunDeps(
         checkout_state=checkout_state, started_checkout=started_checkout, lands_in_flight=lands_in_flight,
-        stop_lands=stop_lands, facts_deps=facts_deps, exec_deps=exec_deps, report_deps=chair_report.Deps(echo=echo),
+        stop_lands=stop_lands, facts_deps=facts_deps, gather=_chair_gather(ws), exec_deps=exec_deps, report_deps=chair_report.Deps(echo=echo),
         beat=beat, current_epoch=epoch,
         lease_beat=lambda: chair.renew_lease(runs_dir, session, pid, host),
         holds=lambda: chair._read_lease(runs_dir, holder) is not None,

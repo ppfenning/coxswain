@@ -171,14 +171,13 @@ def test_the_worktree_venv_bin_is_first_on_path_and_without_a_venv_path_is_uncha
     assert (tmp_path / "log").read_text() == "stub\nother\n"
 
 
-def test_the_dry_run_with_a_broken_cartridge_warns_and_lists_the_short_list(tmp_path, capsys):
+def test_the_dry_run_with_a_broken_cartridge_refuses_with_the_resolvers_message(tmp_path, capsys):
+    """The target branch can live in the cartridge, so a land that cannot read it would plan from the wrong base."""
     repo = _task_repo(tmp_path)
     rc = _land(tmp_path, repo, profile=_profile(tmp_path, "no-such-team"))
-    captured = capsys.readouterr()
-    assert rc == 0
-    assert "land: cartridge checks unavailable (" in captured.err
-    assert "the list below is short" in captured.err
-    assert "checks (pr/seams-task): cargo fmt --check;" in captured.err
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "land: refusing, cartridge no-such-team cannot be resolved: " in out
 
 
 def test_apply_refuses_before_any_step_when_the_cartridge_cannot_be_resolved(tmp_path, capsys, monkeypatch):
@@ -188,8 +187,7 @@ def test_apply_refuses_before_any_step_when_the_cartridge_cannot_be_resolved(tmp
     rc = _land(tmp_path, repo, "--apply", profile=_profile(tmp_path, "no-such-team"))
     out = capsys.readouterr().out
     assert rc == 2
-    assert "land: refusing, cartridge checks unavailable (" in out
-    assert "the land would run fewer checks than the build did" in out
+    assert "land: refusing, cartridge no-such-team cannot be resolved: " in out
     assert ran == []
     assert _git(repo, "branch", "--list", "pr/*") == ""
 

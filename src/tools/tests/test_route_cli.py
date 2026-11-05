@@ -563,11 +563,13 @@ def _write_file_profile(tmp_path):
     ws = tmp_path / "workspace"
     ws.mkdir()
     profile = tmp_path / "profile.yaml"
+    (tmp_path / "cartridges" / "acme").mkdir(parents=True)
+    (tmp_path / "cartridges" / "acme" / "cartridge.yaml").write_text("team: acme\n")
     profile.write_text(
         "team: acme\n"
         f"workspace_dir: {ws}\n"
         "harness_dir: /opt/coxswain-graphs\n"
-        "cartridges_dir: /opt/cartridges\n"
+        f"cartridges_dir: {tmp_path / 'cartridges'}\n"
         "provider_profile: /opt/providers/acme.yaml\n"
     )
     return profile, ws
@@ -761,11 +763,13 @@ def _wait_for(path, timeout=5.0):
 
 def _write_launch_profile(tmp_path, harness_dir, ws, provider_profile=None):
     profile = tmp_path / "profile.yaml"
+    (tmp_path / "cartridges" / "acme").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "cartridges" / "acme" / "cartridge.yaml").write_text("team: acme\n")
     profile.write_text(
         "team: acme\n"
         f"harness_dir: {harness_dir}\n"
         f"workspace_dir: {ws}\n"
-        "cartridges_dir: /opt/cartridges\n"
+        f"cartridges_dir: {tmp_path / 'cartridges'}\n"
         f"provider_profile: {provider_profile or '/opt/providers/acme.yaml'}\n"
     )
     return profile

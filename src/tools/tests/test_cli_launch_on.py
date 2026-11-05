@@ -40,11 +40,13 @@ def _setup(tmp_path):
     remote = tmp_path / "remote"
     (remote / "work").mkdir(parents=True)
     profile = tmp_path / "profile.yaml"
+    (tmp_path / "cartridges" / "acme").mkdir(parents=True)
+    (tmp_path / "cartridges" / "acme" / "cartridge.yaml").write_text("team: acme\n")
     profile.write_text(
         "team: acme\n"
         f"harness_dir: {harness_dir}\n"
         f"workspace_dir: {ws}\n"
-        "cartridges_dir: /opt/cartridges\n"
+        f"cartridges_dir: {tmp_path / 'cartridges'}\n"
         "provider_profile: /opt/providers/acme.yaml\n"
         "lane_hosts:\n"
         f"  - {{name: box, ssh: me@box, workspace_dir: {remote}}}\n"
