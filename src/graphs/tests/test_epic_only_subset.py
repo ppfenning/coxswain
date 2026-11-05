@@ -82,7 +82,7 @@ def test_only_narrows_the_buildable_set() -> None:
     assert [i["id"] for i in _buildable(items, PHASE, {}, frozenset({B}))] == [B]
 
 
-def test_earlier_merged_takes_approved_items_with_a_handoff_outside_the_run() -> None:
+def test_earlier_merged_takes_approved_items_outside_the_run_with_or_without_a_handoff() -> None:
     items = [
         {"id": "a", "phase": "p", "state": "approved", "handoff": {"files_changed": ["a.py"]}},
         {"id": "b", "phase": "p", "state": "approved", "handoff": None},
@@ -90,7 +90,7 @@ def test_earlier_merged_takes_approved_items_with_a_handoff_outside_the_run() ->
         {"id": "d", "phase": "q", "state": "approved", "handoff": {"files_changed": ["d.py"]}},
         {"id": "e", "phase": "p", "state": "approved", "handoff": {"files_changed": ["e.py"]}},
     ]
-    assert [i["id"] for i in _earlier_merged(items, "p", {"e"})] == ["a"]
+    assert [i["id"] for i in _earlier_merged(items, "p", {"e"})] == ["a", "b"]
 
 
 def test_two_calls_build_one_task_each_on_one_branch_and_the_second_validates_the_whole_phase(
