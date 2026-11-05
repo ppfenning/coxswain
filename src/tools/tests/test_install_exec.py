@@ -550,6 +550,73 @@ def test_cli_upgrade_plans_components_from_the_moved_umbrella_manifest_not_the_m
     assert ["git", "-C", str(root / "coxswain-harness"), "checkout", "v1.0.0"] not in calls
 
 
+_TARGET_ASSET = ("https://github.com/ppfenning/coxswain-dash/releases/download/v2026.11.1/"
+                 "towpath-v2026.11.1-aarch64-apple-darwin.tar.gz")
+_PROVIDERS = "[providers.claude-code]\nstatus = \"supported\"\n"
+
+
+def _dash_manifest(tag, provides=True):
+    return (f"[components.dash]\nrepo = \"ppfenning/coxswain-dash\"\ntag = \"{tag}\"\nflag = \"dash\"\n"
+            + ("provides = \"towpath\"\n" if provides else "") + "\n" + _PROVIDERS)
+
+
+def _upgrade_with_binary_manifests(monkeypatch, tmp_path, old_manifest, moved_manifest, towpath_version):
+    """Runs `cox upgrade --to 2026.11.1` on an Apple-silicon host with a present dash checkout. The manifest flag
+    carries `old_manifest`, the moved umbrella carries `moved_manifest`, and `towpath --version` prints
+    `towpath_version` until a `cp` runs, then the target version."""
+    import shutil
+
+    from agent_tools import cli
+
+    flag_manifest = tmp_path / "manifest.toml"
+    flag_manifest.write_text(old_manifest)
+    root = tmp_path / "root"
+    (root / "coxswain").mkdir(parents=True)
+    (root / "coxswain" / "manifest.toml").write_text(moved_manifest)
+    state, calls = {"copied": False}, []
+
+    def fake_run(argv, cwd):
+        calls.append(argv)
+        if argv[-1] == "--version":
+            return 0, "towpath 2026.11.1" if state["copied"] else towpath_version
+        state["copied"] = state["copied"] or argv[0] == "cp"
+        return (0, "abc\trefs/tags/v2026.11.1\n") if "ls-remote" in argv else (0, "")
+
+    monkeypatch.setattr(cli, "_real_run", fake_run)
+    monkeypatch.setattr(cli, "_load_lazy_modules", lambda: None)
+    monkeypatch.setattr(cli.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(cli.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(shutil, "which", lambda name: str(tmp_path / "bin" / name) if name == "towpath" else None)
+    monkeypatch.setattr(cli, "_checkout_facts", lambda path, **_: {"present": True, "tag": "v2026.11.0", "dirty": False})
+    rc = cli.main(["upgrade", "--root", str(root), "--manifest", str(flag_manifest), "--provider", "claude-code",
+                   "--to", "2026.11.1"])
+    return rc, calls, tmp_path / "bin"
+
+
+def test_cli_upgrade_installs_the_binary_a_moved_manifest_adds_before_the_doctor(monkeypatch, tmp_path):
+    rc, calls, bin_dir = _upgrade_with_binary_manifests(
+        monkeypatch, tmp_path, _dash_manifest("v2026.11.0", provides=False), _dash_manifest("v2026.11.1"),
+        "towpath 2026.11.0")
+
+    doctor = calls.index(["cox", "setup", "doctor"])
+    curl = next(at for at, argv in enumerate(calls) if argv[0] == "curl" and argv[-1] == _TARGET_ASSET)
+    copy = next(at for at, argv in enumerate(calls) if argv[0] == "cp" and argv[-1] == str(bin_dir))
+    assert rc == 0
+    assert curl < copy < doctor
+
+
+def test_cli_upgrade_installs_the_target_binary_when_the_old_manifest_pins_an_older_tag(monkeypatch, tmp_path):
+    rc, calls, bin_dir = _upgrade_with_binary_manifests(
+        monkeypatch, tmp_path, _dash_manifest("v2026.11.0"), _dash_manifest("v2026.11.1"), "towpath 2026.11.0")
+
+    doctor = calls.index(["cox", "setup", "doctor"])
+    curl = next(at for at, argv in enumerate(calls) if argv[0] == "curl" and argv[-1] == _TARGET_ASSET)
+    copy = next(at for at, argv in enumerate(calls) if argv[0] == "cp" and argv[-1] == str(bin_dir))
+    assert rc == 0
+    assert curl < copy < doctor
+    assert not any(argv[0] == "curl" and "v2026.11.0" in argv[-1] for argv in calls)
+
+
 def test_cli_install_a_refuse_step_prints_refused_not_failed_and_never_calls_run(monkeypatch, tmp_path, capsys):
     from agent_tools import cli
 
