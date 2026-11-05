@@ -36,6 +36,14 @@ build, as `{name, cmd}` entries, with an optional `timeout` (seconds) and
 its own checks on top with a root `.agent-checks` file. See
 [Landing](../methodology/landing.md#checks-are-evidence).
 
+## Checks by gate
+
+Three lists hold checks, one per gate. `landing_areas.checks` holds the task checks. `landing_areas.level_checks` holds the checks for the level gate. `landing_areas.ticket_checks` holds the checks for the ticket gate.
+
+All three use the `{name, cmd}` shape, with names unique inside each list. The two new lists are optional. A cartridge that omits them has no level or ticket checks, and `checks` reads as it always has.
+
+An integration suite that needs exclusive use of a resource belongs in `level_checks` or `ticket_checks`, because those run once for the level or ticket and not beside every task. The harness reads the two new lists in separate changes.
+
 ## Landing granularity
 
 `landing_areas.land_at` sets where landing happens: `ticket`, `level` or `task`.

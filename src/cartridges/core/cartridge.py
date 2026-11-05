@@ -305,38 +305,41 @@ def _as_mapping(value: Any) -> Mapping[str, Any]:
 # tree, because a project that runs `bash -n` does not also want `pytest`.
 # That is the opposite of the repo-root `.agent-checks` file, which ADDS
 # extra checks and is untouched by this key.
+# `landing_areas.level_checks` and `ticket_checks` are additive lists of the same shape, for the level and ticket gates; absent stays absent.
 # `landing_areas.land_checks` is a `ci` or `local` selector, not a list; absent means local.
 # `landing_areas.land_at` is `ticket`, `level` or `task`, the granularity landing happens at; absent means ticket.
 # `landing_areas.target_branch` is the default branch an initiative lands into; absent means the repository's default chain.
 # `landing_areas.test_database` names a lane's test database (`env`, `template`) and optionally how to remove it (`drop`); absent means no per-lane test database.
 _OVERLAY_NESTED_ALLOWED = {
     "policy": frozenset({"review_tier", "cost"}),
-    "landing_areas": frozenset({"checks", "land_checks", "land_at", "target_branch", "test_database"}),
+    "landing_areas": frozenset(
+        {"checks", "level_checks", "ticket_checks", "land_checks", "land_at", "target_branch", "test_database"}
+    ),
 }
 
 # Which allowed nested subkeys hold a list of entries rather than a mapping;
 # `landing_areas.checks` is the one exception to the mapping shape the loop
 # in `overlay_errors` otherwise assumes.
-_OVERLAY_LIST_SUBKEYS = frozenset({"checks"})
+_OVERLAY_LIST_SUBKEYS = frozenset({"checks", "level_checks", "ticket_checks"})
 
 
-def _checks_problems(checks: Any) -> list[str]:
-    """A replacement `checks` list: non-empty, each entry a mapping with `name` and `cmd`, names unique."""
+def _checks_problems(checks: Any, key: str = "checks") -> list[str]:
+    """A `checks`-shaped list named `key`: non-empty, each entry a mapping with `name` and `cmd`, names unique."""
     if not _is_plain_list(checks):
-        return [f"project layer overlay refuses landing_areas.checks: must be a list, got {type(checks).__name__}"]
+        return [f"project layer overlay refuses landing_areas.{key}: must be a list, got {type(checks).__name__}"]
     if not checks:
-        return ["project layer overlay refuses landing_areas.checks: list must not be empty"]
+        return [f"project layer overlay refuses landing_areas.{key}: list must not be empty"]
     problems: list[str] = []
     seen: list[str] = []
     for entry in checks:
         if not isinstance(entry, Mapping) or "name" not in entry or "cmd" not in entry:
-            problems.append(f"project layer overlay refuses checks entry {entry!r}: missing 'name' or 'cmd'")
+            problems.append(f"project layer overlay refuses {key} entry {entry!r}: missing 'name' or 'cmd'")
             continue
         if not all(isinstance(entry.get(k), str) and entry[k].strip() for k in ("name", "cmd")):
-            problems.append(f"project layer overlay refuses checks entry {entry!r}: 'name' and 'cmd' must be non-empty strings")
+            problems.append(f"project layer overlay refuses {key} entry {entry!r}: 'name' and 'cmd' must be non-empty strings")
             continue
         if entry["name"] in seen:
-            problems.append(f"project layer overlay refuses checks entry '{entry['name']}': duplicate name")
+            problems.append(f"project layer overlay refuses {key} entry '{entry['name']}': duplicate name")
         seen.append(entry["name"])
     return problems
 
@@ -412,7 +415,7 @@ def overlay_errors(overlay: Mapping[str, Any]) -> list[str]:
             if sub_value is None:
                 continue
             if allowed_subkey in _OVERLAY_LIST_SUBKEYS:
-                problems += _checks_problems(sub_value)
+                problems += _checks_problems(sub_value, allowed_subkey)
             elif allowed_subkey == "land_checks":
                 problems += _land_checks_problems(sub_value)
             elif allowed_subkey == "land_at":
@@ -485,7 +488,7 @@ def apply_overlay(
     landing_areas = _as_mapping(overlay.get("landing_areas"))
     overlay_landing = {
         key: landing_areas[key]
-        for key in ("checks", "land_checks", "land_at", "target_branch", "test_database")
+        for key in ("checks", "level_checks", "ticket_checks", "land_checks", "land_at", "target_branch", "test_database")
         if key in landing_areas
     }
     if overlay_landing:
