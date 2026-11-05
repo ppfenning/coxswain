@@ -6683,7 +6683,8 @@ positional arguments:
                         line)
     chair               the chair lock for the landing loop (runs/chair.json)
     sync                mirror the work store onto the profile's tracker
-    launch              run one of the harness's graphs directly
+    launch              run one of the harness's graphs directly; `epic` is
+                        the run of one initiative
 
 options:
   -h, --help            show this help message and exit
@@ -6981,7 +6982,8 @@ options:
 
 positional arguments:
   {epic,decompose,rescue,cos,sweep}
-    epic                launch the epic graph against a filed initiative
+    epic                launch the run of one filed initiative (the epic
+                        graph; epic is its historical name)
     decompose           launch the decompose graph against an idea
     rescue              launch the rescue graph against a task
     cos                 launch the cos graph
