@@ -6379,7 +6379,7 @@ away before a human ever sees it.</p>
 <h2 id="phase-branches-collect-a-phases-tasks">Phase branches collect a phase's tasks</h2>
 <p>Where a graph's tasks belong to an ordered phase, their scratch branches
 land on a shared phase branch rather than each opening its own pull
-request against the epic's target branch. This keeps the phase reviewable
+request against the initiative's target branch. This keeps the phase reviewable
 as one unit instead of as however many tasks happened to be in flight.</p>
 <h2 id="checks-are-evidence">Checks are evidence</h2>
 <p>A build's tests are not something the build gets to assert. The harness
@@ -6550,10 +6550,24 @@ first attempt never made one. At <code>level</code> it finds the level's pull re
 <p>A level runs its ready tasks together, up to a cap. The cap is the <code>--max-parallel</code> option of the phase and epic
 commands. Without it, the cap is the <code>max_parallel</code> setting of the provider profile, a positive integer. Without that,
 it is the free lane count. A zero, a negative or a non-integer profile value is refused.</p>
-<p>A level still waits for its parent levels. The epic driver holds a level until every one of its parents is complete,
+<p>A level still waits for its parent levels. The initiative driver, started by the <code>epic</code> command, holds a level until every one of its parents is complete,
 and a parent that did not meet its goal blocks its dependents. A level with several parents waits for all of them.</p>
 <p>Running a ready task ahead of an unfinished earlier level is not current behaviour. It is planned work, tracked in</p>
 <h1 id="626-until-that-ships-the-scheduler-in-lanespy-is-not-wired-in-and-a-level-holds-until-every-parent-level-is-complete">626. Until that ships, the scheduler in <code>lanes.py</code> is not wired in, and a level holds until every parent level is complete.</h1>
+<h2 id="target-branch">Target branch</h2>
+<p>The target branch is the parent branch an initiative lands into. It resolves like <code>land_at</code>, and the narrowest value
+present wins:</p>
+<ol>
+<li>The team cartridge, as <code>landing_areas.target_branch</code>. This is the default.</li>
+<li>The epic definition, <code>epics/&lt;id&gt;.md</code>, as <code>target_branch</code>. It overrides the cartridge for every initiative in that epic.</li>
+<li>One initiative, as <code>target_branch:</code> in the frontmatter of its <code>initiative.md</code>. It overrides the epic.</li>
+</ol>
+<div class="highlight"><pre><span></span><code><span class="nt">landing_areas</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">target_branch</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">release/next</span>
+</code></pre></div>
+<p>An explicit <code>--base</code> flag on a land still wins over all three. Every value given is checked, including one that a
+narrower value overrides. A bad value is refused with the place it came from. See <a href="../#the-hierarchy">the hierarchy</a>
+for how an initiative joins an epic.</p>
 <h2 id="merge-on-green">Merge on green</h2>
 <p>A pull request merges once its checks are green, not once a run has
 asserted that they are. The land polls the forge's own check results for

@@ -6383,7 +6383,7 @@ returns what it said. Swap the runner and the same graph runs against a
 different provider; swap the cartridge and the same graph works for a
 different team.</p>
 <h2 id="phases-order-tickets-that-need-it-and-only-those">Phases order tickets that need it, and only those</h2>
-<p>An epic is a container with one section per phase. Phases are ordered;
+<p>An initiative is a container with one section per phase. Phases are ordered;
 tickets within a phase are not necessarily. A dependency edge belongs
 between two tickets only where order genuinely matters — a dependency
 that exists because a task "feels sequential" blocks work that could have
@@ -6453,7 +6453,7 @@ records.</p>
 <tr>
 <td><code>reconcile</code></td>
 <td><a href="epic-reconcile/">epic-reconcile</a></td>
-<td>Compares an epic's declared state with its actual state and proposes corrections.</td>
+<td>Compares an initiative's declared state with its actual state and proposes corrections.</td>
 </tr>
 <tr>
 <td><code>retro</code></td>
@@ -6486,7 +6486,9 @@ graphs, block on them and write, which a graph may not do.</p>
 <li><code>epic</code> is <a href="epic-driver/">the epic driver</a>. <code>cox route launch epic</code>
   starts it. It walks an initiative phase by phase: <code>lifecycle</code> per ready
   task, <code>validate</code> per phase, <code>triage-quarantine</code> for a task at its attempt
-  cap.</li>
+  cap. The command and driver named <code>epic</code> run one initiative. Epic is
+  the historical name. It is not the epic group of initiatives, which
+  <a href="../#the-hierarchy">the hierarchy</a> describes.</li>
 <li><code>rescue</code> runs <code>rescue-review</code> on one quarantined task's kept patch.
   <code>cox route launch rescue</code> starts it.</li>
 </ul>

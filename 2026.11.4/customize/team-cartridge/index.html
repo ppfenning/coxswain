@@ -1616,6 +1616,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#target-branch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Target branch
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#the-project-layer" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6251,6 +6262,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#target-branch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Target branch
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#the-project-layer" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6348,6 +6370,13 @@ that repository. An initiative can override both with <code>land_at:</code> in t
 frontmatter of its <code>initiative.md</code>. See
 <a href="../../methodology/landing/#landing-granularity">Landing</a> for what each value
 lands and when.</p>
+<h2 id="target-branch">Target branch</h2>
+<p><code>landing_areas.target_branch</code> names the branch initiatives land into by default.</p>
+<div class="highlight"><pre><span></span><code><span class="nt">landing_areas</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">target_branch</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">release/next</span>
+</code></pre></div>
+<p>An epic definition or an initiative can override it. See
+<a href="../../methodology/landing/#target-branch">Landing</a>.</p>
 <h2 id="the-project-layer">The project layer</h2>
 <p>A repository can also carry <code>.agent/cartridge.yaml</code>. The harness reads it
 for runs against that repository and folds it in last. It may set only

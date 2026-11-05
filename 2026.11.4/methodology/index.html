@@ -6094,6 +6094,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#the-hierarchy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The hierarchy
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#blind-reviewers" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6174,6 +6185,26 @@ three PRs, it was really three tasks, and splitting it earlier is cheaper
 than untangling it in review. A ticket that hasn't been scoped goes to a
 future-work area, not onto the active board — scoping is what promotes
 it.</p>
+<h2 id="the-hierarchy">The hierarchy</h2>
+<p>Work is named at four levels, from the largest to the smallest:</p>
+<ol>
+<li>An epic is a named group of initiatives. It is complete when every initiative in it has landed.</li>
+<li>An initiative comes from an intake and holds phases. It lands into a parent branch and completes into its epic.</li>
+<li>A phase is a wave of tasks. Phases run in waves and complete into the initiative.</li>
+<li>A task is one unit of work with one pull request. Tasks complete into phases.</li>
+</ol>
+<p>The word epic has two meanings. The current one is the group of initiatives above. The older one is a single
+initiative. That meaning survives in the name of the <code>epic</code> command and graph, which run one initiative and not the
+group. See <a href="graphs/epic-driver/">the epic driver</a>.</p>
+<p>To join an epic, put <code>epic:</code> in the frontmatter of an intake or of an initiative.</p>
+<div class="highlight"><pre><span></span><code><span class="nt">epic</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">payments-rework</span>
+</code></pre></div>
+<p>An epic may also have a definition file, <code>epics/&lt;id&gt;.md</code>, beside the work directory. Its frontmatter carries a <code>title</code>
+and a <code>target_branch</code>. The file is optional. An epic with no file still groups the initiatives that name it. See
+<a href="landing/#target-branch">Landing</a> for how <code>target_branch</code> is used.</p>
+<div class="highlight"><pre><span></span><code><span class="nt">title</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Payments rework</span>
+<span class="nt">target_branch</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">release/payments</span>
+</code></pre></div>
 <h2 id="blind-reviewers">Blind reviewers</h2>
 <p>A charter reviewer checks a change against the team's written standards.
 An adversary reviews the same change without seeing the charter
