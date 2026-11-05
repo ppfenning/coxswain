@@ -25,7 +25,7 @@ from agent_tools import (
 from agent_tools.chair_beat import beat_in_thread
 from agent_tools.chair_exec import Result
 from agent_tools.chair_facts import FactsDeps, gather_facts
-from agent_tools.chair_plan import TickPlan, plan_tick, plan_tick_held, waiting_initiatives
+from agent_tools.chair_plan import TickPlan, plan_tick, plan_tick_held, reported_waiting
 from agent_tools.chair_report import EASTERN, format_status, write_status
 from agent_tools.chair_restart import RESTART, CheckoutState, restart_decision, restart_line
 from agent_tools.chair_types import Action, Facts, PlanTick
@@ -539,7 +539,7 @@ def tick_timed(
     ids = () if dry_run or deps.export_rows is None else changed_row_ids(results)
     note, export_s = chair_timing.timed(clock, _export_note, deps.export_rows, ids) if ids and deps.export_rows is not None else ("", None)
     try:
-        line = format_status(facts, [*actions, *waiting_initiatives(facts)], results, now)
+        line = format_status(facts, [*actions, *reported_waiting(facts, now)], results, now)
     except Exception as exc:  # the actions already ran; report them rather than drop them
         line = error_line(exc, now, results)
     line = f"{line} | {chair_exec.NOT_PROBED}" if dry_run else line
