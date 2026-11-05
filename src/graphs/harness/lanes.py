@@ -10,6 +10,7 @@ from collections.abc import Collection, Mapping, Sequence
 from typing import Any
 
 from core import workstore
+from core.landing import DEFAULT_LAND_AT
 
 
 def next_launches(
@@ -17,14 +18,17 @@ def next_launches(
     in_flight: Collection[str],
     max_lanes: int,
     foreign: Mapping[str, str] | None = None,
+    land_at: str = DEFAULT_LAND_AT,
 ) -> list[dict[str, Any]]:
     """Ready tasks to start now, by priority then id, at most the lanes still free.
 
     No phase filter: a task is eligible whatever its level, so a later-level task
-    whose needs are met is not held by an unfinished earlier level.
+    whose needs are met is not held by an unfinished earlier level. `land_at` decides
+    whether an unmerged approved need counts as met.
     """
     free = max(0, max_lanes - len(in_flight))
-    return [task for task in workstore.ready_tasks(items, foreign=foreign) if str(task["id"]) not in in_flight][:free]
+    ready = workstore.ready_tasks(items, foreign=foreign, land_at=land_at)
+    return [task for task in ready if str(task["id"]) not in in_flight][:free]
 
 
 def resolve_max_parallel(cli_value: int | None, profile_value: int | None, ready_count: int) -> int:

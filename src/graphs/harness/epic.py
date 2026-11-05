@@ -57,7 +57,7 @@ from typing import Any, Literal
 from urllib.parse import urlencode
 
 from core import ledger, workstore
-from core.landing import land_gate_level, phase_counts_complete, phase_land_deferred, resolve_land_at
+from core.landing import DEFAULT_LAND_AT, land_gate_level, phase_counts_complete, phase_land_deferred, resolve_land_at
 from core.manifest import append_ledger, build_manifest, gate_diff
 from core.phase_hold import phase_holds
 from core.workstore import WorkStoreError, record_attempt
@@ -1564,9 +1564,13 @@ def _run_lanes(
                 with ctx.items_lock:
                     view = _open_view(items, parents, complete, launched, {p for p in recorded if p not in complete})
                     plan = plan_launches(
-                        view, by_phase, ctx.max_parallel, initiative.get("foreign") or {}, hr, est_task_usd
-                    )
-                    cand = {str(t["phase"]) for t in workstore.ready_tasks(view, foreign=initiative.get("foreign") or {})}
+                        view, by_phase, ctx.max_parallel, initiative.get("foreign") or {}, hr, est_task_usd,
+                        ctx.land_at,
+                    )  # fmt: skip
+                    cand = {
+                        str(t["phase"])
+                        for t in workstore.ready_tasks(view, foreign=initiative.get("foreign") or {}, land_at=ctx.land_at)
+                    }
                 before = len(recorded)
                 idle: list[str] = []
                 for tid, why in sorted(plan.held.items()):
@@ -2468,7 +2472,11 @@ def _invoke_failure_kind(failure: str) -> Literal["infra", "no_work"]:
 
 
 def _buildable(
-    items: list[dict[str, Any]], phase: str, foreign: Mapping[str, Any], only: frozenset[str] | None = None
+    items: list[dict[str, Any]],
+    phase: str,
+    foreign: Mapping[str, Any],
+    only: frozenset[str] | None = None,
+    land_at: str = DEFAULT_LAND_AT,
 ) -> list[dict[str, Any]]:
     """The phase's ready tasks with met needs, a dropped one excluded. A need on another initiative reads `foreign`.
 
@@ -2476,7 +2484,7 @@ def _buildable(
     """
     return [
         item
-        for item in workstore.ready_tasks(_ready_view(items), phase=phase, foreign=foreign)
+        for item in workstore.ready_tasks(_ready_view(items), phase=phase, foreign=foreign, land_at=land_at)
         if item.get("state") != "dropped" and (only is None or str(item["id"]) in only)
     ]
 
@@ -2634,7 +2642,7 @@ def _run_phase(
 
     foreign = initiative.get("foreign") or {}
     with ctx.items_lock:
-        buildable_now = len(_buildable(items, phase, foreign, only))
+        buildable_now = len(_buildable(items, phase, foreign, only, ctx.land_at))
     holds = phase_holds(len(waiting_tasks(cherry)), buildable_now)
     if action == "block" and unlanded_kind == "awaiting_land" and not holds:
         # Approved lands in flight, but a ready task can build: leave the branch and its commits as they are.
@@ -2745,7 +2753,7 @@ def _run_phase(
     # A dropped task is terminal like a done one: it never gets rebuilt or
     # re-reviewed, and never blocks the phase behind it.
     with ctx.items_lock:
-        all_ready = _buildable(items, phase, foreign, only)
+        all_ready = _buildable(items, phase, foreign, only, ctx.land_at)
 
     # A third run of the same task is refused outright rather than tried
     # again — quarantined here, plainly, never through `_quarantine_task`,

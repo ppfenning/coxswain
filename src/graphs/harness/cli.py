@@ -36,6 +36,7 @@ import yaml
 import core
 from core import ledger, workstore
 from core.cartridge import CartridgeError
+from core.landing import resolve_land_at
 from core.manifest import append_ledger, build_manifest
 from graphs._contract import ContractViolation, landing_for
 from graphs.delivery.initiative_decompose import GRAPH_NAME as _DECOMPOSE_GRAPH_NAME
@@ -1580,17 +1581,27 @@ def _run_graph(
         # States of tasks in other initiatives, from the same load as the items:
         # a need on one is met only through this mapping.
         foreign = initiative.get("foreign") or {}
+        # Resolved the way run_epic does, so an unmerged approved need is met at ticket and level, not at task.
+        try:
+            land_at = resolve_land_at(cartridge, initiative.get("land_at"))
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
         phase_name = args.phase_name
         if phase_name is None:
             phase_name = next(
                 (
                     p
                     for p in initiative["phases"]
-                    if workstore.ready_tasks(initiative["items"], phase=p, foreign=foreign)
+                    if workstore.ready_tasks(initiative["items"], phase=p, foreign=foreign, land_at=land_at)
                 ),
                 None,
             )
-        ready = workstore.ready_tasks(initiative["items"], phase=phase_name, foreign=foreign) if phase_name else []
+        ready = (
+            workstore.ready_tasks(initiative["items"], phase=phase_name, foreign=foreign, land_at=land_at)
+            if phase_name
+            else []
+        )
         if not ready:
             print(f"nothing ready in {initiative['id']}" + (f" phase {phase_name}" if phase_name else ""))
             return 0
