@@ -79,6 +79,33 @@ threshold, add to `tier2_surfaces` and remove from `tier0_patterns`, never
 the reverse. It may move `policy.cost.level` toward `strict`, never toward
 `liberal`.
 
+## Test database
+
+`landing_areas.test_database` gives each build lane its own test database. A
+repository sets it in `.agent/cartridge.yaml`. It takes three keys. `env` is
+the name of the environment variable that carries the database URL to the
+harness. `template` is the URL, with one `{lane}` placeholder. `drop` is an
+optional command that removes the database.
+
+Coxswain replaces `{lane}` in `template` with the lane id. The text after
+`{lane}` must not be empty, and the database name keeps that literal suffix.
+In `drop`, `{name}` stands for the resulting database name.
+
+The project harness is expected to create the database on first use. When
+`drop` is set, coxswain runs it to remove the database. When `drop` is
+absent, coxswain lists the database name for cleanup on the run result.
+
+```yaml
+landing_areas:
+  test_database:
+    env: DATABASE_URL
+    template: postgresql://localhost/app_{lane}_test
+    drop: dropdb {name}
+```
+
+A repository with no `test_database` setting behaves as before. Building the
+schema in the new database is the project's own concern.
+
 ## Extending local or base
 
 Most teams extend `local` (the default) rather than reaching past it to
