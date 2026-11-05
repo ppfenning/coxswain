@@ -317,15 +317,21 @@ def _set_state(runs_dir: Path, row: dict, state: str) -> EditResult | None:
     return EditResult(f"the store did not take the state of {row['task_id']}: {detail}", FAILED)
 
 
+def _record_run(runs_dir: Path, row: dict) -> tuple[str, str] | None:
+    """Edge: the `(run, phase)` that holds the task's PR: the newest run whose phase is the row's, else the newest run; None with no run."""
+    runs = run_store.task_run_phases(runs_dir, row["initiative"], row["task_id"])
+    return next((rp for rp in runs if rp[1] == row.get("phase")), runs[0]) if runs else None
+
+
 def _record_pr(runs_dir: Path, row: dict, pr: str | None, now: str | None) -> str:
     """Edge. After a task moved to done, mirror its merged PR onto the newest run's record of it: `pr` as given, else the merged
     PR `gh` finds for the task's branches in its repo. The line to append to the output, "" when there is no PR to record.
     The task is already done, so every failure here is a printed note and never changes the exit code."""
     initiative, task = row["initiative"], row["task_id"]
-    runs = run_store.task_run_phases(runs_dir, initiative, task)
-    if not runs:
+    found = _record_run(runs_dir, row)
+    if found is None:
         return f"note: no run holds {task}; PR not recorded\n" if pr else ""
-    run, phase = next((rp for rp in runs if rp[1] == row.get("phase")), runs[0])
+    run, phase = found
     if pr is None:
         repo = repo_path.expand(str((row.get("extra") or {}).get("repo") or ""), os.path.expanduser("~"))
         branches = land_manual.pr_branches(initiative, phase, task, land_manual.record_branch(runs_dir, run, task))
@@ -334,6 +340,36 @@ def _record_pr(runs_dir: Path, row: dict, pr: str | None, now: str | None) -> st
             return ""
     warning = land_manual.record_landed(runs_dir, run, phase, task, pr, now or "")
     return f"{warning}\n" if warning else f"recorded PR {pr} on {run}/{phase}/{task}\n"
+
+
+def _recorded_pr(runs_dir: Path, row: dict) -> str | None:
+    """Edge: the `landed.pr` on the run `_record_run` picks, None when no run holds the task or it names no PR."""
+    found = _record_run(runs_dir, row)
+    record = run_store.task_record(runs_dir, *found, row["task_id"]) if found else None
+    landed = (record or {}).get("landed")
+    return str(landed["pr"]) if isinstance(landed, dict) and landed.get("pr") else None
+
+
+def _recorded_result(note: str) -> EditResult | None:
+    """Pure: None when `_record_pr` recorded the PR, else its note as a DONE result, since the row is already done."""
+    return None if note.startswith("recorded PR") else EditResult(note.rstrip("\n"), DONE)
+
+
+def mark_done_with_pr(runs_dir: Path, row: dict, pr: str, now: str | None) -> EditResult | None:
+    """Edge: approved row to done with `pr`; None once recorded, a DONE note when it could not be, else a REFUSED or FAILED result."""
+    state, task = row.get("state"), row["task_id"]
+    if state == "done":  # a retry: never a state write, and the PR is recorded only when no run holds one yet
+        seen = _recorded_pr(runs_dir, row)
+        if seen is not None and seen != pr:
+            return EditResult(f"{task} is done with PR {seen}; not recording {pr}", REFUSED)
+        return None if seen == pr else _recorded_result(_record_pr(runs_dir, row, pr, now))
+    refusal = check_state_move(state, "done")
+    if refusal is None and state != "approved":
+        refusal = f"the ticket is {state!r}; only an approved task is marked done with a PR"
+    if refusal:
+        return EditResult(refusal, REFUSED)
+    failed = _set_state(runs_dir, row, "done")
+    return failed if failed is not None else _recorded_result(_record_pr(runs_dir, row, pr, now))
 
 
 def _edit_task(
