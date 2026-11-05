@@ -30,8 +30,16 @@ def push(repo: Path | str, branch: str) -> tuple[bool, str]:
     return True, f"local forge: {branch} stays local until it merges"
 
 
-def open_pr(repo: Path | str, title: str, body: str, *, head: str | None = None, base: str | None = None) -> tuple[bool, str]:
+def open_pr(repo: Path | str, title: str, body: str, *, head: str | None = None, base: str | None = None, draft: bool = False) -> tuple[bool, str]:
     return True, "local forge: no pull request"
+
+
+def update_pr(repo: Path | str, title: str, body: str, *, head: str) -> tuple[bool, str]:
+    return True, "local forge: no pull request to update"
+
+
+def mark_ready(repo: Path | str, *, head: str) -> tuple[bool, str]:
+    return True, "local forge: no pull request to mark ready"
 
 
 def wait_checks(repo: Path | str, timeout_s: float, *, ref: str = "HEAD") -> tuple[bool, str]:

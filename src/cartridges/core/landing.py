@@ -77,3 +77,26 @@ def need_met(land_at: str, state: str, merged: bool) -> bool:
     """An unmerged approved task is met only above `land_at` task."""
     level = _checked(land_at, "need")
     return state in ("done", "dropped") or (state == "approved" and (merged or level != "task"))
+
+
+def pr_branch_name(initiative: str) -> str:
+    return f"pr/{initiative}"
+
+
+def phase_merge_ready(land_at: str, task_states: Sequence[str], quarantined: Sequence[bool]) -> bool:
+    """`quarantined` holds one flag per task; ready only at `ticket`, never empty, never with a quarantined task."""
+    return (
+        _checked(land_at, "phase") == "ticket"
+        and bool(task_states)
+        and not any(quarantined)
+        and all(s in ("approved", "done", "dropped") for s in task_states)
+    )
+
+
+def pr_stage(phase: str, phases: Sequence[str]) -> str:
+    """`ready` for the last of `phases` (so a one-phase initiative), `draft` for the first, else `update`."""
+    if phases and phase == phases[-1]:
+        return "ready"
+    if phases and phase == phases[0]:
+        return "draft"
+    return "update"

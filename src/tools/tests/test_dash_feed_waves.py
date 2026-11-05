@@ -99,7 +99,7 @@ def test_a_phase_cycle_has_no_wave():
         ([{"task_id": "a", "state": "quarantined"}], "r-1", ["p0"], {"p0": "blocked"}, ("running", None)),
         ([{"task_id": "a", "state": "quarantined"}], None, [], {}, ("blocked", "task a is quarantined")),
         ([{"task_id": "a", "state": "done"}, {"task_id": "b", "state": "dropped"}], None, ["p0"], {}, ("complete", None)),
-        ([{"task_id": "a", "state": "approved", "extra": {"merged": True}}], None, [], {}, ("complete", None)),
+        ([{"task_id": "a", "state": "approved", "extra": {"merged": True}}], None, [], {}, ("merged", None)),
         ([{"task_id": "a", "state": "approved"}], None, [], {}, ("waiting", None)),
         ([{"task_id": "a", "state": "ready"}], None, ["p0", "p1"], {"p0": "complete", "p1": "running"}, ("waiting", "waiting on p1")),
         ([{"task_id": "a", "state": "ready"}], None, ["p0"], {"p0": "blocked"}, ("blocked", "parent p0 is blocked")),

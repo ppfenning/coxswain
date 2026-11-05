@@ -18,7 +18,7 @@ from typing import Any
 from agent_tools import forge, forge_forgejo, forge_github, forge_local
 from agent_tools.forge import ForgeNotSupported
 
-__all__ = ["find_branch_prs", "find_open_prs", "forge_of", "merge", "merge_state", "open_pr", "push", "update_branch", "wait_checks"]
+__all__ = ["find_branch_prs", "find_open_prs", "forge_of", "mark_ready", "merge", "merge_state", "open_pr", "push", "update_branch", "update_pr", "wait_checks"]
 
 
 def _forge_for_url(url: str, env: Mapping[str, str]):
@@ -49,8 +49,18 @@ def push(repo: Path | str, branch: str, expected_tip: str | None = None) -> tupl
     return forge_of(repo).push(Path(repo), branch, **lease)
 
 
-def open_pr(repo: Path | str, title: str, body: str, *, head: str | None = None, base: str | None = None) -> tuple[bool, str]:
-    return forge_of(repo).open_pr(Path(repo), title, body, head=head, base=base)
+def open_pr(repo: Path | str, title: str, body: str, *, head: str | None = None, base: str | None = None, draft: bool = False) -> tuple[bool, str]:
+    # draft is forwarded only when set, so a forge from before it existed still opens a plain PR
+    extra = {"draft": True} if draft else {}
+    return forge_of(repo).open_pr(Path(repo), title, body, head=head, base=base, **extra)
+
+
+def update_pr(repo: Path | str, title: str, body: str, *, head: str) -> tuple[bool, str]:
+    return forge_of(repo).update_pr(Path(repo), title, body, head=head)
+
+
+def mark_ready(repo: Path | str, *, head: str) -> tuple[bool, str]:
+    return forge_of(repo).mark_ready(Path(repo), head=head)
 
 
 def wait_checks(repo: Path | str, timeout_s: float, *, ref: str = "HEAD") -> tuple[bool, str]:
