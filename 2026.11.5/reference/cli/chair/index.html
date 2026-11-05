@@ -6467,15 +6467,21 @@ options:
   --profile PROFILE
 </code></pre></div>
 <h2 id="attach">attach</h2>
-<div class="highlight"><pre><span></span><code>usage: cox chair attach [-h] [--profile PROFILE]
+<div class="highlight"><pre><span></span><code>usage: cox chair attach [-h] [--profile PROFILE] [--lend-routine |
+                        --recall-routine]
 
 Reads the chair lease and the loop's last tick.
-It never takes, steals, releases or writes the lease.
+It writes only under --lend-routine and --recall-routine, which set or clear routine_lent in chair.json for the live holder.
+It never takes, steals or releases the lease.
 
 options:
   -h, --help         show this help message and exit
   --profile PROFILE  the routing profile (default: ~/.config/agent-
                      tools/profile.yaml or $AGENT_TOOLS_PROFILE)
+  --lend-routine     mark the routine ticks lent in chair.json; the live
+                     holder only
+  --recall-routine   remove the lent mark from chair.json; the live holder
+                     only
 </code></pre></div>
 <h2 id="answer">answer</h2>
 <div class="highlight"><pre><span></span><code>usage: cox chair answer [-h] [--profile PROFILE] id option

@@ -2090,6 +2090,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#lending-the-routine-ticks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lending the routine ticks
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#rescue" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6568,6 +6579,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#lending-the-routine-ticks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lending the routine ticks
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#rescue" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6932,6 +6954,44 @@ forgotten takeover cannot park the fleet.</p>
 </code></pre></div>
 <p>With a shared Postgres store, any machine on the network can take the
 chair. <a href="../several-machines/">Several machines</a> shows how to set that up.</p>
+<h2 id="lending-the-routine-ticks">Lending the routine ticks</h2>
+<p>With nothing lent, a standby loop does nothing while a session holds the
+lease. That is how it has always worked. You can change it for as long as you
+hold the chair.</p>
+<p>To lend the routine ticks to the loop, run this from the session that holds
+the lease:</p>
+<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>chair<span class="w"> </span>attach<span class="w"> </span>--lend-routine
+</code></pre></div>
+<p>To take them back:</p>
+<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>chair<span class="w"> </span>attach<span class="w"> </span>--recall-routine
+</code></pre></div>
+<p>The two flags cannot be given together. Both act on the live holder only.</p>
+<p>The lend is a mark on the lease record, the <code>routine_lent</code> key in
+<code>chair.json</code>. Taking the chair never sets it. The mark dies with the holder.
+When you release the chair or lose it, the next holder starts with nothing
+lent.</p>
+<p>While the mark is set, the loop still reports <code>standby</code>. It also plans the
+routine ticks and nothing else. Launches, retries and rescues stay with you.</p>
+<p>The loop relaunches an exited epic that has ready, unquarantined tasks. It
+relaunches on the base the epic was launched with. It never relaunches while
+a run for that initiative is alive.</p>
+<p>The loop merges a fully approved level into the ticket branch once the repo
+checks pass. It pushes only on a pass. When a check fails, it leaves the
+level alone.</p>
+<p>The planner allows these routine kinds and no others:</p>
+<ul>
+<li><code>relaunch</code> starts an exited epic again, as above.</li>
+<li><code>clear_branches</code> clears the old branches before a relaunch.</li>
+<li><code>rebase_phase</code> rebases a phase just before its relaunch.</li>
+<li><code>fetch</code> brings a remote run's branches home before anything builds on them.</li>
+<li><code>fetch_exit</code> names a remote run that exited and has not been fetched.</li>
+<li><code>land_phase</code> merges a fully approved level.</li>
+<li><code>needs_chair</code> raises something for you to read.</li>
+<li><code>waiting</code> reports an initiative blocked on other work.</li>
+<li><code>deferred</code> reports a phase whose land is held until a later time.</li>
+</ul>
+<p>Quarantines, budget stops and anything that needs a decision stay with you.
+They show in the inbox.</p>
 <h2 id="rescue">Rescue</h2>
 <p>A build can be quarantined for a harness reason and still keep its patch.
 You can rescue it. Run this from <code>src/graphs</code> in the checkout:</p>
