@@ -17,7 +17,7 @@ MANIFEST = (
 
 def _host(monkeypatch, tmp_path, *, system="Darwin", machine="arm64", before="towpath 2026.11.0",
           after="towpath 2026.11.1", on_path=True, cargo=False):
-    """Fake run and platform. `towpath --version` prints `before` until a `cp` runs, then `after`; None means it fails.
+    """Fake run and platform. `towpath --version` prints `before` until a `mv` runs, then `after`; None means it fails.
     `cargo` puts the Rust build tool on PATH."""
     bin_dir = tmp_path / "bin"
     state, calls = {"copied": False}, []
@@ -27,7 +27,7 @@ def _host(monkeypatch, tmp_path, *, system="Darwin", machine="arm64", before="to
         if argv[-1] == "--version":
             shown = after if state["copied"] else before
             return (0, shown) if shown is not None else (127, "not found")
-        state["copied"] = state["copied"] or argv[0] == "cp"
+        state["copied"] = state["copied"] or argv[0] == "mv"
         return (0, "abc\trefs/tags/v2026.11.1\n") if "ls-remote" in argv else (0, "")
 
     monkeypatch.setattr(cli, "_real_run", run)
@@ -57,7 +57,7 @@ def test_install_with_dash_on_aarch64_macos_runs_the_asset_into_the_existing_bin
     rc, out = _install(tmp_path, capsys)
     assert rc == 0
     assert any(argv[0] == "curl" and argv[-1] == ASSET for argv in calls)
-    assert any(argv[0] == "cp" and argv[-1] == str(bin_dir) for argv in calls)
+    assert ["mv", "-f", f"{bin_dir}/.towpath.new", f"{bin_dir}/towpath"] in calls
     assert "ok: binary dash" in out
     assert _towpath_row(out) == ["towpath", "v2026.11.1", "2026.11.1", "ok"]
 
@@ -75,7 +75,7 @@ def test_install_on_a_host_with_no_asset_prints_the_detail_runs_no_download_and_
     assert rc == 2
     assert "skipped: skip dash" in out
     assert "no release asset for this machine; build towpath from source with cargo install --git" in out
-    assert not any(argv[0] in ("curl", "tar", "cp") for argv in calls)
+    assert not any(argv[0] in ("curl", "tar", "cp", "chmod", "mv") for argv in calls)
     assert _towpath_row(out)[-1] == "missing"
 
 
@@ -97,8 +97,12 @@ def test_plain_upgrade_with_dash_present_runs_the_binary_step_ahead_of_the_docto
     rc, out, calls, bin_dir = _plain_upgrade(monkeypatch, tmp_path, capsys)
     curl = next(at for at, argv in enumerate(calls) if argv[0] == "curl" and argv[-1] == ASSET)
     assert curl < calls.index(["cox", "setup", "doctor"])
-    assert ["cp", "-f", f"{bin_dir}/.towpath-aarch64-apple-darwin.tmp/towpath",
-            f"{bin_dir}/.towpath-aarch64-apple-darwin.tmp/coxtop", str(bin_dir)] in calls
+    scratch = f"{bin_dir}/.towpath-aarch64-apple-darwin.tmp"
+    for name in ("towpath", "coxtop"):
+        install = [["cp", "-f", f"{scratch}/{name}", f"{bin_dir}/.{name}.new"], ["chmod", "+x", f"{bin_dir}/.{name}.new"],
+                   ["mv", "-f", f"{bin_dir}/.{name}.new", f"{bin_dir}/{name}"]]
+        at = calls.index(install[0])
+        assert calls[at:at + 3] == install
     assert rc == 0
     assert _towpath_row(out) == ["towpath", "v2026.11.1", "2026.11.1", "ok"]
 
@@ -138,7 +142,7 @@ def test_plain_upgrade_without_the_optional_dash_component_exits_0_and_names_no_
     rc, out, calls, _ = _plain_upgrade(monkeypatch, tmp_path, capsys, dash_present=False, before=None, after=None, on_path=False)
     assert rc == 0
     assert "upgrade: towpath is at" not in out
-    assert not any(argv[0] in ("curl", "tar", "cp") for argv in calls)
+    assert not any(argv[0] in ("curl", "tar", "cp", "chmod", "mv") for argv in calls)
 
 
 def test_binary_facts_take_bin_dir_from_the_command_on_path_and_version_from_its_output():

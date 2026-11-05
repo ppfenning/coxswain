@@ -44,6 +44,25 @@ def test_binary_status():
     assert db.binary_status("v2026.11.1", "2026.10.5+14df4b9") == "drift"
 
 
+def test_killed_by_signal():
+    assert db.killed_by_signal(-9) is True
+    assert db.killed_by_signal(137) is True
+    assert db.killed_by_signal(0) is False
+    assert db.killed_by_signal(1) is False
+    assert db.killed_by_signal(127) is False
+
+
+def test_binary_status_killed():
+    assert db.binary_status("v2026.11.1", None, killed=True) == "killed"
+    assert db.binary_status("v2026.11.1", None, killed=False) == "missing"
+    assert db.binary_status("v2026.11.1", "2026.11.1", killed=True) == "ok"
+    assert db.binary_status("v2026.11.1", "2026.10.5", killed=True) == "drift"
+
+
+def test_killed_detail():
+    assert db.KILLED_DETAIL == "killed at launch, likely a stale code signature"
+
+
 def test_dev_build_argv():
     assert db.dev_build_argv("/src/dash") == [
         "cargo",

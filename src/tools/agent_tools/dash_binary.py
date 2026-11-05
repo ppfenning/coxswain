@@ -5,6 +5,7 @@ No file, process, network, clock or environment access. Callers pass in what the
 
 BINARIES = ("towpath", "coxtop")
 DASH_REPO_URL = "https://github.com/ppfenning/coxswain-dash"
+KILLED_DETAIL = "killed at launch, likely a stale code signature"
 
 # (platform.system(), machine) to the target triple devtools/release.py publishes.
 _TARGETS = {
@@ -41,9 +42,14 @@ def _release_part(version: str) -> str:
     return version.split("+", 1)[0]
 
 
-def binary_status(pinned_tag: str, installed: str | None) -> str:
+def killed_by_signal(code: int) -> bool:
+    """Negative is the subprocess signal form; 129 to 159 is the shell form 128 plus a signal."""
+    return code < 0 or 129 <= code <= 159
+
+
+def binary_status(pinned_tag: str, installed: str | None, *, killed: bool = False) -> str:
     if installed is None:
-        return "missing"
+        return "killed" if killed else "missing"
     return "ok" if _release_part(installed) == _bare(pinned_tag) else "drift"
 
 
