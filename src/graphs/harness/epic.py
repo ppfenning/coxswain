@@ -65,8 +65,7 @@ from core.landing import (
     DEFAULT_LAND_AT,
     land_gate_level,
     need_met,
-    phase_counts_complete,
-    phase_land_deferred,
+    pr_branch_name,
     resolve_land_at,
 )
 from core.manifest import append_ledger, build_manifest, gate_diff
@@ -460,6 +459,17 @@ class _Ctx:
     def phase_branch(self, phase: str) -> str:
         return f"epic/{self.initiative_id}/{phase}"
 
+    def pr_branch(self) -> str:
+        return pr_branch_name(self.initiative_id)
+
+    def pr_branch_ref(self) -> str | None:
+        """The pr branch as a ref git can cut from: the local branch, else its copy on origin, else None."""
+        name = self.pr_branch()
+        for ref in (f"refs/heads/{name}", f"refs/remotes/origin/{name}"):
+            if _git("-C", str(self.repo), "rev-parse", "--verify", "--quiet", ref)[0]:
+                return ref.removeprefix("refs/heads/").removeprefix("refs/remotes/")
+        return None
+
     def draft_branch(self, phase: str, task: str) -> str:
         # NOT `epic/<initiative>/<phase>/<task>`: git cannot hold both
         # `refs/heads/epic/i/p1` and `refs/heads/epic/i/p1/t1`, because one is a
@@ -498,18 +508,6 @@ class _Ctx:
 
 
 # ── the phase graph ─────────────────────────────────────────────────────────
-
-
-def _items_complete(land_at: str, phase: str, items: Sequence[Mapping[str, Any]]) -> bool:
-    """The shared landing rule over the (state, merged) of one phase's items."""
-    return phase_counts_complete(
-        land_at, [(str(i.get("state")), bool(i.get("merged"))) for i in items if i.get("phase") == phase]
-    )
-
-
-def _land_deferred(land_at: str, phase: str, items: Sequence[Mapping[str, Any]]) -> bool:
-    """True when the phase's land is not due yet and its items already count complete."""
-    return phase_land_deferred(land_at, phase, workstore.phases(items)) and _items_complete(land_at, phase, items)
 
 
 def phase_order(parents: Mapping[str, set[str]]) -> tuple[list[str], list[str]]:
@@ -632,7 +630,7 @@ def _open_phase_worktree(
         return _Opened(ok, detail, True, cleared)
     ok, detail = create_worktree(ctx.repo, worktree, branch=branch, base=base_ref)
     wanted = [ctx.phase_branch(p) for p in parents] if refs is None else list(refs)
-    if ok and parents and wanted:
+    if ok and parents and wanted and wanted != [base_ref]:
         assembled = assemble(ctx.repo, worktree, base_ref, wanted, branch)
         if not assembled.ok:
             # Drop the half-made branch, or the next run reuses it as if it were assembled.
@@ -660,6 +658,7 @@ def _required_refs(
     base_ref: str,
     *,
     cut: bool = False,
+    from_pr: bool = False,
 ) -> list[str]:
     """The commits the phase branch must contain: what its tasks need, not where each parent's head is now.
 
@@ -668,8 +667,9 @@ def _required_refs(
     is unbuilt, done or dropped contributes nothing. A parent no task needs anything from contributes its branch.
     With `cut`, a parent whose tasks are all settled contributes its whole branch, so a branch cut after
     the parent finished carries its phase-level commits too; the staleness check never asks for that.
+    With `from_pr`, the phase is cut from the pr branch, which already holds every landed parent: `base_ref` alone.
     """
-    if not parents:
+    if not parents or from_pr:
         return [base_ref]
     by_id = {str(i["id"]): i for i in items}
     open_phases = {str(i.get("phase")) for i in items if i.get("state") in ("todo", "ready", "in_progress", "blocked")}
@@ -688,6 +688,17 @@ def _required_refs(
             if n.get("state") == "approved" and n.get("merged")
         )
     return sorted(refs)
+
+
+def _needs_other_phase(items: Sequence[Mapping[str, Any]], phase: str) -> bool:
+    """Does a task of `phase` need a task of another phase, whatever that task's state?"""
+    phase_of = {str(i["id"]): i.get("phase") for i in items}
+    return any(
+        phase_of.get(str(n)) not in (None, phase)
+        for i in items
+        if i.get("phase") == phase
+        for n in i.get("needs") or []
+    )
 
 
 def _needs_missing(ctx: _Ctx, phase: str, refs: Sequence[str]) -> bool:
@@ -760,7 +771,7 @@ def awaiting_land_lines(record: Mapping[str, Any], run_id: str, repo: Path | str
 
     The flags mirror the chair's land action (`chair_exec`); this layer does not import it.
     """
-    if record.get("status") != "awaiting_land" or record.get("land_deferred"):
+    if record.get("status") != "awaiting_land":
         return []
     tasks = list(record.get("awaiting_tasks") or [])
     head = f"phase {record.get('phase')}: awaiting land of {len(tasks)} approved task(s): {', '.join(tasks)}"
@@ -787,9 +798,9 @@ def open_in_phase(
     ]
 
 
-def _phase_branch_cherry(ctx: _Ctx, phase: str) -> list[str]:
-    """`git cherry -v` of the phase branch against main, patch-id semantics; empty if git fails."""
-    ok, out = _git("-C", str(ctx.repo), "cherry", "-v", ctx.default_ref, ctx.phase_branch(phase))
+def _phase_branch_cherry(ctx: _Ctx, phase: str, upstream: str | None = None) -> list[str]:
+    """`git cherry -v` of the phase branch against `upstream` (main by default), patch-id semantics; empty if git fails."""
+    ok, out = _git("-C", str(ctx.repo), "cherry", "-v", upstream or ctx.default_ref, ctx.phase_branch(phase))
     return out.splitlines() if ok else []
 
 
@@ -1637,12 +1648,9 @@ def _run_lanes(
             record.update(status="complete", reason="every task in the phase is done in the store")
         if phase in serialised:
             record["serialised"] = serialised[phase]
-        deferred = record["status"] == "awaiting_land" and _land_deferred(ctx.land_at, phase, items)
-        if deferred:
-            record["land_deferred"] = True
         add_phase(record)
         recorded.add(phase)
-        if record["status"] == "complete" or deferred:
+        if record["status"] == "complete":
             complete.add(phase)
 
     def adopt_done(parent: str) -> bool:
@@ -2308,8 +2316,8 @@ def _clear_pause_if_held(
 
 
 def _awaits_land(phase: Mapping[str, Any]) -> bool:
-    """A phase waiting on a land that is due now, not one whose land is deferred."""
-    return phase.get("status") == "awaiting_land" and not phase.get("land_deferred")
+    """A phase waiting on a land."""
+    return phase.get("status") == "awaiting_land"
 
 
 def build_outcome(result: Mapping[str, Any]) -> dict[str, Any]:
@@ -2802,16 +2810,22 @@ def _run_phase(
 
     One parent stacks the branch on that parent's branch. Several parents are merged by
     `assemble` onto the default ref, so `base` is the default ref and `assembled_from` lists them.
+    At land_at ticket, once the pr branch exists, a phase that needs an earlier phase is cut from it and assembles nothing.
     With `only`, just those ready tasks build; the validator, once the phase is finished, sees the whole phase.
     """
     branch = ctx.phase_branch(phase)
     parent = parents[0] if len(parents) == 1 else None
-    base_ref = ctx.phase_branch(parent) if parent else ctx.default_ref
+    # A land marks a phase's tasks done, and `phase_parents` then drops the edge, so the pr base is chosen on
+    # the needs themselves: a phase that needs a task of another phase builds on the pr branch, done or not.
+    with ctx.items_lock:
+        stacked = bool(parents) or _needs_other_phase(items, phase)
+    pr_ref = ctx.pr_branch_ref() if stacked and ctx.land_at == "ticket" else None
+    base_ref = pr_ref or (ctx.phase_branch(parent) if parent else ctx.default_ref)
     quarantined: list[dict[str, Any]] = []
     record: dict[str, Any] = {
         "phase": phase,
         "parent": parent,
-        **({"assembled_from": list(parents)} if len(parents) > 1 else {}),
+        **({"assembled_from": list(parents)} if len(parents) > 1 and not pr_ref else {}),
         "branch": branch,
         "base": base_ref,
         "land_at": ctx.land_at,
@@ -2830,8 +2844,9 @@ def _run_phase(
 
     # A branch under a parent is cut from the default ref and holds only the commits its tasks need.
     with ctx.items_lock:
-        needed = _required_refs(items, phase, parents, ctx.phase_branch, base_ref)
-        cut_from = _required_refs(items, phase, parents, ctx.phase_branch, base_ref, cut=True)
+        from_pr = pr_ref is not None
+        needed = _required_refs(items, phase, parents, ctx.phase_branch, base_ref, from_pr=from_pr)
+        cut_from = _required_refs(items, phase, parents, ctx.phase_branch, base_ref, cut=True, from_pr=from_pr)
     # A lone parent that is settled is the stack itself: cut from it, with no merge commit.
     cut_ref = base_ref if not parents or cut_from == [base_ref] else ctx.default_ref
 
@@ -2867,7 +2882,7 @@ def _run_phase(
     head_moved = reused and _needs_missing(ctx, phase, needed)
     with ctx.items_lock:
         task_states = {str(i["id"]): str(i.get("state")) for i in items}
-    cherry = _phase_branch_cherry(ctx, phase) if head_moved else []
+    cherry = _phase_branch_cherry(ctx, phase, pr_ref) if head_moved else []
     unlanded_kind = classify_unlanded(cherry, task_states)
     action = branch_action(reused, head_moved, unlanded_kind not in ("landed", "rebuild"))
 
@@ -2879,7 +2894,7 @@ def _run_phase(
         # Approved lands in flight, but a ready task can build: leave the branch and its commits as they are.
         action = "proceed"
 
-    if action == "block" and len(parents) > 1:
+    if action == "block" and len(parents) > 1 and not pr_ref:
         # A branch assembled from several parents is re-assembled, never rebased onto the default ref.
         assembled_from = ", ".join(ctx.phase_branch(p) for p in parents)
         record["status"] = "blocked"
