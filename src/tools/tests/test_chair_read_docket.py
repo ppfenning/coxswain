@@ -181,6 +181,56 @@ def test_held_needs_lists_only_the_same_phase_approved_ids_in_needs_order():
     assert _held_needs(own[-1], own) == ["c", "a"]
 
 
+_P2_NEEDS_P1_APPROVED = [_item("t0", "approved"), _item("t1", "ready", ("t0",), phase="p2")]
+_T1 = {"id": "t1", "phase": "p2", "needs": ["t0"], "requires": []}
+
+
+def _alpha_at(items: list[dict], land_at: str | None) -> tuple[list, dict]:
+    summaries = route.initiative_summaries(items, land_at=land_at or route.DEFAULT_LAND_AT)
+    mapping = None if land_at is None else {"alpha": land_at}
+    return summaries, docket_from_builder(summaries, items, 0, 4, mapping)["initiatives"][0]
+
+
+def test_at_ticket_the_phase_two_task_behind_approved_phase_one_work_is_ready():
+    summaries, row = _alpha_at(_P2_NEEDS_P1_APPROVED, "ticket")
+    assert summaries == [{"id": "alpha", "phase": "p2", "ready": 1, "awaiting_merge": 1}]
+    assert row["ready_tasks"] == [_T1]
+    assert row["waiting_tasks"] == []
+    assert row["landed"] == {"t0"}
+
+
+def test_at_level_the_phase_two_task_behind_approved_phase_one_work_is_ready():
+    _, row = _alpha_at(_P2_NEEDS_P1_APPROVED, "level")
+    assert row["ready_tasks"] == [_T1]
+    assert row["waiting_tasks"] == []
+
+
+def test_at_task_the_phase_two_task_behind_approved_phase_one_work_waits():
+    summaries, row = _alpha_at(_P2_NEEDS_P1_APPROVED, "task")
+    assert summaries == [{"id": "alpha", "phase": None, "ready": 0, "awaiting_merge": 1}]
+    assert row["ready_tasks"] == []
+    assert row["waiting_tasks"] == [_T1]
+
+
+def test_without_a_land_at_mapping_the_phase_two_task_waits_as_at_task():
+    _, row = _alpha_at(_P2_NEEDS_P1_APPROVED, None)
+    assert row["ready_tasks"] == []
+    assert row["waiting_tasks"] == [_T1]
+
+
+def test_an_initiative_missing_from_the_land_at_mapping_reads_as_ticket():
+    items = _P2_NEEDS_P1_APPROVED
+    row = docket_from_builder(route.initiative_summaries(items, land_at="ticket"), items, 0, 4, {})["initiatives"][0]
+    assert row["ready_tasks"] == [_T1]
+
+
+def test_a_same_phase_approved_need_still_holds_the_task_at_ticket():
+    _, row = _alpha_at([_item("t0", "approved"), _item("t1", "ready", ("t0",))], "ticket")
+    assert row["held_tasks"] == [{"id": "t1", "phase": "p1", "needs": ["t0"]}]
+    assert row["ready_tasks"] == []
+    assert row["waiting_tasks"] == []
+
+
 def test_parity_the_same_board_as_rows_and_as_files_gives_the_same_initiatives():
     items = [
         _item("t0", "done"), _item("t1", "ready", ("t0",)), _item("t2", "ready", ("t9",)), _item("t3", "todo"),
