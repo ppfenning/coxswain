@@ -9125,10 +9125,13 @@ def _install_execute(steps: list, manifest: dict, options: dict, root: Path, *, 
             for line in (result["output"] or "").rstrip().splitlines():
                 print(f"    {line}")
     post_facts = {"root": str(root), "checkouts": _gather_checkout_facts(root, manifest.get("components", {})),
-                  "binaries": _host_binary_facts(manifest)["binaries"]}
+                  **{key: value for key, value in _host_binary_facts(manifest).items()
+                     if key in ("binaries", "killed_binaries")}}
     table = install.rows(manifest, post_facts, options.get("channel", "release"))
     display = [{"component": c, "pinned_tag": p or "", "installed_tag": i or "", "status": s} for c, p, i, s in table]
     print(records.format_table(display, ["component", "pinned_tag", "installed_tag", "status"]))
+    for note in _killed_notes(table):
+        print(note)
     if any(result["step"]["kind"] == "doctor" and result["exit"] not in (0, None) for result in results):
         print(_DOCTOR_FAILING_LINE)
     stale = _stale_binary_line(steps, manifest, options, table)
@@ -9255,23 +9258,30 @@ def _clone_url(spec: dict) -> str | None:
     return f"https://github.com/{spec['repo']}.git" if spec.get("repo") else None
 
 
-def _binary_version(command: str, run: Callable, on_path: bool, bin_dir: str) -> str | None:
-    """What `<command> --version` prints, parsed; None when it will not run or exits non-zero. A command off PATH
-    is looked up in `bin_dir`, where an install just put it."""
+def _binary_version(command: str, run: Callable, on_path: bool, bin_dir: str) -> tuple[str | None, bool]:
+    """`(version, killed)`: what `<command> --version` prints, parsed, None when it will not run or exits non-zero;
+    killed is True when the exit code was a signal kill. A command off PATH is looked up in `bin_dir`."""
     code, output = run([command if on_path else os.path.join(bin_dir, command), "--version"], None)
-    return dash_binary.installed_version(output) if code == 0 else None
+    return (dash_binary.installed_version(output) if code == 0 else None), dash_binary.killed_by_signal(code)
+
+
+def _killed_notes(table: list) -> list[str]:
+    """One line per row whose status is killed, naming the command and why."""
+    return [f"{name}: {dash_binary.KILLED_DETAIL}" for name, _, _, status in table if status == "killed"]
 
 
 def _binary_facts(manifest: dict, run: Callable, system: str, machine: str, which: Callable, home: str) -> dict:
     """Plain data for `install.plan` and `install.rows`: the release target of this machine, the directory the
     binary lives in (that of the first provided command on PATH, else `~/.local/bin`), and the version each
-    command a component `provides` reports now."""
+    command a component `provides` reports now, plus the sorted commands whose probe was killed by a signal."""
     provided = [spec["provides"] for spec in manifest.get("components", {}).values() if spec.get("provides")]
     found = {command: which(command) for command in provided}
     on_path = [path for path in found.values() if path]
     bin_dir = os.path.dirname(on_path[0]) if on_path else os.path.join(home, ".local", "bin")
+    probes = {command: _binary_version(command, run, bool(found[command]), bin_dir) for command in provided}
     return {"target": dash_binary.host_target(system, machine), "bin_dir": bin_dir,
-            "binaries": {command: _binary_version(command, run, bool(found[command]), bin_dir) for command in provided}}
+            "binaries": {command: version for command, (version, _) in probes.items()},
+            "killed_binaries": sorted(command for command, (_, killed) in probes.items() if killed)}
 
 
 def _host_binary_facts(manifest: dict) -> dict:
