@@ -15,7 +15,9 @@ from dataclasses import dataclass
 from typing import Any
 
 __all__ = [
+    "IdeaHeal",
     "Problem",
+    "heal_idea_reach",
     "idea_reach_problems",
     "idea_reach_refusal",
     "lint_refusal_text",
@@ -215,6 +217,57 @@ def idea_reach_refusal(
     """The refusal text for an idea that names a path outside the repo; `None` when it names none."""
     problems = idea_reach_problems(idea_body, tree, repo, reach_allow)
     return refusal_reason(problems) if problems else None
+
+
+@dataclass(frozen=True)
+class IdeaHeal:
+    text: str
+    notes: tuple[str, ...]
+    refusal: str | None
+
+
+_IDEA_PUNCTUATION = "`,.()"
+
+
+def _phrase(path: str) -> str:
+    """`the <last> file` when the last component has a suffix, else `the <last> checkout`. A leading dot is no suffix."""
+    last = path.rstrip("/").rpartition("/")[2]
+    return f"the {last} file" if "." in last.lstrip(".") else f"the {last} checkout"
+
+
+def heal_idea_reach(
+    idea_body: str,
+    tree: Sequence[Mapping[str, Any]],
+    repo: str,
+    reach_allow: Sequence[str] = (),
+) -> IdeaHeal:
+    """Rewrite each rooted path `idea_reach_problems` would report as a neutral phrase; whitespace is kept byte for byte.
+    `refusal` is set only when no alphanumeric text is left once those paths are removed."""
+    known_paths = {str(row.get("path")) for row in tree}
+    pieces = re.split(r"(\s+)", idea_body)
+
+    def offends(core: str) -> bool:
+        return _looks_rooted(core) and bool(_outside_problems("idea", [core], known_paths, repo, reach_allow, ()))
+
+    cores = [piece.strip(_IDEA_PUNCTUATION) for piece in pieces]
+    hits = [core if not piece.isspace() and offends(core) else None for piece, core in zip(pieces, cores)]
+    rewritten = [
+        piece.replace(core, _phrase(core), 1) if hit is not None else piece
+        for piece, core, hit in zip(pieces, cores, hits)
+    ]
+    paths = tuple(dict.fromkeys(hit for hit in hits if hit is not None))
+    notes = tuple(
+        f'reach: idea named {path}, rewritten as "{_phrase(path)}" '
+        "(the build seat reads one repository, so the path was dropped)"
+        for path in paths
+    )
+    remaining = "".join(piece for piece, hit in zip(pieces, hits) if hit is None)
+    refusal = (
+        f"lint-refused: idea reach\nidea: reach — nothing left to plan once the paths outside {repo} are rewritten"
+        if paths and not any(ch.isalnum() for ch in remaining)
+        else None
+    )
+    return IdeaHeal("".join(rewritten), notes, refusal)
 
 
 def _owner_of(path: str) -> str | None:
