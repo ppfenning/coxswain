@@ -57,6 +57,8 @@ from tempfile import TemporaryDirectory
 from typing import Any, Literal
 from urllib.parse import urlencode
 
+import yaml
+
 from core import ledger, workstore
 from core.cartridge import test_database_setting
 from core.landing import (
@@ -115,6 +117,7 @@ from harness.store_lease import assert_epoch, renew
 from harness.store_pause import clear_paused, is_paused
 from harness.store_retry import retry_store_write
 from harness.store_write import Store, record_handoff, record_merge, upsert_work_item
+from harness.surface_heal import heal_new_markers, malformed_surfaces
 from harness.waves import compute_waves, phase_parents, widest_wave
 from harness.worktree import (
     apply_patch,
@@ -2053,41 +2056,67 @@ def _working_tree_paths(root: Path) -> frozenset[str]:
     )
 
 
-def _parent_has_files(paths: frozenset[str], path: str) -> bool:
-    """True when some file sits under the directory holding `path`; a top-level path's parent is the repo root."""
-    parent = path.rstrip("/").rpartition("/")[0]
-    return any(p.startswith(f"{parent}/") for p in paths) if parent else bool(paths)
-
-
-def _surface_passes(paths: frozenset[str], surface: str) -> bool:
-    """Plain path: in `paths`, or a directory with a path under it. `(new)`: its parent has a file."""
-    text = surface.strip()
-    is_new = text.endswith("(new)")
-    path = text.removesuffix("(new)").strip()
-    if not path:
-        return False
-    if is_new:
-        return _parent_has_files(paths, path)
-    return path in paths or any(p.startswith(f"{path.rstrip('/')}/") for p in paths)
-
-
-def _surface_refusal_reason(paths: frozenset[str], root: Path, surfaces: Sequence[str]) -> str:
-    """The reason a task is refused for surfaces missing from `paths`; `root` only words the message.
-
-    When every surface's parent directory has a file, the files are probably new and lack the `(new)` marker.
-    """
-    failed = ", ".join(str(s) for s in surfaces)
-    parents_exist = all(
-        bool(path) and _parent_has_files(paths, path)
-        for path in (str(s).strip().removesuffix("(new)").strip() for s in surfaces)
+def _surface_refusal_reason(malformed: Sequence[str]) -> str:
+    """The reason a task is refused for surfaces that are absolute, reach outside the repository, or are a glob."""
+    return (
+        f"malformed surfaces: {', '.join(malformed)}; a surface is a repository relative path "
+        "with no glob and no .. segment."
     )
-    if parents_exist:
-        return (
-            f"surfaces not found in {root}: {failed}; their parent directories exist, so these are probably "
-            "new files missing the (new) marker, not a wrong repository. "
-            "Add (new) to each file the task creates."
-        )
-    return f"surfaces not in {root}: {failed}; wrong repository?"
+
+
+def _frontmatter_key_lines(key: str, value: Sequence[str]) -> list[str]:
+    return yaml.safe_dump({key: list(value)}, default_flow_style=None, allow_unicode=True).rstrip().split("\n")
+
+
+def _rewrite_frontmatter_surfaces(path: Path, surfaces: Sequence[str], notes: Sequence[str]) -> None:
+    """Replace the `surfaces` key and extend the `lint` key of the file's frontmatter; every other line is kept as it was."""
+    lines = path.read_text(encoding="utf-8").split("\n")
+    end = next((i for i, line in enumerate(lines[1:], 1) if line.strip() == "---"), None)
+    if lines[0].strip() != "---" or end is None:
+        raise ValueError(f"{path}: no frontmatter block")
+    lint = list(dict.fromkeys([*((yaml.safe_load("\n".join(lines[1:end])) or {}).get("lint") or []), *notes]))
+    front = lines[1:end]
+    for key, value in (("surfaces", surfaces), ("lint", lint)):
+        at = next((i for i, line in enumerate(front) if line.startswith(f"{key}:")), None)
+        if at is None:
+            front = [*front, *_frontmatter_key_lines(key, value)]
+            continue
+        stop = next((i for i in range(at + 1, len(front)) if not front[i].startswith((" ", "-"))), len(front))
+        front = [*front[:at], *_frontmatter_key_lines(key, value), *front[stop:]]
+    path.write_text("\n".join(["---", *front, *lines[end:]]), encoding="utf-8")
+
+
+def _write_healed_surfaces(ctx: _Ctx, task: str, surfaces: Sequence[str], notes: Sequence[str], path: str | None) -> None:
+    """Persist a healed task's surfaces and new lint notes, so a relaunch reads them and does not heal again.
+
+    The task file is written in both work states, since a run reads its tasks from the files. Under work_state
+    store the row gets them too, behind the stale-leader fence. Errors are logged, never raised.
+    """
+    if _store_authoritative(ctx):
+        try:
+            stale = _fenced(ctx)
+            if stale is not None:
+                _log.warning("healed surfaces not written: task=%s: %s", task, stale)
+                return
+            from harness import store_queue  # not module level: see `_mirror_read`
+
+            row = next((r for r in store_queue.read(ctx.store.conn, ctx.initiative_id) if r["task_id"] == task), None)
+            if row is None:
+                _log.warning("healed surfaces not written to the store row: task=%s: no row", task)
+            else:
+                extra = dict(row.get("extra") or {})
+                lint = list(dict.fromkeys([*(extra.get("lint") or []), *notes]))
+                store_queue.upsert(
+                    ctx.store.conn,
+                    {"initiative": ctx.initiative_id, "task_id": task, "surfaces": list(surfaces), "extra": {**extra, "lint": lint}},
+                )
+        except Exception as exc:
+            _log.warning("healed surfaces not written to the store row: task=%s: %s: %s", task, type(exc).__name__, exc)
+    if path:
+        try:
+            _rewrite_frontmatter_surfaces(Path(path), surfaces, notes)
+        except Exception as exc:
+            _log.warning("healed surfaces not written to the task file: task=%s: %s: %s", task, type(exc).__name__, exc)
 
 
 def _quarantine_row(ctx: _Ctx, phase: str, task: str, *, approved_is_open: bool = False) -> None:
@@ -3049,28 +3078,43 @@ def _run_phase(
     over_budget_ids = {str(task["id"]) for task in over_budget}
     within_budget = [task for task in to_run if str(task["id"]) not in over_budget_ids]
 
-    # A task whose every surface is missing from this repository is aimed at
-    # the wrong one. Refused plainly, like the budget refusal above: not an
-    # attempt, so never through `_quarantine_task`, and no model call is made.
+    # A surface naming a file the task creates but lacking `(new)` is healed, not
+    # refused: the marker and a lint note are added, written back so a relaunch
+    # does not heal again, and the build goes on with the healed task. Only a
+    # malformed surface (absolute, outside the repository, a glob) is refused
+    # plainly, like the budget refusal above: not an attempt, so never through
+    # `_quarantine_task`, and no model call is made.
     # Judged against the fetched default branch, not the checkout, which may be stale.
     surface_paths = frozenset[str]()
     if any(task.get("surfaces") for task in within_budget):
         listed = _default_branch_paths(ctx)
         surface_paths = listed if listed is not None else _working_tree_paths(ctx.repo)
-    wrong_repo = [
-        task for task in within_budget
-        if task.get("surfaces") and not any(_surface_passes(surface_paths, str(s)) for s in task["surfaces"])
-    ]
-    for task in wrong_repo:
+    refused_ids: set[str] = set()
+    healed_by_id: dict[str, dict[str, Any]] = {}
+    heal_notes: dict[str, list[str]] = {}
+    for task in (t for t in within_budget if t.get("surfaces")):
         task_id = str(task["id"])
-        failed = ", ".join(str(s) for s in task["surfaces"])
-        reason = _surface_refusal_reason(surface_paths, ctx.repo, task["surfaces"])
-        quarantined.append({"id": task_id, "phase": phase, "grain": "task", "kind": "no_work", "reason": reason})
-        _record_task_cause(ctx, phase, task_id, "ticket", "rule: surfaces not in the repository")
-        _quarantine_row(ctx, phase, task_id)
-        print(f"  surfaces: {task_id} refused ({failed} not in {ctx.repo})")
-    wrong_repo_ids = {str(task["id"]) for task in wrong_repo}
-    runnable = [task for task in within_budget if str(task["id"]) not in wrong_repo_ids]
+        bad = malformed_surfaces([str(s) for s in task["surfaces"]])
+        if bad:
+            refused_ids.add(task_id)
+            quarantined.append({
+                "id": task_id, "phase": phase, "grain": "task", "kind": "no_work", "reason": _surface_refusal_reason(bad),
+            })
+            _record_task_cause(ctx, phase, task_id, "ticket", "rule: surfaces not in the repository")
+            _quarantine_row(ctx, phase, task_id)
+            print(f"  surfaces: {task_id} refused (malformed: {', '.join(bad)})")
+            continue
+        healed = heal_new_markers(task, surface_paths)
+        if healed == dict(task):
+            continue
+        healed_by_id[task_id] = healed
+        heal_notes[task_id] = [str(n) for n in healed["lint"][len(task.get("lint") or []):]]
+        _write_healed_surfaces(
+            ctx, task_id, healed["surfaces"], heal_notes[task_id], str(task["path"]) if task.get("path") else None
+        )
+        marked = [s for s in healed["surfaces"] if s not in task["surfaces"]]
+        print(f"  surfaces: {task_id} healed ({', '.join(str(s) for s in marked)})")
+    runnable = [healed_by_id.get(str(t["id"]), t) for t in within_budget if str(t["id"]) not in refused_ids]
 
     # A task the driver quarantined before carries its reasons — and, when one
     # was saved, its last patch — into the ticket body, so the planner and the
@@ -3098,7 +3142,8 @@ def _run_phase(
                             list(task.get("attempts") or []),
                             patches_for_attempt.get(str(task["id"])),
                             limit=PATCH_FOR_VALIDATION_CHARS,
-                        ),
+                        )
+                        + "".join(f"\n\nSurface note: {note}" for note in heal_notes.get(str(task["id"]), [])),
                     },
                     handoffs,
                 ),

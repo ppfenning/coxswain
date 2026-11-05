@@ -1799,64 +1799,11 @@ def test_a_build_budget_over_the_cap_is_quarantined_and_the_sibling_still_lands(
     assert is_ancestor(repo, "epic/demo-initiative/p1-foundations--t2-bench", "epic/demo-initiative/p1-foundations")
 
 
-def test_surface_passes_checks_a_plain_path_itself_and_a_new_path_by_its_parent() -> None:
-    from harness.epic import _surface_passes
-
-    paths = frozenset({"a.py", "src/a.py"})
-    assert _surface_passes(paths, "a.py")
-    assert not _surface_passes(paths, "b.py")
-    assert _surface_passes(paths, "src/b.py (new)")
-    assert not _surface_passes(paths, "lib/b.py (new)")
-    assert not _surface_passes(paths, "src/b.py")
-    assert _surface_passes(paths, "top.py (new)")
-
-
-def test_surface_passes_a_directory_surface_when_any_path_sits_under_it() -> None:
-    from harness.epic import _surface_passes
-
-    paths = frozenset({"src/deep/a.py", "srcother/b.py"})
-    assert _surface_passes(paths, "src/")
-    assert _surface_passes(paths, "src/deep/")
-    assert not _surface_passes(paths, "lib/")
-    assert not _surface_passes(paths, "sr/")
-    assert _surface_passes(paths, "src/deep")
-    assert not _surface_passes(paths, "sr")
-
-
-def test_a_new_directory_surface_passes_by_the_parent_of_the_directory() -> None:
-    from harness.epic import _surface_passes, _surface_refusal_reason
-
-    paths = frozenset({"src/ui/a.py"})
-    assert _surface_passes(paths, "src/ui/snapshots/ (new)")
-    assert _surface_passes(paths, "newdir/ (new)")
-    assert not _surface_passes(paths, "lib/snapshots/ (new)")
-    assert "wrong repository?" in _surface_refusal_reason(paths, Path("/r"), ["lib/snapshots/ (new)"])
-
-
-def test_refusal_reason_names_the_missing_new_marker_when_every_parent_exists() -> None:
+def test_the_refusal_reason_names_every_malformed_entry() -> None:
     from harness.epic import _surface_refusal_reason
 
-    paths = frozenset({"src/other.py"})
-    reason = _surface_refusal_reason(paths, Path("/r"), ["src/a.py", "src/b.py"])
-    assert "(new)" in reason
-    assert "not a wrong repository" in reason
-    assert "src/a.py, src/b.py" in reason
-
-
-def test_refusal_reason_keeps_the_old_text_when_a_parent_is_missing() -> None:
-    from harness.epic import _surface_refusal_reason
-
-    paths = frozenset({"src/other.py"})
-    old = "surfaces not in /r: lib/a.py, lib/b.py; wrong repository?"
-    assert _surface_refusal_reason(paths, Path("/r"), ["lib/a.py", "lib/b.py"]) == old
-
-
-def test_refusal_reason_keeps_the_old_text_for_a_mix_with_one_parent_missing() -> None:
-    from harness.epic import _surface_refusal_reason
-
-    paths = frozenset({"src/other.py"})
-    old = "surfaces not in /r: src/a.py, lib/b.py; wrong repository?"
-    assert _surface_refusal_reason(paths, Path("/r"), ["src/a.py", "lib/b.py"]) == old
+    reason = _surface_refusal_reason(["/etc/x", "src/*.py"])
+    assert "/etc/x, src/*.py" in reason
 
 
 def _repo_with_stale_checkout(repo: Path, tmp_path: Path) -> None:
@@ -1874,8 +1821,9 @@ def _repo_with_stale_checkout(repo: Path, tmp_path: Path) -> None:
     git("push", "-q", "origin", "main", cwd=other)
 
 
-def test_a_file_on_origins_default_branch_but_absent_from_a_stale_checkout_passes(repo, cart, tmp_path) -> None:
-    from harness.epic import _default_branch_paths, _surface_passes, resolve_default_ref
+def test_a_file_on_origins_default_branch_but_absent_from_a_stale_checkout_is_not_healed(repo, cart, tmp_path) -> None:
+    from harness.epic import _default_branch_paths, resolve_default_ref
+    from harness.surface_heal import heal_new_markers
 
     _repo_with_stale_checkout(repo, tmp_path)
     ctx = _budget_ctx(repo, cart)
@@ -1884,22 +1832,8 @@ def test_a_file_on_origins_default_branch_but_absent_from_a_stale_checkout_passe
     assert not (repo / "src" / "fresh.py").exists()
     paths = _default_branch_paths(ctx)
     assert paths is not None
-    assert _surface_passes(paths, "src/fresh.py")
-    assert _surface_passes(paths, "src/other.py (new)")
-
-
-def test_a_file_in_neither_checkout_nor_origin_is_refused_with_the_new_hint(repo, cart, tmp_path) -> None:
-    from harness.epic import _default_branch_paths, _surface_passes, _surface_refusal_reason, resolve_default_ref
-
-    _repo_with_stale_checkout(repo, tmp_path)
-    ctx = _budget_ctx(repo, cart)
-    ctx = replace(ctx, default_ref=resolve_default_ref(repo, None), surface_paths={})
-    paths = _default_branch_paths(ctx)
-    assert paths is not None
-    assert not _surface_passes(paths, "src/missing.py")
-    reason = _surface_refusal_reason(paths, repo, ["src/missing.py"])
-    assert "(new)" in reason
-    assert "not a wrong repository" in reason
+    assert heal_new_markers({"surfaces": ["src/fresh.py"]}, paths)["surfaces"] == ["src/fresh.py"]
+    assert heal_new_markers({"surfaces": ["src/missing.py"]}, paths)["surfaces"] == ["src/missing.py (new)"]
 
 
 def test_the_listing_is_read_once_for_several_tasks_across_phases(repo, cart, tmp_path, monkeypatch) -> None:
@@ -1936,35 +1870,161 @@ def test_a_warning_on_stderr_does_not_replace_the_listing(repo, cart, monkeypatc
     assert _default_branch_paths(replace(_budget_ctx(repo, cart), default_ref="main")) == {" lead.py", "src/b.py"}
 
 
+def test_a_file_only_in_the_working_tree_is_healed_against_the_branch_listing(repo, cart, tmp_path) -> None:
+    (repo / "only_local.txt").write_text("x\n", encoding="utf-8")
+    work = initiative(two_phases=False)
+    next(i for i in work["items"] if i["id"] == "t1-probe")["surfaces"] = ["only_local.txt"]
+    result, runner = drive(repo, cart, tmp_path, work=work)
+    assert not any(q["id"] == "t1-probe" for q in result["quarantined"])
+    assert any(c["role"] == "build" and "only_local.txt: missing" in c["prompt"] for c in runner.calls)
+
+
 def test_an_unreadable_listing_falls_back_to_the_working_tree(repo, cart, tmp_path, monkeypatch) -> None:
     (repo / "only_local.txt").write_text("x\n", encoding="utf-8")
     work = initiative(two_phases=False)
     next(i for i in work["items"] if i["id"] == "t1-probe")["surfaces"] = ["only_local.txt"]
-    with_listing, _ = drive(repo, cart, tmp_path / "a", work=work)
-    assert any(q["id"] == "t1-probe" and q["kind"] == "no_work" for q in with_listing["quarantined"])
     monkeypatch.setattr(epic_module, "_default_branch_paths", lambda ctx: None)
-    without, runner = drive(repo, cart, tmp_path / "b", work=work, run_id="epic-2")
-    assert not any(q["id"] == "t1-probe" for q in without["quarantined"])
+    result, runner = drive(repo, cart, tmp_path, work=work)
+    assert not any(q["id"] == "t1-probe" for q in result["quarantined"])
     assert any(c["role"] == "build" and "t1-probe" in c["prompt"] for c in runner.calls)
+    assert not any("only_local.txt: missing" in c["prompt"] for c in runner.calls)
 
 
-def test_a_task_whose_only_surface_is_a_new_path_with_no_parent_is_refused_before_any_model_call(
-    repo, cart, tmp_path
-) -> None:
+@pytest.mark.parametrize("bad", ["src/*.py", "/etc/passwd", "../outside.py"])
+def test_a_malformed_surface_is_refused_before_any_model_call(repo, cart, tmp_path, bad) -> None:
     import harness.store_read as read
     from harness.store_write import task_cause
 
     work = initiative(two_phases=False)
-    next(i for i in work["items"] if i["id"] == "t1-probe")["surfaces"] = ["nowhere/new_file.py (new)"]
+    next(i for i in work["items"] if i["id"] == "t1-probe")["surfaces"] = [bad]
     store = Store(open_store("sqlite:///:memory:", datetime.now(UTC).isoformat()))
     result, runner = drive(repo, cart, tmp_path, work=work, store=store)
     entry = next(q for q in result["quarantined"] if q["id"] == "t1-probe")
-    assert entry["reason"] == f"surfaces not in {repo}: nowhere/new_file.py (new); wrong repository?"
+    assert bad in entry["reason"]
     assert entry["kind"] == "no_work"
     assert task_cause(read.task_record(store.conn, "epic-1", "p1-foundations", "t1-probe"))[0] == "ticket"
     assert store.conn.query_all("SELECT 1 FROM attempts WHERE task_id = 't1-probe'", ()) == []
     assert not any(c["role"] in ("plan", "build", "review_charter") and "t1-probe" in c["prompt"] for c in runner.calls)
     assert is_ancestor(repo, "epic/demo-initiative/p1-foundations--t2-bench", "epic/demo-initiative/p1-foundations")
+
+
+def _heal_work(surfaces: list[str]) -> dict:
+    work = initiative(two_phases=False)
+    next(i for i in work["items"] if i["id"] == "t1-probe")["surfaces"] = surfaces
+    return work
+
+
+def _record_invocation_surfaces(monkeypatch) -> dict[str, list[str]]:
+    seen: dict[str, list[str]] = {}
+    real = epic_module._lifecycle_invocation
+
+    def recording(ctx, task, **kwargs):
+        seen[str(task["id"])] = list(task.get("surfaces") or [])
+        return real(ctx, task, **kwargs)
+
+    monkeypatch.setattr(epic_module, "_lifecycle_invocation", recording)
+    return seen
+
+
+def test_two_missing_files_without_the_marker_reach_the_build_marked_and_noted(
+    repo, cart, tmp_path, capsys, monkeypatch
+) -> None:
+    seen = _record_invocation_surfaces(monkeypatch)
+    result, runner = drive(repo, cart, tmp_path, work=_heal_work(["README.md", "docs/a.md", "docs/b.md"]))
+    assert seen["t1-probe"] == ["README.md", "docs/a.md (new)", "docs/b.md (new)"]
+    assert not any(q["id"] == "t1-probe" for q in result["quarantined"])
+    build = next(c for c in runner.calls if c["role"] == "build" and "t1-probe" in c["prompt"])
+    assert "docs/a.md: missing from the repository" in build["prompt"]
+    assert build["prompt"].count("missing from the repository, healed by the surface check") == 2
+    assert "surfaces: t1-probe healed (docs/a.md (new), docs/b.md (new))" in capsys.readouterr().out
+
+
+def test_healed_surfaces_are_written_to_the_store_row(repo, cart, tmp_path) -> None:
+    from harness import store_queue
+
+    store = Store(open_store("sqlite:///:memory:", datetime.now(UTC).isoformat()))
+    drive(repo, cart, tmp_path, work=_heal_work(["docs/a.md"]), store=store, work_state="store")
+    row = next(r for r in store_queue.read(store.conn, "demo-initiative") if r["task_id"] == "t1-probe")
+    assert row["surfaces"] == ["docs/a.md (new)"]
+    assert row["extra"]["lint"] == ["docs/a.md: missing from the repository, healed by the surface check"]
+
+
+def test_healed_surfaces_are_written_to_the_task_file_under_work_state_files(repo, cart, tmp_path) -> None:
+    path = tmp_path / "t1-probe.md"
+    path.write_text(
+        "---\nid: t1-probe\nphase: p1-foundations\nstate: ready\nneeds: []\nsurfaces: [docs/a.md]\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    work = _heal_work(["docs/a.md"])
+    next(i for i in work["items"] if i["id"] == "t1-probe")["path"] = str(path)
+    drive(repo, cart, tmp_path, work=work)
+    text = path.read_text(encoding="utf-8")
+    assert "docs/a.md (new)" in text and "healed by the surface check" in text
+    assert text.endswith("---\n\nbody\n")
+
+
+def test_the_file_rewrite_changes_only_the_surfaces_and_lint_lines(tmp_path) -> None:
+    path = tmp_path / "t.md"
+    path.write_text(
+        "---\nid: t1\n# keep me\ntitle: 'quoted: title'\nsurfaces:\n  - docs/a.md\n  - README.md\nneeds: []\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    epic_module._rewrite_frontmatter_surfaces(path, ["docs/a.md (new)", "README.md"], ["note"])
+    assert path.read_text(encoding="utf-8") == (
+        "---\nid: t1\n# keep me\ntitle: 'quoted: title'\nsurfaces: [docs/a.md (new), README.md]\nneeds: []\n"
+        "lint: [note]\n---\n\nbody\n"
+    )
+
+
+def test_a_relaunch_in_store_mode_reads_the_healed_task_and_does_not_heal_again(
+    repo, cart, tmp_path, capsys, monkeypatch
+) -> None:
+    from harness import store_queue
+
+    wi = tmp_path / "wi"
+    (wi / "p1-foundations").mkdir(parents=True)
+    (wi / "initiative.md").write_text("---\nid: demo-initiative\ntitle: demo\n---\n\nmake the join measurable\n")
+    task_file = wi / "p1-foundations" / "t1-probe.md"
+    task_file.write_text(
+        "---\nid: t1-probe\nphase: p1-foundations\nstate: ready\nneeds: []\nsurfaces: [docs/a.md]\n"
+        "title: schema probe\n---\n\nread the vendor schema\n"
+    )
+    store = Store(open_store("sqlite:///:memory:", datetime.now(UTC).isoformat()))
+    drive(repo, cart, tmp_path, work=workstore.read_initiative(wi), store=store, work_state="store")
+    assert "t1-probe healed (docs/a.md (new))" in capsys.readouterr().out
+    assert workstore.read_item(task_file)["surfaces"] == ["docs/a.md (new)"]
+    row = next(r for r in store_queue.read(store.conn, "demo-initiative") if r["task_id"] == "t1-probe")
+    assert row["surfaces"] == ["docs/a.md (new)"]
+
+    workstore.set_state(task_file, "ready")  # the relaunch: the task is ready again, so the surface check runs on it
+    store_queue.upsert(store.conn, {"initiative": "demo-initiative", "task_id": "t1-probe", "state": "ready"})
+    writes: list[object] = []
+    monkeypatch.setattr(store_queue, "upsert", lambda *a, **k: writes.append(a))
+    monkeypatch.setattr(epic_module, "_rewrite_frontmatter_surfaces", lambda *a: writes.append(a))
+    checks: list[object] = []
+    real_listing = epic_module._default_branch_paths
+    monkeypatch.setattr(epic_module, "_default_branch_paths", lambda ctx: checks.append(1) or real_listing(ctx))
+    drive(repo, cart, tmp_path / "again", work=workstore.read_initiative(wi), store=store, work_state="store", run_id="epic-2")
+    assert checks, "the second run never reached the surface check, so this test proves nothing"
+    assert "healed" not in capsys.readouterr().out
+    assert writes == []
+
+
+def test_an_existing_file_surface_is_unchanged_and_writes_nothing(repo, cart, tmp_path, monkeypatch) -> None:
+    from harness import store_queue
+
+    writes: list[object] = []
+    monkeypatch.setattr(store_queue, "upsert", lambda *a, **k: writes.append(a))
+    monkeypatch.setattr(epic_module, "_rewrite_frontmatter_surfaces", lambda *a: writes.append(a))
+    seen = _record_invocation_surfaces(monkeypatch)
+    work = _heal_work(["README.md"])
+    next(i for i in work["items"] if i["id"] == "t1-probe")["lint"] = ["size: large"]
+    result, runner = drive(repo, cart, tmp_path, work=work, work_state="store")
+    assert seen["t1-probe"] == ["README.md"]
+    assert not any(q["id"] == "t1-probe" for q in result["quarantined"])
+    build = next(c for c in runner.calls if c["role"] == "build" and "t1-probe" in c["prompt"])
+    assert "Surface note" not in build["prompt"]
+    assert writes == []
 
 
 def test_a_new_file_under_an_existing_directory_proceeds_to_the_model(repo, cart, tmp_path) -> None:

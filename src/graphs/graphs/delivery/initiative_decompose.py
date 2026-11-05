@@ -42,6 +42,7 @@ from graphs.delivery.decompose_size import (
 from graphs.delivery.phase_split import split_same_phase_needs
 from graphs.delivery.ticket_lint import Problem, heal_idea_reach, lint_tickets
 from graphs.delivery.ticket_lint import lint_refusal_text as _lint_refusal_text
+from harness.surface_heal import heal_new_markers
 from runner.decision_log import RouterDecision
 from runner.decision_source import DecisionSource, NoDecisionSource, ask
 from runner.protocol import NodeRunner
@@ -1389,7 +1390,11 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
     # The layout check never stops a decompose: a body that does not match its surfaces is healed (the unnamed
     # surface goes on a `Surfaces:` line, a named artifact joins the surfaces) and the repair rides as a `lint:`
     # entry; an edge with no data flow in the body only lands as a `lint:` entry.
+    # The missing-marker heal rides with it: a surface absent from the tree gets `(new)` and a `lint:` entry.
+    # An empty tree says nothing about what exists, so the heal is skipped and no surface is marked new.
     tasks = [heal_layout(t) for t in tasks]
+    tree_paths = frozenset(str(row["path"]) for row in named_tree if row.get("path"))
+    tasks = [heal_new_markers(t, tree_paths) for t in tasks] if tree_paths else tasks
     layout = check_layout(tasks)
     layout_notes: dict[str, list[str]] = {}
     for f in layout.findings:
