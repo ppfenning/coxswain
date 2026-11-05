@@ -28,7 +28,17 @@ from functools import reduce
 from pathlib import Path
 from typing import NamedTuple
 
-from agent_tools import land_manual, queue_export, queue_rows, repo_path, route, route_guard, run_store, store_cli
+from agent_tools import (
+    land_manual,
+    queue_export,
+    queue_rows,
+    repo_path,
+    route,
+    route_guard,
+    route_reach,
+    run_store,
+    store_cli,
+)
 from agent_tools.land import LAND_CONFLICT_KEY, conflict_note
 
 DONE = route_guard.DONE
@@ -386,6 +396,18 @@ def _edit_task(
     return EditResult(f"{text.rstrip(chr(10))}\n{note}" if note else text, DONE)
 
 
+def intake_reach_refusal(text: str, new_body: str, title: str | None) -> str | None:
+    """The refusal a launched decompose would raise for the intake `text` once its body becomes `new_body`.
+    The file's own header is kept, so its `reach_allow` applies; an empty body falls back to the title, as `plan_edit` does."""
+    parts = _split(text)
+    if parts is None:
+        return None
+    header_lines, _ = parts
+    fields, _ = route.parse_frontmatter(text)
+    candidate = "---\n" + "\n".join(header_lines) + f"\n---\n\n{new_body or title or fields.get('title', '')}\n"
+    return route_reach.launch_text_refusal(candidate)
+
+
 def apply_edit(
     runs_dir: Path,
     ws: Path,
@@ -461,6 +483,10 @@ def apply_edit(
         return EditResult(f"cannot read: {exc}", FAILED)
     if route.parse_frontmatter(text)[0] == {}:
         return EditResult(f"{path} has no frontmatter to edit", REFUSED)
+    if is_intake and new_body is not None:
+        refusal = intake_reach_refusal(text, new_body, title)
+        if refusal is not None:
+            return EditResult(refusal, REFUSED)
     new_text, diff = plan_edit(text, title=title, body=new_body, repo=repo, path=str(path.relative_to(ws)), after=after, link=link)
     if dry_run or not diff:
         return EditResult(diff, DONE)
