@@ -6212,6 +6212,21 @@ no explanation — so a decomposition containing one is <strong>refused before a
 is proposed</strong>, and refused again by the work store on read. Both checks exist
 because the failure is silent and the cost of finding it late is a stalled phase
 nobody can diagnose.</p>
+<h2 id="the-idea-reach-check">The idea reach check</h2>
+<p>An intake's text can name a path that lies outside the target repository. The decompose does not refuse
+such an intake. It rewrites the outside path so the text no longer points past the repo, and it keeps
+going.</p>
+<ul>
+<li>Each rewrite becomes a note. The notes are written as a <code>lint:</code> block list in the initiative
+  frontmatter, so the human at the gate sees what was changed.</li>
+<li>Filing prints the same notes as <code>routing: lint:</code> lines, so the two surfaces report one set of
+  rewrites.</li>
+<li>A path covered by <code>reach_allow</code> is left alone. So is a path inside the target repo.</li>
+</ul>
+<p>One refusal remains. A body that is only an outside path has nothing left once the path is rewritten.
+It is refused before any model call, so no tokens are spent on it.</p>
+<p><code>heal_idea_reach</code> in <a href="https://github.com/ppfenning/coxswain/blob/main/src/graphs/graphs/delivery/ticket_lint.py"><code>ticket_lint.py</code></a> is the single home of the rule. The decompose
+and the filing both call it, so the two cannot drift.</p>
 <h2 id="the-layout-check">The layout check</h2>
 <p><a href="https://github.com/ppfenning/coxswain/blob/main/src/graphs/graphs/delivery/decompose_layout.py"><code>decompose_layout.py</code></a> checks the proposed tasks before anything
 is proposed. It reads only the tasks, never the repository. Three things are reported.</p>
