@@ -1,4 +1,12 @@
-from agent_tools.queue_rows import intake_stamp, parse_item, plan_to_rows, render_item, row_path
+from agent_tools.queue_rows import (
+    epic_of_row,
+    intake_stamp,
+    parse_item,
+    plan_to_rows,
+    render_item,
+    row_path,
+    target_branch_of_row,
+)
 
 TASK = "---\nstate: doing\ntitle: 'Codec: rows'\nneeds:\n- a-1\nsurfaces:\n- agent_tools/x.py\nrepo: coxswain\n---\nBody line.\n"
 TASK_ROW = {
@@ -169,3 +177,41 @@ def test_plan_row_equals_parsed_file_row() -> None:
     assert rows[2] == parse_item("task", ("queue", "q", "a-2.md"), ready_with_needs)
     assert rows[1] == parse_item("task", ("queue", "q", "a-1.md"), ready)
     assert parse_item("task", ("queue", "q", "a-2.md"), render_item(rows[2])) == rows[2]
+
+
+EPIC_INITIATIVE = "---\ntitle: Ship it\nepic: ship-it\ntarget_branch: release/1.0\n---\nGoal.\n"
+INITIATIVE_PARTS = ("queue", "initiative.md")
+
+
+def _row(kind: str, **extra: str) -> dict:
+    return {**TASK_ROW, "kind": kind, "extra": extra}
+
+
+def test_initiative_epic_and_target_branch_survive_round_trip() -> None:
+    row = parse_item("initiative", INITIATIVE_PARTS, EPIC_INITIATIVE)
+    assert (row["extra"]["epic"], row["extra"]["target_branch"]) == ("ship-it", "release/1.0")
+    assert parse_item("initiative", INITIATIVE_PARTS, render_item(row)) == row
+
+
+def test_epic_of_row_initiative() -> None:
+    assert epic_of_row(parse_item("initiative", INITIATIVE_PARTS, EPIC_INITIATIVE)) == "ship-it"
+
+
+def test_epic_of_row_task_is_none() -> None:
+    assert epic_of_row(_row("task", epic="ship-it")) is None
+
+
+def test_epic_of_row_bad_value_is_none() -> None:
+    assert epic_of_row(_row("initiative", epic="Not A Slug")) is None
+
+
+def test_epic_of_row_absent_is_none() -> None:
+    assert epic_of_row(_row("initiative")) is None
+
+
+def test_target_branch_of_row_valid() -> None:
+    assert target_branch_of_row(parse_item("initiative", INITIATIVE_PARTS, EPIC_INITIATIVE)) == "release/1.0"
+
+
+def test_target_branch_of_row_invalid() -> None:
+    assert target_branch_of_row(_row("initiative", target_branch="bad..name")) is None
