@@ -496,6 +496,20 @@ def test_land_refusal_names_a_missing_branch_from_the_output() -> None:
     assert refusal["cause"] == "missing_branch"
 
 
+@pytest.mark.parametrize(
+    ("output", "cause"),
+    [
+        ("no branch is ahead of main: t1 has 0 commits", "missing_branch"),
+        ("no branch is ahead of main\n  agents/run-1/t1: 0 ahead", "missing_branch"),
+        ("no branch is exactly one commit ahead of main: t1 has 0", "missing_branch"),
+        ("land: refusing, /repo is dirty", "land"),
+    ],
+    ids=["new_prefix", "new_prefix_with_counts", "old_prefix", "unrelated"],
+)
+def test_land_refusal_classifies_both_no_branch_ahead_prefixes_alike(output, cause) -> None:
+    assert land_refusal(_land("t1", "r"), 1, output)["cause"] == cause
+
+
 def test_land_refusal_falls_back_to_land_for_any_other_nonzero_exit() -> None:
     refusal = land_refusal(_land("t1", "r"), 1, "boom, something else broke")
     assert refusal["cause"] == "land"
