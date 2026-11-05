@@ -40,6 +40,24 @@ is proposed**, and refused again by the work store on read. Both checks exist
 because the failure is silent and the cost of finding it late is a stalled phase
 nobody can diagnose.
 
+## The idea reach check
+
+An intake's text can name a path that lies outside the target repository. The decompose does not refuse
+such an intake. It rewrites the outside path so the text no longer points past the repo, and it keeps
+going.
+
+- Each rewrite becomes a note. The notes are written as a `lint:` block list in the initiative
+  frontmatter, so the human at the gate sees what was changed.
+- Filing prints the same notes as `routing: lint: ` lines, so the two surfaces report one set of
+  rewrites.
+- A path covered by `reach_allow` is left alone. So is a path inside the target repo.
+
+One refusal remains. A body that is only an outside path has nothing left once the path is rewritten.
+It is refused before any model call, so no tokens are spent on it.
+
+`heal_idea_reach` in [`ticket_lint.py`](ticket_lint.py) is the single home of the rule. The decompose
+and the filing both call it, so the two cannot drift.
+
 ## The layout check
 
 [`decompose_layout.py`](decompose_layout.py) checks the proposed tasks before anything
