@@ -42,6 +42,7 @@ from devtools import (
     release_notes_opener,
     release_notes_prs,
     release_rehearsal_gate,
+    release_required_checks,
     run_status,
 )
 
@@ -98,6 +99,36 @@ def _await_checks(poll, timeout_s: float = 180.0, sleep=time.sleep, now=time.mon
             return False, f"{message}: {run_status.render_verdict(verdict, branch)}"
         else:
             return decision == "green", "green" if decision == "green" else output.strip()
+
+
+def _await_required(base: str, branch: str | None, directory: str, run, sleep, now,
+                    timeout_s: float = 180.0) -> tuple[bool, str]:
+    """Waits for every check `base`'s branch protection requires on `branch`'s pull request (None: the checkout's own).
+    Pending waits without bound; a required check that never reports fails after `timeout_s`.
+    An unprotected or unreadable protection answer means no required checks: the caller merges as before."""
+    started, waiting = now(), False
+    rc, out = run(release.required_checks_argv(base), directory)
+    unprotected = rc != 0 and ("not protected" in out.lower() or "404" in out)
+    required = None if rc != 0 else release_required_checks.required_names(out)
+    if unprotected or required == []:
+        return True, "green"
+    if required is None:
+        print(f"required checks of {base} could not be read, merging on the passing checks alone")
+        return True, "green"
+    while True:
+        _, reported = run(release.pr_checks_json_argv(branch or None), directory)
+        verdict = release_required_checks.judge(required, reported)
+        if verdict.kind == "green":
+            return True, "green"
+        if verdict.kind == "failed":
+            return False, f"required checks failed: {', '.join(verdict.names)}"
+        if verdict.kind == "missing":
+            if now() - started >= timeout_s:
+                return False, release_required_checks.render_missing(verdict.names, timeout_s)
+            if not waiting:
+                print(f"required check not reported yet, waiting up to {timeout_s:.0f}s: {', '.join(verdict.names)}")
+            waiting = True
+        sleep(15)
 
 
 def _read_text_or_none(p: Path):
@@ -634,6 +665,9 @@ def _merge_back(step: dict, directory: str, run, sleep, now) -> tuple[bool, str]
         branch=branch)
     if not wc_ok:
         return False, wc_out if branch in wc_out else f"{branch}: {wc_out}"
+    rq_ok, rq_out = _await_required(default, branch, directory, run, sleep, now)
+    if not rq_ok:
+        return False, rq_out if branch in rq_out else f"{branch}: {rq_out}"
     for argv, cwd in ((release.pr_merge_argv(branch, "merge"), directory),
                       (release.checkout_ref_argv(directory, default), None),
                       (release.pull_argv(directory, default), None)):
@@ -876,6 +910,11 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                 list_runs=list_runs, branch=branch)
             if not wc_ok:
                 print(f"FAILED wait_checks {step['component']}: {wc_out}")
+                return 2
+            rq_ok, rq_out = _await_required(step.get("base") or _default_branch(directory, run), branch or None,
+                                            directory, run, sleep, now)
+            if not rq_ok:
+                print(f"FAILED wait_checks {step['component']}: {rq_out}")
                 return 2
             print(f"wait_checks {step['component']}: {wc_out}")
         elif kind == "merge":

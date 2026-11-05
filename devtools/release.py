@@ -580,6 +580,16 @@ def pr_checks_argv(head: str | None = None) -> list[str]:
     return ["gh", "pr", "checks", *([head] if head else []), "--watch", "--fail-fast"]
 
 
+def required_checks_argv(base: str) -> list[str]:
+    """`gh api` call reading the required status checks of `base`'s branch protection; gh fills `{owner}` and `{repo}`."""
+    return ["gh", "api", f"repos/{{owner}}/{{repo}}/branches/{base}/protection/required_status_checks"]
+
+
+def pr_checks_json_argv(head: str | None = None) -> list[str]:
+    """`gh pr checks [head] --json name,state,bucket`, a one-shot listing with no `--watch`."""
+    return ["gh", "pr", "checks", *([head] if head else []), "--json", "name,state,bucket"]
+
+
 def pr_merge_argv(head: str | None = None, method: str = "squash") -> list[str]:
     """`gh pr merge [head] --<method> --delete-branch`, where `method` is squash or merge."""
     return ["gh", "pr", "merge", *([head] if head else []), f"--{method}", "--delete-branch"]

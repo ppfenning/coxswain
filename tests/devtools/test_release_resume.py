@@ -34,6 +34,8 @@ class Origin:
             return 0, self.refs.get("open-prs", "[]")
         if argv[:3] == ["gh", "pr", "checks"]:
             return self.checks.pop(0) if len(self.checks) > 1 else self.checks[0]
+        if argv[:2] == ["gh", "api"]:
+            return 1, "gh: Branch not protected (HTTP 404)"
         if argv[:3] == ["gh", "pr", "merge"] and self.merge_back_fails:
             return 1, "merge blocked"
         return 0, ""

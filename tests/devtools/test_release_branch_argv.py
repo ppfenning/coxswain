@@ -28,6 +28,16 @@ def test_pr_checks_argv_names_the_head_only_when_given():
     assert release.pr_checks_argv("h") == ["gh", "pr", "checks", "h", "--watch", "--fail-fast"]
 
 
+def test_required_checks_argv_reads_branch_protection_with_gh_placeholders():
+    assert release.required_checks_argv("release/1.0") == [
+        "gh", "api", "repos/{owner}/{repo}/branches/release/1.0/protection/required_status_checks"]
+
+
+def test_pr_checks_json_argv_names_the_head_only_when_given():
+    assert release.pr_checks_json_argv() == ["gh", "pr", "checks", "--json", "name,state,bucket"]
+    assert release.pr_checks_json_argv("h") == ["gh", "pr", "checks", "h", "--json", "name,state,bucket"]
+
+
 def test_pr_merge_argv_defaults_to_squash_and_always_deletes_the_branch():
     assert release.pr_merge_argv() == ["gh", "pr", "merge", "--squash", "--delete-branch"]
     assert release.pr_merge_argv("h", method="merge") == ["gh", "pr", "merge", "h", "--merge", "--delete-branch"]
