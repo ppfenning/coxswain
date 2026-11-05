@@ -1630,6 +1630,11 @@ def _run_lanes(
 
     def settle(phase: str, record: dict[str, Any]) -> None:
         record = {**record, "wave": wave_of.get(phase), "lane": lane_of.get(phase)}
+        if record["status"] == "awaiting_land" and adopt_done(phase):
+            # The store keeps the first row of a phase, so a phase done elsewhere is recorded complete the first time.
+            # Only an awaiting_land record is rewritten: a partial one carries a verdict this check must not overrule.
+            record = {k: v for k, v in record.items() if k != "awaiting_tasks"}
+            record.update(status="complete", reason="every task in the phase is done in the store")
         if phase in serialised:
             record["serialised"] = serialised[phase]
         deferred = record["status"] == "awaiting_land" and _land_deferred(ctx.land_at, phase, items)
@@ -1639,6 +1644,18 @@ def _run_lanes(
         recorded.add(phase)
         if record["status"] == "complete" or deferred:
             complete.add(phase)
+
+    def adopt_done(parent: str) -> bool:
+        """True after adopting the rows of `parent`, when every one of its tasks is done in the store."""
+        rows = _read_store_rows(ctx)
+        with ctx.items_lock:
+            mine = [i for i in items if i.get("phase") == parent]
+            fresh = _store_fresh(mine, rows)
+            if not fresh or any(i["state"] not in ("done", "dropped") for i in fresh):
+                return False
+            for item, new in zip(mine, fresh, strict=True):
+                item.update({k: new[k] for k in ("state", "merged", "merged_commit")})
+        return True
 
     def parent_block(phase: str) -> dict[str, Any] | None:
         bad = next((p for p in sorted(parents[phase]) if p in recorded and p not in complete), None)
@@ -2005,6 +2022,33 @@ def _mirror_read(ctx: _Ctx, items: Sequence[dict[str, Any]]) -> None:
 
 def _store_authoritative(ctx: _Ctx) -> bool:
     return ctx.store is not None and getattr(ctx, "work_state", "files") == "store"
+
+
+def _read_store_rows(ctx: _Ctx) -> list[Mapping[str, Any]] | None:
+    """The initiative's work_items rows as the store holds them now; None under files or when the read fails.
+
+    The one store read of the done-wins check. A failure is logged and reads as no rows, as `_mirror_read` does.
+    """
+    if not _store_authoritative(ctx):
+        return None
+    try:
+        from harness import store_read  # not module level, for the reason given in `_mirror_read`
+
+        return list(store_read.work_items(ctx.store.conn, ctx.initiative_id))
+    except Exception as exc:
+        _log.warning("work_items not re-read for %s: %s: %s", ctx.initiative_id, type(exc).__name__, exc)
+        return None
+
+
+def _store_fresh(items: Sequence[Mapping[str, Any]], rows: Sequence[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
+    """Copies of `items` where a task whose row says done takes the row's state, merged flag and merged commit."""
+    done = {str(r["task_id"]): r for r in rows or () if r.get("state") == "done"}
+    return [
+        {**item, "state": "done", "merged": bool(done[k].get("merged")), "merged_commit": done[k].get("merged_commit")}
+        if (k := str(item["id"])) in done
+        else dict(item)
+        for item in items
+    ]
 
 
 def _store_first(ctx: _Ctx, item: dict[str, Any], state: str) -> str | None:
@@ -2593,10 +2637,11 @@ def _ready_view(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _merge_missing(ctx: _Ctx, phase: str, item: Mapping[str, Any]) -> str | None:
+def _merge_missing(ctx: _Ctx, phase: str, item: dict[str, Any]) -> str | None:
     """Why an approved, merged task of this phase cannot be resumed from the store, or None when its commit is on the phase branch.
 
-    Only the store carries `merged_commit`, so a task merged under files is never checked.
+    Only the store carries `merged_commit`, so a task merged under files is never checked. A task whose row is now done,
+    landed by another machine, is adopted into `item` and is not missing.
     """
     commit = item.get("merged_commit")
     if not (_store_authoritative(ctx) and item.get("phase") == phase and item.get("state") == "approved" and commit):
@@ -2604,6 +2649,11 @@ def _merge_missing(ctx: _Ctx, phase: str, item: Mapping[str, Any]) -> str | None
     branch = ctx.phase_branch(phase)
     on_branch, _ = _git("-C", str(ctx.repo), "merge-base", "--is-ancestor", str(commit), branch)
     if on_branch:
+        return None
+    (fresh,) = _store_fresh([item], _read_store_rows(ctx))
+    if fresh["state"] == "done":
+        with ctx.items_lock:
+            item.update({k: fresh[k] for k in ("state", "merged", "merged_commit")})
         return None
     return f"merged commit {commit} is not on {branch}; {item['id']} was approved and merged by an earlier run and is not rebuilt"
 
@@ -3397,10 +3447,14 @@ def _run_phase(
     # A phase is judged once, when it is finished: a run carrying only part of it
     # would be scored against a goal its siblings have not yet built toward.
     # A task an earlier run approved counts as finished, and joins the validator's input.
-    earlier = _earlier_merged(items, phase, {str(r.get("ticket")) for r in results})
+    # One store read: a task another machine landed since this run read its items counts as finished.
+    store_rows = _read_store_rows(ctx)
+    with ctx.items_lock:
+        fresh_items = _store_fresh(items, store_rows)
+    earlier = _earlier_merged(fresh_items, phase, {str(r.get("ticket")) for r in results})
     open_ids = (
         open_in_phase(
-            items,
+            fresh_items,
             phase,
             {str(r.get("ticket")) for r in results} | {str(q["id"]) for q in quarantined} | {str(i["id"]) for i in earlier},
             ctx.land_at,
@@ -3649,7 +3703,7 @@ def _run_phase(
         validated=validated,
         ready=ready,
         quarantined=quarantined,
-        items=items,
+        items=_store_fresh(items, store_rows),
         phase=phase,
         landed=bool(surviving) and all(state.merged.get(task) for task in surviving),
         branch=branch,
