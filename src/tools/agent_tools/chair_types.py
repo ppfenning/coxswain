@@ -393,6 +393,23 @@ class PhaseTasks(TypedDict):
     tasks: list[tuple[str, str]]
 
 
+class EpicInitiative(TypedDict):
+    id: str
+    landed: bool
+
+
+class EpicFacts(TypedDict):
+    """One record of `core.epics.rollup`: an epic with its initiatives and how many have landed."""
+
+    id: str
+    title: str
+    target_branch: str | None
+    initiatives: list[EpicInitiative]
+    landed: int
+    total: int
+    complete: bool
+
+
 class Facts(TypedDict):
     lease: LeaseFacts
     limits: LimitsFacts
@@ -449,6 +466,7 @@ class Facts(TypedDict):
     idle_stall: IdleStallInputs  # idle-lanes stall inputs; a later task fills it
     tuning: NotRequired[TuningFacts]  # filled in later by the facts edge; absent means no tuning inputs
     landed_main: NotRequired[list[LandedMain]]  # lands whose main commit is being watched; absent means none
+    epics: NotRequired[list[EpicFacts]]  # `core.epics.rollup` records; absent or empty means no epic
     # Keyed by initiative, oldest first, each entry "reverted" or "held"; absent means {}.
     land_outcomes: NotRequired[dict[str, list[str]]]
     # The facts edge fills it, the widen planner consumes it, and the widen_ticket executor consumes the action.

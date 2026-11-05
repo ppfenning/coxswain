@@ -28,6 +28,7 @@ from agent_tools import (
     courier,
     decisions,
     pacing,
+    queue_rows,
     route,
     run_store,
     runs_stranded,
@@ -94,6 +95,7 @@ _UNKNOWN_SPEND_SOURCES = {"chair_session": "none", "price_catalog": "missing"}
 def snapshot(
     at, chair, spend, machines, runs, queue, queue_total, inbox, inbox_total, watch, decisions=(), spend_series=(),
     history=(), history_today=None, *, chair_agents=None, spend_split=None, spend_sources=None, budget=None,
+    epics=(),
 ) -> dict:
     """Assemble the schema-1 dash feed snapshot from its sections. `queue_total`/`inbox_total` are each
     section's filtered count before the 50-row cap, for coxtop to render "50 of N". `decisions` is the open
@@ -102,7 +104,7 @@ def snapshot(
     `chair_agents` is the chair's background agent rows, empty when not given; `spend_split` is the three-way
     spend split per window, all zero when not given. `spend_sources` says whether the chair session and the price
     catalog were found; it reads none and missing when not given. `budget` is the monthly budget block; it reads
-    the none block, every figure 0.0 or 0, when not given."""
+    the none block, every figure 0.0 or 0, when not given. `epics` is the epic rollup records, empty when not given."""
     # coxswain-dash carries its own copy of tests/fixtures/dash_feed_v1.json and will need these two fields too.
     # `queue[].phases` is additive and the schema stays 1: a coxtop that does not know the field ignores it.
     # So are `runs[].tasks`, `runs[].landed` and `runs[].quarantined`, which `_runs_v1` adds to each run row.
@@ -130,6 +132,7 @@ def snapshot(
         ),
         "spend_sources": dict(_UNKNOWN_SPEND_SOURCES) if spend_sources is None else spend_sources,
         "budget": dict(_NONE_BUDGET) if budget is None else budget,
+        "epics": list(epics),
     }
 
 
@@ -467,6 +470,39 @@ def _initiative_progress(rows: list[dict], initiative: str) -> tuple[int, int, s
     landed = sum(1 for ok in landed_flags.values() if ok)
     current = next((phase for phase in phases if not landed_flags[phase]), phases[-1] if phases else None)
     return landed, len(phases), current
+
+
+def _epics_v1(rows: list[dict], definitions: Mapping[str, Mapping] | None = None) -> list[dict]:
+    """The feed's `epics`: one record per epic that has member initiatives, sorted by epic id, finished or not.
+    An initiative is landed when it has phases and all of them landed. `definitions` maps an epic id to its
+    `title`; the id is the title when none is given."""
+    from core.epics import rollup  # lazy: core sits beside agent_tools in one venv
+
+    initiatives = sorted((row for row in rows if row.get("kind") == "initiative" and row.get("initiative")), key=lambda r: r["initiative"])
+    members = {row["initiative"]: queue_rows.epic_of_row(row) for row in initiatives}
+    progress = {i: _initiative_progress(rows, i) for i in members}
+    landed = [i for i, (done, total, _) in progress.items() if total > 0 and done == total]
+    # Members may name different branches; the epic takes the first one set, in initiative-id order.
+    branches: dict[str, str] = {}
+    for row in initiatives:
+        branch = queue_rows.target_branch_of_row(row)
+        epic = members[row["initiative"]]
+        if epic is not None and branch is not None:
+            branches.setdefault(epic, branch)
+    defs = {
+        epic: {"title": (definitions or {}).get(epic, {}).get("title"), "target_branch": branches.get(epic)}
+        for epic in set(members.values()) - {None}
+    }
+    return [
+        {
+            **{key: record[key] for key in ("id", "title", "target_branch", "landed", "total", "complete")},
+            "initiatives": [
+                {**entry, "phases_landed": progress[entry["id"]][0], "phases_total": progress[entry["id"]][1]}
+                for entry in record["initiatives"]
+            ],
+        }
+        for record in rollup(members, landed, defs)
+    ]
 
 
 def _configured_land_at(rows: Sequence[Mapping], initiative: str) -> str:
@@ -1529,4 +1565,5 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
         spend_split=activity["spend_split"],
         spend_sources=activity["spend_sources"],
         budget=_budget_edge(runs_dir, at),
+        epics=_epics_v1(task_rows),
     )
