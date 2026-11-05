@@ -207,6 +207,7 @@ runs_stop = _LazyModule("agent_tools.runs_stop")
 runs_stranded = _LazyModule("agent_tools.runs_stranded")
 base_branch = _LazyModule("agent_tools.base_branch")
 land_checkout_guard = _LazyModule("agent_tools.land_checkout_guard")
+phase_status = _LazyModule("agent_tools.phase_status")
 repo_clone = _LazyModule("agent_tools.repo_clone")
 land_manual = _LazyModule("agent_tools.land_manual")
 runs_top = _LazyModule("agent_tools.runs_top")
@@ -1571,6 +1572,42 @@ def _land_branches(repo: Path, record: dict, default_branch: str) -> dict[str, l
         if out.returncode == 0:
             branches[b] = [line for line in out.stdout.splitlines() if line]
     return branches
+
+
+def _land_branch_counts(repo: Path, record: dict, default_branch: str, branches: dict[str, list[str]]) -> dict[str, dict[str, int]]:
+    """Edge. Per candidate branch git resolves, `ahead` and `behind` from `rev-list --left-right --count
+    <base>...<branch>` (raw, patch-equivalent commits included) and `unique`, the commits `_land_branches` kept."""
+    counts: dict[str, dict[str, int]] = {}
+    for b in branches:
+        out = subprocess.run(["git", "-C", str(repo), "rev-list", "--left-right", "--count", f"{default_branch}...{b}"],
+                             capture_output=True, text=True)
+        behind, _, ahead = out.stdout.partition("\t")
+        if out.returncode == 0 and behind.strip().isdigit() and ahead.strip().isdigit():
+            counts[b] = {"ahead": int(ahead), "behind": int(behind), "unique": len(branches[b])}
+    return counts
+
+
+def _phase_done_fact(statuses: Sequence[str], validated: bool) -> bool:
+    return phase_status.phase_status(statuses, validated) == "done"
+
+
+def _land_phase_done(runs_dir: Path, run_id: str, record: dict) -> bool:
+    """Edge. Is the task's phase done: its tickets all settled and its manifest's `phase_verdict.goal_met` true
+    (the key `phase_validate` writes). A missing initiative, unreadable items or no manifest give False.
+    Items come from the files, never the store: the fact only orders the branch choice, and a store read here
+    would add a `task_state` call ahead of the lease's own re-read."""
+    initiative, phase = record.get("initiative"), record.get("phase")
+    if not initiative or not phase:
+        return False
+    items, _ = _phase_items(runs_dir.parent / "work", initiative, phase, runs_dir=runs_dir, land_mode="files")
+    if items is None:
+        return False
+    try:
+        manifest = _land_phase_record(runs_dir, run_id, phase)[0] or {}
+    except (OSError, ValueError):
+        return False
+    validated = (manifest.get("phase_verdict") or {}).get("goal_met") is True
+    return _phase_done_fact([str(i.get("status")) for i in items], validated)
 
 
 def _phase_task_facts(repo: Path, phase_branch: str, items: list[dict], task_records: list[dict]) -> list[dict] | None:
@@ -3468,7 +3505,9 @@ def _runs_land(a: argparse.Namespace) -> int:
         scope, reference = _land_reference(profile, str(runs_dir.parent), record, item_id, issue, repo, sync)
         plan_steps = land.land_plan(record, branches, default_branch, repo_facts,
                                     tracker=_resolved_tracker(profile, runs_dir), issue=issue,
-                                    scope=scope, reference=reference)
+                                    scope=scope, reference=reference,
+                                    phase_done=_land_phase_done(runs_dir, run_id, record),
+                                    compared=_land_branch_counts(repo, record, default_branch, branches))
         steps = _land_enrich(plan_steps, path=searched, worktree_root=a.worktree_root, item_path=item_path,
                               workspace=str(runs_dir.parent), item_id=item_id,
                               profile=str(_profile_path(a)), runs_dir=str(runs_dir), umbrella=profile.get("umbrella_dir"))
