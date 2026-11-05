@@ -6114,12 +6114,14 @@ Coxswain is in beta — versions may change between releases
 
 <h1 id="the-epic-driver">The epic driver</h1>
 <p>The epic driver is not a graph. It is <code>harness/epic.py</code>, the code that
-<code>cox route launch epic</code> starts, and it holds no <code>SPEC</code>. It walks a filed
-initiative phase by phase. For each phase it branches from the parent
-phase's head, runs <code>lifecycle</code> once per ready task, applies and checks
-each patch in a worktree the harness owns, runs <code>validate</code> over the
-phase, gates the phase once, and records it. A task that reaches its
-attempt cap goes to <code>triage-quarantine</code>. Nothing it does merges to a
+<code>cox route launch epic</code> starts, and it holds no <code>SPEC</code>. It computes waves
+of phases from the phase graph of a filed initiative. A phase sits in a
+wave once all of its parent phases sit in earlier waves. Independent
+phases in a wave run together, one lane each. A phase opens only once
+every parent phase is complete, and it branches from its parent phase's
+head. Inside a phase, ready tasks run in parallel up to <code>max_parallel</code> or
+the usage headroom. Each phase ends with one record. A task that reaches
+its attempt cap goes to <code>triage-quarantine</code>. Nothing it does merges to a
 default branch: what lands is phase branches, task pull requests and
 proposals.</p>
 <p>The driver runs one initiative. Epic is its historical name, kept in the
