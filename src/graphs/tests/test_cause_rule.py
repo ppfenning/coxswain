@@ -95,6 +95,12 @@ def test_kind_no_work_is_ticket():
     assert classify_cause("no_work", "nothing to build") == "ticket"
 
 
+def test_a_stale_base_is_harness_while_no_work_stays_ticket():
+    reason = "t1: the build base predates files the ticket needs: src/a.py"
+    assert classify_cause("stale_base", reason) == "harness"
+    assert classify_cause("no_work", reason) == "ticket"
+
+
 def test_no_matching_rule_returns_none():
     assert classify_cause("refused", "the reviewer asked for changes") is None
 

@@ -70,6 +70,7 @@ the printed line (`quarantined task [<kind>]: <id> — <reason>`), and `record_a
 | `no_work`    | nothing produced: budget death, attempt cap, handoff incomplete | `:763`, `:856`, plan/budget paths |
 | `unverified` | approved chain, validator unsatisfied — PATCH KEPT    | `:1011`                              |
 | `infra`      | nothing ran: worktree/branch failure; OR a non-build node (review/adversary/arbitrate/handoff) raised mid-round with a build already in hand — PATCH KEPT | `_open_phase_worktree` `:276` callers; `_run_phase`'s per-task loop on a `failed_node` result |
+| `stale_base` | nothing produced: the build base lacked a file the ticket names; cause `harness`; no patch kept | not wired yet |
 
 `unverified` never discards: the task record keeps `build.patch` (it already does) and the phase record entry
 carries `"patch_kept": true` so `cox runs land` can offer it. The worktree/branch-failure shape of `infra` is
