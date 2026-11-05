@@ -421,6 +421,58 @@ cox route chair release
 With a shared Postgres store, any machine on the network can take the
 chair. [Several machines](several-machines.md) shows how to set that up.
 
+## Lending the routine ticks
+
+With nothing lent, a standby loop does nothing while a session holds the
+lease. That is how it has always worked. You can change it for as long as you
+hold the chair.
+
+To lend the routine ticks to the loop, run this from the session that holds
+the lease:
+
+```sh
+cox chair attach --lend-routine
+```
+
+To take them back:
+
+```sh
+cox chair attach --recall-routine
+```
+
+The two flags cannot be given together. Both act on the live holder only.
+
+The lend is a mark on the lease record, the `routine_lent` key in
+`chair.json`. Taking the chair never sets it. The mark dies with the holder.
+When you release the chair or lose it, the next holder starts with nothing
+lent.
+
+While the mark is set, the loop still reports `standby`. It also plans the
+routine ticks and nothing else. Launches, retries and rescues stay with you.
+
+The loop relaunches an exited epic that has ready, unquarantined tasks. It
+relaunches on the base the epic was launched with. It never relaunches while
+a run for that initiative is alive.
+
+The loop merges a fully approved level into the ticket branch once the repo
+checks pass. It pushes only on a pass. When a check fails, it leaves the
+level alone.
+
+The planner allows these routine kinds and no others:
+
+- `relaunch` starts an exited epic again, as above.
+- `clear_branches` clears the old branches before a relaunch.
+- `rebase_phase` rebases a phase just before its relaunch.
+- `fetch` brings a remote run's branches home before anything builds on them.
+- `fetch_exit` names a remote run that exited and has not been fetched.
+- `land_phase` merges a fully approved level.
+- `needs_chair` raises something for you to read.
+- `waiting` reports an initiative blocked on other work.
+- `deferred` reports a phase whose land is held until a later time.
+
+Quarantines, budget stops and anything that needs a decision stay with you.
+They show in the inbox.
+
 ## Rescue
 
 A build can be quarantined for a harness reason and still keep its patch.

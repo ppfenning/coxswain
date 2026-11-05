@@ -12698,6 +12698,26 @@ def _pid_command(pid: int) -> str:
     return done.stdout.strip() if done.returncode == 0 else ""
 
 
+def _chair_attach_lend(a: argparse.Namespace, on: bool, clock: Callable[[], datetime.datetime] | None = None) -> int:
+    """Edge. Lend or recall the routine ticks on chair.json; only the live holder may, anyone else is refused with exit 1."""
+    _profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
+    if refuse_rc is not None:
+        return refuse_rc
+    host = socket.gethostname()
+    with chair.locked(runs_dir):
+        record, read_rc = _leader_read_or_refuse(runs_dir)
+        if read_rc is not None:
+            return 1
+        now = (clock or (lambda: datetime.datetime.now(datetime.UTC)))()
+        state = chair.liveness(record, _leader_pid_alive(record), now, host, _leader_heartbeat_minutes())
+        if record is None or state != "live" or not chair.is_caller_holder(record, os.environ, host):
+            print(f"chair: not lent: this session is not the live holder (lease {state})")
+            return 1
+        chair.write(runs_dir, chair.lend_routine(record, on))
+    print("chair: routine ticks lent" if on else "chair: routine ticks recalled")
+    return 0
+
+
 def _chair_attach(
     a: argparse.Namespace,
     read_row: Callable[[Path], dict | None] | None = None,
@@ -12707,7 +12727,11 @@ def _chair_attach(
 ) -> int:
     """The explicit holder check. Reads the lease, this host, the clock and the pid; `chair_holder_verdict` decides.
 
-    Exit 0 and the holder line when a loop is live; exit 1 and the reason when none is. It never writes the lease."""
+    Exit 0 and the holder line when a loop is live; exit 1 and the reason when none is. It writes only under
+    `--lend-routine` and `--recall-routine`, through `_chair_attach_lend`."""
+    lend, recall = getattr(a, "lend_routine", False), getattr(a, "recall_routine", False)
+    if lend or recall:
+        return _chair_attach_lend(a, bool(lend), clock)
     _profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
     if refuse_rc is not None:
         return refuse_rc
@@ -12869,9 +12893,18 @@ CHAIR_COMMANDS = [
     ),
     commands.Command(
         "attach", "chair", "say whether a live chair loop holds the lease; exit 0 if so, 1 if not",
-        (commands.Arg(("--profile",), {"help": "the routing profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),),
+        (
+            commands.Arg(("--profile",), {"help": "the routing profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
+            commands.Arg(("--lend-routine",), {"action": "store_true", "help": "mark the routine ticks lent in chair.json; the live holder only"}),
+            commands.Arg(("--recall-routine",), {"action": "store_true", "help": "remove the lent mark from chair.json; the live holder only"}),
+        ),
         "agent_tools.cli:_chair_attach", False, (),
-        description="Reads the chair lease and the loop's last tick.\nIt never takes, steals, releases or writes the lease.",
+        description=(
+            "Reads the chair lease and the loop's last tick.\n"
+            "It writes only under --lend-routine and --recall-routine, which set or clear routine_lent in chair.json for the live holder.\n"
+            "It never takes, steals or releases the lease."
+        ),
+        exclusive=("--lend-routine", "--recall-routine"),
     ),
     commands.Command(
         "answer", "chair", "answer an open decision with one of its options",
