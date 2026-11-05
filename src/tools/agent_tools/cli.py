@@ -189,6 +189,7 @@ route_edit = _LazyModule("agent_tools.route_edit")
 route_guard = _LazyModule("agent_tools.route_guard")
 route_hold = _LazyModule("agent_tools.route_hold")
 route_import = _LazyModule("agent_tools.route_import")
+route_reach = _LazyModule("agent_tools.route_reach")
 route_remove = _LazyModule("agent_tools.route_remove")
 route_requeue = _LazyModule("agent_tools.route_requeue")
 route_sync = _LazyModule("agent_tools.route_sync")
@@ -5208,6 +5209,12 @@ def _route_file_from_intake(a: argparse.Namespace, ws: Path, profile: dict) -> i
     if not _is_git_checkout_path(repo, home):
         print(_not_a_checkout_message(repo))
         return 2
+    # Checked on the file as authored: `_intake_with_repo` below round-trips the frontmatter through a reader that
+    # keeps the quotes in `["~/x"]`, and the launch never sees that copy.
+    reach_refusal = route_reach.launch_text_refusal(intake_text)
+    if reach_refusal:
+        print(f"routing: {reach_refusal}")
+        return 2
     if repo != typed:
         # A redirected repo is written the way `route file --repo` writes it, in the initiative and the archived intake.
         repo_text = route.repo_field(repo, home)
@@ -5311,6 +5318,11 @@ def _route_file(a: argparse.Namespace) -> int:
         body = ""
     try:
         if a.intake:
+            # `route.intake_file` writes the title when there is no body, and the launch reads what was written.
+            reach_refusal = route_reach.launch_reach_refusal(body or a.title, {})
+            if reach_refusal:
+                print(f"routing: {reach_refusal}")
+                return 2
             duplicate = card_keys.find_duplicate(a.title, _open_issues(ws))
             if duplicate is not None and not a.force:
                 print(f"routing: refusing {a.title}: duplicate of issue {duplicate}; pass --force to file it anyway")
