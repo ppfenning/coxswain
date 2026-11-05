@@ -40,7 +40,7 @@ from graphs.delivery.decompose_size import (
     single_ticket_initiative,
 )
 from graphs.delivery.phase_split import split_same_phase_needs
-from graphs.delivery.ticket_lint import Problem, idea_reach_refusal, lint_tickets
+from graphs.delivery.ticket_lint import Problem, heal_idea_reach, lint_tickets
 from graphs.delivery.ticket_lint import lint_refusal_text as _lint_refusal_text
 from runner.decision_log import RouterDecision
 from runner.decision_source import DecisionSource, NoDecisionSource, ask
@@ -344,18 +344,23 @@ def initiative_text(
     home: str | None = None,
     epic: str | None = None,
     target_branch: str | None = None,
+    lint: Sequence[str] = (),
 ) -> str:
     """The `initiative.md` shape every hand-written initiative in the workspace carries.
 
-    Raises ContractViolation naming the initiative when its title spans more than one line.
+    A non-empty `lint` adds a `lint:` block list to the frontmatter. Raises ContractViolation naming the
+    initiative when its title spans more than one line.
     """
     if "\n" in str(idea.get("title") or ""):
         raise ContractViolation(f"initiative {idea.get('id')} has a multi-line title; a title is one line")
     goal_lines = "\n".join(f"- {phase_id}: {goals.get(phase_id, '')}" for phase_id in phases)
     intake_line = f"intake: {_scalar(intake)}\n" if intake else ""
-    size_lines = "".join(f"{key}: {_scalar(size[key])}\n" for key in ("size", "size_reason", "size_source")) if size else ""
+    size_lines = (
+        "".join(f"{key}: {_scalar(size[key])}\n" for key in ("size", "size_reason", "size_source")) if size else ""
+    )
     carried = (("epic", epic), ("target_branch", target_branch))
     carry_lines = "".join(f"{key}: {_scalar(value)}\n" for key, value in carried if value is not None)
+    lint_lines = "lint:\n" + "".join(f"  - {_scalar(note)}\n" for note in lint) if lint else ""
     return (
         "---\n"
         f"id: {_scalar(idea.get('id'))}\n"
@@ -365,6 +370,7 @@ def initiative_text(
         f"{intake_line}"
         f"{size_lines}"
         f"{carry_lines}"
+        f"{lint_lines}"
         "---\n\n"
         f"{idea.get('why', '')}\n\n"
         "PHASE GOALS, each judged against ITS OWN line:\n"
@@ -386,7 +392,10 @@ def resolve_surfaces(surfaces: Sequence[str], tree: Sequence[Mapping[str, Any]])
         if surface.endswith("/") and any(str(row.get("path")).startswith(surface) for row in tree):
             resolved.append(surface)  # a directory surface names the folder, not the first file found under it
             continue
-        hit = next((str(row.get("path")) for row in tree if surface == row.get("path") or surface in str(row.get("path"))), None)
+        hit = next(
+            (str(row.get("path")) for row in tree if surface == row.get("path") or surface in str(row.get("path"))),
+            None,
+        )
         (resolved if hit else unresolved).append(hit or surface)
     return resolved, unresolved
 
@@ -400,7 +409,7 @@ def repo_listing(repo: str) -> list[dict[str, str]]:
         out = subprocess.run(
             ["git", "-C", str(root), "ls-files"], capture_output=True, text=True, timeout=30, check=True
         ).stdout
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return []
     return [{"repo": repo, "path": line} for line in out.splitlines() if line]
 
@@ -480,7 +489,10 @@ def _refused_surfaces(tasks: Sequence[Mapping[str, Any]], problems: Sequence[Pro
         for t in tasks
         if str(t["id"]) in refused
     ]
-    return "Surfaces of the refused tasks as they stand. A correction names one of them exactly as written:\n" + "\n".join(lines)
+    return (
+        "Surfaces of the refused tasks as they stand. A correction names one of them exactly as written:\n"
+        + "\n".join(lines)
+    )
 
 
 def _contract_fixture_rule(
@@ -559,6 +571,15 @@ def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     except yaml.YAMLError:
         loaded = None
     return (loaded if isinstance(loaded, dict) else {}), "\n".join(lines[close + 1 :])
+
+
+def _frontmatter_block(text: str) -> str:
+    """The leading `---` block of `text`, delimiters and line endings included; empty when there is none."""
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
+        return ""
+    close = next((i for i, line in enumerate(lines) if i and line.strip() == "---"), None)
+    return "" if close is None else "".join(lines[: close + 1])
 
 
 def _reach_allow(args: Mapping[str, Any], idea_frontmatter: Mapping[str, Any]) -> list[str]:
@@ -642,9 +663,7 @@ def _tests_replacement(surface: str, tree: Sequence[Mapping[str, Any]]) -> str |
     )
 
 
-def _mark_new_surfaces(
-    tasks: Sequence[Mapping[str, Any]], tree: Sequence[Mapping[str, Any]]
-) -> list[dict[str, Any]]:
+def _mark_new_surfaces(tasks: Sequence[Mapping[str, Any]], tree: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """New task dicts; a path-shaped surface matching no tree path gets ' (new)'.
 
     The parent directory must exist in the tree (some path starts with it plus
@@ -659,7 +678,9 @@ def _mark_new_surfaces(
         parent = surface.rsplit("/", 1)[0] if "/" in surface else ""
         if not parent or any(path.startswith(parent + "/") for path in paths):
             return surface + _NEW
-        raise ContractViolation(f"{task_id}: {surface}: not in the checkout and its parent directory {parent} is missing")
+        raise ContractViolation(
+            f"{task_id}: {surface}: not in the checkout and its parent directory {parent} is missing"
+        )
 
     return [dict(task, surfaces=[mark(task["id"], s) for s in task.get("surfaces") or []]) for task in tasks]
 
@@ -687,9 +708,7 @@ def _validate_plan_surfaces(
         for surface in surfaces:
             candidate = surface
             eligible = (
-                candidate in still_prose
-                and not candidate.endswith(" (new)")
-                and _looks_like_a_surface(candidate)
+                candidate in still_prose and not candidate.endswith(" (new)") and _looks_like_a_surface(candidate)
             )
             if not eligible:
                 new_surfaces.append(surface)
@@ -1006,15 +1025,17 @@ def _plan_from_output(
         if initiative_id
         else moves
     )
-    tasks = [dict(t, needs=list(t.get("needs") or []), surfaces=list(t.get("surfaces") or [])) for t in decomposition.get("tasks") or []]
+    tasks = [
+        dict(t, needs=list(t.get("needs") or []), surfaces=list(t.get("surfaces") or []))
+        for t in decomposition.get("tasks") or []
+    ]
     if not tasks:
         raise ContractViolation("decompose returned no tasks; there is nothing to propose")
     if task_ids == "ordinal":
         ordinal_problems = _ordinal_needs_problems(tasks)
         if ordinal_problems:
             raise ContractViolation(
-                "the decomposed graph used a needs key that names no listed task: "
-                + "; ".join(ordinal_problems)
+                "the decomposed graph used a needs key that names no listed task: " + "; ".join(ordinal_problems)
             )
     if initiative_id:
         tasks = [
@@ -1044,19 +1065,21 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
     tree = list(args.get("tree") or [])
     repo_name = str(args.get("repo") or "")
 
-    # A path the idea itself puts outside the repo is refused here, before any model call.
+    # A path the idea itself puts outside the repo is rewritten and noted; only an idea with nothing else is refused, before any model call.
     idea_frontmatter, idea_body = _split_frontmatter(str(idea))
     reach_allow = _reach_allow(args, idea_frontmatter)
     # An empty allow-list is lint_tickets' own default, so it is left unpassed.
     allow_kwargs = {"reach_allow": reach_allow} if reach_allow else {}
-    idea_refusal = idea_reach_refusal(idea_body, tree, repo_name, reach_allow)
-    if idea_refusal is not None:
-        raise LintRefusal(idea_refusal)
+    heal = heal_idea_reach(idea_body, tree, repo_name, reach_allow)
+    if heal.refusal is not None:
+        raise LintRefusal(heal.refusal)
+    # The original frontmatter plus the healed body: no rooted path reaches the model or initiative.md.
+    planned = _frontmatter_block(str(idea)) + heal.text if heal.notes else str(idea)
     carried = _carry(args, idea_frontmatter)
 
     decompose_hints = Hints(judgment="high")
     decompose_prompt = (
-        f"Break this idea into phases and tasks.\n\nIdea: {idea}\nDate: {date}\n\n"
+        f"Break this idea into phases and tasks.\n\nIdea: {planned}\nDate: {date}\n\n"
         "Phases are ordered; tasks within a phase are not necessarily. Draw a "
         "dependency edge ONLY where order genuinely matters — an edge that exists "
         "because the work feels sequential blocks work that could have run in "
@@ -1104,7 +1127,9 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
         if isinstance(verdict, SizeVerdict) and verdict.verdict == "task":
             built = single_ticket_initiative(dict(intake), verdict, set(repo_files))
             if isinstance(built, SizeError):
-                verdict = built  # the task verdict could not become a ticket: the epic path runs, recorded as a fallback
+                verdict = (
+                    built  # the task verdict could not become a ticket: the epic path runs, recorded as a fallback
+                )
             else:
                 single = built
 
@@ -1113,14 +1138,18 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
         entry = _size_ledger_entry(size_record, run_id=str(run_id), date=str(date), took_task_path=single is not None)
         _append_size_ledger(runner, str(run_id), entry)
 
-    raw = single if single is not None else dict(
-        runner.run(
-            role="decompose",
-            hints=decompose_hints,
-            **_decision(source, "decompose", decompose_hints),
-            schema=DECOMPOSE_SCHEMA,
-            context=context,
-            prompt=decompose_prompt,
+    raw = (
+        single
+        if single is not None
+        else dict(
+            runner.run(
+                role="decompose",
+                hints=decompose_hints,
+                **_decision(source, "decompose", decompose_hints),
+                schema=DECOMPOSE_SCHEMA,
+                context=context,
+                prompt=decompose_prompt,
+            )
         )
     )
     # A deterministic rewrite, not a model call. It runs before the adversary,
@@ -1140,7 +1169,7 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
                     "Attack this dependency graph. Your job is to find edges that are "
                     "not real — every one of them serialises work that could have run at "
                     "the same time.\n\n"
-                    f"Idea: {idea}\nPhases: {phases}\nTasks: {plan}\n\n"
+                    f"Idea: {planned}\nPhases: {phases}\nTasks: {plan}\n\n"
                     "For each edge you challenge, say why the dependency does not "
                     "actually hold. Also name any edge that IS real and is missing."
                 ),
@@ -1162,9 +1191,7 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
     if tree:
         tasks, surface_failures = _validate_plan_surfaces(tasks, tree)
         if surface_failures:
-            raise ContractViolation(
-                "plan surface not found in the checkout: " + "; ".join(surface_failures)
-            )
+            raise ContractViolation("plan surface not found in the checkout: " + "; ".join(surface_failures))
         problems = _unresolved_pairs(tasks, tree)
         if problems:
             # An unresolved surface is a decompose defect, never a task to
@@ -1226,9 +1253,7 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
         if tree:
             tasks, surface_failures = _validate_plan_surfaces(tasks, tree)
             if surface_failures:
-                raise ContractViolation(
-                    "plan surface not found in the checkout: " + "; ".join(surface_failures)
-                )
+                raise ContractViolation("plan surface not found in the checkout: " + "; ".join(surface_failures))
             problems = _unresolved_pairs(tasks, tree)
             if problems:
                 raise ContractViolation(surface_problem(problems))
@@ -1266,7 +1291,9 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
             seat, seat_tier, seat_hints, lead = "review_adversary", "deep", None, ""
         elif all(p.rule == "contract" for p in refusals):
             seat, seat_tier, seat_hints = "decompose", None, decompose_hints
-            lead = f"Idea: {idea}\n\nYour task list was refused by ticket lint. Do not break the idea down again.\n\n"
+            lead = (
+                f"Idea: {planned}\n\nYour task list was refused by ticket lint. Do not break the idea down again.\n\n"
+            )
         else:  # pragma: no cover - noted above; kept so a new branch cannot fall through unseated
             raise LintRefusal(_lint_refusal_text(refusals))
         correction = dict(
@@ -1278,8 +1305,7 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
                 schema=UNBUILDABLE_SCHEMA,
                 context=context,
                 prompt=(
-                    lead
-                    + "Ticket lint refused these tasks for reach, coupling or contract. Resolve "
+                    lead + "Ticket lint refused these tasks for reach, coupling or contract. Resolve "
                     "each so the problem no longer holds. A contract refusal is resolved in "
                     "`tasks`: add the contract task, and restate each task of the interface "
                     "with the contract task in its `needs`.\n\n"
@@ -1293,7 +1319,11 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
         added = list(correction.get("tasks") or [])
         if initiative_id:
             added = [
-                dict(t, id=_prefixed(initiative_id, t["id"]), needs=[_prefixed(initiative_id, n) for n in t.get("needs") or []])
+                dict(
+                    t,
+                    id=_prefixed(initiative_id, t["id"]),
+                    needs=[_prefixed(initiative_id, n) for n in t.get("needs") or []],
+                )
                 for t in added
             ]
         known = {str(t["id"]) for t in tasks}
@@ -1324,8 +1354,7 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
         for p in advisories:
             notes.setdefault(p.task, []).append(f"{p.rule}: {p.detail} ({p.fix})")
         tasks = [
-            dict(t, lint=[*(t.get("lint") or []), *notes[str(t["id"])]]) if str(t["id"]) in notes else t
-            for t in tasks
+            dict(t, lint=[*(t.get("lint") or []), *notes[str(t["id"])]]) if str(t["id"]) in notes else t for t in tasks
         ]
 
     # The seat's own structured output sometimes copies an advisory sentence
@@ -1405,7 +1434,7 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
     landing = landing_for(cartridge, "planned")
 
     goals = {str(p.get("id")): str(p.get("goal") or "") for p in decomposition.get("phases") or []}
-    idea_title, idea_repo, idea_body = idea_parts(str(idea))
+    idea_title, idea_repo, idea_body = idea_parts(planned)
     idea_doc = {
         "id": initiative_id or run_id,
         "title": idea_title,
@@ -1424,77 +1453,83 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
         home=str(Path.home()),
         epic=carried.get("epic"),
         target_branch=carried.get("target_branch"),
+        lint=heal.notes,
     )
     initiative_where = "/".join(part for part in (landing, initiative_id) if part)
 
-    proposals = [
-        proposal(
-            cartridge,
-            kind="item_create",
-            target=str(task["id"]),
-            evidence=[
-                {"check": "phase", "output": str(task.get("phase"))},
-                *(
-                    [{"check": "phase correction", "output": task["phase_correction"]}]
-                    if task.get("phase_correction")
-                    else []
-                ),
-                {"check": "depends on", "output": ", ".join(task["needs"]) or "nothing — can start immediately"},
-                {"check": "surfaces", "output": ", ".join(task.get("surfaces") or []) or "none declared"},
-                *(
-                    [{"check": "adversary on the DAG", "output": "adversary edges applied: " + str(challenge.get("summary"))}]
-                    if challenge
-                    else []
-                ),
-                *(
-                    [{"check": "lint", "output": "; ".join(task.get("lint") or [])}]
-                    if task.get("lint")
-                    else []
-                ),
-                *(
-                    {"check": "surface corrected", "output": fix}
-                    for fix in task.get("surface_fixes") or []
-                ),
-                *(
-                    {"check": "needs dropped", "output": f"{task['id']}: dropped {dropped!r}, not a task id in this plan"}
-                    for dropped in task.get("needs_dropped") or []
-                ),
-            ],
-            rationale=_strip_trailing_tag(str(task.get("body") or decomposition.get("rationale", ""))),
-            # The whole item, in the action. The arm sees the proposal and
-            # nothing else, so an action that named only an id would leave it
-            # inventing the title and guessing the initiative — the first live
-            # run proved exactly that. `initiative_id` is optional: absent, the
-            # store root's name is the initiative, as `read_initiative` reads it.
-            suggested_action=_item_action(task, landing=landing, initiative_id=initiative_id),
-        )
-        for task in sorted(tasks, key=lambda t: str(t["id"]))
-    ] + [
-        proposal(
-            cartridge,
-            kind="item_create",
-            target="initiative",
-            evidence=[{"check": "phases", "output": ", ".join(phase_order) or "none"}],
-            rationale=str(decomposition.get("rationale") or ""),
-            suggested_action=f"create {initiative_where}/initiative.md with body =\n{initiative_body}",
-        )
-    ] + (
+    proposals = (
         [
             proposal(
                 cartridge,
-                kind="state_move",
-                target=intake_path,
-                evidence=[{"check": "initiative", "output": f"{initiative_where}/initiative.md"}],
-                rationale="the initiative now exists; the intake file it came from retires out of the queue",
-                suggested_action=(
-                    f"call `cox route file --from-intake {intake_path}` if that CLI is present; otherwise "
-                    f"set {intake_path}'s frontmatter to `initiative: {initiative_id or run_id}` and move it "
-                    f"to `intake/done/{intake_path.rsplit('/', 1)[-1]}`"
-                ),
+                kind="item_create",
+                target=str(task["id"]),
+                evidence=[
+                    {"check": "phase", "output": str(task.get("phase"))},
+                    *(
+                        [{"check": "phase correction", "output": task["phase_correction"]}]
+                        if task.get("phase_correction")
+                        else []
+                    ),
+                    {"check": "depends on", "output": ", ".join(task["needs"]) or "nothing — can start immediately"},
+                    {"check": "surfaces", "output": ", ".join(task.get("surfaces") or []) or "none declared"},
+                    *(
+                        [
+                            {
+                                "check": "adversary on the DAG",
+                                "output": "adversary edges applied: " + str(challenge.get("summary")),
+                            }
+                        ]
+                        if challenge
+                        else []
+                    ),
+                    *([{"check": "lint", "output": "; ".join(task.get("lint") or [])}] if task.get("lint") else []),
+                    *({"check": "surface corrected", "output": fix} for fix in task.get("surface_fixes") or []),
+                    *(
+                        {
+                            "check": "needs dropped",
+                            "output": f"{task['id']}: dropped {dropped!r}, not a task id in this plan",
+                        }
+                        for dropped in task.get("needs_dropped") or []
+                    ),
+                ],
+                rationale=_strip_trailing_tag(str(task.get("body") or decomposition.get("rationale", ""))),
+                # The whole item, in the action. The arm sees the proposal and
+                # nothing else, so an action that named only an id would leave it
+                # inventing the title and guessing the initiative — the first live
+                # run proved exactly that. `initiative_id` is optional: absent, the
+                # store root's name is the initiative, as `read_initiative` reads it.
+                suggested_action=_item_action(task, landing=landing, initiative_id=initiative_id),
+            )
+            for task in sorted(tasks, key=lambda t: str(t["id"]))
+        ]
+        + [
+            proposal(
+                cartridge,
+                kind="item_create",
+                target="initiative",
+                evidence=[{"check": "phases", "output": ", ".join(phase_order) or "none"}],
+                rationale=str(decomposition.get("rationale") or ""),
+                suggested_action=f"create {initiative_where}/initiative.md with body =\n{initiative_body}",
             )
         ]
-        if intake_path
-        else []
+        + (
+            [
+                proposal(
+                    cartridge,
+                    kind="state_move",
+                    target=intake_path,
+                    evidence=[{"check": "initiative", "output": f"{initiative_where}/initiative.md"}],
+                    rationale="the initiative now exists; the intake file it came from retires out of the queue",
+                    suggested_action=(
+                        f"call `cox route file --from-intake {intake_path}` if that CLI is present; otherwise "
+                        f"set {intake_path}'s frontmatter to `initiative: {initiative_id or run_id}` and move it "
+                        f"to `intake/done/{intake_path.rsplit('/', 1)[-1]}`"
+                    ),
+                )
+            ]
+            if intake_path
+            else []
+        )
     )
 
     unblocked = [t["id"] for t in tasks if not t["needs"]]
@@ -1560,27 +1595,64 @@ SPEC = GraphSpec(
     run=run,
     summary="an idea into phases and a task DAG, with the edges attacked before anyone trusts them",
     needs=(
-        Need("idea", flag="--idea", kind="text_or_path",
-             help="the initiative, as prose or a path to a file holding it"),
-        Need("initiative_id", flag="--initiative-id", required=False,
-             help="directory name for the initiative under the work store (default: the store root itself)"),
-        Need("task_ids", flag="--task-ids", required=False, choices=("ordinal",),
-             help="`ordinal` names the graph's own tasks <initiative-id>-t1, -t2, ... (default: slugs from titles)"),
-        Need("repo", flag="--target-repo", required=False,
-             help="the repository the initiative targets, for initiative.md's frontmatter"),
-        Need("budget_usd", flag="--budget-usd", required=False,
-             help="the initiative's budget in dollars, for initiative.md's frontmatter"),
-        Need("tree", flag="--tree", kind="jsonl_file", required=False,
-             help="rows of {repo, path} across the target repo(s); resolves task surfaces to "
-                  "real paths and derives the stack (default: surfaces are not resolved)"),
-        Need("intake_path", flag="--from-intake", required=False,
-             help="path to the intake file this idea came from, when it did; links initiative.md "
-                  "and the intake file both ways"),
-        Need("intake", flag="--intake-json", kind="json_file", required=False,
-             help="JSON object {id, title, body, checks, frontmatter} of the intake; with the `size` role "
-                  "bound, a one-file intake becomes a one-ticket initiative (default: always decompose)"),
-        Need("grants", flag="--grants", kind="json_file", required=False,
-             help="JSON array of commands the build seat's sandbox actually permits, for the "
-                  "ticket-lint grant rule (default: none granted)"),
+        Need(
+            "idea", flag="--idea", kind="text_or_path", help="the initiative, as prose or a path to a file holding it"
+        ),
+        Need(
+            "initiative_id",
+            flag="--initiative-id",
+            required=False,
+            help="directory name for the initiative under the work store (default: the store root itself)",
+        ),
+        Need(
+            "task_ids",
+            flag="--task-ids",
+            required=False,
+            choices=("ordinal",),
+            help="`ordinal` names the graph's own tasks <initiative-id>-t1, -t2, ... (default: slugs from titles)",
+        ),
+        Need(
+            "repo",
+            flag="--target-repo",
+            required=False,
+            help="the repository the initiative targets, for initiative.md's frontmatter",
+        ),
+        Need(
+            "budget_usd",
+            flag="--budget-usd",
+            required=False,
+            help="the initiative's budget in dollars, for initiative.md's frontmatter",
+        ),
+        Need(
+            "tree",
+            flag="--tree",
+            kind="jsonl_file",
+            required=False,
+            help="rows of {repo, path} across the target repo(s); resolves task surfaces to "
+            "real paths and derives the stack (default: surfaces are not resolved)",
+        ),
+        Need(
+            "intake_path",
+            flag="--from-intake",
+            required=False,
+            help="path to the intake file this idea came from, when it did; links initiative.md "
+            "and the intake file both ways",
+        ),
+        Need(
+            "intake",
+            flag="--intake-json",
+            kind="json_file",
+            required=False,
+            help="JSON object {id, title, body, checks, frontmatter} of the intake; with the `size` role "
+            "bound, a one-file intake becomes a one-ticket initiative (default: always decompose)",
+        ),
+        Need(
+            "grants",
+            flag="--grants",
+            kind="json_file",
+            required=False,
+            help="JSON array of commands the build seat's sandbox actually permits, for the "
+            "ticket-lint grant rule (default: none granted)",
+        ),
     ),
 )

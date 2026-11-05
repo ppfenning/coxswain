@@ -5230,6 +5230,16 @@ def _not_a_checkout_message(value: str) -> str:
     return f"route file: refusing, {value} is not a git checkout on this machine"
 
 
+def _reach_refused(refusal: str | None, notes: tuple[str, ...]) -> bool:
+    """Print the refusal and return True when the decompose would refuse; else print one lint line per note."""
+    if refusal:
+        print(f"routing: {refusal}")
+        return True
+    for note in notes:
+        print(f"routing: lint: {note}")
+    return False
+
+
 def _filing_repo_or_refusal(repo: str, profile: dict) -> tuple[str, str | None]:
     """The repo to file against and None, or `repo` and a `routing: ...` refusal."""
     chosen = repo_clone.filing_repo(repo, profile)
@@ -5265,9 +5275,8 @@ def _route_file_from_intake(a: argparse.Namespace, ws: Path, profile: dict) -> i
         return 2
     # Checked on the file as authored: `_intake_with_repo` below round-trips the frontmatter through a reader that
     # keeps the quotes in `["~/x"]`, and the launch never sees that copy.
-    reach_refusal = route_reach.launch_text_refusal(intake_text)
-    if reach_refusal:
-        print(f"routing: {reach_refusal}")
+    heal = route_reach.launch_text_heal(intake_text)
+    if _reach_refused(heal.refusal, heal.notes):
         return 2
     if repo != typed:
         # A redirected repo is written the way `route file --repo` writes it, in the initiative and the archived intake.
@@ -5373,9 +5382,8 @@ def _route_file(a: argparse.Namespace) -> int:
     try:
         if a.intake:
             # `route.intake_file` writes the title when there is no body, and the launch reads what was written.
-            reach_refusal = route_reach.launch_reach_refusal(body or a.title, {})
-            if reach_refusal:
-                print(f"routing: {reach_refusal}")
+            heal = route_reach.launch_reach_heal(body or a.title, {})
+            if _reach_refused(heal.refusal, heal.notes):
                 return 2
             duplicate = card_keys.find_duplicate(a.title, _open_issues(ws))
             if duplicate is not None and not a.force:

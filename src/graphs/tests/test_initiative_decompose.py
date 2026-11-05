@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -15,7 +16,7 @@ import yaml
 
 from graphs._contract import ContractViolation
 from graphs.delivery import initiative_decompose
-from graphs.delivery.ticket_lint import idea_reach_refusal, refusal_reason
+from graphs.delivery.ticket_lint import heal_idea_reach, refusal_reason
 from runner import ScriptedRunner
 from runner.decision_log import RouterDecision
 from runner.tier_resolution import Hints
@@ -226,8 +227,7 @@ def test_ids_and_needs_the_model_already_prefixed_stay_single_prefixed(cart) -> 
     answer = dict(
         DECOMPOSITION,
         tasks=[
-            dict(t, id=f"regatta-{t['id']}", needs=[f"regatta-{n}" for n in t["needs"]])
-            for t in DECOMPOSITION["tasks"]
+            dict(t, id=f"regatta-{t['id']}", needs=[f"regatta-{n}" for n in t["needs"]]) for t in DECOMPOSITION["tasks"]
         ],
     )
     result = initiative_decompose.run(
@@ -411,14 +411,30 @@ def test_a_phase_equidistant_from_two_declared_phases_fails_the_node(cart) -> No
 
 def test_an_approved_unapplied_item_create_diff_returns_its_refusal_reason() -> None:
     diffs = [
-        {"kind": "item_create", "target": "t1", "decision": "approved", "risk": "low", "outcome": "skipped", "applied": False, "edited": False},
+        {
+            "kind": "item_create",
+            "target": "t1",
+            "decision": "approved",
+            "risk": "low",
+            "outcome": "skipped",
+            "applied": False,
+            "edited": False,
+        },
     ]
     assert initiative_decompose.unexecuted_item_create_reason(diffs) == "skipped"
 
 
 def test_an_applied_item_create_diff_leaves_the_run_unflagged() -> None:
     diffs = [
-        {"kind": "item_create", "target": "t1", "decision": "approved", "risk": "low", "outcome": "clean", "applied": True, "edited": False},
+        {
+            "kind": "item_create",
+            "target": "t1",
+            "decision": "approved",
+            "risk": "low",
+            "outcome": "clean",
+            "applied": True,
+            "edited": False,
+        },
     ]
     assert initiative_decompose.unexecuted_item_create_reason(diffs) is None
 
@@ -483,9 +499,7 @@ def test_an_empty_decomposition_is_refused(cart) -> None:
 
 def test_a_team_without_the_decompose_role_is_told_so(cartridge) -> None:
     with pytest.raises(ContractViolation, match="needs the optional role 'decompose'"):
-        initiative_decompose.run(
-            {"run_id": "r", "date": "d", "cartridge": cartridge, "idea": "x"}, ScriptedRunner({})
-        )
+        initiative_decompose.run({"run_id": "r", "date": "d", "cartridge": cartridge, "idea": "x"}, ScriptedRunner({}))
 
 
 def test_it_refuses_without_a_cartridge(cart) -> None:
@@ -609,7 +623,13 @@ def test_a_misplaced_test_surface_is_corrected_to_the_real_tests_path(cart) -> N
     }
     runner = ScriptedRunner({"decompose": decomposition})
     result = initiative_decompose.run(
-        {"run_id": "r", "date": "d", "cartridge": cart, "idea": "x", "tree": [{"repo": "g", "path": "tests/test_route.py"}]},
+        {
+            "run_id": "r",
+            "date": "d",
+            "cartridge": cart,
+            "idea": "x",
+            "tree": [{"repo": "g", "path": "tests/test_route.py"}],
+        },
         runner,
     )
     task = result["tasks"][0]
@@ -744,7 +764,9 @@ def test_a_named_test_with_one_tree_path_is_added_to_surfaces_and_noted() -> Non
 
 
 def test_a_named_path_the_tree_lacks_is_added_as_new() -> None:
-    out = initiative_decompose.with_named_artifacts(_task("Add tests/test_fresh.py for epic.py.", ["epic.py"]), ARTIFACT_TREE)
+    out = initiative_decompose.with_named_artifacts(
+        _task("Add tests/test_fresh.py for epic.py.", ["epic.py"]), ARTIFACT_TREE
+    )
     assert out["surfaces"] == ["epic.py", "tests/test_fresh.py (new)"]
 
 
@@ -826,7 +848,9 @@ def test_a_directory_surface_is_kept_as_the_directory() -> None:
 def test_a_reach_problem_comes_back_through_apply_corrections_as_a_refusal(cart) -> None:
     decomposition = {
         **DECOMPOSITION,
-        "tasks": [{"id": "t1", "phase": "p1", "title": "a", "body": "b", "needs": [], "surfaces": ["~/scratch/notes.md"]}],
+        "tasks": [
+            {"id": "t1", "phase": "p1", "title": "a", "body": "b", "needs": [], "surfaces": ["~/scratch/notes.md"]}
+        ],
     }
     correction = {
         "corrections": [{"task": "t1", "surface": "~/scratch/notes.md", "replacement": "graphs/notes.py"}],
@@ -845,7 +869,16 @@ def test_a_body_sourced_reach_problem_rides_on_the_ticket_even_with_a_correction
     """The correction schema only rewrites `surfaces`; a path named in prose has nothing to match, so it is a note."""
     decomposition = {
         **DECOMPOSITION,
-        "tasks": [{"id": "t1", "phase": "p1", "title": "a", "body": "notes live at ~/scratch/notes.md", "needs": [], "surfaces": []}],
+        "tasks": [
+            {
+                "id": "t1",
+                "phase": "p1",
+                "title": "a",
+                "body": "notes live at ~/scratch/notes.md",
+                "needs": [],
+                "surfaces": [],
+            }
+        ],
     }
     correction = {
         "corrections": [{"task": "t1", "surface": "~/scratch/notes.md", "replacement": "graphs/notes.py"}],
@@ -929,13 +962,20 @@ def test_a_grant_and_a_reach_hit_go_to_the_rewrite_then_the_adversary_correction
     cart["skills"]["review_adversary"] = "acme-skills:review-adversary"
     runner = ScriptedRunner(
         {
-            "decompose": [_one_ticket(RUFF_BODY, ["~/scratch/notes.md"]), _one_ticket(PYTEST_BODY, ["~/scratch/notes.md"])],
+            "decompose": [
+                _one_ticket(RUFF_BODY, ["~/scratch/notes.md"]),
+                _one_ticket(PYTEST_BODY, ["~/scratch/notes.md"]),
+            ],
             "review_adversary": [ACCEPTED, ACCEPTED, correction],
         }
     )
     result = initiative_decompose.run({**GRANT_ARGS, "cartridge": cart}, runner)
     assert [c["role"] for c in runner.calls] == [
-        "decompose", "review_adversary", "decompose", "review_adversary", "review_adversary",
+        "decompose",
+        "review_adversary",
+        "decompose",
+        "review_adversary",
+        "review_adversary",
     ]
     assert "t1: reach" in runner.calls[-1]["prompt"]
     task = next(t for t in result["tasks"] if t["id"] == "t1")
@@ -1033,7 +1073,8 @@ def test_a_graphs_ticket_naming_its_own_new_files_carries_no_cross_repo_lint(car
 def test_a_tools_ticket_naming_a_graphs_file_carries_the_cross_repo_reason(cart) -> None:
     result = _decompose_for(cart, "coxswain-tools", ["harness/cli.py"])
     assert any(
-        n.startswith("cross_repo: names harness/cli.py, which lives in graphs") and "[unresolved after the rewrite]" in n
+        n.startswith("cross_repo: names harness/cli.py, which lives in graphs")
+        and "[unresolved after the rewrite]" in n
         for n in _lint_of(result, "t1")
     )
 
@@ -1053,7 +1094,16 @@ def test_a_title_carrying_a_colon_round_trips_through_yaml(cart) -> None:
 def test_a_body_ending_in_a_closing_tag_is_written_without_it(cart) -> None:
     decomposition = {
         **DECOMPOSITION,
-        "tasks": [{"id": "t1", "phase": "p1", "title": "a", "body": "the rationale text\n</content>", "needs": [], "surfaces": []}],
+        "tasks": [
+            {
+                "id": "t1",
+                "phase": "p1",
+                "title": "a",
+                "body": "the rationale text\n</content>",
+                "needs": [],
+                "surfaces": [],
+            }
+        ],
     }
     result = decompose(cart, decomposition)
     ticket = next(p for p in result["proposals"] if p["target"] == "t1")
@@ -1215,7 +1265,9 @@ CONTRACT = _settings_task("t0", "contract", "tools", surfaces=["fixtures/setting
 def _contract_run(cart, correction_tasks, **args):
     correction = {"corrections": [], "tasks": correction_tasks, "summary": "added the contract task"}
     cart["skills"]["review_adversary"] = "acme-skills:review-adversary"
-    runner = ScriptedRunner({"decompose": {**DECOMPOSITION, "tasks": [PRODUCER, CONSUMER]}, "review_adversary": [ACCEPTED, correction]})
+    runner = ScriptedRunner(
+        {"decompose": {**DECOMPOSITION, "tasks": [PRODUCER, CONSUMER]}, "review_adversary": [ACCEPTED, correction]}
+    )
     base = {"run_id": "r", "date": "d", "cartridge": cart, "idea": "x", "tree": SETTINGS_TREE}
     return runner, initiative_decompose.run({**base, **args}, runner)
 
@@ -1269,7 +1321,10 @@ def test_a_plan_inside_one_repository_gets_no_contract_demand(cart) -> None:
     result = initiative_decompose.run({"run_id": "r", "date": "d", "cartridge": cart, "idea": "x"}, runner)
     assert [c["role"] for c in runner.calls] == ["decompose", "review_adversary"]
     assert not any("Ticket lint refused" in c["prompt"] for c in runner.calls)
-    assert {t["id"]: (t["side"], t["needs"]) for t in result["tasks"]} == {"t1": ("producer", []), "t2": ("consumer", [])}
+    assert {t["id"]: (t["side"], t["needs"]) for t in result["tasks"]} == {
+        "t1": ("producer", []),
+        "t2": ("consumer", []),
+    }
 
 
 INTAKE = {
@@ -1331,7 +1386,10 @@ def _without_size_lines(result: dict) -> dict:
     return {
         **result,
         "proposals": [
-            dict(p, suggested_action="\n".join(ln for ln in p["suggested_action"].split("\n") if not ln.startswith("size")))
+            dict(
+                p,
+                suggested_action="\n".join(ln for ln in p["suggested_action"].split("\n") if not ln.startswith("size")),
+            )
             if p["target"] == "initiative"
             else p
             for p in result["proposals"]
@@ -1340,7 +1398,9 @@ def _without_size_lines(result: dict) -> dict:
 
 
 def test_frontmatter_size_epic_overrides_a_task_verdict(cart) -> None:
-    _, runner = _sized(cart, {"size": TASK_VERDICT, "decompose": DECOMPOSITION}, dict(INTAKE, frontmatter={"size": "epic"}), tree=[])
+    _, runner = _sized(
+        cart, {"size": TASK_VERDICT, "decompose": DECOMPOSITION}, dict(INTAKE, frontmatter={"size": "epic"}), tree=[]
+    )
     assert _roles(runner) == ["size", "decompose"]
 
 
@@ -1353,13 +1413,17 @@ def test_frontmatter_size_task_overrides_an_epic_verdict_that_named_surfaces(car
 
 
 def test_frontmatter_size_task_on_an_epic_verdict_with_no_surfaces_cannot_build_a_ticket_and_runs_epic(cart) -> None:
-    _, runner = _sized(cart, {"size": EPIC_VERDICT, "decompose": DECOMPOSITION}, dict(INTAKE, frontmatter={"size": "task"}), tree=[])
+    _, runner = _sized(
+        cart, {"size": EPIC_VERDICT, "decompose": DECOMPOSITION}, dict(INTAKE, frontmatter={"size": "task"}), tree=[]
+    )
     assert _roles(runner) == ["size", "decompose"]
 
 
 def test_a_malformed_verdict_or_a_bad_override_falls_back_to_the_epic_path(cart) -> None:
     for verdict, frontmatter in (({"verdict": "huge", "reason": "No."}, {}), (TASK_VERDICT, {"size": "huge"})):
-        _, runner = _sized(cart, {"size": verdict, "decompose": DECOMPOSITION}, dict(INTAKE, frontmatter=frontmatter), tree=[])
+        _, runner = _sized(
+            cart, {"size": verdict, "decompose": DECOMPOSITION}, dict(INTAKE, frontmatter=frontmatter), tree=[]
+        )
         assert _roles(runner) == ["size", "decompose"]
 
 
@@ -1430,12 +1494,20 @@ def test_the_epic_path_records_size_epic_and_no_skipped_marker(cart, tmp_path) -
         "model",
     )
     assert len(lines) == 1 and "skipped" not in lines[0]
-    assert (lines[0]["size"], lines[0]["size_reason"], lines[0]["size_source"]) == ("epic", "It spans two phases.", "model")
+    assert (lines[0]["size"], lines[0]["size_reason"], lines[0]["size_source"]) == (
+        "epic",
+        "It spans two phases.",
+        "model",
+    )
 
 
 def test_a_frontmatter_override_records_size_source_override(cart, tmp_path) -> None:
     frontmatter, lines = _recorded(
-        cart, {"size": TASK_VERDICT, "decompose": DECOMPOSITION}, tmp_path, dict(INTAKE, frontmatter={"size": "epic"}), tree=[]
+        cart,
+        {"size": TASK_VERDICT, "decompose": DECOMPOSITION},
+        tmp_path,
+        dict(INTAKE, frontmatter={"size": "epic"}),
+        tree=[],
     )
     assert (frontmatter["size"], frontmatter["size_source"], frontmatter["size_reason"]) == (
         "epic",
@@ -1492,26 +1564,89 @@ def _decompose_naming(path: str) -> dict:
     return {**DECOMPOSITION, "tasks": [task]}
 
 
-def test_an_idea_naming_a_path_outside_the_repo_is_refused_before_any_model_call(cart, tmp_path) -> None:
+def _initiative_parts(result: dict) -> tuple[dict, str]:
+    """(frontmatter, body) of the initiative.md the run proposes."""
+    action = next(p for p in result["proposals"] if p["target"] == "initiative")["suggested_action"]
+    _, header, body = action.split("---\n", 2)
+    return yaml.safe_load(header), body
+
+
+def test_an_idea_naming_paths_outside_the_repo_is_rewritten_and_noted_not_refused(cart) -> None:
     runner = ScriptedRunner({"decompose": DECOMPOSITION})
-    idea = f"ship it with {_deploy_script(tmp_path)}"
+    home_path = str(Path.home() / "scratch" / "plan.md")
+    idea = f"mirror ~/repos/sibling-service here and read {home_path} before starting"
+    result = initiative_decompose.run({"run_id": "r", "date": "d", "cartridge": cart, "idea": idea}, runner)
+    frontmatter, body = _initiative_parts(result)
+    assert len(frontmatter["lint"]) == 2
+    assert all(note.startswith("reach: idea named ") for note in frontmatter["lint"])
+    for path in ("~/repos/sibling-service", home_path):
+        assert not any(path in call["prompt"] for call in runner.calls)
+        assert path not in body
+        assert not any(path in str(task["body"]) for task in result["tasks"])
+    assert (
+        "mirror the sibling-service checkout here and read the plan.md file before starting"
+        in runner.calls[0]["prompt"]
+    )
+
+
+def test_an_idea_that_is_only_a_path_is_still_refused_before_any_model_call(cart, tmp_path) -> None:
+    runner = ScriptedRunner({"decompose": DECOMPOSITION})
     with pytest.raises(initiative_decompose.LintRefusal) as caught:
-        initiative_decompose.run({"run_id": "r", "date": "d", "cartridge": cart, "idea": idea}, runner)
+        initiative_decompose.run(
+            {"run_id": "r", "date": "d", "cartridge": cart, "idea": _deploy_script(tmp_path)}, runner
+        )
     assert str(caught.value).startswith("lint-refused: idea reach")
     assert runner.calls == []
 
 
 def test_the_decompose_refusal_is_the_shared_idea_reach_refusal(cart, tmp_path) -> None:
     runner = ScriptedRunner({"decompose": DECOMPOSITION})
-    idea = f"ship it with {_deploy_script(tmp_path)}"
+    idea = _deploy_script(tmp_path)
     with pytest.raises(initiative_decompose.LintRefusal) as caught:
         initiative_decompose.run({"run_id": "r", "date": "d", "cartridge": cart, "idea": idea}, runner)
-    assert str(caught.value) == idea_reach_refusal(idea, [], "")
+    assert str(caught.value) == heal_idea_reach(idea, [], "").refusal
 
 
-def test_an_intake_reach_allow_prefix_lets_the_idea_reach_decompose_and_admits_a_ticket_under_it(cart, tmp_path) -> None:
+def test_a_rewritten_idea_keeps_its_frontmatter_block_and_its_own_reach_allow(cart) -> None:
+    runner = ScriptedRunner({"decompose": DECOMPOSITION})
+    idea = "---\ntitle: Ship it\nreach_allow: [~/deploy]\n---\nship with ~/deploy/run.sh and read ~/repos/other/"
+    result = initiative_decompose.run({"run_id": "r", "date": "d", "cartridge": cart, "idea": idea}, runner)
+    assert "reach_allow: [~/deploy]" in runner.calls[0]["prompt"]
+    assert "~/deploy/run.sh" in runner.calls[0]["prompt"]
+    assert len(_initiative_parts(result)[0]["lint"]) == 1
+
+
+def test_an_idea_with_no_outside_path_gives_the_same_initiative_text_and_no_lint_block(cart) -> None:
+    idea = "add a retry to the parser"
+    result = initiative_decompose.run(
+        {"run_id": "r", "date": "d", "cartridge": cart, "idea": idea}, ScriptedRunner({"decompose": DECOMPOSITION})
+    )
+    frontmatter, _ = _initiative_parts(result)
+    assert "lint" not in frontmatter
+    doc = {"id": "r", "title": idea, "budget_usd": None, "why": idea}
+    plain = initiative_decompose.initiative_text(doc, ["p1"], {"p1": "g"}, "")
+    assert plain == initiative_decompose.initiative_text(doc, ["p1"], {"p1": "g"}, "", lint=())
+    assert "lint:" not in plain
+
+
+def test_initiative_text_writes_each_lint_note_quoted_in_a_block_list() -> None:
+    doc = {"id": "r", "title": "t", "budget_usd": 1, "why": "w"}
+    text = initiative_decompose.initiative_text(doc, ["p1"], {"p1": "g"}, "", lint=('reach: a "b": c', "second"))
+    assert yaml.safe_load(text.split("---\n")[1])["lint"] == ['reach: a "b": c', "second"]
+    assert "lint:\n  - 'reach: a \"b\": c'\n  - second\n---\n" in text
+
+
+def test_an_intake_reach_allow_prefix_lets_the_idea_reach_decompose_and_admits_a_ticket_under_it(
+    cart, tmp_path
+) -> None:
     script = _deploy_script(tmp_path)
-    intake = {"id": "i", "title": "t", "body": "b", "checks": [], "frontmatter": {"reach_allow": [str(tmp_path / "deploy")]}}
+    intake = {
+        "id": "i",
+        "title": "t",
+        "body": "b",
+        "checks": [],
+        "frontmatter": {"reach_allow": [str(tmp_path / "deploy")]},
+    }
     runner = ScriptedRunner({"decompose": _decompose_naming(script)})
     result = initiative_decompose.run(
         {"run_id": "r", "date": "d", "cartridge": cart, "idea": f"ship it with {script}", "intake": intake}, runner
@@ -1611,7 +1746,9 @@ def test_a_bound_adversary_still_gets_the_contract_refusal_with_the_surfaces(car
 def test_a_reach_problem_with_no_adversary_rides_on_the_ticket_without_a_second_ask(cart) -> None:
     plan = {
         **DECOMPOSITION,
-        "tasks": [{"id": "t1", "phase": "p1", "title": "a", "body": "b", "needs": [], "surfaces": ["~/scratch/notes.md"]}],
+        "tasks": [
+            {"id": "t1", "phase": "p1", "title": "a", "body": "b", "needs": [], "surfaces": ["~/scratch/notes.md"]}
+        ],
     }
     runner = ScriptedRunner({"decompose": plan})
     result = initiative_decompose.run({"run_id": "r", "date": "d", "cartridge": cart, "idea": "x"}, runner)

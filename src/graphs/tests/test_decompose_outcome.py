@@ -115,10 +115,10 @@ def test_a_successful_decompose_stores_no_refused(cart, store) -> None:
 
 
 def test_the_real_lint_step_refuses_a_reach_problem_and_the_run_gains_refused(cart, store, monkeypatch) -> None:
-    """No stub of the lint: an idea that reaches outside the repo is the one lint that still stops a decompose, before
-    any model call, and the cli handler stores its first line. A ticket's own reach hit only rides as a note."""
+    """No stub of the lint: an idea that is only a path outside the repo is the one lint that still stops a decompose,
+    before any model call, and the cli handler stores its first line. Any other reach hit only rides as a note."""
     runner = ScriptedRunner({"decompose": REACH})
-    args = {"run_id": "r1", "date": "d", "cartridge": cart, "idea": "notes live at ~/scratch/notes.md"}
+    args = {"run_id": "r1", "date": "d", "cartridge": cart, "idea": "~/scratch/notes.md"}
     with pytest.raises(LintRefusal) as caught:
         initiative_decompose.run(args, runner)
     first = str(caught.value).splitlines()[0].strip()
@@ -298,7 +298,10 @@ def test_the_real_route_file_writer_and_reader_agree_on_a_file_backed_store(tmp_
 def test_a_task_already_in_the_store_keeps_its_row_on_a_second_decompose(store, tmp_path, capsys) -> None:
     expected = expected_for("t1")
     task_file(tmp_path, expected["t1"], "t1")
-    upsert_queue(store.conn, {**parse_item("task", ("demo", "p1", "t1.md"), (tmp_path / expected["t1"]).read_text()), "state": "running"})
+    upsert_queue(
+        store.conn,
+        {**parse_item("task", ("demo", "p1", "t1.md"), (tmp_path / expected["t1"]).read_text()), "state": "running"},
+    )
     in_store, on_disk = settle(expected, tmp_path, store)
     assert (in_store, on_disk) == ({"t1"}, {"t1"})
     assert read_queue(store.conn, "demo")[0]["state"] == "running"
