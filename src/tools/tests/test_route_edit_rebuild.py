@@ -80,10 +80,12 @@ def _record(run):
             "arbitration": {"verdict": "approve"}, "landed": False}
 
 
-def _rebuild(tmp_path, monkeypatch, runs, store=None, **extra):
-    """One forced rebuild of the approved `t1`, with `runs` as the store's run list newest first. Returns the store and the result."""
+def _rebuild(tmp_path, monkeypatch, runs, store=None, store_runs=(), **extra):
+    """One forced rebuild of the approved `t1`, with `runs` as the store's run list newest first and `store_runs` as every run id in it.
+    Returns the store and the result."""
     store = store or _store(monkeypatch, [_approved_row(**extra)])
     monkeypatch.setattr(run_store, "task_run_phases", lambda runs_dir, initiative, task: runs)
+    monkeypatch.setattr(run_store, "run_ids", lambda runs_dir: set(store_runs))
     _file(tmp_path, "work/ship/p1/t1.md", _approved_file(conflict=False))
     result = route_edit.apply_edit(tmp_path, tmp_path, "t1", state="ready", rebuild=True, force=True, live_runs=())
     assert result.code == route_edit.DONE
@@ -99,6 +101,25 @@ def test_a_forced_rebuild_lists_every_run_that_holds_the_task(tmp_path, monkeypa
 def test_a_second_rebuild_keeps_the_runs_the_first_one_listed(tmp_path, monkeypatch):
     store, _ = _rebuild(tmp_path, monkeypatch, [("ship-2", "p1")], rebuilt_from=["ship-1"])
     assert store.rows[0]["extra"]["rebuilt_from"] == ["ship-1", "ship-2"]
+
+
+def test_a_rebuild_lists_an_earlier_run_of_the_initiative_that_holds_no_record_of_the_task(tmp_path, monkeypatch):
+    store, _ = _rebuild(tmp_path, monkeypatch, [("ship-2", "p1")], store_runs={"ship-1", "ship-2"})
+    assert store.rows[0]["extra"]["rebuilt_from"] == ["ship-2", "ship-1"]
+
+
+def test_a_rebuild_does_not_list_a_run_of_another_initiative_sharing_a_prefix(tmp_path, monkeypatch):
+    store, _ = _rebuild(tmp_path, monkeypatch, [("ship-2", "p1")], store_runs={"ship-1", "ship-2", "ship-x-1", "shipyard-3"})
+    assert store.rows[0]["extra"]["rebuilt_from"] == ["ship-2", "ship-1"]
+
+
+def test_superseded_runs_unions_earlier_task_and_initiative_runs_without_duplicates():
+    listed = route_edit.superseded_runs("ship", {"ship-3", "ship-1", "ship-x-1", "other-2"}, ["ship-2", "ship-1"], ["ship-9", "ship-2"])
+    assert listed == ["ship-9", "ship-2", "ship-1", "ship-3"]
+
+
+def test_superseded_runs_is_empty_when_no_run_matches():
+    assert route_edit.superseded_runs("ship", {"shipyard-1", "other-2"}, [], []) == []
 
 
 def test_a_rebuild_of_an_approved_task_no_run_holds_says_it_marked_nothing(tmp_path, monkeypatch):

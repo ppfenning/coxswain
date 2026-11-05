@@ -21,6 +21,7 @@ from agent_tools.chair_facts import (
     lease_facts,
     limits_facts,
     new_missing_repos,
+    quarantine_facts,
     repo_dir_name,
     resolve_idle_stall_minutes,
     stale_checkout_keys,
@@ -384,6 +385,38 @@ def test_a_stranded_row_takes_its_initiative_from_its_run_and_a_live_run_drops_i
     assert stranded(("i",)) == []
 
 
+def _stranded_causes(approved: list | None, phase: str | None = "p1") -> list[str]:
+    stranded = [{"run": "i-3", "task": "s", "phase": phase}]
+    return [q["cause"] for q in quarantine_facts([], stranded, [], set(), lambda i, t: False, approved=approved)]
+
+
+def test_a_stranded_row_whose_task_is_not_approved_in_the_store_is_dropped():
+    assert _stranded_causes([{"id": "other", "initiative": "i", "phase": "p1"}]) == []
+    assert _stranded_causes([]) == []
+
+
+def test_a_stranded_row_whose_task_is_approved_in_the_store_stays_stranded():
+    assert _stranded_causes([{"id": "s", "initiative": "i", "phase": "p1"}]) == ["stranded"]
+
+
+def test_a_stranded_row_with_no_phase_or_an_old_phase_for_an_approved_task_stays_stranded():
+    # `runs_stranded` accepts a record with no phase, and one whose task moved phase; both name an approved task.
+    approved = [{"id": "s", "initiative": "i", "phase": "p1"}]
+    assert _stranded_causes(approved, phase=None) == ["stranded"]
+    assert _stranded_causes(approved, phase="p0") == ["stranded"]
+
+
+def test_omitting_the_approved_tasks_keeps_every_stranded_row():
+    assert _stranded_causes(None) == ["stranded"]
+
+
+def test_an_open_quarantine_with_a_real_cause_survives_an_approved_list_that_lacks_it():
+    opened = [{"initiative": "i", "phase": "p1", "task": "a"}]
+    attempts = [{"initiative": "i", "phase": "p1", "task": "a", "cause": "code"}]
+    (q,) = quarantine_facts(opened, [], attempts, set(), lambda i, t: False, approved=[])
+    assert q["cause"] == "code"
+
+
 def test_a_fake_has_patch_gives_that_value_as_has_patch():
     (kept,) = gather_facts(_deps(has_patch=True, stranded=()), NOW)["quarantines"]
     (dropped,) = gather_facts(_deps(has_patch=False, stranded=()), NOW)["quarantines"]
@@ -688,6 +721,30 @@ def test_rows_drive_ready_intake_quarantined_and_stranded_facts_with_files_ignor
         {"task_id": "b", "initiative": "j", "cause": "code", "harness_failures": 0, "has_patch": False, "rescue_failed": False},
         {"task_id": "c", "initiative": "i", "cause": "stranded", "harness_failures": 0, "has_patch": False, "rescue_failed": False},
     ]
+
+
+def _store_deps(task_state: str):
+    """Store rows with `d` done (so "i" is started), `a` ready and `c` at `task_state`, and a record that says `c` was approved."""
+    rows = [_row("i", "d", "done"), _row("i", "a", "ready"), _row("i", "c", task_state)]
+    return replace(_deps(), queue=lambda: rows, stranded_records=lambda: STRANDED_RECORDS, quarantined=lambda: (), attempts=lambda: ())
+
+
+def test_a_stranded_record_for_a_task_the_store_has_at_ready_makes_no_quarantine_and_the_initiative_relaunches():
+    facts = gather_facts(_store_deps("ready"), NOW)
+    assert facts["quarantines"] == []
+    actions = plan_recover(facts)
+    assert {"kind": "relaunch", "initiative": "i"} in actions
+    assert not [a for a in actions if a["kind"] == "needs_chair"]
+
+
+def test_a_stranded_record_for_a_task_the_store_has_approved_still_makes_the_stranded_quarantine():
+    (q,) = gather_facts(_store_deps("approved"), NOW)["quarantines"]
+    assert (q["task_id"], q["cause"]) == ("c", "stranded")
+
+
+def test_without_store_rows_a_stranded_row_missing_from_the_approved_list_is_kept():
+    # The file readers carry no store state to filter by; `_deps` approves only "a", so "s" is not in its list.
+    assert [q["task_id"] for q in gather_facts(_deps(quarantined=()), NOW)["quarantines"]] == ["s"]
 
 
 def test_an_empty_queue_read_falls_back_to_the_file_readers():

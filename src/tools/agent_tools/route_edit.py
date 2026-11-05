@@ -234,6 +234,13 @@ def rebuild_allowed(state: str | None, extra: dict | None, *, rebuild: bool, for
     return rebuild and ((state == "approved" and (force or marked)) or (state == "ready" and marked))
 
 
+def superseded_runs(initiative: str, run_ids: Collection[str], task_runs: Sequence[str], earlier: Sequence[str]) -> list[str]:
+    """Pure: the runs a rebuild supersedes. `earlier` first, then `task_runs`, then every id `<initiative>-N` in `run_ids`
+    sorted; no duplicates. The prefix rule is the one `run_store.task_run_phases` applies."""
+    of_initiative = sorted(run for run in run_ids if run.rsplit("-", 1)[0] == initiative)
+    return list(dict.fromkeys([*earlier, *task_runs, *of_initiative]))
+
+
 def rebuild_note(conflict: str | None) -> str:
     """Pure: the body note a rebuild appends, naming the recorded conflict (`land conflict with ...`) if there is one."""
     if conflict:
@@ -355,7 +362,7 @@ def _edit_task(
         extra = dict(row.get("extra") or {})
         note = rebuild_note(extra.pop(LAND_CONFLICT_KEY, None))
         runs = [run for run, _ in run_store.task_run_phases(runs_dir, row["initiative"], row["task_id"])]
-        superseded = list(dict.fromkeys([*(extra.get(REBUILT_FROM_KEY) or []), *runs]))
+        superseded = superseded_runs(row["initiative"], run_store.run_ids(runs_dir), runs, extra.get(REBUILT_FROM_KEY) or [])
         marked = {**extra, REBUILT_FROM_KEY: superseded} if superseded else extra
         if not superseded and row.get("state") == "approved":
             unmarked = f"note: no run holds {row.get('task_id')}; its old approval is not marked superseded\n"

@@ -430,11 +430,15 @@ def quarantine_facts(
     live: Collection[str],
     has_patch: Callable[[str, str], bool],
     landing: Sequence[ApprovedTask] = (),
+    approved: Sequence[Row] | None = None,
 ) -> list[QuarantineFacts]:
     """One entry per open quarantine with its newest cause, then the stranded rows those did not name.
 
     `landing` is what `chair_plan_land.planned_tasks` plans this tick. A stranded row for one of those tasks
     that carries a run is left out, since its land handles it; a land that then fails raises its own needs_chair.
+
+    `approved` is the tasks the store has approved, keys id, initiative. A stranded row whose task is not among them
+    is stale, since the store sent it back, and is left out. None keeps every stranded row.
 
     An open quarantine whose attempts name no cause (a store row in state quarantined whose ticket file never got the
     attempt) reports `QUARANTINED_CAUSE`, so the status line never shows it with an empty cause.
@@ -443,10 +447,30 @@ def quarantine_facts(
     opened = list(dict.fromkeys(_key(q) for q in quarantined))
     landed_now = {(t["initiative"], t["phase"], t["id"]) for t in landing if t["run"]}
     # A stranded task that is also an open quarantine keeps the quarantine's newest cause, so it is not sent to the chair as stranded.
-    stuck = [k for k in dict.fromkeys(_key(s) for s in stranded) if k not in opened and k not in landed_now]
+    # Matched on initiative and task id, as `chair_plan_recover._recovery` does: a stranded record's phase can be missing or old.
+    in_store = None if approved is None else {(t["initiative"], t["id"]) for t in approved}
+    stuck = [
+        k for k in dict.fromkeys(_key(s) for s in stranded)
+        if k not in opened and k not in landed_now and (in_store is None or (k[0], k[2]) in in_store)
+    ]
     return [
         *(_quarantine(k, newest_cause(attempts, k) or QUARANTINED_CAUSE, attempts, has_patch) for k in opened if k[0] not in live),
         *(_quarantine(k, STRANDED_CAUSE, attempts, has_patch) for k in stuck if k[0] not in live),
+    ]
+
+
+def store_approved_tasks(rows: Sequence[Row]) -> list[Row]:
+    """The tasks whose store row says approved, keys id, initiative: the `approved` `quarantine_facts` filters by.
+
+    Taken from the same `rows` `stranded_from_rows` reads each stranded row's state from, so the two agree by
+    construction. `gather_facts`'s own `approved` list is a separate read that also closes landed tasks, so it can
+    differ within a tick and is not used here.
+
+    Known gap: `runs_stranded` flags a ready task as stranded so its orphaned run branch is reported. A ready task
+    is never in this list, so in store mode that report is dropped too, whether or not the task was rebuilt."""
+    return [
+        {"id": str(r.get("task_id") or ""), "initiative": str(r.get("initiative") or "")}
+        for r in rows if r.get("kind") == "task" and r.get("state") == "approved"
     ]
 
 
@@ -1119,7 +1143,12 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
     stranded_records = deps.stranded_records() if deps.stranded_records is not None else None
     stranded = stranded_from_rows(rows, list(stranded_records)) if rows and stranded_records is not None else list(deps.stranded())
     intake = intake_paths_from_rows(rows) if rows else list(deps.intake())
-    quarantine = quarantine_facts(quarantined, stranded, deps.attempts(), live, deps.has_patch, planned_tasks(approved, initiatives))
+    # Store mode drops stranded rows for tasks the store does not hold approved (see `store_approved_tasks`, which
+    # also names the gap). File mode carries no store state and filters nothing.
+    quarantine = quarantine_facts(
+        quarantined, stranded, deps.attempts(), live, deps.has_patch, planned_tasks(approved, initiatives),
+        store_approved_tasks(rows) if rows else None,
+    )
     action_rows = list(deps.actions()) if deps.actions is not None else []
     login_hosts = deps.hosts()
     decomposed = dict(deps.decomposed_intake()) if deps.decomposed_intake is not None else {}
