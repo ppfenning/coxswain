@@ -160,7 +160,7 @@ def test_remote_unfetched_history_and_housekeeping_hours_are_wired_not_none(tmp_
 
 
 def test_remote_unfetched_is_wired_to_the_docket_s_initiative_ids(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(cli.chair_read_docket, "read_docket", lambda *a, **k: {"initiatives": [{"id": "alpha"}, {"id": "beta"}]})
+    monkeypatch.setattr(cli.chair_facts, "docket_by_land_at", lambda *a, **k: {"initiatives": [{"id": "alpha"}, {"id": "beta"}]})
     seen: dict = {}
 
     def fake_read(runs_dir, initiatives):
@@ -222,7 +222,7 @@ def test_idle_stall_calls_the_four_readers_and_reads_the_configured_minutes(tmp_
     inputs = configured.facts_deps.idle_stall(now)
     assert (inputs["stall_minutes"], inputs["free_lanes"], inputs["open_signature"], inputs["hosts"][0]["host"]) == (20, 2, "host:h2", "h2")
     assert seen["backlog"] == (tmp_path, "files", now)
-    assert seen["reused"] == ["items", "live", "queued"]
+    assert seen["reused"] == ["items", "land_at", "live", "queued"]
     assert unset.facts_deps.idle_stall(now)["stall_minutes"] == 15
 
 

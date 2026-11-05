@@ -6,8 +6,8 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 from agent_tools import route, run_store
-from agent_tools.chair_facts import empty_decompose_facts
-from agent_tools.chair_read_docket import local_runs, read_docket
+from agent_tools.chair_facts import docket_by_land_at, empty_decompose_facts
+from agent_tools.chair_read_docket import _busy_lanes, local_runs, read_docket
 from agent_tools.chair_read_intake import read_intake
 from agent_tools.chair_read_live import read_live_initiatives
 from agent_tools.chair_read_quarantined import WorkFiles, initiative_files, read_work_items
@@ -152,12 +152,14 @@ def read_idle_backlog(
     actions: Sequence[Item] | None = None,
     queued: Sequence[str] | None = None, items: Sequence[Item] | None = None,
     live: Callable[[Sequence[str]], list[str]] | None = None,
+    land_at: Mapping[str, str] | None = None,
 ) -> IdleBacklog:
     """Edge. Never raises. An unreadable docket gives zero lanes, not every lane free.
 
     `files`, `store_rows` and `actions` stand in for the work-file, store and chair_actions reads when a tick already holds them.
     `queued` (the round's intake paths), `items` (its work items) and `live` (probe ids to live ids) stand in for the intake,
     work-item and live-run reads the same way; None reads them here.
+    `land_at` maps initiative id to its land_at and builds the docket and `blocked_ready`; None keeps every initiative strict.
     `actions` is the windowed `FactsDeps.actions()` rows: a land older than the window no longer counts as progress."""
     runs_dir = ws / "runs"
     now_text = now.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -177,7 +179,13 @@ def read_idle_backlog(
     calls = _safe(lambda: list(run_store.last_call_at(runs_dir, run_ids).values()), [])
     return idle_backlog(
         {
-            "docket": _safe(lambda: read_docket(ws, mode, max_in_flight, lambda: now, files, store_rows), None),
+            "docket": _safe(
+                lambda: (
+                    read_docket(ws, mode, max_in_flight, lambda: now, files, store_rows) if land_at is None
+                    else docket_by_land_at(work, _busy_lanes(runs_dir, now_text), max_in_flight, land_at)
+                ),
+                None,
+            ),
             "items": work,
             "queued": (
                 queued if queued is not None
@@ -188,6 +196,7 @@ def read_idle_backlog(
             "node_calls": [str(c) for c in calls],
             "with_file": with_file,
             "stored": stored,
+            "land_at": land_at or {},
             "decomposed": {},  # no caller wires `FactsDeps.decomposed_intake` yet
             "live": _safe(lambda: live(probe) if live is not None else read_live_initiatives(runs_dir, probe, now_text), []),
         }

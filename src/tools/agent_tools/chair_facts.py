@@ -739,6 +739,24 @@ def land_at_facts(cartridge: Mapping[str, Any], values: Mapping[str, str | None]
     return {i: resolved(i) for i in ids}
 
 
+def docket_by_land_at(
+    items: Sequence[Row], busy_lanes: int, max_in_flight: int, land_at: Mapping[str, str]
+) -> dict[str, Any]:
+    """`docket_from_builder` over `items`, each initiative's summary taken under its own land_at.
+
+    `route.initiative_summaries` takes one land_at, so it runs once per initiative. An id missing from `land_at` reads ticket."""
+    from core.landing import DEFAULT_LAND_AT  # lazy: core sits beside agent_tools in one venv
+
+    summaries = [
+        summary
+        for initiative in sorted({i["initiative"] for i in items})
+        for summary in route.initiative_summaries(
+            [i for i in items if i["initiative"] == initiative], land_at=land_at.get(initiative, DEFAULT_LAND_AT)
+        )
+    ]
+    return chair_read_docket.docket_from_builder(summaries, list(items), busy_lanes, max_in_flight, land_at)
+
+
 def initiative_facts(
     docket: Row,
     live: Collection[str],

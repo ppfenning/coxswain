@@ -1106,9 +1106,9 @@ def _runs_stranded(a: argparse.Namespace) -> int:
     return 0
 
 
-def _waiting_lines(runs_dir: Path, initiative: str, items: list) -> list[str]:
-    """Edge. `route.waiting_lines` for `initiative`, with the remedy `cox runs stranded` prints for each task. A record
-    or workspace that cannot be read leaves the remedy out; it never stops a launch."""
+def _waiting_lines(runs_dir: Path, initiative: str, items: list, land_at: str = "task") -> list[str]:  # "task" is route.DEFAULT_LAND_AT; `route` loads lazily, so not named in a default
+    """Edge. `route.waiting_lines` for `initiative` under `land_at`, with the remedy `cox runs stranded` prints for each
+    task. A record or workspace that cannot be read leaves the remedy out; it never stops a launch."""
     try:
         task_records, stranded_items = _stranded_inputs(runs_dir)
         rows = runs_stranded.stranded(
@@ -1116,7 +1116,7 @@ def _waiting_lines(runs_dir: Path, initiative: str, items: list) -> list[str]:
             lambda repo, branch: _branch_exists(Path(repo), branch), base_branch.base_name, land_manual.is_manual)
     except (OSError, ValueError, KeyError):
         rows = []
-    return route.waiting_lines(items, {row["task"]: row["remedy"] for row in rows if row["remedy"]}, initiative)
+    return route.waiting_lines(items, {row["task"]: row["remedy"] for row in rows if row["remedy"]}, initiative, land_at=land_at)
 
 
 def _pick_work_item(paths: list[str], task: str, initiative: str | None) -> tuple[str | None, int]:
@@ -5974,12 +5974,13 @@ def _route_launch(a: argparse.Namespace) -> int:
     via_rows = False  # a decompose that runs to completion here and writes its plan as store rows
     if a.graph == "epic":
         initiative_id = launch_dir.name
+        launch_land_at = _phase_land_at({}, profile, runs_dir.parent / "work", initiative_id)  # initiative.md, else cartridge, else ticket
         mode = work_state.work_state_mode(_lake_provider(a)[0])
         if mode == "store":
             # The chair is the machine the chair lease names; a lane host reads rows but never exports, since only the chair commits.
             lease = chair_read_lease.read_lease(runs_dir, datetime.datetime.now(datetime.UTC))
             is_chair = route.is_chair_machine(lease["host"], socket.gethostname())
-            rows_code, rows_lines = _launch_rows_then_export(runs_dir, initiative_id, a.repo, is_chair)
+            rows_code, rows_lines = _launch_rows_then_export(runs_dir, initiative_id, a.repo, is_chair, land_at=launch_land_at)
             for line in rows_lines:
                 print(line)
             if rows_code:
@@ -5994,7 +5995,7 @@ def _route_launch(a: argparse.Namespace) -> int:
             return 2
         if held:
             print(f"override: launching {initiative_id} despite blocked {', '.join(held)} (--include-blocked)")
-        for line in _waiting_lines(runs_dir, initiative_id, _stored_work_items(runs_dir.parent, mode)):
+        for line in _waiting_lines(runs_dir, initiative_id, _stored_work_items(runs_dir.parent, mode), launch_land_at):
             print(line)
     # Read before the guard: a claim replaces the record with one that has no `model` key.
     chair_model = _recorded_chair_model(runs_dir)
@@ -7008,9 +7009,11 @@ def _export_board(runs_dir: Path, workspace: Path) -> list[str]:
 def _launch_rows_then_export(
     runs_dir: Path, initiative_id: str, repo: str | None, is_chair: bool,
     read_rows: Callable | None = None, export: Callable[[Path, Path], list[str]] | None = None,
-    fill: Callable[[Path], object] | None = None,
-) -> tuple[int, list[str]]:
+    fill: Callable[[Path], object] | None = None, land_at: str = "task",
+) -> tuple[int, list[str]]:  # "task" is route.DEFAULT_LAND_AT
     """Edge. Fill the store from the files, read the initiative's rows, then export the whole board only when `is_chair`.
+
+    `land_at` reaches `route.launch_from_rows`; an injected `read_rows` takes three arguments and ignores it.
 
     The fill runs first for every host, since a decompose writes files and the rows read sees only the store. A fill that
     cannot read the store refuses with code 2 before any rows read or export. A rows error returns before any export."""
@@ -7020,7 +7023,7 @@ def _launch_rows_then_export(
         (fill or store_fill.fill_workspace)(runs_dir.parent)
     except RuntimeError:
         return 2, [f"routing: no initiative row {initiative_id} in the store, or the store is unavailable"]
-    code, lines, _ = (read_rows or route.launch_from_rows)(runs_dir, initiative_id, repo)
+    code, lines, _ = (read_rows or (lambda *args: route.launch_from_rows(*args, land_at=land_at)))(runs_dir, initiative_id, repo)
     if code:
         return code, lines
     if not route.should_export_board(is_chair):
@@ -11831,12 +11834,22 @@ def _chair_run_deps(
         empty = [initiative for initiative, count in item_counts().items() if count == 0]
         return _newest_run_ids({i: [r.run_id for r in decompose_runs_of(intakes[i], i)] for i in empty})
 
+    def land_at_map() -> dict[str, str]:
+        # Initiative id to its resolved land_at; an initiative with no value reads ticket.
+        return once(  # type: ignore[return-value]
+            "land_at",
+            lambda: chair_facts.land_at_facts(
+                _team_cartridge(profile)[0],
+                _initiative_land_at(chair_read_quarantined.initiative_files(ws, work_files())),
+                sorted({t["initiative"] for t in ticket_items()}),
+            ),
+        )
+
     def docket() -> dict:
         if not snapshot:
+            busy = chair_read_docket._busy_lanes(ws / "runs", now_text())
             snapshot.append(
-                chair_read_docket.read_docket(
-                    ws, mode, _local_max_in_flight(runs_dir, profile, host), files=work_files(), store_rows=store_rows(),
-                )
+                chair_facts.docket_by_land_at(ticket_items(), busy, _local_max_in_flight(runs_dir, profile, host), land_at_map())
             )
         return snapshot[0]
 
@@ -12014,7 +12027,7 @@ def _chair_run_deps(
         return chair_facts.idle_stall_inputs(
             chair_read_idle_backlog.read_idle_backlog(
                 ws, mode, _local_max_in_flight(runs_dir, profile, host), n, work_files(), store_rows(), actions(),
-                queued=round_intake(), items=ticket_items(), live=idle_live,
+                queued=round_intake(), items=ticket_items(), live=idle_live, land_at=land_at_map(),
             ),
             chair_read_idle_hosts.read_idle_hosts(runs_dir, startup_hosts),
             chair_read_idle_lands.read_lands_waiting(runs_dir, n, lands_checks),
