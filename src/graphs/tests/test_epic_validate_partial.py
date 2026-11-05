@@ -15,7 +15,7 @@ def test_open_in_phase_names_only_the_open_ids_of_that_phase_outside_the_run() -
         {"id": "e", "phase": "p1", "state": "todo"},
         {"id": "f", "phase": "p2", "state": "ready"},
     ]
-    assert open_in_phase(items, "p1", {"a"}) == ["d", "e"]
+    assert open_in_phase(items, "p1", {"a"}, "task") == ["d", "e"]
 
 
 def _validate_calls(runner) -> list[dict]:

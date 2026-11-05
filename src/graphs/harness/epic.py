@@ -59,7 +59,14 @@ from urllib.parse import urlencode
 
 from core import ledger, workstore
 from core.cartridge import test_database_setting
-from core.landing import DEFAULT_LAND_AT, land_gate_level, phase_counts_complete, phase_land_deferred, resolve_land_at
+from core.landing import (
+    DEFAULT_LAND_AT,
+    land_gate_level,
+    need_met,
+    phase_counts_complete,
+    phase_land_deferred,
+    resolve_land_at,
+)
 from core.manifest import append_ledger, build_manifest, gate_diff
 from core.phase_hold import phase_holds
 from core.workstore import WorkStoreError, record_attempt
@@ -758,14 +765,16 @@ def blocked_line(record: Mapping[str, Any]) -> str | None:
     return f"phase {record.get('phase')}: blocked: {record.get('reason') or 'no reason was recorded on the phase'}"
 
 
-def open_in_phase(items: Sequence[Mapping[str, Any]], phase: str, in_run: Collection[str]) -> list[str]:
-    """Ids of `phase` items neither `done` nor `dropped` and outside this run, in item order."""
+def open_in_phase(
+    items: Sequence[Mapping[str, Any]], phase: str, in_run: Collection[str], land_at: str
+) -> list[str]:
+    """Ids of `phase` items outside this run whose stored state does not meet `need_met` for `land_at`, in item order."""
     return [
         str(item["id"])
         for item in items
         if item.get("phase") == phase
-        and item.get("state") not in ("done", "dropped")
         and str(item["id"]) not in in_run
+        and not need_met(land_at, str(item.get("state")), bool(item.get("merged")))
     ]
 
 
@@ -3308,6 +3317,7 @@ def _run_phase(
             items,
             phase,
             {str(r.get("ticket")) for r in results} | {str(q["id"]) for q in quarantined} | {str(i["id"]) for i in earlier},
+            ctx.land_at,
         )
         if validated and results
         else []
@@ -3557,6 +3567,7 @@ def _run_phase(
         phase=phase,
         landed=bool(surviving) and all(state.merged.get(task) for task in surviving),
         branch=branch,
+        land_at=ctx.land_at,
     )
     if reason:
         record.setdefault("reason", reason)
@@ -3761,6 +3772,7 @@ def _phase_status(
     phase: str,
     landed: bool,
     branch: str,
+    land_at: str,
 ) -> tuple[str, str]:
     """Complete, or partial — and a phase unblocks its dependents only when complete.
 
@@ -3779,10 +3791,10 @@ def _phase_status(
     refused, the next phase would branch from a phase branch with nothing on it,
     so the phase is partial no matter how good the work was.
     """
-    if not ready and not quarantined and all(
-        item.get("state") in ("done", "dropped", "approved") for item in items if item.get("phase") == phase
-    ):
+    if not ready and not quarantined and not open_in_phase(items, phase, (), land_at):
         return "complete", "every task in the phase was already done"
+    if any(item.get("phase") == phase and item.get("state") == "quarantined" for item in items):
+        return "partial", "a task in the phase is quarantined"
     if not validated:
         return "partial", "no validator bound"
     if verdict is None:
