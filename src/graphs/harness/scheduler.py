@@ -9,6 +9,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from core.landing import DEFAULT_LAND_AT
 from harness.lanes import lane_bound, next_launches
 from harness.overlap import serialise
 
@@ -46,6 +47,7 @@ def plan_launches(
     foreign: Mapping[str, str] | None = None,
     headroom_usd: float | None = None,
     est_task_usd: float = 0.0,
+    land_at: str = DEFAULT_LAND_AT,
 ) -> Plan:
     """Tasks to start now by phase, and a reason for every ready task that waits.
 
@@ -55,7 +57,7 @@ def plan_launches(
     slots, binding = lane_bound(max_lanes, len(in_flight), headroom_usd, est_task_usd)
 
     # next_launches cuts to max_lanes minus in-flight; ask for every candidate so each cut task gets a reason below.
-    candidates = next_launches(items, in_flight, len(items) + len(in_flight), foreign)
+    candidates = next_launches(items, in_flight, len(items) + len(in_flight), foreign, land_at)
 
     by_id = {str(i["id"]): i for i in items}
     busy = {
