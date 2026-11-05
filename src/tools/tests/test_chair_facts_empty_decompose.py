@@ -1,8 +1,9 @@
 import os
 import sqlite3
 from dataclasses import replace
+from datetime import timedelta
 
-from agent_tools.chair_facts import empty_decompose_facts, gather_facts
+from agent_tools.chair_facts import empty_decompose_facts, gather_facts, remote_pending_decompose_runs
 from tests.test_chair_facts import NOW, _deps
 
 
@@ -145,3 +146,63 @@ def test_gather_facts_carries_the_log_refusal_into_the_entry(tmp_path):
             "refusal": "initiative-decompose failed: reach lint — missing surfaces",
         }
     ]
+
+
+RUN = "i-decompose-1"
+
+
+def _remote_run(tmp_path, fetched_at=None):
+    (tmp_path / f"{RUN}.remote.json").write_text("{}")
+    if fetched_at is not None:
+        marker = tmp_path / f"{RUN}.fetched.json"
+        marker.write_text("{}")
+        os.utime(marker, (fetched_at.timestamp(), fetched_at.timestamp()))
+
+
+def _gathered_remote(tmp_path):
+    deps = replace(
+        _deps(),
+        runs_dir=lambda: str(tmp_path),
+        decomposed_intake=lambda: {"i": RUN},
+        item_counts=lambda: {"i": 0},
+    )
+    return gather_facts(deps, NOW)["empty_decompose"]
+
+
+def test_a_run_in_remote_pending_is_left_out_though_it_has_zero_items():
+    facts = empty_decompose_facts(
+        decomposed={"i": RUN}, live=set(), item_counts={"i": 0}, states={}, remote_pending={RUN}
+    )
+    assert facts == []
+
+
+def test_omitting_remote_pending_keeps_the_run_reported():
+    facts = empty_decompose_facts(decomposed={"i": RUN}, live=set(), item_counts={"i": 0}, states={})
+    assert facts == [{"initiative": "i", "run": RUN}]
+
+
+def test_a_remote_run_with_no_fetched_marker_is_not_reported(tmp_path):
+    _remote_run(tmp_path)
+    assert remote_pending_decompose_runs(str(tmp_path), {"i": RUN}, NOW) == {RUN}
+    assert _gathered_remote(tmp_path) == []
+
+
+def test_a_remote_run_fetched_before_the_tick_is_reported(tmp_path):
+    _remote_run(tmp_path, fetched_at=NOW - timedelta(minutes=5))
+    assert remote_pending_decompose_runs(str(tmp_path), {"i": RUN}, NOW) == set()
+    assert _gathered_remote(tmp_path) == [{"initiative": "i", "run": RUN}]
+
+
+def test_a_remote_run_fetched_at_the_tick_time_is_not_reported(tmp_path):
+    _remote_run(tmp_path, fetched_at=NOW)
+    assert remote_pending_decompose_runs(str(tmp_path), {"i": RUN}, NOW) == {RUN}
+    assert _gathered_remote(tmp_path) == []
+
+
+def test_a_run_with_no_remote_marker_is_never_pending(tmp_path):
+    assert remote_pending_decompose_runs(str(tmp_path), {"i": RUN}, NOW) == set()
+    assert _gathered_remote(tmp_path) == [{"initiative": "i", "run": RUN}]
+
+
+def test_an_empty_runs_dir_yields_no_pending_runs():
+    assert remote_pending_decompose_runs("", {"i": RUN}, NOW) == set()
