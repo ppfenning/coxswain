@@ -447,7 +447,10 @@ def _frontmatter(fields, body: str) -> str:
     quoted by `_yaml_scalar` when left bare it would change meaning (a
     colon, a `#`, surrounding whitespace, or emptiness), never otherwise.
     """
-    header = "\n".join(f"{key}: {_yaml_scalar(value)}" for key, value in fields)
+    # A list value (`reach_allow`) is a literal this module writes itself, so it goes out as `_Raw`, not as a quoted string.
+    header = "\n".join(
+        f"{key}: {_yaml_scalar(_Raw(_header_value(value)) if isinstance(value, list) else value)}" for key, value in fields
+    )
     return f"---\n{header}\n---\n\n{body}\n"
 
 
