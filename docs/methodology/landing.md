@@ -17,7 +17,7 @@ away before a human ever sees it.
 
 Where a graph's tasks belong to an ordered phase, their scratch branches
 land on a shared phase branch rather than each opening its own pull
-request against the epic's target branch. This keeps the phase reviewable
+request against the initiative's target branch. This keeps the phase reviewable
 as one unit instead of as however many tasks happened to be in flight.
 
 ## Checks are evidence
@@ -158,11 +158,29 @@ A level runs its ready tasks together, up to a cap. The cap is the `--max-parall
 commands. Without it, the cap is the `max_parallel` setting of the provider profile, a positive integer. Without that,
 it is the free lane count. A zero, a negative or a non-integer profile value is refused.
 
-A level still waits for its parent levels. The epic driver holds a level until every one of its parents is complete,
+A level still waits for its parent levels. The initiative driver, started by the `epic` command, holds a level until every one of its parents is complete,
 and a parent that did not meet its goal blocks its dependents. A level with several parents waits for all of them.
 
 Running a ready task ahead of an unfinished earlier level is not current behaviour. It is planned work, tracked in
 #626. Until that ships, the scheduler in `lanes.py` is not wired in, and a level holds until every parent level is complete.
+
+## Target branch
+
+The target branch is the parent branch an initiative lands into. It resolves like `land_at`, and the narrowest value
+present wins:
+
+1. The team cartridge, as `landing_areas.target_branch`. This is the default.
+2. The epic definition, `epics/<id>.md`, as `target_branch`. It overrides the cartridge for every initiative in that epic.
+3. One initiative, as `target_branch:` in the frontmatter of its `initiative.md`. It overrides the epic.
+
+```yaml
+landing_areas:
+  target_branch: release/next
+```
+
+An explicit `--base` flag on a land still wins over all three. Every value given is checked, including one that a
+narrower value overrides. A bad value is refused with the place it came from. See [the hierarchy](index.md#the-hierarchy)
+for how an initiative joins an epic.
 
 ## Merge on green
 

@@ -10,6 +10,10 @@ attempt cap goes to `triage-quarantine`. Nothing it does merges to a
 default branch: what lands is phase branches, task pull requests and
 proposals.
 
+The driver runs one initiative. Epic is its historical name, kept in the
+command and the graph. It is not the epic group of initiatives. See
+[the hierarchy](../index.md#the-hierarchy).
+
 The page below is the driver's specification, kept beside the graphs it
 drives.
 
