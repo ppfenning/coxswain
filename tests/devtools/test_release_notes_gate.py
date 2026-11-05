@@ -92,7 +92,10 @@ def test_release_refuses_a_notes_text_with_a_blank_before_any_step_runs(tmp_path
     out = capsys.readouterr().out
     assert rc == 2
     assert "refuse notes_blank" in out and "the opener blank" in out
-    assert [c for c in calls if "rev-list" not in c] == []
+    # Only the read-only state lookup runs: no fetch of a checkout, no write, before a stateless release refuses.
+    state_reads = [c for c in calls if c[3] in ("ls-remote", "cat-file")
+                   or (c[3] == "fetch" and c[-1].startswith("+refs/rehearsals/"))]
+    assert [c for c in calls if "rev-list" not in c and c not in state_reads] == []
 
 
 def test_release_accepts_a_clean_notes_text(tmp_path, monkeypatch, capsys):
