@@ -1764,6 +1764,13 @@ def _carried_pr(merged_pr: dict | None) -> str:
     return f"#{merged_pr['number']}" if merged_pr is not None and merged_pr.get("carried") else ""
 
 
+def _merged_pr_ref(merged_pr: dict | None) -> str:
+    """Pure. The `pr` a mark_done records for a merged PR: its url when the forge returned one, else `#<n>`, else `""`."""
+    if merged_pr is None:
+        return ""
+    return str(merged_pr.get("url") or (f"#{merged_pr['number']}" if merged_pr.get("number") is not None else ""))
+
+
 def _merged_line(merged_pr: dict) -> str:
     """Pure. The report line for a phase land that skips the merge: `landed via PR #n` when main carried it, else the already-merged line."""
     return land.landed_via_line(_carried_pr(merged_pr)) if merged_pr.get("carried") else already_merged_line(merged_pr)
@@ -1964,7 +1971,7 @@ def _land_enrich(steps: list[dict], *, path: str, worktree_root: str, task_paths
                   item_path: str | None = None, workspace: str | None = None,
                   item_id: str | None = None, profile: str | None = None,
                   runs_dir: str | None = None, umbrella: str | None = None,
-                  task_items: dict[str, str] | None = None) -> list[dict]:
+                  task_items: dict[str, str] | None = None, store_runs_dir: str | None = None) -> list[dict]:
     """Steps enriched with what only the edge knows: each `mark_done`'s own
     record file path (`task_paths` maps task name to path in phase mode), and
     the configured worktree root for `clean`/`clean_phase`. `item_path` (task
@@ -1978,7 +1985,8 @@ def _land_enrich(steps: list[dict], *, path: str, worktree_root: str, task_paths
     (`item_id`, else the task name the plan used), and the land's `profile`
     and `runs_dir`, so the step reads the tracker from where the plan did.
     A `cherry_pick` or `squash_phase` step gets the profile's `umbrella_dir`
-    as `umbrella` when set, for `.agent-generate`."""
+    as `umbrella` when set, for `.agent-generate`. A `mark_done` with `recorded` False has no record file: it
+    gets its store item and `store_runs_dir` instead of a `path`."""
     def enrich(step: dict) -> dict:
         if step["kind"] in ("cherry_pick", "squash_phase") and umbrella is not None:
             return {**step, "umbrella": umbrella}
@@ -1987,6 +1995,9 @@ def _land_enrich(steps: list[dict], *, path: str, worktree_root: str, task_paths
                     "profile": profile, "runs_dir": runs_dir}
         if step["kind"] == "fetch":
             return {**step, "profile": profile, "runs_dir": runs_dir}
+        if step["kind"] == "mark_done" and step.get("recorded") is False:
+            item = (task_items or {}).get(step["task"])
+            return {**step, "item": item, "from": "approved", "to": "done", "runs_dir": store_runs_dir}
         if step["kind"] == "mark_done":
             marked = {**step, "path": (task_paths or {}).get(step["task"], path)}
             item = item_path or (task_items or {}).get(step["task"])
@@ -2654,6 +2665,8 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
         for b in doomed:
             subprocess.run(["git", "-C", str(repo), "branch", "-D", b], capture_output=True)
         return True, "deleted " + ", ".join(doomed)
+    if kind == "mark_done" and step.get("recorded") is False:
+        return _mark_done_unrecorded(step)
     if kind == "mark_done":
         record_path = Path(step["path"])
         record = json.loads(record_path.read_text(encoding="utf-8"))
@@ -2681,6 +2694,22 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
             return True, f"sync of {step['item']} failed {when} ({type(exc).__name__}: {exc}); {tail}"
         return True, f"synced {step['item']}" if rc == 0 else f"sync of {step['item']} failed {when} (exit {rc}); {tail}"
     return False, f"unknown step {kind!r}"
+
+
+def _mark_done_unrecorded(step: dict) -> tuple[bool, str]:
+    """Edge. A `mark_done` with no task record here: the store row moves approved to done carrying the land's `pr`, with
+    no record file and no landed mirror. The failure line is the route edit's own."""
+    item, task = step.get("item"), step["task"]
+    if not item or not step.get("runs_dir"):
+        return False, f"{task} has no work item or runs dir to mark done"
+    runs_dir, initiative = Path(step["runs_dir"]), Path(item).absolute().parents[1].name
+    row = next((r for r in run_store.read_queue(runs_dir, initiative, kind="task") if r.get("task_id") == task), None)
+    if row is None:
+        return False, f"no store row for {task}"
+    result = route_edit.mark_done_with_pr(runs_dir, row, step.get("pr", ""), step.get("at"))
+    if result is None:
+        return True, f"{task} marked done with {step.get('pr') or 'no PR'}"
+    return result.code == route_edit.DONE, result.text
 
 
 def _mark_done_facts(step: dict, pr: str, at: str) -> dict:
@@ -2834,7 +2863,10 @@ def _close_review_prs(repo: Path, initiative: str, task: str, ref: str, forge_mo
 
 
 def _step_initiative(step: dict, record: dict | None) -> str | None:
-    """The initiative a mark_done step's task belongs to: its record file's, else the land's own record's."""
+    """The initiative a mark_done step's task belongs to: its record file's, else the land's own record's.
+    A step with no record file has its work item's directory."""
+    if step.get("recorded") is False and step.get("item"):
+        return Path(step["item"]).absolute().parents[1].name
     try:
         found = json.loads(Path(step["path"]).read_text(encoding="utf-8")).get("initiative")
     except (KeyError, TypeError, OSError, ValueError, AttributeError):
@@ -3489,6 +3521,9 @@ def _runs_land(a: argparse.Namespace) -> int:
         earlier = [r for p in phases if p != phase for r in _land_phase_record(runs_dir, run_id, p)[1]
                    if r["task"] in ticket_items and r.get("status", "approved") == "approved"]
         ticket_present = _ticket_present(repo, phase_record.get("card_branch") or f"epic/{initiative}/{phase}", earlier)
+        # Approved in the store with no task record in any phase, even after the earlier-run fallback: built elsewhere.
+        recorded = {r["task"] for p in phases for r in _land_phase_record(runs_dir, run_id, p)[1]} | {r["task"] for r in task_records}
+        ticket_unrecorded = sorted(t for t in (ticket_items if land_at == "ticket" else _phase_task_items(items)) if t not in recorded)
         from core.landing import phase_land_deferred  # lazy: core sits beside agent_tools in one venv
         plan_steps = land.land_plan(
             {**phase_record, "initiative": initiative, "initiative_title": initiative_title,
@@ -3497,10 +3532,10 @@ def _runs_land(a: argparse.Namespace) -> int:
             repo_facts, items=items, task_records=task_records, phase_pr=phase_pr,
             task_facts=_phase_task_facts(repo, f"epic/{initiative}/{phase}", items, task_records),
             already_merged=already_merged, ticket_tasks=ticket_tasks, ticket_present=ticket_present,
-            ticket_records=[r for r in earlier if r["task"] in ticket_present],
+            ticket_records=[r for r in earlier if r["task"] in ticket_present], ticket_unrecorded=ticket_unrecorded,
         )
         steps = _land_enrich(plan_steps, path=searched, worktree_root=a.worktree_root, task_paths=task_paths,
-                              umbrella=profile.get("umbrella_dir"), task_items={**_phase_task_items(items), **ticket_items})
+                              umbrella=profile.get("umbrella_dir"), store_runs_dir=str(runs_dir), task_items={**_phase_task_items(items), **ticket_items})
         lease_task = f"phase:{initiative}/{phase}"
     else:
         record, searched, count, source = _land_load(runs_dir, run_id, a.task)
@@ -3631,7 +3666,7 @@ def _runs_land(a: argparse.Namespace) -> int:
             print(f"land: {cherry_pick['onto']} at {recreate['old_tip'][:8]} holds nothing beyond {cherry_pick['from']}, "
                   f"recreating it")
         return _land_execute(repo, steps, planned, record, item_path, level, a.no_merge, forge_module, by=_holder_label(a),
-                             mode=land_mode, guard=guard, stops=stops, keep=keep, pr=_carried_pr(merged_pr),
+                             mode=land_mode, guard=guard, stops=stops, keep=keep, pr=_merged_pr_ref(merged_pr),
                              lock=_merge_lock_factory(runs_dir, str(repo), repo_holder, repo_limit, leased))
 
     repo_holder = f"{_holder_label(a)}@{socket.gethostname()}:{os.getpid()}"
@@ -3846,7 +3881,9 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
                 print("stopped; remaining: " + ", ".join(s["kind"] for s in steps[i:]))
                 _note_stop(repo, step, halt, stops)
                 return 1, reached, pr
-        if step["kind"] == "mark_done":
+        if step["kind"] == "mark_done" and step.get("recorded") is False:
+            step = {**step, "pr": pr, "at": datetime.datetime.now(datetime.UTC).isoformat(), "by": by, "mode": mode}
+        elif step["kind"] == "mark_done":
             if record is not None and not Path(step["path"]).exists():
                 # The store copy is written out as the record file, so the path-derived run, phase and runs_dir below keep working.
                 Path(step["path"]).parent.mkdir(parents=True, exist_ok=True)
