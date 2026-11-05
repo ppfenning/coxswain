@@ -40,8 +40,11 @@ New mode beside `--task`; the default when the run record shows more than one ta
   `agents/<run>/<task>` for exactly the tasks in this phase, plus their worktrees under the configured root.
   Nothing else. It is the ONLY step that deletes branches; the existing run-scoped `clean` is removed.
 - **`--task` survives** for a one-task phase and for emergencies, with its cleanup narrowed to
-  `agents/<run>/<task>` and its own phase branch left for `--phase` to finish. Its "exactly one commit ahead"
-  rule is unchanged.
+  `agents/<run>/<task>` and its own phase branch left for `--phase` to finish. A branch is landable when it is
+  ahead of the base by one or more commits. Merge commits and patch-equivalent commits do not count. A done phase
+  lands its phase branch. A phase is done when every task is done, dropped or approved, and the phase is validated.
+  The base is the default branch, or an explicit `--base` naming an open PR branch. A refusal reports the ahead,
+  behind and not-already-on-base counts for each branch.
 - **Paths:** `_land_record` (`cli.py:234`) resolves `runs/` against the profile's `workspace_dir` and
   accepts `--runs-dir`; its refusal names the absolute directory searched and the count found:
   `land: looked in <abs>, found N task records, expected 1`.
