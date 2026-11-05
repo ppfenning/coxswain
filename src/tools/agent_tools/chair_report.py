@@ -248,6 +248,13 @@ def _freeze(facts: Facts, now: datetime) -> str | None:
     return status_text(freeze) if live else None
 
 
+def epics_fragment(epics: Sequence[Mapping[str, Any]]) -> str:
+    """`epics: <line>, ...` from `core.epics.format_epic_line`; empty when there is no epic."""
+    from core.epics import format_epic_line  # lazy: core sits beside agent_tools in one venv
+
+    return f"epics: {', '.join(format_epic_line(e) for e in epics)}" if epics else ""
+
+
 def lanes_text(dispatch: Mapping[str, Any]) -> str:
     """A host missing live_runs or capacity adds nothing to that side of L/C."""
     here = f"{dispatch['live_runs']}/{dispatch['max_in_flight']}"
@@ -280,6 +287,7 @@ def format_status(
     review = review_fragment(facts.get("review_prs", []))
     stall = _stall(facts)
     freeze = _freeze(facts, now)
+    epics = epics_fragment(facts.get("epics", []))
     parts = [
         f"chair {now.astimezone(EASTERN):%m-%d %H:%M %Z}",
         lanes_text(dispatch),
@@ -298,6 +306,7 @@ def format_status(
         *waiting,
         *deferred_items(results),
         *([review] if review else []),
+        *([epics] if epics else []),
         *(f"skipped missing repo {p}" for p in facts.get("missing_repos", [])),
         ", ".join(needs) if needs else "needs chair: none",
         *([housekeeping_fragment(facts["last_housekeeping_at"], now)] if "last_housekeeping_at" in facts else []),

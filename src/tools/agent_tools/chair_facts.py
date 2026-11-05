@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import reduce
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from agent_tools import chair_read_docket, chair_smoke, forge, pacing, repo_path, route
 from agent_tools.budget import MonthBudget
@@ -39,6 +39,7 @@ from agent_tools.chair_types import (
     CarryTask,
     DispatchFacts,
     EmptyDecomposeFacts,
+    EpicFacts,
     Facts,
     HeldFile,
     HoldRecord,
@@ -948,6 +949,21 @@ def todo_initiative_facts(rows: Sequence[Row]) -> list[TodoInitiative]:
     ]
 
 
+def epic_facts(rows: Sequence[Row], definitions: Mapping[str, Mapping[str, Any]]) -> list[EpicFacts]:
+    """`core.epics.rollup` over the store's work rows; an initiative with no epic is left out.
+
+    Landed is `route.initiative_states`: at least one task row and every one done or dropped."""
+    from agent_tools.queue_rows import epic_of_row
+    from core.epics import rollup  # lazy: core sits beside agent_tools in one venv
+
+    initiatives = [r for r in rows if r.get("kind") == "initiative"]
+    ids = [str(r["initiative"]) for r in initiatives]
+    tasks = [r for r in rows if r.get("kind") == "task"]
+    landed = {i for i, done in route.initiative_states(ids, tasks).items() if done}
+    members = {str(r["initiative"]): epic_of_row(r) for r in initiatives}
+    return cast("list[EpicFacts]", rollup(members, landed, definitions))
+
+
 def phase_branch_facts(rows: Sequence[Row]) -> list[PhaseBranch]:
     """One PhaseBranch per row, in row order; ahead and behind are counts against main."""
     return [
@@ -1106,7 +1122,10 @@ def landed_main_facts(
     return [build(w) for w in watches]
 
 
-def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
+def gather_facts(
+    deps: FactsDeps, now: datetime, epic_definitions: Mapping[str, Mapping[str, Any]] | None = None
+) -> Facts:
+    """`epic_definitions` maps an epic id to its definition (title, target_branch); absent means none are known."""
     policy = deps.policy()
     weekly = deps.weekly()
     month = deps.month()
@@ -1156,6 +1175,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
     from agent_tools.chair_decompose_runs import decompose_refusals  # lazy: chair_decompose_runs imports this module
 
     refusals = land_refusals_from_actions(action_rows, now)
+    epics = epic_facts(list(deps.work_rows()), epic_definitions or {}) if deps.work_rows is not None else []
     return {
         "lease": lease_facts(deps.lease(), deps.session, deps.pid, deps.host),
         "limits": limits_facts(
@@ -1237,4 +1257,5 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "land_outcomes": dict(deps.land_outcomes()),
         "handoff_stops": list(deps.handoff_stops()),
         "queue_files": deps.queue_files(),
+        "epics": epics,
     }
