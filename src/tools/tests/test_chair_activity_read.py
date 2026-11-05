@@ -5,6 +5,7 @@ from agent_tools.chair_activity_read import (
     prices_for_profile,
     read_agents,
     read_session_lines,
+    resolve_by_content,
     resolve_session,
     session_status,
 )
@@ -230,3 +231,58 @@ def test_catalog_status_ok_and_missing():
     assert catalog_status(PROFILE, _reader({FIRST: "a: [unclosed"})) == "missing"
     assert catalog_status(PROFILE, _reader({FIRST: "models: {}\n"})) == "missing"
     assert catalog_status(None) == "missing"
+
+
+LEASE = "lease-0000-aaaa"
+
+
+def _resumed_tree(tmp_path: Path, name: str = "orig-name") -> Path:
+    projects = tmp_path / "projects"
+    subagents = projects / "proj" / name / "subagents"
+    subagents.mkdir(parents=True)
+    (projects / "proj" / f"{name}.jsonl").write_text(f'{{"sessionId": "{LEASE}"}}\nsecond\n')
+    (subagents / "agent-a.meta.json").write_text('{"kind": "x"}')
+    (subagents / "agent-a.jsonl").write_text("a1\n")
+    return projects
+
+
+def test_resolve_by_content_values():
+    a, b, c = Path("p1/a.jsonl"), Path("p2/a.jsonl"), Path("p1/c.jsonl")
+    assert resolve_by_content({a: True}, "") == ("none", None)
+    assert resolve_by_content({}, LEASE) == ("not_found", None)
+    assert resolve_by_content({a: False, c: False}, LEASE) == ("not_found", None)
+    assert resolve_by_content({a: True, c: False}, LEASE) == ("ok", a)
+    assert resolve_by_content({b: True, a: True}, LEASE) == ("ok", a)
+    assert resolve_by_content({a: True, c: True}, LEASE) == ("ambiguous", None)
+
+
+def test_resumed_session_resolves_by_content(tmp_path):
+    projects = _resumed_tree(tmp_path)
+    assert session_status(projects, LEASE) == "ok"
+    assert read_session_lines(projects, LEASE) == [f'{{"sessionId": "{LEASE}"}}', "second"]
+    agents = read_agents(projects, LEASE)
+    assert [a["agent_id"] for a in agents] == ["a"]
+    assert agents[0]["lines"] == ["a1"]
+
+
+def test_id_in_no_file_is_not_found(tmp_path):
+    projects = _resumed_tree(tmp_path)
+    assert session_status(projects, "other-id") == "not_found"
+    assert read_session_lines(projects, "other-id") == []
+    assert read_agents(projects, "other-id") == []
+
+
+def test_id_in_two_transcripts_is_ambiguous(tmp_path):
+    projects = _resumed_tree(tmp_path)
+    (projects / "proj" / "second-name.jsonl").write_text(f"{LEASE}\n")
+    assert session_status(projects, LEASE) == "ambiguous"
+    assert read_session_lines(projects, LEASE) == []
+    assert read_agents(projects, LEASE) == []
+
+
+def test_file_name_match_wins_over_content_match(tmp_path):
+    projects = _resumed_tree(tmp_path)
+    (projects / "proj" / f"{LEASE}.jsonl").write_text("named\n")
+    assert session_status(projects, LEASE) == "ok"
+    assert read_session_lines(projects, LEASE) == ["named"]
+    assert read_agents(projects, LEASE) == []

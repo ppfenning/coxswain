@@ -65,14 +65,44 @@ def _match(projects_dir: Path, session: str) -> tuple[str, str]:
     )
 
 
+def resolve_by_content(hits: Mapping[Path, bool], session: str) -> tuple[str, Path | None]:
+    """(status, transcript) from a map of transcript path to whether its text holds the session id. One distinct stem is ok; the same stem in two projects counts once."""
+    if not session:
+        return ("none", None)
+    matched = sorted(path for path, hit in hits.items() if hit)
+    stems = {path.stem for path in matched}
+    if not stems:
+        return ("not_found", None)
+    if len(stems) > 1:
+        return ("ambiguous", None)
+    return ("ok", matched[0])
+
+
+def _content_hits(projects_dir: Path, session: str) -> dict[Path, bool]:
+    """Edge: for each `*/<stem>.jsonl` with no dot in the stem, whether its text contains `session`. An unreadable file is a miss."""
+    paths = Path(projects_dir).glob("*/*.jsonl") if session else []
+    return {p: session in (_read_text(p) or "") for p in sorted(paths) if "." not in p.stem}
+
+
+def _resolve(projects_dir: Path, session: str) -> tuple[str, str, Path | None]:
+    """(status, name-matched id, content-matched transcript). The content match is tried only when no file name matched."""
+    status, resolved = _match(projects_dir, session)
+    if status == "not_found" and not resolved:
+        content_status, transcript = resolve_by_content(_content_hits(projects_dir, session), session)
+        return (content_status, "", transcript)
+    return (status, resolved, None)
+
+
 def read_agents(projects_dir: Path, session: str) -> list[dict]:
     """Agents of the one session `session` names, sorted by agent_id; empty when none or ambiguous. An unreadable or non-JSON meta file is skipped."""
-    _, resolved = _match(projects_dir, session)
+    _, resolved, transcript = _resolve(projects_dir, session)
     pattern = f"*/{glob.escape(resolved)}/subagents/agent-*.meta.json"
-    found = (
-        (path.name.removeprefix("agent-").removesuffix(".meta.json"), path)
-        for path in (Path(projects_dir).glob(pattern) if resolved else [])
+    metas = (
+        transcript.parent.glob(f"{glob.escape(transcript.stem)}/subagents/agent-*.meta.json")
+        if transcript
+        else (Path(projects_dir).glob(pattern) if resolved else [])
     )
+    found = ((path.name.removeprefix("agent-").removesuffix(".meta.json"), path) for path in metas)
     agents = (
         {
             "agent_id": agent_id,
@@ -86,14 +116,16 @@ def read_agents(projects_dir: Path, session: str) -> list[dict]:
 
 def read_session_lines(projects_dir: Path, session: str) -> list[str]:
     """Lines of the first `*/<id>.jsonl` for the session `session` names; empty unless the status is ok."""
-    status, resolved = _match(projects_dir, session)
+    status, resolved, transcript = _resolve(projects_dir, session)
+    if transcript:
+        return _read_lines(transcript)
     matches = sorted(Path(projects_dir).glob(f"*/{glob.escape(resolved)}.jsonl")) if status == "ok" else []
     return _read_lines(matches[0]) if matches else []
 
 
 def session_status(projects_dir: Path, session: str) -> str:
-    """none, not_found, ambiguous or ok."""
-    return _match(projects_dir, session)[0]
+    """none, not_found, ambiguous or ok. A session id found in no file name is matched by transcript content."""
+    return _resolve(projects_dir, session)[0]
 
 
 def _catalog_candidates(profile: Mapping) -> list[Path]:
