@@ -7,7 +7,7 @@ from typing import Literal, get_args
 Cause = Literal["ticket", "code", "review", "harness", "unknown"]
 CAUSES: tuple[str, ...] = get_args(Cause)
 
-# Measured in harness/epic.py: kinds refused|no_work|unverified|infra; reasons
+# Measured in harness/epic.py: kinds refused|no_work|unverified|infra|stale_base; reasons
 # "patch did not apply: ...", "worktree <b> could not be created: ...",
 # "the phase worktree could not be (re)created: ...".
 
@@ -52,7 +52,7 @@ def is_auth_failure(reason: str) -> bool:
 
 
 def classify_cause(kind: str, reason: str) -> Cause | None:
-    """An authentication failure first, then a budget, turn or session limit stop, then a transient OAuth refresh collision, then harness, an outside-surfaces check failure as ticket, code, ticket; None when no rule matches."""
+    """An authentication failure first, then a budget, turn or session limit stop, then a transient OAuth refresh collision, then harness, an outside-surfaces check failure as ticket, code, a stale base as harness, ticket; None when no rule matches."""
     if is_auth_failure(reason):
         return "harness"
     if any(marker in reason.lower() for marker in _LIMIT_MARKERS):
@@ -69,6 +69,8 @@ def classify_cause(kind: str, reason: str) -> Cause | None:
         return "ticket"
     if "configured check failed" in reason or "configured checks failed" in reason:
         return "code"
+    if kind == "stale_base":
+        return "harness"
     if kind == "no_work":
         return "ticket"
     return None
