@@ -97,6 +97,7 @@ from harness.invoke import Invocation, invoke_graphs
 from harness.lanes import lane_bound
 from harness.resume import load_result, reusable, save_result
 from harness.scheduler import plan_launches
+from harness.stack_refresh import refresh_branch, refresh_reason, refresh_record
 from harness.store_dialect import Connection, connect
 from harness.store_lease import assert_epoch, renew
 from harness.store_pause import clear_paused, is_paused
@@ -773,16 +774,70 @@ def _rebase(ctx: _Ctx, phase: str, base_ref: str) -> tuple[bool, str]:
     discard a commit, and a driver guessing at a resolution would be doing
     exactly that.
     """
+    ok, detail, _ = _rebase_reading_conflicts(ctx, phase, base_ref)
+    return ok, detail
+
+
+def _rebase_reading_conflicts(ctx: _Ctx, phase: str, base_ref: str) -> tuple[bool, str, tuple[str, ...]]:
+    """`_rebase`, plus the conflicting paths git listed before the abort cleared them."""
     worktree = ctx.phase_worktree(phase)
     branch = ctx.phase_branch(phase)
     ok, fork = _git("-C", str(worktree), "merge-base", base_ref, branch)
     if not ok:
-        return False, f"no merge base between {base_ref} and {branch}: {fork}"
+        return False, f"no merge base between {base_ref} and {branch}: {fork}", ()
     ok, detail = _git(*_IDENTITY, "-C", str(worktree), "rebase", "--onto", base_ref, fork.strip())
     if not ok:
+        _, listing = _git("-C", str(worktree), "diff", "--name-only", "-z", "--diff-filter=U")
         _git("-C", str(worktree), "rebase", "--abort")
-        return False, detail
-    return True, f"rebased {branch} onto {base_ref}"
+        return False, detail, tuple(sorted(p for p in listing.split("\0") if p))
+    return True, f"rebased {branch} onto {base_ref}", ()
+
+
+def _branch_has(ctx: _Ctx, ref: str, branch: str) -> bool:
+    return _git("-C", str(ctx.repo), "merge-base", "--is-ancestor", ref, branch)[0]
+
+
+def _branch_head(ctx: _Ctx, branch: str) -> str:
+    ok, out = _git("-C", str(ctx.repo), "rev-parse", branch)
+    return out if ok else ""
+
+
+def _refresh_level(
+    ctx: _Ctx, record: dict[str, Any], phase: str, parent: str | None, recreate: Callable[[], dict[str, Any] | None]
+) -> dict[str, Any] | None:
+    """Restack a child onto a current parent, else merge the default ref in; the record to return when it blocks."""
+    branch, default = ctx.phase_branch(phase), ctx.default_ref
+    if ctx.land_at != "ticket" or not record.get("reused_branch") or _branch_has(ctx, default, branch):
+        return None
+    before = _branch_head(ctx, branch)
+    onto, paths = default, ()
+    # Levels can start side by side, so a parent is not always refreshed first; such a child must not wait on it.
+    stacked = parent is not None and _branch_has(ctx, default, ctx.phase_branch(parent))
+    if not stacked:
+        merged = refresh_branch(ctx.phase_worktree(phase), branch, default)
+        ok, reason, paths = merged.ok, merged.reason, merged.paths
+    else:
+        onto = ctx.phase_branch(str(parent))
+        _, own = _git("-C", str(ctx.repo), "rev-list", "--count", f"{onto}..{branch}")
+        if own == "0":
+            early = recreate()
+            if early is not None:
+                return early
+            ok, paths = True, ()
+        else:
+            ok, _, paths = _rebase_reading_conflicts(ctx, phase, onto)
+        reason = refresh_reason(branch, onto, paths)
+    if not ok:
+        record["status"] = "blocked"
+        record["reason"] = reason
+        record["quarantined"].append({"id": phase, "phase": phase, "grain": "phase", "reason": reason})
+        _git("-C", str(ctx.phase_worktree(phase)), "checkout", "--detach", "-q")
+        return record
+    after = _branch_head(ctx, branch)
+    if after != before:
+        record["refreshed"] = refresh_record(branch, onto, before, after)
+        print(f"  {branch} brought up to {onto}")
+    return None
 
 
 # ── one task's build, applied and measured in a worktree the harness owns ────
@@ -2711,7 +2766,8 @@ def _run_phase(
         _git("-C", str(ctx.phase_worktree(phase)), "checkout", "--detach", "-q")
         return record
 
-    if action == "recreate":
+    def recreate() -> dict[str, Any] | None:
+        """Cut the phase branch again from its base; the record to return when the leader is stale or the reopen fails."""
         stale_recreate = _fenced(ctx)
         if stale_recreate:
             return _stale_phase(record, stale_recreate)
@@ -2724,11 +2780,28 @@ def _run_phase(
         if not ok:
             return open_failed(detail, "recreated")
         record["reused_branch"] = reused
+        return None
+
+    if action == "recreate":
+        early = recreate()
+        if early is not None:
+            return early
         record["recreated"] = (
             f"phase branch {branch} recreated from {base_ref}: its commits belonged to tasks sent back to ready, which build again"
             if unlanded_kind == "rebuild"
             else f"phase branch {branch} recreated from {base_ref}: its commits already landed there via squash-merge"
         )
+
+    # An approved task not yet recorded as merged has its land in flight: the branch is left as it is until that settles.
+    with ctx.items_lock:
+        land_in_flight = unlanded_kind == "awaiting_land" and any(
+            i.get("phase") == phase and i.get("state") == "approved" and not i.get("merged") for i in items
+        )
+    if land_in_flight and ctx.land_at == "ticket" and record.get("reused_branch"):
+        record["refresh_skipped"] = f"{branch} keeps its place: an approved task's land is still in flight"
+        print(f"  {record['refresh_skipped']}")
+    elif (early := _refresh_level(ctx, record, phase, parent, recreate)) is not None:
+        return early
 
     # A runner whose nodes can read the world reads THIS phase's branch — not
     # whatever the repository happens to have checked out. Phase N+1 stacks on
