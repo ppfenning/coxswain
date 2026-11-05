@@ -63,7 +63,7 @@ def test_approved_and_quarantined_keep_the_states_the_store_reports(tmp_path):
     got, tally = _tasks(tmp_path, rows)
     assert [(t, got[t]["state"]) for t in ("a", "b")] == [("a", "approved"), ("b", "quarantined")]
     assert dash_feed._task_states(rows, "dash-feed", (), ()) == [("p2-feed", "a", "approved"), ("p2-feed", "b", "quarantined")]
-    assert tally == {"landed": 0, "quarantined": 1}
+    assert tally == {"landed": 0, "quarantined": 1, "merged": 0}
 
 
 def test_tries_counts_attempts_recorded_across_two_runs(tmp_path):

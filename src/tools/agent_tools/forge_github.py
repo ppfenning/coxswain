@@ -157,13 +157,37 @@ def push(repo: Path, branch: str, expected_tip: str | None = None) -> tuple[bool
     return r.returncode == 0, (branch if r.returncode == 0 else r.stderr.strip() or r.stdout.strip())
 
 
-def open_pr(repo: Path, title: str, body: str, *, head: str | None = None, base: str | None = None) -> tuple[bool, str]:
-    refs = [*(["--head", head] if head else []), *(["--base", base] if base else [])]
+def open_pr(repo: Path, title: str, body: str, *, head: str | None = None, base: str | None = None, draft: bool = False) -> tuple[bool, str]:
+    refs = [*(["--head", head] if head else []), *(["--base", base] if base else []), *(["--draft"] if draft else [])]
     try:
         r = _run(["gh", "pr", "create", "--title", title, "--body", body, *refs], timeout=WRITE_TIMEOUT_S, cwd=repo)
     except ForgeError as exc:
         return False, str(exc)
     return r.returncode == 0, (r.stdout.strip() or r.stderr.strip())
+
+
+def _gh_on_open_pr(repo: Path, head: str, verb: list[str]) -> tuple[bool, str]:
+    """Run `gh pr <verb...>` on the one open PR whose head is `head`; `(False, detail naming head)` when there is none. Never opens a PR."""
+    found = find_open_prs(repo, head)
+    if isinstance(found, str):
+        return False, found
+    if not found:
+        return False, f"no open pull request for {head}"
+    try:
+        r = _run(["gh", "pr", verb[0], str(found[0]), *verb[1:]], timeout=WRITE_TIMEOUT_S, cwd=repo)
+    except (OSError, ForgeError) as exc:
+        return False, str(exc)
+    return r.returncode == 0, (r.stdout.strip() or r.stderr.strip())
+
+
+def update_pr(repo: Path, title: str, body: str, *, head: str) -> tuple[bool, str]:
+    """Edit the title and body of the open PR from `head`. A draft stays a draft."""
+    return _gh_on_open_pr(repo, head, ["edit", "--title", title, "--body", body])
+
+
+def mark_ready(repo: Path, *, head: str) -> tuple[bool, str]:
+    """Take the open PR from `head` out of draft."""
+    return _gh_on_open_pr(repo, head, ["ready"])
 
 
 def _update_local_default(repo: Path, default: str) -> str:

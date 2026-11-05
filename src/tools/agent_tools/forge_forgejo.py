@@ -36,6 +36,8 @@ BASE_URL_ENV = "FORGEJO_BASE_URL"
 _SCP_REMOTE = re.compile(r"^(?P<user>[^@/:\s]+)@(?P<host>[^:/\s]+):(?P<path>.+)$")
 # What forge_github's merge_state says for a PR that can and cannot merge; Forgejo has no finer status.
 MERGEABLE, CONFLICTED, UNSETTLED = "CLEAN", "DIRTY", "UNKNOWN"
+# Forgejo marks a pull request as a work in progress by a title prefix; removing it makes the PR ready.
+DRAFT_PREFIX = "WIP: "
 PAGE_SIZE = 50
 # A guard on the page loop: a server that ignores `page` would otherwise repeat page one forever.
 MAX_PAGES = 20
@@ -252,12 +254,59 @@ def find_open_prs(repo: Path, branch: str) -> list[int] | str:
         return f"could not list open pull requests for {branch}: {exc}"
 
 
-def open_pr(repo: Path, title: str, body: str, *, head: str | None = None, base: str | None = None) -> tuple[bool, str]:
-    """`base` None is the branch `origin/HEAD` names, so it is unset for a repo that was not cloned."""
+def open_pr(repo: Path, title: str, body: str, *, head: str | None = None, base: str | None = None, draft: bool = False) -> tuple[bool, str]:
+    """`base` None is the branch `origin/HEAD` names, so it is unset for a repo that was not cloned. Forgejo has no draft flag on create: a draft is a title that starts with `DRAFT_PREFIX`."""
     try:
         source = head or _git(repo, "symbolic-ref", "--short", "HEAD")
         into = base or _git(repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD").removeprefix("origin/")
-        return create_pr(_target(repo, os.environ), os.environ, title, body, source, into)
+        return create_pr(_target(repo, os.environ), os.environ, f"{DRAFT_PREFIX}{title}" if draft else title, body, source, into)
+    except ForgeError as exc:
+        return False, str(exc)
+
+
+def is_draft_title(title: str) -> bool:
+    return title.upper().startswith(DRAFT_PREFIX.strip().upper())
+
+
+def _open_pull(repo: Path, head: str) -> tuple[Target, int, str]:
+    """Target, number and title of the open PR from `head`; ForgeError naming `head` when there is none."""
+    target = _target(repo, os.environ)
+    found = list_open_prs(target, os.environ, head)
+    if isinstance(found, str):
+        raise ForgeError(found)
+    if not found:
+        raise ForgeError(f"no open pull request for {head}")
+    status, body = _call(target, os.environ, "GET", f"/pulls/{found[0]}")
+    if status != 200 or not isinstance(body, dict):
+        raise ForgeError(f"could not read pull request {found[0]}: {_message(status, body)}")
+    return target, found[0], str(body.get("title") or "")
+
+
+def _patch_pull(target: Target, number: int, fields: dict) -> tuple[bool, str]:
+    status, body = _call(target, os.environ, "PATCH", f"/pulls/{number}", fields)
+    url = body.get("html_url") if isinstance(body, dict) else None
+    if status in (200, 201):
+        return True, url if isinstance(url, str) and url else f"pull request {number}"
+    return False, _message(status, body)
+
+
+def update_pr(repo: Path, title: str, body: str, *, head: str) -> tuple[bool, str]:
+    """Edit the title and body of the open PR from `head`. A draft stays a draft: its prefix is kept."""
+    try:
+        target, number, current = _open_pull(repo, head)
+        keep = DRAFT_PREFIX if is_draft_title(current) and not is_draft_title(title) else ""
+        return _patch_pull(target, number, {"title": f"{keep}{title}", "body": body})
+    except ForgeError as exc:
+        return False, str(exc)
+
+
+def mark_ready(repo: Path, *, head: str) -> tuple[bool, str]:
+    """Take the open PR from `head` out of draft by dropping the title prefix."""
+    try:
+        target, number, current = _open_pull(repo, head)
+        if not is_draft_title(current):
+            return True, f"pull request {number} is already ready"
+        return _patch_pull(target, number, {"title": current[len(DRAFT_PREFIX.strip()):].lstrip()})
     except ForgeError as exc:
         return False, str(exc)
 

@@ -714,18 +714,20 @@ def _phase_status(
 ) -> tuple[str, str | None]:
     """`(status, reason)` of one phase from its task rows, its live lane's run id and its parents' statuses.
     `running` while a lane is live. `blocked` for a quarantined task (the reason names it and its own `reason`) or,
-    once none of its own work remains, a blocked parent. `complete` when every task is settled. Else `waiting`,
-    whose reason names the parents not yet complete, or is None when there are none."""
+    once none of its own work remains, a blocked parent. `merged` when every task is settled and one is approved
+    and merged into the pr branch; `complete` when every task is done or dropped. A merged parent gates its
+    children like a complete one. Else `waiting`, whose reason names the parents not yet finished, or is None."""
     quarantined = next((task for task in tasks if task.get("state") == "quarantined"), None)
     blocked_parent = next((parent for parent in sorted(parents) if parent_status.get(parent) == "blocked"), None)
-    unfinished = [parent for parent in sorted(parents) if parent_status.get(parent) != "complete"]
+    unfinished = [parent for parent in sorted(parents) if parent_status.get(parent) not in ("complete", "merged")]
     if lane is not None:
         return "running", None
     if quarantined is not None:
         why = str(quarantined.get("reason") or "")
         return "blocked", f"task {quarantined.get('task_id')} is quarantined" + (f": {why}" if why else "")
     if tasks and all(_task_settled(task) for task in tasks):
-        return "complete", None
+        merged = any(task.get("state") == "approved" and route.is_merged(task) for task in tasks)
+        return ("merged" if merged else "complete"), None
     if blocked_parent is not None:
         return "blocked", f"parent {blocked_parent} is blocked"
     return "waiting", (f"waiting on {', '.join(unfinished)}" if unfinished else None)
@@ -1155,7 +1157,9 @@ def _run_tasks(
     by_task = _attempts_by_task(attempts, slug)
     latest = _latest_by_task(by_task, calls_by_run)
     entries = task_entries(own, by_task, latest, _verdicts_by_task(latest, run_verdicts))
-    return entries, counts(entries)
+    land_at = _configured_land_at(rows, slug)
+    merged = sum(1 for row in own if _task_state(row, (), False, False, land_at) == "merged")
+    return entries, {**counts(entries), "merged": merged}
 
 
 def _run_verdicts(runs_dir: Path, run: str) -> tuple[str, frozenset[str]]:
@@ -1213,7 +1217,7 @@ def _runs_v1(
     by_run = calls_by_run or {}
     ids = short_ids or {}
     named = projects or {}
-    empty: tuple[list[dict], dict] = ([], {"landed": 0, "quarantined": 0})
+    empty: tuple[list[dict], dict] = ([], {"landed": 0, "quarantined": 0, "merged": 0})
 
     def task_keys(run: str) -> dict:
         entries, tally = (empty if tasks_by_slug is None else tasks_by_slug.get(_run_slug(run), empty))
