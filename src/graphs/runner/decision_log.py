@@ -98,6 +98,8 @@ class CallDecision:
     set only in shadow mode: whether the prediction matched the LLM node's answer.
     The `router_*` fields carry the caller's shadow RouterDecision: `router_tier` is
     its chosen_class and `router_reason` is `joined_reasons` of it.
+    The `shadow_*` fields describe the extra shadow-trial call only; the acting
+    call's own verdict and cost stay on its call row.
     """
 
     role: str
@@ -123,6 +125,12 @@ class CallDecision:
     system_one_confidence: float | None = None
     system_one_threshold: float | None = None
     system_one_agreed: bool | None = None
+    shadow_tier: str | None = None
+    shadow_model_id: str | None = None
+    shadow_verdict: bool | None = None
+    shadow_agreed: bool | None = None
+    shadow_costly: bool | None = None
+    shadow_cost_usd: float | None = None
 
 
 def to_row(decision: CallDecision) -> dict[str, Any]:
@@ -163,4 +171,10 @@ def from_row(row: Mapping[str, Any]) -> CallDecision:
         system_one_confidence=row.get("system_one_confidence"),
         system_one_threshold=row.get("system_one_threshold"),
         system_one_agreed=row.get("system_one_agreed"),
+        shadow_tier=row.get("shadow_tier"),
+        shadow_model_id=row.get("shadow_model_id"),
+        shadow_verdict=row.get("shadow_verdict"),
+        shadow_agreed=row.get("shadow_agreed"),
+        shadow_costly=row.get("shadow_costly"),
+        shadow_cost_usd=row.get("shadow_cost_usd"),
     )

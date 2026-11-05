@@ -43,7 +43,7 @@ def test_to_row_returns_a_plain_dict_of_every_field():
     row = to_row(FULL)
     assert type(row) is dict
     assert row["router_tier"] == "deep"
-    assert len(row) == 23
+    assert len(row) == 29
 
 
 def test_router_tier_defaults_to_none():
