@@ -63,6 +63,7 @@ from agent_tools.chair_types import (
     TodoInitiative,
 )
 from agent_tools.checkout_env import CHECKOUT_ENV_KEY
+from agent_tools.remote_lane import fetched_record_path, remote_record_path
 
 HARNESS_CAUSE = "harness"
 RESCUE_FAILED_CAUSE = "rescue_failed"
@@ -781,6 +782,7 @@ def empty_decompose_facts(
     states: Mapping[str, str] | None = None,
     alive: Collection[str] = frozenset(),
     refusals: Mapping[str, str] = {},
+    remote_pending: Collection[str] = frozenset(),
 ) -> list[EmptyDecomposeFacts]:
     """One entry per decomposed intake whose decompose run has ended and left zero stored task items.
 
@@ -791,13 +793,15 @@ def empty_decompose_facts(
     id to its store state: done or dropped is left out, and an initiative with no known state is reported.
     `alive` holds decompose run ids whose process still runs: the runs row can end before the process has
     written every item, so an initiative whose newest run is in `alive` is left out like one in `live`.
-    `refusals` maps a run id to its lint-refusal text: only an entry whose run is listed gains a `refusal` key."""
+    `refusals` maps a run id to its lint-refusal text: only an entry whose run is listed gains a `refusal` key.
+    `remote_pending` holds decompose run ids whose remote task items are unfetched or fetched this tick: left out like `alive`."""
     known = states or {}
     return [
         {"initiative": initiative, "run": run, **({"refusal": refusals[run]} if run in refusals else {})}
         for initiative, run in decomposed.items()
         if initiative not in live
         and run not in alive
+        and run not in remote_pending
         and item_counts.get(initiative, 1) == 0
         and known.get(initiative) not in {"done", "dropped"}
     ]
@@ -818,6 +822,24 @@ def alive_decompose_runs(
         if pid_probe.get(initiative, {}).get("alive")
         or (bool(runs_dir) and _pid_alive(Path(runs_dir) / f"{run}.pid"))
     }
+
+
+def remote_pending_decompose_runs(runs_dir: str, decomposed: Mapping[str, str], now: datetime) -> set[str]:
+    """Edge. The newest decompose runs that ran on a lane host and whose items are not yet safely fetched.
+
+    Pending: `<run>.remote.json` exists and `<run>.fetched.json` is absent or was written at or after `now`.
+    A run with no remote marker is never pending; so is anything under an empty `runs_dir`."""
+    if not runs_dir:
+        return set()
+    base = Path(runs_dir)
+
+    def pending(run: str) -> bool:
+        if not remote_record_path(base, run).exists():
+            return False
+        fetched = fetched_record_path(base, run)
+        return not fetched.exists() or datetime.fromtimestamp(fetched.stat().st_mtime, tz=now.tzinfo) >= now
+
+    return {run for run in decomposed.values() if pending(run)}
 
 
 def dispatch_facts(
@@ -1118,6 +1140,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
             dict(deps.item_counts()) if deps.item_counts is not None else {},
             dict(deps.initiative_states()) if deps.initiative_states is not None else {},
             alive=alive_decompose_runs(deps.runs_dir(), decomposed, probe),
+            remote_pending=remote_pending_decompose_runs(deps.runs_dir(), decomposed, now),
             refusals=decompose_refusals(Path(deps.runs_dir()), decomposed.values()),
         ),
         "todo_initiatives": todo_initiative_facts(list(deps.work_rows())) if deps.work_rows is not None else [],
