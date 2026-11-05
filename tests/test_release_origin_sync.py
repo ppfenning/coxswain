@@ -121,7 +121,8 @@ def _dry_run(tmp_path, monkeypatch, capsys, counts):
 def test_every_checkout_is_fetched_before_the_plan_reads_commits(tmp_path, monkeypatch, capsys):
     rc, _, calls = _dry_run(tmp_path, monkeypatch, capsys, "0\t0\n")
     tag_counts = [i for i, argv in enumerate(calls) if "--count" in argv and "--left-right" not in argv]
-    fetches = [i for i, argv in enumerate(calls) if "fetch" in argv]
+    # The rehearsal record is fetched after the plan, from `refs/rehearsals`; it is not a checkout's fetch.
+    fetches = [i for i, argv in enumerate(calls) if "fetch" in argv and "refs/rehearsals" not in argv[-1]]
     assert rc == 0
     assert len(fetches) == 2 and max(fetches) < min(tag_counts)
 

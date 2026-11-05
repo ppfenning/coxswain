@@ -43,6 +43,7 @@ from devtools import (
     release_notes_prs,
     release_rehearsal_gate,
     release_required_checks,
+    release_resume,
     run_status,
 )
 
@@ -1284,13 +1285,26 @@ def _origin_sha(directory: str, run) -> str:
     return out.strip() if rc == 0 else ""
 
 
+def _cut_record(umbrella: str, version: str, run) -> Mapping | None:
+    """The rehearsal record this version's cut left at origin, or None when absent, unreadable or malformed."""
+    text = release_resume.read_record(umbrella, version, run)
+    return None if text is None else release_rehearsal_gate.parse_record(text)
+
+
+def _recorded_run(run, run_id: int, umbrella: str) -> tuple[Mapping | None, list]:
+    """The one run `gh run view` shows for `run_id` and its jobs; `(None, [])` when `gh` fails."""
+    view = _gh_json(run, ["gh", "run", "view", str(run_id), "--json", "conclusion,jobs"], umbrella)
+    return (view, view.get("jobs") or []) if isinstance(view, dict) else (None, [])
+
+
 def _rehearsed_shas(plan_steps: list[dict], resuming: Collection[str], version: str, root: str, overrides: dict,
-                    umbrella: str, run, existing_tags: Mapping[str, Collection[str] | None] | None = None
-                    ) -> dict[str, str]:
+                    umbrella: str, run, existing_tags: Mapping[str, Collection[str] | None] | None = None,
+                    record: Mapping | None = None) -> dict[str, str]:
     """The commit each cut repo is rehearsed at: `origin/<default>`'s, or for a repo in `resuming` the merge base of
     that and `origin/release/<version>`, since the default branch has moved on since the branch was cut.
     A resuming component that already has `v<version>` on its remote is no longer tagged by the plan, so it is
-    rehearsed at the commit that tag points at. "" when git could not read it."""
+    rehearsed at the commit that tag points at. "" when git could not read it.
+    A `record` of the cut names the commits it was rehearsed at, and those win; a name it leaves empty is read live."""
     tagged = {step["component"] for step in plan_steps if step["kind"] == "tag"}
     peeled = {name for name in resuming
               if name != release.UMBRELLA and name not in tagged and f"v{version}" in ((existing_tags or {}).get(name) or ())}
@@ -1307,7 +1321,8 @@ def _rehearsed_shas(plan_steps: list[dict], resuming: Collection[str], version: 
         rc, out = run(release.merge_base_argv(directory, f"origin/{default}",
                                               f"origin/{release.release_branch_name(version)}"), None)
         return out.strip() if rc == 0 else ""
-    return {name: sha_of(name, directory) for name, directory in directories.items()}
+    recorded = {release.UMBRELLA: record["coxswain"], "dash": record["dash"]} if record else {}
+    return {name: recorded.get(name) or sha_of(name, directory) for name, directory in directories.items()}
 
 
 def _resuming(manifest: dict, version: str, pinned_commits: dict, umbrella: str, root: str, overrides: dict,
@@ -1322,15 +1337,21 @@ def _resuming(manifest: dict, version: str, pinned_commits: dict, umbrella: str,
 
 
 def _rehearsal_steps(a: argparse.Namespace, plan_steps: list[dict], root: str, overrides: dict, umbrella: str,
-                     run, shas: Mapping[str, str] | None = None) -> list[dict]:
+                     run, shas: Mapping[str, str] | None = None, record: Mapping | None = None) -> list[dict]:
     """The rehearsal gate's steps. This edge reads the origin commit of the coxswain checkout (and of dash when
     the plan tags it), the checkout's tags, the notes and `gh`; `release_rehearsal_gate.decide` judges.
     `shas` are those commits when the caller already computed them (`_rehearsed_shas`).
+    A `record` of the cut is judged by `decide_recorded`, fetching only its run and jobs by id: no title is built
+    and no run is listed. Without one, a pass carries the `run_title` it matched, for the record the cut writes.
     An override skips the `gh` calls."""
     notes_text = _read_text_or_none(Path(umbrella) / "docs" / "releases" / f"{a.version}.md") or ""
     declared = release_migrations.parse_declaration(notes_text)
     if isinstance(declared, release_migrations.MigrationError):
         return [{"kind": "refuse", "component": "rehearsal", "detail": declared.message}]
+    if record is not None:
+        found, jobs = (None, []) if a.allow_no_rehearsal is not None else _recorded_run(run, record["run_id"], umbrella)
+        return release_rehearsal_gate.decide_recorded(record, found, jobs, declared or (), a.allow_no_rehearsal,
+                                                      notes_text)
     if shas is None:
         shas = _rehearsed_shas(plan_steps, (), a.version, root, overrides, umbrella, run)
     _, tag_out = run(["git", "-C", umbrella, "tag", "--list"], None)
@@ -1342,7 +1363,11 @@ def _rehearsal_steps(a: argparse.Namespace, plan_steps: list[dict], root: str, o
     def jobs_of(found):
         view = _gh_json(run, ["gh", "run", "view", str(found["databaseId"]), "--json", "jobs"], umbrella)
         return view.get("jobs", []) if isinstance(view, dict) else []
-    return release_rehearsal_gate.decide(runs, jobs_of, shas, previous, declared or (), a.allow_no_rehearsal, notes_text)
+    title = release_rehearsal_gate.run_title(shas.get("coxswain") or "", shas.get("dash") or release_rehearsal_gate.PINNED,
+                                             previous, declared or ())
+    steps = release_rehearsal_gate.decide(runs, jobs_of, shas, previous, declared or (), a.allow_no_rehearsal,
+                                          notes_text)
+    return [{**step, "run_title": title} if "run_id" in step else step for step in steps]
 
 
 def _checkouts(a: argparse.Namespace) -> tuple[Path, str, str, dict]:
@@ -1436,10 +1461,11 @@ def _release(a: argparse.Namespace) -> int:
         plan_steps = plan_for(True)
     # The drift gate guards a cut; a tap-only resume runs after the cut landed and reads only PyPI and the tap clone.
     # One lookup of the rehearsed commits feeds both the rehearsal gate and the executor's `release_branch` steps.
+    record = None if a.tap_only else _cut_record(umbrella, a.version, _stdout_run)
     rehearsed = {} if a.tap_only else _rehearsed_shas(plan_steps, resuming, a.version, root, overrides, umbrella,
-                                                     _stdout_run, existing_tags)
+                                                     _stdout_run, existing_tags, record)
     steps = plan_steps if a.tap_only else (_rehearsal_steps(a, plan_steps, root, overrides, umbrella, _stdout_run,
-                                                            rehearsed)
+                                                            rehearsed, record)
                                            + release.gate(drifts, a.allow_doc_drift, plan_steps) + plan_steps)
     if not a.tap_only:
         # Every tree the release pins, the coxswain checkout's included, is checked at that exact ref, dry run or not.
@@ -1472,6 +1498,17 @@ def _release(a: argparse.Namespace) -> int:
                 print(f"refuse {name}: {reason}")
         return 2 if refused or any(step["kind"] == "refuse" for step in steps) else 0
     path = _profile_path(a.profile, os.environ)
+    passed = next((step for step in steps if "run_id" in step), None)
+    if record is None and passed is not None and not any(step["kind"] == "refuse" for step in steps):
+        # A passing rehearsal is recorded before any release step runs, so a resume judges that run, not a title.
+        made = release_rehearsal_gate.new_record(a.version, rehearsed["coxswain"], rehearsed.get("dash", ""),
+                                                 passed["run_id"], passed["run_title"])
+        ok, detail = release_resume.write_record(umbrella, a.version, rehearsed["coxswain"],
+                                                 release_rehearsal_gate.record_text(made), _real_run)
+        if not ok:
+            ref = release_resume.record_ref(a.version)
+            print(f"refuse rehearsal: could not record the rehearsal at {ref}: {detail}")
+            return _after_release(2, a.version, steps, *_notify_config(path), time.time(), failed="refuse rehearsal")
     printed = _Tee(sys.stdout)
     with contextlib.redirect_stdout(printed):
         # A tap-only resume tags nothing, so it has no sync gate to feed.
