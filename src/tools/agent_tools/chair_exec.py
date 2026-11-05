@@ -245,6 +245,14 @@ def landed(code: int, output: str) -> bool:
     return code == 0 and "mark_done:" in output and ("merge:" in output or skipped or landed_via)
 
 
+# The old "exactly one commit ahead" wording stays: logs written before land_plan changed still carry it.
+_MISSING_BRANCH_MARKERS = (
+    "no branch is ahead of",
+    "no branch is exactly one commit ahead of",
+    "no candidate branch found for",
+)
+
+
 def land_refusal(action: Action, code: int, output: str) -> Action | None:
     """None on a clean exit; else the needs_chair a land's refusal raises, its cause read from `output` by
     literal substring, else the land fallback.
@@ -259,7 +267,7 @@ def land_refusal(action: Action, code: int, output: str) -> Action | None:
         cause = "conflict"
     elif "failing checks:" in output:
         cause = "checks"
-    elif "no branch is exactly one commit ahead of" in output or "no candidate branch found for" in output:
+    elif any(marker in output for marker in _MISSING_BRANCH_MARKERS):
         cause = "missing_branch"
     else:
         cause = "land"
