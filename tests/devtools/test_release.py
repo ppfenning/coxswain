@@ -786,12 +786,15 @@ def _wait_checks_run(answers):
 
 
 def test_release_execute_wait_checks_polls_until_green(tmp_path, capsys):
-    calls, run = _wait_checks_run(iter([(1, f"no checks reported on the 'release/{V1}' branch")] * 2 + [(0, "")]))
+    unprotected = [(1, ""), (1, "gh: Branch not protected (HTTP 404)")]
+    calls, run = _wait_checks_run(iter([(1, f"no checks reported on the 'release/{V1}' branch")] * 2 + [(0, "")] + unprotected))
     slept = []
     rc = cli._release_execute([{"kind": "wait_checks", "component": "coxswain"}], V1, str(tmp_path), {}, str(tmp_path),
                               run, {"components": {}}, str(tmp_path / "manifest.toml"), sleep=slept.append, now=lambda: 0.0)
     assert rc == 0
-    assert calls == [release.pr_checks_argv()] * 3 and slept == [15, 15]
+    symbolic_ref = ["git", "-C", str(tmp_path), "symbolic-ref", "--short", "refs/remotes/origin/HEAD"]
+    assert calls == [release.pr_checks_argv()] * 3 + [symbolic_ref, release.required_checks_argv("main")]
+    assert slept == [15, 15]
     assert "wait_checks coxswain: green" in capsys.readouterr().out
 
 
