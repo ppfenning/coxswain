@@ -105,7 +105,7 @@ def test_a_develop_repo_plans_its_land_and_pr_against_develop(tmp_path: Path) ->
     assert next(s for s in steps if s["kind"] == "pr_create")["base"] == "develop"
     assert next(s for s in steps if s["kind"] == "merge")["default_branch"] == "develop"
     refused = land.land_plan(record, cli._land_branches(repo, record, "main"), "main", {}, tracker="none")
-    assert refused[0]["reason"] == "no branch is exactly one commit ahead of main"
+    assert refused[0]["reason"] == "no branch is ahead of main: agents/r1/t1: 0 not already on main; epic/i/p: 0 not already on main"
 
 
 def test_stranded_pins_a_develop_base_in_its_remedy_and_leaves_main_bare(tmp_path: Path) -> None:

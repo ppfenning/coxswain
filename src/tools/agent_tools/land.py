@@ -630,6 +630,23 @@ def gate_stop(planned: Sequence[dict[str, Any]], gated: Sequence[dict[str, Any]]
     return f"gate: {level} stopped after {last}; pull request {pr or '(none opened)'} left open, unmerged"
 
 
+def _ahead_choice(scratch_branch: str, phase_branch: str | None, branches: Mapping[str, Sequence[str]],
+                  phase_done: bool) -> tuple[str, Sequence[str]] | None:
+    """The first candidate with one or more subjects: phase branch first for a done phase, else scratch first."""
+    order = (phase_branch, scratch_branch) if phase_done else (scratch_branch, phase_branch)
+    return next(((b, branches[b]) for b in order if b and branches.get(b)), None)
+
+
+def _refusal_reason(default_branch: str, candidates: Sequence[str | None], branches: Mapping[str, Sequence[str]],
+                    compared: Mapping[str, Mapping[str, int]] | None) -> str:
+    """`no branch is ahead of <base>` plus each candidate's counts; raw ahead and behind only where `compared` has them."""
+    def entry(b: str) -> str:
+        unique, raw = len(branches.get(b, [])), (compared or {}).get(b)
+        return (f"{b}: ahead {raw['ahead']}, behind {raw['behind']}, {unique} not already on {default_branch}"
+                if raw else f"{b}: {unique} not already on {default_branch}")
+    return f"no branch is ahead of {default_branch}: " + "; ".join(entry(b) for b in candidates if b)
+
+
 def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_branch: str,
               repo_facts: dict[str, Any] | None = None, *, items: list[dict[str, Any]] | None = None,
               task_records: list[dict[str, Any]] | None = None, tracker: str | None = None,
@@ -639,8 +656,11 @@ def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_br
               task_facts: Sequence[Mapping[str, Any]] | None = None, scope: str = "all",
               reference: str | None = None, already_merged: bool = False,
               ticket_tasks: Sequence[str] = (), ticket_present: Collection[str] = (),
-              ticket_records: Sequence[dict[str, Any]] = ()) -> list[dict[str, Any]]:
-    """The ordered steps to land `record`, or a one-step `refuse`. Phase mode only: `already_merged` plans
+              ticket_records: Sequence[dict[str, Any]] = (), phase_done: bool = False,
+              compared: Mapping[str, Mapping[str, int]] | None = None) -> list[dict[str, Any]]:
+    """The ordered steps to land `record`, or a one-step `refuse`. Task mode lands the newest subject of the
+    first branch with any subject: the phase branch first when `phase_done`, else the scratch branch first.
+    `compared` maps a branch to its raw `ahead`/`behind` rev-list counts, quoted in a refusal. Phase mode only: `already_merged` plans
     just the clean and the mark_done steps. Under a `scope` other than `all` (task mode),
     the PR body carries `reference` alone, nothing syncs before the PR, and the closing sync runs only for a
     task whose `issue` was set by hand. Phase mode carries no issue line under any scope (`phase_pr_body`
@@ -668,16 +688,14 @@ def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_br
     initiative = record.get("initiative")
     scratch_branch = f"agents/{run}/{task}"
     phase_branch = f"epic/{initiative}/{phase}" if initiative else None
-    scratch_subjects = branches.get(scratch_branch, [])
-    phase_subjects = branches.get(phase_branch, []) if phase_branch else []
 
-    if len(scratch_subjects) == 1:
-        chosen, subject = scratch_branch, scratch_subjects[0]
-    elif len(phase_subjects) == 1:
-        chosen, subject = phase_branch, phase_subjects[0]
-    else:
+    choice = _ahead_choice(scratch_branch, phase_branch, branches, phase_done)
+    if choice is None:
         found = {b: len(subs) for b, subs in branches.items()}
-        return [{"kind": "refuse", "reason": f"no branch is exactly one commit ahead of {default_branch}", "found": found}]
+        return [{"kind": "refuse", "reason": _refusal_reason(default_branch, (scratch_branch, phase_branch), branches, compared),
+                 "found": found}]
+    chosen, subjects = choice
+    subject, commits = subjects[0], len(subjects)
 
     pr_branch = f"pr/{task}"
     draft = _proposal(record, "draft_pr_create")
@@ -696,8 +714,9 @@ def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_br
     body = (pr_body(record, None, reference if mirrored else None) if scope != "all"
             else pr_body(record, issue if mirrored else None))
     return [
-        {"kind": "pick_branch", "branch": chosen, "commit_subject": subject},
-        {"kind": "cherry_pick", "branch": chosen, "commit_subject": subject, "onto": pr_branch, "from": default_branch},
+        {"kind": "pick_branch", "branch": chosen, "commit_subject": subject, "commits": commits},
+        {"kind": "cherry_pick", "branch": chosen, "commit_subject": subject, "onto": pr_branch, "from": default_branch,
+         "commits": commits},
         checks_step(repo_facts or {}, pr_branch),
         {"kind": "push", "branch": pr_branch},
         *presync,
