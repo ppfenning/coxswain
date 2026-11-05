@@ -170,7 +170,12 @@ tighter than the lane limit. `plan_launches` in `harness/scheduler.py` uses `nex
 ready tasks start. The scheduler holds the ready tasks of a phase while another phase has a build in flight over an overlapping surface.
 
 A phase still waits for its parents. The driver holds the tasks of a phase until every parent phase is complete.
-A parent that did not meet its goal blocks its dependents. A phase with several parents waits for all of them.
+A parent level counts complete for its dependents when every task in it is approved or done in the work store. It does
+not matter where the task was approved. A task approved in an earlier run counts, and so does a task that is not landed.
+This matches the cross-phase need rule, where an unmerged approved task counts at ticket and level but not at task.
+A level reads partial while any of its tasks is still ready, building or quarantined. A quarantined task still blocks
+its dependents. A parent that did not meet its goal blocks its dependents. A phase with several parents waits for all of
+them. When `phase-validate` is bound, it judges the stored tasks of the level and not only those built in this run.
 The one exception is a ready task whose own needs are all merged, which may start before its parents are complete.
 
 ## Target branch
