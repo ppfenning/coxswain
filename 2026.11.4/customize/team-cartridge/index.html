@@ -1638,6 +1638,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#test-database" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Test database
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#extending-local-or-base" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6284,6 +6295,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#test-database" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Test database
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#extending-local-or-base" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6388,6 +6410,26 @@ other key is refused.</p>
 threshold, add to <code>tier2_surfaces</code> and remove from <code>tier0_patterns</code>, never
 the reverse. It may move <code>policy.cost.level</code> toward <code>strict</code>, never toward
 <code>liberal</code>.</p>
+<h2 id="test-database">Test database</h2>
+<p><code>landing_areas.test_database</code> gives each build lane its own test database. A
+repository sets it in <code>.agent/cartridge.yaml</code>. It takes three keys. <code>env</code> is
+the name of the environment variable that carries the database URL to the
+harness. <code>template</code> is the URL, with one <code>{lane}</code> placeholder. <code>drop</code> is an
+optional command that removes the database.</p>
+<p>Coxswain replaces <code>{lane}</code> in <code>template</code> with the lane id. The text after
+<code>{lane}</code> must not be empty, and the database name keeps that literal suffix.
+In <code>drop</code>, <code>{name}</code> stands for the resulting database name.</p>
+<p>The project harness is expected to create the database on first use. When
+<code>drop</code> is set, coxswain runs it to remove the database. When <code>drop</code> is
+absent, coxswain lists the database name for cleanup on the run result.</p>
+<div class="highlight"><pre><span></span><code><span class="nt">landing_areas</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">test_database</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">env</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">DATABASE_URL</span>
+<span class="w">    </span><span class="nt">template</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">postgresql://localhost/app_{lane}_test</span>
+<span class="w">    </span><span class="nt">drop</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dropdb {name}</span>
+</code></pre></div>
+<p>A repository with no <code>test_database</code> setting behaves as before. Building the
+schema in the new database is the project's own concern.</p>
 <h2 id="extending-local-or-base">Extending local or base</h2>
 <p>Most teams extend <code>local</code> (the default) rather than reaching past it to
 <code>base</code>. Extend <code>base</code> directly only when your change is genuinely
