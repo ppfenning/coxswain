@@ -109,6 +109,23 @@ _WRITE_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"})
 _PATCH_ROLES = frozenset({"build"})
 # Roles that judge a builder's evidence and so must know which commands it could run.
 _REVIEW_ROLES = frozenset({"review_charter", "review_adversary", "arbitrate", "evidence_verify", "handoff"})
+
+
+def _gate_checks_paragraph(task: list[str], gates: dict[str, list[str]]) -> str:
+    """The reviewers' paragraph naming each check under its gate: task, level, ticket.
+
+    A gate with no commands is left out, task included, so no empty heading appears.
+    """
+    sections = [("task", task), ("level", gates.get("level", [])), ("ticket", gates.get("ticket", []))]
+    listed = "\n".join(f"{gate} checks: " + "; ".join(f"`{c}`" for c in cmds) for gate, cmds in sections if cmds)
+    return (
+        "The project's checks belong to different gates:\n"
+        f"{listed}\n"
+        "Level and ticket checks run once, by the harness, at that gate. A task review must not "
+        "ask the builder for their output, and missing output from them is not a finding on the task."
+    )
+
+
 _VERIFY_TIMEOUT_S = 120
 _VERIFY_TOTAL_S = 300
 _VERIFY_TAIL_LINES = 40
@@ -917,6 +934,9 @@ class ClaudeCodeRunner:
         # how to run the tests — the wrong interpreter, `which pytest`,
         # `--version`, `echo hello`. The harness knows; the builder is told.
         self.check_commands: list[str] = []
+        # gate name (level, ticket) -> that gate's commands, set by the harness.
+        # `check_commands` stays the task checks; these run once at their gate.
+        self.gate_check_commands: dict[str, list[str]] = {}
         # task id -> that ticket's `verify:` commands, set by the harness. A
         # build call runs them in its own scratch after the patch lands, so the
         # in-graph reviewers see their output instead of the builder's claims.
@@ -1250,6 +1270,11 @@ class ClaudeCodeRunner:
                     "one of them before you produce the diff, a lint command as much as the tests: a "
                     "check you skip here fails after review and costs a whole rerun."
                 )
+            if self.gate_check_commands:
+                lines.append(
+                    "Do not run level or ticket checks in the scratch checkout: the harness runs them "
+                    "once at their own gate, and only the task checks above are yours."
+                )
             permitted = self._permitted_commands(scratch)
             lines.append(
                 f"The ONLY shell commands permitted in this session are: {permitted}. Anything "
@@ -1280,6 +1305,8 @@ class ClaudeCodeRunner:
                 "If a ticket's done condition names such a command, judge the evidence from the "
                 "permitted form instead."
             )
+        if role in _REVIEW_ROLES and self.gate_check_commands:
+            lines.append(_gate_checks_paragraph(self.check_commands, self.gate_check_commands))
         if self.repo_dir or scratch is not None:
             where = scratch if scratch is not None else self.repo_dir
             lines.append(

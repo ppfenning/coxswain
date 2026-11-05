@@ -44,7 +44,9 @@ from harness.checks import (
     repo_checks,
     run_checks,
 )
+from harness.runners import _DelegatingFastPath
 from harness.worktree import apply_patch, create_worktree, link_venv
+from runner.claude_code_runner import ClaudeCodeRunner
 
 
 def _run(cmd: list[str], cwd) -> None:
@@ -934,3 +936,57 @@ def test_no_attempts_left_a_harness_fault_or_a_pass_all_quarantine() -> None:
     unrunnable = {"name": "lint", "cmd": "ruff", "passed": False, "outcome": "unrunnable", "error": "not found"}
     assert refix_route([unrunnable], _CONFIGURED, attempts_left=2, style_bound=True) == "quarantine"
     assert refix_route([_TEST_OK], _CONFIGURED, attempts_left=2, style_bound=True) == "quarantine"
+
+
+_GATE_PROFILE = {"profile": "p", "runner": "claude-code", "tiers": {"cheap": "haiku", "standard": "sonnet", "deep": "opus"}}
+_GATES = {"level": ["pytest -m integration"], "ticket": ["pytest tests/e2e"]}
+
+
+def _gate_runner(tmp_path, gates) -> ClaudeCodeRunner:
+    runner = ClaudeCodeRunner(_GATE_PROFILE, claude_bin="claude", cwd=tmp_path)
+    runner.check_commands = ["pytest -q", "ruff check ."]
+    runner.gate_check_commands = gates
+    return runner
+
+
+def test_review_prompt_lists_commands_under_task_level_and_ticket(tmp_path) -> None:
+    text = _gate_runner(tmp_path, _GATES)._workspace(role="review_charter")
+    task, level, ticket = (text.index(f"{g} checks: ") for g in ("task", "level", "ticket"))
+    assert task < level < ticket
+    assert "task checks: `pytest -q`; `ruff check .`" in text
+    assert "level checks: `pytest -m integration`" in text
+    assert "ticket checks: `pytest tests/e2e`" in text
+    assert "must not ask the builder for their output" in text
+    assert "not a finding on the task" in text
+
+
+def test_review_prompt_without_gate_commands_names_none_and_is_unchanged(tmp_path) -> None:
+    text = _gate_runner(tmp_path, {})._workspace(role="review_charter")
+    untouched = ClaudeCodeRunner(_GATE_PROFILE, claude_bin="claude", cwd=tmp_path)
+    untouched.check_commands = ["pytest -q", "ruff check ."]
+    assert text == untouched._workspace(role="review_charter")
+    assert "level checks" not in text and "ticket checks" not in text and "pytest -m integration" not in text
+
+
+def test_review_prompt_omits_a_gate_with_no_commands(tmp_path) -> None:
+    text = _gate_runner(tmp_path, {"ticket": ["pytest tests/e2e"]})._workspace(role="review_charter")
+    assert "level checks" not in text and "ticket checks: `pytest tests/e2e`" in text
+
+
+def test_non_review_role_gets_no_gate_paragraph(tmp_path) -> None:
+    assert "level checks" not in _gate_runner(tmp_path, _GATES)._workspace(role="plan")
+
+
+def test_builder_prompt_carries_the_gate_sentence_only_when_a_gate_list_is_set(tmp_path) -> None:
+    sentence = "Do not run level or ticket checks in the scratch checkout"
+    scratch = tmp_path / "scratch"
+    assert sentence in _gate_runner(tmp_path, _GATES)._workspace(scratch, role="build")
+    assert sentence not in _gate_runner(tmp_path, {})._workspace(scratch, role="build")
+
+
+def test_gate_check_commands_read_and_write_through_the_fast_path_wrapper(tmp_path) -> None:
+    inner = ClaudeCodeRunner(_GATE_PROFILE, claude_bin="claude", cwd=tmp_path)
+    wrapper = _DelegatingFastPath(inner, None, frozenset(), {})
+    assert wrapper.gate_check_commands == {}
+    wrapper.gate_check_commands = _GATES
+    assert inner.gate_check_commands == _GATES
