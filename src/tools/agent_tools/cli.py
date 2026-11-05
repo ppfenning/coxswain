@@ -8986,7 +8986,7 @@ def _load_lazy_modules() -> None:
         module._lazy_load()
 
 
-def _install_execute(steps: list, manifest: dict, options: dict, root: Path) -> int:
+def _install_execute(steps: list, manifest: dict, options: dict, root: Path, *, name_stale: bool = False) -> int:
     """Runs a planned install/upgrade for real: enrich the planner's steps
     with the repo/tag/team/workspace `install_exec` needs, execute them,
     report one ok/FAILED/skipped/refused line per step, then the versions
@@ -9022,19 +9022,28 @@ def _install_execute(steps: list, manifest: dict, options: dict, root: Path) -> 
     print(records.format_table(display, ["component", "pinned_tag", "installed_tag", "status"]))
     if any(result["step"]["kind"] == "doctor" and result["exit"] not in (0, None) for result in results):
         print(_DOCTOR_FAILING_LINE)
-    stale = _binary_rows_not_ok(steps, manifest, options, table)
+    stale = _stale_binary_line(steps, manifest, options, table)
+    if stale and name_stale:
+        print(stale)
     return 2 if stale or any(install_exec.is_fatal(result) for result in results) else 0
 
 
-def _binary_rows_not_ok(steps: list, manifest: dict, options: dict, table: list) -> bool:
-    """True when a release install planned a binary (or skipped it for want of an asset) for a component and
-    that component's command row is not ok afterwards. Edge builds from source, so its rows never decide."""
+def _stale_binary_line(steps: list, manifest: dict, options: dict, table: list) -> str | None:
+    """A line naming each command a release install planned a binary (or skipped it for want of an asset) for
+    whose row is not ok afterwards, else None. Edge builds from source, so its rows never decide."""
     if options.get("channel", "release") == "edge":
-        return False
+        return None
     components = manifest.get("components", {})
     commands = {components[step["component"]]["provides"] for step in steps
                 if step["kind"] in ("binary", "skip") and components.get(step["component"], {}).get("provides")}
-    return any(status != "ok" for name, _, _, status in table if name in commands)
+    lines = [f"upgrade: {name} is at {installed or 'unreadable'} but the manifest pins {pinned}"
+             for name, pinned, installed, status in table if name in commands and status != "ok"]
+    return "; ".join(lines) or None
+
+
+def _binary_rows_not_ok(steps: list, manifest: dict, options: dict, table: list) -> bool:
+    """True when `_stale_binary_line` has a row to name."""
+    return _stale_binary_line(steps, manifest, options, table) is not None
 
 
 _DOCTOR_FAILING_LINE = ("doctor reports failing rows: create your workspace folders and team cartridge "
@@ -9269,7 +9278,7 @@ def _upgrade(a: argparse.Namespace) -> int:
             if step["kind"] in ("binary", "doctor", "desktop")
             or (step["kind"] == "skip" and moved.get("components", {}).get(step["component"], {}).get("provides")
                 and last[step["component"]] == at)]
-    return _install_execute(tail, moved, tail_options, root)
+    return _install_execute(tail, moved, tail_options, root, name_stale=True)
 
 
 def _with_present(manifest: dict, facts: dict, options: dict) -> dict:

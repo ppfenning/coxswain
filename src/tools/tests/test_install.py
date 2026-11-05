@@ -713,3 +713,9 @@ def test_rows_without_a_binaries_key_is_unchanged():
     without = install.rows(_dash_manifest(), _dash_facts())
     assert all(r[0] != "towpath" for r in without)
     assert install.rows(_dash_manifest(), _dash_facts({})) == [*without, ("towpath", "v2026.11.1", None, "missing")]
+
+
+def test_rows_keeps_a_missing_towpath_row_when_only_another_binary_was_read_and_none_without_a_tag():
+    assert install.rows(_dash_manifest(), _dash_facts({"coxtop": "2026.11.1"}))[-1] == ("towpath", "v2026.11.1", None, "missing")
+    untagged = {**_dash_manifest(), "components": {"dash": {"repo": "org/dash", "flag": "dash", "provides": "towpath"}}}
+    assert all(r[0] != "towpath" for r in install.rows(untagged, _dash_facts({"towpath": "2026.11.1"})))
