@@ -1253,6 +1253,72 @@ def test_waiting_lines_is_empty_when_every_need_is_done_or_dropped():
     assert route.waiting_lines(items, {}, "sync") == []
 
 
+def _need_rows():
+    return [
+        {"task_id": "a", "phase": "1-first", "state": "approved", "needs": [], "surfaces": [], "body": ""},
+        {"task_id": "b", "phase": "1-first", "state": "ready", "needs": ["a"], "surfaces": [], "body": ""},
+    ]
+
+
+_REMEDY = {"a": "cox runs land r1 --task a --repo /r"}
+
+
+@pytest.mark.parametrize("land_at", ["ticket", "level"])
+def test_an_unmerged_approved_need_is_met_above_task(land_at):
+    items = [_wait_item("a", "approved"), _wait_item("b", "ready", ["a"])]
+    head = {"task_id": "sync", "extra": {}}
+    assert route.is_met_need(items[0], land_at=land_at)
+    assert [r["task_id"] for r in route.ready_tasks(_need_rows(), land_at=land_at)] == ["b"]
+    assert route.launch_input(head, _need_rows(), "/r", land_at=land_at)["ready"] == ["b"]
+    assert route.waiting_lines(items, _REMEDY, "sync", land_at=land_at) == []
+    assert route.initiative_summaries(items, land_at=land_at) == [
+        {"id": "sync", "phase": "1-first", "ready": 1, "awaiting_merge": 1}
+    ]
+
+
+def test_an_unmerged_approved_need_keeps_its_waits_on_line_at_task():
+    items = [_wait_item("a", "approved"), _wait_item("b", "ready", ["a"])]
+    head = {"task_id": "sync", "extra": {}}
+    assert not route.is_met_need(items[0], land_at="task")
+    assert route.ready_tasks(_need_rows(), land_at="task") == []
+    assert route.launch_input(head, _need_rows(), "/r", land_at="task")["ready"] == []
+    assert route.waiting_lines(items, _REMEDY, "sync", land_at="task") == [
+        "b waits on a (approved)",
+        "cox runs land r1 --task a --repo /r",
+    ]
+    assert route.initiative_summaries(items, land_at="task") == [
+        {"id": "sync", "phase": None, "ready": 0, "awaiting_merge": 1}
+    ]
+
+
+def test_launch_input_reads_land_at_from_the_initiative_extra_before_the_argument():
+    head = {"task_id": "sync", "extra": {"land_at": "task"}}
+    assert route.launch_input(head, _need_rows(), "/r", land_at="ticket")["ready"] == []
+    assert route.launch_input({"task_id": "sync", "extra": {}}, _need_rows(), "/r", land_at="task")["ready"] == []
+
+
+def test_a_merged_approved_need_is_met_above_task_and_unchanged_at_task():
+    rows = [{**_need_rows()[0], "extra": {"merged": True}}, _need_rows()[1]]
+    assert [r["task_id"] for r in route.ready_tasks(rows, land_at="level")] == ["b"]
+    assert route.ready_tasks(rows, land_at="task") == []
+
+
+@pytest.mark.parametrize("land_at", ["ticket", "level", "task"])
+def test_a_need_in_another_initiative_is_met_only_by_done(land_at):
+    merged = {**_wait_item("x", "approved", initiative="other"), "merged": True}
+    items = [merged, _wait_item("b", "ready", ["x"])]
+    assert route.waiting_lines(items, {}, "sync", land_at=land_at) == ["b waits on x (merged)"]
+    done = [{**merged, "state": "done"}, items[1]]
+    assert route.waiting_lines(done, {}, "sync", land_at=land_at) == []
+
+
+def test_without_land_at_an_unmerged_approved_need_is_not_met():
+    items = [_wait_item("a", "approved"), _wait_item("b", "ready", ["a"])]
+    assert not route.is_met_need(items[0])
+    assert route.ready_tasks(_need_rows()) == []
+    assert route.waiting_lines(items, {}, "sync") == ["b waits on a (approved)"]
+
+
 def test_initiative_summaries_sorts_rows_by_initiative_id():
     # Six initiatives, each with one ready, unblocked task, supplied in
     # reverse order. Grouping them with a bare set (no `sorted`) would come
