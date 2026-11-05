@@ -23,6 +23,7 @@ __all__ = [
     "DEFAULT_LEASE_TTL_SECONDS",
     "LEASE_FILENAME",
     "LEASE_NAME",
+    "LENT_KEY",
     "acquire_lease",
     "adopt_session",
     "beat",
@@ -42,6 +43,7 @@ __all__ = [
     "lease_holder",
     "lease_ttl_for",
     "lease_verdict",
+    "lend_routine",
     "liveness",
     "locked",
     "pid_alive",
@@ -67,6 +69,15 @@ LEASE_NAME = "chair"
 # Beside chair.json, never inside it: the lock file format is unchanged. Holds the holder and epoch that renew and release need.
 LEASE_FILENAME = "chair.lease.json"
 DEFAULT_LEASE_TTL_SECONDS = DEFAULT_HEARTBEAT_MINUTES * 60
+# Top-level boolean in chair.json: the holder has lent the routine ticks. `take` never sets it, so a lend ends with its holder.
+LENT_KEY = "routine_lent"
+
+
+def lend_routine(record: dict[str, Any], on: bool) -> dict[str, Any]:
+    """Pure. A copy of `record` with `LENT_KEY` True when `on`, and without the key when not."""
+    if on:
+        return {**record, LENT_KEY: True}
+    return {key: value for key, value in record.items() if key != LENT_KEY}
 
 
 def lease_ttl_for(record: dict[str, Any] | None, now: datetime.datetime, margin_seconds: int = DEFAULT_LEASE_TTL_SECONDS) -> int:

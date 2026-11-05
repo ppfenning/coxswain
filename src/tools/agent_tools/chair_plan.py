@@ -29,6 +29,7 @@ from agent_tools.chair_plan_recover import (
     refused_launches,
 )
 from agent_tools.chair_plan_review import plan_review
+from agent_tools.chair_plan_routine import routine_only
 from agent_tools.chair_plan_stale import plan_stale
 from agent_tools.chair_plan_tune import plan_tune
 from agent_tools.chair_plan_widen import plan_widen
@@ -936,7 +937,10 @@ def plan_tick_held(facts: Facts, now: datetime | None = None, gate: CiGate = _UN
     login_checks = _login_check_actions(facts, now)
     held = _land_only_ids(facts["initiatives"], facts["approved"]) if gate.paused and gated is None else frozenset()
     holder = _withhold_blocked_hosts(_plan_as_holder(facts, now, held), facts) if gated is None else []
-    actions = [*holder, *housekeeping, *login_checks] if gated is None else gated
+    # A lent lease plans the routine actions, then standby last, so the tick still reads as not acting.
+    lent = gated is not None and gated[0]["kind"] == "standby" and lease.get("lent", False)
+    routine = _withhold_blocked_hosts(routine_only(_plan_as_holder(facts, now)), facts) if lent else []
+    actions = [*holder, *housekeeping, *login_checks] if gated is None else [*routine, *gated]
     return TickPlan([stamp(a, lease["epoch"]) for a in actions], tuple(sorted(held)))
 
 
