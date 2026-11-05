@@ -93,7 +93,7 @@ class _DelegatingFastPath(FastPathRunner):
 
     The wrapper is not a drop-in runner on its own. The harness configures its runner after
     build_runner returns, by `hasattr` then assignment: run_id, node_cap_usd, repo_dir,
-    check_commands, verify_by_task, and it reads `calls` and `close`. Without this forwarding
+    check_commands, gate_check_commands, verify_by_task, and it reads `calls` and `close`. Without this forwarding
     each `hasattr` is False on the wrapper, and the per-node USD cap is dropped with no error.
     Underscored names stay on the wrapper, which owns `_inner`, `_decider` and the rest.
     """

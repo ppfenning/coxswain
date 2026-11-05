@@ -331,3 +331,109 @@ def test_a_ci_land_whose_poll_reports_no_checks_still_fails_at_wait_checks(monke
     wait = steps[kinds.index("wait_checks")]
     monkeypatch.setattr(forge_github, "wait_checks", lambda repo, timeout_s, ref="HEAD": real_wait(repo, timeout_s, sleep=lambda s: None, now=lambda: next(clock), ref=ref))
     assert cli._execute_land_step(tmp_path, wait, forge_github) == (False, "no checks reported within 180s")
+
+
+_TICKET = [{"name": "e2e", "cmd": "cd e2e && pytest -q"}, {"name": "lint", "cmd": "ruff check ."}]
+_BRANCH = "card/x/wire"
+_APPROVED = {"task": "a", "title": "a", "repo": "wire", "status": "approved", "review": {"verdict": "approve"}}
+
+
+def _card_plan(facts, **record):
+    phase = {"run": "epic-x-5", "phase": "seams", "initiative": "x", "card_branch": _BRANCH, "last_phase": True, **record}
+    return land.land_plan(phase, {}, "main", facts, items=[{"id": "a", "status": "approved"}], task_records=[_APPROVED],
+                          repo="wire", ticket_tasks=("a",), ticket_present=())
+
+
+def _kinds_of(steps):
+    return [s["kind"] for s in steps]
+
+
+def _ticket_steps(steps):
+    return [s for s in steps if s.get("gate") == "ticket"]
+
+
+def test_a_ticket_grain_plan_has_one_ticket_step_after_checks_and_before_push_and_pr_create():
+    steps = _card_plan({"ticket_checks": _TICKET})
+    [gate] = _ticket_steps(steps)
+    assert gate == {"kind": "checks", "gate": "ticket", "checks": [("e2e", "cd e2e && pytest -q"), ("lint", "ruff check .")],
+                    "worktree_of": _BRANCH}
+    i = steps.index(gate)
+    assert _kinds_of(steps)[i - 1] == "checks" and "gate" not in steps[i - 1]
+    assert i < _kinds_of(steps).index("push") < _kinds_of(steps).index("pr_create")
+
+
+def test_ticket_checks_run_in_the_land_that_opens_the_pr_not_in_every_phase_land():
+    assert _ticket_steps(_card_plan({"ticket_checks": _TICKET}, last_phase=False)) == []
+
+
+@pytest.mark.parametrize("land_at", ["level", "task"])
+def test_level_and_task_grain_plans_have_no_ticket_step(land_at):
+    assert _ticket_steps(_card_plan({"ticket_checks": _TICKET}, land_at=land_at)) == []
+
+
+def test_a_repo_with_no_ticket_checks_plans_the_same_steps_as_before():
+    plain = _card_plan({})
+    assert _card_plan({"ticket_checks": []}) == plain == _card_plan({"ticket_checks": None})
+    assert land.ticket_checks_steps({}, "b") == [] and _ticket_steps(plain) == []
+
+
+def test_the_phase_plan_that_opens_the_ticket_pr_has_the_ticket_step_once_before_push():
+    phase = {"run": "epic-x-5", "phase": "seams", "initiative": "x", "last_phase": True}
+    task = {**_APPROVED, "arbitration": {"verdict": "approve"}}
+
+    def plan(facts, **over):
+        return land.land_plan({**phase, **over}, {"epic/x/seams": ["c1"]}, "main", facts,
+                              items=[{"id": "a", "status": "approved"}], task_records=[task],
+                              repo="wire", ticket_tasks=("a",), ticket_present=())
+    steps = plan({"ticket_checks": _TICKET})
+    [gate] = _ticket_steps(steps)
+    assert _kinds_of(steps).index("checks") < steps.index(gate) < _kinds_of(steps).index("push")
+    assert _ticket_steps(plan({"ticket_checks": _TICKET}, land_at="level")) == []
+    assert plan({}) == plan({"ticket_checks": []})
+
+
+def test_the_land_facts_read_ticket_checks_from_the_cartridge_alone(tmp_path, monkeypatch):
+    (tmp_path / ".agent-checks").write_text("echo task\n")
+    monkeypatch.setattr(cli, "_cartridge_landing", lambda repo, profile: ({"ticket_checks": _TICKET}, None))
+    facts = cli._land_repo_facts(tmp_path, {}, "main")
+    assert facts["ticket_checks"] == _TICKET
+    assert all(c["cmd"] != _TICKET[0]["cmd"] for c in facts["checks"])
+    monkeypatch.setattr(cli, "_cartridge_landing", lambda repo, profile: ({}, None))
+    assert cli._land_repo_facts(tmp_path, {}, "main")["ticket_checks"] == []
+
+
+def test_the_dry_run_labels_the_ticket_gate_step():
+    [gate] = _ticket_steps(_card_plan({"ticket_checks": _TICKET}))
+    assert cli._land_checks_lines([gate]) == [f"ticket gate ({_BRANCH}): e2e = cd e2e && pytest -q; lint = ruff check ."]
+
+
+def test_the_runner_runs_a_ticket_step_under_the_repo_lock_and_an_ordinary_step_without_it(tmp_path, monkeypatch):
+    from harness import check_gate
+    events = []
+
+    class FakeLock:
+        def __init__(self, repo):
+            events.append(("lock", repo))
+
+        def __enter__(self):
+            events.append("enter")
+
+        def __exit__(self, *exc):
+            events.append("exit")
+    monkeypatch.setattr(check_gate, "repo_gate_lock", FakeLock)
+    monkeypatch.setattr(cli, "_run_checks", lambda checks, wt: events.append(("run", checks)) or (True, "ok"))
+    [gate] = _ticket_steps(_card_plan({"ticket_checks": _TICKET}))
+    assert cli._execute_land_step(tmp_path, gate) == (True, "ok")
+    assert events == [("lock", tmp_path), "enter", ("run", gate["checks"]), "exit"]
+    events.clear()
+    ordinary = {"kind": "checks", "checks": [("t", "true")], "worktree_of": _BRANCH}
+    assert cli._execute_land_step(tmp_path, ordinary) == (True, "ok")
+    assert events == [("run", ordinary["checks"])]
+
+
+def test_a_failing_ticket_check_fails_the_step_naming_the_check(tmp_path, monkeypatch):
+    _git(tmp_path, "init", "-q")
+    monkeypatch.setattr(cli, "_land_worktree", lambda repo, branch: tmp_path)
+    step = land.ticket_checks_steps({"ticket_checks": [{"name": "e2e", "cmd": "false"}]}, _BRANCH)[0]
+    ok, detail = cli._execute_land_step(tmp_path, step)
+    assert not ok and detail.startswith("e2e:")

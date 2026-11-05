@@ -52,6 +52,7 @@ from graphs.delivery.initiative_decompose import (
 )
 from harness import CORE_SCHEMA, node_progress, run_lease, store_traces
 from harness.autonomy import split_by_policy
+from harness.check_gate import gate_commands
 from harness.checks import all_passed, checks_evidence, repo_checks, run_checks
 from harness.digest import build_digest
 from harness.escalate import escalate_self_modification
@@ -982,6 +983,9 @@ def _launch(
         if hasattr(runner, "check_commands"):
             checks = (cartridge.get("landing_areas") or {}).get("checks") or []
             runner.check_commands = [str(c.get("cmd")) for c in checks if isinstance(c, dict) and c.get("cmd")]
+        if hasattr(runner, "gate_check_commands"):
+            by_gate = gate_commands(cartridge.get("landing_areas") or {})
+            runner.gate_check_commands = {g: cmds for g, cmds in by_gate.items() if g != "task"}
 
         # `lifecycle` is the only graph this file ever creates a worktree for
         # (the check arm and the post-gate apply arm inside `_run_graph`, both via
