@@ -105,3 +105,7 @@ Cut with `--allow-no-rehearsal`: the runner image was unavailable and the instal
 The line starts with `Cut with ` and the backtick-quoted flag, then a colon and one space, then the reason, then a final full stop. To compare reasons, the gate takes the text after the colon and space and before the final full stop, trims leading and trailing spaces from it, and tests it for equality with the trimmed command-line reason. A reason that itself ends in a full stop is written with that full stop followed by the line's own full stop.
 
 The gate refuses an empty reason, and a reason that is only spaces. It also refuses when the notes lack the line, or carry a reason that differs from the one passed on the command line under that comparison. An override never waives a failed rehearsal silently. It replaces the lookup in section 3 and leaves a line in the notes that a reader can find.
+
+## Resuming a release
+
+A resume reads the rehearsal record and the `release/<version>` branch at origin, not the checkout it runs from. It takes `manifest.toml` and the notes page from that branch, else from the recorded commit, else from the tag. It works from the release's own checkout and from a main that has moved on to a newer version. A release with no record, no branch and no tag is planned from the checkout as before.

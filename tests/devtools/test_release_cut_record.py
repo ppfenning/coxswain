@@ -2,7 +2,7 @@
 import json
 
 import pytest
-from test_release import _REHEARSAL_NOTES_LINE, _TAGGED_SHA, V0, _checkout, _rehearsal_edge, _sha_of
+from test_release import _MANIFEST_TOML, _REHEARSAL_NOTES_LINE, _TAGGED_SHA, V0, _checkout, _rehearsal_edge, _sha_of
 
 from devtools import cli, release, release_rehearsal_gate, release_resume
 
@@ -33,6 +33,8 @@ class Edge:
             return 0, f"object {_sha_of('x')}\ntype commit\ntag t\n\n{self.record}\n"
         if argv[3:4] == ["push"] and any(_REF in part for part in argv):
             return self.push_rc, "! [rejected]"
+        if argv[3:4] == ["show"] and argv[4].endswith(":manifest.toml"):
+            return 0, _MANIFEST_TOML
         if self.origin and argv[3:4] == ["rev-parse"] and argv[-1].startswith("origin/"):
             return 0, self.origin + "\n"
         return self.base(argv, cwd)

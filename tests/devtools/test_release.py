@@ -911,6 +911,8 @@ def _origin_cut(inner, *, branch=False, tag=False):
             return (0, f"cafe\t{argv[5]}\n") if listed.get(argv[5]) else (0, "")
         if argv[0] == "git" and argv[3] == "merge-base":
             return 0, "abc123\n"
+        if argv[0] == "git" and argv[3] == "show" and argv[4].endswith(":manifest.toml"):
+            return 0, _MANIFEST_TOML
         return inner(argv, cwd)
     return run
 

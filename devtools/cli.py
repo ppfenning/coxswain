@@ -1326,25 +1326,32 @@ def _rehearsed_shas(plan_steps: list[dict], resuming: Collection[str], version: 
 
 
 def _resuming(manifest: dict, version: str, pinned_commits: dict, umbrella: str, root: str, overrides: dict,
-              run) -> set[str]:
+              run, existing_tags: Mapping[str, Collection[str] | None] | None = None) -> set[str]:
     """Names of the umbrella (`coxswain`) and tagged components whose origin already lists `release/<version>`.
-    An origin that cannot be read is not resuming: a tag collision there refuses."""
+    While the umbrella's branch is still listed, a component with `v<version>` and no branch has merged back and
+    deleted it, so it is resuming too. An origin that cannot be read is not resuming: a tag collision there refuses."""
     ref = f"refs/heads/{release.release_branch_name(version)}"
     directories = {release.UMBRELLA: umbrella} | {
         name: release.component_dir(root, name, overrides)
         for name in release.tagged_components(manifest, version, pinned_commits)}
-    return {name for name, directory in directories.items() if _origin_ref_sha(directory, ref, run)[1] is not None}
+    listed = {name for name, directory in directories.items() if _origin_ref_sha(directory, ref, run)[1] is not None}
+    merged_back = {name for name in directories if name not in listed
+                   and f"v{version}" in ((existing_tags or {}).get(name) or ())} if release.UMBRELLA in listed else set()
+    return listed | merged_back
 
 
 def _rehearsal_steps(a: argparse.Namespace, plan_steps: list[dict], root: str, overrides: dict, umbrella: str,
-                     run, shas: Mapping[str, str] | None = None, record: Mapping | None = None) -> list[dict]:
+                     run, shas: Mapping[str, str] | None = None, record: Mapping | None = None,
+                     notes_text: str | None = None) -> list[dict]:
     """The rehearsal gate's steps. This edge reads the origin commit of the coxswain checkout (and of dash when
     the plan tags it), the checkout's tags, the notes and `gh`; `release_rehearsal_gate.decide` judges.
     `shas` are those commits when the caller already computed them (`_rehearsed_shas`).
     A `record` of the cut is judged by `decide_recorded`, fetching only its run and jobs by id: no title is built
     and no run is listed. Without one, a pass carries the `run_title` it matched, for the record the cut writes.
+    `notes_text` is the release's notes page when a resume read it from the release; else the checkout's is read.
     An override skips the `gh` calls."""
-    notes_text = _read_text_or_none(Path(umbrella) / "docs" / "releases" / f"{a.version}.md") or ""
+    if notes_text is None:
+        notes_text = _read_text_or_none(Path(umbrella) / "docs" / "releases" / f"{a.version}.md") or ""
     declared = release_migrations.parse_declaration(notes_text)
     if isinstance(declared, release_migrations.MigrationError):
         return [{"kind": "refuse", "component": "rehearsal", "detail": declared.message}]
@@ -1381,11 +1388,45 @@ def _checkouts(a: argparse.Namespace) -> tuple[Path, str, str, dict]:
     return manifest_path, umbrella, root, overrides
 
 
-def _index_changed(umbrella: str, version: str, manifest: dict, tagged: set[str]) -> bool:
-    """True when `tagged` renders a different index than the file on disk; an absent file reads as empty."""
+def _index_changed(umbrella: str, version: str, manifest: dict, tagged: set[str], index_text: str | None = None) -> bool:
+    """True when `tagged` renders a different index than `index_text`, else than the file on disk; absent reads as empty."""
     index_path = Path(umbrella) / "docs" / "releases" / "index.md"
-    existing = index_path.read_text() if index_path.exists() else ""
+    existing = index_text if index_text is not None else index_path.read_text() if index_path.exists() else ""
     return release.release_index_text(existing, version, manifest, tagged=tagged) != existing
+
+
+_RELEASE_PYPROJECT = "pyproject.toml"
+_RELEASE_INDEX = "docs/releases/index.md"
+
+
+def _release_state(umbrella: str, version: str, run) -> tuple[Mapping | None, str | None, str | None]:
+    """`(record, branch_sha, tag_sha)`: what origin holds of this release, each None when absent or unreadable."""
+    return (_cut_record(umbrella, version, run), release_resume.release_branch_sha(umbrella, version, run),
+            _origin_ref_sha(umbrella, f"refs/tags/v{version}", run)[1])
+
+
+def _release_source(version: str, record: Mapping | None, branch_sha: str | None, tag_sha: str | None) -> str | None:
+    """The ref a resume reads the release's files at: origin's release branch, else the recorded commit, else the tag.
+    None when the release has no state, and the checkout's files are then the release's."""
+    if branch_sha:
+        return f"origin/{release.release_branch_name(version)}"
+    return (record or {}).get("coxswain") or (f"v{version}" if tag_sha else None)
+
+
+def _release_files(umbrella: str, source: str, version: str, run) -> dict[str, str | None]:
+    """`manifest.toml`, the version's notes page, `pyproject.toml` and the releases index as they are at `source`."""
+    paths = ("manifest.toml", f"docs/releases/{version}.md", _RELEASE_PYPROJECT, _RELEASE_INDEX)
+    return {path: release_resume.file_at(umbrella, source, path, run) for path in paths}
+
+
+def _release_facts(files: Mapping[str, str | None], version: str) -> dict:
+    """The facts `gather_version_facts` reads off the working tree, taken from the release's files instead."""
+    pyproject = files.get(_RELEASE_PYPROJECT)
+    try:
+        parsed = tomllib.loads(pyproject) if pyproject else {}
+    except tomllib.TOMLDecodeError:
+        parsed = {}
+    return {"notes_text": files.get(f"docs/releases/{version}.md") or "", "umbrella_pyproject": parsed}
 
 
 def _release(a: argparse.Namespace) -> int:
@@ -1402,6 +1443,13 @@ def _release(a: argparse.Namespace) -> int:
     # The notes text is the first gate: a blank refuses before any git step runs, the fetch included.
     blanks = [] if a.tap_only else release.gate(release_check.run_checks(release_check.gather_version_facts(
         manifest, str(manifest_path), {}, umbrella), (release_check.check_notes_blanks,)), None)
+    state = None
+    if blanks:
+        # Blanks in the checkout's page refuse a release with no state. A release with state is judged on its own
+        # notes by the drift gate below, so a main holding a draft for a newer version cannot refuse its resume.
+        state = _release_state(umbrella, a.version, _stdout_run)
+        if _release_source(a.version, *state) is not None:
+            blanks = []
     if blanks:
         for step in blanks:
             print(f"refuse {step['component']}: {step['detail']}")
@@ -1416,8 +1464,24 @@ def _release(a: argparse.Namespace) -> int:
                    for directory in dict.fromkeys([*component_dirs.values(), umbrella])}
         fetch_failures = {directory: reason for directory, (ok, reason) in results.items() if not ok}
         prefetched = frozenset(directory for directory, (ok, _) in results.items() if ok)
+    # A release with state (its record, its origin branch, its tag) is read from that, so a checkout that has moved
+    # on cannot refuse it. One lookup of the record feeds the files, the rehearsal gate and the rehearsed commits.
+    state = state or ((None, None, None) if a.tap_only else _release_state(umbrella, a.version, _stdout_run))
+    record = state[0]
+    source = None if a.tap_only else _release_source(a.version, *state)
+    files = {} if source is None else _release_files(umbrella, source, a.version, _stdout_run)
+    if source is not None:
+        try:
+            manifest = tomllib.loads(files["manifest.toml"] or "")
+        except tomllib.TOMLDecodeError:
+            manifest = {}
+        if not manifest:
+            print(f"refusing: no readable manifest.toml at {source}")
+            return 2
+        component_dirs = release_check.component_dirs_for(umbrella, manifest, overrides, root)
     plan = release_check.facts_plan(umbrella, manifest, component_dirs)
-    facts = {**plan, **release_check.gather_version_facts(manifest, str(manifest_path), component_dirs, umbrella)}
+    facts = {**plan, **release_check.gather_version_facts(manifest, str(manifest_path), component_dirs, umbrella),
+             **(_release_facts(files, a.version) if source is not None else {})}
     drifts = release_check.run_checks(facts)
     components = manifest.get("components", {})
     umbrella_slug = release.umbrella_release_slug(manifest, _repository_url())
@@ -1447,7 +1511,7 @@ def _release(a: argparse.Namespace) -> int:
     tap_state = _tap_state(release.component_dir(root, release.TAP_CHECKOUT, overrides))
 
     resuming = set() if a.tap_only else _resuming(manifest, a.version, pinned_commits, umbrella, root, overrides,
-                                                   _real_run)
+                                                   _real_run, existing_tags)
 
     def plan_for(index_changed: bool) -> list[dict]:
         return release.release_plan(
@@ -1457,15 +1521,17 @@ def _release(a: argparse.Namespace) -> int:
 
     # `rejoined` is the tagged set the executor's notes step renders with, so the two renderings agree.
     plan_steps = plan_for(False)
-    if not a.tap_only and _index_changed(umbrella, a.version, manifest, release.rejoined(plan_steps)):
+    index_text = files.get(_RELEASE_INDEX) or "" if source is not None else None
+    if not a.tap_only and _index_changed(umbrella, a.version, manifest, release.rejoined(plan_steps), index_text):
         plan_steps = plan_for(True)
     # The drift gate guards a cut; a tap-only resume runs after the cut landed and reads only PyPI and the tap clone.
     # One lookup of the rehearsed commits feeds both the rehearsal gate and the executor's `release_branch` steps.
-    record = None if a.tap_only else _cut_record(umbrella, a.version, _stdout_run)
     rehearsed = {} if a.tap_only else _rehearsed_shas(plan_steps, resuming, a.version, root, overrides, umbrella,
                                                      _stdout_run, existing_tags, record)
     steps = plan_steps if a.tap_only else (_rehearsal_steps(a, plan_steps, root, overrides, umbrella, _stdout_run,
-                                                            rehearsed, record)
+                                                            rehearsed, record,
+                                                            files.get(f"docs/releases/{a.version}.md") or ""
+                                                            if source is not None else None)
                                            + release.gate(drifts, a.allow_doc_drift, plan_steps) + plan_steps)
     if not a.tap_only:
         # Every tree the release pins, the coxswain checkout's included, is checked at that exact ref, dry run or not.
