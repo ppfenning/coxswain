@@ -586,6 +586,21 @@ def test_overlay_errors_refuses_land_checks_other_than_ci_or_local(value: object
     assert overlay_errors({"landing_areas": {"land_checks": value}}) == [expected]
 
 
+def test_overlay_errors_accepts_a_valid_target_branch() -> None:
+    assert overlay_errors({"landing_areas": {"target_branch": "release/2.0"}}) == []
+
+
+def test_overlay_errors_refuses_an_invalid_target_branch() -> None:
+    expected = "project layer overlay refuses landing_areas.target_branch: must be a valid branch name, got 'bad..name'"
+    assert overlay_errors({"landing_areas": {"target_branch": "bad..name"}}) == [expected]
+
+
+def test_apply_overlay_carries_a_lone_target_branch_and_keeps_the_base_checks() -> None:
+    base_checks = [{"name": "lint", "cmd": "ruff check ."}]
+    merged = apply_overlay({"landing_areas": {"checks": base_checks}}, {"landing_areas": {"target_branch": "release"}})
+    assert merged["landing_areas"] == {"checks": base_checks, "target_branch": "release"}
+
+
 def test_apply_overlay_carries_a_lone_land_checks_and_keeps_the_base_checks() -> None:
     base_checks = [{"name": "lint", "cmd": "ruff check ."}]
     resolved = {"landing_areas": {"checks": base_checks}}

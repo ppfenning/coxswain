@@ -24,6 +24,39 @@ def resolve_land_at(cartridge: Mapping[str, Any], initiative_land_at: str | None
     return checked_initiative or checked_config or DEFAULT_LAND_AT
 
 
+_BRANCH_FORBIDDEN = frozenset("~^:?*[\\")
+
+
+def valid_branch(value: Any, where: str) -> str:
+    """A bare branch name under git's ref-name rules; a non-string or any broken rule raises."""
+    ok = (
+        isinstance(value, str)
+        and value != ""
+        and not any(c.isspace() or c < " " or c == "\x7f" or c in _BRANCH_FORBIDDEN for c in value)
+        and ".." not in value
+        and "@{" not in value
+        and not value.startswith(("-", "/"))
+        and not value.endswith(("/", ".", ".lock"))
+    )
+    if ok:
+        return value
+    raise ValueError(f"{where} target_branch must be a valid branch name, got {value!r}")
+
+
+def resolve_target_branch(
+    cartridge: Mapping[str, Any], epic_branch: str | None, initiative_branch: str | None
+) -> str | None:
+    """The initiative value, else the epic, else `landing_areas.target_branch`, else None; every value given is validated."""
+    landing = cartridge.get("landing_areas")
+    configured = landing.get("target_branch") if isinstance(landing, Mapping) else None
+    # Validate all three even when a higher one wins, so a bad lower value never hides.
+    checked = [
+        None if value is None else valid_branch(value, where)
+        for value, where in ((initiative_branch, "initiative"), (epic_branch, "epic"), (configured, "cartridge"))
+    ]
+    return next((value for value in checked if value is not None), None)
+
+
 def land_gate_level(land_at: str) -> str:
     """The granularity at which the human approval gate applies: the `land_at` value itself."""
     return _checked(land_at, "gate")
