@@ -98,7 +98,7 @@ def test_a_draft_initiative_is_not_a_stub_candidate():
 
 def test_a_task_needing_only_an_approved_unlanded_task_is_blocked_ready():
     items = [item("t1", "approved"), item("t2", "todo", ["t1"])]
-    assert blocked_ready(items) == [{"task": "t2", "unlanded_needs": ["t1"]}]
+    assert blocked_ready(items, {"a": "task"}) == [{"task": "t2", "unlanded_needs": ["t1"]}]
 
 
 def test_the_same_task_also_needing_an_unapproved_task_is_not_blocked_ready():

@@ -10,7 +10,7 @@ def test_ready_behind_quarantined_phase_is_blocked():
 
 def test_ready_behind_approved_phase_counts_awaiting_land():
     tasks = (TaskView("a", "p1", "approved"), TaskView("b", "p2", "ready"))
-    assert runnable_verdict(tasks, PHASES) == Blocking("p1", 0, 1)
+    assert runnable_verdict(tasks, PHASES, land_at="task") == Blocking("p1", 0, 1)
 
 
 def test_ready_in_first_phase_with_needs_done_is_runnable():
@@ -20,7 +20,7 @@ def test_ready_in_first_phase_with_needs_done_is_runnable():
 
 def test_ready_with_needs_not_done_is_not_runnable():
     tasks = (TaskView("a", "p1", "approved"), TaskView("b", "p1", "ready", ("a",)))
-    assert runnable_verdict(tasks, PHASES) == Blocking("p1", 0, 1)
+    assert runnable_verdict(tasks, PHASES, land_at="task") == Blocking("p1", 0, 1)
     assert runnable_verdict((TaskView("b", "p1", "ready", ("a",)),), PHASES) == Runnable(())
 
 
@@ -46,7 +46,7 @@ def test_earliest_blocking_phase_is_named_with_both_counts():
         TaskView("c", "p1", "approved"),
         TaskView("d", "p1", "approved"),
     )
-    assert runnable_verdict(tasks, PHASES) == Blocking("p1", 1, 2)
+    assert runnable_verdict(tasks, PHASES, land_at="task") == Blocking("p1", 1, 2)
 
 
 def test_waiting_initiative_carries_blocking():
@@ -60,7 +60,7 @@ def test_ready_task_with_met_needs_shares_a_phase_with_an_approved_task():
 
 def test_ready_task_needing_the_approved_task_leaves_the_phase_blocking():
     tasks = (TaskView("a", "p1", "approved"), TaskView("b", "p1", "ready", ("a",)))
-    assert runnable_verdict(tasks, PHASES) == Blocking("p1", 0, 1)
+    assert runnable_verdict(tasks, PHASES, land_at="task") == Blocking("p1", 0, 1)
 
 
 def _merged_p1(count: int) -> tuple[TaskView, ...]:
@@ -75,7 +75,7 @@ def test_ready_after_an_all_merged_phase_is_runnable_at_ticket_and_level():
 
 def test_an_approved_unmerged_task_still_counts_awaiting_land_beside_merged_ones():
     tasks = (*_merged_p1(2), TaskView("a", "p1", "approved"), TaskView("b", "p2", "ready"))
-    assert runnable_verdict(tasks, PHASES) == Blocking("p1", 0, 1)
+    assert runnable_verdict(tasks, PHASES, land_at="task") == Blocking("p1", 0, 3)
 
 
 def test_a_merged_phase_still_blocks_at_land_at_task():

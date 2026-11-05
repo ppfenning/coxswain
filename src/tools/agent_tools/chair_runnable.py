@@ -5,7 +5,7 @@ Pure. Takes plain task data and the ordered phase list; no file, store or clock 
 
 from dataclasses import dataclass
 
-from core.landing import DEFAULT_LAND_AT, phase_counts_complete
+from core.landing import DEFAULT_LAND_AT, need_met, phase_counts_complete
 from core.phase_hold import phase_holds
 
 READY = "ready"
@@ -52,17 +52,22 @@ def _merged_counts(land_at: str, task: TaskView) -> bool:
     return task.state == MERGED and phase_counts_complete(land_at, [("approved", True)])
 
 
+def _approved_counts(land_at: str, task: TaskView) -> bool:
+    """True for an approved task whose need `core.landing.need_met` accepts as met at `land_at`."""
+    return task.state == APPROVED and need_met(land_at, "approved", False)
+
+
 def _blocking_phases(tasks: tuple[TaskView, ...], phases: tuple[str, ...], land_at: str) -> tuple[Blocking, ...]:
     """Blocking phases in `phases` order; a phase with neither quarantined nor awaiting-land tasks is absent.
 
-    A merged task awaits its land only where `land_at` does not count it complete."""
+    A merged or approved task awaits its land only where `land_at` does not count it met."""
     return tuple(
         Blocking(phase, quarantined, awaiting_land)
         for phase in phases
         for quarantined, awaiting_land in (
             (
                 sum(1 for t in tasks if t.phase == phase and t.state == QUARANTINED),
-                sum(1 for t in tasks if t.phase == phase and (t.state == APPROVED or (t.state == MERGED and not _merged_counts(land_at, t)))),
+                sum(1 for t in tasks if t.phase == phase and ((t.state == APPROVED and not _approved_counts(land_at, t)) or (t.state == MERGED and not _merged_counts(land_at, t)))),
             ),
         )
         if quarantined or awaiting_land
@@ -73,7 +78,7 @@ def runnable_verdict(tasks: tuple[TaskView, ...], phases: tuple[str, ...], land_
     """Runnable ids if any task is ready, has all needs done and no earlier blocking phase; else the earliest Blocking, else an empty Runnable."""
     order = {phase: n for n, phase in enumerate(phases)}
     blocking = _blocking_phases(tasks, phases, land_at)
-    done = frozenset(t.id for t in tasks if t.state == DONE or _merged_counts(land_at, t))
+    done = frozenset(t.id for t in tasks if t.state == DONE or _merged_counts(land_at, t) or _approved_counts(land_at, t))
     met = tuple(t for t in tasks if t.state == READY and all(need in done for need in t.needs))
     first = blocking[0] if blocking else None
     held = first is not None and phase_holds(first.awaiting_land, sum(1 for t in met if t.phase == first.phase))
