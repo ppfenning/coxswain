@@ -158,11 +158,20 @@ A level runs its ready tasks together, up to a cap. The cap is the `--max-parall
 commands. Without it, the cap is the `max_parallel` setting of the provider profile, a positive integer. Without that,
 it is the free lane count. A zero, a negative or a non-integer profile value is refused.
 
-A level still waits for its parent levels. The initiative driver, started by the `epic` command, holds a level until every one of its parents is complete,
-and a parent that did not meet its goal blocks its dependents. A level with several parents waits for all of them.
+Phases form a directed graph of levels. The driver derives each phase's parent phases from the needs between tasks, with
+`phase_parents` in `harness/waves.py`. `compute_waves` in the same module sorts the phases into waves. A wave holds the
+phases whose parents all sit in earlier waves. A phase caught in a dependency cycle is placed in no wave and is recorded as blocked.
 
-Running a ready task ahead of an unfinished earlier level is not current behaviour. It is planned work, tracked in
-#626. Until that ships, the scheduler in `lanes.py` is not wired in, and a level holds until every parent level is complete.
+Independent phases in a wave run together, one lane each. A lane number is reused once its phase finishes. The
+`_run_lanes` function in `harness/epic.py` runs the phases as lanes.
+
+Tasks inside a phase run in parallel up to the cap. `lane_bound` in `harness/lanes.py` lowers the number that start when the usage ceiling is
+tighter than the lane limit. `plan_launches` in `harness/scheduler.py` uses `next_launches` from `harness/lanes.py` to choose which
+ready tasks start. The scheduler holds the ready tasks of a phase while another phase has a build in flight over an overlapping surface.
+
+A phase still waits for its parents. The driver holds the tasks of a phase until every parent phase is complete.
+A parent that did not meet its goal blocks its dependents. A phase with several parents waits for all of them.
+The one exception is a ready task whose own needs are all merged, which may start before its parents are complete.
 
 ## Target branch
 
