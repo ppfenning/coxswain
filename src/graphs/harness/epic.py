@@ -98,6 +98,7 @@ from harness.lanes import lane_bound
 from harness.resume import load_result, reusable, save_result
 from harness.scheduler import plan_launches
 from harness.stack_refresh import refresh_branch, refresh_reason, refresh_record
+from harness.stale_base import is_patch_empty, missing_paths, stale_base_reason, ticket_paths
 from harness.store_dialect import Connection, connect
 from harness.store_lease import assert_epoch, renew
 from harness.store_pause import clear_paused, is_paused
@@ -1688,7 +1689,7 @@ def _quarantine_task(
     phase: str,
     task: str,
     reason: str,
-    kind: Literal["refused", "no_work", "unverified", "infra", "rescue_failed"],
+    kind: Literal["refused", "no_work", "unverified", "infra", "rescue_failed", "stale_base"],
     detail: str | None = None,
     result: Mapping[str, Any] | None = None,
     cause: tuple[str, str] | None = None,
@@ -1714,6 +1715,8 @@ def _quarantine_task(
     record, not a resumable arm session: `auto_apply`'s `runner.run` call carries
     no `thread=`, so nothing about the failed arm call itself survives to be
     resumed.
+
+    `stale_base` is an empty build whose base lacks a file the ticket names; it keeps no patch.
 
     `detail`, when given, is stored as the attempt's own `reason` in place of
     the terse one on `entry` — the next build's carried-forward brief gets the
@@ -2520,6 +2523,15 @@ def _quarantine_missing_merges(
                 item["state"], item["merged"] = "quarantined", False
 
 
+def _stale_base_missing(ctx: _Ctx, phase: str, item: Mapping[str, Any]) -> tuple[str, ...]:
+    """Ticket files absent from the level worktree's head; empty when its tracked paths cannot be read."""
+    ok, listing = _git("-C", str(ctx.phase_worktree(phase)), "ls-tree", "-r", "--name-only", "HEAD")
+    if not ok:
+        return ()
+    named = ticket_paths([str(s) for s in item.get("surfaces") or []], str(item.get("body") or ""))
+    return missing_paths(named, listing.splitlines())
+
+
 def _invoke_failure_kind(failure: str) -> Literal["infra", "no_work"]:
     """`infra` for a transient OAuth refresh collision, which spends no attempt; `no_work` otherwise."""
     lowered = failure.lower()
@@ -3063,10 +3075,15 @@ def _run_phase(
         for failure in failures:
             if is_auth_failure(failure):
                 continue
+            failed = failure.split(":", 1)[0]
+            # An empty patch from a base that lacks the ticket's own files is the base's fault, not the ticket's.
+            empty = is_patch_empty(failure) and failed in by_id
+            missing = _stale_base_missing(ctx, phase, by_id[failed]) if empty else ()
             quarantined.append(
                 _quarantine_task(
-                    ctx, by_id, phase=phase, task=failure.split(":", 1)[0], reason=failure,
-                    kind=_invoke_failure_kind(failure),
+                    ctx, by_id, phase=phase, task=failed,
+                    reason=stale_base_reason(failed, missing) if missing else failure,
+                    kind="stale_base" if missing else _invoke_failure_kind(failure),
                 )
             )
         # A lapsed login fails every task in every later phase the same way.
