@@ -112,7 +112,8 @@ def test_task_flag_forces_task_mode_even_when_the_phase_has_two_records(phase_ru
     rc = cli._runs_land(ns)
     steps = json.loads(capsys.readouterr().out)
     assert rc == 2
-    assert steps == [{"kind": "refuse", "reason": "no branch is exactly one commit ahead of main", "found": {}}]
+    assert steps[0]["reason"].startswith("no branch is ahead of main: agents/")
+    assert steps[0]["found"] == {}
 
 
 @pytest.fixture

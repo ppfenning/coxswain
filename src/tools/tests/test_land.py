@@ -59,24 +59,46 @@ def test_arbitration_verdict_reads_a_null_a_dict_and_the_arbiter_skip_string(arb
     assert land.arbitration_verdict({"arbitration": arbitration}) == verdict
 
 
-@pytest.mark.parametrize("record, branches, branch", [
-    (_record(), {**_ONE_COMMIT, "epic/x/seams": ["Add seams module", "Add other thing"]}, "agents/epic-x-5/seams-task"),
-    (_record(), {"agents/epic-x-5/seams-task": ["c1", "c2"], "epic/x/seams": ["Add seams module"]}, "epic/x/seams"),
-    (_record(initiative=None), _ONE_COMMIT, "agents/epic-x-5/seams-task"),
+@pytest.mark.parametrize("record, branches, branch, commits", [
+    (_record(), {**_ONE_COMMIT, "epic/x/seams": ["Add seams module", "Add other thing"]}, "agents/epic-x-5/seams-task", 1),
+    (_record(), {"agents/epic-x-5/seams-task": ["Add seams module", "c2"], "epic/x/seams": ["Other"]},
+     "agents/epic-x-5/seams-task", 2),
+    (_record(), {"agents/epic-x-5/seams-task": [], "epic/x/seams": ["Add seams module"]}, "epic/x/seams", 1),
+    (_record(initiative=None), _ONE_COMMIT, "agents/epic-x-5/seams-task", 1),
 ])
-def test_branch_choice_picks_the_one_branch_exactly_one_commit_ahead(record, branches, branch):
-    assert land.land_plan(record, branches, "main")[0] == {"kind": "pick_branch", "branch": branch, "commit_subject": "Add seams module"}
+def test_branch_choice_takes_the_scratch_branch_first_when_the_phase_is_not_done(record, branches, branch, commits):
+    assert land.land_plan(record, branches, "main")[0] == {
+        "kind": "pick_branch", "branch": branch, "commit_subject": "Add seams module", "commits": commits}
 
 
-@pytest.mark.parametrize("record, branches, found", [
-    (_record(), {"agents/epic-x-5/seams-task": ["c1", "c2"], "epic/x/seams": ["c1", "c2"]},
-     {"agents/epic-x-5/seams-task": 2, "epic/x/seams": 2}),
-    (_record(initiative=None), {"epic/x/seams": ["one commit"]}, {"epic/x/seams": 1}),
+def test_two_commit_scratch_branch_plans_with_the_newest_subject_and_a_commit_count():
+    steps = land.land_plan(_record(), {"agents/epic-x-5/seams-task": ["Newest", "Oldest"]}, "main")
+    assert [s["kind"] for s in steps] == _STEP_ORDER
+    assert (steps[0]["commits"], steps[1]["commits"], steps[0]["commit_subject"]) == (2, 2, "Newest")
+    assert steps[6]["subject"] == "Newest"
+
+
+def test_done_phase_picks_a_multi_commit_phase_branch_over_the_scratch_branch():
+    branches = {"agents/epic-x-5/seams-task": ["Scratch"], "epic/x/seams": ["Phase newest", "Phase older"]}
+    steps = land.land_plan(_record(), branches, "main", phase_done=True)
+    assert steps[0] == {"kind": "pick_branch", "branch": "epic/x/seams", "commit_subject": "Phase newest", "commits": 2}
+    assert land.land_plan(_record(), {**branches, "epic/x/seams": []}, "main", phase_done=True)[0]["branch"] == "agents/epic-x-5/seams-task"
+
+
+@pytest.mark.parametrize("record, branches, found, reason", [
+    (_record(), {"agents/epic-x-5/seams-task": [], "epic/x/seams": []}, {"agents/epic-x-5/seams-task": 0, "epic/x/seams": 0},
+     "no branch is ahead of main: agents/epic-x-5/seams-task: 0 not already on main; epic/x/seams: 0 not already on main"),
+    (_record(initiative=None), {}, {}, "no branch is ahead of main: agents/epic-x-5/seams-task: 0 not already on main"),
 ])
-def test_branch_choice_ambiguous_refuses_naming_what_was_found(record, branches, found):
-    assert land.land_plan(record, branches, "main") == [
-        {"kind": "refuse", "reason": "no branch is exactly one commit ahead of main", "found": found}
-    ]
+def test_branch_choice_without_a_subject_refuses_naming_what_was_found(record, branches, found, reason):
+    assert land.land_plan(record, branches, "main") == [{"kind": "refuse", "reason": reason, "found": found}]
+
+
+def test_diverged_branch_refuses_quoting_the_compared_counts():
+    compared = {"agents/epic-x-5/seams-task": {"ahead": 3, "behind": 3, "unique": 0}}
+    steps = land.land_plan(_record(initiative=None), {"agents/epic-x-5/seams-task": []}, "main", compared=compared)
+    assert steps == [{"kind": "refuse", "found": {"agents/epic-x-5/seams-task": 0},
+                      "reason": "no branch is ahead of main: agents/epic-x-5/seams-task: ahead 3, behind 3, 0 not already on main"}]
 
 
 def test_step_order():
@@ -379,15 +401,16 @@ def _stacked_repo(tmp_path, *, parent_on_main):
     return root
 
 
-@pytest.mark.parametrize("parent_on_main, subjects, kind", [
-    (True, ["own commit"], "pick_branch"),
-    (False, ["own commit", "parent commit"], "refuse"),
+@pytest.mark.parametrize("parent_on_main, subjects", [
+    (True, ["own commit"]),
+    (False, ["own commit", "parent commit"]),
 ])
-def test_land_branches_drops_a_commit_whose_patch_is_already_on_main_and_keeps_one_that_is_not(tmp_path, parent_on_main, subjects, kind):
+def test_land_branches_drops_a_commit_whose_patch_is_already_on_main_and_keeps_one_that_is_not(tmp_path, parent_on_main, subjects):
     root = _stacked_repo(tmp_path, parent_on_main=parent_on_main)
     branches = cli._land_branches(root, _record(), "main")
     assert branches["agents/epic-x-5/seams-task"] == subjects
-    assert land.land_plan(_record(), branches, "main")[0]["kind"] == kind
+    first = land.land_plan(_record(), branches, "main")[0]
+    assert (first["kind"], first["commits"]) == ("pick_branch", len(subjects))
 
 
 # --- cli._execute_land_step: the git-only arms, for real, no gh ---
