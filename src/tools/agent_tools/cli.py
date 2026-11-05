@@ -2590,6 +2590,11 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
             _link_venv(repo, wt)
         return co.returncode == 0, (f"reusing {step['branch']}" if co.returncode == 0 else co.stderr.strip() or co.stdout.strip())
     if kind == "checks":
+        if step.get("gate") == "ticket":
+            # The ticket gate shares the repo lock with level check runs; task checks below never take it.
+            from harness import check_gate
+            with check_gate.repo_gate_lock(repo):
+                return _run_checks(step["checks"], _land_worktree(repo, step["worktree_of"]))
         if "skipped" in step:
             return True, f"checks: skipped ({step['skipped']})"
         if "kept" in step:
@@ -3320,6 +3325,7 @@ def _land_repo_facts(repo: Path, profile: dict, default_branch: str | None = Non
     `harness.checks.repo_checks`, as the chair does), the files that say whether pytest belongs here, and
     `cartridge_error`, set when the cartridge could not be resolved and the checks are therefore short.
     `land_checks` is the cartridge's; only `ci` reads the forge, for `required_checks`."""
+    from harness.check_gate import gate_checks
     from harness.checks import repo_checks
     try:
         agent_checks = (repo / ".agent-checks").read_text(encoding="utf-8-sig")
@@ -3329,7 +3335,8 @@ def _land_repo_facts(repo: Path, profile: dict, default_branch: str | None = Non
     cartridge_checks = list(landing.get("checks") or [])
     facts = {"venv_python": (repo / ".venv" / "bin" / "python").exists(), "uv_lock": (repo / "uv.lock").exists(),
              "python_project": any((repo / name).exists() for name in land.PYTHON_PROJECT_FILES),
-             "checks": land.resolved_checks(cartridge_checks, repo_checks(agent_checks)), "cartridge_error": cartridge_error}
+             "checks": land.resolved_checks(cartridge_checks, repo_checks(agent_checks)), "cartridge_error": cartridge_error,
+             "ticket_checks": gate_checks(landing, "ticket")}
     land_checks = landing.get("land_checks")
     if land_checks is None:
         return facts
@@ -3345,7 +3352,8 @@ def _land_checks_lines(steps: list[dict]) -> list[str]:
         return line if name == line or line.split(None, 1)[:1] == [name] else f"{name} = {line}"
     lines = []
     for s in (s for s in steps if s["kind"] == "checks"):
-        label = f"checks ({s.get('worktree_of') or s.get('branch') or 'repo'}): "
+        gate = "ticket gate" if s.get("gate") == "ticket" else "checks"
+        label = f"{gate} ({s.get('worktree_of') or s.get('branch') or 'repo'}): "
         if "skipped" in s:
             lines.append(f"{label}skipped ({s['skipped']})")
             continue

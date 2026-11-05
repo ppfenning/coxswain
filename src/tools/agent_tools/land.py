@@ -175,6 +175,12 @@ def checks_step(repo_facts: dict[str, Any], worktree_of: str) -> dict[str, Any]:
     return {"kind": "checks", "checks": checks_argv(repo_facts), "worktree_of": worktree_of, **gate}
 
 
+def ticket_checks_steps(repo_facts: dict[str, Any], worktree_of: str) -> list[dict[str, Any]]:
+    """The ticket gate's one `checks` step, as `(name, shell line)` pairs from `repo_facts["ticket_checks"]`; no step at all when that list is empty."""
+    checks = [(c["name"], c["cmd"]) for c in repo_facts.get("ticket_checks") or []]
+    return [{"kind": "checks", "gate": "ticket", "checks": checks, "worktree_of": worktree_of}] if checks else []
+
+
 PYTEST_NO_TESTS = 5  # pytest's exit code when it collected no tests
 
 
@@ -445,7 +451,9 @@ def _card_phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], 
     if not done and not (ticket and last):
         return [{"kind": "note", "reason": f"phase {phase_record.get('phase')}: no approved task to apply to {branch}"}]
     if ticket:
-        build = [*applied, checks_step(repo_facts or {}, branch), {"kind": "push", "branch": branch}]
+        # The ticket checks run once, in the land that opens the ticket PR (the last phase), not in every phase land.
+        gate = ticket_checks_steps(repo_facts or {}, branch) if last else []
+        build = [*applied, checks_step(repo_facts or {}, branch), *gate, {"kind": "push", "branch": branch}]
         marks = ticket_done(ticket_tasks, {*done, *ticket_present})
         held = {t for s in marks if s["kind"] == "note" for t in s["unmerged"]}
         pr = card_pr_steps(phase_record.get("initiative"), {repo: {"task_ids": [t for t in ticket_tasks if t not in held],
@@ -594,6 +602,7 @@ def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_
     return [
         *build_steps,
         checks_step(repo_facts or {}, pr_branch),
+        *(ticket_checks_steps(repo_facts or {}, pr_branch) if ticket else []),
         {"kind": "push", "branch": pr_branch},
         {"kind": "pr_create", "title": phase_pr_title(initiative, phase, phase_record.get("initiative_title", "")),
          "body": phase_pr_body(phase_record, [*ticket_records, *task_records] if ticket else task_records), "head": pr_branch, "base": default_branch},
