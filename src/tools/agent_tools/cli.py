@@ -233,6 +233,7 @@ stats_lanes = _LazyModule("agent_tools.stats_lanes")
 stats_models_cmd = _LazyModule("agent_tools.stats_models_cmd")
 stats_query = _LazyModule("agent_tools.stats_query")
 stats_schema = _LazyModule("agent_tools.stats_schema")
+stats_shadow_tier = _LazyModule("agent_tools.stats_shadow_tier")
 stats_system_one = _LazyModule("agent_tools.stats_system_one")
 stats_tiers_cmd = _LazyModule("agent_tools.stats_tiers_cmd")
 steward = _LazyModule("agent_tools.steward")
@@ -653,6 +654,13 @@ def _stats_system_one(a: argparse.Namespace) -> int:
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text(stats_system_one.render_proposal(s, today), encoding="utf-8")
             print(f"wrote {out}", file=sys.stderr)
+    return 0
+
+
+def _stats_shadow_tier(a: argparse.Namespace) -> int:
+    usages = list(run_store.usages(Path(a.runs_dir)).values())
+    found = stats_shadow_tier.summaries(stats_shadow_tier.rows_from_usage(usages), a.since, a.role)
+    print(json.dumps(stats_shadow_tier.to_json(found), indent=2) if a.json else stats_shadow_tier.render_report(found))
     return 0
 
 
@@ -10334,6 +10342,16 @@ STATS_COMMANDS = [
             commands.Arg(("--plans-dir",), {"default": "plans", "help": "where --propose writes system-one-graduation-<role>-<date>.md"}),
         ),
         "agent_tools.cli:_stats_system_one", False, (),
+    ),
+    commands.Command(
+        "shadow-tier", "stats", "cheap-tier shadow trial per role: agreement, costly rate, cost saved, and the graduation bar; changes nothing",
+        (
+            commands.Arg(("runs_dir",), {"nargs": "?", "default": "runs"}),
+            commands.Arg(("--role",), {"default": None, "help": "report this role only"}),
+            commands.Arg(("--since",), {"default": None, "help": "keep only rows dated on or after DATE (YYYY-MM-DD)"}),
+            commands.Arg(("--json",), {"action": "store_true"}),
+        ),
+        "agent_tools.cli:_stats_shadow_tier", False, (),
     ),
     commands.Command(
         "lanes", "stats", "per hour, the average and peak busy lanes and the idle minutes, from the store's run spans",
