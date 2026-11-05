@@ -131,24 +131,67 @@ def _binary(target="x86_64-unknown-linux-gnu"):
     return dash_binary.binary_step("dash", {"repo": "acme/coxswain-dash", "tag": "v1.2.3"}, target, _BIN_DIR)
 
 
-def test_binary_step_downloads_unpacks_then_copies_both_programs_in_order():
+def _install_argvs(names=("towpath", "coxtop")):
+    return [
+        argv
+        for name in names
+        for argv in (
+            ["cp", "-f", f"{_SCRATCH}/{name}", f"{_BIN_DIR}/.{name}.new"],
+            ["chmod", "+x", f"{_BIN_DIR}/.{name}.new"],
+            ["mv", "-f", f"{_BIN_DIR}/.{name}.new", f"{_BIN_DIR}/{name}"],
+        )
+    ]
+
+
+def test_binary_step_downloads_unpacks_then_copies_marks_and_moves_both_programs_in_order():
     run, calls = _fake_run({})
     results = install_exec.execute([_binary()], root="/root", run=run)
     download = ["curl", "--fail", "--location", "--silent", "--show-error", "--create-dirs", "--output", _ARCHIVE, _URL]
     unpack = ["tar", "-xzf", _ARCHIVE, "-C", _SCRATCH]
-    copy = ["cp", "-f", f"{_SCRATCH}/towpath", f"{_SCRATCH}/coxtop", _BIN_DIR]
-    assert calls == [(download, None), (unpack, None), (copy, None)]
-    assert results[0]["commands"] == [download, unpack, copy]
+    expected = [download, unpack, *_install_argvs()]
+    assert calls == [(argv, None) for argv in expected]
+    assert results[0]["commands"] == expected
     assert results[0]["exit"] == 0
 
 
 def test_binary_step_argvs_carry_the_url_and_the_bin_dir():
     run, calls = _fake_run({})
     install_exec.execute([_binary()], root="/root", run=run)
-    download, unpack, copy = (argv for argv, _ in calls)
+    download, unpack, *install = (argv for argv, _ in calls)
     assert _URL in download
-    assert copy[-1] == _BIN_DIR
-    assert {"towpath", "coxtop"} <= {Path(arg).name for arg in copy}
+    moves = [argv for argv in install if argv[0] == "mv"]
+    assert [argv[-1] for argv in moves] == [f"{_BIN_DIR}/towpath", f"{_BIN_DIR}/coxtop"]
+    finals = {argv[-1] for argv in moves}
+    assert not any(argv[0] == "cp" and argv[-1] in finals for argv in install)
+
+
+def test_binary_install_replaces_the_destination_with_a_new_inode_and_leaves_no_temporary(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    names = ("towpath", "coxtop")
+    for name in names:
+        (bin_dir / name).write_bytes(b"old")
+    old_inodes = {name: (bin_dir / name).stat().st_ino for name in names}
+    step = dash_binary.binary_step("dash", {"repo": "acme/coxswain-dash", "tag": "v1.2.3"}, "x86_64-unknown-linux-gnu", str(bin_dir))
+    scratch = bin_dir / ".towpath-x86_64-unknown-linux-gnu.tmp"
+
+    def run(argv, cwd):
+        if argv[0] in ("curl", "tar"):
+            scratch.mkdir(exist_ok=True)
+            for name in names:
+                (scratch / name).write_bytes(f"new-{name}".encode())
+            return 0, ""
+        done = subprocess.run(argv, capture_output=True, text=True)
+        return done.returncode, done.stdout + done.stderr
+
+    results = install_exec.execute([step], root=str(tmp_path), run=run)
+    assert results[0]["exit"] == 0
+    for name in names:
+        dest = bin_dir / name
+        assert dest.read_bytes() == f"new-{name}".encode()
+        assert dest.stat().st_ino != old_inodes[name]
+        assert dest.stat().st_mode & 0o111
+    assert {entry.name for entry in bin_dir.iterdir()} == {*names, scratch.name}
 
 
 def test_a_failing_binary_download_stops_before_any_copy_and_is_fatal():
@@ -563,7 +606,7 @@ def _dash_manifest(tag, provides=True):
 def _upgrade_with_binary_manifests(monkeypatch, tmp_path, old_manifest, moved_manifest, towpath_version):
     """Runs `cox upgrade --to 2026.11.1` on an Apple-silicon host with a present dash checkout. The manifest flag
     carries `old_manifest`, the moved umbrella carries `moved_manifest`, and `towpath --version` prints
-    `towpath_version` until a `cp` runs, then the target version."""
+    `towpath_version` until a `mv` runs, then the target version."""
     import shutil
 
     from agent_tools import cli
@@ -579,7 +622,7 @@ def _upgrade_with_binary_manifests(monkeypatch, tmp_path, old_manifest, moved_ma
         calls.append(argv)
         if argv[-1] == "--version":
             return 0, "towpath 2026.11.1" if state["copied"] else towpath_version
-        state["copied"] = state["copied"] or argv[0] == "cp"
+        state["copied"] = state["copied"] or argv[0] == "mv"
         return (0, "abc\trefs/tags/v2026.11.1\n") if "ls-remote" in argv else (0, "")
 
     monkeypatch.setattr(cli, "_real_run", fake_run)
@@ -600,7 +643,7 @@ def test_cli_upgrade_installs_the_binary_a_moved_manifest_adds_before_the_doctor
 
     doctor = calls.index(["cox", "setup", "doctor"])
     curl = next(at for at, argv in enumerate(calls) if argv[0] == "curl" and argv[-1] == _TARGET_ASSET)
-    copy = next(at for at, argv in enumerate(calls) if argv[0] == "cp" and argv[-1] == str(bin_dir))
+    copy = next(at for at, argv in enumerate(calls) if argv[0] == "mv" and Path(argv[-1]).parent == bin_dir)
     assert rc == 0
     assert curl < copy < doctor
 
@@ -611,7 +654,7 @@ def test_cli_upgrade_installs_the_target_binary_when_the_old_manifest_pins_an_ol
 
     doctor = calls.index(["cox", "setup", "doctor"])
     curl = next(at for at, argv in enumerate(calls) if argv[0] == "curl" and argv[-1] == _TARGET_ASSET)
-    copy = next(at for at, argv in enumerate(calls) if argv[0] == "cp" and argv[-1] == str(bin_dir))
+    copy = next(at for at, argv in enumerate(calls) if argv[0] == "mv" and Path(argv[-1]).parent == bin_dir)
     assert rc == 0
     assert curl < copy < doctor
     assert not any(argv[0] == "curl" and "v2026.11.0" in argv[-1] for argv in calls)

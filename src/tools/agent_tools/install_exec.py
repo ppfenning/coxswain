@@ -83,15 +83,24 @@ def _setup_install_argv(step: Mapping, root: str) -> list:
 
 
 def _binary_argvs(step: Mapping) -> list[list]:
-    """Download, unpack and copy argvs for a `binary` step, built from the step alone.
-    The scratch directory sits beside the destination, so no clock, environment or tempfile is read.
-    The release archive holds the binaries at its top level, as the dash readme's `tar -xzf` then `mv` shows."""
-    scratch = f"{step['bin_dir']}/.towpath-{step['target']}.tmp"
+    """Download, unpack, then per binary copy to a `.NAME.new` sibling, chmod +x and `mv -f` over the destination.
+    Rename, never an in-place `cp`: the old inode would keep its cached signature and macOS kills the new code.
+    No clock, environment or tempfile is read; the archive holds the binaries at its top level."""
+    bin_dir = step["bin_dir"]
+    scratch = f"{bin_dir}/.towpath-{step['target']}.tmp"
     archive = f"{scratch}/{step['url'].rsplit('/', 1)[-1]}"
     return [
         ["curl", "--fail", "--location", "--silent", "--show-error", "--create-dirs", "--output", archive, step["url"]],
         ["tar", "-xzf", archive, "-C", scratch],
-        ["cp", "-f", *(f"{scratch}/{name}" for name in step["binaries"]), step["bin_dir"]],
+        *(
+            argv
+            for name in step["binaries"]
+            for argv in (
+                ["cp", "-f", f"{scratch}/{name}", f"{bin_dir}/.{name}.new"],
+                ["chmod", "+x", f"{bin_dir}/.{name}.new"],
+                ["mv", "-f", f"{bin_dir}/.{name}.new", f"{bin_dir}/{name}"],
+            )
+        ),
     ]
 
 
