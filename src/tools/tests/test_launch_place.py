@@ -72,6 +72,22 @@ def test_remote_host_two_login_check_intervals_overdue_is_refused_as_stale():
     assert format_refusal(refusal)[-1] == "idle 0/4  (stale beat)"
 
 
+def _three_hosts():
+    return [_row("heavy", 4, weight=4), _row("mid-a", 3, weight=3), _row("mid-b", 3, weight=3)]
+
+
+def test_a_host_carrying_live_lanes_loses_to_idle_hosts_of_near_weight():
+    assert place(_three_hosts(), {"heavy": 3}, NOW).host == "mid-a"
+
+
+def test_three_successive_places_on_idle_hosts_land_on_three_hosts():
+    rows = _three_hosts()
+    first = place(rows, {}, NOW).host
+    second = place(rows, {first: 1}, NOW).host
+    third = place(rows, {first: 1, second: 1}, NOW).host
+    assert [first, second, third] == ["heavy", "mid-a", "mid-b"]
+
+
 def _store(ws, local, capacity):
     conn = sqlite3.connect(ws / "runs" / "cox.db")
     conn.execute("CREATE TABLE hosts (name TEXT, ssh TEXT, capacity INTEGER, state TEXT, beat_at TEXT, versions_json TEXT)")

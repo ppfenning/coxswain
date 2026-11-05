@@ -332,7 +332,7 @@ def _in_repo(id: str, repo_dir: str) -> dict:
 
 
 def _env_hosts(**over) -> Facts:
-    hosts = [{"name": "stale", "live_runs": 3}, {"name": "fresh", "live_runs": 2}]
+    hosts = [{"name": "stale", "live_runs": 2}, {"name": "fresh", "live_runs": 2}]  # equal load: list order breaks the tie
     return _facts(dispatch={"max_in_flight": 4, "live_runs": 0, "hosts": hosts}, **over)
 
 

@@ -13,7 +13,7 @@ from agent_tools.chair_types import Action, Facts, InitiativeFacts, RunningIniti
 from agent_tools.checkout_env import blocks_launch, host_env_verdict, sync_instruction
 
 # name, weight (a host's share of new placements; its capacity when the hosts table sets none),
-# capabilities, free lane count, assigned-so-far
+# capabilities, free lane count, assigned-so-far (live lanes plus placements made this call)
 HostSlot = tuple[str, int, frozenset[str], int, int]
 
 
@@ -40,7 +40,7 @@ def _eligible(host: HostSlot, required: frozenset[str]) -> bool:
 
 
 def _rank(pair: tuple[int, HostSlot]) -> tuple[float, int, int]:
-    """Share after one more placement, then heavier first, then list order: host order never skews the weighting."""
+    """Share is (live + placed + 1) / weight, then heavier first, then list order: host order never skews the weighting."""
     idx, (_, weight, _, _, assigned) = pair
     return ((assigned + 1) / weight, -weight, idx)
 
@@ -250,7 +250,7 @@ def host_free_slots(facts: Facts) -> list[HostSlot]:
             0
             if h["name"] in blocked
             else max(0, _scaled_lanes(h.get("capacity", dispatch["max_in_flight"]), fraction) - h["live_runs"]),
-            0,
+            h["live_runs"],
         )
         for h in dispatch["hosts"]
     ]
