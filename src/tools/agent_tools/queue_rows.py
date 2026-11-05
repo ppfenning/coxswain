@@ -69,6 +69,34 @@ def row_requires(row: Row) -> list[str]:
     return requires_of(row.get("extra"))
 
 
+def _initiative_extra(row: Row, key: str) -> Any:
+    """`extra[key]` of an initiative row; None for any other kind or when absent."""
+    extra = row.get("extra")
+    return extra.get(key) if row.get("kind") == "initiative" and isinstance(extra, Mapping) else None
+
+
+def epic_of_row(row: Row) -> str | None:
+    """The epic an initiative row belongs to. A bad value is None, not an error: a chair tick must not crash on a row."""
+    from core.epics import valid_epic_id  # lazy: core sits beside agent_tools in one venv
+
+    value = _initiative_extra(row, "epic")
+    try:
+        return None if value is None else valid_epic_id(value)
+    except ValueError:
+        return None
+
+
+def target_branch_of_row(row: Row) -> str | None:
+    """The branch an initiative row lands on. A bad value is None, not an error: a chair tick must not crash on a row."""
+    from core.landing import valid_branch  # lazy: core sits beside agent_tools in one venv
+
+    value = _initiative_extra(row, "target_branch")
+    try:
+        return None if value is None else valid_branch(value, "target_branch")
+    except ValueError:
+        return None
+
+
 def _identity(kind: str, path_parts: tuple[str, ...]) -> tuple[str, str, str, str | None] | None:
     """(initiative, phase, task_id, state from the path or None). Tasks: (initiative, phase, file). Intake: (file,) or ("done", file).
     Initiative: (id, "initiative.md"), keyed by its id."""

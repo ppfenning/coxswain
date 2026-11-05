@@ -23,7 +23,7 @@ import json
 import posixpath
 import re
 import subprocess
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from itertools import takewhile
 from pathlib import Path
 from typing import Any
@@ -342,6 +342,8 @@ def initiative_text(
     intake: str | None = None,
     size: Mapping[str, str] | None = None,
     home: str | None = None,
+    epic: str | None = None,
+    target_branch: str | None = None,
 ) -> str:
     """The `initiative.md` shape every hand-written initiative in the workspace carries.
 
@@ -352,6 +354,8 @@ def initiative_text(
     goal_lines = "\n".join(f"- {phase_id}: {goals.get(phase_id, '')}" for phase_id in phases)
     intake_line = f"intake: {_scalar(intake)}\n" if intake else ""
     size_lines = "".join(f"{key}: {_scalar(size[key])}\n" for key in ("size", "size_reason", "size_source")) if size else ""
+    carried = (("epic", epic), ("target_branch", target_branch))
+    carry_lines = "".join(f"{key}: {_scalar(value)}\n" for key, value in carried if value is not None)
     return (
         "---\n"
         f"id: {_scalar(idea.get('id'))}\n"
@@ -360,6 +364,7 @@ def initiative_text(
         f"budget_usd: {_scalar(idea.get('budget_usd'))}\n"
         f"{intake_line}"
         f"{size_lines}"
+        f"{carry_lines}"
         "---\n\n"
         f"{idea.get('why', '')}\n\n"
         "PHASE GOALS, each judged against ITS OWN line:\n"
@@ -564,6 +569,41 @@ def _reach_allow(args: Mapping[str, Any], idea_frontmatter: Mapping[str, Any]) -
     source = intake.get("frontmatter") if isinstance(intake, Mapping) else idea_frontmatter
     value = source.get("reach_allow") if isinstance(source, Mapping) else None
     return list(value) if isinstance(value, list) and all(isinstance(item, str) for item in value) else []
+
+
+def _core_validators() -> dict[str, Callable[[Any], str]]:
+    """The substrate's validators for the carried keys.
+
+    Imported here, and only when a key is set, because a graph does not otherwise import `core`:
+    a run that carries neither key must work where `core.epics` is absent."""
+    from core.epics import valid_epic_id
+    from core.landing import valid_branch
+
+    return {"epic": valid_epic_id, "target_branch": lambda value: valid_branch(value, "initiative")}
+
+
+def _carry(
+    args: Mapping[str, Any],
+    idea_frontmatter: Mapping[str, Any],
+    validators: Mapping[str, Callable[[Any], str]] | None = None,
+) -> dict[str, str]:
+    """The valid `epic` and `target_branch` the intake's frontmatter names, else the idea's own; unset keys are absent.
+
+    Raises LintRefusal naming the key when a value is set but invalid. `validators` default to core's."""
+    intake = args.get("intake")
+    source = intake.get("frontmatter") if isinstance(intake, Mapping) else idea_frontmatter
+    found = source if isinstance(source, Mapping) else {}
+    keys = [key for key in ("epic", "target_branch") if found.get(key) is not None]
+    checks = (validators or _core_validators()) if keys else {}
+    return {key: _checked(key, checks[key], found[key]) for key in keys}
+
+
+def _checked(key: str, check: Callable[[Any], str], value: Any) -> str:
+    """`check(value)`, with a ValueError re-raised as a LintRefusal that starts with `key`."""
+    try:
+        return check(value)
+    except ValueError as error:
+        raise LintRefusal(f"{key}: {error}") from error
 
 
 def _apply_surface_resolutions(tasks: list[dict[str, Any]], tree: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -1012,6 +1052,7 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
     idea_refusal = idea_reach_refusal(idea_body, tree, repo_name, reach_allow)
     if idea_refusal is not None:
         raise LintRefusal(idea_refusal)
+    carried = _carry(args, idea_frontmatter)
 
     decompose_hints = Hints(judgment="high")
     decompose_prompt = (
@@ -1381,6 +1422,8 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
         intake=intake_path,
         size=size_record,
         home=str(Path.home()),
+        epic=carried.get("epic"),
+        target_branch=carried.get("target_branch"),
     )
     initiative_where = "/".join(part for part in (landing, initiative_id) if part)
 

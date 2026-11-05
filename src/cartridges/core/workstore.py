@@ -46,6 +46,10 @@ in another initiative is met only by `done`.
 `initiative.md` may set `land_at` to `ticket`, `level` or `task`. `read_initiative`
 exposes it, `None` when absent, and raises `WorkStoreError` for any other value.
 
+`initiative.md` may also set `epic`, a lowercase slug, and `target_branch`, a bare
+git branch name. `read_initiative` exposes each, `None` when absent. A value that
+is not valid raises `WorkStoreError` naming the `initiative.md` path.
+
 `priority` is 1..5, 1 highest; an item that omits it defaults to 3. It is
 validated like `budget_usd`. Reading exposes it on every parsed item, never
 absent, unlike `budget_usd`. Writing omits the key once it equals the
@@ -73,7 +77,8 @@ from typing import Any
 
 import yaml
 
-from core.landing import DEFAULT_LAND_AT, need_met
+from core.epics import valid_epic_id
+from core.landing import DEFAULT_LAND_AT, need_met, valid_branch
 
 logger = logging.getLogger(__name__)
 
@@ -224,6 +229,24 @@ def _coerce_land_at(raw: Any, path: Path | str) -> str | None:
     if raw not in LAND_AT:
         raise WorkStoreError(f"{path}: land_at must be one of {list(LAND_AT)}, got {raw!r}")
     return str(raw)
+
+
+def _coerce_epic(raw: Any, path: Path | str) -> str | None:
+    if raw is None:
+        return None
+    try:
+        return valid_epic_id(raw)
+    except ValueError as err:
+        raise WorkStoreError(f"{path}: epic: {err}") from err
+
+
+def _coerce_target_branch(raw: Any, path: Path | str) -> str | None:
+    if raw is None:
+        return None
+    try:
+        return valid_branch(raw, str(path))
+    except ValueError as err:
+        raise WorkStoreError(str(err)) from err
 
 
 def resolve_surfaces(surfaces: Sequence[str], tree: frozenset[str]) -> tuple[list[str], list[str]]:
@@ -394,6 +417,8 @@ def read_initiative(root: Path | str) -> dict[str, Any]:
     if overview.is_file():
         meta, body = _split_frontmatter(overview.read_text(encoding="utf-8"), overview)
     land_at = _coerce_land_at(meta.get("land_at"), overview)
+    epic = _coerce_epic(meta.get("epic"), overview)
+    target_branch = _coerce_target_branch(meta.get("target_branch"), overview)
 
     items = [read_item(p) for p in sorted(root.glob("*/*.md")) if p.name != "initiative.md"]
     own = {str(item["id"]) for item in items}
@@ -406,6 +431,8 @@ def read_initiative(root: Path | str) -> dict[str, Any]:
         "title": str(meta.get("title") or root.name),
         "body": body,
         "land_at": land_at,
+        "epic": epic,
+        "target_branch": target_branch,
         "root": str(root),
         "phases": phases(items),
         "items": items,
