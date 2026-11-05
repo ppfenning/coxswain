@@ -38,3 +38,9 @@ def phase_counts_complete(land_at: str, states: Sequence[tuple[str, bool]]) -> b
     """Every (state, merged) is done or dropped, or approved and merged unless `land_at` is `task`; empty is True."""
     merged_counts = _checked(land_at, "phase") != "task"
     return all(s in ("done", "dropped") or (merged_counts and s == "approved" and merged) for s, merged in states)
+
+
+def need_met(land_at: str, state: str, merged: bool) -> bool:
+    """An unmerged approved task is met only above `land_at` task."""
+    level = _checked(land_at, "need")
+    return state in ("done", "dropped") or (state == "approved" and (merged or level != "task"))
