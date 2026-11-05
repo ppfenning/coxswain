@@ -81,6 +81,7 @@ from harness.assembly import assemble
 from harness.autonomy import split_by_policy
 from harness.cause_model import cause_evidence, classify_with_model, one_line
 from harness.cause_rule import _TRANSIENT_AUTH, classify_cause, is_auth_failure
+from harness.check_gate import gate_checks, gate_commands, repo_gate_lock
 from harness.checks import (
     HARNESS_FAULT_PREFIX,
     _tail_lines,
@@ -485,6 +486,11 @@ class _Ctx:
         known = {c.get("cmd") for c in cartridge_checks}
         extra = [c for c in self.repo_checks if c.get("cmd") not in known]
         return cartridge_checks + extra
+
+    @property
+    def level_checks(self) -> list[Mapping[str, Any]]:
+        """The cartridge's level gate; never joined with `.agent-checks`, and never read by a task build."""
+        return list(gate_checks(self.cartridge.get("landing_areas") or {}, "level"))
 
     @property
     def bound(self) -> Mapping[str, Any]:
@@ -900,6 +906,28 @@ def _trace_evidence(calls: Sequence[Any], task: str, patch: str) -> list[dict[st
 def _checks_log(ctx: _Ctx, phase: str, task: str) -> dict[str, Any]:
     """`run_checks` log arguments: `runs/<run>/checks/<phase>/<task>/<n>.log`, so tasks never overwrite each other."""
     return {"log_dir": ctx.runs_dir / ctx.run_id / "checks" / phase / task, "log_prefix": f"checks/{phase}/{task}/"}
+
+
+def _level_failure_reason(phase: str, results: Sequence[Mapping[str, Any]]) -> str:
+    """A line naming the level and its first failing level check; '' when every row passed."""
+    failing = next((r for r in results if not r.get("passed")), None)
+    return "" if failing is None else f"level {phase} failed level check {failing.get('name')}"
+
+
+def _run_level_checks(ctx: _Ctx, phase: str, record: dict[str, Any]) -> None:
+    """Run the level checks once in the level's worktree, under the repo gate lock, and fold the result into `record`.
+
+    No level checks configured: nothing runs and `record` gains no key. A failure marks the level, never a task.
+    """
+    checks = ctx.level_checks
+    if not checks:
+        return
+    log = {"log_dir": ctx.runs_dir / ctx.run_id / "checks" / phase / "level", "log_prefix": f"checks/{phase}/level/"}
+    with repo_gate_lock(ctx.repo):
+        results = run_checks(ctx.phase_worktree(phase), checks, **log)
+    record["level_checks"] = results
+    if reason := _level_failure_reason(phase, results):
+        record["status"], record["reason"] = "partial", reason
 
 
 def _lane_checks_env(ctx: _Ctx, phase: str, task: str) -> dict[str, str] | None:
@@ -2663,10 +2691,22 @@ class _PhaseRunner:
     A name the shared runner lacks stays absent, as the duck-typed `hasattr` checks expect.
     """
 
-    def __init__(self, shared: Any, repo_dir: Path, repo_digest: str | None, check_commands: list[str]) -> None:
-        values = {"repo_dir": repo_dir, "repo_digest": repo_digest, "check_commands": check_commands}
+    def __init__(
+        self,
+        shared: Any,
+        repo_dir: Path,
+        repo_digest: str | None,
+        check_commands: list[str],
+        gate_check_commands: dict[str, list[str]] | None = None,
+    ) -> None:
+        values = {
+            "repo_dir": repo_dir,
+            "repo_digest": repo_digest,
+            "check_commands": check_commands,
+            "gate_check_commands": gate_check_commands or {},
+        }
         inner = vars(shared).get("_inner") if hasattr(shared, "__dict__") else None
-        view = None if inner is None else _PhaseRunner(inner, repo_dir, repo_digest, check_commands)
+        view = None if inner is None else _PhaseRunner(inner, repo_dir, repo_digest, check_commands, gate_check_commands)
         own = {} if inner is not None else {n: v for n, v in values.items() if hasattr(shared, n)}
         object.__setattr__(self, "_shared", shared)
         object.__setattr__(self, "_own", own)
@@ -2899,7 +2939,11 @@ def _run_phase(
     ctx = replace(
         ctx,
         runner=_PhaseRunner(
-            ctx.runner, worktree, build_digest(worktree) or None, [str(c.get("cmd")) for c in ctx.checks if c.get("cmd")]
+            ctx.runner,
+            worktree,
+            build_digest(worktree) or None,
+            [str(c.get("cmd")) for c in ctx.checks if c.get("cmd")],
+            gate_commands(ctx.cartridge.get("landing_areas") or {}),
         ),
     )
 
@@ -3613,6 +3657,11 @@ def _run_phase(
     )
     if reason:
         record.setdefault("reason", reason)
+
+    # The level gate: once per assembled level, after the status is known and before any review PR opens.
+    # It covers the level as merged. The optional style_pass trim below runs later and is not re-checked here.
+    if record["status"] == "complete":
+        _run_level_checks(ctx, phase, record)
 
     # At `level` a finished level gets one PR. A restart over a merged level finds the PR it already has, or opens
     # the one a failed first attempt never made. A level stacked on one parent is based on that parent's PR branch when
