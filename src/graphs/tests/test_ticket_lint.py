@@ -1,4 +1,11 @@
-from graphs.delivery.ticket_lint import Problem, idea_reach_problems, idea_reach_refusal, lint_tickets
+from graphs.delivery.ticket_lint import (
+    IdeaHeal,
+    Problem,
+    heal_idea_reach,
+    idea_reach_problems,
+    idea_reach_refusal,
+    lint_tickets,
+)
 
 
 def _task(**over):
@@ -420,3 +427,68 @@ def test_idea_reach_refusal_is_none_for_a_tilde_path_under_an_allowed_prefix():
 
 def test_idea_reach_refusal_is_none_for_a_clean_body():
     assert idea_reach_refusal("tidy the parser and add a test", _TREE, "graphs") is None
+
+
+def test_heal_rewrites_a_tilde_path_to_another_checkout_as_the_checkout_phrase_with_one_note():
+    heal = heal_idea_reach("mirror ~/repos/sibling-service here", _TREE, "graphs")
+    assert heal == IdeaHeal(
+        "mirror the sibling-service checkout here",
+        (
+            'reach: idea named ~/repos/sibling-service, rewritten as "the sibling-service checkout" '
+            "(the build seat reads one repository, so the path was dropped)",
+        ),
+        None,
+    )
+
+
+def test_heal_rewrites_an_absolute_home_path_with_a_suffix_as_the_file_phrase():
+    heal = heal_idea_reach("install /opt/deploy/unit.service today", _TREE, "graphs")
+    assert heal.text == "install the unit.service file today"
+    assert heal.notes[0].startswith('reach: idea named /opt/deploy/unit.service, rewritten as "the unit.service file"')
+
+
+def test_heal_strips_a_trailing_slash_before_taking_the_last_component():
+    assert heal_idea_reach("see ~/repos/other/", _TREE, "graphs").text == "see the other checkout"
+
+
+def test_heal_leaves_an_in_tree_path_alone():
+    body = "edit /opt/work/graphs/delivery/ticket_lint.py now"
+    assert heal_idea_reach(body, _TREE, "graphs") == IdeaHeal(body, (), None)
+
+
+def test_heal_leaves_a_path_under_an_allowed_prefix_alone():
+    body = "ship to ~/deploy/unit.service"
+    assert heal_idea_reach(body, _TREE, "graphs", ["~/deploy"]) == IdeaHeal(body, (), None)
+
+
+def test_heal_leaves_a_device_path_alone():
+    body = "send output to /dev/null"
+    assert heal_idea_reach(body, _TREE, "graphs") == IdeaHeal(body, (), None)
+
+
+def test_heal_leaves_a_url_route_alone():
+    body = "call /v1/chat/completions first"
+    assert heal_idea_reach(body, _TREE, "graphs") == IdeaHeal(body, (), None)
+
+
+def test_heal_rewrites_a_repeated_path_each_time_and_notes_it_once():
+    heal = heal_idea_reach("copy ~/repos/other and then diff ~/repos/other", _TREE, "graphs")
+    assert heal.text == "copy the other checkout and then diff the other checkout"
+    assert len(heal.notes) == 1
+
+
+def test_heal_keeps_backticks_trailing_punctuation_and_whitespace():
+    heal = heal_idea_reach("see `~/repos/other`.\n\n  also (~/repos/x/y.py),  ok", _TREE, "graphs")
+    assert heal.text == "see `the other checkout`.\n\n  also (the y.py file),  ok"
+
+
+def test_heal_refuses_a_body_that_is_only_a_path():
+    heal = heal_idea_reach("~/repos/other", _TREE, "graphs")
+    assert heal.refusal == (
+        "lint-refused: idea reach\n"
+        "idea: reach — nothing left to plan once the paths outside graphs are rewritten"
+    )
+
+
+def test_heal_gives_no_refusal_for_a_whitespace_only_body():
+    assert heal_idea_reach("  \n ", _TREE, "graphs") == IdeaHeal("  \n ", (), None)
