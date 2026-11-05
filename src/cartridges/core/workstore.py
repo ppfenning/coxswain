@@ -73,6 +73,8 @@ from typing import Any
 
 import yaml
 
+from core.landing import DEFAULT_LAND_AT, need_met
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -494,15 +496,20 @@ def validate_dag(items: Iterable[Mapping[str, Any]], foreign: Mapping[str, str] 
 
 
 def ready_tasks(
-    items: Sequence[Mapping[str, Any]], *, phase: str | None = None, foreign: Mapping[str, str] | None = None
+    items: Sequence[Mapping[str, Any]],
+    *,
+    phase: str | None = None,
+    foreign: Mapping[str, str] | None = None,
+    land_at: str = DEFAULT_LAND_AT,
 ) -> list[dict[str, Any]]:
     """Every task in state `ready` whose dependencies are all met.
 
     `todo`, `blocked`, `approved` and `in_progress` are held. `in_progress` is
     held because the driver's resume behaviour was not checked when this was written.
 
-    A need in this initiative is met by `done`, `dropped`, or `approved` with
-    `merged` true. An approved task is still never itself returned.
+    A need in this initiative is met by `done` or `dropped`. An unmerged `approved`
+    task is met at `land_at` ticket and level but not at task, where it must be
+    merged. An approved task is still never itself returned.
 
     A need in another initiative (`foreign`) is met only by state `done`; `dropped` and merged `approved` do not satisfy it.
 
@@ -512,11 +519,7 @@ def ready_tasks(
     keeps a task out of this list for no reason.
     """
     own = {str(item["id"]) for item in items}
-    done = {
-        str(item["id"])
-        for item in items
-        if item.get("state") in _TERMINAL or (item.get("state") == APPROVED and item.get("merged") is True)
-    }
+    done = {str(item["id"]) for item in items if need_met(land_at, str(item.get("state")), bool(item.get("merged")))}
     done |= {tid for tid, state in (foreign or {}).items() if state == DONE and tid not in own}
     return sorted(
         (

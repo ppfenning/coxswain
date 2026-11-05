@@ -588,12 +588,54 @@ def test_an_approved_and_merged_need_satisfies_its_dependent() -> None:
     assert [t["id"] for t in ready_tasks(items)] == ["b"]
 
 
-def test_an_approved_and_unmerged_need_does_not_satisfy_its_dependent() -> None:
+def test_an_approved_and_unmerged_need_does_not_satisfy_its_dependent_at_land_at_task() -> None:
     items = [
         {"id": "a", "state": "approved", "merged": False, "needs": []},
         {"id": "b", "state": "ready", "needs": ["a"]},
     ]
-    assert ready_tasks(items) == []
+    assert ready_tasks(items, land_at="task") == []
+
+
+@pytest.mark.parametrize("land_at", ["ticket", "level"])
+def test_an_unmerged_approved_need_in_phase_one_releases_a_phase_two_task_at_ticket_and_level(land_at: str) -> None:
+    items = [
+        {"id": "a", "phase": "p1", "state": "approved", "merged": False, "needs": []},
+        {"id": "b", "phase": "p2", "state": "ready", "needs": ["a"]},
+    ]
+    assert [t["id"] for t in ready_tasks(items, land_at=land_at)] == ["b"]
+
+
+def test_an_unmerged_approved_need_releases_a_dependent_by_default() -> None:
+    items = [
+        {"id": "a", "phase": "p1", "state": "approved", "needs": []},
+        {"id": "b", "phase": "p2", "state": "ready", "needs": ["a"]},
+    ]
+    assert [t["id"] for t in ready_tasks(items)] == ["b"]
+
+
+def test_an_unmerged_approved_need_holds_a_phase_two_task_at_land_at_task() -> None:
+    items = [
+        {"id": "a", "phase": "p1", "state": "approved", "merged": False, "needs": []},
+        {"id": "b", "phase": "p2", "state": "ready", "needs": ["a"]},
+    ]
+    assert ready_tasks(items, land_at="task") == []
+
+
+def test_a_merged_approved_need_releases_a_phase_two_task_at_land_at_task() -> None:
+    items = [
+        {"id": "a", "phase": "p1", "state": "approved", "merged": True, "needs": []},
+        {"id": "b", "phase": "p2", "state": "ready", "needs": ["a"]},
+    ]
+    assert [t["id"] for t in ready_tasks(items, land_at="task")] == ["b"]
+
+
+@pytest.mark.parametrize("land_at", ["ticket", "level", "task"])
+def test_an_approved_task_is_never_itself_returned(land_at: str) -> None:
+    items = [
+        {"id": "a", "state": "approved", "merged": True, "needs": []},
+        {"id": "b", "state": "approved", "merged": False, "needs": []},
+    ]
+    assert ready_tasks(items, land_at=land_at) == []
 
 
 def test_an_approved_merged_task_is_not_itself_ready_and_not_phase_complete() -> None:
@@ -602,9 +644,10 @@ def test_an_approved_merged_task_is_not_itself_ready_and_not_phase_complete() ->
     assert phase_complete(items, "p1") is False
 
 
-def test_a_foreign_approved_need_stays_unmet() -> None:
+@pytest.mark.parametrize("land_at", ["ticket", "level", "task"])
+def test_a_foreign_approved_need_stays_unmet(land_at: str) -> None:
     items = [{"id": "b", "state": "ready", "needs": ["x"]}]
-    assert ready_tasks(items, foreign={"x": "approved"}) == []
+    assert ready_tasks(items, foreign={"x": "approved"}, land_at=land_at) == []
 
 
 def test_merged_and_merged_commit_round_trip_and_survive_a_state_move(tmp_path: Path) -> None:
