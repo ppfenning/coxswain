@@ -24,8 +24,8 @@ POLICY = pacing.Policy(
 )
 
 
-def _item(initiative: str, task: str, state: str, surfaces: list[str]) -> dict:
-    return {"initiative": initiative, "id": task, "state": state, "surfaces": surfaces}
+def _item(initiative: str, task: str, state: str, surfaces: list[str], merged: bool = False) -> dict:
+    return {"initiative": initiative, "id": task, "state": state, "surfaces": surfaces, "merged": merged}
 
 
 def test_ready_surfaces_are_the_sorted_union_of_the_ready_tasks():
@@ -53,6 +53,25 @@ def test_a_non_live_unlanded_initiative_holds_only_its_approved_surfaces():
 def test_a_non_live_unlanded_initiative_with_only_ready_tasks_gives_no_entry():
     items = [_item("x", "b", "ready", ["b.rs"])]
     assert running_initiatives(set(), items, {"x": "/r"}, unlanded={"x"}) == []
+
+
+def test_a_non_live_initiative_with_only_done_or_merged_tasks_gives_no_entry_and_no_steer():
+    items = [_item("x", "a", "done", ["a.rs"]), _item("x", "b", "approved", ["a.rs"], merged=True)]
+    running = running_initiatives(set(), items, {"x": "/r"}, unlanded={"x"})
+    assert running == []
+    assert steer_check("y", "/r", ["a.rs"], running, {}) is None
+
+
+def test_an_approved_task_that_is_not_merged_still_holds_its_surfaces():
+    items = [_item("x", "a", "approved", ["a.rs"], merged=False)]
+    expected = [{"id": "x", "repo": "/r", "surfaces": ["a.rs"]}]
+    assert running_initiatives({"x"}, items, {"x": "/r"}) == expected
+    assert running_initiatives(set(), items, {"x": "/r"}, unlanded={"x"}) == expected
+
+
+def test_a_live_initiative_holds_the_ready_task_and_not_the_merged_approved_one():
+    items = [_item("x", "a", "approved", ["a.rs"], merged=True), _item("x", "b", "ready", ["b.rs"])]
+    assert running_initiatives({"x"}, items, {"x": "/r"}) == [{"id": "x", "repo": "/r", "surfaces": ["b.rs"]}]
 
 
 def test_steer_check_defers_a_candidate_sharing_a_surface_with_an_unlanded_initiative():

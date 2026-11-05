@@ -492,11 +492,17 @@ def ticket_surfaces(items: Sequence[Row], ready_ids: Mapping[str, Collection[str
 def running_initiatives(
     live: Collection[str], items: Sequence[Row], repos: Mapping[str, str], *, unlanded: Collection[str] = frozenset()
 ) -> list[RunningInitiative]:
-    """Live initiatives hold ready and approved surfaces; a non-live unlanded one holds approved surfaces only."""
+    """Live initiatives hold ready and approved surfaces; a non-live unlanded one holds approved surfaces only.
+
+    An approved item whose merged flag is true holds nothing, live or not."""
 
     def held(initiative: str) -> list[Row]:
         states = STEER_STATES if initiative in live else frozenset({"approved"})
-        return [i for i in items if i["initiative"] == initiative and i.get("state") in states]
+        return [
+            i for i in items
+            if i["initiative"] == initiative and i.get("state") in states
+            and not (i.get("state") == "approved" and i.get("merged"))
+        ]
 
     return [
         {
