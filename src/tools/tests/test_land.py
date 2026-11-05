@@ -785,7 +785,8 @@ def _phase_squash_repo(tmp_path, include_b=True):
 def _phase_two_task_fixture(tmp_path):
     (tmp_path / "runs").mkdir(exist_ok=True)
     (tmp_path / "runs/epic-x-5:seams.json").write_text(
-        json.dumps({"run": "epic-x-5", "phase": "seams", "initiative": "x", "phase_verdict": {"reasoning": "solid"}}),
+        json.dumps({"run": "epic-x-5", "phase": "seams", "initiative": "x", "land_at": "level",
+                    "phase_verdict": {"reasoning": "solid"}}),
         encoding="utf-8")
     task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
     for task, files in (("seams-a", ["a.py"]), ("seams-b", ["b.py"])):

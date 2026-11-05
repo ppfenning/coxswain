@@ -46,8 +46,9 @@ def test_ticket_without_a_card_branch_plans_one_pr_for_the_ticket_not_the_phase(
     rec = {**_task("a"), "arbitration": {"verdict": "approve"}}
     last = _plan(_phase(card_branch=""), "a", [rec], ("a", "z"))
     early = _plan(_phase(card_branch="", last_phase=False), "a", [rec], ("a", "z"))
-    assert _kinds(last).count("pr_create") == 1 and _marked(last) == ["a", "z"]
-    assert "pr_create" not in _kinds(early) and _marked(early) == []
+    assert "pr_create" not in _kinds(last) and "pr_ready" in _kinds(last) and _marked(last) == ["a", "z"]
+    assert _kinds(early).count("pr_create") == 1 and "merge" not in _kinds(early) and _marked(early) == []
+    assert "mark_merged" in _kinds(early) and "pr_branch_cut" in _kinds(early)
 
 
 def test_level_opens_one_pr_per_phase_and_marks_only_its_tasks():
@@ -139,7 +140,7 @@ def _cli_steps(tmp_path, monkeypatch, capsys, stacked, *gate, land_phase="p2-b")
 
 def test_cli_land_marks_earlier_phase_tasks_done_when_their_work_is_in_the_stacked_branch(tmp_path, monkeypatch, capsys):
     steps = _cli_steps(tmp_path, monkeypatch, capsys, True, "--gate", "full")
-    assert _kinds(steps).count("pr_create") == 1
+    assert "pr_create" not in _kinds(steps) and "pr_ready" in _kinds(steps)
     assert _marked(steps) == ["early", "late"]
 
 
@@ -151,20 +152,19 @@ def test_cli_land_leaves_an_earlier_phase_task_whose_work_is_not_in_the_branch(t
 
 def test_cli_land_with_the_default_gate_stops_at_the_one_pull_request(tmp_path, monkeypatch, capsys):
     steps = _cli_steps(tmp_path, monkeypatch, capsys, True)
-    assert _kinds(steps)[-2:] == ["pr_create", "note"] and _marked(steps) == []
+    assert _kinds(steps)[-2:] == ["wait_checks", "note"] and _marked(steps) == []
 
 
-def test_cli_dry_run_for_a_deferred_phase_plans_no_pr_and_prints_the_note(tmp_path, monkeypatch, capsys):
+def test_cli_dry_run_for_an_earlier_phase_merges_into_the_pr_branch_and_never_merges_the_pr(tmp_path, monkeypatch, capsys):
     steps = _cli_steps(tmp_path, monkeypatch, capsys, True, "--gate", "full", land_phase="p1-a")
-    assert not {"pr_create", "merge", "mark_done"} & set(_kinds(steps))
-    assert [s["reason"] for s in steps if s["kind"] == "note"] == [
-        "phase p1-a: ticket granularity, the one pull request opens at the last phase"]
+    assert not {"merge", "mark_done"} & set(_kinds(steps))
+    assert _kinds(steps).count("pr_create") == 1 and _kinds(steps)[:2] == ["pr_branch_cut", "merge_phase"]
 
 
 def test_cli_land_of_the_last_phase_opens_one_pr_covering_the_earlier_phases(tmp_path, monkeypatch, capsys):
     steps = _cli_steps(tmp_path, monkeypatch, capsys, True, "--gate", "full")
-    assert _kinds(steps).count("pr_create") == 1
-    body = next(s["body"] for s in steps if s["kind"] == "pr_create")
+    assert "pr_create" not in _kinds(steps)
+    body = next(s["body"] for s in steps if s["kind"] == "pr_update")
     assert "- early: early" in body and "- late: late" in body
     assert sorted(_marked(steps)) == ["early", "late"]
     assert _kinds(steps).index("merge") < _kinds(steps).index("mark_done")
