@@ -53,6 +53,18 @@ frontmatter of its `initiative.md`. See
 [Landing](../methodology/landing.md#landing-granularity) for what each value
 lands and when.
 
+## Target branch
+
+`landing_areas.target_branch` names the branch initiatives land into by default.
+
+```yaml
+landing_areas:
+  target_branch: release/next
+```
+
+An epic definition or an initiative can override it. See
+[Landing](../methodology/landing.md#target-branch).
+
 ## The project layer
 
 A repository can also carry `.agent/cartridge.yaml`. The harness reads it

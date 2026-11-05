@@ -36,7 +36,7 @@ different team.
 
 ## Phases order tickets that need it, and only those
 
-An epic is a container with one section per phase. Phases are ordered;
+An initiative is a container with one section per phase. Phases are ordered;
 tickets within a phase are not necessarily. A dependency edge belongs
 between two tickets only where order genuinely matters — a dependency
 that exists because a task "feels sequential" blocks work that could have
@@ -81,7 +81,7 @@ records.
 | `review-diff` | [review-diff](graphs/review-diff.md) | Reviews an arbitrary diff outside any build's own run: verdict and findings out, nothing written. |
 | `rescue-review` | [rescue-review](graphs/rescue-review.md) | Reviews a patch that already exists against the harness's own check results. |
 | `cos` | [coxswain](graphs/coxswain.md) | One dispatch node: picks which graphs to run next from a docket the driver assembled. |
-| `reconcile` | [epic-reconcile](graphs/epic-reconcile.md) | Compares an epic's declared state with its actual state and proposes corrections. |
+| `reconcile` | [epic-reconcile](graphs/epic-reconcile.md) | Compares an initiative's declared state with its actual state and proposes corrections. |
 | `retro` | [retro-propose](graphs/retro-propose.md) | Reads ledger rows back and proposes only doc updates it can cite. |
 | `triage` | [triage-propose](graphs/triage-propose.md) | Morning triage of an alert queue: read-only, proposes runbook corrections. |
 | `triage-quarantine` | [triage](graphs/triage.md) | Classifies a task stranded at its attempt cap and emits a write by class. |
@@ -98,7 +98,9 @@ graphs, block on them and write, which a graph may not do.
 - `epic` is [the epic driver](graphs/epic-driver.md). `cox route launch epic`
   starts it. It walks an initiative phase by phase: `lifecycle` per ready
   task, `validate` per phase, `triage-quarantine` for a task at its attempt
-  cap.
+  cap. The command and driver named `epic` run one initiative. Epic is
+  the historical name. It is not the epic group of initiatives, which
+  [the hierarchy](index.md#the-hierarchy) describes.
 - `rescue` runs `rescue-review` on one quarantined task's kept patch.
   `cox route launch rescue` starts it.
 

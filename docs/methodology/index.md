@@ -13,6 +13,34 @@ than untangling it in review. A ticket that hasn't been scoped goes to a
 future-work area, not onto the active board — scoping is what promotes
 it.
 
+## The hierarchy
+
+Work is named at four levels, from the largest to the smallest:
+
+1. An epic is a named group of initiatives. It is complete when every initiative in it has landed.
+2. An initiative comes from an intake and holds phases. It lands into a parent branch and completes into its epic.
+3. A phase is a wave of tasks. Phases run in waves and complete into the initiative.
+4. A task is one unit of work with one pull request. Tasks complete into phases.
+
+The word epic has two meanings. The current one is the group of initiatives above. The older one is a single
+initiative. That meaning survives in the name of the `epic` command and graph, which run one initiative and not the
+group. See [the epic driver](graphs/epic-driver.md).
+
+To join an epic, put `epic:` in the frontmatter of an intake or of an initiative.
+
+```yaml
+epic: payments-rework
+```
+
+An epic may also have a definition file, `epics/<id>.md`, beside the work directory. Its frontmatter carries a `title`
+and a `target_branch`. The file is optional. An epic with no file still groups the initiatives that name it. See
+[Landing](landing.md#target-branch) for how `target_branch` is used.
+
+```yaml
+title: Payments rework
+target_branch: release/payments
+```
+
 ## Blind reviewers
 
 A charter reviewer checks a change against the team's written standards.
