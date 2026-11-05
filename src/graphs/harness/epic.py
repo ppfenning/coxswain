@@ -2634,14 +2634,11 @@ def _buildable(
 
 
 def _earlier_merged(items: Sequence[Mapping[str, Any]], phase: str, in_run: Collection[str]) -> list[Mapping[str, Any]]:
-    """The phase's approved items that carry a stored handoff and are outside this run, in item order."""
+    """The phase's approved items outside this run, in item order, with or without a stored handoff."""
     return [
         item
         for item in items
-        if item.get("phase") == phase
-        and item.get("state") == "approved"
-        and item.get("handoff")
-        and str(item["id"]) not in in_run
+        if item.get("phase") == phase and item.get("state") == "approved" and str(item["id"]) not in in_run
     ]
 
 
@@ -3355,8 +3352,8 @@ def _run_phase(
 
     # A phase is judged once, when it is finished: a run carrying only part of it
     # would be scored against a goal its siblings have not yet built toward.
-    # With `only`, a task an earlier call approved and merged counts as finished, and joins the validator's input.
-    earlier = _earlier_merged(items, phase, {str(r.get("ticket")) for r in results}) if only is not None else []
+    # A task an earlier run approved counts as finished, and joins the validator's input.
+    earlier = _earlier_merged(items, phase, {str(r.get("ticket")) for r in results})
     open_ids = (
         open_in_phase(
             items,
@@ -3409,7 +3406,7 @@ def _run_phase(
                     "description": str(item.get("body") or ""),
                     "evidence": [],
                     "change_facts": {
-                        k: list(item["handoff"].get(k) or []) for k in ("files_changed", "interfaces_added", "decisions")
+                        k: list((item.get("handoff") or {}).get(k) or []) for k in ("files_changed", "interfaces_added", "decisions")
                     },
                     "review_verdict": "approve",
                     "patch": "",

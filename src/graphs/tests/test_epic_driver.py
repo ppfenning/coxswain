@@ -2465,7 +2465,8 @@ def test_a_ready_task_builds_beside_an_approved_unlanded_sibling(repo, cart, tmp
 
     result, runner = drive(repo, cart, tmp_path, work=_with_states(t1="approved", t2="ready"), run_id="epic-2")
     assert any(c["role"] == "build" and "t2-bench" in c["prompt"] for c in runner.calls)
-    assert not any("t1-probe" in c["prompt"] for c in runner.calls)
+    # The validator now reads the stored approved sibling, so only the build prompts must not name it.
+    assert not any(c["role"] == "build" and "t1-probe" in c["prompt"] for c in runner.calls)
     assert is_ancestor(repo, approved_commit, BRANCH)
     assert not is_ancestor(repo, "main", BRANCH), "the stale branch is not rebased"
     assert result["quarantined"] == []
