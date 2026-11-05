@@ -1522,6 +1522,61 @@ Coxswain is in beta — versions may change between releases
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#target-branch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Target branch
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#merge-on-green" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Merge on green
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#concurrent-lands-per-repository" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Concurrent lands per repository
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#manual-repos" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Manual repos
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#runs-clean" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        runs clean
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -6339,6 +6394,61 @@ Coxswain is in beta — versions may change between releases
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#target-branch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Target branch
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#merge-on-green" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Merge on green
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#concurrent-lands-per-repository" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Concurrent lands per repository
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#manual-repos" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Manual repos
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#runs-clean" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        runs clean
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -6550,10 +6660,17 @@ first attempt never made one. At <code>level</code> it finds the level's pull re
 <p>A level runs its ready tasks together, up to a cap. The cap is the <code>--max-parallel</code> option of the phase and epic
 commands. Without it, the cap is the <code>max_parallel</code> setting of the provider profile, a positive integer. Without that,
 it is the free lane count. A zero, a negative or a non-integer profile value is refused.</p>
-<p>A level still waits for its parent levels. The initiative driver, started by the <code>epic</code> command, holds a level until every one of its parents is complete,
-and a parent that did not meet its goal blocks its dependents. A level with several parents waits for all of them.</p>
-<p>Running a ready task ahead of an unfinished earlier level is not current behaviour. It is planned work, tracked in</p>
-<h1 id="626-until-that-ships-the-scheduler-in-lanespy-is-not-wired-in-and-a-level-holds-until-every-parent-level-is-complete">626. Until that ships, the scheduler in <code>lanes.py</code> is not wired in, and a level holds until every parent level is complete.</h1>
+<p>Phases form a directed graph of levels. The driver derives each phase's parent phases from the needs between tasks, with
+<code>phase_parents</code> in <code>harness/waves.py</code>. <code>compute_waves</code> in the same module sorts the phases into waves. A wave holds the
+phases whose parents all sit in earlier waves. A phase caught in a dependency cycle is placed in no wave and is recorded as blocked.</p>
+<p>Independent phases in a wave run together, one lane each. A lane number is reused once its phase finishes. The
+<code>_run_lanes</code> function in <code>harness/epic.py</code> runs the phases as lanes.</p>
+<p>Tasks inside a phase run in parallel up to the cap. <code>lane_bound</code> in <code>harness/lanes.py</code> lowers the number that start when the usage ceiling is
+tighter than the lane limit. <code>plan_launches</code> in <code>harness/scheduler.py</code> uses <code>next_launches</code> from <code>harness/lanes.py</code> to choose which
+ready tasks start. The scheduler holds the ready tasks of a phase while another phase has a build in flight over an overlapping surface.</p>
+<p>A phase still waits for its parents. The driver holds the tasks of a phase until every parent phase is complete.
+A parent that did not meet its goal blocks its dependents. A phase with several parents waits for all of them.
+The one exception is a ready task whose own needs are all merged, which may start before its parents are complete.</p>
 <h2 id="target-branch">Target branch</h2>
 <p>The target branch is the parent branch an initiative lands into. It resolves like <code>land_at</code>, and the narrowest value
 present wins:</p>
