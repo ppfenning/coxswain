@@ -1,3 +1,4 @@
+from agent_tools import land_manual
 from agent_tools.chair_read_stranded import keep_stranded_keys, read_missing_repos, read_stranded, stranded_from_rows
 
 
@@ -96,3 +97,75 @@ def test_a_ready_row_for_an_approved_unlanded_record_is_stranded():
 
 def test_a_done_row_for_the_same_task_is_not_stranded():
     assert stranded_from_rows([_row("done")], [_record()]) == []
+
+
+_LOG_LINE = "approved but not landed: t1 — cox runs land r1 --task t1 --repo /here"
+_LAND = "cox runs land r1 --task t1 --repo /here"
+
+
+def _fetched_record(**over):
+    return {**_stranded_record("r1", "/here"), "task": "t1", **over}
+
+
+def _fetched_item(state, **over):
+    return {"id": "t1", "state": state, "phase": "p1", "repo": "/here", **over}
+
+
+def _read(records, items, **kw):
+    return read_stranded(records, items, lambda repo: True, lambda repo, branch: False, **kw)
+
+
+def test_a_fetched_run_with_an_approved_task_record_gives_a_row_for_that_run_and_task():
+    assert _read([_fetched_record()], [_fetched_item("approved")], log_texts={}) == [
+        {"run": "r1", "task": "t1", "phase": "p1", "branch": "b1", "remedy": _LAND},
+    ]
+
+
+def test_a_log_line_alone_gives_a_stranded_row_with_the_line_remedy():
+    assert _read([], [_fetched_item("ready")], log_texts={}) == []
+    assert _read([], [_fetched_item("ready")], log_texts={"r1": _LOG_LINE + "\n"}) == [
+        {"run": "r1", "task": "t1", "phase": "p1", "branch": None, "remedy": _LAND},
+    ]
+
+
+def test_a_task_in_both_the_records_and_the_log_appears_once():
+    rows = _read([_fetched_record()], [_fetched_item("ready")], log_texts={"r1": _LOG_LINE})
+    assert [(r["run"], r["task"], r["branch"]) for r in rows] == [("r1", "t1", "b1")]
+
+
+def test_a_task_whose_record_a_code_quarantine_superseded_gets_no_row_from_a_stale_log_line():
+    record = _fetched_record(cause="code")
+    assert _read([record], [_fetched_item("ready")], log_texts={"r1": _LOG_LINE}) == []
+
+
+def test_a_task_waiting_on_its_carried_phase_branch_gets_no_row_from_its_log_line():
+    record = _fetched_record(branch="epic/acme/p1")
+    rows = read_stranded([record], [_fetched_item("ready")], lambda repo: True, lambda repo, branch: True, log_texts={"r1": _LOG_LINE})
+    assert rows == []
+
+
+def test_a_log_line_for_an_item_rebuilt_from_the_run_or_sent_back_by_a_land_conflict_gets_no_row():
+    assert _read([], [_fetched_item("ready", rebuilt_from=["r1"])], log_texts={"r1": _LOG_LINE}) == []
+    assert _read([], [_fetched_item("ready", land_conflict="x")], log_texts={"r1": _LOG_LINE}) == []
+
+
+def test_a_log_line_for_a_task_in_two_repos_gets_no_row():
+    items = [_fetched_item("ready"), _fetched_item("ready", repo="/there")]
+    assert _read([], items, log_texts={"r1": _LOG_LINE}) == []
+
+
+def test_a_log_line_for_a_manual_repo_gets_the_manual_remedy(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / ".agent").mkdir(parents=True)
+    (repo / ".agent" / "cartridge.yaml").write_text("land: manual\n")
+    rows = _read([], [_fetched_item("ready", repo=str(repo))], log_texts={"r1": _LOG_LINE})
+    assert [r["remedy"] for r in rows] == [land_manual.REMEDY]
+
+
+def test_the_default_edge_reads_fetched_runs_logs_and_skips_missing_and_landed_elsewhere(tmp_path):
+    for run in ("r1", "r2", "r3"):
+        (tmp_path / f"{run}.fetched.json").write_text("{}")
+    (tmp_path / "r3.fetched.json").write_text('{"landed_elsewhere": true}')
+    for run in ("r1", "r3"):
+        (tmp_path / f"{run}.log").write_text(_LOG_LINE.replace("r1", run) + "\n")
+    assert [r["run"] for r in _read([], [_fetched_item("ready")], runs_dir=tmp_path)] == ["r1"]
