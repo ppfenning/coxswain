@@ -4126,6 +4126,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#shadow-tier" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        shadow-tier
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#lanes" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6527,6 +6538,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#shadow-tier" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        shadow-tier
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#lanes" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6565,12 +6587,12 @@ Coxswain is in beta — versions may change between releases
 
 <h1 id="stats">stats</h1>
 <div class="highlight"><pre><span></span><code>usage: cox stats [-h]
-                 {ingest,roles,tiers,models,causes,efficiency,gates,explain,series,coverage,bounds,spend-mix,chair,examples,flaky,system-one,lanes} ...
+                 {ingest,roles,tiers,models,causes,efficiency,gates,explain,series,coverage,bounds,spend-mix,chair,examples,flaky,system-one,shadow-tier,lanes} ...
 
 Load the run corpus into the stats store.
 
 positional arguments:
-  {ingest,roles,tiers,models,causes,efficiency,gates,explain,series,coverage,bounds,spend-mix,chair,examples,flaky,system-one,lanes}
+  {ingest,roles,tiers,models,causes,efficiency,gates,explain,series,coverage,bounds,spend-mix,chair,examples,flaky,system-one,shadow-tier,lanes}
     ingest              load usage, task, node and launch records into
                         stats.db
     roles               landed rate, attempts-to-land and $/landed per role
@@ -6600,6 +6622,9 @@ positional arguments:
                         week, from task records
     system-one          shadow-to-on graduation report per role, and a
                         proposal for the maintainer to approve
+    shadow-tier         cheap-tier shadow trial per role: agreement, costly
+                        rate, cost saved, and the graduation bar; changes
+                        nothing
     lanes               per hour, the average and peak busy lanes and the idle
                         minutes, from the store's run spans
 
@@ -6829,6 +6854,19 @@ options:
   --plans-dir PLANS_DIR
                         where --propose writes system-one-
                         graduation-&lt;role&gt;-&lt;date&gt;.md
+</code></pre></div>
+<h2 id="shadow-tier">shadow-tier</h2>
+<div class="highlight"><pre><span></span><code>usage: cox stats shadow-tier [-h] [--role ROLE] [--since SINCE] [--json]
+                             [runs_dir]
+
+positional arguments:
+  runs_dir
+
+options:
+  -h, --help     show this help message and exit
+  --role ROLE    report this role only
+  --since SINCE  keep only rows dated on or after DATE (YYYY-MM-DD)
+  --json
 </code></pre></div>
 <h2 id="lanes">lanes</h2>
 <div class="highlight"><pre><span></span><code>usage: cox stats lanes [-h] [--runs-dir RUNS_DIR] [--hours HOURS] [--json]
