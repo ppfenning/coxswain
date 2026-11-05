@@ -168,7 +168,7 @@ def test_the_launch_cap_is_three_lanes_unless_the_policy_file_names_a_valid_othe
 
 def test_a_beat_ends_the_docket_snapshot_so_each_tick_reads_it_once(monkeypatch, tmp_path) -> None:
     reads: list[int] = []
-    monkeypatch.setattr(cli.chair_read_docket, "read_docket", lambda *_a, **_kw: reads.append(1) or {"initiatives": [], "n": len(reads)})
+    monkeypatch.setattr(cli.chair_facts, "docket_by_land_at", lambda *_a, **_kw: reads.append(1) or {"initiatives": [], "n": len(reads)})
     monkeypatch.setattr(cli.chair_read_live, "read_live_initiatives", lambda *_a: [])
     deps = cli._chair_run_deps(tmp_path / "runs", {}, "chair", 1, "h", True, print, tmp_path / "p.yaml", "files")
     facts = deps.facts_deps
@@ -190,7 +190,7 @@ def test_each_fact_reader_reaches_its_own_module_with_the_workspace_and_mode(mon
     monkeypatch.setattr(cli.chair_read_lease, "read_lease", lambda runs, _now: ("lease", runs))
     monkeypatch.setattr(cli.chair_read_stranded, "read_stranded", lambda *_a: "stranded")
     monkeypatch.setattr(cli, "_chair_stranded_inputs", lambda *_a: ([], []))
-    monkeypatch.setattr(cli.chair_read_docket, "read_docket", lambda ws, mode, cap, **_kw: {"initiatives": [{"id": "i1", "ready_tasks": [1]}], "at": (ws, mode, cap)})
+    monkeypatch.setattr(cli.chair_facts, "docket_by_land_at", lambda items, busy, cap, land_at: {"initiatives": [{"id": "i1", "ready_tasks": [1]}], "at": cap})
     monkeypatch.setattr(cli.chair_read_live, "read_live_initiatives", lambda runs, names, _now: (runs, names))
     monkeypatch.setattr(cli.chair_read_run_id, "make_run_id", lambda runs: ("run_id", runs))
     deps = cli._chair_run_deps(runs_dir, {}, "chair", 1, "h", True, print, profile_path, "store")
@@ -201,7 +201,7 @@ def test_each_fact_reader_reaches_its_own_module_with_the_workspace_and_mode(mon
     ) == (
         ("approved", tmp_path, "store"), ("quarantined", tmp_path, "store"), ("attempts", tmp_path), ("intake", tmp_path),
         ("sources_configured", profile_path), ("lease", runs_dir), "stranded",
-        (tmp_path, "store", 3), (runs_dir, ["i1"]), True, ("run_id", runs_dir),
+        3, (runs_dir, ["i1"]), True, ("run_id", runs_dir),
     )
 
 

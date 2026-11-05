@@ -42,7 +42,7 @@ def _setup(tmp_path, monkeypatch, mode, launch_code=0, board=BOARD, stub_export=
     monkeypatch.setattr("agent_tools.work_state.work_state_mode", lambda _provider: mode)
     monkeypatch.setattr(
         "agent_tools.route.launch_from_rows",
-        lambda runs_dir, initiative_id, repo: (
+        lambda runs_dir, initiative_id, repo, **_: (
             calls.append(("launch_from_rows", runs_dir, initiative_id, repo))
             or (launch_code, ["routing: stub refusal"], None)
         ),

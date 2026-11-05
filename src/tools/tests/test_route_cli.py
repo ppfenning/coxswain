@@ -2097,7 +2097,7 @@ def _waiting_initiative(tmp_path, dep_state, approved_record):
     _init_repo(repo)
     initiative_dir = ws / "work" / "demo"
     (initiative_dir / "1-base").mkdir(parents=True)
-    (initiative_dir / "initiative.md").write_text(f"---\nid: demo\ntitle: Demo\nrepo: {repo}\n---\n\nBody\n")
+    (initiative_dir / "initiative.md").write_text(f"---\nid: demo\ntitle: Demo\nrepo: {repo}\nland_at: task\n---\n\nBody\n")
     (initiative_dir / "1-base" / "parent.md").write_text(f"---\nid: parent\nstate: {dep_state}\n---\n\nBody\n")
     (initiative_dir / "1-base" / "child.md").write_text("---\nid: child\nstate: ready\nneeds: [parent]\n---\n\nBody\n")
     tasks = ws / "runs" / "prior" / "tasks" / "1-base"
