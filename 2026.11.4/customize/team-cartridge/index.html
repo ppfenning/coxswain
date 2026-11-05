@@ -1605,6 +1605,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#checks-by-gate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Checks by gate
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#landing-granularity" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6292,6 +6303,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#checks-by-gate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Checks by gate
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#landing-granularity" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6410,6 +6432,10 @@ build, as <code>{name, cmd}</code> entries, with an optional <code>timeout</code
 <code>fix</code> (a command that repairs what the check found). A repository can add
 its own checks on top with a root <code>.agent-checks</code> file. See
 <a href="../../methodology/landing/#checks-are-evidence">Landing</a>.</p>
+<h2 id="checks-by-gate">Checks by gate</h2>
+<p>Three lists hold checks, one per gate. <code>landing_areas.checks</code> holds the task checks. <code>landing_areas.level_checks</code> holds the checks for the level gate. <code>landing_areas.ticket_checks</code> holds the checks for the ticket gate.</p>
+<p>All three use the <code>{name, cmd}</code> shape, with names unique inside each list. The two new lists are optional. A cartridge that omits them has no level or ticket checks, and <code>checks</code> reads as it always has.</p>
+<p>An integration suite that needs exclusive use of a resource belongs in <code>level_checks</code> or <code>ticket_checks</code>, because those run once for the level or ticket and not beside every task. The harness reads the two new lists in separate changes.</p>
 <h2 id="landing-granularity">Landing granularity</h2>
 <p><code>landing_areas.land_at</code> sets where landing happens: <code>ticket</code>, <code>level</code> or <code>task</code>.
 The default is <code>ticket</code>, one pull request per initiative. The approval gate
