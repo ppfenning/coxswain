@@ -115,10 +115,11 @@ def test_a_successful_decompose_stores_no_refused(cart, store) -> None:
 
 
 def test_the_real_lint_step_refuses_a_reach_problem_and_the_run_gains_refused(cart, store, monkeypatch) -> None:
-    """No stub of the lint: an idea that reaches outside the repo is the one lint that still stops a decompose, before
-    any model call, and the cli handler stores its first line. A ticket's own reach hit only rides as a note."""
+    """No stub of the lint: an idea that is only a path outside the repo still stops a decompose, before any model
+    call, and the cli handler stores its first line. An idea with other words is rewritten instead, and a ticket's own
+    reach hit only rides as a note."""
     runner = ScriptedRunner({"decompose": REACH})
-    args = {"run_id": "r1", "date": "d", "cartridge": cart, "idea": "notes live at ~/scratch/notes.md"}
+    args = {"run_id": "r1", "date": "d", "cartridge": cart, "idea": "~/scratch/notes.md"}
     with pytest.raises(LintRefusal) as caught:
         initiative_decompose.run(args, runner)
     first = str(caught.value).splitlines()[0].strip()

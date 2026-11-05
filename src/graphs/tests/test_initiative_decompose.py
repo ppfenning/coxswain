@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -15,7 +16,7 @@ import yaml
 
 from graphs._contract import ContractViolation
 from graphs.delivery import initiative_decompose
-from graphs.delivery.ticket_lint import idea_reach_refusal, refusal_reason
+from graphs.delivery.ticket_lint import heal_idea_reach, refusal_reason
 from runner import ScriptedRunner
 from runner.decision_log import RouterDecision
 from runner.tier_resolution import Hints
@@ -1492,21 +1493,81 @@ def _decompose_naming(path: str) -> dict:
     return {**DECOMPOSITION, "tasks": [task]}
 
 
-def test_an_idea_naming_a_path_outside_the_repo_is_refused_before_any_model_call(cart, tmp_path) -> None:
+def _initiative_frontmatter(result: dict) -> dict:
+    initiative = next(p for p in result["proposals"] if p["target"] == "initiative")
+    return yaml.safe_load(initiative["suggested_action"].split("---\n")[1])
+
+
+def test_an_idea_naming_a_path_outside_the_repo_is_rewritten_and_noted(cart, tmp_path) -> None:
+    runner = ScriptedRunner({"decompose": DECOMPOSITION})
+    script = _deploy_script(tmp_path)
+    idea = f"ship it with {script}"
+    result = initiative_decompose.run({"run_id": "r", "date": "d", "cartridge": cart, "idea": idea}, runner)
+    assert [c["role"] for c in runner.calls] == ["decompose"]
+    assert script not in runner.calls[0]["prompt"]
+    notes = _initiative_frontmatter(result)["lint"]
+    assert len(notes) == 1
+    assert script in notes[0]
+
+
+def test_the_decompose_rewrite_is_the_shared_idea_heal(cart, tmp_path) -> None:
     runner = ScriptedRunner({"decompose": DECOMPOSITION})
     idea = f"ship it with {_deploy_script(tmp_path)}"
+    healed = heal_idea_reach(idea, [], "")
+    result = initiative_decompose.run({"run_id": "r", "date": "d", "cartridge": cart, "idea": idea}, runner)
+    assert f"Idea: {healed.text}\n" in runner.calls[0]["prompt"]
+    assert _initiative_frontmatter(result)["lint"] == list(healed.notes)
+
+
+def test_an_idea_naming_two_outside_paths_decomposes_without_either_and_notes_each(cart, tmp_path) -> None:
+    tilde = "~/sibling-repo"
+    absolute = str(Path.home() / "scratch" / "deploy.sh")
+    idea = f"Port the retry from {tilde} into the parser and run {absolute} afterwards"
+    runner = ScriptedRunner({"decompose": DECOMPOSITION})
+    result = initiative_decompose.run({"run_id": "r", "date": "d", "cartridge": cart, "idea": idea}, runner)
+    initiative = next(p for p in result["proposals"] if p["target"] == "initiative")
+    notes = _initiative_frontmatter(result)["lint"]
+    assert len(notes) == 2
+    assert tilde in notes[0]
+    assert absolute in notes[1]
+    assert all(tilde not in c["prompt"] and absolute not in c["prompt"] for c in runner.calls)
+    tasks = [p for p in result["proposals"] if p["target"] != "initiative" and p["kind"] == "item_create"]
+    assert tasks
+    assert all(tilde not in str(p) and absolute not in str(p) for p in tasks)
+    body = initiative["suggested_action"].split("---\n", 2)[2]
+    assert "the sibling-repo checkout" in body
+    assert "the deploy.sh file" in body
+    assert tilde not in body
+    assert absolute not in body
+
+
+def test_an_idea_that_is_only_a_path_is_refused_and_no_model_is_called(cart, tmp_path) -> None:
+    runner = ScriptedRunner({"decompose": DECOMPOSITION})
     with pytest.raises(initiative_decompose.LintRefusal) as caught:
-        initiative_decompose.run({"run_id": "r", "date": "d", "cartridge": cart, "idea": idea}, runner)
+        initiative_decompose.run(
+            {"run_id": "r", "date": "d", "cartridge": cart, "idea": _deploy_script(tmp_path)}, runner
+        )
     assert str(caught.value).startswith("lint-refused: idea reach")
     assert runner.calls == []
 
 
-def test_the_decompose_refusal_is_the_shared_idea_reach_refusal(cart, tmp_path) -> None:
-    runner = ScriptedRunner({"decompose": DECOMPOSITION})
-    idea = f"ship it with {_deploy_script(tmp_path)}"
-    with pytest.raises(initiative_decompose.LintRefusal) as caught:
-        initiative_decompose.run({"run_id": "r", "date": "d", "cartridge": cart, "idea": idea}, runner)
-    assert str(caught.value) == idea_reach_refusal(idea, [], "")
+def test_initiative_text_writes_each_lint_note_as_a_list_entry_that_survives_yaml() -> None:
+    notes = ['reach: idea named /a/b.sh, rewritten as "the b.sh file"', "plain note"]
+    text = initiative_decompose.initiative_text({"id": "i", "title": "t", "why": "w"}, ["p1"], {}, "r", lint=notes)
+    assert yaml.safe_load(text.split("---\n")[1])["lint"] == notes
+    assert "lint" not in yaml.safe_load(initiative_decompose.initiative_text({"id": "i"}, [], {}, "r").split("---\n")[1])
+
+
+@pytest.mark.parametrize(
+    ("text", "block"),
+    [
+        ("---\nrepo: x\n---\nbody\n", "---\nrepo: x\n---\n"),
+        ("no block here", ""),
+        ("---\nrepo: x\nbody never closes", ""),
+    ],
+)
+def test_frontmatter_block_is_the_leading_block_as_given_or_empty(text, block) -> None:
+    assert initiative_decompose._frontmatter_block(text) == block
 
 
 def test_an_intake_reach_allow_prefix_lets_the_idea_reach_decompose_and_admits_a_ticket_under_it(cart, tmp_path) -> None:

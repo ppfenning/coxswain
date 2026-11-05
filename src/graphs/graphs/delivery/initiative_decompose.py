@@ -40,7 +40,7 @@ from graphs.delivery.decompose_size import (
     single_ticket_initiative,
 )
 from graphs.delivery.phase_split import split_same_phase_needs
-from graphs.delivery.ticket_lint import Problem, idea_reach_refusal, lint_tickets
+from graphs.delivery.ticket_lint import Problem, heal_idea_reach, lint_tickets
 from graphs.delivery.ticket_lint import lint_refusal_text as _lint_refusal_text
 from runner.decision_log import RouterDecision
 from runner.decision_source import DecisionSource, NoDecisionSource, ask
@@ -342,8 +342,11 @@ def initiative_text(
     intake: str | None = None,
     size: Mapping[str, str] | None = None,
     home: str | None = None,
+    lint: Sequence[str] = (),
 ) -> str:
     """The `initiative.md` shape every hand-written initiative in the workspace carries.
+
+    Each note in `lint` is written as one entry of a `lint:` list after the other keys.
 
     Raises ContractViolation naming the initiative when its title spans more than one line.
     """
@@ -352,6 +355,7 @@ def initiative_text(
     goal_lines = "\n".join(f"- {phase_id}: {goals.get(phase_id, '')}" for phase_id in phases)
     intake_line = f"intake: {_scalar(intake)}\n" if intake else ""
     size_lines = "".join(f"{key}: {_scalar(size[key])}\n" for key in ("size", "size_reason", "size_source")) if size else ""
+    lint_lines = "lint:\n" + "".join(f"  - {_scalar(note)}\n" for note in lint) if lint else ""
     return (
         "---\n"
         f"id: {_scalar(idea.get('id'))}\n"
@@ -360,6 +364,7 @@ def initiative_text(
         f"budget_usd: {_scalar(idea.get('budget_usd'))}\n"
         f"{intake_line}"
         f"{size_lines}"
+        f"{lint_lines}"
         "---\n\n"
         f"{idea.get('why', '')}\n\n"
         "PHASE GOALS, each judged against ITS OWN line:\n"
@@ -554,6 +559,15 @@ def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     except yaml.YAMLError:
         loaded = None
     return (loaded if isinstance(loaded, dict) else {}), "\n".join(lines[close + 1 :])
+
+
+def _frontmatter_block(text: str) -> str:
+    """The leading `---` block of `text`, delimiters included and bytes untouched; empty when there is no closed block."""
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
+        return ""
+    close = next((i for i, line in enumerate(lines) if i and line.strip() == "---"), None)
+    return "" if close is None else "".join(lines[: close + 1])
 
 
 def _reach_allow(args: Mapping[str, Any], idea_frontmatter: Mapping[str, Any]) -> list[str]:
@@ -1004,18 +1018,21 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
     tree = list(args.get("tree") or [])
     repo_name = str(args.get("repo") or "")
 
-    # A path the idea itself puts outside the repo is refused here, before any model call.
+    # A path the idea itself puts outside the repo is rewritten here, before any model call.
+    # Only an idea that is nothing but such paths is refused.
     idea_frontmatter, idea_body = _split_frontmatter(str(idea))
     reach_allow = _reach_allow(args, idea_frontmatter)
     # An empty allow-list is lint_tickets' own default, so it is left unpassed.
     allow_kwargs = {"reach_allow": reach_allow} if reach_allow else {}
-    idea_refusal = idea_reach_refusal(idea_body, tree, repo_name, reach_allow)
-    if idea_refusal is not None:
-        raise LintRefusal(idea_refusal)
+    healed = heal_idea_reach(idea_body, tree, repo_name, reach_allow)
+    if healed.refusal is not None:
+        raise LintRefusal(healed.refusal)
+    # What every later prompt and initiative.md plan from: the frontmatter as given, then the healed body.
+    planned_idea = _frontmatter_block(str(idea)) + healed.text if healed.notes else str(idea)
 
     decompose_hints = Hints(judgment="high")
     decompose_prompt = (
-        f"Break this idea into phases and tasks.\n\nIdea: {idea}\nDate: {date}\n\n"
+        f"Break this idea into phases and tasks.\n\nIdea: {planned_idea}\nDate: {date}\n\n"
         "Phases are ordered; tasks within a phase are not necessarily. Draw a "
         "dependency edge ONLY where order genuinely matters — an edge that exists "
         "because the work feels sequential blocks work that could have run in "
@@ -1099,7 +1116,7 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
                     "Attack this dependency graph. Your job is to find edges that are "
                     "not real — every one of them serialises work that could have run at "
                     "the same time.\n\n"
-                    f"Idea: {idea}\nPhases: {phases}\nTasks: {plan}\n\n"
+                    f"Idea: {planned_idea}\nPhases: {phases}\nTasks: {plan}\n\n"
                     "For each edge you challenge, say why the dependency does not "
                     "actually hold. Also name any edge that IS real and is missing."
                 ),
@@ -1225,7 +1242,7 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
             seat, seat_tier, seat_hints, lead = "review_adversary", "deep", None, ""
         elif all(p.rule == "contract" for p in refusals):
             seat, seat_tier, seat_hints = "decompose", None, decompose_hints
-            lead = f"Idea: {idea}\n\nYour task list was refused by ticket lint. Do not break the idea down again.\n\n"
+            lead = f"Idea: {planned_idea}\n\nYour task list was refused by ticket lint. Do not break the idea down again.\n\n"
         else:  # pragma: no cover - noted above; kept so a new branch cannot fall through unseated
             raise LintRefusal(_lint_refusal_text(refusals))
         correction = dict(
@@ -1364,7 +1381,7 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
     landing = landing_for(cartridge, "planned")
 
     goals = {str(p.get("id")): str(p.get("goal") or "") for p in decomposition.get("phases") or []}
-    idea_title, idea_repo, idea_body = idea_parts(str(idea))
+    idea_title, idea_repo, idea_body = idea_parts(planned_idea)
     idea_doc = {
         "id": initiative_id or run_id,
         "title": idea_title,
@@ -1381,6 +1398,7 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
         intake=intake_path,
         size=size_record,
         home=str(Path.home()),
+        lint=healed.notes,
     )
     initiative_where = "/".join(part for part in (landing, initiative_id) if part)
 
