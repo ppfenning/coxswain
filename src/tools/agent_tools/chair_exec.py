@@ -39,6 +39,7 @@ from agent_tools import (
     host_cmd,
     land_manual,
     partial_land,
+    queue_rows,
     remote_fetch,
     remote_lane,
     repo_path,
@@ -190,6 +191,43 @@ class Deps:
     rev_parse: Callable[[str, str], str | None] = rev_parse  # (repo, ref) -> the ref's tip, None when it does not resolve; the only door to a land_phase's head
     phase_states: Callable[[str, str], list[str]] = lambda initiative, phase: []  # (initiative, phase) -> the store state of each of its tasks; [] when unknown
     label: str = ""  # the chair's own holder label; each guarded cox command it shells out to carries it as --label
+    target_branch: Callable[[str], str | None] | None = None  # initiative -> the branch it lands on; None or a None result keeps the repo default
+
+
+def resolved_target(cartridge_target: str | None, epic_branch: str | None, initiative_branch: str | None) -> str | None:
+    """Pure. The initiative's value, else its epic's, else the cartridge's; None when none is set."""
+    from core.landing import resolve_target_branch  # lazy: core sits beside agent_tools in one venv
+
+    return resolve_target_branch({"landing_areas": {"target_branch": cartridge_target}}, epic_branch, initiative_branch)
+
+
+class TargetUnreadable(RuntimeError):
+    """The initiative's target branch cannot be told. A step that meets it refuses: landing on the default would be a wrong merge."""
+
+
+def initiative_row(initiative: str, rows: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+    """Pure. The queue row of kind initiative named `initiative`, else None."""
+    return next((r for r in rows if r.get("kind") == "initiative" and r.get("initiative") == initiative), None)
+
+
+def target_for(
+    initiative: str,
+    rows: Sequence[Mapping[str, Any]],
+    epics: Mapping[str, Mapping[str, Any]],
+    cartridge_target: str | None,
+) -> str | None:
+    """Pure. The branch `initiative` lands on, from its queue row and its epic's definition."""
+    row = initiative_row(initiative, rows)
+    epic = queue_rows.epic_of_row(row) if row is not None else None
+    initiative_branch = queue_rows.target_branch_of_row(row) if row is not None else None
+    epic_branch = (epics.get(epic) or {}).get("target_branch") if epic is not None else None
+    return resolved_target(cartridge_target, epic_branch, initiative_branch)
+
+
+def _target_of(deps: Deps, initiative: str) -> str | None:
+    """The branch `initiative` lands on, or None for the repo default. A caller's stub with no `target_branch` has none."""
+    read = getattr(deps, "target_branch", None)
+    return read(initiative) if read is not None and initiative else None
 
 
 LAUNCH_KINDS = ("relaunch", "retry", "launch_epic", "launch_decompose", "rescue")
@@ -601,8 +639,8 @@ def _carry_forward(
     if phases:
         # Resolved in the host checkout after its fetch: `origin/<base>`, never a local branch that may be stale or absent.
         try:
-            base = base_branch.base_ref(home_repo, None, base_branch.configured_base(repo), at_home)
-        except base_branch.BaseError as exc:
+            base = base_branch.base_ref(home_repo, _target_of(deps, initiative), base_branch.configured_base(repo), at_home)
+        except (base_branch.BaseError, TargetUnreadable) as exc:
             return [], None, _result(action, "failed", f"resolving the base to carry onto in {repo}{f' on {host}' if ssh else ''}: {exc}")
     for phase in phases:
         branch = f"epic/{initiative}/{phase}"
@@ -917,7 +955,11 @@ def _finish_task(action: Action, deps: Deps) -> Result:
         return _result(action, "skipped", f"{task} was checked less than {land_manual.RECHECK_S}s ago")
     phase = action.get("phase", "")
     branches = land_manual.pr_branches(initiative, phase, task, land_manual.record_branch(deps.runs_dir, run, task))
-    targets = land_manual.merge_targets(base_branch.base_name(repo, None, None, deps.run), initiative, phase)
+    try:
+        base = base_branch.base_name(repo, _target_of(deps, initiative), None, deps.run)
+    except TargetUnreadable as exc:
+        return _result(action, "failed", f"resolving the branch {initiative} lands on: {exc}")
+    targets = land_manual.merge_targets(base, initiative, phase)
     verdict, why = land_manual.merged_on_origin(repo, branches, targets, deps.run)
     if verdict != "merged":
         land_manual.mark_checked(stamp)
@@ -1092,7 +1134,10 @@ def _carry_phase(action: Action, deps: Deps) -> Result:
     `_review_landed` returns; a port failure is a failed result, never a raise out of perform."""
     if deps.carry_ports is None:
         return _result(action, "refused", "carry_phase needs wired carry ports")
-    git, forge, store = deps.carry_ports(action)
+    try:
+        git, forge, store = deps.carry_ports(action)
+    except TargetUnreadable as exc:
+        return _result(action, "failed", f"carry of {action.get('phase', '')} refused, its target branch is unreadable: {exc}")
     try:
         result = perform_carry(action, git, forge, store)
     except Exception as exc:  # the edge: a port failure becomes a failed result
@@ -1705,8 +1750,8 @@ class _GitEdge:
 
     Every base is `origin/<default branch>` after a `git fetch origin`; local `main` is never read, so it cannot be stale."""
 
-    def __init__(self, runs_dir: Path, workspace: Path, repo: str, home: str | None = None) -> None:
-        self.runs_dir, self.workspace, self.repo, self.tmp, self.home = runs_dir, workspace, repo, "", home
+    def __init__(self, runs_dir: Path, workspace: Path, repo: str, home: str | None = None, target: str | None = None) -> None:
+        self.runs_dir, self.workspace, self.repo, self.tmp, self.home, self.target = runs_dir, workspace, repo, "", home, target
         self.local_repo = _local_repo(repo, home or "")  # every `-C` here runs on this machine; `self.repo` stays as recorded
 
     def _git(self, *args: str) -> tuple[int, str]:
@@ -1717,6 +1762,10 @@ class _GitEdge:
         code, out = run_argv(["git", "-C", self.local_repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
         name = out.strip().removeprefix("origin/") if code == 0 else ""
         return name or "main"
+
+    def landing_branch(self) -> str:
+        """The initiative's target branch when it has one, else `default_branch()`."""
+        return self.target or self.default_branch()
 
     def fetch_branch(self, host: str, branch: str) -> None:
         """The run's branch from its host, reached as `<ssh>:<repo on the host>` the way `remote_fetch` reaches it. An empty host is here."""
@@ -1731,7 +1780,7 @@ class _GitEdge:
     def create_branch_from_main(self, name: str) -> None:
         """Fetches origin, then cuts `name` from `origin/<default branch>` in a new worktree; a failed fetch raises."""
         _must(*run_argv(["git", "-C", self.local_repo, "fetch", "origin"]), "git fetch origin")
-        start = f"origin/{self.default_branch()}"
+        start = f"origin/{self.landing_branch()}"
         tmp = tempfile.mkdtemp(prefix="cox-carry-")
         code, out = run_argv(["git", "-C", self.local_repo, "worktree", "add", "-B", name, tmp, start])
         if code != 0:
@@ -1764,7 +1813,7 @@ class _GitEdge:
         return [c for c in commands if run_argv(["bash", "-c", c], cwd=Path(self.tmp), timeout=_CHECK_COMMAND_TIMEOUT_S)[0] != 0]
 
     def already_on_main(self, commit: str) -> bool:
-        return self._git("merge-base", "--is-ancestor", commit, f"origin/{self.default_branch()}")[0] == 0
+        return self._git("merge-base", "--is-ancestor", commit, f"origin/{self.landing_branch()}")[0] == 0
 
     def close(self) -> None:
         if self.tmp:
@@ -1784,7 +1833,7 @@ class _ForgeEdge:
         self.git, self.branch, self.pr_url = git, "", ""
 
     def open_pr(self, branch: str, title: str, body: str) -> str:
-        ok, detail = forge_auto.open_pr(self.git.tmp, title, body, head=branch, base=self.git.default_branch())
+        ok, detail = forge_auto.open_pr(self.git.tmp, title, body, head=branch, base=self.git.landing_branch())
         if not ok:
             raise RuntimeError(f"open PR for {branch}: {detail}")
         self.branch, self.pr_url = branch, _pr_url(detail)
@@ -1795,7 +1844,7 @@ class _ForgeEdge:
         return [] if ok else [detail]
 
     def merge(self, pr: str) -> None:
-        ok, detail = forge_auto.merge(self.git.tmp, {"branch": self.branch, "default_branch": self.git.default_branch()})
+        ok, detail = forge_auto.merge(self.git.tmp, {"branch": self.branch, "default_branch": self.git.landing_branch()})
         if not ok:
             raise RuntimeError(f"merge of {self.branch}: {detail}")
 
@@ -1860,11 +1909,37 @@ class _RebaseEdge:
 
 
 def _carry_ports(
-    runs_dir: Path, workspace: Path, repo_for: Callable[[Action], str], now: Callable[[], str], home: str, action: Action,
+    runs_dir: Path, workspace: Path, repo_for: Callable[[Action], str], now: Callable[[], str], home: str,
+    target_branch: Callable[[str], str | None] | None, action: Action,
 ) -> tuple[GitPort, ForgePort, StorePort]:
-    git = _GitEdge(runs_dir, workspace, action.get("repo") or repo_for(action), home)
+    initiative = action.get("initiative", "")
+    target = target_branch(initiative) if target_branch is not None and initiative else None
+    git = _GitEdge(runs_dir, workspace, action.get("repo") or repo_for(action), home, target)
     forge = _ForgeEdge(git)
     return git, forge, _StoreEdge(runs_dir, workspace, action, forge, now)
+
+
+def _target_branch_edge(runs_dir: Path, workspace: Path, cartridge_target: str | None, initiative: str) -> str | None:
+    """Edge. Reads the initiative's row, then its own epic's file only when the row sets no branch, then `target_for`.
+    A value that cannot be told raises TargetUnreadable; None means no branch is set anywhere."""
+    from core.epic_files import parse_epic
+
+    rows = run_store.read_queue(runs_dir, initiative)
+    row = initiative_row(initiative, rows)
+    if row is None and (workspace / "work" / initiative / "initiative.md").is_file():
+        raise TargetUnreadable(f"{initiative} has an initiative file but no queue row, so the store may be unreadable")
+    epic = queue_rows.epic_of_row(row) if row is not None and queue_rows.target_branch_of_row(row) is None else None
+    epics: dict[str, Mapping[str, Any]] = {}
+    path = workspace / "epics" / f"{epic}.md"
+    if epic is not None and path.is_file():
+        try:
+            epics[epic] = parse_epic(path.read_text(encoding="utf-8"), path.name)
+        except (ValueError, OSError) as exc:
+            raise TargetUnreadable(f"epic file {path}: {exc}") from exc
+    try:
+        return target_for(initiative, rows, epics, cartridge_target)
+    except ValueError as exc:
+        raise TargetUnreadable(str(exc)) from exc
 
 
 def lease_guard(record: dict[str, Any] | None, own: tuple[str, int, str], pid_alive_: bool, now: datetime, host: str) -> str:
@@ -1911,8 +1986,12 @@ def edge_deps(
     ids_mode: str = "slug",
     provider_profile: Callable[[], dict] = lambda: {},
     dry_run: bool = False,
+    cartridge_target: str | None = None,
 ) -> Deps:
     """Edge. The real bundle: subprocess for cox and git, chair.acquire_lease for the lease.
+
+    `cartridge_target` is the cartridge's `landing_areas.target_branch`, the lowest rung of an initiative's target;
+    unset, only the initiative row and its epic file name one.
 
     A dry run drops every door to a lane host: `run` refuses an ssh or push argv unrun and `check_login` returns no row.
 
@@ -1929,6 +2008,8 @@ def edge_deps(
     def acquire(_holder: str, _host: str, steal: bool = False) -> str:
         refusal, takeover = _lease_state(runs_dir, session, pid, host)
         return refusal or chair.acquire_lease(runs_dir, session, pid, host, steal=steal or takeover)
+
+    target_branch = partial(_target_branch_edge, runs_dir, workspace, cartridge_target)
 
     return Deps(
         run=run,
@@ -1947,7 +2028,8 @@ def edge_deps(
         harness_python=harness_python,
         ids_mode=ids_mode,
         home=home,
-        carry_ports=partial(_carry_ports, runs_dir, workspace, repo_for, lambda: datetime.now(UTC).isoformat(), home),
+        carry_ports=partial(_carry_ports, runs_dir, workspace, repo_for, lambda: datetime.now(UTC).isoformat(), home, target_branch),
+        target_branch=target_branch,
         rebase_port=lambda action: _RebaseEdge(action.get("repo") or repo_for(action)),
         phase_states=lambda initiative, phase: phase_task_states(run_store.work_items(runs_dir, initiative), phase),
     )
