@@ -14,6 +14,7 @@ from agent_tools.chair_read_quarantined import WorkFiles, initiative_files, read
 from agent_tools.chair_read_stale import read_chair_actions
 from agent_tools.chair_types import BlockedReady
 from agent_tools.draft_state import _is_draft
+from core.landing import DEFAULT_LAND_AT, need_met
 
 Item = Mapping[str, Any]
 
@@ -85,12 +86,16 @@ def empty_stubs(
     return sorted(reported | stubs)
 
 
-def blocked_ready(items: Sequence[Item]) -> list[BlockedReady]:
-    """Waiting tasks whose unmet needs are all approved, unlanded tasks of the same initiative, in any phase."""
+def blocked_ready(items: Sequence[Item], land_at_by_initiative: Mapping[str, str] = {}) -> list[BlockedReady]:
+    """Waiting tasks whose unmet needs are all approved, unlanded tasks of the same initiative, in any phase.
+
+    An approved need that `need_met` accepts at the initiative's `land_at` is met; a missing initiative reads as the default."""
     rows: list[BlockedReady] = []
     for item in items:
         own = [i for i in items if i["initiative"] == item["initiative"]]
-        landed = {i["id"] for i in own if i["state"] in route.TERMINAL}
+        land_at = land_at_by_initiative.get(item["initiative"], DEFAULT_LAND_AT)
+        approved_met = need_met(land_at, "approved", False)
+        landed = {i["id"] for i in own if i["state"] in route.TERMINAL or (approved_met and i["state"] == "approved")}
         approved = {i["id"] for i in own if i["state"] == "approved"}
         unmet = [n for n in item.get("needs", []) if n not in landed]
         if item["state"] not in _NOT_WAITING and unmet and all(n in approved for n in unmet):
@@ -99,7 +104,7 @@ def blocked_ready(items: Sequence[Item]) -> list[BlockedReady]:
 
 
 def idle_backlog(plain: Mapping[str, Any]) -> IdleBacklog:
-    """`plain` keys: docket, items, queued, last_launch, last_land, node_calls, with_file, decomposed, live, stored."""
+    """`plain` keys: docket, items, queued, last_launch, last_land, node_calls, with_file, decomposed, live, stored, land_at."""
     docket = plain["docket"]
     lanes, busy = (int(docket["max_in_flight"]), int(docket["busy_lanes"])) if docket else (0, 0)
     return {
@@ -110,7 +115,7 @@ def idle_backlog(plain: Mapping[str, Any]) -> IdleBacklog:
         "empty_stubs": empty_stubs(
             plain["with_file"], plain["items"], plain["decomposed"], plain["live"], plain.get("stored", ())
         ),
-        "blocked_ready": blocked_ready(plain["items"]),
+        "blocked_ready": blocked_ready(plain["items"], plain.get("land_at", {})),
     }
 
 

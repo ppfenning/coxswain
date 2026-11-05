@@ -74,7 +74,8 @@ def test_a_ready_task_behind_a_quarantined_phase_is_withheld_and_recorded(starte
 
 @pytest.mark.parametrize("started", [True, False])
 def test_a_ready_task_behind_an_approved_phase_is_withheld(started: bool) -> None:
-    facts = _facts(initiatives=[_initiative("a", "p2", started)], phase_tasks=[_row("a", "p1", "approved")])
+    initiative = {**_initiative("a", "p2", started), "land_at": "task"}
+    facts = _facts(initiatives=[initiative], phase_tasks=[_row("a", "p1", "approved")])
     actions = plan_tick(facts, _NOW)
     assert _kinds(actions, _LAUNCHES) == []
     assert [(a["quarantined"], a["awaiting_land"]) for a in _waiting(actions)] == [(0, 1)]
@@ -175,6 +176,6 @@ def test_a_merged_phase_at_land_at_task_still_waits() -> None:
 
 
 def test_an_approved_unmerged_task_beside_merged_ones_reports_awaiting_land_one() -> None:
-    initiative = {**_initiative("a", "p2", False), "land_at": "ticket"}
+    initiative = {**_initiative("a", "p2", False), "land_at": "task"}
     facts = _facts(initiatives=[initiative], phase_tasks=[_merged_row("a", "p1", 2, approved=1)])
-    assert waiting_initiatives(facts) == [WaitingInitiative("a", Blocking("p1", 0, 1))]
+    assert waiting_initiatives(facts) == [WaitingInitiative("a", Blocking("p1", 0, 3))]

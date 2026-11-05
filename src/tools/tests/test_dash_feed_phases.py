@@ -126,8 +126,9 @@ def test_a_blocked_task_waits_on_the_same_needs_blocked_ready_names(queue):
     landed = {i["id"] for i in items if i["state"] in ("done", "dropped")}
     waiting = {i["id"]: [n for n in i["needs"] if n not in landed] for i in items if i["state"] == "ready"}
 
-    assert [row["task"] for row in blocked_ready(items)] == ["a-blocked"]
-    assert {row["task"]: row["unlanded_needs"] for row in blocked_ready(items)} == {"a-blocked": waiting["a-blocked"]}
+    at_task = {"alpha": "task", "beta": "task"}  # the dash feed marks an approved need blocking whatever land_at is
+    assert [row["task"] for row in blocked_ready(items, at_task)] == ["a-blocked"]
+    assert {row["task"]: row["unlanded_needs"] for row in blocked_ready(items, at_task)} == {"a-blocked": waiting["a-blocked"]}
     assert {task: states[task] == "blocked" for task, unmet in waiting.items() if task != "a-stranded"} == {
         task: bool(unmet) for task, unmet in waiting.items() if task != "a-stranded"
     }
