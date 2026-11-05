@@ -79,8 +79,10 @@ def test_install_on_a_host_with_no_asset_prints_the_detail_runs_no_download_and_
     assert _towpath_row(out)[-1] == "missing"
 
 
-def _plain_upgrade(monkeypatch, tmp_path, capsys, **host):
+def _plain_upgrade(monkeypatch, tmp_path, capsys, dash_present=True, **host):
     calls, bin_dir = _host(monkeypatch, tmp_path, **host)
+    if not dash_present:
+        monkeypatch.setattr(cli, "_checkout_facts", lambda path, **_: {"present": path.name != "coxswain-dash", "tag": "v2026.11.1", "dirty": False})
     flag_manifest = tmp_path / "manifest.toml"
     flag_manifest.write_text(MANIFEST.replace("v2026.11.1", "v2026.11.0"))
     root = tmp_path / "root"
@@ -105,6 +107,38 @@ def test_plain_upgrade_exits_2_when_the_binary_stays_off_the_new_pin(monkeypatch
     rc, out, _, _ = _plain_upgrade(monkeypatch, tmp_path, capsys, after="towpath 2026.11.0")
     assert rc == 2
     assert _towpath_row(out)[-1] == "drift"
+
+
+STALE_LINE = "upgrade: towpath is at 2026.11.0 but the manifest pins v2026.11.1"
+UNREADABLE_LINE = "upgrade: towpath is at unreadable but the manifest pins v2026.11.1"
+
+
+def test_plain_upgrade_that_leaves_towpath_at_the_old_version_names_it_and_shows_a_drift_row(monkeypatch, tmp_path, capsys):
+    rc, out, _, _ = _plain_upgrade(monkeypatch, tmp_path, capsys, after="towpath 2026.11.0")
+    assert rc == 2
+    assert STALE_LINE in out.splitlines()
+    assert _towpath_row(out) == ["towpath", "v2026.11.1", "2026.11.0", "drift"]
+
+
+def test_plain_upgrade_with_an_unreadable_towpath_version_still_prints_a_missing_row_and_exits_2(monkeypatch, tmp_path, capsys):
+    rc, out, _, _ = _plain_upgrade(monkeypatch, tmp_path, capsys, before=None, after=None)
+    assert rc == 2
+    assert UNREADABLE_LINE in out.splitlines()
+    assert _towpath_row(out) == ["towpath", "v2026.11.1", "missing"]
+
+
+def test_plain_upgrade_that_matches_the_pin_exits_0_prints_no_naming_line_and_shows_an_ok_row(monkeypatch, tmp_path, capsys):
+    rc, out, _, _ = _plain_upgrade(monkeypatch, tmp_path, capsys)
+    assert rc == 0
+    assert "upgrade: towpath is at" not in out
+    assert _towpath_row(out) == ["towpath", "v2026.11.1", "2026.11.1", "ok"]
+
+
+def test_plain_upgrade_without_the_optional_dash_component_exits_0_and_names_no_binary(monkeypatch, tmp_path, capsys):
+    rc, out, calls, _ = _plain_upgrade(monkeypatch, tmp_path, capsys, dash_present=False, before=None, after=None, on_path=False)
+    assert rc == 0
+    assert "upgrade: towpath is at" not in out
+    assert not any(argv[0] in ("curl", "tar", "cp") for argv in calls)
 
 
 def test_binary_facts_take_bin_dir_from_the_command_on_path_and_version_from_its_output():
