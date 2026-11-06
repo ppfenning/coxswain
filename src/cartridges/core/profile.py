@@ -34,7 +34,16 @@ from core.catalog import (
     newest_in_family,
 )
 
-__all__ = ["Profile", "ResolvedModel", "load_profile", "parse_max_parallel", "resolve_entry", "resolve_profile"]
+__all__ = [
+    "MergeQueue",
+    "Profile",
+    "ResolvedModel",
+    "load_profile",
+    "parse_max_parallel",
+    "parse_merge_queue",
+    "resolve_entry",
+    "resolve_profile",
+]
 
 
 @dataclass(frozen=True)
@@ -44,11 +53,18 @@ class ResolvedModel:
 
 
 @dataclass(frozen=True)
+class MergeQueue:
+    batch_size: int = 1
+    wait_s: float = 0.0
+
+
+@dataclass(frozen=True)
 class Profile:
     name: str
     tiers: Mapping[str, ResolvedModel]
     raw: Mapping[str, Any]
     max_parallel: int | None = None
+    merge_queue: MergeQueue | None = None
 
 
 def parse_max_parallel(value: Any) -> int | str | None:
@@ -58,6 +74,39 @@ def parse_max_parallel(value: Any) -> int | str | None:
     if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
         return value
     return f"max_parallel must be a positive integer, got {value!r}"
+
+
+_MERGE_QUEUE_KEYS = frozenset({"batch_size", "wait_s"})
+
+
+def _is_number(value: Any) -> bool:
+    """A bool is refused: it is an int subclass."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def parse_merge_queue(value: Any) -> MergeQueue | str | None:
+    """None when absent, a MergeQueue when valid, else one message listing every problem."""
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        return f"merge_queue must be a mapping, got {value!r}"
+    batch_size = value.get("batch_size", 1)
+    wait_s = value.get("wait_s", 0.0)
+    unknown = sorted(str(k) for k in value if k not in _MERGE_QUEUE_KEYS)
+    problems = [
+        *([f"merge_queue has unknown key(s) {', '.join(repr(k) for k in unknown)}"] if unknown else []),
+        *(
+            []
+            if isinstance(batch_size, int) and not isinstance(batch_size, bool) and batch_size >= 1
+            else [f"merge_queue.batch_size must be an integer of at least 1, got {batch_size!r}"]
+        ),
+        *(
+            []
+            if _is_number(wait_s) and wait_s >= 0
+            else [f"merge_queue.wait_s must be a number of at least 0, got {wait_s!r}"]
+        ),
+    ]
+    return "; ".join(problems) if problems else MergeQueue(batch_size=batch_size, wait_s=float(wait_s))
 
 
 def _resolve_alias(name: str, catalog: Catalog) -> ResolvedModel | str:
@@ -88,9 +137,11 @@ def resolve_profile(raw: Any, catalog: Catalog) -> Profile | list[str]:
         return ["profile must have a non-empty 'tiers' mapping"]
     resolved = {tier: resolve_entry(str(name), catalog) for tier, name in tiers.items()}
     cap = parse_max_parallel(raw.get("max_parallel"))
+    queue = parse_merge_queue(raw.get("merge_queue"))
     errors = [
         *(f"tier {t!r}: {r}" for t, r in resolved.items() if isinstance(r, str)),
         *([cap] if isinstance(cap, str) else []),
+        *([queue] if isinstance(queue, str) else []),
     ]
     return (
         errors
@@ -100,6 +151,7 @@ def resolve_profile(raw: Any, catalog: Catalog) -> Profile | list[str]:
             tiers=MappingProxyType({t: r for t, r in resolved.items() if isinstance(r, ResolvedModel)}),
             raw=MappingProxyType(dict(raw)),
             max_parallel=cap if isinstance(cap, int) else None,
+            merge_queue=queue if isinstance(queue, MergeQueue) else None,
         )
     )
 

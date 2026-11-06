@@ -230,16 +230,26 @@ def _branch_pr_state(repo: Path, branch: str) -> dict:
     return state
 
 
+def merge_flag(step: dict) -> str | None:
+    """The `gh pr merge` method flag for `step["method"]`: squash when absent, rebase, or None for any other value."""
+    return {"squash": "--squash", "rebase": "--rebase"}.get(step.get("method", "squash"))
+
+
 def merge(repo: Path, step: dict) -> tuple[bool, str]:
     """Merge the PR of `step["branch"]`, then delete its remote and local head branch and update the local default branch.
+
+    `step["method"]` is "squash" (the default when absent) or "rebase"; any other value fails without running anything.
 
     gh's own `--delete-branch` is not used: its local cleanup needs a current branch and fails on a detached
     HEAD after the server merged, so the head is deleted through the API instead, unless `step["delete_branch"]`
     is false; a step that omits the key deletes, as `--delete-branch` always did. A non-zero gh exit is judged by the PR's server state (`merge_verdict`). Once the PR has merged,
     a failed branch delete or local update is reported in the detail and the result stays ok.
     """
+    flag = merge_flag(step)
+    if flag is None:
+        return False, f"unknown merge method: {step['method']!r}"
     try:
-        r = _run(["gh", "pr", "merge", step["branch"], "--squash"], timeout=WRITE_TIMEOUT_S, cwd=repo)
+        r = _run(["gh", "pr", "merge", step["branch"], flag], timeout=WRITE_TIMEOUT_S, cwd=repo)
     except ForgeError as exc:
         return False, str(exc)
     text = r.stdout.strip() or r.stderr.strip()
