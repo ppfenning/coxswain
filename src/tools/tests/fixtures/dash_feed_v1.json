@@ -4,7 +4,9 @@
   "chair": {"holder": "chair", "host": "host-b", "epoch": 7, "liveness": "live", "beat_age_s": 4, "session": "a1b2c3d4", "last_tick_at": "09-28 19:59 EDT", "last_status": "chair 09-28 19:59 EDT | landed 2, launched 1", "tick_age_s": 60, "current_action": {"kind": "land", "target": "dash-feed/p2-feed", "since": "2026-09-28T23:59:50Z"}, "today": {"lands": 2, "launches": 1, "refused_or_failed": 1, "needs_chair_open": 1}, "lands_today": 2, "phases_today": 1, "needs_you": 1, "drafts": 2, "housekeeping_age_s": 3600},
   "spend": {"five_hour_fraction": 0.16, "five_hour_source": "meter", "weekly_fraction": 0.35, "weekly_source": "meter", "hard_stop_fraction": 0.93, "five_hour_resets_at": "2026-09-29T02:00:00Z", "weekly_resets_at": "2026-10-04T04:00:00Z", "weekly_target_fraction": 0.0, "weekly_pace": "not_judged", "today": {"date": "2026-09-29", "cost": 6.0, "landed": 3, "per_landed": 2.0, "first_try_rate": 0.5, "measured": 2}},
   "spend_series": [["2026-09-28T23:40:00Z", 0.42], ["2026-09-28T23:50:00Z", 0.84]],
-  "machines": [{"name": "host-b", "state": "active", "lanes_in_use": 2, "capacity": 3, "login_ok": true, "login_checked_at": "2026-09-28T23:50:00Z", "beat_age_s": 12, "checkouts": {"coxswain-tools": {"behind_main": 0}}}],
+  "machines": [{"name": "host-b", "state": "active", "lanes_in_use": 2, "capacity": 3, "login_ok": true, "login_checked_at": "2026-09-28T23:50:00Z", "beat_age_s": 12, "checkouts": {"coxswain-tools": {"behind_main": 0}},
+    "lanes": [{"run": "board-feed-1", "initiative": "board-feed", "phase": "p2-render", "tasks": ["board-render"], "elapsed_s": 840, "cost_usd": 1.0}],
+    "load": {"cpu_pct": 41.5, "load_avg_per_core": 0.75, "mem_used_gb": 18.25, "mem_total_gb": 32.0}}],
   "runs": [{"run": "dash-feed-1", "machine": "host-b", "phase": "p1-foundations", "node": "build", "attempt": 1, "turns": 12, "cost": 0.84, "verdict": "approve", "status": "running", "cost_series": [["2026-09-28T23:40:00Z", 0.42, "plan"], ["2026-09-28T23:55:00Z", 0.84, "build"]], "short_id": "I412", "project": "coxswain-tools", "end": "running"}, {"run": "dash-feed-0", "machine": "host-b", "phase": "p1-foundations", "node": "build", "attempt": 2, "turns": 31, "cost": 2.15, "verdict": "approve", "status": "landed", "cost_series": [], "short_id": "I412", "project": "coxswain-tools", "end": "landed"}, {"run": "dash-feed-9", "machine": "host-b", "phase": "p2-feed", "node": "review", "attempt": 1, "turns": 8, "cost": 0.42, "verdict": "reject", "status": "quarantined", "cost_series": [], "short_id": null, "project": null, "end": {"kind": "quarantined", "cause": "review rejected twice"}}, {"run": "dash-feed-7", "machine": "host-b", "phase": "p2-feed", "node": "build", "attempt": 1, "turns": 3, "cost": 0.1, "verdict": "none", "status": "exited", "cost_series": [], "short_id": null, "project": null, "end": {"kind": "died", "cause": "schema_version"}}],
   "queue": [{"initiative": "dash-feed-streams-a-versioned-json-snapshot-of", "priority": 1, "phases_landed": 0, "phases_total": 3, "current_phase": "p1-foundations", "phases": [{"id": "p1-foundations", "tasks": [{"id": "feed-schema", "state": "approved"}, {"id": "feed-merged", "state": "merged"}, {"id": "feed-landed", "state": "landed"}]}, {"id": "p2-feed", "tasks": [{"id": "feed-queue", "state": "blocked"}]}], "short_id": "I412", "project": "example-repo"}, {"initiative": "unnumbered-initiative", "priority": 2, "phases_landed": 0, "phases_total": 1, "current_phase": "p1-foundations", "phases": [{"id": "p1-foundations", "tasks": [{"id": "only-task", "state": "ready"}]}], "short_id": null, "project": null}],
   "queue_total": 2,
@@ -34,5 +36,212 @@
     "daily_avg_7d_usd": 21.5,
     "daily_avg_14d_usd": 19.25
   },
-  "epics": []
+  "epics": [],
+  "board": {
+    "epics": [
+      {
+        "id": "dash-board",
+        "title": "Board tree on the dash",
+        "status": "building",
+        "cost_usd": 1.75,
+        "counts": {
+          "ready": 1,
+          "building": 1,
+          "approved": 0,
+          "merged": 1,
+          "landed": 1,
+          "quarantined": 0,
+          "dropped": 0,
+          "blocked": 1
+        },
+        "initiatives": [
+          {
+            "id": "board-feed",
+            "short_id": "I501",
+            "status": "building",
+            "cost_usd": 1.75,
+            "counts": {
+              "ready": 1,
+              "building": 1,
+              "approved": 0,
+              "merged": 1,
+              "landed": 1,
+              "quarantined": 0,
+              "dropped": 0,
+              "blocked": 1
+            },
+            "phases": [
+              {
+                "id": "p1-schema",
+                "status": "merged",
+                "cost_usd": 0.75,
+                "counts": {
+                  "ready": 0,
+                  "building": 0,
+                  "approved": 0,
+                  "merged": 1,
+                  "landed": 1,
+                  "quarantined": 0,
+                  "dropped": 0,
+                  "blocked": 0
+                },
+                "tasks": [
+                  {
+                    "id": "board-schema",
+                    "status": "landed",
+                    "run": "",
+                    "host": "",
+                    "cost_usd": 0.5
+                  },
+                  {
+                    "id": "board-rollup",
+                    "status": "merged",
+                    "run": "",
+                    "host": "",
+                    "cost_usd": 0.25
+                  }
+                ]
+              },
+              {
+                "id": "p2-render",
+                "status": "building",
+                "cost_usd": 1.0,
+                "counts": {
+                  "ready": 1,
+                  "building": 1,
+                  "approved": 0,
+                  "merged": 0,
+                  "landed": 0,
+                  "quarantined": 0,
+                  "dropped": 0,
+                  "blocked": 1
+                },
+                "tasks": [
+                  {
+                    "id": "board-render",
+                    "status": "building",
+                    "run": "board-feed-1",
+                    "host": "host-b",
+                    "cost_usd": 1.0
+                  },
+                  {
+                    "id": "board-keys",
+                    "status": "ready",
+                    "run": "",
+                    "host": "",
+                    "cost_usd": 0.0
+                  },
+                  {
+                    "id": "board-docs",
+                    "status": "blocked",
+                    "run": "",
+                    "host": "",
+                    "cost_usd": 0.0
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "",
+        "title": "no epic",
+        "status": "quarantined",
+        "cost_usd": 2.75,
+        "counts": {
+          "ready": 0,
+          "building": 0,
+          "approved": 1,
+          "merged": 0,
+          "landed": 1,
+          "quarantined": 1,
+          "dropped": 1,
+          "blocked": 0
+        },
+        "initiatives": [
+          {
+            "id": "cost-ledger",
+            "short_id": "I498",
+            "status": "quarantined",
+            "cost_usd": 2.75,
+            "counts": {
+              "ready": 0,
+              "building": 0,
+              "approved": 1,
+              "merged": 0,
+              "landed": 1,
+              "quarantined": 1,
+              "dropped": 1,
+              "blocked": 0
+            },
+            "phases": [
+              {
+                "id": "p1-core",
+                "status": "quarantined",
+                "cost_usd": 2.0,
+                "counts": {
+                  "ready": 0,
+                  "building": 0,
+                  "approved": 1,
+                  "merged": 0,
+                  "landed": 0,
+                  "quarantined": 1,
+                  "dropped": 0,
+                  "blocked": 0
+                },
+                "tasks": [
+                  {
+                    "id": "ledger-sum",
+                    "status": "approved",
+                    "run": "",
+                    "host": "",
+                    "cost_usd": 0.75
+                  },
+                  {
+                    "id": "ledger-attempts",
+                    "status": "quarantined",
+                    "run": "",
+                    "host": "",
+                    "cost_usd": 1.25
+                  }
+                ]
+              },
+              {
+                "id": "p2-wire",
+                "status": "landed",
+                "cost_usd": 0.75,
+                "counts": {
+                  "ready": 0,
+                  "building": 0,
+                  "approved": 0,
+                  "merged": 0,
+                  "landed": 1,
+                  "quarantined": 0,
+                  "dropped": 1,
+                  "blocked": 0
+                },
+                "tasks": [
+                  {
+                    "id": "ledger-wire",
+                    "status": "dropped",
+                    "run": "",
+                    "host": "",
+                    "cost_usd": 0.25
+                  },
+                  {
+                    "id": "ledger-test",
+                    "status": "landed",
+                    "run": "",
+                    "host": "",
+                    "cost_usd": 0.5
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
 }

@@ -44,6 +44,8 @@ def _assert_matches_fixture_keys_and_nulls(output, fixture, path="root"):
 def _fixture_inputs() -> tuple[tuple, dict]:
     """The sections, positionally, and the history keywords that `snapshot` takes to build tests/fixtures/dash_feed_v1.json."""
     at = "2026-09-29T00:00:00Z"
+    with open("tests/fixtures/dash_feed_board_v1.json") as board_file:
+        board_fixture = json.load(board_file)
     chair = {
         "holder": "chair",
         "host": "host-b",
@@ -84,6 +86,8 @@ def _fixture_inputs() -> tuple[tuple, dict]:
             "login_checked_at": "2026-09-28T23:50:00Z",
             "beat_age_s": 12,
             "checkouts": {"coxswain-tools": {"behind_main": 0}},
+            "lanes": board_fixture["machines"][0]["lanes"],
+            "load": board_fixture["machines"][0]["load"],
         }
     ]
     runs = [
@@ -229,7 +233,7 @@ def _fixture_inputs() -> tuple[tuple, dict]:
     args = (at, chair, spend, machines, runs, queue, 2, inbox, 2, watch, decisions, spend_series)
     with open("tests/fixtures/dash_budget_v1.json") as budget_file:
         budget = json.load(budget_file)["month"]
-    return args, {"history": history, "history_today": history_today, "budget": budget}
+    return args, {"history": history, "history_today": history_today, "budget": budget, "board": board_fixture["board"]}
 
 
 def test_snapshot_matches_committed_fixture():
@@ -696,6 +700,8 @@ def test_the_live_feed_has_the_fixture_s_keys_no_nulls_and_serializes(monkeypatc
     assert (feed["chair"]["host"], feed["chair"]["epoch"], feed["chair"]["beat_age_s"]) == ("host-b", 7, 60)
     assert (feed["runs"][0]["machine"], feed["runs"][0]["cost"]) == ("host-b", 0.5)
     assert feed["machines"][0]["beat_age_s"] == 60
+    assert (feed["machines"][0]["lanes"], feed["board"]) == ([], {"epics": []})  # no queue and no calls under tmp_path
+    assert feed["machines"][0]["load"] == {"cpu_pct": 0.0, "load_avg_per_core": 0.0, "mem_used_gb": 0.0, "mem_total_gb": 0.0}
     assert feed["inbox"][0] == {"kind": "task", "target": "t1", "reason": "land it", "short_id": None}
 
     run_raw = {

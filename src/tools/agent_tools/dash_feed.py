@@ -26,6 +26,8 @@ from agent_tools import (
     chair_login_check,
     console_screen,
     courier,
+    dash_board,
+    dash_machine_lanes,
     decisions,
     pacing,
     queue_rows,
@@ -95,7 +97,7 @@ _UNKNOWN_SPEND_SOURCES = {"chair_session": "none", "price_catalog": "missing"}
 def snapshot(
     at, chair, spend, machines, runs, queue, queue_total, inbox, inbox_total, watch, decisions=(), spend_series=(),
     history=(), history_today=None, *, chair_agents=None, spend_split=None, spend_sources=None, budget=None,
-    epics=(),
+    epics=(), board=None,
 ) -> dict:
     """Assemble the schema-1 dash feed snapshot from its sections. `queue_total`/`inbox_total` are each
     section's filtered count before the 50-row cap, for coxtop to render "50 of N". `decisions` is the open
@@ -104,7 +106,8 @@ def snapshot(
     `chair_agents` is the chair's background agent rows, empty when not given; `spend_split` is the three-way
     spend split per window, all zero when not given. `spend_sources` says whether the chair session and the price
     catalog were found; it reads none and missing when not given. `budget` is the monthly budget block; it reads
-    the none block, every figure 0.0 or 0, when not given. `epics` is the epic rollup records, empty when not given."""
+    the none block, every figure 0.0 or 0, when not given. `epics` is the epic rollup records, empty when not given.
+    `board` is the epics, initiatives, phases and tasks tree; it reads `{"epics": []}` when not given."""
     # coxswain-dash carries its own copy of tests/fixtures/dash_feed_v1.json and will need these two fields too.
     # `queue[].phases` is additive and the schema stays 1: a coxtop that does not know the field ignores it.
     # So are `runs[].tasks`, `runs[].landed` and `runs[].quarantined`, which `_runs_v1` adds to each run row.
@@ -133,6 +136,7 @@ def snapshot(
         "spend_sources": dict(_UNKNOWN_SPEND_SOURCES) if spend_sources is None else spend_sources,
         "budget": dict(_NONE_BUDGET) if budget is None else budget,
         "epics": list(epics),
+        "board": {"epics": []} if board is None else board,
     }
 
 
@@ -956,8 +960,8 @@ def _today_v1(runs_dir: Path, now: str) -> dict | None:
     return cli._efficiency_figures(Path(runs_dir), now)
 
 
-def _machine_v1(row: dict, at: datetime) -> dict:
-    """A hosts-table row (with the console's `in_use`) as the schema-1 machine."""
+def _machine_v1(row: dict, at: datetime, lanes: Sequence[dict] = ()) -> dict:
+    """A hosts-table row (with the console's `in_use`) as the schema-1 machine, with its lane entries and the load its beat carries."""
     versions = row.get("versions_json") or {}
     if isinstance(versions, str):
         try:
@@ -973,6 +977,8 @@ def _machine_v1(row: dict, at: datetime) -> dict:
         "login_checked_at": str(versions.get("login_checked_at") or ""),
         "beat_age_s": _age_s(row.get("beat_at"), at),
         "checkouts": {},
+        "lanes": list(lanes),
+        "load": dash_machine_lanes.host_load(versions),
     }
 
 
@@ -1196,6 +1202,79 @@ def _tasks_edge(
         return {slug: _run_tasks(rows, attempts, calls_by_run, verdicts, slug) for slug in slugs}
     except (OSError, *run_store._db_errors()):  # a store failure must not take the feed down; a code fault must
         return None
+
+
+def _building_tasks(states: Mapping[tuple[str, str, str], str]) -> dict[tuple[str, str], list[str]]:
+    """The ids of the tasks in the `building` state, by `(initiative, phase)`."""
+    building = [(initiative, phase, task) for (initiative, phase, task), state in states.items() if state == "building"]
+    return {(i, p): sorted(t for i2, p2, t in building if (i2, p2) == (i, p)) for i, p, _ in building}
+
+
+def _started_at(calls_by_run: Mapping[str, Sequence[Mapping]]) -> dict[str, datetime | None]:
+    """Each run's earliest call time; None for a run with no readable call `ts`."""
+    return {
+        run: min((ts for ts in (_utc(call.get("ts")) for call in calls if call.get("ts")) if ts is not None), default=None)
+        for run, calls in calls_by_run.items()
+    }
+
+
+def _lanes_by_host(
+    lanes: Sequence[console_screen.LaneRow], states: Mapping[tuple[str, str, str], str],
+    calls_by_run: Mapping[str, Sequence[Mapping]], now: datetime, local_name: str,
+) -> dict[str, list[dict]]:
+    """The live lanes as `machines[].lanes` entries by host; a lane with no host of its own is on this machine."""
+    aware = now if now.tzinfo else now.replace(tzinfo=UTC)
+    return dash_machine_lanes.lane_entries(
+        lanes, lambda run: None, {lane.run: _run_slug(lane.run) for lane in lanes}, _building_tasks(states),
+        _started_at(calls_by_run), aware, local_host=local_name,
+    )
+
+
+def _board_runs(
+    attempts_by_task: Mapping[str, Sequence[Mapping]], lanes: Sequence[console_screen.LaneRow], local_name: str,
+) -> dict[str, tuple[str, str]]:
+    """Each task's `(run, host)` when its latest attempt is in a live lane; a task of a finished run has none."""
+    hosts = {lane.run: lane.host or local_name for lane in lanes}
+    latest = {task: _latest_run(rows) for task, rows in attempts_by_task.items()}
+    return {task: (run, hosts[run]) for task, run in latest.items() if run in hosts}
+
+
+def _board_attempts(
+    runs_dir: Path, rows: Sequence[Mapping], calls_by_run: Mapping[str, Sequence[Mapping]],
+) -> dict[str, list[Mapping]]:
+    """Edge: the attempts of every stored run of the queue's initiatives, by task id, as `_tasks_edge` selects them."""
+    slugs = {str(row["initiative"]) for row in rows if row.get("kind") == "task" and row.get("initiative")}
+    if not slugs:
+        return {}
+    stored = {str(row["run_id"]) for row in exit_rows(runs_dir) if row.get("run_id")}
+    attempts = run_store.attempt_causes_for(
+        runs_dir, sorted(run for run in {*stored, *calls_by_run} if _run_slug(run) in slugs),
+    )
+    return {task: grouped for slug in slugs for task, grouped in _attempts_by_task(attempts, slug).items()}
+
+
+def _board_edge(
+    runs_dir: Path, rows: Sequence[Mapping], states: Mapping[tuple[str, str, str], str],
+    calls_by_run: Mapping[str, Sequence[Mapping]], lanes: Sequence[console_screen.LaneRow],
+    short_ids: Mapping[str, str], local_name: str, now: datetime,
+) -> tuple[dict, dict[str, list[dict]]]:
+    """Edge: `(board, lanes_by_host)` for the feed. Only store and file errors are caught, as in `_tasks_edge`;
+    the attempts cannot be read then, and the board and the lanes are both empty. A code fault raises."""
+    try:
+        attempts = _board_attempts(runs_dir, rows, calls_by_run)
+    except (OSError, *run_store._db_errors()):  # a store failure must not take the feed down; a code fault must
+        return {"epics": []}, {}
+    epic_of = {
+        str(row["initiative"]): queue_rows.epic_of_row(row)
+        for row in rows
+        if row.get("kind") == "initiative" and row.get("initiative")
+    }
+    tasks = [row for row in rows if row.get("kind") == "task" and row.get("task_id")]
+    board = dash_board.build_board(
+        tasks, states, _board_runs(attempts, lanes, local_name), epic_of, short_ids,
+        dash_board.task_costs(attempts, calls_by_run),
+    )
+    return board, _lanes_by_host(lanes, states, calls_by_run, now, local_name)
 
 
 def _runs_v1(
@@ -1544,14 +1623,18 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
     wide_rows = _store_rows(runs_dir, at, spend_block)
     store_rows = _history_rows(wide_rows, at)
     task_rows = _queue_rows_edge(runs_dir)
-    history, today = _history_edge(store_rows, at, short_ids, projects, _queue_states_edge(runs_dir, live_phases, task_rows))
+    states = _queue_states_edge(runs_dir, live_phases, task_rows)
+    history, today = _history_edge(store_rows, at, short_ids, projects, states)
+    board, lanes_by_host = _board_edge(
+        runs_dir, task_rows, states, calls_by_run, sections["lanes"], short_ids, local_name, at,
+    )
     chair_block = _chair_section(runs_dir, chair_row, entries, read_drafts(work_dir, now), at)
     activity = _activity(runs_dir, profile or {}, chair_block["session"], spend_block, at, wide_rows)
     return snapshot(
         now,
         chair_block,
         spend_block,
-        [_machine_v1(row, at) for row in sections["hosts"]],
+        [_machine_v1(row, at, lanes_by_host.get(str(row.get("name") or ""), [])) for row in sections["hosts"]],
         _runs_v1(
             sections["lanes"], local_name, records, at, calls_by_run, short_ids, projects, _ends_edge(runs_dir, store_rows),
             _tasks_edge(runs_dir, task_rows, calls_by_run),
@@ -1570,4 +1653,5 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
         spend_sources=activity["spend_sources"],
         budget=_budget_edge(runs_dir, at),
         epics=_epics_v1(task_rows),
+        board=board,
     )
