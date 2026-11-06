@@ -78,6 +78,9 @@ from graphs.delivery.lifecycle_propose import DEFAULT_FIX_ATTEMPTS
 from harness import rescue_checks, rescue_select, work_mirror
 from harness.assembly import assemble
 from harness.autonomy import split_by_policy
+from harness.base_check import Expected, expected_merges, gaps, stale_base_stop
+from harness.base_sync import fetch_origin, merge_in
+from harness.base_sync import holds as base_holds
 from harness.cause_model import cause_evidence, classify_with_model, one_line
 from harness.cause_rule import _TRANSIENT_AUTH, classify_cause, is_auth_failure
 from harness.check_gate import gate_checks, gate_commands, repo_gate_lock
@@ -2886,6 +2889,22 @@ class _PhaseRunner:
             setattr(self._shared, name, value)
 
 
+def _base_expected(
+    ctx: _Ctx, phase: str, parents: Sequence[str], items: Sequence[dict[str, Any]], runnable: Sequence[Mapping[str, Any]]
+) -> tuple[Expected, ...]:
+    """Approved, merged tasks the phase base must hold. A task done in the store is landed and is never checked."""
+    rows = _read_store_rows(ctx)
+    with ctx.items_lock:
+        fresh = _store_fresh(items, rows)
+        wanted = expected_merges(fresh, phase, [str(t["id"]) for t in runnable], parents)
+    state = {str(i["id"]): i.get("state") for i in fresh}
+    return tuple(e for e in wanted if state.get(e.task) != "done")
+
+
+def _base_gaps(worktree: Path, expected: Sequence[Expected]) -> tuple[Expected, ...]:
+    return gaps(expected, {e.task: base_holds(worktree, e.commit) for e in expected})
+
+
 def _run_phase(
     ctx: _Ctx,
     *,
@@ -3322,6 +3341,31 @@ def _run_phase(
         for task in runnable
         if task.get("attempts")
     }
+
+    # The phase worktree is shared by the phase's tasks, so the base is checked once, before any build. A base
+    # missing merged work is rebuilt by merging that work in; one that cannot be rebuilt stops the phase. No
+    # task is quarantined and no attempt is recorded: the tasks stay ready for the next launch.
+    if runnable:
+        worktree = ctx.phase_worktree(phase)
+        expected = _base_expected(ctx, phase, parents, items, runnable)
+        missing = _base_gaps(worktree, expected)
+        if missing:
+            fetch_origin(ctx.repo)
+            merged_ok, merge_detail = merge_in(worktree, [g.commit for g in missing])
+            remaining = _base_gaps(worktree, expected)
+            if remaining or not merged_ok:
+                stopped = remaining or missing
+                record["status"] = "blocked"
+                record["reason"] = stale_base_stop(stopped)
+                quarantined.append({
+                    "id": stopped[0].task, "phase": phase, "grain": "phase", "kind": "stale_base",
+                    "reason": record["reason"],
+                })
+                _git("-C", str(worktree), "checkout", "--detach", "-q")
+                print(f"  base check: {phase} stopped ({record['reason']}; {merge_detail or 'commit not found'})")
+                return record
+            record["base_rebuilt"] = sorted({g.task for g in missing})
+            print(f"  base check: {phase} base rebuilt with {', '.join(record['base_rebuilt'])}")
 
     budget_sources: dict[str, Any] = {}
     if runnable:
