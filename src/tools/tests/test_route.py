@@ -1455,6 +1455,28 @@ def test_render_status_appends_the_gate_line_when_given():
 
 
 @pytest.mark.parametrize(
+    ("mode_line", "expected"),
+    [
+        ("host-a: orchestrating (available)", "chair machine host-a: orchestrating"),
+        ("host-a: building (unavailable)", "chair machine host-a: building"),
+    ],
+)
+def test_chair_machine_line_drops_the_availability_suffix(mode_line, expected):
+    assert route.chair_machine_line(mode_line) == expected
+
+
+def test_render_status_ends_with_the_chair_line_when_given():
+    rows = [{"id": "a", "pid": None, "state": "no pidfile", "started": None, **_QUIET}]
+    text = route.render_status(rows, gate_level="ticket", chair_line="chair machine host-a: orchestrating")
+    assert text == "a: no pidfile\ngate: ticket\nchair machine host-a: orchestrating"
+
+
+def test_render_status_has_no_chair_line_by_default():
+    rows = [{"id": "a", "pid": None, "state": "no pidfile", "started": None, **_QUIET}]
+    assert "chair machine" not in route.render_status(rows, gate_level="ticket")
+
+
+@pytest.mark.parametrize(
     ("initiative_text", "intake_text", "initiative_fields", "intake_fields"),
     [
         (
