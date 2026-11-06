@@ -17,6 +17,10 @@ are refused. `--title`, `--surfaces` and the body go to `run_store.upsert_row_de
 `state`, so a state the loop set meanwhile survives. Then `queue_export.export_file(force=True)` rewrites the one file from
 the row as the store now holds it and records the hash, so a hand-edited file is overwritten by the store text.
 `--surfaces` and `--state` apply to a task ticket only.
+`--epic` takes an epic id or `none` and applies to an initiative only: it sets or removes the `epic` frontmatter key and
+the same key in the stored row's `extra`. The chair reads epic membership each tick and it changes no ticket, so an edit
+that gives `--epic` and no other option skips `route_guard.initiative_guard`: a started initiative, or one with a live
+run, may change epic. `--epic` with any other option goes through the guard as every other edit does.
 """
 
 from __future__ import annotations
@@ -43,6 +47,7 @@ from agent_tools.land import LAND_CONFLICT_KEY, conflict_note
 
 DONE = route_guard.DONE
 REFUSED = route_guard.REFUSED
+NO_EPIC = "none"  # the `epic` value that removes the key
 FAILED = 1  # a read or write failed after the options and the guard passed, as in route.write_filed_item
 
 
@@ -54,11 +59,11 @@ class EditResult(NamedTuple):
 def check_options(
     title: str | None, body: str | None, body_file: str | None, repo: str | None,
     surfaces: str | None = None, state: str | None = None, rebuild: bool = False, force: bool = False, pr: str | None = None,
-    after: Sequence[str] | None = None, link: str | None = None,
+    after: Sequence[str] | None = None, link: str | None = None, epic: str | None = None,
 ) -> str | None:
     """The reason the options cannot be applied, or None. Body and body-file are mutually exclusive.
-    `surfaces`, `state`, `after` or `link` alone counts as a change, an empty `after` or `link` included; whether
-    they are valid is `check_task_options` and `apply_edit`.
+    `surfaces`, `state`, `after`, `link` or `epic` alone counts as a change, an empty `after` or `link` included; whether
+    they are valid is `check_task_options` and `apply_edit`. An `epic` must be an epic id or `none`.
     `--rebuild` goes with `--state ready`, `--force` with `--rebuild` and `--pr` with `--state done`."""
     if body is not None and body_file is not None:
         return "give either --body or --body-file, not both"
@@ -68,11 +73,24 @@ def check_options(
         return "--rebuild applies only with --state ready"
     if force and not rebuild:
         return "--force applies only with --rebuild"
-    unchanged = (surfaces, state, title, body, body_file, repo, after, link)
+    unchanged = (surfaces, state, title, body, body_file, repo, after, link, epic)
     if all(option is None for option in unchanged):
-        return "nothing to change: give --title, --body, --body-file, --repo, --surfaces, --state or --link"
+        return "nothing to change: give --title, --body, --body-file, --repo, --epic, --surfaces, --state or --link"
     if title == "" or repo == "":
         return "--title and --repo must not be empty"
+    return _epic_problem(epic)
+
+
+def _epic_problem(epic: str | None) -> str | None:
+    """The validator's message when `epic` is neither None, `none` nor an epic id, else None."""
+    from core.epics import valid_epic_id  # lazy: core sits beside agent_tools in one venv, as in queue_rows
+
+    if epic is None or epic == NO_EPIC:
+        return None
+    try:
+        valid_epic_id(epic)
+    except ValueError as exc:
+        return str(exc)
     return None
 
 
@@ -145,12 +163,13 @@ def _link_plan(link: str | None) -> tuple[tuple[str, ...], list[tuple[str, str]]
 
 def plan_edit(
     text: str, *, title: str | None = None, body: str | None = None, repo: str | None = None, path: str = "",
-    after: Sequence[str] | None = None, link: str | None = None,
+    after: Sequence[str] | None = None, link: str | None = None, epic: str | None = None,
 ) -> tuple[str, str]:
     """`(new text, unified diff)` of `text` with the given overrides. A header line not named stays byte for byte.
     An empty `body` falls back to the title, as `route.intake_file` does. The diff is empty when nothing changed.
     `after` sets the list in the order given, cleaned by `clean_after`; an empty one removes the key; None leaves it.
     `link` sets `link`, `issue` and `issue_repo` from `route.link_fields`; an empty one removes all three; None leaves them.
+    `epic` sets the `epic` key to an id, or removes it for `none`; None leaves it.
     `text` must carry frontmatter; one without it comes back unchanged."""
     parts = _split(text)
     if parts is None:
@@ -162,8 +181,8 @@ def plan_edit(
         (key, value)
         for key, value in (("title", title), ("repo", repo), ("after", cleaned or None))
         if value is not None
-    ] + link_fields
-    removed = (*(("after",) if cleaned == [] else ()), *dropped)
+    ] + link_fields + ([("epic", epic)] if epic not in (None, NO_EPIC) else [])
+    removed = (*(("after",) if cleaned == [] else ()), *(("epic",) if epic == NO_EPIC else ()), *dropped)
     kept = reduce(_without_header_key, removed, header_lines)
     header = "\n".join(route._with_header_fields(kept, changes))
     fields, _ = route.parse_frontmatter(text)
@@ -184,11 +203,13 @@ def plan_edit(
 def initiative_content(stored: dict, new_text: str) -> dict | None:
     """Pure: the partial row that carries an edited initiative.md into its stored initiative row: title, body and the
     file's frontmatter merged over the stored `extra` (which keeps keys such as `phases` the file never names), never
-    `state`. None when the text parses to no initiative row."""
+    `state`. The one exception is `epic`: a text with no `epic` key drops it from the stored extra, so `none` reaches the
+    store. None when the text parses to no initiative row."""
     parsed = queue_rows.parse_item("initiative", (stored["initiative"], "initiative.md"), new_text)
     if parsed is None:
         return None
-    extra = {**(stored.get("extra") or {}), **parsed["extra"]}
+    kept = {key: value for key, value in (stored.get("extra") or {}).items() if key != "epic"}
+    extra = {**kept, **parsed["extra"]}
     return {"initiative": stored["initiative"], "task_id": stored["task_id"], "title": parsed["title"], "body": parsed["body"], "extra": extra}
 
 
@@ -470,6 +491,7 @@ def apply_edit(
     pr: str | None = None,
     after: Sequence[str] | None = None,
     link: str | None = None,
+    epic: str | None = None,
 ) -> EditResult:
     """Edge: edit the queued intake, the initiative or the task ticket named `id`. Exit 0 returns the diff; exit 2 returns the
     reason and writes nothing, whether the options are wrong, the id is unknown, or the guard refuses. With
@@ -477,8 +499,10 @@ def apply_edit(
     A move to done also records the task's merged PR on its newest run record: `pr`, else the one `gh` finds.
     `after` sets, or with an empty list clears, the ids a queued intake waits on; it is refused anywhere else.
     `link` sets or replaces a queued intake's link with its issue fields, or with an empty string clears all three;
-    it is refused anywhere else."""
-    problem = check_options(title, body, body_file, repo, surfaces, state, rebuild, force, pr, after, link)
+    it is refused anywhere else.
+    `epic` sets an initiative's epic to an id, or removes it with `none`, in the store row and in initiative.md; it is
+    refused on an intake and a task ticket. Given alone it skips the initiative guard; see the module docstring."""
+    problem = check_options(title, body, body_file, repo, surfaces, state, rebuild, force, pr, after, link, epic)
     if problem is not None:
         return EditResult(problem, REFUSED)
     rows: Sequence[dict] = run_store.read_queue(runs_dir)
@@ -496,6 +520,8 @@ def apply_edit(
             return EditResult("--after applies to a queued intake, not a task ticket", REFUSED)
         if link is not None:
             return EditResult("--link applies to a queued intake, not a task ticket", REFUSED)
+        if epic is not None:
+            return EditResult("--epic applies to an initiative, not a task ticket", REFUSED)
         problem = check_task_options(state, surfaces)
         if problem is not None:
             return EditResult(problem, REFUSED)
@@ -509,13 +535,18 @@ def apply_edit(
         return EditResult("--after applies to a queued intake, not an initiative", REFUSED)
     if link is not None and not isinstance(target, route_guard.QueuedIntake):
         return EditResult("--link applies to a queued intake, not an initiative", REFUSED)
+    if epic is not None and isinstance(target, route_guard.QueuedIntake):
+        return EditResult("--epic applies to an initiative, not a queued intake", REFUSED)
     if after is not None and id in clean_after(after):
         return EditResult(f"{id!r} cannot come after itself", REFUSED)
     if isinstance(target, route_guard.QueuedIntake):
         path, is_intake = ws / "intake" / f"{target.task_id}.md", True
     else:
+        epic_only = epic is not None and all(
+            option is None for option in (title, body, body_file, repo, surfaces, state, after, link)
+        )
         tasks = [row for row in rows if row.get("kind", "task") == "task" and row.get("initiative") == id]
-        guard = route_guard.initiative_guard(tasks, live_runs)
+        guard = None if epic_only else route_guard.initiative_guard(tasks, live_runs)
         if isinstance(guard, route_guard.Refusal):
             return EditResult(guard.reason, REFUSED)
         path, is_intake = ws / "work" / id / "initiative.md", False
@@ -530,7 +561,7 @@ def apply_edit(
         refusal = intake_reach_refusal(text, new_body, title)
         if refusal is not None:
             return EditResult(refusal, REFUSED)
-    new_text, diff = plan_edit(text, title=title, body=new_body, repo=repo, path=str(path.relative_to(ws)), after=after, link=link)
+    new_text, diff = plan_edit(text, title=title, body=new_body, repo=repo, path=str(path.relative_to(ws)), after=after, link=link, epic=epic)
     if dry_run or not diff:
         return EditResult(diff, DONE)
     failure = _rewrite(path, runs_dir, is_intake, new_text)
