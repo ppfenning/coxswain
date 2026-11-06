@@ -8,7 +8,9 @@ from typing import Any
 from agent_tools import run_store
 from agent_tools.chair_decompose_streak import DecomposeRun
 from agent_tools.chair_facts import run_initiative
+from agent_tools.chair_read_cache import Stamp, StampCache, file_stamp
 from agent_tools.chair_read_exits import exit_rows, row_exited
+from agent_tools.store_dialect import is_postgres
 
 REFUSAL_MARKERS = ("approved but not executed", "initiative-decompose failed:")
 LINT_REFUSAL_MARKER = "initiative-decompose failed:"  # the reach lint's refusal; such a run wrote nothing
@@ -72,9 +74,22 @@ def select_runs(rows: Sequence[Mapping[str, Any]], intake_id: str) -> list[Mappi
 _REFUSALS: dict[tuple[str, int], tuple[str | None, bool | None]] = {}
 
 
-def _log_facts(runs_dir: Path, run_id: str) -> tuple[str | None, bool | None]:
-    """Edge. The log's (refusal line, wrote_items verdict), parsed once per (run_id, mtime_ns); (None, None) if missing."""
+def _parse_log(path: Path, run_id: str) -> tuple[str | None, bool | None]:
+    """Edge. One read and parse of a run's log; (None, None) if it cannot be read."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return (None, None)
+    return (refusal_line(text), log_wrote_items(run_id, text))
+
+
+def _log_facts(runs_dir: Path, run_id: str, cache: StampCache | None = None) -> tuple[str | None, bool | None]:
+    """Edge. The log's (refusal line, wrote_items verdict), parsed once per (run_id, mtime_ns); (None, None) if missing.
+
+    With a cache the entry is keyed by the log's file stamp instead, so a log still being written is re-read."""
     path = runs_dir / f"{run_id}.log"
+    if cache is not None:
+        return cache.get(_log_key(runs_dir, run_id), file_stamp(path), lambda: _parse_log(path, run_id))
     try:
         key = (run_id, path.stat().st_mtime_ns)
         if key not in _REFUSALS:
@@ -92,16 +107,57 @@ def _task_items(runs_dir: Path, initiative: str) -> int | None:
     return sum(1 for row in run_store.work_items(runs_dir, initiative) if row.get("kind", "task") == "task")
 
 
-def read_decompose_runs(runs_dir: Path, intake_id: str) -> list[DecomposeRun]:
-    """Edge. A run that has not exited gets `task_items` None; the intake id is the `chair_exec.decompose_id` value."""
-    items = _task_items(runs_dir, intake_id)
+def _log_key(runs_dir: Path, run_id: str) -> tuple[str, str, str]:
+    return ("decompose-log", str(runs_dir), run_id)
+
+
+def _store_files(runs_dir: Path) -> list[Path]:
+    """Edge. The SQLite store file and its `-wal` sidecar; empty for Postgres, which has no file to stamp."""
+    url = run_store._store_url(runs_dir)
+    if is_postgres(url):
+        return []
+    db = run_store._sqlite_path(url)
+    return [db, db.with_name(db.name + "-wal")]
+
+
+def _store_stamp(runs_dir: Path) -> Stamp | None:
+    """Edge. One stamp over the store file and its WAL, since a write may touch only the WAL.
+
+    None when the store has no file or the main file is missing, so that read is never cached."""
+    stamps = [file_stamp(path) for path in _store_files(runs_dir)]
+    if not stamps or stamps[0] is None:
+        return None
+    present = [s for s in stamps if s is not None]
+    return (max(s[0] for s in present), sum(s[1] for s in present))
+
+
+def read_decompose_runs(runs_dir: Path, intake_id: str, cache: StampCache | None = None) -> list[DecomposeRun]:
+    """Edge. A run that has not exited gets `task_items` None; the intake id is the `chair_exec.decompose_id` value.
+
+    With a cache, the exit rows, the task count and each run's log facts are keyed by file stamp, so an unchanged
+    file is not read again. Entries not seen in this call are dropped, so give each intake its own cache."""
+    if cache is None:
+        items = _task_items(runs_dir, intake_id)
+        rows = exit_rows(runs_dir)
+    else:
+        stamp = _store_stamp(runs_dir)
+        exits_key, items_key = ("decompose-exits", str(runs_dir)), ("decompose-items", str(runs_dir), intake_id)
+        # a missing harness python reads as unknown and is judged on every call, never stored
+        items = (
+            None
+            if run_store._harness_python() is None
+            else cache.get(items_key, stamp, lambda: _task_items(runs_dir, intake_id))
+        )
+        rows = cache.get(exits_key, stamp, lambda: exit_rows(runs_dir))
     out = []
-    for row in select_runs(exit_rows(runs_dir), intake_id):
+    for row in select_runs(rows, intake_id):
         exited = row_exited(row)
         run = parse_run({"run_id": str(row["run_id"]), "log": None, "task_items": items if exited else None})
-        refusal, verdict = _log_facts(runs_dir, run.run_id)
+        refusal, verdict = _log_facts(runs_dir, run.run_id, cache)
         wrote = verdict if exited and verdict is not None else run.wrote_items
         out.append(replace(run, wrote_items=wrote, refusal_line=refusal))
+    if cache is not None:
+        cache.keep([exits_key, items_key, *(_log_key(runs_dir, run.run_id) for run in out)])
     return out
 
 

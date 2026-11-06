@@ -9,6 +9,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path, PurePosixPath
 
 from agent_tools import route, run_store
+from agent_tools.chair_read_cache import StampCache, file_stamp
 from agent_tools.stats_chair import frontmatter_item
 
 OPEN_STATES = ("ready", "blocked")
@@ -114,17 +115,23 @@ def quarantined_from_rows(rows: Iterable[Mapping[str, object]]) -> list[Row]:
 WorkFiles = Mapping[Path, str]
 
 
-def read_work_files(root: Path) -> WorkFiles:
+def read_work_files(root: Path, cache: StampCache | None = None) -> WorkFiles:
     """Edge. Path to text for every `work/*/*/*.md` and `work/*/initiative.md` under `root`, in path order.
 
-    An unreadable file is left out, as the docket and approved readers already leave it out."""
+    An unreadable file is left out, as the docket and approved readers already leave it out.
+    With a cache, a file whose (mtime_ns, size) stamp is unchanged is not re-read."""
     paths = sorted([*root.glob("work/*/*/*.md"), *root.glob("work/*/initiative.md")])
     texts = {}
     for p in paths:
         try:
-            texts[p] = p.read_text(encoding="utf-8")
+            if cache is None:
+                texts[p] = p.read_text(encoding="utf-8")
+            else:
+                texts[p] = cache.get(p, file_stamp(p), lambda p=p: p.read_text(encoding="utf-8"))
         except OSError:
             continue
+    if cache is not None:
+        cache.keep(paths)
     return texts
 
 

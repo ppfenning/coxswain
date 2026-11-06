@@ -10,6 +10,7 @@ creates, migrates or writes the store."""
 
 from __future__ import annotations
 
+import copy
 import functools
 import io
 import json
@@ -18,13 +19,15 @@ import re
 import sqlite3
 import subprocess
 import time
+import zlib
 from collections import Counter
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from agent_tools import analytics_snapshot, epic, install_root
+from agent_tools.chair_read_cache import Stamp, StampCache
 from agent_tools.lake_config import _LITERAL_SECRETS, _from_env
 from agent_tools.store_dialect import connect_readonly_url, is_postgres, placeholder
 from agent_tools.store_url import TracesRoot, profile_traces_root, read_provider_profile, resolve_store_url
@@ -1175,19 +1178,99 @@ def task_state(rows: list[dict], initiative: str, task: str) -> str | None:
     return next((row.get("state") for row in rows if row.get("initiative") == initiative and row.get("task_id") == task), None)
 
 
-def work_items(runs_dir: Path, initiative: str | None = None) -> list[dict]:
+_STAMP_SCRIPT = """import hashlib, json, sqlite3, sys
+url, *want = sys.argv[1:]
+if url.startswith(("postgres:", "postgresql:")):
+    import psycopg
+    conn, mark = psycopg.connect(url), "%s"
+else:
+    path = url.removeprefix("sqlite:///")
+    conn, mark = sqlite3.connect("file:" + path + "?mode=ro", uri=True), "?"
+where = (" WHERE " + " AND ".join(name + " = " + mark for name in @NAMES@)) if @NAMES@ else ""
+cur = conn.execute("SELECT * FROM work_items" + where + " ORDER BY initiative, task_id", want)
+upd = [d[0] for d in cur.description].index("updated_at")
+rows = cur.fetchall()
+newest = max((str(r[upd]) for r in rows if r[upd] is not None), default=None)
+print(json.dumps([len(rows), newest, hashlib.sha256(repr(rows).encode()).hexdigest()]))
+"""
+
+
+class _ReadFailed(Exception):
+    """A full read produced no rows because the reader failed, so the cache must not store it."""
+
+
+def _stamp_argv(python: str, url: str, filters: Sequence[tuple[str, str | None]]) -> list[str]:
+    """Pure: the argv that prints `[row count, greatest updated_at, sha256 of every column of every row]` as one JSON line.
+
+    The digest covers all columns because the mirror and the queue upsert keep an older updated_at on a changed row,
+    so count and greatest updated_at alone miss ordinary writes. Filter columns are fixed names; values are bound arguments."""
+    narrow = [(column, value) for column, value in filters if value is not None]
+    script = _STAMP_SCRIPT.replace("@NAMES@", repr(tuple(column for column, _ in narrow)))
+    return [python, "-c", script, url, *(value for _, value in narrow)]
+
+
+def _work_items_stamp_argv(python: str, url: str, initiative: str | None) -> list[str]:
+    """Pure: the stamp argv for the table, or for one initiative."""
+    return _stamp_argv(python, url, [("initiative", initiative)])
+
+
+def _stamp_from(stdout: str) -> Stamp | None:
+    """Pure: (row count, crc32 of the greatest updated_at and row digest) from the probe's JSON line. None unless it is a list led by an int count."""
+    try:
+        parsed = json.loads(stdout)
+    except ValueError:
+        return None
+    if not isinstance(parsed, list) or not parsed or isinstance(parsed[0], bool) or not isinstance(parsed[0], int):
+        return None
+    return (parsed[0], zlib.crc32(json.dumps(parsed[1:]).encode()))
+
+
+def _stamp_of(done: Any) -> Stamp | None:
+    """Pure: the stamp of a finished probe, None when it did not run, failed or printed nothing usable."""
+    return None if done is None or done.returncode != 0 else _stamp_from(done.stdout)
+
+
+def _run_argv(argv: list[str]) -> Any | None:
+    """Edge: the finished process for argv, None when it cannot be launched or times out."""
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _versioned(cache: StampCache, key: Any, probe: Any, read_rows: Callable[[], list[dict] | None]) -> list[dict]:
+    """Edge: rows from `cache` keyed by the probe's stamp, as copies. A failed full read is [] and is never stored."""
+
+    def full() -> list[dict]:
+        rows = read_rows()
+        if rows is None:
+            raise _ReadFailed
+        return rows
+
+    try:
+        return copy.deepcopy(cache.get(key, _stamp_of(probe), full))
+    except _ReadFailed:
+        return []
+
+
+def work_items(runs_dir: Path, initiative: str | None = None, cache: StampCache | None = None) -> list[dict]:
     """Edge: `work_items` rows through the harness python, optionally for one initiative.
 
-    Empty when the table, the harness or the store is missing or unreadable, so an old store reads as an empty one."""
+    Empty when the table, the harness or the store is missing or unreadable, so an old store reads as an empty one.
+    With a cache, a probe of the row count, greatest updated_at and a digest of every row decides whether the stored rows still stand."""
     python = _harness_python()
     if python is None:
         return []
-    argv = _work_items_argv(str(python), _store_url(Path(runs_dir)), initiative)
-    try:
-        done = subprocess.run(argv, capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.SubprocessError):
-        return []
-    return _work_items_from(done.stdout) if done.returncode == 0 else []
+    url = _store_url(Path(runs_dir))
+
+    def read_rows() -> list[dict] | None:
+        done = _run_argv(_work_items_argv(str(python), url, initiative))
+        return _work_items_from(done.stdout) if done is not None and done.returncode == 0 else None
+
+    if cache is None:
+        return read_rows() or []
+    probe = _run_argv(_work_items_stamp_argv(str(python), url, initiative))
+    return _versioned(cache, ("work_items", str(runs_dir), initiative), probe, read_rows)
 
 
 def task_state_of(runs_dir: Path, initiative: str, task: str) -> str | None:
@@ -1323,10 +1406,24 @@ def _queue_run(runs_dir: Path, build: Any) -> Any | None:
         return None
 
 
-def read_queue(runs_dir: Path, initiative: str | None = None, kind: str | None = None) -> list[dict]:
-    """Edge: queue rows from the store, optionally for one initiative and kind. Empty when the harness, table or store is unavailable."""
-    done = _queue_run(runs_dir, lambda python, url: _queue_read_argv(python, url, initiative, kind))
-    return _queue_rows_from(done.stdout) if done is not None and done.returncode == 0 else []
+def _queue_stamp_argv(python: str, url: str, initiative: str | None, kind: str | None) -> list[str]:
+    """Pure: the stamp argv narrowed by initiative and kind when given. Claim and release change holder, epoch and expires_at without touching updated_at; the digest covers them."""
+    return _stamp_argv(python, url, [("initiative", initiative), ("kind", kind)])
+
+
+def read_queue(runs_dir: Path, initiative: str | None = None, kind: str | None = None, cache: StampCache | None = None) -> list[dict]:
+    """Edge: queue rows from the store, optionally for one initiative and kind. Empty when the harness, table or store is unavailable.
+
+    With a cache, a probe of the table's version decides whether the stored rows still stand."""
+
+    def read_rows() -> list[dict] | None:
+        done = _queue_run(runs_dir, lambda python, url: _queue_read_argv(python, url, initiative, kind))
+        return _queue_rows_from(done.stdout) if done is not None and done.returncode == 0 else None
+
+    if cache is None:
+        return read_rows() or []
+    probe = _queue_run(runs_dir, lambda python, url: _queue_stamp_argv(python, url, initiative, kind))
+    return _versioned(cache, ("queue", str(runs_dir), initiative, kind), probe, read_rows)
 
 
 def upsert_row(runs_dir: Path, row: Mapping[str, Any]) -> bool:
