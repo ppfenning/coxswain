@@ -2766,7 +2766,14 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
                 subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)], capture_output=True)
         for b in doomed:
             subprocess.run(["git", "-C", str(repo), "branch", "-D", b], capture_output=True)
-        return True, "deleted " + ", ".join(doomed)
+        # The phase branch is named too, so one that lives only on origin is still deleted there.
+        parts = step["phase_branch"].split("/")
+        prefix = "/".join(parts[:2]) + "/" if parts[0] == "epic" and len(parts) >= 3 else ""
+        gone, failed = _delete_remote_branches(repo, _remote_doomed([step["phase_branch"], *doomed], prefix))
+        # A failed remote delete is reported, never a failed land: the merge has already happened.
+        remote = (f"; deleted on origin: {', '.join(gone)}" if gone else "") \
+            + (f"; remote delete failed: {'; '.join(failed)}" if failed else "")
+        return True, "deleted " + ", ".join(doomed) + remote
     if kind == "mark_done" and step.get("recorded") is False:
         return _mark_done_unrecorded(step)
     if kind == "mark_done":
@@ -2801,6 +2808,21 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
 def _git_run(repo: Path | str, *args: str) -> tuple[bool, str]:
     done = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
     return done.returncode == 0, (done.stderr.strip() or done.stdout.strip())
+
+
+def _remote_doomed(branches: list[str], prefix: str) -> list[str]:
+    """Names under `prefix` (`epic/<initiative>/`), first occurrence kept, in order. `agents/` scratch branches were never pushed."""
+    return [b for b in dict.fromkeys(branches) if prefix and b.startswith(prefix)]
+
+
+def _delete_remote_branches(repo: Path, names: list[str]) -> tuple[list[str], list[str]]:
+    """Edge. Delete `names` on origin; returns (deleted, failed as 'name: reason'). No origin, or a branch already gone,
+    is neither."""
+    if not names or not _git_run(repo, "remote", "get-url", "origin")[0]:
+        return [], []
+    results = [(n, *_git_run(repo, "push", "origin", f":refs/heads/{n}")) for n in names]
+    gone = [n for n, ok, _ in results if ok]
+    return gone, [f"{n}: {why}" for n, ok, why in results if not ok and "remote ref does not exist" not in why]
 
 
 def _cut_pr_branch(repo: Path, branch: str, base: str) -> tuple[bool, str]:
