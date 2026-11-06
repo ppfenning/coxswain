@@ -1677,12 +1677,14 @@ class ArgvResult:
     mixed: str
 
 
-def run_argv_split(argv: list[str], cwd: Path | None = None, timeout: float = LOCAL_ARGV_TIMEOUT_S) -> ArgvResult:
+def run_argv_split(argv: list[str], cwd: Path | None = None, timeout: float = LOCAL_ARGV_TIMEOUT_S,
+                   env: Mapping[str, str] | None = None) -> ArgvResult:
     """Edge. A missing binary is exit 127 and a timeout exit 124, each with its message, never an exception out of perform.
 
-    A timeout keeps what the child printed before it was killed, after the message, so a later task can read it."""
+    A timeout keeps what the child printed before it was killed, after the message, so a later task can read it.
+    `env` is the child's whole environment; None inherits this process's."""
     try:
-        done = subprocess.run(argv, capture_output=True, text=True, check=False, cwd=cwd, timeout=timeout)
+        done = subprocess.run(argv, capture_output=True, text=True, check=False, cwd=cwd, timeout=timeout, env=env)
     except OSError as error:
         message = f"{argv[0] if argv else '<empty argv>'}: {error}"
         return ArgvResult(127, "", message, message)
@@ -1710,14 +1712,15 @@ def launch_verdict(stdout: str) -> str:
     return f"{head} {'; '.join(detail)}" if detail else head
 
 
-def run_argv(argv: list[str], cwd: Path | None = None, timeout: float = LOCAL_ARGV_TIMEOUT_S) -> tuple[int, str]:
+def run_argv(argv: list[str], cwd: Path | None = None, timeout: float = LOCAL_ARGV_TIMEOUT_S,
+             env: Mapping[str, str] | None = None) -> tuple[int, str]:
     """Edge. The exit code and the mixed stdout-then-stderr text of `run_argv_split`.
 
     A failed `cox runs fetch` or `cox route launch` is the exception: git's long stderr, or held-export warnings,
     would push cox's own stdout verdict ("fetch: verify: ...", "routing: ...") out of the 600-character reason, so its
     text is `failed_reason`, verdict first. Fetch prints its verdict first; launch's is picked by `launch_verdict`.
     Other argvs keep the mixed text because `land_refusal` reads git's stderr ("could not apply") out of it."""
-    done = run_argv_split(argv, cwd, timeout=timeout)
+    done = run_argv_split(argv, cwd, timeout=timeout, env=env)
     if done.returncode in (0, 124, 127):
         return done.returncode, done.mixed
     if argv[:3] == ["cox", "runs", "fetch"]:
@@ -1849,8 +1852,10 @@ class _GitEdge:
 
     Every base is `origin/<default branch>` after a `git fetch origin`; local `main` is never read, so it cannot be stale."""
 
-    def __init__(self, runs_dir: Path, workspace: Path, repo: str, home: str | None = None, target: str | None = None) -> None:
+    def __init__(self, runs_dir: Path, workspace: Path, repo: str, home: str | None = None, target: str | None = None,
+                 capacity: int | None = None) -> None:
         self.runs_dir, self.workspace, self.repo, self.tmp, self.home, self.target = runs_dir, workspace, repo, "", home, target
+        self.capacity = capacity  # the lane cap `.agent-checks` divides this host's cores by; None leaves them uncapped
         self.local_repo = _local_repo(repo, home or "")  # every `-C` here runs on this machine; `self.repo` stays as recorded
 
     def _git(self, *args: str) -> tuple[int, str]:
@@ -1909,7 +1914,9 @@ class _GitEdge:
         except OSError:
             return []
         commands = [line.strip() for line in lines if line.strip() and not line.lstrip().startswith("#")]
-        return [c for c in commands if run_argv(["bash", "-c", c], cwd=Path(self.tmp), timeout=_CHECK_COMMAND_TIMEOUT_S)[0] != 0]
+        from harness.lane_workers import check_env
+        env = check_env(os.environ, os.cpu_count() or 1, self.capacity)  # None inherits the chair's own environment
+        return [c for c in commands if run_argv(["bash", "-c", c], cwd=Path(self.tmp), timeout=_CHECK_COMMAND_TIMEOUT_S, env=env)[0] != 0]
 
     def already_on_main(self, commit: str) -> bool:
         return self._git("merge-base", "--is-ancestor", commit, f"origin/{self.landing_branch()}")[0] == 0
@@ -2009,11 +2016,11 @@ class _RebaseEdge:
 
 def _carry_ports(
     runs_dir: Path, workspace: Path, repo_for: Callable[[Action], str], now: Callable[[], str], home: str,
-    target_branch: Callable[[str], str | None] | None, action: Action,
+    target_branch: Callable[[str], str | None] | None, action: Action, capacity: int | None = None,
 ) -> tuple[GitPort, ForgePort, StorePort]:
     initiative = action.get("initiative", "")
     target = target_branch(initiative) if target_branch is not None and initiative else None
-    git = _GitEdge(runs_dir, workspace, action.get("repo") or repo_for(action), home, target)
+    git = _GitEdge(runs_dir, workspace, action.get("repo") or repo_for(action), home, target, capacity)
     forge = _ForgeEdge(git)
     return git, forge, _StoreEdge(runs_dir, workspace, action, forge, now)
 
@@ -2086,11 +2093,14 @@ def edge_deps(
     provider_profile: Callable[[], dict] = lambda: {},
     dry_run: bool = False,
     cartridge_target: str | None = None,
+    lane_capacity: int | None = None,
 ) -> Deps:
     """Edge. The real bundle: subprocess for cox and git, chair.acquire_lease for the lease.
 
     `cartridge_target` is the cartridge's `landing_areas.target_branch`, the lowest rung of an initiative's target;
     unset, only the initiative row and its epic file name one.
+
+    `lane_capacity` is the lane cap the carry's `.agent-checks` run under; None leaves them uncapped.
 
     A dry run drops every door to a lane host: `run` refuses an ssh or push argv unrun and `check_login` returns no row.
 
@@ -2127,7 +2137,7 @@ def edge_deps(
         harness_python=harness_python,
         ids_mode=ids_mode,
         home=home,
-        carry_ports=partial(_carry_ports, runs_dir, workspace, repo_for, lambda: datetime.now(UTC).isoformat(), home, target_branch),
+        carry_ports=partial(_carry_ports, runs_dir, workspace, repo_for, lambda: datetime.now(UTC).isoformat(), home, target_branch, capacity=lane_capacity),
         target_branch=target_branch,
         rebase_port=lambda action: _RebaseEdge(action.get("repo") or repo_for(action)),
         phase_states=lambda initiative, phase: phase_task_states(run_store.work_items(runs_dir, initiative), phase),
