@@ -301,6 +301,13 @@ def _build_parser(specs: dict[str, GraphSpec]) -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--phase",
+        action="append",
+        default=None,
+        metavar="PHASE",
+        help="epic: run only the named phase, repeatable; the phases' parents are taken as complete from the work store",
+    )
+    parser.add_argument(
         "--repo",
         help=(
             "the repository this change targets; enables the check arm: the patch is "
@@ -796,6 +803,12 @@ def main(argv: list[str] | None = None) -> int:
         signal.signal(signal.SIGTERM, previous)
 
 
+def _refuse_phase_outside_epic(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """`--phase` selects phases of an initiative, which only the epic driver has."""
+    if args.graph != "epic" and getattr(args, "phase", None):
+        parser.error("--phase applies to the epic graph only")
+
+
 def _expand_repo(args: argparse.Namespace) -> argparse.Namespace:
     """A copy of `args` whose `repo`, when given, has a leading tilde expanded to the home directory."""
     if not args.repo:
@@ -808,7 +821,9 @@ def _expand_repo(args: argparse.Namespace) -> argparse.Namespace:
 def _main(argv: list[str] | None) -> int:
     specs = discover()
     parser = _build_parser(specs)
-    args = _expand_repo(parser.parse_args(argv))
+    parsed = parser.parse_args(argv)
+    _refuse_phase_outside_epic(parser, parsed)
+    args = _expand_repo(parsed)
     # A rescue's stdout is its JSON report and nothing else, since its caller parses all of it.
     # Every other line the launch prints, the usage totals included, goes to stderr instead.
     report_out = sys.stdout
@@ -1622,6 +1637,7 @@ def _run_graph(
             lease_name=lease_name,
             work_state=work_state,
             base=getattr(args, "base", None),
+            **({"only_phases": frozenset(args.phase)} if getattr(args, "phase", None) else {}),
         )
         totals = result.get("totals") or {}
         print(epic_summary_line(run_id, totals))
