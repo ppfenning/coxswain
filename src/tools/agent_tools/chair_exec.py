@@ -39,6 +39,7 @@ from agent_tools import (
     host_cmd,
     land_manual,
     partial_land,
+    queue_export,
     queue_rows,
     remote_fetch,
     remote_lane,
@@ -851,20 +852,50 @@ def _write_ticket(work_dir: Path, item: dict) -> None:
     (work_dir / "work" / item["initiative"] / item["file"]).write_text(text, encoding="utf-8")
 
 
-def _merge_and_write(work_dir: Path, initiative: str) -> None:
-    """Same-phase ready/todo tickets of `initiative` that share a surface collapse into one; the merged ticket and
-    every dropped member are written back to disk before the next build starts, so it sees one ticket where two
-    used to collide."""
+def _merge_and_write(work_dir: Path, runs_dir: Path, initiative: str) -> str:
+    """Edge. Merges the tickets in the store, then the files; "" on success, else the failure line, with no file written."""
     tickets = _initiative_tickets(work_dir, initiative)
     if not tickets:
-        return
+        return ""
     merged_items, merges = route.merge_same_phase(tickets)
+    if not merges:
+        return ""
+    if Path(runs_dir) == Path("."):
+        return f"merge of {initiative} needs a runs directory: Deps.runs_dir is unset; no ticket file written"
+    stored_heads = [r for r in run_store.read_queue(runs_dir, initiative, kind="initiative") if r.get("task_id") == initiative]
+    if not stored_heads:
+        return f"merge of {initiative} refused: the store has no initiative row; no ticket file written"
+    seen_events = (stored_heads[0].get("extra") or {}).get("events", [])
     by_id = {item["id"]: item for item in merged_items}
-    changed_ids = {member_id for merge in merges for member_id in merge["members"]}
-    for ticket_id in changed_ids:
-        item = by_id.get(ticket_id)
-        if item is not None:
-            _write_ticket(work_dir, item)
+    changed = [by_id[ticket_id] for merge in merges for ticket_id in merge["members"] if ticket_id in by_id]
+    paths = [work_dir / "work" / initiative / item["file"] for item in changed]
+    # merge_rows reads `title` off every member; a ticket file without one falls back to its id.
+    titled = [{**item, "title": item.get("title", item["id"])} for item in merged_items]
+    rows, events = route.merge_rows(titled, merges, initiative)
+    stored = {r["task_id"]: r for r in run_store.read_queue(runs_dir, initiative, kind="task")}
+    # The row each task had before the merge: the stored one, else the one its ticket file describes.
+    before = {
+        t["id"]: stored.get(t["id"]) or route._merge_task_row(initiative, {**t, "title": t.get("title", t["id"])}, {})
+        for t in tickets
+    }
+    accepted = route.write_merge_rows(runs_dir, rows, events, initiative, paths)
+    refused = [row["task_id"] for row in rows if row["task_id"] not in accepted]
+    if not refused:
+        # write_merge_rows returns task ids only; a refused initiative row shows as an event count that did not grow.
+        heads = run_store.read_queue(runs_dir, initiative, kind="initiative")
+        head = next((r for r in heads if r.get("task_id") == initiative), None)
+        recorded = ((head or {}).get("extra") or {}).get("events", [])
+        refused = [] if len(recorded) >= len(seen_events) + len(events) else [initiative]
+    if refused:
+        # Rows upserted before the refusal would leave a merged survivor in the store beside unmerged files.
+        failed = [f"{task}: {detail}" for task in accepted if (detail := run_store.upsert_row_detail(runs_dir, before[task]))]
+        outcome = f"restore refused for {'; '.join(failed)}, so the store and the workspace now disagree" if failed else "store rows restored"
+        return f"merge of {initiative} refused by the store ({', '.join(refused)}); no ticket file written; {outcome}"
+    for item in changed:
+        _write_ticket(work_dir, item)
+    # write_merge_rows recorded each file's pre-merge text; record the merged text so the export never holds it.
+    queue_export.record_written_paths(Path(runs_dir).parent, paths)
+    return ""
 
 
 def _launch(action: Action, deps: Deps) -> Result:
@@ -876,7 +907,9 @@ def _launch(action: Action, deps: Deps) -> Result:
             return _result(action, "refused", chosen_id.reason)
         initiative_id = route_guard.fresh_initiative_id(chosen_id, deps.initiative_rows())
     if action.get("kind") in ("launch_epic", "relaunch") and action.get("initiative"):
-        _merge_and_write(deps.work_dir, action["initiative"])
+        failure = _merge_and_write(deps.work_dir, deps.runs_dir, action["initiative"])
+        if failure:
+            return _result(action, "failed", failure)
     argv = argv_for(action, initiative_id, deps.ids_mode, deps.label)
     if argv is None:
         return _result(action, "refused", f"{action.get('kind')} names no initiative, task or intake id")
