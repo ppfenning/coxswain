@@ -7,6 +7,7 @@ import types
 
 from agent_tools import cli, host_cmd, run_store
 from agent_tools.checkout_env import CHECKOUT_ENV_KEY
+from agent_tools.host_load import LOAD_KEY
 from agent_tools.lane_hosts import LaneHost
 
 NOW = datetime.datetime(2026, 9, 26, 12, 0, tzinfo=datetime.UTC)
@@ -137,6 +138,7 @@ def test_a_gather_that_cannot_run_is_null_and_never_raises():
 
     result = host_cmd.beat_versions(run, "0.20.0", "/h", None)
     host_facts = result.pop("host_facts")
+    load = result.pop(LOAD_KEY)
     assert result == {
         "cox": "0.20.0", "graphs": None, "cartridges": None, "claude": None, "login_ok": None,
         "workspace_dir": None, "repos": [], "checkouts": {}, CHECKOUT_ENV_KEY: {},
@@ -144,6 +146,43 @@ def test_a_gather_that_cannot_run_is_null_and_never_raises():
     assert isinstance(host_facts["os"], str) and host_facts["os"]
     assert isinstance(host_facts["cpu_count"], int)
     assert isinstance(host_facts["mem_total_gb"], float)
+    assert set(load) == {"cpu", "mem"}
+
+
+def test_the_load_record_holds_numeric_cpu_and_mem_within_a_sane_bound_here():
+    load = host_cmd._load_record()
+    assert set(load) == {"cpu", "mem"}
+    assert all(isinstance(v, int | float) for v in load.values())
+    assert 0 <= load["cpu"] <= 1000
+    assert 0 <= load["mem"] <= 1
+
+
+def test_the_load_record_is_zeros_when_the_proc_read_fails(tmp_path):
+    assert host_cmd._load_record(str(tmp_path / "missing")) == {"cpu": 0.0, "mem": 0.0}
+
+
+def test_the_load_record_is_zeros_when_a_meminfo_line_is_missing(tmp_path):
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemTotal:       1000 kB\n", encoding="utf-8")
+    assert host_cmd._load_record(str(meminfo)) == {"cpu": 0.0, "mem": 0.0}
+
+
+def test_the_load_record_is_zeros_when_getloadavg_is_unavailable(monkeypatch, tmp_path):
+    def refuse() -> tuple[float, float, float]:
+        raise OSError("no load average")
+
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemTotal:       1000 kB\nMemAvailable:    250 kB\n", encoding="utf-8")
+    monkeypatch.setattr(host_cmd.os, "getloadavg", refuse)
+    assert host_cmd._load_record(str(meminfo)) == {"cpu": 0.0, "mem": 0.0}
+
+
+def test_the_load_record_reads_mem_as_the_fraction_in_use(monkeypatch, tmp_path):
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemTotal:       1000 kB\nMemFree: 10 kB\nMemAvailable:    250 kB\n", encoding="utf-8")
+    monkeypatch.setattr(host_cmd.os, "getloadavg", lambda: (2.0, 0.0, 0.0))
+    monkeypatch.setattr(host_cmd.os, "cpu_count", lambda: 4)
+    assert host_cmd._load_record(str(meminfo)) == {"cpu": 0.5, "mem": 0.75}
 
 
 def test_the_beat_reads_login_from_claude_auth_status_json():
@@ -158,6 +197,7 @@ def test_the_beat_reads_login_from_claude_auth_status_json():
 
     result = host_cmd.beat_versions(run, None, "/h", "/c", "/srv/ws", ["/h", "/c", "/t"])
     result.pop("host_facts")
+    result.pop(LOAD_KEY)
     assert result == {
         "cox": "v9", "graphs": "v9", "cartridges": "v9", "claude": "v9", "login_ok": True,
         "workspace_dir": "/srv/ws", "repos": ["/h", "/c", "/t"],

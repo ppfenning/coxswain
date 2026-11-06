@@ -22,6 +22,7 @@ from agent_tools.checkout_env import (
     host_env_verdict,
     sync_instruction,
 )
+from agent_tools.host_load import LOAD_KEY, load_report
 from agent_tools.lane_hosts import LaneHost
 from agent_tools.remote_argv import ssh_argv
 
@@ -296,6 +297,30 @@ def _mem_total_gb() -> float:
     return 0.0
 
 
+def _meminfo_kb(path: str = "/proc/meminfo") -> tuple[int, int]:
+    """(MemTotal, MemAvailable) in kB from /proc/meminfo; (0, 0) when the file or either line is unreadable."""
+    found: dict[str, int] = {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                key = line.split(":", 1)[0]
+                if key in ("MemTotal", "MemAvailable"):
+                    found[key] = int(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        return 0, 0
+    return (found["MemTotal"], found["MemAvailable"]) if len(found) == 2 else (0, 0)
+
+
+def _load_record(meminfo_path: str = "/proc/meminfo") -> dict[str, float]:
+    """The beat's load record; a host without getloadavg or /proc/meminfo reports zeros and still beats."""
+    try:
+        load_1m = os.getloadavg()[0]
+    except (OSError, AttributeError):
+        return load_report(0.0, 0, 0, 0)
+    total_kb, available_kb = _meminfo_kb(meminfo_path)
+    return load_report(load_1m, os.cpu_count() or 0, total_kb, available_kb) if total_kb else load_report(0.0, 0, 0, 0)
+
+
 def _host_facts() -> dict:
     """This machine's own os, cpu count and total memory -- never injected through `run`, since they are
     local process facts rather than another tool's output."""
@@ -358,7 +383,7 @@ def beat_versions(
     run: Run, package_version: str | None, harness_dir: str | None, cartridges_dir: str | None,
     workspace_dir: str | None = None, repos: Sequence[str] = (),
 ) -> dict:
-    """This machine's versions, plus its workspace_dir, checkout paths, host facts, per-checkout branch
+    """This machine's versions, plus its workspace_dir, checkout paths, host facts, load record, per-checkout branch
     and commits-behind-main, and per-checkout lock and synced hashes. `cox --version` text if it answers,
     else the package version."""
     def tag(directory: str | None) -> str | None:
@@ -370,7 +395,7 @@ def beat_versions(
     )
     return {
         **versions, "workspace_dir": workspace_dir, "repos": list(repos),
-        "host_facts": _host_facts(), "checkouts": _checkouts(run, repos),
+        "host_facts": _host_facts(), LOAD_KEY: _load_record(), "checkouts": _checkouts(run, repos),
         CHECKOUT_ENV_KEY: dict(_checkout_env(run, repo) for repo in repos),
     }
 

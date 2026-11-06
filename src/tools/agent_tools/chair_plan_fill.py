@@ -6,7 +6,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import datetime
 from typing import NamedTuple
 
-from agent_tools import chair_login_watch
+from agent_tools import chair_login_watch, host_load
 from agent_tools.chair_plan_recover import budget_verdict
 from agent_tools.chair_steer import steer_check
 from agent_tools.chair_types import Action, Facts, InitiativeFacts, RunningInitiative
@@ -240,7 +240,8 @@ def _scaled_lanes(capacity: int, lane_fraction: float) -> int:
 
 def host_free_slots(facts: Facts) -> list[HostSlot]:
     dispatch = facts["dispatch"]
-    blocked = chair_login_watch.login_blocked(facts.get("login_hosts", []))
+    rows = facts.get("login_hosts", [])
+    blocked = chair_login_watch.login_blocked(rows) | host_load.overloaded(rows, facts.get("host_load_ceiling")).keys()
     fraction = facts.get("limits", {}).get("lane_fraction", 1.0)
     return [
         (
