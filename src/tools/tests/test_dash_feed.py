@@ -233,7 +233,7 @@ def _fixture_inputs() -> tuple[tuple, dict]:
     args = (at, chair, spend, machines, runs, queue, 2, inbox, 2, watch, decisions, spend_series)
     with open("tests/fixtures/dash_budget_v1.json") as budget_file:
         budget = json.load(budget_file)["month"]
-    return args, {"history": history, "history_today": history_today, "budget": budget, "board": board_fixture["board"]}
+    return args, {"history": history, "history_today": history_today, "budget": budget, "board": board_fixture["board"], "live": board_fixture["live"]}
 
 
 def test_snapshot_matches_committed_fixture():
@@ -262,7 +262,12 @@ def test_snapshot_without_activity_carries_an_empty_list_and_the_all_zero_split(
 
     assert result["chair_agents"] == []
     with open("tests/fixtures/dash_feed_v1.json") as f:
-        assert result["spend_sources"].keys() == json.load(f)["spend_sources"].keys()
+        fixture = json.load(f)
+    assert result["spend_sources"].keys() == fixture["spend_sources"].keys()
+    assert result["live"].keys() == fixture["live"].keys()
+    assert [len(result["live"][k]) for k in ("calls_per_min", "lands_per_hour")] == [60, 24]
+    assert result["live"]["agents"] == [] and result["live"]["throughput"]["hosts"] == []
+    assert result["live"]["burn"]["meters"]["weekly"]["over_ceiling"] is False
     assert set(result["spend_split"]) == {"five_hour", "weekly"}
     for window in result["spend_split"].values():
         assert set(window) == window_keys
@@ -692,6 +697,7 @@ def test_the_live_feed_has_the_fixture_s_keys_no_nulls_and_serializes(monkeypatc
     assert feed["spend_sources"] == fixture["spend_sources"]
     for section in ("machines", "runs", "queue", "inbox"):
         assert set(feed[section][0]) == set(fixture[section][0]), section
+    assert feed["live"].keys() == fixture["live"].keys()
     assert feed["spend"]["today"] is None  # no run store under tmp_path
     rows = [feed["chair"], {k: v for k, v in feed["spend"].items() if k != "today"}, *feed["machines"], *feed["runs"], *feed["queue"], *feed["inbox"]]
     # `current_action` is null when nothing is running, `tick_age_s` when no tick was read, `short_id` when its initiative has none.

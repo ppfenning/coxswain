@@ -27,6 +27,11 @@ from agent_tools import (
     console_screen,
     courier,
     dash_board,
+    dash_live_agents,
+    dash_live_burn,
+    dash_live_series,
+    dash_live_turns_lane,
+    dash_live_turns_session,
     dash_machine_lanes,
     decisions,
     pacing,
@@ -97,7 +102,7 @@ _UNKNOWN_SPEND_SOURCES = {"chair_session": "none", "price_catalog": "missing"}
 def snapshot(
     at, chair, spend, machines, runs, queue, queue_total, inbox, inbox_total, watch, decisions=(), spend_series=(),
     history=(), history_today=None, *, chair_agents=None, spend_split=None, spend_sources=None, budget=None,
-    epics=(), board=None,
+    epics=(), board=None, live=None,
 ) -> dict:
     """Assemble the schema-1 dash feed snapshot from its sections. `queue_total`/`inbox_total` are each
     section's filtered count before the 50-row cap, for coxtop to render "50 of N". `decisions` is the open
@@ -107,7 +112,8 @@ def snapshot(
     spend split per window, all zero when not given. `spend_sources` says whether the chair session and the price
     catalog were found; it reads none and missing when not given. `budget` is the monthly budget block; it reads
     the none block, every figure 0.0 or 0, when not given. `epics` is the epic rollup records, empty when not given.
-    `board` is the epics, initiatives, phases and tasks tree; it reads `{"epics": []}` when not given."""
+    `board` is the epics, initiatives, phases and tasks tree; it reads `{"epics": []}` when not given. `live` is the
+    live section (token series, burn, agents); it reads the zero block, 60 and 24 point zero series, when not given."""
     # coxswain-dash carries its own copy of tests/fixtures/dash_feed_v1.json and will need these two fields too.
     # `queue[].phases` is additive and the schema stays 1: a coxtop that does not know the field ignores it.
     # So are `runs[].tasks`, `runs[].landed` and `runs[].quarantined`, which `_runs_v1` adds to each run row.
@@ -137,6 +143,36 @@ def snapshot(
         "budget": dict(_NONE_BUDGET) if budget is None else budget,
         "epics": list(epics),
         "board": {"epics": []} if board is None else board,
+        "live": _zero_live(_zero_anchor(at)) if live is None else live,
+    }
+
+
+def _zero_anchor(at) -> datetime:
+    """The moment the zero live series end at: `at`, or the epoch when `at` is not a timestamp."""
+    try:
+        return _parse_now(at)
+    except ValueError:
+        return datetime.fromtimestamp(0, UTC)
+
+
+_ZERO_METER = {"used_fraction": 0.0, "projected_fraction": 0.0, "ceiling_fraction": 0.0, "resets_at": "", "over_ceiling": False}
+_LIVE_WINDOW = timedelta(minutes=60)
+
+
+def _zero_live(at: datetime) -> dict:
+    """The live block with no turns: 60 point series (24 per hour), no hosts or agents, burn all zero."""
+    return {
+        "throughput": dash_live_series.throughput([], at),
+        "burn": {
+            "usd_per_min_5m": 0.0,
+            "usd_per_min_15m": 0.0,
+            "meters": {name: dict(_ZERO_METER) for name in dash_live_burn.METER_NAMES},
+        },
+        "agents": [],
+        "calls_per_min": dash_live_series.calls_per_min([], at),
+        "cache_hit_pct": dash_live_series.cache_hit_pct([], at),
+        "lands_per_hour": dash_live_series.per_hour([], at, 24),
+        "quarantines_per_hour": dash_live_series.per_hour([], at, 24),
     }
 
 
@@ -1277,6 +1313,102 @@ def _board_edge(
     return board, _lanes_by_host(lanes, states, calls_by_run, now, local_name)
 
 
+def _burn_meters(spend: Mapping, split: Mapping, ceiling: float) -> dict[str, dict]:
+    """The two burn meters: used fraction and reset from `spend`, window spend from the split's `cox_seats_usd`."""
+    return {
+        name: {
+            "used_fraction": float(spend.get(f"{name}_fraction") or 0.0),
+            "window_spend_usd": float((split.get(name) or {}).get("cox_seats_usd") or 0.0),
+            "ceiling_fraction": ceiling,
+            "resets_at": str(spend.get(f"{name}_resets_at") or ""),
+        }
+        for name in dash_live_burn.METER_NAMES
+    }
+
+
+def _run_hosts(rows: Mapping) -> dict[str, str]:
+    """Each stored run's host, for the runs that record one."""
+    return {str(r["run_id"]): str(r["host"]) for r in rows.get("runs", ()) if r.get("run_id") and r.get("host")}
+
+
+def _ended_events(rows: Mapping) -> list[dict]:
+    """The `ts` and `outcome` of every landed or quarantined run in the wide store rows. Not the history cut: that one
+    drops what ended before local midnight, and the per-hour series reach back 24 hours."""
+    runs = rows.get("runs", ())
+    history = build_history(runs, rows.get("task_records", ()), rows.get("node_calls", ()), limit=len(runs))
+    return [{"ts": str(h["ended_at"]), "outcome": h["outcome"]} for h in history if h["outcome"] in ("landed", "quarantined")]
+
+
+def _lane_targets(
+    lanes: Sequence[console_screen.LaneRow], states: Mapping[tuple[str, str, str], str],
+    records: Sequence[Mapping], hosts: Mapping[str, str], local_name: str, at: datetime,
+) -> list[dict]:
+    """What to read lane turns for: each live lane, and each run that ended in the last 60 minutes. A finished run is
+    on the host its stored row names, or on this machine when the store records none."""
+    building = _building_tasks(states)
+    live = [
+        {
+            "run": lane.run, "host": lane.host or local_name, "initiative": _run_slug(lane.run),
+            "task": next(iter(building.get((_run_slug(lane.run), lane.phase), [])), ""), "node": lane.node,
+        }
+        for lane in lanes
+    ]
+    recent = [
+        {
+            "run": str(r["run"]), "host": hosts.get(str(r["run"])) or local_name, "initiative": _run_slug(str(r["run"])),
+            "task": "",
+            "node": str(r.get("node") or ""),
+        }
+        for r in records
+        if (ended := _utc(r.get("ended_at"))) is not None and timedelta(0) <= at - ended <= _LIVE_WINDOW
+    ]
+    return [*live, *recent]
+
+
+def _assemble_live(
+    turns: Sequence[Mapping], meters: Mapping, events: Sequence[Mapping], windows: Mapping[str, int], at: datetime,
+) -> dict:
+    """The live block from the turns, the burn meters, the `{ts, outcome}` end events and the context windows."""
+    landed = [event for event in events if event["outcome"] == "landed"]
+    quarantined = [event for event in events if event["outcome"] == "quarantined"]
+    return {
+        "throughput": dash_live_series.throughput(turns, at),
+        "burn": dash_live_burn.burn(turns, meters, at),
+        "agents": dash_live_agents.agents(turns, at, windows),
+        "calls_per_min": dash_live_series.calls_per_min(turns, at),
+        "cache_hit_pct": dash_live_series.cache_hit_pct(turns, at),
+        "lands_per_hour": dash_live_series.per_hour(landed, at, 24),
+        "quarantines_per_hour": dash_live_series.per_hour(quarantined, at, 24),
+    }
+
+
+def _live_edge(
+    runs_dir: Path, targets: Sequence[Mapping], meters: Mapping, events: Sequence[Mapping], profile: dict,
+    local_name: str, chair_session: str, at: datetime,
+) -> dict:
+    """Edge: the live block from lane traces and session transcripts. `events` are the landed and quarantined end
+    events of the wide store rows. Only store and file errors are caught, as in `_tasks_edge`; the zero block then
+    stands. The agents' context windows are the price catalog's own, else the module's fallback."""
+    moment = at if at.tzinfo else at.replace(tzinfo=UTC)
+    try:
+        prices = chair_activity_read.prices_for_profile(profile)
+        windows = dash_live_agents.default_context_windows(chair_activity_read.catalog_for_profile(profile))
+        lane_turns = [
+            turn
+            for t in targets
+            for turn in dash_live_turns_lane.read_lane_turns(
+                runs_dir, t["run"], t["host"], t["initiative"], t["task"], t["node"], prices,
+            )
+        ]
+        session = dash_live_turns_session.read_session_turns(
+            Path(_PROJECTS_DIR).expanduser(), local_name, chair_session, moment - _LIVE_WINDOW, prices=prices,
+        )
+    except (OSError, *run_store._db_errors()):  # a store failure must not take the feed down; a code fault must
+        return _zero_live(moment)
+    turns = sorted([*lane_turns, *session], key=lambda turn: turn["ts"])
+    return _assemble_live(turns, meters, events, windows, moment)
+
+
 def _runs_v1(
     lanes: Sequence[console_screen.LaneRow], local_name: str, records: Sequence[Mapping], now: datetime,
     calls_by_run: Mapping[str, Sequence[Mapping]] | None = None, short_ids: Mapping[str, str] | None = None,
@@ -1593,7 +1725,8 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
     when the queue is empty or unreadable, or a store error hit while they were read: absent means no task data was
     readable, never "no tasks". A task's `waiting_on` is one task id, its first need not yet settled. `profile` is the parsed profile
     the capacity chain reads the team cartridge from. `budget` is the monthly block, with no nulls: period
-    "none" and a zero limit and fraction when the profile sets no limit."""
+    "none" and a zero limit and fraction when the profile sets no limit. `live` is a new key under schema 1: token
+    series, burn and agents from the lane traces and session transcripts, the zero block when they cannot be read."""
     runs_dir, work_dir = Path(runs_dir), Path(work_dir)
     at = _parse_now(now)
     local_name, local_capacity = _local_identity(runs_dir, profile or {})
@@ -1630,6 +1763,11 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
     )
     chair_block = _chair_section(runs_dir, chair_row, entries, read_drafts(work_dir, now), at)
     activity = _activity(runs_dir, profile or {}, chair_block["session"], spend_block, at, wide_rows)
+    live = _live_edge(
+        runs_dir, _lane_targets(sections["lanes"], states, records, _run_hosts(wide_rows), local_name, at),
+        _burn_meters(spend_block, activity["spend_split"] or {}, _hard_stop_fraction(runs_dir)),
+        _ended_events(wide_rows), profile or {}, local_name, chair_block["session"], at,
+    )
     return snapshot(
         now,
         chair_block,
@@ -1654,4 +1792,5 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
         budget=_budget_edge(runs_dir, at),
         epics=_epics_v1(task_rows),
         board=board,
+        live=live,
     )

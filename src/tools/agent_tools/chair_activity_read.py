@@ -135,22 +135,28 @@ def _catalog_candidates(profile: Mapping) -> list[Path]:
     return [*beside, *under]
 
 
+def catalog_for_profile(profile: Mapping | None, read_text: Callable[[Path], str | None] | None = None) -> object | None:
+    """The parsed first readable catalog.yaml for `profile`; None when none is readable or the YAML is invalid."""
+    if not profile:
+        return None
+    reader = read_text or _read_text
+    texts = (text for text in map(reader, _catalog_candidates(profile)) if text is not None)
+    first = next(texts, None)
+    if first is None:
+        return None
+    try:
+        return yaml.safe_load(first)
+    except yaml.YAMLError:
+        return None
+
+
 def prices_for_profile(
     profile: Mapping | None,
     read_text: Callable[[Path], str | None] | None = None,
 ) -> dict[str, dict[str, float]]:
     """model -> price from the first readable catalog.yaml for `profile`; {} when none is readable or the YAML is invalid."""
-    if not profile:
-        return {}
-    reader = read_text or _read_text
-    texts = (text for text in map(reader, _catalog_candidates(profile)) if text is not None)
-    first = next(texts, None)
-    if first is None:
-        return {}
-    try:
-        return catalog_prices(yaml.safe_load(first))
-    except yaml.YAMLError:
-        return {}
+    catalog = catalog_for_profile(profile, read_text)
+    return {} if catalog is None else catalog_prices(catalog)
 
 
 def catalog_status(profile: Mapping | None, read_text: Callable[[Path], str | None] | None = None) -> str:
