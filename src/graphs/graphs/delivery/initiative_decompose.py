@@ -40,6 +40,7 @@ from graphs.delivery.decompose_size import (
     parse_size_verdict,
     single_ticket_initiative,
 )
+from graphs.delivery.decompose_split import split_foreign
 from graphs.delivery.phase_split import split_same_phase_needs
 from graphs.delivery.ticket_lint import Problem, heal_idea_reach, lint_tickets
 from graphs.delivery.ticket_lint import lint_refusal_text as _lint_refusal_text
@@ -911,6 +912,37 @@ def _local_cycle(tasks: list[dict[str, Any]]) -> list[str]:
     return problems
 
 
+def _split_plan(
+    decomposition: Mapping[str, Any],
+    tasks: list[dict[str, Any]],
+    own_listing: Sequence[Mapping[str, Any]],
+    repo_trees: Mapping[str, Collection[str]],
+    title: str,
+) -> tuple[Mapping[str, Any], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+    """(decomposition, kept tasks, follow-ups, dropped, notes) once tasks in other repositories are moved out.
+
+    The own listing is the whole stack tree, so a stack sibling's file stays here for `_split_cross_repo`;
+    `repo_trees` names repositories outside the stack. A surface that is still prose or a directory counts as own
+    when it resolves in that listing, as the later resolution would. A phase left with no task is removed.
+    """
+    if not repo_trees:
+        return decomposition, tasks, [], [], []
+    paths = [str(row["path"]) for row in own_listing if row.get("path")]
+    resolvable = [s for t in tasks for s in t.get("surfaces") or [] if resolve_surfaces([s], own_listing)[0]]
+    split = split_foreign(tasks, [*paths, *resolvable] if paths else [], repo_trees, title=title)
+    if tasks and not split.kept:
+        owners = ", ".join(str(f["repo"]) for f in split.follow_ups)
+        raise ContractViolation(
+            f"every task in this plan belongs to {owners}; the intake belongs there, not in this repository"
+            if owners
+            else "no task in this plan touches a file in this repository or a registered one: "
+            + "; ".join(str(d["reason"]) for d in split.dropped)
+        )
+    emptied = {str(t.get("phase")) for t in tasks} - {str(t.get("phase")) for t in split.kept}
+    phases = [p for p in decomposition.get("phases") or [] if str(p.get("id")) not in emptied]
+    return {**decomposition, "phases": phases}, split.kept, split.follow_ups, split.dropped, split.notes
+
+
 def unexecuted_item_create_reason(diffs: Sequence[Mapping[str, Any]]) -> str | None:
     """The arm's own refusal, when every `item_create` diff was approved but none applied.
 
@@ -1190,6 +1222,17 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
             "ever become ready: " + "; ".join(cycles)
         )
 
+    # Own listing: the stack tree when given, else the checkout's tracked files. Read once, reused for named artifacts.
+    own_listing = tree or repo_listing(str(args.get("checkout") or repo_name))
+
+    # A task whose files live in another registered repository is moved out before the lint can see a foreign
+    # surface: the lint's cross-repo rewrite would send the whole plan back to the model.
+    repo_trees = args.get("repo_trees") or {}
+    split_title = idea_parts(str(planned))[0]
+    decomposition, tasks, follow_ups, dropped_tasks, split_notes = _split_plan(
+        decomposition, tasks, own_listing, repo_trees, split_title
+    )
+
     if tree:
         tasks, surface_failures = _validate_plan_surfaces(tasks, tree)
         if surface_failures:
@@ -1252,6 +1295,11 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
                 "the rewritten graph contains a dependency cycle, so nothing in it could "
                 "ever become ready: " + "; ".join(cycles)
             )
+        # The rewritten plan replaces the first one outright, foreign tasks included: split it afresh, and let
+        # its follow-ups, drops and notes replace the first plan's, which no longer describe anything.
+        decomposition, tasks, follow_ups, dropped_tasks, split_notes = _split_plan(
+            decomposition, tasks, own_listing, repo_trees, split_title
+        )
         if tree:
             tasks, surface_failures = _validate_plan_surfaces(tasks, tree)
             if surface_failures:
@@ -1385,7 +1433,7 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
     # mechanical when the name points at one file: add it, and say so on the ticket.
     # Launches pass no --tree, so a bare test name could never resolve; the checkout's own listing stands in, here only.
     # `repo` (--target-repo) is often unset on a launch; `checkout` is the harness's own --repo, the seats' readable copy.
-    named_tree = tree or repo_listing(str(args.get("checkout") or repo_name))
+    named_tree = own_listing
     tasks = [with_named_artifacts(t, named_tree) for t in tasks]
 
     # The layout check never stops a decompose: a body that does not match its surfaces is healed (the unnamed
@@ -1460,7 +1508,7 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
         home=str(Path.home()),
         epic=carried.get("epic"),
         target_branch=carried.get("target_branch"),
-        lint=[*heal.notes, *ordering_notes],
+        lint=[*heal.notes, *ordering_notes, *split_notes],
     )
     initiative_where = "/".join(part for part in (landing, initiative_id) if part)
 
@@ -1550,6 +1598,8 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
         "moves": reported_moves,
         "challenge": challenge,
         "layout": layout.as_outcome(),
+        "follow_ups": follow_ups,
+        "dropped": dropped_tasks,
         "proposals": proposals,
         "totals": {
             "phases": len({t["phase"] for t in tasks}),
@@ -1660,6 +1710,14 @@ SPEC = GraphSpec(
             required=False,
             help="JSON array of commands the build seat's sandbox actually permits, for the "
             "ticket-lint grant rule (default: none granted)",
+        ),
+        Need(
+            "repo_trees",
+            flag="--repo-trees",
+            kind="json_file",
+            required=False,
+            help="JSON object mapping a repository path to the list of that repository's tracked file paths; "
+            "a task whose files live in one of them is returned as a follow-up (default: no split)",
         ),
     ),
 )
