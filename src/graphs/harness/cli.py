@@ -58,6 +58,7 @@ from harness.checks import all_passed, checks_evidence, repo_checks, run_checks
 from harness.digest import build_digest
 from harness.escalate import escalate_self_modification
 from harness.gate import apply_decisions, auto_apply, gate
+from harness.lane_workers import LANE_CAPACITY_VAR, check_env
 from harness.lanes import resolve_max_parallel
 from harness.phase import run_phase
 from harness.registry import GraphSpec, discover
@@ -764,6 +765,12 @@ def _lifecycle_worktree(args: argparse.Namespace, cartridge: Mapping[str, Any], 
     """
     root = args.worktree_root or (cartridge.get("landing_areas") or {}).get("worktree_root", "~/worktrees")
     return Path(str(root)).expanduser() / run_id
+
+
+def _checks_env() -> dict[str, str] | None:
+    """Edge: the checks' child environment under `COX_LANE_CAPACITY`; None without a valid capacity, which changes nothing."""
+    text = os.environ.get(LANE_CAPACITY_VAR, "").strip()
+    return check_env(os.environ, os.cpu_count() or 1, int(text) if text.isdecimal() else None)
 
 
 def pgrep_pids(text: str) -> list[int]:
@@ -1907,7 +1914,11 @@ def _run_graph(
                     print("no checks configured; the gate decides on review evidence alone")
                 else:
                     check_results = run_checks(
-                        worktree, checks_config, log_dir=Path(args.runs_dir) / run_id / "checks", log_prefix="checks/"
+                        worktree,
+                        checks_config,
+                        env=_checks_env(),
+                        log_dir=Path(args.runs_dir) / run_id / "checks",
+                        log_prefix="checks/",
                     )
                     result["checks"] = check_results
                     for r in check_results:

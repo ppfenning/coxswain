@@ -63,6 +63,7 @@ def _verify_in(
     patch: str,
     checks: Sequence[Mapping[str, Any]],
     apply: Callable[[Path, str], str | None],
+    env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     try:
         error = apply(worktree, patch)
@@ -71,7 +72,7 @@ def _verify_in(
     if error is not None:
         return _outcome(False, False, [], f"patch did not apply: {error}")
     try:
-        results = run_checks(worktree, checks)
+        results = run_checks(worktree, checks, env=env)
     except ValueError as exc:
         return _outcome(True, False, [], f"{HARNESS_FAULT_PREFIX} {exc}")
     rows = evidence_rows(results)
@@ -88,8 +89,12 @@ def verify_patch(
     *,
     apply: Callable[[Path, str], str | None],
     workdir: Path,
+    env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Empty `checks` is refused, since nothing run is not evidence; the worktree is always removed."""
+    """Empty `checks` is refused, since nothing run is not evidence; the worktree is always removed.
+
+    `env` is the checks' whole child environment; None inherits this process's.
+    """
     if not checks:
         return _outcome(False, False, [], "no checks configured")
     workdir.mkdir(parents=True, exist_ok=True)
@@ -98,7 +103,7 @@ def verify_patch(
         added = _git(repo, "worktree", "add", "--detach", str(worktree), base_ref)
         if added.returncode != 0:
             return _outcome(False, False, [], f"{HARNESS_FAULT_PREFIX} worktree add failed: {added.stderr.strip()}")
-        return _verify_in(worktree, patch, checks, apply)
+        return _verify_in(worktree, patch, checks, apply, env)
     finally:
         _git(repo, "worktree", "remove", "--force", str(worktree))
         shutil.rmtree(worktree, ignore_errors=True)
