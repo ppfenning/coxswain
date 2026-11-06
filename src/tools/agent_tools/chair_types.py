@@ -489,6 +489,8 @@ class Facts(TypedDict):
     handoff_stops: NotRequired[list[HandoffStop]]  # tickets stopped on a handoff; absent means none
     queue_files: NotRequired[list[QueueFile]]  # exported task tickets with their stored hash and file text; absent means none
     held_files: NotRequired[list[HeldFile]]  # files the last board export held; absent means none
+    held_initiatives: NotRequired[list[str]]  # sorted ids of held initiatives; absent means none
+    deferred_initiatives: NotRequired[dict[str, str]]  # initiative id to target release, while the umbrella is below it; absent means none
     # `<path>|<blob>` of each held_file needs_chair already in the action log, so each held text is reported once. Absent means [].
     held_reported: NotRequired[list[str]]
     # The launch budget's inputs, keyed by initiative id; absent means no history. The default limit applies when

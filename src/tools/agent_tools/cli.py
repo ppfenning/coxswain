@@ -182,6 +182,7 @@ remote_doctor = _LazyModule("agent_tools.remote_doctor")
 remote_fetch = _LazyModule("agent_tools.remote_fetch")
 remote_lane = _LazyModule("agent_tools.remote_lane")
 remote_launch = _LazyModule("agent_tools.remote_launch")
+release_gate = _LazyModule("agent_tools.release_gate")
 repo_clone = _LazyModule("agent_tools.repo_clone")
 repo_path = _LazyModule("agent_tools.repo_path")
 repo_path_migrate = _LazyModule("agent_tools.repo_path_migrate")
@@ -4896,11 +4897,22 @@ def _route_status(a: argparse.Namespace) -> int:
         groups = _intake_groups_for(ws, items)
         problems = route.state_problems(items)
         queue = run_store.read_queue(ws / "runs")
-        waiting, held = intake_queue.waiting_on(queue), _held_entries(intake_queue.held_rows(queue))
+        from agent_tools.version_info import package_version  # local: keeps the import off every other command's path
+
+        held_intakes = intake_queue.held_rows(queue)
+        waiting = intake_queue.waiting_on(queue)
+        held = [
+            *_held_entries(held_intakes),
+            *route.held_initiative_entries(queue, release_gate.held_initiatives(queue), held_intakes),
+        ]
+        deferred = route.deferred_by_target(queue, package_version())
         if a.json:
             # The bare rows list is the shape older callers read; it stays when there
             # is nothing else to say. A problem is never dropped for lack of an intake dir.
-            queue_facts = {"waiting": waiting, "held": held} if waiting or held else {}
+            queue_facts = {
+                **({"waiting": waiting, "held": held} if waiting or held else {}),
+                **({"deferred": deferred} if deferred else {}),
+            }
             if groups is None and not problems and not queue_facts:
                 doc = rows
             elif groups is None:
@@ -4913,7 +4925,7 @@ def _route_status(a: argparse.Namespace) -> int:
             status = route.render_status(
                 shown, groups, problems, gate_level=_resolved_gate_level(ws / "runs"), hidden=hidden,
                 short_ids=_run_short_ids([r["id"] for r in rows], short_ids),
-                waiting=_waiting_by_entry_id(queue, waiting), held=held,
+                waiting=_waiting_by_entry_id(queue, waiting), held=held, deferred=deferred,
             )
             drafts = route.render_drafts(
                 draft_list.read_drafts(ws / "work", datetime.datetime.now(datetime.UTC).isoformat()), draft_list.format_age

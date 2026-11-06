@@ -21,7 +21,16 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import NamedTuple
 
-from agent_tools import card_keys, chair, decompose_empty, open_queue_priority, queue_rows, repo_path, run_store
+from agent_tools import (
+    card_keys,
+    chair,
+    decompose_empty,
+    open_queue_priority,
+    queue_rows,
+    release_gate,
+    repo_path,
+    run_store,
+)
 from agent_tools.intake_state import intake_group, intake_index
 from agent_tools.pacing import Assessment
 
@@ -2331,11 +2340,49 @@ def _intake_group_line(name: str, entries: list, waiting: Mapping[str, Sequence[
     return f"intake {name}: {len(entries)}" + (f" — {names}" if entries else "")
 
 
+def group_deferred(*id_targets: Mapping[str, str]) -> dict[str, list[str]]:
+    """Id-to-target mappings as target-to-sorted-ids, targets ascending by version. Targets that parse to the
+    same version (`1.2`, `v1.2`) share one heading, labelled with the smaller text."""
+    pairs = {(release_gate.release_tuple(t) or (), t, i) for ids in id_targets for i, t in ids.items()}
+    versions = sorted({version for version, _, _ in pairs})
+    label = {v: min(t for version, t, _ in pairs if version == v) for v in versions}
+    return {label[v]: sorted({i for version, _, i in pairs if version == v}) for v in versions}
+
+
+def deferred_by_target(queue: Sequence[Mapping], current: str) -> dict[str, list[str]]:
+    """Deferred initiatives and intakes grouped by target release. An intake that names a deferred initiative is
+    left out: the initiative stands for it."""
+    initiatives = release_gate.deferred_initiatives(queue, current)
+    names = {str(r["task_id"]): str((r.get("extra") or {}).get("initiative") or "").strip()
+             for r in queue if r["kind"] == "intake"}
+    intakes = {i: t for i, t in release_gate.deferred_intakes(queue, current).items() if names.get(i, "") not in initiatives}
+    return group_deferred(intakes, initiatives)
+
+
+def held_initiative_entries(
+    queue: Sequence[Mapping], held_ids: Collection[str], held_intakes: Sequence[Mapping] = ()
+) -> list[dict]:
+    """Held rows for initiatives: id and `hold_reason`, from the initiative's own row, else a named intake.
+    An initiative a listed held intake names, or whose id that intake has, is left out: its hold is already shown."""
+    def named(row: Mapping) -> str:
+        return str((row.get("extra") or {}).get("initiative") or "").strip()
+
+    def reason(name: str) -> str:
+        own = [r for r in queue if r["kind"] == "initiative" and str(r.get("initiative") or r["task_id"]) == name]
+        via = [r for r in queue if r["kind"] == "intake" and r["state"] != "removed" and named(r) == name]
+        texts = (str((r.get("extra") or {}).get("hold_reason") or "") for r in [*own, *via])
+        return next((t for t in texts if t), "")
+
+    covered = {named(r) for r in held_intakes} | {str(r["task_id"]) for r in held_intakes}
+    return [{"id": name, "reason": reason(name)} for name in sorted(set(held_ids) - covered)]
+
+
 def render_status(rows: list, groups: dict | None = None, problems: list | None = None,
                   gate_level: str | None = None, hidden: int = 0,
                   short_ids: Mapping[str, str] | None = None,
                   waiting: Mapping[str, Sequence[str]] | None = None,
-                  held: Sequence[Mapping] | None = None) -> str:
+                  held: Sequence[Mapping] | None = None,
+                  deferred: Mapping[str, Sequence[str]] | None = None) -> str:
     """The human-readable text `agent-tools route status` prints, spec §5,
     from `status_rows`' output. One line per row: a run with no pidfile
     states only its id and state, since `pid` and `started` are both
@@ -2349,6 +2396,8 @@ def render_status(rows: list, groups: dict | None = None, problems: list | None 
     `short_ids` (slug to short id) shows `slug [short]` on a row whose slug is in it.
     `waiting` (intake id to the ids it waits on) marks queued intake entries in the group lines. `held`, rows of
     `{"id", "reason"}`, adds a `held:` heading after the groups with one `  id: reason` line each.
+    `deferred` (target release to ids, `group_deferred`'s output) adds a `deferred to <version>:` heading per target
+    after the held block, in the mapping's order, with one `  id` line each.
     """
     ids = short_ids or {}
     lines = [_status_line(row, ids.get(row["id"])) for row in rows]
@@ -2356,6 +2405,7 @@ def render_status(rows: list, groups: dict | None = None, problems: list | None 
     if groups is not None:
         lines += [_intake_group_line(name, groups[name], waiting) for name in ("queued", "decomposed", "landed")]
     lines += ["held:", *(f"  {h['id']}: {h['reason']}" if h.get("reason") else f"  {h['id']}" for h in held)] if held else []
+    lines += [line for target, names in (deferred or {}).items() for line in (f"deferred to {target}:", *(f"  {n}" for n in names))]
     lines += [f"problem: {p}" for p in problems or []]
     lines += [f"gate: {gate_level}"] if gate_level is not None else []
     return "\n".join(lines)

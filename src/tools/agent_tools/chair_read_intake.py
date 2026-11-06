@@ -5,7 +5,7 @@ The core is pure. The edge lists intake with `route.intake_entries` and reads th
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
-from agent_tools import intake_queue, route
+from agent_tools import intake_queue, release_gate, route
 
 
 def queued_oldest_first(groups: Mapping[str, Sequence[Mapping]], mtimes: Mapping[str, float]) -> list[str]:
@@ -21,15 +21,21 @@ def has_sources(sources: Sequence[str]) -> bool:
     return len(sources) > 0
 
 
-def intake_from_rows(rows: Sequence[Mapping]) -> list[Mapping]:
+def intake_from_rows(rows: Sequence[Mapping], current: str | None = None) -> list[Mapping]:
     """Runnable intake rows naming no initiative: `intake_queue.runnable_intake` over every row, then the initiative filter.
 
     Held rows and rows with an unmet `after` are dropped; order is priority descending, then row order. All rows go in
     because landing is judged from the task rows. `route.intake_groups` never queues one that names an initiative, done or not.
+    With `current` (the umbrella version), a row whose `target_release` is above it is dropped too.
 
     unknown: an `initiative.md` whose `intake:` field names the entry also unqueues it; rows carry no initiative.md, so that is not checked.
     """
-    return [r for r in intake_queue.runnable_intake(list(rows)) if r["extra"].get("initiative") is None]
+    deferred = release_gate.deferred_intakes(rows, current) if current is not None else {}
+    return [
+        r
+        for r in intake_queue.runnable_intake(list(rows))
+        if r["extra"].get("initiative") is None and str(r["task_id"]) not in deferred
+    ]
 
 
 def read_intake(ws: Path, initiative_texts: Mapping[Path, str] | None = None) -> list[str]:
