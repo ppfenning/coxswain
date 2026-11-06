@@ -106,8 +106,21 @@ sys.exit(1 if bad else 0)
 
 def git(*args: str, cwd: Path) -> str:
     proc = subprocess.run(
-        ["git", "-c", "user.email=t@invalid", "-c", "user.name=t", *args],
-        cwd=cwd, capture_output=True, text=True,
+        [
+            "git",
+            "-c",
+            "user.email=t@invalid",
+            "-c",
+            "user.name=t",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+            *args,
+        ],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
     )
     assert proc.returncode == 0, f"git {' '.join(args)} failed: {proc.stderr or proc.stdout}"
     return proc.stdout.strip()
@@ -352,6 +365,8 @@ class LimitStopBuild(Runner):
         )
 
 
+STORE_OPENED_AT = "2026-09-01T00:00:00+00:00"
+
 SPECS = {
     "lifecycle": GraphSpec(name="lifecycle", graph_name="lifecycle-propose", run=lifecycle_propose.run),
     "validate": phase_validate.SPEC,
@@ -364,7 +379,7 @@ def drive(
 ):
     runner = runner or Runner(patches if patches is not None else {t: new_file_patch(f"{t}.txt") for t in TASK_IDS})
     if "store" not in extra:
-        extra["store"] = Store(open_store("sqlite:///:memory:", datetime.now(UTC).isoformat()))
+        extra["store"] = Store(open_store("sqlite:///:memory:", STORE_OPENED_AT))
     result = run_epic(
         initiative=work if work is not None else initiative(),
         repo=repo,

@@ -82,11 +82,13 @@ def test_a_conflicting_pair_is_blocked_with_the_assembly_cause(repo, cart, tmp_p
         "t2-bench": readme_patch("# two"),
         "t3-cutover": new_file_patch("t3-cutover.txt"),
     }
-    result, _ = drive(repo, cart, tmp_path, work=two_parent_work(), patches=patches)
+    work = two_parent_work()
+    result, _ = drive(repo, cart, tmp_path, work=work, patches=patches)
 
+    left, right = (f"epic/{work['id']}/{work['items'][i]['phase']}" for i in (0, 1))
     join = phase_record(result, "p2-rollout")
     assert join["status"] == "blocked"
-    assert join["reason"].startswith(f"{ASSEMBLY_FAILED}merging {LEFT} after {RIGHT} conflicted in: README.md")
+    assert join["reason"].startswith(f"{ASSEMBLY_FAILED}merging {left} after {right} conflicted in: README.md")
     assert "phase_failed_to_start" not in join
     entries = [q for q in result["quarantined"] if q["phase"] == "p2-rollout"]
     assert [(q["id"], q["grain"]) for q in entries] == [("t3-cutover", "task")]

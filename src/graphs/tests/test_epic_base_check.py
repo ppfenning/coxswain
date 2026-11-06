@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
 from harness.store_migrate import open_store
@@ -54,35 +56,54 @@ def _work(commit: str, need_state: str = "approved") -> dict:
 
 
 def _side_commit(repo, path: str, text: str) -> str:
-    """A commit on a side branch off main, which no phase branch holds."""
-    git("checkout", "-q", "-b", "side", cwd=repo)
-    (repo / path).write_text(text, encoding="utf-8")
-    git("add", "-A", cwd=repo)
-    git("commit", "-qm", "side work", cwd=repo)
-    commit = git("rev-parse", "HEAD", cwd=repo)
-    git("checkout", "-q", "main", cwd=repo)
-    return commit
+    """A commit on a side branch off main, which no phase branch holds. The checkout returns to main on any exit."""
+    git("checkout", "-q", "-b", f"side-{repo.parent.name}-{path}", cwd=repo)
+    try:
+        (repo / path).write_text(text, encoding="utf-8")
+        git("add", "-A", cwd=repo)
+        git("commit", "-qm", "side work", cwd=repo)
+        return git("rev-parse", "HEAD", cwd=repo)
+    finally:
+        git("checkout", "-q", "main", cwd=repo)
 
 
 def _attempts(store: Store) -> int:
     return store.conn.query_one(f"SELECT count(*) FROM attempts WHERE task_id = '{DEPENDENT}'")[0]
 
 
-def _store() -> Store:
-    return Store(open_store("sqlite:///:memory:", "2026-11-06T00:00:00+00:00"))
+@pytest.fixture
+def memory_store():
+    """One in-memory store per test, closed when the test ends."""
+    store = Store(open_store("sqlite:///:memory:", "2026-11-06T00:00:00+00:00"))
+    try:
+        yield store
+    finally:
+        store.conn.close()
 
 
-def _drive(repo, cart, tmp_path, work, runner):
-    store = _store()
-    result, _ = drive(repo, cart, tmp_path, runner=runner, work=work, store=store)
-    return result, {p["phase"]: p for p in result["phases"]}["p2-rollout"], store
+def _drive(repo, cart, tmp_path, work, runner, store):
+    # p1 has nothing to build, so the harness cuts its branch on a thread that p2 can outrun; cut it here instead.
+    git("branch", "epic/demo-initiative/p1-foundations", "main", cwd=repo)
+    result, _ = drive(repo, cart, tmp_path, runner=runner, work=work, store=store, run_id=f"epic-{tmp_path.name}")
+    return result, {p["phase"]: p for p in result["phases"]}["p2-rollout"]
 
 
-def test_a_base_missing_a_needed_commit_is_rebuilt_and_the_build_runs(repo, cart, tmp_path) -> None:
+def test_missing_is_not_a_commit_in_the_tests_repo(repo) -> None:
+    probe = subprocess.run(["git", "cat-file", "-e", f"{MISSING}^{{commit}}"], cwd=repo, capture_output=True)
+    assert probe.returncode != 0
+
+
+def test_a_failed_side_commit_leaves_the_checkout_on_main(repo) -> None:
+    with pytest.raises(FileNotFoundError):
+        _side_commit(repo, "no-such-dir/needed.txt", "ok\n")
+    assert git("rev-parse", "--abbrev-ref", "HEAD", cwd=repo) == "main"
+
+
+def test_a_base_missing_a_needed_commit_is_rebuilt_and_the_build_runs(repo, cart, tmp_path, memory_store) -> None:
     commit = _side_commit(repo, "needed.txt", "ok\n")
     runner = Watching(repo, {DEPENDENT: new_file_patch(f"{DEPENDENT}.txt")})
 
-    result, phase, store = _drive(repo, cart, tmp_path, _work(commit), runner)
+    result, phase = _drive(repo, cart, tmp_path, _work(commit), runner, memory_store)
 
     assert phase["base_rebuilt"] == [NEED]
     assert len(runner.builds()) == 1
@@ -93,7 +114,10 @@ def test_a_base_missing_a_needed_commit_is_rebuilt_and_the_build_runs(repo, cart
 
 
 @pytest.mark.parametrize("conflicting", [True, False], ids=["conflict", "unknown-commit"])
-def test_a_base_that_cannot_be_assembled_stops_the_phase_before_any_build(repo, cart, tmp_path, conflicting) -> None:
+def test_a_base_that_cannot_be_assembled_stops_the_phase_before_any_build(
+    repo, cart, tmp_path, memory_store, conflicting
+) -> None:
+    store = memory_store
     commit = MISSING
     if conflicting:
         commit = _side_commit(repo, "README.md", "# side\n")
@@ -101,7 +125,7 @@ def test_a_base_that_cannot_be_assembled_stops_the_phase_before_any_build(repo, 
         git("commit", "-qam", "main moves", cwd=repo)
     runner = Watching(repo, {DEPENDENT: new_file_patch(f"{DEPENDENT}.txt")})
 
-    result, phase, store = _drive(repo, cart, tmp_path, _work(commit), runner)
+    result, phase = _drive(repo, cart, tmp_path, _work(commit), runner, store)
 
     assert phase["status"] == "blocked"
     assert phase["reason"].startswith(f"{NEED}: the build base lacks the merged work of {NEED}")
@@ -116,11 +140,11 @@ def test_a_base_that_cannot_be_assembled_stops_the_phase_before_any_build(repo, 
     assert state is None or state[0] == "ready"
 
 
-def test_a_base_that_holds_every_needed_commit_builds_unchanged(repo, cart, tmp_path) -> None:
+def test_a_base_that_holds_every_needed_commit_builds_unchanged(repo, cart, tmp_path, memory_store) -> None:
     head = git("rev-parse", "main", cwd=repo)
     runner = Watching(repo, {DEPENDENT: new_file_patch(f"{DEPENDENT}.txt")})
 
-    _, phase, _ = _drive(repo, cart, tmp_path, _work(head), runner)
+    _, phase = _drive(repo, cart, tmp_path, _work(head), runner, memory_store)
 
     assert runner.heads == [head]
     assert "base_rebuilt" not in phase
@@ -128,11 +152,13 @@ def test_a_base_that_holds_every_needed_commit_builds_unchanged(repo, cart, tmp_
 
 
 @pytest.mark.parametrize(("need_state", "blocked"), [("done", False), ("approved", True)])
-def test_only_an_unlanded_need_is_checked_against_the_base(repo, cart, tmp_path, need_state, blocked) -> None:
+def test_only_an_unlanded_need_is_checked_against_the_base(
+    repo, cart, tmp_path, memory_store, need_state, blocked
+) -> None:
     """A need done in the store landed, perhaps on another machine; its commit is not expected on the phase base."""
     runner = Watching(repo, {DEPENDENT: new_file_patch(f"{DEPENDENT}.txt")})
 
-    result, phase, _ = _drive(repo, cart, tmp_path, _work(MISSING, need_state), runner)
+    result, phase = _drive(repo, cart, tmp_path, _work(MISSING, need_state), runner, memory_store)
 
     assert (phase["status"] == "blocked") is blocked
     assert (len(runner.builds()) == 0) is blocked
