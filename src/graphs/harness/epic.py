@@ -4224,7 +4224,7 @@ def _trim_phase(ctx: _Ctx, phase: str) -> str | None:
             if before is None or after is None:
                 outcome = "refused (coverage floor)"
             else:
-                checks_ok = all_passed(run_checks(after_tree, ctx.checks)) if ctx.checks else True
+                checks_ok = all_passed(run_checks(after_tree, ctx.checks, env=_checks_env(ctx, {}))) if ctx.checks else True
                 if not (coverage_floor_holds(before, after) and checks_ok):
                     outcome = "refused (coverage floor)"
         finally:
@@ -5046,7 +5046,13 @@ def rescue_task(ctx: _Ctx, item: Mapping[str, Any], *, phase: str) -> dict[str, 
         return None if applied else detail
 
     verified = rescue_checks.verify_patch(
-        ctx.repo, ctx.default_ref, patch, ctx.checks, apply=apply, workdir=ctx.worktree_root / ctx.run_id
+        ctx.repo,
+        ctx.default_ref,
+        patch,
+        ctx.checks,
+        apply=apply,
+        workdir=ctx.worktree_root / ctx.run_id,
+        env=_checks_env(ctx, {}),
     )
     if not verified["passed"]:
         return _rescue_failed(ctx, item, phase=phase, reason=str(verified["reason"]), failed_checks=True)
