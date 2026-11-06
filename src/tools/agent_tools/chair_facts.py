@@ -13,7 +13,7 @@ from functools import reduce
 from pathlib import Path
 from typing import Any, cast
 
-from agent_tools import chair_read_docket, chair_smoke, forge, pacing, repo_path, route
+from agent_tools import chair_read_docket, chair_smoke, forge, pacing, queue_rows, repo_path, route
 from agent_tools.budget import MonthBudget
 from agent_tools.chair import lease_holder
 from agent_tools.chair_decompose_streak import DecomposeRun, DecomposeStreak, at_limit, streak
@@ -21,6 +21,7 @@ from agent_tools.chair_idle_stall import IDLE_STALL_MINUTES
 from agent_tools.chair_land_backoff import LandRefusal, aligned
 from agent_tools.chair_land_freeze import LandFreeze, read_freeze
 from agent_tools.chair_launch_budget import DEFAULT_MAX_LAUNCHES_PER_HOUR, WINDOW
+from agent_tools.chair_phases import launchable_phases
 from agent_tools.chair_plan import initiative_homes
 from agent_tools.chair_plan_land import planned_tasks
 from agent_tools.chair_read_dag import dag_problems
@@ -55,8 +56,10 @@ from agent_tools.chair_types import (
     LaunchHistory,
     LeaseFacts,
     LimitsFacts,
+    LivePhase,
     MergeQueueFacts,
     PhaseBranch,
+    PhaseFacts,
     PhaseTasks,
     PidProbeFact,
     QuarantineFacts,
@@ -261,6 +264,7 @@ class FactsDeps:
     review_prs: Callable[[], list[ReviewPr]] = lambda: []  # forge_review_prs bound to the profile's forge; absent means []
     pid_probe: Callable[[], Mapping[str, PidProbeFact]] = lambda: {}  # initiative to its remote pid probe; absent means {}
     tickets: Callable[[], Sequence[Row]] | None = None  # `read_ticket_items` rows; absent means no surfaces and no running initiatives
+    live_phases: Callable[[], Sequence[tuple[str, str]]] | None = None  # live (initiative, phase) runs; absent means no phase runs live
     repos: Callable[[], Mapping[str, str]] | None = None  # initiative to its initiative.md `repo:`; absent means no repo is known
     actions: Callable[[], Sequence[Row]] | None = None  # windowed chair_actions rows, read once per gather (`windowed_actions`); absent means no steer streaks
     decompose_runs: Callable[[str], Sequence[DecomposeRun]] | None = None  # intake path to its decompose runs, oldest first; absent means no decompose streaks
@@ -532,13 +536,48 @@ def ticket_surfaces(items: Sequence[Row], ready_ids: Mapping[str, Collection[str
     }
 
 
+def phase_facts(rows: Sequence[Row], land_at: str, claimed: Collection[str] = frozenset()) -> list[PhaseFacts]:
+    """The phases of one initiative that can start a lane under `land_at`, each with its ready tasks and their surfaces.
+
+    A task id in `claimed` (a live lease holds it) is not ready, so a phase left with none is not listed.
+    `requires` is read as the docket reads it: a scalar `requires: gpu` is `["gpu"]`."""
+    by_id = {str(r["id"]): r for r in rows}
+    free = {phase: [i for i in ids if i not in claimed] for phase, ids in launchable_phases(rows, land_at).items()}
+    return [
+        {
+            "phase": phase,
+            "ready_tasks": [
+                {
+                    "id": i,
+                    "phase": phase,
+                    "needs": [str(n) for n in by_id[i].get("needs") or []],
+                    "requires": queue_rows.requires_of(by_id[i]),
+                }
+                for i in ids
+            ],
+            "surfaces": sorted({s for i in ids for s in _surfaces_of(by_id[i])}),
+        }
+        for phase, ids in free.items()
+        if ids
+    ]
+
+
+PHASE_RUN_STATES = frozenset({"in_progress", "ready"})  # what a live phase run holds files for
+
+
 def running_initiatives(
-    live: Collection[str], items: Sequence[Row], repos: Mapping[str, str], *, unlanded: Collection[str] = frozenset()
+    live: Collection[str],
+    items: Sequence[Row],
+    repos: Mapping[str, str],
+    *,
+    unlanded: Collection[str] = frozenset(),
+    live_phases: Collection[tuple[str, str]] = (),
 ) -> list[RunningInitiative]:
     """Live initiatives hold ready and approved surfaces; a non-live unlanded one holds approved surfaces only.
 
     An approved item whose merged flag is true holds nothing, live or not. An initiative with only ready tasks and no
-    live run has no entry. `live` trusts an unexpired `runs:` lease or a live pid, so a finished run holds files until its lease expires."""
+    live run has no entry. `live` trusts an unexpired `runs:` lease or a live pid, so a finished run holds files until its lease expires.
+    Each `live_phases` pair adds an entry with `phase` set, holding the surfaces of that phase's in-progress and ready items only."""
 
     def held(initiative: str) -> list[Row]:
         states = STEER_STATES if initiative in live else frozenset({"approved"})
@@ -556,6 +595,20 @@ def running_initiatives(
         }
         for initiative in sorted(set(live) | set(unlanded))
         if initiative in live or held(initiative)
+    ] + [
+        {
+            "id": initiative,
+            "repo": repos.get(initiative, ""),
+            "surfaces": sorted(
+                {
+                    s for i in items
+                    if i["initiative"] == initiative and i.get("phase") == phase and i.get("state") in PHASE_RUN_STATES
+                    for s in _surfaces_of(i)
+                }
+            ),
+            "phase": phase,
+        }
+        for initiative, phase in sorted(set(live_phases))
     ]
 
 
@@ -839,10 +892,26 @@ def initiative_facts(
     surfaces: Mapping[str, list[str]] | None = None,
     repos: Mapping[str, str] | None = None,
     land_at: Mapping[str, str] | None = None,
+    rows: Mapping[str, Sequence[Row]] | None = None,
+    claimed: Collection[tuple[str, str]] = (),
+    live_phases: Collection[tuple[str, str]] = (),
 ) -> list[InitiativeFacts]:
     """The docket's initiatives with no live run, so a live run is never relaunched.
 
-    `repo`, `ready_surfaces` and `land_at` ride along only when their source was read."""
+    `repo`, `ready_surfaces`, `land_at` and `phases` ride along only when their source was read; `rows` is each initiative's
+    ticket rows. `phases` leaves out a phase in `live_phases` and a task in `claimed` (initiative, task id), and is absent
+    when no phase can start a lane, so an initiative with no phase rows reads as it did."""
+    from core.landing import DEFAULT_LAND_AT  # lazy: core sits beside agent_tools in one venv
+
+    def phases_entry(initiative: str) -> dict[str, list[PhaseFacts]]:
+        if rows is None or initiative not in rows:
+            return {}
+        held = {t for i, t in claimed if i == initiative}
+        live_here = {p for i, p in live_phases if i == initiative}
+        listed = phase_facts(rows[initiative], (land_at or {}).get(initiative, DEFAULT_LAND_AT), held)
+        shown = [p for p in listed if p["phase"] not in live_here]
+        return {"phases": shown} if shown else {}
+
     return [
         {
             "id": i["id"],
@@ -863,6 +932,7 @@ def initiative_facts(
                 else {}
             ),
             **({"land_at": land_at[i["id"]]} if land_at is not None and i["id"] in land_at else {}),
+            **phases_entry(i["id"]),
         }
         for i in docket["initiatives"]
         if i["id"] not in live
@@ -1248,6 +1318,8 @@ def gather_facts(
     repos = dict(deps.repos()) if deps.repos is not None else {}
     ready_ids = {i["id"]: {t["id"] for t in i["ready_tasks"]} for i in ready}
     problems = dag_problems(items) if deps.tickets is not None else {}
+    live_phase_pairs = [(p[0], p[1]) for p in deps.live_phases()] if deps.live_phases is not None else []
+    leased = {(r["initiative"], r["task_id"]) for r in rows if r["kind"] == "task" and chair_read_docket._claimed(r, now_iso)}
     initiatives = [
         {**i, "dag_problem": problems[i["id"]]} if i["id"] in problems else i
         for i in initiative_facts(
@@ -1255,6 +1327,9 @@ def gather_facts(
             ticket_surfaces(items, ready_ids) if deps.tickets is not None else None,
             repos if deps.repos is not None else None,
             land_at_facts(deps.cartridge(), deps.land_at_values(), [i["id"] for i in ready]),
+            {i["id"]: [t for t in items if t["initiative"] == i["id"]] for i in ready} if deps.tickets is not None else None,
+            leased,
+            live_phase_pairs,
         )
     ]
     newest_run_host = dict(deps.newest_run_host()) if deps.newest_run_host is not None else {}
@@ -1356,7 +1431,16 @@ def gather_facts(
         "review_prs": list(deps.review_prs()),
         "phase_tasks": list(deps.phase_tasks()),
         **({"phase_records": list(deps.phase_records(approved))} if deps.phase_records is not None else {}),
-        "running": running_initiatives(live, items, repos, unlanded=unfinished) if deps.tickets is not None else [],
+        "running": (
+            running_initiatives(live, items, repos, unlanded=unfinished, live_phases=live_phase_pairs)
+            if deps.tickets is not None
+            else []
+        ),
+        **(
+            {"live_phases": [LivePhase(initiative=i, phase=p) for i, p in live_phase_pairs]}
+            if deps.live_phases is not None
+            else {}
+        ),
         "steer_streaks": steer_streaks_from_actions(action_rows),
         "waiting_reported": waiting_reported_from_actions(action_rows),
         "pull_age_s": pull_age_s(action_rows, now),
