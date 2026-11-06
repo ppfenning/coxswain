@@ -59,6 +59,7 @@ from agent_tools.chair_rebase_exec import RebasePort, perform_rebase
 from agent_tools.chair_revert_exec import MERGED, RevertResult, perform_revert
 from agent_tools.chair_revert_exec import ForgePort as RevertForgePort
 from agent_tools.chair_revert_exec import GitPort as RevertGitPort
+from agent_tools.chair_schedule import SCHEDULE_FILE
 from agent_tools.chair_types import Action, LandTrigger, is_fenced
 from agent_tools.land import approve_to_done
 from agent_tools.remote_argv import LANE_HOST_TIMEOUT_S, probe_argv, ssh_argv, sync_argv
@@ -1285,6 +1286,37 @@ def _steer_reason(action: Action) -> str:
     return f"steer clear of {action.get('other', '')}: {','.join(action.get('paths', []))}"[:200]
 
 
+def schedule_document(action: Action) -> str:
+    """The text of `SCHEDULE_FILE`: the action's schedule object alone, as JSON."""
+    return json.dumps(action["schedule"], indent=2, sort_keys=True) + "\n"
+
+
+def _write_replacing(path: Path, text: str) -> None:
+    """Edge. `text` lands in `path` in one step: written beside it, then renamed over it, so a reader never sees half a file.
+
+    mkstemp creates 0600, which the rename would carry onto `path`; the document is published for other readers, so it is 0644.
+    """
+    descriptor, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.chmod(name, 0o644)
+        os.replace(name, path)
+    except BaseException:
+        Path(name).unlink(missing_ok=True)
+        raise
+
+
+def _schedule_updated(action: Action, deps: Deps) -> Result:
+    if not isinstance(action.get("schedule"), Mapping):
+        return _result(action, "refused", "schedule_updated carries no schedule")
+    try:
+        _write_replacing(deps.runs_dir / SCHEDULE_FILE, schedule_document(action))
+    except OSError as err:
+        return _result(action, "failed", f"{SCHEDULE_FILE}: {err}")
+    return _result(action, "done", f"wrote {SCHEDULE_FILE}")
+
+
 def _deferred_reason(action: Action) -> str:
     """`deferred to the last phase (land_at <land_at>)`, naming the land_at the action carries."""
     return f"deferred to the last phase (land_at {action.get('land_at', '?')})"
@@ -1445,6 +1477,8 @@ def _would(action: Action) -> str:
         return f"would run the gate of {epic} and publish its result event on {action.get('topic', '')}"
     if kind == "steward_event":
         return f"would publish {action.get('event', '')} on {action.get('topic', '')}"
+    if kind == "schedule_updated":
+        return f"would write {SCHEDULE_FILE}"
     if kind == "relaunch" and epic:
         return f"would relaunch {action.get('initiative', '')} and publish relaunched on {action.get('topic', '')}"
     return ""
@@ -1531,6 +1565,8 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
         return _stalled(action, deps, signal.SIGUSR1)
     if kind == "stalled_stop":
         return _stalled(action, deps, signal.SIGTERM)
+    if kind == "schedule_updated":
+        return _schedule_updated(action, deps)
     return _result(action, "refused", f"unsupported action kind {kind!r}")
 
 
