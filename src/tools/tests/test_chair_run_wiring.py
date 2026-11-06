@@ -245,6 +245,16 @@ def test_the_steward_is_on_only_for_a_profile_that_sets_chair_steward(tmp_path) 
         assert chair_facts.resolve_steward_enabled(deps(profile).steward_enabled()) is False
 
 
+def test_a_profile_chair_steward_scope_reaches_the_facts_deps(tmp_path) -> None:
+    runs = tmp_path / "runs"
+    runs.mkdir()
+
+    def scope(profile: dict) -> object:
+        return cli._chair_run_deps(runs, profile, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files").facts_deps.steward_scope()
+
+    assert (scope({"chair": {"steward_scope": "epics"}}), scope({})) == ("epics", None)
+
+
 def test_harness_python_is_the_configured_harness_venv(tmp_path) -> None:
     runs = tmp_path / "runs"
     profile = {"harness_dir": str(tmp_path / "harness")}
