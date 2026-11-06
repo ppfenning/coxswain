@@ -24,6 +24,7 @@ from agent_tools import (
     chair_activity_read,
     chair_capacity,
     chair_login_check,
+    chair_orchestrate,
     console_screen,
     courier,
     dash_board,
@@ -102,7 +103,7 @@ _UNKNOWN_SPEND_SOURCES = {"chair_session": "none", "price_catalog": "missing"}
 def snapshot(
     at, chair, spend, machines, runs, queue, queue_total, inbox, inbox_total, watch, decisions=(), spend_series=(),
     history=(), history_today=None, *, chair_agents=None, spend_split=None, spend_sources=None, budget=None,
-    epics=(), board=None, live=None,
+    epics=(), board=None, live=None, orchestration=None,
 ) -> dict:
     """Assemble the schema-1 dash feed snapshot from its sections. `queue_total`/`inbox_total` are each
     section's filtered count before the 50-row cap, for coxtop to render "50 of N". `decisions` is the open
@@ -113,7 +114,9 @@ def snapshot(
     catalog were found; it reads none and missing when not given. `budget` is the monthly budget block; it reads
     the none block, every figure 0.0 or 0, when not given. `epics` is the epic rollup records, empty when not given.
     `board` is the epics, initiatives, phases and tasks tree; it reads `{"epics": []}` when not given. `live` is the
-    live section (token series, burn, agents); it reads the zero block, 60 and 24 point zero series, when not given."""
+    live section (token series, burn, agents); it reads the zero block, 60 and 24 point zero series, when not given.
+    `orchestration` is the chair machine's mode block; the key is absent when it is None, because the profile or the
+    hosts table could not be read."""
     # coxswain-dash carries its own copy of tests/fixtures/dash_feed_v1.json and will need these two fields too.
     # `queue[].phases` is additive and the schema stays 1: a coxtop that does not know the field ignores it.
     # So are `runs[].tasks`, `runs[].landed` and `runs[].quarantined`, which `_runs_v1` adds to each run row.
@@ -124,6 +127,7 @@ def snapshot(
         "spend": spend,
         "spend_series": [list(point) for point in spend_series],
         "machines": machines,
+        **({} if orchestration is None else {"orchestration": orchestration}),
         "runs": runs,
         "queue": queue,
         "queue_total": queue_total,
@@ -472,6 +476,27 @@ def _activity(
 def _local_identity(runs_dir: Path, profile: dict) -> tuple[str, int]:
     """This machine's own name and the lane capacity `cox chair run` enforces, from `chair_capacity`."""
     return socket.gethostname(), chair_capacity.chair_max_in_flight(Path(runs_dir), profile)
+
+
+def _orchestration_v1(chair_host: str, configured: str, rows: Sequence[Mapping], now: str) -> dict:
+    """The chair machine's orchestration block: the lane hosts are the active hosts other than the chair's own."""
+    lane_hosts = [name for name in chair_orchestrate.active_hosts(rows, now) if name != chair_host]
+    return {
+        "chair_host": chair_host,
+        "configured": configured,
+        "mode": chair_orchestrate.mode_name(configured, lane_hosts),
+        "available": chair_orchestrate.orchestration_available(rows, now),
+    }
+
+
+def _orchestration_edge(profile: Mapping | None, chair_host: str, rows: Sequence[Mapping], now: str) -> dict | None:
+    """Edge: the orchestration block, or None when the profile or the hosts rows cannot be read."""
+    try:
+        if not isinstance(profile, dict):
+            return None
+        return _orchestration_v1(chair_host, chair_capacity.chair_local_lanes(profile), rows, now)
+    except Exception:  # the block is garnish: an unreadable profile or table must not take the feed down
+        return None
 
 
 def _run_capturing(argv: list[str]) -> tuple[int, str]:
@@ -1793,4 +1818,5 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
         epics=_epics_v1(task_rows),
         board=board,
         live=live,
+        orchestration=_orchestration_edge(profile, local_name, sections["hosts"], now),
     )

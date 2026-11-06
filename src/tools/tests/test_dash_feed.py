@@ -246,11 +246,11 @@ def test_snapshot_matches_committed_fixture():
 
     result = snapshot(
         *args, **kwargs, chair_agents=activity["chair_agents"], spend_split=activity["spend_split"],
-        spend_sources=expected["spend_sources"],
+        spend_sources=expected["spend_sources"], orchestration=expected["orchestration"],
     )
 
-    # orchestration is emitted by the producer task; drop this filter there.
-    assert result == {key: value for key, value in expected.items() if key != "orchestration"}
+    assert result == expected
+    assert list(result)[list(result).index("machines") + 1] == "orchestration"
     assert result["history"] == kwargs["history"] and result["history_today"] == kwargs["history_today"]
 
 
@@ -328,12 +328,65 @@ def test_the_feed_built_from_the_fixtures_inputs_equals_the_fixture(monkeypatch,
     built = dash_feed._activity(tmp_path, {}, "sess", _SPEND, _ACTIVITY_AT, {})
     result = snapshot(
         *args, **kwargs, chair_agents=activity["chair_agents"], spend_split=built["spend_split"],
-        spend_sources=built["spend_sources"],
+        spend_sources=built["spend_sources"], orchestration=fixture["orchestration"],
     )
 
     assert built["spend_sources"] == fixture["spend_sources"]
-    # orchestration is emitted by the producer task; drop this filter there.
-    assert result == {key: value for key, value in fixture.items() if key != "orchestration"}
+    assert result == fixture
+
+
+_ORCH_NOW = "2026-09-29T00:00:00Z"
+
+
+def _host_row(name: str) -> dict:
+    return {"name": name, "state": "active", "beat_at": "2026-09-28T23:59:30Z"}
+
+
+def _team_profile(tmp_path, local_lanes: str) -> dict:
+    cartridge = tmp_path / "team" / "cartridge.yaml"
+    cartridge.parent.mkdir()
+    cartridge.write_text(f"policy:\n  dispatch:\n    local_lanes: {local_lanes}\n", encoding="utf-8")
+    return {"cartridges_dir": str(tmp_path), "team": "team"}
+
+
+def test_a_decompose_cartridge_on_a_one_host_table_is_building(tmp_path):
+    profile = _team_profile(tmp_path, "decompose")
+
+    block = dash_feed._orchestration_edge(profile, "host-a", [_host_row("host-a")], _ORCH_NOW)
+
+    assert block == {"chair_host": "host-a", "configured": "decompose", "mode": "building", "available": False}
+
+
+def test_a_decompose_cartridge_on_a_three_host_table_is_orchestrating(tmp_path):
+    profile = _team_profile(tmp_path, "decompose")
+    rows = [_host_row("host-a"), _host_row("host-b"), _host_row("host-c")]
+
+    block = dash_feed._orchestration_edge(profile, "host-a", rows, _ORCH_NOW)
+
+    assert block == {"chair_host": "host-a", "configured": "decompose", "mode": "orchestrating", "available": True}
+
+
+def test_an_unreadable_profile_omits_the_orchestration_key(monkeypatch, tmp_path):
+    rows = [_host_row("host-a"), _host_row("host-b")]
+
+    def refuse(profile):
+        raise OSError("profile unreadable")
+
+    assert dash_feed._orchestration_edge(None, "host-a", rows, _ORCH_NOW) is None
+    monkeypatch.setattr(dash_feed.chair_capacity, "chair_local_lanes", refuse)
+    unreadable = dash_feed._orchestration_edge({"team": "team"}, "host-a", rows, _ORCH_NOW)
+    assert unreadable is None
+    assert "orchestration" not in snapshot("2026-09-29T00:00:00Z", {}, {}, [], [], [], 0, [], 0, [], orchestration=unreadable)
+    assert "orchestration" not in dash_feed.gather_feed(tmp_path, tmp_path, _ORCH_NOW)
+
+
+@pytest.mark.xfail(strict=True, reason="the fixture pairs decompose with building and available, which chair_orchestrate cannot yield")
+def test_the_orchestration_derived_from_the_fixtures_inputs_equals_the_fixture():
+    with open("tests/fixtures/dash_feed_v1.json") as f:
+        expected = json.load(f)["orchestration"]
+    rows = [_host_row("host-a"), _host_row("host-b")]
+
+    assert dash_feed._orchestration_v1("host-a", "decompose", rows, _ORCH_NOW) == expected
 
 
 _UUID = "3f2a9c1e-5b7d-4e08-9a61-0c4d8e7f1b22"
