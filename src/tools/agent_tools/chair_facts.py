@@ -71,6 +71,7 @@ from agent_tools.chair_types import (
 from agent_tools.checkout_env import CHECKOUT_ENV_KEY
 from agent_tools.host_load import resolve_load_ceiling
 from agent_tools.land_batch_settings import merge_queue_setting
+from agent_tools.release_gate import deferred_initiatives, held_initiatives
 from agent_tools.remote_lane import fetched_record_path, remote_record_path
 
 HARNESS_CAUSE = "harness"
@@ -81,6 +82,13 @@ LAUNCH_KINDS = frozenset({"launch_epic", "relaunch", "retry", "rescue"})
 STEER_STATES = frozenset({"ready", "approved"})
 
 Row = Mapping[str, Any]
+
+
+def _package_version() -> str:
+    """Edge. The umbrella's installed version via `version_info.package_version`; imported late to keep it off this module's import path."""
+    from agent_tools.version_info import package_version
+
+    return package_version()
 
 
 @dataclass(frozen=True)
@@ -273,6 +281,7 @@ class FactsDeps:
     handoff_stops: Callable[[], Sequence[Row]] = lambda: []  # chair_read_handoff_stops.read_handoff_stops rows; absent means []
     queue_files: Callable[[], list[QueueFile]] = lambda: []  # `read_queue_files` bound to the workspace and store; absent means []
     held_files: Callable[[], Sequence[HeldFile]] = lambda: []  # `queue_export.read_held_record` bound to the workspace; absent means []
+    current_version: Callable[[], str] = _package_version  # the umbrella's current version, read once per tick; gates target_release
     rev_parse: Callable[[str, str], str | None] = _rev_parse  # (repo, ref) to the commit sha or None; read by `read_land_heads` for refused phases only
     cartridge: Callable[[], Mapping[str, Any]] = lambda: {}  # the resolved team cartridge; {} when unreadable, so land_at reads the default
     land_at_values: Callable[[], Mapping[str, str | None]] = lambda: {}  # initiative to its initiative.md `land_at:`; absent means {}
@@ -1069,9 +1078,11 @@ def new_missing_repos(missing: Collection[str], reported: Collection[str]) -> li
     return sorted({p for p in missing if p not in reported})
 
 
-def intake_paths_from_rows(rows: Sequence[Row]) -> list[str]:
-    """Queued intake rows as `<task_id>.md`, in row order: the same relative-path shape `read_intake` returns."""
-    return [f"{row['task_id']}.md" for row in intake_from_rows(rows)]
+def intake_paths_from_rows(rows: Sequence[Row], current: str | None = None) -> list[str]:
+    """Queued intake rows as `<task_id>.md`, in row order: the same relative-path shape `read_intake` returns.
+
+    Held intakes are dropped; with `current`, so are those whose `target_release` is above it."""
+    return [f"{row['task_id']}.md" for row in intake_from_rows(rows, current)]
 
 
 DEFAULT_HOUSEKEEPING_HOURS = 24.0
@@ -1252,7 +1263,8 @@ def gather_facts(
     quarantined = quarantined_from_rows(rows) if rows else list(deps.quarantined())
     stranded_records = deps.stranded_records() if deps.stranded_records is not None else None
     stranded = stranded_from_rows(rows, list(stranded_records)) if rows and stranded_records is not None else list(deps.stranded())
-    intake = intake_paths_from_rows(rows) if rows else list(deps.intake())
+    current = deps.current_version() if rows else None  # file mode carries no gate rows, so it reads no version
+    intake = intake_paths_from_rows(rows, current) if rows else list(deps.intake())
     # Store mode drops stranded rows for tasks the store does not hold approved (see `store_approved_tasks`, which
     # also names the gap). File mode carries no store state and filters nothing.
     quarantine = quarantine_facts(
@@ -1307,6 +1319,8 @@ def gather_facts(
         "env_stale_reported": stale_checkout_keys(action_rows),
         "held_files": [dict(h) for h in deps.held_files()],  # type: ignore[misc]
         "held_reported": held_file_keys(action_rows),
+        "held_initiatives": sorted(held_initiatives(rows)) if rows else [],
+        "deferred_initiatives": deferred_initiatives(rows, current) if rows and current is not None else {},
         "host_env": host_env_from_rows(login_hosts),
         "relaunch_loop_reported": relaunch_loop_keys(action_rows),
         "land_refusals": refusals,
