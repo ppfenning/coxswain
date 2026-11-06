@@ -109,7 +109,7 @@ def _decomposed_workspace(tmp_path, monkeypatch, tasks: tuple[str, ...], intake_
         (tmp_path / "cited.md").write_text(f"---\nid: {intake_id}\n---\nbody\n", encoding="utf-8")
     seen: list[str] = []
 
-    def fake_runs(runs_dir, intake):
+    def fake_runs(runs_dir, intake, cache=None):
         seen.append(intake)
         return [SimpleNamespace(run_id="cited-1"), SimpleNamespace(run_id="cited-2")]
 
@@ -847,3 +847,165 @@ def test_a_detached_checkout_passes_no_dash_inputs(tmp_path, monkeypatch) -> Non
     wired = _wired_kwargs(tmp_path, monkeypatch, "")
 
     assert "dash_dir" not in wired
+
+
+def _live_deps(tmp_path, profile: dict | None = None, dry_run: bool = False) -> chair_run.RunDeps:
+    return cli._chair_run_deps(tmp_path / "runs", profile or {}, "chair", 1, "h", dry_run, print, tmp_path / "profile.yaml", "files")
+
+
+def _tracked_caches(monkeypatch) -> list:
+    made: list = []
+
+    class Tracked(cli.chair_read_cache.StampCache):
+        def __init__(self, max_entries: int) -> None:
+            super().__init__(max_entries)
+            made.append(self)
+
+    monkeypatch.setattr(cli.chair_read_cache, "StampCache", Tracked)
+    return made
+
+
+def test_the_first_work_files_read_after_a_restart_is_served_from_the_saved_cache(tmp_path, monkeypatch) -> None:
+    task = tmp_path / "work" / "init" / "p1" / "t1.md"
+    task.parent.mkdir(parents=True)
+    task.write_text("---\nid: t1\n---\nbody\n", encoding="utf-8")
+    (tmp_path / "runs").mkdir()
+    saved = cli.chair_read_cache.StampCache(512)
+    cached_text = "---\nid: t1\n---\ntext only the saved cache holds\n"
+    saved.get(task, cli.chair_read_cache.file_stamp(task), lambda: cached_text)
+    cli.chair_read_cache.save_cache(saved, tmp_path / "runs" / "chair-cache.json")
+    made = _tracked_caches(monkeypatch)
+    real_read = cli.chair_read_quarantined.read_work_files
+    returned: list = []
+
+    def spy(root, cache=None):
+        returned.append((cache, real_read(root, cache)))
+        return returned[-1][1]
+
+    monkeypatch.setattr(cli.chair_read_quarantined, "read_work_files", spy)
+
+    deps = _live_deps(tmp_path)
+    assert deps.facts_deps.item_counts() == {"init": 1}  # type: ignore[misc]
+
+    files_cache = made[0]
+    assert returned[0][0] is files_cache
+    assert returned[0][1][task] == cached_text  # the disk text differs, so no read callback fired
+    assert (files_cache.hits, files_cache.misses) == (1, 0)
+
+
+def test_save_cache_writes_the_work_and_store_files_and_keeps_an_unread_decompose_file(tmp_path) -> None:
+    (tmp_path / "runs").mkdir()
+    kept = tmp_path / "runs" / "chair-cache-decompose.json"
+    kept.write_text("previous chair", encoding="utf-8")
+    deps = _live_deps(tmp_path)
+
+    assert not (tmp_path / "runs" / "chair-cache.json").exists()
+    deps.save_cache()  # type: ignore[misc]
+
+    written = sorted(p.name for p in (tmp_path / "runs").glob("chair-cache*.json"))
+    assert written == ["chair-cache-decompose.json", "chair-cache-store.json", "chair-cache.json"]
+    assert kept.read_text(encoding="utf-8") == "previous chair"  # no intake was read, so nothing replaces it
+
+
+def test_a_restart_record_on_disk_gives_the_note_and_record_restart_bumps_it(tmp_path) -> None:
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    path = cli.chair_restart_log.record_path(runs)
+    stamp = datetime.now(UTC).isoformat()
+    cli.chair_restart_log.write_record(path, cli.chair_restart_log.RestartRecord(times=(stamp,), reason="code moved"))
+
+    deps = _live_deps(tmp_path)
+
+    assert deps.restart_note == "restarts 1 in 24h, last: code moved"
+    assert "| tick error: " not in deps.restart_note
+    deps.record_restart("newer code")  # type: ignore[misc]
+    bumped = cli.chair_restart_log.read_record(path)
+    assert bumped is not None and len(bumped.times) == 2 and bumped.reason == "newer code"
+
+
+def test_a_record_restart_with_no_record_on_disk_writes_the_first_one(tmp_path) -> None:
+    (tmp_path / "runs").mkdir()
+    deps = _live_deps(tmp_path)
+
+    assert deps.restart_note == ""
+    deps.record_restart("first")  # type: ignore[misc]
+    record = cli.chair_restart_log.read_record(cli.chair_restart_log.record_path(tmp_path / "runs"))
+    assert record is not None and len(record.times) == 1
+
+
+def test_the_profile_sets_the_restart_window_and_defaults_apply_otherwise(tmp_path) -> None:
+    set_by_profile = _live_deps(tmp_path, {"chair": {"restart_window_s": 30, "restart_max_defer_s": 90.5}})
+    absent = _live_deps(tmp_path, {})
+    non_numeric = _live_deps(tmp_path, {"chair": {"restart_window_s": "soon", "restart_max_defer_s": True}})
+
+    assert (set_by_profile.restart_window_s, set_by_profile.restart_max_defer_s) == (30.0, 90.5)
+    assert (absent.restart_window_s, absent.restart_max_defer_s) == (120.0, 600.0)
+    assert (non_numeric.restart_window_s, non_numeric.restart_max_defer_s) == (120.0, 600.0)
+    assert callable(absent.changed_files)
+
+
+def test_a_zero_restart_window_is_kept_and_a_negative_one_falls_back(tmp_path) -> None:
+    zero = _live_deps(tmp_path, {"chair": {"restart_window_s": 0, "restart_max_defer_s": 0.0}})
+    negative = _live_deps(tmp_path, {"chair": {"restart_window_s": -5}})
+
+    assert (zero.restart_window_s, zero.restart_max_defer_s) == (0.0, 0.0)
+    assert negative.restart_window_s == 120.0
+
+
+def _two_intake_workspace(tmp_path, monkeypatch, dry_run: bool):
+    for name in ("a", "b"):
+        (tmp_path / "work" / name / "p1").mkdir(parents=True)
+        (tmp_path / "work" / name / "initiative.md").write_text(f"---\nintake: {name}.md\n---\n", encoding="utf-8")
+        (tmp_path / f"{name}.md").write_text(f"---\nid: {name}\n---\nbody\n", encoding="utf-8")
+    (tmp_path / "runs").mkdir()
+    seen: list = []
+
+    def fake_runs(runs_dir, intake, cache=None):
+        seen.append((intake, cache))
+        cache.get(("facts", intake), (1, 1), lambda: f"log of {intake}")
+        return [SimpleNamespace(run_id=f"{intake}-1")]
+
+    monkeypatch.setattr(cli.chair_decompose_runs, "read_decompose_runs", fake_runs)
+    return _live_deps(tmp_path, dry_run=dry_run), seen
+
+
+def test_each_intake_gets_its_own_decompose_cache_and_keeps_it_across_ticks(tmp_path, monkeypatch) -> None:
+    deps, seen = _two_intake_workspace(tmp_path, monkeypatch, True)
+
+    deps.facts_deps.decomposed_intake()  # type: ignore[misc]
+    deps.beat()  # type: ignore[misc]
+    deps.facts_deps.decomposed_intake()  # type: ignore[misc]
+
+    by_intake: dict = {}
+    for intake, cache in seen:
+        by_intake.setdefault(intake, []).append(cache)
+    assert sorted(by_intake) == ["a", "b"]
+    assert all(len({id(c) for c in caches}) == 1 for caches in by_intake.values())
+    assert by_intake["a"][0] is not by_intake["b"][0]
+
+
+def test_the_saved_decompose_file_holds_every_intakes_facts(tmp_path, monkeypatch) -> None:
+    deps, _ = _two_intake_workspace(tmp_path, monkeypatch, False)
+    deps.facts_deps.decomposed_intake()  # type: ignore[misc]
+
+    deps.save_cache()  # type: ignore[misc]
+
+    reloaded = cli.chair_read_cache.StampCache(64)
+    assert cli.chair_read_cache.load_cache(reloaded, tmp_path / "runs" / "chair-cache-decompose.json") == 2
+    assert reloaded.get(("facts", "a"), (1, 1), lambda: "miss") == "log of a"
+    assert reloaded.get(("facts", "b"), (1, 1), lambda: "miss") == "log of b"
+
+
+def test_a_dry_run_sets_no_save_or_record_hooks_and_loads_no_cache(tmp_path, monkeypatch) -> None:
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    cli.chair_restart_log.write_record(
+        cli.chair_restart_log.record_path(runs),
+        cli.chair_restart_log.RestartRecord(times=(datetime.now(UTC).isoformat(),), reason="r"),
+    )
+    loaded: list = []
+    monkeypatch.setattr(cli.chair_read_cache, "load_cache", lambda cache, path: loaded.append(path) or 0)
+
+    deps = _live_deps(tmp_path, dry_run=True)
+
+    assert (deps.save_cache, deps.record_restart, deps.restart_note, loaded) == (None, None, "", [])
