@@ -1,12 +1,15 @@
+import datetime
 import json
 import os
 import shutil
+import socket
+import sqlite3
 import subprocess
 
 import pytest
 from test_route_cli import _init_repo, _unmeasured_window, _wait_for, _write_harness
 
-from agent_tools import cli, route, usage_window
+from agent_tools import cli, route, run_store, usage_window
 from agent_tools.cli import main
 from agent_tools.remote_argv import auth_status_argv, ssh_argv
 
@@ -497,3 +500,70 @@ def test_host_env_probe_is_stdout_on_success_and_stderr_otherwise(monkeypatch, d
 def test_parse_profile_skips_the_lane_hosts_block_and_reads_the_keys_after_it():
     text = "team: acme\nlane_hosts:\n  - name: box\n    ssh: me@box\n    workspace_dir: /srv\nassume: b\n"
     assert route.parse_profile(text) == {"team": "acme", "assume": "b"}
+
+
+LOCAL = socket.gethostname()
+
+
+def _decompose_mode(tmp_path, local_capacity, box_capacity):
+    """`_setup` with the team cartridge on `local_lanes: decompose` and a hosts table of this machine and the lane host `box`."""
+    ws, remote, argv = _setup(tmp_path)
+    (tmp_path / "cartridges" / "acme" / "cartridge.yaml").write_text("team: acme\npolicy:\n  dispatch:\n    local_lanes: decompose\n")
+    beat = datetime.datetime.now(datetime.UTC).isoformat()
+    conn = sqlite3.connect(ws / "runs" / "cox.db")
+    conn.execute("CREATE TABLE hosts (name TEXT, ssh TEXT, capacity INTEGER, state TEXT, beat_at TEXT, versions_json TEXT)")
+    conn.execute("INSERT INTO hosts VALUES (?, ?, ?, 'active', ?, '{}')", (LOCAL, LOCAL, local_capacity, beat))
+    conn.execute("INSERT INTO hosts VALUES ('box', 'me@box', ?, 'active', ?, ?)", (box_capacity, beat, json.dumps({"workspace_dir": str(remote)})))
+    conn.commit()
+    conn.close()
+    return ws, argv
+
+
+def test_an_epic_under_decompose_mode_is_placed_on_the_lane_host_though_local_has_room(tmp_path, monkeypatch, capsys):
+    ws, argv = _decompose_mode(tmp_path, local_capacity=5, box_capacity=1)
+    monkeypatch.setattr(cli, "_toolchain_refusal", lambda *a, **k: None)
+    _fake_edge(monkeypatch, [])
+    _no_local_process(monkeypatch)
+    rc = main(argv)
+    out = capsys.readouterr().out
+    assert rc == 0 and "placed on box (0/1)" in out
+    assert "demo-1.remote.json" in _run_files(ws)
+
+
+def test_an_epic_under_decompose_mode_with_the_lane_host_full_is_refused_not_run_here(tmp_path, monkeypatch, capsys):
+    ws, argv = _decompose_mode(tmp_path, local_capacity=5, box_capacity=1)
+    monkeypatch.setattr(cli, "_toolchain_refusal", lambda *a, **k: None)
+    monkeypatch.setattr(run_store, "live_lanes", lambda runs_dir, now: [run_store.Lane("r1", "box", "2026-11-06T00:00:00+00:00", "2026-11-06T00:00:00+00:00")])
+    calls = []
+    _fake_edge(monkeypatch, calls)
+    _no_local_process(monkeypatch)
+    rc = main(argv)
+    out = capsys.readouterr().out
+    assert rc == 2 and "routing: no host has room" in out
+    assert "box 1/1" in out and f"{LOCAL} 0/5  (decompose only)" in out
+    assert "placed on" not in out and calls == [] and not any(n.endswith(".remote.json") for n in _run_files(ws))
+
+
+def test_local_still_places_an_epic_on_this_machine_under_decompose_mode(tmp_path, monkeypatch, capsys):
+    ws, argv = _decompose_mode(tmp_path, local_capacity=2, box_capacity=1)
+    calls = []
+    _fake_edge(monkeypatch, calls)
+    assert main([*argv, "--local", "--dry-run"]) == 0
+    assert f"placed on {LOCAL} (0/2)" in capsys.readouterr().out
+    assert calls == []
+
+
+def test_a_decompose_graph_under_decompose_mode_may_still_place_locally(tmp_path, monkeypatch, capsys):
+    ws, argv = _decompose_mode(tmp_path, local_capacity=2, box_capacity=1)
+    monkeypatch.setattr(run_store, "live_lanes", lambda runs_dir, now: [run_store.Lane("r1", "box", "2026-11-06T00:00:00+00:00", "2026-11-06T00:00:00+00:00")])
+    idea = ws / "work" / "intake" / "idea1.md"
+    idea.parent.mkdir(parents=True)
+    idea.write_text(f"---\ntitle: Idea\nrepo: {argv[argv.index('--repo') + 1]}\n---\n\nBody\n")
+    profile = argv[argv.index("--profile") + 1]
+    monkeypatch.setattr(cli, "_toolchain_refusal", lambda *a, **k: None)
+    calls = []
+    _fake_edge(monkeypatch, calls)
+    decompose = ["route", "launch", "decompose", "--profile", profile, "--idea", str(idea), "--initiative-id", "demo2", "--label", "lbl"]
+    assert main([*decompose, "--dry-run"]) == 0
+    assert f"placed on {LOCAL} (0/2)" in capsys.readouterr().out
+    assert calls == []
