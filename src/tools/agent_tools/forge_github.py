@@ -445,6 +445,93 @@ def _read_required(repo: Path, ref: str) -> tuple[str, ...] | None:
     return None if base is None else _required_for_base(repo, base)
 
 
+_PR_FIELDS = ("number", "state", "url", "headRefName", "headRefOid", "baseRefName", "body")
+
+
+def pr_view_argv(number: int) -> list[str]:
+    return ["gh", "pr", "view", str(number), "--json", ",".join(_PR_FIELDS)]
+
+
+def parse_pr_view(stdout: str) -> dict | None:
+    """The `_PR_FIELDS` as a dict; None unless every one is present, `number` an int, the rest strings and all but `body` non-empty."""
+    data = _loads(stdout)
+    if not isinstance(data, dict) or any(f not in data for f in _PR_FIELDS):
+        return None
+    number, body = data["number"], data["body"]
+    named = [data[f] for f in _PR_FIELDS if f not in ("number", "body")]
+    if not isinstance(number, int) or isinstance(number, bool) or not isinstance(body, str):
+        return None
+    return {f: data[f] for f in _PR_FIELDS} if all(isinstance(v, str) and v for v in named) else None
+
+
+def read_pr(repo: Path, number: int) -> dict | None:
+    """`parse_pr_view` of PR `number`; None when gh fails or its output is unreadable."""
+    return parse_pr_view(_gh_text(pr_view_argv(number), repo, timeout=READ_TIMEOUT_S) or "")
+
+
+def required_for_pr(repo: Path, number: int) -> tuple[str, ...] | None:
+    """Required check names for the PR's base branch; () means none required, None means unreadable."""
+    pr = read_pr(repo, number)
+    return None if pr is None else read_required_for_base(repo, pr["baseRefName"])
+
+
+_STATUS_STATES = {"success": "success", "failure": "failure", "error": "failure", "pending": "pending"}
+
+
+def _run_state(run: dict) -> str:
+    """Pending until completed; `neutral` is skipped; an unknown conclusion is pending, never success."""
+    conclusion = run.get("conclusion") if run.get("status") == "completed" else None
+    if conclusion == "success":
+        return "success"
+    if conclusion in ("skipped", "neutral"):
+        return "skipped"
+    return "failure" if conclusion in land._FAILED_CONCLUSIONS else "pending"
+
+
+def parse_check_rows(check_runs, statuses) -> tuple[dict, ...] | None:
+    """Rows `{name, state, url}`; None when a body or a row's name is unreadable, or a body holds fewer rows than its `total_count`."""
+    runs = check_runs.get("check_runs") if isinstance(check_runs, dict) else None
+    legacy = statuses.get("statuses") if isinstance(statuses, dict) else None
+    if not isinstance(runs, list) or not isinstance(legacy, list):
+        return None
+    if any(isinstance(b.get("total_count"), int) and b["total_count"] != len(rows) for b, rows in ((check_runs, runs), (statuses, legacy))):
+        return None
+    run_rows = [(r.get("name"), _run_state(r), r.get("html_url")) for r in runs if isinstance(r, dict)]
+    status_rows = [(s.get("context"), _STATUS_STATES.get(s.get("state"), "pending"), s.get("target_url")) for s in legacy if isinstance(s, dict)]
+    rows = [*run_rows, *status_rows]
+    if len(rows) != len(runs) + len(legacy) or not all(isinstance(name, str) and name for name, _, _ in rows):
+        return None
+    return tuple({"name": name, "state": state, "url": url} for name, state, url in rows)
+
+
+def pr_check_rows(repo: Path, sha: str) -> tuple[dict, ...] | None:
+    """Check runs and commit statuses of `sha` as `parse_check_rows` rows; () means none exist, None means unreadable."""
+    bodies = []
+    for argv, key in zip(land.rest_checks_argvs(sha), ("check_runs", "statuses")):
+        text = _gh_text(argv, repo, timeout=READ_TIMEOUT_S)
+        body = None if text is None else land.merge_pages(text, key)
+        if body is None:
+            return None
+        bodies.append(body)
+    return parse_check_rows(*bodies)
+
+
+def squash_merge_argv(number: int) -> list[str]:
+    return ["gh", "pr", "merge", str(number), "--squash", "--delete-branch"]
+
+
+def merge_pr(repo: Path, number: int) -> tuple[bool, str]:
+    """Squash-merge PR `number`. A non-zero exit is judged by the PR's server state (`merge_verdict`), since gh's
+    `--delete-branch` cleanup can fail after the merge landed; any other refusal is `(False, <the forge's own reason>)`."""
+    try:
+        r = _run(squash_merge_argv(number), timeout=WRITE_TIMEOUT_S, cwd=repo)
+        code, text = r.returncode, (r.stdout or "").strip() or (r.stderr or "").strip()
+    except (OSError, ForgeError) as exc:
+        code, text = 1, str(exc)
+    pr = None if code == 0 else read_pr(repo, number)
+    return merge_verdict(code, text, None if pr is None else {"state": _PR_STATES.get(pr["state"], "unknown")})
+
+
 def wait_checks(repo: Path, timeout_s: float, sleep=time.sleep, now=time.monotonic, *, ref: str = "HEAD") -> tuple[bool, str]:
     required = _read_required(repo, ref)
     started = now()
