@@ -40,7 +40,7 @@ def test_review_cause_gives_one_event():
 
 def test_self_clearing_causes_give_no_event():
     actions = [{"kind": "needs_chair", "initiative": f"init-{c}", "cause": c, "reason": "r"}
-               for c in ("no_run", "steer_deferred", "held_file")]
+               for c in ("no_run", "steer_deferred")]
     real = {"kind": "needs_chair", "initiative": "init-t", "cause": "ticket", "reason": "r"}
     assert [e.key for e in events_from_tick({}, [*actions, real])] == ["needs_chair:init-t:ticket"]
 
@@ -61,6 +61,15 @@ def test_two_steer_head_stuck_actions_for_one_initiative_give_one_event():
     first = {"kind": "needs_chair", "initiative": "init-s", "cause": "steer_head_stuck", "reason": "a"}
     second = {**first, "reason": "b"}
     assert [e.key for e in events_from_tick({}, [first, second])] == ["stuck:init-s"]
+
+
+def test_a_held_file_gives_one_needs_attention_event_with_its_reason_keyed_by_path_and_blob():
+    held = {"kind": "needs_chair", "initiative": "init-h", "cause": "held_file", "path": "work/a.md", "blob": "b1",
+            "reason": "work/a.md: changed with no matching store change (state changed)"}
+    (event,) = events_from_tick({}, [held, dict(held)])
+    assert (event.kind, event.key, event.body) == ("needs_attention", "needs_attention:work/a.md|b1", held["reason"])
+    (again,) = events_from_tick({}, [{**held, "blob": "b2"}])
+    assert again.key == "needs_attention:work/a.md|b2"
 
 
 def test_a_remedy_command_is_carried_in_the_body():

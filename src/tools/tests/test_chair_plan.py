@@ -9,6 +9,7 @@ from agent_tools.chair_plan import (
     _launch_cap,
     initiative_homes,
     plan_close_initiatives,
+    plan_held_files,
     plan_idle_stall,
     plan_stall,
     plan_tick,
@@ -1498,3 +1499,27 @@ def test_a_close_initiative_is_stamped_and_survives_the_hard_stop():
     stopped = _facts(todo_initiatives=[_todo("i", "done")], limits=stopped_limits)
     assert plan_tick(open_tick) == [{**_closing("i", "done"), "epoch": 7}]
     assert plan_tick(stopped) == [{**_closing("i", "done"), "epoch": 7}]
+
+
+_HELD = {"path": "work/a/p1/t1.md", "initiative": "a", "reason": "edited by hand", "blob": "b1"}
+_TAIL = "keep it with `cox route import`, or restore the export"
+
+
+def test_a_held_row_with_a_diff_summary_puts_it_in_the_reason():
+    [action] = plan_held_files({"held_files": [{**_HELD, "diff_summary": "state changed; body +1/-0 lines"}]})
+    assert action["reason"] == f"work/a/p1/t1.md: changed with no matching store change (state changed; body +1/-0 lines); {_TAIL}"
+    assert (action["kind"], action["cause"]) == ("needs_chair", "held_file")
+
+
+def test_a_held_row_with_an_empty_or_missing_diff_summary_keeps_the_export_reason():
+    expected = f"work/a/p1/t1.md: edited by hand; {_TAIL}"
+    assert [a["reason"] for a in plan_held_files({"held_files": [{**_HELD, "diff_summary": ""}, {**_HELD, "path": "x", "blob": "b2"}]})] == [
+        expected, f"x: edited by hand; {_TAIL}",
+    ]
+
+
+def test_a_held_edit_is_reported_once_and_a_new_edit_to_the_file_again():
+    row = {**_HELD, "diff_summary": "state changed"}
+    reported = ["work/a/p1/t1.md|b1"]
+    assert plan_held_files({"held_files": [row], "held_reported": reported}) == []
+    assert len(plan_held_files({"held_files": [{**row, "blob": "b2"}], "held_reported": reported})) == 1

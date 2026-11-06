@@ -8,7 +8,7 @@ def _event(key="k1", body="b"):
 
 
 def test_kinds_literal():
-    assert KINDS == ("needs_chair", "host_login", "stall", "release_cut", "decision_card")
+    assert KINDS == ("needs_chair", "host_login", "stall", "release_cut", "decision_card", "needs_attention")
 
 
 def test_config_missing_is_none():

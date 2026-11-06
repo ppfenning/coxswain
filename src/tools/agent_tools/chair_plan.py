@@ -466,6 +466,12 @@ def _login_needs_chair_actions(facts: Facts) -> list[Action]:
     return chair_login_watch.login_needs_chair(facts.get("login_hosts", []))
 
 
+def _held_reason(held: dict) -> str:
+    """The action's reason: the diff summary when the row has one, else the export's own reason text."""
+    what = f"changed with no matching store change ({held['diff_summary']})" if held.get("diff_summary") else held["reason"]
+    return f"{held['path']}: {what}; keep it with `cox route import`, or restore the export"
+
+
 def plan_held_files(facts: Facts) -> list[Action]:
     """One needs_chair per file the last board export held, naming its path, unless the same held text (`path|blob`)
     was already reported: a hand edit reaches the chair once, never silently, and a new edit to the file again."""
@@ -477,7 +483,7 @@ def plan_held_files(facts: Facts) -> list[Action]:
             "cause": HELD_FILE_CAUSE,
             "path": held["path"],
             "blob": held["blob"],
-            "reason": f"{held['path']}: {held['reason']}; keep it with `cox route import`, or restore the export",
+            "reason": _held_reason(held),
         }
         for held in facts.get("held_files", [])
         if f"{held['path']}|{held['blob']}" not in reported
