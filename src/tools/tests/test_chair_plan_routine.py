@@ -61,7 +61,7 @@ def test_a_lease_that_is_mine_plans_exactly_what_the_holder_plans():
 
 
 def test_routine_only_keeps_the_allowlist_in_order_and_drops_the_rest():
-    allowed = ["relaunch", "clear_branches", "rebase_phase", "fetch", "fetch_exit", "land_phase", "needs_chair", "waiting", "deferred"]
+    allowed = ["relaunch", "clear_branches", "rebase_phase", "fetch", "fetch_exit", "land_phase", "needs_chair", "waiting"]
     dropped = ["launch_epic", "launch_decompose", "retry", "rescue", "partial_land", "land", "stale", "tune", "housekeeping", "check_login"]
     mixed = [{"kind": k} for k in [*dropped[:5], *allowed, *dropped[5:]]]
     assert _kinds(routine_only(mixed)) == allowed

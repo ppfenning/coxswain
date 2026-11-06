@@ -547,7 +547,6 @@ ActionKind = Literal[
     "land_batch",
     "pull_workspace",
     "waiting",
-    "deferred",
     "close_initiative",
     "finish_task",
     "merge_level",
@@ -577,8 +576,7 @@ class Action(TypedDict, total=False):
     the plan adds repo, task_runs and run (the newest of task_runs) for the loop's task lands. land_batch carries sources,
     batch_size and wait_s: the phases the merge queue lands together. A relaunch_loop needs_chair carries
     initiative, cause and a reason naming both quarantined run ids. waiting carries initiative, phase, quarantined and
-    awaiting_land and runs no command. deferred carries initiative, phase and land_at and runs no command: the land waits for
-    the granularity land_at names. close_initiative carries initiative and state (done or dropped).
+    awaiting_land and runs no command. close_initiative carries initiative and state (done or dropped).
     The steward's actions each carry epic and topic (both the epic id) and fields. merge_level also carries level,
     the index of the level to merge. run_gate carries no more. steward_event also carries event, the name to publish.
     The steward's relaunch is a relaunch carrying initiative, plus epic, topic and fields (the signature) so the executor
