@@ -16,7 +16,9 @@ from agent_tools.courier import (
     inbox,
     needs_model,
     parse_reference,
+    parse_run_exited,
     resolve,
+    run_exited_fields,
     send,
 )
 
@@ -281,8 +283,31 @@ def test_an_unknown_event_is_refused():
 
 def test_needs_model_is_true_for_exactly_the_four_exception_events():
     assert {e for e in EVENTS if needs_model({"event": e})} == set(EXCEPTION_EVENTS)
-    assert len(EVENTS) == 8 and len(EXCEPTION_EVENTS) == 4
+    assert len(EVENTS) == 9 and len(EXCEPTION_EVENTS) == 4
     assert not needs_model({"id": "m1"})
+
+
+def test_send_accepts_run_exited_and_still_refuses_an_unknown_event():
+    assert send(Reference("run", "r1"), "a", "chair", "n", "m1", event="run_exited")["event"] == "run_exited"
+    with pytest.raises(ValueError):
+        send(Reference("run", "r1"), "a", "chair", "n", "m1", event="exploded")
+
+
+def test_run_exited_round_trips_through_send():
+    fields = run_exited_fields("r1", "init-x", "merged")
+    assert fields == {"run": "r1", "initiative": "init-x", "outcome": "merged"}
+    entry = send(Reference("run", "r1"), "a", "chair", "n", "m1", event="run_exited", fields=fields)
+    assert parse_run_exited(entry) == ("r1", "init-x", "merged")
+
+
+def test_a_run_exited_entry_missing_a_field_parses_to_none():
+    entry = send(Reference("run", "r1"), "a", "chair", "n", "m1", event="run_exited", fields={"run": "r1", "initiative": "i"})
+    assert parse_run_exited(entry) is None
+    assert parse_run_exited(_typed("m2", "stuck")) is None
+
+
+def test_needs_model_is_false_for_run_exited():
+    assert not needs_model({"event": "run_exited"})
 
 
 def test_two_consumers_each_see_an_entry_until_each_has_acked_it():

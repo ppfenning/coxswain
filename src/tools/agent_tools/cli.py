@@ -6862,6 +6862,7 @@ def _route_launch_on_host(
         host, initiative, run_id, _holder_label(a), launched_at, run, locate, repo, harness_dir,
         preflight=preflight, home=home, host_checkouts=_host_checkouts(run_store.hosts(runs_dir), host.name), tools=tools,
         graph=graph, intake=intake, cartridges=_workspace_cartridges(runs_dir), probe=_workspace_probe(runs_dir.parent),
+        profile=provider,
     )
     if isinstance(result, remote_launch.LaunchError):
         print(f"routing: launch on {host.name} failed at {result.step}: {result.message}")

@@ -177,6 +177,7 @@ def launch_plan(
     graph: str = "epic",
     intake: str | None = None,
     cartridges: str | None = None,
+    chair_courier: str | None = None,
 ) -> list[list[str]]:
     """The argv that `launch_on_host` runs in order: the rsync push, then, when `cartridges` is given, a mirroring
     rsync push of that directory (a path relative to the chair's workspace) and an rsync check that it now matches,
@@ -195,7 +196,8 @@ def launch_plan(
     one `base_sync_argv` step that also checks the result. With no `harness_base` the harness follows `harness_head`
     (`sync_argvs`); with no `base` the repo follows `repo_head` only when detached (see `_sync_argvs`).
     With `graph="decompose"` the first step copies the one file `intake` (a path relative to the chair's work store)
-    to the same relative path under the host workspace, and the last starts `route launch decompose` on it."""
+    to the same relative path under the host workspace, and the last starts `route launch decompose` on it.
+    A `chair_courier` destination is set as COX_CHAIR_COURIER in the environment of that last command."""
     place = locate if locate is not None else (lambda path: f"{host.ssh}:{path}")
     workspace = host.workspace_dir.rstrip("/")
     src = f"work/{initiative}"
@@ -207,12 +209,14 @@ def launch_plan(
         # initiative itself on the host, so the stub initiative.md need not arrive. Wrong belief: "a decompose launch
         # needs the initiative directory there"; and `rsync --delete` of a stub would erase tickets already on the host.
         rsync_step = rsync_file_argv(intake, place(workspace))
-        launch_step = ssh_argv(host.ssh, decompose_launch_argv(f"{workspace}/{intake}", initiative, run_id, label))
+        launch_step = ssh_argv(
+            host.ssh, decompose_launch_argv(f"{workspace}/{intake}", initiative, run_id, label, chair_courier=chair_courier)
+        )
     elif graph == "epic":
         # The local work/<initiative> is the source: a ticket moved or dropped here must not linger on the lane host,
         # where a second copy of one id fails the run's DAG check.
         rsync_step = rsync_push_argv(src, place(remote_dir), mirror=True)
-        launch_step = ssh_argv(host.ssh, launch_argv(remote_dir, run_id, label))
+        launch_step = ssh_argv(host.ssh, launch_argv(remote_dir, run_id, label, chair_courier=chair_courier))
     else:
         raise ValueError(f"unknown graph {graph!r}: a remote launch plan covers epic and decompose")
     cartridge_steps = (
@@ -256,6 +260,12 @@ def launch_plan(
     return [rsync_step, *cartridge_steps, *harness_steps, *repo_steps, *push_steps, launch_step]
 
 
+def courier_ssh_of(profile: Mapping | None) -> str | None:
+    """The `courier_ssh` destination the chair's profile names, or None when it is absent, empty, or not a string."""
+    value = None if profile is None else profile.get("courier_ssh")
+    return value if isinstance(value, str) and value.strip() else None
+
+
 def env_preflight(names: tuple[str, ...], probes: Mapping[str, tuple[int, str]]) -> str | None:
     """None when every name's probe (printenv exit code, text) is a non-empty value. Exit 1 is unset; any other non-zero is ssh failing."""
     if not names:
@@ -289,6 +299,7 @@ def launch_on_host(
     graph: str = "epic",
     intake: str | None = None,
     cartridges: str | None = None,
+    profile: Mapping | None = None,
 ) -> dict | LaunchError:
     """`preflight` is a refusal line from a check made before anything is copied; None lets the launch go on.
     `tools` are the executables the repo's checks run: one `probe` of the host's lane PATH, before the copy, refuses
@@ -297,7 +308,8 @@ def launch_on_host(
     brought to it and the launch is refused, naming both commits, unless each is there (`probe` runs that step).
     A chair path with no git checkout or no origin has no base: it keeps the old unguarded sync and records no `base_sha`.
     An origin whose `origin/<base>` does not resolve refuses. The harness now follows origin/<base>, not the commit the
-    chair runs (`chair_head`), so a chair on a tagged harness can differ from its lane's harness."""
+    chair runs (`chair_head`), so a chair on a tagged harness can differ from its lane's harness.
+    `profile` is the chair's provider profile; a `courier_ssh` key in it is passed to the host as COX_CHAIR_COURIER."""
     if preflight is not None:
         return LaunchError("auth", preflight)
     if graph not in ("epic", "decompose"):
@@ -328,6 +340,7 @@ def launch_on_host(
         host, initiative, run_id, label, locate, repo, harness_dir, relaunch,
         home=home, host_checkouts=host_checkouts, harness_head=harness_head, repo_head=repo_head, base=base,
         harness_base=harness_base, graph=graph, intake=intake, cartridges=cartridges,
+        chair_courier=courier_ssh_of(profile),
     )
     rsync_argv, ssh_cmd = plan[0], plan[-1]
     pushed = run(rsync_argv)
