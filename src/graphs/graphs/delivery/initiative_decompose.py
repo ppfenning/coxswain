@@ -44,7 +44,7 @@ from graphs.delivery.decompose_split import split_foreign
 from graphs.delivery.phase_split import split_same_phase_needs
 from graphs.delivery.ticket_lint import Problem, heal_idea_reach, lint_tickets
 from graphs.delivery.ticket_lint import lint_refusal_text as _lint_refusal_text
-from harness.surface_heal import heal_new_markers
+from harness.surface_heal import heal_bare_filenames, heal_new_markers, notes_out_of_surfaces
 from runner.decision_log import RouterDecision
 from runner.decision_source import DecisionSource, NoDecisionSource, ask
 from runner.protocol import NodeRunner
@@ -1441,8 +1441,10 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
     # entry; an edge with no data flow in the body only lands as a `lint:` entry.
     # The missing-marker heal rides with it: a surface absent from the tree gets `(new)` and a `lint:` entry.
     # An empty tree says nothing about what exists, so the heal is skipped and no surface is marked new.
-    tasks = [heal_layout(t) for t in tasks]
+    # heal_layout can add a body-named test by its bare name. heal_bare_filenames writes its repository path, or leaves
+    # it out with a lint note, and runs on an empty tree too, where only a body-named path can resolve it.
     tree_paths = frozenset(str(row["path"]) for row in named_tree if row.get("path"))
+    tasks = [heal_bare_filenames(heal_layout(t), tree_paths) for t in tasks]
     tasks = [heal_new_markers(t, tree_paths) for t in tasks] if tree_paths else tasks
     layout = check_layout(tasks)
     layout_notes: dict[str, list[str]] = {}
@@ -1454,6 +1456,7 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
         dict(t, lint=[*(t.get("lint") or []), *layout_notes[str(t["id"])]]) if str(t["id"]) in layout_notes else t
         for t in tasks
     ]
+    tasks = [notes_out_of_surfaces(t) for t in tasks]
 
     # A generated file whose generator source is a surface changes with it. check_layout flags a surface the body
     # does not name and this one is never named, so the step runs after the layout check, before surfaces are read.
@@ -1626,6 +1629,7 @@ def _item_action(task: Mapping[str, Any], *, landing: str, initiative_id: str | 
     # Ticket lint's grant/size warnings land here too — docs/design/work-shape.md
     # §3 puts them in the ticket's own `lint:` frontmatter list. A retried seat
     # can see the same advisory more than once; dedupe keeps it to one.
+    task = notes_out_of_surfaces(task)
     frontmatter = {
         "id": task["id"],
         "title": task.get("title") or task["id"],

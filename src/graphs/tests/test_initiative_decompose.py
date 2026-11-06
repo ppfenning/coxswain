@@ -1154,6 +1154,73 @@ def test_duplicated_lint_entries_are_written_once(cart) -> None:
     assert yaml.safe_load(block)["lint"] == [lint_entry]
 
 
+def _named_test_run(cart, body: str, tree: list[dict]) -> dict:
+    decomposition = {
+        **DECOMPOSITION,
+        "tasks": [
+            {"id": "t1", "phase": "p1", "title": "a", "body": body, "needs": [], "surfaces": ["src/thing.py"]},
+        ],
+    }
+    return initiative_decompose.run(
+        {"run_id": "r", "date": "d", "cartridge": cart, "idea": "x", "tree": tree},
+        ScriptedRunner({"decompose": decomposition}),
+    )
+
+
+def test_a_bare_test_name_with_one_tree_match_is_written_as_its_repository_path(cart) -> None:
+    tree = [
+        {"repo": "r", "path": "src/thing.py"},
+        {"repo": "r", "path": "src/cartridges/tests/test_ticket_pr_branch.py"},
+    ]
+    result = _named_test_run(cart, "Edit src/thing.py and cover it in test_ticket_pr_branch.py.", tree)
+    t1 = next(t for t in result["tasks"] if t["id"] == "t1")
+    assert t1["surfaces"] == ["src/thing.py", "src/cartridges/tests/test_ticket_pr_branch.py"]
+
+
+def test_a_bare_test_name_with_no_match_and_no_body_path_is_left_out_with_a_lint_note(cart) -> None:
+    """2026-11-06: this reached the ticket as `test_ticket_pr_branch.py (new)`."""
+    tree = [{"repo": "r", "path": "src/thing.py"}]
+    result = _named_test_run(cart, "Edit src/thing.py and cover it in test_ticket_pr_branch.py.", tree)
+    t1 = next(t for t in result["tasks"] if t["id"] == "t1")
+    assert t1["surfaces"] == ["src/thing.py"]
+    assert "test_ticket_pr_branch.py: no unique repository path, left out of surfaces" in t1["lint"]
+
+
+def test_a_bare_test_name_is_resolved_against_a_body_path_when_the_tree_is_empty(cart) -> None:
+    body = "Edit src/thing.py and cover it in test_ticket_pr_branch.py, src/cartridges/tests/test_ticket_pr_branch.py."
+    result = _named_test_run(cart, body, [])
+    t1 = next(t for t in result["tasks"] if t["id"] == "t1")
+    assert not any("/" not in s.removesuffix(" (new)") and s != "src/thing.py" for s in t1["surfaces"])
+
+
+def test_an_edge_unsupported_note_lands_in_lint_and_in_no_surfaces_item(cart) -> None:
+    decomposition = {
+        **DECOMPOSITION,
+        "tasks": [
+            {"id": "t1", "phase": "p1", "title": "a", "body": "Add src/a.py.", "needs": [], "surfaces": ["src/a.py"]},
+            {"id": "t2", "phase": "p2", "title": "b", "body": "Add src/b.py.", "needs": ["t1"], "surfaces": ["src/b.py"]},
+        ],
+    }
+    result = decompose(cart, decomposition)
+    t2 = next(t for t in result["tasks"] if t["id"] == "t2")
+    notes = [n for n in t2["lint"] if n.startswith("edge_unsupported:")]
+    assert len(notes) == 1
+    assert not any(n in t2["surfaces"] for n in notes)
+    action = initiative_decompose._item_action(t2, landing="work", initiative_id=None)
+    block = action.split("with frontmatter\n", 1)[1].rsplit("\nbody = ", 1)[0]
+    assert notes[0] in yaml.safe_load(block)["lint"]
+    assert not any(s.startswith("edge_unsupported:") for s in yaml.safe_load(block)["surfaces"])
+
+
+def test_item_action_moves_a_note_in_surfaces_to_lint() -> None:
+    note = "edge_unsupported: t2 needs t1 (name the data flow)"
+    task = {"id": "t2", "phase": "p1", "title": "b", "needs": [], "surfaces": ["src/b.py", note], "lint": []}
+    action = initiative_decompose._item_action(task, landing="work", initiative_id=None)
+    frontmatter = yaml.safe_load(action.split("with frontmatter\n", 1)[1].rsplit("\nbody = ", 1)[0])
+    assert frontmatter["surfaces"] == ["src/b.py"]
+    assert frontmatter["lint"] == [note]
+
+
 def test_a_task_with_needs_is_written_ready() -> None:
     task = {"id": "t2", "phase": "p1", "title": "b", "needs": ["t1"], "surfaces": []}
     action = initiative_decompose._item_action(task, landing="work", initiative_id=None)

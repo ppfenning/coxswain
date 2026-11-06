@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import ClassVar
 
 import pytest
+import yaml
 
 from core import ledger, workstore
 from graphs._spec import GraphSpec
@@ -1961,6 +1962,54 @@ def test_healed_surfaces_are_written_to_the_task_file_under_work_state_files(rep
     text = path.read_text(encoding="utf-8")
     assert "docs/a.md (new)" in text and "healed by the surface check" in text
     assert text.endswith("---\n\nbody\n")
+
+
+def _commit_files(repo: Path, *names: str) -> None:
+    for name in names:
+        (repo / name).parent.mkdir(parents=True, exist_ok=True)
+        (repo / name).write_text("x\n", encoding="utf-8")
+    git("add", "-A", cwd=repo)
+    git("commit", "-qm", "files", cwd=repo)
+
+
+def test_a_bare_filename_with_one_repository_match_is_healed_to_its_path_and_not_quarantined(
+    repo, cart, tmp_path, capsys, monkeypatch
+) -> None:
+    _commit_files(repo, "docs/guide.md")
+    seen = _record_invocation_surfaces(monkeypatch)
+    result, _ = drive(repo, cart, tmp_path, work=_heal_work(["README.md", "guide.md (new)"]))
+    assert seen["t1-probe"] == ["README.md", "docs/guide.md"]
+    assert not any(q["id"] == "t1-probe" for q in result["quarantined"])
+    assert "surfaces: t1-probe healed (docs/guide.md)" in capsys.readouterr().out
+
+
+def test_a_healed_bare_filename_and_a_moved_note_reach_the_task_file_under_the_right_keys(repo, cart, tmp_path) -> None:
+    _commit_files(repo, "docs/guide.md")
+    path = tmp_path / "t1-probe.md"
+    path.write_text(
+        "---\nid: t1-probe\nphase: p1-foundations\nstate: ready\nneeds: []\nsurfaces: [guide.md]\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    work = _heal_work(["guide.md", "see the readme"])
+    next(i for i in work["items"] if i["id"] == "t1-probe")["path"] = str(path)
+    drive(repo, cart, tmp_path, work=work)
+    text = path.read_text(encoding="utf-8")
+    front = yaml.safe_load(text.split("---\n")[1])
+    assert front["surfaces"] == ["docs/guide.md"]
+    assert front["lint"] == ["see the readme"]
+    assert text.endswith("---\n\nbody\n")
+
+
+def test_a_bare_filename_with_two_repository_matches_is_left_out_of_surfaces_with_a_lint_note(
+    repo, cart, tmp_path, monkeypatch
+) -> None:
+    _commit_files(repo, "docs/a/dup.md", "docs/b/dup.md")
+    seen = _record_invocation_surfaces(monkeypatch)
+    result, runner = drive(repo, cart, tmp_path, work=_heal_work(["README.md", "dup.md"]))
+    assert seen["t1-probe"] == ["README.md"]
+    assert not any(q["id"] == "t1-probe" for q in result["quarantined"])
+    build = next(c for c in runner.calls if c["role"] == "build" and "t1-probe" in c["prompt"])
+    assert "dup.md: no unique repository path, left out of surfaces" in build["prompt"]
 
 
 def test_the_file_rewrite_changes_only_the_surfaces_and_lint_lines(tmp_path) -> None:
