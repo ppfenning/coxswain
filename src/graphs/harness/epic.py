@@ -107,6 +107,7 @@ from harness.handoff import build_handoff, plan_context
 from harness.invoke import Invocation, invoke_graphs
 from harness.lane_database import database_name, lane_env
 from harness.lane_database_drop import drop_lane_database
+from harness.lane_workers import lane_workers_from, workers_env
 from harness.lanes import lane_bound
 from harness.resume import load_result, reusable, save_result
 from harness.scheduler import plan_launches
@@ -442,6 +443,8 @@ class _Ctx:
     retry: _StoreRetry = field(default_factory=_StoreRetry)
     # `landing_areas.test_database`, read once: each task lane runs its checks against its own database.
     test_database: Mapping[str, str] | None = None
+    # Workers each lane's checks may use; None when no lane capacity was stated.
+    lane_workers: int | None = None
     # Run-level and mutable, shared by `replace`: lanes holding a database, and the drop records (the cleanup list).
     lane_names: dict[tuple[str, str], str] = field(default_factory=dict, compare=False, repr=False)
     lane_drops: list[dict[str, Any]] = field(default_factory=list, compare=False, repr=False)
@@ -955,16 +958,21 @@ def _run_level_checks(ctx: _Ctx, phase: str, record: dict[str, Any]) -> None:
         return
     log = {"log_dir": ctx.runs_dir / ctx.run_id / "checks" / phase / "level", "log_prefix": f"checks/{phase}/level/"}
     with repo_gate_lock(ctx.repo):
-        results = run_checks(ctx.phase_worktree(phase), checks, **log)
+        results = run_checks(ctx.phase_worktree(phase), checks, env=_checks_env(ctx, {}), **log)
     record["level_checks"] = results
     if reason := _level_failure_reason(phase, results):
         record["status"], record["reason"] = "partial", reason
 
 
+def _checks_env(ctx: _Ctx, lane: Mapping[str, str]) -> dict[str, str] | None:
+    """The process environment with the worker count and the lane variable over it; None when neither applies."""
+    workers = {} if ctx.lane_workers is None else workers_env(os.environ, ctx.lane_workers)
+    return {**os.environ, **workers, **lane} if workers or lane else None
+
+
 def _lane_checks_env(ctx: _Ctx, phase: str, task: str) -> dict[str, str] | None:
-    """The child environment for one lane's checks: the process environment with the lane variable over it, None with no setting."""
-    lane = lane_env(ctx.test_database, ctx.run_id, phase, task)
-    return {**os.environ, **lane} if lane else None
+    """The child environment for one lane's checks, None when there is neither a worker count nor a lane database."""
+    return _checks_env(ctx, lane_env(ctx.test_database, ctx.run_id, phase, task))
 
 
 def _drop_lane(ctx: _Ctx, phase: str, task: str) -> None:
@@ -999,8 +1007,8 @@ def _build_task(
         return record
     link_venv(ctx.repo, worktree)
     env = _lane_checks_env(ctx, phase, task)
-    if env is not None:
-        lane = lane_env(ctx.test_database, ctx.run_id, phase, task)
+    lane = lane_env(ctx.test_database, ctx.run_id, phase, task)
+    if lane:
         record["test_database"] = ctx.lane_names[(phase, task)] = database_name(next(iter(lane.values())))
 
     ok, detail = apply_patch(patch, worktree)
@@ -1471,6 +1479,7 @@ def run_epic(
             resume_from=resume_from,
             repo_checks=repo_checks(agent_checks_text),
             test_database=test_database_setting(cartridge),
+            lane_workers=lane_workers_from(os.environ, os.cpu_count() or 1),
             store=store,
             epoch=epoch,
             lease_name=lease_name,
