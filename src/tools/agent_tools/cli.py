@@ -12572,6 +12572,7 @@ def _chair_run_deps(
         work_store_ready=lambda: chair_read_docket.work_store_ready(docket()),
         sources_configured=sources_configured,
         profile_stale=profile_stale,
+        steward_enabled=lambda: (profile.get("chair") or {}).get("steward"),
         session=session, pid=pid, host=host, dispatch=dispatch,
         drafts=lambda: draft_list.count_drafts(
             draft_list.read_drafts(ws / "work", now_text(), chair_read_quarantined.initiative_files(ws, work_files()))

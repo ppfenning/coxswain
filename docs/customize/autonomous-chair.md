@@ -469,9 +469,116 @@ The planner allows these routine kinds and no others:
 - `needs_chair` raises something for you to read.
 - `waiting` reports an initiative blocked on other work.
 - `deferred` reports a phase whose land is held until a later time.
+- `merge_level`, `run_gate` and `steward_event` are the [steward's](#the-steward)
+  merges, gates and events. They appear only when the steward is on.
 
 Quarantines, budget stops and anything that needs a decision stay with you.
 They show in the inbox.
+
+## The steward
+
+The steward runs an epic's routine steps without a model. It decides from
+facts alone, and it reports each step as a typed event on the courier bus.
+
+The steward is off by default. Turn it on with `chair.steward` in the
+agent-tools profile:
+
+```yaml
+chair:
+  steward: true
+```
+
+Only the boolean `true` or the string `true` turns it on. An absent key or any
+other value leaves it off, and the loop gathers no steward facts.
+
+Do not turn `chair.steward` on yet. Today the profile setting is the only part
+of the steward the run command wires. The loop does not yet pass the steward
+these inputs:
+
+- The bus entries it has already published. Without them the reported set is
+  always empty, so a quarantine is announced again on every tick. The steward
+  also relaunches on every tick and never reports `stuck`.
+- The ticket branch head and whether a level has merged. Without them the head
+  is blank and a settled level never counts as merged.
+- The executor and the checks. Without them every merge and every gate is
+  refused with `no steward executor`, and no `level_merged`, `merge_failed`,
+  `gate_passed` or `gate_failed` event is published.
+
+That wiring is separate work. The rules below describe what the steward
+decides once those inputs are wired. This page changes when that work lands.
+
+The steward follows these rules for each epic:
+
+- It announces a quarantine once. A quarantined task raises `needs_attention`
+  one time, and it is not raised again while the task stays quarantined.
+- It merges an approved level once the build, vet and unit checks pass. The
+  loop supplies those checks. The merge always comes before a relaunch.
+- It relaunches an exited epic once for each state of its tasks. If the epic
+  exits again with the same task states, it reports `stuck` and stops. It
+  never relaunches while a task is quarantined.
+- It runs the integration gate once for each ticket branch head. Gates run
+  one at a time, so two epics never gate together. Under a hard stop the
+  gate waits, because a gate run can spend what the stop protects. Merges and
+  events still go ahead.
+
+The steward acts when the loop holds the chair. It also acts while an
+interactive session holds the chair, once that session has run
+`cox chair attach --lend-routine`, because its merges, gates and events are
+routine kinds. With nothing lent, a standby loop does nothing, and the steward
+does nothing with it.
+
+A dry run shows what the steward would do before it acts:
+
+```sh
+cox chair run --once --dry-run
+```
+
+Each steward action appears as a line such as `would merge level 0 of <epic>`
+or `would run the gate of <epic>`. Nothing is merged, relaunched or published.
+The dry run shows the plan. It does not show whether the executor is wired.
+
+### The events
+
+The steward publishes eight typed events. Each is published under the epic's
+id as its topic.
+
+| Event | Fields | Wakes a model |
+| --- | --- | --- |
+| `needs_attention` | `task` | yes |
+| `level_merged` | `head`, `level` | no |
+| `merge_failed` | `head`, `level` | yes |
+| `relaunched` | `signature` | no |
+| `stuck` | `signature` | yes |
+| `gate_passed` | `head` | no |
+| `gate_failed` | `head` | yes |
+| `epic_complete` | `head` | no |
+
+`head` is the ticket branch head. `level` is the index of the level. `signature`
+is the sorted task states at the time. `task` is the id of the quarantined task.
+
+The fields of `merge_failed` and `gate_failed` are not fixed by the steward.
+The executor chooses them, and it falls back to the fields of the merge or
+gate action, which are the fields shown above. Read them by name and ignore
+any you do not know.
+
+A model is called only at epic start, at close and for the four events marked
+yes. The other four are read and acted on without one.
+
+A consumer reads the events by topic and event, and it acks under its own
+consumer name. This lists the entries that need a model:
+
+```sh
+cox courier inbox --topic <epic> --event stuck --consumer <name> --wake
+```
+
+This acks one entry for that consumer only:
+
+```sh
+cox courier ack <id> --consumer <name>
+```
+
+An ack under one consumer name hides the entry from that consumer and from no
+one else.
 
 ## Rescue
 
