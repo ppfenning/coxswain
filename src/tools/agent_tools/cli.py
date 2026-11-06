@@ -91,6 +91,8 @@ chair_holder = _LazyModule("agent_tools.chair_holder")
 chair_resolve = _LazyModule("agent_tools.chair_resolve")
 chair_land_freeze = _LazyModule("agent_tools.chair_land_freeze")
 chair_login_check = _LazyModule("agent_tools.chair_login_check")
+chair_login_watch = _LazyModule("agent_tools.chair_login_watch")
+chair_orchestrate = _LazyModule("agent_tools.chair_orchestrate")
 chair_pid_probe = _LazyModule("agent_tools.chair_pid_probe")
 chair_read_approved = _LazyModule("agent_tools.chair_read_approved")
 chair_read_attempts = _LazyModule("agent_tools.chair_read_attempts")
@@ -6605,6 +6607,24 @@ def _lane_host_candidates(
     return host_cmd.host_rows_to_lane_hosts(rows, () if isinstance(parsed, lane_hosts.LaneHostError) else parsed, local)
 
 
+def _orchestration_hosts(
+    candidates: tuple[lane_hosts.LaneHost, ...] | lane_hosts.LaneHostError, rows: Sequence[Mapping], now: str,
+) -> list[str]:
+    """The lane hosts the chair can orchestrate onto now, by the test `launch_place.place` applies to a remote host:
+    dispatchable, a fresh beat (a blank beat is stale there, so it is stale here) and no lapsed login. The chair
+    loop and `_place_or_refuse` both read this, so the mode the loop plans in is the mode placement honours.
+    Without table rows the profile's hosts stand as listed. An unreadable `lane_hosts` leaves none."""
+    if isinstance(candidates, lane_hosts.LaneHostError):
+        return []
+    names = host_cmd.dispatchable(candidates)[0]
+    if not rows:
+        return names
+    active = [row for row in rows if row.get("state") == "active"]
+    stale = chair_read_lost.stale_hosts(active, now, threshold_s=chair_login_watch.PLACEMENT_STALE_S)
+    blocked = chair_login_watch.login_blocked(rows)
+    return [name for name in names if name not in stale and name not in blocked]
+
+
 def _shadowed_note(profile_text: str, table_names: Sequence[str]) -> str | None:
     """One line naming the profile lane hosts the table overrides, or None when the table is empty or overrides none."""
     parsed = _profile_lane_hosts(profile_text)
@@ -6729,7 +6749,12 @@ def _place_or_refuse(
         candidates = _lane_host_candidates(profile_text, rows, local)
         epic_repo = _intake_repo(a) if graph == "decompose" else _epic_repo(a, profile)
         tools = _repo_check_tools(epic_repo).found if epic_repo else ()
-        local_excluded = graph == "epic" and chair_capacity.chair_local_lanes(dict(profile)) == "decompose"
+        # the effective mode, not the configured one: with no usable lane host the chair builds here instead of refusing
+        usable = _orchestration_hosts(candidates, rows, _now_iso())
+        local_excluded = (
+            graph == "epic"
+            and chair_orchestrate.effective_local_lanes(chair_capacity.chair_local_lanes(dict(profile)), usable) == "decompose"
+        )
 
         def refused(name: str) -> str | None:
             host = None if isinstance(candidates, lane_hosts.LaneHostError) else lane_hosts.find_lane_host(candidates, name)
@@ -12286,6 +12311,9 @@ def _chair_run_deps(
     # edge state: `beat` empties it, so one tick's window, weekly and source readers share one meter read and verdict
     meter_snapshot: list[tuple[usage_meter.Meter | None, str]] = []
 
+    # edge state: `beat` empties it, so the build-locally fallback notice prints once per tick however many rows dispatch
+    fallback_noticed: list[bool] = []
+
     # edge state: `beat` empties it, so one tick reads each work file, the store's work rows, the attempts and the
     # stranded inputs once and every reader that needs one shares it
     tick_reads: dict[str, object] = {}
@@ -12403,6 +12431,7 @@ def _chair_run_deps(
         main_ci.cache.clear()
         green_since.cache.clear()
         meter_snapshot.clear()
+        fallback_noticed.clear()
         lost = "" if dry_run else chair.renew_lease(runs_dir, session, pid, host)
         if _record_beat_wanted(dry_run, lost):
             _beat_record(runs_dir, session, pid, host, now())
@@ -12480,10 +12509,19 @@ def _chair_run_deps(
         candidates = _lane_host_candidates(profile_text, host_rows, host)
         # a host with no workspace_dir is refused by `route launch --on`, so the loop must not plan launches onto it
         host_names = [] if isinstance(candidates, lane_hosts.LaneHostError) else host_cmd.dispatchable(candidates)[0]
+        configured = chair_capacity.chair_local_lanes(profile)
+        effective = chair_orchestrate.effective_local_lanes(configured, _orchestration_hosts(candidates, host_rows, stamp))
+        if configured == "decompose" and effective == "any" and not fallback_noticed:
+            fallback_noticed.append(True)
+            cause = (
+                f"lane_hosts unreadable ({candidates.message}); building on the chair machine"
+                if isinstance(candidates, lane_hosts.LaneHostError) else chair_orchestrate.FALLBACK_NOTICE
+            )
+            echo(f"chair run: {cause}")
         return chair_facts.dispatch_facts(
             row, host_names, _dispatch_counts(lanes, host, host_names, pidfile_live), host_cmd.row_capacities(host_rows),
             weight=host_cmd.row_weights(host_rows), capabilities=host_cmd.row_capabilities(host_rows), local=host,
-            local_lanes=chair_capacity.chair_local_lanes(profile),
+            local_lanes=effective,
         )
 
     weekly_reset = usage_window.parse_weekly_reset(profile.get("weekly_reset"))
