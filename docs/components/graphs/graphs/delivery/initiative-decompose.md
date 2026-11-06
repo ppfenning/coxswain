@@ -32,6 +32,14 @@ yet, which is the failure that parallelism would otherwise cause. Two things it
 is not allowed to do: invent a task that does not exist, and make a task depend
 on itself.
 
+## Tasks that share a file are ordered
+
+After the surfaces and phase names are final, a decompose looks at each phase for tasks that list the
+same file and have no needs path between them in either direction. Two such tasks would edit the same
+file at the same time, so it adds the edge from the later task to the earlier one. Each edge added this
+way is noted in the initiative's lint list, naming both tasks and the file. Tasks already ordered by a
+needs path, and tasks that share no file, are left exactly as they were.
+
 ## A task is not written until it is in the store and on disk
 
 Straight after the arms have applied the proposals, the harness hands each cleared task file to the
