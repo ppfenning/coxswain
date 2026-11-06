@@ -192,6 +192,9 @@ class Deps:
     phase_states: Callable[[str, str], list[str]] = lambda initiative, phase: []  # (initiative, phase) -> the store state of each of its tasks; [] when unknown
     label: str = ""  # the chair's own holder label; each guarded cox command it shells out to carries it as --label
     target_branch: Callable[[str], str | None] | None = None  # initiative -> the branch it lands on; None or a None result keeps the repo default
+    # chair_steward_exec's door: (merge_level or run_gate action, the repo's checks) -> {"event", "fields", "reason"}; None refuses both
+    steward_exec: Callable[[Action, Sequence[str]], Mapping[str, Any]] | None = None
+    steward_checks: Callable[[Action], Sequence[str]] = lambda action: ()  # the checks the loop already resolved for the action's repo; the executor never chooses them
 
 
 def resolved_target(cartridge_target: str | None, epic_branch: str | None, initiative_branch: str | None) -> str | None:
@@ -1224,6 +1227,69 @@ def _deferred_reason(action: Action) -> str:
     return f"deferred to the last phase (land_at {action.get('land_at', '?')})"
 
 
+# The (success, failure) event each steward command may report; any other event from chair_steward_exec is refused.
+_STEWARD_OUTCOMES = {"merge_level": ("level_merged", "merge_failed"), "run_gate": ("gate_passed", "gate_failed")}
+
+
+def _publish(action: Action, deps: Deps, event: str, fields: Mapping[str, str]) -> None:
+    """Edge. One typed courier line on the action's topic, appended to `work_dir/courier.jsonl` and never read back.
+
+    It is addressed to `deps.note_to`, the chair label; `courier.needs_model` marks the events a model must see.
+    """
+    epic = action.get("epic", "")
+    note = f"{event}: {epic}"
+    entry = courier.send(
+        courier.Reference("initiative", epic), deps.label or "chair", deps.note_to, note, uuid.uuid4().hex,
+        event=event, fields=dict(fields), topic=action.get("topic"),
+    )
+    courier.append_file(deps.work_dir / "courier.jsonl", entry)
+
+
+def _steward_command(action: Action, deps: Deps) -> Result:
+    """A merge_level or run_gate: chair_steward_exec runs it with the loop's checks, then its result event is published."""
+    kind = action["kind"]
+    if deps.steward_exec is None:
+        return _result(action, "refused", f"{kind} has no steward executor")
+    outcome = deps.steward_exec(action, tuple(deps.steward_checks(action)))
+    event = outcome.get("event", "")
+    passed, failed = _STEWARD_OUTCOMES[kind]
+    if event not in (passed, failed):
+        return _result(action, "refused", f"{kind} reported {event!r}, expected {passed} or {failed}")
+    _publish(action, deps, event, outcome.get("fields", action.get("fields", {})))
+    return _result(action, "done" if event == passed else "failed", outcome.get("reason", ""))
+
+
+def _steward_event(action: Action, deps: Deps) -> Result:
+    event = action.get("event", "")
+    if not event:
+        return _result(action, "refused", "steward_event names no event")
+    _publish(action, deps, event, action.get("fields", {}))
+    return _result(action, "done", f"published {event}")
+
+
+def _steward_relaunch(action: Action, deps: Deps) -> Result:
+    """The existing launch path, then `relaunched` once the launch exited 0, so the steward's reported set holds its key."""
+    result = _launch(action, deps)
+    if result["status"] == "done":
+        _publish(action, deps, "relaunched", action.get("fields", {}))
+    return result
+
+
+def _would(action: Action) -> str:
+    """What a dry run would have done for a steward action; empty for every other kind."""
+    kind = action.get("kind")
+    epic = action.get("epic", "")
+    if kind == "merge_level":
+        return f"would merge level {action.get('level')} of {epic} and publish its result event on {action.get('topic', '')}"
+    if kind == "run_gate":
+        return f"would run the gate of {epic} and publish its result event on {action.get('topic', '')}"
+    if kind == "steward_event":
+        return f"would publish {action.get('event', '')} on {action.get('topic', '')}"
+    if kind == "relaunch" and epic:
+        return f"would relaunch {action.get('initiative', '')} and publish relaunched on {action.get('topic', '')}"
+    return ""
+
+
 # The kinds whose result may carry a needs_chair that is recorded as its own row after the result.
 _CARRIES_NEEDS_CHAIR = ("clear_branches", "review_landed", "carry_phase", "rebase_phase", "revert_land", "rerun_main")
 
@@ -1279,6 +1345,12 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
         return _close_initiative(action, deps)
     if kind == "finish_task":
         return _finish_task(action, deps)
+    if kind in ("merge_level", "run_gate"):
+        return _steward_command(action, deps)
+    if kind == "steward_event":
+        return _steward_event(action, deps)
+    if kind == "relaunch" and action.get("epic"):
+        return _steward_relaunch(action, deps)
     if kind in LAUNCH_KINDS or kind in ("pull", "fetch"):
         return _launch(action, deps)
     if kind == "housekeeping":
@@ -1424,7 +1496,7 @@ def perform(
             results.append(escalated)
     for action in actions:
         if dry_run:
-            results.append(_result(action, "dry_run"))
+            results.append(_result(action, "dry_run", _would(action)))
             continue
         initiative = action.get("initiative", "")
         holding = [b for b in (blocked_initiatives.get(initiative), blocked.get(action.get("repo", ""))) if b is not None]

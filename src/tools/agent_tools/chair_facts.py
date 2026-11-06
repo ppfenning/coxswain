@@ -28,8 +28,10 @@ from agent_tools.chair_read_intake import intake_from_rows
 from agent_tools.chair_read_land_conflicts import _rev_parse, read_land_conflicts
 from agent_tools.chair_read_land_heads import read_land_heads
 from agent_tools.chair_read_quarantined import quarantined_from_rows
+from agent_tools.chair_read_steward import reported_keys, task_signature
 from agent_tools.chair_read_stranded import stranded_from_rows
 from agent_tools.chair_read_tuning import current_lanes, tuning_facts
+from agent_tools.chair_steward import StewardFacts, StewardTask
 from agent_tools.chair_types import (
     EASTERN,
     HELD_FILE_CAUSE,
@@ -60,6 +62,7 @@ from agent_tools.chair_types import (
     ReviewPr,
     RunningInitiative,
     RunRecord,
+    StewardPlanFacts,
     StrandedPhase,
     TodoInitiative,
 )
@@ -183,6 +186,13 @@ class FactsDeps:
         infra or smoke-failed land. Defaults to a callable returning False.
     land_hold: the smoke hold, `chair_smoke.read_hold`'s result. Defaults to a callable returning None.
     land_outcomes: initiative to its resolved land outcomes, oldest first. Defaults to a callable returning {}.
+    steward_enabled: the raw profile value that turns the epic steward on, resolved by `resolve_steward_enabled`.
+        Defaults to a callable returning None, meaning off: `gather_facts` adds no `steward` key and calls no other steward source.
+    steward_entries: every bus entry (`chair_read_steward.read_bus_entries`); `reported_keys` turns the typed ones
+        into the steward's reported set. Defaults to a callable returning [].
+    ticket_head: initiative to its ticket branch head commit. Defaults to a callable returning "".
+    level_merged: (initiative, phase) to whether that level branch has landed on the ticket branch, bound in
+        production to `chair_read_steward.level_is_merged`. Defaults to a callable returning False.
     """
 
     lease: Callable[[], Row]
@@ -256,6 +266,10 @@ class FactsDeps:
     rev_parse: Callable[[str, str], str | None] = _rev_parse  # (repo, ref) to the commit sha or None; read by `read_land_heads` for refused phases only
     cartridge: Callable[[], Mapping[str, Any]] = lambda: {}  # the resolved team cartridge; {} when unreadable, so land_at reads the default
     land_at_values: Callable[[], Mapping[str, str | None]] = lambda: {}  # initiative to its initiative.md `land_at:`; absent means {}
+    steward_enabled: Callable[[], object] = lambda: None  # raw profile value that turns the steward on; absent means off
+    steward_entries: Callable[[], Sequence[Row]] = lambda: []  # every bus entry; absent means []
+    ticket_head: Callable[[str], str] = lambda initiative: ""  # initiative to its ticket branch head; absent means ""
+    level_merged: Callable[[str, str], bool] = lambda initiative, phase: False  # (initiative, phase) to whether the level landed
 
 
 def read_queue_files(workspace: Path, rows: Sequence[Row], stored: Mapping[tuple[str, str], str]) -> list[QueueFile]:
@@ -1079,6 +1093,56 @@ def resolve_idle_stall_minutes(value: object) -> int:
     return minutes if minutes > 0 else IDLE_STALL_MINUTES
 
 
+def resolve_steward_enabled(value: object) -> bool:
+    """The profile's raw steward setting: on only for boolean True or the string "true", else off."""
+    if isinstance(value, bool):
+        return value
+    return isinstance(value, str) and value.strip().lower() == "true"
+
+
+_STEWARD_STATES = ("ready", "approved", "done", "quarantined", "dropped", "building")
+
+
+def _steward_task(row: Row) -> StewardTask:
+    """A store state the steward does not know (todo, blocked) is open work it must not relaunch, so building."""
+    state = str(row["state"])
+    return {"id": str(row["task_id"]), "state": state if state in _STEWARD_STATES else "building"}  # type: ignore[typeddict-item]
+
+
+def _natural(phase: str) -> list[object]:
+    return [int(p) if p.isdigit() else p for p in re.split(r"(\d+)", phase)]
+
+
+def steward_plan_facts(
+    initiatives: Sequence[str],
+    rows: Sequence[Row],
+    run_exited: Mapping[str, bool],
+    heads: Callable[[str], str],
+    level_merged: Callable[[str, str], bool],
+    entries: Sequence[Row],
+) -> StewardPlanFacts:
+    """One StewardFacts per initiative. A level is a phase of its task rows, in natural phase order."""
+    tasks = [r for r in rows if r.get("kind") == "task"]
+
+    def build(initiative: str) -> StewardFacts:
+        own = [r for r in tasks if r["initiative"] == initiative]
+        phases = sorted({str(r["phase"]) for r in own}, key=_natural)
+        levels = [
+            {"tasks": [_steward_task(r) for r in own if str(r["phase"]) == p], "merged": level_merged(initiative, p)}
+            for p in phases
+        ]
+        return {
+            "epic_id": initiative,
+            "branch_head": heads(initiative),
+            "levels": levels,
+            "exited": bool(run_exited.get(initiative, False)),
+            "signature": task_signature([_steward_task(r) for r in own]),
+            "reported": reported_keys(entries, initiative),
+        }
+
+    return {"enabled": True, "epics": [build(i) for i in initiatives]}
+
+
 def idle_stall_inputs(
     backlog: Row,
     hosts: Sequence[HostCheck],
@@ -1265,4 +1329,18 @@ def gather_facts(
         "handoff_stops": list(deps.handoff_stops()),
         "queue_files": deps.queue_files(),
         "epics": epics,
+        **(
+            {
+                "steward": steward_plan_facts(
+                    [i["id"] for e in epics for i in e["initiatives"] if not i["landed"]],
+                    list(deps.work_rows()) if deps.work_rows is not None else [],
+                    dict(deps.run_exited()) if deps.run_exited is not None else {},
+                    deps.ticket_head,
+                    deps.level_merged,
+                    list(deps.steward_entries()),
+                )
+            }
+            if resolve_steward_enabled(deps.steward_enabled())
+            else {}
+        ),
     }
