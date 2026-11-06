@@ -91,6 +91,7 @@ chair_holder = _LazyModule("agent_tools.chair_holder")
 chair_resolve = _LazyModule("agent_tools.chair_resolve")
 chair_land_freeze = _LazyModule("agent_tools.chair_land_freeze")
 chair_login_check = _LazyModule("agent_tools.chair_login_check")
+chair_orchestrate = _LazyModule("agent_tools.chair_orchestrate")
 chair_pid_probe = _LazyModule("agent_tools.chair_pid_probe")
 chair_read_approved = _LazyModule("agent_tools.chair_read_approved")
 chair_read_attempts = _LazyModule("agent_tools.chair_read_attempts")
@@ -13503,6 +13504,30 @@ def _host_activate(a: argparse.Namespace) -> int:
     return _host_store_write(a, host_cmd.set_state_argv(a.name, "active", _holder_label(a)))
 
 
+_ORCHESTRATE_LOCAL_LANES = {"on": "decompose", "off": "any"}
+
+
+def _host_orchestrate(a: argparse.Namespace) -> int:
+    """No mode prints this machine's mode line. `on` is refused, with nothing written, unless another active
+    lane host exists; `off` is never refused. Both write `policy.dispatch.local_lanes` through `cox settings set`."""
+    profile, runs_dir, rc = _leader_runs_dir_or_refuse(a)
+    if rc is not None:
+        return rc
+    rows, now = run_store.hosts(runs_dir), _now_iso()
+    if a.mode is None:
+        configured = chair_capacity.chair_local_lanes(dict(profile))
+        print(chair_orchestrate.mode_line(configured, rows, socket.gethostname(), now))
+        return 0
+    refusal = chair_orchestrate.toggle_refusal(a.mode, rows, now)
+    if refusal is not None:
+        print(refusal)
+        return 1
+    from agent_tools import cox_settings
+    return cox_settings.run_set(
+        _profile_path(a), "cartridge", "policy.dispatch.local_lanes", _ORCHESTRATE_LOCAL_LANES[a.mode], False,
+    )
+
+
 def _host_capacity(a: argparse.Namespace) -> int:
     """Changes only capacity, leaving the row's own ssh, weight and capabilities as they are. This only ever
     writes the store row: a lane already running on the host keeps running either way, and a capacity of 0
@@ -13715,6 +13740,11 @@ HOST_COMMANDS = [
         "agent_tools.cli:_host_remove", False, (),
     ),
     commands.Command("activate", "host", "make a host a lane host again", (commands.Arg(("name",)),), "agent_tools.cli:_host_activate", False, ()),
+    commands.Command(
+        "orchestrate", "host", "show, or turn on or off, orchestration on this machine",
+        (commands.Arg(("mode",), {"nargs": "?", "choices": ["on", "off"], "help": "omit to show the current mode"}),),
+        "agent_tools.cli:_host_orchestrate", False, (),
+    ),
     commands.Command(
         "capacity", "host", "change only a host's capacity, leaving ssh, weight and capabilities as they are",
         (
