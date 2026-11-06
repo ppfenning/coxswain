@@ -159,6 +159,11 @@ intake_state = _LazyModule("agent_tools.intake_state")
 lake_config = _LazyModule("agent_tools.lake_config")
 lake_lease = _LazyModule("agent_tools.lake_lease")
 land = _LazyModule("agent_tools.land")
+land_batch_effects = _LazyModule("agent_tools.land_batch_effects")
+land_batch_group = _LazyModule("agent_tools.land_batch_group")
+land_batch_run = _LazyModule("agent_tools.land_batch_run")
+land_batch_settings = _LazyModule("agent_tools.land_batch_settings")
+land_batch_squash = _LazyModule("agent_tools.land_batch_squash")
 land_lease = _LazyModule("agent_tools.land_lease")
 land_limit = _LazyModule("agent_tools.land_limit")
 land_merge_lock = _LazyModule("agent_tools.land_merge_lock")
@@ -2521,6 +2526,8 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
             subprocess.run(["git", "-C", str(repo), "branch", "-D", step["onto"]], capture_output=True, text=True)
         # The sha and branch follow the detail: `land_conflict_reason` reads a detail that leads with `cherry-pick of`.
         return (True, f"cherry-picked {len(shas)} commits onto {step['onto']}") if ok else (False, f"{detail}\nstopped at {sha[:8]} on {step['branch']}")
+    if kind == "batch_squash":
+        return land_batch_squash.squash_onto_batch(repo, step)
     if kind == "squash_phase":
         # Built in its own worktree from `from`, exactly like `cherry_pick`, so `repo`'s HEAD never moves.
         wt = _land_worktree(repo, step["onto"])
@@ -4088,6 +4095,182 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
     if stop:
         print(stop)
     return (3 if stop else 0), reached, pr
+
+
+_BATCH_POLL_S = 30.0  # how often a queue waiting for a fuller batch reads its sources again
+
+
+class _BatchBusy(Exception):
+    """Edge. The repo land lease was refused; its busy text is already printed."""
+
+
+@dataclasses.dataclass(frozen=True)
+class _BatchJob:
+    """What `_runs_land_batch` runs: `build` makes the Effects once it is given the lease guard and the merge lock."""
+
+    repo: Path
+    runs_dir: Path
+    settings: object
+    build: Callable[[Callable[[str], str | None], Callable[[], contextlib.AbstractContextManager]], object]
+
+
+def _land_batch_steps(a: argparse.Namespace, repo: Path, runs_dir: Path, default_branch: str, forge_module, land_mode: str,
+                      umbrella: str | None, steps: list[dict], tickets: Mapping[str, str],
+                      guard: Callable[[str], str | None] | None, lock: Callable[[], contextlib.AbstractContextManager] | None
+                      ) -> tuple[str | None, str]:
+    """Edge. Run one batch's steps as `runs land` runs a phase's: the error or None, and the pull request.
+
+    The default branch is synced first, on every batch: the previous batch merged on the remote and the local branch
+    does not move with it, and each batch is cut from the local one. A refused sync returns the batch with no step run.
+    The land is logged and the lake synced after the walk, as `runs land` does, so a returned batch leaves its row."""
+    synced, detail = _sync_default_branch(repo, default_branch)
+    if synced == "refuse":
+        return f"cannot sync {default_branch}: {detail}", ""
+    if synced == "fast_forward":
+        print(f"land: {detail}")
+    paths = {s["task"]: s["path"] for s in steps if s["kind"] == "mark_done"}
+    enriched = _land_enrich(steps, path="", worktree_root=a.worktree_root, task_paths=paths, umbrella=umbrella,
+                            store_runs_dir=str(runs_dir), task_items=dict(tickets))
+    stops: list[dict] = []
+    rc, reached, pr = _land_execute(repo, enriched, enriched, None, None, "full", False, forge_module, by=_holder_label(a), mode=land_mode,
+                                    guard=guard, stops=stops, lock=lock)
+    branch = next((s["branch"] for s in steps if s["kind"] == "push"), "queue")
+    _append_land_log(runs_dir, land.land_log_row(datetime.datetime.now(datetime.UTC).isoformat(), branch, None, reached, rc, pr,
+                                                 stops[0] if stops else None))
+    _lake_after_land(a, runs_dir, rc, reached)
+    if rc == 0 and pr:
+        print(land.landed_via_line(pr))
+    return (None if rc == 0 else (stops[0]["stop_detail"] if stops else f"land exited {rc}")), pr
+
+
+@contextlib.contextmanager
+def _batch_lease(runs_dir: Path, repo: str, holder: str, limit: int):
+    """Edge. The repo land lease for one batch, through the calls `runs land` makes: acquire in slots, renew on a timer and
+    before each step, release. Yields the guard, or None when the store gave no lease (an outage must not block a land).
+    A refusal prints the busy text and raises `_BatchBusy`."""
+    slot, got = land_repo_lease.acquire_in_slots(runs_dir, repo, holder, _REPO_LEASE_TTL_SECONDS, socket.gethostname(), limit)
+    if isinstance(got, store_cli.LeaseRefused):
+        print(land_repo_lease.refusal_message(repo, got.holder or "another land"))
+        raise _BatchBusy
+    if not isinstance(got, store_cli.LeaseGranted):
+        yield None
+        return
+    epoch, lost = [got.epoch], []
+
+    def reacquire() -> store_cli.LeaseResult:
+        again = land_repo_lease.acquire_slot(runs_dir, repo, slot, holder, _REPO_LEASE_TTL_SECONDS)
+        if isinstance(again, store_cli.LeaseGranted):
+            epoch[0] = again.epoch
+        return again
+
+    guard = _repo_lease_guard(repo, lambda: land_repo_lease.renew_slot(runs_dir, repo, slot, holder, epoch[0], _REPO_LEASE_TTL_SECONDS),
+                              time.monotonic, _REPO_LEASE_TTL_SECONDS, lost, reacquire)
+    try:
+        with guard.renewing():
+            yield guard
+    finally:
+        if not lost:  # a refused renew means another land holds it now
+            try:
+                freed = land_repo_lease.release_slot(runs_dir, repo, slot, holder, epoch[0])
+                why = freed.detail if isinstance(freed, store_cli.LeaseError) else (
+                    "the store is not available" if isinstance(freed, store_cli.NotAvailable) else None)
+            except Exception as exc:
+                why = f"{type(exc).__name__}: {exc}"
+            if why is not None:
+                print(f"warning: repo lease {land_repo_lease.slot_lease_name(repo, slot)} not released: {why}", file=sys.stderr)
+
+
+def _land_batch_prepare(a: argparse.Namespace) -> _BatchJob | int:
+    """Edge. The checks `runs land` makes before it plans, then the job; an int is the exit code of a refusal or a dry run."""
+    repo = Path(a.repo).expanduser()
+    runs_dir, reason = _runs_dir_for_land(a)
+    if runs_dir is None:
+        print(f"land: {reason}")
+        return 2
+    refs = [(text, land_batch_effects.parse_source(text)) for text in a.source]
+    if not refs or any(ref is None for _, ref in refs):
+        print("land: --source takes initiative/phase/run, once per source: " + (", ".join(t for t, r in refs if r is None) or "none given"))
+        return 2
+    if a.apply:
+        guard_rc = _leader_guard_or_refuse(runs_dir, _holder_label(a), a.force, claim=not a.no_claim, explicit_label=getattr(a, "label", None))
+        if guard_rc is not None:
+            return guard_rc
+    profile_text = _read_text_or_none(_profile_path(a))
+    try:
+        profile = route.parse_profile(profile_text) if profile_text is not None else {}
+    except route.ProfileError as exc:
+        print(f"land: profile unreadable: {exc}")
+        return 2
+    try:
+        default_branch = base_branch.base_ref(str(repo), getattr(a, "base", None)).removeprefix("origin/")
+    except base_branch.BaseError as exc:
+        print(f"land: refusing, {exc}")
+        return 2
+    forge_module = forge.forge_for(forge.forge_name(profile))
+    if forge_module is None:
+        print(f"land: no forge named {forge.forge_name(profile)} (built in: local, github, auto)")
+        return 2
+    repo_facts = _land_repo_facts(repo, profile, default_branch, forge_module)
+    land_mode = work_state.work_state_mode(_lake_provider(a)[0]) if a.apply else "files"
+    base = land_batch_settings.merge_queue_setting(profile)
+    settings = land_batch_settings.MergeQueue(a.batch_size or base.batch_size, base.wait_s if a.wait_s is None else a.wait_s)
+    work_root = runs_dir.parent / "work"
+
+    def read_phase(initiative: str, phase: str, run: str):
+        if land_mode == "store":
+            _backfill_phase_task_files(runs_dir, run, phase)
+        record, task_records, task_paths, _ = _land_phase_record(runs_dir, run, phase)
+        items, _ = _phase_items(work_root, initiative, phase, runs_dir=runs_dir, land_mode=land_mode)
+        return None if record is None or items is None else (items, {r["task"]: r for r in task_records}, task_paths)
+
+    def build(guard, lock):
+        def run_steps(steps: list[dict], tickets: Mapping[str, str]) -> tuple[str | None, str]:
+            return _land_batch_steps(a, repo, runs_dir, default_branch, forge_module, land_mode, profile.get("umbrella_dir"), steps, tickets,
+                                     guard, lock)
+
+        return land_batch_effects.build_effects([ref for _, ref in refs], str(repo), read_phase, run_steps, repo_facts, default_branch)
+
+    job = _BatchJob(repo, runs_dir, settings, build)
+    if a.apply:
+        if _repo_is_dirty(repo):
+            print(f"land: refusing, {repo} is dirty")
+            return 2
+        return job
+    sources = job.build(None, None).read_sources()
+    batches = land_batch_group.disjoint_batches(sources, settings.batch_size)
+    print(json.dumps({"batches": [[f"{s['initiative']}/{s['phase']}" for s in b] for b in batches]}, indent=2))
+    return 0
+
+
+def _runs_land_batch(a: argparse.Namespace) -> int:
+    """Land the chair's sources as batches, each under the repo land lease taken after collecting. Exit 2 when it is refused,
+    1 when every opened source was returned, else 0."""
+    job = _land_batch_prepare(a)
+    if isinstance(job, int):
+        return job
+    repo, runs_dir = str(job.repo), job.runs_dir
+    holder = f"{_holder_label(a)}@{socket.gethostname()}:{os.getpid()}"
+    limit = land_limit.repo_land_limit(repo)
+    held: list[_LeaseGuard | None] = [None]  # the guard of the batch being landed; None between batches
+    merge_lock = _merge_lock_factory(runs_dir, repo, holder, limit, True)
+    effects = job.build(lambda kind: held[0](kind) if held[0] is not None else None,
+                        lambda: merge_lock() if held[0] is not None and merge_lock is not None else contextlib.nullcontext())
+
+    def leased_land(batch):
+        # The lease covers one batch's walk and is released before the next collect or wait, so a normal land is blocked no longer.
+        with _batch_lease(runs_dir, repo, holder, limit) as guard:
+            held[0] = guard
+            try:
+                return effects.land(batch)
+            finally:
+                held[0] = None
+
+    try:
+        result = land_batch_run.run_queue(job.settings, dataclasses.replace(effects, land=leased_land), _BATCH_POLL_S)
+    except _BatchBusy:
+        return 2
+    print(land_batch_run.render_lines(result), end="")
+    return 1 if result.returned and not result.landed else 0
 
 
 def _runs_recover(a: argparse.Namespace) -> int:
@@ -10111,6 +10294,21 @@ RUNS_COMMANDS = [
         "agent_tools.cli:_runs_land", False, (),
     ),
     commands.Command(
+        "land-batch", "runs", "land the chair's disjoint approved phases together as one batch pull request",
+        (
+            commands.Arg(("--repo",), {"required": True}), commands.Arg(("--label",)),
+            commands.Arg(("--source",), {"action": "append", "default": [], "help": "initiative/phase/run to batch; repeat per source"}),
+            commands.Arg(("--batch-size",), {"type": int, "help": "sources per batch; default: the profile's merge_queue.batch_size"}),
+            commands.Arg(("--wait-s",), {"type": float, "help": "seconds to wait for a full batch; default: the profile's merge_queue.wait_s"}),
+            commands.Arg(("--force",), {"action": "store_true", "help": "land despite a foreign live leader"}),
+            commands.Arg(("--no-claim",), {"action": "store_true", "help": "land without taking an unheld or stale loop"}),
+            commands.Arg(("--base",), {"help": "branch to land onto; default: the repo's base: setting, then origin/HEAD, then main"}),
+            commands.Arg(("--worktree-root",), {"default": "~/worktrees"}), commands.Arg(("--apply",), {"action": "store_true"}),
+            commands.Arg(("--runs-dir",), {"help": "override: resolve task records here instead of the profile's workspace_dir"}), commands.Arg(("--profile",)),
+        ),
+        "agent_tools.cli:_runs_land_batch", False, (),
+    ),
+    commands.Command(
         "fetch", "runs", "pull an ended remote lane's run directory, log and branches to this machine",
         (
             commands.Arg(("--runs-dir",), {"help": "override: resolve the run's records here instead of the profile's workspace_dir"}),
@@ -12605,6 +12803,7 @@ def _chair_run_deps(
         housekeeping_hours=lambda: (profile.get("chair") or {}).get("housekeeping_hours"),
         stale_days=lambda: (profile.get("chair") or {}).get("stale_days"),
         max_launches_per_hour=lambda: (profile.get("chair") or {}).get("max_launches_per_hour"),
+        merge_queue=lambda: profile.get("merge_queue"),
         stale_candidates=lambda n: chair_read_stale.read_stale_candidates(ws, n, work_files(), attempts(), actions()),
         stall_candidates=lambda n: chair_read_stall.read_stall_candidates(runs_dir, startup_hosts, n),
         idle_stall=idle_stall,
