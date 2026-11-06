@@ -6681,7 +6681,8 @@ def _place_or_refuse(
     """Edge. Place the lane by the hosts table and print `placed on <host> (<in use>/<cap>)`; a remote pick comes back
     as its LaneHost. Epic and decompose go remote, each probed for the toolchain of its repo (an epic's initiative or an
     intake's `repo:`); the other graphs have no remote launch, so they place on this machine. A forced local launch
-    places on this machine, refused at capacity without `--force`."""
+    places on this machine, refused at capacity without `--force`. Under `policy.dispatch.local_lanes: decompose` an
+    epic is not placed locally without an explicit local flag: with no lane host free it is refused, not run here."""
     graph = getattr(a, "graph", "epic")
     if not forced_local and graph not in ("epic", "decompose"):
         return None, None
@@ -6702,6 +6703,7 @@ def _place_or_refuse(
         candidates = _lane_host_candidates(profile_text, rows, local)
         epic_repo = _intake_repo(a) if graph == "decompose" else _epic_repo(a, profile)
         tools = _repo_check_tools(epic_repo).found if epic_repo else ()
+        local_excluded = graph == "epic" and chair_capacity.chair_local_lanes(dict(profile)) == "decompose"
 
         def refused(name: str) -> str | None:
             host = None if isinstance(candidates, lane_hosts.LaneHostError) else lane_hosts.find_lane_host(candidates, name)
@@ -6715,6 +6717,7 @@ def _place_or_refuse(
         placed = launch_place.place_checked(
             lambda barred: launch_place.place(
                 rows, live, datetime.datetime.now(datetime.UTC), local, cap, profile_hosts, barred,
+                local_excluded=local_excluded,
             ),
             refused,
         )
@@ -6742,7 +6745,8 @@ def _lane_host_or_refuse(a: argparse.Namespace, profile: Mapping) -> tuple[lane_
     """Exit code 2 after printing the refusal. No host means this machine.
 
     `--on local` or `--local` forces this machine, refused at capacity without `--force`. `--on NAME` names a table host.
-    With neither, epic and decompose are placed by the hosts table; an empty table places nothing."""
+    With neither, epic and decompose are placed by the hosts table; an empty table places nothing. Under
+    `local_lanes: decompose` an epic is not placed locally without `--local` or `--on local`."""
     name = getattr(a, "on", None)
     if name == "local" or getattr(a, "local", False):
         return _place_or_refuse(a, profile, forced_local=True)
