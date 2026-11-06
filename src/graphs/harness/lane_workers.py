@@ -33,3 +33,10 @@ def lane_workers_from(environ: Mapping[str, str], cores: int) -> int | None:
 def workers_env(environ: Mapping[str, str], workers: int) -> dict[str, str]:
     """An operator's explicit XDIST_VAR wins, so an already-set one yields no override."""
     return {} if XDIST_VAR in environ else {XDIST_VAR: str(workers)}
+
+
+def check_env(environ: Mapping[str, str], cores: int, capacity: int | None) -> dict[str, str] | None:
+    """The full child environment for a check spawn; None without a capacity of 1 or more, so the caller changes nothing."""
+    if capacity is None or capacity < 1:
+        return None
+    return {**environ, **workers_env(environ, lane_workers(cores, capacity))}

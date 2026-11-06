@@ -23,6 +23,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from harness.lane_workers import XDIST_VAR
+
 __all__ = [
     "HARNESS_FAULT_PREFIX",
     "all_passed",
@@ -304,6 +306,11 @@ def _write_log(log_dir: Path | None, prefix: str, number: int, text: str) -> dic
     return {"log": f"{prefix}{number}.log"}
 
 
+def _workers_field(env: Mapping[str, str] | None) -> dict[str, str]:
+    """The worker count the child env states, as a result field; empty when it states none."""
+    return {"workers": env[XDIST_VAR]} if env is not None and XDIST_VAR in env else {}
+
+
 def run_checks(
     worktree: Path,
     checks: Sequence[Mapping[str, Any]],
@@ -326,6 +333,7 @@ def run_checks(
     environment; None inherits this process's.
     """
     results: list[dict[str, Any]] = []
+    workers = _workers_field(env)
     for number, check in enumerate(checks, 1):
         name = check.get("name")
         cmd = check.get("cmd")
@@ -369,6 +377,7 @@ def run_checks(
                     "output_tail": (partial + f"\n[timed out after {limit}s]")[-_TAIL_CHARS:],
                     "excerpt": "\n".join(filter(None, [output_excerpt(partial), f"[timed out after {limit}s]"])),
                     **_write_log(log_dir, log_prefix, number, partial + f"\n[timed out after {limit}s]\n"),
+                    **workers,
                 }
             )
             continue
@@ -386,6 +395,7 @@ def run_checks(
                     "output_tail": "",
                     "excerpt": error,
                     **_write_log(log_dir, log_prefix, number, error + "\n"),
+                    **workers,
                 }
             )
             continue
@@ -420,6 +430,7 @@ def run_checks(
                 "output_tail": combined[-_TAIL_CHARS:],
                 "excerpt": output_excerpt(combined),
                 **_write_log(log_dir, log_prefix, number, combined),
+                **workers,
             }
         )
     return results
@@ -440,8 +451,11 @@ def checks_evidence(
     """
     rows: list[dict[str, str]] = []
     for result in results:
+        workers_line = f"workers: {result['workers']}" if result.get("workers") else ""
         if result.get("outcome") == "skipped":
-            rows.append({"check": f"{prefix}:{result['name']}", "output": _SKIPPED_NO_PYTHON_TESTS})
+            # A skipped row keeps its worker count too: the variable was applied even though no test ran.
+            skipped = "\n".join(filter(None, [_SKIPPED_NO_PYTHON_TESTS, workers_line]))
+            rows.append({"check": f"{prefix}:{result['name']}", "output": skipped})
             continue
         counts = result.get("counts") or {}
         counted = ", ".join(f"{v} {k}" for k, v in counts.items())
@@ -459,6 +473,8 @@ def checks_evidence(
         output = summary + tail if carries_tail else summary
         if result.get("note"):
             output = f"{output}\n{result['note']}"
+        if workers_line:
+            output = f"{output}\n{workers_line}"
         rows.append({"check": f"{prefix}:{result['name']}", "output": output})
     return rows
 
