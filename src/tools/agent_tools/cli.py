@@ -993,6 +993,11 @@ def _run_short_ids(run_ids: Sequence[str], short_ids: Mapping[str, str]) -> dict
     return {run_id: short_ids[_run_slug(run_id)] for run_id in run_ids if _run_slug(run_id) in short_ids}
 
 
+def _run_events(run_ids: Sequence[str], events: Mapping[str, Sequence[Mapping]]) -> dict[str, Sequence[Mapping]]:
+    """Run id to events, from a slug-keyed `events`; a run whose slug has no entry is absent."""
+    return {run_id: events[_run_slug(run_id)] for run_id in run_ids if _run_slug(run_id) in events}
+
+
 def _runs_top(a: argparse.Namespace) -> int:
     """On two terminals with towpath installed, exec towpath; otherwise, and always with --once, print the table."""
     # The seams are passed at call time so a test can stub them; launch's own defaults bind at import.
@@ -4907,6 +4912,7 @@ def _route_status(a: argparse.Namespace) -> int:
             *route.held_initiative_entries(queue, release_gate.held_initiatives(queue), held_intakes),
         ]
         deferred = route.deferred_by_target(queue, package_version())
+        events = route.initiative_events(queue)
         if a.json:
             # The bare rows list is the shape older callers read; it stays when there
             # is nothing else to say. A problem is never dropped for lack of an intake dir.
@@ -4927,6 +4933,7 @@ def _route_status(a: argparse.Namespace) -> int:
                 shown, groups, problems, gate_level=_resolved_gate_level(ws / "runs"), hidden=hidden,
                 short_ids=_run_short_ids([r["id"] for r in rows], short_ids),
                 waiting=_waiting_by_entry_id(queue, waiting), held=held, deferred=deferred,
+                events=_run_events([r["id"] for r in rows], events),
             )
             drafts = route.render_drafts(
                 draft_list.read_drafts(ws / "work", datetime.datetime.now(datetime.UTC).isoformat()), draft_list.format_age
