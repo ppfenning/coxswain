@@ -2252,13 +2252,54 @@ def _generate_and_amend(wt: Path, umbrella: str | None, echo: Callable[[str], No
     return True, ""
 
 
+def _skip_empty_pick(wt: Path, sha: str, cp: subprocess.CompletedProcess, echo: Callable[[str], None] = print) -> bool:
+    """Edge. True when the stopped pick `cp` of `sha` in `wt` was empty, not a conflict and not a commit authored empty:
+    git's skip cleared it and the skip line was echoed. False leaves the stopped pick for the caller's handling."""
+    conflicted = subprocess.run(["git", "-C", str(wt), "diff", "--name-only", "--diff-filter=U"], capture_output=True, text=True).stdout
+    if not land.is_empty_pick(cp.stderr, cp.stdout, bool(conflicted.split())):
+        return False
+    if not _git_out(wt, "diff-tree", "--no-commit-id", "--name-only", "-r", sha):
+        return False  # a commit authored empty is not already on the base: it fails as it always did
+    subject = _git_out(wt, "log", "-1", "--format=%s", sha) or ""
+    if subprocess.run(["git", "-C", str(wt), "cherry-pick", "--skip"], capture_output=True, text=True).returncode != 0:
+        return False
+    echo(land.skip_note(sha, subject, land.SKIP_EMPTY))
+    return True
+
+
+def _patch_id_skipped(repo: Path, step: dict) -> str | None:
+    """Edge. For a `cherry_pick` step whose range is empty: the all-skipped detail when the base holds the branch's
+    commits by patch-id, after echoing each with its reason. None for a branch with no commits ahead of its base."""
+    raw = _git_out(repo, "rev-list", "--reverse", "--no-merges", "--right-only", f"{step['from']}...{step['branch']}")
+    dropped = (raw or "").split()
+    for sha in dropped:
+        print(land.skip_note(sha, _git_out(repo, "log", "-1", "--format=%s", sha) or "", land.SKIP_PATCH_ID))
+    return land.skipped_all_detail(len(dropped), step["from"]) if dropped else None
+
+
+def _drop_pr_branch(repo: Path, onto: str) -> None:
+    """Edge. An all-skipped pick built nothing to keep: drop its land worktree and the local pr branch, so a rerun can cut it again."""
+    _remove_land_worktree(repo, onto)
+    subprocess.run(["git", "-C", str(repo), "branch", "-D", onto], capture_output=True, text=True)
+
+
+def _range_detail(step: dict, shas: list[str], skipped: list[str]) -> str:
+    """Pure. The success detail of a `cherry_pick` step: the all-skipped detail when every commit was skipped."""
+    if shas and len(skipped) == len(shas):
+        return land.skipped_all_detail(len(skipped), step["from"])
+    return f"cherry-picked {len(shas) - len(skipped)} commits onto {step['onto']}"
+
+
 def _cherry_pick_generated(wt: Path, sha: str, umbrella: str | None, echo: Callable[[str], None] = print) -> tuple[bool, str]:
     """Cherry-pick `sha` into `wt`, then regenerate and amend. The real land and the resume check both
-    build the pushed tree here, so the tree the resume check expects cannot drift from the tree pushed."""
+    build the pushed tree here, so the tree the resume check expects cannot drift from the tree pushed.
+    A pick that stops empty without a conflict is skipped, not failed: it returns `(True, land.SKIP_EMPTY)`."""
     cp = subprocess.run(
         ["git", "-C", str(wt), "-c", "merge.conflictStyle=diff3", "cherry-pick", sha], capture_output=True, text=True
     )
     regenerated: list[str] = []
+    if cp.returncode != 0 and _skip_empty_pick(wt, sha, cp, echo):
+        return True, land.SKIP_EMPTY
     if cp.returncode != 0:
         conflicted = subprocess.run(
             ["git", "-C", str(wt), "diff", "--name-only", "--diff-filter=U"], capture_output=True, text=True
@@ -2343,6 +2384,8 @@ def _generated_tree(repo: Path, branch: str, base: str, sha: str, umbrella: str 
             return None, add.stderr.strip() or add.stdout.strip()
         _link_venv(repo, scratch)
         ok, detail = _cherry_pick_generated(scratch, sha, umbrella, echo=lambda _: None)
+        if ok and detail == land.SKIP_EMPTY:
+            return None, f"cherry-pick of {sha[:8]} is empty on {base}"
         return (_git_out(scratch, "rev-parse", "HEAD^{tree}"), "") if ok else (None, detail)
     finally:
         _remove_land_worktree(repo, branch)
@@ -2465,15 +2508,23 @@ def _execute_gather_step(repo: Path, step: dict) -> tuple[bool, str]:
         rev = subprocess.run(["git", "-C", str(repo), "rev-list", "--reverse", "--no-merges", "--cherry-pick", "--right-only",
                               f"{step['from']}...{step['branch']}"], capture_output=True, text=True)
         shas = rev.stdout.split()
+        dropped = _patch_id_skipped(repo, step) if rev.returncode == 0 and not shas else None
+        if dropped:
+            return True, dropped
         refusal = _commit_count_refusal(step, shas)
         if rev.returncode != 0 or refusal:
             return False, refusal or rev.stderr.strip()
+        skipped: list[str] = []
         for sha in shas:
             cp = subprocess.run(["git", "-C", str(wt), "cherry-pick", sha], capture_output=True, text=True)
-            if cp.returncode != 0:
-                _, detail = _gather_failed(wt, f"cherry-pick of {sha[:8]}", ["cherry-pick", "--abort"], cp)
-                return False, f"{detail}\nstopped at {sha[:8]} on {step['branch']}"
-        return True, f"cherry-picked {len(shas)} commits onto {step['onto']}"
+            if cp.returncode == 0:
+                continue
+            if _skip_empty_pick(wt, sha, cp):
+                skipped.append(sha)
+                continue
+            _, detail = _gather_failed(wt, f"cherry-pick of {sha[:8]}", ["cherry-pick", "--abort"], cp)
+            return False, f"{detail}\nstopped at {sha[:8]} on {step['branch']}"
+        return True, _range_detail(step, shas, skipped)
     applied = subprocess.run(["git", "-C", str(wt), "apply", "--3way", "--index", "-"], input=step["patch"],
                              capture_output=True, text=True)
     if applied.returncode != 0:
@@ -2510,20 +2561,32 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
         rev = subprocess.run(["git", "-C", str(repo), "rev-list", "--reverse", "--no-merges", "--cherry-pick", "--right-only",
                               f"{step['from']}...{step['branch']}"], capture_output=True, text=True)
         shas = [s for s in rev.stdout.split() if s]
+        dropped = _patch_id_skipped(repo, step) if rev.returncode == 0 and not shas else None
+        if dropped:
+            _drop_pr_branch(repo, step["onto"])
+            return True, dropped
         refusal = _commit_count_refusal(step, shas)
         if rev.returncode != 0 or refusal:
             return False, refusal or rev.stderr.strip()
+        skipped: list[str] = []
         for sha in shas:
             ok, detail = _cherry_pick_generated(wt, sha, step.get("umbrella"))
             if not ok:
                 break
+            if detail == land.SKIP_EMPTY:
+                skipped.append(sha)
         if not ok and detail.startswith(_GENERATE_FAILED):
             # Keep the worktree, detached, for inspection; free the branch so a rerun starts fresh
             # instead of finding a pr branch that holds the un-generated tree and refusing on it.
             subprocess.run(["git", "-C", str(wt), "checkout", "-q", "--detach"], capture_output=True, text=True)
             subprocess.run(["git", "-C", str(repo), "branch", "-D", step["onto"]], capture_output=True, text=True)
         # The sha and branch follow the detail: `land_conflict_reason` reads a detail that leads with `cherry-pick of`.
-        return (True, f"cherry-picked {len(shas)} commits onto {step['onto']}") if ok else (False, f"{detail}\nstopped at {sha[:8]} on {step['branch']}")
+        if not ok:
+            return False, f"{detail}\nstopped at {sha[:8]} on {step['branch']}"
+        picked = _range_detail(step, shas, skipped)
+        if land.is_skipped_all(picked):
+            _drop_pr_branch(repo, step["onto"])
+        return True, picked
     if kind == "squash_phase":
         # Built in its own worktree from `from`, exactly like `cherry_pick`, so `repo`'s HEAD never moves.
         wt = _land_worktree(repo, step["onto"])
@@ -4080,6 +4143,19 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
             print("stopped; remaining: " + ", ".join(remaining))
             _note_stop(repo, step, detail, stops)
             return 1, reached, pr
+        if step["kind"] == "cherry_pick" and "task" not in step and land.is_skipped_all(detail):
+            # Every commit is on the base already: close through the PR that carried them, with no push, checks or merge.
+            number = _task_already_on_main(repo, step, record)
+            walk = None if number is None else _carried_walk(steps[i + 1:], planned, number)
+            if walk is None:
+                why = f"{detail}, but no pull request number was found on {step['from']} for {step['branch']}"
+                print("stopped; remaining: " + ", ".join(s["kind"] for s in steps[i + 1:]))
+                _note_stop(repo, step, why, stops)
+                return 1, reached, pr
+            steps, planned, pr = walk
+            print(land.landed_via_line(pr))
+            i = 0
+            continue
         if step["kind"] == "wait_checks" and no_merge:
             print("stopping after wait_checks (--no-merge)")
             return 0, reached, pr
