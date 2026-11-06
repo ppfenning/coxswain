@@ -2377,12 +2377,18 @@ def held_initiative_entries(
     return [{"id": name, "reason": reason(name)} for name in sorted(set(held_ids) - covered)]
 
 
+def chair_machine_line(mode_line: str) -> str:
+    """`chair machine <host>: <mode>` from `chair_orchestrate.mode_line`'s `<host>: <mode> (<availability>)`."""
+    return f"chair machine {mode_line.rsplit(' (', 1)[0]}"
+
+
 def render_status(rows: list, groups: dict | None = None, problems: list | None = None,
                   gate_level: str | None = None, hidden: int = 0,
                   short_ids: Mapping[str, str] | None = None,
                   waiting: Mapping[str, Sequence[str]] | None = None,
                   held: Sequence[Mapping] | None = None,
-                  deferred: Mapping[str, Sequence[str]] | None = None) -> str:
+                  deferred: Mapping[str, Sequence[str]] | None = None,
+                  chair_line: str = "") -> str:
     """The human-readable text `agent-tools route status` prints, spec §5,
     from `status_rows`' output. One line per row: a run with no pidfile
     states only its id and state, since `pid` and `started` are both
@@ -2398,6 +2404,7 @@ def render_status(rows: list, groups: dict | None = None, problems: list | None 
     `{"id", "reason"}`, adds a `held:` heading after the groups with one `  id: reason` line each.
     `deferred` (target release to ids, `group_deferred`'s output) adds a `deferred to <version>:` heading per target
     after the held block, in the mapping's order, with one `  id` line each.
+    `chair_line`, when non-empty, is the last line, after `gate:`.
     """
     ids = short_ids or {}
     lines = [_status_line(row, ids.get(row["id"])) for row in rows]
@@ -2408,6 +2415,7 @@ def render_status(rows: list, groups: dict | None = None, problems: list | None 
     lines += [line for target, names in (deferred or {}).items() for line in (f"deferred to {target}:", *(f"  {n}" for n in names))]
     lines += [f"problem: {p}" for p in problems or []]
     lines += [f"gate: {gate_level}"] if gate_level is not None else []
+    lines += [chair_line] if chair_line else []
     return "\n".join(lines)
 
 
