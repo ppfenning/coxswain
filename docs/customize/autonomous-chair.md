@@ -276,6 +276,35 @@ cox chair freeze-lands            # show the freeze
 cox chair freeze-lands --off      # lift it now
 ```
 
+## Sharing files between initiatives
+
+Initiatives may build together on a shared file. The limit is
+`chair.max_shared_file_initiatives` in the profile. It defaults to 2. Setting
+it to 1 restores the old behaviour, where the loop holds every initiative that
+shares a file with one already building.
+
+`serial_files` is a flat list of paths at the top level of the profile. The
+loop always holds these files one initiative at a time, whatever the limit
+says. A path ending in a slash covers the whole directory.
+
+The loop also holds a file that both initiatives mark `(new)` in their planned
+surfaces. That is the planned-scope estimate of a heavy rewrite. The loop does
+not detect a `restructured` file beyond that marker.
+
+```yaml
+serial_files: [Cargo.lock, src/app.rs, migrations/]
+chair:
+  max_shared_file_initiatives: 2
+```
+
+Every land builds on current main, so the second land to touch a shared file
+rebases by construction. When a cherry-pick conflicts, the task goes back to
+`ready` with a `land_conflict` note. The build runs once more on the new main.
+
+The land log records `conflict_paths` for each cherry-pick conflict. Count the
+conflicts per path in that log. A path that conflicts often belongs in
+`serial_files`, or under a lower limit.
+
 ## The workspace checkout
 
 The workspace (`work/`, `intake/`, `runs/`) is a git checkout. The loop
