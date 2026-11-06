@@ -32,6 +32,7 @@ import yaml
 
 from graphs._contract import ContractViolation, epic_shape, landing_for, proposal, require, require_cartridge
 from graphs.delivery.decompose_layout import check_layout, heal_layout, unlisted_artifacts
+from graphs.delivery.decompose_order import order_shared_surfaces
 from graphs.delivery.decompose_size import (
     SizeError,
     SizeVerdict,
@@ -1429,6 +1430,7 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
         resolved_phase, note = match
         resolved_tasks.append(dict(task, phase=resolved_phase, phase_correction=note) if note else task)
     tasks = resolved_tasks
+    tasks, ordering_notes = order_shared_surfaces(tasks)
 
     shape = epic_shape(
         cartridge,
@@ -1458,7 +1460,7 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
         home=str(Path.home()),
         epic=carried.get("epic"),
         target_branch=carried.get("target_branch"),
-        lint=heal.notes,
+        lint=[*heal.notes, *ordering_notes],
     )
     initiative_where = "/".join(part for part in (landing, initiative_id) if part)
 
