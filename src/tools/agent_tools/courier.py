@@ -10,9 +10,17 @@ from typing import NamedTuple
 from agent_tools.route import intake_entries, parse_frontmatter
 from agent_tools.stats_ingest import LEDGER_PATH, _read_ledger
 
-__all__ = ["Reference", "ack", "ack_file", "append_line", "format_reference", "inbox", "parse_reference", "resolve", "send"]
+__all__ = [
+    "EVENTS", "EXCEPTION_EVENTS", "Reference", "ack", "ack_file", "append_file", "append_line", "format_reference",
+    "inbox", "needs_model", "parse_reference", "resolve", "send",
+]
 
 _KINDS = ("run", "task", "pr", "intake", "proposal", "finding", "initiative")
+EVENTS = (
+    "needs_attention", "level_merged", "merge_failed", "relaunched", "stuck", "gate_passed", "gate_failed",
+    "epic_complete",
+)
+EXCEPTION_EVENTS = ("needs_attention", "merge_failed", "stuck", "gate_failed")
 _PATTERN = re.compile(r"^coxswain://([a-z]+)/(.+)$")
 
 
@@ -123,9 +131,21 @@ def resolve(ref: Reference, workspace_dir: Path | str, ledger_path: Path | str |
     return _work_item(workspace_dir, ref.id)
 
 
-def send(ref: Reference, sender: str, to: str, note: str, message_id: str) -> dict:
-    """Builds one bus entry; never writes it (docs/design/courier.md `#the-bus`)."""
-    return {"ref": format_reference(ref), "from": sender, "to": to, "note": note, "id": message_id, "ack": False}
+def needs_model(entry: dict) -> bool:
+    return entry.get("event") in EXCEPTION_EVENTS
+
+
+def send(
+    ref: Reference, sender: str, to: str, note: str, message_id: str,
+    *, event: str | None = None, fields: dict | None = None, topic: str | None = None,
+) -> dict:
+    """Builds one bus entry; never writes it (docs/design/courier.md `#the-bus`).
+    `event`, `fields` and `topic` add their key only when given; an unknown `event` raises ValueError."""
+    if event is not None and event not in EVENTS:
+        raise ValueError(f"unknown courier event {event!r}; expected one of {', '.join(EVENTS)}")
+    base = {"ref": format_reference(ref), "from": sender, "to": to, "note": note, "id": message_id, "ack": False}
+    extras = {"event": event, "fields": fields, "topic": topic}
+    return {**base, **{k: v for k, v in extras.items() if v is not None}}
 
 
 def append_line(blob: str, entry: dict) -> str:
@@ -143,14 +163,26 @@ def _latest_by_id(blob: str) -> dict[str, dict]:
         except json.JSONDecodeError:
             continue
         if isinstance(entry, dict) and "id" in entry:
-            latest[entry["id"]] = entry
+            latest[entry["id"]] = _fold(latest.get(entry["id"]), entry)
     return latest
 
 
-def inbox(blob: str, label: str | None = None, holder: str | None = None) -> list[dict]:
+def _fold(prior: dict | None, entry: dict) -> dict:
+    """The last line wins, but `acks` is unioned and a legacy `ack` stays true once any line set it,
+    so a line appended from a stale read cannot lose another reader's ack or revive a hidden entry."""
+    acks = list(dict.fromkeys([*(prior or {}).get("acks", []), *(entry.get("acks") or [])]))
+    legacy = bool((prior or {}).get("ack")) and not entry.get("ack")
+    return {**entry, **({"acks": acks} if acks else {}), **({"ack": True} if legacy else {})}
+
+
+def inbox(
+    blob: str, label: str | None = None, holder: str | None = None,
+    topic: str | None = None, event: str | None = None, consumer: str | None = None,
+) -> list[dict]:
     """`holder`: the label currently holding the leader lock, read at the edge.
     An entry addressed to the generic `chair` reaches `label` when `label` is the
-    holder or `label` itself starts with `chair`; any other `to` needs an exact match."""
+    holder or `label` itself starts with `chair`; any other `to` needs an exact match.
+    `consumer` hides an entry that consumer has acked; with none, only the legacy `ack` flag hides it."""
     entries = _latest_by_id(blob).values()
 
     def _matches(e: dict) -> bool:
@@ -158,17 +190,42 @@ def inbox(blob: str, label: str | None = None, holder: str | None = None) -> lis
             return True
         return e["to"] == "chair" and (label == holder or label.startswith("chair"))
 
-    return [e for e in entries if not e["ack"] and _matches(e)]
+    def _hidden(e: dict) -> bool:
+        return bool(e["ack"]) or (consumer is not None and consumer in e.get("acks", []))
+
+    return [
+        e for e in entries
+        if not _hidden(e) and _matches(e)
+        and (topic is None or e.get("topic") == topic) and (event is None or e.get("event") == event)
+    ]
 
 
-def ack(blob: str, message_id: str) -> str:
+def _ack_line(entry: dict, consumer: str | None) -> dict:
+    """A consumer ack records the consumer in `acks` and leaves the legacy `ack` flag as it was."""
+    if consumer is None:
+        return {**entry, "ack": True}
+    return {**entry, "acks": list(dict.fromkeys([*entry.get("acks", []), consumer]))}
+
+
+def ack(blob: str, message_id: str, consumer: str | None = None) -> str:
     entry = _latest_by_id(blob).get(message_id)
-    return blob if entry is None else append_line(blob, {**entry, "ack": True})
+    return blob if entry is None else append_line(blob, _ack_line(entry, consumer))
 
 
-def ack_file(path: Path, message_id: str) -> bool:
-    """Appends one ack line and never rewrites the file; False when no entry has `message_id`.
-    A final line missing its newline (a torn write) is closed first so the ack stays on its own line."""
+def append_file(path: Path, entry: dict) -> None:
+    """Appends one line and never reads or rewrites the file. A final line missing its newline
+    (a torn write) is closed first so the entry stays on its own line."""
+    with open(path, "ab+") as f:
+        size = f.seek(0, 2)
+        if size > 0:
+            f.seek(size - 1)
+        last = f.read(1) if size > 0 else b"\n"
+        torn = last != b"\n"
+        f.write((b"\n" if torn else b"") + json.dumps(entry).encode("utf-8") + b"\n")
+
+
+def ack_file(path: Path, message_id: str, consumer: str | None = None) -> bool:
+    """Appends one ack line and never rewrites the file; False when no entry has `message_id`."""
     try:
         blob = path.read_text(encoding="utf-8")
     except OSError:
@@ -176,9 +233,7 @@ def ack_file(path: Path, message_id: str) -> bool:
     entry = _latest_by_id(blob).get(message_id)
     if entry is None:
         return False
-    prefix = "\n" if blob and not blob.endswith("\n") else ""
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(prefix + json.dumps({**entry, "ack": True}) + "\n")
+    append_file(path, _ack_line(entry, consumer))
     return True
 
 

@@ -58,6 +58,43 @@ Three commands operate on it:
   `ack: true`; the last line per id decides acknowledgment, so acking never
   rewrites a prior line.
 
+### Typed events and topics
+
+An entry may also carry three optional keys. `event` names what happened,
+`fields` is a dict of its details, and `topic` groups entries for a reader
+that follows one subject. A key with no value is absent, so an untyped entry
+is byte for byte what it was before. `send` refuses an `event` outside the
+list with a `ValueError`.
+
+The eight events are `needs_attention`, `level_merged`, `merge_failed`,
+`relaunched`, `stuck`, `gate_passed`, `gate_failed` and `epic_complete`.
+Four of them wake a model: `needs_attention`, `merge_failed`, `stuck` and
+`gate_failed`, named `EXCEPTION_EVENTS`. `needs_model(entry)` is true for an
+entry whose event is one of those four. The other four are routine and are
+read without a model.
+
+`inbox` filters on `topic` and `event` by equality when they are given.
+
+### The per-consumer ack
+
+More than one consumer can read a label. A consumer acks by appending a line
+that records its name in an `acks` list and leaves the legacy `ack` flag as
+it was, false. `inbox` given a `consumer` hides an entry when that consumer
+is in `acks` or when `ack` is true. Given no consumer, `inbox` looks only at
+`ack`, as before. The legacy `ack` hides an entry from everyone.
+
+The last line per id still decides the entry, but the `acks` lists of every
+line of that id are unioned, and `ack` is true once any line of that id set
+it. Two consumers that each append from a stale read of the bus cannot lose
+one another's ack, and a consumer ack written from a read that predates a
+legacy ack does not bring the entry back.
+
+### Publishing
+
+`append_file` writes one line to the bus without reading and rewriting it. A
+torn final line, one missing its newline, is closed first. Event publishers
+use it so they never read-modify-write `courier.jsonl`.
+
 ## Labels
 
 `from` and `to` hold labels the codebase already uses elsewhere, not a new
