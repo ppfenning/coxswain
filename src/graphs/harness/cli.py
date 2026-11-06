@@ -18,6 +18,7 @@ import faulthandler
 import hashlib
 import json
 import os
+import shlex
 import signal
 import socket
 import subprocess
@@ -29,7 +30,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, datetime
 from datetime import date as date_type
 from pathlib import Path
-from typing import Any, TextIO
+from typing import TYPE_CHECKING, Any, TextIO
 
 import yaml
 
@@ -74,11 +75,15 @@ from harness.usage import summarize
 from harness.worktree import apply_patch, create_worktree, keep_worktree, remove_worktree
 from runner.protocol import LimitStop, RunnerError
 
+if TYPE_CHECKING:
+    from harness.epic import PoolSetting
+
 __all__ = ["main"]
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 # The cartridges component beside this one in the coxswain checkout: src/graphs -> src/cartridges.
 CARTRIDGES_ROOT = REPO_ROOT.parent / "cartridges"
+DEFAULT_POOL_KEEP = 4
 
 
 def _default_ledger() -> Path:
@@ -291,6 +296,17 @@ def _build_parser(specs: dict[str, GraphSpec]) -> argparse.ArgumentParser:
         "--keep-worktrees",
         action="store_true",
         help="on exit, move the run's worktree under <worktree_root>/_kept/<run_id> instead of deleting it",
+    )
+    parser.add_argument(
+        "--pool-keep",
+        type=_non_negative,
+        default=DEFAULT_POOL_KEEP,
+        help=f"epic: most idle warm worktrees left in the pool after the run (default {DEFAULT_POOL_KEEP})",
+    )
+    parser.add_argument(
+        "--no-pool",
+        action="store_true",
+        help="epic: build every task in a cold worktree instead of leasing one from the warm pool",
     )
     parser.add_argument(
         "--resume-from",
@@ -691,6 +707,44 @@ def _cos_docket_args(*, cartridge: Mapping[str, Any], args: argparse.Namespace) 
         "runs_dir": args.runs_dir,
         "stranded": stranded_count(),
     }
+
+
+def _words(declared: object) -> list[str]:
+    """A declared command or name list as strings; a string splits like a shell line, unusable input is []."""
+    if isinstance(declared, str):
+        try:
+            return shlex.split(declared)
+        except ValueError:
+            return []
+    if isinstance(declared, list):
+        return [str(w) for w in declared]
+    return []
+
+
+def _pool_setting(
+    *, enabled: bool, keep: int, worktree_root: Path | str, landing_areas: Mapping[str, Any] | None
+) -> PoolSetting | None:
+    """The `PoolSetting` for `landing_areas.sync` and `.lockfiles`, or None when off.
+
+    No sync command or no lock names also means off: without lock names the pool cannot tell a stale environment.
+    """
+    from harness.epic import PoolSetting
+
+    areas = landing_areas or {}
+    argv, locks = _words(areas.get("sync")), _words(areas.get("lockfiles"))
+    if not enabled or not argv or not locks:
+        return None
+    return PoolSetting(
+        pool_root=Path(worktree_root).expanduser().parent / "_pool", sync_argv=argv, lock_names=locks, keep=keep
+    )
+
+
+def _non_negative(text: str) -> int:
+    """argparse type: a pool keep limit of 0 or more; a negative would trim every idle worktree."""
+    value = int(text)
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"must be 0 or more, got {value}")
+    return value
 
 
 def _read_overlay(repo: str | None) -> Any | None:
@@ -1598,6 +1652,13 @@ def _run_graph(
         # the run's log, for whatever is capturing this process's output.
         register_stack_dump(sys.stdout)
 
+        worktree_root = args.worktree_root or (cartridge.get("landing_areas") or {}).get("worktree_root", "~/worktrees")
+        pool = _pool_setting(
+            enabled=not getattr(args, "no_pool", False),
+            keep=getattr(args, "pool_keep", DEFAULT_POOL_KEEP),
+            worktree_root=worktree_root,
+            landing_areas=cartridge.get("landing_areas"),
+        )
         result = run_epic(
             initiative=initiative,
             repo=Path(args.repo),
@@ -1612,11 +1673,11 @@ def _run_graph(
             ledger_path=args.ledger,
             provider_profile=_provider_profile_scope(args.provider_profile),
             runs_dir=args.runs_dir,
-            worktree_root=args.worktree_root
-            or (cartridge.get("landing_areas") or {}).get("worktree_root", "~/worktrees"),
+            worktree_root=worktree_root,
             assume=args.assume,
             fix_attempts=args.fix_attempts,
             resume_from=args.resume_from,
+            pool=pool,
             store=store,
             epoch=epoch,
             lease_name=lease_name,
