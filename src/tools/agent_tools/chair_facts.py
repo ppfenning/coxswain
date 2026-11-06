@@ -69,6 +69,7 @@ from agent_tools.chair_types import (
     TodoInitiative,
 )
 from agent_tools.checkout_env import CHECKOUT_ENV_KEY
+from agent_tools.host_load import resolve_load_ceiling
 from agent_tools.land_batch_settings import merge_queue_setting
 from agent_tools.remote_lane import fetched_record_path, remote_record_path
 
@@ -133,6 +134,8 @@ class FactsDeps:
         Optional, and absent means 24 hours.
     max_launches_per_hour: the raw profile value at `chair.max_launches_per_hour`, resolved by
         `resolve_max_launches_per_hour`. Optional, and absent means the default.
+    host_load_ceiling: the raw profile value at `chair.host_load_ceiling`, resolved by `host_load.resolve_load_ceiling`.
+        Optional, and absent means no ceiling.
     merge_queue: the raw profile value at the top-level `merge_queue`, resolved by `merge_queue_fact`. Optional, and
         absent means the queue is off.
     stale_days: the raw profile value at `chair.stale_days`, resolved by `resolve_stale_days`. Optional, and
@@ -238,6 +241,7 @@ class FactsDeps:
     housekeeping_hours: Callable[[], object] | None = None  # raw profile chair.housekeeping_hours; absent means 24 hours
     stale_days: Callable[[], object] | None = None  # raw profile chair.stale_days; absent means 7 days
     max_launches_per_hour: Callable[[], object] | None = None  # raw profile chair.max_launches_per_hour; absent means the default
+    host_load_ceiling: Callable[[], object] | None = None  # raw profile chair.host_load_ceiling; absent means no ceiling
     merge_queue: Callable[[], object] | None = None  # raw profile top-level merge_queue; absent means the queue is off
     stale_candidates: Callable[[datetime], Sequence[Row]] | None = None  # chair_read_stale.read_stale_candidates; absent means no candidates
     stall_candidates: Callable[[datetime], Sequence[Row]] | None = None  # chair_read_stall.read_stall_candidates; absent means no candidates
@@ -1312,6 +1316,12 @@ def gather_facts(
         **(
             {"merge_queue": queue}
             if (queue := merge_queue_fact(deps.merge_queue() if deps.merge_queue is not None else None)) is not None
+            else {}
+        ),
+        **(
+            {"host_load_ceiling": ceiling}
+            if (ceiling := resolve_load_ceiling(deps.host_load_ceiling() if deps.host_load_ceiling is not None else None))
+            is not None
             else {}
         ),
         "launch_history": launch_history_from_actions(action_rows, quarantine, now),
