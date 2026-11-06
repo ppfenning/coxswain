@@ -855,6 +855,15 @@ def _write_progress(tracker: node_progress.Tracker, run_id: str, path: Path, loc
     return json.dumps(snapshot)
 
 
+def _node_phase(info: dict[str, Any], run_id: str) -> str:
+    """The phase of a node's task: the info's own, else the directory under the run directory holding its worktree."""
+    named = info.get("phase")
+    if isinstance(named, str) and named:
+        return named
+    cwd = Path(str(info.get("cwd") or ""))
+    return cwd.parent.name if cwd.parent.parent.name == run_id else ""
+
+
 def _progress_observer(
     tracker: node_progress.Tracker, run_id: str, path: Path, lock: threading.Lock, *, traced: bool
 ) -> Callable[..., None]:
@@ -863,7 +872,15 @@ def _progress_observer(
     def on_node(kind: str, info: dict[str, Any], event: dict[str, Any] | None) -> None:
         node, attempt = info["role"], info["attempt"]
         if kind == "started":
-            tracker.start(node, attempt, info["task"], info["tier"], info["cwd"], _head_branch(info["cwd"]))
+            tracker.start(
+                node,
+                attempt,
+                info["task"],
+                info["tier"],
+                info["cwd"],
+                _head_branch(info["cwd"]),
+                phase=_node_phase(info, run_id),
+            )
             _write_progress(tracker, run_id, path, lock)
         elif kind == "event" and event is not None:
             tracker.observe(node, attempt, event)
