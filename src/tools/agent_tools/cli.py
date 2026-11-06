@@ -12210,6 +12210,13 @@ def _chair_float(table: Mapping[str, object], key: str, default: float) -> float
     return float(value)
 
 
+# Bounds on the chair's process-lifetime read caches, sized from the work they hold so a day of ticks cannot grow memory.
+_CHAIR_FILES_CACHE_ENTRIES = 4096  # one entry per work file: a few thousand
+_CHAIR_STORE_CACHE_ENTRIES = 8  # one entry per table read: work_items, and the queue
+_CHAIR_DECOMPOSE_ENTRIES = 320  # per intake: a few hundred runs' logs, plus its exit-rows and item-count entries
+_CHAIR_DECOMPOSE_INTAKES = 256  # intakes holding a cache at once; the oldest is dropped past this
+
+
 def _chair_cache_paths(runs_dir: Path) -> tuple[Path, Path, Path]:
     """The work-file, store-row and decompose-log cache files; `save_cache` writes one cache per path."""
     return runs_dir / "chair-cache.json", runs_dir / "chair-cache-store.json", runs_dir / "chair-cache-decompose.json"
@@ -12264,8 +12271,9 @@ def _chair_run_deps(
 
     # Process-lifetime, unlike `tick_reads`; `load_cache` fills them from the previous chair's stop.
     files_path, store_path, decompose_path = _chair_cache_paths(runs_dir)
-    files_cache = chair_read_cache.StampCache(512)
-    store_cache = chair_read_cache.StampCache(8)
+    files_cache = chair_read_cache.StampCache(_CHAIR_FILES_CACHE_ENTRIES)
+    store_cache = chair_read_cache.StampCache(_CHAIR_STORE_CACHE_ENTRIES)
+    queue_cache = chair_read_cache.StampCache(_CHAIR_STORE_CACHE_ENTRIES)  # memory only: the queue rows are not saved at a stop
     if not dry_run:
         chair_read_cache.load_cache(files_cache, files_path)
         chair_read_cache.load_cache(store_cache, store_path)
@@ -12274,7 +12282,9 @@ def _chair_run_deps(
 
     def decompose_cache_for(intake_id: str):
         if intake_id not in decompose_caches:
-            cache = chair_read_cache.StampCache(64)
+            if len(decompose_caches) >= _CHAIR_DECOMPOSE_INTAKES:
+                del decompose_caches[next(iter(decompose_caches))]  # oldest intake first; its next read parses again
+            cache = chair_read_cache.StampCache(_CHAIR_DECOMPOSE_ENTRIES)
             if not dry_run:
                 chair_read_cache.load_cache(cache, decompose_path)  # the first call for this intake prunes what it does not use
             decompose_caches[intake_id] = cache
@@ -12284,7 +12294,7 @@ def _chair_run_deps(
         chair_read_cache.save_cache(files_cache, files_path)
         chair_read_cache.save_cache(store_cache, store_path)
         if decompose_caches:  # none read this run: leave the saved file for the next chair
-            merged = chair_read_cache.StampCache(64 * len(decompose_caches))
+            merged = chair_read_cache.StampCache(_CHAIR_DECOMPOSE_ENTRIES * len(decompose_caches))
             for cache in decompose_caches.values():
                 chair_read_cache.load_entries(merged, chair_read_cache.dump_entries(cache))  # type: ignore[arg-type]
             chair_read_cache.save_cache(merged, decompose_path)
@@ -12303,7 +12313,7 @@ def _chair_run_deps(
 
     def work_rows() -> list[dict]:
         # `store_rows` (run_store.work_items) carries no `kind` column; the queue read does. Store mode only, once per tick.
-        return once("work_rows", lambda: run_store.read_queue(runs_dir) if mode == "store" else [])  # type: ignore[return-value]
+        return once("work_rows", lambda: run_store.read_queue(runs_dir, None, None, queue_cache) if mode == "store" else [])  # type: ignore[return-value]
 
     def ticket_items() -> list[dict]:
         return once("tickets", lambda: chair_read_docket._work_items(ws, mode, work_files(), store_rows()))  # type: ignore[return-value]
