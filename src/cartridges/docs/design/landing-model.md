@@ -153,10 +153,21 @@ Status vocabulary, from `agent_tools/dash_feed.py _task_state`:
 | `landed` | `done` at the configured `land_at`. |
 
 The merged state is stored. A task merged into its level branch stays `approved` and its row keeps `merged` and
-`merged_commit`. Only a land writes `done`. On restart `_ready_view` presents a merged parent as `done` for `needs`, so
-a dependent level does not wait for a person. `_merge_missing` checks that `merged_commit` is an ancestor of the level
-branch, and quarantines the one task whose commit is gone. A merged task is not rebuilt. At `task` a restart opens the
-PR of any stored merged task that has none. At `level` it reuses the level's PR or opens the missing one.
+`merged_commit`. Only a land writes `done`. On restart a merged parent counts as `done` for `needs`, so a dependent
+level does not wait for a person.
+
+A new run builds its phase branch fresh, so a stored `merged_commit` is often not on it. That does not mean the work is
+lost. The approved commit still exists somewhere, and a restart carries it forward under four rules.
+
+- A change that has already landed is marked `done` against its pull request. Nothing is carried.
+- Otherwise the commit is fetched from origin, from the run's branch namespace, or from the building host. It is
+  cherry-picked onto the new phase branch. The approval is kept and `carried_from` records where the commit came from.
+- Only a commit that cannot be found, or that does not apply, sends the task back to `ready` for a rebuild. The reason
+  is recorded on the task.
+- A task named by an active land is never touched.
+
+A merged task is not rebuilt unless the third rule applies. At `task` a restart opens the PR of any stored merged task
+that has none. At `level` it reuses the level's PR or opens the missing one.
 
 The task cap is `--max-parallel` on the phase and epic commands. Without it the cap is the provider profile's
 `max_parallel`, a positive integer, else the free lane count (`harness/lanes.py resolve_max_parallel`).
