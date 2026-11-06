@@ -6172,6 +6172,11 @@ def _decompose_repo_refusal(a: argparse.Namespace) -> str | None:
     return None if text is None else route.missing_repo_refusal(idea_path.stem, route.parse_frontmatter(text)[0])
 
 
+def lane_capacity_env(env: Mapping[str, str], capacity: int) -> dict[str, str]:
+    """A copy of `env` carrying `COX_LANE_CAPACITY=<capacity>`; a value already set, even empty, is kept."""
+    return {"COX_LANE_CAPACITY": str(capacity), **env}
+
+
 def _route_launch(a: argparse.Namespace) -> int:
     profile, rc = _resolve_profile_or_refuse(a)
     if rc is not None:
@@ -6488,9 +6493,13 @@ def _route_launch(a: argparse.Namespace) -> int:
             print(line)
         return rows_code
 
+    launch_env = (
+        lane_capacity_env(env, _local_max_in_flight(runs_dir, dict(profile), socket.gethostname()))
+        if a.graph == "epic" else env
+    )
     with open(log_path, "ab") as log:
         proc = subprocess.Popen(
-            argv, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
+            argv, env=launch_env, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
         )
     exit_code = _wait_for_exit(
         proc, lambda: _LAUNCH_STARTED_MARKER in (_read_text_or_none(log_path) or ""), _LAUNCH_SETTLE_S,
