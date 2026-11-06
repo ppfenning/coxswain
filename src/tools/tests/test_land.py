@@ -801,7 +801,7 @@ def _phase_two_task_fixture(tmp_path):
 def test_phase_land_proceeds_when_the_squash_carries_every_approved_tasks_files(tmp_path, capsys, monkeypatch):
     repo = _phase_squash_repo(tmp_path, include_b=True)
     item_dir = _phase_two_task_fixture(tmp_path)
-    monkeypatch.setattr(cli, "_run_checks", lambda checks, cwd: (True, "1 checks passed"))
+    monkeypatch.setattr(cli, "_run_checks", lambda checks, cwd, *_: (True, "1 checks passed"))
     rc = cli.main(["runs", "land", "epic-x-5", "--phase", "seams", "--repo", str(repo),
                    "--apply", "--gate", "full", "--runs-dir", str(tmp_path / "runs")])
     out = capsys.readouterr().out
@@ -816,7 +816,7 @@ def test_phase_land_proceeds_when_the_squash_carries_every_approved_tasks_files(
 def test_phase_land_refuses_when_the_squash_is_missing_an_approved_tasks_files(tmp_path, capsys, monkeypatch):
     repo = _phase_squash_repo(tmp_path, include_b=False)
     item_dir = _phase_two_task_fixture(tmp_path)
-    monkeypatch.setattr(cli, "_run_checks", lambda checks, cwd: (True, "1 checks passed"))
+    monkeypatch.setattr(cli, "_run_checks", lambda checks, cwd, *_: (True, "1 checks passed"))
     rc = cli.main(["runs", "land", "epic-x-5", "--phase", "seams", "--repo", str(repo),
                    "--apply", "--gate", "full", "--runs-dir", str(tmp_path / "runs")])
     out = capsys.readouterr().out
@@ -2003,7 +2003,7 @@ def test_a_land_with_no_forge_in_the_profile_fast_forwards_main_and_calls_no_gh(
         return real_run(cmd, *a, **kw)
 
     monkeypatch.setattr(cli.subprocess, "run", no_gh)
-    monkeypatch.setattr(cli, "_run_checks", lambda checks, cwd: (True, "1 checks passed"))
+    monkeypatch.setattr(cli, "_run_checks", lambda checks, cwd, *_: (True, "1 checks passed"))
     rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--gate", "full", *argv])
     out = capsys.readouterr().out
     assert rc == 0, out
@@ -2038,7 +2038,7 @@ def test_a_full_task_land_leaves_the_checkouts_head_where_it_was(repo, tmp_path,
     if start == "side":
         sp.run(["git", "-C", str(repo), "checkout", "-qb", "side"], check=True, env=_ENV)
     seen = []
-    rc, out = _land(repo, tmp_path, lambda checks, cwd: (seen.append(cwd) or True, "1 checks passed"), capsys)
+    rc, out = _land(repo, tmp_path, lambda checks, cwd, *_: (seen.append(cwd) or True, "1 checks passed"), capsys)
     assert rc == 0, out
     assert _head(repo) == start
     assert cli._git_out(repo, "show", "main:f") == "y"
@@ -2049,7 +2049,7 @@ def test_a_full_task_land_leaves_the_checkouts_head_where_it_was(repo, tmp_path,
 @pytest.mark.parametrize("attempts", [1, 2])
 def test_a_land_whose_checks_fail_keeps_the_pr_branch_and_leaves_head_and_no_worktree(repo, tmp_path, capsys, attempts):
     for _ in range(attempts):
-        rc, out = _land(repo, tmp_path, lambda checks, cwd: (False, "tests: boom"), capsys)
+        rc, out = _land(repo, tmp_path, lambda checks, cwd, *_: (False, "tests: boom"), capsys)
     assert rc == 1, out
     assert ("reuse_branch: reusing pr/seams-task" in out) == (attempts == 2)
     assert _head(repo) == "main"
@@ -2061,11 +2061,11 @@ def test_a_land_whose_checks_fail_keeps_the_pr_branch_and_leaves_head_and_no_wor
 
 @pytest.mark.parametrize("start", ["main", "side"])
 def test_a_resumed_land_works_the_same_way(repo, tmp_path, capsys, start):
-    rc, out = _land(repo, tmp_path, lambda checks, cwd: (False, "tests: boom"), capsys)
+    rc, out = _land(repo, tmp_path, lambda checks, cwd, *_: (False, "tests: boom"), capsys)
     assert rc == 1, out
     if start == "side":
         sp.run(["git", "-C", str(repo), "checkout", "-qb", "side"], check=True, env=_ENV)
-    rc, out = _land(repo, tmp_path, lambda checks, cwd: (True, "1 checks passed"), capsys)
+    rc, out = _land(repo, tmp_path, lambda checks, cwd, *_: (True, "1 checks passed"), capsys)
     assert rc == 0, out
     assert "reuse_branch: reusing pr/seams-task" in out
     assert _head(repo) == start
@@ -2092,7 +2092,7 @@ def test_a_profile_naming_an_unknown_forge_refuses_with_exit_2(repo, tmp_path, c
 def test_a_profile_naming_github_routes_the_land_to_it_handing_the_planned_head_base_and_checks_ref(repo, tmp_path, capsys, monkeypatch):
     argv = _forge_land(tmp_path, "forge: github\n")
     calls = []
-    monkeypatch.setattr(cli, "_run_checks", lambda checks, cwd: (True, "1 checks passed"))
+    monkeypatch.setattr(cli, "_run_checks", lambda checks, cwd, *_: (True, "1 checks passed"))
     monkeypatch.setattr(forge_github, "find_open_prs", lambda repo, branch: [])
     monkeypatch.setattr(forge_github, "push", lambda repo, branch: (calls.append(("push", branch)) or True, branch))
     monkeypatch.setattr(forge_github, "open_pr", lambda repo, title, body, *, head=None, base=None:

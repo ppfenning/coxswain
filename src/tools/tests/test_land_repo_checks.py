@@ -234,7 +234,7 @@ def test_ci_with_no_required_check_keeps_the_checks_and_the_dry_run_gives_the_re
     assert step["kept"] == "checks kept locally: main has no required status check"
     assert cli._land_checks_lines([step])[-1] == "  checks kept locally: main has no required status check"
     ran = []
-    monkeypatch.setattr(cli, "_run_checks", lambda checks, wt: ran.append(checks) or (True, "ok"))
+    monkeypatch.setattr(cli, "_run_checks", lambda checks, wt, *_: ran.append(checks) or (True, "ok"))
     assert cli._execute_land_step(tmp_path, step) == (True, "ok")
     assert ran == [step["checks"]]
     assert capsys.readouterr().out == "checks kept locally: main has no required status check\n"
@@ -421,7 +421,7 @@ def test_the_runner_runs_a_ticket_step_under_the_repo_lock_and_an_ordinary_step_
         def __exit__(self, *exc):
             events.append("exit")
     monkeypatch.setattr(check_gate, "repo_gate_lock", FakeLock)
-    monkeypatch.setattr(cli, "_run_checks", lambda checks, wt: events.append(("run", checks)) or (True, "ok"))
+    monkeypatch.setattr(cli, "_run_checks", lambda checks, wt, *_: events.append(("run", checks)) or (True, "ok"))
     [gate] = _ticket_steps(_card_plan({"ticket_checks": _TICKET}))
     assert cli._execute_land_step(tmp_path, gate) == (True, "ok")
     assert events == [("lock", tmp_path), "enter", ("run", gate["checks"]), "exit"]
