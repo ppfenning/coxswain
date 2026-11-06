@@ -1,4 +1,4 @@
-"""`route hold` and `route release` core: mark a queued intake held, or free it again. The edge writes; the name, date and reason come in as arguments."""
+"""`route hold` and `route release` core: mark a queued intake or an initiative held, or free it again. The edge writes; the name, date and reason come in as arguments."""
 
 import json
 from collections.abc import Mapping, Sequence
@@ -16,7 +16,7 @@ class Refused:
     reason: str  # one line, names the id
 
 
-Plan = route_guard.QueuedIntake | Refused
+Plan = route_guard.QueuedIntake | route_guard.InitiativeFound | Refused
 
 
 def hold_reason(by: str, date: str, reason: str) -> str:
@@ -80,15 +80,13 @@ def released_text(text: str) -> str:
 
 def _plan(rows: Sequence[Mapping], target_id: str) -> Plan:
     target = route_guard.resolve_target(rows, target_id)
-    if isinstance(target, route_guard.QueuedIntake):
+    if isinstance(target, route_guard.QueuedIntake | route_guard.InitiativeFound):
         return target
-    if isinstance(target, route_guard.InitiativeFound):
-        return Refused(f"{target_id} is an initiative, not a queued intake")
     return Refused(f"no queued intake named {target_id}")
 
 
 def plan_hold(rows: Sequence[Mapping], target_id: str, reason: str) -> Plan:
-    """`rows` are queue rows. Only a queued intake is held; a decomposed or done intake resolves as not found."""
+    """`rows` are queue rows. A queued intake or an initiative is held; a decomposed or done intake resolves as not found."""
     if not reason.strip():
         return Refused(f"a hold on {target_id} needs a reason")
     return _plan(rows, target_id)
@@ -107,24 +105,42 @@ def _row_of(rows: Sequence[Mapping], task_id: str) -> Mapping:
     return next(row for row in rows if row.get("kind") == "intake" and row.get("state") == "queued" and row.get("task_id") == task_id)
 
 
+def _initiative_row(rows: Sequence[Mapping], initiative: str) -> Mapping | None:
+    return next((row for row in rows if row.get("kind") == "initiative" and row.get("task_id") == initiative), None)
+
+
 def _row_without_held(row: Mapping) -> dict:
     return {**row, "extra": {k: v for k, v in (row.get("extra") or {}).items() if k not in HELD_KEYS}}
 
 
-def _apply(verb: str, ws: Path, runs_dir: Path, plan: route_guard.QueuedIntake, rows: Sequence[Mapping], sent: dict, new_text, line: str, dry_run: bool) -> int:
-    path = ws / "intake" / f"{plan.task_id}.md"
+def _row_held(row: Mapping, value: str) -> dict:
+    return {**row, "extra": {**(row.get("extra") or {}), "held": "true", "hold_reason": value}}
+
+
+def _locate(plan: route_guard.QueuedIntake | route_guard.InitiativeFound, ws: Path, rows: Sequence[Mapping]) -> tuple[str, str, Path, Mapping | None]:
+    """(kind, id, the file, the store row or None when the store has none)."""
+    if isinstance(plan, route_guard.QueuedIntake):
+        return "intake", plan.task_id, ws / "intake" / f"{plan.task_id}.md", _row_of(rows, plan.task_id)
+    return "initiative", plan.initiative, ws / "work" / plan.initiative / "initiative.md", _initiative_row(rows, plan.initiative)
+
+
+def _apply(verb: str, ws: Path, runs_dir: Path, plan: route_guard.QueuedIntake | route_guard.InitiativeFound, rows: Sequence[Mapping], new_row, new_text, line: str, dry_run: bool) -> int:
+    kind, ident, path, row = _locate(plan, ws, rows)
+    if row is None:
+        return _refuse(verb, f"no initiative row for {ident} in the store")
     if not path.is_file():
-        return _refuse(verb, f"no intake file at {path}")
+        return _refuse(verb, f"no {kind} file at {path}")
+    sent = new_row(row)
     text = path.read_bytes().decode("utf-8")
     new = new_text(text)
     if dry_run:
-        print(f"would {verb} intake {plan.task_id}: {line}")
+        print(f"would {verb} {kind} {ident}: {line}")
         return route_guard.DONE
-    if new == text and sent == dict(_row_of(rows, plan.task_id)):
-        print(f"{verb}: intake {plan.task_id}: nothing to change")
+    if new == text and sent == dict(row):
+        print(f"{verb}: {kind} {ident}: nothing to change")
         return route_guard.DONE
     if not run_store.upsert_row(runs_dir, sent):
-        print(f"{verb}: the store did not take intake {plan.task_id}")
+        print(f"{verb}: the store did not take {kind} {ident}")
         return 1
     try:
         path.write_bytes(new.encode("utf-8"))
@@ -132,7 +148,7 @@ def _apply(verb: str, ws: Path, runs_dir: Path, plan: route_guard.QueuedIntake, 
         print(f"{verb}: could not write {path}: {exc}")
         return 1
     queue_export.record_written_paths(ws, [path])
-    print(f"{verb}: intake {plan.task_id}: {line}")
+    print(f"{verb}: {kind} {ident}: {line}")
     return route_guard.DONE
 
 
@@ -141,22 +157,19 @@ def hold(
 ) -> int:
     """Edge. `rows` are queue rows; `runs_dir` is the store's, whose parent is `ws`. Exit 0 done, 1 a write failed, 2 refused with nothing written.
 
-    The store takes the row first and `intake/<id>.md` follows, as `route.set_intake_priority` does.
+    The store takes the row first and the file (`intake/<id>.md` or `work/<id>/initiative.md`) follows, as `route.set_intake_priority` does.
     """
     plan = plan_hold(rows, id, reason)
     if isinstance(plan, Refused):
         return _refuse("hold", plan.reason)
     date = now.date().isoformat()
     value = hold_reason(by, date, reason)
-    row = _row_of(rows, plan.task_id)
-    sent = {**row, "extra": {**(row.get("extra") or {}), "held": "true", "hold_reason": value}}
-    return _apply("hold", ws, runs_dir, plan, rows, sent, lambda text: held_text(text, reason, by, date), value, dry_run)
+    return _apply("hold", ws, runs_dir, plan, rows, lambda row: _row_held(row, value), lambda text: held_text(text, reason, by, date), value, dry_run)
 
 
 def release(ws: Path, runs_dir: Path, id: str, rows: Sequence[Mapping], *, dry_run: bool = False) -> int:
-    """Edge. Exit codes as `hold`. Releasing an intake that is not held writes nothing."""
+    """Edge. Exit codes as `hold`. Releasing a target that is not held writes nothing."""
     plan = plan_release(rows, id)
     if isinstance(plan, Refused):
         return _refuse("release", plan.reason)
-    sent = _row_without_held(_row_of(rows, plan.task_id))
-    return _apply("release", ws, runs_dir, plan, rows, sent, released_text, "held fields removed", dry_run)
+    return _apply("release", ws, runs_dir, plan, rows, _row_without_held, released_text, "held fields removed", dry_run)

@@ -1,6 +1,6 @@
 """Intake filing, entries, status lines and priority carry `after`, `held` and `priority`."""
 
-from agent_tools import route, run_store
+from agent_tools import intake_queue, route, run_store
 
 
 def test_intake_file_default_has_no_after_line():
@@ -166,3 +166,10 @@ def test_set_intake_priority_without_a_file_still_succeeds(tmp_path, monkeypatch
 
     assert route.set_intake_priority(tmp_path / "runs", tmp_path, _row(0), 5) == 0
     assert not (tmp_path / "intake").exists()
+
+
+def test_a_single_quoted_true_hold_is_held_and_not_runnable():
+    row = {"kind": "intake", "state": "queued", "task_id": "idea", "initiative": None, "extra": {"held": "'true'"}}
+
+    assert intake_queue.runnable_intake([row]) == []
+    assert intake_queue.held_rows([row]) == [row]

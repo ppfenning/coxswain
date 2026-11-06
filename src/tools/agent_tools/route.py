@@ -2466,6 +2466,8 @@ def _parse_field(line: str):
         return key, _unquote(raw)
     if raw.startswith("["):
         return key, _parse_list(raw)
+    if raw.startswith("'"):
+        return key, _unquote_item(raw)
     return key, raw
 
 
