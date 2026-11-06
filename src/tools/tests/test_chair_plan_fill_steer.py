@@ -149,3 +149,44 @@ def test_a_steered_out_initiative_is_dropped_before_host_placement():
         _launch("z", host="host-a"),
         {"kind": "steer_clear", "initiative": "x", "other": "y", "paths": ["src/main.rs"]},
     ]
+
+
+def _clear(initiative: str, other: str, path: str) -> dict:
+    return {"kind": "steer_clear", "initiative": initiative, "other": other, "paths": [path]}
+
+
+def test_a_limit_of_two_launches_both_initiatives_sharing_a_file():
+    facts = _facts(
+        initiatives=[_init("x", ["src/a.rs"]), _init("z", ["src/a.rs"])],
+        steer_policy={"limit": 2, "serial": []},
+    )
+    assert plan_fill(facts, 2) == [_launch("x"), _launch("z")]
+
+
+def test_a_third_initiative_on_a_file_at_its_limit_is_steered_clear():
+    facts = _facts(
+        initiatives=[_init("x", ["src/a.rs"]), _init("z", ["src/a.rs"]), _init("w", ["src/a.rs"])],
+        steer_policy={"limit": 2, "serial": []},
+    )
+    assert plan_fill(facts, 3) == [_launch("x"), _launch("z"), _clear("w", "x", "src/a.rs")]
+
+
+def test_a_serial_file_is_held_even_at_limit_five():
+    facts = _facts(
+        initiatives=[_init("x", ["src/a.rs"]), _init("z", ["src/a.rs"])],
+        steer_policy={"limit": 5, "serial": ["src/a.rs"]},
+    )
+    assert plan_fill(facts, 2) == [_launch("x"), _clear("z", "x", "src/a.rs")]
+
+
+def test_a_file_marked_new_by_both_initiatives_is_held_at_limit_five():
+    facts = _facts(
+        initiatives=[_init("x", ["src/a.rs (new)"]), _init("z", ["src/a.rs (new)"])],
+        steer_policy={"limit": 5, "serial": []},
+    )
+    assert plan_fill(facts, 2) == [_launch("x"), _clear("z", "x", "src/a.rs")]
+
+
+def test_facts_without_a_steer_policy_still_hold_a_shared_file():
+    facts = _facts(initiatives=[_init("x", ["src/a.rs"]), _init("z", ["src/a.rs"])])
+    assert plan_fill(facts, 2) == [_launch("x"), _clear("z", "x", "src/a.rs")]
