@@ -27,7 +27,18 @@ from agent_tools.chair_exec import Result
 from agent_tools.chair_facts import FactsDeps, gather_facts
 from agent_tools.chair_plan import TickPlan, plan_tick, plan_tick_held, reported_waiting
 from agent_tools.chair_report import EASTERN, format_status, write_status
-from agent_tools.chair_restart import RESTART, CheckoutState, restart_decision, restart_line
+from agent_tools.chair_restart import (
+    RESTART,
+    WAIT,
+    CheckoutState,
+    Pending,
+    coalesce,
+    restart_decision,
+    restart_line,
+    restart_reason,
+    touches_chair_code,
+)
+from agent_tools.chair_restart_log import with_note
 from agent_tools.chair_types import Action, Facts, PlanTick
 from agent_tools.ci_gate import DEFAULT_QUEUED_BOUND_SECONDS, CiGate, evaluate_gate
 from agent_tools.forge_status import StatusReader
@@ -118,9 +129,10 @@ class OverrunState:
 
 @dataclass
 class RestartState:
-    """The (old, new) heads when the loop stopped because its checkout moved; None otherwise. Read after `run` returns."""
+    """The (old, new) heads and the reason when the loop stopped because its checkout moved; None otherwise. Read after `run` returns."""
 
     moved: tuple[str, str] | None = None
+    reason: str | None = None
 
 
 @dataclass
@@ -199,6 +211,15 @@ class RunDeps:
     started_checkout: CheckoutState | None = None
     lands_in_flight: Callable[[], bool] = no_lands_in_flight
     restart_state: RestartState = field(default_factory=RestartState)
+    # Paths changed between two heads; None reads no diff, so every move is relevant. A None return is an unreadable diff, also relevant.
+    changed_files: Callable[[str, str], list[str] | None] | None = None
+    # A relevant move restarts once its head has held `restart_window_s`, or `restart_max_defer_s` after it was first seen; zero restarts at the first check.
+    restart_window_s: float = 0.0
+    restart_max_defer_s: float = 0.0
+    monotonic: Callable[[], float] = time.monotonic
+    restart_note: str = ""  # the "restarts N in 24h" segment appended to every tick line; "" for none
+    record_restart: Callable[[str], None] | None = None  # given the reason when the loop restarts
+    save_cache: Callable[[], None] | None = None  # run on every live stop, before the lease is released
     # Notifier: `notify` is `dispatch`'s call shape; `notify_config` None is the off state; no `workspace` skips the step.
     notify: Callable[[list, NotifyConfig | None, Path, float], list[str]] = dispatch
     notify_config: NotifyConfig | None = None
@@ -564,14 +585,15 @@ def _attempt(deps: RunDeps, dry_run: bool) -> None:
         line = overrun_line(exc.bound, deps.overrun_state.consecutive, now)
     except Exception as exc:  # one bad tick must not stop the loop
         line = error_line(exc, now)
-    _publish_status(deps, dry_run, line, now, stage_seconds)
-    _publish_tick_status(deps, dry_run, line, now)
+    shown = with_note(line, deps.restart_note)
+    _publish_status(deps, dry_run, shown, now, stage_seconds)
+    _publish_tick_status(deps, dry_run, shown, now)
     try:
         if timing is not None:
             # Before the status line: `_chair_run` takes its --once exit code from the last line echoed.
             with contextlib.suppress(Exception):
                 deps.report_deps.echo(timing)
-        write_status(line, deps.report_deps)
+        write_status(shown, deps.report_deps)
     except Exception as exc:  # a failed notify or echo must not stop the loop either
         # A broken echo leaves nowhere to write, so the loop goes on silent rather than dying.
         with contextlib.suppress(Exception):
@@ -605,55 +627,86 @@ def start_lease_beat(deps: RunDeps, dry_run: bool) -> threading.Event:
     return stop
 
 
-def _shutdown(deps: RunDeps, beating: threading.Event, restore: Callable[[], None]) -> None:
+def _shutdown(deps: RunDeps, beating: threading.Event, restore: Callable[[], None], dry_run: bool) -> None:
     beating.set()  # before the release: a beat with no sidecar acquires, and would retake the lease just released
     restore()  # a second SIGTERM during the release below ends the process as it would have
     with contextlib.suppress(Exception):  # a failed land release must not keep the chair lease held
         deps.stop_lands()
+    if deps.save_cache is not None and not dry_run:
+        with contextlib.suppress(Exception):  # a failed cache save must not keep the chair lease held
+            deps.save_cache()
     if deps.holds():
         deps.release()
 
 
-def _moved_heads(deps: RunDeps) -> tuple[str, str] | None:
-    """The (old, new) heads when the checkout moved and no land is in flight; None to tick on. An unreadable state stays."""
-    if deps.checkout_state is None or deps.started_checkout is None:
-        return None
+def _moved_heads(deps: RunDeps, pending: Pending | None) -> tuple[tuple[str, str] | None, str, Pending | None]:
+    """(heads, reason, pending): heads is set once a code move has settled and no land is in flight; None to tick on.
+
+    A land in flight or an unreadable checkout keeps `pending`. A head back where it started, or a move that touches no chair code, drops it.
+    """
+    started = deps.started_checkout
+    if deps.checkout_state is None or started is None:
+        return None, "", None
     try:
         current = deps.checkout_state()
     except Exception:  # an unreadable checkout is no reason to restart
-        return None
-    decision = restart_decision(deps.started_checkout, current, deps.lands_in_flight())
-    return (deps.started_checkout.head, current.head) if decision.state == RESTART and current is not None else None
+        return None, "", pending
+    state = restart_decision(started, current, deps.lands_in_flight()).state
+    if current is None or state == WAIT:
+        return None, "", pending
+    if state != RESTART:
+        return None, "", None
+    paths = None
+    if deps.changed_files is not None:
+        try:
+            paths = deps.changed_files(started.head, current.head)
+        except Exception:  # an unreadable diff counts as relevant
+            paths = None
+        if paths is not None and not touches_chair_code(paths):
+            return None, "", None
+    now = deps.monotonic()
+    seen = pending or Pending(current.head, now, now)
+    ready, kept = coalesce(seen, current.head, now, deps.restart_window_s, deps.restart_max_defer_s)
+    moved = (started.head, current.head)
+    return (moved, restart_reason(*moved, paths), None) if ready else (None, "", kept)
 
 
-def _restart(deps: RunDeps, moved: tuple[str, str]) -> None:
+def _restart(deps: RunDeps, moved: tuple[str, str], reason: str) -> None:
     with contextlib.suppress(Exception):  # a broken echo must not keep the chair lease held
         deps.report_deps.echo(restart_line(*moved))
     deps.restart_state.moved = moved
+    deps.restart_state.reason = reason
+    if deps.record_restart is not None:
+        with contextlib.suppress(Exception):  # a failed record must not keep the chair lease held
+            deps.record_restart(reason)
 
 
 def run(once: bool, interval: float, dry_run: bool, deps: RunDeps, max_overruns: int = 3) -> None:
     """Ticks until interrupted, SIGTERM, max_overruns overruns in a row or a moved checkout, or once; a stop frees the lands, then the lease.
 
     The checkout is read between ticks only, so a tick in progress finishes first; a land in flight defers the restart.
+    A move that touches no chair code never restarts; a burst of code moves restarts once, after the head settles.
     """
     restore = (lambda: None) if dry_run else deps.install_sigterm()
     beating = start_lease_beat(deps, dry_run)
+    pending: Pending | None = None  # carried across passes: the code move waiting for its head to settle
     try:
         while True:
             _attempt(deps, dry_run)
             if once:
                 return
             if overrun_limit_hit(deps.overrun_state.consecutive, max_overruns):
-                _shutdown(deps, beating, restore)
+                _shutdown(deps, beating, restore, dry_run)
                 return
             deps.sleep(interval)
-            if not dry_run and (moved := _moved_heads(deps)) is not None:
-                _restart(deps, moved)
-                _shutdown(deps, beating, restore)
-                return
+            if not dry_run:
+                moved, reason, pending = _moved_heads(deps, pending)
+                if moved is not None:
+                    _restart(deps, moved, reason)
+                    _shutdown(deps, beating, restore, dry_run)
+                    return
     except KeyboardInterrupt:
-        _shutdown(deps, beating, restore)
+        _shutdown(deps, beating, restore, dry_run)
     finally:
         beating.set()
         restore()

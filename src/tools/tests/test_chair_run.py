@@ -819,6 +819,119 @@ def test_an_unreadable_checkout_ticks_as_usual(state):
     assert (rig.log.count("gather"), len(reads), deps.restart_state.moved) == (3, 2, None)
 
 
+CODE = ["src/tools/agent_tools/chair_run.py"]
+DOCS = ["docs/index.md", "src/tools/agent_tools/README.md"]
+
+
+def _clocked(rig, step=10.0, **over):
+    """`over` plus a fake monotonic clock that the rig's sleep advances by `step`; returns the over dict."""
+    now = [0.0]
+
+    def sleep(seconds):
+        now[0] += step
+        rig._sleep(seconds)
+
+    return {"monotonic": lambda: now[0], "sleep": sleep, **over}
+
+
+def _head(letter):
+    return CheckoutState(letter * 40, True)
+
+
+def test_a_docs_only_move_never_restarts_and_the_loop_keeps_ticking():
+    rig = Rig(sleeps_before_interrupt=4)
+    deps, reads = _checkout(rig, [CheckoutState(NEW, True)], changed_files=lambda old, new: DOCS)
+    run(False, 60, False, deps)
+    assert (rig.log.count("gather"), len(reads), deps.restart_state.moved, _restart_lines(rig)) == (4, 3, None, [])
+
+
+def test_a_code_move_restarts_only_after_the_tick_that_was_running_has_completed():
+    rig = Rig(sleeps_before_interrupt=100)
+    seen = []
+    deps, _ = _checkout(rig, [CheckoutState(NEW, True)], changed_files=lambda old, new: seen.append(rig.log.count("gather")) or CODE)
+    run(False, 60, False, deps)
+    assert (rig.log.count("gather"), seen, rig.released) == (1, [1], [True])
+    assert deps.restart_state.moved == (OLD, NEW)
+    assert deps.restart_state.reason == f"checkout moved {OLD[:12]} to {NEW[:12]}, 1 chair code files changed"
+
+
+def test_three_head_moves_inside_the_window_cause_exactly_one_restart():
+    rig = Rig(sleeps_before_interrupt=100)
+    recorded = []
+    heads = [_head("c"), _head("d"), _head("e")]
+    deps, reads = _checkout(
+        rig, heads, changed_files=lambda old, new: CODE, record_restart=recorded.append,
+        **_clocked(rig, restart_window_s=25.0, restart_max_defer_s=1000.0),
+    )
+    run(False, 60, False, deps)
+    assert (rig.log.count("gather"), len(reads), len(_restart_lines(rig)), len(recorded)) == (6, 6, 1, 1)
+    assert deps.restart_state.moved == (OLD, "e" * 40)
+
+
+def test_a_head_that_keeps_moving_restarts_once_the_max_defer_has_passed():
+    rig = Rig(sleeps_before_interrupt=100)
+    heads = [_head(c) for c in "cdefg"]
+    deps, reads = _checkout(
+        rig, heads, changed_files=lambda old, new: CODE, **_clocked(rig, restart_window_s=100.0, restart_max_defer_s=25.0)
+    )
+    run(False, 60, False, deps)
+    assert (rig.log.count("gather"), len(reads), deps.restart_state.moved) == (4, 4, (OLD, "f" * 40))
+
+
+def test_a_land_in_flight_defers_a_code_move_to_the_first_tick_after_it_finishes():
+    rig = Rig(sleeps_before_interrupt=100)
+    deps, reads = _checkout(rig, [CheckoutState(NEW, True)], in_flight=[True, True, False], changed_files=lambda old, new: CODE)
+    run(False, 60, False, deps)
+    assert (rig.log.count("gather"), len(reads), deps.restart_state.moved) == (3, 3, (OLD, NEW))
+
+
+def test_save_cache_and_record_restart_are_each_called_once_on_a_restart_and_save_runs_before_the_release():
+    rig = Rig(sleeps_before_interrupt=100)
+    saved, recorded = [], []
+    deps, _ = _checkout(
+        rig, [CheckoutState(NEW, True)], changed_files=lambda old, new: CODE,
+        save_cache=lambda: saved.append(list(rig.released)), record_restart=recorded.append,
+    )
+    run(False, 60, False, deps)
+    assert (saved, recorded, rig.released) == ([[]], [deps.restart_state.reason], [True])
+
+
+def test_a_raising_save_cache_or_record_restart_still_frees_the_lease():
+    def boom(*_args):
+        raise RuntimeError("disk full")
+
+    rig = Rig(sleeps_before_interrupt=100)
+    deps, _ = _checkout(rig, [CheckoutState(NEW, True)], save_cache=boom, record_restart=boom)
+    run(False, 60, False, deps)
+    assert (deps.restart_state.moved, rig.released) == ((OLD, NEW), [True])
+
+
+@pytest.mark.parametrize(("dry", "calls"), [(False, 1), (True, 0)])
+def test_save_cache_runs_once_on_an_interrupt_and_never_in_a_dry_run(dry, calls):
+    rig = Rig(sleeps_before_interrupt=1)
+    saved = []
+    run(False, 60, dry, replace(rig.deps(), save_cache=lambda: saved.append(1)))
+    assert len(saved) == calls
+
+
+def test_the_tick_line_ends_with_the_restart_note_when_one_is_set():
+    note = "restarts 2 in 24h, last: checkout moved"
+    rig = Rig()
+    run(True, 60, False, replace(rig.deps(), restart_note=note))
+    assert rig.lines[-1].endswith(f" | {note}")
+    plain = Rig()
+    run(True, 60, False, plain.deps())
+    assert note not in plain.lines[-1]
+
+
+def test_an_unset_changed_files_restarts_on_any_move_and_an_unreadable_diff_counts_as_relevant():
+    for over in ({}, {"changed_files": lambda old, new: None}):
+        rig = Rig(sleeps_before_interrupt=100)
+        deps, _ = _checkout(rig, [CheckoutState(NEW, True)], **over)
+        run(False, 60, False, deps)
+        assert (rig.log.count("gather"), deps.restart_state.moved) == (1, (OLD, NEW))
+
+
 def test_a_gather_that_raises_inside_the_bound_still_surfaces_its_exception():
     rig = Rig()
 
