@@ -1,10 +1,11 @@
 """The pure overlap rule every launch path shares; the edge fills `running` and `steer_streaks`."""
 from collections.abc import Mapping, Sequence
 
-from agent_tools.chair_types import Action, RunningInitiative
+from agent_tools.chair_types import Action, RunningInitiative, SteerPolicy
 
 ESCALATE_AT = 3  # consecutive prior deferrals of one ordered pair before the chair is asked
 _NEW_MARKER = " (new)"
+STRICT: SteerPolicy = {"limit": 1, "serial": []}
 
 
 def _clean(entry: str) -> str:
@@ -40,6 +41,35 @@ def _first_overlap(surfaces: Sequence[str], entries: Sequence[RunningInitiative]
     return next(((e, paths) for e in entries if (paths := shared_paths(surfaces, e["surfaces"]))), None)
 
 
+def _serial(path: str, serial: Sequence[str]) -> bool:
+    """True when `path` equals a serial entry or lies under a `/`-ending one."""
+    return any(path == s or (s.endswith("/") and path.startswith(s)) for s in serial)
+
+
+def _both_new(path: str, surfaces: Sequence[str], peer_surfaces: Sequence[str]) -> bool:
+    """True when the candidate and the peer both list exactly `path` with the (new) marker."""
+    return f"{path}{_NEW_MARKER}" in surfaces and f"{path}{_NEW_MARKER}" in peer_surfaces
+
+
+def _blocking(surfaces: Sequence[str], entry: RunningInitiative, others: Sequence[RunningInitiative], policy: SteerPolicy) -> list[str]:
+    """The paths shared with `entry` that serial, a mutual (new) or too many distinct holders in `others` make blocking."""
+
+    def holders(path: str) -> int:
+        return len({e["id"] for e in others if shared_paths([path], e["surfaces"])})
+
+    return [
+        p
+        for p in shared_paths(surfaces, entry["surfaces"])
+        if _serial(p, policy["serial"]) or _both_new(p, surfaces, entry["surfaces"]) or holders(p) >= policy["limit"]
+    ]
+
+
+def _first_blocking(
+    surfaces: Sequence[str], entries: Sequence[RunningInitiative], policy: SteerPolicy
+) -> tuple[RunningInitiative, list[str]] | None:
+    return next(((e, paths) for e in entries if (paths := _blocking(surfaces, e, entries, policy))), None)
+
+
 def steer_check(
     initiative: str,
     repo: str,
@@ -47,14 +77,18 @@ def steer_check(
     running: Sequence[RunningInitiative],
     streaks: Mapping[str, int],
     phase: str | None = None,
+    policy: SteerPolicy | None = None,
 ) -> Action | None:
-    """The first same-repo overlap with another initiative: steer_clear, or needs_chair once the streak reaches 3.
+    """The first same-repo blocking overlap with another initiative: steer_clear, or needs_chair once the streak reaches 3.
+
+    A shared path blocks when it is serial, planned new by both sides, or held by at least `policy["limit"]` other
+    initiatives; no policy means STRICT, where any shared path blocks. Holders count distinct initiative ids.
 
     Only with no such overlap, a sibling phase of the same initiative that shares a path gives steer_clear, never needs_chair.
     An entry or candidate without a phase is the whole initiative and never a sibling.
     """
     same_repo = [e for e in running if e["repo"] == repo]
-    cross = _first_overlap(surfaces, [e for e in same_repo if e["id"] != initiative])
+    cross = _first_blocking(surfaces, [e for e in same_repo if e["id"] != initiative], STRICT if policy is None else policy)
     if cross is not None:
         entry, paths = cross
         other = entry["id"]

@@ -1,4 +1,4 @@
-from agent_tools.chair_steer import shared_paths, steer_check, steer_heads
+from agent_tools.chair_steer import STRICT, shared_paths, steer_check, steer_heads
 
 
 def _clear(initiative: str, other: str) -> dict:
@@ -97,3 +97,40 @@ def test_heads_come_first_seen_first():
 def test_a_self_pair_and_other_kinds_give_no_head():
     other_kinds = [{"kind": "launch_epic", "initiative": "a", "other": "x"}, {"kind": "needs_chair", "initiative": "d", "cause": "no_run", "other": "y"}]
     assert steer_heads([_clear("i", "i"), *other_kinds]) == []
+
+
+def _clear_a(other: str) -> dict:
+    return {"kind": "steer_clear", "initiative": "cand", "other": other, "paths": ["a.py"]}
+
+
+def test_shared_file_under_limit_two_with_one_holder_is_none():
+    assert steer_check("cand", "r", ["a.py"], [_run("p1", ["a.py"])], {}, None, {"limit": 2, "serial": []}) is None
+
+
+def test_shared_file_at_limit_two_with_two_holders_steers_clear():
+    running = [_run("p1", ["a.py"]), _run("p2", ["a.py"])]
+    assert steer_check("cand", "r", ["a.py"], running, {}, None, {"limit": 2, "serial": []}) == _clear_a("p1")
+
+
+def test_new_on_both_sides_steers_clear_at_limit_five():
+    policy = {"limit": 5, "serial": []}
+    assert steer_check("cand", "r", ["a.py (new)"], [_run("p1", ["a.py (new)"])], {}, None, policy) == _clear_a("p1")
+
+
+def test_new_on_one_side_only_does_not_block_at_limit_five():
+    assert steer_check("cand", "r", ["a.py (new)"], [_run("p1", ["a.py"])], {}, None, {"limit": 5, "serial": []}) is None
+
+
+def test_serial_entry_steers_clear_at_limit_five():
+    assert steer_check("cand", "r", ["a.py"], [_run("p1", ["a.py"])], {}, None, {"limit": 5, "serial": ["a.py"]}) == _clear_a("p1")
+
+
+def test_serial_directory_covers_a_file_under_it():
+    action = steer_check("cand", "r", ["src/x.rs"], [_run("p1", ["src/x.rs"])], {}, None, {"limit": 5, "serial": ["src/"]})
+    assert action == {"kind": "steer_clear", "initiative": "cand", "other": "p1", "paths": ["src/x.rs"]}
+
+
+def test_five_argument_call_matches_the_strict_policy():
+    running = [_run("p1", ["a.py"])]
+    assert steer_check("cand", "r", ["a.py"], running, {}) == _clear_a("p1")
+    assert steer_check("cand", "r", ["a.py"], running, {}, None, STRICT) == _clear_a("p1")

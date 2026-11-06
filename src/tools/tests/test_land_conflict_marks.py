@@ -134,3 +134,24 @@ def test_rebuild_then_files_the_note_and_clears_the_marker_on_the_task_the_land_
     assert task["body"].endswith("Land conflict with main@abc12345 in cli.py; rebuilding on current main.\n")
     assert "land_conflict" not in task["extra"]
     assert route.launch_from_rows(tmp_path / "runs", "ship", "/r")[2]["ready"] == ["t1"]
+
+
+def test_a_cherry_pick_conflict_records_its_paths_sorted_and_no_commits():
+    detail = "cherry-pick of abcd1234 conflicts in: f, cli.py\ncould not apply abcd1234"
+    assert land.stop_fields("cherry_pick", detail, "b1", "f1") == {
+        "stopped_step": "cherry_pick", "stop_detail": detail, "conflict_paths": ["cli.py", "f"]}
+
+
+def test_a_cherry_pick_stop_with_another_detail_records_no_paths():
+    assert land.stop_fields("cherry_pick", "checks failed", None, None) == {
+        "stopped_step": "cherry_pick", "stop_detail": "checks failed"}
+
+
+def test_a_squash_phase_conflict_still_records_paths_and_both_commits():
+    detail = "squash of x conflicts in: b, a"
+    assert land.stop_fields("squash_phase", detail, "bsha", "fsha") == {
+        "stopped_step": "squash_phase", "stop_detail": detail, "conflict_paths": ["a", "b"], "branch_sha": "bsha", "from_sha": "fsha"}
+
+
+def test_a_land_log_row_with_no_stop_carries_no_conflict_paths():
+    assert "conflict_paths" not in land.land_log_row("2026-11-06T00:00:00Z", "r1", "t1", ["cherry_pick"], 0, None)
