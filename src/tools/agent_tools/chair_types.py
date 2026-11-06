@@ -429,6 +429,7 @@ class Facts(TypedDict):
     lease: LeaseFacts
     limits: LimitsFacts
     stale_days: int  # resolved chair.stale_days profile value, default 7; filled in by the edge
+    host_load_ceiling: NotRequired[float | None]  # resolved chair.host_load_ceiling fraction; absent means no ceiling
     dispatch: DispatchFacts
     approved: list[ApprovedTask]
     initiatives: list[InitiativeFacts]

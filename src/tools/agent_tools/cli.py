@@ -151,6 +151,7 @@ forge_github = _LazyModule("agent_tools.forge_github")
 generate = _LazyModule("agent_tools.generate")
 home_paths = _LazyModule("agent_tools.home")
 host_cmd = _LazyModule("agent_tools.host_cmd")
+host_load = _LazyModule("agent_tools.host_load")
 install = _LazyModule("agent_tools.install")
 install_exec = _LazyModule("agent_tools.install_exec")
 install_root = _LazyModule("agent_tools.install_root")
@@ -6705,6 +6706,7 @@ def _place_or_refuse(
     local = socket.gethostname()
     live = _live_by_host_name(run_store.live_lanes(runs_dir, _now_iso()), local)
     cap = _local_max_in_flight(runs_dir, dict(profile), local)
+    ceiling = host_load.resolve_load_ceiling((profile.get("chair") or {}).get("host_load_ceiling"))
     force = bool(getattr(a, "force", False))
     profile_text = _read_text_or_none(_profile_path(a)) or ""
     parsed = _profile_lane_hosts(profile_text)
@@ -6729,7 +6731,7 @@ def _place_or_refuse(
         placed = launch_place.place_checked(
             lambda barred: launch_place.place(
                 rows, live, datetime.datetime.now(datetime.UTC), local, cap, profile_hosts, barred,
-                local_excluded=local_excluded,
+                local_excluded=local_excluded, load_ceiling=ceiling,
             ),
             refused,
         )
@@ -12605,6 +12607,7 @@ def _chair_run_deps(
         housekeeping_hours=lambda: (profile.get("chair") or {}).get("housekeeping_hours"),
         stale_days=lambda: (profile.get("chair") or {}).get("stale_days"),
         max_launches_per_hour=lambda: (profile.get("chair") or {}).get("max_launches_per_hour"),
+        host_load_ceiling=lambda: (profile.get("chair") or {}).get("host_load_ceiling"),
         stale_candidates=lambda n: chair_read_stale.read_stale_candidates(ws, n, work_files(), attempts(), actions()),
         stall_candidates=lambda n: chair_read_stall.read_stall_candidates(runs_dir, startup_hosts, n),
         idle_stall=idle_stall,

@@ -269,6 +269,21 @@ def test_a_stale_days_callable_returning_10_gives_stale_days_10():
     assert gather_facts(deps, NOW)["stale_days"] == 10
 
 
+def test_a_host_load_ceiling_of_0_8_gives_the_fact_0_8():
+    deps = replace(_deps(), host_load_ceiling=lambda: 0.8)
+    assert gather_facts(deps, NOW)["host_load_ceiling"] == 0.8
+
+
+def test_no_reader_gives_no_host_load_ceiling_key():
+    assert "host_load_ceiling" not in gather_facts(_deps(), NOW)
+
+
+@pytest.mark.parametrize("raw", [None, 0, 0.0, -0.5, "abc", True, float("nan"), float("inf"), [0.8]])
+def test_an_absent_zero_or_malformed_host_load_ceiling_gives_no_key(raw):
+    deps = replace(_deps(), host_load_ceiling=lambda: raw)
+    assert "host_load_ceiling" not in gather_facts(deps, NOW)
+
+
 def test_weekly_spend_of_85_percent_is_a_hard_stop_with_no_launches():
     limits = gather_facts(_deps(weekly_spent=85.0), NOW)["limits"]
     assert limits == {
@@ -573,9 +588,10 @@ def test_lease_is_mine_only_for_this_holder_on_a_live_lease():
 
 
 def test_gather_facts_fills_every_key_from_the_fakes():
-    # merge_queue is gathered only for an enabled queue, so this fake enables one.
+    # merge_queue and host_load_ceiling are gathered only when configured, so these fakes configure them.
     queue = {"batch_size": 3, "wait_s": 90}
-    facts = gather_facts(replace(_deps(), phase_records=lambda tasks: [], merge_queue=lambda: queue), NOW)
+    deps = replace(_deps(), phase_records=lambda tasks: [], merge_queue=lambda: queue, host_load_ceiling=lambda: 0.8)
+    facts = gather_facts(deps, NOW)
     # login_hosts is not yet declared on Facts: a later task adds it there once the login watch reads it.
     # tuning, landed_main and land_outcomes are all filled in gather_facts now.
     # steward is declared on Facts and read by the planner; the next task gathers it, until then it is absent.
