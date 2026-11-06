@@ -1,6 +1,7 @@
 from harness.lane_workers import (
     LANE_CAPACITY_VAR,
     XDIST_VAR,
+    check_env,
     lane_workers,
     lane_workers_from,
     workers_env,
@@ -62,4 +63,29 @@ def test_an_operator_set_xdist_variable_is_left_alone():
 def test_workers_env_does_not_mutate_its_input():
     environ = {"HOME": "/h"}
     workers_env(environ, 4)
+    assert environ == {"HOME": "/h"}
+
+
+def test_check_env_adds_the_worker_count_to_the_whole_environment():
+    assert check_env({"HOME": "/h"}, 20, 5) == {"HOME": "/h", XDIST_VAR: "4"}
+
+
+def test_check_env_without_a_usable_capacity_is_none():
+    assert check_env({"HOME": "/h"}, 20, 0) is None
+    assert check_env({"HOME": "/h"}, 20, -1) is None
+    assert check_env({"HOME": "/h"}, 20, None) is None
+
+
+def test_check_env_keeps_an_operator_set_value():
+    assert check_env({XDIST_VAR: "16"}, 20, 5) == {XDIST_VAR: "16"}
+
+
+def test_check_env_takes_a_capacity_read_from_the_lane_variable():
+    environ = {LANE_CAPACITY_VAR: "5"}
+    assert check_env(environ, 20, int(environ[LANE_CAPACITY_VAR]))[XDIST_VAR] == "4"
+
+
+def test_check_env_does_not_mutate_its_input():
+    environ = {"HOME": "/h"}
+    check_env(environ, 20, 5)
     assert environ == {"HOME": "/h"}
