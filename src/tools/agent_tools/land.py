@@ -65,6 +65,7 @@ __all__ = [
     "last_command",
     "mark_done",
     "merge_pages",
+    "parent_land_wait",
     "phase_landable",
     "phase_landed_tasks",
     "phase_pr_body",
@@ -251,6 +252,18 @@ def phase_landable(items: list[dict[str, Any]], records: dict[str, dict[str, Any
         if refusal is not None:
             return f"{item.get('id')}: {refusal}"
     return None
+
+
+def _phase_order(phase: str) -> list[object]:
+    return [int(p) if p.isdigit() else p for p in re.split(r"(\d+)", phase)]
+
+
+def parent_land_wait(tasks: Collection[str], phase_of: Mapping[str, str], needs: Mapping[str, Collection[str]],
+                     landed: Collection[str], carried: Collection[str] = ()) -> str | None:
+    """`waiting on parent land: <phase>` for the first parent phase, in natural order, holding a need that is neither landed nor carried."""
+    unmet = {phase_of[n] for t in tasks for n in needs.get(t, ())
+             if n in phase_of and phase_of[n] != phase_of.get(t) and n not in landed and n not in carried}
+    return f"waiting on parent land: {min(unmet, key=_phase_order)}" if unmet else None
 
 
 def squash_missing_files(approved_files: Sequence[dict[str, Any]], squashed_files: Sequence[str]) -> str | None:
