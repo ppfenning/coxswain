@@ -139,10 +139,13 @@ def test_a_gather_that_cannot_run_is_null_and_never_raises():
     result = host_cmd.beat_versions(run, "0.20.0", "/h", None)
     host_facts = result.pop("host_facts")
     load = result.pop(LOAD_KEY)
+    host_load = result.pop("host_load")
     assert result == {
         "cox": "0.20.0", "graphs": None, "cartridges": None, "claude": None, "login_ok": None,
         "workspace_dir": None, "repos": [], "checkouts": {}, CHECKOUT_ENV_KEY: {},
     }
+    assert set(host_load) == {"cpu_pct", "load_avg_1m", "load_avg_5m", "load_avg_15m", "mem_used_gb"}
+    assert all(isinstance(v, float) for v in host_load.values())
     assert isinstance(host_facts["os"], str) and host_facts["os"]
     assert isinstance(host_facts["cpu_count"], int)
     assert isinstance(host_facts["mem_total_gb"], float)
@@ -177,6 +180,71 @@ def test_the_load_record_is_zeros_when_getloadavg_is_unavailable(monkeypatch, tm
     assert host_cmd._load_record(str(meminfo)) == {"cpu": 0.0, "mem": 0.0}
 
 
+def test_cpu_pct_is_the_busy_share_of_the_jiffies_between_two_samples():
+    assert host_cmd.cpu_pct((100, 200), (150, 300)) == 50.0
+    assert host_cmd.cpu_pct((0, 0), (1, 3)) == 66.67
+
+
+def test_cpu_pct_is_zero_when_total_did_not_advance():
+    assert host_cmd.cpu_pct((100, 200), (100, 200)) == 0.0
+
+
+def test_the_cpu_sample_is_idle_plus_iowait_and_the_first_eight_fields_from_the_cpu_line():
+    stat = "cpu  10 20 30 400 50 6 7 8 9 10\ncpu0 1 2 3 4 5 6 7 8 9 10\nintr 1\n"
+    assert host_cmd.parse_cpu_sample(stat) == (450, 531)
+
+
+def test_the_cpu_sample_is_zeros_for_empty_short_or_non_numeric_text():
+    assert host_cmd.parse_cpu_sample("") == (0, 0)
+    assert host_cmd.parse_cpu_sample("cpu  1 2 3\n") == (0, 0)
+    assert host_cmd.parse_cpu_sample("cpu  a b c d e f g h\n") == (0, 0)
+
+
+def test_the_loadavg_parser_takes_the_first_three_fields():
+    assert host_cmd.parse_loadavg("0.524 0.41 0.30 1/234 5678\n") == (0.52, 0.41, 0.3)
+
+
+def test_the_loadavg_parser_is_zeros_for_short_or_non_numeric_text():
+    assert host_cmd.parse_loadavg("") == (0.0, 0.0, 0.0)
+    assert host_cmd.parse_loadavg("0.5 0.4") == (0.0, 0.0, 0.0)
+    assert host_cmd.parse_loadavg("a b c") == (0.0, 0.0, 0.0)
+
+
+def test_the_meminfo_parser_is_total_minus_available_in_gib():
+    meminfo = "MemTotal:       16777216 kB\nMemFree:  100 kB\nMemAvailable:    8388608 kB\n"
+    assert host_cmd.parse_meminfo_used_gb(meminfo) == 8.0
+    assert host_cmd.parse_meminfo_used_gb("MemTotal: 1000 kB\nMemAvailable: 250 kB\n") == 0.0
+
+
+def test_the_meminfo_parser_is_zero_when_a_line_is_missing_or_non_numeric():
+    assert host_cmd.parse_meminfo_used_gb("MemTotal: 1000 kB\n") == 0.0
+    assert host_cmd.parse_meminfo_used_gb("MemTotal: x kB\nMemAvailable: 1 kB\n") == 0.0
+    assert host_cmd.parse_meminfo_used_gb("") == 0.0
+
+
+def test_the_host_load_samples_cpu_either_side_of_one_injected_sleep():
+    files = iter(["cpu  0 0 0 100 0 0 0 0\n", "cpu  50 0 0 150 0 0 0 0\n"])
+    texts = {"/proc/loadavg": "1.5 1.0 0.5 1/2 3\n", "/proc/meminfo": "MemTotal: 16777216 kB\nMemAvailable: 8388608 kB\n"}
+    slept: list[float] = []
+
+    def read(path: str) -> str:
+        return next(files) if path == "/proc/stat" else texts[path]
+
+    assert host_cmd._host_load(read, slept.append, 0.5) == {
+        "cpu_pct": 50.0, "load_avg_1m": 1.5, "load_avg_5m": 1.0, "load_avg_15m": 0.5, "mem_used_gb": 8.0,
+    }
+    assert slept == [0.5]
+
+
+def test_the_host_load_is_zeros_when_every_file_is_unreadable():
+    def read(path: str) -> str:
+        raise OSError(path)
+
+    assert host_cmd._host_load(read, lambda _: None) == {
+        "cpu_pct": 0.0, "load_avg_1m": 0.0, "load_avg_5m": 0.0, "load_avg_15m": 0.0, "mem_used_gb": 0.0,
+    }
+
+
 def test_the_load_record_reads_mem_as_the_fraction_in_use(monkeypatch, tmp_path):
     meminfo = tmp_path / "meminfo"
     meminfo.write_text("MemTotal:       1000 kB\nMemFree: 10 kB\nMemAvailable:    250 kB\n", encoding="utf-8")
@@ -198,6 +266,7 @@ def test_the_beat_reads_login_from_claude_auth_status_json():
     result = host_cmd.beat_versions(run, None, "/h", "/c", "/srv/ws", ["/h", "/c", "/t"])
     result.pop("host_facts")
     result.pop(LOAD_KEY)
+    result.pop("host_load")
     assert result == {
         "cox": "v9", "graphs": "v9", "cartridges": "v9", "claude": "v9", "login_ok": True,
         "workspace_dir": "/srv/ws", "repos": ["/h", "/c", "/t"],
