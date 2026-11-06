@@ -368,6 +368,11 @@ def slugify(title: str) -> str:
     return (cut[:boundary] if boundary > 0 else cut).strip("-")
 
 
+def phase_run_prefix(initiative_id: str, phase: str) -> str:
+    """The run-id prefix of one phase's run: `<prefix>-<N>` via `next_run_id`, so its lease is `runs:<prefix>`, not `runs:<initiative_id>`."""
+    return f"{initiative_id}.{phase}"
+
+
 def next_run_id(existing_names, prefix: str) -> str:
     """Return `<prefix>-<n>` for one past the highest n used by a name in
     existing_names with that prefix, or `<prefix>-1` when there is none.
@@ -762,7 +767,7 @@ def harness_argv(
 ) -> list:
     """Build the harness command line, spec §4, from a parsed `profile`
     and the graph-specific `needs` (`initiative`/`repo` for `epic`, plus
-    `task` for `rescue`; `idea`/`initiative_id`, plus an optional `task_ids` and `repo`, for `decompose`). Pure: no Popen, no env reads.
+    `task` for `rescue`, and an optional `phase` for `epic`; `idea`/`initiative_id`, plus an optional `task_ids` and `repo`, for `decompose`). Pure: no Popen, no env reads.
     `python` is the interpreter `install_root.harness_python` chose; without it, the harness checkout's own venv.
     `result_out`, for `decompose` only, adds `--result-out <path>` so the graph result lands as JSON.
     """
@@ -791,6 +796,8 @@ def harness_argv(
     ]
     if graph in ("epic", "rescue"):
         argv += ["--initiative", needs["initiative"], "--repo", needs["repo"]]
+        if graph == "epic" and needs.get("phase"):
+            argv += ["--phase", needs["phase"]]
         if graph == "rescue":
             argv += ["--task", needs["task"]]
         if needs.get("fix_attempts") is not None:

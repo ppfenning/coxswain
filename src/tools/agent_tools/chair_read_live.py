@@ -1,5 +1,6 @@
 import glob
 import re
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,3 +46,33 @@ def read_live_initiatives(runs_dir: Path, initiatives: Sequence[str], now: str) 
     leases = {name: None if row is None else Lease(row[0], row[1]) for name, row in rows.items()}
     pid_live = {name: any(_run_live(p, now) for p in _pidfiles(runs_dir, name)) for name in initiatives}
     return live_initiatives(leases, pid_live, now)
+
+
+def live_phases(leases: Mapping[tuple[str, str], Lease | None], pid_live: Mapping[tuple[str, str], bool], now: str) -> list[tuple[str, str]]:
+    """Pure. Keys are `(initiative, phase)`. Live by the `live_initiatives` rule: a held, unexpired lease, else a live pid. Sorted."""
+    by_lease = {key for key, lease in leases.items() if lease is not None and lease.holder and lease.expires_at > now}
+    by_pid = {key for key, alive in pid_live.items() if alive}
+    return sorted(by_lease | by_pid)
+
+
+def _phase_pidfiles(runs_dir: Path, initiative: str) -> list[tuple[str, Path]]:
+    """Edge. `(phase, path)` for `<initiative>.<phase>.pid` and `<initiative>.<phase>-<N>.pid`; the phase has no dot."""
+    own = re.compile(re.escape(initiative) + r"\.([^.]+?)(?:-\d+)?\.pid")
+    matches = ((own.fullmatch(p.name), p) for p in runs_dir.glob(f"{glob.escape(initiative)}.*.pid"))
+    return sorted((m.group(1), p) for m, p in matches if m)
+
+
+def _phase_leases(runs_dir: Path, initiative: str) -> dict[str, Lease]:
+    """Edge. The `runs:<initiative>.<phase>` lease rows by phase; the whole-initiative `runs:<initiative>` row never matches."""
+    own = re.compile("runs:" + re.escape(initiative) + r"\.([^.]+)")
+    table = run_store._lease_table(str(runs_dir), int(time.monotonic() // run_store._LEASE_SNAPSHOT_S))  # the cache window is the only clock read
+    matches = ((own.fullmatch(name), row) for name, row in table.items())
+    return {m.group(1): Lease(row[0], row[1]) for m, row in matches if m}
+
+
+def read_live_phases(runs_dir: Path, initiatives: Sequence[str], now: str) -> list[tuple[str, str]]:
+    """Edge. The live `(initiative, phase)` pairs of each initiative's phase leases and phase pidfiles. `now` is passed in."""
+    leases = {(i, phase): lease for i in initiatives for phase, lease in _phase_leases(runs_dir, i).items()}
+    pidfiles = [(i, phase, p) for i in initiatives for phase, p in _phase_pidfiles(runs_dir, i)]
+    pid_live = dict.fromkeys({(i, phase) for i, phase, p in pidfiles if _run_live(p, now)}, True)
+    return live_phases(leases, pid_live, now)
