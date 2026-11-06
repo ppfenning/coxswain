@@ -33,6 +33,7 @@ from agent_tools import readme_commands
 from agent_tools.card_commits import card_commit_steps
 from agent_tools.card_pr import card_pr_steps
 from agent_tools.chair_plan_land import fetch_action
+from core.landing import phase_merge_ready, pr_branch_name, pr_stage
 
 if TYPE_CHECKING:
     from agent_tools import store_cli
@@ -229,11 +230,14 @@ def checks_detail(head: str, skipped: Sequence[str], flaky: Sequence[str] = ()) 
     return "\n".join([head, *(skip_line(name) for name in skipped), *(f"checks: {note}" for note in flaky)])
 
 
-def phase_landable(items: list[dict[str, Any]], records: dict[str, dict[str, Any]]) -> str | None:
+def phase_landable(items: list[dict[str, Any]], records: dict[str, dict[str, Any]], quarantine: bool = False) -> str | None:
     """None when every item is landable, else the first reason it is not. A `done` or `dropped` item is
-    satisfied without a record; an `approved` item needs one, and any record present must be approved."""
+    satisfied without a record; an `approved` item needs one, and any record present must be approved.
+    With `quarantine`, an item or record in state `quarantined` is refused by name."""
     for item in items:
         status = item.get("status")
+        if quarantine and "quarantined" in (status, (records.get(item.get("id")) or {}).get("status")):
+            return f"{item.get('id')} is quarantined; the ticket pull request takes only approved, done or dropped tasks"
         if status not in ("approved", "done", "dropped"):
             return f"{item.get('id')} is {status!r}, not approved, done or dropped"
         if status == "dropped":
@@ -485,6 +489,96 @@ def _card_phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], 
     ]
 
 
+def _ticket_branch_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_records: list[dict[str, Any]],
+                        records: Mapping[str, dict[str, Any]], repo_facts: dict[str, Any] | None, default_branch: str,
+                        pr_facts: dict[str, Any] | None, *, phases: Sequence[str], branches: Mapping[str, list[str]] | None,
+                        repo: str, run_hosts: Mapping[str, str] | None, fetched_missing: Collection[str],
+                        task_facts: Sequence[Mapping[str, Any]] | None, already_merged: bool, ticket_tasks: Sequence[str],
+                        ticket_present: Collection[str], ticket_records: Sequence[dict[str, Any]],
+                        ticket_unrecorded: Collection[str]) -> list[dict[str, Any]]:
+    """A ticket phase land into the one `pr/<initiative>` branch. A first phase whose branch has no tip plans
+    `pr_branch_cut` (`if_missing`); a later phase finding no branch refuses. Then `merge_phase` (or a gather of each task, flagged `keep_branch` so the executor
+    keeps the earlier phases), checks, push, `pr_create` (first phase, no open PR) or `pr_update`, then
+    `mark_merged` per task and `phase_done`. The last phase adds `pr_ready`, `wait_checks`, `merge`, `clean_phase`
+    and `ticket_done`'s marks. No per-phase pull request is opened. `pr_facts` with a `pr` is an open PR found
+    by its head branch; its number rides on the update and the wait."""
+    run, phase, initiative = phase_record.get("run"), phase_record.get("phase"), phase_record.get("initiative")
+    phase_branch, pr_branch = f"epic/{initiative}/{phase}", pr_branch_name(initiative)
+    last = pr_stage(phase, phases) == "ready"
+    approved_ids = [r.get("task") for r in task_records if r.get("status", "approved") == "approved"]
+    if not [r for r in task_records if r.get("status") != "dropped"] and all(i.get("status") in ("done", "dropped") for i in items):
+        return [{"kind": "note", "reason": f"phase {phase} done: every item is done or dropped, nothing to land"}]
+    if last and already_merged:
+        return [{"kind": "clean_phase", "run": run, "phase_branch": phase_branch, "pr_branch": pr_branch,
+                 "tasks": [r.get("task") for r in task_records if r.get("status") != "dropped"]},
+                *ticket_done(ticket_tasks, set(ticket_tasks), ticket_unrecorded)]
+    quarantined = [i.get("status") == "quarantined" or (records.get(i.get("id")) or {}).get("status") == "quarantined" for i in items]
+    if not phase_merge_ready("ticket", [i.get("status") for i in items], quarantined):
+        return [{"kind": "refuse", "reason": f"phase {phase} is not ready to merge into {pr_branch}"}]
+    facts = pr_facts or {}
+    open_pr = None
+    if facts.get("pr") is not None:
+        decision = phase_resume(pr_facts, pr_branch)
+        if decision["kind"] == "refuse":
+            return [{"kind": "refuse", "reason": decision["reason"]}]
+        open_pr = decision["pr"]
+    known = branches or {}
+    statuses = task_gather_status(task_facts or [])
+    missing = [t for t, s in statuses.items() if s == "missing"]
+    if missing:
+        return [{"kind": "refuse", "reason": f"{', '.join(missing)}: no agent branch and no build.patch to gather the work from; nothing merged"}]
+    lacking = [records[t] for t, s in statuses.items() if s.startswith("gather_") and t in records]
+    from_branch = {f"agents/{records[t].get('run')}/{t}": [] for t, s in statuses.items() if s == "gather_from_branch" and t in records}
+    approved = [records[i["id"]] for i in items if i.get("status") == "approved" and i.get("id") in records]
+    merge = {"kind": "merge_phase", "branch": phase_branch, "onto": pr_branch, "phase": phase,
+             "message": f"epic {initiative}: merge phase {phase}"}
+
+    def gather_for(recs: list[dict[str, Any]], seen: Mapping[str, list[str]]) -> list[dict[str, Any]]:
+        steps = [s for r in recs for s in _gather_one(r, seen, run_hosts or {}, fetched_missing, repo=repo, initiative=initiative,
+                                                       pr_branch=pr_branch, default_branch=default_branch)]
+        return [{**s, "keep_branch": True} if "onto" in s else s for s in steps]
+
+    if lacking:
+        build = [*([merge] if "already_present" in statuses.values() else []), *gather_for(lacking, {**known, **from_branch})]
+    elif approved and phase_branch in known and not known[phase_branch]:
+        build = gather_for(approved, known)
+    else:
+        build = [merge]
+    if any(s["kind"] == "refuse" for s in build):
+        return [next(s for s in build if s["kind"] == "refuse")]
+    first = phase == phases[0]
+    gone = pr_facts is not None and facts.get("local_tip") is None and facts.get("remote_tip") is None
+    if gone and not first:
+        return [{"kind": "refuse", "reason": f"{pr_branch} does not exist, so the work of the phases before {phase} is not on it; land the first phase again"}]
+    # The cut creates the branch only when it is missing: a branch with a tip, or an open PR, is reused as it is.
+    cut = first and facts.get("local_tip") is None and facts.get("remote_tip") is None and open_pr is None
+    title = phase_pr_title(initiative, phase, phase_record.get("initiative_title", ""))
+    body = phase_pr_body(phase_record, [*ticket_records, *task_records])
+    pinned = {"pr": open_pr} if open_pr is not None else {}
+    pr_steps = ([{"kind": "pr_create", "title": title, "body": body, "head": pr_branch, "base": default_branch, "draft": True}]
+                if open_pr is None and first else
+                [{"kind": "pr_update", "head": pr_branch, "base": default_branch, "title": title, "body": body, **pinned}])
+    tail = [
+        {"kind": "wait_checks", "branch": pr_branch, **pinned},
+        {"kind": "merge", "squash": True, "delete_branch": True, "branch": pr_branch, "default_branch": default_branch,
+         "subject": f"epic {initiative}: {phase}"},
+        {"kind": "clean_phase", "run": run, "phase_branch": phase_branch, "pr_branch": pr_branch, "tasks": approved_ids},
+        *ticket_done(ticket_tasks, set(approved_ids) | set(ticket_present) | set(ticket_unrecorded), ticket_unrecorded),
+    ] if last else []
+    return [
+        *([{"kind": "pr_branch_cut", "branch": pr_branch, "from": default_branch, "phase": phase, "if_missing": True}] if cut else []),
+        *build,
+        checks_step(repo_facts or {}, pr_branch),
+        *(ticket_checks_steps(repo_facts or {}, pr_branch) if last else []),
+        {"kind": "push", "branch": pr_branch},
+        *pr_steps,
+        *([{"kind": "pr_ready", "head": pr_branch, **pinned}] if last else []),
+        *[{"kind": "mark_merged", "task": t, "merged": True} for t in approved_ids],
+        {"kind": "phase_done", "initiative": initiative, "phase": phase, "pr_branch": pr_branch},
+        *tail,
+    ]
+
+
 def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_records: list[dict[str, Any]],
                 repo_facts: dict[str, Any] | None, default_branch: str = "main",
                 pr_facts: dict[str, Any] | None = None, *, branches: Mapping[str, list[str]] | None = None,
@@ -494,7 +588,8 @@ def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_
                 already_merged: bool = False, ticket_tasks: Sequence[str] = (),
                 ticket_present: Collection[str] = (),
                 ticket_records: Sequence[dict[str, Any]] = (),
-                ticket_unrecorded: Collection[str] = ()) -> list[dict[str, Any]]:
+                ticket_unrecorded: Collection[str] = (),
+                phases: Sequence[str] = ()) -> list[dict[str, Any]]:
     """§1's phase step list, or a one-step `refuse` from `phase_landable`. The
     phase branch is squashed onto a fresh `default_branch` in its own PR
     branch, the way a task land builds its PR, since a coxswain repo requires
@@ -515,12 +610,19 @@ def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_
     records = {r.get("task"): r for r in task_records}
     # Merged already, an approved item with no local record is marked in the store, not refused for lacking one.
     unrecorded_items = [i.get("id") for i in items if already_merged and i.get("status") == "approved" and i.get("id") not in records]
-    refusal = phase_landable([i for i in items if i.get("id") not in unrecorded_items], records)
+    # With `phases`, a ticket land merges each phase into one `pr/<initiative>` branch; without it the squash shape below stays.
+    branch_ticket = granularity(phase_record) == "ticket" and bool(ticket_tasks) and bool(phases) and not phase_record.get("card_branch")
+    refusal = phase_landable([i for i in items if i.get("id") not in unrecorded_items], records, quarantine=branch_ticket)
     if refusal is not None:
         return [{"kind": "refuse", "reason": refusal}]
     if phase_record.get("card_branch"):
         return _card_phase_plan(phase_record, items, task_records, repo_facts, repo, default_branch, ticket_tasks, ticket_present,
                                 ticket_unrecorded)
+    if branch_ticket:
+        return _ticket_branch_plan(phase_record, items, task_records, records, repo_facts, default_branch, pr_facts, phases=phases,
+                                   branches=branches, repo=repo, run_hosts=run_hosts, fetched_missing=fetched_missing,
+                                   task_facts=task_facts, already_merged=already_merged, ticket_tasks=ticket_tasks,
+                                   ticket_present=ticket_present, ticket_records=ticket_records, ticket_unrecorded=ticket_unrecorded)
     ticket = granularity(phase_record) == "ticket" and bool(ticket_tasks)
     if ticket and not phase_record.get("last_phase"):
         return [{"kind": "note", "reason": f"phase {phase_record.get('phase')}: ticket granularity, the one pull request opens at the last phase"}]
@@ -635,6 +737,14 @@ def gate_steps(steps: Sequence[dict[str, Any]], level: str, land_at: str | None 
         note = [{"kind": "note", "reason": f"gate: {len(ticket_tasks)} ticket tasks are marked done after the pull request merges"}
                 ] if land_at == "ticket" and ticket_tasks else []
         return steps if idx is None else [*steps[:idx], *note]
+    if any(s["kind"] == "phase_done" for s in steps):
+        # Every `_ticket_branch_plan` plan ends its phase with `phase_done`, whether it merged or gathered. It stops
+        # before the final merge, and before the wait on that PR's checks.
+        merge = next((i for i, s in enumerate(steps) if s["kind"] == "merge" and "target" not in s), None)
+        if merge is None:
+            return steps
+        stop = merge - 1 if steps[merge - 1]["kind"] == "wait_checks" else merge
+        return [*steps[:stop], {"kind": "note", "reason": "gate: ticket — the pull request is ready and the final merge waits for a person"}]
     # A phase land resumed at an open PR has no `pr_create`; its `wait_checks` carries the PR number.
     idx = next((i for i, s in enumerate(steps) if s["kind"] == "pr_create" or (s["kind"] == "wait_checks" and "pr" in s)), None)
     note = {"kind": "note", "reason": "gate: ticket — the pull request is open and waits for a person"}
@@ -678,7 +788,8 @@ def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_br
               ticket_tasks: Sequence[str] = (), ticket_present: Collection[str] = (),
               ticket_records: Sequence[dict[str, Any]] = (), phase_done: bool = False,
               compared: Mapping[str, Mapping[str, int]] | None = None,
-              ticket_unrecorded: Collection[str] = ()) -> list[dict[str, Any]]:
+              ticket_unrecorded: Collection[str] = (),
+              phases: Sequence[str] = ()) -> list[dict[str, Any]]:
     """The ordered steps to land `record`, or a one-step `refuse`. Task mode lands the newest subject of the
     first branch with any subject: the phase branch first when `phase_done`, else the scratch branch first.
     `compared` maps a branch to its raw `ahead`/`behind` rev-list counts, quoted in a refusal. Phase mode only: `already_merged` plans
@@ -694,12 +805,13 @@ def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_br
     closing `route_sync`, and `issue` adds `Closes #n` to the PR body; `none`
     plans neither and says so in a note. At ticket, `ticket_records` are the earlier phases' task records whose
     work is in the PR; their blocks head the one PR body. `ticket_unrecorded` names ticket tasks the store holds
-    approved with no task record here; a ticket plan treats them as in the PR and marks each with `recorded: False`."""
+    approved with no task record here; a ticket plan treats them as in the PR and marks each with `recorded: False`.
+    `phases` (the initiative's phases in order) switches a ticket phase land to the one `pr/<initiative>` branch."""
     if items is not None:
         return _phase_plan(record, items, task_records or [], repo_facts, default_branch, phase_pr, branches=branches,
                            repo=repo, run_hosts=run_hosts, fetched_missing=fetched_missing, task_facts=task_facts,
                            already_merged=already_merged, ticket_tasks=ticket_tasks, ticket_present=ticket_present,
-                           ticket_records=ticket_records, ticket_unrecorded=ticket_unrecorded)
+                           ticket_records=ticket_records, ticket_unrecorded=ticket_unrecorded, phases=phases)
     if _proposal(record, "draft_pr_create") is None:
         return [{"kind": "refuse", "reason": "no draft_pr_create proposal in record"}]
     refusal = _approved(record)

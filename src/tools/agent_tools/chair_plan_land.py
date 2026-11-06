@@ -7,9 +7,7 @@ from agent_tools.chair_land_backoff import suppressing
 from agent_tools.chair_land_conflict import standing
 from agent_tools.chair_plan_partial import partial_land_action
 from agent_tools.chair_types import Action, ApprovedTask, Facts, InitiativeFacts
-from core.landing import phase_land_deferred
-
-_SETTLED = frozenset({"approved", "merged", "done", "dropped"})
+from core.landing import phase_merge_ready
 
 
 def _first_of_each_id(tasks: list[ApprovedTask]) -> list[ApprovedTask]:
@@ -103,33 +101,39 @@ def plan_finish(facts: Facts) -> list[Action]:
     ]
 
 
-def deferred_phases(facts: Facts) -> dict[tuple[str, str], str]:
-    """(initiative, phase) to the land_at used, for each phase whose land waits for the last phase of its initiative.
+def ticket_phases(facts: Facts) -> dict[tuple[str, str], bool]:
+    """(initiative, phase) to whether `phase_merge_ready` holds, for each phase of a `land_at` ticket initiative.
 
-    The phases are the sorted union of those in `phase_tasks` (which holds every phase with an approved task) and the
-    initiative's ready and waiting tasks, the order `core.workstore.phases` gives. A phase holding a task in any state but approved, merged, done or dropped
-    (a quarantined or unfinished sibling) is never deferred. An initiative without a `land_at` fact defers nothing."""
-    rows = facts.get("phase_tasks", [])
-    result: dict[tuple[str, str], str] = {}
-    for initiative in facts.get("initiatives", []):
-        land_at = initiative.get("land_at")
-        if land_at is None:
-            continue
-        name = initiative["id"]
-        mine = [r for r in rows if r["initiative"] == name]
-        queued = [*initiative.get("ready_tasks", []), *initiative.get("waiting_tasks", [])]
-        phases = sorted(
-            {*(r["phase"] for r in mine), *(t.get("phase", "") for t in queued)} - {""}
-        )
-        unsettled = {r["phase"] for r in mine if any(state not in _SETTLED for _, state in r["tasks"])}
-        result |= {(name, p): land_at for p in phases if p not in unsettled and phase_land_deferred(land_at, p, phases)}
-    return result
+    The phases are those in `phase_tasks` and those of the initiative's approved tasks. A phase with no `phase_tasks`
+    row reads each of its approved tasks as `approved`. A `merged` state is an approved task whose PR merged."""
+    tickets = {i["id"] for i in facts.get("initiatives", []) if i.get("land_at") == "ticket"}
+    rows = {(r["initiative"], r["phase"]): r["tasks"] for r in facts.get("phase_tasks", []) if r["initiative"] in tickets}
+    keys = {*rows, *((t["initiative"], t["phase"]) for t in facts["approved"] if t["initiative"] in tickets)}
+    states = {
+        key: [s for _, s in rows[key]] if key in rows else ["approved" for t in facts["approved"] if (t["initiative"], t["phase"]) == key]
+        for key in keys
+    }
+    return {
+        key: phase_merge_ready("ticket", ["approved" if s == "merged" else s for s in ss], [s == "quarantined" for s in ss])
+        for key, ss in states.items()
+    }
+
+
+def ticket_held(facts: Facts) -> frozenset[tuple[str, str]]:
+    """The ticket phases that plan no land this tick: not merge-ready, or behind an earlier ready phase of their initiative.
+
+    Phases are ordered by name, as `core.workstore.phases` orders them. Only the earliest ready phase with a finished
+    approved task is let through, so two phases of one initiative never land at once; the next is planned once it has landed."""
+    phases = ticket_phases(facts)
+    finished = {(t["initiative"], t["phase"]) for t in facts["approved"] if t["phase_done"]}
+    first = dict(sorted((k for k, ok in phases.items() if ok and k in finished), reverse=True))
+    return frozenset(key for key in phases if first.get(key[0]) != key[1])
 
 
 def _land_groups(facts: Facts) -> dict[tuple[str, str], list[ApprovedTask]]:
     """The tasks this tick lands, grouped by (initiative, phase) in landing order."""
     # Awaiting phases leave before scheduling, so a task needing an awaiting task is deferred, not landed ahead of it.
-    awaiting = awaiting_phases(facts) | manual_phases(facts) | deferred_phases(facts).keys()
+    awaiting = awaiting_phases(facts) | manual_phases(facts) | ticket_held(facts)
     tasks = planned_tasks([t for t in facts["approved"] if (t["initiative"], t["phase"]) not in awaiting], facts["initiatives"])
     groups: dict[tuple[str, str], list[ApprovedTask]] = {}
     for t in tasks:
@@ -200,8 +204,9 @@ def plan_lands(facts: Facts, now: datetime | None = None) -> list[Action]:
     A `land_freeze` fact is a live freeze, already judged against the tick's clock: it plans no land_phase and no
     by-task land. Fetches and needs_chair are still planned, and so is everything else outside this function.
 
-    A phase `deferred_phases` names plans none of the above and is never in `backoff_held`: at ticket granularity its
-    land waits for the last phase. It gets one `deferred` action carrying the land_at used, in place of the land."""
+    At `land_at` ticket a phase lands once `phase_merge_ready` holds for its task states (`ticket_phases`). One with a
+    quarantined or unfinished task plans nothing, a partial_land included. A later phase of the initiative plans
+    nothing until the earlier ready one has landed (`ticket_held`)."""
     frozen = facts.get("land_freeze") is not None
     fetched: set[str] = set()
     actions: list[Action] = []  # type: ignore[assignment]  # plan_tick stamps the epoch on every action below
@@ -227,7 +232,7 @@ def plan_lands(facts: Facts, now: datetime | None = None) -> list[Action]:
             "kind": "land_phase", "initiative": initiative, "phase": phase, "repo": repo, "run": run, "epoch": None,
             "task_runs": task_runs,
         })
-    return actions + _partial_lands(facts, frozenset(_land_groups(facts)), now) + _deferred_actions(facts)
+    return actions + _partial_lands(facts, frozenset(_land_groups(facts)), now)
 
 
 def _partial_lands(facts: Facts, whole: frozenset[tuple[str, str]], now: datetime | None = None) -> list[Action]:
@@ -236,7 +241,7 @@ def _partial_lands(facts: Facts, whole: frozenset[tuple[str, str]], now: datetim
     Each gains the repo, `task_runs` (approved task id -> the run holding its record, from `approved`) and `run`, the
     newest of those runs; a fetch leads it when one of its runs is remote and unfetched. A phase inside its
     `land_refusals` backoff, or with a standing `land_conflicts` entry for its run, plans nothing, as a land_phase would."""
-    skip = whole | awaiting_phases(facts) | manual_phases(facts) | deferred_phases(facts).keys()
+    skip = whole | awaiting_phases(facts) | manual_phases(facts) | ticket_held(facts)
     approved = {(t["initiative"], t["phase"], t["id"]): t for t in facts["approved"]}
     actions: list[Action] = []
     fetched: set[str] = set()
@@ -256,14 +261,3 @@ def _partial_lands(facts: Facts, whole: frozenset[tuple[str, str]], now: datetim
         repo = rows[0]["repo"] if rows else ""
         actions.append({**action, "repo": repo, "run": run, "task_runs": {t: task_runs.get(t, "") for t in action["task_ids"]}})
     return actions
-
-
-def _deferred_actions(facts: Facts) -> list[Action]:
-    """One deferred action per deferred phase with a finished approved task, unless a review PR or a manual repo holds its land."""
-    held = awaiting_phases(facts) | manual_phases(facts)
-    finished = {(t["initiative"], t["phase"]) for t in facts.get("approved", []) if t["phase_done"]} - held
-    return [  # type: ignore[misc]  # plan_tick stamps the epoch; Action does not declare land_at
-        {"kind": "deferred", "initiative": initiative, "phase": phase, "land_at": land_at}
-        for (initiative, phase), land_at in sorted(deferred_phases(facts).items())
-        if (initiative, phase) in finished
-    ]
