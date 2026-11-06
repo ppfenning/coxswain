@@ -418,6 +418,11 @@ class StewardPlanFacts(TypedDict):
     epics: list[StewardFacts]  # one entry per epic the steward handles; its epic_id is the initiative id
 
 
+class MergeQueueFacts(TypedDict):
+    batch_size: int  # at least 2; a batch_size of 1 leaves the key out of Facts
+    wait_s: float  # seconds the queue waits for a full batch
+
+
 class Facts(TypedDict):
     lease: LeaseFacts
     limits: LimitsFacts
@@ -487,6 +492,7 @@ class Facts(TypedDict):
     # max_launches_per_hour is absent.
     launch_history: NotRequired[dict[str, LaunchHistory]]
     max_launches_per_hour: NotRequired[int]
+    merge_queue: NotRequired[MergeQueueFacts]  # the profile's enabled merge queue; absent means the queue is off
     # `<run1>|<run2>` of each relaunch_loop needs_chair already in the action log. Absent means [].
     relaunch_loop_reported: NotRequired[list[str]]
     # Land refusals still counted: refused or failed land_phase rows since the key's last landed row. Absent means [].
@@ -533,6 +539,7 @@ ActionKind = Literal[
     "rerun_main",
     "widen_ticket",
     "partial_land",
+    "land_batch",
     "pull_workspace",
     "waiting",
     "deferred",
@@ -562,7 +569,8 @@ class Action(TypedDict, total=False):
     rerun_main carries initiative, phase, repo and commit.
     widen_ticket carries initiative, task_id, paths, additions and reason. partial_land carries initiative, phase,
     task_ids and quarantined: the approved tasks of a phase whose other tasks are all quarantined, done or dropped;
-    the plan adds repo, task_runs and run (the newest of task_runs) for the loop's task lands. A relaunch_loop needs_chair carries
+    the plan adds repo, task_runs and run (the newest of task_runs) for the loop's task lands. land_batch carries sources,
+    batch_size and wait_s: the phases the merge queue lands together. A relaunch_loop needs_chair carries
     initiative, cause and a reason naming both quarantined run ids. waiting carries initiative, phase, quarantined and
     awaiting_land and runs no command. deferred carries initiative, phase and land_at and runs no command: the land waits for
     the granularity land_at names. close_initiative carries initiative and state (done or dropped).
@@ -598,6 +606,9 @@ class Action(TypedDict, total=False):
     quarantined: int  # a partial_land or waiting counts the phase's quarantined tasks
     awaiting_land: int  # a waiting counts the phase's approved tasks not yet landed
     task_runs: dict[str, str]  # a partial_land or land_phase maps each approved task id to the run holding its approved record; "" when unknown
+    sources: list[dict[str, object]]  # a land_batch lists the phases it lands together, each a dict of initiative, phase, run and task_runs
+    batch_size: int  # a land_batch names the merge queue's batch_size
+    wait_s: float  # a land_batch names the merge queue's wait_s
     pr_branch: str  # a carry_phase names the branch its pull request is opened from
     picks: list[CarryTask]  # a carry_phase lists the commits to cherry-pick, in order
     branch: str  # a rebase_phase names the phase branch it rebases

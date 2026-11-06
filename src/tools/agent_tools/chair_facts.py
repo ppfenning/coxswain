@@ -5,6 +5,7 @@ No retry state is stored: `harness_failures` is counted from run history on ever
 """
 import json
 import re
+import sys
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -54,6 +55,7 @@ from agent_tools.chair_types import (
     LaunchHistory,
     LeaseFacts,
     LimitsFacts,
+    MergeQueueFacts,
     PhaseBranch,
     PhaseTasks,
     PidProbeFact,
@@ -67,6 +69,7 @@ from agent_tools.chair_types import (
     TodoInitiative,
 )
 from agent_tools.checkout_env import CHECKOUT_ENV_KEY
+from agent_tools.land_batch_settings import merge_queue_setting
 from agent_tools.remote_lane import fetched_record_path, remote_record_path
 
 HARNESS_CAUSE = "harness"
@@ -130,6 +133,8 @@ class FactsDeps:
         Optional, and absent means 24 hours.
     max_launches_per_hour: the raw profile value at `chair.max_launches_per_hour`, resolved by
         `resolve_max_launches_per_hour`. Optional, and absent means the default.
+    merge_queue: the raw profile value at the top-level `merge_queue`, resolved by `merge_queue_fact`. Optional, and
+        absent means the queue is off.
     stale_days: the raw profile value at `chair.stale_days`, resolved by `resolve_stale_days`. Optional, and
         absent means 7 days.
     stale_candidates: `stale_candidates(now) -> list[dict]`, bound in production to
@@ -233,6 +238,7 @@ class FactsDeps:
     housekeeping_hours: Callable[[], object] | None = None  # raw profile chair.housekeeping_hours; absent means 24 hours
     stale_days: Callable[[], object] | None = None  # raw profile chair.stale_days; absent means 7 days
     max_launches_per_hour: Callable[[], object] | None = None  # raw profile chair.max_launches_per_hour; absent means the default
+    merge_queue: Callable[[], object] | None = None  # raw profile top-level merge_queue; absent means the queue is off
     stale_candidates: Callable[[datetime], Sequence[Row]] | None = None  # chair_read_stale.read_stale_candidates; absent means no candidates
     stall_candidates: Callable[[datetime], Sequence[Row]] | None = None  # chair_read_stall.read_stall_candidates; absent means no candidates
     hosts: Callable[[], list[dict]] = lambda: []  # run_store.hosts(runs_dir) rows, stored verbatim under login_hosts
@@ -301,6 +307,16 @@ def forge_review_prs(runs_dir: str, forge_name: str, resolve: Callable[[str], An
 def land_freeze_fact(runs_dir: str, now: datetime) -> LandFreeze | None:
     """Edge. The live land freeze, or None. An empty `runs_dir` never touches the store; an expired row is no freeze."""
     return read_freeze(Path(runs_dir), now) if runs_dir else None
+
+
+def merge_queue_fact(raw: object) -> MergeQueueFacts | None:
+    """The enabled merge queue from the raw profile `merge_queue` value, or None when it is off, absent or malformed.
+
+    wait_s is capped at the largest finite float. The settings keep a huge int or an inf as given, and `float()` of an int
+    past that cap raises OverflowError, which would stop fact gathering for the whole chair.
+    """
+    queue = merge_queue_setting({"merge_queue": raw})
+    return {"batch_size": queue.batch_size, "wait_s": float(min(queue.wait_s, sys.float_info.max))} if queue.enabled else None
 
 
 def run_host_facts(raw: Mapping[str, str]) -> dict[str, str]:
@@ -1293,6 +1309,11 @@ def gather_facts(
         "land_conflicts": read_land_conflicts(deps.runs_dir(), repos),
         "land_heads": read_land_heads(refusals, repos, deps.rev_parse),
         **({"land_freeze": freeze} if (freeze := land_freeze_fact(deps.runs_dir(), now)) is not None else {}),
+        **(
+            {"merge_queue": queue}
+            if (queue := merge_queue_fact(deps.merge_queue() if deps.merge_queue is not None else None)) is not None
+            else {}
+        ),
         "launch_history": launch_history_from_actions(action_rows, quarantine, now),
         "max_launches_per_hour": resolve_max_launches_per_hour(
             deps.max_launches_per_hour() if deps.max_launches_per_hour is not None else None
