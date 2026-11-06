@@ -1255,6 +1255,91 @@ def merge_report_lines(merges: list) -> list[str]:
     ]
 
 
+def _merge_task_row(initiative_id: str, item: Mapping, extra: Mapping) -> dict:
+    """Pure: the store row for one task item, `extra` carrying the frontmatter keys the row shape leaves there."""
+    phase = item.get("phase", "")
+    return {
+        "kind": "task",
+        "initiative": initiative_id,
+        "task_id": item["id"],
+        "phase": phase,
+        "state": item.get("state", "todo"),
+        "needs": list(item.get("needs", [])),
+        "title": item["title"],
+        "surfaces": list(item.get("surfaces", [])),
+        "body": item.get("body", ""),
+        "extra": {"id": item["id"], "phase": phase, **extra},
+    }
+
+
+def merge_rows(items: Sequence[Mapping], merges: Sequence[Mapping], initiative_id: str) -> tuple[list[dict], list[dict]]:
+    """`(rows, events)` for the `merge_same_phase` result `items` and `merges`: per merge, the surviving task row
+    then one dropped row per folded member, and one `tasks_merged` event naming the members in order.
+    A folded row carries `merged_into` at the top level and in its extra, beside the note `folded into <id>`:
+    the store has no `merged_into` column, so `extra` is the copy a rendered file is rebuilt from."""
+    by_id = {item["id"]: item for item in items}
+    rows = [
+        row
+        for merge in merges
+        for row in (
+            _merge_task_row(initiative_id, by_id[merge["into"]], {}),
+            *(
+                {
+                    **_merge_task_row(
+                        initiative_id, by_id[member], {"note": f"folded into {merge['into']}", "merged_into": merge["into"]}
+                    ),
+                    "state": "dropped",
+                    "merged_into": merge["into"],
+                }
+                for member in merge["members"]
+                if member != merge["into"]
+            ),
+        )
+    ]
+    events = [{"event": "tasks_merged", "into": merge["into"], "tasks": list(merge["members"])} for merge in merges]
+    return rows, events
+
+
+def write_merge_rows(
+    runs_dir: Path, rows: Sequence[Mapping], events: Sequence[Mapping], initiative_id: str, paths: Sequence[Path]
+) -> list[str]:
+    """Edge: the store first for a merge, `merge_rows`'s output. Each row goes through `run_store.upsert_row_detail`
+    one at a time, then `events` are appended to the initiative row's `extra["events"]`, its other keys kept.
+    Returns the task ids the store accepted. A refusal, or no initiative row, prints one line and returns
+    what was accepted so far, before the baselines are recorded; the file side stays the caller's job.
+    A task row already in the store keeps its `extra` keys (attempts, budget_usd, requires) and its priority, since an
+    upsert replaces `extra` whole and `merge_rows` only knows the keys the item list carries.
+    The written `paths` are recorded as export baselines, so the export never holds a merged file."""
+    from agent_tools import queue_export  # imported here: route loads on every cox start
+
+    stored = {r["task_id"]: r for r in run_store.read_queue(runs_dir, initiative_id, kind="task")}
+    accepted: list[str] = []
+    for planned in rows:
+        old = stored.get(planned["task_id"]) or {}
+        row = {
+            **({"priority": old["priority"]} if "priority" in old else {}),
+            **planned,
+            "extra": {**(old.get("extra") or {}), **planned["extra"]},
+        }
+        detail = run_store.upsert_row_detail(runs_dir, row)
+        if detail:
+            print(f"routing: store refused {row['kind']} row {row['task_id']}: {detail}")
+            return accepted
+        accepted.append(row["task_id"])
+    if events:
+        head = next((r for r in run_store.read_queue(runs_dir, initiative_id, kind="initiative") if r.get("task_id") == initiative_id), None)
+        if head is None:
+            print(f"routing: no initiative row {initiative_id} to record the merge on")
+            return accepted
+        extra = dict(head.get("extra") or {})
+        detail = run_store.upsert_row_detail(runs_dir, {**head, "extra": {**extra, "events": [*extra.get("events", []), *events]}})
+        if detail:
+            print(f"routing: store refused initiative row {initiative_id}: {detail}")
+            return accepted
+    queue_export.record_written_paths(Path(runs_dir).parent, list(paths))
+    return accepted
+
+
 def _header_value(value) -> str:
     """A frontmatter value as `_frontmatter` writes it: a list as a flat list literal, anything else as a scalar."""
     if isinstance(value, list):
