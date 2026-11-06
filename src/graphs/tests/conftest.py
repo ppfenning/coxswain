@@ -51,6 +51,16 @@ def _courier_sends_are_recorded(request, monkeypatch):
     record.calls = calls  # type: ignore[attr-defined]
     monkeypatch.setattr(courier_adapter, "send", record)
     monkeypatch.setattr(epic, "send_to_courier", record)
+
+    exits: list[tuple[str, str, str]] = []
+
+    def record_exit(run_id: str, initiative: str, outcome: str) -> bool:
+        exits.append((run_id, initiative, outcome))
+        return True
+
+    record_exit.calls = exits  # type: ignore[attr-defined]
+    monkeypatch.setattr(courier_adapter, "publish_run_exited", record_exit)
+    monkeypatch.setattr(epic, "publish_run_exited", record_exit)
     return calls
 
 

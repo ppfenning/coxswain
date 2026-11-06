@@ -105,6 +105,7 @@ from harness.checks import (
     run_checks,
 )
 from harness.cos import pid_alive
+from harness.courier_adapter import publish_run_exited
 from harness.courier_adapter import send as send_to_courier
 from harness.digest import build_digest
 from harness.escalate import escalate_self_modification, touched_paths
@@ -1740,7 +1741,9 @@ def run_epic(
                 except Exception as exc:
                     _log.warning("partial result for %s not built: %s: %s", run_id, type(exc).__name__, exc)
             # A return leaves no exception in flight here; a raise, a signal or an exit leaves one.
-            _record_run_exit(store, run_id, "ok" if sys.exc_info()[0] is None and close_error is None else "error", retry, result)
+            exit_status = "ok" if sys.exc_info()[0] is None and close_error is None else "error"
+            _record_run_exit(store, run_id, exit_status, retry, result)
+            _publish_run_exit(run_id, ctx.initiative_id if ctx is not None else "", exit_status)
         # Nothing before `ctx` exists can have made a worktree, so there is nothing to do yet.
         if ctx is not None:
             run_dir = ctx.worktree_root / ctx.run_id
@@ -2666,6 +2669,17 @@ def _record_run_exit(
         retry.write(lambda: store.record_outcome(run_id, build_outcome(result)), _EXIT_WINDOW_S)
     except Exception as exc:
         _log.warning("run outcome for %s not recorded in the store: %s: %s", run_id, type(exc).__name__, exc)
+
+
+def _publish_run_exit(run_id: str, initiative_id: str, status: str) -> None:
+    """Publish `run_exited` once, after the exit is recorded. A failure is logged and never changes the run's exit."""
+    try:
+        published = publish_run_exited(run_id, initiative_id, status)
+    except Exception as exc:
+        _log.warning("run_exited for %s not published: %s: %s", run_id, type(exc).__name__, exc)
+        return
+    if not published:
+        _log.warning("run_exited for %s not published: the courier was unreachable", run_id)
 
 
 def _wait_if_paused(ctx: _Ctx) -> None:
