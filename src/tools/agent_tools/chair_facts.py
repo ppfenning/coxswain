@@ -196,6 +196,8 @@ class FactsDeps:
     land_outcomes: initiative to its resolved land outcomes, oldest first. Defaults to a callable returning {}.
     steward_enabled: the raw profile value that turns the epic steward on, resolved by `resolve_steward_enabled`.
         Defaults to a callable returning None, meaning off: `gather_facts` adds no `steward` key and calls no other steward source.
+    steward_scope: the raw profile value of chair `steward_scope`, resolved by `resolve_steward_scope`: "all" plans every
+        open initiative, "epics" only unlanded epic members. Defaults to a callable returning None, meaning "all".
     steward_entries: every bus entry (`chair_read_steward.read_bus_entries`); `reported_keys` turns the typed ones
         into the steward's reported set. Defaults to a callable returning [].
     ticket_head: initiative to its ticket branch head commit. Defaults to a callable returning "".
@@ -277,6 +279,7 @@ class FactsDeps:
     cartridge: Callable[[], Mapping[str, Any]] = lambda: {}  # the resolved team cartridge; {} when unreadable, so land_at reads the default
     land_at_values: Callable[[], Mapping[str, str | None]] = lambda: {}  # initiative to its initiative.md `land_at:`; absent means {}
     steward_enabled: Callable[[], object] = lambda: None  # raw profile value that turns the steward on; absent means off
+    steward_scope: Callable[[], object] = lambda: None  # raw profile value of steward_scope; absent means "all"
     steward_entries: Callable[[], Sequence[Row]] = lambda: []  # every bus entry; absent means []
     ticket_head: Callable[[str], str] = lambda initiative: ""  # initiative to its ticket branch head; absent means ""
     level_merged: Callable[[str, str], bool] = lambda initiative, phase: False  # (initiative, phase) to whether the level landed
@@ -1120,6 +1123,23 @@ def resolve_steward_enabled(value: object) -> bool:
     return isinstance(value, str) and value.strip().lower() == "true"
 
 
+def resolve_steward_scope(value: object) -> str:
+    """The profile's raw steward_scope: "epics" only for that string, case and space ignored, else "all"."""
+    return "epics" if isinstance(value, str) and value.strip().lower() == "epics" else "all"
+
+
+def steward_initiative_ids(scope: str, epics: Sequence[EpicFacts], rows: Sequence[Row]) -> list[str]:
+    """Sorted ids the steward manages. "epics": unlanded epic members. Otherwise every initiative row not landed.
+
+    Landed is `route.initiative_states`: at least one task row and every one done or dropped."""
+    if scope == "epics":
+        return sorted({i["id"] for e in epics for i in e["initiatives"] if not i["landed"]})
+    ids = sorted({str(r["initiative"]) for r in rows if r.get("kind") == "initiative"})
+    tasks = [r for r in rows if r.get("kind") == "task"]
+    landed = {i for i, done in route.initiative_states(ids, tasks).items() if done}
+    return [i for i in ids if i not in landed]
+
+
 _STEWARD_STATES = ("ready", "approved", "done", "quarantined", "dropped", "building")
 
 
@@ -1266,7 +1286,8 @@ def gather_facts(
     from agent_tools.chair_decompose_runs import decompose_refusals  # lazy: chair_decompose_runs imports this module
 
     refusals = land_refusals_from_actions(action_rows, now)
-    epics = epic_facts(list(deps.work_rows()), epic_definitions or {}) if deps.work_rows is not None else []
+    work = list(deps.work_rows()) if deps.work_rows is not None else []
+    epics = epic_facts(work, epic_definitions or {}) if deps.work_rows is not None else []
     return {
         "lease": lease_facts(deps.lease(), deps.session, deps.pid, deps.host),
         "limits": limits_facts(
@@ -1363,8 +1384,8 @@ def gather_facts(
         **(
             {
                 "steward": steward_plan_facts(
-                    [i["id"] for e in epics for i in e["initiatives"] if not i["landed"]],
-                    list(deps.work_rows()) if deps.work_rows is not None else [],
+                    steward_initiative_ids(resolve_steward_scope(deps.steward_scope()), epics, work),
+                    work,
                     dict(deps.run_exited()) if deps.run_exited is not None else {},
                     deps.ticket_head,
                     deps.level_merged,

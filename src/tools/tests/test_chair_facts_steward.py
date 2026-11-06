@@ -5,7 +5,7 @@ import pytest
 
 from agent_tools import pacing
 from agent_tools.chair import lease_holder
-from agent_tools.chair_facts import FactsDeps, gather_facts, resolve_steward_enabled
+from agent_tools.chair_facts import FactsDeps, gather_facts, resolve_steward_enabled, resolve_steward_scope
 from agent_tools.chair_read_steward import level_is_merged, reported_keys, task_signature
 from agent_tools.chair_steward import event_key
 
@@ -65,6 +65,56 @@ def test_the_steward_setting_is_off_for_an_absent_or_malformed_value(value):
 @pytest.mark.parametrize("value", [True, "true", " True "])
 def test_the_steward_setting_is_on_for_an_explicit_true(value):
     assert resolve_steward_enabled(value) is True
+
+
+@pytest.mark.parametrize("value", [None, 5, True, [], "", "all", "banana"])
+def test_the_steward_scope_is_all_for_an_absent_or_unknown_value(value):
+    assert resolve_steward_scope(value) == "all"
+
+
+@pytest.mark.parametrize("value", ["epics", " Epics "])
+def test_the_steward_scope_is_epics_ignoring_case_and_space(value):
+    assert resolve_steward_scope(value) == "epics"
+
+
+def _planned(rows, scope=None) -> list[str]:
+    deps = replace(_deps(), steward_enabled=lambda: True, work_rows=lambda: rows, steward_scope=lambda: scope)
+    return [e["epic_id"] for e in gather_facts(deps, NOW)["steward"]["epics"]]
+
+
+def _initiative(name, **extra):
+    return {"kind": "initiative", "initiative": name, "task_id": name, "phase": "", "state": "todo", "extra": extra}
+
+
+def _task(initiative, task_id, state):
+    return {"kind": "task", "initiative": initiative, "task_id": task_id, "phase": "p1", "state": state}
+
+
+LOOSE = [_initiative("solo"), _task("solo", "a", "ready")]
+LANDED = [_initiative("done"), _task("done", "a", "done"), _task("done", "b", "dropped")]
+
+
+def test_an_initiative_with_no_epic_is_planned_under_the_default_scope():
+    assert _planned(LOOSE) == ["solo"]
+
+
+def test_an_initiative_with_no_epic_is_skipped_under_the_epics_scope():
+    assert _planned(LOOSE, "epics") == []
+
+
+@pytest.mark.parametrize("scope", [None, "epics"])
+def test_a_landed_initiative_is_skipped_under_both_scopes(scope):
+    assert _planned(LANDED, scope) == []
+
+
+@pytest.mark.parametrize("scope", [None, "epics"])
+def test_an_epic_member_is_planned_once_under_both_scopes(scope):
+    assert _planned(ROWS, scope) == ["i"]
+
+
+def test_an_unknown_scope_value_plans_the_same_as_all():
+    rows = [*LOOSE, *ROWS, *LANDED]
+    assert _planned(rows, "banana") == _planned(rows) == ["i", "solo"]
 
 
 def test_reported_keys_returns_quarantine_relaunch_and_gate_keys_and_ignores_untyped_entries():
