@@ -2035,6 +2035,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#sharing-files-between-initiatives" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sharing files between initiatives
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#the-workspace-checkout" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6552,6 +6563,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#sharing-files-between-initiatives" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sharing files between initiatives
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#the-workspace-checkout" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6910,6 +6932,27 @@ itself when its minutes pass:</p>
 cox<span class="w"> </span>chair<span class="w"> </span>freeze-lands<span class="w">            </span><span class="c1"># show the freeze</span>
 cox<span class="w"> </span>chair<span class="w"> </span>freeze-lands<span class="w"> </span>--off<span class="w">      </span><span class="c1"># lift it now</span>
 </code></pre></div>
+<h2 id="sharing-files-between-initiatives">Sharing files between initiatives</h2>
+<p>Initiatives may build together on a shared file. The limit is
+<code>chair.max_shared_file_initiatives</code> in the profile. It defaults to 2. Setting
+it to 1 restores the old behaviour, where the loop holds every initiative that
+shares a file with one already building.</p>
+<p><code>serial_files</code> is a flat list of paths at the top level of the profile. The
+loop always holds these files one initiative at a time, whatever the limit
+says. A path ending in a slash covers the whole directory.</p>
+<p>The loop also holds a file that both initiatives mark <code>(new)</code> in their planned
+surfaces. That is the planned-scope estimate of a heavy rewrite. The loop does
+not detect a <code>restructured</code> file beyond that marker.</p>
+<div class="highlight"><pre><span></span><code><span class="nt">serial_files</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">Cargo.lock</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">src/app.rs</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">migrations/</span><span class="p p-Indicator">]</span>
+<span class="nt">chair</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">max_shared_file_initiatives</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+</code></pre></div>
+<p>Every land builds on current main, so the second land to touch a shared file
+rebases by construction. When a cherry-pick conflicts, the task goes back to
+<code>ready</code> with a <code>land_conflict</code> note. The build runs once more on the new main.</p>
+<p>The land log records <code>conflict_paths</code> for each cherry-pick conflict. Count the
+conflicts per path in that log. A path that conflicts often belongs in
+<code>serial_files</code>, or under a lower limit.</p>
 <h2 id="the-workspace-checkout">The workspace checkout</h2>
 <p>The workspace (<code>work/</code>, <code>intake/</code>, <code>runs/</code>) is a git checkout. The loop
 keeps it in step with its upstream on every live tick. A dry run does
