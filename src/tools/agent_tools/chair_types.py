@@ -420,6 +420,11 @@ class StewardPlanFacts(TypedDict):
     epics: list[StewardFacts]  # one entry per epic the steward handles; its epic_id is the initiative id
 
 
+class SteerPolicy(TypedDict):
+    limit: int  # most initiatives that may hold one file at once, the candidate included
+    serial: list[str]  # always-serial paths; an entry ending in `/` covers everything under it
+
+
 class MergeQueueFacts(TypedDict):
     batch_size: int  # at least 2; a batch_size of 1 leaves the key out of Facts
     wait_s: float  # seconds the queue waits for a full batch
@@ -474,6 +479,7 @@ class Facts(TypedDict):
     running: NotRequired[list[RunningInitiative]]  # initiatives with a live lane on any machine; absent means none
     # Keyed `<candidate>|<other>`: the count of consecutive prior deferrals for that ordered pair; absent means 0.
     steer_streaks: NotRequired[dict[str, int]]
+    steer_policy: NotRequired[SteerPolicy]  # absent means strict: limit 1, no serial paths
     # Each initiative's newest waiting row as `<phase>|<quarantined>|<awaiting_land>`, until a later launch of it.
     waiting_reported: NotRequired[dict[str, str]]  # absent means {}
     pull_age_s: NotRequired[float | None]  # seconds since the newest `pull` chair action; None or absent means no pull yet

@@ -1314,8 +1314,11 @@ _SQUASH_CONFLICT = re.compile(r"squash of .+ conflicts in: (?P<paths>.+)", re.DO
 
 
 def stop_fields(kind: str, detail: str, branch_sha: str | None, from_sha: str | None) -> dict[str, Any]:
-    """The land log keys for the step that stopped a land. A `squash_phase` merge conflict also names its paths and the two commits tried."""
+    """The land log keys for a stopped land. A `squash_phase` conflict names its paths and commits; a `cherry_pick` conflict, its paths."""
     base = {"stopped_step": kind, "stop_detail": detail}
+    picked = _CHERRY_CONFLICT.match(detail) if kind == "cherry_pick" else None
+    if picked is not None:
+        return {**base, "conflict_paths": sorted(picked["paths"].split(", "))}
     conflict = _SQUASH_CONFLICT.fullmatch(detail) if kind == "squash_phase" else None
     if conflict is None:
         return base
