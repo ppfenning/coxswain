@@ -133,6 +133,7 @@ _SPEND_TEXT_KEYS = {"weekly_reset", "budget_timezone"}  # `Sun 04:00 America/New
 _CHAIR_KEYS = {"housekeeping_hours", "stale_days", "idle_stall_minutes", "launch_stagger_s", "max_launches_per_hour"}  # every key `cli._chair_run_deps` reads off `profile["chair"]`
 
 _CHAIR_BOOL_WORDS = {"true": True, "yes": True, "false": False, "no": False}  # the spellings a boolean `chair:` key accepts, any case
+_CHAIR_STEWARD_SCOPES = {"all", "epics"}  # the values `chair: steward_scope:` accepts, stored lower case
 
 _STORE_KEYS = {"mode"}  # the one key of the `store:` block, kept as text in `profile["store"]["mode"]`
 
@@ -181,6 +182,8 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
     reads off `profile["chair"]`; `log_retention_days` stays a flat top-level key, not one of
     these). The same block also takes `steward:`, a boolean (true, false, yes or no, any case)
     kept as a Python bool in `result["chair"]["steward"]`; any other value raises ProfileError.
+    It also takes `steward_scope:`, text with quotes stripped, `all` or `epics` in any case, kept lower case as a str in
+    `result["chair"]["steward_scope"]`; any other value raises ProfileError. The key is absent when not written and the reader applies the default `all`.
     A bare `store:` line followed by an indented `mode:` line is kept as text in
     `result["store"]["mode"]`. A `notify: {ntfy: <url>}` line is the one inline mapping, kept as `result["notify"]`.
 
@@ -234,6 +237,12 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
                     if flag is None:
                         raise ProfileError(f"line {lineno}: {raw_line}")
                     result.setdefault("chair", {})[key] = flag
+                    continue
+                if key == "steward_scope":
+                    scope = value.strip("\"'").lower()
+                    if scope not in _CHAIR_STEWARD_SCOPES:
+                        raise ProfileError(f"line {lineno}: {raw_line}")
+                    result.setdefault("chair", {})[key] = scope
                     continue
                 if key not in _CHAIR_KEYS:
                     raise ProfileError(f"line {lineno}: {raw_line}")

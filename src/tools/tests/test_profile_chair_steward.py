@@ -50,3 +50,39 @@ def test_colon_bearing_comments_leave_the_result_unchanged():
 def test_the_parsed_steward_reaches_resolve_steward_enabled():
     assert resolve_steward_enabled(_parse("chair:\n  steward: true\n")["chair"]["steward"]) is True
     assert resolve_steward_enabled(_parse("chair:\n  steward: false\n")["chair"]["steward"]) is False
+
+
+@pytest.mark.parametrize("word", ["all", "epics"])
+def test_steward_scope_parses_to_its_string(word):
+    assert _parse(f"chair:\n  steward_scope: {word}\n")["chair"] == {"steward_scope": word}
+
+
+@pytest.mark.parametrize(("written", "expected"), [("Epics", "epics"), ("ALL", "all"), ("EpIcS", "epics")])
+def test_steward_scope_is_lower_cased(written, expected):
+    assert _parse(f"chair:\n  steward_scope: {written}\n")["chair"]["steward_scope"] == expected
+
+
+@pytest.mark.parametrize(("written", "expected"), [('"epics"', "epics"), ("'all'", "all")])
+def test_steward_scope_strips_quotes(written, expected):
+    assert _parse(f"chair:\n  steward_scope: {written}\n")["chair"]["steward_scope"] == expected
+
+
+def test_steward_and_steward_scope_keep_their_types():
+    chair = _parse("chair:\n  steward: true\n  steward_scope: epics\n")["chair"]
+    assert chair == {"steward": True, "steward_scope": "epics"}
+    assert type(chair["steward"]) is bool
+    assert type(chair["steward_scope"]) is str
+
+
+def test_an_unknown_steward_scope_names_its_line():
+    with pytest.raises(route.ProfileError, match=r"line 3:\s+steward_scope: everything"):
+        _parse("chair:\n  stale_days: 14\n  steward_scope: everything\n")
+
+
+def test_an_empty_steward_scope_raises():
+    with pytest.raises(route.ProfileError, match="line 2"):
+        _parse("chair:\n  steward_scope:\n")
+
+
+def test_steward_scope_is_absent_when_not_written():
+    assert "steward_scope" not in _parse("chair:\n  stale_days: 7\n")["chair"]
