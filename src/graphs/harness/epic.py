@@ -83,7 +83,9 @@ from harness.base_sync import fetch_origin, merge_in
 from harness.base_sync import holds as base_holds
 from harness.cause_model import cause_evidence, classify_with_model, one_line
 from harness.cause_rule import _TRANSIENT_AUTH, classify_cause, is_auth_failure
+from harness.check_deps import load_dep_map
 from harness.check_gate import gate_checks, gate_commands, repo_gate_lock
+from harness.check_scope import _is_test_file, pytest_component, render_selection, select_checks
 from harness.checks import (
     HARNESS_FAULT_PREFIX,
     _tail_lines,
@@ -945,6 +947,49 @@ def _checks_log(ctx: _Ctx, phase: str, task: str) -> dict[str, Any]:
     return {"log_dir": ctx.runs_dir / ctx.run_id / "checks" / phase / task, "log_prefix": f"checks/{phase}/{task}/"}
 
 
+def _nul_paths(listing: str) -> list[str]:
+    return [p for p in listing.split("\0") if p]
+
+
+def _lane_checks(
+    worktree: Path, base: str, checks: Sequence[Mapping[str, Any]]
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """The checks the task's patch can affect, and the selection; every check, with a reason, on any error."""
+    known = [c for c in (pytest_component(str(check.get("cmd", ""))) for check in checks) if c]
+
+    def everything(why: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        return [dict(c) for c in checks], {
+            "components_run": known,
+            "components_skipped": [],
+            "narrowed": dict.fromkeys(known, "whole"),
+            "added_tests": [],
+            "reason": dict.fromkeys(known or ["*"], f"fallback {why}"),
+        }
+
+    ok, changed = _git("-C", str(worktree), "diff", "--name-only", "--no-renames", "-z", base, "HEAD")
+    added_ok, added = _git(
+        "-C", str(worktree), "diff", "--name-only", "--no-renames", "-z", "--diff-filter=A", base, "HEAD"
+    )
+    if not (ok and added_ok):
+        return everything(f"diff unreadable: {changed if not ok else added}")
+    try:
+        dep_map = load_dep_map(worktree, known)
+        import_map = {
+            "components": dep_map.components,
+            "test_reach": dep_map.test_reach,
+            "unresolved": dep_map.unresolved,
+        }
+        added_tests = [p for p in _nul_paths(added) if _is_test_file(p)]
+        scoped = select_checks(checks, _nul_paths(changed), added_tests, import_map)
+    except Exception as exc:  # fail open: whatever broke, the full list still runs
+        return everything(f"import map failed: {type(exc).__name__}: {exc}")
+    return list(scoped.checks), scoped.selection
+
+
+def _tests_run(results: Sequence[Mapping[str, Any]]) -> int:
+    return sum((r.get("counts") or {}).get(k, 0) for r in results for k in ("passed", "failed", "error"))
+
+
 def _level_failure_reason(phase: str, results: Sequence[Mapping[str, Any]]) -> str:
     """A line naming the level and its first failing level check; '' when every row passed."""
     failing = next((r for r in results if not r.get("passed")), None)
@@ -1062,9 +1107,15 @@ def _build_task(
                     build_field["patch"] = folded + "\n"
 
     if ctx.checks:
-        results = run_checks(worktree, ctx.checks, env=env, **_checks_log(ctx, phase, task))
+        scoped, selection = _lane_checks(worktree, ctx.phase_branch(phase), ctx.checks)
+        results = run_checks(worktree, scoped, env=env, **_checks_log(ctx, phase, task))
         record["checks"] = results
         record["evidence"].extend(checks_evidence(results))
+        tests_run = _tests_run(results)
+        record["check_scope"] = {**selection, "tests_run": tests_run}
+        record["evidence"].append(
+            {"check": "checks:scope", "output": f"{render_selection(selection)}; tests_run={tests_run}"}
+        )
         reason = quarantine_reason(results)
         if reason:
             record["quarantine"] = reason
@@ -1198,11 +1249,13 @@ def _style_fix(ctx: _Ctx, *, phase: str, task: str, result: Mapping[str, Any], b
         worktree, ctx.checks, env=_lane_checks_env(ctx, phase, task), **_checks_log(ctx, phase, task)
     )
     build["checks"] = results
+    build["check_scope"] = {"reason": "style pass reran the full list", "tests_run": _tests_run(results)}
     # Only `checks:` rows are replaced; `verify:` rows stay as run before the style edit.
     build["evidence"] = [
         *(row for row in build["evidence"] if not str(row.get("check")).startswith("checks:")),
         {"check": "style_pass", "output": f"edit applied after approval, not reviewed: {', '.join(paths)}"},
         *checks_evidence(results),
+        {"check": "checks:scope", "output": f"full list rerun after a style pass; tests_run={_tests_run(results)}"},
     ]
     build["quarantine"] = quarantine_reason(results)
     return True
