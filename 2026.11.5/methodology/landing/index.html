@@ -6618,7 +6618,7 @@ applies, and the earlier stop wins. <code>ticket</code> stops at the rung of the
 <tr>
 <td><code>ticket</code></td>
 <td>One per initiative.</td>
-<td>At the last level, once its tasks are merged and checked.</td>
+<td>As a draft when the first phase merges in. Ready for review when the last phase merges.</td>
 </tr>
 <tr>
 <td><code>level</code></td>
@@ -6634,13 +6634,17 @@ applies, and the earlier stop wins. <code>ticket</code> stops at the rung of the
 </table>
 <h3 id="the-hierarchy-at-ticket">The hierarchy at ticket</h3>
 <p>An initiative is one ticket. Its levels and its tasks open no pull request of their own. A task branch merges into the
-branch of its level. Levels stack, each on the branch of its parent level, and the stack is the single pull request.
-When that pull request merges, every task in the ticket is marked done. A task whose work is not in the merged pull
-request is left in its current state, and a note names it.</p>
-<p>A level is a set of tasks that can run together. It exists only to order tasks and to stack their branches, so it has
-no review or approval of its own. The harness names a level a phase, and its branch is <code>epic/&lt;initiative&gt;/&lt;phase&gt;</code>.
-A level with one parent is stacked on that parent's branch. A level with several parents is assembled from all of
-them onto the default branch, and its record lists them as <code>assembled_from</code>.</p>
+branch of its level.</p>
+<p>Each initiative has one branch, <code>pr/&lt;initiative&gt;</code>. It is cut from the target branch when the first phase completes.</p>
+<p>A phase is done when every task is approved, done or dropped and the phase is validated. Then the chair merges the
+phase branch into <code>pr/&lt;initiative&gt;</code> locally and pushes it. It marks the phase done and its tasks merged. A phase with a
+quarantined task does not merge.</p>
+<p>Later phases build on <code>pr/&lt;initiative&gt;</code>, so a phase with several parents needs no reassembly.</p>
+<p>The pull request lands under the team gate. At gate <code>ticket</code> a person merges it. At gate <code>full</code> the chair merges it on
+green. Its merge marks every task in the ticket done. A task whose work is not in the merged pull request is left in
+its current state, and a note names it.</p>
+<p>A level is a set of tasks that can run together. It exists only to order tasks, so it has no review or approval of its
+own. The harness names a level a phase, and its branch is <code>epic/&lt;initiative&gt;/&lt;phase&gt;</code>.</p>
 <p>At <code>level</code> each completed level opens its own pull request. A level stacked on a parent is based on the parent's pull
 request branch when that pull request exists, so it shows only its own commits. Otherwise it is based on the default
 branch. At <code>task</code> each merged task opens its own pull request against the default branch. A pull request that fails to
@@ -6669,7 +6673,7 @@ open is a note on the task or level. It is not a quarantine, because the merge i
 </tr>
 <tr>
 <td><code>merged</code></td>
-<td>The work is merged but has not landed at the configured <code>land_at</code>. That is an approved task with the merge flag, or a done task written at another <code>land_at</code>.</td>
+<td>The work is merged but has not landed at the configured <code>land_at</code>. At <code>ticket</code> the task is in the pr branch. That is an approved task with the merge flag, or a done task written at another <code>land_at</code>.</td>
 </tr>
 <tr>
 <td><code>landed</code></td>
@@ -6678,6 +6682,8 @@ open is a note on the task or level. It is not a quarantine, because the merge i
 </tbody>
 </table>
 <p>A task whose needs are not all landed reads <code>blocked</code>. A dropped or quarantined task reads as that state.</p>
+<p>The <code>route status</code> command and the dash show each phase as <code>building</code>, <code>merged</code> or <code>landed</code>. A merged phase is done and
+merged into the pr branch. The merged tally is kept apart from the approved tally.</p>
 <h3 id="the-merged-state-and-restart">The merged state and restart</h3>
 <p>The merge is stored. When a task merges into its level branch, its row in the work store keeps <code>approved</code> and records
 <code>merged</code> and the commit as <code>merged_commit</code>. Nothing in a run writes <code>done</code>. Only a land does that.</p>
