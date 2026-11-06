@@ -798,6 +798,26 @@ def open_in_phase(
     ]
 
 
+def outside_parents_complete(
+    items: Sequence[Mapping[str, Any]],
+    rows: Sequence[Mapping[str, Any]] | None,
+    parents: Mapping[str, set[str]],
+    named: Collection[str],
+    land_at: str,
+) -> set[str]:
+    """Parents of the `named` phases that are not named themselves and have every task met under `land_at`.
+
+    A stored row's state and merged flag win over the item's. A parent with no tasks is not complete.
+    """
+    by_task = {str(r["task_id"]): r for r in rows or ()}
+    view = [
+        {**item, "state": row["state"], "merged": row.get("merged")} if (row := by_task.get(str(item["id"]))) else item
+        for item in items
+    ]
+    outside = {p for phase in named for p in parents.get(phase, ())} - set(named)
+    return {p for p in outside if any(i.get("phase") == p for i in view) and not open_in_phase(view, p, (), land_at)}
+
+
 def _phase_branch_cherry(ctx: _Ctx, phase: str, upstream: str | None = None) -> list[str]:
     """`git cherry -v` of the phase branch against `upstream` (main by default), patch-id semantics; empty if git fails."""
     ok, out = _git("-C", str(ctx.repo), "cherry", "-v", upstream or ctx.default_ref, ctx.phase_branch(phase))
@@ -1370,8 +1390,13 @@ def run_epic(
     retry: _StoreRetry | None = None,
     headroom_usd: Callable[[], float | None] | None = None,
     est_task_usd: float = 0.0,
+    only_phases: Collection[str] | None = None,
 ) -> dict[str, Any]:
     """Drive a whole initiative: every phase, in dependency order, landing nothing.
+
+    With `only_phases`, just those phases run. An unknown name refuses the run before any write. A parent outside
+    the set counts complete when every task of it is met under `land_at`; a named phase under any other outside
+    parent is recorded blocked.
 
     Phases run as lanes: a phase opens once its parent phases are complete, and `plan_launches` starts the
     ready tasks of every open phase, up to `max_parallel` or the usage `headroom_usd() / est_task_usd`.
@@ -1405,6 +1430,10 @@ def run_epic(
             "the epic driver needs a store: phases, tasks, attempts, gate decisions and ledger rows are recorded there"
         )
     work_state = checked_work_state(work_state)
+    if only_phases is not None:
+        known = {str(i["phase"]) for i in initiative.get("items") or [] if i.get("phase")}
+        if unknown := sorted(set(only_phases) - known):
+            raise ValueError(f"unknown phase(s) {', '.join(unknown)}; the initiative's phases are {', '.join(sorted(known))}")
     retry = retry or _StoreRetry.for_store(store)
     repo = Path(repo).expanduser()
     ctx: _Ctx | None = None
@@ -1465,7 +1494,12 @@ def run_epic(
         _mirror_read(ctx, items)
 
         parents = phase_parents(items)
-        waves, cyclic = compute_waves(parents)
+        named = None if only_phases is None else frozenset(only_phases)
+        seed: frozenset[str] = frozenset()
+        if named is not None:
+            seed = frozenset(outside_parents_complete(items, _read_store_rows(ctx), parents, named, ctx.land_at))
+            parents = {p: ps for p, ps in parents.items() if p in named}
+        waves, cyclic = compute_waves(parents if named is None else {p: ps & named for p, ps in parents.items()})
         _, binding = lane_bound(max_parallel, 0, headroom_usd() if headroom_usd else None, est_task_usd)
         print(
             f"  waves: {' | '.join(', '.join(w) for w in waves) or 'none'}; widest wave {widest_wave(waves)}; "
@@ -1492,11 +1526,28 @@ def run_epic(
                 }
             )
 
+        scope: frozenset[str] | None = None
+        if named is not None:
+            for phase in sorted(parents):
+                if missing := sorted(parents[phase] - named - seed):
+                    add_phase(
+                        {
+                            "phase": phase,
+                            "status": "blocked",
+                            "parents": sorted(parents[phase]),
+                            "reason": (
+                                f"parent phase '{missing[0]}' is outside this run and its tasks are not all met "
+                                f"under land_at {ctx.land_at}; dependents do not run"
+                            ),
+                        }
+                    )
+            scope = frozenset(p for p in parents if p not in {str(r["phase"]) for r in phases})
+
         tally = _Tally()
         _run_lanes(
             ctx, initiative=initiative, items=items, parents=parents, waves=waves, add_phase=add_phase,
             phases=phases, tasks=tasks, quarantined=quarantined, proposals=proposals, tally=tally,
-            headroom_usd=headroom_usd, est_task_usd=est_task_usd,
+            headroom_usd=headroom_usd, est_task_usd=est_task_usd, seed_complete=seed, scope=scope,
         )
         stacks_rebased, paused_until = tally.stacks_rebased, tally.paused_until
         rank = {p: n for n, p in enumerate([*cyclic, *(p for w in waves for p in w)])}
@@ -1625,8 +1676,14 @@ def _run_lanes(
     tally: _Tally,
     headroom_usd: Callable[[], float | None] | None,
     est_task_usd: float,
+    seed_complete: frozenset[str] = frozenset(),
+    scope: frozenset[str] | None = None,
 ) -> None:
-    """Run phases as lanes until nothing runs and the planner starts nothing; every phase ends with one record."""
+    """Run phases as lanes until nothing runs and the planner starts nothing; every phase ends with one record.
+
+    `seed_complete` names parents outside the run that already count complete. With a `scope`, a ready task of a
+    phase outside it is held, so only those phases launch.
+    """
     order = [p for w in waves for p in w]
     wave_of = {p: n + 1 for n, w in enumerate(waves) for p in w}
     phase_of = {str(i["id"]): str(i.get("phase") or "") for i in items}
@@ -1634,7 +1691,7 @@ def _run_lanes(
     lane_of: dict[str, int] = {}
     acc: dict[str, dict[str, Any]] = {}
     launched: set[str] = set()
-    complete: set[str] = set()
+    complete: set[str] = set(seed_complete)
     recorded = {str(r["phase"]) for r in phases}
     serialised: dict[str, str] = {}
     why_stopped: list[str] = []
@@ -1721,6 +1778,11 @@ def _run_lanes(
             while True:
                 with ctx.items_lock:
                     view = _open_view(items, parents, complete, launched, {p for p in recorded if p not in complete})
+                    if scope is not None:
+                        view = [
+                            {**i, "state": "blocked"} if i.get("state") == "ready" and str(i.get("phase")) not in scope else i
+                            for i in view
+                        ]
                     plan = plan_launches(
                         view, by_phase, ctx.max_parallel, initiative.get("foreign") or {}, hr, est_task_usd,
                         ctx.land_at,

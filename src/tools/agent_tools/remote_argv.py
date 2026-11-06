@@ -68,7 +68,7 @@ def env_check_argv(var: str) -> list[str]:
     return ["printenv", var]
 
 
-def launch_argv(initiative: str, run_id: str, label: str) -> list[str]:
+def launch_argv(initiative: str, run_id: str, label: str, phase: str | None = None) -> list[str]:
     # Wrong belief: "the remote cox just runs the launch". Without --local it places the run again, so host-a can
     # forward it to host-b while the chair records host-a as the host that ran it.
     return [
@@ -77,6 +77,7 @@ def launch_argv(initiative: str, run_id: str, label: str) -> list[str]:
         "--run-id", run_id,
         "--label", label,
         "--no-claim",
+        *(["--phase", phase] if phase else []),
     ]
 
 

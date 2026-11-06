@@ -36,24 +36,43 @@ def shared_paths(a: Sequence[str], b: Sequence[str]) -> list[str]:
     return sorted(found)
 
 
+def _first_overlap(surfaces: Sequence[str], entries: Sequence[RunningInitiative]) -> tuple[RunningInitiative, list[str]] | None:
+    return next(((e, paths) for e in entries if (paths := shared_paths(surfaces, e["surfaces"]))), None)
+
+
 def steer_check(
     initiative: str,
     repo: str,
     surfaces: Sequence[str],
     running: Sequence[RunningInitiative],
     streaks: Mapping[str, int],
+    phase: str | None = None,
 ) -> Action | None:
-    """The first same-repo overlap in running order: steer_clear, or needs_chair once the streak reaches 3."""
-    peers = [other for other in running if other["repo"] == repo and other["id"] != initiative]
-    hit = next(((other["id"], paths) for other in peers if (paths := shared_paths(surfaces, other["surfaces"]))), None)
-    if hit is None:
+    """The first same-repo overlap with another initiative: steer_clear, or needs_chair once the streak reaches 3.
+
+    Only with no such overlap, a sibling phase of the same initiative that shares a path gives steer_clear, never needs_chair.
+    An entry or candidate without a phase is the whole initiative and never a sibling.
+    """
+    same_repo = [e for e in running if e["repo"] == repo]
+    cross = _first_overlap(surfaces, [e for e in same_repo if e["id"] != initiative])
+    if cross is not None:
+        entry, paths = cross
+        other = entry["id"]
+        if streaks.get(f"{initiative}|{other}", 0) < ESCALATE_AT:
+            other_phase = entry.get("phase")
+            named: Action = {} if phase is None else {"phase": phase, **({} if other_phase is None else {"other_phase": other_phase})}
+            return {"kind": "steer_clear", "initiative": initiative, "other": other, **named, "paths": paths}
+        return {
+            "kind": "needs_chair",
+            "initiative": initiative,
+            "cause": "steer_deferred",
+            "reason": f"{initiative} shares {', '.join(paths)} with running {other}; the pair has been deferred three ticks",
+        }
+    if phase is None:
         return None
-    other, paths = hit
-    if streaks.get(f"{initiative}|{other}", 0) < ESCALATE_AT:
-        return {"kind": "steer_clear", "initiative": initiative, "other": other, "paths": paths}
-    return {
-        "kind": "needs_chair",
-        "initiative": initiative,
-        "cause": "steer_deferred",
-        "reason": f"{initiative} shares {', '.join(paths)} with running {other}; the pair has been deferred three ticks",
-    }
+    siblings = [e for e in same_repo if e["id"] == initiative and e.get("phase") not in (None, phase)]
+    sibling = _first_overlap(surfaces, siblings)
+    if sibling is None:
+        return None
+    entry, paths = sibling
+    return {"kind": "steer_clear", "initiative": initiative, "other": initiative, "phase": phase, "other_phase": entry["phase"], "paths": paths}

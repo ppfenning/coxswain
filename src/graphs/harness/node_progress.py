@@ -38,7 +38,9 @@ class Tracker:
         self._lock = threading.Lock()
         self._nodes: dict[_KEY, dict[str, Any]] = {}
 
-    def start(self, node: str, attempt: int, task: str, tier: str, worktree: str, branch: str | None) -> None:
+    def start(
+        self, node: str, attempt: int, task: str, tier: str, worktree: str, branch: str | None, *, phase: str = ""
+    ) -> None:
         record = {
             "node": node,
             "attempt": attempt,
@@ -52,6 +54,7 @@ class Tracker:
             "last_tool_at": None,
             "worktree": worktree,
             "branch": branch,
+            "phase": phase,
         }
         with self._lock:
             self._nodes[(node, attempt)] = record

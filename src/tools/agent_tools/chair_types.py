@@ -182,6 +182,7 @@ class RunningInitiative(TypedDict):
     id: str
     repo: str
     surfaces: list[str]
+    phase: NotRequired[str]  # the phase this entry runs; absent means the whole initiative
 
 
 class InitiativeFacts(TypedDict):
@@ -543,6 +544,7 @@ class Action(TypedDict, total=False):
     A stale_checkout needs_chair also carries repo, the repo directory name keyed in the host's checkout_env record.
     review_landed carries initiative, phase, task_id, repo, url and merged_at. steer_clear carries
     initiative, other and paths: the launch of initiative is deferred because it shares paths with other.
+    A steer_clear between two phases of one initiative also carries phase and other_phase, and other is the same initiative.
     carry_phase carries initiative, phase, pr_branch and picks; rebase_phase carries initiative, phase, branch,
     tip and base. tune_lanes carries host, from_lanes, to_lanes, reason and evidence. propose_tiers carries
     proposals and body and is propose-only: no action kind applies a tier or model change.
@@ -576,6 +578,7 @@ class Action(TypedDict, total=False):
     url: str  # a review_landed names the review PR
     merged_at: str | None  # a review_landed names when that PR merged
     other: str  # a steer_clear names the running initiative it steers clear of
+    other_phase: str  # a steer_clear names the phase of the running entry it steers clear of, when that entry has one
     paths: list[str]  # a steer_clear names the shared paths; a widen_ticket names the repo-relative files to add to surfaces
     task_ids: list[str]  # a partial_land names the approved task ids it would land, in phase order
     quarantined: int  # a partial_land or waiting counts the phase's quarantined tasks
