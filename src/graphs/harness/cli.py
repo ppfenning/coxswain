@@ -1166,6 +1166,68 @@ def _make_phase_dirs(root: Path, rels: Sequence[str]) -> None:
         (root / rel).mkdir(parents=True, exist_ok=True)
 
 
+def _repo_trees(
+    repo_map: Mapping[str, Any],
+    workspace: Path,
+    target: str | None,
+    *,
+    home: str,
+    is_checkout: Callable[[Path], bool],
+    listing: Callable[[str], Sequence[Mapping[str, str]]],
+) -> dict[str, list[str]]:
+    """Repository path to its tracked paths for each `repo_map` value that is a checkout other than `target`.
+
+    A value resolves as `route.resolve_repo` does, a bare name against the workspace's parent directory."""
+    from agent_tools import route  # imported here: the harness stays importable without the tools package
+
+    own = Path(target).expanduser().resolve() if target else None
+    trees: dict[str, list[str]] = {}
+    for value in repo_map.values():
+        if not isinstance(value, str):
+            continue
+        path = route.resolve_repo(value, workspace.parent, is_checkout, home)
+        if isinstance(path, route.RepoRefused) or not is_checkout(Path(path).expanduser()):
+            continue
+        if own is not None and Path(path).expanduser().resolve() == own:
+            continue
+        trees[path] = [str(row["path"]) for row in listing(path)]
+    return trees
+
+
+def _decompose_repo_trees(profile: Mapping[str, Any], workspace: Path, target: str | None) -> dict[str, list[str]]:
+    """Edge: `_repo_trees` over the profile's `repo_map`; empty when the profile has none."""
+    from agent_tools import route  # imported here: the harness stays importable without the tools package
+    from graphs.delivery.initiative_decompose import repo_listing
+
+    repo_map = profile.get("repo_map")
+    if not isinstance(repo_map, Mapping):
+        return {}
+    return _repo_trees(
+        repo_map, workspace, target, home=str(Path.home()), is_checkout=route.is_git_checkout, listing=repo_listing
+    )
+
+
+def _file_decompose_follow_ups(
+    result: Mapping[str, Any], *, initiative: str, workspace: Path, runs_dir: Path, date: str
+) -> int:
+    """Edge: file each follow-up as an intake waiting on `initiative`; the count whose write failed.
+
+    The queue treats a landed initiative's id as met, so `initiative` is the id the intake waits on."""
+    from agent_tools import follow_up_intake  # imported here: the harness stays importable without the tools package
+
+    failed = 0
+    for follow_up in result.get("follow_ups") or []:
+        rel = follow_up_intake.file_follow_up(
+            runs_dir, workspace, follow_up, after=initiative, date=date, home=str(Path.home())
+        )
+        if rel is None:
+            print(f"decompose: follow-up for {follow_up['repo']} was not filed", file=sys.stderr)
+            failed += 1
+        else:
+            print(f"decompose: filed follow-up for {follow_up['repo']}: {rel}")
+    return failed
+
+
 def _settle_decompose(
     proposals: Sequence[Mapping[str, Any]],
     diffs: Sequence[Mapping[str, Any]],
@@ -1730,6 +1792,14 @@ def _run_graph(
         graph_args.update(_materialise(spec, args, parser))
         if getattr(args, "repo", None):
             graph_args.setdefault("checkout", str(Path(args.repo).expanduser()))  # the readable repo the seats get
+        if graph_name == _DECOMPOSE_GRAPH_NAME:
+            trees = _decompose_repo_trees(
+                _read_profile(args.provider_profile) if getattr(args, "provider_profile", None) else {},
+                Path(getattr(runner, "cwd", None) or Path.cwd()),
+                graph_args.get("checkout"),
+            )
+            if trees:
+                graph_args["repo_trees"] = trees
         try:
             result = spec.run(graph_args, runner)
         except LintRefusal as exc:
@@ -1852,6 +1922,16 @@ def _run_graph(
         if graph_name == _DECOMPOSE_GRAPH_NAME
         else ("", 0)
     )  # fmt: skip
+    unfiled = 0
+    if graph_name == _DECOMPOSE_GRAPH_NAME and not missing and approved_task_ids(proposals, diffs, auto_applied):
+        root = Path(getattr(runner, "cwd", None) or Path.cwd())
+        unfiled = _file_decompose_follow_ups(
+            result,
+            initiative=graph_args.get("initiative_id") or root.name,
+            workspace=root,
+            runs_dir=Path(args.runs_dir),
+            date=args.date,
+        )
 
     # A build patch is applied only after the gate approved the work it belongs
     # to. Skipped when --repo already ran the check arm above: the work is
@@ -1908,7 +1988,7 @@ def _run_graph(
         if reason is not None:
             print(f"decompose failed: no task item_create was executed: {reason}", file=sys.stderr)
             return 1
-        if missing:
+        if missing or unfiled:
             return 1
 
     print(f"\nrecorded {run_id}: {len(auto_applied)} auto-applied, {len(diffs)} gated decision(s), {len(proposals)} proposal(s)")

@@ -63,6 +63,31 @@ The apply arm is a model arm that writes the file, so the store row follows the 
 between the two leaves a file with no row and prints no closing line. `cox route store-fill` repairs
 that case.
 
+## Tasks that belong to another repository
+
+The harness reads the profile's `repo_map` before a decompose run. Each value is resolved the way
+`route file --repo` resolves it, a bare name against the workspace's parent directory. A value that
+is not a git checkout is skipped, and so is the repository the run targets. The tracked files of
+each remaining checkout go to the graph as `repo_trees`. A profile with no `repo_map`, or an
+unreadable one, passes nothing and the graph keeps every task.
+
+With `repo_trees` the graph moves a task whose files live in another registered repository out of
+the initiative. That task becomes a follow-up. Once the initiative's tasks are written, the harness
+files each follow-up as a queued intake for the other repository and prints one line naming that
+repository and the intake path. The intake carries the moved task's body and an `after` list holding
+the id of the initiative. The queue treats a landed initiative's id as met, so the intake stays
+queued until this initiative lands and then runs.
+
+The split is recorded as a lint note in `initiative.md`, for example that a task has no surface in
+this repository and was moved to the follow-up for the other one. The same lint sentence opens the
+intake body.
+
+A task that touches no known repository is dropped. It is absent from the initiative, nothing is
+filed for it, and the reason is listed in the result's `dropped` list.
+
+If a follow-up cannot be written, the run prints a line to stderr and exits non-zero, as it does
+for a missing task. Nothing is filed when the run was refused or no task was written.
+
 ## Refusing to emit nonsense
 
 A cycle means nothing in it can ever become ready — the phase would stall with
