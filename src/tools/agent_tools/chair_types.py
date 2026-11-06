@@ -380,12 +380,14 @@ class QueueFile(TypedDict):
 
 class HeldFile(TypedDict):
     """One file the last board export held as edited by hand: its workspace path, the initiative its path names ("" for
-    an intake), the reason, and the blob id of the text it holds, as `queue_export.read_held_record` reads them."""
+    an intake), the reason, the blob id of the text it holds, and a one-line summary of how it differs from its export,
+    as `queue_export.read_held_record` reads them."""
 
     path: str
     initiative: str
     reason: str
     blob: str
+    diff_summary: NotRequired[str]  # "" for a record written before the summary existed
 
 
 class PhaseTasks(TypedDict):

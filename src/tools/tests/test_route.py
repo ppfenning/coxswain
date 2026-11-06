@@ -1963,6 +1963,77 @@ def test_merge_same_phase_merges_two_ready_tickets_sharing_one_surface():
     assert merges == [{"members": ["a", "b"], "into": "a", "surfaces": ["agent_tools/x.py"]}]
 
 
+def _merge_pair():
+    items = [
+        _ticket("a", "Add A", surfaces=["agent_tools/x.py"], body="Body A"),
+        _ticket("b", "Add B", surfaces=["agent_tools/x.py"], body="Body B"),
+    ]
+    return route.merge_same_phase(items)
+
+
+def test_merge_rows_gives_a_merged_row_a_dropped_row_with_its_note_and_one_event():
+    result_items, merges = _merge_pair()
+    assert route.merge_rows(result_items, merges, "init") == (
+        [
+            {
+                "kind": "task", "initiative": "init", "task_id": "a", "phase": "build", "state": "ready",
+                "needs": [], "title": "Add A; Add B", "surfaces": ["agent_tools/x.py"],
+                "body": "## Add A\nBody A\n\n## Add B\nBody B", "extra": {"id": "a", "phase": "build"},
+            },
+            {
+                "kind": "task", "initiative": "init", "task_id": "b", "phase": "build", "state": "dropped",
+                "needs": [], "title": "Add B", "surfaces": ["agent_tools/x.py"], "body": "Body B",
+                "merged_into": "a",
+                "extra": {"id": "b", "phase": "build", "note": "folded into a", "merged_into": "a"},
+            },
+        ],
+        [{"event": "tasks_merged", "into": "a", "tasks": ["a", "b"]}],
+    )
+
+
+def test_write_merge_rows_writes_row_by_row_and_appends_the_event_keeping_the_old_ones(monkeypatch, tmp_path, capsys):
+    result_items, merges = _merge_pair()
+    rows, events = route.merge_rows(result_items, merges, "init")
+    old = {"event": "other", "n": 1}
+    # The fake keeps what the real store keeps: the named columns and priority, `extra` replaced whole, any other key dropped.
+    kept = (*route.run_store._QUEUE_COLUMNS, "priority")
+    store = {
+        ("initiative", "init"): {"kind": "initiative", "initiative": "init", "task_id": "init", "extra": {"events": [old], "keep": 1}},
+        ("task", "a"): {"kind": "task", "initiative": "init", "task_id": "a", "priority": 5, "extra": {"id": "a", "attempts": 2}},
+    }
+    refuse: set = set()
+    baselines: list = []
+
+    def upsert(runs_dir, row):
+        if row["task_id"] in refuse:
+            return "boom"
+        store[(row["kind"], row["task_id"])] = {k: v for k, v in row.items() if k in kept}
+        return ""
+
+    def read_queue(runs_dir, initiative=None, kind=None):
+        return [r for r in store.values() if r["initiative"] == initiative and (kind is None or r["kind"] == kind)]
+
+    monkeypatch.setattr(route.run_store, "upsert_row_detail", upsert)
+    monkeypatch.setattr(route.run_store, "read_queue", read_queue)
+    monkeypatch.setattr("agent_tools.queue_export.record_written_paths", lambda ws, paths: baselines.append((ws, paths)))
+    runs_dir = tmp_path / "runs"
+    paths = [tmp_path / "work" / "a.md"]
+
+    assert route.write_merge_rows(runs_dir, rows, events, "init", paths) == ["a", "b"]
+    assert store[("task", "b")]["state"] == "dropped"
+    assert store[("task", "b")]["extra"] == {"id": "b", "phase": "build", "note": "folded into a", "merged_into": "a"}
+    assert (store[("task", "a")]["extra"]["attempts"], store[("task", "a")]["priority"]) == (2, 5)
+    assert store[("initiative", "init")]["extra"] == {"events": [old, events[0]], "keep": 1}
+    assert baselines == [(tmp_path, paths)]
+
+    refuse.add("b")
+    before = dict(store)
+    assert route.write_merge_rows(runs_dir, rows, events, "init", paths) == ["a"]
+    assert capsys.readouterr().out == "routing: store refused task row b: boom\n"
+    assert store[("initiative", "init")] == before[("initiative", "init")]
+    assert baselines == [(tmp_path, paths)]
+
+
 def test_merge_same_phase_merges_a_chain_through_an_intermediate_ticket():
     items = [
         _ticket("a", "Add A", surfaces=["agent_tools/x.py"]),

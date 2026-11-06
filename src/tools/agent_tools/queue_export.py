@@ -21,10 +21,11 @@ import logging
 import os
 import subprocess
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
 
-from agent_tools.queue_rows import render_item, row_path
+from agent_tools.queue_rows import _split_frontmatter, render_item, row_path
 
 Row = dict[str, Any]
 RowKey = tuple[str, str]  # (initiative, task_id): the store's key for a row's last-exported hash
@@ -195,10 +196,36 @@ def record_written_paths(workspace: Path, paths: Iterable[Path | str]) -> None:
         record_written(workspace, texts)
 
 
-def held_record(held: Sequence[Held], on_disk: Mapping[str, str]) -> list[dict[str, str]]:
+def _fields_and_body(text: str) -> tuple[dict[str, Any], list[str]]:
+    split = _split_frontmatter(text)
+    fields, body = split if split is not None else ({}, text)
+    return fields, body.splitlines()
+
+
+def diff_summary(disk_text: str, store_text: str | None) -> str:
+    """Pure: one line on how a hand-edited file differs from its export: the frontmatter keys that changed, in file
+    order, then the body lines added and removed. "no store row" without store text, "no change" for equal texts."""
+    if store_text is None:
+        return "no store row"
+    if disk_text == store_text:
+        return "no change"
+    (disk_fields, disk_body), (store_fields, store_body) = _fields_and_body(disk_text), _fields_and_body(store_text)
+    keys = [*disk_fields, *(k for k in store_fields if k not in disk_fields)]
+    changed = [k for k in keys if disk_fields.get(k) != store_fields.get(k)]
+    ops = [op for op in SequenceMatcher(None, store_body, disk_body).get_opcodes() if op[0] != "equal"]
+    added, removed = sum(j2 - j1 for _, _, _, j1, j2 in ops), sum(i2 - i1 for _, i1, i2, _, _ in ops)
+    body = f"body +{added}/-{removed} lines"
+    return f"{', '.join(changed)} changed; {body}" if changed else body
+
+
+def held_record(held: Sequence[Held], on_disk: Mapping[str, str], exported: Mapping[str, str]) -> list[dict[str, str]]:
     """Pure: the rows of `runs/.export-held.json`: each held file with the blob id of the text it holds, so one
-    needs-chair is raised per held content, and a new edit to the same file raises another."""
-    return [{**h._asdict(), "blob": blob_hash(on_disk[h.path])} for h in held if h.path in on_disk]
+    needs-chair is raised per held content, and a new edit to the same file raises another, and a `diff_summary`
+    against its `exported` text."""
+    return [
+        {**h._asdict(), "blob": blob_hash(on_disk[h.path]), "diff_summary": diff_summary(on_disk[h.path], exported.get(h.path))}
+        for h in held if h.path in on_disk
+    ]
 
 
 def read_held_record(workspace: Path) -> list[dict[str, str]]:
@@ -207,7 +234,7 @@ def read_held_record(workspace: Path) -> list[dict[str, str]]:
         rows = json.loads((Path(workspace) / _HELD_RECORD).read_text())
     except (OSError, ValueError):
         return []
-    keys = ("path", "initiative", "reason", "blob")
+    keys = ("path", "initiative", "reason", "blob", "diff_summary")  # a record from before diff_summary reads it as ""
     return [
         {key: str(row.get(key) or "") for key in keys}
         for row in rows if isinstance(row, dict) and row.get("path")
@@ -447,11 +474,12 @@ def export_files(
     workspace = Path(workspace)
     on_disk = _read_files(workspace)
     writes, deletes = plan_export(rows, on_disk, protected=protected)
+    exported = export_rows(rows)
     written, held = _write_guarded(
-        workspace, export_rows(rows), writes, on_disk, _row_keys(rows), hashes, False, rows_by_path(rows)
+        workspace, exported, writes, on_disk, _row_keys(rows), hashes, False, rows_by_path(rows)
     )
     if hashes is not None:
-        rows_held = held_record(held, on_disk)
+        rows_held = held_record(held, on_disk, exported)
         if rows_held != read_held_record(workspace):
             write_held_record(workspace, rows_held)
     stop_at = {workspace, workspace / "intake", workspace / "work"}

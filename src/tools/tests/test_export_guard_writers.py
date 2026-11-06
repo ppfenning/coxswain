@@ -255,7 +255,13 @@ def test_a_real_hand_edit_is_held_listed_once_and_released_by_a_forced_write(tmp
         assert export_files(tmp_path, [TASK], hashes=_hashes()).touched == []
     assert (tmp_path / TASK_PATH).read_text() == hand
     assert read_held_record(tmp_path) == [
-        {"path": TASK_PATH, "initiative": "epic-a", "reason": HELD_REASON, "blob": blob_hash(hand)}
+        {
+            "path": TASK_PATH,
+            "initiative": "epic-a",
+            "reason": HELD_REASON,
+            "blob": blob_hash(hand),
+            "diff_summary": "title, surfaces, id, lint, phase changed; body +1/-1 lines",
+        }
     ]
     assert len(caplog.records) == 1
     export_file(tmp_path, TASK, force=True, hashes=_hashes())

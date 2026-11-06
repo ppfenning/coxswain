@@ -1,3 +1,4 @@
+import json
 import logging
 import subprocess
 from pathlib import Path
@@ -11,15 +12,19 @@ from agent_tools.queue_export import (
     blob_hash,
     classify_file,
     committed_blob,
+    diff_summary,
     export_files,
     export_rows,
     held_files,
+    held_record,
     is_contentless,
     may_overwrite,
     plan_export,
     read_baseline_record,
     read_held,
+    read_held_record,
     skipped_ids,
+    write_held_record,
 )
 from agent_tools.queue_rows import render_item, row_path
 
@@ -410,3 +415,37 @@ def test_read_held_names_exactly_the_files_the_export_then_leaves_alone(tmp_path
     held = read_held(tmp_path, [TASK_ROW, other])
     touched, _ = export_files(tmp_path, [TASK_ROW, other], hashes=_hashes())
     assert ([h.path for h in held], touched) == (sorted([GUARD_PATH, row_path(other)]), [])
+
+
+STORE = "---\ntitle: Codec\nsurfaces: [a.py]\nstate: doing\n---\nOne.\nTwo.\n"
+
+
+def test_a_changed_title_and_surfaces_are_named_in_file_order() -> None:
+    disk = "---\ntitle: Mine\nsurfaces: [a.py, b.py]\nstate: doing\n---\nOne.\nTwo.\n"
+    assert diff_summary(disk, STORE) == "title, surfaces changed; body +0/-0 lines"
+
+
+def test_a_body_only_edit_counts_added_and_removed_lines() -> None:
+    disk = STORE.replace("One.\nTwo.\n", "One.\nNew.\nMore.\n")
+    assert diff_summary(disk, STORE) == "body +2/-1 lines"
+
+
+def test_a_file_with_no_store_text_has_no_store_row() -> None:
+    assert diff_summary(STORE, None) == "no store row"
+
+
+def test_the_held_record_carries_its_summary_through_a_round_trip(tmp_path: Path) -> None:
+    disk = STORE.replace("state: doing", "state: ready")
+    rows = held_record([Held("work/a/p1/t.md", "a", HELD_REASON)], {"work/a/p1/t.md": disk}, {"work/a/p1/t.md": STORE})
+    write_held_record(tmp_path, rows)
+    assert read_held_record(tmp_path) == [
+        {"path": "work/a/p1/t.md", "initiative": "a", "reason": HELD_REASON, "blob": blob_hash(disk),
+         "diff_summary": "state changed; body +0/-0 lines"}
+    ]
+
+
+def test_a_record_written_before_the_summary_still_reads_with_an_empty_one(tmp_path: Path) -> None:
+    old = {"path": "work/a/p1/t.md", "initiative": "a", "reason": HELD_REASON, "blob": "b1"}
+    (tmp_path / "runs").mkdir()
+    (tmp_path / "runs/.export-held.json").write_text(json.dumps([old]))
+    assert read_held_record(tmp_path) == [{**old, "diff_summary": ""}]
