@@ -20,7 +20,7 @@ from agent_tools.chair_plan_fill import (
     host_free_slots,
     plan_fill,
 )
-from agent_tools.chair_plan_land import backoff_held, deferred_phases, fetch_action, newest_run, plan_finish, plan_lands
+from agent_tools.chair_plan_land import backoff_held, fetch_action, newest_run, plan_finish, plan_lands
 from agent_tools.chair_plan_recover import (
     _initiative_first_unmet_need,
     claimed_by,
@@ -599,20 +599,10 @@ def plan_idle_stall(inputs: IdleStallInputs | None, now: datetime) -> list[Actio
 
 
 def deferred_land_deadlock(facts: Facts, now: datetime | None) -> tuple[str, ApprovedTask] | None:
-    """(waiting task, approved task it needs) for the first stalled blocked_ready entry whose need sits in a deferred phase.
+    """Always None: no phase's land is deferred any more (a ticket phase lands once merge-ready), so no need waits on one.
 
-    land_at defers that land, so the need never lands while the waiting task waits for it. A stall `diagnose` names
-    for another cause (a failed host first) is that cause's line, so it is no deadlock."""
-    inputs = facts.get("idle_stall")
-    if inputs is None or now is None or not is_stalled(inputs, now) or diagnose(inputs)["kind"] != "blocked_needs":
-        return None
-    deferred = deferred_phases(facts)
-    approved = {t["id"]: t for t in facts.get("approved", []) if (t["initiative"], t["phase"]) in deferred}
-    pairs = [
-        (entry["task"], next((approved[n] for n in entry["unlanded_needs"] if n in approved), None))
-        for entry in inputs["blocked_ready"]
-    ]
-    return next(((waiting, need) for waiting, need in pairs if need is not None), None)
+    Callers stay until a later task retires the deferred action kind and this line with it."""
+    return None
 
 
 def _land_command(task: ApprovedTask) -> list[str] | None:
