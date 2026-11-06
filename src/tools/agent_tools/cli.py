@@ -90,6 +90,7 @@ chair_facts = _LazyModule("agent_tools.chair_facts")
 chair_holder = _LazyModule("agent_tools.chair_holder")
 chair_resolve = _LazyModule("agent_tools.chair_resolve")
 chair_land_freeze = _LazyModule("agent_tools.chair_land_freeze")
+chair_load_warn = _LazyModule("agent_tools.chair_load_warn")
 chair_login_check = _LazyModule("agent_tools.chair_login_check")
 chair_pid_probe = _LazyModule("agent_tools.chair_pid_probe")
 chair_read_approved = _LazyModule("agent_tools.chair_read_approved")
@@ -12303,6 +12304,14 @@ def _chair_run_deps(
         return now().strftime("%Y-%m-%dT%H:%M:%SZ")
 
     snapshot: list[dict] = []  # edge state: `beat` empties it, so one tick's three docket readers share one read
+    warned_hosts: list[frozenset[str]] = [frozenset()]  # edge state: the hosts `beat` has already warned are overloaded
+
+    def warn_overloaded_hosts() -> None:
+        # A failed hosts read must not break the beat: warn nothing and keep the warned set.
+        try:
+            warned_hosts[0] = chair_load_warn.warn_overloaded(run_store.hosts(runs_dir), echo, warned_hosts[0])
+        except (*run_store._DB_ERRORS, OSError, RuntimeError, ValueError, TypeError):
+            pass
 
     runner = chair_revert_ports.bounded(chair_exec.run_argv)  # gh and git of the revert path never wait past the bound
 
@@ -12434,6 +12443,7 @@ def _chair_run_deps(
         lost = "" if dry_run else chair.renew_lease(runs_dir, session, pid, host)
         if _record_beat_wanted(dry_run, lost):
             _beat_record(runs_dir, session, pid, host, now())
+        warn_overloaded_hosts()
         return lost
 
     def live_initiatives() -> list[str]:
