@@ -6704,9 +6704,9 @@ positional arguments:
     edit                change a queued intake, an initiative or a task ticket
     remove              remove queued intakes or initiatives that have no live
                         run
-    hold                hold a queued intake so the chair skips it until
-                        released
-    release             release a held intake back to the queue
+    hold                hold a queued intake or an initiative so the chair
+                        skips it until released
+    release             release a held intake or initiative back to the queue
     requeue             requeue the intake of an initiative that has no live
                         tasks
     leader              whether this session is the chair (the SessionStart
@@ -6929,7 +6929,7 @@ options:
                       id
 
 positional arguments:
-  id                 a queued intake
+  id                 a queued intake or an initiative
 
 options:
   -h, --help         show this help message and exit
@@ -6942,7 +6942,7 @@ options:
 <div class="highlight"><pre><span></span><code>usage: cox route release [-h] [--dry-run] [--profile PROFILE] id
 
 positional arguments:
-  id                 a held intake
+  id                 a held intake or initiative
 
 options:
   -h, --help         show this help message and exit
