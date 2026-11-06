@@ -26,6 +26,21 @@ class Unavailable:
 
 LeaseCall = Callable[..., store_cli.LeaseResult]
 
+TASK_LEASE_PREFIX = "land:task:"
+
+
+def task_lease_name(initiative: str, task: str) -> str:
+    """The lease name of a task land that says which initiative it belongs to; `parse_task_lease_name` reverses it."""
+    return f"{TASK_LEASE_PREFIX}{initiative}/{task}"
+
+
+def parse_task_lease_name(name: str) -> tuple[str, str] | None:
+    """(initiative, task) for a `task_lease_name`; None for a bare `land:<task>`, a phase land, or a repo lease."""
+    if not name.startswith(TASK_LEASE_PREFIX):
+        return None
+    initiative, slash, task = name.removeprefix(TASK_LEASE_PREFIX).partition("/")
+    return (initiative, task) if slash and initiative and task else None
+
 
 def _reason(result: store_cli.LeaseResult) -> str:
     if isinstance(result, store_cli.LeaseError):
@@ -68,6 +83,7 @@ def run_under_land_lease[T](
     epoch_now: Callable[[], int] | None = None,
     this_host: str | None = None,
     alive: Callable[[int], bool] = land_repo_lease.pid_alive,
+    initiative: str | None = None,
 ) -> Ran[T] | Refused | Unavailable:
     """Refused and Unavailable run no body; a release warning rides on Ran, or as a note on the body's exception.
 
@@ -75,10 +91,12 @@ def run_under_land_lease[T](
 
     With `this_host`, a refusal by a dead pid on that host gets one steal. A steal granted at any epoch but the refused
     one + 1 took a live land's lease: it is released and the refusal returned with no holder. `Ran.recovered_from`
-    names the dead holder after a takeover."""
+    names the dead holder after a takeover.
+
+    With `initiative`, the lease is named by `task_lease_name`, so a reader can tell which initiative's task it claims."""
     take = acquire or store_cli.lease_acquire
     give = release or store_cli.lease_release
-    name = store_cli.land_lease_name(task)
+    name = store_cli.land_lease_name(task) if initiative is None else task_lease_name(initiative, task)
     refused: store_cli.LeaseRefused | None = None
     try:
         got = take(runs_dir=runs_dir, name=name, holder=holder, ttl=ttl)

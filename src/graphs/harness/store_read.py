@@ -41,6 +41,7 @@ __all__ = [
     "cost_by_model",
     "current_lease",
     "gate_decisions",
+    "leases_with_prefix",
     "ledger_rows",
     "ledger_streak_rows",
     "list_runs",
@@ -258,6 +259,13 @@ def current_lease(conn: Connection, name: str) -> Row | None:
     p = conn.dialect.placeholder
     row = conn.query_one(f"{_select(_LEASE_COLS, 'leases')} WHERE name = {p}", (name,))
     return None if row is None else _dict(_LEASE_COLS, row)
+
+
+def leases_with_prefix(conn: Connection, prefix: str) -> list[Row]:
+    """Every lease row whose name starts with `prefix`, expired or not, by name. `%` and `_` in `prefix` are wildcards."""
+    p = conn.dialect.placeholder
+    sql = f"{_select(_LEASE_COLS, 'leases')} WHERE name LIKE {p} ORDER BY name"
+    return [_dict(_LEASE_COLS, r) for r in conn.query_all(sql, (prefix + "%",))]
 
 
 def run_graph(conn: Connection, run_id: str) -> Row | None:
