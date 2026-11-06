@@ -9,7 +9,16 @@ from pathlib import Path
 
 import pytest
 
-from agent_tools import chair_exec, chair_housekeeping, chair_pid_probe, cli, courier, remote_lane, run_store
+from agent_tools import (
+    chair_exec,
+    chair_housekeeping,
+    chair_pid_probe,
+    cli,
+    courier,
+    queue_export,
+    remote_lane,
+    run_store,
+)
 from agent_tools.chair_exec import (
     Deps,
     Refusal,
@@ -1723,11 +1732,14 @@ def test_write_ticket_round_trips_through_initiative_tickets(tmp_path) -> None:
 
 
 @pytest.mark.parametrize("kind", ["launch_epic", "relaunch"])
-def test_an_epic_launch_merges_same_phase_tickets_sharing_a_surface_before_dispatching_the_merged_ticket(kind: str, tmp_path) -> None:
+def test_an_epic_launch_merges_same_phase_tickets_sharing_a_surface_before_dispatching_the_merged_ticket(
+    kind: str, monkeypatch, tmp_path
+) -> None:
     _ticket(tmp_path, "alpha", "build", "t1", "First ticket", "First body.", ["agent_tools/shared.py"])
     _ticket(tmp_path, "alpha", "build", "t2", "Second ticket", "Second body.", ["agent_tools/shared.py"])
+    _fake_store(monkeypatch, "alpha")
     calls: list = []
-    deps = replace(_deps(calls), work_dir=tmp_path)
+    deps = replace(_deps(calls), work_dir=tmp_path, runs_dir=tmp_path / "runs")
     perform([{"kind": kind, "initiative": "alpha", "epoch": 1}], deps, lambda: 1, False)  # type: ignore[list-item]
     merged_text = (tmp_path / "work" / "alpha" / "build" / "t1.md").read_text(encoding="utf-8")
     dropped_text = (tmp_path / "work" / "alpha" / "build" / "t2.md").read_text(encoding="utf-8")
@@ -2167,3 +2179,123 @@ def test_lacks_phase_record_reads_only_a_failed_land_with_the_refusal_line() -> 
         chair_exec.lacks_phase_record(code, output)
         for code, output in [(1, NO_PHASE_RECORD), (1, "fetch: ok\n" + NO_PHASE_RECORD), (0, NO_PHASE_RECORD), (1, LANDED)]
     ] == [True, True, False, False]
+
+
+def _merge_tickets(tmp_path: Path) -> dict[str, Path]:
+    """Two ready tickets of one phase sharing `agent_tools/x.py`, filed under tmp_path/work/init/build."""
+    phase = tmp_path / "work" / "init" / "build"
+    phase.mkdir(parents=True)
+    for name in ("a", "b"):
+        (phase / f"{name}.md").write_text(
+            f"---\nid: {name}\nphase: build\nstate: ready\nneeds: []\nsurfaces: [agent_tools/x.py]\ntitle: Add {name.upper()}\n---\nBody {name}\n"
+        )
+    return {name: phase / f"{name}.md" for name in ("a", "b")}
+
+
+def _fake_store(monkeypatch, initiative: str = "init", refuse: frozenset[str] = frozenset(), refuse_restore: frozenset[str] = frozenset()) -> dict:
+    """A store that keeps the rows it accepts whole. A task id in `refuse` is always refused; one in `refuse_restore` is refused from its second upsert."""
+    head = {
+        "kind": "initiative", "initiative": initiative, "task_id": initiative, "phase": None, "state": None,
+        "title": "Init", "needs": [], "surfaces": [], "body": "", "extra": {},
+    }
+    store = {("initiative", initiative): head}
+    seen: set[str] = set()
+
+    def upsert(runs_dir, row):
+        if row["task_id"] in refuse:
+            return "boom"
+        if row["task_id"] in refuse_restore and row["task_id"] in seen:
+            return "boom"
+        seen.add(row["task_id"])
+        store[(row["kind"], row["task_id"])] = row
+        return ""
+
+    def read_queue(runs_dir, initiative=None, kind=None):
+        return [r for r in store.values() if r["initiative"] == initiative and (kind is None or r["kind"] == kind)]
+
+    monkeypatch.setattr(run_store, "upsert_row_detail", upsert)
+    monkeypatch.setattr(run_store, "read_queue", read_queue)
+    return store
+
+
+def test_a_launch_merges_through_the_store_then_the_files_and_the_export_holds_none(monkeypatch, tmp_path) -> None:
+    files = _merge_tickets(tmp_path)
+    store = _fake_store(monkeypatch)
+    calls: list = []
+    deps = replace(_deps(calls), work_dir=tmp_path, runs_dir=tmp_path / "runs")
+
+    results = perform([{"kind": "launch_epic", "initiative": "init", "epoch": 1}], deps, lambda: 1, False)
+
+    assert [r["status"] for r in results] == ["done"]
+    assert (store[("task", "a")]["state"], store[("task", "b")]["state"]) == ("ready", "dropped")
+    assert store[("task", "b")]["extra"]["note"] == "folded into a"
+    assert store[("initiative", "init")]["extra"]["events"] == [{"event": "tasks_merged", "into": "a", "tasks": ["a", "b"]}]
+    assert "Add A; Add B" in files["a"].read_text()
+    assert "state: dropped" in files["b"].read_text() and "merged_into: a" in files["b"].read_text()
+    assert sorted(p.name for p in files["a"].parent.glob("*.md")) == ["a.md", "b.md"]
+    assert queue_export.read_held(tmp_path, list(store.values())) == []
+    queue_export.export_files(tmp_path, list(store.values()), hashes=queue_export.Hashes({}, lambda *args: True))
+    assert "state: dropped" in files["b"].read_text() and "Add A; Add B" in files["a"].read_text()
+
+
+@pytest.mark.parametrize("refused", ["b", "init"])
+def test_a_launch_whose_merge_the_store_refuses_writes_no_file_restores_the_rows_and_fails(refused: str, monkeypatch, tmp_path) -> None:
+    files = _merge_tickets(tmp_path)
+    before = {name: path.read_text() for name, path in files.items()}
+    store = _fake_store(monkeypatch, refuse=frozenset({refused}))
+    event = {"event": "tasks_merged", "into": "a", "tasks": ["a", "b"]}
+    store[("initiative", "init")]["extra"] = {"events": [event]}
+    calls: list = []
+    deps = replace(_deps(calls), work_dir=tmp_path, runs_dir=tmp_path / "runs")
+
+    results = perform([{"kind": "launch_epic", "initiative": "init", "epoch": 1}], deps, lambda: 1, False)
+
+    assert [r["status"] for r in results] == ["failed"]
+    assert f"refused by the store ({refused})" in results[0]["reason"] and "store rows restored" in results[0]["reason"]
+    assert {name: path.read_text() for name, path in files.items()} == before
+    assert {v["state"] for k, v in store.items() if k[0] == "task"} == {"ready"}
+    assert store[("task", "a")]["title"] == "Add A"
+    assert store[("initiative", "init")]["extra"]["events"] == [event]
+    assert [c for c in calls if c[0] == "run"] == []
+
+
+def test_a_launch_whose_store_restore_is_refused_says_the_store_and_workspace_disagree(monkeypatch, tmp_path) -> None:
+    files = _merge_tickets(tmp_path)
+    before = {name: path.read_text() for name, path in files.items()}
+    _fake_store(monkeypatch, refuse=frozenset({"b"}), refuse_restore=frozenset({"a"}))
+    calls: list = []
+    deps = replace(_deps(calls), work_dir=tmp_path, runs_dir=tmp_path / "runs")
+
+    results = perform([{"kind": "launch_epic", "initiative": "init", "epoch": 1}], deps, lambda: 1, False)
+
+    assert [r["status"] for r in results] == ["failed"]
+    assert "restore refused for a" in results[0]["reason"] and "now disagree" in results[0]["reason"]
+    assert {name: path.read_text() for name, path in files.items()} == before
+
+
+def test_a_launch_whose_initiative_has_no_store_row_fails_without_touching_a_file(monkeypatch, tmp_path) -> None:
+    files = _merge_tickets(tmp_path)
+    before = {name: path.read_text() for name, path in files.items()}
+    _fake_store(monkeypatch).clear()
+    calls: list = []
+    deps = replace(_deps(calls), work_dir=tmp_path, runs_dir=tmp_path / "runs")
+
+    results = perform([{"kind": "launch_epic", "initiative": "init", "epoch": 1}], deps, lambda: 1, False)
+
+    assert [r["status"] for r in results] == ["failed"]
+    assert "no initiative row" in results[0]["reason"]
+    assert {name: path.read_text() for name, path in files.items()} == before
+
+
+def test_a_merging_launch_with_no_runs_directory_fails_before_touching_anything(monkeypatch, tmp_path) -> None:
+    files = _merge_tickets(tmp_path)
+    before = {name: path.read_text() for name, path in files.items()}
+    store = _fake_store(monkeypatch)
+    calls: list = []
+    deps = replace(_deps(calls), work_dir=tmp_path)
+
+    results = perform([{"kind": "launch_epic", "initiative": "init", "epoch": 1}], deps, lambda: 1, False)
+
+    assert [r["status"] for r in results] == ["failed"]
+    assert "runs directory" in results[0]["reason"]
+    assert {name: path.read_text() for name, path in files.items()} == before and set(store) == {("initiative", "init")}
