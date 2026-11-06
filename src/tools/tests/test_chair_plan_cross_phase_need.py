@@ -81,9 +81,9 @@ def test_an_approved_need_counts_met_so_phase_two_launches_without_a_wait(land_a
     assert backlog["blocked_ready"] == []
 
 
-def test_land_at_ticket_defers_the_phase_one_land(tmp_path):
+def test_land_at_ticket_lands_the_phase_one_when_it_is_done(tmp_path):
     actions, _ = _planned("ticket", tmp_path)
-    assert _kinds(actions, LANDS) == []
+    assert [a["phase"] for a in _kinds(actions, LANDS)] == ["p1"]
 
 
 def test_land_at_level_still_lands_phase_one_at_its_boundary(tmp_path):

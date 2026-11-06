@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 
 from agent_tools.chair_plan import plan_tick
-from agent_tools.chair_plan_land import backoff_held, deferred_phases
+from agent_tools.chair_plan_land import backoff_held
 from agent_tools.chair_types import Facts
 
 _NOW = datetime(2026, 11, 4, 12, 0, tzinfo=UTC)
@@ -76,31 +76,17 @@ def _kinds(actions: list[dict], kinds: set[str]) -> list[dict]:
     return [a for a in actions if a["kind"] in kinds]
 
 
-def test_a_non_last_phase_at_ticket_is_deferred_and_the_initiative_launches() -> None:
+def test_a_non_last_phase_at_ticket_plans_its_land_and_holds_the_initiative_from_launches() -> None:
     actions = plan_tick(_p1_facts(), _NOW)
-    assert [a["initiative"] for a in _kinds(actions, _LAUNCH)] == ["a"]
-    assert _kinds(actions, {"deferred"}) == [
-        {"kind": "deferred", "initiative": "a", "phase": "p1", "land_at": "ticket", "epoch": 7}
-    ]
-    assert _kinds(actions, _LANDS | {"needs_chair"}) == []
+    assert [a["phase"] for a in _kinds(actions, {"land_phase"})] == ["p1"]
+    assert _kinds(actions, _LAUNCH | {"deferred"}) == []
 
 
-def test_a_deferred_phase_is_not_held_from_launches_by_a_refusal() -> None:
-    refusal = {"initiative": "a", "phase": "p1", "run": "run-1", "at": _NOW.isoformat(), "reason": "note"}
+def test_a_ticket_phase_inside_a_refusal_backoff_holds_the_initiative_from_launches() -> None:
+    refusal = {"initiative": "a", "phase": "p1", "run": "run-1", "attempts": 1, "last_refused_at": _NOW.isoformat()}
     facts = _p1_facts(land_refusals=[refusal])
-    assert backoff_held(facts, _NOW) == frozenset()
-    assert deferred_phases(facts) == {("a", "p1"): "ticket"}
-
-
-def test_the_last_phase_approved_plans_its_land_phase() -> None:
-    facts = _facts(
-        initiatives=[_initiative(ready=[])],
-        approved=[_approved("a-p1", "p1"), _approved("a-p2", "p2")],
-        phase_tasks=[_row("p1", ("a-p1", "merged")), _row("p2", ("a-p2", "merged"))],
-    )
-    actions = plan_tick(facts, _NOW)
-    assert [(a["phase"], a["run"]) for a in _kinds(actions, {"land_phase"})] == [("p2", "run-1")]
-    assert [a["phase"] for a in _kinds(actions, {"deferred"})] == ["p1"]
+    assert backoff_held(facts, _NOW) == frozenset({"a"})
+    assert _kinds(plan_tick(facts, _NOW), _LANDS | _LAUNCH) == []
 
 
 def test_level_and_task_still_land_a_non_last_phase() -> None:
@@ -110,11 +96,10 @@ def test_level_and_task_still_land_a_non_last_phase() -> None:
         assert _kinds(actions, {"deferred"}) == []
 
 
-def test_a_quarantined_sibling_keeps_the_phase_out_of_deferral() -> None:
+def test_a_quarantined_sibling_at_ticket_plans_no_land() -> None:
     facts = _facts(
         initiatives=[_initiative()],
         approved=[{**_approved("a-p1", "p1"), "phase_done": False}],
         phase_tasks=[_row("p1", ("a-p1", "approved"), ("a-q", "quarantined"))],
     )
-    assert deferred_phases(facts) == {}
-    assert [a["phase"] for a in _kinds(plan_tick(facts, _NOW), {"partial_land"})] == ["p1"]
+    assert _kinds(plan_tick(facts, _NOW), _LANDS) == []

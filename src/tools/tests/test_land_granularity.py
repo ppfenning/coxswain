@@ -14,10 +14,10 @@ def _task(task, status="approved", repo="wire"):
     return {"task": task, "title": task, "repo": repo, "status": status, "review": {"verdict": "approve"}}
 
 
-def _plan(record, ids, records=None, ticket_tasks=("a", "b", "z"), present=("z",)):
+def _plan(record, ids, records=None, ticket_tasks=("a", "b", "z"), present=("z",), phases=()):
     items = [{"id": t, "status": "approved"} for t in ids]
     return land.land_plan(record, {}, "main", items=items, task_records=records or [_task(t) for t in ids],
-                          repo="wire", ticket_tasks=ticket_tasks, ticket_present=present)
+                          repo="wire", ticket_tasks=ticket_tasks, ticket_present=present, phases=phases)
 
 
 def _kinds(steps):
@@ -42,12 +42,25 @@ def test_ticket_plans_one_pr_and_marks_every_ticket_task_after_the_merge():
     assert _marked(_plan(_phase(last_phase=False), "ab")) == []
 
 
+def test_ticket_with_phases_merges_into_one_branch_and_opens_no_pr_after_the_first():
+    items = [{"id": "a", "status": "approved"}]
+    kw = {"items": items, "task_records": [_task("a")], "repo": "wire", "ticket_tasks": ("a", "z"),
+          "ticket_present": ("z",), "phases": ["p1", "p2"]}
+    first = land.land_plan(_phase(card_branch="", phase="p1", last_phase=False), {}, "main", **kw)
+    last = land.land_plan(_phase(card_branch="", phase="p2"), {}, "main", **kw)
+    assert _kinds(first).count("pr_create") == 1 and _kinds(first)[0] == "pr_branch_cut" and _marked(first) == []
+    assert "pr_create" not in _kinds(last) and _kinds(last).index("merge") < _kinds(last).index("mark_done")
+    assert _marked(last) == ["a", "z"]
+
+
 def test_ticket_without_a_card_branch_plans_one_pr_for_the_ticket_not_the_phase():
     rec = {**_task("a"), "arbitration": {"verdict": "approve"}}
-    last = _plan(_phase(card_branch=""), "a", [rec], ("a", "z"))
-    early = _plan(_phase(card_branch="", last_phase=False), "a", [rec], ("a", "z"))
-    assert _kinds(last).count("pr_create") == 1 and _marked(last) == ["a", "z"]
-    assert "pr_create" not in _kinds(early) and _marked(early) == []
+    phases = ("p1", "p2")
+    last = _plan(_phase(card_branch="", phase="p2"), "a", [rec], ("a", "z"), phases=phases)
+    early = _plan(_phase(card_branch="", phase="p1", last_phase=False), "a", [rec], ("a", "z"), phases=phases)
+    assert "pr_create" not in _kinds(last) and _kinds(last)[-5:-2] == ["wait_checks", "merge", "clean_phase"]
+    assert _marked(last) == ["a", "z"]
+    assert _kinds(early).count("pr_create") == 1 and "merge" not in _kinds(early) and _marked(early) == []
 
 
 def test_level_opens_one_pr_per_phase_and_marks_only_its_tasks():
@@ -101,8 +114,9 @@ def test_a_skipped_task_in_the_ticket_set_is_not_marked_done():
 
 
 def test_an_earlier_phase_task_whose_work_is_not_in_the_pr_is_not_marked_done():
-    for record in (_phase(), _phase(card_branch="")):
-        steps = _plan(record, "a", [{**_task("a"), "arbitration": {"verdict": "approve"}}], ("a", "y", "z"), present=("z",))
+    for record, phases in ((_phase(), ()), (_phase(card_branch="", phase="p2"), ("p1", "p2"))):
+        steps = _plan(record, "a", [{**_task("a"), "arbitration": {"verdict": "approve"}}], ("a", "y", "z"), present=("z",),
+                      phases=phases)
         assert _marked(steps) == ["a", "z"]
         assert [s["unmerged"] for s in steps if s["kind"] == "note"] == [["y"]]
         assert _kinds(steps).index("merge") < _kinds(steps).index("mark_done")
