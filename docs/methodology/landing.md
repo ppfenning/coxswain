@@ -106,21 +106,29 @@ applies, and the earlier stop wins. `ticket` stops at the rung of the one pull r
 
 | `land_at` | Pull requests | When one opens |
 | --- | --- | --- |
-| `ticket` | One per initiative. | At the last level, once its tasks are merged and checked. |
+| `ticket` | One per initiative. | As a draft when the first phase merges in. Ready for review when the last phase merges. |
 | `level` | One per level. | When that level is complete. |
 | `task` | One per task. | After the task is merged into its level branch. |
 
 ### The hierarchy at ticket
 
 An initiative is one ticket. Its levels and its tasks open no pull request of their own. A task branch merges into the
-branch of its level. Levels stack, each on the branch of its parent level, and the stack is the single pull request.
-When that pull request merges, every task in the ticket is marked done. A task whose work is not in the merged pull
-request is left in its current state, and a note names it.
+branch of its level.
 
-A level is a set of tasks that can run together. It exists only to order tasks and to stack their branches, so it has
-no review or approval of its own. The harness names a level a phase, and its branch is `epic/<initiative>/<phase>`.
-A level with one parent is stacked on that parent's branch. A level with several parents is assembled from all of
-them onto the default branch, and its record lists them as `assembled_from`.
+Each initiative has one branch, `pr/<initiative>`. It is cut from the target branch when the first phase completes.
+
+A phase is done when every task is approved, done or dropped and the phase is validated. Then the chair merges the
+phase branch into `pr/<initiative>` locally and pushes it. It marks the phase done and its tasks merged. A phase with a
+quarantined task does not merge.
+
+Later phases build on `pr/<initiative>`, so a phase with several parents needs no reassembly.
+
+The pull request lands under the team gate. At gate `ticket` a person merges it. At gate `full` the chair merges it on
+green. Its merge marks every task in the ticket done. A task whose work is not in the merged pull request is left in
+its current state, and a note names it.
+
+A level is a set of tasks that can run together. It exists only to order tasks, so it has no review or approval of its
+own. The harness names a level a phase, and its branch is `epic/<initiative>/<phase>`.
 
 At `level` each completed level opens its own pull request. A level stacked on a parent is based on the parent's pull
 request branch when that pull request exists, so it shows only its own commits. Otherwise it is based on the default
@@ -136,10 +144,13 @@ A task row reads one of these words in the dashboard feed. The words are listed 
 | `ready` | The task is ready, every task it needs has landed, and no lane is building it. |
 | `building` | A live lane covers the task's initiative and phase. The lane covers a phase, so idle siblings read `building` too. |
 | `approved` | The work passed review and waits for its merge. A task `cox runs stranded` lists reads `approved` as well. |
-| `merged` | The work is merged but has not landed at the configured `land_at`. That is an approved task with the merge flag, or a done task written at another `land_at`. |
+| `merged` | The work is merged but has not landed at the configured `land_at`. At `ticket` the task is in the pr branch. That is an approved task with the merge flag, or a done task written at another `land_at`. |
 | `landed` | The task is `done` at the configured `land_at`. |
 
 A task whose needs are not all landed reads `blocked`. A dropped or quarantined task reads as that state.
+
+The `route status` command and the dash show each phase as `building`, `merged` or `landed`. A merged phase is done and
+merged into the pr branch. The merged tally is kept apart from the approved tally.
 
 ### The merged state and restart
 
