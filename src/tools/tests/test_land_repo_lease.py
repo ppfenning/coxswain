@@ -227,3 +227,92 @@ def test_renew_and_release_address_the_named_slot(monkeypatch, tmp_path):
         ("renew", tmp_path, "land:/repo", "me", 4, 60), ("release", tmp_path, "land:/repo", "me", 4),
         ("renew", tmp_path, "land:/repo#1", "me", 4, 60), ("release", tmp_path, "land:/repo#1", "me", 4),
     ]
+
+
+def test_waiting_message_names_the_holder_or_another_land():
+    assert land_repo_lease.waiting_message("/repo", "pid 1 on host") == "land: waiting, pid 1 on host is landing in /repo"
+    assert land_repo_lease.waiting_message("/repo", None) == "land: waiting, another land is landing in /repo"
+
+
+def _waiting(monkeypatch, tmp_path, results, timeout_s, poll_s=2):
+    """Run acquire_in_slots_waiting over a scripted acquire and a fake clock; returns (got, attempts, sleeps)."""
+    queue = list(results)
+    attempts = []
+    sleeps = []
+    clock = [100.0]
+
+    def fake_acquire_in_slots(*args):
+        attempts.append(args)
+        return 0, (queue.pop(0) if len(queue) > 1 else queue[0])
+
+    def fake_sleep(seconds):
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    monkeypatch.setattr(land_repo_lease, "acquire_in_slots", fake_acquire_in_slots)
+    got = land_repo_lease.acquire_in_slots_waiting(
+        tmp_path, "/repo", "me", 60, "host-a", 1, timeout_s, poll_s, sleep=fake_sleep, now=lambda: clock[0])
+    return got, attempts, sleeps
+
+
+def test_a_land_refused_twice_then_granted_returns_the_grant_after_two_sleeps(monkeypatch, tmp_path):
+    refused = store_cli.LeaseRefused(4, "other@host-b:1")
+    granted = store_cli.LeaseGranted(5, "me")
+    got, attempts, sleeps = _waiting(monkeypatch, tmp_path, [refused, refused, granted], timeout_s=60)
+    assert got == (0, granted)
+    assert len(attempts) == 3
+    assert sleeps == [2, 2]
+
+
+def test_a_land_refused_until_the_timeout_returns_the_refusal_and_never_sleeps_past_it(monkeypatch, tmp_path):
+    refused = store_cli.LeaseRefused(4, "other@host-b:1")
+    got, attempts, sleeps = _waiting(monkeypatch, tmp_path, [refused], timeout_s=5, poll_s=2)
+    assert got == (0, refused)
+    assert sleeps == [2, 2, 1]
+    assert len(attempts) == 4
+
+
+def test_a_store_outage_or_lease_error_returns_on_the_first_attempt_without_sleeping(monkeypatch, tmp_path):
+    for result in (store_cli.NotAvailable("no store"), store_cli.LeaseError("down")):
+        got, attempts, sleeps = _waiting(monkeypatch, tmp_path, [result], timeout_s=60)
+        assert (got, len(attempts), sleeps) == ((0, result), 1, [])
+
+
+def test_a_timeout_of_zero_makes_one_attempt(monkeypatch, tmp_path):
+    refused = store_cli.LeaseRefused(4, "other@host-b:1")
+    got, attempts, sleeps = _waiting(monkeypatch, tmp_path, [refused], timeout_s=0)
+    assert (got, len(attempts), sleeps) == ((0, refused), 1, [])
+
+
+def test_waiting_passes_its_arguments_through_to_acquire_in_slots(monkeypatch, tmp_path):
+    def alive(_pid):
+        return True
+
+    seen = []
+
+    def fake_acquire_in_slots(*args):
+        seen.append(args)
+        return 0, store_cli.LeaseGranted(1, "me")
+
+    monkeypatch.setattr(land_repo_lease, "acquire_in_slots", fake_acquire_in_slots)
+    land_repo_lease.acquire_in_slots_waiting(tmp_path, "/repo", "me", 60, "host-a", 3, 0, 1, alive)
+    assert seen == [(tmp_path, "/repo", "me", 60, "host-a", 3, alive)]
+
+
+def test_the_real_acquire_in_slots_is_retried_and_still_takes_over_a_dead_pid_each_attempt(monkeypatch, tmp_path, capsys):
+    replies = [store_cli.LeaseRefused(4, "chair-x@host-b:1"), store_cli.LeaseRefused(4, "chair-x@host-a:4242")]
+    calls = []
+
+    def fake_acquire(runs_dir, name, holder, ttl, steal=False):
+        calls.append(steal)
+        return store_cli.LeaseGranted(5, holder) if steal else replies.pop(0)
+
+    monkeypatch.setattr(store_cli, "lease_acquire", fake_acquire)
+    sleeps = []
+    clock = iter([0, 0, 3])
+    got = land_repo_lease.acquire_in_slots_waiting(
+        tmp_path, "/repo", "me@host-a:9", 60, "host-a", 1, 10, 3, lambda _pid: False, sleeps.append, lambda: next(clock))
+    assert got == (0, store_cli.LeaseGranted(5, "me@host-a:9"))
+    assert calls == [False, False, True]
+    assert sleeps == [3]
+    assert "taking over" in capsys.readouterr().out
