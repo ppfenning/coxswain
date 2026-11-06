@@ -32,7 +32,7 @@ Run = Callable[[list[str]], tuple[int, str]]
 Row = Mapping[str, object]
 
 __all__ = [
-    "ChairHead", "add_argv", "beat_argv", "beat_versions", "capacity_upsert_argv", "delete_argv", "dispatchable", "doctor_line", "env_rows", "format_host_list",
+    "ChairHead", "add_argv", "beat_argv", "beat_versions", "capacity_upsert_argv", "delete_argv", "deploy_targets", "dispatchable", "doctor_line", "env_rows", "format_host_list",
     "host_line", "host_rows_to_lane_hosts", "local_host_add_argv", "local_host_missing", "local_workspace_dir", "recorded_repos", "remove_refusal",
     "removed_line", "row_capabilities", "row_capacities", "row_weights", "set_state_argv", "shadowed", "sync_argvs", "sync_host", "versions_report",
 ]
@@ -67,6 +67,14 @@ def host_rows_to_lane_hosts(rows: Sequence[Row], profile_hosts: Sequence[LaneHos
         LaneHost(str(r["name"]), str(r["ssh"]), _workspace(r) or workspaces.get(str(r["name"]), ""))
         for r in rows if r.get("state") == "active" and str(r["name"]) != local
     )
+
+
+_DEPLOY_STATES = frozenset({"active", "deploy_only"})
+
+
+def deploy_targets(rows: Sequence[Row]) -> list[Row]:
+    """Rows a deploy reaches, in name order: `deploy_only` hosts get code but never lanes."""
+    return sorted((r for r in rows if r.get("state") in _DEPLOY_STATES), key=lambda r: str(r["name"]))
 
 
 def dispatchable(hosts: Sequence[LaneHost]) -> tuple[list[str], list[str]]:

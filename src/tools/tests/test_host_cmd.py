@@ -92,6 +92,26 @@ def test_a_draining_row_is_never_a_lane_host_no_matter_how_many_lanes_it_still_h
     assert host_cmd.host_rows_to_lane_hosts([row]) == ()
 
 
+_EVERY_STATE = [
+    {**HOST_A, "name": "zed", "ssh": "zed", "state": "deploy_only"},
+    {**HOST_A, "name": "pi", "ssh": "pi", "state": "draining"},
+    {**HOST_A, "name": "old", "ssh": "old", "state": "offline"},
+    HOST_A,
+]
+
+
+def test_deploy_targets_keep_exactly_active_and_deploy_only_rows_in_name_order():
+    assert host_cmd.deploy_targets(_EVERY_STATE) == [HOST_A, _EVERY_STATE[0]]
+
+
+def test_a_deploy_only_row_is_never_a_lane_host():
+    assert host_cmd.host_rows_to_lane_hosts(_EVERY_STATE) == (LaneHost("host-a", "host-a", ""),)
+
+
+def test_a_deploy_only_host_line_names_the_state_with_no_drained_or_lane_wording():
+    assert host_cmd.host_line(_EVERY_STATE[0], NOW, {"zed": 0}) == "zed  deploy_only  cap 8  beat 2m ago  login ok"
+
+
 def test_the_local_row_is_never_a_lane_host_candidate():
     rows = [HOST_A, {**HOST_A, "name": "host-b", "ssh": "host-b"}]
     assert host_cmd.host_rows_to_lane_hosts(rows, [LaneHost("host-a", "x", "/w")], local="host-b") == (
