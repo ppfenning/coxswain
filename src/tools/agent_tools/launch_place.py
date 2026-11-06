@@ -40,11 +40,13 @@ def _capacity(row: Row | None, default: int) -> int:
 
 def _why_not(
     row: Row, local: str, stale: Collection[str], reachable: Collection[str], blocked: Collection[str],
-    barred: Mapping[str, str] | None = None,
+    barred: Mapping[str, str] | None = None, local_excluded: bool = False,
 ) -> str:
     name = str(row["name"])
     if barred and name in barred:
         return barred[name]
+    if local_excluded and name == local:
+        return "decompose only"
     if row.get("state") != "active":
         return str(row.get("state"))
     if name != local and name in stale:
@@ -62,17 +64,19 @@ def format_refusal(refusal: Refusal) -> list[str]:
 def place(
     rows: Sequence[Row], live_by_host: Mapping[str, int], now: datetime, local: str = "", default_capacity: int = 1,
     profile_hosts: Sequence[LaneHost] = (), barred: Mapping[str, str] | None = None,
+    local_excluded: bool = False,
 ) -> Placement | Refusal:
     """The host the chair tick would give one more lane, else a refusal naming every row's in-use/cap.
 
     live_by_host is keyed by row name, this machine under `local`. default_capacity is the cap of a row without one.
-    `barred` maps a host to the reason it may not be chosen; the chooser skips it and the refusal quotes the reason."""
+    `barred` maps a host to the reason it may not be chosen; the chooser skips it and the refusal quotes the reason.
+    `local_excluded` drops this machine from the candidates and reports it as 'decompose only'."""
     bars = barred or {}
     active = [r for r in rows if r.get("state") == "active"]
     stale = stale_hosts(active, now.isoformat(), threshold_s=PLACEMENT_STALE_S)
     reachable = set(host_cmd.dispatchable(host_cmd.host_rows_to_lane_hosts(active, profile_hosts, local))[0])
     blocked = login_blocked(rows)
-    names = [str(r["name"]) for r in active if str(r["name"]) == local or (str(r["name"]) in reachable and str(r["name"]) not in stale)]
+    names = [str(r["name"]) for r in active if (str(r["name"]) == local and not local_excluded) or (str(r["name"]) in reachable and str(r["name"]) not in stale)]
     facts = cast(Facts, {
         "dispatch": dispatch_facts(
             {"max_in_flight": default_capacity}, names, live_by_host,
@@ -87,7 +91,7 @@ def place(
         return Placement(name, live_by_host.get(name, 0), _capacity(row, default_capacity))
     return Refusal(tuple(
         (str(r["name"]), live_by_host.get(str(r["name"]), 0), _capacity(r, default_capacity),
-         _why_not(r, local, stale, reachable, blocked, bars))
+         _why_not(r, local, stale, reachable, blocked, bars, local_excluded))
         for r in rows
     ))
 

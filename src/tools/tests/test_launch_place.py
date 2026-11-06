@@ -57,6 +57,24 @@ def test_every_host_full_refuses_with_each_in_use_and_cap():
     assert format_refusal(refusal) == ["here 2/2", "a 1/1", "off 0/5  (draining)"]
 
 
+def test_local_excluded_places_on_the_lane_host_though_local_has_free_lanes():
+    rows = [_row("here", 2, weight=3), _row("a", 2)]
+    assert place(rows, {}, NOW, local="here", local_excluded=True) == Placement("a", 0, 2)
+
+
+def test_local_excluded_with_the_lane_host_full_refuses_naming_the_local_reason():
+    rows = [_row("here", 2, weight=3), _row("a", 2)]
+    refusal = place(rows, {"a": 2}, NOW, local="here", local_excluded=True)
+    assert refusal == Refusal((("here", 0, 2, "decompose only"), ("a", 2, 2, "")))
+    assert format_refusal(refusal) == ["here 0/2  (decompose only)", "a 2/2"]
+
+
+def test_local_not_excluded_is_still_chosen():
+    rows = [_row("here", 2, weight=3), _row("a", 2)]
+    assert place(rows, {}, NOW, local="here") == Placement("here", 0, 2)
+    assert place(rows, {}, NOW, local="here", local_excluded=False) == Placement("here", 0, 2)
+
+
 def test_idle_remote_host_beaten_by_the_scheduled_login_check_stays_placeable():
     beat = (NOW - datetime.timedelta(minutes=25)).isoformat()
     versions = json.dumps({"workspace_dir": "/srv/ws", "login_ok": True, "login_checked_at": beat})
