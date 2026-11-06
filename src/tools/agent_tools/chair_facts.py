@@ -4,6 +4,7 @@ The shapers are pure and `gather_facts` calls each source once. The only clock i
 No retry state is stored: `harness_failures` is counted from run history on every call.
 """
 import json
+import math
 import re
 import sys
 from collections.abc import Callable, Collection, Mapping, Sequence
@@ -142,6 +143,10 @@ class FactsDeps:
         Optional, and absent means 24 hours.
     max_launches_per_hour: the raw profile value at `chair.max_launches_per_hour`, resolved by
         `resolve_max_launches_per_hour`. Optional, and absent means the default.
+    shared_file_limit: the raw profile value at `chair.max_shared_file_initiatives`, resolved by
+        `resolve_shared_file_limit`. Optional, and absent means 2.
+    serial_files: the raw profile value at the top-level `serial_files`, resolved by `resolve_serial_files`.
+        Optional, and absent means no serial paths.
     host_load_ceiling: the raw profile value at `chair.host_load_ceiling`, resolved by `host_load.resolve_load_ceiling`.
         Optional, and absent means no ceiling.
     merge_queue: the raw profile value at the top-level `merge_queue`, resolved by `merge_queue_fact`. Optional, and
@@ -251,6 +256,8 @@ class FactsDeps:
     housekeeping_hours: Callable[[], object] | None = None  # raw profile chair.housekeeping_hours; absent means 24 hours
     stale_days: Callable[[], object] | None = None  # raw profile chair.stale_days; absent means 7 days
     max_launches_per_hour: Callable[[], object] | None = None  # raw profile chair.max_launches_per_hour; absent means the default
+    shared_file_limit: Callable[[], object] | None = None  # raw profile chair.max_shared_file_initiatives; absent means 2
+    serial_files: Callable[[], object] | None = None  # raw profile top-level serial_files; absent means none
     host_load_ceiling: Callable[[], object] | None = None  # raw profile chair.host_load_ceiling; absent means no ceiling
     merge_queue: Callable[[], object] | None = None  # raw profile top-level merge_queue; absent means the queue is off
     stale_candidates: Callable[[datetime], Sequence[Row]] | None = None  # chair_read_stale.read_stale_candidates; absent means no candidates
@@ -1091,6 +1098,7 @@ def intake_paths_from_rows(rows: Sequence[Row], current: str | None = None) -> l
 
 DEFAULT_HOUSEKEEPING_HOURS = 24.0
 DEFAULT_STALE_DAYS = 7  # chair.stale_days profile default
+DEFAULT_SHARED_FILE_LIMIT = 2  # chair.max_shared_file_initiatives profile default
 
 
 def resolve_housekeeping_hours(value: object) -> float:
@@ -1117,6 +1125,18 @@ def resolve_max_launches_per_hour(value: object) -> int:
     except (TypeError, ValueError):
         return DEFAULT_MAX_LAUNCHES_PER_HOUR
     return limit if limit > 0 and not isinstance(value, bool) else DEFAULT_MAX_LAUNCHES_PER_HOUR
+
+
+def resolve_shared_file_limit(value: object) -> int:
+    """A finite number of at least 1 (a bool is not a number) as an int, else the default. inf and nan parse from a profile."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 1 <= value < math.inf:
+        return DEFAULT_SHARED_FILE_LIMIT
+    return int(value)
+
+
+def resolve_serial_files(value: object) -> list[str]:
+    """The string entries of a list; anything else is no serial paths."""
+    return [entry for entry in value if isinstance(entry, str)] if isinstance(value, list) else []
 
 
 def resolve_idle_stall_minutes(value: object) -> int:
@@ -1379,6 +1399,10 @@ def gather_facts(
         **({"phase_records": list(deps.phase_records(approved))} if deps.phase_records is not None else {}),
         "running": running_initiatives(live, items, repos, unlanded=unfinished) if deps.tickets is not None else [],
         "steer_streaks": steer_streaks_from_actions(action_rows),
+        "steer_policy": {
+            "limit": resolve_shared_file_limit(deps.shared_file_limit() if deps.shared_file_limit is not None else None),
+            "serial": resolve_serial_files(deps.serial_files() if deps.serial_files is not None else None),
+        },
         "waiting_reported": waiting_reported_from_actions(action_rows),
         "pull_age_s": pull_age_s(action_rows, now),
         "stranded": stranded_facts(approved, list(deps.run_commits()), list(deps.phase_state())),

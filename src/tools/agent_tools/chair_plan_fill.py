@@ -9,7 +9,7 @@ from typing import NamedTuple
 from agent_tools import chair_login_watch, host_load
 from agent_tools.chair_plan_recover import budget_verdict
 from agent_tools.chair_steer import steer_check
-from agent_tools.chair_types import Action, Facts, InitiativeFacts, RunningInitiative
+from agent_tools.chair_types import Action, Facts, InitiativeFacts, RunningInitiative, SteerPolicy
 from agent_tools.checkout_env import blocks_launch, host_env_verdict, sync_instruction
 
 # name, weight (a host's share of new placements; its capacity when the hosts table sets none),
@@ -128,6 +128,7 @@ def _walk_candidates(
     local_left: int,
     hosts: Sequence[HostSlot],
     env: HostEnv = _NO_ENV,
+    policy: SteerPolicy | None = None,
 ) -> tuple[list[Action], list[Action]]:
     """Launches and steer actions in walk order; only a launch that takes a lane uses it and claims its surfaces.
 
@@ -141,22 +142,22 @@ def _walk_candidates(
     notes = _stale_needs_chair(head, barred, hosts, required, env)
     placed = None if local_left > 0 else best_host(required, hosts, barred)
     if local_left <= 0 and placed is None:
-        launches, steers = _walk_candidates(tail, running, streaks, local_left, hosts, env)
+        launches, steers = _walk_candidates(tail, running, streaks, local_left, hosts, env, policy)
         return launches, [*notes, *steers]
     repo = head.get("repo", "")
     surfaces = head.get("ready_surfaces", [])
-    steer = steer_check(head["id"], repo, surfaces, running, streaks) if repo and surfaces else None
+    steer = steer_check(head["id"], repo, surfaces, running, streaks, policy=policy) if repo and surfaces else None
     if steer is not None:
-        launches, steers = _walk_candidates(tail, running, streaks, local_left, hosts, env)
+        launches, steers = _walk_candidates(tail, running, streaks, local_left, hosts, env, policy)
         return launches, [*notes, steer, *steers]
     claim: list[RunningInitiative] = [{"id": head["id"], "repo": repo, "surfaces": surfaces}] if repo and surfaces else []
     if placed is None:
         local: Action = {"kind": "launch_epic", "initiative": head["id"]}
-        launches, steers = _walk_candidates(tail, [*running, *claim], streaks, local_left - 1, hosts, env)
+        launches, steers = _walk_candidates(tail, [*running, *claim], streaks, local_left - 1, hosts, env, policy)
         return [local, *launches], steers
     name, next_hosts = placed
     hosted: Action = {"kind": "launch_epic", "initiative": head["id"], "host": name}
-    launches, steers = _walk_candidates(tail, [*running, *claim], streaks, local_left, next_hosts, env)
+    launches, steers = _walk_candidates(tail, [*running, *claim], streaks, local_left, next_hosts, env, policy)
     return [hosted, *launches], [*notes, *steers]
 
 
@@ -199,7 +200,9 @@ def _epic_launches(
     ordered = [*(i for i in open_ if i["started"]), *(i for i in open_ if not i["started"])]
     running = [*facts.get("running", []), *claimed]
     env = HostEnv(facts.get("host_env", {}), frozenset(facts.get("env_stale_reported", [])))
-    launches, steers = _walk_candidates(ordered, running, facts.get("steer_streaks", {}), max(0, free_lanes), host_free, env)
+    launches, steers = _walk_candidates(
+        ordered, running, facts.get("steer_streaks", {}), max(0, free_lanes), host_free, env, facts.get("steer_policy")
+    )
     stale = [a for a in steers if a.get("cause") == "stale_checkout"]
     return [*launches, *(a for a in steers if a not in stale), *_once_per_reason(stale)]
 
