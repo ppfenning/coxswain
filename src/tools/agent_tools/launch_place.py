@@ -15,6 +15,7 @@ from agent_tools.chair_login_watch import PLACEMENT_STALE_S, login_blocked
 from agent_tools.chair_plan_fill import best_host, host_free_slots
 from agent_tools.chair_read_lost import stale_hosts
 from agent_tools.chair_types import Facts
+from agent_tools.host_load import overloaded
 from agent_tools.lane_hosts import LaneHost
 
 Row = Mapping[str, Any]
@@ -40,7 +41,7 @@ def _capacity(row: Row | None, default: int) -> int:
 
 def _why_not(
     row: Row, local: str, stale: Collection[str], reachable: Collection[str], blocked: Collection[str],
-    barred: Mapping[str, str] | None = None, local_excluded: bool = False,
+    barred: Mapping[str, str] | None = None, local_excluded: bool = False, loaded: Mapping[str, str] | None = None,
 ) -> str:
     name = str(row["name"])
     if barred and name in barred:
@@ -53,7 +54,9 @@ def _why_not(
         return "stale beat"
     if name != local and name not in reachable:
         return "no workspace_dir"
-    return "login lapsed" if name in blocked else ""
+    if name in blocked:
+        return "login lapsed"
+    return (loaded or {}).get(name, "")
 
 
 def format_refusal(refusal: Refusal) -> list[str]:
@@ -64,18 +67,20 @@ def format_refusal(refusal: Refusal) -> list[str]:
 def place(
     rows: Sequence[Row], live_by_host: Mapping[str, int], now: datetime, local: str = "", default_capacity: int = 1,
     profile_hosts: Sequence[LaneHost] = (), barred: Mapping[str, str] | None = None,
-    local_excluded: bool = False,
+    local_excluded: bool = False, load_ceiling: float | None = None,
 ) -> Placement | Refusal:
     """The host the chair tick would give one more lane, else a refusal naming every row's in-use/cap.
 
     live_by_host is keyed by row name, this machine under `local`. default_capacity is the cap of a row without one.
     `barred` maps a host to the reason it may not be chosen; the chooser skips it and the refusal quotes the reason.
-    `local_excluded` drops this machine from the candidates and reports it as 'decompose only'."""
+    `local_excluded` drops this machine from the candidates and reports it as 'decompose only'.
+    `load_ceiling` skips a host whose recorded cpu or mem is above it; None skips none."""
     bars = barred or {}
     active = [r for r in rows if r.get("state") == "active"]
     stale = stale_hosts(active, now.isoformat(), threshold_s=PLACEMENT_STALE_S)
     reachable = set(host_cmd.dispatchable(host_cmd.host_rows_to_lane_hosts(active, profile_hosts, local))[0])
     blocked = login_blocked(rows)
+    loaded = overloaded(rows, load_ceiling)
     names = [str(r["name"]) for r in active if (str(r["name"]) == local and not local_excluded) or (str(r["name"]) in reachable and str(r["name"]) not in stale)]
     facts = cast(Facts, {
         "dispatch": dispatch_facts(
@@ -83,6 +88,7 @@ def place(
             host_cmd.row_capacities(rows), host_cmd.row_weights(rows), host_cmd.row_capabilities(rows),
         ),
         "login_hosts": list(rows),
+        "host_load_ceiling": load_ceiling,
     })
     chosen = best_host(frozenset(), host_free_slots(facts), bars)
     if chosen is not None:
@@ -91,7 +97,7 @@ def place(
         return Placement(name, live_by_host.get(name, 0), _capacity(row, default_capacity))
     return Refusal(tuple(
         (str(r["name"]), live_by_host.get(str(r["name"]), 0), _capacity(r, default_capacity),
-         _why_not(r, local, stale, reachable, blocked, bars, local_excluded))
+         _why_not(r, local, stale, reachable, blocked, bars, local_excluded, loaded))
         for r in rows
     ))
 
