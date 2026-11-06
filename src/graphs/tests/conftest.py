@@ -135,3 +135,33 @@ def _store_backups_stay_out_of_home(tmp_path_factory, monkeypatch):
     simply overrides this default.
     """
     monkeypatch.setenv("COX_STORE_BACKUP_DIR", str(tmp_path_factory.mktemp("store-backups")))
+
+
+_GIT_REPOSITORY_VARIABLES = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_NAMESPACE",
+    "GIT_CEILING_DIRECTORIES",
+)
+
+
+@pytest.fixture(autouse=True)
+def _git_environment_is_hermetic(tmp_path_factory, monkeypatch) -> None:
+    """Git reads only the repository it is pointed at, so no inherited variable or global config may reach a child git.
+
+    The config file comes from `tmp_path_factory`, not `tmp_path`: several tests inventory every file under their own.
+    """
+    for name in _GIT_REPOSITORY_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+    empty_config = tmp_path_factory.mktemp("git-config") / "gitconfig"
+    empty_config.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty_config))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
+    # The harness commits without its own identity; an empty global config no longer supplies one.
+    for role in ("AUTHOR", "COMMITTER"):
+        monkeypatch.setenv(f"GIT_{role}_NAME", "t")
+        monkeypatch.setenv(f"GIT_{role}_EMAIL", "t@invalid")
