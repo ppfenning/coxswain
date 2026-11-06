@@ -360,6 +360,69 @@ def test_status_json_with_profile_matches_status_rows(tmp_path, capsys):
     assert rows == _expected_status_rows(ws)
 
 
+def _decompose_profile(tmp_path):
+    profile = _write_workspace(tmp_path)
+    cartridges = tmp_path / "cartridges"
+    (cartridges / "acme").mkdir(parents=True)
+    (cartridges / "acme" / "cartridge.yaml").write_text("policy:\n  dispatch:\n    local_lanes: decompose\n")
+    profile.write_text(profile.read_text() + f"cartridges_dir: {cartridges}\n")
+    return profile
+
+
+def _host_rows(*names):
+    return [{"name": n, "state": "active", "beat_at": None} for n in names]
+
+
+def _chair_lines(out):
+    return [line for line in out.splitlines() if line.startswith("chair machine")]
+
+
+def test_status_text_names_the_chair_machine_orchestrating_on_a_three_host_table(tmp_path, capsys, monkeypatch):
+    profile = _decompose_profile(tmp_path)
+    monkeypatch.setattr(cli.socket, "gethostname", lambda: "host-a")
+    monkeypatch.setattr(cli.run_store, "hosts", lambda runs_dir: _host_rows("host-a", "host-b", "host-c"))
+    rc = main(["route", "status", "--profile", str(profile)])
+    assert rc == 0
+    assert _chair_lines(capsys.readouterr().out) == ["chair machine host-a: orchestrating"]
+
+
+def test_status_text_names_the_chair_machine_building_on_a_one_host_table(tmp_path, capsys, monkeypatch):
+    profile = _decompose_profile(tmp_path)
+    monkeypatch.setattr(cli.socket, "gethostname", lambda: "host-a")
+    monkeypatch.setattr(cli.run_store, "hosts", lambda runs_dir: _host_rows("host-a"))
+    rc = main(["route", "status", "--profile", str(profile)])
+    assert rc == 0
+    assert _chair_lines(capsys.readouterr().out) == ["chair machine host-a: building"]
+
+
+def test_status_text_leaves_the_chair_line_out_when_the_hosts_read_fails(tmp_path, capsys, monkeypatch):
+    profile = _decompose_profile(tmp_path)
+
+    def boom(runs_dir):
+        raise OSError("store gone")
+
+    monkeypatch.setattr(cli.run_store, "hosts", boom)
+    rc = main(["route", "status", "--profile", str(profile)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert _chair_lines(out) == [] and "status unavailable" not in out
+
+
+def test_status_text_leaves_the_chair_line_out_for_an_empty_hosts_table(tmp_path, capsys, monkeypatch):
+    profile = _decompose_profile(tmp_path)
+    monkeypatch.setattr(cli.run_store, "hosts", lambda runs_dir: [])
+    rc = main(["route", "status", "--profile", str(profile)])
+    assert rc == 0
+    assert _chair_lines(capsys.readouterr().out) == []
+
+
+def test_status_json_carries_no_chair_line(tmp_path, capsys, monkeypatch):
+    profile = _decompose_profile(tmp_path)
+    monkeypatch.setattr(cli.run_store, "hosts", lambda runs_dir: _host_rows("host-a", "host-b"))
+    main(["route", "status", "--profile", str(profile), "--json"])
+    assert "chair machine" not in capsys.readouterr().out
+
+
 def test_status_json_with_an_intake_dir_carries_runs_and_intake_groups(tmp_path, capsys):
     profile, ws = _write_runs_workspace(tmp_path)
     (ws / "intake").mkdir()
