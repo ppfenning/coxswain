@@ -7933,6 +7933,15 @@ def _doctor_dash_build_rows(profile: dict | None) -> list[dict]:
     return [doctor.dash_build_row(dev_install, dash_present, shutil.which("cargo") is not None)]
 
 
+def _doctor_steward_rows(profile: dict | None) -> list[dict]:
+    """Edge. The steward row; skipped without a profile. A missing or malformed `chair` reads as off."""
+    if profile is None:
+        return [doctor._skip("steward")]
+    chair = profile.get("chair")
+    raw = chair.get("steward") if isinstance(chair, Mapping) else None
+    return [doctor.steward_row(chair_facts.resolve_steward_enabled(raw))]
+
+
 def _setup_doctor(a: argparse.Namespace) -> int:
     if getattr(a, "host", None):
         return _setup_doctor_host(a, _run_ssh)
@@ -7944,7 +7953,13 @@ def _setup_doctor(a: argparse.Namespace) -> int:
         fn = (lambda *_: lines) if isinstance(lines, list) else None
         rows = [*rows, *doctor.freshness_rows(None, None, None, fn)]
     profile = _doctor_profile(facts["profile_text"])
-    rows = [*rows, *_doctor_home_rows(profile), *_doctor_store_rows(profile), *_doctor_dash_build_rows(profile)]
+    rows = [
+        *rows,
+        *_doctor_home_rows(profile),
+        *_doctor_store_rows(profile),
+        *_doctor_dash_build_rows(profile),
+        *_doctor_steward_rows(profile),
+    ]
     rc = doctor.exit_code(rows)
     # Informational: outside rows, so outside rc. Reuses the text the facts already read.
     parquet = _parquet_traces_line(profile)

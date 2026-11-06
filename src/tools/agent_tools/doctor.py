@@ -423,6 +423,16 @@ def dash_build_row(dev_install: bool, dash_present: bool, toolchain_found: bool)
     )
 
 
+_STEWARD = "steward"
+
+
+def steward_row(enabled: bool) -> dict:
+    """Informational: `ok` is True in both states, so `exit_code` ignores the row."""
+    if enabled:
+        return {"check": _STEWARD, "ok": True, "detail": "on"}
+    return {"check": _STEWARD, "ok": True, "detail": "off; turn it on with chair.steward set to true in the profile"}
+
+
 def _marketplace_registered_row(listing: Mapping[str, str] | None) -> dict:
     """`listing` maps marketplace name to source text from `claude plugin marketplace list`; None when claude is absent."""
     if listing is None:
