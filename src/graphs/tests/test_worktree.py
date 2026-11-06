@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 from harness.worktree import (
     apply_patch,
     keep_worktree,
     normalise_patch,
+    read_lock,
     release_stale_holders,
     remove_worktree,
+    reset_worktree,
     stale_holders,
+    sync_env,
 )
 
 
@@ -256,3 +260,85 @@ def test_release_stale_holders_removes_the_directory_keeps_the_branch_and_frees_
         capture_output=True, text=True,
     )
     assert again.returncode == 0, again.stderr
+
+
+def _git(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-c", "user.email=t@invalid", "-c", "user.name=t", *args],
+        cwd=cwd, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def test_reset_worktree_restores_base_and_keeps_ignored_paths(tmp_path: Path) -> None:
+    repo, worktree = _repo_with_worktree(tmp_path)
+    (repo / ".gitignore").write_text("keep/\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "ignore")
+    _git(worktree, "checkout", "-q", "-B", "feature", "main")
+    (worktree / "f.txt").write_text("changed\n")
+    (worktree / "new.txt").write_text("stray\n")
+    (worktree / "newdir").mkdir()
+    (worktree / "newdir" / "a.txt").write_text("stray\n")
+    (worktree / "keep").mkdir()
+    (worktree / "keep" / "env.txt").write_text("env\n")
+    ok, detail = reset_worktree(worktree, branch="scratch", base="main")
+    assert ok, detail
+    assert _git(worktree, "status", "--porcelain") == ""
+    assert (worktree / "f.txt").read_text() == "x\n"
+    assert not (worktree / "new.txt").exists()
+    assert not (worktree / "newdir").exists()
+    assert (worktree / "keep" / "env.txt").read_text() == "env\n"
+    assert _git(worktree, "branch", "--show-current") == "scratch"
+
+
+def test_reset_worktree_to_a_second_base_moves_the_checkout_and_reuses_a_leftover_branch(tmp_path: Path) -> None:
+    repo, worktree = _repo_with_worktree(tmp_path)
+    ok, detail = reset_worktree(worktree, branch="scratch", base="main")
+    assert ok, detail
+    (repo / "g.txt").write_text("g\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "second")
+    second = _git(repo, "rev-parse", "main")
+    ok, detail = reset_worktree(worktree, branch="scratch", base=second)
+    assert ok, detail
+    assert _git(worktree, "rev-parse", "HEAD") == second
+    assert (worktree / "g.txt").read_text() == "g\n"
+    _git(repo, "branch", "-f", "leftover", "main~1")
+    ok, detail = reset_worktree(worktree, branch="leftover", base=second)
+    assert ok, detail
+    assert _git(worktree, "rev-parse", "HEAD") == second
+
+
+def test_reset_worktree_reports_gits_message_for_an_unknown_base(tmp_path: Path) -> None:
+    _, worktree = _repo_with_worktree(tmp_path)
+    ok, detail = reset_worktree(worktree, branch="scratch", base="no-such-ref")
+    assert not ok
+    assert detail
+
+
+def test_read_lock_returns_none_without_a_lockfile_and_the_bytes_with_one(tmp_path: Path) -> None:
+    _, worktree = _repo_with_worktree(tmp_path)
+    assert read_lock(worktree) is None
+    (worktree / "uv.lock").write_bytes(b"lock\x00bytes\n")
+    assert read_lock(worktree) == b"lock\x00bytes\n"
+
+
+def test_read_lock_takes_the_first_existing_name(tmp_path: Path) -> None:
+    (tmp_path / "b.lock").write_bytes(b"b")
+    assert read_lock(tmp_path, ("a.lock", "b.lock")) == b"b"
+    assert read_lock(tmp_path, ()) is None
+
+
+def test_sync_env_reports_success_and_failure_with_output(tmp_path: Path) -> None:
+    ok, detail = sync_env(tmp_path, [sys.executable, "-c", "print('synced')"])
+    assert ok
+    assert "synced" in detail
+    ok, detail = sync_env(tmp_path, [sys.executable, "-c", "import sys; sys.stderr.write('boom'); sys.exit(3)"])
+    assert not ok
+    assert "boom" in detail
+
+
+def test_sync_env_runs_in_the_worktree(tmp_path: Path) -> None:
+    ok, detail = sync_env(tmp_path, [sys.executable, "-c", "import os; print(os.getcwd())"])
+    assert ok
+    assert Path(detail).resolve() == tmp_path.resolve()

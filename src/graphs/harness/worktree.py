@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 __all__ = [
@@ -14,9 +14,12 @@ __all__ = [
     "link_venv",
     "normalise_patch",
     "prune_registrations",
+    "read_lock",
     "release_stale_holders",
     "remove_worktree",
+    "reset_worktree",
     "stale_holders",
+    "sync_env",
 ]
 
 _TRAILING_MARKERS = ("</patch>", "</diff>", "</code>", "```")
@@ -180,6 +183,35 @@ def remove_worktree(repo: Path, worktree: Path) -> tuple[bool, str]:
     prune_ok, prune_detail = prune_registrations(repo)
     combined = f"{detail}\n{prune_detail}".strip() if prune_detail else detail
     return (not worktree.exists()) and prune_ok, combined
+
+
+def reset_worktree(worktree: Path, *, branch: str, base: str) -> tuple[bool, str]:
+    """Put a registered worktree on a fresh `branch` at `base`, clean of untracked files; ignored paths survive."""
+    steps = (
+        ["checkout", "-f", "-B", branch, base],
+        ["reset", "--hard", base],
+        ["clean", "-fd"],
+    )
+    messages: list[str] = []
+    for args in steps:
+        result = subprocess.run(["git", "-C", str(worktree), *args], capture_output=True, text=True)
+        detail = (result.stderr or result.stdout).strip()
+        if result.returncode != 0:
+            return False, detail
+        messages.append(detail)
+    return True, "\n".join(m for m in messages if m)
+
+
+def read_lock(worktree: Path, names: Sequence[str] = ("uv.lock",)) -> bytes | None:
+    """Bytes of the first of `names` that exists in the worktree, else None."""
+    found = next((p for p in (Path(worktree) / n for n in names) if p.is_file()), None)
+    return None if found is None else found.read_bytes()
+
+
+def sync_env(worktree: Path, argv: Sequence[str]) -> tuple[bool, str]:
+    """Run the caller's environment sync `argv` with the worktree as cwd; the command is never named here."""
+    result = subprocess.run(list(argv), cwd=worktree, capture_output=True, text=True)
+    return result.returncode == 0, "\n".join(s for s in (result.stdout.strip(), result.stderr.strip()) if s)
 
 
 def stale_holders(porcelain: str, branch: str, worktree_root: Path, alive: Callable[[str], bool]) -> list[Path]:
