@@ -2018,6 +2018,11 @@ def _land_enrich(steps: list[dict], *, path: str, worktree_root: str, task_paths
     return [enrich(s) for s in steps]
 
 
+def _with_check_cap(steps: list[dict], cores: int, capacity: int | None) -> list[dict]:
+    """Each `checks` step carrying the host's `cores` and the lane `capacity`, for `_execute_land_step` to run its checks with."""
+    return [{**s, "cores": cores, "capacity": capacity} if s["kind"] == "checks" else s for s in steps]
+
+
 def _backfill_phase_task_files(runs_dir: Path, run_id: str, phase: str) -> None:
     """Store mode only: write any task record the store holds for this run and phase, then for each earlier run of
     the same initiative (newest first), that has no file yet under `runs/<run>/tasks/<phase>/`, so
@@ -2168,23 +2173,31 @@ def _phase_needing_land(runs_dir: Path, run_id: str) -> str | None:
     return candidates[0] if len(candidates) == 1 else None
 
 
-def _checks_env(cwd: Path) -> dict[str, str] | None:
+def _checks_env(cwd: Path, cores: int = 1, capacity: int | None = None) -> dict[str, str] | None:
     """Edge. The environment a check runs in: `cwd/.venv/bin` first on PATH when the worktree has one (the venv
-    `_link_venv` links), so a bare `pytest` is the project's, not a standalone tool's. None, the inherited
-    environment, when it has not."""
+    `_link_venv` links), so a bare `pytest` is the project's, not a standalone tool's. With a `capacity` of 1 or more
+    the lane's xdist worker count rides on top (`harness.lane_workers.check_env`). None, the inherited environment,
+    when there is neither a venv nor a capacity."""
+    from harness.lane_workers import check_env
     venv_bin = Path(cwd) / ".venv" / "bin"
-    if not venv_bin.is_dir():
-        return None
-    return {**os.environ, "PATH": os.pathsep.join([str(venv_bin), os.environ.get("PATH", "")])}
+    base = {**os.environ, "PATH": os.pathsep.join([str(venv_bin), os.environ.get("PATH", "")])} if venv_bin.is_dir() else None
+    capped = check_env(base if base is not None else os.environ, cores, capacity)
+    return capped if capped is not None else base
 
 
-def _run_checks(checks: list[tuple[str, str]], cwd: Path) -> tuple[bool, str]:
+def _run_checks(checks: list[tuple[str, str]], cwd: Path, cores: int = 1, capacity: int | None = None) -> tuple[bool, str]:
     """Each `(name, shell line)` pair in order, run by a shell in `cwd` as the builders run it (`harness.checks`),
-    stopping at the first launch error or failure and naming it by `name`, never by its command."""
+    stopping at the first launch error or failure and naming it by `name`, never by its command.
+
+    `cores` and `capacity` are the land's, read by the caller. With a `capacity` the passing detail names the xdist
+    worker count the checks ran with."""
     from harness.checks import run_checks
+    from harness.lane_workers import XDIST_VAR
     if not checks:
         return True, "none declared"
-    env = _checks_env(cwd)
+    env = _checks_env(cwd, cores, capacity)
+    workers = env.get(XDIST_VAR) if env is not None and capacity is not None and capacity >= 1 else None
+    note = f" (xdist workers: {workers})" if workers else ""
     skipped: list[str] = []
     flaky: list[str] = []
     for name, line in checks:
@@ -2200,7 +2213,7 @@ def _run_checks(checks: list[tuple[str, str]], cwd: Path) -> tuple[bool, str]:
             return False, land.checks_detail(f"{name}: {result['output_tail'].strip()}", skipped, flaky)
         if verdict == "skip":
             skipped.append(name)
-    return True, land.checks_detail(f"{len(checks)} checks passed", skipped, flaky)
+    return True, land.checks_detail(f"{len(checks)} checks passed{note}", skipped, flaky)
 
 
 def _land_worktree(repo: Path, branch: str) -> Path:
@@ -2619,11 +2632,12 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
             _link_venv(repo, wt)
         return co.returncode == 0, (f"reusing {step['branch']}" if co.returncode == 0 else co.stderr.strip() or co.stdout.strip())
     if kind == "checks":
+        cap = (step.get("cores", 1), step.get("capacity"))  # set by `_with_check_cap` on an applied land
         if step.get("gate") == "ticket":
             # The ticket gate shares the repo lock with level check runs; task checks below never take it.
             from harness import check_gate
             with check_gate.repo_gate_lock(repo):
-                return _run_checks(step["checks"], _land_worktree(repo, step["worktree_of"]))
+                return _run_checks(step["checks"], _land_worktree(repo, step["worktree_of"]), *cap)
         if "skipped" in step:
             return True, f"checks: skipped ({step['skipped']})"
         if "kept" in step:
@@ -2640,12 +2654,12 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
                 return False, add.stderr.strip() or add.stdout.strip()
             _link_venv(repo, wt)
             try:
-                return _run_checks(step["checks"], wt)
+                return _run_checks(step["checks"], wt, *cap)
             finally:
                 subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)], capture_output=True)
         if "worktree_of" in step:
-            return _run_checks(step["checks"], _land_worktree(repo, step["worktree_of"]))
-        return _run_checks(step["checks"], repo)
+            return _run_checks(step["checks"], _land_worktree(repo, step["worktree_of"]), *cap)
+        return _run_checks(step["checks"], repo, *cap)
     if kind == "push":
         return _land_push(repo, step["branch"], forge_module)
     if kind == "pr_branch_cut":
@@ -3709,6 +3723,7 @@ def _runs_land(a: argparse.Namespace) -> int:
             print(line, file=sys.stderr)
         print(json.dumps(steps, indent=2))
         return 2 if any(s["kind"] == "refuse" for s in steps) else 0
+    steps = _with_check_cap(steps, os.cpu_count() or 1, _check_capacity(runs_dir, profile, socket.gethostname()))
     forge_choice = forge.forge_name(profile)
     forge_module = forge.forge_for(forge_choice)
     if forge_module is None:
@@ -11723,6 +11738,19 @@ def _local_max_in_flight(runs_dir: Path, profile: dict, hostname: str) -> int:
     return _chair_max_in_flight(runs_dir, profile) if row is None or row.get("capacity") is None else int(row["capacity"])
 
 
+def _check_capacity(runs_dir: Path, profile: dict, hostname: str) -> int | None:
+    """Edge. The capacity a check's worker count divides cores by: `COX_LANE_CAPACITY` when set, else `_local_max_in_flight`.
+    A set value that is not a whole number of 1 or more is None, so the checks run uncapped, as `lane_workers_from` reads it."""
+    raw = os.environ.get("COX_LANE_CAPACITY")
+    if raw is None:
+        return _local_max_in_flight(runs_dir, profile, hostname)
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return None
+    return value if value >= 1 else None
+
+
 def _chair_stranded_inputs(
     ws: Path, mode: str, files: Mapping[Path, str] | None = None, store_rows: list | None = None,
 ) -> tuple[list[dict], list[dict]]:
@@ -12652,6 +12680,7 @@ def _chair_run_deps(
         log_retention_days=run_logs.retention_days(profile),
         ids_mode=profile.get("ids", "slug"),
         dry_run=dry_run,
+        lane_capacity=_check_capacity(runs_dir, profile, host),
     )
     exec_deps = dataclasses.replace(
         exec_deps,
