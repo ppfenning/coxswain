@@ -2,7 +2,10 @@
 from agent_tools.chair_types import Action
 
 ROUTINE_KINDS = frozenset(
-    {"relaunch", "clear_branches", "rebase_phase", "fetch", "fetch_exit", "land_phase", "needs_chair", "waiting", "deferred"}
+    {
+        "relaunch", "clear_branches", "rebase_phase", "fetch", "fetch_exit", "land_phase", "needs_chair", "waiting",
+        "deferred", "merge_level", "run_gate", "steward_event",
+    }
 )
 
 
