@@ -123,6 +123,8 @@ _SPEND_TEXT_KEYS = {"weekly_reset", "budget_timezone"}  # `Sun 04:00 America/New
 
 _CHAIR_KEYS = {"housekeeping_hours", "stale_days", "idle_stall_minutes", "launch_stagger_s", "max_launches_per_hour"}  # every key `cli._chair_run_deps` reads off `profile["chair"]`
 
+_CHAIR_BOOL_WORDS = {"true": True, "yes": True, "false": False, "no": False}  # the spellings a boolean `chair:` key accepts, any case
+
 _STORE_KEYS = {"mode"}  # the one key of the `store:` block, kept as text in `profile["store"]["mode"]`
 
 
@@ -168,7 +170,9 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
     and a bare `chair:` line followed by indented `housekeeping_hours:`/`stale_days:`/`idle_stall_minutes:`/`launch_stagger_s:`/`max_launches_per_hour:` lines,
     all optional, parsed as floats into `result["chair"]` (every key `cli._chair_run_deps`
     reads off `profile["chair"]`; `log_retention_days` stays a flat top-level key, not one of
-    these). A bare `store:` line followed by an indented `mode:` line is kept as text in
+    these). The same block also takes `steward:`, a boolean (true, false, yes or no, any case)
+    kept as a Python bool in `result["chair"]["steward"]`; any other value raises ProfileError.
+    A bare `store:` line followed by an indented `mode:` line is kept as text in
     `result["store"]["mode"]`. A `notify: {ntfy: <url>}` line is the one inline mapping, kept as `result["notify"]`.
 
     A nested key outside a `spend:` or `chair:` block, or an unrecognized key inside one,
@@ -216,6 +220,12 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
                     raise ProfileError(f"line {lineno}: {raw_line}")
                 key, _, value = content.partition(":")
                 key, value = key.strip(), value.strip()
+                if key == "steward":
+                    flag = _CHAIR_BOOL_WORDS.get(value.lower())
+                    if flag is None:
+                        raise ProfileError(f"line {lineno}: {raw_line}")
+                    result.setdefault("chair", {})[key] = flag
+                    continue
                 if key not in _CHAIR_KEYS:
                     raise ProfileError(f"line {lineno}: {raw_line}")
                 try:
