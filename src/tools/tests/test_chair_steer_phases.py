@@ -37,6 +37,7 @@ def test_cross_initiative_overlap_at_the_streak_limit_escalates_even_behind_a_si
     assert steer_check("i", "r", ["a.py"], running, {"i|j": ESCALATE_AT}, phase="p2") == {
         "kind": "needs_chair",
         "initiative": "i",
+        "other": "j",
         "cause": "steer_deferred",
         "reason": "i shares a.py with running j; the pair has been deferred three ticks",
     }

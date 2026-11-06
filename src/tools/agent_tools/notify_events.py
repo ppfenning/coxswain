@@ -32,6 +32,13 @@ def _stall(action: Mapping) -> Event:
     )
 
 
+def _stuck(action: Mapping) -> Event:
+    """A steer chain head that cannot launch: one stuck event per initiative, the reason in the body."""
+    initiative = str(action.get("initiative") or "")
+    lines = [_remedy_line(action), str(action.get("reason") or "")]
+    return Event("stuck", f"stuck:{initiative}", f"Stuck: {initiative}", "\n".join(x for x in lines if x))
+
+
 def _remedy_line(action: Mapping) -> str:
     """The remedy argv as one line; empty when the action carries no command."""
     command = " ".join(str(part) for part in action.get("command") or [])
@@ -59,6 +66,8 @@ def _event(action: Mapping) -> Event:
         return _host_login(action)
     if cause in ("stalled", "idle_stall"):
         return _stall(action)
+    if cause == "steer_head_stuck":
+        return _stuck(action)
     return _needs_chair(action)
 
 
