@@ -177,6 +177,21 @@ class ReadyTask(TypedDict):
     requires: list[str]  # capabilities the ticket's own `requires:` frontmatter field names; empty when it names none
 
 
+class PhaseFacts(TypedDict):
+    """A phase that can start a lane now: its ready tasks and the union of their surfaces."""
+
+    phase: str
+    ready_tasks: list[ReadyTask]
+    surfaces: list[str]
+
+
+class LivePhase(TypedDict):
+    """One phase of an initiative that has its own live run."""
+
+    initiative: str
+    phase: str
+
+
 class RunningInitiative(TypedDict):
     """A live initiative or one with approved tasks not yet landed; surfaces is the union of the tasks it holds."""
 
@@ -198,6 +213,7 @@ class InitiativeFacts(TypedDict):
     ready_surfaces: NotRequired[list[str]]  # the union of the surfaces of its ready tasks; absent means none
     dag_problem: NotRequired[str]  # the first work-store DAG problem, e.g. "b needs x"; absent means valid
     land_at: NotRequired[str]  # the land_at (ticket, level or task) resolved this tick; old fixtures omit it
+    phases: NotRequired[list[PhaseFacts]]  # the phases that can start a lane now; absent means none can, or the initiative's rows were not read
 
 
 class QuarantineFacts(TypedDict):
@@ -477,6 +493,7 @@ class Facts(TypedDict):
     review_prs: NotRequired[list[ReviewPr]]  # approved tasks awaiting a review PR; absent means none
     landing: NotRequired[list[LandingFact]]  # lands in progress on the land worker; absent means none
     running: NotRequired[list[RunningInitiative]]  # initiatives with a live lane on any machine; absent means none
+    live_phases: NotRequired[list[LivePhase]]  # phases with their own live run; absent means no phase runs live
     # Keyed `<candidate>|<other>`: the count of consecutive prior deferrals for that ordered pair; absent means 0.
     steer_streaks: NotRequired[dict[str, int]]
     steer_policy: NotRequired[SteerPolicy]  # absent means strict: limit 1, no serial paths
