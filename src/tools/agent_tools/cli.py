@@ -4870,6 +4870,19 @@ def _record_intake_done(runs_dir: Path, done_path: Path) -> None:
         print(f"remove: warning: the store still lists {done_path.stem} as queued; run cox route import to reconcile")
 
 
+def _chair_machine_line(profile: Mapping, runs_dir: Path) -> str:
+    """Edge. The status line naming this machine and its effective orchestration mode; empty when either read fails
+    or the hosts table has no rows (`run_store.hosts` answers `[]` for no store, so there is nothing to report)."""
+    try:
+        rows = run_store.hosts(runs_dir)
+        if not rows:
+            return ""
+        configured = chair_capacity.chair_local_lanes(dict(profile))
+        return route.chair_machine_line(chair_orchestrate.mode_line(configured, rows, socket.gethostname(), _now_iso()))
+    except Exception:
+        return ""
+
+
 def _route_status(a: argparse.Namespace) -> int:
     profile_path = _profile_path(a)
     text = _read_text_or_none(profile_path)
@@ -4927,6 +4940,7 @@ def _route_status(a: argparse.Namespace) -> int:
                 shown, groups, problems, gate_level=_resolved_gate_level(ws / "runs"), hidden=hidden,
                 short_ids=_run_short_ids([r["id"] for r in rows], short_ids),
                 waiting=_waiting_by_entry_id(queue, waiting), held=held, deferred=deferred,
+                chair_line=_chair_machine_line(profile, ws / "runs"),
             )
             drafts = route.render_drafts(
                 draft_list.read_drafts(ws / "work", datetime.datetime.now(datetime.UTC).isoformat()), draft_list.format_age
