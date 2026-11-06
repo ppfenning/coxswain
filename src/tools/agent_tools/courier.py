@@ -12,13 +12,13 @@ from agent_tools.stats_ingest import LEDGER_PATH, _read_ledger
 
 __all__ = [
     "EVENTS", "EXCEPTION_EVENTS", "Reference", "ack", "ack_file", "append_file", "append_line", "format_reference",
-    "inbox", "needs_model", "parse_reference", "resolve", "send",
+    "inbox", "needs_model", "parse_reference", "parse_run_exited", "resolve", "run_exited_fields", "send",
 ]
 
 _KINDS = ("run", "task", "pr", "intake", "proposal", "finding", "initiative")
 EVENTS = (
     "needs_attention", "level_merged", "merge_failed", "relaunched", "stuck", "gate_passed", "gate_failed",
-    "epic_complete",
+    "epic_complete", "run_exited",
 )
 EXCEPTION_EVENTS = ("needs_attention", "merge_failed", "stuck", "gate_failed")
 _PATTERN = re.compile(r"^coxswain://([a-z]+)/(.+)$")
@@ -133,6 +133,18 @@ def resolve(ref: Reference, workspace_dir: Path | str, ledger_path: Path | str |
 
 def needs_model(entry: dict) -> bool:
     return entry.get("event") in EXCEPTION_EVENTS
+
+
+def run_exited_fields(run: str, initiative: str, outcome: str) -> dict:
+    return {"run": run, "initiative": initiative, "outcome": outcome}
+
+
+def parse_run_exited(entry: dict) -> tuple[str, str, str] | None:
+    fields = entry.get("fields")
+    if entry.get("event") != "run_exited" or not isinstance(fields, dict):
+        return None
+    values = tuple(fields.get(k) for k in ("run", "initiative", "outcome"))
+    return values if all(isinstance(v, str) for v in values) else None
 
 
 def send(

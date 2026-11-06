@@ -24,8 +24,20 @@ def login_shell_argv(remote_argv: list[str]) -> list[str]:
     return ["/bin/sh", "-c", script, "login-shell", shlex.join(remote_argv)]
 
 
+def _after_env_prefix(remote_argv: list[str]) -> list[str]:
+    """The command past a leading `env NAME=value ...`; an argv without that prefix comes back unchanged."""
+    if remote_argv[:1] != ["env"]:
+        return remote_argv
+    rest = remote_argv[1:]
+    assignments = 0
+    while assignments < len(rest) and re.match(r"[A-Za-z_][A-Za-z0-9_]*=", rest[assignments]):
+        assignments += 1
+    return rest[assignments:]
+
+
 def _wants_login_shell(remote_argv: list[str]) -> bool:
-    return remote_argv[:1] == ["claude"] or remote_argv[:3] == ["cox", "route", "launch"]
+    command = _after_env_prefix(remote_argv)
+    return command[:1] == ["claude"] or command[:3] == ["cox", "route", "launch"]
 
 
 def _as_binary(remote_argv: list[str]) -> list[str]:
@@ -68,10 +80,19 @@ def env_check_argv(var: str) -> list[str]:
     return ["printenv", var]
 
 
-def launch_argv(initiative: str, run_id: str, label: str, phase: str | None = None) -> list[str]:
+def chair_courier_env(courier_ssh: str | None) -> list[str]:
+    """The `env` prefix that tells the host where the chair's courier is; empty when there is no destination,
+    which leaves the launch argv as it was and the host on polling."""
+    return ["env", f"COX_CHAIR_COURIER={courier_ssh}"] if courier_ssh else []
+
+
+def launch_argv(
+    initiative: str, run_id: str, label: str, phase: str | None = None, *, chair_courier: str | None = None,
+) -> list[str]:
     # Wrong belief: "the remote cox just runs the launch". Without --local it places the run again, so host-a can
     # forward it to host-b while the chair records host-a as the host that ran it.
     return [
+        *chair_courier_env(chair_courier),
         "cox", "route", "launch", "epic", "--local",
         "--initiative", initiative,
         "--run-id", run_id,
@@ -81,9 +102,12 @@ def launch_argv(initiative: str, run_id: str, label: str, phase: str | None = No
     ]
 
 
-def decompose_launch_argv(intake: str, initiative: str, run_id: str, label: str) -> list[str]:
+def decompose_launch_argv(
+    intake: str, initiative: str, run_id: str, label: str, *, chair_courier: str | None = None,
+) -> list[str]:
     """The decompose twin of `launch_argv`; `intake` is the copied intake file's path on the host, its idea."""
     return [
+        *chair_courier_env(chair_courier),
         "cox", "route", "launch", "decompose", "--local", "--detach",
         "--idea", intake,
         "--initiative-id", initiative,
