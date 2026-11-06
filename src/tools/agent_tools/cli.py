@@ -126,6 +126,7 @@ chair_service = _LazyModule("agent_tools.chair_service")
 chair_service_host = _LazyModule("agent_tools.chair_service_host")
 chair_smoke = _LazyModule("agent_tools.chair_smoke")
 chair_unit = _LazyModule("agent_tools.chair_unit")
+chair_wake = _LazyModule("agent_tools.chair_wake")
 chair_watchdog = _LazyModule("agent_tools.chair_watchdog")
 checkout = _LazyModule("agent_tools.checkout")
 checkout_sync = _LazyModule("agent_tools.checkout_sync")
@@ -12224,6 +12225,9 @@ def _chair_cache_paths(runs_dir: Path) -> tuple[Path, Path, Path]:
     return runs_dir / "chair-cache.json", runs_dir / "chair-cache-store.json", runs_dir / "chair-cache-decompose.json"
 
 
+CHAIR_WAKE_POLL_SECONDS = 5.0  # how often the between-tick wait re-reads the bus for a run_exited entry
+
+
 def _chair_run_deps(
     runs_dir: Path, profile: dict, session: str, pid: int, host: str, dry_run: bool, echo: Callable[[str], None],
     profile_path: Path, mode: str,
@@ -12700,7 +12704,14 @@ def _chair_run_deps(
         "toolchain_found": shutil.which("cargo") is not None,
     } if dev_install else {}
 
+    def read_bus() -> list[dict]:
+        return courier.entries(_read_text_or_none(ws / "courier.jsonl") or "")  # a missing file is an empty bus
+
+    # A dry run and a missing workspace keep the plain sleep, so polling is unchanged there.
+    wake = None if dry_run or not ws.is_dir() else chair_wake.wait_for_run_exit(read_bus, time.sleep, time.monotonic, CHAIR_WAKE_POLL_SECONDS)
+
     return chair_run.RunDeps(
+        wait=wake,
         checkout_state=checkout_state, started_checkout=started_checkout, lands_in_flight=lands_in_flight,
         stop_lands=stop_lands, facts_deps=facts_deps, gather=_chair_gather(ws), exec_deps=exec_deps, report_deps=chair_report.Deps(echo=echo),
         beat=beat, current_epoch=epoch,
