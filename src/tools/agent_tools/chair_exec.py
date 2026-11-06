@@ -914,6 +914,7 @@ def _fetch_exit(action: Action, deps: Deps) -> Result:
     if code != 0:
         return _result(action, fetch_status(code, output), output)
     approved, warnings = chair_apply_fetch.apply_fetched_approvals(deps.runs_dir, deps.work_dir, run, initiative)
+    _ack_run_exited(run, deps)
     reason = "; ".join([f"fetched {run}; approved: {', '.join(approved)}", *warnings])
     return {"action": action, "status": "done", "reason": reason, "run": run, "host": _fetched_host(deps.runs_dir, run)}
 
@@ -1382,6 +1383,32 @@ def notices_to_ack(tasks: list[dict], notices: list[dict]) -> list[str]:
         if not n.get("ack") and str(n.get("ref", "")).startswith(prefix)
         and str(n["ref"])[len(prefix):] in done and "land" in str(n.get("note", "")).lower()
     ]
+
+
+def run_exited_ids(entries: list[dict], run: str) -> list[str]:
+    """Ids of the unacked `run_exited` entries that announce `run`, in first-seen order."""
+    return [
+        e["id"] for e in entries
+        if not e.get("ack") and (parsed := courier.parse_run_exited(e)) is not None and parsed[0] == run
+    ]
+
+
+def _ack_run_exited(run: str, deps: Deps) -> list[str]:
+    """Edge. Acks, through `courier.ack_file`, every open `run_exited` entry for `run` in `work_dir/courier.jsonl`;
+    returns the ids acked. A missing or unreadable file, or a failed ack, leaves the fetch result as it was."""
+    path = deps.work_dir / "courier.jsonl"
+    try:
+        entries = courier.entries(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    acked = []
+    for message_id in run_exited_ids(entries, run):
+        try:
+            if courier.ack_file(path, message_id):
+                acked.append(message_id)
+        except OSError:
+            continue
+    return acked
 
 
 def _ack_done_land_notices(deps: Deps) -> list[str]:

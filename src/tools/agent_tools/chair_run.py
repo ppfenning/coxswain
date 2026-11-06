@@ -188,6 +188,7 @@ class RunDeps:
     release: Callable[[], None]
     sleep: Callable[[float], None]
     now: Callable[[], datetime]
+    wait: Callable[[float], bool] | None = None  # ends the between-tick pause early; None keeps the plain sleep
     gather: Gather = gather_facts
     plan: PlanTick = plan_tick
     perform: Perform = chair_exec.perform
@@ -698,7 +699,10 @@ def run(once: bool, interval: float, dry_run: bool, deps: RunDeps, max_overruns:
             if overrun_limit_hit(deps.overrun_state.consecutive, max_overruns):
                 _shutdown(deps, beating, restore, dry_run)
                 return
-            deps.sleep(interval)
+            if deps.wait is None:
+                deps.sleep(interval)
+            else:
+                deps.wait(interval)
             if not dry_run:
                 moved, reason, pending = _moved_heads(deps, pending)
                 if moved is not None:
