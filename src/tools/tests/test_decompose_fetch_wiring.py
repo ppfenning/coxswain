@@ -21,10 +21,11 @@ def _world(tmp_path, monkeypatch, *, graph: str, facts=ENDED):
 
     def run(argv):
         argvs.append(argv)
-        if any(part.endswith("/work/demo/") for part in argv) and "--list-only" not in argv:
-            (ws / "work" / "demo" / "p1").mkdir(parents=True, exist_ok=True)
-            (ws / "work" / "demo" / "initiative.md").write_text(INITIATIVE_MD)
-            (ws / "work" / "demo" / "p1" / "t1.md").write_text(TASK_MD)
+        if argv[-2].endswith("/work/demo/") and "--list-only" not in argv:
+            dest = Path(argv[-1])
+            (dest / "p1").mkdir(parents=True, exist_ok=True)
+            (dest / "initiative.md").write_text(INITIATIVE_MD)
+            (dest / "p1" / "t1.md").write_text(TASK_MD)
         return 0
 
     rows: list[dict] = []
@@ -50,9 +51,9 @@ def test_a_fetched_decompose_leaves_its_files_in_the_workspace_and_the_store(tmp
 def test_a_decompose_fetch_records_the_pulled_files_as_written(tmp_path, monkeypatch):
     ws, host, _, _ = _world(tmp_path, monkeypatch, graph="decompose")
     written = []
-    monkeypatch.setattr(cli.queue_export, "record_written_paths", lambda workspace, paths: written.append((workspace, [Path(p) for p in paths])))
+    monkeypatch.setattr(cli.queue_export, "record_written", lambda workspace, texts: written.append((workspace, dict(texts))))
     cli._fetch_one(ws / "runs", [host], RUN)
-    assert written == [(ws, [ws / "work/demo/initiative.md", ws / "work/demo/p1/t1.md"])]
+    assert written == [(ws, {"work/demo/initiative.md": INITIATIVE_MD, "work/demo/p1/t1.md": TASK_MD})]
 
 
 def test_a_live_decompose_is_not_fetched(tmp_path, monkeypatch):
