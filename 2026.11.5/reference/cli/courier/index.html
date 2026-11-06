@@ -6268,7 +6268,9 @@ options:
   -h, --help        show this help message and exit
 </code></pre></div>
 <h2 id="send">send</h2>
-<div class="highlight"><pre><span></span><code>usage: cox courier send [-h] --to TO --note NOTE [--profile PROFILE] ref
+<div class="highlight"><pre><span></span><code>usage: cox courier send [-h] --to TO --note NOTE [--profile PROFILE]
+                        [--event EVENT] [--topic TOPIC] [--field FIELD]
+                        ref
 
 positional arguments:
   ref
@@ -6278,24 +6280,34 @@ options:
   --to TO
   --note NOTE
   --profile PROFILE
+  --event EVENT      a typed event name
+  --topic TOPIC      a topic to file the entry under
+  --field FIELD      key=value, repeatable
 </code></pre></div>
 <h2 id="inbox">inbox</h2>
 <div class="highlight"><pre><span></span><code>usage: cox courier inbox [-h] [--label LABEL] [--profile PROFILE]
+                         [--topic TOPIC] [--event EVENT] [--consumer CONSUMER]
+                         [--wake]
 
 options:
-  -h, --help         show this help message and exit
+  -h, --help           show this help message and exit
   --label LABEL
   --profile PROFILE
+  --topic TOPIC
+  --event EVENT
+  --consumer CONSUMER
+  --wake               only entries that need a model
 </code></pre></div>
 <h2 id="ack">ack</h2>
-<div class="highlight"><pre><span></span><code>usage: cox courier ack [-h] [--profile PROFILE] id
+<div class="highlight"><pre><span></span><code>usage: cox courier ack [-h] [--profile PROFILE] [--consumer CONSUMER] id
 
 positional arguments:
   id
 
 options:
-  -h, --help         show this help message and exit
+  -h, --help           show this help message and exit
   --profile PROFILE
+  --consumer CONSUMER
 </code></pre></div>
 
 
