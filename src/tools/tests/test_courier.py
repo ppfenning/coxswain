@@ -4,13 +4,17 @@ import json
 import pytest
 
 from agent_tools.courier import (
+    EVENTS,
+    EXCEPTION_EVENTS,
     Reference,
     ack,
     ack_file,
+    append_file,
     append_line,
     entries,
     format_reference,
     inbox,
+    needs_model,
     parse_reference,
     resolve,
     send,
@@ -250,6 +254,115 @@ def test_ack_after_a_torn_final_line_still_lands(tmp_path):
     path.write_text(_bus([send(Reference("run", "r1"), "a", "cos", "one", "m1")]) + '{"ref": "co', encoding="utf-8")
     assert ack_file(path, "m1")
     assert [e["ack"] for e in entries(path.read_text(encoding="utf-8"))] == [True]
+
+
+def _typed(message_id, event, topic=None, to="chair"):
+    return send(Reference("run", "r1"), "a", to, "n", message_id, event=event, fields={"k": 1}, topic=topic)
+
+
+def test_an_untyped_send_adds_no_key():
+    assert set(send(Reference("run", "r1"), "a", "b", "n", "m1")) == {"ref", "from", "to", "note", "id", "ack"}
+
+
+def test_a_typed_event_is_read_back_by_topic_and_by_event():
+    e1 = _typed("m1", "stuck", topic="epic-1")
+    e2 = _typed("m2", "gate_passed", topic="epic-2")
+    blob = _bus([e1, e2])
+    assert e1["event"] == "stuck" and e1["fields"] == {"k": 1} and e1["topic"] == "epic-1"
+    assert inbox(blob, topic="epic-2") == [e2]
+    assert inbox(blob, event="stuck") == [e1]
+    assert inbox(blob, topic="epic-1", event="gate_passed") == []
+
+
+def test_an_unknown_event_is_refused():
+    with pytest.raises(ValueError):
+        send(Reference("run", "r1"), "a", "b", "n", "m1", event="exploded")
+
+
+def test_needs_model_is_true_for_exactly_the_four_exception_events():
+    assert {e for e in EVENTS if needs_model({"event": e})} == set(EXCEPTION_EVENTS)
+    assert len(EVENTS) == 8 and len(EXCEPTION_EVENTS) == 4
+    assert not needs_model({"id": "m1"})
+
+
+def test_two_consumers_each_see_an_entry_until_each_has_acked_it():
+    blob = _bus([_typed("m1", "stuck")])
+    assert len(inbox(blob, consumer="a")) == 1 and len(inbox(blob, consumer="b")) == 1
+    blob = ack(blob, "m1", consumer="a")
+    assert inbox(blob, consumer="a") == [] and len(inbox(blob, consumer="b")) == 1
+    assert len(inbox(blob)) == 1
+    assert inbox(ack(blob, "m1", consumer="b"), consumer="b") == []
+
+
+def test_a_legacy_ack_hides_an_entry_from_every_consumer():
+    blob = ack(_bus([_typed("m1", "stuck")]), "m1")
+    assert inbox(blob, consumer="a") == [] and inbox(blob, consumer="b") == []
+
+
+def test_a_consumer_ack_leaves_the_legacy_flag_false():
+    blob = ack(_bus([_typed("m1", "stuck")]), "m1", consumer="a")
+    assert entries(blob)[0]["ack"] is False and entries(blob)[0]["acks"] == ["a"]
+
+
+def test_acks_from_stale_reads_are_unioned_when_the_lines_fold(tmp_path):
+    path = tmp_path / "courier.jsonl"
+    base = _typed("m1", "stuck")
+    path.write_text(_bus([base]), encoding="utf-8")
+    stale = path.read_text(encoding="utf-8")
+    assert ack_file(path, "m1", consumer="a")
+    # consumer b acks from the blob it read before a's line landed
+    append_file(path, json.loads(ack(stale, "m1", consumer="b").splitlines()[-1]))
+    assert entries(path.read_text(encoding="utf-8"))[0]["acks"] == ["a", "b"]
+
+
+def test_ack_file_with_a_consumer_hides_only_from_that_consumer(tmp_path):
+    path = tmp_path / "courier.jsonl"
+    path.write_text(_bus([_typed("m1", "stuck")]), encoding="utf-8")
+    assert ack_file(path, "m1", consumer="a")
+    blob = path.read_text(encoding="utf-8")
+    assert inbox(blob, consumer="a") == [] and len(inbox(blob, consumer="b")) == 1
+
+
+def test_append_file_creates_the_file_and_appends_without_rewriting(tmp_path):
+    path = tmp_path / "courier.jsonl"
+    e1, e2 = _typed("m1", "stuck"), _typed("m2", "relaunched")
+    append_file(path, e1)
+    append_file(path, e2)
+    assert entries(path.read_text(encoding="utf-8")) == [e1, e2]
+
+
+def test_append_file_closes_a_torn_final_line_first(tmp_path):
+    path = tmp_path / "courier.jsonl"
+    e1, e2 = _typed("m1", "stuck"), _typed("m2", "relaunched")
+    path.write_text(_bus([e1]) + '{"ref": "co', encoding="utf-8")
+    append_file(path, e2)
+    assert entries(path.read_text(encoding="utf-8")) == [e1, e2]
+    assert path.read_text(encoding="utf-8") == _bus([e1]) + '{"ref": "co\n' + json.dumps(e2) + "\n"
+
+
+def test_append_file_adds_no_blank_line_to_a_well_formed_file(tmp_path):
+    path = tmp_path / "courier.jsonl"
+    e1, e2, e3 = _typed("m1", "stuck"), _typed("m2", "relaunched"), _typed("m3", "epic_complete")
+    for e in (e1, e2, e3):
+        append_file(path, e)
+    assert path.read_text(encoding="utf-8") == _bus([e1, e2, e3])
+
+
+def test_a_legacy_ack_file_appends_exactly_one_line(tmp_path):
+    path = tmp_path / "courier.jsonl"
+    e1 = send(Reference("run", "r1"), "a", "cos", "one", "m1")
+    path.write_text(_bus([e1]), encoding="utf-8")
+    assert ack_file(path, "m1")
+    assert path.read_text(encoding="utf-8") == _bus([e1, {**e1, "ack": True}])
+
+
+def test_a_consumer_ack_from_a_stale_read_does_not_revive_a_legacy_acked_entry():
+    base = _bus([_typed("m1", "stuck")])
+    legacy = ack(base, "m1")
+    stale_consumer = json.loads(ack(base, "m1", consumer="a").splitlines()[-1])
+    blob = append_line(legacy, stale_consumer)
+    assert entries(blob)[0]["ack"] is True and entries(blob)[0]["acks"] == ["a"]
+    assert inbox(blob, consumer="b") == [] and inbox(blob) == []
 
 
 def _profile(tmp_path):
