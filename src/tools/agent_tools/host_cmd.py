@@ -10,6 +10,7 @@ import datetime
 import json
 import os
 import platform
+import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import NamedTuple
@@ -321,6 +322,80 @@ def _load_record(meminfo_path: str = "/proc/meminfo") -> dict[str, float]:
     return load_report(load_1m, os.cpu_count() or 0, total_kb, available_kb) if total_kb else load_report(0.0, 0, 0, 0)
 
 
+CPU_SAMPLE_SECONDS = 0.25
+
+
+def cpu_pct(before: tuple[int, int], after: tuple[int, int]) -> float:
+    """Busy percentage between two (idle, total) jiffy pairs; 0.0 when total did not advance."""
+    total = after[1] - before[1]
+    return round(100 * (total - (after[0] - before[0])) / total, 2) if total > 0 else 0.0
+
+
+def parse_cpu_sample(stat_text: str) -> tuple[int, int]:
+    """(idle + iowait, user..steal) jiffies from the aggregate `cpu ` line of /proc/stat; (0, 0) when unreadable.
+    Guest time is already inside user, so only the first eight fields are summed."""
+    for line in stat_text.splitlines():
+        if line.startswith("cpu "):
+            try:
+                fields = [int(f) for f in line.split()[1:9]]
+            except ValueError:
+                return 0, 0
+            return (fields[3] + fields[4], sum(fields)) if len(fields) == 8 else (0, 0)
+    return 0, 0
+
+
+def parse_loadavg(text: str) -> tuple[float, float, float]:
+    """The 1, 5 and 15 minute load averages from /proc/loadavg text; zeros when short or non-numeric."""
+    try:
+        one, five, fifteen = (round(float(f), 2) for f in text.split()[:3])
+    except ValueError:
+        return 0.0, 0.0, 0.0
+    return one, five, fifteen
+
+
+def parse_meminfo_used_gb(text: str) -> float:
+    """MemTotal minus MemAvailable from /proc/meminfo text, in GiB; 0.0 when either line is missing or non-numeric."""
+    found: dict[str, int] = {}
+    for line in text.splitlines():
+        key = line.split(":", 1)[0]
+        if key in ("MemTotal", "MemAvailable"):
+            try:
+                found[key] = int(line.split()[1])
+            except (ValueError, IndexError):
+                return 0.0
+    if len(found) != 2:
+        return 0.0
+    return round(max(found["MemTotal"] - found["MemAvailable"], 0) / (1024 * 1024), 2)
+
+
+def _read_text(path: str) -> str:
+    with open(path, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _host_load(
+    read: Callable[[str], str] = _read_text, sleep: Callable[[float], object] = time.sleep,
+    interval: float = CPU_SAMPLE_SECONDS,
+) -> dict[str, float]:
+    """The beat's live load: cpu busy over `interval` seconds, load averages and memory in use. A file that
+    cannot be read zeroes only its own fields."""
+    def text(path: str) -> str:
+        try:
+            return read(path)
+        except OSError:
+            return ""
+
+    before = parse_cpu_sample(text("/proc/stat"))
+    sleep(interval)
+    after = parse_cpu_sample(text("/proc/stat"))
+    one, five, fifteen = parse_loadavg(text("/proc/loadavg"))
+    return {
+        "cpu_pct": cpu_pct(before, after) if before[1] and after[1] else 0.0,
+        "load_avg_1m": one, "load_avg_5m": five, "load_avg_15m": fifteen,
+        "mem_used_gb": parse_meminfo_used_gb(text("/proc/meminfo")),
+    }
+
+
 def _host_facts() -> dict:
     """This machine's own os, cpu count and total memory -- never injected through `run`, since they are
     local process facts rather than another tool's output."""
@@ -383,7 +458,7 @@ def beat_versions(
     run: Run, package_version: str | None, harness_dir: str | None, cartridges_dir: str | None,
     workspace_dir: str | None = None, repos: Sequence[str] = (),
 ) -> dict:
-    """This machine's versions, plus its workspace_dir, checkout paths, host facts, load record, per-checkout branch
+    """This machine's versions, plus its workspace_dir, checkout paths, host facts, live host load, load record, per-checkout branch
     and commits-behind-main, and per-checkout lock and synced hashes. `cox --version` text if it answers,
     else the package version."""
     def tag(directory: str | None) -> str | None:
@@ -395,7 +470,7 @@ def beat_versions(
     )
     return {
         **versions, "workspace_dir": workspace_dir, "repos": list(repos),
-        "host_facts": _host_facts(), LOAD_KEY: _load_record(), "checkouts": _checkouts(run, repos),
+        "host_facts": _host_facts(), "host_load": _host_load(), LOAD_KEY: _load_record(), "checkouts": _checkouts(run, repos),
         CHECKOUT_ENV_KEY: dict(_checkout_env(run, repo) for repo in repos),
     }
 
