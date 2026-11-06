@@ -149,25 +149,25 @@ def test_a_gather_that_cannot_run_is_null_and_never_raises():
     assert isinstance(host_facts["os"], str) and host_facts["os"]
     assert isinstance(host_facts["cpu_count"], int)
     assert isinstance(host_facts["mem_total_gb"], float)
-    assert set(load) == {"cpu", "mem"}
+    assert set(load) == {"cpu", "mem", "load_1m", "cores"}
 
 
 def test_the_load_record_holds_numeric_cpu_and_mem_within_a_sane_bound_here():
     load = host_cmd._load_record()
-    assert set(load) == {"cpu", "mem"}
+    assert set(load) == {"cpu", "mem", "load_1m", "cores"}
     assert all(isinstance(v, int | float) for v in load.values())
     assert 0 <= load["cpu"] <= 1000
     assert 0 <= load["mem"] <= 1
 
 
 def test_the_load_record_is_zeros_when_the_proc_read_fails(tmp_path):
-    assert host_cmd._load_record(str(tmp_path / "missing")) == {"cpu": 0.0, "mem": 0.0}
+    assert host_cmd._load_record(str(tmp_path / "missing")) == {"cpu": 0.0, "mem": 0.0, "load_1m": 0.0, "cores": 0}
 
 
 def test_the_load_record_is_zeros_when_a_meminfo_line_is_missing(tmp_path):
     meminfo = tmp_path / "meminfo"
     meminfo.write_text("MemTotal:       1000 kB\n", encoding="utf-8")
-    assert host_cmd._load_record(str(meminfo)) == {"cpu": 0.0, "mem": 0.0}
+    assert host_cmd._load_record(str(meminfo)) == {"cpu": 0.0, "mem": 0.0, "load_1m": 0.0, "cores": 0}
 
 
 def test_the_load_record_is_zeros_when_getloadavg_is_unavailable(monkeypatch, tmp_path):
@@ -177,7 +177,7 @@ def test_the_load_record_is_zeros_when_getloadavg_is_unavailable(monkeypatch, tm
     meminfo = tmp_path / "meminfo"
     meminfo.write_text("MemTotal:       1000 kB\nMemAvailable:    250 kB\n", encoding="utf-8")
     monkeypatch.setattr(host_cmd.os, "getloadavg", refuse)
-    assert host_cmd._load_record(str(meminfo)) == {"cpu": 0.0, "mem": 0.0}
+    assert host_cmd._load_record(str(meminfo)) == {"cpu": 0.0, "mem": 0.0, "load_1m": 0.0, "cores": 0}
 
 
 def test_cpu_pct_is_the_busy_share_of_the_jiffies_between_two_samples():
@@ -250,7 +250,7 @@ def test_the_load_record_reads_mem_as_the_fraction_in_use(monkeypatch, tmp_path)
     meminfo.write_text("MemTotal:       1000 kB\nMemFree: 10 kB\nMemAvailable:    250 kB\n", encoding="utf-8")
     monkeypatch.setattr(host_cmd.os, "getloadavg", lambda: (2.0, 0.0, 0.0))
     monkeypatch.setattr(host_cmd.os, "cpu_count", lambda: 4)
-    assert host_cmd._load_record(str(meminfo)) == {"cpu": 0.5, "mem": 0.75}
+    assert host_cmd._load_record(str(meminfo)) == {"cpu": 0.5, "mem": 0.75, "load_1m": 2.0, "cores": 4}
 
 
 def test_the_beat_reads_login_from_claude_auth_status_json():
