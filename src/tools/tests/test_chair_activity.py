@@ -211,3 +211,19 @@ def test_the_inputs_are_not_mutated():
     before = copy.deepcopy(args)
     gather_activity(*args)
     assert args == before
+
+
+def test_given_sessions_the_split_and_rows_match_the_sessions_fixture():
+    import test_operator_sessions as ops
+
+    seats = {"five_hour": (2.0, 0.12, "2026-11-06T22:00:00Z"), "weekly": (88.0, 0.57, "2026-11-08T08:00:00Z")}
+    windows = {
+        name: {**ops._WINDOWS[name], "seat_usd": seat, "meter_fraction": meter, "resets_at": resets}
+        for name, (seat, meter, resets) in seats.items()
+    }
+    now = datetime(2026, 11, 6, 19, 0, 0, tzinfo=UTC)
+    out = gather_activity([], [], ops._PRICES, now, windows, sessions=ops._SESSIONS)
+    for name, expected in ops._FIXTURE["spend_split"].items():
+        assert {k: out["spend_split"][name][k] for k in expected} == expected
+    assert out["operator_sessions"] == ops._FIXTURE["operator_sessions"]
+    assert "operator_sessions" not in gather_activity(_SESSION, [_AGENT], _PRICES, _NOW, _WINDOWS)
