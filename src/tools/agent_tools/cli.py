@@ -10873,6 +10873,62 @@ def _dev_moved(a: argparse.Namespace) -> int:
     return 2
 
 
+_RELEASE_HELP = "deploy a release to every host (the other old release commands moved to the checkout)"
+
+
+def _release_notification(event) -> notify.Notification | None:
+    """Pure. The notice for one deploy event: `deployed` is low, `deploy_failed` critical, `released` normal; any other kind None.
+    `notify.notifications` is not used: it names only run events, so it would drop every deploy kind."""
+    detail = event.detail
+    if event.kind == "deployed":
+        return notify.Notification(f"{event.run} deployed", str(detail.get("host", "")), "low")
+    if event.kind == "deploy_failed":
+        return notify.Notification(f"{event.run} deploy failed", f"{detail.get('host', '')} failed at {detail.get('step', '')}", "critical")
+    if event.kind == "released":
+        return notify.Notification(f"{event.run} released", str(detail.get("version", "")), "normal")
+    return None
+
+
+def _release_notify(event) -> None:
+    """Edge. Sends the event's notice the way `cox runs notify` does: notify-send when installed, else one printed line.
+    A notifier that cannot start never changes the deploy's exit code."""
+    note = _release_notification(event)
+    if note is None:
+        return
+    if shutil.which("notify-send") is None:
+        print(f"[{note.urgency}] {note.title}: {note.body}")
+        return
+    with contextlib.suppress(OSError):
+        subprocess.run(notify.notify_argv(note))
+
+
+def _release_deploy(a: argparse.Namespace) -> int:
+    """Edge. Hands the hosts rows and this host's name to the deploy edge and returns its exit code."""
+    _, runs_dir, rc = _leader_runs_dir_or_refuse(a)
+    if rc is not None:
+        return rc
+    # `cox upgrade` replaces this tool's environment mid-run, so import everything first. The edge is imported here and
+    # is not a `_LazyModule`: a registered one would make `_load_lazy_modules` fail on every install before it lands.
+    edge = importlib.import_module("agent_tools.release_deploy_edge")
+    _load_lazy_modules()
+    rows = run_store.hosts(runs_dir)
+    return edge.deploy_release(
+        a.version, rows, socket.gethostname(), lambda argv: _real_run(list(argv), None), _release_notify
+    )
+
+
+def _release(a: argparse.Namespace) -> int:
+    """`release deploy VERSION` deploys; every other `release ...` is an old maintainer command and gets the moved pointer.
+    `rest` is the unparsed remainder, so an old subcommand or flag never meets argparse's invalid-choice error."""
+    if a.rest[:1] != ["deploy"]:
+        return _dev_moved(a)
+    deploy_p = argparse.ArgumentParser(prog="cox release deploy", description="upgrade every host to VERSION and verify each")
+    deploy_p.add_argument("version", metavar="VERSION", help="the release tag, e.g. 2026.11.6")
+    deploy_p.add_argument("--profile", help="the profile whose run store holds the hosts")
+    parsed = deploy_p.parse_args(a.rest[1:])
+    return _release_deploy(argparse.Namespace(profile=parsed.profile or getattr(a, "launcher_profile", None), version=parsed.version))
+
+
 def version_line(version: str) -> str:
     return f"cox {version}"
 
@@ -10904,7 +10960,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  cox home opens the towpath dashboard\n"
             "  cox session opens the coxswain Claude session, with the same argv\n"
             "  cox setup doctor checks this machine\n"
-            "  cox route launch epic runs a filed initiative"
+            "  cox route launch epic runs a filed initiative\n"
+            "  cox release deploy 2026.11.6 upgrades every host and verifies each"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -10978,9 +11035,12 @@ def build_parser() -> argparse.ArgumentParser:
     dev.add_argument("rest", nargs=argparse.REMAINDER)
     dev.set_defaults(fn=_dev_moved)
 
-    old_rel = sub.add_parser("release", help=argparse.SUPPRESS)
-    old_rel.add_argument("rest", nargs=argparse.REMAINDER)
-    old_rel.set_defaults(fn=_dev_moved)
+    release_p = sub.add_parser("release", help=_RELEASE_HELP,
+                               description=f"cox release deploy VERSION upgrades every host and verifies each.\nOther release commands: {_DEV_MOVED}",
+                               formatter_class=argparse.RawDescriptionHelpFormatter)
+    # `deploy` is read from `rest` by `_release`; the old maintainer subcommands and flags land there too and print the pointer
+    release_p.add_argument("rest", nargs=argparse.REMAINDER)
+    release_p.set_defaults(fn=_release)
 
     group, rows = _table_entry("home")
     commands.build_parser(rows, [group], sub)
