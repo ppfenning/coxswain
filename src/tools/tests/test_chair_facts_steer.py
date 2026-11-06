@@ -1,5 +1,8 @@
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+from test_chair_facts import _deps
 
 from agent_tools import chair_read_docket, pacing
 from agent_tools.chair import lease_holder
@@ -8,6 +11,8 @@ from agent_tools.chair_facts import (
     gather_facts,
     read_initiative_repos,
     read_ticket_items,
+    resolve_serial_files,
+    resolve_shared_file_limit,
     running_initiatives,
     steer_streaks_from_actions,
     ticket_surfaces,
@@ -167,3 +172,48 @@ def test_a_work_tree_with_two_initiatives_sharing_a_path_gives_steer_check_a_non
     assert facts["steer_streaks"] == {"x|y": 1}
     action = steer_check(entry["id"], entry["repo"], entry["ready_surfaces"], facts["running"], facts["steer_streaks"])
     assert action == {"kind": "steer_clear", "initiative": "x", "other": "y", "paths": ["src/b.rs"]}
+
+
+def test_an_absent_shared_file_limit_is_two():
+    assert resolve_shared_file_limit(None) == 2
+
+
+def test_a_zero_shared_file_limit_is_two():
+    assert resolve_shared_file_limit(0) == 2
+
+
+def test_a_bool_shared_file_limit_is_two():
+    assert resolve_shared_file_limit(True) == 2
+
+
+def test_a_shared_file_limit_below_one_is_two():
+    assert resolve_shared_file_limit(0.5) == 2
+
+
+def test_a_float_shared_file_limit_of_four_is_four():
+    assert resolve_shared_file_limit(4.0) == 4
+
+
+def test_an_infinite_shared_file_limit_is_two():
+    assert resolve_shared_file_limit(float("inf")) == 2
+
+
+def test_a_nan_shared_file_limit_is_two():
+    assert resolve_shared_file_limit(float("nan")) == 2
+
+
+def test_a_non_list_serial_value_is_an_empty_list():
+    assert resolve_serial_files("a.py") == []
+
+
+def test_a_mixed_serial_list_keeps_only_strings():
+    assert resolve_serial_files(["a.py", 3, None, "b/"]) == ["a.py", "b/"]
+
+
+def test_gathered_facts_default_the_steer_policy_to_limit_two_and_no_serial_paths():
+    assert gather_facts(_deps(), NOW)["steer_policy"] == {"limit": 2, "serial": []}
+
+
+def test_gathered_facts_carry_the_steer_policy_from_the_profile_deps():
+    deps = replace(_deps(), shared_file_limit=lambda: 4.0, serial_files=lambda: ["x.py"])
+    assert gather_facts(deps, NOW)["steer_policy"] == {"limit": 4, "serial": ["x.py"]}
