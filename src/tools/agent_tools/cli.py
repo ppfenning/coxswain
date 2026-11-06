@@ -2002,6 +2002,11 @@ def _land_enrich(steps: list[dict], *, path: str, worktree_root: str, task_paths
             marked = {**step, "path": (task_paths or {}).get(step["task"], path)}
             item = item_path or (task_items or {}).get(step["task"])
             return {**marked, "item": item, "from": "approved", "to": "done"} if item else marked
+        if step["kind"] == "mark_merged":
+            return {**step, "path": (task_paths or {}).get(step["task"], path), "runs_dir": store_runs_dir,
+                    "item": item_path or (task_items or {}).get(step["task"])}
+        if step["kind"] == "phase_done":
+            return {**step, "runs_dir": runs_dir or store_runs_dir}
         if step["kind"] in ("clean", "clean_phase"):
             return {**step, "worktree_root": worktree_root}
         return step
@@ -2638,8 +2643,21 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
         return _run_checks(step["checks"], repo)
     if kind == "push":
         return _land_push(repo, step["branch"], forge_module)
+    if kind == "pr_branch_cut":
+        return _cut_pr_branch(repo, step["branch"], step["from"])
+    if kind == "merge_phase":
+        return _merge_phase(repo, step["branch"], step["onto"], step["message"])
     if kind == "pr_create":
-        return forge_module.open_pr(repo, step["title"], step["body"], head=step.get("head"), base=step.get("base"))
+        draft = {"draft": True} if step.get("draft") else {}
+        return forge_module.open_pr(repo, step["title"], step["body"], head=step.get("head"), base=step.get("base"), **draft)
+    if kind == "pr_update":
+        return forge_module.update_pr(repo, step["title"], step["body"], head=step["head"])
+    if kind == "pr_ready":
+        return forge_module.mark_ready(repo, head=step["head"])
+    if kind == "mark_merged":
+        return _mark_merged(repo, step)
+    if kind == "phase_done":
+        return _phase_done_record(step)
     if kind == "wait_checks":
         return forge_module.wait_checks(repo, float(step.get("timeout_s", 180)), ref=step.get("branch", "HEAD"))
     if kind == "merge":
@@ -2694,6 +2712,89 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
             return True, f"sync of {step['item']} failed {when} ({type(exc).__name__}: {exc}); {tail}"
         return True, f"synced {step['item']}" if rc == 0 else f"sync of {step['item']} failed {when} (exit {rc}); {tail}"
     return False, f"unknown step {kind!r}"
+
+
+def _git_run(repo: Path | str, *args: str) -> tuple[bool, str]:
+    done = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    return done.returncode == 0, (done.stderr.strip() or done.stdout.strip())
+
+
+def _cut_pr_branch(repo: Path, branch: str, base: str) -> tuple[bool, str]:
+    """Edge. Cut `branch` from `base` in its land worktree when no local branch of that name exists. An existing branch
+    is never reset or moved: a later phase's tip is the work already merged into it."""
+    if _git_run(repo, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}")[0]:
+        return True, f"reusing {branch}"
+    wt = _land_worktree(repo, branch)
+    _remove_land_worktree(repo, branch)
+    ok, detail = _git_run(repo, "worktree", "add", "-b", branch, str(wt), base)
+    if ok:
+        _link_venv(repo, wt)
+    return ok, f"cut {branch} from {base}" if ok else detail
+
+
+def _merge_phase(repo: Path, phase_branch: str, onto: str, message: str) -> tuple[bool, str]:
+    """Edge. Merge `phase_branch` into `onto` with a merge commit, in `onto`'s land worktree, which stays for the checks
+    that follow. A conflict is aborted and the worktree dropped, so `onto` keeps its tip and no half merge is left."""
+    wt = _land_worktree(repo, onto)
+    _remove_land_worktree(repo, onto)
+    ok, detail = _git_run(repo, "worktree", "add", str(wt), onto)
+    if not ok:
+        return False, detail
+    _link_venv(repo, wt)
+    ok, detail = _git_run(wt, "-c", "merge.conflictStyle=diff3", "merge", "--no-ff", "-m", message, phase_branch)
+    if ok:
+        return True, f"merged {phase_branch} into {onto}"
+    _git_run(wt, "merge", "--abort")
+    _remove_land_worktree(repo, onto)
+    return False, detail
+
+
+def _mark_merged(repo: Path, step: dict) -> tuple[bool, str]:
+    """Edge. The task's work is on the pr branch: `merged` and the branch tip are set on the task record, the work item
+    and the store row, and the state stays `approved`. The store takes it first under `store` mode, as `mark_done` does."""
+    task, mode = step["task"], step.get("mode", "files")
+    ok, tip = _git_run(repo, "rev-parse", "--verify", step["pr_branch"])
+    if not ok:
+        return False, f"{task}: no pr branch {step['pr_branch']}: {tip}"
+    item = step.get("item")
+    if item and step.get("runs_dir"):
+        result = store_cli.mark_merged(Path(step["runs_dir"]), Path(item).absolute().parents[1].name, task, tip, step.get("by", _UNLABELED))
+        problem = None if isinstance(result, store_cli.MergeRecorded) else f"store did not record {task} as merged: {result}"
+        if problem and mode == "store":
+            return False, problem
+        if problem:
+            print(f"warning: {problem}")
+    path = step.get("path")
+    if path and Path(path).exists():
+        record = json.loads(Path(path).read_text(encoding="utf-8"))
+        Path(path).write_text(json.dumps({**record, "merged": True, "merged_commit": tip}, indent=2), encoding="utf-8")
+    if item and Path(item).exists():
+        from core import workstore
+        found = workstore.read_item(item)
+        if found["state"] == "approved":
+            workstore.write_item({**found, "merged": True, "merged_commit": tip}, item)
+    return True, f"{task} marked merged at {tip[:7]}, state approved"
+
+
+def _phase_done_record(step: dict) -> tuple[bool, str]:
+    """Edge. The phase record is written done and merged into the pr branch, never landed: the manifest file
+    `<runs_dir>/<run_id>.json` when one exists, and the store's phase row. A phase recorded in neither fails the step."""
+    run_id, branch = step.get("phase_record_id"), step["pr_branch"]
+    if not run_id or not step.get("runs_dir"):
+        return False, f"phase {step['phase']} not recorded as done: no phase record id or runs dir"
+    runs_dir, wrote = Path(step["runs_dir"]), []
+    path = runs_dir / f"{run_id}.json"
+    if path.exists():
+        record = {k: v for k, v in json.loads(path.read_text(encoding="utf-8")).items() if k != "landed"}
+        path.write_text(json.dumps({**record, "status": "done", "merged_into": branch}, indent=2), encoding="utf-8")
+        wrote.append("file")
+    run, _, phase = run_id.partition(":")
+    stored = store_cli.mark_phase_done(runs_dir, run, phase, branch)
+    if isinstance(stored, store_cli.MergeRecorded):
+        wrote.append("store")
+    elif not wrote:
+        return False, f"phase {run_id} not recorded as done: no manifest file and the store gave {stored}"
+    return True, f"phase {phase} done, merged into {branch} ({' and '.join(wrote)})"
 
 
 def _mark_done_unrecorded(step: dict) -> tuple[bool, str]:
@@ -2790,9 +2891,30 @@ def _pr_url(detail: str) -> str | None:
     return url if url.startswith(("http://", "https://")) else None
 
 
-def _landed_pr(kind: str, ok: bool, detail: str, prior: str) -> str:
-    """The land's `pr` after a step: `""`, never None, is "no PR", because the store's `--pr` argv takes a str."""
-    return (_pr_url(detail) or "") if kind == "pr_create" and ok else prior
+def _landed_pr(kind: str, ok: bool, detail: str, prior: str, step_pr: object = None) -> str:
+    """The land's `pr` after a step: `""`, never None, is "no PR", because the store's `--pr` argv takes a str.
+    `pr_update` and `pr_ready` act on a PR a phase-two land never opened: they carry its url when the forge answers one,
+    else the number the plan pinned (`#<n>`), else the PR already carried."""
+    if not ok:
+        return prior
+    if kind == "pr_create":
+        return _pr_url(detail) or ""
+    if kind in ("pr_update", "pr_ready"):
+        return _pr_url(detail) or prior or (f"#{step_pr}" if step_pr is not None else "")
+    return prior
+
+
+def _open_pr_ref(repo: Path, steps: Sequence[dict], forge_module) -> str:
+    """Edge. `#<n>` of the open PR for the pr branch, for a plan that starts after the PR was opened and so has no
+    `pr_create`; `""` when the plan opens one, names no pr branch, or the forge finds none."""
+    head = next((s["pr_branch"] for s in steps if s["kind"] == "phase_done"), None)
+    if head is None or any(s["kind"] == "pr_create" for s in steps) or not hasattr(forge_module, "find_open_prs"):
+        return ""
+    try:
+        found = forge_module.find_open_prs(repo, head)
+    except Exception:
+        return ""
+    return f"#{found[0]}" if isinstance(found, list) and found else ""
 
 
 # A conflict, a missing review or a draft can never merge; UNKNOWN is GitHub still computing, so it is re-read, and
@@ -2896,8 +3018,8 @@ def _settled_merge_state(read: Callable[[], str], sleep: Callable[[float], None]
 
 
 def _pr_number(steps: Sequence[dict], i: int, pr_url: str) -> int | None:
-    """The PR a `merge` at `steps[i]` lands: the `pr` of the last earlier `wait_checks` that has one, else the number ending the `pr_create` URL."""
-    pinned = [s["pr"] for s in steps[:i] if s["kind"] == "wait_checks" and s.get("pr") is not None]
+    """The PR a `merge` at `steps[i]` lands: the `pr` of the last earlier `wait_checks`, `pr_update` or `pr_ready` that has one, else the number ending the carried PR url."""
+    pinned = [s["pr"] for s in steps[:i] if s["kind"] in ("wait_checks", "pr_update", "pr_ready") and s.get("pr") is not None]
     found = re.search(r"(\d+)/?$", str(pinned[-1] if pinned else pr_url))
     return int(found.group(1)) if found else None
 
@@ -3087,7 +3209,9 @@ def _runs_review(a: argparse.Namespace) -> int:
 
 
 _LAND_LEASE_TTL_SECONDS = 3600
-_GUARDED_STEPS = ("merge", "mark_done")
+_GUARDED_STEPS = ("merge", "mark_done", "pr_branch_cut", "merge_phase", "pr_update", "pr_ready", "mark_merged", "phase_done")
+_PR_REPORT_STEPS = ("pr_create", "pr_update", "pr_ready")  # a failure after the push is reported; mark_merged still runs
+_AFTER_PR_FAILURE = (*_PR_REPORT_STEPS, "mark_merged", "phase_done")
 
 
 def _land_approval_stop(mode: str, store_state: str | None, file_state: str | None) -> str | None:
@@ -3845,6 +3969,9 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
     landing = ""  # what a landed task's review PRs are closed against; "" until a merge succeeds
     reached: list[str] = []
     looped = False
+    pr = pr or _open_pr_ref(repo, steps, forge_module)
+    pr_failed: tuple[dict, str] | None = None  # the pr step that failed after the push, and why
+    into_pr_branch = any(s["kind"] == "phase_done" for s in steps)  # only such a plan reports a pr failure instead of stopping
     i = 0
     while i < len(steps):
         step = steps[i]
@@ -3856,6 +3983,11 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
                 print(step["reason"])
             i += 1
             continue
+        if pr_failed is not None and step["kind"] not in _AFTER_PR_FAILURE:
+            # The tasks are marked merged and the phase recorded; the final merge must not run on a PR that is not ready.
+            print("stopped; remaining: " + ", ".join(s["kind"] for s in steps[i:]))
+            _note_stop(repo, pr_failed[0], pr_failed[1], stops)
+            return 1, reached, pr
         carried = _task_already_on_main(repo, step, record) if step["kind"] == "cherry_pick" else None
         walk = None if carried is None else _carried_walk(steps[i:], planned, carried)
         if walk is not None:
@@ -3869,8 +4001,14 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
             print("stopped; remaining: " + ", ".join(s["kind"] for s in steps[i:]))
             return 2, reached, pr
         reached.append(step["kind"])
-        if step["kind"] in ("cherry_pick", "squash_phase", "reuse_branch", "patch_apply"):
+        if step["kind"] in ("cherry_pick", "squash_phase", "reuse_branch", "patch_apply", "pr_branch_cut", "merge_phase"):
             built.append(step.get("onto") or step["branch"])
+        if step["kind"] == "mark_merged":
+            pr_branch = next((s["pr_branch"] for s in steps if s["kind"] == "phase_done"), "")
+            step = {**step, "pr_branch": pr_branch, "by": by, "mode": mode}
+        if step["kind"] == "phase_done":
+            rec = record or {}
+            step = {**step, "phase_record_id": rec.get("run_id") or (f"{rec['run']}:{rec['phase']}" if rec.get("run") and rec.get("phase") else None)}
         if step["kind"] == "merge":
             # gh and git cannot delete a branch a worktree still holds.
             for branch in built:
@@ -3893,7 +4031,13 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
         if step.get("before") == "pr_create":
             # The sync may have just written `issue:`; the PR opened next must carry its `Closes`.
             steps = land.with_issue(steps, record, _land_item_facts(item_path)[1])
-        pr = _landed_pr(step["kind"], ok, detail, pr)
+        pr = _landed_pr(step["kind"], ok, detail, pr, step.get("pr"))
+        if not ok and into_pr_branch and step["kind"] in _PR_REPORT_STEPS:
+            print(f"{step['kind']}: {detail}")
+            print(f"warning: {step['kind']} failed after the push; the phase is merged into the pr branch")
+            pr_failed = (step, detail)
+            i += 1
+            continue
         if step["kind"] == "checks" and not ok and detail.startswith(land.LAUNCH_ERROR):
             # A check whose executable `subprocess` can't find is a refusal,
             # not an ordinary failure, and it fires before `push` so a check
@@ -3934,6 +4078,9 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
             print("stopping after wait_checks (--no-merge)")
             return 0, reached, pr
         i += 1
+    if pr_failed is not None:
+        _note_stop(repo, pr_failed[0], pr_failed[1], stops)
+        return 1, reached, pr
     stop = land.gate_stop(planned, steps, level, pr)
     if stop:
         print(stop)

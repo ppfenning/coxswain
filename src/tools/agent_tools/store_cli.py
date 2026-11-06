@@ -121,6 +121,12 @@ class ResumeRefused:
     pass
 
 
+@dataclass(frozen=True)
+class MergeRecorded:
+    rows: int
+
+
+MergeResult = MergeRecorded | StateRefused | Failed | NotAvailable
 MarkLandedResult = Landed | NotInStore | Failed | NotAvailable
 SetStateResult = StateSet | StateRefused | Failed | NotAvailable
 LeaseResult = LeaseGranted | LeaseReleased | LeaseRefused | LeaseError | NotAvailable
@@ -143,6 +149,66 @@ def set_state_argv(
 ) -> list[str]:
     expect = ["--expect", expected] if expected is not None else []
     return [python, *_MODULE, "set-state", initiative, task, state, "--by", by, *expect, *_store(store_url)]
+
+
+# The harness has no store_cli verb for a merge, so the epic driver's own write (`store_write.record_merge`) runs under
+# the harness python. It stamps `merged_commit` on an approved row and refuses any other state with exit 3.
+_RECORD_MERGE = """import datetime, json, sys
+from harness.store_migrate import open_store
+from harness.store_write import record_merge
+initiative, task, commit, by, url = sys.argv[1:6]
+now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+conn = open_store(url, now)
+try:
+    rows = record_merge(conn, initiative, task, commit, now, by)
+except ValueError as exc:
+    print(json.dumps({"error": str(exc)}))
+    sys.exit(3)
+finally:
+    conn.close()
+print(json.dumps({"rows": rows}))
+"""
+
+
+# The phase's row in `phases` keeps its manifest under `manifest_record`; this marks it done and merged into the pr branch.
+_RECORD_PHASE_DONE = """import json, sys
+from harness.store_migrate import open_store
+from harness.store_write import json_load, json_text
+run, phase, branch, url = sys.argv[1:5]
+conn = open_store(url, "")
+mark = conn.dialect.placeholder
+try:
+    with conn.transaction():
+        row = conn.query_one(f"SELECT record_json FROM phases WHERE run_id = {mark} AND phase_id = {mark}", (run, phase))
+        if row is None:
+            print(json.dumps({"error": f"no phase row {run}:{phase}"}))
+            sys.exit(3)
+        record = json_load(row[0]) or {}
+        manifest = {k: v for k, v in (record.get("manifest_record") or {}).items() if k != "landed"}
+        record = {**record, "manifest_record": {**manifest, "status": "done", "merged_into": branch}}
+        conn.execute(f"UPDATE phases SET record_json = {mark} WHERE run_id = {mark} AND phase_id = {mark}", (json_text(record), run, phase))
+finally:
+    conn.close()
+print(json.dumps({"rows": 1}))
+"""
+
+
+def record_phase_done_argv(python: str, run: str, phase: str, branch: str, store_url: str) -> list[str]:
+    return [python, "-c", _RECORD_PHASE_DONE, run, phase, branch, store_url]
+
+
+def record_merge_argv(python: str, initiative: str, task: str, commit: str, by: str, store_url: str) -> list[str]:
+    return [python, "-c", _RECORD_MERGE, initiative, task, commit, by, store_url]
+
+
+def parse_record_merge(code: int, stdout: str) -> MergeRecorded | StateRefused | Failed:
+    """Exit 0 with `rows` is recorded (0 rows: no row, or the same commit again); exit 3 is a state other than approved."""
+    body = _json_object(stdout)
+    if code == 3:
+        return StateRefused(str((body or {}).get("error") or stdout.strip()))
+    if code == 0 and body is not None and isinstance(body.get("rows"), int):
+        return MergeRecorded(body["rows"])
+    return Failed(code, stdout.strip() or "no JSON object on stdout")
 
 
 def land_lease_name(task: str) -> str:
@@ -279,6 +345,18 @@ def mark_landed(runs_dir: Path, run_id: str, phase: str, task: str, pr: str, at:
     url = _store_url(Path(runs_dir))
     ran = _run(lambda python: mark_landed_argv(python, run_id, phase, task, pr, at, url))
     return _outcome(ran, parse_mark_landed)
+
+
+def mark_merged(runs_dir: Path, initiative: str, task: str, commit: str, by: str) -> MergeResult:
+    """Edge. Record that an approved task's work is merged at `commit`; its state stays approved."""
+    url = _store_url(Path(runs_dir))
+    return _outcome(_run(lambda python: record_merge_argv(python, initiative, task, commit, by, url)), parse_record_merge)
+
+
+def mark_phase_done(runs_dir: Path, run: str, phase: str, branch: str) -> MergeResult:
+    """Edge. Mark the store's phase row done and merged into `branch`, never landed. Exit 3 is a phase with no row."""
+    url = _store_url(Path(runs_dir))
+    return _outcome(_run(lambda python: record_phase_done_argv(python, run, phase, branch, url)), parse_record_merge)
 
 
 def pause(
