@@ -54,6 +54,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from time import monotonic
 from typing import Any, Literal
 from urllib.parse import urlencode
 
@@ -75,7 +76,7 @@ from graphs._contract import proposal
 from graphs.delivery import rescue_review
 from graphs.delivery.budget_estimate import estimate_budget
 from graphs.delivery.lifecycle_propose import DEFAULT_FIX_ATTEMPTS
-from harness import rescue_checks, rescue_select, work_mirror
+from harness import pool_edge, rescue_checks, rescue_select, warm_pool, work_mirror
 from harness.assembly import assemble
 from harness.autonomy import split_by_policy
 from harness.base_check import Expected, expected_merges, gaps, stale_base_stop
@@ -131,13 +132,14 @@ from harness.worktree import (
     keep_worktree,
     link_venv,
     prune_registrations,
+    read_lock,
     release_stale_holders,
     remove_worktree,
 )
 from runner.claude_code_runner import files_touched_from_patch
 from runner.protocol import LimitStop, RunnerError
 
-__all__ = ["branch_action", "phase_order", "phase_parents", "rescue_task", "run_epic"]
+__all__ = ["PoolSetting", "branch_action", "phase_order", "phase_parents", "rescue_task", "run_epic"]
 
 _log = logging.getLogger(__name__)
 
@@ -415,6 +417,21 @@ class _StoreRetry:
 
 
 @dataclass(frozen=True)
+class PoolSetting:
+    """Warm pool of task worktrees on this host; `run_epic` leaves it off unless one is passed.
+
+    `keep` is the most idle directories left after the run. The pool's capacity is `pool_size(max_parallel)`.
+    The clock is wall time because the pool index outlives the process.
+    """
+
+    pool_root: Path
+    sync_argv: Sequence[str]
+    lock_names: Sequence[str]
+    keep: int
+    clock: Callable[[], float] = time.time
+
+
+@dataclass(frozen=True)
 class _Ctx:
     """Everything the per-phase work needs, fixed for the whole run.
 
@@ -453,6 +470,11 @@ class _Ctx:
     # Run-level and mutable, shared by `replace`: lanes holding a database, and the drop records (the cleanup list).
     lane_names: dict[tuple[str, str], str] = field(default_factory=dict, compare=False, repr=False)
     lane_drops: list[dict[str, Any]] = field(default_factory=list, compare=False, repr=False)
+    pool: PoolSetting | None = None
+    # Run-level and mutable: the lease each pooled task build holds, with the lock digest read when it was acquired.
+    pool_leases: dict[tuple[str, str], tuple[pool_edge.Lease, str]] = field(
+        default_factory=dict, compare=False, repr=False
+    )
     # The one mutable member of a frozen record: file listings by commit (see `_default_branch_paths`).
     surface_paths: dict[str, frozenset[str]] = field(default_factory=dict, compare=False, repr=False)
     # Guards writes to the shared `items` list and the lazy fill of `surface_paths`; `replace` shares it across per-phase copies.
@@ -496,7 +518,8 @@ class _Ctx:
         return self.worktree_root / self.run_id / phase
 
     def task_worktree(self, phase: str, task: str) -> Path:
-        return self.phase_worktree(phase) / task
+        held = self.pool_leases.get((phase, task))
+        return held[0].path if held else self.phase_worktree(phase) / task
 
     @property
     def checks(self) -> list[Mapping[str, Any]]:
@@ -1033,6 +1056,61 @@ def _drop_lane(ctx: _Ctx, phase: str, task: str) -> None:
     )
 
 
+def _lease_task(ctx: _Ctx, *, phase: str, task: str, branch: str) -> tuple[bool, str, dict[str, object]]:
+    """Edge: lease the task's worktree from the pool. Returns (ok, failure detail, setup record)."""
+    pool = ctx.pool
+    assert pool is not None
+    try:
+        lease = pool_edge.acquire(
+            ctx.repo,
+            pool.pool_root,
+            branch=branch,
+            base=ctx.phase_branch(phase),
+            sync_argv=pool.sync_argv,
+            lock_names=pool.lock_names,
+            keep=warm_pool.pool_size(ctx.max_parallel),
+            clock=pool.clock,
+        )
+    except pool_edge.PoolError as exc:
+        return False, str(exc), {}
+    digest = warm_pool.lock_digest(read_lock(lease.path, pool.lock_names))
+    ctx.pool_leases[(phase, task)] = (lease, digest)
+    return True, "", warm_pool.setup_record(lease.mode, lease.setup_seconds)
+
+
+def _release_task(ctx: _Ctx, phase: str, task: str) -> None:
+    """Give back the task's pooled lease, or remove its worktree when it holds none."""
+    held = ctx.pool_leases.pop((phase, task), None)
+    if held is None:
+        remove_worktree(ctx.repo, ctx.task_worktree(phase, task))
+    else:
+        pool_edge.release(*held)
+
+
+def _settle_pool(ctx: _Ctx, *, keep_worktrees: bool) -> None:
+    """Edge, at epic end: release every lease still held (or move it out of the pool when kept), then trim.
+
+    A kept worktree leaves its directory, so its index entry is dropped by trim's vanished-directory pass.
+    """
+    pool = ctx.pool
+    if pool is None:
+        return
+    held = sorted(ctx.pool_leases.items())
+    ctx.pool_leases.clear()
+    for (phase, task), (lease, digest) in held:
+        try:
+            if keep_worktrees:
+                keep_worktree(ctx.repo, lease.path, ctx.worktree_root, ctx.run_id)
+            else:
+                pool_edge.release(lease, digest)
+        except Exception as exc:
+            _log.warning("pooled worktree for %s/%s not settled: %s: %s", phase, task, type(exc).__name__, exc)
+    try:
+        pool_edge.trim(ctx.repo, pool.pool_root, pool.keep, pool.clock)
+    except Exception as exc:
+        _log.warning("pool trim for %s failed: %s: %s", ctx.run_id, type(exc).__name__, exc)
+
+
 def _build_task(
     ctx: _Ctx, *, phase: str, task: str, result: Mapping[str, Any], verify: Sequence[str] = ()
 ) -> dict[str, Any]:
@@ -1049,11 +1127,19 @@ def _build_task(
     branch = ctx.scratch_branch(task)
     record: dict[str, Any] = {"id": task, "phase": phase, "branch": branch, "evidence": []}
 
-    ok, detail = create_worktree(ctx.repo, worktree, branch=branch, base=ctx.phase_branch(phase))
+    started = monotonic()
+    if ctx.pool is None:
+        ok, detail = create_worktree(ctx.repo, worktree, branch=branch, base=ctx.phase_branch(phase))
+        if ok:
+            link_venv(ctx.repo, worktree)
+        setup = warm_pool.setup_record("cold", monotonic() - started)
+    else:
+        ok, detail, setup = _lease_task(ctx, phase=phase, task=task, branch=branch)
+        worktree = ctx.task_worktree(phase, task)
     if not ok:
         record["quarantine"] = f"worktree {branch} could not be created: {detail}"
         return record
-    link_venv(ctx.repo, worktree)
+    record["setup"] = setup
     env = _lane_checks_env(ctx, phase, task)
     lane = lane_env(ctx.test_database, ctx.run_id, phase, task)
     if lane:
@@ -1338,7 +1424,7 @@ def _refix(
         spent += float((result.get("fix_loop") or {}).get("attempts") or 1)
         routes.append("revise")
         names = ", ".join(str(c["name"]) for c in build["checks"] if not c.get("passed"))
-        remove_worktree(ctx.repo, ctx.task_worktree(phase, task))
+        _release_task(ctx, phase, task)
         _drop_lane(ctx, phase, task)
         _git("-C", str(ctx.repo), "branch", "-D", ctx.scratch_branch(task))
         build = _build_task(ctx, phase=phase, task=task, result=result, verify=_verify_of(by_id, task))
@@ -1455,8 +1541,12 @@ def run_epic(
     headroom_usd: Callable[[], float | None] | None = None,
     est_task_usd: float = 0.0,
     only_phases: Collection[str] | None = None,
+    pool: PoolSetting | None = None,
 ) -> dict[str, Any]:
     """Drive a whole initiative: every phase, in dependency order, landing nothing.
+
+    With a `pool`, each task build leases its worktree from the host's warm pool instead of creating one,
+    and the pool is trimmed to `pool.keep` idle entries at the end. Without it nothing changes.
 
     With `only_phases`, just those phases run. An unknown name refuses the run before any write. A parent outside
     the set counts complete when every task of it is met under `land_at`; a named phase under any other outside
@@ -1536,6 +1626,7 @@ def run_epic(
             repo_checks=repo_checks(agent_checks_text),
             test_database=test_database_setting(cartridge),
             lane_workers=lane_workers_from(os.environ, os.cpu_count() or 1),
+            pool=pool,
             store=store,
             epoch=epoch,
             lease_name=lease_name,
@@ -1653,6 +1744,7 @@ def run_epic(
         # Nothing before `ctx` exists can have made a worktree, so there is nothing to do yet.
         if ctx is not None:
             run_dir = ctx.worktree_root / ctx.run_id
+            _settle_pool(ctx, keep_worktrees=keep_worktrees)
             if keep_worktrees:
                 # `keep_worktree` moves ONE named worktree to
                 # `_kept/<run_id>/<name>`; run_dir's own name is the run id,
