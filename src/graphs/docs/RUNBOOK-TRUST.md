@@ -148,6 +148,28 @@ a per-run record from the resolved cartridge: the entry-level observation
 `src/cartridges/core/manifest.py` reads `overlay_sha` off the cartridge it is
 handed.
 
+### How lane checks are scoped
+
+The checks above are the full list. A lane does not always run all of it.
+
+- A lane runs only the component suites whose directories the patch touches,
+  plus every component that imports a touched component.
+- Where the import map allows it, a suite narrows further to the test modules
+  that reach a changed source file.
+- A changed non-Python file, `conftest.py` or `pytest.ini` runs the whole
+  component.
+- Any test file the patch adds or edits always runs.
+- Commands that are not component pytest runs, such as the clean check, always
+  run.
+
+The selection and the number of tests run appear as the `checks:scope`
+evidence row and as the `check_scope` field of the task record.
+
+If the import map cannot be built, the lane fails open and runs the full list.
+
+The full `.agent-checks` list stays what land and CI run. CI on the pull
+request remains the full gate.
+
 ## What a seat can see
 
 A build seat sees one repository worktree. It cannot analyse the platform's
