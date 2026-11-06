@@ -227,6 +227,24 @@ def test_idle_stall_calls_the_four_readers_and_reads_the_configured_minutes(tmp_
     assert unset.facts_deps.idle_stall(now)["stall_minutes"] == 15
 
 
+def test_the_steward_is_on_only_for_a_profile_that_sets_chair_steward(tmp_path) -> None:
+    runs = tmp_path / "runs"
+    runs.mkdir()
+
+    now = datetime(2026, 9, 27, 12, 0, tzinfo=UTC)
+
+    def deps(profile: dict) -> chair_facts.FactsDeps:
+        return cli._chair_run_deps(runs, profile, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files").facts_deps
+
+    # This proves only that the profile setting reaches the Facts key. The steward's bus entries, head, level and
+    # executor inputs are not wired by `_chair_run_deps` yet, and nothing here covers them.
+    assert chair_facts.gather_facts(deps({"chair": {"steward": True}}), now)["steward"]["enabled"] is True
+    assert "steward" not in chair_facts.gather_facts(deps({}), now)
+    # The malformed and empty forms are cheap to check on the wired setting alone.
+    for profile in ({"chair": {}}, {"chair": {"steward": "banana"}}):
+        assert chair_facts.resolve_steward_enabled(deps(profile).steward_enabled()) is False
+
+
 def test_harness_python_is_the_configured_harness_venv(tmp_path) -> None:
     runs = tmp_path / "runs"
     profile = {"harness_dir": str(tmp_path / "harness")}
