@@ -573,7 +573,9 @@ def test_lease_is_mine_only_for_this_holder_on_a_live_lease():
 
 
 def test_gather_facts_fills_every_key_from_the_fakes():
-    facts = gather_facts(replace(_deps(), phase_records=lambda tasks: []), NOW)
+    # merge_queue is gathered only for an enabled queue, so this fake enables one.
+    queue = {"batch_size": 3, "wait_s": 90}
+    facts = gather_facts(replace(_deps(), phase_records=lambda tasks: [], merge_queue=lambda: queue), NOW)
     # login_hosts is not yet declared on Facts: a later task adds it there once the login watch reads it.
     # tuning, landed_main and land_outcomes are all filled in gather_facts now.
     # steward is declared on Facts and read by the planner; the next task gathers it, until then it is absent.
