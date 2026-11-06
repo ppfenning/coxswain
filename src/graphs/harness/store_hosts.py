@@ -11,7 +11,7 @@ from harness.store_dialect import Connection, json_load, json_text, upsert
 
 __all__ = ["HOST_STATES", "host_beat", "host_list", "host_set_state", "host_upsert", "update_host_login"]
 
-HOST_STATES = ("active", "draining", "offline")
+HOST_STATES = ("active", "draining", "offline", "deploy_only")
 HOST_COLUMNS = ("name", "ssh", "capacity", "state", "beat_at", "versions_json", "updated_at", "updated_by")
 HOST_KEY = ("name",)
 
