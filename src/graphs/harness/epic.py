@@ -126,6 +126,7 @@ from harness.store_pause import clear_paused, is_paused
 from harness.store_retry import retry_store_write
 from harness.store_write import Store, record_handoff, record_merge, upsert_work_item
 from harness.surface_heal import heal_bare_filenames, heal_new_markers, malformed_surfaces, notes_out_of_surfaces
+from harness.ticket_check import check_ticket, ticket_lookups
 from harness.waves import compute_waves, phase_parents, widest_wave
 from harness.worktree import (
     apply_patch,
@@ -2317,16 +2318,17 @@ def row_should_quarantine(work_state: str, current_state: str | None, *, approve
     return work_state == "store" and current_state is not None and current_state not in finished
 
 
-def _git_stdout(*args: str) -> str | None:
-    """Edge. Stdout of one git command, byte for byte; None on a non-zero exit, a timeout or undecodable output.
+def _git_stdout(*args: str, timeout: int = 120, ok_codes: tuple[int, ...] = (0,)) -> str | None:
+    """Edge. Stdout of one git command, byte for byte; None on an exit outside `ok_codes`, a timeout or undecodable output.
 
     `_git` returns stderr in place of stdout when stderr is non-empty, so it cannot carry a NUL-separated listing.
+    `git grep` exits 1 for no match, so its callers pass ok_codes=(0, 1).
     """
     try:
-        proc = subprocess.run(["git", *args], capture_output=True, text=True, timeout=120)
+        proc = subprocess.run(["git", *args], capture_output=True, text=True, timeout=timeout)
     except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError):
         return None
-    return proc.stdout if proc.returncode == 0 else None
+    return proc.stdout if proc.returncode in ok_codes else None
 
 
 def _default_branch_paths(ctx: _Ctx) -> frozenset[str] | None:
@@ -2347,6 +2349,23 @@ def _default_branch_paths(ctx: _Ctx) -> frozenset[str] | None:
                 return None
             ctx.surface_paths[sha] = frozenset(p for p in listing.split("\0") if p)
         return ctx.surface_paths[sha]
+
+
+def _default_branch_commit(ctx: _Ctx) -> str:
+    """Edge. The commit `ctx.default_ref` names; empty when it cannot be read."""
+    named = _git_stdout("-C", str(ctx.repo), "rev-parse", "--verify", f"{ctx.default_ref}^{{commit}}")
+    return (named or "").strip()
+
+
+def _without_correction_lint(ticket: Mapping[str, Any], original: Mapping[str, Any]) -> dict[str, Any]:
+    """`ticket` without its `correction:` lint entries.
+
+    A correction quotes the tree at one commit, so it goes stale once the code or the body changes. It is
+    recomputed at each launch and handed to the builder, never stored.
+    """
+    kept = [n for n in ticket.get("lint") or [] if not str(n).startswith("correction:")]
+    rest = {k: v for k, v in ticket.items() if k != "lint"}
+    return {**rest, "lint": kept} if kept or "lint" in original else rest
 
 
 def _working_tree_paths(root: Path) -> frozenset[str]:
@@ -3465,6 +3484,11 @@ def _run_phase(
     refused_ids: set[str] = set()
     healed_by_id: dict[str, dict[str, Any]] = {}
     heal_notes: dict[str, list[str]] = {}
+    ticket_corrections: dict[str, list[str]] = {}
+    # The ticket check reads file contents at the commit the listing was taken from. It never refuses or
+    # quarantines: when the commit cannot be read, the check raises, is logged, and the task builds unchanged.
+    commit = _default_branch_commit(ctx) if surface_paths else ""
+    defined, search = ticket_lookups(str(ctx.repo), commit, _git_stdout)
     for task in (t for t in within_budget if t.get("surfaces")):
         task_id = str(task["id"])
         bad = malformed_surfaces([str(s) for s in task["surfaces"]])
@@ -3477,8 +3501,20 @@ def _run_phase(
             _quarantine_row(ctx, phase, task_id)
             print(f"  surfaces: {task_id} refused (malformed: {', '.join(bad)})")
             continue
-        healed = _heal_surfaces(task, surface_paths)
+        # The ticket check runs first: a bare filename must be resolved before heal_new_markers can mark it `(new)`.
+        # Prose notes are moved out of surfaces first, so the check does not read them as filenames.
+        prepared = notes_out_of_surfaces(task)
+        try:
+            checked, corrections = check_ticket(prepared, surface_paths, defined, search)
+        except Exception as exc:
+            _log.warning("ticket check failed, task builds unchanged: task=%s: %s: %s", task_id, type(exc).__name__, exc)
+            checked, corrections = prepared, ()
+        if corrections:
+            ticket_corrections[task_id] = list(corrections)
+        healed = _without_correction_lint(_heal_surfaces(checked, surface_paths), task)
         if healed == dict(task):
+            if corrections:
+                print(f"  ticket check: {task_id} {len(corrections)} correction(s) for the builder")
             continue
         healed_by_id[task_id] = healed
         known = {str(n) for n in task.get("lint") or []}
@@ -3486,8 +3522,10 @@ def _run_phase(
         _write_healed_surfaces(
             ctx, task_id, healed["surfaces"], heal_notes[task_id], str(task["path"]) if task.get("path") else None
         )
-        changed = [s for s in healed["surfaces"] if s not in task["surfaces"]]
-        print(f"  surfaces: {task_id} healed ({', '.join(str(s) for s in changed)})")
+        changed = [str(s) for s in healed["surfaces"] if s not in task["surfaces"]]
+        label = "ticket check" if checked != prepared else "surfaces"
+        extra = f", {len(corrections)} correction(s)" if corrections else ""
+        print(f"  {label}: {task_id} healed ({', '.join(changed) or 'surfaces unchanged'}){extra}")
     runnable = [healed_by_id.get(str(t["id"]), t) for t in within_budget if str(t["id"]) not in refused_ids]
 
     # A task the driver quarantined before carries its reasons — and, when one
@@ -3542,7 +3580,8 @@ def _run_phase(
                             patches_for_attempt.get(str(task["id"])),
                             limit=PATCH_FOR_VALIDATION_CHARS,
                         )
-                        + "".join(f"\n\nSurface note: {note}" for note in heal_notes.get(str(task["id"]), [])),
+                        + "".join(f"\n\nSurface note: {note}" for note in heal_notes.get(str(task["id"]), []))
+                        + "".join(f"\n\nCorrection note: {note}" for note in ticket_corrections.get(str(task["id"]), [])),
                     },
                     handoffs,
                 ),
