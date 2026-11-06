@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import glob
 import json
+import re
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 
@@ -93,15 +94,8 @@ def _resolve(projects_dir: Path, session: str) -> tuple[str, str, Path | None]:
     return (status, resolved, None)
 
 
-def read_agents(projects_dir: Path, session: str) -> list[dict]:
-    """Agents of the one session `session` names, sorted by agent_id; empty when none or ambiguous. An unreadable or non-JSON meta file is skipped."""
-    _, resolved, transcript = _resolve(projects_dir, session)
-    pattern = f"*/{glob.escape(resolved)}/subagents/agent-*.meta.json"
-    metas = (
-        transcript.parent.glob(f"{glob.escape(transcript.stem)}/subagents/agent-*.meta.json")
-        if transcript
-        else (Path(projects_dir).glob(pattern) if resolved else [])
-    )
+def _agents_from_metas(metas: Iterable[Path]) -> list[dict]:
+    """Agents of the `agent-*.meta.json` paths, sorted by agent_id. An unreadable or non-JSON meta file is skipped."""
     found = ((path.name.removeprefix("agent-").removesuffix(".meta.json"), path) for path in metas)
     agents = (
         {
@@ -112,6 +106,40 @@ def read_agents(projects_dir: Path, session: str) -> list[dict]:
         for agent_id, path in found
     )
     return sorted((a for a in agents if a["meta"] is not None), key=lambda a: a["agent_id"])
+
+
+def read_agents(projects_dir: Path, session: str) -> list[dict]:
+    """Agents of the one session `session` names, sorted by agent_id; empty when none or ambiguous. An unreadable or non-JSON meta file is skipped."""
+    _, resolved, transcript = _resolve(projects_dir, session)
+    pattern = f"*/{glob.escape(resolved)}/subagents/agent-*.meta.json"
+    metas = (
+        transcript.parent.glob(f"{glob.escape(transcript.stem)}/subagents/agent-*.meta.json")
+        if transcript
+        else (Path(projects_dir).glob(pattern) if resolved else [])
+    )
+    return _agents_from_metas(metas)
+
+
+def project_folder_name(workspace: Path) -> str:
+    """Claude's folder name under its projects dir: every character of the path that is not an ASCII letter or digit becomes a hyphen."""
+    return re.sub(r"[^A-Za-z0-9]", "-", str(workspace))
+
+
+def read_project_sessions(projects_dir: Path, workspace: Path) -> list[dict]:
+    """Every session of `workspace` as {session_id, lines, agents}, sorted by session_id. Stems with a dot are not sessions; nothing raises."""
+    folder = Path(projects_dir) / project_folder_name(workspace)
+    transcripts = (p for p in folder.glob("*.jsonl") if "." not in p.stem and p.is_file())
+    return sorted(
+        (
+            {
+                "session_id": path.stem,
+                "lines": _read_lines(path),
+                "agents": _agents_from_metas(folder.glob(f"{glob.escape(path.stem)}/subagents/agent-*.meta.json")),
+            }
+            for path in transcripts
+        ),
+        key=lambda s: s["session_id"],
+    )
 
 
 def read_session_lines(projects_dir: Path, session: str) -> list[str]:
