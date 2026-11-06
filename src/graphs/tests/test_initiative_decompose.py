@@ -702,6 +702,41 @@ def test_decompose_marks_a_missing_module_new_end_to_end(cart) -> None:
     assert result["tasks"][0]["surfaces"] == ["pkg/b.py (new)"]
 
 
+def _ordering_run(cart, tasks: list[dict]) -> tuple[dict, dict]:
+    decomposition = {**DECOMPOSITION, "tasks": tasks}
+    result = initiative_decompose.run(
+        {"run_id": "r", "date": "d", "cartridge": cart, "idea": "x", "tree": MARK_TREE},
+        ScriptedRunner({"decompose": decomposition}),
+    )
+    initiative = next(p for p in result["proposals"] if p["target"] == "initiative")
+    return result, yaml.safe_load(initiative["suggested_action"].split("---\n")[1])
+
+
+def _unit(task_id: str, needs: list[str], surfaces: list[str]) -> dict:
+    return {"id": task_id, "phase": "p1", "title": task_id, "body": "b", "needs": needs, "surfaces": surfaces}
+
+
+def test_two_unordered_same_phase_tasks_sharing_a_file_are_ordered_and_noted(cart) -> None:
+    result, frontmatter = _ordering_run(cart, [_unit("t1", [], ["pkg/a.py"]), _unit("t2", [], ["pkg/a.py"])])
+    t2 = next(t for t in result["tasks"] if t["id"] == "t2")
+    assert "t1" in t2["needs"]
+    (note,) = frontmatter["lint"]
+    assert "t1" in note and "t2" in note and "pkg/a.py" in note
+
+
+@pytest.mark.parametrize(
+    "tasks",
+    [
+        [_unit("t1", [], ["pkg/a.py"]), _unit("t2", ["t1"], ["pkg/a.py"])],
+        [_unit("t1", [], ["pkg/a.py"]), _unit("t2", [], ["pkg/b.py (new)"])],
+    ],
+)
+def test_ordered_or_file_disjoint_tasks_keep_their_needs_and_leave_no_note(cart, tasks) -> None:
+    result, frontmatter = _ordering_run(cart, tasks)
+    assert {t["id"]: t["needs"] for t in result["tasks"]} == {t["id"]: t["needs"] for t in tasks}
+    assert not any("ordered:" in note for note in frontmatter.get("lint", []))
+
+
 def test_a_needs_entry_naming_a_task_absent_from_the_plan_is_dropped(cart) -> None:
     decomposition = {
         **DECOMPOSITION,
