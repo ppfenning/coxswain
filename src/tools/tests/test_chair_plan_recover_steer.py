@@ -1,5 +1,5 @@
 from agent_tools.chair_plan_recover import claimed_by, plan_recover
-from agent_tools.chair_types import Facts, InitiativeFacts, QuarantineFacts, RunningInitiative
+from agent_tools.chair_types import Facts, InitiativeFacts, QuarantineFacts, RunningInitiative, SteerPolicy
 
 
 def _initiative(id: str, surfaces: list[str], repo: str = "r") -> InitiativeFacts:
@@ -33,8 +33,9 @@ def _facts(
     quarantines: list[QuarantineFacts] | None = None,
     running: list[RunningInitiative] | None = None,
     streaks: dict[str, int] | None = None,
+    policy: SteerPolicy | None = None,
 ) -> Facts:
-    return {
+    facts: Facts = {
         "lease": {"holder": "a", "host": "h", "epoch": 1, "mine": True, "released": False, "stale": False},
         "limits": {"hard_stop": False, "weekly_fraction": 0.1, "hard_stop_fraction": 0.9, "launch_cap": 2, "go_degraded": False},
         "dispatch": {"max_in_flight": 3, "live_runs": 0},
@@ -47,6 +48,7 @@ def _facts(
         "running": [] if running is None else running,
         "steer_streaks": {} if streaks is None else streaks,
     }
+    return facts if policy is None else {**facts, "steer_policy": policy}
 
 
 CLEAR = {"kind": "clear_branches", "initiative": "x"}
@@ -125,3 +127,47 @@ def test_claimed_by_returns_one_entry_for_two_retries_of_one_initiative():
     second["task_id"] = "q2"
     facts = _facts([_initiative("x", ["a.py"])], [_quarantine("x"), second])
     assert claimed_by(plan_recover(facts), facts) == [{"id": "x", "repo": "r", "surfaces": ["a.py"]}]
+
+
+def _clear(id: str) -> dict:
+    return {"kind": "clear_branches", "initiative": id}
+
+
+def _relaunch(id: str) -> dict:
+    return {"kind": "relaunch", "initiative": id}
+
+
+def test_two_relaunches_sharing_a_file_both_stay_launches_at_limit_two():
+    facts = _facts([_initiative("x", ["a.py"]), _initiative("y", ["a.py"])], policy={"limit": 2, "serial": []})
+    assert plan_recover(facts) == [_clear("x"), _relaunch("x"), _clear("y"), _relaunch("y")]
+
+
+def test_a_third_relaunch_on_the_file_is_replaced_and_its_clear_is_dropped_at_limit_two():
+    facts = _facts(
+        [_initiative("x", ["a.py"]), _initiative("y", ["a.py"]), _initiative("z", ["a.py"])],
+        policy={"limit": 2, "serial": []},
+    )
+    assert plan_recover(facts) == [
+        _clear("x"),
+        _relaunch("x"),
+        _clear("y"),
+        _relaunch("y"),
+        {"kind": "steer_clear", "initiative": "z", "other": "x", "paths": ["a.py"]},
+    ]
+
+
+def test_a_serial_listed_file_replaces_the_launch_with_a_steer_clear_at_limit_five():
+    facts = _facts(
+        [_initiative("x", ["a.py"])], running=[_running("y", ["a.py"])], policy={"limit": 5, "serial": ["a.py"]}
+    )
+    assert plan_recover(facts) == [STEER]
+
+
+def test_facts_with_no_steer_policy_defer_the_second_relaunch_as_before():
+    facts = _facts([_initiative("x", ["a.py"]), _initiative("y", ["a.py"])])
+    assert "steer_policy" not in facts
+    assert plan_recover(facts) == [
+        CLEAR,
+        _relaunch("x"),
+        {"kind": "steer_clear", "initiative": "y", "other": "x", "paths": ["a.py"]},
+    ]
