@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 from agent_tools.chair_decompose_streak import DecomposeStreak
 from agent_tools.chair_land_backoff import LandRefusal
 from agent_tools.chair_land_conflict import LandConflict
+from agent_tools.chair_steward import StewardFacts
 
 EASTERN = ZoneInfo("America/New_York")  # every time the chair prints for an operator is shown in this zone
 STALE_CHECKOUT_CAUSE = "stale_checkout"  # the needs_chair cause for a lane host whose checkout environment is stale
@@ -412,6 +413,11 @@ class EpicFacts(TypedDict):
     complete: bool
 
 
+class StewardPlanFacts(TypedDict):
+    enabled: bool  # False plans exactly what an absent key plans
+    epics: list[StewardFacts]  # one entry per epic the steward handles; its epic_id is the initiative id
+
+
 class Facts(TypedDict):
     lease: LeaseFacts
     limits: LimitsFacts
@@ -493,6 +499,7 @@ class Facts(TypedDict):
     phase_records: NotRequired[list[str]]
     # Each initiative row in state todo with its task rows' states, in row order; absent means none. `plan_close_initiatives` plans a close_initiative for each finished one.
     todo_initiatives: NotRequired[list[TodoInitiative]]
+    steward: NotRequired[StewardPlanFacts]  # the epic steward's inputs; absent means the steward is off
 
 
 ActionKind = Literal[
@@ -531,6 +538,9 @@ ActionKind = Literal[
     "deferred",
     "close_initiative",
     "finish_task",
+    "merge_level",
+    "run_gate",
+    "steward_event",
 ]
 
 
@@ -555,7 +565,11 @@ class Action(TypedDict, total=False):
     the plan adds repo, task_runs and run (the newest of task_runs) for the loop's task lands. A relaunch_loop needs_chair carries
     initiative, cause and a reason naming both quarantined run ids. waiting carries initiative, phase, quarantined and
     awaiting_land and runs no command. deferred carries initiative, phase and land_at and runs no command: the land waits for
-    the granularity land_at names. close_initiative carries initiative and state (done or dropped)."""
+    the granularity land_at names. close_initiative carries initiative and state (done or dropped).
+    The steward's actions each carry epic and topic (both the epic id) and fields. merge_level also carries level,
+    the index of the level to merge. run_gate carries no more. steward_event also carries event, the name to publish.
+    The steward's relaunch is a relaunch carrying initiative, plus epic, topic and fields (the signature) so the executor
+    can record `relaunched`. A planner relaunch carries none of those three."""
 
     kind: ActionKind
     epoch: int
@@ -598,6 +612,11 @@ class Action(TypedDict, total=False):
     commit: str  # a revert_land names the new main commit of that land
     additions: list[str]  # a widen_ticket names the addition for each path, same order and length as paths
     state: str  # a close_initiative names the state to move the initiative to: done or dropped
+    epic: str  # a merge_level, run_gate or steward_event names the epic it acts on
+    level: int  # a merge_level names the index of the level it merges
+    event: str  # a steward_event names the event it publishes, for example needs_attention
+    fields: dict[str, str]  # a merge_level, run_gate or steward_event carries the scope fields of its reported-set key
+    topic: str  # a merge_level, run_gate or steward_event names the topic its event is published under
 
 
 class PlanLands(Protocol):

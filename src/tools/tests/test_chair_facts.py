@@ -576,7 +576,8 @@ def test_gather_facts_fills_every_key_from_the_fakes():
     facts = gather_facts(replace(_deps(), phase_records=lambda tasks: []), NOW)
     # login_hosts is not yet declared on Facts: a later task adds it there once the login watch reads it.
     # tuning, landed_main and land_outcomes are all filled in gather_facts now.
-    assert set(facts) == set(Facts.__annotations__) | {"login_hosts"}
+    # steward is declared on Facts and read by the planner; the next task gathers it, until then it is absent.
+    assert set(facts) == (set(Facts.__annotations__) - {"steward"}) | {"login_hosts"}
     assert facts["dispatch"] == {"max_in_flight": 2, "live_runs": 1, "hosts": []}
     assert facts["initiatives"][0]["landed"] == {"z"}
     assert facts["approved"][0]["phase_done"] is True

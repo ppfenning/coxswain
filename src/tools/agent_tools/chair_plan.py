@@ -7,7 +7,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from agent_tools import chair_login_watch, chair_plan_prune, chair_stall
+from agent_tools import chair_login_watch, chair_plan_prune, chair_stall, chair_steward
 from agent_tools.chair_carry import plan_carry
 from agent_tools.chair_idle_stall import diagnose, is_stalled
 from agent_tools.chair_plan_fill import (
@@ -781,6 +781,58 @@ def _waiting_actions(waiting: Sequence[WaitingInitiative], reported: Mapping[str
     ]
 
 
+def _steward_handled(facts: Facts) -> frozenset[str]:
+    """The epic ids the steward plans for this tick; empty when the steward key is absent or disabled."""
+    steward = facts.get("steward")
+    return frozenset(e["epic_id"] for e in steward["epics"]) if steward is not None and steward["enabled"] else frozenset()
+
+
+def _from_steward(action: chair_steward.StewardAction) -> Action:
+    topic, fields = action["topic"], action["fields"]
+    scoped: Action = {"epic": topic, "topic": topic, "fields": fields}
+    if action["kind"] == "relaunch":
+        # epic, topic and fields (the signature) let the executor record `relaunched`; a planner relaunch carries none.
+        return {"kind": "relaunch", "initiative": topic, **scoped}
+    if action["kind"] == "merge_level":
+        return {"kind": "merge_level", **scoped, "level": int(fields["level"])}
+    if action["kind"] == "run_gate":
+        return {"kind": "run_gate", **scoped}
+    # The only kind left is publish, which the plan names steward_event.
+    return {"kind": "steward_event", **scoped, "event": action["event"]}
+
+
+def _steward_actions(facts: Facts, lost: frozenset[str]) -> list[Action]:
+    """The steward's decisions as actions, with no planner gate applied yet.
+
+    A lost run has no exit record by definition, so the steward is told it exited: the host's silence is the evidence
+    plan_lost_runs relies on, and without this a lost run on a handled epic would never be relaunched."""
+    steward = facts.get("steward")
+    if steward is None or not steward["enabled"]:
+        return []
+    epics = [{**e, "exited": True} if e["epic_id"] in lost else e for e in steward["epics"]]
+    return [_from_steward(a) for a in chair_steward.decide(epics)]
+
+
+def _without_launch_pair(actions: list[Action], ids: frozenset[str]) -> list[Action]:
+    """Drop the relaunch and the paired clear_branches of each initiative in ids."""
+    return [a for a in actions if not (a["kind"] in ("relaunch", "clear_branches") and a["initiative"] in ids)]
+
+
+def _steward_relaunches_replace(
+    recover: list[Action], steward: list[Action], handled: frozenset[str]
+) -> list[Action]:
+    """The steward's relaunch takes the place of the planner's relaunch pair for each handled epic.
+
+    `recover` is plan_recover's or plan_lost_runs' output; they own the gates a relaunch needs: quarantine, schema
+    death, landing repo, dag problem, waiting, launch budget, loop rule and steer. The planner's relaunch is never
+    kept. The steward's relaunch is kept only where `recover` held one to replace, so no gate is skipped. If the
+    planner sees no relaunchable work where the steward does, no relaunch is planned. The gates after (lost,
+    unfetched, not exited, CI hold, deadlock, cap and homing) then see the steward's relaunch as any other."""
+    gated_in = frozenset(a["initiative"] for a in recover if a["kind"] == "relaunch")
+    relaunches = [a for a in steward if a["kind"] == "relaunch" and a["initiative"] in gated_in]
+    return [*_without_launch_pair(recover, handled), *relaunches]
+
+
 def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str] = frozenset()) -> list[Action]:
     facts = _with_dead_pid_lost(raw_facts, now)
     reverts = revert_check(facts.get("landed_main", []))
@@ -804,12 +856,15 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     run_exited = facts.get("run_exited", {})
     widen = plan_widen(facts)
     widened = frozenset((a["initiative"], a["task_id"]) for a in widen)
-    recover_actions = plan_recover(facts, now)
+    steward_handled = _steward_handled(facts)
+    steward = _steward_actions(facts, lost)
+    recover_actions = _steward_relaunches_replace(plan_recover(facts, now), steward, steward_handled)
+    lost_actions = _steward_relaunches_replace(plan_lost_runs(facts, now), steward, steward_handled)
     ordinary = _withhold_lost_runs(_without_widened(recover_actions, widened), lost)
     pre_exit_gate = _withhold_remote_unfetched(ordinary, remote_unfetched)
     would_relaunch = frozenset(a["initiative"] for a in pre_exit_gate if a["kind"] == "relaunch")
     not_exited = frozenset(i for i in would_relaunch if not run_exited.get(i, False))
-    recoverable = _hold_for_ci([*_withhold_not_exited(pre_exit_gate, not_exited), *plan_lost_runs(facts, now)], held)
+    recoverable = _hold_for_ci([*_withhold_not_exited(pre_exit_gate, not_exited), *lost_actions], held)
     waiting = waiting_initiatives(facts)
     waiting_ids = frozenset(w.initiative for w in waiting)
     # A deferred-land deadlock is one line for the whole stall: whichever blocked task `diagnose` names, its idle_stall line
@@ -820,6 +875,8 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     closes = [*plan_close_initiatives(facts), *plan_finish(facts)]
     # A blocked initiative's relaunch and its paired clear_branches go; the waiting action records why.
     recovered = [a for a in _without_deadlocked(recoverable, deadlock) if not (a["kind"] in ("relaunch", "clear_branches") and a["initiative"] in waiting_ids)]
+    # The steward's relaunch is already in `recovered`; its merges, gates and events follow the planner's own actions.
+    steward_events = [a for a in steward if a["kind"] != "relaunch"]
     if facts["limits"]["hard_stop"]:
         return [
             *reverts,  # a revert starts no run, so a red main is healed under the hard stop too
@@ -841,6 +898,8 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
             *unstarted_waiting_chair,
             *waiting_actions,
             *closes,
+            # Merges and events start no run. A gate run may spend what the stop protects, so it waits for the stop to lift.
+            *[a for a in steward_events if a["kind"] != "run_gate"],
         ]
     cap = _launch_cap(facts["limits"])
     host_free = host_free_slots(facts)
@@ -854,6 +913,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     # Withheld initiatives stay in the facts so their ready tasks still block a pull.
     # A steer deferral already reports its initiative; fill would find the same overlap and report it twice.
     # An initiative whose repo is landing, or whose phase lands this tick, must not launch until the land settles.
+    steward_started = steward_handled & frozenset(i["id"] for i in facts["initiatives"] if i["started"])
     withheld = (
         frozenset({a["initiative"] for a in capped if a["kind"] == "relaunch" or a["kind"] == "steer_clear" or _steer_deferred(a)})
         | frozenset(q["initiative"] for q in facts["quarantines"])
@@ -867,6 +927,8 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         | refused_launches(facts, now)
         | backoff_held(facts, now)
         | waiting_ids
+        # fill would launch a started epic the steward holds back, which is a relaunch; an unstarted one still launches.
+        | steward_started
     )
     claimed = claimed_by(recover_actions, facts)
     filled = plan_fill(
@@ -896,6 +958,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         *unstarted_waiting_chair,
         *waiting_actions,
         *closes,
+        *steward_events,
     ]
 
 
