@@ -11101,22 +11101,47 @@ def _courier_workspace(a: argparse.Namespace) -> Path | None:
     return None if profile is None else Path(profile["workspace_dir"]).expanduser()
 
 
+def _parse_fields(pairs: list[str]) -> dict | None:
+    """`key=value` pairs split on the first `=`; None when a pair has no `=` or an empty key."""
+    split = [p.partition("=") for p in pairs]
+    return None if any(not key or not sep for key, sep, _ in split) else {key: value for key, _, value in split}
+
+
 def _courier_send(a: argparse.Namespace) -> int:
     workspace = _courier_workspace(a)
     if workspace is None: return 2
     ref = courier.parse_reference(a.ref)
     if ref is None or courier.resolve(ref, workspace) is None:
         print(f"courier: {a.ref} does not resolve"); return 2
+    pairs = getattr(a, "field", None) or []
+    fields = _parse_fields(pairs)
+    if fields is None:
+        print(f"courier: bad field in {pairs}; expected key=value"); return 2
     path = workspace / "courier.jsonl"
     sender = (chair.read(workspace / "runs") or {}).get("session") or "cli"
-    entry = courier.send(ref, sender, a.to, a.note, uuid.uuid4().hex)
+    try:
+        entry = courier.send(
+            ref, sender, a.to, a.note, uuid.uuid4().hex,
+            event=getattr(a, "event", None), fields=fields or None, topic=getattr(a, "topic", None),
+        )
+    except ValueError as exc:
+        print(f"courier: {exc}"); return 2
     path.write_text(courier.append_line(_read_text_or_none(path) or "", entry), encoding="utf-8")
     return 0
 
 
-def _print_inbox(blob: str, label: str | None, holder: str | None) -> None:
-    for entry in courier.inbox(blob, label, holder=holder):
-        print(f"{entry['id']}: {entry['from']} -> {entry['to']}: {entry['note']} ({entry['ref']})")
+def _inbox_line(entry: dict) -> str:
+    typed = " ".join(f"{k}={entry[k]}" for k in ("event", "topic") if entry.get(k))
+    return f"{entry['id']}: {entry['from']} -> {entry['to']}: {entry['note']} ({entry['ref']})" + (f" [{typed}]" if typed else "")
+
+
+def _print_inbox(
+    blob: str, label: str | None, holder: str | None,
+    *, topic: str | None = None, event: str | None = None, consumer: str | None = None, wake: bool = False,
+) -> None:
+    listed = courier.inbox(blob, label, holder=holder, topic=topic, event=event, consumer=consumer)
+    for entry in (e for e in listed if not wake or courier.needs_model(e)):
+        print(_inbox_line(entry))
 
 
 def _lock_holder_or_none(runs_dir: Path) -> str | None:
@@ -11132,7 +11157,11 @@ def _courier_inbox(a: argparse.Namespace) -> int:
     workspace = _courier_workspace(a)
     if workspace is None: return 2
     holder = _lock_holder_or_none(workspace / "runs")
-    _print_inbox(_read_text_or_none(workspace / "courier.jsonl") or "", a.label, holder)
+    _print_inbox(
+        _read_text_or_none(workspace / "courier.jsonl") or "", a.label, holder,
+        topic=getattr(a, "topic", None), event=getattr(a, "event", None),
+        consumer=getattr(a, "consumer", None), wake=getattr(a, "wake", False),
+    )
     return 0
 
 
@@ -11140,7 +11169,7 @@ def _courier_ack(a: argparse.Namespace) -> int:
     workspace = _courier_workspace(a)
     if workspace is None: return 2
     path = workspace / "courier.jsonl"
-    if not courier.ack_file(path, a.id): print(f"courier: no entry {a.id}"); return 2
+    if not courier.ack_file(path, a.id, getattr(a, "consumer", None)): print(f"courier: no entry {a.id}"); return 2
     return 0
 
 
@@ -11148,17 +11177,21 @@ COURIER_GROUP = commands.Group(name="courier", help="the courier bus: hand a ref
 COURIER_COMMANDS = [
     commands.Command(
         "send", "courier", "append a bus entry naming a courier reference",
-        (commands.Arg(("ref",)), commands.Arg(("--to",), {"required": True}), commands.Arg(("--note",), {"required": True}), commands.Arg(("--profile",))),
+        (commands.Arg(("ref",)), commands.Arg(("--to",), {"required": True}), commands.Arg(("--note",), {"required": True}), commands.Arg(("--profile",)),
+         commands.Arg(("--event",), {"help": "a typed event name"}), commands.Arg(("--topic",), {"help": "a topic to file the entry under"}),
+         commands.Arg(("--field",), {"action": "append", "help": "key=value, repeatable"})),
         "agent_tools.cli:_courier_send", False, (),
     ),
     commands.Command(
         "inbox", "courier", "list this label's unacknowledged bus entries",
-        (commands.Arg(("--label",)), commands.Arg(("--profile",))),
+        (commands.Arg(("--label",)), commands.Arg(("--profile",)),
+         commands.Arg(("--topic",)), commands.Arg(("--event",)), commands.Arg(("--consumer",)),
+         commands.Arg(("--wake",), {"action": "store_true", "help": "only entries that need a model"})),
         "agent_tools.cli:_courier_inbox", False, (),
     ),
     commands.Command(
         "ack", "courier", "acknowledge one bus entry by id",
-        (commands.Arg(("id",)), commands.Arg(("--profile",))),
+        (commands.Arg(("id",)), commands.Arg(("--profile",)), commands.Arg(("--consumer",))),
         "agent_tools.cli:_courier_ack", False, (),
     ),
 ]
