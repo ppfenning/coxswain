@@ -13120,6 +13120,10 @@ def _host_drain(a: argparse.Namespace) -> int:
     return _host_store_write(a, host_cmd.set_state_argv(a.name, "draining", _holder_label(a)))
 
 
+def _host_deploy_only(a: argparse.Namespace) -> int:
+    return _host_store_write(a, host_cmd.set_state_argv(a.name, "deploy_only", _holder_label(a)))
+
+
 def _host_remove(a: argparse.Namespace) -> int:
     """Deletes a draining host's row once no lane runs on it, and prints the row so `host add` can restore it.
     A refusal and `--dry-run` both stop before the store is called."""
@@ -13351,6 +13355,7 @@ HOST_COMMANDS = [
     ),
     commands.Command("list", "host", "one line per host: state, capacity, beat age, login", (), "agent_tools.cli:_host_list", False, ()),
     commands.Command("drain", "host", "stop launching on a host; its live lanes finish", (commands.Arg(("name",)),), "agent_tools.cli:_host_drain", False, ()),
+    commands.Command("deploy-only", "host", "receive releases but never lanes", (commands.Arg(("name",)),), "agent_tools.cli:_host_deploy_only", False, ()),
     commands.Command(
         "remove", "host", "delete a drained idle host from the hosts table",
         (commands.Arg(("name",)), commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the row that would be removed; write nothing"})),
