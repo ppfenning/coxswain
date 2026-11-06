@@ -117,7 +117,7 @@ from harness.store_lease import assert_epoch, renew
 from harness.store_pause import clear_paused, is_paused
 from harness.store_retry import retry_store_write
 from harness.store_write import Store, record_handoff, record_merge, upsert_work_item
-from harness.surface_heal import heal_new_markers, malformed_surfaces
+from harness.surface_heal import heal_bare_filenames, heal_new_markers, malformed_surfaces, notes_out_of_surfaces
 from harness.waves import compute_waves, phase_parents, widest_wave
 from harness.worktree import (
     apply_patch,
@@ -2210,6 +2210,24 @@ def _frontmatter_key_lines(key: str, value: Sequence[str]) -> list[str]:
     return yaml.safe_dump({key: list(value)}, default_flow_style=None, allow_unicode=True).rstrip().split("\n")
 
 
+def _heal_surfaces(task: Mapping[str, Any], paths: frozenset[str]) -> dict[str, Any]:
+    """Bare filenames resolved or left out with a note, notes moved to lint, then missing surfaces marked `(new)`.
+
+    An unmarked bare name that no repository file shares is a new file at the repository root, so it is not
+    handed to heal_bare_filenames, which would drop it; heal_new_markers marks it `(new)` as before.
+    """
+    names = {p.rsplit("/", 1)[-1] for p in paths}
+    surfaces = [str(s) for s in task.get("surfaces") or []]
+    root_new = [
+        s for s in surfaces
+        if "/" not in s and not s.strip().endswith("(new)") and s.strip() not in names
+        and s.strip() and not any(c.isspace() or c in "*?[]" for c in s.strip()) and s.strip() != ".."
+    ]
+    resolved = heal_bare_filenames({**task, "surfaces": [s for s in surfaces if s not in root_new]}, paths)
+    kept = {**resolved, "surfaces": [*(resolved.get("surfaces") or []), *root_new]}
+    return heal_new_markers(notes_out_of_surfaces(kept), paths)
+
+
 def _rewrite_frontmatter_surfaces(path: Path, surfaces: Sequence[str], notes: Sequence[str]) -> None:
     """Replace the `surfaces` key and extend the `lint` key of the file's frontmatter; every other line is kept as it was."""
     lines = path.read_text(encoding="utf-8").split("\n")
@@ -3272,16 +3290,17 @@ def _run_phase(
             _quarantine_row(ctx, phase, task_id)
             print(f"  surfaces: {task_id} refused (malformed: {', '.join(bad)})")
             continue
-        healed = heal_new_markers(task, surface_paths)
+        healed = _heal_surfaces(task, surface_paths)
         if healed == dict(task):
             continue
         healed_by_id[task_id] = healed
-        heal_notes[task_id] = [str(n) for n in healed["lint"][len(task.get("lint") or []):]]
+        known = {str(n) for n in task.get("lint") or []}
+        heal_notes[task_id] = [str(n) for n in healed.get("lint") or [] if str(n) not in known]
         _write_healed_surfaces(
             ctx, task_id, healed["surfaces"], heal_notes[task_id], str(task["path"]) if task.get("path") else None
         )
-        marked = [s for s in healed["surfaces"] if s not in task["surfaces"]]
-        print(f"  surfaces: {task_id} healed ({', '.join(str(s) for s in marked)})")
+        changed = [s for s in healed["surfaces"] if s not in task["surfaces"]]
+        print(f"  surfaces: {task_id} healed ({', '.join(str(s) for s in changed)})")
     runnable = [healed_by_id.get(str(t["id"]), t) for t in within_budget if str(t["id"]) not in refused_ids]
 
     # A task the driver quarantined before carries its reasons — and, when one
