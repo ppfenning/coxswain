@@ -408,6 +408,29 @@ def carrying_pr(subjects: Sequence[str], parent_pr: int | None) -> int | None:
     return next((n for n in map(pr_number_of_subject, subjects) if n is not None), parent_pr)
 
 
+SKIP_EMPTY = "empty pick"
+SKIP_PATCH_ID = "patch-id match on base"
+SKIPPED_ALL = "skipped all "
+_EMPTY_PICK = re.compile(r"previous cherry-pick is now empty|^nothing to commit\b", re.IGNORECASE | re.MULTILINE)
+
+
+def is_empty_pick(stderr: str, stdout: str, unmerged: bool) -> bool:
+    """A stopped cherry-pick that git calls empty and that leaves no file unmerged; a real conflict is not."""
+    return not unmerged and _EMPTY_PICK.search(f"{stderr}\n{stdout}") is not None
+
+
+def skip_note(sha: str, subject: str, reason: str) -> str:
+    return f"land: skipped {sha[:8]} {subject}: {reason}"
+
+
+def skipped_all_detail(count: int, base: str) -> str:
+    return f"{SKIPPED_ALL}{count} commits, already on {base}"
+
+
+def is_skipped_all(detail: str) -> bool:
+    return detail.startswith(SKIPPED_ALL)
+
+
 def landed_tail(steps: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     """Only the closing steps (clean, clean_phase, mark_done) of `steps`, in order."""
     return [s for s in steps if s.get("kind") in _TAIL_KINDS]
