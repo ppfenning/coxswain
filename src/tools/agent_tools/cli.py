@@ -12932,6 +12932,7 @@ def _chair_run_deps(
         ticket_branch_of=land.pr_branch_name,
         phase_of=_steward_phase_of(work_rows),
         run_gate_checks=_steward_gate_runner(runner, lane_capacity),
+        lane_capacity=_check_capacity(runs_dir, profile, host),
     )
     exec_deps = dataclasses.replace(
         exec_deps,
