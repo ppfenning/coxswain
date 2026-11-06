@@ -300,6 +300,24 @@ class Lane:
     host: str | None
     launched_at: str
     heartbeat_at: str
+    phases: int = 1
+
+
+def _progress_nodes(progress: str | None) -> list[Any]:
+    try:
+        body = json.loads(progress) if progress else None
+    except ValueError:
+        return []
+    nodes = body.get("nodes") if isinstance(body, dict) else None
+    return nodes if isinstance(nodes, list) else []
+
+
+def running_phases(progress: str | None) -> int:
+    """Distinct non-empty `phase` values among the `running` nodes of a lease's progress JSON; 1 when there are none or the text does not parse."""
+    phases = {
+        n["phase"] for n in _progress_nodes(progress) if isinstance(n, dict) and n.get("status") == "running" and isinstance(n.get("phase"), str) and n["phase"]
+    }
+    return max(1, len(phases))
 
 
 def _runs_columns(conn: Any, token: str) -> set[str]:
@@ -324,9 +342,11 @@ def _newest_run(conn: Any, token: str, name: str, host_expr: str) -> Any | None:
 def live_lanes(runs_dir: Path, now: str) -> list[Lane]:
     """Edge. Every `runs:` lease with `expires_at` later than `now` (ISO UTC, passed in), joined to its prefix's newest run row, by lease name.
 
-    A lease with no run row is skipped. Empty with no store or an unreadable one."""
-    table = _lease_table(str(runs_dir), int(time.monotonic() // _LEASE_SNAPSHOT_S))
-    return _joined_lanes(runs_dir, sorted((n, beat) for n, (_, expires, beat) in table.items() if n.startswith("runs:") and expires > now))
+    A lease with no run row is skipped. `phases` is `running_phases` of the lease's progress, read in the same snapshot.
+    Empty with no store or an unreadable one."""
+    rows = _lease_rows(str(runs_dir), int(time.monotonic() // _LEASE_SNAPSHOT_S))
+    live = sorted((n, r.heartbeat_at, running_phases(r.progress)) for n, r in rows.items() if n.startswith("runs:") and r.expires_at > now)
+    return _joined_lanes(runs_dir, live)
 
 
 def lost_lanes(runs_dir: Path, now: str) -> list[Lane]:
@@ -335,24 +355,24 @@ def lost_lanes(runs_dir: Path, now: str) -> list[Lane]:
     A release writes a 1970 `expires_at`, so a released lease is never listed. A lane whose host died stops renewing, and
     its lease lapses a ttl after its last beat, so it is listed here and not in `live_lanes`."""
     table = _lease_table(str(runs_dir), int(time.monotonic() // _LEASE_SNAPSHOT_S))
-    lapsed = sorted((n, beat) for n, (_, expires, beat) in table.items() if n.startswith("runs:") and beat < expires <= now)
+    lapsed = sorted((n, beat, 1) for n, (_, expires, beat) in table.items() if n.startswith("runs:") and beat < expires <= now)
     return _joined_lanes(runs_dir, lapsed)
 
 
-def _joined_lanes(runs_dir: Path, live: list[tuple[str, str]]) -> list[Lane]:
-    """Edge. Each (lease name, heartbeat) joined to its prefix's newest run row; a lease with no run row is skipped."""
+def _joined_lanes(runs_dir: Path, live: list[tuple[str, str, int]]) -> list[Lane]:
+    """Edge. Each (lease name, heartbeat, phases) joined to its prefix's newest run row; a lease with no run row is skipped."""
     opened = _open(runs_dir) if live else None
     if opened is None:
         return []
     conn, token = opened
     try:
         host_expr = "host" if "host" in _runs_columns(conn, token) else "NULL AS host"
-        joined = [(_newest_run(conn, token, name, host_expr), beat) for name, beat in live]
+        joined = [(_newest_run(conn, token, name, host_expr), beat, phases) for name, beat, phases in live]
     except _db_errors():
         return []
     finally:
         conn.close()
-    return [Lane(r["run_id"], r["host"], r["launched_at"], beat) for r, beat in joined if r is not None]
+    return [Lane(r["run_id"], r["host"], r["launched_at"], beat, phases) for r, beat, phases in joined if r is not None]
 
 
 def newest_run_hosts(runs_dir: Path, initiatives: Collection[str]) -> dict[str, str]:
