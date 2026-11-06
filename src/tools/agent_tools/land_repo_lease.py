@@ -7,6 +7,7 @@ Distinct from land_lease.py's task-scoped `land:<task>` lease. This lease is nam
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -19,6 +20,11 @@ def lease_name(repo: str) -> str:
 
 def refusal_message(repo: str, holder: str) -> str:
     return f"land: refusing, {holder} is landing in {repo}"
+
+
+def waiting_message(repo: str, holder: str | None) -> str:
+    """A lost takeover refuses with no holder, so None reads as `another land`."""
+    return f"land: waiting, {holder or 'another land'} is landing in {repo}"
 
 
 def acquire(runs_dir: Path, repo: str, holder: str, ttl: int) -> store_cli.LeaseResult:
@@ -135,3 +141,22 @@ def acquire_in_slots(runs_dir: Path, repo: str, holder: str, ttl: int, this_host
             return slot, got
         first = got if first is None else first
     return 0, first
+
+
+def acquire_in_slots_waiting(runs_dir: Path, repo: str, holder: str, ttl: int, this_host: str, limit: int,
+                             timeout_s: float, poll_s: float, alive: Callable[[int], bool] = pid_alive,
+                             sleep: Callable[[float], None] = time.sleep,
+                             now: Callable[[], float] = time.monotonic) -> tuple[int, store_cli.LeaseResult]:
+    """`acquire_in_slots`, retried every `poll_s` while refused, until `timeout_s` has passed on `now`.
+
+    Only a refusal waits; a grant, an outage or a lease error returns at once. The last refusal is returned on timeout.
+    A `timeout_s` of 0 is one attempt. Each sleep is capped at the time left, so the total never exceeds `timeout_s`."""
+    deadline = now() + timeout_s
+    while True:
+        slot, got = acquire_in_slots(runs_dir, repo, holder, ttl, this_host, limit, alive)
+        if not isinstance(got, store_cli.LeaseRefused):
+            return slot, got
+        remaining = deadline - now()
+        if remaining <= 0:
+            return slot, got
+        sleep(min(poll_s, remaining))
