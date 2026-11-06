@@ -7054,12 +7054,19 @@ They show in the inbox.</p>
 <p>The steward runs an epic's routine steps without a model. It decides from
 facts alone, and it reports each step as a typed event on the courier bus.</p>
 <p>The steward is off by default. Turn it on with <code>chair.steward</code> in the
-agent-tools profile:</p>
+agent-tools profile. These are the exact lines to add. They go at the top level
+of the profile file:</p>
 <div class="highlight"><pre><span></span><code><span class="nt">chair</span><span class="p">:</span>
 <span class="w">  </span><span class="nt">steward</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
 </code></pre></div>
-<p>Only the boolean <code>true</code> or the string <code>true</code> turns it on. An absent key or any
-other value leaves it off, and the loop gathers no steward facts.</p>
+<p>The profile accepts <code>true</code>, <code>false</code>, <code>yes</code> and <code>no</code> in any case. <code>true</code> and
+<code>yes</code> turn the steward on. <code>false</code>, <code>no</code> and an absent key leave it off, and the
+loop gathers no steward facts. Any other value makes the profile unreadable, and
+the error names the line.</p>
+<p>The other chair keys sit in the same block and are numbers. They are
+<code>housekeeping_hours</code>, <code>stale_days</code>, <code>idle_stall_minutes</code>, <code>launch_stagger_s</code> and
+<code>max_launches_per_hour</code>.</p>
+<p>The doctor report has a <code>steward</code> row. It shows <code>on</code> or <code>off</code>.</p>
 <p>Do not turn <code>chair.steward</code> on yet. Today the profile setting is the only part
 of the steward the run command wires. The loop does not yet pass the steward
 these inputs:</p>
