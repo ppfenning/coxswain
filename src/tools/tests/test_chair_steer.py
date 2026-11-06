@@ -1,4 +1,12 @@
-from agent_tools.chair_steer import shared_paths, steer_check
+from agent_tools.chair_steer import shared_paths, steer_check, steer_heads
+
+
+def _clear(initiative: str, other: str) -> dict:
+    return {"kind": "steer_clear", "initiative": initiative, "other": other, "paths": ["f"]}
+
+
+def _deferred(initiative: str, other: str) -> dict:
+    return {"kind": "needs_chair", "initiative": initiative, "other": other, "cause": "steer_deferred", "reason": "r"}
 
 
 def _run(id: str, surfaces: list[str], repo: str = "r") -> dict:
@@ -60,6 +68,32 @@ def test_streak_three_needs_chair():
     assert action == {
         "kind": "needs_chair",
         "initiative": "cand",
+        "other": "peer",
         "cause": "steer_deferred",
         "reason": "cand shares src/x.rs with running peer; the pair has been deferred three ticks",
     }
+
+
+def test_a_steer_clear_names_its_other_as_the_head():
+    assert steer_heads([_clear("b", "a")]) == ["a"]
+
+
+def test_a_steer_deferred_needs_chair_names_its_other_as_the_head():
+    assert steer_heads([_deferred("b", "a")]) == ["a"]
+
+
+def test_an_other_that_is_itself_deferred_is_not_a_head():
+    assert steer_heads([_clear("c", "b"), _clear("b", "a")]) == ["a"]
+
+
+def test_two_deferred_initiatives_naming_one_head_give_it_once():
+    assert steer_heads([_clear("b", "a"), _deferred("c", "a")]) == ["a"]
+
+
+def test_heads_come_first_seen_first():
+    assert steer_heads([_clear("b", "z"), _clear("c", "a")]) == ["z", "a"]
+
+
+def test_a_self_pair_and_other_kinds_give_no_head():
+    other_kinds = [{"kind": "launch_epic", "initiative": "a", "other": "x"}, {"kind": "needs_chair", "initiative": "d", "cause": "no_run", "other": "y"}]
+    assert steer_heads([_clear("i", "i"), *other_kinds]) == []

@@ -3,6 +3,7 @@
 Pure. Takes the facts and the tick's clock, returns actions each stamped with the lease epoch. No I/O.
 """
 import re
+from collections import Counter
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -17,6 +18,7 @@ from agent_tools.chair_plan_fill import (
     _less_consumed,
     _place_on_hosts,
     _required_capabilities,
+    budget_skips,
     host_free_slots,
     plan_fill,
 )
@@ -36,6 +38,7 @@ from agent_tools.chair_plan_widen import plan_widen
 from agent_tools.chair_rebase import plan_rebase
 from agent_tools.chair_revert import revert_check
 from agent_tools.chair_runnable import Blocking, TaskView, WaitingInitiative, runnable_verdict
+from agent_tools.chair_steer import steer_heads
 from agent_tools.chair_types import (
     DEADLOCK_CAUSE,
     HELD_FILE_CAUSE,
@@ -833,6 +836,59 @@ def _steward_relaunches_replace(
     return [*_without_launch_pair(recover, handled), *relaunches]
 
 
+def _no_host(free_lanes: int, host_free: Sequence[HostSlot], consumed: Mapping[str, int], filled: Sequence[Action], reserved: bool) -> bool:
+    """True when no local lane and no lane-host slot is left for an epic after recovery and fill placed theirs.
+
+    reserved is dispatch local_lanes "decompose": the local lanes then take no epic."""
+    local_epics = sum(a["kind"] == "launch_epic" and "host" not in a for a in filled)
+    taken = Counter(a["host"] for a in filled if a["kind"] == "launch_epic" and "host" in a)
+    host_slots = [free - taken[name] for name, *_, free, _ in _less_consumed(list(host_free), dict(consumed))]
+    return (reserved or free_lanes - local_epics <= 0) and not any(slot > 0 for slot in host_slots)
+
+
+def _left_out_why(
+    head: str, by_id: Mapping[str, InitiativeFacts], withheld_by: Mapping[str, frozenset[str]], skips: Mapping[str, str]
+) -> str | None:
+    """Why the launch list leaves a head out, where the facts show it; None when they show nothing."""
+    named = next((why for why, ids in withheld_by.items() if head in ids), None)
+    initiative = by_id.get(head)
+    if named is not None:
+        return named
+    if head in skips:
+        return f"launch budget: {skips[head]}"
+    if initiative is None:
+        return "not on the board"
+    if initiative.get("dag_problem"):
+        return "invalid dag"
+    return None if initiative["ready_tasks"] else "no ready tasks"
+
+
+def _stuck_steer_heads(
+    heads: Sequence[str],
+    launched: Collection[str],
+    running: Collection[str],
+    by_id: Mapping[str, InitiativeFacts],
+    withheld_by: Mapping[str, frozenset[str]],
+    skips: Mapping[str, str],
+    no_host: bool,
+) -> list[Action]:
+    """One steer_head_stuck needs_chair per chain head that neither runs nor launches this tick.
+
+    A withhold the facts show is named first: the head would not launch with lanes free. Else no host, else the
+    head was left out of the launch list for a reason the facts do not show."""
+    def reason(head: str) -> str:
+        why = _left_out_why(head, by_id, withheld_by, skips)
+        if why is not None:
+            return f"launch refused: {why}"
+        return "no host" if no_host else "launch refused: left out of the launch list"
+
+    return [
+        {"kind": "needs_chair", "initiative": h, "cause": "steer_head_stuck", "reason": reason(h)}
+        for h in heads
+        if h not in running and h not in launched
+    ]
+
+
 def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str] = frozenset()) -> list[Action]:
     facts = _with_dead_pid_lost(raw_facts, now)
     reverts = revert_check(facts.get("landed_main", []))
@@ -914,27 +970,39 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     # A steer deferral already reports its initiative; fill would find the same overlap and report it twice.
     # An initiative whose repo is landing, or whose phase lands this tick, must not launch until the land settles.
     steward_started = steward_handled & frozenset(i["id"] for i in facts["initiatives"] if i["started"])
-    withheld = (
-        frozenset({a["initiative"] for a in capped if a["kind"] == "relaunch" or a["kind"] == "steer_clear" or _steer_deferred(a)})
-        | frozenset(q["initiative"] for q in facts["quarantines"])
-        | remote_unfetched
-        | not_exited
-        | lost
-        | frozenset(facts.get("schema_deaths", {}))
-        | _unmet_needs_ids(facts["initiatives"])
-        | _landing_initiatives(facts, lands)
+    # Each set is keyed by the plain words a stuck steer head reports when it is the reason the head is left out.
+    withheld_by = {
+        "recovery already holds it": frozenset(
+            {a["initiative"] for a in capped if a["kind"] == "relaunch" or a["kind"] == "steer_clear" or _steer_deferred(a)}
+        ),
+        "quarantined": frozenset(q["initiative"] for q in facts["quarantines"]),
+        "its branches are not fetched": remote_unfetched,
+        "its last run has not exited": not_exited,
+        "its run is lost": lost,
+        "schema version death": frozenset(facts.get("schema_deaths", {})),
+        "an unmet need": _unmet_needs_ids(facts["initiatives"]),
+        "its repo is landing": _landing_initiatives(facts, lands),
         # A relaunch the budget or the loop rule refused must not go out again as a launch_epic.
-        | refused_launches(facts, now)
-        | backoff_held(facts, now)
-        | waiting_ids
+        "relaunch refused by the budget or the loop rule": refused_launches(facts, now),
+        "land backoff": backoff_held(facts, now),
+        "waiting on a need": waiting_ids,
         # fill would launch a started epic the steward holds back, which is a relaunch; an unstarted one still launches.
-        | steward_started
-    )
+        "the steward holds it": steward_started,
+    }
+    withheld = frozenset().union(*withheld_by.values())
     claimed = claimed_by(recover_actions, facts)
-    filled = plan_fill(
-        facts, _free_lanes(cap, kept, facts["dispatch"]), withheld, consumed, claimed, stalled=stalled_intake, now=now
-    )
+    free_lanes = _free_lanes(cap, kept, facts["dispatch"])
+    filled = plan_fill(facts, free_lanes, withheld, consumed, claimed, stalled=stalled_intake, now=now)
     launches = [*capped, *filled]
+    stuck_heads = _stuck_steer_heads(
+        steer_heads(launches),
+        frozenset(a["initiative"] for a in launches if _is_launch(a)),
+        frozenset(r["id"] for r in facts.get("running", [])),
+        {i["id"]: i for i in facts["initiatives"]},
+        withheld_by,
+        budget_skips(facts, facts["initiatives"], now),
+        _no_host(free_lanes, host_free, consumed, filled, facts["dispatch"].get("local_lanes") == "decompose"),
+    )
     # Read before the cap: a rebase starts no run, so a relaunch the cap dropped still gets its branch rebased.
     relaunching = frozenset(a["initiative"] for a in [*recovered, *launches] if _is_launch(a))
     rebases = plan_rebase(facts.get("phase_branches", []), relaunching)
@@ -957,6 +1025,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         *review,
         *unstarted_waiting_chair,
         *waiting_actions,
+        *stuck_heads,
         *closes,
         *steward_events,
     ]

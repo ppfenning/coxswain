@@ -23,7 +23,7 @@ __all__ = [
     "EASTERN", "REASON_LINE_CAP", "Deps", "echo_line", "failed_items", "fetched_items", "file_ahead_items", "format_status",
     "housekeeping_fragment",
     "landing_fragment", "lands_this_tick", "launched_items", "mode_of", "needs_chair_items",
-    "partial_land_text", "reason_tail", "steered_items", "waiting_item", "would_items", "write_status",
+    "partial_land_text", "reason_tail", "steer_head_items", "steered_items", "waiting_item", "would_items", "write_status",
 ]
 
 REASON_LINE_CAP = 80  # characters of a failed result's reason the one status line carries
@@ -147,6 +147,36 @@ def steered_items(results: Sequence[Result]) -> list[str]:
         for r in results
         if r["action"].get("kind") == "steer_clear"
     ]
+
+
+def _chain_heads(node: str, behind: Mapping[str, tuple[str, ...]], seen: frozenset[str] = frozenset()) -> tuple[str, ...]:
+    """Every head `node` waits on, in first-seen order; a node in a cycle reaches none through the cycle."""
+    if node not in behind:
+        return (node,)
+    if node in seen:
+        return ()
+    return tuple(dict.fromkeys(h for o in behind[node] for h in _chain_heads(o, behind, seen | {node})))
+
+
+def steer_head_items(results: Sequence[Result]) -> list[str]:
+    """`<head> (<n> waiting, launched|idle)` per steer chain head; launched means a done launch result for it in `results`.
+
+    A steer_clear naming its own initiative as `other` (a sibling phase) defers nothing, so it is skipped,
+    as is one missing either name. An initiative steered behind several others waits on each of their heads.
+    """
+    pairs = [
+        (a["initiative"], a["other"])
+        for a in (r["action"] for r in results)
+        if a.get("kind") == "steer_clear" and a.get("initiative") and a.get("other") and a["initiative"] != a["other"]
+    ]
+    behind = {i: tuple(dict.fromkeys(o for j, o in pairs if j == i)) for i, _ in pairs}
+    waiting = Counter(h for i in behind for h in _chain_heads(i, behind))
+    launched = {
+        r["action"].get("initiative")
+        for r in results
+        if r["status"] == "done" and r["action"].get("kind") in LAUNCH_KINDS
+    }
+    return [f"{head} ({n} waiting, {'launched' if head in launched else 'idle'})" for head, n in waiting.items()]
 
 
 def deferred_items(results: Sequence[Result]) -> list[str]:
@@ -283,6 +313,7 @@ def format_status(
     )
     landing = landing_fragment(facts.get("landing", []))
     steered = steered_items(results)
+    heads = steer_head_items(results)
     drafts = facts.get("drafts", 0)
     review = review_fragment(facts.get("review_prs", []))
     stall = _stall(facts)
@@ -303,6 +334,7 @@ def format_status(
         *([f"fetched: {', '.join(fetched)}"] if fetched else []),
         *([f"failed: {', '.join(failed)}"] if failed else []),
         *([f"steered: {', '.join(steered)}"] if steered else []),
+        *([f"steer heads: {', '.join(heads)}"] if heads else []),
         *waiting,
         *deferred_items(results),
         *([review] if review else []),

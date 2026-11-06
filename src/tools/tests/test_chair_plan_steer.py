@@ -98,3 +98,52 @@ def test_facts_without_running_streaks_or_repo_plan_as_before():
         {"kind": "relaunch", "initiative": "x", "epoch": 7},
         {"kind": "launch_epic", "initiative": "z", "epoch": 7},
     ]
+
+
+def _stuck(plan: list[dict]) -> list[dict]:
+    return [a for a in plan if a.get("cause") == "steer_head_stuck"]
+
+
+def test_a_head_holding_a_file_launches_or_b_is_not_deferred_whichever_order_the_docket_lists_them():
+    # a holds f, is idle with ready tasks and no run; b wants f.
+    for order in (("a", "b"), ("b", "a")):
+        plan = plan_tick(_facts(initiatives=[_initiative(i, False, ["f"]) for i in order]), _NOW)
+        launched = {a["initiative"] for a in plan if a["kind"] == "launch_epic"}
+        b_deferred = any(a["kind"] == "steer_clear" and a["initiative"] == "b" for a in plan)
+        assert not b_deferred or "a" in launched
+        assert _stuck(plan) == []
+
+
+def test_a_head_withheld_from_the_launch_list_is_reported_stuck_with_the_withhold_named():
+    # a is started and its last run has not exited, so its relaunch is withheld but still claims f; b is deferred behind it.
+    facts = _facts(run_exited={"a": False}, initiatives=[_initiative("a", True, ["f"]), _initiative("b", False, ["f"])])
+    plan = plan_tick(facts, _NOW)
+    assert [a["kind"] for a in plan if a.get("initiative") == "a" and a["kind"] != "needs_chair"] == []
+    assert [(a["kind"], a["initiative"]) for a in plan if a["kind"] == "steer_clear"] == [("steer_clear", "b")]
+    assert _stuck(plan) == [
+        {"kind": "needs_chair", "initiative": "a", "cause": "steer_head_stuck", "reason": "launch refused: its last run has not exited", "epoch": 7}
+    ]
+
+
+def test_a_head_no_lane_or_host_can_take_is_reported_stuck_as_no_host():
+    # Local lanes are decompose-only and the one lane host lacks the "go" a needs; c takes the host's last slot after b is deferred.
+    dispatch = {"max_in_flight": 4, "live_runs": 0, "local_lanes": "decompose", "hosts": [{"name": "h1", "capacity": 1, "live_runs": 0}]}
+    a = {**_initiative("a", True, ["f"]), "ready_tasks": [{"id": "a-t", "needs": [], "requires": ["go"]}]}
+    facts = _facts(
+        dispatch=dispatch,
+        home={"a": ""},
+        run_exited={"a": True},
+        initiatives=[a, _initiative("b", False, ["f"]), _initiative("c", False, ["c.py"])],
+    )
+    plan = plan_tick(facts, _NOW)
+    assert [(x["kind"], x["initiative"]) for x in plan if x["kind"] == "launch_epic"] == [("launch_epic", "c")]
+    assert _stuck(plan) == [{"kind": "needs_chair", "initiative": "a", "cause": "steer_head_stuck", "reason": "no host", "epoch": 7}]
+
+
+def test_a_head_that_launches_gets_no_stuck_action_and_the_hard_stop_gets_none_either():
+    live = _facts(run_exited={"a": True}, initiatives=[_initiative("a", True, ["f"]), _initiative("b", False, ["f"])])
+    assert [a["kind"] for a in plan_tick(live, _NOW) if a.get("initiative") == "a"] == ["clear_branches", "relaunch"]
+    assert _stuck(plan_tick(live, _NOW)) == []
+    limits = {"hard_stop": True, "weekly_fraction": 0.95, "hard_stop_fraction": 0.9, "launch_cap": 5, "go_degraded": False}
+    stopped = _facts(limits=limits, run_exited={"a": False}, initiatives=[_initiative("a", True, ["f"]), _initiative("b", False, ["f"])])
+    assert _stuck(plan_tick(stopped, _NOW)) == []

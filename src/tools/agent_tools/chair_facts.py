@@ -537,7 +537,8 @@ def running_initiatives(
 ) -> list[RunningInitiative]:
     """Live initiatives hold ready and approved surfaces; a non-live unlanded one holds approved surfaces only.
 
-    An approved item whose merged flag is true holds nothing, live or not."""
+    An approved item whose merged flag is true holds nothing, live or not. An initiative with only ready tasks and no
+    live run has no entry. `live` trusts an unexpired `runs:` lease or a live pid, so a finished run holds files until its lease expires."""
 
     def held(initiative: str) -> list[Row]:
         states = STEER_STATES if initiative in live else frozenset({"approved"})

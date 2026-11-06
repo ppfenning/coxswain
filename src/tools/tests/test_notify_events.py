@@ -45,6 +45,24 @@ def test_self_clearing_causes_give_no_event():
     assert [e.key for e in events_from_tick({}, [*actions, real])] == ["needs_chair:init-t:ticket"]
 
 
+def test_steer_head_stuck_gives_one_stuck_event_with_the_reason():
+    action = {
+        "kind": "needs_chair",
+        "initiative": "init-s",
+        "cause": "steer_head_stuck",
+        "reason": "head cannot launch",
+    }
+    [event] = events_from_tick({}, [action])
+    assert (event.kind, event.key, event.title) == ("stuck", "stuck:init-s", "Stuck: init-s")
+    assert "head cannot launch" in event.body
+
+
+def test_two_steer_head_stuck_actions_for_one_initiative_give_one_event():
+    first = {"kind": "needs_chair", "initiative": "init-s", "cause": "steer_head_stuck", "reason": "a"}
+    second = {**first, "reason": "b"}
+    assert [e.key for e in events_from_tick({}, [first, second])] == ["stuck:init-s"]
+
+
 def test_a_remedy_command_is_carried_in_the_body():
     action = {**UNRELATED, "reason": "stuck", "remedy": "carry", "command": ["cox", "runs", "land", "r1"]}
     (event,) = events_from_tick({}, [action])

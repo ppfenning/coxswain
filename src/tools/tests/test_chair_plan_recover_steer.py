@@ -93,6 +93,7 @@ def test_a_pair_deferred_three_times_needs_the_chair():
         {
             "kind": "needs_chair",
             "initiative": "x",
+            "other": "y",
             "cause": "steer_deferred",
             "reason": "x shares a.py with running y; the pair has been deferred three ticks",
         }

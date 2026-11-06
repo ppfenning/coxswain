@@ -65,6 +65,7 @@ def steer_check(
         return {
             "kind": "needs_chair",
             "initiative": initiative,
+            "other": other,
             "cause": "steer_deferred",
             "reason": f"{initiative} shares {', '.join(paths)} with running {other}; the pair has been deferred three ticks",
         }
@@ -76,3 +77,14 @@ def steer_check(
         return None
     entry, paths = sibling
     return {"kind": "steer_clear", "initiative": initiative, "other": initiative, "phase": phase, "other_phase": entry["phase"], "paths": paths}
+
+
+def steer_heads(actions: Sequence[Action]) -> list[str]:
+    """The `other` ids of a tick's steer actions that are not themselves deferred by another steer action, first seen first.
+
+    A steer action is a steer_clear or a needs_chair with cause steer_deferred. A self-pair names its own initiative as
+    `other`, so it is deferred by itself and never a head.
+    """
+    steers = [a for a in actions if a["kind"] == "steer_clear" or (a["kind"] == "needs_chair" and a.get("cause") == "steer_deferred")]
+    deferred = {a["initiative"] for a in steers}
+    return list(dict.fromkeys(other for a in steers if (other := a.get("other")) and other not in deferred))
