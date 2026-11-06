@@ -94,6 +94,7 @@ chair_login_check = _LazyModule("agent_tools.chair_login_check")
 chair_pid_probe = _LazyModule("agent_tools.chair_pid_probe")
 chair_read_approved = _LazyModule("agent_tools.chair_read_approved")
 chair_read_attempts = _LazyModule("agent_tools.chair_read_attempts")
+chair_read_cache = _LazyModule("agent_tools.chair_read_cache")
 chair_read_docket = _LazyModule("agent_tools.chair_read_docket")
 chair_read_exits = _LazyModule("agent_tools.chair_read_exits")
 chair_read_housekeeping = _LazyModule("agent_tools.chair_read_housekeeping")
@@ -116,6 +117,7 @@ chair_read_stall = _LazyModule("agent_tools.chair_read_stall")
 chair_read_stranded = _LazyModule("agent_tools.chair_read_stranded")
 chair_report = _LazyModule("agent_tools.chair_report")
 chair_restart = _LazyModule("agent_tools.chair_restart")
+chair_restart_log = _LazyModule("agent_tools.chair_restart_log")
 chair_revert_green = _LazyModule("agent_tools.chair_revert_green")
 chair_revert_ports = _LazyModule("agent_tools.chair_revert_ports")
 chair_revert_watch = _LazyModule("agent_tools.chair_revert_watch")
@@ -12199,6 +12201,19 @@ def _sync_chair_checkouts(
                 echo(f"chair run: {repo}: {line}")
 
 
+def _chair_float(table: Mapping[str, object], key: str, default: float) -> float:
+    """`table[key]` when it is a number of zero or more (a bool is not one), else `default`; zero is a real setting."""
+    value = table.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        return default
+    return float(value)
+
+
+def _chair_cache_paths(runs_dir: Path) -> tuple[Path, Path, Path]:
+    """The work-file, store-row and decompose-log cache files; `save_cache` writes one cache per path."""
+    return runs_dir / "chair-cache.json", runs_dir / "chair-cache-store.json", runs_dir / "chair-cache-decompose.json"
+
+
 def _chair_run_deps(
     runs_dir: Path, profile: dict, session: str, pid: int, host: str, dry_run: bool, echo: Callable[[str], None],
     profile_path: Path, mode: str,
@@ -12246,11 +12261,38 @@ def _chair_run_deps(
         "chair_actions", lambda: chair_read_stale.read_chair_actions(runs_dir, now(), actions_window)
     )
 
+    # Process-lifetime, unlike `tick_reads`; `load_cache` fills them from the previous chair's stop.
+    files_path, store_path, decompose_path = _chair_cache_paths(runs_dir)
+    files_cache = chair_read_cache.StampCache(512)
+    store_cache = chair_read_cache.StampCache(8)
+    if not dry_run:
+        chair_read_cache.load_cache(files_cache, files_path)
+        chair_read_cache.load_cache(store_cache, store_path)
+    # `read_decompose_runs` drops every entry its call did not touch, so each intake gets its own cache.
+    decompose_caches: dict[str, object] = {}
+
+    def decompose_cache_for(intake_id: str):
+        if intake_id not in decompose_caches:
+            cache = chair_read_cache.StampCache(64)
+            if not dry_run:
+                chair_read_cache.load_cache(cache, decompose_path)  # the first call for this intake prunes what it does not use
+            decompose_caches[intake_id] = cache
+        return decompose_caches[intake_id]
+
+    def save_caches() -> None:
+        chair_read_cache.save_cache(files_cache, files_path)
+        chair_read_cache.save_cache(store_cache, store_path)
+        if decompose_caches:  # none read this run: leave the saved file for the next chair
+            merged = chair_read_cache.StampCache(64 * len(decompose_caches))
+            for cache in decompose_caches.values():
+                chair_read_cache.load_entries(merged, chair_read_cache.dump_entries(cache))  # type: ignore[arg-type]
+            chair_read_cache.save_cache(merged, decompose_path)
+
     def work_files() -> Mapping[Path, str]:
-        return once("files", lambda: chair_read_quarantined.read_work_files(ws))  # type: ignore[return-value]
+        return once("files", lambda: chair_read_quarantined.read_work_files(ws, files_cache))  # type: ignore[return-value]
 
     def store_rows() -> list:
-        return once("store_rows", lambda: run_store.work_items(runs_dir) if mode == "store" else [])  # type: ignore[return-value]
+        return once("store_rows", lambda: run_store.work_items(runs_dir, None, store_cache) if mode == "store" else [])  # type: ignore[return-value]
 
     def attempts() -> list[dict]:
         return once("attempts", lambda: chair_read_attempts.read_attempts(ws, work_files()))  # type: ignore[return-value]
@@ -12272,7 +12314,7 @@ def _chair_run_deps(
         # The launch decomposes under a fresh id when a dropped initiative holds the intake id. The dropped one asking
         # for itself (`initiative == iid`) keeps its own runs.
         under = iid if initiative == iid else _decompose_initiative_id(iid, work_rows())
-        return chair_decompose_runs.read_decompose_runs(Path(runs_dir), under)
+        return chair_decompose_runs.read_decompose_runs(Path(runs_dir), under, decompose_cache_for(under))
 
     def initiative_intakes() -> dict[str, str]:
         return _initiative_intakes(chair_read_quarantined.initiative_files(ws, work_files()))
@@ -12615,6 +12657,15 @@ def _chair_run_deps(
     release_requested = None if dry_run else (lambda: chair.honour_release_request(runs_dir, session, pid, host))
     checkout_state = lambda: chair_restart.read_checkout_state(chair_restart.checkout_root(), _chair_git)  # noqa: E731
     checkout_reports = _CheckoutReports()  # edge state for the whole process: each note prints once per repo
+    changed_files = lambda old, new: chair_restart.changed_paths(chair_restart.checkout_root(), old, new, _chair_git)  # noqa: E731
+    chair_table = profile.get("chair") or {}
+    restart_path = chair_restart_log.record_path(runs_dir)
+
+    def record_restart(reason: str) -> None:
+        previous = chair_restart_log.read_record(restart_path)
+        chair_restart_log.write_record(restart_path, chair_restart_log.bump(previous, reason, now()))
+
+    restart_note = "" if dry_run else chair_restart_log.restart_note(chair_restart_log.read_record(restart_path), now())
 
     def pull_and_sync() -> str:
         """The live tick's pull, then the checkout sync of each repo the initiatives name; the sync never raises."""
@@ -12654,6 +12705,12 @@ def _chair_run_deps(
         export_rows=(lambda ids: _chair_export_hook(runs_dir, ids)) if mode == "store" and not dry_run else None,
         notify_config=notify_core.config_from_profile(profile), workspace=ws,
         pull_workspace=None if dry_run else pull_and_sync,
+        changed_files=changed_files,
+        restart_window_s=_chair_float(chair_table, "restart_window_s", 120.0),
+        restart_max_defer_s=_chair_float(chair_table, "restart_max_defer_s", 600.0),
+        restart_note=restart_note,
+        record_restart=None if dry_run else record_restart,
+        save_cache=None if dry_run else save_caches,
     )
 
 
