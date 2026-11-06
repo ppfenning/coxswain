@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from agent_tools import cli, route, run_store, store_fill
 
 RUN = "demo-1"
@@ -19,8 +21,9 @@ def _world(tmp_path, monkeypatch, *, pulled: str, intake: str, stored: list[dict
 
     def run(argv):
         if argv[-1].endswith("/work/demo/"):
-            (ws / "work" / "demo").mkdir(parents=True, exist_ok=True)
-            (ws / "work" / "demo" / "initiative.md").write_text(pulled)
+            dest = Path(argv[-1])
+            dest.mkdir(parents=True, exist_ok=True)
+            (dest / "initiative.md").write_text(pulled)
         return 0
 
     monkeypatch.setattr(store_fill, "_read_store", lambda runs_dir: list(store.values()))
