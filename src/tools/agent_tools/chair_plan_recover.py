@@ -12,7 +12,15 @@ from agent_tools.chair_read_quarantined import RUNAWAY_CAUSE
 from agent_tools.chair_remedy import remedy_for, trim_reason
 from agent_tools.chair_revert import revert_stopped
 from agent_tools.chair_steer import steer_check
-from agent_tools.chair_types import Action, Facts, InitiativeFacts, QuarantineFacts, ReadyTask, RunningInitiative
+from agent_tools.chair_types import (
+    Action,
+    Facts,
+    InitiativeFacts,
+    QuarantineFacts,
+    ReadyTask,
+    RunningInitiative,
+    SteerPolicy,
+)
 from agent_tools.run_death_cause import SCHEMA_VERSION_CAUSE
 
 Recovery = Literal["rescue", "retry", "needs_chair", "relaunch", "none"]
@@ -283,14 +291,18 @@ def _entry(i: InitiativeFacts) -> RunningInitiative | None:
 
 
 def _steer(
-    a: Action, by_id: dict[str, InitiativeFacts], running: list[RunningInitiative], streaks: Mapping[str, int]
+    a: Action,
+    by_id: dict[str, InitiativeFacts],
+    running: list[RunningInitiative],
+    streaks: Mapping[str, int],
+    policy: SteerPolicy | None,
 ) -> tuple[Action, RunningInitiative | None]:
     """The action to return for a launch, and the running entry it claims; a deferral claims nothing."""
     i = by_id.get(a["initiative"])
     entry = None if i is None else _entry(i)
     if entry is None:
         return a, None
-    deferred = steer_check(entry["id"], entry["repo"], entry["surfaces"], running, streaks)
+    deferred = steer_check(entry["id"], entry["repo"], entry["surfaces"], running, streaks, policy=policy)
     return (a, entry) if deferred is None else (deferred, None)
 
 
@@ -309,6 +321,7 @@ def _steered(actions: list[Action], facts: Facts) -> list[Action]:
     by_id = {i["id"]: i for i in facts["initiatives"]}
     base = facts.get("running", [])
     streaks = facts.get("steer_streaks", {})
+    policy = facts.get("steer_policy")
 
     def fold(
         state: tuple[list[Action], list[RunningInitiative]], a: Action
@@ -316,7 +329,7 @@ def _steered(actions: list[Action], facts: Facts) -> list[Action]:
         out, kept = state
         if a["kind"] not in _LAUNCHES:
             return [*out, a], kept
-        action, entry = _steer(a, by_id, [*base, *kept], streaks)
+        action, entry = _steer(a, by_id, [*base, *kept], streaks, policy)
         return [*out, action], kept if entry is None else [*kept, entry]
 
     return _without_deferred_clears(actions, reduce(fold, actions, ([], []))[0])

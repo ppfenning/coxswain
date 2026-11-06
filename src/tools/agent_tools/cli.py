@@ -12649,6 +12649,8 @@ def _chair_run_deps(
         housekeeping_hours=lambda: (profile.get("chair") or {}).get("housekeeping_hours"),
         stale_days=lambda: (profile.get("chair") or {}).get("stale_days"),
         max_launches_per_hour=lambda: (profile.get("chair") or {}).get("max_launches_per_hour"),
+        shared_file_limit=lambda: (profile.get("chair") or {}).get("max_shared_file_initiatives"),
+        serial_files=lambda: profile.get("serial_files"),
         host_load_ceiling=lambda: (profile.get("chair") or {}).get("host_load_ceiling"),
         stale_candidates=lambda n: chair_read_stale.read_stale_candidates(ws, n, work_files(), attempts(), actions()),
         stall_candidates=lambda n: chair_read_stall.read_stall_candidates(runs_dir, startup_hosts, n),
