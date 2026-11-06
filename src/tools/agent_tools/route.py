@@ -2377,12 +2377,32 @@ def held_initiative_entries(
     return [{"id": name, "reason": reason(name)} for name in sorted(set(held_ids) - covered)]
 
 
+def merge_event_lines(events: Sequence[Mapping]) -> list[str]:
+    """`merged: a, b into a` per `tasks_merged` event, in order; other events and malformed entries are skipped."""
+    return [
+        f"merged: {', '.join(str(t) for t in e['tasks'])} into {e['into']}"
+        for e in events
+        if e.get("event") == "tasks_merged" and e.get("into") and e.get("tasks")
+    ]
+
+
+def initiative_events(queue: Sequence[Mapping]) -> dict[str, list]:
+    """Initiative name to the `extra["events"]` its queue row carries; initiatives with none are left out."""
+    named = {
+        str(r.get("initiative") or r["task_id"]): (r.get("extra") or {}).get("events") or []
+        for r in queue
+        if r.get("kind") == "initiative"
+    }
+    return {name: list(events) for name, events in named.items() if events}
+
+
 def render_status(rows: list, groups: dict | None = None, problems: list | None = None,
                   gate_level: str | None = None, hidden: int = 0,
                   short_ids: Mapping[str, str] | None = None,
                   waiting: Mapping[str, Sequence[str]] | None = None,
                   held: Sequence[Mapping] | None = None,
-                  deferred: Mapping[str, Sequence[str]] | None = None) -> str:
+                  deferred: Mapping[str, Sequence[str]] | None = None,
+                  events: Mapping[str, Sequence[Mapping]] | None = None) -> str:
     """The human-readable text `agent-tools route status` prints, spec §5,
     from `status_rows`' output. One line per row: a run with no pidfile
     states only its id and state, since `pid` and `started` are both
@@ -2398,9 +2418,15 @@ def render_status(rows: list, groups: dict | None = None, problems: list | None 
     `{"id", "reason"}`, adds a `held:` heading after the groups with one `  id: reason` line each.
     `deferred` (target release to ids, `group_deferred`'s output) adds a `deferred to <version>:` heading per target
     after the held block, in the mapping's order, with one `  id` line each.
+    `events` (row id to that initiative's events) puts one indented `merged:` line under a row per `tasks_merged` event.
     """
     ids = short_ids or {}
-    lines = [_status_line(row, ids.get(row["id"])) for row in rows]
+    seen = events or {}
+    lines = [
+        line
+        for row in rows
+        for line in (_status_line(row, ids.get(row["id"])), *(f"  {m}" for m in merge_event_lines(seen.get(row["id"], []))))
+    ]
     lines += [f"({hidden} older runs hidden; --all shows every run)"] if hidden > 0 else []
     if groups is not None:
         lines += [_intake_group_line(name, groups[name], waiting) for name in ("queued", "decomposed", "landed")]
