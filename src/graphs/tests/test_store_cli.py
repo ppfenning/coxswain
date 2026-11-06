@@ -363,6 +363,23 @@ def test_host_set_state_changes_only_state_updated_at_and_updated_by(url, run, a
     assert one_object(out) == {**json.loads(before)[0], **changed}
 
 
+def test_host_set_state_accepts_deploy_only(url, run, at):
+    at(T20)
+    run(url, "host", "upsert", "host-a", "--ssh", "host-a", "--capacity", "8", "--by", "chair")
+    at(T40)
+    code, out, _ = run(url, "host", "set-state", "host-a", "deploy_only", "--by", "operator")
+    assert (code, one_object(out)["state"]) == (0, "deploy_only")
+    _, listed, _ = run(url, "host", "list")
+    assert [r["state"] for r in json.loads(listed)] == ["deploy_only"]
+
+
+def test_host_upsert_accepts_deploy_only_state(url, run):
+    code, out, _ = run(
+        url, "host", "upsert", "host-b", "--ssh", "host-b", "--capacity", "2", "--state", "deploy_only", "--by", "chair"
+    )
+    assert (code, one_object(out)["state"]) == (0, "deploy_only")
+
+
 def test_host_set_state_outside_the_three_exits_two_with_nothing_on_stdout(url, run):
     code, out, _ = run(url, "host", "set-state", "host-a", "parked", "--by", "chair")
     assert (code, out) == (2, "")
