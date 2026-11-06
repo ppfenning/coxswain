@@ -3708,6 +3708,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#orchestrate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        orchestrate
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#capacity" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6351,6 +6362,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#orchestrate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        orchestrate
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#capacity" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6433,18 +6455,19 @@ Coxswain is in beta — versions may change between releases
 
 <h1 id="host">host</h1>
 <div class="highlight"><pre><span></span><code>usage: cox host [-h] [--profile PROFILE]
-                {add,list,drain,deploy-only,remove,activate,capacity,beat,login,doctor,sync} ...
+                {add,list,drain,deploy-only,remove,activate,orchestrate,capacity,beat,login,doctor,sync} ...
 
 The hosts table: lane hosts, their capacity, versions and login.
 
 positional arguments:
-  {add,list,drain,deploy-only,remove,activate,capacity,beat,login,doctor,sync}
+  {add,list,drain,deploy-only,remove,activate,orchestrate,capacity,beat,login,doctor,sync}
     add                 add or update a host in the table
     list                one line per host: state, capacity, beat age, login
     drain               stop launching on a host; its live lanes finish
     deploy-only         receive releases but never lanes
     remove              delete a drained idle host from the hosts table
     activate            make a host a lane host again
+    orchestrate         show, or turn on or off, orchestration on this machine
     capacity            change only a host's capacity, leaving ssh, weight and
                         capabilities as they are
     beat                record this machine's versions and claude login in the
@@ -6520,6 +6543,15 @@ options:
 
 positional arguments:
   name
+
+options:
+  -h, --help  show this help message and exit
+</code></pre></div>
+<h2 id="orchestrate">orchestrate</h2>
+<div class="highlight"><pre><span></span><code>usage: cox host orchestrate [-h] [{on,off}]
+
+positional arguments:
+  {on,off}    omit to show the current mode
 
 options:
   -h, --help  show this help message and exit
