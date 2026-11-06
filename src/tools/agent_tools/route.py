@@ -2103,7 +2103,31 @@ def set_initiative_priority(runs_dir: Path, ws: Path, initiative: str, flag: int
     return 0
 
 
-def status_rows(entries, short_ids: Mapping[str, str] | None = None) -> list:
+def phase_summary(items: Sequence[Mapping]) -> dict[str, list[dict]]:
+    """Per initiative, its phases in first-seen order as `{phase, state, tasks}`.
+
+    Dropped tasks are ignored and a phase left with none is omitted. `landed`: every task is done.
+    `merged`: every task is done or approved with the merge flag, and at least one is not done yet.
+    Anything else is `building`."""
+    keys = dict.fromkeys((i["initiative"], i["phase"]) for i in items)
+    out: dict[str, list[dict]] = {}
+    for initiative, phase in keys:
+        live = [i for i in items if (i["initiative"], i["phase"]) == (initiative, phase) and i["state"] != "dropped"]
+        if not live:
+            continue
+        words = [state_word(i) for i in live]
+        state = "landed" if all(w == "done" for w in words) else "merged" if all(w in ("done", "merged") for w in words) else "building"
+        out[initiative] = [*out.get(initiative, []), {"phase": phase, "state": state, "tasks": len(live)}]
+    return out
+
+
+def task_tally(items: Sequence[Mapping]) -> dict[str, int]:
+    """Counts of `approved`, `merged`, `done` and `total` tasks. A merged task counts under `merged` only, never under `approved`."""
+    words = [state_word(i) for i in items]
+    return {"approved": words.count("approved"), "merged": words.count("merged"), "done": words.count("done"), "total": len(words)}
+
+
+def status_rows(entries, short_ids: Mapping[str, str] | None = None, detail: Mapping[str, Mapping] | None = None) -> list:
     """Format the rows `agent-tools route status` prints, spec §5, from a
     pre-gathered list of run entries. Each entry is
     `{"id", "pid", "alive", "started", "quarantined", "reused", "summary",
@@ -2113,6 +2137,7 @@ def status_rows(entries, short_ids: Mapping[str, str] | None = None) -> list:
     a distinct "no pidfile" state rather than a crash. Order is preserved
     from `entries`; no pidfile is read and `epic.alive` is not called here.
     `short_ids` maps slug to short id as plain data; a row's `short_id` is None when its slug is absent.
+    `detail` maps slug to `{"phases": [...], "tally": {...}}` (from `phase_summary` and `task_tally`); a row gains `phases` and `tally` only when its slug is in it.
     """
     rows = []
     for entry in entries:
@@ -2138,9 +2163,14 @@ def status_rows(entries, short_ids: Mapping[str, str] | None = None) -> list:
                 "summary": entry.get("summary"),
                 "usage": entry.get("usage"),
                 "short_id": (short_ids or {}).get(entry["id"]),
+                **_detail_fields((detail or {}).get(entry["id"])),
             }
         )
     return rows
+
+
+def _detail_fields(detail: Mapping | None) -> dict:
+    return {} if not detail else {"phases": list(detail.get("phases", [])), "tally": dict(detail.get("tally", {}))}
 
 
 def recent_rows(rows: list, now: datetime.datetime, hours: int = 24) -> tuple[list, int]:
@@ -2174,8 +2204,17 @@ def _status_line(row: dict, short_id: str | None = None) -> str:
     tails = (
         ["; ".join(row[key]) for key in ("quarantined", "reused") if row.get(key)]
         + [row[key] for key in ("summary", "usage") if row.get(key)]
+        + _phase_tails(row)
     )
     return " ".join([head, *tails])
+
+
+def _phase_tails(row: dict) -> list[str]:
+    """`phases: p1 merged, p2 building` and `tally: 7 approved, 9 merged`, each only when the row carries it."""
+    phases = ", ".join(f"{p['phase']} {p['state']}" for p in row.get("phases") or [])
+    tally = row.get("tally") or {}
+    counts = ", ".join(f"{tally[k]} {k}" for k in ("approved", "merged", "done") if tally.get(k))
+    return ([f"phases: {phases}"] if phases else []) + ([f"tally: {counts}"] if counts else [])
 
 
 def _intake_group_line(name: str, entries: list, waiting: Mapping[str, Sequence[str]] | None = None) -> str:
