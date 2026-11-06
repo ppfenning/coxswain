@@ -937,6 +937,16 @@ def test_parse_frontmatter_splits_a_non_empty_list_on_commas():
     assert fields["needs"] == ["a", "b"]
 
 
+def test_parse_frontmatter_unquotes_a_single_quoted_value():
+    fields, _ = route.parse_frontmatter("---\nheld: 'true'\ntitle: 'it''s'\n---\n\nx\n")
+    assert (fields["held"], fields["title"]) == ("true", "it's")
+
+
+def test_parse_frontmatter_leaves_double_quoted_and_bare_values_as_before():
+    fields, _ = route.parse_frontmatter('---\nheld: "true"\ntitle: bare\n---\n\nx\n')
+    assert (fields["held"], fields["title"]) == ("true", "bare")
+
+
 def test_parse_frontmatter_block_list_matches_flow_list():
     flow_text = "---\nneeds: [a, b]\nsurfaces: [c]\n---\n\nx\n"
     block_text = "---\nneeds:\n  - a\n  - b\nsurfaces:\n  - c\n---\n\nx\n"

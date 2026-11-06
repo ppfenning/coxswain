@@ -12,7 +12,11 @@ ROWS = [
     {"kind": "intake", "state": "queued", "task_id": "idea", "initiative": "intake", "extra": {"title": "Idea"}},
     {"kind": "intake", "state": "done", "task_id": "old", "initiative": "intake"},
     {"kind": "task", "initiative": "demo", "task_id": "a", "state": "todo"},
+    {"kind": "initiative", "initiative": "demo", "task_id": "demo", "state": "ready", "extra": {"id": "demo", "repo": "r"}},
+    {"kind": "task", "initiative": "ghost", "task_id": "a", "state": "todo"},
 ]
+INIT_FREE = "---\nid: demo\ntitle: Demo\n---\nBody\n"
+INIT_HELD = '---\nid: demo\ntitle: Demo\nheld: true\nhold_reason: "held by pat on 2026-11-03: waiting on design"\n---\nBody\n'
 
 
 def test_held_text_sets_both_fields_and_leaves_the_body():
@@ -47,9 +51,14 @@ def test_a_queued_intake_is_planned_by_its_task_id():
     assert route_hold.plan_release(ROWS, "idea").task_id == "idea"
 
 
-def test_an_initiative_id_is_refused_naming_the_id():
+def test_an_initiative_id_is_planned():
     for plan in (route_hold.plan_hold(ROWS, "demo", "why"), route_hold.plan_release(ROWS, "demo")):
-        assert plan == route_hold.Refused("demo is an initiative, not a queued intake")
+        assert plan == route_hold.route_guard.InitiativeFound("demo")
+
+
+def test_an_id_that_names_an_intake_and_an_initiative_resolves_to_the_intake():
+    rows = [*ROWS, {"kind": "task", "initiative": "idea", "task_id": "a", "state": "todo"}]
+    assert route_hold.plan_hold(rows, "idea", "why") == route_hold.route_guard.QueuedIntake("idea")
 
 
 def test_a_done_intake_and_an_unknown_id_are_refused_naming_the_id():
@@ -113,9 +122,9 @@ def test_dry_run_prints_the_plan_and_writes_nothing(tmp_path, monkeypatch, capsy
 def test_a_refusal_writes_nothing_and_names_the_id(tmp_path, monkeypatch, capsys):
     ws = make_ws(tmp_path)
     calls = spy(monkeypatch, ws)
-    assert route_hold.hold(ws, ws / "runs", "demo", "why", "pat", NOW, ROWS) == 2
+    assert route_hold.hold(ws, ws / "runs", "nope", "why", "pat", NOW, ROWS) == 2
     assert route_hold.release(ws, ws / "runs", "old", ROWS) == 2
-    assert capsys.readouterr().out == "hold: refused: demo is an initiative, not a queued intake\nrelease: refused: no queued intake named old\n"
+    assert capsys.readouterr().out == "hold: refused: no queued intake named nope\nrelease: refused: no queued intake named old\n"
     assert calls == [] and (ws / "intake" / "idea.md").read_text() == FREE
 
 
@@ -140,3 +149,60 @@ def test_a_queue_export_round_trip_keeps_the_hold():
     assert "hold_reason: 'held by pat on 2026-11-03: waiting on design'" in kept
     assert queue_rows.parse_item("intake", ("idea.md",), kept) == row
     assert route_hold.released_text(kept).count("held") == 0
+
+
+def make_initiative(ws: Path, name: str = "demo", text: str = INIT_FREE) -> Path:
+    (ws / "work" / name).mkdir(parents=True)
+    path = ws / "work" / name / "initiative.md"
+    path.write_text(text)
+    return path
+
+
+def spy_initiative(monkeypatch, path: Path, took: bool = True) -> list:
+    calls = []
+    monkeypatch.setattr(route_hold.run_store, "upsert_row", lambda runs_dir, row: calls.append(("store", path.read_text(), row)) or took)
+    monkeypatch.setattr(route_hold.queue_export, "record_written_paths", lambda w, paths: calls.append(("file", path.read_text(), list(paths))))
+    return calls
+
+
+def test_holding_then_releasing_an_initiative_round_trips_the_file_and_the_row(tmp_path, monkeypatch):
+    path = make_initiative(tmp_path)
+    calls = spy_initiative(monkeypatch, path)
+    assert route_hold.hold(tmp_path, tmp_path / "runs", "demo", "waiting on design", "pat", NOW, ROWS) == 0
+    assert [c[0] for c in calls] == ["store", "file"]
+    assert calls[0][1] == INIT_FREE and calls[1][1] == INIT_HELD
+    held = {"id": "demo", "repo": "r", "held": "true", "hold_reason": "held by pat on 2026-11-03: waiting on design"}
+    assert calls[0][2]["extra"] == held and calls[1][2] == [path]
+    assert route_hold.release(tmp_path, tmp_path / "runs", "demo", [ROWS[2], {**ROWS[3], "extra": held}]) == 0
+    assert calls[2][2]["extra"] == {"id": "demo", "repo": "r"}
+    assert path.read_text() == INIT_FREE
+
+
+def test_releasing_an_initiative_that_is_not_held_writes_nothing(tmp_path, monkeypatch):
+    path = make_initiative(tmp_path)
+    calls = spy_initiative(monkeypatch, path)
+    assert route_hold.release(tmp_path, tmp_path / "runs", "demo", ROWS) == 0
+    assert calls == [] and path.read_text() == INIT_FREE
+
+
+def test_a_missing_initiative_file_is_refused(tmp_path, monkeypatch, capsys):
+    calls = spy_initiative(monkeypatch, tmp_path / "none.md")
+    assert route_hold.hold(tmp_path, tmp_path / "runs", "demo", "why", "pat", NOW, ROWS) == 2
+    assert capsys.readouterr().out == f"hold: refused: no initiative file at {tmp_path / 'work' / 'demo' / 'initiative.md'}\n"
+    assert calls == []
+
+
+def test_an_initiative_with_no_store_row_is_refused(tmp_path, monkeypatch, capsys):
+    path = make_initiative(tmp_path, "ghost")
+    calls = spy_initiative(monkeypatch, path)
+    assert route_hold.release(tmp_path, tmp_path / "runs", "ghost", ROWS) == 2
+    assert capsys.readouterr().out == "release: refused: no initiative row for ghost in the store\n"
+    assert calls == []
+
+
+def test_dry_run_on_an_initiative_prints_a_would_line_and_writes_nothing(tmp_path, monkeypatch, capsys):
+    path = make_initiative(tmp_path)
+    calls = spy_initiative(monkeypatch, path)
+    assert route_hold.hold(tmp_path, tmp_path / "runs", "demo", "why", "pat", NOW, ROWS, dry_run=True) == 0
+    assert capsys.readouterr().out == "would hold initiative demo: held by pat on 2026-11-03: why\n"
+    assert calls == [] and path.read_text() == INIT_FREE

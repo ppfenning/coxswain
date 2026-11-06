@@ -11381,9 +11381,9 @@ ROUTE_COMMANDS = [
         "agent_tools.cli:_route_remove", False, (), defaults={"runs_dir": None},
     ),
     commands.Command(
-        "hold", "route", "hold a queued intake so the chair skips it until released",
+        "hold", "route", "hold a queued intake or an initiative so the chair skips it until released",
         (
-            commands.Arg(("id",), {"help": "a queued intake"}),
+            commands.Arg(("id",), {"help": "a queued intake or an initiative"}),
             commands.Arg(("--reason",), {"required": True}),
             commands.Arg(("--by",), {"help": "who holds; default the OS user"}),
             commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the plan and write nothing"}),
@@ -11392,9 +11392,9 @@ ROUTE_COMMANDS = [
         "agent_tools.cli:_route_hold", False, (), defaults={"runs_dir": None},
     ),
     commands.Command(
-        "release", "route", "release a held intake back to the queue",
+        "release", "route", "release a held intake or initiative back to the queue",
         (
-            commands.Arg(("id",), {"help": "a held intake"}),
+            commands.Arg(("id",), {"help": "a held intake or initiative"}),
             commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the plan and write nothing"}),
             commands.Arg(("--profile",)),
         ),

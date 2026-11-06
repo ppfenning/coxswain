@@ -118,8 +118,8 @@ cox route approve INITIATIVE [--task TASK] [--by BY] [--profile PROFILE]   appro
 cox route decline INITIATIVE --reason REASON [--by BY] [--profile PROFILE]   decline a draft initiative: its todo tickets become dropped
 cox route edit ID [--title TITLE] [--body BODY] [--body-file BODY_FILE] [--repo REPO] [--surfaces SURFACES] [--state STATE] [--pr PR] [--rebuild] [--force] [--link LINK] [--after AFTER] [--dry-run] [--profile PROFILE]   change a queued intake, an initiative or a task ticket
 cox route remove [ID...] [--match GLOB] --reason REASON [--by BY] [--dry-run] [--profile PROFILE]   remove queued intakes or initiatives that have no live run
-cox route hold ID --reason REASON [--by BY] [--dry-run] [--profile PROFILE]   hold a queued intake so the chair skips it until released
-cox route release ID [--dry-run] [--profile PROFILE]   release a held intake back to the queue
+cox route hold ID --reason REASON [--by BY] [--dry-run] [--profile PROFILE]   hold a queued intake or an initiative so the chair skips it until released
+cox route release ID [--dry-run] [--profile PROFILE]   release a held intake or initiative back to the queue
 cox route requeue ID [--dry-run] [--profile PROFILE]   requeue the intake of an initiative that has no live tasks
 cox route leader status [--profile PROFILE]   print one line: held by this session, taken over, or not the chair
 cox route chair take [--profile PROFILE] [--label LABEL] [--pid PID] [--steal] [--hours HOURS] [--model sonnet|opus|haiku]   take the chair lock; --steal overrides a live holder and names it

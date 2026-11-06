@@ -17,9 +17,15 @@ def after_ids(extra: Mapping[str, Any]) -> list[str]:
 
 
 def is_held(extra: Mapping[str, Any]) -> bool:
-    """True for `held: true` as a bool or as the string the store loader and `route hold` write; `route.intake_entries` reads it the same way."""
+    """True for `held: true` as a bool or a string, bare or wrapped in one pair of single or double quotes, any case."""
     value = extra.get("held")
-    return value is True or (isinstance(value, str) and value.strip().lower() == "true")
+    if value is True:
+        return True
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    unquoted = text[1:-1] if len(text) >= 2 and text[0] == text[-1] and text[0] in "'\"" else text
+    return unquoted.strip().lower() == "true"
 
 
 def intake_priority(extra: Mapping[str, Any]) -> int:
