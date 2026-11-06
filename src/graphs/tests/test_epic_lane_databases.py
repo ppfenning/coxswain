@@ -85,6 +85,7 @@ def test_the_task_record_names_the_lane_database(repo, cart, tmp_path) -> None: 
 def test_no_setting_runs_checks_with_no_environment_and_leaves_the_record_alone(
     repo, cart, tmp_path, monkeypatch  # noqa: F811
 ) -> None:
+    monkeypatch.delenv("COX_LANE_CAPACITY", raising=False)  # a lane host exports it; this test is the no-capacity case
     calls = _spy_checks(monkeypatch)
     result, _ = drive(repo, cart, tmp_path, work=_work())
     assert calls and all(env is None for _, env in calls)
