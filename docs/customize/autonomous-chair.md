@@ -481,15 +481,24 @@ The steward runs an epic's routine steps without a model. It decides from
 facts alone, and it reports each step as a typed event on the courier bus.
 
 The steward is off by default. Turn it on with `chair.steward` in the
-agent-tools profile:
+agent-tools profile. These are the exact lines to add. They go at the top level
+of the profile file:
 
 ```yaml
 chair:
   steward: true
 ```
 
-Only the boolean `true` or the string `true` turns it on. An absent key or any
-other value leaves it off, and the loop gathers no steward facts.
+The profile accepts `true`, `false`, `yes` and `no` in any case. `true` and
+`yes` turn the steward on. `false`, `no` and an absent key leave it off, and the
+loop gathers no steward facts. Any other value makes the profile unreadable, and
+the error names the line.
+
+The other chair keys sit in the same block and are numbers. They are
+`housekeeping_hours`, `stale_days`, `idle_stall_minutes`, `launch_stagger_s` and
+`max_launches_per_hour`.
+
+The doctor report has a `steward` row. It shows `on` or `off`.
 
 Do not turn `chair.steward` on yet. Today the profile setting is the only part
 of the steward the run command wires. The loop does not yet pass the steward
