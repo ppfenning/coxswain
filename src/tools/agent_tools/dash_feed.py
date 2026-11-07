@@ -35,6 +35,7 @@ from agent_tools import (
     dash_live_turns_session,
     dash_machine_lanes,
     decisions,
+    operator_sessions,
     pacing,
     queue_rows,
     route,
@@ -103,7 +104,7 @@ _UNKNOWN_SPEND_SOURCES = {"chair_session": "none", "price_catalog": "missing"}
 def snapshot(
     at, chair, spend, machines, runs, queue, queue_total, inbox, inbox_total, watch, decisions=(), spend_series=(),
     history=(), history_today=None, *, chair_agents=None, spend_split=None, spend_sources=None, budget=None,
-    epics=(), board=None, live=None, orchestration=None,
+    epics=(), board=None, live=None, orchestration=None, operator_sessions=None,
 ) -> dict:
     """Assemble the schema-1 dash feed snapshot from its sections. `queue_total`/`inbox_total` are each
     section's filtered count before the 50-row cap, for coxtop to render "50 of N". `decisions` is the open
@@ -116,7 +117,8 @@ def snapshot(
     `board` is the epics, initiatives, phases and tasks tree; it reads `{"epics": []}` when not given. `live` is the
     live section (token series, burn, agents); it reads the zero block, 60 and 24 point zero series, when not given.
     `orchestration` is the chair machine's mode block; the key is absent when it is None, because the profile or the
-    hosts table could not be read."""
+    hosts table could not be read. `operator_sessions` is every operator session's rows per window; the key is absent
+    when it is None."""
     # coxswain-dash carries its own copy of tests/fixtures/dash_feed_v1.json and will need these two fields too.
     # `queue[].phases` is additive and the schema stays 1: a coxtop that does not know the field ignores it.
     # So are `runs[].tasks`, `runs[].landed` and `runs[].quarantined`, which `_runs_v1` adds to each run row.
@@ -148,6 +150,7 @@ def snapshot(
         "epics": list(epics),
         "board": {"epics": []} if board is None else board,
         "live": _zero_live(_zero_anchor(at)) if live is None else live,
+        **({} if operator_sessions is None else {"operator_sessions": operator_sessions}),
     }
 
 
@@ -431,13 +434,23 @@ def _pane_meter_fraction(spend: Mapping, window: str) -> float:
     return 0.0 if spend.get(f"{window}_source") == "est" else float(spend.get(f"{window}_fraction") or 0.0)
 
 
+def _workspace(work_dir: Path) -> Path:
+    """The workspace root: the parent of a directory named `work`, else `work_dir` itself."""
+    return work_dir.parent if work_dir.name == "work" else work_dir
+
+
 def _activity(
-    runs_dir: Path, profile: dict, session: str, spend: Mapping, at: datetime, store_rows: Mapping | None = None,
+    runs_dir: Path, profile: dict, session: str, workspace: Path, spend: Mapping, at: datetime,
+    store_rows: Mapping | None = None,
 ) -> dict:
-    """Edge: the chair's background agent rows, the three-way spend split and `spend_sources`, which says whether the
-    session and the price catalog were found. Each window starts five hours (weekly: seven days) before its
-    `resets_at`, or before `at` when the spend section has no reset time to read. The per-node rows and done counts
-    are cut from `store_rows`, the one store read, which reaches back to the weekly start."""
+    """Edge: the chair's background agent rows, the three-way spend split, `operator_sessions` and `spend_sources`.
+    The sessions are every transcript in `workspace`'s project folder plus the lease holder's own when it resolves
+    (status ok), even if its transcript sits in another project folder; an unresolved holder adds none, so
+    `sessions_found` counts transcripts read. `chair_agents` are the holder's agents, empty for a service chair.
+    `spend_sources` says whether the holder's session and the price catalog were found, and the session counts. Each
+    window starts five hours (weekly: seven days) before its `resets_at`, or before `at` when the spend section has
+    no reset time to read. The per-node rows and done counts are cut from `store_rows`, the one store read, which
+    reaches back to the weekly start."""
     projects_dir = Path(_PROJECTS_DIR).expanduser()
     five_start, weekly_start = _window_starts(spend, at)
     windows = {
@@ -457,18 +470,31 @@ def _activity(
         },
     }
     node_rows, done_counts = _window_node_inputs(store_rows or {}, windows)
+    holder_lines = chair_activity_read.read_session_lines(projects_dir, session)
+    holder_agents = chair_activity_read.read_agents(projects_dir, session)
+    holder_status = chair_activity_read.session_status(projects_dir, session)
+    prices = chair_activity_read.prices_for_profile(profile)
+    # A holder that is not_found or ambiguous has no transcript to add; `with_holder` adds only a non-empty id.
+    sessions = operator_sessions.with_holder(
+        chair_activity_read.read_project_sessions(projects_dir, workspace),
+        session if holder_status == "ok" else "",
+        holder_lines,
+        holder_agents,
+    )
     gathered = chair_activity.gather_activity(
-        chair_activity_read.read_session_lines(projects_dir, session),
-        chair_activity_read.read_agents(projects_dir, session),
-        chair_activity_read.prices_for_profile(profile),
+        holder_lines,
+        holder_agents,
+        prices,
         at,
         windows,
         node_rows=node_rows,
         done_counts=done_counts,
+        sessions=sessions,
     )
     sources = {
-        "chair_session": chair_activity_read.session_status(projects_dir, session),
+        "chair_session": holder_status,
         "price_catalog": chair_activity_read.catalog_status(profile),
+        **operator_sessions.sources(sessions, prices),
     }
     return {**gathered, "spend_sources": sources}
 
@@ -1751,7 +1777,10 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
     readable, never "no tasks". A task's `waiting_on` is one task id, its first need not yet settled. `profile` is the parsed profile
     the capacity chain reads the team cartridge from. `budget` is the monthly block, with no nulls: period
     "none" and a zero limit and fraction when the profile sets no limit. `live` is a new key under schema 1: token
-    series, burn and agents from the lane traces and session transcripts, the zero block when they cannot be read."""
+    series, burn and agents from the lane traces and session transcripts, the zero block when they cannot be read.
+    So is `operator_sessions`: every operator session of the workspace's project folder, plus the lease holder's, as
+    rows per window with their agents, which the `spend_split` sums; `spend_sources` gains `sessions_found` and
+    `sessions_priced`. The key is absent when the activity section did not gather sessions."""
     runs_dir, work_dir = Path(runs_dir), Path(work_dir)
     at = _parse_now(now)
     local_name, local_capacity = _local_identity(runs_dir, profile or {})
@@ -1787,7 +1816,9 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
         runs_dir, task_rows, states, calls_by_run, sections["lanes"], short_ids, local_name, at,
     )
     chair_block = _chair_section(runs_dir, chair_row, entries, read_drafts(work_dir, now), at)
-    activity = _activity(runs_dir, profile or {}, chair_block["session"], spend_block, at, wide_rows)
+    activity = _activity(
+        runs_dir, profile or {}, chair_block["session"], _workspace(work_dir), spend_block, at, wide_rows,
+    )
     live = _live_edge(
         runs_dir, _lane_targets(sections["lanes"], states, records, _run_hosts(wide_rows), local_name, at),
         _burn_meters(spend_block, activity["spend_split"] or {}, _hard_stop_fraction(runs_dir)),
@@ -1819,4 +1850,5 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
         board=board,
         live=live,
         orchestration=_orchestration_edge(profile, local_name, sections["hosts"], now),
+        operator_sessions=activity.get("operator_sessions"),
     )

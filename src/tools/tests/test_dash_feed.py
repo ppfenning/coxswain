@@ -301,6 +301,8 @@ def _stub_activity_readers(monkeypatch, chair_usd, five_seat_usd, weekly_seat_us
     reader = dash_feed.chair_activity_read
     monkeypatch.setattr(reader, "read_session_lines", lambda projects_dir, session: ["session"])
     monkeypatch.setattr(reader, "read_agents", lambda projects_dir, session: [{"lines": ["agent"]}])
+    one_session = [{"session_id": "sess", "lines": ["session"], "agents": [{"lines": ["agent"]}]}]
+    monkeypatch.setattr(reader, "read_project_sessions", lambda projects_dir, workspace: one_session)
     monkeypatch.setattr(reader, "prices_for_profile", lambda profile: {})
     monkeypatch.setattr(reader, "session_status", lambda projects_dir, session: "ok")
     monkeypatch.setattr(reader, "catalog_status", lambda profile: "ok")
@@ -309,6 +311,18 @@ def _stub_activity_readers(monkeypatch, chair_usd, five_seat_usd, weekly_seat_us
     monkeypatch.setattr(dash_feed.chair_activity, "lines_since", lambda lines, day: (lines[0], day))
     monkeypatch.setattr(dash_feed.chair_activity, "chair_cost", lambda pair, prices: chair_usd.get(pair, 0.0))
     monkeypatch.setattr(dash_feed.chair_activity, "agent_rows", lambda agents, prices, now: [])
+    monkeypatch.setattr(dash_feed.operator_sessions, "lines_since", lambda lines, day: (lines[0], day))
+    monkeypatch.setattr(dash_feed.operator_sessions, "chair_cost", _operator_chair_cost(chair_usd))
+
+
+def _operator_chair_cost(chair_usd):
+    """The gathered sessions are priced in `operator_sessions`, which calls `chair_cost` two ways: `window_costs` with
+    a windowed (line, day) pair, priced from `chair_usd`, and `sources` with a session's raw lines, a list, which this
+    stub prices at a flat 1.0 so the stubbed session reads as priced."""
+    def cost(lines, prices):
+        return chair_usd.get(lines, 0.0) if isinstance(lines, tuple) else 1.0
+
+    return cost
 
 
 def test_the_feed_built_from_the_fixtures_inputs_equals_the_fixture(monkeypatch, tmp_path):
@@ -325,14 +339,16 @@ def test_the_feed_built_from_the_fixtures_inputs_equals_the_fixture(monkeypatch,
     monkeypatch.setattr(dash_feed, "_window_node_inputs", lambda rows, windows: (node_rows, {"five_hour": 2, "weekly": 6}))
     args, kwargs = _fixture_inputs()
 
-    built = dash_feed._activity(tmp_path, {}, "sess", _SPEND, _ACTIVITY_AT, {})
+    built = dash_feed._activity(tmp_path, {}, "sess", tmp_path, _SPEND, _ACTIVITY_AT, {})
     result = snapshot(
         *args, **kwargs, chair_agents=activity["chair_agents"], spend_split=built["spend_split"],
         spend_sources=built["spend_sources"], orchestration=fixture["orchestration"],
     )
 
-    assert built["spend_sources"] == fixture["spend_sources"]
-    assert result == fixture
+    # dash_feed_v1.json predates the session counts; dash_sessions_v1.json fixes the two keys added to its sources.
+    with_counts = {**fixture["spend_sources"], "sessions_found": 1, "sessions_priced": "ok"}
+    assert built["spend_sources"] == with_counts
+    assert result == {**fixture, "spend_sources": with_counts}
 
 
 _ORCH_NOW = "2026-09-29T00:00:00Z"
@@ -424,20 +440,24 @@ def _projects_with(tmp_path, monkeypatch, *transcripts: str, agent_of: str | Non
 def test_the_short_chair_id_prices_the_session_and_lists_its_agent_end_to_end(monkeypatch, tmp_path):
     profile = _projects_with(tmp_path, monkeypatch, _UUID, agent_of=_UUID)
 
-    built = dash_feed._activity(tmp_path, profile, _UUID[:8], _SPEND, _ACTIVITY_AT, {})
+    built = dash_feed._activity(tmp_path, profile, _UUID[:8], tmp_path, _SPEND, _ACTIVITY_AT, {})
 
     assert built["spend_split"]["five_hour"]["chair_session_usd"] == 3.0
     assert built["spend_split"]["weekly"]["chair_agents_usd"] == 3.0
     assert [agent["agent_id"] for agent in built["chair_agents"]] == ["abc"]
-    assert built["spend_sources"] == {"chair_session": "ok", "price_catalog": "ok"}
+    assert built["spend_sources"] == {
+        "chair_session": "ok", "price_catalog": "ok", "sessions_found": 1, "sessions_priced": "ok",
+    }
 
 
 def test_a_short_id_with_no_transcript_reads_not_found_and_costs_nothing(monkeypatch, tmp_path):
     profile = _projects_with(tmp_path, monkeypatch, _UUID)
 
-    built = dash_feed._activity(tmp_path, profile, "deadbeef", _SPEND, _ACTIVITY_AT, {})
+    built = dash_feed._activity(tmp_path, profile, "deadbeef", tmp_path, _SPEND, _ACTIVITY_AT, {})
 
-    assert built["spend_sources"] == {"chair_session": "not_found", "price_catalog": "ok"}
+    assert built["spend_sources"] == {
+        "chair_session": "not_found", "price_catalog": "ok", "sessions_found": 0, "sessions_priced": "none",
+    }
     assert built["spend_split"]["five_hour"]["chair_session_usd"] == 0.0
     assert built["spend_split"]["weekly"]["chair_session_usd"] == 0.0
     assert built["chair_agents"] == []
@@ -446,18 +466,22 @@ def test_a_short_id_with_no_transcript_reads_not_found_and_costs_nothing(monkeyp
 def test_two_sessions_sharing_the_prefix_read_ambiguous_and_cost_nothing(monkeypatch, tmp_path):
     profile = _projects_with(tmp_path, monkeypatch, _UUID, _OTHER_UUID)
 
-    built = dash_feed._activity(tmp_path, profile, _UUID[:8], _SPEND, _ACTIVITY_AT, {})
+    built = dash_feed._activity(tmp_path, profile, _UUID[:8], tmp_path, _SPEND, _ACTIVITY_AT, {})
 
-    assert built["spend_sources"] == {"chair_session": "ambiguous", "price_catalog": "ok"}
+    assert built["spend_sources"] == {
+        "chair_session": "ambiguous", "price_catalog": "ok", "sessions_found": 0, "sessions_priced": "none",
+    }
     assert built["spend_split"]["five_hour"]["chair_session_usd"] == 0.0
 
 
 def test_a_profile_with_no_readable_catalog_reads_price_catalog_missing(monkeypatch, tmp_path):
     _projects_with(tmp_path, monkeypatch, _UUID)
 
-    built = dash_feed._activity(tmp_path, {}, _UUID[:8], _SPEND, _ACTIVITY_AT, {})
+    built = dash_feed._activity(tmp_path, {}, _UUID[:8], tmp_path, _SPEND, _ACTIVITY_AT, {})
 
-    assert built["spend_sources"] == {"chair_session": "ok", "price_catalog": "missing"}
+    assert built["spend_sources"] == {
+        "chair_session": "ok", "price_catalog": "missing", "sessions_found": 1, "sessions_priced": "none",
+    }
     assert built["spend_split"]["five_hour"]["chair_session_usd"] == 0.0
 
 
@@ -467,7 +491,7 @@ def test_activity_does_not_copy_an_estimated_fraction_into_either_spend_pane(mon
         **_SPEND, "five_hour_source": "est", "weekly_source": "est", "five_hour_resets_at": None, "weekly_resets_at": None,
     }
 
-    split = dash_feed._activity(tmp_path, {}, "sess", estimate, _ACTIVITY_AT, {})["spend_split"]
+    split = dash_feed._activity(tmp_path, {}, "sess", tmp_path, estimate, _ACTIVITY_AT, {})["spend_split"]
 
     assert split["five_hour"]["meter_fraction"] == 0.0
     assert split["weekly"]["meter_fraction"] == 0.0
@@ -477,7 +501,7 @@ def test_activity_copies_a_meters_fraction_into_each_spend_pane_by_its_own_sourc
     _stub_activity_readers(monkeypatch, {}, 2.0, 5.0)
     mixed = {**_SPEND, "five_hour_source": "meter", "weekly_source": "est"}
 
-    split = dash_feed._activity(tmp_path, {}, "sess", mixed, _ACTIVITY_AT, {})["spend_split"]
+    split = dash_feed._activity(tmp_path, {}, "sess", tmp_path, mixed, _ACTIVITY_AT, {})["spend_split"]
 
     assert split["five_hour"]["meter_fraction"] == 0.12
     assert split["weekly"]["meter_fraction"] == 0.0
@@ -506,7 +530,7 @@ def test_activity_cuts_the_store_rows_into_each_windows_by_node_and_cost_per_lan
         ],
     }
 
-    split = dash_feed._activity(tmp_path, {}, "sess", _SPEND, _ACTIVITY_AT, store_rows)["spend_split"]
+    split = dash_feed._activity(tmp_path, {}, "sess", tmp_path, _SPEND, _ACTIVITY_AT, store_rows)["spend_split"]
 
     built_group = {"role": "build", "tier": "standard", "model": "claude-sonnet-5-5", "calls": 2, "turns": 6, "tokens": 130, "cost_usd": 1.5}
     review_group = {"role": "review", "tier": "premium", "model": "claude-opus-5", "calls": 1, "turns": 1, "tokens": 220, "cost_usd": 3.0}

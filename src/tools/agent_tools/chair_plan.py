@@ -8,7 +8,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from agent_tools import chair_login_watch, chair_plan_prune, chair_stall, chair_steward
+from agent_tools import chair_lease_refusal, chair_login_watch, chair_plan_prune, chair_stall, chair_steward
 from agent_tools.chair_carry import plan_carry
 from agent_tools.chair_idle_stall import diagnose, is_stalled
 from agent_tools.chair_plan_fill import (
@@ -439,6 +439,48 @@ def _withhold_lost_runs(actions: list[Action], lost: frozenset[str]) -> list[Act
         a
         for n, a in enumerate(actions)
         if n not in dropped and not (a["kind"] == "clear_branches" and a["initiative"] in lost)
+    ]
+
+
+def _lease_held_ids(facts: Facts) -> frozenset[str]:
+    """Initiatives whose launch was refused on a lease whose holder is still running. A gone holder waits for nothing.
+
+    A live holder past the TTL since the last refusal is also past it since the first, so that case is the stuck one and stays held."""
+    running = frozenset(r["id"] for r in facts.get("running", []))
+    return frozenset(i for i, s in facts.get("lease_refusals", {}).items() if s["holder_run"] in running)
+
+
+def _lease_stuck_actions(facts: Facts, now: datetime | None) -> list[Action]:
+    """One lease_stuck needs_chair per initiative whose live holder has refused it for the TTL, unless its key is reported.
+
+    The key `lease_stuck|<initiative>|<holder_run>` shares the relaunch_loop_reported set."""
+    reported = set(facts.get("relaunch_loop_reported", []))
+    running = frozenset(r["id"] for r in facts.get("running", []))
+    due = [
+        (initiative, streak)
+        for initiative, streak in facts.get("lease_refusals", {}).items()
+        if (first := _parse_utc(streak["first_at"])) is not None
+        and now is not None
+        and chair_lease_refusal.stuck_due(first, now, streak["holder_run"] in running)
+        and f"lease_stuck|{initiative}|{streak['holder_run']}" not in reported
+    ]
+    return [
+        {
+            "kind": "needs_chair",
+            "initiative": initiative,
+            "cause": "lease_stuck",
+            "reason": f"run {s['holder_run']} still holds the lease; launches refused from {s['first_at']} to {s['last_at']}",
+        }
+        for initiative, s in due
+    ]
+
+
+def _withhold_lease_held(actions: list[Action], held: frozenset[str]) -> list[Action]:
+    """Drop a lease-held initiative's relaunch, retry and rescue, and the paired clear_branches. needs_chair is untouched."""
+    return [
+        a
+        for a in actions
+        if not (a["initiative"] in held and a["kind"] in ("relaunch", "retry", "rescue", "clear_branches"))
     ]
 
 
@@ -972,6 +1014,8 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     would_relaunch = frozenset(a["initiative"] for a in pre_exit_gate if a["kind"] == "relaunch")
     not_exited = frozenset(i for i in would_relaunch if not run_exited.get(i, False))
     recoverable = _hold_for_ci([*_withhold_not_exited(pre_exit_gate, not_exited), *lost_actions], held)
+    lease_held = _lease_held_ids(facts)
+    lease_stuck = _lease_stuck_actions(facts, now)
     waiting = waiting_initiatives(facts)
     waiting_ids = frozenset(w.initiative for w in waiting)
     # A deferred-land deadlock is one line for the whole stall: whichever blocked task `diagnose` names, its idle_stall line
@@ -981,7 +1025,10 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     unstarted_waiting_chair = _without_deadlocked(planned_unstarted_waiting_chair, deadlock)
     closes = [*plan_close_initiatives(facts), *plan_finish(facts)]
     # A blocked initiative's relaunch and its paired clear_branches go; the waiting action records why.
-    recovered = [a for a in _without_deadlocked(recoverable, deadlock) if not (a["kind"] in ("relaunch", "clear_branches") and a["initiative"] in waiting_ids)]
+    recovered = _withhold_lease_held(
+        [a for a in _without_deadlocked(recoverable, deadlock) if not (a["kind"] in ("relaunch", "clear_branches") and a["initiative"] in waiting_ids)],
+        lease_held,
+    )
     # The steward's relaunch is already in `recovered`; its merges, gates and events follow the planner's own actions.
     steward_events = [a for a in steward if a["kind"] != "relaunch"]
     if facts["limits"]["hard_stop"]:
@@ -999,6 +1046,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
             *widen,
             *login_needs_chair,
             *empty_decompose_needs_chair,
+            *lease_stuck,
             *held_needs_chair,
             *decompose_stalled_needs_chair,
             *review,
@@ -1039,6 +1087,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         "waiting on a need": waiting_ids,
         # fill would launch a started epic the steward holds back, which is a relaunch; an unstarted one still launches.
         "the steward holds it": steward_started,
+        "its launch was refused on a held lease": lease_held,
     }
     withheld = frozenset().union(*withheld_by.values())
     claimed = claimed_by(recover_actions, facts)
@@ -1075,6 +1124,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         *widen,
         *login_needs_chair,
         *empty_decompose_needs_chair,
+        *lease_stuck,
         *held_needs_chair,
         *decompose_stalled_needs_chair,
         *review,
