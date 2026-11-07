@@ -1979,6 +1979,118 @@ def test_healed_surfaces_are_written_to_the_task_file_under_work_state_files(rep
     assert text.endswith("---\n\nbody\n")
 
 
+def _file_surfaces_and_lint(path: Path) -> tuple[list[str], list[str]]:
+    front = yaml.safe_load(path.read_text(encoding="utf-8").split("---\n")[1])
+    return front["surfaces"], front.get("lint") or []
+
+
+def _row_surfaces_and_lint(store: Store) -> tuple[list[str], list[str]]:
+    from harness import store_queue
+
+    row = next(r for r in store_queue.read(store.conn, "demo-initiative") if r["task_id"] == "t1-probe")
+    return row["surfaces"], (row["extra"] or {}).get("lint") or []
+
+
+def _seed_heal_row(store: Store, surfaces: list[str], lint: list[str]) -> None:
+    from harness import store_queue
+
+    store_queue.upsert(
+        store.conn,
+        {
+            "initiative": "demo-initiative", "task_id": "t1-probe", "kind": "task", "phase": "p1-foundations",
+            "state": "ready", "needs": [], "surfaces": surfaces, "extra": {"lint": lint},
+        },
+    )  # fmt: skip
+
+
+def _heal_ctx(store: Store, **fields):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        **{
+            "store": store, "initiative_id": "demo-initiative", "work_state": "files", "epoch": None,
+            "lease_name": None, "retry": epic_module._StoreRetry(), **fields,
+        }
+    )  # fmt: skip
+
+
+def _healed_task_file(tmp_path: Path, lint: str = "") -> Path:
+    path = tmp_path / "t1-probe.md"
+    path.write_text(
+        f"---\nid: t1-probe\nphase: p1-foundations\nstate: ready\nneeds: []\nsurfaces: [docs/a.md]\n{lint}---\n\nbody\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_a_heal_under_work_state_files_leaves_the_file_and_the_store_row_with_the_same_surfaces_and_lint(
+    repo, cart, tmp_path
+) -> None:
+    path = _healed_task_file(tmp_path, 'lint: ["size: large"]\n')
+    work = _heal_work(["docs/a.md"])
+    next(i for i in work["items"] if i["id"] == "t1-probe")["path"] = str(path)
+    store = Store(open_store("sqlite:///:memory:", datetime.now(UTC).isoformat()))
+    drive(repo, cart, tmp_path, work=work, store=store, work_state="files")
+    surfaces, lint = _file_surfaces_and_lint(path)
+    assert surfaces == ["docs/a.md (new)"]
+    assert lint == ["size: large", "docs/a.md: missing from the repository, healed by the surface check"]
+    assert _row_surfaces_and_lint(store) == (surfaces, lint)
+
+
+@pytest.mark.parametrize("work_state", ["files", "store"])
+def test_a_heal_keeps_a_lint_note_only_the_row_holds_and_one_only_the_file_holds(tmp_path, store, work_state) -> None:
+    path = _healed_task_file(tmp_path, 'lint: ["file only"]\n')
+    _seed_heal_row(store, ["docs/a.md"], ["row only"])
+    ctx = _heal_ctx(store, work_state=work_state)
+    epic_module._write_healed_surfaces(ctx, "t1-probe", ["docs/a.md (new)"], ["new note"], str(path))
+    surfaces, lint = _file_surfaces_and_lint(path)
+    assert surfaces == ["docs/a.md (new)"]
+    assert lint == ["file only", "row only", "new note"]
+    assert _row_surfaces_and_lint(store) == (surfaces, lint)
+
+
+def test_a_heal_under_work_state_store_with_no_task_path_merges_into_the_rows_own_lint(tmp_path, store) -> None:
+    _seed_heal_row(store, ["docs/a.md"], ["row only"])
+    ctx = _heal_ctx(store, work_state="store")
+    epic_module._write_healed_surfaces(ctx, "t1-probe", ["docs/a.md (new)"], ["new note", "row only"], None)
+    assert _row_surfaces_and_lint(store) == (["docs/a.md (new)"], ["row only", "new note"])
+
+
+def test_a_heal_under_a_stale_leader_writes_neither_the_file_nor_the_row(tmp_path, store) -> None:
+    path = _healed_task_file(tmp_path)
+    before = path.read_text(encoding="utf-8")
+    _seed_heal_row(store, ["docs/a.md"], ["old note"])
+    lease = acquire(store.conn, LEASE, "a", _now(), 3600)
+    assert _hand_to_b(store, lease.epoch) > lease.epoch
+    ctx = _heal_ctx(store, epoch=lease.epoch, lease_name=LEASE)
+    epic_module._write_healed_surfaces(ctx, "t1-probe", ["docs/a.md (new)"], ["new note"], str(path))
+    assert path.read_text(encoding="utf-8") == before
+    assert _row_surfaces_and_lint(store) == (["docs/a.md"], ["old note"])
+
+
+@pytest.mark.parametrize("work_state", ["files", "store"])
+def test_a_failed_file_rewrite_leaves_the_store_row_unchanged_and_logs_the_failure(
+    tmp_path, store, caplog, work_state
+) -> None:
+    broken = tmp_path / "broken.md"
+    broken.write_text("no frontmatter here\n", encoding="utf-8")
+    _seed_heal_row(store, ["docs/a.md"], ["old note"])
+    ctx = _heal_ctx(store, work_state=work_state)
+    with caplog.at_level(logging.WARNING, logger=epic_module._log.name):
+        epic_module._write_healed_surfaces(ctx, "t1-probe", ["docs/a.md (new)"], ["new note"], str(broken))
+    assert _row_surfaces_and_lint(store) == (["docs/a.md"], ["old note"])
+    assert "healed surfaces not written to the task file: task=t1-probe" in caplog.text
+    assert "no frontmatter block" in caplog.text
+
+
+def test_a_heal_with_no_task_path_leaves_the_row_unchanged_under_work_state_files(tmp_path, store, caplog) -> None:
+    _seed_heal_row(store, ["docs/a.md"], ["old note"])
+    with caplog.at_level(logging.WARNING, logger=epic_module._log.name):
+        epic_module._write_healed_surfaces(_heal_ctx(store), "t1-probe", ["docs/a.md (new)"], ["new note"], None)
+    assert _row_surfaces_and_lint(store) == (["docs/a.md"], ["old note"])
+    assert "healed surfaces not written to the task file: task=t1-probe: no path" in caplog.text
+
+
 def _commit_files(repo: Path, *names: str) -> None:
     for name in names:
         (repo / name).parent.mkdir(parents=True, exist_ok=True)

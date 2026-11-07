@@ -2420,8 +2420,11 @@ def _heal_surfaces(task: Mapping[str, Any], paths: frozenset[str]) -> dict[str, 
     return heal_new_markers(notes_out_of_surfaces(kept), paths)
 
 
-def _rewrite_frontmatter_surfaces(path: Path, surfaces: Sequence[str], notes: Sequence[str]) -> None:
-    """Replace the `surfaces` key and extend the `lint` key of the file's frontmatter; every other line is kept as it was."""
+def _rewrite_frontmatter_surfaces(path: Path, surfaces: Sequence[str], notes: Sequence[str]) -> list[str]:
+    """Replace the `surfaces` key and extend the `lint` key of the file's frontmatter; every other line is kept as it was.
+
+    Returns the lint list now in the file, so a caller can give the store row the same notes.
+    """
     lines = path.read_text(encoding="utf-8").split("\n")
     end = next((i for i, line in enumerate(lines[1:], 1) if line.strip() == "---"), None)
     if lines[0].strip() != "---" or end is None:
@@ -2436,39 +2439,65 @@ def _rewrite_frontmatter_surfaces(path: Path, surfaces: Sequence[str], notes: Se
         stop = next((i for i in range(at + 1, len(front)) if not front[i].startswith((" ", "-"))), len(front))
         front = [*front[:at], *_frontmatter_key_lines(key, value), *front[stop:]]
     path.write_text("\n".join(["---", *front, *lines[end:]]), encoding="utf-8")
+    return lint
 
 
 def _write_healed_surfaces(ctx: _Ctx, task: str, surfaces: Sequence[str], notes: Sequence[str], path: str | None) -> None:
     """Persist a healed task's surfaces and new lint notes, so a relaunch reads them and does not heal again.
 
-    The task file is written in both work states, since a run reads its tasks from the files. Under work_state
-    store the row gets them too, behind the stale-leader fence. Errors are logged, never raised.
+    A stale leader writes neither the file nor the row. Otherwise the file is rewritten first with the row's lint
+    notes and the new ones added to its own, and the row gets that same list and the same surfaces, in either work
+    state. So a note held only by the row, or only by the file, survives in both. A file that cannot be rewritten
+    leaves the row as it was. Under work_state store a task with no file path is the one case where the row is
+    written alone, since the row is the source of truth and there is no file to disagree with. Errors are logged,
+    never raised.
+
+    Functions checked for other writes of a task file's title, body or surfaces: `_rewrite_frontmatter_surfaces`
+    (called only here), `_repair_file_state` (the `state:` line only), and `_apply_amend_directly`, whose only file
+    write puts back the bytes read before a refused amend. The fix-loop re-scope and correction rounds amend a ticket
+    through the `work_state_arm` `ticket_amend` call and do not write the file themselves, so none needed routing.
     """
-    if _store_authoritative(ctx):
+    try:
+        stale = _fenced(ctx)
+    except Exception as exc:
+        _log.warning("healed surfaces not written: task=%s: %s: %s", task, type(exc).__name__, exc)
+        return
+    if stale is not None:
+        _log.warning("healed surfaces not written: task=%s: %s", task, stale)
+        return
+    row: Mapping[str, Any] | None = None
+    if ctx.store is not None:
         try:
-            stale = _fenced(ctx)
-            if stale is not None:
-                _log.warning("healed surfaces not written: task=%s: %s", task, stale)
-                return
             from harness import store_queue  # not module level: see `_mirror_read`
 
             row = next((r for r in store_queue.read(ctx.store.conn, ctx.initiative_id) if r["task_id"] == task), None)
-            if row is None:
-                _log.warning("healed surfaces not written to the store row: task=%s: no row", task)
-            else:
-                extra = dict(row.get("extra") or {})
-                lint = list(dict.fromkeys([*(extra.get("lint") or []), *notes]))
-                store_queue.upsert(
-                    ctx.store.conn,
-                    {"initiative": ctx.initiative_id, "task_id": task, "surfaces": list(surfaces), "extra": {**extra, "lint": lint}},
-                )
         except Exception as exc:
-            _log.warning("healed surfaces not written to the store row: task=%s: %s: %s", task, type(exc).__name__, exc)
+            _log.warning("healed surfaces: store row not read: task=%s: %s: %s", task, type(exc).__name__, exc)
+        if row is None:
+            _log.warning("healed surfaces not written to the store row: task=%s: no row", task)
+    extra = dict((row or {}).get("extra") or {})
+    row_lint = [str(n) for n in extra.get("lint") or []]
+    lint = list(dict.fromkeys([*row_lint, *notes]))
     if path:
         try:
-            _rewrite_frontmatter_surfaces(Path(path), surfaces, notes)
+            lint = _rewrite_frontmatter_surfaces(Path(path), surfaces, lint)
         except Exception as exc:
             _log.warning("healed surfaces not written to the task file: task=%s: %s: %s", task, type(exc).__name__, exc)
+            _log.warning("healed surfaces not written to the store row, to keep it in step with the task file: task=%s", task)
+            return
+    elif not _store_authoritative(ctx):
+        _log.warning("healed surfaces not written to the task file: task=%s: no path", task)
+        _log.warning("healed surfaces not written to the store row, to keep it in step with the task file: task=%s", task)
+        return
+    if row is None:
+        return
+    try:
+        store_queue.upsert(
+            ctx.store.conn,
+            {"initiative": ctx.initiative_id, "task_id": task, "surfaces": list(surfaces), "extra": {**extra, "lint": list(lint)}},
+        )
+    except Exception as exc:
+        _log.warning("healed surfaces not written to the store row: task=%s: %s: %s", task, type(exc).__name__, exc)
 
 
 def _quarantine_row(ctx: _Ctx, phase: str, task: str, *, approved_is_open: bool = False) -> None:
