@@ -70,6 +70,7 @@ from harness.store_migrate import open_store
 from harness.store_read import calls as node_calls
 from harness.store_read import cost_by_model, run_summary
 from harness.store_write import Store
+from harness.termination import mark_terminating
 from harness.traces_url import have_pyarrow, redact_url, resolve_traces_root
 from harness.usage import summarize
 from harness.worktree import apply_patch, create_worktree, keep_worktree, remove_worktree
@@ -818,7 +819,9 @@ def _workers_alive() -> bool:
 
 def _exit_on_sigterm(signum: int, frame: object) -> None:
     """Ignore further SIGTERMs, stop in-flight nodes, and exit 143 (128 + SIGTERM) through `_main`'s `finally`."""
-    # Ignored first, so a supervisor's repeat SIGTERM cannot cut the `finally` that stamps `ended_at`.
+    # Marked first, so a worker that sees its child die after this point also sees the flag.
+    mark_terminating()
+    # Ignored next, so a supervisor's repeat SIGTERM cannot cut the `finally` that stamps `ended_at`.
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     # Fan-out nodes run `subprocess.run` in worker threads, which never see this exception,
     # so their children are stopped here rather than by `subprocess.run`'s own cleanup.
