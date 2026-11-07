@@ -52,7 +52,7 @@ from agent_tools.remote_argv import git_fetch_argv, git_fetch_phase_argv, rsync_
 __all__ = [
     "FetchError", "FetchPlan", "approved_without_branch", "branch_expected", "chair_repo_path", "fetch_plan", "fetch_run",
     "host_repo_path", "localize_task_records", "probe_argv", "pull_argvs", "refuse_unended", "rewrite_record_paths",
-    "store_task_records", "task_record_ids", "task_repos", "task_status",
+    "staging_dir", "store_task_records", "task_record_ids", "task_repos", "task_status", "unconfirmed_keys",
 ]
 
 _PATH_KEYS = ("repo", "worktree", "checkout")
@@ -113,6 +113,8 @@ def chair_repo_path(chair_workspace: str, host_workspace: str, recorded: str, ho
     return swapped if home is None else repo_path.expand(swapped, home)
 
 
+# An epic fetch pulls the run directory and the log and never a path under work/: task files reach the chair
+# workspace only through the store and its export. Pinned by test_remote_fetch_task_files.py.
 def pull_argvs(run_location: str, log_location: str, chair_runs_dir: str, run: str) -> list[list[str]]:
     """The run directory lands at `<chair_runs_dir>/<run>/`, the log beside it."""
     runs = chair_runs_dir.rstrip("/")
@@ -122,13 +124,29 @@ def pull_argvs(run_location: str, log_location: str, chair_runs_dir: str, run: s
     ]
 
 
+def staging_dir(chair_workspace: str, run: str) -> str:
+    """Where a decompose fetch stages `work/<initiative>/` before the store has seen it: under `runs/`, never `work/`.
+    `queue_export` reads only `intake/` and `work/`, and nothing in `state_paths` sweeps a directory under `runs/`,
+    so a staged file survives an export and a failed fetch until the next tick pulls again."""
+    return f"{chair_workspace.rstrip('/')}/runs/.fetch-staging/{run}"
+
+
+def unconfirmed_keys(wanted: Sequence[tuple[str, str]], stored: Sequence[Mapping[str, Any]]) -> list[tuple[str, str]]:
+    """The `(initiative, task_id)` keys in `wanted` that no row in `stored` carries. An empty `stored` confirms nothing."""
+    held = {(str(row.get("initiative")), str(row.get("task_id"))) for row in stored}
+    return [key for key in wanted if key not in held]
+
+
 def decompose_pull_argvs(
     host: str, host_workspace: str, chair_workspace: str, initiative: str, run: str
 ) -> list[list[str]]:
-    """A decompose leaves `work/<initiative>/` and a log, never a branch, so nothing here git-fetches or verifies a repo."""
+    """A decompose leaves `work/<initiative>/` and a log, never a branch, so nothing here git-fetches or verifies a repo.
+
+    The task files land in `staging_dir`, not in the chair's `work/`: they reach `work/` only after the caller has
+    written their rows to the store and read them back."""
     host_ws, chair_ws = host_workspace.rstrip("/"), chair_workspace.rstrip("/")
     return [
-        rsync_pull_argv(f"{host}:{host_ws}/work/{initiative}/", f"{chair_ws}/work/{initiative}/"),
+        rsync_pull_argv(f"{host}:{host_ws}/work/{initiative}/", f"{staging_dir(chair_ws, run)}/work/{initiative}/"),
         rsync_pull_argv(f"{host}:{host_ws}/runs/{run}.log", f"{chair_ws}/runs/"),
     ]
 

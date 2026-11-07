@@ -5,9 +5,9 @@ from agent_tools.remote_fetch import decompose_pull_argvs
 from agent_tools.remote_lane import is_decompose_record, parse_remote_record, record_graph, remote_record
 
 
-def test_decompose_pull_argvs_bring_back_the_work_directory_and_the_log():
+def test_decompose_pull_argvs_stage_the_work_directory_and_bring_back_the_log():
     assert decompose_pull_argvs("me@box", "/hw/", "/cw", "my-init", "my-init-1") == [
-        rsync_pull_argv("me@box:/hw/work/my-init/", "/cw/work/my-init/"),
+        rsync_pull_argv("me@box:/hw/work/my-init/", "/cw/runs/.fetch-staging/my-init-1/work/my-init/"),
         rsync_pull_argv("me@box:/hw/runs/my-init-1.log", "/cw/runs/"),
     ]
 

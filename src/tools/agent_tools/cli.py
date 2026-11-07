@@ -7362,19 +7362,12 @@ def _repo_restore(pulled: str, intake: str | None) -> tuple[str, str] | None:
     return route.initiative_with_repo(pulled, found), found
 
 
-def _restore_intake_repo(workspace: Path, initiative_md: Path) -> str:
-    """Edge. Put the intake's repo on the pulled initiative.md and record the write; the repo restored, "" when nothing changed."""
-    pulled = _read_text_or_none(initiative_md)
-    if pulled is None:
-        return ""
+def _restore_intake_repo(workspace: Path, pulled: str) -> tuple[str, str]:
+    """Edge. The staged initiative.md text with the intake's repo put on it, and that repo; the text unchanged and "" when nothing changed."""
     named = route.parse_frontmatter(pulled)[0].get("intake")
     intake = _read_text_or_none(workspace / named) if isinstance(named, str) and named else None
     restored = _repo_restore(pulled, intake)
-    if restored is None:
-        return ""
-    initiative_md.write_text(restored[0], encoding="utf-8")
-    queue_export.record_written_paths(workspace, [initiative_md.absolute()])
-    return restored[1]
+    return (pulled, "") if restored is None else restored
 
 
 def _store_initiative_repo(runs_dir: Path, initiative: str, repo: str) -> str:
@@ -7391,10 +7384,12 @@ def _fetch_decompose(
     runs_dir: Path, host, initiative: object, run_id: str, lease_released: bool, ended_at: str | None,
     run: Callable[[list[str]], int],
 ) -> tuple[str, list[str], str]:
-    """Edge. Fetch an ended remote decompose: its `work/<initiative>` files and log, then the store fill a local decompose gets.
+    """Edge. Fetch an ended remote decompose: its `work/<initiative>` files and log, rows first, files after.
 
     A decompose leaves files and a log, never a branch, so no git runs and no task path is rewritten. The files are
-    recorded as written and the store filled before the marker, so a failed fill leaves the run unfetched for the next try."""
+    staged under `runs/.fetch-staging/<run>/`, their rows are written to the store and read back, and only then are
+    they copied into `work/` (recorded as written), the staging removed and the marker written. Any store failure
+    returns "failed" with the staged files kept and no marker, so the next tick pulls and tries again."""
     from agent_tools import store_fill  # imported here: cli loads a command module only when it runs
 
     refusal = remote_fetch.refuse_unended(lease_released, ended_at)
@@ -7403,24 +7398,45 @@ def _fetch_decompose(
     if not isinstance(initiative, str) or not initiative or Path(initiative).name != initiative:
         return "failed", [f"fetch: the {run_id} remote record names no initiative"], host.name
     workspace = runs_dir.parent
-    work_dir = workspace / "work" / initiative
-    work_dir.mkdir(parents=True, exist_ok=True)
-    runs_dir.mkdir(parents=True, exist_ok=True)
+    staging = Path(remote_fetch.staging_dir(str(workspace), run_id))
+    staged_work = staging / "work" / initiative
+    staged_work.mkdir(parents=True, exist_ok=True)
     for argv in remote_fetch.decompose_pull_argvs(host.ssh, host.workspace_dir, str(workspace), initiative, run_id):
         code = run(argv)
         if code != 0:
             return "failed", [f"fetch: rsync: {' '.join(argv)} exited {code}"], host.name
-    pulled = sorted(p for p in work_dir.rglob("*.md") if p.is_file())
-    queue_export.record_written_paths(workspace, [p.absolute() for p in pulled])
-    repo = _restore_intake_repo(workspace, work_dir / "initiative.md")
-    try:
-        store_fill.fill_workspace(workspace)
-    except RuntimeError as exc:
-        return "failed", [f"fetch: store: {exc}"], host.name
+    texts = {p.relative_to(staging).as_posix(): p.read_text(encoding="utf-8") for p in sorted(staged_work.rglob("*.md")) if p.is_file()}
+    initiative_key = f"work/{initiative}/initiative.md"
+    repo = ""
+    if initiative_key in texts:
+        texts[initiative_key], repo = _restore_intake_repo(workspace, texts[initiative_key])
+    files = [(tuple(key.split("/")), text) for key, text in texts.items()]
+    parsed, _ = store_fill.parse_workspace(files)
+    confirmed = {key: text for key, text in texts.items() if store_fill.parse_workspace([(tuple(key.split("/")), text)])[0]}
+    existing = store_fill._read_store(runs_dir)
+    if existing is None:
+        return "failed", [f"fetch: store: {store_fill._UNREADABLE}"], host.name
+    for row in store_fill.plan_fill(parsed, existing).writes:
+        detail = run_store.upsert_row_detail(runs_dir, row)
+        if detail:
+            return "failed", [f"fetch: store: store refused {row['initiative']}/{row['task_id']}: {detail}"], host.name
     detail = _store_initiative_repo(runs_dir, initiative, repo) if repo else ""
     if detail:
         return "failed", [f"fetch: store: {detail}"], host.name
-    tasks = [p.relative_to(work_dir).as_posix() for p in pulled if p != work_dir / "initiative.md"]
+    stored = store_fill._read_store(runs_dir)
+    if stored is None:
+        return "failed", [f"fetch: store: {store_fill._UNREADABLE}"], host.name
+    missing = remote_fetch.unconfirmed_keys([(r["initiative"], r["task_id"]) for r in parsed], stored)
+    if missing:
+        return "failed", [f"fetch: store: rows not read back: {', '.join('/'.join(key) for key in missing)}"], host.name
+    for key, text in confirmed.items():
+        (workspace / key).parent.mkdir(parents=True, exist_ok=True)
+        (workspace / key).write_text(text, encoding="utf-8")
+    queue_export.record_written(workspace, confirmed)
+    shutil.rmtree(staging)
+    with contextlib.suppress(OSError):
+        staging.parent.rmdir()  # runs/.fetch-staging goes with its last run
+    tasks = [key.removeprefix(f"work/{initiative}/") for key in confirmed if key != initiative_key]
     marker = {"fetched_at": _now_iso(), "initiative": initiative, "tasks": tasks}
     remote_lane.fetched_record_path(runs_dir, run_id).write_text(json.dumps(marker))
     return "fetched", [f"run {run_id}", f"host {host.name}", f"initiative {initiative}"], host.name
