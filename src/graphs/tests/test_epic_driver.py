@@ -48,11 +48,13 @@ from harness.epic import (
     branch_action,
     build_outcome,
     classify_unlanded,
+    declared_phases,
     default_branch,
     phase_order,
     phase_parents,
     run_epic,
     task_outcome,
+    unreached_warning,
     waiting_tasks,
 )
 from harness.resume import load_result, save_result
@@ -2822,6 +2824,55 @@ def test_a_dependent_of_an_awaiting_land_phase_says_what_its_parent_waits_on(rep
     assert result["phases"][1]["reason"] == reason
     assert f"phase p2-rollout: blocked: {reason}" in capsys.readouterr().out.splitlines()
     assert result["totals"]["phases_awaiting_land"] == 1
+
+
+def _three_phases(*, chained: bool) -> dict:
+    """p1 and p3 both name shared.py; p3 needs only p2, which needs p1 only when `chained`."""
+    items = [
+        {"id": "t1-probe", "phase": "p1-a", "state": "ready", "needs": [], "surfaces": ["shared.py"],
+         "title": "probe", "body": "read"},
+        {"id": "t2-bench", "phase": "p2-b", "state": "ready", "needs": ["t1-probe"] if chained else [],
+         "surfaces": [], "title": "bench", "body": "time"},
+        {"id": "t3-cutover", "phase": "p3-c", "state": "ready", "needs": ["t2-bench"],
+         "surfaces": ["shared.py"], "title": "cutover", "body": "move"},
+    ]
+    return {"id": "demo", "title": "demo", "body": "demo", "phases": ["p1-a", "p2-b", "p3-c"], "items": items}
+
+
+def _launch_lines(repo, cart, tmp_path, capsys, **extra) -> list[str]:
+    drive(repo, cart, tmp_path, **extra)
+    return capsys.readouterr().out.splitlines()
+
+
+def test_launch_names_the_earlier_phase_and_file_a_phase_builds_without(repo, cart, tmp_path, capsys) -> None:
+    lines = _launch_lines(repo, cart, tmp_path, capsys, work=_three_phases(chained=False))
+    assert "  phase p3-c: parents p2-b | not inherited: p1-a (shared.py)" in lines
+    assert "  phase p1-a: parents none" in lines
+    assert sum("will build without" in line for line in lines) == 1
+
+
+def test_launch_prints_no_gap_for_a_fully_chained_initiative(repo, cart, tmp_path, capsys) -> None:
+    lines = _launch_lines(repo, cart, tmp_path, capsys, work=_three_phases(chained=True))
+    assert "  phase p3-c: parents p2-b" in lines
+    assert not any("not inherited" in line or "will build without" in line for line in lines)
+
+
+def test_launch_lines_cover_only_the_named_phases(repo, cart, tmp_path, capsys) -> None:
+    lines = _launch_lines(repo, cart, tmp_path, capsys, work=_three_phases(chained=False), only_phases=["p1-a"])
+    assert "  phase p1-a: parents none" in lines
+    assert not any(line.startswith(("  phase p2-b:", "  phase p3-c:")) for line in lines)
+    assert not any("will build without" in line for line in lines)
+
+
+def test_declared_phases_reads_ids_then_falls_back_to_item_names() -> None:
+    items = [{"id": "a", "phase": "p2"}, {"id": "b", "phase": "p1"}]
+    assert declared_phases({"phases": [{"id": "p2"}, {"id": "p1"}]}, items) == ["p2", "p1"]
+    assert declared_phases({"phases": ["p2", "p1"]}, items) == ["p1", "p2"]
+
+
+def test_unreached_warning_is_silent_without_a_gap() -> None:
+    assert unreached_warning({}) is None
+    assert "p3-c" in unreached_warning({"p3-c": {"p1-a": ["shared.py"]}})
 
 
 def test_waiting_tasks_names_each_task_once_in_commit_order() -> None:

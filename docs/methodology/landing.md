@@ -173,6 +173,16 @@ Phases form a directed graph of levels. The driver derives each phase's parent p
 `phase_parents` in `harness/waves.py`. `compute_waves` in the same module sorts the phases into waves. A wave holds the
 phases whose parents all sit in earlier waves. A phase caught in a dependency cycle is placed in no wave and is recorded as blocked.
 
+A phase branch is assembled from the phases its tasks need, not from every earlier phase. Stacking each phase on all of
+its predecessors would chain the whole initiative into one line. Phases with no need between them would then wait on one
+another, and the waves would shrink to one phase each. Keeping the parents to real needs is what lets independent phases run together.
+
+At launch the driver prints one line per phase, `phase <id>: parents <ids>`, before any phase builds. When a later phase
+names a file in `surfaces` that an earlier, unfinished phase also names, and no chain of needs reaches that phase, its
+line ends with `not inherited: <phase> (<files>)`. One warning line follows. The phase builds without that earlier work, and
+nothing is blocked. A task need on a task in the earlier phase adds it, and the decompose step adds that edge for a shared
+file. Only files named in `surfaces` are compared, so a dependency through an import, a symbol or a generated file is not seen.
+
 Independent phases in a wave run together, one lane each. A lane number is reused once its phase finishes. The
 `_run_lanes` function in `harness/epic.py` runs the phases as lanes.
 

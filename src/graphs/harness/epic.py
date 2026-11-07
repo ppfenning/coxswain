@@ -128,7 +128,7 @@ from harness.store_retry import retry_store_write
 from harness.store_write import Store, record_handoff, record_merge, upsert_work_item
 from harness.surface_heal import heal_bare_filenames, heal_new_markers, malformed_surfaces, notes_out_of_surfaces
 from harness.ticket_check import check_ticket, ticket_lookups
-from harness.waves import compute_waves, phase_parents, widest_wave
+from harness.waves import compute_waves, parent_lines, phase_parents, unreached_phases, widest_wave
 from harness.worktree import (
     apply_patch,
     create_worktree,
@@ -575,6 +575,22 @@ def phase_order(parents: Mapping[str, set[str]]) -> tuple[list[str], list[str]]:
             ordered.append(phase)
             del remaining[phase]
     return ordered, sorted(remaining)
+
+
+def declared_phases(initiative: Mapping[str, Any], items: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Phase ids in declared order; the sorted phase names on the items when no entry carries an id."""
+    declared = [str(p["id"]) for p in initiative.get("phases") or [] if isinstance(p, Mapping) and p.get("id")]
+    return declared or sorted({str(i["phase"]) for i in items if i.get("phase")})
+
+
+def unreached_warning(unreached: Mapping[str, Mapping[str, Sequence[str]]]) -> str | None:
+    """One warning line naming the phases that build without earlier phases they share files with, else None."""
+    if not unreached:
+        return None
+    return (
+        f"  warning: phase(s) {', '.join(sorted(unreached))} will build without the earlier phases listed as not "
+        "inherited; a task dependency on a task in that phase would add it"
+    )
 
 
 _EVIDENCE_LINE_CAP = 400
@@ -1676,6 +1692,15 @@ def run_epic(
             f"  waves: {' | '.join(', '.join(w) for w in waves) or 'none'}; widest wave {widest_wave(waves)}; "
             f"lane bound {max_parallel} ({binding})"
         )
+        unreached = {
+            later: gap
+            for later, gap in unreached_phases(items, declared_phases(initiative, items)).items()
+            if named is None or later in named
+        }
+        for line in parent_lines(parents, unreached):
+            print(line)
+        if (warning := unreached_warning(unreached)) is not None:
+            print(warning)
 
         def add_phase(record: dict[str, Any]) -> None:
             phases.append(record)
