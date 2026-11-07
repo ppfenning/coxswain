@@ -29,6 +29,7 @@ from agent_tools import (
     chair_apply_widen,
     chair_housekeeping,
     chair_land_freeze,
+    chair_lease_refusal,
     chair_login_check,
     chair_login_watch,
     chair_plan_prune,
@@ -89,7 +90,7 @@ __all__ = [
 
 Status = Literal[
     "fenced", "dry_run", "skipped", "refused", "recorded", "done", "failed", "landed", "not_landed", "escalated", "busy",
-    "in_progress",
+    "in_progress", "lease_held",
 ]
 
 Run = Callable[[list[str]], tuple[int, str]]
@@ -914,7 +915,11 @@ def _launch(action: Action, deps: Deps) -> Result:
     if argv is None:
         return _result(action, "refused", f"{action.get('kind')} names no initiative, task or intake id")
     code, output = deps.run(argv)
-    return _result(action, "done" if code == 0 else "failed", output)
+    if code == 0:
+        return _result(action, "done", output)
+    if chair_lease_refusal.parse_lease_refusal(output) is not None:  # the previous run's lease has not expired: not a broken launch
+        return _result(action, chair_lease_refusal.STATUS, output)
+    return _result(action, "failed", output)
 
 
 def _fetched_host(runs_dir: Path, run: str) -> str:

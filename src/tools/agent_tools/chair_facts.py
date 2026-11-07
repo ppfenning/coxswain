@@ -11,10 +11,11 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import reduce
+from itertools import takewhile
 from pathlib import Path
 from typing import Any, cast
 
-from agent_tools import chair_read_docket, chair_smoke, forge, pacing, queue_rows, repo_path, route
+from agent_tools import chair_lease_refusal, chair_read_docket, chair_smoke, forge, pacing, queue_rows, repo_path, route
 from agent_tools.budget import MonthBudget
 from agent_tools.chair import lease_holder
 from agent_tools.chair_decompose_streak import DecomposeRun, DecomposeStreak, at_limit, streak
@@ -56,6 +57,7 @@ from agent_tools.chair_types import (
     LandWatch,
     LaunchHistory,
     LeaseFacts,
+    LeaseRefusalStreak,
     LimitsFacts,
     LivePhase,
     MergeQueueFacts,
@@ -843,6 +845,33 @@ def launch_history_from_actions(
     }
 
 
+def lease_refusals_from_actions(actions: Sequence[Row], now: datetime) -> dict[str, LeaseRefusalStreak]:
+    """Per initiative, its newest unbroken run of lease_held launch rows; rows outside the launch window are dropped first.
+
+    Any later launch_epic or relaunch row with another status ends the run. A row whose reason does not parse is skipped."""
+    launches = sorted(
+        (
+            d
+            for d in map(_action_doc, actions)
+            if d.get("kind") in ("launch_epic", "relaunch")
+            and (d.get("initiative") or d.get("target"))
+            and _launched_within_window(d.get("ts"), now)
+        ),
+        key=lambda d: str(d["ts"]),
+    )
+
+    def streak_of(initiative: str) -> LeaseRefusalStreak | None:
+        own = [d for d in launches if (d.get("initiative") or d.get("target")) == initiative]
+        held = takewhile(lambda d: d.get("status") == chair_lease_refusal.STATUS, reversed(own))
+        parsed = [(d, p) for d in held if (p := chair_lease_refusal.parse_lease_refusal(str(d.get("reason") or ""))) is not None]
+        if not parsed:
+            return None
+        return {"first_at": str(parsed[-1][0]["ts"]), "last_at": str(parsed[0][0]["ts"]), "holder_run": parsed[0][1].holder_run}
+
+    found = {i: streak_of(i) for i in sorted({d.get("initiative") or d.get("target") for d in launches})}
+    return {i: s for i, s in found.items() if s is not None}
+
+
 def decompose_streak_facts(
     paths: Sequence[str], runs_for: Callable[[str], Sequence[DecomposeRun]]
 ) -> dict[str, DecomposeStreak]:
@@ -1456,6 +1485,7 @@ def gather_facts(
             else {}
         ),
         "launch_history": launch_history_from_actions(action_rows, quarantine, now),
+        "lease_refusals": lease_refusals_from_actions(action_rows, now),
         "max_launches_per_hour": resolve_max_launches_per_hour(
             deps.max_launches_per_hour() if deps.max_launches_per_hour is not None else None
         ),
