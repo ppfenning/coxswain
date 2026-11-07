@@ -1246,16 +1246,25 @@ def _publish(action: Action, deps: Deps, event: str, fields: Mapping[str, str]) 
     courier.append_file(deps.work_dir / "courier.jsonl", entry)
 
 
+def _refused_steward(action: Action, deps: Deps, reason: str) -> Result:
+    """Edge. A refused steward command is published as `needs_attention`, so the epic is not left with no actor."""
+    _publish(action, deps, "needs_attention", {"action": str(action["kind"]), "reason": reason})
+    return _result(action, "refused", reason)
+
+
 def _steward_command(action: Action, deps: Deps) -> Result:
     """A merge_level or run_gate: chair_steward_exec runs it with the loop's checks, then its result event is published."""
     kind = action["kind"]
     if deps.steward_exec is None:
-        return _result(action, "refused", f"{kind} has no steward executor")
-    outcome = deps.steward_exec(action, tuple(deps.steward_checks(action)))
+        return _refused_steward(action, deps, f"{kind} has no steward executor")
+    try:
+        outcome = deps.steward_exec(action, tuple(deps.steward_checks(action)))
+    except Exception as exc:  # the edge: an executor that raises is a refusal, so the relaunch after it still runs
+        return _refused_steward(action, deps, f"{kind} raised {type(exc).__name__}: {exc}")
     event = outcome.get("event", "")
     passed, failed = _STEWARD_OUTCOMES[kind]
     if event not in (passed, failed):
-        return _result(action, "refused", f"{kind} reported {event!r}, expected {passed} or {failed}")
+        return _refused_steward(action, deps, f"{kind} reported {event!r}, expected {passed} or {failed}")
     _publish(action, deps, event, outcome.get("fields", action.get("fields", {})))
     return _result(action, "done" if event == passed else "failed", outcome.get("reason", ""))
 
@@ -1509,6 +1518,7 @@ def perform(
     blocked_initiatives: dict[str, Blocker] = {}  # initiative -> its uncounted land_phase that skips its later lands
     uncleared: dict[str, str] = {}  # initiative -> status of its clear_branches that did not finish done, this tick
     launched_hosts: set[str] = set()  # hosts a launch was attempted on this tick; "" is the loop's own machine
+    steward_ended: dict[str, tuple[str, str]] = {}  # epic -> (kind, status) of its merge_level or run_gate this tick
     if not dry_run:
         _ack_done_land_notices(deps)
     for finished in deps.lands.collect() if deps.lands is not None and not dry_run else []:
@@ -1541,6 +1551,13 @@ def perform(
             result = _result(action, "skipped", f"an earlier land in {action.get('repo', '')} ({blocked_initiatives[initiative].label}) was not counted")
         elif action.get("kind") in _LAND_KINDS and (frozen := _frozen_reason(deps)) is not None:
             result = _result(action, "skipped", frozen)
+        elif (
+            action.get("kind") == "relaunch"
+            and action.get("after_steward")
+            and steward_ended.get(action.get("epic") or initiative, ("", ""))[1] == "failed"
+        ):
+            steward_kind = steward_ended[action.get("epic") or initiative][0]
+            result = _result(action, "recorded", f"not relaunched, {steward_kind} for {action.get('epic') or initiative} failed")
         else:
             if action.get("kind") in LAUNCH_KINDS:
                 launch_host = action.get("host", "")
@@ -1552,6 +1569,8 @@ def perform(
             _note_uncounted(action, result, blocked, blocked_initiatives)
         if action.get("kind") == "clear_branches" and result["status"] != "done":
             uncleared[initiative] = result["status"]
+        if action.get("kind") in _STEWARD_OUTCOMES and result["status"] in ("done", "failed", "refused"):
+            steward_ended[action.get("epic", "")] = (action["kind"], result["status"])
         if result["status"] != "in_progress":  # the land's own result is recorded when it is collected
             deps.record(_recorded(result))
         results.append(result)
