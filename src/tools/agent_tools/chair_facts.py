@@ -105,7 +105,8 @@ class FactsDeps:
     docket: the `route context` docket, keys initiatives (id, started, ready_tasks, landed), busy_lanes, max_in_flight.
     approved: approved tasks, keys id, initiative, repo, phase, phase_done, needs, run (empty when no record is stranded).
     quarantined: open quarantined work items, keys initiative, phase, task, from each item's work-store path.
-    stranded: `runs_stranded.stranded` rows as they land, keys run, task, phase, branch, remedy. No initiative.
+    stranded: `runs_stranded.stranded` rows as they land, keys run, task, phase, branch, remedy, expected.
+        No initiative. `expected` is true for a deliberate `land: manual` repo, whose row raises no quarantine entry.
     attempts: every attempt over all runs, oldest first, keys run, phase, task, cause, and initiative when known.
         A work item's frontmatter `attempts` entries carry run and cause, as `stats_chair` reads them; the item's
         path adds phase and task. The store's `attempts` table has no task column (`run_store.attempt_causes`).
@@ -492,6 +493,7 @@ def quarantine_facts(
     has_patch: Callable[[str, str], bool],
     landing: Sequence[ApprovedTask] = (),
     approved: Sequence[Row] | None = None,
+    waiting: Collection[tuple[str, str]] = frozenset(),
 ) -> list[QuarantineFacts]:
     """One entry per open quarantine with its newest cause, then the stranded rows those did not name.
 
@@ -500,6 +502,13 @@ def quarantine_facts(
 
     `approved` is the tasks the store has approved, keys id, initiative. A stranded row whose task is not among them
     is stale, since the store sent it back, and is left out. None keeps every stranded row.
+
+    A stranded row with `expected` true is left out. The remaining stranded rows of one run give one entry, whose
+    `tasks` lists each task with its run and remedy. Its `task_id` is the first task not in `waiting`, else the first.
+
+    `waiting` is the (initiative, task id) pairs of approved, unlanded rows. `chair_plan_recover._recovery` plans nothing
+    for a stranded entry whose `task_id` is one of them, so a run's lead task is one that is not, and one such task keeps
+    the run's note alive.
 
     An open quarantine whose attempts name no cause (a store row in state quarantined whose ticket file never got the
     attempt) reports `QUARANTINED_CAUSE`, so the status line never shows it with an empty cause.
@@ -510,14 +519,42 @@ def quarantine_facts(
     # A stranded task that is also an open quarantine keeps the quarantine's newest cause, so it is not sent to the chair as stranded.
     # Matched on initiative and task id, as `chair_plan_recover._recovery` does: a stranded record's phase can be missing or old.
     in_store = None if approved is None else {(t["initiative"], t["id"]) for t in approved}
+    # An `expected` row is a deliberate manual landing: it is reported by the reader but raises no note.
+    kept = [s for s in stranded if not s.get("expected")]
+    rows = {k: next(s for s in kept if _key(s) == k) for k in dict.fromkeys(_key(s) for s in kept)}
     stuck = [
-        k for k in dict.fromkeys(_key(s) for s in stranded)
+        k for k in rows
         if k not in opened and k not in landed_now and (in_store is None or (k[0], k[2]) in in_store)
     ]
     return [
         *(_quarantine(k, newest_cause(attempts, k) or QUARANTINED_CAUSE, attempts, has_patch) for k in opened if k[0] not in live),
-        *(_quarantine(k, STRANDED_CAUSE, attempts, has_patch) for k in stuck if k[0] not in live),
+        *(_stranded_entry(ks, rows, attempts, has_patch, waiting) for ks in _by_run(stuck, rows) if ks[0][0] not in live),
     ]
+
+
+def _by_run(keys: Sequence[Key], rows: Mapping[Key, Row]) -> list[list[Key]]:
+    """`keys` grouped by (initiative, run), in first-seen order. A row with no run groups under the empty run."""
+    def group(k: Key) -> tuple[str, str]:
+        return k[0], str(rows[k].get("run") or "")
+
+    return [[k for k in keys if group(k) == g] for g in dict.fromkeys(group(k) for k in keys)]
+
+
+def _stranded_entry(
+    keys: Sequence[Key],
+    rows: Mapping[Key, Row],
+    attempts: Sequence[Row],
+    has_patch: Callable[[str, str], bool],
+    waiting: Collection[tuple[str, str]] = frozenset(),
+) -> QuarantineFacts:
+    """One stranded entry for one run's tasks. `task_id` is the first task not in `waiting`, else the first; `tasks` lists every one in row order.
+
+    The run rides inside `tasks`, not as a top-level `run`: `launch_history_from_actions` reads that key as a quarantined run."""
+    lead = next((k for k in keys if (k[0], k[2]) not in waiting), keys[0])
+    return cast(QuarantineFacts, {
+        **_quarantine(lead, STRANDED_CAUSE, attempts, has_patch),
+        "tasks": [{"task": k[2], "run": rows[k].get("run"), "remedy": rows[k].get("remedy")} for k in keys],
+    })
 
 
 def store_approved_tasks(rows: Sequence[Row]) -> list[Row]:
@@ -1436,6 +1473,7 @@ def gather_facts(
     quarantine = quarantine_facts(
         quarantined, stranded, deps.attempts(), live, deps.has_patch, planned_tasks(approved, initiatives),
         store_approved_tasks(rows) if rows else None,
+        waiting={(a["initiative"], a["id"]) for a in approved},
     )
     action_rows = list(deps.actions()) if deps.actions is not None else []
     login_hosts = deps.hosts()
