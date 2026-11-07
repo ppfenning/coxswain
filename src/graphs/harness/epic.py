@@ -118,7 +118,7 @@ from harness.lane_database_create import create_lane_database, creation_failure
 from harness.lane_database_drop import drop_lane_database
 from harness.lane_workers import lane_workers_from, workers_env
 from harness.lanes import lane_bound
-from harness.phase_remote import push_branch
+from harness.phase_remote import FetchOutcome, Kind, fetch_branch, materialise_local, missing_branch_cause, push_branch
 from harness.resume import load_result, reusable, save_result
 from harness.scheduler import plan_launches
 from harness.stack_refresh import refresh_branch, refresh_reason, refresh_record
@@ -281,6 +281,66 @@ def _publish_branch(ctx: _Ctx, branch: str) -> str | None:
     """Push `branch` to origin. None on success or with no origin, else a warning; a failed push never stops the build."""
     ok, detail = push_branch(ctx.repo, branch)
     return None if ok else f"push of {branch} failed: {detail}"
+
+
+def _fetch_phase_branches(ctx: _Ctx, branches: Sequence[str]) -> dict[str, FetchOutcome]:
+    """Make each of `branches` a plain local branch where origin holds it; a branch already local is left alone."""
+    outcomes: dict[str, FetchOutcome] = {}
+    for branch in branches:
+        outcome = fetch_branch(ctx.repo, branch)
+        if outcome.kind == Kind.FETCHED:
+            ok, detail = materialise_local(ctx.repo, branch)
+            outcome = outcome if ok else FetchOutcome(Kind.FETCH_FAILED, detail)
+        outcomes[branch] = outcome
+    return outcomes
+
+
+def _await_launched_branch(ctx: _Ctx, branch: str, outcome: FetchOutcome, *, patience: float = 60.0) -> FetchOutcome:
+    """A branch missing everywhere while its phase is launched and unfinished is still being cut: wait for the cut, not the phase."""
+    owner = ctx.launched.get(branch.removeprefix(f"epic/{ctx.initiative_id}/"))
+    if outcome.kind != Kind.MISSING_EVERYWHERE or owner is None:
+        return outcome
+    deadline = time.monotonic() + patience
+    while not owner.done() and not _branch_exists(ctx, branch) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    return fetch_branch(ctx.repo, branch)
+
+
+def _fetch_or_stop(
+    ctx: _Ctx,
+    record: dict[str, Any],
+    fetch: Sequence[str],
+    required: Sequence[str],
+    loose: Sequence[str] = (),
+    parent_branches: Sequence[str] = (),
+) -> dict[str, Any] | None:
+    """Fetch `fetch`; the stopped record when a branch the phase needs is missing everywhere or origin could not be asked.
+
+    The needed branches are `required`, plus the parents' when a `loose` ref (a commit id) is not in this repo,
+    since that commit can only come from a parent's branch. A parent nothing is needed from is fetched, never demanded.
+    """
+    outcomes = _fetch_phase_branches(ctx, fetch)
+    unresolved = any(not _git("-C", str(ctx.repo), "rev-parse", "--verify", "--quiet", f"{r}^{{commit}}")[0] for r in loose)
+    demanded = list(dict.fromkeys([*required, *(parent_branches if unresolved else [])]))
+    outcomes = {b: _await_launched_branch(ctx, b, o) if b in demanded else o for b, o in outcomes.items()}
+    for branch in demanded:
+        if outcomes[branch].kind in (Kind.MISSING_EVERYWHERE, Kind.FETCH_FAILED):
+            return _missing_branch_phase(record, branch, missing_branch_cause(branch, outcomes[branch]))
+    return None
+
+
+def _phase_branches_to_fetch(
+    initiative_id: str, branch: str, parent_branches: Sequence[str], needed: Sequence[str], cut_from: Sequence[str]
+) -> tuple[list[str], list[str], list[str]]:
+    """`(fetch, required, loose)`: what to fetch, which of it the phase needs, and the needed refs that are not epic names.
+
+    Fetched: the own branch, every parent's branch and the epic refs of needed and cut_from. Required: those epic refs
+    only, so a parent nothing is needed from never stops the phase. Loose: the default ref, the pr branch, commit ids.
+    """
+    refs = list(dict.fromkeys([*needed, *cut_from]))
+    required = [r for r in refs if r.startswith(f"epic/{initiative_id}/") and r != branch]
+    loose = [r for r in refs if not r.startswith(f"epic/{initiative_id}/")]
+    return list(dict.fromkeys([branch, *parent_branches, *required])), required, loose
 
 
 def _note_push_failure(record: dict[str, Any], warning: str | None) -> None:
@@ -496,6 +556,9 @@ class _Ctx:
     surface_paths: dict[str, frozenset[str]] = field(default_factory=dict, compare=False, repr=False)
     # Guards writes to the shared `items` list and the lazy fill of `surface_paths`; `replace` shares it across per-phase copies.
     items_lock: threading.Lock = field(default_factory=threading.Lock, compare=False, repr=False)
+    # Run-level and mutable: the future of each phase this run launched, so a dependent that starts early can wait for the cut.
+    # The scheduler thread sets one key per launch and workers only `get`, each atomic, and a parent is set before any dependent starts.
+    launched: dict[str, Future[Any]] = field(default_factory=dict, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         """Refuse a bad per-check timeout at build, before any model call; the ValueError names the check."""
@@ -2015,6 +2078,7 @@ def _run_lanes(
                 _run_phase, ctx, initiative=initiative, phase=phase,
                 parents=tuple(sorted(parents[phase])), items=items, only=only,
             )
+            ctx.launched[phase] = future
             running[future] = (phase, ids, lane_of[phase])
 
         while True:
@@ -3304,6 +3368,13 @@ def _run_phase(
             quarantined.append({"id": phase, "phase": phase, "grain": "phase", "reason": record["reason"]})
         return record
 
+    # A branch an earlier phase left on origin from another host becomes a local branch here; one that is
+    # nowhere stops the phase before any worktree opens, so assembly only ever fails on a real conflict.
+    parent_branches = [] if from_pr else [ctx.phase_branch(p) for p in parents]
+    fetch, required, loose = _phase_branches_to_fetch(ctx.initiative_id, branch, parent_branches, needed, cut_from)
+    if (stopped := _fetch_or_stop(ctx, record, fetch, required, loose, parent_branches)) is not None:
+        return stopped
+
     opened = _open_phase_worktree(ctx, phase, cut_ref, parents, cut_from)
     ok, detail, reused = opened
     record["cleared_worktrees"] = list(getattr(opened, "cleared", ()))
@@ -4318,6 +4389,14 @@ def _stale_phase(record: dict[str, Any], reason: str) -> dict[str, Any]:
     return record
 
 
+def _missing_branch_phase(record: dict[str, Any], branch: str, cause: str) -> dict[str, Any]:
+    """Block the phase on a branch it needs and cannot find. Nothing is quarantined: the run stops, the work is untouched."""
+    record["status"] = "blocked"
+    record["reason"] = cause
+    record["missing_branch"] = branch
+    return record
+
+
 def _collected_ids(worktree: Path) -> set[str] | None:
     """`pytest --collect-only -q` in `worktree`, read back as node ids.
 
@@ -4863,6 +4942,11 @@ def _execute(
         if not state.landed.get(subject):
             return False, "the draft did not land, so its merge is refused with it"
         draft = ctx.draft_branch(phase, subject)
+        if not _branch_exists(ctx, draft):
+            # A draft another host created and pushed: make it local, or refuse with the cause.
+            found = _fetch_phase_branches(ctx, [draft])[draft]
+            if found.kind in (Kind.MISSING_EVERYWHERE, Kind.FETCH_FAILED):
+                return False, missing_branch_cause(draft, found)
         ok, detail = _git(
             *_IDENTITY, "-C", str(ctx.phase_worktree(phase)), "merge", "--no-ff", draft,
             "-m", f"epic {ctx.run_id}: merge {subject} into {phase}",
