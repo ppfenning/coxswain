@@ -209,14 +209,30 @@ def _governance_line(hits: list[str], *, label: str = "") -> str:
     )
 
 
+_INTEGRATION_KEYS = (
+    "integration_tasks_passed",
+    "integration_tasks_failed",
+    "integration_levels_passed",
+    "integration_levels_failed",
+)
+
+
 def epic_summary_line(run_id: str, totals: Mapping[str, int]) -> str:
-    """The end-of-run epic line; a missing total counts as 0."""
+    """The end-of-run epic line; a missing total counts as 0. The integration clause prints only when an integration check ran."""
+    integration = (
+        f"; integration: {totals.get('integration_tasks_passed', 0)} task(s) passed, "
+        f"{totals.get('integration_tasks_failed', 0)} failed, "
+        f"{totals.get('integration_levels_passed', 0)} level(s) passed, "
+        f"{totals.get('integration_levels_failed', 0)} failed"
+        if any(totals.get(k, 0) for k in _INTEGRATION_KEYS)
+        else ""
+    )
     return (
         f"\nepic {run_id}: {totals.get('phases_complete', 0)} phase(s) complete, "
         f"{totals.get('phases_partial', 0)} partial, {totals.get('phases_blocked', 0)} blocked, "
         f"{totals.get('phases_awaiting_land', 0)} awaiting land, "
         f"{totals.get('tasks_quarantined', 0)} task(s) quarantined, "
-        f"{totals.get('stacks_rebased', 0)} stack(s) rebased"
+        f"{totals.get('stacks_rebased', 0)} stack(s) rebased{integration}"
     )
 
 
@@ -507,9 +523,13 @@ def _refuse_start(store: Store, run_id: str, status: str, code: int) -> int:
     return code
 
 
-def _end_lease(store: Store, heartbeat: run_lease.Heartbeat, name: str, holder: str, epoch: int) -> None:
-    """Stop renewing, then expire the lease. Warns on any fault and never raises; an unreleased lease expires."""
-    heartbeat.stop()
+def _end_lease(store: Store, heartbeat: run_lease.Heartbeat | None, name: str, holder: str, epoch: int) -> None:
+    """Stop renewing, then expire the lease. Warns on any fault and never raises; an unreleased lease expires.
+
+    `heartbeat` is None when the run raised before one was built.
+    """
+    if heartbeat is not None:
+        heartbeat.stop()
     try:
         if not release(store.conn, name, holder, epoch):
             print(f"lease: {name} was not released: it is no longer held by {holder}", file=sys.stderr)
@@ -1013,32 +1033,35 @@ def _launch(
     if not lease.ok:
         print(f"run: {lease.holder} holds {name}; refusing to start {run_id}", file=sys.stderr)
         return _refuse_start(store, run_id, "refused", 2)
-    # `cox route launch` reads this line from the run log (its _LAUNCH_STARTED_MARKER); flushed because stdout is a file there.
-    print(f"graph started: {run_id}", flush=True)
-
-    # The heartbeat renews on its own connection from the moment the lease is held, so a slow
-    # setup cannot eat the ttl. The epoch fence, not this thread, stops a run that lost the lease.
-    def clock() -> str:
-        return datetime.now(UTC).isoformat()
-
-    tracker = node_progress.Tracker(clock)
-    progress_path = Path(args.runs_dir) / f"{run_id}.progress.json"
-    # Set once the runner accepts `on_node`. Until then (and for a runner that never does) a tick
-    # stores no progress and writes no file.
-    reporting = threading.Event()
-    progress_lock = threading.Lock()
-    heartbeat = run_lease.Heartbeat(
-        _storage_url(_read_profile(args.provider_profile), args.runs_dir),
-        name,
-        run_id,
-        lease.epoch,
-        clock=clock,
-        progress=lambda: _write_progress(tracker, run_id, progress_path, progress_lock) if reporting.is_set() else None,
-    )
-
-    # Setup can raise, or take a SIGTERM, between the lease and the run's own `finally`. That exit
-    # still stamps the run and frees the lease, or a relaunch would be refused by a run that is gone.
+    # Everything from here to the run's own `finally` can raise or take a SIGTERM: the started
+    # marker, the heartbeat build and the setup. That exit still stamps the run and frees the
+    # lease, or a relaunch would be refused by a run that is gone.
+    heartbeat: run_lease.Heartbeat | None = None
     try:
+        # `cox route launch` reads this line from the run log (its _LAUNCH_STARTED_MARKER); flushed because stdout is a file there.
+        print(f"graph started: {run_id}", flush=True)
+
+        # The heartbeat renews on its own connection from the moment the lease is held, so a slow
+        # setup cannot eat the ttl. The epoch fence, not this thread, stops a run that lost the lease.
+        def clock() -> str:
+            return datetime.now(UTC).isoformat()
+
+        tracker = node_progress.Tracker(clock)
+        progress_path = Path(args.runs_dir) / f"{run_id}.progress.json"
+        # Set once the runner accepts `on_node`. Until then (and for a runner that never does) a tick
+        # stores no progress and writes no file.
+        reporting = threading.Event()
+        progress_lock = threading.Lock()
+        heartbeat = run_lease.Heartbeat(
+            _storage_url(_read_profile(args.provider_profile), args.runs_dir),
+            name,
+            run_id,
+            lease.epoch,
+            clock=clock,
+            progress=lambda: (
+                _write_progress(tracker, run_id, progress_path, progress_lock) if reporting.is_set() else None
+            ),
+        )
         heartbeat.start()
         runner = build_runner(
             scripted=args.scripted,

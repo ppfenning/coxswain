@@ -1857,6 +1857,47 @@ def test_a_setup_step_that_raises_after_the_lease_still_releases_it_and_ends_the
     assert cli.main([]) == 0
 
 
+def test_a_heartbeat_build_that_raises_after_the_lease_still_releases_it_and_ends_the_run(monkeypatch, tmp_path) -> None:
+    _store_run(monkeypatch, tmp_path)
+    real, calls = cli._storage_url, []
+
+    def url(profile, runs_dir):
+        calls.append(runs_dir)
+        if len(calls) > 1:  # the first call opens the store; the second builds the heartbeat
+            raise RuntimeError("profile unreadable")
+        return real(profile, runs_dir)
+
+    monkeypatch.setattr(cli, "_storage_url", url)
+
+    with pytest.raises(RuntimeError, match="profile unreadable"):
+        cli.main([])
+
+    assert len(calls) == 2
+    assert _expired(tmp_path)
+    assert _lease_row(tmp_path, "runs:runS")[1:3] == ("runS", 1)
+    assert _rows(tmp_path / "cox.db", "SELECT status, ended_at IS NOT NULL FROM runs") == [("error", 1)]
+
+
+def test_a_started_marker_that_raises_after_the_lease_still_releases_it_and_ends_the_run(monkeypatch, tmp_path) -> None:
+    import builtins
+
+    _store_run(monkeypatch, tmp_path)
+
+    def marker_fails(*args, **kwargs):
+        if args and str(args[0]).startswith("graph started:"):
+            raise OSError("stdout closed")
+        return builtins.print(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "print", marker_fails, raising=False)
+
+    with pytest.raises(OSError, match="stdout closed"):
+        cli.main([])
+
+    assert _expired(tmp_path)
+    assert _lease_row(tmp_path, "runs:runS")[1:3] == ("runS", 1)
+    assert _rows(tmp_path / "cox.db", "SELECT status, ended_at IS NOT NULL FROM runs") == [("error", 1)]
+
+
 def test_head_branch_reads_a_checkout_a_worktree_pointer_a_detached_head_and_a_missing_dir(tmp_path) -> None:
     checkout = tmp_path / "checkout"
     (checkout / ".git").mkdir(parents=True)
