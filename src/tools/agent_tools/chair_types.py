@@ -585,6 +585,7 @@ ActionKind = Literal[
     "merge_level",
     "run_gate",
     "steward_event",
+    "unlaunched",
 ]
 
 
@@ -615,6 +616,7 @@ class Action(TypedDict, total=False):
     The steward's actions each carry epic and topic (both the epic id) and fields. merge_level also carries level,
     the index of the level to merge, plus land_at (how the initiative lands) and phase (the level's phase name) as
     top-level keys, never inside fields, so the reported-set key is unchanged. run_gate carries no more. steward_event also carries event, the name to publish.
+    unlaunched carries initiative and reason and runs no command: why a ready initiative was not launched.
     The steward's relaunch is a relaunch carrying initiative, plus epic, topic and fields (the signature) so the executor
     can record `relaunched`. A planner relaunch carries none of those three."""
 
