@@ -71,6 +71,7 @@ def test_read_normalises_title_body_repo_and_link():
         body="Uploads occasionally fail without a retry.",
         repo="acme/widgets",
         link="https://github.com/acme/widgets/issues/12",
+        labels=frozenset({"intake"}),
     )
 
 
@@ -91,7 +92,7 @@ def test_list_argv_builds_the_gh_issue_list_command():
         "--label",
         "intake",
         "--json",
-        "number,title,body,labels,url",
+        "number,title,body,labels,milestone,url",
     ]
 
 
