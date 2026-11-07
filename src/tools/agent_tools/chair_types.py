@@ -446,6 +446,52 @@ class MergeQueueFacts(TypedDict):
     wait_s: float  # seconds the queue waits for a full batch
 
 
+ScheduleStatus = Literal["ready", "waiting", "blocked", "running", "complete"]  # chair_schedule_graph.Status
+
+
+class SchedulePhase(TypedDict):
+    id: str
+    status: ScheduleStatus
+    parents: list[str]  # phase ids of the same initiative whose undone tasks this phase's tasks need
+    size: str  # "" when no ticket of the phase names one
+    mix: str  # "" when no ticket of the phase names one
+    surfaces: list[str]
+
+
+class ScheduleInitiative(TypedDict):
+    id: str
+    priority: int  # higher runs first
+    repo: str
+    phases: list[SchedulePhase]
+
+
+class ScheduleHost(TypedDict):
+    name: str
+    lanes: list[str]  # one entry per lane
+    local: bool
+    repos: list[str]  # empty means capable of every repo
+
+
+class ScheduleRunning(TypedDict):
+    initiative: str
+    phase: str
+    host: str  # a ScheduleHost name
+    lane: str  # one of that host's lanes
+    finish: str | None  # estimated ISO finish; None when unrecorded
+
+
+class ScheduleInputs(TypedDict):
+    """The `chair_schedule.plan_schedule` arguments minus the clock, as plain data."""
+
+    initiatives: list[ScheduleInitiative]
+    records: list[dict[str, str]]  # finished phases: size, mix, build_start, approve_time
+    hosts: list[ScheduleHost]
+    mode: str  # "orchestrating" or "building"
+    load: dict[str, int]  # host name to live runs
+    running: list[ScheduleRunning]
+    target: str | None  # the earliest release moment a work item states, ISO UTC; None when none does
+
+
 class Facts(TypedDict):
     lease: LeaseFacts
     limits: LimitsFacts
@@ -534,6 +580,7 @@ class Facts(TypedDict):
     # Each initiative row in state todo with its task rows' states, in row order; absent means none. `plan_close_initiatives` plans a close_initiative for each finished one.
     todo_initiatives: NotRequired[list[TodoInitiative]]
     steward: NotRequired[StewardPlanFacts]  # the epic steward's inputs; absent means the steward is off
+    schedule_inputs: NotRequired[ScheduleInputs]  # the scheduler's inputs; absent means the scheduler is not fed
 
 
 ActionKind = Literal[
@@ -576,6 +623,7 @@ ActionKind = Literal[
     "merge_level",
     "run_gate",
     "steward_event",
+    "schedule_updated",
 ]
 
 
@@ -604,6 +652,7 @@ class Action(TypedDict, total=False):
     the granularity land_at names. close_initiative carries initiative and state (done or dropped).
     The steward's actions each carry epic and topic (both the epic id) and fields. merge_level also carries level,
     the index of the level to merge. run_gate carries no more. steward_event also carries event, the name to publish.
+    schedule_updated carries schedule, the body of the contract fixture's action, and runs no command.
     The steward's relaunch is a relaunch carrying initiative, plus epic, topic and fields (the signature) so the executor
     can record `relaunched`. A planner relaunch carries none of those three."""
 
@@ -657,6 +706,7 @@ class Action(TypedDict, total=False):
     fields: dict[str, str]  # a merge_level, run_gate or steward_event carries the scope fields of its reported-set key
     topic: str  # a merge_level, run_gate or steward_event names the topic its event is published under
     after_steward: bool  # the relaunch runs behind the same epic's steward action
+    schedule: dict[str, object]  # a schedule_updated carries the schedule body of dash_feed_schedule_v1.json and runs no command
 
 
 class PlanLands(Protocol):
