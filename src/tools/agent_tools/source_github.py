@@ -46,7 +46,13 @@ def candidates(config: SourceConfig, listing: Sequence[Mapping]) -> tuple[Ref, .
 
 def read(raw: Mapping) -> Candidate:
     return Candidate(
-        title=raw["title"], body=raw["body"], repo=_repo(raw), link=raw["url"], kind=_kind(raw)
+        title=raw["title"],
+        body=raw["body"],
+        repo=_repo(raw),
+        link=raw["url"],
+        kind=_kind(raw),
+        labels=_labels(raw),
+        milestone=(raw.get("milestone") or {}).get("title", ""),
     )
 
 
@@ -65,7 +71,7 @@ def list_argv(config: SourceConfig, repo: str) -> list[str]:
         "--label",
         _wanted_label(config),
         "--json",
-        "number,title,body,labels,url",
+        "number,title,body,labels,milestone,url",
     ]
 
 
