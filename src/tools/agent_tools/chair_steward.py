@@ -18,6 +18,7 @@ class StewardTask(TypedDict):
 class StewardLevel(TypedDict):
     tasks: list[StewardTask]
     merged: bool
+    phase: str
 
 
 class StewardFacts(TypedDict):
@@ -27,6 +28,7 @@ class StewardFacts(TypedDict):
     exited: bool
     signature: str
     reported: Collection[str]
+    land_at: str
 
 
 class StewardAction(TypedDict):
@@ -35,6 +37,8 @@ class StewardAction(TypedDict):
     fields: dict[str, str]
     key: str
     event: NotRequired[str]
+    land_at: NotRequired[str]  # a merge_level carries how the initiative lands; outside fields, so the key is unchanged
+    phase: NotRequired[str]  # a merge_level carries the phase name of its level; outside fields, so the key is unchanged
 
 
 def event_key(event: str, fields: dict[str, str]) -> str:
@@ -69,9 +73,12 @@ def epic_actions(facts: StewardFacts) -> list[StewardAction]:
     ]
     unmerged = [(i, _live(lv)) for i, lv in enumerate(levels) if not lv["merged"] and _live(lv)]
     if unmerged and all(t["state"] in _SETTLED for t in unmerged[0][1]):
-        merge = _action(
-            facts, "merge_level", "level_merged", {"head": facts["branch_head"], "level": str(unmerged[0][0])}
-        )
+        index = unmerged[0][0]
+        merge: StewardAction = {
+            **_action(facts, "merge_level", "level_merged", {"head": facts["branch_head"], "level": str(index)}),
+            "land_at": facts["land_at"],
+            "phase": levels[index]["phase"],
+        }
         return [*attention, merge]
     if unmerged or states & set(_OPEN):
         return [*attention, *_relaunch_or_stuck(facts, blocked=bool(quarantined), ready="ready" in states)]
