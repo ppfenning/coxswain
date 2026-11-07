@@ -170,3 +170,129 @@ def test_outcome_copies_the_action_fields():
     result = outcome("gate_passed", action, "ok")
     assert result == {"event": "gate_passed", "fields": {"a": "1"}, "reason": "ok"}
     assert result["fields"] is not action["fields"]
+
+
+TIP = "a" * 40
+LEVEL_TIP = "b" * 40
+MERGED = "c" * 40
+ZERO = "0" * 40
+
+
+def scripted_git(rules: list[tuple[str, tuple[int, str]]]):
+    """A GitRun with literal results: the first rule whose key is in the joined argv answers."""
+    calls: list[list[str]] = []
+
+    def run(args: list[str]) -> tuple[int, str]:
+        calls.append(args)
+        joined = " ".join(args)
+        return next(reply for key, reply in rules if key in joined)
+
+    return run, calls
+
+
+def merge_rules(
+    ticket_ref: tuple[int, str] = (0, ""),
+    target: tuple[int, str] = (0, f"{TIP}\n"),
+    create: tuple[int, str] = (0, ""),
+) -> list[tuple[str, tuple[int, str]]]:
+    return [
+        ("--verify --quiet", ticket_ref),
+        ("--verify main^{commit}", target),
+        (ZERO, create),
+        ("is-ancestor", (1, "")),
+        ("^{tree}", (0, "tree-ticket\n")),
+        ("merge-tree", (0, "tree-merged\n")),
+        (f"{TICKET}^{{commit}}", (0, f"{TIP}\n")),
+        (f"{LEVEL}^{{commit}}", (0, f"{LEVEL_TIP}\n")),
+        ("commit-tree", (0, f"{MERGED}\n")),
+        ("update-ref", (0, "")),
+    ]
+
+
+def scripted_ports(run, with_target: bool = True) -> StewardPorts:
+    return StewardPorts(
+        git=run,
+        repo_of=lambda epic: "/r",
+        ticket_branch_of=lambda epic: TICKET,
+        phase_of=lambda epic, level: "phase-a",
+        run_gate_checks=boom,
+        target_branch_of=(lambda epic: "main") if with_target else None,
+    )
+
+
+def test_missing_ticket_branch_is_created_from_target_tip_then_merged():
+    run, calls = scripted_git(merge_rules(ticket_ref=(1, "")))
+    result = chair_steward_exec(merge_action(), [], scripted_ports(run))
+    assert result == {
+        "event": "level_merged",
+        "fields": FIELDS,
+        "reason": f"merged {LEVEL} into {TICKET} as {MERGED}",
+    }
+    create = ["-C", "/r", "update-ref", "-m", f"steward: create {TICKET}", f"refs/heads/{TICKET}", TIP, ZERO]
+    assert create in calls
+    assert calls.index(create) < calls.index(next(c for c in calls if "commit-tree" in c))
+    assert calls[-1][2:] == ["update-ref", "-m", f"steward: merge {LEVEL}", f"refs/heads/{TICKET}", MERGED, TIP]
+
+
+def test_present_ticket_branch_is_left_alone():
+    run, calls = scripted_git(merge_rules())
+    assert chair_steward_exec(merge_action(), [], scripted_ports(run))["event"] == "level_merged"
+    assert not any(ZERO in c or "main^{commit}" in " ".join(c) for c in calls)
+
+
+def test_missing_ticket_branch_without_target_port_fails_naming_the_step():
+    run, calls = scripted_git(merge_rules(ticket_ref=(1, "")))
+    result = chair_steward_exec(merge_action(), [], scripted_ports(run, with_target=False))
+    assert result["event"] == "merge_failed"
+    assert result["reason"].startswith("target branch:")
+    assert not any("update-ref" in c for c in calls)
+
+
+def test_unresolved_target_branch_fails_and_creates_nothing():
+    run, calls = scripted_git(merge_rules(ticket_ref=(1, ""), target=(128, "fatal: Needed a single revision\n")))
+    result = chair_steward_exec(merge_action(), [], scripted_ports(run))
+    assert result == {
+        "event": "merge_failed",
+        "fields": FIELDS,
+        "reason": "rev-parse target: fatal: Needed a single revision",
+    }
+    assert not any("update-ref" in c for c in calls)
+
+
+def test_failed_branch_creation_is_a_merge_failure_not_a_raise():
+    run, _ = scripted_git(merge_rules(ticket_ref=(1, ""), create=(128, "fatal: reference already exists\n")))
+    result = chair_steward_exec(merge_action(), [], scripted_ports(run))
+    assert result["event"] == "merge_failed"
+    assert result["reason"] == "create ticket branch: fatal: reference already exists"
+
+
+@pytest.mark.parametrize("land_at", ["level", "task"])
+def test_level_and_task_landing_is_left_to_the_chair(land_at: str):
+    run, calls = scripted_git([])
+    action = {**merge_action(), "land_at": land_at}
+    result = chair_steward_exec(action, [], scripted_ports(run))
+    assert result == {
+        "event": "merge_failed",
+        "fields": FIELDS,
+        "reason": f"land_at {land_at}: the land is run by the chair, not the steward executor",
+    }
+    assert calls == []
+
+
+def test_first_merge_at_ticket_creates_the_branch_and_a_second_call_finds_it_merged(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    git(repo, "checkout", "-q", LEVEL)
+    commit_file(repo, "level.txt", "level\n")
+    git(repo, "checkout", "-q", "main")
+    git(repo, "branch", "-D", TICKET)
+    main_tip, level_tip = git(repo, "rev-parse", "main").strip(), git(repo, "rev-parse", LEVEL).strip()
+    with_target = StewardPorts(**{**ports(repo).__dict__, "target_branch_of": lambda epic: "main"})
+    action = {**merge_action(), "land_at": "ticket"}
+    first = chair_steward_exec(action, [], with_target)
+    assert first["event"] == "level_merged"
+    new = git(repo, "rev-parse", TICKET).strip()
+    assert git(repo, "rev-list", "--parents", "-n1", TICKET).split() == [new, main_tip, level_tip]
+    before = refs(repo)
+    second = chair_steward_exec(action, [], with_target)
+    assert (second["event"], second["reason"]) == ("level_merged", "already merged")
+    assert refs(repo) == before
