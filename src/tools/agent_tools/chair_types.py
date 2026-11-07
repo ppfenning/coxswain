@@ -639,6 +639,7 @@ class Action(TypedDict, total=False):
     event: str  # a steward_event names the event it publishes, for example needs_attention
     fields: dict[str, str]  # a merge_level, run_gate or steward_event carries the scope fields of its reported-set key
     topic: str  # a merge_level, run_gate or steward_event names the topic its event is published under
+    after_steward: bool  # the relaunch runs behind the same epic's steward action
 
 
 class PlanLands(Protocol):

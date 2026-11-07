@@ -827,13 +827,20 @@ def _steward_relaunches_replace(
     """The steward's relaunch takes the place of the planner's relaunch pair for each handled epic.
 
     `recover` is plan_recover's or plan_lost_runs' output; they own the gates a relaunch needs: quarantine, schema
-    death, landing repo, dag problem, waiting, launch budget, loop rule and steer. The planner's relaunch is never
-    kept. The steward's relaunch is kept only where `recover` held one to replace, so no gate is skipped. If the
-    planner sees no relaunchable work where the steward does, no relaunch is planned. The gates after (lost,
-    unfetched, not exited, CI hold, deadlock, cap and homing) then see the steward's relaunch as any other."""
+    death, landing repo, dag problem, waiting, launch budget, loop rule and steer. The steward's relaunch is kept only
+    where `recover` held one to replace, so no gate is skipped. If the planner sees no relaunchable work where the
+    steward does, no relaunch is planned. The gates after (lost, unfetched, not exited, CI hold, deadlock, cap and
+    homing) then see the steward's relaunch as any other.
+
+    An epic whose steward plans a merge_level or run_gate and no relaunch of its own keeps the planner's gated relaunch,
+    tagged after_steward so it runs behind that action. Its clear_branches is dropped: it could delete level branches
+    before the merge."""
     gated_in = frozenset(a["initiative"] for a in recover if a["kind"] == "relaunch")
     relaunches = [a for a in steward if a["kind"] == "relaunch" and a["initiative"] in gated_in]
-    return [*_without_launch_pair(recover, handled), *relaunches]
+    own = frozenset(a["initiative"] for a in steward if a["kind"] == "relaunch")
+    behind = frozenset(a["epic"] for a in steward if a["kind"] in ("merge_level", "run_gate")) - own
+    kept = [{**a, "after_steward": True} for a in recover if a["kind"] == "relaunch" and a["initiative"] in behind]
+    return [*_without_launch_pair(recover, handled), *relaunches, *kept]
 
 
 def _no_host(free_lanes: int, host_free: Sequence[HostSlot], consumed: Mapping[str, int], filled: Sequence[Action], reserved: bool) -> bool:
@@ -1006,6 +1013,10 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     # Read before the cap: a rebase starts no run, so a relaunch the cap dropped still gets its branch rebased.
     relaunching = frozenset(a["initiative"] for a in [*recovered, *launches] if _is_launch(a))
     rebases = plan_rebase(facts.get("phase_branches", []), relaunching)
+    # A relaunch tagged after_steward runs behind its epic's merge or gate, so it trails the steward events with its rebase.
+    behind = [a for a in launches if a.get("after_steward")]
+    behind_ids = frozenset(a["initiative"] for a in behind)
+    ahead = [a for a in launches if not a.get("after_steward")]
     return [
         *reverts,
         *lands,
@@ -1016,7 +1027,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         *idle_stall,
         *deadlock_chair,
         *carries,
-        *_with_rebases(launches, rebases),
+        *_with_rebases(ahead, [r for r in rebases if r["initiative"] not in behind_ids]),
         *widen,
         *login_needs_chair,
         *empty_decompose_needs_chair,
@@ -1028,6 +1039,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         *stuck_heads,
         *closes,
         *steward_events,
+        *_with_rebases(behind, [r for r in rebases if r["initiative"] in behind_ids]),
     ]
 
 

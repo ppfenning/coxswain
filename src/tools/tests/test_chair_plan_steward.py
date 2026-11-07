@@ -31,12 +31,27 @@ def _without_steward(facts: dict) -> dict:
     return {k: v for k, v in facts.items() if k != "steward"}
 
 
-def test_an_approved_unmerged_level_plans_a_merge_and_no_relaunch_for_that_epic():
+PLANNER_RELAUNCH_BEHIND = {"kind": "relaunch", "initiative": "a", "epoch": 7, "after_steward": True}
+
+
+def test_an_approved_unmerged_level_plans_a_merge_then_the_planner_relaunch_tagged_after_steward():
     facts = _facts_for(_epic(("a-t", "approved")))
-    assert "relaunch" in _kinds(plan_tick(_without_steward(facts)))
+    assert _kinds(plan_tick(_without_steward(facts))) == ["clear_branches", "relaunch"]
     assert plan_tick(facts) == [
-        {"kind": "merge_level", "epic": "a", "topic": "a", "fields": {"head": "h1", "level": "0"}, "level": 0, "epoch": 7}
+        {"kind": "merge_level", "epic": "a", "topic": "a", "fields": {"head": "h1", "level": "0"}, "level": 0, "epoch": 7},
+        PLANNER_RELAUNCH_BEHIND,
     ]
+
+
+def test_an_epic_whose_steward_relaunches_itself_has_no_tagged_relaunch():
+    actions = plan_tick(_facts_for(_epic(("a-t", "ready"))))
+    assert actions == [STEWARD_RELAUNCH]
+    assert not any(a.get("after_steward") for a in actions)
+
+
+def test_a_quarantined_epic_with_an_approved_level_plans_no_relaunch():
+    actions = plan_tick(_facts_for(_epic(("a-q", "quarantined"), ("a-t", "approved")), quarantines=[MAIN_RED]))
+    assert [a for a in actions if a["kind"] == "relaunch"] == []
 
 
 def test_an_exited_epic_with_ready_tasks_plans_one_relaunch_from_the_steward_only():
@@ -92,9 +107,11 @@ def test_a_lost_run_on_a_handled_epic_plans_one_steward_relaunch_where_the_plann
     assert _relaunches(plan_tick(facts)) == [STEWARD_RELAUNCH]
 
 
-def test_a_lost_run_whose_epic_has_an_approved_level_merges_first_and_plans_no_relaunch():
+def test_a_lost_run_whose_epic_has_an_approved_level_merges_first_and_relaunches_behind_the_merge():
     facts = _facts_for(_epic(("a-t", "approved"), exited=False), lost_runs={"a": "a-1"}, run_exited={"a": False})
-    assert _kinds(plan_tick(facts)) == ["mark_lost", "merge_level"]
+    actions = plan_tick(facts)
+    assert _kinds(actions) == ["mark_lost", "merge_level", "relaunch"]
+    assert actions[-1]["after_steward"] is True
 
 
 def test_a_lost_run_with_a_quarantine_gets_the_event_and_no_relaunch_from_either_path():
@@ -174,10 +191,11 @@ def test_a_hard_stop_keeps_the_steward_merge_and_event_and_plans_no_relaunch_and
     assert kinds(("a-q", "quarantined"), ("a-t", "ready"), quarantines=[MAIN_RED]) == ["steward_event"]
 
 
-def test_a_finished_epic_plans_the_gate_run_when_there_is_no_hard_stop():
+def test_a_finished_epic_plans_the_gate_run_then_the_tagged_relaunch_when_there_is_no_hard_stop():
     facts = _facts_for(_epic(("a-t", "done"), merged=True))
     assert plan_tick(facts) == [
-        {"kind": "run_gate", "epic": "a", "topic": "a", "fields": {"head": "h1"}, "epoch": 7}
+        {"kind": "run_gate", "epic": "a", "topic": "a", "fields": {"head": "h1"}, "epoch": 7},
+        PLANNER_RELAUNCH_BEHIND,
     ]
 
 
@@ -190,5 +208,6 @@ def test_a_lent_lease_still_plans_the_steward_actions_before_standby():
     facts = _facts_for(_epic(("a-t", "approved")), lease=_lease(lent=True))
     assert plan_tick_held(facts, NOW).actions == [
         {"kind": "merge_level", "epic": "a", "topic": "a", "fields": {"head": "h1", "level": "0"}, "level": 0, "epoch": 7},
+        PLANNER_RELAUNCH_BEHIND,
         STANDBY,
     ]
