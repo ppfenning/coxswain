@@ -2011,7 +2011,7 @@ def test_a_healed_bare_filename_and_a_moved_note_reach_the_task_file_under_the_r
     text = path.read_text(encoding="utf-8")
     front = yaml.safe_load(text.split("---\n")[1])
     assert front["surfaces"] == ["docs/guide.md"]
-    assert front["lint"] == ["see the readme"]
+    assert front["lint"] == ["see the readme", "guide.md: resolved to docs/guide.md, healed by the ticket check"]
     assert text.endswith("---\n\nbody\n")
 
 
@@ -2025,6 +2025,117 @@ def test_a_bare_filename_with_two_repository_matches_is_left_out_of_surfaces_wit
     assert not any(q["id"] == "t1-probe" for q in result["quarantined"])
     build = next(c for c in runner.calls if c["role"] == "build" and "t1-probe" in c["prompt"])
     assert "dup.md: no unique repository path, left out of surfaces" in build["prompt"]
+
+
+def _commit_ticket_sources(repo: Path) -> None:
+    (repo / "lib").mkdir()
+    (repo / "lib" / "use.py").write_text(
+        "def helper_fn():\n    pass\n\n\nhelper_fn()\n\n\ndef lonely():\n    pass\n", encoding="utf-8"
+    )
+    _commit_files(repo, "docs/guide.md")
+
+
+def _ticket_body(work: dict, body: str, **fields) -> None:
+    item = next(i for i in work["items"] if i["id"] == "t1-probe")
+    item["body"] = body
+    item.update(fields)
+
+
+def test_a_false_claim_reaches_the_builder_as_a_correction_note_and_only_the_heal_is_written_back(
+    repo, cart, tmp_path, capsys
+) -> None:
+    _commit_ticket_sources(repo)
+    path = tmp_path / "t1-probe.md"
+    path.write_text(
+        "---\nid: t1-probe\nphase: p1-foundations\nstate: ready\nneeds: []\nsurfaces: [README.md, docs/a.md]\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    work = _heal_work(["README.md", "docs/a.md"])
+    item = next(i for i in work["items"] if i["id"] == "t1-probe")
+    item["path"] = str(path)
+    item["body"] = "Remove the helper. No callers of `helper_fn`."
+    result, runner = drive(repo, cart, tmp_path, work=work)
+    assert not any(q["id"] == "t1-probe" for q in result["quarantined"])
+    build = next(c for c in runner.calls if c["role"] == "build" and "t1-probe" in c["prompt"])
+    assert "\n\nCorrection note: claim 'no caller of helper_fn' is false, 1 hit: lib/use.py:5: helper_fn()" in build["prompt"]
+    assert "Surface note: docs/a.md: missing from the repository" in build["prompt"]
+    front = yaml.safe_load(path.read_text(encoding="utf-8").split("---\n")[1])
+    assert front["surfaces"] == ["README.md", "docs/a.md (new)"]
+    assert "docs/a.md: missing from the repository, healed by the surface check" in front["lint"]
+    assert not any(str(n).startswith("correction:") for n in front["lint"])
+    assert "ticket check: t1-probe healed (docs/a.md (new)), 1 correction(s)" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("surfaces", "body", "build_surfaces", "note"),
+    [
+        (
+            ["README.md"],
+            "Rework `ghost_fn()` to take a path.",
+            ["README.md"],
+            "Correction note: ghost_fn was not found in the tree. No def or class of that name exists.",
+        ),
+        (
+            ["README.md"],
+            "Update lib/use.py to match.",
+            ["README.md", "lib/use.py"],
+            "Surface note: added to surfaces: lib/use.py was named in the body and healed by the ticket check",
+        ),
+        (
+            ["README.md", "guide.md"],
+            "One file changes.",
+            ["README.md", "docs/guide.md"],
+            "Surface note: guide.md: resolved to docs/guide.md, healed by the ticket check",
+        ),
+    ],
+)
+def test_each_ticket_kind_is_healed_or_annotated_before_the_build_and_none_is_quarantined(
+    repo, cart, tmp_path, monkeypatch, surfaces, body, build_surfaces, note
+) -> None:
+    _commit_ticket_sources(repo)
+    seen = _record_invocation_surfaces(monkeypatch)
+    work = _heal_work(surfaces)
+    _ticket_body(work, body)
+    result, runner = drive(repo, cart, tmp_path, work=work)
+    assert seen["t1-probe"] == build_surfaces
+    assert not any(q["id"] == "t1-probe" for q in result["quarantined"])
+    build = next(c for c in runner.calls if c["role"] == "build" and "t1-probe" in c["prompt"])
+    assert f"\n\n{note}" in build["prompt"]
+
+
+def test_a_relaunch_resends_the_correction_and_stores_and_repeats_nothing(repo, cart, tmp_path) -> None:
+    _commit_ticket_sources(repo)
+    text = (
+        "---\nid: t1-probe\nphase: p1-foundations\nstate: ready\nneeds: []\n"
+        "surfaces: [README.md, docs/a.md (new)]\nlint: [healed earlier]\n---\n\nbody\n"
+    )
+    path = tmp_path / "t1-probe.md"
+    path.write_text(text, encoding="utf-8")
+    work = _heal_work(["README.md", "docs/a.md (new)"])
+    _ticket_body(work, "No callers of `helper_fn`.", lint=["healed earlier"], path=str(path))
+    drive(repo, cart, tmp_path, work=work)
+    assert path.read_text(encoding="utf-8") == text
+
+
+def test_a_true_claim_gives_no_correction_note(repo, cart, tmp_path) -> None:
+    _commit_ticket_sources(repo)
+    work = _heal_work(["README.md"])
+    _ticket_body(work, "No callers of `lonely`.")
+    _, runner = drive(repo, cart, tmp_path, work=work)
+    build = next(c for c in runner.calls if c["role"] == "build" and "t1-probe" in c["prompt"])
+    assert "Correction note" not in build["prompt"]
+
+
+def test_a_ticket_check_that_raises_leaves_the_task_to_build_unchanged(repo, cart, tmp_path, monkeypatch) -> None:
+    def boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(epic_module, "check_ticket", boom)
+    result, runner = drive(repo, cart, tmp_path, work=_heal_work(["README.md", "docs/a.md"]))
+    assert not any(q["id"] == "t1-probe" for q in result["quarantined"])
+    build = next(c for c in runner.calls if c["role"] == "build" and "t1-probe" in c["prompt"])
+    assert "Correction note" not in build["prompt"]
+    assert "Surface note: docs/a.md: missing from the repository" in build["prompt"]
 
 
 def test_the_file_rewrite_changes_only_the_surfaces_and_lint_lines(tmp_path) -> None:
