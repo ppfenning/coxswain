@@ -2732,6 +2732,28 @@ def _unlanded(
     return [(t, f"cox runs land {run_id} --repo {repo} --task {t['id']} --apply") for t in approved + merged]
 
 
+def _integration_rows(record: Mapping[str, Any], key: str) -> list[Mapping[str, Any]]:
+    """The check rows under `key`, shaped like `checks` rows; none when the key is absent, empty or not a list."""
+    rows = record.get(key)
+    return [r for r in rows if isinstance(r, Mapping)] if isinstance(rows, list) else []
+
+
+def _integration_counts(tasks: Sequence[Mapping[str, Any]], phases: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    """Integration totals kept apart from the unit `tests_run`; a task or level with no integration rows counts in none."""
+    task_rows = [_integration_rows(t, "integration") for t in tasks]
+    level_rows = [_integration_rows(p, "level_integration") for p in phases]
+    return {
+        "integration_tasks_passed": sum(1 for rows in task_rows if rows and all(r.get("passed") for r in rows)),
+        "integration_tasks_failed": sum(1 for rows in task_rows if rows and not all(r.get("passed") for r in rows)),
+        "integration_levels_passed": sum(1 for rows in level_rows if rows and all(r.get("passed") for r in rows)),
+        "integration_levels_failed": sum(1 for rows in level_rows if rows and not all(r.get("passed") for r in rows)),
+        **{
+            f"integration_rows_{k}": sum((r.get("counts") or {}).get(k, 0) for rows in task_rows for r in rows)
+            for k in ("passed", "failed", "error")
+        },
+    }
+
+
 def _build_result(
     *,
     run_id: str,
@@ -2781,6 +2803,7 @@ def _build_result(
             "phases_awaiting_land": sum(1 for p in phases if _awaits_land(p)),
             "phases_blocked": sum(1 for p in phases if p["status"] == "blocked"),
             "tasks_quarantined": sum(1 for q in quarantined if q.get("grain") == "task"),
+            **_integration_counts(tasks, phases),
             "approved_not_landed": len(unlanded),
             "stacks_rebased": stacks_rebased,
         },
