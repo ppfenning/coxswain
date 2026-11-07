@@ -2,14 +2,14 @@ from agent_tools import land_manual
 from agent_tools.chair_read_stranded import keep_stranded_keys, read_missing_repos, read_stranded, stranded_from_rows
 
 
-def test_a_full_row_keeps_exactly_the_five_keys():
-    row = {"run": "r1", "task": "t1", "phase": "p1", "branch": "b1", "remedy": "cox runs land r1 --task t1 --repo /x"}
+def test_a_full_row_keeps_exactly_the_six_keys():
+    row = {"run": "r1", "task": "t1", "phase": "p1", "branch": "b1", "remedy": "cox runs land r1 --task t1 --repo /x", "expected": True}
     assert keep_stranded_keys([row]) == [row]
 
 
 def test_extra_keys_on_the_input_row_are_dropped():
     row = {"run": "r1", "task": "t1", "phase": "p1", "branch": "b1", "remedy": None, "review": {"verdict": "approve"}, "repo": "/x"}
-    assert keep_stranded_keys([row]) == [{"run": "r1", "task": "t1", "phase": "p1", "branch": "b1", "remedy": None}]
+    assert keep_stranded_keys([row]) == [{"run": "r1", "task": "t1", "phase": "p1", "branch": "b1", "remedy": None, "expected": None}]
 
 
 def test_an_empty_input_gives_an_empty_list():
@@ -33,7 +33,7 @@ def test_read_stranded_drops_a_row_whose_repo_the_predicate_rejects():
     items = [_stranded_item("r1"), _stranded_item("r2")]
     repo_exists = {"/gone": False, "/here": True}.__getitem__
     assert read_stranded(records, items, repo_exists) == [
-        {"run": "r2", "task": "r2", "phase": "p1", "branch": "b1", "remedy": "cox runs land r2 --task r2 --repo /here"},
+        {"run": "r2", "task": "r2", "phase": "p1", "branch": "b1", "remedy": "cox runs land r2 --task r2 --repo /here", "expected": False},
     ]
 
 
@@ -51,11 +51,11 @@ def test_read_missing_repos_returns_the_rejected_repo_once():
     assert read_missing_repos(records, items, repo_exists) == ["/gone"]
 
 
-def test_read_stranded_keeps_the_five_key_row_for_a_live_present_repo():
+def test_read_stranded_keeps_the_six_key_row_for_a_live_present_repo():
     records = [_stranded_record("r1", "/here")]
     items = [_stranded_item("r1")]
     assert read_stranded(records, items, lambda repo: True) == [
-        {"run": "r1", "task": "r1", "phase": "p1", "branch": "b1", "remedy": "cox runs land r1 --task r1 --repo /here"},
+        {"run": "r1", "task": "r1", "phase": "p1", "branch": "b1", "remedy": "cox runs land r1 --task r1 --repo /here", "expected": False},
     ]
 
 
@@ -70,7 +70,7 @@ def test_read_stranded_keeps_a_row_whose_branch_the_predicate_reports_gone():
     items = [_stranded_item("r1")]
     assert read_stranded(records, items, lambda repo: True, lambda repo, branch: False) == [
         {"run": "r1", "task": "r1", "phase": "p1", "branch": "epic/acme/p1",
-         "remedy": "cox runs land r1 --task r1 --repo /here"},
+         "remedy": "cox runs land r1 --task r1 --repo /here", "expected": False},
     ]
 def _record(**over):
     base = {
@@ -91,8 +91,26 @@ def _row(state, **over):
 
 def test_a_ready_row_for_an_approved_unlanded_record_is_stranded():
     assert stranded_from_rows([_row("ready")], [_record()]) == [
-        {"run": "r1", "task": "t1", "phase": "p1", "branch": "b1", "remedy": None}
+        {"run": "r1", "task": "t1", "phase": "p1", "branch": "b1", "remedy": None, "expected": False}
     ]
+
+
+def test_a_store_row_for_a_record_in_a_manual_repo_is_expected_and_carries_the_manual_remedy():
+    record = _record(repo="/manual")
+    (row,) = stranded_from_rows([_row("ready")], [record], manual_of=lambda repo: repo == "/manual")
+    assert (row["expected"], row["remedy"]) == (True, land_manual.REMEDY)
+    (row,) = stranded_from_rows([_row("ready")], [record], manual_of=lambda repo: False)
+    assert row["expected"] is False
+
+
+def test_a_store_row_reads_the_records_repo_overlay_by_default(tmp_path):
+    manual = tmp_path / "manual"
+    (manual / ".agent").mkdir(parents=True)
+    (manual / ".agent" / "cartridge.yaml").write_text("land: manual\n")
+    auto = tmp_path / "auto"
+    auto.mkdir()
+    assert [r["expected"] for r in stranded_from_rows([_row("ready")], [_record(repo=str(manual))])] == [True]
+    assert [r["expected"] for r in stranded_from_rows([_row("ready")], [_record(repo=str(auto))])] == [False]
 
 
 def test_a_done_row_for_the_same_task_is_not_stranded():
@@ -117,14 +135,14 @@ def _read(records, items, **kw):
 
 def test_a_fetched_run_with_an_approved_task_record_gives_a_row_for_that_run_and_task():
     assert _read([_fetched_record()], [_fetched_item("approved")], log_texts={}) == [
-        {"run": "r1", "task": "t1", "phase": "p1", "branch": "b1", "remedy": _LAND},
+        {"run": "r1", "task": "t1", "phase": "p1", "branch": "b1", "remedy": _LAND, "expected": False},
     ]
 
 
 def test_a_log_line_alone_gives_a_stranded_row_with_the_line_remedy():
     assert _read([], [_fetched_item("ready")], log_texts={}) == []
     assert _read([], [_fetched_item("ready")], log_texts={"r1": _LOG_LINE + "\n"}) == [
-        {"run": "r1", "task": "t1", "phase": "p1", "branch": None, "remedy": _LAND},
+        {"run": "r1", "task": "t1", "phase": "p1", "branch": None, "remedy": _LAND, "expected": False},
     ]
 
 
@@ -159,7 +177,19 @@ def test_a_log_line_for_a_manual_repo_gets_the_manual_remedy(tmp_path):
     (repo / ".agent").mkdir(parents=True)
     (repo / ".agent" / "cartridge.yaml").write_text("land: manual\n")
     rows = _read([], [_fetched_item("ready", repo=str(repo))], log_texts={"r1": _LOG_LINE})
-    assert [r["remedy"] for r in rows] == [land_manual.REMEDY]
+    assert [(r["remedy"], r["expected"]) for r in rows] == [(land_manual.REMEDY, True)]
+
+
+def test_a_record_row_for_a_manual_repo_is_expected_and_one_for_an_automatic_repo_is_not(tmp_path):
+    manual = tmp_path / "manual"
+    (manual / ".agent").mkdir(parents=True)
+    (manual / ".agent" / "cartridge.yaml").write_text("land: manual\n")
+    auto = tmp_path / "auto"
+    auto.mkdir()
+    records = [_stranded_record("r1", str(manual)), _stranded_record("r2", str(auto))]
+    rows = _read(records, [_stranded_item("r1"), _stranded_item("r2")], log_texts={})
+    assert [(r["run"], r["expected"]) for r in rows] == [("r1", True), ("r2", False)]
+    assert rows[0]["remedy"] == land_manual.REMEDY
 
 
 def test_the_default_edge_reads_fetched_runs_logs_and_skips_missing_and_landed_elsewhere(tmp_path):
