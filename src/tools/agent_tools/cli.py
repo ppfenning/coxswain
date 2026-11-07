@@ -117,6 +117,7 @@ chair_read_run_id = _LazyModule("agent_tools.chair_read_run_id")
 chair_read_stale = _LazyModule("agent_tools.chair_read_stale")
 chair_read_stall = _LazyModule("agent_tools.chair_read_stall")
 chair_read_stranded = _LazyModule("agent_tools.chair_read_stranded")
+chair_read_steward = _LazyModule("agent_tools.chair_read_steward")
 chair_report = _LazyModule("agent_tools.chair_report")
 chair_restart = _LazyModule("agent_tools.chair_restart")
 chair_restart_log = _LazyModule("agent_tools.chair_restart_log")
@@ -127,6 +128,7 @@ chair_run = _LazyModule("agent_tools.chair_run")
 chair_service = _LazyModule("agent_tools.chair_service")
 chair_service_host = _LazyModule("agent_tools.chair_service_host")
 chair_smoke = _LazyModule("agent_tools.chair_smoke")
+chair_steward_exec = _LazyModule("agent_tools.chair_steward_exec")
 chair_unit = _LazyModule("agent_tools.chair_unit")
 chair_wake = _LazyModule("agent_tools.chair_wake")
 chair_watchdog = _LazyModule("agent_tools.chair_watchdog")
@@ -1320,6 +1322,80 @@ def _repo_for(ws: Path, home: str) -> Callable[[dict], str]:
         recorded = route.parse_frontmatter(text)[0].get("repo")
         return repo_path.expand(recorded, home) if recorded else ""
     return repo_for
+
+
+def _steward_git(runner: Callable[[list[str]], tuple[int, str]]) -> Callable[[list[str]], tuple[int, str]]:
+    """The steward's `GitRun`: its argv starts at `-C`, so the loop's runner gets `git` put in front."""
+    return lambda args: runner(["git", *args])
+
+
+def _steward_phase_of(work_rows: Callable[[], list[dict]]) -> Callable[[str, int], str]:
+    """`StewardPorts.phase_of`: the epic's phases in natural order, as `chair_facts.steward_plan_facts` indexes its levels.
+    An index past the last phase raises IndexError, which the executor reports as the kind's failure event."""
+    def phase_of(epic: str, level: int) -> str:
+        phases = {str(r["phase"]) for r in work_rows() if r.get("kind") == "task" and r.get("initiative") == epic}
+        return sorted(phases, key=_natural_key)[level]
+    return phase_of
+
+
+def _steward_head(runner: Callable[[list[str]], tuple[int, str]], repo_for: Callable[[dict], str]) -> Callable[[str], str]:
+    """`FactsDeps.ticket_head`: the commit the initiative's ticket branch points at in its repository; "" when either is missing."""
+    def head(initiative: str) -> str:
+        root = repo_for({"initiative": initiative})
+        if not root:
+            return ""
+        code, out = runner(["git", "-C", root, "rev-parse", "--verify", "--quiet", f"{land.pr_branch_name(initiative)}^{{commit}}"])
+        return out.strip() if code == 0 else ""
+    return head
+
+
+def _steward_level_merged(runner: Callable[[list[str]], tuple[int, str]], repo_for: Callable[[dict], str]) -> Callable[[str, str], bool]:
+    """`FactsDeps.level_merged`: whether the phase's level branch has landed on the initiative's ticket branch; False without a repository."""
+    git = _steward_git(runner)
+
+    def merged(initiative: str, phase: str) -> bool:
+        root = repo_for({"initiative": initiative})
+        return bool(root) and chair_read_steward.level_is_merged(
+            root, land.pr_branch_name(initiative), chair_read_steward.level_branch(initiative, phase), git
+        )
+    return merged
+
+
+def _steward_checks_for(profile: dict, repo_for: Callable[[dict], str]) -> Callable[[Mapping], list[str]]:
+    """`Deps.steward_checks`: the shell lines a land resolves for the epic's repository (`_land_repo_facts` then
+    `land.checks_argv`), cartridge checks first. A run_gate whose cartridge cannot be resolved raises rather than
+    pass on checks that are short; the executor's caller reports that as a refusal."""
+    def checks(action: Mapping) -> list[str]:
+        root = repo_for({"initiative": action.get("epic", "")})
+        if not root:
+            return []
+        facts = _land_repo_facts(Path(root), profile)
+        if action.get("kind") == "run_gate" and facts["cartridge_error"]:
+            raise RuntimeError(f"cartridge unresolved: {facts['cartridge_error']}")
+        return [line for _name, line in land.checks_argv(facts)]
+    return checks
+
+
+def _steward_gate_runner(
+    runner: Callable[[list[str]], tuple[int, str]], capacity: int | None
+) -> Callable[[str, str, Sequence[str]], tuple[bool, str]]:
+    """`StewardPorts.run_gate_checks`: the lines run in a throwaway worktree of the branch, as a land runs them.
+    A check is named by its own line, since the steward carries lines and not names."""
+    def run_gate(repo: str, branch: str, checks: Sequence[str]) -> tuple[bool, str]:
+        if not repo:
+            return False, "no repository recorded for the epic"
+        root = Path(repo)
+        wt = _land_worktree(root, branch)
+        _remove_land_worktree(root, branch)
+        try:
+            code, out = runner(["git", "-C", str(root), "worktree", "add", "--detach", str(wt), branch])
+            if code != 0:
+                return False, f"worktree add: {out.strip()}"
+            _link_venv(root, wt)
+            return _run_checks([(line, line) for line in checks], wt, capacity=capacity)
+        finally:
+            _remove_land_worktree(root, branch)
+    return run_gate
 
 
 def _runs_move_repo_for(ws: Path, home: str) -> Callable[[dict], str]:
@@ -12768,7 +12844,12 @@ def _chair_run_deps(
         )
 
     sources_configured, profile_stale = chair_read_intake.sources_configured_keeping_last_good(profile_path)
+    repo_for = _repo_for(ws, home)
+    lane_capacity = _check_capacity(runs_dir, profile, host)
     facts_deps = chair_facts.FactsDeps(
+        steward_entries=lambda: chair_read_steward.read_bus_entries(ws / "courier.jsonl"),
+        ticket_head=_steward_head(runner, repo_for),
+        level_merged=_steward_level_merged(runner, repo_for),
         lease=lambda: chair_read_lease.read_lease(runs_dir, now()),
         window=window,
         weekly=weekly,
@@ -12836,14 +12917,21 @@ def _chair_run_deps(
     )
     exec_deps = chair_exec.edge_deps(
         runs_dir, ws, session, pid,
-        run_id=chair_read_run_id.make_run_id(runs_dir), repo_for=_repo_for(ws, home),
+        run_id=chair_read_run_id.make_run_id(runs_dir), repo_for=repo_for,
         record=record,
         host=host,
         harness_python=harness_python,
         log_retention_days=run_logs.retention_days(profile),
         ids_mode=profile.get("ids", "slug"),
         dry_run=dry_run,
-        lane_capacity=_check_capacity(runs_dir, profile, host),
+        lane_capacity=lane_capacity,
+    )
+    steward_ports = chair_steward_exec.StewardPorts(
+        git=_steward_git(runner),
+        repo_of=lambda epic: repo_for({"initiative": epic}),
+        ticket_branch_of=land.pr_branch_name,
+        phase_of=_steward_phase_of(work_rows),
+        run_gate_checks=_steward_gate_runner(runner, lane_capacity),
     )
     exec_deps = dataclasses.replace(
         exec_deps,
@@ -12857,6 +12945,8 @@ def _chair_run_deps(
         resolve_land=_resolve_land_with(actions, record),
         rerun_main=lambda repo, commit: chair_revert_ports.rerun_infra(runner, _gh_repo(repo), commit),
         launch_stagger_s=chair_exec.stagger_seconds((profile.get("chair") or {}).get("launch_stagger_s")),
+        steward_exec=lambda action, checks: chair_steward_exec.chair_steward_exec(action, checks, steward_ports),
+        steward_checks=_steward_checks_for(profile, repo_for),
     )
     def held() -> None:
         """Resolves each pending watch the smoke hold does not name, when its commit is green on main or main went green after it."""
