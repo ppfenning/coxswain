@@ -1291,15 +1291,35 @@ def steward_plan_facts(
     heads: Callable[[str], str],
     level_merged: Callable[[str, str], bool],
     entries: Sequence[Row],
+    land_at: Mapping[str, str] | None = None,
+    landed: Mapping[str, Collection[str]] | None = None,
 ) -> StewardPlanFacts:
-    """One StewardFacts per initiative. A level is a phase of its task rows, in natural phase order."""
+    """One StewardFacts per initiative. A level is a phase of its task rows, in natural phase order.
+
+    `land_at` is `land_at_facts` output; an id missing from it reads ticket. At ticket a level is merged by
+    `level_merged` (ancestry). At level and task it is merged when every non-dropped task is landed and done or merged."""
+    from core.landing import DEFAULT_LAND_AT  # lazy: core sits beside agent_tools in one venv
+
     tasks = [r for r in rows if r.get("kind") == "task"]
 
     def build(initiative: str) -> StewardFacts:
         own = [r for r in tasks if r["initiative"] == initiative]
         phases = sorted({str(r["phase"]) for r in own}, key=_natural)
+        mode = (land_at or {}).get(initiative, DEFAULT_LAND_AT)
+        done = set((landed or {}).get(initiative, ()))
+
+        def merged(p: str) -> bool:
+            if mode == DEFAULT_LAND_AT:
+                return level_merged(initiative, p)
+            # `landed` counts an approved task as met at level whether or not it merged, so merged-ness is checked on the row.
+            return all(
+                r["task_id"] in done and (r["state"] == "done" or route.is_merged(r))
+                for r in own
+                if str(r["phase"]) == p and r["state"] != "dropped"
+            )
+
         levels = [
-            {"tasks": [_steward_task(r) for r in own if str(r["phase"]) == p], "merged": level_merged(initiative, p)}
+            {"tasks": [_steward_task(r) for r in own if str(r["phase"]) == p], "merged": merged(p), "phase": p}
             for p in phases
         ]
         return {
@@ -1309,6 +1329,7 @@ def steward_plan_facts(
             "exited": bool(run_exited.get(initiative, False)),
             "signature": task_signature([_steward_task(r) for r in own]),
             "reported": reported_keys(entries, initiative),
+            "land_at": mode,
         }
 
     return {"enabled": True, "epics": [build(i) for i in initiatives]}
@@ -1425,6 +1446,11 @@ def gather_facts(
     refusals = land_refusals_from_actions(action_rows, now)
     work = list(deps.work_rows()) if deps.work_rows is not None else []
     epics = epic_facts(work, epic_definitions or {}) if deps.work_rows is not None else []
+    steward_ids = (
+        steward_initiative_ids(resolve_steward_scope(deps.steward_scope()), epics, work)
+        if resolve_steward_enabled(deps.steward_enabled())
+        else None
+    )
     return {
         "lease": lease_facts(deps.lease(), deps.session, deps.pid, deps.host),
         "limits": limits_facts(
@@ -1537,15 +1563,18 @@ def gather_facts(
         **(
             {
                 "steward": steward_plan_facts(
-                    steward_initiative_ids(resolve_steward_scope(deps.steward_scope()), epics, work),
+                    steward_ids,
                     work,
                     dict(deps.run_exited()) if deps.run_exited is not None else {},
                     deps.ticket_head,
                     deps.level_merged,
                     list(deps.steward_entries()),
+                    land_at_facts(deps.cartridge(), deps.land_at_values(), steward_ids),
+                    # An initiative missing from `initiatives` (a live run) has no landed set and reads not merged.
+                    {i["id"]: i["landed"] for i in initiatives},
                 )
             }
-            if resolve_steward_enabled(deps.steward_enabled())
+            if steward_ids is not None
             else {}
         ),
     }
