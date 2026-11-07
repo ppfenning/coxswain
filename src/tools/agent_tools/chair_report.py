@@ -354,6 +354,15 @@ def format_status(
     return " | ".join(parts)
 
 
+def _stamp(now: datetime) -> str:
+    return f"chair {now.astimezone(EASTERN):%m-%d %H:%M %Z}"
+
+
+def unlaunched_lines(actions: Sequence[Action], now: datetime) -> list[str]:
+    """One line per unlaunched action, in the order given. `now` must be timezone-aware."""
+    return [f"{_stamp(now)} not launched {a['initiative']}: {a['reason']}" for a in actions if a["kind"] == "unlaunched"]
+
+
 def echo_line(line: str) -> None:
     """Edge. Flushes, because stdout redirected to a file is block-buffered and a service log would stay empty."""
     print(line, flush=True)

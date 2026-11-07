@@ -983,6 +983,22 @@ def test_level_merged_and_ticket_head_read_a_real_git_repository(tmp_path) -> No
     assert facts.level_merged("no-initiative", "p1") is False
 
 
+def test_the_wired_steward_ports_resolve_a_target_branch_for_a_recorded_repo_and_an_empty_one_without(tmp_path) -> None:
+    repo = _steward_repo(tmp_path)
+    (tmp_path / "work" / "no-repo").mkdir()
+    (tmp_path / "work" / "no-repo" / "initiative.md").write_text("---\ntitle: t\n---\n", encoding="utf-8")
+    home = os.path.expanduser("~")
+    target = cli._steward_target_branch_of({}, tmp_path, cli._repo_for(tmp_path, home))
+    assert (target("epic-x"), target("no-repo"), target("no-initiative")) == ("main", "", "")
+
+    run = _live_deps(tmp_path).exec_deps.steward_exec
+    assert run is not None
+    missing = run({"kind": "merge_level", "epic": "no-repo", "level": 0}, ())
+    assert missing["event"] == "merge_failed" and "no target branch is known" in missing["reason"]
+    run({"kind": "merge_level", "epic": "epic-x", "level": 0}, ())
+    assert _git(repo, "rev-parse", "pr/epic-x") == _git(repo, "rev-parse", "main")
+
+
 def test_steward_entries_reads_the_courier_bus_in_the_workspace(tmp_path) -> None:
     facts = _live_deps(tmp_path).facts_deps
     assert list(facts.steward_entries()) == []

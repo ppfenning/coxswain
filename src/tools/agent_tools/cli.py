@@ -1351,6 +1351,18 @@ def _steward_head(runner: Callable[[list[str]], tuple[int, str]], repo_for: Call
     return head
 
 
+def _steward_target_branch_of(profile: dict, ws: Path, repo_for: Callable[[dict], str]) -> Callable[[str], str]:
+    """`StewardPorts.target_branch_of`: the branch a land of the epic's repository targets, as `land` resolves it, no fetch.
+    "" when no repository is recorded or the target is refused, so the executor reports merge_failed."""
+    def target(epic: str) -> str:
+        root = repo_for({"initiative": epic})
+        if not root:
+            return ""
+        flag, refusal = _initiative_target_branch(profile, Path(root), ws, epic)
+        return "" if refusal else base_branch.base_name(root, flag)
+    return target
+
+
 def _steward_level_merged(runner: Callable[[list[str]], tuple[int, str]], repo_for: Callable[[dict], str]) -> Callable[[str, str], bool]:
     """`FactsDeps.level_merged`: whether the phase's level branch has landed on the initiative's ticket branch; False without a repository."""
     git = _steward_git(runner)
@@ -5277,22 +5289,42 @@ def _leader_guard_or_refuse(runs_dir: Path, holder: str, force: bool, claim: boo
         print(f"override: {line}" if force else line)
         return None if force else 2
     if claim and state != "live":
-        pid, host = _leader_identity()
+        pid, host = _leader_identity(None, os.environ)
         new_record, _ = chair.take(record, holder, pid, host, datetime.datetime.now(datetime.UTC), _leader_heartbeat_minutes(), _leader_pid_alive(record), steal=True, claude_session=chair.claude_session_from_env(os.environ))
         chair.write(runs_dir, new_record)
         print(f"taking the loop: {holder}" if record is None else f"taking the loop from {record.get('session')} ({state})")
     return None
 
 
-def _leader_identity(explicit_pid: int | None = None) -> tuple[int, str]:
+def _leader_pid_choice(explicit_pid: int | None, env: Mapping[str, str], ppid: int, alive: Callable[[int], bool]) -> tuple[int, bool]:
+    """Pure. The pid to record and whether it is the parent-pid fallback.
+    An explicit pid wins, then an all-digit, non-zero, live `CLAUDE_PID`, then `ppid`."""
+    if explicit_pid:
+        return explicit_pid, False
+    raw = env.get("CLAUDE_PID", "")
+    if raw.isascii() and raw.isdigit() and int(raw) > 0 and alive(int(raw)):
+        return int(raw), False
+    return ppid, True
+
+
+def _leader_identity(explicit_pid: int | None = None, env: Mapping[str, str] | None = None) -> tuple[int, str]:
     """The pid and host that name *this session* to the lock, for `take`/`beat`/`release`.
     `os.getpid()` names this one `cox` invocation, which exits the moment the command
-    returns. `os.getppid()` names the process that invoked `cox`, which is the right
-    answer only when a single long-running shell issues `take`, `beat` and `release` in
-    turn; a caller that runs each command in a fresh shell records a pid that is dead
-    before the next command, so its lock reads as stale the instant it is taken.
-    `--pid` lets such a caller name the durable process that actually owns the loop."""
-    return explicit_pid or os.getppid(), socket.gethostname()
+    returns. `os.getppid()` names the process that invoked `cox`, which is the invoking
+    shell and not the loop: a caller that runs each command in a fresh shell records a
+    pid that is dead before the next command, so its lock reads as stale at once.
+    `--pid`, or a live `CLAUDE_PID` in the passed `env`, names the durable process instead.
+    Every verb that writes or matches a lease passes `os.environ`, so they all name the same pid;
+    no `env` means no `CLAUDE_PID` lookup."""
+    return _leader_pid_choice(explicit_pid, env or {}, os.getppid(), chair.pid_alive)[0], socket.gethostname()
+
+
+def _leader_take_warning(pid: int, explicit_pid: int | None, env: Mapping[str, str], ppid: int, alive: Callable[[int], bool]) -> str | None:
+    """Pure. The warning for a take that records the invoking shell's pid, else None.
+    `pid` is the pid actually recorded, so a pid read back off a held lease counts as the shell's when it equals `ppid`."""
+    if explicit_pid or pid != ppid or _leader_pid_choice(None, env, ppid, alive) == (ppid, False):
+        return None
+    return f"warning: recorded pid {pid} is the invoking shell's; the lease goes stale when it exits. Pass --pid with a long-lived loop's pid."
 
 
 def _leader_pid_alive(record: dict | None) -> bool:
@@ -5377,7 +5409,8 @@ def _route_chair_take(a: argparse.Namespace) -> int:
         return refuse_rc
     held = _caller_holder(runs_dir, a.label)
     session = a.label or (held[0] if held else "chair")
-    pid, host = _leader_identity(a.pid or (held[1] if held else None))
+    pid, host = _leader_identity(a.pid or (held[1] if held else None), os.environ)
+    warning = _leader_take_warning(pid, a.pid, os.environ, os.getppid(), chair.pid_alive)
     refuse_rc = _leader_refuse_dead_pid(a.pid)
     if refuse_rc is not None:
         return refuse_rc
@@ -5403,6 +5436,8 @@ def _route_chair_take(a: argparse.Namespace) -> int:
                 return 2
             chair.write(runs_dir, retaken)
             print(line)
+            if warning:
+                print(warning)
             return 0
         if new_record is None:
             print(reason)
@@ -5416,6 +5451,8 @@ def _route_chair_take(a: argparse.Namespace) -> int:
     if displaced:
         print(chair.displaced_line(record))
     print(f"chair taken: {new_record['session']} (pid {new_record['pid']}) on {new_record['host']}")
+    if warning:
+        print(warning)
     return 0
 
 
@@ -5424,7 +5461,7 @@ def _route_chair_extend(a: argparse.Namespace) -> int:
     if refuse_rc is not None:
         return refuse_rc
     session = a.label or "chair"
-    pid, host = _leader_identity(a.pid)
+    pid, host = _leader_identity(a.pid, os.environ)
     refuse_rc = _leader_refuse_dead_pid(a.pid) or _leader_refuse_hours(a.hours)
     if refuse_rc is not None:
         return refuse_rc
@@ -5447,7 +5484,7 @@ def _route_chair_beat(a: argparse.Namespace) -> int:
         return refuse_rc
     held = _caller_holder(runs_dir, a.label)
     session = a.label or (held[0] if held else "chair")
-    pid, host = _leader_identity(a.pid or (held[1] if held else None))
+    pid, host = _leader_identity(a.pid or (held[1] if held else None), os.environ)
     refuse_rc = _leader_refuse_dead_pid(a.pid)
     if refuse_rc is not None:
         return refuse_rc
@@ -5475,7 +5512,7 @@ def _route_chair_release(a: argparse.Namespace) -> int:
         return refuse_rc
     held = _caller_holder(runs_dir, a.label)
     session = a.label or (held[0] if held else "chair")
-    pid, host = _leader_identity(a.pid or (held[1] if held else None))
+    pid, host = _leader_identity(a.pid or (held[1] if held else None), os.environ)
     refuse_rc = _leader_refuse_dead_pid(a.pid)
     if refuse_rc is not None:
         return refuse_rc
@@ -5580,7 +5617,7 @@ def _route_chair_chat(a: argparse.Namespace) -> int:
         record, read_rc = _leader_read_or_refuse(runs_dir)
         if read_rc is not None:
             return read_rc
-        pid, host = _leader_identity()
+        pid, host = _leader_identity(None, os.environ)
         now = datetime.datetime.now(datetime.UTC)
         state = chair.liveness(record, _leader_pid_alive(record), now, host, _leader_heartbeat_minutes())
         if state != "live":
@@ -13093,6 +13130,7 @@ def _chair_run_deps(
         ticket_branch_of=land.pr_branch_name,
         phase_of=_steward_phase_of(work_rows),
         run_gate_checks=_steward_gate_runner(runner, lane_capacity),
+        target_branch_of=_steward_target_branch_of(profile, ws, repo_for),
     )
     exec_deps = dataclasses.replace(
         exec_deps,
@@ -13211,6 +13249,10 @@ def _chair_run_deps(
 
 def _chair_run(a: argparse.Namespace) -> int:
     """Refuses before any beat while a fact source or recorder is unwired, so a chair that cannot act never holds the lease."""
+    as_holder = bool(getattr(a, "as_holder", False))
+    if as_holder and not a.dry_run:
+        print("chair run: refusing to start, no lease taken; --as-holder needs --dry-run")
+        return 2
     profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
     if refuse_rc is not None:
         return refuse_rc
@@ -13228,6 +13270,7 @@ def _chair_run(a: argparse.Namespace) -> int:
         runs_dir, profile, _holder_label(a), os.getpid(), socket.gethostname(), a.dry_run, echo,
         _profile_path(a), work_state.work_state_mode(provider),
     )
+    deps = dataclasses.replace(deps, force_holder=as_holder)
     missing = _chair_unwired_sources(deps)
     if missing:
         print(f"chair run: refusing to start, no lease taken; not wired: {', '.join(missing)}")
@@ -13719,6 +13762,7 @@ CHAIR_COMMANDS = [
             commands.Arg(("--once",), {"action": "store_true", "help": "run one tick, release the lease, exit 1 if the tick errored"}),
             commands.Arg(("--interval",), {"type": float, "default": _CHAIR_RUN_INTERVAL, "help": "seconds between ticks (default: 60)"}),
             commands.Arg(("--dry-run",), {"action": "store_true", "help": "plan and report each tick without taking the lease or performing any action"}),
+            commands.Arg(("--as-holder",), {"action": "store_true", "help": "with --dry-run, plan as the lease holder would while the loop holds the lease; takes no lease and performs nothing"}),
             commands.Arg(("--max-overruns",), {"type": int, "default": 3, "help": "exit 3 after this many facts-stage overruns in a row (default: 3; 0 disables)"}),
             commands.Arg(("--label",), {"help": "the chair's holder label (default: $COX_SESSION_LABEL, else unlabeled)"}),
             commands.Arg(("--profile",), {"help": "the routing profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
