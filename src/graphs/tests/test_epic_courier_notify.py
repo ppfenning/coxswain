@@ -208,9 +208,12 @@ def test_one_approved_not_landed_task_sends_one_courier_record(repo, cart, tmp_p
     result = drive(repo, cart, tmp_path, runner=Runner(new_file_patch("t1-probe.txt")), work=initiative())
 
     lines = [line for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    task_lines = [line for line in lines if "coxswain://task/" in line]
+    exit_lines = [line for line in lines if "--event run_exited" in line]
     expected_command = f"cox runs land epic-1 --repo {repo} --task t1-probe --apply"
-    assert len(lines) == 1
-    assert "coxswain://task/t1-probe" in lines[0] and expected_command in lines[0]
+    assert len(task_lines) == 1
+    assert "coxswain://task/t1-probe" in task_lines[0] and expected_command in task_lines[0]
+    assert len(exit_lines) == 1 and "coxswain://run/epic-1" in exit_lines[0]
     assert f"approved but not landed: t1-probe — {expected_command}" in result["exit_summary"]
 
 
@@ -223,7 +226,9 @@ def test_a_task_already_landed_sends_no_courier_record(repo, cart, tmp_path, mon
 
     result = drive(repo, cart, tmp_path, runner=Runner(new_file_patch("t1-probe.txt")), work=initiative(done=True))
 
-    assert log_path.read_text(encoding="utf-8").strip() == ""
+    lines = [line for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert [line for line in lines if "coxswain://task/" in line] == []
+    assert len([line for line in lines if "--event run_exited" in line]) == 1
     assert result["exit_summary"] == []
 
 
