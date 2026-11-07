@@ -30,7 +30,7 @@ def _ctx(store_conn, root: Path, **more):
     fields = {
         "store": Store(store_conn), "initiative_id": INITIATIVE, "run_id": "run-1", "work_state": "store",
         "epoch": None, "cartridge": {}, "runner": None, "retry": epic._StoreRetry(), "repo": root,
-        "items_lock": threading.Lock(),
+        "items_lock": threading.Lock(), "launched": {},
         "phase_branch": staticmethod(lambda phase: "main"), "scratch_branch": staticmethod(lambda task: f"scratch/{task}"),
         **more,
     }  # fmt: skip
