@@ -1351,6 +1351,18 @@ def _steward_head(runner: Callable[[list[str]], tuple[int, str]], repo_for: Call
     return head
 
 
+def _steward_target_branch_of(profile: dict, ws: Path, repo_for: Callable[[dict], str]) -> Callable[[str], str]:
+    """`StewardPorts.target_branch_of`: the branch a land of the epic's repository targets, as `land` resolves it, no fetch.
+    "" when no repository is recorded or the target is refused, so the executor reports merge_failed."""
+    def target(epic: str) -> str:
+        root = repo_for({"initiative": epic})
+        if not root:
+            return ""
+        flag, refusal = _initiative_target_branch(profile, Path(root), ws, epic)
+        return "" if refusal else base_branch.base_name(root, flag)
+    return target
+
+
 def _steward_level_merged(runner: Callable[[list[str]], tuple[int, str]], repo_for: Callable[[dict], str]) -> Callable[[str, str], bool]:
     """`FactsDeps.level_merged`: whether the phase's level branch has landed on the initiative's ticket branch; False without a repository."""
     git = _steward_git(runner)
@@ -13093,6 +13105,7 @@ def _chair_run_deps(
         ticket_branch_of=land.pr_branch_name,
         phase_of=_steward_phase_of(work_rows),
         run_gate_checks=_steward_gate_runner(runner, lane_capacity),
+        target_branch_of=_steward_target_branch_of(profile, ws, repo_for),
     )
     exec_deps = dataclasses.replace(
         exec_deps,
