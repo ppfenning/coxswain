@@ -90,18 +90,46 @@ the reverse. It may move `policy.cost.level` toward `strict`, never toward
 ## Test database
 
 `landing_areas.test_database` gives each build lane its own test database. A
-repository sets it in `.agent/cartridge.yaml`. It takes three keys. `env` is
+repository sets it in `.agent/cartridge.yaml`. It takes five keys. `env` is
 the name of the environment variable that carries the database URL to the
 harness. `template` is the URL, with one `{lane}` placeholder. `drop` is an
-optional command that removes the database.
+optional command that removes the database. `schema` and `create` are
+optional keys that build the database, described below.
 
 Coxswain replaces `{lane}` in `template` with the lane id. The text after
 `{lane}` must not be empty, and the database name keeps that literal suffix.
 In `drop`, `{name}` stands for the resulting database name.
 
-The project harness is expected to create the database on first use. When
-`drop` is set, coxswain runs it to remove the database. When `drop` is
-absent, coxswain lists the database name for cleanup on the run result.
+When `create` is not set, the project harness is expected to create the
+database on first use. When `create` is set, coxswain runs it to build the
+database, as described below. When `drop` is set, coxswain runs it to remove
+the database. When `drop` is absent, coxswain lists the database name for
+cleanup on the run result.
+
+Two more optional keys let coxswain build the schema in the new database.
+`schema` is a path relative to the repository. It must not be empty, must not
+start with a slash and must not contain a `..` segment. `create` is the
+command that builds the database. It must hold `{name}`, which stands for the
+database name, and it may hold `{schema}`, which stands for the `schema` path.
+`create` requires `schema`. Coxswain runs `create` in the lane worktree, so a
+relative `schema` path resolves there. A later run can meet a database that
+already exists, so `create` must tolerate an existing database. When `schema`
+is set without `create`, coxswain builds nothing and records that no create
+command was configured.
+
+The outcome of `create` is a record for the lane. It holds the database name,
+a status and the last 500 characters of the command output. The status is
+`created` when the command exits with zero, `failed` when it exits non-zero,
+cannot start or runs past 60 seconds, and `skipped` when no command was
+configured. Coxswain returns a failure as a `failed` record and does not
+raise it. A `failed` or `skipped` record does not change the database name,
+which always comes from `template` and the lane id.
+
+Two fields already show the lane database in a run. The task record carries
+the database name under `test_database`. The run result lists the outcome of
+each drop under `lane_databases`. The `create` record is returned to the
+caller that ran `create`. No field of the task record or the run result
+carries it yet, so a `failed` status is not visible there.
 
 ```yaml
 landing_areas:
@@ -111,8 +139,69 @@ landing_areas:
     drop: dropdb {name}
 ```
 
-A repository with no `test_database` setting behaves as before. Building the
-schema in the new database is the project's own concern.
+A repository with no `test_database` setting behaves as before. When `create`
+is not set, building the schema in the new database is the project's own
+concern.
+
+### Integration checks
+
+`landing_areas.integration_checks` is a list of checks that run against a
+real database. Each entry has the same shape as an entry in
+`landing_areas.checks`: a `name`, a `cmd` and an optional `timeout`. Like the
+other check lists it adds to what a layer below it set. A `cmd` may hold the
+placeholder `{packages}`. Coxswain replaces it with the packages the change
+touched, sorted and separated by spaces.
+
+The repository overlay in `.agent/cartridge.yaml` is refused, with a message
+that names `landing_areas.integration_checks`, when any of these hold. The
+value is not a list. The list is empty, so leave the key out instead of
+writing `[]`. An entry is not a mapping or lacks `name` or `cmd`. A `name` or
+`cmd` is not a non-empty string. Two entries share a `name`.
+
+A package is named from a changed path. Under a source tree, which is `src`,
+a path with three or more segments belongs to the package named by its first
+two segments, so `src/graphs/harness/x.py` belongs to `src/graphs`. Any other
+path belongs to the package named by its first segment. A changed test file
+counts as touching its own package. When the list of changed paths is empty,
+no package is named and the selection holds no check.
+
+Integration results show up in three places.
+
+- The task gate. It runs only when `integration_checks` is not empty and the
+  lane has a private test database. A failure shows up as a task that is not
+  approved.
+- The level gate. It runs only when `integration_checks` is configured and a
+  `test_database` is set. It uses its own private database, never the database
+  of a lane. A run that lands nothing still gets the level gate. That means
+  landing nothing does not exempt a run from the gate. The gate still selects
+  checks by the same package rule, so it holds no check when its list of
+  changed paths is empty.
+- The run summary. It counts integration results apart from unit results, so
+  a green unit count never hides a failing integration check.
+
+A lane has a private test database when `test_database` is set, because the
+database name comes from `template` and the lane id. A `failed` or `skipped`
+`create` record does not take that database away. Without a private lane
+database the task gate does not run. The level gate needs `test_database` and
+does not depend on any lane. A repository that sets no `test_database` gets
+neither gate, whatever `integration_checks` holds.
+
+```yaml
+landing_areas:
+  test_database:
+    env: DATABASE_URL
+    template: postgresql://localhost/app_{lane}_test
+    drop: dropdb {name}
+    schema: db/schema.sql
+    create: ./scripts/create-db.sh {name} {schema}
+  integration_checks:
+    - name: db-integration
+      cmd: ./scripts/integration.sh {packages}
+      timeout: 600
+```
+
+A repository with none of `schema`, `create` and `integration_checks`
+behaves as before.
 
 ## Extending local or base
 
