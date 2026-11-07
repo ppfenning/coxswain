@@ -298,6 +298,18 @@ def honour_release_request(runs_dir: Path | str, session: str, pid: int, host: s
     return True
 
 
+def release_at_exit(runs_dir: Path | str, session: str, pid: int, host: str) -> bool:
+    """Edge. When the session's pid is gone, ends its lease and record, but only if the record still names this holder; returns whether it released."""
+    runs_dir = Path(runs_dir)
+    with locked(runs_dir):
+        record = read(runs_dir)
+        if record is None or not _is_holder(record, session, pid, host):
+            return False
+        release_lease(runs_dir, session, pid, host)
+        write(runs_dir, None)
+    return True
+
+
 RELEASE_POLL_SECONDS = 2.0
 
 BEAT_LOOP_DEPRECATION = "chair: beat-loop is deprecated; the chair loop now beats its own lease and this subcommand will be removed in the next release"
@@ -325,6 +337,8 @@ def beat_loop(
         try:
             alive(pid, 0)
         except ProcessLookupError:
+            if release_at_exit(runs_dir, label, pid, host):
+                print(f"chair: {label} released at session exit")
             return 0
         except PermissionError:
             pass
