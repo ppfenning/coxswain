@@ -309,18 +309,29 @@ def _as_mapping(value: Any) -> Mapping[str, Any]:
 # `landing_areas.land_checks` is a `ci` or `local` selector, not a list; absent means local.
 # `landing_areas.land_at` is `ticket`, `level` or `task`, the granularity landing happens at; absent means ticket.
 # `landing_areas.target_branch` is the default branch an initiative lands into; absent means the repository's default chain.
+# `landing_areas.integration_checks` is an additive list of the same shape, run against the packages a change touched; a `cmd` may hold the literal placeholder `{packages}`; absent stays absent.
 # `landing_areas.test_database` names a lane's test database (`env`, `template`) and optionally how to remove it (`drop`); absent means no per-lane test database.
+# `test_database.schema` is a repository-relative path (no leading slash, no `..` segment); `test_database.create` holds `{name}`, may hold `{schema}`, and requires `schema`.
 _OVERLAY_NESTED_ALLOWED = {
     "policy": frozenset({"review_tier", "cost"}),
     "landing_areas": frozenset(
-        {"checks", "level_checks", "ticket_checks", "land_checks", "land_at", "target_branch", "test_database"}
+        {
+            "checks",
+            "level_checks",
+            "ticket_checks",
+            "integration_checks",
+            "land_checks",
+            "land_at",
+            "target_branch",
+            "test_database",
+        }
     ),
 }
 
 # Which allowed nested subkeys hold a list of entries rather than a mapping;
 # `landing_areas.checks` is the one exception to the mapping shape the loop
 # in `overlay_errors` otherwise assumes.
-_OVERLAY_LIST_SUBKEYS = frozenset({"checks", "level_checks", "ticket_checks"})
+_OVERLAY_LIST_SUBKEYS = frozenset({"checks", "level_checks", "ticket_checks", "integration_checks"})
 
 
 def _checks_problems(checks: Any, key: str = "checks") -> list[str]:
@@ -367,12 +378,12 @@ def _target_branch_problems(value: Any) -> list[str]:
     return []
 
 
-_TEST_DATABASE_KEYS = frozenset({"env", "template", "drop"})
+_TEST_DATABASE_KEYS = frozenset({"env", "template", "drop", "schema", "create"})
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 def _test_database_problems(value: Any) -> list[str]:
-    """`test_database` is {env, template, drop?}: `template` holds one `{lane}` with a non-empty suffix, `drop` holds `{name}`."""
+    """`test_database` is {env, template, drop?, schema?, create?}: `template` holds one `{lane}` with a non-empty suffix, `drop` and `create` hold `{name}`, `create` needs a repo-relative `schema`."""
     prefix = "project layer overlay refuses landing_areas.test_database"
     if not isinstance(value, Mapping):
         return [f"{prefix}: must be a mapping, got {type(value).__name__}"]
@@ -386,6 +397,21 @@ def _test_database_problems(value: Any) -> list[str]:
         problems.append(f"{prefix}: template must have text after '{{lane}}', got {template!r}")
     if "drop" in value and (not isinstance(drop, str) or "{name}" not in drop):
         problems.append(f"{prefix}: drop must be a string containing '{{name}}', got {drop!r}")
+    schema, create = value.get("schema"), value.get("create")
+    if "schema" in value and (
+        not isinstance(schema, str)
+        or not schema.strip()
+        or schema.startswith("/")
+        or ".." in schema.split("/")
+    ):
+        problems.append(
+            f"{prefix}: schema must be a non-empty path relative to the repository, "
+            f"with no leading '/' and no '..' segment, got {schema!r}"
+        )
+    if "create" in value and (not isinstance(create, str) or "{name}" not in create):
+        problems.append(f"{prefix}: create must be a string containing '{{name}}', got {create!r}")
+    if "create" in value and "schema" not in value:
+        problems.append(f"{prefix}: create requires schema")
     return problems
 
 
@@ -488,7 +514,16 @@ def apply_overlay(
     landing_areas = _as_mapping(overlay.get("landing_areas"))
     overlay_landing = {
         key: landing_areas[key]
-        for key in ("checks", "level_checks", "ticket_checks", "land_checks", "land_at", "target_branch", "test_database")
+        for key in (
+            "checks",
+            "level_checks",
+            "ticket_checks",
+            "integration_checks",
+            "land_checks",
+            "land_at",
+            "target_branch",
+            "test_database",
+        )
         if key in landing_areas
     }
     if overlay_landing:
@@ -509,6 +544,11 @@ def apply_overlay(
 def test_database_setting(cartridge: Mapping[str, Any]) -> Mapping[str, Any] | None:
     """The `landing_areas.test_database` mapping of a resolved cartridge, or None when absent."""
     return _as_mapping(cartridge.get("landing_areas")).get("test_database")
+
+
+def integration_checks_setting(cartridge: Mapping[str, Any]) -> list[Any]:
+    """The `landing_areas.integration_checks` list of a resolved cartridge, or an empty list when absent."""
+    return list(_as_mapping(cartridge.get("landing_areas")).get("integration_checks") or [])
 
 
 def _merge_overlay(
