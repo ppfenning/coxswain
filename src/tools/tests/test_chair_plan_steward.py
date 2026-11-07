@@ -41,7 +41,10 @@ def test_an_approved_unmerged_level_plans_a_merge_then_the_planner_relaunch_tagg
     facts = _facts_for(_epic(("a-t", "approved")))
     assert _kinds(plan_tick(_without_steward(facts))) == ["clear_branches", "relaunch"]
     assert plan_tick(facts) == [
-        {"kind": "merge_level", "epic": "a", "topic": "a", "fields": {"head": "h1", "level": "0"}, "level": 0, "epoch": 7},
+        {
+            "kind": "merge_level", "epic": "a", "topic": "a", "fields": {"head": "h1", "level": "0"}, "level": 0,
+            "land_at": "ticket", "epoch": 7,
+        },
         PLANNER_RELAUNCH_BEHIND,
     ]
 
@@ -210,7 +213,78 @@ def test_the_routine_filter_keeps_the_three_steward_kinds():
 def test_a_lent_lease_still_plans_the_steward_actions_before_standby():
     facts = _facts_for(_epic(("a-t", "approved")), lease=_lease(lent=True))
     assert plan_tick_held(facts, NOW).actions == [
-        {"kind": "merge_level", "epic": "a", "topic": "a", "fields": {"head": "h1", "level": "0"}, "level": 0, "epoch": 7},
+        {
+            "kind": "merge_level", "epic": "a", "topic": "a", "fields": {"head": "h1", "level": "0"}, "level": 0,
+            "land_at": "ticket", "epoch": 7,
+        },
         PLANNER_RELAUNCH_BEHIND,
         STANDBY,
     ]
+
+
+def _task(id: str, run: str, *, fetch: bool = False) -> dict:
+    return {**_approved(id), "initiative": "a", "phase": "p1", "run": run, "needs_fetch": fetch}
+
+
+def _landing_facts(land_at: str, *tasks: dict, steward: bool = True) -> dict:
+    epic = {**_epic(*[(t["id"], "approved") for t in tasks]), "land_at": land_at}
+    facts = _facts_for(epic, approved=list(tasks))
+    return facts if steward else _without_steward(facts)
+
+
+def _merges(actions: list[dict]) -> list[dict]:
+    return [a for a in actions if a["kind"] == "merge_level"]
+
+
+def _lands(actions: list[dict]) -> list[dict]:
+    return [a for a in actions if a["kind"] in ("land_phase", "partial_land")]
+
+
+def test_a_land_at_level_merge_carries_repo_phase_run_task_runs_and_fetch_runs():
+    [merge] = _merges(plan_tick(_landing_facts("level", _task("a-t1", "a-2", fetch=True), _task("a-t2", "a-2", fetch=True))))
+    assert merge | {"epoch": 0} == {
+        "kind": "merge_level", "epic": "a", "topic": "a", "fields": {"head": "h1", "level": "0"}, "level": 0,
+        "land_at": "level", "repo": "r", "phase": "p1", "run": "a-2", "task_runs": {"a-t1": "a-2", "a-t2": "a-2"},
+        "fetch_runs": ["a-2"], "epoch": 0,
+    }
+
+
+def test_a_land_at_task_merge_carries_the_same_inputs_with_no_fetch_runs_when_fetched():
+    [merge] = _merges(plan_tick(_landing_facts("task", _task("a-t1", "a-2"))))
+    assert (merge["land_at"], merge["repo"], merge["phase"], merge["run"]) == ("task", "r", "p1", "a-2")
+    assert (merge["task_runs"], merge["fetch_runs"]) == ({"a-t1": "a-2"}, [])
+
+
+def test_a_land_at_ticket_merge_carries_no_land_inputs():
+    [merge] = _merges(plan_tick(_landing_facts("ticket", _task("a-t1", "a-2"))))
+    assert merge["land_at"] == "ticket"
+    assert not {"repo", "phase", "run", "task_runs", "fetch_runs"} & merge.keys()
+
+
+def test_a_split_phase_in_two_runs_lands_from_the_newest_and_lists_both_in_task_runs():
+    tasks = (_task("a-t1", "a-2"), _task("a-t2", "a-10", fetch=True), _task("a-t3", "a-3", fetch=True))
+    [merge] = _merges(plan_tick(_landing_facts("level", *tasks)))
+    assert merge["run"] == "a-10"
+    assert merge["task_runs"] == {"a-t1": "a-2", "a-t2": "a-10", "a-t3": "a-3"}
+    assert merge["fetch_runs"] == ["a-10", "a-3"]
+
+
+def test_a_task_with_an_unknown_run_leaves_the_merge_without_a_run():
+    [merge] = _merges(plan_tick(_landing_facts("level", _task("a-t1", "a-2"), _task("a-t2", ""))))
+    assert "run" not in merge
+    assert (merge["repo"], merge["phase"], merge["task_runs"]) == ("r", "p1", {"a-t1": "a-2", "a-t2": ""})
+
+
+def test_a_tick_plans_one_land_for_the_phase_the_steward_merges_not_two():
+    tasks = (_task("a-t1", "a-2", fetch=True), _task("a-t2", "a-2", fetch=True))
+    assert [a["kind"] for a in _lands(plan_tick(_landing_facts("level", *tasks, steward=False)))] == ["land_phase"]
+    actions = plan_tick(_landing_facts("level", *tasks))
+    assert len(_merges(actions)) == 1
+    assert _lands(actions) == []
+    assert [a for a in actions if a["kind"] == "fetch"] == []
+
+
+def test_a_ticket_merge_leaves_the_planner_land_in_place():
+    tasks = (_task("a-t1", "a-2"),)
+    unhandled = _lands(plan_tick(_landing_facts("ticket", *tasks, steward=False)))
+    assert _lands(plan_tick(_landing_facts("ticket", *tasks))) == unhandled

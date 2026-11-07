@@ -796,14 +796,37 @@ def _steward_handled(facts: Facts) -> frozenset[str]:
     return frozenset(e["epic_id"] for e in steward["epics"]) if steward is not None and steward["enabled"] else frozenset()
 
 
-def _from_steward(action: chair_steward.StewardAction) -> Action:
+_LANDS_BY_MERGE = ("level", "task")
+
+
+def _land_inputs(approved: Sequence[ApprovedTask], initiative: str, phase: str) -> dict[str, object]:
+    """What a phase land needs, read off the approved tasks of the phase: repo, phase, task_runs, fetch_runs and run.
+
+    `run` is the newest run and is left out when any task's run is unknown, so the executor can name the missing run."""
+    tasks = [t for t in approved if t["initiative"] == initiative and t["phase"] == phase]
+    if not tasks:
+        return {}
+    run = newest_run({t["run"] for t in tasks})
+    return {
+        "repo": tasks[0]["repo"],
+        "phase": phase,
+        **({"run": run} if run else {}),
+        "task_runs": {t["id"]: t["run"] for t in tasks},
+        "fetch_runs": sorted({t["run"] for t in tasks if t["needs_fetch"] and t["run"]}),
+    }
+
+
+def _from_steward(action: chair_steward.StewardAction, approved: Sequence[ApprovedTask] = ()) -> Action:
     topic, fields = action["topic"], action["fields"]
     scoped: Action = {"epic": topic, "topic": topic, "fields": fields}
     if action["kind"] == "relaunch":
         # epic, topic and fields (the signature) let the executor record `relaunched`; a planner relaunch carries none.
         return {"kind": "relaunch", "initiative": topic, **scoped}
     if action["kind"] == "merge_level":
-        return {"kind": "merge_level", **scoped, "level": int(fields["level"])}
+        land_at = action.get("land_at")
+        inputs = _land_inputs(approved, topic, action.get("phase", "")) if land_at in _LANDS_BY_MERGE else {}
+        kept = {"land_at": land_at} if land_at else {}
+        return {"kind": "merge_level", **scoped, "level": int(fields["level"]), **kept, **inputs}  # type: ignore[typeddict-item]
     if action["kind"] == "run_gate":
         return {"kind": "run_gate", **scoped}
     # The only kind left is publish, which the plan names steward_event.
@@ -819,7 +842,20 @@ def _steward_actions(facts: Facts, lost: frozenset[str]) -> list[Action]:
     if steward is None or not steward["enabled"]:
         return []
     epics = [{**e, "exited": True} if e["epic_id"] in lost else e for e in steward["epics"]]
-    return [_from_steward(a) for a in chair_steward.decide(epics)]
+    return [_from_steward(a, facts["approved"]) for a in chair_steward.decide(epics)]
+
+
+def _without_steward_lands(lands: list[Action], steward: list[Action]) -> list[Action]:
+    """Drop the planner's land for each phase a steward merge_level at land_at level or task is landing.
+
+    The merge carries the fetch_runs, so the planner's fetch of those runs goes too; otherwise the run is fetched twice."""
+    merging = {(a["epic"], a["phase"]): a for a in steward if a["kind"] == "merge_level" and a.get("land_at") in _LANDS_BY_MERGE and "phase" in a}
+    fetched = {(a["epic"], run) for a in merging.values() for run in a.get("fetch_runs", [])}
+    return [
+        a for a in lands
+        if not (a["kind"] in ("land_phase", "partial_land") and (a["initiative"], a["phase"]) in merging)
+        and not (a["kind"] == "fetch" and (a["initiative"], a["run"]) in fetched)
+    ]
 
 
 def _without_launch_pair(actions: list[Action], ids: frozenset[str]) -> list[Action]:
@@ -906,7 +942,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     facts = _with_dead_pid_lost(raw_facts, now)
     reverts = revert_check(facts.get("landed_main", []))
     carries = plan_carry(facts.get("stranded", []))
-    lands = _without_carried_lands(plan_lands(facts, now), carries)
+    planned_lands = _without_carried_lands(plan_lands(facts, now), carries)
     fetch_exits = _fetch_exit_actions(facts)
     login_needs_chair = _login_needs_chair_actions(facts)
     empty_decompose_needs_chair = _empty_decompose_needs_chair_actions(facts)
@@ -927,6 +963,8 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     widened = frozenset((a["initiative"], a["task_id"]) for a in widen)
     steward_handled = _steward_handled(facts)
     steward = _steward_actions(facts, lost)
+    # A merge_level at land_at level or task lands its phase: the planner's own land for it would be a second land.
+    lands = _without_steward_lands(planned_lands, steward)
     recover_actions = _steward_relaunches_replace(plan_recover(facts, now), steward, steward_handled)
     lost_actions = _steward_relaunches_replace(plan_lost_runs(facts, now), steward, steward_handled)
     ordinary = _withhold_lost_runs(_without_widened(recover_actions, widened), lost)
@@ -994,7 +1032,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         "its run is lost": lost,
         "schema version death": frozenset(facts.get("schema_deaths", {})),
         "an unmet need": _unmet_needs_ids(facts["initiatives"]),
-        "its repo is landing": _landing_initiatives(facts, lands),
+        "its repo is landing": _landing_initiatives(facts, planned_lands),
         # A relaunch the budget or the loop rule refused must not go out again as a launch_epic.
         "relaunch refused by the budget or the loop rule": refused_launches(facts, now),
         "land backoff": backoff_held(facts, now),
