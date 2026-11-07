@@ -250,7 +250,7 @@ def stagger_seconds(value: object) -> float:
     return seconds if math.isfinite(seconds) and seconds >= 0 else DEFAULT_LAUNCH_STAGGER_S
 
 
-_UNFENCED = ("standby", "take_lease", "steer_clear", "waiting", "deferred")  # not writes, so a stale or missing epoch does not stop them
+_UNFENCED = ("standby", "take_lease", "steer_clear", "waiting", "deferred", "unlaunched")  # not writes, so a stale or missing epoch does not stop them
 _LAND_KINDS = ("land", "land_phase", "partial_land")  # a partial_land is a run of task lands, blocked and escalated as one
 _REASON_CAP = 600
 LOCAL_ARGV_TIMEOUT_S = 900.0  # a local argv with no bound of its own; matches _CHECK_COMMAND_TIMEOUT_S
@@ -427,7 +427,7 @@ def argv_for(action: Action, initiative_id: str = "", ids_mode: str = "slug", la
         ] if initiative else None
     if kind == "pull":
         return ["cox", "route", "pull"]
-    if kind in ("steer_clear", "waiting", "deferred"):  # recorded only; no command runs
+    if kind in ("steer_clear", "waiting", "deferred", "unlaunched"):  # recorded only; no command runs
         return None
     return None
 
@@ -1470,6 +1470,8 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
         )
     if kind == "deferred":
         return _result(action, "recorded", _deferred_reason(action))
+    if kind == "unlaunched":  # "skipped", not "recorded": CHANGED_STATUSES must not count it
+        return _result(action, "skipped", action.get("reason", ""))
     if kind == "fetch_exit":
         return _fetch_exit(action, deps)
     if kind == "widen_ticket":
@@ -1655,6 +1657,9 @@ def perform(
             deps.record(_recorded(escalated))
             results.append(escalated)
     for action in actions:
+        if dry_run and action.get("kind") == "unlaunched":  # same result as live, and not a would item
+            results.append(_execute(action, deps, blocked))
+            continue
         if dry_run:
             results.append(_result(action, "dry_run", _would(action)))
             continue
@@ -1694,7 +1699,9 @@ def perform(
             uncleared[initiative] = result["status"]
         if action.get("kind") in _STEWARD_OUTCOMES and result["status"] in ("done", "failed", "refused"):
             steward_ended[action.get("epic", "")] = (action["kind"], result["status"])
-        if result["status"] != "in_progress":  # the land's own result is recorded when it is collected
+        # The land's own result is recorded when it is collected. An unlaunched is never recorded: the chair
+        # repeats it every few minutes for every waiting initiative, so a row each tick would flood the store.
+        if result["status"] != "in_progress" and action.get("kind") != "unlaunched":
             deps.record(_recorded(result))
         results.append(result)
         if (

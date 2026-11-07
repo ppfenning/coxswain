@@ -2314,6 +2314,12 @@ def _started_since(started, cutoff: datetime.datetime) -> bool:
     return (when if when.tzinfo else when.replace(tzinfo=datetime.UTC)) >= cutoff
 
 
+FENCED_NOTE = (
+    "the run's process still answers but its lease heartbeat stopped, so the epoch fence refuses its writes "
+    "and it is not making progress; stop that pid on its host, then relaunch."
+)  # names no pid, so other screens can reuse it
+
+
 def _status_line(row: dict, short_id: str | None = None) -> str:
     short = short_id or row.get("short_id")
     name = f"{row['id']} [{short}]" if short else row["id"]
@@ -2326,6 +2332,7 @@ def _status_line(row: dict, short_id: str | None = None) -> str:
         ["; ".join(row[key]) for key in ("quarantined", "reused") if row.get(key)]
         + [row[key] for key in ("summary", "usage") if row.get(key)]
         + _phase_tails(row)
+        + ([FENCED_NOTE] if row["state"] == "fenced" else [])
     )
     return " ".join([head, *tails])
 
@@ -2405,7 +2412,7 @@ def render_status(rows: list, groups: dict | None = None, problems: list | None 
     `None` for that row and printing them would show the word "None"
     twice for no reason. `quarantined`, `reused`, `summary` and `usage`
     are appended only when the row carries them, so a quiet run stays
-    one line. `groups`, an `intake_groups` result, appends one line per
+    one line. A fenced row ends with `FENCED_NOTE`. `groups`, an `intake_groups` result, appends one line per
     group when given, and nothing when `None`. `problems`, `state_problems`'
     output, appends one line per entry last. `hidden`, when positive, adds
     one line after the rows saying that many older runs were left out.
