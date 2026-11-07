@@ -221,6 +221,7 @@ class RunDeps:
     restart_note: str = ""  # the "restarts N in 24h" segment appended to every tick line; "" for none
     record_restart: Callable[[str], None] | None = None  # given the reason when the loop restarts
     save_cache: Callable[[], None] | None = None  # run on every live stop, before the lease is released
+    force_holder: bool = False  # a dry run plans as the holder even behind a live foreign lease; a live tick never reads it
     # Notifier: `notify` is `dispatch`'s call shape; `notify_config` None is the off state; no `workspace` skips the step.
     notify: Callable[[list, NotifyConfig | None, Path, float], list[str]] = dispatch
     notify_config: NotifyConfig | None = None
@@ -371,10 +372,10 @@ def error_line(exc: Exception, now: datetime, results: Sequence[Result] = ()) ->
     return f"chair {now.astimezone(EASTERN):%m-%d %H:%M %Z} | tick error: {type(exc).__name__}: {exc}{tail}"
 
 
-def as_holder(facts: Facts) -> Facts:
-    """The facts as seen once `take_lease` had won a released or stale lease; a live foreign holder is left alone."""
+def as_holder(facts: Facts, force: bool = False) -> Facts:
+    """The facts as seen once `take_lease` had won a released or stale lease; a live foreign holder is left alone unless `force`."""
     lease = facts["lease"]
-    won = lease["released"] or lease["stale"]
+    won = force or lease["released"] or lease["stale"]
     return {**facts, "lease": {**lease, "mine": True}} if won else facts
 
 
@@ -543,7 +544,7 @@ def tick_timed(
     _publish_meter(deps, dry_run, now)
     pull_failure = _pull_step(deps, dry_run)
     gathered, facts_s = _gather_bounded(deps, sources, now, clock)
-    facts = as_holder(gathered) if dry_run else gathered
+    facts = as_holder(gathered, deps.force_holder) if dry_run else gathered
     gate = _evaluate_gate(deps, now)
     if not dry_run:
         deps.set_gate(gate)
