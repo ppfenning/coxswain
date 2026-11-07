@@ -859,6 +859,34 @@ def test_status_rows_reads_a_pid_that_answers_without_a_held_lease_as_fenced():
     assert [(r["state"], r["fenced"]) for r in route.status_rows(entries)] == [("fenced", True), ("exited", False), ("no pidfile", False)]
 
 
+def _line_row(state, pid, started):
+    return {"id": "run-1", "state": state, "pid": pid, "started": started}
+
+
+def test_status_line_ends_a_fenced_row_with_the_fenced_note():
+    line = route._status_line(_line_row("fenced", 7, "10:00"))
+    assert line == f"run-1: fenced (pid 7, started 10:00) {route.FENCED_NOTE}"
+
+
+@pytest.mark.parametrize(
+    "row, expected",
+    [
+        (_line_row("alive", 7, "10:00"), "run-1: alive (pid 7, started 10:00)"),
+        (_line_row("exited", 7, "10:00"), "run-1: exited (pid 7, started 10:00)"),
+        (_line_row("no pidfile", None, None), "run-1: no pidfile"),
+    ],
+)
+def test_status_line_leaves_other_states_without_the_fenced_note(row, expected):
+    assert route._status_line(row) == expected
+
+
+def test_render_status_carries_the_fenced_note_for_a_fenced_row_only():
+    text = route.render_status([_line_row("fenced", 7, "10:00"), {**_line_row("alive", 8, "10:01"), "id": "run-2"}])
+    fenced_line, alive_line = text.splitlines()
+    assert fenced_line.endswith(route.FENCED_NOTE)
+    assert route.FENCED_NOTE not in alive_line
+
+
 def test_run_entries_carries_the_fenced_flag_only_for_a_readable_pidfile():
     entries = route.run_entries({"r1": "1", "r2": "junk"}, {}, {}, None, {"r1": True, "r2": True})
     assert [(e["id"], e["fenced"]) for e in entries] == [("r1", True), ("r2", False)]
