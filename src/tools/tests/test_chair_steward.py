@@ -2,14 +2,18 @@ from agent_tools.chair_steward import decide, epic_actions, event_key
 from agent_tools.courier import EVENTS
 
 
-def facts(levels, *, epic="e1", head="h1", exited=False, signature="s1", reported=()):
+def facts(levels, *, epic="e1", head="h1", exited=False, signature="s1", reported=(), land_at="ticket"):
     return {
         "epic_id": epic,
         "branch_head": head,
-        "levels": [{"tasks": [{"id": i, "state": s} for i, s in tasks], "merged": merged} for tasks, merged in levels],
+        "levels": [
+            {"tasks": [{"id": i, "state": s} for i, s in tasks], "merged": merged, "phase": f"p{n}"}
+            for n, (tasks, merged) in enumerate(levels)
+        ],
         "exited": exited,
         "signature": signature,
         "reported": frozenset(reported),
+        "land_at": land_at,
     }
 
 
@@ -46,6 +50,30 @@ def test_quarantine_blocks_relaunch_even_when_reported():
 def test_all_approved_unmerged_level_yields_merge_level():
     f = facts([([("t1", "approved"), ("t2", "done"), ("t3", "dropped")], False)])
     assert kinds(epic_actions(f)) == [("merge_level", None)]
+
+
+def test_merge_level_carries_land_at_and_the_level_phase():
+    levels = [([("t1", "done")], True), ([("t2", "approved")], False)]
+    [at_level] = epic_actions(facts(levels, land_at="level"))
+    [at_ticket] = epic_actions(facts(levels))
+    assert (at_level["land_at"], at_level["phase"]) == ("level", "p1")
+    assert (at_ticket["land_at"], at_ticket["phase"]) == ("ticket", "p1")
+
+
+def test_merge_level_fields_and_key_do_not_depend_on_land_at():
+    levels = [([("t1", "approved")], False)]
+    [at_level] = epic_actions(facts(levels, land_at="level"))
+    [at_ticket] = epic_actions(facts(levels))
+    assert at_level["fields"] == at_ticket["fields"] == {"head": "h1", "level": "0"}
+    assert at_level["key"] == at_ticket["key"] == "level_merged:h1:0"
+
+
+def test_only_merge_level_carries_land_at_and_phase():
+    [attention] = epic_actions(facts([([("t1", "quarantined")], False)], land_at="task"))
+    [gate] = epic_actions(facts([([("t1", "done")], True)], land_at="task"))
+    assert gate["kind"] == "run_gate"
+    assert "land_at" not in attention and "phase" not in attention
+    assert "land_at" not in gate and "phase" not in gate
 
 
 def test_level_with_unfinished_task_is_not_merged():

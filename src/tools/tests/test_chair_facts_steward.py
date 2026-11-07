@@ -3,11 +3,17 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from agent_tools import pacing
+from agent_tools import pacing, route
 from agent_tools.chair import lease_holder
-from agent_tools.chair_facts import FactsDeps, gather_facts, resolve_steward_enabled, resolve_steward_scope
+from agent_tools.chair_facts import (
+    FactsDeps,
+    gather_facts,
+    resolve_steward_enabled,
+    resolve_steward_scope,
+    steward_plan_facts,
+)
 from agent_tools.chair_read_steward import level_is_merged, reported_keys, task_signature
-from agent_tools.chair_steward import event_key
+from agent_tools.chair_steward import epic_actions, event_key
 
 NOW = datetime(2026, 9, 25, 12, 0, tzinfo=UTC)
 POLICY = pacing.Policy((1.2, 1.5, 2.0), ("deep", "standard", "cheap"), ("high", "low"), 1.0, 0.85)
@@ -157,11 +163,82 @@ def test_with_the_setting_on_gather_facts_fills_levels_merged_state_head_exit_an
     assert steward["enabled"] is True
     assert epic["epic_id"] == "i" and epic["branch_head"] == "abc" and epic["exited"] is True
     assert epic["levels"] == [
-        {"tasks": [{"id": "a", "state": "ready"}, {"id": "c", "state": "building"}], "merged": True},
-        {"tasks": [{"id": "b", "state": "approved"}], "merged": False},
+        {"tasks": [{"id": "a", "state": "ready"}, {"id": "c", "state": "building"}], "merged": True, "phase": "p2"},
+        {"tasks": [{"id": "b", "state": "approved"}], "merged": False, "phase": "p10"},
     ]
     assert epic["signature"] == "a=ready,b=approved,c=building"
     assert epic["reported"] == reported_keys(ENTRIES, "i")
+    assert epic["land_at"] == "ticket"
+
+
+def _plan(land_at, landed, level_merged=lambda initiative, phase: False):
+    rows = [
+        {**_task("i", "a", "approved"), "extra": {"merged": True}},
+        _task("i", "b", "done"),
+        _task("i", "x", "dropped"),
+        {**_task("i", "c", "approved"), "phase": "p2"},
+    ]
+    (epic,) = steward_plan_facts(["i"], rows, {}, lambda initiative: "h", level_merged, [], land_at, landed)["epics"]
+    return epic
+
+
+def test_at_ticket_a_level_is_merged_by_the_ancestry_callable_not_the_landed_set():
+    epic = _plan({"i": "ticket"}, {"i": {"a", "b", "c"}}, lambda initiative, phase: phase == "p2")
+    assert [lv["merged"] for lv in epic["levels"]] == [False, True]
+    assert epic["land_at"] == "ticket"
+
+
+@pytest.mark.parametrize("land_at", ["level", "task"])
+def test_at_level_and_task_a_fully_landed_level_is_merged_with_no_ticket_branch(land_at):
+    epic = _plan({"i": land_at}, {"i": {"a", "b"}})
+    assert [lv["merged"] for lv in epic["levels"]] == [True, False]
+    assert epic["land_at"] == land_at
+
+
+@pytest.mark.parametrize("land_at", ["level", "task"])
+def test_at_level_and_task_a_level_with_an_unlanded_task_is_not_merged(land_at):
+    assert [lv["merged"] for lv in _plan({"i": land_at}, {"i": {"b"}})["levels"]] == [False, False]
+
+
+@pytest.mark.parametrize("land_at", ["level", "task"])
+def test_at_level_and_task_a_dropped_task_need_not_be_landed(land_at):
+    assert _plan({"i": land_at}, {"i": {"a", "b"}})["levels"][0]["merged"] is True
+
+
+def test_an_initiative_missing_from_land_at_reads_ticket_and_one_missing_from_landed_reads_empty():
+    epic = _plan({}, {}, lambda initiative, phase: True)
+    assert epic["land_at"] == "ticket" and [lv["merged"] for lv in epic["levels"]] == [True, True]
+    assert [lv["merged"] for lv in _plan({"i": "level"}, {})["levels"]] == [False, False]
+
+
+def test_an_approved_unmerged_task_at_level_is_landed_but_its_level_is_not_merged_so_merge_level_fires():
+    items = [{"id": "a", "state": "approved"}, {"id": "b", "state": "done"}]
+    landed = {i["id"] for i in items if route.is_met_need(i, land_at="level")}
+    assert landed == {"a", "b"}
+    rows = [_task("i", "a", "approved"), _task("i", "b", "done")]
+    plan = steward_plan_facts(["i"], rows, {}, lambda i: "h", lambda i, p: False, [], {"i": "level"}, {"i": landed})
+    (epic,) = plan["epics"]
+    assert epic["levels"][0]["merged"] is False
+    [action] = epic_actions(epic)
+    assert (action["kind"], action["land_at"], action["phase"]) == ("merge_level", "level", "p1")
+
+
+def test_each_level_carries_its_phase_name_in_natural_order():
+    assert [lv["phase"] for lv in _plan({"i": "level"}, {})["levels"]] == ["p1", "p2"]
+
+
+def test_gather_facts_resolves_land_at_and_passes_the_ready_landed_set():
+    deps = replace(
+        _deps(),
+        steward_enabled=lambda: True,
+        work_rows=lambda: ROWS,
+        cartridge=lambda: {},
+        land_at_values=lambda: {"i": "level"},
+        level_merged=lambda initiative, phase: False,
+    )
+    (epic,) = gather_facts(deps, NOW)["steward"]["epics"]
+    assert epic["land_at"] == "level"
+    assert [lv["merged"] for lv in epic["levels"]] == [False, False]
 
 
 def _git(answers: dict[str, tuple[int, str]]):
