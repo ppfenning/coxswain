@@ -724,6 +724,15 @@ def test_two_unordered_same_phase_tasks_sharing_a_file_are_ordered_and_noted(car
     assert "t1" in note and "t2" in note and "pkg/a.py" in note
 
 
+def test_tasks_in_two_phases_sharing_a_file_are_ordered_and_noted(cart) -> None:
+    result, frontmatter = _ordering_run(
+        cart, [_unit("t1", [], ["pkg/a.py"]), {**_unit("t2", [], ["pkg/a.py"]), "phase": "p2"}]
+    )
+    t2 = next(t for t in result["tasks"] if t["id"] == "t2")
+    assert t2["needs"] == ["t1"]
+    assert "ordered: t2 now needs t1, both touch pkg/a.py" in frontmatter["lint"]
+
+
 @pytest.mark.parametrize(
     "tasks",
     [
