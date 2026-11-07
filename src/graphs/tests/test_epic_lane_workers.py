@@ -3,15 +3,31 @@
 from __future__ import annotations
 
 import os
+import sys
+from dataclasses import replace
 
 import pytest
-from test_epic_driver import cart, drive, initiative, repo  # noqa: F401 -- fixtures
+from test_epic_driver import (  # noqa: F401 -- cart and repo are fixtures
+    _DELETE_BENCH_TXT,
+    _TRIM_PHASE,
+    Runner,
+    _trim_patches,
+    _with_style,
+    cart,
+    drive,
+    initiative,
+    new_file_patch,
+    repo,
+)
 
 import harness.epic as epic
-from harness.lane_workers import LANE_CAPACITY_VAR, XDIST_VAR
+from harness.lane_workers import LANE_CAPACITY_VAR, XDIST_VAR, lane_workers_from
+from harness.resume import load_result
+from tests.test_epic_rescue import PHASE, TASK, _rescue, _setup
 
 LANE_DB = "LANE_DB"
 LEVEL = {"name": "level", "cmd": "true"}
+PRINT = f'echo "workers=[${XDIST_VAR}]"'
 
 
 @pytest.fixture(autouse=True)
@@ -74,3 +90,75 @@ def test_workers_and_the_lane_database_travel_together(repo, cart, tmp_path, mon
     result, _ = drive(repo, cart, tmp_path, work=_work())
     assert calls and all(env[XDIST_VAR] == "4" and env[LANE_DB].endswith("_test") for _, env in calls)
     assert all(t["test_database"].endswith("_test") for t in result["tasks"])
+
+
+# ── end to end: a really spawned command prints what its environment holds ──────────────────────────────────────
+
+BOTH = pytest.mark.parametrize(
+    ("capacity", "workers"), [("5", "4"), (None, "")], ids=["capacity-5-on-20-cores", "no-capacity"]
+)
+
+
+def _twenty_cores(monkeypatch, capacity: str | None) -> None:
+    monkeypatch.setattr(os, "cpu_count", lambda: 20)
+    if capacity is not None:
+        monkeypatch.setenv(LANE_CAPACITY_VAR, capacity)
+
+
+def _states_workers(result: dict, workers: str) -> None:
+    """The count a result carries as a field, absent when the child environment stated none."""
+    assert (result.get("workers") == workers) if workers else ("workers" not in result)
+
+
+@BOTH
+def test_every_check_prints_the_cap_it_was_spawned_with(repo, cart, tmp_path, monkeypatch, capacity, workers) -> None:  # noqa: F811
+    _twenty_cores(monkeypatch, capacity)
+    fixed = tmp_path / "lint-fix.out"
+    cart["landing_areas"]["checks"] = [{"name": "probe", "cmd": PRINT, "fix": f'echo "[${XDIST_VAR}]" > {fixed}'}]
+    cart["landing_areas"]["level_checks"] = [{"name": "level", "cmd": PRINT}]
+    work = _work()
+    next(i for i in work["items"] if i["id"] == "t1-probe")["verify"] = [PRINT]
+    result, _ = drive(repo, cart, tmp_path, work=work)
+
+    printed = f"workers=[{workers}]"
+    for task in result["tasks"]:
+        (check,) = task["change_facts"]["checks"]
+        assert printed in check["output_tail"]
+        _states_workers(check, workers)
+    evidence = {row["check"]: row["output"] for t in result["tasks"] for row in t["evidence"]}
+    assert ("workers: 4" in evidence["checks:probe"]) == bool(workers)
+    assert printed in evidence["verify:1"]
+    assert ("workers: 4" in evidence["verify:1"]) == bool(workers)
+
+    (level,) = result["phases"][0]["level_checks"]
+    assert printed in level["output_tail"]
+    _states_workers(level, workers)
+    assert fixed.read_text().strip() == f"[{workers}]"
+
+
+@BOTH
+def test_the_coverage_floor_carries_the_cap(repo, cart, tmp_path, monkeypatch, capacity, workers) -> None:  # noqa: F811
+    """The floor's checks run in a scratch worktree named `after`, and nothing captures their output but a file."""
+    _twenty_cores(monkeypatch, capacity)
+    seen = tmp_path / "seen.log"
+    cmd = f'echo "$(pwd -P) [${XDIST_VAR}]" >> {seen}; {sys.executable} check.py'
+    cart["landing_areas"]["checks"] = [{"name": "lint", "cmd": cmd}]
+    runner = Runner(_trim_patches(), style={_TRIM_PHASE: _DELETE_BENCH_TXT})
+    result, _ = drive(repo, _with_style(cart), tmp_path, runner=runner, work=initiative(two_phases=False))
+
+    assert result["phases"][0]["trim"] == "trim: 1 lines removed"
+    floor = [line for line in seen.read_text().splitlines() if line.split()[0].endswith("/after")]
+    assert floor and all(line.endswith(f"[{workers}]") for line in floor)
+
+
+@BOTH
+def test_the_rescue_checks_carry_the_cap(repo, cart, tmp_path, monkeypatch, capacity, workers) -> None:  # noqa: F811
+    _twenty_cores(monkeypatch, capacity)
+    cart["landing_areas"]["checks"] = [{"name": "probe", "cmd": PRINT}]
+    ctx, item, _ = _setup(repo, cart, tmp_path, new_file_patch("t1-probe.txt"))
+    # `rescue_task` is not reached through `drive`; `run_epic` derives this field the same way.
+    ctx = replace(ctx, lane_workers=lane_workers_from(os.environ, os.cpu_count() or 1))
+
+    assert _rescue(ctx, item, Runner({}))["status"] == "approved"
+    (row,) = load_result(ctx.runs_dir, "rescue-1", PHASE, TASK)["evidence"]
+    assert row["source"] == "harness_verify" and f"workers=[{workers}]" in row["output"]
