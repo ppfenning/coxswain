@@ -1270,13 +1270,14 @@ def _deferred_reason(action: Action) -> str:
 _STEWARD_OUTCOMES = {"merge_level": ("level_merged", "merge_failed"), "run_gate": ("gate_passed", "gate_failed")}
 
 
-def _publish(action: Action, deps: Deps, event: str, fields: Mapping[str, str]) -> None:
+def _publish(action: Action, deps: Deps, event: str, fields: Mapping[str, str], detail: str = "") -> None:
     """Edge. One typed courier line on the action's topic, appended to `work_dir/courier.jsonl` and never read back.
 
     It is addressed to `deps.note_to`, the chair label; `courier.needs_model` marks the events a model must see.
+    A `detail` (a failure's reason, cut to 300 characters) rides in the note; `fields` stay the action's own.
     """
     epic = action.get("epic", "")
-    note = f"{event}: {epic}"
+    note = f"{event}: {epic}" + (f" ({tail(detail.strip(), 300)})" if detail.strip() else "")
     entry = courier.send(
         courier.Reference("initiative", epic), deps.label or "chair", deps.note_to, note, uuid.uuid4().hex,
         event=event, fields=dict(fields), topic=action.get("topic"),
@@ -1290,9 +1291,89 @@ def _refused_steward(action: Action, deps: Deps, reason: str) -> Result:
     return _result(action, "refused", reason)
 
 
-def _steward_command(action: Action, deps: Deps) -> Result:
-    """A merge_level or run_gate: chair_steward_exec runs it with the loop's checks, then its result event is published."""
+def _steward_land_action(action: Action) -> Action | str:
+    """Pure. The land a level or task merge_level performs, or the line naming what the action lacks.
+
+    A level is a land_phase over the stamped phase and run; a task is the by-task partial_land over task_runs."""
+    land_at = action.get("land_at", "")
+    task_runs = dict(action.get("task_runs") or {})
+    missing = [name for name in ("repo", "phase", "run") if not action.get(name)]
+    missing += ["task_runs"] if land_at == "task" and not task_runs else []
+    # partial_land.steps stops at the first task with no run, which would land a subset and call the level merged
+    missing += [f"run of task {t}" for t, run in task_runs.items() if not run]
+    if missing:
+        return f"merge_level at land_at {land_at} lacks {', '.join(missing)}"
+    land: Action = {
+        "kind": "land_phase" if land_at == "level" else "partial_land",
+        "initiative": action.get("initiative") or action.get("epic", ""),
+        "phase": action["phase"], "repo": action["repo"], "run": action["run"], "task_runs": task_runs,
+    }
+    if land_at == "task":
+        land = {**land, "task_ids": list(task_runs), "quarantined": 0}
+    return {**land, "epoch": action["epoch"]} if "epoch" in action else land
+
+
+_DONE_ELSEWHERE = "already done on another machine"  # partial_land's note when every task was finished by another machine
+
+
+def _land_event(result: Result) -> tuple[str, str]:
+    """Pure. The steward event a land's result reports, with the land's reason.
+
+    landed merged the level. recorded merged it only for an already landed phase or tasks another machine finished;
+    any other recorded, such as no task with a known run, wrote nothing and is merge_failed."""
+    recorded_merge = result["status"] == "recorded" and (bool(result.get("already_landed")) or _DONE_ELSEWHERE in result["reason"])
+    return ("level_merged" if result["status"] == "landed" or recorded_merge else "merge_failed"), result["reason"]
+
+
+def _steward_fetch(action: Action, deps: Deps) -> str:
+    """Edge. `cox runs fetch` for each run the action names, in order; "" when all exited 0, else the first failure."""
+    for run in action.get("fetch_runs") or []:
+        argv = argv_for({"kind": "fetch", "run": run})
+        code, output = deps.run(argv) if argv else (1, "no run id")
+        if code != 0:
+            return f"fetch of {run} {fetch_status(code, output)}: {tail(output.strip(), 200)}"
+    return ""
+
+
+def _steward_land(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> tuple[str, str, Action | None]:
+    """Edge. (event, reason, needs_chair) of a level or task merge_level run as the chair's own land; nothing raises.
+
+    It obeys the gates a person's land does: a repo already in `blocked` and a live land freeze end it as merge_failed
+    before any fetch. It only reads `blocked`; `perform` adds to it for land kinds alone, so a failure here blocks nothing.
+    The land runs in line, not through the land sink: a land the sink still holds for the repo ends it as merge_failed,
+    and `cox runs land` takes the repo lease itself, so a second process lands as busy."""
+    land = _steward_land_action(action)
+    if isinstance(land, str):
+        return "merge_failed", land, None
+    repo = land["repo"]
+    if repo in blocked:
+        return "merge_failed", f"an earlier land in {repo} ({blocked[repo].label}) was not counted", None
+    if deps.lands is not None and (deps.lands.pending(repo) or deps.lands.full(repo)):
+        return "merge_failed", f"a land is still running in {repo}", None
+    try:
+        frozen = _frozen_reason(deps)
+        if frozen is not None:
+            return "merge_failed", frozen, None
+        refused = _steward_fetch(action, deps)
+        if refused:
+            return "merge_failed", refused, None
+        run_land = _land_phase if land["kind"] == "land_phase" else _partial_land
+        result = run_land(land, deps, blocked)
+        return (*_land_event(result), result.get("needs_chair"))
+    except Exception as exc:  # the edge: a land that raised did not land, and the loop goes on
+        return "merge_failed", f"land raised {type(exc).__name__}: {exc}", None
+
+
+def _steward_command(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
+    """A merge_level or run_gate: chair_steward_exec runs it with the loop's checks, then its result event is published.
+
+    A merge_level at land_at level or task is the chair's own land instead, and never reaches chair_steward_exec."""
     kind = action["kind"]
+    if kind == "merge_level" and action.get("land_at") in ("level", "task"):
+        event, reason, needs_chair = _steward_land(action, deps, blocked)
+        _publish(action, deps, event, action.get("fields", {}), "" if event == "level_merged" else reason)
+        result = _result(action, "done" if event == "level_merged" else "failed", reason)
+        return {**result, "needs_chair": needs_chair} if needs_chair else result  # perform records it as its own row
     if deps.steward_exec is None:
         return _refused_steward(action, deps, f"{kind} has no steward executor")
     try:
@@ -1327,6 +1408,10 @@ def _would(action: Action) -> str:
     """What a dry run would have done for a steward action; empty for every other kind."""
     kind = action.get("kind")
     epic = action.get("epic", "")
+    if kind == "merge_level" and action.get("land_at") == "level":
+        return f"would land phase {action.get('phase', '')} of {epic} as one pull request in {action.get('repo', '')} and publish its result event on {action.get('topic', '')}"
+    if kind == "merge_level" and action.get("land_at") == "task":
+        return f"would land each approved task of {action.get('phase', '')} of {epic} in {action.get('repo', '')} and publish its result event on {action.get('topic', '')}"
     if kind == "merge_level":
         return f"would merge level {action.get('level')} of {epic} and publish its result event on {action.get('topic', '')}"
     if kind == "run_gate":
@@ -1339,7 +1424,7 @@ def _would(action: Action) -> str:
 
 
 # The kinds whose result may carry a needs_chair that is recorded as its own row after the result.
-_CARRIES_NEEDS_CHAIR = ("clear_branches", "review_landed", "carry_phase", "rebase_phase", "revert_land", "rerun_main")
+_CARRIES_NEEDS_CHAIR = ("merge_level", "clear_branches", "review_landed", "carry_phase", "rebase_phase", "revert_land", "rerun_main")
 
 
 def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
@@ -1394,7 +1479,7 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
     if kind == "finish_task":
         return _finish_task(action, deps)
     if kind in ("merge_level", "run_gate"):
-        return _steward_command(action, deps)
+        return _steward_command(action, deps, blocked)
     if kind == "steward_event":
         return _steward_event(action, deps)
     if kind == "relaunch" and action.get("epic"):
