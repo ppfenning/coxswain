@@ -9,7 +9,7 @@ import re
 import sys
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from functools import reduce
 from pathlib import Path
 from typing import Any, cast
@@ -34,6 +34,7 @@ from agent_tools.chair_read_quarantined import quarantined_from_rows
 from agent_tools.chair_read_steward import reported_keys, task_signature
 from agent_tools.chair_read_stranded import stranded_from_rows
 from agent_tools.chair_read_tuning import current_lanes, tuning_facts
+from agent_tools.chair_schedule_durations import END_KEY, MIX_KEY, SIZE_KEY, START_KEY
 from agent_tools.chair_steward import StewardFacts, StewardTask
 from agent_tools.chair_types import (
     EASTERN,
@@ -68,6 +69,12 @@ from agent_tools.chair_types import (
     ReviewPr,
     RunningInitiative,
     RunRecord,
+    ScheduleHost,
+    ScheduleInitiative,
+    ScheduleInputs,
+    SchedulePhase,
+    ScheduleRunning,
+    ScheduleStatus,
     StewardPlanFacts,
     StrandedPhase,
     TodoInitiative,
@@ -570,6 +577,200 @@ def phase_facts(rows: Sequence[Row], land_at: str, claimed: Collection[str] = fr
         for phase, ids in free.items()
         if ids
     ]
+
+
+def schedule_parents(tasks: Sequence[Row]) -> dict[str, list[str]]:
+    """Phase to the sorted phases holding a task its tasks need that is not done or dropped; a task with no phase adds none.
+
+    Repeats `dash_feed._phase_parents`, except that a dropped need adds no parent either."""
+    phase_of = {str(t["id"]): str(t.get("phase") or "") for t in tasks}
+    state_of = {str(t["id"]): t.get("state") for t in tasks}
+    return {
+        phase: sorted(
+            {
+                there
+                for t in tasks
+                if str(t.get("phase") or "") == phase
+                for need in t.get("needs") or []
+                if (there := phase_of.get(str(need), "")) and there != phase and state_of.get(str(need)) not in route.TERMINAL
+            }
+        )
+        for phase in dict.fromkeys(p for p in phase_of.values() if p)
+    }
+
+
+def phase_row(tasks: Sequence[Row], parents: Collection[str], live: bool) -> ScheduleStatus:
+    """The scheduler status of one phase from its task rows.
+
+    `complete` first, when every task is done, dropped, or approved and merged: a lingering live lane does not
+    keep a finished phase open. Then `running` only when a live run covers the phase or one of its tasks is
+    `in_progress`; a `todo` or `ready` task never makes a phase running. Then `blocked` for a quarantined or blocked
+    task. Else `waiting` while a parent phase holds an unfinished need, and `ready`."""
+    states = {str(t.get("state")) for t in tasks}
+    settled = bool(tasks) and all(
+        t.get("state") in route.TERMINAL or (t.get("state") == "approved" and route.is_merged(t)) for t in tasks
+    )
+    if settled:
+        return "complete"
+    if live or "in_progress" in states:
+        return "running"
+    if states & {"quarantined", "blocked"}:
+        return "blocked"
+    return "waiting" if parents else "ready"
+
+
+def _first_text(tasks: Sequence[Row], key: str) -> str:
+    return next((str(t[key]) for t in tasks if t.get(key)), "")
+
+
+def schedule_initiatives(
+    items: Sequence[Row],
+    repos: Mapping[str, str],
+    priorities: Mapping[str, int],
+    live_phases: Collection[tuple[str, str]],
+) -> list[ScheduleInitiative]:
+    """Every open phase of every initiative in `items`, in first-seen order; an initiative with only complete phases is left out.
+
+    A phase is live only for a pair in `live_phases` naming it. A pair with a blank phase (a lane that has not
+    written its phase yet) covers no phase: reading it as covering all would label a later todo-only wave running.
+    `size` and `mix` are the first values the phase's tickets carry. A parent that is complete is dropped from `parents`."""
+    ids = list(dict.fromkeys(str(i["initiative"]) for i in items))
+
+    def phases(initiative: str) -> list[SchedulePhase]:
+        own = [i for i in items if str(i["initiative"]) == initiative]
+        parents = schedule_parents(own)
+        by_phase = {p: [i for i in own if str(i.get("phase") or "") == p] for p in parents}
+        status = {
+            p: phase_row(ts, parents[p], (initiative, p) in live_phases) for p, ts in by_phase.items()
+        }
+        return [
+            {
+                "id": p,
+                "status": status[p],
+                "parents": [q for q in parents[p] if status[q] != "complete"],
+                "size": _first_text(ts, "size"),
+                "mix": _first_text(ts, "mix"),
+                "surfaces": ticket_surfaces(ts, {initiative: {str(t["id"]) for t in ts}})[initiative],
+            }
+            for p, ts in by_phase.items()
+            if status[p] != "complete"
+        ]
+
+    built = [(i, phases(i)) for i in ids]
+    return [
+        {"id": i, "priority": priorities.get(i, 0), "repo": repos.get(i, ""), "phases": ps} for i, ps in built if ps
+    ]
+
+
+def duration_records(phase_records: Sequence[Row], ledger: Sequence[Row]) -> list[dict[str, str]]:
+    """One record per finished phase for `chair_schedule_durations.estimate_duration`.
+
+    A phase record (initiative, phase, build_start, approve_time) joins the ledger row of the same initiative and
+    phase for its size and mix. A phase missing any of the four values is skipped."""
+    sized = {(str(r.get("initiative")), str(r.get("phase"))): r for r in ledger}
+
+    def record(p: Row) -> dict[str, str]:
+        row = sized.get((str(p.get("initiative")), str(p.get("phase"))), {})
+        return {
+            SIZE_KEY: str(row.get(SIZE_KEY) or ""),
+            MIX_KEY: str(row.get(MIX_KEY) or ""),
+            START_KEY: str(p.get(START_KEY) or ""),
+            END_KEY: str(p.get(END_KEY) or ""),
+        }
+
+    return [r for r in map(record, phase_records) if all(r.values())]
+
+
+def schedule_hosts(dispatch: DispatchFacts) -> tuple[list[ScheduleHost], dict[str, int], str]:
+    """Host slots, live load by host and the orchestration mode, from the dispatch facts.
+
+    A remote host has `capacity` lanes (one when absent). The local machine is the host `local` with `max_in_flight`
+    lanes, and `local_lanes: decompose` is the orchestrating mode."""
+    remote: list[ScheduleHost] = [
+        {"name": h["name"], "lanes": [f"{h['name']}-{n}" for n in range(1, h.get("capacity", 1) + 1)], "local": False, "repos": []}
+        for h in dispatch["hosts"]
+    ]
+    local: ScheduleHost = {
+        "name": "local", "lanes": [f"local-{n}" for n in range(1, dispatch["max_in_flight"] + 1)], "local": True, "repos": [],
+    }
+    load = {"local": dispatch["live_runs"], **{h["name"]: h["live_runs"] for h in dispatch["hosts"]}}
+    mode = "orchestrating" if dispatch.get("local_lanes") == "decompose" else "building"
+    return [local, *remote], load, mode
+
+
+def _target_moment(value: object) -> datetime | None:
+    """An ISO date or datetime as a UTC moment (a naive one is read as UTC); None for anything else, a version included."""
+    try:
+        moment = datetime.fromisoformat(str(value).strip())
+    except ValueError:
+        return None
+    return moment.replace(tzinfo=UTC) if moment.tzinfo is None else moment.astimezone(UTC)
+
+
+def release_target(work_rows: Sequence[Row]) -> str | None:
+    """The earliest release moment a work item states, as `YYYY-MM-DDTHH:MM:SSZ`; None when none states one.
+
+    Read from `extra.target_release` of the initiative rows, and only when it is an ISO date or datetime, because
+    `plan_schedule` takes a datetime. A version such as `2026.11.6` is the release gate's target, not a moment, so it
+    reads as no target."""
+    moments = [
+        m for r in work_rows if r.get("kind") == "initiative" and (m := _target_moment((r.get("extra") or {}).get("target_release")))
+    ]
+    return min(moments).strftime("%Y-%m-%dT%H:%M:%SZ") if moments else None
+
+
+def schedule_running(
+    initiatives: Sequence[ScheduleInitiative], hosts: Sequence[ScheduleHost], run_host: Mapping[str, str]
+) -> list[ScheduleRunning]:
+    """Each running phase pinned to a lane of the host its initiative's newest run is on.
+
+    `run_host` is `Facts["newest_run_host"]`: initiative to host name, "" meaning the local machine, and a missing
+    initiative is read as local. Phases take the host's lanes in order; a phase left without a free lane is not
+    listed, and the planner then holds it for its minimum remaining time without pinning a lane. `finish` is None:
+    no row read records an estimate."""
+    lanes = {h["name"]: h["lanes"] for h in hosts}
+
+    def step(
+        state: tuple[dict[str, int], list[ScheduleRunning]], key: tuple[str, str]
+    ) -> tuple[dict[str, int], list[ScheduleRunning]]:
+        used, out = state
+        host = run_host.get(key[0]) or "local"
+        n = used.get(host, 0)
+        if n >= len(lanes.get(host, [])):
+            return state
+        entry: ScheduleRunning = {"initiative": key[0], "phase": key[1], "host": host, "lane": lanes[host][n], "finish": None}
+        return {**used, host: n + 1}, [*out, entry]
+
+    keys = [(i["id"], p["id"]) for i in initiatives for p in i["phases"] if p["status"] == "running"]
+    return reduce(step, keys, ({}, []))[1]
+
+
+def schedule_inputs(
+    items: Sequence[Row],
+    repos: Mapping[str, str],
+    priorities: Mapping[str, int],
+    live_phases: Collection[tuple[str, str]],
+    phase_records: Sequence[Row],
+    ledger: Sequence[Row],
+    dispatch: DispatchFacts,
+    work_rows: Sequence[Row],
+    run_host: Mapping[str, str],
+) -> ScheduleInputs:
+    """The `chair_schedule.plan_schedule` arguments minus the clock, from rows the tick already read. Pure.
+
+    `run_host` is `Facts["newest_run_host"]`; `schedule_running` pins each running phase to a lane with it."""
+    initiatives = schedule_initiatives(items, repos, priorities, live_phases)
+    hosts, load, mode = schedule_hosts(dispatch)
+    running = schedule_running(initiatives, hosts, run_host)
+    return {
+        "initiatives": initiatives,
+        "records": duration_records(phase_records, ledger),
+        "hosts": hosts,
+        "mode": mode,
+        "load": load,
+        "running": running,
+        "target": release_target(work_rows),
+    }
 
 
 PHASE_RUN_STATES = frozenset({"in_progress", "ready"})  # what a live phase run holds files for
