@@ -111,7 +111,7 @@ def test_context_json_with_full_profile_lists_initiative_and_runs(tmp_path, caps
     assert doc["intake"] == {
         "queued": [
             {"id": "i1", "title": "Do the thing", "initiative": None, "done": False, "path": "intake/one.md",
-             "after": [], "held": False, "stage": "ready", "priority": 0}
+             "after": [], "held": False, "stage": "ready", "priority": 0, "epic": "", "target_release": "", "repo": ""}
         ],
         "decomposed": [],
         "landed": [],
@@ -434,7 +434,7 @@ def test_status_json_with_an_intake_dir_carries_runs_and_intake_groups(tmp_path,
     assert doc["intake"] == {
         "queued": [
             {"id": "q", "title": "Q", "initiative": None, "done": False, "path": "intake/2026-09-01-q.md",
-             "after": [], "held": False, "stage": "ready", "priority": 0}
+             "after": [], "held": False, "stage": "ready", "priority": 0, "epic": "", "target_release": "", "repo": ""}
         ],
         "decomposed": [],
         "landed": [],
