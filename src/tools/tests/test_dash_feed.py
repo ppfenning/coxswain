@@ -249,7 +249,8 @@ def test_snapshot_matches_committed_fixture():
         spend_sources=expected["spend_sources"], orchestration=expected["orchestration"],
     )
 
-    assert result == expected
+    # dash_feed_v1.json predates the intake block; dash_feed_intake_v1.json fixes it.
+    assert result == {**expected, "intake": []}
     assert list(result)[list(result).index("machines") + 1] == "orchestration"
     assert result["history"] == kwargs["history"] and result["history_today"] == kwargs["history_today"]
 
@@ -348,7 +349,7 @@ def test_the_feed_built_from_the_fixtures_inputs_equals_the_fixture(monkeypatch,
     # dash_feed_v1.json predates the session counts; dash_sessions_v1.json fixes the two keys added to its sources.
     with_counts = {**fixture["spend_sources"], "sessions_found": 1, "sessions_priced": "ok"}
     assert built["spend_sources"] == with_counts
-    assert result == {**fixture, "spend_sources": with_counts}
+    assert result == {**fixture, "spend_sources": with_counts, "intake": []}
 
 
 _ORCH_NOW = "2026-09-29T00:00:00Z"
