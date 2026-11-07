@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 from agent_tools.chair_facts import land_freeze_fact
 from agent_tools.chair_land_freeze import LandFreeze, active_freeze
 from agent_tools.chair_plan import plan_tick
-from agent_tools.chair_plan_land import plan_lands
+from agent_tools.chair_plan_land import plan_lands, planned_tasks
 from agent_tools.chair_types import Facts
 
 
@@ -55,12 +55,17 @@ def _phases(facts: Facts) -> list[str]:
     return [a["phase"] for a in plan_lands(facts)]
 
 
+def _scheduled(facts: Facts) -> list[str]:
+    """The landing order `planned_tasks` gives, before `parent_held` defers a phase whose parent has not landed."""
+    return [t["phase"] for t in planned_tasks(facts["approved"], facts["initiatives"])]
+
+
 def test_a_done_phase_task_is_planned_and_a_not_done_one_gets_none():
     assert _phases(_facts([_task("a"), _task("b", done=False)])) == ["a"]
 
 
 def test_a_task_comes_after_the_task_it_needs_whatever_the_input_order():
-    assert _phases(_facts([_task("b", needs=("a",)), _task("a")])) == ["a", "b"]
+    assert _scheduled(_facts([_task("b", needs=("a",)), _task("a")])) == ["a", "b"]
 
 
 def test_lands_for_one_repository_are_contiguous():
@@ -68,7 +73,7 @@ def test_lands_for_one_repository_are_contiguous():
 
 
 def test_a_cross_repository_need_puts_the_needed_repository_first():
-    assert _phases(_facts([_task("a1", "A", needs=("b1",)), _task("b1", "B")])) == ["b1", "a1"]
+    assert _scheduled(_facts([_task("a1", "A", needs=("b1",)), _task("b1", "B")])) == ["b1", "a1"]
 
 
 def test_a_need_that_is_not_landed_and_not_planned_leaves_the_task_and_its_dependents_out():
@@ -93,23 +98,23 @@ def test_a_cycle_and_an_unknown_id_are_omitted_without_raising():
 
 def test_a_chain_that_crosses_back_into_a_repository_plans_its_prefix_and_the_rest_next_tick():
     approved = [_task("a1", "A"), _task("b1", "B", needs=("a1",)), _task("a2", "A", needs=("b1",)), _task("c", "C")]
-    assert _phases(_facts(approved)) == ["a1", "b1", "c"]
-    assert _phases(_facts([_task("a2", "A", needs=("b1",))], landed=frozenset({"a1", "b1"}))) == ["a2"]
+    assert _scheduled(_facts(approved)) == ["a1", "b1", "c"]
+    assert _scheduled(_facts([_task("a2", "A", needs=("b1",))], landed=frozenset({"a1", "b1"}))) == ["a2"]
 
 
 def test_a_task_in_another_repository_that_needs_only_the_planned_prefix_is_planned():
     approved = [_task("a1", "A"), _task("b1", "B", needs=("a1",)), _task("a2", "A", needs=("b1",)), _task("d1", "D", needs=("a1",))]
-    assert _phases(_facts(approved)) == ["a1", "b1", "d1"]
+    assert _scheduled(_facts(approved)) == ["a1", "b1", "d1"]
 
 
 def test_a_task_needing_one_left_for_a_later_tick_is_left_too():
     approved = [_task("a1", "A"), _task("b1", "B", needs=("a1",)), _task("a2", "A", needs=("b1",)), _task("e", "E", needs=("a2",))]
-    assert _phases(_facts(approved)) == ["a1", "b1"]
+    assert _scheduled(_facts(approved)) == ["a1", "b1"]
 
 
 def test_a_long_chain_plans_in_order_without_raising():
     approved = [_task("t0")] + [_task(f"t{n}", needs=(f"t{n - 1}",)) for n in range(1, 5000)]
-    assert _phases(_facts(approved)) == [f"t{n}" for n in range(5000)]
+    assert _scheduled(_facts(approved)) == [f"t{n}" for n in range(5000)]
 
 
 def test_a_repeated_id_keeps_its_first_occurrence_position_and_fields():
@@ -151,9 +156,10 @@ def test_a_phase_not_done_gives_no_action():
     assert plan_lands(_facts([_task("a", done=False)])) == []
 
 
-def test_a_needed_phase_lands_first():
+def test_a_needed_phase_lands_first_and_its_child_waits_for_a_later_tick():
     approved = [_task("b", phase="b", needs=("a",)), _task("a", phase="a")]
-    assert _phases(_facts(approved)) == ["a", "b"]
+    assert _scheduled(_facts(approved)) == ["a", "b"]
+    assert _phases(_facts(approved)) == ["a"]
 
 
 def test_a_task_whose_run_is_empty_gets_needs_chair_no_run_and_no_land_phase():

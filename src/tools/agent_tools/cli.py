@@ -2140,6 +2140,34 @@ def _parent_phase(work_root: Path, initiative: str, phase: str) -> str | None:
     return _sole_parent({str(i["id"]): str(i["phase"]) for i in items}, {str(i["id"]): [str(n) for n in i["needs"] or []] for i in items}, phase)
 
 
+def _initiative_land_facts(work_root: Path, initiative: str, runs_dir: Path, land_mode: str) -> tuple[dict[str, str], dict[str, list[str]], set[str]]:
+    """Edge. Every ticket's phase and needs across the initiative, as `_parent_phase` reads them, and the ids whose
+    state is done or dropped: from the store's `work_items` rows in store mode, the ticket files otherwise."""
+    root = work_root / initiative
+    paths = sorted(root.glob("*/*.md")) if root.is_dir() else []
+    items = [route.work_item(route.parse_frontmatter(text)[0], initiative=initiative, phase_dir=p.parent.name, stem=p.stem)
+             for p in paths if (text := _read_text_or_none(p)) is not None]
+    rows = run_store.work_items(runs_dir, initiative) if land_mode == "store" else []
+    state = {str(i["id"]): (run_store.task_state(rows, initiative, str(i["id"])) if land_mode == "store" else i["state"]) for i in items}
+    return ({str(i["id"]): str(i["phase"]) for i in items}, {str(i["id"]): [str(n) for n in i["needs"] or []] for i in items},
+            {t for t, s in state.items() if s in ("done", "dropped")})
+
+
+def _parent_land_refusal(tasks: Sequence[str], facts: tuple[dict[str, str], dict[str, list[str]], set[str]],
+                         carried: Collection[str] = ()) -> list[dict] | None:
+    """Pure. The one `refuse` step for a land of `tasks` whose parent phase has not landed, else None; see `land.parent_land_wait`."""
+    phase_of, needs, landed = facts
+    wait = land.parent_land_wait(tasks, phase_of, needs, landed, carried)
+    return None if wait is None else [{"kind": "refuse", "reason": wait}]
+
+
+def _land_parent_refused(a: argparse.Namespace, steps: list[dict]) -> int:
+    """Edge. Report a parent-land refusal the way the land reports its others: the step listing on a dry run, a
+    `land: refusing` line on apply. Exit 2."""
+    print(f"land: refusing, {steps[0]['reason']}" if a.apply else json.dumps(steps, indent=2))
+    return 2
+
+
 def _ticket_items(work_root: Path, initiative: str, runs_dir: Path, land_mode: str, current: tuple[str, list[dict]]) -> tuple[dict[str, str], list[str]]:
     """Approved task id to ticket path across every phase of the initiative (`current` is already read), and the phases in natural order."""
     root = work_root / initiative
@@ -3745,6 +3773,11 @@ def _runs_land(a: argparse.Namespace) -> int:
         land_at = _phase_land_at(phase_record, profile, runs_dir.parent / "work", initiative)
         ticket_items, phases = _ticket_items(runs_dir.parent / "work", initiative, runs_dir, land_mode, (phase, items)) if land_at == "ticket" else ({}, [])
         ticket_tasks = list(ticket_items)
+        # An already merged phase puts nothing new on the target branch; a ticket land carries the earlier phases in its one PR.
+        parent_wait = (None if already_merged else _parent_land_refusal(
+            [i["id"] for i in items], _initiative_land_facts(runs_dir.parent / "work", initiative, runs_dir, land_mode), ticket_tasks))
+        if parent_wait:
+            return _land_parent_refused(a, parent_wait)
         for earlier_phase in (phases if land_mode == "store" else []):
             if earlier_phase != phase:
                 _backfill_phase_task_files(runs_dir, run_id, earlier_phase)
@@ -3773,6 +3806,10 @@ def _runs_land(a: argparse.Namespace) -> int:
             print(f"land: looked in {searched}, found {count} task records, expected 1")
             return 2
         print(f"land: record from {source}", file=sys.stderr)
+        parent_wait = (_parent_land_refusal([record["task"]], _initiative_land_facts(runs_dir.parent / "work", record["initiative"], runs_dir, land_mode))
+                       if record.get("initiative") and record.get("phase") else None)
+        if parent_wait:
+            return _land_parent_refused(a, parent_wait)
         lease_task = record["task"]
         branches = _land_branches(repo, record, default_branch)
         item_path = (str(runs_dir.parent / "work" / record["initiative"] / record["phase"] / f"{record['task']}.md")

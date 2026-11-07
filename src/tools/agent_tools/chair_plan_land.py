@@ -130,10 +130,44 @@ def ticket_held(facts: Facts) -> frozenset[tuple[str, str]]:
     return frozenset(key for key in phases if first.get(key[0]) != key[1])
 
 
+def parent_waits(facts: Facts) -> dict[tuple[str, str], str]:
+    """(initiative, phase) to `waiting on parent land: <phase>` for the first parent phase it needs that has not landed.
+
+    A need in the same phase, an unknown id or a landed id waits on nothing; `land_at` ticket initiatives are exempt,
+    as their phases ride in one pull request."""
+    from agent_tools.land import parent_land_wait  # land.py imports this module for fetch_action
+
+    initiatives = {i["id"]: i for i in facts["initiatives"] if "id" in i}
+    phase_of: dict[tuple[str, str], str] = {
+        **{(r["initiative"], tid): r["phase"] for r in facts.get("phase_tasks", []) for tid, _ in r["tasks"]},
+        **{(t["initiative"], t["id"]): t["phase"] for t in facts["approved"]},
+    }
+    needs = {(t["initiative"], t["id"]): t["needs"] for t in facts["approved"]}
+    by_phase: dict[tuple[str, str], list[str]] = {}
+    for t in facts["approved"]:
+        by_phase.setdefault((t["initiative"], t["phase"]), []).append(t["id"])
+    waits = {
+        (initiative, phase): parent_land_wait(
+            ids,
+            {tid: p for (i, tid), p in phase_of.items() if i == initiative},
+            {tid: n for (i, tid), n in needs.items() if i == initiative},
+            initiatives.get(initiative, {}).get("landed", ()),
+        )
+        for (initiative, phase), ids in by_phase.items()
+        if initiatives.get(initiative, {}).get("land_at") != "ticket"
+    }
+    return {key: wait for key, wait in waits.items() if wait is not None}
+
+
+def parent_held(facts: Facts) -> frozenset[tuple[str, str]]:
+    """The (initiative, phase) that plan no land this tick: a parent phase they need has not landed."""
+    return frozenset(parent_waits(facts))
+
+
 def _land_groups(facts: Facts) -> dict[tuple[str, str], list[ApprovedTask]]:
     """The tasks this tick lands, grouped by (initiative, phase) in landing order."""
     # Awaiting phases leave before scheduling, so a task needing an awaiting task is deferred, not landed ahead of it.
-    awaiting = awaiting_phases(facts) | manual_phases(facts) | ticket_held(facts)
+    awaiting = awaiting_phases(facts) | manual_phases(facts) | ticket_held(facts) | parent_held(facts)
     tasks = planned_tasks([t for t in facts["approved"] if (t["initiative"], t["phase"]) not in awaiting], facts["initiatives"])
     groups: dict[tuple[str, str], list[ApprovedTask]] = {}
     for t in tasks:
@@ -241,7 +275,7 @@ def _partial_lands(facts: Facts, whole: frozenset[tuple[str, str]], now: datetim
     Each gains the repo, `task_runs` (approved task id -> the run holding its record, from `approved`) and `run`, the
     newest of those runs; a fetch leads it when one of its runs is remote and unfetched. A phase inside its
     `land_refusals` backoff, or with a standing `land_conflicts` entry for its run, plans nothing, as a land_phase would."""
-    skip = whole | awaiting_phases(facts) | manual_phases(facts) | ticket_held(facts)
+    skip = whole | awaiting_phases(facts) | manual_phases(facts) | ticket_held(facts) | parent_held(facts)
     approved = {(t["initiative"], t["phase"], t["id"]): t for t in facts["approved"]}
     actions: list[Action] = []
     fetched: set[str] = set()
