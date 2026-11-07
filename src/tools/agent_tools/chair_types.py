@@ -386,6 +386,12 @@ class LaunchHistory(TypedDict, total=False):
     main_head: str  # the current main head; absent means ""
 
 
+class LeaseRefusalStreak(TypedDict):
+    first_at: str  # ISO ts of the oldest lease_held launch row in the streak
+    last_at: str  # ISO ts of the newest
+    holder_run: str  # the holder the newest parseable row's reason names
+
+
 class QueueFile(TypedDict):
     """One exported task ticket: its store hash from the last export, and the text of its file on disk. Either may be None."""
 
@@ -519,6 +525,8 @@ class Facts(TypedDict):
     # The launch budget's inputs, keyed by initiative id; absent means no history. The default limit applies when
     # max_launches_per_hour is absent.
     launch_history: NotRequired[dict[str, LaunchHistory]]
+    # Per initiative, the current run of lease_held launch rows in the launch window. Absent key or initiative means no streak.
+    lease_refusals: NotRequired[dict[str, LeaseRefusalStreak]]
     max_launches_per_hour: NotRequired[int]
     merge_queue: NotRequired[MergeQueueFacts]  # the profile's enabled merge queue; absent means the queue is off
     # `<run1>|<run2>` of each relaunch_loop needs_chair already in the action log. Absent means [].
