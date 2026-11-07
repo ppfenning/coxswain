@@ -8,12 +8,13 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from agent_tools import chair, leader_chat
 
 TAKEOVER_GRACE_SECONDS = 20.0
 TAKEOVER_POLL_SECONDS = 1.0
+_TAKE_POLICIES = ("never", "when_free", "always")
 _SESSION_FLAGS = ("-r", "--resume", "-c", "--continue", "--session-id")
 
 
@@ -28,6 +29,23 @@ class Plan:
     host: str | None = None
     default: str = "observer"
     note: str | None = None
+
+
+@dataclass(frozen=True)
+class SessionHolder:
+    """`free` and `stale` are both a lease nobody holds; `is_service` marks the service among loops."""
+
+    kind: Literal["free", "stale", "loop", "session"]
+    label: str | None = None
+    is_service: bool = False
+
+
+@dataclass(frozen=True)
+class TakeDecision:
+    """`action` is take or observer; `line` is the sentence to show."""
+
+    action: str
+    line: str
 
 
 def transcript_path(config_dir: Path, cwd: str, session_id: str) -> Path:
@@ -81,6 +99,35 @@ def choose(key: str, default: str) -> str:
         "a": "takeover", "b": "observer", "c": "cancel", "d": "attach" if default == "attach" else "cancel",
         "\r": default, "\n": default, "": default,
     }.get(key.lower(), "cancel")
+
+
+def resolve_session_takes(raw: object) -> str:
+    """Pure. never, when_free or always, ignoring case and surrounding space; anything else is when_free."""
+    value = raw.strip().lower() if isinstance(raw, str) else ""
+    return value if value in _TAKE_POLICIES else "when_free"
+
+
+def held_line(label: str, is_service: bool) -> str:
+    return f"chair held by {label} ({'service' if is_service else 'chair loop'})"
+
+
+def session_take_decision(policy: object, holder: SessionHolder, explicit_take: bool) -> TakeDecision:
+    """Pure. A live chair loop is observer unless `explicit_take`; an unrecognised holder kind is observer."""
+    mode = resolve_session_takes(policy)
+    if holder.kind == "loop":
+        line = held_line(holder.label or "?", holder.is_service)
+        if explicit_take:
+            return TakeDecision("take", f"chair: {line}; taking it because the operator asked")
+        return TakeDecision("observer", line)
+    if holder.kind in ("free", "stale"):
+        if mode == "never":
+            return TakeDecision("observer", "chair: free, and the policy never takes it; a non-chair session is starting")
+        return TakeDecision("take", "chair: free; taking the chair as the session starts")
+    if holder.kind == "session":
+        if mode == "always":
+            return TakeDecision("take", "chair: held by another session; the policy always takes it over")
+        return TakeDecision("observer", "chair: held by another session; the offer flow decides")
+    return TakeDecision("observer", "chair: holder not recognised; a non-chair session is starting")
 
 
 def with_session(argv: list[str], flag: str, value: str, extra_args: list[str]) -> list[str]:
