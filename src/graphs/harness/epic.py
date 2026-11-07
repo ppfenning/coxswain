@@ -2923,11 +2923,22 @@ def _apply_amend_directly(
     return None, f"{why}{restored}"
 
 
+def _newest_attempt_text(attempts: Sequence[Mapping[str, Any]]) -> str:
+    """One line naming the newest attempt by `ts` (ties keep list order); the reason is cut to 120 characters."""
+    newest = sorted(attempts, key=lambda a: str(a.get("ts") or ""))[-1:]
+    if not newest:
+        return "newest attempt: none recorded"
+    a = newest[0]
+    reason = " ".join(str(a.get("reason") or "").split())[:120]
+    return f"newest attempt: kind {a.get('kind') or 'unrecorded'}, cause {a.get('cause') or 'unrecorded'}, reason {reason}"
+
+
 def _attempt_cap_reason(attempts: Sequence[Mapping[str, Any]]) -> str:
     """The refusal's reason, naming every earlier run so a person has the history."""
     history = "; ".join(f"{a.get('run')}: {a.get('reason')}" for a in attempts)
     return (
         f"attempt cap: {len(attempts)} earlier run(s) quarantined this task — {history}. "
+        f"{_newest_attempt_text(attempts)}. "
         "Refusing a third run; a person decides."
     )
 
@@ -3415,7 +3426,10 @@ def _run_phase(
             reason = f"{_attempt_cap_reason(attempts_by_id[task_id])} triage itself failed: {failure}"
             quarantined.append({"id": task_id, "phase": phase, "grain": "task", "reason": reason, "kind": "no_work"})
             _quarantine_row(ctx, phase, task_id)
-            print(f"  attempt cap: {task_id} refused; triage could not run ({failure})")
+            print(
+                f"  attempt cap: {task_id} refused; triage could not run ({failure}); "
+                f"{_newest_attempt_text(attempts_by_id[task_id])}"
+            )
 
         for result in triaged:
             task_id = str(result.get("run_id", "")).rsplit(":", 1)[-1]
@@ -3427,7 +3441,10 @@ def _run_phase(
                 )
                 quarantined.append({"id": task_id, "phase": phase, "grain": "task", "reason": reason, "kind": "no_work"})
                 _quarantine_row(ctx, phase, task_id)
-                print(f"  attempt cap: {task_id} launched triage, which escalated a repeated diagnosis")
+                print(
+                    f"  attempt cap: {task_id} launched triage, which escalated a repeated diagnosis; "
+                    f"{_newest_attempt_text(attempts)}"
+                )
                 continue
 
             emitted = dict(result.get("emit") or {})
@@ -3438,7 +3455,10 @@ def _run_phase(
                 )
                 quarantined.append({"id": task_id, "phase": phase, "grain": "task", "reason": reason, "kind": "no_work"})
                 _quarantine_row(ctx, phase, task_id)
-                print(f"  attempt cap: {task_id} launched triage -> {result.get('class')} (no proposal)")
+                print(
+                    f"  attempt cap: {task_id} launched triage -> {result.get('class')} (no proposal); "
+                    f"{_newest_attempt_text(attempts)}"
+                )
                 continue
 
             if emitted["kind"] == "ticket_amend":
@@ -3451,17 +3471,26 @@ def _run_phase(
                 )
                 if rebuilt is not None:
                     amended[task_id] = rebuilt
-                    print(f"  attempt cap: {task_id} launched triage -> append-only ticket_amend applied; rebuilding")
+                    print(
+                        f"  attempt cap: {task_id} launched triage -> append-only ticket_amend applied; rebuilding; "
+                        f"{_newest_attempt_text(attempts)}"
+                    )
                     continue
                 if failure is not None:
                     if not any(q.get("id") == task_id and q.get("grain") == "task" for q in quarantined):
                         reason = f"{_attempt_cap_reason(attempts)} triage proposed an append-only amendment; applying it failed: {failure}"
                         quarantined.append({"id": task_id, "phase": phase, "grain": "task", "reason": reason, "kind": "no_work"})
                         _quarantine_row(ctx, phase, task_id)
-                    print(f"  attempt cap: {task_id} append-only ticket_amend not applied ({failure})")
+                    print(
+                        f"  attempt cap: {task_id} append-only ticket_amend not applied ({failure}); "
+                        f"{_newest_attempt_text(attempts)}"
+                    )
                     continue
             triage_batch.append(emitted)
-            print(f"  attempt cap: {task_id} launched triage -> {result.get('class')} ({emitted['kind']})")
+            print(
+                f"  attempt cap: {task_id} launched triage -> {result.get('class')} ({emitted['kind']}); "
+                f"{_newest_attempt_text(attempts)}"
+            )
     all_ready = [amended.get(str(item["id"]), item) for item in all_ready]
     counted_by_id = {**counted_by_id, **{task_id: [] for task_id in amended}}
     ready = [item for item in all_ready if len(counted_by_id[str(item["id"])]) < cap_by_id[str(item["id"])]]
