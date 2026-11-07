@@ -28,6 +28,14 @@ not to.
   and could not, `approve` with your strongest (failed) objection is exactly
   the evidence the arbiter needs.
 
+## Integration evidence
+
+Evidence rows prefixed `integration` are run by the harness on the lane's
+private database. Treat them as the only proof about integration behavior.
+A builder's claim about tests it says it did not re-run is not evidence.
+Return `revise` when no integration row covers the touched package.
+A failing integration row is a `revise` regardless of unit results.
+
 ## Failure modes
 
 - Manufacturing objections to look rigorous — the arbiter reads both reviews,
