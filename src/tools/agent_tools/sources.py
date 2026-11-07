@@ -27,6 +27,8 @@ class Candidate:
     link: str
     kind: Kind = "issue"
     project_item_id: str = ""
+    labels: frozenset[str] = frozenset()
+    milestone: str = ""
 
 
 @dataclass(frozen=True)
