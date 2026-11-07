@@ -5289,22 +5289,42 @@ def _leader_guard_or_refuse(runs_dir: Path, holder: str, force: bool, claim: boo
         print(f"override: {line}" if force else line)
         return None if force else 2
     if claim and state != "live":
-        pid, host = _leader_identity()
+        pid, host = _leader_identity(None, os.environ)
         new_record, _ = chair.take(record, holder, pid, host, datetime.datetime.now(datetime.UTC), _leader_heartbeat_minutes(), _leader_pid_alive(record), steal=True, claude_session=chair.claude_session_from_env(os.environ))
         chair.write(runs_dir, new_record)
         print(f"taking the loop: {holder}" if record is None else f"taking the loop from {record.get('session')} ({state})")
     return None
 
 
-def _leader_identity(explicit_pid: int | None = None) -> tuple[int, str]:
+def _leader_pid_choice(explicit_pid: int | None, env: Mapping[str, str], ppid: int, alive: Callable[[int], bool]) -> tuple[int, bool]:
+    """Pure. The pid to record and whether it is the parent-pid fallback.
+    An explicit pid wins, then an all-digit, non-zero, live `CLAUDE_PID`, then `ppid`."""
+    if explicit_pid:
+        return explicit_pid, False
+    raw = env.get("CLAUDE_PID", "")
+    if raw.isascii() and raw.isdigit() and int(raw) > 0 and alive(int(raw)):
+        return int(raw), False
+    return ppid, True
+
+
+def _leader_identity(explicit_pid: int | None = None, env: Mapping[str, str] | None = None) -> tuple[int, str]:
     """The pid and host that name *this session* to the lock, for `take`/`beat`/`release`.
     `os.getpid()` names this one `cox` invocation, which exits the moment the command
-    returns. `os.getppid()` names the process that invoked `cox`, which is the right
-    answer only when a single long-running shell issues `take`, `beat` and `release` in
-    turn; a caller that runs each command in a fresh shell records a pid that is dead
-    before the next command, so its lock reads as stale the instant it is taken.
-    `--pid` lets such a caller name the durable process that actually owns the loop."""
-    return explicit_pid or os.getppid(), socket.gethostname()
+    returns. `os.getppid()` names the process that invoked `cox`, which is the invoking
+    shell and not the loop: a caller that runs each command in a fresh shell records a
+    pid that is dead before the next command, so its lock reads as stale at once.
+    `--pid`, or a live `CLAUDE_PID` in the passed `env`, names the durable process instead.
+    Every verb that writes or matches a lease passes `os.environ`, so they all name the same pid;
+    no `env` means no `CLAUDE_PID` lookup."""
+    return _leader_pid_choice(explicit_pid, env or {}, os.getppid(), chair.pid_alive)[0], socket.gethostname()
+
+
+def _leader_take_warning(pid: int, explicit_pid: int | None, env: Mapping[str, str], ppid: int, alive: Callable[[int], bool]) -> str | None:
+    """Pure. The warning for a take that records the invoking shell's pid, else None.
+    `pid` is the pid actually recorded, so a pid read back off a held lease counts as the shell's when it equals `ppid`."""
+    if explicit_pid or pid != ppid or _leader_pid_choice(None, env, ppid, alive) == (ppid, False):
+        return None
+    return f"warning: recorded pid {pid} is the invoking shell's; the lease goes stale when it exits. Pass --pid with a long-lived loop's pid."
 
 
 def _leader_pid_alive(record: dict | None) -> bool:
@@ -5389,7 +5409,8 @@ def _route_chair_take(a: argparse.Namespace) -> int:
         return refuse_rc
     held = _caller_holder(runs_dir, a.label)
     session = a.label or (held[0] if held else "chair")
-    pid, host = _leader_identity(a.pid or (held[1] if held else None))
+    pid, host = _leader_identity(a.pid or (held[1] if held else None), os.environ)
+    warning = _leader_take_warning(pid, a.pid, os.environ, os.getppid(), chair.pid_alive)
     refuse_rc = _leader_refuse_dead_pid(a.pid)
     if refuse_rc is not None:
         return refuse_rc
@@ -5415,6 +5436,8 @@ def _route_chair_take(a: argparse.Namespace) -> int:
                 return 2
             chair.write(runs_dir, retaken)
             print(line)
+            if warning:
+                print(warning)
             return 0
         if new_record is None:
             print(reason)
@@ -5428,6 +5451,8 @@ def _route_chair_take(a: argparse.Namespace) -> int:
     if displaced:
         print(chair.displaced_line(record))
     print(f"chair taken: {new_record['session']} (pid {new_record['pid']}) on {new_record['host']}")
+    if warning:
+        print(warning)
     return 0
 
 
@@ -5436,7 +5461,7 @@ def _route_chair_extend(a: argparse.Namespace) -> int:
     if refuse_rc is not None:
         return refuse_rc
     session = a.label or "chair"
-    pid, host = _leader_identity(a.pid)
+    pid, host = _leader_identity(a.pid, os.environ)
     refuse_rc = _leader_refuse_dead_pid(a.pid) or _leader_refuse_hours(a.hours)
     if refuse_rc is not None:
         return refuse_rc
@@ -5459,7 +5484,7 @@ def _route_chair_beat(a: argparse.Namespace) -> int:
         return refuse_rc
     held = _caller_holder(runs_dir, a.label)
     session = a.label or (held[0] if held else "chair")
-    pid, host = _leader_identity(a.pid or (held[1] if held else None))
+    pid, host = _leader_identity(a.pid or (held[1] if held else None), os.environ)
     refuse_rc = _leader_refuse_dead_pid(a.pid)
     if refuse_rc is not None:
         return refuse_rc
@@ -5487,7 +5512,7 @@ def _route_chair_release(a: argparse.Namespace) -> int:
         return refuse_rc
     held = _caller_holder(runs_dir, a.label)
     session = a.label or (held[0] if held else "chair")
-    pid, host = _leader_identity(a.pid or (held[1] if held else None))
+    pid, host = _leader_identity(a.pid or (held[1] if held else None), os.environ)
     refuse_rc = _leader_refuse_dead_pid(a.pid)
     if refuse_rc is not None:
         return refuse_rc
@@ -5592,7 +5617,7 @@ def _route_chair_chat(a: argparse.Namespace) -> int:
         record, read_rc = _leader_read_or_refuse(runs_dir)
         if read_rc is not None:
             return read_rc
-        pid, host = _leader_identity()
+        pid, host = _leader_identity(None, os.environ)
         now = datetime.datetime.now(datetime.UTC)
         state = chair.liveness(record, _leader_pid_alive(record), now, host, _leader_heartbeat_minutes())
         if state != "live":
