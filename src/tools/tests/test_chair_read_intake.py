@@ -219,6 +219,41 @@ def test_the_file_path_skips_held_and_any_non_empty_after():
     assert cri.queued_oldest_first(groups, mtimes) == ["intake/empty.md"]
 
 
+def test_the_file_path_excludes_a_draft():
+    groups = _groups(
+        [
+            {**_entry("intake/draft.md"), "stage": "draft", "held": True},
+            {**_entry("intake/ready.md"), "stage": "ready"},
+        ]
+    )
+    mtimes = {"intake/draft.md": 1.0, "intake/ready.md": 2.0}
+    assert cri.queued_oldest_first(groups, mtimes) == ["intake/ready.md"]
+
+
+def test_a_later_target_release_is_left_out_only_when_current_is_given():
+    groups = _groups([{**_entry("intake/later.md"), "stage": "ready", "target_release": "1.2"}])
+    mtimes = {"intake/later.md": 1.0}
+    assert cri.queued_oldest_first(groups, mtimes, current="1.1") == []
+    assert cri.queued_oldest_first(groups, mtimes) == ["intake/later.md"]
+
+
+def test_a_target_release_equal_to_the_current_one_is_kept():
+    groups = _groups([{**_entry("intake/same.md"), "target_release": "1.2"}])
+    assert cri.queued_oldest_first(groups, {"intake/same.md": 1.0}, current="1.2") == ["intake/same.md"]
+
+
+def test_higher_priority_comes_first_when_current_is_given():
+    groups = _groups(
+        [
+            {**_entry("intake/low.md"), "priority": 0, "target_release": "1.0"},
+            {**_entry("intake/high.md"), "priority": 2, "target_release": "1.0"},
+            {**_entry("intake/later.md"), "priority": 9, "target_release": "2.0"},
+        ]
+    )
+    mtimes = {"intake/low.md": 1.0, "intake/high.md": 50.0, "intake/later.md": 2.0}
+    assert cri.queued_oldest_first(groups, mtimes, current="1.0") == ["intake/high.md", "intake/low.md"]
+
+
 def test_the_edge_reads_priority_held_and_after_from_frontmatter(tmp_path):
     (tmp_path / "intake").mkdir()
     for name, text, mtime in (
@@ -234,6 +269,29 @@ def test_the_edge_reads_priority_held_and_after_from_frontmatter(tmp_path):
     (tmp_path / "work" / "x" / "initiative.md").write_text("# x\n", encoding="utf-8")
     (tmp_path / "work" / "x" / "p1" / "t.md").write_text("---\nstate: done\n---\n", encoding="utf-8")
     assert cri.read_intake(tmp_path) == ["intake/urgent.md", "intake/plain.md"]
+
+
+def test_the_edge_defers_a_later_target_release_only_when_current_is_given(tmp_path):
+    (tmp_path / "intake").mkdir()
+    for name, text, mtime in (
+        ("plain.md", "body\n", 100),
+        ("later.md", "---\ntarget_release: 2.0\n---\nbody\n", 50),
+    ):
+        p = tmp_path / "intake" / name
+        p.write_text(text, encoding="utf-8")
+        os.utime(p, (mtime, mtime))
+    assert cri.read_intake(tmp_path, current="1.0") == ["intake/plain.md"]
+    assert cri.read_intake(tmp_path) == ["intake/later.md", "intake/plain.md"]
+
+
+def test_intake_from_rows_returns_only_ready_rows_by_priority():
+    rows = [
+        _intake_row("draft", stage="draft"),
+        _intake_row("later", target_release="9.0"),
+        _intake_row("low", priority=1),
+        _intake_row("high", priority=5),
+    ]
+    assert _ids(cri.intake_from_rows(rows, current="1.0")) == ["high", "low"]
 
 
 def _stems(paths):
