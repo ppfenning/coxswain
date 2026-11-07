@@ -196,6 +196,7 @@ review_pr_close = _LazyModule("agent_tools.review_pr_close")
 route = _LazyModule("agent_tools.route")
 route_drift = _LazyModule("agent_tools.route_drift")
 route_edit = _LazyModule("agent_tools.route_edit")
+route_epic = _LazyModule("agent_tools.route_epic")
 route_guard = _LazyModule("agent_tools.route_guard")
 route_hold = _LazyModule("agent_tools.route_hold")
 route_import = _LazyModule("agent_tools.route_import")
@@ -5015,13 +5016,26 @@ def _route_edit(a: argparse.Namespace) -> int:
         runs_dir, runs_dir.parent, target_id, title=a.title, body=a.body, body_file=a.body_file, repo=a.repo,
         surfaces=a.surfaces, state=a.state, dry_run=a.dry_run, live_runs=on_target, now=now,
         rebuild=getattr(a, "rebuild", False), force=getattr(a, "force", False), pr=getattr(a, "pr", None),
-        link=getattr(a, "link", None), after=_after_ids(getattr(a, "after", None)),
+        link=getattr(a, "link", None), after=_after_ids(getattr(a, "after", None)), epic=getattr(a, "epic", None),
     )
     if result.code != route_edit.DONE:
         print(f"edit: {'refused' if result.code == route_edit.REFUSED else 'failed'}: {result.text}")
     else:
         print(result.text.rstrip("\n") or "edit: no change")
     return result.code
+
+
+def _route_epic(a: argparse.Namespace) -> int:
+    if a.action != "new":
+        print(f"epic: unknown action {a.action!r}; usage: route epic new <id> [--title T] [--target-branch B] [--dry-run]")
+        return 2
+    runs_dir, reason = _runs_dir_for_land(a)
+    if runs_dir is None:
+        print(f"route: {reason}")
+        return 2
+    code, text = route_epic.create_epic(runs_dir.parent, a.id, a.title, a.target_branch, a.dry_run)
+    print(text.rstrip("\n"))
+    return code
 
 
 def _route_remove(a: argparse.Namespace) -> int:
@@ -11770,10 +11784,21 @@ ROUTE_COMMANDS = [
             commands.Arg(("--force",), {"action": "store_true", "help": "with --rebuild: allow it with no recorded land conflict"}),
             commands.Arg(("--link",), {"default": None, "help": "queued intake only: set the issue url; an empty value clears the link"}),
             commands.Arg(("--after",), {"action": "append", "default": None, "help": "queued intake only: ids it waits on, repeated or comma-separated; an empty value clears the list"}),
+            commands.Arg(("--epic",), {"default": None, "help": "initiative only: join the epic with this id, or none to leave it"}),
             commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the diff and write nothing"}),
             commands.Arg(("--profile",)),
         ),
         "agent_tools.cli:_route_edit", False, (), defaults={"runs_dir": None},
+    ),
+    commands.Command(
+        "epic", "route", "create an epic definition file: `route epic new <id>`",
+        (
+            commands.Arg(("action",), {"help": "only `new`"}), commands.Arg(("id",), {"help": "the epic id, a lowercase slug"}),
+            commands.Arg(("--title",)), commands.Arg(("--target-branch",)),
+            commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the plan and write nothing"}),
+            commands.Arg(("--profile",)),
+        ),
+        "agent_tools.cli:_route_epic", False, (), defaults={"runs_dir": None},
     ),
     commands.Command(
         "remove", "route", "remove queued intakes or initiatives that have no live run",
