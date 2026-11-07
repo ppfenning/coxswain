@@ -47,6 +47,9 @@ def test_entry_carries_after_held_and_priority():
             "held": True,
             "stage": "draft",
             "priority": 4,
+            "epic": "",
+            "target_release": "",
+            "repo": "",
         }
     ]
 
@@ -110,6 +113,93 @@ def test_held_comes_before_problems_and_gate():
 
 def test_empty_held_adds_nothing():
     assert route.render_status([], GROUPS, held=[]) == route.render_status([], GROUPS)
+
+
+def _filed(**fields):
+    return route.intake_file("Ship it", "Body.", "repo", "2026-11-03", **fields)["intake/2026-11-03-ship-it.md"]
+
+
+@pytest.mark.parametrize(
+    ("fields", "line"),
+    [
+        ({"epic": "E1"}, "epic: E1"),
+        ({"priority": 3}, "priority: 3"),
+        ({"priority": -2}, "priority: -2"),
+        ({"target_release": "2026.12.0"}, "target_release: 2026.12.0"),
+        ({"epic": "a: b"}, 'epic: "a: b"'),
+    ],
+)
+def test_intake_file_writes_each_field_as_its_own_line_after_repo(fields, line):
+    assert _filed(**fields) == f"---\nid: ship-it\ntitle: Ship it\nrepo: repo\n{line}\n---\n\nBody.\n"
+
+
+def test_intake_file_writes_the_fields_after_stage_and_before_after():
+    text = _filed(stage="draft", epic="E1", priority=3, target_release="2026.12.0", after=["a"])
+
+    assert text == (
+        "---\nid: ship-it\ntitle: Ship it\nrepo: repo\nstage: draft\nepic: E1\npriority: 3\n"
+        "target_release: 2026.12.0\nafter: [a]\n---\n\nBody.\n"
+    )
+
+
+def test_intake_file_empty_fields_write_no_line():
+    assert _filed(epic="", priority="", target_release="") == _filed()
+
+
+def test_intake_file_fields_round_trip_through_the_entry():
+    entry = route.intake_entries({"x.md": _filed(epic="E1", priority=3, target_release="2026.12.0")})[0]
+
+    assert (entry["epic"], entry["priority"], entry["target_release"], entry["repo"]) == ("E1", 3, "2026.12.0", "repo")
+
+
+def test_entry_fields_default_to_empty_strings():
+    entry = route.intake_entries({"idea.md": "---\nid: idea\n---\n\nBody.\n"})[0]
+
+    assert (entry["epic"], entry["target_release"], entry["repo"]) == ("", "", "")
+
+
+READY = {"id": "go", "stage": "ready", "repo": "widgets", "epic": "E1", "priority": 3, "target_release": "2026.12.0"}
+DRAFT = {"id": "maybe", "stage": "draft", "repo": "widgets", "epic": "", "priority": 0, "target_release": ""}
+
+
+def test_status_shows_a_ready_intake_with_its_fields_and_omits_empty_ones():
+    groups = {"queued": [READY, {**READY, "id": "bare", "epic": "", "priority": 0, "target_release": ""}],
+              "decomposed": [], "landed": []}
+
+    assert route.render_status([], groups).splitlines()[0] == (
+        "intake queued: 2 — go [stage ready, repo widgets, epic E1, priority 3, target 2026.12.0],"
+        " bare [stage ready, repo widgets]"
+    )
+
+
+def test_status_lists_a_draft_under_its_own_line_apart_from_the_ready_queue():
+    groups = {"queued": [DRAFT, READY], "decomposed": [], "landed": []}
+
+    assert route.render_status([], groups).splitlines() == [
+        "intake queued: 1 — go [stage ready, repo widgets, epic E1, priority 3, target 2026.12.0]",
+        "intake drafts: 1 — maybe [stage draft, repo widgets]",
+        "intake decomposed: 0",
+        "intake landed: 0",
+    ]
+
+
+def test_status_has_no_drafts_line_without_a_draft():
+    assert "drafts" not in route.render_status([], {"queued": [READY], "decomposed": [], "landed": []})
+
+
+def test_status_shows_a_deferred_intake_target_in_its_group_and_on_its_queue_entry():
+    groups = {"queued": [READY], "decomposed": [], "landed": []}
+
+    lines = route.render_status([], groups, deferred={"2026.12.0": ["go"]}).splitlines()
+
+    assert lines[0].endswith("target 2026.12.0]")
+    assert lines[3:] == ["deferred to 2026.12.0:", "  go"]
+
+
+def test_held_row_shows_its_tags_when_it_carries_them():
+    held = [{"id": "maybe", "reason": "draft", "stage": "draft", "epic": "E1"}]
+
+    assert route.render_status([], None, held=held).splitlines() == ["held:", "  maybe [stage draft, epic E1]: draft"]
 
 
 def _row(priority):

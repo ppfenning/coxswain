@@ -684,6 +684,9 @@ def intake_file(
     allocate: Callable[[], str] | None = None,
     after: Sequence[str] = (),
     stage: str | None = None,  # None writes no line, which reads as ready; a pulled or programmatic caller is unchanged
+    epic: str = "",
+    priority: int | str = "",
+    target_release: str = "",
 ) -> dict:
     """Content for `route file --intake` (spec §3):
     `intake/<date>-<slug>.md`, same frontmatter shape as the initiative
@@ -693,9 +696,15 @@ def intake_file(
     Under `ids="sequence"` the file is `intake/<id>.md` with the id from `allocate`; a failed allocation raises, never slugifies.
     A non-empty `after` is written last as an `after: [a, b]` list; empty leaves the file as it was.
     A `stage` ("draft" or "ready") is written as `stage: <value>` after `repo`; None writes no line.
+    A non-empty `epic`, `priority` (a bare integer) and `target_release` follow `stage` in that order; empty writes no line.
     """
     text = body if body else title
-    staged = [("stage", stage)] if stage is not None else []
+    staged = [
+        *([("stage", stage)] if stage is not None else []),
+        *([("epic", epic)] if epic else []),
+        *([("priority", _Raw(str(int(priority))))] if priority not in ("", None) else []),
+        *([("target_release", target_release)] if target_release else []),
+    ]
     # A pulled file keeps its old form. Sync reads a frontmatter `issue` as the item's own mirror issue, so a pull
     # must not write the source issue number there; `route_sync._issue_steps` would skip `issue_create` for it.
     origin = [("source", source), ("link", link)] if source and link else link_fields(link)
@@ -2369,13 +2378,29 @@ def _phase_tails(row: dict) -> list[str]:
     return ([f"phases: {phases}"] if phases else []) + ([f"tally: {counts}"] if counts else [])
 
 
+def intake_tags(entry: Mapping) -> str:
+    """` [stage ready, repo r, epic e, priority 3, target 2026.12.0]` from an intake entry, leaving out any part
+    that is absent, empty or zero; empty when none remain. `repo` shows the last path component."""
+    priority = _int_or_zero(entry.get("priority"))
+    repo = os.path.basename(str(entry.get("repo") or "").rstrip("/"))
+    parts = [
+        *([f"stage {entry['stage']}"] if entry.get("stage") else []),
+        *([f"repo {repo}"] if repo else []),
+        *([f"epic {entry['epic']}"] if entry.get("epic") else []),
+        *([f"priority {priority}"] if priority else []),
+        *([f"target {entry['target_release']}"] if entry.get("target_release") else []),
+    ]
+    return f" [{', '.join(parts)}]" if parts else ""
+
+
 def _intake_group_line(name: str, entries: list, waiting: Mapping[str, Sequence[str]] | None = None) -> str:
-    """`waiting` (intake id to the ids it waits on) annotates a queued entry as `id (waiting on a, b)`."""
+    """`waiting` (intake id to the ids it waits on) annotates a queued entry as `id (waiting on a, b)`.
+    An entry's stage, repo, epic, priority and target release follow as `intake_tags`."""
     waits = waiting or {}
 
     def label(entry: Mapping) -> str:
         on = waits.get(entry["id"]) if name == "queued" else None
-        return f"{entry['id']} (waiting on {', '.join(on)})" if on else entry["id"]
+        return (f"{entry['id']} (waiting on {', '.join(on)})" if on else entry["id"]) + intake_tags(entry)
 
     names = ", ".join(label(entry) for entry in entries)
     return f"intake {name}: {len(entries)}" + (f" — {names}" if entries else "")
@@ -2441,8 +2466,11 @@ def render_status(rows: list, groups: dict | None = None, problems: list | None 
     output, appends one line per entry last. `hidden`, when positive, adds
     one line after the rows saying that many older runs were left out.
     `short_ids` (slug to short id) shows `slug [short]` on a row whose slug is in it.
-    `waiting` (intake id to the ids it waits on) marks queued intake entries in the group lines. `held`, rows of
-    `{"id", "reason"}`, adds a `held:` heading after the groups with one `  id: reason` line each.
+    `waiting` (intake id to the ids it waits on) marks queued intake entries in the group lines. Queued entries
+    whose `stage` is "draft" leave the queued line for an `intake drafts: N` line after it, shown only when
+    there is one, so the queued line lists what the chair plans next. Each entry shows its `intake_tags`.
+    `held`, rows of `{"id", "reason"}` and optionally the same entry keys, adds a `held:` heading after the groups
+    with one `  id [tags]: reason` line each.
     `deferred` (target release to ids, `group_deferred`'s output) adds a `deferred to <version>:` heading per target
     after the held block, in the mapping's order, with one `  id` line each.
     `chair_line`, when non-empty, is the last line, after `gate:`.
@@ -2451,8 +2479,24 @@ def render_status(rows: list, groups: dict | None = None, problems: list | None 
     lines = [_status_line(row, ids.get(row["id"])) for row in rows]
     lines += [f"({hidden} older runs hidden; --all shows every run)"] if hidden > 0 else []
     if groups is not None:
-        lines += [_intake_group_line(name, groups[name], waiting) for name in ("queued", "decomposed", "landed")]
-    lines += ["held:", *(f"  {h['id']}: {h['reason']}" if h.get("reason") else f"  {h['id']}" for h in held)] if held else []
+        queue = groups["queued"]
+        drafts = [e for e in queue if e.get("stage") == "draft"]
+        shown = {
+            "queued": [e for e in queue if e.get("stage") != "draft"],
+            "drafts": drafts,
+            "decomposed": groups["decomposed"],
+            "landed": groups["landed"],
+        }
+        lines += [
+            _intake_group_line(name, shown[name], waiting)
+            for name in ("queued", "drafts", "decomposed", "landed")
+            if name != "drafts" or drafts
+        ]
+    lines += (
+        ["held:", *(f"  {h['id']}{intake_tags(h)}: {h['reason']}" if h.get("reason") else f"  {h['id']}{intake_tags(h)}" for h in held)]
+        if held
+        else []
+    )
     lines += [line for target, names in (deferred or {}).items() for line in (f"deferred to {target}:", *(f"  {n}" for n in names))]
     lines += [f"problem: {p}" for p in problems or []]
     lines += [f"gate: {gate_level}"] if gate_level is not None else []
@@ -2645,14 +2689,18 @@ def _intake_entry(filename: str, text: str) -> dict:
         "held": intake_queue.is_held(fields),
         "stage": intake_queue.stage(fields),
         "priority": _int_or_zero(fields.get("priority")),
+        "epic": str(fields.get("epic") or ""),
+        "target_release": str(fields.get("target_release") or ""),
+        "repo": str(fields.get("repo") or ""),
     }
 
 
 def intake_entries(files: dict) -> list:
     """Rows for the intake queue, the `intake` input `render_context` and
     `context_document` already accept: one `{"id", "title", "initiative",
-    "done", "path", "after", "held", "stage", "priority"}` per file in `files` (filename -> text, as the caller
-    listed the intake dir), sorted by filename. `held` and `stage` come from `intake_queue`, the predicate the
+    "done", "path", "after", "held", "stage", "priority", "epic", "target_release", "repo"}` per file in `files`
+    (filename -> text, as the caller listed the intake dir), sorted by filename. `epic`, `target_release` and `repo`
+    are strings, empty when the frontmatter has none. `held` and `stage` come from `intake_queue`, the predicate the
     row readers use: `stage` is "draft" or "ready", and `held` is true for any draft. A filename under a
     `consumed/` prefix has already been handled and is skipped. `id` comes
     from frontmatter's `id` field, or the filename's stem when frontmatter

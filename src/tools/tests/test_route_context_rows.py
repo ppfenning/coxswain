@@ -5,7 +5,7 @@ import pytest
 from agent_tools import chair, queue_rows, route, run_store
 
 NOW = "2026-09-27T00:00:00Z"
-_QUEUE_CONTROL = ("after", "held", "stage", "priority")
+_QUEUE_CONTROL = ("after", "held", "stage", "priority", "epic", "target_release", "repo")
 
 _T0 = "---\nstate: done\ntitle: T0\n---\nTask zero.\n"
 _T1 = "---\nstate: ready\nneeds: [t0]\ntitle: T1\n---\nTask one.\n"
