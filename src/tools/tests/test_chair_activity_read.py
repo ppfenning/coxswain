@@ -3,7 +3,9 @@ from pathlib import Path
 from agent_tools.chair_activity_read import (
     catalog_status,
     prices_for_profile,
+    project_folder_name,
     read_agents,
+    read_project_sessions,
     read_session_lines,
     resolve_by_content,
     resolve_session,
@@ -286,3 +288,101 @@ def test_file_name_match_wins_over_content_match(tmp_path):
     assert session_status(projects, LEASE) == "ok"
     assert read_session_lines(projects, LEASE) == ["named"]
     assert read_agents(projects, LEASE) == []
+
+
+WORKSPACE = Path("/home/user/my.repo/a_b")
+FOLDER = "-home-user-my-repo-a-b"
+
+
+def _project_tree(tmp_path: Path) -> tuple[Path, Path]:
+    projects = tmp_path / "projects"
+    folder = projects / FOLDER
+    for session, tag in (("s2", "y"), ("s1", "x")):
+        subagents = folder / session / "subagents"
+        subagents.mkdir(parents=True)
+        (folder / f"{session}.jsonl").write_text(f"{session}-1\n{session}-2\n")
+        (subagents / "agent-b.meta.json").write_text(f'{{"kind": "{tag}b"}}')
+        (subagents / "agent-b.jsonl").write_text(f"{session}-b\n")
+        (subagents / "agent-a.meta.json").write_text(f'{{"kind": "{tag}a"}}')
+    return projects, folder
+
+
+def test_project_folder_name_replaces_non_alphanumerics():
+    assert project_folder_name(WORKSPACE) == FOLDER
+
+
+def test_read_project_sessions_two_sessions_with_agents(tmp_path):
+    projects, _ = _project_tree(tmp_path)
+    assert read_project_sessions(projects, WORKSPACE) == [
+        {
+            "session_id": "s1",
+            "lines": ["s1-1", "s1-2"],
+            "agents": [
+                {"agent_id": "a", "meta": {"kind": "xa"}, "lines": []},
+                {"agent_id": "b", "meta": {"kind": "xb"}, "lines": ["s1-b"]},
+            ],
+        },
+        {
+            "session_id": "s2",
+            "lines": ["s2-1", "s2-2"],
+            "agents": [
+                {"agent_id": "a", "meta": {"kind": "ya"}, "lines": []},
+                {"agent_id": "b", "meta": {"kind": "yb"}, "lines": ["s2-b"]},
+            ],
+        },
+    ]
+
+
+def test_read_project_sessions_ignores_other_project_folder(tmp_path):
+    projects, _ = _project_tree(tmp_path)
+    (projects / "-srv-other").mkdir()
+    (projects / "-srv-other" / "s9.jsonl").write_text("other\n")
+    assert [s["session_id"] for s in read_project_sessions(projects, WORKSPACE)] == ["s1", "s2"]
+
+
+def test_read_project_sessions_skips_dotted_neighbour(tmp_path):
+    projects, folder = _project_tree(tmp_path)
+    (folder / "s1.bak.jsonl").write_text("bak\n")
+    assert [s["session_id"] for s in read_project_sessions(projects, WORKSPACE)] == ["s1", "s2"]
+
+
+def test_read_project_sessions_missing_folder(tmp_path):
+    assert read_project_sessions(tmp_path / "projects", WORKSPACE) == []
+    (tmp_path / "projects").mkdir()
+    assert read_project_sessions(tmp_path / "projects", WORKSPACE) == []
+
+
+def test_read_project_sessions_skips_bad_meta_files(tmp_path):
+    projects, folder = _project_tree(tmp_path)
+    subagents = folder / "s1" / "subagents"
+    (subagents / "agent-c.meta.json").write_text("not json")
+    (subagents / "agent-d.meta.json").write_text("[1, 2]")
+    (subagents / "agent-e.meta.json").write_bytes(b"\xff\xfe\x00{")
+    (subagents / "agent-f.meta.json").mkdir()
+    sessions = read_project_sessions(projects, WORKSPACE)
+    assert [a["agent_id"] for a in sessions[0]["agents"]] == ["a", "b"]
+
+
+def test_read_project_sessions_undecodable_transcript_gives_empty_lines(tmp_path):
+    projects, folder = _project_tree(tmp_path)
+    (folder / "s1.jsonl").write_bytes(b"\xff\xfe")
+    sessions = read_project_sessions(projects, WORKSPACE)
+    assert [(s["session_id"], s["lines"]) for s in sessions] == [("s1", []), ("s2", ["s2-1", "s2-2"])]
+
+
+def test_read_project_sessions_subagent_folder_without_transcript_is_not_a_session(tmp_path):
+    projects, folder = _project_tree(tmp_path)
+    (folder / "s3" / "subagents").mkdir(parents=True)
+    (folder / "s3" / "subagents" / "agent-a.meta.json").write_text("{}")
+    assert [s["session_id"] for s in read_project_sessions(projects, WORKSPACE)] == ["s1", "s2"]
+
+
+def test_read_agents_unchanged_and_shared_with_project_sessions(tmp_path):
+    expected = [
+        {"agent_id": "a", "meta": {"kind": "y"}, "lines": []},
+        {"agent_id": "b", "meta": {"kind": "x"}, "lines": ["b1", "b2"]},
+    ]
+    projects = _tree(tmp_path)
+    assert read_agents(projects, "sess") == expected
+    (projects / "proj").rename(projects / FOLDER)
+    assert read_project_sessions(projects, WORKSPACE)[0]["agents"] == expected
