@@ -611,7 +611,8 @@ class Action(TypedDict, total=False):
     awaiting_land and runs no command. deferred carries initiative, phase and land_at and runs no command: the land waits for
     the granularity land_at names. close_initiative carries initiative and state (done or dropped).
     The steward's actions each carry epic and topic (both the epic id) and fields. merge_level also carries level,
-    the index of the level to merge. run_gate carries no more. steward_event also carries event, the name to publish.
+    the index of the level to merge, plus land_at (how the initiative lands) and phase (the level's phase name) as
+    top-level keys, never inside fields, so the reported-set key is unchanged. run_gate carries no more. steward_event also carries event, the name to publish.
     The steward's relaunch is a relaunch carrying initiative, plus epic, topic and fields (the signature) so the executor
     can record `relaunched`. A planner relaunch carries none of those three."""
 
@@ -621,7 +622,7 @@ class Action(TypedDict, total=False):
     repo: str
     run: str  # a land or fetch names the run that holds the approved record; a fetch_exit or mark_lost names the lost run; a land_phase names the run whose phase-mode land command performs it
     initiative: str  # retry, rescue and land_phase carry initiative (land_phase carries no task_id); a stale_to_draft, mark_lost, carry_phase or rebase_phase names the initiative
-    phase: str  # a land_phase names the phase it lands; a carry_phase or rebase_phase names the phase it works on
+    phase: str  # a land_phase names the phase it lands; a carry_phase or rebase_phase names the phase it works on; a merge_level names its level's phase
     cause: str
     intake_ids: list[str]
     holder: str
@@ -661,6 +662,7 @@ class Action(TypedDict, total=False):
     state: str  # a close_initiative names the state to move the initiative to: done or dropped
     epic: str  # a merge_level, run_gate or steward_event names the epic it acts on
     level: int  # a merge_level names the index of the level it merges
+    land_at: str  # a merge_level or deferred names the land_at (ticket, level or task) of its initiative
     event: str  # a steward_event names the event it publishes, for example needs_attention
     fields: dict[str, str]  # a merge_level, run_gate or steward_event carries the scope fields of its reported-set key
     topic: str  # a merge_level, run_gate or steward_event names the topic its event is published under

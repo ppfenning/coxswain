@@ -14,8 +14,11 @@ MAIN_RED = {"task_id": "a-q", "initiative": "a", "cause": MAIN_RED_CAUSE, "harne
 
 
 def _epic(*tasks: tuple[str, str], merged: bool = False, exited: bool = True) -> dict:
-    levels = [{"tasks": [{"id": i, "state": s} for i, s in tasks], "merged": merged}]
-    return {"epic_id": "a", "branch_head": "h1", "levels": levels, "exited": exited, "signature": "s1", "reported": ()}
+    levels = [{"tasks": [{"id": i, "state": s} for i, s in tasks], "merged": merged, "phase": "p1"}]
+    return {
+        "epic_id": "a", "branch_head": "h1", "levels": levels, "exited": exited, "signature": "s1", "reported": (),
+        "land_at": "ticket",
+    }
 
 
 def _steward(*epics: dict, enabled: bool = True) -> dict:
