@@ -2184,7 +2184,9 @@ def test_route_lint_cli_merges_same_phase_ready_tickets_before_linting(tmp_path,
     code = cli._route_lint(_lint_ns(initiative))
     out = capsys.readouterr().out
     assert code == 0
-    assert out == "merged: t1 + t2 -> t1 (shared tests/test_widget.py)\n"
+    # No store here, so each merged file is filed with the unrecorded warning first.
+    assert out.splitlines()[-1] == "merged: t1 + t2 -> t1 (shared tests/test_widget.py)"
+    assert [line.split(" ")[:5] for line in out.splitlines()[:-1]] == [["routing:", "store", "unavailable,", "filing", str(p)] for p in (initiative / "build" / "t1.md", initiative / "build" / "t2.md")]
     merged_text = t1.read_text(encoding="utf-8")
     merged_fields, _ = route.parse_frontmatter(merged_text)
     assert merged_fields["state"] == "ready"
@@ -2220,7 +2222,9 @@ def test_route_lint_cli_defaults_a_missing_state_to_todo_so_the_pair_still_merge
     code = cli._route_lint(_lint_ns(initiative))
     out = capsys.readouterr().out
     assert code == 0
-    assert out == "merged: t1 + t2 -> t1 (shared tests/test_widget.py)\n"
+    # No store here, so each merged file is filed with the unrecorded warning first.
+    assert out.splitlines()[-1] == "merged: t1 + t2 -> t1 (shared tests/test_widget.py)"
+    assert [line.split(" ")[:5] for line in out.splitlines()[:-1]] == [["routing:", "store", "unavailable,", "filing", str(p)] for p in (initiative / "build" / "t1.md", initiative / "build" / "t2.md")]
 
 
 def test_parse_profile_reads_the_weekly_ceiling_beside_the_window_ceiling():

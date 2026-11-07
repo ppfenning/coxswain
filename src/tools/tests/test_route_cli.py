@@ -2800,3 +2800,250 @@ def test_status_reads_a_live_pid_whose_lease_another_run_holds_as_fenced(tmp_pat
     rows = {row["id"]: row for row in json.loads(capsys.readouterr().out)}
     assert (rows["fx-3"]["state"], rows["fx-3"]["fenced"]) == ("fenced", True)
     assert (rows["fx-4"]["state"], rows["fx-4"]["fenced"]) == ("exited", False)
+
+
+# -- the lint and launch merge goes through the store -------------------------------------------------------
+
+
+def _ticket_file(initiative_dir, phase, task_id, surface, needs=()):
+    path = initiative_dir / phase / f"{task_id}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"---\nid: {task_id}\ntitle: {task_id.upper()}\nphase: {phase}\nstate: ready\nsurfaces: [{surface}]\n"
+        f"needs: [{', '.join(needs)}]\n---\n{task_id} body\n"
+    )
+    return path
+
+
+def _merge(initiative_dir, runs_dir):
+    with cli._merging_into(runs_dir):
+        return cli._merge_initiative_tickets(initiative_dir)
+
+
+def _merge_world(tmp_path, monkeypatch, *, up=True, refuse=(), head=True, seeded=(), lose=()):
+    """A workspace with initiative `demo` and a fake store that keeps what the real one keeps: rows by (kind, task_id).
+    Returns the initiative dir, the rows, and the `record_written_paths` calls as `(workspace, [(path, text then)])`."""
+    initiative_dir = tmp_path / "workspace" / "work" / "demo"
+    initiative_dir.mkdir(parents=True)
+    rows = {("task", name): {"kind": "task", "initiative": "demo", "task_id": name, "extra": {}} for name in seeded}
+    if head:
+        rows[("initiative", "demo")] = {"kind": "initiative", "initiative": "demo", "task_id": "demo", "extra": {}}
+    baselines = []
+
+    runs = tmp_path / "workspace" / "runs"  # the store lives here; a call naming another directory finds nothing
+
+    alive = [up]  # a row named in `lose` takes the store down when it is upserted
+
+    def upsert(runs_dir, row):
+        if not alive[0] or Path(runs_dir) != runs:
+            return "harness python not found"
+        if row["task_id"] in lose:
+            alive[0] = False
+            return "gone"
+        if row["task_id"] in refuse:
+            return "boom"
+        rows[(row["kind"], row["task_id"])] = row
+        return ""
+
+    def read_queue(runs_dir, initiative=None, kind=None):
+        return [r for r in rows.values() if alive[0] and Path(runs_dir) == runs and r["initiative"] == initiative and kind in (None, r["kind"])]
+
+    monkeypatch.setattr(run_store, "upsert_row_detail", upsert)
+    monkeypatch.setattr(run_store, "read_queue", read_queue)
+    monkeypatch.setattr(
+        "agent_tools.queue_export.record_written_paths",
+        lambda ws, paths: baselines.append((ws, [(Path(p), Path(p).read_text()) for p in paths])),
+    )
+    return initiative_dir, rows, baselines
+
+
+def test_merge_goes_to_the_store_first_and_the_files_agree_with_it(tmp_path, monkeypatch, capsys):
+    initiative_dir, rows, baselines = _merge_world(tmp_path, monkeypatch)
+    t1 = _ticket_file(initiative_dir, "p1", "t1", "agent_tools/x.py")
+    t2 = _ticket_file(initiative_dir, "p1", "t2", "agent_tools/x.py")
+
+    assert [item["id"] for item in _merge(initiative_dir, tmp_path / "workspace" / "runs")] == ["t1"]
+
+    assert capsys.readouterr().out == "merged: t1 + t2 -> t1 (shared agent_tools/x.py)\n"
+    assert rows[("task", "t1")]["title"] == "T1; T2"
+    assert (rows[("task", "t2")]["state"], rows[("task", "t2")]["extra"]["note"]) == ("dropped", "folded into t1")
+    assert rows[("initiative", "demo")]["extra"]["events"] == [{"event": "tasks_merged", "into": "t1", "tasks": ["t1", "t2"]}]
+    assert route.parse_frontmatter(t1.read_text())[0]["title"] == rows[("task", "t1")]["title"]
+    assert route.parse_frontmatter(t2.read_text())[0]["state"] == rows[("task", "t2")]["state"]
+    # The last baseline call follows the file writes, so it holds the merged text, under the absolute workspace.
+    last_workspace, last_paths = baselines[-1]
+    assert last_workspace == tmp_path / "workspace"
+    assert [(path, "state: dropped" in text) for path, text in last_paths] == [(t1.resolve(), False), (t2.resolve(), True)]
+    assert "title: T1; T2" in last_paths[0][1]
+
+
+def test_a_relative_initiative_dir_still_records_absolute_baselines(tmp_path, monkeypatch):
+    initiative_dir, _rows, baselines = _merge_world(tmp_path, monkeypatch)
+    _ticket_file(initiative_dir, "p1", "t1", "agent_tools/x.py")
+    _ticket_file(initiative_dir, "p1", "t2", "agent_tools/x.py")
+    monkeypatch.chdir(tmp_path)
+
+    _merge(Path("workspace/work/demo"), tmp_path / "workspace" / "runs")
+
+    assert [path.is_absolute() for path, _ in baselines[-1][1]] == [True, True]
+    assert "state: dropped" in baselines[-1][1][1][1]
+
+
+@pytest.mark.parametrize(
+    "seeded, notice",
+    [
+        ((), "routing: store unavailable, filing {path} without it"),
+        (("t9",), "routing: the store has no row for initiative demo, filing {path} without it"),
+    ],
+    ids=["empty store, which reads as down", "task rows but no initiative row"],
+)
+def test_a_store_with_no_initiative_row_is_filed_to_the_files_and_names_the_cause(tmp_path, monkeypatch, capsys, seeded, notice):
+    initiative_dir, rows, _ = _merge_world(tmp_path, monkeypatch, head=False, seeded=seeded)
+    t1 = _ticket_file(initiative_dir, "p1", "t1", "agent_tools/x.py")
+    t2 = _ticket_file(initiative_dir, "p1", "t2", "agent_tools/x.py")
+
+    assert [item["id"] for item in _merge(initiative_dir, tmp_path / "workspace" / "runs")] == ["t1"]
+
+    assert capsys.readouterr().out.splitlines() == [
+        notice.format(path=t1.resolve()),
+        notice.format(path=t2.resolve()),
+        "merged: t1 + t2 -> t1 (shared agent_tools/x.py)",
+    ]
+    assert route.parse_frontmatter(t2.read_text())[0]["state"] == "dropped"
+    assert sorted(task for kind, task in rows if kind == "task") == list(seeded)
+
+
+def test_a_directory_that_is_not_the_workspaces_own_initiative_never_touches_the_store(tmp_path, monkeypatch, capsys):
+    _, rows, _ = _merge_world(tmp_path, monkeypatch)
+    outside = tmp_path / "copy" / "demo"  # same name as the stored initiative, but not workspace/work/demo
+    t1 = _ticket_file(outside, "p1", "t1", "agent_tools/x.py")
+    t2 = _ticket_file(outside, "p1", "t2", "agent_tools/x.py")
+    stored = {key: dict(row) for key, row in rows.items()}
+
+    _merge(outside, tmp_path / "workspace" / "runs")
+
+    assert capsys.readouterr().out.splitlines() == [
+        f"routing: {outside.resolve()} is not an initiative of the workspace {tmp_path / 'workspace'}; merging its files without the store",
+        "merged: t1 + t2 -> t1 (shared agent_tools/x.py)",
+    ]
+    assert rows == stored
+    assert route.parse_frontmatter(t2.read_text())[0]["state"] == "dropped"
+    assert route.parse_frontmatter(t1.read_text())[0]["title"] == "T1; T2"
+
+
+def test_a_store_that_goes_away_mid_pass_is_the_down_path_not_a_refusal(tmp_path, monkeypatch, capsys):
+    initiative_dir, _rows, _ = _merge_world(tmp_path, monkeypatch, lose={"t2"})
+    t1 = _ticket_file(initiative_dir, "p1", "t1", "agent_tools/x.py")
+    t2 = _ticket_file(initiative_dir, "p1", "t2", "agent_tools/x.py")
+
+    assert [item["id"] for item in _merge(initiative_dir, tmp_path / "workspace" / "runs")] == ["t1"]
+
+    assert capsys.readouterr().out.splitlines() == [
+        "routing: store refused task row t2: gone",
+        f"routing: store unavailable, filing {t1.resolve()} without it",
+        f"routing: store unavailable, filing {t2.resolve()} without it",
+        "merged: t1 + t2 -> t1 (shared agent_tools/x.py)",
+    ]
+    assert route.parse_frontmatter(t2.read_text())[0]["state"] == "dropped"
+
+
+def test_merge_with_no_store_still_writes_the_files_and_warns_once_per_file(tmp_path, monkeypatch, capsys):
+    initiative_dir, rows, _ = _merge_world(tmp_path, monkeypatch, up=False)
+    t1 = _ticket_file(initiative_dir, "p1", "t1", "agent_tools/x.py")
+    t2 = _ticket_file(initiative_dir, "p1", "t2", "agent_tools/x.py")
+
+    assert [item["id"] for item in _merge(initiative_dir, tmp_path / "workspace" / "runs")] == ["t1"]
+
+    assert capsys.readouterr().out.splitlines() == [
+        f"routing: store unavailable, filing {t1.resolve()} without it",
+        f"routing: store unavailable, filing {t2.resolve()} without it",
+        "merged: t1 + t2 -> t1 (shared agent_tools/x.py)",
+    ]
+    assert route.parse_frontmatter(t2.read_text())[0]["state"] == "dropped"
+    assert list(rows) == [("initiative", "demo")]
+
+
+def test_a_refused_merge_writes_no_file_and_the_merges_after_it_still_apply(tmp_path, monkeypatch, capsys):
+    initiative_dir, rows, _ = _merge_world(tmp_path, monkeypatch, refuse={"t2"})
+    first = [_ticket_file(initiative_dir, "p1", name, "agent_tools/x.py") for name in ("t1", "t2")]
+    before = [path.read_text() for path in first]
+    t3 = _ticket_file(initiative_dir, "p2", "t3", "agent_tools/y.py")
+    t4 = _ticket_file(initiative_dir, "p2", "t4", "agent_tools/y.py")
+
+    returned = _merge(initiative_dir, tmp_path / "workspace" / "runs")
+
+    assert [item["id"] for item in returned] == ["t1", "t2", "t3"]
+    assert capsys.readouterr().out.splitlines() == [
+        "routing: store refused task row t2: boom",
+        "refused: t1 + t2 -> t1",
+        "merged: t3 + t4 -> t3 (shared agent_tools/y.py)",
+    ]
+    assert [path.read_text() for path in first] == before
+    assert route.parse_frontmatter(t4.read_text())[0]["state"] == "dropped"
+    assert route.parse_frontmatter(t3.read_text())[0]["title"] == "T3; T4"
+    assert rows[("initiative", "demo")]["extra"]["events"] == [{"event": "tasks_merged", "into": "t3", "tasks": ["t3", "t4"]}]
+    # The survivor row the store took before t2 was refused is rolled back, so the store agrees with the unmerged file.
+    assert (rows[("task", "t1")]["title"], rows[("task", "t1")]["state"]) == ("T1", "ready")
+    assert ("task", "t2") not in rows
+
+
+def test_a_refusal_does_not_leak_its_needs_rewrite_into_the_merges_that_apply(tmp_path, monkeypatch, capsys):
+    initiative_dir, rows, _ = _merge_world(tmp_path, monkeypatch, refuse={"t2"})
+    _ticket_file(initiative_dir, "p1", "t1", "agent_tools/x.py")
+    _ticket_file(initiative_dir, "p1", "t2", "agent_tools/x.py")
+    t5 = _ticket_file(initiative_dir, "p2", "t5", "agent_tools/y.py", needs=["t2"])
+    _ticket_file(initiative_dir, "p2", "t6", "agent_tools/y.py")
+    _ticket_file(initiative_dir, "p3", "t7", "agent_tools/z.py", needs=["t6"])
+
+    returned = {item["id"]: item for item in _merge(initiative_dir, tmp_path / "workspace" / "runs")}
+
+    assert capsys.readouterr().out.splitlines() == [
+        "routing: store refused task row t2: boom",
+        "refused: t1 + t2 -> t1",
+        "merged: t5 + t6 -> t5 (shared agent_tools/y.py)",
+    ]
+    # t2 was never folded into t1, so t5 still waits on t2 in the file, the store and the returned list alike.
+    assert route.parse_frontmatter(t5.read_text())[0]["needs"] == ["t2"]
+    assert rows[("task", "t5")]["needs"] == ["t2"]
+    assert list(returned) == ["t1", "t2", "t5", "t7"]
+    assert returned["t5"]["needs"] == ["t2"]
+    assert returned["t7"]["needs"] == ["t5"]  # t6 was folded into t5, which did apply
+    assert (returned["t1"]["state"], returned["t2"]["state"]) == ("ready", "ready")
+
+
+def test_a_refused_event_rolls_the_accepted_rows_back_and_writes_no_file(tmp_path, monkeypatch, capsys):
+    initiative_dir, rows, _ = _merge_world(tmp_path, monkeypatch, refuse={"demo"})
+    files = [_ticket_file(initiative_dir, "p1", name, "agent_tools/x.py") for name in ("t1", "t2")]
+    before = [path.read_text() for path in files]
+
+    returned = _merge(initiative_dir, tmp_path / "workspace" / "runs")
+
+    assert [item["id"] for item in returned] == ["t1", "t2"]
+    assert capsys.readouterr().out.splitlines() == [
+        "routing: store refused initiative row demo: boom",
+        "refused: t1 + t2 -> t1",
+    ]
+    assert [path.read_text() for path in files] == before
+    assert [(rows[("task", name)]["title"], rows[("task", name)]["state"]) for name in ("t1", "t2")] == [("T1", "ready"), ("T2", "ready")]
+
+
+def test_launch_takes_its_blockers_from_the_merge_result(tmp_path, monkeypatch, capsys):
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    initiative_dir = ws / "work" / "demo"
+    initiative_dir.mkdir(parents=True)
+    (initiative_dir / "initiative.md").write_text("---\nid: demo\ntitle: Demo\n---\n\nBody\n")
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    profile = _write_launch_profile(tmp_path, _write_harness(tmp_path), ws)
+    item = {"needs": [], "surfaces": []}
+    merged = [
+        {**item, "id": "a", "state": "blocked", "phase": "p1", "file": "p1/a.md"},
+        {**item, "id": "b", "state": "ready", "phase": "p2", "file": "p2/b.md"},
+    ]
+    monkeypatch.setattr(cli, "_merge_initiative_tickets", lambda _d: merged)
+
+    rc = main(["route", "launch", "epic", "--profile", str(profile), "--initiative", str(initiative_dir), "--repo", str(repo)])
+
+    assert rc == 2
+    assert "demo has a ready task behind blocked p1/a.md" in capsys.readouterr().out

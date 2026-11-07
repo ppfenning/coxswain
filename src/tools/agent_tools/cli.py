@@ -6,6 +6,7 @@ import argparse
 import ast
 import collections
 import contextlib
+import contextvars
 import dataclasses
 import datetime
 import getpass
@@ -6466,11 +6467,11 @@ def _route_launch(a: argparse.Namespace) -> int:
                 print(line)
             if rows_code:
                 return rows_code
-        _merge_initiative_tickets(launch_dir)
+        # The merge result, not a reread: a refused merge never wrote its files.
+        with _merging_into(runs_dir):
+            merged = _merge_initiative_tickets(launch_dir)
         # Only --include-blocked lifts this guard; --force never does.
-        held = route.launch_blockers([
-            item for item in _work_items(runs_dir.parent) if item["initiative"] == initiative_id
-        ])
+        held = route.launch_blockers(merged)
         if held and not a.include_blocked:
             print(f"routing: {initiative_id} has a ready task behind blocked {', '.join(held)}; pass --include-blocked to launch anyway")
             return 2
@@ -7583,17 +7584,118 @@ def _chair_export_hook(runs_dir: Path, ids: tuple[str, ...]) -> str:
     return f"{committed}; skipped {len(skipped)} contentless row(s): {', '.join(skipped)}" if skipped else committed
 
 
+def _initiative_head(runs_dir: Path, initiative_id: str) -> dict | None:
+    """Edge. The initiative's own store row; None when the store has none."""
+    rows = run_store.read_queue(runs_dir, initiative_id, kind="initiative")
+    return next((r for r in rows if r.get("task_id") == initiative_id), None)
+
+
+def _events_of(head: Mapping | None) -> list | None:
+    return None if head is None else list((head.get("extra") or {}).get("events", []))
+
+
+def _store_mode(runs_dir: Path | None, initiative_dir: Path) -> str:
+    """Edge. How a merge of `initiative_dir` reaches the store: "up" (an initiative row), "headless" (rows for the
+    initiative but no initiative row), "outside" (not the workspace's own `work/<initiative>`, so the store's rows
+    are not its rows), else "down": no workspace, or a store that answers with nothing, which cannot be told apart."""
+    if runs_dir is None:
+        return "down"
+    if (runs_dir.parent / "work" / initiative_dir.name).resolve() != initiative_dir:
+        return "outside"
+    if _initiative_head(runs_dir, initiative_dir.name) is not None:
+        return "up"
+    return "headless" if run_store.read_queue(runs_dir, initiative_dir.name) else "down"
+
+
+def _unfiled_notice(state: str, path: Path, initiative_id: str) -> str | None:
+    """Pure: the one line printed before `path` is written without a store row behind it; None when it needs none."""
+    if state in ("applied", "outside"):
+        return None
+    if state == "headless":
+        return f"routing: the store has no row for initiative {initiative_id}, filing {path} without it"
+    return route._unrecorded_row_warning(path, {})
+
+
+def _rows_before(runs_dir: Path, initiative_id: str, sources: Mapping[str, tuple[Path, str]]) -> dict[str, dict]:
+    """Edge. Each ticket's task row as it stands, else the row its file describes: what a rollback puts back."""
+    stored = {r["task_id"]: r for r in run_store.read_queue(runs_dir, initiative_id, kind="task")}
+    parsed = {task: queue_rows.parse_item("task", (initiative_id, path.parent.name, path.stem), text) for task, (path, text) in sources.items()}
+    return {task: row for task in sources if (row := stored.get(task) or parsed[task]) is not None}
+
+
+def _put_back(runs_dir: Path, rows: Sequence[Mapping]) -> None:
+    """Edge. Upserts `rows`, one printed line for each the store refuses."""
+    for row in rows:
+        if detail := run_store.upsert_row_detail(runs_dir, row):
+            print(f"routing: could not put back {row['kind']} row {row['task_id']}: {detail}; the store and the workspace now disagree")
+
+
+def _store_merge(runs_dir: Path, initiative_id: str, items: list[dict], merge: Mapping, paths: list[Path], before: Mapping[str, dict]) -> str:
+    """Edge. One merge to the store: "applied", "refused" (its accepted rows put back), or "unavailable" (store gone)."""
+    seen = _events_of(_initiative_head(runs_dir, initiative_id))
+    rows, events = route.merge_rows(items, [merge], initiative_id)
+    accepted = route.write_merge_rows(runs_dir, rows, events, initiative_id, paths)
+    held = _events_of(_initiative_head(runs_dir, initiative_id))
+    if seen is None or held is None:
+        return "unavailable"
+    if all(row["task_id"] in accepted for row in rows) and held[len(seen):] == events:
+        return "applied"
+    _put_back(runs_dir, [before[task] for task in accepted if task in before])
+    return "refused"
+
+
+def _settle_merges(
+    runs_dir: Path, initiative_id: str, items: list[dict], sources: Mapping[str, tuple[Path, str]]
+) -> tuple[list[dict], list[dict], list[str]]:
+    """Edge. `(merged_items, merges, states)` once no merge is refused. Each round sends every merge to the store; when
+    any is refused, the round's applied merges are put back, the refused tickets are held out of the merge, and the
+    rest is merged again. `merge_same_phase` rewrites a `needs` from a dropped id to its survivor across all groups,
+    so a refused group's rewrite must not reach the groups that still apply."""
+    before = _rows_before(runs_dir, initiative_id, sources)
+    held_out: set[str] = set()
+    while True:
+        merged, merges = route.merge_same_phase([{**i, "state": "held"} if i["id"] in held_out else i for i in items])
+        head = _initiative_head(runs_dir, initiative_id)
+        states = [
+            _store_merge(runs_dir, initiative_id, merged, merge, [sources[m][0] for m in merge["members"]], before) for merge in merges
+        ]
+        refused = [merge for merge, state in zip(merges, states) if state == "refused"]
+        if not refused:
+            states_of = {i["id"]: i["state"] for i in items}
+            return [{**m, "state": states_of[m["id"]]} if m["id"] in held_out else m for m in merged], merges, states
+        applied = [merge for merge, state in zip(merges, states) if state == "applied"]
+        _put_back(runs_dir, [before[m] for merge in applied for m in merge["members"] if m in before])
+        if applied and head is not None:
+            _put_back(runs_dir, [head])
+        for merge in refused:
+            held_out.update(merge["members"])
+            print(f"refused: {' + '.join(merge['members'])} -> {merge['into']}")
+
+
+_MERGE_RUNS_DIR: contextvars.ContextVar[Path | None] = contextvars.ContextVar("merge_runs_dir", default=None)
+
+
+@contextlib.contextmanager
+def _merging_into(runs_dir: Path | None):
+    """Names the runs directory (the profile's `workspace_dir/runs`) that `_merge_initiative_tickets` calls in the
+    block send their merges to. A context, not an argument, because `route launch` calls the merge with the
+    initiative directory alone. Outside any block, or given None, the merge has no store and writes files only."""
+    token = _MERGE_RUNS_DIR.set(runs_dir)
+    try:
+        yield
+    finally:
+        _MERGE_RUNS_DIR.reset(token)
+
+
 def _merge_initiative_tickets(initiative_dir: Path) -> list[dict]:
-    """`route.merge_same_phase` on the tickets under `initiative_dir`: the
-    same glob-and-`parse_frontmatter` read `_route_lint` used to do alone,
-    now also the write-back. The merged ticket and every `dropped` member
-    are rewritten in place with `route.merged_ticket_text`, which keeps
-    every header line the merge did not change. One `merged: ...` line
-    prints per merge, and the returned list drops the `dropped` entries:
-    they are already folded into a survivor, so a caller linting or
-    launching next must not see them beside it.
+    """`route.merge_same_phase` on the tickets under `initiative_dir`, each merge sent to the store before its files.
+    The store is `runs/` under the profile's `workspace_dir` (`_merging_into`), and only for that workspace's own
+    `work/<initiative>`. A refused merge writes no file; the rest are merged without it (`_settle_merges`).
+    Without a store the files are written as before, each after the unrecorded warning `write_filed_item` prints.
+    The returned list drops the `dropped` entries; each item carries `file` for `route.launch_blockers`.
     """
-    paths = sorted(initiative_dir.glob("*/*.md"))
+    root = initiative_dir.resolve()  # absolute, so the export baselines below are not skipped
+    paths = sorted(root.glob("*/*.md"))
     texts = [path.read_text(encoding="utf-8") for path in paths]
     items = [
         {
@@ -7605,17 +7707,33 @@ def _merge_initiative_tickets(initiative_dir: Path) -> list[dict]:
             "surfaces": fields.get("surfaces", []),
             "body": body,
             "needs": fields.get("needs", []),
+            "file": f"{path.parent.name}/{path.name}",
         }
         for path, text in zip(paths, texts)
         for fields, body in [route.parse_frontmatter(text)]
     ]
-    merged_items, merges = route.merge_same_phase(items)
-    touched = {member for merge in merges for member in merge["members"]}
-    for path, text, item in zip(paths, texts, merged_items):
-        if item["id"] in touched:
-            path.write_text(route.merged_ticket_text(text, item), encoding="utf-8")
-    for line in route.merge_report_lines(merges):
-        print(line)
+    sources = {item["id"]: (path, text) for path, text, item in zip(paths, texts, items)}
+    runs_dir = _MERGE_RUNS_DIR.get()
+    mode = _store_mode(runs_dir, root)
+    if mode == "up":
+        merged_items, merges, states = _settle_merges(runs_dir, root.name, items, sources)
+    else:
+        merged_items, merges = route.merge_same_phase(items)
+        states = [mode] * len(merges)
+        if merges and mode == "outside":
+            print(f"routing: {root} is not an initiative of the workspace {runs_dir.parent}; merging its files without the store")
+    merged_of = {item["id"]: item for item in merged_items}
+    for merge, state in zip(merges, states):
+        written = [(sources[m][0], route.merged_ticket_text(sources[m][1], merged_of[m])) for m in merge["members"]]
+        for path, _ in written:
+            if notice := _unfiled_notice(state, path, root.name):
+                print(notice)
+        for path, text in written:
+            path.write_text(text, encoding="utf-8")
+        if runs_dir is not None:
+            queue_export.record_written_paths(runs_dir.parent, [path for path, _ in written])
+        for line in route.merge_report_lines([merge]):
+            print(line)
     return [item for item in merged_items if item.get("state") != "dropped"]
 
 
@@ -7671,7 +7789,9 @@ def _route_lint(a: argparse.Namespace) -> int:
     initiative_dir = _route_lint_dir(a)
     if initiative_dir is None:
         return 2
-    items = _merge_initiative_tickets(initiative_dir)
+    runs_dir, _ = _runs_dir_for_land(argparse.Namespace(runs_dir=getattr(a, "runs_dir", None), profile=getattr(a, "profile", None)))
+    with _merging_into(runs_dir):
+        items = _merge_initiative_tickets(initiative_dir)
     repo = a.repo
     if not repo:
         init_path = initiative_dir / "initiative.md"

@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-KINDS = ("needs_chair", "host_login", "stall", "release_cut", "decision_card")
+KINDS = ("needs_chair", "host_login", "stall", "release_cut", "decision_card", "needs_attention")
 
 TITLE_MAX = 60
 BODY_MAX = 200

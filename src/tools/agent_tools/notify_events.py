@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
+from agent_tools.chair_types import HELD_FILE_CAUSE
 from agent_tools.notify_core import Event
 
 
@@ -60,8 +61,21 @@ def _needs_chair(action: Mapping) -> Event:
     )
 
 
+def _held_file(action: Mapping) -> Event:
+    """A hand edit the export held. The key carries the blob, so a new edit to the same file pushes again."""
+    path = str(action.get("path") or "")
+    return Event(
+        "needs_attention",
+        f"needs_attention:{path}|{action.get('blob') or ''}",
+        f"Needs attention: {path}",
+        str(action.get("reason") or ""),
+    )
+
+
 def _event(action: Mapping) -> Event:
     cause = action.get("cause")
+    if cause == HELD_FILE_CAUSE:
+        return _held_file(action)
     if cause == "login_lapsed":
         return _host_login(action)
     if cause in ("stalled", "idle_stall"):
@@ -110,7 +124,12 @@ def _queue_is_empty(facts: Mapping, events: Sequence[Event]) -> bool:
 def events_from_tick(facts: Mapping, actions: Sequence[Mapping]) -> list[Event]:
     """Events in first-seen key order, one per key, the first action that carries a remedy winning; queue_empty comes last, when facts show nothing left to run."""
     chosen: dict[str, tuple[Mapping, Event]] = {}
-    for a in (a for a in actions if a.get("kind") == "needs_chair" and not _is_dependency_wait(a)):
+    # A held file clears itself once its edit is kept or restored, but the edit is reported once, so it is exempt here.
+    pushed = (
+        a for a in actions
+        if a.get("kind") == "needs_chair" and (a.get("cause") == HELD_FILE_CAUSE or not _is_dependency_wait(a))
+    )
+    for a in pushed:
         e = _event(a)
         held = chosen.get(e.key)
         if held is None or (_remedy_line(a) and not _remedy_line(held[0])):
