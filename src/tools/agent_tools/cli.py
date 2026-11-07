@@ -13211,6 +13211,10 @@ def _chair_run_deps(
 
 def _chair_run(a: argparse.Namespace) -> int:
     """Refuses before any beat while a fact source or recorder is unwired, so a chair that cannot act never holds the lease."""
+    as_holder = bool(getattr(a, "as_holder", False))
+    if as_holder and not a.dry_run:
+        print("chair run: refusing to start, no lease taken; --as-holder needs --dry-run")
+        return 2
     profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
     if refuse_rc is not None:
         return refuse_rc
@@ -13228,6 +13232,7 @@ def _chair_run(a: argparse.Namespace) -> int:
         runs_dir, profile, _holder_label(a), os.getpid(), socket.gethostname(), a.dry_run, echo,
         _profile_path(a), work_state.work_state_mode(provider),
     )
+    deps = dataclasses.replace(deps, force_holder=as_holder)
     missing = _chair_unwired_sources(deps)
     if missing:
         print(f"chair run: refusing to start, no lease taken; not wired: {', '.join(missing)}")
@@ -13719,6 +13724,7 @@ CHAIR_COMMANDS = [
             commands.Arg(("--once",), {"action": "store_true", "help": "run one tick, release the lease, exit 1 if the tick errored"}),
             commands.Arg(("--interval",), {"type": float, "default": _CHAIR_RUN_INTERVAL, "help": "seconds between ticks (default: 60)"}),
             commands.Arg(("--dry-run",), {"action": "store_true", "help": "plan and report each tick without taking the lease or performing any action"}),
+            commands.Arg(("--as-holder",), {"action": "store_true", "help": "with --dry-run, plan as the lease holder would while the loop holds the lease; takes no lease and performs nothing"}),
             commands.Arg(("--max-overruns",), {"type": int, "default": 3, "help": "exit 3 after this many facts-stage overruns in a row (default: 3; 0 disables)"}),
             commands.Arg(("--label",), {"help": "the chair's holder label (default: $COX_SESSION_LABEL, else unlabeled)"}),
             commands.Arg(("--profile",), {"help": "the routing profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
