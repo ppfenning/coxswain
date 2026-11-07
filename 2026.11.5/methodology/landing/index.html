@@ -6699,6 +6699,14 @@ it is the free lane count. A zero, a negative or a non-integer profile value is 
 <p>Phases form a directed graph of levels. The driver derives each phase's parent phases from the needs between tasks, with
 <code>phase_parents</code> in <code>harness/waves.py</code>. <code>compute_waves</code> in the same module sorts the phases into waves. A wave holds the
 phases whose parents all sit in earlier waves. A phase caught in a dependency cycle is placed in no wave and is recorded as blocked.</p>
+<p>A phase branch is assembled from the phases its tasks need, not from every earlier phase. Stacking each phase on all of
+its predecessors would chain the whole initiative into one line. Phases with no need between them would then wait on one
+another, and the waves would shrink to one phase each. Keeping the parents to real needs is what lets independent phases run together.</p>
+<p>At launch the driver prints one line per phase, <code>phase &lt;id&gt;: parents &lt;ids&gt;</code>, before any phase builds. When a later phase
+names a file in <code>surfaces</code> that an earlier, unfinished phase also names, and no chain of needs reaches that phase, its
+line ends with <code>not inherited: &lt;phase&gt; (&lt;files&gt;)</code>. One warning line follows. The phase builds without that earlier work, and
+nothing is blocked. A task need on a task in the earlier phase adds it, and the decompose step adds that edge for a shared
+file. Only files named in <code>surfaces</code> are compared, so a dependency through an import, a symbol or a generated file is not seen.</p>
 <p>Independent phases in a wave run together, one lane each. A lane number is reused once its phase finishes. The
 <code>_run_lanes</code> function in <code>harness/epic.py</code> runs the phases as lanes.</p>
 <p>Tasks inside a phase run in parallel up to the cap. <code>lane_bound</code> in <code>harness/lanes.py</code> lowers the number that start when the usage ceiling is
