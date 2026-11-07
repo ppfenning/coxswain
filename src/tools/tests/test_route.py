@@ -1048,7 +1048,7 @@ def test_parse_frontmatter_misparses_a_bare_value_that_happens_to_start_with_a_q
     assert fields["title"] != '"draft" ship it'
 
 
-_NO_QUEUE_CONTROL = {"after": [], "held": False, "priority": 0}
+_NO_QUEUE_CONTROL = {"after": [], "held": False, "stage": "ready", "priority": 0}
 
 
 def test_intake_entries_sorts_by_filename_and_skips_consumed_prefix():
