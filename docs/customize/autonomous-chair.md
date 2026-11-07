@@ -575,6 +575,29 @@ Each steward action appears as a line such as `would merge level 0 of <epic>`
 or `would run the gate of <epic>`. Nothing is merged, relaunched or published.
 The dry run shows the plan. It does not show whether the executor is wired.
 
+### The merge step by land_at
+
+The steward's merge step follows the initiative's `land_at` setting. The three
+values merge a level in three different ways.
+
+At `ticket`, the steward merges the level into `pr/<initiative>`. The steward
+creates that branch from the target branch the first time the initiative needs
+it.
+
+At `level`, the level lands as its own pull request, as a phase land does. The
+steward first fetches the runs that hold the level's approved tasks. A phase
+that was split lands one task at a time, each from that task's newest run. The
+land honours the land lock and waits for green checks.
+
+At `task`, the steward lands each approved task.
+
+One initiative's merge failure publishes `merge_failed` for that initiative. It
+never stops the steward from handling the other initiatives. The initiative's
+normal relaunch still runs after the failure.
+
+`run_gate` still reads `pr/<initiative>`. An initiative that lands at `level` or
+at `task` has no gate branch yet, so the gate has nothing to read for it.
+
 ### The events
 
 The steward publishes eight typed events. Each is published under the epic's
