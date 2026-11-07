@@ -1657,6 +1657,23 @@ Coxswain is in beta — versions may change between releases
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Test database">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#integration-checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Integration checks
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -6355,6 +6372,23 @@ Coxswain is in beta — versions may change between releases
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Test database">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#integration-checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Integration checks
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -6468,24 +6502,102 @@ the reverse. It may move <code>policy.cost.level</code> toward <code>strict</cod
 <code>liberal</code>.</p>
 <h2 id="test-database">Test database</h2>
 <p><code>landing_areas.test_database</code> gives each build lane its own test database. A
-repository sets it in <code>.agent/cartridge.yaml</code>. It takes three keys. <code>env</code> is
+repository sets it in <code>.agent/cartridge.yaml</code>. It takes five keys. <code>env</code> is
 the name of the environment variable that carries the database URL to the
 harness. <code>template</code> is the URL, with one <code>{lane}</code> placeholder. <code>drop</code> is an
-optional command that removes the database.</p>
+optional command that removes the database. <code>schema</code> and <code>create</code> are
+optional keys that build the database, described below.</p>
 <p>Coxswain replaces <code>{lane}</code> in <code>template</code> with the lane id. The text after
 <code>{lane}</code> must not be empty, and the database name keeps that literal suffix.
 In <code>drop</code>, <code>{name}</code> stands for the resulting database name.</p>
-<p>The project harness is expected to create the database on first use. When
-<code>drop</code> is set, coxswain runs it to remove the database. When <code>drop</code> is
-absent, coxswain lists the database name for cleanup on the run result.</p>
+<p>When <code>create</code> is not set, the project harness is expected to create the
+database on first use. When <code>create</code> is set, coxswain runs it to build the
+database, as described below. When <code>drop</code> is set, coxswain runs it to remove
+the database. When <code>drop</code> is absent, coxswain lists the database name for
+cleanup on the run result.</p>
+<p>Two more optional keys let coxswain build the schema in the new database.
+<code>schema</code> is a path relative to the repository. It must not be empty, must not
+start with a slash and must not contain a <code>..</code> segment. <code>create</code> is the
+command that builds the database. It must hold <code>{name}</code>, which stands for the
+database name, and it may hold <code>{schema}</code>, which stands for the <code>schema</code> path.
+<code>create</code> requires <code>schema</code>. Coxswain runs <code>create</code> in the lane worktree, so a
+relative <code>schema</code> path resolves there. A later run can meet a database that
+already exists, so <code>create</code> must tolerate an existing database. When <code>schema</code>
+is set without <code>create</code>, coxswain builds nothing and records that no create
+command was configured.</p>
+<p>The outcome of <code>create</code> is a record for the lane. It holds the database name,
+a status and the last 500 characters of the command output. The status is
+<code>created</code> when the command exits with zero, <code>failed</code> when it exits non-zero,
+cannot start or runs past 60 seconds, and <code>skipped</code> when no command was
+configured. Coxswain returns a failure as a <code>failed</code> record and does not
+raise it. A <code>failed</code> or <code>skipped</code> record does not change the database name,
+which always comes from <code>template</code> and the lane id.</p>
+<p>Two fields already show the lane database in a run. The task record carries
+the database name under <code>test_database</code>. The run result lists the outcome of
+each drop under <code>lane_databases</code>. The <code>create</code> record is returned to the
+caller that ran <code>create</code>. No field of the task record or the run result
+carries it yet, so a <code>failed</code> status is not visible there.</p>
 <div class="highlight"><pre><span></span><code><span class="nt">landing_areas</span><span class="p">:</span>
 <span class="w">  </span><span class="nt">test_database</span><span class="p">:</span>
 <span class="w">    </span><span class="nt">env</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">DATABASE_URL</span>
 <span class="w">    </span><span class="nt">template</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">postgresql://localhost/app_{lane}_test</span>
 <span class="w">    </span><span class="nt">drop</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dropdb {name}</span>
 </code></pre></div>
-<p>A repository with no <code>test_database</code> setting behaves as before. Building the
-schema in the new database is the project's own concern.</p>
+<p>A repository with no <code>test_database</code> setting behaves as before. When <code>create</code>
+is not set, building the schema in the new database is the project's own
+concern.</p>
+<h3 id="integration-checks">Integration checks</h3>
+<p><code>landing_areas.integration_checks</code> is a list of checks that run against a
+real database. Each entry has the same shape as an entry in
+<code>landing_areas.checks</code>: a <code>name</code>, a <code>cmd</code> and an optional <code>timeout</code>. Like the
+other check lists it adds to what a layer below it set. A <code>cmd</code> may hold the
+placeholder <code>{packages}</code>. Coxswain replaces it with the packages the change
+touched, sorted and separated by spaces.</p>
+<p>The repository overlay in <code>.agent/cartridge.yaml</code> is refused, with a message
+that names <code>landing_areas.integration_checks</code>, when any of these hold. The
+value is not a list. The list is empty, so leave the key out instead of
+writing <code>[]</code>. An entry is not a mapping or lacks <code>name</code> or <code>cmd</code>. A <code>name</code> or
+<code>cmd</code> is not a non-empty string. Two entries share a <code>name</code>.</p>
+<p>A package is named from a changed path. Under a source tree, which is <code>src</code>,
+a path with three or more segments belongs to the package named by its first
+two segments, so <code>src/graphs/harness/x.py</code> belongs to <code>src/graphs</code>. Any other
+path belongs to the package named by its first segment. A changed test file
+counts as touching its own package. When the list of changed paths is empty,
+no package is named and the selection holds no check.</p>
+<p>Integration results show up in three places.</p>
+<ul>
+<li>The task gate. It runs only when <code>integration_checks</code> is not empty and the
+  lane has a private test database. A failure shows up as a task that is not
+  approved.</li>
+<li>The level gate. It runs only when <code>integration_checks</code> is configured and a
+  <code>test_database</code> is set. It uses its own private database, never the database
+  of a lane. A run that lands nothing still gets the level gate. That means
+  landing nothing does not exempt a run from the gate. The gate still selects
+  checks by the same package rule, so it holds no check when its list of
+  changed paths is empty.</li>
+<li>The run summary. It counts integration results apart from unit results, so
+  a green unit count never hides a failing integration check.</li>
+</ul>
+<p>A lane has a private test database when <code>test_database</code> is set, because the
+database name comes from <code>template</code> and the lane id. A <code>failed</code> or <code>skipped</code>
+<code>create</code> record does not take that database away. Without a private lane
+database the task gate does not run. The level gate needs <code>test_database</code> and
+does not depend on any lane. A repository that sets no <code>test_database</code> gets
+neither gate, whatever <code>integration_checks</code> holds.</p>
+<div class="highlight"><pre><span></span><code><span class="nt">landing_areas</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">test_database</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">env</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">DATABASE_URL</span>
+<span class="w">    </span><span class="nt">template</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">postgresql://localhost/app_{lane}_test</span>
+<span class="w">    </span><span class="nt">drop</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dropdb {name}</span>
+<span class="w">    </span><span class="nt">schema</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">db/schema.sql</span>
+<span class="w">    </span><span class="nt">create</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">./scripts/create-db.sh {name} {schema}</span>
+<span class="w">  </span><span class="nt">integration_checks</span><span class="p">:</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">db-integration</span>
+<span class="w">      </span><span class="nt">cmd</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">./scripts/integration.sh {packages}</span>
+<span class="w">      </span><span class="nt">timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">600</span>
+</code></pre></div>
+<p>A repository with none of <code>schema</code>, <code>create</code> and <code>integration_checks</code>
+behaves as before.</p>
 <h2 id="extending-local-or-base">Extending local or base</h2>
 <p>Most teams extend <code>local</code> (the default) rather than reaching past it to
 <code>base</code>. Extend <code>base</code> directly only when your change is genuinely
