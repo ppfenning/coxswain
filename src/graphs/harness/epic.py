@@ -61,7 +61,7 @@ from urllib.parse import urlencode
 import yaml
 
 from core import ledger, workstore
-from core.cartridge import test_database_setting
+from core.cartridge import integration_checks_setting, test_database_setting
 from core.landing import (
     DEFAULT_LAND_AT,
     land_gate_level,
@@ -111,8 +111,10 @@ from harness.digest import build_digest
 from harness.escalate import escalate_self_modification, touched_paths
 from harness.gate import apply_arm_for, auto_apply, gate
 from harness.handoff import build_handoff, plan_context
+from harness.integration_scope import scope_integration
 from harness.invoke import Invocation, invoke_graphs
 from harness.lane_database import database_name, lane_env
+from harness.lane_database_create import create_lane_database, creation_failure
 from harness.lane_database_drop import drop_lane_database
 from harness.lane_workers import lane_workers_from, workers_env
 from harness.lanes import lane_bound
@@ -547,6 +549,11 @@ class _Ctx:
     def level_checks(self) -> list[Mapping[str, Any]]:
         """The cartridge's level gate; never joined with `.agent-checks`, and never read by a task build."""
         return list(gate_checks(self.cartridge.get("landing_areas") or {}, "level"))
+
+    @property
+    def integration_checks(self) -> list[Any]:
+        """The cartridge's touched-package integration checks; empty when none are configured."""
+        return integration_checks_setting(self.cartridge)
 
     @property
     def bound(self) -> Mapping[str, Any]:
@@ -1063,6 +1070,46 @@ def _run_level_checks(ctx: _Ctx, phase: str, record: dict[str, Any]) -> None:
         results = run_checks(ctx.phase_worktree(phase), checks, env=_checks_env(ctx, {}), **log)
     record["level_checks"] = results
     if reason := _level_failure_reason(phase, results):
+        record["status"], record["reason"] = "partial", reason
+
+
+def _level_integration_reason(phase: str, creation: Mapping[str, Any], results: Sequence[Mapping[str, Any]]) -> str:
+    """A line naming the level and what stopped its integration gate; '' when the database exists and every row passed."""
+    if setup := creation_failure(creation):
+        return f"level {phase}: {setup}"
+    failing = next((r for r in results if not r.get("passed")), None)
+    return "" if failing is None else f"level {phase} failed integration check {failing.get('name')}"
+
+
+def _run_level_integration(ctx: _Ctx, phase: str, base: str, record: dict[str, Any]) -> None:
+    """Run the touched-package integration checks once on the level's own database, after the level checks.
+
+    `base` is the ref the level was cut from. Nothing runs, and `record` gains no key, without both
+    `integration_checks` and a `test_database`. The database is registered before it is created, so a
+    failed creation is still listed by the drop path. A failure marks the level partial, never a task.
+    """
+    checks, setting = ctx.integration_checks, ctx.test_database
+    if not checks or setting is None:
+        return
+    worktree = ctx.phase_worktree(phase)
+    lane = lane_env(setting, ctx.run_id, phase, "level")
+    name = ctx.lane_names[(phase, "level")] = database_name(next(iter(lane.values())))
+    creation = create_lane_database(setting.get("create"), setting.get("schema", ""), name, lane, str(worktree))
+    ok, listing = _git("-C", str(worktree), "diff", "--name-only", "--no-renames", "-z", base, "HEAD")
+    if not ok:
+        record["status"], record["reason"] = "partial", f"level {phase} integration paths unreadable: {listing}"
+        return
+    scoped = scope_integration(checks, _nul_paths(listing))
+    results: list[dict[str, Any]] = []
+    if scoped.checks and not creation_failure(creation):
+        log = {
+            "log_dir": ctx.runs_dir / ctx.run_id / "checks" / phase / "level-integration",
+            "log_prefix": f"checks/{phase}/level-integration/",
+        }
+        with repo_gate_lock(ctx.repo):
+            results = run_checks(worktree, list(scoped.checks), env=_checks_env(ctx, lane), **log)
+    record["level_integration"], record["level_integration_scope"] = results, scoped.selection
+    if reason := _level_integration_reason(phase, creation, results):
         record["status"], record["reason"] = "partial", reason
 
 
@@ -4164,6 +4211,8 @@ def _run_phase(
     # It covers the level as merged. The optional style_pass trim below runs later and is not re-checked here.
     if record["status"] == "complete":
         _run_level_checks(ctx, phase, record)
+    if record["status"] == "complete":
+        _run_level_integration(ctx, phase, str(record["base"]), record)
 
     # At `level` a finished level gets one PR. A restart over a merged level finds the PR it already has, or opens
     # the one a failed first attempt never made. A level stacked on one parent is based on that parent's PR branch when
