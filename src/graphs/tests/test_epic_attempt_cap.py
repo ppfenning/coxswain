@@ -6,6 +6,7 @@ from pathlib import Path
 
 from core import workstore
 from graphs.ops import triage_quarantine
+from harness.epic import _newest_attempt_text
 from tests.test_epic_driver import (  # noqa: F401 -- cart and repo are fixtures
     SPECS,
     TriageAttemptRunner,
@@ -86,3 +87,31 @@ def test_triage_sees_its_prior_entry_on_an_older_body_and_escalates(repo, cart, 
     assert "triage repeats a prior" in entry["reason"]
     assert "epic-prior-0" in entry["reason"]
     assert not any(p["target"] == "t1-probe" for p in result["proposals"])
+
+
+def test_newest_attempt_text_picks_the_newest_by_ts_and_reads_unrecorded_and_truncates() -> None:
+    older = {"ts": "2026-09-02T00:00:00+00:00", "kind": "check_failed", "cause": "code", "reason": "old"}
+    newest = {"ts": "2026-09-03T00:00:00+00:00", "kind": "no_work", "reason": "node 'build':\nno result event " + "x" * 300}
+    text = _newest_attempt_text([newest, older])
+
+    assert text.startswith("newest attempt: kind no_work, cause unrecorded, reason node 'build': no result event x")
+    assert "\n" not in text
+    assert len(text.split("reason ", 1)[1]) == 120
+    assert _newest_attempt_text([older]) == "newest attempt: kind check_failed, cause code, reason old"
+
+
+def test_a_capped_task_names_the_newest_attempt_in_its_printed_line_and_quarantine_reason(repo, cart, tmp_path, capsys) -> None:  # noqa: F811
+    wi, path = _store_with_two_recorded_attempts(tmp_path)
+    reason = "node 'build': no result event in the stream"
+    workstore.record_attempt(
+        path, run="epic-prior-3", phase="p1-foundations", reason=reason, ts="2026-09-03T00:00:00+00:00", kind="no_work"
+    )
+    result, _ = drive(
+        repo, _amend_cart(cart), tmp_path, runner=TriageAttemptRunner({}), work=workstore.read_initiative(wi),
+        specs=TRIAGE_SPECS,
+    )
+
+    line = next(ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("  attempt cap: t1-probe"))
+    assert f"kind no_work, cause unrecorded, reason {reason}" in line
+    entry = next(q for q in result["quarantined"] if q["id"] == "t1-probe")
+    assert f"kind no_work, cause unrecorded, reason {reason}" in entry["reason"]
