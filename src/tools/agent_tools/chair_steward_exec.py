@@ -26,6 +26,7 @@ class StewardPorts:
     ticket_branch_of: Callable[[str], str]
     phase_of: Callable[[str, int], str]  # (epic, level index into its phases in natural order) -> phase name
     run_gate_checks: Callable[[str, str, Sequence[str]], tuple[bool, str]]
+    target_branch_of: Callable[[str], str] | None = None  # epic -> the repository's target branch name
 
 
 def outcome(event: str, action: Action, reason: str) -> Outcome:
@@ -77,10 +78,41 @@ def _merge(action: Action, repo: str, ticket: str, level: str, run: GitRun) -> O
     return outcome(EVENTS["merge_level"][0], action, f"merged {level} into {ticket} as {new}")
 
 
+def _land_at(action: Action) -> str:
+    return action.get("land_at") or "ticket"
+
+
+def _ensure_ticket_branch(action: Action, repo: str, ticket: str, ports: StewardPorts) -> Outcome | None:
+    """Create the ticket branch at the target tip when absent. None means it exists; else a merge_failed outcome."""
+    exists_code, _ = ports.git(_git(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{ticket}"))
+    if exists_code == 0:
+        return None
+    target = ports.target_branch_of(action["epic"]) if ports.target_branch_of else ""
+    if not target:
+        return _merge_failed(action, "target branch", f"{ticket} is missing and no target branch is known")
+    tip_code, tip_out = ports.git(_git(repo, "rev-parse", "--verify", f"{target}^{{commit}}"))
+    if tip_code != 0 or not tip_out.strip():
+        return _merge_failed(action, "rev-parse target", tip_out or f"{target} does not resolve")
+    # The all-zeros old value makes update-ref refuse when the branch appeared since the check above.
+    create_code, create_out = ports.git(
+        _git(repo, "update-ref", "-m", f"steward: create {ticket}", f"refs/heads/{ticket}", tip_out.strip(), "0" * 40)
+    )
+    if create_code != 0:
+        return _merge_failed(action, "create ticket branch", create_out)
+    return None
+
+
 def _merge_level(action: Action, ports: StewardPorts) -> Outcome:
+    land_at = _land_at(action)
+    if land_at != "ticket":
+        reason = f"land_at {land_at}: the land is run by the chair, not the steward executor"
+        return outcome(EVENTS["merge_level"][1], action, reason)
     epic = action["epic"]
     repo = ports.repo_of(epic)
     ticket = ports.ticket_branch_of(epic)
+    failed = _ensure_ticket_branch(action, repo, ticket, ports)
+    if failed is not None:
+        return failed
     level = level_branch(epic, ports.phase_of(epic, action["level"]))
     if level_state(repo, ticket, level, ports.git) is LevelState.MERGED:
         return outcome(EVENTS["merge_level"][0], action, "already merged")
