@@ -209,14 +209,30 @@ def _governance_line(hits: list[str], *, label: str = "") -> str:
     )
 
 
+_INTEGRATION_KEYS = (
+    "integration_tasks_passed",
+    "integration_tasks_failed",
+    "integration_levels_passed",
+    "integration_levels_failed",
+)
+
+
 def epic_summary_line(run_id: str, totals: Mapping[str, int]) -> str:
-    """The end-of-run epic line; a missing total counts as 0."""
+    """The end-of-run epic line; a missing total counts as 0. The integration clause prints only when an integration check ran."""
+    integration = (
+        f"; integration: {totals.get('integration_tasks_passed', 0)} task(s) passed, "
+        f"{totals.get('integration_tasks_failed', 0)} failed, "
+        f"{totals.get('integration_levels_passed', 0)} level(s) passed, "
+        f"{totals.get('integration_levels_failed', 0)} failed"
+        if any(totals.get(k, 0) for k in _INTEGRATION_KEYS)
+        else ""
+    )
     return (
         f"\nepic {run_id}: {totals.get('phases_complete', 0)} phase(s) complete, "
         f"{totals.get('phases_partial', 0)} partial, {totals.get('phases_blocked', 0)} blocked, "
         f"{totals.get('phases_awaiting_land', 0)} awaiting land, "
         f"{totals.get('tasks_quarantined', 0)} task(s) quarantined, "
-        f"{totals.get('stacks_rebased', 0)} stack(s) rebased"
+        f"{totals.get('stacks_rebased', 0)} stack(s) rebased{integration}"
     )
 
 
