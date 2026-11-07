@@ -76,7 +76,7 @@ from graphs._contract import proposal
 from graphs.delivery import rescue_review
 from graphs.delivery.budget_estimate import estimate_budget
 from graphs.delivery.lifecycle_propose import DEFAULT_FIX_ATTEMPTS
-from harness import pool_edge, rescue_checks, rescue_select, warm_pool, work_mirror
+from harness import pool_edge, rescue_checks, rescue_select, termination, warm_pool, work_mirror
 from harness.assembly import assemble
 from harness.autonomy import split_by_policy
 from harness.base_check import Expected, expected_merges, gaps, stale_base_stop
@@ -2093,6 +2093,8 @@ def _quarantine_task(
     quarantine. The session limit is not a failure of the task: it propagates
     before anything is written, so the run pauses with no attempt recorded.
 
+    A task that fails while the run is terminating records no attempt and no cause and stays ready, because that failure is the kill.
+
     `cause`, a (cause, cause_why) the caller already knows, replaces that judgment.
     `rescue_task` passes it for `rescue_failed`, whose cause a rule fixed.
 
@@ -2102,6 +2104,9 @@ def _quarantine_task(
     if stale is not None:
         # A stale leader records no attempt anywhere, so it is not an attempt either.
         return {"id": task, "phase": phase, "grain": "task", "reason": f"{stale}; not recorded: {reason}", "kind": "no_work"}
+    if termination.is_terminating():
+        # A failure seen after SIGTERM looks like a failed build but is the kill: recording it would cap the task.
+        return {"id": task, "phase": phase, "grain": "task", "reason": f"run terminated by signal; not recorded: {reason}", "kind": "no_work"}
     # Before any write, so a `LimitStop` from the classifier leaves nothing half recorded.
     judged = (cause or _cause_of(ctx.runner, kind, reason, result, task)) if ctx.store is not None else None
     patch_kept = kind in ("unverified", "infra")
