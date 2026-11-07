@@ -72,6 +72,15 @@ def test_a_held_file_gives_one_needs_attention_event_with_its_reason_keyed_by_pa
     assert again.key == "needs_attention:work/a.md|b2"
 
 
+def test_a_held_file_gives_one_needs_attention_event_with_its_reason_keyed_by_path_and_blob():
+    held = {"kind": "needs_chair", "initiative": "init-h", "cause": "held_file", "path": "work/a.md", "blob": "b1",
+            "reason": "work/a.md: changed with no matching store change (state changed)"}
+    (event,) = events_from_tick({}, [held, dict(held)])
+    assert (event.kind, event.key, event.body) == ("needs_attention", "needs_attention:work/a.md|b1", held["reason"])
+    (again,) = events_from_tick({}, [{**held, "blob": "b2"}])
+    assert again.key == "needs_attention:work/a.md|b2"
+
+
 def test_a_remedy_command_is_carried_in_the_body():
     action = {**UNRELATED, "reason": "stuck", "remedy": "carry", "command": ["cox", "runs", "land", "r1"]}
     (event,) = events_from_tick({}, [action])
