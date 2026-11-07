@@ -116,6 +116,7 @@ from harness.lane_database import database_name, lane_env
 from harness.lane_database_drop import drop_lane_database
 from harness.lane_workers import lane_workers_from, workers_env
 from harness.lanes import lane_bound
+from harness.phase_remote import push_branch
 from harness.resume import load_result, reusable, save_result
 from harness.scheduler import plan_launches
 from harness.stack_refresh import refresh_branch, refresh_reason, refresh_record
@@ -272,6 +273,18 @@ def _push_review_branch(ctx: _Ctx, task: str) -> tuple[bool, str]:
 def _push_review_ref(ctx: _Ctx, local: str, name: str) -> tuple[bool, str]:
     """Push the local branch `local` to origin as `review/<initiative>/<name>`."""
     return _git("-C", str(ctx.repo), "push", "origin", f"{local}:refs/heads/review/{ctx.initiative_id}/{name}")
+
+
+def _publish_branch(ctx: _Ctx, branch: str) -> str | None:
+    """Push `branch` to origin. None on success or with no origin, else a warning; a failed push never stops the build."""
+    ok, detail = push_branch(ctx.repo, branch)
+    return None if ok else f"push of {branch} failed: {detail}"
+
+
+def _note_push_failure(record: dict[str, Any], warning: str | None) -> None:
+    """Add `warning` to the phase record's `remote_push_failed`, a single string joined with '; '."""
+    if warning:
+        record["remote_push_failed"] = "; ".join(filter(None, [record.get("remote_push_failed"), warning]))
 
 
 def _open_review_pr(ctx: _Ctx, *, title: str, body: str, head: str, base: str) -> tuple[bool, str]:
@@ -3162,6 +3175,7 @@ def _run_phase(
     if not ok:
         return open_failed(detail, "created")
     record["reused_branch"] = reused
+    _note_push_failure(record, _publish_branch(ctx, branch))
 
     # Decided before a single task builds: a reused branch missing a commit it
     # needs is either recreated (nothing of its own to lose) or blocked (something is).
@@ -3257,6 +3271,7 @@ def _run_phase(
         if not ok:
             return open_failed(detail, "recreated")
         record["reused_branch"] = reused
+        _note_push_failure(record, _publish_branch(ctx, branch))
         return None
 
     if action == "recreate":
@@ -3964,6 +3979,9 @@ def _run_phase(
         # happened, so an approved merge that conflicted records `skipped`.
         diffs.append(gate_diff(item, decision, applied=applied, edited=edited))
 
+    for warning in state.push_warnings:
+        _note_push_failure(record, warning)
+
     # At `task` each task merged by this run gets its own PR; at `level` and `ticket` none does. A failed PR is a
     # note on the task, not a quarantine: the merge into the phase branch already happened.
     if opens_pr(ctx.land_at, "task"):
@@ -4487,6 +4505,7 @@ class _Execution:
     escalated: frozenset[str] = frozenset()
     notes: dict[str, str] = field(default_factory=dict)
     draft_detail: dict[str, str] = field(default_factory=dict)
+    push_warnings: list[str] = field(default_factory=list)  # origin pushes that failed; the branch stays local
     commits: dict[str, str] = field(default_factory=dict)  # task -> the commit its merge made on the phase branch
     builds: dict[str, Mapping[str, Any]] = field(default_factory=dict)  # task -> its build result, for the handoff
     handoffs: dict[str, dict[str, Any]] = field(default_factory=dict)  # task -> the handoff stored with its merge
@@ -4677,6 +4696,8 @@ def _execute(
         state.landed[subject] = ok
         if not ok:
             state.draft_detail[subject] = f"draft branch {draft} was not created ({detail})"
+        else:
+            state.push_warnings.extend(filter(None, [_publish_branch(ctx, draft)]))
         return ok, detail or f"created {draft}"
 
     if kind == "merge_stack" and slot == "merge":
@@ -4709,6 +4730,7 @@ def _execute(
             head_ok, head = _git("-C", str(ctx.phase_worktree(phase)), "rev-parse", "HEAD")
             if head_ok:
                 state.commits[subject] = head
+            state.push_warnings.extend(filter(None, [_publish_branch(ctx, ctx.phase_branch(phase))]))
         return ok, detail
 
     if kind == "stack_rebase" and slot == "rebase":
