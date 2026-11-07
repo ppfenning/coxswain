@@ -3936,6 +3936,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#epic" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        epic
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#remove" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6560,6 +6571,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#epic" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        epic
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#remove" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6675,12 +6697,12 @@ Coxswain is in beta — versions may change between releases
 
 <h1 id="route">route</h1>
 <div class="highlight"><pre><span></span><code>usage: cox route [-h]
-                 {context,status,file,priority,pull,lint,groups,drift,import,paths,store-fill,approve,decline,edit,remove,hold,release,requeue,leader,chair,sync,launch} ...
+                 {context,status,file,priority,pull,lint,groups,drift,import,paths,store-fill,approve,decline,edit,epic,remove,hold,release,requeue,leader,chair,sync,launch} ...
 
 File work for the harness, and see what is queued or running.
 
 positional arguments:
-  {context,status,file,priority,pull,lint,groups,drift,import,paths,store-fill,approve,decline,edit,remove,hold,release,requeue,leader,chair,sync,launch}
+  {context,status,file,priority,pull,lint,groups,drift,import,paths,store-fill,approve,decline,edit,epic,remove,hold,release,requeue,leader,chair,sync,launch}
     context             the routing profile's resolved context
     status              what is queued or running for this profile
     file                file a new ticket for the harness
@@ -6702,6 +6724,7 @@ positional arguments:
     decline             decline a draft initiative: its todo tickets become
                         dropped
     edit                change a queued intake, an initiative or a task ticket
+    epic                create an epic definition file: `route epic new &lt;id&gt;`
     remove              remove queued intakes or initiatives that have no live
                         run
     hold                hold a queued intake or an initiative so the chair
@@ -6875,7 +6898,7 @@ options:
                       [--body-file BODY_FILE] [--repo REPO]
                       [--surfaces SURFACES] [--state STATE] [--pr PR]
                       [--rebuild] [--force] [--link LINK] [--after AFTER]
-                      [--dry-run] [--profile PROFILE]
+                      [--epic EPIC] [--dry-run] [--profile PROFILE]
                       id
 
 positional arguments:
@@ -6903,7 +6926,25 @@ options:
                         clears the link
   --after AFTER         queued intake only: ids it waits on, repeated or
                         comma-separated; an empty value clears the list
+  --epic EPIC           initiative only: join the epic with this id, or none
+                        to leave it
   --dry-run             print the diff and write nothing
+  --profile PROFILE
+</code></pre></div>
+<h2 id="epic">epic</h2>
+<div class="highlight"><pre><span></span><code>usage: cox route epic [-h] [--title TITLE] [--target-branch TARGET_BRANCH]
+                      [--dry-run] [--profile PROFILE]
+                      action id
+
+positional arguments:
+  action                only `new`
+  id                    the epic id, a lowercase slug
+
+options:
+  -h, --help            show this help message and exit
+  --title TITLE
+  --target-branch TARGET_BRANCH
+  --dry-run             print the plan and write nothing
   --profile PROFILE
 </code></pre></div>
 <h2 id="remove">remove</h2>
