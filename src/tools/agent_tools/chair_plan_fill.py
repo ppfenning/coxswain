@@ -3,13 +3,24 @@
 Pure. free_lanes comes from the caller; only host_free_slots reads dispatch and the optional limits lane_fraction.
 """
 from collections.abc import Callable, Collection, Mapping, Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import NamedTuple
 
 from agent_tools import chair_login_watch, host_load
 from agent_tools.chair_plan_recover import budget_verdict
+from agent_tools.chair_schedule import Host, Placement, Schedule, plan_schedule
+from agent_tools.chair_schedule_durations import estimate_duration
+from agent_tools.chair_schedule_graph import Initiative as GraphInitiative
+from agent_tools.chair_schedule_graph import Phase, build_graph
 from agent_tools.chair_steer import steer_check
-from agent_tools.chair_types import Action, Facts, InitiativeFacts, RunningInitiative, SteerPolicy
+from agent_tools.chair_types import (
+    Action,
+    Facts,
+    InitiativeFacts,
+    RunningInitiative,
+    ScheduleInputs,
+    SteerPolicy,
+)
 from agent_tools.checkout_env import blocks_launch, host_env_verdict, sync_instruction
 
 # name, weight (a host's share of new placements; its capacity when the hosts table sets none),
@@ -28,6 +39,9 @@ _NO_ENV = HostEnv({}, frozenset())
 
 # Seconds: the minimum gap between pulls.
 PULL_MIN_AGE_S = 600
+
+# Seconds a phase with no finished-phase record is assumed to take; no tier of the records can say better.
+DEFAULT_PHASE_SECONDS = 3600.0
 
 
 def _required_capabilities(initiative: InitiativeFacts) -> frozenset[str]:
@@ -207,6 +221,130 @@ def _epic_launches(
     return [*launches, *(a for a in steers if a not in stale), *_once_per_reason(stale)]
 
 
+def _release_target(target: str | None) -> datetime | None:
+    """The ISO target as an aware datetime; a bare date is read as UTC midnight, an unreadable one as no target."""
+    try:
+        parsed = None if target is None else datetime.fromisoformat(target)
+    except ValueError:
+        return None
+    return parsed if parsed is None or parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def schedule_for(inputs: ScheduleInputs, now: datetime) -> Schedule:
+    """The Schedule `chair_schedule.plan_schedule` returns for the facts' inputs; a phase with no record takes DEFAULT_PHASE_SECONDS."""
+    initiatives = [
+        GraphInitiative(
+            i["id"],
+            i["priority"],
+            i["repo"],
+            tuple(Phase(p["id"], p["status"], tuple(p["parents"]), p["size"], tuple(p["surfaces"])) for p in i["phases"]),
+        )
+        for i in inputs["initiatives"]
+    ]
+    mixes = {(i["id"], p["id"]): p["mix"] for i in inputs["initiatives"] for p in i["phases"]}
+    nodes, dependents = build_graph(initiatives)
+    durations = {
+        key: estimate_duration(inputs["records"], node.size, mixes[key], DEFAULT_PHASE_SECONDS)
+        for key, node in nodes.items()
+    }
+    hosts = [Host(h["name"], tuple(h["lanes"]), h["local"], tuple(h["repos"])) for h in inputs["hosts"]]
+    return plan_schedule(
+        nodes, dependents, durations, hosts, inputs["mode"], inputs["load"], now, None, _release_target(inputs["target"])
+    )
+
+
+def _first_per_initiative(placements: Sequence[Placement]) -> list[Placement]:
+    """A schedule may start several phases of one initiative; the chair launches the initiative once."""
+    return [p for n, p in enumerate(placements) if p.key[0] not in {q.key[0] for q in placements[:n]}]
+
+
+def _walk_scheduled(
+    placements: Sequence[Placement],
+    by_id: Mapping[str, InitiativeFacts],
+    local: frozenset[str],
+    running: Sequence[RunningInitiative],
+    streaks: Mapping[str, int],
+    local_left: int,
+    hosts: Sequence[HostSlot],
+    env: HostEnv,
+    policy: SteerPolicy | None,
+) -> tuple[list[Action], list[Action]]:
+    """Launches and steer actions in schedule order. A placement a gate refuses is dropped; nothing takes its place.
+
+    A gate refuses it when its initiative is not launchable, its lane or host slot is gone, the host's checkout is
+    stale for its repo_dir, or the steer rule holds it against a running or earlier-launched initiative."""
+    if not placements:
+        return [], []
+    head, *tail = placements
+    initiative = by_id.get(head.key[0])
+    on_local = head.host in local
+    slot = next((h for h in hosts if h[0] == head.host), None)
+
+    def skip(notes: list[Action], extra: list[Action]) -> tuple[list[Action], list[Action]]:
+        launches, steers = _walk_scheduled(tail, by_id, local, running, streaks, local_left, hosts, env, policy)
+        return launches, [*notes, *extra, *steers]
+
+    if initiative is None or (local_left <= 0 if on_local else slot is None or not _eligible(slot, _required_capabilities(initiative))):
+        return skip([], [])
+    barred = {} if on_local or slot is None else _barred_hosts(initiative, [slot], env)
+    if barred:
+        return skip(_stale_needs_chair(initiative, barred, [slot], _required_capabilities(initiative), env), [])
+    repo = initiative.get("repo", "")
+    surfaces = initiative.get("ready_surfaces", [])
+    steer = steer_check(initiative["id"], repo, surfaces, running, streaks, policy=policy) if repo and surfaces else None
+    if steer is not None:
+        return skip([], [steer])
+    claim: list[RunningInitiative] = [{"id": initiative["id"], "repo": repo, "surfaces": surfaces}] if repo and surfaces else []
+    action: Action = {"kind": "launch_epic", "initiative": initiative["id"]} if on_local else _epic_action(initiative["id"], head.host)
+    launches, steers = _walk_scheduled(
+        tail,
+        by_id,
+        local,
+        [*running, *claim],
+        streaks,
+        local_left - 1 if on_local else local_left,
+        hosts if on_local else _after_placing(hosts, [action]),
+        env,
+        policy,
+    )
+    return [action, *launches], steers
+
+
+def scheduled_launches(
+    facts: Facts,
+    schedule: Schedule,
+    free_lanes: int,
+    withheld: frozenset[str],
+    host_free: Sequence[HostSlot],
+    claimed: Sequence[RunningInitiative] = (),
+    now: datetime | None = None,
+) -> list[Action]:
+    """The schedule's this-tick launches, in its order and on its hosts, kept only where the chair's gates allow.
+
+    Withheld ids, a `dag_problem`, a budget refusal (with now), a missing lane, a stale checkout and the steer rule
+    each drop a launch. No unscheduled initiative ever takes a dropped launch's place."""
+    candidates = [
+        i for i in facts["initiatives"] if i["ready_tasks"] and i["id"] not in withheld and not i.get("dag_problem")
+    ]
+    skips = budget_skips(facts, candidates, now)
+    by_id = {i["id"]: i for i in candidates if i["id"] not in skips}
+    local = frozenset(h["name"] for h in facts.get("schedule_inputs", {}).get("hosts", []) if h["local"])
+    env = HostEnv(facts.get("host_env", {}), frozenset(facts.get("env_stale_reported", [])))
+    launches, steers = _walk_scheduled(
+        _first_per_initiative(schedule.launches),
+        by_id,
+        local,
+        [*facts.get("running", []), *claimed],
+        facts.get("steer_streaks", {}),
+        max(0, free_lanes),
+        host_free,
+        env,
+        facts.get("steer_policy"),
+    )
+    stale = [a for a in steers if a.get("cause") == "stale_checkout"]
+    return [*launches, *(a for a in steers if a not in stale), *_once_per_reason(stale)]
+
+
 def _decompose_launches(
     facts: Facts,
     lanes: int,
@@ -277,6 +415,7 @@ def plan_fill(
     hosted_decompose: bool = False,
     stalled: frozenset[str] = frozenset(),
     now: datetime | None = None,
+    schedule: Schedule | None = None,
 ) -> list[Action]:
     """now enables the launch budget: an initiative it refuses gets no launch_epic. Without it the budget is skipped.
 
@@ -292,7 +431,10 @@ def plan_fill(
     It defaults off: `cox route launch decompose` has no `--on` yet, so a hosted decompose would fail to parse.
 
     stalled names intake paths at the empty-decompose limit. They stay in facts["intake"], so no pull is planned,
-    but no launch_decompose is built for them."""
+    but no launch_decompose is built for them.
+
+    schedule takes launch choice and host placement from `chair_schedule`'s this-tick list instead of the ranking
+    and the freest host; the gates above still drop a launch, and none is substituted. Without it nothing changes."""
     host_free = host_free_slots(facts)
     if consumed_host_lanes:
         host_free = _less_consumed(host_free, consumed_host_lanes)
@@ -301,14 +443,20 @@ def plan_fill(
     local_lanes = max(0, free_lanes)
     reserved = facts["dispatch"].get("local_lanes") == "decompose"
     epic_lanes = 0 if reserved else free_lanes
-    first_pass = _epic_launches(facts, epic_lanes, withheld, host_free, claimed, now)
+
+    def epics(hosts: Sequence[HostSlot]) -> list[Action]:
+        if schedule is None:
+            return _epic_launches(facts, epic_lanes, withheld, hosts, claimed, now)
+        return scheduled_launches(facts, schedule, epic_lanes, withheld, hosts, claimed, now)
+
+    first_pass = epics(host_free)
     local_epics = [a for a in first_pass if a["kind"] == "launch_epic" and "host" not in a]
     decomposes = _decompose_launches(
         facts, local_lanes - len(local_epics), host_free if hosted_decompose else (), stalled
     )
     # Host lanes a decompose took are gone before epics are placed on hosts; the local epic count is unchanged.
-    epics = _epic_launches(facts, epic_lanes, withheld, _after_placing(host_free, decomposes), claimed, now)
+    placed = epics(_after_placing(host_free, decomposes))
     local_decomposes = [a for a in decomposes if "host" not in a]
     lanes_left = local_lanes - len(local_epics) - len(local_decomposes)
     pulls: list[Action] = [{"kind": "pull"}] if _wants_pull(facts, lanes_left) else []
-    return [*epics, *decomposes, *pulls]
+    return [*placed, *decomposes, *pulls]

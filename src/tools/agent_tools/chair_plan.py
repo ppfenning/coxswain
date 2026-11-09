@@ -7,6 +7,7 @@ from collections import Counter
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Any, cast
 
 from agent_tools import (
     chair_launch_why,
@@ -28,6 +29,7 @@ from agent_tools.chair_plan_fill import (
     budget_skips,
     host_free_slots,
     plan_fill,
+    schedule_for,
 )
 from agent_tools.chair_plan_land import backoff_held, fetch_action, newest_run, plan_finish, plan_lands
 from agent_tools.chair_plan_recover import (
@@ -45,6 +47,7 @@ from agent_tools.chair_plan_widen import plan_widen
 from agent_tools.chair_rebase import plan_rebase
 from agent_tools.chair_revert import revert_check
 from agent_tools.chair_runnable import Blocking, TaskView, WaitingInitiative, runnable_verdict
+from agent_tools.chair_schedule import Schedule, schedule_feed, schedule_updated_action
 from agent_tools.chair_steer import steer_heads
 from agent_tools.chair_types import (
     DEADLOCK_CAUSE,
@@ -1061,6 +1064,54 @@ def _unlaunched_actions(
     ]
 
 
+PREVIOUS_FEED_KEY = "previous_schedule_feed"  # the last tick's `schedule_feed`; its producer belongs to the facts edge
+
+
+def _minutes_after(at: datetime | None, stamp: str | None) -> int | str | None:
+    """Whole minutes from `at` to an ISO stamp; the stamp itself when `at` or the stamp cannot be read."""
+    try:
+        return None if stamp is None else round((datetime.fromisoformat(stamp) - cast("datetime", at)).total_seconds() / 60)
+    except (TypeError, ValueError):
+        return stamp
+
+
+def _without_clock(feed: Mapping[str, Any]) -> dict[str, Any]:
+    """The plan in a feed with the clock taken out, so two ticks over the same plan compare equal.
+
+    Lane starts and finishes and the projected finishes become whole minutes after the feed's `at`, because a
+    launch placed now starts at `now` and moves with it. The release target stays absolute, and an advice line keeps
+    only its kind: its text and `at` both move with the clock. The feed's `action` carries the same body."""
+    body = feed.get("schedule") or {}
+    try:
+        at = datetime.fromisoformat(feed["at"])
+    except (KeyError, TypeError, ValueError):
+        at = None
+    lanes = [
+        {**lane, "next": [{**p, "start": _minutes_after(at, p.get("start")), "finish": _minutes_after(at, p.get("finish"))} for p in lane.get("next", [])]}
+        for lane in body.get("lanes", [])
+    ]
+    initiatives = [{**i, "projected_finish": _minutes_after(at, i.get("projected_finish"))} for i in body.get("initiatives", [])]
+    release = body.get("release") or {}
+    return {
+        "schema": feed.get("schema"),
+        "schedule": {
+            **body,
+            "lanes": lanes,
+            "initiatives": initiatives,
+            "release": {**release, "projected_finish": _minutes_after(at, release.get("projected_finish"))},
+            "advice": [{"kind": line.get("kind")} for line in body.get("advice", [])],
+        },
+    }
+
+
+def _schedule_update(schedule: Schedule | None, previous: Mapping[str, Any] | None, now: datetime | None) -> list[Action]:
+    """One schedule_updated action when there is a schedule and its feed form differs from the previous tick's."""
+    if schedule is None or now is None:
+        return []
+    same = previous is not None and _without_clock(previous) == _without_clock(schedule_feed(schedule, now))
+    return [] if same else [schedule_updated_action(schedule, now)]
+
+
 def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str] = frozenset()) -> list[Action]:
     facts = _with_dead_pid_lost(raw_facts, now)
     reverts = revert_check(facts.get("landed_main", []))
@@ -1187,7 +1238,13 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     withheld = frozenset().union(*withheld_by.values())
     claimed = claimed_by(recover_actions, facts)
     free_lanes = _free_lanes(cap, kept, facts["dispatch"])
-    filled = plan_fill(facts, free_lanes, withheld, consumed, claimed, stalled=stalled_intake, now=now)
+    inputs = facts.get("schedule_inputs")
+    schedule = schedule_for(inputs, now) if inputs is not None and now is not None else None
+    # Not a typed Facts key yet: no facts producer fills it, so until chair_facts.py and chair_types.py add it under this
+    # name every tick with a schedule appends schedule_updated. Do not read "the cast works" as "the dedupe runs".
+    previous = cast("Mapping[str, Any]", facts).get(PREVIOUS_FEED_KEY)
+    schedule_updated = _schedule_update(schedule, previous, now)
+    filled = plan_fill(facts, free_lanes, withheld, consumed, claimed, stalled=stalled_intake, now=now, schedule=schedule)
     launches = [*capped, *filled]
     skips = budget_skips(facts, facts["initiatives"], now)
     no_host = _no_host(free_lanes, host_free, consumed, filled, facts["dispatch"].get("local_lanes") == "decompose")
@@ -1234,6 +1291,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         *closes,
         *steward_events,
         *_with_rebases(behind, [r for r in rebases if r["initiative"] in behind_ids]),
+        *schedule_updated,
     ]
 
 
