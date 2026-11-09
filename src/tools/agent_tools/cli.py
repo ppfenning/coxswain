@@ -5105,6 +5105,22 @@ def _route_release(a: argparse.Namespace) -> int:
     return route_hold.release(runs_dir.parent, runs_dir, a.id, run_store.read_queue(runs_dir), dry_run=a.dry_run)
 
 
+def _route_set_stage(a: argparse.Namespace, stage: str) -> int:
+    runs_dir, reason = _runs_dir_for_land(a)
+    if runs_dir is None:
+        print(f"route: {reason}")
+        return 2
+    return route_hold.set_stage(runs_dir.parent, runs_dir, a.id, stage, run_store.read_queue(runs_dir), dry_run=a.dry_run)
+
+
+def _route_stage_ready(a: argparse.Namespace) -> int:
+    return _route_set_stage(a, "ready")
+
+
+def _route_stage_draft(a: argparse.Namespace) -> int:
+    return _route_set_stage(a, "draft")
+
+
 def _route_requeue(a: argparse.Namespace) -> int:
     runs_dir, reason = _runs_dir_for_land(a)
     if runs_dir is None:
@@ -5854,6 +5870,13 @@ def _body_refusal(value: str) -> str:
     return f"routing: cannot read body file {value}"
 
 
+def _filing_stage(a: argparse.Namespace, profile: Mapping) -> str:
+    """The stage a session files an intake at: the flag, else the profile's `intake_stage`, else draft."""
+    if a.ready:
+        return "ready"
+    return "draft" if a.draft else profile.get("intake_stage") or "draft"
+
+
 def _route_file(a: argparse.Namespace) -> int:
     profile, rc = _resolve_profile_or_refuse(a)
     if rc is not None:
@@ -5871,6 +5894,12 @@ def _route_file(a: argparse.Namespace) -> int:
     after = _after_ids(getattr(a, "after", None)) or []
     if after and not a.intake:
         print("routing: --after needs --intake, since only a queued intake waits")
+        return 2
+    if a.draft and a.ready:
+        print("routing: --draft and --ready are exclusive; give one")
+        return 2
+    if (a.draft or a.ready) and not a.intake:
+        print("routing: --draft and --ready need --intake, since only an intake has a stage")
         return 2
     # Repos are siblings of the workspace: a bare name is resolved there, so the row never holds a name launch cannot read.
     home = str(Path.home())
@@ -5907,7 +5936,8 @@ def _route_file(a: argparse.Namespace) -> int:
                 print(f"routing: refusing {a.title}: duplicate of issue {duplicate}; pass --force to file it anyway")
                 return 2
             date = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
-            mapping = route.intake_file(a.title, body, repo, date, link=link, ids=profile.get("ids", "slug"), after=after)
+            mapping = route.intake_file(a.title, body, repo, date, link=link, ids=profile.get("ids", "slug"), after=after,
+                                       stage=_filing_stage(a, profile))
         else:
             mapping = route.initiative_files(a.title, body, repo, phase=a.phase)
     except ValueError as exc:
@@ -6643,6 +6673,9 @@ def _route_launch(a: argparse.Namespace) -> int:
             route.select_intake_row(run_store.read_queue(runs_dir, kind="intake"), idea_path.stem)
             if store_mode == "store" and not a.dry_run else None
         )
+        if intake_row is not None and intake_queue.stage(intake_row.get("extra") or {}) == "draft":
+            print(f"routing: intake {idea_path.stem} is a draft; ready it with `cox route ready {idea_path.stem}`")
+            return 2
         via_rows = _decompose_via_rows(store_mode, a.dry_run, host, intake_row, detach=bool(getattr(a, "detach", False)))
         if via_rows:
             pass  # the plan lands as rows after the run; the chair's export writes the files
@@ -11733,6 +11766,8 @@ ROUTE_COMMANDS = [
             commands.Arg(("--force",), {"action": "store_true", "help": "file an intake even when its title duplicates an open issue"}),
             commands.Arg(("--link",), {"default": None, "help": "with --intake: the issue url this intake is filed from, so a later pull skips it"}),
             commands.Arg(("--after",), {"action": "append", "default": None, "help": "with --intake: ids this intake waits on; repeat the flag or comma-separate"}),
+            commands.Arg(("--draft",), {"action": "store_true", "help": "with --intake: file it as a draft, which the chair skips until it is ready (the default)"}),
+            commands.Arg(("--ready",), {"action": "store_true", "help": "with --intake: file it ready for the chair to pick up"}),
         ),
         "agent_tools.cli:_route_file", False, (),
     ),
@@ -11850,7 +11885,7 @@ ROUTE_COMMANDS = [
         "agent_tools.cli:_route_remove", False, (), defaults={"runs_dir": None},
     ),
     commands.Command(
-        "hold", "route", "hold a queued intake or an initiative so the chair skips it until released",
+        "hold", "route", "hold a queued intake or an initiative so the chair skips it until released; for an intake, an alias for draft with a reason",
         (
             commands.Arg(("id",), {"help": "a queued intake or an initiative"}),
             commands.Arg(("--reason",), {"required": True}),
@@ -11861,13 +11896,31 @@ ROUTE_COMMANDS = [
         "agent_tools.cli:_route_hold", False, (), defaults={"runs_dir": None},
     ),
     commands.Command(
-        "release", "route", "release a held intake or initiative back to the queue",
+        "release", "route", "release a held intake or initiative back to the queue; an intake moves to ready",
         (
             commands.Arg(("id",), {"help": "a held intake or initiative"}),
             commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the plan and write nothing"}),
             commands.Arg(("--profile",)),
         ),
         "agent_tools.cli:_route_release", False, (), defaults={"runs_dir": None},
+    ),
+    commands.Command(
+        "ready", "route", "move a queued intake to ready so the chair can pick it up",
+        (
+            commands.Arg(("id",), {"help": "a queued intake"}),
+            commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the plan and write nothing"}),
+            commands.Arg(("--profile",)),
+        ),
+        "agent_tools.cli:_route_stage_ready", False, (), defaults={"runs_dir": None},
+    ),
+    commands.Command(
+        "draft", "route", "move a queued intake to draft so the chair skips it until it is ready",
+        (
+            commands.Arg(("id",), {"help": "a queued intake"}),
+            commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the plan and write nothing"}),
+            commands.Arg(("--profile",)),
+        ),
+        "agent_tools.cli:_route_stage_draft", False, (), defaults={"runs_dir": None},
     ),
     commands.Command(
         "requeue", "route", "requeue the intake of an initiative that has no live tasks",

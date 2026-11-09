@@ -16,16 +16,28 @@ def after_ids(extra: Mapping[str, Any]) -> list[str]:
     return [item for item in stripped if item]
 
 
-def is_held(extra: Mapping[str, Any]) -> bool:
-    """True for `held: true` as a bool or a string, bare or wrapped in one pair of single or double quotes, any case."""
-    value = extra.get("held")
-    if value is True:
-        return True
+def _unquoted(value: Any) -> str:
+    """Lowercased text of a string, minus one pair of single or double quotes; "" for a non-string."""
     if not isinstance(value, str):
-        return False
+        return ""
     text = value.strip()
-    unquoted = text[1:-1] if len(text) >= 2 and text[0] == text[-1] and text[0] in "'\"" else text
-    return unquoted.strip().lower() == "true"
+    inner = text[1:-1] if len(text) >= 2 and text[0] == text[-1] and text[0] in "'\"" else text
+    return inner.strip().lower()
+
+
+def _held_flag(extra: Mapping[str, Any]) -> bool:
+    value = extra.get("held")
+    return value is True or _unquoted(value) == "true"
+
+
+def stage(extra: Mapping[str, Any]) -> str:
+    """"draft" for `stage: draft` or `held: true`; "ready" otherwise, so an intake with no stage is queued for planning."""
+    return "draft" if _held_flag(extra) or _unquoted(extra.get("stage")) == "draft" else "ready"
+
+
+def is_held(extra: Mapping[str, Any]) -> bool:
+    """True when the intake is a draft: `stage: draft`, or `held: true` as a bool or a quoted string, any case."""
+    return stage(extra) == "draft"
 
 
 def intake_priority(extra: Mapping[str, Any]) -> int:
