@@ -60,7 +60,7 @@ from agent_tools.chair_revert_exec import ForgePort as RevertForgePort
 from agent_tools.chair_revert_exec import GitPort as RevertGitPort
 from agent_tools.chair_types import Action, LandTrigger, is_fenced
 from agent_tools.land import approve_to_done
-from agent_tools.remote_argv import LANE_HOST_TIMEOUT_S, ssh_argv, sync_argv
+from agent_tools.remote_argv import LANE_HOST_TIMEOUT_S, probe_argv, ssh_argv, sync_argv
 
 __all__ = [
     "LAUNCH_KINDS",
@@ -176,6 +176,7 @@ class Deps:
     # one session, so the generic label is used here.
     note_to: str = "chair"
     check_login: Callable[[str], dict] | None = None  # a check_login's host name -> the hosts row cox host beat prints
+    probe_host: Callable[[str], dict] | None = None  # a probe_host's host name -> the hosts row, or {}
     log_retention_days: int = 7  # the profile's log_retention_days: traces and run logs kept locally, in days
     launch_stagger_s: float = 20.0  # the profile's chair.launch_stagger_s: seconds between two launches on one host in a tick; 0 is none
     harness_python: str = "python"  # the interpreter the trace prune runs under; the harness venv's python when one is configured
@@ -1130,6 +1131,16 @@ def _check_login(action: Action, deps: Deps) -> Result:
     return _result(action, "recorded", json.dumps(row, sort_keys=True))
 
 
+def _probe_host(action: Action, deps: Deps) -> Result:
+    """Runs the injected probe_host edge against the action's host; the row it returns becomes the reason.
+    Its outcome is always "recorded", and it sends no notice: the planner's host_back action does."""
+    host = action.get("host", "")
+    if not host or deps.probe_host is None:
+        return _result(action, "refused", "probe_host needs a host and a wired probe_host edge")
+    row = deps.probe_host(host)
+    return _result(action, "recorded", json.dumps(row, sort_keys=True))
+
+
 def _stalled(action: Action, deps: Deps, sig: int) -> Result:
     """Edge. One `sig` to the pid in `<run>.pid`; a missing pidfile or a failed send is a failed result, never a raise."""
     pidfile = Path(deps.runs_dir) / f'{action.get("run", "")}.pid'
@@ -1456,6 +1467,8 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
         return _lease(action, deps)
     if kind == "check_login":
         return _check_login(action, deps)
+    if kind == "probe_host":
+        return _probe_host(action, deps)
     if kind in ("standby", "mark_lost"):
         return _result(action, "recorded")
     if kind == "needs_chair":
@@ -1986,6 +1999,21 @@ def _check_login_edge(runs_dir: Path, ssh_run: Callable[[list[str]], ArgvResult]
     )
 
 
+def _probe_host_edge(runs_dir: Path, ssh_run: Callable[[list[str]], ArgvResult], host: str) -> dict:
+    """Edge. One `probe_argv` ssh to `host`, its ssh read from the hosts table, "now" read at call time. Always
+    merges probe_checked_at through `cox host login`. Exit 0 also sets the host active and clears the unreachable
+    fields; any other exit changes nothing else. Never writes beat_at."""
+    ssh = str(_host_row(runs_dir, host).get("ssh", ""))
+    now = datetime.now(UTC).isoformat()
+    reachable = ssh_run(probe_argv(ssh)).returncode == 0
+    login = {"probe_checked_at": now}
+    if reachable:
+        login = {**login, "unreachable_failures": 0, "unreachable_since": None, "host_back_at": now}
+        _cli_run(runs_dir, host_cmd.set_state_argv(host, "active", "probe"))
+    _cli_run(runs_dir, ["host", "login", host, "--login-json", json.dumps(login, sort_keys=True)])
+    return _host_row(runs_dir, host)
+
+
 _CHECKS_TIMEOUT_S = 600.0
 _CHECK_COMMAND_TIMEOUT_S = 900.0
 
@@ -2251,7 +2279,7 @@ def edge_deps(
 
     `lane_capacity` is the lane cap the carry's `.agent-checks` run under; None leaves them uncapped.
 
-    A dry run drops every door to a lane host: `run` refuses an ssh or push argv unrun and `check_login` returns no row.
+    A dry run drops every door to a lane host: `run` refuses an ssh or push argv unrun and `check_login` and `probe_host` return no row.
 
     Every subprocess runs in `workspace`, because `cox route launch epic` reads `work/<id>/initiative.md` from its cwd.
     A take_lease action names no holder, so the lease is always taken as this loop's own session, pid and host.
@@ -2262,6 +2290,7 @@ def edge_deps(
     run = _local_only(workspace) if dry_run else _bounded_for_ssh(workspace)
     login_run = partial(run_argv_split, cwd=workspace, timeout=LANE_HOST_TIMEOUT_S)
     live_check = partial(_check_login_edge, runs_dir, login_run, provider_profile)
+    live_probe = partial(_probe_host_edge, runs_dir, login_run)
 
     def acquire(_holder: str, _host: str, steal: bool = False) -> str:
         refusal, takeover = _lease_state(runs_dir, session, pid, host)
@@ -2282,6 +2311,7 @@ def edge_deps(
         runs_dir=runs_dir,
         work_dir=workspace,
         check_login=(lambda name: {}) if dry_run else live_check,
+        probe_host=(lambda name: {}) if dry_run else live_probe,
         log_retention_days=log_retention_days,
         harness_python=harness_python,
         ids_mode=ids_mode,

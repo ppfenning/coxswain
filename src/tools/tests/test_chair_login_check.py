@@ -1,6 +1,6 @@
 import json
 
-from agent_tools import chair_login_check
+from agent_tools import chair_login_check, host_cmd
 from agent_tools.chair_exec import ArgvResult
 from agent_tools.chair_login_check import check_login_on_host
 from agent_tools.remote_argv import auth_status_argv, ssh_argv
@@ -21,9 +21,17 @@ def _versions_arg(argv: list[str]) -> dict:
     return json.loads(argv[argv.index("--versions") + 1])
 
 
-def _recording_cli(captured: list) -> object:
+def _recording_cli(captured: list, argvs: list | None = None) -> object:
+    """Records a beat's `--versions` or a login-merge's `--login-json` payload in `captured`, and every
+    argv in `argvs`. A set-state call is only in `argvs`."""
+
     def cli_run(argv: list[str]) -> dict:
-        captured.append(_versions_arg(argv))
+        if argvs is not None:
+            argvs.append(argv)
+        if argv[:2] == ["host", "set-state"]:
+            return {"state": argv[3]}
+        flag = "--login-json" if argv[:2] == ["host", "login"] else "--versions"
+        captured.append(json.loads(argv[argv.index(flag) + 1]))
         return {"versions_json": captured[-1]}
 
     return cli_run
@@ -278,15 +286,28 @@ def test_an_env_vars_runner_with_a_missing_variable_names_it_in_the_reason() -> 
     assert "MY_API_KEY" in versions["reason"]
 
 
-def test_an_env_vars_runner_on_an_unreachable_host_is_not_logged_in() -> None:
-    row = check_login_on_host(
+def test_an_env_vars_runner_on_an_unreachable_host_is_counted_unreachable_not_logged_out() -> None:
+    captured: list = []
+    check_login_on_host(
         "shed", "user@shed", {}, NOW,
         lambda argv: _reply(255, "", "ssh: connect to host x: Connection refused"),
-        lambda argv: {"versions_json": _versions_arg(argv)},
+        _recording_cli(captured),
         runner="litellm", env_names=("MY_API_KEY",),
     )
 
-    assert row["versions_json"]["login_ok"] is False
+    assert captured == [{"unreachable_failures": 1, "login_checked_at": NOW, "reason": captured[0]["reason"]}]
+    assert captured[0]["reason"].startswith("exit 255: ssh: connect to host x: Connection refused")
+
+
+def test_an_env_vars_runner_whose_printenv_exits_1_is_missing_not_unreachable() -> None:
+    captured: list = []
+    check_login_on_host(
+        "shed", "user@shed", {}, NOW, lambda argv: _reply(1, ""), _recording_cli(captured),
+        runner="litellm", env_names=("MY_API_KEY",),
+    )
+
+    assert captured[0]["login_ok"] is False
+    assert captured[0]["reason"] == "missing MY_API_KEY"
 
 
 def test_an_env_vars_runner_with_no_env_names_is_not_logged_in_and_runs_nothing() -> None:
@@ -328,3 +349,75 @@ def test_a_passing_check_clears_a_stored_login_url() -> None:
     versions, _ = _check([_reply(0, LOGGED_IN)], stored)
 
     assert versions == {"login_ok": True, "login_checked_at": NOW, "check": "claude_auth", "login_failures": 0}
+
+
+TIMED_OUT = "ssh: timed out after 30s"
+SET_STATE = host_cmd.set_state_argv("shed", "unreachable", "chair")
+
+
+def _set_states(argvs: list) -> list:
+    return [argv for argv in argvs if argv[:2] == ["host", "set-state"]]
+
+
+def test_one_timed_out_reply_records_one_unreachable_failure_and_marks_nothing() -> None:
+    run, calls = _fake([_reply(124, "", TIMED_OUT)])
+    captured: list = []
+    argvs: list = []
+
+    row = check_login_on_host("shed", "user@shed", {"login_failures": 1}, NOW, run, _recording_cli(captured, argvs))
+
+    assert captured == [{"unreachable_failures": 1, "login_checked_at": NOW, "reason": f"exit 124: {TIMED_OUT}"}]
+    assert [argv[:3] for argv in argvs] == [["host", "login", "shed"]]
+    assert "login_ok" not in captured[0]
+    assert len(calls) == 1
+    assert row == {"versions_json": captured[0]}
+
+
+def test_a_second_timed_out_reply_in_a_row_adds_unreachable_since_and_sets_the_state() -> None:
+    run, _ = _fake([_reply(124, "", TIMED_OUT)] * 2)
+    captured: list = []
+    argvs: list = []
+    cli_run = _recording_cli(captured, argvs)
+
+    check_login_on_host("shed", "user@shed", {}, NOW, run, cli_run)
+    row = check_login_on_host("shed", "user@shed", captured[0], NOW, run, cli_run)
+
+    assert captured[1]["unreachable_failures"] == 2
+    assert captured[1]["unreachable_since"] == NOW
+    assert "unreachable_since" not in captured[0]
+    assert _set_states(argvs) == [SET_STATE]
+    assert argvs[-1] == SET_STATE
+    assert row == {"state": "unreachable"}
+
+
+def test_a_logged_out_reply_twice_still_blocks_and_never_sets_the_state() -> None:
+    run, _ = _fake([_reply(1, LOGGED_OUT)] * 4)
+    captured: list = []
+    argvs: list = []
+    cli_run = _recording_cli(captured, argvs)
+
+    check_login_on_host("shed", "user@shed", {}, NOW, run, cli_run)
+    check_login_on_host("shed", "user@shed", captured[0], NOW, run, cli_run)
+
+    assert [(v["login_ok"], v["login_failures"]) for v in captured] == [(None, 1), (False, 2)]
+    assert all("unreachable_failures" not in v for v in captured)
+    assert _set_states(argvs) == []
+
+
+def test_a_permission_denied_255_reply_is_not_counted_unreachable() -> None:
+    versions, _ = _check([_reply(255, "", "user@shed: Permission denied (publickey).")])
+
+    assert versions["login_failures"] == 1
+    assert versions["login_ok"] is None
+    assert "unreachable_failures" not in versions
+
+
+def test_a_pass_after_one_unreachable_check_clears_the_streak() -> None:
+    run, _ = _fake([_reply(124, "", TIMED_OUT), _reply(0, LOGGED_IN)])
+    captured: list = []
+    cli_run = _recording_cli(captured)
+
+    check_login_on_host("shed", "user@shed", {}, NOW, run, cli_run)
+    check_login_on_host("shed", "user@shed", captured[0], NOW, run, cli_run)
+
+    assert captured[1] == {"login_ok": True, "login_checked_at": NOW, "check": "claude_auth", "login_failures": 0}

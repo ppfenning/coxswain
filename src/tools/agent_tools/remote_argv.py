@@ -4,6 +4,8 @@ import json
 import re
 import shlex
 
+from agent_tools.chair_login_watch import PROBE_CONNECT_TIMEOUT_S
+
 # Every lane-host call must give up within this many seconds.
 LANE_HOST_TIMEOUT_S = 30
 _ALIVE_INTERVAL_S = 10
@@ -51,6 +53,11 @@ def ssh_argv(ssh: str, remote_argv: list[str]) -> list[str]:
     """`ssh` is a destination such as user@host; the remote shell sees one quoted command."""
     inner = login_shell_argv(_as_binary(remote_argv)) if _wants_login_shell(remote_argv) else remote_argv
     return ["ssh", *_SSH_BOUND_OPTIONS, ssh, shlex.join(inner)]
+
+
+def probe_argv(ssh: str) -> list[str]:
+    """One bare ssh connect that runs `true`: no login shell, and BatchMode so a prompt fails instead of hanging."""
+    return ["ssh", "-o", f"ConnectTimeout={PROBE_CONNECT_TIMEOUT_S}", "-o", "BatchMode=yes", ssh, "true"]
 
 
 def doctor_argv() -> list[str]:

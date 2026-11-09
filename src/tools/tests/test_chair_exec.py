@@ -41,7 +41,7 @@ from agent_tools.chair_exec import (
 from agent_tools.chair_facts import STRANDED_CAUSE
 from agent_tools.chair_report import format_status
 from agent_tools.draft_apply import plan_approve
-from agent_tools.remote_argv import ssh_argv, sync_argv
+from agent_tools.remote_argv import probe_argv, ssh_argv, sync_argv
 from agent_tools.store_url import TracesRoot
 
 LANDED = "merge: ok\nmark_done: ok\n"
@@ -1504,6 +1504,68 @@ def test_a_dry_run_edge_reaches_no_lane_host(monkeypatch, tmp_path) -> None:
     results = perform([{"kind": "fetch_exit", "run": "x-1", "epoch": 1}], deps, lambda: 1, True)
     assert [r["status"] for r in results] == ["dry_run"]
     assert reached == []
+
+
+def _probe_edge(monkeypatch, code: int) -> tuple[list, list]:
+    """The live probe edge over a fake ssh runner (exit `code`) and a recording store runner."""
+    ssh_calls: list = []
+    store_calls: list = []
+    monkeypatch.setattr(chair_exec, "_host_row", lambda runs_dir, host: {"name": host, "ssh": "me@shed"})
+    monkeypatch.setattr(chair_exec, "_cli_run", lambda runs_dir, argv: store_calls.append(argv) or {})
+
+    def ssh_run(argv: list[str]) -> chair_exec.ArgvResult:
+        ssh_calls.append(argv)
+        return chair_exec.ArgvResult(code, "", "", "")
+
+    chair_exec._probe_host_edge(Path("runs"), ssh_run, "shed")
+    return ssh_calls, store_calls
+
+
+def test_a_probe_that_connects_sets_the_host_active_and_merges_host_back_at(monkeypatch) -> None:
+    ssh_calls, store_calls = _probe_edge(monkeypatch, 0)
+    assert ssh_calls == [["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", "me@shed", "true"]]
+    assert store_calls[0] == ["host", "set-state", "shed", "active", "--by", "probe"]
+    assert store_calls[1][:4] == ["host", "login", "shed", "--login-json"]
+    login = json.loads(store_calls[1][4])
+    assert login["unreachable_failures"] == 0
+    assert login["unreachable_since"] is None
+    assert login["host_back_at"] == login["probe_checked_at"]
+    assert len(store_calls) == 2
+
+
+def test_a_probe_that_fails_records_only_probe_checked_at(monkeypatch) -> None:
+    _, store_calls = _probe_edge(monkeypatch, 255)
+    assert len(store_calls) == 1
+    assert store_calls[0][:4] == ["host", "login", "shed", "--login-json"]
+    assert list(json.loads(store_calls[0][4])) == ["probe_checked_at"]
+
+
+def test_a_probe_never_writes_beat_at(monkeypatch) -> None:
+    for code in (0, 255):
+        _, store_calls = _probe_edge(monkeypatch, code)
+        assert not any("beat" in part for argv in store_calls for part in argv)
+
+
+def test_a_dry_run_probe_makes_no_call(monkeypatch, tmp_path) -> None:
+    reached: list = []
+    monkeypatch.setattr(chair_exec.subprocess, "run", lambda argv, **kw: reached.append(argv))
+    assert _edge(tmp_path, dry_run=True).probe_host("shed") == {}
+    assert reached == []
+
+
+def test_probe_argv_is_a_bare_five_second_batch_ssh_running_true() -> None:
+    argv = probe_argv("me@shed")
+    assert "ConnectTimeout=5" in argv and "BatchMode=yes" in argv
+    assert argv[-2:] == ["me@shed", "true"]
+    assert "login-shell" not in argv
+
+
+def test_a_probe_host_action_is_recorded_with_the_edge_row_and_refused_without_a_host() -> None:
+    seen: list = []
+    deps = replace(_deps([]), probe_host=lambda host: seen.append(host) or {"name": host})
+    results = perform([{"kind": "probe_host", "host": "shed", "epoch": 1}, {"kind": "probe_host", "epoch": 1}], deps, lambda: 1, False)
+    assert [r["status"] for r in results] == ["recorded", "refused"]
+    assert seen == ["shed"]
 
 
 LANE_BEAT = "2026-10-05T11:59:00Z"
