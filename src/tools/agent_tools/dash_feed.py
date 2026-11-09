@@ -12,11 +12,12 @@ import re
 import socket
 import subprocess
 import time
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from functools import reduce
 from pathlib import Path
+from types import MappingProxyType
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from agent_tools import (
@@ -71,8 +72,11 @@ from agent_tools.dash_finished_runs import LIMIT, finished_runs
 from agent_tools.dash_history import _by_run, _in_task_order, _is_landed, _landed_pr, _pr_number, _record, build_history
 from agent_tools.dash_history import history_today as _history_today
 from agent_tools.dash_history_store import RECENT_ENDED, read_history_rows
+from agent_tools.dash_live_turns_lane import advance_lane_cursor
+from agent_tools.dash_live_turns_session import read_session_turns_with_cursor
 from agent_tools.dash_run_end import End, run_end
 from agent_tools.dash_spend_series import spend_series as _spend_series
+from agent_tools.dash_transcript_cursor import CursorState
 from agent_tools.draft_list import read_drafts
 from agent_tools.runs_detail import NODE_ORDER
 from agent_tools.runs_top_screen import calls_from_usage
@@ -1439,29 +1443,54 @@ def _assemble_live(
     }
 
 
+@dataclass(frozen=True)
+class LiveCursors:
+    """The read positions the live block carries between refreshes: the session transcripts' cursor, and one lane
+    cursor per (run, node) target."""
+
+    session: CursorState | None = None
+    lanes: Mapping[tuple[str, str], CursorState] = MappingProxyType({})
+
+
 def _live_edge(
     runs_dir: Path, targets: Sequence[Mapping], meters: Mapping, events: Sequence[Mapping], profile: dict,
     local_name: str, chair_session: str, at: datetime,
+    cursors: LiveCursors | None = None, on_cursors: Callable[[LiveCursors], None] | None = None,
 ) -> dict:
     """Edge: the live block from lane traces and session transcripts. `events` are the landed and quarantined end
     events of the wide store rows. Only store and file errors are caught, as in `_tasks_edge`; the zero block then
-    stands. The agents' context windows are the price catalog's own, else the module's fallback."""
+    stands. The agents' context windows are the price catalog's own, else the module's fallback.
+    With `cursors`, only bytes past each cursor are parsed. The advanced cursors go to `on_cursors`, and only when
+    the block was read; on the zero block the caller keeps the cursors it had. Without `cursors` every file is
+    read whole."""
     moment = at if at.tzinfo else at.replace(tzinfo=UTC)
     try:
         prices = chair_activity_read.prices_for_profile(profile)
         windows = dash_live_agents.default_context_windows(chair_activity_read.catalog_for_profile(profile))
-        lane_turns = [
-            turn
-            for t in targets
-            for turn in dash_live_turns_lane.read_lane_turns(
+        lane_turns: list[dict] = []
+        lane_states: dict[tuple[str, str], CursorState] = {}
+        for t in targets:
+            key = (t["run"], t["node"])
+            if cursors is not None:
+                lane_states[key] = advance_lane_cursor(runs_dir, t["run"], t["node"], cursors.lanes.get(key))
+            lane_turns += dash_live_turns_lane.read_lane_turns(
                 runs_dir, t["run"], t["host"], t["initiative"], t["task"], t["node"], prices,
+                **({} if cursors is None else {"cursor": lane_states[key]}),
             )
-        ]
-        session = dash_live_turns_session.read_session_turns(
-            Path(_PROJECTS_DIR).expanduser(), local_name, chair_session, moment - _LIVE_WINDOW, prices=prices,
-        )
+        projects_dir, since = Path(_PROJECTS_DIR).expanduser(), moment - _LIVE_WINDOW
+        session_state = None
+        if cursors is None:
+            session = dash_live_turns_session.read_session_turns(
+                projects_dir, local_name, chair_session, since, prices=prices,
+            )
+        else:
+            session, session_state = read_session_turns_with_cursor(
+                projects_dir, local_name, chair_session, since, cursors.session, prices=prices,
+            )
     except (OSError, *run_store._db_errors()):  # a store failure must not take the feed down; a code fault must
         return _zero_live(moment)
+    if cursors is not None and on_cursors is not None:
+        on_cursors(LiveCursors(session_state, MappingProxyType(lane_states)))
     turns = sorted([*lane_turns, *session], key=lambda turn: turn["ts"])
     return _assemble_live(turns, meters, events, windows, moment)
 
@@ -1823,10 +1852,14 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
     return _build(Path(runs_dir), Path(work_dir), now, profile, lambda name, compute, anchor=None, extra=(): compute())
 
 
-def _build(runs_dir: Path, work_dir: Path, now: str, profile: dict | None, hold) -> dict:
-    """Edge: the body of `gather_feed`. `hold(name, compute, anchor, extra)` gives one store-driven section's value:
+def _build(
+    runs_dir: Path, work_dir: Path, now: str, profile: dict | None, hold,
+    cursors: LiveCursors | None = None, on_cursors: Callable[[LiveCursors], None] | None = None,
+) -> dict:
+    """Edge: the body of `gather_feed`. `hold(name, compute, anchor, extra)` gives one section's value:
     `compute()` uncached, a memoised value in `gather_feed_cached`. `anchor` is read after a compute only and names the
-    stamps the section's ages count from; `extra` is the section's time-dependent inputs already read, for its key."""
+    stamps the section's ages count from; `extra` is the section's time-dependent inputs already read, for its key.
+    `cursors` and `on_cursors` make the live block read incrementally; see `_live_edge`."""
     at = _parse_now(now)
     local_name, local_capacity = _local_identity(runs_dir, profile or {})
     local_versions = _local_versions(_local_login(local_name), now)
@@ -1884,10 +1917,18 @@ def _build(runs_dir: Path, work_dir: Path, now: str, profile: dict | None, hold)
     activity = _activity(
         runs_dir, profile or {}, chair_block["session"], _workspace(work_dir), spend_block, at, wide_rows,
     )
-    live = _live_edge(
-        runs_dir, _lane_targets(sections["lanes"], states, records, _run_hosts(wide_rows), local_name, at),
-        _burn_meters(spend_block, activity["spend_split"] or {}, _hard_stop_fraction(runs_dir)),
-        _ended_events(wide_rows), profile or {}, local_name, chair_block["session"], at,
+    targets = _lane_targets(sections["lanes"], states, records, _run_hosts(wide_rows), local_name, at)
+    meters = _burn_meters(spend_block, activity["spend_split"] or {}, _hard_stop_fraction(runs_dir))
+    ended = _ended_events(wide_rows)
+    # The key adds what the block reads beside the transcripts and lane traces: its targets, meters, end events,
+    # chair session and profile. Wrong belief to avoid: "live moves only with new bytes". It also moves with `at`,
+    # which the minute floor in `_SECTION_STEP_S` bounds: a reused block is as of the minute's first refresh.
+    live = hold(
+        "live",
+        lambda: _live_edge(
+            runs_dir, targets, meters, ended, profile or {}, local_name, chair_block["session"], at, cursors, on_cursors,
+        ),
+        extra=(targets, meters, ended, chair_block["session"], profile or {}),
     )
     machines = hold(
         "machines",
@@ -1941,6 +1982,7 @@ class FeedCache:
     memo: dash_feed_memo.Memo
     fingerprints: Mapping[str, object]
     clock: tuple[float, float]
+    live: LiveCursors = LiveCursors()
 
 
 EMPTY_CACHE = FeedCache(dash_feed_memo.EMPTY, {}, (0.0, 0.0))
@@ -1958,6 +2000,7 @@ _SECTION_GROUPS = {
     "history": _STORE_RECORDS_TRACES,
     "board": _STORE_RECORDS_TRACES,
     "epics": ("store",),
+    "live": ("transcripts", "lane_traces"),
 }
 # The finest step, in seconds, a section's output moves with `now` once its age fields are refreshed and its other
 # time-dependent inputs are in its key (`extra` in `_build`: the lanes, the hosts, the run window, the console chair
@@ -1966,6 +2009,7 @@ _SECTION_GROUPS = {
 _SECTION_STEP_S = {
     "chair": 60, "spend": 3600, "history": 60, "machines": 3600, "runs": 3600,
     "queue": 3600, "inbox": 3600, "board": 3600, "epics": 3600,
+    "live": int(min(dash_live_series.MINUTE, dash_live_series.HOUR).total_seconds()),
 }
 # These read `courier.jsonl` and `*/initiative.md` under `work_dir`, which the probe does not stat.
 _WORK_STAMPED = frozenset({"chair", "inbox"})
@@ -2028,14 +2072,15 @@ def gather_feed_cached(
     runs_dir: Path, work_dir: Path, now: str, profile: dict | None, cache: FeedCache,
 ) -> tuple[dict, FeedCache]:
     """Edge: `gather_feed` plus a `cost` block, rebuilding only the store-driven sections whose inputs moved since
-    `cache`. Inputs are probed once. `live` is never memoised and is always listed as recomputed. The feed without
-    `cost` equals `gather_feed`'s for the same inputs. Returns the feed and the cache for the next refresh."""
+    `cache`. Inputs are probed once. `live` is memoised on the transcripts and lane traces fingerprints and the
+    minute, and reads only bytes past the cursors in `cache.live`. The feed without `cost` equals `gather_feed`'s for
+    the same inputs. Returns the feed and the cache for the next refresh."""
     start, finish = dash_feed_cost.measure(time.process_time, time.perf_counter)
     runs_dir, work_dir = Path(runs_dir), Path(work_dir)
     at = _parse_now(now)
     fingerprints = dash_feed_inputs.probe(runs_dir, Path(_PROJECTS_DIR).expanduser(), _store_is_local_sqlite(runs_dir))
     stamp = _work_stamp(work_dir)
-    state = {"memo": cache.memo}
+    state: dict = {"memo": cache.memo, "live": cache.live}
     results: list[tuple[str, bool]] = []
 
     def hold(name: str, compute, anchor=None, extra=()):
@@ -2047,8 +2092,9 @@ def gather_feed_cached(
         section, anchors = value
         return _refresh_ages(name, section, anchors, at) if reused else section
 
-    feed = _build(runs_dir, work_dir, now, profile, hold)
-    recomputed, reused = dash_feed_memo.split_reuse(dash_feed_cost.SECTION_ORDER, [*results, ("live", False)])
+    feed = _build(runs_dir, work_dir, now, profile, hold, cache.live, lambda cursors: state.update(live=cursors))
+    recomputed, reused = dash_feed_memo.split_reuse(dash_feed_cost.SECTION_ORDER, results)
     cpu_s, wall_s = finish()
     cost = dash_feed_cost.cost_block(cpu_s, wall_s, recomputed, reused)
-    return {**feed, "cost": cost}, FeedCache(state["memo"], fingerprints, (start[0] + cpu_s, start[1] + wall_s))
+    clock = (start[0] + cpu_s, start[1] + wall_s)
+    return {**feed, "cost": cost}, FeedCache(state["memo"], fingerprints, clock, state["live"])

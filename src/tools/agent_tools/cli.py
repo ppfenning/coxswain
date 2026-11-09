@@ -146,6 +146,7 @@ dash_detail_release = _LazyModule("agent_tools.dash_detail_release")
 dash_detail_run = _LazyModule("agent_tools.dash_detail_run")
 dash_detail_spend = _LazyModule("agent_tools.dash_detail_spend")
 dash_feed = _LazyModule("agent_tools.dash_feed")
+dash_feed_share = _LazyModule("agent_tools.dash_feed_share")
 decisions = _LazyModule("agent_tools.decisions")
 doctor = _LazyModule("agent_tools.doctor")
 draft_apply = _LazyModule("agent_tools.draft_apply")
@@ -10281,6 +10282,37 @@ def _dash_dirs(runs_dir: str | None, work_dir: str | None, profile: dict | None)
     return runs, work
 
 
+_DASH_SHARE_DIR = ".dash-feed"
+
+
+def _dash_feed_loop(runs_dir: Path, work_dir: Path, profile: dict | None, interval: float) -> int:
+    """Edge. One process per runs dir owns the share lock and computes; the others print what it publishes.
+    A follower tries the lock every pass, so it takes over the pass after the owner exits. Only this loop
+    touches the share files; `--once` and `--detail` never do."""
+    share_dir = runs_dir / _DASH_SHARE_DIR
+    handle = dash_feed_share.try_own(share_dir)
+    cache = dash_feed.EMPTY_CACHE
+    last_stamp = None
+    try:
+        while True:
+            handle = handle or dash_feed_share.try_own(share_dir)
+            if handle is not None:
+                now = datetime.datetime.now(datetime.UTC).isoformat()
+                feed, cache = dash_feed.gather_feed_cached(runs_dir, work_dir, now, profile, cache)
+                line = json.dumps(feed)
+                dash_feed_share.publish(share_dir, line)
+                print(line)
+            else:
+                line, last_stamp = dash_feed_share.read_if_changed(share_dir, last_stamp)
+                if line is not None:
+                    print(line)
+            sys.stdout.flush()
+            time.sleep(interval)
+    finally:
+        if handle is not None:
+            dash_feed_share.release(handle)
+
+
 def _dash(a: argparse.Namespace) -> int:
     """Edge. `--once` prints one `dash_feed.gather_feed` snapshot; `--feed` prints one per pass forever,
     `interval` seconds apart; `--detail <kind> [id]` prints one `dash_detail_*.build` result. `--feed` and
@@ -10302,11 +10334,7 @@ def _dash(a: argparse.Namespace) -> int:
         print(json.dumps(dash_feed.gather_feed(runs_dir, work_dir, now, profile)))
         return 0
     if a.feed:
-        while True:
-            now = datetime.datetime.now(datetime.UTC).isoformat()
-            print(json.dumps(dash_feed.gather_feed(runs_dir, work_dir, now, profile)))
-            sys.stdout.flush()
-            time.sleep(a.interval)
+        return _dash_feed_loop(runs_dir, work_dir, profile, a.interval)
     print("cox dash: pass --feed, --once or --detail", file=sys.stderr)
     return 2
 
@@ -10785,7 +10813,7 @@ DASH_GROUP = commands.Group(
         commands.Arg(("--work-dir",), {"default": None}),
         commands.Arg(("--feed",), {"action": "store_true"}),
         commands.Arg(("--once",), {"action": "store_true"}),
-        commands.Arg(("--interval",), {"type": float, "default": 2}),
+        commands.Arg(("--interval",), {"type": float, "default": 5}),
         commands.Arg(("--detail",), {"nargs": "+", "metavar": "KIND"}),
     ),
     fn="agent_tools.cli:_dash",

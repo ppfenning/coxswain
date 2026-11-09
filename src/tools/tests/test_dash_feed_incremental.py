@@ -100,8 +100,8 @@ def test_nothing_changed_reuses_every_store_driven_section(workspace):
     first, cache = dash_feed.gather_feed_cached(runs, work, NOW, None, dash_feed.EMPTY_CACHE)
     assert first["cost"]["recomputed"] == list(dash_feed_cost.SECTION_ORDER)
     again, _ = dash_feed.gather_feed_cached(runs, work, NOW, None, cache)
-    assert again["cost"]["reused"] == STORE_DRIVEN
-    assert again["cost"]["recomputed"] == ["live"]
+    assert again["cost"]["reused"] == list(dash_feed_cost.SECTION_ORDER)
+    assert again["cost"]["recomputed"] == []
     assert _without_cost(again) == _fresh(runs, work, NOW)
     assert "cost" not in dash_feed.gather_feed(runs, work, NOW)
     with pytest.raises(dataclasses.FrozenInstanceError):
@@ -114,8 +114,8 @@ def test_touching_a_run_record_recomputes_only_sections_that_read_records(worksp
     (runs / "run-1.log").write_text("one\ntwo\n")
     feed, _ = dash_feed.gather_feed_cached(runs, work, NOW, None, cache)
     reading = [n for n in STORE_DRIVEN if "records" in dash_feed._SECTION_GROUPS[n]]
-    assert feed["cost"]["recomputed"] == [*reading, "live"]
-    assert feed["cost"]["reused"] == ["epics"]
+    assert feed["cost"]["recomputed"] == reading
+    assert feed["cost"]["reused"] == ["epics", "live"]
 
 
 @pytest.mark.parametrize(
@@ -127,7 +127,7 @@ def test_a_reused_feed_at_a_later_now_equals_a_fresh_one(workspace, monkeypatch,
         _use_record_path(monkeypatch)
     _, cache = dash_feed.gather_feed_cached(runs, work, NOW, None, dash_feed.EMPTY_CACHE)
     feed, _ = dash_feed.gather_feed_cached(runs, work, LATER, None, cache)
-    assert feed["cost"]["reused"] == STORE_DRIVEN
+    assert feed["cost"]["reused"] == list(dash_feed_cost.SECTION_ORDER)
     assert _without_cost(feed) == _fresh(runs, work, LATER)
     assert (feed["chair"]["beat_age_s"], feed["chair"]["tick_age_s"]) == (beat_age, tick_age)
     assert feed["chair"]["housekeeping_age_s"] == 150
@@ -149,7 +149,7 @@ def test_a_run_aging_out_of_the_window_recomputes_runs(workspace):
     assert "old-1" in [row["run"] for row in first["runs"]]
     feed, _ = dash_feed.gather_feed_cached(runs, work, LATER, None, cache)
     assert "old-1" not in [row["run"] for row in feed["runs"]]
-    assert feed["cost"]["recomputed"] == ["runs", "live"]
+    assert feed["cost"]["recomputed"] == ["runs"]
     assert _without_cost(feed) == _fresh(runs, work, LATER)
 
 
@@ -158,7 +158,7 @@ def test_lanes_that_change_recompute_the_sections_built_from_them(workspace):
     _, cache = dash_feed.gather_feed_cached(runs, work, NOW, None, dash_feed.EMPTY_CACHE)
     WORLD["lanes"] = []
     feed, _ = dash_feed.gather_feed_cached(runs, work, LATER, None, cache)
-    assert feed["cost"]["recomputed"] == ["machines", "runs", "queue", "history", "board", "live"]
+    assert feed["cost"]["recomputed"] == ["machines", "runs", "queue", "history", "board"]
     assert _without_cost(feed) == _fresh(runs, work, LATER)
 
 
