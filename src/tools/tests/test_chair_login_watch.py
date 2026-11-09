@@ -1,7 +1,12 @@
 import json
 
 from agent_tools.chair_login_watch import (
+    BACK_WINDOW_S,
     due_for_login_check,
+    due_for_probe,
+    host_back_needs_chair,
+    host_unreachable_needs_chair,
+    is_unreachable_reply,
     login_blocked,
     login_needs_chair,
     login_url_from_output,
@@ -111,4 +116,73 @@ def test_a_blocked_host_holding_a_login_url_has_one_needs_chair_action_carrying_
     host = _host("h", versions_json={"login_ok": False, "login_url": "https://login.tailscale.com/a/abc123"})
     assert login_needs_chair([host]) == [
         {"kind": "needs_chair", "host": "h", "cause": "login_lapsed", "url": "https://login.tailscale.com/a/abc123"}
+    ]
+
+
+def test_a_timed_out_exit_124_reply_is_unreachable():
+    assert is_unreachable_reply(124, "exit 124: ssh: timed out after 30s") is True
+
+
+def test_a_connection_refused_255_reply_is_unreachable():
+    assert is_unreachable_reply(255, "ssh: connect to host h port 22: Connection refused") is True
+
+
+def test_a_permission_denied_255_reply_is_not_unreachable():
+    assert is_unreachable_reply(255, "h: Permission denied (publickey).") is False
+
+
+def test_a_timed_out_reply_with_exit_zero_is_not_unreachable():
+    assert is_unreachable_reply(0, "timed out") is False
+
+
+def test_a_never_probed_unreachable_host_is_due_for_probe():
+    assert due_for_probe([_host("h", state="unreachable")], NOW) == ["h"]
+
+
+def test_an_unreachable_host_probed_ten_minutes_ago_is_not_due_for_probe():
+    host = _host("h", state="unreachable", versions_json={"probe_checked_at": "2026-09-27T11:50:00Z"})
+    assert due_for_probe([host], NOW) == []
+
+
+def test_an_unreachable_host_probed_thirty_one_minutes_ago_is_due_for_probe():
+    host = _host("h", state="unreachable", versions_json={"probe_checked_at": "2026-09-27T11:29:00Z"})
+    assert due_for_probe([host], NOW) == ["h"]
+
+
+def test_an_active_host_is_never_due_for_probe():
+    assert due_for_probe([_host("h")], NOW) == []
+
+
+def test_an_unreachable_host_is_absent_from_the_login_rules():
+    host = _host("h", state="unreachable", versions_json={"login_ok": False})
+    assert due_for_login_check([host], NOW) == []
+    assert login_blocked([host]) == set()
+    assert login_needs_chair([host]) == []
+
+
+def test_host_unreachable_needs_chair_is_sorted_and_omits_an_absent_since():
+    hosts = [
+        _host("b", state="unreachable"),
+        _host("a", state="unreachable", versions_json={"unreachable_since": "2026-09-27T10:00:00Z"}),
+        _host("c"),
+    ]
+    assert host_unreachable_needs_chair(hosts) == [
+        {"kind": "needs_chair", "host": "a", "cause": "host_unreachable", "since": "2026-09-27T10:00:00Z"},
+        {"kind": "needs_chair", "host": "b", "cause": "host_unreachable"},
+    ]
+
+
+def test_host_back_needs_chair_names_active_hosts_back_within_the_window():
+    assert BACK_WINDOW_S == 3600
+    hosts = [
+        _host("b", versions_json={"host_back_at": "2026-09-27T11:30:00Z"}),
+        _host("a", versions_json={"host_back_at": "2026-09-27T11:59:00Z"}),
+        _host("old", versions_json={"host_back_at": "2026-09-27T10:59:00Z"}),
+        _host("bad", versions_json={"host_back_at": "not a time"}),
+        _host("none"),
+        _host("down", state="unreachable", versions_json={"host_back_at": "2026-09-27T11:59:00Z"}),
+    ]
+    assert host_back_needs_chair(hosts, NOW) == [
+        {"kind": "needs_chair", "host": "a", "cause": "host_back", "back_at": "2026-09-27T11:59:00Z"},
+        {"kind": "needs_chair", "host": "b", "cause": "host_back", "back_at": "2026-09-27T11:30:00Z"},
     ]
