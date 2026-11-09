@@ -55,8 +55,7 @@ def test_the_queue_the_feed_emits_from_literal_rows_equals_the_fixtures(monkeypa
         live=fixture["live"],
     )
     # orchestration is emitted by the producer task; drop this filter there.
-    # dash_feed_v1.json predates the intake block, which the feed now always carries (empty here: no intake rows).
-    assert whole == {**{key: value for key, value in fixture.items() if key != "orchestration"}, "intake": []}
+    assert whole == {key: value for key, value in fixture.items() if key != "orchestration"}
 
 
 @pytest.mark.parametrize(
