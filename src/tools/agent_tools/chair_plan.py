@@ -48,6 +48,7 @@ from agent_tools.chair_plan_widen import plan_widen
 from agent_tools.chair_rebase import plan_rebase
 from agent_tools.chair_revert import revert_check
 from agent_tools.chair_runnable import Blocking, TaskView, WaitingInitiative, runnable_verdict
+from agent_tools.chair_schedule import Schedule, schedule_feed
 from agent_tools.chair_steer import steer_heads
 from agent_tools.chair_types import (
     DEADLOCK_CAUSE,
@@ -65,6 +66,7 @@ from agent_tools.chair_types import (
     stamp,
 )
 from agent_tools.ci_gate import CiGate
+from agent_tools.route_schedule import plan_from_inputs
 from core.landing import DEFAULT_LAND_AT
 
 _UNPAUSED = CiGate(False, "")
@@ -1071,8 +1073,30 @@ def _unlocked(facts: Facts) -> tuple[Facts, list[Action]]:
     return chair_steer_cycle.break_cycle(chair_approval_hold.without_released(facts, releases))[0], releases
 
 
+def _planned_schedule(facts: Facts, now: datetime | None) -> Schedule | None:
+    """The queue's Schedule, or None when the facts carry no inputs or there is no clock."""
+    return plan_from_inputs(facts["schedule_inputs"], now)[0] if "schedule_inputs" in facts and now is not None else None
+
+
+def _without_advice_clock(body: Mapping) -> dict:
+    """A schedule body with the `at` stamp dropped from its advice: it moves every tick and says nothing new."""
+    return {**body, "advice": [{k: v for k, v in a.items() if k != "at"} for a in body.get("advice", [])]}
+
+
+def _schedule_update(facts: Facts, schedule: Schedule | None, now: datetime | None) -> list[Action]:
+    """One schedule_updated action when the feed form differs from the previous tick's, else none."""
+    if schedule is None or now is None:
+        return []
+    feed = schedule_feed(schedule, now)
+    previous = facts.get("previous_schedule_feed")
+    unchanged = previous is not None and _without_advice_clock(previous.get("schedule", {})) == _without_advice_clock(feed["schedule"])
+    return [] if unchanged else [feed["action"]]
+
+
 def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str] = frozenset()) -> list[Action]:
     facts, releases = _unlocked(_with_dead_pid_lost(raw_facts, now))
+    schedule = _planned_schedule(facts, now)
+    schedule_update = _schedule_update(facts, schedule, now)
     reverts = revert_check(facts.get("landed_main", []))
     carries = plan_carry(facts.get("stranded", []))
     gated = _gated_initiatives(facts)
@@ -1162,6 +1186,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
             # Events start no run. A gate run may spend what the stop protects, so it waits for the stop to lift.
             *[a for a in steward_events if a["kind"] != "run_gate"],
             *stopped,
+            *schedule_update,
         ]
     cap = _launch_cap(facts["limits"])
     host_free = host_free_slots(facts)
@@ -1200,7 +1225,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     withheld = frozenset().union(*withheld_by.values())
     claimed = claimed_by(recover_actions, facts)
     free_lanes = _free_lanes(cap, kept, facts["dispatch"])
-    filled = plan_fill(facts, free_lanes, withheld, consumed, claimed, stalled=stalled_intake, now=now)
+    filled = plan_fill(facts, free_lanes, withheld, consumed, claimed, stalled=stalled_intake, now=now, schedule=schedule)
     launches = [*capped, *filled]
     skips = budget_skips(facts, facts["initiatives"], now)
     no_host = _no_host(free_lanes, host_free, consumed, filled, facts["dispatch"].get("local_lanes") == "decompose")
@@ -1250,6 +1275,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         *closes,
         *steward_events,
         *_with_rebases(behind, [r for r in rebases if r["initiative"] in behind_ids]),
+        *schedule_update,
     ]
 
 

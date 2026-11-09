@@ -599,6 +599,8 @@ class Facts(TypedDict):
     todo_initiatives: NotRequired[list[TodoInitiative]]
     steward: NotRequired[StewardPlanFacts]  # the epic steward's inputs; absent means the steward is off
     schedule_inputs: NotRequired[ScheduleInputs]  # the scheduler's inputs; absent means the edge did not read them
+    # The previous tick's `chair_schedule.schedule_feed` form; absent means none was read, so the schedule is announced.
+    previous_schedule_feed: NotRequired[dict[str, Any]]
 
 
 ActionKind = Literal[
