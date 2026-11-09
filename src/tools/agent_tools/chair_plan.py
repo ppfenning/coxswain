@@ -130,11 +130,16 @@ def _drained_hosts(login_hosts: Sequence[Mapping]) -> frozenset[str]:
     return frozenset(str(row.get("name") or "") for row in login_hosts if row.get("state") == "draining")
 
 
+def _unreachable_hosts(login_hosts: Sequence[Mapping]) -> frozenset[str]:
+    """Names of rows whose state is 'unreachable': a dead machine, so a home there is stuck."""
+    return frozenset(str(row.get("name") or "") for row in login_hosts if row.get("state") == chair_login_watch.UNREACHABLE_STATE)
+
+
 def _stuck_homes(actions: list[Action], launch_at: list[int], home: Mapping[str, str], facts: Facts) -> set[int]:
-    """Indices whose home host is drained, login-lapsed, or whose lane is lost: these relocate instead of
-    routing home. While local lanes are decompose-only, a relaunch or retry homed on "" is stuck too."""
+    """Indices whose home host is drained, unreachable, login-lapsed, or whose lane is lost: these relocate instead
+    of routing home. While local lanes are decompose-only, a relaunch or retry homed on "" is stuck too."""
     login_hosts = facts.get("login_hosts", [])
-    stuck_hosts = chair_login_watch.login_blocked(login_hosts) | _drained_hosts(login_hosts)
+    stuck_hosts = chair_login_watch.login_blocked(login_hosts) | _drained_hosts(login_hosts) | _unreachable_hosts(login_hosts)
     lost = frozenset(facts.get("lost_runs", {}))
     decompose_only = facts.get("dispatch", {}).get("local_lanes") == "decompose"
     return {
@@ -511,8 +516,11 @@ def _unstarted_waiting_chair(initiatives: list[InitiativeFacts]) -> list[Action]
     ]
 
 
-def _login_needs_chair_actions(facts: Facts) -> list[Action]:
-    return chair_login_watch.login_needs_chair(facts.get("login_hosts", []))
+def _login_needs_chair_actions(facts: Facts, now: datetime | None) -> list[Action]:
+    """Login-lapsed and host-unreachable notices; host_back needs the tick's clock and is absent without it."""
+    login_hosts = facts.get("login_hosts", [])
+    back = chair_login_watch.host_back_needs_chair(login_hosts, now.isoformat()) if now is not None else []
+    return [*chair_login_watch.login_needs_chair(login_hosts), *chair_login_watch.host_unreachable_needs_chair(login_hosts), *back]
 
 
 def _held_reason(held: dict) -> str:
@@ -601,6 +609,14 @@ def _login_check_actions(facts: Facts, now: datetime | None) -> list[Action]:
         return []
     login_hosts = facts.get("login_hosts", [])
     return [{"kind": "check_login", "host": name} for name in chair_login_watch.due_for_login_check(login_hosts, now.isoformat())]
+
+
+def _probe_host_actions(facts: Facts, now: datetime | None) -> list[Action]:
+    """One probe_host per unreachable host due for a probe; requires the tick's clock."""
+    if now is None:
+        return []
+    login_hosts = facts.get("login_hosts", [])
+    return [{"kind": "probe_host", "host": name} for name in chair_login_watch.due_for_probe(login_hosts, now.isoformat())]
 
 
 def _stall_reason(last_call: LastCall | None, idle: float) -> str:
@@ -1052,7 +1068,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     gated = _gated_initiatives(facts)
     planned_lands = _without_carried_lands(_without_gated_lands(plan_lands(facts, now), gated), carries)
     fetch_exits = _fetch_exit_actions(facts)
-    login_needs_chair = _login_needs_chair_actions(facts)
+    login_needs_chair = _login_needs_chair_actions(facts, now)
     empty_decompose_needs_chair = _empty_decompose_needs_chair_actions(facts)
     held_needs_chair = plan_held_files(facts)
     stalled_intake, decompose_stalled_needs_chair = _decompose_gate(facts)
@@ -1234,14 +1250,14 @@ def plan_housekeeping(facts: Facts, now: datetime) -> list[Action]:
 
 
 def plan_tick_held(facts: Facts, now: datetime | None = None, gate: CiGate = _UNPAUSED) -> TickPlan:
-    """now is the tick's clock; without it no housekeeping or check_login is planned.
+    """now is the tick's clock; without it no housekeeping, check_login, probe_host or host_back is planned.
 
     While `gate.paused`, a started initiative that waits only on a land not yet completed gets no relaunch and is
     named in `held_for_ci`; the caller reports it. An unpaused gate, or a tick the lease gates, holds nothing."""
     lease = facts["lease"]
     gated = _lease_gate(lease)
     housekeeping = plan_housekeeping(facts, now) if now is not None else []
-    login_checks = _login_check_actions(facts, now)
+    login_checks = [*_login_check_actions(facts, now), *_probe_host_actions(facts, now)]
     held = _land_only_ids(facts["initiatives"], facts["approved"]) if gate.paused and gated is None else frozenset()
     holder = _withhold_blocked_hosts(_plan_as_holder(facts, now, held), facts) if gated is None else []
     # A lent lease plans the routine actions, then standby last, so the tick still reads as not acting.
