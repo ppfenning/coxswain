@@ -139,6 +139,7 @@ _CHAIR_KEYS = {"housekeeping_hours", "stale_days", "idle_stall_minutes", "launch
 
 _CHAIR_BOOL_WORDS = {"true": True, "yes": True, "false": False, "no": False}  # the spellings a boolean `chair:` key accepts, any case
 _CHAIR_STEWARD_SCOPES = {"all", "epics"}  # the values `chair: steward_scope:` accepts, stored lower case
+_CHAIR_SESSION_TAKES = {"never", "when_free", "always"}  # the values `chair: session_takes:` accepts, stored lower case
 
 _STORE_KEYS = {"mode"}  # the one key of the `store:` block, kept as text in `profile["store"]["mode"]`
 
@@ -190,6 +191,8 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
     It also takes `steward_scope:`, text with quotes stripped, `all` or `epics` in any case, kept lower case as a str in
     `result["chair"]["steward_scope"]`; any other value raises ProfileError. The key is absent when not written and the reader applies the default `all`.
     `intake_stage:` is `draft` or `ready`, quotes and case ignored, kept lower case; any other value raises ProfileError.
+    It also takes `session_takes:`, text with quotes stripped, `never`, `when_free` or `always` in any case, kept lower case as a str in
+    `result["chair"]["session_takes"]`; any other value raises ProfileError. The key is absent when not written and the reader applies the default `when_free`.
     A bare `store:` line followed by an indented `mode:` line is kept as text in
     `result["store"]["mode"]`. A `notify: {ntfy: <url>}` line is the one inline mapping, kept as `result["notify"]`.
 
@@ -249,6 +252,12 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
                     if scope not in _CHAIR_STEWARD_SCOPES:
                         raise ProfileError(f"line {lineno}: {raw_line}")
                     result.setdefault("chair", {})[key] = scope
+                    continue
+                if key == "session_takes":
+                    taken = value.strip("\"'").lower()
+                    if taken not in _CHAIR_SESSION_TAKES:
+                        raise ProfileError(f"line {lineno}: chair session_takes must be one of never, when_free, always: {raw_line}")
+                    result.setdefault("chair", {})[key] = taken
                     continue
                 if key not in _CHAIR_KEYS:
                     raise ProfileError(f"line {lineno}: {raw_line}")
