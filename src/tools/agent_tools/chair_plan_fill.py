@@ -9,7 +9,7 @@ from typing import NamedTuple
 from agent_tools import chair_login_watch, host_load
 from agent_tools.chair_plan_recover import budget_verdict
 from agent_tools.chair_steer import steer_check
-from agent_tools.chair_types import Action, Facts, InitiativeFacts, RunningInitiative
+from agent_tools.chair_types import Action, Facts, InitiativeFacts, ReadyTask, RunningInitiative
 from agent_tools.checkout_env import blocks_launch, host_env_verdict, sync_instruction
 
 # name, weight (a host's share of new placements; its capacity when the hosts table sets none),
@@ -30,8 +30,12 @@ _NO_ENV = HostEnv({}, frozenset())
 PULL_MIN_AGE_S = 600
 
 
+def _capabilities(tasks: Sequence[ReadyTask]) -> frozenset[str]:
+    return frozenset(cap for task in tasks for cap in task.get("requires", []))
+
+
 def _required_capabilities(initiative: InitiativeFacts) -> frozenset[str]:
-    return frozenset(cap for task in initiative["ready_tasks"] for cap in task.get("requires", []))
+    return _capabilities(initiative["ready_tasks"])
 
 
 def _eligible(host: HostSlot, required: frozenset[str]) -> bool:
@@ -60,8 +64,13 @@ def best_host(
 _best_host = best_host  # chair_plan.py still imports this name; it is outside the launch-placement change
 
 
-def _epic_action(initiative_id: str, host: str) -> Action:
-    return {"kind": "launch_epic", "initiative": initiative_id, "host": host}
+def _epic_action(initiative_id: str, host: str | None = None, phase: str | None = None) -> Action:
+    return {
+        "kind": "launch_epic",
+        "initiative": initiative_id,
+        **({} if phase is None else {"phase": phase}),
+        **({} if host is None else {"host": host}),
+    }
 
 
 def _decompose_action(intake_id: str, host: str) -> Action:
@@ -121,8 +130,30 @@ def _stale_needs_chair(
     ]
 
 
+class Candidate(NamedTuple):
+    """One launch unit: an initiative and the phase it launches (None for the whole initiative), with that phase's tasks and surfaces."""
+
+    initiative: InitiativeFacts
+    phase: str | None
+    tasks: Sequence[ReadyTask]
+    surfaces: Sequence[str]
+
+
+def _phase_candidates(initiatives: Sequence[InitiativeFacts]) -> list[Candidate]:
+    """One candidate per entry of each initiative's `phases` fact, in order; no `phases` fact is one whole-initiative candidate."""
+    return [
+        c
+        for i in initiatives
+        for c in (
+            [Candidate(i, p["phase"], p["ready_tasks"], p["surfaces"]) for p in i["phases"]]
+            if "phases" in i
+            else [Candidate(i, None, i["ready_tasks"], i.get("ready_surfaces", []))]
+        )
+    ]
+
+
 def _walk_candidates(
-    candidates: Sequence[InitiativeFacts],
+    candidates: Sequence[Candidate],
     running: Sequence[RunningInitiative],
     streaks: Mapping[str, int],
     local_left: int,
@@ -135,8 +166,8 @@ def _walk_candidates(
     carries a stale_checkout needs_chair for it, once per call per initiative and not yet in env.reported."""
     if not candidates or (local_left <= 0 and not any(free for *_, free, _ in hosts)):
         return [], []
-    head, *tail = candidates
-    required = _required_capabilities(head)
+    (head, phase, tasks, surfaces), *tail = candidates
+    required = _capabilities(tasks)
     barred = {} if local_left > 0 else _barred_hosts(head, hosts, env)
     notes = _stale_needs_chair(head, barred, hosts, required, env)
     placed = None if local_left > 0 else best_host(required, hosts, barred)
@@ -144,18 +175,18 @@ def _walk_candidates(
         launches, steers = _walk_candidates(tail, running, streaks, local_left, hosts, env)
         return launches, [*notes, *steers]
     repo = head.get("repo", "")
-    surfaces = head.get("ready_surfaces", [])
-    steer = steer_check(head["id"], repo, surfaces, running, streaks) if repo and surfaces else None
+    steer = steer_check(head["id"], repo, surfaces, running, streaks, phase) if repo and surfaces else None
     if steer is not None:
         launches, steers = _walk_candidates(tail, running, streaks, local_left, hosts, env)
         return launches, [*notes, steer, *steers]
-    claim: list[RunningInitiative] = [{"id": head["id"], "repo": repo, "surfaces": surfaces}] if repo and surfaces else []
+    entry: RunningInitiative = {"id": head["id"], "repo": repo, "surfaces": list(surfaces)}
+    claim = [entry if phase is None else {**entry, "phase": phase}] if repo and surfaces else []
     if placed is None:
-        local: Action = {"kind": "launch_epic", "initiative": head["id"]}
+        local = _epic_action(head["id"], phase=phase)
         launches, steers = _walk_candidates(tail, [*running, *claim], streaks, local_left - 1, hosts, env)
         return [local, *launches], steers
     name, next_hosts = placed
-    hosted: Action = {"kind": "launch_epic", "initiative": head["id"], "host": name}
+    hosted = _epic_action(head["id"], name, phase)
     launches, steers = _walk_candidates(tail, [*running, *claim], streaks, local_left, next_hosts, env)
     return [hosted, *launches], [*notes, *steers]
 
@@ -185,6 +216,8 @@ def _epic_launches(
 
     An initiative with a `dag_problem` never launches either; `plan_recover` is the one place that reports it.
 
+    A candidate is one phase of an initiative's `phases` fact, or the whole initiative when it has none.
+
     With now, an initiative the launch budget refuses is left out like a withheld one; `budget_skips` names why.
 
     The first free_lanes launch locally. The rest fill host_free in proportion to weight, capped at each
@@ -199,7 +232,8 @@ def _epic_launches(
     ordered = [*(i for i in open_ if i["started"]), *(i for i in open_ if not i["started"])]
     running = [*facts.get("running", []), *claimed]
     env = HostEnv(facts.get("host_env", {}), frozenset(facts.get("env_stale_reported", [])))
-    launches, steers = _walk_candidates(ordered, running, facts.get("steer_streaks", {}), max(0, free_lanes), host_free, env)
+    streaks = facts.get("steer_streaks", {})
+    launches, steers = _walk_candidates(_phase_candidates(ordered), running, streaks, max(0, free_lanes), host_free, env)
     stale = [a for a in steers if a.get("cause") == "stale_checkout"]
     return [*launches, *(a for a in steers if a not in stale), *_once_per_reason(stale)]
 
