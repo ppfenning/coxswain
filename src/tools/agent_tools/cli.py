@@ -169,6 +169,7 @@ land_lease = _LazyModule("agent_tools.land_lease")
 land_limit = _LazyModule("agent_tools.land_limit")
 land_merge_lock = _LazyModule("agent_tools.land_merge_lock")
 land_repo_lease = _LazyModule("agent_tools.land_repo_lease")
+lane_checkout_sync = _LazyModule("agent_tools.lane_checkout_sync")
 lane_hosts = _LazyModule("agent_tools.lane_hosts")
 lane_python = _LazyModule("agent_tools.lane_python")
 lane_toolchain = _LazyModule("agent_tools.lane_toolchain")
@@ -7168,6 +7169,21 @@ def _pid_probe_ssh(argv: list[str]) -> tuple[int, str] | None:
     return done.returncode, done.stdout
 
 
+def _lane_sync_ssh(argv: list[str]) -> tuple[int, str]:
+    """Edge: (exit code, stdout and stderr) of one lane checkout sync call; ssh never prompts and no call outlasts 60s.
+
+    The sync runs in series on every live tick before the gather, so a host that hangs must cost a bounded wait.
+    A timeout or an ssh that cannot run is a nonzero code, which the sync reads as an unreachable host."""
+    batch = [argv[0], "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", *argv[1:]] if argv[:1] == ["ssh"] else argv
+    try:
+        done = subprocess.run(batch, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        return 124, f"{argv[0]}: no answer within 60s"
+    except OSError as exc:
+        return 127, f"{argv[0]}: {exc}"
+    return done.returncode, done.stdout
+
+
 def _host_checkouts(rows: Sequence[Mapping[str, object]], name: str) -> tuple[str, ...]:
     """The checkouts the named host's own beat recorded; () for a host with no row."""
     return next((tuple(host_cmd.recorded_repos(r)) for r in rows if r.get("name") == name), ())
@@ -13263,6 +13279,13 @@ def _chair_run_deps(
                     with contextlib.suppress(Exception):
                         echo(f"chair run: checkout sync skipped: {exc}")
 
+    def sync_lane_checkouts_now() -> list[dict]:
+        """The needs_chair actions for lane host checkouts left alone; the repos are the initiatives' that exist here."""
+        repos = _initiative_repos(chair_read_quarantined.initiative_files(ws, work_files()), home).values()
+        return lane_checkout_sync.sync_lane_checkouts(parsed_hosts, [r for r in repos if Path(r).is_dir()], str(ws), _lane_sync_ssh)
+
+    has_lane_hosts = not isinstance(parsed_hosts, lane_hosts.LaneHostError) and bool(parsed_hosts)
+
     started_checkout = checkout_state()
     dev_install = started_checkout is not None and started_checkout.on_branch  # the condition that arms the restart rule
     towpath = shutil.which("towpath")
@@ -13295,6 +13318,7 @@ def _chair_run_deps(
         export_rows=(lambda ids: _chair_export_hook(runs_dir, ids)) if mode == "store" and not dry_run else None,
         notify_config=notify_core.config_from_profile(profile), workspace=ws,
         pull_workspace=None if dry_run else pull_and_sync,
+        lane_checkout_actions=sync_lane_checkouts_now if has_lane_hosts and not dry_run else None,
         changed_files=changed_files,
         restart_window_s=_chair_float(chair_table, "restart_window_s", 120.0),
         restart_max_defer_s=_chair_float(chair_table, "restart_max_defer_s", 600.0),

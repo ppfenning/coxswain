@@ -10,6 +10,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 from agent_tools import (
     chair_exec,
@@ -150,6 +151,24 @@ class PullState:
     last_reason: str = ""
 
 
+LaneKey = tuple[str, str]  # (host, cause); the cause names the checkout, so each checkout on a host has its own key
+
+
+@dataclass
+class LaneSyncState:
+    """The keys of the lane checkout actions already recorded and still standing."""
+
+    seen: frozenset[LaneKey] = frozenset()
+
+
+class LaneTick(NamedTuple):
+    """`fresh` is to be recorded, `standing` is every action the sync reported, `keys` is what `seen` becomes once recorded."""
+
+    fresh: list[Action]
+    standing: list[Action]
+    keys: frozenset[LaneKey]
+
+
 @dataclass
 class ReasonState:
     """The why-not-launched lines of the last tick; cleared as `tick_timed` starts, so a failed tick leaves none."""
@@ -214,6 +233,9 @@ class RunDeps:
     # Returns "" on success or a one-line failure reason; run by every live tick right after the beat. None pulls nothing.
     pull_workspace: Callable[[], str] | None = None
     pull_state: PullState = field(default_factory=PullState)
+    # The needs_chair actions of one lane checkout sync; run by every live tick after the pull. None syncs nothing.
+    lane_checkout_actions: Callable[[], list[dict]] | None = None
+    lane_sync_state: LaneSyncState = field(default_factory=LaneSyncState)
     facts_bound: float = FACTS_BOUND_SECONDS
     checkout_state: Callable[[], CheckoutState | None] | None = None  # None disables the restart check
     started_checkout: CheckoutState | None = None
@@ -425,6 +447,49 @@ def _pull_step(deps: RunDeps, dry_run: bool) -> str:
     return reason
 
 
+def _lane_key(action: Action) -> LaneKey:
+    return str(action.get("host", "")), str(action.get("cause", ""))
+
+
+def _named_by_checkout(action: Action) -> Action:
+    """The action with its cause suffixed by the checkout its reason names, as `ci_gate_paused: <reason>` does.
+
+    The push key is `needs_chair:<host>:<cause>`, so two dirty checkouts on one host would share a key and the
+    second would never be recorded or pushed. The reason reads `lane host H, checkout P: why`.
+    """
+    head = str(action.get("reason", "")).partition(": ")[0]
+    path = head.partition(", checkout ")[2]
+    return {**action, "cause": f"{action.get('cause', '')}: {path}"} if path else action
+
+
+def _lane_checkout_step(deps: RunDeps, dry_run: bool) -> LaneTick:
+    """What this tick does with the lane checkout sync; nothing on a dry run or with no sync wired.
+
+    `fresh` leaves out an action whose key is already in `seen`. Nothing here changes `seen`: `_settle_lane_sync`
+    does, once `perform` has recorded the action. A sync that raises is one `lane_checkout_error` action, and the
+    keys already standing are kept, because a failed sync says nothing about them.
+    """
+    seen = deps.lane_sync_state.seen
+    if dry_run or deps.lane_checkout_actions is None:
+        return LaneTick([], [], seen)
+    try:
+        found = [_named_by_checkout(a) for a in deps.lane_checkout_actions()]
+        keys = frozenset(_lane_key(a) for a in found)
+    except Exception as exc:
+        found = [{
+            "kind": "needs_chair", "host": "lane checkouts", "cause": "lane_checkout_error",
+            "reason": f"lane checkout sync failed: {str(exc) or type(exc).__name__}",
+        }]
+        keys = seen | {_lane_key(found[0])}
+    return LaneTick([a for a in found if _lane_key(a) not in seen], found, keys)
+
+
+def _settle_lane_sync(deps: RunDeps, step: LaneTick, results: list[Result]) -> None:
+    """Remember a key only if it was already seen or `perform` recorded its action, so a lost one is raised again."""
+    recorded = {_lane_key(r["action"]) for r in results if r["status"] == "recorded"}
+    deps.lane_sync_state.seen = frozenset(k for k in step.keys if k in deps.lane_sync_state.seen or k in recorded)
+
+
 def _publish_status(deps: RunDeps, dry_run: bool, line: str, now: datetime, stage_seconds: dict[str, float] | None = None) -> None:
     """Record the tick's status line as a `status` action, so the feed reads it from the store on any machine.
 
@@ -553,6 +618,7 @@ def tick_timed(
     deps.beat()
     _publish_meter(deps, dry_run, now)
     pull_failure = _pull_step(deps, dry_run)
+    lane = _lane_checkout_step(deps, dry_run)
     gathered, facts_s = _gather_bounded(deps, sources, now, clock)
     facts = as_holder(gathered, deps.force_holder) if dry_run else gathered
     gate = _evaluate_gate(deps, now)
@@ -566,8 +632,16 @@ def tick_timed(
     deps.reason_state.lines = chair_report.unlaunched_lines(planned.actions, now)
     acting = not dry_run and all(a.get("kind") != "standby" for a in planned.actions)
     notice = next_gate_record(deps.gate_state.paused, gate, planned.held_for_ci, deps.current_epoch()) if acting and gate.paused else None
-    actions = [*planned.actions, notice] if notice is not None else planned.actions
+    # Fresh lane checkout actions ride the planned list: perform records each needs_chair, and the notify step pushes it.
+    # perform fences an action with no epoch, so each carries the current one.
+    stamped = [{**a, "epoch": deps.current_epoch()} for a in lane.fresh]
+    actions = [*planned.actions, *stamped, *([notice] if notice is not None else [])]
     results, perform_s = chair_timing.timed(clock, deps.perform, actions, deps.exec_deps, deps.current_epoch, dry_run)
+    if not dry_run:
+        _settle_lane_sync(deps, lane, results)
+    # Notify hears every standing lane action each tick: `notify_core.due` pushes a standing key once, and a push
+    # that failed is only retried while its event is still presented.
+    standing = [a for a in lane.standing if a not in lane.fresh]
     if acting and gate.paused != deps.gate_state.paused:
         deps.gate_state.paused = gate.paused
     ids = () if dry_run or deps.export_rows is None else changed_row_ids(results)
@@ -580,7 +654,7 @@ def tick_timed(
     line = f"{line} | {note}" if note else line
     line = f"{line} | workspace pull failed: {pull_failure}" if pull_failure else line
     line = f"{line} | {PROFILE_STALE_NOTE}" if facts.get("profile_stale") else line
-    pushed = _notify_step(deps, dry_run, facts, actions, now)
+    pushed = _notify_step(deps, dry_run, facts, [*actions, *standing], now)
     stages = {"facts": facts_s, "plan": plan_s, "perform": perform_s, "export": export_s}
     return (f"{line} | {pushed}" if pushed else line), stages, sources
 
