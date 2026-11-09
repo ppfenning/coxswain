@@ -575,6 +575,7 @@ ActionKind = Literal[
     "release_approvals",
     "mark_lost",
     "check_login",
+    "probe_host",
     "stalled_usr1",
     "stalled_stop",
     "review_landed",
@@ -605,7 +606,8 @@ class Action(TypedDict, total=False):
     """mark_lost only records the loss to the chair's own action log: it is never an attempt against a
     task, and by construction never touches the attempts table, so it never counts toward
     harness_failures or any retry cap. check_login carries host, performs an ssh call and a store
-    write, and like mark_lost never touches the attempts table. needs_chair carries either
+    write, and like mark_lost never touches the attempts table. probe_host carries host, performs one ssh
+    connect and may write the hosts row. needs_chair carries either
     initiative and cause, or host and cause when the entry names a lane host rather than an
     initiative; when host is present cause is "login_lapsed" or "stale_checkout" and there is no initiative key.
     A stale_checkout needs_chair also carries repo, the repo directory name keyed in the host's checkout_env record.
