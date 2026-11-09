@@ -5156,6 +5156,19 @@ def _chair_machine_line(profile: Mapping, runs_dir: Path) -> str:
         return ""
 
 
+def _initiative_events(queue: Sequence[Mapping], run_ids: Sequence[str]) -> dict[str, list]:
+    """Run id to the `events` its initiative's own row carries. A run id is a slug with an optional
+    `-<digits>` suffix, so it is looked up whole, then by `_run_slug`. A run with no events, or with
+    anything but a list of them, is absent."""
+    found = {
+        str(r.get("initiative") or r.get("task_id") or ""): (r["extra"].get("events") if isinstance(r.get("extra"), Mapping) else None)
+        for r in queue
+        if r.get("kind") == "initiative"
+    }
+    by_run = {run_id: found.get(run_id) or found.get(_run_slug(run_id)) for run_id in run_ids}
+    return {run_id: list(evs) for run_id, evs in by_run.items() if isinstance(evs, list) and evs}
+
+
 def _route_status(a: argparse.Namespace) -> int:
     profile_path = _profile_path(a)
     text = _read_text_or_none(profile_path)
@@ -5214,6 +5227,7 @@ def _route_status(a: argparse.Namespace) -> int:
                 short_ids=_run_short_ids([r["id"] for r in rows], short_ids),
                 waiting=_waiting_by_entry_id(queue, waiting), held=held, deferred=deferred,
                 chair_line=_chair_machine_line(profile, ws / "runs"),
+                events=_initiative_events(queue, [r["id"] for r in rows]),
             )
             drafts = route.render_drafts(
                 draft_list.read_drafts(ws / "work", datetime.datetime.now(datetime.UTC).isoformat()), draft_list.format_age

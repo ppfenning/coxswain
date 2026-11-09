@@ -2448,13 +2448,23 @@ def chair_machine_line(mode_line: str) -> str:
     return f"chair machine {mode_line.rsplit(' (', 1)[0]}"
 
 
+def merged_event_lines(events: Sequence[Mapping]) -> list[str]:
+    """`merged: a, b into a` per `tasks_merged` event, in order; other events are skipped."""
+    return [
+        f"merged: {', '.join(str(t) for t in event.get('tasks', []))} into {event.get('into', '')}"
+        for event in events
+        if event.get("event") == "tasks_merged"
+    ]
+
+
 def render_status(rows: list, groups: dict | None = None, problems: list | None = None,
                   gate_level: str | None = None, hidden: int = 0,
                   short_ids: Mapping[str, str] | None = None,
                   waiting: Mapping[str, Sequence[str]] | None = None,
                   held: Sequence[Mapping] | None = None,
                   deferred: Mapping[str, Sequence[str]] | None = None,
-                  chair_line: str = "") -> str:
+                  chair_line: str = "",
+                  events: Mapping[str, Sequence[Mapping]] | None = None) -> str:
     """The human-readable text `agent-tools route status` prints, spec §5,
     from `status_rows`' output. One line per row: a run with no pidfile
     states only its id and state, since `pid` and `started` are both
@@ -2474,9 +2484,15 @@ def render_status(rows: list, groups: dict | None = None, problems: list | None 
     `deferred` (target release to ids, `group_deferred`'s output) adds a `deferred to <version>:` heading per target
     after the held block, in the mapping's order, with one `  id` line each.
     `chair_line`, when non-empty, is the last line, after `gate:`.
+    `events` (run id to its initiative's events) puts a `merged:` line under a row for each `tasks_merged` event.
     """
     ids = short_ids or {}
-    lines = [_status_line(row, ids.get(row["id"])) for row in rows]
+    by_run = events or {}
+    lines = [
+        line
+        for row in rows
+        for line in (_status_line(row, ids.get(row["id"])), *merged_event_lines(by_run.get(row["id"], [])))
+    ]
     lines += [f"({hidden} older runs hidden; --all shows every run)"] if hidden > 0 else []
     if groups is not None:
         queue = groups["queued"]
