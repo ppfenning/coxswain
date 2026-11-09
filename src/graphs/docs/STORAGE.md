@@ -149,7 +149,7 @@ Added by migration 0007. One row per action the chair takes. Primary key `ts`, `
 
 ### hosts
 
-Added by migration 0008. One row per machine the chair may dispatch to. Primary key `name`. Every column is NOT NULL. TEXT columns: `name`, `ssh`, `state`, `beat_at`, `updated_at`, `updated_by`. INTEGER column: `capacity`. JSON column: `versions_json`. `state` is `active`, `draining` or `offline`. `beat_at` is the empty string until the first beat. `versions_json` holds what the host reported: its cox, graphs, cartridges and claude versions, and `login_ok`.
+Added by migration 0008. One row per machine the chair may dispatch to. Primary key `name`. Every column is NOT NULL. TEXT columns: `name`, `ssh`, `state`, `beat_at`, `updated_at`, `updated_by`. INTEGER column: `capacity`. JSON column: `versions_json`. `state` is `active`, `draining`, `offline`, `deploy_only` or `unreachable`. A beat from an unreachable host sets it `active`, sets `updated_by` to `beat` and writes `host_back_at` into `versions_json`. `beat_at` is the empty string until the first beat. `versions_json` holds what the host reported: its cox, graphs, cartridges and claude versions, and `login_ok`.
 
 ### id_sequence
 
