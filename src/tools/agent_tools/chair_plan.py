@@ -9,14 +9,17 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from agent_tools import (
+    chair_approval_hold,
     chair_launch_why,
     chair_lease_refusal,
     chair_login_watch,
     chair_plan_prune,
     chair_stall,
+    chair_steer_cycle,
     chair_steward,
 )
 from agent_tools.chair_carry import plan_carry
+from agent_tools.chair_idle_ready import plan_idle_ready
 from agent_tools.chair_idle_stall import diagnose, is_stalled
 from agent_tools.chair_plan_fill import (
     HostSlot,
@@ -1061,8 +1064,15 @@ def _unlaunched_actions(
     ]
 
 
+def _unlocked(facts: Facts) -> tuple[Facts, list[Action]]:
+    """Facts without the approvals held past the limit, then without a steer cycle's non-live holders, and the releases."""
+    # plan_release reads `merged` on every approved row before it looks at a hold, so it runs only when there is a hold.
+    releases = chair_approval_hold.plan_release(facts) if facts.get("approval_holds") else []
+    return chair_steer_cycle.break_cycle(chair_approval_hold.without_released(facts, releases))[0], releases
+
+
 def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str] = frozenset()) -> list[Action]:
-    facts = _with_dead_pid_lost(raw_facts, now)
+    facts, releases = _unlocked(_with_dead_pid_lost(raw_facts, now))
     reverts = revert_check(facts.get("landed_main", []))
     carries = plan_carry(facts.get("stranded", []))
     gated = _gated_initiatives(facts)
@@ -1124,6 +1134,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
             {**a, "reason": "hard stop: nothing launches until the stop lifts"}
             for a in _unlaunched_actions(facts, [], {}, {}, 0, False, 0, now, [])
         ]
+        idle_ready = plan_idle_ready(facts, recovered, now) if now is not None else []
         return [
             *reverts,  # a revert starts no run, so a red main is healed under the hard stop too
             *steward_merges,  # a merge starts no run either, and it must run before a land takes the repo
@@ -1133,6 +1144,8 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
             *tune,
             *stall,
             *idle_stall,
+            *idle_ready,
+            *releases,  # a release starts no run
             *deadlock_chair,
             *carries,
             *_needs_chair_only(recovered),
@@ -1208,6 +1221,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     behind = [a for a in launches if a.get("after_steward")]
     behind_ids = frozenset(a["initiative"] for a in behind)
     ahead = [a for a in launches if not a.get("after_steward")]
+    idle_ready = plan_idle_ready(facts, [*launches, *stuck_heads, *unlaunched], now) if now is not None else []
     return [
         *reverts,
         *steward_merges,
@@ -1217,6 +1231,8 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         *tune,
         *stall,
         *idle_stall,
+        *idle_ready,
+        *releases,  # a release starts no run
         *deadlock_chair,
         *carries,
         *_with_rebases(ahead, [r for r in rebases if r["initiative"] not in behind_ids]),
