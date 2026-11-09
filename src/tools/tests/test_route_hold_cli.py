@@ -35,7 +35,7 @@ def env(tmp_path, monkeypatch):
 
 
 def _file(env, title):
-    assert main(["route", "file", "--profile", env["profile"], "--repo", env["repo"], "--title", title, "--intake"]) == 0
+    assert main(["route", "file", "--profile", env["profile"], "--repo", env["repo"], "--title", title, "--intake", "--ready"]) == 0
     return next(row["task_id"] for row in env["rows"].values() if row["title"] == title)
 
 
@@ -69,10 +69,9 @@ def test_hold_then_release_round_trips_the_intake_file(env):
     assert _route(env, "release", task_id) == 0
     released = _path(env, task_id).read_bytes()
     assert b"stage: ready\n" in released and b"hold_reason" not in released
-    assert released.replace(b"stage: ready\n", b"") == original
+    assert released == original
 
 
-@pytest.mark.xfail(strict=True, reason="the chair still reads `held`; the next task teaches it `stage`")
 def test_a_held_intake_stays_in_the_queue_rows_but_not_in_the_chairs_runnable_intake(env):
     kept, parked = _file(env, "Kept"), _file(env, "Parked")
     assert _route(env, "hold", parked, "--reason", "waiting", "--by", "pat") == 0
