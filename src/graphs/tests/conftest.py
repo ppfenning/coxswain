@@ -8,6 +8,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import pytest
 
+from harness import termination
 from harness.serial_tests import pytest_collection_modifyitems, pytest_sessionfinish  # noqa: F401  (hooks)
 
 CARTRIDGE = {
@@ -145,6 +146,14 @@ def _store_backups_stay_out_of_home(tmp_path_factory, monkeypatch):
     simply overrides this default.
     """
     monkeypatch.setenv("COX_STORE_BACKUP_DIR", str(tmp_path_factory.mktemp("store-backups")))
+
+
+@pytest.fixture(autouse=True)
+def _termination_flag_is_per_test():
+    """`termination` is process state that nothing clears; a test that sets it must not leave the next test a killed run."""
+    termination._TERMINATING.clear()
+    yield
+    termination._TERMINATING.clear()
 
 
 _GIT_REPOSITORY_VARIABLES = (
