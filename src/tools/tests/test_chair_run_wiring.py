@@ -29,7 +29,7 @@ _FACTS_DEPS_METADATA_FIELDS = frozenset({"session", "pid", "host"})
 # `merge_queue` is declared but not wired yet: the command task passes a profile reader and drops it from this set.
 # `live_phases` is likewise declared but not wired yet: the wiring task passes a reader and drops it from this set.
 _FACTS_DEPS_NONE_GUARDED_FIELDS = frozenset(
-    {"queue", "stranded_records", "merge_queue", "live_phases", "approval_hold_ticks"}  # approval_hold_ticks: cli wiring is a later task
+    {"queue", "stranded_records", "merge_queue", "live_phases"}
 )
 
 # Steward sources whose dataclass default is a working callable (`[]`, `""`, `False`), so only identity shows them unwired.
