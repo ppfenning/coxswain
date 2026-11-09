@@ -12848,6 +12848,9 @@ def _chair_run_deps(
     # edge state: `beat` empties it, so one tick's window, weekly and source readers share one meter read and verdict
     meter_snapshot: list[tuple[usage_meter.Meter | None, str]] = []
 
+    # edge state: `beat` empties it, so the orchestration fallback notice prints once per tick
+    fallback_noticed: list[bool] = []
+
     # edge state: `beat` empties it, so one tick reads each work file, the store's work rows, the attempts and the
     # stranded inputs once and every reader that needs one shares it
     tick_reads: dict[str, object] = {}
@@ -12965,6 +12968,7 @@ def _chair_run_deps(
         main_ci.cache.clear()
         green_since.cache.clear()
         meter_snapshot.clear()
+        fallback_noticed.clear()
         lost = "" if dry_run else chair.renew_lease(runs_dir, session, pid, host)
         if _record_beat_wanted(dry_run, lost):
             _beat_record(runs_dir, session, pid, host, now())
@@ -13043,10 +13047,15 @@ def _chair_run_deps(
         candidates = _lane_host_candidates(profile_text, host_rows, host)
         # a host with no workspace_dir is refused by `route launch --on`, so the loop must not plan launches onto it
         host_names = [] if isinstance(candidates, lane_hosts.LaneHostError) else host_cmd.dispatchable(candidates)[0]
+        configured = chair_capacity.chair_local_lanes(profile)
+        effective = chair_orchestrate.effective_local_lanes(configured, host_names)  # no usable host: build locally this tick
+        if configured == "decompose" and effective == "any" and not fallback_noticed:
+            fallback_noticed.append(True)
+            echo(f"chair run: {chair_orchestrate.FALLBACK_NOTICE}")
         return chair_facts.dispatch_facts(
             row, host_names, _dispatch_counts(lanes, host, host_names, pidfile_live), host_cmd.row_capacities(host_rows),
             weight=host_cmd.row_weights(host_rows), capabilities=host_cmd.row_capabilities(host_rows), local=host,
-            local_lanes=chair_capacity.chair_local_lanes(profile),
+            local_lanes=effective,
         )
 
     weekly_reset = usage_window.parse_weekly_reset(profile.get("weekly_reset"))
