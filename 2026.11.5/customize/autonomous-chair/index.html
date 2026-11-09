@@ -2098,6 +2098,23 @@ Coxswain is in beta — versions may change between releases
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Taking over">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#starting-a-session-beside-the-chair" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Starting a session beside the chair
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -6637,6 +6654,23 @@ Coxswain is in beta — versions may change between releases
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Taking over">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#starting-a-session-beside-the-chair" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Starting a session beside the chair
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -7075,6 +7109,49 @@ forgotten takeover cannot park the fleet.</p>
 </code></pre></div>
 <p>With a shared Postgres store, any machine on the network can take the
 chair. <a href="../several-machines/">Several machines</a> shows how to set that up.</p>
+<h3 id="starting-a-session-beside-the-chair">Starting a session beside the chair</h3>
+<p>A bare <code>cox</code> session decides whether to take the chair as it starts. The
+<code>session_takes</code> key under <code>chair:</code> in the profile sets the policy. These are
+the lines to add, at the top level of the profile file:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">chair</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">session_takes</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">when_free</span>
+</code></pre></div>
+<p>The key accepts <code>never</code>, <code>when_free</code> and <code>always</code>, in any case. <code>when_free</code> is
+the default and applies when the key is absent. Any other value makes the
+profile unreadable.</p>
+<p>With <code>never</code>, a session never takes the chair. It opens as a non-chair session
+and leaves a free chair free. When another session holds the chair, it prints
+who holds it and opens as a non-chair session without asking.</p>
+<p>With <code>when_free</code>, a session takes the chair when it is free or its lease has
+gone stale. When the last holder crashed and its Claude session can still be
+found, the session resumes that conversation and takes the lease. When another
+session holds the chair, the session shows an offer. The choices are to take
+over, open a non-chair session or cancel. A fourth choice, attach, appears when
+the holder's conversation is on this machine, and Enter picks it. Otherwise
+Enter opens a non-chair session.</p>
+<p>With <code>always</code>, a session takes or resumes a free or stale chair as <code>when_free</code>
+does. It also takes the chair from another session without showing the offer.</p>
+<p>None of the three values lets a session displace a live chair loop. The loop
+may be the systemd service or another running chair loop. A session started
+beside it opens as a non-chair session and prints one of these lines:</p>
+<div class="highlight"><pre><span></span><code>chair held by &lt;label&gt; (service)
+chair held by &lt;label&gt; (chair loop)
+</code></pre></div>
+<p>The first names the systemd service. The second names any other running chair
+loop. The session takes, steals and releases nothing. This holds under
+<code>always</code> too, because <code>always</code> only reaches sessions and never loops.</p>
+<p>The one way to take the chair from a live chair loop is the explicit
+<code>cox route chair take --steal</code> command shown above. Bare <code>cox</code> never runs it
+for you. Only the operator's own command displaces a live loop.</p>
+<p>A session that holds the chair releases its lease when it exits. The launcher
+starts a background process that watches the session and checks it once every
+five minutes. When the session is gone, that process ends the lease and clears
+the chair record. A standby service takes the free chair on its next tick,
+without waiting for the lease to expire. The release can lag the exit by up to
+those five minutes.</p>
+<p>Two beliefs are wrong here. A new session does not displace the service, even
+under <code>always</code>. A held lease no longer waits out its expiry after the session
+ends. The wait is now at most one five minute check.</p>
 <h2 id="lending-the-routine-ticks">Lending the routine ticks</h2>
 <p>With nothing lent, a standby loop does nothing while a session holds the
 lease. That is how it has always worked. You can change it for as long as you
