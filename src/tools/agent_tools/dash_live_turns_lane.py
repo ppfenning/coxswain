@@ -15,15 +15,17 @@ The caller stamps `task` and `node`: a trace directory is per run, so nothing he
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from agent_tools.dash_transcript_cursor import CursorState, KeyedTurn, advance
 from agent_tools.records import load_trace
 
-__all__ = ["read_lane_turns", "turns_from_events"]
+__all__ = ["advance_lane_cursor", "read_lane_turns", "turns_from_events"]
 
 _PER_MILLION = 1_000_000
 _TRACE_STEM = re.compile(r"^(?P<role>.+)-\d+$")  # a role may hold hyphens: review-adversary-1
@@ -130,6 +132,60 @@ def _file_turns(path: Path, prices: Mapping[str, Mapping[str, float]], **stamp: 
     return turns_from_events(events, prices=prices, agent_id=path.stem, **stamp)
 
 
+def _trace_paths(runs_dir: Path | str, run: str, node: str) -> list[Path]:
+    """Edge: the run's `<node>-<n>.jsonl` trace files; other roles' files are another node's turns."""
+    trace_dir = Path(runs_dir) / f"{run}-trace"
+    try:
+        return sorted(p for p in trace_dir.glob("*.jsonl") if (m := _TRACE_STEM.match(p.stem)) and m["role"] == node)
+    except OSError:
+        return []
+
+
+def _read_from(path: Path, offset: int) -> bytes:
+    """Edge: the bytes of `path` from `offset` to its end; an unreadable file yields none."""
+    try:
+        with path.open("rb") as handle:
+            handle.seek(offset)
+            return handle.read()
+    except OSError:
+        return b""
+
+
+def _loads(line: str) -> dict[str, Any] | None:
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    return event if isinstance(event, dict) else None
+
+
+def _parse_lines(path: Path, lines: list[str]) -> list[KeyedTurn]:
+    """Pure: the events `turns_from_events` can use, each keyed by its line text.
+
+    The cursor holds raw events, not built turns, so the most-output repeat of a message is still chosen at read time.
+    Byte-identical lines share a key and collapse to one, which only matters for an event naming no message id."""
+    events = ((line, _loads(line)) for line in lines)
+    return [
+        (line, event)
+        for line, event in events
+        if event is not None and _iso_utc(event.get("timestamp")) is not None and _usage(event) is not None
+    ]
+
+
+def advance_lane_cursor(runs_dir: Path | str, run: str, node: str, cursor: CursorState | None = None) -> CursorState:
+    """Edge: the cursor after the node's traces as they are now; an unchanged file reads nothing, a grown one its new bytes.
+
+    Call this for the new cursor, then pass that to `read_lane_turns`."""
+    stats: dict[Path, tuple[int, int]] = {}
+    for path in _trace_paths(runs_dir, run, node):
+        try:
+            seen = path.stat()
+        except OSError:
+            continue
+        stats[path] = (seen.st_size, seen.st_mtime_ns)
+    return advance(cursor or CursorState(), stats, _read_from, _parse_lines)
+
+
 def read_lane_turns(
     runs_dir: Path | str,
     run: str,
@@ -138,12 +194,19 @@ def read_lane_turns(
     task: str,
     node: str,
     prices: Mapping[str, Mapping[str, float]] | None = None,
+    *,
+    cursor: CursorState | None = None,
 ) -> list[dict[str, Any]]:
-    """Edge: turns from the run's `<node>-<n>.jsonl` trace files; other roles' files are another node's turns."""
-    trace_dir = Path(runs_dir) / f"{run}-trace"
-    try:
-        paths = sorted(p for p in trace_dir.glob("*.jsonl") if (m := _TRACE_STEM.match(p.stem)) and m["role"] == node)
-    except OSError:
-        return []
+    """Edge: turns from the run's `<node>-<n>.jsonl` trace files; other roles' files are another node's turns.
+
+    With a `cursor` only bytes the cursor has not seen are read. The updated cursor comes from `advance_lane_cursor`."""
     stamp = {"host": host, "run": run, "initiative": initiative, "task": task, "node": node}
-    return [turn for path in paths for turn in _file_turns(path, prices or {}, **stamp)]
+    if cursor is not None:
+        return [
+            turn
+            for path, seen in advance_lane_cursor(runs_dir, run, node, cursor).paths
+            for turn in turns_from_events(
+                [event for _, event in seen.turns], prices=prices or {}, agent_id=path.stem, **stamp
+            )
+        ]
+    return [turn for path in _trace_paths(runs_dir, run, node) for turn in _file_turns(path, prices or {}, **stamp)]
