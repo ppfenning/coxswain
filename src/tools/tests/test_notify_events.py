@@ -1,3 +1,4 @@
+from agent_tools.chair_plan import plan_held_files
 from agent_tools.notify_core import Event, render
 from agent_tools.notify_events import SELF_CLEARING_CAUSES, events_from_tick
 
@@ -72,6 +73,15 @@ def test_a_held_file_gives_one_needs_attention_event_with_its_reason_keyed_by_pa
     assert (event.kind, event.key, event.body) == ("needs_attention", "needs_attention:work/a.md|b1", held["reason"])
     (again,) = events_from_tick({}, [{**held, "blob": "b2"}])
     assert again.key == "needs_attention:work/a.md|b2"
+
+
+def test_a_workspace_only_edit_planned_by_the_chair_pushes_one_needs_attention_with_the_diff_summary():
+    row = {"path": "work/a.md", "initiative": "init-h", "reason": "edited by hand", "blob": "b1", "diff_summary": "state changed"}
+    actions = plan_held_files({"held_files": [row]})
+    (event,) = events_from_tick({}, actions)
+    assert (event.kind, event.key) == ("needs_attention", "needs_attention:work/a.md|b1")
+    assert "changed with no matching store change (state changed)" in event.body
+    assert plan_held_files({"held_files": [row], "held_reported": ["work/a.md|b1"]}) == []
 
 
 def test_a_remedy_command_is_carried_in_the_body():

@@ -102,7 +102,7 @@ def test_status_shows_a_waiting_line_and_a_held_section(env, capsys):
     assert main(["route", "status", "--profile", env["profile"]]) == 0
     out = capsys.readouterr().out
 
-    assert "intake queued: 2 — parked, waits (waiting on nothing-landed)" in out
+    assert "intake queued: 2 — parked [stage ready, repo widget], waits (waiting on nothing-landed) [stage ready, repo widget]" in out
     assert f"held:\n  {parked['task_id']}: waiting on a decision" in out
 
 

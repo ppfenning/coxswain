@@ -25,6 +25,7 @@ from agent_tools import (
     base_branch,
     chair,
     chair_apply_fetch,
+    chair_apply_release,
     chair_apply_review,
     chair_apply_widen,
     chair_housekeeping,
@@ -58,6 +59,7 @@ from agent_tools.chair_rebase_exec import RebasePort, perform_rebase
 from agent_tools.chair_revert_exec import MERGED, RevertResult, perform_revert
 from agent_tools.chair_revert_exec import ForgePort as RevertForgePort
 from agent_tools.chair_revert_exec import GitPort as RevertGitPort
+from agent_tools.chair_schedule import SCHEDULE_FILE
 from agent_tools.chair_types import Action, LandTrigger, is_fenced
 from agent_tools.land import approve_to_done
 from agent_tools.remote_argv import LANE_HOST_TIMEOUT_S, probe_argv, ssh_argv, sync_argv
@@ -967,6 +969,18 @@ def _widen_ticket(action: Action, deps: Deps) -> Result:
     return _result(action, "done", reason if warning is None else f"{reason}; {warning}")
 
 
+def _release_approvals(action: Action, deps: Deps) -> Result:
+    """In-process, with no argv; each released ticket's `ready` is mirrored to the store, and the action's cause rides in the reason."""
+    initiative, task_ids, cause = action.get("initiative", ""), action.get("task_ids", []), action.get("reason", "")
+    if not initiative or not task_ids:
+        return _result(action, "refused", "release_approvals needs an initiative and task_ids")
+    ok, reason = chair_apply_release.apply_release(deps.work_dir, initiative, task_ids, cause, deps.now()[:10])
+    if not ok:
+        return _result(action, "failed", reason)
+    warnings = [w for t in dict.fromkeys(task_ids) if (w := store_cli.mirror_state(deps.runs_dir, initiative, t, "ready", "chair")) is not None]
+    return _result(action, "done", "; ".join([f"{reason}: {cause}" if cause else reason, *warnings]))
+
+
 _CLOSE_STATES = ("done", "dropped")
 
 
@@ -1272,6 +1286,37 @@ def _steer_reason(action: Action) -> str:
     return f"steer clear of {action.get('other', '')}: {','.join(action.get('paths', []))}"[:200]
 
 
+def schedule_document(action: Action) -> str:
+    """The text of `SCHEDULE_FILE`: the action's schedule object alone, as JSON."""
+    return json.dumps(action["schedule"], indent=2, sort_keys=True) + "\n"
+
+
+def _write_replacing(path: Path, text: str) -> None:
+    """Edge. `text` lands in `path` in one step: written beside it, then renamed over it, so a reader never sees half a file.
+
+    mkstemp creates 0600, which the rename would carry onto `path`; the document is published for other readers, so it is 0644.
+    """
+    descriptor, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.chmod(name, 0o644)
+        os.replace(name, path)
+    except BaseException:
+        Path(name).unlink(missing_ok=True)
+        raise
+
+
+def _schedule_updated(action: Action, deps: Deps) -> Result:
+    if not isinstance(action.get("schedule"), Mapping):
+        return _result(action, "refused", "schedule_updated carries no schedule")
+    try:
+        _write_replacing(deps.runs_dir / SCHEDULE_FILE, schedule_document(action))
+    except OSError as err:
+        return _result(action, "failed", f"{SCHEDULE_FILE}: {err}")
+    return _result(action, "done", f"wrote {SCHEDULE_FILE}")
+
+
 def _deferred_reason(action: Action) -> str:
     """`deferred to the last phase (land_at <land_at>)`, naming the land_at the action carries."""
     return f"deferred to the last phase (land_at {action.get('land_at', '?')})"
@@ -1432,6 +1477,8 @@ def _would(action: Action) -> str:
         return f"would run the gate of {epic} and publish its result event on {action.get('topic', '')}"
     if kind == "steward_event":
         return f"would publish {action.get('event', '')} on {action.get('topic', '')}"
+    if kind == "schedule_updated":
+        return f"would write {SCHEDULE_FILE}"
     if kind == "relaunch" and epic:
         return f"would relaunch {action.get('initiative', '')} and publish relaunched on {action.get('topic', '')}"
     return ""
@@ -1492,6 +1539,8 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
         return _fetch_exit(action, deps)
     if kind == "widen_ticket":
         return _widen_ticket(action, deps)
+    if kind == "release_approvals":
+        return _release_approvals(action, deps)
     if kind == "close_initiative":
         return _close_initiative(action, deps)
     if kind == "finish_task":
@@ -1516,6 +1565,8 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
         return _stalled(action, deps, signal.SIGUSR1)
     if kind == "stalled_stop":
         return _stalled(action, deps, signal.SIGTERM)
+    if kind == "schedule_updated":
+        return _schedule_updated(action, deps)
     return _result(action, "refused", f"unsupported action kind {kind!r}")
 
 

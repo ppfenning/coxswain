@@ -641,7 +641,7 @@ def test_gather_facts_fills_every_key_from_the_fakes():
     # tuning, landed_main and land_outcomes are all filled in gather_facts now.
     # steward is declared on Facts and read by the planner; the next task gathers it, until then it is absent.
     # live_phases is gathered only when the deps supply it, and these fakes do not.
-    assert set(facts) == (set(Facts.__annotations__) - {"steward", "live_phases"}) | {"login_hosts"}
+    assert set(facts) == (set(Facts.__annotations__) - {"steward", "live_phases", "schedule_inputs"}) | {"login_hosts"}
     assert facts["dispatch"] == {"max_in_flight": 2, "live_runs": 1, "hosts": []}
     assert facts["initiatives"][0]["landed"] == {"z"}
     assert facts["approved"][0]["phase_done"] is True

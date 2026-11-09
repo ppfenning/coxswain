@@ -6,7 +6,7 @@ filled in by the facts edge and consumed by the stale planner; `stall_candidates
 consumed by the stall planner. `tuning` likewise, consumed by the lane-tuning and tier-proposal planners.
 """
 from datetime import datetime
-from typing import Literal, NotRequired, Protocol, TypedDict
+from typing import Any, Literal, NotRequired, Protocol, TypedDict
 from zoneinfo import ZoneInfo
 
 from agent_tools.chair_decompose_streak import DecomposeStreak
@@ -461,6 +461,51 @@ class ApprovalHold(TypedDict):
     ticks: int  # ticks the approval has been unlanded without merging
 
 
+class SchedulePhase(TypedDict):
+    id: str
+    status: Literal["ready", "waiting", "blocked", "running"]  # running only when a live run holds the phase
+    parents: list[str]  # phase ids of the same initiative that must finish first
+    size: str  # "" when no task states one
+    mix: str  # the phase's `requires:` capabilities joined by "+", or "plain"
+    surfaces: list[str]
+
+
+class ScheduleInitiative(TypedDict):
+    id: str
+    priority: int
+    repo: str
+    phases: list[SchedulePhase]
+
+
+class ScheduleHost(TypedDict):
+    name: str
+    lanes: list[str]  # one entry per lane
+    local: bool
+    repos: list[str]  # empty: capable of every repo
+
+
+DurationRecord = dict[str, str]  # the keys `chair_schedule_durations` reads: size, mix, build_start, approve_time
+
+
+class ScheduleInputs(TypedDict):
+    """The arguments of `chair_schedule.plan_schedule` minus the clock, as plain data. `running` is not carried:
+    the facts know which phases are live but not their host, lane or finish."""
+
+    initiatives: list[ScheduleInitiative]
+    records: list[DurationRecord]
+    hosts: list[ScheduleHost]
+    mode: str
+    load: dict[str, int]  # host name to live runs
+    target: str | None  # ISO release target a work item states; None when none does
+
+
+class ScheduleUpdatedAction(TypedDict):
+    """The `action` of `dash_feed_schedule_v1.json`: `schedule` is `chair_schedule._body`."""
+
+    kind: Literal["schedule_updated"]
+    schedule: dict[str, Any]
+
+
 class Facts(TypedDict):
     lease: LeaseFacts
     limits: LimitsFacts
@@ -553,6 +598,7 @@ class Facts(TypedDict):
     # Each initiative row in state todo with its task rows' states, in row order; absent means none. `plan_close_initiatives` plans a close_initiative for each finished one.
     todo_initiatives: NotRequired[list[TodoInitiative]]
     steward: NotRequired[StewardPlanFacts]  # the epic steward's inputs; absent means the steward is off
+    schedule_inputs: NotRequired[ScheduleInputs]  # the scheduler's inputs; absent means the edge did not read them
 
 
 ActionKind = Literal[
@@ -599,6 +645,7 @@ ActionKind = Literal[
     "run_gate",
     "steward_event",
     "unlaunched",
+    "schedule_updated",
 ]
 
 
@@ -619,7 +666,8 @@ class Action(TypedDict, total=False):
     proposals and body and is propose-only: no action kind applies a tier or model change.
     revert_land carries initiative, phase, repo, pr, commit and reason.
     rerun_main carries initiative, phase, repo and commit.
-    widen_ticket carries initiative, task_id, paths, additions and reason. partial_land carries initiative, phase,
+    widen_ticket carries initiative, task_id, paths, additions and reason. release_approvals carries initiative,
+    task_ids and reason and runs no command: the tickets go back to ready. partial_land carries initiative, phase,
     task_ids and quarantined: the approved tasks of a phase whose other tasks are all quarantined, done or dropped;
     the plan adds repo, task_runs and run (the newest of task_runs) for the loop's task lands. land_batch carries sources,
     batch_size and wait_s: the phases the merge queue lands together. A relaunch_loop needs_chair carries
