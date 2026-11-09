@@ -199,6 +199,7 @@ class RunningInitiative(TypedDict):
     repo: str
     surfaces: list[str]
     phase: NotRequired[str]  # the phase this entry runs; absent means the whole initiative
+    live: NotRequired[bool]  # False when the entry exists only for unlanded approvals; a missing key means live
 
 
 class InitiativeFacts(TypedDict):
@@ -452,6 +453,14 @@ class MergeQueueFacts(TypedDict):
     wait_s: float  # seconds the queue waits for a full batch
 
 
+class ApprovalHold(TypedDict):
+    initiative: str
+    repo: str
+    task_id: str
+    run: str
+    ticks: int  # ticks the approval has been unlanded without merging
+
+
 class Facts(TypedDict):
     lease: LeaseFacts
     limits: LimitsFacts
@@ -502,6 +511,8 @@ class Facts(TypedDict):
     live_phases: NotRequired[list[LivePhase]]  # phases with their own live run; absent means no phase runs live
     # Keyed `<candidate>|<other>`: the count of consecutive prior deferrals for that ordered pair; absent means 0.
     steer_streaks: NotRequired[dict[str, int]]
+    approval_holds: NotRequired[list[ApprovalHold]]  # absent means none
+    approval_hold_ticks: NotRequired[int]  # the hold limit in ticks; absent means 6
     steer_policy: NotRequired[SteerPolicy]  # absent means strict: limit 1, no serial paths
     # Each initiative's newest waiting row as `<phase>|<quarantined>|<awaiting_land>`, until a later launch of it.
     waiting_reported: NotRequired[dict[str, str]]  # absent means {}
@@ -561,6 +572,7 @@ ActionKind = Literal[
     "pull",
     "housekeeping",
     "stale_to_draft",
+    "release_approvals",
     "mark_lost",
     "check_login",
     "stalled_usr1",

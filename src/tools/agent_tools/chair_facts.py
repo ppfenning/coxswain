@@ -10,7 +10,7 @@ import sys
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from functools import reduce
+from functools import partial, reduce
 from itertools import takewhile
 from pathlib import Path
 from typing import Any, cast
@@ -41,6 +41,7 @@ from agent_tools.chair_types import (
     HELD_FILE_CAUSE,
     QUARANTINED_CAUSE,
     STALE_CHECKOUT_CAUSE,
+    ApprovalHold,
     ApprovedTask,
     CarryTask,
     DispatchFacts,
@@ -157,6 +158,8 @@ class FactsDeps:
         Optional, and absent means no ceiling.
     merge_queue: the raw profile value at the top-level `merge_queue`, resolved by `merge_queue_fact`. Optional, and
         absent means the queue is off.
+    approval_hold_ticks: the raw profile value for the approval hold limit, resolved by `resolve_approval_hold_ticks`.
+        Optional, and absent means 6 ticks.
     stale_days: the raw profile value at `chair.stale_days`, resolved by `resolve_stale_days`. Optional, and
         absent means 7 days.
     stale_candidates: `stale_candidates(now) -> list[dict]`, bound in production to
@@ -261,6 +264,7 @@ class FactsDeps:
     history: Callable[[], str | None] | None = None  # chair_read_housekeeping.read_last_housekeeping; absent means no history
     housekeeping_hours: Callable[[], object] | None = None  # raw profile chair.housekeeping_hours; absent means 24 hours
     stale_days: Callable[[], object] | None = None  # raw profile chair.stale_days; absent means 7 days
+    approval_hold_ticks: Callable[[], object] | None = None  # raw approval hold limit setting; absent means 6 ticks
     max_launches_per_hour: Callable[[], object] | None = None  # raw profile chair.max_launches_per_hour; absent means the default
     shared_file_limit: Callable[[], object] | None = None  # raw profile chair.max_shared_file_initiatives; absent means 2
     serial_files: Callable[[], object] | None = None  # raw profile top-level serial_files; absent means none
@@ -641,6 +645,7 @@ def running_initiatives(
             "id": initiative,
             "repo": repos.get(initiative, ""),
             "surfaces": sorted({s for i in held(initiative) for s in _surfaces_of(i)}),
+            "live": initiative in live,
         }
         for initiative in sorted(set(live) | set(unlanded))
         if initiative in live or held(initiative)
@@ -656,6 +661,7 @@ def running_initiatives(
                 }
             ),
             "phase": phase,
+            "live": True,
         }
         for initiative, phase in sorted(set(live_phases))
     ]
@@ -681,6 +687,37 @@ def steer_streaks_from_actions(actions: Sequence[Row]) -> dict[str, int]:
     """`<initiative>|<other>` to its steer_clear count since that initiative's last launch; no record, no key."""
     ordered = sorted(actions, key=lambda r: str(r.get("ts") or ""))
     return reduce(_streak_step, map(_action_doc, ordered), {})
+
+
+HOLD_LAND_KINDS = frozenset({"land", "land_phase"})
+HOLD_KINDS = HOLD_LAND_KINDS | {"steer_clear"}
+HOLD_LANDED_STATUSES = frozenset({"landed", "done"})
+
+
+def _hold_names(doc: Row, task: Row) -> bool:
+    return doc.get("task_id") == task["id"] or (not doc.get("task_id") and doc.get("initiative") == task["initiative"])
+
+
+def _hold_step(task: Row, ticks: frozenset[str], doc: Row) -> frozenset[str]:
+    if doc.get("kind") not in HOLD_KINDS or not _hold_names(doc, task):
+        return ticks
+    if doc.get("kind") in HOLD_LAND_KINDS and doc.get("status") in HOLD_LANDED_STATUSES:
+        return frozenset()
+    return ticks | {str(doc.get("ts") or "")}
+
+
+def approval_holds_from_actions(approved: Sequence[Row], actions: Sequence[Row]) -> list[ApprovalHold]:
+    """Per unmerged approved task, the distinct `ts` of its or its initiative's land, land_phase and steer_clear rows since its last landed row; none, no entry."""
+    docs = list(map(_action_doc, sorted(actions, key=lambda r: str(r.get("ts") or ""))))
+    holds = [
+        ApprovalHold(
+            initiative=str(a["initiative"]), repo=str(a.get("repo") or ""), task_id=str(a["id"]),
+            run=str(a.get("run") or ""), ticks=len(reduce(partial(_hold_step, a), docs, frozenset())),
+        )
+        for a in approved
+        if not a.get("merged")
+    ]
+    return sorted((h for h in holds if h["ticks"] > 0), key=lambda h: (h["initiative"], h["task_id"]))
 
 
 def _waiting_step(reported: Mapping[str, str], doc: Row) -> dict[str, str]:
@@ -1234,6 +1271,7 @@ def intake_paths_from_rows(rows: Sequence[Row], current: str | None = None) -> l
 
 DEFAULT_HOUSEKEEPING_HOURS = 24.0
 DEFAULT_STALE_DAYS = 7  # chair.stale_days profile default
+DEFAULT_APPROVAL_HOLD_TICKS = 6  # ticks an unmerged approval may be held before the planner releases it
 DEFAULT_SHARED_FILE_LIMIT = 2  # chair.max_shared_file_initiatives profile default
 
 
@@ -1252,6 +1290,15 @@ def resolve_stale_days(value: object) -> int:
         return int(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return DEFAULT_STALE_DAYS
+
+
+def resolve_approval_hold_ticks(value: object) -> int:
+    """The raw approval hold limit, or 6 when it is missing, non-numeric, or not positive."""
+    try:
+        ticks = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return DEFAULT_APPROVAL_HOLD_TICKS
+    return ticks if ticks > 0 else DEFAULT_APPROVAL_HOLD_TICKS
 
 
 def resolve_max_launches_per_hour(value: object) -> int:
@@ -1577,6 +1624,10 @@ def gather_facts(
             else {}
         ),
         "steer_streaks": steer_streaks_from_actions(action_rows),
+        "approval_holds": approval_holds_from_actions(approved, action_rows),
+        "approval_hold_ticks": resolve_approval_hold_ticks(deps.approval_hold_ticks())
+        if deps.approval_hold_ticks is not None
+        else DEFAULT_APPROVAL_HOLD_TICKS,
         "steer_policy": {
             "limit": resolve_shared_file_limit(deps.shared_file_limit() if deps.shared_file_limit is not None else None),
             "serial": resolve_serial_files(deps.serial_files() if deps.serial_files is not None else None),
