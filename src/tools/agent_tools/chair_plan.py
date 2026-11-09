@@ -771,6 +771,21 @@ def _hold_for_ci(actions: list[Action], held: frozenset[str]) -> list[Action]:
     return [a for a in actions if not (a["kind"] in {"relaunch", "clear_branches"} and a.get("initiative") in held)]
 
 
+def _gated_initiatives(facts: Facts) -> frozenset[str]:
+    """Initiatives the chair neither launches, relaunches nor lands: held ones, and ones deferred to a later release."""
+    return frozenset(facts.get("held_initiatives", [])) | frozenset(facts.get("deferred_initiatives", {}))
+
+
+def _without_gated_launches(actions: list[Action], gated: frozenset[str]) -> list[Action]:
+    """Drop each gated initiative's launch-kind actions and its clear_branches; needs_chair and mark_lost stay."""
+    return [a for a in actions if not ((a["kind"] in _LAUNCHES or a["kind"] == "clear_branches") and a.get("initiative") in gated)]
+
+
+def _without_gated_lands(lands: list[Action], gated: frozenset[str]) -> list[Action]:
+    """Drop a gated initiative's land_phase and partial_land; a fetch, a needs_chair report and an action with no initiative stay."""
+    return [a for a in lands if not (a["kind"] in ("land_phase", "partial_land") and a.get("initiative") in gated)]
+
+
 def _without_widened(actions: list[Action], widened: frozenset[tuple[str, str]]) -> list[Action]:
     """Drop the needs_chair, retry and rescue of a task that gets a widen_ticket; an action with no task_id stays."""
     return [
@@ -875,15 +890,17 @@ def _from_steward(action: chair_steward.StewardAction, approved: Sequence[Approv
     return {"kind": "steward_event", **scoped, "event": action["event"]}
 
 
-def _steward_actions(facts: Facts, lost: frozenset[str]) -> list[Action]:
-    """The steward's decisions as actions, with no planner gate applied yet.
+def _steward_actions(facts: Facts, lost: frozenset[str], gated: frozenset[str] = frozenset()) -> list[Action]:
+    """The steward's decisions as actions, with no planner gate applied yet except `gated`.
+
+    A gated epic is left out before `decide`, so its merge, gate and events go and it takes none of the one serial gate slot.
 
     A lost run has no exit record by definition, so the steward is told it exited: the host's silence is the evidence
     plan_lost_runs relies on, and without this a lost run on a handled epic would never be relaunched."""
     steward = facts.get("steward")
     if steward is None or not steward["enabled"]:
         return []
-    epics = [{**e, "exited": True} if e["epic_id"] in lost else e for e in steward["epics"]]
+    epics = [{**e, "exited": True} if e["epic_id"] in lost else e for e in steward["epics"] if e["epic_id"] not in gated]
     return [_from_steward(a, facts["approved"]) for a in chair_steward.decide(epics)]
 
 
@@ -984,7 +1001,8 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     facts = _with_dead_pid_lost(raw_facts, now)
     reverts = revert_check(facts.get("landed_main", []))
     carries = plan_carry(facts.get("stranded", []))
-    planned_lands = _without_carried_lands(plan_lands(facts, now), carries)
+    gated = _gated_initiatives(facts)
+    planned_lands = _without_carried_lands(_without_gated_lands(plan_lands(facts, now), gated), carries)
     fetch_exits = _fetch_exit_actions(facts)
     login_needs_chair = _login_needs_chair_actions(facts)
     empty_decompose_needs_chair = _empty_decompose_needs_chair_actions(facts)
@@ -1004,7 +1022,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     widen = plan_widen(facts)
     widened = frozenset((a["initiative"], a["task_id"]) for a in widen)
     steward_handled = _steward_handled(facts)
-    steward = _steward_actions(facts, lost)
+    steward = _steward_actions(facts, lost, gated)
     # A merge_level at land_at level or task lands its phase: the planner's own land for it would be a second land.
     lands = _without_steward_lands(planned_lands, steward)
     recover_actions = _steward_relaunches_replace(plan_recover(facts, now), steward, steward_handled)
@@ -1013,7 +1031,9 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     pre_exit_gate = _withhold_remote_unfetched(ordinary, remote_unfetched)
     would_relaunch = frozenset(a["initiative"] for a in pre_exit_gate if a["kind"] == "relaunch")
     not_exited = frozenset(i for i in would_relaunch if not run_exited.get(i, False))
-    recoverable = _hold_for_ci([*_withhold_not_exited(pre_exit_gate, not_exited), *lost_actions], held)
+    recoverable = _without_gated_launches(
+        _hold_for_ci([*_withhold_not_exited(pre_exit_gate, not_exited), *lost_actions], held | gated), gated
+    )
     lease_held = _lease_held_ids(facts)
     lease_stuck = _lease_stuck_actions(facts, now)
     waiting = waiting_initiatives(facts)
@@ -1088,6 +1108,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         # fill would launch a started epic the steward holds back, which is a relaunch; an unstarted one still launches.
         "the steward holds it": steward_started,
         "its launch was refused on a held lease": lease_held,
+        "it is held or deferred to a later release": gated,
     }
     withheld = frozenset().union(*withheld_by.values())
     claimed = claimed_by(recover_actions, facts)
