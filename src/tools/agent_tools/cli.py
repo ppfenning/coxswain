@@ -1407,7 +1407,7 @@ def _steward_gate_runner(
             if code != 0:
                 return False, f"worktree add: {out.strip()}"
             _link_venv(root, wt)
-            return _run_checks([(line, line) for line in checks], wt, capacity=capacity)
+            return _run_checks([(line, line) for line in checks], wt, os.cpu_count() or 1, capacity)
         finally:
             _remove_land_worktree(root, branch)
     return run_gate
