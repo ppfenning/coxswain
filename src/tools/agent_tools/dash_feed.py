@@ -58,6 +58,7 @@ from agent_tools.chair_read_housekeeping import latest_housekeeping, read_last_h
 from agent_tools.chair_read_record import ACTION_LOG
 from agent_tools.chair_read_review_prs import read_review_prs
 from agent_tools.chair_read_schema_deaths import log_tail
+from agent_tools.chair_schedule import SCHEDULE_FILE
 from agent_tools.chair_types import EASTERN, ReviewPr
 from agent_tools.dash_chair_action import read_current_action
 from agent_tools.dash_chair_attention import chair_attention
@@ -114,7 +115,7 @@ _UNKNOWN_SPEND_SOURCES = {"chair_session": "none", "price_catalog": "missing"}
 def snapshot(
     at, chair, spend, machines, runs, queue, queue_total, inbox, inbox_total, watch, decisions=(), spend_series=(),
     history=(), history_today=None, *, chair_agents=None, spend_split=None, spend_sources=None, budget=None,
-    epics=(), board=None, live=None, orchestration=None, operator_sessions=None,
+    epics=(), board=None, live=None, orchestration=None, operator_sessions=None, schedule=None,
 ) -> dict:
     """Assemble the schema-1 dash feed snapshot from its sections. `queue_total`/`inbox_total` are each
     section's filtered count before the 50-row cap, for coxtop to render "50 of N". `decisions` is the open
@@ -128,7 +129,8 @@ def snapshot(
     live section (token series, burn, agents); it reads the zero block, 60 and 24 point zero series, when not given.
     `orchestration` is the chair machine's mode block; the key is absent when it is None, because the profile or the
     hosts table could not be read. `operator_sessions` is every operator session's rows per window; the key is absent
-    when it is None."""
+    when it is None. `schedule` is the published schedule object, passed through unchanged; the key is absent when it
+    is None."""
     # coxswain-dash carries its own copy of tests/fixtures/dash_feed_v1.json and will need these two fields too.
     # `queue[].phases` is additive and the schema stays 1: a coxtop that does not know the field ignores it.
     # So are `runs[].tasks`, `runs[].landed` and `runs[].quarantined`, which `_runs_v1` adds to each run row.
@@ -161,6 +163,7 @@ def snapshot(
         "board": {"epics": []} if board is None else board,
         "live": _zero_live(_zero_anchor(at)) if live is None else live,
         **({} if operator_sessions is None else {"operator_sessions": operator_sessions}),
+        **({} if schedule is None else {"schedule": schedule}),
     }
 
 
@@ -1572,6 +1575,16 @@ def _lease(runs_dir: Path) -> dict:
     return raw if isinstance(raw, dict) else {}
 
 
+def _schedule_edge(runs_dir: Path) -> dict | None:
+    """The `schedule` object of runs/SCHEDULE_FILE, unchanged; None when the document is absent, unparsable or lacks one."""
+    try:
+        raw = json.loads((runs_dir / SCHEDULE_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    schedule = raw.get("schedule") if isinstance(raw, dict) else None
+    return schedule if isinstance(schedule, dict) else None
+
+
 def _chair_record(runs_dir: Path) -> dict:
     """runs/chair.json via `chair.read`; {} when absent or unreadable, as `runs_top_screen.chair_now` does."""
     try:
@@ -1971,6 +1984,8 @@ def _build(
         live=live,
         orchestration=_orchestration_edge(profile, local_name, sections["hosts"], now),
         operator_sessions=activity.get("operator_sessions"),
+        # Read on every refresh, not held: the section fingerprints do not stat schedule.json.
+        schedule=_schedule_edge(runs_dir),
     )
 
 
