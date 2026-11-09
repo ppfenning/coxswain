@@ -58,6 +58,7 @@ from harness.checks import all_passed, checks_evidence, repo_checks, run_checks
 from harness.digest import build_digest
 from harness.escalate import escalate_self_modification
 from harness.gate import apply_decisions, auto_apply, gate
+from harness.lane_workers import LANE_CAPACITY_VAR, check_env, lane_workers_from
 from harness.lanes import resolve_max_parallel
 from harness.phase import run_phase
 from harness.registry import GraphSpec, discover
@@ -792,6 +793,20 @@ def _lifecycle_worktree(args: argparse.Namespace, cartridge: Mapping[str, Any], 
     """
     root = args.worktree_root or (cartridge.get("landing_areas") or {}).get("worktree_root", "~/worktrees")
     return Path(str(root)).expanduser() / run_id
+
+
+def _checks_env(environ: Mapping[str, str], cores: int) -> dict[str, str] | None:
+    """`check_env` over the capacity COX_LANE_CAPACITY states; None unless `lane_workers_from` accepts it."""
+    stated = lane_workers_from(environ, cores) is not None
+    return check_env(environ, cores, int(environ[LANE_CAPACITY_VAR]) if stated else None)
+
+
+def _run_worktree_checks(
+    worktree: Path, checks_config: Sequence[Mapping[str, Any]], log_dir: Path
+) -> list[dict[str, Any]]:
+    """The edge: reads the process environment and core count so the checks run under the lane cap."""
+    env = _checks_env(os.environ, os.cpu_count() or 1)
+    return run_checks(worktree, checks_config, log_dir=log_dir, log_prefix="checks/", env=env)
 
 
 def pgrep_pids(text: str) -> list[int]:
@@ -1615,6 +1630,7 @@ def _run_rescue(
         assume=args.assume,
         fix_attempts=args.fix_attempts,
         repo_checks=repo_checks(agent_checks),
+        lane_workers=lane_workers_from(os.environ, os.cpu_count() or 1),
         store=store,
         epoch=epoch,
         lease_name=lease_name,
@@ -1948,8 +1964,8 @@ def _run_graph(
                 if not checks_config:
                     print("no checks configured; the gate decides on review evidence alone")
                 else:
-                    check_results = run_checks(
-                        worktree, checks_config, log_dir=Path(args.runs_dir) / run_id / "checks", log_prefix="checks/"
+                    check_results = _run_worktree_checks(
+                        worktree, checks_config, Path(args.runs_dir) / run_id / "checks"
                     )
                     result["checks"] = check_results
                     for r in check_results:
