@@ -25,6 +25,7 @@ from agent_tools import (
     base_branch,
     chair,
     chair_apply_fetch,
+    chair_apply_release,
     chair_apply_review,
     chair_apply_widen,
     chair_housekeeping,
@@ -967,6 +968,18 @@ def _widen_ticket(action: Action, deps: Deps) -> Result:
     return _result(action, "done", reason if warning is None else f"{reason}; {warning}")
 
 
+def _release_approvals(action: Action, deps: Deps) -> Result:
+    """In-process, with no argv; each released ticket's `ready` is mirrored to the store, and the action's cause rides in the reason."""
+    initiative, task_ids, cause = action.get("initiative", ""), action.get("task_ids", []), action.get("reason", "")
+    if not initiative or not task_ids:
+        return _result(action, "refused", "release_approvals needs an initiative and task_ids")
+    ok, reason = chair_apply_release.apply_release(deps.work_dir, initiative, task_ids, cause, deps.now()[:10])
+    if not ok:
+        return _result(action, "failed", reason)
+    warnings = [w for t in dict.fromkeys(task_ids) if (w := store_cli.mirror_state(deps.runs_dir, initiative, t, "ready", "chair")) is not None]
+    return _result(action, "done", "; ".join([f"{reason}: {cause}" if cause else reason, *warnings]))
+
+
 _CLOSE_STATES = ("done", "dropped")
 
 
@@ -1492,6 +1505,8 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
         return _fetch_exit(action, deps)
     if kind == "widen_ticket":
         return _widen_ticket(action, deps)
+    if kind == "release_approvals":
+        return _release_approvals(action, deps)
     if kind == "close_initiative":
         return _close_initiative(action, deps)
     if kind == "finish_task":
