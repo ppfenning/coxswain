@@ -206,6 +206,7 @@ route_import = _LazyModule("agent_tools.route_import")
 route_reach = _LazyModule("agent_tools.route_reach")
 route_remove = _LazyModule("agent_tools.route_remove")
 route_requeue = _LazyModule("agent_tools.route_requeue")
+route_schedule = _LazyModule("agent_tools.route_schedule")
 route_sync = _LazyModule("agent_tools.route_sync")
 route_sync_gh = _LazyModule("agent_tools.route_sync_gh")
 router = _LazyModule("agent_tools.router")
@@ -5992,6 +5993,51 @@ def _route_priority(a: argparse.Namespace) -> int:
         intake = next(row for row in queue if row.get("kind") == "intake" and row["task_id"] == target.task_id)
         return route.set_intake_priority(runs_dir, ws, intake, flag)
     return route.set_initiative_priority(runs_dir, ws, _initiative_token(runs_dir, a.initiative), flag)
+
+
+def _schedule_inputs(profile: dict, mode: str, now: datetime.datetime):
+    """Edge. The scheduler's inputs from the same readers the chair uses. Not read here, so the projection is a
+    lower bound: live phases (a running phase reads waiting), remote hosts, and live lane load."""
+    ws = Path(profile["workspace_dir"]).expanduser()
+    runs_dir = ws / "runs"
+    home = str(Path.home())
+    files = chair_read_quarantined.initiative_files(ws, chair_read_quarantined.read_work_files(ws))
+    items = chair_facts.read_ticket_items(ws, mode)
+    ids = list(dict.fromkeys(str(r["initiative"]) for r in items))
+    dispatch = {"max_in_flight": _local_max_in_flight(runs_dir, profile, socket.gethostname()), "live_runs": 0, "hosts": []}
+    return chair_facts.schedule_inputs_from_rows(
+        items,
+        run_store.read_queue(runs_dir) if mode == "store" else [],
+        chair_read_stale.read_chair_actions(runs_dir, now),
+        dispatch,
+        local=socket.gethostname(),
+        repos=_initiative_repos(files, home),
+        land_at=chair_facts.land_at_facts(_team_cartridge(profile)[0], _initiative_land_at(files), ids),
+        live_phases=frozenset(),
+    )
+
+
+def _route_schedule(a: argparse.Namespace) -> int:
+    profile, rc = _resolve_profile_or_refuse(a)
+    if rc is not None:
+        return rc
+    now = datetime.datetime.now(datetime.UTC)
+    inputs = _schedule_inputs(profile, work_state.work_state_mode(_lake_provider(a)[0]), now)
+    schedule, context = route_schedule.plan_from_inputs(inputs, now)
+    named = a.explain or a.should_jump
+    lines = (
+        route_schedule.format_plain(schedule)
+        if not named
+        else route_schedule.explain_lines(schedule, context, a.explain)
+        if a.explain
+        # no model asker is wired: src/graphs/harness/invoke.py holds no single-shot helper, only invoke_graphs
+        else route_schedule.should_jump_lines(schedule, context, a.should_jump, None, now.isoformat())
+    )
+    if lines is None:
+        print(f"routing: unknown initiative: {named}")
+        return 2
+    print("\n".join(lines))
+    return 0
 
 
 def _run_argv(argv: list[str]) -> tuple[int, str, str]:
@@ -11833,6 +11879,16 @@ ROUTE_COMMANDS = [
         ),
         "agent_tools.cli:_route_priority", False, (),
         exclusive=("--set", "--up", "--down", "--top", "--bottom"),
+    ),
+    commands.Command(
+        "schedule", "route", "project the whole queue as one schedule",
+        (
+            commands.Arg(("--profile",)),
+            commands.Arg(("--explain",), {"metavar": "INITIATIVE", "default": None, "help": "why this initiative sits where it does"}),
+            commands.Arg(("--should-jump",), {"metavar": "INITIATIVE", "default": None, "help": "ask whether this initiative should move up the queue"}),
+        ),
+        "agent_tools.cli:_route_schedule", False, (),
+        exclusive=("--explain", "--should-jump"),
     ),
     commands.Command(
         "pull", "route", "file intake tickets from a source, once per link",
