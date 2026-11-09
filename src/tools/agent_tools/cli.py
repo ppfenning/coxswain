@@ -3413,9 +3413,18 @@ def _sync_default_branch(repo: Path, default_branch: str) -> tuple[str, str]:
     return decision, f"{default_branch} fast-forwarded to {remote_ref} ({behind} commits)"
 
 
+_RUN_FILE_SUFFIXES = re.compile(
+    r"\.(?:log|pid|json|jsonl|result\.json|remote\.json|launched\.json|fetched\.json|usage\.json|progress\.json"
+    r"|ceiling\.json|calls\.jsonl|jsonl\.zst|parquet|provider-profile\.yaml)$"
+)
+
+
 def _run_id_of(name: str) -> str:
-    """`<id>.log`, `<id>.remote.json`, `<id>:<task>.json` and `<id>-trace` all belong to `<id>`."""
-    return re.split(r"[.:]", name, maxsplit=1)[0].removesuffix("-trace")
+    """`<id>.log`, `<id>.remote.json`, `<id>:<task>.json` and `<id>-trace` all belong to `<id>`.
+
+    Wrong belief: "the id ends at the first dot". A phase run id is `<initiative>.<phase>-<N>`, so only a known
+    run-file suffix is cut, from the right; a name with none keeps its dots up to the first colon."""
+    return _RUN_FILE_SUFFIXES.sub("", name).split(":", 1)[0].removesuffix("-trace")
 
 
 def _taken_run_names(runs_dir: Path) -> list[str]:
@@ -6583,6 +6592,21 @@ def lane_capacity_env(env: Mapping[str, str], capacity: int) -> dict[str, str]:
 
 
 def _route_launch(a: argparse.Namespace) -> int:
+    phases = list(dict.fromkeys(getattr(a, "phase", None) or []))
+    if phases and a.graph != "epic":
+        print("routing: --phase applies to the epic graph only")
+        return 2
+    if len(phases) > 1 and getattr(a, "run_id", None) is not None:
+        print("routing: --run-id names one run; it cannot go with more than one --phase")
+        return 2
+    if len(phases) > 1:
+        # One run per phase, each placing its own host from live load, so a later phase sees the earlier launches.
+        for phase in phases:
+            code = _route_launch(argparse.Namespace(**{**vars(a), "phase": [phase]}))
+            if code:
+                return code
+        return 0
+    phase = phases[0] if phases else None
     profile, rc = _resolve_profile_or_refuse(a)
     if rc is not None:
         return rc
@@ -6618,6 +6642,10 @@ def _route_launch(a: argparse.Namespace) -> int:
         # The merge result, not a reread: a refused merge never wrote its files.
         with _merging_into(runs_dir):
             merged = _merge_initiative_tickets(launch_dir)
+        known_phases = sorted({str(item["phase"]) for item in merged})
+        if phase is not None and phase not in known_phases:
+            print(f"routing: {initiative_id} has no phase {phase}; phases: {', '.join(known_phases) or 'none'}")
+            return 2
         # Only --include-blocked lifts this guard; --force never does.
         held = route.launch_blockers(merged)
         if held and not a.include_blocked:
@@ -6685,7 +6713,7 @@ def _route_launch(a: argparse.Namespace) -> int:
         if status.stdout.strip():
             print(f"routing: {repo} has uncommitted changes:\n{status.stdout}")
             return 2
-        prefix = initiative_dir.name
+        prefix = initiative_dir.name if phase is None else route.phase_run_prefix(initiative_dir.name, phase)
         already = _refuse_if_already_running(runs_dir, prefix)
         if already is not None:
             print(already)
@@ -6703,12 +6731,14 @@ def _route_launch(a: argparse.Namespace) -> int:
             needs["task"] = a.task
         elif a.fix_attempts is not None:
             needs["fix_attempts"] = a.fix_attempts
+        if phase is not None:
+            needs["phase"] = phase
         if host is None:
             # A remote lane runs the host's own `cox route launch` on the synced repo, which resolves the repo's `base:`
             # setting itself through this same branch; only an explicit `--base` is lost there, so `_dropped_ceilings` refuses it.
             base_flag = getattr(a, "base", None)
             if not base_flag:
-                base_flag, refusal = _initiative_target_branch(profile, Path(local_repo), runs_dir.parent, prefix)
+                base_flag, refusal = _initiative_target_branch(profile, Path(local_repo), runs_dir.parent, initiative_dir.name)
                 if refusal:
                     print(f"routing: {refusal}")
                     return 2
@@ -6829,7 +6859,7 @@ def _route_launch(a: argparse.Namespace) -> int:
             (env_repo or None) if checkouts else None,
             launch_harness if checkouts else None, home=os.path.expanduser("~"), host_checkouts=checkouts,
             graph="decompose" if a.graph == "decompose" else "epic", intake=intake if a.graph == "decompose" else None,
-            cartridges=_workspace_cartridges(runs_dir),
+            cartridges=_workspace_cartridges(runs_dir), phase=phase,
         )
         for remote_argv in plan:
             print(f"dry-run: {shlex.join(remote_argv)}")
@@ -6851,6 +6881,7 @@ def _route_launch(a: argparse.Namespace) -> int:
             a, host, runs_dir, run_id, env_repo or None, launch_harness, home=os.path.expanduser("~"),
             tools=_repo_check_tools(env_repo).found if pinned else (),
             graph="decompose" if a.graph == "decompose" else "epic", intake=intake if a.graph == "decompose" else None,
+            phase=phase,
         )
 
     lane = _local_lane_python(socket.gethostname(), os.environ.get("PATH", ""))
@@ -7272,7 +7303,7 @@ def _workspace_probe(cwd: Path) -> Callable[[list[str]], tuple[int, str]]:
 def _route_launch_on_host(
     a: argparse.Namespace, host: lane_hosts.LaneHost, runs_dir: Path, run_id: str, repo: str | None = None,
     harness_dir: str | None = None, *, home: str | None = None, tools: Sequence[str] = (),
-    graph: str = "epic", intake: str | None = None,
+    graph: str = "epic", intake: str | None = None, phase: str | None = None,
 ) -> int:
     """Copies the initiative to `host`, and the workspace's cartridges directory with it when there is one, and
     starts the lane there; writes only `<run>.remote.json`, and only on success.
@@ -7295,7 +7326,7 @@ def _route_launch_on_host(
         host, initiative, run_id, _holder_label(a), launched_at, run, locate, repo, harness_dir,
         preflight=preflight, home=home, host_checkouts=_host_checkouts(run_store.hosts(runs_dir), host.name), tools=tools,
         graph=graph, intake=intake, cartridges=_workspace_cartridges(runs_dir), probe=_workspace_probe(runs_dir.parent),
-        profile=provider,
+        profile=provider, phase=phase,
     )
     if isinstance(result, remote_launch.LaunchError):
         print(f"routing: launch on {host.name} failed at {result.step}: {result.message}")
@@ -12145,6 +12176,7 @@ ROUTE_COMMANDS = [
                     commands.Arg(("--on",), {"help": "start the lane on this host from the hosts table; `local` is this machine. Without it the table places the lane"}),
                     commands.Arg(("--local",), {"action": "store_true", "help": "start the lane on this machine, not where the hosts table places it"}),
                     commands.Arg(("--include-blocked",), {"action": "store_true", "help": "launch despite a ready task behind a blocked item (--force does not)"}),
+                    commands.Arg(("--phase",), {"action": "append", "default": None, "help": "run only the named phases of the initiative; repeat to start one run per phase, each on its own lane"}),
                     *_LAUNCH_SHARED_ARGS,
                 ),
                 "agent_tools.cli:_route_launch", False, (), defaults={"graph": "epic"},
