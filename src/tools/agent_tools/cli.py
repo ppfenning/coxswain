@@ -13245,6 +13245,7 @@ def _chair_run_deps(
         history=lambda: chair_read_housekeeping.read_last_housekeeping(runs_dir),
         housekeeping_hours=lambda: (profile.get("chair") or {}).get("housekeeping_hours"),
         stale_days=lambda: (profile.get("chair") or {}).get("stale_days"),
+        approval_hold_ticks=lambda: (profile.get("chair") or {}).get("approval_hold_ticks"),
         max_launches_per_hour=lambda: (profile.get("chair") or {}).get("max_launches_per_hour"),
         shared_file_limit=lambda: (profile.get("chair") or {}).get("max_shared_file_initiatives"),
         serial_files=lambda: profile.get("serial_files"),
