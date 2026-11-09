@@ -11,7 +11,7 @@ from harness.store_dialect import Connection, json_load, json_text, upsert
 
 __all__ = ["HOST_STATES", "host_beat", "host_list", "host_set_state", "host_upsert", "update_host_login"]
 
-HOST_STATES = ("active", "draining", "offline", "deploy_only")
+HOST_STATES = ("active", "draining", "offline", "deploy_only", "unreachable")
 HOST_COLUMNS = ("name", "ssh", "capacity", "state", "beat_at", "versions_json", "updated_at", "updated_by")
 HOST_KEY = ("name",)
 
@@ -45,14 +45,35 @@ def host_upsert(conn: Connection, name: str, ssh: str, capacity: int, state: str
     return row
 
 
+def _carry_back_at(incoming: dict[str, Any], stored: dict[str, Any]) -> dict[str, Any]:
+    """Keep the stored host_back_at when the incoming versions lack it."""
+    if "host_back_at" not in incoming and "host_back_at" in stored:
+        return {**incoming, "host_back_at": stored["host_back_at"]}
+    return dict(incoming)
+
+
 def host_beat(conn: Connection, name: str, versions: dict[str, Any], now: str) -> dict[str, Any] | None:
-    """Set beat_at and versions_json; state and updated_* stay as they were."""
+    """Set beat_at and versions_json; an unreachable host also becomes active, by beat, with host_back_at."""
     mark = conn.dialect.placeholder
     with conn.transaction():
-        changed = conn.execute(
-            f"UPDATE hosts SET beat_at = {mark}, versions_json = {mark} WHERE name = {mark}", [now, json_text(versions), name]
+        found = _find(conn, name)
+        if found is None:
+            return None
+        carried = _carry_back_at(versions, found["versions_json"])
+        # The read above takes no row lock. An operator may set the state between it and the write, so the restore
+        # re-checks state in its WHERE clause; Postgres re-evaluates that against the committed row. A restore
+        # that matches no row falls through to the plain write, which leaves state alone.
+        restored = found["state"] == "unreachable" and conn.execute(
+            f"UPDATE hosts SET beat_at = {mark}, versions_json = {mark}, state = {mark}, updated_at = {mark},"
+            f" updated_by = {mark} WHERE name = {mark} AND state = {mark}",
+            [now, json_text({**carried, "host_back_at": now}), "active", now, "beat", name, "unreachable"],
         )
-        return _find(conn, name) if changed else None
+        if not restored:
+            conn.execute(
+                f"UPDATE hosts SET beat_at = {mark}, versions_json = {mark} WHERE name = {mark}",
+                [now, json_text(carried), name],
+            )
+        return _find(conn, name)
 
 
 def host_set_state(conn: Connection, name: str, state: str, by: str, now: str) -> dict[str, Any] | None:
