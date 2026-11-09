@@ -8,7 +8,14 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from agent_tools import chair_lease_refusal, chair_login_watch, chair_plan_prune, chair_stall, chair_steward
+from agent_tools import (
+    chair_launch_why,
+    chair_lease_refusal,
+    chair_login_watch,
+    chair_plan_prune,
+    chair_stall,
+    chair_steward,
+)
 from agent_tools.chair_carry import plan_carry
 from agent_tools.chair_idle_stall import diagnose, is_stalled
 from agent_tools.chair_plan_fill import (
@@ -997,6 +1004,47 @@ def _stuck_steer_heads(
     ]
 
 
+def _unlaunched_actions(
+    facts: Facts,
+    launches: Sequence[Action],
+    withheld_by: Mapping[str, Collection[str]],
+    skips: Mapping[str, str],
+    free_lanes: int,
+    no_host: bool,
+    pace_cap: int,
+    now: datetime | None,
+    stuck: Sequence[Action],
+) -> list[Action]:
+    """One unlaunched action per ready initiative the launch list leaves out, except those with a steer_head_stuck line.
+
+    Empty without now, as for stale and tune. Each initiative is asked on its own, so its clearing time reads from its
+    own launch_history entry. host is "": an initiative left out was not placed on a lane host."""
+    if now is None:
+        return []
+    launched = frozenset(a["initiative"] for a in launches if _is_launch(a))
+    holds = [a for a in launches if a["kind"] == "steer_clear" or _steer_deferred(a)]
+    reported = frozenset(a["initiative"] for a in stuck)
+    history = facts.get("launch_history", {})
+    return [
+        action
+        for i in facts["initiatives"]
+        if i["id"] not in reported
+        for action in chair_launch_why.unlaunched(
+            [{**i, "host": ""}],
+            launched,
+            withheld_by,
+            skips,
+            holds,
+            free_lanes,
+            no_host,
+            facts["dispatch"].get("local_lanes") == "decompose",
+            pace_cap,
+            now,
+            history.get(i["id"], {}).get("launches", []),
+        )
+    ]
+
+
 def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str] = frozenset()) -> list[Action]:
     facts = _with_dead_pid_lost(raw_facts, now)
     reverts = revert_check(facts.get("landed_main", []))
@@ -1052,6 +1100,11 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     # The steward's relaunch is already in `recovered`; its merges, gates and events follow the planner's own actions.
     steward_events = [a for a in steward if a["kind"] != "relaunch"]
     if facts["limits"]["hard_stop"]:
+        # Nothing launches, so every ready initiative is left out; a pace cap of 0 names the first reason, which the stop replaces.
+        stopped = [
+            {**a, "reason": "hard stop: nothing launches until the stop lifts"}
+            for a in _unlaunched_actions(facts, [], {}, {}, 0, False, 0, now, [])
+        ]
         return [
             *reverts,  # a revert starts no run, so a red main is healed under the hard stop too
             *lands,
@@ -1075,6 +1128,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
             *closes,
             # Merges and events start no run. A gate run may spend what the stop protects, so it waits for the stop to lift.
             *[a for a in steward_events if a["kind"] != "run_gate"],
+            *stopped,
         ]
     cap = _launch_cap(facts["limits"])
     host_free = host_free_slots(facts)
@@ -1115,15 +1169,18 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     free_lanes = _free_lanes(cap, kept, facts["dispatch"])
     filled = plan_fill(facts, free_lanes, withheld, consumed, claimed, stalled=stalled_intake, now=now)
     launches = [*capped, *filled]
+    skips = budget_skips(facts, facts["initiatives"], now)
+    no_host = _no_host(free_lanes, host_free, consumed, filled, facts["dispatch"].get("local_lanes") == "decompose")
     stuck_heads = _stuck_steer_heads(
         steer_heads(launches),
         frozenset(a["initiative"] for a in launches if _is_launch(a)),
         frozenset(r["id"] for r in facts.get("running", [])),
         {i["id"]: i for i in facts["initiatives"]},
         withheld_by,
-        budget_skips(facts, facts["initiatives"], now),
-        _no_host(free_lanes, host_free, consumed, filled, facts["dispatch"].get("local_lanes") == "decompose"),
+        skips,
+        no_host,
     )
+    unlaunched = _unlaunched_actions(facts, launches, withheld_by, skips, free_lanes, no_host, cap, now, stuck_heads)
     # Read before the cap: a rebase starts no run, so a relaunch the cap dropped still gets its branch rebased.
     relaunching = frozenset(a["initiative"] for a in [*recovered, *launches] if _is_launch(a))
     rebases = plan_rebase(facts.get("phase_branches", []), relaunching)
@@ -1152,6 +1209,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         *unstarted_waiting_chair,
         *waiting_actions,
         *stuck_heads,
+        *unlaunched,
         *closes,
         *steward_events,
         *_with_rebases(behind, [r for r in rebases if r["initiative"] in behind_ids]),

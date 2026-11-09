@@ -60,7 +60,7 @@ def _alive() -> list[dict]:
 
 
 def _kinds(facts: Facts) -> list[str]:
-    return [a["kind"] for a in plan_tick(facts, _NOW) if a.get("initiative") == "a"]
+    return [a["kind"] for a in plan_tick(facts, _NOW) if a.get("initiative") == "a" and a["kind"] != "unlaunched"]
 
 
 def _stuck(facts: Facts) -> list[dict]:

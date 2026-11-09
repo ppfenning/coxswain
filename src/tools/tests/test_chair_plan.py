@@ -715,7 +715,7 @@ def test_the_idle_stall_action_is_not_counted_against_the_launch_cap():
         last_housekeeping_at=_QUIET_HOUSEKEEPING,
     )
     actions = plan_tick(facts, _NOW)
-    assert [(a["kind"], a["initiative"]) for a in actions] == [
+    assert [(a["kind"], a["initiative"]) for a in actions if a["kind"] != "unlaunched"] == [
         ("needs_chair", "chair"),
         ("clear_branches", "a"),
         ("relaunch", "a"),
