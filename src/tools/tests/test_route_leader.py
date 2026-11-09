@@ -460,3 +460,30 @@ def test_leader_status_says_not_the_chair_for_a_foreign_pid_and_session(tmp_path
 
 def test_leader_status_with_no_lease_prints_chair_none(tmp_path, monkeypatch, capsys):
     assert _leader_line(tmp_path, monkeypatch, capsys, claude_pid="1") == "chair: none\n"
+
+
+def _live_loop(monkeypatch, cgroup):
+    """The holder's pid is alive and runs `chair run`; no lease row, so the record alone names it."""
+    monkeypatch.setattr("agent_tools.cli._read_holder_inputs", lambda runs_dir: None)
+    monkeypatch.setattr("agent_tools.chair.pid_alive", lambda pid: True)
+    monkeypatch.setattr("agent_tools.cli._pid_command", lambda pid: "python -m agent_tools.cli chair run --label alice")
+    monkeypatch.setattr("agent_tools.cli._pid_cgroup", lambda pid: cgroup)
+
+
+@pytest.mark.parametrize(
+    ("cgroup", "form"),
+    [("0::/user.slice/app.slice/coxswain-chair.service\n", "service"), ("0::/user.slice/session-3.scope\n", "chair loop")],
+)
+def test_leader_status_names_a_live_loop_holder_that_is_not_this_session_and_leaves_the_lease(tmp_path, monkeypatch, capsys, cgroup, form):
+    _hold(tmp_path, pid=os.getpid())
+    _live_loop(monkeypatch, cgroup)
+    before = (tmp_path / "runs" / "chair.json").read_bytes()
+    assert _leader_line(tmp_path, monkeypatch, capsys, claude_pid="1") == f"chair held by alice ({form})\n"
+    assert (tmp_path / "runs" / "chair.json").read_bytes() == before
+
+
+def test_leader_status_still_says_held_by_this_session_when_the_caller_is_the_recorded_holder(tmp_path, monkeypatch, capsys):
+    _hold(tmp_path, pid=os.getpid())
+    _live_loop(monkeypatch, "0::/user.slice/session-3.scope\n")
+    out = _leader_line(tmp_path, monkeypatch, capsys, claude_pid=str(os.getpid()))
+    assert "chair held by" not in out
