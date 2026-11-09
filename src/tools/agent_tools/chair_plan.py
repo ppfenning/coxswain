@@ -1113,8 +1113,11 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         [a for a in _without_deadlocked(recoverable, deadlock) if not (a["kind"] in ("relaunch", "clear_branches") and a["initiative"] in waiting_ids)],
         lease_held,
     )
-    # The steward's relaunch is already in `recovered`; its merges, gates and events follow the planner's own actions.
-    steward_events = [a for a in steward if a["kind"] != "relaunch"]
+    # The steward's relaunch is already in `recovered`. Its merges lead the plan: a merge_level at land_at level or task is an
+    # inline land, and a land_phase started in the land sink can hold the repo for ten minutes on CI, so the merge would find it held.
+    # Its gates and events follow the planner's own actions.
+    steward_merges = [a for a in steward if a["kind"] == "merge_level"]
+    steward_events = [a for a in steward if a["kind"] not in ("relaunch", "merge_level")]
     if facts["limits"]["hard_stop"]:
         # Nothing launches, so every ready initiative is left out; a pace cap of 0 names the first reason, which the stop replaces.
         stopped = [
@@ -1123,6 +1126,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         ]
         return [
             *reverts,  # a revert starts no run, so a red main is healed under the hard stop too
+            *steward_merges,  # a merge starts no run either, and it must run before a land takes the repo
             *lands,
             *fetch_exits,
             *stale,
@@ -1142,7 +1146,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
             *unstarted_waiting_chair,
             *waiting_actions,
             *closes,
-            # Merges and events start no run. A gate run may spend what the stop protects, so it waits for the stop to lift.
+            # Events start no run. A gate run may spend what the stop protects, so it waits for the stop to lift.
             *[a for a in steward_events if a["kind"] != "run_gate"],
             *stopped,
         ]
@@ -1206,6 +1210,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     ahead = [a for a in launches if not a.get("after_steward")]
     return [
         *reverts,
+        *steward_merges,
         *lands,
         *fetch_exits,
         *stale,
