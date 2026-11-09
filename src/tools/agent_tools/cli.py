@@ -11925,9 +11925,9 @@ def _write_reported_repos(runs_dir: Path, repos: list[str]) -> None:
 
 
 def _live_by_host(lanes: Sequence[run_store.Lane], local: str) -> dict[str, int]:
-    """Live lanes per host name; a lane with no host, or on `local`, counts under the empty name."""
+    """Live lanes per host name; a lane with no host, or on `local`, counts under the empty name. A lane counts once per running phase (`Lane.phases`)."""
     names = [("" if lane.host in (None, local) else lane.host) for lane in lanes]
-    return {name: names.count(name) for name in dict.fromkeys(names)}
+    return {name: sum(lane.phases for lane, n in zip(lanes, names, strict=True) if n == name) for name in dict.fromkeys(names)}
 
 
 def _dispatch_counts(lanes: Sequence[run_store.Lane], local: str, listed: Sequence[str], pidfile_live: int) -> dict[str, int]:
@@ -12412,6 +12412,9 @@ def _chair_run_deps(
     def live_initiatives() -> list[str]:
         return chair_read_live.read_live_initiatives(runs_dir, [row["id"] for row in docket()["initiatives"]], now_text())
 
+    def live_phases() -> list[tuple[str, str]]:
+        return chair_read_live.read_live_phases(runs_dir, [row["id"] for row in docket()["initiatives"]], now_text())
+
     def approved() -> list:
         # The land's runs come from `land_records`: a code or ticket cause hides a record from the stranded report,
         # but an approved item still lands from the run holding its approval.
@@ -12602,6 +12605,7 @@ def _chair_run_deps(
         attempts=attempts,
         has_patch=has_patch,
         live_initiatives=live_initiatives,
+        live_phases=live_phases,
         intake=round_intake,
         work_store_ready=lambda: chair_read_docket.work_store_ready(docket()),
         sources_configured=sources_configured,
