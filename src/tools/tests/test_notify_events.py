@@ -4,6 +4,8 @@ from agent_tools.notify_events import events_from_tick
 STRANDED = {"kind": "needs_chair", "initiative": "init-a", "cause": "stranded", "reason": "no patch"}
 UNRELATED = {"kind": "needs_chair", "initiative": "init-b", "cause": "odd"}
 LOGIN = {"kind": "needs_chair", "host": "lane1", "cause": "login_lapsed"}
+UNREACHABLE = {"kind": "needs_chair", "host": "lane2", "cause": "host_unreachable", "since": "2026-11-09T04:00Z"}
+BACK = {"kind": "needs_chair", "host": "lane2", "cause": "host_back", "back_at": "2026-11-09T05:00Z"}
 STALLED = {
     "kind": "needs_chair",
     "initiative": "init-c",
@@ -126,6 +128,30 @@ def test_login_with_url_clicks_through():
 def test_login_without_url_names_the_login():
     (event,) = events_from_tick({}, [LOGIN])
     assert event.click == "" and "claude login" in event.body and "lane1" in event.body
+
+
+def test_host_unreachable_gives_one_event_naming_unreachable_not_login():
+    (event,) = events_from_tick({}, [UNREACHABLE])
+    assert (event.kind, event.key) == ("host_unreachable", "host_unreachable:lane2:2026-11-09T04:00Z")
+    assert "unreachable" in event.title and "lane2" in event.title
+    assert "lapsed" not in event.body and "login" not in event.body
+
+
+def test_the_same_host_unreachable_action_twice_in_one_tick_gives_one_event():
+    assert len(events_from_tick({}, [UNREACHABLE, UNREACHABLE])) == 1
+
+
+def test_a_second_outage_on_the_same_host_keys_apart():
+    later = {**UNREACHABLE, "since": "2026-11-09T09:00Z"}
+    assert len({e.key for e in events_from_tick({}, [UNREACHABLE, later])}) == 2
+    (bare,) = events_from_tick({}, [{k: v for k, v in UNREACHABLE.items() if k != "since"}])
+    assert bare.key == "host_unreachable:lane2:"
+
+
+def test_host_back_gives_one_event_titled_host_back():
+    (event,) = events_from_tick({}, [BACK])
+    assert (event.kind, event.key) == ("host_back", "host_back:lane2:2026-11-09T05:00Z")
+    assert event.title == "Host back: lane2"
 
 
 def test_stalled_gives_stall_by_run():
