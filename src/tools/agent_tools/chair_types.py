@@ -619,7 +619,8 @@ class Action(TypedDict, total=False):
     proposals and body and is propose-only: no action kind applies a tier or model change.
     revert_land carries initiative, phase, repo, pr, commit and reason.
     rerun_main carries initiative, phase, repo and commit.
-    widen_ticket carries initiative, task_id, paths, additions and reason. partial_land carries initiative, phase,
+    widen_ticket carries initiative, task_id, paths, additions and reason. release_approvals carries initiative,
+    task_ids and reason and runs no command: the tickets go back to ready. partial_land carries initiative, phase,
     task_ids and quarantined: the approved tasks of a phase whose other tasks are all quarantined, done or dropped;
     the plan adds repo, task_runs and run (the newest of task_runs) for the loop's task lands. land_batch carries sources,
     batch_size and wait_s: the phases the merge queue lands together. A relaunch_loop needs_chair carries
