@@ -162,6 +162,7 @@ host_load = _LazyModule("agent_tools.host_load")
 install = _LazyModule("agent_tools.install")
 install_exec = _LazyModule("agent_tools.install_exec")
 install_root = _LazyModule("agent_tools.install_root")
+intake_fields = _LazyModule("agent_tools.intake_fields")
 intake_queue = _LazyModule("agent_tools.intake_queue")
 intake_state = _LazyModule("agent_tools.intake_state")
 lake_config = _LazyModule("agent_tools.lake_config")
@@ -5908,6 +5909,21 @@ def _filing_stage(a: argparse.Namespace, profile: Mapping) -> str:
     return "draft" if a.draft else profile.get("intake_stage") or "draft"
 
 
+def _known_epic_ids(rows: Sequence[Mapping]) -> set[str]:
+    """The epic ids the store's initiative rows name, which are the ids the dash feed rolls up."""
+    return {epic for row in rows if (epic := queue_rows.epic_of_row(row)) is not None}
+
+
+def _known_repo_names(profile: Mapping, rows: Sequence[Mapping], resolved: str = "") -> set[str]:
+    """The profile's `repo_map` names, the repos the store rows already hold, and this filing's resolved repo."""
+    held = {str(row["repo"]) for row in rows if row.get("repo")}
+    return {*profile.get("repo_map", {}), *held, *([resolved] if resolved else [])}
+
+
+def _repo_refusal_with_names(message: str, known: Collection[str]) -> str:
+    return f"{message}; valid repos: {', '.join(sorted(known)) or 'none known'}"
+
+
 def _route_file(a: argparse.Namespace) -> int:
     profile, rc = _resolve_profile_or_refuse(a)
     if rc is not None:
@@ -5926,6 +5942,10 @@ def _route_file(a: argparse.Namespace) -> int:
     if after and not a.intake:
         print("routing: --after needs --intake, since only a queued intake waits")
         return 2
+    for flag, noun in (("epic", "an epic"), ("priority", "a priority"), ("target_release", "a target release")):
+        if getattr(a, flag, None) is not None and not a.intake:
+            print(f"routing: --{flag.replace('_', '-')} needs --intake, since only an intake carries {noun}")
+            return 2
     if a.draft and a.ready:
         print("routing: --draft and --ready are exclusive; give one")
         return 2
@@ -5935,8 +5955,9 @@ def _route_file(a: argparse.Namespace) -> int:
     # Repos are siblings of the workspace: a bare name is resolved there, so the row never holds a name launch cannot read.
     home = str(Path.home())
     repo = route.resolve_repo(a.repo, ws.absolute().parent, route.is_git_checkout, home)
+    rows = run_store.read_queue(ws / "runs")
     if isinstance(repo, route.RepoRefused):
-        print(repo.message)
+        print(_repo_refusal_with_names(repo.message, _known_repo_names(profile, rows)))
         return 2
     resolved = repo
     repo, refusal = _filing_repo_or_refusal(resolved, profile)
@@ -5958,6 +5979,13 @@ def _route_file(a: argparse.Namespace) -> int:
         body = ""
     try:
         if a.intake:
+            refusals = intake_fields.validate(
+                repo, a.epic, a.priority, a.target_release, _known_repo_names(profile, rows, repo), _known_epic_ids(rows)
+            )
+            if refusals:
+                print("\n".join(f"routing: {line}" for line in refusals))
+                return 2
+            fields = intake_fields.normalise(repo, a.epic, a.priority, a.target_release)
             # `route.intake_file` writes the title when there is no body, and the launch reads what was written.
             heal = route_reach.launch_reach_heal(body or a.title, {})
             if _reach_refused(heal.refusal, heal.notes):
@@ -5968,7 +5996,8 @@ def _route_file(a: argparse.Namespace) -> int:
                 return 2
             date = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
             mapping = route.intake_file(a.title, body, repo, date, link=link, ids=profile.get("ids", "slug"), after=after,
-                                       stage=_filing_stage(a, profile))
+                                       stage=_filing_stage(a, profile), epic=fields.get("epic", ""),
+                                       priority=fields.get("priority", ""), target_release=fields.get("target_release", ""))
         else:
             mapping = route.initiative_files(a.title, body, repo, phase=a.phase)
     except ValueError as exc:
@@ -11908,6 +11937,9 @@ ROUTE_COMMANDS = [
             commands.Arg(("--after",), {"action": "append", "default": None, "help": "with --intake: ids this intake waits on; repeat the flag or comma-separate"}),
             commands.Arg(("--draft",), {"action": "store_true", "help": "with --intake: file it as a draft, which the chair skips until it is ready (the default)"}),
             commands.Arg(("--ready",), {"action": "store_true", "help": "with --intake: file it ready for the chair to pick up"}),
+            commands.Arg(("--epic",), {"default": None, "help": "with --intake: the epic id this intake belongs to; it must already exist"}),
+            commands.Arg(("--priority",), {"default": None, "help": "with --intake: a whole number; higher runs first"}),
+            commands.Arg(("--target-release",), {"default": None, "help": "with --intake: the release it ships in, a dotted version such as 2026.11.6"}),
         ),
         "agent_tools.cli:_route_file", False, (),
     ),
