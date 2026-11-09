@@ -49,7 +49,7 @@ from agent_tools.notify_events import events_from_tick
 
 __all__ = [
     "DEFAULT_INTERVAL", "FACTS_BOUND_SECONDS", "LAND_BEAT_INTERVAL", "RELEASE_HOLD_OFF_SECONDS", "TAKEOVER_GRACE_SECONDS", "GateState",
-    "LeaseRejected", "OverrunState", "ReleaseState", "RestartState", "RunDeps", "TickOverrun",
+    "LeaseRejected", "OverrunState", "ReasonState", "ReleaseState", "RestartState", "RunDeps", "TickOverrun",
     "WorkerLands", "as_holder", "error_line", "finished_land", "land_sink", "next_gate_record", "no_landing", "no_lands_in_flight", "no_lands_to_stop", "overran",
     "overrun_limit_hit", "overrun_line", "run", "tick", "tick_timed",
 ]
@@ -150,6 +150,13 @@ class PullState:
     last_reason: str = ""
 
 
+@dataclass
+class ReasonState:
+    """The why-not-launched lines of the last tick; cleared as `tick_timed` starts, so a failed tick leaves none."""
+
+    lines: list[str] = field(default_factory=list)
+
+
 class TickOverrun(Exception):
     """The facts stage did not return inside its bound; the tick was abandoned before plan and perform."""
 
@@ -234,6 +241,7 @@ class RunDeps:
     # True when a takeover asked this holder to release and the lease and lock were just released; a live tick checks it first. None checks nothing.
     release_requested: Callable[[], bool] | None = None
     release_state: ReleaseState = field(default_factory=ReleaseState)
+    reason_state: ReasonState = field(default_factory=ReasonState)
 
 
 def finished_land(action: Action, outcome: chair_land.LandResult[Result] | None) -> Result:
@@ -535,7 +543,9 @@ def tick_timed(
     A paused CI gate holds lands and dependent relaunches and records one needs_chair when it first pauses. The pause
     is remembered after perform, and only by a tick that acts as the holder, so a tick that fails records it again.
     A live tick that changed rows hands their ids to `export_rows`; its note or failure is appended to the line.
+    The unlaunched reason lines of the plan are left on `deps.reason_state`, for a dry run as well.
     """
+    deps.reason_state.lines = []
     released = _release_step(deps, dry_run, now, clock)
     if released is not None:
         return released, {}, {}
@@ -553,6 +563,7 @@ def tick_timed(
     else:
         plain, plan_s = chair_timing.timed(clock, deps.plan, facts, now)
         planned = TickPlan(plain, ())
+    deps.reason_state.lines = chair_report.unlaunched_lines(planned.actions, now)
     acting = not dry_run and all(a.get("kind") != "standby" for a in planned.actions)
     notice = next_gate_record(deps.gate_state.paused, gate, planned.held_for_ci, deps.current_epoch()) if acting and gate.paused else None
     actions = [*planned.actions, notice] if notice is not None else planned.actions
@@ -578,9 +589,11 @@ def _attempt(deps: RunDeps, dry_run: bool) -> None:
     """One guarded tick and its write; nothing raised here leaves the loop."""
     now = deps.now()
     timing, stage_seconds = None, None
+    reasons: list[str] = []
     try:
         line, stages, sources = tick_timed(deps, dry_run, now)
         timing, stage_seconds = chair_timing.format_timing(stages, sources), chair_timing.ran(stages)
+        reasons = list(deps.reason_state.lines)
         deps.overrun_state.consecutive = 0
     except TickOverrun as exc:  # a facts stage that never returned; counted, and not an error line
         deps.overrun_state.consecutive += 1
@@ -595,6 +608,9 @@ def _attempt(deps: RunDeps, dry_run: bool) -> None:
             # Before the status line: `_chair_run` takes its --once exit code from the last line echoed.
             with contextlib.suppress(Exception):
                 deps.report_deps.echo(timing)
+        for reason in reasons:  # same rule: the status line stays last
+            with contextlib.suppress(Exception):
+                deps.report_deps.echo(reason)
         write_status(shown, deps.report_deps)
     except Exception as exc:  # a failed notify or echo must not stop the loop either
         # A broken echo leaves nowhere to write, so the loop goes on silent rather than dying.

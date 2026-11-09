@@ -53,6 +53,27 @@ def test_parse_profile_omits_a_key_it_was_not_given(text, key):
     assert key not in route.parse_profile(text)
 
 
+@pytest.mark.parametrize(
+    "written, stored",
+    [("never", "never"), ("when_free", "when_free"), ("always", "always"), ("ALWAYS", "always"), ("When_Free", "when_free"), ('"never"', "never")],
+)
+def test_parse_profile_reads_chair_session_takes_lower_case(written, stored):
+    text = VALID_PROFILE + f"chair:\n  session_takes: {written}\n"
+    assert route.parse_profile(text)["chair"] == {"session_takes": stored}
+
+
+def test_parse_profile_rejects_a_chair_session_takes_outside_the_three_values():
+    with pytest.raises(route.ProfileError) as exc_info:
+        route.parse_profile(VALID_PROFILE + "chair:\n  session_takes: sometimes\n")
+    message = str(exc_info.value)
+    assert message.startswith("line 9:")
+    assert all(word in message for word in ("session_takes", "never", "when_free", "always"))
+
+
+def test_parse_profile_leaves_session_takes_out_when_not_written():
+    assert "session_takes" not in route.parse_profile(VALID_PROFILE + "chair:\n  stale_days: 3\n")["chair"]
+
+
 def test_parse_profile_unknown_key_warns_once_and_keeps_the_rest(capsys, monkeypatch):
     monkeypatch.setattr(route, "_WARNED_KEYS", set())
     text = "team: acme\nbogus_key: nope\nassume: y\n"
@@ -1048,7 +1069,7 @@ def test_parse_frontmatter_misparses_a_bare_value_that_happens_to_start_with_a_q
     assert fields["title"] != '"draft" ship it'
 
 
-_NO_QUEUE_CONTROL = {"after": [], "held": False, "priority": 0}
+_NO_QUEUE_CONTROL = {"after": [], "held": False, "stage": "ready", "priority": 0}
 
 
 def test_intake_entries_sorts_by_filename_and_skips_consumed_prefix():

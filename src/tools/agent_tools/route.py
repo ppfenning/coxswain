@@ -25,6 +25,7 @@ from agent_tools import (
     card_keys,
     chair,
     decompose_empty,
+    intake_queue,
     open_queue_priority,
     queue_rows,
     release_gate,
@@ -122,7 +123,10 @@ _KNOWN_KEYS = {
     "ids",  # `slug` (default) or `sequence`; `intake_file`'s own id source, spec's `route file --intake`
     "operator",  # the human the courier and decisions address; settings_model.operator_name, "operator" when absent
     "serial_files",  # `[path, ...]` the steer rule never lets two initiatives share; an entry ending in `/` covers a directory
+    "intake_stage",  # `draft` or `ready`: the stage a session files an intake at when the caller names none
 }
+
+INTAKE_STAGES = ("draft", "ready")
 
 _JSON_KEYS = {"sources", "repo_map"}
 
@@ -135,6 +139,7 @@ _CHAIR_KEYS = {"housekeeping_hours", "stale_days", "idle_stall_minutes", "launch
 
 _CHAIR_BOOL_WORDS = {"true": True, "yes": True, "false": False, "no": False}  # the spellings a boolean `chair:` key accepts, any case
 _CHAIR_STEWARD_SCOPES = {"all", "epics"}  # the values `chair: steward_scope:` accepts, stored lower case
+_CHAIR_SESSION_TAKES = {"never", "when_free", "always"}  # the values `chair: session_takes:` accepts, stored lower case
 
 _STORE_KEYS = {"mode"}  # the one key of the `store:` block, kept as text in `profile["store"]["mode"]`
 
@@ -185,6 +190,9 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
     kept as a Python bool in `result["chair"]["steward"]`; any other value raises ProfileError.
     It also takes `steward_scope:`, text with quotes stripped, `all` or `epics` in any case, kept lower case as a str in
     `result["chair"]["steward_scope"]`; any other value raises ProfileError. The key is absent when not written and the reader applies the default `all`.
+    `intake_stage:` is `draft` or `ready`, quotes and case ignored, kept lower case; any other value raises ProfileError.
+    It also takes `session_takes:`, text with quotes stripped, `never`, `when_free` or `always` in any case, kept lower case as a str in
+    `result["chair"]["session_takes"]`; any other value raises ProfileError. The key is absent when not written and the reader applies the default `when_free`.
     A bare `store:` line followed by an indented `mode:` line is kept as text in
     `result["store"]["mode"]`. A `notify: {ntfy: <url>}` line is the one inline mapping, kept as `result["notify"]`.
 
@@ -244,6 +252,12 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
                     if scope not in _CHAIR_STEWARD_SCOPES:
                         raise ProfileError(f"line {lineno}: {raw_line}")
                     result.setdefault("chair", {})[key] = scope
+                    continue
+                if key == "session_takes":
+                    taken = value.strip("\"'").lower()
+                    if taken not in _CHAIR_SESSION_TAKES:
+                        raise ProfileError(f"line {lineno}: chair session_takes must be one of never, when_free, always: {raw_line}")
+                    result.setdefault("chair", {})[key] = taken
                     continue
                 if key not in _CHAIR_KEYS:
                     raise ProfileError(f"line {lineno}: {raw_line}")
@@ -337,6 +351,11 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
             raise ProfileError(f"line {lineno}: {raw_line} (tracker_scope is one of {', '.join(TRACKER_SCOPES)})")
         elif key == "tracker_backfill" and value not in ("true", "false"):
             raise ProfileError(f"line {lineno}: {raw_line} (tracker_backfill is true or false)")
+        elif key == "intake_stage":
+            stage_value = value.strip("\"'").lower()
+            if stage_value not in INTAKE_STAGES:
+                raise ProfileError(f"line {lineno}: {raw_line} (intake_stage is one of {', '.join(INTAKE_STAGES)})")
+            result[key] = stage_value
         else:
             result[key] = value
     # An `assume:` with no value is treated the same as an absent key, not
@@ -664,6 +683,7 @@ def intake_file(
     ids: str = "slug",
     allocate: Callable[[], str] | None = None,
     after: Sequence[str] = (),
+    stage: str | None = None,  # None writes no line, which reads as ready; a pulled or programmatic caller is unchanged
 ) -> dict:
     """Content for `route file --intake` (spec §3):
     `intake/<date>-<slug>.md`, same frontmatter shape as the initiative
@@ -672,17 +692,19 @@ def intake_file(
 
     Under `ids="sequence"` the file is `intake/<id>.md` with the id from `allocate`; a failed allocation raises, never slugifies.
     A non-empty `after` is written last as an `after: [a, b]` list; empty leaves the file as it was.
+    A `stage` ("draft" or "ready") is written as `stage: <value>` after `repo`; None writes no line.
     """
     text = body if body else title
+    staged = [("stage", stage)] if stage is not None else []
     # A pulled file keeps its old form. Sync reads a frontmatter `issue` as the item's own mirror issue, so a pull
     # must not write the source issue number there; `route_sync._issue_steps` would skip `issue_create` for it.
     origin = [("source", source), ("link", link)] if source and link else link_fields(link)
     waits = [("after", _Raw("[" + ", ".join(_yaml_scalar(a) for a in after) + "]"))] if after else []
     if ids == "sequence":
         id_ = (allocate or allocate_intake_id)()
-        return {f"intake/{id_}.md": _frontmatter([("id", id_), ("title", title), *origin, *waits], text)}
+        return {f"intake/{id_}.md": _frontmatter([("id", id_), ("title", title), *staged, *origin, *waits], text)}
     slug = _slug_or_raise(title)
-    file_text = _frontmatter([("id", slug), ("title", title), ("repo", repo), *origin, *waits], text)
+    file_text = _frontmatter([("id", slug), ("title", title), ("repo", repo), *staged, *origin, *waits], text)
     return {f"intake/{date}-{slug}.md": file_text}
 
 
@@ -1949,6 +1971,8 @@ def decompose_into_rows(
     intake = select_intake_row(run_store.read_queue(runs_dir, kind="intake"), intake_id)
     if intake is None:
         return 2, [f"routing: no intake row {intake_id}"]
+    if intake_queue.stage(intake.get("extra") or {}) == "draft":
+        return 2, [f"routing: intake {intake_id} is a draft; ready it with `cox route ready {intake_id}`"]
     plan = run(intake_input_from_row(intake))
     existing = run_store.read_queue(runs_dir, plan["id"]) if plan["tasks"] else []
     rows, failure = plan_writes(plan, intake, existing)
@@ -2618,7 +2642,8 @@ def _intake_entry(filename: str, text: str) -> dict:
         "done": filename.startswith("done/"),
         "path": f"intake/{os.path.basename(filename)}",
         "after": _after_list(fields.get("after")),
-        "held": str(fields.get("held", "")).strip().lower() == "true",
+        "held": intake_queue.is_held(fields),
+        "stage": intake_queue.stage(fields),
         "priority": _int_or_zero(fields.get("priority")),
     }
 
@@ -2626,8 +2651,9 @@ def _intake_entry(filename: str, text: str) -> dict:
 def intake_entries(files: dict) -> list:
     """Rows for the intake queue, the `intake` input `render_context` and
     `context_document` already accept: one `{"id", "title", "initiative",
-    "done", "path", "after", "held", "priority"}` per file in `files` (filename -> text, as the caller
-    listed the intake dir), sorted by filename. A filename under a
+    "done", "path", "after", "held", "stage", "priority"}` per file in `files` (filename -> text, as the caller
+    listed the intake dir), sorted by filename. `held` and `stage` come from `intake_queue`, the predicate the
+    row readers use: `stage` is "draft" or "ready", and `held` is true for any draft. A filename under a
     `consumed/` prefix has already been handled and is skipped. `id` comes
     from frontmatter's `id` field, or the filename's stem when frontmatter
     has none; `title` comes from frontmatter's `title` field, or the first
