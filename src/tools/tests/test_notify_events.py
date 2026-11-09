@@ -1,5 +1,5 @@
 from agent_tools.notify_core import Event, render
-from agent_tools.notify_events import events_from_tick
+from agent_tools.notify_events import SELF_CLEARING_CAUSES, events_from_tick
 
 STRANDED = {"kind": "needs_chair", "initiative": "init-a", "cause": "stranded", "reason": "no patch"}
 UNRELATED = {"kind": "needs_chair", "initiative": "init-b", "cause": "odd"}
@@ -223,3 +223,17 @@ def test_missing_facts_never_fire_queue_empty():
 
 def test_a_needs_chair_event_suppresses_queue_empty():
     assert [e.key for e in events_from_tick(EMPTY_FACTS, [STRANDED])] == ["needs_chair:init-a:stranded"]
+
+
+def test_idle_ready_is_not_self_clearing_and_pushes_keyed_on_subject_and_cause():
+    action = {
+        "kind": "needs_chair",
+        "initiative": "init-a",
+        "cause": "idle_ready",
+        "signature": "idle_ready:init-a,init-b",
+        "reason": "init-a waits on init-b",
+    }
+    assert "idle_ready" not in SELF_CLEARING_CAUSES
+    (event,) = events_from_tick({}, [action])
+    assert (event.kind, event.key) == ("needs_chair", "needs_chair:init-a:idle_ready")
+    assert "init-a waits on init-b" in event.body
