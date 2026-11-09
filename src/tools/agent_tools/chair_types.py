@@ -118,6 +118,16 @@ class ApprovedTask(TypedDict):
     land_manual: NotRequired[bool]  # the repo sets `land: manual`: a person merges the PR, so no land is planned for the task
 
 
+class ApprovalHold(TypedDict):
+    """An approved, unmerged task and the count of ticks its approval has sat unlanded without merging."""
+
+    initiative: str
+    repo: str
+    task_id: str
+    run: str
+    ticks: int
+
+
 class LandingFact(TypedDict):
     """A land the worker is running now, from the action it was submitted with; a key the action lacked is empty."""
 
@@ -199,6 +209,7 @@ class RunningInitiative(TypedDict):
     repo: str
     surfaces: list[str]
     phase: NotRequired[str]  # the phase this entry runs; absent means the whole initiative
+    live: NotRequired[bool]  # False only for an entry held by unlanded approvals alone; absent means live
 
 
 class InitiativeFacts(TypedDict):
@@ -503,6 +514,8 @@ class Facts(TypedDict):
     # Keyed `<candidate>|<other>`: the count of consecutive prior deferrals for that ordered pair; absent means 0.
     steer_streaks: NotRequired[dict[str, int]]
     steer_policy: NotRequired[SteerPolicy]  # absent means strict: limit 1, no serial paths
+    approval_holds: NotRequired[list[ApprovalHold]]  # approved unmerged tasks with a hold age; absent means none
+    approval_hold_ticks: NotRequired[int]  # the hold limit in ticks; absent means 6
     # Each initiative's newest waiting row as `<phase>|<quarantined>|<awaiting_land>`, until a later launch of it.
     waiting_reported: NotRequired[dict[str, str]]  # absent means {}
     pull_age_s: NotRequired[float | None]  # seconds since the newest `pull` chair action; None or absent means no pull yet
@@ -561,6 +574,7 @@ ActionKind = Literal[
     "pull",
     "housekeeping",
     "stale_to_draft",
+    "release_approvals",
     "mark_lost",
     "check_login",
     "stalled_usr1",
