@@ -6410,7 +6410,7 @@ cox plan serve DIR [--kind KIND] [--check] [--no-open]   serve a visual plan thr
 cox epic watch PIDFILE [--log LOG] [--max-seconds MAX_SECONDS] [--interval INTERVAL] [--json]   poll a detached run's pidfile until it exits
 cox route context [--profile PROFILE] [--json]   the routing profile's resolved context
 cox route status [--profile PROFILE] [--json] [--all]   what is queued or running for this profile
-cox route file [--profile PROFILE] [--repo REPO] [--title TITLE] [--body BODY] [--phase PHASE] [--intake] [--from-intake FROM_INTAKE] [--force] [--link LINK] [--after AFTER]   file a new ticket for the harness
+cox route file [--profile PROFILE] [--repo REPO] [--title TITLE] [--body BODY] [--phase PHASE] [--intake] [--from-intake FROM_INTAKE] [--force] [--link LINK] [--after AFTER] [--draft] [--ready]   file a new ticket for the harness
 cox route priority [INITIATIVE] [--profile PROFILE] [--set N] [--up] [--down] [--top] [--bottom]   move an initiative or a queued intake up or down the launch order
 cox route pull [--profile PROFILE] [--source SOURCE] [--dry-run]   file intake tickets from a source, once per link
 cox route lint INITIATIVE_DIR [--repo REPO]   static ticket lint over a filed initiative, work-shape.md §3
@@ -6424,8 +6424,10 @@ cox route decline INITIATIVE --reason REASON [--by BY] [--profile PROFILE]   dec
 cox route edit ID [--title TITLE] [--body BODY] [--body-file BODY_FILE] [--repo REPO] [--surfaces SURFACES] [--state STATE] [--pr PR] [--rebuild] [--force] [--link LINK] [--after AFTER] [--epic EPIC] [--dry-run] [--profile PROFILE]   change a queued intake, an initiative or a task ticket
 cox route epic ACTION ID [--title TITLE] [--target-branch TARGET_BRANCH] [--dry-run] [--profile PROFILE]   create an epic definition file: `route epic new &lt;id&gt;`
 cox route remove [ID...] [--match GLOB] --reason REASON [--by BY] [--dry-run] [--profile PROFILE]   remove queued intakes or initiatives that have no live run
-cox route hold ID --reason REASON [--by BY] [--dry-run] [--profile PROFILE]   hold a queued intake or an initiative so the chair skips it until released
-cox route release ID [--dry-run] [--profile PROFILE]   release a held intake or initiative back to the queue
+cox route hold ID --reason REASON [--by BY] [--dry-run] [--profile PROFILE]   hold a queued intake or an initiative so the chair skips it until released; for an intake, an alias for draft with a reason
+cox route release ID [--dry-run] [--profile PROFILE]   release a held intake or initiative back to the queue; an intake moves to ready
+cox route ready ID [--dry-run] [--profile PROFILE]   move a queued intake to ready so the chair can pick it up
+cox route draft ID [--dry-run] [--profile PROFILE]   move a queued intake to draft so the chair skips it until it is ready
 cox route requeue ID [--dry-run] [--profile PROFILE]   requeue the intake of an initiative that has no live tasks
 cox route leader status [--profile PROFILE]   print one line: held by this session, taken over, or not the chair
 cox route chair take [--profile PROFILE] [--label LABEL] [--pid PID] [--steal] [--hours HOURS] [--model sonnet|opus|haiku]   take the chair lock; --steal overrides a live holder and names it

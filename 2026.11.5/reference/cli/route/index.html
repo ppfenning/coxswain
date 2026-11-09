@@ -3980,6 +3980,28 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#ready" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ready
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#draft" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        draft
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#requeue" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6615,6 +6637,28 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#ready" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ready
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#draft" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        draft
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#requeue" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6697,12 +6741,12 @@ Coxswain is in beta — versions may change between releases
 
 <h1 id="route">route</h1>
 <div class="highlight"><pre><span></span><code>usage: cox route [-h]
-                 {context,status,file,priority,pull,lint,groups,drift,import,paths,store-fill,approve,decline,edit,epic,remove,hold,release,requeue,leader,chair,sync,launch} ...
+                 {context,status,file,priority,pull,lint,groups,drift,import,paths,store-fill,approve,decline,edit,epic,remove,hold,release,ready,draft,requeue,leader,chair,sync,launch} ...
 
 File work for the harness, and see what is queued or running.
 
 positional arguments:
-  {context,status,file,priority,pull,lint,groups,drift,import,paths,store-fill,approve,decline,edit,epic,remove,hold,release,requeue,leader,chair,sync,launch}
+  {context,status,file,priority,pull,lint,groups,drift,import,paths,store-fill,approve,decline,edit,epic,remove,hold,release,ready,draft,requeue,leader,chair,sync,launch}
     context             the routing profile's resolved context
     status              what is queued or running for this profile
     file                file a new ticket for the harness
@@ -6728,8 +6772,14 @@ positional arguments:
     remove              remove queued intakes or initiatives that have no live
                         run
     hold                hold a queued intake or an initiative so the chair
-                        skips it until released
-    release             release a held intake or initiative back to the queue
+                        skips it until released; for an intake, an alias for
+                        draft with a reason
+    release             release a held intake or initiative back to the queue;
+                        an intake moves to ready
+    ready               move a queued intake to ready so the chair can pick it
+                        up
+    draft               move a queued intake to draft so the chair skips it
+                        until it is ready
     requeue             requeue the intake of an initiative that has no live
                         tasks
     leader              whether this session is the chair (the SessionStart
@@ -6767,7 +6817,7 @@ options:
 <div class="highlight"><pre><span></span><code>usage: cox route file [-h] [--profile PROFILE] [--repo REPO] [--title TITLE]
                       [--body BODY] [--phase PHASE] [--intake]
                       [--from-intake FROM_INTAKE] [--force] [--link LINK]
-                      [--after AFTER]
+                      [--after AFTER] [--draft] [--ready]
 
 options:
   -h, --help            show this help message and exit
@@ -6786,6 +6836,9 @@ options:
                         from, so a later pull skips it
   --after AFTER         with --intake: ids this intake waits on; repeat the
                         flag or comma-separate
+  --draft               with --intake: file it as a draft, which the chair
+                        skips until it is ready (the default)
+  --ready               with --intake: file it ready for the chair to pick up
 </code></pre></div>
 <h2 id="priority">priority</h2>
 <div class="highlight"><pre><span></span><code>usage: cox route priority [-h] [--profile PROFILE] [--set N | --up | --down |
@@ -6984,6 +7037,28 @@ options:
 
 positional arguments:
   id                 a held intake or initiative
+
+options:
+  -h, --help         show this help message and exit
+  --dry-run          print the plan and write nothing
+  --profile PROFILE
+</code></pre></div>
+<h2 id="ready">ready</h2>
+<div class="highlight"><pre><span></span><code>usage: cox route ready [-h] [--dry-run] [--profile PROFILE] id
+
+positional arguments:
+  id                 a queued intake
+
+options:
+  -h, --help         show this help message and exit
+  --dry-run          print the plan and write nothing
+  --profile PROFILE
+</code></pre></div>
+<h2 id="draft">draft</h2>
+<div class="highlight"><pre><span></span><code>usage: cox route draft [-h] [--dry-run] [--profile PROFILE] id
+
+positional arguments:
+  id                 a queued intake
 
 options:
   -h, --help         show this help message and exit
