@@ -230,9 +230,9 @@ def local_runs(runs_dir: Path, now: str) -> tuple[int, set[str]]:
 
 
 def _busy_lanes(runs_dir: Path, now: str) -> int:
-    """Runs with a live local pidfile, plus live store leases no local pidfile names."""
+    """Runs with a live local pidfile, plus live store leases no local pidfile names, each counted once per running phase."""
     live, named = local_runs(runs_dir, now)
-    return live + len(run_store.remote_lanes(run_store.live_lanes(runs_dir, now), named))
+    return live + sum(lane.phases for lane in run_store.remote_lanes(run_store.live_lanes(runs_dir, now), named))
 
 
 def read_docket(

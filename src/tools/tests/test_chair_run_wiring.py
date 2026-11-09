@@ -25,8 +25,7 @@ _FACTS_DEPS_METADATA_FIELDS = frozenset({"session", "pid", "host"})
 # `stranded_records=`, the assertion below fails and names the field to drop from this set.
 # `decomposed_intake` and `item_counts` are wired and so no longer listed here.
 # `merge_queue` is declared but not wired yet: the command task passes a profile reader and drops it from this set.
-# `live_phases` is likewise declared but not wired yet: the wiring task passes a reader and drops it from this set.
-_FACTS_DEPS_NONE_GUARDED_FIELDS = frozenset({"queue", "stranded_records", "merge_queue", "live_phases"})
+_FACTS_DEPS_NONE_GUARDED_FIELDS = frozenset({"queue", "stranded_records", "merge_queue"})
 
 
 def test_every_facts_deps_field_the_dataclass_declares_is_wired(tmp_path) -> None:
