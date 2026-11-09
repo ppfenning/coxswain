@@ -11,7 +11,9 @@ import os
 import re
 import socket
 import subprocess
+import time
 from collections.abc import Collection, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from functools import reduce
 from pathlib import Path
@@ -28,6 +30,9 @@ from agent_tools import (
     console_screen,
     courier,
     dash_board,
+    dash_feed_cost,
+    dash_feed_inputs,
+    dash_feed_memo,
     dash_live_agents,
     dash_live_burn,
     dash_live_series,
@@ -56,8 +61,9 @@ from agent_tools.chair_types import EASTERN, ReviewPr
 from agent_tools.dash_chair_action import read_current_action
 from agent_tools.dash_chair_attention import chair_attention
 from agent_tools.dash_chair_beat import beat_age_s, read_status_record, status_from_store
+from agent_tools.dash_chair_counters import _age_s as _stamp_age_s
 from agent_tools.dash_chair_counters import chair_counters
-from agent_tools.dash_chair_store import chair_from_store, read_chair_rows
+from agent_tools.dash_chair_store import _iso, _liveness, _tick_fields, chair_from_store, read_chair_rows
 from agent_tools.dash_chair_today import _ts, chair_today, local_midnight
 from agent_tools.dash_cost_series import run_cost_series
 from agent_tools.dash_feed_tasks import counts, task_entries
@@ -71,7 +77,7 @@ from agent_tools.draft_list import read_drafts
 from agent_tools.runs_detail import NODE_ORDER
 from agent_tools.runs_top_screen import calls_from_usage
 
-__all__ = ["gather_feed", "snapshot"]
+__all__ = ["EMPTY_CACHE", "FeedCache", "gather_feed", "gather_feed_cached", "snapshot"]
 
 _LANDED_STATES = ("done", "dropped")
 _LOGIN_CHECK_TIMEOUT_S = 15
@@ -1627,23 +1633,56 @@ def _iso_ts(row: dict) -> dict:
     return {**row, "ts": ts.isoformat()} if isinstance(ts, datetime) else row
 
 
-def _chair_section(runs_dir: Path, row: dict, entries: list[dict], drafts: list, at: datetime) -> dict:
-    """Edge: the chair from the store, and from the local record files only when the store fetch returns None."""
+def _chair_parts(
+    runs_dir: Path, row: dict, entries: list[dict], drafts: list, at: datetime,
+) -> tuple[dict, tuple]:
+    """Edge: the chair from the store, and from the local record files only when the store fetch returns None, with
+    the raw stamps its age fields count from: (source, heartbeat_at, tick_at, last_housekeeping_at, holder, expires_at).
+    Each stamp is the one the chosen path reads: the lease's on the store path, chair.json's and the status line's
+    on the record path, so `_chair_ages` can redo the ages at a later `at` and agree with this function."""
     offset = at.astimezone(EASTERN).utcoffset()
     needs_chair_open = _needs_chair_open(entries)
     # Other seats drop out as in `_inbox`; `chair_attention` drops `chair` itself.
     people = [e for e in entries if _reaches_a_person(str(e.get("to") or ""))]
     fetched = read_chair_rows(runs_dir, at, offset)
+    record = _chair_record(runs_dir)
     if fetched is None:
-        return _chair_v1(
-            row, _lease(runs_dir), _chair_record(runs_dir), at,
-            needs_chair_open=needs_chair_open, inbox_entries=people, drafts=drafts, **_chair_edge(runs_dir),
+        edge = _chair_edge(runs_dir)
+        block = _chair_v1(
+            row, _lease(runs_dir), record, at,
+            needs_chair_open=needs_chair_open, inbox_entries=people, drafts=drafts, **edge,
         )
+        return block, ("record", record.get("heartbeat_at"), edge["status"][0], edge["last_housekeeping_at"], "", None)
     lease, raw_rows = fetched
     rows = [_iso_ts(r) for r in raw_rows]
     # The fetch reaches back about a day, so a housekeeping row older than that is read whole from the store.
     last_housekeeping_at = latest_housekeeping(rows) or read_last_housekeeping(runs_dir)
-    return _chair_from_store_v1(lease, rows, _chair_record(runs_dir), at, needs_chair_open, last_housekeeping_at, people, drafts)
+    block = _chair_from_store_v1(lease, rows, record, at, needs_chair_open, last_housekeeping_at, people, drafts)
+    stamps = (
+        "store", _iso(lease.get("heartbeat_at")), _tick_fields(lease.get("status"), at)["last_tick_at"],
+        last_housekeeping_at, str(lease.get("holder") or ""), lease.get("expires_at"),
+    )
+    return block, stamps
+
+
+def _chair_section(runs_dir: Path, row: dict, entries: list[dict], drafts: list, at: datetime) -> dict:
+    """Edge: the chair block of `_chair_parts`."""
+    return _chair_parts(runs_dir, row, entries, drafts, at)[0]
+
+
+def _chair_ages(stamps: tuple, at: datetime) -> dict:
+    """The chair's age-derived fields at `at`, from the stamps `_chair_parts` returned, by the formulas of the path
+    that produced them. `liveness` moves with `at` on the store path only; on the record path it is the console row's."""
+    source, heartbeat_at, tick_at, housekeeping_at, holder, expires_at = stamps
+    age = beat_age_s(heartbeat_at, at) if isinstance(heartbeat_at, str) else None
+    ages = {
+        "beat_age_s": max(0, age) if age is not None else 0,
+        "housekeeping_age_s": _stamp_age_s(housekeeping_at, at),
+    }
+    if source == "store":
+        tick = beat_age_s(tick_at, at) if isinstance(tick_at, str) else None
+        return {**ages, "tick_age_s": tick, "liveness": _liveness(holder, expires_at, at)}
+    return {**ages, "tick_age_s": _tick_age_s(tick_at, at)}
 
 
 def _history_tasks(
@@ -1781,7 +1820,13 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
     So is `operator_sessions`: every operator session of the workspace's project folder, plus the lease holder's, as
     rows per window with their agents, which the `spend_split` sums; `spend_sources` gains `sessions_found` and
     `sessions_priced`. The key is absent when the activity section did not gather sessions."""
-    runs_dir, work_dir = Path(runs_dir), Path(work_dir)
+    return _build(Path(runs_dir), Path(work_dir), now, profile, lambda name, compute, anchor=None, extra=(): compute())
+
+
+def _build(runs_dir: Path, work_dir: Path, now: str, profile: dict | None, hold) -> dict:
+    """Edge: the body of `gather_feed`. `hold(name, compute, anchor, extra)` gives one store-driven section's value:
+    `compute()` uncached, a memoised value in `gather_feed_cached`. `anchor` is read after a compute only and names the
+    stamps the section's ages count from; `extra` is the section's time-dependent inputs already read, for its key."""
     at = _parse_now(now)
     local_name, local_capacity = _local_identity(runs_dir, profile or {})
     local_versions = _local_versions(_local_login(local_name), now)
@@ -1791,10 +1836,8 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
     )
     chair_row = sections["chair"][0] if sections["chair"] else {}
     live_phases = _live_lanes(sections["lanes"])
-    queue, queue_total = _queue(runs_dir, live_phases)
     blob = _courier_blob(work_dir)
     entries = courier.inbox(blob)
-    inbox, inbox_total = _inbox(entries)
     # A state callable that answers nothing: the feed lists each awaiting PR with its url and never asks the forge.
     review_prs = read_review_prs(runs_dir, lambda url: {})
     lane_ids = {lane.run for lane in sections["lanes"]}
@@ -1805,17 +1848,39 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
     }
     short_ids = run_store.initiative_short_ids(runs_dir)
     projects = _projects(run_store.read_queue(runs_dir, kind="initiative"))
-    # `today` is added after `_spend_v1`, which would blank its null into a string.
-    spend_block = {**_spend_v1(sections["spend"]), "today": _today_v1(runs_dir, now)}
+    lanes = tuple(sections["lanes"])
+    # `today` is added after `_spend_v1`, which would blank its null into a string. Only `today` is held: the rest of
+    # the block is `sections["spend"]`, read afresh above, and moves with `now` in ways no key could floor.
+    today_spend = hold("spend", lambda: _today_v1(runs_dir, now))
+    spend_block = {**_spend_v1(sections["spend"]), "today": today_spend}
     wide_rows = _store_rows(runs_dir, at, spend_block)
     store_rows = _history_rows(wide_rows, at)
     task_rows = _queue_rows_edge(runs_dir)
     states = _queue_states_edge(runs_dir, live_phases, task_rows)
-    history, today = _history_edge(store_rows, at, short_ids, projects, states)
-    board, lanes_by_host = _board_edge(
-        runs_dir, task_rows, states, calls_by_run, sections["lanes"], short_ids, local_name, at,
+
+    def queue_block() -> tuple[list[dict], int]:
+        queue, total = _queue(runs_dir, live_phases)
+        return [_queue_v1(row, short_ids, projects) for row in queue], total
+
+    def inbox_block() -> tuple[list[dict], int]:
+        inbox, total = _inbox(entries)
+        rows = [*(_inbox_v1(entry, short_ids) for entry in inbox), *_review_inbox_v1(review_prs, short_ids)]
+        return rows, total + len(review_prs)
+
+    queue_rows, queue_total = hold("queue", queue_block, extra=lanes)
+    inbox_rows, inbox_total = hold("inbox", inbox_block)
+    history, today = hold("history", lambda: _history_edge(store_rows, at, short_ids, projects, states), extra=lanes)
+    board, lanes_by_host = hold(
+        "board",
+        lambda: _board_edge(runs_dir, task_rows, states, calls_by_run, sections["lanes"], short_ids, local_name, at),
+        lambda: _started_at(calls_by_run),
+        lanes,
     )
-    chair_block = _chair_section(runs_dir, chair_row, entries, read_drafts(work_dir, now), at)
+    chair_block, _ = hold(
+        "chair",
+        lambda: _chair_parts(runs_dir, chair_row, entries, read_drafts(work_dir, now), at),
+        extra=repr(chair_row),
+    )
     activity = _activity(
         runs_dir, profile or {}, chair_block["session"], _workspace(work_dir), spend_block, at, wide_rows,
     )
@@ -1824,19 +1889,33 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
         _burn_meters(spend_block, activity["spend_split"] or {}, _hard_stop_fraction(runs_dir)),
         _ended_events(wide_rows), profile or {}, local_name, chair_block["session"], at,
     )
+    machines = hold(
+        "machines",
+        lambda: [_machine_v1(row, at, lanes_by_host.get(str(row.get("name") or ""), [])) for row in sections["hosts"]],
+        lambda: ([row.get("beat_at") for row in sections["hosts"]], _started_at(calls_by_run)),
+        (lanes, repr(sections["hosts"])),
+    )
+    # `finished_runs` drops rows that aged out of its window, so which rows it keeps at `at` is part of the key.
+    window = tuple(row["run"] for row in finished_runs(records, lane_ids, at if at.tzinfo else at.replace(tzinfo=UTC)))
+    runs = hold(
+        "runs",
+        lambda: _runs_v1(
+            sections["lanes"], local_name, records, at, calls_by_run, short_ids, projects, _ends_edge(runs_dir, store_rows),
+            _tasks_edge(runs_dir, task_rows, calls_by_run),
+        ),
+        extra=(lanes, window),
+    )
+    epics = hold("epics", lambda: _epics_v1(task_rows))
     return snapshot(
         now,
         chair_block,
         spend_block,
-        [_machine_v1(row, at, lanes_by_host.get(str(row.get("name") or ""), [])) for row in sections["hosts"]],
-        _runs_v1(
-            sections["lanes"], local_name, records, at, calls_by_run, short_ids, projects, _ends_edge(runs_dir, store_rows),
-            _tasks_edge(runs_dir, task_rows, calls_by_run),
-        ),
-        [_queue_v1(row, short_ids, projects) for row in queue],
+        machines,
+        runs,
+        queue_rows,
         queue_total,
-        [*(_inbox_v1(entry, short_ids) for entry in inbox), *_review_inbox_v1(review_prs, short_ids)],
-        inbox_total + len(review_prs),
+        inbox_rows,
+        inbox_total,
         [],
         _open_decisions(entries, blob),
         _spend_series(_spend_points(calls_by_run), at),
@@ -1846,9 +1925,130 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
         spend_split=activity["spend_split"],
         spend_sources=activity["spend_sources"],
         budget=_budget_edge(runs_dir, at),
-        epics=_epics_v1(task_rows),
+        epics=epics,
         board=board,
         live=live,
         orchestration=_orchestration_edge(profile, local_name, sections["hosts"], now),
         operator_sessions=activity.get("operator_sessions"),
     )
+
+
+@dataclass(frozen=True)
+class FeedCache:
+    """What one cached refresh hands the next: the section memo, the fingerprints it probed, and the (cpu, wall)
+    clock readings at its end."""
+
+    memo: dash_feed_memo.Memo
+    fingerprints: Mapping[str, object]
+    clock: tuple[float, float]
+
+
+EMPTY_CACHE = FeedCache(dash_feed_memo.EMPTY, {}, (0.0, 0.0))
+
+# The fingerprint groups each section's builders read. Wrong belief to avoid: "machines reads only the store". Its
+# lane entries come from `_board_edge`, so it reads what the board reads. Only `epics` is on the store alone.
+_STORE_RECORDS_TRACES = ("store", "records", "lane_traces")
+_SECTION_GROUPS = {
+    "chair": ("store", "records"),
+    "spend": ("store", "records"),
+    "machines": _STORE_RECORDS_TRACES,
+    "runs": _STORE_RECORDS_TRACES,
+    "queue": _STORE_RECORDS_TRACES,
+    "inbox": ("store", "records"),
+    "history": _STORE_RECORDS_TRACES,
+    "board": _STORE_RECORDS_TRACES,
+    "epics": ("store",),
+}
+# The finest step, in seconds, a section's output moves with `now` once its age fields are refreshed and its other
+# time-dependent inputs are in its key (`extra` in `_build`: the lanes, the hosts, the run window, the console chair
+# row). Chair counters and history count from local midnight, which falls on a minute. `spend.today` counts a UTC
+# day, which falls on an hour. The rest move with `now` only through those keyed inputs.
+_SECTION_STEP_S = {
+    "chair": 60, "spend": 3600, "history": 60, "machines": 3600, "runs": 3600,
+    "queue": 3600, "inbox": 3600, "board": 3600, "epics": 3600,
+}
+# These read `courier.jsonl` and `*/initiative.md` under `work_dir`, which the probe does not stat.
+_WORK_STAMPED = frozenset({"chair", "inbox"})
+
+
+def _work_stamp(work_dir: Path) -> tuple:
+    """Edge: (path, size, mtime_ns) of the courier log and the draft files; no size for an unreadable file."""
+
+    def read(path: Path) -> tuple:
+        try:
+            info = path.stat()
+        except OSError:
+            return (str(path), None)
+        return (str(path), info.st_size, info.st_mtime_ns)
+
+    return tuple(read(path) for path in (work_dir / "courier.jsonl", *sorted(work_dir.glob("*/initiative.md"))))
+
+
+def _section_key(name: str, fingerprints: Mapping[str, object], at: datetime, work_stamp: tuple) -> tuple:
+    """A section's memo key: its groups' fingerprints, `at` floored to its step, and the work-dir stamp where it reads
+    the work dir. A group with no fingerprint (a non-sqlite store) gives a key equal to no other."""
+    prints = tuple(fingerprints.get(group) for group in _SECTION_GROUPS[name])
+    if any(print_ is None for print_ in prints):
+        return (object(),)
+    return (prints, int(at.timestamp()) // _SECTION_STEP_S[name], work_stamp if name in _WORK_STAMPED else ())
+
+
+def _aged_lanes(lanes: Sequence[dict], started: Mapping[str, datetime | None], at: datetime) -> list[dict]:
+    """`lanes` with each `elapsed_s` counted from its run's start to `at`."""
+    aware = at if at.tzinfo else at.replace(tzinfo=UTC)
+    return [{**lane, "elapsed_s": dash_machine_lanes._elapsed_s(started.get(lane["run"]), aware)} for lane in lanes]
+
+
+def _refresh_ages(name: str, value, anchor, at: datetime):
+    """A copy of a cached section with its age fields counted to `at` from the raw stamps in `anchor`; the cached
+    value is not touched. chair: `value` is `_chair_parts`' pair and `_chair_ages` redoes three ages and the liveness.
+    machines: each `beat_age_s` and each lane's `elapsed_s`. board: the `elapsed_s` of its lanes by host, which
+    machines reads. The other sections carry no field that moves with `at`."""
+    if name == "chair":
+        block, stamps = value
+        return {**block, **_chair_ages(stamps, at)}, stamps
+    if name == "machines":
+        beats, started = anchor
+        return [
+            {**machine, "beat_age_s": _age_s(beat, at), "lanes": _aged_lanes(machine["lanes"], started, at)}
+            for machine, beat in zip(value, beats, strict=True)
+        ]
+    if name == "board":
+        board, lanes_by_host = value
+        return board, {host: _aged_lanes(lanes, anchor, at) for host, lanes in lanes_by_host.items()}
+    return value
+
+
+def _store_is_local_sqlite(runs_dir: Path) -> bool:
+    """Edge: whether the run store is a local sqlite file the probe can stat."""
+    return not run_store.is_postgres(run_store._store_url(Path(runs_dir)))
+
+
+def gather_feed_cached(
+    runs_dir: Path, work_dir: Path, now: str, profile: dict | None, cache: FeedCache,
+) -> tuple[dict, FeedCache]:
+    """Edge: `gather_feed` plus a `cost` block, rebuilding only the store-driven sections whose inputs moved since
+    `cache`. Inputs are probed once. `live` is never memoised and is always listed as recomputed. The feed without
+    `cost` equals `gather_feed`'s for the same inputs. Returns the feed and the cache for the next refresh."""
+    start, finish = dash_feed_cost.measure(time.process_time, time.perf_counter)
+    runs_dir, work_dir = Path(runs_dir), Path(work_dir)
+    at = _parse_now(now)
+    fingerprints = dash_feed_inputs.probe(runs_dir, Path(_PROJECTS_DIR).expanduser(), _store_is_local_sqlite(runs_dir))
+    stamp = _work_stamp(work_dir)
+    state = {"memo": cache.memo}
+    results: list[tuple[str, bool]] = []
+
+    def hold(name: str, compute, anchor=None, extra=()):
+        key = (*_section_key(name, fingerprints, at, stamp), extra)
+        value, state["memo"], reused = dash_feed_memo.reuse(
+            state["memo"], name, key, lambda: (compute(), None if anchor is None else anchor()),
+        )
+        results.append((name, reused))
+        section, anchors = value
+        return _refresh_ages(name, section, anchors, at) if reused else section
+
+    feed = _build(runs_dir, work_dir, now, profile, hold)
+    recomputed, reused = dash_feed_memo.split_reuse(dash_feed_cost.SECTION_ORDER, [*results, ("live", False)])
+    cpu_s, wall_s = finish()
+    cost = dash_feed_cost.cost_block(cpu_s, wall_s, recomputed, reused)
+    return {**feed, "cost": cost}, FeedCache(state["memo"], fingerprints, (start[0] + cpu_s, start[1] + wall_s))
