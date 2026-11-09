@@ -1,4 +1,4 @@
-from agent_tools.chair_facts import DEFAULT_HOUSEKEEPING_HOURS, DEFAULT_STALE_DAYS
+from agent_tools.chair_facts import DEFAULT_APPROVAL_HOLD_TICKS, DEFAULT_HOUSEKEEPING_HOURS, DEFAULT_STALE_DAYS
 from agent_tools.settings_model import SettingRow
 from agent_tools.settings_sections.defaults import DEFAULT_KEYS, default_rows
 
@@ -26,6 +26,7 @@ def test_missing_keys_yield_exactly_those_built_in_rows():
         "policy.build_budget_usd_max",
         "policy.review_tier",
         "chair.housekeeping_hours",
+        "chair.approval_hold_ticks",
         "analytics.snapshot_max_age_s",
         "operator",
         "store.mode",
@@ -59,6 +60,7 @@ def test_code_defaults_are_imported_and_cartridge_keys_are_null():
     by_key = _by_key(default_rows([]))
     assert by_key["chair.stale_days"]["value"] == DEFAULT_STALE_DAYS
     assert by_key["chair.housekeeping_hours"]["value"] == DEFAULT_HOUSEKEEPING_HOURS
+    assert by_key["chair.approval_hold_ticks"]["value"] == DEFAULT_APPROVAL_HOLD_TICKS
     assert "note" not in by_key["chair.stale_days"]
     assert by_key["epic_threshold"]["value"] is None
     assert by_key["epic_threshold"]["note"] == "set by the cartridge"
