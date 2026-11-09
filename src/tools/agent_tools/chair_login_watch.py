@@ -20,6 +20,28 @@ DEFAULT_THRESHOLD_S = 1800
 # An idle host is beaten only by the login check, so placement must tolerate two missed check intervals.
 PLACEMENT_STALE_S = 2 * DEFAULT_THRESHOLD_S
 
+# A host whose ssh check is unreachable UNREACHABLE_AFTER times in a row enters UNREACHABLE_STATE, and is
+# then probed every PROBE_INTERVAL_S with one ssh connect bounded by PROBE_CONNECT_TIMEOUT_S.
+UNREACHABLE_STATE = "unreachable"
+UNREACHABLE_AFTER = 2
+PROBE_INTERVAL_S = 1800
+PROBE_CONNECT_TIMEOUT_S = 5
+BACK_WINDOW_S = 3600
+
+UNREACHABLE_FAILURES_KEY = "unreachable_failures"  # int count of consecutive unreachable checks
+UNREACHABLE_SINCE_KEY = "unreachable_since"  # ISO UTC, set when the state is entered
+PROBE_CHECKED_AT_KEY = "probe_checked_at"  # ISO UTC of the last probe
+HOST_BACK_AT_KEY = "host_back_at"  # ISO UTC of the last return, written by the store on a beat and by the probe
+
+_UNREACHABLE_CODES = (124, 255)
+_UNREACHABLE_PHRASES = (
+    "timed out",
+    "connection refused",
+    "no route to host",
+    "network is unreachable",
+    "could not resolve hostname",
+)
+
 _HTTPS_URL = re.compile(r"https://[^\s<>\"']+")
 
 
@@ -92,6 +114,53 @@ def login_needs_chair(hosts: Sequence[Row]) -> list[dict]:
         {"kind": "needs_chair", "host": name, "cause": "login_lapsed", **({"url": urls[name]} if urls.get(name) else {})}
         for name in sorted(blocked)
     ]
+
+
+def is_unreachable_reply(returncode: int, output: str) -> bool:
+    """True only for exit 124 or 255 with an unreachable phrase in `output`, case-insensitive."""
+    lowered = output.lower()
+    return returncode in _UNREACHABLE_CODES and any(phrase in lowered for phrase in _UNREACHABLE_PHRASES)
+
+
+def due_for_probe(hosts: Sequence[Row], now: str, interval_s: int = PROBE_INTERVAL_S) -> list[str]:
+    """Names of `unreachable` rows whose `probe_checked_at` is missing, unparsable, or more than
+    `interval_s` seconds before `now`."""
+    now_parsed = _parsed(now) or datetime.min.replace(tzinfo=UTC)
+    return [
+        str(row.get("name") or "")
+        for row in hosts
+        if row.get("state") == UNREACHABLE_STATE
+        and _checked_long_ago(_versions(row).get(PROBE_CHECKED_AT_KEY), now_parsed, interval_s)
+    ]
+
+
+def host_unreachable_needs_chair(hosts: Sequence[Row]) -> list[dict]:
+    """One `host_unreachable` needs_chair action per `unreachable` row, sorted by name. `since` is
+    omitted when the row holds no `unreachable_since`."""
+    rows = sorted((row for row in hosts if row.get("state") == UNREACHABLE_STATE), key=lambda row: str(row.get("name") or ""))
+    return [
+        {
+            "kind": "needs_chair",
+            "host": str(row.get("name") or ""),
+            "cause": "host_unreachable",
+            **({"since": since} if (since := _versions(row).get(UNREACHABLE_SINCE_KEY)) else {}),
+        }
+        for row in rows
+    ]
+
+
+def host_back_needs_chair(hosts: Sequence[Row], now: str) -> list[dict]:
+    """One `host_back` needs_chair action per `active` row whose `host_back_at` parses and lies within
+    `BACK_WINDOW_S` seconds before `now`, sorted by name. A `host_back_at` after `now` is not within."""
+    now_parsed = _parsed(now) or datetime.min.replace(tzinfo=UTC)
+    returned = [
+        (str(row.get("name") or ""), back_at)
+        for row in hosts
+        if row.get("state") == "active"
+        for back_at in [_versions(row).get(HOST_BACK_AT_KEY)]
+        if back_at and (parsed := _parsed(back_at)) is not None and 0 <= (now_parsed - parsed).total_seconds() <= BACK_WINDOW_S
+    ]
+    return [{"kind": "needs_chair", "host": name, "cause": "host_back", "back_at": back_at} for name, back_at in sorted(returned)]
 
 
 def merge_login_versions(
