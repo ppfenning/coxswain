@@ -13,6 +13,7 @@ import getpass
 import importlib
 import importlib.metadata
 import importlib.util
+import inspect
 import io
 import json
 import math
@@ -12810,6 +12811,21 @@ def _chair_cache_paths(runs_dir: Path) -> tuple[Path, Path, Path]:
 
 CHAIR_WAKE_POLL_SECONDS = 5.0  # how often the between-tick wait re-reads the bus for a run_exited entry
 
+# Bounds of the process-lifetime read caches, sized from the work they hold so a day of ticks cannot grow memory.
+CHAIR_FILES_CACHE_MAX = 4096  # one entry per work file: a few thousand
+CHAIR_STORE_CACHE_MAX = 8  # one entry per store read shape: the work rows and the queue rows
+CHAIR_DECOMPOSE_CACHE_MAX = 256  # one intake's exit rows, task count and run logs: a few hundred runs at most
+CHAIR_DECOMPOSE_INTAKES_MAX = 64  # intakes holding a decompose cache at once; the least recently used is dropped
+
+
+def _takes_cache(read: Callable[..., list[dict]], cache: object) -> Callable[..., list[dict]]:
+    """Edge. `read` with `cache=` bound when it has that parameter, else `read` itself, called as before."""
+    try:
+        takes = "cache" in inspect.signature(read).parameters
+    except (TypeError, ValueError):
+        takes = False
+    return (lambda *args, **kwargs: read(*args, cache=cache, **kwargs)) if takes else read
+
 
 def _chair_run_deps(
     runs_dir: Path, profile: dict, session: str, pid: int, host: str, dry_run: bool, echo: Callable[[str], None],
@@ -12871,27 +12887,31 @@ def _chair_run_deps(
 
     # Process-lifetime, unlike `tick_reads`; `load_cache` fills them from the previous chair's stop.
     files_path, store_path, decompose_path = _chair_cache_paths(runs_dir)
-    files_cache = chair_read_cache.StampCache(512)
-    store_cache = chair_read_cache.StampCache(8)
+    files_cache = chair_read_cache.StampCache(CHAIR_FILES_CACHE_MAX)
+    store_cache = chair_read_cache.StampCache(CHAIR_STORE_CACHE_MAX)
+    queue_cache = chair_read_cache.StampCache(CHAIR_STORE_CACHE_MAX)  # not saved: queue rows carry claims
     if not dry_run:
         chair_read_cache.load_cache(files_cache, files_path)
         chair_read_cache.load_cache(store_cache, store_path)
     # `read_decompose_runs` drops every entry its call did not touch, so each intake gets its own cache.
-    decompose_caches: dict[str, object] = {}
+    decompose_caches: collections.OrderedDict[str, object] = collections.OrderedDict()
 
     def decompose_cache_for(intake_id: str):
         if intake_id not in decompose_caches:
-            cache = chair_read_cache.StampCache(64)
+            cache = chair_read_cache.StampCache(CHAIR_DECOMPOSE_CACHE_MAX)
             if not dry_run:
                 chair_read_cache.load_cache(cache, decompose_path)  # the first call for this intake prunes what it does not use
             decompose_caches[intake_id] = cache
+            while len(decompose_caches) > CHAIR_DECOMPOSE_INTAKES_MAX:
+                decompose_caches.popitem(last=False)
+        decompose_caches.move_to_end(intake_id)
         return decompose_caches[intake_id]
 
     def save_caches() -> None:
         chair_read_cache.save_cache(files_cache, files_path)
         chair_read_cache.save_cache(store_cache, store_path)
         if decompose_caches:  # none read this run: leave the saved file for the next chair
-            merged = chair_read_cache.StampCache(64 * len(decompose_caches))
+            merged = chair_read_cache.StampCache(CHAIR_DECOMPOSE_CACHE_MAX * len(decompose_caches))
             for cache in decompose_caches.values():
                 chair_read_cache.load_entries(merged, chair_read_cache.dump_entries(cache))  # type: ignore[arg-type]
             chair_read_cache.save_cache(merged, decompose_path)
@@ -12910,7 +12930,7 @@ def _chair_run_deps(
 
     def work_rows() -> list[dict]:
         # `store_rows` (run_store.work_items) carries no `kind` column; the queue read does. Store mode only, once per tick.
-        return once("work_rows", lambda: run_store.read_queue(runs_dir) if mode == "store" else [])  # type: ignore[return-value]
+        return once("work_rows", lambda: _takes_cache(run_store.read_queue, queue_cache)(runs_dir) if mode == "store" else [])  # type: ignore[return-value]
 
     def ticket_items() -> list[dict]:
         return once("tickets", lambda: chair_read_docket._work_items(ws, mode, work_files(), store_rows()))  # type: ignore[return-value]
