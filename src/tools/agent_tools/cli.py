@@ -5578,6 +5578,10 @@ def _route_leader_status(a: argparse.Namespace) -> int:
     if read_rc is not None:
         return read_rc
     host = socket.gethostname()
+    live = _live_loop_holder(runs_dir)
+    if live is not None and not chair.is_caller_holder(record, os.environ, host):
+        print(chair_resolve.held_line(live.label or "?", live.is_service))  # a live chair loop holds the chair: read only, the lease is not touched
+        return 0
     state = chair.liveness(record, _leader_pid_alive(record), datetime.datetime.now(datetime.UTC), host, _leader_heartbeat_minutes())
     with chair.locked(runs_dir):  # re-read under the lock: a beat or a takeover's release request may have landed since the read above
         fresh = chair.read(runs_dir)
@@ -13663,6 +13667,19 @@ def _pid_command(pid: int) -> str:
     return done.stdout.strip() if done.returncode == 0 else ""
 
 
+def _is_service_cgroup(text: str) -> bool:
+    """Pure. True when the cgroup text of a process names the coxswain chair service unit."""
+    return chair_service.UNIT_NAME in text
+
+
+def _pid_cgroup(pid: int) -> str:
+    """Edge. The cgroup text of `pid` from proc; empty when it cannot be read (no proc on macOS, or the pid is gone)."""
+    try:
+        return Path(f"/proc/{pid}/cgroup").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
 def _chair_attach_lend(a: argparse.Namespace, on: bool, clock: Callable[[], datetime.datetime] | None = None) -> int:
     """Edge. Lend or recall the routine ticks on chair.json; only the live holder may, anyone else is refused with exit 1."""
     _profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
@@ -14410,7 +14427,8 @@ def _holder_from_row(row: Mapping[str, object] | None) -> tuple[object, datetime
     """The chair lease row as (HolderLease, last tick), or None when nobody holds it.
 
     Only a chair loop writes a `tick_at` into the row's `status` cell, so a holder with one is the loop and a Claude
-    session holder is not. An expiry that does not parse reads as already expired."""
+    session holder is not. A row with no `status` column cannot say, so it counts as a loop, as `_attach_inputs` reads it.
+    An expiry that does not parse reads as already expired."""
     holder = str((row or {}).get("holder") or "")
     label, _, rest = holder.partition("@")
     host, _, pid_text = rest.rpartition(":")
@@ -14419,7 +14437,7 @@ def _holder_from_row(row: Mapping[str, object] | None) -> tuple[object, datetime
     doc = run_store._json_cell(row.get("status")) if row.get("status") else None
     tick = _aware_or_none(doc.get("tick_at")) if isinstance(doc, dict) and doc.get("tick_at") else None
     expires = _aware_or_none(row.get("expires_at")) or datetime.datetime.fromtimestamp(0, datetime.UTC)
-    return chair_holder.HolderLease(label, int(pid_text), host, expires, tick is not None), tick
+    return chair_holder.HolderLease(label, int(pid_text), host, expires, "status" not in row or tick is not None), tick
 
 
 def _read_holder_inputs(runs_dir: Path):
@@ -14444,16 +14462,45 @@ def _read_holder_inputs(runs_dir: Path):
     return lease, tick, chair.pid_alive(lease.pid) if lease.host == socket.gethostname() else None
 
 
-def _live_holder_line(runs_dir: Path) -> str | None:
-    """The one-line description of a live chair loop that holds the lease, or None when the lease may be taken."""
+def _loop_holder(label: str, pid: int, host: str) -> chair_resolve.SessionHolder:
+    """Edge. A live chair loop holder; the service form when its cgroup names the chair service (readable only on this host)."""
+    return chair_resolve.SessionHolder("loop", label, host == socket.gethostname() and _is_service_cgroup(_pid_cgroup(pid)))
+
+
+def _live_loop_holder(runs_dir: Path) -> chair_resolve.SessionHolder | None:
+    """The live chair loop that holds the chair, or None when the chair may be taken.
+
+    The lease row names a loop by its tick. A service whose row has no tick yet, or one only the runs chair record names,
+    is still a loop when its pid is alive on this host and its command line is a chair run command."""
+    this_host = socket.gethostname()
     inputs = _read_holder_inputs(runs_dir)
-    if inputs is None:
+    if inputs is not None:
+        lease, tick, alive = inputs
+        if not lease.is_loop and alive and _is_chair_run_command(_pid_command(lease.pid)):
+            lease = dataclasses.replace(lease, is_loop=True)
+        verdict = chair_holder.chair_holder_verdict(
+            lease, this_host, datetime.datetime.now(datetime.UTC), tick, alive, float(chair.DEFAULT_LEASE_TTL_SECONDS)
+        )
+        if verdict.kind != "none":
+            return _loop_holder(lease.label, lease.pid, lease.host)
+    try:
+        record = chair.read(runs_dir)
+    except (OSError, ValueError):
         return None
-    lease, tick, alive = inputs
-    verdict = chair_holder.chair_holder_verdict(
-        lease, socket.gethostname(), datetime.datetime.now(datetime.UTC), tick, alive, float(chair.DEFAULT_LEASE_TTL_SECONDS)
-    )
-    return None if verdict.kind == "none" else chair_holder.format_holder_verdict(verdict)
+    pid = None if record is None else record.get("pid")
+    if isinstance(pid, int) and record is not None and record.get("host") == this_host and chair.pid_alive(pid) and _is_chair_run_command(_pid_command(pid)):
+        return _loop_holder(str(record.get("session") or "?"), pid, this_host)
+    return None
+
+
+def _launcher_session_takes(profile_arg: str | None) -> str:
+    """The profile's `chair: session_takes:` policy; when_free when the profile cannot be read or does not say."""
+    text = _read_text_or_none(_profile_path(argparse.Namespace(profile=profile_arg)))
+    try:
+        chair_keys = (route.parse_profile(text) if text is not None else {}).get("chair")
+    except route.ProfileError:
+        chair_keys = None
+    return chair_resolve.resolve_session_takes(chair_keys.get("session_takes") if isinstance(chair_keys, dict) else None)
 
 
 def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
@@ -14484,11 +14531,21 @@ def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
     plan = chair_resolve.resolve_bare(record, state, host, now, _transcript_exists)
     if plan.note:
         print(plan.note, file=sys.stderr if a.print_argv else sys.stdout)
-    live_line = _live_holder_line(runs_dir)
-    action = "observer" if live_line is not None else {"take": "take", "resume": "resume"}.get(plan.kind, plan.default)
+    live = _live_loop_holder(runs_dir)
+    policy = _launcher_session_takes(a.launcher_profile)
+    holder = live or chair_resolve.SessionHolder({"take": "free", "resume": "stale"}.get(plan.kind, "session"))
+    decision = chair_resolve.session_take_decision(policy, holder, False)
+    offered = plan.kind == "offer" and live is None  # a live non-loop holder: the offer flow, unless the policy decides
+    if live is not None or (decision.action == "observer" and not offered):
+        action, notice = "observer", decision.line
+    elif offered:
+        action = {"always": "takeover", "never": "observer"}.get(policy, plan.default)
+        notice = chair_resolve.holder_line(record) if policy == "never" else None
+    else:
+        action, notice = {"take": "take", "resume": "resume"}.get(plan.kind, plan.default), None
     sid = None  # a take learns its session id from the SessionStart status call; claude's argv stays as it was
     label = f"chair-{now:%Y-%m-%d}"
-    if plan.kind == "offer" and live_line is None:
+    if offered and policy == "when_free":
         print(chair_resolve.holder_line(record), file=sys.stderr if a.print_argv else sys.stdout)
         print(chair_resolve.offer_line(plan), file=sys.stderr if a.print_argv else sys.stdout)
         if not a.print_argv:
@@ -14505,8 +14562,8 @@ def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
         print(cwd)
         print(chair_resolve.describe(action, plan), file=sys.stderr)  # stdout stays the argv and cwd alone
         return 0
-    if live_line is not None:
-        print(live_line)  # a live chair loop holds the lease: this session takes, steals and releases nothing
+    if notice:
+        print(notice)  # a live chair loop holds the chair, or the policy never takes it: this session takes, steals and releases nothing
     if action in ("observer", "attach"):
         os.chdir(cwd)
         os.execvp(argv[0], argv)
@@ -14543,11 +14600,15 @@ def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
             beater = _spawn(beater_argv)
         except OSError as exc:
             print(f"chair: beater failed to start: {exc}")
+            chair.release_at_exit(runs_dir, chair_a.label, chair_a.pid, host)  # only what will keep the chair may hold it
+            print("chair: released; a non-chair session is starting")
+            took = False
         else:
             print(f"chair: beating from pid {beater.pid}")
         # chair_a.label is the label `_route_chair_take` just wrote as the holder above;
         # it is the holder, not a re-read of the file this same call just produced.
-        _print_inbox(_read_text_or_none(Path(workspace).expanduser() / "courier.jsonl") or "", chair_a.label, chair_a.label)
+        if took:
+            _print_inbox(_read_text_or_none(Path(workspace).expanduser() / "courier.jsonl") or "", chair_a.label, chair_a.label)
     os.chdir(cwd)
     os.execvp(argv[0], argv)
     return 0
