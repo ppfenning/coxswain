@@ -3856,6 +3856,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#schedule" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        schedule
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#pull" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6513,6 +6524,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#schedule" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        schedule
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#pull" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6771,17 +6793,18 @@ Coxswain is in beta — versions may change between releases
 
 <h1 id="route">route</h1>
 <div class="highlight"><pre><span></span><code>usage: cox route [-h]
-                 {context,status,file,priority,pull,lint,groups,drift,import,paths,store-fill,approve,decline,edit,epic,remove,hold,release,ready,draft,requeue,leader,chair,sync,launch} ...
+                 {context,status,file,priority,schedule,pull,lint,groups,drift,import,paths,store-fill,approve,decline,edit,epic,remove,hold,release,ready,draft,requeue,leader,chair,sync,launch} ...
 
 File work for the harness, and see what is queued or running.
 
 positional arguments:
-  {context,status,file,priority,pull,lint,groups,drift,import,paths,store-fill,approve,decline,edit,epic,remove,hold,release,ready,draft,requeue,leader,chair,sync,launch}
+  {context,status,file,priority,schedule,pull,lint,groups,drift,import,paths,store-fill,approve,decline,edit,epic,remove,hold,release,ready,draft,requeue,leader,chair,sync,launch}
     context             the routing profile's resolved context
     status              what is queued or running for this profile
     file                file a new ticket for the harness
     priority            move an initiative or a queued intake up or down the
                         launch order
+    schedule            project the whole queue as one schedule
     pull                file intake tickets from a source, once per link
     lint                static ticket lint over a filed initiative, work-
                         shape.md §3
@@ -6887,6 +6910,17 @@ options:
   --down             pass the nearest lower open initiative
   --top              one above every other open initiative
   --bottom           one below every other open initiative
+</code></pre></div>
+<h2 id="schedule">schedule</h2>
+<div class="highlight"><pre><span></span><code>usage: cox route schedule [-h] [--profile PROFILE] [--explain INITIATIVE |
+                          --should-jump INITIATIVE]
+
+options:
+  -h, --help            show this help message and exit
+  --profile PROFILE
+  --explain INITIATIVE  why this initiative sits where it does
+  --should-jump INITIATIVE
+                        ask whether this initiative should move up the queue
 </code></pre></div>
 <h2 id="pull">pull</h2>
 <div class="highlight"><pre><span></span><code>usage: cox route pull [-h] [--profile PROFILE] [--source SOURCE] [--dry-run]
