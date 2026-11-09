@@ -30,10 +30,18 @@ def release_tuple(text: str) -> tuple[int, ...] | None:
     return tuple(int(part) for part in found.group(1).split(".")) if found else None
 
 
+def working_release(have: tuple[int, ...]) -> tuple[int, ...]:
+    """The release in progress on top of `have`: its last part plus one (2026.11.5 -> 2026.11.6)."""
+    return (*have[:-1], have[-1] + 1)
+
+
 def is_deferred(target: str, current: str) -> bool:
-    """True only when both versions parse and current is strictly below target."""
+    """True only when both versions parse and target is beyond the release in progress.
+
+    `target_release` names the release a piece of work ships in, so work for the next release (the current
+    version's last part plus one) is open now, and only work for a later release waits for the next cut."""
     wanted, have = release_tuple(target), release_tuple(current)
-    return wanted is not None and have is not None and have < wanted
+    return wanted is not None and have is not None and working_release(have) < wanted
 
 
 def held_initiatives(rows: Sequence[Row]) -> frozenset[str]:
