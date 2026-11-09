@@ -52,6 +52,7 @@ from agent_tools.chair_read_housekeeping import latest_housekeeping, read_last_h
 from agent_tools.chair_read_record import ACTION_LOG
 from agent_tools.chair_read_review_prs import read_review_prs
 from agent_tools.chair_read_schema_deaths import log_tail
+from agent_tools.chair_schedule import SCHEDULE_FILE
 from agent_tools.chair_types import EASTERN, ReviewPr
 from agent_tools.dash_chair_action import read_current_action
 from agent_tools.dash_chair_attention import chair_attention
@@ -104,7 +105,7 @@ _UNKNOWN_SPEND_SOURCES = {"chair_session": "none", "price_catalog": "missing"}
 def snapshot(
     at, chair, spend, machines, runs, queue, queue_total, inbox, inbox_total, watch, decisions=(), spend_series=(),
     history=(), history_today=None, *, chair_agents=None, spend_split=None, spend_sources=None, budget=None,
-    epics=(), board=None, live=None, orchestration=None, operator_sessions=None,
+    epics=(), board=None, live=None, orchestration=None, operator_sessions=None, schedule=None,
 ) -> dict:
     """Assemble the schema-1 dash feed snapshot from its sections. `queue_total`/`inbox_total` are each
     section's filtered count before the 50-row cap, for coxtop to render "50 of N". `decisions` is the open
@@ -118,6 +119,7 @@ def snapshot(
     live section (token series, burn, agents); it reads the zero block, 60 and 24 point zero series, when not given.
     `orchestration` is the chair machine's mode block; the key is absent when it is None, because the profile or the
     hosts table could not be read. `operator_sessions` is every operator session's rows per window; the key is absent
+    when it is None. `schedule` is the projected queue schedule object, passed through unchanged; the key is absent
     when it is None."""
     # coxswain-dash carries its own copy of tests/fixtures/dash_feed_v1.json and will need these two fields too.
     # `queue[].phases` is additive and the schema stays 1: a coxtop that does not know the field ignores it.
@@ -151,6 +153,7 @@ def snapshot(
         "board": {"epics": []} if board is None else board,
         "live": _zero_live(_zero_anchor(at)) if live is None else live,
         **({} if operator_sessions is None else {"operator_sessions": operator_sessions}),
+        **({} if schedule is None else {"schedule": schedule}),
     }
 
 
@@ -522,6 +525,20 @@ def _orchestration_edge(profile: Mapping | None, chair_host: str, rows: Sequence
             return None
         return _orchestration_v1(chair_host, chair_capacity.chair_local_lanes(profile), rows, now)
     except Exception:  # the block is garnish: an unreadable profile or table must not take the feed down
+        return None
+
+
+def _schedule_v1(document: object) -> dict | None:
+    """The document's `schedule` object, unchanged, or None when the document has no such object."""
+    schedule = document.get("schedule") if isinstance(document, dict) else None
+    return schedule if isinstance(schedule, dict) else None
+
+
+def _schedule_edge(runs_dir: Path) -> dict | None:
+    """Edge: the schedule object of `SCHEDULE_FILE` in the runs directory, or None when it is missing or corrupt."""
+    try:
+        return _schedule_v1(json.loads((runs_dir / SCHEDULE_FILE).read_text(encoding="utf-8")))
+    except (OSError, ValueError):  # the key is optional: a missing or corrupt document must not take the feed down
         return None
 
 
@@ -1780,7 +1797,9 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
     series, burn and agents from the lane traces and session transcripts, the zero block when they cannot be read.
     So is `operator_sessions`: every operator session of the workspace's project folder, plus the lease holder's, as
     rows per window with their agents, which the `spend_split` sums; `spend_sources` gains `sessions_found` and
-    `sessions_priced`. The key is absent when the activity section did not gather sessions."""
+    `sessions_priced`. The key is absent when the activity section did not gather sessions. So is `schedule`: the
+    `schedule` object of the `SCHEDULE_FILE` document in the runs directory, passed through unchanged, and absent when
+    that document is missing or does not parse."""
     runs_dir, work_dir = Path(runs_dir), Path(work_dir)
     at = _parse_now(now)
     local_name, local_capacity = _local_identity(runs_dir, profile or {})
@@ -1851,4 +1870,5 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
         live=live,
         orchestration=_orchestration_edge(profile, local_name, sections["hosts"], now),
         operator_sessions=activity.get("operator_sessions"),
+        schedule=_schedule_edge(runs_dir),
     )
