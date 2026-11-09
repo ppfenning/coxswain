@@ -45,13 +45,13 @@ def test_a_task_outside_the_ready_set_adds_no_surface():
 
 def test_an_approved_tasks_surfaces_count_for_a_running_initiative_and_a_done_tasks_do_not():
     items = [_item("x", "a", "approved", ["a.rs"]), _item("x", "d", "done", ["d.rs"]), _item("y", "b", "ready", ["b.rs"])]
-    assert running_initiatives({"x"}, items, {"x": "/r"}) == [{"id": "x", "repo": "/r", "surfaces": ["a.rs"]}]
+    assert running_initiatives({"x"}, items, {"x": "/r"}) == [{"id": "x", "repo": "/r", "surfaces": ["a.rs"], "live": True}]
 
 
 def test_a_non_live_unlanded_initiative_holds_only_its_approved_surfaces():
     items = [_item("x", "a", "approved", ["a.rs"]), _item("x", "b", "ready", ["b.rs"])]
     assert running_initiatives(set(), items, {"x": "/r"}, unlanded={"x"}) == [
-        {"id": "x", "repo": "/r", "surfaces": ["a.rs"]}
+        {"id": "x", "repo": "/r", "surfaces": ["a.rs"], "live": False}
     ]
 
 
@@ -69,14 +69,15 @@ def test_a_non_live_initiative_with_only_done_or_merged_tasks_gives_no_entry_and
 
 def test_an_approved_task_that_is_not_merged_still_holds_its_surfaces():
     items = [_item("x", "a", "approved", ["a.rs"], merged=False)]
-    expected = [{"id": "x", "repo": "/r", "surfaces": ["a.rs"]}]
-    assert running_initiatives({"x"}, items, {"x": "/r"}) == expected
-    assert running_initiatives(set(), items, {"x": "/r"}, unlanded={"x"}) == expected
+    live = [{"id": "x", "repo": "/r", "surfaces": ["a.rs"], "live": True}]
+    held = [{"id": "x", "repo": "/r", "surfaces": ["a.rs"], "live": False}]
+    assert running_initiatives({"x"}, items, {"x": "/r"}) == live
+    assert running_initiatives(set(), items, {"x": "/r"}, unlanded={"x"}) == held
 
 
 def test_a_live_initiative_holds_the_ready_task_and_not_the_merged_approved_one():
     items = [_item("x", "a", "approved", ["a.rs"], merged=True), _item("x", "b", "ready", ["b.rs"])]
-    assert running_initiatives({"x"}, items, {"x": "/r"}) == [{"id": "x", "repo": "/r", "surfaces": ["b.rs"]}]
+    assert running_initiatives({"x"}, items, {"x": "/r"}) == [{"id": "x", "repo": "/r", "surfaces": ["b.rs"], "live": True}]
 
 
 def test_an_idle_initiative_with_ready_tasks_on_a_file_does_not_defer_another_that_wants_it():
@@ -168,7 +169,7 @@ def test_a_work_tree_with_two_initiatives_sharing_a_path_gives_steer_check_a_non
     facts = gather_facts(deps, NOW)
     (entry,) = facts["initiatives"]
     assert (entry["id"], entry["repo"], entry["ready_surfaces"]) == ("x", "/r", ["src/a.rs", "src/b.rs"])
-    assert facts["running"] == [{"id": "y", "repo": "/r", "surfaces": ["src/b.rs", "src/c.rs"]}]
+    assert facts["running"] == [{"id": "y", "repo": "/r", "surfaces": ["src/b.rs", "src/c.rs"], "live": True}]
     assert facts["steer_streaks"] == {"x|y": 1}
     action = steer_check(entry["id"], entry["repo"], entry["ready_surfaces"], facts["running"], facts["steer_streaks"])
     assert action == {"kind": "steer_clear", "initiative": "x", "other": "y", "paths": ["src/b.rs"]}
