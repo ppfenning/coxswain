@@ -74,10 +74,12 @@ def _release_held(initiative: Mapping[str, Any]) -> str | None:
     return f"target release {initiative['target_release']} is above current version {initiative['current_version']}" if above else None
 
 
-# Optional initiative keys the caller supplies: host, backoff_until, hold, target_release, current_version.
+# Optional initiative keys the caller supplies: host, scheduled_later, dag_problem, backoff_until, hold,
+# target_release, current_version.
 # A missing key claims nothing. host == "" is the one fact that says it would build on the chair machine: the caller
-# sets it "" where plan_fill's launch carries no host, and the host name where it does. Until it does, the
-# orchestration and zero-lane reasons stay dormant and the fallback line shows. A steer action with no "other" is skipped.
+# sets host from the real placement (the name of the lane host the schedule or fill chose, "" for the chair machine)
+# and leaves it absent when the initiative was not placed. scheduled_later is returned verbatim; dag_problem is
+# reported as an invalid DAG ahead of any withheld name. A steer action with no "other" is skipped.
 # The budget expiry needs the skip text for the initiative; a withheld refusal with no such skip may be the loop rule.
 def unlaunched(
     initiatives: Sequence[Mapping[str, Any]],
@@ -97,9 +99,11 @@ def unlaunched(
         local = i.get("host") == ""
         note = _clears_at(skips.get(i["id"]), now, launch_history)
         candidates = (
+            f"invalid DAG: {i['dag_problem']}" if i.get("dag_problem") else None,
             _withheld(i, withheld_by, note),
             _skipped(i["id"], skips, note),
             _steer_held(i["id"], steer_holds),
+            i.get("scheduled_later") or None,
             "orchestration mode: it would build on the chair machine" if orchestrating and local else None,
             "paced against the weekly target" if pace_cap == 0 else None,
             _release_held(i),
