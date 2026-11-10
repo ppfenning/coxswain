@@ -70,6 +70,7 @@ from agent_tools.chair_types import (
     PidProbeFact,
     QuarantineFacts,
     QueueFile,
+    RemoteUnfetched,
     ReviewPr,
     RunningInitiative,
     RunRecord,
@@ -129,6 +130,7 @@ class FactsDeps:
         A missing repository is reported once, in the status line, and never becomes a needs_chair fact.
     remote_unfetched: initiative id to run id, for each initiative whose newest run carries a remote
         record and no local run directory or log. Optional, and absent means no initiative counts.
+        A `RemoteUnfetched` result also names the initiatives whose newest such run is a decompose.
     schema_deaths: initiative id to its newest two run ids, for each initiative whose newest two runs both
         exited on the schema-version refusal. Defaults to a callable returning {}.
     lost_runs: initiative id to run id, for each lane whose host has gone stale (no heartbeat for the
@@ -1788,6 +1790,7 @@ def gather_facts(
     login_hosts = deps.hosts()
     decomposed = dict(deps.decomposed_intake()) if deps.decomposed_intake is not None else {}
     probe = dict(deps.pid_probe())
+    unfetched = deps.remote_unfetched() if deps.remote_unfetched is not None else {}
     from agent_tools.chair_decompose_runs import decompose_refusals  # lazy: chair_decompose_runs imports this module
 
     refusals = land_refusals_from_actions(action_rows, now)
@@ -1819,7 +1822,8 @@ def gather_facts(
             deps.reported_repos() if deps.reported_repos is not None else set(),
         ),
         "run_exited": dict(deps.run_exited()) if deps.run_exited is not None else {},
-        "remote_unfetched": dict(deps.remote_unfetched()) if deps.remote_unfetched is not None else {},
+        "remote_unfetched": dict(unfetched),
+        "remote_unfetched_decompose": list(unfetched.decompose) if isinstance(unfetched, RemoteUnfetched) else [],
         "schema_deaths": {i: list(r) for i, r in deps.schema_deaths().items()},
         "lost_runs": dict(deps.lost_runs()) if deps.lost_runs is not None else {},
         "pid_probe": probe,

@@ -5,6 +5,7 @@ the facts and executes the actions; the planners in between are pure. `stale_can
 filled in by the facts edge and consumed by the stale planner; `stall_candidates` likewise,
 consumed by the stall planner. `tuning` likewise, consumed by the lane-tuning and tier-proposal planners.
 """
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any, Literal, NotRequired, Protocol, TypedDict
 from zoneinfo import ZoneInfo
@@ -524,6 +525,14 @@ class LandFailStreak(TypedDict):
     ticks: int
 
 
+class RemoteUnfetched(dict[str, str]):
+    """The `remote_unfetched` map, carrying beside it the sorted initiative ids whose newest run is a decompose."""
+
+    def __init__(self, mapping: Mapping[str, str] | None = None, decompose: Sequence[str] = ()) -> None:
+        super().__init__(mapping or {})
+        self.decompose: list[str] = sorted(decompose)
+
+
 class Facts(TypedDict):
     lease: LeaseFacts
     limits: LimitsFacts
@@ -544,6 +553,7 @@ class Facts(TypedDict):
     # directory with no local run directory or log for that run id. Maps the initiative id to
     # that run id. Absent when the newest run is local, is a fetched remote run, or there is no run.
     remote_unfetched: dict[str, str]
+    remote_unfetched_decompose: NotRequired[list[str]]  # sorted initiatives whose newest unfetched run is a decompose
     missing_repos: NotRequired[list[str]]  # sorted repository paths newly seen missing this tick
     last_housekeeping_at: str | None  # ISO UTC of the newest recorded housekeeping action; None when the store has none
     housekeeping_hours: float  # period in hours; the edge fills it from profile chair.housekeeping_hours, default 24
