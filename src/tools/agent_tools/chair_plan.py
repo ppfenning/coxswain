@@ -1073,9 +1073,24 @@ def _unlocked(facts: Facts) -> tuple[Facts, list[Action]]:
     return chair_steer_cycle.break_cycle(chair_approval_hold.without_released(facts, releases))[0], releases
 
 
-def _planned_schedule(facts: Facts, now: datetime | None) -> Schedule | None:
+def _schedule_withheld(facts: Facts, held: frozenset[str], gated: frozenset[str], steward_handled: frozenset[str]) -> frozenset[str]:
+    """Initiatives that start nothing this tick, so the schedule orders no work behind their files."""
+    started = frozenset(i["id"] for i in facts["initiatives"] if i["started"])
+    return (
+        frozenset(q["initiative"] for q in facts["quarantines"])
+        | frozenset(s["initiative"] for s in facts.get("stranded", []))
+        | frozenset(i["id"] for i in facts["initiatives"] if i.get("dag_problem"))
+        | held
+        | gated
+        | (steward_handled & started)
+    )
+
+
+def _planned_schedule(facts: Facts, now: datetime | None, withheld: frozenset[str]) -> Schedule | None:
     """The queue's Schedule, or None when the facts carry no inputs or there is no clock."""
-    return plan_from_inputs(facts["schedule_inputs"], now)[0] if "schedule_inputs" in facts and now is not None else None
+    if "schedule_inputs" not in facts or now is None:
+        return None
+    return plan_from_inputs(facts["schedule_inputs"], now, withheld=withheld)[0]
 
 
 def _without_advice_clock(body: Mapping) -> dict:
@@ -1095,8 +1110,6 @@ def _schedule_update(facts: Facts, schedule: Schedule | None, now: datetime | No
 
 def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str] = frozenset()) -> list[Action]:
     facts, releases = _unlocked(_with_dead_pid_lost(raw_facts, now))
-    schedule = _planned_schedule(facts, now)
-    schedule_update = _schedule_update(facts, schedule, now)
     reverts = revert_check(facts.get("landed_main", []))
     carries = plan_carry(facts.get("stranded", []))
     gated = _gated_initiatives(facts)
@@ -1120,6 +1133,8 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     widen = plan_widen(facts)
     widened = frozenset((a["initiative"], a["task_id"]) for a in widen)
     steward_handled = _steward_handled(facts)
+    schedule = _planned_schedule(facts, now, _schedule_withheld(facts, held, gated, steward_handled))
+    schedule_update = _schedule_update(facts, schedule, now)
     steward = _steward_actions(facts, lost, gated)
     # A merge_level at land_at level or task lands its phase: the planner's own land for it would be a second land.
     lands = _without_steward_lands(planned_lands, steward)
