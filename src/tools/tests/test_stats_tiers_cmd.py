@@ -36,12 +36,12 @@ def _tiers(tmp_path, *flags):
 
 
 TEXT = """build
-  big: calls 2, tasks 2, $1.2500/call, turns 7.5, landed 50%, first-try 0%, $2.5000/landed
-  small: calls 1, tasks 1, $0.5000/call, turns 8.0, landed 100%, first-try 100%, $0.5000/landed
+  big: calls 2, tasks 2, $1.2500/call, turns 7.5, landed 50%, first-try 0%, $2.5000/completion
+  small: calls 1, tasks 1, $0.5000/call, turns 8.0, landed 100%, first-try 100%, $0.5000/completion
   pick: small (best landed rate: small)
   savings: +1.5000 USD
 review_charter
-  big: calls 1, tasks 1, $0.2500/call, turns 2.0, landed 100%, first-try -, $0.2500/landed
+  big: calls 1, tasks 1, $0.2500/call, turns 2.0, landed 100%, first-try -, $0.2500/completion
   not enough evidence (big: 1 tasks)
   savings: +0.0000 USD
 skipped 2 calls: no joined task, or no role, model, cost or turns
@@ -57,7 +57,7 @@ def test_text_keeps_each_runs_outcome_and_excludes_a_row_before_since(tmp_path, 
 def _summary(role, model, calls, tasks, cost, turns, landed, first_try, per_landed):
     return {
         "role": role, "model": model, "calls": calls, "tasks": tasks, "cost_per_call": cost, "avg_turns": turns,
-        "landed_rate": landed, "first_try_rate": first_try, "cost_per_landed": per_landed,
+        "landed_rate": landed, "first_try_rate": first_try, "cost_per_completion": per_landed,
     }
 
 

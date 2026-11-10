@@ -7,7 +7,7 @@ at each, and the role has at most one row per tier and so at most one `current` 
 - model: the model with the most runs at the tier; runs: its distinct tasks (`stats_tiers`).
 - approval_pct: the build role's first-try rate (`stats_tiers`); a gate role's `1 - changed_rate` from
   `stats_gates.gate_rows` run over that model's own calls at the tier, so it differs between models.
-- cost_per_approved: `stats_models` cost per landed task, else the `stats_tiers` one.
+- cost_per_approved: `stats_models` cost per completion, else the `stats_tiers` one.
 - settings_key: `settings_key_for(role)`; current: the tier is the role's configured tier.
 
 A row is dropped, not guessed, when its role has no registered settings key, or it has no approval or cost figure.
@@ -73,8 +73,8 @@ def _approval(summary: stats_tiers.ModelSummary, tasks: Rows, calls: Rows) -> fl
 
 def _cost(summary: stats_tiers.ModelSummary, models: Mapping[str, Mapping[str, stats_models.ModelRow]]) -> float | None:
     cell = models.get(summary.role, {}).get(summary.model)
-    landed = cell.cost_per_landed.value if cell is not None else None
-    return landed if landed is not None else summary.cost_per_landed
+    completion = cell.cost_per_completion.value if cell is not None else None
+    return completion if completion is not None else summary.cost_per_completion
 
 
 def _tier_partition(tier: str, joined: Rows, tasks: Rows, calls: Rows, current: Mapping[str, str]) -> list[Row]:
