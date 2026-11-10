@@ -125,6 +125,50 @@ def test_one_missing_commit_quarantines_that_task_and_leaves_the_others_merged(s
     assert _ready(restart) == []
 
 
+def _twin_repo(tmp_path: Path) -> tuple[Path, str]:
+    """main holds a rebased twin of the merged commit; the original sits only on side."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git = ["git", "-C", str(repo), "-c", "user.name=a", "-c", "user.email=a@b"]
+
+    def run(*args: str) -> str:
+        return subprocess.run([*git, *args], check=True, capture_output=True, text=True).stdout.strip()
+
+    run("init", "-q", "-b", "main")
+    (repo / "x.py").write_text("a\n")
+    run("add", "x.py")
+    run("commit", "-q", "-m", "base")
+    run("checkout", "-q", "-b", "side")
+    (repo / "x.py").write_text("b\n")
+    run("commit", "-q", "-am", "change x")
+    merged = run("rev-parse", "HEAD")
+    run("checkout", "-q", "main")
+    (repo / "y.py").write_text("y\n")
+    run("add", "y.py")
+    run("commit", "-q", "-m", "new base")
+    run("cherry-pick", merged)
+    return repo, merged
+
+
+def test_a_rebased_twin_of_the_merged_commit_is_not_quarantined(store_conn, tmp_path, monkeypatch):
+    repo, merged = _twin_repo(tmp_path)
+    ancestor = subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", merged, "main"])
+    assert ancestor.returncode != 0
+    ctx = _ctx(store_conn, repo)
+    (item,) = _files(tmp_path, ("t1", []))
+    _put(ctx, item, "ready")
+    _merge_in_run_n(ctx, item, merged, monkeypatch)
+    before = {r["task_id"]: r for r in read.work_items(store_conn, INITIATIVE)}
+    restart = _files(tmp_path, ("t1", []))
+    epic._mirror_read(ctx, restart)
+    quarantined: list = []
+    epic._quarantine_missing_merges(ctx, "p1", restart, quarantined)
+    after = {r["task_id"]: r for r in read.work_items(store_conn, INITIATIVE)}
+    assert quarantined == []
+    assert (restart[0]["state"], restart[0]["merged"]) == ("approved", True)
+    assert after == before
+
+
 def test_the_plan_input_holds_only_the_handoff_of_the_tasks_needed():
     handoffs = {
         "t1": {"files_changed": ["a.py"], "decisions": ["d1"], "branch": "scratch/t1", "commit": "c1"},
