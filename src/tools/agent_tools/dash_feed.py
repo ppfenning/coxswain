@@ -41,6 +41,7 @@ from agent_tools import (
     dash_live_turns_session,
     dash_machine_lanes,
     decisions,
+    jsonl_log,
     operator_sessions,
     pacing,
     queue_rows,
@@ -943,9 +944,9 @@ def _reaches_a_person(to: str) -> bool:
 
 
 def _courier_blob(work_dir: Path) -> str:
-    """The raw courier.jsonl; "" when it cannot be read."""
+    """The raw courier.jsonl, undecodable bytes replaced; "" when it cannot be opened."""
     try:
-        return (Path(work_dir) / "courier.jsonl").read_text(encoding="utf-8")
+        return (Path(work_dir) / "courier.jsonl").read_text(encoding="utf-8", errors="replace")
     except OSError:
         return ""
 
@@ -968,7 +969,7 @@ def _open_decisions(entries: list[dict], blob: str) -> list[dict]:
     `answer`; an ask carries `_ASK_KEYS`, and a decision entry with neither is left out."""
     asks = [e for e in entries if _is_decision(e) and "answer" not in e and all(key in e for key in _ASK_KEYS)]
     # An acked answer drops out of `courier.inbox`, so answers come from every line of the blob, acked or not.
-    lines = [json.loads(line) for line in blob.splitlines() if line.strip()]
+    lines = jsonl_log.parse_log(blob).rows
     answers = [e for e in lines if _is_decision(e) and "answer" in e]
     return decisions.open_decisions_newest_first(decisions.merge_decisions(asks, answers))
 
@@ -1604,20 +1605,16 @@ def _chair_record(runs_dir: Path) -> dict:
 
 
 def _action_rows(runs_dir: Path) -> list[dict]:
-    """The chair action log's lines as dicts; [] when it is missing, blank lines and malformed ones skipped."""
-    try:
-        lines = (runs_dir / ACTION_LOG).read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeDecodeError):
-        return []
-    rows = []
-    for line in lines:
-        try:
-            value = json.loads(line) if line.strip() else None
-        except ValueError:
-            value = None
-        if isinstance(value, dict):
-            rows.append(value)
-    return rows
+    """The chair action log's lines as dicts; [] when it is missing, blank lines and damaged ones skipped."""
+    return list(jsonl_log.read_log(runs_dir / ACTION_LOG).rows)
+
+
+def _health(work_dir: Path, runs_dir: Path) -> dict:
+    """Edge: the skipped-line count of each damaged log, courier, land, then chair actions; clean logs are left out."""
+    paths = (Path(work_dir) / "courier.jsonl", Path(runs_dir) / "land.jsonl", Path(runs_dir) / ACTION_LOG)
+    counts = [(path.name, jsonl_log.read_log(path).skipped) for path in paths]
+    logs = [{"log": name, "skipped": skipped} for name, skipped in counts if skipped]
+    return {"skipped_total": sum(row["skipped"] for row in logs), "logs": logs}
 
 
 def open_needs_chair_ids(entries: list[dict]) -> list[str]:
@@ -1995,6 +1992,8 @@ def _build(
         operator_sessions=activity.get("operator_sessions"),
         # Read on every refresh, not held: the section fingerprints do not stat schedule.json.
         schedule=_schedule_edge(runs_dir),
+        # Read on every refresh, not held, for the same reason: the fingerprints do not stat these logs.
+        health=_health(work_dir, runs_dir),
     )
 
 
