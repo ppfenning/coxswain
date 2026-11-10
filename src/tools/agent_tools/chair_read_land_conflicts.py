@@ -5,7 +5,6 @@ Source: `land.jsonl`, one row per land. A `squash_phase` stop records `conflict_
 and the phase is named by the branch in `stop_detail`, `squash of epic/<initiative>/<phase> conflicts in: ...`.
 """
 
-import json
 import os
 import re
 import subprocess
@@ -14,6 +13,7 @@ from pathlib import Path
 
 from agent_tools import repo_path
 from agent_tools.chair_land_conflict import LandConflict
+from agent_tools.jsonl_log import parse_log
 
 Row = Mapping[str, object]
 Key = tuple[str, str, str]  # (initiative, phase, run)
@@ -61,10 +61,10 @@ def read_land_conflicts(
     if not runs_dir:
         return []
     try:
-        lines = (Path(runs_dir) / "land.jsonl").read_text(encoding="utf-8").splitlines()
+        text = (Path(runs_dir) / "land.jsonl").read_text(encoding="utf-8", errors="replace")
     except (OSError, ValueError):
         return []
-    rows = [d for d in (_json_object(line) for line in lines) if d is not None]
+    rows = list(parse_log(text).rows)
     phases = dict.fromkeys((k[0], k[1]) for row in rows if (k := squash_key(row)) is not None)
     tips = {
         (i, p): (rev_parse(repos[i], f"epic/{i}/{p}"), rev_parse(repos[i], MAIN))
@@ -72,11 +72,3 @@ def read_land_conflicts(
         if repos.get(i)
     }
     return land_conflicts(rows, {key: (b, m) for key, (b, m) in tips.items() if b and m})
-
-
-def _json_object(line: str) -> dict | None:
-    try:
-        d = json.loads(line)
-    except ValueError:
-        return None
-    return d if isinstance(d, dict) else None
