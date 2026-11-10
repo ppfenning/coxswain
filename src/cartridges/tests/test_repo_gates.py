@@ -1,6 +1,5 @@
-"""The repo's own overlay runs each component's full suite at the level and ticket gate."""
+"""The repo's own overlay leaves the full suite to CI: task checks run narrowed, and no local level or ticket gate repeats the suite."""
 
-import re
 from pathlib import Path
 
 import pytest
@@ -24,11 +23,9 @@ def test_overlay_is_accepted_and_ci_lands():
 
 
 @pytest.mark.parametrize("key", ["level_checks", "ticket_checks"])
-def test_gate_list_names_each_component_once(key):
-    entries = overlay()["landing_areas"][key]
-    dirs = [re.match(r"cd src/(\w+) && ", entry["cmd"]).group(1) for entry in entries]
-    assert sorted(dirs) == COMPONENTS
-    assert {entry["timeout"] for entry in entries} == {1500}
+def test_no_local_gate_repeats_the_full_suite(key):
+    # Pat, 2026-11-10: test only what a task touches, and leave the full suite to CI on the PR.
+    assert key not in overlay()["landing_areas"]
 
 
 def test_agent_checks_keeps_task_checks():

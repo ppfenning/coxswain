@@ -34,6 +34,7 @@ from agent_tools.chair_plan_fill import (
 )
 from agent_tools.chair_plan_land import backoff_held, fetch_action, newest_run, plan_finish, plan_lands
 from agent_tools.chair_plan_recover import (
+    STRANDED_CAUSE,
     _initiative_first_unmet_need,
     claimed_by,
     plan_lost_runs,
@@ -1206,7 +1207,9 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         "recovery already holds it": frozenset(
             {a["initiative"] for a in capped if a["kind"] == "relaunch" or a["kind"] == "steer_clear" or _steer_deferred(a)}
         ),
-        "quarantined": frozenset(q["initiative"] for q in facts["quarantines"]),
+        # chair_facts imports this module, so STRANDED_CAUSE comes from chair_plan_recover, which holds the same value.
+        "quarantined": frozenset(q["initiative"] for q in facts["quarantines"] if q["cause"] != STRANDED_CAUSE),
+        "stranded": frozenset(q["initiative"] for q in facts["quarantines"] if q["cause"] == STRANDED_CAUSE),
         "its branches are not fetched": remote_unfetched,
         "its last run has not exited": not_exited,
         "its run is lost": lost,

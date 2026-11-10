@@ -1,14 +1,6 @@
-# The self-hosted runner runs the same suites as the required test job,
-# so a land waits on CI instead of running them twice locally.
+# The self-hosted runner runs the same suites as the required test job, so a land waits on CI
+# instead of running them again locally. Task checks (.agent-checks) run the same commands
+# narrowed to the tests a patch can affect; the full suite runs once, in CI, on the PR
+# (Pat, 2026-11-10: "only testing what is touched, then leave tests to CI for initiative level PRs").
 landing_areas:
-  # Each component's full suite runs once per level and once per ticket gate.
-  # The task checks in .agent-checks run the same commands narrowed to the tests a patch can affect.
-  level_checks:
-    - {name: tools, cmd: "cd src/tools && pytest -q -n auto", timeout: 1500}
-    - {name: graphs, cmd: "cd src/graphs && pytest -q -n auto", timeout: 1500}
-    - {name: cartridges, cmd: "cd src/cartridges && pytest -q -n auto", timeout: 1500}
-  ticket_checks:
-    - {name: tools, cmd: "cd src/tools && pytest -q -n auto", timeout: 1500}
-    - {name: graphs, cmd: "cd src/graphs && pytest -q -n auto", timeout: 1500}
-    - {name: cartridges, cmd: "cd src/cartridges && pytest -q -n auto", timeout: 1500}
   land_checks: ci
