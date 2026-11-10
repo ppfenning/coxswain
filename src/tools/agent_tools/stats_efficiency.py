@@ -21,7 +21,7 @@ class EfficiencyRow:
     turns: int
     cost_per_turn: float | None
     landed: int | None  # None on a day before the land log's first row
-    cost_per_landed: float | None
+    cost_per_completion: float | None  # cost over the landed count; the landed set is still the divisor
     first_try_rate: float | None  # landed tasks with exactly one build call over all runs, over landed tasks
     waste_share: float | None  # task-scoped spend on tasks that never landed, over task-scoped spend
     cache_read_share: float | None  # cache_read_tokens over input_total
@@ -109,14 +109,14 @@ def _row(
         turns=turns,
         cost_per_turn=_ratio(cost, turns),
         landed=len(landed),
-        cost_per_landed=_ratio(cost, len(landed)),
+        cost_per_completion=_ratio(cost, len(landed)),
         first_try_rate=_ratio(first_try, len(landed)),
         waste_share=_ratio(wasted, sum(c["cost_usd"] for c in scoped)),
         cache_read_share=_ratio(sum(c["cache_read_tokens"] for c in calls), sum(c["input_total"] for c in calls)),
     )
     if covered:
         return row
-    return replace(row, landed=None, cost_per_landed=None, first_try_rate=None, waste_share=None)
+    return replace(row, landed=None, cost_per_completion=None, first_try_rate=None, waste_share=None)
 
 
 def efficiency(
@@ -132,7 +132,7 @@ def efficiency(
     `calls` are per (day, task_id) sums, `tasks` per task_id build counts and last call ts. A task's land counts on its
     first land day when that day is on or after `since`; a land at any time keeps the task's spend out of waste.
     `log_start` is the first day the lands cover (`coverage_start`), None with no dated land. A day before it, or every day when it is
-    None, has landed, $/landed, first-try and waste None; the total takes those four from the covered days only."""
+    None, has landed, $/completion, first-try and waste None; the total takes those four from the covered days only."""
     by_task = {t["task_id"]: t for t in tasks}
     ever_landed = frozenset(task for _, task in lands)
     counted = {task: day for task, day in first_land_days(lands).items() if day >= since}
@@ -155,7 +155,7 @@ def efficiency(
         TOTAL, [c for c in calls if is_covered(c["day"])], frozenset(counted), ever_landed, by_task, now, log_start is not None,
     )
     return rows, replace(
-        everything, landed=known.landed, cost_per_landed=known.cost_per_landed,
+        everything, landed=known.landed, cost_per_completion=known.cost_per_completion,
         first_try_rate=known.first_try_rate, waste_share=known.waste_share,
     )
 
@@ -166,11 +166,11 @@ def _cell(value: float | None, fmt: str) -> str:
 
 def render_lines(rows: Sequence[EfficiencyRow], total: EfficiencyRow, source: str | None = None) -> list[str]:
     """The table, total last; with `source`, a first line `lands from: <source>` names where the lands came from."""
-    head = ["day", "cost", "turns", "$/turn", "landed", "$/landed", "first-try", "waste", "cache-read"]
+    head = ["day", "cost", "turns", "$/turn", "landed", "$/completion", "first-try", "waste", "cache-read"]
     body = [
         [
             r.day, f"{r.cost_usd:.2f}", str(r.turns), _cell(r.cost_per_turn, ".3f"), _cell(r.landed, "d"),
-            _cell(r.cost_per_landed, ".2f"), _cell(r.first_try_rate, ".0%"), _cell(r.waste_share, ".0%"), _cell(r.cache_read_share, ".0%"),
+            _cell(r.cost_per_completion, ".2f"), _cell(r.first_try_rate, ".0%"), _cell(r.waste_share, ".0%"), _cell(r.cache_read_share, ".0%"),
         ]
         for r in [*rows, total]
     ]

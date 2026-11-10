@@ -60,9 +60,9 @@ def test_cost_and_turns_are_the_day_sums_and_cost_per_turn_is_their_ratio():
     assert (day.cost_usd, day.turns, day.cost_per_turn) == (6.0, 10, pytest.approx(0.6))
 
 
-def test_cost_per_landed_is_the_days_cost_over_the_days_lands():
+def test_cost_per_completion_is_the_days_cost_over_the_days_lands():
     day = _by_day()[0]["2026-09-22"]
-    assert (day.landed, day.cost_per_landed) == (2, 3.0)
+    assert (day.landed, day.cost_per_completion) == (2, 3.0)
 
 
 def test_first_try_rate_is_the_landed_tasks_with_exactly_one_build_call():
@@ -112,14 +112,14 @@ def test_cache_read_share_is_cache_read_tokens_over_input_total():
     assert (days["2026-09-22"].cache_read_share, days["2026-09-23"].cache_read_share) == (pytest.approx(0.4), None)
 
 
-def test_a_day_with_no_lands_has_no_cost_per_landed_or_first_try_rate_but_still_shows_its_waste():
+def test_a_day_with_no_lands_has_no_cost_per_completion_or_first_try_rate_but_still_shows_its_waste():
     day = _by_day()[0]["2026-09-23"]
-    assert (day.landed, day.cost_per_landed, day.first_try_rate, day.waste_share) == (0, None, None, 1.0)
+    assert (day.landed, day.cost_per_completion, day.first_try_rate, day.waste_share) == (0, None, None, 1.0)
 
 
 def test_totals_sum_the_window_and_ignore_a_land_before_the_cutoff():
     _, total = _by_day()
-    assert (total.day, total.cost_usd, total.turns, total.landed, total.cost_per_landed, total.first_try_rate) == ("total", 17.0, 16, 2, 8.5, 0.5)
+    assert (total.day, total.cost_usd, total.turns, total.landed, total.cost_per_completion, total.first_try_rate) == ("total", 17.0, 16, 2, 8.5, 0.5)
     assert total.waste_share == pytest.approx(5.0 / 7.0)
 
 
@@ -142,12 +142,14 @@ def test_a_day_before_the_land_logs_first_row_is_unknown_and_a_later_day_with_no
     ]
     rows, total = efficiency(calls, tasks, landed_lands(log), SINCE, NOW, first_log_day(log))
     lines = render_lines(rows, total)
+    assert "$/completion" in lines[0] and "$/landed" not in lines[0]
     assert lines[1].split()[4:8] == ["-", "-", "-", "-"]
     assert (lines[2].split()[4], lines[2].split()[7]) == ("0", "100%")
-    assert (total.cost_usd, total.turns, total.landed, total.cost_per_landed, total.first_try_rate) == (8.0, 7, 1, 6.0, 1.0)
+    assert (total.cost_usd, total.turns, total.landed, total.cost_per_completion, total.first_try_rate) == (8.0, 7, 1, 6.0, 1.0)
     assert total.waste_share == pytest.approx(5.0 / 6.0)
     rows, total = efficiency(calls, tasks, [], SINCE, NOW, first_log_day([]))
     assert [r.landed for r in [*rows, total]] == [None] * 5
+    assert [r.cost_per_completion for r in [*rows, total]] == [None] * 5
 
 
 def test_first_land_days_keeps_the_earliest_dated_land_per_task():
@@ -219,7 +221,7 @@ def test_the_command_keys_a_retried_task_by_its_task_id_across_runs(tmp_path, mo
     )
     assert main(["stats", "efficiency", "--runs-dir", str(tmp_path), "--json"]) == 0
     total = json.loads(capsys.readouterr().out)["total"]
-    assert (total["cost_usd"], total["landed"], total["cost_per_landed"], total["first_try_rate"], total["waste_share"]) == (4.0, 1, 4.0, 0.0, 0.25)
+    assert (total["cost_usd"], total["landed"], total["cost_per_completion"], total["first_try_rate"], total["waste_share"]) == (4.0, 1, 4.0, 0.0, 0.25)
 
 
 def test_the_command_on_a_runs_dir_with_no_store_prints_an_empty_total(tmp_path, monkeypatch, capsys):
@@ -246,7 +248,7 @@ def test_a_task_record_without_a_landed_flag_counts_when_it_is_in_the_landed_set
     tasks = [{"task_id": "t1", "builds": 1, "last_ts": "2026-09-22T10:00:00+00:00", "outcome": "failed"}]
     lands = lands_of([_landed_row("init", "t1", "2026-09-22T12:00:00+00:00")])
     rows, total = efficiency([_call("2026-09-22", "t1", 3.0, 2, 0, 0)], tasks, lands, SINCE, NOW, coverage_start(lands))
-    assert (rows[0].landed, rows[0].cost_per_landed, rows[0].waste_share, total.landed) == (1, 3.0, 0.0, 1)
+    assert (rows[0].landed, rows[0].cost_per_completion, rows[0].waste_share, total.landed) == (1, 3.0, 0.0, 1)
 
 
 def test_coverage_starts_at_the_first_land_so_earlier_days_in_the_window_are_unknown_not_zero():
@@ -284,7 +286,7 @@ def test_the_command_counts_lands_from_done_work_items_and_prints_the_source(tmp
     assert main(["stats", "efficiency", "--runs-dir", str(tmp_path), "--json"]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["source"] == "work_items"
-    assert (out["total"]["landed"], out["total"]["cost_per_landed"], out["total"]["waste_share"]) == (1, 3.0, pytest.approx(1.0 / 3.0))
+    assert (out["total"]["landed"], out["total"]["cost_per_completion"], out["total"]["waste_share"]) == (1, 3.0, pytest.approx(1.0 / 3.0))
     assert main(["stats", "efficiency", "--runs-dir", str(tmp_path)]) == 0
     assert capsys.readouterr().out.splitlines()[0] == "lands from: work_items"
 
