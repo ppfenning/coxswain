@@ -65,8 +65,9 @@ class Tie:
 class Explanation:
     """Why a node sits where it does.
 
-    `binding` is now, lane, parent or running for a node with a place. For one without, it is blocked (status),
-    no_estimate (no duration given) or unplaced (no capable host, or something it waits on has none).
+    `binding` is now, lane, parent or running for a node with a place. For one without, it is
+    blocked or waiting (both from status), no_estimate (no duration given) or unplaced (no capable host, or
+    something it waits on has none).
     """
 
     key: Key
@@ -168,9 +169,9 @@ def plan_schedule(
 
     A running node holds its lane and its children for its remaining time, or for `MIN_REMAINING_SECONDS` once it
     is overdue or has no record; its finish is never clamped to `now`.
-    A blocked node, or one with no entry in `durations`, has no projectable start: it is left unplaced, and so is
-    every node that waits on it. `release_finish` then covers placed work only, a lower bound, and `misses_target`
-    is True when that bound passes the target and None, not False, when it does not.
+    A blocked or waiting node, or one with no entry in `durations`, has no projectable start: it is left unplaced,
+    and so is every node that waits on it. `release_finish` then covers placed work only, a lower bound, and
+    `misses_target` is True when that bound passes the target and None, not False, when it does not.
     """
     held = running or {}
     seconds = {k: _seconds(n, durations, held, now) for k, n in nodes.items()}
@@ -193,9 +194,9 @@ def plan_schedule(
     ties: list[Tie] = []
     placed_on = {h.name: 0 for h in hosts}
     excluded = {
-        k: "blocked" if n.status == "blocked" else "no_estimate"
+        k: n.status if n.status in ("blocked", "waiting") else "no_estimate"
         for k, n in nodes.items()
-        if n.status != "running" and (n.status == "blocked" or k not in durations)
+        if n.status != "running" and (n.status in ("blocked", "waiting") or k not in durations)
     }
     pending = [k for k, n in nodes.items() if n.status != "running" and k not in excluded]
     # List scheduling is sequential by nature: the mutation below stays inside this loop.
