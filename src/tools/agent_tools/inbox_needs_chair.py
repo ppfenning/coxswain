@@ -9,8 +9,8 @@ from pathlib import Path
 
 from agent_tools.chair_read_record import ACTION_LOG
 from agent_tools.chair_remedy import remedy_for
-from agent_tools.dash_chair_action import _parsed  # the existing action-log line parser; reused, not copied
 from agent_tools.inbox import InboxItem, item_id
+from agent_tools.jsonl_log import read_log
 
 # chair_remedy maps cause "stale" to drop and cause "ticket" to re-ground; the argv depends only on the remedy kind.
 _DROP_CAUSE = "stale"
@@ -135,8 +135,4 @@ def open_needs_chair(rows: Sequence[Mapping]) -> list[dict]:
 
 def load_needs_chair_records(runs_dir: Path) -> list[dict]:
     """Edge: open needs_chair rows from runs_dir / ACTION_LOG; [] when the log is missing."""
-    try:
-        lines = (runs_dir / ACTION_LOG).read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeDecodeError):
-        return []
-    return open_needs_chair([row for row in map(_parsed, lines) if row is not None])
+    return open_needs_chair(list(read_log(runs_dir / ACTION_LOG).rows))
