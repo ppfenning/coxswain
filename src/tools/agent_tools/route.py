@@ -1590,16 +1590,16 @@ def _lane(run: dict, now: str | None) -> str:
     return f'{run["id"]} (pid {run["pid"]}, since {since})' if age is None else f'{run["id"]} (since {since}, heartbeat {age} ago)'
 
 
-def efficiency_line(spend: float | None, landed: int, first_try_rate: float | None, measured: int | None = None) -> str | None:
+def efficiency_line(spend: float | None, completions: int, first_try_rate: float | None, measured: int | None = None) -> str | None:
     """The docket's `efficiency:` line; None with no store. `first_try_rate` is a 0..1 share of `measured` tasks, None when none were measured."""
     if spend is None:
         return None
-    if landed == 0:
-        return f"efficiency: today ${spend:.2f}, nothing landed yet"
-    head = f"efficiency: today ${spend:.2f} for {landed} landed (${spend / landed:.2f} per landed task)"
+    if completions == 0:
+        return f"efficiency: today ${spend:.2f}, nothing completed yet"
+    head = f"efficiency: today ${spend:.2f} for {completions} completions (${spend / completions:.2f} per completion)"
     if first_try_rate is None:
         return f"{head}, first-try unknown"
-    if measured is not None and measured < landed:
+    if measured is not None and measured < completions:
         return f"{head}, first-try {first_try_rate * 100:.0f}% of {measured} measured"
     return f"{head}, first-try {first_try_rate * 100:.0f}%"
 
