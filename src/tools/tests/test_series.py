@@ -23,7 +23,7 @@ def test_series_row_sums_completed_and_quarantined_across_two_phase_manifests():
     usage = _usage(cost=2.0, calls=4, turns=20)
     manifests = [_manifest("2026-09-01T10:00:00Z", completed=2, quarantined=1), _manifest("2026-09-02T10:00:00Z", completed=3, quarantined=0)]
     row = records.series_row("r1", usage, manifests)
-    assert row["tasks_landed"] == 5 and row["quarantined"] == 1
+    assert row["completions"] == 5 and row["quarantined"] == 1
     assert row["date"] == "2026-09-01" and row["cartridge_sha"] == "abcdef123456"
 
 
@@ -48,20 +48,20 @@ def test_series_row_with_usage_and_no_manifests():
     usage = _usage(cost=1.5, calls=3, turns=10)
     row = records.series_row("r1", usage, [])
     assert row["date"] == "" and row["cartridge_sha"] == "" and row["provider_profile"] == ""
-    assert row["tasks_landed"] == 0 and row["cost_per_landed"] is None and row["cost_usd"] == 1.5
+    assert row["completions"] == 0 and row["cost_per_completion"] is None and row["cost_usd"] == 1.5
 
 
 def test_series_row_with_manifests_and_no_usage():
     manifests = [_manifest("2026-09-01T00:00:00Z", completed=2)]
     row = records.series_row("r1", None, manifests)
     assert row["calls"] == 0 and row["turns"] == 0 and row["cost_usd"] == 0.0 and row["cache_share"] == 0.0
-    assert row["tasks_landed"] == 2 and row["cost_per_landed"] == 0.0
+    assert row["completions"] == 2 and row["cost_per_completion"] == 0.0
 
 
-def test_series_row_cost_per_landed_is_none_at_zero_landed():
+def test_series_row_cost_per_completion_is_none_at_zero_completions():
     usage = _usage(cost=5.0)
     row = records.series_row("r1", usage, [_manifest("2026-09-01T00:00:00Z", completed=0)])
-    assert row["tasks_landed"] == 0 and row["cost_per_landed"] is None and row["review_rounds"] == 0.0
+    assert row["completions"] == 0 and row["cost_per_completion"] is None and row["review_rounds"] == 0.0
 
 
 def test_series_row_review_rounds_counts_review_and_arbitrate_roles():
@@ -90,7 +90,7 @@ def test_series_groups_by_run_id_and_handles_colon_filename():
     }
     rows = records.series(files)
     assert len(rows) == 1
-    assert rows[0]["run"] == "r1" and rows[0]["tasks_landed"] == 3
+    assert rows[0]["run"] == "r1" and rows[0]["completions"] == 3
 
 
 def test_series_picks_up_the_runs_ceiling_file():
@@ -117,12 +117,12 @@ def test_series_sorts_by_date_then_run():
 
 def test_series_totals_counts_runs_landing_nothing():
     rows = [
-        {"cost_usd": 1.0, "tasks_landed": 2, "quarantined": 0},
-        {"cost_usd": 3.0, "tasks_landed": 0, "quarantined": 1},
+        {"cost_usd": 1.0, "completions": 2, "quarantined": 0},
+        {"cost_usd": 3.0, "completions": 0, "quarantined": 1},
     ]
     totals = records.series_totals(rows)
     assert totals["runs"] == 2 and totals["runs_landing_nothing"] == 1
-    assert totals["cost_usd"] == 4.0 and totals["tasks_landed"] == 2 and totals["cost_per_landed"] == 2.0
+    assert totals["cost_usd"] == 4.0 and totals["completions"] == 2 and totals["cost_per_completion"] == 2.0
 
 
 def _write_run(tmp_path, run_id, cost, completed, ts):
