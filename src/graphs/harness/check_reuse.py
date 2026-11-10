@@ -95,6 +95,11 @@ def tree_of(worktree: Path) -> str | None:
 
     Stages into a copy of the index, so the real index is never touched. The tree
     objects are written to the object database, which is harmless.
+
+    The copy is dated 1970-01-01T00:00:01, so git treats every entry as racily clean and
+    hashes the file rather than trusting its stat data. A fresh copy dated now would let
+    an edit that keeps a file's size and mtime second read as unchanged, and a stale
+    passing result would be reused for content that never ran.
     """
     try:
         index = Path(worktree) / _git(worktree, os.environ, "rev-parse", "--git-path", "index")
@@ -102,6 +107,7 @@ def tree_of(worktree: Path) -> str | None:
             copy = Path(tmp) / "index"
             if index.is_file():
                 shutil.copyfile(index, copy)
+                os.utime(copy, (1, 1))  # not 0: git skips the racy check for an index dated 0
             env = {**os.environ, "GIT_INDEX_FILE": str(copy)}
             _git(worktree, env, "add", "-A")
             return _git(worktree, env, "write-tree") or None

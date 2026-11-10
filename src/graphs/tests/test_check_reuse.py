@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -115,6 +116,19 @@ def test_tree_of_tracks_tracked_and_untracked_not_ignored(repo):
     (repo / "new.txt").unlink()
     assert tree_of(repo) == base
     assert (repo / ".git" / "index").read_bytes() == index_before
+
+
+def test_tree_of_sees_an_edit_that_keeps_size_and_mtime(repo):
+    """The stat data git compares matches the index and the index is newer: only the content says it changed."""
+    _git(repo, "config", "core.checkStat", "minimal")  # whole-second mtime and size, as a build without nsec has
+    path = repo / "a.txt"
+    old = path.stat().st_mtime - 100
+    os.utime(path, (old, old))
+    _git(repo, "update-index", "--refresh")  # the entry now records the old mtime, well before the index's own
+    base = tree_of(repo)
+    path.write_text("two\n")
+    os.utime(path, (old, old))
+    assert tree_of(repo) != base
 
 
 def test_tree_of_none_outside_git(tmp_path):
