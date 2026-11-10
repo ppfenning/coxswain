@@ -164,6 +164,7 @@ install_exec = _LazyModule("agent_tools.install_exec")
 install_root = _LazyModule("agent_tools.install_root")
 intake_queue = _LazyModule("agent_tools.intake_queue")
 intake_state = _LazyModule("agent_tools.intake_state")
+jsonl_log = _LazyModule("agent_tools.jsonl_log")
 lake_config = _LazyModule("agent_tools.lake_config")
 lake_lease = _LazyModule("agent_tools.lake_lease")
 land = _LazyModule("agent_tools.land")
@@ -599,7 +600,7 @@ def _stats_chair(a: argparse.Namespace) -> int:
         for run_id, u in run_store.usages(runs_dir).items() if _run_in_window(runs_dir, run_id, a.since)
         for call in (u.get("calls") or [])
     ]
-    land_rows = [r for line in (_read_text_or_none(runs_dir / "land.jsonl") or "").splitlines() if isinstance(r := _json_or(line, None), dict)]
+    land_rows = list(jsonl_log.read_log(runs_dir / "land.jsonl").rows)
     prices = _chair_catalog_prices(a)
     sessions = stats_chair.session_ids(chair.read(runs_dir) if (runs_dir / chair.CHAIR_FILENAME).exists() else None, a.session or [])
     lines = [line for s in sessions for line in _chair_transcript_lines(Path(a.projects_dir).expanduser(), s)]
@@ -4128,8 +4129,7 @@ def _mark_stopped_land(repo: Path, runs_dir: Path, rc: int, record: dict | None,
 
 
 def _append_land_log(runs_dir: Path, row: dict) -> None:
-    with (runs_dir / "land.jsonl").open("a", encoding="utf-8") as f:
-        f.write(json.dumps(row) + "\n")
+    jsonl_log.append_line(runs_dir / "land.jsonl", row, sync=True)
 
 
 def should_sync_lake(rc: int, reached: Sequence[str], extra_imports: bool, config_resolved: bool,
