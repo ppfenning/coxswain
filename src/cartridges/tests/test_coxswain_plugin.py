@@ -23,7 +23,7 @@ SUMMARIZE_PY = PLUGIN_DIR / "statusline" / "summarize.py"
 SETTINGS_JSON = PLUGIN_DIR / "settings.json"
 MARKETPLACE_JSON = ROOT / ".claude-plugin" / "marketplace.json"
 COMMANDS_DIR = PLUGIN_DIR / "commands"
-COMMAND_NAMES = ("launch", "land", "runs", "intake", "regatta")
+COMMAND_NAMES = ("launch", "land", "runs", "intake", "regatta", "stage", "approve")
 
 
 def _load_summarize():
@@ -236,7 +236,7 @@ def test_each_command_file_exists_with_frontmatter_and_a_body(name):
     assert body
 
 
-@pytest.mark.parametrize("name", ("launch", "intake"))
+@pytest.mark.parametrize("name", ("launch", "intake", "stage"))
 def test_launch_and_intake_bodies_carry_the_arguments_placeholder(name):
     _, body = _command_frontmatter_and_body(name)
     assert "$ARGUMENTS" in body
@@ -273,3 +273,72 @@ def test_runs_checks_leader_status_but_still_shows_the_table_read_only():
     status_at = body.index("cox route status")
     assert leader_at < status_at
     assert "show the table anyway" in body
+
+
+def _flat_body(name):
+    return " ".join(_command_frontmatter_and_body(name)[1].split())
+
+
+def test_intake_prefers_file_intake_and_keeps_the_command_line_fallback():
+    body = _flat_body("intake")
+    assert "file_intake" in body
+    assert "route file --intake" in body
+    assert "do not retry it through the other route" in body
+
+
+def test_stage_names_both_mcp_tools_and_both_command_line_routes():
+    body = _flat_body("stage")
+    assert "set_stage" in body
+    assert "send_directive" in body
+    assert "route ready" in body
+    assert "route hold" in body
+
+
+def test_stage_asks_for_a_missing_id_and_a_missing_hold_reason():
+    body = _flat_body("stage")
+    assert "If either is missing, ask rather than guess." in body
+    assert "Ask for the reason if none was given." in body
+
+
+def test_stage_readies_only_a_queued_intake_and_points_initiatives_elsewhere():
+    body = _flat_body("stage")
+    assert "only a queued intake item can be readied" in body
+    assert "route release" in body
+    assert "/approve" in body
+
+
+@pytest.mark.parametrize("name", ("intake", "stage", "approve"))
+def test_write_commands_report_a_refusal_without_retrying_the_other_route(name):
+    body = _flat_body(name)
+    assert "report the refusal and stop" in body
+    assert "do not retry it through the other route" in body
+
+
+@pytest.mark.parametrize("name", ("intake", "stage", "approve", "runs"))
+def test_commands_say_which_route_was_used(name):
+    assert "which route was used" in _flat_body(name)
+
+
+def test_approve_names_the_command_line_as_its_route_until_an_mcp_tool_exists():
+    body = _flat_body("approve")
+    assert "route approve" in body
+    assert "have no approve tool" in body
+    assert "only if the server lists one" in body
+
+
+def test_runs_prefers_release_status_and_queue_board_and_keeps_route_status():
+    body = _flat_body("runs")
+    assert "release_status" in body
+    assert "queue_board" in body
+    assert "If both `release_status` and `queue_board` appear" in body
+    assert "If either is absent" in body
+    assert "cox route status" in body
+    assert "agent-tools route status" in body
+
+
+def test_land_keeps_dry_run_first_and_never_applies_on_its_own():
+    body = _flat_body("land")
+    assert body.index("as a dry run") < body.index("--apply")
+    assert "never decide to apply it on your own reading of the plan" in body
+    assert "Never merge the run by another route." in body
+    assert "lists no landing tool today" in body
