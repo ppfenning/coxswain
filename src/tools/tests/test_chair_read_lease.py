@@ -139,6 +139,41 @@ def test_another_holders_live_record_does_not_clear_the_store_expiry(tmp_path):
     assert read_lease(tmp_path, NOW, pid_alive=_alive, host="h")["stale"] is True
 
 
+def _session_record(runs_dir, **extra):
+    chair.write(runs_dir, {"session": "s", "pid": 7, "host": "h", "heartbeat_at": "2026-09-26T11:00:00+00:00", **extra})
+
+
+def test_a_plain_session_record_sets_session_held(tmp_path):
+    _held(tmp_path, until="")
+    lease = read_lease(tmp_path, NOW, pid_alive=_alive, host="h")
+    assert lease["session_held"] is True
+    assert lease_facts(lease, "other", 1, "h")["session_held"] is True
+
+
+def test_an_until_record_leaves_session_held_unset(tmp_path):
+    _held(tmp_path)
+    assert read_lease(tmp_path, NOW, pid_alive=_alive, host="h").get("session_held", False) is False
+
+
+def test_a_taken_over_from_record_leaves_session_held_unset(tmp_path):
+    _held(tmp_path, until="")
+    _session_record(tmp_path, taken_over_from="old")
+    assert read_lease(tmp_path, NOW, pid_alive=_alive, host="h").get("session_held", False) is False
+
+
+def test_a_lent_record_leaves_session_held_unset(tmp_path):
+    _held(tmp_path, until="")
+    _session_record(tmp_path, routine_lent=True)
+    lease = read_lease(tmp_path, NOW, pid_alive=_alive, host="h")
+    assert (lease["lent"], lease.get("session_held", False)) == (True, False)
+
+
+def test_a_released_lease_never_sets_session_held(tmp_path):
+    _held(tmp_path, until="", expires_at="1970-01-01T00:00:00Z")
+    lease = read_lease(tmp_path, NOW, pid_alive=_alive, host="h")
+    assert (lease["released"], lease.get("session_held", False)) == (True, False)
+
+
 def test_a_thief_holding_the_lease_with_a_live_record_plans_standby_not_take(tmp_path):
     _held(tmp_path, session="thief", pid=9)
     thief = lease_holder("thief", 9, "h")
