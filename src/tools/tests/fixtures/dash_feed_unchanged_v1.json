@@ -1,0 +1,41 @@
+{
+  "rules": "The revision is a hash of the section's serialised content: the lowercase hex sha256 of the section's JSON with sorted keys, compact separators and UTF-8 encoding. The first line of a stream is always complete, so no section in it carries the unchanged marker. The share file is always complete and never carries the unchanged marker. A consumer that has no previous section treats an unchanged marker as an error and asks for a restart.",
+  "first": {
+    "board": {
+      "tasks": [
+        {"id": "t-1", "state": "running"},
+        {"id": "t-2", "state": "queued"}
+      ]
+    },
+    "runs": {
+      "active": [
+        {"id": "r-1", "graph": "build", "state": "running"}
+      ]
+    },
+    "history": {
+      "events": [
+        {"at": "2026-11-10T09:00:00Z", "kind": "landed", "id": "t-0"}
+      ]
+    },
+    "revs": {
+      "board": "b3c0a8747b754204e91b4085b713bf27fe73ebfb52f11532d8d2d6e81f85597d",
+      "runs": "c4c1dd0f8c36bc3baff17917c3a0f0a0d8518afc168de032f272af43043ec72a",
+      "history": "8ac6d9b7595e5ec0cf33e6519174765b44621a155e9b77f5d194eae28712cbcb"
+    }
+  },
+  "second": {
+    "board": {"unchanged": true, "rev": "b3c0a8747b754204e91b4085b713bf27fe73ebfb52f11532d8d2d6e81f85597d"},
+    "runs": {"unchanged": true, "rev": "c4c1dd0f8c36bc3baff17917c3a0f0a0d8518afc168de032f272af43043ec72a"},
+    "history": {
+      "events": [
+        {"at": "2026-11-10T09:05:00Z", "kind": "landed", "id": "t-1"},
+        {"at": "2026-11-10T09:00:00Z", "kind": "landed", "id": "t-0"}
+      ]
+    },
+    "revs": {
+      "board": "b3c0a8747b754204e91b4085b713bf27fe73ebfb52f11532d8d2d6e81f85597d",
+      "runs": "c4c1dd0f8c36bc3baff17917c3a0f0a0d8518afc168de032f272af43043ec72a",
+      "history": "c165dbc62a688a4015700532b1fe368f0ffff049324eda0cea96214a23105a7a"
+    }
+  }
+}
