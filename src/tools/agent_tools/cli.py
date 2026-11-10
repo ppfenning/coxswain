@@ -303,7 +303,7 @@ def _runs_usage(a: argparse.Namespace) -> int:
 
 
 _SERIES_COLUMNS = ["run", "date", "cartridge_sha", "provider_profile", "calls", "turns", "cost_usd",
-                   "cache_share", "tasks_landed", "quarantined", "review_rounds", "cost_per_landed",
+                   "cache_share", "completions", "quarantined", "review_rounds", "cost_per_completion",
                    "tier_ceiling", "effort_ceiling", "launched_by"]
 
 
@@ -320,8 +320,8 @@ def _runs_series(a: argparse.Namespace) -> int:
         print(json.dumps({"rows": rows, "totals": totals}, indent=2))
     else:
         print(records.format_table(rows, _SERIES_COLUMNS))
-        print(f"totals: {totals['runs']} runs, ${totals['cost_usd']:.2f}, {totals['tasks_landed']} landed, "
-              f"{totals['quarantined']} quarantined, cost/landed {totals['cost_per_landed']}, "
+        print(f"totals: {totals['runs']} runs, ${totals['cost_usd']:.2f}, {totals['completions']} completions, "
+              f"{totals['quarantined']} quarantined, cost/completion {totals['cost_per_completion']}, "
               f"{totals['runs_landing_nothing']} landed nothing")
     if a.append:
         p = Path(a.append)
@@ -4587,7 +4587,9 @@ def _efficiency_figures(runs_dir: Path, now: str) -> dict | None:
         "date": today,
         "cost": spend,
         "landed": len(landed),
-        "per_landed": spend / len(landed) if landed else None,
+        "per_landed": spend / len(landed) if landed else None,  # deprecated alias of cost_per_completion
+        "completions": len(landed),
+        "cost_per_completion": spend / len(landed) if landed else None,
         "first_try_rate": rate,
         "measured": measured,
     }
@@ -4598,7 +4600,7 @@ def _efficiency(runs_dir: Path, now: str) -> str | None:
     figures = _efficiency_figures(runs_dir, now)
     if figures is None:
         return None
-    return route.efficiency_line(figures["cost"], figures["landed"], figures["first_try_rate"], figures["measured"])
+    return route.efficiency_line(figures["cost"], figures["completions"], figures["first_try_rate"], figures["measured"])
 
 
 def _gather_context(profile_path: Path, mode: str = "files"):
@@ -11076,7 +11078,7 @@ STATS_COMMANDS = [
         "agent_tools.cli:_stats_causes", False, (),
     ),
     commands.Command(
-        "efficiency", "stats", "cost per turn, cost per landed task, first-try rate, waste share, per day",
+        "efficiency", "stats", "cost per turn, cost per completion, first-try rate, waste share, per day",
         (
             commands.Arg(("--runs-dir",), {"default": "runs"}),
             commands.Arg(("--days",), {"type": int, "default": 7, "help": "UTC days to report, today included (default 7)"}),

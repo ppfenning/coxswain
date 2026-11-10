@@ -222,7 +222,7 @@ def series_row(run_id: str, usage: Mapping[str, Any] | None, manifests: Sequence
     date = earliest.get("ts", "")[:10] if earliest and earliest.get("ts") else ""
     cartridge_sha = (earliest.get("cartridge_sha") or "")[:12] if earliest else ""
     provider_profile = earliest.get("provider_profile") or "" if earliest else ""
-    tasks_landed = sum(int((m.get("totals") or {}).get("completed") or 0) for m in manifests)
+    completions = sum(int((m.get("totals") or {}).get("completed") or 0) for m in manifests)
     quarantined = sum(int((m.get("totals") or {}).get("quarantined") or 0) for m in manifests)
     review_calls = sum(1 for c in calls_list if str(c.get("role") or "").startswith("review") or c.get("role") == "arbitrate")
     applied = (ceiling or {}).get("applied") or {}
@@ -235,10 +235,10 @@ def series_row(run_id: str, usage: Mapping[str, Any] | None, manifests: Sequence
         "turns": figures["turns"],
         "cost_usd": figures["cost_usd"],
         "cache_share": figures["cache_share"],
-        "tasks_landed": tasks_landed,
+        "completions": completions,
         "quarantined": quarantined,
-        "review_rounds": round(review_calls / tasks_landed, 2) if tasks_landed else 0.0,
-        "cost_per_landed": round(figures["cost_usd"] / tasks_landed, 2) if tasks_landed else None,
+        "review_rounds": round(review_calls / completions, 2) if completions else 0.0,
+        "cost_per_completion": round(figures["cost_usd"] / completions, 2) if completions else None,
         "tier_ceiling": applied.get("tier") or "",
         "effort_ceiling": applied.get("effort") or "",
         "launched_by": launched_by or "",
@@ -269,14 +269,14 @@ def series(files: Mapping[str, str]) -> list[dict[str, Any]]:
 def series_totals(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Pure: totals across a series() result."""
     cost_usd = round(sum(float(r.get("cost_usd") or 0.0) for r in rows), 4)
-    tasks_landed = sum(int(r.get("tasks_landed") or 0) for r in rows)
+    completions = sum(int(r.get("completions") or 0) for r in rows)
     return {
         "runs": len(rows),
         "cost_usd": cost_usd,
-        "tasks_landed": tasks_landed,
+        "completions": completions,
         "quarantined": sum(int(r.get("quarantined") or 0) for r in rows),
-        "cost_per_landed": round(cost_usd / tasks_landed, 2) if tasks_landed else None,
-        "runs_landing_nothing": sum(1 for r in rows if not r.get("tasks_landed")),
+        "cost_per_completion": round(cost_usd / completions, 2) if completions else None,
+        "runs_landing_nothing": sum(1 for r in rows if not r.get("completions")),
     }
 
 
