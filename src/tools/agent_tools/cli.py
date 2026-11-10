@@ -13297,6 +13297,8 @@ def _chair_run_deps(
         quarantined=lambda: chair_read_quarantined.read_quarantined(ws, mode, work_files(), store_rows()),
         held_files=lambda: queue_export.read_held_record(ws),
         stranded=lambda: chair_read_stranded.read_stranded(*stranded_inputs()),
+        queue=work_rows if mode == "store" else None,
+        stranded_records=(lambda: stranded_inputs()[0]) if mode == "store" else None,
         missing_repos=missing_repos,
         reported_repos=reported_repos,
         run_exited=lambda: chair_read_exits.exits(runs_dir),
