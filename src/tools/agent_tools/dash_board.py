@@ -8,6 +8,8 @@ STATUSES = ("ready", "building", "approved", "merged", "landed", "quarantined", 
 # A parent shows the first status in this list that any live child has.
 ROLLUP_ORDER = ("building", "quarantined", "blocked", "approved", "merged", "ready")
 NO_EPIC_TITLE = "no epic"
+# An initiative with one of these rolled-up statuses is settled: the board counts it and does not list it.
+SETTLED = ("landed", "dropped")
 
 
 def task_costs(
@@ -65,6 +67,20 @@ def _phase(phase: str, tasks: list[dict]) -> dict:
     }
 
 
+def _settle(epic: dict) -> dict:
+    """The epic with only its open initiatives listed and the settled ones reduced to counts and cost."""
+    settled = [i for i in epic["initiatives"] if i["status"] in SETTLED]
+    return {
+        **epic,
+        "initiatives": [i for i in epic["initiatives"] if i["status"] not in SETTLED],
+        "settled": {
+            "landed": sum(1 for i in settled if i["status"] == "landed"),
+            "dropped": sum(1 for i in settled if i["status"] == "dropped"),
+            "cost_usd": round(sum(i["cost_usd"] for i in settled), 4),
+        },
+    }
+
+
 def build_board(
     task_rows: Sequence[Mapping],
     states: Mapping[tuple[str, str, str], str],
@@ -74,7 +90,8 @@ def build_board(
     costs: Mapping[str, float],
 ) -> dict:
     """The epics, initiatives, phases and tasks of the task rows, each level with status, cost and counts.
-    A row with no entry in `states` is left out; an initiative with no epic goes under id "" titled "no epic"."""
+    A row with no entry in `states` is left out; an initiative with no epic goes under id "" titled "no epic".
+    An epic's status, counts and cost cover every initiative; it lists only the open ones, and `settled` holds the rest."""
     keys = [
         (row["initiative"], row.get("phase") or "", row["task_id"])
         for row in task_rows
@@ -93,7 +110,7 @@ def build_board(
     def epic(epic_id: str) -> dict:
         slugs = sorted({key[0] for key in keys if (epic_of.get(key[0]) or "") == epic_id})
         head = {"id": epic_id, "title": epic_id or NO_EPIC_TITLE}
-        return _parent(head, "initiatives", [initiative(slug) for slug in slugs])
+        return _settle(_parent(head, "initiatives", [initiative(slug) for slug in slugs]))
 
     epic_ids = sorted({epic_of.get(key[0]) or "" for key in keys}, key=lambda epic_id: (epic_id == "", epic_id))
     return {"epics": [epic(epic_id) for epic_id in epic_ids]}

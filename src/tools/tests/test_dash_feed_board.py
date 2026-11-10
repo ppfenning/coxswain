@@ -8,6 +8,7 @@ from test_dash_feed_tasks_contract import _row, _store
 from agent_tools import console_screen, dash_feed, run_store
 
 BOARD_FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "dash_feed_board_v1.json").read_text(encoding="utf-8"))
+SLIM_BOARD = json.loads((Path(__file__).parent / "fixtures" / "dash_feed_board_slim_v1.json").read_text(encoding="utf-8"))["board"]
 NOW = "2026-09-29T00:00:00Z"
 STATUSES = ("ready", "building", "approved", "merged", "landed", "quarantined", "dropped", "blocked")
 
@@ -173,11 +174,16 @@ def test_the_new_keys_of_a_fixture_built_feed_are_the_board_fixture_s(feed):
     built = dash_feed.snapshot(*args, **kwargs)
     machine, expected = built["machines"][0], BOARD_FIXTURE["machines"][0]
 
-    _assert_matches_fixture_keys_and_nulls(built["board"], BOARD_FIXTURE["board"])
+    # The built board is the v1 fixture's two epics; the slim fixture has a third, so pair epics by id.
+    slim_by_id = {e["id"]: e for e in SLIM_BOARD["epics"]}
+    _assert_matches_fixture_keys_and_nulls(built["board"], {"epics": [slim_by_id[e["id"]] for e in built["board"]["epics"]]})
+    # The epics with no counterpart in the built board are named, and every slim epic has the built epics' keys.
+    assert slim_by_id.keys() - {e["id"] for e in built["board"]["epics"]} == {"ops-cleanup"}
+    assert all(list(e) == list(built["board"]["epics"][0]) for e in SLIM_BOARD["epics"])
     _assert_matches_fixture_keys_and_nulls({k: machine[k] for k in ("lanes", "load")}, {k: expected[k] for k in ("lanes", "load")})
     assert machine.keys() == expected.keys()
     # The live gather has the same key structure at every level and in every lane and load.
-    assert _levels(feed["board"]) == _levels(BOARD_FIXTURE["board"])
+    assert _levels(feed["board"]) == _levels(SLIM_BOARD)
     live = feed["machines"][0]
     assert live.keys() == expected.keys()
     assert list(live["lanes"][0]) == list(expected["lanes"][0]) and list(live["load"]) == list(expected["load"])

@@ -22,7 +22,8 @@ SAMPLE_TURN = {
     "cost_usd": 0.0875,
 }
 
-EPIC = {"id": str, "title": str, "status": str, "cost_usd": float, "counts": dict, "initiatives": list}
+EPIC = {"id": str, "title": str, "status": str, "cost_usd": float, "counts": dict, "initiatives": list, "settled": dict}
+SETTLED = {"landed": int, "dropped": int, "cost_usd": float}
 INITIATIVE = {"id": str, "short_id": str, "status": str, "cost_usd": float, "counts": dict, "phases": list}
 PHASE = {"id": str, "status": str, "cost_usd": float, "counts": dict, "tasks": list}
 TASK = {"id": str, "status": str, "run": str, "host": str, "cost_usd": float}
@@ -103,6 +104,8 @@ def test_board_nodes_carry_the_documented_keys_and_types():
     assert all(_types(i) == INITIATIVE for i in INITIATIVES)
     assert all(_types(p) == PHASE for p in PHASES)
     assert all(_types(t) == TASK for t in TASKS)
+    assert all(_types(e["settled"]) == SETTLED for e in EPICS)
+    assert all(e["settled"] == {"landed": 0, "dropped": 0, "cost_usd": 0.0} for e in EPICS)
     nodes = [*EPICS, *INITIATIVES, *PHASES]
     assert all(list(n["counts"]) == list(STATUSES) for n in nodes)
     assert all(type(v) is int for n in nodes for v in n["counts"].values())
