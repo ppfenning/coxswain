@@ -74,6 +74,20 @@ def test_one_gather_reads_each_work_path_and_the_store_rows_once(monkeypatch, ws
     assert (len(work), set(work.values()), len(store_reads)) == (4, {1}, 1)
 
 
+def test_the_store_queue_and_stranded_records_are_wired_only_in_store_mode(ws) -> None:
+    store, files = _deps(ws, "store").facts_deps, _deps(ws, "files").facts_deps
+    assert (store.queue is not None, store.stranded_records is not None, files.queue, files.stranded_records) == (True, True, None, None)
+
+
+def test_one_store_gather_with_the_queue_wired_reads_queue_and_stranded_inputs_once(monkeypatch, ws) -> None:
+    calls: collections.Counter = collections.Counter()
+    real_queue, real_stranded = run_store.read_queue, cli._chair_stranded_inputs
+    monkeypatch.setattr(run_store, "read_queue", lambda *a, **k: calls.update(["queue"]) or real_queue(*a, **k))
+    monkeypatch.setattr(cli, "_chair_stranded_inputs", lambda *a, **k: calls.update(["stranded"]) or real_stranded(*a, **k))
+    chair_facts.gather_facts(_deps(ws, "store").facts_deps, NOW)
+    assert dict(calls) == {"queue": 1, "stranded": 1}
+
+
 def test_a_beat_ends_the_tick_reads(monkeypatch, ws) -> None:
     store_reads: list[int] = []
     monkeypatch.setattr(run_store, "work_items", lambda *_a: store_reads.append(1) or [])
