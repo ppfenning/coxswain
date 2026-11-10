@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from agent_tools import chair_schedule_advice as advice_mod
-from agent_tools.chair_schedule import Host, Schedule, plan_schedule
+from agent_tools.chair_schedule import Host, Running, Schedule, plan_schedule
 from agent_tools.chair_schedule_durations import Estimate, estimate_duration
 from agent_tools.chair_schedule_graph import Initiative, Key, Node, Phase, build_graph
 from agent_tools.chair_steer import shared_paths
@@ -74,7 +74,13 @@ def plan_from_inputs(inputs: ScheduleInputs, now: datetime) -> tuple[Schedule, C
     durations = {k: estimate_duration(inputs["records"], n.size, mix[k], DEFAULT_SECONDS) for k, n in nodes.items()}
     hosts = [Host(h["name"], tuple(h["lanes"]), h["local"], tuple(h["repos"])) for h in inputs["hosts"]]
     target = datetime.fromisoformat(inputs["target"]) if inputs["target"] else None
-    schedule = plan_schedule(nodes, dependents, durations, hosts, inputs["mode"], inputs["load"], now, None, target)
+    # No finish is carried, so `now` marks each as overdue and it holds its lane for the planner's minimum.
+    held = {
+        (r["initiative"], r["phase"]): Running(r["host"], r["lane"], now)
+        for r in inputs.get("running", [])
+        if (r["initiative"], r["phase"]) in nodes
+    }
+    schedule = plan_schedule(nodes, dependents, durations, hosts, inputs["mode"], inputs["load"], now, held, target)
     return schedule, Context(nodes, dependents, durations)
 
 
