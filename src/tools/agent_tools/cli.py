@@ -162,6 +162,7 @@ host_load = _LazyModule("agent_tools.host_load")
 install = _LazyModule("agent_tools.install")
 install_exec = _LazyModule("agent_tools.install_exec")
 install_root = _LazyModule("agent_tools.install_root")
+intake_fields = _LazyModule("agent_tools.intake_fields")
 intake_queue = _LazyModule("agent_tools.intake_queue")
 intake_state = _LazyModule("agent_tools.intake_state")
 lake_config = _LazyModule("agent_tools.lake_config")
@@ -5812,6 +5813,35 @@ def _filing_repo_or_refusal(repo: str, profile: dict) -> tuple[str, str | None]:
     return chosen, None
 
 
+def _known_epics(rows: Sequence[Mapping]) -> list[str]:
+    """Pure. The epic ids the store rows name, which is the set the dash feed rolls up."""
+    return sorted({epic for row in rows if (epic := queue_rows.epic_of_row(row)) is not None})
+
+
+def _known_repos(profile: dict, siblings: Collection[str], resolved: str = "") -> list[str]:
+    """Pure. The `repo_map` names, the sibling checkout names a bare `--repo` resolves to, and the repo just resolved."""
+    return sorted({*(profile.get("repo_map") or {}), *siblings, *([resolved] if resolved else [])})
+
+
+def _sibling_checkouts(ws: Path) -> list[str]:
+    """Edge. Names of the git checkouts beside the workspace, where `route.resolve_repo` looks for a bare name."""
+    root = ws.absolute().parent
+    return [p.name for p in root.iterdir() if route.is_git_checkout(p)] if root.is_dir() else []
+
+
+_NEEDS_INTAKE = (
+    ("epic", "an epic"), ("priority", "a priority"), ("target_release", "a target release"),
+)
+
+
+def _field_needs_intake(a: argparse.Namespace) -> str | None:
+    """The refusal for the first of `--epic`, `--priority`, `--target-release` given without `--intake`, else None."""
+    for name, what in _NEEDS_INTAKE:
+        if getattr(a, name, None) is not None and not a.intake:
+            return f"routing: --{name.replace('_', '-')} needs --intake, since only an intake carries {what}"
+    return None
+
+
 def _intake_with_repo(intake_text: str, repo: str) -> str:
     fields, body = route.parse_frontmatter(intake_text)
     return route._frontmatter({**fields, "repo": repo}.items(), body)
@@ -5926,6 +5956,10 @@ def _route_file(a: argparse.Namespace) -> int:
     if after and not a.intake:
         print("routing: --after needs --intake, since only a queued intake waits")
         return 2
+    field_refusal = _field_needs_intake(a)
+    if field_refusal:
+        print(field_refusal)
+        return 2
     if a.draft and a.ready:
         print("routing: --draft and --ready are exclusive; give one")
         return 2
@@ -5936,7 +5970,8 @@ def _route_file(a: argparse.Namespace) -> int:
     home = str(Path.home())
     repo = route.resolve_repo(a.repo, ws.absolute().parent, route.is_git_checkout, home)
     if isinstance(repo, route.RepoRefused):
-        print(repo.message)
+        valid = ", ".join(_known_repos(profile, _sibling_checkouts(ws))) or "none known"
+        print(f"{repo.message}; valid repos: {valid}")
         return 2
     resolved = repo
     repo, refusal = _filing_repo_or_refusal(resolved, profile)
@@ -5946,6 +5981,17 @@ def _route_file(a: argparse.Namespace) -> int:
     if not _is_git_checkout_path(repo, home):
         print(_not_a_checkout_message(a.repo if repo == resolved else repo))
         return 2
+    fields: dict = {}
+    if a.intake:
+        # The repo passed the checkout test above, so its own name is a known repo; the epic list is read only when one is asked for.
+        name = os.path.basename(repo.rstrip("/"))
+        known_repos = _known_repos(profile, _sibling_checkouts(ws), name)
+        known_epics = _known_epics(run_store.read_queue(ws / "runs")) if a.epic else []
+        refusals = intake_fields.validate(name, a.epic, a.priority, a.target_release, known_repos, known_epics)
+        if refusals:
+            print("\n".join(f"routing: {line}" for line in refusals))
+            return 2
+        fields = intake_fields.normalise(name, a.epic, a.priority, a.target_release)
     repo = route.repo_field(repo, home)
     if a.body == "-":
         body = sys.stdin.read()
@@ -5968,7 +6014,8 @@ def _route_file(a: argparse.Namespace) -> int:
                 return 2
             date = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
             mapping = route.intake_file(a.title, body, repo, date, link=link, ids=profile.get("ids", "slug"), after=after,
-                                       stage=_filing_stage(a, profile))
+                                       stage=_filing_stage(a, profile), epic=fields.get("epic", ""),
+                                       priority=fields.get("priority", ""), target_release=fields.get("target_release", ""))
         else:
             mapping = route.initiative_files(a.title, body, repo, phase=a.phase)
     except ValueError as exc:
@@ -11908,6 +11955,9 @@ ROUTE_COMMANDS = [
             commands.Arg(("--after",), {"action": "append", "default": None, "help": "with --intake: ids this intake waits on; repeat the flag or comma-separate"}),
             commands.Arg(("--draft",), {"action": "store_true", "help": "with --intake: file it as a draft, which the chair skips until it is ready (the default)"}),
             commands.Arg(("--ready",), {"action": "store_true", "help": "with --intake: file it ready for the chair to pick up"}),
+            commands.Arg(("--epic",), {"default": None, "help": "with --intake: the epic id this intake belongs to; it must already exist"}),
+            commands.Arg(("--priority",), {"default": None, "help": "with --intake: a whole number; higher runs first"}),
+            commands.Arg(("--target-release",), {"default": None, "help": "with --intake: the release it ships in, such as 2026.11.6"}),
         ),
         "agent_tools.cli:_route_file", False, (),
     ),

@@ -105,7 +105,7 @@ cox plan serve DIR [--kind KIND] [--check] [--no-open]   serve a visual plan thr
 cox epic watch PIDFILE [--log LOG] [--max-seconds MAX_SECONDS] [--interval INTERVAL] [--json]   poll a detached run's pidfile until it exits
 cox route context [--profile PROFILE] [--json]   the routing profile's resolved context
 cox route status [--profile PROFILE] [--json] [--all]   what is queued or running for this profile
-cox route file [--profile PROFILE] [--repo REPO] [--title TITLE] [--body BODY] [--phase PHASE] [--intake] [--from-intake FROM_INTAKE] [--force] [--link LINK] [--after AFTER] [--draft] [--ready]   file a new ticket for the harness
+cox route file [--profile PROFILE] [--repo REPO] [--title TITLE] [--body BODY] [--phase PHASE] [--intake] [--from-intake FROM_INTAKE] [--force] [--link LINK] [--after AFTER] [--draft] [--ready] [--epic EPIC] [--priority PRIORITY] [--target-release TARGET_RELEASE]   file a new ticket for the harness
 cox route priority [INITIATIVE] [--profile PROFILE] [--set N] [--up] [--down] [--top] [--bottom]   move an initiative or a queued intake up or down the launch order
 cox route schedule [--profile PROFILE] [--explain INITIATIVE] [--should-jump INITIATIVE]   project the whole queue as one schedule
 cox route pull [--profile PROFILE] [--source SOURCE] [--dry-run]   file intake tickets from a source, once per link
