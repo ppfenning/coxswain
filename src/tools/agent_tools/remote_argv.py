@@ -21,7 +21,7 @@ _RSYNC_BOUND_OPTIONS = ["-a", f"--timeout={LANE_HOST_TIMEOUT_S}", "-e", f"ssh -o
 
 
 def login_shell_argv(remote_argv: list[str]) -> list[str]:
-    """Run the quoted command in `$SHELL -l -i -c` so startup files that export a token are read."""
+    """Run the quoted command in `$SHELL -l -i -c` so startup files that set PATH and the toolchain are read."""
     script = 'exec "${SHELL:-/bin/sh}" -l -i -c "$1"'
     return ["/bin/sh", "-c", script, "login-shell", shlex.join(remote_argv)]
 
@@ -66,6 +66,11 @@ def doctor_argv() -> list[str]:
 
 def auth_status_argv() -> list[str]:
     return ["claude", "auth", "status"]
+
+
+def token_status_argv(probe: bool = False) -> list[str]:
+    """Runs on the lane host against its own token file: no secret, no env prefix."""
+    return ["cox", "setup", "token", "status", "--probe"] if probe else ["cox", "setup", "token", "status"]
 
 
 def json_object_in(output: str) -> dict | None:
