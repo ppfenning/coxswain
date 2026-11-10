@@ -93,3 +93,47 @@ def test_absent_inputs_reproduce_the_old_plan():
 
 def _facts_without_inputs() -> Facts:
     return {k: v for k, v in _facts().items() if k != "schedule_inputs"}  # type: ignore[return-value]
+
+
+def _cli_phase(id: str, status: str, parents: list[str], surface: str = "cli.py") -> dict:
+    return {"id": id, "status": status, "parents": parents, "size": "S", "mix": "plain", "surfaces": [surface]}
+
+
+def _cli_facts(a_phases: list[dict], **over) -> Facts:
+    """A (the higher priority, so it takes cli.py first) and B with free lanes; B's ready phase is on cli.py."""
+    ready = {"a": next(p for p in a_phases if p["status"] == "ready"), "b": _cli_phase("p1", "ready", [])}
+    initiatives = [{**_initiative(i), "ready_surfaces": ready[i]["surfaces"]} for i in "ab"]
+    inputs = {
+        "initiatives": [
+            {"id": "a", "priority": 1, "repo": "r", "phases": a_phases},
+            {"id": "b", "priority": 0, "repo": "r", "phases": [ready["b"]]},
+        ],
+        "records": [],
+        "hosts": HOSTS,
+        "mode": "orchestrating",
+        "load": {},
+        "target": None,
+    }
+    dispatch = {"max_in_flight": 3, "live_runs": 0, "hosts": [{"name": "host-a", "live_runs": 0, "capacity": 1}, {"name": "host-b", "live_runs": 0, "capacity": 1}]}
+    return _base_facts(initiatives=initiatives, dispatch=dispatch, steer_policy={"limit": 1, "serial": []}, schedule_inputs=inputs, **over)
+
+
+def _quarantined(initiative: str) -> dict:
+    # A verify quarantine plans a needs_chair report and no retry, so the steer policy leaves B's launch to the schedule.
+    return {"task_id": f"{initiative}-q", "initiative": initiative, "cause": "verify", "harness_failures": 0, "has_patch": False, "rescue_failed": False}
+
+
+def test_a_quarantined_initiatives_ready_phase_holds_no_file_against_another_initiative():
+    facts = _cli_facts([_cli_phase("p1", "ready", [])], quarantines=[_quarantined("a")])
+    assert [i for i, _ in _epics(plan_tick(facts, NOW))] == ["b"]
+
+
+def test_without_the_quarantine_the_file_holder_launches_and_the_other_waits():
+    facts = _cli_facts([_cli_phase("p1", "ready", [])])
+    assert [i for i, _ in _epics(plan_tick(facts, NOW))] == ["a"]
+
+
+def test_a_withheld_initiatives_blocked_later_phase_holds_no_file_either():
+    phases = [_cli_phase("p1", "ready", [], "other.py"), _cli_phase("p2", "blocked", ["p1"])]
+    facts = _cli_facts(phases, quarantines=[_quarantined("a")])
+    assert [i for i, _ in _epics(plan_tick(facts, NOW))] == ["b"]
