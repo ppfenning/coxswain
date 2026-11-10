@@ -154,6 +154,7 @@ def test_a_gather_that_cannot_run_is_null_and_never_raises():
     assert result == {
         "cox": "0.20.0", "graphs": None, "cartridges": None, "claude": None, "login_ok": None,
         "workspace_dir": None, "repos": [], "checkouts": {}, CHECKOUT_ENV_KEY: {},
+        "ref_faults": {},
     }
     assert set(host_load) == {"cpu_pct", "load_avg_1m", "load_avg_5m", "load_avg_15m", "mem_used_gb"}
     assert all(isinstance(v, float) for v in host_load.values())
@@ -287,7 +288,35 @@ def test_the_beat_reads_login_from_claude_auth_status_json():
             "t": {"branch": "", "behind_main": 0},
         },
         CHECKOUT_ENV_KEY: {name: {"lock_hash": "v9", "synced_hash": "v9"} for name in ("h", "c", "t")},
+        "ref_faults": {},
     }
+
+
+def _repo_with_refs(root, name: str, refs: dict[str, str]):
+    repo = root / name
+    for rel, text in refs.items():
+        path = repo / ".git" / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    return repo
+
+
+def _no_answer(argv: list[str]) -> tuple[int, str]:
+    return 1, ""
+
+
+def test_the_beat_names_the_exact_empty_ref_file_under_ref_faults(tmp_path):
+    repo = _repo_with_refs(tmp_path, "r", {"refs/heads/ok": "a" * 40 + "\n", "refs/heads/broken": ""})
+    result = host_cmd.beat_versions(_no_answer, None, None, None, None, [str(repo)])
+    assert result["ref_faults"] == {str(repo): [".git/refs/heads/broken"]}
+
+
+def test_a_healthy_repo_is_absent_from_ref_faults_and_the_key_reaches_the_beat_argv(tmp_path):
+    healthy = _repo_with_refs(tmp_path, "good", {"refs/heads/main": "b" * 40 + "\n"})
+    broken = _repo_with_refs(tmp_path, "bad", {"refs/tags/t": ""})
+    versions = host_cmd.beat_versions(_no_answer, None, None, None, None, [str(healthy), str(broken)])
+    assert versions["ref_faults"] == {str(broken): [".git/refs/tags/t"]}
+    assert "ref_faults" in " ".join(host_cmd.beat_argv("h", versions))
 
 
 def _env_run(lock: str | None, stamp: dict[str, str], check_code: int, calls: list[list[str]]):
