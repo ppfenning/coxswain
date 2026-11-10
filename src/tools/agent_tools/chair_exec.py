@@ -47,6 +47,7 @@ from agent_tools import (
     remote_lane,
     repo_path,
     route,
+    route_edit,
     route_guard,
     run_store,
     stale_draft,
@@ -61,7 +62,7 @@ from agent_tools.chair_revert_exec import ForgePort as RevertForgePort
 from agent_tools.chair_revert_exec import GitPort as RevertGitPort
 from agent_tools.chair_schedule import SCHEDULE_FILE
 from agent_tools.chair_types import Action, LandTrigger, is_fenced
-from agent_tools.land import approve_to_done
+from agent_tools.land import LAND_CONFLICT_KEY, approve_to_done, conflict_note
 from agent_tools.remote_argv import LANE_HOST_TIMEOUT_S, probe_argv, ssh_argv, sync_argv
 
 __all__ = [
@@ -1029,6 +1030,31 @@ def _finish_task(action: Action, deps: Deps) -> Result:
     return _result(action, "failed", f"set-state done for {task}: {written}")
 
 
+def _requeue_task(action: Action, deps: Deps) -> Result:
+    """Edge. Mark an approved task's store row with `reason` as a rebuild marker, then set it ready; a task no longer approved is skipped."""
+    initiative, task = action.get("initiative", ""), action.get("task_id", "")
+    why = action.get("reason", "") or "requeued by the chair"
+    stored = next((r for r in run_store.read_queue(deps.runs_dir, initiative, kind="task") if r.get("task_id") == task), None)
+    if stored is None:
+        return _result(action, "failed", f"no store row for {task}")
+    if stored.get("state") != "approved":
+        return _result(action, "skipped", f"{task} is {stored.get('state')}, not approved")
+    key = {"initiative": initiative, "task_id": task}
+    marked = {"extra": {**(stored.get("extra") or {}), LAND_CONFLICT_KEY: why}, "body": route_edit.append_note(stored.get("body") or "", conflict_note(why))}
+    refused_row = run_store.upsert_row_detail(deps.runs_dir, {**key, **marked})
+    if refused_row:
+        return _result(action, "failed", f"the store did not take the reason of {task}: {refused_row}")
+    written = store_cli.set_state(deps.runs_dir, initiative, task, "ready", "chair-loop", "approved")
+    if isinstance(written, store_cli.StateSet):
+        return _result(action, "done", f"{task} requeued: {why}")
+    # The task is not ours to mark: put the row back as it was.
+    unrestored = run_store.upsert_row_detail(deps.runs_dir, {**key, "extra": stored.get("extra") or {}, "body": stored.get("body") or ""})
+    note = f"; the store did not put the row back: {unrestored}" if unrestored else ""
+    if isinstance(written, store_cli.StateRefused) and written.current not in (None, "approved") and not unrestored:
+        return _result(action, "skipped", f"{task} is {written.current}, not approved")
+    return _result(action, "failed", f"set-state ready for {task}: {written}{note}")
+
+
 def _record_merged_pr(deps: Deps, repo: str, run: str, phase: str, task: str, branches: list[str]) -> str:
     """Edge. Mirror the merged PR onto the finished task's record; the text to add to the reason.
     The task is already done, so a PR that cannot be found or recorded changes the reason only, never the status.
@@ -1545,6 +1571,8 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
         return _close_initiative(action, deps)
     if kind == "finish_task":
         return _finish_task(action, deps)
+    if kind == "requeue_task":
+        return _requeue_task(action, deps)
     if kind in ("merge_level", "run_gate"):
         return _steward_command(action, deps, blocked)
     if kind == "steward_event":
