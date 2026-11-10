@@ -809,14 +809,15 @@ def _required_refs(
     cut: bool = False,
     from_pr: bool = False,
 ) -> list[str]:
-    """The commits the phase branch must contain: what its tasks need, not where each parent's head is now.
+    """The refs a phase branch is checked against (`cut` false) or cut from (`cut` true).
 
-    A phase with no parents needs `base_ref`. Under a parent, a need that is approved and merged
-    contributes its stored `merged_commit`, or the parent's branch when none is stored. A need that
-    is unbuilt, done or dropped contributes nothing. A parent no task needs anything from contributes its branch.
-    With `cut`, a parent whose tasks are all settled contributes its whole branch, so a branch cut after
-    the parent finished carries its phase-level commits too; the staleness check never asks for that.
-    With `from_pr`, the phase is cut from the pr branch, which already holds every landed parent: `base_ref` alone.
+    A phase with no parents, or one cut from the pr branch (`from_pr`), needs `base_ref` alone. Under a
+    parent, a need that is unbuilt, done or dropped contributes nothing, and a parent no task needs anything
+    from contributes its branch. A need that is approved and merged contributes its stored `merged_commit`
+    (the parent's branch when none is stored), so the staleness check judges a branch on what its tasks need.
+    With `cut`, such a need contributes the parent's current branch tip instead, so an assembly never starts
+    from an older head whose conflict a later commit resolved, and a parent whose tasks are all settled
+    contributes its whole branch.
     """
     if not parents or from_pr:
         return [base_ref]
@@ -832,7 +833,7 @@ def _required_refs(
             refs.add(branch_of(parent))
             continue
         refs.update(
-            str(n.get("merged_commit") or branch_of(parent))
+            branch_of(parent) if cut else str(n.get("merged_commit") or branch_of(parent))
             for n in edges
             if n.get("state") == "approved" and n.get("merged")
         )
