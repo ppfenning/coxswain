@@ -1011,6 +1011,16 @@ def test_local_login_is_true_false_or_unknown_by_what_claude_auth_status_said(mo
     ]
 
 
+def test_local_login_asks_the_token_verb_without_a_probe_so_a_feed_tick_spends_no_model_turn(monkeypatch):
+    asked: list = []
+    monkeypatch.undo()  # the autouse fixture stubs `_local_login`; this test needs the real one
+    monkeypatch.setattr(dash_feed, "_run_capturing", lambda argv: asked.append(argv) or (0, '{"loggedIn": true}'))
+    monkeypatch.setattr(dash_feed.chair_login_check.socket, "gethostname", lambda: "m")
+
+    assert dash_feed._local_login("m") is True
+    assert asked == [["cox", "setup", "token", "status"]]
+
+
 def test_gather_feed_seats_the_local_login_check_on_the_local_row(monkeypatch, tmp_path):
     def fake_gather(runs_dir, work_dir, now, local_name, local_capacity, spend, local_versions=None):
         hosts = console_screen.with_local_host([], local_name, local_capacity, local_versions)
