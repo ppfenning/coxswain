@@ -3183,8 +3183,7 @@ def _merge_missing(ctx: _Ctx, phase: str, item: dict[str, Any]) -> str | None:
     if not (_store_authoritative(ctx) and item.get("phase") == phase and item.get("state") == "approved" and commit):
         return None
     branch = ctx.phase_branch(phase)
-    on_branch, _ = _git("-C", str(ctx.repo), "merge-base", "--is-ancestor", str(commit), branch)
-    if on_branch:
+    if base_holds(ctx.repo, str(commit), branch):
         return None
     (fresh,) = _store_fresh([item], _read_store_rows(ctx))
     if fresh["state"] == "done":
