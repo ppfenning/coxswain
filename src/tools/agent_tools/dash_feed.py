@@ -12,12 +12,13 @@ import re
 import socket
 import subprocess
 import time
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from functools import reduce
 from pathlib import Path
 from types import MappingProxyType
+from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from agent_tools import (
@@ -570,6 +571,16 @@ def _local_versions(login_ok: bool | None, now: str) -> dict | None:
     return None if login_ok is None else {"login_ok": login_ok, "login_checked_at": now}
 
 
+def _group_rows(rows: Iterable[Mapping]) -> dict[Any, list[Mapping]]:
+    """`rows` by their `initiative` in one pass, row order kept within each group. A row naming none sits under `None`.
+    The per-initiative helpers filter `rows` themselves, so handing each its own group gives the same result without
+    a scan of every row per initiative."""
+    groups: dict[Any, list[Mapping]] = {}  # mutation localised to this one pass
+    for row in rows:
+        groups.setdefault(row.get("initiative"), []).append(row)
+    return groups
+
+
 def _initiative_progress(rows: list[dict], initiative: str) -> tuple[int, int, str | None]:
     """`(phases_landed, phases_total, current_phase)` for one initiative's task rows: a phase is landed when
     every one of its items is `done` or `dropped`, the same rule `console_screen._phase_progress` uses.
@@ -593,7 +604,8 @@ def _epics_v1(rows: list[dict], definitions: Mapping[str, Mapping] | None = None
 
     initiatives = sorted((row for row in rows if row.get("kind") == "initiative" and row.get("initiative")), key=lambda r: r["initiative"])
     members = {row["initiative"]: queue_rows.epic_of_row(row) for row in initiatives}
-    progress = {i: _initiative_progress(rows, i) for i in members}
+    groups = _group_rows(rows)
+    progress = {i: _initiative_progress(groups.get(i, []), i) for i in members}
     landed = [i for i, (done, total, _) in progress.items() if total > 0 and done == total]
     # Members may name different branches; the epic takes the first one set, in initiative-id order.
     branches: dict[str, str] = {}
@@ -717,11 +729,10 @@ def _queue_states(
     rows: Sequence[Mapping], live_phases: Collection[tuple[str, str]], stranded: Collection[tuple[str, str, str]],
 ) -> dict[tuple[str, str, str], str]:
     """Every queue task's feed state by `(initiative, phase, task_id)`, the state `phases[].tasks[].state` shows."""
-    initiatives = {row.get("initiative") for row in rows if row.get("kind") == "task"}
     return {
         (initiative, phase, task): state
-        for initiative in initiatives
-        for phase, task, state in _task_states(rows, initiative, live_phases, stranded)
+        for initiative, own in _group_rows(rows).items()
+        for phase, task, state in _task_states(own, initiative, live_phases, stranded)
     }
 
 
@@ -915,8 +926,9 @@ def _queue(runs_dir: Path, live_phases: Collection[tuple[str, str]] = ()) -> tup
     stranded = _stranded_tasks(_task_records(runs_dir), rows)
     # Walked backwards, so the last write for each initiative is its first index.
     first_seen = {row["initiative"]: index for index, row in reversed(list(enumerate(rows))) if row.get("initiative")}
-    progress = {initiative: _initiative_progress(rows, initiative) for initiative in first_seen}
-    priorities = {initiative: _priority(rows, initiative) for initiative in first_seen}
+    groups = _group_rows(rows)
+    progress = {initiative: _initiative_progress(groups[initiative], initiative) for initiative in first_seen}
+    priorities = {initiative: _priority(groups[initiative], initiative) for initiative in first_seen}
     open_initiatives = sorted(
         (initiative for initiative in first_seen if progress[initiative][0] < progress[initiative][1]),
         key=lambda initiative: (_priority_key(priorities[initiative]), first_seen[initiative]),
@@ -928,12 +940,12 @@ def _queue(runs_dir: Path, live_phases: Collection[tuple[str, str]] = ()) -> tup
             "phases_landed": progress[initiative][0],
             "phases_total": progress[initiative][1],
             "current_phase": progress[initiative][2],
-            "phases": _initiative_phases(rows, initiative, live_phases, stranded),
+            "phases": _initiative_phases(groups[initiative], initiative, live_phases, stranded),
         }
         for initiative in open_initiatives
     ]
     shown = queue[:_MAX_ROWS]
-    return ([_waved(row, rows, live_phases) for row in shown] if isinstance(live_phases, Mapping) else shown), len(queue)
+    return ([_waved(row, groups[row["initiative"]], live_phases) for row in shown] if isinstance(live_phases, Mapping) else shown), len(queue)
 
 
 def _reaches_a_person(to: str) -> bool:
