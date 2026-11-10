@@ -138,6 +138,7 @@ from harness.worktree import (
     link_venv,
     prune_registrations,
     read_lock,
+    registry_lock,
     release_stale_holders,
     remove_worktree,
 )
@@ -775,7 +776,8 @@ def _open_phase_worktree(
         listed, listing = _git("-C", str(ctx.repo), "worktree", "list", "--porcelain")
         if listed and _registered_on_branch(listing, worktree, branch):
             return _Opened(True, "", True, cleared)
-        ok, detail = _git("-C", str(ctx.repo), "worktree", "add", str(worktree), branch)
+        with registry_lock():
+            ok, detail = _git("-C", str(ctx.repo), "worktree", "add", str(worktree), branch)
         return _Opened(ok, detail, True, cleared)
     ok, detail = create_worktree(ctx.repo, worktree, branch=branch, base=base_ref)
     wanted = [ctx.phase_branch(p) for p in parents] if refs is None else list(refs)
@@ -3513,7 +3515,8 @@ def _run_phase(
         if stale_recreate:
             return _stale_phase(record, stale_recreate)
         _git("-C", str(ctx.phase_worktree(phase)), "checkout", "--detach", "-q")
-        _git("-C", str(ctx.repo), "worktree", "remove", "--force", str(ctx.phase_worktree(phase)))
+        with registry_lock():
+            _git("-C", str(ctx.repo), "worktree", "remove", "--force", str(ctx.phase_worktree(phase)))
         _git("-C", str(ctx.repo), "branch", "-D", branch)
         reopened = _open_phase_worktree(ctx, phase, cut_ref, parents, cut_from)
         ok, detail, reused = reopened

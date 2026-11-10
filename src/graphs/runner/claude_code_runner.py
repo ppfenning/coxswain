@@ -1132,23 +1132,28 @@ class ClaudeCodeRunner:
     def _make_scratch(self, role: str) -> tuple[Path, Path]:
         parent = Path(tempfile.mkdtemp(prefix="agent-graphs-build-"))
         scratch = parent / "tree"
-        proc = subprocess.run(
-            ["git", "-C", str(self.repo_dir), "worktree", "add", "--detach", str(scratch), "HEAD"],
-            capture_output=True, text=True,
-        )
+        from harness.worktree import link_venv, registry_lock  # here, not at the top: harness imports this module
+
+        with registry_lock():
+            proc = subprocess.run(
+                ["git", "-C", str(self.repo_dir), "worktree", "add", "--detach", str(scratch), "HEAD"],
+                capture_output=True, text=True,
+            )
         if proc.returncode != 0:
             shutil.rmtree(parent, ignore_errors=True)
             raise RunnerError(f"could not create a scratch worktree for '{role}': {(proc.stderr or '').strip()[:300]}")
-        from harness.worktree import link_venv  # here, not at the top: harness imports this module
 
         link_venv(Path(self.repo_dir), scratch)
         return parent, scratch
 
     def _drop_scratch(self, parent: Path, scratch: Path) -> None:
-        subprocess.run(
-            ["git", "-C", str(self.repo_dir), "worktree", "remove", "--force", str(scratch)],
-            capture_output=True, text=True,
-        )
+        from harness.worktree import registry_lock  # here, not at the top: harness imports this module
+
+        with registry_lock():
+            subprocess.run(
+                ["git", "-C", str(self.repo_dir), "worktree", "remove", "--force", str(scratch)],
+                capture_output=True, text=True,
+            )
         shutil.rmtree(parent, ignore_errors=True)
 
     def _thread(self, name: str, role: str) -> dict[str, Any]:

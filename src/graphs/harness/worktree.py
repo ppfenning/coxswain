@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import threading
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -15,12 +16,25 @@ __all__ = [
     "normalise_patch",
     "prune_registrations",
     "read_lock",
+    "registry_lock",
     "release_stale_holders",
     "remove_worktree",
     "reset_worktree",
     "stale_holders",
     "sync_env",
 ]
+
+# One lock for every `git worktree` add, remove and prune this process runs. Lanes run phases on threads over
+# one repository, and a `prune` in one lane can delete the `.git/worktrees/<name>` entry another lane's `add` has
+# just made and not yet checked out ("gitfile does not point to a valid repository"). Re-entrant, so
+# `remove_worktree` can prune under the lock it already holds.
+_REGISTRY_LOCK = threading.RLock()
+
+
+def registry_lock() -> threading.RLock:
+    """The lock to hold around any `git worktree add`, `remove` or `prune`, so no two of them overlap."""
+    return _REGISTRY_LOCK
+
 
 _TRAILING_MARKERS = ("</patch>", "</diff>", "</code>", "```")
 _MIDDLE_TAGS = ("</patch>", "</diff>", "<patch>", "<diff>")
@@ -120,7 +134,8 @@ def create_worktree(repo: Path, worktree: Path, *, branch: str, base: str | None
     cmd = ["git", "-C", str(repo), "worktree", "add", "-b", branch, str(worktree)]
     if base is not None:
         cmd.append(base)
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    with _REGISTRY_LOCK:
+        result = subprocess.run(cmd, capture_output=True, text=True)
     return result.returncode == 0, (result.stderr or result.stdout).strip()
 
 
@@ -154,11 +169,12 @@ def prune_registrations(repo: Path) -> tuple[bool, str]:
     then blocks the next `worktree add` on the same branch or path with a
     phantom "already exists" until this runs.
     """
-    result = subprocess.run(
-        ["git", "-C", str(repo), "worktree", "prune", "--verbose"],
-        capture_output=True,
-        text=True,
-    )
+    with _REGISTRY_LOCK:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "worktree", "prune", "--verbose"],
+            capture_output=True,
+            text=True,
+        )
     return result.returncode == 0, (result.stderr or result.stdout).strip()
 
 
@@ -171,11 +187,12 @@ def remove_worktree(repo: Path, worktree: Path) -> tuple[bool, str]:
     when there is no real repo behind a patch. Either way, `prune_registrations`
     runs last so a stale entry never survives this call.
     """
-    result = subprocess.run(
-        ["git", "-C", str(repo), "worktree", "remove", "--force", str(worktree)],
-        capture_output=True,
-        text=True,
-    )
+    with _REGISTRY_LOCK:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "worktree", "remove", "--force", str(worktree)],
+            capture_output=True,
+            text=True,
+        )
     detail = (result.stderr or result.stdout).strip()
     if result.returncode != 0 and worktree.exists():
         shutil.rmtree(worktree, ignore_errors=True)
