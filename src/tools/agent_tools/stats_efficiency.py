@@ -33,7 +33,7 @@ def _ratio(num: float, den: float) -> float | None:
 
 def _land(line: str) -> tuple[str, str] | None:
     try:
-        row = json.loads(line)
+        row = json.loads(line.replace("\x00", ""))
     except ValueError:
         return None
     if isinstance(row, dict) and row.get("exit") == 0 and "mark_done" in (row.get("steps_reached") or []) and row.get("task"):
@@ -68,7 +68,7 @@ def coverage_start(lands: Iterable[tuple[str, str]]) -> str | None:
 
 def _log_day(line: str) -> str:
     try:
-        row = json.loads(line)
+        row = json.loads(line.replace("\x00", ""))
     except ValueError:
         return ""
     ts = row.get("ts") if isinstance(row, dict) else None
