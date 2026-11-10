@@ -4073,9 +4073,10 @@ def test_a_driver_whose_lease_was_taken_before_the_phase_builds_nothing_and_reco
     )
 
     assert runner.calls == []
-    assert result["phases"][0]["status"] == "blocked"
-    assert [q["grain"] for q in result["quarantined"]] == ["phase"]
-    _assert_stale(result["quarantined"][0])
+    assert result["phases"][0]["status"] == "interrupted"
+    assert result["quarantined"] == []
+    _assert_stale(result["phases"][0])
+    assert result["phases"][0]["interrupted"] == []
     assert _store_rows(store) == [0, 0, 0, 0, 0]
 
 
@@ -4088,10 +4089,11 @@ def test_a_landing_after_the_lease_is_taken_over_is_refused_and_records_no_ledge
         repo, cart, tmp_path, work=initiative(two_phases=False), store=store, epoch=held, lease_name=LEASE
     )
 
-    assert {q["grain"] for q in result["quarantined"]} == {"task", "phase"}
-    for entry in result["quarantined"]:
+    assert result["quarantined"] == []
+    assert result["phases"][0]["status"] == "interrupted"
+    assert result["phases"][0]["interrupted"], "the tasks the lease loss stopped are listed"
+    for entry in result["phases"][0]["interrupted"]:
         _assert_stale(entry)
-    assert result["phases"][0]["status"] == "blocked"
     assert _store_rows(store) == [0, 0, 0, 0, 0]
     assert not (tmp_path / "ledger.jsonl").exists()
     assert [b for b in branches(repo) if "--" in b] == [], "no draft branch was created"
@@ -4118,9 +4120,10 @@ def test_a_quarantine_after_the_lease_is_taken_over_records_no_attempt(repo, car
         lease_name=LEASE,
     )
 
-    probe = next(q for q in result["quarantined"] if q["id"] == "t1-probe")
+    probe = next(q for q in result["phases"][0]["interrupted"] if q["id"] == "t1-probe")
     _assert_stale(probe)
-    assert "not recorded: " in probe["reason"] and probe["kind"] == "no_work"
+    assert "not recorded: " in probe["reason"] and probe["kind"] == "interrupted"
+    assert result["quarantined"] == []
     assert _store_rows(store) == [0, 0, 0, 0, 0]
 
 
@@ -4132,11 +4135,10 @@ def test_a_lease_lost_at_the_ledger_tail_blocks_the_phase_and_its_dependents(
     result, _ = drive(repo, cart, tmp_path, store=store, epoch=held, lease_name=LEASE)
 
     p1, p2 = result["phases"]
-    assert p1["status"] == "blocked"
+    assert p1["status"] == "interrupted"
     _assert_stale(p1)
-    assert [q for q in result["quarantined"] if q["grain"] == "phase"] == [
-        {"id": "p1-foundations", "phase": "p1-foundations", "grain": "phase", "reason": p1["reason"], "kind": "no_work"}
-    ]
+    assert result["quarantined"] == []
+    assert p1["interrupted"] == [], "every task merged before the takeover, so none was in flight"
     assert p2["status"] == "blocked" and "did not meet its goal" in p2["reason"]
     # The landing ran under the live lease; only what came after the takeover is refused.
     assert all(task["merged"] for task in result["tasks"])

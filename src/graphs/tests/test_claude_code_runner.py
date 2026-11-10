@@ -121,6 +121,29 @@ def test_child_env_sets_shell_to_bash_and_keeps_the_rest() -> None:
     assert child_env(ENVIRON, None) == {"SHELL": "/usr/bin/zsh", "PATH": "p"}
 
 
+def test_child_env_token_replaces_a_different_value_in_the_environment() -> None:
+    environ = {**ENVIRON, "CLAUDE_CODE_OAUTH_TOKEN": "old"}
+    assert child_env(environ, "/bin/bash", "new") == {
+        "SHELL": "/bin/bash",
+        "PATH": "p",
+        "CLAUDE_CODE_OAUTH_TOKEN": "new",
+    }
+    assert environ["CLAUDE_CODE_OAUTH_TOKEN"] == "old"
+
+
+def test_child_env_token_is_added_when_the_environment_has_none() -> None:
+    assert child_env(ENVIRON, None, "new") == {
+        "SHELL": "/usr/bin/zsh",
+        "PATH": "p",
+        "CLAUDE_CODE_OAUTH_TOKEN": "new",
+    }
+
+
+def test_child_env_without_a_token_keeps_the_exported_value() -> None:
+    environ = {**ENVIRON, "CLAUDE_CODE_OAUTH_TOKEN": "old"}
+    assert child_env(environ, None, None) == environ
+
+
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not on PATH")
 def test_the_child_sees_bash_as_its_shell(fake_claude, tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("SHELL", "/usr/bin/zsh")

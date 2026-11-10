@@ -8,8 +8,18 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from agent_tools import chair_login_watch, chair_plan_prune, chair_stall, chair_steward
+from agent_tools import (
+    chair_approval_hold,
+    chair_launch_why,
+    chair_lease_refusal,
+    chair_login_watch,
+    chair_plan_prune,
+    chair_stall,
+    chair_steer_cycle,
+    chair_steward,
+)
 from agent_tools.chair_carry import plan_carry
+from agent_tools.chair_idle_ready import plan_idle_ready
 from agent_tools.chair_idle_stall import diagnose, is_stalled
 from agent_tools.chair_plan_fill import (
     HostSlot,
@@ -24,6 +34,7 @@ from agent_tools.chair_plan_fill import (
 )
 from agent_tools.chair_plan_land import backoff_held, fetch_action, newest_run, plan_finish, plan_lands
 from agent_tools.chair_plan_recover import (
+    STRANDED_CAUSE,
     _initiative_first_unmet_need,
     claimed_by,
     plan_lost_runs,
@@ -38,6 +49,7 @@ from agent_tools.chair_plan_widen import plan_widen
 from agent_tools.chair_rebase import plan_rebase
 from agent_tools.chair_revert import revert_check
 from agent_tools.chair_runnable import Blocking, TaskView, WaitingInitiative, runnable_verdict
+from agent_tools.chair_schedule import Schedule, schedule_feed
 from agent_tools.chair_steer import steer_heads
 from agent_tools.chair_types import (
     DEADLOCK_CAUSE,
@@ -55,6 +67,7 @@ from agent_tools.chair_types import (
     stamp,
 )
 from agent_tools.ci_gate import CiGate
+from agent_tools.route_schedule import plan_from_inputs
 from core.landing import DEFAULT_LAND_AT
 
 _UNPAUSED = CiGate(False, "")
@@ -123,11 +136,16 @@ def _drained_hosts(login_hosts: Sequence[Mapping]) -> frozenset[str]:
     return frozenset(str(row.get("name") or "") for row in login_hosts if row.get("state") == "draining")
 
 
+def _unreachable_hosts(login_hosts: Sequence[Mapping]) -> frozenset[str]:
+    """Names of rows whose state is 'unreachable': a dead machine, so a home there is stuck."""
+    return frozenset(str(row.get("name") or "") for row in login_hosts if row.get("state") == chair_login_watch.UNREACHABLE_STATE)
+
+
 def _stuck_homes(actions: list[Action], launch_at: list[int], home: Mapping[str, str], facts: Facts) -> set[int]:
-    """Indices whose home host is drained, login-lapsed, or whose lane is lost: these relocate instead of
-    routing home. While local lanes are decompose-only, a relaunch or retry homed on "" is stuck too."""
+    """Indices whose home host is drained, unreachable, login-lapsed, or whose lane is lost: these relocate instead
+    of routing home. While local lanes are decompose-only, a relaunch or retry homed on "" is stuck too."""
     login_hosts = facts.get("login_hosts", [])
-    stuck_hosts = chair_login_watch.login_blocked(login_hosts) | _drained_hosts(login_hosts)
+    stuck_hosts = chair_login_watch.login_blocked(login_hosts) | _drained_hosts(login_hosts) | _unreachable_hosts(login_hosts)
     lost = frozenset(facts.get("lost_runs", {}))
     decompose_only = facts.get("dispatch", {}).get("local_lanes") == "decompose"
     return {
@@ -442,6 +460,48 @@ def _withhold_lost_runs(actions: list[Action], lost: frozenset[str]) -> list[Act
     ]
 
 
+def _lease_held_ids(facts: Facts) -> frozenset[str]:
+    """Initiatives whose launch was refused on a lease whose holder is still running. A gone holder waits for nothing.
+
+    A live holder past the TTL since the last refusal is also past it since the first, so that case is the stuck one and stays held."""
+    running = frozenset(r["id"] for r in facts.get("running", []))
+    return frozenset(i for i, s in facts.get("lease_refusals", {}).items() if s["holder_run"] in running)
+
+
+def _lease_stuck_actions(facts: Facts, now: datetime | None) -> list[Action]:
+    """One lease_stuck needs_chair per initiative whose live holder has refused it for the TTL, unless its key is reported.
+
+    The key `lease_stuck|<initiative>|<holder_run>` shares the relaunch_loop_reported set."""
+    reported = set(facts.get("relaunch_loop_reported", []))
+    running = frozenset(r["id"] for r in facts.get("running", []))
+    due = [
+        (initiative, streak)
+        for initiative, streak in facts.get("lease_refusals", {}).items()
+        if (first := _parse_utc(streak["first_at"])) is not None
+        and now is not None
+        and chair_lease_refusal.stuck_due(first, now, streak["holder_run"] in running)
+        and f"lease_stuck|{initiative}|{streak['holder_run']}" not in reported
+    ]
+    return [
+        {
+            "kind": "needs_chair",
+            "initiative": initiative,
+            "cause": "lease_stuck",
+            "reason": f"run {s['holder_run']} still holds the lease; launches refused from {s['first_at']} to {s['last_at']}",
+        }
+        for initiative, s in due
+    ]
+
+
+def _withhold_lease_held(actions: list[Action], held: frozenset[str]) -> list[Action]:
+    """Drop a lease-held initiative's relaunch, retry and rescue, and the paired clear_branches. needs_chair is untouched."""
+    return [
+        a
+        for a in actions
+        if not (a["initiative"] in held and a["kind"] in ("relaunch", "retry", "rescue", "clear_branches"))
+    ]
+
+
 def _unmet_needs_ids(initiatives: list[InitiativeFacts]) -> frozenset[str]:
     """Initiatives no launch_epic may take this tick: no ready task has every need landed."""
     return frozenset(i["id"] for i in initiatives if _initiative_first_unmet_need(i) is not None)
@@ -462,8 +522,11 @@ def _unstarted_waiting_chair(initiatives: list[InitiativeFacts]) -> list[Action]
     ]
 
 
-def _login_needs_chair_actions(facts: Facts) -> list[Action]:
-    return chair_login_watch.login_needs_chair(facts.get("login_hosts", []))
+def _login_needs_chair_actions(facts: Facts, now: datetime | None) -> list[Action]:
+    """Login-lapsed and host-unreachable notices; host_back needs the tick's clock and is absent without it."""
+    login_hosts = facts.get("login_hosts", [])
+    back = chair_login_watch.host_back_needs_chair(login_hosts, now.isoformat()) if now is not None else []
+    return [*chair_login_watch.login_needs_chair(login_hosts), *chair_login_watch.host_unreachable_needs_chair(login_hosts), *back]
 
 
 def _held_reason(held: dict) -> str:
@@ -552,6 +615,14 @@ def _login_check_actions(facts: Facts, now: datetime | None) -> list[Action]:
         return []
     login_hosts = facts.get("login_hosts", [])
     return [{"kind": "check_login", "host": name} for name in chair_login_watch.due_for_login_check(login_hosts, now.isoformat())]
+
+
+def _probe_host_actions(facts: Facts, now: datetime | None) -> list[Action]:
+    """One probe_host per unreachable host due for a probe; requires the tick's clock."""
+    if now is None:
+        return []
+    login_hosts = facts.get("login_hosts", [])
+    return [{"kind": "probe_host", "host": name} for name in chair_login_watch.due_for_probe(login_hosts, now.isoformat())]
 
 
 def _stall_reason(last_call: LastCall | None, idle: float) -> str:
@@ -729,6 +800,21 @@ def _hold_for_ci(actions: list[Action], held: frozenset[str]) -> list[Action]:
     return [a for a in actions if not (a["kind"] in {"relaunch", "clear_branches"} and a.get("initiative") in held)]
 
 
+def _gated_initiatives(facts: Facts) -> frozenset[str]:
+    """Initiatives the chair neither launches, relaunches nor lands: held ones, and ones deferred to a later release."""
+    return frozenset(facts.get("held_initiatives", [])) | frozenset(facts.get("deferred_initiatives", {}))
+
+
+def _without_gated_launches(actions: list[Action], gated: frozenset[str]) -> list[Action]:
+    """Drop each gated initiative's launch-kind actions and its clear_branches; needs_chair and mark_lost stay."""
+    return [a for a in actions if not ((a["kind"] in _LAUNCHES or a["kind"] == "clear_branches") and a.get("initiative") in gated)]
+
+
+def _without_gated_lands(lands: list[Action], gated: frozenset[str]) -> list[Action]:
+    """Drop a gated initiative's land_phase and partial_land; a fetch, a needs_chair report and an action with no initiative stay."""
+    return [a for a in lands if not (a["kind"] in ("land_phase", "partial_land") and a.get("initiative") in gated)]
+
+
 def _without_widened(actions: list[Action], widened: frozenset[tuple[str, str]]) -> list[Action]:
     """Drop the needs_chair, retry and rescue of a task that gets a widen_ticket; an action with no task_id stays."""
     return [
@@ -833,15 +919,17 @@ def _from_steward(action: chair_steward.StewardAction, approved: Sequence[Approv
     return {"kind": "steward_event", **scoped, "event": action["event"]}
 
 
-def _steward_actions(facts: Facts, lost: frozenset[str]) -> list[Action]:
-    """The steward's decisions as actions, with no planner gate applied yet.
+def _steward_actions(facts: Facts, lost: frozenset[str], gated: frozenset[str] = frozenset()) -> list[Action]:
+    """The steward's decisions as actions, with no planner gate applied yet except `gated`.
+
+    A gated epic is left out before `decide`, so its merge, gate and events go and it takes none of the one serial gate slot.
 
     A lost run has no exit record by definition, so the steward is told it exited: the host's silence is the evidence
     plan_lost_runs relies on, and without this a lost run on a handled epic would never be relaunched."""
     steward = facts.get("steward")
     if steward is None or not steward["enabled"]:
         return []
-    epics = [{**e, "exited": True} if e["epic_id"] in lost else e for e in steward["epics"]]
+    epics = [{**e, "exited": True} if e["epic_id"] in lost else e for e in steward["epics"] if e["epic_id"] not in gated]
     return [_from_steward(a, facts["approved"]) for a in chair_steward.decide(epics)]
 
 
@@ -938,13 +1026,84 @@ def _stuck_steer_heads(
     ]
 
 
+def _unlaunched_actions(
+    facts: Facts,
+    launches: Sequence[Action],
+    withheld_by: Mapping[str, Collection[str]],
+    skips: Mapping[str, str],
+    free_lanes: int,
+    no_host: bool,
+    pace_cap: int,
+    now: datetime | None,
+    stuck: Sequence[Action],
+) -> list[Action]:
+    """One unlaunched action per ready initiative the launch list leaves out, except those with a steer_head_stuck line.
+
+    Empty without now, as for stale and tune. Each initiative is asked on its own, so its clearing time reads from its
+    own launch_history entry. host is "": an initiative left out was not placed on a lane host."""
+    if now is None:
+        return []
+    launched = frozenset(a["initiative"] for a in launches if _is_launch(a))
+    holds = [a for a in launches if a["kind"] == "steer_clear" or _steer_deferred(a)]
+    reported = frozenset(a["initiative"] for a in stuck)
+    history = facts.get("launch_history", {})
+    return [
+        action
+        for i in facts["initiatives"]
+        if i["id"] not in reported
+        for action in chair_launch_why.unlaunched(
+            [{**i, "host": ""}],
+            launched,
+            withheld_by,
+            skips,
+            holds,
+            free_lanes,
+            no_host,
+            facts["dispatch"].get("local_lanes") == "decompose",
+            pace_cap,
+            now,
+            history.get(i["id"], {}).get("launches", []),
+        )
+    ]
+
+
+def _unlocked(facts: Facts) -> tuple[Facts, list[Action]]:
+    """Facts without the approvals held past the limit, then without a steer cycle's non-live holders, and the releases."""
+    # plan_release reads `merged` on every approved row before it looks at a hold, so it runs only when there is a hold.
+    releases = chair_approval_hold.plan_release(facts) if facts.get("approval_holds") else []
+    return chair_steer_cycle.break_cycle(chair_approval_hold.without_released(facts, releases))[0], releases
+
+
+def _planned_schedule(facts: Facts, now: datetime | None) -> Schedule | None:
+    """The queue's Schedule, or None when the facts carry no inputs or there is no clock."""
+    return plan_from_inputs(facts["schedule_inputs"], now)[0] if "schedule_inputs" in facts and now is not None else None
+
+
+def _without_advice_clock(body: Mapping) -> dict:
+    """A schedule body with the `at` stamp dropped from its advice: it moves every tick and says nothing new."""
+    return {**body, "advice": [{k: v for k, v in a.items() if k != "at"} for a in body.get("advice", [])]}
+
+
+def _schedule_update(facts: Facts, schedule: Schedule | None, now: datetime | None) -> list[Action]:
+    """One schedule_updated action when the feed form differs from the previous tick's, else none."""
+    if schedule is None or now is None:
+        return []
+    feed = schedule_feed(schedule, now)
+    previous = facts.get("previous_schedule_feed")
+    unchanged = previous is not None and _without_advice_clock(previous.get("schedule", {})) == _without_advice_clock(feed["schedule"])
+    return [] if unchanged else [feed["action"]]
+
+
 def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str] = frozenset()) -> list[Action]:
-    facts = _with_dead_pid_lost(raw_facts, now)
+    facts, releases = _unlocked(_with_dead_pid_lost(raw_facts, now))
+    schedule = _planned_schedule(facts, now)
+    schedule_update = _schedule_update(facts, schedule, now)
     reverts = revert_check(facts.get("landed_main", []))
     carries = plan_carry(facts.get("stranded", []))
-    planned_lands = _without_carried_lands(plan_lands(facts, now), carries)
+    gated = _gated_initiatives(facts)
+    planned_lands = _without_carried_lands(_without_gated_lands(plan_lands(facts, now), gated), carries)
     fetch_exits = _fetch_exit_actions(facts)
-    login_needs_chair = _login_needs_chair_actions(facts)
+    login_needs_chair = _login_needs_chair_actions(facts, now)
     empty_decompose_needs_chair = _empty_decompose_needs_chair_actions(facts)
     held_needs_chair = plan_held_files(facts)
     stalled_intake, decompose_stalled_needs_chair = _decompose_gate(facts)
@@ -962,7 +1121,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     widen = plan_widen(facts)
     widened = frozenset((a["initiative"], a["task_id"]) for a in widen)
     steward_handled = _steward_handled(facts)
-    steward = _steward_actions(facts, lost)
+    steward = _steward_actions(facts, lost, gated)
     # A merge_level at land_at level or task lands its phase: the planner's own land for it would be a second land.
     lands = _without_steward_lands(planned_lands, steward)
     recover_actions = _steward_relaunches_replace(plan_recover(facts, now), steward, steward_handled)
@@ -971,7 +1130,11 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     pre_exit_gate = _withhold_remote_unfetched(ordinary, remote_unfetched)
     would_relaunch = frozenset(a["initiative"] for a in pre_exit_gate if a["kind"] == "relaunch")
     not_exited = frozenset(i for i in would_relaunch if not run_exited.get(i, False))
-    recoverable = _hold_for_ci([*_withhold_not_exited(pre_exit_gate, not_exited), *lost_actions], held)
+    recoverable = _without_gated_launches(
+        _hold_for_ci([*_withhold_not_exited(pre_exit_gate, not_exited), *lost_actions], held | gated), gated
+    )
+    lease_held = _lease_held_ids(facts)
+    lease_stuck = _lease_stuck_actions(facts, now)
     waiting = waiting_initiatives(facts)
     waiting_ids = frozenset(w.initiative for w in waiting)
     # A deferred-land deadlock is one line for the whole stall: whichever blocked task `diagnose` names, its idle_stall line
@@ -981,32 +1144,50 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     unstarted_waiting_chair = _without_deadlocked(planned_unstarted_waiting_chair, deadlock)
     closes = [*plan_close_initiatives(facts), *plan_finish(facts)]
     # A blocked initiative's relaunch and its paired clear_branches go; the waiting action records why.
-    recovered = [a for a in _without_deadlocked(recoverable, deadlock) if not (a["kind"] in ("relaunch", "clear_branches") and a["initiative"] in waiting_ids)]
-    # The steward's relaunch is already in `recovered`; its merges, gates and events follow the planner's own actions.
-    steward_events = [a for a in steward if a["kind"] != "relaunch"]
+    recovered = _withhold_lease_held(
+        [a for a in _without_deadlocked(recoverable, deadlock) if not (a["kind"] in ("relaunch", "clear_branches") and a["initiative"] in waiting_ids)],
+        lease_held,
+    )
+    # The steward's relaunch is already in `recovered`. Its merges lead the plan: a merge_level at land_at level or task is an
+    # inline land, and a land_phase started in the land sink can hold the repo for ten minutes on CI, so the merge would find it held.
+    # Its gates and events follow the planner's own actions.
+    steward_merges = [a for a in steward if a["kind"] == "merge_level"]
+    steward_events = [a for a in steward if a["kind"] not in ("relaunch", "merge_level")]
     if facts["limits"]["hard_stop"]:
+        # Nothing launches, so every ready initiative is left out; a pace cap of 0 names the first reason, which the stop replaces.
+        stopped = [
+            {**a, "reason": "hard stop: nothing launches until the stop lifts"}
+            for a in _unlaunched_actions(facts, [], {}, {}, 0, False, 0, now, [])
+        ]
+        idle_ready = plan_idle_ready(facts, recovered, now) if now is not None else []
         return [
             *reverts,  # a revert starts no run, so a red main is healed under the hard stop too
+            *steward_merges,  # a merge starts no run either, and it must run before a land takes the repo
             *lands,
             *fetch_exits,
             *stale,
             *tune,
             *stall,
             *idle_stall,
+            *idle_ready,
+            *releases,  # a release starts no run
             *deadlock_chair,
             *carries,
             *_needs_chair_only(recovered),
             *widen,
             *login_needs_chair,
             *empty_decompose_needs_chair,
+            *lease_stuck,
             *held_needs_chair,
             *decompose_stalled_needs_chair,
             *review,
             *unstarted_waiting_chair,
             *waiting_actions,
             *closes,
-            # Merges and events start no run. A gate run may spend what the stop protects, so it waits for the stop to lift.
+            # Events start no run. A gate run may spend what the stop protects, so it waits for the stop to lift.
             *[a for a in steward_events if a["kind"] != "run_gate"],
+            *stopped,
+            *schedule_update,
         ]
     cap = _launch_cap(facts["limits"])
     host_free = host_free_slots(facts)
@@ -1026,7 +1207,9 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         "recovery already holds it": frozenset(
             {a["initiative"] for a in capped if a["kind"] == "relaunch" or a["kind"] == "steer_clear" or _steer_deferred(a)}
         ),
-        "quarantined": frozenset(q["initiative"] for q in facts["quarantines"]),
+        # chair_facts imports this module, so STRANDED_CAUSE comes from chair_plan_recover, which holds the same value.
+        "quarantined": frozenset(q["initiative"] for q in facts["quarantines"] if q["cause"] != STRANDED_CAUSE),
+        "stranded": frozenset(q["initiative"] for q in facts["quarantines"] if q["cause"] == STRANDED_CAUSE),
         "its branches are not fetched": remote_unfetched,
         "its last run has not exited": not_exited,
         "its run is lost": lost,
@@ -1039,21 +1222,26 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         "waiting on a need": waiting_ids,
         # fill would launch a started epic the steward holds back, which is a relaunch; an unstarted one still launches.
         "the steward holds it": steward_started,
+        "its launch was refused on a held lease": lease_held,
+        "it is held or deferred to a later release": gated,
     }
     withheld = frozenset().union(*withheld_by.values())
     claimed = claimed_by(recover_actions, facts)
     free_lanes = _free_lanes(cap, kept, facts["dispatch"])
-    filled = plan_fill(facts, free_lanes, withheld, consumed, claimed, stalled=stalled_intake, now=now)
+    filled = plan_fill(facts, free_lanes, withheld, consumed, claimed, stalled=stalled_intake, now=now, schedule=schedule)
     launches = [*capped, *filled]
+    skips = budget_skips(facts, facts["initiatives"], now)
+    no_host = _no_host(free_lanes, host_free, consumed, filled, facts["dispatch"].get("local_lanes") == "decompose")
     stuck_heads = _stuck_steer_heads(
         steer_heads(launches),
         frozenset(a["initiative"] for a in launches if _is_launch(a)),
         frozenset(r["id"] for r in facts.get("running", [])),
         {i["id"]: i for i in facts["initiatives"]},
         withheld_by,
-        budget_skips(facts, facts["initiatives"], now),
-        _no_host(free_lanes, host_free, consumed, filled, facts["dispatch"].get("local_lanes") == "decompose"),
+        skips,
+        no_host,
     )
+    unlaunched = _unlaunched_actions(facts, launches, withheld_by, skips, free_lanes, no_host, cap, now, stuck_heads)
     # Read before the cap: a rebase starts no run, so a relaunch the cap dropped still gets its branch rebased.
     relaunching = frozenset(a["initiative"] for a in [*recovered, *launches] if _is_launch(a))
     rebases = plan_rebase(facts.get("phase_branches", []), relaunching)
@@ -1061,29 +1249,36 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     behind = [a for a in launches if a.get("after_steward")]
     behind_ids = frozenset(a["initiative"] for a in behind)
     ahead = [a for a in launches if not a.get("after_steward")]
+    idle_ready = plan_idle_ready(facts, [*launches, *stuck_heads, *unlaunched], now) if now is not None else []
     return [
         *reverts,
+        *steward_merges,
         *lands,
         *fetch_exits,
         *stale,
         *tune,
         *stall,
         *idle_stall,
+        *idle_ready,
+        *releases,  # a release starts no run
         *deadlock_chair,
         *carries,
         *_with_rebases(ahead, [r for r in rebases if r["initiative"] not in behind_ids]),
         *widen,
         *login_needs_chair,
         *empty_decompose_needs_chair,
+        *lease_stuck,
         *held_needs_chair,
         *decompose_stalled_needs_chair,
         *review,
         *unstarted_waiting_chair,
         *waiting_actions,
         *stuck_heads,
+        *unlaunched,
         *closes,
         *steward_events,
         *_with_rebases(behind, [r for r in rebases if r["initiative"] in behind_ids]),
+        *schedule_update,
     ]
 
 
@@ -1105,14 +1300,14 @@ def plan_housekeeping(facts: Facts, now: datetime) -> list[Action]:
 
 
 def plan_tick_held(facts: Facts, now: datetime | None = None, gate: CiGate = _UNPAUSED) -> TickPlan:
-    """now is the tick's clock; without it no housekeeping or check_login is planned.
+    """now is the tick's clock; without it no housekeeping, check_login, probe_host or host_back is planned.
 
     While `gate.paused`, a started initiative that waits only on a land not yet completed gets no relaunch and is
     named in `held_for_ci`; the caller reports it. An unpaused gate, or a tick the lease gates, holds nothing."""
     lease = facts["lease"]
     gated = _lease_gate(lease)
     housekeeping = plan_housekeeping(facts, now) if now is not None else []
-    login_checks = _login_check_actions(facts, now)
+    login_checks = [*_login_check_actions(facts, now), *_probe_host_actions(facts, now)]
     held = _land_only_ids(facts["initiatives"], facts["approved"]) if gate.paused and gated is None else frozenset()
     holder = _withhold_blocked_hosts(_plan_as_holder(facts, now, held), facts) if gated is None else []
     # A lent lease plans the routine actions, then standby last, so the tick still reads as not acting.

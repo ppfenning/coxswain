@@ -64,6 +64,7 @@ class _Check:
     expired: bool
     reason: str | None
     output: str
+    unreachable: bool = False
 
 
 def _remote_argv(host_name: str, ssh: str, argv: list[str]) -> list[str]:
@@ -84,10 +85,17 @@ def _failure_reason(returncode: int, output: str) -> str:
     return f"exit {returncode}: {output.strip()[:REASON_OUTPUT_CHARS]}"
 
 
-def _failure_count(versions: dict) -> int:
-    """The stored `login_failures`; 0 when absent or not a positive int."""
-    stored = versions.get("login_failures")
+def _failure_count(versions: dict, key: str = "login_failures") -> int:
+    """The stored count under `key` (`login_failures` by default); 0 when absent or not a positive int."""
+    stored = versions.get(key)
     return stored if isinstance(stored, int) and not isinstance(stored, bool) and stored > 0 else 0
+
+
+def _unreachable_login(count: int, now: str, reason: str | None) -> dict:
+    """The `--login-json` payload of an unreachable check. `unreachable_since` joins it once `count`
+    reaches `UNREACHABLE_AFTER`. `login_ok`, `login_failures` and `beat_at` are never in it."""
+    base = {chair_login_watch.UNREACHABLE_FAILURES_KEY: count, "login_checked_at": now, "reason": reason}
+    return base if count < chair_login_watch.UNREACHABLE_AFTER else {**base, chair_login_watch.UNREACHABLE_SINCE_KEY: now}
 
 
 def _refresh_expiry(credentials: str) -> datetime | None:
@@ -124,7 +132,8 @@ def _claude_check(host_name: str, ssh: str, ssh_run: SshRun, now: str) -> _Check
     if verdict is True:
         return _Check(True, False, None, status.mixed)
     if verdict is None:
-        return _Check(False, False, _failure_reason(status.returncode, status.mixed), status.mixed)
+        unreachable = chair_login_watch.is_unreachable_reply(status.returncode, status.mixed)
+        return _Check(False, False, _failure_reason(status.returncode, status.mixed), status.mixed, unreachable)
     credentials = ssh_run(_remote_argv(host_name, ssh, ["sh", "-c", _CREDENTIALS_SCRIPT]))
     if credentials.returncode == 0 and _refresh_expired(_refresh_expiry(credentials.stdout), now):
         return _Check(False, True, _failure_reason(status.returncode, status.mixed), status.mixed)
@@ -141,22 +150,25 @@ def _login_ok(host_name: str, ssh: str, ssh_run: Callable[[list[str]], tuple[int
     return _stdout_verdict(ssh_run(_remote_argv(host_name, ssh, auth_status_argv()))[1])
 
 
-def _env_check(host_name: str, ssh: str, ssh_run: SshRun, env_names: tuple[str, ...]) -> tuple[bool, str | None]:
-    """True with no reason when every name in `env_names` is present; False naming the first missing one,
-    `"missing <name>"`, otherwise. False with a fixed reason when `env_names` is empty: a provider profile
-    naming neither `auth_env` nor `endpoint_env`. `claude` is never invoked here.
+def _env_check(host_name: str, ssh: str, ssh_run: SshRun, env_names: tuple[str, ...]) -> _Check:
+    """A passing check when every name in `env_names` is present; a failing one naming the first missing
+    one, `"missing <name>"`, otherwise. An unreachable reply (see `is_unreachable_reply`) fails as
+    `unreachable` with the usual `_failure_reason`. Fails with a fixed reason when `env_names` is empty: a
+    provider profile naming neither `auth_env` nor `endpoint_env`. `claude` is never invoked here.
 
     Present means exit 0 and non-empty trimmed stdout. The wrong belief is that non-empty output alone
     proves the variable is set: an ssh failure (exit 255, "Connection refused" on stderr) must not read as
     present. `printenv` exits 1 on an unset name, so the exit code separates set from missing and from
     unreachable."""
     if not env_names:
-        return False, "no auth_env or endpoint_env configured"
+        return _Check(False, False, "no auth_env or endpoint_env configured", "")
     for name in env_names:
         reply = ssh_run(_remote_argv(host_name, ssh, env_check_argv(name)))
+        if chair_login_watch.is_unreachable_reply(reply.returncode, reply.mixed):
+            return _Check(False, False, _failure_reason(reply.returncode, reply.mixed), reply.mixed, True)
         if reply.returncode != 0 or not reply.stdout.strip():
-            return False, f"missing {name}"
-    return True, None
+            return _Check(False, False, f"missing {name}", reply.mixed)
+    return _Check(True, False, None, "")
 
 
 def check_login_on_host(
@@ -179,13 +191,31 @@ def check_login_on_host(
     `login_ok` is False once that count reaches `BLOCK_AFTER_FAILURES` or the refresh token is expired, and
     None before. A failed check also stores the first https URL in its output as `login_url`; a passing
     check clears any stored one. Any other `runner` checks `env_names` instead, with no failure count;
-    `claude` is never invoked on that branch."""
+    `claude` is never invoked on that branch.
+
+    An unreachable check (either branch) touches neither `login_ok`, `login_failures` nor `reason`, and
+    never beats, since `beat_at` is the last-seen time. It writes `unreachable_failures`,
+    `login_checked_at` and `reason` through `cox host login`; at `UNREACHABLE_AFTER` in a row it also
+    writes `unreachable_since` and sets the host `unreachable`. A reachable check beats as above and drops
+    `unreachable_failures`."""
+    check = (
+        _claude_check(host_name, ssh, ssh_run, now)
+        if runner == "claude-code"
+        else _env_check(host_name, ssh, ssh_run, env_names)
+    )
+    if check.unreachable:
+        count = _failure_count(current_versions, chair_login_watch.UNREACHABLE_FAILURES_KEY) + 1
+        payload = _unreachable_login(count, now, check.reason)
+        row = cli_run(["host", "login", host_name, "--login-json", json.dumps(payload, sort_keys=True)])
+        if count < chair_login_watch.UNREACHABLE_AFTER:
+            return row
+        return cli_run(host_cmd.set_state_argv(host_name, chair_login_watch.UNREACHABLE_STATE, "chair"))
+    streak_cleared = {k: v for k, v in current_versions.items() if k != chair_login_watch.UNREACHABLE_FAILURES_KEY}
     if runner == "claude-code":
-        check = _claude_check(host_name, ssh, ssh_run, now)
         failures = 0 if check.ok else _failure_count(current_versions) + 1
         login_ok = True if check.ok else (False if check.expired or failures >= BLOCK_AFTER_FAILURES else None)
         login_url = None if check.ok else chair_login_watch.login_url_from_output(check.output)
-        kept = {key: value for key, value in current_versions.items() if key != "reason"}
+        kept = {key: value for key, value in streak_cleared.items() if key != "reason"}
         merged = {
             **chair_login_watch.merge_login_versions(
                 kept, login_ok, now, check="claude_auth", reason=check.reason, login_url=login_url
@@ -193,8 +223,7 @@ def check_login_on_host(
             "login_failures": failures,
         }
     else:
-        env_ok, env_reason = _env_check(host_name, ssh, ssh_run, env_names)
         merged = chair_login_watch.merge_login_versions(
-            current_versions, env_ok, now, check="env_vars", reason=env_reason
+            streak_cleared, check.ok, now, check="env_vars", reason=check.reason
         )
     return cli_run(host_cmd.beat_argv(host_name, merged))

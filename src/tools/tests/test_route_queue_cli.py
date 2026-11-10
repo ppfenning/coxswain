@@ -93,8 +93,8 @@ def test_editing_with_after_absent_leaves_the_list_alone(env):
 
 
 def test_status_shows_a_waiting_line_and_a_held_section(env, capsys):
-    assert _file(env, "Waits", "--intake", "--after", "nothing-landed") == 0
-    assert _file(env, "Parked", "--intake") == 0
+    assert _file(env, "Waits", "--intake", "--ready", "--after", "nothing-landed") == 0
+    assert _file(env, "Parked", "--intake", "--ready") == 0
     parked = _intake(env, "Parked")
     parked["extra"] = {**parked["extra"], "held": True, "hold_reason": "waiting on a decision"}
     capsys.readouterr()
@@ -102,13 +102,13 @@ def test_status_shows_a_waiting_line_and_a_held_section(env, capsys):
     assert main(["route", "status", "--profile", env["profile"]]) == 0
     out = capsys.readouterr().out
 
-    assert "intake queued: 2 — parked, waits (waiting on nothing-landed)" in out
+    assert "intake queued: 2 — parked [stage ready, repo widget], waits (waiting on nothing-landed) [stage ready, repo widget]" in out
     assert f"held:\n  {parked['task_id']}: waiting on a decision" in out
 
 
 def test_status_json_gains_waiting_and_held(env, capsys):
-    assert _file(env, "Waits", "--intake", "--after", "nothing-landed") == 0
-    assert _file(env, "Parked", "--intake") == 0
+    assert _file(env, "Waits", "--intake", "--ready", "--after", "nothing-landed") == 0
+    assert _file(env, "Parked", "--intake", "--ready") == 0
     parked = _intake(env, "Parked")
     parked["extra"] = {**parked["extra"], "held": True}
     capsys.readouterr()

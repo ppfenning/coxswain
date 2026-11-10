@@ -39,6 +39,15 @@ def test_is_deferred_false_when_equal_or_above() -> None:
     assert (is_deferred("2026.11.5", "2026.11.5"), is_deferred("2026.11.5", "2027.1.0")) == (False, False)
 
 
+def test_work_for_the_next_release_is_open_now() -> None:
+    # target_release names the release work ships in: with 2026.11.5 installed, 2026.11.6 is the one in progress.
+    assert (is_deferred("2026.11.6", "2026.11.5"), is_deferred("2026.11.6", "2026.11.5-30-gabc1234")) == (False, False)
+
+
+def test_work_for_the_release_after_next_waits() -> None:
+    assert is_deferred("2026.11.7", "2026.11.5") is True
+
+
 def test_is_deferred_false_for_a_describe_string_at_the_target() -> None:
     assert is_deferred("2026.11.5", "2026.11.5-12-gabc1234") is False
 

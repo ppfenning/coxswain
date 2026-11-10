@@ -8,6 +8,7 @@ import time
 from test_run_store import lane_run, lane_store, leases_table
 
 from agent_tools import cli, epic, run_store, runs_top
+from agent_tools.route import FENCED_NOTE
 from agent_tools.runs_top_screen import _accordion_detail, _fact, calls_from_usage, facts, rows_now
 
 _WRITTEN = datetime.datetime(2026, 9, 25, 5, 29, 0, tzinfo=datetime.UTC).timestamp()
@@ -537,6 +538,22 @@ def test_an_expanded_run_lists_its_nodes(tmp_path, monkeypatch):
     text = _accordion_detail(tmp_path, "x-3", 200, lambda pid: True, _NOW)
 
     assert "  build t1 high running 4 $0.50 Bash 30s ago feat/t1" in text
+
+
+def test_an_expanded_fenced_run_shows_the_fenced_note_once(tmp_path, monkeypatch):
+    _local_run(tmp_path, monkeypatch, holder="host-b-x-2")
+
+    lines = _accordion_detail(tmp_path, "x-3", 1000, lambda pid: True, _NOW)
+
+    assert lines.count(FENCED_NOTE) == 1
+
+
+def test_an_expanded_exited_run_does_not_show_the_fenced_note(tmp_path, monkeypatch):
+    _local_run(tmp_path, monkeypatch, holder="host-b-x-2")
+
+    lines = _accordion_detail(tmp_path, "x-3", 1000, lambda pid: False, _NOW)
+
+    assert FENCED_NOTE not in lines
 
 
 def test_an_expanded_run_with_no_progress_keeps_the_timeline_and_tail(tmp_path):

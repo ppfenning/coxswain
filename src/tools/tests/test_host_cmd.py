@@ -24,6 +24,17 @@ def test_the_host_list_line_has_state_capacity_beat_age_and_login():
     assert host_cmd.format_host_list([HOST_A], NOW) == ["host-a  active  cap 8  beat 2m ago  login ok"]
 
 
+def test_an_unreachable_host_line_reads_last_seen_not_beat():
+    row = {**HOST_A, "name": "gone", "state": "unreachable", "beat_at": "2026-09-24T12:00:00+00:00"}
+    line = host_cmd.format_host_list([row], NOW)[0]
+    assert "unreachable" in line and "last seen 2d ago" in line and "beat" not in line
+
+
+def test_an_unreachable_host_that_never_beat_reads_last_seen_never():
+    row = {**HOST_A, "name": "gone", "state": "unreachable", "beat_at": ""}
+    assert "last seen never" in host_cmd.format_host_list([row], NOW)[0]
+
+
 def test_row_weights_and_capabilities_read_active_rows_that_carry_them():
     rows = [
         {**HOST_A, "weight": 2, "capabilities": ["go"]},

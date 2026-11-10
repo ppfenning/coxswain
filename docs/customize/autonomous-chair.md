@@ -450,6 +450,64 @@ cox route chair release
 With a shared Postgres store, any machine on the network can take the
 chair. [Several machines](several-machines.md) shows how to set that up.
 
+### Starting a session beside the chair
+
+A bare `cox` session decides whether to take the chair as it starts. The
+`session_takes` key under `chair:` in the profile sets the policy. These are
+the lines to add, at the top level of the profile file:
+
+```yaml
+chair:
+  session_takes: when_free
+```
+
+The key accepts `never`, `when_free` and `always`, in any case. `when_free` is
+the default and applies when the key is absent. Any other value makes the
+profile unreadable.
+
+With `never`, a session never takes the chair. It opens as a non-chair session
+and leaves a free chair free. When another session holds the chair, it prints
+who holds it and opens as a non-chair session without asking.
+
+With `when_free`, a session takes the chair when it is free or its lease has
+gone stale. When the last holder crashed and its Claude session can still be
+found, the session resumes that conversation and takes the lease. When another
+session holds the chair, the session shows an offer. The choices are to take
+over, open a non-chair session or cancel. A fourth choice, attach, appears when
+the holder's conversation is on this machine, and Enter picks it. Otherwise
+Enter opens a non-chair session.
+
+With `always`, a session takes or resumes a free or stale chair as `when_free`
+does. It also takes the chair from another session without showing the offer.
+
+None of the three values lets a session displace a live chair loop. The loop
+may be the systemd service or another running chair loop. A session started
+beside it opens as a non-chair session and prints one of these lines:
+
+```text
+chair held by <label> (service)
+chair held by <label> (chair loop)
+```
+
+The first names the systemd service. The second names any other running chair
+loop. The session takes, steals and releases nothing. This holds under
+`always` too, because `always` only reaches sessions and never loops.
+
+The one way to take the chair from a live chair loop is the explicit
+`cox route chair take --steal` command shown above. Bare `cox` never runs it
+for you. Only the operator's own command displaces a live loop.
+
+A session that holds the chair releases its lease when it exits. The launcher
+starts a background process that watches the session and checks it once every
+five minutes. When the session is gone, that process ends the lease and clears
+the chair record. A standby service takes the free chair on its next tick,
+without waiting for the lease to expire. The release can lag the exit by up to
+those five minutes.
+
+Two beliefs are wrong here. A new session does not displace the service, even
+under `always`. A held lease no longer waits out its expiry after the session
+ends. The wait is now at most one five minute check.
+
 ## Lending the routine ticks
 
 With nothing lent, a standby loop does nothing while a session holds the

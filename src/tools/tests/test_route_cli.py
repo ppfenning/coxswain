@@ -111,7 +111,7 @@ def test_context_json_with_full_profile_lists_initiative_and_runs(tmp_path, caps
     assert doc["intake"] == {
         "queued": [
             {"id": "i1", "title": "Do the thing", "initiative": None, "done": False, "path": "intake/one.md",
-             "after": [], "held": False, "priority": 0}
+             "after": [], "held": False, "stage": "ready", "priority": 0, "epic": "", "target_release": "", "repo": ""}
         ],
         "decomposed": [],
         "landed": [],
@@ -434,7 +434,7 @@ def test_status_json_with_an_intake_dir_carries_runs_and_intake_groups(tmp_path,
     assert doc["intake"] == {
         "queued": [
             {"id": "q", "title": "Q", "initiative": None, "done": False, "path": "intake/2026-09-01-q.md",
-             "after": [], "held": False, "priority": 0}
+             "after": [], "held": False, "stage": "ready", "priority": 0, "epic": "", "target_release": "", "repo": ""}
         ],
         "decomposed": [],
         "landed": [],
@@ -658,7 +658,7 @@ def test_file_intake_writes_the_intake_file_with_todays_date(tmp_path, capsys):
     written = list((ws / "intake").glob("*.md"))
     assert len(written) == 1
     assert written[0].name.startswith(expected_date)
-    expected = route.intake_file("Fix the thing", "", _widget(tmp_path), expected_date)
+    expected = route.intake_file("Fix the thing", "", _widget(tmp_path), expected_date, stage="draft")
     [(rel, text)] = expected.items()
     assert (ws / rel).read_text(encoding="utf-8") == text
     assert str(ws / rel) in out
@@ -675,7 +675,7 @@ def test_file_intake_with_ids_sequence_writes_the_allocated_id(tmp_path, monkeyp
     written = list((ws / "intake").glob("*.md"))
     assert [p.name for p in written] == ["I7.md"]
     fields, _ = route.parse_frontmatter(written[0].read_text(encoding="utf-8"))
-    assert fields == {"id": "I7", "title": "Fix the thing"}
+    assert fields == {"id": "I7", "title": "Fix the thing", "stage": "draft"}
 
 
 def test_file_refuses_an_existing_path_collision(tmp_path, capsys):

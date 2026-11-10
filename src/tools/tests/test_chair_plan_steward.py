@@ -116,7 +116,7 @@ def test_a_lost_run_on_a_handled_epic_plans_one_steward_relaunch_where_the_plann
 def test_a_lost_run_whose_epic_has_an_approved_level_merges_first_and_relaunches_behind_the_merge():
     facts = _facts_for(_epic(("a-t", "approved"), exited=False), lost_runs={"a": "a-1"}, run_exited={"a": False})
     actions = plan_tick(facts)
-    assert _kinds(actions) == ["mark_lost", "merge_level", "relaunch"]
+    assert _kinds(actions) == ["merge_level", "mark_lost", "relaunch"]
     assert actions[-1]["after_steward"] is True
 
 
@@ -157,7 +157,7 @@ def test_a_handled_started_epic_with_a_live_run_is_not_launched_by_fill():
 def test_an_initiative_the_steward_does_not_handle_keeps_the_planner_relaunch():
     facts = _facts(initiatives=[_initiative("b")], run_exited={"b": True}, steward=_steward(_epic(("a-t", "approved"))))
     assert [(a["kind"], a.get("initiative", a.get("epic"))) for a in plan_tick(facts)] == [
-        ("clear_branches", "b"), ("relaunch", "b"), ("merge_level", "a"),
+        ("merge_level", "a"), ("clear_branches", "b"), ("relaunch", "b"),
     ]
 
 
@@ -288,3 +288,22 @@ def test_a_ticket_merge_leaves_the_planner_land_in_place():
     tasks = (_task("a-t1", "a-2"),)
     unhandled = _lands(plan_tick(_landing_facts("ticket", *tasks, steward=False)))
     assert _lands(plan_tick(_landing_facts("ticket", *tasks))) == unhandled
+
+
+def _merge_and_planner_land_facts(**overrides) -> dict:
+    """A land_at level merge for phase p1 of repo r, plus the planner's own land for phase p of the same repo."""
+    facts = _landing_facts("level", _task("a-t1", "a-2", fetch=True))
+    return {**facts, "approved": [*facts["approved"], _approved("x-t")], **overrides}
+
+
+def test_a_steward_merge_is_planned_before_the_planner_land_of_another_phase_in_the_same_repo():
+    kinds = _kinds(plan_tick(_merge_and_planner_land_facts()))
+    assert kinds.count("land_phase") == 1
+    assert kinds.index("merge_level") < kinds.index("land_phase")
+
+
+def test_a_hard_stop_plans_the_steward_merge_before_the_planner_land():
+    stop = {"hard_stop": True, "weekly_fraction": 0.95, "hard_stop_fraction": 0.9, "launch_cap": 5, "go_degraded": False}
+    kinds = _kinds(plan_tick(_merge_and_planner_land_facts(limits=stop)))
+    assert kinds.count("land_phase") == 1
+    assert kinds.index("merge_level") < kinds.index("land_phase")

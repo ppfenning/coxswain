@@ -19,6 +19,23 @@ def _host_login(action: Mapping) -> Event:
     return Event("host_login", f"host_login:{host}", f"Login lapsed on {host}", body, url)
 
 
+def _host_unreachable(action: Mapping) -> Event:
+    """The key carries `since`, so one outage pushes once and a later outage on the same host pushes again."""
+    host = str(action.get("host") or "")
+    since = str(action.get("since") or "")
+    body = (
+        f"{host} could not be reached over ssh twice in a row. It has no lanes and is no longer checked hourly. "
+        "It returns on its own when it beats or answers a probe."
+    )
+    return Event("host_unreachable", f"host_unreachable:{host}:{since}", f"Host unreachable: {host}", body)
+
+
+def _host_back(action: Mapping) -> Event:
+    host = str(action.get("host") or "")
+    back_at = str(action.get("back_at") or "")
+    return Event("host_back", f"host_back:{host}:{back_at}", f"Host back: {host}", f"{host} is reachable again and active.")
+
+
 def _stall(action: Mapping) -> Event:
     initiative = str(action.get("initiative") or "")
     reason = str(action.get("reason") or "")
@@ -78,6 +95,10 @@ def _event(action: Mapping) -> Event:
         return _held_file(action)
     if cause == "login_lapsed":
         return _host_login(action)
+    if cause == "host_unreachable":
+        return _host_unreachable(action)
+    if cause == "host_back":
+        return _host_back(action)
     if cause in ("stalled", "idle_stall"):
         return _stall(action)
     if cause == "steer_head_stuck":

@@ -52,7 +52,7 @@ def test_the_queue_the_feed_emits_from_literal_rows_equals_the_fixtures(monkeypa
         fixture["inbox"], fixture["inbox_total"], fixture["watch"], fixture["decisions"], fixture["spend_series"],
         fixture["history"], fixture["history_today"], chair_agents=fixture["chair_agents"], spend_split=fixture["spend_split"],
         spend_sources=fixture["spend_sources"], budget=fixture["budget"], board=fixture["board"],
-        live=fixture["live"],
+        live=fixture["live"], health=fixture["health"],
     )
     # orchestration is emitted by the producer task; drop this filter there.
     assert whole == {key: value for key, value in fixture.items() if key != "orchestration"}

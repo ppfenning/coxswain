@@ -138,6 +138,14 @@ every broken formula.
 A green proof means that formula installs and upgrades on those two platforms
 today. It does not mean the release is otherwise good.
 
+## `2026.11.6`
+
+| Component | Repository or path | Tag | Required or flag |
+| --- | --- | --- | --- |
+| dash | `ppfenning/coxswain-dash` | `v2026.11.6` | flag: `dash`, provides `towpath` |
+
+See the [2026.11.6 release notes](2026.11.6.md) for what landed in each component.
+
 ## `2026.11.5`
 
 | Component | Repository or path | Tag | Required or flag |

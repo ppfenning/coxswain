@@ -7,6 +7,7 @@ from agent_tools.chair_facts import initiative_facts, todo_initiative_facts
 from agent_tools.chair_plan import (
     _free_lanes,
     _launch_cap,
+    _stuck_homes,
     initiative_homes,
     plan_close_initiatives,
     plan_held_files,
@@ -715,7 +716,7 @@ def test_the_idle_stall_action_is_not_counted_against_the_launch_cap():
         last_housekeeping_at=_QUIET_HOUSEKEEPING,
     )
     actions = plan_tick(facts, _NOW)
-    assert [(a["kind"], a["initiative"]) for a in actions] == [
+    assert [(a["kind"], a["initiative"]) for a in actions if a["kind"] != "unlaunched"] == [
         ("needs_chair", "chair"),
         ("clear_branches", "a"),
         ("relaunch", "a"),
@@ -917,6 +918,65 @@ def test_a_host_neither_due_nor_blocked_yields_no_login_actions():
         last_housekeeping_at=_NOW.isoformat(),
     )
     assert plan_tick(facts, _NOW) == []
+
+
+def _unreachable_host(name: str, **versions) -> dict:
+    return {"name": name, "state": "unreachable", "versions_json": versions}
+
+
+def test_an_unreachable_host_yields_one_host_unreachable_needs_chair_action():
+    facts = _facts(login_hosts=[_unreachable_host("host-a", unreachable_since="2026-09-27T11:00:00+00:00")], last_housekeeping_at=_NOW.isoformat())
+    actions = [a for a in plan_tick(facts, _NOW) if a["kind"] == "needs_chair"]
+    assert actions == [
+        {"kind": "needs_chair", "host": "host-a", "cause": "host_unreachable", "since": "2026-09-27T11:00:00+00:00", "epoch": 7}
+    ]
+
+
+def test_a_never_probed_unreachable_host_yields_one_probe_host_action():
+    facts = _facts(login_hosts=[_unreachable_host("host-a")], last_housekeeping_at=_NOW.isoformat())
+    assert [a for a in plan_tick(facts, _NOW) if a["kind"] == "probe_host"] == [{"kind": "probe_host", "host": "host-a", "epoch": 7}]
+
+
+def test_a_recently_probed_unreachable_host_yields_no_probe_host_action():
+    probed = (_NOW - timedelta(minutes=5)).isoformat()
+    facts = _facts(login_hosts=[_unreachable_host("host-a", probe_checked_at=probed)], last_housekeeping_at=_NOW.isoformat())
+    assert [a for a in plan_tick(facts, _NOW) if a["kind"] == "probe_host"] == []
+
+
+def test_an_unreachable_host_yields_no_check_login_action():
+    facts = _facts(login_hosts=[_unreachable_host("host-a")], last_housekeeping_at=_NOW.isoformat())
+    assert [a for a in plan_tick(facts, _NOW) if a["kind"] == "check_login"] == []
+
+
+def test_an_unreachable_host_plans_no_probe_or_host_back_without_the_clock():
+    facts = _facts(login_hosts=[_unreachable_host("host-a")])
+    assert {a["kind"] for a in plan_tick(facts)} == {"needs_chair"}
+
+
+def _returned_host(back_at: datetime) -> dict:
+    return {"name": "host-a", "state": "active", "versions_json": {"login_ok": True, "login_checked_at": _NOW.isoformat(), "host_back_at": back_at.isoformat()}}
+
+
+def test_a_host_that_returned_ten_minutes_ago_yields_one_host_back_action():
+    back_at = _NOW - timedelta(minutes=10)
+    facts = _facts(login_hosts=[_returned_host(back_at)], last_housekeeping_at=_NOW.isoformat())
+    assert plan_tick(facts, _NOW) == [{"kind": "needs_chair", "host": "host-a", "cause": "host_back", "back_at": back_at.isoformat(), "epoch": 7}]
+
+
+def test_a_host_that_returned_two_hours_ago_yields_no_host_back_action():
+    facts = _facts(login_hosts=[_returned_host(_NOW - timedelta(hours=2))], last_housekeeping_at=_NOW.isoformat())
+    assert plan_tick(facts, _NOW) == []
+
+
+def test_a_login_blocked_active_host_still_yields_its_login_lapsed_action():
+    facts = _facts(login_hosts=[_login_host("host-a", login_ok=False, checked_at=_NOW.isoformat())], last_housekeeping_at=_NOW.isoformat())
+    assert plan_tick(facts, _NOW) == [{"kind": "needs_chair", "host": "host-a", "cause": "login_lapsed", "epoch": 7}]
+
+
+def test_a_home_on_an_unreachable_host_is_stuck():
+    actions = [{"kind": "relaunch", "initiative": "a"}, {"kind": "relaunch", "initiative": "b"}]
+    facts = _facts(login_hosts=[_unreachable_host("host-a"), _login_host("host-b")])
+    assert _stuck_homes(actions, [0, 1], {"a": "host-a", "b": "host-b"}, facts) == {0}
 
 
 def test_another_holder_inside_its_takeover_plans_standby_naming_until():

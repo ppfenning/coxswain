@@ -42,13 +42,18 @@ def _approved_and_unlanded(record: dict) -> bool:
     )
 
 
+def _repo_of(record: dict, item: dict | None) -> str | None:
+    """The record's own repo, else its resolved item's."""
+    return record.get("repo") or (item.get("repo") if item else None)
+
+
 def _remedy(record: dict, item: dict | None, base_of: Callable[[str], str] | None = None,
             manual_of: Callable[[str], bool] | None = None) -> str | None:
     """The exact `cox runs land` line, or `None` when no repo path can be
     resolved — a line that looks runnable and is not is worse than none.
     `base_of` names the repo's integration branch; one other than `main` is pinned with `--base`.
     `manual_of` reports a `land: manual` repo, whose remedy says the human merges the PR."""
-    repo = record.get("repo") or (item.get("repo") if item else None)
+    repo = _repo_of(record, item)
     if not repo:
         return None
     if manual_of is not None and manual_of(repo):
@@ -60,9 +65,11 @@ def _remedy(record: dict, item: dict | None, base_of: Callable[[str], str] | Non
 
 def _row(record: dict, item: dict | None, base_of: Callable[[str], str] | None = None,
          manual_of: Callable[[str], bool] | None = None) -> dict:
+    repo = _repo_of(record, item)
     return {
         "run": record.get("run"), "task": record.get("task"), "phase": record.get("phase"),
         "branch": record.get("branch"), "remedy": _remedy(record, item, base_of, manual_of),
+        "expected": bool(repo and manual_of is not None and manual_of(repo)),
     }
 
 
@@ -154,12 +161,12 @@ def _task_and_remedy(line: str) -> tuple[str, str | None] | None:
 
 
 def stranded_from_log(run: str, approved_lines: list[str], items: list[dict], repo: str) -> list[dict]:
-    """Rows for a run log's approved-but-not-landed lines. A line yields a row only when its task id names exactly one item in `repo` and that item is `ready` or `approved`; the remedy is the line's own text and `branch` is `None`."""
+    """Rows for a run log's approved-but-not-landed lines. A line yields a row only when its task id names exactly one item in `repo` and that item is `ready` or `approved`; the remedy is the line's own text, `branch` is `None` and `expected` is `False`: the caller knows the repo's landing mode."""
     in_repo = [item for item in items if item.get("repo") == repo]
     parsed = [p for p in map(_task_and_remedy, approved_lines) if p is not None]
     matches = [(task, remedy, [i for i in in_repo if i.get("id") == task]) for task, remedy in parsed]
     return [
-        {"run": run, "task": task, "phase": found[0].get("phase"), "branch": None, "remedy": remedy}
+        {"run": run, "task": task, "phase": found[0].get("phase"), "branch": None, "remedy": remedy, "expected": False}
         for task, remedy, found in matches
         if len(found) == 1 and found[0].get("state") in _LIVE_STATES
     ]

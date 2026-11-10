@@ -6,7 +6,7 @@ filled in by the facts edge and consumed by the stale planner; `stall_candidates
 consumed by the stall planner. `tuning` likewise, consumed by the lane-tuning and tier-proposal planners.
 """
 from datetime import datetime
-from typing import Literal, NotRequired, Protocol, TypedDict
+from typing import Any, Literal, NotRequired, Protocol, TypedDict
 from zoneinfo import ZoneInfo
 
 from agent_tools.chair_decompose_streak import DecomposeStreak
@@ -199,6 +199,7 @@ class RunningInitiative(TypedDict):
     repo: str
     surfaces: list[str]
     phase: NotRequired[str]  # the phase this entry runs; absent means the whole initiative
+    live: NotRequired[bool]  # False when the entry exists only for unlanded approvals; a missing key means live
 
 
 class InitiativeFacts(TypedDict):
@@ -452,6 +453,77 @@ class MergeQueueFacts(TypedDict):
     wait_s: float  # seconds the queue waits for a full batch
 
 
+class ApprovalHold(TypedDict):
+    initiative: str
+    repo: str
+    task_id: str
+    run: str
+    ticks: int  # ticks the approval has been unlanded without merging
+
+
+class SchedulePhase(TypedDict):
+    id: str
+    status: Literal["ready", "waiting", "blocked", "running"]  # running only when a live run holds the phase
+    parents: list[str]  # phase ids of the same initiative that must finish first
+    size: str  # "" when no task states one
+    mix: str  # the phase's `requires:` capabilities joined by "+", or "plain"
+    surfaces: list[str]
+
+
+class ScheduleInitiative(TypedDict):
+    id: str
+    priority: int
+    repo: str
+    phases: list[SchedulePhase]
+
+
+class ScheduleHost(TypedDict):
+    name: str
+    lanes: list[str]  # one entry per lane
+    local: bool
+    repos: list[str]  # empty: capable of every repo
+
+
+DurationRecord = dict[str, str]  # the keys `chair_schedule_durations` reads: size, mix, build_start, approve_time
+
+
+class ScheduleRunning(TypedDict):
+    initiative: str
+    phase: str
+    host: str
+    lane: str  # a lane name of that host; the facts assign it, the run store does not record it
+
+
+class ScheduleInputs(TypedDict):
+    """The arguments of `chair_schedule.plan_schedule` minus the clock, as plain data. `running` lists live phases
+    with the host and lane they hold; their finish is not carried, so the planner treats each as overdue."""
+
+    initiatives: list[ScheduleInitiative]
+    records: list[DurationRecord]
+    hosts: list[ScheduleHost]
+    mode: str
+    load: dict[str, int]  # host name to live runs
+    target: str | None  # ISO release target a work item states; None when none does
+    running: NotRequired[list[ScheduleRunning]]
+
+
+class ScheduleUpdatedAction(TypedDict):
+    """The `action` of `dash_feed_schedule_v1.json`: `schedule` is `chair_schedule._body`."""
+
+    kind: Literal["schedule_updated"]
+    schedule: dict[str, Any]
+
+
+class LandFailStreak(TypedDict):
+    """The newest failed land_phase or merge_level outcome of a phase, and the consecutive ticks it repeated."""
+
+    initiative: str
+    phase: str
+    kind: Literal["land_phase", "merge_level"]
+    reason: str
+    ticks: int
+
+
 class Facts(TypedDict):
     lease: LeaseFacts
     limits: LimitsFacts
@@ -502,6 +574,8 @@ class Facts(TypedDict):
     live_phases: NotRequired[list[LivePhase]]  # phases with their own live run; absent means no phase runs live
     # Keyed `<candidate>|<other>`: the count of consecutive prior deferrals for that ordered pair; absent means 0.
     steer_streaks: NotRequired[dict[str, int]]
+    approval_holds: NotRequired[list[ApprovalHold]]  # absent means none
+    approval_hold_ticks: NotRequired[int]  # the hold limit in ticks; absent means 6
     steer_policy: NotRequired[SteerPolicy]  # absent means strict: limit 1, no serial paths
     # Each initiative's newest waiting row as `<phase>|<quarantined>|<awaiting_land>`, until a later launch of it.
     waiting_reported: NotRequired[dict[str, str]]  # absent means {}
@@ -533,6 +607,8 @@ class Facts(TypedDict):
     relaunch_loop_reported: NotRequired[list[str]]
     # Land refusals still counted: refused or failed land_phase rows since the key's last landed row. Absent means [].
     land_refusals: NotRequired[list[LandRefusal]]
+    land_fail_streaks: NotRequired[list[LandFailStreak]]  # per (initiative, phase), the run of identical failed-land reasons; absent means none
+    no_run_streaks: NotRequired[dict[str, int]]  # approved task id to its consecutive no_run needs_chair ticks; absent means {}
     # Squash conflicts a retry would repeat: the run's newest squash_phase stop, its branch and main unmoved. Absent means [].
     land_conflicts: NotRequired[list[LandConflict]]
     land_heads: NotRequired[dict[str, str]]  # `<initiative>/<phase>` to the phase branch tip, for refused phases only. Absent means {}.
@@ -542,6 +618,9 @@ class Facts(TypedDict):
     # Each initiative row in state todo with its task rows' states, in row order; absent means none. `plan_close_initiatives` plans a close_initiative for each finished one.
     todo_initiatives: NotRequired[list[TodoInitiative]]
     steward: NotRequired[StewardPlanFacts]  # the epic steward's inputs; absent means the steward is off
+    schedule_inputs: NotRequired[ScheduleInputs]  # the scheduler's inputs; absent means the edge did not read them
+    # The previous tick's `chair_schedule.schedule_feed` form; absent means none was read, so the schedule is announced.
+    previous_schedule_feed: NotRequired[dict[str, Any]]
 
 
 ActionKind = Literal[
@@ -561,8 +640,10 @@ ActionKind = Literal[
     "pull",
     "housekeeping",
     "stale_to_draft",
+    "release_approvals",
     "mark_lost",
     "check_login",
+    "probe_host",
     "stalled_usr1",
     "stalled_stop",
     "review_landed",
@@ -579,12 +660,15 @@ ActionKind = Literal[
     "pull_workspace",
     "waiting",
     "deferred",
+    "unlaunched",
     "close_initiative",
     "finish_task",
     "merge_level",
     "run_gate",
     "steward_event",
     "unlaunched",
+    "schedule_updated",
+    "requeue_task",
 ]
 
 
@@ -592,7 +676,8 @@ class Action(TypedDict, total=False):
     """mark_lost only records the loss to the chair's own action log: it is never an attempt against a
     task, and by construction never touches the attempts table, so it never counts toward
     harness_failures or any retry cap. check_login carries host, performs an ssh call and a store
-    write, and like mark_lost never touches the attempts table. needs_chair carries either
+    write, and like mark_lost never touches the attempts table. probe_host carries host, performs one ssh
+    connect and may write the hosts row. needs_chair carries either
     initiative and cause, or host and cause when the entry names a lane host rather than an
     initiative; when host is present cause is "login_lapsed" or "stale_checkout" and there is no initiative key.
     A stale_checkout needs_chair also carries repo, the repo directory name keyed in the host's checkout_env record.
@@ -604,19 +689,22 @@ class Action(TypedDict, total=False):
     proposals and body and is propose-only: no action kind applies a tier or model change.
     revert_land carries initiative, phase, repo, pr, commit and reason.
     rerun_main carries initiative, phase, repo and commit.
-    widen_ticket carries initiative, task_id, paths, additions and reason. partial_land carries initiative, phase,
+    widen_ticket carries initiative, task_id, paths, additions and reason. release_approvals carries initiative,
+    task_ids and reason and runs no command: the tickets go back to ready. partial_land carries initiative, phase,
     task_ids and quarantined: the approved tasks of a phase whose other tasks are all quarantined, done or dropped;
     the plan adds repo, task_runs and run (the newest of task_runs) for the loop's task lands. land_batch carries sources,
     batch_size and wait_s: the phases the merge queue lands together. A relaunch_loop needs_chair carries
     initiative, cause and a reason naming both quarantined run ids. waiting carries initiative, phase, quarantined and
     awaiting_land and runs no command. deferred carries initiative, phase and land_at and runs no command: the land waits for
-    the granularity land_at names. close_initiative carries initiative and state (done or dropped).
+    the granularity land_at names. unlaunched carries initiative and reason, runs no command and writes no row.
+    close_initiative carries initiative and state (done or dropped).
     The steward's actions each carry epic and topic (both the epic id) and fields. merge_level also carries level,
     the index of the level to merge, plus land_at (how the initiative lands) and phase (the level's phase name) as
     top-level keys, never inside fields, so the reported-set key is unchanged. run_gate carries no more. steward_event also carries event, the name to publish.
     unlaunched carries initiative and reason and runs no command: why a ready initiative was not launched.
     The steward's relaunch is a relaunch carrying initiative, plus epic, topic and fields (the signature) so the executor
-    can record `relaunched`. A planner relaunch carries none of those three."""
+    can record `relaunched`. A planner relaunch carries none of those three.
+    requeue_task carries initiative, phase, task_id, reason and epoch; it is declared here and not yet planned or executed."""
 
     kind: ActionKind
     epoch: int
