@@ -7042,7 +7042,7 @@ options:
 </code></pre></div>
 <h2 id="edit">edit</h2>
 <div class="highlight"><pre><span></span><code>usage: cox route edit [-h] [--title TITLE] [--body BODY]
-                      [--body-file BODY_FILE] [--repo REPO]
+                      [--body-file BODY_FILE] [--note NOTE] [--repo REPO]
                       [--surfaces SURFACES] [--state STATE] [--pr PR]
                       [--rebuild] [--force] [--link LINK] [--after AFTER]
                       [--epic EPIC] [--dry-run] [--profile PROFILE]
@@ -7056,6 +7056,9 @@ options:
   --title TITLE
   --body BODY
   --body-file BODY_FILE
+  --note NOTE           task ticket only: append this text to the body once,
+                        with or without --state; not with --body or --body-
+                        file
   --repo REPO
   --surfaces SURFACES   task ticket only: comma-separated paths that replace
                         the list
