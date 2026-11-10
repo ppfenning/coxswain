@@ -110,12 +110,15 @@ _NONE_BUDGET = {
 }
 # What the feed says of its spend sources when the caller read none: no session named, no price catalog found.
 _UNKNOWN_SPEND_SOURCES = {"chair_session": "none", "price_catalog": "missing"}
+# The health block of a feed with no damaged log lines.
+_ZERO_HEALTH = {"skipped_total": 0, "logs": []}
 
 
 def snapshot(
     at, chair, spend, machines, runs, queue, queue_total, inbox, inbox_total, watch, decisions=(), spend_series=(),
     history=(), history_today=None, *, chair_agents=None, spend_split=None, spend_sources=None, budget=None,
     epics=(), board=None, live=None, orchestration=None, operator_sessions=None, schedule=None,
+    health=None,
 ) -> dict:
     """Assemble the schema-1 dash feed snapshot from its sections. `queue_total`/`inbox_total` are each
     section's filtered count before the 50-row cap, for coxtop to render "50 of N". `decisions` is the open
@@ -130,7 +133,8 @@ def snapshot(
     `orchestration` is the chair machine's mode block; the key is absent when it is None, because the profile or the
     hosts table could not be read. `operator_sessions` is every operator session's rows per window; the key is absent
     when it is None. `schedule` is the published schedule object, passed through unchanged; the key is absent when it
-    is None."""
+    is None. `health` is the skipped-line counts per damaged log; it reads the zero block, 0 and an empty list,
+    when not given."""
     # coxswain-dash carries its own copy of tests/fixtures/dash_feed_v1.json and will need these two fields too.
     # `queue[].phases` is additive and the schema stays 1: a coxtop that does not know the field ignores it.
     # So are `runs[].tasks`, `runs[].landed` and `runs[].quarantined`, which `_runs_v1` adds to each run row.
@@ -162,9 +166,14 @@ def snapshot(
         "epics": list(epics),
         "board": {"epics": []} if board is None else board,
         "live": _zero_live(_zero_anchor(at)) if live is None else live,
+        "health": _copy_health(_ZERO_HEALTH if health is None else health),
         **({} if operator_sessions is None else {"operator_sessions": operator_sessions}),
         **({} if schedule is None else {"schedule": schedule}),
     }
+
+
+def _copy_health(block: dict) -> dict:
+    return {**block, "logs": [dict(row) for row in block["logs"]]}
 
 
 def _zero_anchor(at) -> datetime:
