@@ -56,8 +56,13 @@ def _hours(seconds: float) -> str:
     return f"{seconds / 3600:.1f}h"
 
 
-def plan_from_inputs(inputs: ScheduleInputs, now: datetime) -> tuple[Schedule, Context]:
-    """Plan the queue from the facts' inputs. `now` is passed in; nothing here reads a clock."""
+def plan_from_inputs(
+    inputs: ScheduleInputs, now: datetime, *, withheld: frozenset[str] = frozenset()
+) -> tuple[Schedule, Context]:
+    """Plan the queue from the facts' inputs. `now` is passed in; nothing here reads a clock.
+
+    A withheld initiative's ready phases are not started this tick, so nothing waits behind them.
+    """
     mix = {(i["id"], p["id"]): p["mix"] for i in inputs["initiatives"] for p in i["phases"]}
     initiatives = [
         Initiative(
@@ -70,7 +75,7 @@ def plan_from_inputs(inputs: ScheduleInputs, now: datetime) -> tuple[Schedule, C
         )
         for i in inputs["initiatives"]
     ]
-    nodes, dependents = build_graph(initiatives)
+    nodes, dependents = build_graph(initiatives, withheld=withheld)
     durations = {k: estimate_duration(inputs["records"], n.size, mix[k], DEFAULT_SECONDS) for k, n in nodes.items()}
     hosts = [Host(h["name"], tuple(h["lanes"]), h["local"], tuple(h["repos"])) for h in inputs["hosts"]]
     target = datetime.fromisoformat(inputs["target"]) if inputs["target"] else None
