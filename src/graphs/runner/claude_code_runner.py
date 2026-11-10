@@ -51,6 +51,7 @@ from functools import partial
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any
 
+from runner.claude_token import TOKEN_ENV, read_token, token_path
 from runner.decision_log import REASON_SEPARATOR, CallDecision, RouterDecision, joined_reasons, to_row
 from runner.protocol import BudgetStop, Capability, LimitStop, NodeResult, RunnerError
 from runner.tier_resolution import CLASSES, TIERS, Hints, Resolution, clamp_to_chair, resolve, to_class, to_tier
@@ -144,9 +145,13 @@ def _chair_model(environ: Mapping[str, str]) -> str | None:
     return environ.get(CHAIR_MODEL_ENV, "").strip() or None
 
 
-def child_env(environ: Mapping[str, str], bash: str | None) -> dict[str, str]:
-    """Claude Code's Bash tool runs in $SHELL, and zsh fails an unquoted glob such as `--include=*.py`."""
-    return {**environ, "SHELL": bash} if bash is not None else dict(environ)
+def child_env(environ: Mapping[str, str], bash: str | None, token: str | None = None) -> dict[str, str]:
+    """Claude Code's Bash tool runs in $SHELL, and zsh fails an unquoted glob such as `--include=*.py`.
+
+    A given `token` replaces whatever `environ` holds under TOKEN_ENV.
+    """
+    with_shell = {**environ, "SHELL": bash} if bash is not None else dict(environ)
+    return {**with_shell, TOKEN_ENV: token} if token is not None else with_shell
 
 
 def _capture_diff(scratch: Path) -> str:
@@ -1514,7 +1519,7 @@ class ClaudeCodeRunner:
                 # A thread keeps one working directory for its whole life: the
                 # CLI files sessions by directory, and a resume looks there.
                 cwd=scratch or self.cwd,
-                env=child_env(os.environ, shutil.which("bash")),
+                env=child_env(os.environ, shutil.which("bash"), read_token(token_path(str(Path.home())))),
                 start_new_session=True,
             )
         except FileNotFoundError as exc:
