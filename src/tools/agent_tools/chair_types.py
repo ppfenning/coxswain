@@ -487,9 +487,16 @@ class ScheduleHost(TypedDict):
 DurationRecord = dict[str, str]  # the keys `chair_schedule_durations` reads: size, mix, build_start, approve_time
 
 
+class ScheduleRunning(TypedDict):
+    initiative: str
+    phase: str
+    host: str
+    lane: str  # a lane name of that host; the facts assign it, the run store does not record it
+
+
 class ScheduleInputs(TypedDict):
-    """The arguments of `chair_schedule.plan_schedule` minus the clock, as plain data. `running` is not carried:
-    the facts know which phases are live but not their host, lane or finish."""
+    """The arguments of `chair_schedule.plan_schedule` minus the clock, as plain data. `running` lists live phases
+    with the host and lane they hold; their finish is not carried, so the planner treats each as overdue."""
 
     initiatives: list[ScheduleInitiative]
     records: list[DurationRecord]
@@ -497,6 +504,7 @@ class ScheduleInputs(TypedDict):
     mode: str
     load: dict[str, int]  # host name to live runs
     target: str | None  # ISO release target a work item states; None when none does
+    running: NotRequired[list[ScheduleRunning]]
 
 
 class ScheduleUpdatedAction(TypedDict):

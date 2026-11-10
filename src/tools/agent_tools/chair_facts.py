@@ -76,6 +76,7 @@ from agent_tools.chair_types import (
     ScheduleInitiative,
     ScheduleInputs,
     SchedulePhase,
+    ScheduleRunning,
     StewardPlanFacts,
     StrandedPhase,
     TodoInitiative,
@@ -791,6 +792,31 @@ def schedule_hosts(dispatch: DispatchFacts, local: str) -> tuple[list[ScheduleHo
     return hosts, {name: live for name, _, _, live in slots}, mode
 
 
+def running_lanes(
+    hosts: Sequence[ScheduleHost],
+    live_phases: Collection[tuple[str, str]],
+    newest_run_host: Mapping[str, str] | None,
+    local: str,
+) -> list[ScheduleRunning]:
+    """Each live phase with its newest run's host and the next unused lane of that host, in `hosts` lane order.
+
+    A phase on an unknown host, or past that host's lane count, is left out. Phases are taken in sorted order."""
+    names = {h["name"] for h in hosts}
+    wanted = [
+        (i, p, (newest_run_host or {}).get(i) or local) for i, p in sorted(live_phases)
+    ]
+    kept = [(i, p, h) for i, p, h in wanted if h in names]
+    lanes = {h["name"]: h["lanes"] for h in hosts}
+    ordinal = {
+        (i, p): sum(1 for _, _, other in kept[:n] if other == h) for n, (i, p, h) in enumerate(kept)
+    }
+    return [
+        {"initiative": i, "phase": p, "host": h, "lane": lanes[h][ordinal[(i, p)]]}
+        for i, p, h in kept
+        if ordinal[(i, p)] < len(lanes[h])
+    ]
+
+
 def _int(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
@@ -816,8 +842,11 @@ def schedule_inputs_from_rows(
     repos: Mapping[str, str],
     land_at: Mapping[str, str],
     live_phases: Collection[tuple[str, str]],
+    newest_run_host: Mapping[str, str] | None = None,
 ) -> ScheduleInputs:
     """The scheduler's inputs, from rows already read; no read, no clock.
+
+    `newest_run_host` maps an initiative to its newest run's host, "" meaning local; None means every live phase is local.
 
     `items` are the ticket rows, `work` the work rows (priority, release target), `actions` the chair action rows
     for `duration_records`. `repos`, `land_at` and `live_phases` have no default: an edge that forgets one would
@@ -849,6 +878,7 @@ def schedule_inputs_from_rows(
         "mode": mode,
         "load": load,
         "target": release_target(work, {i["id"] for i in initiatives}),
+        "running": running_lanes(hosts, live_phases, newest_run_host, local),
     }
 
 
@@ -1815,6 +1845,7 @@ def gather_facts(
                     local=deps.host, repos=repos,
                     land_at=land_at_facts(deps.cartridge(), deps.land_at_values(), sorted({str(i["initiative"]) for i in items})),
                     live_phases=live_phase_pairs,
+                    newest_run_host=newest_run_host,
                 )
             }
             if deps.tickets is not None

@@ -111,6 +111,31 @@ def test_plan_from_inputs_places_the_ready_phase_with_the_default_tier():
     assert context.durations[("alpha", "build")].tier == "default"
 
 
+def _two_initiatives(**extra):
+    phase = {"parents": [], "size": "S", "mix": "plain", "surfaces": []}
+    return {
+        **INPUTS,
+        "initiatives": [
+            {"id": "alpha", "priority": 0, "repo": "r", "phases": [{"id": "build", "status": "running", **phase}]},
+            {"id": "beta", "priority": 0, "repo": "r", "phases": [{"id": "build", "status": "ready", **phase}]},
+        ],
+        **extra,
+    }
+
+
+def test_a_running_phase_holds_the_only_lane_so_a_ready_phase_waits_for_it():
+    held = [{"initiative": "alpha", "phase": "build", "host": "h", "lane": "h-1"}]
+    schedule, _ = route_schedule.plan_from_inputs(_two_initiatives(running=held), T0)
+    beta = next(p for lane in schedule.lanes for p in lane.next if p.key == B)
+    assert B not in [p.key for p in schedule.launches]
+    assert beta.start == T0 + timedelta(seconds=900)
+
+
+def test_without_a_running_key_the_same_ready_phase_launches_this_tick():
+    schedule, _ = route_schedule.plan_from_inputs(_two_initiatives(), T0)
+    assert B in [p.key for p in schedule.launches]
+
+
 def _patch_edge(monkeypatch):
     monkeypatch.setattr(cli, "_resolve_profile_or_refuse", lambda a: ({}, None))
     monkeypatch.setattr(cli, "_lake_provider", lambda a: ({}, None))
