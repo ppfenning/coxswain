@@ -9,6 +9,8 @@ import sqlite3
 import sys
 from pathlib import Path
 
+import pytest
+
 from agent_tools import dash_detail_initiative as ddi
 from agent_tools import run_store
 
@@ -198,3 +200,59 @@ def test_build_initiative_detail_flags_only_the_same_phase_needs_edge() -> None:
     assert p1_tasks[1]["error"] == "needs edge inside phase p1-foundations"
     assert p2_tasks[0]["needs"] == [_SCHEMA]
     assert p2_tasks[0]["error"] is None
+
+
+def _settled_items(state: str) -> list[dict]:
+    """Two phases of two tasks each, every task in `state`; `b1` needs `a1` across phases."""
+    rows = [
+        ("a1", "p1", [], "2026-10-01T00:00:00Z"),
+        ("a2", "p1", [], "2026-10-02T00:00:00Z"),
+        ("b1", "p2", ["a1"], "2026-10-03T00:00:00Z"),
+        ("b2", "p2", [], "2026-10-04T00:00:00Z"),
+    ]
+    return [
+        {"id": task, "phase": phase, "state": state, "needs": needs, "updated_at": at}
+        for task, phase, needs, at in rows
+    ]
+
+
+@pytest.mark.parametrize("state", ["done", "dropped"])
+def test_build_returns_every_phase_and_task_of_a_settled_initiative(monkeypatch, tmp_path, state) -> None:
+    monkeypatch.setattr(ddi, "_items", lambda runs_dir, initiative_id: _settled_items(state))
+    monkeypatch.setattr(ddi, "_runs", lambda runs_dir, initiative_id: [])
+
+    result = ddi.build("demo", tmp_path / "work", tmp_path / "runs", "2026-10-05T00:00:00Z")
+
+    assert result == {
+        "schema": 1,
+        "kind": "initiative",
+        "at": "2026-10-05T00:00:00Z",
+        "initiative": "demo",
+        "phases": [
+            {
+                "id": "p1",
+                "landed_at": "2026-10-02T00:00:00Z",
+                "tasks": [
+                    {"id": "a1", "needs": [], "state": state, "error": None},
+                    {"id": "a2", "needs": [], "state": state, "error": None},
+                ],
+            },
+            {
+                "id": "p2",
+                "landed_at": "2026-10-04T00:00:00Z",
+                "tasks": [
+                    {"id": "b1", "needs": ["a1"], "state": state, "error": None},
+                    {"id": "b2", "needs": [], "state": state, "error": None},
+                ],
+            },
+        ],
+        "history": [
+            {"at": "2026-10-02T00:00:00Z", "event": "phase p1 landed"},
+            {"at": "2026-10-04T00:00:00Z", "event": "phase p2 landed"},
+        ],
+    }
+    v1 = json.loads(_FIXTURE_PATH.read_text(encoding="utf-8"))
+    phase_keys, task_keys = v1["phases"][0].keys(), v1["phases"][0]["tasks"][0].keys()
+    assert result.keys() == v1.keys()
+    assert all(phase.keys() == phase_keys for phase in result["phases"])
+    assert all(task.keys() == task_keys for phase in result["phases"] for task in phase["tasks"])
