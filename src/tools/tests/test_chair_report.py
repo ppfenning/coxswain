@@ -104,6 +104,26 @@ def test_standby_line_names_the_holder_and_host():
     assert "lands 0" in line and "needs chair: none" in line
 
 
+def test_a_done_takeback_reads_as_a_takeback_not_a_standby():
+    action = {"kind": "take_lease", "reason": "takeback from sess-9"}
+    result = {"action": action, "status": "done", "reason": "takeback from sess-9"}
+    line = format_status(_facts(), [action], [result], NOW)
+    assert "takeback: took the chair back from sess-9" in line
+    assert "standby" not in line and "would:" not in line
+
+
+def test_a_takeback_line_names_only_the_first_word_after_the_prefix():
+    action = {"kind": "take_lease", "reason": "takeback from sess-9 (resumed at epoch 4)"}
+    line = format_status(_facts(), [action], [{"action": action, "status": "done", "reason": action["reason"]}], NOW)
+    assert "takeback: took the chair back from sess-9 |" in line
+
+
+def test_a_plain_take_lease_and_a_refused_takeback_do_not_read_as_a_takeback():
+    plain = {"action": {"kind": "take_lease", "reason": ""}, "status": "done", "reason": ""}
+    refused = {"action": {"kind": "take_lease", "reason": "takeback from sess-9"}, "status": "refused", "reason": "chair: held"}
+    assert "takeback" not in format_status(_facts(), [], [plain, refused], NOW)
+
+
 def test_hard_stop_line_says_hard_stop():
     line = format_status(_facts(hard_stop=True, weekly=0.95), [], [], NOW)
     assert "weekly 95%/90% (meter) hard stop" in line
