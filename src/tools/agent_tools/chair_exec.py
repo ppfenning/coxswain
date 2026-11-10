@@ -158,7 +158,7 @@ def _no_initiative_rows() -> tuple[()]:
 class Deps:
     run: Run  # (exit code, output); the only door to cox and git
     delete_branches: Callable[[str, str], tuple[list[str], str]]  # (repo, pattern) -> (deleted names, error text)
-    acquire_lease: Callable[..., str]  # (holder, host), or (holder, host, steal=True) over an expired takeover -> refusal line or ""
+    acquire_lease: Callable[..., str]  # (holder, host), (holder, host, steal=True) over an expired takeover, or steal=True, takeback=True over a live session -> refusal line or ""
     record: Callable[[Action], None]
     run_id: Callable[[Action], str]  # the run whose task a land applies to; "" when unknown
     repo_for: Callable[[Action], str]  # the repository a clear_branches acts in; "" when unknown
@@ -807,11 +807,22 @@ def _clear(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
     return {**result, "needs_chair": needs_chair} if needs_chair is not None else result
 
 
+TAKEBACK_PREFIX = "takeback from "  # opens the reason of a take_lease over a live session holder; chair_report reads the holder after it
+
+
 def _lease(action: Action, deps: Deps) -> Result:
     holder, host = action.get("holder", ""), action.get("host", "")
-    over_expired = action.get("reason", "").startswith("takeover expired")
-    line = deps.acquire_lease(holder, host, steal=True) if over_expired else deps.acquire_lease(holder, host)
-    return _result(action, "refused", line) if line else _result(action, "done")
+    reason = action.get("reason", "")
+    takeback = reason.startswith(TAKEBACK_PREFIX)
+    if takeback:
+        line = deps.acquire_lease(holder, host, steal=True, takeback=True)
+    elif reason.startswith("takeover expired"):
+        line = deps.acquire_lease(holder, host, steal=True)
+    else:
+        line = deps.acquire_lease(holder, host)
+    if line:
+        return _result(action, "refused", line)
+    return _result(action, "done", reason) if takeback else _result(action, "done")
 
 
 def _rendered_value(value: object) -> object:
@@ -2349,7 +2360,9 @@ def edge_deps(
     live_check = partial(_check_login_edge, runs_dir, login_run, provider_profile)
     live_probe = partial(_probe_host_edge, runs_dir, login_run)
 
-    def acquire(_holder: str, _host: str, steal: bool = False) -> str:
+    def acquire(_holder: str, _host: str, steal: bool = False, takeback: bool = False) -> str:
+        if takeback:  # only a takeback may take a lease a live session holds; a bare steal still meets the refusal below
+            return chair.acquire_lease(runs_dir, session, pid, host, steal=True)
         refusal, takeover = _lease_state(runs_dir, session, pid, host)
         return refusal or chair.acquire_lease(runs_dir, session, pid, host, steal=steal or takeover)
 

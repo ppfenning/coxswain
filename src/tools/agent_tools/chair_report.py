@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from agent_tools.chair_exec import LAUNCH_KINDS, Result
+from agent_tools.chair_exec import LAUNCH_KINDS, TAKEBACK_PREFIX, Result
 from agent_tools.chair_land_freeze import LandFreeze, status_text
 from agent_tools.chair_read_quarantined import RUNAWAY_CAUSE
 from agent_tools.chair_runnable import WaitingInitiative
@@ -23,7 +23,8 @@ __all__ = [
     "EASTERN", "REASON_LINE_CAP", "Deps", "echo_line", "failed_items", "fetched_items", "file_ahead_items", "format_status",
     "housekeeping_fragment",
     "landing_fragment", "lands_this_tick", "launched_items", "mode_of", "needs_chair_items",
-    "partial_land_text", "reason_tail", "steer_head_items", "steered_items", "waiting_item", "would_items", "write_status",
+    "partial_land_text", "reason_tail", "steer_head_items", "steered_items", "takeback_text", "waiting_item", "would_items",
+    "write_status",
 ]
 
 REASON_LINE_CAP = 80  # characters of a failed result's reason the one status line carries
@@ -40,11 +41,27 @@ def lands_this_tick(results: Sequence[Result]) -> int:
     return sum(1 for r in results if r["action"].get("kind") in ("land", "land_phase", "partial_land") and r["status"] == "landed")
 
 
+def takeback_text(results: Sequence[Result]) -> str | None:
+    """`takeback: took the chair back from <holder>` for a done take_lease whose reason starts `takeback from `, else None.
+
+    The holder is the first word after the prefix, so text the lease gate appends to the reason stays out of the line.
+    """
+    reasons = (
+        r["action"].get("reason", "")
+        for r in results
+        if r["status"] == "done" and r["action"].get("kind") == "take_lease"
+    )
+    named = next((reason.removeprefix(TAKEBACK_PREFIX).split() for reason in reasons if reason.startswith(TAKEBACK_PREFIX)), None)
+    return None if named is None else f"takeback: took the chair back from {named[0] if named else '?'}"
+
+
 def mode_of(actions: Sequence[Action], results: Sequence[Result]) -> str:
-    """dry-run when every result is a dry_run, else standby with its holder and host, else holding."""
+    """dry-run when every result is a dry_run, else a takeback, else standby with its holder and host, else holding."""
     standby = next((a for a in actions if a.get("kind") == "standby"), None)
     if results and all(r["status"] == "dry_run" for r in results):
         return "dry-run"
+    if (takeback := takeback_text(results)) is not None:
+        return takeback
     if standby is not None and standby.get("until"):
         return f"standby: held by {standby.get('holder', '?').partition('@')[0]} until {standby['until']}"
     if standby is not None:

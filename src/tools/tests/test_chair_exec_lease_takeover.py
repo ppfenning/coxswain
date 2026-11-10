@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 from agent_tools import chair, chair_exec
 from agent_tools.chair_exec import foreign_holder_gone
@@ -113,3 +114,56 @@ def test_a_stale_session_record_over_a_live_store_row_is_taken_end_to_end(tmp_pa
     chair.write(tmp_path, _fresh())
     assert deps.acquire_lease("h", "host-a") == ""
     assert store.steals == [True]
+
+
+def test_a_takeback_over_a_live_unexpired_session_record_reaches_the_store_with_steal(tmp_path, monkeypatch) -> None:
+    deps, calls = _recording(tmp_path, monkeypatch)
+    chair.write(tmp_path, _fresh())
+    result = chair_exec._lease({"kind": "take_lease", "holder": "h", "host": "host-a", "reason": "takeback from other"}, deps)
+    assert calls == [True]
+    assert (result["status"], result["reason"]) == ("done", "takeback from other")
+
+
+def test_a_plain_take_lease_over_the_same_live_record_is_still_refused(tmp_path, monkeypatch) -> None:
+    deps, calls = _recording(tmp_path, monkeypatch)
+    chair.write(tmp_path, _fresh())
+    result = chair_exec._lease({"kind": "take_lease", "holder": "h", "host": "host-a", "reason": ""}, deps)
+    assert calls == []
+    assert (result["status"], result["reason"]) == ("refused", REFUSAL)
+
+
+def _lease_deps(line: str = "") -> tuple[SimpleNamespace, list]:
+    calls: list = []
+    return SimpleNamespace(acquire_lease=lambda holder, host, **kw: calls.append(kw) or line), calls
+
+
+def _take(reason: str) -> dict:
+    return {"kind": "take_lease", "holder": "chair-loop", "host": "host-a", "reason": reason}
+
+
+def test_a_takeback_reason_steals_and_keeps_its_reason_on_the_done_result() -> None:
+    deps, calls = _lease_deps()
+    result = chair_exec._lease(_take("takeback from sess-9"), deps)
+    assert calls == [{"steal": True, "takeback": True}]
+    assert (result["status"], result["reason"]) == ("done", "takeback from sess-9")
+
+
+def test_a_takeover_expired_reason_steals_without_the_takeback_flag() -> None:
+    deps, calls = _lease_deps()
+    result = chair_exec._lease(_take("takeover expired"), deps)
+    assert calls == [{"steal": True}]
+    assert (result["status"], result["reason"]) == ("done", "")
+
+
+def test_a_plain_take_lease_does_not_steal() -> None:
+    deps, calls = _lease_deps()
+    result = chair_exec._lease(_take("no holder"), deps)
+    assert calls == [{}]
+    assert (result["status"], result["reason"]) == ("done", "")
+
+
+def test_a_refused_takeback_stays_refused_with_the_refusal_line() -> None:
+    deps, calls = _lease_deps(REFUSAL)
+    result = chair_exec._lease(_take("takeback from sess-9"), deps)
+    assert calls == [{"steal": True, "takeback": True}]
+    assert (result["status"], result["reason"]) == ("refused", REFUSAL)
