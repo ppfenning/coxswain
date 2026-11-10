@@ -1500,6 +1500,10 @@ def _without_size_lines(result: dict) -> dict:
             dict(
                 p,
                 suggested_action="\n".join(ln for ln in p["suggested_action"].split("\n") if not ln.startswith("size")),
+                apply={
+                    **p["apply"],
+                    "item": {k: v for k, v in p["apply"]["item"].items() if not k.startswith("size")},
+                },
             )
             if p["target"] == "initiative"
             else p
