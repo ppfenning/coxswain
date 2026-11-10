@@ -639,7 +639,6 @@ ActionKind = Literal[
     "land_batch",
     "pull_workspace",
     "waiting",
-    "deferred",
     "unlaunched",
     "close_initiative",
     "finish_task",
@@ -674,8 +673,7 @@ class Action(TypedDict, total=False):
     the plan adds repo, task_runs and run (the newest of task_runs) for the loop's task lands. land_batch carries sources,
     batch_size and wait_s: the phases the merge queue lands together. A relaunch_loop needs_chair carries
     initiative, cause and a reason naming both quarantined run ids. waiting carries initiative, phase, quarantined and
-    awaiting_land and runs no command. deferred carries initiative, phase and land_at and runs no command: the land waits for
-    the granularity land_at names. unlaunched carries initiative and reason, runs no command and writes no row.
+    awaiting_land and runs no command. unlaunched carries initiative and reason, runs no command and writes no row.
     close_initiative carries initiative and state (done or dropped).
     The steward's actions each carry epic and topic (both the epic id) and fields. merge_level also carries level,
     the index of the level to merge, plus land_at (how the initiative lands) and phase (the level's phase name) as
@@ -730,7 +728,7 @@ class Action(TypedDict, total=False):
     state: str  # a close_initiative names the state to move the initiative to: done or dropped
     epic: str  # a merge_level, run_gate or steward_event names the epic it acts on
     level: int  # a merge_level names the index of the level it merges
-    land_at: str  # a merge_level or deferred names the land_at (ticket, level or task) of its initiative
+    land_at: str  # a merge_level names the land_at (ticket, level or task) of its initiative
     event: str  # a steward_event names the event it publishes, for example needs_attention
     fields: dict[str, str]  # a merge_level, run_gate or steward_event carries the scope fields of its reported-set key
     topic: str  # a merge_level, run_gate or steward_event names the topic its event is published under

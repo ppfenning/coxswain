@@ -79,7 +79,7 @@ def _kinds(actions: list[dict], kinds: set[str]) -> list[dict]:
 def test_a_non_last_phase_at_ticket_plans_its_land_and_holds_the_initiative_from_launches() -> None:
     actions = plan_tick(_p1_facts(), _NOW)
     assert [a["phase"] for a in _kinds(actions, {"land_phase"})] == ["p1"]
-    assert _kinds(actions, _LAUNCH | {"deferred"}) == []
+    assert _kinds(actions, _LAUNCH) == []
 
 
 def test_a_ticket_phase_inside_a_refusal_backoff_holds_the_initiative_from_launches() -> None:
@@ -93,7 +93,6 @@ def test_level_and_task_still_land_a_non_last_phase() -> None:
     for land_at in ("level", "task"):
         actions = plan_tick(_p1_facts(land_at), _NOW)
         assert [a["phase"] for a in _kinds(actions, {"land_phase"})] == ["p1"]
-        assert _kinds(actions, {"deferred"}) == []
 
 
 def test_a_quarantined_sibling_at_ticket_plans_no_land() -> None:

@@ -179,15 +179,6 @@ def steer_head_items(results: Sequence[Result]) -> list[str]:
     return [f"{head} ({n} waiting, {'launched' if head in launched else 'idle'})" for head, n in waiting.items()]
 
 
-def deferred_items(results: Sequence[Result]) -> list[str]:
-    """`deferred: <initiative> <phase> (deferred to the last phase, land_at <land_at>)` per deferred result; never a land or a failure."""
-    return [
-        f"deferred: {a.get('initiative', '?')} {a.get('phase', '?')} (deferred to the last phase, land_at {a.get('land_at', '?')})"
-        for a in (r["action"] for r in results)
-        if a.get("kind") == "deferred"
-    ]
-
-
 def landing_fragment(landing: Sequence[Mapping[str, Any]]) -> str:
     """Empty when none; else `landing N (2 coxswain, 1 dash)`, names being repo basenames (`?` for a land with no repo)."""
     if not landing:
@@ -352,7 +343,6 @@ def format_status(
         *([f"steered: {', '.join(steered)}"] if steered else []),
         *([f"steer heads: {', '.join(heads)}"] if heads else []),
         *waiting,
-        *deferred_items(results),
         *([review] if review else []),
         *([epics] if epics else []),
         *([steward] if steward else []),
