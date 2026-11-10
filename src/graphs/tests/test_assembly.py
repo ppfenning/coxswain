@@ -108,3 +108,47 @@ def test_a_parent_already_contained_in_the_target_is_skipped(repo: Path, worktre
 def test_unknown_base_ref_fails_without_raising(repo: Path, worktree: Path) -> None:
     result = assemble(repo, worktree, "no-such-ref", ["p-a"], "assembled")
     assert not result.ok and result.head == "" and "no-such-ref" in result.cause
+
+
+RESOLVED = BASE_TEXT.replace("line 5\n", "resolved\n")
+
+
+def record_resolution(repo: Path) -> None:
+    """Resolve p-a against p-b by hand once, with rerere on, so git records the resolution."""
+    run(repo, "config", "rerere.enabled", "true")
+    run(repo, "config", "rerere.autoupdate", "true")
+    branch_with(repo, "p-a", {"shared.txt": BASE_TEXT.replace("line 5\n", "from a\n")})
+    branch_with(repo, "p-b", {"shared.txt": BASE_TEXT.replace("line 5\n", "from b\n")})
+    run(repo, "checkout", "-q", "-b", "trial", "p-a")
+    assert git(repo, "merge", "p-b")[0] != 0
+    (repo / "shared.txt").write_text(RESOLVED)
+    run(repo, "add", "shared.txt")
+    assert git(repo, "commit", "--no-edit")[0] == 0
+    run(repo, "checkout", "-q", "main")
+    run(repo, "branch", "-q", "-D", "trial")
+
+
+def test_a_merge_rerere_resolved_and_left_unfinished_is_committed(repo: Path, worktree: Path) -> None:
+    record_resolution(repo)
+    result = assemble(repo, worktree, "main", ["p-a", "p-b"], "assembled")
+    assert result.ok and result.cause == ""
+    assert (worktree / "shared.txt").read_text() == RESOLVED
+    assert run(repo, "log", "-n1", "--format=%s", "assembled") == "Merge branch 'p-b' into assembled"
+    assert git(worktree, "status", "--porcelain") == (0, "")
+
+
+def test_a_recorded_resolution_that_cannot_finish_the_merge_names_the_real_files(repo: Path, worktree: Path) -> None:
+    record_resolution(repo)
+    hooks = repo.parent / "hooks"
+    hooks.mkdir()
+    # `git commit` concluding a merge runs pre-commit; `git merge` itself runs pre-merge-commit.
+    hook = hooks / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n")
+    hook.chmod(0o755)
+    run(repo, "config", "core.hooksPath", str(hooks))
+    result = assemble(repo, worktree, "main", ["p-a", "p-b"], "assembled")
+    assert result.cause == (
+        "merging p-b after p-a conflicted in: shared.txt "
+        "(rerere resolution could not be applied; conflict found with rerere off)"
+    )
+    assert git(worktree, "status", "--porcelain") == (0, "")

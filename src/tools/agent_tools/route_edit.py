@@ -15,7 +15,11 @@ A task ticket (a `work_items` row that `resolve_target` does not name) is edited
 done or dropped, a move backward along ready -> in_progress -> approved -> done, and a move on a row a launch claim holds
 are refused. `--title`, `--surfaces` and the body go to `run_store.upsert_row_detail` as a partial row that never carries
 `state`, so a state the loop set meanwhile survives. Then `queue_export.export_file(force=True)` rewrites the one file from
-the row as the store now holds it and records the hash, so a hand-edited file is overwritten by the store text.
+the row as the store now holds it and records the hash, so a hand-edited file is overwritten by the store text, except on a
+requeue: a move to ready from a state other than todo, or a rebuild. There the file's body and needs are read through
+`queue_rows.parse_item`, and when they differ from the row they are adopted into the planned row (`file_edit`), so the export
+keeps them. With a differing file and `--body` or `--body-file` the edit is refused with a diff of the two bodies.
+`--note` appends its text to the body with `append_note`, once; it applies to a task ticket only.
 `--surfaces` and `--state` apply to a task ticket only.
 `--epic` takes an epic id or `none` and applies to an initiative only: it sets or removes the `epic` frontmatter key and
 the same key in the stored row's `extra`. The chair reads epic membership each tick and it changes no ticket, so an edit
@@ -59,23 +63,28 @@ class EditResult(NamedTuple):
 def check_options(
     title: str | None, body: str | None, body_file: str | None, repo: str | None,
     surfaces: str | None = None, state: str | None = None, rebuild: bool = False, force: bool = False, pr: str | None = None,
-    after: Sequence[str] | None = None, link: str | None = None, epic: str | None = None,
+    after: Sequence[str] | None = None, link: str | None = None, epic: str | None = None, note: str | None = None,
 ) -> str | None:
     """The reason the options cannot be applied, or None. Body and body-file are mutually exclusive.
-    `surfaces`, `state`, `after`, `link` or `epic` alone counts as a change, an empty `after` or `link` included; whether
-    they are valid is `check_task_options` and `apply_edit`. An `epic` must be an epic id or `none`.
-    `--rebuild` goes with `--state ready`, `--force` with `--rebuild` and `--pr` with `--state done`."""
+    `surfaces`, `state`, `after`, `link`, `epic` or `note` alone counts as a change, an empty `after` or `link` included;
+    whether they are valid is `check_task_options` and `apply_edit`. An `epic` must be an epic id or `none`.
+    `--rebuild` goes with `--state ready`, `--force` with `--rebuild` and `--pr` with `--state done`.
+    A `note` is not empty and does not go with `--body` or `--body-file`."""
     if body is not None and body_file is not None:
         return "give either --body or --body-file, not both"
+    if note is not None and (body is not None or body_file is not None):
+        return "--note appends to the body; give it without --body or --body-file"
+    if note is not None and not note.strip():
+        return "--note must not be empty"
     if pr is not None and state != "done":
         return "--pr applies only with --state done"
     if rebuild and state != "ready":
         return "--rebuild applies only with --state ready"
     if force and not rebuild:
         return "--force applies only with --rebuild"
-    unchanged = (surfaces, state, title, body, body_file, repo, after, link, epic)
+    unchanged = (surfaces, state, title, body, body_file, repo, after, link, epic, note)
     if all(option is None for option in unchanged):
-        return "nothing to change: give --title, --body, --body-file, --repo, --epic, --surfaces, --state or --link"
+        return "nothing to change: give --title, --body, --body-file, --note, --repo, --epic, --surfaces, --state or --link"
     if title == "" or repo == "":
         return "--title and --repo must not be empty"
     return _epic_problem(epic)
@@ -242,7 +251,7 @@ _STATE_RANK = {"todo": 0, "ready": 0, "in_progress": 1, "approved": 2, "done": 3
 _FINAL_STATES = frozenset({"done", "dropped"})
 # The states `harness.store_cli set-state` takes, as its target and as its `--expect`.
 SET_STATES = ("ready", "approved", "done", "dropped")
-_CONTENT_FIELDS = ("title", "body", "surfaces", "extra")
+_CONTENT_FIELDS = ("title", "body", "needs", "surfaces", "extra")  # needs changes only when a requeue adopts the file's
 EDITED_BY = "cox route edit"
 _REBUILD_HINT = "; --rebuild needs a recorded land conflict, or --force"
 REBUILT_FROM_KEY = "rebuilt_from"  # `extra` key: every run id a rebuild superseded, kept across rebuilds
@@ -393,14 +402,56 @@ def mark_done_with_pr(runs_dir: Path, row: dict, pr: str, now: str | None) -> Ed
     return failed if failed is not None else _recorded_result(_record_pr(runs_dir, row, pr, now))
 
 
+def file_edit(stored: dict, rel: str, text: str) -> dict | None:
+    """Pure: the `body` and `needs` of the task file `text` that differ from the `stored` row, keyed by field, or None when
+    both match or the text parses to no task row. `rel` is the file's `work/<initiative>/<phase>/<task>.md` path.
+    A row with no needs is compared on its body only: a file naming needs there does not put them back."""
+    parsed = queue_rows.parse_item("task", tuple(Path(rel).parts[-3:]), text)
+    if parsed is None:
+        return None
+    needs = list(stored.get("needs") or [])
+    held = {"body": stored.get("body") or "", **({"needs": needs} if needs else {})}
+    differs = {key: parsed[key] for key, value in held.items() if parsed[key] != value}
+    return differs or None
+
+
+def kept_refusal(stored: dict, rel: str, kept: dict) -> str:
+    """Pure: the refusal text when an explicit body meets a file that differs from the row: a reason, then the unified diff
+    of the stored needs and body against the file's."""
+    def lines(needs: Collection[str], body: str) -> list[str]:
+        return [f"needs: {', '.join(needs)}\n", *body.splitlines(keepends=True)]
+
+    diff = "".join(
+        difflib.unified_diff(
+            lines(stored.get("needs") or [], stored.get("body") or ""),
+            lines(kept.get("needs", stored.get("needs") or []), kept.get("body", stored.get("body") or "")),
+            fromfile=f"a/{rel} (stored)", tofile=f"b/{rel} (file)",
+        )
+    )
+    return f"{rel} was edited by hand; --body or --body-file would overwrite it. Stored against file:\n{diff}"
+
+
+def _requeues(row: dict, new_row: dict, *, moves: bool, allowed: bool) -> bool:
+    """Pure: True when the edit sends a ticket to ready as a requeue. A rebuild always is. A todo ticket has never been
+    launched, so its move to ready keeps writing the stored text over the file."""
+    return new_row.get("state") == "ready" and (allowed or (moves and row.get("state") != "todo"))
+
+
+def _report(text: str, lines: Sequence[str]) -> str:
+    """Pure: `text` with each of `lines` on a line of its own below it."""
+    return "".join([f"{text.rstrip(chr(10))}\n" if text and lines else text, *(f"{line}\n" for line in lines)])
+
+
 def _edit_task(
     runs_dir: Path, ws: Path, row: dict, *, title: str | None, body: str | None, body_file: str | None,
     surfaces: str | None, state: str | None, dry_run: bool, now: str | None, rebuild: bool = False, force: bool = False,
-    pr: str | None = None,
+    pr: str | None = None, user_note: str | None = None,
 ) -> EditResult:
     """Edge: a state move first, through `store_cli.set_state` with a compare-and-set on the state read; then the changed
     content fields only, as a partial row `upsert_row_detail` merges (never `state`); then the store's row as it now stands,
-    through `export_file(force=True)`. The diff is the file on disk against the text the planned row renders."""
+    through `export_file(force=True)`. The diff is the file on disk against the text the planned row renders.
+    On a requeue (`_requeues`) the file on disk is read first: a body or needs that differ from the row are adopted into the
+    planned row, or refused with a diff when `body` or `body_file` also names a body. `user_note` is appended to the body once."""
     try:
         new_body = Path(body_file).read_text(encoding="utf-8").removesuffix("\n") if body_file is not None else body
     except OSError as exc:
@@ -414,6 +465,19 @@ def _edit_task(
         problem = (refusal and refusal + hint) or check_claim(row, now)
         if problem:
             return EditResult(problem, REFUSED)
+    report: list[str] = []
+    if _requeues(row, new_row, moves=moves, allowed=allowed):
+        rel = queue_rows.row_path(new_row)
+        try:
+            on_disk = (ws / rel).read_text(encoding="utf-8") if (ws / rel).is_file() else None
+        except OSError as exc:
+            return EditResult(f"cannot read: {exc}", FAILED)
+        kept = None if on_disk is None else file_edit(row, rel, on_disk)
+        if kept is not None and new_body is not None:
+            return EditResult(kept_refusal(row, rel, kept), REFUSED)
+        if kept is not None:
+            new_row = {**new_row, **kept}
+            report.append(f"kept from the file: {' and '.join(kept)}")
     unmarked = ""
     if allowed:
         extra = dict(row.get("extra") or {})
@@ -424,6 +488,11 @@ def _edit_task(
         if not superseded and row.get("state") == "approved":
             unmarked = f"note: no run holds {row.get('task_id')}; its old approval is not marked superseded\n"
         new_row = {**new_row, "body": append_note(new_row.get("body") or "", note), "extra": marked}
+    if user_note is not None:
+        text = user_note.strip()
+        noted = append_note(new_row.get("body") or "", text)
+        report.append(f"note appended: {text}" if noted != (new_row.get("body") or "") else "note already in the body")
+        new_row = {**new_row, "body": noted}
     if queue_export.is_contentless(new_row):
         return EditResult(f"task {row.get('task_id')!r} has no content to export", REFUSED)
     [(rel, new_text)] = queue_export.export_rows([new_row]).items()
@@ -438,7 +507,7 @@ def _edit_task(
     backfill = state == "done" and row.get("state") == "done"  # already done: --state done only records the PR
     unchanged = not diff and new_row == row
     if dry_run or (unchanged and not backfill):
-        return EditResult(diff, DONE)
+        return EditResult(_report(diff, report), DONE)
     if moves:
         refused = _set_state(runs_dir, row, new_row["state"])
         if refused is not None:
@@ -457,7 +526,7 @@ def _edit_task(
     except OSError as exc:
         return EditResult(f"the store row was updated but {rel} could not be written: {exc}", FAILED)
     text = diff or f"store row {row.get('task_id')} updated; {rel} already matched"
-    return EditResult(f"{text.rstrip(chr(10))}\n{note}" if note else text, DONE)
+    return EditResult(_report(f"{text.rstrip(chr(10))}\n{note}" if note else text, report), DONE)
 
 
 def intake_reach_refusal(text: str, new_body: str, title: str | None) -> str | None:
@@ -492,6 +561,7 @@ def apply_edit(
     after: Sequence[str] | None = None,
     link: str | None = None,
     epic: str | None = None,
+    note: str | None = None,
 ) -> EditResult:
     """Edge: edit the queued intake, the initiative or the task ticket named `id`. Exit 0 returns the diff; exit 2 returns the
     reason and writes nothing, whether the options are wrong, the id is unknown, or the guard refuses. With
@@ -501,8 +571,9 @@ def apply_edit(
     `link` sets or replaces a queued intake's link with its issue fields, or with an empty string clears all three;
     it is refused anywhere else.
     `epic` sets an initiative's epic to an id, or removes it with `none`, in the store row and in initiative.md; it is
-    refused on an intake and a task ticket. Given alone it skips the initiative guard; see the module docstring."""
-    problem = check_options(title, body, body_file, repo, surfaces, state, rebuild, force, pr, after, link, epic)
+    refused on an intake and a task ticket. Given alone it skips the initiative guard; see the module docstring.
+    `note` is appended once to a task ticket's body, with or without a state move; it is refused on an intake and an initiative."""
+    problem = check_options(title, body, body_file, repo, surfaces, state, rebuild, force, pr, after, link, epic, note)
     if problem is not None:
         return EditResult(problem, REFUSED)
     rows: Sequence[dict] = run_store.read_queue(runs_dir)
@@ -527,8 +598,10 @@ def apply_edit(
             return EditResult(problem, REFUSED)
         return _edit_task(
             runs_dir, ws, dict(tickets[0]), title=title, body=body, body_file=body_file, surfaces=surfaces, state=state, dry_run=dry_run,
-            now=now, rebuild=rebuild, force=force, pr=pr,
+            now=now, rebuild=rebuild, force=force, pr=pr, user_note=note,
         )
+    if note is not None:
+        return EditResult("--note applies to a task ticket, not an intake or an initiative", REFUSED)
     if surfaces is not None or state is not None:
         return EditResult("--surfaces and --state apply to a task ticket only", REFUSED)
     if after is not None and not isinstance(target, route_guard.QueuedIntake):

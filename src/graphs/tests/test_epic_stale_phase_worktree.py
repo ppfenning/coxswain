@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from harness.epic import _Ctx, _open_phase_worktree
+from harness.epic import _Ctx, _open_phase_worktree, _registered_on_branch
 
 PHASE = "p1-foundations"
 
@@ -108,3 +108,28 @@ def test_nothing_is_cleared_when_no_other_run_holds_the_branch(repo, tmp_path) -
     assert opened[:1] == (True,)
     assert opened[2] is True
     assert opened.cleared == ()
+
+
+def test_a_second_open_in_one_run_reuses_the_worktree(repo, tmp_path) -> None:
+    ctx = _ctx(repo, tmp_path, "r1")
+    ok, detail, _ = _open_phase_worktree(ctx, PHASE, "main")
+    assert ok, detail
+
+    opened = _open_phase_worktree(ctx, PHASE, "main")
+
+    ok, detail, reused = opened
+    assert ok, detail
+    assert reused is True
+    assert opened.cleared == ()
+    assert ctx.phase_worktree(PHASE).is_dir()
+
+
+def test_registered_on_branch_reads_a_porcelain_listing(tmp_path) -> None:
+    here = tmp_path / "wt" / PHASE
+    listing = (
+        f"worktree {tmp_path / 'repo'}\nHEAD abc\nbranch refs/heads/main\n\n"
+        f"worktree {here}\nHEAD def\nbranch refs/heads/phase/{PHASE}\n"
+    )
+    assert _registered_on_branch(listing, here, f"phase/{PHASE}") is True
+    assert _registered_on_branch(listing, here, "main") is False
+    assert _registered_on_branch(listing, tmp_path / "other", f"phase/{PHASE}") is False

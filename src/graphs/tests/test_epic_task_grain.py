@@ -1,4 +1,4 @@
-"""A task starts when its own needs are merged; its phase branch holds those commits, not the parent's head."""
+"""A task starts when its own needs are merged; staleness asks for those commits, and the branch is cut from the parent's tip."""
 
 from __future__ import annotations
 
@@ -47,26 +47,28 @@ def test_a_task_with_merged_needs_opens_before_its_parent_phase_completes() -> N
     assert {i["id"]: i["state"] for i in _open_view(held, {"p1": set(), PHASE: {"p1"}}, set(), set())}["e"] == "blocked"
 
 
-def test_the_child_branch_holds_the_needed_commit_and_not_the_parents_other_work(repo, tmp_path) -> None:  # noqa: F811
+def test_the_child_branch_is_cut_from_the_parents_tip_and_holds_its_other_work(repo, tmp_path) -> None:  # noqa: F811
     ctx, tree, sha_a, sha_slow = stack(repo, tmp_path)
     refs = _required_refs(items_for(sha_a), PHASE, ("p1",), ctx.phase_branch, "main", cut=True)
-    assert refs == [sha_a]
+    assert refs == [ctx.phase_branch("p1")]
     ok, detail, _ = _open_phase_worktree(ctx, PHASE, "main", ("p1",), refs)
     assert ok, detail
     assert is_ancestor(repo, sha_a, ctx.phase_branch(PHASE))
-    assert not is_ancestor(repo, sha_slow, ctx.phase_branch(PHASE))
+    assert is_ancestor(repo, sha_slow, ctx.phase_branch(PHASE))
 
 
 def test_a_parent_that_merges_unrelated_work_does_not_stale_the_child_branch(repo, tmp_path) -> None:  # noqa: F811
     ctx, tree, sha_a, _ = stack(repo, tmp_path)
-    refs = _required_refs(items_for(sha_a), PHASE, ("p1",), ctx.phase_branch, "main", cut=True)
-    ok, detail, _ = _open_phase_worktree(ctx, PHASE, "main", ("p1",), refs)
+    needed = _required_refs(items_for(sha_a), PHASE, ("p1",), ctx.phase_branch, "main")
+    cut_from = _required_refs(items_for(sha_a), PHASE, ("p1",), ctx.phase_branch, "main", cut=True)
+    ok, detail, _ = _open_phase_worktree(ctx, PHASE, "main", ("p1",), cut_from)
     assert ok, detail
     commit_file(tree, "unrelated.md", "unrelated")
     head = git("rev-parse", "HEAD", cwd=tree)
     # The old head check would call this branch stale.
     assert not is_ancestor(repo, head, ctx.phase_branch(PHASE))
-    assert _needs_missing(ctx, PHASE, refs) is False
+    assert needed == [sha_a]
+    assert _needs_missing(ctx, PHASE, needed) is False
 
 
 def test_a_needed_commit_missing_from_the_child_branch_reads_as_stale(repo, tmp_path) -> None:  # noqa: F811
