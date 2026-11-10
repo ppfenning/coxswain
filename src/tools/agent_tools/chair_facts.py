@@ -378,6 +378,7 @@ def lease_facts(record: Row, session: str, pid: int, host: str) -> LeaseFacts:
         "expired": bool(record.get("expired", False)),
         "until": str(record.get("until") or ""),
         "lent": bool(record.get("lent", False)),
+        **({"session_held": True} if record.get("session_held") is True else {}),
     }
 
 

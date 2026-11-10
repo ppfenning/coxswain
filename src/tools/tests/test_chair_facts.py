@@ -632,6 +632,11 @@ def test_lease_is_mine_only_for_this_holder_on_a_live_lease():
     assert mine(holder=MINE, stale=True) is False
 
 
+def test_lease_facts_carries_session_held_only_when_set():
+    assert lease_facts({"holder": MINE, "session_held": True}, "s", 7, "h")["session_held"] is True
+    assert "session_held" not in lease_facts({"holder": MINE}, "s", 7, "h")
+
+
 def test_gather_facts_fills_every_key_from_the_fakes():
     # merge_queue and host_load_ceiling are gathered only when configured, so these fakes configure them.
     queue = {"batch_size": 3, "wait_s": 90}
