@@ -7,12 +7,14 @@ import re
 from pathlib import Path
 from typing import NamedTuple
 
+from agent_tools.jsonl_log import append_line as _append_log_line
+from agent_tools.jsonl_log import parse_log
 from agent_tools.route import intake_entries, parse_frontmatter
 from agent_tools.stats_ingest import LEDGER_PATH, _read_ledger
 
 __all__ = [
     "EVENTS", "EXCEPTION_EVENTS", "Reference", "ack", "ack_file", "append_file", "append_line", "format_reference",
-    "inbox", "needs_model", "parse_reference", "parse_run_exited", "resolve", "run_exited_fields", "send",
+    "inbox", "needs_model", "parse_reference", "parse_run_exited", "resolve", "run_exited_fields", "send", "skipped",
 ]
 
 _KINDS = ("run", "task", "pr", "intake", "proposal", "finding", "initiative")
@@ -167,16 +169,15 @@ def append_line(blob: str, entry: dict) -> str:
 def _latest_by_id(blob: str) -> dict[str, dict]:
     """Last line per id wins, in first-seen order."""
     latest: dict[str, dict] = {}
-    for line in blob.splitlines():
-        if not line.strip():
-            continue
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(entry, dict) and "id" in entry:
+    for entry in parse_log(blob).rows:
+        if "id" in entry:
             latest[entry["id"]] = _fold(latest.get(entry["id"]), entry)
     return latest
+
+
+def skipped(blob: str) -> int:
+    """Count of damaged lines in `blob` that the reads above dropped."""
+    return parse_log(blob).skipped
 
 
 def _fold(prior: dict | None, entry: dict) -> dict:
@@ -227,13 +228,7 @@ def ack(blob: str, message_id: str, consumer: str | None = None) -> str:
 def append_file(path: Path, entry: dict) -> None:
     """Appends one line and never reads or rewrites the file. A final line missing its newline
     (a torn write) is closed first so the entry stays on its own line."""
-    with open(path, "ab+") as f:
-        size = f.seek(0, 2)
-        if size > 0:
-            f.seek(size - 1)
-        last = f.read(1) if size > 0 else b"\n"
-        torn = last != b"\n"
-        f.write((b"\n" if torn else b"") + json.dumps(entry).encode("utf-8") + b"\n")
+    _append_log_line(path, entry, sync=True)
 
 
 def ack_file(path: Path, message_id: str, consumer: str | None = None) -> bool:
