@@ -33,6 +33,7 @@ from agent_tools import (
     run_store,
 )
 from agent_tools.intake_state import intake_group, intake_index
+from agent_tools.jsonl_log import parse_log
 from agent_tools.pacing import Assessment
 
 __all__ = [
@@ -1603,14 +1604,6 @@ def efficiency_line(spend: float | None, landed: int, first_try_rate: float | No
     return f"{head}, first-try {first_try_rate * 100:.0f}%"
 
 
-def _json_object(line: str) -> dict | None:
-    try:
-        value = json.loads(line)
-    except ValueError:
-        return None
-    return value if isinstance(value, dict) else None
-
-
 def _is_landed_today(row: dict, today: str) -> bool:
     steps = row.get("steps_reached")
     return row.get("exit") == 0 and isinstance(steps, list) and "mark_done" in steps and str(row.get("ts", "")).startswith(today)
@@ -1623,8 +1616,8 @@ def _str_or_none(value: object) -> str | None:
 def landed_today(land_log: str, today: str) -> list[tuple[str | None, str | None]]:
     """`(run, task)` per task landed on `today` (exit 0, `mark_done` reached, `ts` that day), once per named task; unparseable lines skipped."""
     rows = [
-        (_str_or_none(r.get("run")), _str_or_none(r.get("task"))) for r in map(_json_object, land_log.splitlines())
-        if r is not None and _is_landed_today(r, today)
+        (_str_or_none(r.get("run")), _str_or_none(r.get("task"))) for r in parse_log(land_log).rows
+        if _is_landed_today(r, today)
     ]
     return [row for i, row in enumerate(rows) if row[1] is None or row not in rows[:i]]
 

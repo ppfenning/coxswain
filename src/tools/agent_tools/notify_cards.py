@@ -7,6 +7,7 @@ from pathlib import Path
 
 from agent_tools import courier
 from agent_tools.dash_feed import _courier_blob, _open_decisions
+from agent_tools.jsonl_log import parse_log
 from agent_tools.notify_core import Event, render
 
 __all__ = ["card_events", "pending_cards"]
@@ -25,22 +26,15 @@ def card_events(cards: list[dict]) -> list[Event]:
     return [_event(card) for card in cards if not card.get("answer")]
 
 
-def _is_object(line: str) -> bool:
-    try:
-        return isinstance(json.loads(line), dict)
-    except ValueError:
-        return False
-
-
-def _object_lines(blob: str) -> str:
-    """Drops torn and non-object lines, which `_open_decisions` would raise on and so hide every card."""
-    return "".join(f"{line}\n" for line in blob.splitlines() if _is_object(line))
+def _rows_blob(blob: str) -> str:
+    """Damaged lines are dropped and NULs stripped, so `_open_decisions` never raises on one and hides every card."""
+    return "".join(f"{json.dumps(row)}\n" for row in parse_log(blob).rows)
 
 
 def pending_cards(workspace) -> list[dict]:
     """Open decisions in `<workspace>/courier.jsonl`; [] when there are none or the read fails."""
     try:
-        blob = _object_lines(_courier_blob(Path(workspace)))
+        blob = _rows_blob(_courier_blob(Path(workspace)))
         return _open_decisions(courier.inbox(blob), blob)
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return []
