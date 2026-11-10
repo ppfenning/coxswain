@@ -136,6 +136,86 @@ def test_without_a_running_key_the_same_ready_phase_launches_this_tick():
     assert B in [p.key for p in schedule.launches]
 
 
+CLI = "src/tools/agent_tools/cli.py"
+README = "src/tools/README.md"
+
+
+def _phase(pid, status, *surfaces, parents=()):
+    return {
+        "id": pid,
+        "status": status,
+        "parents": list(parents),
+        "size": "S",
+        "mix": "plain",
+        "surfaces": list(surfaces),
+    }
+
+
+def _conflict_inputs(alpha, beta, *, running=()):
+    """Two initiatives in one repo on a host with three free lanes, so lane scarcity cannot order them."""
+    return {
+        **INPUTS,
+        "initiatives": [
+            {"id": "alpha", "priority": 0, "repo": "r", "phases": alpha},
+            {"id": "beta", "priority": 0, "repo": "r", "phases": beta},
+        ],
+        "hosts": [{"name": "h", "lanes": ["h-1", "h-2", "h-3"], "local": True, "repos": []}],
+        "running": list(running),
+    }
+
+
+def _launched(schedule):
+    return [p.key for p in schedule.launches]
+
+
+def _waits_lines(lines):
+    return [x for x in lines if "waits behind" in x]
+
+
+def test_a_blocked_later_phase_does_not_hold_back_a_ready_phase_on_the_same_file():
+    alpha = [_phase("first", "ready", "src/other.py"), _phase("later", "blocked", CLI, parents=["first"])]
+    inputs = _conflict_inputs(alpha, [_phase("build", "ready", CLI)])
+    schedule, context = route_schedule.plan_from_inputs(inputs, T0)
+    assert B in _launched(schedule)
+    assert not _waits_lines(route_schedule.explain_lines(schedule, context, "beta"))
+
+
+def test_a_waiting_only_phase_does_not_hold_back_a_ready_phase_on_a_shared_surface():
+    inputs = _conflict_inputs([_phase("build", "waiting", CLI)], [_phase("build", "ready", CLI)])
+    schedule, context = route_schedule.plan_from_inputs(inputs, T0)
+    assert B in _launched(schedule)
+    assert not _waits_lines(route_schedule.explain_lines(schedule, context, "beta"))
+    assert "not placed" in route_schedule.explain_lines(schedule, context, "alpha")[1]
+
+
+def test_a_running_phase_still_orders_a_ready_phase_behind_it_and_explain_says_so():
+    held = [{"initiative": "alpha", "phase": "build", "host": "h", "lane": "h-1"}]
+    inputs = _conflict_inputs([_phase("build", "running", CLI)], [_phase("build", "ready", CLI)], running=held)
+    schedule, context = route_schedule.plan_from_inputs(inputs, T0)
+    assert B not in _launched(schedule)
+    assert f"  waits behind alpha/build on {CLI}" in route_schedule.explain_lines(schedule, context, "beta")
+
+
+def test_a_withheld_initiative_does_not_hold_back_a_ready_phase():
+    inputs = _conflict_inputs([_phase("build", "ready", CLI)], [_phase("build", "ready", CLI)])
+    kept, kept_context = route_schedule.plan_from_inputs(inputs, T0)
+    assert f"  waits behind alpha/build on {CLI}" in route_schedule.explain_lines(kept, kept_context, "beta")
+    schedule, context = route_schedule.plan_from_inputs(inputs, T0, withheld=frozenset({"alpha"}))
+    assert B in _launched(schedule)
+    assert not _waits_lines(route_schedule.explain_lines(schedule, context, "beta"))
+
+
+def test_a_queue_shaped_like_the_report_prints_no_wait_behind_a_blocked_or_waiting_phase():
+    alpha = [_phase("held", "blocked", README, CLI), _phase("approved", "waiting", README, CLI)]
+    inputs = _conflict_inputs(alpha, [_phase("build", "ready", CLI)])
+    schedule, context = route_schedule.plan_from_inputs(inputs, T0)
+    assert B in _launched(schedule)
+    assert not _waits_lines(route_schedule.explain_lines(schedule, context, "beta"))
+    headings = [x for x in route_schedule.explain_lines(schedule, context, "alpha") if x.startswith("alpha/")]
+    assert len(headings) == 2
+    assert all(x.endswith("not placed") for x in headings)
+
+
 def _patch_edge(monkeypatch):
     monkeypatch.setattr(cli, "_resolve_profile_or_refuse", lambda a: ({}, None))
     monkeypatch.setattr(cli, "_lake_provider", lambda a: ({}, None))
