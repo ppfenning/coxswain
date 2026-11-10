@@ -78,6 +78,58 @@ _EXPECTED = {
     ],
 }
 
+_SETTLED = "settled-demo"
+_SETTLED_NOW = "2026-10-01T00:00:00Z"
+
+
+def _settled_rows(state: str) -> list[tuple]:
+    """Store rows for an initiative whose every task is `state`; p2's task needs a p1 task."""
+    return [
+        (_SETTLED, "a1", "p1", state, "[]", "2026-09-20T00:00:00Z", "me"),
+        (_SETTLED, "a2", "p1", state, "[]", "2026-09-21T00:00:00Z", "me"),
+        (_SETTLED, "b1", "p2", state, '["a1"]', "2026-09-22T00:00:00Z", "me"),
+    ]
+
+
+def _seed_store(tmp_path, monkeypatch, rows: list[tuple]) -> None:
+    db = tmp_path / "s.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE work_items (initiative, task_id, phase, state, needs_json, updated_at, updated_by)")
+    conn.executemany("INSERT INTO work_items VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(run_store, "_harness_python", lambda: Path(sys.executable))
+    monkeypatch.setattr(run_store, "_store_url", lambda runs_dir: f"sqlite:///{db}")
+
+
+def _settled_detail(state: str) -> dict:
+    return {
+        "schema": 1,
+        "kind": "initiative",
+        "at": _SETTLED_NOW,
+        "initiative": _SETTLED,
+        "phases": [
+            {
+                "id": "p1",
+                "landed_at": "2026-09-21T00:00:00Z",
+                "tasks": [
+                    {"id": "a1", "needs": [], "state": state, "error": None},
+                    {"id": "a2", "needs": [], "state": state, "error": None},
+                ],
+            },
+            {
+                "id": "p2",
+                "landed_at": "2026-09-22T00:00:00Z",
+                "tasks": [{"id": "b1", "needs": ["a1"], "state": state, "error": None}],
+            },
+        ],
+        "history": [
+            {"at": "2026-09-21T00:00:00Z", "event": "phase p1 landed"},
+            {"at": "2026-09-22T00:00:00Z", "event": "phase p2 landed"},
+        ],
+    }
+
+
 _NODE_CALLS_TABLE = (
     "CREATE TABLE node_calls (call_id TEXT PRIMARY KEY, run_id TEXT, seq INTEGER, task_id TEXT, role TEXT, "
     "tier TEXT, model_alias TEXT, cost_usd REAL, ceiling_usd REAL, ceiling_source TEXT, turns INTEGER, "
@@ -198,3 +250,19 @@ def test_build_initiative_detail_flags_only_the_same_phase_needs_edge() -> None:
     assert p1_tasks[1]["error"] == "needs edge inside phase p1-foundations"
     assert p2_tasks[0]["needs"] == [_SCHEMA]
     assert p2_tasks[0]["error"] is None
+
+
+def test_build_returns_every_phase_and_task_for_an_all_landed_initiative(tmp_path, monkeypatch) -> None:
+    _seed_store(tmp_path, monkeypatch, _settled_rows("done"))
+
+    result = ddi.build(_SETTLED, tmp_path / "work", tmp_path, _SETTLED_NOW)
+
+    assert result == _settled_detail("done")
+
+
+def test_build_returns_every_phase_and_task_for_an_all_dropped_initiative(tmp_path, monkeypatch) -> None:
+    _seed_store(tmp_path, monkeypatch, _settled_rows("dropped"))
+
+    result = ddi.build(_SETTLED, tmp_path / "work", tmp_path, _SETTLED_NOW)
+
+    assert result == _settled_detail("dropped")
