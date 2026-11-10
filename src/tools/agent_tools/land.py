@@ -224,11 +224,16 @@ def skip_line(name: str) -> str:
     return f"checks: {name} skipped (pytest exit 5, no tests ran)"
 
 
-def checks_detail(head: str, skipped: Sequence[str], flaky: Sequence[str] = ()) -> str:
-    """`head` first, then one skip line each, then one line per flaky note. The land prints the detail as
-    `checks: <detail>`, so `head` gets that prefix and each later line carries its own; a skip line placed first
-    would print as `checks: checks: ...`."""
-    return "\n".join([head, *(skip_line(name) for name in skipped), *(f"checks: {note}" for note in flaky)])
+def reused_line(name: str) -> str:
+    return f"checks: reused: {name} (same tree and command passed earlier)"
+
+
+def checks_detail(head: str, skipped: Sequence[str], flaky: Sequence[str] = (), reused: Sequence[str] = ()) -> str:
+    """`head` first, then one skip line each, one line per reused check, then one line per flaky note. The land
+    prints the detail as `checks: <detail>`, so `head` gets that prefix and each later line carries its own; a skip
+    line placed first would print as `checks: checks: ...`."""
+    return "\n".join([head, *(skip_line(name) for name in skipped), *(reused_line(name) for name in reused),
+                      *(f"checks: {note}" for note in flaky)])
 
 
 def phase_landable(items: list[dict[str, Any]], records: dict[str, dict[str, Any]], quarantine: bool = False) -> str | None:

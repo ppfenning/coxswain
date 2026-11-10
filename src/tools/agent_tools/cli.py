@@ -2387,12 +2387,24 @@ def _checks_env(cwd: Path, cores: int = 1, capacity: int | None = None) -> dict[
     return capped if capped is not None else base
 
 
+def _git_common_dir(cwd: Path) -> Path | None:
+    """Edge. The repository's git common directory, shared by every worktree, or None when git cannot say."""
+    try:
+        out = subprocess.run(["git", "-C", str(cwd), "rev-parse", "--git-common-dir"], capture_output=True, text=True,
+                             check=True, timeout=30).stdout.strip()
+    except subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError:
+        return None
+    return (Path(cwd) / out).resolve() if out else None
+
+
 def _run_checks(checks: list[tuple[str, str]], cwd: Path, cores: int = 1, capacity: int | None = None) -> tuple[bool, str]:
     """Each `(name, shell line)` pair in order, run by a shell in `cwd` as the builders run it (`harness.checks`),
     stopping at the first launch error or failure and naming it by `name`, never by its command.
 
-    `cores` and `capacity` are the land's, read by the caller. With a `capacity` the passing detail names the xdist
-    worker count the checks ran with."""
+    A check that already passed on this exact tree and command is not run again (`harness.check_reuse`); the detail
+    names it. `cores` and `capacity` are the land's, read by the caller. With a `capacity` the passing detail names
+    the xdist worker count the checks ran with."""
+    from harness.check_reuse import run_checks_reusing
     from harness.checks import run_checks
     from harness.lane_workers import XDIST_VAR
     if not checks:
@@ -2400,10 +2412,16 @@ def _run_checks(checks: list[tuple[str, str]], cwd: Path, cores: int = 1, capaci
     env = _checks_env(cwd, cores, capacity)
     workers = env.get(XDIST_VAR) if env is not None and capacity is not None and capacity >= 1 else None
     note = f" (xdist workers: {workers})" if workers else ""
+    common = _git_common_dir(Path(cwd))
     skipped: list[str] = []
+    reused: list[str] = []
     flaky: list[str] = []
     for name, line in checks:
-        [result] = run_checks(Path(cwd), [{"name": name, "cmd": line}], env=env)
+        one = [{"name": name, "cmd": line}]
+        [result] = (run_checks_reusing(Path(cwd), one, ledger_dir=common, env=env) if common is not None
+                    else run_checks(Path(cwd), one, env=env))
+        if result.get("reused"):
+            reused.append(name)
         if result.get("note"):
             flaky.append(result["note"])
         if result["outcome"] == "unrunnable":
@@ -2415,7 +2433,7 @@ def _run_checks(checks: list[tuple[str, str]], cwd: Path, cores: int = 1, capaci
             return False, land.checks_detail(f"{name}: {result['output_tail'].strip()}", skipped, flaky)
         if verdict == "skip":
             skipped.append(name)
-    return True, land.checks_detail(f"{len(checks)} checks passed{note}", skipped, flaky)
+    return True, land.checks_detail(f"{len(checks)} checks passed{note}", skipped, flaky, reused)
 
 
 def _land_worktree(repo: Path, branch: str) -> Path:

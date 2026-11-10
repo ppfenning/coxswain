@@ -502,7 +502,8 @@ def test_execute_checks_runs_every_check_in_order_and_reports_the_count(tmp_path
 
 def test_execute_checks_with_a_branch_runs_in_a_worktree_and_removes_it(repo, tmp_path, monkeypatch):
     wt = tmp_path / "checks-wt"
-    monkeypatch.setattr(cli.tempfile, "mkdtemp", lambda prefix="": str(wt))
+    real_mkdtemp = cli.tempfile.mkdtemp  # `tempfile` is global: the tree hash of a reused check also makes a temp dir
+    monkeypatch.setattr(cli.tempfile, "mkdtemp", lambda *a, **kw: str(wt) if kw.get("prefix") == "land-checks-" else real_mkdtemp(*a, **kw))
     ok, detail = cli._execute_land_step(repo, {"kind": "checks", "checks": [("tests", "true")], "branch": "agents/epic-x-5/seams-task"})
     assert ok, detail
     assert not wt.exists()
@@ -1569,6 +1570,7 @@ def test_cli_apply_refuses_a_checks_launch_failure_before_push(repo, tmp_path, c
 
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
     monkeypatch.setattr(importlib.import_module("harness.checks"), "run_checks", unrunnable)
+    monkeypatch.setattr(importlib.import_module("harness.check_reuse"), "run_checks", unrunnable)
     rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs")])
     out = capsys.readouterr().out
     assert rc == 2
