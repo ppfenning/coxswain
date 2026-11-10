@@ -21,7 +21,7 @@ import subprocess
 import time
 import zlib
 from collections import Counter
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Hashable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -199,6 +199,42 @@ def connect_readonly(runs_dir: Path) -> Any | None:
     """None when a SQLite store is absent. Opened read-only, so it can never create the file. Rows are addressable by column name."""
     opened = _open(runs_dir)
     return None if opened is None else opened[0]
+
+
+def _change_stamp_sql() -> str:
+    """One row per user table: its name and the rows inserted, updated and deleted since statistics began."""
+    return "SELECT relname, n_tup_ins + n_tup_upd + n_tup_del AS changes FROM pg_stat_user_tables"
+
+
+def _stamp_of_rows(rows: Sequence[Any]) -> Hashable:
+    """Sorted (table, changes) pairs, so row order never moves the stamp. Accepts mapping rows and plain pairs."""
+    pairs = ((r["relname"], int(r["changes"])) if isinstance(r, Mapping) else (r[0], int(r[1])) for r in rows)
+    return tuple(sorted(pairs))
+
+
+def store_change_stamp(runs_dir: Path) -> Hashable | None:
+    """Edge. A value that moves when any table the feed reads is written; None means treat the store as always changed.
+
+    The feed reads runs, leases, hosts, node_calls, attempts, phases, task_records, work_items, chair_actions and
+    export_hashes. The stamp sums inserted, updated and deleted rows for every user table, so it covers those and
+    any table added later. Reads leave the counters alone, which a transaction commit counter would not.
+    Postgres flushes these statistics after a write, not at commit, so the stamp can trail a write by about a second.
+    TRUNCATE is not counted as deleted rows, and the counters restart on crash recovery or `pg_stat_reset`.
+    None for a SQLite store, an absent store or any failure, from config, psycopg or the database. Never raises.
+    """
+    try:
+        if not is_postgres(_store_url(Path(runs_dir))):
+            return None
+        opened = _open(runs_dir)
+        if opened is None:
+            return None
+        conn = opened[0]
+        try:
+            return _stamp_of_rows(conn.execute(_change_stamp_sql()).fetchall())
+        finally:
+            conn.close()
+    except Exception:  # never raise: store config, a missing psycopg and an unreachable Postgres all mean "always changed"
+        return None
 
 
 def run_started_at(runs_dir: Path, run_id: str) -> str | None:
