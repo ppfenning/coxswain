@@ -733,6 +733,19 @@ def _run_alive(ctx: _Ctx) -> Callable[[str], bool]:
     return lambda run_id: run_id == ctx.run_id or pid_alive(ctx.runs_dir / f"{run_id}.pid")
 
 
+def _registered_on_branch(listing: str, path: Path, branch: str) -> bool:
+    """True when `git worktree list --porcelain` text registers `path` (resolved) on `refs/heads/<branch>`."""
+    target = path.resolve()
+    return any(
+        f"branch refs/heads/{branch}" in record.splitlines()
+        and any(
+            line.startswith("worktree ") and Path(line.removeprefix("worktree ")).resolve() == target
+            for line in record.splitlines()
+        )
+        for record in listing.split("\n\n")
+    )
+
+
 def _open_phase_worktree(
     ctx: _Ctx, phase: str, base_ref: str, parents: tuple[str, ...] = (), refs: Sequence[str] | None = None
 ) -> _Opened:
@@ -748,6 +761,7 @@ def _open_phase_worktree(
 
     A dead run can also leave its worktree in place holding the branch, so a
     reused branch first releases the holders whose run is no longer alive.
+    A registered worktree of this run on the branch is reused.
 
     A new branch under any parent is cut from `base_ref` and assembled from `refs`, the commits it needs;
     `refs` defaults to every parent's branch. A failure keeps the assembly cause.
@@ -758,6 +772,9 @@ def _open_phase_worktree(
     worktree.parent.mkdir(parents=True, exist_ok=True)
     if _branch_exists(ctx, branch):
         cleared = release_stale_holders(ctx.repo, branch, ctx.worktree_root, _run_alive(ctx))
+        listed, listing = _git("-C", str(ctx.repo), "worktree", "list", "--porcelain")
+        if listed and _registered_on_branch(listing, worktree, branch):
+            return _Opened(True, "", True, cleared)
         ok, detail = _git("-C", str(ctx.repo), "worktree", "add", str(worktree), branch)
         return _Opened(ok, detail, True, cleared)
     ok, detail = create_worktree(ctx.repo, worktree, branch=branch, base=base_ref)
