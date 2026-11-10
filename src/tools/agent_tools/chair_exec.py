@@ -5,6 +5,7 @@ Argv spellings follow `cox runs land --help` and `cox route launch epic|decompos
 """
 from __future__ import annotations
 
+import getpass
 import json
 import math
 import os
@@ -62,6 +63,7 @@ from agent_tools.chair_revert_exec import GitPort as RevertGitPort
 from agent_tools.chair_schedule import SCHEDULE_FILE
 from agent_tools.chair_types import Action, LandTrigger, is_fenced
 from agent_tools.land import approve_to_done
+from agent_tools.pytest_tmp_sweep import sweep_pytest_tmp
 from agent_tools.remote_argv import LANE_HOST_TIMEOUT_S, probe_argv, ssh_argv, sync_argv
 
 __all__ = [
@@ -154,6 +156,14 @@ def _no_initiative_rows() -> tuple[()]:
     return ()
 
 
+def _current_user() -> str:
+    """The login name pytest's temp directory is keyed on; "" when the platform has none, which matches no directory."""
+    try:
+        return getpass.getuser()
+    except (KeyError, OSError):
+        return ""
+
+
 @dataclass(frozen=True)
 class Deps:
     run: Run  # (exit code, output); the only door to cox and git
@@ -200,6 +210,8 @@ class Deps:
     # chair_steward_exec's door: (merge_level or run_gate action, the repo's checks) -> {"event", "fields", "reason"}; None refuses both
     steward_exec: Callable[[Action, Sequence[str]], Mapping[str, Any]] | None = None
     steward_checks: Callable[[Action], Sequence[str]] = lambda action: ()  # the checks the loop already resolved for the action's repo; the executor never chooses them
+    temp_root: Path | None = None  # the system temp directory housekeeping sweeps for stale pytest runs; None sweeps nothing
+    user: str = ""  # the login name whose `pytest-of-<user>` directory that sweep reads
 
 
 def resolved_target(cartridge_target: str | None, epic_branch: str | None, initiative_branch: str | None) -> str | None:
@@ -1046,14 +1058,31 @@ def _prune_available(run: Run, harness_python: str) -> bool:
     return code == 0
 
 
+def _pytest_sweep_line(names: list[str]) -> str:
+    """The reason line for the stale pytest run directories removed; "" when none were."""
+    return f"pytest tmp: removed {', '.join(names)}" if names else ""
+
+
+def _sweep_pytest_runs(deps: Deps) -> str:
+    """Edge. Stale pytest run directories removed at the tick's clock, as a reason line; "" when none or the sweep failed."""
+    if deps.temp_root is None:
+        return ""
+    try:
+        names = sweep_pytest_tmp(deps.temp_root, deps.user, _as_utc(deps.now()).timestamp())
+    except Exception:  # best-effort: a failed sweep must not fail the tick or stop the steps around it
+        return ""
+    return _pytest_sweep_line(names)
+
+
 def _housekeeping(action: Action, deps: Deps) -> Result:
-    """Lake sync, trace prune, runs clean, in order; the reason names all three, none stopping the others."""
+    """Lake sync, trace prune, runs clean, in order, none stopping the others; then the pytest run sweep."""
     traces_root = run_store._traces_root(deps.runs_dir).url
     status, reason = chair_housekeeping.run_housekeeping(
         deps.run, traces_root, partial(_prune_available, deps.run, deps.harness_python),
         deps.harness_python, deps.log_retention_days,
     )
-    return _result(action, status, reason)
+    swept = _sweep_pytest_runs(deps)
+    return _result(action, status, f"{reason}; {swept}" if swept else reason)
 
 
 def _send_note(deps: Deps, ref: courier.Reference, text: str) -> None:
@@ -2371,6 +2400,8 @@ def edge_deps(
         probe_host=(lambda name: {}) if dry_run else live_probe,
         log_retention_days=log_retention_days,
         harness_python=harness_python,
+        temp_root=Path(tempfile.gettempdir()),
+        user=_current_user(),
         ids_mode=ids_mode,
         home=home,
         carry_ports=partial(_carry_ports, runs_dir, workspace, repo_for, lambda: datetime.now(UTC).isoformat(), home, target_branch, capacity=lane_capacity),
