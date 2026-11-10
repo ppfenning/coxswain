@@ -1,7 +1,11 @@
-"""The check scope selector, from literals: no repository, no import map builder."""
+"""The check scope selector, from literal import maps, plus one test over this repository's real src/tools map."""
 
 from __future__ import annotations
 
+from collections import Counter
+from pathlib import Path
+
+from harness.check_deps import load_dep_map
 from harness.check_scope import ScopedChecks, pytest_component, render_selection, select_checks
 
 TOOLS = {"name": "tools", "cmd": "cd src/tools && pytest -q -n auto"}
@@ -144,7 +148,56 @@ def test_narrowing_keeps_changed_sources_tests_and_added_tests() -> None:
 def test_render_selection_is_one_short_line() -> None:
     selection = scope(["src/tools/c.py"]).selection
     assert render_selection(selection) == (
-        "scoped checks: ran src/tools (narrowed to 1 file); skipped src/graphs, src/cartridges"
+        "scoped checks: ran src/tools (narrowed to 1 of 3 files); skipped src/graphs, src/cartridges"
     )
     whole = scope(["src/tools/data.json"]).selection
     assert render_selection(whole).startswith("scoped checks: ran src/tools (whole);")
+
+
+def test_render_selection_of_a_whole_selection_without_a_tests_key() -> None:
+    selection = {"components_run": ["tools"], "components_skipped": [], "narrowed": {"tools": "whole"}}
+    assert render_selection(selection) == "scoped checks: ran tools (whole)"
+
+
+def test_a_patch_selects_direct_and_transitive_importers_with_counts() -> None:
+    selection = scope(["src/tools/a.py"]).selection
+    assert selection["narrowed"]["src/tools"] == ["tests/test_a.py", "tests/test_b.py"]
+    assert selection["tests"] == {"src/tools": {"selected": 2, "total": 3}}
+    assert render_selection(selection).startswith("scoped checks: ran src/tools (narrowed to 2 of 3 files);")
+
+
+def test_conftest_change_selects_the_whole_component_with_selected_equal_to_total() -> None:
+    selection = scope(["src/tools/tests/conftest.py"]).selection
+    assert selection["narrowed"]["src/tools"] == "whole"
+    assert selection["reason"]["src/tools"] == "fallback conftest.py changed"
+    assert selection["tests"]["src/tools"] == {"selected": 3, "total": 3}
+
+
+def test_fixture_directory_change_selects_the_whole_component() -> None:
+    path = "src/tools/tests/fixtures/data.json"
+    selection = scope([path]).selection
+    assert selection["narrowed"]["src/tools"] == "whole"
+    assert selection["reason"]["src/tools"] == f"fallback non-Python file {path}"
+    assert selection["tests"]["src/tools"] == {"selected": 3, "total": 3}
+
+
+def test_full_fallback_counts_every_component_whole() -> None:
+    assert scope([]).selection["tests"] == {
+        "src/tools": {"selected": 3, "total": 3},
+        "src/graphs": {"selected": 1, "total": 1},
+        "src/cartridges": {"selected": 1, "total": 1},
+    }
+
+
+def test_real_tools_map_narrows_a_leaf_module_to_under_15_percent_of_tests() -> None:
+    root = Path(__file__).resolve().parents[3]
+    dep_map = load_dep_map(root, ["src/tools"])
+    reach = dep_map.test_reach
+    imports = Counter(src for srcs in reach.values() for src in srcs)
+    leaf = min(imports, key=lambda src: (imports[src], src))
+    import_map = {"components": dep_map.components, "test_reach": reach, "unresolved": dep_map.unresolved}
+    checks = [{"name": "tools", "cmd": "cd src/tools && pytest -q"}]
+    selection = select_checks(checks, [leaf], set(), import_map).selection
+    counts = selection["tests"]["src/tools"]
+    assert counts["total"] == len(reach) > 0
+    assert 0 < counts["selected"] < 0.15 * counts["total"], (leaf, counts)

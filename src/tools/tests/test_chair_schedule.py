@@ -43,7 +43,7 @@ def _by_key(schedule):
 TWO_HOSTS = (Host("host-a", ("lane-1",)), Host("host-b", ("lane-1",)))
 # a1 and b1 hold src/shared.py strictly, so a1 (the higher priority) goes before b1; c1 is independent.
 WAVE = [
-    Initiative("a", 3, "r", (_ph("a1", surfaces=("src/shared.py",)), _ph("a2", "waiting", ("a1",)))),
+    Initiative("a", 3, "r", (_ph("a1", surfaces=("src/shared.py",)), _ph("a2", parents=("a1",)))),
     Initiative("b", 2, "r", (_ph("b1", surfaces=("src/shared.py",)),)),
     Initiative("c", 1, "r", (_ph("c1", surfaces=("src/other.py",)),)),
 ]
@@ -95,7 +95,7 @@ def test_remaining_seconds_is_the_minimum_once_overdue():
 
 def test_an_overdue_running_parent_keeps_its_lane_and_its_child():
     initiatives = [
-        Initiative("a", 1, "r1", (_ph("a1", "running"), _ph("a2", "waiting", ("a1",)))),
+        Initiative("a", 1, "r1", (_ph("a1", "running"), _ph("a2", parents=("a1",)))),
         Initiative("c", 2, "r2", (_ph("c1"),)),
     ]
     overdue = {("a", "a1"): Running("host-a", "lane-1", NOW - timedelta(hours=1))}
@@ -111,7 +111,7 @@ def test_an_overdue_running_parent_keeps_its_lane_and_its_child():
 
 def test_an_idle_host_takes_independent_work_instead_of_a_far_future_child():
     initiatives = [
-        Initiative("x", 1, "r1", (_ph("x1"), _ph("x2", "waiting", ("x1",)))),
+        Initiative("x", 1, "r1", (_ph("x1"), _ph("x2", parents=("x1",)))),
         Initiative("y", 1, "r2", (_ph("y1"),)),
     ]
     schedule = _plan(initiatives, {("x", "x1"): 10, ("x", "x2"): 20, ("y", "y1"): 1}, TWO_HOSTS)
@@ -153,7 +153,7 @@ def test_a_running_node_is_explained_as_running_on_its_lane():
 
 def test_no_capable_host_leaves_the_node_and_what_waits_on_it_unplaced():
     initiatives = [
-        Initiative("x", 1, "r-other", (_ph("x1"), _ph("x2", "waiting", ("x1",)))),
+        Initiative("x", 1, "r-other", (_ph("x1"), _ph("x2", parents=("x1",)))),
         Initiative("y", 1, "r-here", (_ph("y1"),)),
     ]
     hosts = (Host("host-a", ("lane-1",), repos=("r-here",)),)
@@ -181,7 +181,7 @@ def test_a_dependency_cycle_returns_an_empty_schedule_naming_the_cycle():
 
 
 def test_a_phase_with_no_estimate_is_not_projected_and_does_not_launch_its_child():
-    initiatives = [Initiative("a", 1, "r1", (_ph("p1"), _ph("p2", "waiting", ("p1",))))]
+    initiatives = [Initiative("a", 1, "r1", (_ph("p1"), _ph("p2", parents=("p1",))))]
     schedule = _plan(initiatives, {("a", "p2"): 1}, TWO_HOSTS)
     assert schedule.launches == ()
     assert schedule.unplaced == (("a", "p1"), ("a", "p2"))
@@ -205,6 +205,44 @@ def test_a_blocked_phase_is_not_projected_and_holds_back_what_waits_on_it():
     assert _plan(initiatives, hours, TWO_HOSTS, target=NOW + timedelta(minutes=30)).misses_target is True
 
 
+ONE_LANE = (Host("host-a", ("lane-1",)),)
+
+
+def test_a_waiting_node_takes_no_lane_and_a_ready_node_starts_at_now():
+    initiatives = [
+        Initiative("w", 2, "r1", (_ph("w1", "waiting"),)),
+        Initiative("r", 1, "r1", (_ph("r1"),)),
+    ]
+    schedule = _plan(initiatives, {("w", "w1"): 1, ("r", "r1"): 1}, ONE_LANE)
+    assert [(p.key, p.lane, p.start) for p in schedule.launches] == [(("r", "r1"), "lane-1", NOW)]
+    assert list(_by_key(schedule)) == [("r", "r1")]
+    assert _why(schedule)[("w", "w1")].binding == "waiting"
+    assert schedule.unplaced == (("w", "w1"),)
+
+
+def test_a_ready_child_of_a_waiting_parent_is_unplaced_too():
+    initiatives = [Initiative("a", 1, "r1", (_ph("a1", "waiting"), _ph("a2", parents=("a1",))))]
+    schedule = _plan(initiatives, {("a", "a1"): 1, ("a", "a2"): 1}, ONE_LANE)
+    assert (schedule.launches, schedule.lanes) == ((), ())
+    assert schedule.unplaced == (("a", "a1"), ("a", "a2"))
+    assert _why(schedule)[("a", "a1")].binding == "waiting"
+    assert _why(schedule)[("a", "a2")].binding == "unplaced"
+
+
+def test_a_waiting_node_with_no_dependents_leaves_its_lane_free_at_now():
+    nodes, _ = build_graph(
+        [
+            Initiative("w", 2, "r1", (_ph("w1", "waiting"),)),
+            Initiative("r", 1, "r1", (_ph("r1"),)),
+        ]
+    )
+    dependents = {k: frozenset() for k in nodes}
+    durations = {k: Estimate(HOUR, "default", 0) for k in nodes}
+    schedule = plan_schedule(nodes, dependents, durations, ONE_LANE, "building", {}, NOW)
+    assert [(p.key, p.start) for p in schedule.launches] == [(("r", "r1"), NOW)]
+    assert schedule.unplaced == (("w", "w1"),)
+
+
 def test_three_equal_nodes_are_reported_as_one_tie_in_queue_order():
     same = [Initiative(n, 1, f"r-{n}", (_ph("p"),)) for n in "xyz"]
     schedule = _plan(same, {(n, "p"): 2 for n in "xyz"}, (Host("host-a", ("lane-1",)),))
@@ -213,11 +251,11 @@ def test_three_equal_nodes_are_reported_as_one_tie_in_queue_order():
 
 FEED_INITIATIVES = [
     Initiative(
-        "plan-an-initiative-as-waves-of-phases", 1, "r1", (_ph("p1-schema"), _ph("p2-feed", "waiting", ("p1-schema",)))
+        "plan-an-initiative-as-waves-of-phases", 1, "r1", (_ph("p1-schema"), _ph("p2-feed", parents=("p1-schema",)))
     ),
     Initiative("scheduler-plans-the-whole-queue-as-one-graph", 2, "r2", (_ph("p1-core"),)),
     Initiative(
-        "refresh-the-install-docs", 3, "r3", (_ph("p0-prep", "running"), _ph("p1-docs", "waiting", ("p0-prep",)))
+        "refresh-the-install-docs", 3, "r3", (_ph("p0-prep", "running"), _ph("p1-docs", parents=("p0-prep",)))
     ),
 ]
 FEED_HOURS = {
