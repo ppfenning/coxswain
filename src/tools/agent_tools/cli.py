@@ -5042,6 +5042,7 @@ def _route_edit(a: argparse.Namespace) -> int:
         surfaces=a.surfaces, state=a.state, dry_run=a.dry_run, live_runs=on_target, now=now,
         rebuild=getattr(a, "rebuild", False), force=getattr(a, "force", False), pr=getattr(a, "pr", None),
         link=getattr(a, "link", None), after=_after_ids(getattr(a, "after", None)), epic=getattr(a, "epic", None),
+        note=getattr(a, "note", None),
     )
     if result.code != route_edit.DONE:
         print(f"edit: {'refused' if result.code == route_edit.REFUSED else 'failed'}: {result.text}")
@@ -11998,7 +11999,9 @@ ROUTE_COMMANDS = [
         "edit", "route", "change a queued intake, an initiative or a task ticket",
         (
             commands.Arg(("id",), {"help": "a queued intake, an initiative or a task ticket"}), commands.Arg(("--title",)),
-            commands.Arg(("--body",)), commands.Arg(("--body-file",)), commands.Arg(("--repo",)),
+            commands.Arg(("--body",)), commands.Arg(("--body-file",)),
+            commands.Arg(("--note",), {"default": None, "help": "task ticket only: append this text to the body once, with or without --state; not with --body or --body-file"}),
+            commands.Arg(("--repo",)),
             commands.Arg(("--surfaces",), {"help": "task ticket only: comma-separated paths that replace the list"}),
             commands.Arg(("--state",), {"help": "task ticket only: ready, approved, done or dropped; never backward"}),
             commands.Arg(("--pr",), {"help": "with --state done: the merged PR url to record on the task, also on a task that is already done; without it the merged PR is looked up with gh"}),
