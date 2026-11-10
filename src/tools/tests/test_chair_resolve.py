@@ -390,3 +390,62 @@ def test_a_live_non_loop_session_is_taken_over_only_under_always():
 def test_held_line_names_the_service_and_another_chair_loop():
     assert chair_resolve.held_line("coxswain-service", True) == "chair held by coxswain-service (service)"
     assert chair_resolve.held_line("chair-2", False) == "chair held by chair-2 (chair loop)"
+
+
+_SERVICE = chair_resolve.SessionHolder("loop", "coxswain-service", True, "box-1")
+_MINE = {"session": "chair-me", "host": "box-2"}
+
+
+def test_session_start_names_a_live_service_holder_even_when_the_record_matches_the_caller():
+    decision = chair_resolve.session_start_decision("when_free", _MINE, _SERVICE, True)
+    assert decision == chair_resolve.TakeDecision("observer", "chair: held by coxswain-service on box-1; not the chair")
+
+
+def test_session_start_is_observer_for_a_live_holder_under_never():
+    assert chair_resolve.session_start_decision("never", _MINE, _SERVICE, True) == chair_resolve.TakeDecision("observer", "chair: held by coxswain-service on box-1; not the chair")
+
+
+def test_session_start_is_observer_for_a_live_holder_under_when_free():
+    assert chair_resolve.session_start_decision("when_free", None, _SERVICE, False) == chair_resolve.TakeDecision("observer", "chair: held by coxswain-service on box-1; not the chair")
+
+
+def test_session_start_takes_a_live_holder_under_always():
+    assert chair_resolve.session_start_decision("always", _MINE, _SERVICE, True) == chair_resolve.TakeDecision("take", "chair: held by coxswain-service; the policy always takes it over")
+
+
+def test_session_start_keeps_held_by_this_session_when_the_caller_is_the_live_holder_under_never():
+    live = chair_resolve.SessionHolder("loop", "chair-me", False, "box-2")
+    assert chair_resolve.session_start_decision("never", _MINE, live, True) == chair_resolve.TakeDecision("take", "chair: held by this session")
+
+
+def test_session_start_keeps_held_by_this_session_when_the_caller_is_the_live_holder_under_always():
+    live = chair_resolve.SessionHolder("loop", "chair-me", False, "box-2")
+    assert chair_resolve.session_start_decision("always", _MINE, live, True) == chair_resolve.TakeDecision("take", "chair: held by this session")
+
+
+def test_session_start_keeps_the_resumed_and_taken_over_wording_for_the_live_caller():
+    live = chair_resolve.SessionHolder("loop", "chair-me", False, "box-2")
+    assert chair_resolve.session_start_decision("when_free", {**_MINE, "resumed": True}, live, True).line == "chair: resumed chair-me"
+    assert chair_resolve.session_start_decision("when_free", {**_MINE, "taken_over_from": "chair-old"}, live, True).line == "chair: taken over from chair-old"
+
+
+def test_session_start_treats_the_same_label_on_another_host_as_a_foreign_holder():
+    live = chair_resolve.SessionHolder("loop", "chair-me", False, "box-9")
+    assert chair_resolve.session_start_decision("when_free", _MINE, live, True) == chair_resolve.TakeDecision("observer", "chair: held by chair-me on box-9; not the chair")
+
+
+def test_session_start_without_a_live_holder_takes_under_when_free():
+    assert chair_resolve.session_start_decision("when_free", None, None, False) == chair_resolve.TakeDecision("take", "chair: free; taking the chair as the session starts")
+
+
+def test_session_start_without_a_live_holder_takes_under_always():
+    assert chair_resolve.session_start_decision("always", None, None, False).action == "take"
+
+
+def test_session_start_without_a_live_holder_is_observer_under_never():
+    assert chair_resolve.session_start_decision("never", None, None, False).action == "observer"
+
+
+def test_session_start_follows_the_policy_when_the_caller_holds_the_record_but_nothing_is_live():
+    assert chair_resolve.session_start_decision("never", _MINE, None, True) == chair_resolve.TakeDecision("observer", "chair: free, and the policy never takes it; a non-chair session is starting")
+    assert chair_resolve.session_start_decision("when_free", _MINE, None, True).action == "take"

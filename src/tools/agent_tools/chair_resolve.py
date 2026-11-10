@@ -38,6 +38,7 @@ class SessionHolder:
     kind: Literal["free", "stale", "loop", "session"]
     label: str | None = None
     is_service: bool = False
+    host: str | None = None
 
 
 @dataclass(frozen=True)
@@ -128,6 +129,27 @@ def session_take_decision(policy: object, holder: SessionHolder, explicit_take: 
             return TakeDecision("take", "chair: held by another session; the policy always takes it over")
         return TakeDecision("observer", "chair: held by another session; the offer flow decides")
     return TakeDecision("observer", "chair: holder not recognised; a non-chair session is starting")
+
+
+def session_start_decision(
+    policy: object, record: Mapping[str, Any] | None, live: SessionHolder | None, caller_holds_record: bool,
+) -> TakeDecision:
+    """Pure. The hook source (startup, resume, compact, clear) cannot change the outcome, so it is not an argument.
+
+    The caller's identity is the record's `session` and `host` when `caller_holds_record`. A live holder is the caller only on the
+    same label and, when both hosts are known, the same host. Without a live holder the policy decides, whatever the record says.
+    """
+    if live is None:
+        return session_take_decision(policy, SessionHolder("free"), False)
+    own = record if record is not None and caller_holds_record else None
+    same_host = own is not None and (live.host is None or own.get("host") is None or live.host == own.get("host"))
+    if own is not None and same_host and live.label == own.get("session"):
+        if own.get("taken_over_from"):
+            return TakeDecision("take", f"chair: taken over from {own['taken_over_from']}")
+        return TakeDecision("take", f"chair: resumed {own['session']}" if own.get("resumed") else "chair: held by this session")
+    if resolve_session_takes(policy) == "always":
+        return TakeDecision("take", f"chair: held by {live.label or '?'}; the policy always takes it over")
+    return TakeDecision("observer", f"chair: held by {live.label or '?'} on {live.host or '?'}; not the chair")
 
 
 def with_session(argv: list[str], flag: str, value: str, extra_args: list[str]) -> list[str]:
