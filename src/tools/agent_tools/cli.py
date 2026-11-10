@@ -167,6 +167,11 @@ intake_state = _LazyModule("agent_tools.intake_state")
 lake_config = _LazyModule("agent_tools.lake_config")
 lake_lease = _LazyModule("agent_tools.lake_lease")
 land = _LazyModule("agent_tools.land")
+land_batch_effects = _LazyModule("agent_tools.land_batch_effects")
+land_batch_group = _LazyModule("agent_tools.land_batch_group")
+land_batch_run = _LazyModule("agent_tools.land_batch_run")
+land_batch_settings = _LazyModule("agent_tools.land_batch_settings")
+land_batch_squash = _LazyModule("agent_tools.land_batch_squash")
 land_lease = _LazyModule("agent_tools.land_lease")
 land_limit = _LazyModule("agent_tools.land_limit")
 land_merge_lock = _LazyModule("agent_tools.land_merge_lock")
@@ -2866,6 +2871,8 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
         return _phase_done_record(step)
     if kind == "wait_checks":
         return forge_module.wait_checks(repo, float(step.get("timeout_s", 180)), ref=step.get("branch", "HEAD"))
+    if kind == "batch_squash":
+        return land_batch_squash.squash_onto_batch(repo, step)
     if kind == "merge":
         return forge_module.merge(repo, step)
     if kind == "clean":
@@ -4080,6 +4087,179 @@ def _runs_land(a: argparse.Namespace) -> int:
     return rc
 
 
+_BATCH_POLL_S = 30.0  # how often a queue pass re-reads the sources while it waits for a full batch
+
+
+class _BatchLease:
+    """Edge. The repo land lease for one queue pass, through the same acquire, renew and release calls `_runs_land` makes.
+
+    Taken on the first batch to open, never while sources are collected, so a normal land is not blocked meanwhile."""
+
+    def __init__(self, runs_dir: Path, repo: Path, holder: str):
+        self.runs_dir, self.repo, self.holder = runs_dir, repo, holder
+        self.slot, self.epoch, self.held, self.busy = 0, 0, False, None
+        self.lost: list[str] = []
+        self.limit = land_limit.repo_land_limit(str(repo))
+
+    def take(self) -> str | None:
+        """The refusal text when another land holds the repo, else None. A store outage lands without the lease."""
+        if self.busy is not None or self.held:
+            return self.busy
+        self.slot, got = land_repo_lease.acquire_in_slots(
+            self.runs_dir, str(self.repo), self.holder, _REPO_LEASE_TTL_SECONDS, socket.gethostname(), self.limit)
+        if isinstance(got, store_cli.LeaseRefused):
+            self.busy = land_repo_lease.refusal_message(str(self.repo), got.holder or "another land")
+        elif isinstance(got, store_cli.LeaseGranted):
+            self.held, self.epoch = True, got.epoch
+        return self.busy
+
+    def _reacquire(self) -> store_cli.LeaseResult:
+        again = land_repo_lease.acquire_slot(self.runs_dir, str(self.repo), self.slot, self.holder, _REPO_LEASE_TTL_SECONDS)
+        if isinstance(again, store_cli.LeaseGranted):
+            self.epoch = again.epoch
+        return again
+
+    def guard(self) -> _LeaseGuard | None:
+        if not self.held:
+            return None
+        return _repo_lease_guard(
+            str(self.repo),
+            lambda: land_repo_lease.renew_slot(self.runs_dir, str(self.repo), self.slot, self.holder, self.epoch, _REPO_LEASE_TTL_SECONDS),
+            time.monotonic, _REPO_LEASE_TTL_SECONDS, self.lost, self._reacquire)
+
+    def merge_lock(self) -> Callable[[], contextlib.AbstractContextManager] | None:
+        return _merge_lock_factory(self.runs_dir, str(self.repo), self.holder, self.limit, self.held)
+
+    def release(self) -> None:
+        if not self.held or self.lost:  # a refused renew means another land holds it now; releasing is not ours to do
+            return
+        name = land_repo_lease.slot_lease_name(str(self.repo), self.slot)
+        try:
+            freed = land_repo_lease.release_slot(self.runs_dir, str(self.repo), self.slot, self.holder, self.epoch)
+            why = freed.detail if isinstance(freed, store_cli.LeaseError) else (
+                "the store is not available" if isinstance(freed, store_cli.NotAvailable) else None)
+        except Exception as exc:
+            why = f"{type(exc).__name__}: {exc}"
+        if why is not None:
+            print(f"warning: repo lease {name} not released: {why}", file=sys.stderr)
+
+
+def _ready_phase_ids(runs_dir: Path, work_root: Path) -> list[tuple[str, str, str]]:
+    """Edge. `(initiative, phase, run)` for every phase directory under `runs/<run>/tasks/` that a work initiative owns."""
+    found = [(_initiative_of_phase(work_root, p.name, p.parent.parent.name), p.name, p.parent.parent.name)
+             for p in sorted(runs_dir.glob("*/tasks/*")) if p.is_dir()]
+    return [(i, ph, r) for i, ph, r in found if i]
+
+
+def _batch_sources(runs_dir: Path, repo: Path, land_mode: str, wanted: list[tuple[str, str, str]] | None) -> list[dict]:
+    """Edge. The source mappings of the ready phases among `wanted`, or among every phase when None.
+
+    Reads the records `_runs_land` reads for a phase. A phase with no tickets, no record, or a task still unapproved is skipped."""
+    work_root = runs_dir.parent / "work"
+    sources = []
+    for initiative, phase, run in wanted if wanted is not None else _ready_phase_ids(runs_dir, work_root):
+        items, _ = _phase_items(work_root, initiative, phase, runs_dir=runs_dir, land_mode=land_mode)
+        if not items or not land_batch_effects.phase_ready(items):
+            continue
+        if land_mode == "store":
+            _backfill_phase_task_files(runs_dir, run, phase)
+        record, task_records, task_paths, _ = _land_phase_record(runs_dir, run, phase)
+        if record is not None:
+            sources.append(land_batch_effects.build_source(initiative, phase, run, str(repo), items, task_records, task_paths))
+    return sources
+
+
+def _batch_effects(a: argparse.Namespace, repo: Path, runs_dir: Path, profile: dict, lease: _BatchLease,
+                   wanted: list[tuple[str, str, str]] | None):
+    """Edge. The queue's `Effects`, or the reason they cannot be built. Its steps run through `_land_execute`, as a land's do."""
+    try:
+        default_branch = base_branch.base_ref(str(repo), getattr(a, "base", None)).removeprefix("origin/")
+    except base_branch.BaseError as exc:
+        return f"land: refusing, {exc}"
+    forge_choice = forge.forge_name(profile)
+    forge_module = forge.forge_for(forge_choice)
+    if forge_module is None:
+        return f"land: no forge named {forge_choice} (built in: local, github, auto)"
+    stale = forge.missing_refs(forge_module)
+    if stale:
+        return f"land: refusing, forge {forge_choice} does not accept {', '.join(stale)}; see agent_tools/forge.py"
+    repo_facts = _land_repo_facts(repo, profile, default_branch, forge_module)
+    if repo_facts["cartridge_error"] and a.apply:
+        return f"land: refusing, cartridge checks unavailable ({repo_facts['cartridge_error']}); the land would run fewer checks than the build did"
+    land_mode = work_state.work_state_mode(_lake_provider(a)[0]) if a.apply else "files"
+    level = a.gate or _resolved_gate_level(runs_dir)
+    capacity = _check_capacity(runs_dir, profile, socket.gethostname())
+
+    def run_steps(steps: list[dict], batch: list[dict]) -> tuple[int, list[str], str]:
+        enriched = _with_check_cap(
+            _land_enrich(steps, path="", worktree_root=a.worktree_root, workspace=str(runs_dir.parent),
+                         profile=str(_profile_path(a)), runs_dir=str(runs_dir), umbrella=profile.get("umbrella_dir"),
+                         task_paths={t: p for s in batch for t, p in s["task_paths"].items()},
+                         task_items={t: f for s in batch for t, f in s["task_items"].items()}),
+            os.cpu_count() or 1, capacity)
+        repo_guard = lease.guard()
+        return _land_execute(repo, enriched, steps, None, None, level, False, forge_module, by=_holder_label(a), mode=land_mode,
+                             guard=_first_stop(repo_guard, None) if repo_guard else None, stops=[],
+                             keep=[repo_guard] if repo_guard else [], lock=lease.merge_lock())
+
+    return land_batch_effects.make_effects(
+        lambda: _batch_sources(runs_dir, repo, land_mode, wanted), run_steps, repo_facts, default_branch,
+        lambda: datetime.datetime.now(datetime.UTC).strftime("%Y%m%d%H%M%S"))
+
+
+def _runs_land_batch(a: argparse.Namespace) -> int:
+    """Edge. One merge-queue pass: collect, take the repo lease, open the first batch, print the result.
+
+    Exits 2 when the lease is refused, 1 when every opened source was returned, else 0. A returned source keeps its
+    tasks approved and its phase branch untouched."""
+    repo = Path(a.repo).expanduser()
+    wanted, bad = land_batch_effects.parse_source_ids(a.source or [])
+    if bad:
+        print(f"land-batch: {bad}")
+        return 2
+    runs_dir, reason = _runs_dir_for_land(a)
+    if runs_dir is None:
+        print(f"land-batch: {reason}")
+        return 2
+    if a.apply:
+        guard_rc = _leader_guard_or_refuse(runs_dir, _holder_label(a), a.force, claim=not a.no_claim, explicit_label=getattr(a, "label", None))
+        if guard_rc is not None:
+            return guard_rc
+    profile_text = _read_text_or_none(_profile_path(a))
+    try:
+        profile = route.parse_profile(profile_text) if profile_text is not None else {}
+    except route.ProfileError as exc:
+        print(f"land-batch: profile unreadable: {exc}")
+        return 2
+    configured = land_batch_settings.merge_queue_setting(profile)
+    settings = land_batch_settings.MergeQueue(a.batch_size or configured.batch_size, configured.wait_s if a.wait_s is None else a.wait_s)
+    lease = _BatchLease(runs_dir, repo, f"{_holder_label(a)}@{socket.gethostname()}:{os.getpid()}")
+    effects = _batch_effects(a, repo, runs_dir, profile, lease, wanted)
+    if isinstance(effects, str):
+        print(effects)
+        return 2
+    if not a.apply:
+        sources = effects.read_sources()
+        batch = land_batch_group.disjoint_batches(sources, settings.batch_size)[0] if sources else []
+        print(json.dumps({"would_batch": [f"{s['initiative']}/{s['phase']}" for s in batch],
+                          "ready": [f"{s['initiative']}/{s['phase']}" for s in sources]}, indent=2))
+        return 0
+
+    def land(group: list[dict]):
+        busy = lease.take()
+        return land_batch_run.Outcome(busy, None) if busy is not None else effects.land(group)
+
+    try:
+        result = land_batch_run.run_queue(settings, land_batch_run.Effects(effects.read_sources, land, effects.sleep, effects.now), _BATCH_POLL_S)
+    finally:
+        lease.release()
+    if lease.busy is not None:
+        print(lease.busy)
+        return 2
+    print(land_batch_run.render_lines(result), end="")
+    return 1 if result.returned and not result.landed else 0
+
+
 def _mark_land_conflict(runs_dir: Path, record: dict, item_path: str | None, reason: str, by: str, mode: str) -> None:
     """Edge. A land whose cherry-pick conflicted leaves the task `ready`, not `approved`, with `reason` as a `land_conflict`
     marker and a body note, on the store row and the item file. The row is written first, so a crash before the state
@@ -4248,7 +4428,7 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
             print("stopped; remaining: " + ", ".join(s["kind"] for s in steps[i:]))
             return 2, reached, pr
         reached.append(step["kind"])
-        if step["kind"] in ("cherry_pick", "squash_phase", "reuse_branch", "patch_apply", "pr_branch_cut", "merge_phase"):
+        if step["kind"] in ("cherry_pick", "squash_phase", "reuse_branch", "patch_apply", "pr_branch_cut", "merge_phase", "batch_squash"):
             built.append(step.get("onto") or step["branch"])
         if step["kind"] == "mark_merged":
             pr_branch = next((s["pr_branch"] for s in steps if s["kind"] == "phase_done"), "")
@@ -10743,6 +10923,22 @@ RUNS_COMMANDS = [
         "agent_tools.cli:_runs_land", False, (),
     ),
     commands.Command(
+        "land-batch", "runs", "land disjoint approved phases together as one pull request (the merge queue)",
+        (
+            commands.Arg(("--repo",), {"required": True}), commands.Arg(("--label",)),
+            commands.Arg(("--source",), {"action": "append", "help": "initiative/phase/run to queue, repeatable; default: every ready phase"}),
+            commands.Arg(("--batch-size",), {"type": int, "help": "sources per batch; default: the profile's merge_queue.batch_size"}),
+            commands.Arg(("--wait-s",), {"type": float, "help": "seconds to wait for a full batch; default: the profile's merge_queue.wait_s"}),
+            commands.Arg(("--force",), {"action": "store_true", "help": "land despite a foreign live leader"}),
+            commands.Arg(("--no-claim",), {"action": "store_true", "help": "land without taking an unheld or stale loop"}),
+            commands.Arg(("--base",), {"help": "branch to land onto; default: the repo's base: setting, then origin/HEAD, then main"}),
+            commands.Arg(("--worktree-root",), {"default": "~/worktrees"}), commands.Arg(("--apply",), {"action": "store_true"}),
+            commands.Arg(("--runs-dir",), {"help": "override: resolve task records here instead of the profile's workspace_dir"}), commands.Arg(("--profile",)),
+            commands.Arg(("--gate",), {"choices": ["ticket", "phase", "epic", "full"], "help": "override the resolved gate level for this invocation"}),
+        ),
+        "agent_tools.cli:_runs_land_batch", False, (),
+    ),
+    commands.Command(
         "fetch", "runs", "pull an ended remote lane's run directory, log and branches to this machine",
         (
             commands.Arg(("--runs-dir",), {"help": "override: resolve the run's records here instead of the profile's workspace_dir"}),
@@ -13340,6 +13536,7 @@ def _chair_run_deps(
         stale_days=lambda: (profile.get("chair") or {}).get("stale_days"),
         approval_hold_ticks=lambda: (profile.get("chair") or {}).get("approval_hold_ticks"),
         max_launches_per_hour=lambda: (profile.get("chair") or {}).get("max_launches_per_hour"),
+        merge_queue=lambda: profile.get("merge_queue"),
         shared_file_limit=lambda: (profile.get("chair") or {}).get("max_shared_file_initiatives"),
         serial_files=lambda: profile.get("serial_files"),
         host_load_ceiling=lambda: (profile.get("chair") or {}).get("host_load_ceiling"),
