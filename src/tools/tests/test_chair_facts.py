@@ -783,7 +783,7 @@ def test_rows_drive_ready_intake_quarantined_and_stranded_facts_with_files_ignor
     initiative_i = next(i for i in facts["initiatives"] if i["id"] == "i")
     assert initiative_i == {
         "id": "i", "started": True, "ready_tasks": [{"id": "a", "phase": "p1", "needs": [], "requires": []}], "waiting_tasks": [],
-        "landed": set(), "land_at": "ticket",
+        "landed": {"c"}, "land_at": "ticket",  # c is approved, which a ticket initiative counts as landed
     }
     assert facts["intake"] == ["q1.md"]
     assert facts["quarantines"] == [
