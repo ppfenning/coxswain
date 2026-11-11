@@ -36,6 +36,15 @@ container built from a Debian or Ubuntu base image with `git` and `curl`
 installed. This is the fastest way to try Coxswain without
 touching the host machine at all.
 
+## Lane hosts
+
+Every lane host runs `cox setup token` itself. A remote lane reads the token
+from its own host's file. The token is never sent over ssh or placed in a
+command line.
+
+The chair's login check reports a host with no token file as a named failure.
+So does `cox setup doctor` when you give it a host name.
+
 ## What you'll see
 
 <img alt="cox install --dry-run printing the install plan without writing anything" src="../assets/shots/install-dry-run.svg">
