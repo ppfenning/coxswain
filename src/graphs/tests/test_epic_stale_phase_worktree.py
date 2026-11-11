@@ -45,10 +45,24 @@ def _ctx(repo: Path, tmp_path: Path, run_id: str) -> _Ctx:
     )
 
 
+def _is_gone(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    return False
+
+
 def _finished_pid() -> int:
-    child = subprocess.Popen([sys.executable, "-c", "pass"])
-    child.wait()
-    return child.pid
+    """A pid with no process behind it right now; another xdist worker may have been handed a reaped child's number."""
+    for _ in range(20):
+        child = subprocess.Popen([sys.executable, "-c", "pass"])
+        child.wait()
+        if _is_gone(child.pid):
+            return child.pid
+    raise AssertionError("no finished child's pid stayed free")
 
 
 def _earlier_run_holding_the_branch(repo: Path, tmp_path: Path, pid: int) -> Path:
