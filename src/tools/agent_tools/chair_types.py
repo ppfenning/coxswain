@@ -202,6 +202,7 @@ class RunningInitiative(TypedDict):
     surfaces: list[str]
     phase: NotRequired[str]  # the phase this entry runs; absent means the whole initiative
     live: NotRequired[bool]  # False when the entry exists only for unlanded approvals; a missing key means live
+    state: NotRequired[Literal["running", "awaiting_land"]]  # awaiting_land: no live run, only approved unmerged items
 
 
 class InitiativeFacts(TypedDict):
@@ -741,6 +742,7 @@ class Action(TypedDict, total=False):
     merged_at: str | None  # a review_landed names when that PR merged
     other: str  # a steer_clear names the running initiative it steers clear of
     other_phase: str  # a steer_clear names the phase of the running entry it steers clear of, when that entry has one
+    partner_state: str  # a steer_clear may carry the state of that entry: running or awaiting_land
     paths: list[str]  # a steer_clear names the shared paths; a widen_ticket names the repo-relative files to add to surfaces
     task_ids: list[str]  # a partial_land names the approved task ids it would land, in phase order
     quarantined: int  # a partial_land or waiting counts the phase's quarantined tasks
