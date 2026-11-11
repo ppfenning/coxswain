@@ -4437,6 +4437,10 @@ def _note_stop(repo: Path, step: dict, detail: str, stops: list[dict] | None) ->
         stops.append(fields)
 
 
+# The note land.py plans for an earlier phase; the chair reads it from this output to defer, not fail, that land. Change them together.
+_TICKET_GRANULARITY_NOTE = "ticket granularity, the one pull request opens at the last phase"
+
+
 def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict | None, item_path: str | None,
                level: str, no_merge: bool, forge_module, built: list[str], by: str = _UNLABELED,
                mode: str = "files", guard: Callable[[str], str | None] | None = None,
@@ -4455,7 +4459,7 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
             print(f"refused: {step['reason']}")
             return 2, reached, pr
         if step["kind"] == "note":
-            if step.get("unmerged"):
+            if step.get("unmerged") or _TICKET_GRANULARITY_NOTE in step["reason"]:
                 print(step["reason"])
             i += 1
             continue
