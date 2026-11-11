@@ -22,7 +22,7 @@ def _facts(**overrides) -> Facts:
     base = {
         "lease": {"holder": "a", "host": "h", "epoch": 7, "mine": True, "released": False, "stale": False},
         "limits": _limits(5),
-        "dispatch": {"max_in_flight": 1, "live_runs": 1, "local_lanes": "decompose", "hosts": _hosts("omarchy", "friday")},
+        "dispatch": {"max_in_flight": 1, "live_runs": 1, "local_lanes": "decompose", "hosts": _hosts("lane-b", "friday")},
         "approved": [],
         "initiatives": [],
         "quarantines": [],
@@ -96,7 +96,7 @@ def test_a_launch_cap_of_two_with_five_ready_initiatives_launches_the_two_first_
     facts = _facts(limits=_limits(2), initiatives=[_initiative(i) for i in "abcde"])
     actions = plan_tick(facts, _NOW)
     assert _launched(actions) == ["a", "b"]
-    assert all(a.get("host") in {"omarchy", "friday"} for a in actions if a["kind"] == "launch_epic")
+    assert all(a.get("host") in {"lane-b", "friday"} for a in actions if a["kind"] == "launch_epic")
     assert _unlaunched(actions) == dict.fromkeys("cde", "paced against the weekly target")
 
 
@@ -127,5 +127,5 @@ def test_a_cap_above_the_free_lanes_launches_on_every_free_lane():
 
 
 def test_the_fleet_lanes_count_the_chair_machine_and_every_lane_host():
-    dispatch = {"max_in_flight": 1, "live_runs": 0, "hosts": [{"name": "omarchy", "capacity": 4}, {"name": "friday"}]}
+    dispatch = {"max_in_flight": 1, "live_runs": 0, "hosts": [{"name": "lane-b", "capacity": 4}, {"name": "friday"}]}
     assert fleet_lanes(dispatch) == 1 + 4 + 1
