@@ -11,7 +11,7 @@ def _run(missing_when):
 
     def run(argv):
         command = " ".join(argv)
-        if "claude auth status" in command:
+        if "setup token status --probe" in command:
             return 0, '{"loggedIn": true}'
         if "lane-toolchain" in command:
             return 0, "python\n" if missing_when(command) else ""
