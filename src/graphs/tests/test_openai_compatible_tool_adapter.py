@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from runner.claude_code_runner import _DIFF_CMD
 from runner.openai_compatible_runner import OpenAICompatibleRunner, OpenAICompatibleToolLoopAdapter
 from runner.protocol import BudgetStop
 from runner.tool_loop import TOOLS, ToolCall, _CheckClock, _execute
@@ -83,7 +84,7 @@ def test_a_build_call_with_a_worktree_returns_the_worktrees_staged_diff_as_its_p
     ]
     with FakeOpenAIServer(replies) as server:
         result = _runner(server, tree).run(role="build", tier="cheap", schema=SCHEMA, prompt="edit a.txt", thread="t")
-    staged = subprocess.run("git add -A && git diff --cached", shell=True, cwd=tree, capture_output=True, text=True)
+    staged = subprocess.run(_DIFF_CMD, shell=True, cwd=tree, capture_output=True, text=True)
     assert "+world" in result["patch"]
     assert result["patch"] == staged.stdout
     assert result["ok"] is True

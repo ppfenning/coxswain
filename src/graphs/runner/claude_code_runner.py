@@ -131,7 +131,7 @@ _VERIFY_TIMEOUT_S = 120
 _VERIFY_TOTAL_S = 300
 _VERIFY_TAIL_LINES = 40
 
-_DIFF_CMD = "git add -A && git diff --cached"
+_DIFF_CMD = "git add -A && git diff --cached --binary --full-index"
 # Checks led by one of these also run as `python -m <tool>`; builders reach for that form.
 _PY_TOOLS = frozenset({"pytest", "ruff"})
 _PLAIN_PATH = re.compile(r"[\w./-]+")  # no space, quote or glob: the only paths a `git -C` prefix rule may name
