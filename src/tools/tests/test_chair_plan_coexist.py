@@ -80,20 +80,20 @@ def _decompose_live(hosts: list[dict]) -> dict:
 def test_a_decompose_live_on_the_chair_machine_leaves_a_ready_build_its_remote_lane():
     facts = _facts(
         limits={"hard_stop": False, "weekly_fraction": 0.1, "hard_stop_fraction": 0.9, "launch_cap": 1, "go_degraded": False},
-        dispatch=_decompose_live([{"name": "omarchy", "capacity": 3, "live_runs": 0}]),
+        dispatch=_decompose_live([{"name": "lane-b", "capacity": 3, "live_runs": 0}]),
         initiatives=[_initiative("b")],
     )
-    assert _launches(plan_tick(facts, _NOW)) == [("launch_epic", "b", "omarchy")]
+    assert _launches(plan_tick(facts, _NOW)) == [("launch_epic", "b", "lane-b")]
 
 
 def test_a_decompose_live_on_the_chair_machine_leaves_a_relaunch_its_remote_lane():
     facts = _facts(
         limits={"hard_stop": False, "weekly_fraction": 0.1, "hard_stop_fraction": 0.9, "launch_cap": 1, "go_degraded": False},
-        dispatch=_decompose_live([{"name": "omarchy", "capacity": 3, "live_runs": 0}]),
+        dispatch=_decompose_live([{"name": "lane-b", "capacity": 3, "live_runs": 0}]),
         initiatives=[_initiative("a", started=True), _initiative("b")],
         run_exited={"a": True},
     )
-    assert _launches(plan_tick(facts, _NOW)) == [("relaunch", "a", "omarchy"), ("launch_epic", "b", "omarchy")]
+    assert _launches(plan_tick(facts, _NOW)) == [("relaunch", "a", "lane-b"), ("launch_epic", "b", "lane-b")]
 
 
 def test_the_chair_machine_room_still_bounds_what_launches_on_it():
@@ -119,7 +119,7 @@ def test_the_weekly_lane_fraction_still_limits_remote_launches():
             "hard_stop": False, "weekly_fraction": 0.5, "hard_stop_fraction": 0.9, "launch_cap": 1, "go_degraded": False,
             "lane_fraction": 0.5,
         },
-        dispatch=_decompose_live([{"name": "omarchy", "capacity": 4, "live_runs": 0}]),
+        dispatch=_decompose_live([{"name": "lane-b", "capacity": 4, "live_runs": 0}]),
         initiatives=[_initiative(i, repo=f"r{i}") for i in "abcd"],
     )
-    assert _launches(plan_tick(facts, _NOW)) == [("launch_epic", "a", "omarchy"), ("launch_epic", "b", "omarchy")]
+    assert _launches(plan_tick(facts, _NOW)) == [("launch_epic", "a", "lane-b"), ("launch_epic", "b", "lane-b")]
