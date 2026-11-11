@@ -64,7 +64,7 @@ from agent_tools.chair_revert_exec import GitPort as RevertGitPort
 from agent_tools.chair_schedule import SCHEDULE_FILE
 from agent_tools.chair_types import Action, LandTrigger, is_fenced
 from agent_tools.land import LAND_CONFLICT_KEY, approve_to_done, conflict_note
-from agent_tools.remote_argv import LANE_HOST_TIMEOUT_S, probe_argv, ssh_argv, sync_argv
+from agent_tools.remote_argv import LANE_HOST_TIMEOUT_S, incoming_ref, probe_argv, ssh_argv, sync_argv
 
 __all__ = [
     "LAUNCH_KINDS",
@@ -2140,6 +2140,11 @@ def _must(code: int, output: str, what: str) -> str:
     return output
 
 
+def _stdout_of(done: ArgvResult) -> tuple[int, str]:
+    """The exit code and stdout alone, which `remote_fetch.settle_phase_refs` parses."""
+    return done.returncode, done.stdout
+
+
 class _GitEdge:
     """Edge. GitPort over one throwaway worktree of `repo`; the main checkout is never switched or written.
 
@@ -2164,15 +2169,21 @@ class _GitEdge:
         """The initiative's target branch when it has one, else `default_branch()`."""
         return self.target or self.default_branch()
 
-    def fetch_branch(self, host: str, branch: str) -> None:
-        """The run's branch from its host, reached as `<ssh>:<repo on the host>` the way `remote_fetch` reaches it. An empty host is here."""
+    def fetch_branch(self, host: str, branch: str) -> list[str]:
+        """The run's branch from its host, reached as `<ssh>:<repo on the host>` the way `remote_fetch` reaches it. An empty host is here.
+
+        The branch lands under refs/coxswain/incoming/<host>/ and `remote_fetch.settle_phase_refs` moves the local
+        branch forward only, so a phase branch holding merges the host lacks is never reset (2026-11-11). The lines
+        name any diverged branch and the side ref its fetched tip was kept at."""
         if not host:
-            return
+            return []
         lane = next(iter(host_cmd.host_rows_to_lane_hosts([{**_host_row(self.runs_dir, host), "state": "active"}])), None)
         if lane is None or not lane.workspace_dir:
             raise RuntimeError(f"host {host} has no ssh or workspace_dir recorded")
         host_repo = remote_fetch.host_repo_path(str(self.workspace), lane.workspace_dir, self.repo, self.home)
-        _must(*self._git("fetch", f"{lane.ssh}:{host_repo}", f"+refs/heads/{branch}:refs/heads/{branch}"), f"git fetch {branch} from {host}")
+        _must(*self._git("fetch", f"{lane.ssh}:{host_repo}", f"+refs/heads/{branch}:{incoming_ref(host, branch)}"),
+              f"git fetch {branch} from {host}")
+        return remote_fetch.settle_phase_refs(self.local_repo, host, lambda argv: _stdout_of(run_argv_split(argv)))
 
     def create_branch_from_main(self, name: str) -> None:
         """Fetches origin, then cuts `name` from `origin/<default branch>` in a new worktree; a failed fetch raises."""
