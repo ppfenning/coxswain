@@ -23,7 +23,12 @@ component, so `/ws-other` is not under `/ws`. Given a `home`, a tilde path or a
 path under another machine's home is expanded under that home on the chair, and
 the host location uses the home-relative form.
 
-Each repo is fetched with `git -C <chair repo> fetch <host repo> <refspec>`. Then
+Each repo is fetched with `git -C <chair repo> fetch <host repo> <refspec>`. Phase
+branches (`epic/<initiative>/<phase>`) arrive under `refs/coxswain/incoming/<host>/`
+and `settle_phase_refs` moves the local branch only forward: created when absent,
+fast-forwarded when local is behind, kept when local is ahead or equal. A diverged
+fetched tip is kept under `refs/coxswain/fetched/<host>/<branch>` and reported, so
+a merge the lane's copy lacks is never left on no branch. Then
 `git -C <chair repo> ls-remote --exit-code . refs/heads/agents/<run>/*` must find
 a ref, so a fetch that brought no branch is a `FetchError`. A lane whose lease is
 held or that has no `ended_at` is refused before anything is copied.
@@ -38,6 +43,7 @@ which steps to run."""
 from __future__ import annotations
 
 import json
+import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -47,12 +53,19 @@ from typing import Any
 from agent_tools import repo_path, run_store
 from agent_tools.land import _approved as land_approved
 from agent_tools.lane_hosts import LaneHost
-from agent_tools.remote_argv import git_fetch_argv, git_fetch_phase_argv, rsync_pull_argv
+from agent_tools.remote_argv import (
+    INCOMING_PREFIX,
+    fetched_ref,
+    git_fetch_argv,
+    git_fetch_phase_argv,
+    incoming_ref,
+    rsync_pull_argv,
+)
 
 __all__ = [
     "FetchError", "FetchPlan", "approved_without_branch", "branch_expected", "chair_repo_path", "fetch_plan", "fetch_run",
-    "host_repo_path", "localize_task_records", "probe_argv", "pull_argvs", "refuse_unended", "rewrite_record_paths",
-    "staging_dir", "store_task_records", "task_record_ids", "task_repos", "task_status", "unconfirmed_keys",
+    "host_repo_path", "localize_task_records", "phase_update", "probe_argv", "pull_argvs", "refuse_unended", "rewrite_record_paths",
+    "settle_phase_refs", "staging_dir", "store_task_records", "task_record_ids", "task_repos", "task_status", "unconfirmed_keys",
 ]
 
 _PATH_KEYS = ("repo", "worktree", "checkout")
@@ -290,8 +303,13 @@ def fetch_run(
     ended_at: str | None,
     store_records: Callable[[Path, str], list[dict[str, Any]]] | None = None,
     home: str | None = None,
+    git: Callable[[list[str]], tuple[int, str]] | None = None,
+    diverged: list[str] | None = None,
 ) -> tuple[str, ...] | FetchError:
-    """The chair repos whose `agents/<run>/*` branches now exist, or the step that failed. Nothing is raised."""
+    """The chair repos whose `agents/<run>/*` branches now exist, or the step that failed. Nothing is raised.
+
+    `git` runs the phase-settling git calls and returns (exit code, stdout); each diverged phase branch appends one
+    line to `diverged`."""
     refusal = refuse_unended(lease_released, ended_at)
     if refusal is not None:
         return FetchError("refuse", refusal)
@@ -327,10 +345,13 @@ def fetch_run(
     for repo in repos:
         # git_fetch_argv has no repo selector, so `-C` goes in after its leading "git".
         # git runs its own ssh transport, so no 30s bound from this file applies to this call.
-        fetch = git_fetch_argv(place(host_repo_path(chair_ws, host_ws, repo, home)), run)
+        fetch = git_fetch_argv(place(host_repo_path(chair_ws, host_ws, repo, home)), run, host.name)
         code = run_cmd(["git", "-C", repo, *fetch[1:]])
         if code != 0:
             return FetchError("git", f"fetching {run} into {repo} exited {code}")
+        found_diverged = settle_phase_refs(repo, host.name, git or _git_output)
+        if diverged is not None:
+            diverged.extend(found_diverged)
         scoped = _records_in(records, repo, chair_ws, host_ws, home) if records is not None else []
         if scoped:
             # Readable records decide: a run with no approved task has no branch by design.
@@ -362,17 +383,77 @@ def fetch_phase_branches(
     locate: Callable[[str], str] | None = None,
     *,
     home: str | None = None,
+    git: Callable[[list[str]], tuple[int, str]] | None = None,
+    diverged: list[str] | None = None,
 ) -> tuple[str, ...]:
     """The `branches` that exist locally in some chair repo after fetching each. Nothing is raised.
 
-    A nonzero fetch is not an error: a phase landed and deleted on the host has no branch. `run` is unused."""
+    A nonzero fetch is not an error: a phase landed and deleted on the host has no branch. `run` is unused.
+    Each fetched branch is settled as `fetch_run` settles one, and a divergence appends one line to `diverged`."""
     place = locate if locate is not None else (lambda path: f"{host.ssh}:{path}")
     host_ws = host.workspace_dir.rstrip("/")
     chair_ws = str(chair_runs_dir.parent)
 
     def present(repo: str, branch: str) -> bool:
-        fetch = git_fetch_phase_argv(place(host_repo_path(chair_ws, host_ws, repo, home)), branch)
+        fetch = git_fetch_phase_argv(place(host_repo_path(chair_ws, host_ws, repo, home)), branch, host.name)
         run_cmd(["git", "-C", repo, *fetch[1:]])
+        found_diverged = settle_phase_refs(repo, host.name, git or _git_output)
+        if diverged is not None:
+            diverged.extend(found_diverged)
         return run_cmd(["git", "-C", repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"]) == 0
 
     return tuple(sorted({branch for repo in repos for branch in branches if present(repo, branch)}))
+
+
+def phase_update(local_exists: bool, local_in_fetched: bool, fetched_in_local: bool) -> str:
+    """Pure. What a fetched phase tip does to the local branch: `create`, `fast_forward`, `keep` or `diverged`.
+
+    `local_in_fetched` is "local is an ancestor of fetched", `fetched_in_local` the reverse; equal tips are both, and keep."""
+    if not local_exists:
+        return "create"
+    if fetched_in_local:
+        return "keep"
+    return "fast_forward" if local_in_fetched else "diverged"
+
+
+def _git_output(argv: list[str]) -> tuple[int, str]:
+    """Edge. (exit code, stdout) of one git argv; a git that cannot start is exit 127."""
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True)
+    except OSError as exc:
+        return 127, str(exc)
+    return done.returncode, done.stdout
+
+
+def settle_phase_refs(repo: str, host: str, git: Callable[[list[str]], tuple[int, str]]) -> list[str]:
+    """Edge. Moves each `refs/coxswain/incoming/<host>/<branch>` onto local `refs/heads/<branch>` only forward.
+
+    Every update-ref is guarded by the old value, so a branch that moved meanwhile is left alone. The incoming ref is
+    deleted once settled; a diverged tip is kept under `refs/coxswain/fetched/<host>/<branch>`. Returns one line per
+    divergence. A repo `git` cannot read has nothing incoming and returns no line."""
+    prefix = f"{INCOMING_PREFIX}/{host}/"
+    code, out = git(["git", "-C", repo, "for-each-ref", "--format=%(objectname) %(refname)", prefix])
+    if code != 0:
+        return []
+    lines = []
+    for row in out.splitlines():
+        fetched, _, ref = row.partition(" ")
+        branch = ref.removeprefix(prefix)
+        local_ref = f"refs/heads/{branch}"
+        local_code, local_out = git(["git", "-C", repo, "rev-parse", "--verify", "--quiet", f"{local_ref}^{{commit}}"])
+        local = local_out.strip() if local_code == 0 else ""
+
+        def ancestor(older: str, newer: str) -> bool:
+            return git(["git", "-C", repo, "merge-base", "--is-ancestor", older, newer])[0] == 0
+
+        verdict = phase_update(bool(local), bool(local) and ancestor(local, fetched), bool(local) and ancestor(fetched, local))
+        if verdict == "create":
+            git(["git", "-C", repo, "update-ref", "-m", f"fetch: create from {host}", local_ref, fetched, "0" * 40])
+        elif verdict == "fast_forward":
+            git(["git", "-C", repo, "update-ref", "-m", f"fetch: fast-forward from {host}", local_ref, fetched, local])
+        elif verdict == "diverged":
+            side = fetched_ref(host, branch)
+            git(["git", "-C", repo, "update-ref", "-m", f"fetch: diverged from {host}", side, fetched])
+            lines.append(f"fetch: diverged: {branch} in {repo}: kept local {local[:12]}; {host}'s {fetched[:12]} saved at {side}")
+        git(["git", "-C", repo, "update-ref", "-d", incoming_ref(host, branch), fetched])
+    return lines

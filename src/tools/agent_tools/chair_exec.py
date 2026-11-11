@@ -969,8 +969,13 @@ def _fetch_exit(action: Action, deps: Deps) -> Result:
         return _result(action, fetch_status(code, output), output)
     approved, warnings = chair_apply_fetch.apply_fetched_approvals(deps.runs_dir, deps.work_dir, run, initiative)
     _ack_run_exited(run, deps)
-    reason = "; ".join([f"fetched {run}; approved: {', '.join(approved)}", *warnings])
+    reason = "; ".join([f"fetched {run}; approved: {', '.join(approved)}", *warnings, *fetch_divergences(output)])
     return {"action": action, "status": "done", "reason": reason, "run": run, "host": _fetched_host(deps.runs_dir, run)}
+
+
+def fetch_divergences(output: str) -> list[str]:
+    """Pure. The `fetch: diverged:` lines of a `cox runs fetch` output, each naming the kept branch and the side ref."""
+    return [line.strip() for line in output.splitlines() if "fetch: diverged:" in line]
 
 
 def _widen_ticket(action: Action, deps: Deps) -> Result:

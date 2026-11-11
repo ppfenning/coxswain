@@ -7793,14 +7793,21 @@ def _fetch_one(runs_dir: Path, hosts, run_id: str, mode: str = "files", by: str 
     def repo_paths(run_dir: Path) -> list[str]:
         return (remote_fetch.task_repos(run_dir) or recorded) if only is None else only
 
+    diverged: list[str] = []
     result = remote_fetch.fetch_run(host, run_id, runs_dir, repo_paths, run, locate,
-                                    lease_released=lease_released, ended_at=ended_at, home=os.path.expanduser("~"))
+                                    lease_released=lease_released, ended_at=ended_at, home=os.path.expanduser("~"),
+                                    diverged=diverged)
     if isinstance(result, remote_fetch.FetchError):
         detail = f"{run_id} is still live on {host.name}: {result.message}" if result.step == "refuse" else result.message
         return ("live" if result.step == "refuse" else "failed"), [f"fetch: {result.step}: {detail}"], host.name
     wanted = remote_fetch.phase_branches(run_store.phase_manifests(runs_dir, run_id))
-    brought = (remote_fetch.fetch_phase_branches(host, run_id, runs_dir, list(result), wanted, run, locate, home=os.path.expanduser("~"))
+    brought = (remote_fetch.fetch_phase_branches(host, run_id, runs_dir, list(result), wanted, run, locate,
+                                                 home=os.path.expanduser("~"), diverged=diverged)
                if wanted else ())
+    # A diverged phase branch kept its local tip; the line names the side ref holding the lane's, so nothing is lost
+    # silently. Printed here because `--all` drops a fetched run's lines, and the chair reads this output.
+    for line in dict.fromkeys(diverged):
+        print(f"{run_id}: {line}")
     marker = {"fetched_at": _now_iso(), "repos": list(result), "tasks": remote_fetch.task_record_ids(runs_dir / run_id),
               "phase_branches": list(brought)}
     remote_lane.fetched_record_path(runs_dir, run_id).write_text(json.dumps(marker))
