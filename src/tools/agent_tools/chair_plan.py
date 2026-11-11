@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 
 from agent_tools import (
     chair_approval_hold,
+    chair_approval_restore,
     chair_launch_why,
     chair_lease_refusal,
     chair_login_watch,
@@ -1068,10 +1069,11 @@ def _unlaunched_actions(
 
 
 def _unlocked(facts: Facts) -> tuple[Facts, list[Action]]:
-    """Facts without the approvals held past the limit, then without a steer cycle's non-live holders, and the releases."""
+    """Facts without the approvals held past the limit, then without a steer cycle's non-live holders, and the releases and restores."""
     # plan_release reads `merged` on every approved row before it looks at a hold, so it runs only when there is a hold.
     releases = chair_approval_hold.plan_release(facts) if facts.get("approval_holds") else []
-    return chair_steer_cycle.break_cycle(chair_approval_hold.without_released(facts, releases))[0], releases
+    restores = chair_approval_restore.not_released(chair_approval_restore.plan_restore(facts), releases)
+    return chair_steer_cycle.break_cycle(chair_approval_hold.without_released(facts, releases))[0], [*releases, *restores]
 
 
 def _planned_schedule(facts: Facts, now: datetime | None) -> Schedule | None:

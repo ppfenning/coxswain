@@ -98,6 +98,7 @@ chair_orchestrate = _LazyModule("agent_tools.chair_orchestrate")
 chair_pid_probe = _LazyModule("agent_tools.chair_pid_probe")
 chair_read_approved = _LazyModule("agent_tools.chair_read_approved")
 chair_read_attempts = _LazyModule("agent_tools.chair_read_attempts")
+chair_read_branch_merged = _LazyModule("agent_tools.chair_read_branch_merged")
 chair_read_cache = _LazyModule("agent_tools.chair_read_cache")
 chair_read_docket = _LazyModule("agent_tools.chair_read_docket")
 chair_read_exits = _LazyModule("agent_tools.chair_read_exits")
@@ -1358,6 +1359,54 @@ def _steward_head(runner: Callable[[list[str]], tuple[int, str]], repo_for: Call
         code, out = runner(["git", "-C", root, "rev-parse", "--verify", "--quiet", f"{land.pr_branch_name(initiative)}^{{commit}}"])
         return out.strip() if code == 0 else ""
     return head
+
+
+def _approved_branch_merged(
+    runner: Callable[[list[str]], tuple[int, str]],
+    repo_for: Callable[[dict], str],
+    runs_dir: Path,
+) -> Callable[[Mapping], bool]:
+    """`FactsDeps.approved_branch_merged`: whether the approved task's commit is on its epic phase branch or the pr branch.
+
+    The commit is the tip of the `branch` the task record names. Only a row whose `land_at` is ticket or level asks;
+    task landing, a missing run, branch, commit or repository is False. A task branch deleted after landing cannot be
+    resolved, so it reads False and the hold stays."""
+    def merged(row: Mapping) -> bool:
+        initiative = str(row["initiative"])
+        if row.get("land_at", "ticket") not in ("ticket", "level"):
+            return False
+        root = repo_for({"initiative": initiative})
+        branch = land_manual.record_branch(runs_dir, str(row.get("run") or ""), str(row["id"]))
+        if not root or not branch:
+            return False
+        code, out = runner(["git", "-C", root, "rev-parse", "--verify", "--quiet", f"{branch}^{{commit}}"])
+        return code == 0 and chair_read_branch_merged.branch_merged(
+            _steward_git(runner), root, out.strip(),
+            [chair_read_steward.level_branch(initiative, str(row["phase"])), land.pr_branch_name(initiative)],
+        )
+    return merged
+
+
+def _wrongly_released_merged(
+    approved_merged: Callable[[Mapping], bool],
+    runs_dir: Path,
+    live: Callable[[], Collection[str]],
+    land_at: Mapping[str, str],
+) -> Callable[[Mapping], bool]:
+    """`chair_facts.wrongly_released_facts`' `branch_merged`: `approved_branch_merged` asked of the task's newest run record.
+
+    The commit is the tip of the `branch` that record names, as for an approval. A task with no run record, or any
+    live run, is False: a live run is rebuilding it."""
+    def merged(item: Mapping) -> bool:
+        initiative, task = str(item["initiative"]), str(item["id"])
+        runs = {
+            run for p in runs_dir.glob(f"*/tasks/*/{task}.json")
+            if chair_facts.run_initiative(run := p.parent.parent.parent.name) == initiative
+        }
+        return bool(runs) and not runs & set(live()) and approved_merged(
+            {**item, "run": max(runs, key=chair_facts._run_number), "land_at": land_at.get(initiative, "ticket")}
+        )
+    return merged
 
 
 def _steward_target_branch_of(profile: dict, ws: Path, repo_for: Callable[[dict], str]) -> Callable[[str], str]:
@@ -13475,10 +13524,24 @@ def _chair_run_deps(
     sources_configured, profile_stale = chair_read_intake.sources_configured_keeping_last_good(profile_path)
     repo_for = _repo_for(ws, home)
     lane_capacity = _check_capacity(runs_dir, profile, host)
+
+    def wrongly_released() -> list:
+        files, at = work_files(), land_at_map()
+        bodies = [  # the work items carry frontmatter fields only, so the note is read from the file text
+            {**i, "body": route.parse_frontmatter(files.get(ws / "work" / str(i["initiative"]) / str(i["file"]), ""))[1]}
+            for i in ticket_items() if i.get("state") == "ready"
+        ]
+        merged = _wrongly_released_merged(
+            _approved_branch_merged(runner, repo_for, runs_dir), runs_dir, lambda: _live_runs(runs_dir, now_text()), at
+        )
+        return chair_facts.wrongly_released_facts(bodies, merged, at)
+
     facts_deps = chair_facts.FactsDeps(
         steward_entries=lambda: chair_read_steward.read_bus_entries(ws / "courier.jsonl"),
         ticket_head=_steward_head(runner, repo_for),
         level_merged=_steward_level_merged(runner, repo_for),
+        approved_branch_merged=_approved_branch_merged(runner, repo_for, runs_dir),
+        wrongly_released=wrongly_released,
         lease=lambda: chair_read_lease.read_lease(runs_dir, now()),
         window=window,
         weekly=weekly,
