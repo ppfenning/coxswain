@@ -96,8 +96,29 @@ def test_a_done_row_with_another_pr_is_refused_and_left_unchanged(tmp_path, monk
     assert store.states == [] and store.marks == []
 
 
-def test_a_ready_row_is_refused_and_left_unchanged(tmp_path, monkeypatch):
+def test_a_ready_row_ends_done_with_the_pr_recorded(tmp_path, monkeypatch):
     store = _store(monkeypatch, "ready")
+    assert _mark(store, tmp_path) is None
+    assert store.row["state"] == "done"
+    assert store.landed == {"ship-2": {"pr": PR, "at": NOW}}
+
+
+def test_a_quarantined_row_ends_done_with_the_pr_recorded(tmp_path, monkeypatch):
+    store = _store(monkeypatch, "quarantined")
+    assert _mark(store, tmp_path) is None
+    assert store.row["state"] == "done"
+    assert store.landed == {"ship-2": {"pr": PR, "at": NOW}}
+
+
+def test_a_dropped_row_is_refused_naming_the_state_and_left_unchanged(tmp_path, monkeypatch):
+    store = _store(monkeypatch, "dropped")
     result = _mark(store, tmp_path)
-    assert result is not None and result.code == route_edit.REFUSED and "approved" in result.text
-    assert store.row["state"] == "ready" and store.states == [] and store.marks == []
+    assert result is not None and result.code == route_edit.REFUSED and "dropped" in result.text
+    assert store.row["state"] == "dropped" and store.states == [] and store.marks == []
+
+
+def test_a_draft_row_is_refused_naming_the_state_and_left_unchanged(tmp_path, monkeypatch):
+    store = _store(monkeypatch, "draft")
+    result = _mark(store, tmp_path)
+    assert result is not None and result.code == route_edit.REFUSED and "'draft'" in result.text
+    assert store.row["state"] == "draft" and store.states == [] and store.marks == []
