@@ -243,6 +243,32 @@ def _carry_forward(body: str, attempts: list[dict[str, Any]], patch: str | None,
     return "\n".join((body, *header, *reference))
 
 
+PREVIOUS_OBJECTION_HEADING = "## Previous run's objection (recorded by the harness)"
+PREVIOUS_OBJECTION_CHARS = 600
+
+
+def previous_objection_block(result: Mapping[str, Any] | None, cap: int = PREVIOUS_OBJECTION_CHARS) -> str:
+    """The previous run's last adversary objection, else its last review finding, under a heading; '' with neither.
+
+    `cap` bounds the text after the heading, not the heading itself.
+    """
+    if not isinstance(result, Mapping):
+        return ""
+    objections = [o for o in (result.get("adversary") or {}).get("objections") or [] if isinstance(o, Mapping)]
+    findings = [f for f in (result.get("review") or {}).get("findings") or [] if isinstance(f, Mapping)]
+    if objections:
+        last = objections[-1]
+        text = f"{last.get('claim') or ''} {last.get('why_wrong') or ''}".strip()
+    elif findings:
+        last = findings[-1]
+        text = f"{last.get('detail') or ''} ({last.get('file')})" if last.get("file") else str(last.get("detail") or "")
+    else:
+        text = ""
+    if not text.strip():
+        return ""
+    return f"{PREVIOUS_OBJECTION_HEADING}\n{text if len(text) <= cap else text[:cap] + '... truncated'}"
+
+
 def _permit_outside_surfaces(body: str, surfaces: Sequence[str], reason: str) -> tuple[str, list[str]]:
     """Body and surfaces with the files named by an outside-surfaces `reason` added, once each.
 
@@ -3763,6 +3789,7 @@ def _run_phase(
     # patch that no longer fits the phase branch quarantines on its own merits.
     reused: list[dict[str, Any]] = []
     to_run = list(ready)
+    prior_results: dict[str, dict[str, Any]] = {}  # task id -> the earlier run's result for a task that is rebuilt
     if ctx.resume_from:
         to_run = []
         for task in ready:
@@ -3772,6 +3799,8 @@ def _run_phase(
                 print(f"  reused {task['id']} from {ctx.resume_from} (approved patch, no model call)")
             else:
                 to_run.append(task)
+                if saved is not None:
+                    prior_results[str(task["id"])] = saved
     record["reused_tasks"] = [str(r.get("ticket")) for r in reused]
 
     # A task whose item asks for a build budget above the cartridge's cap
@@ -3912,7 +3941,12 @@ def _run_phase(
                             limit=PATCH_FOR_VALIDATION_CHARS,
                         )
                         + "".join(f"\n\nSurface note: {note}" for note in heal_notes.get(str(task["id"]), []))
-                        + "".join(f"\n\nCorrection note: {note}" for note in ticket_corrections.get(str(task["id"]), [])),
+                        + "".join(f"\n\nCorrection note: {note}" for note in ticket_corrections.get(str(task["id"]), []))
+                        + "".join(
+                            f"\n\n{block}"
+                            for block in (previous_objection_block(prior_results.get(str(task["id"]))),)
+                            if block
+                        ),
                     },
                     handoffs,
                 ),
