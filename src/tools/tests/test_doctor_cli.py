@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_tools import cli
+from agent_tools import claude_token, cli
 from agent_tools.cli import _run_core_probe, main
 
 
@@ -17,6 +17,8 @@ def _home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.delenv("COXSWAIN_HOME", raising=False)
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    monkeypatch.delenv(claude_token.TOKEN_ENV, raising=False)
+    claude_token.write_token(claude_token.token_path(str(tmp_path / "home")), "sk-ant-oat01-test")
 
 
 def _ready_home(monkeypatch, home):
@@ -105,6 +107,25 @@ def test_all_good_gives_exit_zero_with_every_row_ok(tmp_path, monkeypatch, capsy
     out = capsys.readouterr().out
     assert rc == 0
     assert "FAIL" not in out
+
+
+def test_a_stored_token_file_passes_the_claude_token_row_naming_the_path(tmp_path, monkeypatch, capsys):
+    profile, *_ = _good_setup(tmp_path, monkeypatch)
+    rc = main(["setup", "doctor", "--profile", str(profile), "--json"])
+    rows = {r["check"]: r for r in json.loads(capsys.readouterr().out)["rows"]}
+    assert rc == 0
+    assert rows["claude token"]["ok"] is True
+    assert claude_token.token_path(str(tmp_path / "home")) in rows["claude token"]["detail"]
+
+
+def test_a_removed_token_file_fails_the_claude_token_row_and_names_the_path(tmp_path, monkeypatch, capsys):
+    profile, *_ = _good_setup(tmp_path, monkeypatch)
+    path = claude_token.token_path(str(tmp_path / "home"))
+    os.remove(path)
+    rc = main(["setup", "doctor", "--profile", str(profile)])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "claude token" in out and path in out
 
 
 def test_probe_argv_carries_the_profiles_own_cartridges_dir_team_and_roots(tmp_path, monkeypatch, capsys):
