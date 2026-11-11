@@ -134,20 +134,19 @@ def last_phases(phases: Collection[tuple[str, str]]) -> dict[str, str]:
 
 
 def _let_through(facts: Facts, initiative: str, ready: set[tuple[str, str]], last: str) -> str | None:
-    """The one phase of the initiative allowed to land: its last when the epic is complete, else its earliest ready."""
+    """The one phase of the initiative allowed to land: its last once the epic is complete, and none before then."""
     if epic_complete(facts, initiative):
         return last if (initiative, last) in ready else None
-    return min((p for i, p in ready if i == initiative), default=None)
+    return None
 
 
 def ticket_held(facts: Facts) -> frozenset[tuple[str, str]]:
-    """The ticket phases that plan no land this tick: not merge-ready, or behind an earlier ready phase of their initiative.
+    """The ticket phases that plan no land this tick: every phase until the epic is complete, then all but the last.
 
-    Phases are ordered by name, as `core.workstore.phases` orders them. Only the earliest ready phase with a finished
-    approved task is let through, so two phases of one initiative never land at once; the next is planned once it has landed.
-
-    Once the steward reports the initiative's epic complete only its last phase is let through. The earlier phases'
-    land only returned the note 'ticket granularity, the one pull request opens at the last phase' and opened nothing."""
+    Phases are ordered by name, as `core.workstore.phases` orders them. A ticket phase plans no land before the
+    steward reports the initiative's epic complete. A land planned earlier only returned the note 'ticket granularity,
+    the one pull request opens at the last phase', opened nothing, and withheld the initiative from launching the tasks
+    that would complete it. Once the epic is complete only its last phase is let through, when it is merge-ready and finished."""
     phases = ticket_phases(facts)
     finished = {(t["initiative"], t["phase"]) for t in facts["approved"] if t["phase_done"]}
     ready = {k for k, ok in phases.items() if ok and k in finished}
@@ -264,9 +263,9 @@ def plan_lands(facts: Facts, now: datetime | None = None) -> list[Action]:
     by-task land. Fetches and needs_chair are still planned, and so is everything else outside this function.
 
     At `land_at` ticket a phase lands once `phase_merge_ready` holds for its task states (`ticket_phases`). One with a
-    quarantined or unfinished task plans nothing, a partial_land included. A later phase of the initiative plans
-    nothing until the earlier ready one has landed (`ticket_held`). Once the steward reports the epic complete, the
-    land is planned for the initiative's last phase and its run, not for the first phase."""
+    quarantined or unfinished task plans nothing, a partial_land included. A ticket phase plans no land before the
+    steward reports the epic complete (`ticket_held`), so an incomplete epic is not withheld from launches. Once it is
+    complete, one land is planned for the initiative's last phase and its run."""
     frozen = facts.get("land_freeze") is not None
     fetched: set[str] = set()
     actions: list[Action] = []  # type: ignore[assignment]  # plan_tick stamps the epoch on every action below
