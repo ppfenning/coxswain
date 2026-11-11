@@ -85,6 +85,7 @@ class _LazyHandler:
 card_keys = _LazyModule("agent_tools.card_keys")
 chair = _LazyModule("agent_tools.chair")
 chair_capacity = _LazyModule("agent_tools.chair_capacity")
+chair_chat = _LazyModule("agent_tools.chair_chat")
 chair_dash_sync = _LazyModule("agent_tools.chair_dash_sync")
 chair_decompose_runs = _LazyModule("agent_tools.chair_decompose_runs")
 chair_exec = _LazyModule("agent_tools.chair_exec")
@@ -5941,6 +5942,115 @@ def _route_chair_chat(a: argparse.Namespace) -> int:
     entry = {"at": datetime.datetime.now(datetime.UTC).isoformat(), "from": sender, "text": a.text}
     path.write_text(leader_chat.append_line(existing, entry), encoding="utf-8")
     print(f"chat: {sender}: {a.text}")
+    return 0
+
+
+def _chat_state_path(workspace: Path) -> Path:
+    return workspace / "chair_chat_state.json"
+
+
+def _read_chat_doc(path: Path) -> tuple[dict, list[dict]]:
+    """Edge. The directive state and the epics the chair last saw; a missing or torn file reads as empty."""
+    try:
+        loaded = json.loads(_read_text_or_none(path) or "{}")
+    except json.JSONDecodeError:
+        loaded = {}
+    doc = loaded if isinstance(loaded, dict) else {}
+    base = chair_chat.empty_state()
+    saved = doc.get("state") if isinstance(doc.get("state"), dict) else {}
+    epics = doc.get("epics") if isinstance(doc.get("epics"), list) else []
+    return {**base, **{k: v for k, v in saved.items() if k in base}}, epics
+
+
+def _write_chat_doc(path: Path, state: dict, epics: list[dict]) -> None:
+    """Edge. Replace the file atomically; an unchanged document is not rewritten."""
+    text = json.dumps({"state": state, "epics": epics}, default=sorted, sort_keys=True)
+    if _read_text_or_none(path) == text:
+        return
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _chat_deps(ws: Path) -> chair_run.ChatDeps:
+    """Edge. The chat edges over the workspace's `courier.jsonl` and `chair_chat_state.json`; neither is the lease."""
+    courier_path, chat_path = ws / "courier.jsonl", _chat_state_path(ws)
+    return chair_run.ChatDeps(
+        read=lambda: courier.entries(_read_text_or_none(courier_path) or ""),  # a missing file is an empty bus
+        load=lambda: _read_chat_doc(chat_path)[0],
+        save=lambda state, epics: _write_chat_doc(chat_path, state, epics),
+        append=lambda entry: courier.append_file(courier_path, entry),
+        ack=lambda message_id: courier.ack_file(courier_path, message_id, chair_run.CHAT_CONSUMER),
+    )
+
+
+def _converse_append(a: argparse.Namespace, body_kind: str, payload: dict[str, str]) -> tuple[Path, str] | None:
+    """Edge. Append one chat entry to the workspace courier; the lease record is never opened. None after printing why."""
+    workspace = _courier_workspace(a)
+    if workspace is None:
+        return None
+    message_id = uuid.uuid4().hex
+    entry = chair_chat.build_message(a.sender, body_kind, payload, message_id, chair_run.CHAT_REF)
+    courier.append_file(workspace / "courier.jsonl", entry)
+    return workspace, message_id
+
+
+def _route_chair_converse_send(a: argparse.Namespace) -> int:
+    fields = _parse_fields(a.args or [])
+    if fields is None:
+        print(f"converse: bad argument in {a.args}; expected key=value")
+        return 2
+    payload = {**fields, "kind": a.kind}
+    reason = chair_chat.validate_directive(a.kind, payload)
+    if reason is not None:
+        print(f"converse: {reason}")
+        return 2
+    sent = _converse_append(a, "directive", payload)
+    if sent is None:
+        return 2
+    print(f"converse: sent {a.kind} directive {sent[1]}; the chair applies it on its next tick")
+    return 0
+
+
+def _find_chat_answer(blob: str, question_id: str) -> dict | None:
+    return next((e for e in courier.entries(blob) if e.get("event") == "chat_answer" and (e.get("fields") or {}).get("question") == question_id), None)
+
+
+def _await_chat_answer(
+    path: Path, question_id: str, wait: float, poll: float = 1.0,
+    sleep: Callable[[float], None] = time.sleep, monotonic: Callable[[], float] = time.monotonic,
+) -> dict | None:
+    """Edge. The answer entry for `question_id`, polled until `wait` seconds pass; None when none came."""
+    deadline = monotonic() + wait
+    while True:
+        found = _find_chat_answer(_read_text_or_none(path) or "", question_id)
+        left = deadline - monotonic()
+        if found is not None or left <= 0:
+            return found
+        sleep(min(poll, left))
+
+
+def _route_chair_converse_ask(a: argparse.Namespace) -> int:
+    if a.kind not in chair_chat.QUESTION_KINDS:
+        print(f"converse: unknown question {a.kind!r}; expected one of {', '.join(chair_chat.QUESTION_KINDS)}")
+        return 2
+    sent = _converse_append(a, "question", {"kind": a.kind, "subject": a.subject})
+    if sent is None:
+        return 2
+    answer = _await_chat_answer(sent[0] / "courier.jsonl", sent[1], a.wait)
+    print(answer["note"] if answer else f"converse: the chair has not answered within {a.wait:g}s; the question stays queued for its next tick")
+    return 0
+
+
+def _route_chair_converse_state(a: argparse.Namespace) -> int:
+    workspace = _courier_workspace(a)
+    if workspace is None:
+        return 2
+    state, epics = _read_chat_doc(_chat_state_path(workspace))
+    sent = courier.entries(_read_text_or_none(workspace / "courier.jsonl") or "")
+    recent = [{"event": e["event"]} for e in sent if e.get("topic") == chair_chat.LABEL and e.get("event") in ("directive_applied", "directive_refused")][-5:]
+    print(chair_chat.state_summary(state, epics, recent))
+    print("Epics are as of the chair's last acting tick; a standby or dry-run tick does not refresh them.")
     return 0
 
 
@@ -12493,6 +12603,38 @@ ROUTE_COMMANDS = [
                 ),
                 "agent_tools.cli:_route_chair_chat", False, (),
             ),
+            commands.Command(
+                "converse", "route", "talk to the running chair through the courier, without the lease (`chat` is the leader thread)", (), None, False, (),
+                subcommands=(
+                    commands.Command(
+                        "send", "route", "send the chair a directive; it applies on the chair's next tick",
+                        (
+                            commands.Arg(("kind",), {"help": "one of: priority, hold, release, scope, feature, cut_release"}),
+                            commands.Arg(("args",), {"nargs": "*", "help": "key=value pairs, e.g. target_kind=task target=t1 rank=1"}),
+                            commands.Arg(("--profile",)),
+                            commands.Arg(("--sender",), {"default": "session"}),
+                        ),
+                        "agent_tools.cli:_route_chair_converse_send", False, (),
+                    ),
+                    commands.Command(
+                        "ask", "route", "ask the chair a question and wait a bounded time for its answer",
+                        (
+                            commands.Arg(("kind",), {"help": "one of: left_on_release, why_not_launched, what_failed"}),
+                            commands.Arg(("subject",), {"nargs": "?", "default": ""}),
+                            commands.Arg(("--profile",)),
+                            commands.Arg(("--sender",), {"default": "session"}),
+                            commands.Arg(("--wait",), {"type": float, "default": 30.0, "help": "seconds to wait for the answer (default 30)"}),
+                        ),
+                        "agent_tools.cli:_route_chair_converse_ask", False, (),
+                    ),
+                    commands.Command(
+                        "state", "route", "print the directives in force, the epics the chair last saw, and recent events",
+                        (commands.Arg(("--profile",)),),
+                        "agent_tools.cli:_route_chair_converse_state", False, (),
+                    ),
+                ),
+                sub_dest="converse_cmd", sub_required=False,
+            ),
         ),
         sub_dest="chair_cmd", sub_required=False,
     ),
@@ -13843,7 +13985,10 @@ def _chair_run_deps(
     # A dry run and a missing workspace keep the plain sleep, so polling is unchanged there.
     wake = None if dry_run or not ws.is_dir() else chair_wake.wait_for_run_exit(read_bus, time.sleep, time.monotonic, CHAIR_WAKE_POLL_SECONDS)
 
+    chat = None if dry_run or not ws.is_dir() else _chat_deps(ws)
+
     return chair_run.RunDeps(
+        chat=chat,
         wait=wake,
         checkout_state=checkout_state, started_checkout=started_checkout, lands_in_flight=lands_in_flight,
         stop_lands=stop_lands, facts_deps=facts_deps, gather=_chair_gather(ws), exec_deps=exec_deps, report_deps=chair_report.Deps(echo=echo),
