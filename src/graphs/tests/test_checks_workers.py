@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import os
 import sys
+
+import pytest
 
 from harness.checks import checks_evidence, run_checks
 from harness.lane_workers import XDIST_VAR
@@ -11,8 +12,16 @@ from harness.lane_workers import XDIST_VAR
 _OK = {"name": "ok", "cmd": f"{sys.executable} -c 'print(1)'"}
 _BAD = {"name": "bad", "cmd": f"{sys.executable} -c 'raise SystemExit(1)'"}
 _SLOW = {"name": "slow", "cmd": f"{sys.executable} -c 'import time; time.sleep(30)'", "timeout": 1}
-_BASE = dict(os.environ)
-_BASE.pop(XDIST_VAR, None)
+_BASE = {"PATH": "/usr/bin:/bin"}
+
+
+@pytest.fixture(autouse=True, params=[None, "1", "64"], ids=["ambient-unset", "ambient-1", "ambient-64"])
+def ambient_workers(request, monkeypatch) -> None:
+    """The variable pytest-xdist sets in a worker, established here; monkeypatch restores it."""
+    if request.param is None:
+        monkeypatch.delenv(XDIST_VAR, raising=False)
+    else:
+        monkeypatch.setenv(XDIST_VAR, request.param)
 
 
 def test_a_passing_check_carries_the_workers_and_an_evidence_line(tmp_path):
@@ -38,5 +47,6 @@ def test_without_the_variable_results_and_evidence_carry_no_workers(tmp_path):
     assert all("workers" not in row["output"] for row in checks_evidence(results))
 
 
-def test_an_inherited_env_carries_no_workers(tmp_path):
+def test_an_inherited_env_carries_no_workers(tmp_path, monkeypatch):
+    monkeypatch.setenv(XDIST_VAR, "64")
     assert "workers" not in run_checks(tmp_path, [_OK])[0]
