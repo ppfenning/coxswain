@@ -53,3 +53,37 @@ def test_a_later_ready_phase_waits_until_the_earlier_one_has_landed() -> None:
     assert _kinds(both) == [("land_phase", "p1")]
     after = _facts([_approved("a-p2", "p2")], [_row("p1", ("a-p1", "done")), _row("p2", ("a-p2", "approved"))])
     assert _kinds(after) == [("land_phase", "p2")]
+
+
+def _four_phases(reported: set[str] | None) -> Facts:
+    runs = {"p1": "a-run-2", "p2": "a-run-3", "p3": "a-run-3", "p4": "a-run-4"}
+    facts = _facts(
+        [{**_approved(f"a-{p}", p), "run": run} for p, run in runs.items()],
+        [_row(p, (f"a-{p}", "merged")) for p in runs],
+    )
+    if reported is None:
+        return facts
+    epic = {
+        "epic_id": "a", "branch_head": "h1", "levels": [], "exited": False, "signature": "",
+        "reported": reported, "land_at": "ticket",
+    }
+    return {**facts, "steward": {"enabled": True, "epics": [epic]}}  # type: ignore[typeddict-item]
+
+
+def test_a_complete_ticket_epic_lands_from_its_last_phase_run() -> None:
+    plan = plan_lands(_four_phases({"epic_complete:h1"}))
+    assert [(a["kind"], a["phase"], a["run"], a["task_runs"]) for a in plan] == [
+        ("land_phase", "p4", "a-run-4", {"a-p4": "a-run-4"})
+    ]
+
+
+def test_a_ticket_epic_not_reported_complete_plans_as_before() -> None:
+    plan = plan_lands(_four_phases({"gate_passed:h1"}))
+    assert [(a["kind"], a["phase"], a["run"]) for a in plan] == [("land_phase", "p1", "a-run-2")]
+    assert plan == plan_lands(_four_phases(None))
+
+
+def test_a_complete_epic_whose_last_phase_is_unfinished_plans_nothing() -> None:
+    facts = _four_phases({"epic_complete:h1"})
+    unfinished = [{**t, "phase_done": t["phase"] != "p4"} for t in facts["approved"]]
+    assert plan_lands({**facts, "approved": unfinished}) == []  # type: ignore[typeddict-item]

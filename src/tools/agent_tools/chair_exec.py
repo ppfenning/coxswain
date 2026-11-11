@@ -293,6 +293,15 @@ def landed(code: int, output: str) -> bool:
     return code == 0 and "mark_done:" in output and ("merge:" in output or skipped or landed_via)
 
 
+_TICKET_GRANULARITY_NOTE = "ticket granularity, the one pull request opens at the last phase"  # land.py plans it, cli._land_walk prints it, test_land_granularity.py pins it; change them together
+
+
+def note_only_land(code: int, output: str) -> bool:
+    """True on exit 0 when the output carries the ticket-granularity note and no step line: nothing landed, nothing failed."""
+    steps = any(mark in output for mark in ("mark_done:", "merge:", _LANDED_VIA_PREFIX)) or land_stop(output) is not None
+    return code == 0 and not landed(code, output) and _TICKET_GRANULARITY_NOTE in output and not steps
+
+
 # The old "exactly one commit ahead" wording stays: logs written before land_plan changed still carry it.
 _MISSING_BRANCH_MARKERS = (
     "no branch is ahead of",
@@ -502,6 +511,8 @@ def land_outcome(action: Action, deps: Deps, code: int, output: str) -> Result:
     refusal = land_refusal(action, code, output)
     if refusal is not None:
         return {"action": action, "status": "refused", "reason": output, "needs_chair": refusal}
+    if action.get("kind") == "land_phase" and note_only_land(code, output):
+        return _result(action, "deferred", output.strip())
     return _land_result(action, action.get("repo", ""), code, output)
 
 
