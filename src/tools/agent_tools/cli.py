@@ -8890,7 +8890,9 @@ def _install_home_refusal(home: str, record: str | None, named: bool) -> str | N
 def _install_facts(a: argparse.Namespace) -> dict:
     """Gathers exactly what `install_plan` needs and nothing it decides:
     PATH lookups, the coxswain tool's receipt extras, the profile's existence, and the
-    config/settings paths expanded once, here. Without `--root` the checkouts,
+    config/settings paths expanded once, here, and the platform, home, cox path and
+    whether the chair service file exists, and the default garage.env and its `export` lines.
+    A `--root` install passes no home and no env file. Without `--root` the checkouts,
     profile and workspace come from the resolved coxswain home; a refusal
     raises ValueError for the caller to print."""
     config_dir = str(Path("~/.config").expanduser())
@@ -8914,6 +8916,11 @@ def _install_facts(a: argparse.Namespace) -> dict:
         registered = (listing or {}).get(setup_install.MARKETPLACE)
     tool_dir = setup_receipts.default_tool_dir(os.environ, str(Path.home()))
     paths = setup_install.layout(root)
+    # A `--root` install is a sandbox: it never writes into the real user's service folders.
+    service_home = "" if a.root else str(Path.home())
+    service_file = chair_service.service_file(sys.platform, Path(service_home)) if service_home else None
+    chair_env_file = None if a.root else _chair_default_environment_file()
+    chair_env_text = _read_text_or_none(Path(chair_env_file)) if chair_env_file else None
     return {
         "tool_extras": setup_receipts.read_tool_extras(tool_dir, setup_install.TOOL),
         "root": root,
@@ -8935,6 +8942,12 @@ def _install_facts(a: argparse.Namespace) -> dict:
         "assume": a.assume,
         "window_ceiling_usd": a.window_ceiling_usd,
         "weekly_ceiling_usd": a.weekly_ceiling_usd,
+        "platform": sys.platform,
+        "home": service_home,
+        "cox_path": shutil.which("cox"),
+        "chair_service_exists": service_file is not None and service_file.exists(),
+        "chair_env_file": chair_env_file,
+        "chair_env_exports": tuple(chair_service.export_lines(chair_env_text or "")),
     }
 
 
