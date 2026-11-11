@@ -1,3 +1,4 @@
+from agent_tools import cli
 from agent_tools.land import pr_footer
 from agent_tools.land_batch import batch_plan
 
@@ -67,9 +68,57 @@ def test_repeated_source_is_refused():
     steps = plan([SOURCES[0], SOURCES[1], SOURCES[0]])
     assert [s["kind"] for s in steps] == ["refuse"]
     assert "a/p1" in steps[0]["reason"]
+    assert not {"merge", "batch_squash"} & {s["kind"] for s in steps}
 
 
-def test_task_missing_from_paths_is_refused():
-    steps = plan(paths={"t1": "/w/t1.md", "t2": "/w/t2.md", "t3": "/w/t3.md"})
+ITEMS = {"t2": "/store/t2.md", "t4": "/store/t4.md"}
+
+
+def with_items(items):
+    return [{**s, "task_items": {t: f for t, f in items.items() if t in s["tasks"]}} for s in SOURCES]
+
+
+def test_mixed_batch_marks_every_task_and_flags_unrecorded():
+    steps = plan(with_items(ITEMS), paths={"t1": "/w/t1.md", "t3": "/w/t3.md"})
+    done = [s for s in steps if s["kind"] == "mark_done"]
+    assert done == [{"kind": "mark_done", "task": "t1", "path": "/w/t1.md"},
+                    {"kind": "mark_done", "task": "t2", "recorded": False},
+                    {"kind": "mark_done", "task": "t3", "path": "/w/t3.md"},
+                    {"kind": "mark_done", "task": "t4", "recorded": False}]
+
+
+def test_store_only_batch_marks_every_task_after_the_merge():
+    items = {**ITEMS, "t1": "/store/t1.md", "t3": "/store/t3.md"}
+    steps = plan(with_items(items), paths={})
+    kinds = [s["kind"] for s in steps]
+    done = [s for s in steps if s["kind"] == "mark_done"]
+    assert done == [{"kind": "mark_done", "task": t, "recorded": False} for t in ("t1", "t2", "t3", "t4")]
+    assert kinds.index("merge") < kinds.index("mark_done")
+
+
+def test_unrecorded_task_with_no_item_is_refused_before_any_merge():
+    steps = plan(with_items({"t2": "/store/t2.md"}), paths={"t1": "/w/t1.md", "t3": "/w/t3.md"})
     assert [s["kind"] for s in steps] == ["refuse"]
-    assert "t4" in steps[0]["reason"]
+    assert "t4" in steps[0]["reason"] and "t2" not in steps[0]["reason"]
+    assert not {"merge", "batch_squash"} & {s["kind"] for s in steps}
+
+
+def test_unrecorded_marks_reach_the_edge_with_their_item():
+    steps = plan(with_items(ITEMS), paths={"t1": "/w/t1.md", "t3": "/w/t3.md"})
+    enriched = cli._land_enrich(steps, path="", worktree_root="/wt", task_paths={"t1": "/w/t1.md", "t3": "/w/t3.md"},
+                                task_items=ITEMS)
+    unrecorded = [s for s in enriched if s["kind"] == "mark_done" and s.get("recorded") is False]
+    assert [(s["task"], s["item"]) for s in unrecorded] == [("t2", "/store/t2.md"), ("t4", "/store/t4.md")]
+
+
+def test_task_id_shared_across_sources_is_marked_once():
+    shared = [SOURCES[0], {**SOURCES[1], "tasks": ["t2", "t3"]}]
+    done = [s["task"] for s in plan(shared) if s["kind"] == "mark_done"]
+    assert done == ["t1", "t2", "t3"]
+
+
+def test_source_with_no_tasks_is_refused_before_any_merge():
+    steps = plan([SOURCES[0], {**SOURCES[1], "tasks": []}])
+    assert [s["kind"] for s in steps] == ["refuse"]
+    assert "b/p2" in steps[0]["reason"]
+    assert not {"merge", "batch_squash"} & {s["kind"] for s in steps}
