@@ -1647,13 +1647,17 @@ def _runs_dir_for_land(a: argparse.Namespace) -> tuple[Path | None, str | None]:
 
 
 def _land_record(runs_dir: Path, run_id: str, task: str | None) -> tuple[dict | None, str, int]:
+    """The one record file for `task` (any task when None). A named task with no file under the land's own run takes the
+    newest earlier run's, the order `_land_phase_record` uses; several files in one run stay ambiguous."""
     tasks_root = runs_dir / run_id / "tasks"
     matches = sorted(tasks_root.glob(f"*/{task}.json" if task else "*/*.json"))
+    if not matches and task:
+        matches = next((m for r in _earlier_runs(run_id) if (m := sorted((runs_dir / r / "tasks").glob(f"*/{task}.json")))), [])
     if len(matches) != 1:
         return None, str(tasks_root.resolve()), len(matches)
     path = matches[0]
     record = json.loads(path.read_text(encoding="utf-8"))
-    record.setdefault("run", run_id)
+    record.setdefault("run", path.parents[2].name)
     record.setdefault("task", path.stem)
     record.setdefault("phase", path.parent.name)
     return record, str(path), 1
@@ -1684,9 +1688,10 @@ def _land_load(runs_dir: Path, run_id: str, task: str | None) -> tuple[dict | No
             return {"run": run_id, "task": task, "phase": phases[0], **held}, str(path), 1, "store"
         return None, where, count, None
     path = Path(where)
-    stored = run_store.task_record(runs_dir, run_id, path.parent.name, path.stem) if count == 1 else None
+    filed_run = path.parents[2].name if count == 1 else run_id  # an earlier run's record is read from that run
+    stored = run_store.task_record(runs_dir, filed_run, path.parent.name, path.stem) if count == 1 else None
     if stored is not None:
-        stored = {"run": run_id, "task": path.stem, "phase": path.parent.name, **stored}
+        stored = {"run": filed_run, "task": path.stem, "phase": path.parent.name, **stored}
     record, source = _choose_record(stored, filed)
     return record, where, count, source
 
@@ -2361,6 +2366,13 @@ def _phase_needing_land(runs_dir: Path, run_id: str) -> str | None:
         return None
     candidates = [d.name for d in tasks_root.iterdir() if d.is_dir() and len(list(d.glob("*.json"))) > 1]
     return candidates[0] if len(candidates) == 1 else None
+
+
+def _last_phase_with_manifest(runs_dir: Path, run_id: str) -> str | None:
+    """Edge. The last phase, by name, that holds task records under `run_id` and has a phase record; None when none does."""
+    tasks_root = runs_dir / run_id / "tasks"
+    held = sorted(d.name for d in tasks_root.iterdir() if d.is_dir() and any(d.glob("*.json"))) if tasks_root.is_dir() else []
+    return next((p for p in reversed(held) if _land_phase_record(runs_dir, run_id, p)[0] is not None), None)
 
 
 def _checks_env(cwd: Path, cores: int = 1, capacity: int | None = None) -> dict[str, str] | None:
@@ -3934,6 +3946,10 @@ def _runs_land(a: argparse.Namespace) -> int:
             return 2
         print(f"land: {shortfall}; the list below is short", file=sys.stderr)
     phase = getattr(a, "phase", None) or (None if a.task else _phase_needing_land(runs_dir, run_id))
+    # No phase named and records in several phases: the ticket's last phase, but only to finish an already merged PR (checked below).
+    inferred = phase is None and not a.task and _land_record(runs_dir, run_id, None)[2] > 1
+    phase = _last_phase_with_manifest(runs_dir, run_id) if inferred else phase
+    inferred = inferred and phase is not None
     land_mode = work_state.work_state_mode(_lake_provider(a)[0]) if a.apply else "files"
     record, item_path, lease_task = None, None, None
     land_at, ticket_tasks = None, []
@@ -3969,6 +3985,10 @@ def _runs_land(a: argparse.Namespace) -> int:
                                       _parent_phase(runs_dir.parent / "work", initiative, phase))
                      if read_forge is not None else None)
         already_merged = merged_pr is not None
+        if inferred and not already_merged:
+            _, searched, count = _land_record(runs_dir, run_id, None)
+            print(f"land: looked in {searched}, found {count} task records, expected 1")
+            return 2
         land_at = _phase_land_at(phase_record, profile, runs_dir.parent / "work", initiative)
         ticket_items, phases = _ticket_items(runs_dir.parent / "work", initiative, runs_dir, land_mode, (phase, items)) if land_at == "ticket" else ({}, [])
         ticket_tasks = list(ticket_items)
@@ -3996,6 +4016,9 @@ def _runs_land(a: argparse.Namespace) -> int:
             already_merged=already_merged, ticket_tasks=ticket_tasks, ticket_present=ticket_present,
             ticket_records=[r for r in earlier if r["task"] in ticket_present], ticket_unrecorded=ticket_unrecorded,
         )
+        if inferred:  # a re-run named by no phase, after the PR merged, leaves a task already done (by hand or by a first run) alone
+            finished = {i["id"] for i in items if i["status"] == "done"}
+            plan_steps = [s for s in plan_steps if not (s["kind"] == "mark_done" and s["task"] in finished)]
         earlier_paths = {t: p for ph in phases if ph != phase for t, p in _land_phase_record(runs_dir, run_id, ph)[2].items()}
         steps = _land_enrich(plan_steps, path=searched, worktree_root=a.worktree_root, task_paths={**earlier_paths, **task_paths},
                               umbrella=profile.get("umbrella_dir"), store_runs_dir=str(runs_dir),
@@ -4606,7 +4629,7 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
                 print("land: merge refused for an expected required check; waiting for checks once more")
                 i = waits[-1]
                 continue
-        if raised:
+        if raised or (not ok and step["kind"] == "mark_done" and pr):
             # The PR is merged: record it and mark every task whose mark_done has not run, so none keeps holding its files.
             number = _pr_number(steps, i, pr)
             pr = pr or (f"#{number}" if number is not None else "")
