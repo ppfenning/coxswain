@@ -90,13 +90,16 @@ def initiative_homes(newest_run_host: Mapping[str, str], unfinished: Collection[
 
 
 def _lease_gate(lease: LeaseFacts) -> list[Action] | None:
-    """None when the lease is mine and the tick goes on; otherwise the one action the tick returns."""
+    """None when the lease is mine and the tick goes on; otherwise the one action the tick returns.
+    A released, stale, expired or session-held (takeback) lease is taken; any other live holder gets standby."""
     if lease["mine"]:
         return None
     if lease["released"] or lease["stale"]:
         return [{"kind": "take_lease"}]
     if lease.get("expired", False):
         return [{"kind": "take_lease", "reason": f"takeover expired at {lease.get('until', '')}"}]
+    if lease.get("session_held", False):
+        return [{"kind": "take_lease", "reason": f"takeback from {lease['holder']}"}]
     until = lease.get("until", "")
     return [{"kind": "standby", "holder": lease["holder"], "host": lease["host"], **({"until": until} if until else {})}]
 
