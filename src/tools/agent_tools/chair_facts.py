@@ -1575,11 +1575,19 @@ def new_missing_repos(missing: Collection[str], reported: Collection[str]) -> li
     return sorted({p for p in missing if p not in reported})
 
 
+def intake_path_of_row(row: Row) -> str:
+    """The intake file a queued row names: its recorded `extra.path` when it has one, else `intake/<task_id>.md`
+    (`queue_rows.row_path` for a queued row). The row's key is the bare stem, so the `intake/` folder comes from here.
+    A relative path resolves against the workspace, the cwd every chair launch runs in."""
+    recorded = row["extra"].get("path")
+    return recorded if isinstance(recorded, str) and recorded else f"intake/{row['task_id']}.md"
+
+
 def intake_paths_from_rows(rows: Sequence[Row], current: str | None = None) -> list[str]:
-    """Queued intake rows as `<task_id>.md`, in row order: the same relative-path shape `read_intake` returns.
+    """Queued intake rows as workspace-relative paths (`intake/<task_id>.md`), in row order: the shape `read_intake` returns.
 
     Held intakes are dropped; with `current`, so are those whose `target_release` is above it."""
-    return [f"{row['task_id']}.md" for row in intake_from_rows(rows, current)]
+    return [intake_path_of_row(row) for row in intake_from_rows(rows, current)]
 
 
 DEFAULT_HOUSEKEEPING_HOURS = 24.0

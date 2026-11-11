@@ -1,5 +1,6 @@
 from dataclasses import replace
 
+from agent_tools.chair_exec import argv_for
 from agent_tools.chair_facts import gather_facts, intake_paths_from_rows
 from agent_tools.chair_read_intake import intake_from_rows
 from tests.test_chair_facts import NOW, _deps
@@ -18,7 +19,18 @@ def _gathered(rows: list[dict], current: str = "2026.11.5") -> dict:
 
 
 def test_a_queued_intake_held_with_a_quoted_value_yields_no_path() -> None:
-    assert intake_paths_from_rows([intake("a", held="true"), intake("b")]) == ["b.md"]
+    assert intake_paths_from_rows([intake("a", held="true"), intake("b")]) == ["intake/b.md"]
+
+
+def test_a_bare_keyed_queued_intake_launches_decompose_on_the_file_under_intake() -> None:
+    [idea] = intake_paths_from_rows([intake("2026-11-11-some-idea")])
+    argv = argv_for({"kind": "launch_decompose", "intake_ids": [idea]}, "some-idea")
+    assert argv is not None and argv[argv.index("--idea") + 1] == "intake/2026-11-11-some-idea.md"
+
+
+def test_a_queued_intake_with_a_recorded_path_keeps_it() -> None:
+    rows = [intake("a", path="intake/elsewhere.md"), intake("b", path="/abs/ws/intake/b.md")]
+    assert intake_paths_from_rows(rows) == ["intake/elsewhere.md", "/abs/ws/intake/b.md"]
 
 
 def test_a_queued_intake_with_a_later_target_release_yields_no_path() -> None:
@@ -28,8 +40,8 @@ def test_a_queued_intake_with_a_later_target_release_yields_no_path() -> None:
 
 def test_a_current_version_at_or_above_the_target_yields_the_path() -> None:
     rows = [intake("a", target_release="2026.12.0")]
-    assert intake_paths_from_rows(rows, "2026.12.0") == ["a.md"]
-    assert intake_paths_from_rows(rows, "2027.1.0") == ["a.md"]
+    assert intake_paths_from_rows(rows, "2026.12.0") == ["intake/a.md"]
+    assert intake_paths_from_rows(rows, "2027.1.0") == ["intake/a.md"]
 
 
 def test_intake_from_rows_without_current_ignores_target_release() -> None:
@@ -39,7 +51,7 @@ def test_intake_from_rows_without_current_ignores_target_release() -> None:
 
 def test_the_gathered_intake_fact_drops_held_and_deferred_intakes() -> None:
     rows = [intake("held", held="'true'"), intake("later", target_release="2026.12.0"), intake("free")]
-    assert _gathered(rows)["intake"] == ["free.md"]
+    assert _gathered(rows)["intake"] == ["intake/free.md"]
 
 
 def test_a_held_decomposed_intake_marks_its_initiative() -> None:
