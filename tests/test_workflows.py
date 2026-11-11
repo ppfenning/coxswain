@@ -4,6 +4,7 @@ The CLI reference is generated from the `cox` the checkout installs into its own
 the in-repo folders from disk (only dash, a separate repository, is fetched at its manifest tag).
 """
 
+import re
 from pathlib import Path
 
 import yaml
@@ -52,6 +53,15 @@ def test_every_ci_pytest_step_runs_in_parallel():
     assert len(steps) == 9
     missing = _missing_xdist(steps)
     assert not missing, "pytest steps without -n auto:\n" + "\n".join(missing)
+
+
+def test_every_pytest_step_in_the_test_job_is_named_after_its_suite():
+    """The land's rerun rule parses `pytest <suite>` from the check run name."""
+    steps = yaml.safe_load(CI.read_text())["jobs"]["test"]["steps"]
+    pytest_steps = [step for step in steps if step.get("run", "").startswith("uv run pytest")]
+    matches = [re.fullmatch(r"pytest (root|tools|graphs|cartridges)", step.get("name", "")) for step in pytest_steps]
+    assert len(pytest_steps) == 4 and all(matches)
+    assert {match.group(1) for match in matches} == {"root", "tools", "graphs", "cartridges"}
 
 
 def test_the_extras_job_runs_each_suite_as_its_own_serial_job():
