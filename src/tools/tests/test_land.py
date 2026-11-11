@@ -2704,3 +2704,76 @@ def test_landed_tail_keeps_only_the_closing_steps_in_order():
              {"kind": "note", "reason": "x"}, {"kind": "refuse", "reason": "y"}, clean, done, clean_phase]
     assert land.landed_tail(steps) == [clean, done, clean_phase]
     assert len(steps) == 10
+
+
+# --- every land path marks each task it carries, or refuses ahead of the merge ---
+
+_CARRY_PHASE = {"run": "r", "phase": "p", "initiative": "i"}
+_CARRY_TASKS = [{"run": "r", "task": t, "phase": "p", "initiative": "i", "status": "approved",
+                 "review": {"verdict": "approve"}, "build": {"patch": "x"}} for t in ("a", "b")]
+_CARRY_FACTS = [{"task": t, "reachable": True, "branch_exists": True, "has_patch": True} for t in ("a", "b")]
+
+
+def _carry_phase_plan(items=("a", "b"), **kw):
+    return land.land_plan(_CARRY_PHASE, {"epic/i/p": []}, "main", items=[{"id": t, "status": "approved"} for t in items],
+                          task_records=_CARRY_TASKS, task_facts=_CARRY_FACTS, **kw)
+
+
+def test_the_helpers_mark_each_carried_task_and_refuse_an_unknowable_set():
+    assert land.carried_done(["a", "u"], {"u"}) == [{"kind": "mark_done", "task": "a"},
+                                                    {"kind": "mark_done", "task": "u", "recorded": False}]
+    assert land.carry_refusal(["a"], {"a"}) is None
+    assert land.carry_refusal(None, set())[0]["kind"] == "refuse"
+    assert "q" in land.carry_refusal(["a", "q"], {"a"})[0]["reason"]
+
+
+def test_a_phase_plan_tail_marks_every_carried_task_and_records_the_unrecorded_one():
+    steps = _carry_phase_plan()
+    assert [s for s in land.landed_tail(steps) if s["kind"] == "mark_done"] == [
+        {"kind": "mark_done", "task": "a"}, {"kind": "mark_done", "task": "b"}]
+    merged = _carry_phase_plan(items=("a", "b", "c"), already_merged=True)
+    assert {"kind": "mark_done", "task": "c", "recorded": False} in merged
+    assert [s["task"] for s in merged if s["kind"] == "mark_done"] == ["a", "b", "c"]
+
+
+def test_a_phase_plan_whose_carried_task_is_outside_the_merged_set_refuses_ahead_of_the_merge(monkeypatch):
+    monkeypatch.setattr(land, "phase_landed_tasks", lambda steps: frozenset({"a"}))
+    steps = _carry_phase_plan()
+    assert [s["kind"] for s in steps] == ["refuse"]
+    assert steps[0]["reason"].startswith("b: ")
+
+
+def _carry_ticket_plan(items=("a",), tasks=("a", "u", "z"), **kw):
+    records = [{"task": t, "title": t, "repo": "wire", "status": "approved", "review": {"verdict": "approve"}} for t in items]
+    return land.land_plan({"run": "epic-x-5", "phase": "wiring", "initiative": "x"}, {}, "main",
+                          items=[{"id": t, "status": "approved"} for t in items], task_records=records, repo="wire",
+                          ticket_tasks=tasks, ticket_present=("z",), ticket_unrecorded=("u",),
+                          phases=["seams", "wiring"], **kw)
+
+
+def test_a_ticket_plan_tail_marks_every_carried_task_and_records_the_unrecorded_one():
+    steps = _carry_ticket_plan()
+    kinds = [s["kind"] for s in steps]
+    assert [s for s in steps if s["kind"] == "mark_done"] == [
+        {"kind": "mark_done", "task": "a"}, {"kind": "mark_done", "task": "u", "recorded": False},
+        {"kind": "mark_done", "task": "z"}]
+    assert kinds.index("merge") < kinds.index("mark_done")
+
+
+def test_a_ticket_plan_whose_carried_task_is_not_a_ticket_task_refuses_ahead_of_the_merge():
+    steps = _carry_ticket_plan(items=("a", "q"))
+    assert [s["kind"] for s in steps] == ["refuse"]
+    assert steps[0]["reason"].startswith("q: ")
+
+
+def test_a_squash_plan_marks_its_task_and_records_it_when_unrecorded():
+    branches = {"agents/epic-x-5/seams-task": ["Add seams"]}
+    steps = land.land_plan(_record(), branches, "main")
+    assert steps[-1] == {"kind": "mark_done", "task": "seams-task"}
+    unrecorded = land.land_plan(_record(), branches, "main", ticket_unrecorded=("seams-task",))
+    assert unrecorded[-1] == {"kind": "mark_done", "task": "seams-task", "recorded": False}
+
+
+def test_a_squash_plan_with_no_task_to_carry_refuses_before_any_step():
+    steps = land.land_plan(_record(task=None), {"agents/epic-x-5/None": ["Add seams"]}, "main")
+    assert [s["kind"] for s in steps] == ["refuse"]
