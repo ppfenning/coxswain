@@ -1075,6 +1075,27 @@ def merge_expects_check(output: str) -> bool:
     return "Required status check" in output and "is expected" in output
 
 
+def _suite_of(step: str) -> str | None:
+    """The suite of a failed step named `pytest <suite>`; None for any other spelling."""
+    words = step.split()
+    return words[1] if len(words) == 2 and words[0] == "pytest" else None
+
+
+def _touches_suite(suite: str, changed_paths: Sequence[str]) -> bool:
+    """`root` is every path outside `src/`; any other suite is the folder `src/<suite>/`."""
+    if suite == "root":
+        return any(not path.startswith("src/") for path in changed_paths)
+    return any(path.startswith(f"src/{suite}/") for path in changed_paths)
+
+
+def rerun_scope(failed_steps: Sequence[str], changed_paths: Sequence[str]) -> bool:
+    """Whether a failed check earns the one rerun: no failed step, an unattributable step, or no failed suite the change touches."""
+    suites = [_suite_of(step) for step in failed_steps]
+    return any(suite is None for suite in suites) or not any(
+        suite is not None and _touches_suite(suite, changed_paths) for suite in suites
+    )
+
+
 MERGE_UPDATE_ATTEMPTS = 3  # branch updates a land makes for one merge before it stops
 _BEHIND_PHRASE = "not up to date with the base branch"
 
