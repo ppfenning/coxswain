@@ -228,6 +228,8 @@ class QuarantineFacts(TypedDict):
     causes: NotRequired[list[str]]  # every quarantine cause on the current body, oldest attempt first; absent means just `cause`
     run: NotRequired[str]  # the run the remedy command names; absent means unknown
     repo: NotRequired[str]  # the repository the remedy command names; absent means unknown
+    task_state_key: NotRequired[str]  # names the harness state the task was quarantined in; absent leaves the quarantine unsorted
+    held_objection: NotRequired[str]  # the review objection text holding the task; absent leaves a review quarantine unsorted
 
 
 class EmptyDecomposeFacts(TypedDict):
@@ -605,6 +607,8 @@ class Facts(TypedDict):
     merge_queue: NotRequired[MergeQueueFacts]  # the profile's enabled merge queue; absent means the queue is off
     # `<run1>|<run2>` of each relaunch_loop needs_chair already in the action log. Absent means [].
     relaunch_loop_reported: NotRequired[list[str]]
+    # chair_sort keys already acted on: `<task>:<state key>` for a rebuild, an objection hash for an annotation. Absent means none.
+    handled_keys: NotRequired[list[str]]
     # Land refusals still counted: refused or failed land_phase rows since the key's last landed row. Absent means [].
     land_refusals: NotRequired[list[LandRefusal]]
     land_fail_streaks: NotRequired[list[LandFailStreak]]  # per (initiative, phase), the run of identical failed-land reasons; absent means none
@@ -669,6 +673,8 @@ ActionKind = Literal[
     "unlaunched",
     "schedule_updated",
     "requeue_task",
+    "rebuild_quarantined",
+    "annotate_objection",
 ]
 
 
@@ -704,7 +710,9 @@ class Action(TypedDict, total=False):
     unlaunched carries initiative and reason and runs no command: why a ready initiative was not launched.
     The steward's relaunch is a relaunch carrying initiative, plus epic, topic and fields (the signature) so the executor
     can record `relaunched`. A planner relaunch carries none of those three.
-    requeue_task carries initiative, phase, task_id, reason and epoch; it is declared here and not yet planned or executed."""
+    requeue_task carries initiative, phase, task_id, reason and epoch; it is declared here and not yet planned or executed.
+    rebuild_quarantined carries initiative, task_id and key (the chair_sort state key); it clears branches onto current main, then relaunches.
+    annotate_objection carries initiative, task_id, objection (the objection text) and key (its chair_sort hash)."""
 
     kind: ActionKind
     epoch: int
@@ -721,6 +729,8 @@ class Action(TypedDict, total=False):
     reason: str  # a take_lease over an expired takeover says so; a stale_to_draft carries its stale_reason string; a quarantine needs_chair or a widen_ticket carries the trimmed reason, at most 600 characters
     remedy: str  # a quarantine needs_chair names the remedy kind choose_remedy picks for its cause
     command: list[str]  # a quarantine needs_chair carries the argv remedy_for returns for that remedy
+    objection: str  # an annotate_objection's review objection text
+    key: str  # a rebuild_quarantined or annotate_objection's chair_sort handled key
     stale_tasks: list[str]  # a stale_to_draft names the task ids found stale
     since: str  # a stale_to_draft names the ISO timestamp the staleness was detected
     carry: list[str]  # the phases a clear_branches keeps and merges main into
