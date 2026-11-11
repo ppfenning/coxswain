@@ -45,6 +45,9 @@ _HARNESS_FAULT_PREFIX = "harness fault:"
 _OUTSIDE_SURFACES_PREFIX = "configured check failed outside surfaces:"
 _OUTSIDE_SURFACES_WHY = "tests outside surfaces"
 
+# Must equal `harness.stale_base.WRONG_REPOSITORY_PREFIX`; this module imports nothing from the harness.
+_WRONG_REPOSITORY_PREFIX = "wrong repository:"
+
 
 def is_auth_failure(reason: str) -> bool:
     """True when the reason carries an authentication marker; `classify_cause` asks the same."""
@@ -52,7 +55,9 @@ def is_auth_failure(reason: str) -> bool:
 
 
 def classify_cause(kind: str, reason: str) -> Cause | None:
-    """An authentication failure first, then a budget, turn or session limit stop, then a transient OAuth refresh collision, then harness, an outside-surfaces check failure as ticket, code, a stale base as harness, ticket; None when no rule matches."""
+    """A wrong-repository stop first as ticket, since its reason embeds a task id and paths that must not trip a marker below, then an authentication failure, then a budget, turn or session limit stop, then a transient OAuth refresh collision, then harness, an outside-surfaces check failure as ticket, code, a stale base as harness, ticket; None when no rule matches."""
+    if reason.startswith(_WRONG_REPOSITORY_PREFIX):
+        return "ticket"
     if is_auth_failure(reason):
         return "harness"
     if any(marker in reason.lower() for marker in _LIMIT_MARKERS):
