@@ -116,6 +116,8 @@ class ApprovedTask(TypedDict):
     needs_fetch: bool  # the run is remote and not yet fetched; False without a run
     merged: bool  # the task's PR has merged into the level branch; it still awaits its land
     land_manual: NotRequired[bool]  # the repo sets `land: manual`: a person merges the PR, so no land is planned for the task
+    branch_merged: NotRequired[bool]  # the task's commit, or one with its patch id, is on its phase or pr branch; absent is False
+    land_at: NotRequired[str]  # where the task's work lands: ticket, level or task; absent is task
 
 
 class LandingFact(TypedDict):
@@ -524,6 +526,13 @@ class LandFailStreak(TypedDict):
     ticks: int
 
 
+class WronglyReleased(TypedDict):
+    """A task the approval hold released while its work was merged on its phase branch."""
+
+    initiative: str
+    task_id: str
+
+
 class Facts(TypedDict):
     lease: LeaseFacts
     limits: LimitsFacts
@@ -575,6 +584,7 @@ class Facts(TypedDict):
     # Keyed `<candidate>|<other>`: the count of consecutive prior deferrals for that ordered pair; absent means 0.
     steer_streaks: NotRequired[dict[str, int]]
     approval_holds: NotRequired[list[ApprovalHold]]  # absent means none
+    wrongly_released: NotRequired[list[WronglyReleased]]  # tasks the hold released while merged on their phase branch; absent means none
     approval_hold_ticks: NotRequired[int]  # the hold limit in ticks; absent means 6
     steer_policy: NotRequired[SteerPolicy]  # absent means strict: limit 1, no serial paths
     # Each initiative's newest waiting row as `<phase>|<quarantined>|<awaiting_land>`, until a later launch of it.
@@ -641,6 +651,7 @@ ActionKind = Literal[
     "housekeeping",
     "stale_to_draft",
     "release_approvals",
+    "restore_approvals",
     "mark_lost",
     "check_login",
     "probe_host",
@@ -690,7 +701,9 @@ class Action(TypedDict, total=False):
     revert_land carries initiative, phase, repo, pr, commit and reason.
     rerun_main carries initiative, phase, repo and commit.
     widen_ticket carries initiative, task_id, paths, additions and reason. release_approvals carries initiative,
-    task_ids and reason and runs no command: the tickets go back to ready. partial_land carries initiative, phase,
+    task_ids and reason and runs no command: the tickets go back to ready. restore_approvals carries initiative, task_ids
+    and reason like release_approvals: the tasks the hold wrongly released go back to approved; it is planned only,
+    and executing it is a later task. partial_land carries initiative, phase,
     task_ids and quarantined: the approved tasks of a phase whose other tasks are all quarantined, done or dropped;
     the plan adds repo, task_runs and run (the newest of task_runs) for the loop's task lands. land_batch carries sources,
     batch_size and wait_s: the phases the merge queue lands together. A relaunch_loop needs_chair carries
