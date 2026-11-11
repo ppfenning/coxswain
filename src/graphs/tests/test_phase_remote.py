@@ -11,6 +11,7 @@ from harness.phase_remote import (
     FetchOutcome,
     Kind,
     fetch_branch,
+    fetch_branch_tip,
     materialise_local,
     missing_branch_cause,
     push_branch,
@@ -164,6 +165,43 @@ def test_a_failed_fetch_of_a_branch_origin_holds_is_fetch_failed(
     git("remote", "add", "origin", str(origin), cwd=other)
     failing_fetch(monkeypatch, 1)
     assert fetch_branch(other, PHASE) == FetchOutcome(Kind.FETCH_FAILED, "fatal: transient failure")
+
+
+def test_a_stale_local_branch_is_refreshed_from_origin(tmp_path: Path) -> None:
+    repo, origin = with_origin(tmp_path)
+    push_branch(repo, PHASE)
+    git("clone", "-q", str(origin), "other", cwd=tmp_path)
+    other = tmp_path / "other"
+    git("checkout", "-q", PHASE, cwd=other)
+    stale = git("rev-parse", f"refs/heads/{PHASE}", cwd=other)
+    git("checkout", "-q", PHASE, cwd=repo)
+    (repo / "b.txt").write_text("b\n")
+    git("add", "b.txt", cwd=repo)
+    git("commit", "-q", "-m", "ahead", cwd=repo)
+    push_branch(repo, PHASE)
+    assert fetch_branch_tip(other, PHASE) == FetchOutcome(Kind.FETCHED)
+    new_tip = git("rev-parse", f"refs/heads/{PHASE}", cwd=origin)
+    assert git("rev-parse", f"refs/remotes/origin/{PHASE}", cwd=other) == new_tip
+    assert new_tip != stale
+    assert git("rev-parse", f"refs/heads/{PHASE}", cwd=other) == stale
+
+
+def test_a_repo_with_no_origin_has_no_tip_to_fetch(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path / "repo")
+    assert fetch_branch_tip(repo, PHASE).kind == Kind.MISSING_EVERYWHERE
+
+
+def test_an_origin_without_the_branch_is_missing_for_a_tip_fetch(tmp_path: Path) -> None:
+    repo, _ = with_origin(tmp_path)
+    assert fetch_branch_tip(repo, ABSENT).kind == Kind.MISSING_EVERYWHERE
+
+
+def test_an_unreadable_origin_is_fetch_failed_for_a_tip_fetch(tmp_path: Path) -> None:
+    repo, _ = with_origin(tmp_path)
+    break_origin(repo, tmp_path)
+    outcome = fetch_branch_tip(repo, PHASE)
+    assert outcome.kind == Kind.FETCH_FAILED
+    assert outcome.detail != ""
 
 
 def test_missing_branch_cause_names_the_branch() -> None:
