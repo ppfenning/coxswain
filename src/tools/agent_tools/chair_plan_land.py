@@ -7,7 +7,7 @@ from agent_tools.chair_land_backoff import suppressing
 from agent_tools.chair_land_conflict import standing
 from agent_tools.chair_plan_partial import partial_land_action
 from agent_tools.chair_steward import event_key
-from agent_tools.chair_types import Action, ApprovedTask, Facts, InitiativeFacts
+from agent_tools.chair_types import Action, ApprovedTask, Facts, InitiativeFacts, MergeQueueFacts
 from core.landing import phase_merge_ready
 
 
@@ -291,7 +291,31 @@ def plan_lands(facts: Facts, now: datetime | None = None) -> list[Action]:
             "kind": "land_phase", "initiative": initiative, "phase": phase, "repo": repo, "run": run, "epoch": None,
             "task_runs": task_runs,
         })
-    return actions + _partial_lands(facts, frozenset(_land_groups(facts)), now)
+    return _batched(actions, facts.get("merge_queue")) + _partial_lands(facts, frozenset(_land_groups(facts)), now)
+
+
+def _batched(actions: list[Action], queue: MergeQueueFacts | None) -> list[Action]:
+    """With the queue on, each repo's land_phase actions become one land_batch at the place its first stood; off, `actions` as is."""
+    if queue is None:
+        return actions
+    phases = [(i, a) for i, a in enumerate(actions) if a["kind"] == "land_phase"]
+    first = {a["repo"]: i for i, a in reversed(phases)}  # reversed, so the earliest index wins
+    sources = {
+        repo: [
+            {"initiative": a["initiative"], "phase": a["phase"], "run": a["run"], "task_runs": a["task_runs"]}
+            for _, a in phases if a["repo"] == repo
+        ]
+        for repo in first
+    }
+    return [
+        {
+            "kind": "land_batch", "repo": a["repo"], "sources": sources[a["repo"]],
+            "batch_size": queue["batch_size"], "wait_s": queue["wait_s"], "epoch": None,
+        }  # type: ignore[typeddict-item]
+        if a["kind"] == "land_phase" else a
+        for i, a in enumerate(actions)
+        if a["kind"] != "land_phase" or first[a["repo"]] == i
+    ]
 
 
 def _partial_lands(facts: Facts, whole: frozenset[tuple[str, str]], now: datetime | None = None) -> list[Action]:
