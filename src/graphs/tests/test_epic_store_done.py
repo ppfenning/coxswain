@@ -30,7 +30,8 @@ def _ctx(store_conn, root: Path, **more):
     fields = {
         "store": Store(store_conn), "initiative_id": INITIATIVE, "run_id": "run-1", "work_state": "store",
         "epoch": None, "cartridge": {}, "runner": None, "retry": epic._StoreRetry(), "repo": root,
-        "items_lock": threading.Lock(), "launched": {},
+        "items_lock": threading.Lock(), "launched": {}, "default_ref": "main", "runs_dir": root.parent / "runs",
+        "phase_worktree": staticmethod(lambda phase: root),
         "phase_branch": staticmethod(lambda phase: "main"), "scratch_branch": staticmethod(lambda task: f"scratch/{task}"),
         **more,
     }  # fmt: skip
@@ -77,28 +78,22 @@ def test_a_task_done_in_the_store_is_adopted_not_quarantined(store_conn, tmp_pat
     items = [_stale("t1")]
     _put(ctx.store, INITIATIVE, items[0], "done", MISSING)
     before = _row(ctx.store, INITIATIVE, "t1")
-    quarantined: list = []
-    epic._quarantine_missing_merges(ctx, "p1", items, quarantined)
-    assert quarantined == []
+    epic._carry_missing_merges(ctx, "p1", items)
     assert (items[0]["state"], items[0]["merged"]) == ("done", True)
     assert _row(ctx.store, INITIATIVE, "t1") == before
     assert before["state"] == "done"
 
 
-def test_a_row_still_approved_with_a_missing_commit_is_quarantined_as_before(store_conn, tmp_path):
+def test_a_row_still_approved_with_a_missing_commit_goes_back_to_ready(store_conn, tmp_path):
     ctx = _ctx(store_conn, _repo(tmp_path))
     items = [_stale("t1")]
     _put(ctx.store, INITIATIVE, items[0], "approved", MISSING)
-    quarantined: list = []
-    epic._quarantine_missing_merges(ctx, "p1", items, quarantined)
-    assert [q["id"] for q in quarantined] == ["t1"]
-    assert quarantined[0]["reason"] == (
-        f"merged commit {MISSING} is not on main; t1 was approved and merged by an earlier run and is not rebuilt"
-    )
-    assert _row(ctx.store, INITIATIVE, "t1")["state"] == "quarantined"
+    epic._carry_missing_merges(ctx, "p1", items)
+    assert (items[0]["state"], items[0]["rebuild_reason"]) == ("ready", "commit not found")
+    assert _row(ctx.store, INITIATIVE, "t1")["state"] == "ready"
 
 
-def test_a_store_read_error_leaves_the_quarantine_in_place(store_conn, tmp_path, monkeypatch):
+def test_a_store_read_error_never_quarantines_and_cas_adopts_done(store_conn, tmp_path, monkeypatch):
     ctx = _ctx(store_conn, _repo(tmp_path))
     items = [_stale("t1")]
     _put(ctx.store, INITIATIVE, items[0], "done", MISSING)
@@ -107,9 +102,9 @@ def test_a_store_read_error_leaves_the_quarantine_in_place(store_conn, tmp_path,
         raise RuntimeError("store down")
 
     monkeypatch.setattr(read, "work_items", boom)
-    quarantined: list = []
-    epic._quarantine_missing_merges(ctx, "p1", items, quarantined)
-    assert [q["id"] for q in quarantined] == ["t1"]
+    epic._carry_missing_merges(ctx, "p1", items)
+    # The row read failed, so the task was sent to ready; the store's compare-and-set refused and adopted done.
+    assert items[0]["state"] == "done"
 
 
 def test_store_fresh_takes_only_done_rows_and_copies_its_input():

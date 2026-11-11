@@ -21,7 +21,8 @@ def _ctx(store_conn, repo: Path):
     fields = {
         "store": Store(store_conn), "initiative_id": INITIATIVE, "run_id": "run-1", "work_state": "store",
         "epoch": None, "cartridge": {}, "runner": None, "retry": epic._StoreRetry(), "repo": repo,
-        "items_lock": threading.Lock(),
+        "items_lock": threading.Lock(), "default_ref": "main", "runs_dir": repo.parent / "runs",
+        "phase_worktree": staticmethod(lambda phase: repo),
         "phase_branch": staticmethod(lambda phase: "main"), "scratch_branch": staticmethod(lambda task: f"scratch/{task}"),
     }  # fmt: skip
     return type("Ctx", (), fields)()
@@ -98,13 +99,12 @@ def test_a_restart_skips_merged_tasks_and_expects_their_commit_on_the_branch(sto
         _merge_in_run_n(ctx, item, second if item["id"] == "t2" else first, monkeypatch)
     restart = _files(tmp_path, ("t1", []), ("t2", []))
     epic._mirror_read(ctx, restart)
-    quarantined: list = []
-    epic._quarantine_missing_merges(ctx, "p1", restart, quarantined)
-    assert (_ready(restart), quarantined) == ([], [])
+    epic._carry_missing_merges(ctx, "p1", restart)
+    assert _ready(restart) == []
     assert [i["state"] for i in restart] == ["approved", "approved"]
 
 
-def test_one_missing_commit_quarantines_that_task_and_leaves_the_others_merged(store_conn, tmp_path, monkeypatch):
+def test_one_missing_commit_goes_back_to_ready_and_leaves_the_others_merged(store_conn, tmp_path, monkeypatch):
     repo, (first, second) = _repo(tmp_path)
     ctx = _ctx(store_conn, repo)
     items = _files(tmp_path, ("t1", []), ("t2", []), ("t3", []))
@@ -114,15 +114,13 @@ def test_one_missing_commit_quarantines_that_task_and_leaves_the_others_merged(s
     before = {r["task_id"]: r for r in read.work_items(store_conn, INITIATIVE)}
     restart = _files(tmp_path, ("t1", []), ("t2", []), ("t3", []))
     epic._mirror_read(ctx, restart)
-    quarantined: list = []
-    epic._quarantine_missing_merges(ctx, "p1", restart, quarantined)
+    epic._carry_missing_merges(ctx, "p1", restart)
     after = {r["task_id"]: r for r in read.work_items(store_conn, INITIATIVE)}
-    assert [q["id"] for q in quarantined] == ["t2"]
-    assert f"merged commit {'0' * 40} is not on main" in quarantined[0]["reason"]
-    assert after["t2"]["state"] == "quarantined"
+    assert after["t2"]["state"] == "ready"
+    assert restart[1]["rebuild_reason"] == "commit not found"
     for kept in ("t1", "t3"):
         assert after[kept] == before[kept]
-    assert _ready(restart) == []
+    assert _ready(restart) == ["t2"]
 
 
 def _twin_repo(tmp_path: Path) -> tuple[Path, str]:
@@ -161,10 +159,8 @@ def test_a_rebased_twin_of_the_merged_commit_is_not_quarantined(store_conn, tmp_
     before = {r["task_id"]: r for r in read.work_items(store_conn, INITIATIVE)}
     restart = _files(tmp_path, ("t1", []))
     epic._mirror_read(ctx, restart)
-    quarantined: list = []
-    epic._quarantine_missing_merges(ctx, "p1", restart, quarantined)
+    epic._carry_missing_merges(ctx, "p1", restart)
     after = {r["task_id"]: r for r in read.work_items(store_conn, INITIATIVE)}
-    assert quarantined == []
     assert (restart[0]["state"], restart[0]["merged"]) == ("approved", True)
     assert after == before
 

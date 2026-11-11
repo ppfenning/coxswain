@@ -76,8 +76,9 @@ from graphs._contract import proposal
 from graphs.delivery import rescue_review
 from graphs.delivery.budget_estimate import estimate_budget
 from graphs.delivery.lifecycle_propose import DEFAULT_FIX_ATTEMPTS
-from harness import pool_edge, rescue_checks, rescue_select, termination, warm_pool, work_mirror
+from harness import carry, carry_git, pool_edge, rescue_checks, rescue_select, termination, warm_pool, work_mirror
 from harness.assembly import assemble
+from harness.assembly import git as git_in
 from harness.autonomy import split_by_policy
 from harness.base_check import Expected, expected_merges, gaps, stale_base_stop
 from harness.base_sync import fetch_origin, merge_in
@@ -3173,44 +3174,178 @@ def _ready_view(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _merge_missing(ctx: _Ctx, phase: str, item: dict[str, Any]) -> str | None:
-    """Why an approved, merged task of this phase cannot be resumed from the store, or None when its commit is on the phase branch.
+def _first_parent_twins(repo: Path, commit: str, ref: str) -> list[str]:
+    """Commits of `ref` with the patch-id of `commit^1..commit`, in log order.
+
+    A merge commit is compared by its first-parent diff, the change the driver's --no-ff merge brought in.
+    """
+    code, line = git_in(repo, "rev-list", "--parents", "-n", "1", commit)
+    parts = line.split()
+    if code != 0 or len(parts) < 2:
+        return []
+    full, first = parts[0], parts[1]
+    fmt = "--format=commit %H"
+    code, mine = git_in(repo, "log", "-p", "--diff-merges=first-parent", "-n", "1", fmt, full)
+    code_base, base = git_in(repo, "log", "-p", "--diff-merges=first-parent", fmt, f"{first}..{ref}")
+    if code != 0 or code_base != 0:
+        return []
+    ids = carry_git.patch_ids(repo, f"{mine}\n{base}\n")
+    return [sha for sha, pid in ids.items() if full in ids and pid == ids[full] and sha != full]
+
+
+def _first_parent_twin(repo: Path, commit: str, base_ref: str) -> int | None:
+    """Pull request number of a `base_ref` commit with the patch-id of `commit^1..commit`, or None."""
+    for sha in _first_parent_twins(repo, commit, base_ref):
+        code, subject = git_in(repo, "log", "-n", "1", "--format=%s", sha)
+        number = carry_git.pull_request_number(subject) if code == 0 else None
+        if number is not None:
+            return number
+    return None
+
+
+def _cherry_pick_first_parent(worktree: Path, commit: str) -> tuple[bool, str]:
+    """Edge. (True, new head) or (False, cause). `carry_git.cherry_pick` has no -m, which a merge commit needs."""
+    mainline = ["-m", "1"] if git_in(worktree, "rev-list", "--merges", "-n", "1", f"{commit}^!")[1].strip() else []
+    code, out = git_in(worktree, *_IDENTITY, "cherry-pick", *mainline, commit)
+    if code == 0:
+        return True, git_in(worktree, "rev-parse", "HEAD")[1].strip()
+    _, listing = git_in(worktree, "diff", "--name-only", "--diff-filter=U")
+    git_in(worktree, "cherry-pick", "--abort")
+    return False, carry_git.conflict_cause(commit, listing.splitlines(), out)
+
+
+def _fetch_source(repo: Path, commit: str) -> str | None:
+    """Where the commit came from: `local` when present, else the first remote that supplies it; None when none does."""
+    if carry_git.has_commit(repo, commit):
+        return "local"
+    _, remotes = git_in(repo, "remote")
+    named = [("origin", ()), *((r, (r,)) for r in remotes.split() if r != "origin")]
+    return next((name for name, sources in named if carry_git.fetch_commit(repo, commit, "agents", sources)), None)
+
+
+def _carry_outcome(ctx: _Ctx, phase: str, item: Mapping[str, Any], claimed: frozenset[str]) -> carry.Outcome:
+    """Edge. Gather the facts `carry.next_step` asks for, one probe at a time, and return what `carry.decide` says."""
+    repo, worktree, commit = ctx.repo, ctx.phase_worktree(phase), str(item["merged_commit"])
+    facts = carry.Facts(str(item["id"]), commit, on_phase_branch=False)  # the caller found it missing
+    while (probe := carry.next_step(facts)) is not None:
+        if probe == "claimed":
+            facts = replace(facts, claimed_by_active_land=facts.task_id in claimed)
+        elif probe == "landed_on_base":
+            number = _first_parent_twin(repo, commit, ctx.default_ref)
+            facts = replace(facts, base=carry.NotOnBase() if number is None else carry.OnBase(number))
+        elif probe == "fetch":
+            source = _fetch_source(repo, commit)
+            facts = replace(facts, fetch=carry.NotFetched() if source is None else carry.Fetched(source))
+        else:
+            merged = git_in(worktree, "merge-tree", "--write-tree", f"--merge-base={commit}^1", "HEAD", commit)
+            facts = replace(facts, applies_cleanly=merged[0] == 0)
+    return carry.decide(facts) or carry.Skip()
+
+
+def _note_on_task(ctx: _Ctx, phase: str, task: str, fields: Mapping[str, Any]) -> None:
+    """Put `fields` on this run's task record, as `_record_task_cause` does. A failure is a warning, never a block."""
+    try:
+        saved = load_result(ctx.runs_dir, ctx.run_id, phase, task) or {
+            "ticket": task,
+            "initiative": ctx.initiative_id,
+            "phase": phase,
+        }
+        _save_result(ctx, {**saved, **fields}, phase=phase, task=task)
+    except Exception as exc:
+        _log.warning("%s not recorded on the task record of %s/%s/%s: %r", sorted(fields), ctx.run_id, phase, task, exc)
+
+
+def _apply_carry(ctx: _Ctx, phase: str, item: dict[str, Any], outcome: carry.Outcome) -> None:
+    """Apply one outcome to one task, under the leader check. The single writer of what a carry changes."""
+    task = str(item["id"])
+    stale = _fenced(ctx)
+    if stale is not None:
+        _log.warning("carry of %s not applied: %s", task, stale)
+        return
+    if isinstance(outcome, carry.Carry):
+        # The compare before the write: the row is read again now, and the branch moves only for a row still approved.
+        rows = _read_store_rows(ctx)
+        row = next((r for r in rows or () if r["task_id"] == task), None)
+        if row is None or row.get("state") != "approved":
+            _log.warning("carry of %s not applied: its row is %s, or the store could not be read", task, row and row.get("state"))
+            (fresh,) = _store_fresh([item], rows)
+            if fresh["state"] == "done":
+                with ctx.items_lock:
+                    item.update({k: fresh[k] for k in ("state", "merged", "merged_commit")})
+            return
+        # A start that picked this change and died before the store write left it on the branch: adopt it, do not pick twice.
+        twins = _first_parent_twins(ctx.repo, str(item["merged_commit"]), ctx.phase_branch(phase))
+        if twins:
+            picked, head = True, twins[0]
+        else:
+            picked, head = _cherry_pick_first_parent(ctx.phase_worktree(phase), str(item["merged_commit"]))
+        if not picked:
+            outcome = carry.Rebuild(f"{carry.REASON_DOES_NOT_APPLY}: {head}")
+        else:
+            record = carry.carried_from_record(outcome)
+            try:
+                ctx.retry.write(
+                    lambda: record_merge(ctx.store.conn, ctx.initiative_id, task, head, _now(), _mirror_by(ctx)),
+                    _END_WRITE_WINDOW_S,
+                )
+            except Exception as exc:
+                _log.warning("carried head %s of %s not stored: %s: %s", head, task, type(exc).__name__, exc)
+            with ctx.items_lock:
+                item["merged_commit"], item["carried_from"] = head, record
+            _note_on_task(ctx, phase, task, {"carried_from": record})
+            print(f"  {task}: carried {record['commit'][:12]} from {record['fetched_from']} onto {ctx.phase_branch(phase)}")
+    if isinstance(outcome, carry.MarkDone):
+        with ctx.items_lock:
+            refused = _store_first(ctx, item, "done")
+            if refused is None:
+                item["state"] = "done"
+        if refused is None:
+            _note_on_task(ctx, phase, task, {"landed": {"pr": str(outcome.pr_number), "at": _now()}})
+            print(f"  {task}: already on {ctx.default_ref} as pull request {outcome.pr_number}; marked done")
+    elif isinstance(outcome, carry.Rebuild):
+        with ctx.items_lock:
+            refused = _store_first(ctx, item, "ready")
+            if refused is None:
+                item.update({"state": "ready", "merged": False, "merged_commit": None, "rebuild_reason": outcome.reason})
+        if refused is None:
+            _note_on_task(ctx, phase, task, {"rebuild_reason": outcome.reason})
+            print(f"  {task}: not carried ({outcome.reason}); back to ready for a rebuild on the current base")
+
+
+def _carry_missing_merges(ctx: _Ctx, phase: str, items: Sequence[dict[str, Any]]) -> None:
+    """Carry each approved, merged task of this phase whose commit is not on the phase branch, one by one.
 
     Only the store carries `merged_commit`, so a task merged under files is never checked. A task whose row is now done,
-    landed by another machine, is adopted into `item` and is not missing.
+    landed by another machine, is adopted. Land claims are read once, here; a task an active land claims is left as it is.
+    No task is quarantined for a missing commit, and no attempt is spent.
     """
-    commit = item.get("merged_commit")
-    if not (_store_authoritative(ctx) and item.get("phase") == phase and item.get("state") == "approved" and commit):
-        return None
-    branch = ctx.phase_branch(phase)
-    if base_holds(ctx.repo, str(commit), branch):
-        return None
-    (fresh,) = _store_fresh([item], _read_store_rows(ctx))
-    if fresh["state"] == "done":
-        with ctx.items_lock:
-            item.update({k: fresh[k] for k in ("state", "merged", "merged_commit")})
-        return None
-    return f"merged commit {commit} is not on {branch}; {item['id']} was approved and merged by an earlier run and is not rebuilt"
-
-
-def _quarantine_missing_merges(
-    ctx: _Ctx, phase: str, items: Sequence[dict[str, Any]], quarantined: list[dict[str, Any]]
-) -> None:
-    """Quarantine each merged task whose commit is gone, one by one. No other item, row or file is touched."""
+    if not _store_authoritative(ctx):
+        return
     with ctx.items_lock:
-        by_id = {str(i["id"]): i for i in items}
-        snapshot = list(items)
-    for item in snapshot:
-        why = _merge_missing(ctx, phase, item)
-        if why is not None:
-            quarantined.append(
-                _quarantine_task(
-                    ctx, by_id, phase=phase, task=str(item["id"]), reason=why, kind="infra",
-                    cause=("harness", "merged commit missing"), approved_is_open=True,
-                )
-            )  # fmt: skip
+        merged = [i for i in items if i.get("phase") == phase and i.get("state") == "approved" and i.get("merged_commit")]
+    branch = ctx.phase_branch(phase)
+    missing = [i for i in merged if not base_holds(ctx.repo, str(i["merged_commit"]), branch)]
+    if not missing:
+        return
+    pending = []
+    for item, fresh in zip(missing, _store_fresh(missing, _read_store_rows(ctx)), strict=True):
+        if fresh["state"] == "done":
             with ctx.items_lock:
-                item["state"], item["merged"] = "quarantined", False
+                item.update({k: fresh[k] for k in ("state", "merged", "merged_commit")})
+        else:
+            pending.append(item)
+    if not pending:
+        return
+    try:
+        from harness import land_claims  # not module level: it imports store_read, see `_mirror_read`
+
+        claimed = land_claims.read_claimed_tasks(ctx.store.conn, ctx.initiative_id, datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    except Exception as exc:
+        # A claim that cannot be read is a claim that may exist: each pending task is left as it is, and the adopted ones above stand.
+        _log.warning("land claims not read for %s: %s: %s; no task carried", ctx.initiative_id, type(exc).__name__, exc)
+        return
+    for item in pending:
+        _apply_carry(ctx, phase, item, _carry_outcome(ctx, phase, item, claimed))
 
 
 def _stale_base_missing(ctx: _Ctx, phase: str, item: Mapping[str, Any]) -> tuple[str, ...]:
@@ -3565,9 +3700,9 @@ def _run_phase(
         ),
     )
 
-    # A task approved and merged in an earlier run is not rebuilt. Its commit must be on this phase's branch,
-    # and a task whose commit is gone is quarantined alone: no other task's row or state is touched.
-    _quarantine_missing_merges(ctx, phase, items, quarantined)
+    # A task approved and merged in an earlier run is not rebuilt. Its commit is carried onto this phase's branch;
+    # one that cannot be carried goes back to ready. It is never quarantined for a missing commit.
+    _carry_missing_merges(ctx, phase, items)
     with ctx.items_lock:
         handoffs = {str(i["id"]): i["handoff"] for i in items if i.get("handoff")}
 
