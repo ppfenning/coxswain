@@ -503,6 +503,8 @@ def checks_evidence(
         tail = f"\ncmd: {result.get('cmd')}\n{_tail_lines(body)}"
         carries_tail = always_tail or not result.get("passed")
         output = summary + tail if carries_tail else summary
+        if result.get("reused"):
+            output = f"{output}\n{result.get('excerpt') or 'reused: same tree and command passed earlier'}"
         if result.get("note"):
             output = f"{output}\n{result['note']}"
         if result.get("reused"):
