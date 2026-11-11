@@ -285,7 +285,7 @@ def _publish_branch(ctx: _Ctx, branch: str) -> str | None:
 
 
 def _fetch_phase_branches(ctx: _Ctx, branches: Sequence[str]) -> dict[str, FetchOutcome]:
-    """Make each of `branches` a plain local branch where origin holds it; a branch already local is left alone."""
+    """Make each of `branches` a plain local branch where origin holds it; a branch already local only moves forward."""
     outcomes: dict[str, FetchOutcome] = {}
     for branch in branches:
         outcome = fetch_branch(ctx.repo, branch)
@@ -321,6 +321,10 @@ def _fetch_or_stop(
     since that commit can only come from a parent's branch. A parent nothing is needed from is fetched, never demanded.
     """
     outcomes = _fetch_phase_branches(ctx, fetch)
+    # A diverged branch kept its local tip; the record names origin's side ref so the divergence is never silent.
+    diverged = [o.detail for o in outcomes.values() if o.kind == Kind.DIVERGED]
+    if diverged:
+        record["phase_branch_diverged"] = diverged
     unresolved = any(not _git("-C", str(ctx.repo), "rev-parse", "--verify", "--quiet", f"{r}^{{commit}}")[0] for r in loose)
     demanded = list(dict.fromkeys([*required, *(parent_branches if unresolved else [])]))
     outcomes = {b: _await_launched_branch(ctx, b, o) if b in demanded else o for b, o in outcomes.items()}
