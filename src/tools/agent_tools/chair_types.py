@@ -140,6 +140,14 @@ class ReviewPr(TypedDict):
     merged_at: str | None
 
 
+class MergedPr(TypedDict):
+    """A merged chair PR and the task ids its body carries."""
+
+    url: str
+    repo: str
+    task_ids: list[str]
+
+
 class CarryTask(TypedDict):
     """One approved task commit to cherry-pick; run_seq is higher for a newer run."""
 
@@ -587,6 +595,7 @@ class Facts(TypedDict):
     home: dict[str, str]
     run_hosts: NotRequired[dict[str, str]]  # run id to the host name that ran it; a local run is absent; absent means {}
     review_prs: NotRequired[list[ReviewPr]]  # approved tasks awaiting a review PR; absent means none
+    merged_prs: NotRequired[list[MergedPr]]  # merged chair PRs with the task ids their bodies carry; absent means none
     landing: NotRequired[list[LandingFact]]  # lands in progress on the land worker; absent means none
     running: NotRequired[list[RunningInitiative]]  # initiatives with a live lane on any machine; absent means none
     live_phases: NotRequired[list[LivePhase]]  # phases with their own live run; absent means no phase runs live
@@ -683,6 +692,7 @@ ActionKind = Literal[
     "unlaunched",
     "close_initiative",
     "finish_task",
+    "close_merged_task",
     "merge_level",
     "run_gate",
     "steward_event",
@@ -720,6 +730,7 @@ class Action(TypedDict, total=False):
     awaiting_land and runs no command. deferred carries initiative, phase and land_at and runs no command: the land waits for
     the granularity land_at names. unlaunched carries initiative and reason, runs no command and writes no row.
     close_initiative carries initiative and state (done or dropped).
+    close_merged_task carries initiative, task_id, pr (the merged PR's url) and repo; it is planned only, and executing it is a later task.
     The steward's actions each carry epic and topic (both the epic id) and fields. merge_level also carries level,
     the index of the level to merge, plus land_at (how the initiative lands) and phase (the level's phase name) as
     top-level keys, never inside fields, so the reported-set key is unchanged. run_gate carries no more. steward_event also carries event, the name to publish.
@@ -768,7 +779,7 @@ class Action(TypedDict, total=False):
     evidence: dict[str, object]  # a tune_lanes carries the stats and meter figures that justify the change
     proposals: list[dict[str, object]]  # a propose_tiers lists one entry per role
     body: str  # a propose_tiers carries the rendered inbox text
-    pr: int  # a revert_land names the pull request whose land turned main red
+    pr: int | str  # a revert_land names the number of the pull request whose land turned main red; a close_merged_task names the merged PR's url
     commit: str  # a revert_land names the new main commit of that land
     additions: list[str]  # a widen_ticket names the addition for each path, same order and length as paths
     state: str  # a close_initiative names the state to move the initiative to: done or dropped
