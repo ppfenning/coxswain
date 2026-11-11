@@ -53,6 +53,8 @@ _CROSS_REPO_CORRECTION = "paste the code the build needs into the ticket: a buil
 _SURFACE_MISSING_FIX = "add (new) after the path if the task creates it, otherwise correct the path"
 _NEW_SUFFIX = " (new)"
 _WRONG_REPO_FIX = "move the task to an initiative for that repository"
+_DEFAULT_MAX_FILES = 12
+_FILE_CAP_FIX = "split the task by directory or by layer, or state in the body why it cannot be split"
 _CONTRACT_CORRECTION = (
     "add a contract task in the producer repository that commits a JSON fixture of the interface, "
     "and add its id to this task's needs"
@@ -472,6 +474,15 @@ def _size_problems(tasks: Sequence[Mapping[str, Any]]) -> list[Problem]:
     return problems
 
 
+def _file_cap_problems(tasks: Sequence[Mapping[str, Any]], cap: int) -> list[Problem]:
+    """A task naming more surfaces than `cap` is flagged; `(new)` entries count, and the body never clears it."""
+    return [
+        Problem(str(task["id"]), "size", f"names {n} files, over the cap of {cap}", _FILE_CAP_FIX)
+        for task in tasks
+        if (n := len(task.get("surfaces") or [])) > cap
+    ]
+
+
 def _contract_flaws(contract: Mapping[str, Any], producer_repos: set[Any]) -> list[str]:
     has_json = any(str(s).removesuffix(_NEW_SUFFIX).endswith(".json") for s in contract.get("surfaces") or [])
     wrong_repo = bool(producer_repos) and contract.get("repo") not in producer_repos
@@ -531,6 +542,7 @@ def lint_tickets(
     *,
     reach_allow: Sequence[str] = (),
     texts: Mapping[str, str] | None = None,
+    max_files_per_task: int = _DEFAULT_MAX_FILES,
 ) -> list[Problem]:
     # ticket_references imports Problem from this module, so it is imported here to avoid a cycle.
     from graphs.delivery.ticket_references import references_problems
@@ -541,6 +553,7 @@ def lint_tickets(
         *_coupling_problems(fixed_tasks, tree),
         *_grant_problems(fixed_tasks, grants),
         *_size_problems(fixed_tasks),
+        *_file_cap_problems(fixed_tasks, max_files_per_task),
         *references_problems(fixed_tasks, tree, texts or {}),
         *_cross_repo_problems(fixed_tasks, tree, repo),
         *_surface_missing_problems(fixed_tasks, tree, repo),
