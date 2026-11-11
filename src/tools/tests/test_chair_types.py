@@ -45,6 +45,11 @@ def test_a_release_approvals_action_stamped_at_epoch_3_is_fenced_only_at_epoch_4
     assert (is_fenced(release, 3), is_fenced(release, 4)) == (False, True)
 
 
+def test_a_restore_approvals_action_stamped_at_epoch_3_is_fenced_only_at_epoch_4():
+    restore = stamp({"kind": "restore_approvals", "initiative": "i", "task_ids": ["t3"], "reason": "restoring"}, 3)
+    assert (is_fenced(restore, 3), is_fenced(restore, 4)) == (False, True)
+
+
 def test_a_tune_lanes_action_stamped_at_epoch_3_is_fenced_only_at_epoch_4():
     tune_lanes = stamp(
         {"kind": "tune_lanes", "host": "h1", "from_lanes": 2, "to_lanes": 3, "reason": "weekly use under pace", "evidence": {}},
