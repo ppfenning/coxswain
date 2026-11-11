@@ -3357,6 +3357,8 @@ Coxswain is in beta — versions may change between releases
       
         
       
+        
+      
     
     
     
@@ -3704,6 +3706,34 @@ Coxswain is in beta — versions may change between releases
     
   
     plan
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pr/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pr
   
 
     
@@ -6859,7 +6889,8 @@ options:
                      [--behind-limit BEHIND_LIMIT] [--base BASE]
                      [--worktree-root WORKTREE_ROOT] [--apply] [--no-merge]
                      [--runs-dir RUNS_DIR] [--profile PROFILE]
-                     [--gate {ticket,phase,epic,full}]
+                     [--gate {ticket,phase,epic,full}] [--wait-lock]
+                     [--wait-lock-timeout WAIT_LOCK_TIMEOUT]
                      run_id
 
 positional arguments:
@@ -6887,6 +6918,11 @@ options:
   --profile PROFILE
   --gate {ticket,phase,epic,full}
                         override the resolved gate level for this invocation
+  --wait-lock           when another land holds the repo lease, wait for it
+                        instead of refusing
+  --wait-lock-timeout WAIT_LOCK_TIMEOUT
+                        seconds --wait-lock waits before refusing (default
+                        600)
 </code></pre></div>
 <h2 id="land-batch">land-batch</h2>
 <div class="highlight"><pre><span></span><code>usage: cox runs land-batch [-h] --repo REPO [--label LABEL] [--source SOURCE]
