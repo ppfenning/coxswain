@@ -78,6 +78,24 @@ def fetch_branch(repo: Path, branch: str) -> FetchOutcome:
     return FetchOutcome(Kind.FETCH_FAILED, detail)
 
 
+def fetch_branch_tip(repo: Path, branch: str) -> FetchOutcome:
+    """Refresh refs/remotes/origin/<branch> from origin; never short-circuits on a local branch, which is the stale copy."""
+    ok, remotes = _remotes(repo)
+    if not ok:
+        return FetchOutcome(Kind.FETCH_FAILED, remotes[0])
+    if "origin" not in remotes:
+        return FetchOutcome(Kind.MISSING_EVERYWHERE)
+    code, detail = _run("fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}", cwd=repo)
+    if code == 0:
+        return FetchOutcome(Kind.FETCHED)
+    if code == _TIMED_OUT:
+        return FetchOutcome(Kind.FETCH_FAILED, detail)
+    probe, _ = _run("ls-remote", "--exit-code", "origin", f"refs/heads/{branch}", cwd=repo)
+    if probe == _LS_REMOTE_NO_MATCH:
+        return FetchOutcome(Kind.MISSING_EVERYWHERE)
+    return FetchOutcome(Kind.FETCH_FAILED, detail)
+
+
 def missing_branch_cause(branch: str, outcome: FetchOutcome) -> str:
     """The one-line stop cause for a phase branch that could not be found."""
     if outcome.kind == Kind.FETCH_FAILED:
