@@ -13,11 +13,13 @@ from pathlib import Path
 from typing import NamedTuple
 
 from agent_tools import (
+    chair_chat,
     chair_exec,
     chair_land,
     chair_report,
     chair_tick_status,
     chair_timing,
+    courier,
     dash_chair_action,
     land_limit,
     land_repo_lease,
@@ -49,13 +51,16 @@ from agent_tools.notify_dispatch import dispatch
 from agent_tools.notify_events import events_from_tick
 
 __all__ = [
-    "DEFAULT_INTERVAL", "FACTS_BOUND_SECONDS", "LAND_BEAT_INTERVAL", "RELEASE_HOLD_OFF_SECONDS", "TAKEOVER_GRACE_SECONDS", "GateState",
+    "CHAT_CONSUMER", "CHAT_REF", "DEFAULT_INTERVAL", "FACTS_BOUND_SECONDS", "LAND_BEAT_INTERVAL", "RELEASE_HOLD_OFF_SECONDS", "TAKEOVER_GRACE_SECONDS",
+    "ChatDeps", "GateState",
     "LeaseRejected", "OverrunState", "ReasonState", "ReleaseState", "RestartState", "RunDeps", "TickOverrun",
     "WorkerLands", "as_holder", "error_line", "finished_land", "land_sink", "next_gate_record", "no_landing", "no_lands_in_flight", "no_lands_to_stop", "overran",
-    "overrun_limit_hit", "overrun_line", "run", "tick", "tick_timed",
+    "overrun_limit_hit", "overrun_line", "run", "tick", "tick_timed", "unacked_chat",
 ]
 
 DEFAULT_INTERVAL = 60.0
+CHAT_CONSUMER = "chair"  # the consumer name the chair acks chat entries under
+CHAT_REF = courier.Reference("proposal", "chair-chat")  # every chat entry rides this reference; a chat names no work item
 PROFILE_STALE_NOTE = "profile re-read failed; keeping the last good profile"  # a segment of the one status line
 LAND_BEAT_INTERVAL = 30.0  # half a minute, so the chair lease is beaten at least once a minute while a land runs
 FACTS_BOUND_SECONDS = 180.0  # wall clock the facts stage may take before the tick is abandoned as an overrun
@@ -198,6 +203,18 @@ def overrun_line(bound: float, count: int, now: datetime) -> str:
 
 
 @dataclass(frozen=True)
+class ChatDeps:
+    """The edges of the directive step. `read` gives the courier's entries, latest state each; `save` also takes the epics
+    the tick saw, so a session can print them without the lease. `ack` marks one entry read by `CHAT_CONSUMER`."""
+
+    read: Callable[[], list[dict]]
+    load: Callable[[], chair_chat.DirectiveState]
+    save: Callable[[chair_chat.DirectiveState, list[dict]], None]
+    append: Callable[[dict], None]
+    ack: Callable[[str], object]
+
+
+@dataclass(frozen=True)
 class RunDeps:
     """`beat` renews the store lease; a lost renewal reaches the tick through the lease that `gather` reads next.
 
@@ -264,6 +281,8 @@ class RunDeps:
     release_requested: Callable[[], bool] | None = None
     release_state: ReleaseState = field(default_factory=ReleaseState)
     reason_state: ReasonState = field(default_factory=ReasonState)
+    # The chat edges; a live holder tick applies the directives a session sent since the last one. None skips the step.
+    chat: ChatDeps | None = None
 
 
 def finished_land(action: Action, outcome: chair_land.LandResult[Result] | None) -> Result:
@@ -565,6 +584,93 @@ def _gather_bounded(deps: RunDeps, sources: dict[str, float], now: datetime, clo
     return result
 
 
+def unacked_chat(entries: Sequence[dict]) -> list[dict]:
+    """The entries addressed to the chair on the chat topic that `CHAT_CONSUMER` has not acked."""
+    return [
+        e for e in entries
+        if e.get("to") == "chair" and e.get("topic") == chair_chat.LABEL
+        and not e.get("ack") and CHAT_CONSUMER not in e.get("acks", [])
+    ]
+
+
+def _as_steward_actions(actions: Sequence[Action]) -> list[chair_chat.StewardAction]:
+    """The planned actions in the shape `chair_chat.answer` reads: kind, the epic as topic, and scalar fields as strings."""
+    scalar = (str, int, float, bool)
+    skipped = ("kind", "epic", "initiative", "epoch", "fields")
+    return [
+        {
+            "kind": a["kind"],
+            "topic": str(a.get("epic") or a.get("initiative") or ""),
+            "fields": {
+                **{k: str(v) for k, v in a.items() if k not in skipped and isinstance(v, scalar)},
+                **{str(k): str(v) for k, v in (a.get("fields") or {}).items()},
+            },
+            "key": str(a.get("key", "")),
+            **({"event": str(a["event"])} if a.get("event") else {}),
+        }
+        for a in actions
+    ]
+
+
+def _epic_snapshot(epics: Sequence[dict]) -> list[dict]:
+    return [{"epic_id": e["epic_id"], "levels": e["levels"], "exited": e["exited"]} for e in epics]
+
+
+def _event_entry(event: dict[str, object]) -> dict:
+    """A courier entry for one event `apply_directives` returned, addressed to the session that sent the directive.
+
+    The id is the directive's id plus the event name, so a repeat of the step folds into the same entry."""
+    fields = {str(k): str(v) for k, v in dict(event["fields"]).items()}  # type: ignore[call-overload]
+    name = str(event["event"])
+    return courier.send(
+        CHAT_REF, "chair", fields.get("sender", "session"), f"{name}: {fields.get('kind', '')}",
+        f"{fields['id']}.{name}", event=name, fields=fields, topic=chair_chat.LABEL,
+    )
+
+
+def _answer_entry(message: chair_chat.ChatMessage, text: str) -> dict:
+    """The `chat_answer` entry for a question; its `question` field is the question's id, which `cox route chair converse ask` matches."""
+    return courier.send(
+        CHAT_REF, "chair", message["sender"], text, f"{message['id']}.answer",
+        event="chat_answer", fields={"question": message["id"], "kind": message["payload"].get("kind", "")}, topic=chair_chat.LABEL,
+    )
+
+
+def _chat_step(chat: ChatDeps, facts: Facts, actions: Sequence[Action], now: datetime) -> str:
+    """Edge. Apply the unacked directives, publish each event, persist the state, answer each question, then ack.
+
+    It reads the lease nowhere and writes it nowhere. An entry `parse_message` refuses is left unacked.
+    Events go out before the state is saved and entries are acked last, with ids derived from the entry's id.
+    A failure at any point leaves the entries unacked, so the next tick replays them and the repeats fold into the
+    same courier entries; saving first would instead record a directive as applied whose event was never published.
+    The returned note is "" when there was nothing to read."""
+    entries = unacked_chat(chat.read())
+    epics = list((facts.get("steward") or {}).get("epics", []))
+    state, events = chair_chat.apply_directives(chat.load(), entries, now.isoformat())
+    for event in events:
+        chat.append(_event_entry(event))
+    chat.save(state, _epic_snapshot(epics))
+    messages = [m for m in map(chair_chat.parse_message, entries) if m is not None]
+    questions = [m for m in messages if m["body_kind"] == "question"]
+    plan = _as_steward_actions(actions)
+    for question in questions:
+        chat.append(_answer_entry(question, chair_chat.answer(question["payload"], epics, plan)))
+    for message in messages:
+        chat.ack(message["id"])
+    applied = sum(1 for e in events if e["event"] == "directive_applied")
+    return f"chat: {applied} applied, {len(events) - applied} refused, {len(questions)} answered" if messages else ""
+
+
+def _directive_step(deps: RunDeps, acting: bool, facts: Facts, actions: Sequence[Action], now: datetime) -> str:
+    """The note of the chat step, or "" when it did not run. Only a holder's live tick runs it; a failure becomes a note, never a stop."""
+    if not acting or deps.chat is None:
+        return ""
+    try:
+        return _chat_step(deps.chat, facts, actions, now)
+    except Exception as exc:  # a broken chat file must not stop the chair's own work
+        return f"chat step failed: {exc}"
+
+
 def tick(deps: RunDeps, dry_run: bool, now: datetime) -> str:
     """The status line of one tick; `tick_timed` holds the rules and the stage seconds."""
     return tick_timed(deps, dry_run, now)[0]
@@ -608,6 +714,7 @@ def tick_timed(
     A paused CI gate holds lands and dependent relaunches and records one needs_chair when it first pauses. The pause
     is remembered after perform, and only by a tick that acts as the holder, so a tick that fails records it again.
     A live tick that changed rows hands their ids to `export_rows`; its note or failure is appended to the line.
+    A holder's live tick with `chat` set applies the directives sent since the last tick, before perform, and appends a note.
     The unlaunched reason lines of the plan are left on `deps.reason_state`, for a dry run as well.
     """
     deps.reason_state.lines = []
@@ -631,6 +738,7 @@ def tick_timed(
         planned = TickPlan(plain, ())
     deps.reason_state.lines = chair_report.unlaunched_lines(planned.actions, now)
     acting = not dry_run and all(a.get("kind") != "standby" for a in planned.actions)
+    chat_note = _directive_step(deps, acting, facts, planned.actions, now)
     notice = next_gate_record(deps.gate_state.paused, gate, planned.held_for_ci, deps.current_epoch()) if acting and gate.paused else None
     # Fresh lane checkout actions ride the planned list: perform records each needs_chair, and the notify step pushes it.
     # perform fences an action with no epoch, so each carries the current one.
@@ -652,6 +760,7 @@ def tick_timed(
         line = error_line(exc, now, results)
     line = f"{line} | {chair_exec.NOT_PROBED}" if dry_run else line
     line = f"{line} | {note}" if note else line
+    line = f"{line} | {chat_note}" if chat_note else line
     line = f"{line} | workspace pull failed: {pull_failure}" if pull_failure else line
     line = f"{line} | {PROFILE_STALE_NOTE}" if facts.get("profile_stale") else line
     pushed = _notify_step(deps, dry_run, facts, [*actions, *standing], now)
