@@ -17,19 +17,25 @@ def _limit(facts: Facts) -> int:
 
 
 def plan_release(facts: Facts) -> list[Action]:
-    """One release_approvals action per initiative with a hold at or above the limit; a merged task is never released."""
+    """One release_approvals action per initiative with a hold at or above the limit.
+
+    A task merged to main or its phase branch, or in a done phase waiting on a ticket or level landing, is never released."""
     limit = _limit(facts)
-    merged = {(t["initiative"], t["id"]) for t in facts.get("approved", []) if t["merged"]}
+    spared = {
+        (t["initiative"], t["id"]) for t in facts.get("approved", [])
+        if t["merged"] or t.get("branch_merged", False)
+        or (t.get("phase_done", False) and t.get("land_at", "task") in ("ticket", "level"))
+    }
     stuck = [
         h for h in facts.get("approval_holds", [])
-        if h["ticks"] >= limit and (h["initiative"], h["task_id"]) not in merged
+        if h["ticks"] >= limit and (h["initiative"], h["task_id"]) not in spared
     ]
     return [
         {
             "kind": "release_approvals",
             "initiative": initiative,
             "task_ids": [h["task_id"] for h in stuck if h["initiative"] == initiative],
-            "reason": f"approval unmerged for {limit} ticks; rebuild on the current main",
+            "reason": f"approval not merged to main or its phase branch for {limit} ticks; rebuild on the current main",
         }
         for initiative in dict.fromkeys(h["initiative"] for h in stuck)
     ]

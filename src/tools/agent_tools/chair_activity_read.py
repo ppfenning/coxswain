@@ -7,6 +7,7 @@ import json
 import re
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
+from typing import Literal, NamedTuple
 
 import yaml
 
@@ -149,6 +150,173 @@ def read_session_lines(projects_dir: Path, session: str) -> list[str]:
         return _read_lines(transcript)
     matches = sorted(Path(projects_dir).glob(f"*/{glob.escape(resolved)}.jsonl")) if status == "ok" else []
     return _read_lines(matches[0]) if matches else []
+
+
+class Entry(NamedTuple):
+    """One file as last read. `offset` is the byte after the last newline read; `lines` ends with an unterminated tail, so only `lines[:done]` is final. A meta file holds its parsed `meta` and no lines."""
+
+    size: int
+    mtime_ns: int
+    offset: int
+    lines: tuple[str, ...]
+    done: int
+    meta: dict | None = None
+
+
+Cache = Mapping[Path, Entry]
+Plan = Literal["keep", "append", "fresh", "drop"]
+
+
+def plan_read(prev: Entry | None, size: int | None, mtime_ns: int | None) -> Plan:
+    """What to do with a file given its last entry and its stat now. Same size with a new mtime is a rewrite."""
+    if size is None or mtime_ns is None:
+        return "drop"
+    if prev is None or size < prev.size:
+        return "fresh"
+    if size == prev.size:
+        return "keep" if mtime_ns == prev.mtime_ns else "fresh"
+    return "append"
+
+
+def extend_lines(final: tuple[str, ...], chunk: bytes) -> tuple[tuple[str, ...], int, int] | None:
+    """(lines, final count, bytes consumed) after adding `chunk` to the `final` lines; None when the chunk is not UTF-8. Bytes after the last newline are shown but not consumed."""
+    cut = chunk.rfind(b"\n") + 1
+    try:
+        head, tail = chunk[:cut].decode("utf-8"), chunk[cut:].decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    done = (*final, *head.splitlines())
+    return ((*done, *tail.splitlines()), len(done), cut)
+
+
+def _stat(path: Path) -> tuple[int, int] | None:
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_size, st.st_mtime_ns)
+
+
+def _read_from(path: Path, offset: int) -> bytes | None:
+    try:
+        with path.open("rb") as fh:
+            fh.seek(offset)
+            return fh.read()
+    except OSError:
+        return None
+
+
+def refresh_entry(
+    path: Path,
+    prev: Entry | None,
+    stat: Callable[[Path], tuple[int, int] | None] | None = None,
+    read_from: Callable[[Path, int], bytes | None] | None = None,
+) -> Entry | None:
+    """The entry for a transcript now, reading only what `plan_read` needs; None when it is gone or unreadable. An unchanged file is not opened."""
+    now = (stat or _stat)(path)
+    size, mtime_ns = now if now else (None, None)
+    plan = plan_read(prev, size, mtime_ns)
+    if plan == "drop" or now is None:
+        return None
+    if plan == "keep":
+        return prev
+    base = prev if plan == "append" and prev else None
+    offset = base.offset if base else 0
+    chunk = (read_from or _read_from)(path, offset)
+    if chunk is None:
+        return None
+    grown = extend_lines(base.lines[: base.done] if base else (), chunk)
+    if grown is None:
+        return Entry(now[0], now[1], 0, (), 0)
+    lines, done, consumed = grown
+    return Entry(now[0], now[1], offset + consumed, lines, done)
+
+
+def refresh_meta(
+    path: Path, prev: Entry | None, stat: Callable[[Path], tuple[int, int] | None] | None = None
+) -> Entry | None:
+    """The entry for an agent meta file now; it is parsed only when it is new or changed."""
+    now = (stat or _stat)(path)
+    plan = plan_read(prev, *(now or (None, None)))
+    if plan == "drop" or now is None:
+        return None
+    if plan == "keep":
+        return prev
+    return Entry(now[0], now[1], 0, (), 0, _parse_meta(_read_text(path)))
+
+
+def _refreshed(
+    paths: Iterable[Path], cache: Cache, refresh: Callable[[Path, Entry | None], Entry | None]
+) -> dict[Path, Entry]:
+    pairs = [(path, refresh(path, cache.get(path))) for path in paths]
+    return {path: entry for path, entry in pairs if entry is not None}
+
+
+def _agents_cached(metas: Iterable[Path], cache: Cache) -> tuple[dict[Path, Entry], list[dict]]:
+    """Cached counterpart of `_agents_from_metas`: the entries seen and the agents."""
+    metas_seen = _refreshed(metas, cache, refresh_meta)
+    valid = {
+        path: path.with_name(f"agent-{path.name.removeprefix('agent-').removesuffix('.meta.json')}.jsonl")
+        for path, entry in metas_seen.items()
+        if entry.meta is not None
+    }
+    lines_seen = _refreshed(valid.values(), cache, refresh_entry)
+    agents = [
+        {
+            "agent_id": path.name.removeprefix("agent-").removesuffix(".meta.json"),
+            "meta": metas_seen[path].meta,
+            "lines": list(lines_seen[jsonl].lines) if jsonl in lines_seen else [],
+        }
+        for path, jsonl in valid.items()
+    ]
+    return ({**metas_seen, **lines_seen}, sorted(agents, key=lambda a: a["agent_id"]))
+
+
+def read_project_sessions_cached(projects_dir: Path, workspace: Path, cache: Cache) -> tuple[Cache, list[dict]]:
+    """`read_project_sessions` past the `cache` of the last call: (new cache, sessions). A file that grew is read from its offset; the new cache holds only files seen now."""
+    folder = Path(projects_dir) / project_folder_name(workspace)
+    transcripts = [p for p in folder.glob("*.jsonl") if "." not in p.stem and p.is_file()]
+    lines_seen = _refreshed(transcripts, cache, refresh_entry)
+    per_agents = {
+        path: _agents_cached(folder.glob(f"{glob.escape(path.stem)}/subagents/agent-*.meta.json"), cache)
+        for path in transcripts
+    }
+    sessions = [
+        {
+            "session_id": path.stem,
+            "lines": list(lines_seen[path].lines) if path in lines_seen else [],
+            "agents": per_agents[path][1],
+        }
+        for path in transcripts
+    ]
+    seen = {k: v for entries, _ in per_agents.values() for k, v in entries.items()}
+    return ({**lines_seen, **seen}, sorted(sessions, key=lambda s: s["session_id"]))
+
+
+def read_session_lines_cached(projects_dir: Path, session: str, cache: Cache) -> tuple[Cache, list[str]]:
+    """`read_session_lines` past the `cache`: (new cache, lines)."""
+    status, resolved, transcript = _resolve(projects_dir, session)
+    matches = (
+        [transcript]
+        if transcript
+        else sorted(Path(projects_dir).glob(f"*/{glob.escape(resolved)}.jsonl"))
+        if status == "ok"
+        else []
+    )
+    seen = _refreshed(matches[:1], cache, refresh_entry)
+    return (seen, list(seen[matches[0]].lines) if matches and matches[0] in seen else [])
+
+
+def read_agents_cached(projects_dir: Path, session: str, cache: Cache) -> tuple[Cache, list[dict]]:
+    """`read_agents` past the `cache`: (new cache, agents)."""
+    _, resolved, transcript = _resolve(projects_dir, session)
+    pattern = f"*/{glob.escape(resolved)}/subagents/agent-*.meta.json"
+    metas = (
+        transcript.parent.glob(f"{glob.escape(transcript.stem)}/subagents/agent-*.meta.json")
+        if transcript
+        else (Path(projects_dir).glob(pattern) if resolved else [])
+    )
+    return _agents_cached(metas, cache)
 
 
 def session_status(projects_dir: Path, session: str) -> str:

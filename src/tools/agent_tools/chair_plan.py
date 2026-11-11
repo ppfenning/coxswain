@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 
 from agent_tools import (
     chair_approval_hold,
+    chair_approval_restore,
     chair_launch_why,
     chair_lease_refusal,
     chair_login_watch,
@@ -34,6 +35,7 @@ from agent_tools.chair_plan_fill import (
 )
 from agent_tools.chair_plan_land import backoff_held, fetch_action, newest_run, plan_finish, plan_lands
 from agent_tools.chair_plan_recover import (
+    STRANDED_CAUSE,
     _initiative_first_unmet_need,
     claimed_by,
     plan_lost_runs,
@@ -1067,10 +1069,11 @@ def _unlaunched_actions(
 
 
 def _unlocked(facts: Facts) -> tuple[Facts, list[Action]]:
-    """Facts without the approvals held past the limit, then without a steer cycle's non-live holders, and the releases."""
+    """Facts without the approvals held past the limit, then without a steer cycle's non-live holders, and the releases and restores."""
     # plan_release reads `merged` on every approved row before it looks at a hold, so it runs only when there is a hold.
     releases = chair_approval_hold.plan_release(facts) if facts.get("approval_holds") else []
-    return chair_steer_cycle.break_cycle(chair_approval_hold.without_released(facts, releases))[0], releases
+    restores = chair_approval_restore.not_released(chair_approval_restore.plan_restore(facts), releases)
+    return chair_steer_cycle.break_cycle(chair_approval_hold.without_released(facts, releases))[0], [*releases, *restores]
 
 
 def _planned_schedule(facts: Facts, now: datetime | None) -> Schedule | None:
@@ -1206,7 +1209,9 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         "recovery already holds it": frozenset(
             {a["initiative"] for a in capped if a["kind"] == "relaunch" or a["kind"] == "steer_clear" or _steer_deferred(a)}
         ),
-        "quarantined": frozenset(q["initiative"] for q in facts["quarantines"]),
+        # chair_facts imports this module, so STRANDED_CAUSE comes from chair_plan_recover, which holds the same value.
+        "quarantined": frozenset(q["initiative"] for q in facts["quarantines"] if q["cause"] != STRANDED_CAUSE),
+        "stranded": frozenset(q["initiative"] for q in facts["quarantines"] if q["cause"] == STRANDED_CAUSE),
         "its branches are not fetched": remote_unfetched,
         "its last run has not exited": not_exited,
         "its run is lost": lost,

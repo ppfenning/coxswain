@@ -111,3 +111,62 @@ def test_fingerprint_from_literals():
         "transcripts": (("/p/x/t.jsonl", (5, 6)),),
         "lane_traces": (),
     }
+
+
+def test_own_outputs_do_not_move_any_group(tree):
+    runs, projects, _ = tree
+    share = runs / ".dash-feed"
+    share.mkdir()
+    own = [share / "feed.snapshot", runs / "r1.progress.json"]
+    for path in own:
+        path.write_text("a")
+    before = inputs.probe(runs, projects)
+    for path in own:
+        path.write_text("bbb")
+        os.utime(path, ns=(9_000_000_000, 9_000_000_000))
+    assert inputs.probe(runs, projects) == before
+
+
+def test_the_ccusage_cache_stays_in_records_because_the_spend_section_reads_it(tree):
+    runs, projects, _ = tree
+    cache = runs / ".ccusage-block.json"
+    cache.write_text("{}")
+    assert inputs.classify(cache, runs, projects) == "records"
+    assert _moved(runs, projects, lambda: cache.write_text("{} ")) == {"records"}
+
+
+def test_the_walk_never_enters_the_share_dir_and_classifies_each_path_once(tree, monkeypatch):
+    runs, projects, _ = tree
+    (runs / ".dash-feed" / "deep").mkdir(parents=True)
+    (runs / ".dash-feed" / "deep" / "x.json").write_text("x")
+    visited, classified = [], []
+    real_walk, real_group_of = os.walk, inputs._group_of
+
+    def recording_walk(base):
+        for root, dirs, names in real_walk(base):
+            visited.append(root)
+            yield root, dirs, names
+
+    def counting_group_of(path, runs_prefix, projects_prefix):
+        classified.append(path)
+        return real_group_of(path, runs_prefix, projects_prefix)
+
+    monkeypatch.setattr(os, "walk", recording_walk)
+    monkeypatch.setattr(inputs, "_group_of", counting_group_of)
+    inputs.probe(runs, projects)
+    assert not [root for root in visited if ".dash-feed" in root]
+    assert str(runs / "r1-trace") in visited
+    assert len(classified) == len(set(classified)) == 5
+
+
+def test_a_postgres_store_takes_the_stamp_and_without_one_stays_none(tree):
+    runs, projects, _ = tree
+    assert inputs.probe(runs, projects, store_is_local_sqlite=False, store_stamp="s1")["store"] == "s1"
+    assert inputs.probe(runs, projects, store_is_local_sqlite=False)["store"] is None
+    assert inputs.probe(runs, projects, store_stamp="s1")["store"] != "s1"
+
+
+def test_fingerprint_stamp_from_literals():
+    runs, projects = Path("/r"), Path("/p")
+    assert inputs.fingerprint({}, runs, projects, False, 7)["store"] == 7
+    assert inputs.fingerprint({}, runs, projects, False)["store"] is None

@@ -26,6 +26,7 @@ from agent_tools import (
     chair,
     chair_apply_fetch,
     chair_apply_release,
+    chair_apply_restore,
     chair_apply_review,
     chair_apply_widen,
     chair_housekeeping,
@@ -47,6 +48,7 @@ from agent_tools import (
     remote_lane,
     repo_path,
     route,
+    route_edit,
     route_guard,
     run_store,
     stale_draft,
@@ -61,7 +63,7 @@ from agent_tools.chair_revert_exec import ForgePort as RevertForgePort
 from agent_tools.chair_revert_exec import GitPort as RevertGitPort
 from agent_tools.chair_schedule import SCHEDULE_FILE
 from agent_tools.chair_types import Action, LandTrigger, is_fenced
-from agent_tools.land import approve_to_done
+from agent_tools.land import LAND_CONFLICT_KEY, approve_to_done, conflict_note
 from agent_tools.remote_argv import LANE_HOST_TIMEOUT_S, probe_argv, ssh_argv, sync_argv
 
 __all__ = [
@@ -981,6 +983,18 @@ def _release_approvals(action: Action, deps: Deps) -> Result:
     return _result(action, "done", "; ".join([f"{reason}: {cause}" if cause else reason, *warnings]))
 
 
+def _restore_approvals(action: Action, deps: Deps) -> Result:
+    """In-process, with no argv; each restored ticket's `approved` is mirrored to the store, and the action's cause rides in the reason."""
+    initiative, task_ids, cause = action.get("initiative", ""), action.get("task_ids", []), action.get("reason", "")
+    if not initiative or not task_ids:
+        return _result(action, "refused", "restore_approvals needs an initiative and task_ids")
+    ok, reason = chair_apply_restore.apply_restore(deps.work_dir, initiative, task_ids, cause, deps.now()[:10])
+    if not ok:
+        return _result(action, "failed", reason)
+    warnings = [w for t in dict.fromkeys(task_ids) if (w := store_cli.mirror_state(deps.runs_dir, initiative, t, "approved", "chair")) is not None]
+    return _result(action, "done", "; ".join([f"{reason}: {cause}" if cause else reason, *warnings]))
+
+
 _CLOSE_STATES = ("done", "dropped")
 
 
@@ -1027,6 +1041,31 @@ def _finish_task(action: Action, deps: Deps) -> Result:
     if isinstance(written, store_cli.StateSet):
         return _result(action, "done", f"{task} done: {why}{_record_merged_pr(deps, repo, run, phase, task, branches)}")
     return _result(action, "failed", f"set-state done for {task}: {written}")
+
+
+def _requeue_task(action: Action, deps: Deps) -> Result:
+    """Edge. Mark an approved task's store row with `reason` as a rebuild marker, then set it ready; a task no longer approved is skipped."""
+    initiative, task = action.get("initiative", ""), action.get("task_id", "")
+    why = action.get("reason", "") or "requeued by the chair"
+    stored = next((r for r in run_store.read_queue(deps.runs_dir, initiative, kind="task") if r.get("task_id") == task), None)
+    if stored is None:
+        return _result(action, "failed", f"no store row for {task}")
+    if stored.get("state") != "approved":
+        return _result(action, "skipped", f"{task} is {stored.get('state')}, not approved")
+    key = {"initiative": initiative, "task_id": task}
+    marked = {"extra": {**(stored.get("extra") or {}), LAND_CONFLICT_KEY: why}, "body": route_edit.append_note(stored.get("body") or "", conflict_note(why))}
+    refused_row = run_store.upsert_row_detail(deps.runs_dir, {**key, **marked})
+    if refused_row:
+        return _result(action, "failed", f"the store did not take the reason of {task}: {refused_row}")
+    written = store_cli.set_state(deps.runs_dir, initiative, task, "ready", "chair-loop", "approved")
+    if isinstance(written, store_cli.StateSet):
+        return _result(action, "done", f"{task} requeued: {why}")
+    # The task is not ours to mark: put the row back as it was.
+    unrestored = run_store.upsert_row_detail(deps.runs_dir, {**key, "extra": stored.get("extra") or {}, "body": stored.get("body") or ""})
+    note = f"; the store did not put the row back: {unrestored}" if unrestored else ""
+    if isinstance(written, store_cli.StateRefused) and written.current not in (None, "approved") and not unrestored:
+        return _result(action, "skipped", f"{task} is {written.current}, not approved")
+    return _result(action, "failed", f"set-state ready for {task}: {written}{note}")
 
 
 def _record_merged_pr(deps: Deps, repo: str, run: str, phase: str, task: str, branches: list[str]) -> str:
@@ -1541,10 +1580,14 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
         return _widen_ticket(action, deps)
     if kind == "release_approvals":
         return _release_approvals(action, deps)
+    if kind == "restore_approvals":
+        return _restore_approvals(action, deps)
     if kind == "close_initiative":
         return _close_initiative(action, deps)
     if kind == "finish_task":
         return _finish_task(action, deps)
+    if kind == "requeue_task":
+        return _requeue_task(action, deps)
     if kind in ("merge_level", "run_gate"):
         return _steward_command(action, deps, blocked)
     if kind == "steward_event":
