@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
+import threading
 import uuid
+from collections.abc import Mapping
+from typing import NamedTuple
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import pytest
@@ -184,3 +187,64 @@ def _git_environment_is_hermetic(tmp_path_factory, monkeypatch) -> None:
     for role in ("AUTHOR", "COMMITTER"):
         monkeypatch.setenv(f"GIT_{role}_NAME", "t")
         monkeypatch.setenv(f"GIT_{role}_EMAIL", "t@invalid")
+
+
+GUARDED_MODULES = (
+    "test_epic_waves",
+    "test_epic_driver",
+    "test_lane_workers",
+    "test_epic_lane_workers",
+    "test_checks_workers",
+    "test_epic_timeouts",
+    "test_phase_runner",
+    "test_epic_stale_phase_worktree",
+    "test_epic_stale_base",
+    "test_epic_isolation",
+    "test_epic_phase_isolation",
+)
+
+
+class Snapshot(NamedTuple):
+    threads: frozenset[tuple[int, str]]  # (ident, name) of each live non-daemon thread
+    cwd: str
+    env: Mapping[str, str]
+
+
+def isolation_verdict(before: Snapshot, after: Snapshot) -> tuple[str, ...]:
+    """One finding per leaked thread, changed cwd and differing env var; `()` is a clean run."""
+    threads = tuple(f"thread {name!r} is still alive" for _, name in sorted(after.threads - before.threads))
+    cwd = (f"cwd changed from {before.cwd!r} to {after.cwd!r}",) if before.cwd != after.cwd else ()
+    env = tuple(
+        f"env {key} changed from {before.env.get(key)!r} to {after.env.get(key)!r}"
+        for key in sorted(before.env.keys() | after.env.keys())
+        if before.env.get(key) != after.env.get(key)
+    )
+    return (*threads, *cwd, *env)
+
+
+def _snapshot() -> Snapshot:
+    live = frozenset((t.ident or 0, t.name) for t in threading.enumerate() if t.is_alive() and not t.daemon)
+    try:
+        cwd = os.getcwd()
+    except OSError:  # the directory a test changed into was removed
+        cwd = "<deleted>"
+    # pytest rewrites PYTEST_CURRENT_TEST between setup and teardown; it is not the test's doing.
+    env = {k: v for k, v in os.environ.items() if k != "PYTEST_CURRENT_TEST"}
+    return Snapshot(live, cwd, env)
+
+
+@pytest.fixture(autouse=True)
+def _a_guarded_modules_leave_no_trace(request):
+    """A guarded module's test may not leave a non-daemon thread, a changed cwd or a different environment.
+
+    The name sorts first so pytest sets this fixture up before `monkeypatch` and tears it down after it:
+    a test's own `monkeypatch.setenv` is undone by the time the comparison runs.
+    """
+    if request.module.__name__.rsplit(".", 1)[-1] not in GUARDED_MODULES:
+        yield
+        return
+    before = _snapshot()
+    yield
+    findings = isolation_verdict(before, _snapshot())
+    if findings:
+        pytest.fail("test left state behind:\n" + "\n".join(findings), pytrace=False)
