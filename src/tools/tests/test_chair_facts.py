@@ -970,7 +970,8 @@ def _store_with_recorder(tmp_path, monkeypatch, at: datetime):
 def _planned_kinds(tmp_path, now: datetime) -> list[str]:
     """Facts through the planner's own read path, `read_chair_actions` under `windowed_actions`, then `plan_lands`."""
     actions = windowed_actions(lambda n: read_chair_actions(tmp_path, n), now)
-    facts = gather_facts(replace(_deps(), actions=actions), now)
+    # land_at level: an incomplete ticket epic plans no land, so it would leave the back-off nothing to hold off.
+    facts = gather_facts(replace(_deps(), actions=actions, land_at_values=lambda: {"i": "level"}), now)
     return [a["kind"] for a in plan_lands(facts, now)]
 
 

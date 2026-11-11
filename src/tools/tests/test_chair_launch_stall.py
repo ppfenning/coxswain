@@ -96,7 +96,10 @@ def test_a_launch_cap_of_zero_with_lanes_free_launches_nothing_and_every_initiat
 def test_a_land_backoff_holds_its_unstarted_initiative_and_the_four_lanes_still_fill():
     refusal = {"initiative": "i05", "phase": "p", "run": "i05-1", "attempts": 1, "last_refused_at": (_NOW - timedelta(minutes=5)).isoformat()}
     task = {**_CARRIED, "id": "t5", "initiative": "i05", "run": "i05-1", "needs_fetch": True}
-    unlaunched = _four_launch_and_none_overlap(_symptom(approved=[task], land_refusals=[refusal]), "i05")
+    facts = _symptom(approved=[task], land_refusals=[refusal])
+    # land_at level: an incomplete ticket epic plans no land, so there would be no backoff to hold i05.
+    facts["initiatives"] = [{**i, "land_at": "level"} if i["id"] == "i05" else i for i in facts["initiatives"]]
+    unlaunched = _four_launch_and_none_overlap(facts, "i05")
     assert "backoff" in unlaunched["i05"]
 
 
