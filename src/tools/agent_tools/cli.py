@@ -2126,7 +2126,8 @@ def _land_enrich(steps: list[dict], *, path: str, worktree_root: str, task_paths
                   item_path: str | None = None, workspace: str | None = None,
                   item_id: str | None = None, profile: str | None = None,
                   runs_dir: str | None = None, umbrella: str | None = None,
-                  task_items: dict[str, str] | None = None, store_runs_dir: str | None = None) -> list[dict]:
+                  task_items: dict[str, str] | None = None, store_runs_dir: str | None = None,
+                  check_paths: bool = False) -> list[dict]:
     """Steps enriched with what only the edge knows: each `mark_done`'s own
     record file path (`task_paths` maps task name to path in phase mode), and
     the configured worktree root for `clean`/`clean_phase`. `item_path` (task
@@ -2141,7 +2142,8 @@ def _land_enrich(steps: list[dict], *, path: str, worktree_root: str, task_paths
     and `runs_dir`, so the step reads the tracker from where the plan did.
     A `cherry_pick` or `squash_phase` step gets the profile's `umbrella_dir`
     as `umbrella` when set, for `.agent-generate`. A `mark_done` with `recorded` False has no record file: it
-    gets its store item and `store_runs_dir` instead of a `path`."""
+    gets its store item and `store_runs_dir` instead of a `path`. With `check_paths`, a `mark_done` whose path is
+    not a file becomes that store-only step when it has an item, else a `refuse` step naming the task and the path."""
     def enrich(step: dict) -> dict:
         if step["kind"] in ("cherry_pick", "squash_phase") and umbrella is not None:
             return {**step, "umbrella": umbrella}
@@ -2154,8 +2156,13 @@ def _land_enrich(steps: list[dict], *, path: str, worktree_root: str, task_paths
             item = (task_items or {}).get(step["task"])
             return {**step, "item": item, "from": "approved", "to": "done", "runs_dir": store_runs_dir}
         if step["kind"] == "mark_done":
-            marked = {**step, "path": (task_paths or {}).get(step["task"], path)}
+            resolved = (task_paths or {}).get(step["task"], path)
             item = item_path or (task_items or {}).get(step["task"])
+            if check_paths and not Path(resolved).is_file():  # a phase record that lives only in the store
+                if item is None:
+                    return {"kind": "refuse", "reason": f"{step['task']}: record {resolved} does not exist and the task has no approved item; nothing merged"}
+                return {**step, "recorded": False, "item": item, "from": "approved", "to": "done", "runs_dir": store_runs_dir}
+            marked = {**step, "path": resolved}
             return {**marked, "item": item, "from": "approved", "to": "done"} if item else marked
         if step["kind"] == "mark_merged":
             return {**step, "path": (task_paths or {}).get(step["task"], path), "runs_dir": store_runs_dir,
@@ -3956,8 +3963,10 @@ def _runs_land(a: argparse.Namespace) -> int:
             already_merged=already_merged, ticket_tasks=ticket_tasks, ticket_present=ticket_present,
             ticket_records=[r for r in earlier if r["task"] in ticket_present], ticket_unrecorded=ticket_unrecorded,
         )
-        steps = _land_enrich(plan_steps, path=searched, worktree_root=a.worktree_root, task_paths=task_paths,
-                              umbrella=profile.get("umbrella_dir"), store_runs_dir=str(runs_dir), task_items={**_phase_task_items(items), **ticket_items})
+        earlier_paths = {t: p for ph in phases if ph != phase for t, p in _land_phase_record(runs_dir, run_id, ph)[2].items()}
+        steps = _land_enrich(plan_steps, path=searched, worktree_root=a.worktree_root, task_paths={**earlier_paths, **task_paths},
+                              umbrella=profile.get("umbrella_dir"), store_runs_dir=str(runs_dir),
+                              task_items={**_phase_task_items(items), **ticket_items}, check_paths=True)
         lease_task = f"phase:{initiative}/{phase}"
     else:
         record, searched, count, source = _land_load(runs_dir, run_id, a.task)
