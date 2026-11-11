@@ -64,6 +64,7 @@ from agent_tools.chair_revert_exec import GitPort as RevertGitPort
 from agent_tools.chair_schedule import SCHEDULE_FILE
 from agent_tools.chair_types import Action, LandTrigger, is_fenced
 from agent_tools.land import LAND_CONFLICT_KEY, approve_to_done, conflict_note
+from agent_tools.land_batch_run import parse_lines
 from agent_tools.remote_argv import LANE_HOST_TIMEOUT_S, probe_argv, ssh_argv, sync_argv
 
 __all__ = [
@@ -113,6 +114,7 @@ class Result(TypedDict):
     commit: NotRequired[str]  # a landed land's origin/main commit, from land_commit; set only when landed() was True
     landed_commits: NotRequired[list[partial_land.LandedCommit]]  # a partial_land's every landed task commit, any status
     already_landed: NotRequired[bool]  # a land_phase whose phase branch is gone with every task done; never escalated
+    needs_chairs: NotRequired[list[Action]]  # a land_batch's returned sources, one needs_chair each, escalated in place of the generic one
 
 
 class LandSink(Protocol):
@@ -256,7 +258,7 @@ def stagger_seconds(value: object) -> float:
 
 
 _UNFENCED = ("standby", "take_lease", "steer_clear", "waiting", "deferred", "unlaunched")  # not writes, so a stale or missing epoch does not stop them
-_LAND_KINDS = ("land", "land_phase", "partial_land")  # a partial_land is a run of task lands, blocked and escalated as one
+_LAND_KINDS = ("land", "land_phase", "partial_land", "land_batch")  # a partial_land is a run of task lands, blocked and escalated as one; a land_batch lands several phases as one pull request
 _REASON_CAP = 600
 LOCAL_ARGV_TIMEOUT_S = 900.0  # a local argv with no bound of its own; matches _CHECK_COMMAND_TIMEOUT_S
 LAND_TIMEOUT_S = 45 * 60.0  # the overall bound on one `cox runs land`; it outlives the checks it runs
@@ -422,6 +424,13 @@ def argv_for(action: Action, initiative_id: str = "", ids_mode: str = "slug", la
         return ["cox", "runs", "land", run, "--task", task, "--repo", repo, "--apply", "--no-claim", *tag] if run and task and repo else None
     if kind == "land_phase":
         return ["cox", "runs", "land", run, "--phase", phase, "--repo", repo, "--apply", "--no-claim", *tag] if run and phase and repo else None
+    if kind == "land_batch":
+        sources = action.get("sources") or []
+        return [
+            "cox", "runs", "land-batch", "--repo", repo, "--apply", "--no-claim", *tag,
+            *(arg for s in sources for arg in ("--source", f"{s['initiative']}/{s['phase']}/{s['run']}")),
+            "--batch-size", str(action.get("batch_size", 1)), "--wait-s", str(action.get("wait_s", 0)),
+        ] if repo and sources else None
     if kind in ("fetch", "fetch_exit"):
         return ["cox", "runs", "fetch", run] if run else None
     if kind == "launch_decompose":
@@ -516,6 +525,61 @@ def land_outcome(action: Action, deps: Deps, code: int, output: str) -> Result:
     return _land_result(action, action.get("repo", ""), code, output)
 
 
+def _source_needs_chair(epoch: int, initiative: str, phase: str, detail: str) -> Action:
+    """The needs_chair for one source of a land_batch, built as `land_refusal` builds one (a non-zero exit, so never None) and carrying `detail`."""
+    refused = land_refusal({"initiative": initiative, "phase": phase, "epoch": epoch}, 1, detail)
+    assert refused is not None
+    return {**refused, "reason": detail}
+
+
+def _land_batch(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
+    """Run `cox runs land-batch` and read its lines: landed when any source landed, one needs_chair per returned source.
+
+    Only an exit 0 with deferred lines and nothing landed or returned is not_landed without escalation, and it
+    carries `needs_chairs: []` to say so. Any other result without a landed or returned line (a timeout, a crash,
+    empty output) is `failed` with no `needs_chairs` key, so `_escalations` raises a needs_chair for it."""
+    repo = action.get("repo", "")
+    argv = argv_for(action, label=deps.label)
+    if argv is None:
+        return _result(action, "refused", "land_batch needs a repo and at least one source")
+    if repo in blocked:
+        return _result(action, "skipped", f"an earlier land in {repo} ({blocked[repo].label}) was not counted")
+    code, output = _run_land(deps, argv)
+    if code == TIMED_OUT:
+        return _land_timed_out(action, argv)
+    if _repo_busy(output):
+        return _result(action, "busy", output)
+    parsed = parse_lines(output)
+    epoch = action.get("epoch", 0)
+    raised = [_source_needs_chair(epoch, *label.partition("/")[::2], detail) for label, detail in parsed.returned]
+    if parsed.landed:
+        return {**_result(action, "landed", output), "commit": land_commit(repo), "needs_chairs": raised}
+    if raised:
+        return {**_result(action, "not_landed", output), "needs_chairs": raised}
+    if code == 0 and parsed.deferred:
+        return {**_result(action, "not_landed", output), "needs_chairs": []}
+    return _result(action, "failed", output or f"{' '.join(argv)}: exit {code} with no batch lines")
+
+
+def _batch_failures(land: Action, result: Result) -> list[Action]:
+    """One needs_chair per source of a land_batch that failed outright, each carrying the failure's reason; one with no source names none."""
+    detail, epoch = result["reason"], land.get("epoch", 0)
+    sources = land.get("sources") or []
+    return [_source_needs_chair(epoch, str(s["initiative"]), str(s["phase"]), detail) for s in sources] or [escalation(land)]
+
+
+def _escalations(land: Action, result: Result) -> list[Result]:
+    """The escalated rows for a land. A land_batch raises its returned sources' needs_chairs, or, when it failed
+    outright (no `needs_chairs` key), one per source; every other land raises the one `_escalate` row."""
+    if land.get("kind") != "land_batch":
+        return [_escalate(land, result)]
+    raised = result["needs_chairs"] if "needs_chairs" in result else _batch_failures(land, result)
+    return [
+        _result(n, "escalated", f"land_batch {land.get('repo', '')} {result['status']} {n.get('initiative', '')}/{n.get('phase', '')}: {n.get('reason', '')}")
+        for n in raised
+    ]
+
+
 def _land(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
     command = land_command(action, deps, blocked)
     if not isinstance(command, tuple):
@@ -538,7 +602,7 @@ def _land_async(action: Action, deps: Deps, sink: LandSink) -> Result:
             return command
         started, argv = command
         return sink.start(started, argv)
-    land = {"land": _land, "partial_land": _partial_land}.get(action.get("kind", ""), _land_phase)
+    land = {"land": _land, "partial_land": _partial_land, "land_batch": _land_batch}.get(action.get("kind", ""), _land_phase)
     return sink.submit(action, lambda: land(action, deps, {}))
 
 
@@ -1547,6 +1611,8 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
         return _land_async(action, deps, deps.lands)
     if kind == "land":
         return _land(action, deps, blocked)
+    if kind == "land_batch":
+        return _land_batch(action, deps, blocked)
     if kind == "land_phase":
         return _land_phase(action, deps, blocked)
     if kind == "partial_land":
@@ -1776,10 +1842,10 @@ def perform(
             _note_uncounted(land, finished, blocked, blocked_initiatives)
         deps.record(_recorded(finished))
         results.append(finished)
-        if finished["status"] not in ("landed", "fenced", "busy") and not finished.get("already_landed"):
-            escalated = _escalate(land, finished)
-            deps.record(_recorded(escalated))
-            results.append(escalated)
+        if finished.get("needs_chairs") or (finished["status"] not in ("landed", "fenced", "busy") and not finished.get("already_landed")):
+            for escalated in _escalations(land, finished):
+                deps.record(_recorded(escalated))
+                results.append(escalated)
     for action in actions:
         if dry_run and action.get("kind") == "unlaunched":  # same result as live, and not a would item
             results.append(_execute(action, deps, blocked))
@@ -1831,11 +1897,11 @@ def perform(
         if (
             action.get("kind") in _LAND_KINDS
             and frozen is None
-            and result["status"] not in ("landed", "fenced", "busy", "in_progress", "recorded")
+            and (result.get("needs_chairs") or result["status"] not in ("landed", "fenced", "busy", "in_progress", "recorded"))
         ):
-            escalated = _escalate(action, result)
-            deps.record(_recorded(escalated))
-            results.append(escalated)
+            for escalated in _escalations(action, result):
+                deps.record(_recorded(escalated))
+                results.append(escalated)
         if action.get("kind") in _CARRIES_NEEDS_CHAIR and "needs_chair" in result:
             carried = _result(result["needs_chair"], "recorded", result["needs_chair"].get("reason", ""))
             deps.record(_recorded(carried))
@@ -2014,7 +2080,10 @@ def reaches_lane_host(argv: list[str]) -> bool:
 
 
 def local_timeout(argv: list[str]) -> float:
-    """`LAND_TIMEOUT_S` for a `cox runs land`, `LOCAL_ARGV_TIMEOUT_S` for any other local argv."""
+    """`LAND_TIMEOUT_S` for a `cox runs land`, `LAND_TIMEOUT_S` plus its `--wait-s` for a `cox runs land-batch`,
+    `LOCAL_ARGV_TIMEOUT_S` for any other local argv."""
+    if argv[:3] == ["cox", "runs", "land-batch"]:
+        return LAND_TIMEOUT_S + (float(argv[argv.index("--wait-s") + 1]) if "--wait-s" in argv[:-1] else 0.0)
     return LAND_TIMEOUT_S if argv[:3] == ["cox", "runs", "land"] else LOCAL_ARGV_TIMEOUT_S
 
 

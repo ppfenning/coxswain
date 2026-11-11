@@ -37,7 +37,7 @@ class Deps:
 
 def lands_this_tick(results: Sequence[Result]) -> int:
     """chair_exec marks a land, land_phase or partial_land `landed` only when its lands exited 0 and reported both merge and mark_done."""
-    return sum(1 for r in results if r["action"].get("kind") in ("land", "land_phase", "partial_land") and r["status"] == "landed")
+    return sum(1 for r in results if r["action"].get("kind") in ("land", "land_phase", "partial_land", "land_batch") and r["status"] == "landed")
 
 
 def mode_of(actions: Sequence[Action], results: Sequence[Result]) -> str:
@@ -59,6 +59,8 @@ def _scope(action: Action) -> str:
 
 
 def _target(action: Action) -> str:
+    if action.get("kind") == "land_batch":
+        return action.get("repo", "?")
     return action.get("task_id") or _scope(action)
 
 
