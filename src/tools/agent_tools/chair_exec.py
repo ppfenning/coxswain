@@ -5,6 +5,7 @@ Argv spellings follow `cox runs land --help` and `cox route launch epic|decompos
 """
 from __future__ import annotations
 
+import getpass
 import json
 import math
 import os
@@ -64,6 +65,7 @@ from agent_tools.chair_revert_exec import GitPort as RevertGitPort
 from agent_tools.chair_schedule import SCHEDULE_FILE
 from agent_tools.chair_types import Action, LandTrigger, is_fenced
 from agent_tools.land import LAND_CONFLICT_KEY, approve_to_done, conflict_note
+from agent_tools.pytest_tmp_sweep import sweep_pytest_tmp
 from agent_tools.remote_argv import LANE_HOST_TIMEOUT_S, incoming_ref, probe_argv, ssh_argv, sync_argv
 
 __all__ = [
@@ -202,6 +204,8 @@ class Deps:
     # chair_steward_exec's door: (merge_level or run_gate action, the repo's checks) -> {"event", "fields", "reason"}; None refuses both
     steward_exec: Callable[[Action, Sequence[str]], Mapping[str, Any]] | None = None
     steward_checks: Callable[[Action], Sequence[str]] = lambda action: ()  # the checks the loop already resolved for the action's repo; the executor never chooses them
+    temp_root: Path | None = None  # the system temp directory the tick sweeps stale pytest run directories under; None sweeps nothing
+    user: str = ""  # the user whose `pytest-of-<user>` directory the sweep reads
 
 
 def resolved_target(cartridge_target: str | None, epic_branch: str | None, initiative_branch: str | None) -> str | None:
@@ -1671,6 +1675,25 @@ def _ack_run_exited(run: str, deps: Deps) -> list[str]:
     return acked
 
 
+def _current_user() -> str:
+    """Edge. The login name pytest names its temp directory after; "" when the system has none."""
+    try:
+        return getpass.getuser()
+    except (OSError, KeyError):
+        return ""
+
+
+def _sweep_pytest_tmp(deps: Deps) -> list[str]:
+    """Edge. Names of the stale `pytest-of-<user>` run directories removed at the tick's clock.
+    The module's age band is the only test of life. Any failure removes nothing here and stops nothing else."""
+    if deps.temp_root is None:
+        return []
+    try:
+        return sweep_pytest_tmp(deps.temp_root, deps.user, _as_utc(deps.now()).timestamp())
+    except Exception:  # a sweep of scratch space must never fail the tick
+        return []
+
+
 def _ack_done_land_notices(deps: Deps) -> list[str]:
     """Edge. Acks, through `courier.ack_file`, every open land notice in `work_dir/courier.jsonl` whose task is
     done under `work_dir/work/*/*/*.md`; returns the ids acked. A missing or unreadable file acks nothing."""
@@ -1845,6 +1868,15 @@ def perform(
             carried = _result(result["needs_chair"], "recorded", result["needs_chair"].get("reason", ""))
             deps.record(_recorded(carried))
             results.append(carried)
+    # After every action's result, so a caller that reads `results[0]` for its single action still gets that action's.
+    if not dry_run and (removed := _sweep_pytest_tmp(deps)):
+        swept = _result(
+            {"kind": "pytest_tmp_sweep"},  # type: ignore[typeddict-item]  # not a planned kind, so no housekeeping timer moves
+            "done",
+            f"removed stale pytest run directories: {', '.join(removed)}",
+        )
+        deps.record(_recorded(swept))
+        results.append(swept)
     return results
 
 
@@ -2447,4 +2479,6 @@ def edge_deps(
         target_branch=target_branch,
         rebase_port=lambda action: _RebaseEdge(action.get("repo") or repo_for(action)),
         phase_states=lambda initiative, phase: phase_task_states(run_store.work_items(runs_dir, initiative), phase),
+        temp_root=Path(tempfile.gettempdir()),
+        user=_current_user(),
     )
