@@ -98,6 +98,7 @@ chair_orchestrate = _LazyModule("agent_tools.chair_orchestrate")
 chair_pid_probe = _LazyModule("agent_tools.chair_pid_probe")
 chair_read_approved = _LazyModule("agent_tools.chair_read_approved")
 chair_read_attempts = _LazyModule("agent_tools.chair_read_attempts")
+chair_read_branch_merged = _LazyModule("agent_tools.chair_read_branch_merged")
 chair_read_cache = _LazyModule("agent_tools.chair_read_cache")
 chair_read_docket = _LazyModule("agent_tools.chair_read_docket")
 chair_read_exits = _LazyModule("agent_tools.chair_read_exits")
@@ -1358,6 +1359,32 @@ def _steward_head(runner: Callable[[list[str]], tuple[int, str]], repo_for: Call
         code, out = runner(["git", "-C", root, "rev-parse", "--verify", "--quiet", f"{land.pr_branch_name(initiative)}^{{commit}}"])
         return out.strip() if code == 0 else ""
     return head
+
+
+def _approved_branch_merged(
+    runner: Callable[[list[str]], tuple[int, str]],
+    repo_for: Callable[[dict], str],
+    runs_dir: Path,
+) -> Callable[[Mapping], bool]:
+    """`FactsDeps.approved_branch_merged`: whether the approved task's commit is on its epic phase branch or the pr branch.
+
+    The commit is the tip of the `branch` the task record names. Only a row whose `land_at` is ticket or level asks;
+    task landing, a missing run, branch, commit or repository is False. A task branch deleted after landing cannot be
+    resolved, so it reads False and the hold stays."""
+    def merged(row: Mapping) -> bool:
+        initiative = str(row["initiative"])
+        if row.get("land_at", "ticket") not in ("ticket", "level"):
+            return False
+        root = repo_for({"initiative": initiative})
+        branch = land_manual.record_branch(runs_dir, str(row.get("run") or ""), str(row["id"]))
+        if not root or not branch:
+            return False
+        code, out = runner(["git", "-C", root, "rev-parse", "--verify", "--quiet", f"{branch}^{{commit}}"])
+        return code == 0 and chair_read_branch_merged.branch_merged(
+            _steward_git(runner), root, out.strip(),
+            [chair_read_steward.level_branch(initiative, str(row["phase"])), land.pr_branch_name(initiative)],
+        )
+    return merged
 
 
 def _steward_target_branch_of(profile: dict, ws: Path, repo_for: Callable[[dict], str]) -> Callable[[str], str]:
@@ -13479,6 +13506,7 @@ def _chair_run_deps(
         steward_entries=lambda: chair_read_steward.read_bus_entries(ws / "courier.jsonl"),
         ticket_head=_steward_head(runner, repo_for),
         level_merged=_steward_level_merged(runner, repo_for),
+        approved_branch_merged=_approved_branch_merged(runner, repo_for, runs_dir),
         lease=lambda: chair_read_lease.read_lease(runs_dir, now()),
         window=window,
         weekly=weekly,
