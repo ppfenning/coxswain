@@ -55,6 +55,7 @@ from agent_tools.chair_types import (
     IdleStallInputs,
     InitiativeFacts,
     LandedMain,
+    LandFailStreak,
     LandWait,
     LandWatch,
     LaunchHistory,
@@ -76,6 +77,7 @@ from agent_tools.chair_types import (
     ScheduleInitiative,
     ScheduleInputs,
     SchedulePhase,
+    ScheduleRunning,
     StewardPlanFacts,
     StrandedPhase,
     TodoInitiative,
@@ -791,6 +793,31 @@ def schedule_hosts(dispatch: DispatchFacts, local: str) -> tuple[list[ScheduleHo
     return hosts, {name: live for name, _, _, live in slots}, mode
 
 
+def running_lanes(
+    hosts: Sequence[ScheduleHost],
+    live_phases: Collection[tuple[str, str]],
+    newest_run_host: Mapping[str, str] | None,
+    local: str,
+) -> list[ScheduleRunning]:
+    """Each live phase with its newest run's host and the next unused lane of that host, in `hosts` lane order.
+
+    A phase on an unknown host, or past that host's lane count, is left out. Phases are taken in sorted order."""
+    names = {h["name"] for h in hosts}
+    wanted = [
+        (i, p, (newest_run_host or {}).get(i) or local) for i, p in sorted(live_phases)
+    ]
+    kept = [(i, p, h) for i, p, h in wanted if h in names]
+    lanes = {h["name"]: h["lanes"] for h in hosts}
+    ordinal = {
+        (i, p): sum(1 for _, _, other in kept[:n] if other == h) for n, (i, p, h) in enumerate(kept)
+    }
+    return [
+        {"initiative": i, "phase": p, "host": h, "lane": lanes[h][ordinal[(i, p)]]}
+        for i, p, h in kept
+        if ordinal[(i, p)] < len(lanes[h])
+    ]
+
+
 def _int(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
@@ -816,8 +843,11 @@ def schedule_inputs_from_rows(
     repos: Mapping[str, str],
     land_at: Mapping[str, str],
     live_phases: Collection[tuple[str, str]],
+    newest_run_host: Mapping[str, str] | None = None,
 ) -> ScheduleInputs:
     """The scheduler's inputs, from rows already read; no read, no clock.
+
+    `newest_run_host` maps an initiative to its newest run's host, "" meaning local; None means every live phase is local.
 
     `items` are the ticket rows, `work` the work rows (priority, release target), `actions` the chair action rows
     for `duration_records`. `repos`, `land_at` and `live_phases` have no default: an edge that forgets one would
@@ -849,6 +879,7 @@ def schedule_inputs_from_rows(
         "mode": mode,
         "load": load,
         "target": release_target(work, {i["id"] for i in initiatives}),
+        "running": running_lanes(hosts, live_phases, newest_run_host, local),
     }
 
 
@@ -1020,6 +1051,8 @@ def relaunch_loop_keys(actions: Sequence[Row]) -> list[str]:
 LAND_REFUSAL_HORIZON = timedelta(hours=24)
 # Wrong belief: every unlanded land is recorded `refused` or `failed`; an exit-0 land with no merge is `not_landed`.
 LAND_UNLANDED_STATUSES = ("refused", "failed", "not_landed")
+LAND_FAIL_KINDS = ("land_phase", "merge_level")
+LAND_FAIL_STATUSES = (*LAND_UNLANDED_STATUSES, "merge_failed")
 
 
 def _within_horizon(ts: object, now: datetime, horizon: timedelta) -> bool:
@@ -1057,6 +1090,50 @@ def land_refusals_from_actions(
         }
 
     return [r for r in map(refusal, keys) if r is not None]
+
+
+_FailState = tuple[str, str, int, str]
+
+
+def _fail_step(state: Mapping[tuple[str, str], _FailState], doc: Row) -> dict[tuple[str, str], _FailState]:
+    key = (str(doc["initiative"]), str(doc["phase"]))
+    if doc.get("status") in HOLD_LANDED_STATUSES:
+        return {k: v for k, v in state.items() if k != key}
+    if doc.get("status") not in LAND_FAIL_STATUSES:
+        return dict(state)
+    reason, ts = str(doc.get("reason") or ""), str(doc.get("ts") or "")
+    _, prev_reason, ticks, prev_ts = state.get(key, ("", None, 0, ""))
+    count = (ticks if ts == prev_ts else ticks + 1) if prev_reason == reason else 1
+    return {**state, key: (str(doc["kind"]), reason, count, ts)}
+
+
+def land_fail_streaks_from_actions(actions: Sequence[Row]) -> list[LandFailStreak]:
+    """Per (initiative, phase), the newest failed land_phase or merge_level reason and the distinct ticks it ran unbroken; a landed row drops the entry."""
+    docs = map(_action_doc, sorted(actions, key=lambda r: str(r.get("ts") or "")))
+    rows = [d for d in docs if d.get("kind") in LAND_FAIL_KINDS and d.get("initiative") and d.get("phase")]
+    state = reduce(_fail_step, rows, {})
+    return [
+        {"initiative": i, "phase": p, "kind": cast("Any", kind), "reason": reason, "ticks": ticks}
+        for (i, p), (kind, reason, ticks, _) in sorted(state.items())
+    ]
+
+
+def _no_run_step(task: Row, ticks: frozenset[str], doc: Row) -> frozenset[str]:
+    kind = doc.get("kind")
+    if kind == "requeue_task" and doc.get("task_id") == task["id"]:
+        return frozenset()
+    if kind in HOLD_LAND_KINDS and doc.get("status") in HOLD_LANDED_STATUSES and _hold_names(doc, task):
+        return frozenset()
+    if kind == "needs_chair" and doc.get("cause") == "no_run" and doc.get("initiative") == task["initiative"]:
+        return ticks | {str(doc.get("ts") or "")}
+    return ticks
+
+
+def no_run_streaks_from_actions(approved: Sequence[Row], actions: Sequence[Row]) -> dict[str, int]:
+    """Unmerged approved task id to the distinct ticks its initiative recorded a no_run needs_chair since the task's last landed or requeue_task row; none, no key."""
+    docs = list(map(_action_doc, sorted(actions, key=lambda r: str(r.get("ts") or ""))))
+    counts = {str(a["id"]): len(reduce(partial(_no_run_step, a), docs, frozenset())) for a in approved if not a.get("merged")}
+    return {task_id: n for task_id, n in counts.items() if n > 0}
 
 
 def _launched_within_window(ts: object, now: datetime) -> bool:
@@ -1815,12 +1892,15 @@ def gather_facts(
                     local=deps.host, repos=repos,
                     land_at=land_at_facts(deps.cartridge(), deps.land_at_values(), sorted({str(i["initiative"]) for i in items})),
                     live_phases=live_phase_pairs,
+                    newest_run_host=newest_run_host,
                 )
             }
             if deps.tickets is not None
             else {}
         ),
         "steer_streaks": steer_streaks_from_actions(action_rows),
+        "land_fail_streaks": land_fail_streaks_from_actions(action_rows),
+        "no_run_streaks": no_run_streaks_from_actions(approved, action_rows),
         "approval_holds": approval_holds_from_actions(approved, action_rows),
         "approval_hold_ticks": resolve_approval_hold_ticks(deps.approval_hold_ticks())
         if deps.approval_hold_ticks is not None

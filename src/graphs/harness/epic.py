@@ -138,6 +138,7 @@ from harness.worktree import (
     link_venv,
     prune_registrations,
     read_lock,
+    registry_lock,
     release_stale_holders,
     remove_worktree,
 )
@@ -775,7 +776,8 @@ def _open_phase_worktree(
         listed, listing = _git("-C", str(ctx.repo), "worktree", "list", "--porcelain")
         if listed and _registered_on_branch(listing, worktree, branch):
             return _Opened(True, "", True, cleared)
-        ok, detail = _git("-C", str(ctx.repo), "worktree", "add", str(worktree), branch)
+        with registry_lock():
+            ok, detail = _git("-C", str(ctx.repo), "worktree", "add", str(worktree), branch)
         return _Opened(ok, detail, True, cleared)
     ok, detail = create_worktree(ctx.repo, worktree, branch=branch, base=base_ref)
     wanted = [ctx.phase_branch(p) for p in parents] if refs is None else list(refs)
@@ -809,14 +811,15 @@ def _required_refs(
     cut: bool = False,
     from_pr: bool = False,
 ) -> list[str]:
-    """The commits the phase branch must contain: what its tasks need, not where each parent's head is now.
+    """The refs a phase branch is checked against (`cut` false) or cut from (`cut` true).
 
-    A phase with no parents needs `base_ref`. Under a parent, a need that is approved and merged
-    contributes its stored `merged_commit`, or the parent's branch when none is stored. A need that
-    is unbuilt, done or dropped contributes nothing. A parent no task needs anything from contributes its branch.
-    With `cut`, a parent whose tasks are all settled contributes its whole branch, so a branch cut after
-    the parent finished carries its phase-level commits too; the staleness check never asks for that.
-    With `from_pr`, the phase is cut from the pr branch, which already holds every landed parent: `base_ref` alone.
+    A phase with no parents, or one cut from the pr branch (`from_pr`), needs `base_ref` alone. Under a
+    parent, a need that is unbuilt, done or dropped contributes nothing, and a parent no task needs anything
+    from contributes its branch. A need that is approved and merged contributes its stored `merged_commit`
+    (the parent's branch when none is stored), so the staleness check judges a branch on what its tasks need.
+    With `cut`, such a need contributes the parent's current branch tip instead, so an assembly never starts
+    from an older head whose conflict a later commit resolved, and a parent whose tasks are all settled
+    contributes its whole branch.
     """
     if not parents or from_pr:
         return [base_ref]
@@ -832,7 +835,7 @@ def _required_refs(
             refs.add(branch_of(parent))
             continue
         refs.update(
-            str(n.get("merged_commit") or branch_of(parent))
+            branch_of(parent) if cut else str(n.get("merged_commit") or branch_of(parent))
             for n in edges
             if n.get("state") == "approved" and n.get("merged")
         )
@@ -928,10 +931,11 @@ def awaiting_land_lines(record: Mapping[str, Any], run_id: str, repo: Path | str
 
 
 def blocked_line(record: Mapping[str, Any]) -> str | None:
-    """`phase <p>: blocked: <reason>` for a blocked phase record, else None."""
-    if record.get("status") != "blocked":
+    """`phase <p>: blocked: <reason>` for a blocked or interrupted phase record, else None."""
+    status = record.get("status")
+    if status not in ("blocked", "interrupted"):
         return None
-    return f"phase {record.get('phase')}: blocked: {record.get('reason') or 'no reason was recorded on the phase'}"
+    return f"phase {record.get('phase')}: {status}: {record.get('reason') or 'no reason was recorded on the phase'}"
 
 
 def open_in_phase(
@@ -2709,6 +2713,11 @@ def _fenced(ctx: _Ctx) -> str | None:
     return ctx.retry.write(check, _END_WRITE_WINDOW_S)
 
 
+def _is_stale_epoch(reason: str) -> bool:
+    """True for the reason `_fenced` returns when the driver's lease is lost."""
+    return reason.startswith("stale epoch")
+
+
 # Only a store error is retried in the pause wait; a bug there still raises with its traceback.
 _STORE_ERRORS: tuple[type[Exception], ...] = (sqlite3.Error,)
 try:  # the postgres driver is an optional extra
@@ -2796,10 +2805,16 @@ def build_outcome(result: Mapping[str, Any]) -> dict[str, Any]:
         if p.get("status") == "blocked" and len(p.get("parents") or []) >= 1 and p["phase"] not in blocked_ids
     ]
     awaiting_land = any(_awaits_land(p) for p in result.get("phases") or [])
+    interrupted = [
+        {"phase": p["phase"], "reason": p.get("reason")}
+        for p in result.get("phases") or []
+        if p.get("status") == "interrupted"
+    ]
     return {
         "totals": dict(result.get("totals") or {}),
         "blocked": blocked,
         "waiting": waiting,
+        **({"interrupted": interrupted} if interrupted else {}),
         **({"blocked_kind": "awaiting_land"} if awaiting_land else {}),
     }
 
@@ -3112,6 +3127,15 @@ def _newest_attempt_text(attempts: Sequence[Mapping[str, Any]]) -> str:
     a = newest[0]
     reason = " ".join(str(a.get("reason") or "").split())[:120]
     return f"newest attempt: kind {a.get('kind') or 'unrecorded'}, cause {a.get('cause') or 'unrecorded'}, reason {reason}"
+
+
+INTERRUPTED_KIND = "interrupted"  # a task the lost lease stopped mid-run; never an attempt
+
+
+def _build_attempts(attempts: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """The attempts that count toward the cap: `infra`, `rescue_failed` and `interrupted` are not builds."""
+    not_a_build = {"infra", rescue_select.RESCUE_KIND, INTERRUPTED_KIND}
+    return [a for a in attempts if a.get("kind") not in not_a_build]
 
 
 def _attempt_cap_reason(attempts: Sequence[Mapping[str, Any]]) -> str:
@@ -3491,7 +3515,8 @@ def _run_phase(
         if stale_recreate:
             return _stale_phase(record, stale_recreate)
         _git("-C", str(ctx.phase_worktree(phase)), "checkout", "--detach", "-q")
-        _git("-C", str(ctx.repo), "worktree", "remove", "--force", str(ctx.phase_worktree(phase)))
+        with registry_lock():
+            _git("-C", str(ctx.repo), "worktree", "remove", "--force", str(ctx.phase_worktree(phase)))
         _git("-C", str(ctx.repo), "branch", "-D", branch)
         reopened = _open_phase_worktree(ctx, phase, cut_ref, parents, cut_from)
         ok, detail, reused = reopened
@@ -3559,11 +3584,7 @@ def _run_phase(
     # An `infra` attempt is the apply arm's own failure, not the task's, so it
     # must not grow the count the cap enforces. Nor does a `rescue_failed` one:
     # a rescue checks work already built and is not a build.
-    not_a_build = {"infra", rescue_select.RESCUE_KIND}
-    attempts_by_id = {
-        str(item["id"]): [a for a in (item.get("attempts") or []) if a.get("kind") not in not_a_build]
-        for item in all_ready
-    }
+    attempts_by_id = {str(item["id"]): _build_attempts(item.get("attempts") or []) for item in all_ready}
     # A rewritten ticket starts a fresh count. Triage still gets the whole history for its repeat guard.
     # An item with no `body` cannot be matched, so all its attempts count.
     counted_by_id = {
@@ -4402,13 +4423,38 @@ def _run_phase(
 
 
 def _stale_phase(record: dict[str, Any], reason: str) -> dict[str, Any]:
-    """Block the phase on a stale epoch, so it neither reads complete nor unblocks its dependents."""
-    record["status"] = "blocked"
+    """Stop the phase on a fence, so it neither reads complete nor unblocks its dependents.
+
+    A lost lease leaves the phase `interrupted`. Its in-flight tasks, and the task entries `_quarantine_task`
+    returned once fenced, move from `quarantined` to `interrupted`. Merged and otherwise quarantined tasks stay.
+    """
     record["reason"] = reason
-    record["quarantined"].append(
-        {"id": record["phase"], "phase": record["phase"], "grain": "phase", "reason": reason, "kind": "no_work"}
-    )
+    if not _is_stale_epoch(reason):
+        record["status"] = "blocked"
+        record["quarantined"].append(
+            {"id": record["phase"], "phase": record["phase"], "grain": "phase", "reason": reason, "kind": "no_work"}
+        )
+        return record
+    lost = {q["id"]: q["reason"] for q in record["quarantined"] if _fenced_task_entry(q)}
+    record["quarantined"][:] = [q for q in record["quarantined"] if not _fenced_task_entry(q)]
+    in_flight = [
+        t["id"]
+        for t in record["task_records"]
+        if t["id"] in lost or not (t.get("merged") or t.get("quarantine") or t.get("status") == "quarantined")
+    ]
+    record["status"] = "interrupted"
+    record["interrupted"] = [
+        {"id": i, "phase": record["phase"], "grain": "task", "reason": lost.get(i, reason), "kind": INTERRUPTED_KIND}
+        for i in [*in_flight, *(i for i in lost if i not in in_flight)]
+    ]
+    if "totals" in record:
+        record["totals"] = {**record["totals"], "quarantined": record["totals"]["quarantined"] - len(lost)}
     return record
+
+
+def _fenced_task_entry(entry: Mapping[str, Any]) -> bool:
+    """A task quarantine entry that `_quarantine_task` returned because the lease was already lost."""
+    return entry.get("grain") == "task" and _is_stale_epoch(str(entry.get("reason")))
 
 
 def _missing_branch_phase(record: dict[str, Any], branch: str, cause: str) -> dict[str, Any]:
