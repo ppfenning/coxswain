@@ -1182,6 +1182,39 @@ def _tests_run(results: Sequence[Mapping[str, Any]]) -> int:
     return sum((r.get("counts") or {}).get(k, 0) for r in results for k in ("passed", "failed", "error"))
 
 
+def _cpu_seconds_total(results: Sequence[Mapping[str, Any]]) -> float:
+    return round(sum(r.get("cpu_seconds", 0.0) for r in results), 3)
+
+
+def _scope_figures(selection: Mapping[str, Any], results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Per-component counts and their totals under the dash feed's key names; {} when the selection has no counts."""
+    tests = selection.get("tests")
+    if not tests:
+        return {}
+    return {
+        "tests": tests,
+        "totals": {
+            "tests_selected": sum(t["selected"] for t in tests.values()),
+            "tests_total": sum(t["total"] for t in tests.values()),
+            "cpu_seconds": _cpu_seconds_total(results),
+        },
+    }
+
+
+def _scope_clause(figures: Mapping[str, Any]) -> str:
+    totals = figures.get("totals")
+    if not totals:
+        return ""
+    return f"; tests {totals['tests_selected']} of {totals['tests_total']}, cpu {totals['cpu_seconds']:.1f}s"
+
+
+def _scope_record(selection: Mapping[str, Any], results: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], str]:
+    """The `check_scope` record and the `checks:scope` row text for one run of the scoped checks."""
+    tests_run, figures = _tests_run(results), _scope_figures(selection, results)
+    row = f"{render_selection(selection)}; tests_run={tests_run}{_scope_clause(figures)}"
+    return {**selection, "tests_run": tests_run, **figures}, row
+
+
 def _level_failure_reason(phase: str, results: Sequence[Mapping[str, Any]]) -> str:
     """A line naming the level and its first failing level check; '' when every row passed."""
     failing = next((r for r in results if not r.get("passed")), None)
@@ -1428,11 +1461,9 @@ def _build_task_checked(
         results = run_checks(worktree, scoped, env=env, **_checks_log(ctx, phase, task))
         record["checks"] = results
         record["evidence"].extend(checks_evidence(results))
-        tests_run = _tests_run(results)
-        record["check_scope"] = {**selection, "tests_run": tests_run}
-        record["evidence"].append(
-            {"check": "checks:scope", "output": f"{render_selection(selection)}; tests_run={tests_run}"}
-        )
+        record["check_scope"], row = _scope_record(selection, results)
+        record["check_cpu_seconds"] = _cpu_seconds_total(results)
+        record["evidence"].append({"check": "checks:scope", "output": row})
         reason = quarantine_reason(results)
         if reason:
             record["quarantine"] = reason
@@ -1562,20 +1593,20 @@ def _style_fix(ctx: _Ctx, *, phase: str, task: str, result: Mapping[str, Any], b
     build_field = result.get("build")
     if isinstance(build_field, dict) and folded:
         build_field["patch"] = folded + "\n"
+    scoped, selection = _lane_checks(worktree, ctx.phase_branch(phase), ctx.checks)
     try:
-        results = run_checks(
-            worktree, ctx.checks, env=_lane_checks_env(ctx, phase, task), **_checks_log(ctx, phase, task)
-        )
+        results = run_checks(worktree, scoped, env=_lane_checks_env(ctx, phase, task), **_checks_log(ctx, phase, task))
     finally:
         _remove_scratch(ctx, phase, task)
     build["checks"] = results
-    build["check_scope"] = {"reason": "style pass reran the full list", "tests_run": _tests_run(results)}
+    build["check_scope"], scope_row = _scope_record(selection, results)
+    build["check_cpu_seconds"] = _cpu_seconds_total(results)
     # Only `checks:` rows are replaced; `verify:` rows stay as run before the style edit.
     build["evidence"] = [
         *(row for row in build["evidence"] if not str(row.get("check")).startswith("checks:")),
         {"check": "style_pass", "output": f"edit applied after approval, not reviewed: {', '.join(paths)}"},
         *checks_evidence(results),
-        {"check": "checks:scope", "output": f"full list rerun after a style pass; tests_run={_tests_run(results)}"},
+        {"check": "checks:scope", "output": f"style pass: {scope_row}"},
     ]
     build["quarantine"] = quarantine_reason(results)
     return True
