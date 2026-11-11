@@ -647,9 +647,9 @@ def test_gather_facts_fills_every_key_from_the_fakes():
     # steward is declared on Facts and read by the planner; the next task gathers it, until then it is absent.
     # live_phases is gathered only when the deps supply it, and these fakes do not.
     # previous_schedule_feed is read by the planner; no task gathers it yet.
-    # merged_prs is read by plan_missed_closes; the facts edge does not gather it yet.
+    # merged_prs is read by plan_missed_closes and handled_keys by plan_recover; the facts edge gathers neither yet.
     declared = set(Facts.__annotations__) - {
-        "steward", "live_phases", "schedule_inputs", "previous_schedule_feed", "merged_prs",
+        "steward", "live_phases", "schedule_inputs", "previous_schedule_feed", "merged_prs", "handled_keys",
     }
     assert set(facts) == declared | {"login_hosts"}
     assert facts["dispatch"] == {"max_in_flight": 2, "live_runs": 1, "hosts": []}
