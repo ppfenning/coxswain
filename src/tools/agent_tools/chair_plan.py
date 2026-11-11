@@ -1058,6 +1058,25 @@ def _stuck_steer_heads(
     ]
 
 
+_SCHEDULED_LATER = "the schedule placed it later"
+
+
+def _placement_hints(facts: Facts, schedule: Schedule | None) -> dict[str, dict[str, str]]:
+    """Per initiative the schedule places: host of its first this-tick launch, else scheduled_later.
+
+    host is "" when that host is local in schedule_inputs. An Explanation names neither the node a placement waits
+    behind nor a file, so a later placement always reads as the fallback text."""
+    if schedule is None:
+        return {}
+    local = frozenset(h["name"] for h in facts.get("schedule_inputs", {}).get("hosts", []) if h["local"])
+    first_host = {p.key[0]: p.host for p in reversed(schedule.launches)}  # reversed, so the first placement wins
+    later = frozenset(p.key[0] for lane in schedule.lanes for p in lane.next) - first_host.keys()
+    return {
+        **{i: {"scheduled_later": _SCHEDULED_LATER} for i in later},
+        **{i: {"host": "" if h in local else h} for i, h in first_host.items()},
+    }
+
+
 def _unlaunched_actions(
     facts: Facts,
     launches: Sequence[Action],
@@ -1068,23 +1087,26 @@ def _unlaunched_actions(
     pace_cap: int,
     now: datetime | None,
     stuck: Sequence[Action],
+    schedule: Schedule | None = None,
 ) -> list[Action]:
     """One unlaunched action per ready initiative the launch list leaves out, except those with a steer_head_stuck line.
 
     Empty without now, as for stale and tune. Each initiative is asked on its own, so its clearing time reads from its
-    own launch_history entry. host is "": an initiative left out was not placed on a lane host."""
+    own launch_history entry. host is the schedule's first placement of the initiative, "" for the chair machine, and
+    absent when there is no schedule or it does not place the initiative; scheduled_later marks one it places later."""
     if now is None:
         return []
     launched = frozenset(a["initiative"] for a in launches if _is_launch(a))
     holds = [a for a in launches if a["kind"] == "steer_clear" or _steer_deferred(a)]
     reported = frozenset(a["initiative"] for a in stuck)
     history = facts.get("launch_history", {})
+    hints = _placement_hints(facts, schedule)
     return [
         action
         for i in facts["initiatives"]
         if i["id"] not in reported
         for action in chair_launch_why.unlaunched(
-            [{**i, "host": ""}],
+            [{**i, **hints.get(i["id"], {})}],
             launched,
             withheld_by,
             skips,
@@ -1241,6 +1263,10 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     # An initiative being landed, or whose phase lands this tick, must not launch until the land settles; the rest of
     # its repo launches beside the land.
     steward_started = steward_handled & frozenset(i["id"] for i in facts["initiatives"] if i["started"])
+    steward_acted = frozenset(a["epic"] for a in steward if a["kind"] in ("merge_level", "run_gate", "steward_event")) | frozenset(
+        a["initiative"] for a in recovered if a["kind"] == "relaunch"
+    )
+    decompose_only = frozenset(facts.get("remote_unfetched_decompose", ()))  # type: ignore[typeddict-item]
     # Each set is keyed by the plain words a stuck steer head reports when it is the reason the head is left out.
     withheld_by = {
         "recovery already holds it": frozenset(
@@ -1249,7 +1275,8 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         # chair_facts imports this module, so STRANDED_CAUSE comes from chair_plan_recover, which holds the same value.
         "quarantined": frozenset(q["initiative"] for q in facts["quarantines"] if q["cause"] != STRANDED_CAUSE),
         "stranded": frozenset(q["initiative"] for q in facts["quarantines"] if q["cause"] == STRANDED_CAUSE),
-        "its branches are not fetched": remote_unfetched,
+        # A decompose-only unfetched run holds no epic branches, so it does not keep the initiative from launching.
+        "its branches are not fetched": remote_unfetched - decompose_only,
         "its last run has not exited": not_exited,
         "its run is lost": lost,
         "schema version death": frozenset(facts.get("schema_deaths", {})),
@@ -1260,7 +1287,8 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         "land backoff": backoff_held(facts, now),
         "waiting on a need": waiting_ids,
         # fill would launch a started epic the steward holds back, which is a relaunch; an unstarted one still launches.
-        "the steward holds it": steward_started,
+        "the steward holds it": steward_started & steward_acted,
+        "the steward planned nothing for it this tick": steward_started - steward_acted,
         "its launch was refused on a held lease": lease_held,
         "it is held or deferred to a later release": gated,
     }
@@ -1285,7 +1313,9 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         no_host,
     )
     cap_left = max(0, cap - _cap_count(launches))
-    unlaunched = _unlaunched_actions(facts, launches, withheld_by, skips, free_lanes, no_host, cap_left, now, stuck_heads)
+    unlaunched = _unlaunched_actions(
+        facts, launches, withheld_by, skips, free_lanes, no_host, cap_left, now, stuck_heads, schedule
+    )
     # Read before the cap: a rebase starts no run, so a relaunch the cap dropped still gets its branch rebased.
     relaunching = frozenset(a["initiative"] for a in [*recovered, *launches] if _is_launch(a))
     rebases = plan_rebase(facts.get("phase_branches", []), relaunching)
