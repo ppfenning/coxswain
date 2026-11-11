@@ -208,6 +208,34 @@ def _text(value: str | bytes | None) -> str:
     return value or ""
 
 
+def _cpu_seconds(usage: Any) -> float:
+    """User plus system CPU seconds of a `wait4` rusage, rounded to milliseconds; 0.0 when none was gathered."""
+    return 0.0 if usage is None else round(usage.ru_utime + usage.ru_stime, 3)
+
+
+def _popen(*args: Any, **kwargs: Any) -> subprocess.Popen[str]:
+    """Edge: a Popen that keeps its own child's rusage on `.rusage` when it reaps it.
+
+    `communicate()` reaps the child and throws the usage away; this is the one place that
+    keeps it. `wait4` on this pid counts the child and the descendants it reaped, and no
+    other lane's checks, which a before and after `getrusage(RUSAGE_CHILDREN)` would.
+    """
+
+    class _Measured(subprocess.Popen):
+        rusage: Any = None
+
+        def _try_wait(self, wait_flags: int) -> tuple[int, int]:
+            try:
+                pid, sts, usage = os.wait4(self.pid, wait_flags)
+            except ChildProcessError:
+                return self.pid, 0
+            if pid == self.pid:
+                self.rusage = usage
+            return pid, sts
+
+    return _Measured(*args, **kwargs)
+
+
 def _kill_group(proc: subprocess.Popen[str]) -> None:
     """SIGKILL the check's whole process group; a group that is already gone is fine."""
     with contextlib.suppress(ProcessLookupError):
@@ -344,7 +372,7 @@ def run_checks(
         try:
             # Own session so a timeout can kill the shell's grandchildren too;
             # a child left alive keeps the pipes open and communicate() hangs.
-            proc = subprocess.Popen(
+            proc = _popen(
                 cmd,
                 shell=True,
                 cwd=worktree,
@@ -377,6 +405,7 @@ def run_checks(
                     "output_tail": (partial + f"\n[timed out after {limit}s]")[-_TAIL_CHARS:],
                     "excerpt": "\n".join(filter(None, [output_excerpt(partial), f"[timed out after {limit}s]"])),
                     **_write_log(log_dir, log_prefix, number, partial + f"\n[timed out after {limit}s]\n"),
+                    "cpu_seconds": _cpu_seconds(getattr(proc, "rusage", None)),
                     **workers,
                 }
             )
@@ -395,6 +424,7 @@ def run_checks(
                     "output_tail": "",
                     "excerpt": error,
                     **_write_log(log_dir, log_prefix, number, error + "\n"),
+                    "cpu_seconds": 0.0,
                     **workers,
                 }
             )
@@ -430,6 +460,8 @@ def run_checks(
                 "output_tail": combined[-_TAIL_CHARS:],
                 "excerpt": output_excerpt(combined),
                 **_write_log(log_dir, log_prefix, number, combined),
+                # The first run only: a flaky serial rerun is not added in.
+                "cpu_seconds": _cpu_seconds(getattr(proc, "rusage", None)),
                 **workers,
             }
         )

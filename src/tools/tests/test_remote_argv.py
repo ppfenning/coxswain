@@ -1,4 +1,5 @@
 import os
+import re
 import shlex
 import subprocess
 from pathlib import Path
@@ -18,6 +19,7 @@ from agent_tools.remote_argv import (
     rsync_push_argv,
     ssh_argv,
     sync_argv,
+    token_status_argv,
 )
 
 
@@ -83,6 +85,57 @@ def test_ssh_argv_bounds_the_connect_and_a_silent_connection_without_batch_mode(
 
 def test_doctor_argv_is_the_cox_setup_doctor_command():
     assert doctor_argv() == ["cox", "setup", "doctor"]
+
+
+def test_token_status_argv_is_the_cox_setup_token_status_command():
+    assert token_status_argv() == ["cox", "setup", "token", "status"]
+    assert token_status_argv(True) == ["cox", "setup", "token", "status", "--probe"]
+
+
+def test_ssh_argv_runs_the_token_status_command_bare_without_a_login_shell():
+    argv = ssh_argv("u@h", token_status_argv(True))
+    assert argv[-2:] == ["u@h", "cox setup token status --probe"]
+    assert "/bin/sh" not in argv
+    assert not any("login-shell" in word for word in argv)
+
+
+def _command_layers(ssh_command: list[str]) -> tuple[list[str], list[str]]:
+    """The remote command split once, and the command inside the login shell split again.
+
+    login_shell_argv joins the whole command into one word, so one split leaves
+    `env NAME=value cox route launch ...` unsplit and no word starts with an assignment."""
+    remote = shlex.split(ssh_command[-1])
+    inner = shlex.split(remote[-1]) if remote[:1] == ["/bin/sh"] else []
+    return remote, inner
+
+
+def _assignments_in(ssh_command: list[str]) -> list[str]:
+    """Every NAME=value word of the remote command at both layers. The ssh -o options are not in it."""
+    remote, inner = _command_layers(ssh_command)
+    return [word for word in [*remote, *inner] if re.match(r"[A-Za-z_][A-Za-z0-9_]*=", word)]
+
+
+def test_assignments_in_finds_an_env_prefix_hidden_in_the_login_shell_word():
+    """The launch check below can fail: it sees a token assignment inside the joined login-shell command."""
+    argv = ssh_argv("u@h", ["env", "FOO_TOKEN=secret", "cox", "route", "launch", "epic"])
+    assert _assignments_in(argv) == ["FOO_TOKEN=secret"]
+    assert "route" in _command_layers(argv)[1]
+
+
+@pytest.mark.parametrize("courier", [None, "me@chair"])
+def test_no_ssh_argv_for_a_launch_carries_the_token(courier):
+    launches = [
+        launch_argv("init-x", "run-7", "lane-a", chair_courier=courier),
+        decompose_launch_argv("/ws/intake.md", "init-x", "run-7", "lane-a", chair_courier=courier),
+    ]
+    for remote in launches:
+        argv = ssh_argv("u@h", remote)
+        remote_words, inner_words = _command_layers(argv)
+        assert "route" in inner_words
+        every_word = [*argv, *remote_words, *inner_words]
+        assert not any("CLAUDE_CODE_OAUTH_TOKEN" in word for word in every_word)
+        assert not any(re.search(r"(TOKEN|KEY|SECRET|PASSWORD)\w*=", word, re.I) for word in every_word)
+        assert _assignments_in(argv) == ([f"COX_CHAIR_COURIER={courier}"] if courier else [])
 
 
 def test_env_check_argv_is_printenv_of_the_variable():

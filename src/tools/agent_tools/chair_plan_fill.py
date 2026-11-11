@@ -35,6 +35,14 @@ def _required_capabilities(initiative: InitiativeFacts) -> frozenset[str]:
     return frozenset(cap for task in initiative["ready_tasks"] for cap in task.get("requires", []))
 
 
+def _launchable(initiative: InitiativeFacts, held_phases: frozenset[tuple[str, str]]) -> InitiativeFacts:
+    """The initiative with held-phase ready tasks dropped; ready_surfaces stays, so steer overlap still sees them."""
+    if not held_phases:
+        return initiative
+    kept = [t for t in initiative["ready_tasks"] if (initiative["id"], t["phase"]) not in held_phases]
+    return {**initiative, "ready_tasks": kept}
+
+
 def _eligible(host: HostSlot, required: frozenset[str]) -> bool:
     _, _, capabilities, free, _ = host
     return free > 0 and required <= capabilities
@@ -182,8 +190,11 @@ def _epic_launches(
     host_free: Sequence[HostSlot],
     claimed: Sequence[RunningInitiative] = (),
     now: datetime | None = None,
+    held_phases: frozenset[tuple[str, str]] = frozenset(),
 ) -> list[Action]:
     """Started initiatives with ready tasks, then unstarted ones, each in docket order; withheld ids never launch.
+
+    A ready task in a held (initiative, phase) is not launchable; an initiative left with none is left out.
 
     An initiative with a `dag_problem` never launches either; `plan_recover` is the one place that reports it.
 
@@ -194,7 +205,9 @@ def _epic_launches(
     One that overlaps a running, claimed or launched initiative in its repo yields its lane; steer actions follow.
     """
     candidates = [
-        i for i in facts["initiatives"] if i["ready_tasks"] and i["id"] not in withheld and not i.get("dag_problem")
+        i
+        for i in (_launchable(i, held_phases) for i in facts["initiatives"])
+        if i["ready_tasks"] and i["id"] not in withheld and not i.get("dag_problem")
     ]
     skips = budget_skips(facts, candidates, now)
     open_ = [i for i in candidates if i["id"] not in skips]
@@ -255,13 +268,18 @@ def scheduled_launches(
     host_free: Sequence[HostSlot],
     claimed: Sequence[RunningInitiative] = (),
     now: datetime | None = None,
+    held_phases: frozenset[tuple[str, str]] = frozenset(),
 ) -> list[Action]:
     """The schedule's this-tick launches as launch_epic actions, in schedule order and on the scheduled host.
 
     A placement on a local host in `schedule_inputs` carries no host. Only the first placement of an initiative
     counts. The gates of `_epic_launches` apply, and a launch one withholds is dropped, never replaced."""
     local = {h["name"] for h in facts["schedule_inputs"]["hosts"] if h["local"]}
-    open_ = [i for i in facts["initiatives"] if i["ready_tasks"] and i["id"] not in withheld and not i.get("dag_problem")]
+    open_ = [
+        i
+        for i in (_launchable(i, held_phases) for i in facts["initiatives"])
+        if i["ready_tasks"] and i["id"] not in withheld and not i.get("dag_problem")
+    ]
     skips = budget_skips(facts, open_, now)
     by_id = {i["id"]: i for i in open_ if i["id"] not in skips}
     wanted = [(p.key[0], None if p.host in local else p.host) for p in schedule.launches if p.key[0] in by_id]
@@ -346,10 +364,15 @@ def plan_fill(
     stalled: frozenset[str] = frozenset(),
     now: datetime | None = None,
     schedule: Schedule | None = None,
+    *,
+    held_phases: frozenset[tuple[str, str]] = frozenset(),
 ) -> list[Action]:
     """now enables the launch budget: an initiative it refuses gets no launch_epic. Without it the budget is skipped.
 
     schedule, when given, replaces the ranking and host choice: only its this-tick launches become launch_epic.
+
+    held_phases names (initiative, phase) pairs whose ready tasks are skipped when picking; an initiative with
+    only held ready work is left out like a withheld one. Held tasks still count for steer overlap.
 
     claimed names initiatives launched earlier this tick; they count as running for the overlap check.
 
@@ -375,8 +398,8 @@ def plan_fill(
 
     def epics_on(hosts: Sequence[HostSlot]) -> list[Action]:
         if schedule is None:
-            return _epic_launches(facts, epic_lanes, withheld, hosts, claimed, now)
-        return scheduled_launches(facts, schedule, epic_lanes, withheld, hosts, claimed, now)
+            return _epic_launches(facts, epic_lanes, withheld, hosts, claimed, now, held_phases)
+        return scheduled_launches(facts, schedule, epic_lanes, withheld, hosts, claimed, now, held_phases)
 
     first_pass = epics_on(host_free)
     local_epics = [a for a in first_pass if a["kind"] == "launch_epic" and "host" not in a]
