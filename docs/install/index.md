@@ -108,6 +108,27 @@ page uses:
 | `--edge` | Follow `main` instead of the release tag. |
 | `--dry-run` | Print the plan and change nothing. |
 
+## Store the Claude token
+
+This step is required. Sign in with `claude` first. Then store a long-lived
+token that coxswain uses for its own `claude` processes.
+
+1. Run `claude setup-token`.
+2. Run `cox setup token`. It takes the token by prompt, by `--token`, or from
+   an existing file with `--from-file`. It stores the token with mode 600 in
+   `~/.config/agent-tools/`.
+
+Lanes and the chair must never stop at an expired interactive login. A stored
+token does not expire that way. Lane auth also must not depend on shell
+startup files. That broke once: a shell function wrapper made the login check
+pass while every lane failed.
+
+The token is inference-only, so do not export it in your interactive shells.
+Coxswain injects it only into the `claude` processes it spawns. A normal
+`claude auth login` session in your own shell keeps Remote Control.
+
+Check the result with `cox setup token status --probe` and `cox setup doctor`.
+
 ## Verify
 
 ```sh
