@@ -145,3 +145,27 @@ def test_a_thief_holding_the_lease_with_a_live_record_plans_standby_not_take(tmp
     lease = read_lease(tmp_path, NOW, pid_alive=_alive, host="h")
     assert lease["stale"] is False
     assert _gate(lease) == [{"kind": "standby", "holder": thief, "host": "h", "until": "2026-09-26T18:00:00+00:00"}]
+
+
+def _session_record(runs_dir, **extra):
+    """A live holder's chair.json with no takeover window, plus any extra stamps."""
+    _held(runs_dir, until="")
+    chair.write(runs_dir, {"session": "s", "pid": 7, "host": "h", "heartbeat_at": "2026-09-26T11:59:00+00:00", **extra})
+    return read_lease(runs_dir, NOW, pid_alive=_alive, host="h")
+
+
+def test_a_plain_session_record_sets_session_held(tmp_path):
+    assert _session_record(tmp_path)["session_held"] is True
+
+
+def test_an_until_a_taken_over_from_or_a_lent_record_leaves_session_held_unset(tmp_path):
+    cases = {"until": {"until": "2026-09-26T18:00:00+00:00"}, "took": {"taken_over_from": "old"}, "lent": {"routine_lent": True}}
+    for name, extra in cases.items():
+        (tmp_path / name).mkdir()
+        assert _session_record(tmp_path / name, **extra).get("session_held", False) is False
+
+
+def test_a_released_lease_never_sets_session_held(tmp_path):
+    _held(tmp_path, until="", expires_at="1970-01-01T00:00:00Z")
+    chair.write(tmp_path, {"session": "s", "pid": 7, "host": "h", "heartbeat_at": "2026-09-26T11:59:00+00:00"})
+    assert read_lease(tmp_path, NOW, pid_alive=_alive, host="h").get("session_held", False) is False

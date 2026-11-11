@@ -32,6 +32,7 @@ class LeaseFacts(TypedDict):
     expired: bool  # another holder's takeover window has passed
     until: str  # that window's end, ISO; empty when the holder set none
     lent: NotRequired[bool]  # the live holder has lent the routine ticks; read with .get("lent", False)
+    session_held: NotRequired[bool]  # a session holds the lease informally, no takeover window; read with .get("session_held", False)
 
 
 class SmokeCommandResult(TypedDict):
