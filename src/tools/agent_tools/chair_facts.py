@@ -232,6 +232,9 @@ class FactsDeps:
     ticket_head: initiative to its ticket branch head commit. Defaults to a callable returning "".
     level_merged: (initiative, phase) to whether that level branch has landed on the ticket branch, bound in
         production to `chair_read_steward.level_is_merged`. Defaults to a callable returning False.
+    approved_branch_merged: an approved row to whether its commit is already on its phase or pr branch, bound in
+        production to `chair_read_branch_merged.branch_merged`. Not consulted under task landing. Defaults to a
+        callable returning False.
     """
 
     lease: Callable[[], Row]
@@ -317,6 +320,7 @@ class FactsDeps:
     steward_entries: Callable[[], Sequence[Row]] = lambda: []  # every bus entry; absent means []
     ticket_head: Callable[[str], str] = lambda initiative: ""  # initiative to its ticket branch head; absent means ""
     level_merged: Callable[[str, str], bool] = lambda initiative, phase: False  # (initiative, phase) to whether the level landed
+    approved_branch_merged: Callable[[Row], bool] = lambda row: False  # approved row to whether its commit is on a phase or pr branch
 
 
 def read_queue_files(workspace: Path, rows: Sequence[Row], stored: Mapping[tuple[str, str], str]) -> list[QueueFile]:
@@ -923,7 +927,7 @@ def _hold_step(task: Row, ticks: frozenset[str], doc: Row) -> frozenset[str]:
 
 
 def approval_holds_from_actions(approved: Sequence[Row], actions: Sequence[Row]) -> list[ApprovalHold]:
-    """Per unmerged approved task, the distinct `ts` of its or its initiative's land, land_phase and steer_clear rows since its last landed row; none, no entry."""
+    """Per approved task not merged and not branch_merged, the distinct `ts` of its or its initiative's land, land_phase and steer_clear rows since its last landed row; none, no entry."""
     docs = list(map(_action_doc, sorted(actions, key=lambda r: str(r.get("ts") or ""))))
     holds = [
         ApprovalHold(
@@ -931,7 +935,7 @@ def approval_holds_from_actions(approved: Sequence[Row], actions: Sequence[Row])
             run=str(a.get("run") or ""), ticks=len(reduce(partial(_hold_step, a), docs, frozenset())),
         )
         for a in approved
-        if not a.get("merged")
+        if not a.get("merged") and not a.get("branch_merged")
     ]
     return sorted((h for h in holds if h["ticks"] > 0), key=lambda h: (h["initiative"], h["task_id"]))
 
@@ -1418,7 +1422,20 @@ def dispatch_facts(
     }
 
 
-def approved_facts(rows: Sequence[Row]) -> list[ApprovedTask]:
+def approved_facts(
+    rows: Sequence[Row],
+    land_at: Mapping[str, str] | None = None,
+    branch_merged: Callable[[Row], bool] | None = None,
+) -> list[ApprovedTask]:
+    """Each row also carries its initiative's `land_at` (an id missing from `land_at` reads ticket) and `branch_merged`.
+
+    `branch_merged` is asked only for land_at ticket or level, and is given the row with that `land_at` set."""
+    def at(r: Row) -> str:
+        return (land_at or {}).get(str(r["initiative"]), "ticket")
+
+    def on_branch(r: Row) -> bool:
+        return branch_merged is not None and at(r) in ("ticket", "level") and bool(branch_merged({**r, "land_at": at(r)}))
+
     return [
         {
             "id": r["id"],
@@ -1430,6 +1447,8 @@ def approved_facts(rows: Sequence[Row]) -> list[ApprovedTask]:
             "run": str(r["run"]),
             "needs_fetch": bool(r["needs_fetch"]),
             "merged": bool(r.get("merged", False)),
+            "land_at": at(r),
+            "branch_merged": on_branch(r),
         }
         for r in rows
     ]
@@ -1750,7 +1769,12 @@ def gather_facts(
     ready = docket_from_rows(rows, now_iso, items) if rows else docket["initiatives"]
     dispatch = deps.dispatch(docket) if deps.dispatch else dispatch_facts(docket, [], {"": int(docket["busy_lanes"])})
     live = set(deps.live_initiatives())
-    approved = approved_facts(deps.approved())
+    approved_rows = deps.approved()
+    approved = approved_facts(
+        approved_rows,
+        land_at_facts(deps.cartridge(), deps.land_at_values(), sorted({str(r["initiative"]) for r in approved_rows})),
+        deps.approved_branch_merged,
+    )
     repos = dict(deps.repos()) if deps.repos is not None else {}
     ready_ids = {i["id"]: {t["id"] for t in i["ready_tasks"]} for i in ready}
     problems = dag_problems(items) if deps.tickets is not None else {}
