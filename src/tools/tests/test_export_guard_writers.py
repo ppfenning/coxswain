@@ -17,7 +17,6 @@ from agent_tools.queue_export import (
     Hashes,
     agreeing_blobs,
     blob_hash,
-    export_file,
     export_files,
     own_export,
     read_baseline_record,
@@ -248,12 +247,14 @@ def test_a_file_matching_head_is_never_edited_whatever_the_record_says(tmp_path:
     assert caplog.records == []
 
 
-def test_a_real_hand_edit_is_held_listed_once_and_released_by_a_forced_write(tmp_path: Path, caplog) -> None:
+def test_a_real_hand_edit_is_saved_listed_once_and_dropped_by_the_next_export(tmp_path: Path, caplog) -> None:
     hand = "---\nstate: ready\ntitle: My own words\n---\nI changed this.\n"
     _write(tmp_path, TASK_PATH, hand)
     with caplog.at_level(logging.WARNING):
-        assert export_files(tmp_path, [TASK], hashes=_hashes()).touched == []
-    assert (tmp_path / TASK_PATH).read_text() == hand
+        assert export_files(tmp_path, [TASK], hashes=_hashes()).touched == [TASK_PATH]
+    assert (tmp_path / TASK_PATH).read_text() == render_item(TASK)
+    saved_to = f"runs/.hand-edits/{TASK_PATH.replace('/', '__')}.{blob_hash(hand)[:12]}.md"
+    assert (tmp_path / saved_to).read_text() == hand
     assert read_held_record(tmp_path) == [
         {
             "path": TASK_PATH,
@@ -261,10 +262,12 @@ def test_a_real_hand_edit_is_held_listed_once_and_released_by_a_forced_write(tmp
             "reason": HELD_REASON,
             "blob": blob_hash(hand),
             "diff_summary": "title, surfaces, id, lint, phase changed; body +1/-1 lines",
+            "saved_to": saved_to,
+            "outcome": "saved",
         }
     ]
     assert len(caplog.records) == 1
-    export_file(tmp_path, TASK, force=True, hashes=_hashes())
+    export_files(tmp_path, [TASK], hashes=_hashes())
     assert read_held_record(tmp_path) == []
 
 
@@ -318,7 +321,7 @@ def test_the_export_hook_does_not_commit_a_held_file(tmp_path: Path, monkeypatch
     monkeypatch.setattr(cli, "_export_board", export)
     cli._chair_export_hook(tmp_path / "runs", ("t1",))
     committed = subprocess.run(["git", "-C", str(tmp_path), "ls-files"], capture_output=True, text=True).stdout.split()
-    assert (committed, (tmp_path / TASK_PATH).read_text()) == ([INTAKE_PATH], hand)
+    assert (committed, (tmp_path / TASK_PATH).read_text()) == ([INTAKE_PATH], render_item(TASK))
 
 
 # --- a quarantine in the store reaches the status line, whatever its file says ---
@@ -331,7 +334,7 @@ def test_regression_a_store_quarantine_whose_file_is_held_reaches_the_status_lin
     hand = "---\nstate: ready\ntitle: Mine\n---\nhand\n"
     _write(tmp_path, TASK_PATH, hand)
     export_files(tmp_path, [{**TASK, "state": "quarantined"}], hashes=_hashes())
-    assert "state: ready" in (tmp_path / TASK_PATH).read_text()  # held: the file still says ready
+    assert "state: quarantined" in (tmp_path / TASK_PATH).read_text()  # the export overwrote the hand text, saved beside
     store = [{"initiative": "epic-a", "task_id": "t1", "phase": "p1", "state": "quarantined"}]
     monkeypatch.setattr(run_store, "work_items", lambda runs_dir, initiative=None: store)
     quarantined = chair_read_quarantined.read_quarantined(tmp_path, "store")

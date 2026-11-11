@@ -38,6 +38,7 @@ _KEEP_PREFIXES = ("intake/held/", "intake/done/")  # never deleted, whether or n
 _PATH_KEYS = {"task": ("initiative", "phase", "task_id"), "initiative": ("initiative",), "intake": ("task_id",)}
 _BASELINE_RECORD = "runs/.export-baseline.json"  # this workspace's own record of what its harness writers wrote; never shared
 _HELD_RECORD = "runs/.export-held.json"  # the files the last board export held, for the chair's facts and its export commit
+_HAND_EDITS = "runs/.hand-edits"  # hand text saved before the export overwrites it; outside work/ and intake/, which the export reads
 
 
 class Export(NamedTuple):
@@ -218,12 +219,24 @@ def diff_summary(disk_text: str, store_text: str | None) -> str:
     return f"{', '.join(changed)} changed; {body}" if changed else body
 
 
-def held_record(held: Sequence[Held], on_disk: Mapping[str, str], exported: Mapping[str, str]) -> list[dict[str, str]]:
+def hand_edit_save_path(path: str, blob: str) -> str:
+    """Pure: where the hand text of `path` with blob id `blob` is saved. Under runs/, never under work/ or intake/:
+    the export reads every markdown file in those trees as a work file, so a copy saved beside the file would be one."""
+    return f"{_HAND_EDITS}/{path.replace('/', '__')}.{blob[:12]}.md"
+
+
+def held_record(
+    held: Sequence[Held], on_disk: Mapping[str, str], exported: Mapping[str, str], saved: Mapping[str, str] | None = None
+) -> list[dict[str, str]]:
     """Pure: the rows of `runs/.export-held.json`: each held file with the blob id of the text it holds, so one
     needs-chair is raised per held content, and a new edit to the same file raises another, and a `diff_summary`
-    against its `exported` text."""
+    against its `exported` text. A path in `saved` (to its saved copy) carries it as `saved_to` and outcome `saved`."""
+    kept = saved or {}
     return [
-        {**h._asdict(), "blob": blob_hash(on_disk[h.path]), "diff_summary": diff_summary(on_disk[h.path], exported.get(h.path))}
+        {
+            **h._asdict(), "blob": blob_hash(on_disk[h.path]), "diff_summary": diff_summary(on_disk[h.path], exported.get(h.path)),
+            "saved_to": kept.get(h.path, ""), "outcome": "saved" if h.path in kept else "",
+        }
         for h in held if h.path in on_disk
     ]
 
@@ -234,7 +247,7 @@ def read_held_record(workspace: Path) -> list[dict[str, str]]:
         rows = json.loads((Path(workspace) / _HELD_RECORD).read_text())
     except (OSError, ValueError):
         return []
-    keys = ("path", "initiative", "reason", "blob", "diff_summary")  # a record from before diff_summary reads it as ""
+    keys = ("path", "initiative", "reason", "blob", "diff_summary", "saved_to", "outcome")  # an older record reads a missing key as ""
     return [
         {key: str(row.get(key) or "") for key in keys}
         for row in rows if isinstance(row, dict) and row.get("path")
@@ -371,6 +384,29 @@ def hashes_to_record(target: dict[str, str], written: set[str], on_disk: dict[st
     return [(keys[path], digest) for path, digest in digests.items() if stored.get(keys[path]) != digest]
 
 
+def _save_hand_edit(workspace: Path, path: str, text: str) -> str | None:
+    """Edge: save the hand `text` of `path` under runs/.hand-edits and return its workspace-relative path; the same blob
+    already saved is a no-op. None, logged, when it cannot be written: the caller must then leave the file alone."""
+    saved_to = hand_edit_save_path(path, blob_hash(text))
+    full = workspace / saved_to
+    try:
+        if not full.is_file():
+            full.parent.mkdir(parents=True, exist_ok=True)
+            full.write_text(text)
+    except OSError as exc:
+        _LOG.warning("could not save the hand edit of %s to %s, so the export keeps the file: %s", path, full, exc)
+        return None
+    return saved_to
+
+
+def _saved_warning(workspace: Path, path: str, saved_to: str) -> str:
+    return (
+        f"{workspace / path} was edited by hand: it matches neither this workspace's last committed or exported copy "
+        f"nor the store's export. Its text is saved at {workspace / saved_to} and the export has overwritten the file. "
+        f"To keep the edit, copy the saved text back and `cox route import --workspace {workspace}` overwrites the store with the file."
+    )
+
+
 def _edited_warning(workspace: Path, path: str) -> str:
     return (
         f"{workspace / path} was edited by hand: it matches neither this workspace's last committed or exported copy "
@@ -406,18 +442,22 @@ def read_held(workspace: Path, rows: list[Row]) -> list[Held]:
 def _write_guarded(
     workspace: Path, target: dict[str, str], writes: list[tuple[str, str]], on_disk: dict[str, str],
     keys: dict[str, RowKey], hashes: Hashes | None, force: bool, by_path: Mapping[str, Row],
-) -> tuple[list[str], list[Held]]:
-    """Edge: write `writes` under `workspace`, except files the classifier calls edited, which are left untouched and
-    logged once each. A file behind this workspace's own baseline is rewritten silently. Records the hash of every file
-    that now holds its target text, in the store and in the workspace's baseline record. Returns the paths written and
-    the files held. `by_path` is the row each path renders from. `hashes=None` is no guard."""
+) -> tuple[list[str], list[Held], dict[str, str]]:
+    """Edge: write `writes` under `workspace`. A file the classifier calls edited has its hand text saved under
+    runs/.hand-edits first, then the export text written over it; when the save fails the file is left untouched and
+    held, logged. A file behind this workspace's own baseline is rewritten silently. Records the hash of every file
+    that now holds its target text, in the store and in the workspace's baseline record. Returns the paths written, the
+    edited files, and the saved path of each that was saved. `by_path` is the row each path renders from. `hashes=None`
+    is no guard."""
     stored = {} if hashes is None else hashes.stored
     record = {} if hashes is None else read_baseline_record(workspace)
     guarded = hashes is not None and not force
     held_list = held_files(writes, on_disk, _write_baselines(workspace, record, writes, on_disk, by_path)) if guarded else []
-    held = {h.path for h in held_list}
-    for path in sorted(held):
-        _LOG.warning("%s", _edited_warning(workspace, path))
+    attempts = {h.path: _save_hand_edit(workspace, h.path, on_disk[h.path]) for h in held_list}
+    saved = {path: saved_to for path, saved_to in attempts.items() if saved_to is not None}
+    held = {path for path, saved_to in attempts.items() if saved_to is None}
+    for path in sorted(attempts):
+        _LOG.warning("%s", _edited_warning(workspace, path) if path in held else _saved_warning(workspace, path, saved[path]))
     written = [(path, text) for path, text in writes if path not in held]
     for path, text in written:
         full = workspace / path
@@ -431,7 +471,7 @@ def _write_guarded(
         updated = recorded_baselines(record, target, now_equal)
         if updated != record:
             write_baseline_record(workspace, updated)
-    return [path for path, _ in written], held_list
+    return [path for path, _ in written], held_list, saved
 
 
 def _forget_held(workspace: Path, paths: Collection[str]) -> None:
@@ -452,7 +492,7 @@ def export_file(workspace: Path, row: Row, *, force: bool = False, hashes: Hashe
     [(path, text)] = target.items()
     on_disk = {path: (workspace / path).read_text()} if (workspace / path).is_file() else {}
     writes = [(path, text)] if on_disk.get(path) != text else []
-    written, _ = _write_guarded(workspace, target, writes, on_disk, _row_keys([row]), hashes, force, rows_by_path([row]))
+    written, _, _ = _write_guarded(workspace, target, writes, on_disk, _row_keys([row]), hashes, force, rows_by_path([row]))
     if written:
         _forget_held(workspace, written)
     return Export(sorted(written), [])
@@ -465,9 +505,10 @@ def export_files(
     Returns the sorted paths touched and the ids of contentless rows skipped. Nothing under
     intake/held/ or intake/done/ is deleted. Rows with no content to export mean the store was
     unavailable or degraded, not an empty board, so the tree is left unchanged.
-    With `hashes`, a hand-edited file is left untouched and logged instead of rewritten; one merely behind this
-    workspace's own baseline is rewritten, and the held files are listed in `runs/.export-held.json`, replacing the
-    last list, so a file no longer held drops out of it. Files of a `protected` initiative are never deleted."""
+    With `hashes`, a hand-edited file has its text saved under `runs/.hand-edits` and is then rewritten, or is left
+    untouched and logged when the save fails; one merely behind this workspace's own baseline is rewritten silently.
+    Both kinds are listed in `runs/.export-held.json`, replacing the last list, so a file no longer edited drops out
+    of it. Files of a `protected` initiative are never deleted."""
     skipped = skipped_ids(rows)
     if len(skipped) == len(rows):
         return Export([], skipped)
@@ -475,11 +516,11 @@ def export_files(
     on_disk = _read_files(workspace)
     writes, deletes = plan_export(rows, on_disk, protected=protected)
     exported = export_rows(rows)
-    written, held = _write_guarded(
+    written, held, saved = _write_guarded(
         workspace, exported, writes, on_disk, _row_keys(rows), hashes, False, rows_by_path(rows)
     )
     if hashes is not None:
-        rows_held = held_record(held, on_disk, exported)
+        rows_held = held_record(held, on_disk, exported, saved)
         if rows_held != read_held_record(workspace):
             write_held_record(workspace, rows_held)
     stop_at = {workspace, workspace / "intake", workspace / "work"}
