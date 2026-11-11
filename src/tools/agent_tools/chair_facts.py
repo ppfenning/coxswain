@@ -70,6 +70,7 @@ from agent_tools.chair_types import (
     PidProbeFact,
     QuarantineFacts,
     QueueFile,
+    RemoteUnfetched,
     ReviewPr,
     RunningInitiative,
     RunRecord,
@@ -265,7 +266,7 @@ class FactsDeps:
     missing_repos: Callable[[], list[str]] | None = None
     reported_repos: Callable[[], set[str]] | None = None
     run_exited: Callable[[], Mapping[str, bool]] | None = None  # initiative to whether its newest run has an exit record; absent means {}
-    remote_unfetched: Callable[[], Mapping[str, str]] | None = None
+    remote_unfetched: Callable[[], Mapping[str, str]] | None = None  # a `RemoteUnfetched` also carries the decompose-only initiatives
     lost_runs: Callable[[], Mapping[str, str]] | None = None  # initiative to run id, for a lane whose host is stale and whose run has no exit record; absent means {}
     decomposed_intake: Callable[[], Mapping[str, str]] | None = None  # initiative to its newest decompose run id, for a decomposed intake; absent means {}
     item_counts: Callable[[], Mapping[str, int]] | None = None  # initiative to its stored task-item count; absent means every initiative counts as non-empty
@@ -1866,6 +1867,7 @@ def gather_facts(
     login_hosts = deps.hosts()
     decomposed = dict(deps.decomposed_intake()) if deps.decomposed_intake is not None else {}
     probe = dict(deps.pid_probe())
+    unfetched = deps.remote_unfetched() if deps.remote_unfetched is not None else {}
     from agent_tools.chair_decompose_runs import decompose_refusals  # lazy: chair_decompose_runs imports this module
 
     refusals = land_refusals_from_actions(action_rows, now)
@@ -1897,7 +1899,8 @@ def gather_facts(
             deps.reported_repos() if deps.reported_repos is not None else set(),
         ),
         "run_exited": dict(deps.run_exited()) if deps.run_exited is not None else {},
-        "remote_unfetched": dict(deps.remote_unfetched()) if deps.remote_unfetched is not None else {},
+        "remote_unfetched": dict(unfetched),
+        "remote_unfetched_decompose": list(unfetched.decompose) if isinstance(unfetched, RemoteUnfetched) else [],
         "schema_deaths": {i: list(r) for i, r in deps.schema_deaths().items()},
         "lost_runs": dict(deps.lost_runs()) if deps.lost_runs is not None else {},
         "pid_probe": probe,
