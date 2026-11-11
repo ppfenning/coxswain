@@ -1,7 +1,7 @@
 """lint_tickets — the static checks from docs/design/work-shape.md §3, plus `cross_repo`.
 
 Pure: plain data in, plain data out, no file I/O, no network, no clock.
-`reach`, `coupling`, `contract` and `surface_missing` are refusals; `grant`, `size`, `cross_repo` and `references` are advisory
+`reach`, `coupling`, `contract`, `surface_missing` and `wrong_repo` are refusals; `grant`, `size`, `cross_repo` and `references` are advisory
 (`Problem.severity`) — the caller in `initiative_decompose.py` routes on that.
 `tree` rows may carry an optional `"imports"` list (paths that file imports),
 computed once at the edge, so the coupling rule's import disjunct stays pure.
@@ -14,6 +14,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from graphs.delivery.repo_layout import foreign_repo
+from graphs.delivery.repo_layout import repo_key as layout_repo_key
+
 __all__ = [
     "IdeaHeal",
     "Problem",
@@ -25,7 +28,7 @@ __all__ = [
     "refusal_reason",
 ]
 
-_REFUSAL_RULES = frozenset({"reach", "coupling", "contract", "surface_missing"})
+_REFUSAL_RULES = frozenset({"reach", "coupling", "contract", "surface_missing", "wrong_repo"})
 _ROOTED_PREFIXES = ("~/", "/")
 _RISKY_SINGLE = frozenset({"cox", "uv", "gh", "ruff"})
 _RISKY_TWO_WORD = frozenset({"git push"})
@@ -49,6 +52,7 @@ _PATH_PUNCTUATION = "`,.()\"':;"
 _CROSS_REPO_CORRECTION = "paste the code the build needs into the ticket: a build reads only its own repository"
 _SURFACE_MISSING_FIX = "add (new) after the path if the task creates it, otherwise correct the path"
 _NEW_SUFFIX = " (new)"
+_WRONG_REPO_FIX = "move the task to an initiative for that repository"
 _CONTRACT_CORRECTION = (
     "add a contract task in the producer repository that commits a JSON fixture of the interface, "
     "and add its id to this task's needs"
@@ -64,7 +68,7 @@ class Problem:
 
     @property
     def severity(self) -> str:
-        """`"refusal"` for reach/coupling/contract/surface_missing, `"advisory"` for grant/size/cross_repo."""
+        """`"refusal"` for reach/coupling/contract/surface_missing/wrong_repo, `"advisory"` for grant/size/cross_repo."""
         return "refusal" if self.rule in _REFUSAL_RULES else "advisory"
 
 
@@ -315,11 +319,12 @@ def _is_plain_file_surface(surface: str) -> bool:
 
 
 def _surface_missing_problems(tasks: Sequence[Mapping[str, Any]], tree: Sequence[Mapping[str, Any]], repo: str) -> list[Problem]:
-    """Silent on an empty tree. A surface in another repository's roots is `cross_repo`'s, so it is skipped here."""
+    """Silent on an empty tree. A surface another repository owns is `cross_repo`'s or `wrong_repo`'s, so it is skipped here."""
     if not tree:
         return []
     known_paths = {str(row.get("path")) for row in tree}
     own = _own_repos(repo, tree)
+    own_key = layout_repo_key(repo)
     problems: list[Problem] = []
     for task in tasks:
         for path in dict.fromkeys(str(s).strip() for s in task.get("surfaces") or []):
@@ -328,9 +333,30 @@ def _surface_missing_problems(tasks: Sequence[Mapping[str, Any]], tree: Sequence
             owner = _owner_of(path)
             if owner and owner not in own:
                 continue
+            if own_key is not None and foreign_repo(path, own_key) is not None:
+                continue
             problems.append(
                 Problem(str(task["id"]), "surface_missing", f"task {task['id']} names {path}, which is not in the repository", _SURFACE_MISSING_FIX)
             )
+    return problems
+
+
+def _wrong_repo_problems(tasks: Sequence[Mapping[str, Any]], repo: str) -> list[Problem]:
+    """One problem per task and foreign repository. Silent when `repo` is not a known repository."""
+    own_key = layout_repo_key(repo)
+    if own_key is None:
+        return []
+    problems: list[Problem] = []
+    for task in tasks:
+        by_repo: dict[str, list[str]] = {}
+        for path in dict.fromkeys(str(s).strip() for s in task.get("surfaces") or []):
+            found = foreign_repo(path, own_key)
+            if found is not None:
+                by_repo.setdefault(found, []).append(path)
+        problems.extend(
+            Problem(str(task["id"]), "wrong_repo", f"task {task['id']} names {', '.join(paths)}, which belongs to {found}, not this repository", _WRONG_REPO_FIX)
+            for found, paths in by_repo.items()
+        )
     return problems
 
 
@@ -518,5 +544,6 @@ def lint_tickets(
         *references_problems(fixed_tasks, tree, texts or {}),
         *_cross_repo_problems(fixed_tasks, tree, repo),
         *_surface_missing_problems(fixed_tasks, tree, repo),
+        *_wrong_repo_problems(fixed_tasks, repo),
         *_contract_problems(fixed_tasks),
     ]
