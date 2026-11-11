@@ -1576,10 +1576,14 @@ def new_missing_repos(missing: Collection[str], reported: Collection[str]) -> li
 
 
 def intake_paths_from_rows(rows: Sequence[Row], current: str | None = None) -> list[str]:
-    """Queued intake rows as `<task_id>.md`, in row order: the same relative-path shape `read_intake` returns.
+    """Queued intake rows as `intake/<stem>.md`, relative to the workspace, whether the key is bare, prefixed or suffixed.
 
     Held intakes are dropped; with `current`, so are those whose `target_release` is above it."""
-    return [f"{row['task_id']}.md" for row in intake_from_rows(rows, current)]
+    return [f"intake/{_intake_stem(row['task_id'])}.md" for row in intake_from_rows(rows, current)]
+
+
+def _intake_stem(task_id: str) -> str:
+    return task_id.removeprefix("intake/").removesuffix(".md")
 
 
 DEFAULT_HOUSEKEEPING_HOURS = 24.0

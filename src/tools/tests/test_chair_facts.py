@@ -785,7 +785,7 @@ def test_rows_drive_ready_intake_quarantined_and_stranded_facts_with_files_ignor
         "id": "i", "started": True, "ready_tasks": [{"id": "a", "phase": "p1", "needs": [], "requires": []}], "waiting_tasks": [],
         "landed": {"c"}, "land_at": "ticket",  # c is approved, which a ticket initiative counts as landed
     }
-    assert facts["intake"] == ["q1.md"]
+    assert facts["intake"] == ["intake/q1.md"]
     assert facts["quarantines"] == [
         {"task_id": "b", "initiative": "j", "cause": "code", "harness_failures": 0, "has_patch": False, "rescue_failed": False},
         {"task_id": "c", "initiative": "i", "cause": "stranded", "harness_failures": 0, "has_patch": False, "rescue_failed": False,
