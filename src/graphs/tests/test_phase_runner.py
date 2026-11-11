@@ -9,7 +9,6 @@ not notice.
 from __future__ import annotations
 
 import threading
-import time
 from functools import partial
 
 from graphs.delivery import lifecycle_propose
@@ -36,11 +35,12 @@ RESPONSES = {
 
 
 class SlowRunner:
-    """Records overlap. Each call sleeps, so sequential execution is visible."""
+    """Records overlap. With `rendezvous` > 1 a call holds until that many are in flight, so overlap is forced, not timed."""
 
-    def __init__(self, responses, delay=0.05):
+    def __init__(self, responses, rendezvous=1):
         self.responses = responses
-        self.delay = delay
+        self.rendezvous = rendezvous
+        self.met = threading.Event()
         self.lock = threading.Lock()
         self.active = 0
         self.peak = 0
@@ -49,16 +49,19 @@ class SlowRunner:
         with self.lock:
             self.active += 1
             self.peak = max(self.peak, self.active)
+            if self.active >= self.rendezvous:
+                self.met.set()
         try:
-            time.sleep(self.delay)
+            if self.rendezvous > 1:
+                self.met.wait(timeout=30)  # generous bound; a broken pool fails the peak assertion, not a hang
             return dict(self.responses[role])
         finally:
             with self.lock:
                 self.active -= 1
 
 
-def phase(cartridge, tasks=TASKS, max_parallel=3, responses=None):
-    runner = SlowRunner(responses or RESPONSES)
+def phase(cartridge, tasks=TASKS, max_parallel=3, responses=None, rendezvous=1):
+    runner = SlowRunner(responses or RESPONSES, rendezvous=rendezvous)
     results, proposals, failures = _run_phase(
         tasks=list(tasks),
         cartridge=cartridge,
@@ -72,7 +75,7 @@ def phase(cartridge, tasks=TASKS, max_parallel=3, responses=None):
 
 def test_independent_tasks_really_do_overlap(cartridge) -> None:
     """The whole reason for a DAG: unblocked work runs at the same time."""
-    _, _, _, runner = phase(cartridge)
+    _, _, _, runner = phase(cartridge, rendezvous=2)
     assert runner.peak > 1, "tasks ran one after another; the parallelism is not real"
 
 
