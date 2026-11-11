@@ -82,13 +82,14 @@ def test_the_task_record_names_the_lane_database(repo, cart, tmp_path) -> None: 
     assert names["t1-probe"] != names["t2-bench"]
 
 
-def test_no_setting_runs_checks_with_no_environment_and_leaves_the_record_alone(
+def test_no_setting_runs_checks_with_only_the_lane_basetemp_and_leaves_the_record_alone(
     repo, cart, tmp_path, monkeypatch  # noqa: F811
 ) -> None:
     monkeypatch.delenv("COX_LANE_CAPACITY", raising=False)  # a lane host exports it; this test is the no-capacity case
+    monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)  # a lane exports its own --basetemp
     calls = _spy_checks(monkeypatch)
     result, _ = drive(repo, cart, tmp_path, work=_work())
-    assert calls and all(env is None for _, env in calls)
+    assert calls and all("--basetemp=" in env["PYTEST_ADDOPTS"] and VAR not in env for _, env in calls)
     assert not any("test_database" in t for t in result["tasks"])
     assert "lane_databases" not in result
 

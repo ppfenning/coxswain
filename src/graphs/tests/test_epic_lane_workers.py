@@ -35,6 +35,7 @@ def twelve_cores(monkeypatch) -> None:
     monkeypatch.setattr(os, "cpu_count", lambda: 12)
     monkeypatch.delenv(LANE_CAPACITY_VAR, raising=False)
     monkeypatch.delenv(XDIST_VAR, raising=False)
+    monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)  # a lane exports its own --basetemp
 
 
 def _work() -> dict:
@@ -68,11 +69,13 @@ def test_capacity_3_on_12_cores_gives_4_workers_to_every_task_call_and_the_phase
     assert not any("test_database" in t for t in result["tasks"])
 
 
-def test_no_capacity_leaves_every_environment_as_today(repo, cart, tmp_path, monkeypatch) -> None:  # noqa: F811
+def test_no_capacity_adds_no_worker_count_but_every_environment_carries_the_lane_basetemp(
+    repo, cart, tmp_path, monkeypatch  # noqa: F811
+) -> None:
     cart["landing_areas"]["level_checks"] = [LEVEL]
     calls = _spy_checks(monkeypatch)
     drive(repo, cart, tmp_path, work=_work())
-    assert calls and all(env is None for _, env in calls)
+    assert calls and all("--basetemp=" in env["PYTEST_ADDOPTS"] and XDIST_VAR not in env for _, env in calls)
 
 
 def test_an_operator_set_worker_count_is_kept(repo, cart, tmp_path, monkeypatch) -> None:  # noqa: F811
@@ -80,7 +83,7 @@ def test_an_operator_set_worker_count_is_kept(repo, cart, tmp_path, monkeypatch)
     monkeypatch.setenv(XDIST_VAR, "7")
     calls = _spy_checks(monkeypatch)
     drive(repo, cart, tmp_path, work=_work())
-    assert calls and all(env is None or env[XDIST_VAR] == "7" for _, env in calls)
+    assert calls and all(env[XDIST_VAR] == "7" for _, env in calls)
 
 
 def test_workers_and_the_lane_database_travel_together(repo, cart, tmp_path, monkeypatch) -> None:  # noqa: F811

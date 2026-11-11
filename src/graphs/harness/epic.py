@@ -42,6 +42,7 @@ import difflib
 import json
 import logging
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -116,6 +117,7 @@ from harness.invoke import Invocation, invoke_graphs
 from harness.lane_database import database_name, lane_env
 from harness.lane_database_create import create_lane_database, creation_failure
 from harness.lane_database_drop import drop_lane_database
+from harness.lane_pytest_tmp import basetemp_env, lane_scratch_dir
 from harness.lane_workers import lane_workers_from, workers_env
 from harness.lanes import lane_bound
 from harness.phase_remote import FetchOutcome, Kind, fetch_branch, materialise_local, missing_branch_cause, push_branch
@@ -1170,7 +1172,7 @@ def _run_level_checks(ctx: _Ctx, phase: str, record: dict[str, Any]) -> None:
         return
     log = {"log_dir": ctx.runs_dir / ctx.run_id / "checks" / phase / "level", "log_prefix": f"checks/{phase}/level/"}
     with repo_gate_lock(ctx.repo):
-        results = run_checks(ctx.phase_worktree(phase), checks, env=_checks_env(ctx, {}), **log)
+        results = run_checks(ctx.phase_worktree(phase), checks, env=_checks_env(ctx, {}, phase, "@level"), **log)
     record["level_checks"] = results
     if reason := _level_failure_reason(phase, results):
         record["status"], record["reason"] = "partial", reason
@@ -1210,25 +1212,37 @@ def _run_level_integration(ctx: _Ctx, phase: str, base: str, record: dict[str, A
             "log_prefix": f"checks/{phase}/level-integration/",
         }
         with repo_gate_lock(ctx.repo):
-            results = run_checks(worktree, list(scoped.checks), env=_checks_env(ctx, lane), **log)
+            results = run_checks(worktree, list(scoped.checks), env=_checks_env(ctx, lane, phase, "@level-integration"), **log)
     record["level_integration"], record["level_integration_scope"] = results, scoped.selection
     if reason := _level_integration_reason(phase, creation, results):
         record["status"], record["reason"] = "partial", reason
 
 
-def _checks_env(ctx: _Ctx, lane: Mapping[str, str]) -> dict[str, str] | None:
-    """The process environment with the worker count and the lane variable over it; None when neither applies."""
+def _scratch_dir(ctx: _Ctx, phase: str, task: str) -> Path:
+    """`@` opens every name that is not a task id, so a task called `level` cannot share the level's directory."""
+    return lane_scratch_dir(ctx.worktree_root / ctx.run_id, phase, task)
+
+
+def _remove_scratch(ctx: _Ctx, phase: str, task: str) -> None:
+    shutil.rmtree(_scratch_dir(ctx, phase, task), ignore_errors=True)
+
+
+def _checks_env(ctx: _Ctx, lane: Mapping[str, str], phase: str, task: str) -> dict[str, str]:
+    """The process environment with the worker count, the lane variable and a made pytest scratch directory over it."""
+    scratch = _scratch_dir(ctx, phase, task)
+    scratch.mkdir(parents=True, exist_ok=True)
     workers = {} if ctx.lane_workers is None else workers_env(os.environ, ctx.lane_workers)
-    return {**os.environ, **workers, **lane} if workers or lane else None
+    return {**os.environ, **workers, **lane, **basetemp_env(os.environ, scratch)}
 
 
-def _lane_checks_env(ctx: _Ctx, phase: str, task: str) -> dict[str, str] | None:
-    """The child environment for one lane's checks, None when there is neither a worker count nor a lane database."""
-    return _checks_env(ctx, lane_env(ctx.test_database, ctx.run_id, phase, task))
+def _lane_checks_env(ctx: _Ctx, phase: str, task: str) -> dict[str, str]:
+    """The child environment for one lane's checks: its database, worker count and own pytest scratch directory."""
+    return _checks_env(ctx, lane_env(ctx.test_database, ctx.run_id, phase, task), phase, task)
 
 
 def _drop_lane(ctx: _Ctx, phase: str, task: str) -> None:
-    """Drop the lane's database once its worktree is gone and list the outcome; a lane with no database does nothing."""
+    """Remove the lane's scratch directory, then drop its database once its worktree is gone and list the outcome."""
+    _remove_scratch(ctx, phase, task)
     name = ctx.lane_names.pop((phase, task), None)
     if name is None or ctx.test_database is None:
         return
@@ -1293,6 +1307,16 @@ def _settle_pool(ctx: _Ctx, *, keep_worktrees: bool) -> None:
 
 
 def _build_task(
+    ctx: _Ctx, *, phase: str, task: str, result: Mapping[str, Any], verify: Sequence[str] = ()
+) -> dict[str, Any]:
+    """Build and check one task; its pytest scratch directory is removed as soon as its checks have run."""
+    try:
+        return _build_task_checked(ctx, phase=phase, task=task, result=result, verify=verify)
+    finally:
+        _remove_scratch(ctx, phase, task)
+
+
+def _build_task_checked(
     ctx: _Ctx, *, phase: str, task: str, result: Mapping[str, Any], verify: Sequence[str] = ()
 ) -> dict[str, Any]:
     """Apply one task's patch on a scratch branch off the phase branch, and check it.
@@ -1512,9 +1536,12 @@ def _style_fix(ctx: _Ctx, *, phase: str, task: str, result: Mapping[str, Any], b
     build_field = result.get("build")
     if isinstance(build_field, dict) and folded:
         build_field["patch"] = folded + "\n"
-    results = run_checks(
-        worktree, ctx.checks, env=_lane_checks_env(ctx, phase, task), **_checks_log(ctx, phase, task)
-    )
+    try:
+        results = run_checks(
+            worktree, ctx.checks, env=_lane_checks_env(ctx, phase, task), **_checks_log(ctx, phase, task)
+        )
+    finally:
+        _remove_scratch(ctx, phase, task)
     build["checks"] = results
     build["check_scope"] = {"reason": "style pass reran the full list", "tests_run": _tests_run(results)}
     # Only `checks:` rows are replaced; `verify:` rows stay as run before the style edit.
@@ -1937,6 +1964,8 @@ def run_epic(
         if ctx is not None:
             run_dir = ctx.worktree_root / ctx.run_id
             _settle_pool(ctx, keep_worktrees=keep_worktrees)
+            # The phase-level and end-of-run scratch directories; a kept run must not carry this one as a phase directory.
+            shutil.rmtree(run_dir / "pytest-tmp", ignore_errors=True)
             if keep_worktrees:
                 # `keep_worktree` moves ONE named worktree to
                 # `_kept/<run_id>/<name>`; run_dir's own name is the run id,
@@ -4564,7 +4593,7 @@ def _trim_phase(ctx: _Ctx, phase: str) -> str | None:
             if before is None or after is None:
                 outcome = "refused (coverage floor)"
             else:
-                checks_ok = all_passed(run_checks(after_tree, ctx.checks, env=_checks_env(ctx, {}))) if ctx.checks else True
+                checks_ok = all_passed(run_checks(after_tree, ctx.checks, env=_checks_env(ctx, {}, phase, "@trim"))) if ctx.checks else True
                 if not (coverage_floor_holds(before, after) and checks_ok):
                     outcome = "refused (coverage floor)"
         finally:
@@ -5401,7 +5430,7 @@ def rescue_task(ctx: _Ctx, item: Mapping[str, Any], *, phase: str) -> dict[str, 
         ctx.checks,
         apply=apply,
         workdir=ctx.worktree_root / ctx.run_id,
-        env=_checks_env(ctx, {}),
+        env=_checks_env(ctx, {}, phase, f"@rescue-{task}"),
     )
     if not verified["passed"]:
         return _rescue_failed(ctx, item, phase=phase, reason=str(verified["reason"]), failed_checks=True)
