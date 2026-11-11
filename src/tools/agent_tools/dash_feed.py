@@ -1247,9 +1247,11 @@ def _latest_run(attempts: Sequence[Mapping]) -> str:
 
 def _latest_by_task(
     attempts_by_task: Mapping[str, Sequence[Mapping]], calls_by_run: Mapping[str, Sequence[Mapping]],
+    scope_of: Callable[[str, str], Mapping | None] | None = None,
 ) -> dict[str, dict]:
     """Each task's latest run, with the node of its last call there and the turns and cost of its calls there.
-    Only calls stamped with the task's id count: a run's calls carry the task they built."""
+    Only calls stamped with the task's id count: a run's calls carry the task they built. `scope_of(task, run)`
+    is the task record's `check_scope`; a task it gives none for carries no `check_scope` key."""
     latest = {task: _latest_run(rows) for task, rows in attempts_by_task.items()}
     own = {task: [c for c in calls_by_run.get(run, ()) if c.get("task_id") == task] for task, run in latest.items()}
     return {
@@ -1258,9 +1260,20 @@ def _latest_by_task(
             "node": own[task][-1]["node"] if own[task] else "",
             "turns": sum(int(c.get("turns") or 0) for c in own[task]),
             "cost": round(sum(float(c.get("cost_usd") or 0.0) for c in own[task]), 4),
+            **({"check_scope": scope} if scope_of and (scope := scope_of(task, run)) is not None else {}),
         }
         for task, run in latest.items()
     }
+
+
+def _task_check_scope(runs_dir: Path, run: str, phase: str, task: str) -> Mapping | None:
+    """Edge: `check_scope` of `<runs_dir>/<run>/tasks/<phase>/<task>.json`; None when the file is missing, unreadable or malformed."""
+    try:
+        record = json.loads((runs_dir / run / "tasks" / phase / f"{task}.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):  # UnicodeDecodeError and JSONDecodeError are ValueErrors
+        return None
+    scope = record.get("check_scope") if isinstance(record, dict) else None
+    return scope if isinstance(scope, dict) else None
 
 
 def _verdicts_by_task(
@@ -1277,12 +1290,15 @@ def _verdicts_by_task(
 
 def _run_tasks(
     rows: Sequence[Mapping], attempts: Sequence[Mapping], calls_by_run: Mapping[str, Sequence[Mapping]],
-    run_verdicts: Mapping[str, tuple[str, frozenset[str]]], slug: str,
+    run_verdicts: Mapping[str, tuple[str, frozenset[str]]], slug: str, runs_dir: Path | None = None,
 ) -> tuple[list[dict], dict]:
-    """`(task_entries, counts)` for one initiative's task rows; a row with no task id is left out."""
+    """`(task_entries, counts)` for one initiative's task rows; a row with no task id is left out. With `runs_dir`,
+    each task's latest run record supplies its check figures."""
     own = [row for row in _own_tasks(rows, slug) if row.get("task_id")]
     by_task = _attempts_by_task(attempts, slug)
-    latest = _latest_by_task(by_task, calls_by_run)
+    phase_of = {str(row["task_id"]): str(row.get("phase") or "") for row in own}
+    scope_of = (lambda task, run: _task_check_scope(runs_dir, run, phase_of.get(task, ""), task)) if runs_dir else None
+    latest = _latest_by_task(by_task, calls_by_run, scope_of)
     entries = task_entries(own, by_task, latest, _verdicts_by_task(latest, run_verdicts))
     land_at = _configured_land_at(rows, slug)
     merged = sum(1 for row in own if _task_state(row, (), False, False, land_at) == "merged")
@@ -1320,7 +1336,7 @@ def _tasks_edge(
         )
         latest_runs = {_latest_run(grouped) for slug in slugs for grouped in _attempts_by_task(attempts, slug).values()}
         verdicts = {run: _run_verdicts(runs_dir, run) for run in latest_runs}
-        return {slug: _run_tasks(rows, attempts, calls_by_run, verdicts, slug) for slug in slugs}
+        return {slug: _run_tasks(rows, attempts, calls_by_run, verdicts, slug, runs_dir) for slug in slugs}
     except (OSError, *run_store._db_errors()):  # a store failure must not take the feed down; a code fault must
         return None
 
