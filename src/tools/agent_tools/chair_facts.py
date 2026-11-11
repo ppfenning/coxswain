@@ -1798,7 +1798,14 @@ def gather_facts(
     now_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     items = list(deps.tickets()) if deps.tickets is not None else []
     # `items` carry the store's `updated_at`, which the queue rows lack, so the docket's age tie-break holds here too.
-    ready = docket_from_rows(rows, now_iso, items) if rows else docket["initiatives"]
+    # Each initiative is judged by its own land_at, as `docket_by_land_at` does for the file docket.
+    ready = (
+        docket_from_rows(
+            rows, now_iso, items,
+            land_at_facts(deps.cartridge(), deps.land_at_values(), sorted({str(r["initiative"]) for r in rows if r["kind"] == "task"})),
+        )
+        if rows else docket["initiatives"]
+    )
     dispatch = deps.dispatch(docket) if deps.dispatch else dispatch_facts(docket, [], {"": int(docket["busy_lanes"])})
     live = set(deps.live_initiatives())
     approved_rows = deps.approved()
