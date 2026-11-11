@@ -13,6 +13,7 @@ LEFT_OUT = "left out of the launch list for a reason the facts do not show"
 _STEER_KINDS = frozenset({"needs_chair", "steer_clear"})
 _BUDGET = "launch budget"
 _BUDGET_REFUSED = "relaunch refused by the budget or the loop rule"
+_CAP_SPENT = "launch cap reached this tick"
 _MAX = re.compile(r"max_launches_per_hour=(\d+)")
 
 
@@ -81,6 +82,7 @@ def _release_held(initiative: Mapping[str, Any]) -> str | None:
 # and leaves it absent when the initiative was not placed. scheduled_later is returned verbatim; dag_problem is
 # reported as an invalid DAG ahead of any withheld name. A steer action with no "other" is skipped.
 # The budget expiry needs the skip text for the initiative; a withheld refusal with no such skip may be the loop rule.
+# cap_spent is a caller fact: a cap above 0 was used up by earlier launches this tick. It ignores the host field.
 def unlaunched(
     initiatives: Sequence[Mapping[str, Any]],
     launched: Collection[str],
@@ -93,6 +95,8 @@ def unlaunched(
     pace_cap: int,
     now: datetime,
     launch_history: Sequence[Any],
+    *,
+    cap_spent: bool = False,
 ) -> list[dict[str, str]]:
     """One unlaunched action per ready initiative not in launched, naming the first reason that applies."""
     def reason(i: Mapping[str, Any]) -> str:
@@ -106,6 +110,7 @@ def unlaunched(
             i.get("scheduled_later") or None,
             "orchestration mode: it would build on the chair machine" if orchestrating and local else None,
             "paced against the weekly target" if pace_cap == 0 else None,
+            _CAP_SPENT if cap_spent else None,
             _release_held(i),
             "no lane free on an eligible host" if no_host or (free_lanes <= 0 and local) else None,
         )
