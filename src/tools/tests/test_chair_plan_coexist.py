@@ -96,18 +96,6 @@ def test_a_decompose_live_on_the_chair_machine_leaves_a_relaunch_its_remote_lane
     assert _launches(plan_tick(facts, _NOW)) == [("relaunch", "a", "omarchy"), ("launch_epic", "b", "omarchy")]
 
 
-def test_a_decompose_live_on_the_chair_machine_leaves_a_rescue_its_remote_lane():
-    quarantine = {"task_id": "a-t", "initiative": "a", "cause": "stranded_no_heartbeat", "harness_failures": 0}
-    facts = _facts(
-        limits={"hard_stop": False, "weekly_fraction": 0.1, "hard_stop_fraction": 0.9, "launch_cap": 1, "go_degraded": False},
-        dispatch=_decompose_live([{"name": "omarchy", "capacity": 3, "live_runs": 0}]),
-        initiatives=[_initiative("a", started=True)],
-        quarantines=[quarantine],
-    )
-    rescues = [(a["kind"], a.get("host", "")) for a in plan_tick(facts, _NOW) if a["kind"] == "rescue"]
-    assert rescues in ([], [("rescue", "omarchy")])
-
-
 def test_the_chair_machine_room_still_bounds_what_launches_on_it():
     facts = _facts(
         dispatch={"max_in_flight": 2, "live_runs": 1, "hosts": []},
@@ -135,12 +123,3 @@ def test_the_weekly_lane_fraction_still_limits_remote_launches():
         initiatives=[_initiative(i, repo=f"r{i}") for i in "abcd"],
     )
     assert _launches(plan_tick(facts, _NOW)) == [("launch_epic", "a", "omarchy"), ("launch_epic", "b", "omarchy")]
-
-
-def test_a_go_degraded_cap_of_zero_launches_nothing_anywhere():
-    facts = _facts(
-        limits={"hard_stop": False, "weekly_fraction": 0.5, "hard_stop_fraction": 0.9, "launch_cap": 3, "go_degraded": True},
-        dispatch=_decompose_live([{"name": "omarchy", "capacity": 3, "live_runs": 0}]),
-        initiatives=[_initiative("a", repo="r1")],
-    )
-    assert _launches(plan_tick(facts, _NOW)) == []

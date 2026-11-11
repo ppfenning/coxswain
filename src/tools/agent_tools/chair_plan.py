@@ -38,6 +38,7 @@ from agent_tools.chair_plan_recover import (
     STRANDED_CAUSE,
     _initiative_first_unmet_need,
     claimed_by,
+    landing_initiatives,
     plan_lost_runs,
     plan_recover,
     refused_launches,
@@ -343,10 +344,9 @@ def _without_carried_lands(lands: list[Action], carries: list[Action]) -> list[A
 
 
 def _landing_initiatives(facts: Facts, lands: list[Action]) -> frozenset[str]:
-    """Initiatives whose repo has a land in flight, plus those with a land_phase or partial_land planned this tick."""
-    repos = frozenset(landing["repo"] for landing in facts.get("landing", []))
-    in_repo = frozenset(i["id"] for i in facts["initiatives"] if i.get("repo") in repos)
-    return in_repo | frozenset(a["initiative"] for a in lands if a["kind"] in ("land_phase", "partial_land"))
+    """Initiatives a land in flight touches (landing_initiatives), plus those with a land_phase or partial_land planned
+    this tick. Another initiative in the landing repo is not withheld: it launches beside the land."""
+    return landing_initiatives(facts) | frozenset(a["initiative"] for a in lands if a["kind"] in ("land_phase", "partial_land"))
 
 
 def _is_launch(action: Action) -> bool:
@@ -1202,7 +1202,8 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     # Recover already owns a relaunched or quarantined initiative this tick; fill must not launch it a second time.
     # Withheld initiatives stay in the facts so their ready tasks still block a pull.
     # A steer deferral already reports its initiative; fill would find the same overlap and report it twice.
-    # An initiative whose repo is landing, or whose phase lands this tick, must not launch until the land settles.
+    # An initiative being landed, or whose phase lands this tick, must not launch until the land settles; the rest of
+    # its repo launches beside the land.
     steward_started = steward_handled & frozenset(i["id"] for i in facts["initiatives"] if i["started"])
     # Each set is keyed by the plain words a stuck steer head reports when it is the reason the head is left out.
     withheld_by = {
