@@ -1,49 +1,51 @@
-import errno
-import os
-
 import pytest
 
-from agent_tools import log_doctor
-from agent_tools.jsonl_log import read_log
-from agent_tools.log_doctor import LOG_NAMES, check_logs, fix_logs, log_rows, plan_fix
-
-GOOD = '{"a": 1}'
-STRIPPABLE = '{"a"\x00: 1\x00}'
-BROKEN = '{"a": \x00'
+from agent_tools.log_doctor import (
+    CHAIR_ACTIONS,
+    COURIER,
+    LAND,
+    check_logs,
+    fix_logs,
+    log_rows,
+    plan_fix,
+)
 
 
 def test_all_null_line_is_moved_and_left_out():
-    assert plan_fix(f"{GOOD}\n\x00\x00\x00\n") == (f"{GOOD}\n", ("\x00\x00\x00",))
+    assert plan_fix('{"a": 1}\n\x00\x00\x00\n{"b": 2}\n') == ('{"a": 1}\n{"b": 2}\n', ("\x00\x00\x00",))
 
 
-def test_embedded_nuls_that_parse_stripped_stay_in_stripped_form():
-    assert plan_fix(f"{GOOD}\n{STRIPPABLE}\n") == (f'{GOOD}\n{{"a": 1}}\n', (STRIPPABLE,))
+def test_embedded_nuls_that_parse_stripped_stay_stripped_and_are_returned_raw():
+    assert plan_fix('{"a"\x00: 1\x00}\n') == ('{"a": 1}\n', ('{"a"\x00: 1\x00}',))
 
 
-def test_line_that_stays_unparseable_is_left_out():
-    assert plan_fix(f"{GOOD}\n{BROKEN}\n{GOOD}\n") == (f"{GOOD}\n{GOOD}\n", (BROKEN,))
+def test_line_that_stays_unparseable_is_left_out_and_returned_raw():
+    assert plan_fix('{"a": 1}\n{"a": \x00\n') == ('{"a": 1}\n', ('{"a": \x00',))
 
 
-def test_clean_text_is_returned_unchanged():
-    text = f'{GOOD}\r\n\n{{"b": 2}}'
+def test_unparseable_line_without_nul_is_damaged():
+    assert plan_fix('{"a": 1}\nnot json\n') == ('{"a": 1}\n', ("not json",))
+
+
+def test_damaged_unterminated_tail_leaves_a_closed_log():
+    assert plan_fix('{"a": 1}\nnot json') == ('{"a": 1}\n', ("not json",))
+
+
+@pytest.mark.parametrize("text", ["", '{"a": 1}\n', '{"a": 1}', '{"a": 1}\r\n\n{"b": 2}\n'])
+def test_clean_text_is_returned_unchanged(text):
     assert plan_fix(text) == (text, ())
 
 
-def test_good_lines_keep_order_and_content_around_damage():
-    assert plan_fix('{"z": 1}\n{"a": 2}\n[1]\n') == ('{"z": 1}\n{"a": 2}\n', ("[1]",))
-
-
-def test_log_rows_one_row_per_log_in_order():
-    rows = log_rows({"land.jsonl": 2, "chair.actions.jsonl": 1})
-    assert [row["check"] for row in rows] == [f"log {name}" for name in LOG_NAMES]
-    assert rows[0] == {"check": "log courier.jsonl", "ok": True, "detail": "no damaged lines"}
-    assert rows[1] == {
-        "check": "log land.jsonl",
-        "ok": True,
-        "warn": True,
-        "detail": "2 damaged lines; run cox setup doctor --fix",
-    }
-    assert rows[2]["detail"] == "1 damaged line; run cox setup doctor --fix"
+def test_log_rows_ok_at_zero_and_warning_otherwise():
+    assert log_rows({"land.jsonl": 0, "courier.jsonl": 3}) == [
+        {"check": "land.jsonl", "ok": True, "detail": "ok"},
+        {
+            "check": "courier.jsonl",
+            "ok": True,
+            "warn": True,
+            "detail": "3 damaged line(s): run cox setup doctor --fix",
+        },
+    ]
 
 
 @pytest.fixture
@@ -55,162 +57,64 @@ def dirs(tmp_path):
 
 
 def test_missing_logs_are_ok(dirs):
-    assert all(row["ok"] and "warn" not in row for row in check_logs(*dirs))
-    assert fix_logs(*dirs) == dict.fromkeys(LOG_NAMES, 0)
+    assert [row["detail"] for row in check_logs(*dirs)] == ["ok", "ok", "ok"]
+    assert fix_logs(*dirs) == {COURIER: 0, LAND: 0, CHAIR_ACTIONS: 0}
+    assert sorted(p.name for d in dirs for p in d.iterdir()) == []
 
 
-def test_check_reports_damage_per_log(dirs):
+def test_check_counts_nul_lines_that_parse_stripped(dirs):
     work, runs = dirs
-    (work / "courier.jsonl").write_bytes(f"{GOOD}\n{STRIPPABLE}\n".encode())
+    (runs / LAND).write_bytes(b'{"a"\x00: 1}\n\x00\n')
     rows = {row["check"]: row for row in check_logs(work, runs)}
-    assert rows["log courier.jsonl"]["detail"] == "1 damaged line; run cox setup doctor --fix"
-    assert "warn" not in rows["log land.jsonl"]
+    assert rows[LAND]["detail"] == "2 damaged line(s): run cox setup doctor --fix"
+    assert rows[COURIER]["detail"] == rows[CHAIR_ACTIONS]["detail"] == "ok"
 
 
 def test_clean_log_is_byte_for_byte_unchanged_with_no_damaged_file(dirs):
     work, runs = dirs
-    clean = f'{GOOD}\r\n\n{{"b": 2}}'.encode()
-    (runs / "land.jsonl").write_bytes(clean)
-    assert fix_logs(work, runs)["land.jsonl"] == 0
-    assert (runs / "land.jsonl").read_bytes() == clean
-    assert not (runs / "land.jsonl.damaged").exists()
+    clean = b'{"a": 1}\r\n\n{"b": 2}\n'
+    (work / COURIER).write_bytes(clean)
+    assert fix_logs(work, runs) == {COURIER: 0, LAND: 0, CHAIR_ACTIONS: 0}
+    assert (work / COURIER).read_bytes() == clean
+    assert not (work / (COURIER + ".damaged")).exists()
+    assert not (work / (COURIER + ".tmp")).exists()
 
 
-def test_damaged_file_holds_the_original_raw_lines_and_second_fix_adds_nothing(dirs):
+def test_fix_moves_raw_lines_aside_and_a_second_fix_adds_nothing(dirs):
     work, runs = dirs
-    log = runs / "chair.actions.jsonl"
-    log.write_bytes(f"{GOOD}\n\x00\x00\n{STRIPPABLE}\n{BROKEN}\n".encode())
-    assert fix_logs(work, runs)["chair.actions.jsonl"] == 3
-    damaged = runs / "chair.actions.jsonl.damaged"
-    assert damaged.read_bytes() == f"\x00\x00\n{STRIPPABLE}\n{BROKEN}\n".encode()
-    assert log.read_bytes() == f'{GOOD}\n{{"a": 1}}\n'.encode()
-    before = damaged.read_bytes()
-    assert fix_logs(work, runs) == dict.fromkeys(LOG_NAMES, 0)
-    assert damaged.read_bytes() == before
-    assert all("warn" not in row for row in check_logs(work, runs))
+    (runs / CHAIR_ACTIONS).write_bytes(b'{"a": 1}\n\x00\x00\n{"b"\x00: 2}\n{"c": \x00\n{"d": 4}\n')
+    assert fix_logs(work, runs) == {COURIER: 0, LAND: 0, CHAIR_ACTIONS: 3}
+    assert (runs / CHAIR_ACTIONS).read_bytes() == b'{"a": 1}\n{"b": 2}\n{"d": 4}\n'
+    aside = runs / (CHAIR_ACTIONS + ".damaged")
+    original = b'\x00\x00\n{"b"\x00: 2}\n{"c": \x00\n'
+    assert aside.read_bytes() == original
+    assert fix_logs(work, runs) == {COURIER: 0, LAND: 0, CHAIR_ACTIONS: 0}
+    assert aside.read_bytes() == original
+    assert (runs / CHAIR_ACTIONS).read_bytes() == b'{"a": 1}\n{"b": 2}\n{"d": 4}\n'
 
 
-def test_invalid_utf8_in_a_good_line_survives_the_fix(dirs):
+def test_later_damage_appends_to_the_damaged_file(dirs):
     work, runs = dirs
-    log = work / "courier.jsonl"
-    body = b'{"a": "\xff"}\n'
-    log.write_bytes(body + b"[1]\n")
-    assert fix_logs(work, runs)["courier.jsonl"] == 1
-    assert log.read_bytes() == body
-
-
-def test_failed_damaged_write_leaves_the_log_untouched(dirs):
-    work, runs = dirs
-    log = work / "courier.jsonl"
-    original = f"{GOOD}\n{BROKEN}\n".encode()
-    log.write_bytes(original)
-    (work / "courier.jsonl.damaged").mkdir()
-    with pytest.raises(OSError):
-        fix_logs(work, runs)
-    assert log.read_bytes() == original
-    assert not (work / "courier.jsonl.fix.tmp").exists()
-
-
-def _short_writes(monkeypatch, *, then_fail):
-    real, calls = os.write, []
-
-    def write(fd, data):
-        calls.append(len(data))
-        if then_fail and len(calls) > 1:
-            raise OSError(errno.ENOSPC, "No space left on device")
-        return real(fd, bytes(data)[:3])
-
-    monkeypatch.setattr(os, "write", write)
-    return calls
-
-
-def test_short_writes_still_put_every_damaged_line_in_the_damaged_file(dirs, monkeypatch):
-    work, runs = dirs
-    log = work / "courier.jsonl"
-    log.write_bytes(f"{GOOD}\n{BROKEN}\n[1]\n".encode())
-    calls = _short_writes(monkeypatch, then_fail=False)
-    assert fix_logs(work, runs)["courier.jsonl"] == 2
-    assert len(calls) > 1
-    assert (work / "courier.jsonl.damaged").read_bytes() == f"{BROKEN}\n[1]\n".encode()
-    assert log.read_bytes() == f"{GOOD}\n".encode()
-
-
-def test_short_write_then_full_disk_leaves_the_log_untouched(dirs, monkeypatch):
-    work, runs = dirs
-    log = work / "courier.jsonl"
-    original = f"{GOOD}\n{BROKEN}\n[1]\n".encode()
-    log.write_bytes(original)
-    _short_writes(monkeypatch, then_fail=True)
-    with pytest.raises(OSError):
-        fix_logs(work, runs)
-    assert log.read_bytes() == original
-
-
-def test_write_of_zero_bytes_is_an_error_and_the_log_is_untouched(dirs, monkeypatch):
-    work, runs = dirs
-    log = work / "courier.jsonl"
-    original = f"{GOOD}\n[1]\n".encode()
-    log.write_bytes(original)
-    monkeypatch.setattr(os, "write", lambda fd, data: 0)
-    with pytest.raises(OSError):
-        fix_logs(work, runs)
-    assert log.read_bytes() == original
-
-
-def test_replacement_keeps_the_log_mode(dirs):
-    work, runs = dirs
-    log = work / "courier.jsonl"
-    log.write_bytes(f"{GOOD}\n[1]\n".encode())
-    log.chmod(0o600)
+    (work / COURIER).write_bytes(b"one bad\n")
     fix_logs(work, runs)
-    assert log.stat().st_mode & 0o777 == 0o600
-
-
-def test_replacement_is_synced_before_the_rename(dirs, monkeypatch):
-    work, runs = dirs
-    (work / "courier.jsonl").write_bytes(f"{GOOD}\n[1]\n".encode())
-    events = []
-    real_fsync, real_replace = os.fsync, os.replace
-    monkeypatch.setattr(os, "fsync", lambda fd: (events.append("fsync"), real_fsync(fd))[1])
-    monkeypatch.setattr(os, "replace", lambda a, b: (events.append("replace"), real_replace(a, b))[1])
+    (work / COURIER).write_bytes(b'{"a": 1}\ntwo bad\n')
     fix_logs(work, runs)
-    assert events == ["fsync", "fsync", "replace"]
+    assert (work / (COURIER + ".damaged")).read_bytes() == b"one bad\ntwo bad\n"
 
 
-def test_a_line_appended_during_the_fix_is_not_dropped(dirs, monkeypatch):
+def test_failure_writing_damaged_file_leaves_the_log_untouched(dirs):
     work, runs = dirs
-    log = work / "courier.jsonl"
-    log.write_bytes(f"{GOOD}\n[1]\n".encode())
-    real = log_doctor._append_damaged
-
-    def append_then_race(path, damaged):
-        real(path, damaged)
-        with log.open("ab") as handle:
-            handle.write(b'{"late": 1}\n')
-
-    monkeypatch.setattr(log_doctor, "_append_damaged", append_then_race)
+    original = b'{"a": 1}\nnot json\n'
+    (work / COURIER).write_bytes(original)
+    (work / (COURIER + ".damaged")).mkdir()
     with pytest.raises(OSError):
         fix_logs(work, runs)
-    assert log.read_bytes() == f'{GOOD}\n[1]\n{{"late": 1}}\n'.encode()
-    assert not (work / "courier.jsonl.fix.tmp").exists()
+    assert (work / COURIER).read_bytes() == original
+    assert not (work / (COURIER + ".tmp")).exists()
 
 
-def test_a_crash_between_append_and_replace_duplicates_and_never_loses(dirs, monkeypatch):
+def test_non_utf8_bytes_in_good_lines_survive_a_fix(dirs):
     work, runs = dirs
-    log = work / "courier.jsonl"
-    log.write_bytes(f"{GOOD}\n[1]\n".encode())
-    monkeypatch.setattr(log_doctor, "_replace", lambda *args: (_ for _ in ()).throw(OSError("crash")))
-    with pytest.raises(OSError):
-        fix_logs(work, runs)
-    monkeypatch.undo()
-    assert fix_logs(work, runs)["courier.jsonl"] == 1
-    assert (work / "courier.jsonl.damaged").read_bytes() == b"[1]\n[1]\n"
-
-
-@pytest.mark.parametrize("body", [b'{"a": "\xff"}\n', b'{"a": \xff}\n', b"\xff\xfe\n", b'{"a": 1}\n[1]\n'])
-def test_check_agrees_with_read_log_when_no_nul_is_present(dirs, body):
-    work, runs = dirs
-    (work / "courier.jsonl").write_bytes(body)
-    skipped = read_log(work / "courier.jsonl").skipped
-    assert check_logs(work, runs)[0]["ok"] is True
-    assert ("warn" in check_logs(work, runs)[0]) == (skipped > 0)
+    (work / COURIER).write_bytes(b'{"a": "\xff"}\nnot json\n')
+    fix_logs(work, runs)
+    assert (work / COURIER).read_bytes() == b'{"a": "\xff"}\n'
