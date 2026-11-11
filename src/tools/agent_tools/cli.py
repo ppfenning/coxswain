@@ -243,6 +243,8 @@ setup_migrate_hosts = _LazyModule("agent_tools.setup_migrate_hosts")
 setup_receipts = _LazyModule("agent_tools.setup_receipts")
 setup_store = _LazyModule("agent_tools.setup_store")
 setup_store_io = _LazyModule("agent_tools.setup_store_io")
+setup_token = _LazyModule("agent_tools.setup_token")
+claude_token = _LazyModule("agent_tools.claude_token")
 sources = _LazyModule("agent_tools.sources")
 stats_causes = _LazyModule("agent_tools.stats_causes")
 stats_chair = _LazyModule("agent_tools.stats_chair")
@@ -8618,6 +8620,7 @@ def _gather_doctor_facts(profile_path: Path, repo: Path) -> dict:
     facts.update(_git_and_forge_facts(profile or {}))
     facts["plugins_tools"] = _tools_plugin_facts()
     facts.update(_chair_unit_facts())
+    facts["claude_token"] = setup_token.token_fact(claude_token.token_path(str(Path.home())))
     if profile is None:
         return facts
     singles = [profile.get(k, "") for k in ("cartridges_dir", "provider_profile", "harness_dir", "workspace_dir", "umbrella_dir")]
@@ -9991,6 +9994,27 @@ def _setup_store(a: argparse.Namespace, *, env: Mapping[str, str] | None = None,
     if choice == "files":
         return _store_files(a, settings_path)
     return _store_shared(a, settings_path, os.environ if env is None else env, ask, tty, probes, exclude_file)
+
+
+def _setup_token(a: argparse.Namespace) -> int:
+    """Edge. Store the long-lived Claude token: getpass for the prompt, a prompt only when both ends are terminals."""
+    return setup_token.store(
+        a.token, a.from_file,
+        path=claude_token.token_path(str(Path.home())),
+        interactive=sys.stdin.isatty() and sys.stdout.isatty(),
+        ask_secret=setup_token.prompt_secret,
+        read_text=setup_token.read_file_text,
+    )
+
+
+def _setup_token_status(a: argparse.Namespace) -> int:
+    """Edge. Report the stored token's state; `--probe` spends one small claude request to prove it works."""
+    return setup_token.status(
+        a.probe,
+        path=claude_token.token_path(str(Path.home())),
+        read_token=claude_token.read_token,
+        run=setup_token.run_command,
+    )
 
 
 def _store_mode_and_runs(settings_path: Path) -> tuple[str, Path | None]:
@@ -12626,6 +12650,27 @@ SETUP_COMMANDS = [
             ),
         ),
         sub_dest="store_cmd", sub_required=False,
+    ),
+    commands.Command(
+        "token", "setup", "store the long-lived Claude token that coxswain's own claude runs use",
+        (
+            commands.Arg(("--token",), {"help": "the token printed by `claude setup-token`; prefer --from-file, a flag lands in shell history"}),
+            commands.Arg(("--from-file",), {"metavar": "PATH", "help": "read the token from this file; else asked with hidden input in a terminal"}),
+        ),
+        "agent_tools.cli:_setup_token", False, (),
+        subcommands=(
+            commands.Command(
+                "status", "setup", "report whether the stored token file exists and claude accepts it",
+                (commands.Arg(("--probe",), {"action": "store_true", "help": "also send one small claude request; exits 1 when it fails"}),),
+                "agent_tools.cli:_setup_token_status", False, (),
+            ),
+        ),
+        sub_dest="token_cmd", sub_required=False,
+        description=(
+            "The token comes from `claude setup-token`.\n"
+            "It is stored mode 600 in coxswain's config folder.\n"
+            "Interactive claude sessions are untouched: only coxswain's own runs read the file."
+        ),
     ),
 ]
 
