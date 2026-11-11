@@ -127,7 +127,7 @@ def test_an_approval_at_the_hold_limit_is_released_and_its_files_stop_blocking()
             "kind": "release_approvals",
             "initiative": "A",
             "task_ids": ["A-t"],
-            "reason": "approval unmerged for 6 ticks; rebuild on the current main",
+            "reason": "approval not merged to main or its phase branch for 6 ticks; rebuild on the current main",
             "epoch": 7,
         }
     ]

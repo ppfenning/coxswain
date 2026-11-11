@@ -116,6 +116,8 @@ class ApprovedTask(TypedDict):
     needs_fetch: bool  # the run is remote and not yet fetched; False without a run
     merged: bool  # the task's PR has merged into the level branch; it still awaits its land
     land_manual: NotRequired[bool]  # the repo sets `land: manual`: a person merges the PR, so no land is planned for the task
+    branch_merged: NotRequired[bool]  # the task's commit, or one with its patch id, is on its phase or pr branch; absent is False
+    land_at: NotRequired[str]  # where the task's work lands: ticket, level or task; absent is task
 
 
 class LandingFact(TypedDict):
