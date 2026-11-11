@@ -143,3 +143,45 @@ def test_a_rewritten_plan_is_split_again_and_replaces_the_first_split(cart) -> N
     assert [c["role"] for c in runner.calls] == ["decompose", "decompose"]
     assert [t["id"] for t in result["tasks"]] == ["t1"]
     assert [f["tasks"] for f in result["follow_ups"]] == [["t2"]]
+
+
+COX = "~/repos/coxswain"
+DASH = "~/repos/coxswain-dash"
+COX_OWN = [{"repo": "me", "path": "src/tools/agent_tools/a.py"}]
+DASH_OWN = [{"repo": "me", "path": "src/ui/regatta.rs"}]
+
+
+def test_a_layout_foreign_task_becomes_a_follow_up_without_repo_trees(cart) -> None:
+    plan = _plan(
+        _task("t1", ["src/tools/agent_tools/a.py"], "edit a"),
+        _task("t2", ["src/ui/regatta.rs", "Cargo.toml"], "edit the dashboard"),
+    )
+    result = decompose(cart, plan, tree=COX_OWN, repo=COX)
+    assert [t["id"] for t in result["tasks"]] == ["t1"]
+    assert [(f["repo"], f["tasks"]) for f in result["follow_ups"]] == [(DASH, ["t2"])]
+    assert result["dropped"] == []
+
+
+def test_a_coxswain_dash_initiative_moves_a_coxswain_task_by_layout(cart) -> None:
+    plan = _plan(
+        _task("t1", ["src/ui/regatta.rs"], "edit regatta"),
+        _task("t2", ["src/tools/agent_tools/dash_feed.py"], "edit the feed"),
+    )
+    result = decompose(cart, plan, tree=DASH_OWN, repo=DASH)
+    assert [t["id"] for t in result["tasks"]] == ["t1"]
+    assert [f["repo"] for f in result["follow_ups"]] == [COX]
+
+
+def test_a_plan_wholly_in_the_layout_repository_is_refused_naming_it(cart) -> None:
+    plan = _plan(_task("t1", ["src/ui/regatta.rs"], "edit regatta"))
+    with pytest.raises(ContractViolation, match=f"every task in this plan belongs to {DASH}"):
+        decompose(cart, plan, tree=COX_OWN, repo=COX)
+
+
+def test_a_plan_with_no_known_own_key_is_unchanged(cart) -> None:
+    plan = _plan(_task("t1", ["src/a.py"], "edit a"), _task("t2", ["src/ui/regatta.rs"], "edit regatta"))
+    with pytest.raises(ContractViolation, match="t2: src/ui/regatta.rs: not in the checkout"):
+        decompose(cart, plan, repo="repo/u")
+    kept = decompose(cart, _plan(_task("t1", ["src/a.py"], "edit a")), repo="repo/u")
+    assert [t["id"] for t in kept["tasks"]] == ["t1"]
+    assert kept["follow_ups"] == []
