@@ -254,7 +254,7 @@ def test_a_local_phase_branch_ahead_of_origin_is_kept(tmp_path: Path) -> None:
     host = second_machine(tmp_path, origin)
     git("checkout", "-q", PHASE, cwd=host)
     merged = commit(host, "merged.txt")
-    git("checkout", "-q", "main", cwd=host)
+    git("checkout", "-q", "--detach", cwd=host)
     assert fetch_branch(host, PHASE) == FetchOutcome(Kind.PRESENT_LOCALLY)
     assert git("rev-parse", f"refs/heads/{PHASE}", cwd=host) == merged
     assert not has_ref(host, fetched_ref(PHASE))
@@ -266,7 +266,7 @@ def test_a_diverged_phase_branch_keeps_local_and_saves_origins_tip(tmp_path: Pat
     host = second_machine(tmp_path, origin)
     git("checkout", "-q", PHASE, cwd=host)
     merged = commit(host, "merged.txt")
-    git("checkout", "-q", "main", cwd=host)
+    git("checkout", "-q", "--detach", cwd=host)
     repaired = advance_origin(repo, "repaired.txt")
     outcome = fetch_branch(host, PHASE)
     assert outcome.kind == Kind.DIVERGED

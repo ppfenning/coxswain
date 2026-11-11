@@ -151,15 +151,31 @@ def test_an_unreachable_origin_is_a_fetch_failure_not_a_missing_branch_claim(hos
     assert result["quarantined"] == []
 
 
-def test_a_local_branch_is_not_overwritten_by_the_fetch(hosts, cart, tmp_path) -> None:  # noqa: F811
+def test_a_stale_local_branch_is_fast_forwarded_by_the_fetch(hosts, cart, tmp_path) -> None:  # noqa: F811
     drive(hosts.a, cart, tmp_path, work=initiative(two_phases=False), run_id="epic-a")
     git("branch", P1_BRANCH, "main", cwd=hosts.b)
-    local = git("rev-parse", P1_BRANCH, cwd=hosts.b)
+    stale = git("rev-parse", P1_BRANCH, cwd=hosts.b)
 
     outcomes = epic._fetch_phase_branches(SimpleNamespace(repo=hosts.b), [P1_BRANCH])
 
-    assert outcomes[P1_BRANCH].kind == Kind.PRESENT_LOCALLY
-    assert git("rev-parse", P1_BRANCH, cwd=hosts.b) == local != git("rev-parse", P1_BRANCH, cwd=hosts.a)
+    assert outcomes[P1_BRANCH].kind == Kind.FAST_FORWARDED
+    assert stale != git("rev-parse", P1_BRANCH, cwd=hosts.b) == git("rev-parse", f"origin/{P1_BRANCH}", cwd=hosts.b)
+
+
+def test_a_local_branch_holding_its_own_commit_is_not_overwritten_by_the_fetch(hosts, cart, tmp_path) -> None:  # noqa: F811
+    drive(hosts.a, cart, tmp_path, work=initiative(two_phases=False), run_id="epic-a")
+    git("branch", P1_BRANCH, "main", cwd=hosts.b)
+    own = git("-c", "user.name=t", "-c", "user.email=t@invalid", "commit-tree", "-m", "own", "-p", P1_BRANCH,
+              f"{P1_BRANCH}^{{tree}}", cwd=hosts.b)
+    git("update-ref", f"refs/heads/{P1_BRANCH}", own, cwd=hosts.b)
+
+    outcomes = epic._fetch_phase_branches(SimpleNamespace(repo=hosts.b), [P1_BRANCH])
+
+    assert outcomes[P1_BRANCH].kind == Kind.DIVERGED
+    assert git("rev-parse", P1_BRANCH, cwd=hosts.b) == own
+    assert git("rev-parse", f"refs/coxswain/fetched/origin/{P1_BRANCH}", cwd=hosts.b) == git(
+        "rev-parse", f"origin/{P1_BRANCH}", cwd=hosts.b
+    )
 
 
 def test_the_branches_to_fetch_are_the_own_and_parent_branches_and_the_epic_refs_of_needed_and_cut_from() -> None:
