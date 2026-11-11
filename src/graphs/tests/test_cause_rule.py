@@ -3,6 +3,7 @@ from pathlib import Path
 
 from harness import cause_rule
 from harness.cause_rule import CAUSES, classify_cause, is_auth_failure
+from harness.stale_base import WRONG_REPOSITORY_PREFIX, wrong_repository_reason
 
 
 def test_the_closed_set_of_causes():
@@ -99,6 +100,25 @@ def test_a_stale_base_is_harness_while_no_work_stays_ticket():
     reason = "t1: the build base predates files the ticket needs: src/a.py"
     assert classify_cause("stale_base", reason) == "harness"
     assert classify_cause("no_work", reason) == "ticket"
+
+
+def test_a_wrong_repository_stale_base_is_ticket_and_an_ordinary_one_stays_harness():
+    wrong = "wrong repository: t1 needs src/ui/a.rs, which belong in coxswain-dash"
+    assert classify_cause("stale_base", wrong) == "ticket"
+    assert classify_cause("stale_base", "t1: the build base predates files the ticket needs: src/a.py") == "harness"
+
+
+def test_the_real_wrong_repository_reason_is_ticket():
+    assert classify_cause("stale_base", wrong_repository_reason("t1", "coxswain-dash", ["src/ui/a.rs"])) == "ticket"
+
+
+def test_a_task_id_carrying_a_harness_marker_does_not_override_a_wrong_repository_reason():
+    reason = wrong_repository_reason("usage limit", "coxswain-dash", ["src/ui/a.rs"])
+    assert classify_cause("stale_base", reason) == "ticket"
+
+
+def test_the_wrong_repository_prefix_matches_the_one_stale_base_emits():
+    assert cause_rule._WRONG_REPOSITORY_PREFIX == WRONG_REPOSITORY_PREFIX
 
 
 def test_no_matching_rule_returns_none():

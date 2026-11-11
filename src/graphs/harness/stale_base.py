@@ -5,6 +5,11 @@ from __future__ import annotations
 import re
 from collections.abc import Collection, Iterable, Sequence
 
+from graphs.delivery.repo_layout import foreign_repo
+
+# Must equal `_WRONG_REPOSITORY_PREFIX` in harness/cause_rule.py, which imports nothing from the harness.
+WRONG_REPOSITORY_PREFIX = "wrong repository:"
+
 _NEW_MARKER = "(new)"
 
 # Not preceded by a path character, so the tail of an absolute path or a URL never starts a match.
@@ -46,3 +51,15 @@ def is_patch_empty(failure: str) -> bool:
 def stale_base_reason(task: str, missing: Iterable[str]) -> str:
     """The quarantine reason: every missing path, sorted, and why the build produced nothing."""
     return f"{task}: the build base predates files the ticket needs: {', '.join(sorted(set(missing)))}"
+
+
+def wrong_repository(missing: Iterable[str], own_key: str) -> str | None:
+    """The one other repository key placing every missing path; None for no paths, a mix, or an unplaceable path."""
+    keys = {foreign_repo(p, own_key) for p in missing}
+    return next(iter(keys)) if len(keys) == 1 else None
+
+
+def wrong_repository_reason(task: str, repo: str, missing: Iterable[str]) -> str:
+    """The quarantine reason for a task whose missing files all belong to another known repository."""
+    paths = ", ".join(sorted(set(missing)))
+    return f"{WRONG_REPOSITORY_PREFIX} {task} needs {paths}, which belong in {repo}; the task belongs in an initiative for {repo}"

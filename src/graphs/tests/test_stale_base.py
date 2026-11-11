@@ -1,4 +1,12 @@
-from harness.stale_base import is_patch_empty, missing_paths, stale_base_reason, ticket_paths
+from harness.stale_base import (
+    WRONG_REPOSITORY_PREFIX,
+    is_patch_empty,
+    missing_paths,
+    stale_base_reason,
+    ticket_paths,
+    wrong_repository,
+    wrong_repository_reason,
+)
 
 
 def test_a_plain_surface_is_named():
@@ -54,3 +62,22 @@ def test_the_reason_names_every_missing_path_sorted():
     assert stale_base_reason("t1", ["src/z.py", "src/a.py"]) == (
         "t1: the build base predates files the ticket needs: src/a.py, src/z.py"
     )
+
+
+def test_every_missing_path_in_one_other_repository_gives_its_key():
+    assert wrong_repository(("src/ui/a.rs", "themes/x.toml"), "coxswain") == "coxswain-dash"
+
+
+def test_a_mix_of_foreign_and_own_paths_gives_none():
+    assert wrong_repository(("src/ui/a.rs", "src/tools/b.py"), "coxswain") is None
+
+
+def test_a_path_the_layout_cannot_place_gives_none():
+    assert wrong_repository(("src/ui/a.rs", "docs/x.md"), "coxswain") is None
+
+
+def test_the_wrong_repository_reason_starts_with_the_prefix_and_names_task_repo_and_paths():
+    reason = wrong_repository_reason("t1", "coxswain-dash", ["src/ui/z.rs", "src/ui/a.rs"])
+    assert reason.startswith(WRONG_REPOSITORY_PREFIX)
+    assert reason.startswith("wrong repository: t1 needs src/ui/a.rs, src/ui/z.rs")
+    assert "initiative for coxswain-dash" in reason
