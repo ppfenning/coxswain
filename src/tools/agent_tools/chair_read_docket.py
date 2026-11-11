@@ -171,21 +171,41 @@ def _with_item_ages(items: Sequence[Row], aged: Sequence[Row]) -> list[dict[str,
     return [{**i, "updated_at": i.get("updated_at") or ages.get((i["initiative"], i["id"]))} for i in items]
 
 
-def docket_from_rows(rows: Sequence[Row], now: str, aged: Sequence[Row] = ()) -> list[dict[str, Any]]:
+def _summaries_by_land_at(items: Sequence[Row], land_at: Mapping[str, str]) -> list[dict[str, Any]]:
+    """`route.initiative_summaries` run once per initiative, each under its own land_at; an id not in `land_at` keeps the default."""
+    return [
+        summary
+        for initiative in sorted({i["initiative"] for i in items})
+        for summary in route.initiative_summaries(
+            [i for i in items if i["initiative"] == initiative], land_at=land_at.get(initiative, route.DEFAULT_LAND_AT)
+        )
+    ]
+
+
+def docket_from_rows(
+    rows: Sequence[Row], now: str, aged: Sequence[Row] = (), land_at: Mapping[str, str] | None = None
+) -> list[dict[str, Any]]:
     """The builder's `initiatives` over the task rows, less each task a live lease holds (`holder` set, `expires_at` after ISO `now`).
 
     Queue rows carry no `updated_at` (`run_store._QUEUE_COLUMNS`), so ages come from `aged`, the `_work_items` rows,
-    unless a queue row supplies one. Ordering runs after the lease filter, so a leased task never sets an age."""
+    unless a queue row supplies one. Ordering runs after the lease filter, so a leased task never sets an age.
+
+    `land_at` maps initiative id to its land_at. None, or an id missing from it, keeps `route.DEFAULT_LAND_AT`."""
     tasks = [r for r in rows if r["kind"] == "task"]
     items = _with_item_ages([_item_of(r) for r in tasks], aged)
     claimed = {(r["initiative"], r["task_id"]) for r in tasks if _claimed(r, now)}
+    judged = (
+        None if land_at is None
+        else {i["initiative"]: land_at.get(i["initiative"], route.DEFAULT_LAND_AT) for i in items}
+    )
+    summaries = route.initiative_summaries(items) if judged is None else _summaries_by_land_at(items, judged)
     unclaimed = [
         {
             **i,
             "ready_tasks": [t for t in i["ready_tasks"] if (i["id"], t["id"]) not in claimed],
             "waiting_tasks": [t for t in i["waiting_tasks"] if (i["id"], t["id"]) not in claimed],
         }
-        for i in _initiative_rows(route.initiative_summaries(items), items)
+        for i in _initiative_rows(summaries, items, judged)
     ]
     return _by_priority(unclaimed, items)
 
