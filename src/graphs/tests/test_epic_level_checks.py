@@ -7,7 +7,7 @@ import time
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
-from harness import epic
+from harness import check_reuse, epic
 from harness.epic import _level_failure_reason, _PhaseRunner
 from tests.test_epic_driver import cart, drive, git, repo  # noqa: F401
 from tests.test_epic_waves import Gated, by_phase, work
@@ -49,6 +49,7 @@ class Spy:
 def spy_on(monkeypatch) -> Spy:
     spy = Spy(epic.run_checks)
     monkeypatch.setattr(epic, "run_checks", spy)
+    monkeypatch.setattr(check_reuse, "run_checks", spy)  # the task gate runs through the ledger
     return spy
 
 

@@ -19,6 +19,7 @@ from test_epic_driver import (  # noqa: F401 -- fixtures
 )
 
 import harness.epic as epic
+from harness import check_reuse
 
 LINT, TOOLS, GRAPHS, CLEAN = "echo lint", "cd tools && pytest -q", "cd graphs && pytest -q", "echo clean"
 CHECKS = [
@@ -92,6 +93,7 @@ def lane(monkeypatch) -> dict:
         return seen["record"]
 
     monkeypatch.setattr(epic, "run_checks", fake_run_checks)
+    monkeypatch.setattr(check_reuse, "run_checks", fake_run_checks)  # the task gate runs through the ledger
     monkeypatch.setattr(epic, "_build_task", spy_build)
     return seen
 

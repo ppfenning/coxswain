@@ -87,6 +87,7 @@ from harness.cause_model import cause_evidence, classify_with_model, one_line
 from harness.cause_rule import _TRANSIENT_AUTH, classify_cause, is_auth_failure
 from harness.check_deps import load_dep_map
 from harness.check_gate import gate_checks, gate_commands, repo_gate_lock
+from harness.check_reuse import run_checks_reusing
 from harness.check_scope import _is_test_file, pytest_component, render_selection, select_checks
 from harness.checks import (
     HARNESS_FAULT_PREFIX,
@@ -1139,6 +1140,24 @@ def _checks_log(ctx: _Ctx, phase: str, task: str) -> dict[str, Any]:
     return {"log_dir": ctx.runs_dir / ctx.run_id / "checks" / phase / task, "log_prefix": f"checks/{phase}/{task}/"}
 
 
+def _ledger_dir(worktree: Path) -> Path | None:
+    """The repository's git common directory, shared by every worktree; None when git cannot say."""
+    ok, out = _git("-C", str(worktree), "rev-parse", "--git-common-dir")
+    return (worktree / out).resolve() if ok and out else None
+
+
+def _gate_checks(worktree: Path, checks: Sequence[Mapping[str, Any]], **kw: Any) -> list[dict[str, Any]]:
+    """`run_checks` for a task gate or style pass: a pass on this tree and command is reused and recorded."""
+    ledger = _ledger_dir(worktree)
+    if ledger is None:
+        return run_checks(worktree, checks, **kw)
+    return run_checks_reusing(worktree, checks, ledger_dir=ledger, **kw)
+
+
+def _reused_names(results: Sequence[Mapping[str, Any]]) -> list[str]:
+    return [str(r.get("name")) for r in results if r.get("reused")]
+
+
 def _nul_paths(listing: str) -> list[str]:
     return [p for p in listing.split("\0") if p]
 
@@ -1458,10 +1477,11 @@ def _build_task_checked(
 
     if ctx.checks:
         scoped, selection = _lane_checks(worktree, ctx.phase_branch(phase), ctx.checks)
-        results = run_checks(worktree, scoped, env=env, **_checks_log(ctx, phase, task))
+        results = _gate_checks(worktree, scoped, env=env, **_checks_log(ctx, phase, task))
         record["checks"] = results
         record["evidence"].extend(checks_evidence(results))
         record["check_scope"], row = _scope_record(selection, results)
+        record["check_scope"]["reused"] = _reused_names(results)
         record["check_cpu_seconds"] = _cpu_seconds_total(results)
         record["evidence"].append({"check": "checks:scope", "output": row})
         reason = quarantine_reason(results)
@@ -1595,11 +1615,12 @@ def _style_fix(ctx: _Ctx, *, phase: str, task: str, result: Mapping[str, Any], b
         build_field["patch"] = folded + "\n"
     scoped, selection = _lane_checks(worktree, ctx.phase_branch(phase), ctx.checks)
     try:
-        results = run_checks(worktree, scoped, env=_lane_checks_env(ctx, phase, task), **_checks_log(ctx, phase, task))
+        results = _gate_checks(worktree, scoped, env=_lane_checks_env(ctx, phase, task), **_checks_log(ctx, phase, task))
     finally:
         _remove_scratch(ctx, phase, task)
     build["checks"] = results
     build["check_scope"], scope_row = _scope_record(selection, results)
+    build["check_scope"]["reused"] = _reused_names(results)
     build["check_cpu_seconds"] = _cpu_seconds_total(results)
     # Only `checks:` rows are replaced; `verify:` rows stay as run before the style edit.
     build["evidence"] = [

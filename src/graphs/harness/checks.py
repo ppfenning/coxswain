@@ -505,6 +505,8 @@ def checks_evidence(
         output = summary + tail if carries_tail else summary
         if result.get("note"):
             output = f"{output}\n{result['note']}"
+        if result.get("reused"):
+            output = f"{output}\nreused"
         if workers_line:
             output = f"{output}\n{workers_line}"
         rows.append({"check": f"{prefix}:{result['name']}", "output": output})

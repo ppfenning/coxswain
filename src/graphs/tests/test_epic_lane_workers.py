@@ -21,6 +21,7 @@ from test_epic_driver import (  # noqa: F401 -- cart and repo are fixtures
 )
 
 import harness.epic as epic
+from harness import check_reuse
 from harness.lane_workers import LANE_CAPACITY_VAR, XDIST_VAR, lane_workers_from
 from harness.resume import load_result
 from tests.test_epic_rescue import PHASE, TASK, _rescue, _setup
@@ -54,6 +55,7 @@ def _spy_checks(monkeypatch) -> list[tuple[bool, dict | None]]:
         return real(worktree, checks, **kw)
 
     monkeypatch.setattr(epic, "run_checks", spy)
+    monkeypatch.setattr(check_reuse, "run_checks", spy)  # the task gate runs through the ledger
     return calls
 
 
