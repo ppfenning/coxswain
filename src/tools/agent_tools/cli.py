@@ -3104,6 +3104,33 @@ def _mark_done_unrecorded(step: dict) -> tuple[bool, str]:
     return result.code == route_edit.DONE, result.text
 
 
+def _mark_remaining_done(steps: list[dict], pr: str, at: str, mark: Callable[[dict], tuple[bool, str]]) -> list[tuple[str, str]]:
+    """Edge. Mark done with `pr` every task of the `mark_done` steps in `steps`; returns `(task, reason)` for each it could
+    not. A task whose record file is missing, or that never had one, goes by its store item as `_mark_done_unrecorded` does.
+    A record `mark` fails on (False or an exception) falls back to the store item. Never raises."""
+    unmarked: list[tuple[str, str]] = []
+    for step in {s["task"]: s for s in steps if s["kind"] == "mark_done"}.values():
+        path = step.get("path")
+        has_record = step.get("recorded") is not False and path is not None and Path(path).is_file()
+        reason = ""
+        if has_record:
+            try:
+                ok, detail = mark(_mark_done_facts(step, pr, at))
+            except Exception as exc:
+                ok, detail = False, f"{type(exc).__name__}: {exc}"
+            if ok:
+                continue
+            reason = detail
+        try:
+            runs_dir = step.get("runs_dir") or (str(Path(path).resolve().parents[3]) if path else None)
+            ok, detail = _mark_done_unrecorded({**step, "runs_dir": runs_dir, "pr": pr, "at": at})
+        except Exception as exc:
+            ok, detail = False, f"{type(exc).__name__}: {exc}"
+        if not ok:
+            unmarked.append((step["task"], f"{reason}; then {detail}" if reason else detail))
+    return unmarked
+
+
 def _mark_done_facts(step: dict, pr: str, at: str) -> dict:
     """`step` with the store facts `mark_done` mirrors: run and phase from the
     `runs/<run>/tasks/<phase>/<task>.json` path, the PR url, and the caller's ISO time."""
@@ -4460,6 +4487,7 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
     looped = False
     pr = pr or _open_pr_ref(repo, steps, forge_module)
     pr_failed: tuple[dict, str] | None = None  # the pr step that failed after the push, and why
+    merge_ran = False  # once a merge step succeeded, a later step's exception is a failed result with the tasks marked, not a traceback
     into_pr_branch = any(s["kind"] == "phase_done" for s in steps)  # only such a plan reports a pr failure instead of stopping
     i = 0
     while i < len(steps):
@@ -4516,7 +4544,16 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
                 Path(step["path"]).parent.mkdir(parents=True, exist_ok=True)
                 Path(step["path"]).write_text(json.dumps(record, indent=2), encoding="utf-8")
             step = {**_mark_done_facts(step, pr, datetime.datetime.now(datetime.UTC).isoformat()), "by": by, "mode": mode}
-        ok, detail = (merged, merge_detail) if step["kind"] == "merge" else _execute_land_step(repo, step, forge_module)
+        raised = False  # the step raised after the merge; a returned failure keeps today's stop
+        if step["kind"] == "merge":
+            ok, detail = merged, merge_detail
+        elif not merge_ran:
+            ok, detail = _execute_land_step(repo, step, forge_module)
+        else:
+            try:
+                ok, detail = _execute_land_step(repo, step, forge_module)
+            except Exception as exc:
+                ok, detail, raised = False, f"{type(exc).__name__}: {exc}", True
         if step.get("before") == "pr_create":
             # The sync may have just written `issue:`; the PR opened next must carry its `Closes`.
             steps = land.with_issue(steps, record, _land_item_facts(item_path)[1])
@@ -4536,6 +4573,7 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
             return 2, reached, pr
         print(f"{step['kind']}: {detail}")
         if ok and step["kind"] == "merge":
+            merge_ran = True
             landing = _landing_ref(detail, pr, _pr_number(steps, i, pr), step.get("default_branch", "main"))
         if ok and step["kind"] == "mark_done":
             initiative = _step_initiative(step, record)
@@ -4558,6 +4596,13 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
                 print("land: merge refused for an expected required check; waiting for checks once more")
                 i = waits[-1]
                 continue
+        if raised:
+            # The PR is merged: record it and mark every task whose mark_done has not run, so none keeps holding its files.
+            number = _pr_number(steps, i, pr)
+            pr = pr or (f"#{number}" if number is not None else "")
+            at = datetime.datetime.now(datetime.UTC).isoformat()
+            for task, why in _mark_remaining_done(steps[i:], pr, at, lambda s: _execute_land_step(repo, {**s, "by": by, "mode": mode}, forge_module)):
+                print(f"{task} not marked done: {why}")
         if not ok:
             remaining = [s["kind"] for s in steps[i + 1:]]
             print("stopped; remaining: " + ", ".join(remaining))
