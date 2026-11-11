@@ -188,8 +188,17 @@ def test_context_prints_todays_spend_lands_and_first_try_rate_after_lanes(tmp_pa
     assert main(["route", "context", "--profile", str(profile)]) == 0
     out = capsys.readouterr().out.splitlines()
     assert out[out.index(next(l for l in out if l.startswith("lanes:"))) + 1] == (
-        "efficiency: today $6.00 for 3 landed ($2.00 per landed task), first-try 50% of 2 measured"
+        "efficiency: today $6.00 for 3 completions ($2.00 per completion), first-try 50% of 2 measured"
     )
+
+
+def test_efficiency_figures_keep_per_landed_as_an_alias_of_cost_per_completion(tmp_path):
+    ts, calls = _today_and_calls({"cost_usd": 3.0, "role": "build", "task_id": "epic-x-5:seams:seams-t"})
+    store(tmp_path, *calls)
+    (tmp_path / "land.jsonl").write_text(_landed(ts, "epic-x-5", "seams-task") + "\n")
+    figures = cli._efficiency_figures(tmp_path, ts)
+    assert figures["cost_per_completion"] == 3.0 and figures["per_landed"] == figures["cost_per_completion"]
+    assert figures["completions"] == figures["landed"] == 1
 
 
 def test_context_does_not_hand_a_ticket_the_builds_of_a_ticket_whose_name_it_extends(tmp_path, capsys):
@@ -203,14 +212,14 @@ def test_context_does_not_hand_a_ticket_the_builds_of_a_ticket_whose_name_it_ext
     store(runs, *calls)
     (runs / "land.jsonl").write_text("\n".join([_landed(ts, "epic-x-5", "seams-task"), _landed(ts, "epic-x-5", "seams-task-two")]) + "\n")
     assert main(["route", "context", "--profile", str(profile)]) == 0
-    assert _efficiency_line(capsys) == "efficiency: today $3.00 for 2 landed ($1.50 per landed task), first-try 0% of 1 measured"
+    assert _efficiency_line(capsys) == "efficiency: today $3.00 for 2 completions ($1.50 per completion), first-try 0% of 1 measured"
 
 
-def test_context_says_nothing_landed_yet_when_the_store_has_spend_and_no_lands(tmp_path, capsys):
+def test_context_says_nothing_completed_yet_when_the_store_has_spend_and_no_lands(tmp_path, capsys):
     profile = _write_workspace(tmp_path)
     store(tmp_path / "workspace" / "runs", *_today_and_calls({"cost_usd": 0.5})[1])
     assert main(["route", "context", "--profile", str(profile)]) == 0
-    assert _efficiency_line(capsys) == "efficiency: today $0.50, nothing landed yet"
+    assert _efficiency_line(capsys) == "efficiency: today $0.50, nothing completed yet"
 
 
 def test_context_prints_no_efficiency_line_with_no_store(tmp_path, capsys):
