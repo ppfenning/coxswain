@@ -9,6 +9,13 @@ from tests.test_epic_driver import Runner, cart, drive, git, new_file_patch, rep
 
 IDS = ("ta-one", "tb-one", "tj-join", "tk-last", "ta-two", "tb-two")
 
+# Real git work runs between the events; sized for a loaded xdist worker, not a quiet one.
+WAIT_SECONDS = 120
+
+
+def await_event(event: threading.Event, name: str) -> None:
+    assert event.wait(WAIT_SECONDS), f"{name} never arrived within {WAIT_SECONDS}s"
+
 
 def work(*spec: tuple[str, str, list[str]]) -> dict:
     items = [
@@ -43,9 +50,9 @@ class Gated(Runner):
                 if self.hold and self.hold[1] in self.begun:
                     self.release.set()
             if self.hold and task == self.hold[0]:
-                assert self.release.wait(10), f"{task} was held while {self.hold[1]} never started"
+                await_event(self.release, f"release (build of {self.hold[1]} starting while {task} was held)")
             if self.gate and task in ("ta-one", "tb-one"):
-                assert self.both.wait(10), f"{task} never saw the other chain building"
+                await_event(self.both, f"both (the other of ta-one/tb-one building, seen from {task})")
         return super().run(**kw)
 
 

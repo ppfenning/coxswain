@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import subprocess
 import sys
@@ -106,6 +107,19 @@ sys.exit(1 if bad else 0)
 """
 
 
+def _git_env() -> dict[str, str]:
+    """The caller's environment minus the machine's git config and author, which outrank `-c` flags."""
+    return {
+        **os.environ,
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@invalid",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@invalid",
+    }
+
+
 def git(*args: str, cwd: Path) -> str:
     proc = subprocess.run(
         [
@@ -121,6 +135,7 @@ def git(*args: str, cwd: Path) -> str:
             *args,
         ],
         cwd=cwd,
+        env=_git_env(),
         capture_output=True,
         text=True,
     )
@@ -131,6 +146,7 @@ def git(*args: str, cwd: Path) -> str:
 def is_ancestor(repo: Path, older: str, newer: str) -> bool:
     return subprocess.run(
         ["git", "-C", str(repo), "merge-base", "--is-ancestor", older, newer],
+        env=_git_env(),
         capture_output=True,
     ).returncode == 0
 
