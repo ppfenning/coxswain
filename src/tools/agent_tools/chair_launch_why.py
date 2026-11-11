@@ -104,8 +104,8 @@ def unlaunched(
             _skipped(i["id"], skips, note),
             _steer_held(i["id"], steer_holds),
             i.get("scheduled_later") or None,
-            "orchestration mode: it would build on the chair machine" if orchestrating and local else None,
             "paced against the weekly target" if pace_cap == 0 else None,
+            "orchestration mode: it would build on the chair machine" if orchestrating and local else None,
             _release_held(i),
             "no lane free on an eligible host" if no_host or (free_lanes <= 0 and local) else None,
         )

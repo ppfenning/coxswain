@@ -391,8 +391,30 @@ def _dispatch_room(dispatch: DispatchFacts) -> int:
     return max(0, dispatch["max_in_flight"] - dispatch["live_runs"])
 
 
-def _free_lanes(cap: int, kept: int, dispatch: DispatchFacts) -> int:
-    return max(0, min(cap - kept, dispatch["max_in_flight"] - dispatch["live_runs"] - kept))
+def _free_lanes(cap: int, kept: int, dispatch: DispatchFacts, hosted_kept: int = 0) -> int:
+    """The chair machine's lanes left for fill: the cap less every kept launch, local or hosted, and this machine's
+    room less its local ones."""
+    return max(0, min(cap - kept - hosted_kept, dispatch["max_in_flight"] - dispatch["live_runs"] - kept))
+
+
+_CAPPED = _LAUNCHES | {"launch_epic", "launch_decompose"}
+
+
+def _cap_count(actions: Sequence[Action]) -> int:
+    return sum(a["kind"] in _CAPPED for a in actions)
+
+
+def _within_cap(actions: list[Action], budget: int) -> list[Action]:
+    """The first `budget` launches, relaunches, retries, rescues and decomposes, wherever they are placed; the rest
+    are dropped, and a dropped relaunch takes its paired clear_branches. Every other action is kept."""
+    launch_at = [n for n, a in enumerate(actions) if a["kind"] in _CAPPED]
+    over = frozenset(launch_at[max(0, budget) :])
+    dropped = frozenset(actions[n]["initiative"] for n in over if actions[n]["kind"] == "relaunch")
+    return [
+        a
+        for n, a in enumerate(actions)
+        if n not in over and not (a["kind"] == "clear_branches" and a.get("initiative") in dropped)
+    ]
 
 
 def _fetch_exit_actions(facts: Facts) -> list[Action]:
@@ -1201,7 +1223,8 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     capped_actions, consumed = _cap_launches(
         recovered, min(cap, _dispatch_room(facts["dispatch"])), facts["initiatives"], host_free, facts.get("home", {}), facts
     )
-    capped = [_with_carry(a, facts["approved"]) for a in capped_actions]
+    # The cap bounds the whole fleet: a relaunch or retry placed on a lane host counts against it as a local one does.
+    capped = [_with_carry(a, facts["approved"]) for a in _within_cap(capped_actions, cap)]
     # A hosted relaunch or retry takes no local lane, so it must not count against the local free-lane budget.
     kept = sum(a["kind"] in _LAUNCHES and "host" not in a for a in capped)
     # Recover already owns a relaunched or quarantined initiative this tick; fill must not launch it a second time.
@@ -1234,10 +1257,12 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     }
     withheld = frozenset().union(*withheld_by.values())
     claimed = claimed_by(recover_actions, facts)
-    free_lanes = _free_lanes(cap, kept, facts["dispatch"])
+    free_lanes = _free_lanes(cap, kept, facts["dispatch"], _cap_count(capped) - kept)
     # Fill plans with the withheld set, so an initiative recovery holds does not keep others behind its surfaces.
     fill_schedule = _planned_schedule(facts, now, withheld) if withheld else schedule
-    filled = plan_fill(facts, free_lanes, withheld, consumed, claimed, stalled=stalled_intake, now=now, schedule=fill_schedule)
+    planned_fill = plan_fill(facts, free_lanes, withheld, consumed, claimed, stalled=stalled_intake, now=now, schedule=fill_schedule)
+    # Fill places epics on lane hosts past the local lanes; what the cap has no room left for is dropped here.
+    filled = _within_cap(planned_fill, cap - _cap_count(capped))
     launches = [*capped, *filled]
     skips = budget_skips(facts, facts["initiatives"], now)
     no_host = _no_host(free_lanes, host_free, consumed, filled, facts["dispatch"].get("local_lanes") == "decompose")
@@ -1250,7 +1275,8 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         skips,
         no_host,
     )
-    unlaunched = _unlaunched_actions(facts, launches, withheld_by, skips, free_lanes, no_host, cap, now, stuck_heads)
+    cap_left = max(0, cap - _cap_count(launches))
+    unlaunched = _unlaunched_actions(facts, launches, withheld_by, skips, free_lanes, no_host, cap_left, now, stuck_heads)
     # Read before the cap: a rebase starts no run, so a relaunch the cap dropped still gets its branch rebased.
     relaunching = frozenset(a["initiative"] for a in [*recovered, *launches] if _is_launch(a))
     rebases = plan_rebase(facts.get("phase_branches", []), relaunching)
