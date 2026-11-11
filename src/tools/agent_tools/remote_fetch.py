@@ -432,7 +432,11 @@ def settle_phase_refs(repo: str, host: str, git: Callable[[list[str]], tuple[int
     deleted once settled; a diverged tip is kept under `refs/coxswain/fetched/<host>/<branch>`. Returns one line per
     divergence. A repo `git` cannot read has nothing incoming and returns no line."""
     prefix = f"{INCOMING_PREFIX}/{host}/"
-    code, out = git(["git", "-C", repo, "for-each-ref", "--format=%(objectname) %(refname)", prefix])
+
+    def at(*args: str) -> tuple[int, str]:
+        return git(["git", "-C", repo, *args])
+
+    code, out = at("for-each-ref", "--format=%(objectname) %(refname)", prefix)
     if code != 0:
         return []
     lines = []
@@ -440,20 +444,20 @@ def settle_phase_refs(repo: str, host: str, git: Callable[[list[str]], tuple[int
         fetched, _, ref = row.partition(" ")
         branch = ref.removeprefix(prefix)
         local_ref = f"refs/heads/{branch}"
-        local_code, local_out = git(["git", "-C", repo, "rev-parse", "--verify", "--quiet", f"{local_ref}^{{commit}}"])
+        local_code, local_out = at("rev-parse", "--verify", "--quiet", f"{local_ref}^{{commit}}")
         local = local_out.strip() if local_code == 0 else ""
 
         def ancestor(older: str, newer: str) -> bool:
-            return git(["git", "-C", repo, "merge-base", "--is-ancestor", older, newer])[0] == 0
+            return at("merge-base", "--is-ancestor", older, newer)[0] == 0
 
         verdict = phase_update(bool(local), bool(local) and ancestor(local, fetched), bool(local) and ancestor(fetched, local))
         if verdict == "create":
-            git(["git", "-C", repo, "update-ref", "-m", f"fetch: create from {host}", local_ref, fetched, "0" * 40])
+            at("update-ref", "-m", f"fetch: create from {host}", local_ref, fetched, "0" * 40)
         elif verdict == "fast_forward":
-            git(["git", "-C", repo, "update-ref", "-m", f"fetch: fast-forward from {host}", local_ref, fetched, local])
+            at("update-ref", "-m", f"fetch: fast-forward from {host}", local_ref, fetched, local)
         elif verdict == "diverged":
             side = fetched_ref(host, branch)
-            git(["git", "-C", repo, "update-ref", "-m", f"fetch: diverged from {host}", side, fetched])
+            at("update-ref", "-m", f"fetch: diverged from {host}", side, fetched)
             lines.append(f"fetch: diverged: {branch} in {repo}: kept local {local[:12]}; {host}'s {fetched[:12]} saved at {side}")
-        git(["git", "-C", repo, "update-ref", "-d", incoming_ref(host, branch), fetched])
+        at("update-ref", "-d", incoming_ref(host, branch), fetched)
     return lines
