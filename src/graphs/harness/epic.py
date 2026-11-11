@@ -48,7 +48,7 @@ import sys
 import threading
 import time
 import types
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -121,7 +121,7 @@ from harness.lanes import lane_bound
 from harness.phase_remote import FetchOutcome, Kind, fetch_branch, materialise_local, missing_branch_cause, push_branch
 from harness.resume import load_result, reusable, save_result
 from harness.scheduler import plan_launches
-from harness.stack_refresh import refresh_branch, refresh_reason, refresh_record
+from harness.stack_refresh import guarded_refresh, refresh_record
 from harness.stale_base import is_patch_empty, missing_paths, stale_base_reason, ticket_paths
 from harness.store_dialect import Connection, connect
 from harness.store_lease import assert_epoch, renew
@@ -977,8 +977,23 @@ def _phase_branch_cherry(ctx: _Ctx, phase: str, upstream: str | None = None) -> 
     return out.splitlines() if ok else []
 
 
-def _rebase(ctx: _Ctx, phase: str, base_ref: str) -> tuple[bool, str]:
-    """Replay the phase branch onto the parent's new head, or leave it untouched.
+def _recorded_merges(items: Iterable[Mapping[str, Any]], phase: str) -> tuple[str, ...]:
+    """The `merged_commit` each of `phase`'s tasks recorded, in item order: the shas a refresh must keep on the branch."""
+    return tuple(str(i["merged_commit"]) for i in items if i.get("phase") == phase and i.get("merged_commit"))
+
+
+def _locked_merges(ctx: _Ctx, items: Iterable[Mapping[str, Any]], phase: str) -> tuple[str, ...]:
+    with ctx.items_lock:
+        return _recorded_merges(items, phase)
+
+
+def _rebase(ctx: _Ctx, phase: str, base_ref: str, recorded: Iterable[str] = ()) -> tuple[bool, str]:
+    """Bring the phase branch up to `base_ref`, or leave it untouched.
+
+    Named for the `stack_rebase` write kind it executes, but it merges `base_ref` in rather than replaying the
+    branch: a replay drops (or re-shas) the task merges whose `merged_commit` the store holds, and the next build
+    then quarantines on "merged commit ... is not on ...". A refresh that would still lose one of `recorded`
+    refuses and leaves the branch where it was.
 
     A conflict aborts and quarantines the phase with git's own diagnosis. There
     is no path here that resolves one unattended: `stack_rebase` is a write kind
@@ -986,23 +1001,19 @@ def _rebase(ctx: _Ctx, phase: str, base_ref: str) -> tuple[bool, str]:
     discard a commit, and a driver guessing at a resolution would be doing
     exactly that.
     """
-    ok, detail, _ = _rebase_reading_conflicts(ctx, phase, base_ref)
+    ok, detail, _ = _rebase_reading_conflicts(ctx, phase, base_ref, recorded)
     return ok, detail
 
 
-def _rebase_reading_conflicts(ctx: _Ctx, phase: str, base_ref: str) -> tuple[bool, str, tuple[str, ...]]:
+def _rebase_reading_conflicts(
+    ctx: _Ctx, phase: str, base_ref: str, recorded: Iterable[str] = ()
+) -> tuple[bool, str, tuple[str, ...]]:
     """`_rebase`, plus the conflicting paths git listed before the abort cleared them."""
-    worktree = ctx.phase_worktree(phase)
     branch = ctx.phase_branch(phase)
-    ok, fork = _git("-C", str(worktree), "merge-base", base_ref, branch)
-    if not ok:
-        return False, f"no merge base between {base_ref} and {branch}: {fork}", ()
-    ok, detail = _git(*_IDENTITY, "-C", str(worktree), "rebase", "--onto", base_ref, fork.strip())
-    if not ok:
-        _, listing = _git("-C", str(worktree), "diff", "--name-only", "-z", "--diff-filter=U")
-        _git("-C", str(worktree), "rebase", "--abort")
-        return False, detail, tuple(sorted(p for p in listing.split("\0") if p))
-    return True, f"rebased {branch} onto {base_ref}", ()
+    result = guarded_refresh(ctx.phase_worktree(phase), branch, base_ref, recorded)
+    if not result.ok:
+        return False, result.reason, result.paths
+    return True, f"merged {base_ref} into {branch}", ()
 
 
 def _branch_has(ctx: _Ctx, ref: str, branch: str) -> bool:
@@ -1015,7 +1026,12 @@ def _branch_head(ctx: _Ctx, branch: str) -> str:
 
 
 def _refresh_level(
-    ctx: _Ctx, record: dict[str, Any], phase: str, parent: str | None, recreate: Callable[[], dict[str, Any] | None]
+    ctx: _Ctx,
+    record: dict[str, Any],
+    phase: str,
+    parent: str | None,
+    recreate: Callable[[], dict[str, Any] | None],
+    recorded: Iterable[str] = (),
 ) -> dict[str, Any] | None:
     """Restack a child onto a current parent, else merge the default ref in; the record to return when it blocks."""
     branch, default = ctx.phase_branch(phase), ctx.default_ref
@@ -1026,7 +1042,7 @@ def _refresh_level(
     # Levels can start side by side, so a parent is not always refreshed first; such a child must not wait on it.
     stacked = parent is not None and _branch_has(ctx, default, ctx.phase_branch(parent))
     if not stacked:
-        merged = refresh_branch(ctx.phase_worktree(phase), branch, default)
+        merged = guarded_refresh(ctx.phase_worktree(phase), branch, default, recorded)
         ok, reason, paths = merged.ok, merged.reason, merged.paths
     else:
         onto = ctx.phase_branch(str(parent))
@@ -1035,10 +1051,9 @@ def _refresh_level(
             early = recreate()
             if early is not None:
                 return early
-            ok, paths = True, ()
+            ok, reason, paths = True, "", ()
         else:
-            ok, _, paths = _rebase_reading_conflicts(ctx, phase, onto)
-        reason = refresh_reason(branch, onto, paths)
+            ok, reason, paths = _rebase_reading_conflicts(ctx, phase, onto, recorded)
     if not ok:
         record["status"] = "blocked"
         record["reason"] = reason
@@ -3470,7 +3485,9 @@ def _run_phase(
 
     if action == "block" and unlanded_kind == "rebase":
         # Some commits already landed (done), the rest are approved: replay the branch onto the new base.
-        rebased_ok, rebase_detail = _rebase(ctx, phase, base_ref)
+        with ctx.items_lock:
+            recorded = _recorded_merges(items, phase)
+        rebased_ok, rebase_detail = _rebase(ctx, phase, base_ref, recorded)
         if not rebased_ok:
             record["status"] = "blocked"
             record["reason"] = f"rebase conflict: {rebase_detail}"
@@ -3544,7 +3561,7 @@ def _run_phase(
     if land_in_flight and ctx.land_at == "ticket" and record.get("reused_branch"):
         record["refresh_skipped"] = f"{branch} keeps its place: an approved task's land is still in flight"
         print(f"  {record['refresh_skipped']}")
-    elif (early := _refresh_level(ctx, record, phase, parent, recreate)) is not None:
+    elif (early := _refresh_level(ctx, record, phase, parent, recreate, _locked_merges(ctx, items, phase))) is not None:
         return early
 
     # A runner whose nodes can read the world reads THIS phase's branch — not
@@ -5040,7 +5057,7 @@ def _execute(
         return ok, detail
 
     if kind == "stack_rebase" and slot == "rebase":
-        ok, detail = _rebase(ctx, phase, _rebase_base(item))
+        ok, detail = _rebase(ctx, phase, _rebase_base(item), _locked_merges(ctx, by_id.values(), phase))
         if not ok:
             state.quarantined.append(
                 {"id": phase, "phase": phase, "grain": "phase", "reason": f"rebase conflict: {detail}"}
