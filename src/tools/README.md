@@ -48,7 +48,7 @@ The block below is generated from the command table; run
 cox runs usage RUN_ID [--runs-dir RUNS_DIR] [--json]   usage stats and cost for one run
 cox runs trace RUN_ID [--runs-dir RUNS_DIR] [--role ROLE] [-v]   the tool-call trace for one run
 cox runs clean RUN_ID --repo REPO [--worktree-root WORKTREE_ROOT] [--runs-dir RUNS_DIR] [--profile PROFILE] [--apply] [--force]   delete a run's worktree and branches locally
-cox runs land RUN_ID --repo REPO [--task TASK] [--phase PHASE] [--label LABEL] [--force] [--no-claim] [--behind-limit BEHIND_LIMIT] [--base BASE] [--worktree-root WORKTREE_ROOT] [--apply] [--no-merge] [--runs-dir RUNS_DIR] [--profile PROFILE] [--gate ticket|phase|epic|full]   merge a run's branch into the target repo
+cox runs land RUN_ID --repo REPO [--task TASK] [--phase PHASE] [--label LABEL] [--force] [--no-claim] [--behind-limit BEHIND_LIMIT] [--base BASE] [--worktree-root WORKTREE_ROOT] [--apply] [--no-merge] [--runs-dir RUNS_DIR] [--profile PROFILE] [--gate ticket|phase|epic|full] [--wait-lock] [--wait-lock-timeout WAIT_LOCK_TIMEOUT]   merge a run's branch into the target repo
 cox runs land-batch --repo REPO [--label LABEL] [--source SOURCE] [--batch-size BATCH_SIZE] [--wait-s WAIT_S] [--force] [--no-claim] [--base BASE] [--worktree-root WORKTREE_ROOT] [--apply] [--runs-dir RUNS_DIR] [--profile PROFILE] [--gate ticket|phase|epic|full]   land disjoint approved phases together as one pull request (the merge queue)
 cox runs fetch [--runs-dir RUNS_DIR] [--profile PROFILE] [RUN_ID] [--all]   pull an ended remote lane's run directory, log and branches to this machine
 cox runs review --pr PR [--profile PROFILE]   review a contributor PR with the review graph and post the verdict
@@ -104,6 +104,7 @@ cox lake doctor [--runs-dir RUNS_DIR] [--profile PROFILE] [--json]   check the l
 cox usage assess [--json] [--runs-dir RUNS_DIR] [--profile PROFILE]   the pacing verdict for the current spend window
 cox plan serve DIR [--kind KIND] [--check] [--no-open]   serve a visual plan through the local bridge
 cox epic watch PIDFILE [--log LOG] [--max-seconds MAX_SECONDS] [--interval INTERVAL] [--json]   poll a detached run's pidfile until it exits
+cox pr land NUMBER --repo REPO [--timeout TIMEOUT]   wait for the required checks, squash-merge a pull request and mark its tasks done
 cox route context [--profile PROFILE] [--json]   the routing profile's resolved context
 cox route status [--profile PROFILE] [--json] [--all]   what is queued or running for this profile
 cox route file [--profile PROFILE] [--repo REPO] [--title TITLE] [--body BODY] [--phase PHASE] [--intake] [--from-intake FROM_INTAKE] [--force] [--link LINK] [--after AFTER] [--draft] [--ready]   file a new ticket for the harness

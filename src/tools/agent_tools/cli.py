@@ -187,6 +187,7 @@ notify = _LazyModule("agent_tools.notify")
 notify_core = _LazyModule("agent_tools.notify_core")
 pacing = _LazyModule("agent_tools.pacing")
 plan = _LazyModule("agent_tools.plan")
+pr_land = _LazyModule("agent_tools.pr_land")
 provenance = _LazyModule("agent_tools.provenance")
 queue_export = _LazyModule("agent_tools.queue_export")
 queue_rows = _LazyModule("agent_tools.queue_rows")
@@ -3544,6 +3545,7 @@ def _task_lease_stop(task: str, kind: str, result: store_cli.LeaseResult) -> str
 # The ttl `_land` passes to land_repo_lease.acquire. A renew restarts it, but only when one runs: `_LeaseGuard.renewing`
 # renews every third of it for as long as the land runs, because a step such as wait_checks blocks for longer than it.
 _REPO_LEASE_TTL_SECONDS = 1200
+_LAND_LOCK_POLL_SECONDS = 5  # `runs land --wait-lock` retries the repo lease this often
 # The merge lock is held for one state read and one merge, not the waits between them, so its ttl is short and a land
 # that cannot take it within the timeout stops for the chair to retry.
 _MERGE_LOCK_TTL_SECONDS = 120
@@ -4100,6 +4102,11 @@ def _runs_land(a: argparse.Namespace) -> int:
     repo_limit = land_limit.repo_land_limit(str(repo))
     repo_slot[0], got = land_repo_lease.acquire_in_slots(
         runs_dir, str(repo), repo_holder, _REPO_LEASE_TTL_SECONDS, socket.gethostname(), repo_limit)
+    if getattr(a, "wait_lock", False) and isinstance(got, store_cli.LeaseRefused):
+        print(land_repo_lease.waiting_message(str(repo), got.holder))
+        repo_slot[0], got = land_repo_lease.acquire_in_slots_waiting(
+            runs_dir, str(repo), repo_holder, _REPO_LEASE_TTL_SECONDS, socket.gethostname(), repo_limit,
+            getattr(a, "wait_lock_timeout", 600), _LAND_LOCK_POLL_SECONDS)
     leased = isinstance(got, store_cli.LeaseGranted)
     if isinstance(got, store_cli.LeaseGranted):
         repo_epoch[0] = got.epoch
@@ -4726,6 +4733,17 @@ def _runs_wait(a: argparse.Namespace, *, rows_fn=None, clock=None, sleep=None, f
             print(f"exited {o['run']} at {o['at']}")
             print("\n".join([*o["approved"], *o["quarantined"], *([o["summary"]] if o["summary"] else [])]))
     return 0 if outcomes else 3
+
+
+def _pr_land(a: argparse.Namespace) -> int:
+    """Wait for the PR's required checks, squash-merge it and mark its tasks done; exit 2 when it was not merged."""
+    runs_dir, reason = _runs_dir_for_land(argparse.Namespace(runs_dir=None, profile=None))
+    deps = pr_land.real_deps(runs_dir or Path("."), a.timeout, _LAND_LOCK_POLL_SECONDS)
+    if runs_dir is None:  # the merge still goes ahead; the carried tasks are named as not marked
+        deps = dataclasses.replace(deps, mark_done=lambda task, url: (False, f"no runs dir: {reason}"))
+    result = pr_land.land_pr(Path(a.repo).expanduser(), a.number, deps)
+    print(f"{result.event}: {result.text}")
+    return 0 if result.event == pr_land.LEVEL_MERGED else 2
 
 
 def _epic_watch(a: argparse.Namespace) -> int:
@@ -10972,6 +10990,8 @@ RUNS_COMMANDS = [
             commands.Arg(("--worktree-root",), {"default": "~/worktrees"}), commands.Arg(("--apply",), {"action": "store_true"}), commands.Arg(("--no-merge",), {"action": "store_true"}),
             commands.Arg(("--runs-dir",), {"help": "override: resolve task records here instead of the profile's workspace_dir"}), commands.Arg(("--profile",)),
             commands.Arg(("--gate",), {"choices": ["ticket", "phase", "epic", "full"], "help": "override the resolved gate level for this invocation"}),
+            commands.Arg(("--wait-lock",), {"action": "store_true", "help": "when another land holds the repo lease, wait for it instead of refusing"}),
+            commands.Arg(("--wait-lock-timeout",), {"type": int, "default": 600, "help": "seconds --wait-lock waits before refusing (default 600)"}),
         ),
         "agent_tools.cli:_runs_land", False, (),
     ),
@@ -11890,6 +11910,9 @@ def build_parser() -> argparse.ArgumentParser:
     group, rows = _table_entry("epic")
     commands.build_parser(rows, [group], sub)
 
+    group, rows = _table_entry("pr")
+    commands.build_parser(rows, [group], sub)
+
     group, rows = _table_entry("plan")
     commands.build_parser(rows, [group], sub)
 
@@ -12117,6 +12140,22 @@ EPIC_COMMANDS = [
             commands.Arg(("--json",), {"action": "store_true"}),
         ),
         "agent_tools.cli:_epic_watch", False, (),
+    ),
+]
+
+PR_GROUP = commands.Group(
+    name="pr", help="land a pull request once its required checks pass",
+    description="Land a pull request once its required checks pass.",
+    epilog="examples:\n  cox pr land 123 --repo ~/repos/x",
+)
+PR_COMMANDS = [
+    commands.Command(
+        "land", "pr", "wait for the required checks, squash-merge a pull request and mark its tasks done",
+        (
+            commands.Arg(("number",), {"type": int, "help": "pull request number"}), commands.Arg(("--repo",), {"required": True}),
+            commands.Arg(("--timeout",), {"type": float, "default": 600, "help": "seconds to wait for the required checks (default 600)"}),
+        ),
+        "agent_tools.cli:_pr_land", False, (),
     ),
 ]
 
@@ -14818,6 +14857,7 @@ COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = _dispatch_t
     (USAGE_GROUP, USAGE_COMMANDS),
     (PLAN_GROUP, PLAN_COMMANDS),
     (EPIC_GROUP, EPIC_COMMANDS),
+    (PR_GROUP, PR_COMMANDS),
     (ROUTE_GROUP, ROUTE_COMMANDS),
     (CHAIR_GROUP, CHAIR_COMMANDS),
     (HOST_GROUP, HOST_COMMANDS),
