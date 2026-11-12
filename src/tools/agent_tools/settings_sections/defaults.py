@@ -6,7 +6,6 @@ Where each default comes from, measured in this repository:
 
 - `chair.stale_days`: imported from `agent_tools.chair_facts.DEFAULT_STALE_DAYS`.
 - `chair.housekeeping_hours`: imported from `agent_tools.chair_facts.DEFAULT_HOUSEKEEPING_HOURS`.
-- `chair.approval_hold_ticks`: imported from `agent_tools.chair_facts.DEFAULT_APPROVAL_HOLD_TICKS`.
 - `analytics.snapshot_max_age_s`: imported from `agent_tools.analytics_snapshot.DEFAULT_MAX_AGE_S`.
 - `operator`: imported from `agent_tools.settings_model.DEFAULT_OPERATOR`.
 - `store.mode`: imported from `agent_tools.settings_model.DEFAULT_STORE_MODE`.
@@ -24,7 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from agent_tools.analytics_snapshot import DEFAULT_MAX_AGE_S
-from agent_tools.chair_facts import DEFAULT_APPROVAL_HOLD_TICKS, DEFAULT_HOUSEKEEPING_HOURS, DEFAULT_STALE_DAYS
+from agent_tools.chair_facts import DEFAULT_HOUSEKEEPING_HOURS, DEFAULT_STALE_DAYS
 from agent_tools.settings_model import DEFAULT_OPERATOR, DEFAULT_STORE_MODE, SettingRow
 
 BUILT_IN = "built-in"
@@ -46,7 +45,6 @@ DEFAULT_KEYS: tuple[DefaultKey, ...] = (
     DefaultKey("cartridge", "policy.review_tier", "models and tiers", None, operator_only=True),
     DefaultKey("profile", "chair.housekeeping_hours", "housekeeping", DEFAULT_HOUSEKEEPING_HOURS),
     DefaultKey("profile", "chair.stale_days", "housekeeping", DEFAULT_STALE_DAYS),
-    DefaultKey("profile", "chair.approval_hold_ticks", "housekeeping", DEFAULT_APPROVAL_HOLD_TICKS),
     DefaultKey("profile", "analytics.snapshot_max_age_s", "housekeeping", DEFAULT_MAX_AGE_S),
     DefaultKey("profile", "operator", "profile files", DEFAULT_OPERATOR),
     DefaultKey("profile", "store.mode", "profile files", DEFAULT_STORE_MODE),

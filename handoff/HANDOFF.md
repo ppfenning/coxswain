@@ -243,3 +243,20 @@ Commit 8 is complete: `lander_ports.split_initiative` is the real `split_blocked
 `epic/<id>-2/<phase>`, moves the task files and store rows with their state and merged commit, drops the phases from
 the first record, re-runnable; the follow-up waits because its tasks' needs are now foreign). `lander._clean` deletes
 a phase branch only when the landed initiative branch holds its tip, and names the ones it keeps.
+
+Commit 9 is done, with one deliberate difference from the plan row:
+
+- `lander.queue_alarm` / `stale_items`: an item open for an hour is told to the chair once per queueing (courier
+  `needs_attention`); a land waiting on a person never alarms. `cox lander status` shows each item's age.
+- The approval-hold release timer is removed: `chair_approval_hold.py`, `resolve_approval_hold_ticks`, the facts key,
+  the deps field and the listed setting. A profile that still sets `chair.approval_hold_ticks` parses (ignored).
+- **The steward is retired by switch, not excised.** `resolve_steward_enabled` always returns False,
+  `steward_asked_for` reads the profile for the doctor row. The steward modules are still in the tree, unreachable
+  from a real tick. Reason: design 5.2 says the code is removed after the 24-hour run, and it is threaded through
+  `chair_plan`, `chair_exec`, `chair_facts` and 29 test files. Say this in the PR body; the operator may want it cut.
+- A helper updated 11 test files for the two retirements (tight rules, tests only).
+
+The backlog branch is finished and pushed (`5919446d`): 58 applied, 4 not applied (approved commit not reachable from
+this machine: refreshing-a-phase-branch rebase-guard, schedule-conflict-edges route-schedule, efficiency feed-contract,
+not-launched plan-passes-real-reasons), 1 skipped. Three integration fixes are listed in the manifest.
+Still to do: commit 10, commit 11 (docs, manifest migration step), rebase onto the backlog branch, reshape, PR.

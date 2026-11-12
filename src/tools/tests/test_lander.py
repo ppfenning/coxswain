@@ -435,3 +435,21 @@ def test_cleanup_after_a_land_keeps_a_phase_branch_that_holds_work_the_landed_br
     assert run(world.repo, "rev-parse", "epic/i/p9") == unlanded
     assert "i: kept epic/i/p9: not in what landed" in world.logged
     assert ("delete_remote", "epic/i/p9") not in world.forge.calls
+
+
+def test_an_item_that_has_waited_past_the_limit_raises_the_alarm_once_and_a_person_gate_never_does(world: World) -> None:
+    """Approved work that is waiting and not moving is told to the chair with its age and its last error."""
+    world.start("i", [task("a", "p1"), task("b", "p2", needs=("a",))])
+    world.build("i", "p1")
+    ls.enqueue(world.conn, ls.PHASE_MERGE, "i", phase="p1", repo=str(world.repo), now="2026-11-12T08:00:00Z", reason="phase built")
+    ls.enqueue(world.conn, ls.INITIATIVE_LAND, "j", repo=str(world.repo), parent="main", now="2026-11-12T08:00:00Z")
+    waiting_on_a_person = {**ls.get_item(world.conn, "initiative_land:j"), "last_error": f"{lander.PERSON_GATE_NOTE}: https://forge.example/pull/9"}
+    old = lander.stale_items([ls.get_item(world.conn, "phase_merge:i:p1"), waiting_on_a_person], "2026-11-12T10:00:00Z")
+    assert [i["id"] for i in old] == ["phase_merge:i:p1"]
+    assert lander.stale_items(ls.list_items(world.conn), "2026-11-12T08:30:00Z") == [], "half an hour is not a stall"
+
+    world.clock = 4 * 3600  # the lander was down for hours
+    first = lander.queue_alarm(world.ports)
+    assert first == ["alarm: phase_merge:i:p1 has waited since 2026-11-12T08:00:00Z (queued, 0 attempt(s))"]
+    assert world.notes == [("stalled", {"initiative": "i", "phase": "p1", "reason": first[0].removeprefix("alarm: ")})]
+    assert lander.queue_alarm(world.ports) == [] and len(world.notes) == 1, "told once for one queueing"

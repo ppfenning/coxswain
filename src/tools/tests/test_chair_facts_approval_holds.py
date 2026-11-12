@@ -5,7 +5,6 @@ from agent_tools import cli
 from agent_tools.chair_facts import (
     approval_holds_from_actions,
     approved_facts,
-    resolve_approval_hold_ticks,
     running_initiatives,
 )
 
@@ -125,7 +124,3 @@ def test_hold_age_counts_distinct_ticks_since_the_last_landed_row_and_skips_merg
     assert approval_holds_from_actions(approved, actions) == [
         {"initiative": "i", "repo": "r", "task_id": "t1", "run": "i-1", "ticks": 2}
     ]
-
-
-def test_the_approval_hold_limit_defaults_to_6_when_missing_non_numeric_or_not_positive():
-    assert [resolve_approval_hold_ticks(v) for v in (None, "x", 0, -3, "4")] == [6, 6, 6, 6, 4]

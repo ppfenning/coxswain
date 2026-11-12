@@ -594,7 +594,6 @@ class Facts(TypedDict):
     steer_streaks: NotRequired[dict[str, int]]
     approval_holds: NotRequired[list[ApprovalHold]]  # absent means none
     wrongly_released: NotRequired[list[WronglyReleased]]  # tasks the hold released while merged on their phase branch; absent means none
-    approval_hold_ticks: NotRequired[int]  # the hold limit in ticks; absent means 6
     steer_policy: NotRequired[SteerPolicy]  # absent means strict: limit 1, no serial paths
     # Each initiative's newest waiting row as `<phase>|<quarantined>|<awaiting_land>`, until a later launch of it.
     waiting_reported: NotRequired[dict[str, str]]  # absent means {}

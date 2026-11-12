@@ -1,4 +1,4 @@
-"""The steward tick from profile to executed action: real deps, a real git repository, only the process launch recorded."""
+"""The retired steward from profile to tick: real deps, a real git repository, only the process launch recorded."""
 from __future__ import annotations
 
 import dataclasses
@@ -10,15 +10,12 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-import pytest
-
 from agent_tools import chair_run, cli, courier, run_store
 from harness import store_migrate
 
 INITIATIVE = "epic-x"
 PHASE = "p1"
 NEXT_PHASE = "p2"  # open work after the merge: a relaunch needs a ready task, and an all-approved epic plans no relaunch
-LEVEL = f"epic/{INITIATIVE}/{PHASE}"
 TICKET = f"pr/{INITIATIVE}"
 _OLD = "2026-01-01T00:00:00Z"
 _GIT_ENV = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e"}
@@ -32,10 +29,6 @@ def _commit(repo: Path, name: str) -> None:
     (repo / name).write_text(name, encoding="utf-8")
     _git(repo, "add", name)
     _git(repo, "commit", "-m", name)
-
-
-def _contains(repo: Path, ancestor: str, branch: str) -> bool:
-    return _git(repo, "merge-base", "--is-ancestor", ancestor, branch, check=False).returncode == 0
 
 
 def _tasks(initiative: str) -> list[tuple[str, str, str, str]]:
@@ -98,7 +91,6 @@ def _seed_store(runs: Path, monkeypatch, initiatives: tuple[str, ...]) -> None:
 
 
 LANDED = (0, "merge: ok\nmark_done: ok\n")
-DIRTY = (1, "land: refusing, the working tree is dirty\n")
 
 
 def _tick(
@@ -150,83 +142,16 @@ def _bus(ws: Path) -> list[dict]:
     return courier.entries(path.read_text(encoding="utf-8")) if path.exists() else []
 
 
-def _relaunches(launched: list[list[str]], initiative: str = INITIATIVE) -> list[list[str]]:
-    return [argv for argv in launched if argv[:3] == ["cox", "route", "launch"] and f"work/{initiative}" in argv]
+_STEWARD_KINDS = ("merge_level", "run_gate", "steward_event")
+_STEWARD_EVENTS = ("level_merged", "merge_failed", "gate_passed", "gate_failed", "relaunched", "needs_attention")
 
 
-def _lands(launched: list[list[str]], flag: str) -> list[str]:
-    """The `cox runs land` lines (argv[2:6] joined) that carry `flag`, in the order they ran."""
-    return [" ".join(a[2:6]) for a in launched if a[:3] == ["cox", "runs", "land"] and flag in a]
+def test_a_tick_with_the_steward_set_in_the_profile_plans_and_reports_nothing_of_the_steward(tmp_path, monkeypatch) -> None:
+    repo, ws, _launched, performed, before = _tick(tmp_path, monkeypatch, drop_executor=False)
 
-
-def _events(ws: Path, name: str) -> list[tuple[str, str]]:
-    return [(e["topic"], e["event"]) for e in _bus(ws) if e.get("event") == name]
-
-
-def _branch_exists(repo: Path, branch: str) -> bool:
-    return _git(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}", check=False).returncode == 0
-
-
-@pytest.mark.parametrize("land_at", ["ticket", "task"])
-def test_a_tick_merges_at_each_land_at(tmp_path, monkeypatch, land_at) -> None:
-    repo, ws, launched, _performed, _before = _tick(tmp_path, monkeypatch, drop_executor=False, initiatives=((INITIATIVE, land_at, False),))
-
-    assert _events(ws, "level_merged") == [(INITIATIVE, "level_merged")]
-    assert _git(repo, "status", "--porcelain").stdout == ""
-    phase_lands, task_lands = _lands(launched, "--phase"), _lands(launched, "--task")
-    if land_at == "ticket":
-        assert _contains(repo, LEVEL, TICKET)  # the steward created the branch, then merged the level into it
-        assert not phase_lands  # the planner's own per-task lands of approved work may run; the steward lands no phase
-        assert len(_relaunches(launched)) == 1
-    else:
-        assert not _branch_exists(repo, TICKET)
-        assert task_lands == [f"land {INITIATIVE}-1 --task t1", f"land {INITIATIVE}-2 --task t1b"] and not phase_lands
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason="defect in the planner, not patched here: at land_at task the pre-land facts still hold t1 and t1b approved, "
-    "so the planner reports 'blocked by p1: 2 awaiting land' and plans no relaunch in the tick that lands them",
-)
-def test_a_task_tick_relaunches_after_the_merge(tmp_path, monkeypatch) -> None:
-    _repo_x, _ws, launched, performed, _before = _tick(tmp_path, monkeypatch, drop_executor=False, initiatives=((INITIATIVE, "task", False),))
-
-    assert len(_relaunches(launched)) == 1, [(r["action"]["kind"], r.get("reason", "")) for r in performed]
-
-
-def test_a_failing_initiative_does_not_stop_the_next_from_merging_and_relaunching(tmp_path, monkeypatch) -> None:
-    both = (("epic-x", "ticket", True), ("epic-y", "initiative", True))
-    _repo_x, ws, launched, performed, _before = _tick(tmp_path, monkeypatch, drop_executor=False, initiatives=both, broken=("epic-x",))
-
-    assert _events(ws, "merge_failed") == [("epic-x", "merge_failed")]
-    assert _events(ws, "level_merged") == [("epic-y", "level_merged")]
-    assert _lands(launched, "--phase") == []
-    assert len(_relaunches(launched, "epic-y")) == 1
-    # chair_exec.perform skips a relaunch tagged after_steward when its epic's merge_level failed; the failed epic is
-    # not relaunched, it is recorded with that reason, and the next epic is unaffected.
-    assert len(_relaunches(launched, "epic-x")) == 0
-    assert any("not relaunched, merge_level for epic-x failed" in r.get("reason", "") for r in performed)
-    assert _git(tmp_path / "repo-epic-y", "status", "--porcelain").stdout == ""
-
-
-def test_a_tick_merges_the_level_and_relaunches_after_the_merge(tmp_path, monkeypatch) -> None:
-    repo, ws, launched, performed, _before = _tick(tmp_path, monkeypatch, drop_executor=False)
-
-    assert _contains(repo, LEVEL, TICKET)
-    assert [e["event"] for e in _bus(ws) if e.get("event") == "level_merged"] == ["level_merged"]
-    assert len(_relaunches(launched)) == 1
-    assert [r["action"]["kind"] for r in performed if r["action"]["kind"] in ("merge_level", "relaunch")] == ["merge_level", "relaunch"]
-    assert not any("no steward executor" in str(r.get("reason", "")) for r in performed)
-
-
-def test_a_tick_without_an_executor_refuses_the_merge_and_still_relaunches(tmp_path, monkeypatch) -> None:
-    repo, ws, launched, performed, before = _tick(tmp_path, monkeypatch, drop_executor=True)
-
-    merge = next(r for r in performed if r["action"]["kind"] == "merge_level")
-    assert (merge["status"], "no steward executor" in merge["reason"]) == ("refused", True)
-    attention = [e for e in _bus(ws) if e.get("event") == "needs_attention"]
-    assert len(attention) == 1 and "no steward executor" in attention[0]["fields"]["reason"]
-    assert not [e for e in _bus(ws) if e.get("event") == "level_merged"]
-    assert len(_relaunches(launched)) == 1
-    assert _git(repo, "rev-parse", TICKET).stdout.strip() == before
-    assert not _contains(repo, LEVEL, TICKET)
+    actions = [r["action"] for r in performed]
+    assert actions  # the tick ran and performed its own plan
+    assert [a["kind"] for a in actions if a["kind"] in _STEWARD_KINDS] == []
+    assert [a for a in actions if a["kind"] == "relaunch" and "epic" in a] == []  # only a steward relaunch names its epic
+    assert [e["event"] for e in _bus(ws) if e.get("event") in _STEWARD_EVENTS] == []
+    assert _git(repo, "rev-parse", TICKET).stdout.strip() == before  # nothing merged the phase into the ticket branch

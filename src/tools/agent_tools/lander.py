@@ -32,6 +32,7 @@ from harness import landing_ops as ops
 from harness import landing_store as ls
 
 LAND_CLAIM_SECONDS = 3600  # an initiative land waits on CI; its claim is renewed while it works
+QUEUE_ALARM_SECONDS = 3600  # an item still open this long after it was queued is told to the chair, once
 PERSON_GATE_NOTE = "the pull request is open and its merge waits for a person"
 
 
@@ -477,6 +478,41 @@ def sweep(ports: Ports) -> list[str]:
     return events
 
 
+def stale_items(items: Sequence[Mapping[str, Any]], now: str, limit: int = QUEUE_ALARM_SECONDS) -> list[Mapping[str, Any]]:
+    """Pure. The open queue items older than `limit` seconds, oldest first: approved work that is waiting and not moving.
+
+    A land whose pull request waits for a person is not stalled, however long the person takes."""
+    return sorted(
+        (
+            i for i in items
+            if i["state"] in ("queued", "claimed", "failed") and i.get("queued_at")
+            and ops.later(str(i["queued_at"]), limit) <= now
+            and not str(i.get("last_error") or "").startswith(PERSON_GATE_NOTE)
+        ),
+        key=lambda i: (str(i["queued_at"]), str(i["id"])),
+    )
+
+
+def queue_alarm(ports: Ports, limit: int = QUEUE_ALARM_SECONDS) -> list[str]:
+    """Tell the chair, once per queueing, about each item that has waited past `limit`: what it is, since when, and
+    the last error. This is the stall alarm's view of landing: a lander that dies, or an item nothing can finish,
+    shows up here instead of as silence."""
+    events: list[str] = []
+    for item in stale_items(ls.list_items(ports.conn), ports.now(), limit):
+        initiative, ident = str(item["initiative"]), str(item["id"])
+        record = ls.get_record(ports.conn, initiative)
+        told = dict((record or {}).get("queue_alarms") or {})
+        if record is None or told.get(ident) == item["queued_at"]:
+            continue
+        reason = f"{ident} has waited since {item['queued_at']} ({item['state']}, {item.get('attempts') or 0} attempt(s))"
+        if item.get("last_error"):
+            reason += f": {item['last_error']}"
+        ports.notify("stalled", {"initiative": initiative, "phase": str(item.get("phase") or ""), "reason": reason})
+        ls.put_record(ports.conn, {**record, "queue_alarms": {**told, ident: item["queued_at"]}})
+        events.append(f"alarm: {reason}")
+    return events
+
+
 def perform(ports: Ports, item: Mapping[str, Any]) -> Outcome:
     if item["kind"] == ls.PHASE_MERGE:
         return merge_phase(ports, str(item["initiative"]), str(item["phase"]))
@@ -488,7 +524,7 @@ def run_once(ports: Ports, *, phase_cap: int = 2, land_cap: int = 1) -> list[Out
 
     Phase merges and initiative lands have separate caps and neither counts against the build cap. An item that is
     waiting stays queued for the next pass."""
-    for line in sweep(ports):
+    for line in [*sweep(ports), *queue_alarm(ports)]:
         ports.log(line)
     items = ls.claimable(ls.list_items(ports.conn), ports.now())
     outcomes: list[Outcome] = []

@@ -7,9 +7,13 @@ from agent_tools import pacing
 from agent_tools.chair import lease_holder
 from agent_tools.chair_facts import (
     FactsDeps,
+    epic_facts,
     gather_facts,
+    land_at_facts,
     resolve_steward_enabled,
     resolve_steward_scope,
+    steward_asked_for,
+    steward_initiative_ids,
     steward_plan_facts,
 )
 from agent_tools.chair_read_steward import level_is_merged, reported_keys, task_signature
@@ -69,8 +73,9 @@ def test_the_steward_setting_is_off_for_an_absent_or_malformed_value(value):
 
 
 @pytest.mark.parametrize("value", [True, "true", " True "])
-def test_the_steward_setting_is_on_for_an_explicit_true(value):
-    assert resolve_steward_enabled(value) is True
+def test_an_explicit_true_is_asked_for_and_still_turns_nothing_on(value):
+    assert steward_asked_for(value) is True
+    assert resolve_steward_enabled(value) is False
 
 
 @pytest.mark.parametrize("value", [None, 5, True, [], "", "all", "banana"])
@@ -84,8 +89,8 @@ def test_the_steward_scope_is_epics_ignoring_case_and_space(value):
 
 
 def _planned(rows, scope=None) -> list[str]:
-    deps = replace(_deps(), steward_enabled=lambda: True, work_rows=lambda: rows, steward_scope=lambda: scope)
-    return [e["epic_id"] for e in gather_facts(deps, NOW)["steward"]["epics"]]
+    """The ids the scope selects, from the pure functions: `gather_facts` no longer plans the retired steward."""
+    return steward_initiative_ids(resolve_steward_scope(scope), epic_facts(rows, {}), rows)
 
 
 def _initiative(name, **extra):
@@ -148,17 +153,24 @@ def test_with_the_setting_off_gather_facts_has_no_steward_key_and_is_otherwise_u
     assert "steward" not in base and off == base
 
 
-def test_with_the_setting_on_gather_facts_fills_levels_merged_state_head_exit_and_reported_keys():
-    deps = replace(
+def test_with_the_setting_on_gather_facts_still_has_no_steward_key():
+    wired = replace(
         _deps(),
-        steward_enabled=lambda: True,
         work_rows=lambda: ROWS,
         run_exited=lambda: {"i": True},
         steward_entries=lambda: ENTRIES,
         ticket_head=lambda initiative: "abc",
         level_merged=lambda initiative, phase: phase == "p2",
     )
-    steward = gather_facts(deps, NOW)["steward"]
+    for value in (True, "true"):
+        on = gather_facts(replace(wired, steward_enabled=lambda value=value: value, steward_scope=lambda: "epics"), NOW)
+        assert "steward" not in on and on == gather_facts(wired, NOW)
+
+
+def test_steward_plan_facts_fills_levels_merged_state_head_exit_and_reported_keys():
+    steward = steward_plan_facts(
+        ["i"], ROWS, {"i": True}, lambda initiative: "abc", lambda initiative, phase: phase == "p2", ENTRIES
+    )
     (epic,) = steward["epics"]
     assert steward["enabled"] is True
     assert epic["epic_id"] == "i" and epic["branch_head"] == "abc" and epic["exited"] is True
@@ -212,7 +224,7 @@ def test_each_level_carries_its_phase_name_in_natural_order():
     assert [lv["phase"] for lv in _plan({"i": "task"}, {})["levels"]] == ["p1", "p2"]
 
 
-def test_gather_facts_resolves_land_at_and_passes_the_ready_landed_set():
+def test_the_resolved_land_at_reaches_the_plan_facts_and_gather_facts_plans_none_of_it():
     deps = replace(
         _deps(),
         steward_enabled=lambda: True,
@@ -221,7 +233,9 @@ def test_gather_facts_resolves_land_at_and_passes_the_ready_landed_set():
         land_at_values=lambda: {"i": "level"},
         level_merged=lambda initiative, phase: False,
     )
-    (epic,) = gather_facts(deps, NOW)["steward"]["epics"]
+    assert "steward" not in gather_facts(deps, NOW)
+    land_at = land_at_facts({}, {"i": "level"}, ["i"])
+    (epic,) = steward_plan_facts(["i"], ROWS, {}, lambda initiative: "", lambda initiative, phase: False, [], land_at, {})["epics"]
     assert epic["land_at"] == "initiative"  # the retired level reads as initiative
     assert [lv["merged"] for lv in epic["levels"]] == [False, False]
 

@@ -239,7 +239,7 @@ def test_idle_stall_calls_the_four_readers_and_reads_the_configured_minutes(tmp_
     assert unset.facts_deps.idle_stall(now)["stall_minutes"] == 15
 
 
-def test_the_steward_is_on_only_for_a_profile_that_sets_chair_steward(tmp_path) -> None:
+def test_the_steward_stays_off_whatever_the_profile_sets_for_chair_steward(tmp_path) -> None:
     runs = tmp_path / "runs"
     runs.mkdir()
 
@@ -248,12 +248,16 @@ def test_the_steward_is_on_only_for_a_profile_that_sets_chair_steward(tmp_path) 
     def deps(profile: dict) -> chair_facts.FactsDeps:
         return cli._chair_run_deps(runs, profile, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files").facts_deps
 
-    # This proves only that the profile setting reaches the Facts key. The steward's bus entries, head, level and
-    # executor inputs are not wired by `_chair_run_deps` yet, and nothing here covers them.
-    assert chair_facts.gather_facts(deps({"chair": {"steward": True}}), now)["steward"]["enabled"] is True
+    # The steward is retired: the profile value still reaches the wired setting, where `steward_asked_for` reads it
+    # for the doctor row, and it adds no Facts key.
+    asked = deps({"chair": {"steward": True}})
+    assert chair_facts.steward_asked_for(asked.steward_enabled()) is True
+    assert chair_facts.resolve_steward_enabled(asked.steward_enabled()) is False
+    assert "steward" not in chair_facts.gather_facts(asked, now)
     assert "steward" not in chair_facts.gather_facts(deps({}), now)
     # The malformed and empty forms are cheap to check on the wired setting alone.
     for profile in ({"chair": {}}, {"chair": {"steward": "banana"}}):
+        assert chair_facts.steward_asked_for(deps(profile).steward_enabled()) is False
         assert chair_facts.resolve_steward_enabled(deps(profile).steward_enabled()) is False
 
 
