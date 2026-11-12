@@ -139,9 +139,22 @@ def _scripted(monkeypatch, replies):
     return calls
 
 
-def _wait(monkeypatch, tmp_path, check_runs, status=NO_STATUS, required=((0, "[]"), EMPTY_PROTECTION), rerun=((0, ""),)):
-    """`rerun` is a list of answers for every `gh run rerun`, or a dict of answers keyed by a substring of the argv."""
+def _jobs(*failed_steps):
+    """A run's jobs body: one job with a failed step for each name given and a passing `checkout`."""
+    steps = [{"name": "checkout", "conclusion": "success"}, *({"name": n, "conclusion": "failure"} for n in failed_steps)]
+    return (0, json.dumps({"jobs": [{"name": "test", "steps": steps}]}))
+
+
+def _files(*paths):
+    return (0, json.dumps({"files": [{"path": p} for p in paths]}))
+
+
+def _wait(monkeypatch, tmp_path, check_runs, status=NO_STATUS, required=((0, "[]"), EMPTY_PROTECTION), rerun=((0, ""),),
+          jobs=(1, "unscripted"), files=(1, "unscripted")):
+    """`rerun` is a list of answers for every `gh run rerun`, or a dict of answers keyed by a substring of the argv.
+    `jobs` and `files` answer the failed-steps and changed-paths reads; unreadable unless a test scripts them."""
     calls = _scripted(monkeypatch, {
+        "--json files": [files], "/jobs": [jobs],
         "pr view": [BASE_MAIN], "rules/branches": [required[0]], "protection/required": [required[1]],
         "rev-parse": [(0, "abc\n")], "check-runs": [(0, body) for body in check_runs], "/status": [status],
         **(rerun if isinstance(rerun, dict) else {"run rerun": list(rerun)})})
@@ -257,6 +270,54 @@ def test_wait_checks_reruns_a_failed_run_once_and_keeps_polling(monkeypatch, tmp
 def test_wait_checks_returns_the_failure_after_the_rerun_without_a_second_rerun(monkeypatch, tmp_path):
     failed, failed_again = _runs(("test", "failure", RUN_URL.format(123))), _runs(("test", "failure", RUN_URL.format(123)), first_id=10)
     result, reruns, _ = _wait(monkeypatch, tmp_path, [failed, failed_again])
+    assert result == (False, "failing checks: test")
+    assert reruns == [["gh", "run", "rerun", "123", "--failed"]]
+
+
+def test_parse_failed_steps_names_each_failed_step_and_is_none_for_garbage():
+    assert forge_github.parse_failed_steps(_jobs("pytest tools", "pytest root")[1]) == ("pytest tools", "pytest root")
+    assert forge_github.parse_failed_steps("not json") is None
+    assert forge_github.parse_failed_steps('{"message": "Not Found"}') is None
+
+
+def test_parse_changed_paths_reads_each_path_and_is_none_without_files():
+    assert forge_github.parse_changed_paths(_files("a.md", "src/x.py")[1]) == ("a.md", "src/x.py")
+    assert forge_github.parse_changed_paths('{"baseRefName": "main"}') is None
+
+
+def test_wait_checks_reruns_once_when_the_failed_suite_is_untouched(monkeypatch, tmp_path):
+    failed, green = _runs(("test", "failure", RUN_URL.format(123))), _runs(("test", "success", RUN_URL.format(123)))
+    result, reruns, _ = _wait(monkeypatch, tmp_path, [failed, green], jobs=_jobs("pytest tools"), files=_files("docs/x.md"))
+    assert result == (True, "green")
+    assert reruns == [["gh", "run", "rerun", "123", "--failed"]]
+
+
+def test_wait_checks_returns_a_touched_suite_failure_with_no_rerun(monkeypatch, tmp_path):
+    failed = _runs(("test", "failure", RUN_URL.format(123)))
+    result, reruns, _ = _wait(monkeypatch, tmp_path, [failed], jobs=_jobs("pytest tools"), files=_files("src/tools/agent_tools/forge_github.py"))
+    assert result[0] is False
+    assert "failing checks: test" in result[1]
+    assert "pytest tools" in result[1]
+    assert reruns == []
+
+
+def test_wait_checks_still_reruns_once_when_the_jobs_read_is_unreadable(monkeypatch, tmp_path):
+    failed, green = _runs(("test", "failure", RUN_URL.format(123))), _runs(("test", "success", RUN_URL.format(123)))
+    result, reruns, _ = _wait(monkeypatch, tmp_path, [failed, green], jobs=(1, "boom"), files=_files("src/tools/x.py"))
+    assert result == (True, "green")
+    assert reruns == [["gh", "run", "rerun", "123", "--failed"]]
+
+
+def test_wait_checks_still_reruns_once_when_the_changed_paths_are_unreadable(monkeypatch, tmp_path):
+    failed, green = _runs(("test", "failure", RUN_URL.format(123))), _runs(("test", "success", RUN_URL.format(123)))
+    result, reruns, _ = _wait(monkeypatch, tmp_path, [failed, green], jobs=_jobs("pytest tools"), files=(1, "boom"))
+    assert result == (True, "green")
+    assert reruns == [["gh", "run", "rerun", "123", "--failed"]]
+
+
+def test_wait_checks_ends_on_a_second_failure_after_a_scoped_rerun(monkeypatch, tmp_path):
+    failed, failed_again = _runs(("test", "failure", RUN_URL.format(123))), _runs(("test", "failure", RUN_URL.format(123)), first_id=10)
+    result, reruns, _ = _wait(monkeypatch, tmp_path, [failed, failed_again], jobs=_jobs("pytest tools"), files=_files("docs/x.md"))
     assert result == (False, "failing checks: test")
     assert reruns == [["gh", "run", "rerun", "123", "--failed"]]
 
