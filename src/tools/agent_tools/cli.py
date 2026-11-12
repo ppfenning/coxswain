@@ -6658,6 +6658,53 @@ def _route_pull(a: argparse.Namespace) -> int:
     return max([_pull_source(a, profile, name, named=len(names) > 1) for name in names])
 
 
+def _taken_tickets(adapter, config) -> list | None:
+    """Edge. The tickets a source's earlier pulls took, as candidates; [] for an adapter that cannot list them, None
+    after printing when a listing fails."""
+    build = getattr(adapter, "taken_list_argv", None)
+    if build is None:
+        return []
+    unwrap = getattr(adapter, "unwrap", None) or (lambda payload, _repo: payload)
+    tickets: list = []
+    for repo in config.repos:
+        rc, out, err = _run_argv(build(config, repo))
+        try:
+            tickets.extend(adapter.read(raw) for raw in (unwrap(json.loads(out or "[]"), repo) if rc == 0 else ()))
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            rc, err = 1, f"{type(exc).__name__}: {exc}"
+        if rc != 0:
+            print(f"sync: listing the taken tickets of {repo} failed: {err}")
+            return None
+    return tickets
+
+
+def _sync_source(adapter, config, ws: Path, fresh: Sequence, dry_run: bool) -> bool:
+    """Edge. One-way sync of a source's tickets into the store's intake rows (`intake_sync`); True when it failed.
+    `fresh` are the candidates the pull just read, so a queued ticket still on the intake listing is covered too."""
+    from agent_tools import intake_sync  # imported here: cli loads a command module only when it runs
+
+    taken = _taken_tickets(adapter, config)
+    if taken is None:
+        return True
+    tickets = [*fresh, *taken]
+    if not tickets:
+        return False
+    at = datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
+    failed = False
+    for step in intake_sync.plan_sync(tickets, run_store.read_queue(ws / "runs"), at):
+        if dry_run:
+            if step.line:
+                print(f"would {step.line}")
+            continue
+        refusals = [why for why in (run_store.upsert_row_detail(ws / "runs", row) for row in step.writes) if why]
+        if refusals:
+            failed = True
+            print(f"sync: the store refused the change for {step.link}: {refusals[0]}")
+        elif step.line:
+            print(step.line)
+    return failed
+
+
 def _held_issues(ws: Path, repo_map: dict) -> dict[tuple[str, str], str]:
     """(repository, number) to `initiative/task_id` for the store rows that name both; empty when the store is unreadable."""
     keyed = ((route.row_issue_key(row, repo_map), row) for row in run_store.read_queue(ws / "runs"))
@@ -6704,6 +6751,9 @@ def _pull_source(a: argparse.Namespace, profile: dict, source: str, *, named: bo
         print(f"routing: pull wrote nothing{f' from {source}' if named else ''}: no eligible candidates")
     failed = [_pull_one(adapter, config, mapping, found, ws, a.dry_run) for mapping in plan]
     failed += [_review_one(adapter, found[link], str(_profile_path(a)), a.dry_run) for link in reviews]
+    if work_state.work_state_mode(_lake_provider(a)[0]) == "store":
+        # The store is the board, so an edit at the source reaches it here; with the files as the board there is no row to sync.
+        failed.append(_sync_source(adapter, config, ws, [c for c in found.values() if c.kind != "pr"], a.dry_run))
     return 2 if problems or any(failed) else 0
 
 

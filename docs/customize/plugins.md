@@ -45,6 +45,24 @@ repo_map: {"owner/repo": "/path/to/repo", "~/intake": "/path/to/repo"}
 The autonomous chair runs a bare `cox route pull` when it has free lanes
 and nothing else queued, so it reads every configured source.
 
+### Edits at the source after a pull
+
+With `work_state: store`, a pull is also a one-way sync. Text flows from
+the source into the store and never back.
+
+- **Still queued** (draft, ready or held): the stored title and body are
+  replaced with the source's newer text. Nothing was built from the old
+  text.
+- **Decomposed**: the stored initiative is what the tasks were cut from,
+  so its text is kept. The edit is recorded on the initiative as
+  `changed_upstream` (when, the link, the new title) and the pull prints a
+  line. What happens next is the orchestrator's rule, not the sync's.
+- **Landed or done**: left alone.
+
+Each edit is acted on once. A source takes part when its adapter can list
+the tickets it already took (`taken_list_argv`); `github` does, by the
+`intake:taken` label. `--dry-run` prints what a sync would do.
+
 ## Installing
 
 `cox` loads sources, forges and trackers from its own environment. `cox` is
