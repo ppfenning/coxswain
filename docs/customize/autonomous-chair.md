@@ -47,6 +47,19 @@ it reads the board from. If the store is unreachable, that line reads:
 work state: files (store unreachable)
 ```
 
+The files then stand in as the board until the store answers. That is safe
+only while the files are a committed copy. With `chair.workspace_git: false`
+they are a disposable copy, so set this in the provider profile beside
+`work_state: store`:
+
+```yaml
+store_required: true
+```
+
+An unreachable store then stays the board. Commands that need it fail and
+say so, and nothing is written to files that the store would later ignore.
+The line reads `work state: store (unreachable; ...)`.
+
 A local SQLite store keeps the ticket files as the board and needs no shared
 store; local-first stays the default.
 

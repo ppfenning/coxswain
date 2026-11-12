@@ -12,14 +12,17 @@ from agent_tools.store_url import read_provider_profile
 _PROBE_CONNECT_TIMEOUT_S = 3
 
 
-def _resolve_mode(explicit: object, shared_store: bool, store_answered: bool) -> str:
+def _resolve_mode(explicit: object, shared_store: bool, store_answered: bool, required: bool = False) -> str:
     """Pure. `files` for explicit `"files"`. `store` for explicit `"store"` only when
     `store_answered`. `store` for a missing or `None` explicit only when `shared_store
-    and store_answered`. `files` for any other value, such as a typo."""
+    and store_answered`. `files` for any other value, such as a typo.
+
+    With `required` (`store_required: true`), an explicit `"store"` is `store` whether or not it answered: the
+    store is the only board, so a store that is down fails the command instead of making stale files the board."""
     if explicit == "files":
         return "files"
     if explicit == "store":
-        return "store" if store_answered else "files"
+        return "store" if store_answered or required else "files"
     if explicit is None:
         return "store" if shared_store and store_answered else "files"
     return "files"
@@ -64,7 +67,10 @@ def resolve(profile: Mapping[str, Any]) -> tuple[str, str]:
     explicit = profile.get("work_state")
     should_probe = shared_store and (explicit == "store" or explicit is None)
     store_answered = _probe_store(url) if should_probe else True
-    mode = _resolve_mode(explicit, shared_store, store_answered)
+    required = profile.get("store_required") is True
+    mode = _resolve_mode(explicit, shared_store, store_answered, required)
+    if mode == "store" and should_probe and not store_answered:
+        return mode, "work state: store (unreachable; store_required keeps the files from standing in)"
     if mode == "store":
         return mode, "work state: store"
     if should_probe and not store_answered:

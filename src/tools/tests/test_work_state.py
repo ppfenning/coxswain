@@ -102,3 +102,19 @@ def test_route_context_turns_a_failing_provider_read_into_its_unavailable_line(m
     monkeypatch.setattr(cli, "_lake_provider", unreadable)
     assert cli.main(["route", "context", "--profile", "/nonexistent/profile.yaml"]) == 0
     assert capsys.readouterr().out.startswith("routing: context unavailable (UnicodeDecodeError")
+
+
+def test_a_required_store_that_does_not_answer_stays_store_and_says_so(monkeypatch):
+    monkeypatch.setattr(work_state, "_probe_store", lambda url: False)
+    profile = {"work_state": "store", "storage_url": "postgresql://db.example/cox", "store_required": True}
+    mode, line = work_state.resolve(profile)
+    assert mode == "store" and "unreachable" in line and "store_required" in line
+    assert work_state.resolve({**profile, "store_required": False})[0] == "files", "without the setting the files stand in, as before"
+    assert work_state.resolve({**profile, "store_required": "yes"})[0] == "files", "only a true boolean turns it on"
+
+
+def test_a_required_store_never_overrides_an_explicit_files_or_a_missing_key(monkeypatch):
+    monkeypatch.setattr(work_state, "_probe_store", lambda url: False)
+    url = "postgresql://db.example/cox"
+    assert work_state.resolve({"work_state": "files", "storage_url": url, "store_required": True})[0] == "files"
+    assert work_state.resolve({"storage_url": url, "store_required": True})[0] == "files"
