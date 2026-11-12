@@ -41,14 +41,14 @@ def _launched(actions: list[dict]) -> set[str]:
     return {a["initiative"] for a in actions if a["kind"] in {"launch_epic", "relaunch"}}
 
 
-def test_an_initiative_in_a_landing_repo_gets_no_launch():
-    landing = [{"initiative": "x", "phase": "p", "repo": "r1"}]
+def test_an_initiative_being_landed_gets_no_launch():
+    landing = [{"initiative": "a", "phase": "p", "repo": "r1"}]
     facts = _facts(initiatives=[_initiative("a", "r1")], landing=landing)
     assert _launched(plan_tick(facts, _NOW)) == set()
 
 
-def test_a_started_initiative_in_a_landing_repo_gets_no_launch():
-    landing = [{"initiative": "x", "phase": "p", "repo": "r1"}]
+def test_a_started_initiative_being_landed_gets_no_launch():
+    landing = [{"initiative": "a", "phase": "p", "repo": "r1"}]
     facts = _facts(initiatives=[_initiative("a", "r1", started=True)], landing=landing)
     assert _launched(plan_tick(facts, _NOW)) == set()
 

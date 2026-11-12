@@ -148,8 +148,15 @@ def relaunch_pair(initiative: str) -> list[Action]:
     return [{"kind": "clear_branches", "initiative": initiative}, {"kind": "relaunch", "initiative": initiative}]
 
 
-def _landing_repos(facts: Facts) -> set[str]:
-    return {landing["repo"] for landing in facts.get("landing", [])}
+def landing_initiatives(facts: Facts) -> frozenset[str]:
+    """The initiatives a land in flight touches: the one it names. A land naming no initiative touches its whole repo.
+
+    Other initiatives in a landing repo stay launchable: a build on a phase branch never waits on a land to main,
+    and the stale-base rebase handles a base the land moved meanwhile."""
+    landings = facts.get("landing", [])
+    named = frozenset(landing["initiative"] for landing in landings if landing.get("initiative"))
+    whole_repos = frozenset(landing["repo"] for landing in landings if not landing.get("initiative"))
+    return named | frozenset(i["id"] for i in facts["initiatives"] if i.get("repo") in whole_repos)
 
 
 def _launch(record: Mapping[str, str]) -> Launch | None:
@@ -181,8 +188,8 @@ def budget_verdict(facts: Facts, initiative: str, kind: str, now: datetime) -> V
 
 
 def _relaunch_candidates(facts: Facts, blocked: set[str]) -> list[InitiativeFacts]:
-    landing_repos = _landing_repos(facts)
-    return [i for i in facts["initiatives"] if _can_relaunch(i, blocked) and i.get("repo") not in landing_repos]
+    landing = landing_initiatives(facts)
+    return [i for i in facts["initiatives"] if _can_relaunch(i, blocked) and i["id"] not in landing]
 
 
 def _lane_capacity_zero(facts: Facts) -> bool:
@@ -214,7 +221,7 @@ def _loop_key(verdict: Verdict) -> str:
 def _relaunch_actions(
     initiatives: list[InitiativeFacts],
     blocked: set[str],
-    landing_repos: set[str],
+    landing: frozenset[str],
     refused: Mapping[str, Verdict] | None = None,
     reported: Collection[str] = (),
 ) -> list[Action]:
@@ -224,7 +231,7 @@ def _relaunch_actions(
     return [
         action
         for i in initiatives
-        if _can_relaunch(i, blocked) and i.get("repo") not in landing_repos
+        if _can_relaunch(i, blocked) and i["id"] not in landing
         for action in _relaunch_or_refusal(i["id"], refusals.get(i["id"]), reported)
     ]
 
@@ -393,7 +400,8 @@ def plan_recover(facts: Facts, now: datetime | None = None) -> list[Action]:
     An initiative in `schema_deaths` gets one schema-version needs_chair carrying the two run ids, and no
     relaunch, retry or rescue. Its quarantines still report their own needs_chair.
 
-    An initiative whose repo has a land in `landing` gets no relaunch pair, so the pair never takes a launch slot.
+    An initiative a land in `landing` touches (landing_initiatives) gets no relaunch pair, so the pair never takes a
+    launch slot; another initiative in the same repo relaunches as usual.
 
     An initiative with a `dag_problem` is never relaunched. It reaches the chair once, as `invalid_dag (<problem>)`.
 
@@ -425,7 +433,7 @@ def plan_recover(facts: Facts, now: datetime | None = None) -> list[Action]:
         _schema_death_actions(deaths)
         + _without_schema_dead_launches(_without_over_budget(quarantine_actions, over), deaths)
         + _relaunch_actions(
-            facts["initiatives"], blocked, _landing_repos(facts), refused, facts.get("relaunch_loop_reported", [])
+            facts["initiatives"], blocked, landing_initiatives(facts), refused, facts.get("relaunch_loop_reported", [])
         )
         + _invalid_dag_actions(facts["initiatives"])
         + _waiting_actions(facts["initiatives"], blocked),

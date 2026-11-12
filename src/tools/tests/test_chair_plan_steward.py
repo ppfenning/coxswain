@@ -97,8 +97,8 @@ def test_a_remote_unfetched_initiative_gets_no_steward_relaunch():
     assert plan_tick(facts) == plan_tick(_without_steward(facts))
 
 
-def test_an_initiative_in_a_landing_repo_gets_no_steward_relaunch():
-    landing = [{"initiative": "x", "phase": "p", "repo": "r1"}]
+def test_an_initiative_being_landed_gets_no_steward_relaunch():
+    landing = [{"initiative": "a", "phase": "p", "repo": "r1"}]
     facts = _facts_for(_epic(("a-t", "ready")), initiatives=[{**_initiative("a"), "repo": "r1"}], landing=landing)
     assert _relaunches(plan_tick(facts)) == []
     assert plan_tick(facts) == plan_tick(_without_steward(facts))

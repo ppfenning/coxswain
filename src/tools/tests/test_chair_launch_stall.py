@@ -121,8 +121,13 @@ def test_a_land_in_flight_on_another_repo_does_not_hold_the_ready_initiatives():
     assert _outcome(_symptom(landing=other)) == _outcome(_symptom())
 
 
-def test_a_land_in_flight_on_their_repo_holds_all_of_them_and_names_the_hold():
+def test_a_land_of_another_initiative_in_their_repo_holds_none_of_them():
     same = [{"initiative": "zz", "phase": "p", "repo": "repo-a"}]
+    assert _outcome(_symptom(landing=same)) == _outcome(_symptom())
+
+
+def test_a_land_naming_no_initiative_on_their_repo_holds_all_of_them_and_names_the_hold():
+    same = [{"initiative": "", "phase": "", "repo": "repo-a"}]
     launched, unlaunched, _ = _outcome(_symptom(landing=same))
     assert launched == set()
     assert set(unlaunched) == set(_IDS)
