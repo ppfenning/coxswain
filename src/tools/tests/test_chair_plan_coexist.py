@@ -93,7 +93,8 @@ def test_a_decompose_live_on_the_chair_machine_leaves_a_relaunch_its_remote_lane
         initiatives=[_initiative("a", started=True), _initiative("b")],
         run_exited={"a": True},
     )
-    assert _launches(plan_tick(facts, _NOW)) == [("relaunch", "a", "lane-b"), ("launch_epic", "b", "lane-b")]
+    # The launch cap counts launches on lane hosts too, so a cap of 1 leaves room for the relaunch alone.
+    assert _launches(plan_tick(facts, _NOW)) == [("relaunch", "a", "lane-b")]
 
 
 def test_the_chair_machine_room_still_bounds_what_launches_on_it():
@@ -116,7 +117,7 @@ def test_the_weekly_launch_cap_still_limits_launches():
 def test_the_weekly_lane_fraction_still_limits_remote_launches():
     facts = _facts(
         limits={
-            "hard_stop": False, "weekly_fraction": 0.5, "hard_stop_fraction": 0.9, "launch_cap": 1, "go_degraded": False,
+            "hard_stop": False, "weekly_fraction": 0.5, "hard_stop_fraction": 0.9, "launch_cap": 2, "go_degraded": False,
             "lane_fraction": 0.5,
         },
         dispatch=_decompose_live([{"name": "lane-b", "capacity": 4, "live_runs": 0}]),
