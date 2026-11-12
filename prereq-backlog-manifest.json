@@ -9,7 +9,8 @@
     "1148": "superseded by the combined PR",
     "1135": "superseded by the combined PR",
     "1121": "superseded by the combined PR",
-    "1134": "superseded by the combined PR"
+    "1134": "superseded by the combined PR",
+    "1102": "folded into the combined PR"
   },
   "notes": [
     "launch-cap tasks may be superseded by main #1137; refreshing-a-phase-branch by #1138; schedule-conflict-edges by #1139: check before applying",
@@ -105,11 +106,6 @@
     {
       "initiative": "intakes-have-draft-and-ready-states-and-state",
       "task_id": "intakes-have-draft-and-ready-states-and-state-chair-release-order",
-      "reason": "held"
-    },
-    {
-      "initiative": "intakes-have-draft-and-ready-states-and-state",
-      "task_id": "intakes-have-draft-and-ready-states-and-state-fields-cli",
       "reason": "held"
     },
     {
@@ -1180,11 +1176,26 @@
         "3822982c489bacbb7d11a1f3343fa1f5b3664374"
       ],
       "status": "applied clean"
+    },
+    {
+      "initiative": "intakes-have-draft-and-ready-states-and-state",
+      "task_id": "intakes-have-draft-and-ready-states-and-state-fields-cli",
+      "status": "applied clean (from open pull request #1102; it was listed as held; its README command table is regenerated)",
+      "new_commits": [
+        "44a4182cff426aad9b8d086ffdeb52f1df35ed30"
+      ]
     }
   ],
   "integration_fixes": [
     "harness/checks.py + tests/test_epic_check_reuse.py: two tasks each wrote a 'reused' line on a check's evidence; one line is kept ('reused: same tree and command passed earlier')",
     "harness/check_reuse.py run_checks_reusing(run=...) and epic._gate_checks: the reuse step runs misses through the caller's run_checks, so the lane environment and scoped-check tasks still see every run",
     "agent_tools/host_cmd.py: imports scan_repo_refs (the name git_ref_health defines) and reports repo-relative paths, as its own tests expect"
-  ]
+  ],
+  "open_prs_reviewed": {
+    "1148": "already in the combined PR",
+    "1134": "an older attempt (run 4) of a task applied from run 11",
+    "1135": "the fixtures-only feed-contract task: not applied, see its task entry",
+    "1121": "an older attempt of the same fixtures-only task",
+    "1102": "folded in"
+  }
 }
