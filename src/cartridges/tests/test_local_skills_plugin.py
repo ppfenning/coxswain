@@ -133,6 +133,20 @@ def test_build_in_worktree_requires_neutral_test_data() -> None:
     assert "/" + "home/user" in text
     assert "check_clean" in text
     assert re.search(r"^name: build-in-worktree$", raw, re.MULTILINE)
+    assert "tmp_path" in text
+    assert "/" + "home/<name>" in text
+    assert "/" + "Users/<name>" in text
+    assert "~" + "/" in text
+    assert "runs the clean check on your patch before review" in text
+
+
+def test_plan_task_names_tmp_path_for_test_paths() -> None:
+    raw = (PLUGIN / "skills" / "plan-task" / "SKILL.md").read_text(encoding="utf-8")
+    text = " ".join(raw.split())
+    assert "tmp_path" in text
+    assert "/" + "home/<name>" in text
+    assert "/" + "Users/<name>" in text
+    assert re.search(r"^name: plan-task$", raw, re.MULTILINE)
 
 
 def test_the_index_maps_each_binding_to_exactly_one_body() -> None:

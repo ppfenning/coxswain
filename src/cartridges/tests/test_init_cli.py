@@ -93,7 +93,7 @@ def test_dry_run_shows_the_minimal_yaml_write_with_no_skills_bindings(tmp_path, 
 
     assert exit_code == 0
     assert f"write {cartridges_dir / 'demo' / 'cartridge.yaml'} (7 lines)" in out
-    assert "skills" not in out
+    assert "skills" not in out.replace(str(REPO), "")
 
 
 def test_second_init_without_force_exits_2_and_changes_nothing(tmp_path, capsys):
