@@ -130,10 +130,17 @@ class OverrunState:
 
 @dataclass
 class RestartState:
-    """The (old, new) heads and the reason when the loop stopped because its checkout moved; None otherwise. Read after `run` returns."""
+    """The (old, new) heads when the checkout moved, and the reason for any restart; None otherwise. Read after `run` returns.
+
+    A reload restart sets `reason` only, so `restarted` is the test for a restart of either cause.
+    """
 
     moved: tuple[str, str] | None = None
     reason: str | None = None
+
+    @property
+    def restarted(self) -> bool:
+        return self.reason is not None
 
 
 @dataclass
@@ -249,6 +256,7 @@ class RunDeps:
     monotonic: Callable[[], float] = time.monotonic
     restart_note: str = ""  # the "restarts N in 24h" segment appended to every tick line; "" for none
     record_restart: Callable[[str], None] | None = None  # given the reason when the loop restarts
+    reload_config: Callable[[], str | None] | None = None  # between live ticks: None carries on, a string is the restart reason
     save_cache: Callable[[], None] | None = None  # run on every live stop, before the lease is released
     force_holder: bool = False  # a dry run plans as the holder even behind a live foreign lease; a live tick never reads it
     # Notifier: `notify` is `dispatch`'s call shape; `notify_config` None is the off state; no `workspace` skips the step.
@@ -773,10 +781,28 @@ def _restart(deps: RunDeps, moved: tuple[str, str], reason: str) -> None:
             deps.record_restart(reason)
 
 
-def run(once: bool, interval: float, dry_run: bool, deps: RunDeps, max_overruns: int = 3) -> None:
-    """Ticks until interrupted, SIGTERM, max_overruns overruns in a row or a moved checkout, or once; a stop frees the lands, then the lease.
+def _reload_reason(deps: RunDeps) -> str | None:
+    if deps.reload_config is None:
+        return None
+    try:
+        return deps.reload_config()
+    except Exception:  # a failing reload check must not stop the chair
+        return None
 
-    The checkout is read between ticks only, so a tick in progress finishes first; a land in flight defers the restart.
+
+def _restart_for_reload(deps: RunDeps, reason: str) -> None:
+    with contextlib.suppress(Exception):  # a broken echo must not keep the chair lease held
+        deps.report_deps.echo(reason)
+    deps.restart_state.reason = reason
+    if deps.record_restart is not None:
+        with contextlib.suppress(Exception):  # a failed record must not keep the chair lease held
+            deps.record_restart(reason)
+
+
+def run(once: bool, interval: float, dry_run: bool, deps: RunDeps, max_overruns: int = 3) -> None:
+    """Ticks until interrupted, SIGTERM, max_overruns overruns in a row, a moved checkout or a reload restart, or once; a stop frees the lands, then the lease.
+
+    The reload hook and the checkout are read between ticks only, so a tick in progress finishes first; a land in flight defers the restart.
     A move that touches no chair code never restarts; a burst of code moves restarts once, after the head settles.
     """
     restore = (lambda: None) if dry_run else deps.install_sigterm()
@@ -795,6 +821,11 @@ def run(once: bool, interval: float, dry_run: bool, deps: RunDeps, max_overruns:
             else:
                 deps.wait(interval)
             if not dry_run:
+                reload_reason = _reload_reason(deps)
+                if reload_reason is not None:
+                    _restart_for_reload(deps, reload_reason)
+                    _shutdown(deps, beating, restore, dry_run)
+                    return
                 moved, reason, pending = _moved_heads(deps, pending)
                 if moved is not None:
                     _restart(deps, moved, reason)
