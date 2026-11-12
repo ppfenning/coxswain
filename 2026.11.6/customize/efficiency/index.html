@@ -1876,6 +1876,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#cost-per-completion" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cost per completion
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#cox-stats-gates" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3479,6 +3490,8 @@ Coxswain is in beta — versions may change between releases
       
         
       
+        
+      
     
     
     
@@ -3798,6 +3811,34 @@ Coxswain is in beta — versions may change between releases
     
   
     lake
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/cli/lander/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    lander
   
 
     
@@ -6349,6 +6390,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#cost-per-completion" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cost per completion
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#cox-stats-gates" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6442,13 +6494,23 @@ See <a href="../dashboards/">Dashboards</a> to run it.</p>
 <ul>
 <li><strong>Cost per turn by model.</strong></li>
 <li><strong>Cache-read share.</strong></li>
-<li><strong>Cost per landed task.</strong></li>
+<li><strong>Cost per completion.</strong></li>
 <li><strong>Landed per day.</strong></li>
 <li><strong>First-try build rate.</strong></li>
 <li><strong>Lead time.</strong></li>
 <li><strong>Spend by task outcome.</strong></li>
 </ul>
 <p>Quarantines by cause is also a chart.</p>
+<h2 id="cost-per-completion">Cost per completion</h2>
+<p>A task counts as a completion when it is done, or approved and merged
+into its phase or PR branch, or landed on main. It counts once, however
+it later lands.</p>
+<p>Cost per completion is spend divided by completions in the same window.
+The status line and the feed report it for today, the five-hour window
+and the week.</p>
+<p>The feed keeps the old keys for one release as deprecated aliases:
+<code>per_landed</code> under <code>spend.today</code>, and <code>cost_per_landed_task</code> under each
+<code>spend_split</code> window. Towpath reads <code>cost_per_completion</code> first.</p>
 <h2 id="cox-stats-gates"><code>cox stats gates</code></h2>
 <p>For each review step, <code>cox stats gates</code> shows its cost and how often its
 verdict changed the outcome. It flags steps that change fewer than 5% of
@@ -6456,7 +6518,7 @@ outcomes. Those steps are candidates for a cheaper tier, or for skipping
 on small tasks.</p>
 <h2 id="cox-stats-tiers"><code>cox stats tiers</code></h2>
 <p>For each role and model, <code>cox stats tiers</code> shows the landed rate, the
-first-try rate, and the cost per landed task.</p>
+first-try rate, and the cost per completion.</p>
 <p>It picks the cheapest model within 5 points of the best landed rate. Each
 model needs at least 20 tasks to count. It then shows what the pick would
 have saved.</p>

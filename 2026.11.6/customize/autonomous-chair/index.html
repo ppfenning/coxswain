@@ -2159,41 +2159,13 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
-  <a href="#the-steward" class="md-nav__link">
+  <a href="#the-lander" class="md-nav__link">
     <span class="md-ellipsis">
       
-        The steward
+        The lander
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="The steward">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#the-merge-step-by-land_at" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        The merge step by land_at
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#the-events" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        The events
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
@@ -3706,6 +3678,8 @@ Coxswain is in beta — versions may change between releases
       
         
       
+        
+      
     
     
     
@@ -4025,6 +3999,34 @@ Coxswain is in beta — versions may change between releases
     
   
     lake
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/cli/lander/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    lander
   
 
     
@@ -6775,41 +6777,13 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
-  <a href="#the-steward" class="md-nav__link">
+  <a href="#the-lander" class="md-nav__link">
     <span class="md-ellipsis">
       
-        The steward
+        The lander
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="The steward">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#the-merge-step-by-land_at" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        The merge step by land_at
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#the-events" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        The events
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
@@ -7277,155 +7251,33 @@ level alone.</p>
 <li><code>needs_chair</code> raises something for you to read.</li>
 <li><code>waiting</code> reports an initiative blocked on other work.</li>
 <li><code>deferred</code> reports a phase whose land is held until a later time.</li>
-<li><code>merge_level</code>, <code>run_gate</code> and <code>steward_event</code> are the <a href="#the-steward">steward's</a>
-  merges, gates and events. They appear only when the steward is on.</li>
 </ul>
 <p>Quarantines, budget stops and anything that needs a decision stay with you.
 They show in the inbox.</p>
-<h2 id="the-steward">The steward</h2>
-<p>The steward runs an epic's routine steps without a model. It decides from
-facts alone, and it reports each step as a typed event on the courier bus.</p>
-<p>The steward is off by default. Turn it on with <code>chair.steward</code> in the
-agent-tools profile. These are the exact lines to add. They go at the top level
-of the profile file:</p>
-<div class="highlight"><pre><span></span><code><span class="nt">chair</span><span class="p">:</span>
-<span class="w">  </span><span class="nt">steward</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<h2 id="the-lander">The lander</h2>
+<p>The chair's tick does not land initiatives. A second worker, the lander, runs
+beside it and owns the land queue:</p>
+<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>lander<span class="w"> </span>run<span class="w"> </span>--interval<span class="w"> </span><span class="m">30</span>
+cox<span class="w"> </span>lander<span class="w"> </span>service<span class="w"> </span>--install
+cox<span class="w"> </span>lander<span class="w"> </span>status
 </code></pre></div>
-<p>The profile accepts <code>true</code>, <code>false</code>, <code>yes</code> and <code>no</code> in any case. <code>true</code> and
-<code>yes</code> turn the steward on. <code>false</code>, <code>no</code> and an absent key leave it off, and the
-loop gathers no steward facts. Any other value makes the profile unreadable, and
-the error names the line.</p>
-<p>The other chair keys sit in the same block and are numbers. They are
-<code>housekeeping_hours</code>, <code>stale_days</code>, <code>idle_stall_minutes</code>, <code>launch_stagger_s</code> and
-<code>max_launches_per_hour</code>.</p>
-<p>The doctor report has a <code>steward</code> row. It shows <code>on</code> or <code>off</code>.</p>
-<p>Do not turn <code>chair.steward</code> on yet. Today the profile setting is the only part
-of the steward the run command wires. The loop does not yet pass the steward
-these inputs:</p>
-<ul>
-<li>The bus entries it has already published. Without them the reported set is
-  always empty, so a quarantine is announced again on every tick. The steward
-  also relaunches on every tick and never reports <code>stuck</code>.</li>
-<li>The ticket branch head and whether a level has merged. Without them the head
-  is blank and a settled level never counts as merged.</li>
-<li>The executor and the checks. Without them every merge and every gate is
-  refused with <code>no steward executor</code>, and no <code>level_merged</code>, <code>merge_failed</code>,
-  <code>gate_passed</code> or <code>gate_failed</code> event is published.</li>
-</ul>
-<p>That wiring is separate work. The rules below describe what the steward
-decides once those inputs are wired. This page changes when that work lands.</p>
-<p>The steward follows these rules for each epic:</p>
-<ul>
-<li>It announces a quarantine once. A quarantined task raises <code>needs_attention</code>
-  one time, and it is not raised again while the task stays quarantined.</li>
-<li>It merges an approved level once the build, vet and unit checks pass. The
-  loop supplies those checks. The merge always comes before a relaunch.</li>
-<li>It relaunches an exited epic once for each state of its tasks. If the epic
-  exits again with the same task states, it reports <code>stuck</code> and stops. It
-  never relaunches while a task is quarantined.</li>
-<li>It runs the integration gate once for each ticket branch head. Gates run
-  one at a time, so two epics never gate together. Under a hard stop the
-  gate waits, because a gate run can spend what the stop protects. Merges and
-  events still go ahead.</li>
-</ul>
-<p>The steward acts when the loop holds the chair. It also acts while an
-interactive session holds the chair, once that session has run
-<code>cox chair attach --lend-routine</code>, because its merges, gates and events are
-routine kinds. With nothing lent, a standby loop does nothing, and the steward
-does nothing with it.</p>
-<p>A dry run shows what the steward would do before it acts:</p>
-<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>chair<span class="w"> </span>run<span class="w"> </span>--once<span class="w"> </span>--dry-run
-</code></pre></div>
-<p>Each steward action appears as a line such as <code>would merge level 0 of &lt;epic&gt;</code>
-or <code>would run the gate of &lt;epic&gt;</code>. Nothing is merged, relaunched or published.
-The dry run shows the plan. It does not show whether the executor is wired.</p>
-<h3 id="the-merge-step-by-land_at">The merge step by land_at</h3>
-<p>The steward's merge step follows the initiative's <code>land_at</code> setting. The three
-values merge a level in three different ways.</p>
-<p>At <code>ticket</code>, the steward merges the level into <code>pr/&lt;initiative&gt;</code>. The steward
-creates that branch from the target branch the first time the initiative needs
-it.</p>
-<p>At <code>level</code>, the level lands as its own pull request, as a phase land does. The
-steward first fetches the runs that hold the level's approved tasks. A phase
-that was split lands one task at a time, each from that task's newest run. The
-land honours the land lock and waits for green checks.</p>
-<p>At <code>task</code>, the steward lands each approved task.</p>
-<p>One initiative's merge failure publishes <code>merge_failed</code> for that initiative. It
-never stops the steward from handling the other initiatives. The initiative's
-normal relaunch still runs after the failure.</p>
-<p><code>run_gate</code> still reads <code>pr/&lt;initiative&gt;</code>. An initiative that lands at <code>level</code> or
-at <code>task</code> has no gate branch yet, so the gate has nothing to read for it.</p>
-<h3 id="the-events">The events</h3>
-<p>The steward publishes eight typed events. Each is published under the epic's
-id as its topic.</p>
-<table>
-<thead>
-<tr>
-<th>Event</th>
-<th>Fields</th>
-<th>Wakes a model</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>needs_attention</code></td>
-<td><code>task</code></td>
-<td>yes</td>
-</tr>
-<tr>
-<td><code>level_merged</code></td>
-<td><code>head</code>, <code>level</code></td>
-<td>no</td>
-</tr>
-<tr>
-<td><code>merge_failed</code></td>
-<td><code>head</code>, <code>level</code></td>
-<td>yes</td>
-</tr>
-<tr>
-<td><code>relaunched</code></td>
-<td><code>signature</code></td>
-<td>no</td>
-</tr>
-<tr>
-<td><code>stuck</code></td>
-<td><code>signature</code></td>
-<td>yes</td>
-</tr>
-<tr>
-<td><code>gate_passed</code></td>
-<td><code>head</code></td>
-<td>no</td>
-</tr>
-<tr>
-<td><code>gate_failed</code></td>
-<td><code>head</code></td>
-<td>yes</td>
-</tr>
-<tr>
-<td><code>epic_complete</code></td>
-<td><code>head</code></td>
-<td>no</td>
-</tr>
-</tbody>
-</table>
-<p><code>head</code> is the ticket branch head. <code>level</code> is the index of the level. <code>signature</code>
-is the sorted task states at the time. <code>task</code> is the id of the quarantined task.</p>
-<p>The fields of <code>merge_failed</code> and <code>gate_failed</code> are not fixed by the steward.
-The executor chooses them, and it falls back to the fields of the merge or
-gate action, which are the fields shown above. Read them by name and ignore
-any you do not know.</p>
-<p>A model is called only at epic start, at close and for the four events marked
-yes. The other four are read and acted on without one.</p>
-<p>A consumer reads the events by topic and event, and it acks under its own
-consumer name. This lists the entries that need a model:</p>
-<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>courier<span class="w"> </span>inbox<span class="w"> </span>--topic<span class="w"> </span>&lt;epic&gt;<span class="w"> </span>--event<span class="w"> </span>stuck<span class="w"> </span>--consumer<span class="w"> </span>&lt;name&gt;<span class="w"> </span>--wake
-</code></pre></div>
-<p>This acks one entry for that consumer only:</p>
-<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>courier<span class="w"> </span>ack<span class="w"> </span>&lt;id&gt;<span class="w"> </span>--consumer<span class="w"> </span>&lt;name&gt;
+<p>When a phase is built, the lander merges it into the initiative branch. When
+every phase has merged, it takes the initiative to its parent as one pull
+request. A conflict or a red check goes back to build as a rectify task. The
+<a href="../../methodology/landing/#landing-granularity">landing page</a> describes the
+model.</p>
+<p>The lander tells the chair with a <code>needs_attention</code> entry on the courier when
+a phase is blocked, when a conflict cannot be sent back to build, and when a
+queue item has waited for an hour. A consumer reads typed entries by topic and
+event, and acks under its own consumer name:</p>
+<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>courier<span class="w"> </span>inbox<span class="w"> </span>--topic<span class="w"> </span>&lt;initiative&gt;<span class="w"> </span>--event<span class="w"> </span>needs_attention<span class="w"> </span>--consumer<span class="w"> </span>&lt;name&gt;<span class="w"> </span>--wake
+cox<span class="w"> </span>courier<span class="w"> </span>ack<span class="w"> </span>&lt;id&gt;<span class="w"> </span>--consumer<span class="w"> </span>&lt;name&gt;
 </code></pre></div>
 <p>An ack under one consumer name hides the entry from that consumer and from no
 one else.</p>
+<p>The epic steward that used to merge levels and run a gate is removed. A
+profile that still sets <code>chair.steward</code> is read and ignored, and the doctor
+report's <code>steward</code> row says it is retired.</p>
 <h2 id="rescue">Rescue</h2>
 <p>A build can be quarantined for a harness reason and still keep its patch.
 You can rescue it. Run this from <code>src/graphs</code> in the checkout:</p>

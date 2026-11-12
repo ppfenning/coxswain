@@ -3359,6 +3359,8 @@ Coxswain is in beta — versions may change between releases
       
         
       
+        
+      
     
     
     
@@ -3678,6 +3680,34 @@ Coxswain is in beta — versions may change between releases
     
   
     lake
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../lander/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    lander
   
 
     
@@ -6930,7 +6960,8 @@ options:
 <div class="highlight"><pre><span></span><code>usage: cox route file [-h] [--profile PROFILE] [--repo REPO] [--title TITLE]
                       [--body BODY] [--phase PHASE] [--intake]
                       [--from-intake FROM_INTAKE] [--force] [--link LINK]
-                      [--after AFTER] [--draft] [--ready]
+                      [--after AFTER] [--draft] [--ready] [--epic EPIC]
+                      [--priority PRIORITY] [--target-release TARGET_RELEASE]
 
 options:
   -h, --help            show this help message and exit
@@ -6952,6 +6983,12 @@ options:
   --draft               with --intake: file it as a draft, which the chair
                         skips until it is ready (the default)
   --ready               with --intake: file it ready for the chair to pick up
+  --epic EPIC           with --intake: the epic id this intake belongs to; it
+                        must already exist
+  --priority PRIORITY   with --intake: a whole number; higher runs first
+  --target-release TARGET_RELEASE
+                        with --intake: the release it ships in, a dotted
+                        version such as 2026.11.6
 </code></pre></div>
 <h2 id="priority">priority</h2>
 <div class="highlight"><pre><span></span><code>usage: cox route priority [-h] [--profile PROFILE] [--set N | --up | --down |
@@ -7215,10 +7252,11 @@ options:
   -h, --help  show this help message and exit
 </code></pre></div>
 <h2 id="chair">chair</h2>
-<div class="highlight"><pre><span></span><code>usage: cox route chair [-h] {take,extend,beat,release,status,clear,chat} ...
+<div class="highlight"><pre><span></span><code>usage: cox route chair [-h]
+                       {take,extend,beat,release,status,clear,chat,converse} ...
 
 positional arguments:
-  {take,extend,beat,release,status,clear,chat}
+  {take,extend,beat,release,status,clear,chat,converse}
     take                take the chair lock; --steal overrides a live holder
                         and names it
     extend              move the end of the chair takeover this session holds
@@ -7229,6 +7267,8 @@ positional arguments:
                         unless --force
     chat                append to or read the leader chat thread
                         (runs/leader.chat.jsonl)
+    converse            talk to the running chair through the courier, without
+                        the lease (`chat` is the leader thread)
 
 options:
   -h, --help            show this help message and exit

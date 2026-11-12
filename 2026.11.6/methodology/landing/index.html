@@ -1474,10 +1474,76 @@ Coxswain is in beta — versions may change between releases
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#the-hierarchy-at-ticket" class="md-nav__link">
+  <a href="#the-initiative-branch" class="md-nav__link">
     <span class="md-ellipsis">
       
-        The hierarchy at ticket
+        The initiative branch
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-the-words-mean" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the words mean
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-lander" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The lander
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#a-blocked-phase" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A blocked phase
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#epics-as-stacks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Epics as stacks
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bringing-an-in-flight-initiative-under-the-record" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bringing an in-flight initiative under the record
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#at-task" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        At task
       
     </span>
   </a>
@@ -1489,17 +1555,6 @@ Coxswain is in beta — versions may change between releases
     <span class="md-ellipsis">
       
         Status vocabulary
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#the-merged-state-and-restart" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        The merged state and restart
       
     </span>
   </a>
@@ -3562,6 +3617,8 @@ Coxswain is in beta — versions may change between releases
       
         
       
+        
+      
     
     
     
@@ -3881,6 +3938,34 @@ Coxswain is in beta — versions may change between releases
     
   
     lake
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/cli/lander/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    lander
   
 
     
@@ -6466,10 +6551,76 @@ Coxswain is in beta — versions may change between releases
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#the-hierarchy-at-ticket" class="md-nav__link">
+  <a href="#the-initiative-branch" class="md-nav__link">
     <span class="md-ellipsis">
       
-        The hierarchy at ticket
+        The initiative branch
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-the-words-mean" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the words mean
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-lander" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The lander
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#a-blocked-phase" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A blocked phase
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#epics-as-stacks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Epics as stacks
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bringing-an-in-flight-initiative-under-the-record" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bringing an in-flight initiative under the record
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#at-task" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        At task
       
     </span>
   </a>
@@ -6481,17 +6632,6 @@ Coxswain is in beta — versions may change between releases
     <span class="md-ellipsis">
       
         Status vocabulary
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#the-merged-state-and-restart" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        The merged state and restart
       
     </span>
   </a>
@@ -6679,23 +6819,16 @@ the same land.</p>
 <code>&lt;runs&gt;/policy.gate.json</code>. <code>--gate</code> overrides it for one land. An
 unreadable or unknown level reads as <code>ticket</code>, never <code>full</code>.</p>
 <h2 id="landing-granularity">Landing granularity</h2>
-<p>The <code>land_at</code> setting says at which size of unit a change lands. Its values are <code>ticket</code>, <code>level</code> and <code>task</code>. The
-default is <code>ticket</code>. An unset value reads as <code>ticket</code>, and any other value is refused with the place it came from.</p>
+<p>The <code>land_at</code> setting answers one question: which level opens a pull request on origin. Everything below that level
+completes locally. Its values are <code>initiative</code> and <code>task</code>. The default is <code>initiative</code>. <code>ticket</code> is a permanent alias
+of <code>initiative</code>, so no cartridge or <code>initiative.md</code> needs editing. <code>level</code> (one pull request per phase) is retired:
+it is still read, with a warning, and treated as <code>initiative</code>. Any other value is refused with the place it came from.</p>
 <p><code>land_at</code> is set in three places, and the narrowest one present wins:</p>
 <ol>
 <li>The team cartridge, as <code>landing_areas.land_at</code>.</li>
-<li>The repository overlay, <code>.agent/cartridge.yaml</code>, under the same key. It replaces the team value for that repository.</li>
+<li>The repo overlay <code>.agent/cartridge.yaml</code>, with the same key.</li>
 <li>One initiative, as <code>land_at:</code> in the frontmatter of its <code>initiative.md</code>. It overrides the cartridge and the overlay.</li>
 </ol>
-<div class="highlight"><pre><span></span><code><span class="nt">landing_areas</span><span class="p">:</span>
-<span class="w">  </span><span class="nt">land_at</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">level</span>
-</code></pre></div>
-<p>Every value given is checked, including a cartridge value that an initiative overrides, so a bad cartridge never hides.</p>
-<p>The approval gate applies only at that granularity. The gate level is the <code>land_at</code> value itself. At <code>ticket</code> a run
-asks nobody about its batch and clears it unless the caller passes an explicit <code>assume</code>, because the one pull request
-is where a person decides. At <code>level</code> and <code>task</code> the batch goes through the gate. The team <code>gate</code> policy above still
-applies, and the earlier stop wins. <code>ticket</code> stops at the rung of the one pull request, <code>level</code> at the phase rung, and
-<code>task</code> keeps the team's <code>gate</code> value.</p>
 <table>
 <thead>
 <tr>
@@ -6706,39 +6839,126 @@ applies, and the earlier stop wins. <code>ticket</code> stops at the rung of the
 </thead>
 <tbody>
 <tr>
-<td><code>ticket</code></td>
-<td>One per initiative.</td>
-<td>As a draft when the first phase merges in. Ready for review when the last phase merges.</td>
-</tr>
-<tr>
-<td><code>level</code></td>
-<td>One per level.</td>
-<td>When that level is complete.</td>
+<td><code>initiative</code></td>
+<td>One per initiative. No phase and no task ever gets one.</td>
+<td>When every phase has merged into the initiative branch and the gate checks pass there.</td>
 </tr>
 <tr>
 <td><code>task</code></td>
 <td>One per task.</td>
-<td>After the task is merged into its level branch.</td>
+<td>After the task is merged into its phase branch.</td>
 </tr>
 </tbody>
 </table>
-<h3 id="the-hierarchy-at-ticket">The hierarchy at ticket</h3>
-<p>An initiative is one ticket. Its levels and its tasks open no pull request of their own. A task branch merges into the
-branch of its level.</p>
-<p>Each initiative has one branch, <code>pr/&lt;initiative&gt;</code>. It is cut from the target branch when the first phase completes.</p>
-<p>A phase is done when every task is approved, done or dropped and the phase is validated. Then the chair merges the
-phase branch into <code>pr/&lt;initiative&gt;</code> locally and pushes it. It marks the phase done and its tasks merged. A phase with a
-quarantined task does not merge.</p>
-<p>Later phases build on <code>pr/&lt;initiative&gt;</code>, so a phase with several parents needs no reassembly.</p>
-<p>The pull request lands under the team gate. At gate <code>ticket</code> a person merges it. At gate <code>full</code> the chair merges it on
-green. Its merge marks every task in the ticket done. A task whose work is not in the merged pull request is left in
-its current state, and a note names it.</p>
-<p>A level is a set of tasks that can run together. It exists only to order tasks, so it has no review or approval of its
-own. The harness names a level a phase, and its branch is <code>epic/&lt;initiative&gt;/&lt;phase&gt;</code>.</p>
-<p>At <code>level</code> each completed level opens its own pull request. A level stacked on a parent is based on the parent's pull
-request branch when that pull request exists, so it shows only its own commits. Otherwise it is based on the default
-branch. At <code>task</code> each merged task opens its own pull request against the default branch. A pull request that fails to
-open is a note on the task or level. It is not a quarantine, because the merge into the level branch already happened.</p>
+<h3 id="the-initiative-branch">The initiative branch</h3>
+<p>An initiative has one branch, cut from its parent when its first run starts. Its name comes from a cartridge template,
+<code>landing_areas.initiative_pr.branch</code>, and defaults to <code>init/&lt;id&gt;</code>. The same template block sets the pull request's
+title and its issue line, so one issue key names all three. A <code>pr/&lt;id&gt;</code> branch an earlier release left is kept.</p>
+<div class="highlight"><pre><span></span><code>parent (main, develop, a release branch, or an epic branch)
+ `-- init/&lt;id&gt;                     the initiative branch: the head of the one pull request
+      |-- epic/&lt;id&gt;/&lt;phase&gt;        a phase, cut from the initiative branch once its parent phases merged into it
+      |    `-- ...--&lt;task&gt;         a task, merged into its phase when approved
+      `-- epic/&lt;id&gt;/&lt;phase&gt;
+</code></pre></div>
+<p>A phase starts only when every phase it needs has merged into the initiative branch. So a phase is always cut from one
+branch, and nothing is assembled from several parents. A wave is the set of phases at one depth; it is a label on the
+initiative branch, not a branch.</p>
+<p>The landing record, one per initiative in the store, names the branch, the parent it was cut from, and each phase's
+state, tip and merge commit. The parent is resolved once, when the branch is cut, and no longer floats.</p>
+<h3 id="what-the-words-mean">What the words mean</h3>
+<table>
+<thead>
+<tr>
+<th>Word</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>approved</td>
+<td>The task is built, reviewed and merged into its phase branch.</td>
+</tr>
+<tr>
+<td>merged</td>
+<td>The task's phase is merged into the initiative branch. This is "phase complete", and it is the only meaning of the flag at <code>initiative</code>. A merged task holds no files.</td>
+</tr>
+<tr>
+<td>done</td>
+<td>The initiative's pull request merged into the parent. Only the lander writes it.</td>
+</tr>
+</tbody>
+</table>
+<p>A merged phase that later gains work (a task sent back to build, a rectify task) is no longer whole on the initiative
+branch. It reads by its tasks again until it merges once more.</p>
+<h3 id="the-lander">The lander</h3>
+<p>Landing is its own worker, <code>cox lander run</code>, beside the chair. The chair's tick plans no land for an initiative. It
+reads the landing record as facts: a phase is placeable when its parent phases are merged, and a merged task holds no
+files.</p>
+<p>The lander works a queue in the store with two kinds of item:</p>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>phase_merge</code></td>
+<td>Merges one built phase into the initiative branch, locally, after the level checks pass on the merged tree. A build run performs this merge itself the moment it finishes a phase; the lander performs whatever is left queued.</td>
+</tr>
+<tr>
+<td><code>initiative_land</code></td>
+<td>Merges the parent into the initiative branch, runs the gate checks, pushes, opens the one pull request, waits for its checks, merges it at gate <code>full</code> (or leaves the merge to a person), then marks every task done and cleans the branches.</td>
+</tr>
+</tbody>
+</table>
+<p>Every move of an initiative branch is made under one store lease per initiative, after a fetch, so two hosts never fork
+it. The two kinds have separate caps (<code>landing_areas.phase_cap</code>, default 2, and <code>landing_areas.land_cap</code>, default 1)
+and neither counts against the launch cap. An item open for an hour is told to the chair once; a pull request waiting
+for a person never is. <code>cox lander status</code> shows every initiative in flight and every item with its age.</p>
+<p>Lands on one parent are one at a time by default, since each needs an up-to-date parent. With
+<code>landing_areas.land_batch</code> above 1, the lander lands together up to that many initiatives that share a repo and a
+parent and change no file in common. Each keeps its own pull request. They are refreshed onto the same parent so their
+checks run side by side, then merged together in a scratch tree where the gate checks run once for the batch. When
+that passes, the pull requests are merged in queue order without refreshing again. When it does not, only the first is
+landed and the rest wait. Batching applies only where the lander itself merges (gate <code>full</code>); an initiative whose
+files overlap another's waits its turn.</p>
+<p>The lander never resolves a conflict and never edits code. A phase merge that conflicts, or fails its checks, is sent
+back to build as a rectify task in that phase; a conflict with the parent, or a red pull request, becomes a task in a
+final <code>integrate</code> phase. The conflicted merge is committed on the branch the task builds on, so nothing already built
+is redone. A rebuild of any task starts from its last attempt, put back in full in a tree of its own, and only the
+change is built.</p>
+<p>Refreshes are always forward merges of the parent into the child. No branch the record names is rebased, reset or
+force-pushed, and a merge that would drop a recorded commit is refused. After a land, a phase branch is deleted only
+when the landed branch holds its tip.</p>
+<h3 id="a-blocked-phase">A blocked phase</h3>
+<p><code>landing_areas.on_blocked</code> says what happens when a phase holds a task that is quarantined past repair:</p>
+<ul>
+<li><code>hold</code> (default): the initiative waits and the operator is told once, with the choices. Merged phases still hold no
+  files.</li>
+<li><code>split</code>: the blocked phase and every phase that depends on it move to a follow-up initiative, <code>&lt;id&gt;-2</code>, with what
+  they had built, and the first initiative lands without them. It is refused, and held, when a merged phase depends on
+  the blocked one.</li>
+</ul>
+<h3 id="epics-as-stacks">Epics as stacks</h3>
+<p>The epic steward is gone: nothing but the lander merges a phase or lands an initiative. A profile that still sets
+<code>chair.steward</code> is read and ignored, and <code>cox setup doctor</code> says so.</p>
+<p>By default an epic is a group: its initiatives land on the resolved target one by one. With <code>epic_stack: true</code> (in the
+cartridge, the repo overlay or the epic file) the epic's <code>target_branch</code> is an epic branch. An initiative that needs an
+unlanded initiative of the same epic forks from that initiative's branch and bases its pull request on it. When the
+one below lands, the pull request is retargeted to the epic branch and the epic branch is merged forward. Initiatives
+merge into the epic branch with merge commits. When every member has landed, the epic branch gets one pull request to
+its parent. The layers of a stack are initiative pull requests, never phases.</p>
+<h3 id="bringing-an-in-flight-initiative-under-the-record">Bringing an in-flight initiative under the record</h3>
+<p><code>cox lander adopt</code> reports, for each initiative with no landing record, what adopting it would do, and does it with
+<code>--apply</code>. Work already on the parent is marked done, an approval off its phase branch is carried onto it, one that
+cannot be found goes back to ready, the branch is kept or cut, and every built phase is merged. Nothing is deleted, and
+an initiative that has a record is skipped, so it is safe to run twice.</p>
+<h3 id="at-task">At task</h3>
+<p><code>task</code> is unchanged: each merged task opens its own pull request against the target branch, phases stack on their
+parents' branches, and the chair plans those lands on its tick. A failed pull request is a note on the task. It is not
+a quarantine, because the merge into the phase branch already happened.</p>
 <h3 id="status-vocabulary">Status vocabulary</h3>
 <p>A task row reads one of these words in the dashboard feed. The words are listed in the order a task moves through them.</p>
 <table>
@@ -6759,29 +6979,19 @@ open is a note on the task or level. It is not a quarantine, because the merge i
 </tr>
 <tr>
 <td><code>approved</code></td>
-<td>The work passed review and waits for its merge. A task <code>cox runs stranded</code> lists reads <code>approved</code> as well.</td>
+<td>The work passed review and is on its phase branch.</td>
 </tr>
 <tr>
 <td><code>merged</code></td>
-<td>The work is merged but has not landed at the configured <code>land_at</code>. At <code>ticket</code> the task is in the pr branch. That is an approved task with the merge flag, or a done task written at another <code>land_at</code>.</td>
+<td>At <code>initiative</code>, the task's phase is merged into the initiative branch.</td>
 </tr>
 <tr>
 <td><code>landed</code></td>
-<td>The task is <code>done</code> at the configured <code>land_at</code>.</td>
+<td>The task is <code>done</code>: its pull request merged.</td>
 </tr>
 </tbody>
 </table>
 <p>A task whose needs are not all landed reads <code>blocked</code>. A dropped or quarantined task reads as that state.</p>
-<p>The <code>route status</code> command and the dash show each phase as <code>building</code>, <code>merged</code> or <code>landed</code>. A merged phase is done and
-merged into the pr branch. The merged tally is kept apart from the approved tally.</p>
-<h3 id="the-merged-state-and-restart">The merged state and restart</h3>
-<p>The merge is stored. When a task merges into its level branch, its row in the work store keeps <code>approved</code> and records
-<code>merged</code> and the commit as <code>merged_commit</code>. Nothing in a run writes <code>done</code>. Only a land does that.</p>
-<p>A restart reads that stored state and does not rebuild a task that was approved and merged. A dependent level treats a
-merged parent as done for its <code>needs</code>, so it does not wait for a person to land the parent. Before it resumes, the run
-checks that <code>merged_commit</code> is an ancestor of the level branch. A task whose commit is gone is quarantined with that
-reason, and no other task is touched. At <code>task</code> a restart also opens the pull request for any stored merged task whose
-first attempt never made one. At <code>level</code> it finds the level's pull request, or opens the one a failed attempt missed.</p>
 <h3 id="parallelism">Parallelism</h3>
 <p>A level runs its ready tasks together, up to a cap. The cap is the <code>--max-parallel</code> option of the phase and epic
 commands. Without it, the cap is the <code>max_parallel</code> setting of the provider profile, a positive integer. Without that,
@@ -6789,9 +6999,9 @@ it is the free lane count. A zero, a negative or a non-integer profile value is 
 <p>Phases form a directed graph of levels. The driver derives each phase's parent phases from the needs between tasks, with
 <code>phase_parents</code> in <code>harness/waves.py</code>. <code>compute_waves</code> in the same module sorts the phases into waves. A wave holds the
 phases whose parents all sit in earlier waves. A phase caught in a dependency cycle is placed in no wave and is recorded as blocked.</p>
-<p>A phase branch is assembled from the phases its tasks need, not from every earlier phase. Stacking each phase on all of
-its predecessors would chain the whole initiative into one line. Phases with no need between them would then wait on one
-another, and the waves would shrink to one phase each. Keeping the parents to real needs is what lets independent phases run together.</p>
+<p>At <code>initiative</code> every phase is cut from the initiative branch, which holds each parent phase once that phase has merged
+into it. A phase's parents are only the phases its tasks need, so phases with no need between them still run together.
+At <code>task</code> there is no initiative branch: a phase is stacked on its one parent's branch, or assembled from several.</p>
 <p>At launch the driver prints one line per phase, <code>phase &lt;id&gt;: parents &lt;ids&gt;</code>, before any phase builds. When a later phase
 names a file in <code>surfaces</code> that an earlier, unfinished phase also names, and no chain of needs reaches that phase, its
 line ends with <code>not inherited: &lt;phase&gt; (&lt;files&gt;)</code>. One warning line follows. The phase builds without that earlier work, and
@@ -6802,14 +7012,13 @@ file. Only files named in <code>surfaces</code> are compared, so a dependency th
 <p>Tasks inside a phase run in parallel up to the cap. <code>lane_bound</code> in <code>harness/lanes.py</code> lowers the number that start when the usage ceiling is
 tighter than the lane limit. <code>plan_launches</code> in <code>harness/scheduler.py</code> uses <code>next_launches</code> from <code>harness/lanes.py</code> to choose which
 ready tasks start. The scheduler holds the ready tasks of a phase while another phase has a build in flight over an overlapping surface.</p>
-<p>A phase still waits for its parents. The driver holds the tasks of a phase until every parent phase is complete.
-A parent level counts complete for its dependents when every task in it is approved or done in the work store. It does
-not matter where the task was approved. A task approved in an earlier run counts, and so does a task that is not landed.
-This matches the cross-phase need rule, where an unmerged approved task counts at ticket and level but not at task.
-A level reads partial while any of its tasks is still ready, building or quarantined. A quarantined task still blocks
-its dependents. A parent that did not meet its goal blocks its dependents. A phase with several parents waits for all of
-them. When <code>phase-validate</code> is bound, it judges the stored tasks of the level and not only those built in this run.
-The one exception is a ready task whose own needs are all merged, which may start before its parents are complete.</p>
+<p>A phase still waits for its parents. At <code>initiative</code> a parent counts for its dependents only once it is merged into the
+initiative branch, whole: every task approved (or dropped) and on the phase branch, and the merge recorded. A phase with
+a task still ready, building or quarantined reads partial and is not merged, whatever the validator said of its goal, and
+no task of a later phase starts early. A phase with several parents waits for all of them. Across hosts, the clone must
+hold the recorded merge commit, fetched from origin if need be; a phase that would build without it stops, with no quarantine.</p>
+<p>At <code>task</code> a parent counts complete when every task in it is done, and a ready task whose own needs are all merged may
+start before its parents are complete.</p>
 <h2 id="target-branch">Target branch</h2>
 <p>The target branch is the parent branch an initiative lands into. It resolves like <code>land_at</code>, and the narrowest value
 present wins:</p>
