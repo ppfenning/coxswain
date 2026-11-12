@@ -187,6 +187,33 @@ def _status(a: argparse.Namespace) -> int:
     return 0
 
 
+def _adopt(a: argparse.Namespace) -> int:
+    """Dry run unless `--apply`: prints, per initiative with no landing record, what adopting it would do."""
+    from agent_tools import lander_adopt, work_state
+    from agent_tools.store_url import read_provider_profile
+
+    found = _workspace(a)
+    if found is None:
+        return 2
+    ws, profile = found
+    ports = lander_ports.build(ws, profile)
+    try:
+        named = list(a.initiative) or lander_ports.initiatives_in(ws)
+        provider = read_provider_profile(profile["provider_profile"]) if profile.get("provider_profile") else {}
+        send_back = lander_ports.send_back(ws, ports.conn, ports.worker, work_state.work_state_mode(provider))
+        stopped = False
+        for initiative in lander_adopt.candidates(ports, named):
+            plan = lander_adopt.plan(ports, initiative)
+            lines = lander_adopt.apply(ports, plan, send_back) if a.apply else plan.lines()
+            stopped = stopped or any(": stopped: " in line for line in lines)
+            print("\n".join(lines))
+        if not a.apply:
+            print("dry run: nothing was changed; run again with --apply to adopt")
+    finally:
+        ports.conn.close()
+    return 1 if stopped else 0
+
+
 def _service(a: argparse.Namespace) -> int:
     """Writes or shows the unit. Never runs systemctl: it prints the two lines to run."""
     from agent_tools import cli

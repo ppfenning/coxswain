@@ -14411,6 +14411,11 @@ def _lander_status(a: argparse.Namespace) -> int:
     return lander_cli._status(a)
 
 
+def _lander_adopt(a: argparse.Namespace) -> int:
+    from agent_tools import lander_cli
+    return lander_cli._adopt(a)
+
+
 def _lander_service(a: argparse.Namespace) -> int:
     from agent_tools import lander_cli
     return lander_cli._service(a)
@@ -14423,7 +14428,7 @@ LANDER_GROUP = commands.Group(
         "The landing worker. It runs beside the chair and owns the land queue: a built phase is merged into its "
         "initiative branch, and a whole initiative goes to its parent as one pull request."
     ),
-    epilog="examples:\n  cox lander status\n  cox lander once\n  cox lander run --interval 30\n  cox lander service --install",
+    epilog="examples:\n  cox lander status\n  cox lander adopt\n  cox lander adopt --apply\n  cox lander once\n  cox lander run --interval 30\n  cox lander service --install",
 )
 LANDER_COMMANDS = [
     commands.Command(
@@ -14439,6 +14444,21 @@ LANDER_COMMANDS = [
         "status", "lander", "every initiative in flight with its phases, and the land queue with how long each item has waited",
         (commands.Arg(("--json",), {"action": "store_true", "help": "print the status as JSON"}), _PROFILE_ARG),
         "agent_tools.cli:_lander_status", False, (), defaults={"profile": None},
+    ),
+    commands.Command(
+        "adopt", "lander", "bring initiatives that were in flight before the landing record under it; a dry run unless --apply",
+        (
+            commands.Arg(("initiative",), {"nargs": "*", "help": "initiative ids (default: every initiative with no landing record)"}),
+            commands.Arg(("--apply",), {"action": "store_true", "help": "do it; without this flag only the report is printed"}),
+            _PROFILE_ARG,
+        ),
+        "agent_tools.cli:_lander_adopt", False, (), defaults={"profile": None},
+        description=(
+            "For each initiative with no landing record: work already on the parent is marked done, an approval off "
+            "its phase branch is carried onto it, one that cannot be found goes back to ready, the initiative branch "
+            "is kept or cut, and every built phase is merged into it.\nNothing is deleted, reset or rebased, and an "
+            "initiative that has a record is skipped, so it is safe to run twice."
+        ),
     ),
     commands.Command(
         "service", "lander", "write or show the systemd user unit; never runs systemctl",

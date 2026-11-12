@@ -215,3 +215,13 @@ Step 3 (commit 6, the chair tick) is done:
   dropped, or approved with the merged flag; a need in the task's own phase is met by an approval.
 - Not changed: `core.landing.need_met` (six callers; it still calls an unmerged approval met above `task`).
   The harness refuses to build without the parent's merge anyway.
+
+Step 4 (commit 7, adopt) is done: `agent_tools/lander_adopt.py` (`plan` reads only, `apply` performs it) and
+`cox lander adopt [initiative ...] [--apply]`, a dry run by default. Tests cover the four shapes, the carry case, a
+missing commit, the dry run and a second run. Limits to state in the PR body: "already on the parent" is the same
+commit or the same patch-id of a single-parent commit; a task that landed inside a multi-task squash is not detected
+and is kept (its phase merges; identical changes merge cleanly when the parent is taken forward).
+
+**Trap hit here:** `lander._repo` used to return `Path("")` for a record with no repo, so git ran in the current
+directory. A test run created two empty `init/*` branches in the real checkout (deleted; they held no commits). It
+now raises `LookupError`, and adopt skips such an initiative. Never run ruff `--fix` on a whole directory.
