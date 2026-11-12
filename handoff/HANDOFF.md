@@ -187,3 +187,17 @@ Open, found here, not yet done:
   blocks only the phases with a foreign need (`ctx.parent_behind`). Deviation from the design's refresh table: say
   it in the PR body.
 - The lander must use the same lease, fetch and publish around `merge_phase` and before a land.
+
+Step 2 (real lander ports and CLI) is done except two things:
+
+- `agent_tools/lander_ports.py` builds `lander.Ports` for a workspace: store (`harness.store_dialect.connect`, then
+  `migrate`; `store_connect.connect` is postgres only), task rows (store row wins, file adds title and needs), meta,
+  the forge with `pr_merged`, gate checks, `mark_done` (`cli._close_approved_item`), `file_rectify` (one open rectify
+  task per phase, `<phase>-rectify[-n]`), notify (courier `needs_attention` to the chair), `repo` (the initiative's
+  `repo:` on this machine, not the record's path), `fetch` (forward only; refuses a diverged branch).
+- `lander.py` now fetches the phase branch and the initiative branch before a merge, publishes through
+  `ops.merge_phase`, and takes the parent forward through `ops.take_parent_forward` (both under the branch lease).
+- `cox lander once | run | status | service` (`agent_tools/lander_cli.py`; handlers are thin wrappers in `cli.py`
+  because `test_cli_lazy_dispatch` wants every handler there). README table regenerated.
+- **Not yet:** `split_blocked` real port (commit 8: move phase dirs, store rows and branches to `<id>-2`), and
+  `cox lander adopt` (commit 7).
