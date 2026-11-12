@@ -184,3 +184,16 @@ def _git_environment_is_hermetic(tmp_path_factory, monkeypatch) -> None:
     for role in ("AUTHOR", "COMMITTER"):
         monkeypatch.setenv(f"GIT_{role}_NAME", "t")
         monkeypatch.setenv(f"GIT_{role}_EMAIL", "t@invalid")
+
+
+@pytest.fixture
+def at_task(cart, monkeypatch):
+    """The test's cartridge lands per task. Phases stack on each other and on the default ref only there: at
+    `initiative` every phase is cut from the initiative branch. A fake forge stands in, so no run reaches `gh`."""
+    from harness import epic
+
+    cart["landing_areas"]["land_at"] = "task"
+    monkeypatch.setattr(epic, "_push_review_ref", lambda ctx, local, name: (True, ""))
+    monkeypatch.setattr(epic, "_existing_pr", lambda ctx, head: (True, ""))
+    monkeypatch.setattr(epic, "_open_review_pr", lambda ctx, *, title, body, head, base: (True, f"pr:{head}"))
+    return cart

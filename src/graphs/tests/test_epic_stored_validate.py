@@ -16,7 +16,7 @@ from tests.test_epic_driver import (  # noqa: F401
 )
 
 P1, P2 = "p1-foundations", "p2-rollout"
-STALE = {"state": "approved", "merged": False, "run_id": "epic-0"}
+STALE = {"state": "approved", "merged": True, "run_id": "epic-0"}
 HANDOFF = {"files_changed": ["t1-probe.txt"], "interfaces_added": ["probe()"], "decisions": ["read only"]}
 
 

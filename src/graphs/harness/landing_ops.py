@@ -7,7 +7,7 @@ and a worker that dies mid-merge is replaced once its claim lapses. The record i
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -16,6 +16,7 @@ from typing import Any
 from core import landing_record as lr
 from harness import landing_git as lg
 from harness import landing_store as ls
+from harness import store_lease
 from harness.store_dialect import Connection
 
 CLAIM_SECONDS = 900  # a phase merge with its level checks; a dead worker's claim is taken again after this
@@ -100,16 +101,48 @@ def _green_waves(record: Mapping[str, Any], tasks: Sequence[Mapping[str, Any]], 
     return stored
 
 
+def branch_lease(initiative: str) -> str:
+    """The lease every move of one initiative's branch is made under, whichever host or worker makes it."""
+    return f"initiative-branch:{initiative}"
+
+
+def off_branch(repo: Path | str, source: str, tasks: Sequence[Mapping[str, Any]], phase: str) -> list[str]:
+    """The phase's approved tasks whose recorded `merged_commit` the phase tip does not hold: merging the phase now
+    would leave their work behind. A task with no recorded commit is not judged here."""
+    return [
+        str(t["id"]) for t in lr.phase_tasks(tasks, phase)
+        if t.get("state") == "approved" and t.get("merged_commit") and not lg.is_ancestor(repo, str(t["merged_commit"]), source)
+    ]
+
+
 def merge_phase(conn: Connection, repo: Path | str, *, initiative: str, phase: str, tasks: Sequence[Mapping[str, Any]],
                 worker: str, now: str, checks: lg.Checks | None = None, source: str | None = None,
-                claim_seconds: int = CLAIM_SECONDS) -> PhaseMerge:
+                claim_seconds: int = CLAIM_SECONDS, fetch: Callable[[str], str | None] | None = None,
+                publish: Callable[[str], str | None] | None = None) -> PhaseMerge:
     """Merge one built phase into its initiative branch, under the phase's queue item.
 
     `tasks` are the initiative's task rows (`id`, `phase`, `state`, `needs`). The phase must be built: every task
     approved, done or dropped, and every parent phase merged. The merge refreshes and merges in one commit on the
     initiative tip, runs `checks` on the merged tree, and moves the branch only if they pass and no recorded sha is
     dropped. A conflict or a red check marks the phase `conflicted` and fails the item with the reason; the caller
-    files the rectify task. Calling again for a merged phase changes nothing."""
+    files the rectify task. Calling again for a merged phase changes nothing.
+
+    The initiative branch has one mover at a time, on any host: the merge runs under `branch_lease`. `fetch` brings
+    the branch up to origin's copy first (it returns why the merge must not go ahead here, or None), and `publish`
+    pushes the merged branch (it returns a warning, or None). Both are given the branch name."""
+    held = store_lease.acquire(conn, branch_lease(initiative), worker, now, claim_seconds)
+    if not held.ok:
+        return PhaseMerge("busy", initiative, phase, detail=f"{held.holder or 'another worker'} is moving the branch of {initiative}")
+    try:
+        return _merge_phase(conn, repo, initiative=initiative, phase=phase, tasks=tasks, worker=worker, now=now,
+                            checks=checks, source=source, claim_seconds=claim_seconds, fetch=fetch, publish=publish)
+    finally:
+        store_lease.release(conn, branch_lease(initiative), worker, int(held.epoch or 0))
+
+
+def _merge_phase(conn: Connection, repo: Path | str, *, initiative: str, phase: str, tasks: Sequence[Mapping[str, Any]],
+                 worker: str, now: str, checks: lg.Checks | None, source: str | None, claim_seconds: int,
+                 fetch: Callable[[str], str | None] | None, publish: Callable[[str], str | None] | None) -> PhaseMerge:
     record = ls.get_record(conn, initiative)
     if record is None:
         return PhaseMerge("error", initiative, phase, detail=f"{initiative} has no landing record")
@@ -123,6 +156,13 @@ def merge_phase(conn: Connection, repo: Path | str, *, initiative: str, phase: s
         return PhaseMerge("not_ready", initiative, phase, detail=f"phase {phase} is {state}, not built")
     ident = ls.item_id(ls.PHASE_MERGE, initiative, phase)
     ls.enqueue(conn, ls.PHASE_MERGE, initiative, phase=phase, repo=str(record.get("repo") or repo), now=now, reason="phase built")
+    tip_ref = source or phase_branch(initiative, phase)
+    if lg.rev(repo, tip_ref) is not None and (loose := off_branch(repo, tip_ref, tasks, phase)):
+        # Left queued: the phase is not whole in this clone. Whoever holds the commits (or the carry rule) merges it.
+        return PhaseMerge("not_ready", initiative, phase,
+                          detail=f"approved task(s) {', '.join(loose)} are not on {tip_ref} in this clone")
+    if fetch is not None and (refused := fetch(str(record["branch"]))):
+        return PhaseMerge("error", initiative, phase, detail=refused)
     if not ls.claim(conn, ident, worker, now=now, lease_until=later(now, claim_seconds)):
         holder = (ls.get_item(conn, ident) or {}).get("claimed_by") or "another worker"
         return PhaseMerge("busy", initiative, phase, detail=f"{holder} is merging phase {phase}")
@@ -133,7 +173,8 @@ def merge_phase(conn: Connection, repo: Path | str, *, initiative: str, phase: s
     record = ls.get_record(conn, initiative) or record
     if merged.ok:
         tip = merged.tip
-        updated = lr.with_phase(record, phase, now, state="merged", tip=merged.merged, merge_sha=tip, error="")
+        carried = [str(t["id"]) for t in lr.phase_tasks(tasks, phase) if t.get("state") == "approved"]
+        updated = lr.with_phase(record, phase, now, state="merged", tip=merged.merged, merge_sha=tip, error="", tasks=carried)
         updated = {**updated, "waves": _green_waves(updated, tasks, tip)}
         assembled = lr.initiative_state(updated, tasks) == "assembled"
         if assembled and updated.get("state") in ("building", "conflicted", "blocked"):
@@ -141,7 +182,9 @@ def merge_phase(conn: Connection, repo: Path | str, *, initiative: str, phase: s
         ls.put_record(conn, updated)
         ls.finish(conn, ident, worker, now=now)
         done = tuple(str(t["id"]) for t in lr.phase_tasks(tasks, phase) if t.get("state") == "approved")
-        return PhaseMerge("merged", initiative, phase, tip=merged.merged, merge_sha=tip, merged_tasks=done, assembled=assembled)
+        warning = (publish(branch) if publish is not None else None) or ""
+        return PhaseMerge("merged", initiative, phase, tip=merged.merged, merge_sha=tip, merged_tasks=done,
+                          assembled=assembled, detail=warning)
     if merged.status == "error":
         ls.fail(conn, ident, worker, now=now, error=merged.detail)
         return PhaseMerge("error", initiative, phase, detail=merged.detail)

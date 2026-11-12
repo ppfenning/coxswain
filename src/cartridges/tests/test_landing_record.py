@@ -69,6 +69,20 @@ def test_a_phase_whose_tasks_are_all_done_reads_merged_whatever_the_record_says(
     assert lr.phase_states(None, tasks) == {"p1": "merged", "p3": "open"}
 
 
+def test_a_merged_phase_that_gains_work_reads_by_its_tasks_again_until_it_merges_once_more() -> None:
+    carried = record(p1={"state": "merged", "tasks": ["a"]})
+    assert lr.phase_state(carried, "p1", [task("a", "p1", "approved")]) == "merged"
+    assert lr.phase_state(carried, "p1", [task("a", "p1", "approved"), task("fix", "p1")]) == "open"
+    assert lr.phase_state(carried, "p1", [task("a", "p1", "approved"), task("fix", "p1", "approved")]) == "built"
+    assert lr.phase_state(carried, "p1", [task("a", "p1", "approved"), task("gone", "p1", "dropped")]) == "merged"
+    sent_back = [task("a", "p1", "ready"), task("c", "p2", needs=("a",))]
+    assert lr.phase_states(carried, sent_back) == {"p1": "open", "p2": "waiting"}, "its children wait again"
+    assert lr.merged_tasks(carried, [task("a", "p1", "approved"), task("fix", "p1", "approved")]) == []
+    # An entry with no list of carried tasks (written by hand, or before merges recorded one) is trusted.
+    assert lr.phase_state(record(p1={"state": "merged"}), "p1", [task("a", "p1", "approved")]) == "merged"
+    assert lr.phase_state(record(p1={"state": "merged"}), "p1", [task("a", "p1")]) == "open"
+
+
 def test_waves_go_green_when_every_phase_of_the_wave_is_merged() -> None:
     tasks = [task("a", "p1", "approved"), task("b", "p2", "approved"), *TWO_WAVES[2:]]
     rec = {**record(p1={"state": "merged"}, p2={"state": "merged"}), "waves": {"1": {"green_tip": "9" * 40}}}

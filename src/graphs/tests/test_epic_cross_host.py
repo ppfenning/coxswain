@@ -1,4 +1,7 @@
-"""A phase finds the branches earlier phases left on origin, from any host, and stops on one that is nowhere."""
+"""A phase finds the branches earlier phases left on origin, from any host, and stops on one that is nowhere.
+
+At `initiative` the branch a phase needs is the initiative branch: it holds every merged parent phase. At `task` a
+phase is stacked on its parents' own branches."""
 
 from __future__ import annotations
 
@@ -12,6 +15,8 @@ import pytest
 
 import harness.epic as epic
 from harness.phase_remote import FetchOutcome, Kind, missing_branch_cause
+from harness.store_migrate import open_store
+from harness.store_write import Store
 from tests.test_epic_driver import (  # noqa: F401 -- cart and repo are fixtures
     cart,
     drive,
@@ -25,6 +30,65 @@ from tests.test_epic_phase_subset import P1, P1_BRANCH, P2, staged
 
 P2_BRANCH = f"epic/demo-initiative/{P2}"
 INITIATIVE = "demo-initiative"
+INIT_BRANCH = f"init/{INITIATIVE}"
+
+
+def _shared_store() -> Store:
+    """One store for both hosts, as a deployment has: the landing record host A writes is the one host B reads."""
+    return Store(open_store("sqlite:///:memory:", "2026-11-12T00:00:00+00:00"))
+
+
+def _pushing_early(cart: dict) -> dict:  # noqa: F811
+    return {**cart, "landing_areas": {**cart["landing_areas"], "push_initiative": "early"}}
+
+
+def test_at_initiative_phase_two_on_another_host_builds_on_the_initiative_branch_it_finds_on_origin(hosts, cart, tmp_path) -> None:  # noqa: F811
+    store = _shared_store()
+    first, _ = drive(hosts.a, _pushing_early(cart), tmp_path, work=initiative(two_phases=False), run_id="epic-a", store=store)
+    assert first["phases"][0]["initiative_merge"]["status"] == "merged"
+    merge_sha = first["phases"][0]["initiative_merge"]["merge_sha"]
+    p1_commit = git("rev-parse", P1_BRANCH, cwd=hosts.a)
+    assert git("branch", "--list", INIT_BRANCH, cwd=hosts.b) == ""
+
+    result, runner = drive(
+        hosts.b, _pushing_early(hosts.cart_b), hosts.home_b, work=staged(), only_phases=[P2], run_id="epic-b", store=store
+    )
+
+    (record,) = result["phases"]
+    assert record["base"] == INIT_BRANCH and record["status"] != "blocked"
+    assert any(c["role"] == "build" and "t3-cutover" in c["prompt"] for c in runner.calls)
+    assert is_ancestor(hosts.b, merge_sha, P2_BRANCH) and is_ancestor(hosts.b, p1_commit, P2_BRANCH)
+
+
+def test_at_initiative_a_merge_this_clone_cannot_get_stops_the_phase_without_a_quarantine(hosts, cart, tmp_path, monkeypatch) -> None:  # noqa: F811
+    """Host A merged phase one and did not push the initiative branch: host B must not build phase two without it."""
+    store = _shared_store()
+    first, _ = drive(hosts.a, cart, tmp_path, work=initiative(two_phases=False), run_id="epic-a", store=store)
+    assert first["phases"][0]["initiative_merge"]["status"] == "merged"
+    opened: list[str] = []
+    real = epic._open_phase_worktree
+    monkeypatch.setattr(epic, "_open_phase_worktree", lambda *a, **k: opened.append("called") or real(*a, **k))
+
+    result, runner = drive(hosts.b, hosts.cart_b, hosts.home_b, work=staged(), only_phases=[P2], run_id="epic-b", store=store)
+
+    (record,) = result["phases"]
+    assert record["status"] == "blocked" and record["missing_branch"] == INIT_BRANCH
+    assert f"does not hold the merge of parent phase '{P1}'" in record["reason"]
+    assert result["quarantined"] == [] and result["totals"]["tasks_quarantined"] == 0
+    assert opened == []
+    assert not any(c["role"] == "build" for c in runner.calls)
+    assert _local_branches(hosts.b) == []
+
+
+def test_at_initiative_a_parent_merged_nowhere_blocks_the_named_phase(hosts) -> None:
+    """The store says phase one's tasks are approved, and no landing record says the phase merged."""
+    result, runner = drive(hosts.b, hosts.cart_b, hosts.home_b, work=staged(), only_phases=[P2], run_id="epic-b")
+
+    (record,) = result["phases"]
+    assert record["status"] == "blocked" and "missing_branch" not in record
+    assert record["reason"] == f"parent phase '{P1}' is not merged into {INIT_BRANCH} yet; dependents start once it is"
+    assert result["quarantined"] == []
+    assert not any(c["role"] == "build" for c in runner.calls)
 
 
 class Hosts(NamedTuple):
@@ -64,6 +128,7 @@ def _assert_stopped_not_quarantined(result: dict, branch: str, cause: str) -> No
     assert record.get("task_records", []) == []
 
 
+@pytest.mark.usefixtures("at_task")
 def test_phase_two_on_another_host_builds_on_the_phase_one_branch_it_finds_on_origin(hosts, cart, tmp_path) -> None:  # noqa: F811
     first, _ = drive(hosts.a, cart, tmp_path, work=initiative(two_phases=False), run_id="epic-a")
     assert first["phases"][0]["status"] == "complete"
@@ -77,6 +142,7 @@ def test_phase_two_on_another_host_builds_on_the_phase_one_branch_it_finds_on_or
     assert is_ancestor(hosts.b, p1_commit, P2_BRANCH)
 
 
+@pytest.mark.usefixtures("at_task")
 def test_a_parent_branch_on_neither_clone_nor_origin_stops_the_phase_without_a_quarantine(hosts, monkeypatch) -> None:
     opened: list[str] = []
     real = epic._open_phase_worktree
@@ -92,22 +158,7 @@ def test_a_parent_branch_on_neither_clone_nor_origin_stops_the_phase_without_a_q
     assert _local_branches(hosts.b) == []
 
 
-def test_a_settled_parent_in_cut_from_only_that_is_missing_everywhere_stops_before_the_worktree_opens(
-    hosts, monkeypatch
-) -> None:
-    work = staged(unmerged=("t1-probe",))
-    opened: list[str] = []
-    real = epic._open_phase_worktree
-    monkeypatch.setattr(epic, "_open_phase_worktree", lambda *a, **k: opened.append("called") or real(*a, **k))
-
-    result, _ = drive(hosts.b, hosts.cart_b, hosts.home_b, work=work, only_phases=[P2], run_id="epic-b")
-
-    _assert_stopped_not_quarantined(
-        result, P1_BRANCH, missing_branch_cause(P1_BRANCH, FetchOutcome(Kind.MISSING_EVERYWHERE))
-    )
-    assert opened == []
-
-
+@pytest.mark.usefixtures("at_task")
 def test_a_parent_whose_needs_resolve_to_commit_ids_still_stops_when_its_branch_is_missing(hosts, monkeypatch) -> None:
     """An open parent with approved, merged needs contributes merged commit ids, which live only on its branch."""
     monkeypatch.setattr(epic, "_required_refs", lambda *args, **kwargs: ["a" * 40])
@@ -123,6 +174,7 @@ def test_a_parent_whose_needs_resolve_to_commit_ids_still_stops_when_its_branch_
     assert opened == []
 
 
+@pytest.mark.usefixtures("at_task")
 def test_a_parent_branch_that_is_missing_but_needed_for_nothing_does_not_stop_the_phase(hosts, monkeypatch) -> None:
     monkeypatch.setattr(epic, "_required_refs", lambda *args, **kwargs: [])
 
@@ -133,6 +185,7 @@ def test_a_parent_branch_that_is_missing_but_needed_for_nothing_does_not_stop_th
     assert any(c["role"] == "build" and "t3-cutover" in c["prompt"] for c in runner.calls)
 
 
+@pytest.mark.usefixtures("at_task")
 def test_an_unreachable_origin_is_a_fetch_failure_not_a_missing_branch_claim(hosts, monkeypatch) -> None:
     resolve = epic.resolve_default_ref
 

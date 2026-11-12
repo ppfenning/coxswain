@@ -6,7 +6,7 @@ import pytest
 
 from core import ledger
 from harness import epic as epic_module
-from harness.epic import EXIT_AWAITING_LAND, build_outcome, opens_pr
+from harness.epic import EXIT_AWAITING_LAND, opens_pr
 from tests.test_epic_driver import (  # noqa: F401 -- cart and repo are fixtures
     GOAL_UNMET,
     Runner,
@@ -195,14 +195,19 @@ def _p2(result: dict) -> dict:
     return next(p for p in result["phases"] if p["phase"] == "p2-rollout")
 
 
-def test_at_ticket_a_merged_p1_is_an_ordinary_awaiting_land_phase_that_holds_p2(repo, cart, tmp_path, prs) -> None:  # noqa: F811
+def test_at_ticket_a_built_p1_merges_into_the_initiative_branch_and_p2_builds_whatever_main_did(repo, cart, tmp_path, prs) -> None:  # noqa: F811
     _first_run_then_move_main(repo, cart, tmp_path, "ticket")
     work = _restart_work("ticket", levels=("p1-foundations",))
     result, runner = drive(repo, cart, tmp_path, work=work, run_id="epic-2")
-    assert result["phases"][0]["status"] == "awaiting_land" and "land_deferred" not in result["phases"][0]
-    assert "awaiting the land" in _p2(result)["reason"]
-    assert build_outcome(result)["blocked_kind"] == "awaiting_land"
-    assert not any(c["role"] == "build" and "t3-cutover" in c["prompt"] for c in runner.calls)
+    p1 = result["phases"][0]
+    assert p1["status"] == "complete" and p1["initiative_merge"]["status"] == "merged"
+    assert "awaiting_tasks" not in p1 and "land_deferred" not in p1
+    assert _p2(result)["status"] != "blocked" and _p2(result)["base"] == "init/demo-initiative"
+    assert "exit_code" not in result or result["exit_code"] != EXIT_AWAITING_LAND
+    assert git("merge-base", "--is-ancestor", "epic/demo-initiative/p1-foundations", "epic/demo-initiative/p2-rollout", cwd=repo) == ""
+    # The parent no longer floats: main moved after the branch was cut, and neither branch took it.
+    assert git("rev-list", "--count", "init/demo-initiative..main", cwd=repo) == "1"
+    assert prs == []
 
 
 def test_at_ticket_a_partial_p1_with_every_task_merged_still_blocks_p2(repo, cart, tmp_path, prs) -> None:  # noqa: F811
@@ -233,12 +238,15 @@ def test_at_task_a_merged_p1_does_not_unblock_p2(repo, cart, tmp_path, prs) -> N
     assert not any(c["role"] == "build" and "t3-cutover" in c["prompt"] for c in runner.calls)
 
 
-def test_at_ticket_the_last_phase_approved_and_merged_still_awaits_its_land(repo, cart, tmp_path, prs) -> None:  # noqa: F811
+def test_at_ticket_the_last_phase_built_reads_complete_and_awaits_nothing(repo, cart, tmp_path, prs) -> None:  # noqa: F811
+    """Phase complete is the local merge into the initiative branch. The pull request is the lander's, later."""
     only = {**initiative(two_phases=False), "land_at": "ticket"}
     drive(repo, cart, tmp_path, work=only, run_id="epic-1")
     _advance_main(repo)
     approved = {**only, "items": [{**i, "state": "approved", "merged": True} for i in only["items"]]}
-    result, _ = drive(repo, cart, tmp_path, work=approved, run_id="epic-2")
-    assert [p["status"] for p in result["phases"]] == ["awaiting_land"]
-    assert build_outcome(result)["blocked_kind"] == "awaiting_land"
-    assert result["exit_code"] == EXIT_AWAITING_LAND
+    result, runner = drive(repo, cart, tmp_path, work=approved, run_id="epic-2")
+    assert [p["status"] for p in result["phases"]] == ["complete"]
+    assert result["phases"][0]["initiative_merge"]["status"] == "merged"
+    assert result.get("exit_code") != EXIT_AWAITING_LAND
+    assert not any(c["role"] == "build" for c in runner.calls)
+    assert prs == []

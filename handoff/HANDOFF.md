@@ -44,7 +44,7 @@ leaving all three suites green.
 |---|---|---|
 | 1 | Work-cartridge contract test (settings half); `land_at` is `initiative` or `task` (`ticket` an alias, `level` retired with a warning); branch, title and issue-line template | Done. Cartridges 822 pass. Tools updated by a helper: last full run 12,010 pass. |
 | 2 | Migration 0016 (`landing_records`, `land_queue`); `harness/landing_store.py`; `core/landing_record.py` state tables | Done and tested. "Merged work holds no files" in the chair facts is not wired yet (see commit 6). |
-| 3 | Initiative branch cut at run start; every phase cut from it; a built phase merges into it (`harness/landing_git.py`, `harness/landing_ops.py`, `epic.py`) | Code done. **Graphs suite: 38 old-model tests still fail; see below.** |
+| 3 | Initiative branch cut at run start; every phase cut from it; a built phase merges into it (`harness/landing_git.py`, `harness/landing_ops.py`, `epic.py`) | Done (second machine). Graphs 3,736 pass, tools 12,027, cartridges 823. See "Second session" below. |
 | 4 | Lander: queue, `phase_merge` | Done: `agent_tools/lander.py`, 16 end-to-end tests pass. |
 | 5 | `initiative_land`: one PR from the initiative branch, issue line, re-runnable bookkeeping | Done in `lander.py`, covered by the same tests. **Real ports not written** (see below). |
 | 6 | Chair tick stops planning initiative lands and stops waiting for the steward; reads the landing record as facts | **Not started.** |
@@ -159,3 +159,31 @@ leaving all three suites green.
 - Wait on processes by process ID: a `pgrep -f` or `pkill -f` pattern matches the waiter's own shell.
 - Open PRs #1148, #1135, #1121 and #1134 are superseded by the combined PR. The operator closes them.
 - Left out, because they belong to another repository: the two dashboard initiatives.
+
+## Second session (2026-11-12, second machine)
+
+Step 1 (graphs suite) is done. What changed beyond test updates, because the failures showed real gaps:
+
+- `epic.py` `_parent_gap`: a phase starts only when the landing record says each parent is merged AND this clone's
+  initiative branch holds that merge sha (fetched forward-only if not). Else the phase is blocked with no quarantine
+  (`missing_branch` names the initiative branch when the merge is on another host and origin does not have it).
+- No early task start at initiative (`_open_view(whole_parents=True)`).
+- A phase is merged only when built: every task approved/dropped and on the phase branch. Otherwise the phase record
+  reads `partial` with `initiative_merge.status == "not_built"`, whatever the validator said, and children wait.
+- With an initiative branch the stale-branch machinery (recreate, rebase, block, awaiting_land on a moved default
+  ref) is skipped: the parent does not float. `_refresh_level` only forward-merges the initiative tip into a reused
+  phase, and publishes it after.
+- `landing_ops.merge_phase`: runs under a per-initiative store lease (`initiative-branch:<id>`), takes `fetch` and
+  `publish` callables, refuses (`not_ready`, item left queued) when an approved task's `merged_commit` is not on the
+  phase tip, and records the task ids each merge carried (`phases[p].tasks`).
+- `landing_record.phase_state`: a merged phase that gains work (a task sent back, a rectify task, a new approval)
+  reads by its tasks again and merges again. `merged` stays final for what a merge carried.
+- 33 old-model tests moved to `land_at: task` with the `at_task` fixture (tests/conftest.py).
+
+Open, found here, not yet done:
+
+- **Foreign needs.** A phase that waits on another initiative's work is cut from an initiative branch that may be
+  older than that work (before, an unparented phase was cut from fresh main). Planned: when a run starts and the
+  recorded parent has moved, merge the parent into the initiative branch under the branch lease, clean merges only;
+  a phase with a foreign need stops when that merge could not be made.
+- The lander must use the same lease, fetch and publish around `merge_phase` and before a land.

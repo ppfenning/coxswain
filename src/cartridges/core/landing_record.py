@@ -154,15 +154,19 @@ def phase_state(record: Mapping[str, Any] | None, phase: str, tasks: Sequence[Ma
                 parents: Mapping[str, Collection[str]] | None = None) -> str:
     """The state of one phase, from its stored entry and its tasks.
 
-    `merged` is stored and final; a phase whose every task is done or dropped has already landed and reads `merged`
-    too. Otherwise a phase behind an unmerged parent is `waiting`. A stored `blocked` stands while a task is
+    `merged` is stored and final for the work that merge carried; a phase whose every task is done or dropped has
+    already landed and reads `merged` too. A merged phase that has since gained work (a task sent back to build, a
+    rectify task, an approval the merge did not carry: the entry's `tasks` lists what it did) is not whole on the
+    initiative branch, and reads by its tasks again until it merges once more. Otherwise a phase behind an unmerged parent is `waiting`. A stored `blocked` stands while a task is
     quarantined, and a stored `conflicted` while a task is still unsettled (the rectify task). Every task settled is
     `built`, or `queued` when the queue holds it. Anything else is `open`."""
     known = parents if parents is not None else phase_parents(tasks)
     stored = str(_stored(record, phase).get("state") or "")
     own = phase_tasks(tasks, phase)
     states = [str(t.get("state")) for t in own]
-    if stored == "merged" or (own and all(s in LANDED_TASK_STATES for s in states)):
+    if own and all(s in LANDED_TASK_STATES for s in states):
+        return "merged"
+    if stored == "merged" and not _gained_work(_stored(record, phase), own):
         return "merged"
     if any(phase_state(record, parent, tasks, known) != "merged" for parent in known.get(phase, ()) if parent != phase):
         return "waiting"
@@ -174,6 +178,19 @@ def phase_state(record: Mapping[str, Any] | None, phase: str, tasks: Sequence[Ma
     if settled:
         return "queued" if stored == "queued" else "built"
     return "open"
+
+
+def _gained_work(entry: Mapping[str, Any], own: Sequence[Mapping[str, Any]]) -> bool:
+    """Has a merged phase work its merge did not carry: a task not settled, or an approved one the merge did not list?
+    An entry with no `tasks` list (written before merges recorded it, or by hand) is trusted for approved tasks."""
+    carried = entry.get("tasks")
+    for task in own:
+        state = str(task.get("state"))
+        if state not in SETTLED_TASK_STATES:
+            return True
+        if state == "approved" and isinstance(carried, list) and str(task["id"]) not in carried:
+            return True
+    return False
 
 
 def phase_states(record: Mapping[str, Any] | None, tasks: Sequence[Mapping[str, Any]]) -> dict[str, str]:

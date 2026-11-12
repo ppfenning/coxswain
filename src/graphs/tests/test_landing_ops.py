@@ -148,3 +148,71 @@ def test_a_rectified_phase_merges_on_the_next_try(conn, repo):  # noqa: F811
     assert (healed.status, healed.assembled) == ("merged", True)
     assert run(repo, "show", "init/i:shared.txt") == "one\nTWO from both\nthree"
     assert ls.get_item(conn, "phase_merge:i:p2")["state"] == "done"
+
+
+def test_one_initiative_branch_has_one_mover_at_a_time_and_a_dead_movers_lease_lapses(conn, repo):  # noqa: F811
+    """Two hosts merging two phases of one initiative would each fork the branch. The lease is per initiative."""
+    from harness import store_lease
+
+    start(conn, repo)
+    build(repo, "p1")
+    build(repo, "p2")
+    tasks = [task("a", "p1"), task("b", "p2")]
+    assert store_lease.acquire(conn, ops.branch_lease("i"), "run-on-lane-a", T0, 900).ok  # merging p1, then it died
+    busy = ops.merge_phase(conn, repo, initiative="i", phase="p2", tasks=tasks, worker="lander", now=T1)
+    assert (busy.status, busy.detail) == ("busy", "run-on-lane-a is moving the branch of i")
+    assert ls.list_items(conn) == [], "nothing was claimed behind the lease"
+    assert ops.merge_phase(conn, repo, initiative="i", phase="p2", tasks=tasks, worker="lander", now=T9).status == "merged"
+    assert ops.merge_phase(conn, repo, initiative="i", phase="p1", tasks=tasks, worker="other", now=T9).status == "merged", (
+        "the lease is released after each merge"
+    )
+
+
+def test_a_phase_merged_once_that_gains_approved_work_is_built_again_and_merges_again(conn, repo):  # noqa: F811
+    start(conn, repo)
+    build(repo, "p1")
+    first = ops.merge_phase(conn, repo, initiative="i", phase="p1", tasks=[task("a", "p1")], worker="w", now=T1)
+    assert ls.get_record(conn, "i")["phases"]["p1"]["tasks"] == ["a"]
+    reopened = [task("a", "p1"), task("a-fix", "p1", "ready")]
+    record = ls.get_record(conn, "i")
+    assert lr.phase_state(record, "p1", reopened) == "open" and lr.initiative_state(record, reopened) == "building"
+    assert ops.merge_phase(conn, repo, initiative="i", phase="p1", tasks=reopened, worker="w", now=T1).status == "not_ready"
+    later_tip = commit(repo, "epic/i/p1", "fix.txt", "fix\n")
+    both = [task("a", "p1"), task("a-fix", "p1")]
+    assert lr.phase_state(record, "p1", both) == "built", "the first merge did not carry a-fix"
+    again = ops.merge_phase(conn, repo, initiative="i", phase="p1", tasks=both, worker="w", now=T9)
+    assert (again.status, again.tip, again.assembled) == ("merged", later_tip, True)
+    assert again.merge_sha != first.merge_sha and lg.is_ancestor(repo, first.merge_sha, "init/i")
+    assert ls.get_record(conn, "i")["phases"]["p1"]["tasks"] == ["a", "a-fix"]
+    assert run(repo, "show", "init/i:fix.txt") == "fix"
+
+
+def test_an_approved_task_whose_recorded_commit_is_not_on_the_phase_tip_keeps_the_phase_out(conn, repo):  # noqa: F811
+    """Merging the phase would leave that task's work behind while the record called the phase merged."""
+    start(conn, repo)
+    build(repo, "p1")
+    cut(repo, "elsewhere", "main")
+    stray = commit(repo, "elsewhere", "stray.txt", "stray\n")
+    tasks = [{**task("a", "p1"), "merged_commit": run(repo, "rev-parse", "epic/i/p1")}, {**task("b", "p1"), "merged_commit": stray}]
+    before = run(repo, "rev-parse", "init/i")
+    held = ops.merge_phase(conn, repo, initiative="i", phase="p1", tasks=tasks, worker="w", now=T1)
+    assert (held.status, held.detail) == ("not_ready", "approved task(s) b are not on epic/i/p1 in this clone")
+    assert run(repo, "rev-parse", "init/i") == before
+    assert ls.get_item(conn, "phase_merge:i:p1")["state"] == "queued", "left for a worker whose clone holds the commit"
+
+
+def test_the_branch_is_fetched_before_the_merge_and_published_after_it(conn, repo):  # noqa: F811
+    start(conn, repo)
+    build(repo, "p1")
+    tasks = [task("a", "p1")]
+    before = run(repo, "rev-parse", "init/i")
+    refused = ops.merge_phase(conn, repo, initiative="i", phase="p1", tasks=tasks, worker="w", now=T1,
+                              fetch=lambda branch: f"{branch} has diverged from origin")
+    assert (refused.status, refused.detail) == ("error", "init/i has diverged from origin")
+    assert run(repo, "rev-parse", "init/i") == before and ls.get_item(conn, "phase_merge:i:p1")["state"] == "queued"
+    seen: list[str] = []
+    done = ops.merge_phase(conn, repo, initiative="i", phase="p1", tasks=tasks, worker="w", now=T1,
+                           fetch=lambda branch: seen.append(f"fetch {branch}"),
+                           publish=lambda branch: seen.append(f"publish {branch}") or "push of init/i failed: offline")
+    assert seen == ["fetch init/i", "publish init/i"]
+    assert (done.status, done.detail) == ("merged", "push of init/i failed: offline"), "a failed push is a warning"
