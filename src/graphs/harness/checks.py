@@ -507,8 +507,6 @@ def checks_evidence(
             output = f"{output}\n{result.get('excerpt') or 'reused: same tree and command passed earlier'}"
         if result.get("note"):
             output = f"{output}\n{result['note']}"
-        if result.get("reused"):
-            output = f"{output}\nreused"
         if workers_line:
             output = f"{output}\n{workers_line}"
         rows.append({"check": f"{prefix}:{result['name']}", "output": output})

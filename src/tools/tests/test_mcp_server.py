@@ -1,10 +1,10 @@
 import json
 
 import pytest
-from agent_tools.mcp_read_tools import ReadPorts
 
 from agent_tools import mcp_server
 from agent_tools.mcp_protocol import INVALID_REQUEST, PARSE_ERROR, ToolSpec, handle
+from agent_tools.mcp_read_tools import ReadPorts
 from agent_tools.mcp_server import Ports, build_tools, make_handler, serve_stdio
 
 NOW = "2026-11-11T09:00:00Z"

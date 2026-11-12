@@ -43,6 +43,7 @@ class Fake:
 def fake(monkeypatch) -> Fake:
     seen = Fake()
     monkeypatch.setattr(check_reuse, "run_checks", seen)
+    monkeypatch.setattr(epic, "run_checks", seen)  # the gate hands its own runner to the reuse step
     return seen
 
 
@@ -58,7 +59,7 @@ def test_a_second_gate_run_on_an_unchanged_tree_reuses_and_says_so(repo, fake) -
     assert epic._reused_names(first) == []
     assert epic._reused_names(second) == ["lint", "tools"]
     assert [r["cpu_seconds"] for r in second] == [0.0, 0.0]
-    assert all(row["output"].endswith("\nreused") for row in checks_evidence(second))
+    assert all(row["output"].endswith("\nreused: same tree and command passed earlier") for row in checks_evidence(second))
     assert not any("reused" in row["output"] for row in checks_evidence(first))
 
 

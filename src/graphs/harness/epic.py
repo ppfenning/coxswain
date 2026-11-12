@@ -1151,7 +1151,7 @@ def _gate_checks(worktree: Path, checks: Sequence[Mapping[str, Any]], **kw: Any)
     ledger = _ledger_dir(worktree)
     if ledger is None:
         return run_checks(worktree, checks, **kw)
-    return run_checks_reusing(worktree, checks, ledger_dir=ledger, **kw)
+    return run_checks_reusing(worktree, checks, ledger_dir=ledger, run=run_checks, **kw)
 
 
 def _reused_names(results: Sequence[Mapping[str, Any]]) -> list[str]:

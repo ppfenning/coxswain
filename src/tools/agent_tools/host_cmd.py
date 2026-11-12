@@ -23,7 +23,7 @@ from agent_tools.checkout_env import (
     host_env_verdict,
     sync_instruction,
 )
-from agent_tools.git_ref_health import scan_repo
+from agent_tools.git_ref_health import scan_repo_refs
 from agent_tools.host_load import LOAD_KEY, load_report
 from agent_tools.lane_hosts import LaneHost
 from agent_tools.remote_argv import ssh_argv
@@ -429,7 +429,7 @@ def _ref_faults(repos: Sequence[str]) -> dict[str, list[str]]:
 
     def scan(repo: str) -> list[str]:
         try:
-            return scan_repo(Path(repo))
+            return [Path(found).relative_to(repo).as_posix() for found in scan_repo_refs(Path(repo))]
         except OSError:
             return []
 
