@@ -6247,6 +6247,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#store-the-claude-token" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Store the Claude token
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#verify" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6475,6 +6486,23 @@ page uses:</p>
 </tr>
 </tbody>
 </table>
+<h2 id="store-the-claude-token">Store the Claude token</h2>
+<p>This step is required. Sign in with <code>claude</code> first. Then store a long-lived
+token that coxswain uses for its own <code>claude</code> processes.</p>
+<ol>
+<li>Run <code>claude setup-token</code>.</li>
+<li>Run <code>cox setup token</code>. It takes the token by prompt, by <code>--token</code>, or from
+   an existing file with <code>--from-file</code>. It stores the token with mode 600 in
+   <code>~/.config/agent-tools/</code>.</li>
+</ol>
+<p>Lanes and the chair must never stop at an expired interactive login. A stored
+token does not expire that way. Lane auth also must not depend on shell
+startup files. That broke once: a shell function wrapper made the login check
+pass while every lane failed.</p>
+<p>The token is inference-only, so do not export it in your interactive shells.
+Coxswain injects it only into the <code>claude</code> processes it spawns. A normal
+<code>claude auth login</code> session in your own shell keeps Remote Control.</p>
+<p>Check the result with <code>cox setup token status --probe</code> and <code>cox setup doctor</code>.</p>
 <h2 id="verify">Verify</h2>
 <div class="highlight"><pre><span></span><code>cox<span class="w"> </span>setup<span class="w"> </span>doctor
 </code></pre></div>

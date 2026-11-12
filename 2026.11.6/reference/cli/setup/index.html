@@ -4036,6 +4036,17 @@ Coxswain is in beta — versions may change between releases
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#token" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        token
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -6363,6 +6374,17 @@ Coxswain is in beta — versions may change between releases
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#token" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        token
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -6391,12 +6413,12 @@ Coxswain is in beta — versions may change between releases
 
 <h1 id="setup">setup</h1>
 <div class="highlight"><pre><span></span><code>usage: cox setup [-h] [--profile PROFILE]
-                 {doctor,install,extras,migrate,store} ...
+                 {doctor,install,extras,migrate,store,token} ...
 
 Does this machine's profile actually work.
 
 positional arguments:
-  {doctor,install,extras,migrate,store}
+  {doctor,install,extras,migrate,store,token}
     doctor              check this machine's profile against what it needs
     install             sync the checkout's venv, install cox and write a
                         profile for this machine
@@ -6405,6 +6427,8 @@ positional arguments:
     migrate             plan moving this host to the one monorepo checkout;
                         --apply migrates
     store               choose files or a shared store for run records
+    token               store the long-lived Claude token that coxswain's own
+                        claude runs use
 
 options:
   -h, --help            show this help message and exit
@@ -6519,6 +6543,25 @@ options:
                         shared: NAME of the variable holding the S3 secret key
   --dry-run             validate and print; write and probe nothing
   --allow-unreachable   exit 0 even when a probe fails
+</code></pre></div>
+<h2 id="token">token</h2>
+<div class="highlight"><pre><span></span><code>usage: cox setup token [-h] [--token TOKEN] [--from-file PATH] {status} ...
+
+The token comes from `claude setup-token`.
+It is stored mode 600 in coxswain's config folder.
+Interactive claude sessions are untouched: only coxswain's own runs read the file.
+
+positional arguments:
+  {status}
+    status          report whether the stored token file exists and claude
+                    accepts it
+
+options:
+  -h, --help        show this help message and exit
+  --token TOKEN     the token printed by `claude setup-token`; prefer --from-
+                    file, a flag lands in shell history
+  --from-file PATH  read the token from this file; else asked with hidden
+                    input in a terminal
 </code></pre></div>
 
 

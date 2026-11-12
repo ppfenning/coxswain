@@ -769,6 +769,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#lane-hosts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lane hosts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#what-youll-see" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6371,6 +6382,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#lane-hosts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lane hosts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#what-youll-see" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6433,6 +6455,12 @@ and network access to GitHub.</p>
 container built from a Debian or Ubuntu base image with <code>git</code> and <code>curl</code>
 installed. This is the fastest way to try Coxswain without
 touching the host machine at all.</p>
+<h2 id="lane-hosts">Lane hosts</h2>
+<p>Every lane host runs <code>cox setup token</code> itself. A remote lane reads the token
+from its own host's file. The token is never sent over ssh or placed in a
+command line.</p>
+<p>The chair's login check reports a host with no token file as a named failure.
+So does <code>cox setup doctor</code> when you give it a host name.</p>
 <h2 id="what-youll-see">What you'll see</h2>
 <p><img alt="cox install --dry-run printing the install plan without writing anything" src="../assets/shots/install-dry-run.svg"></p>
 <p><code>cox install --dry-run</code> prints the plan <code>cox install</code> would run, before it writes anything.</p>
