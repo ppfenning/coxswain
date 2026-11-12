@@ -225,3 +225,16 @@ and is kept (its phase merges; identical changes merge cleanly when the parent i
 **Trap hit here:** `lander._repo` used to return `Path("")` for a record with no repo, so git ran in the current
 directory. A test run created two empty `init/*` branches in the real checkout (deleted; they held no commits). It
 now raises `LookupError`, and adopt skips such an initiative. Never run ruff `--fix` on a whole directory.
+
+Step 5 (commit 8, rule 9 in the harness) is done. A rebuild no longer gets a truncated reference patch:
+
+- `epic.py` `_attempt_tree`: the last attempt's full patch (from the saved result) is applied and committed in a
+  detached worktree at the phase tip, under the run directory. `_invoke_from_attempt` runs the lifecycle with a
+  runner view on that tree (`ctx.shared_runner` is the un-viewed runner), the body carries the reasons and
+  `RESUME_NOTE`, and `_compose_with_attempt` turns the builder's change into one patch against the phase tip. The
+  saved result keeps `patch` (applied), `change` (what the rebuild did) and `resumed_from`.
+- The in-run revise after failed checks does the same.
+- Fallback, unchanged behaviour: when the attempt no longer applies to the phase, or no saved result is on this
+  host, the attempt rides along as a reference patch. Say this limit in the PR body.
+- Rectify tasks already build on the phase branch that holds the conflicted merge (lander `conflict_commit`).
+- Still open in commit 8: the real `split_blocked` port.
