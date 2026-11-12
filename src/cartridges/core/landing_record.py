@@ -31,10 +31,11 @@ INTEGRATE_PHASE = "integrate"
 SETTLED_TASK_STATES = frozenset({"approved", "done", "dropped"})
 LANDED_TASK_STATES = frozenset({"done", "dropped"})
 
-# Who may move a phase where. `waiting` and `built` are derived, never stored, so no stored move enters them.
+# Who may move a phase where. `waiting` and `built` are derived, never stored, so no stored move enters them: a
+# stored `open` covers a built phase too, which is why it may go straight to `merged`.
 PHASE_MOVES: dict[str, frozenset[str]] = {
     "waiting": frozenset({"open"}),
-    "open": frozenset({"built", "queued", "blocked", "conflicted"}),
+    "open": frozenset({"built", "queued", "merged", "blocked", "conflicted"}),
     "built": frozenset({"queued", "merged", "conflicted", "blocked"}),
     "queued": frozenset({"merged", "conflicted", "blocked", "open"}),
     "conflicted": frozenset({"open", "built", "queued", "merged", "blocked"}),

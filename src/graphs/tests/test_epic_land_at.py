@@ -67,8 +67,7 @@ def stored_approved(work: dict) -> dict:
 
 @pytest.mark.parametrize(
     ("land_at", "grain", "expected"),
-    [("ticket", "task", False), ("ticket", "level", False), ("level", "level", True), ("level", "task", False),
-     ("task", "task", True), ("task", "level", False)],
+    [("initiative", "task", False), ("initiative", "level", False), ("task", "task", True), ("task", "level", False)],
 )
 def test_a_pr_is_opened_only_at_the_configured_granularity(land_at, grain, expected) -> None:
     assert opens_pr(land_at, grain) is expected
@@ -77,16 +76,16 @@ def test_a_pr_is_opened_only_at_the_configured_granularity(land_at, grain, expec
 def test_at_ticket_no_task_or_level_opens_a_pr_and_the_record_carries_land_at(repo, cart, tmp_path, prs) -> None:  # noqa: F811
     result, _ = drive(repo, cart, tmp_path, work=land("ticket"))
     assert prs == []
-    assert result["land_at"] == "ticket"
-    assert [p["land_at"] for p in result["phases"]] == ["ticket", "ticket"]
+    assert result["land_at"] == "initiative", "the alias `ticket` is recorded under its canonical name"
+    assert [p["land_at"] for p in result["phases"]] == ["initiative", "initiative"]
     assert all(t["state"] == "approved" and t["merged"] for t in result["tasks"])
     assert not any("review_pr" in t for t in result["tasks"])
 
 
-def test_land_at_defaults_to_ticket_when_the_initiative_sets_none(repo, cart, tmp_path, prs) -> None:  # noqa: F811
+def test_land_at_defaults_to_initiative_when_the_initiative_sets_none(repo, cart, tmp_path, prs) -> None:  # noqa: F811
     result, _ = drive(repo, cart, tmp_path)
     assert prs == []
-    assert [p["land_at"] for p in result["phases"]] == ["ticket", "ticket"]
+    assert [p["land_at"] for p in result["phases"]] == ["initiative", "initiative"]
 
 
 def test_a_ticket_run_needs_no_approval_and_mints_no_gate_evidence(repo, cart, tmp_path, prs) -> None:  # noqa: F811
@@ -98,15 +97,19 @@ def test_a_ticket_run_needs_no_approval_and_mints_no_gate_evidence(repo, cart, t
     assert (ledger.read(ledger_file) if ledger_file.exists() else []) == [], "no clean row for a decision nobody made"
 
 
-def test_at_level_a_pr_is_opened_per_level(repo, cart, tmp_path, prs) -> None:  # noqa: F811
+def test_the_retired_level_opens_no_pull_request_per_phase(repo, cart, tmp_path, prs) -> None:  # noqa: F811
     result, _ = drive(repo, cart, tmp_path, work=land("level"))
-    assert sorted(prs) == sorted(f"review/demo-initiative/{p}" for p in LEVELS)
-    assert [p["land_at"] for p in result["phases"]] == ["level", "level"]
-    assert all("review_pr" in p for p in result["phases"])
-    assert not any(t["state"] == "done" for t in result["tasks"]), "the run never writes done; only land does"
-    p1, p2 = LEVELS_IN_ORDER
-    assert not prs.bases[f"review/demo-initiative/{p1}"].startswith("review/")
-    assert prs.bases[f"review/demo-initiative/{p2}"] == f"review/demo-initiative/{p1}", "a stacked level shows only its own commits"
+    assert prs == [], "per-phase pull requests no longer exist"
+    assert [p["land_at"] for p in result["phases"]] == ["initiative", "initiative"]
+    assert not any("review_pr" in p for p in result["phases"])
+    assert all(t["state"] == "approved" and t["merged"] for t in result["tasks"])
+
+
+def test_a_forge_that_cannot_be_asked_opens_no_duplicate(repo, cart, tmp_path, prs) -> None:  # noqa: F811
+    prs.unreachable = True
+    result, _ = drive(repo, cart, tmp_path, work={**initiative(two_phases=False), "land_at": "task"})
+    assert prs == []
+    assert not any("review_pr" in t for t in result["tasks"])
 
 
 def test_at_task_a_pr_is_opened_per_task(repo, cart, tmp_path, prs) -> None:  # noqa: F811
@@ -123,29 +126,8 @@ def test_a_bad_land_at_refuses_the_run_before_any_phase(repo, cart, tmp_path, pr
     assert prs == []
 
 
-def test_a_restart_after_a_finished_level_rebuilds_nothing(repo, cart, tmp_path, prs) -> None:  # noqa: F811
-    first = {**initiative(two_phases=False), "land_at": "level"}
-    drive(repo, cart, tmp_path, work=first)
-    assert len(prs) == 1
-
-    result, runner = drive(repo, cart, tmp_path, work=stored_approved(first), run_id="epic-2", resume_from="epic-1")
-
-    assert [c for c in runner.calls if c["role"] == "build"] == []
-    assert len(prs) == 1, "the restart found the PR it already had and opened no second one"
-    assert [p["land_at"] for p in result["phases"]] == ["level"]
-    assert result["phases"][0]["status"] == "complete"
 
 
-def test_a_restart_opens_the_level_pr_a_failed_first_run_never_made(repo, cart, tmp_path, prs) -> None:  # noqa: F811
-    first = {**initiative(two_phases=False), "land_at": "level"}
-    prs.down = True
-    result, _ = drive(repo, cart, tmp_path, work=first)
-    assert prs == [] and "review_pr_error" in result["phases"][0]
-
-    prs.down = False
-    _, runner = drive(repo, cart, tmp_path, work=stored_approved(first), run_id="epic-2", resume_from="epic-1")
-    assert [c for c in runner.calls if c["role"] == "build"] == []
-    assert prs == ["review/demo-initiative/p1-foundations"]
 
 
 def test_a_restart_opens_the_task_prs_a_failed_first_run_never_made(repo, cart, tmp_path, prs) -> None:  # noqa: F811
@@ -159,11 +141,6 @@ def test_a_restart_opens_the_task_prs_a_failed_first_run_never_made(repo, cart, 
     assert sorted(prs) == ["review/demo-initiative/t1-probe", "review/demo-initiative/t2-bench"]
 
 
-def test_a_forge_that_cannot_be_asked_opens_no_duplicate(repo, cart, tmp_path, prs) -> None:  # noqa: F811
-    prs.unreachable = True
-    result, _ = drive(repo, cart, tmp_path, work={**initiative(two_phases=False), "land_at": "level"})
-    assert prs == []
-    assert "could not check for an existing PR" in result["phases"][0]["review_pr_error"]
 
 
 def test_a_restart_with_one_level_merged_builds_only_the_next(repo, cart, tmp_path, prs) -> None:  # noqa: F811
@@ -238,14 +215,6 @@ def test_at_ticket_a_partial_p1_with_every_task_merged_still_blocks_p2(repo, car
     assert not any(c["role"] == "build" and "t3-cutover" in c["prompt"] for c in runner.calls)
 
 
-def test_at_level_a_merged_p1_whose_land_is_due_still_blocks_p2(repo, cart, tmp_path, prs) -> None:  # noqa: F811
-    _first_run_then_move_main(repo, cart, tmp_path, "level")
-    work = _restart_work("level", levels=("p1-foundations",))
-    result, runner = drive(repo, cart, tmp_path, work=work, run_id="epic-2")
-    assert result["phases"][0]["status"] == "awaiting_land" and "land_deferred" not in result["phases"][0]
-    assert "awaiting the land" in _p2(result)["reason"]
-    assert build_outcome(result)["blocked_kind"] == "awaiting_land"
-    assert not any(c["role"] == "build" and "t3-cutover" in c["prompt"] for c in runner.calls)
 
 
 def test_at_ticket_p2_stays_blocked_when_one_p1_task_is_approved_unmerged(repo, cart, tmp_path, prs) -> None:  # noqa: F811

@@ -1376,7 +1376,7 @@ def _approved_branch_merged(
     resolved, so it reads False and the hold stays."""
     def merged(row: Mapping) -> bool:
         initiative = str(row["initiative"])
-        if row.get("land_at", "ticket") not in ("ticket", "level"):
+        if row.get("land_at", "initiative") == "task":
             return False
         root = repo_for({"initiative": initiative})
         branch = land_manual.record_branch(runs_dir, str(row.get("run") or ""), str(row["id"]))
@@ -1407,7 +1407,7 @@ def _wrongly_released_merged(
             if chair_facts.run_initiative(run := p.parent.parent.parent.name) == initiative
         }
         return bool(runs) and not runs & set(live()) and approved_merged(
-            {**item, "run": max(runs, key=chair_facts._run_number), "land_at": land_at.get(initiative, "ticket")}
+            {**item, "run": max(runs, key=chair_facts._run_number), "land_at": land_at.get(initiative, "initiative")}
         )
     return merged
 
@@ -3941,7 +3941,7 @@ def _runs_land(a: argparse.Namespace) -> int:
                      if read_forge is not None else None)
         already_merged = merged_pr is not None
         land_at = _phase_land_at(phase_record, profile, runs_dir.parent / "work", initiative)
-        ticket_items, phases = _ticket_items(runs_dir.parent / "work", initiative, runs_dir, land_mode, (phase, items)) if land_at == "ticket" else ({}, [])
+        ticket_items, phases = _ticket_items(runs_dir.parent / "work", initiative, runs_dir, land_mode, (phase, items)) if land.is_initiative(land_at) else ({}, [])
         ticket_tasks = list(ticket_items)
         # An already merged phase puts nothing new on the target branch; a ticket land carries the earlier phases in its one PR.
         parent_wait = (None if already_merged else _parent_land_refusal(
@@ -3956,7 +3956,7 @@ def _runs_land(a: argparse.Namespace) -> int:
         ticket_present = _ticket_present(repo, phase_record.get("card_branch") or f"epic/{initiative}/{phase}", earlier)
         # Approved in the store with no task record in any phase, even after the earlier-run fallback: built elsewhere.
         recorded = {r["task"] for p in phases for r in _land_phase_record(runs_dir, run_id, p)[1]} | {r["task"] for r in task_records}
-        ticket_unrecorded = sorted(t for t in (ticket_items if land_at == "ticket" else _phase_task_items(items)) if t not in recorded)
+        ticket_unrecorded = sorted(t for t in (ticket_items if land.is_initiative(land_at) else _phase_task_items(items)) if t not in recorded)
         from core.landing import phase_land_deferred  # lazy: core sits beside agent_tools in one venv
         plan_steps = land.land_plan(
             {**phase_record, "initiative": initiative, "initiative_title": initiative_title,
@@ -12906,7 +12906,7 @@ def _phase_land_at(phase_record: Mapping, profile: dict, work_dir: Path, initiat
     `land_at`, so reading the record alone gave ticket while the chair planned at level: the chair asked for a
     phase land, the land deferred it as ticket and exited 0 with nothing done, and the chair backed off."""
     if phase_record.get("land_at") in land.LAND_AT:
-        return str(phase_record["land_at"])
+        return land.granularity(phase_record)
     from core.landing import resolve_land_at  # lazy: core sits beside agent_tools in one venv
 
     path = work_dir / initiative / "initiative.md"

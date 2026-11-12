@@ -878,7 +878,7 @@ def schedule_inputs_from_rows(
     initiatives: list[ScheduleInitiative] = [
         {"id": i, "priority": priority.get(i, 0), "repo": repos.get(i, ""), "phases": phases}
         for i in ids
-        if (phases := schedule_phases(i, own[i], land_at.get(i, "ticket"), live_phases))
+        if (phases := schedule_phases(i, own[i], land_at.get(i, "initiative"), live_phases))
     ]
     shapes = {
         (i, p): (_phase_size(rs), _phase_mix(rs))
@@ -1443,10 +1443,10 @@ def approved_facts(
 
     `branch_merged` is asked only for land_at ticket or level, and is given the row with that `land_at` set."""
     def at(r: Row) -> str:
-        return (land_at or {}).get(str(r["initiative"]), "ticket")
+        return (land_at or {}).get(str(r["initiative"]), "initiative")
 
     def on_branch(r: Row) -> bool:
-        return branch_merged is not None and at(r) in ("ticket", "level") and bool(branch_merged({**r, "land_at": at(r)}))
+        return branch_merged is not None and at(r) != "task" and bool(branch_merged({**r, "land_at": at(r)}))
 
     return [
         {
@@ -1489,7 +1489,7 @@ def wrongly_released_facts(
         for i in items
         if i.get("state") == "ready"
         and _release_note(i.get("body", ""))
-        and land_at.get(str(i["initiative"]), "ticket") in ("ticket", "level")
+        and land_at.get(str(i["initiative"]), "initiative") != "task"
         and branch_merged(i)
     ]
 

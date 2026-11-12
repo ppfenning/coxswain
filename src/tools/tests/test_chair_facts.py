@@ -783,7 +783,7 @@ def test_rows_drive_ready_intake_quarantined_and_stranded_facts_with_files_ignor
     initiative_i = next(i for i in facts["initiatives"] if i["id"] == "i")
     assert initiative_i == {
         "id": "i", "started": True, "ready_tasks": [{"id": "a", "phase": "p1", "needs": [], "requires": []}], "waiting_tasks": [],
-        "landed": {"c"}, "land_at": "ticket",  # c is approved, which a ticket initiative counts as landed
+        "landed": {"c"}, "land_at": "initiative",  # c is approved, which an initiative-grain epic counts as landed
     }
     assert facts["intake"] == ["intake/q1.md"]
     assert facts["quarantines"] == [
@@ -970,8 +970,8 @@ def _store_with_recorder(tmp_path, monkeypatch, at: datetime):
 def _planned_kinds(tmp_path, now: datetime) -> list[str]:
     """Facts through the planner's own read path, `read_chair_actions` under `windowed_actions`, then `plan_lands`."""
     actions = windowed_actions(lambda n: read_chair_actions(tmp_path, n), now)
-    # land_at level: an incomplete ticket epic plans no land, so it would leave the back-off nothing to hold off.
-    facts = gather_facts(replace(_deps(), actions=actions, land_at_values=lambda: {"i": "level"}), now)
+    # land_at task: an incomplete initiative-grain epic plans no land, so it would leave the back-off nothing to hold off.
+    facts = gather_facts(replace(_deps(), actions=actions, land_at_values=lambda: {"i": "task"}), now)
     return [a["kind"] for a in plan_lands(facts, now)]
 
 

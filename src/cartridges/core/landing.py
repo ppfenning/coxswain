@@ -30,6 +30,12 @@ def lands_at_initiative(value: Any) -> bool:
     return value is None or canonical_land_at(value) == INITIATIVE
 
 
+def is_initiative(value: Any) -> bool:
+    """True for `initiative` and the spellings that read as it (`ticket`, the retired `level`); False for `task`, an
+    absent value and anything else. Use it wherever a stored or recorded `land_at` is compared."""
+    return canonical_land_at(value) == INITIATIVE
+
+
 def retired_land_at_warning(value: Any, where: str) -> str | None:
     """The warning a retired `land_at` value earns, None for every other value."""
     if value in RETIRED_LAND_AT:

@@ -79,7 +79,9 @@ def _merge(action: Action, repo: str, ticket: str, level: str, run: GitRun) -> O
 
 
 def _land_at(action: Action) -> str:
-    return action.get("land_at") or "ticket"
+    from core.landing import DEFAULT_LAND_AT, canonical_land_at  # lazy: core sits beside agent_tools in one venv
+
+    return canonical_land_at(action.get("land_at")) or DEFAULT_LAND_AT
 
 
 def _ensure_ticket_branch(action: Action, repo: str, ticket: str, ports: StewardPorts) -> Outcome | None:
@@ -104,7 +106,7 @@ def _ensure_ticket_branch(action: Action, repo: str, ticket: str, ports: Steward
 
 def _merge_level(action: Action, ports: StewardPorts) -> Outcome:
     land_at = _land_at(action)
-    if land_at != "ticket":
+    if land_at != "initiative":
         reason = f"land_at {land_at}: the land is run by the chair, not the steward executor"
         return outcome(EVENTS["merge_level"][1], action, reason)
     epic = action["epic"]

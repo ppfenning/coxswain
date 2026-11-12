@@ -33,7 +33,7 @@ from agent_tools import readme_commands
 from agent_tools.card_commits import card_commit_steps
 from agent_tools.card_pr import card_pr_steps
 from agent_tools.chair_plan_land import fetch_action
-from core.landing import phase_merge_ready, pr_branch_name, pr_stage
+from core.landing import ACCEPTED_LAND_AT, DEFAULT_LAND_AT, canonical_land_at, is_initiative, phase_merge_ready, pr_branch_name, pr_stage
 
 if TYPE_CHECKING:
     from agent_tools import store_cli
@@ -449,14 +449,13 @@ def landed_tail(steps: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     return [s for s in steps if s.get("kind") in _TAIL_KINDS]
 
 
-LAND_AT = ("ticket", "level", "task")
-_GATE_FOR = {"level": "phase", "ticket": "epic"}
+LAND_AT = ACCEPTED_LAND_AT  # every spelling a record may carry; `granularity` returns the canonical one
+_GATE_FOR = {"level": "phase", "ticket": "epic", "initiative": "epic"}
 
 
 def granularity(phase_record: Mapping[str, Any]) -> str:
-    """The record's `land_at` when it is ticket, level or task; ticket when absent or unknown."""
-    value = phase_record.get("land_at")
-    return value if value in LAND_AT else "ticket"
+    """The record's `land_at`, canonical: `initiative` (also for the alias `ticket`, the retired `level`, absent or unknown) or `task`."""
+    return canonical_land_at(phase_record.get("land_at")) or DEFAULT_LAND_AT
 
 
 def gate_level(level: str, land_at: str | None) -> str:
@@ -484,7 +483,7 @@ def _card_phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], 
     """apply_task per approved task onto `card_branch`; with `ticket_tasks` at ticket one PR on the last phase, then merge and a ticket-wide mark_done."""
     branch = phase_record["card_branch"]
     # Without `ticket_tasks` the per-phase shape below stays: the card-branch tests pin it.
-    ticket, last = granularity(phase_record) == "ticket" and bool(ticket_tasks), bool(phase_record.get("last_phase"))
+    ticket, last = granularity(phase_record) == "initiative" and bool(ticket_tasks), bool(phase_record.get("last_phase"))
     if not repo:
         return [{"kind": "refuse", "reason": f"card-mode land onto {branch} needs the repo name; none was given"}]
     applied = [{**s, "branch": branch} for s in card_commit_steps(phase_record.get("initiative"), repo, task_records)]
@@ -514,7 +513,7 @@ def _card_phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], 
              "reason": f"{', '.join(skipped)}: approved item not applied to {branch}; left in current state"}] if skipped else []
     # `last_phase` is set by the caller on the initiative's final phase; the card finds the PR by its head branch.
     pr = card_pr_steps(phase_record.get("initiative"), {repo: {"task_ids": [s["task"] for s in applied],
-                                                             "default_branch": default_branch}}) if last or granularity(phase_record) == "level" else []
+                                                             "default_branch": default_branch}}) if last else []
     return [
         *applied,
         checks_step(repo_facts or {}, branch),
@@ -647,7 +646,7 @@ def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_
     # Merged already, an approved item with no local record is marked in the store, not refused for lacking one.
     unrecorded_items = [i.get("id") for i in items if already_merged and i.get("status") == "approved" and i.get("id") not in records]
     # With `phases`, a ticket land merges each phase into one `pr/<initiative>` branch; without it the squash shape below stays.
-    branch_ticket = granularity(phase_record) == "ticket" and bool(ticket_tasks) and bool(phases) and not phase_record.get("card_branch")
+    branch_ticket = granularity(phase_record) == "initiative" and bool(ticket_tasks) and bool(phases) and not phase_record.get("card_branch")
     refusal = phase_landable([i for i in items if i.get("id") not in unrecorded_items], records, quarantine=branch_ticket)
     if refusal is not None:
         return [{"kind": "refuse", "reason": refusal}]
@@ -659,7 +658,7 @@ def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_
                                    branches=branches, repo=repo, run_hosts=run_hosts, fetched_missing=fetched_missing,
                                    task_facts=task_facts, already_merged=already_merged, ticket_tasks=ticket_tasks,
                                    ticket_present=ticket_present, ticket_records=ticket_records, ticket_unrecorded=ticket_unrecorded)
-    ticket = granularity(phase_record) == "ticket" and bool(ticket_tasks)
+    ticket = granularity(phase_record) == "initiative" and bool(ticket_tasks)
     if ticket and not phase_record.get("last_phase"):
         return [{"kind": "note", "reason": f"phase {phase_record.get('phase')}: ticket granularity, the one pull request opens at the last phase"}]
     run, phase, initiative = phase_record.get("run"), phase_record.get("phase"), phase_record.get("initiative")
@@ -771,7 +770,7 @@ def gate_steps(steps: Sequence[dict[str, Any]], level: str, land_at: str | None 
     if level in ("phase", "epic"):
         idx = next((i for i, s in enumerate(steps) if s["kind"] == "merge" and "target" not in s), None)
         note = [{"kind": "note", "reason": f"gate: {len(ticket_tasks)} ticket tasks are marked done after the pull request merges"}
-                ] if land_at == "ticket" and ticket_tasks else []
+                ] if is_initiative(land_at) and ticket_tasks else []
         return steps if idx is None else [*steps[:idx], *note]
     if any(s["kind"] == "phase_done" for s in steps):
         # Every `_ticket_branch_plan` plan ends its phase with `phase_done`, whether it merged or gathered. It stops

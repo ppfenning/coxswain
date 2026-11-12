@@ -266,15 +266,14 @@ def test_failed_branch_creation_is_a_merge_failure_not_a_raise():
     assert result["reason"] == "create ticket branch: fatal: reference already exists"
 
 
-@pytest.mark.parametrize("land_at", ["level", "task"])
-def test_level_and_task_landing_is_left_to_the_chair(land_at: str):
+def test_task_landing_is_left_to_the_chair():
     run, calls = scripted_git([])
-    action = {**merge_action(), "land_at": land_at}
+    action = {**merge_action(), "land_at": "task"}
     result = chair_steward_exec(action, [], scripted_ports(run))
     assert result == {
         "event": "merge_failed",
         "fields": FIELDS,
-        "reason": f"land_at {land_at}: the land is run by the chair, not the steward executor",
+        "reason": "land_at task: the land is run by the chair, not the steward executor",
     }
     assert calls == []
 
