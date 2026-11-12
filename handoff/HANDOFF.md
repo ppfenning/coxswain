@@ -238,3 +238,8 @@ Step 5 (commit 8, rule 9 in the harness) is done. A rebuild no longer gets a tru
   host, the attempt rides along as a reference patch. Say this limit in the PR body.
 - Rectify tasks already build on the phase branch that holds the conflicted merge (lander `conflict_commit`).
 - Still open in commit 8: the real `split_blocked` port.
+
+Commit 8 is complete: `lander_ports.split_initiative` is the real `split_blocked` port (copies each phase branch to
+`epic/<id>-2/<phase>`, moves the task files and store rows with their state and merged commit, drops the phases from
+the first record, re-runnable; the follow-up waits because its tasks' needs are now foreign). `lander._clean` deletes
+a phase branch only when the landed initiative branch holds its tip, and names the ones it keeps.

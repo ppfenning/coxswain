@@ -174,6 +174,83 @@ def run_gate(repo: Path, tree: Path, gate: str, landing: Mapping[str, Any], erro
     )
 
 
+def follow_up_for(work: Path, initiative: str) -> str:
+    """Edge (reads). The follow-up initiative a split of `initiative` uses: the one an earlier, unfinished split of it
+    made (its `initiative.md` says `split_from`), else the first free `<id>-2`, `-3`."""
+    from core import landing_record as lr
+
+    taken = sorted(p.parent.name for p in Path(work).glob("*/initiative.md"))
+    made = [name for name in taken if _frontmatter(Path(work) / name / "initiative.md").get("split_from") == initiative]
+    return made[-1] if made else lr.follow_up_id(initiative, taken)
+
+
+def split_initiative(ws: Path, conn: Any, repo: Path, initiative: str, phases: Sequence[str], *, worker: str,
+                     push: Callable[[Path, str], tuple[bool, str]] | None = None) -> str:
+    """Edge. Move `phases` of `initiative` to a follow-up initiative. Returns the follow-up's id.
+
+    Nothing built is lost or rebuilt: each phase branch is copied under the follow-up's name at the same tip (the
+    original is left where it is), its task files move with their state, and their store rows move with their state
+    and merged commit. The moved tasks keep their needs, which now name tasks of the first initiative: a need in
+    another initiative is met only once that task is done, so the follow-up waits for the first to land.
+    Every step reads what is already so, so a split that died part-way finishes when it runs again."""
+    import shutil
+
+    import yaml
+
+    from agent_tools import queue_export
+    from core import workstore
+    from harness import landing_git as lg
+    from harness import landing_store, store_write
+
+    work = Path(ws) / "work"
+    follow = follow_up_for(work, initiative)
+    for phase in phases:
+        old, new = f"epic/{initiative}/{phase}", f"epic/{follow}/{phase}"
+        tip = lg.rev(repo, f"refs/heads/{old}")
+        if tip is not None and lg.rev(repo, f"refs/heads/{new}") is None:
+            ok, why = lg.git(repo, "branch", "--no-track", new, tip)
+            if not ok:
+                raise RuntimeError(f"could not copy {old} to {new}: {why}")
+            if push is not None:
+                push(repo, new)
+    overview = work / follow / "initiative.md"
+    if not overview.is_file():
+        meta, body = workstore._split_frontmatter((work / initiative / "initiative.md").read_text(encoding="utf-8"), overview)
+        meta = {**meta, "id": follow, "title": f"{meta.get('title') or initiative} (follow-up)", "split_from": initiative}
+        note = f"Split from `{initiative}`: phases {', '.join(phases)} were blocked there and moved here with what they had built."
+        overview.parent.mkdir(parents=True, exist_ok=True)
+        overview.write_text(f"---\n{yaml.safe_dump(meta, sort_keys=False).strip()}\n---\n\n{note}\n\n{body}\n", encoding="utf-8")
+    moved_files = [overview]
+    for phase in phases:
+        source, target = work / initiative / phase, work / follow / phase
+        if source.is_dir() and not target.exists():
+            shutil.move(str(source), str(target))
+        moved_files += sorted(target.glob("*.md")) if target.is_dir() else []
+    mark = conn.dialect.placeholder
+    stamp = now_stamp()
+    from harness import store_read
+
+    for row in [r for r in store_read.work_items(conn, initiative) if str(r.get("phase")) in set(phases)]:
+        task = str(row["task_id"])
+        with conn.transaction():
+            store_write.upsert_work_item(conn, follow, task, str(row["phase"]), str(row["state"]), list(row.get("needs") or []), stamp, worker)
+            if row.get("merged_commit") and row.get("state") == "approved":
+                store_write.record_merge(conn, follow, task, str(row["merged_commit"]), stamp, worker)
+            conn.execute(f"DELETE FROM work_items WHERE initiative = {mark} AND task_id = {mark}", (initiative, task))
+    record = landing_store.get_record(conn, initiative)
+    if record is not None and any(p in (record.get("phases") or {}) for p in phases):
+        kept = {p: e for p, e in (record.get("phases") or {}).items() if p not in set(phases)}
+        landing_store.put_record(conn, {**record, "phases": kept, "updated_at": stamp})
+    for phase in phases:
+        conn.execute(
+            f"UPDATE land_queue SET state = 'done', last_error = {mark}, updated_at = {mark} "
+            f"WHERE initiative = {mark} AND phase = {mark} AND state IN ('queued', 'failed')",
+            (f"moved to {follow}", stamp, initiative, phase),
+        )
+    queue_export.record_written_paths(ws, moved_files)
+    return follow
+
+
 def send_back(ws: Path, conn: Any, worker: str, mode: str) -> Callable[[str, str, str], str | None]:
     """Edge. Adopt's way to return an approved task whose work cannot be found to `ready`: the store row first (only
     from `approved`), then the work file. The reason is logged by the caller; why it was refused, else None."""
@@ -273,6 +350,14 @@ def build(ws: Path, profile: Mapping[str, Any], *, worker: str | None = None, lo
         queue_export.record_written_paths(ws, [path])
         return ident
 
+    def split_blocked(initiative: str, phases: Sequence[str]) -> str | None:
+        try:
+            repo = lander._repo(ports_ref[0], {"initiative": initiative})
+            return split_initiative(ws, conn, repo, initiative, list(phases), worker=name, push=getattr(module, "push", None))
+        except Exception as exc:
+            log(f"lander: {initiative} was not split: {type(exc).__name__}: {exc}")
+            return None
+
     def notify(kind: str, fields: Mapping[str, Any]) -> None:
         initiative = str(fields.get("initiative") or "")
         note = f"lander: {kind}: {initiative}" + (f" phase {fields['phase']}" if fields.get("phase") else "") + f": {fields.get('reason') or ''}"
@@ -282,8 +367,11 @@ def build(ws: Path, profile: Mapping[str, Any], *, worker: str | None = None, lo
         )
         courier.append_file(ws / "courier.jsonl", entry)
 
-    return lander.Ports(
+    ports_ref: list[lander.Ports] = []
+    ports_ref.append(lander.Ports(
         conn=conn, worker=name, now=now_stamp, tasks=tasks, meta=meta, forge=Forge(module), checks=checks,
         mark_merged=lambda initiative, task, tip: None,  # the landing record is the one place that says a phase merged
-        mark_done=mark_done, file_rectify=file_rectify, notify=notify, repo=repo_of, fetch=fetch_branch, log=log,
-    )
+        mark_done=mark_done, file_rectify=file_rectify, split_blocked=split_blocked, notify=notify, repo=repo_of,
+        fetch=fetch_branch, log=log,
+    ))
+    return ports_ref[0]

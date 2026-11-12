@@ -189,3 +189,44 @@ def test_send_back_moves_an_approved_work_file_to_ready_and_lists_the_workspaces
     assert move("demo", "b", "already ready") is None, "a task that is not approved is left as it is"
     assert "state: ready" in (ws / "work" / "demo" / "p2" / "b.md").read_text()
     assert lander_ports.initiatives_in(ws) == ["demo"]
+
+
+def test_a_split_moves_the_blocked_phase_with_everything_it_built_and_can_be_run_again(ws: Path, ports, tmp_path: Path) -> None:
+    from core import workstore
+    from harness import landing_store, store_write
+
+    repo = tmp_path / "repo"
+    git(repo, "branch", "epic/demo/p2", "main")
+    git(repo, "checkout", "-q", "epic/demo/p2")
+    (repo / "half.txt").write_text("approved work of the blocked phase\n")
+    git(repo, "add", "--all")
+    git(repo, "commit", "-qm", "b: half")
+    tip = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-q", "main")
+    write(ws / "work" / "demo" / "p2" / "gate.md", {"id": "gate", "title": "Human gate", "state": "quarantined", "needs": ["b"]})
+    for ident, phase, state, needs in (("a", "p1", "approved", []), ("b", "p2", "approved", ["a"]), ("gate", "p2", "quarantined", ["b"])):
+        store_write.upsert_work_item(ports.conn, "demo", ident, phase, state, needs, NOW, "tester")
+    store_write.record_merge(ports.conn, "demo", "b", tip, NOW, "tester")
+    landing_store.put_record(ports.conn, {"initiative": "demo", "repo": str(repo), "branch": "init/demo", "parent": "main",
+                                          "state": "building", "phases": {"p1": {"state": "merged"}, "p2": {"state": "blocked"}},
+                                          "updated_at": NOW})
+    landing_store.enqueue(ports.conn, landing_store.PHASE_MERGE, "demo", phase="p2", repo=str(repo), now="2026-11-12T10:00:00Z")
+
+    assert ports.split_blocked("demo", ["p2"]) == "demo-2"
+
+    assert git(repo, "rev-parse", "epic/demo-2/p2") == tip == git(repo, "rev-parse", "epic/demo/p2"), "copied, and the original left"
+    assert not (ws / "work" / "demo" / "p2").exists()
+    assert sorted(p.name for p in (ws / "work" / "demo-2" / "p2").glob("*.md")) == ["b.md", "gate.md"]
+    overview = workstore._split_frontmatter((ws / "work" / "demo-2" / "initiative.md").read_text(), ws)[0]
+    assert (overview["id"], overview["split_from"], overview["title"]) == ("demo-2", "demo", "Demo title (follow-up)")
+    assert {t["id"]: t["state"] for t in ports.tasks("demo")} == {"a": "approved"}
+    moved = {t["id"]: t for t in ports.tasks("demo-2")}
+    assert (moved["b"]["state"], moved["b"]["merged_commit"], moved["b"]["needs"]) == ("approved", tip, ["a"]), (
+        "its approval and its commit moved with it; its need now names a task of the first initiative"
+    )
+    assert moved["gate"]["state"] == "quarantined"
+    assert landing_store.get_record(ports.conn, "demo")["phases"] == {"p1": {"state": "merged"}}
+    item = landing_store.get_item(ports.conn, "phase_merge:demo:p2")
+    assert (item["state"], item["last_error"]) == ("done", "moved to demo-2")
+    assert ports.split_blocked("demo", ["p2"]) == "demo-2", "a second run finds the same follow-up and changes nothing"
+    assert lander_ports.initiatives_in(ws) == ["demo", "demo-2"]
