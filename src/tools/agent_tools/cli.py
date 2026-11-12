@@ -5995,7 +5995,7 @@ def _chat_deps(ws: Path) -> chair_run.ChatDeps:
     """Edge. The chat edges over the workspace's `courier.jsonl` and `chair_chat_state.json`; neither is the lease."""
     courier_path, chat_path = ws / "courier.jsonl", _chat_state_path(ws)
     return chair_run.ChatDeps(
-        read=lambda: courier.entries(_read_text_or_none(courier_path) or ""),  # a missing file is an empty bus
+        read=lambda: courier.entries(courier.read_text(courier_path)),  # no bus yet is an empty bus
         load=lambda: _read_chat_doc(chat_path)[0],
         save=lambda state, epics: _write_chat_doc(chat_path, state, epics),
         append=lambda entry: courier.append_file(courier_path, entry),
@@ -6042,7 +6042,7 @@ def _await_chat_answer(
     """Edge. The answer entry for `question_id`, polled until `wait` seconds pass; None when none came."""
     deadline = monotonic() + wait
     while True:
-        found = _find_chat_answer(_read_text_or_none(path) or "", question_id)
+        found = _find_chat_answer(courier.read_text(path), question_id)
         left = deadline - monotonic()
         if found is not None or left <= 0:
             return found
@@ -6066,7 +6066,7 @@ def _route_chair_converse_state(a: argparse.Namespace) -> int:
     if workspace is None:
         return 2
     state, epics = _read_chat_doc(_chat_state_path(workspace))
-    sent = courier.entries(_read_text_or_none(workspace / "courier.jsonl") or "")
+    sent = courier.entries(courier.read_text(workspace / "courier.jsonl"))
     recent = [{"event": e["event"]} for e in sent if e.get("topic") == chair_chat.LABEL and e.get("event") in ("directive_applied", "directive_refused")][-5:]
     print(chair_chat.state_summary(state, epics, recent))
     print("Epics are as of the chair's last acting tick; a standby or dry-run tick does not refresh them.")
@@ -12271,7 +12271,7 @@ def _courier_send(a: argparse.Namespace) -> int:
         )
     except ValueError as exc:
         print(f"courier: {exc}"); return 2
-    path.write_text(courier.append_line(_read_text_or_none(path) or "", entry), encoding="utf-8")
+    courier.append_file(path, entry)
     return 0
 
 
@@ -12303,7 +12303,7 @@ def _courier_inbox(a: argparse.Namespace) -> int:
     if workspace is None: return 2
     holder = _lock_holder_or_none(workspace / "runs")
     _print_inbox(
-        _read_text_or_none(workspace / "courier.jsonl") or "", a.label, holder,
+        courier.read_text(workspace / "courier.jsonl"), a.label, holder,
         topic=getattr(a, "topic", None), event=getattr(a, "event", None),
         consumer=getattr(a, "consumer", None), wake=getattr(a, "wake", False),
     )
@@ -14053,7 +14053,7 @@ def _chair_run_deps(
     } if dev_install else {}
 
     def read_bus() -> list[dict]:
-        return courier.entries(_read_text_or_none(ws / "courier.jsonl") or "")  # a missing file is an empty bus
+        return courier.entries(courier.read_text(ws / "courier.jsonl"))  # a missing file is an empty bus
 
     # A dry run and a missing workspace keep the plain sleep, so polling is unchanged there.
     wake = None if dry_run or not ws.is_dir() else chair_wake.wait_for_run_exit(read_bus, time.sleep, time.monotonic, CHAIR_WAKE_POLL_SECONDS)
@@ -14347,7 +14347,7 @@ def _decision_bus(a: argparse.Namespace) -> tuple[Path, str, list[dict], str] | 
     profile = _courier_profile(a)
     if profile is None: return None
     path = Path(profile["workspace_dir"]).expanduser() / "courier.jsonl"
-    blob = _read_text_or_none(path) or ""
+    blob = courier.read_text(path)
     return path, blob, courier.entries(blob), settings_model.operator_name(profile)
 
 
@@ -14372,7 +14372,7 @@ def _chair_ask(a: argparse.Namespace) -> int:
     entry = decisions.make_ask_entry(
         a.question, a.option, a.context, _holder_label(a), decision_id, _decision_now(), operator=operator
     )
-    path.write_text(courier.append_line(blob, entry), encoding="utf-8")
+    courier.append_file(path, entry)
     print(decision_id)
     return 0
 
@@ -14388,7 +14388,8 @@ def _chair_answer(a: argparse.Namespace) -> int:
     answer = decisions.make_answer_entry(
         ask_entry, a.option, answered_at=_decision_now(), message_id=uuid.uuid4().hex, operator=operator
     )
-    path.write_text(courier.ack(courier.append_line(blob, answer), ask_entry["id"]), encoding="utf-8")
+    courier.append_file(path, answer)
+    courier.ack_file(path, ask_entry["id"])
     return 0
 
 
@@ -15509,7 +15510,7 @@ def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
         # chair_a.label is the label `_route_chair_take` just wrote as the holder above;
         # it is the holder, not a re-read of the file this same call just produced.
         if took:
-            _print_inbox(_read_text_or_none(Path(workspace).expanduser() / "courier.jsonl") or "", chair_a.label, chair_a.label)
+            _print_inbox(courier.read_text(Path(workspace).expanduser() / "courier.jsonl"), chair_a.label, chair_a.label)
     os.chdir(cwd)
     os.execvp(argv[0], argv)
     return 0

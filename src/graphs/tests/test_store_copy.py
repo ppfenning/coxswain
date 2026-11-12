@@ -26,6 +26,7 @@ EXPECTED_ORDER = (
     "id_sequence",
     "landing_records",
     "land_queue",
+    "courier_log",
 )
 
 SEED = {
@@ -67,6 +68,9 @@ SEED = {
         {"id": "phase_merge:i1:p1", "kind": "phase_merge", "initiative": "i1", "phase": "p1", "repo": "r", "parent": "",
          "state": "queued", "reason": "phase built", "queued_at": "2026-09-25T00:00:00Z", "claimed_by": "",
          "claimed_at": "", "lease_until": "", "attempts": 0, "last_error": "", "updated_at": "2026-09-25T00:00:00Z"},
+    ],
+    "courier_log": [
+        {"line_id": "l1", "at": "2026-09-25T00:00:00.000000Z", "line": '{"id": "m1", "to": "chair", "ack": false}'},
     ],
 }
 

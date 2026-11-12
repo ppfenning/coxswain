@@ -958,10 +958,7 @@ def _reaches_a_person(to: str) -> bool:
 
 def _courier_blob(work_dir: Path) -> str:
     """The raw courier.jsonl, undecodable bytes replaced; "" when it cannot be opened."""
-    try:
-        return (Path(work_dir) / "courier.jsonl").read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return ""
+    return courier.read_text(Path(work_dir) / "courier.jsonl")
 
 
 def _inbox(entries: list[dict]) -> tuple[list[dict], int]:
@@ -2080,7 +2077,7 @@ def _work_stamp(work_dir: Path) -> tuple:
             return (str(path), None)
         return (str(path), info.st_size, info.st_mtime_ns)
 
-    return tuple(read(path) for path in (work_dir / "courier.jsonl", *sorted(work_dir.glob("*/initiative.md"))))
+    return (courier.stamp(work_dir / "courier.jsonl"), *(read(path) for path in sorted(work_dir.glob("*/initiative.md"))))
 
 
 def _section_key(name: str, fingerprints: Mapping[str, object], at: datetime, work_stamp: tuple) -> tuple:
