@@ -417,13 +417,20 @@ def scaled_cap(max_in_flight: int, lane_fraction: float) -> int:
     return max(1, int(max_in_flight * lane_fraction))
 
 
+def fleet_lanes(dispatch: DispatchFacts) -> int:
+    """The chair machine's `max_in_flight` plus each lane host's `capacity`, a host naming none counting
+    `max_in_flight` as `host_free_slots` does. The launch cap is scaled from this: it bounds the whole fleet's launches."""
+    own = int(dispatch["max_in_flight"])
+    return own + sum(int(h.get("capacity", own)) for h in dispatch.get("hosts", []))
+
+
 def limits_facts(
     assessment: pacing.Assessment, policy: pacing.Policy, weekly: pacing.Window | None, max_in_flight: int,
     window_source: str = "est", weekly_source: str = "est", runs_dir: str = "", now: datetime | None = None,
     month: MonthBudget | None = None,
 ) -> LimitsFacts:
     """`launch_cap` is the smaller of the 5-hour and weekly verdicts: none on a 5-hour `hold` or `stop`, otherwise
-    `max_in_flight` scaled by the weekly lane fraction. The weekly verdict never raises the cap.
+    `max_in_flight` (the fleet's lanes, `fleet_lanes`, at the edge) scaled by the weekly lane fraction. The weekly verdict never raises the cap.
     With no `now` the weekly pace is not judged and the lane fraction is 1.0.
 
     `smoke_hold` comes from `chair_smoke.read_hold(runs_dir)`, so a caller such as `chair_plan._launch_cap`
@@ -1872,7 +1879,7 @@ def gather_facts(
     return {
         "lease": lease_facts(deps.lease(), deps.session, deps.pid, deps.host),
         "limits": limits_facts(
-            assessment, policy, weekly, dispatch["max_in_flight"], deps.window_source(), deps.weekly_source(),
+            assessment, policy, weekly, fleet_lanes(dispatch), deps.window_source(), deps.weekly_source(),
             deps.runs_dir(), now=now, month=month,
         ),
         "dispatch": dispatch,
