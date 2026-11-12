@@ -60,7 +60,7 @@ def test_status_shows_live_initiatives_by_derived_state_and_the_open_queue_with_
 def test_the_lander_group_is_in_the_command_table_with_its_commands() -> None:
     group, rows = cli._table_entry("lander")
     assert group.name == "lander"
-    assert [row.name for row in rows] == ["once", "run", "status", "adopt", "service"]
+    assert [row.name for row in rows] == ["once", "run", "status", "adopt", "backlog", "service"]
     adopt = cli.build_parser().parse_args(["lander", "adopt", "one", "two"])
     assert (adopt.initiative, adopt.apply) == (["one", "two"], False), "adopt is a dry run unless --apply is given"
     parsed = cli.build_parser().parse_args(["lander", "run", "--interval", "5"])

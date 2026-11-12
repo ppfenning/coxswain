@@ -156,6 +156,7 @@ cox lander once [--profile PROFILE]   one pass: queue what is ready, then merge 
 cox lander run [--interval INTERVAL] [--profile PROFILE]   pass after pass until interrupted
 cox lander status [--json] [--profile PROFILE]   every initiative in flight with its phases, and the land queue with how long each item has waited
 cox lander adopt [INITIATIVE...] [--apply] [--profile PROFILE]   bring initiatives that were in flight before the landing record under it; a dry run unless --apply
+cox lander backlog --manifest MANIFEST --pr PR [--apply] [--profile PROFILE]   mark the tasks a hand-folded pull request carried as done, once it has merged; a dry run unless --apply
 cox lander service [--install] [--status] [--interval INTERVAL] [--environment-file ENVIRONMENT_FILE] [--profile PROFILE]   write or show the systemd user unit; never runs systemctl
 cox host add NAME --ssh SSH --capacity CAPACITY [--weight WEIGHT] [--capabilities CAPABILITIES]   add or update a host in the table
 cox host list   one line per host: state, capacity, beat age, login

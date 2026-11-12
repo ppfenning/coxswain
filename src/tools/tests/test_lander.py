@@ -69,13 +69,26 @@ class Forge:
 
     def merge(self, repo, step):
         self.calls.append(("merge", step["branch"]))
-        self.person_merges(repo, step["branch"])
+        self.person_merges(repo, step["branch"], squash=step.get("squash", True))
         return True, ""
 
-    def person_merges(self, repo, branch):
-        run(repo, "merge", "--squash", branch)
-        run(repo, "commit", "-m", f"squash {branch}")
+    def person_merges(self, repo, branch, squash=True):
+        """Merge the pull request into its own base, as the forge does, and leave the checkout on main."""
+        base = self.prs[branch].get("base") or "main"
+        run(repo, "checkout", "-q", base)
+        if squash:
+            run(repo, "merge", "--squash", branch)
+            run(repo, "commit", "-m", f"squash {branch}")
+        else:
+            run(repo, "merge", "--no-ff", "-m", f"merge {branch}", branch)
+        run(repo, "checkout", "-q", "main")
         self.prs[branch]["state"] = "merged"
+        self.merges = [*getattr(self, "merges", []), (branch, base, "squash" if squash else "merge")]
+
+    def retarget(self, repo, branch, base):
+        self.calls.append(("retarget", branch, base))
+        self.prs[branch]["base"] = base
+        return True, ""
 
     def delete_branch(self, repo, branch):
         self.calls.append(("delete_remote", branch))
@@ -453,3 +466,61 @@ def test_an_item_that_has_waited_past_the_limit_raises_the_alarm_once_and_a_pers
     assert first == ["alarm: phase_merge:i:p1 has waited since 2026-11-12T08:00:00Z (queued, 0 attempt(s))"]
     assert world.notes == [("stalled", {"initiative": "i", "phase": "p1", "reason": first[0].removeprefix("alarm: ")})]
     assert lander.queue_alarm(world.ports) == [] and len(world.notes) == 1, "told once for one queueing"
+
+
+def test_an_epic_stack_gives_one_pull_request_per_initiative_with_the_stack_bases_and_retargets_without_a_rebase(tmp_path: Path) -> None:
+    """A, B (needs A) and C in one stacked epic: A and C base on the epic branch, B on A's branch. Landing A moves B
+    down onto the epic branch by retargeting its pull request and merging forward; when all three have landed the
+    epic branch gets its one pull request to main."""
+    world = World(tmp_path)
+    run(world.repo, "branch", "epic-x", "main")
+    stack = {"epic_stack": True, "epic_branch": "epic-x", "epic_parent": "main", "epic_title": "Epic X"}
+    real_meta = world.ports.meta
+    world.ports.meta = lambda initiative: {**real_meta(initiative), **stack}
+
+    def start(initiative: str, parent: str) -> None:
+        world.rows[initiative] = [task(f"{initiative}-t", "p1")]
+        record, why = ops.start_record(world.conn, world.repo, initiative=initiative, branch=f"init/{initiative}",
+                                       parent=parent, parent_ref=parent, now=world.now(), epic="x")
+        assert record is not None, why
+        world.build(initiative, "p1")
+        assert lander.merge_phase(world.ports, initiative, "p1").status == "done"
+
+    start("a", "epic-x")
+    start("c", "epic-x")
+    start("b", "init/a")  # the launcher chose A's branch: `core.landing.stack_parent`
+    b_tip_before = run(world.repo, "rev-parse", "init/b")
+
+    assert lander.land_initiative(world.ports, "b").detail.endswith("is stacked on a, which has not landed")
+    assert world.forge.prs["init/b"]["base"] == "init/a" and world.forge.prs["init/b"]["state"] == "open"
+    assert lander.land_initiative(world.ports, "a").status == "done"
+    assert lander.land_initiative(world.ports, "c").status == "done"
+    landed_b = lander.land_initiative(world.ports, "b")
+
+    assert landed_b.status == "done"
+    creates = [c[1:3] for c in world.forge.calls if c[0] == "pr_create"]
+    assert creates == [("init/b", "init/a"), ("init/a", "epic-x"), ("init/c", "epic-x")], "one pull request per initiative, never per phase"
+    assert ("retarget", "init/b", "epic-x") in world.forge.calls
+    assert world.forge.merges == [("init/a", "epic-x", "merge"), ("init/c", "epic-x", "merge"), ("init/b", "epic-x", "merge")], (
+        "merge commits into the epic branch"
+    )
+    assert world.record("b")["parent"] == "epic-x"
+    assert "b: a landed; its parent is now epic-x" in landed_b.events
+    assert lg.is_ancestor(world.repo, b_tip_before, "epic-x"), "B was merged forward, never rebased: its commits are the same"
+    assert run(world.repo, "ls-tree", "--name-only", "epic-x").split() == ["a-p1.txt", "b-p1.txt", "base.txt", "c-p1.txt", "shared.txt"]
+    assert "a-p1.txt" not in run(world.repo, "ls-tree", "--name-only", "main"), "nothing reaches main until the epic lands"
+
+    events = lander.sweep(world.ports)
+    assert any(e.startswith("epic x: every initiative has landed; opened ") for e in events)
+    assert [c[1:3] for c in world.forge.calls if c[0] == "pr_create"][-1] == ("epic-x", "main")
+    assert ls.get_record(world.conn, "epic:x")["state"] == "pr_open"
+    assert not any(e.startswith("epic x") for e in lander.sweep(world.ports)), "opened once"
+
+
+def test_without_epic_stack_an_initiative_squashes_onto_its_parent_and_no_epic_pull_request_is_opened(world: World) -> None:
+    world.rows["a"] = [task("a-t", "p1")]
+    ops.start_record(world.conn, world.repo, initiative="a", branch="init/a", parent="main", parent_ref="main", now=world.now(), epic="x")
+    world.build("a", "p1")
+    lander.run_once(world.ports)
+    assert world.forge.merges == [("init/a", "main", "squash")]
+    assert lander.sweep(world.ports) == [] and ls.get_record(world.conn, "epic:x") is None
