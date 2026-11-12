@@ -201,3 +201,17 @@ Step 2 (real lander ports and CLI) is done except two things:
   because `test_cli_lazy_dispatch` wants every handler there). README table regenerated.
 - **Not yet:** `split_blocked` real port (commit 8: move phase dirs, store rows and branches to `<id>-2`), and
   `cox lander adopt` (commit 7).
+
+Step 3 (commit 6, the chair tick) is done:
+
+- `chair_plan_land.lander_owned`: every phase of an initiative at `initiative` plans no land, whole or partial.
+  `ticket_phases`, `epic_complete`, `last_phases`, `_let_through`, `ticket_held` are gone. Lands are planned only at
+  `land_at: task`, where "its repo is landing" and "land backoff" still apply (that path is unchanged on purpose).
+- `chair_facts.with_landing_merged` (called once in `gather_facts`, on `deps.tickets()` rows): at `initiative` an
+  approved task's `merged` flag is the landing record's (`lr.merged_tasks`); no record means nothing merged.
+  `FactsDeps.landing_records` is wired in `cli._chair_run_deps` to `lander_ports.read_records`, which reads sqlite
+  strictly read-only (connecting created `cox.db` and broke the tick's caches) and never raises.
+- `chair_phases.launchable_phases`: at `initiative` a parent phase is met only when every task of it is done,
+  dropped, or approved with the merged flag; a need in the task's own phase is met by an approval.
+- Not changed: `core.landing.need_met` (six callers; it still calls an unmerged approval met above `task`).
+  The harness refuses to build without the parent's merge anyway.

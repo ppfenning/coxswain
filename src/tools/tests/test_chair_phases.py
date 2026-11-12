@@ -1,5 +1,7 @@
 """launchable_phases: a phase starts when its parent phases' tasks are all met and one of its tasks is ready."""
 
+import pytest
+
 from agent_tools.chair_phases import _phase_parents, launchable_phases
 
 
@@ -65,9 +67,27 @@ def test_land_at_task_meets_an_approved_merged_parent():
     assert launchable_phases(items, "task") == {"p2": ["b1"]}
 
 
-def test_land_at_level_meets_an_approved_unmerged_parent():
-    items = [row("a1", "p1", "approved"), row("b1", "p2", "ready", ["a1"])]
-    assert launchable_phases(items, "level") == {"p2": ["b1"]}
+@pytest.mark.parametrize("land_at", ["initiative", "ticket", "level"])
+def test_at_initiative_a_parent_phase_is_met_only_once_it_is_merged_into_the_initiative_branch(land_at):
+    """The merged flag is the landing record's: the phase is on the initiative branch, which a child is cut from."""
+    built = [row("a1", "p1", "approved"), row("b1", "p2", "ready", ["a1"])]
+    assert launchable_phases(built, land_at) == {}
+    merged = [row("a1", "p1", "approved", merged=True), row("b1", "p2", "ready", ["a1"])]
+    assert launchable_phases(merged, land_at) == {"p2": ["b1"]}
+    landed = [row("a1", "p1", "done"), row("b1", "p2", "ready", ["a1"])]
+    assert launchable_phases(landed, land_at) == {"p2": ["b1"]}
+
+
+def test_at_initiative_a_parent_phase_must_be_merged_whole():
+    half = [row("a1", "p1", "approved", merged=True), row("a2", "p1", "approved"), row("b1", "p2", "ready", ["a1"])]
+    assert launchable_phases(half, "initiative") == {}
+
+
+def test_at_initiative_a_need_inside_the_tasks_own_phase_is_met_by_an_approval():
+    """Both tasks are on one phase branch, so the second builds on the first before the phase has merged anywhere."""
+    items = [row("a1", "p1", "approved"), row("a2", "p1", "ready", ["a1"])]
+    assert launchable_phases(items, "initiative") == {"p1": ["a2"]}
+
 
 
 def test_quarantined_parent_task_blocks_the_child():

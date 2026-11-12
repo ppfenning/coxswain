@@ -163,3 +163,20 @@ def test_a_rectify_task_is_filed_once_as_a_ready_work_file_and_a_store_row(ws: P
     assert sorted(p.name for p in (ws / "work" / "demo" / "p1").glob("*.md")) == ["a.md", "p1-rectify.md"]
     assert ports.file_rectify("demo", "integrate", "Integrate with main", "body") == "integrate-rectify"
     assert (ws / "work" / "demo" / "integrate" / "integrate-rectify.md").is_file()
+
+
+def test_reading_the_records_for_the_chair_leaves_no_trace_and_never_raises(tmp_path: Path, ws: Path, ports) -> None:
+    from harness import landing_store
+
+    empty = tmp_path / "elsewhere" / "runs"
+    empty.mkdir(parents=True)
+    assert lander_ports.read_records(empty) == []
+    assert list(empty.iterdir()) == [], "no store file is made by looking"
+    landing_store.put_record(ports.conn, {"initiative": "demo", "repo": "r", "branch": "init/demo", "parent": "main",
+                                          "state": "building", "phases": {"p1": {"state": "merged"}}, "updated_at": NOW})
+    (read,) = lander_ports.read_records(ws / "runs")
+    assert (read["initiative"], read["phases"]["p1"]["state"]) == ("demo", "merged")
+    notes: list[str] = []
+    (empty / "cox.db").write_bytes(b"not a database")
+    assert lander_ports.read_records(empty, notes.append) == []
+    assert len(notes) == 1 and notes[0].startswith("note: landing records not read (")

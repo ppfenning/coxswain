@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import sqlite3
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
@@ -40,6 +41,39 @@ def connect(runs_dir: Path) -> Any:
     conn = open_url(run_store._store_url(runs_dir))
     migrate(conn, now_stamp(), default_modules())
     return conn
+
+
+def _sqlite_records(path: Path) -> list[dict[str, Any]]:
+    """Edge. The records of a sqlite store, read-only: no file is created, no journal mode is set, nothing is touched."""
+    if not path.is_file():
+        return []
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5.0)
+    try:
+        rows = conn.execute("SELECT record_json FROM landing_records ORDER BY initiative").fetchall()
+    finally:
+        conn.close()
+    return [dict(json.loads(row[0]) or {}) for row in rows]
+
+
+def read_records(runs_dir: Path, log: Callable[[str], None] | None = None) -> list[dict[str, Any]]:
+    """Edge. Every landing record, for a reader that only looks (the chair's tick). Never migrates and never raises:
+    a store with no landing tables yet, or one that cannot be reached, reads as no records, so nothing reads as merged."""
+    try:
+        from harness import landing_store
+        from harness.store_dialect import connect as open_url
+
+        url = run_store._store_url(Path(runs_dir))
+        if url.startswith("sqlite:"):
+            return _sqlite_records(run_store._sqlite_path(url))
+        conn = open_url(url)
+        try:
+            return landing_store.list_records(conn)
+        finally:
+            conn.close()
+    except Exception as exc:
+        if log is not None:
+            log(f"note: landing records not read ({type(exc).__name__}: {exc}); no phase reads as merged this tick")
+        return []
 
 
 def _frontmatter(path: Path) -> dict[str, Any]:

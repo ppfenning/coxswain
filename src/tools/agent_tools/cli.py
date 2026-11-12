@@ -13686,6 +13686,7 @@ def _chair_run_deps(
         ),
         lost_runs=lambda: chair_read_lost.read_lost_runs(runs_dir, now_text()),
         tickets=ticket_items,
+        landing_records=lambda: _landing_records(runs_dir),
         decomposed_intake=decomposed_intake,
         item_counts=item_counts,
         initiative_states=initiative_states,
@@ -14387,6 +14388,12 @@ def _chair_freeze_lands(a: argparse.Namespace) -> int:
     text = chair_land_freeze.run_freeze(runs_dir, datetime.datetime.now(datetime.UTC), a.minutes, a.reason, a.off)
     print(text)
     return 1 if text.endswith(chair_land_freeze.USAGE) else 0
+
+
+def _landing_records(runs_dir: Path) -> list[dict]:
+    """Edge. The store's landing records for the chair's facts; empty, with a note, when they cannot be read."""
+    from agent_tools import lander_ports
+    return lander_ports.read_records(runs_dir, lambda line: print(line, file=sys.stderr))
 
 
 def _lander_once(a: argparse.Namespace) -> int:
