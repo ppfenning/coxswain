@@ -93,6 +93,7 @@ from graphs.delivery.checkpoint import (
     checkpoint_decision,
     checkpoint_ledger_line,
 )
+from graphs.delivery.clean_gate import GateStatus, clean_gate_outcome
 from graphs.delivery.phase_validate import _PLACEHOLDER_MARKERS
 from graphs.delivery.snapshot_surfaces import drop_pending_snapshots, is_surface_snapshot
 from runner.decision_log import RouterDecision
@@ -1686,6 +1687,26 @@ def _patch_truncated_review(reason: str) -> dict[str, Any]:
     }
 
 
+def _clean_critique(finding: str) -> dict[str, Any]:
+    """Pure: the review slot for a clean-check hit. No reviewer ran; the finding carries the quoted hit lines."""
+    return {
+        "verdict": "revise",
+        "findings": [{"charter_principle": "clean check", "detail": finding, "file": ""}],
+        "rationale": "clean_check",
+    }
+
+
+def _clean_gate_row(attempt: int, finding: str | None, status: GateStatus) -> dict[str, str] | None:
+    """Pure: the evidence row for one gate outcome; None when there was nothing to gate."""
+    if finding is not None:
+        return {"check": "clean gate", "output": f"hits found on attempt {attempt}"}
+    if status == "skipped":
+        return {"check": "clean gate", "output": f"skipped on attempt {attempt}: names pattern not exported (exit 2)"}
+    if status == "ran":
+        return {"check": "clean gate", "output": f"ran on attempt {attempt}: no hits"}
+    return None
+
+
 def _abstained_review() -> dict[str, Any]:
     """Pure: the charter reviewer's slot in the record once it has abstained.
 
@@ -2219,6 +2240,15 @@ def _run(
     build_output_invalid = invalid is not None
     frozen = patch_truncated or build_output_invalid or checkpoint_reason is not None
 
+    # A hit on the clean check is a build fault the builder can fix, so it is
+    # caught here, before the handoff and before any reviewer reads the patch.
+    clean_finding, clean_status = (
+        (None, "none")
+        if frozen
+        else clean_gate_outcome(build.get("patch") or "", checkpoint.checks, checkpoint.repo_dir)
+    )
+    clean_gate_row = _clean_gate_row(1, clean_finding, clean_status)
+
     facts = _change_facts(build)
     tier = review_tier(cartridge, change_facts=facts, surfaces=surfaces, patterns=patterns)
 
@@ -2226,7 +2256,7 @@ def _run(
     # Declared here, not beside `standing`: the first pass below appends to it.
     rounds: list[dict[str, Any]] = []
     try:
-        if not frozen and "handoff" in bound:
+        if not frozen and clean_finding is None and "handoff" in bound:
             handoff = _handoff(runner, context=context, ticket=ticket_text, plan=plan, build=build, facts=facts, ticket_id=ticket)
 
         # A non-blocking refusal costs a build attempt, not the run. Review is
@@ -2250,6 +2280,10 @@ def _run(
             review = {"verdict": "revise", "rationale": "build_output_invalid",
                       "findings": [{"charter_principle": "harness fault", "detail": invalid, "file": ""}]}
             adversary, arbitration, verdict, review_placeholder, review_quarantine = None, None, "revise", False, False
+        elif clean_finding is not None:
+            review, adversary, arbitration = _clean_critique(clean_finding), None, None
+            verdict, review_placeholder, review_quarantine = "revise", False, False
+            rounds.append(round_summary(1, "clean check", review, adversary, arbitration, verdict))
         elif handoff is not None and not handoff.get("complete"):
             review, adversary, arbitration, verdict, review_placeholder, review_quarantine = _handoff_critique(handoff)
             rounds.append(round_summary(1, "handoff", review, adversary, arbitration, verdict))
@@ -2294,6 +2328,8 @@ def _run(
     # Whether the round that produced the current `verdict` ended at handoff
     # (no reviewer has read this patch yet) rather than at a review verdict.
     prior_handoff = handoff is not None and not handoff.get("complete")
+    # Whether the latest round ended at a clean-check hit: no reviewer read it either.
+    prior_clean = clean_finding is not None
     # Set when the second build asks a tier up. The runner takes no `reason`,
     # so the escalation is told on the record, as an evidence row, not to the call.
     escalation: str | None = None
@@ -2306,8 +2342,12 @@ def _run(
         critique = _critique(review, adversary, arbitration)
 
         # Only the second build, and only after a review revise: not a handoff
-        # gap and never a third attempt. A ticket tier for build overrides it.
-        escalate = int(attempts) == 1 and verdict == "revise" and not prior_handoff and "build" not in ticket_tiers
+        # gap or a clean-check hit, and never a third attempt. A ticket tier for
+        # build overrides it.
+        escalate = (
+            int(attempts) == 1 and verdict == "revise" and not prior_handoff and not prior_clean
+            and "build" not in ticket_tiers
+        )
         retry_tier = _escalate("standard") if escalate else "standard"
         if escalate:
             escalation = f"escalated: attempt 2 after revise (standard -> {retry_tier})"
@@ -2387,6 +2427,17 @@ def _run(
 
         build = retry
         facts = _change_facts(build)
+        # The same gate on every retry, before that round's handoff and review:
+        # a retry that still carries the hit is flagged again, with no reviewer paid.
+        clean_finding, clean_status = clean_gate_outcome(build.get("patch") or "", checkpoint.checks, checkpoint.repo_dir)
+        clean_gate_row = _clean_gate_row(int(attempts), clean_finding, clean_status) or clean_gate_row
+        prior_clean = clean_finding is not None
+        if clean_finding is not None:
+            review, adversary, arbitration = _clean_critique(clean_finding), None, None
+            verdict, review_placeholder, review_quarantine = "revise", False, False
+            rounds.append(round_summary(int(attempts), "clean check", review, adversary, arbitration, verdict))
+            prior_handoff = False
+            continue
         try:
             if "handoff" in bound:
                 handoff = _handoff(runner, context=context, ticket=ticket_text, plan=plan, build=build, facts=facts, ticket_id=ticket)
@@ -2499,6 +2550,9 @@ def _run(
                         if attempts > 1
                         else []
                     ),
+                    # Only when the gate ran or skipped: a row for a gate with
+                    # nothing to run on would claim a check that never happened.
+                    *([clean_gate_row] if clean_gate_row else []),
                     *([{"check": "tier escalation", "output": escalation}] if escalation else []),
                     {"check": "changed lines", "output": str(facts["changed_lines"])},
                     # Only when a budget was set, and attributed to where it
