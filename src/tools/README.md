@@ -113,6 +113,7 @@ cox route schedule [--profile PROFILE] [--explain INITIATIVE] [--should-jump INI
 cox route pull [--profile PROFILE] [--source SOURCE] [--dry-run]   file intake tickets from a source, once per link
 cox route lint INITIATIVE_DIR [--repo REPO]   static ticket lint over a filed initiative, work-shape.md §3
 cox route groups [--profile PROFILE]   print the newest plans/intake-groups/<date>.md file, work-shape.md §5
+cox route export [--profile PROFILE]   write this machine's work/ and intake/ files from the store; nothing is committed
 cox route drift [--profile PROFILE] [--json]   items whose store state and file state differ
 cox route import [--profile PROFILE] [--workspace WORKSPACE]   load the current work item files into the store's work_items table
 cox route paths [--profile PROFILE] [--workspace WORKSPACE] [--apply] [--move ('OLD', 'NEW')]   rewrite recorded repo paths to the tilde form, dry run first

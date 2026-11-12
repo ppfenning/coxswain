@@ -5008,6 +5008,24 @@ def _status_rows_for(runs_dir: Path, short_ids: Mapping[str, str] | None = None)
     return _with_lane_fields(route.status_rows(entries, by_run), runs, _now_iso())
 
 
+def _route_export(a: argparse.Namespace) -> int:
+    """Edge. Refresh this machine's copy of the board from the store. No git, no lease."""
+    profile = _courier_profile(a)
+    if profile is None:
+        return 2
+    if work_state.work_state_mode(_lake_provider(a)[0]) != "store":
+        print("export: work_state is files; the files are the board, so there is nothing to write")
+        return 0
+    workspace = Path(profile["workspace_dir"]).expanduser()
+    try:
+        skipped = _export_board(workspace / "runs", workspace)
+    except Exception as exc:
+        print(f"export: {type(exc).__name__}: {exc}")
+        return 1
+    print(f"export: {workspace} matches the store" + (f"; skipped {len(skipped)} contentless row(s)" if skipped else ""))
+    return 0
+
+
 def _route_drift(a: argparse.Namespace) -> int:
     """Report only: exits 0 whether or not the store and the files disagree."""
     profile_path = _profile_path(a)
@@ -8157,14 +8175,29 @@ def export_commit_excludes(held: Sequence[Mapping[str, str]]) -> list[str]:
     return [f":(exclude){row['path']}" for row in held if row.get("path")]
 
 
-def _chair_export_hook(runs_dir: Path, ids: tuple[str, ...]) -> str:
+def workspace_git_on(profile: Mapping) -> bool:
+    """Whether the chair keeps the workspace in git: `chair.workspace_git`, on unless the profile says false.
+
+    Off, the store is the only shared copy of the board. The work/ and intake/ trees are then this machine's own
+    files, written from the store so everything that reads them still can: the chair neither pulls the workspace
+    nor commits and pushes what it exports, and any machine refreshes its copy with `cox route export`."""
+    chair = profile.get("chair")
+    return not (isinstance(chair, Mapping) and chair.get("workspace_git") is False)
+
+
+def _chair_export_hook(runs_dir: Path, ids: tuple[str, ...], commit: bool = True) -> str:
     """Edge. Export the board, then commit the work/ and intake/ files; returns a tick-line note, "" when nothing is worth saying.
+
+    With `commit` False (`chair.workspace_git: false`) the files are written and nothing is committed or pushed.
 
     The files the export held are left out of the commit: committing one would make the hand edit this workspace's HEAD
     baseline, and the next export would overwrite it. A git failure raises, so the tick reports it as an export failure.
     A failed push is a note, never a raise."""
     workspace = runs_dir.parent
     skipped = _export_board(runs_dir, workspace)  # fills the store from the files first; see _export_board
+    if not commit:
+        wrote = f"export: wrote the files for {len(ids)} changed row(s); the workspace is not in git"
+        return f"{wrote}; skipped {len(skipped)} contentless row(s): {', '.join(skipped)}" if skipped else wrote
     git = ["git", "-C", str(workspace)]
     names = [name for name in ("work", "intake") if (workspace / name).exists()]  # git add refuses a path that matches nothing
     if not names:  # `git add -A --` with no path stages the whole tree
@@ -12442,6 +12475,16 @@ ROUTE_COMMANDS = [
         "agent_tools.cli:_route_groups", False, (),
     ),
     commands.Command(
+        "export", "route", "write this machine's work/ and intake/ files from the store; nothing is committed",
+        (commands.Arg(("--profile",)),),
+        "agent_tools.cli:_route_export", False, (),
+        description=(
+            "The store holds the board. This writes it out as files under the workspace so they can be read, and "
+            "removes files no row names.\nIt first loads any ticket a decompose wrote as a file and the store has "
+            "not seen. Under work_state files it does nothing."
+        ),
+    ),
+    commands.Command(
         "drift", "route", "items whose store state and file state differ",
         (commands.Arg(("--profile",)), commands.Arg(("--json",), {"action": "store_true"})),
         "agent_tools.cli:_route_drift", False, (),
@@ -13977,10 +14020,13 @@ def _chair_run_deps(
 
     restart_note = "" if dry_run else chair_restart_log.restart_note(chair_restart_log.read_record(restart_path), now())
 
+    git_workspace = workspace_git_on(profile)
+
     def pull_and_sync() -> str:
-        """The live tick's pull, then the checkout sync of each repo the initiatives name; the sync never raises."""
+        """The live tick's pull (when the workspace is in git), then the checkout sync of each repo the initiatives
+        name; the sync never raises."""
         try:
-            return workspace_sync.pull_workspace(ws)
+            return workspace_sync.pull_workspace(ws) if git_workspace else ""
         finally:
             try:
                 repos = _initiative_repos(chair_read_quarantined.initiative_files(ws, work_files()), home).values()
@@ -14029,7 +14075,7 @@ def _chair_run_deps(
             watch=lambda w: chair_revert_watch.record_watch(record, w), held=held,
             tickets=lambda: chair_facts.read_ticket_items(ws, mode), echo=echo, **dash_wiring,
         ),
-        export_rows=(lambda ids: _chair_export_hook(runs_dir, ids)) if mode == "store" and not dry_run else None,
+        export_rows=(lambda ids: _chair_export_hook(runs_dir, ids, git_workspace)) if mode == "store" and not dry_run else None,
         notify_config=notify_core.config_from_profile(profile), workspace=ws,
         pull_workspace=None if dry_run else pull_and_sync,
         lane_checkout_actions=sync_lane_checkouts_now if has_lane_hosts and not dry_run else None,

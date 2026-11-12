@@ -307,9 +307,30 @@ conflicts per path in that log. A path that conflicts often belongs in
 
 ## The workspace checkout
 
-The workspace (`work/`, `intake/`, `runs/`) is a git checkout. The loop
-keeps it in step with its upstream on every live tick. A dry run does
+The workspace (`work/`, `intake/`, `runs/`) is a git checkout by default. The
+loop keeps it in step with its upstream on every live tick. A dry run does
 neither step.
+
+With a shared store the checkout is not needed. The store holds every intake,
+initiative and task, text and state, and `work/` and `intake/` are files
+written from it. Turn the git steps off in the profile:
+
+```yaml
+chair:
+  workspace_git: false
+```
+
+The loop then pulls nothing and commits and pushes nothing. It still writes
+the files, so everything that reads them keeps working, and they are this
+machine's own copy. Any machine refreshes its copy from the store with:
+
+```sh
+cox route export
+```
+
+One step still reads files into the store: a decompose writes its tickets as
+files, and the export loads those before it writes. The rest of this section
+describes the default, with git on.
 
 **Pull.** Right after the beat, the loop runs
 `git pull --ff-only --autostash` in the workspace. Uncommitted changes are
