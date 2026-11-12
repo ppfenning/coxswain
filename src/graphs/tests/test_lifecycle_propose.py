@@ -11,6 +11,7 @@ import pytest
 from graphs._contract import ContractViolation
 from graphs.delivery import lifecycle_propose
 from runner import ScriptedRunner
+from runner.claude_code_runner import _capture_diff
 from runner.tier_resolution import Hints
 
 
@@ -1314,3 +1315,65 @@ def test_patch_sections_keys_a_deleted_file_by_its_old_path():
         "@@ -1 +1 @@\n-b\n+c\n"
     )
     assert list(lifecycle_propose._patch_sections(patch)) == ["agent_tools/x.py", "tests/test_y.py"]
+
+
+_EMPTY_NEW = (
+    "diff --git a/pkg/__init__.py b/pkg/__init__.py\n"
+    "new file mode 100644\n"
+    "index 0000000..e69de29\n"
+)
+_FULL_NEW = (
+    "diff --git a/pkg/mod.py b/pkg/mod.py\n"
+    "new file mode 100644\n"
+    "index 0000000..d00491f\n"
+    "--- /dev/null\n"
+    "+++ b/pkg/mod.py\n"
+    "@@ -0,0 +1 @@\n+1\n"
+)
+
+
+def test_header_only_new_file_is_keyed_by_its_path_in_both_functions():
+    """An empty new file has no `+++` line; 2026-11: aim-slack's scaffold task was quarantined as build_output_invalid."""
+    sections = lifecycle_propose._patch_sections(_EMPTY_NEW)
+    assert list(sections) == ["pkg/__init__.py"]
+    assert "new file mode 100644" in sections["pkg/__init__.py"]
+    assert lifecycle_propose._touched_paths(_EMPTY_NEW) == ["pkg/__init__.py"]
+    prefixed = _EMPTY_NEW.replace("a/pkg", "c/pkg").replace("b/pkg", "i/pkg")
+    assert list(lifecycle_propose._patch_sections(prefixed)) == ["pkg/__init__.py"]
+
+
+def test_mixed_empty_and_non_empty_new_files_are_listed_once_each():
+    patch = _EMPTY_NEW + _FULL_NEW
+    assert list(lifecycle_propose._patch_sections(patch)) == ["pkg/__init__.py", "pkg/mod.py"]
+    assert lifecycle_propose._touched_paths(patch) == ["pkg/__init__.py", "pkg/mod.py"]
+
+
+def test_a_pure_rename_block_names_no_file():
+    """A rename has no `+++` line and `files_touched_from_patch` reads none, so it must not be keyed."""
+    rename = (
+        "diff --git a/tools/app.py b/tools/app2.py\nsimilarity index 100%\n"
+        "rename from tools/app.py\nrename to tools/app2.py\n"
+    )
+    assert lifecycle_propose._patch_sections(rename) == {}
+    assert lifecycle_propose._touched_paths(rename) == []
+
+
+def test_build_output_valid_accepts_a_mixed_empty_and_non_empty_patch():
+    build = {"patch": _EMPTY_NEW + _FULL_NEW, "files_touched": ["pkg/__init__.py", "pkg/mod.py"], "commands_run": []}
+    assert lifecycle_propose._build_output_valid(build, "") is None
+
+
+def test_build_output_valid_accepts_the_runner_captured_patch_of_an_empty_file(tmp_path):
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-c", "user.email=t@example.com", "-c", "user.name=t", *args],
+                       cwd=tmp_path, check=True, capture_output=True)
+
+    git("init", "-q")
+    (tmp_path / "seed.txt").write_text("seed\n")
+    git("add", "-A")
+    git("commit", "-q", "-m", "seed")
+    (tmp_path / "empty.py").write_text("")
+    (tmp_path / "full.py").write_text("x = 1\n")
+    patch = _capture_diff(tmp_path)
+    build = {"patch": patch, "files_touched": ["empty.py", "full.py"], "commands_run": []}
+    assert lifecycle_propose._build_output_valid(build, "") is None

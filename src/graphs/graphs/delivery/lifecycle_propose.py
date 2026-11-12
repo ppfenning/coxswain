@@ -610,12 +610,31 @@ def _arbiter_scope(verdict: str, arbitration: Mapping[str, Any] | None) -> set[s
 _PATH_TOKEN = re.compile(r"^[\w.\-]+(?:/[\w.\-]+)*$")
 
 
-def _patch_sections(patch: str) -> dict[str, str]:
-    """Each touched file's own diff text, sliced between its `+++ b/<path>` headers."""
-    # Builders emit `a/`+`b/` or, under diff.mnemonicPrefix, `c/`+`i/`/`w/`;
-    # any one-letter prefix is stripped so the key is the repository path.
-    # A deletion's `+++` side is /dev/null; the file it removes is named on the `---` line just above.
-    marks = list(re.finditer(r"^\+\+\+ (?:[a-z]/)?(\S+)", patch, re.MULTILINE))
+# Builders emit `a/`+`b/` or, under diff.mnemonicPrefix, `c/`+`i/`/`w/`;
+# any one-letter prefix is stripped so the key is the repository path.
+_PLUS_PATH_RE = re.compile(r"^\+\+\+ (?:[a-z]/)?(\S+)", re.MULTILINE)
+_GIT_HEADER_PATH_RE = re.compile(r"^diff --git \S+ (?:[a-z]/)?(\S+)$", re.MULTILINE)
+
+
+def _patch_files(patch: str) -> list[tuple[str, str]]:
+    """One `(repository path, diff text)` per file, in patch order.
+
+    A `diff --git` header opens each file's block, so an empty new file, which
+    has no `+++` line, is still found; its text is its header block. Within a
+    block the `+++` path wins when present. A deletion's `+++` side is
+    /dev/null, and its header names the removed file. A block with no `+++`
+    line is a file only when it is `new file mode`; a pure rename or a mode
+    change names no new content and is skipped. A patch with no
+    `diff --git` headers is sliced between its `+++` lines instead.
+    """
+    headers = list(_GIT_HEADER_PATH_RE.finditer(patch))
+    if headers:
+        ends = [h.start() for h in headers[1:]] + [len(patch)]
+        blocks = [(h.group(1), patch[h.start() : end]) for h, end in zip(headers, ends)]
+        return [((m.group(1) if m and m.group(1) != "/dev/null" else path), text)
+                for path, text in blocks for m in [_PLUS_PATH_RE.search(text)]
+                if m or re.search(r"^new file mode", text, re.MULTILINE)]
+    marks = list(_PLUS_PATH_RE.finditer(patch))
 
     def path_of(mark: re.Match[str]) -> str:
         if mark.group(1) != "/dev/null":
@@ -623,7 +642,12 @@ def _patch_sections(patch: str) -> dict[str, str]:
         old = re.match(r"--- (?:[a-z]/)?(\S+)", patch[: mark.start()].rstrip("\n").rsplit("\n", 1)[-1])
         return old.group(1) if old else mark.group(1)
 
-    return {path_of(m): patch[m.end() : n.start() if n else len(patch)] for m, n in zip(marks, marks[1:] + [None])}
+    return [(path_of(m), patch[m.end() : n.start() if n else len(patch)]) for m, n in zip(marks, marks[1:] + [None])]
+
+
+def _patch_sections(patch: str) -> dict[str, str]:
+    """Each touched file's own diff text, keyed by its repository path."""
+    return dict(_patch_files(patch))
 
 
 # A ticket's own contract commands, always backtick-fenced in its prose.
@@ -677,15 +701,8 @@ def _is_budget_stop(exc: Exception) -> bool:
 
 
 def _touched_paths(patch: str) -> list[str]:
-    """Every path a unified diff's `+++` lines name; a deletion, whose `+++` side is /dev/null, by its `---` path."""
-    lines = (patch or "").splitlines()
-    return [
-        _diff_path(lines[n - 1][len("--- ") :].strip())
-        if line.strip() == "+++ /dev/null" and n > 0 and lines[n - 1].startswith("--- ")
-        else _diff_path(line[len("+++ ") :].strip())
-        for n, line in enumerate(lines)
-        if line.startswith("+++ ")
-    ]
+    """Every path a unified diff touches, in patch order; an empty new file by its `diff --git` header, a deletion by its old path."""
+    return [path for path, _ in _patch_files(patch or "")]
 
 
 def _is_test_path(path: str) -> bool:
