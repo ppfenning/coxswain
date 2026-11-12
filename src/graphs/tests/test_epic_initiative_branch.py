@@ -155,3 +155,69 @@ def test_with_an_initiative_branch_no_task_starts_before_its_whole_parent_phase_
     whole = {i["id"]: i["state"] for i in _open_view(items, parents, set(), set(), whole_parents=True)}
     assert (early["c"], whole["c"]) == ("ready", "blocked")
     assert {i["id"]: i["state"] for i in _open_view(items, parents, {"p1"}, set(), whole_parents=True)}["c"] == "ready"
+
+
+FOREIGN = "other-initiative-task"
+EDIT_FOREIGN = "diff --git a/foreign.md b/foreign.md\n--- a/foreign.md\n+++ b/foreign.md\n@@ -1 +1 @@\n-landed\n+used\n"
+
+
+def _needing_foreign(foreign_state: str, *, t1: str = "ready") -> dict:
+    """p1 builds alone; p2's one task needs a task of another initiative."""
+    first, second, _ = initiative()["items"]
+    items = [
+        {**first, "state": t1, **({"merged": True} if t1 == "approved" else {})},
+        {**second, "phase": "p2-rollout", "needs": [FOREIGN]},
+    ]
+    return {**initiative(), "items": items, "foreign": {FOREIGN: foreign_state}}
+
+
+def _land_on_main(repo, name: str, text: str) -> None:  # noqa: F811
+    (repo / name).write_text(text, encoding="utf-8")
+    git("add", "-A", cwd=repo)
+    git("commit", "-qm", f"another initiative lands {name}", cwd=repo)
+
+
+def test_work_of_another_initiative_that_landed_after_the_cut_is_on_the_branch_before_its_dependent_builds(repo, cart, tmp_path, store) -> None:  # noqa: F811
+    """The initiative branch was cut before the other initiative landed. Its parent is merged forward, never rebased."""
+    drive(repo, cart, tmp_path, store=store, run_id="epic-1", work=_needing_foreign("ready"))
+    assert not is_ancestor(repo, P1, P2), "phase two was opened for its record, before anything it needs was there"
+    cut_tip = git("rev-parse", INIT, cwd=repo)
+    _land_on_main(repo, "foreign.md", "landed\n")
+
+    result, runner = drive(
+        repo, cart, tmp_path, store=store, run_id="epic-2", work=_needing_foreign("done", t1="approved"),
+        patches={"t2-bench": EDIT_FOREIGN},
+    )
+
+    p2 = next(p for p in result["phases"] if p["phase"] == "p2-rollout")
+    assert p2["status"] == "complete" and p2["base"] == INIT
+    assert p2["refreshed"].startswith(f"refreshed {P2} onto {INIT}: head "), "the waiting phase takes the branch's new tip"
+    assert is_ancestor(repo, "main", INIT) and is_ancestor(repo, cut_tip, INIT)
+    assert git("show", f"{INIT}:foreign.md", cwd=repo) == "used"
+    assert landing_store.get_record(store.conn, INITIATIVE)["state"] == "assembled"
+
+
+def test_a_parent_that_conflicts_stops_only_the_phase_that_needs_the_foreign_work(repo, cart, tmp_path, store) -> None:  # noqa: F811
+    drive(repo, cart, tmp_path, store=store, run_id="epic-1", work=_needing_foreign("ready"))
+    before = git("rev-parse", INIT, cwd=repo)
+    _land_on_main(repo, "t1-probe.txt", "main wrote this too\n")
+
+    result, runner = drive(repo, cart, tmp_path, store=store, run_id="epic-2", work=_needing_foreign("done", t1="approved"))
+
+    by = {p["phase"]: p for p in result["phases"]}
+    assert by["p1-foundations"]["status"] == "complete", "a phase with no foreign need is not held"
+    assert by["p2-rollout"]["status"] == "blocked"
+    assert by["p2-rollout"]["reason"] == (
+        f"phase p2-rollout needs {FOREIGN} of another initiative, and main was not merged into {INIT}: conflict in t1-probe.txt"
+    )
+    assert result["quarantined"] == [] and not any(c["role"] == "build" for c in runner.calls)
+    assert git("rev-parse", INIT, cwd=repo) == before, "the branch is left where it was; nothing is resolved here"
+
+
+def test_an_initiative_with_no_foreign_need_never_takes_its_parent_forward_in_a_run(repo, cart, tmp_path, store) -> None:  # noqa: F811
+    one = initiative(two_phases=False)
+    drive(repo, cart, tmp_path, store=store, run_id="epic-1", work={**one, "items": one["items"][:1]})
+    _land_on_main(repo, "foreign.md", "landed\n")
+    t1, t2 = one["items"]
+    drive(repo, cart, tmp_path, store=store, run_id="epic-2", work={**one, "items": [{**t1, "state": "approved", "merged": True}, t2]})
+    assert not is_ancestor(repo, "main", INIT)

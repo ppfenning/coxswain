@@ -106,6 +106,34 @@ def branch_lease(initiative: str) -> str:
     return f"initiative-branch:{initiative}"
 
 
+def take_parent_forward(conn: Connection, repo: Path | str, *, initiative: str, parent_ref: str, worker: str, now: str,
+                        fetch: Callable[[str], str | None] | None = None,
+                        publish: Callable[[str], str | None] | None = None,
+                        lease_seconds: int = CLAIM_SECONDS) -> lg.Merge:
+    """Merge the initiative's parent, as it stands at `parent_ref`, into the initiative branch. Always forward.
+
+    Under the branch lease, after `fetch`, with the guard: a merge that would drop a recorded sha is refused. A
+    conflict leaves the branch where it was and names the paths; resolving it is build work (the `integrate` phase),
+    never this function's. `up_to_date` when the branch already holds the parent."""
+    record = ls.get_record(conn, initiative)
+    if record is None:
+        return lg.Merge("error", detail=f"{initiative} has no landing record")
+    branch = str(record["branch"])
+    held = store_lease.acquire(conn, branch_lease(initiative), worker, now, lease_seconds)
+    if not held.ok:
+        return lg.Merge("error", detail=f"{held.holder or 'another worker'} is moving the branch of {initiative}")
+    try:
+        if fetch is not None and (refused := fetch(branch)):
+            return lg.Merge("error", detail=refused)
+        merged = lg.merge_into(repo, branch=branch, source=parent_ref, recorded=lr.recorded_shas(record),
+                               message=f"{initiative}: merge {record.get('parent')} into {branch}")
+        if merged.status == "merged" and publish is not None and (warning := publish(branch)):
+            return lg.Merge("merged", tip=merged.tip, merged=merged.merged, detail=warning)
+        return merged
+    finally:
+        store_lease.release(conn, branch_lease(initiative), worker, int(held.epoch or 0))
+
+
 def off_branch(repo: Path | str, source: str, tasks: Sequence[Mapping[str, Any]], phase: str) -> list[str]:
     """The phase's approved tasks whose recorded `merged_commit` the phase tip does not hold: merging the phase now
     would leave their work behind. A task with no recorded commit is not judged here."""

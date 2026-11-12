@@ -182,8 +182,8 @@ Step 1 (graphs suite) is done. What changed beyond test updates, because the fai
 
 Open, found here, not yet done:
 
-- **Foreign needs.** A phase that waits on another initiative's work is cut from an initiative branch that may be
-  older than that work (before, an unparented phase was cut from fresh main). Planned: when a run starts and the
-  recorded parent has moved, merge the parent into the initiative branch under the branch lease, clean merges only;
-  a phase with a foreign need stops when that merge could not be made.
+- **Foreign needs: done.** `landing_ops.take_parent_forward` (branch lease, fetch, guarded forward merge, publish).
+  `epic.py` calls it at run start only when a task needs another initiative's task; a conflict leaves the branch and
+  blocks only the phases with a foreign need (`ctx.parent_behind`). Deviation from the design's refresh table: say
+  it in the PR body.
 - The lander must use the same lease, fetch and publish around `merge_phase` and before a land.

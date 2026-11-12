@@ -339,6 +339,48 @@ def _start_initiative(ctx: _Ctx, initiative: Mapping[str, Any]) -> str:
     return str(record["branch"])
 
 
+def _foreign_needs(items: Sequence[Mapping[str, Any]], phase: str | None = None) -> list[str]:
+    """The needs that name a task of another initiative, of every task or of one phase's unsettled tasks."""
+    own = {str(i["id"]) for i in items}
+    return sorted({
+        str(n) for i in items
+        if phase is None or (i.get("phase") == phase and i.get("state") not in ("approved", "done", "dropped"))
+        for n in i.get("needs") or [] if str(n) not in own
+    })
+
+
+def _take_parent_forward(ctx: _Ctx) -> str | None:
+    """Edge. Bring the initiative branch up to its parent, for an initiative that needs another initiative's work.
+
+    That work reaches this initiative only through the parent it landed on, and the initiative branch was cut before
+    it landed. So the parent is merged forward here, under the branch lease, when it merges cleanly. Why it could not
+    be, else None: the phases that need the foreign work then stop, and every other phase builds as it is."""
+    if ctx.store is None or ctx.initiative_branch is None:
+        return None
+    branch = ctx.initiative_branch
+    record = landing_store.get_record(ctx.store.conn, ctx.initiative_id) or {}
+    parent = str(record.get("parent") or ctx.default_ref.removeprefix("origin/"))
+    parent_ref = f"origin/{parent}" if landing_git.rev(ctx.repo, f"refs/remotes/origin/{parent}") else parent
+    if landing_git.is_ancestor(ctx.repo, parent_ref, branch):
+        return None
+    early = resolve_push_initiative(ctx.cartridge) == "early"
+    try:
+        merged = ctx.retry.write(
+            lambda: landing_ops.take_parent_forward(
+                ctx.store.conn, ctx.repo, initiative=ctx.initiative_id, parent_ref=parent_ref,
+                worker=f"run:{ctx.run_id}", now=_landing_stamp(), fetch=lambda b: _fetch_initiative(ctx, b),
+                publish=(lambda b: _publish_branch(ctx, b)) if early else None,
+            ),
+            _END_WRITE_WINDOW_S,
+        )
+    except Exception as exc:
+        return f"{parent} was not merged into {branch}: {type(exc).__name__}: {exc}"
+    if merged.ok:
+        print(f"  {branch} brought up to {parent}: this initiative needs work that landed there")
+        return None
+    return f"{parent} was not merged into {branch}: {merged.detail or merged.status}"
+
+
 def _merge_checks(ctx: _Ctx, phase: str) -> landing_git.Checks | None:
     """The level checks, to run on the merged tree when the merge joins the phase with work it has not seen."""
     checks = ctx.level_checks
@@ -704,6 +746,9 @@ class _Ctx:
     # The initiative's one branch, from its landing record: set once the run has started the record. Every phase is
     # cut from it, each phase merges back into it when built, and its tip is what the one pull request opens from.
     initiative_branch: str | None = None
+    # Why the initiative branch does not hold its parent's current tip, when a run that needs it asked and could
+    # not have it (a conflict, a held lease). None when it holds it, or when nothing in the initiative needs it.
+    parent_behind: str | None = None
     resume_from: str | None = None
     repo_checks: list = field(default_factory=list)
     store: Store | None = None
@@ -1987,6 +2032,8 @@ def run_epic(
         if is_initiative(ctx.land_at):
             # Before any phase: the initiative branch is cut from its parent and recorded, so every phase forks from it.
             ctx = replace(ctx, initiative_branch=_start_initiative(ctx, initiative))
+            if _foreign_needs(items):
+                ctx = replace(ctx, parent_behind=_take_parent_forward(ctx))
 
         parents = phase_parents(items)
         named = None if only_phases is None else frozenset(only_phases)
@@ -3640,6 +3687,15 @@ def _run_phase(
             if missing:
                 return _missing_branch_phase(record, missing, reason)
             record.update(status="blocked", reason=reason)
+            return record
+        with ctx.items_lock:
+            foreign_needs = _foreign_needs(items, phase)
+        if ctx.parent_behind and foreign_needs:
+            # The needed work landed on the parent, and this branch could not take the parent forward.
+            record.update(
+                status="blocked",
+                reason=f"phase {phase} needs {', '.join(foreign_needs)} of another initiative, and {ctx.parent_behind}",
+            )
             return record
 
     opened = _open_phase_worktree(ctx, phase, cut_ref, parents, cut_from)

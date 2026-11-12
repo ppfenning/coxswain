@@ -216,3 +216,26 @@ def test_the_branch_is_fetched_before_the_merge_and_published_after_it(conn, rep
                            publish=lambda branch: seen.append(f"publish {branch}") or "push of init/i failed: offline")
     assert seen == ["fetch init/i", "publish init/i"]
     assert (done.status, done.detail) == ("merged", "push of init/i failed: offline"), "a failed push is a warning"
+
+
+def test_the_parent_is_taken_forward_by_a_merge_and_a_conflict_leaves_the_branch_alone(conn, repo):  # noqa: F811
+    from harness import store_lease
+
+    start(conn, repo)
+    build(repo, "p1", "shared.txt", "from p1\n")
+    ops.merge_phase(conn, repo, initiative="i", phase="p1", tasks=[task("a", "p1")], worker="w", now=T1)
+    merged_p1 = run(repo, "rev-parse", "init/i")
+    assert ops.take_parent_forward(conn, repo, initiative="i", parent_ref="main", worker="w", now=T1).status == "up_to_date"
+    commit(repo, "main", "landed.txt", "landed\n")
+    seen: list[str] = []
+    taken = ops.take_parent_forward(conn, repo, initiative="i", parent_ref="main", worker="w", now=T1,
+                                    fetch=lambda b: seen.append(f"fetch {b}"), publish=lambda b: seen.append(f"publish {b}"))
+    assert taken.status == "merged" and seen == ["fetch init/i", "publish init/i"]
+    assert lg.is_ancestor(repo, "main", "init/i") and lg.is_ancestor(repo, merged_p1, "init/i")
+    commit(repo, "main", "shared.txt", "from main\n")
+    tip = run(repo, "rev-parse", "init/i")
+    clash = ops.take_parent_forward(conn, repo, initiative="i", parent_ref="main", worker="w", now=T1)
+    assert (clash.status, clash.paths) == ("conflict", ("shared.txt",)) and run(repo, "rev-parse", "init/i") == tip
+    assert store_lease.acquire(conn, ops.branch_lease("i"), "someone-else", T1, 900).ok, "the lease was released each time"
+    busy = ops.take_parent_forward(conn, repo, initiative="i", parent_ref="main", worker="w", now=T1)
+    assert (busy.status, busy.detail) == ("error", "someone-else is moving the branch of i")
