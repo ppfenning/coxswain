@@ -33,7 +33,15 @@ from agent_tools import readme_commands
 from agent_tools.card_commits import card_commit_steps
 from agent_tools.card_pr import card_pr_steps
 from agent_tools.chair_plan_land import fetch_action
-from core.landing import ACCEPTED_LAND_AT, DEFAULT_LAND_AT, canonical_land_at, is_initiative, phase_merge_ready, pr_branch_name, pr_stage
+from core.landing import (
+    ACCEPTED_LAND_AT,
+    DEFAULT_LAND_AT,
+    canonical_land_at,
+    is_initiative,
+    phase_merge_ready,
+    pr_branch_name,
+    pr_stage,
+)
 
 if TYPE_CHECKING:
     from agent_tools import store_cli
