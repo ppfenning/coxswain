@@ -348,27 +348,30 @@ def test_untracked_file_falls_back_to_the_workspace_record(tmp_path: Path, caplo
     assert caplog.records == []
 
 
-def test_untracked_file_with_no_baseline_is_left_alone_with_a_warning(tmp_path: Path, caplog) -> None:
+def test_untracked_file_with_no_baseline_is_saved_and_overwritten_with_a_warning(tmp_path: Path, caplog) -> None:
     (tmp_path / GUARD_PATH).parent.mkdir(parents=True)
     (tmp_path / GUARD_PATH).write_text("hand written\n")
     with caplog.at_level(logging.WARNING):
         touched, _ = export_files(tmp_path, [TASK_ROW], hashes=_hashes())
-    assert touched == []
-    assert (tmp_path / GUARD_PATH).read_text() == "hand written\n"
+    assert touched == [GUARD_PATH]
+    assert (tmp_path / GUARD_PATH).read_text() == render_item(TASK_ROW)
+    [saved] = (tmp_path / "runs/.hand-edits").iterdir()
+    assert saved.read_text() == "hand written\n"
     assert len(caplog.records) == 1
 
 
-def test_edited_committed_file_is_left_alone_and_the_warning_leads_with_a_diff(tmp_path: Path, caplog) -> None:
+def test_edited_committed_file_is_saved_and_the_warning_names_the_saved_copy(tmp_path: Path, caplog) -> None:
     _commit(tmp_path, GUARD_PATH, render_item(TASK_ROW))
     (tmp_path / GUARD_PATH).write_text(render_item(TASK_ROW) + "\nhand edit\n")
     with caplog.at_level(logging.WARNING):
         touched, _ = export_files(tmp_path, [{**TASK_ROW, "title": "Changed in the store"}], hashes=_hashes())
-    assert touched == []
-    assert (tmp_path / GUARD_PATH).read_text().endswith("hand edit\n")
+    assert touched == [GUARD_PATH]
+    assert "Changed in the store" in (tmp_path / GUARD_PATH).read_text()
+    [saved] = (tmp_path / "runs/.hand-edits").iterdir()
+    assert saved.read_text().endswith("hand edit\n")
     [record] = caplog.records
     line = record.getMessage()
-    assert f"git -C {tmp_path} diff HEAD -- {GUARD_PATH}" in line
-    assert line.index("diff HEAD") < line.index("cox route import")
+    assert f"saved at {saved}" in line
     assert "overwrites the store with the file" in line
 
 
@@ -407,14 +410,15 @@ def test_a_planned_write_with_no_file_on_disk_is_not_held() -> None:
     assert held_files([("work/a/p1/new.md", "export\n")], {}, {}) == []
 
 
-def test_read_held_names_exactly_the_files_the_export_then_leaves_alone(tmp_path: Path) -> None:
+def test_read_held_names_exactly_the_files_the_export_then_saves_and_overwrites(tmp_path: Path) -> None:
     other = {**TASK_ROW, "initiative": "other", "task_id": "x"}
     for row in (TASK_ROW, other):
         (tmp_path / row_path(row)).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / row_path(row)).write_text(HAND)
     held = read_held(tmp_path, [TASK_ROW, other])
     touched, _ = export_files(tmp_path, [TASK_ROW, other], hashes=_hashes())
-    assert ([h.path for h in held], touched) == (sorted([GUARD_PATH, row_path(other)]), [])
+    paths = sorted([GUARD_PATH, row_path(other)])
+    assert ([h.path for h in held], touched) == (paths, paths)
 
 
 STORE = "---\ntitle: Codec\nsurfaces: [a.py]\nstate: doing\n---\nOne.\nTwo.\n"
@@ -440,7 +444,7 @@ def test_the_held_record_carries_its_summary_through_a_round_trip(tmp_path: Path
     write_held_record(tmp_path, rows)
     assert read_held_record(tmp_path) == [
         {"path": "work/a/p1/t.md", "initiative": "a", "reason": HELD_REASON, "blob": blob_hash(disk),
-         "diff_summary": "state changed; body +0/-0 lines"}
+         "diff_summary": "state changed; body +0/-0 lines", "saved_to": "", "outcome": ""}
     ]
 
 
@@ -448,4 +452,4 @@ def test_a_record_written_before_the_summary_still_reads_with_an_empty_one(tmp_p
     old = {"path": "work/a/p1/t.md", "initiative": "a", "reason": HELD_REASON, "blob": "b1"}
     (tmp_path / "runs").mkdir()
     (tmp_path / "runs/.export-held.json").write_text(json.dumps([old]))
-    assert read_held_record(tmp_path) == [{**old, "diff_summary": ""}]
+    assert read_held_record(tmp_path) == [{**old, "diff_summary": "", "saved_to": "", "outcome": ""}]
