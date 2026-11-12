@@ -91,7 +91,7 @@ def test_notify_appends_one_courier_entry_for_the_chair(ws: Path, ports) -> None
     (line,) = (ws / "courier.jsonl").read_text().splitlines()
     entry = json.loads(line)
     assert (entry["ref"], entry["to"], entry["from"], entry["event"]) == ("coxswain://initiative/demo", "chair", "lander-test", "needs_attention")
-    assert entry["note"] == "lander: blocked: demo phase p2: on_blocked is hold"
+    assert entry["note"] == "lander: blocked: demo phase p2: on_blocked is hold" and entry["topic"] == "demo"
     assert entry["fields"]["choices"] == '["split", "drop"]'
 
 

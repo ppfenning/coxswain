@@ -367,6 +367,12 @@ def resolve_land_cap(cartridge: Mapping[str, Any]) -> int:
     return _cap(_landing(cartridge).get("land_cap"), DEFAULT_LAND_CAP, "landing_areas.land_cap")
 
 
+def resolve_land_batch(cartridge: Mapping[str, Any]) -> int:
+    """How many initiatives the lander may land together on one parent when they change no file in common:
+    `landing_areas.land_batch`, default 1, which is one at a time. Each still has its own pull request."""
+    return _cap(_landing(cartridge).get("land_batch"), 1, "landing_areas.land_batch")
+
+
 def landing_settings(cartridge: Mapping[str, Any], initiative: Mapping[str, Any] | None = None,
                      epic: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Every resolved landing setting of one initiative, in one mapping; each value given is validated."""

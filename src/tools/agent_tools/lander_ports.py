@@ -407,6 +407,7 @@ def build(ws: Path, profile: Mapping[str, Any], *, worker: str | None = None, lo
         entry = courier.send(
             courier.Reference("initiative", initiative), name, "chair", note.strip(), uuid.uuid4().hex,
             event="needs_attention", fields={k: v if isinstance(v, str) else json.dumps(v) for k, v in fields.items()},
+            topic=initiative or None,
         )
         courier.append_file(ws / "courier.jsonl", entry)
 

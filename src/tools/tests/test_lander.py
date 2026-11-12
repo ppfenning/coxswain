@@ -524,3 +524,71 @@ def test_without_epic_stack_an_initiative_squashes_onto_its_parent_and_no_epic_p
     lander.run_once(world.ports)
     assert world.forge.merges == [("init/a", "main", "squash")]
     assert lander.sweep(world.ports) == [] and ls.get_record(world.conn, "epic:x") is None
+
+
+def _assembled(world: World, initiative: str, file: str, text: str = "x\n") -> None:
+    """One built and merged phase: the initiative is assembled and queued to land on main."""
+    world.start(initiative, [task(f"{initiative}-t", "p1")])
+    world.build(initiative, "p1", file, text)
+    assert lander.merge_phase(world.ports, initiative, "p1").status == "done"
+
+
+def test_lands_on_one_parent_are_grouped_only_when_they_change_no_file_in_common() -> None:
+    def item(ident: str, repo: str = "r", parent: str = "main") -> dict:
+        return {"id": ident, "repo": repo, "parent": parent}
+
+    paths = {"a": frozenset({"x.py"}), "b": frozenset({"y.py"}), "c": frozenset({"x.py", "z.py"}), "d": frozenset({"w.py"}), "e": None}
+    items = [item("a"), item("b"), item("c"), item("d", parent="develop"), item("e")]
+    groups = [[i["id"] for i in g] for g in lander.disjoint_batches(items, paths, 4)]
+    assert groups == [["a", "b"], ["c"], ["d"], ["e"]], "c overlaps a; d has another parent; e's files are not known"
+    assert [[i["id"] for i in g] for g in lander.disjoint_batches(items, paths, 1)] == [["a"], ["b"], ["c"], ["d"], ["e"]]
+    assert [len(g) for g in lander.disjoint_batches([item("a"), item("b"), item("d")], paths, 2)] == [2, 1], "a batch has a size"
+
+
+def test_disjoint_initiatives_land_together_each_through_its_own_pull_request_with_one_check_of_the_batch(world: World) -> None:
+    _assembled(world, "a", "a.txt")
+    _assembled(world, "b", "b.txt")
+    _assembled(world, "c", "a.txt", "c also writes a.txt\n")
+    gate_runs: list[str] = []
+    real = world.ports.checks
+    world.ports.checks = lambda repo, tree, gate: (gate_runs.append(gate), real(repo, tree, gate))[1]
+
+    outcomes = lander.run_once(world.ports, land_cap=1, land_batch_size=4)
+
+    creates = [c[1:3] for c in world.forge.calls if c[0] == "pr_create"]
+    assert creates == [("init/a", "main"), ("init/b", "main")], "one pull request each; c overlaps a and waits its turn"
+    assert world.forge.merges == [("init/a", "main", "squash"), ("init/b", "main", "squash")]
+    assert [c for c in world.forge.calls if c[0] == "push"] == [("push", "init/a"), ("push", "init/b")], "b was not refreshed again after a merged"
+    assert gate_runs.count("ticket") == 3, "each member on its own, then the two together, once"
+    assert world.record("a")["state"] == world.record("b")["state"] == "landed"
+    assert world.record("c")["state"] == "assembled", "the land cap counts the batch as one"
+    assert "batch on main: a, b change no file in common and pass together" in world.logged
+    assert sorted(run(world.repo, "ls-tree", "--name-only", "main").split()) == ["a.txt", "b.txt", "base.txt", "shared.txt"]
+    assert {o.item: o.status for o in outcomes if o.item.startswith("initiative_land")} == {
+        "initiative_land:a": "done", "initiative_land:b": "done",
+    }
+
+
+def test_a_batch_that_does_not_pass_together_lands_only_its_first_member(world: World) -> None:
+    _assembled(world, "a", "a.txt")
+    _assembled(world, "b", "b.txt")
+    calls = {"n": 0}
+
+    def checks(repo, tree, gate):
+        calls["n"] += gate == "ticket"
+        together = (Path(tree) / "a.txt").exists() and (Path(tree) / "b.txt").exists()
+        return (False, "tests/test_both.py::test_a_and_b failed") if together else (True, "ok")
+
+    world.ports.checks = checks
+    lander.run_once(world.ports, land_cap=1, land_batch_size=4)
+
+    assert world.forge.merges == [("init/a", "main", "squash")]
+    assert world.record("a")["state"] == "landed" and world.record("b")["state"] == "pr_open"
+    assert any(line.startswith("batch of 2 on main does not pass together (tests/test_both.py::test_a_and_b failed)") for line in world.logged)
+
+
+def test_with_the_default_batch_size_lands_stay_one_at_a_time(world: World) -> None:
+    _assembled(world, "a", "a.txt")
+    _assembled(world, "b", "b.txt")
+    lander.run_once(world.ports)
+    assert world.forge.merges == [("init/a", "main", "squash")] and world.record("b")["state"] == "assembled"

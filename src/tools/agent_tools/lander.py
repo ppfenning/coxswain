@@ -34,6 +34,7 @@ from harness import landing_store as ls
 LAND_CLAIM_SECONDS = 3600  # an initiative land waits on CI; its claim is renewed while it works
 QUEUE_ALARM_SECONDS = 3600  # an item still open this long after it was queued is told to the chair, once
 PERSON_GATE_NOTE = "the pull request is open and its merge waits for a person"
+PREPARED_NOTE = "the pull request is open and waits for the rest of its batch"
 
 
 @dataclass
@@ -216,8 +217,13 @@ def _other_land_on_parent(ports: Ports, mine: Mapping[str, Any]) -> str | None:
     return None
 
 
-def land_initiative(ports: Ports, initiative: str) -> Outcome:
-    """Take one assembled initiative to its parent. Safe to run again at any point."""
+def land_initiative(ports: Ports, initiative: str, *, merge: bool = True, refresh_when_behind: bool = True) -> Outcome:
+    """Take one assembled initiative to its parent. Safe to run again at any point.
+
+    A batch drives it in two steps. `merge=False` stops once the pull request is open on a refreshed branch (the
+    outcome is `waiting`, with `PREPARED_NOTE`). `refresh_when_behind=False` then merges it as it stands: the batch
+    has already checked the members together on the parent, so a parent that moved by a sibling of the batch is not
+    a reason to refresh and wait for the checks again."""
     ident = ls.item_id(ls.INITIATIVE_LAND, initiative)
     now = ports.now()
     if not ls.claim(ports.conn, ident, ports.worker, now=now, lease_until=ops.later(now, LAND_CLAIM_SECONDS)):
@@ -253,7 +259,8 @@ def land_initiative(ports: Ports, initiative: str) -> Outcome:
     merged, _ = ports.forge.pr_merged(repo, branch) if (record.get("pr") or {}).get("url") else (False, "")
     # An open pull request the lander itself will merge is refreshed when its parent has moved under it. One that
     # waits for a person is left as that person last saw it.
-    behind = auto and not merged and (lg.ahead_behind(repo, branch, _parent_ref(repo, parent)) or (0, 0))[1] > 0
+    behind = (auto and refresh_when_behind and not merged
+              and (lg.ahead_behind(repo, branch, _parent_ref(repo, parent)) or (0, 0))[1] > 0)
     if not merged and (state == "assembled" or not (record.get("pr") or {}).get("url") or behind):
         opened = _open_pr(ports, record, tasks, meta, repo, branch, parent)
         if isinstance(opened, Outcome):
@@ -269,6 +276,8 @@ def land_initiative(ports: Ports, initiative: str) -> Outcome:
     if not merged:
         if not auto:
             return close("waiting", f"{PERSON_GATE_NOTE}: {url}", events)
+        if not merge:
+            return close("waiting", f"{PREPARED_NOTE}: {url}", events)
         green, detail = ports.forge.wait_checks(repo, ports.wait_checks_s, ref=branch)
         if not green:
             if "pending" in detail or "timed out" in detail:
@@ -581,17 +590,111 @@ def queue_alarm(ports: Ports, limit: int = QUEUE_ALARM_SECONDS) -> list[str]:
     return events
 
 
+# -- batches ------------------------------------------------------------------------------------------------------
+
+def changed_paths(repo: Path, branch: str, parent_ref: str) -> frozenset[str] | None:
+    """The files the initiative branch changes against its parent (from their merge base); None when git cannot say."""
+    ok, out = lg.git(repo, "diff", "--name-only", f"{parent_ref}...{branch}")
+    return frozenset(p for p in out.splitlines() if p) if ok else None
+
+
+def disjoint_batches(items: Sequence[Mapping[str, Any]], paths: Mapping[str, frozenset[str] | None], size: int) -> list[list[Mapping[str, Any]]]:
+    """Pure. The queue's lands grouped for landing together, in queue order.
+
+    Members of a batch share a repo and a parent and change no file in common. An item goes into the first batch of
+    its repo and parent that it does not overlap and that has room; else it starts one. An item whose files are not
+    known overlaps everything. With `size` 1 every batch is one item, which is landing one at a time."""
+    batches: list[list[Mapping[str, Any]]] = []
+    for item in items:
+        mine = paths.get(str(item["id"]))
+        home = next(
+            (b for b in batches
+             if len(b) < size and mine is not None and (b[0]["repo"], b[0]["parent"]) == (item["repo"], item["parent"])
+             and all(paths.get(str(o["id"])) is not None and not (mine & paths[str(o["id"])]) for o in b)),  # type: ignore[operator]
+            None,
+        )
+        if home is None:
+            batches.append([item])
+        else:
+            home.append(item)
+    return batches
+
+
+def _check_together(ports: Ports, repo: Path, parent_ref: str, branches: Sequence[str]) -> tuple[bool, str]:
+    """Merge every member onto the parent in a scratch tree and run the gate checks there, once, for the batch."""
+    def check(tree: Path) -> tuple[bool, str]:
+        for branch in branches:
+            ok, out = lg.git(tree, *lg.IDENTITY, "merge", "--no-ff", "--no-edit", "-m", f"batch: {branch}", branch)
+            if not ok:
+                lg.git(tree, "merge", "--abort")
+                return False, f"{branch} does not merge with the rest of the batch: {out.splitlines()[0] if out else 'conflict'}"
+        return ports.checks(repo, tree, "ticket")
+
+    return lg.on_scratch(repo, parent_ref, check)
+
+
+def land_batch(ports: Ports, items: Sequence[Mapping[str, Any]]) -> list[Outcome]:
+    """Land several initiatives that change no file in common, each through its own pull request.
+
+    Each is refreshed onto the same parent and its pull request opened, so their checks run side by side. The members
+    are then merged together on the parent in a scratch tree and the gate checks run there once. When that passes,
+    each pull request is merged in queue order without refreshing again. A member that is not ready (a person merges
+    it, its checks are red, it conflicts) drops out and is handled as a single land; when the members do not pass
+    together, only the first is landed and the rest wait for the next pass."""
+    if len(items) < 2:
+        return [land_initiative(ports, str(i["initiative"])) for i in items]
+    prepared, outcomes = [], []
+    for item in items:
+        outcome = land_initiative(ports, str(item["initiative"]), merge=False)
+        if outcome.status == "waiting" and outcome.detail.startswith(PREPARED_NOTE):
+            prepared.append(item)
+        else:
+            outcomes.append(outcome)  # landed already, waiting on a person or a stack, sent back, or failed
+    if len(prepared) < 2:
+        return [*outcomes, *(land_initiative(ports, str(i["initiative"])) for i in prepared)]
+    records = [ls.get_record(ports.conn, str(i["initiative"])) or {} for i in prepared]
+    repo, parent = _repo(ports, records[0]), str(records[0].get("parent") or "")
+    passed, why = _check_together(ports, repo, _parent_ref(repo, parent), [str(r["branch"]) for r in records])
+    if not passed:
+        first = land_initiative(ports, str(prepared[0]["initiative"]))
+        note = f"batch of {len(prepared)} on {parent} does not pass together ({why.splitlines()[0] if why else 'checks failed'}); landing one at a time"
+        return [*outcomes, Outcome(first.status, first.item, first.detail, (note, *first.events))]
+    names = ", ".join(str(i["initiative"]) for i in prepared)
+    for n, item in enumerate(prepared):
+        outcome = land_initiative(ports, str(item["initiative"]), refresh_when_behind=False)
+        lead = (f"batch on {parent}: {names} change no file in common and pass together",) if n == 0 else ()
+        outcomes.append(Outcome(outcome.status, outcome.item, outcome.detail, (*lead, *outcome.events)))
+    return outcomes
+
+
+def _land_paths(ports: Ports, items: Sequence[Mapping[str, Any]]) -> dict[str, frozenset[str] | None]:
+    """Each queued land's changed files, for grouping; None for one whose record or repository cannot be read."""
+    found: dict[str, frozenset[str] | None] = {}
+    for item in items:
+        record = ls.get_record(ports.conn, str(item["initiative"]))
+        try:
+            repo = _repo(ports, record) if record else None
+        except LookupError:
+            repo = None
+        found[str(item["id"])] = (
+            changed_paths(repo, str(record["branch"]), _parent_ref(repo, str(record.get("parent") or "")))
+            if record and repo is not None else None
+        )
+    return found
+
+
 def perform(ports: Ports, item: Mapping[str, Any]) -> Outcome:
     if item["kind"] == ls.PHASE_MERGE:
         return merge_phase(ports, str(item["initiative"]), str(item["phase"]))
     return land_initiative(ports, str(item["initiative"]))
 
 
-def run_once(ports: Ports, *, phase_cap: int = 2, land_cap: int = 1) -> list[Outcome]:
+def run_once(ports: Ports, *, phase_cap: int = 2, land_cap: int = 1, land_batch_size: int = 1) -> list[Outcome]:
     """One pass: sweep, then perform what can be claimed, oldest first, within the two caps.
 
     Phase merges and initiative lands have separate caps and neither counts against the build cap. An item that is
-    waiting stays queued for the next pass."""
+    waiting stays queued for the next pass. With `land_batch_size` above 1, lands on one parent that change no file
+    in common are landed together (`land_batch`); the land cap then counts batches."""
     for line in [*sweep(ports), *queue_alarm(ports)]:
         ports.log(line)
     items = ls.claimable(ls.list_items(ports.conn), ports.now())
@@ -607,12 +710,18 @@ def run_once(ports: Ports, *, phase_cap: int = 2, land_cap: int = 1) -> list[Out
     for item in [i for i in items if i["kind"] == ls.PHASE_MERGE][:max(phase_cap, 0)]:
         do(item)
     # Read again: a phase merged just now may have assembled its initiative, which then lands in this same pass.
+    lands = [i for i in ls.claimable(ls.list_items(ports.conn), ports.now()) if i["kind"] == ls.INITIATIVE_LAND]
     worked = 0
-    for item in [i for i in ls.claimable(ls.list_items(ports.conn), ports.now()) if i["kind"] == ls.INITIATIVE_LAND]:
+    for batch in disjoint_batches(lands, _land_paths(ports, lands) if land_batch_size > 1 else {}, max(land_batch_size, 1)):
         if worked >= land_cap:
             break
+        results = land_batch(ports, batch) if len(batch) > 1 else [perform(ports, batch[0])]
+        for outcome in results:
+            outcomes.append(outcome)
+            for line in outcome.events or ((f"{outcome.item}: {outcome.status}: {outcome.detail}",) if outcome.detail else ()):
+                ports.log(line)
         # A land left waiting (a pull request a person has yet to merge, checks still running, another land ahead
-        # of it) did no work, so it does not use the cap: the next initiative gets its turn.
-        if do(item).status != "waiting":
+        # of it) did no work, so it does not use the cap: the next one gets its turn. A batch uses the cap once.
+        if any(o.status != "waiting" for o in results):
             worked += 1
     return outcomes

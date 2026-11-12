@@ -122,12 +122,13 @@ def _workspace(a: argparse.Namespace) -> tuple[Path, dict] | None:
     return None if profile is None else (Path(profile["workspace_dir"]).expanduser(), profile)
 
 
-def _caps(profile: Mapping[str, Any]) -> tuple[int, int]:
+def _caps(profile: Mapping[str, Any]) -> dict[str, int]:
     from agent_tools import cli
-    from core.landing import resolve_land_cap, resolve_phase_cap
+    from core.landing import resolve_land_batch, resolve_land_cap, resolve_phase_cap
 
     cartridge, _ = cli._team_cartridge(dict(profile))
-    return resolve_phase_cap(cartridge), resolve_land_cap(cartridge)
+    return {"phase_cap": resolve_phase_cap(cartridge), "land_cap": resolve_land_cap(cartridge),
+            "land_batch_size": resolve_land_batch(cartridge)}
 
 
 def _once(a: argparse.Namespace) -> int:
@@ -137,8 +138,7 @@ def _once(a: argparse.Namespace) -> int:
     ws, profile = found
     ports = lander_ports.build(ws, profile)
     try:
-        phase_cap, land_cap = _caps(profile)
-        outcomes = lander.run_once(ports, phase_cap=phase_cap, land_cap=land_cap)
+        outcomes = lander.run_once(ports, **_caps(profile))
     finally:
         ports.conn.close()
     if not outcomes:
@@ -156,8 +156,7 @@ def _run(a: argparse.Namespace) -> int:
     try:
         while True:
             try:
-                phase_cap, land_cap = _caps(profile)
-                lander.run_once(ports, phase_cap=phase_cap, land_cap=land_cap)
+                lander.run_once(ports, **_caps(profile))
             except KeyboardInterrupt:
                 raise
             except Exception as exc:  # one bad pass must not end the loop: the next pass reads everything again
