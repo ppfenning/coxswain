@@ -259,6 +259,71 @@ def _carry_forward(body: str, attempts: list[dict[str, Any]], patch: str | None,
     return "\n".join((body, *header, *reference))
 
 
+RESUME_NOTE = (
+    "Your previous attempt is in the tree you are working in, in full, as commit {sha} on top of the phase branch. "
+    "It was not approved, for the reasons above. Work from it: change only what those reasons need, and return a "
+    "patch against this tree as it stands. Do not rebuild, rewrite or remove what is already there."
+)
+
+
+def _resume_body(body: str, attempts: list[dict[str, Any]], sha: str) -> str:
+    """Pure. The ticket body for a rebuild that starts from its last attempt: the reasons, and where that work is."""
+    return "\n".join((_carry_forward(body, attempts, None, limit=0), "", RESUME_NOTE.format(sha=sha[:12])))
+
+
+def _attempt_tree(ctx: _Ctx, phase: str, task: str, patch: str) -> tuple[Path, str] | None:
+    """Edge. A detached worktree at the phase tip holding the task's last attempt, applied in full and committed.
+
+    (the tree, the commit). None when the attempt no longer applies to the phase as it stands now: the rebuild then
+    gets the attempt as a reference patch, as before. The tree lives under the run directory and goes with it."""
+    tree = ctx.worktree_root / ctx.run_id / f"{phase}--attempt--{task}"
+    tree.parent.mkdir(parents=True, exist_ok=True)
+    with registry_lock():
+        ok, _ = _git("-C", str(ctx.repo), "worktree", "add", "--detach", str(tree), ctx.phase_branch(phase))
+    if not ok:
+        return None
+    applied, _ = apply_patch(patch, tree)
+    staged = applied and _git("-C", str(tree), "add", "-A")[0]
+    committed = staged and _git(
+        *_IDENTITY, "-C", str(tree), "commit", "-q", "--no-verify", "-m", f"epic {ctx.run_id}: previous attempt of {task} (not approved)"
+    )[0]
+    ok, sha = _git("-C", str(tree), "rev-parse", "HEAD") if committed else (False, "")
+    if not ok:
+        remove_worktree(ctx.repo, tree)
+        return None
+    return tree, sha
+
+
+def _compose_with_attempt(ctx: _Ctx, phase: str, tree: Path, patch: str) -> str | None:
+    """Edge. The last attempt and the rebuild's change as one patch against the phase tip, which is what gets applied,
+    checked and merged. None when the change does not apply to the attempt tree it was written against."""
+    if not apply_patch(patch, tree)[0] or not _git("-C", str(tree), "add", "-A")[0]:
+        return None
+    ok, combined = _git("-C", str(tree), "diff", "--cached", "--binary", ctx.phase_branch(phase))
+    return combined + "\n" if ok and combined.strip() else None
+
+
+def _invoke_from_attempt(
+    ctx: _Ctx, phase: str, inv: Invocation, tree: Path, attempt_sha: str, *, run_id: str
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Edge. Run one rebuild with the runner reading the attempt's tree, then make its result's patch the whole change.
+
+    The record keeps both: `patch` is what is applied to the phase tip, `change` is what the rebuild did to the last
+    attempt. A change that does not apply to the tree it was written against is left as the builder returned it."""
+    view = _PhaseRunner(
+        ctx.shared_runner if ctx.shared_runner is not None else ctx.runner, tree, build_digest(tree) or None,
+        [str(c.get("cmd")) for c in ctx.checks if c.get("cmd")], gate_commands(ctx.cartridge.get("landing_areas") or {}),
+    )
+    results, _, failures = invoke_graphs([inv], specs=ctx.specs, runner=view, run_id=run_id, max_parallel=1)
+    for result in results:
+        build_part = result.get("build") if isinstance(result.get("build"), dict) else None
+        change = str((build_part or {}).get("patch") or "")
+        combined = _compose_with_attempt(ctx, phase, tree, change) if change.strip() else None
+        if build_part is not None and combined is not None:
+            result["build"] = {**build_part, "patch": combined, "resumed_from": attempt_sha, "change": change}
+    return results, failures
+
+
 PREVIOUS_OBJECTION_HEADING = "## Previous run's objection (recorded by the harness)"
 PREVIOUS_OBJECTION_CHARS = 600
 
@@ -778,6 +843,9 @@ class _Ctx:
     # Why the initiative branch does not hold its parent's current tip, when a run that needs it asked and could
     # not have it (a conflict, a held lease). None when it holds it, or when nothing in the initiative needs it.
     parent_behind: str | None = None
+    # The run's runner before any phase took its view of it. A rebuild from a last attempt takes a view on that
+    # attempt's tree, and a view is never stacked on another phase's view.
+    shared_runner: Any = None
     resume_from: str | None = None
     repo_checks: list = field(default_factory=list)
     store: Store | None = None
@@ -1875,26 +1943,24 @@ def _refix(
             "phase": phase,
             "reason": f"approved, then failed its configured checks:\n{check_feedback(build['checks'])}",
         }
-        carried = _carry_forward(
-            item.get("body") or "",
-            [*(item.get("attempts") or []), failed],
-            str((result.get("build") or {}).get("patch") or ""),
-            limit=PATCH_FOR_VALIDATION_CHARS,
+        last_patch = str((result.get("build") or {}).get("patch") or "")
+        history = [*(item.get("attempts") or []), failed]
+        # The revise starts from the patch that just failed its checks, in a tree of its own, not from a reference.
+        attempt = _attempt_tree(ctx, phase, f"{task}--refix{len(routes) + 1}", last_patch) if last_patch.strip() else None
+        carried = (
+            _resume_body(item.get("body") or "", history, attempt[1])
+            if attempt is not None
+            else _carry_forward(item.get("body") or "", history, last_patch, limit=PATCH_FOR_VALIDATION_CHARS)
         )
         body, permitted = _permit_outside_surfaces(
             carried, item.get("surfaces") or [], str(build.get("quarantine") or "")
         )
-        retried, _, failures = invoke_graphs(
-            [
-                _lifecycle_invocation(
-                    ctx, {**item, "surfaces": permitted}, body=body, fix_attempts=max(int(left) - 1, 0)
-                )
-            ],
-            specs=ctx.specs,
-            runner=ctx.runner,
-            run_id=f"{ctx.run_id}:{phase}:refix{len(routes) + 1}",
-            max_parallel=1,
-        )
+        refix = _lifecycle_invocation(ctx, {**item, "surfaces": permitted}, body=body, fix_attempts=max(int(left) - 1, 0))
+        refix_run = f"{ctx.run_id}:{phase}:refix{len(routes) + 1}"
+        if attempt is not None:
+            retried, failures = _invoke_from_attempt(ctx, phase, refix, *attempt, run_id=refix_run)
+        else:
+            retried, _, failures = invoke_graphs([refix], specs=ctx.specs, runner=ctx.runner, run_id=refix_run, max_parallel=1)
         why = failures[0] if failures else None
         if why is None and retried[0].get("failed_node") is not None:
             why = f"node '{retried[0]['failed_node']}' failed"
@@ -3937,6 +4003,7 @@ def _run_phase(
     worktree = ctx.phase_worktree(phase)
     ctx = replace(
         ctx,
+        shared_runner=ctx.runner,
         runner=_PhaseRunner(
             ctx.runner,
             worktree,
@@ -4229,6 +4296,15 @@ def _run_phase(
             record["base_rebuilt"] = sorted({g.task for g in missing})
             print(f"  base check: {phase} base rebuilt with {', '.join(record['base_rebuilt'])}")
 
+    # A rebuild works from what the task already built. The last attempt is put back, in full, in a tree of its own;
+    # the builder reads that tree and returns only the change; the two are composed below into the one patch that is
+    # applied, checked and merged. Nothing finished is regenerated from a truncated reference.
+    resumed: dict[str, tuple[Path, str]] = {}
+    for task in runnable:
+        last = patches_for_attempt.get(str(task["id"]))
+        if last and last.strip() and (tree := _attempt_tree(ctx, phase, str(task["id"]), last)) is not None:
+            resumed[str(task["id"])] = tree
+
     budget_sources: dict[str, Any] = {}
     if runnable:
         _wait_if_paused(ctx)
@@ -4239,11 +4315,15 @@ def _run_phase(
                 body=plan_context(
                     {
                         **task,
-                        "body": _carry_forward(
-                            task.get("body") or "",
-                            list(task.get("attempts") or []),
-                            patches_for_attempt.get(str(task["id"])),
-                            limit=PATCH_FOR_VALIDATION_CHARS,
+                        "body": (
+                            _resume_body(task.get("body") or "", list(task.get("attempts") or []), resumed[str(task["id"])][1])
+                            if str(task["id"]) in resumed
+                            else _carry_forward(
+                                task.get("body") or "",
+                                list(task.get("attempts") or []),
+                                patches_for_attempt.get(str(task["id"])),
+                                limit=PATCH_FOR_VALIDATION_CHARS,
+                            )
                         )
                         + "".join(f"\n\nSurface note: {note}" for note in heal_notes.get(str(task["id"]), []))
                         + "".join(f"\n\nCorrection note: {note}" for note in ticket_corrections.get(str(task["id"]), []))
@@ -4261,12 +4341,16 @@ def _run_phase(
         ]
         budget_sources = {inv.id: inv.args["build_budget_source"] for inv in invocations}
         results, _, failures = invoke_graphs(
-            invocations,
+            [inv for inv in invocations if inv.id not in resumed],
             specs=ctx.specs,
             runner=ctx.runner,
             run_id=f"{ctx.run_id}:{phase}",
             max_parallel=ctx.max_parallel,
         )
+        for inv in (i for i in invocations if i.id in resumed):
+            more, more_failures = _invoke_from_attempt(ctx, phase, inv, *resumed[inv.id], run_id=f"{ctx.run_id}:{phase}")
+            results = [*results, *more]
+            failures = [*failures, *more_failures]
         # A child's failure is a quarantined task, not a failed swarm — the
         # policy `invoke_graphs` names continue-and-quarantine. A lapsed login is
         # the host's failure, not the task's: like the account session limit it

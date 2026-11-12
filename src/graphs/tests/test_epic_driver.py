@@ -3442,29 +3442,82 @@ def test_a_quarantined_task_records_an_attempt_on_its_own_work_item(repo, cart, 
 # ── the previous attempt's reasons and patch, carried into the ticket body ──
 
 
-def test_a_recorded_attempt_carries_its_reason_and_last_patch_into_both_prompts(repo, cart, tmp_path) -> None:
-    """What worked by hand seven times: the reference implementation and the objections, in the body."""
-    work = initiative()
+class TreeReading(Runner):
+    """A runner that reads a tree, as the real one does: each build records what it found at `repo_dir`."""
+
+    repo_dir = None
+    repo_digest = None
+    check_commands: ClassVar[list] = []
+
+    def __init__(self, patches, **kw) -> None:
+        super().__init__(patches, **kw)
+        self.seen: dict[str, list] = {}
+
+    def run(self, *, role, prompt, **kw):
+        if role == "build" and self._subject(prompt, TASK_IDS) == "t1-probe":
+            old = Path(str(self.repo_dir)) / "t1-probe-old.txt"
+            self.seen.setdefault("builds", []).append(old.read_text(encoding="utf-8") if old.is_file() else None)
+        return super().run(role=role, prompt=prompt, **kw)
+
+
+EDIT_OLD = (
+    "diff --git a/t1-probe-old.txt b/t1-probe-old.txt\n--- a/t1-probe-old.txt\n+++ b/t1-probe-old.txt\n"
+    "@@ -1 +1 @@\n-distinctive-marker\n+ok\n"
+)
+
+
+def _with_a_recorded_attempt(tmp_path, last_patch: str) -> dict:
+    work = initiative(two_phases=False)
     work["items"][0]["attempts"] = [
         {"run": "epic-0", "phase": "p1-foundations", "reason": "checks failed: state 1 failed", "ts": "t"}
     ]
     save_result(
-        {"ticket": "t1-probe", "build": {"patch": new_file_patch("t1-probe-old.txt", "distinctive-marker")}},
+        {"ticket": "t1-probe", "build": {"patch": last_patch}},
         runs_dir=tmp_path / "runs", run_id="epic-0", phase="p1-foundations", task="t1-probe",
     )
+    return work
+
+
+def test_a_rebuild_starts_from_the_last_attempt_in_its_tree_and_only_the_change_is_built(repo, cart, tmp_path) -> None:
+    """Nothing finished is regenerated: the builder finds its last attempt, whole, and returns the fix on top of it.
+
+    The attempt added a file the repo's check refuses; the rebuild changes that one line."""
+    work = _with_a_recorded_attempt(tmp_path, new_file_patch("t1-probe-old.txt", "distinctive-marker"))
+    runner = TreeReading({"t1-probe": EDIT_OLD, "t2-bench": new_file_patch("t2-bench.txt"), "t3-cutover": new_file_patch("t3-cutover.txt")})
+
+    result, runner = drive(repo, cart, tmp_path, work=work, runner=runner)
+
+    assert runner.seen["builds"] == ["distinctive-marker\n"], "one build, and the last attempt was in the tree it read"
+    for role in ("plan", "build"):
+        prompt = next(c["prompt"] for c in runner.calls if c["role"] == role and "t1-probe" in c["prompt"])
+        assert "checks failed: state 1 failed" in prompt
+        assert "Your previous attempt is in the tree you are working in, in full, as commit " in prompt
+        assert "Do not rebuild, rewrite or remove what is already there." in prompt
+        assert "```diff" not in prompt, "no reference patch to retype"
+    assert next(t for t in result["tasks"] if t["id"] == "t1-probe")["state"] == "approved"
+    # What merged is the attempt and the change as one: the file the attempt added, with the fix in it.
+    assert git("show", "epic/demo-initiative/p1-foundations:t1-probe-old.txt", cwd=repo) == "ok"
+    saved = load_result(tmp_path / "runs", "epic-1", "p1-foundations", "t1-probe")["build"]
+    assert saved["change"] == EDIT_OLD and "new file mode" in saved["patch"] and "+ok" in saved["patch"]
+    assert saved["resumed_from"] and git("worktree", "list", cwd=repo).count("--attempt--") == 0, "the attempt tree went with the run"
+
+    # The sibling with no attempts carries nothing.
+    sibling = next(c["prompt"] for c in runner.calls if c["role"] == "plan" and "t2-bench" in c["prompt"])
+    assert "## Previous attempts" not in sibling and "Your previous attempt" not in sibling
+
+
+def test_a_last_attempt_that_no_longer_applies_rides_along_as_a_reference_instead(repo, cart, tmp_path) -> None:
+    """The phase moved under it (here: the file it adds exists). The builder still gets all of it, to read."""
+    work = _with_a_recorded_attempt(tmp_path, new_file_patch("README.md", "distinctive-marker"))
 
     result, runner = drive(repo, cart, tmp_path, work=work)
 
     for role in ("plan", "build"):
         prompt = next(c["prompt"] for c in runner.calls if c["role"] == role and "t1-probe" in c["prompt"])
         assert "checks failed: state 1 failed" in prompt
-        assert "distinctive-marker" in prompt
-        assert "NOT approved" in prompt
-
-    # The sibling with no attempts carries nothing.
-    sibling = next(c["prompt"] for c in runner.calls if c["role"] == "plan" and "t2-bench" in c["prompt"])
-    assert "## Previous attempts" not in sibling
-    assert "```diff" not in sibling
+        assert "distinctive-marker" in prompt and "NOT approved" in prompt
+        assert "Your previous attempt is in the tree" not in prompt
+    assert next(t for t in result["tasks"] if t["id"] == "t1-probe")["state"] == "approved"
 
 
 def test_a_recorded_attempt_with_no_saved_result_still_carries_its_reason(repo, cart, tmp_path) -> None:

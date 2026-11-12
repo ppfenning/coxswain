@@ -421,3 +421,17 @@ def test_work_contract_one_pull_request_per_initiative_nothing_per_phase_and_no_
     assert "merge" not in world.forge.kinds(), "the merge waits for a person"
     assert all(r["state"] == "approved" for name in ("export-csv", "import-csv") for r in world.rows[name])
     assert {world.record(n)["state"] for n in ("export-csv", "import-csv")} == {"pr_open"}
+
+
+def test_cleanup_after_a_land_keeps_a_phase_branch_that_holds_work_the_landed_branch_does_not(world: World) -> None:
+    """A blocked phase's approved work, or a build that finished after the land: never deleted with the rest."""
+    world.start("i", [task("a", "p1")])
+    world.build("i", "p1")
+    run(world.repo, "branch", "epic/i/p9", "init/i")
+    unlanded = commit(world.repo, "epic/i/p9", "later.txt", "built after the land was queued\n")
+    lander.run_once(world.ports)
+    assert world.record("i")["state"] == "landed"
+    assert run(world.repo, "for-each-ref", "--format=%(refname:short)", "refs/heads/").split() == ["epic/i/p9", "main"]
+    assert run(world.repo, "rev-parse", "epic/i/p9") == unlanded
+    assert "i: kept epic/i/p9: not in what landed" in world.logged
+    assert ("delete_remote", "epic/i/p9") not in world.forge.calls

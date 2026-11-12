@@ -386,8 +386,13 @@ def _clean(ports: Ports, record: Mapping[str, Any]) -> list[str]:
     """Delete the landed initiative's branches, here and on origin. Only ever called after the forge says it merged."""
     initiative, repo = str(record["initiative"]), _repo(ports, record)
     ok, listed = lg.git(repo, "for-each-ref", "--format=%(refname:short)", f"refs/heads/epic/{initiative}/")
-    doomed = [b for b in listed.splitlines() if b] if ok else []
-    if lg.rev(repo, f"refs/heads/{record['branch']}"):
+    phases = [b for b in listed.splitlines() if b] if ok else []
+    landed_tip = lg.rev(repo, f"refs/heads/{record['branch']}")
+    # The guard before any delete: a phase branch goes only when the branch that landed holds its tip. One that holds
+    # more (a blocked phase's approved work, a build that finished after the land) is kept and named.
+    kept = [b for b in phases if landed_tip is None or not lg.is_ancestor(repo, b, landed_tip)]
+    doomed = [b for b in phases if b not in kept]
+    if landed_tip is not None:
         doomed.append(str(record["branch"]))
     gone = []
     for branch in doomed:
@@ -395,7 +400,10 @@ def _clean(ports: Ports, record: Mapping[str, Any]) -> list[str]:
         if deleted:
             gone.append(branch)
         ports.forge.delete_branch(repo, branch)
-    return [f"{initiative}: deleted {len(gone)} branch(es)"] if gone else []
+    events = [f"{initiative}: deleted {len(gone)} branch(es)"] if gone else []
+    if kept:
+        events.append(f"{initiative}: kept {', '.join(kept)}: not in what landed")
+    return events
 
 
 # -- blocked phases -----------------------------------------------------------------------------------------------
