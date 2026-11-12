@@ -5,14 +5,14 @@ import subprocess
 from pathlib import Path
 
 import pytest
+
+from agent_tools import lander
 from core import landing_record as lr
 from harness import landing_git as lg
 from harness import landing_ops as ops
 from harness import landing_store as ls
 from harness.store_dialect import connect
 from harness.store_migrate import default_modules, migrate
-
-from agent_tools import lander
 
 ID = ("-c", "user.email=t@invalid", "-c", "user.name=t")
 
@@ -133,7 +133,7 @@ class World:
         for row in self.rows[initiative]:
             if row["id"] == task:
                 row["state"], row["pr"] = "done", pr
-        return None
+        return
 
     def file_rectify(self, initiative, phase, title, body):
         task = f"{phase}-rectify-{len(self.rectified) + 1}"

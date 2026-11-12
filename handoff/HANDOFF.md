@@ -1,0 +1,139 @@
+# Landing model build: handoff (2026-11-12)
+
+Delete this `handoff/` folder before the pull request opens. It names real machines, and the repo's clean-names
+check refuses those.
+
+## What this is
+
+One pull request that rebuilds coxswain's landing model. It is built by hand, outside the coxswain harness, on
+branch `feat/landing-model`. The design is `handoff/design.md`. Its last section, "Operator answers", is binding:
+where an answer and the body differ, the answer wins. Read the whole design before changing code.
+
+The operator's rules for this build:
+
+- One PR, built completely and correctly. Never merge it; the operator merges after an independent review.
+- The work setup (a work Mac) lands one PR per initiative. No per-phase PR, no stacked PRs unless opted in, and
+  nothing in this change may alter that. The contract tests guard it and are never weakened.
+- A conflict or rebuild never throws away finished or partial work (answer 9).
+- Other coxswain work is paused: the chair service on the chair machine is stopped and disabled, and the lane
+  hosts are drained. Leave that alone. Never run `cox` commands that mutate state (lands, launches, settings,
+  store writes) and never touch a live workspace or `~/.config`.
+- Test data uses neutral names only (lane-a, chair-host): no real host or person names.
+- Commits end with `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>`.
+
+## Run things
+
+Always from inside the component, or the tests import the installed code instead of this tree:
+
+```
+cd src/cartridges && uv run pytest tests -q -n 4
+cd src/graphs     && uv run pytest tests -q -n 6
+cd src/tools      && uv run pytest tests -q -n 6      # about 12,000 tests, 4 minutes
+uv run ruff check <changed files>
+```
+
+CI also runs root `pytest`, `mkdocs build --strict`, and a clean-names check (see `.github/workflows/ci.yml`).
+README command tables are generated: `python -m agent_tools.readme_commands`.
+
+## The commit plan
+
+The branch holds WIP checkpoint commits. Before the PR, reshape them into one commit per row, in this order, each
+leaving all three suites green.
+
+| # | Commit | State |
+|---|---|---|
+| 1 | Work-cartridge contract test (settings half); `land_at` is `initiative` or `task` (`ticket` an alias, `level` retired with a warning); branch, title and issue-line template | Done. Cartridges 822 pass. Tools updated by a helper: last full run 12,010 pass. |
+| 2 | Migration 0016 (`landing_records`, `land_queue`); `harness/landing_store.py`; `core/landing_record.py` state tables | Done and tested. "Merged work holds no files" in the chair facts is not wired yet (see commit 6). |
+| 3 | Initiative branch cut at run start; every phase cut from it; a built phase merges into it (`harness/landing_git.py`, `harness/landing_ops.py`, `epic.py`) | Code done. **Graphs suite: 38 old-model tests still fail; see below.** |
+| 4 | Lander: queue, `phase_merge` | Done: `agent_tools/lander.py`, 16 end-to-end tests pass. |
+| 5 | `initiative_land`: one PR from the initiative branch, issue line, re-runnable bookkeeping | Done in `lander.py`, covered by the same tests. **Real ports not written** (see below). |
+| 6 | Chair tick stops planning initiative lands and stops waiting for the steward; reads the landing record as facts | **Not started.** |
+| 7 | Adopt: migrate in-flight initiatives; dry run by default; safe to run twice | **Not started.** |
+| 8 | Rectify tasks, rule 9, `on_blocked` split and hold | Lander side done and tested. **Harness side not started**: a rebuild still clears the worktree. |
+| 9 | Guards before push and delete; reconcile sweep; separate caps; steward merge code and `approval_hold_ticks` removed | Guard, sweep and caps done in the lander. **Steward removal, queue age in the stall alarm and status: not started.** |
+| 10 | Epic stacks (opt-in), batching of initiative PRs | **Not started.** Settings resolve (`epic_stack`); no behaviour yet. |
+| 11 | Docs, backlog-manifest migration step, rebase onto the backlog branch, PR | **Not started.** |
+
+## How it works now (read with the code)
+
+- `core/landing.py`: `canonical_land_at`, `is_initiative(value)` (use it wherever a stored `land_at` is compared;
+  stored `ticket` and `level` values stay valid), `initiative_branch_name`, `initiative_pr_title`,
+  `initiative_pr_reference`, `landing_settings`.
+- `core/landing_record.py`: pure state tables. A stored phase state of `open` covers a built phase; `waiting`
+  and `built` are derived. `merged` is final.
+- `harness/landing_store.py`: record and queue reads and writes. A queue item moves queued, claimed, done or
+  failed. A claimed item whose `lease_until` has passed can be claimed again.
+- `harness/landing_git.py`: `ensure_branch`, `merge_into` (merge on a scratch worktree, then move the branch
+  with a compare-and-swap; refuses to drop a recorded sha), `conflict_commit` (commits conflict markers on a
+  branch, as the base of a rectify task), `on_scratch`.
+- `harness/landing_ops.py`: `start_record` and `merge_phase`. **One deliberate deviation from the design:** the
+  phase merge is one shared, leased operation with a queue item, and a build run performs it itself the moment
+  it finishes a phase (`epic.py` `settle()` calls `_merge_into_initiative`), so the next wave continues in the
+  same run. The lander performs whatever is left queued. Say this in the PR body.
+- `epic.py`: `_start_initiative` (the branch name comes from the record, else a legacy `pr/<id>` branch, else the
+  template); `pr_branch()` returns the initiative branch; `pr_ref` is used for every phase at initiative;
+  `_refresh_level` merges the initiative tip forward and never restacks; `settle()` merges a built phase and
+  turns a failed merge into `awaiting_land` with an `initiative_merge` entry; `parent_block` has a reason for it.
+  Per-phase review PRs (`level`) are removed.
+- `agent_tools/lander.py`: `merge_phase`, `land_initiative`, `_send_back` (rectify), `_send_back_initiative`
+  (an `integrate` phase), `settle_blocked` (`on_blocked`), `sweep`, `run_once`. A land that is waiting (a PR a
+  person has yet to merge, checks still running) does not use the land cap. Gate `full` means the lander merges
+  on green; any other gate leaves the merge to a person and the lander finishes the bookkeeping once the forge
+  says merged.
+
+## Next steps, in order
+
+1. **Graphs suite.** Run it. About 38 tests in 13 files describe the old model (phases stacked on each other,
+   assembly from several parents, `awaiting_land` for a built phase, refresh onto a moved default ref). A helper
+   had started on them; its partial edits may be in the tree. Rules:
+   - `base` and ancestry assertions expect the initiative branch (`init/demo-initiative` in the fixtures).
+   - Stacking, multi-parent assembly, restack and rebase still exist at `land_at: task`: move such a test there
+     if it still holds, else rewrite it to the new behaviour. Prefer rewriting to deleting.
+   - A built phase at initiative reads `complete` with `initiative_merge.status == "merged"`.
+   - Stub `Ctx` classes need `initiative_branch = None`.
+   - If a failure looks like a real defect (a child phase starting without its parent's work, lost work, a task
+     marked done, a blocked phase building), stop and fix the code, not the test.
+   - Add `tests/test_epic_initiative_branch.py`: a two-phase run at initiative (branch exists, both bases are
+     it, p2 holds p1's work, the store record shows both merged and `assembled`, every task approved and none
+     done), and the same run at `task` creating no initiative branch and no record.
+2. **Real lander ports and CLI** (`cox lander run | once | status | adopt`): store connection
+   (`store_connect.connect(run_store._store_url(runs_dir))`), task rows (`harness.store_read.work_items`),
+   `mark_done` (`store_cli.set_state(..., "done", expected="approved")` plus the work file, as
+   `cli._close_approved_item` does), `mark_merged`, the forge (`forge_github`: `push`, `find_open_prs`,
+   `open_pr`, `wait_checks`, `merge`, `delete_branch`; add `pr_merged` from `find_branch_prs`), checks
+   (`harness.check_gate.gate_checks(landing, "level" | "ticket")`), `file_rectify` (write a task file and store
+   row in that phase), `split_blocked` (a follow-up initiative `<id>-2` that needs the first), the gate level
+   (`cli._resolved_gate_level`), notify (the courier), and a systemd unit beside the chair's.
+3. **Chair tick (commit 6):** no `land_phase` planned for an initiative row; remove `ticket_held`,
+   `_let_through`, the `epic_complete` wait (`chair_plan_land.py`); "its repo is landing" and "land backoff"
+   stop withholding launches; a phase is placeable only when its parents are `merged` in the record; a task
+   whose phase is merged per the record counts as `merged` in `running_initiatives`, so it holds no files.
+4. **Adopt (commit 7):** design 5.1. Fixtures for the four shapes. No recorded commit may be lost.
+5. **Rule 9 in the harness (commit 8):** a rebuild or rectify starts from the existing state; task worktrees are
+   kept until their initiative lands (today `epic.py` clears them and passes only reasons and a truncated patch).
+6. Commits 9 to 11.
+7. **The backlog branch.** `prereq/approved-backlog` on origin holds approved task commits cherry-picked onto
+   main, with `prereq-backlog-manifest.json`. It was stopped part-way; the manifest says what remains. Finish
+   it, then rebase `feat/landing-model` onto it so the single PR carries both. Add a migration step that marks
+   every task the manifest lists as applied as done, and make it safe to run twice.
+
+## Traps found
+
+- `merged` has two sources: tools read `extra["merged"]`; the harness derives it from `merged_commit` (the task
+  is on its phase branch). Derive the new meaning from the landing record at the facts boundary.
+- `chair_plan_recover.landing_initiatives` withholds relaunches separately from `withheld_by`.
+- A new store table needs `store_copy.py` (`_ORDER`, `_REFRESH`, `tables()`) and `test_store_copy.py`.
+- `store_queue` connects without migrating.
+- The name "adopt" is already used in the land code (`test_land_adopt.py`).
+- `ctx.retry` is an object: call `ctx.retry.write(fn, _END_WRITE_WINDOW_S)`.
+- Gate names `level` and `ticket` in `gate_checks(...)` are check-gate names, not `land_at` values. Leave them.
+- The chair machine resets without warning. Push after every step.
+
+## Notes from the graphs test helper (stopped at 1 of 38)
+
+- Done: `test_epic_ticket_pr_base.py` (the first-phase test now expects every phase's base to be the initiative
+  branch). Not run after the edit.
+- `test_epic_level_checks.py`, the "serially" test: the cause is the test double, not `epic.py`. The phase's merge
+  into the initiative runs the level checks again through `repo_gate_lock`, which is a third arrival at the test's
+  2-party barrier. Let only the first two arrivals wait at the barrier, then recheck the enter and exit markers.
+- No suspected defect in `epic.py` so far.
