@@ -294,6 +294,10 @@ class FactsDeps:
     review_prs: Callable[[], list[ReviewPr]] = lambda: []  # forge_review_prs bound to the profile's forge; absent means []
     pid_probe: Callable[[], Mapping[str, PidProbeFact]] = lambda: {}  # initiative to its remote pid probe; absent means {}
     tickets: Callable[[], Sequence[Row]] | None = None  # `read_ticket_items` rows; absent means no surfaces and no running initiatives
+    # The store's landing records (`harness.landing_store.list_records`). With it, an approved task of an initiative
+    # that lands at `initiative` carries the merged flag exactly when the record says its phase merged. Absent means
+    # the flag is left as each reader found it.
+    landing_records: Callable[[], Sequence[Mapping[str, Any]]] | None = None
     live_phases: Callable[[], Sequence[tuple[str, str]]] | None = None  # live (initiative, phase) runs; absent means no phase runs live
     repos: Callable[[], Mapping[str, str]] | None = None  # initiative to its initiative.md `repo:`; absent means no repo is known
     actions: Callable[[], Sequence[Row]] | None = None  # windowed chair_actions rows, read once per gather (`windowed_actions`); absent means no steer streaks
@@ -636,6 +640,35 @@ def phase_facts(rows: Sequence[Row], land_at: str, claimed: Collection[str] = fr
         }
         for phase, ids in free.items()
         if ids
+    ]
+
+
+def with_landing_merged(items: Sequence[Row], records: Sequence[Mapping[str, Any]], land_at: Mapping[str, str]) -> list[Row]:
+    """Pure. `items` with the merged flag of each approved task set from the landing record, for initiatives at `initiative`.
+
+    `merged` has one meaning there: the task's phase is merged into the initiative branch. A merged task holds no
+    files and its phase's children may start. An initiative with no record yet has nothing merged. Items of an
+    initiative that lands at `task`, and items in any other state, are returned as they came."""
+    from core import landing_record as lr  # lazy: core sits beside agent_tools in one venv
+    from core.landing import is_initiative
+
+    by_initiative = {str(r.get("initiative")): r for r in records}
+    own: dict[str, list[Row]] = {}
+    for item in items:
+        own.setdefault(str(item["initiative"]), []).append(item)
+    merged = {
+        initiative: set(lr.merged_tasks(by_initiative.get(initiative), [
+            {"id": str(r["id"]), "phase": str(r.get("phase") or ""), "state": r.get("state"), "needs": list(r.get("needs") or [])}
+            for r in rows
+        ]))
+        for initiative, rows in own.items()
+        if is_initiative(land_at.get(initiative, "initiative"))
+    }
+    return [
+        {**item, "merged": str(item["id"]) in merged[initiative]}
+        if (initiative := str(item["initiative"])) in merged and item.get("state") == "approved"
+        else item
+        for item in items
     ]
 
 
@@ -1817,6 +1850,10 @@ def gather_facts(
     rows = list(deps.queue()) if deps.queue is not None else []
     now_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     items = list(deps.tickets()) if deps.tickets is not None else []
+    if deps.landing_records is not None and items:
+        # The one place the merged flag takes its landing-model meaning for the tick: everything below reads `items`.
+        item_land_at = land_at_facts(deps.cartridge(), deps.land_at_values(), sorted({str(i["initiative"]) for i in items}))
+        items = with_landing_merged(items, list(deps.landing_records()), item_land_at)
     # `items` carry the store's `updated_at`, which the queue rows lack, so the docket's age tie-break holds here too.
     # Each initiative is judged by its own land_at, as `docket_by_land_at` does for the file docket.
     ready = (
