@@ -34,7 +34,7 @@ def clone(tmp_path: Path) -> tuple[Path, Path]:
 
 
 def _stub_export(monkeypatch: pytest.MonkeyPatch, text: str | None) -> None:
-    def export(runs_dir: Path, workspace: Path) -> list[str]:
+    def export(runs_dir: Path, workspace: Path, prune_stale: bool = False) -> list[str]:
         if text is not None:
             (workspace / "work" / "ticket.md").write_text(text)
         return []
@@ -111,7 +111,7 @@ def test_with_workspace_git_off_a_workspace_that_is_no_git_checkout_exports_all_
     workspace = tmp_path / "plain"
     (workspace / "work").mkdir(parents=True)
     (workspace / "runs").mkdir()
-    monkeypatch.setattr(cli, "_export_board", lambda runs_dir, ws: ["empty-row"])
+    monkeypatch.setattr(cli, "_export_board", lambda runs_dir, ws, prune_stale=False: ["empty-row"])
     assert cli._chair_export_hook(workspace / "runs", ("t1",), False) == (
         "export: wrote the files for 1 changed row(s); the workspace is not in git; skipped 1 contentless row(s): empty-row"
     )

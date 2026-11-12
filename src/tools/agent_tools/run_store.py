@@ -1443,6 +1443,12 @@ def read_queue(runs_dir: Path, initiative: str | None = None, kind: str | None =
     return _versioned(cache, ("queue", str(runs_dir), initiative, kind), probe, read_rows)
 
 
+def queue_stamp(runs_dir: Path) -> Stamp | None:
+    """Edge: the version of the whole queue (row count and a digest of every row), None when the store cannot say.
+    Two equal stamps mean no row changed in between."""
+    return _stamp_of(_queue_run(runs_dir, lambda python, url: _queue_stamp_argv(python, url, None, None)))
+
+
 def upsert_row(runs_dir: Path, row: Mapping[str, Any]) -> bool:
     """Edge: True when the store took the row, False when it could not."""
     done = _queue_run(runs_dir, lambda python, url: _queue_upsert_argv(python, url, row))

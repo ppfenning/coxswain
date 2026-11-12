@@ -5018,12 +5018,58 @@ def _route_export(a: argparse.Namespace) -> int:
         return 0
     workspace = Path(profile["workspace_dir"]).expanduser()
     try:
-        skipped = _export_board(workspace / "runs", workspace)
+        skipped = _export_board(workspace / "runs", workspace, prune_stale=not workspace_git_on(profile))
+        _note_export_stamp(workspace / "runs", run_store.queue_stamp(workspace / "runs"))
     except Exception as exc:
         print(f"export: {type(exc).__name__}: {exc}")
         return 1
     print(f"export: {workspace} matches the store" + (f"; skipped {len(skipped)} contentless row(s)" if skipped else ""))
     return 0
+
+
+_EXPORT_STAMP = ".export-stamp"
+# Commands that read the board from this machine's files. `chair` is not here: its tick exports for itself.
+_BOARD_READERS = frozenset({"route", "runs", "lander", "epic", "console", "dash"})
+_BOARD_WRITERS = frozenset({("route", "export"), ("route", "import"), ("route", "store-fill")})
+
+
+def _note_export_stamp(runs_dir: Path, stamp: object) -> None:
+    """Edge: remember the store version this machine's files were last written from. A failure only costs a re-export."""
+    if stamp is None:
+        return
+    with contextlib.suppress(OSError):
+        (runs_dir / _EXPORT_STAMP).write_text(json.dumps(stamp) + "\n", encoding="utf-8")
+
+
+def reads_board(head: Sequence[str]) -> bool:
+    """Pure: whether the command line `head` runs a command that reads the board files and does not write them itself."""
+    words = [w for w in head if not w.startswith("-")]
+    return bool(words) and words[0] in _BOARD_READERS and tuple(words[:2]) not in _BOARD_WRITERS
+
+
+def _refresh_board_files(a: argparse.Namespace) -> None:
+    """Edge. With the workspace out of git, bring this machine's work/ and intake/ files up to the store before a
+    command reads them: one cheap version probe, and an export only when the store changed since the last one.
+    Never raises and never prints on success: a store that cannot be reached leaves the files as they are."""
+    try:
+        text = _read_text_or_none(_profile_path(a))
+        profile = route.parse_profile(text) if text else {}
+        if not profile.get("workspace_dir") or workspace_git_on(profile):
+            return
+        if work_state.work_state_mode(_lake_provider(a)[0]) != "store":
+            return
+        workspace = Path(profile["workspace_dir"]).expanduser()
+        runs_dir = workspace / "runs"
+        stamp = run_store.queue_stamp(runs_dir)
+        if stamp is None:
+            return
+        last = _read_text_or_none(runs_dir / _EXPORT_STAMP)
+        if last is not None and last.strip() == json.dumps(stamp):
+            return
+        _export_board(runs_dir, workspace, prune_stale=True)
+        _note_export_stamp(runs_dir, stamp)
+    except Exception as exc:  # a refresh is a convenience; the command still runs on the files it has
+        print(f"export: could not refresh this machine's board files from the store: {type(exc).__name__}: {exc}", file=sys.stderr)
 
 
 def _route_drift(a: argparse.Namespace) -> int:
@@ -8171,16 +8217,17 @@ def _runs_fetch(a: argparse.Namespace) -> int:
     return 0 if outcome == "fetched" else 2
 
 
-def _export_board(runs_dir: Path, workspace: Path) -> list[str]:
+def _export_board(runs_dir: Path, workspace: Path, prune_stale: bool = False) -> list[str]:
     """Edge. Write the whole store board under `workspace` and return the ids of the contentless rows skipped.
 
     The whole board, never one initiative: `export_files` deletes every intake/ and work/ file its rows do not name.
     So it fills the store from the files first: a decompose writes its tickets as files, and an export with no fill
     deleted them, on the chair's tick and on an epic launch alike (2026-10-06). A fill that cannot read the store
-    raises before anything is written or deleted."""
+    raises before anything is written or deleted. `prune_stale` is for a workspace out of git: see `fill_workspace`."""
     from agent_tools import store_fill  # imported here: cli loads a command module only when it runs
 
-    store_fill.fill_workspace(workspace)
+    # The argument is passed only when set, so a caller's stand-in for the plain fill keeps working.
+    store_fill.fill_workspace(workspace, prune_stale=True) if prune_stale else store_fill.fill_workspace(workspace)
     # A file with no row is not necessarily orphaned: it may be a live decompose's, whose rows are not written yet.
     live = chair_decompose_runs.live_decompose_initiatives(runs_dir)
     return queue_export.export_files(workspace, run_store.read_queue(runs_dir), hashes=queue_export.store_hashes(runs_dir), protected=live).skipped
@@ -8236,7 +8283,8 @@ def _chair_export_hook(runs_dir: Path, ids: tuple[str, ...], commit: bool = True
     baseline, and the next export would overwrite it. A git failure raises, so the tick reports it as an export failure.
     A failed push is a note, never a raise."""
     workspace = runs_dir.parent
-    skipped = _export_board(runs_dir, workspace)  # fills the store from the files first; see _export_board
+    # Fills the store from the files first; see _export_board. Out of git, a stale copy of a dropped row goes first.
+    skipped = _export_board(runs_dir, workspace) if commit else _export_board(runs_dir, workspace, prune_stale=True)
     if not commit:
         wrote = f"export: wrote the files for {len(ids)} changed row(s); the workspace is not in git"
         return f"{wrote}; skipped {len(skipped)} contentless row(s): {', '.join(skipped)}" if skipped else wrote
@@ -15602,6 +15650,8 @@ def main(argv: list[str] | None = None) -> int:
     a = build_parser().parse_args(head)
     if not hasattr(a, "fn"):
         return _launcher(a, tail)
+    if reads_board(head):
+        _refresh_board_files(a)
     return a.fn(a)
 
 
