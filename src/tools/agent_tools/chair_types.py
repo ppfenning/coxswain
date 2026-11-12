@@ -533,6 +533,14 @@ class WronglyReleased(TypedDict):
     task_id: str
 
 
+class RemoteUnfetched(dict[str, str]):
+    """The `remote_unfetched` map, plus the initiatives among it whose newest unfetched run is a decompose."""
+
+    def __init__(self, unfetched: dict[str, str], decompose: list[str]) -> None:
+        super().__init__(unfetched)
+        self.decompose = decompose
+
+
 class Facts(TypedDict):
     lease: LeaseFacts
     limits: LimitsFacts
@@ -553,6 +561,7 @@ class Facts(TypedDict):
     # directory with no local run directory or log for that run id. Maps the initiative id to
     # that run id. Absent when the newest run is local, is a fetched remote run, or there is no run.
     remote_unfetched: dict[str, str]
+    remote_unfetched_decompose: NotRequired[list[str]]  # sorted initiatives whose newest unfetched run is a decompose; absent means []
     missing_repos: NotRequired[list[str]]  # sorted repository paths newly seen missing this tick
     last_housekeeping_at: str | None  # ISO UTC of the newest recorded housekeeping action; None when the store has none
     housekeeping_hours: float  # period in hours; the edge fills it from profile chair.housekeeping_hours, default 24

@@ -11,7 +11,8 @@ from pathlib import Path
 
 from agent_tools import run_store
 from agent_tools.chair_facts import run_initiative
-from agent_tools.remote_lane import fetched_record_path, remote_record_path
+from agent_tools.chair_types import RemoteUnfetched
+from agent_tools.remote_lane import fetched_record_path, is_decompose_record, parse_remote_record, remote_record_path
 
 Booleans = tuple[bool, bool, bool, bool]  # has_remote_record, has_local_run_dir, has_local_log, has_fetched_marker
 
@@ -40,6 +41,11 @@ def remote_unfetched_facts(
     }
 
 
+def remote_unfetched_decompose_facts(unfetched: Mapping[str, str], is_decompose: Mapping[str, bool]) -> list[str]:
+    """Sorted initiatives whose newest unfetched run (the map value) is a decompose; a run not in `is_decompose` is not."""
+    return sorted(initiative for initiative, run in unfetched.items() if is_decompose.get(run, False))
+
+
 def _run_order(run: str) -> tuple[int, str]:
     """`x-10` sorts after `x-2`: by the numeric suffix, then the name. Mirrors `chair_read_approved._run_order`."""
     tail = run.rsplit("-", 1)[-1]
@@ -56,10 +62,19 @@ def runs_per_initiative(runs_dir: Path, initiatives: Sequence[str]) -> dict[str,
     return {initiative: runs for initiative, runs in by_initiative.items() if runs}
 
 
-def read_remote_unfetched(runs_dir: Path, initiatives: Sequence[str]) -> dict[str, str]:
+def _is_decompose_run(runs_dir: Path, run: str) -> bool:
+    """Edge. Whether the run's remote record names the decompose graph; an unreadable or malformed record is not."""
+    try:
+        record = parse_remote_record(remote_record_path(runs_dir, run).read_text(encoding="utf-8"))
+    except OSError:
+        return False
+    return record is not None and is_decompose_record(record)
+
+
+def read_remote_unfetched(runs_dir: Path, initiatives: Sequence[str]) -> RemoteUnfetched:
     """Edge. `gather_facts`'s `remote_unfetched` source: initiative id to its newest matching run id, for
     each initiative with any run that has a `<run>.remote.json` beside `runs_dir` and no local run
-    directory or log for that run id."""
+    directory or log for that run id. The result also lists the initiatives whose newest such run is a decompose."""
     runs_by_initiative = runs_per_initiative(runs_dir, initiatives)
     booleans = {
         run: (
@@ -71,4 +86,6 @@ def read_remote_unfetched(runs_dir: Path, initiatives: Sequence[str]) -> dict[st
         for runs in runs_by_initiative.values()
         for run in runs
     }
-    return remote_unfetched_facts(runs_by_initiative, booleans)
+    unfetched = remote_unfetched_facts(runs_by_initiative, booleans)
+    flags = {run: _is_decompose_run(runs_dir, run) for run in unfetched.values()}
+    return RemoteUnfetched(unfetched, remote_unfetched_decompose_facts(unfetched, flags))
