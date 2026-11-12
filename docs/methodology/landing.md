@@ -148,6 +148,14 @@ it. The two kinds have separate caps (`landing_areas.phase_cap`, default 2, and 
 and neither counts against the launch cap. An item open for an hour is told to the chair once; a pull request waiting
 for a person never is. `cox lander status` shows every initiative in flight and every item with its age.
 
+Lands on one parent are one at a time by default, since each needs an up-to-date parent. With
+`landing_areas.land_batch` above 1, the lander lands together up to that many initiatives that share a repo and a
+parent and change no file in common. Each keeps its own pull request. They are refreshed onto the same parent so their
+checks run side by side, then merged together in a scratch tree where the gate checks run once for the batch. When
+that passes, the pull requests are merged in queue order without refreshing again. When it does not, only the first is
+landed and the rest wait. Batching applies only where the lander itself merges (gate `full`); an initiative whose
+files overlap another's waits its turn.
+
 The lander never resolves a conflict and never edits code. A phase merge that conflicts, or fails its checks, is sent
 back to build as a rectify task in that phase; a conflict with the parent, or a red pull request, becomes a task in a
 final `integrate` phase. The conflicted merge is committed on the branch the task builds on, so nothing already built
@@ -169,6 +177,10 @@ when the landed branch holds its tip.
   the blocked one.
 
 ### Epics as stacks
+
+The epic steward is gone: nothing but the lander merges a phase or lands an initiative. A profile that still sets
+`chair.steward` is read and ignored, and `cox setup doctor` says so.
+
 
 By default an epic is a group: its initiatives land on the resolved target one by one. With `epic_stack: true` (in the
 cartridge, the repo overlay or the epic file) the epic's `target_branch` is an epic branch. An initiative that needs an

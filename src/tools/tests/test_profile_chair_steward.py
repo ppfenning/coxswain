@@ -1,7 +1,7 @@
 import pytest
 
 from agent_tools import route
-from agent_tools.chair_facts import resolve_steward_enabled, steward_asked_for
+from agent_tools.chair_facts import steward_asked_for
 
 
 def _parse(text: str) -> dict:
@@ -47,11 +47,10 @@ def test_colon_bearing_comments_leave_the_result_unchanged():
     assert _parse(commented) == _parse(plain)
 
 
-def test_the_parsed_steward_is_read_as_asked_for_and_turns_nothing_on():
+def test_the_parsed_steward_is_read_as_asked_for():
     on = _parse("chair:\n  steward: true\n")["chair"]["steward"]
     off = _parse("chair:\n  steward: false\n")["chair"]["steward"]
     assert (steward_asked_for(on), steward_asked_for(off)) == (True, False)
-    assert (resolve_steward_enabled(on), resolve_steward_enabled(off)) == (False, False)
 
 
 @pytest.mark.parametrize("word", ["all", "epics"])

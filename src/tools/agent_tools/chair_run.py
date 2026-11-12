@@ -601,7 +601,7 @@ def unacked_chat(entries: Sequence[dict]) -> list[dict]:
     ]
 
 
-def _as_steward_actions(actions: Sequence[Action]) -> list[chair_chat.StewardAction]:
+def _as_planned_actions(actions: Sequence[Action]) -> list[chair_chat.PlannedAction]:
     """The planned actions in the shape `chair_chat.answer` reads: kind, the epic as topic, and scalar fields as strings."""
     scalar = (str, int, float, bool)
     skipped = ("kind", "epic", "initiative", "epoch", "fields")
@@ -653,14 +653,14 @@ def _chat_step(chat: ChatDeps, facts: Facts, actions: Sequence[Action], now: dat
     same courier entries; saving first would instead record a directive as applied whose event was never published.
     The returned note is "" when there was nothing to read."""
     entries = unacked_chat(chat.read())
-    epics = list((facts.get("steward") or {}).get("epics", []))
+    epics = list(facts.get("chat_epics", []))
     state, events = chair_chat.apply_directives(chat.load(), entries, now.isoformat())
     for event in events:
         chat.append(_event_entry(event))
     chat.save(state, _epic_snapshot(epics))
     messages = [m for m in map(chair_chat.parse_message, entries) if m is not None]
     questions = [m for m in messages if m["body_kind"] == "question"]
-    plan = _as_steward_actions(actions)
+    plan = _as_planned_actions(actions)
     for question in questions:
         chat.append(_answer_entry(question, chair_chat.answer(question["payload"], epics, plan)))
     for message in messages:

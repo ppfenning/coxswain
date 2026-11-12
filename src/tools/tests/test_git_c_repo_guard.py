@@ -77,8 +77,6 @@ SITES: Sequence[tuple[str, str, int, str]] = [
     ("chair_smoke.py", '"checkout": ["git", "-C", repo, "checkout", "-b", branch, "origin/main"],', 1, FACTS),
     ("chair_smoke.py", '"revert": ["git", "-C", repo, "revert", "--no-edit", land["commit"]],', 1, FACTS),
     ("chair_smoke.py", '"push": ["git", "-C", repo, "push", "origin", branch],', 1, FACTS),
-    ("chair_steward_level.py", 'return ["-C", repo, *args]', 1, "repo is expanded by the caller, the steward's chair facts reader, before it reaches level_state"),
-    ("chair_steward_exec.py", 'return ["-C", repo, *args]', 1, "repo is expanded by the repo_of port the caller supplies, the same contract as level_state"),
     ("host_cmd.py", 'branch = _out(run, ["git", "-C", repo, "rev-parse", "--abbrev-ref", "HEAD"]) or ""', 1, HOST_REPOS),
     ("host_cmd.py", 'behind_raw = _out(run, ["git", "-C", repo, "rev-list", "--count", "HEAD..origin/main"])', 1, HOST_REPOS),
     ("host_cmd.py", 'lock_hash = _out(run, ["git", "-C", repo, "hash-object", LOCKFILE_NAME])', 1, HOST_REPOS),

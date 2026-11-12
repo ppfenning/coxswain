@@ -18,7 +18,7 @@ LEASE_FUNCTIONS = ("read", "write", "locked", "take", "renew_lease", "release_le
 
 def _facts(lease):
     return {
-        "lease": lease, "steward": {"enabled": False, "epics": [EPIC]},
+        "lease": lease, "chat_epics": [EPIC],
         "limits": {"hard_stop": False, "weekly_fraction": 0.1, "hard_stop_fraction": 0.9, "launch_cap": 2, "go_degraded": False},
         "dispatch": {"max_in_flight": 4, "live_runs": 0, "hosts": []},
         "approved": [], "initiatives": [], "quarantines": [], "intake": [], "work_store_ready": False,

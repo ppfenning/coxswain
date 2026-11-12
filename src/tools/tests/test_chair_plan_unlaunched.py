@@ -3,7 +3,6 @@ from datetime import UTC, datetime
 from agent_tools.chair_plan import _placement_hints, _unlaunched_actions, plan_tick, plan_tick_held
 from agent_tools.route_schedule import plan_from_inputs
 from tests.test_chair_plan import _facts, _initiative, _lease, _unstarted
-from tests.test_chair_plan_steward import _epic, _facts_for
 
 NOW = datetime(2026, 10, 7, 12, 0, tzinfo=UTC)
 RECENT = [{"at": "2026-10-07T11:50:00+00:00", "kind": "launch_epic"}, {"at": "2026-10-07T11:40:00+00:00", "kind": "relaunch"}]
@@ -136,24 +135,9 @@ def test_a_lent_lease_plans_no_unlaunched_action_where_the_holder_does():
 ONE_HOST = {"max_in_flight": 5, "live_runs": 0, "hosts": [{"name": "h1", "live_runs": 0, "capacity": 1}]}
 
 
-def _handled_started(*tasks: tuple[str, str], merged: bool = False, dag_problem: str | None = None) -> dict:
-    started = {**_initiative("a"), **({"dag_problem": dag_problem} if dag_problem else {})}
-    return _facts_for(_epic(*tasks, merged=merged, exited=False), initiatives=[started])
-
-
-def test_a_started_steward_handled_initiative_with_a_dag_problem_reports_the_invalid_dag_not_the_steward_hold():
-    assert _unlaunched(_handled_started(("a-t", "ready"), dag_problem="b needs x")) == {"a": "invalid DAG: b needs x"}
-
-
-def test_a_started_steward_handled_initiative_with_no_steward_action_reports_that_it_planned_nothing():
-    assert _unlaunched(_handled_started(("a-t", "ready"))) == {"a": "the steward planned nothing for it this tick"}
-
-
-def test_a_started_steward_handled_initiative_with_a_planned_gate_still_reports_the_steward_hold():
-    limits = {"hard_stop": False, "weekly_fraction": 0.1, "hard_stop_fraction": 0.9, "launch_cap": 0, "go_degraded": False}
-    facts = {**_handled_started(("a-t", "done"), merged=True), "limits": limits}
-    assert [a["kind"] for a in plan_tick(facts, NOW) if a["kind"] == "run_gate"] == ["run_gate"]
-    assert _unlaunched(facts) == {"a": "the steward holds it"}
+def test_a_started_initiative_with_a_dag_problem_reports_the_invalid_dag():
+    started = {**_initiative("a"), "dag_problem": "b needs x"}
+    assert _unlaunched(_facts(initiatives=[started], run_exited={"a": False})) == {"a": "invalid DAG: b needs x"}
 
 
 def _remote(unfetched: dict[str, str], decompose: list[str]) -> dict:

@@ -312,21 +312,6 @@ def lanes_text(dispatch: Mapping[str, Any]) -> str:
     return f"lanes {live}/{cap} (here {here})"
 
 
-def steward_fragment(facts: Facts, results: Sequence[Result]) -> str:
-    """Empty when the steward is off. Zero prints `steward 0`, so a steward that manages nothing is visible.
-
-    A deferred merge_level is counted here only; `failed_items` selects refused, failed and not_landed, so it never reaches `failed:`.
-    """
-    steward = facts.get("steward")
-    if not (steward and steward["enabled"]):
-        return ""
-    merges = [r for r in results if r["action"].get("kind") == "merge_level"]
-    merged = sum(r["status"] == "done" for r in merges)
-    deferred = sum(r["status"] == "deferred" for r in merges)
-    tail = f" (merged {merged}, deferred {deferred})" if merged + deferred > 0 else ""
-    return f"steward {len(steward['epics'])}{tail}"
-
-
 def format_status(
     facts: Facts, all_actions: Sequence[Action | WaitingInitiative], results: Sequence[Result], now: datetime
 ) -> str:
@@ -350,7 +335,6 @@ def format_status(
     stall = _stall(facts)
     freeze = _freeze(facts, now)
     epics = epics_fragment(facts.get("epics", []))
-    steward = steward_fragment(facts, results)
     parts = [
         f"chair {now.astimezone(EASTERN):%m-%d %H:%M %Z}",
         lanes_text(dispatch),
@@ -371,7 +355,6 @@ def format_status(
         *deferred_items(results),
         *([review] if review else []),
         *([epics] if epics else []),
-        *([steward] if steward else []),
         *(f"skipped missing repo {p}" for p in facts.get("missing_repos", [])),
         ", ".join(needs) if needs else "needs chair: none",
         *([housekeeping_fragment(facts["last_housekeeping_at"], now)] if "last_housekeeping_at" in facts else []),

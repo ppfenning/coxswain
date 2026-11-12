@@ -25,6 +25,7 @@ from agent_tools.chair_facts import (
     repo_dir_name,
     resolve_idle_stall_minutes,
     stale_checkout_keys,
+    steward_asked_for,
     todo_initiative_facts,
     waiting_reported_from_actions,
     windowed_actions,
@@ -157,6 +158,26 @@ def test_a_work_rows_callables_rows_appear_under_todo_initiatives():
     rows = [_work_row("initiative", "i", "i", "todo"), _work_row("task", "i", "a", "ready"), _work_row("task", "i", "b", "todo")]
     deps = replace(_deps(), work_rows=lambda: rows)
     assert gather_facts(deps, NOW)["todo_initiatives"] == [{"id": "i", "task_states": ["ready", "todo"]}]
+
+
+def test_a_work_rows_callables_rows_appear_under_chat_epics_and_none_gathers_no_such_key():
+    rows = [_work_row("initiative", "i", "i", "todo"), _work_row("task", "i", "a", "ready"), _work_row("task", "i", "b", "todo")]
+    facts = gather_facts(replace(_deps(), work_rows=lambda: rows, run_exited=lambda: {"i": True}), NOW)
+    [epic] = facts["chat_epics"]
+    assert (epic["epic_id"], epic["exited"]) == ("i", True)
+    assert [t for level in epic["levels"] for t in level["tasks"]] == [{"id": "a", "state": "ready"}, {"id": "b", "state": "building"}]
+    assert "chat_epics" not in gather_facts(replace(_deps(), work_rows=None), NOW)
+    assert "steward" not in facts
+
+
+@pytest.mark.parametrize("value", [True, "true", " True "])
+def test_an_explicit_true_steward_setting_is_asked_for(value):
+    assert steward_asked_for(value) is True
+
+
+@pytest.mark.parametrize("value", [None, "banana", 0, 1, [], "", "yes", "false", False])
+def test_an_absent_or_malformed_steward_setting_is_not_asked_for(value):
+    assert steward_asked_for(value) is False
 
 
 def test_a_remote_unfetched_callables_mapping_appears_under_remote_unfetched():
@@ -644,12 +665,12 @@ def test_gather_facts_fills_every_key_from_the_fakes():
     facts = gather_facts(deps, NOW)
     # login_hosts is not yet declared on Facts: a later task adds it there once the login watch reads it.
     # tuning, landed_main and land_outcomes are all filled in gather_facts now.
-    # steward is declared on Facts and read by the planner; the next task gathers it, until then it is absent.
+    # chat_epics is gathered only when the deps supply work_rows, and these fakes do not.
     # live_phases is gathered only when the deps supply it, and these fakes do not.
     # previous_schedule_feed is read by the planner; no task gathers it yet.
     # merged_prs is read by plan_missed_closes and handled_keys by plan_recover; the facts edge gathers neither yet.
     declared = set(Facts.__annotations__) - {
-        "steward", "live_phases", "schedule_inputs", "previous_schedule_feed", "merged_prs", "handled_keys",
+        "chat_epics", "live_phases", "schedule_inputs", "previous_schedule_feed", "merged_prs", "handled_keys",
     }
     assert set(facts) == declared | {"login_hosts"}
     assert facts["dispatch"] == {"max_in_flight": 2, "live_runs": 1, "hosts": []}

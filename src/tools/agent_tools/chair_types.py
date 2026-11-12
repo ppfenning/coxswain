@@ -12,7 +12,6 @@ from zoneinfo import ZoneInfo
 from agent_tools.chair_decompose_streak import DecomposeStreak
 from agent_tools.chair_land_backoff import LandRefusal
 from agent_tools.chair_land_conflict import LandConflict
-from agent_tools.chair_steward import StewardFacts
 
 EASTERN = ZoneInfo("America/New_York")  # every time the chair prints for an operator is shown in this zone
 STALE_CHECKOUT_CAUSE = "stale_checkout"  # the needs_chair cause for a lane host whose checkout environment is stale
@@ -452,11 +451,6 @@ class EpicFacts(TypedDict):
     complete: bool
 
 
-class StewardPlanFacts(TypedDict):
-    enabled: bool  # False plans exactly what an absent key plans
-    epics: list[StewardFacts]  # one entry per epic the steward handles; its epic_id is the initiative id
-
-
 class SteerPolicy(TypedDict):
     limit: int  # most initiatives that may hold one file at once, the candidate included
     serial: list[str]  # always-serial paths; an entry ending in `/` covers everything under it
@@ -650,7 +644,7 @@ class Facts(TypedDict):
     phase_records: NotRequired[list[str]]
     # Each initiative row in state todo with its task rows' states, in row order; absent means none. `plan_close_initiatives` plans a close_initiative for each finished one.
     todo_initiatives: NotRequired[list[TodoInitiative]]
-    steward: NotRequired[StewardPlanFacts]  # the epic steward's inputs; absent means the steward is off
+    chat_epics: NotRequired[list[dict[str, Any]]]  # each open initiative's tasks by phase, for the chair's answers; absent means none
     schedule_inputs: NotRequired[ScheduleInputs]  # the scheduler's inputs; absent means the edge did not read them
     # The previous tick's `chair_schedule.schedule_feed` form; absent means none was read, so the schedule is announced.
     previous_schedule_feed: NotRequired[dict[str, Any]]
@@ -698,9 +692,6 @@ ActionKind = Literal[
     "close_initiative",
     "finish_task",
     "close_merged_task",
-    "merge_level",
-    "run_gate",
-    "steward_event",
     "unlaunched",
     "schedule_updated",
     "requeue_task",
@@ -738,12 +729,7 @@ class Action(TypedDict, total=False):
     the granularity land_at names. unlaunched carries initiative and reason, runs no command and writes no row.
     close_initiative carries initiative and state (done or dropped).
     close_merged_task carries initiative, task_id, pr (the merged PR's url) and repo; it is planned only, and executing it is a later task.
-    The steward's actions each carry epic and topic (both the epic id) and fields. merge_level also carries level,
-    the index of the level to merge, plus land_at (how the initiative lands) and phase (the level's phase name) as
-    top-level keys, never inside fields, so the reported-set key is unchanged. run_gate carries no more. steward_event also carries event, the name to publish.
     unlaunched carries initiative and reason and runs no command: why a ready initiative was not launched.
-    The steward's relaunch is a relaunch carrying initiative, plus epic, topic and fields (the signature) so the executor
-    can record `relaunched`. A planner relaunch carries none of those three.
     requeue_task carries initiative, phase, task_id, reason and epoch; it is declared here and not yet planned or executed.
     rebuild_quarantined carries initiative, task_id and key (the chair_sort state key); it clears branches onto current main, then relaunches.
     annotate_objection carries initiative, task_id, objection (the objection text) and key (its chair_sort hash)."""
@@ -795,13 +781,11 @@ class Action(TypedDict, total=False):
     commit: str  # a revert_land names the new main commit of that land
     additions: list[str]  # a widen_ticket names the addition for each path, same order and length as paths
     state: str  # a close_initiative names the state to move the initiative to: done or dropped
-    epic: str  # a merge_level, run_gate or steward_event names the epic it acts on
-    level: int  # a merge_level names the index of the level it merges
-    land_at: str  # a merge_level or deferred names the land_at (ticket, level or task) of its initiative
-    event: str  # a steward_event names the event it publishes, for example needs_attention
-    fields: dict[str, str]  # a merge_level, run_gate or steward_event carries the scope fields of its reported-set key
-    topic: str  # a merge_level, run_gate or steward_event names the topic its event is published under
-    after_steward: bool  # the relaunch runs behind the same epic's steward action
+    epic: str  # the initiative a published event is about
+    land_at: str  # a deferred names the land_at of its initiative
+    event: str  # the event an action publishes, for example needs_attention
+    fields: dict[str, str]  # the fields of a published event
+    topic: str  # the topic a published event is filed under
 
 
 class PlanLands(Protocol):

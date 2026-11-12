@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
-import os
 import sqlite3
-import subprocess
 import threading
 import time
 from datetime import UTC, datetime
@@ -32,10 +30,6 @@ _FACTS_DEPS_NONE_GUARDED_FIELDS = frozenset(
     {"queue", "stranded_records", "live_phases"}
 )
 
-# Steward sources whose dataclass default is a working callable (`[]`, `""`, `False`), so only identity shows them unwired.
-_FACTS_DEPS_STEWARD_SOURCES = ("steward_entries", "ticket_head", "level_merged")
-
-
 def test_every_facts_deps_field_the_dataclass_declares_is_wired(tmp_path) -> None:
     """Iterates `FactsDeps`' own fields, so a fact added later is checked with no edit here.
 
@@ -54,10 +48,6 @@ def test_every_facts_deps_field_the_dataclass_declares_is_wired(tmp_path) -> Non
         assert callable(value), f"{f.name} is not callable: {value!r}"
         assert value is not None, f"{f.name} is None"
         assert not isinstance(value, cli._ChairUnwired), f"{f.name} is unwired: {value!r}"
-    # A default is callable and not None, so the loop above accepts it: the steward sources must differ from it.
-    declared = {f.name: f.default for f in dataclasses.fields(chair_facts.FactsDeps)}
-    for name in _FACTS_DEPS_STEWARD_SOURCES:
-        assert getattr(deps.facts_deps, name) is not declared[name], f"{name} is still the dataclass default"
     # `_ChairUnwired` is one sentinel shared by both bundles: `_chair_unwired_sources` (agent_tools/cli.py:5545-5552)
     # refuses to start while either `deps.facts_deps` or `deps.exec_deps` holds one. The replaced `TWELVE` set
     # named "run_id" and "record", both `exec_deps` fields, so checking `exec_deps` here too keeps that coverage
@@ -237,38 +227,6 @@ def test_idle_stall_calls_the_four_readers_and_reads_the_configured_minutes(tmp_
     assert seen["backlog"] == (tmp_path, "files", now)
     assert seen["reused"] == ["items", "land_at", "live", "queued"]
     assert unset.facts_deps.idle_stall(now)["stall_minutes"] == 15
-
-
-def test_the_steward_stays_off_whatever_the_profile_sets_for_chair_steward(tmp_path) -> None:
-    runs = tmp_path / "runs"
-    runs.mkdir()
-
-    now = datetime(2026, 9, 27, 12, 0, tzinfo=UTC)
-
-    def deps(profile: dict) -> chair_facts.FactsDeps:
-        return cli._chair_run_deps(runs, profile, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files").facts_deps
-
-    # The steward is retired: the profile value still reaches the wired setting, where `steward_asked_for` reads it
-    # for the doctor row, and it adds no Facts key.
-    asked = deps({"chair": {"steward": True}})
-    assert chair_facts.steward_asked_for(asked.steward_enabled()) is True
-    assert chair_facts.resolve_steward_enabled(asked.steward_enabled()) is False
-    assert "steward" not in chair_facts.gather_facts(asked, now)
-    assert "steward" not in chair_facts.gather_facts(deps({}), now)
-    # The malformed and empty forms are cheap to check on the wired setting alone.
-    for profile in ({"chair": {}}, {"chair": {"steward": "banana"}}):
-        assert chair_facts.steward_asked_for(deps(profile).steward_enabled()) is False
-        assert chair_facts.resolve_steward_enabled(deps(profile).steward_enabled()) is False
-
-
-def test_a_profile_chair_steward_scope_reaches_the_facts_deps(tmp_path) -> None:
-    runs = tmp_path / "runs"
-    runs.mkdir()
-
-    def scope(profile: dict) -> object:
-        return cli._chair_run_deps(runs, profile, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files").facts_deps.steward_scope()
-
-    assert (scope({"chair": {"steward_scope": "epics"}}), scope({})) == ("epics", None)
 
 
 def test_harness_python_is_the_configured_harness_venv(tmp_path) -> None:
@@ -896,122 +854,6 @@ def test_a_detached_checkout_passes_no_dash_inputs(tmp_path, monkeypatch) -> Non
 
 def _live_deps(tmp_path, profile: dict | None = None, dry_run: bool = False) -> chair_run.RunDeps:
     return cli._chair_run_deps(tmp_path / "runs", profile or {}, "chair", 1, "h", dry_run, print, tmp_path / "profile.yaml", "files")
-
-
-_GIT_ENV = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e"}
-_REAL_CARTRIDGES = Path(__file__).resolve().parents[2] / "cartridges"  # src/cartridges, the real `local` team cartridge
-_AGENT_CHECKS = ("cargo fmt --check", "cargo test")
-
-
-def _git(repo: Path, *args: str) -> str:
-    done = subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True, env=_GIT_ENV)
-    return done.stdout.strip()
-
-
-def _commit(repo: Path, name: str) -> None:
-    (repo / name).write_text(name, encoding="utf-8")
-    _git(repo, "add", name)
-    _git(repo, "commit", "-m", name)
-
-
-def _steward_repo(tmp_path: Path, initiative: str = "epic-x") -> Path:
-    """A real git repository with `.agent-checks`, recorded as `initiative`'s repo in the workspace `tmp_path`."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _git(repo, "init", "-b", "main")
-    (repo / ".agent-checks").write_text("\n".join(_AGENT_CHECKS) + "\n", encoding="utf-8")
-    _commit(repo, "a.txt")
-    (tmp_path / "work" / initiative).mkdir(parents=True)
-    (tmp_path / "work" / initiative / "initiative.md").write_text(f"---\nrepo: {repo}\n---\n", encoding="utf-8")
-    return repo
-
-
-def test_a_live_bundle_wires_the_steward_executor_and_its_checks_from_the_cartridge_and_agent_checks(tmp_path) -> None:
-    repo = _steward_repo(tmp_path)
-    profile = {"team": "local", "cartridges_dir": str(_REAL_CARTRIDGES / "cartridges"), "skills_roots": [str(_REAL_CARTRIDGES / "skills-plugins")]}
-    for dry_run in (False, True):
-        deps = _live_deps(tmp_path, profile, dry_run)
-        assert deps.exec_deps.steward_exec is not None
-        assert deps.exec_deps.steward_checks({"kind": "run_gate", "epic": "epic-x"}) == [
-            "ruff check .", "pytest -q", *_AGENT_CHECKS,
-        ]
-    assert deps.exec_deps.steward_checks({"kind": "run_gate", "epic": "no-such-epic"}) == []
-    assert repo.is_dir()
-
-
-def test_a_run_gate_that_cannot_resolve_its_cartridge_raises_and_a_merge_level_does_not(tmp_path) -> None:
-    _steward_repo(tmp_path)
-    profile = {"team": "no-such-team", "cartridges_dir": str(_REAL_CARTRIDGES / "cartridges"), "skills_roots": []}
-    checks = _live_deps(tmp_path, profile).exec_deps.steward_checks
-    assert checks({"kind": "merge_level", "epic": "epic-x"}) == list(_AGENT_CHECKS)
-    try:
-        checks({"kind": "run_gate", "epic": "epic-x"})
-    except RuntimeError as exc:
-        assert "cartridge unresolved" in str(exc)
-    else:
-        raise AssertionError("a gate on short checks must not pass")
-
-
-def test_the_wired_steward_runs_a_gate_in_a_temporary_worktree_of_the_ticket_branch(tmp_path) -> None:
-    repo = _steward_repo(tmp_path)
-    _git(repo, "branch", "pr/epic-x")
-    run = _live_deps(tmp_path).exec_deps.steward_exec
-    assert run is not None
-    passed = run({"kind": "run_gate", "epic": "epic-x", "fields": {"k": "v"}}, ("test -f a.txt",))
-    failed = run({"kind": "run_gate", "epic": "epic-x", "fields": {}}, ("exit 1",))
-    assert (passed["event"], passed["fields"], failed["event"]) == ("gate_passed", {"k": "v"}, "gate_failed")
-    assert not cli._land_worktree(repo, "pr/epic-x").exists()
-    assert "pr/epic-x" in _git(repo, "branch", "--list", "pr/epic-x")
-
-
-def test_steward_phase_of_indexes_the_phases_in_natural_order() -> None:
-    rows = [{"kind": "task", "initiative": i, "phase": p} for i, p in (("e", "p10"), ("e", "p2"), ("e", "p1"), ("o", "z"))]
-    phase_of = cli._steward_phase_of(lambda: rows)
-    assert [phase_of("e", n) for n in range(3)] == ["p1", "p2", "p10"]
-
-
-def test_level_merged_and_ticket_head_read_a_real_git_repository(tmp_path) -> None:
-    repo = _steward_repo(tmp_path)
-    (tmp_path / "work" / "no-branch").mkdir()
-    (tmp_path / "work" / "no-branch" / "initiative.md").write_text(f"---\nrepo: {repo}\n---\n", encoding="utf-8")
-    _git(repo, "branch", "pr/epic-x")
-    _git(repo, "checkout", "-b", "epic/epic-x/p1")
-    _commit(repo, "level.txt")
-    _git(repo, "checkout", "pr/epic-x")
-    facts = _live_deps(tmp_path).facts_deps
-
-    assert facts.ticket_head("epic-x") == _git(repo, "rev-parse", "pr/epic-x")
-    assert (facts.ticket_head("no-branch"), facts.ticket_head("no-initiative")) == ("", "")
-    assert facts.level_merged("epic-x", "p1") is False
-    _git(repo, "merge", "--no-ff", "-m", "merge level", "epic/epic-x/p1")
-    assert facts.level_merged("epic-x", "p1") is True
-    assert facts.ticket_head("epic-x") == _git(repo, "rev-parse", "pr/epic-x")
-    assert facts.level_merged("no-initiative", "p1") is False
-
-
-def test_the_wired_steward_ports_resolve_a_target_branch_for_a_recorded_repo_and_an_empty_one_without(tmp_path) -> None:
-    repo = _steward_repo(tmp_path)
-    (tmp_path / "work" / "no-repo").mkdir()
-    (tmp_path / "work" / "no-repo" / "initiative.md").write_text("---\ntitle: t\n---\n", encoding="utf-8")
-    home = os.path.expanduser("~")
-    target = cli._steward_target_branch_of({}, tmp_path, cli._repo_for(tmp_path, home))
-    assert (target("epic-x"), target("no-repo"), target("no-initiative")) == ("main", "", "")
-
-    run = _live_deps(tmp_path).exec_deps.steward_exec
-    assert run is not None
-    missing = run({"kind": "merge_level", "epic": "no-repo", "level": 0}, ())
-    assert missing["event"] == "merge_failed" and "no target branch is known" in missing["reason"]
-    run({"kind": "merge_level", "epic": "epic-x", "level": 0}, ())
-    assert _git(repo, "rev-parse", "pr/epic-x") == _git(repo, "rev-parse", "main")
-
-
-def test_steward_entries_reads_the_courier_bus_in_the_workspace(tmp_path) -> None:
-    facts = _live_deps(tmp_path).facts_deps
-    assert list(facts.steward_entries()) == []
-    (tmp_path / "courier.jsonl").write_text(
-        json.dumps({"id": "m1", "topic": "epic-x", "event": "relaunched", "fields": {"level": "0"}}) + "\n", encoding="utf-8"
-    )
-    assert [e["event"] for e in facts.steward_entries()] == ["relaunched"]
 
 
 def _tracked_caches(monkeypatch) -> list:

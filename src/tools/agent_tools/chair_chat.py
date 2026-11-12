@@ -5,12 +5,45 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Sequence
 from functools import reduce
-from typing import Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
-from agent_tools.chair_steward import StewardAction, StewardFacts, event_key
 from agent_tools.courier import Reference, send
 
 BodyKind = Literal["directive", "question"]
+TaskState = Literal["ready", "approved", "done", "quarantined", "dropped", "building"]
+
+
+class ViewTask(TypedDict):
+    id: str
+    state: TaskState
+
+
+class ViewLevel(TypedDict):
+    phase: str
+    tasks: list[ViewTask]
+
+
+class EpicView(TypedDict):
+    """One initiative as an answer reads it: its tasks by phase, and whether its last run has exited."""
+
+    epic_id: str
+    levels: list[ViewLevel]
+    exited: bool
+
+
+class PlannedAction(TypedDict):
+    """One planned action as an answer reads it: its kind, the initiative as topic, and its scalar fields as text."""
+
+    kind: str
+    topic: str
+    fields: dict[str, str]
+    key: str
+    event: NotRequired[str]
+
+
+def event_key(event: str, fields: dict[str, str]) -> str:
+    """Stable key of one event: its name plus its field values by field name."""
+    return ":".join([event, *(value for _, value in sorted(fields.items()))])
 
 LABEL = "chair_chat"
 DIRECTIVE_KINDS = ("priority", "hold", "release", "scope", "feature", "cut_release")
@@ -169,20 +202,20 @@ def _unnamed(subject: str) -> str:
     return f"The facts do not name {subject or 'a subject'}."
 
 
-def _describe(action: StewardAction) -> str:
+def _describe(action: PlannedAction) -> str:
     return f"{action['kind']}({', '.join(f'{k}={v}' for k, v in sorted(action['fields'].items()))})"
 
 
-def _planned(epic_id: str, plan: Sequence[StewardAction]) -> str:
+def _planned(epic_id: str, plan: Sequence[PlannedAction]) -> str:
     mine = [a for a in plan if a["topic"] == epic_id]
     return " Planned: " + ", ".join(_describe(a) for a in mine) + "." if mine else " Nothing is planned."
 
 
-def _tasks(facts: StewardFacts) -> list[dict]:
+def _tasks(facts: EpicView) -> list[dict]:
     return [t for level in facts["levels"] for t in level["tasks"]]
 
 
-def _left_on_release(subject: str, facts: Sequence[StewardFacts], plan: Sequence[StewardAction]) -> str:
+def _left_on_release(subject: str, facts: Sequence[EpicView], plan: Sequence[PlannedAction]) -> str:
     epic = next((f for f in facts if f["epic_id"] == subject), None)
     if epic is None:
         return _unnamed(subject)
@@ -195,7 +228,7 @@ def _left_on_release(subject: str, facts: Sequence[StewardFacts], plan: Sequence
     return head + _planned(subject, plan)
 
 
-def _why_task(epic: StewardFacts, task: dict, plan: Sequence[StewardAction]) -> str:
+def _why_task(epic: EpicView, task: dict, plan: Sequence[PlannedAction]) -> str:
     relaunch = any(a["topic"] == epic["epic_id"] and a["kind"] == "relaunch" for a in plan)
     state = task["state"]
     name = task["id"]
@@ -211,7 +244,7 @@ def _why_task(epic: StewardFacts, task: dict, plan: Sequence[StewardAction]) -> 
     return f"{name} is {state}, so there is nothing to launch."
 
 
-def _why_not_launched(subject: str, facts: Sequence[StewardFacts], plan: Sequence[StewardAction]) -> str:
+def _why_not_launched(subject: str, facts: Sequence[EpicView], plan: Sequence[PlannedAction]) -> str:
     task_hit = next(((f, t) for f in facts for t in _tasks(f) if t["id"] == subject), None)
     epic = next((f for f in facts if f["epic_id"] == subject), None)
     if task_hit is not None:
@@ -223,7 +256,7 @@ def _why_not_launched(subject: str, facts: Sequence[StewardFacts], plan: Sequenc
     return _unnamed(subject)
 
 
-def _what_failed(_subject: str, facts: Sequence[StewardFacts], plan: Sequence[StewardAction]) -> str:
+def _what_failed(_subject: str, facts: Sequence[EpicView], plan: Sequence[PlannedAction]) -> str:
     quarantined = [f"{t['id']} on {f['epic_id']}" for f in facts for t in _tasks(f) if t["state"] == "quarantined"]
     failures = [_describe(a) for a in plan if a.get("event") in _FAILURE_EVENTS]
     lines = [
@@ -233,21 +266,21 @@ def _what_failed(_subject: str, facts: Sequence[StewardFacts], plan: Sequence[St
     return " ".join(lines)
 
 
-_ANSWERS: dict[str, Callable[[str, Sequence[StewardFacts], Sequence[StewardAction]], str]] = {
+_ANSWERS: dict[str, Callable[[str, Sequence[EpicView], Sequence[PlannedAction]], str]] = {
     "left_on_release": _left_on_release,
     "why_not_launched": _why_not_launched,
     "what_failed": _what_failed,
 }
 
 
-def answer(question: dict[str, str], facts: Sequence[StewardFacts], plan: Sequence[StewardAction]) -> str:
+def answer(question: dict[str, str], facts: Sequence[EpicView], plan: Sequence[PlannedAction]) -> str:
     """Text built only from the facts and planned actions given. `question` carries `kind` and `subject`."""
     kind = question.get("kind", "")
     handler = _ANSWERS.get(kind)
     return f"Unknown question kind {kind!r}." if handler is None else handler(question.get("subject", ""), facts, plan)
 
 
-def state_summary(state: DirectiveState, facts: Sequence[StewardFacts], recent_events: Sequence[Event]) -> str:
+def state_summary(state: DirectiveState, facts: Sequence[EpicView], recent_events: Sequence[Event]) -> str:
     """The text a session shows at start: directives in force, the epics in the facts, and recent events."""
     holds = ", ".join(state["holds"]) or "none"
     features = ", ".join(f"{k}={v}" for k, v in sorted(state["features"].items())) or "none"

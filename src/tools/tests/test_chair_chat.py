@@ -8,11 +8,11 @@ from agent_tools.chair_chat import (
     apply_directives,
     build_message,
     empty_state,
+    event_key,
     parse_message,
     state_summary,
     validate_directive,
 )
-from agent_tools.chair_steward import decide
 from agent_tools.courier import Reference
 
 REF = Reference("initiative", "e1")
@@ -54,6 +54,23 @@ def facts(*tasks, epic="e1", exited=True):
         "reported": frozenset(),
         "land_at": "ticket",
     }
+
+
+def publish(task, epic="e1"):
+    fields = {"task": task}
+    return {"kind": "publish", "topic": epic, "fields": fields, "key": event_key("needs_attention", fields), "event": "needs_attention"}
+
+
+def relaunch(epic="e1"):
+    fields = {"signature": "s1"}
+    return {"kind": "relaunch", "topic": epic, "fields": fields, "key": event_key("relaunched", fields)}
+
+
+def test_event_key_is_the_event_name_then_its_field_values_by_field_name():
+    assert event_key("needs_attention", {"task": "t1"}) == "needs_attention:t1"
+    assert event_key("needs_attention", {"task": "t1"}) != event_key("needs_attention", {"task": "t2"})
+    assert event_key("level_merged", {"level": "1", "head": "h1"}) == "level_merged:h1:1"
+    assert event_key("epic_complete", {}) == "epic_complete"
 
 
 def test_build_message_is_a_courier_entry_on_the_chair_label():
@@ -164,7 +181,7 @@ def test_questions_and_malformed_entries_apply_nothing():
 
 def test_left_on_release_lists_open_tasks_and_what_is_planned():
     f = [facts(("t1", "done"), ("t2", "ready"), ("t3", "quarantined"), exited=False)]
-    text = answer({"kind": "left_on_release", "subject": "e1"}, f, decide(f))
+    text = answer({"kind": "left_on_release", "subject": "e1"}, f, [publish("t3")])
     assert text == "e1: 2 left: t2 (ready), t3 (quarantined). Planned: publish(task=t3)."
 
 
@@ -180,7 +197,7 @@ def test_why_not_launched_names_the_blocking_fact_for_a_task():
     assert answer({"kind": "why_not_launched", "subject": "t1"}, f, []) == (
         "t1 is ready but not launched: the run for e1 has not exited."
     )
-    planned = decide([facts(("t1", "ready"))])
+    planned = [relaunch()]
     assert answer({"kind": "why_not_launched", "subject": "t1"}, [facts(("t1", "ready"))], planned) == (
         "t1 is ready and a relaunch is planned for e1."
     )
@@ -195,7 +212,7 @@ def test_why_not_launched_for_an_initiative_counts_states():
 
 def test_what_failed_lists_quarantines_and_planned_failure_events():
     f = [facts(("t1", "quarantined"), ("t2", "ready"))]
-    assert answer({"kind": "what_failed"}, f, decide(f)) == (
+    assert answer({"kind": "what_failed"}, f, [publish("t1")]) == (
         "Quarantined: t1 on e1. Failure events planned: publish(task=t1)."
     )
     assert answer({"kind": "what_failed"}, [facts(("t1", "done"))], []) == (
