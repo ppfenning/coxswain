@@ -1079,9 +1079,11 @@ def _unlocked(facts: Facts) -> tuple[Facts, list[Action]]:
     return chair_steer_cycle.break_cycle(chair_approval_hold.without_released(facts, releases))[0], [*releases, *restores]
 
 
-def _planned_schedule(facts: Facts, now: datetime | None) -> Schedule | None:
-    """The queue's Schedule, or None when the facts carry no inputs or there is no clock."""
-    return plan_from_inputs(facts["schedule_inputs"], now)[0] if "schedule_inputs" in facts and now is not None else None
+def _planned_schedule(facts: Facts, now: datetime | None, withheld: frozenset[str] = frozenset()) -> Schedule | None:
+    """The queue's Schedule, or None when the facts carry no inputs or there is no clock; withheld ids claim no surfaces."""
+    if "schedule_inputs" not in facts or now is None:
+        return None
+    return plan_from_inputs(facts["schedule_inputs"], now, withheld)[0]
 
 
 def _without_advice_clock(body: Mapping) -> dict:
@@ -1233,7 +1235,9 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     withheld = frozenset().union(*withheld_by.values())
     claimed = claimed_by(recover_actions, facts)
     free_lanes = _free_lanes(cap, kept, facts["dispatch"])
-    filled = plan_fill(facts, free_lanes, withheld, consumed, claimed, stalled=stalled_intake, now=now, schedule=schedule)
+    # Fill plans with the withheld set, so an initiative recovery holds does not keep others behind its surfaces.
+    fill_schedule = _planned_schedule(facts, now, withheld) if withheld else schedule
+    filled = plan_fill(facts, free_lanes, withheld, consumed, claimed, stalled=stalled_intake, now=now, schedule=fill_schedule)
     launches = [*capped, *filled]
     skips = budget_skips(facts, facts["initiatives"], now)
     no_host = _no_host(free_lanes, host_free, consumed, filled, facts["dispatch"].get("local_lanes") == "decompose")
