@@ -1,5 +1,5 @@
 {
-  "status": "complete: every task whose approved commit could be found is applied; four are not (see tasks)",
+  "status": "complete: every approved task is applied except one skipped as not really approved and one whose fixtures are ahead of an unbuilt producer",
   "base": "origin/main 104ea2e83",
   "order": "cherry-pick -x the remaining tasks in the listed order; tasks are grouped by initiative, phase order and needs honoured",
   "tests": {
@@ -744,8 +744,10 @@
         "be8c67b1ca85157951caffef3971856a72a77a2a"
       ],
       "source_branch": "agents/refreshing-a-phase-branch-onto-main-never-drops-2/refreshing-a-phase-branch-onto-main-never-drops-rebase-guard-reason-helpers",
-      "new_commits": [],
-      "status": "not applied: source commit is not in this clone or on origin",
+      "new_commits": [
+        "6cd5803a9218aec7f407c66ef01772d5a1276db0"
+      ],
+      "status": "applied, conflict resolved: stack_refresh.py imports (both kept) (fetched from the first machine, applied after the landing commits)",
       "expected_conflict": "src/graphs/harness/stack_refresh.py"
     },
     {
@@ -807,8 +809,10 @@
         "67824d70ae43f852057ed781ecbeedfdd78d2548"
       ],
       "source_branch": "agents/schedule-conflict-edges-only-order-work-behind-8/schedule-conflict-edges-only-order-work-behind-route-schedule-withheld-and-scenarios",
-      "new_commits": [],
-      "status": "not applied: source commit is not in this clone or on origin",
+      "new_commits": [
+        "d18421d239e34a45477d3bb5de8d3f3496e861b1"
+      ],
+      "status": "applied, conflict resolved: route_schedule.py keeps main's signature for `withheld` (fetched from the first machine, applied after the landing commits)",
       "expected_conflict": "src/tools/agent_tools/route_schedule.py"
     },
     {
@@ -1002,7 +1006,7 @@
       ],
       "source_branch": "agents/efficiency-reads-cost-per-completion-not-cost-6/efficiency-reads-cost-per-completion-not-cost-feed-contract",
       "new_commits": [],
-      "status": "not applied: source commit is not in this clone or on origin"
+      "status": "not applied: it changes only the expected dashboard feed fixtures (adds completions and cost_per_completion to the spend split), and no approved task makes the producer emit them, so applying it turns six fixture tests red"
     },
     {
       "task_id": "efficiency-reads-cost-per-completion-not-cost-status-line",
@@ -1081,8 +1085,10 @@
         "fc68c7c7bda91d8193312437cbdd9980e4ca5af7"
       ],
       "source_branch": "agents/not-launched-lines-name-the-real-reason-an-6/not-launched-lines-name-the-real-reason-an-plan-passes-real-reasons",
-      "new_commits": [],
-      "status": "not applied: source commit is not in this clone or on origin",
+      "new_commits": [
+        "f4d3ff871842815d4dedf22a4e5c434cb8b83c22"
+      ],
+      "status": "applied, conflict resolved: chair_plan.py passes the cap left and the schedule (fetched from the first machine, applied after the landing commits)",
       "expected_conflict": "src/tools/agent_tools/chair_plan.py"
     },
     {
