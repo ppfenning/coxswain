@@ -174,6 +174,33 @@ def run_gate(repo: Path, tree: Path, gate: str, landing: Mapping[str, Any], erro
     )
 
 
+def send_back(ws: Path, conn: Any, worker: str, mode: str) -> Callable[[str, str, str], str | None]:
+    """Edge. Adopt's way to return an approved task whose work cannot be found to `ready`: the store row first (only
+    from `approved`), then the work file. The reason is logged by the caller; why it was refused, else None."""
+    from core import workstore
+    from harness import store_work_state
+
+    def move(initiative: str, task: str, reason: str) -> str | None:
+        paths = sorted((Path(ws) / "work" / initiative).glob(f"*/{task}.md"))
+        try:
+            if mode == "store":
+                done = store_work_state.set_state(conn, initiative, task, "ready", worker, None, now_stamp(), expected="approved")
+                if not isinstance(done, dict):
+                    return f"the store did not move it from approved ({done})"
+            if paths and workstore.read_item(paths[0])["state"] == "approved":
+                workstore.set_state(paths[0], "ready")
+        except Exception as exc:
+            return f"{type(exc).__name__}: {exc}"
+        return None
+
+    return move
+
+
+def initiatives_in(ws: Path) -> list[str]:
+    """Edge. Every initiative with an `initiative.md` under the workspace's `work/`, by name."""
+    return sorted(p.parent.name for p in (Path(ws) / "work").glob("*/initiative.md"))
+
+
 def build(ws: Path, profile: Mapping[str, Any], *, worker: str | None = None, log: Callable[[str], None] = print,
           conn: Any = None, forge_module: Any = None) -> lander.Ports:
     """Edge. The ports for the workspace `ws` under routing profile `profile`."""
@@ -195,7 +222,7 @@ def build(ws: Path, profile: Mapping[str, Any], *, worker: str | None = None, lo
         named = _frontmatter(work / str(record["initiative"]) / "initiative.md").get("repo")
         if isinstance(named, str) and named:
             return Path(repo_path.expand(named, home))
-        return Path(str(record.get("repo") or "")).expanduser()
+        return Path(str(record.get("repo") or "")).expanduser()  # `lander._repo` refuses an empty or relative one
 
     def files_of(initiative: str) -> dict[str, dict[str, Any]]:
         found = {}

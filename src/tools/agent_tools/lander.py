@@ -70,9 +70,11 @@ class Outcome:
 
 
 def _repo(ports: Ports, record: Mapping[str, Any]) -> Path:
-    if ports.repo is not None:
-        return ports.repo(record)
-    return Path(str(record.get("repo") or "")).expanduser()
+    found = ports.repo(record) if ports.repo is not None else Path(str(record.get("repo") or "")).expanduser()
+    if not str(found).strip(".") or not found.is_absolute():
+        # Never the current directory: an empty path would run git in whatever checkout the process happens to be in.
+        raise LookupError(f"{record.get('initiative')}: its repository is not known on this machine")
+    return found
 
 
 def _parent_ref(repo: Path, parent: str) -> str:

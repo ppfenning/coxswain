@@ -180,3 +180,12 @@ def test_reading_the_records_for_the_chair_leaves_no_trace_and_never_raises(tmp_
     (empty / "cox.db").write_bytes(b"not a database")
     assert lander_ports.read_records(empty, notes.append) == []
     assert len(notes) == 1 and notes[0].startswith("note: landing records not read (")
+
+
+def test_send_back_moves_an_approved_work_file_to_ready_and_lists_the_workspaces_initiatives(ws: Path, ports) -> None:
+    move = lander_ports.send_back(ws, ports.conn, "lander-test", "files")
+    assert move("demo", "a", "commit 000000000000 is not in this clone") is None
+    assert "state: ready" in (ws / "work" / "demo" / "p1" / "a.md").read_text()
+    assert move("demo", "b", "already ready") is None, "a task that is not approved is left as it is"
+    assert "state: ready" in (ws / "work" / "demo" / "p2" / "b.md").read_text()
+    assert lander_ports.initiatives_in(ws) == ["demo"]
