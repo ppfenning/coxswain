@@ -13102,7 +13102,7 @@ def _initiative_target_branch(profile: dict, repo: Path | None, ws: Path, initia
     else the cartridge's `landing_areas.target_branch`), None when none is set. `refusal` is the message when the
     cartridge does not resolve or a set target branch is invalid; every other gap falls back to None with a `note:`."""
     from core.cartridge import OVERLAY_ALLOWED_KEYS  # lazy: core sits beside agent_tools in one venv
-    from core.landing import resolve_target_branch
+    from core.landing import resolve_epic_stack, resolve_target_branch
 
     cartridge, error = _team_cartridge(profile, repo, OVERLAY_ALLOWED_KEYS)
     if error:
@@ -13122,7 +13122,14 @@ def _initiative_target_branch(profile: dict, repo: Path | None, ws: Path, initia
         epic = definitions.get(epic_id) if epic_id else None
         if epic_id and epic is None and epic_id not in unread:
             print(f"note: epic {epic_id} has no file under epics/; using the repo default", file=sys.stderr)
-        return resolve_target_branch(cartridge, epic["target_branch"] if epic else None, fields.get("target_branch")), None
+        resolved = resolve_target_branch(cartridge, epic["target_branch"] if epic else None, fields.get("target_branch"))
+        if epic and initiative and not fields.get("target_branch") and resolve_epic_stack(cartridge, epic.get("epic_stack")):
+            # A stacked epic: an initiative that needs an unlanded initiative of the same epic forks from its branch.
+            from agent_tools import lander_ports
+            resolved = lander_ports.stack_base(
+                ws, initiative, str(epic_id), epic["target_branch"], lander_ports.read_records(ws / "runs")
+            ) or resolved
+        return resolved, None
     except ValueError as exc:
         return None, str(exc)
 
@@ -14661,6 +14668,11 @@ def _lander_adopt(a: argparse.Namespace) -> int:
     return lander_cli._adopt(a)
 
 
+def _lander_backlog(a: argparse.Namespace) -> int:
+    from agent_tools import lander_cli
+    return lander_cli._backlog(a)
+
+
 def _lander_service(a: argparse.Namespace) -> int:
     from agent_tools import lander_cli
     return lander_cli._service(a)
@@ -14703,6 +14715,20 @@ LANDER_COMMANDS = [
             "its phase branch is carried onto it, one that cannot be found goes back to ready, the initiative branch "
             "is kept or cut, and every built phase is merged into it.\nNothing is deleted, reset or rebased, and an "
             "initiative that has a record is skipped, so it is safe to run twice."
+        ),
+    ),
+    commands.Command(
+        "backlog", "lander", "mark the tasks a hand-folded pull request carried as done, once it has merged; a dry run unless --apply",
+        (
+            commands.Arg(("--manifest",), {"required": True, "help": "the backlog manifest (prereq-backlog-manifest.json)"}),
+            commands.Arg(("--pr",), {"required": True, "help": "the pull request that carried the manifest's tasks (URL)"}),
+            commands.Arg(("--apply",), {"action": "store_true", "help": "do it; refused until the forge says the pull request merged"}),
+            _PROFILE_ARG,
+        ),
+        "agent_tools.cli:_lander_backlog", False, (), defaults={"profile": None},
+        description=(
+            "Each task the manifest lists as applied moves from approved to done.\nA task already done, or in any other "
+            "state, is skipped, so it is safe to run twice."
         ),
     ),
     commands.Command(

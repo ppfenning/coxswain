@@ -235,6 +235,7 @@ def land_initiative(ports: Ports, initiative: str) -> Outcome:
     record = ls.get_record(ports.conn, initiative)
     if record is None:
         return close("failed", f"{initiative} has no landing record")
+    record, stack_events, below = _restack(ports, record)
     first = _other_land_on_parent(ports, ls.get_item(ports.conn, ident) or {})
     if first is not None:
         return close("waiting", f"{first} is landing on {record.get('parent')} first")
@@ -246,8 +247,9 @@ def land_initiative(ports: Ports, initiative: str) -> Outcome:
         return close("waiting", f"{initiative} is {state}, not assembled")
     repo, branch, parent = _repo(ports, record), str(record["branch"]), str(record["parent"])
     meta = ports.meta(initiative)
-    events: list[str] = []
+    events: list[str] = list(stack_events)
     auto = str(meta.get("gate") or "full") == "full"
+    stacked = bool(meta.get("epic_stack"))
     merged, _ = ports.forge.pr_merged(repo, branch) if (record.get("pr") or {}).get("url") else (False, "")
     # An open pull request the lander itself will merge is refreshed when its parent has moved under it. One that
     # waits for a person is left as that person last saw it.
@@ -261,6 +263,9 @@ def land_initiative(ports: Ports, initiative: str) -> Outcome:
     url = str((record.get("pr") or {}).get("url") or "")
     if not merged:
         merged, _ = ports.forge.pr_merged(repo, branch)
+    if not merged and below is not None:
+        # A layer of a stack: its pull request is open against the layer below, and merges only once that has landed.
+        return close("waiting", f"{url} is stacked on {below}, which has not landed", events)
     if not merged:
         if not auto:
             return close("waiting", f"{PERSON_GATE_NOTE}: {url}", events)
@@ -269,13 +274,75 @@ def land_initiative(ports: Ports, initiative: str) -> Outcome:
             if "pending" in detail or "timed out" in detail:
                 return close("waiting", f"checks on {url} have not finished: {detail}", events)
             return close("failed", f"checks failed on {url}: {detail}", [*events, *_send_back_initiative(ports, record, "checks", detail)])
-        ok, detail = ports.forge.merge(repo, {"kind": "merge", "squash": True, "delete_branch": True, "branch": branch,
+        # Into an epic branch an initiative merges with a merge commit, so the layers above it retarget cleanly; the
+        # squash happens once, from the epic branch to its parent.
+        ok, detail = ports.forge.merge(repo, {"kind": "merge", "squash": not stacked, "delete_branch": True, "branch": branch,
                                              "default_branch": parent, "subject": str((record.get("pr") or {}).get("title") or initiative)})
         if not ok:
             return close("failed", f"merge of {url} failed: {detail}", events)
         events.append(f"merged {url} into {parent}")
     events += _finish_landed(ports, record, tasks, url)
     return close("done", f"{initiative} landed on {parent}", events)
+
+
+def _restack(ports: Ports, record: dict[str, Any]) -> tuple[dict[str, Any], list[str], str | None]:
+    """The stack step of a land. (the record, events, the initiative this one is still stacked on or None).
+
+    When the record's parent is another initiative's branch, that initiative is the layer below. While it has not
+    landed this one waits on it. Once it has, this one moves down onto that initiative's own parent: the record's
+    parent changes, the open pull request is retargeted, and the new parent is merged forward by the ordinary
+    refresh. Nothing is rebased."""
+    parent = str(record.get("parent") or "")
+    below = next((r for r in ls.list_records(ports.conn)
+                  if r.get("branch") == parent and r.get("initiative") != record.get("initiative")), None)
+    if below is None:
+        return record, [], None
+    if below.get("state") != "landed":
+        return record, [], str(below["initiative"])
+    new_parent, initiative = str(below.get("parent") or ""), str(record["initiative"])
+    updated = {**record, "parent": new_parent, "updated_at": ports.now()}
+    if isinstance(updated.get("pr"), Mapping):
+        updated["pr"] = {**updated["pr"], "base": new_parent}
+    ls.put_record(ports.conn, updated)
+    events = [f"{initiative}: {below['initiative']} landed; its parent is now {new_parent}"]
+    if (record.get("pr") or {}).get("url"):
+        ok, why = ports.forge.retarget(_repo(ports, record), str(record["branch"]), new_parent)
+        events.append(f"{initiative}: pull request retargeted to {new_parent}" if ok
+                      else f"{initiative}: pull request not retargeted to {new_parent}: {why}")
+    return updated, events, None
+
+
+def land_epics(ports: Ports) -> list[str]:
+    """With `epic_stack` on, open the epic branch's one pull request once every member initiative has landed.
+
+    The epic's record is kept under `epic:<id>`. The pull request is opened once and left for the gate that merges it."""
+    events: list[str] = []
+    by_epic: dict[str, list[Mapping[str, Any]]] = {}
+    for record in ls.list_records(ports.conn):
+        if record.get("epic") and not str(record["initiative"]).startswith("epic:"):
+            by_epic.setdefault(str(record["epic"]), []).append(record)
+    for epic, members in sorted(by_epic.items()):
+        key = f"epic:{epic}"
+        if ls.get_record(ports.conn, key) is not None or any(m.get("state") != "landed" for m in members):
+            continue
+        meta = ports.meta(str(members[0]["initiative"]))
+        branch, parent = meta.get("epic_branch"), meta.get("epic_parent")
+        if not meta.get("epic_stack") or not branch or not parent:
+            continue
+        repo = _repo(ports, members[0])
+        title = str(meta.get("epic_title") or epic)
+        body = "\n".join([title, "", *(f"- {m['initiative']}: {m.get('landed_pr') or ''}".rstrip() for m in members), ""])
+        ok, url = ports.forge.open_pr(repo, title, body, head=str(branch), base=str(parent))
+        if not ok:
+            events.append(f"epic {epic}: pull request for {branch} was not opened: {url}")
+            continue
+        now = ports.now()
+        ls.put_record(ports.conn, {"initiative": key, "repo": str(members[0].get("repo") or ""), "branch": branch,
+                                   "parent": parent, "state": "pr_open", "land_at": "epic", "phases": {},
+                                   "pr": {"url": url, "title": title, "head": branch, "base": parent},
+                                   "created_at": now, "updated_at": now})
+        events.append(f"epic {epic}: every initiative has landed; opened {url} from {branch} to {parent}")
+    return events
 
 
 def _open_pr(ports: Ports, record: dict[str, Any], tasks: Sequence[Mapping[str, Any]], meta: Mapping[str, Any], repo: Path,
@@ -458,8 +525,9 @@ def sweep(ports: Ports) -> list[str]:
     Every built phase of a live record gets a `phase_merge` item, every assembled initiative an `initiative_land`,
     and an initiative with a blocked phase has its `on_blocked` policy applied."""
     events: list[str] = []
+    events += land_epics(ports)
     for record in ls.list_records(ports.conn):
-        if record.get("state") == "landed" or record.get("land_at") == "task":
+        if record.get("state") == "landed" or record.get("land_at") in ("task", "epic"):
             continue
         initiative = str(record["initiative"])
         tasks = ports.tasks(initiative)

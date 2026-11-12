@@ -141,6 +141,13 @@ class Forge:
     def pr_merged(self, repo: Path, branch: str) -> tuple[bool, str]:
         return pr_merged_verdict(self._module.find_branch_prs(repo, branch))
 
+    def retarget(self, repo: Path, branch: str, base: str) -> tuple[bool, str]:
+        """Point the open pull request from `branch` at a new base: how a stack's layer moves down when the one below lands."""
+        edit = getattr(self._module, "_gh_on_open_pr", None)
+        if edit is None:
+            return False, "this forge cannot retarget a pull request"
+        return edit(repo, branch, ["edit", "--base", base])
+
 
 def fetch_branch(repo: Path, branch: str) -> str | None:
     """Edge. Bring `branch` up to origin's copy, forward only. A reason only when it diverged: it must not be moved here."""
@@ -251,6 +258,37 @@ def split_initiative(ws: Path, conn: Any, repo: Path, initiative: str, phases: S
     return follow
 
 
+def needed_initiatives(work: Path, initiative: str) -> list[str]:
+    """Edge (reads). The other initiatives whose tasks this initiative's tasks need, in first-need order."""
+    from core import workstore
+
+    own = {p.stem: p for p in sorted((Path(work) / initiative).glob("*/*.md"))}
+    found: list[str] = []
+    for path in own.values():
+        try:
+            needs = [str(n) for n in workstore.read_item(path).get("needs") or []]
+        except Exception:
+            continue
+        for need in needs:
+            if need in own:
+                continue
+            owner = next((p.parent.parent.name for p in sorted(Path(work).glob(f"*/*/{need}.md"))), None)
+            if owner and owner != initiative and owner not in found:
+                found.append(owner)
+    return found
+
+
+def stack_base(ws: Path, initiative: str, epic: str, epic_branch: str | None, records: Sequence[Mapping[str, Any]]) -> str | None:
+    """Edge (reads). With `epic_stack` on, the branch `initiative` forks from: see `core.landing.stack_parent`."""
+    from core.landing import stack_parent
+
+    members = {
+        str(r["initiative"]): {"branch": r.get("branch"), "landed": r.get("state") == "landed"}
+        for r in records if r.get("epic") == epic
+    }
+    return stack_parent(needed_initiatives(Path(ws) / "work", initiative), members, epic_branch)
+
+
 def send_back(ws: Path, conn: Any, worker: str, mode: str) -> Callable[[str, str, str], str | None]:
     """Edge. Adopt's way to return an approved task whose work cannot be found to `ready`: the store row first (only
     from `approved`), then the work file. The reason is logged by the caller; why it was refused, else None."""
@@ -284,6 +322,7 @@ def build(ws: Path, profile: Mapping[str, Any], *, worker: str | None = None, lo
     from agent_tools import cli
     from core import workstore
     from core.cartridge import OVERLAY_ALLOWED_KEYS
+    from core.landing import resolve_epic_stack
     from harness import store_read
 
     ws = Path(ws)
@@ -319,8 +358,12 @@ def build(ws: Path, profile: Mapping[str, Any], *, worker: str | None = None, lo
         repo = Path(repo_path.expand(str(own["repo"]), home)) if own.get("repo") else None
         cartridge, error = cli._team_cartridge(dict(profile), repo, OVERLAY_ALLOWED_KEYS)
         epic = cli._read_epics(ws)[0].get(str(own.get("epic"))) if own.get("epic") else None
+        stack = bool(epic) and resolve_epic_stack(cartridge, (epic or {}).get("epic_stack"))
         return {"initiative": own, "cartridge": cartridge, "cartridge_error": error,
-                "epic_issue": (epic or {}).get("issue"), "gate": cli._resolved_gate_level(runs_dir)}
+                "epic_issue": (epic or {}).get("issue"), "gate": cli._resolved_gate_level(runs_dir),
+                "epic_stack": stack, "epic_branch": (epic or {}).get("target_branch"), "epic_title": (epic or {}).get("title"),
+                # Where the epic branch itself lands: the cartridge's target branch, else the repo's default branch.
+                "epic_parent": (cartridge.get("landing_areas") or {}).get("target_branch") if stack else None}
 
     def checks(repo: Path, tree: Path, gate: str) -> tuple[bool, str]:
         landing, error = cli._cartridge_landing(repo, dict(profile))

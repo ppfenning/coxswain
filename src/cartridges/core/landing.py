@@ -343,6 +343,20 @@ def resolve_epic_stack(cartridge: Mapping[str, Any], epic_value: bool | None = N
     return _flag(epic_value, configured, "epic epic_stack")
 
 
+def stack_parent(needs: Sequence[str], members: Mapping[str, Mapping[str, Any]], epic_branch: str | None) -> str | None:
+    """The branch a stacked initiative forks from and bases its pull request on, with `epic_stack` on.
+
+    `needs` are the initiatives this one needs, in order; `members` maps each initiative of the same epic to
+    `{"branch": its initiative branch or None, "landed": bool}`. The first needed member that has a branch and has not
+    landed is the parent: that is the stack, and its layers are initiative pull requests, never phases. With none,
+    the parent is the epic branch. None when the epic names no branch."""
+    for need in needs:
+        member = members.get(need) or {}
+        if member.get("branch") and not member.get("landed"):
+            return str(member["branch"])
+    return epic_branch
+
+
 def resolve_phase_cap(cartridge: Mapping[str, Any]) -> int:
     """How many phase merges run at once: `landing_areas.phase_cap`, default 2."""
     return _cap(_landing(cartridge).get("phase_cap"), DEFAULT_PHASE_CAP, "landing_areas.phase_cap")

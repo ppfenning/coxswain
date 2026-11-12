@@ -214,6 +214,38 @@ def _adopt(a: argparse.Namespace) -> int:
     return 1 if stopped else 0
 
 
+def _backlog(a: argparse.Namespace) -> int:
+    """Dry run unless `--apply`; with `--apply` it refuses until the forge says the pull request merged."""
+    from agent_tools import lander_backlog
+
+    found = _workspace(a)
+    if found is None:
+        return 2
+    ws, profile = found
+    try:
+        manifest = lander_backlog.read_manifest(Path(a.manifest))
+    except ValueError as exc:
+        print(f"lander: {exc}")
+        return 2
+    ports = lander_ports.build(ws, profile)
+    try:
+        def state_of(initiative: str, task: str) -> str | None:
+            return next((t["state"] for t in ports.tasks(initiative) if t["id"] == task), None)
+
+        steps = lander_backlog.plan(manifest, state_of)
+        if not a.apply:
+            print("\n".join([*lander_backlog.lines(steps), "dry run: nothing was changed; run again with --apply once the pull request has merged"]))
+            return 0
+        state = ports.forge.pr_state(a.pr)
+        if state.get("state") != "merged":
+            print(f"lander: refusing: {a.pr} is {state.get('state') or 'unknown'}, not merged; its tasks are not on the parent yet")
+            return 2
+        print("\n".join(lander_backlog.apply(steps, ports.mark_done, a.pr)))
+    finally:
+        ports.conn.close()
+    return 0
+
+
 def _service(a: argparse.Namespace) -> int:
     """Writes or shows the unit. Never runs systemctl: it prints the two lines to run."""
     from agent_tools import cli

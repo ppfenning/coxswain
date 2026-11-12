@@ -260,3 +260,14 @@ The backlog branch is finished and pushed (`5919446d`): 58 applied, 4 not applie
 this machine: refreshing-a-phase-branch rebase-guard, schedule-conflict-edges route-schedule, efficiency feed-contract,
 not-launched plan-passes-real-reasons), 1 skipped. Three integration fixes are listed in the manifest.
 Still to do: commit 10, commit 11 (docs, manifest migration step), rebase onto the backlog branch, reshape, PR.
+
+Backlog merged into this branch (one merge commit; `_merge_checks` takes the new `_checks_env` signature).
+`cox lander backlog --manifest ... --pr ... [--apply]` is the manifest migration step (refuses until the PR merged).
+
+Commit 10, epic stacks (opt-in, default off): `core.landing.stack_parent`; `parse_epic` returns `issue` and
+`epic_stack` when the file sets them (so `Part of #n` works); the launcher's `_initiative_target_branch` returns the
+needed unlanded member's branch (`lander_ports.stack_base`); `lander._restack` waits on the layer below, then
+retargets (`Forge.retarget`) and merges forward; an initiative merges into the epic branch with a merge commit;
+`lander.land_epics` opens the epic branch's one PR when every member landed (record `epic:<id>`).
+**Not built: batching of disjoint initiative PRs** (the existing `land_batch*` modules still serve task lands only).
+Also not built: marking the `epic:<id>` record landed after its PR merges.

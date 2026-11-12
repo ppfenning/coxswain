@@ -230,3 +230,29 @@ def test_a_split_moves_the_blocked_phase_with_everything_it_built_and_can_be_run
     assert (item["state"], item["last_error"]) == ("done", "moved to demo-2")
     assert ports.split_blocked("demo", ["p2"]) == "demo-2", "a second run finds the same follow-up and changes nothing"
     assert lander_ports.initiatives_in(ws) == ["demo", "demo-2"]
+
+
+def test_a_stacked_initiative_is_based_on_the_unlanded_initiative_its_tasks_need(ws: Path) -> None:
+    write(ws / "work" / "second" / "initiative.md", {"id": "second", "title": "Second", "epic": "x"})
+    write(ws / "work" / "second" / "p1" / "s1.md", {"id": "s1", "title": "S1", "state": "ready", "needs": ["a"]})
+    assert lander_ports.needed_initiatives(ws / "work", "second") == ["demo"]
+    assert lander_ports.needed_initiatives(ws / "work", "demo") == []
+    records = [{"initiative": "demo", "epic": "x", "branch": "init/demo", "state": "building"}]
+    assert lander_ports.stack_base(ws, "second", "x", "epic-x", records) == "init/demo"
+    assert lander_ports.stack_base(ws, "second", "x", "epic-x", [{**records[0], "state": "landed"}]) == "epic-x"
+    assert lander_ports.stack_base(ws, "second", "other-epic", "epic-x", records) == "epic-x"
+
+
+def test_the_forge_wrapper_retargets_through_the_modules_pr_edit_and_says_when_it_cannot() -> None:
+    class Module:
+        def __init__(self) -> None:
+            self.calls: list = []
+
+        def _gh_on_open_pr(self, repo, head, verb):
+            self.calls.append((head, verb))
+            return True, ""
+
+    module = Module()
+    assert lander_ports.Forge(module).retarget(Path("/srv/r"), "init/b", "epic-x") == (True, "")
+    assert module.calls == [("init/b", ["edit", "--base", "epic-x"])]
+    assert lander_ports.Forge(object()).retarget(Path("/srv/r"), "init/b", "epic-x")[0] is False
