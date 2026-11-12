@@ -134,6 +134,13 @@ def rsync_file_argv(src_file: str, dest_dir_location: str) -> list[str]:
     return ["rsync", *_RSYNC_BOUND_OPTIONS, "--relative", src_file, dest_dir_location.rstrip("/") + "/"]
 
 
+def cartridges_fetch_argv(sha: str, into: str) -> list[str]:
+    """The lane host writes the chair's published cartridges itself, from the store, into the directory the rsync
+    used to fill. `--replace`: the launch names this host as a lane, whose copy is the chair's, as the mirroring
+    rsync treated it."""
+    return ["cox", "route", "cartridges", "fetch", "--sha", sha, "--into", into, "--replace"]
+
+
 def rsync_push_argv(src_dir: str, dest_location: str, *, mirror: bool = False) -> list[str]:
     """Trailing slashes on both ends copy directory contents; deletes at the destination only when `mirror`."""
     return ["rsync", *_RSYNC_BOUND_OPTIONS, *(["--delete"] if mirror else []), src_dir.rstrip("/") + "/", dest_location.rstrip("/") + "/"]

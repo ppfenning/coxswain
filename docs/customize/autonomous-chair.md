@@ -335,6 +335,30 @@ launch runs the same command in the background, to completion. The export
 still loads any ticket file the store has not got before it writes, so a
 ticket written by hand as a file is not deleted.
 
+You rarely need to run that by hand. With git off, `cox route`, `runs`,
+`lander`, `epic`, `console` and `dash` check the store's version first and
+rewrite the files only when a row changed since the last write. A file that
+is an unchanged copy of a row the store has since dropped is deleted, so a
+machine that was behind never puts the row back. A store that cannot be
+reached leaves the files as they are and the command still runs.
+
+**Cartridges stay yours.** They are written and versioned where you keep
+them; the store never becomes the place they are authored. With git off and
+a shared store, a launch to a lane host publishes the exact files of the
+chair's `cartridges/` directory to the store under the digest of those
+files, and the lane host writes that snapshot itself before the run. Nothing
+is copied from machine to machine, and a host that cannot produce the same
+digest stops the launch. A publish that fails falls back to the copy.
+
+```sh
+cox route cartridges publish             # prints the sha
+cox route cartridges fetch --sha <sha>   # writes it into cartridges_dir
+```
+
+A fetch refuses to write over cartridges a person put there or edited. Only
+a directory that is empty, or still exactly what the last fetch left, is
+replaced without `--replace`.
+
 With a shared store the courier bus is the store's `courier_log` table, one
 bus for every machine, with git on or off. The first use loads what
 `courier.jsonl` already held. `cox courier send`, `inbox` and `ack` work as

@@ -5027,6 +5027,33 @@ def _route_export(a: argparse.Namespace) -> int:
     return 0
 
 
+def _route_cartridges(a: argparse.Namespace) -> int:
+    """Edge. `publish` stores the profile's cartridges directory under its sha; `fetch` writes a stored snapshot there."""
+    from agent_tools import cartridge_snapshot  # imported here: cli loads a command module only when it runs
+
+    profile = _courier_profile(a)
+    if profile is None:
+        return 2
+    folder = a.into or profile.get("cartridges_dir")
+    if not folder:
+        print("cartridges: the profile names no cartridges_dir; pass --into")
+        return 2
+    root, runs_dir = Path(folder).expanduser(), Path(profile["workspace_dir"]).expanduser() / "runs"
+    try:
+        if a.action == "publish":
+            print(cartridge_snapshot.publish(runs_dir, root))
+            return 0
+        if not a.sha:
+            print("cartridges: fetch needs --sha")
+            return 2
+        wrote, deleted = cartridge_snapshot.fetch(runs_dir, a.sha, root, replace=a.replace)
+    except Exception as exc:
+        print(f"cartridges: {type(exc).__name__}: {exc}")
+        return 1
+    print(f"cartridges: {root} holds {a.sha[:12]} ({wrote} written, {deleted} removed)")
+    return 0
+
+
 _EXPORT_STAMP = ".export-stamp"
 # Commands that read the board from this machine's files. `chair` is not here: its tick exports for itself.
 _BOARD_READERS = frozenset({"route", "runs", "lander", "epic", "console", "dash"})
@@ -7845,6 +7872,31 @@ def _workspace_cartridges(runs_dir: Path) -> str | None:
     return "cartridges" if (runs_dir.parent / "cartridges").is_dir() else None
 
 
+def _routing_profile_or_empty(a: argparse.Namespace) -> dict:
+    """Edge. The parsed routing profile; {} when it is missing or unreadable, which reads as every default."""
+    text = _read_text_or_none(_profile_path(a))
+    try:
+        return route.parse_profile(text) if text else {}
+    except route.ProfileError:
+        return {}
+
+
+def _published_cartridges(runs_dir: Path, profile: Mapping) -> str | None:
+    """Edge. The sha of the chair's cartridges, published to the store, when lanes read them from there: the
+    workspace is out of git, the store is shared, and the workspace holds a cartridges directory. None keeps the copy
+    by rsync (`profile` is the routing profile). A publish that fails also returns None, after saying so: the launch then copies them as before."""
+    from agent_tools import cartridge_snapshot, courier_bus
+
+    folder = _workspace_cartridges(runs_dir)  # the same directory the rsync copies
+    if workspace_git_on(profile) or folder is None or not courier_bus.uses_store(runs_dir.parent / "courier.jsonl"):
+        return None
+    try:
+        return cartridge_snapshot.publish(runs_dir, runs_dir.parent / folder)
+    except Exception as exc:
+        print(f"cartridges: could not publish to the store, copying them instead: {type(exc).__name__}: {exc}")
+        return None
+
+
 def _workspace_probe(cwd: Path) -> Callable[[list[str]], tuple[int, str]]:
     """Edge. `remote_launch`'s probe (exit code, stdout then stderr) run from `cwd`: the cartridges check names its source relative to the workspace."""
 
@@ -7884,7 +7936,7 @@ def _route_launch_on_host(
         host, initiative, run_id, _holder_label(a), launched_at, run, locate, repo, harness_dir,
         preflight=preflight, home=home, host_checkouts=_host_checkouts(run_store.hosts(runs_dir), host.name), tools=tools,
         graph=graph, intake=intake, cartridges=_workspace_cartridges(runs_dir), probe=_workspace_probe(runs_dir.parent),
-        profile=provider, phase=phase,
+        profile=provider, phase=phase, cartridge_sha=_published_cartridges(runs_dir, _routing_profile_or_empty(a)),
     )
     if isinstance(result, remote_launch.LaunchError):
         print(f"routing: launch on {host.name} failed at {result.step}: {result.message}")
@@ -12613,6 +12665,24 @@ ROUTE_COMMANDS = [
         "groups", "route", "print the newest plans/intake-groups/<date>.md file, work-shape.md §5",
         (commands.Arg(("--profile",)),),
         "agent_tools.cli:_route_groups", False, (),
+    ),
+    commands.Command(
+        "cartridges", "route", "publish this machine's cartridges to the store, or write a published snapshot here",
+        (
+            commands.Arg(("action",), {"choices": ("publish", "fetch")}),
+            commands.Arg(("--sha",), {"help": "the snapshot to fetch"}),
+            commands.Arg(("--replace",), {"action": "store_true", "help": "fetch over cartridges that no fetch put there"}),
+            commands.Arg(("--into",), {"help": "the directory to publish from or fetch into; default the profile's cartridges_dir"}),
+            commands.Arg(("--profile",)),
+        ),
+        "agent_tools.cli:_route_cartridges", False, (),
+        description=(
+            "Cartridges are written and versioned where their owner keeps them. The store only carries a copy of "
+            "the exact files a launch used, under the digest of those files, so a lane host can read them.\n"
+            "publish prints the sha of the profile's cartridges_dir and stores its files once.\n"
+            "fetch makes cartridges_dir hold exactly that snapshot. It refuses to write over files a person put "
+            "there or edited, unless --replace is given."
+        ),
     ),
     commands.Command(
         "export", "route", "write this machine's work/ and intake/ files from the store; nothing is committed",
