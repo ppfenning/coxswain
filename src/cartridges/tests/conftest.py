@@ -19,6 +19,19 @@ def write_cartridge(directory: Path, config: dict, context: dict[str, str] | Non
     return directory
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _git_templates_are_empty(tmp_path_factory):
+    """`git init` and `git clone` copy the stock templates (sample hooks, description, info/exclude) unless the template holds none.
+
+    The template keeps empty `hooks/` and `info/` directories: tests write hook scripts and `info/exclude` into them."""
+    templates = tmp_path_factory.mktemp("git-templates")
+    for name in ("hooks", "info"):
+        (templates / name).mkdir()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("GIT_TEMPLATE_DIR", str(templates))
+        yield
+
+
 @pytest.fixture
 def cartridges(tmp_path: Path) -> Path:
     """A minimal base + team pair, obviously fake, enough to resolve cleanly."""

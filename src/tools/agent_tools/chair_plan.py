@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from agent_tools import (
-    chair_approval_hold,
     chair_approval_restore,
     chair_launch_why,
     chair_lease_refusal,
@@ -17,7 +16,6 @@ from agent_tools import (
     chair_plan_prune,
     chair_stall,
     chair_steer_cycle,
-    chair_steward,
 )
 from agent_tools.chair_carry import plan_carry
 from agent_tools.chair_idle_ready import plan_idle_ready
@@ -33,7 +31,14 @@ from agent_tools.chair_plan_fill import (
     host_free_slots,
     plan_fill,
 )
-from agent_tools.chair_plan_land import backoff_held, fetch_action, newest_run, plan_finish, plan_lands
+from agent_tools.chair_plan_land import (
+    backoff_held,
+    fetch_action,
+    newest_run,
+    plan_finish,
+    plan_lands,
+    plan_missed_closes,
+)
 from agent_tools.chair_plan_recover import (
     STRANDED_CAUSE,
     _initiative_first_unmet_need,
@@ -902,103 +907,6 @@ def _waiting_actions(waiting: Sequence[WaitingInitiative], reported: Mapping[str
     ]
 
 
-def _steward_handled(facts: Facts) -> frozenset[str]:
-    """The epic ids the steward plans for this tick; empty when the steward key is absent or disabled."""
-    steward = facts.get("steward")
-    return frozenset(e["epic_id"] for e in steward["epics"]) if steward is not None and steward["enabled"] else frozenset()
-
-
-_LANDS_BY_MERGE = ("level", "task")
-
-
-def _land_inputs(approved: Sequence[ApprovedTask], initiative: str, phase: str) -> dict[str, object]:
-    """What a phase land needs, read off the approved tasks of the phase: repo, phase, task_runs, fetch_runs and run.
-
-    `run` is the newest run and is left out when any task's run is unknown, so the executor can name the missing run."""
-    tasks = [t for t in approved if t["initiative"] == initiative and t["phase"] == phase]
-    if not tasks:
-        return {}
-    run = newest_run({t["run"] for t in tasks})
-    return {
-        "repo": tasks[0]["repo"],
-        "phase": phase,
-        **({"run": run} if run else {}),
-        "task_runs": {t["id"]: t["run"] for t in tasks},
-        "fetch_runs": sorted({t["run"] for t in tasks if t["needs_fetch"] and t["run"]}),
-    }
-
-
-def _from_steward(action: chair_steward.StewardAction, approved: Sequence[ApprovedTask] = ()) -> Action:
-    topic, fields = action["topic"], action["fields"]
-    scoped: Action = {"epic": topic, "topic": topic, "fields": fields}
-    if action["kind"] == "relaunch":
-        # epic, topic and fields (the signature) let the executor record `relaunched`; a planner relaunch carries none.
-        return {"kind": "relaunch", "initiative": topic, **scoped}
-    if action["kind"] == "merge_level":
-        land_at = action.get("land_at")
-        inputs = _land_inputs(approved, topic, action.get("phase", "")) if land_at in _LANDS_BY_MERGE else {}
-        kept = {"land_at": land_at} if land_at else {}
-        return {"kind": "merge_level", **scoped, "level": int(fields["level"]), **kept, **inputs}  # type: ignore[typeddict-item]
-    if action["kind"] == "run_gate":
-        return {"kind": "run_gate", **scoped}
-    # The only kind left is publish, which the plan names steward_event.
-    return {"kind": "steward_event", **scoped, "event": action["event"]}
-
-
-def _steward_actions(facts: Facts, lost: frozenset[str], gated: frozenset[str] = frozenset()) -> list[Action]:
-    """The steward's decisions as actions, with no planner gate applied yet except `gated`.
-
-    A gated epic is left out before `decide`, so its merge, gate and events go and it takes none of the one serial gate slot.
-
-    A lost run has no exit record by definition, so the steward is told it exited: the host's silence is the evidence
-    plan_lost_runs relies on, and without this a lost run on a handled epic would never be relaunched."""
-    steward = facts.get("steward")
-    if steward is None or not steward["enabled"]:
-        return []
-    epics = [{**e, "exited": True} if e["epic_id"] in lost else e for e in steward["epics"] if e["epic_id"] not in gated]
-    return [_from_steward(a, facts["approved"]) for a in chair_steward.decide(epics)]
-
-
-def _without_steward_lands(lands: list[Action], steward: list[Action]) -> list[Action]:
-    """Drop the planner's land for each phase a steward merge_level at land_at level or task is landing.
-
-    The merge carries the fetch_runs, so the planner's fetch of those runs goes too; otherwise the run is fetched twice."""
-    merging = {(a["epic"], a["phase"]): a for a in steward if a["kind"] == "merge_level" and a.get("land_at") in _LANDS_BY_MERGE and "phase" in a}
-    fetched = {(a["epic"], run) for a in merging.values() for run in a.get("fetch_runs", [])}
-    return [
-        a for a in lands
-        if not (a["kind"] in ("land_phase", "partial_land") and (a["initiative"], a["phase"]) in merging)
-        and not (a["kind"] == "fetch" and (a["initiative"], a["run"]) in fetched)
-    ]
-
-
-def _without_launch_pair(actions: list[Action], ids: frozenset[str]) -> list[Action]:
-    """Drop the relaunch and the paired clear_branches of each initiative in ids."""
-    return [a for a in actions if not (a["kind"] in ("relaunch", "clear_branches") and a["initiative"] in ids)]
-
-
-def _steward_relaunches_replace(
-    recover: list[Action], steward: list[Action], handled: frozenset[str]
-) -> list[Action]:
-    """The steward's relaunch takes the place of the planner's relaunch pair for each handled epic.
-
-    `recover` is plan_recover's or plan_lost_runs' output; they own the gates a relaunch needs: quarantine, schema
-    death, landing repo, dag problem, waiting, launch budget, loop rule and steer. The steward's relaunch is kept only
-    where `recover` held one to replace, so no gate is skipped. If the planner sees no relaunchable work where the
-    steward does, no relaunch is planned. The gates after (lost, unfetched, not exited, CI hold, deadlock, cap and
-    homing) then see the steward's relaunch as any other.
-
-    An epic whose steward plans a merge_level or run_gate and no relaunch of its own keeps the planner's gated relaunch,
-    tagged after_steward so it runs behind that action. Its clear_branches is dropped: it could delete level branches
-    before the merge."""
-    gated_in = frozenset(a["initiative"] for a in recover if a["kind"] == "relaunch")
-    relaunches = [a for a in steward if a["kind"] == "relaunch" and a["initiative"] in gated_in]
-    own = frozenset(a["initiative"] for a in steward if a["kind"] == "relaunch")
-    behind = frozenset(a["epic"] for a in steward if a["kind"] in ("merge_level", "run_gate")) - own
-    kept = [{**a, "after_steward": True} for a in recover if a["kind"] == "relaunch" and a["initiative"] in behind]
-    return [*_without_launch_pair(recover, handled), *relaunches, *kept]
-
-
 def _no_host(free_lanes: int, host_free: Sequence[HostSlot], consumed: Mapping[str, int], filled: Sequence[Action], reserved: bool) -> bool:
     """True when no local lane and no lane-host slot is left for an epic after recovery and fill placed theirs.
 
@@ -1052,6 +960,25 @@ def _stuck_steer_heads(
     ]
 
 
+_SCHEDULED_LATER = "the schedule placed it later"
+
+
+def _placement_hints(facts: Facts, schedule: Schedule | None) -> dict[str, dict[str, str]]:
+    """Per initiative the schedule places: host of its first this-tick launch, else scheduled_later.
+
+    host is "" when that host is local in schedule_inputs. An Explanation names neither the node a placement waits
+    behind nor a file, so a later placement always reads as the fallback text."""
+    if schedule is None:
+        return {}
+    local = frozenset(h["name"] for h in facts.get("schedule_inputs", {}).get("hosts", []) if h["local"])
+    first_host = {p.key[0]: p.host for p in reversed(schedule.launches)}  # reversed, so the first placement wins
+    later = frozenset(p.key[0] for lane in schedule.lanes for p in lane.next) - first_host.keys()
+    return {
+        **{i: {"scheduled_later": _SCHEDULED_LATER} for i in later},
+        **{i: {"host": "" if h in local else h} for i, h in first_host.items()},
+    }
+
+
 def _unlaunched_actions(
     facts: Facts,
     launches: Sequence[Action],
@@ -1062,23 +989,26 @@ def _unlaunched_actions(
     pace_cap: int,
     now: datetime | None,
     stuck: Sequence[Action],
+    schedule: Schedule | None = None,
 ) -> list[Action]:
     """One unlaunched action per ready initiative the launch list leaves out, except those with a steer_head_stuck line.
 
     Empty without now, as for stale and tune. Each initiative is asked on its own, so its clearing time reads from its
-    own launch_history entry. host is "": an initiative left out was not placed on a lane host."""
+    own launch_history entry. host is the schedule's first placement of the initiative, "" for the chair machine, and
+    absent when there is no schedule or it does not place the initiative; scheduled_later marks one it places later."""
     if now is None:
         return []
     launched = frozenset(a["initiative"] for a in launches if _is_launch(a))
     holds = [a for a in launches if a["kind"] == "steer_clear" or _steer_deferred(a)]
     reported = frozenset(a["initiative"] for a in stuck)
     history = facts.get("launch_history", {})
+    hints = _placement_hints(facts, schedule)
     return [
         action
         for i in facts["initiatives"]
         if i["id"] not in reported
         for action in chair_launch_why.unlaunched(
-            [{**i, "host": ""}],
+            [{**i, **hints.get(i["id"], {})}],
             launched,
             withheld_by,
             skips,
@@ -1094,11 +1024,13 @@ def _unlaunched_actions(
 
 
 def _unlocked(facts: Facts) -> tuple[Facts, list[Action]]:
-    """Facts without the approvals held past the limit, then without a steer cycle's non-live holders, and the releases and restores."""
-    # plan_release reads `merged` on every approved row before it looks at a hold, so it runs only when there is a hold.
-    releases = chair_approval_hold.plan_release(facts) if facts.get("approval_holds") else []
-    restores = chair_approval_restore.not_released(chair_approval_restore.plan_restore(facts), releases)
-    return chair_steer_cycle.break_cycle(chair_approval_hold.without_released(facts, releases))[0], [*releases, *restores]
+    """Facts without a steer cycle's non-live holders, and the restores of approvals an earlier release wrongly took.
+
+    No approval is released here. An approval used to go back to ready once it had held files for `approval_hold_ticks`
+    ticks, which threw finished work away because time had passed. Approved work now stops holding files when its
+    phase merges into the initiative branch, and a land that fails files a rectify task on top of what is built."""
+    restores = chair_approval_restore.plan_restore(facts)
+    return chair_steer_cycle.break_cycle(facts)[0], list(restores)
 
 
 def _planned_schedule(facts: Facts, now: datetime | None, withheld: frozenset[str] = frozenset()) -> Schedule | None:
@@ -1149,12 +1081,9 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     run_exited = facts.get("run_exited", {})
     widen = plan_widen(facts)
     widened = frozenset((a["initiative"], a["task_id"]) for a in widen)
-    steward_handled = _steward_handled(facts)
-    steward = _steward_actions(facts, lost, gated)
-    # A merge_level at land_at level or task lands its phase: the planner's own land for it would be a second land.
-    lands = _without_steward_lands(planned_lands, steward)
-    recover_actions = _steward_relaunches_replace(plan_recover(facts, now), steward, steward_handled)
-    lost_actions = _steward_relaunches_replace(plan_lost_runs(facts, now), steward, steward_handled)
+    lands = planned_lands
+    recover_actions = plan_recover(facts, now)
+    lost_actions = plan_lost_runs(facts, now)
     ordinary = _withhold_lost_runs(_without_widened(recover_actions, widened), lost)
     pre_exit_gate = _withhold_remote_unfetched(ordinary, remote_unfetched)
     would_relaunch = frozenset(a["initiative"] for a in pre_exit_gate if a["kind"] == "relaunch")
@@ -1171,17 +1100,12 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     idle_stall = [] if deadlock is not None else planned_idle_stall
     waiting_actions = _without_deadlocked(_waiting_actions(waiting, facts.get("waiting_reported", {})), deadlock)
     unstarted_waiting_chair = _without_deadlocked(planned_unstarted_waiting_chair, deadlock)
-    closes = [*plan_close_initiatives(facts), *plan_finish(facts)]
+    closes = [*plan_close_initiatives(facts), *plan_finish(facts), *plan_missed_closes(facts)]
     # A blocked initiative's relaunch and its paired clear_branches go; the waiting action records why.
     recovered = _withhold_lease_held(
         [a for a in _without_deadlocked(recoverable, deadlock) if not (a["kind"] in ("relaunch", "clear_branches") and a["initiative"] in waiting_ids)],
         lease_held,
     )
-    # The steward's relaunch is already in `recovered`. Its merges lead the plan: a merge_level at land_at level or task is an
-    # inline land, and a land_phase started in the land sink can hold the repo for ten minutes on CI, so the merge would find it held.
-    # Its gates and events follow the planner's own actions.
-    steward_merges = [a for a in steward if a["kind"] == "merge_level"]
-    steward_events = [a for a in steward if a["kind"] not in ("relaunch", "merge_level")]
     if facts["limits"]["hard_stop"]:
         # Nothing launches, so every ready initiative is left out; a pace cap of 0 names the first reason, which the stop replaces.
         stopped = [
@@ -1191,7 +1115,6 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         idle_ready = plan_idle_ready(facts, recovered, now) if now is not None else []
         return [
             *reverts,  # a revert starts no run, so a red main is healed under the hard stop too
-            *steward_merges,  # a merge starts no run either, and it must run before a land takes the repo
             *lands,
             *fetch_exits,
             *stale,
@@ -1213,8 +1136,6 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
             *unstarted_waiting_chair,
             *waiting_actions,
             *closes,
-            # Events start no run. A gate run may spend what the stop protects, so it waits for the stop to lift.
-            *[a for a in steward_events if a["kind"] != "run_gate"],
             *stopped,
             *schedule_update,
         ]
@@ -1232,7 +1153,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     # A steer deferral already reports its initiative; fill would find the same overlap and report it twice.
     # An initiative being landed, or whose phase lands this tick, must not launch until the land settles; the rest of
     # its repo launches beside the land.
-    steward_started = steward_handled & frozenset(i["id"] for i in facts["initiatives"] if i["started"])
+    decompose_only = frozenset(facts.get("remote_unfetched_decompose", ()))  # type: ignore[typeddict-item]
     # Each set is keyed by the plain words a stuck steer head reports when it is the reason the head is left out.
     withheld_by = {
         "recovery already holds it": frozenset(
@@ -1241,7 +1162,8 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         # chair_facts imports this module, so STRANDED_CAUSE comes from chair_plan_recover, which holds the same value.
         "quarantined": frozenset(q["initiative"] for q in facts["quarantines"] if q["cause"] != STRANDED_CAUSE),
         "stranded": frozenset(q["initiative"] for q in facts["quarantines"] if q["cause"] == STRANDED_CAUSE),
-        "its branches are not fetched": remote_unfetched,
+        # A decompose-only unfetched run holds no epic branches, so it does not keep the initiative from launching.
+        "its branches are not fetched": remote_unfetched - decompose_only,
         "its last run has not exited": not_exited,
         "its run is lost": lost,
         "schema version death": frozenset(facts.get("schema_deaths", {})),
@@ -1251,8 +1173,6 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         "relaunch refused by the budget or the loop rule": refused_launches(facts, now),
         "land backoff": backoff_held(facts, now),
         "waiting on a need": waiting_ids,
-        # fill would launch a started epic the steward holds back, which is a relaunch; an unstarted one still launches.
-        "the steward holds it": steward_started,
         "its launch was refused on a held lease": lease_held,
         "it is held or deferred to a later release": gated,
     }
@@ -1277,18 +1197,15 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         no_host,
     )
     cap_left = max(0, cap - _cap_count(launches))
-    unlaunched = _unlaunched_actions(facts, launches, withheld_by, skips, free_lanes, no_host, cap_left, now, stuck_heads)
+    unlaunched = _unlaunched_actions(
+        facts, launches, withheld_by, skips, free_lanes, no_host, cap_left, now, stuck_heads, schedule
+    )
     # Read before the cap: a rebase starts no run, so a relaunch the cap dropped still gets its branch rebased.
     relaunching = frozenset(a["initiative"] for a in [*recovered, *launches] if _is_launch(a))
     rebases = plan_rebase(facts.get("phase_branches", []), relaunching)
-    # A relaunch tagged after_steward runs behind its epic's merge or gate, so it trails the steward events with its rebase.
-    behind = [a for a in launches if a.get("after_steward")]
-    behind_ids = frozenset(a["initiative"] for a in behind)
-    ahead = [a for a in launches if not a.get("after_steward")]
     idle_ready = plan_idle_ready(facts, [*launches, *stuck_heads, *unlaunched], now) if now is not None else []
     return [
         *reverts,
-        *steward_merges,
         *lands,
         *fetch_exits,
         *stale,
@@ -1299,7 +1216,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         *releases,  # a release starts no run
         *deadlock_chair,
         *carries,
-        *_with_rebases(ahead, [r for r in rebases if r["initiative"] not in behind_ids]),
+        *_with_rebases(launches, rebases),
         *widen,
         *login_needs_chair,
         *empty_decompose_needs_chair,
@@ -1312,8 +1229,6 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         *stuck_heads,
         *unlaunched,
         *closes,
-        *steward_events,
-        *_with_rebases(behind, [r for r in rebases if r["initiative"] in behind_ids]),
         *schedule_update,
     ]
 

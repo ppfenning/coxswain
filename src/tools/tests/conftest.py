@@ -41,6 +41,20 @@ def _fresh_store_url():
     for cache in caches:
         cache.cache_clear()
 
+
+@pytest.fixture(scope="session", autouse=True)
+def _git_templates_are_empty(tmp_path_factory):
+    """`git init` and `git clone` copy the stock templates (sample hooks, description, info/exclude) unless the template holds none.
+
+    The template keeps empty `hooks/` and `info/` directories: tests write hook scripts and `info/exclude` into them."""
+    templates = tmp_path_factory.mktemp("git-templates")
+    for name in ("hooks", "info"):
+        (templates / name).mkdir()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("GIT_TEMPLATE_DIR", str(templates))
+        yield
+
+
 @pytest.fixture(autouse=True)
 def _no_host_profile(monkeypatch, tmp_path_factory):
     """The default profile is not absent in tests: `~/.config/agent-tools/profile.yaml` is read unless a test names another."""

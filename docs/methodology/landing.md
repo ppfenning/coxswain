@@ -82,58 +82,125 @@ unreadable or unknown level reads as `ticket`, never `full`.
 
 ## Landing granularity
 
-The `land_at` setting says at which size of unit a change lands. Its values are `ticket`, `level` and `task`. The
-default is `ticket`. An unset value reads as `ticket`, and any other value is refused with the place it came from.
+The `land_at` setting answers one question: which level opens a pull request on origin. Everything below that level
+completes locally. Its values are `initiative` and `task`. The default is `initiative`. `ticket` is a permanent alias
+of `initiative`, so no cartridge or `initiative.md` needs editing. `level` (one pull request per phase) is retired:
+it is still read, with a warning, and treated as `initiative`. Any other value is refused with the place it came from.
 
 `land_at` is set in three places, and the narrowest one present wins:
 
 1. The team cartridge, as `landing_areas.land_at`.
-2. The repository overlay, `.agent/cartridge.yaml`, under the same key. It replaces the team value for that repository.
+2. The repo overlay `.agent/cartridge.yaml`, with the same key.
 3. One initiative, as `land_at:` in the frontmatter of its `initiative.md`. It overrides the cartridge and the overlay.
-
-```yaml
-landing_areas:
-  land_at: level
-```
-
-Every value given is checked, including a cartridge value that an initiative overrides, so a bad cartridge never hides.
-
-The approval gate applies only at that granularity. The gate level is the `land_at` value itself. At `ticket` a run
-asks nobody about its batch and clears it unless the caller passes an explicit `assume`, because the one pull request
-is where a person decides. At `level` and `task` the batch goes through the gate. The team `gate` policy above still
-applies, and the earlier stop wins. `ticket` stops at the rung of the one pull request, `level` at the phase rung, and
-`task` keeps the team's `gate` value.
 
 | `land_at` | Pull requests | When one opens |
 | --- | --- | --- |
-| `ticket` | One per initiative. | As a draft when the first phase merges in. Ready for review when the last phase merges. |
-| `level` | One per level. | When that level is complete. |
-| `task` | One per task. | After the task is merged into its level branch. |
+| `initiative` | One per initiative. No phase and no task ever gets one. | When every phase has merged into the initiative branch and the gate checks pass there. |
+| `task` | One per task. | After the task is merged into its phase branch. |
 
-### The hierarchy at ticket
+### The initiative branch
 
-An initiative is one ticket. Its levels and its tasks open no pull request of their own. A task branch merges into the
-branch of its level.
+An initiative has one branch, cut from its parent when its first run starts. Its name comes from a cartridge template,
+`landing_areas.initiative_pr.branch`, and defaults to `init/<id>`. The same template block sets the pull request's
+title and its issue line, so one issue key names all three. A `pr/<id>` branch an earlier release left is kept.
 
-Each initiative has one branch, `pr/<initiative>`. It is cut from the target branch when the first phase completes.
+```
+parent (main, develop, a release branch, or an epic branch)
+ `-- init/<id>                     the initiative branch: the head of the one pull request
+      |-- epic/<id>/<phase>        a phase, cut from the initiative branch once its parent phases merged into it
+      |    `-- ...--<task>         a task, merged into its phase when approved
+      `-- epic/<id>/<phase>
+```
 
-A phase is done when every task is approved, done or dropped and the phase is validated. Then the chair merges the
-phase branch into `pr/<initiative>` locally and pushes it. It marks the phase done and its tasks merged. A phase with a
-quarantined task does not merge.
+A phase starts only when every phase it needs has merged into the initiative branch. So a phase is always cut from one
+branch, and nothing is assembled from several parents. A wave is the set of phases at one depth; it is a label on the
+initiative branch, not a branch.
 
-Later phases build on `pr/<initiative>`, so a phase with several parents needs no reassembly.
+The landing record, one per initiative in the store, names the branch, the parent it was cut from, and each phase's
+state, tip and merge commit. The parent is resolved once, when the branch is cut, and no longer floats.
 
-The pull request lands under the team gate. At gate `ticket` a person merges it. At gate `full` the chair merges it on
-green. Its merge marks every task in the ticket done. A task whose work is not in the merged pull request is left in
-its current state, and a note names it.
+### What the words mean
 
-A level is a set of tasks that can run together. It exists only to order tasks, so it has no review or approval of its
-own. The harness names a level a phase, and its branch is `epic/<initiative>/<phase>`.
+| Word | Meaning |
+| --- | --- |
+| approved | The task is built, reviewed and merged into its phase branch. |
+| merged | The task's phase is merged into the initiative branch. This is "phase complete", and it is the only meaning of the flag at `initiative`. A merged task holds no files. |
+| done | The initiative's pull request merged into the parent. Only the lander writes it. |
 
-At `level` each completed level opens its own pull request. A level stacked on a parent is based on the parent's pull
-request branch when that pull request exists, so it shows only its own commits. Otherwise it is based on the default
-branch. At `task` each merged task opens its own pull request against the default branch. A pull request that fails to
-open is a note on the task or level. It is not a quarantine, because the merge into the level branch already happened.
+A merged phase that later gains work (a task sent back to build, a rectify task) is no longer whole on the initiative
+branch. It reads by its tasks again until it merges once more.
+
+### The lander
+
+Landing is its own worker, `cox lander run`, beside the chair. The chair's tick plans no land for an initiative. It
+reads the landing record as facts: a phase is placeable when its parent phases are merged, and a merged task holds no
+files.
+
+The lander works a queue in the store with two kinds of item:
+
+| Item | What it does |
+| --- | --- |
+| `phase_merge` | Merges one built phase into the initiative branch, locally, after the level checks pass on the merged tree. A build run performs this merge itself the moment it finishes a phase; the lander performs whatever is left queued. |
+| `initiative_land` | Merges the parent into the initiative branch, runs the gate checks, pushes, opens the one pull request, waits for its checks, merges it at gate `full` (or leaves the merge to a person), then marks every task done and cleans the branches. |
+
+Every move of an initiative branch is made under one store lease per initiative, after a fetch, so two hosts never fork
+it. The two kinds have separate caps (`landing_areas.phase_cap`, default 2, and `landing_areas.land_cap`, default 1)
+and neither counts against the launch cap. An item open for an hour is told to the chair once; a pull request waiting
+for a person never is. `cox lander status` shows every initiative in flight and every item with its age.
+
+Lands on one parent are one at a time by default, since each needs an up-to-date parent. With
+`landing_areas.land_batch` above 1, the lander lands together up to that many initiatives that share a repo and a
+parent and change no file in common. Each keeps its own pull request. They are refreshed onto the same parent so their
+checks run side by side, then merged together in a scratch tree where the gate checks run once for the batch. When
+that passes, the pull requests are merged in queue order without refreshing again. When it does not, only the first is
+landed and the rest wait. Batching applies only where the lander itself merges (gate `full`); an initiative whose
+files overlap another's waits its turn.
+
+The lander never resolves a conflict and never edits code. A phase merge that conflicts, or fails its checks, is sent
+back to build as a rectify task in that phase; a conflict with the parent, or a red pull request, becomes a task in a
+final `integrate` phase. The conflicted merge is committed on the branch the task builds on, so nothing already built
+is redone. A rebuild of any task starts from its last attempt, put back in full in a tree of its own, and only the
+change is built.
+
+Refreshes are always forward merges of the parent into the child. No branch the record names is rebased, reset or
+force-pushed, and a merge that would drop a recorded commit is refused. After a land, a phase branch is deleted only
+when the landed branch holds its tip.
+
+### A blocked phase
+
+`landing_areas.on_blocked` says what happens when a phase holds a task that is quarantined past repair:
+
+- `hold` (default): the initiative waits and the operator is told once, with the choices. Merged phases still hold no
+  files.
+- `split`: the blocked phase and every phase that depends on it move to a follow-up initiative, `<id>-2`, with what
+  they had built, and the first initiative lands without them. It is refused, and held, when a merged phase depends on
+  the blocked one.
+
+### Epics as stacks
+
+The epic steward is gone: nothing but the lander merges a phase or lands an initiative. A profile that still sets
+`chair.steward` is read and ignored, and `cox setup doctor` says so.
+
+
+By default an epic is a group: its initiatives land on the resolved target one by one. With `epic_stack: true` (in the
+cartridge, the repo overlay or the epic file) the epic's `target_branch` is an epic branch. An initiative that needs an
+unlanded initiative of the same epic forks from that initiative's branch and bases its pull request on it. When the
+one below lands, the pull request is retargeted to the epic branch and the epic branch is merged forward. Initiatives
+merge into the epic branch with merge commits. When every member has landed, the epic branch gets one pull request to
+its parent. The layers of a stack are initiative pull requests, never phases.
+
+### Bringing an in-flight initiative under the record
+
+`cox lander adopt` reports, for each initiative with no landing record, what adopting it would do, and does it with
+`--apply`. Work already on the parent is marked done, an approval off its phase branch is carried onto it, one that
+cannot be found goes back to ready, the branch is kept or cut, and every built phase is merged. Nothing is deleted, and
+an initiative that has a record is skipped, so it is safe to run twice.
+
+### At task
+
+`task` is unchanged: each merged task opens its own pull request against the target branch, phases stack on their
+parents' branches, and the chair plans those lands on its tick. A failed pull request is a note on the task. It is not
+a quarantine, because the merge into the phase branch already happened.
 
 ### Status vocabulary
 
@@ -143,25 +210,11 @@ A task row reads one of these words in the dashboard feed. The words are listed 
 | --- | --- |
 | `ready` | The task is ready, every task it needs has landed, and no lane is building it. |
 | `building` | A live lane covers the task's initiative and phase. The lane covers a phase, so idle siblings read `building` too. |
-| `approved` | The work passed review and waits for its merge. A task `cox runs stranded` lists reads `approved` as well. |
-| `merged` | The work is merged but has not landed at the configured `land_at`. At `ticket` the task is in the pr branch. That is an approved task with the merge flag, or a done task written at another `land_at`. |
-| `landed` | The task is `done` at the configured `land_at`. |
+| `approved` | The work passed review and is on its phase branch. |
+| `merged` | At `initiative`, the task's phase is merged into the initiative branch. |
+| `landed` | The task is `done`: its pull request merged. |
 
 A task whose needs are not all landed reads `blocked`. A dropped or quarantined task reads as that state.
-
-The `route status` command and the dash show each phase as `building`, `merged` or `landed`. A merged phase is done and
-merged into the pr branch. The merged tally is kept apart from the approved tally.
-
-### The merged state and restart
-
-The merge is stored. When a task merges into its level branch, its row in the work store keeps `approved` and records
-`merged` and the commit as `merged_commit`. Nothing in a run writes `done`. Only a land does that.
-
-A restart reads that stored state and does not rebuild a task that was approved and merged. A dependent level treats a
-merged parent as done for its `needs`, so it does not wait for a person to land the parent. Before it resumes, the run
-checks that `merged_commit` is an ancestor of the level branch. A task whose commit is gone is quarantined with that
-reason, and no other task is touched. At `task` a restart also opens the pull request for any stored merged task whose
-first attempt never made one. At `level` it finds the level's pull request, or opens the one a failed attempt missed.
 
 ### Parallelism
 
@@ -173,9 +226,9 @@ Phases form a directed graph of levels. The driver derives each phase's parent p
 `phase_parents` in `harness/waves.py`. `compute_waves` in the same module sorts the phases into waves. A wave holds the
 phases whose parents all sit in earlier waves. A phase caught in a dependency cycle is placed in no wave and is recorded as blocked.
 
-A phase branch is assembled from the phases its tasks need, not from every earlier phase. Stacking each phase on all of
-its predecessors would chain the whole initiative into one line. Phases with no need between them would then wait on one
-another, and the waves would shrink to one phase each. Keeping the parents to real needs is what lets independent phases run together.
+At `initiative` every phase is cut from the initiative branch, which holds each parent phase once that phase has merged
+into it. A phase's parents are only the phases its tasks need, so phases with no need between them still run together.
+At `task` there is no initiative branch: a phase is stacked on its one parent's branch, or assembled from several.
 
 At launch the driver prints one line per phase, `phase <id>: parents <ids>`, before any phase builds. When a later phase
 names a file in `surfaces` that an earlier, unfinished phase also names, and no chain of needs reaches that phase, its
@@ -190,14 +243,14 @@ Tasks inside a phase run in parallel up to the cap. `lane_bound` in `harness/lan
 tighter than the lane limit. `plan_launches` in `harness/scheduler.py` uses `next_launches` from `harness/lanes.py` to choose which
 ready tasks start. The scheduler holds the ready tasks of a phase while another phase has a build in flight over an overlapping surface.
 
-A phase still waits for its parents. The driver holds the tasks of a phase until every parent phase is complete.
-A parent level counts complete for its dependents when every task in it is approved or done in the work store. It does
-not matter where the task was approved. A task approved in an earlier run counts, and so does a task that is not landed.
-This matches the cross-phase need rule, where an unmerged approved task counts at ticket and level but not at task.
-A level reads partial while any of its tasks is still ready, building or quarantined. A quarantined task still blocks
-its dependents. A parent that did not meet its goal blocks its dependents. A phase with several parents waits for all of
-them. When `phase-validate` is bound, it judges the stored tasks of the level and not only those built in this run.
-The one exception is a ready task whose own needs are all merged, which may start before its parents are complete.
+A phase still waits for its parents. At `initiative` a parent counts for its dependents only once it is merged into the
+initiative branch, whole: every task approved (or dropped) and on the phase branch, and the merge recorded. A phase with
+a task still ready, building or quarantined reads partial and is not merged, whatever the validator said of its goal, and
+no task of a later phase starts early. A phase with several parents waits for all of them. Across hosts, the clone must
+hold the recorded merge commit, fetched from origin if need be; a phase that would build without it stops, with no quarantine.
+
+At `task` a parent counts complete when every task in it is done, and a ready task whose own needs are all merged may
+start before its parents are complete.
 
 ## Target branch
 

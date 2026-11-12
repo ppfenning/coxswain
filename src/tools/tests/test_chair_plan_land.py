@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 from agent_tools.chair_facts import land_freeze_fact
 from agent_tools.chair_land_freeze import LandFreeze, active_freeze
 from agent_tools.chair_plan import plan_tick
-from agent_tools.chair_plan_land import plan_lands, planned_tasks
+from agent_tools.chair_plan_land import plan_lands, plan_missed_closes, planned_tasks
 from agent_tools.chair_types import Facts
 
 
@@ -299,3 +299,48 @@ def test_a_live_freeze_still_plans_recoveries(monkeypatch):
 def test_an_expired_row_is_no_freeze_and_an_unset_runs_dir_reads_no_store():
     assert active_freeze({"holder": "cut", "expires_at": _NOW.isoformat()}, _NOW) is None
     assert land_freeze_fact("", _NOW) is None
+
+
+def _open_facts(merged_prs: list[dict], landed: frozenset[str] = frozenset()) -> Facts:
+    """Facts holding an approved task `a`, a ready task `r` and a quarantined task `q`, all of initiative `i`."""
+    facts = _facts([_task("a", done=False)], landed)
+    facts["initiatives"][0]["ready_tasks"] = [{"id": "r", "needs": [], "phase": "p", "requires": []}]
+    facts["quarantines"] = [{"task_id": "q", "initiative": "i", "cause": "x", "harness_failures": 0, "has_patch": False, "rescue_failed": False}]
+    return {**facts, "merged_prs": merged_prs}
+
+
+def _pr(url: str, *task_ids: str) -> dict:
+    return {"url": url, "repo": "r", "task_ids": list(task_ids)}
+
+
+def test_a_ready_an_approved_and_a_quarantined_task_each_close_against_their_pr():
+    facts = _open_facts([_pr("u/1", "a"), _pr("u/2", "r"), _pr("u/3", "q")])
+    assert plan_missed_closes(facts) == [
+        {"kind": "close_merged_task", "initiative": "i", "task_id": t, "pr": url, "repo": "r"}
+        for t, url in (("a", "u/1"), ("r", "u/2"), ("q", "u/3"))
+    ]
+
+
+def test_a_task_two_prs_name_closes_once_against_the_first():
+    actions = plan_missed_closes(_open_facts([_pr("u/1", "r"), _pr("u/2", "r", "a")]))
+    assert [(a["task_id"], a["pr"]) for a in actions] == [("r", "u/1"), ("a", "u/2")]
+
+
+def test_an_open_task_no_merged_pr_names_gets_no_close():
+    assert plan_missed_closes(_open_facts([_pr("u/1", "other")])) == []
+
+
+def test_an_empty_or_absent_merged_prs_plans_no_close():
+    facts = _open_facts([])
+    assert plan_missed_closes(facts) == []
+    assert plan_missed_closes({k: v for k, v in facts.items() if k != "merged_prs"}) == []
+
+
+def test_a_task_the_initiative_has_landed_gets_no_close():
+    assert plan_missed_closes(_open_facts([_pr("u/1", "a", "r")], landed=frozenset({"a"}))) == [
+        {"kind": "close_merged_task", "initiative": "i", "task_id": "r", "pr": "u/1", "repo": "r"}
+    ]
+
+
+def test_the_tick_plan_carries_the_close_for_a_ready_task_a_merged_pr_names():
+    assert "close_merged_task" in _kinds_of_tick(_open_facts([_pr("u/1", "r")]))

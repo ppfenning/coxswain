@@ -46,6 +46,18 @@ def test_models_tiers_and_gates_merge_into_one_row_per_role_and_tier_with_per_mo
     assert [TierRow(**r).tier for r in rows] == ["cheap", "standard"]
 
 
+def test_cost_per_approved_is_the_models_figure_when_present_and_the_tiers_figure_otherwise():
+    calls = [
+        _call("a", "cheap", "haiku", 1.0), _call("a", "cheap", "haiku", 5.0, challenger=1),
+        _call("e", "standard", "mini", 2.0, challenger=1),
+    ]
+    rows = tier_rows(calls, [_task("a"), _task("e")], calls, {})
+    assert [(r["tier"], r["model"], r["cost_per_approved"]) for r in rows] == [
+        ("cheap", "haiku", 1.0),
+        ("standard", "mini", 2.0),
+    ]
+
+
 def test_a_model_at_two_tiers_is_a_row_per_tier_and_the_role_has_one_current_row():
     calls = [
         _call("a", "cheap", "haiku", 0.5), _call("b", "cheap", "haiku", 0.5), _call("c", "standard", "haiku", 1.0),

@@ -3,14 +3,17 @@ import json
 from agent_tools import chair_login_check, host_cmd
 from agent_tools.chair_exec import ArgvResult
 from agent_tools.chair_login_check import check_login_on_host
-from agent_tools.remote_argv import auth_status_argv, ssh_argv
+from agent_tools.remote_argv import ssh_argv, token_status_argv
 
 NOW = "2026-09-28T00:00:00+00:00"
 SSH_BOUND = ["ssh", "-o", "ConnectTimeout=30", "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3"]
-LOGGED_IN = '{"loggedIn": true}'
-LOGGED_OUT = '{"loggedIn": false}'
-EXPIRED = json.dumps({"claudeAiOauth": {"refreshTokenExpiresAt": 1_000_000_000_000}})
-VALID = json.dumps({"claudeAiOauth": {"refreshTokenExpiresAt": 4_102_444_800_000}})
+VERB = token_status_argv(probe=True)
+TOKEN_PATH = "/home/user/.config/coxswain/claude-token"
+NO_FILE_REASON = f"claude token: no token file at {TOKEN_PATH}"
+REJECTED_REASON = "claude token: the probe was rejected"
+LOGGED_IN = '{"loggedIn": true, "tokenFile": true}'
+REJECTED = json.dumps({"loggedIn": False, "tokenFile": True, "reason": REJECTED_REASON})
+NO_FILE = json.dumps({"loggedIn": False, "tokenFile": False, "reason": NO_FILE_REASON})
 
 
 def _reply(code: int, stdout: str = "", stderr: str = "") -> ArgvResult:
@@ -37,50 +40,24 @@ def _recording_cli(captured: list, argvs: list | None = None) -> object:
     return cli_run
 
 
-def _fake(statuses: list[ArgvResult], credentials: ArgvResult | None = None, renew: ArgvResult | None = None):
-    """A runner that answers status calls from `statuses` in order, and records every argv."""
+def _fake(statuses: list[ArgvResult]):
+    """A runner that answers the token verb argv from `statuses` in order, and records every argv. Any
+    other argv raises."""
     calls: list = []
     queue = list(statuses)
 
     def run(argv: list[str]) -> ArgvResult:
         calls.append(argv)
         text = argv[-1] if argv[0] == "ssh" else " ".join(argv)
-        if "auth status" in text:
+        if "cox setup token status --probe" in text:
             return queue.pop(0)
-        if "-p ok" in text:
-            return renew or _reply(0, "ok")
-        if "Claude Code-credentials" in text:
-            return credentials or _reply(1, "", "no such file")
         raise AssertionError(f"unexpected argv {argv}")
 
     return run, calls
 
 
-TOKEN_AUTH = '{"loggedIn": true, "authMethod": "oauth_token"}'
-NO_AUTH = '{"loggedIn": false, "authMethod": "none"}'
-
-
-def _login_aware_fake():
-    """Answers token auth to a login-shell auth status argv and no auth to a plain-shell one. Renew and
-    credentials argvs raise, so a token host that reaches them fails loudly."""
-    calls: list = []
-
-    def run(argv: list[str]) -> ArgvResult:
-        calls.append(argv)
-        text = argv[-1] if argv[0] == "ssh" else " ".join(argv)
-        if "auth status" not in text:
-            raise AssertionError(f"renew or keychain step ran: {argv}")
-        return _reply(0, TOKEN_AUTH) if "login-shell" in text else _reply(1, NO_AUTH)
-
-    return run, calls
-
-
-def _renewals(calls: list) -> int:
-    return sum(1 for argv in calls if "-p ok" in (argv[-1] if argv[0] == "ssh" else " ".join(argv)))
-
-
-def _check(statuses, versions=None, **fake) -> tuple[dict, list]:
-    run, calls = _fake(statuses, **fake)
+def _check(statuses, versions=None) -> tuple[dict, list]:
+    run, calls = _fake(statuses)
     captured: list = []
     check_login_on_host("shed", "user@shed", versions or {}, NOW, run, _recording_cli(captured))
     return captured[0], calls
@@ -99,31 +76,20 @@ def test_a_logged_in_host_merges_login_ok_true_and_now_and_keeps_existing_keys()
     assert versions["login_checked_at"] == NOW
     assert versions["login_failures"] == 0
     assert versions["cox"] == "1.2.3"
-    assert calls == [ssh_argv("user@shed", auth_status_argv())]
+    assert calls == [ssh_argv("user@shed", VERB)]
 
 
-def test_a_token_host_over_ssh_is_logged_in_and_never_renews_or_reads_the_keychain() -> None:
-    run, calls = _login_aware_fake()
-    captured: list = []
+def test_a_missing_token_file_blocks_the_host_on_the_first_check_with_the_reply_reason() -> None:
+    versions, calls = _check([_reply(1, NO_FILE)])
 
-    check_login_on_host("shed", "user@shed", {}, NOW, run, _recording_cli(captured))
-
-    assert captured[0]["login_ok"] is True
-    assert captured[0]["login_failures"] == 0
-    assert calls == [ssh_argv("user@shed", auth_status_argv())]
-    assert "login-shell" in calls[0][-1]
-    assert _renewals(calls) == 0
-    assert not any("Claude Code-credentials" in argv[-1] for argv in calls)
+    assert versions["login_ok"] is False
+    assert versions["login_failures"] == 1
+    assert versions["reason"] == f"claude token: no token file at {TOKEN_PATH}"
+    assert len(calls) == 1
 
 
-def test_the_plain_shell_argv_reads_as_logged_out_in_the_fake() -> None:
-    run, _ = _login_aware_fake()
-
-    assert json.loads(run(["claude", "auth", "status"]).stdout) == json.loads(NO_AUTH)
-
-
-def test_a_truly_logged_out_host_fails_after_two_attempts() -> None:
-    run, calls = _fake([_reply(1, NO_AUTH)] * 4)
+def test_a_rejected_token_counts_a_failure_and_blocks_on_the_second() -> None:
+    run, calls = _fake([_reply(1, REJECTED)] * 2)
     captured: list = []
     cli_run = _recording_cli(captured)
 
@@ -131,7 +97,16 @@ def test_a_truly_logged_out_host_fails_after_two_attempts() -> None:
     check_login_on_host("shed", "user@shed", captured[0], NOW, run, cli_run)
 
     assert [(v["login_ok"], v["login_failures"]) for v in captured] == [(None, 1), (False, 2)]
-    assert _renewals(calls) == 2
+    assert captured[1]["reason"] == REJECTED_REASON
+    assert len(calls) == 2
+
+
+def test_a_failing_reply_without_a_reason_falls_back_to_the_exit_code_and_output() -> None:
+    bare = '{"loggedIn": false, "tokenFile": true}'
+    versions, _ = _check([_reply(1, bare)])
+
+    assert versions["login_ok"] is None
+    assert versions["reason"] == f"exit 1: {bare}"
 
 
 def test_a_stderr_line_before_the_json_still_parses_as_logged_in() -> None:
@@ -141,24 +116,37 @@ def test_a_stderr_line_before_the_json_still_parses_as_logged_in() -> None:
     assert versions["login_failures"] == 0
 
 
-def test_the_loop_s_own_host_is_checked_locally_with_no_ssh(monkeypatch) -> None:
+def test_the_loop_s_own_host_runs_the_verb_argv_directly_with_no_ssh(monkeypatch) -> None:
     monkeypatch.setattr(chair_login_check.socket, "gethostname", lambda: "host-b")
     run, calls = _fake([_reply(0, LOGGED_IN)])
     captured: list = []
 
     check_login_on_host("host-b", "user@host-b", {}, NOW, run, _recording_cli(captured))
 
-    assert calls == [["claude", "auth", "status"]]
+    assert calls == [["cox", "setup", "token", "status", "--probe"]]
     assert captured[0] == {"login_ok": True, "login_checked_at": NOW, "check": "claude_auth", "login_failures": 0}
 
 
-def test_a_different_host_than_the_loop_s_own_is_still_checked_over_ssh(monkeypatch) -> None:
+def test_a_different_host_than_the_loop_s_own_gets_the_ssh_wrapped_verb_argv(monkeypatch) -> None:
     monkeypatch.setattr(chair_login_check.socket, "gethostname", lambda: "host-b")
     run, calls = _fake([_reply(0, LOGGED_IN)])
 
     check_login_on_host("shed", "user@shed", {}, NOW, run, _recording_cli([]))
 
-    assert calls == [ssh_argv("user@shed", auth_status_argv())]
+    assert calls == [ssh_argv("user@shed", VERB)]
+    assert calls[0][: len(SSH_BOUND)] == SSH_BOUND
+
+
+def test_the_argv_given_to_the_runner_never_contains_a_token(monkeypatch) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-secret")
+    monkeypatch.setattr(chair_login_check.socket, "gethostname", lambda: "host-b")
+    run, calls = _fake([_reply(0, LOGGED_IN)] * 2)
+
+    check_login_on_host("host-b", "user@host-b", {}, NOW, run, _recording_cli([]))
+    check_login_on_host("shed", "user@shed", {}, NOW, run, _recording_cli([]))
+
+    parts = [part for argv in calls for part in argv]
+    assert not any("sk-ant" in part or "OAUTH_TOKEN" in part for part in parts)
 
 
 def test_a_claude_code_runner_call_builds_the_same_argv_and_never_calls_env_check_argv(monkeypatch) -> None:
@@ -172,7 +160,7 @@ def test_a_claude_code_runner_call_builds_the_same_argv_and_never_calls_env_chec
 
     check_login_on_host("shed", "user@shed", {}, NOW, run, _recording_cli(captured), runner="claude-code")
 
-    assert calls == [ssh_argv("user@shed", auth_status_argv())]
+    assert calls == [ssh_argv("user@shed", VERB)]
     assert captured[0] == {"login_ok": True, "login_checked_at": NOW, "check": "claude_auth", "login_failures": 0}
 
 
@@ -182,7 +170,6 @@ def test_one_unreadable_reply_stores_none_with_a_reason_and_does_not_block() -> 
     assert versions["login_ok"] is None
     assert versions["login_failures"] == 1
     assert versions["reason"] == "exit 1: connection refused"
-    assert _renewals(calls) == 0
     assert len(calls) == 1
 
 
@@ -193,68 +180,31 @@ def test_a_second_unreadable_reply_blocks_the_host() -> None:
     assert versions["login_failures"] == 2
 
 
-def test_unreadable_credentials_renew_once_and_a_failed_renewal_does_not_block_the_first_time() -> None:
-    versions, calls = _check([_reply(1, LOGGED_OUT), _reply(1, LOGGED_OUT)])
-
-    assert _renewals(calls) == 1
-    assert versions["login_ok"] is None
-    assert versions["login_failures"] == 1
-    assert versions["reason"] == f"exit 1: {LOGGED_OUT}"
-
-
-def test_a_renewal_that_works_is_logged_in_with_one_p_call_and_clears_the_failure() -> None:
-    stored = {"login_ok": None, "login_failures": 1, "reason": "exit 1: stale"}
-    versions, calls = _check([_reply(1, LOGGED_OUT), _reply(0, LOGGED_IN)], stored, credentials=_reply(0, VALID))
-
-    assert _renewals(calls) == 1
-    assert versions["login_ok"] is True
-    assert versions["login_failures"] == 0
-    assert "reason" not in versions
-
-
-def test_an_expired_refresh_token_is_false_at_once_and_never_renews() -> None:
-    versions, calls = _check([_reply(1, LOGGED_OUT)], credentials=_reply(0, EXPIRED))
-
-    assert _renewals(calls) == 0
-    assert versions["login_ok"] is False
-    assert versions["login_failures"] == 1
-    assert versions["reason"] == f"exit 1: {LOGGED_OUT}"
-
-
-def test_credentials_are_read_with_one_script_that_names_both_stores() -> None:
-    _, calls = _check([_reply(1, LOGGED_OUT), _reply(0, LOGGED_IN)], credentials=_reply(0, VALID))
-
-    script = next(argv for argv in calls if "Claude Code-credentials" in argv[-1])[-1]
-    assert "security find-generic-password" in script
-    assert "~/.claude/.credentials.json" in script
-
-
 def test_the_reason_keeps_only_the_first_200_characters_of_output() -> None:
     versions, _ = _check([_reply(7, "x" * 500)])
 
     assert versions["reason"] == "exit 7: " + "x" * 200
 
 
-def test_refresh_expiry_reads_milliseconds_seconds_and_iso_and_rejects_junk() -> None:
-    def blob(value: object) -> str:
-        return json.dumps({"claudeAiOauth": {"refreshTokenExpiresAt": value}})
-
-    from_ms = chair_login_check._refresh_expiry(blob(4_102_444_800_000))
-    assert from_ms is not None and from_ms.year == 2100
-    from_s = chair_login_check._refresh_expiry(blob(4_102_444_800))
-    assert from_s == from_ms
-    from_iso = chair_login_check._refresh_expiry(blob("2100-01-01T00:00:00Z"))
-    assert from_iso == from_ms
-    assert chair_login_check._refresh_expiry("not json") is None
-    assert chair_login_check._refresh_expiry(blob(True)) is None
-    assert chair_login_check._refresh_expiry("{}") is None
-    assert chair_login_check._refresh_expired(None, NOW) is False
-
-
 def test_login_ok_keeps_its_tuple_runner_contract() -> None:
     assert chair_login_check._login_ok("shed", "u@shed", lambda argv: (0, LOGGED_IN)) is True
-    assert chair_login_check._login_ok("shed", "u@shed", lambda argv: (1, LOGGED_OUT)) is False
+    assert chair_login_check._login_ok("shed", "u@shed", lambda argv: (1, REJECTED)) is False
     assert chair_login_check._login_ok("shed", "u@shed", lambda argv: (1, "refused")) is None
+
+
+def test_login_ok_runs_the_verb_without_the_probe_so_a_dashboard_poll_spends_no_turn(monkeypatch) -> None:
+    monkeypatch.setattr(chair_login_check.socket, "gethostname", lambda: "host-b")
+    seen: list = []
+
+    def run(argv: list[str]) -> tuple[int, str]:
+        seen.append(argv)
+        return 0, LOGGED_IN
+
+    chair_login_check._login_ok("shed", "u@shed", run)
+    chair_login_check._login_ok("host-b", "", run)
+
+    assert seen == [ssh_argv("u@shed", token_status_argv()), token_status_argv()]
+    assert not any("--probe" in part for argv in seen for part in argv)
 
 
 def test_an_env_vars_runner_with_every_variable_present_is_logged_in() -> None:
@@ -390,8 +340,8 @@ def test_a_second_timed_out_reply_in_a_row_adds_unreachable_since_and_sets_the_s
     assert row == {"state": "unreachable"}
 
 
-def test_a_logged_out_reply_twice_still_blocks_and_never_sets_the_state() -> None:
-    run, _ = _fake([_reply(1, LOGGED_OUT)] * 4)
+def test_a_rejected_token_twice_still_blocks_and_never_sets_the_state() -> None:
+    run, _ = _fake([_reply(1, REJECTED)] * 2)
     captured: list = []
     argvs: list = []
     cli_run = _recording_cli(captured, argvs)

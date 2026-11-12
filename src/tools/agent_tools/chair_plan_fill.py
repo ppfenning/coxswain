@@ -130,6 +130,10 @@ def _stale_needs_chair(
     ]
 
 
+def _spent(launch_budget: int | None) -> int | None:
+    return None if launch_budget is None else launch_budget - 1
+
+
 def _walk_candidates(
     candidates: Sequence[InitiativeFacts],
     running: Sequence[RunningInitiative],
@@ -138,12 +142,18 @@ def _walk_candidates(
     hosts: Sequence[HostSlot],
     env: HostEnv = _NO_ENV,
     policy: SteerPolicy | None = None,
+    launch_budget: int | None = None,
 ) -> tuple[list[Action], list[Action]]:
     """Launches and steer actions in walk order; only a launch that takes a lane uses it and claims its surfaces.
 
     A hosted placement skips a host whose checkout is stale for the initiative's repo_dir; the second list then
-    carries a stale_checkout needs_chair for it, once per call per initiative and not yet in env.reported."""
+    carries a stale_checkout needs_chair for it, once per call per initiative and not yet in env.reported.
+
+    launch_budget bounds the launches returned; the walk stops when it is spent, so a candidate past the cut
+    leaves no steer hold and no claim."""
     if not candidates or (local_left <= 0 and not any(free for *_, free, _ in hosts)):
+        return [], []
+    if launch_budget is not None and launch_budget <= 0:
         return [], []
     head, *tail = candidates
     required = _required_capabilities(head)
@@ -151,22 +161,26 @@ def _walk_candidates(
     notes = _stale_needs_chair(head, barred, hosts, required, env)
     placed = None if local_left > 0 else best_host(required, hosts, barred)
     if local_left <= 0 and placed is None:
-        launches, steers = _walk_candidates(tail, running, streaks, local_left, hosts, env, policy)
+        launches, steers = _walk_candidates(tail, running, streaks, local_left, hosts, env, policy, launch_budget)
         return launches, [*notes, *steers]
     repo = head.get("repo", "")
     surfaces = head.get("ready_surfaces", [])
     steer = steer_check(head["id"], repo, surfaces, running, streaks, policy=policy) if repo and surfaces else None
     if steer is not None:
-        launches, steers = _walk_candidates(tail, running, streaks, local_left, hosts, env, policy)
+        launches, steers = _walk_candidates(tail, running, streaks, local_left, hosts, env, policy, launch_budget)
         return launches, [*notes, steer, *steers]
     claim: list[RunningInitiative] = [{"id": head["id"], "repo": repo, "surfaces": surfaces}] if repo and surfaces else []
     if placed is None:
         local: Action = {"kind": "launch_epic", "initiative": head["id"]}
-        launches, steers = _walk_candidates(tail, [*running, *claim], streaks, local_left - 1, hosts, env, policy)
+        launches, steers = _walk_candidates(
+            tail, [*running, *claim], streaks, local_left - 1, hosts, env, policy, _spent(launch_budget)
+        )
         return [local, *launches], steers
     name, next_hosts = placed
     hosted: Action = {"kind": "launch_epic", "initiative": head["id"], "host": name}
-    launches, steers = _walk_candidates(tail, [*running, *claim], streaks, local_left, next_hosts, env, policy)
+    launches, steers = _walk_candidates(
+        tail, [*running, *claim], streaks, local_left, next_hosts, env, policy, _spent(launch_budget)
+    )
     return [hosted, *launches], [*notes, *steers]
 
 
@@ -191,8 +205,11 @@ def _epic_launches(
     claimed: Sequence[RunningInitiative] = (),
     now: datetime | None = None,
     held_phases: frozenset[tuple[str, str]] = frozenset(),
+    launch_budget: int | None = None,
 ) -> list[Action]:
     """Started initiatives with ready tasks, then unstarted ones, each in docket order; withheld ids never launch.
+
+    launch_budget, when not None, is the most launches returned, local and hosted together, in this order.
 
     A ready task in a held (initiative, phase) is not launchable; an initiative left with none is left out.
 
@@ -215,7 +232,8 @@ def _epic_launches(
     running = [*facts.get("running", []), *claimed]
     env = HostEnv(facts.get("host_env", {}), frozenset(facts.get("env_stale_reported", [])))
     launches, steers = _walk_candidates(
-        ordered, running, facts.get("steer_streaks", {}), max(0, free_lanes), host_free, env, facts.get("steer_policy")
+        ordered, running, facts.get("steer_streaks", {}), max(0, free_lanes), host_free, env, facts.get("steer_policy"),
+        launch_budget,
     )
     stale = [a for a in steers if a.get("cause") == "stale_checkout"]
     return [*launches, *(a for a in steers if a not in stale), *_once_per_reason(stale)]
@@ -230,11 +248,15 @@ def _scheduled_walk(
     hosts: Sequence[HostSlot],
     env: HostEnv,
     policy: SteerPolicy | None,
+    launch_budget: int | None = None,
 ) -> tuple[list[Action], list[Action]]:
     """Launches and steer actions for the scheduled (initiative, host) picks, in schedule order.
 
-    A pick with no lane, a barred host or a steer hold is dropped; nothing is picked in its place."""
+    A pick with no lane, a barred host or a steer hold is dropped; nothing is picked in its place.
+    The walk stops once launch_budget launches are placed."""
     if not picks:
+        return [], []
+    if launch_budget is not None and launch_budget <= 0:
         return [], []
     (initiative_id, host), *tail = picks
     head = by_id[initiative_id]
@@ -244,18 +266,19 @@ def _scheduled_walk(
     notes = [] if slot is None else _stale_needs_chair(head, barred, [slot], required, env)
     fits = local_left > 0 if host is None else slot is not None and _eligible(slot, required) and host not in barred
     if not fits:
-        launches, steers = _scheduled_walk(tail, by_id, running, streaks, local_left, hosts, env, policy)
+        launches, steers = _scheduled_walk(tail, by_id, running, streaks, local_left, hosts, env, policy, launch_budget)
         return launches, [*notes, *steers]
     repo = head.get("repo", "")
     surfaces = head.get("ready_surfaces", [])
     steer = steer_check(initiative_id, repo, surfaces, running, streaks, policy=policy) if repo and surfaces else None
     if steer is not None:
-        launches, steers = _scheduled_walk(tail, by_id, running, streaks, local_left, hosts, env, policy)
+        launches, steers = _scheduled_walk(tail, by_id, running, streaks, local_left, hosts, env, policy, launch_budget)
         return launches, [steer, *steers]
     claim: list[RunningInitiative] = [{"id": initiative_id, "repo": repo, "surfaces": surfaces}] if repo and surfaces else []
     action: Action = {"kind": "launch_epic", "initiative": initiative_id, **({} if host is None else {"host": host})}
     launches, steers = _scheduled_walk(
-        tail, by_id, [*running, *claim], streaks, local_left - (host is None), _after_placing(hosts, [action]), env, policy
+        tail, by_id, [*running, *claim], streaks, local_left - (host is None), _after_placing(hosts, [action]), env, policy,
+        _spent(launch_budget),
     )
     return [action, *launches], steers
 
@@ -269,11 +292,13 @@ def scheduled_launches(
     claimed: Sequence[RunningInitiative] = (),
     now: datetime | None = None,
     held_phases: frozenset[tuple[str, str]] = frozenset(),
+    launch_budget: int | None = None,
 ) -> list[Action]:
     """The schedule's this-tick launches as launch_epic actions, in schedule order and on the scheduled host.
 
     A placement on a local host in `schedule_inputs` carries no host. Only the first placement of an initiative
-    counts. The gates of `_epic_launches` apply, and a launch one withholds is dropped, never replaced."""
+    counts. The gates of `_epic_launches` apply, and a launch one withholds is dropped, never replaced.
+    launch_budget, when not None, is the most launches returned, local and hosted together."""
     local = {h["name"] for h in facts["schedule_inputs"]["hosts"] if h["local"]}
     open_ = [
         i
@@ -287,7 +312,7 @@ def scheduled_launches(
     env = HostEnv(facts.get("host_env", {}), frozenset(facts.get("env_stale_reported", [])))
     launches, steers = _scheduled_walk(
         picks, by_id, [*facts.get("running", []), *claimed], facts.get("steer_streaks", {}), max(0, free_lanes),
-        host_free, env, facts.get("steer_policy"),
+        host_free, env, facts.get("steer_policy"), launch_budget,
     )
     stale = [a for a in steers if a.get("cause") == "stale_checkout"]
     return [*launches, *(a for a in steers if a not in stale), *_once_per_reason(stale)]
@@ -298,16 +323,19 @@ def _decompose_launches(
     lanes: int,
     host_free: Sequence[HostSlot] = (),
     stalled: frozenset[str] = frozenset(),
+    launch_budget: int | None = None,
 ) -> list[Action]:
     """One intake item per free local lane, oldest first; the rest go to lane hosts, ranked as epics are.
 
     A decompose requires no capabilities, so any host with a free lane is eligible, and each hosted one counts
-    toward its host's weighted share for the epics placed after it. A stalled intake is never launched."""
+    toward its host's weighted share for the epics placed after it. A stalled intake is never launched.
+    launch_budget, when not None, keeps only the first that many, local ones before hosted ones."""
     fit = max(0, lanes)
     open_intake = [i for i in facts["intake"] if i not in stalled]
     local: list[Action] = [{"kind": "launch_decompose", "intake_ids": [i]} for i in open_intake[:fit]]
     overflow = [(intake_id, frozenset[str]()) for intake_id in open_intake[fit:]]
-    return [*local, *_place_on_hosts(overflow, host_free, _decompose_action)]
+    launches = [*local, *_place_on_hosts(overflow, host_free, _decompose_action)]
+    return launches if launch_budget is None else launches[: max(0, launch_budget)]
 
 
 def _wants_pull(facts: Facts, lanes_left: int) -> bool:
@@ -366,8 +394,12 @@ def plan_fill(
     schedule: Schedule | None = None,
     *,
     held_phases: frozenset[tuple[str, str]] = frozenset(),
+    launch_budget: int | None = None,
 ) -> list[Action]:
-    """now enables the launch budget: an initiative it refuses gets no launch_epic. Without it the budget is skipped.
+    """launch_budget, when not None, is the most launch_epic and launch_decompose actions returned in total,
+    local and hosted together; epics rank ahead of decomposes. None leaves the count to the lanes.
+
+    now enables the launch budget: an initiative it refuses gets no launch_epic. Without it the budget is skipped.
 
     schedule, when given, replaces the ranking and host choice: only its this-tick launches become launch_epic.
 
@@ -396,18 +428,22 @@ def plan_fill(
     reserved = facts["dispatch"].get("local_lanes") == "decompose"
     epic_lanes = 0 if reserved else free_lanes
 
-    def epics_on(hosts: Sequence[HostSlot]) -> list[Action]:
+    def epics_on(hosts: Sequence[HostSlot], budget: int | None) -> list[Action]:
         if schedule is None:
-            return _epic_launches(facts, epic_lanes, withheld, hosts, claimed, now, held_phases)
-        return scheduled_launches(facts, schedule, epic_lanes, withheld, hosts, claimed, now, held_phases)
+            return _epic_launches(facts, epic_lanes, withheld, hosts, claimed, now, held_phases, budget)
+        return scheduled_launches(facts, schedule, epic_lanes, withheld, hosts, claimed, now, held_phases, budget)
 
-    first_pass = epics_on(host_free)
-    local_epics = [a for a in first_pass if a["kind"] == "launch_epic" and "host" not in a]
+    first_pass = epics_on(host_free, launch_budget)
+    first_epics = [a for a in first_pass if a["kind"] == "launch_epic"]
+    local_epics = [a for a in first_epics if "host" not in a]
+    decompose_budget = None if launch_budget is None else launch_budget - len(first_epics)
     decomposes = _decompose_launches(
-        facts, local_lanes - len(local_epics), host_free if hosted_decompose else (), stalled
+        facts, local_lanes - len(local_epics), host_free if hosted_decompose else (), stalled, decompose_budget
     )
     # Host lanes a decompose took are gone before epics are placed on hosts; the local epic count is unchanged.
-    epics = epics_on(_after_placing(host_free, decomposes))
+    # The second pass keeps at least the first pass's epic count of budget, so no first-pass epic is cut.
+    epic_budget = None if launch_budget is None else launch_budget - len(decomposes)
+    epics = epics_on(_after_placing(host_free, decomposes), epic_budget)
     local_decomposes = [a for a in decomposes if "host" not in a]
     lanes_left = local_lanes - len(local_epics) - len(local_decomposes)
     pulls: list[Action] = [{"kind": "pull"}] if _wants_pull(facts, lanes_left) else []

@@ -40,8 +40,21 @@ def lands_this_tick(results: Sequence[Result]) -> int:
     return sum(1 for r in results if r["action"].get("kind") in ("land", "land_phase", "partial_land") and r["status"] == "landed")
 
 
+_TAKEBACK = "takeback from "
+
+
+def takeback_holder(results: Sequence[Result]) -> str | None:
+    """The holder named in a done take_lease whose reason starts `takeback from `; None when no result is one."""
+    named = (
+        str(r["action"].get("reason", "")).removeprefix(_TAKEBACK).split()
+        for r in results
+        if r["action"].get("kind") == "take_lease" and r["status"] == "done" and str(r["action"].get("reason", "")).startswith(_TAKEBACK)
+    )
+    return next((words[0] for words in named if words), None)
+
+
 def mode_of(actions: Sequence[Action], results: Sequence[Result]) -> str:
-    """dry-run when every result is a dry_run, else standby with its holder and host, else holding."""
+    """dry-run when every result is a dry_run, else standby with its holder and host, else a done takeback, else holding."""
     standby = next((a for a in actions if a.get("kind") == "standby"), None)
     if results and all(r["status"] == "dry_run" for r in results):
         return "dry-run"
@@ -49,6 +62,9 @@ def mode_of(actions: Sequence[Action], results: Sequence[Result]) -> str:
         return f"standby: held by {standby.get('holder', '?').partition('@')[0]} until {standby['until']}"
     if standby is not None:
         return f"standby holder={standby.get('holder', '?')} host={standby.get('host', '?')}"
+    taken_from = takeback_holder(results)
+    if taken_from is not None:
+        return f"takeback: took the chair back from {taken_from}"
     return "holding"
 
 
@@ -296,21 +312,6 @@ def lanes_text(dispatch: Mapping[str, Any]) -> str:
     return f"lanes {live}/{cap} (here {here})"
 
 
-def steward_fragment(facts: Facts, results: Sequence[Result]) -> str:
-    """Empty when the steward is off. Zero prints `steward 0`, so a steward that manages nothing is visible.
-
-    A deferred merge_level is counted here only; `failed_items` selects refused, failed and not_landed, so it never reaches `failed:`.
-    """
-    steward = facts.get("steward")
-    if not (steward and steward["enabled"]):
-        return ""
-    merges = [r for r in results if r["action"].get("kind") == "merge_level"]
-    merged = sum(r["status"] == "done" for r in merges)
-    deferred = sum(r["status"] == "deferred" for r in merges)
-    tail = f" (merged {merged}, deferred {deferred})" if merged + deferred > 0 else ""
-    return f"steward {len(steward['epics'])}{tail}"
-
-
 def format_status(
     facts: Facts, all_actions: Sequence[Action | WaitingInitiative], results: Sequence[Result], now: datetime
 ) -> str:
@@ -334,7 +335,6 @@ def format_status(
     stall = _stall(facts)
     freeze = _freeze(facts, now)
     epics = epics_fragment(facts.get("epics", []))
-    steward = steward_fragment(facts, results)
     parts = [
         f"chair {now.astimezone(EASTERN):%m-%d %H:%M %Z}",
         lanes_text(dispatch),
@@ -355,7 +355,6 @@ def format_status(
         *deferred_items(results),
         *([review] if review else []),
         *([epics] if epics else []),
-        *([steward] if steward else []),
         *(f"skipped missing repo {p}" for p in facts.get("missing_repos", [])),
         ", ".join(needs) if needs else "needs chair: none",
         *([housekeeping_fragment(facts["last_housekeeping_at"], now)] if "last_housekeeping_at" in facts else []),

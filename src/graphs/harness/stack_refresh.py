@@ -7,7 +7,7 @@ re-creates them under new shas) leaves those recorded shas off the branch.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,6 +33,16 @@ def refresh_record(branch: str, default_ref: str, head_before: str, head_after: 
 def refresh_reason(branch: str, default_ref: str, paths: Iterable[str]) -> str:
     listed = ", ".join(sorted(paths)) or "none reported"
     return f"merging {default_ref} into {branch} conflicted in: {listed}; the level was not built on the stale tree"
+
+
+def lost_merges(recorded: Mapping[str, str | None], reachable: Mapping[str, bool]) -> list[str]:
+    """Task ids with a recorded commit that is not reachable. A task absent from `reachable` counts as lost."""
+    return sorted(task for task, commit in recorded.items() if commit and not reachable.get(task, False))
+
+
+def rebase_lost_reason(branch: str, onto: str, lost: Iterable[str]) -> str:
+    listed = ", ".join(sorted(lost))
+    return f"rebasing {branch} onto {onto} lost the merged commits of: {listed}; the branch was left as it was"
 
 
 def _failed(head: str, reason: str, paths: tuple[str, ...] = ()) -> RefreshResult:

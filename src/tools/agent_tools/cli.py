@@ -85,6 +85,7 @@ class _LazyHandler:
 card_keys = _LazyModule("agent_tools.card_keys")
 chair = _LazyModule("agent_tools.chair")
 chair_capacity = _LazyModule("agent_tools.chair_capacity")
+chair_chat = _LazyModule("agent_tools.chair_chat")
 chair_dash_sync = _LazyModule("agent_tools.chair_dash_sync")
 chair_decompose_runs = _LazyModule("agent_tools.chair_decompose_runs")
 chair_exec = _LazyModule("agent_tools.chair_exec")
@@ -120,7 +121,6 @@ chair_read_run_id = _LazyModule("agent_tools.chair_read_run_id")
 chair_read_stale = _LazyModule("agent_tools.chair_read_stale")
 chair_read_stall = _LazyModule("agent_tools.chair_read_stall")
 chair_read_stranded = _LazyModule("agent_tools.chair_read_stranded")
-chair_read_steward = _LazyModule("agent_tools.chair_read_steward")
 chair_report = _LazyModule("agent_tools.chair_report")
 chair_restart = _LazyModule("agent_tools.chair_restart")
 chair_restart_log = _LazyModule("agent_tools.chair_restart_log")
@@ -131,7 +131,6 @@ chair_run = _LazyModule("agent_tools.chair_run")
 chair_service = _LazyModule("agent_tools.chair_service")
 chair_service_host = _LazyModule("agent_tools.chair_service_host")
 chair_smoke = _LazyModule("agent_tools.chair_smoke")
-chair_steward_exec = _LazyModule("agent_tools.chair_steward_exec")
 chair_unit = _LazyModule("agent_tools.chair_unit")
 chair_wake = _LazyModule("agent_tools.chair_wake")
 chair_watchdog = _LazyModule("agent_tools.chair_watchdog")
@@ -163,8 +162,10 @@ host_load = _LazyModule("agent_tools.host_load")
 install = _LazyModule("agent_tools.install")
 install_exec = _LazyModule("agent_tools.install_exec")
 install_root = _LazyModule("agent_tools.install_root")
+intake_fields = _LazyModule("agent_tools.intake_fields")
 intake_queue = _LazyModule("agent_tools.intake_queue")
 intake_state = _LazyModule("agent_tools.intake_state")
+jsonl_log = _LazyModule("agent_tools.jsonl_log")
 lake_config = _LazyModule("agent_tools.lake_config")
 lake_lease = _LazyModule("agent_tools.lake_lease")
 land = _LazyModule("agent_tools.land")
@@ -312,7 +313,7 @@ def _runs_usage(a: argparse.Namespace) -> int:
 
 
 _SERIES_COLUMNS = ["run", "date", "cartridge_sha", "provider_profile", "calls", "turns", "cost_usd",
-                   "cache_share", "tasks_landed", "quarantined", "review_rounds", "cost_per_landed",
+                   "cache_share", "completions", "quarantined", "review_rounds", "cost_per_completion",
                    "tier_ceiling", "effort_ceiling", "launched_by"]
 
 
@@ -329,8 +330,8 @@ def _runs_series(a: argparse.Namespace) -> int:
         print(json.dumps({"rows": rows, "totals": totals}, indent=2))
     else:
         print(records.format_table(rows, _SERIES_COLUMNS))
-        print(f"totals: {totals['runs']} runs, ${totals['cost_usd']:.2f}, {totals['tasks_landed']} landed, "
-              f"{totals['quarantined']} quarantined, cost/landed {totals['cost_per_landed']}, "
+        print(f"totals: {totals['runs']} runs, ${totals['cost_usd']:.2f}, {totals['completions']} completions, "
+              f"{totals['quarantined']} quarantined, cost/completion {totals['cost_per_completion']}, "
               f"{totals['runs_landing_nothing']} landed nothing")
     if a.append:
         p = Path(a.append)
@@ -608,7 +609,7 @@ def _stats_chair(a: argparse.Namespace) -> int:
         for run_id, u in run_store.usages(runs_dir).items() if _run_in_window(runs_dir, run_id, a.since)
         for call in (u.get("calls") or [])
     ]
-    land_rows = [r for line in (_read_text_or_none(runs_dir / "land.jsonl") or "").splitlines() if isinstance(r := _json_or(line, None), dict)]
+    land_rows = list(jsonl_log.read_log(runs_dir / "land.jsonl").rows)
     prices = _chair_catalog_prices(a)
     sessions = stats_chair.session_ids(chair.read(runs_dir) if (runs_dir / chair.CHAIR_FILENAME).exists() else None, a.session or [])
     lines = [line for s in sessions for line in _chair_transcript_lines(Path(a.projects_dir).expanduser(), s)]
@@ -1339,31 +1340,6 @@ def _repo_for(ws: Path, home: str) -> Callable[[dict], str]:
     return repo_for
 
 
-def _steward_git(runner: Callable[[list[str]], tuple[int, str]]) -> Callable[[list[str]], tuple[int, str]]:
-    """The steward's `GitRun`: its argv starts at `-C`, so the loop's runner gets `git` put in front."""
-    return lambda args: runner(["git", *args])
-
-
-def _steward_phase_of(work_rows: Callable[[], list[dict]]) -> Callable[[str, int], str]:
-    """`StewardPorts.phase_of`: the epic's phases in natural order, as `chair_facts.steward_plan_facts` indexes its levels.
-    An index past the last phase raises IndexError, which the executor reports as the kind's failure event."""
-    def phase_of(epic: str, level: int) -> str:
-        phases = {str(r["phase"]) for r in work_rows() if r.get("kind") == "task" and r.get("initiative") == epic}
-        return sorted(phases, key=_natural_key)[level]
-    return phase_of
-
-
-def _steward_head(runner: Callable[[list[str]], tuple[int, str]], repo_for: Callable[[dict], str]) -> Callable[[str], str]:
-    """`FactsDeps.ticket_head`: the commit the initiative's ticket branch points at in its repository; "" when either is missing."""
-    def head(initiative: str) -> str:
-        root = repo_for({"initiative": initiative})
-        if not root:
-            return ""
-        code, out = runner(["git", "-C", root, "rev-parse", "--verify", "--quiet", f"{land.pr_branch_name(initiative)}^{{commit}}"])
-        return out.strip() if code == 0 else ""
-    return head
-
-
 def _approved_branch_merged(
     runner: Callable[[list[str]], tuple[int, str]],
     repo_for: Callable[[dict], str],
@@ -1376,7 +1352,7 @@ def _approved_branch_merged(
     resolved, so it reads False and the hold stays."""
     def merged(row: Mapping) -> bool:
         initiative = str(row["initiative"])
-        if row.get("land_at", "ticket") not in ("ticket", "level"):
+        if row.get("land_at", "initiative") == "task":
             return False
         root = repo_for({"initiative": initiative})
         branch = land_manual.record_branch(runs_dir, str(row.get("run") or ""), str(row["id"]))
@@ -1384,8 +1360,8 @@ def _approved_branch_merged(
             return False
         code, out = runner(["git", "-C", root, "rev-parse", "--verify", "--quiet", f"{branch}^{{commit}}"])
         return code == 0 and chair_read_branch_merged.branch_merged(
-            _steward_git(runner), root, out.strip(),
-            [chair_read_steward.level_branch(initiative, str(row["phase"])), land.pr_branch_name(initiative)],
+            lambda args: runner(["git", *args]), root, out.strip(),
+            [f"epic/{initiative}/{row['phase']}", land.pr_branch_name(initiative)],
         )
     return merged
 
@@ -1407,70 +1383,9 @@ def _wrongly_released_merged(
             if chair_facts.run_initiative(run := p.parent.parent.parent.name) == initiative
         }
         return bool(runs) and not runs & set(live()) and approved_merged(
-            {**item, "run": max(runs, key=chair_facts._run_number), "land_at": land_at.get(initiative, "ticket")}
+            {**item, "run": max(runs, key=chair_facts._run_number), "land_at": land_at.get(initiative, "initiative")}
         )
     return merged
-
-
-def _steward_target_branch_of(profile: dict, ws: Path, repo_for: Callable[[dict], str]) -> Callable[[str], str]:
-    """`StewardPorts.target_branch_of`: the branch a land of the epic's repository targets, as `land` resolves it, no fetch.
-    "" when no repository is recorded or the target is refused, so the executor reports merge_failed."""
-    def target(epic: str) -> str:
-        root = repo_for({"initiative": epic})
-        if not root:
-            return ""
-        flag, refusal = _initiative_target_branch(profile, Path(root), ws, epic)
-        return "" if refusal else base_branch.base_name(root, flag)
-    return target
-
-
-def _steward_level_merged(runner: Callable[[list[str]], tuple[int, str]], repo_for: Callable[[dict], str]) -> Callable[[str, str], bool]:
-    """`FactsDeps.level_merged`: whether the phase's level branch has landed on the initiative's ticket branch; False without a repository."""
-    git = _steward_git(runner)
-
-    def merged(initiative: str, phase: str) -> bool:
-        root = repo_for({"initiative": initiative})
-        return bool(root) and chair_read_steward.level_is_merged(
-            root, land.pr_branch_name(initiative), chair_read_steward.level_branch(initiative, phase), git
-        )
-    return merged
-
-
-def _steward_checks_for(profile: dict, repo_for: Callable[[dict], str]) -> Callable[[Mapping], list[str]]:
-    """`Deps.steward_checks`: the shell lines a land resolves for the epic's repository (`_land_repo_facts` then
-    `land.checks_argv`), cartridge checks first. A run_gate whose cartridge cannot be resolved raises rather than
-    pass on checks that are short; the executor's caller reports that as a refusal."""
-    def checks(action: Mapping) -> list[str]:
-        root = repo_for({"initiative": action.get("epic", "")})
-        if not root:
-            return []
-        facts = _land_repo_facts(Path(root), profile)
-        if action.get("kind") == "run_gate" and facts["cartridge_error"]:
-            raise RuntimeError(f"cartridge unresolved: {facts['cartridge_error']}")
-        return [line for _name, line in land.checks_argv(facts)]
-    return checks
-
-
-def _steward_gate_runner(
-    runner: Callable[[list[str]], tuple[int, str]], capacity: int | None
-) -> Callable[[str, str, Sequence[str]], tuple[bool, str]]:
-    """`StewardPorts.run_gate_checks`: the lines run in a throwaway worktree of the branch, as a land runs them.
-    A check is named by its own line, since the steward carries lines and not names."""
-    def run_gate(repo: str, branch: str, checks: Sequence[str]) -> tuple[bool, str]:
-        if not repo:
-            return False, "no repository recorded for the epic"
-        root = Path(repo)
-        wt = _land_worktree(root, branch)
-        _remove_land_worktree(root, branch)
-        try:
-            code, out = runner(["git", "-C", str(root), "worktree", "add", "--detach", str(wt), branch])
-            if code != 0:
-                return False, f"worktree add: {out.strip()}"
-            _link_venv(root, wt)
-            return _run_checks([(line, line) for line in checks], wt, os.cpu_count() or 1, capacity)
-        finally:
-            _remove_land_worktree(root, branch)
-    return run_gate
 
 
 def _runs_move_repo_for(ws: Path, home: str) -> Callable[[dict], str]:
@@ -1645,13 +1560,17 @@ def _runs_dir_for_land(a: argparse.Namespace) -> tuple[Path | None, str | None]:
 
 
 def _land_record(runs_dir: Path, run_id: str, task: str | None) -> tuple[dict | None, str, int]:
+    """The one record file for `task` (any task when None). A named task with no file under the land's own run takes the
+    newest earlier run's, the order `_land_phase_record` uses; several files in one run stay ambiguous."""
     tasks_root = runs_dir / run_id / "tasks"
     matches = sorted(tasks_root.glob(f"*/{task}.json" if task else "*/*.json"))
+    if not matches and task:
+        matches = next((m for r in _earlier_runs(run_id) if (m := sorted((runs_dir / r / "tasks").glob(f"*/{task}.json")))), [])
     if len(matches) != 1:
         return None, str(tasks_root.resolve()), len(matches)
     path = matches[0]
     record = json.loads(path.read_text(encoding="utf-8"))
-    record.setdefault("run", run_id)
+    record.setdefault("run", path.parents[2].name)
     record.setdefault("task", path.stem)
     record.setdefault("phase", path.parent.name)
     return record, str(path), 1
@@ -1682,9 +1601,10 @@ def _land_load(runs_dir: Path, run_id: str, task: str | None) -> tuple[dict | No
             return {"run": run_id, "task": task, "phase": phases[0], **held}, str(path), 1, "store"
         return None, where, count, None
     path = Path(where)
-    stored = run_store.task_record(runs_dir, run_id, path.parent.name, path.stem) if count == 1 else None
+    filed_run = path.parents[2].name if count == 1 else run_id  # an earlier run's record is read from that run
+    stored = run_store.task_record(runs_dir, filed_run, path.parent.name, path.stem) if count == 1 else None
     if stored is not None:
-        stored = {"run": run_id, "task": path.stem, "phase": path.parent.name, **stored}
+        stored = {"run": filed_run, "task": path.stem, "phase": path.parent.name, **stored}
     record, source = _choose_record(stored, filed)
     return record, where, count, source
 
@@ -2361,6 +2281,13 @@ def _phase_needing_land(runs_dir: Path, run_id: str) -> str | None:
     return candidates[0] if len(candidates) == 1 else None
 
 
+def _last_phase_with_manifest(runs_dir: Path, run_id: str) -> str | None:
+    """Edge. The last phase, by name, that holds task records under `run_id` and has a phase record; None when none does."""
+    tasks_root = runs_dir / run_id / "tasks"
+    held = sorted(d.name for d in tasks_root.iterdir() if d.is_dir() and any(d.glob("*.json"))) if tasks_root.is_dir() else []
+    return next((p for p in reversed(held) if _land_phase_record(runs_dir, run_id, p)[0] is not None), None)
+
+
 def _checks_env(cwd: Path, cores: int = 1, capacity: int | None = None) -> dict[str, str] | None:
     """Edge. The environment a check runs in: `cwd/.venv/bin` first on PATH when the worktree has one (the venv
     `_link_venv` links), so a bare `pytest` is the project's, not a standalone tool's. With a `capacity` of 1 or more
@@ -2373,12 +2300,24 @@ def _checks_env(cwd: Path, cores: int = 1, capacity: int | None = None) -> dict[
     return capped if capped is not None else base
 
 
+def _git_common_dir(cwd: Path) -> Path | None:
+    """Edge. The repository's git common directory, shared by every worktree, or None when git cannot say."""
+    try:
+        out = subprocess.run(["git", "-C", str(cwd), "rev-parse", "--git-common-dir"], capture_output=True, text=True,
+                             check=True, timeout=30).stdout.strip()
+    except subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError:
+        return None
+    return (Path(cwd) / out).resolve() if out else None
+
+
 def _run_checks(checks: list[tuple[str, str]], cwd: Path, cores: int = 1, capacity: int | None = None) -> tuple[bool, str]:
     """Each `(name, shell line)` pair in order, run by a shell in `cwd` as the builders run it (`harness.checks`),
     stopping at the first launch error or failure and naming it by `name`, never by its command.
 
-    `cores` and `capacity` are the land's, read by the caller. With a `capacity` the passing detail names the xdist
-    worker count the checks ran with."""
+    A check that already passed on this exact tree and command is not run again (`harness.check_reuse`); the detail
+    names it. `cores` and `capacity` are the land's, read by the caller. With a `capacity` the passing detail names
+    the xdist worker count the checks ran with."""
+    from harness.check_reuse import run_checks_reusing
     from harness.checks import run_checks
     from harness.lane_workers import XDIST_VAR
     if not checks:
@@ -2386,10 +2325,16 @@ def _run_checks(checks: list[tuple[str, str]], cwd: Path, cores: int = 1, capaci
     env = _checks_env(cwd, cores, capacity)
     workers = env.get(XDIST_VAR) if env is not None and capacity is not None and capacity >= 1 else None
     note = f" (xdist workers: {workers})" if workers else ""
+    common = _git_common_dir(Path(cwd))
     skipped: list[str] = []
+    reused: list[str] = []
     flaky: list[str] = []
     for name, line in checks:
-        [result] = run_checks(Path(cwd), [{"name": name, "cmd": line}], env=env)
+        one = [{"name": name, "cmd": line}]
+        [result] = (run_checks_reusing(Path(cwd), one, ledger_dir=common, env=env) if common is not None
+                    else run_checks(Path(cwd), one, env=env))
+        if result.get("reused"):
+            reused.append(name)
         if result.get("note"):
             flaky.append(result["note"])
         if result["outcome"] == "unrunnable":
@@ -2401,7 +2346,7 @@ def _run_checks(checks: list[tuple[str, str]], cwd: Path, cores: int = 1, capaci
             return False, land.checks_detail(f"{name}: {result['output_tail'].strip()}", skipped, flaky)
         if verdict == "skip":
             skipped.append(name)
-    return True, land.checks_detail(f"{len(checks)} checks passed{note}", skipped, flaky)
+    return True, land.checks_detail(f"{len(checks)} checks passed{note}", skipped, flaky, reused)
 
 
 def _land_worktree(repo: Path, branch: str) -> Path:
@@ -3105,6 +3050,33 @@ def _mark_done_unrecorded(step: dict) -> tuple[bool, str]:
     if result is None:
         return True, f"{task} marked done with {step.get('pr') or 'no PR'}"
     return result.code == route_edit.DONE, result.text
+
+
+def _mark_remaining_done(steps: list[dict], pr: str, at: str, mark: Callable[[dict], tuple[bool, str]]) -> list[tuple[str, str]]:
+    """Edge. Mark done with `pr` every task of the `mark_done` steps in `steps`; returns `(task, reason)` for each it could
+    not. A task whose record file is missing, or that never had one, goes by its store item as `_mark_done_unrecorded` does.
+    A record `mark` fails on (False or an exception) falls back to the store item. Never raises."""
+    unmarked: list[tuple[str, str]] = []
+    for step in {s["task"]: s for s in steps if s["kind"] == "mark_done"}.values():
+        path = step.get("path")
+        has_record = step.get("recorded") is not False and path is not None and Path(path).is_file()
+        reason = ""
+        if has_record:
+            try:
+                ok, detail = mark(_mark_done_facts(step, pr, at))
+            except Exception as exc:
+                ok, detail = False, f"{type(exc).__name__}: {exc}"
+            if ok:
+                continue
+            reason = detail
+        try:
+            runs_dir = step.get("runs_dir") or (str(Path(path).resolve().parents[3]) if path else None)
+            ok, detail = _mark_done_unrecorded({**step, "runs_dir": runs_dir, "pr": pr, "at": at})
+        except Exception as exc:
+            ok, detail = False, f"{type(exc).__name__}: {exc}"
+        if not ok:
+            unmarked.append((step["task"], f"{reason}; then {detail}" if reason else detail))
+    return unmarked
 
 
 def _mark_done_facts(step: dict, pr: str, at: str) -> dict:
@@ -3905,6 +3877,10 @@ def _runs_land(a: argparse.Namespace) -> int:
             return 2
         print(f"land: {shortfall}; the list below is short", file=sys.stderr)
     phase = getattr(a, "phase", None) or (None if a.task else _phase_needing_land(runs_dir, run_id))
+    # No phase named and records in several phases: the ticket's last phase, but only to finish an already merged PR (checked below).
+    inferred = phase is None and not a.task and _land_record(runs_dir, run_id, None)[2] > 1
+    phase = _last_phase_with_manifest(runs_dir, run_id) if inferred else phase
+    inferred = inferred and phase is not None
     land_mode = work_state.work_state_mode(_lake_provider(a)[0]) if a.apply else "files"
     record, item_path, lease_task = None, None, None
     land_at, ticket_tasks = None, []
@@ -3940,8 +3916,12 @@ def _runs_land(a: argparse.Namespace) -> int:
                                       _parent_phase(runs_dir.parent / "work", initiative, phase))
                      if read_forge is not None else None)
         already_merged = merged_pr is not None
+        if inferred and not already_merged:
+            _, searched, count = _land_record(runs_dir, run_id, None)
+            print(f"land: looked in {searched}, found {count} task records, expected 1")
+            return 2
         land_at = _phase_land_at(phase_record, profile, runs_dir.parent / "work", initiative)
-        ticket_items, phases = _ticket_items(runs_dir.parent / "work", initiative, runs_dir, land_mode, (phase, items)) if land_at == "ticket" else ({}, [])
+        ticket_items, phases = _ticket_items(runs_dir.parent / "work", initiative, runs_dir, land_mode, (phase, items)) if land.is_initiative(land_at) else ({}, [])
         ticket_tasks = list(ticket_items)
         # An already merged phase puts nothing new on the target branch; a ticket land carries the earlier phases in its one PR.
         parent_wait = (None if already_merged else _parent_land_refusal(
@@ -3956,7 +3936,7 @@ def _runs_land(a: argparse.Namespace) -> int:
         ticket_present = _ticket_present(repo, phase_record.get("card_branch") or f"epic/{initiative}/{phase}", earlier)
         # Approved in the store with no task record in any phase, even after the earlier-run fallback: built elsewhere.
         recorded = {r["task"] for p in phases for r in _land_phase_record(runs_dir, run_id, p)[1]} | {r["task"] for r in task_records}
-        ticket_unrecorded = sorted(t for t in (ticket_items if land_at == "ticket" else _phase_task_items(items)) if t not in recorded)
+        ticket_unrecorded = sorted(t for t in (ticket_items if land.is_initiative(land_at) else _phase_task_items(items)) if t not in recorded)
         from core.landing import phase_land_deferred  # lazy: core sits beside agent_tools in one venv
         plan_steps = land.land_plan(
             {**phase_record, "initiative": initiative, "initiative_title": initiative_title,
@@ -3967,6 +3947,9 @@ def _runs_land(a: argparse.Namespace) -> int:
             already_merged=already_merged, ticket_tasks=ticket_tasks, ticket_present=ticket_present,
             ticket_records=[r for r in earlier if r["task"] in ticket_present], ticket_unrecorded=ticket_unrecorded,
         )
+        if inferred:  # a re-run named by no phase, after the PR merged, leaves a task already done (by hand or by a first run) alone
+            finished = {i["id"] for i in items if i["status"] == "done"}
+            plan_steps = [s for s in plan_steps if not (s["kind"] == "mark_done" and s["task"] in finished)]
         earlier_paths = {t: p for ph in phases if ph != phase for t, p in _land_phase_record(runs_dir, run_id, ph)[2].items()}
         steps = _land_enrich(plan_steps, path=searched, worktree_root=a.worktree_root, task_paths={**earlier_paths, **task_paths},
                               umbrella=profile.get("umbrella_dir"), store_runs_dir=str(runs_dir),
@@ -4375,8 +4358,7 @@ def _mark_stopped_land(repo: Path, runs_dir: Path, rc: int, record: dict | None,
 
 
 def _append_land_log(runs_dir: Path, row: dict) -> None:
-    with (runs_dir / "land.jsonl").open("a", encoding="utf-8") as f:
-        f.write(json.dumps(row) + "\n")
+    jsonl_log.append_line(runs_dir / "land.jsonl", row, sync=True)
 
 
 def should_sync_lake(rc: int, reached: Sequence[str], extra_imports: bool, config_resolved: bool,
@@ -4469,6 +4451,7 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
     looped = False
     pr = pr or _open_pr_ref(repo, steps, forge_module)
     pr_failed: tuple[dict, str] | None = None  # the pr step that failed after the push, and why
+    merge_ran = False  # once a merge step succeeded, a later step's exception is a failed result with the tasks marked, not a traceback
     into_pr_branch = any(s["kind"] == "phase_done" for s in steps)  # only such a plan reports a pr failure instead of stopping
     i = 0
     while i < len(steps):
@@ -4525,7 +4508,16 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
                 Path(step["path"]).parent.mkdir(parents=True, exist_ok=True)
                 Path(step["path"]).write_text(json.dumps(record, indent=2), encoding="utf-8")
             step = {**_mark_done_facts(step, pr, datetime.datetime.now(datetime.UTC).isoformat()), "by": by, "mode": mode}
-        ok, detail = (merged, merge_detail) if step["kind"] == "merge" else _execute_land_step(repo, step, forge_module)
+        raised = False  # the step raised after the merge; a returned failure keeps today's stop
+        if step["kind"] == "merge":
+            ok, detail = merged, merge_detail
+        elif not merge_ran:
+            ok, detail = _execute_land_step(repo, step, forge_module)
+        else:
+            try:
+                ok, detail = _execute_land_step(repo, step, forge_module)
+            except Exception as exc:
+                ok, detail, raised = False, f"{type(exc).__name__}: {exc}", True
         if step.get("before") == "pr_create":
             # The sync may have just written `issue:`; the PR opened next must carry its `Closes`.
             steps = land.with_issue(steps, record, _land_item_facts(item_path)[1])
@@ -4545,6 +4537,7 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
             return 2, reached, pr
         print(f"{step['kind']}: {detail}")
         if ok and step["kind"] == "merge":
+            merge_ran = True
             landing = _landing_ref(detail, pr, _pr_number(steps, i, pr), step.get("default_branch", "main"))
         if ok and step["kind"] == "mark_done":
             initiative = _step_initiative(step, record)
@@ -4567,6 +4560,13 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
                 print("land: merge refused for an expected required check; waiting for checks once more")
                 i = waits[-1]
                 continue
+        if raised or (not ok and step["kind"] == "mark_done" and pr):
+            # The PR is merged: record it and mark every task whose mark_done has not run, so none keeps holding its files.
+            number = _pr_number(steps, i, pr)
+            pr = pr or (f"#{number}" if number is not None else "")
+            at = datetime.datetime.now(datetime.UTC).isoformat()
+            for task, why in _mark_remaining_done(steps[i:], pr, at, lambda s: _execute_land_step(repo, {**s, "by": by, "mode": mode}, forge_module)):
+                print(f"{task} not marked done: {why}")
         if not ok:
             remaining = [s["kind"] for s in steps[i + 1:]]
             print("stopped; remaining: " + ", ".join(remaining))
@@ -4849,7 +4849,9 @@ def _efficiency_figures(runs_dir: Path, now: str) -> dict | None:
         "date": today,
         "cost": spend,
         "landed": len(landed),
-        "per_landed": spend / len(landed) if landed else None,
+        "per_landed": spend / len(landed) if landed else None,  # deprecated alias of cost_per_completion
+        "completions": len(landed),
+        "cost_per_completion": spend / len(landed) if landed else None,
         "first_try_rate": rate,
         "measured": measured,
     }
@@ -4860,7 +4862,7 @@ def _efficiency(runs_dir: Path, now: str) -> str | None:
     figures = _efficiency_figures(runs_dir, now)
     if figures is None:
         return None
-    return route.efficiency_line(figures["cost"], figures["landed"], figures["first_try_rate"], figures["measured"])
+    return route.efficiency_line(figures["cost"], figures["completions"], figures["first_try_rate"], figures["measured"])
 
 
 def _gather_context(profile_path: Path, mode: str = "files"):
@@ -5944,6 +5946,115 @@ def _route_chair_chat(a: argparse.Namespace) -> int:
     return 0
 
 
+def _chat_state_path(workspace: Path) -> Path:
+    return workspace / "chair_chat_state.json"
+
+
+def _read_chat_doc(path: Path) -> tuple[dict, list[dict]]:
+    """Edge. The directive state and the epics the chair last saw; a missing or torn file reads as empty."""
+    try:
+        loaded = json.loads(_read_text_or_none(path) or "{}")
+    except json.JSONDecodeError:
+        loaded = {}
+    doc = loaded if isinstance(loaded, dict) else {}
+    base = chair_chat.empty_state()
+    saved = doc.get("state") if isinstance(doc.get("state"), dict) else {}
+    epics = doc.get("epics") if isinstance(doc.get("epics"), list) else []
+    return {**base, **{k: v for k, v in saved.items() if k in base}}, epics
+
+
+def _write_chat_doc(path: Path, state: dict, epics: list[dict]) -> None:
+    """Edge. Replace the file atomically; an unchanged document is not rewritten."""
+    text = json.dumps({"state": state, "epics": epics}, default=sorted, sort_keys=True)
+    if _read_text_or_none(path) == text:
+        return
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _chat_deps(ws: Path) -> chair_run.ChatDeps:
+    """Edge. The chat edges over the workspace's `courier.jsonl` and `chair_chat_state.json`; neither is the lease."""
+    courier_path, chat_path = ws / "courier.jsonl", _chat_state_path(ws)
+    return chair_run.ChatDeps(
+        read=lambda: courier.entries(_read_text_or_none(courier_path) or ""),  # a missing file is an empty bus
+        load=lambda: _read_chat_doc(chat_path)[0],
+        save=lambda state, epics: _write_chat_doc(chat_path, state, epics),
+        append=lambda entry: courier.append_file(courier_path, entry),
+        ack=lambda message_id: courier.ack_file(courier_path, message_id, chair_run.CHAT_CONSUMER),
+    )
+
+
+def _converse_append(a: argparse.Namespace, body_kind: str, payload: dict[str, str]) -> tuple[Path, str] | None:
+    """Edge. Append one chat entry to the workspace courier; the lease record is never opened. None after printing why."""
+    workspace = _courier_workspace(a)
+    if workspace is None:
+        return None
+    message_id = uuid.uuid4().hex
+    entry = chair_chat.build_message(a.sender, body_kind, payload, message_id, chair_run.CHAT_REF)
+    courier.append_file(workspace / "courier.jsonl", entry)
+    return workspace, message_id
+
+
+def _route_chair_converse_send(a: argparse.Namespace) -> int:
+    fields = _parse_fields(a.args or [])
+    if fields is None:
+        print(f"converse: bad argument in {a.args}; expected key=value")
+        return 2
+    payload = {**fields, "kind": a.kind}
+    reason = chair_chat.validate_directive(a.kind, payload)
+    if reason is not None:
+        print(f"converse: {reason}")
+        return 2
+    sent = _converse_append(a, "directive", payload)
+    if sent is None:
+        return 2
+    print(f"converse: sent {a.kind} directive {sent[1]}; the chair applies it on its next tick")
+    return 0
+
+
+def _find_chat_answer(blob: str, question_id: str) -> dict | None:
+    return next((e for e in courier.entries(blob) if e.get("event") == "chat_answer" and (e.get("fields") or {}).get("question") == question_id), None)
+
+
+def _await_chat_answer(
+    path: Path, question_id: str, wait: float, poll: float = 1.0,
+    sleep: Callable[[float], None] = time.sleep, monotonic: Callable[[], float] = time.monotonic,
+) -> dict | None:
+    """Edge. The answer entry for `question_id`, polled until `wait` seconds pass; None when none came."""
+    deadline = monotonic() + wait
+    while True:
+        found = _find_chat_answer(_read_text_or_none(path) or "", question_id)
+        left = deadline - monotonic()
+        if found is not None or left <= 0:
+            return found
+        sleep(min(poll, left))
+
+
+def _route_chair_converse_ask(a: argparse.Namespace) -> int:
+    if a.kind not in chair_chat.QUESTION_KINDS:
+        print(f"converse: unknown question {a.kind!r}; expected one of {', '.join(chair_chat.QUESTION_KINDS)}")
+        return 2
+    sent = _converse_append(a, "question", {"kind": a.kind, "subject": a.subject})
+    if sent is None:
+        return 2
+    answer = _await_chat_answer(sent[0] / "courier.jsonl", sent[1], a.wait)
+    print(answer["note"] if answer else f"converse: the chair has not answered within {a.wait:g}s; the question stays queued for its next tick")
+    return 0
+
+
+def _route_chair_converse_state(a: argparse.Namespace) -> int:
+    workspace = _courier_workspace(a)
+    if workspace is None:
+        return 2
+    state, epics = _read_chat_doc(_chat_state_path(workspace))
+    sent = courier.entries(_read_text_or_none(workspace / "courier.jsonl") or "")
+    recent = [{"event": e["event"]} for e in sent if e.get("topic") == chair_chat.LABEL and e.get("event") in ("directive_applied", "directive_refused")][-5:]
+    print(chair_chat.state_summary(state, epics, recent))
+    print("Epics are as of the chair's last acting tick; a standby or dry-run tick does not refresh them.")
+    return 0
+
+
 _PROFILE_KEYS_FOR_LAUNCH = ("workspace_dir", "harness_dir", "team", "cartridges_dir", "provider_profile")
 
 
@@ -6171,6 +6282,21 @@ def _filing_stage(a: argparse.Namespace, profile: Mapping) -> str:
     return "draft" if a.draft else profile.get("intake_stage") or "draft"
 
 
+def _known_epic_ids(rows: Sequence[Mapping]) -> set[str]:
+    """The epic ids the store's initiative rows name, which are the ids the dash feed rolls up."""
+    return {epic for row in rows if (epic := queue_rows.epic_of_row(row)) is not None}
+
+
+def _known_repo_names(profile: Mapping, rows: Sequence[Mapping], resolved: str = "") -> set[str]:
+    """The profile's `repo_map` names, the repos the store rows already hold, and this filing's resolved repo."""
+    held = {str(row["repo"]) for row in rows if row.get("repo")}
+    return {*profile.get("repo_map", {}), *held, *([resolved] if resolved else [])}
+
+
+def _repo_refusal_with_names(message: str, known: Collection[str]) -> str:
+    return f"{message}; valid repos: {', '.join(sorted(known)) or 'none known'}"
+
+
 def _route_file(a: argparse.Namespace) -> int:
     profile, rc = _resolve_profile_or_refuse(a)
     if rc is not None:
@@ -6189,6 +6315,10 @@ def _route_file(a: argparse.Namespace) -> int:
     if after and not a.intake:
         print("routing: --after needs --intake, since only a queued intake waits")
         return 2
+    for flag, noun in (("epic", "an epic"), ("priority", "a priority"), ("target_release", "a target release")):
+        if getattr(a, flag, None) is not None and not a.intake:
+            print(f"routing: --{flag.replace('_', '-')} needs --intake, since only an intake carries {noun}")
+            return 2
     if a.draft and a.ready:
         print("routing: --draft and --ready are exclusive; give one")
         return 2
@@ -6198,8 +6328,9 @@ def _route_file(a: argparse.Namespace) -> int:
     # Repos are siblings of the workspace: a bare name is resolved there, so the row never holds a name launch cannot read.
     home = str(Path.home())
     repo = route.resolve_repo(a.repo, ws.absolute().parent, route.is_git_checkout, home)
+    rows = run_store.read_queue(ws / "runs")
     if isinstance(repo, route.RepoRefused):
-        print(repo.message)
+        print(_repo_refusal_with_names(repo.message, _known_repo_names(profile, rows)))
         return 2
     resolved = repo
     repo, refusal = _filing_repo_or_refusal(resolved, profile)
@@ -6221,6 +6352,13 @@ def _route_file(a: argparse.Namespace) -> int:
         body = ""
     try:
         if a.intake:
+            refusals = intake_fields.validate(
+                repo, a.epic, a.priority, a.target_release, _known_repo_names(profile, rows, repo), _known_epic_ids(rows)
+            )
+            if refusals:
+                print("\n".join(f"routing: {line}" for line in refusals))
+                return 2
+            fields = intake_fields.normalise(repo, a.epic, a.priority, a.target_release)
             # `route.intake_file` writes the title when there is no body, and the launch reads what was written.
             heal = route_reach.launch_reach_heal(body or a.title, {})
             if _reach_refused(heal.refusal, heal.notes):
@@ -6231,7 +6369,8 @@ def _route_file(a: argparse.Namespace) -> int:
                 return 2
             date = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
             mapping = route.intake_file(a.title, body, repo, date, link=link, ids=profile.get("ids", "slug"), after=after,
-                                       stage=_filing_stage(a, profile))
+                                       stage=_filing_stage(a, profile), epic=fields.get("epic", ""),
+                                       priority=fields.get("priority", ""), target_release=fields.get("target_release", ""))
         else:
             mapping = route.initiative_files(a.title, body, repo, phase=a.phase)
     except ValueError as exc:
@@ -8797,7 +8936,7 @@ def _doctor_steward_rows(profile: dict | None) -> list[dict]:
         return [doctor._skip("steward")]
     chair = profile.get("chair")
     raw = chair.get("steward") if isinstance(chair, Mapping) else None
-    return [doctor.steward_row(chair_facts.resolve_steward_enabled(raw))]
+    return [doctor.steward_row(chair_facts.steward_asked_for(raw))]
 
 
 def _setup_doctor(a: argparse.Namespace) -> int:
@@ -8890,7 +9029,9 @@ def _install_home_refusal(home: str, record: str | None, named: bool) -> str | N
 def _install_facts(a: argparse.Namespace) -> dict:
     """Gathers exactly what `install_plan` needs and nothing it decides:
     PATH lookups, the coxswain tool's receipt extras, the profile's existence, and the
-    config/settings paths expanded once, here. Without `--root` the checkouts,
+    config/settings paths expanded once, here, and the platform, home, cox path and
+    whether the chair service file exists, and the default garage.env and its `export` lines.
+    A `--root` install passes no home and no env file. Without `--root` the checkouts,
     profile and workspace come from the resolved coxswain home; a refusal
     raises ValueError for the caller to print."""
     config_dir = str(Path("~/.config").expanduser())
@@ -8914,6 +9055,11 @@ def _install_facts(a: argparse.Namespace) -> dict:
         registered = (listing or {}).get(setup_install.MARKETPLACE)
     tool_dir = setup_receipts.default_tool_dir(os.environ, str(Path.home()))
     paths = setup_install.layout(root)
+    # A `--root` install is a sandbox: it never writes into the real user's service folders.
+    service_home = "" if a.root else str(Path.home())
+    service_file = chair_service.service_file(sys.platform, Path(service_home)) if service_home else None
+    chair_env_file = None if a.root else _chair_default_environment_file()
+    chair_env_text = _read_text_or_none(Path(chair_env_file)) if chair_env_file else None
     return {
         "tool_extras": setup_receipts.read_tool_extras(tool_dir, setup_install.TOOL),
         "root": root,
@@ -8935,6 +9081,12 @@ def _install_facts(a: argparse.Namespace) -> dict:
         "assume": a.assume,
         "window_ceiling_usd": a.window_ceiling_usd,
         "weekly_ceiling_usd": a.weekly_ceiling_usd,
+        "platform": sys.platform,
+        "home": service_home,
+        "cox_path": shutil.which("cox"),
+        "chair_service_exists": service_file is not None and service_file.exists(),
+        "chair_env_file": chair_env_file,
+        "chair_env_exports": tuple(chair_service.export_lines(chair_env_text or "")),
     }
 
 
@@ -11385,7 +11537,7 @@ STATS_COMMANDS = [
         "agent_tools.cli:_stats_causes", False, (),
     ),
     commands.Command(
-        "efficiency", "stats", "cost per turn, cost per landed task, first-try rate, waste share, per day",
+        "efficiency", "stats", "cost per turn, cost per completion, first-try rate, waste share, per day",
         (
             commands.Arg(("--runs-dir",), {"default": "runs"}),
             commands.Arg(("--days",), {"type": int, "default": 7, "help": "UTC days to report, today included (default 7)"}),
@@ -11962,6 +12114,9 @@ def build_parser() -> argparse.ArgumentParser:
     group, rows = _table_entry("chair")
     commands.build_parser(rows, [group], sub)
 
+    group, rows = _table_entry("lander")
+    commands.build_parser(rows, [group], sub)
+
     group, rows = _table_entry("host")
     commands.build_parser(rows, [group], sub)
 
@@ -12237,6 +12392,9 @@ ROUTE_COMMANDS = [
             commands.Arg(("--after",), {"action": "append", "default": None, "help": "with --intake: ids this intake waits on; repeat the flag or comma-separate"}),
             commands.Arg(("--draft",), {"action": "store_true", "help": "with --intake: file it as a draft, which the chair skips until it is ready (the default)"}),
             commands.Arg(("--ready",), {"action": "store_true", "help": "with --intake: file it ready for the chair to pick up"}),
+            commands.Arg(("--epic",), {"default": None, "help": "with --intake: the epic id this intake belongs to; it must already exist"}),
+            commands.Arg(("--priority",), {"default": None, "help": "with --intake: a whole number; higher runs first"}),
+            commands.Arg(("--target-release",), {"default": None, "help": "with --intake: the release it ships in, a dotted version such as 2026.11.6"}),
         ),
         "agent_tools.cli:_route_file", False, (),
     ),
@@ -12479,6 +12637,38 @@ ROUTE_COMMANDS = [
                     commands.Arg(("--as-leader",), {"action": "store_true", "help": "send as the lock's holder; refuses unless this process is the live holder"}),
                 ),
                 "agent_tools.cli:_route_chair_chat", False, (),
+            ),
+            commands.Command(
+                "converse", "route", "talk to the running chair through the courier, without the lease (`chat` is the leader thread)", (), None, False, (),
+                subcommands=(
+                    commands.Command(
+                        "send", "route", "send the chair a directive; it applies on the chair's next tick",
+                        (
+                            commands.Arg(("kind",), {"help": "one of: priority, hold, release, scope, feature, cut_release"}),
+                            commands.Arg(("args",), {"nargs": "*", "help": "key=value pairs, e.g. target_kind=task target=t1 rank=1"}),
+                            commands.Arg(("--profile",)),
+                            commands.Arg(("--sender",), {"default": "session"}),
+                        ),
+                        "agent_tools.cli:_route_chair_converse_send", False, (),
+                    ),
+                    commands.Command(
+                        "ask", "route", "ask the chair a question and wait a bounded time for its answer",
+                        (
+                            commands.Arg(("kind",), {"help": "one of: left_on_release, why_not_launched, what_failed"}),
+                            commands.Arg(("subject",), {"nargs": "?", "default": ""}),
+                            commands.Arg(("--profile",)),
+                            commands.Arg(("--sender",), {"default": "session"}),
+                            commands.Arg(("--wait",), {"type": float, "default": 30.0, "help": "seconds to wait for the answer (default 30)"}),
+                        ),
+                        "agent_tools.cli:_route_chair_converse_ask", False, (),
+                    ),
+                    commands.Command(
+                        "state", "route", "print the directives in force, the epics the chair last saw, and recent events",
+                        (commands.Arg(("--profile",)),),
+                        "agent_tools.cli:_route_chair_converse_state", False, (),
+                    ),
+                ),
+                sub_dest="converse_cmd", sub_required=False,
             ),
         ),
         sub_dest="chair_cmd", sub_required=False,
@@ -12856,7 +13046,7 @@ def _initiative_target_branch(profile: dict, repo: Path | None, ws: Path, initia
     else the cartridge's `landing_areas.target_branch`), None when none is set. `refusal` is the message when the
     cartridge does not resolve or a set target branch is invalid; every other gap falls back to None with a `note:`."""
     from core.cartridge import OVERLAY_ALLOWED_KEYS  # lazy: core sits beside agent_tools in one venv
-    from core.landing import resolve_target_branch
+    from core.landing import resolve_epic_stack, resolve_target_branch
 
     cartridge, error = _team_cartridge(profile, repo, OVERLAY_ALLOWED_KEYS)
     if error:
@@ -12876,7 +13066,14 @@ def _initiative_target_branch(profile: dict, repo: Path | None, ws: Path, initia
         epic = definitions.get(epic_id) if epic_id else None
         if epic_id and epic is None and epic_id not in unread:
             print(f"note: epic {epic_id} has no file under epics/; using the repo default", file=sys.stderr)
-        return resolve_target_branch(cartridge, epic["target_branch"] if epic else None, fields.get("target_branch")), None
+        resolved = resolve_target_branch(cartridge, epic["target_branch"] if epic else None, fields.get("target_branch"))
+        if epic and initiative and not fields.get("target_branch") and resolve_epic_stack(cartridge, epic.get("epic_stack")):
+            # A stacked epic: an initiative that needs an unlanded initiative of the same epic forks from its branch.
+            from agent_tools import lander_ports
+            resolved = lander_ports.stack_base(
+                ws, initiative, str(epic_id), epic["target_branch"], lander_ports.read_records(ws / "runs")
+            ) or resolved
+        return resolved, None
     except ValueError as exc:
         return None, str(exc)
 
@@ -12906,7 +13103,7 @@ def _phase_land_at(phase_record: Mapping, profile: dict, work_dir: Path, initiat
     `land_at`, so reading the record alone gave ticket while the chair planned at level: the chair asked for a
     phase land, the land deferred it as ticket and exited 0 with nothing done, and the chair backed off."""
     if phase_record.get("land_at") in land.LAND_AT:
-        return str(phase_record["land_at"])
+        return land.granularity(phase_record)
     from core.landing import resolve_land_at  # lazy: core sits beside agent_tools in one venv
 
     path = work_dir / initiative / "initiative.md"
@@ -13641,9 +13838,6 @@ def _chair_run_deps(
         return chair_facts.wrongly_released_facts(bodies, merged, at)
 
     facts_deps = chair_facts.FactsDeps(
-        steward_entries=lambda: chair_read_steward.read_bus_entries(ws / "courier.jsonl"),
-        ticket_head=_steward_head(runner, repo_for),
-        level_merged=_steward_level_merged(runner, repo_for),
         approved_branch_merged=_approved_branch_merged(runner, repo_for, runs_dir),
         wrongly_released=wrongly_released,
         lease=lambda: chair_read_lease.read_lease(runs_dir, now()),
@@ -13672,8 +13866,6 @@ def _chair_run_deps(
         work_store_ready=lambda: chair_read_docket.work_store_ready(docket()),
         sources_configured=sources_configured,
         profile_stale=profile_stale,
-        steward_enabled=lambda: (profile.get("chair") or {}).get("steward"),
-        steward_scope=lambda: (profile.get("chair") or {}).get("steward_scope"),
         session=session, pid=pid, host=host, dispatch=dispatch,
         drafts=lambda: draft_list.count_drafts(
             draft_list.read_drafts(ws / "work", now_text(), chair_read_quarantined.initiative_files(ws, work_files()))
@@ -13683,6 +13875,7 @@ def _chair_run_deps(
         ),
         lost_runs=lambda: chair_read_lost.read_lost_runs(runs_dir, now_text()),
         tickets=ticket_items,
+        landing_records=lambda: _landing_records(runs_dir),
         decomposed_intake=decomposed_intake,
         item_counts=item_counts,
         initiative_states=initiative_states,
@@ -13701,7 +13894,6 @@ def _chair_run_deps(
         history=lambda: chair_read_housekeeping.read_last_housekeeping(runs_dir),
         housekeeping_hours=lambda: (profile.get("chair") or {}).get("housekeeping_hours"),
         stale_days=lambda: (profile.get("chair") or {}).get("stale_days"),
-        approval_hold_ticks=lambda: (profile.get("chair") or {}).get("approval_hold_ticks"),
         max_launches_per_hour=lambda: (profile.get("chair") or {}).get("max_launches_per_hour"),
         merge_queue=lambda: profile.get("merge_queue"),
         shared_file_limit=lambda: (profile.get("chair") or {}).get("max_shared_file_initiatives"),
@@ -13726,14 +13918,6 @@ def _chair_run_deps(
         dry_run=dry_run,
         lane_capacity=lane_capacity,
     )
-    steward_ports = chair_steward_exec.StewardPorts(
-        git=_steward_git(runner),
-        repo_of=lambda epic: repo_for({"initiative": epic}),
-        ticket_branch_of=land.pr_branch_name,
-        phase_of=_steward_phase_of(work_rows),
-        run_gate_checks=_steward_gate_runner(runner, lane_capacity),
-        target_branch_of=_steward_target_branch_of(profile, ws, repo_for),
-    )
     exec_deps = dataclasses.replace(
         exec_deps,
         label=session,
@@ -13746,8 +13930,6 @@ def _chair_run_deps(
         resolve_land=_resolve_land_with(actions, record),
         rerun_main=lambda repo, commit: chair_revert_ports.rerun_infra(runner, _gh_repo(repo), commit),
         launch_stagger_s=chair_exec.stagger_seconds((profile.get("chair") or {}).get("launch_stagger_s")),
-        steward_exec=lambda action, checks: chair_steward_exec.chair_steward_exec(action, checks, steward_ports),
-        steward_checks=_steward_checks_for(profile, repo_for),
     )
     def held() -> None:
         """Resolves each pending watch the smoke hold does not name, when its commit is green on main or main went green after it."""
@@ -13830,7 +14012,10 @@ def _chair_run_deps(
     # A dry run and a missing workspace keep the plain sleep, so polling is unchanged there.
     wake = None if dry_run or not ws.is_dir() else chair_wake.wait_for_run_exit(read_bus, time.sleep, time.monotonic, CHAIR_WAKE_POLL_SECONDS)
 
+    chat = None if dry_run or not ws.is_dir() else _chat_deps(ws)
+
     return chair_run.RunDeps(
+        chat=chat,
         wait=wake,
         checkout_state=checkout_state, started_checkout=started_checkout, lands_in_flight=lands_in_flight,
         stop_lands=stop_lands, facts_deps=facts_deps, gather=_chair_gather(ws), exec_deps=exec_deps, report_deps=chair_report.Deps(echo=echo),
@@ -13981,6 +14166,19 @@ def _chair_unit_text(label: str, interval: int | str, env_file: str | None, prof
     return chair_service.unit_text(
         resolved.cox, resolved.workspace_dir, label, interval, env_file, resolved.profile, resolved.path,
     )
+
+
+def _lander_unit_text(a: argparse.Namespace, ws: Path) -> str | None:
+    """Edge-light. The lander's unit text, built from the same resolved cox, PATH and profile as the chair's; None after
+    printing why when systemd would read one of them differently from this shell."""
+    from agent_tools import lander_cli
+
+    env_file = _chair_service_environment_file(a)
+    resolved = _chair_unit_inputs("lander", env_file, _profile_path(a))
+    if isinstance(resolved, _ChairUnitRefusal):
+        print(resolved.message)
+        return None
+    return lander_cli.unit_text(resolved.cox, str(ws), int(a.interval), resolved.profile, resolved.path, env_file)
 
 
 def _chair_service_install(a: argparse.Namespace, path: Path) -> int:
@@ -14372,6 +14570,108 @@ def _chair_freeze_lands(a: argparse.Namespace) -> int:
     print(text)
     return 1 if text.endswith(chair_land_freeze.USAGE) else 0
 
+
+def _landing_records(runs_dir: Path) -> list[dict]:
+    """Edge. The store's landing records for the chair's facts; empty, with a note, when they cannot be read."""
+    from agent_tools import lander_ports
+    return lander_ports.read_records(runs_dir, lambda line: print(line, file=sys.stderr))
+
+
+def _lander_once(a: argparse.Namespace) -> int:
+    from agent_tools import lander_cli
+    return lander_cli._once(a)
+
+
+def _lander_run(a: argparse.Namespace) -> int:
+    from agent_tools import lander_cli
+    return lander_cli._run(a)
+
+
+def _lander_status(a: argparse.Namespace) -> int:
+    from agent_tools import lander_cli
+    return lander_cli._status(a)
+
+
+def _lander_adopt(a: argparse.Namespace) -> int:
+    from agent_tools import lander_cli
+    return lander_cli._adopt(a)
+
+
+def _lander_backlog(a: argparse.Namespace) -> int:
+    from agent_tools import lander_cli
+    return lander_cli._backlog(a)
+
+
+def _lander_service(a: argparse.Namespace) -> int:
+    from agent_tools import lander_cli
+    return lander_cli._service(a)
+
+
+_PROFILE_ARG = commands.Arg(("--profile",), {"help": "the routing profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"})
+LANDER_GROUP = commands.Group(
+    name="lander", help="the landing worker: merges built phases and lands whole initiatives",
+    description=(
+        "The landing worker. It runs beside the chair and owns the land queue: a built phase is merged into its "
+        "initiative branch, and a whole initiative goes to its parent as one pull request."
+    ),
+    epilog="examples:\n  cox lander status\n  cox lander adopt\n  cox lander adopt --apply\n  cox lander once\n  cox lander run --interval 30\n  cox lander service --install",
+)
+LANDER_COMMANDS = [
+    commands.Command(
+        "once", "lander", "one pass: queue what is ready, then merge and land within the caps",
+        (_PROFILE_ARG,), "agent_tools.cli:_lander_once", False, (), defaults={"profile": None},
+    ),
+    commands.Command(
+        "run", "lander", "pass after pass until interrupted",
+        (commands.Arg(("--interval",), {"type": float, "default": 30.0, "help": "seconds between passes (default: 30)"}), _PROFILE_ARG),
+        "agent_tools.cli:_lander_run", False, (), defaults={"profile": None},
+    ),
+    commands.Command(
+        "status", "lander", "every initiative in flight with its phases, and the land queue with how long each item has waited",
+        (commands.Arg(("--json",), {"action": "store_true", "help": "print the status as JSON"}), _PROFILE_ARG),
+        "agent_tools.cli:_lander_status", False, (), defaults={"profile": None},
+    ),
+    commands.Command(
+        "adopt", "lander", "bring initiatives that were in flight before the landing record under it; a dry run unless --apply",
+        (
+            commands.Arg(("initiative",), {"nargs": "*", "help": "initiative ids (default: every initiative with no landing record)"}),
+            commands.Arg(("--apply",), {"action": "store_true", "help": "do it; without this flag only the report is printed"}),
+            _PROFILE_ARG,
+        ),
+        "agent_tools.cli:_lander_adopt", False, (), defaults={"profile": None},
+        description=(
+            "For each initiative with no landing record: work already on the parent is marked done, an approval off "
+            "its phase branch is carried onto it, one that cannot be found goes back to ready, the initiative branch "
+            "is kept or cut, and every built phase is merged into it.\nNothing is deleted, reset or rebased, and an "
+            "initiative that has a record is skipped, so it is safe to run twice."
+        ),
+    ),
+    commands.Command(
+        "backlog", "lander", "mark the tasks a hand-folded pull request carried as done, once it has merged; a dry run unless --apply",
+        (
+            commands.Arg(("--manifest",), {"required": True, "help": "the backlog manifest (prereq-backlog-manifest.json)"}),
+            commands.Arg(("--pr",), {"required": True, "help": "the pull request that carried the manifest's tasks (URL)"}),
+            commands.Arg(("--apply",), {"action": "store_true", "help": "do it; refused until the forge says the pull request merged"}),
+            _PROFILE_ARG,
+        ),
+        "agent_tools.cli:_lander_backlog", False, (), defaults={"profile": None},
+        description=(
+            "Each task the manifest lists as applied moves from approved to done.\nA task already done, or in any other "
+            "state, is skipped, so it is safe to run twice."
+        ),
+    ),
+    commands.Command(
+        "service", "lander", "write or show the systemd user unit; never runs systemctl",
+        (
+            commands.Arg(("--install",), {"action": "store_true", "help": "write the unit and print the systemctl lines to run"}),
+            commands.Arg(("--status",), {"action": "store_true", "help": "print the unit as it is on disk"}),
+            commands.Arg(("--interval",), {"type": int, "default": 30, "help": "seconds between passes (default: 30)"}),
+            commands.Arg(("--environment-file",), {"help": "an EnvironmentFile for the unit (default: the chair's)"}),
+            _PROFILE_ARG,
+        ),
+        "agent_tools.cli:_lander_service", False, (), defaults={"profile": None},
+    ),
+]
 
 CHAIR_GROUP = commands.Group(
     name="chair", help="the chair loop that runs the landing and launch ticks itself",
@@ -14921,6 +15221,7 @@ COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = _dispatch_t
     (PR_GROUP, PR_COMMANDS),
     (ROUTE_GROUP, ROUTE_COMMANDS),
     (CHAIR_GROUP, CHAIR_COMMANDS),
+    (LANDER_GROUP, LANDER_COMMANDS),
     (HOST_GROUP, HOST_COMMANDS),
     (ROUTER_GROUP, ROUTER_COMMANDS),
     (STEWARD_GROUP, STEWARD_COMMANDS),

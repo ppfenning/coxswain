@@ -42,6 +42,7 @@ from graphs.delivery.decompose_size import (
 )
 from graphs.delivery.decompose_split import split_foreign
 from graphs.delivery.phase_split import split_same_phase_needs
+from graphs.delivery.repo_layout import repo_key
 from graphs.delivery.ticket_lint import Problem, heal_idea_reach, lint_tickets
 from graphs.delivery.ticket_lint import lint_refusal_text as _lint_refusal_text
 from harness.surface_heal import heal_bare_filenames, heal_new_markers, notes_out_of_surfaces
@@ -918,6 +919,7 @@ def _split_plan(
     own_listing: Sequence[Mapping[str, Any]],
     repo_trees: Mapping[str, Collection[str]],
     title: str,
+    own_key: str | None = None,
 ) -> tuple[Mapping[str, Any], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[str]]:
     """(decomposition, kept tasks, follow-ups, dropped, notes) once tasks in other repositories are moved out.
 
@@ -925,11 +927,11 @@ def _split_plan(
     `repo_trees` names repositories outside the stack. A surface that is still prose or a directory counts as own
     when it resolves in that listing, as the later resolution would. A phase left with no task is removed.
     """
-    if not repo_trees:
+    if not repo_trees and own_key is None:
         return decomposition, tasks, [], [], []
     paths = [str(row["path"]) for row in own_listing if row.get("path")]
     resolvable = [s for t in tasks for s in t.get("surfaces") or [] if resolve_surfaces([s], own_listing)[0]]
-    split = split_foreign(tasks, [*paths, *resolvable] if paths else [], repo_trees, title=title)
+    split = split_foreign(tasks, [*paths, *resolvable] if paths else [], repo_trees, title=title, own_key=own_key)
     if tasks and not split.kept:
         owners = ", ".join(str(f["repo"]) for f in split.follow_ups)
         raise ContractViolation(
@@ -1229,8 +1231,9 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
     # surface: the lint's cross-repo rewrite would send the whole plan back to the model.
     repo_trees = args.get("repo_trees") or {}
     split_title = idea_parts(str(planned))[0]
+    own_key = repo_key(repo_name)
     decomposition, tasks, follow_ups, dropped_tasks, split_notes = _split_plan(
-        decomposition, tasks, own_listing, repo_trees, split_title
+        decomposition, tasks, own_listing, repo_trees, split_title, own_key
     )
 
     if tree:
@@ -1298,7 +1301,7 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
         # The rewritten plan replaces the first one outright, foreign tasks included: split it afresh, and let
         # its follow-ups, drops and notes replace the first plan's, which no longer describe anything.
         decomposition, tasks, follow_ups, dropped_tasks, split_notes = _split_plan(
-            decomposition, tasks, own_listing, repo_trees, split_title
+            decomposition, tasks, own_listing, repo_trees, split_title, own_key
         )
         if tree:
             tasks, surface_failures = _validate_plan_surfaces(tasks, tree)

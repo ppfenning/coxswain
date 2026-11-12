@@ -26,7 +26,6 @@ def test_missing_keys_yield_exactly_those_built_in_rows():
         "policy.build_budget_usd_max",
         "policy.review_tier",
         "chair.housekeeping_hours",
-        "chair.approval_hold_ticks",
         "analytics.snapshot_max_age_s",
         "operator",
         "store.mode",
