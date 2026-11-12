@@ -328,9 +328,19 @@ machine's own copy. Any machine refreshes its copy from the store with:
 cox route export
 ```
 
-One step still reads files into the store: a decompose writes its tickets as
-files, and the export loads those before it writes. The rest of this section
-describes the default, with git on.
+With git off, the tick reads its work from the store's rows, rendered as the
+files would be, and opens no work file. A decompose writes its plan to the
+store as rows on whichever machine ran it, a lane host included: a detached
+launch runs the same command in the background, to completion. The export
+still loads any ticket file the store has not got before it writes, so a
+ticket written by hand as a file is not deleted.
+
+With a shared store the courier bus is the store's `courier_log` table, one
+bus for every machine, with git on or off. The first use loads what
+`courier.jsonl` already held. `cox courier send`, `inbox` and `ack` work as
+before.
+
+The rest of this section describes the default, with git on.
 
 **Pull.** Right after the beat, the loop runs
 `git pull --ff-only --autostash` in the workspace. Uncommitted changes are

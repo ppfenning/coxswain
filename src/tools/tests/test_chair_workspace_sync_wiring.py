@@ -147,3 +147,17 @@ def test_route_export_is_a_command_and_says_files_mode_has_nothing_to_write(tmp_
     monkeypatch.setattr(cli, "_export_board", lambda runs_dir, ws: called.append(ws) or [])
     assert cli._route_export(argparse.Namespace(profile=str(profile))) == 0
     assert called == [] and "work_state is files" in capsys.readouterr().out
+
+
+def test_a_detached_decompose_is_rerun_in_the_background_without_the_flag_and_with_its_run_id() -> None:
+    """So a lane host's decompose writes its plan to the store as rows, as a local one does: no file is carried back."""
+    argv = ["cox", "route", "launch", "decompose", "--local", "--detach", "--idea", "intake/x.md", "--initiative-id", "x",
+            "--run-id", "x-1", "--label", "lane-a", "--no-claim"]
+    assert cli.detached_rows_argv(argv, "x-1") == [
+        "cox", "route", "launch", "decompose", "--local", "--idea", "intake/x.md", "--initiative-id", "x",
+        "--run-id", "x-1", "--label", "lane-a", "--no-claim",
+    ]
+    bare = ["cox", "route", "launch", "decompose", "--detach", "--idea", "intake/x.md", "--initiative-id", "x"]
+    assert cli.detached_rows_argv(bare, "x-7")[-2:] == ["--run-id", "x-7"]
+    assert cli.detached_rows_argv(["cox", "route", "launch", "decompose", "--idea", "i.md"], "x-1") is None
+    assert cli.detached_rows_argv(["pytest", "-q"], "x-1") is None, "called some other way: the caller launches the harness itself"

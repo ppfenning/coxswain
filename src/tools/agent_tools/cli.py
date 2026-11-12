@@ -7046,6 +7046,7 @@ def _route_launch(a: argparse.Namespace) -> int:
     launch_dir = _initiative_path(runs_dir, a.initiative) if a.graph in ("epic", "rescue") else None
     stub_written = None  # the initiative.md a decompose launch created, named in the report if the launch then dies
     via_rows = False  # a decompose that runs to completion here and writes its plan as store rows
+    rows_when_detached = False  # the same decompose asked for with --detach: it is run in the background, rows and all
     if a.graph == "epic":
         initiative_id = launch_dir.name
         launch_land_at = _phase_land_at({}, profile, runs_dir.parent / "work", initiative_id)  # initiative.md, else cartridge, else ticket
@@ -7141,7 +7142,10 @@ def _route_launch(a: argparse.Namespace) -> int:
         if getattr(a, "run_id", None) is None:
             run_id = route.next_run_id(_taken_run_names(runs_dir), prefix)
         else:
-            taken = remote_lane.refuse_taken_run_id(a.run_id, set(_taken_run_names(runs_dir)))
+            # The background rerun of a detached decompose is handed its run id by the launch that named it and
+            # already opened its log, so that one id is its own and not "taken".
+            own = os.environ.get(_OWN_RUN_ID_ENV) == a.run_id
+            taken = None if own else remote_lane.refuse_taken_run_id(a.run_id, set(_taken_run_names(runs_dir)))
             if taken is not None:
                 print(taken)
                 return 2
@@ -7194,6 +7198,7 @@ def _route_launch(a: argparse.Namespace) -> int:
             print(f"routing: intake {idea_path.stem} is a draft; ready it with `cox route ready {idea_path.stem}`")
             return 2
         via_rows = _decompose_via_rows(store_mode, a.dry_run, host, intake_row, detach=bool(getattr(a, "detach", False)))
+        rows_when_detached = not via_rows and _decompose_via_rows(store_mode, a.dry_run, host, intake_row)
         if via_rows:
             pass  # the plan lands as rows after the run; the chair's export writes the files
         elif initiative_md.exists() and any(initiative_dir.glob("*/*.md")):
@@ -7227,7 +7232,10 @@ def _route_launch(a: argparse.Namespace) -> int:
         if getattr(a, "run_id", None) is None:
             run_id = route.next_run_id(_taken_run_names(runs_dir), a.initiative_id)
         else:
-            taken = remote_lane.refuse_taken_run_id(a.run_id, set(_taken_run_names(runs_dir)))
+            # The background rerun of a detached decompose is handed its run id by the launch that named it and
+            # already opened its log, so that one id is its own and not "taken".
+            own = os.environ.get(_OWN_RUN_ID_ENV) == a.run_id
+            taken = None if own else remote_lane.refuse_taken_run_id(a.run_id, set(_taken_run_names(runs_dir)))
             if taken is not None:
                 print(taken)
                 return 2
@@ -7352,6 +7360,22 @@ def _route_launch(a: argparse.Namespace) -> int:
             print(line)
         return rows_code
 
+    background = detached_rows_argv(sys.argv, run_id) if rows_when_detached else None
+    if background is not None:
+        # A detached decompose writes its plan as store rows too. This command runs again in the background without
+        # --detach, to completion: the store gets the rows from whichever machine ran it, and no ticket file has to be
+        # carried back to the chair and loaded.
+        with open(log_path, "ab") as log:
+            proc = subprocess.Popen(
+                background, env={**os.environ, _OWN_RUN_ID_ENV: run_id}, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                start_new_session=True,
+            )
+        pid_path.write_text(str(proc.pid))
+        print(f"run {run_id}")
+        print(f"pid {pid_path}")
+        print(f"log {log_path}")
+        return 0
+
     launch_env = (
         lane_capacity_env(env, _local_max_in_flight(runs_dir, dict(profile), socket.gethostname()))
         if a.graph == "epic" else env
@@ -7389,6 +7413,24 @@ def _route_launch(a: argparse.Namespace) -> int:
     print(f"pid {pid_path}")
     print(f"log {log_path}")
     return 0
+
+
+_OWN_RUN_ID_ENV = "COXSWAIN_OWN_RUN_ID"  # set for the background rerun of a detached decompose: the run id it was given
+
+
+def detached_rows_argv(argv: Sequence[str], run_id: str) -> list[str] | None:
+    """Pure. This `cox route launch decompose --detach ...` command line as the one to run in the background: the same
+    arguments without `--detach`, with the run id pinned so both processes name one run. None when `argv` is not such
+    a command line (the handler was called some other way), so the caller falls back to launching the harness itself."""
+    if "--detach" not in argv or "decompose" not in argv:
+        return None
+    kept = [arg for arg in argv if arg != "--detach"]
+    if "--run-id" in kept:
+        at = kept.index("--run-id")
+        kept[at + 1:at + 2] = [run_id]
+    elif not any(arg.startswith("--run-id=") for arg in kept):
+        kept += ["--run-id", run_id]
+    return kept
 
 
 def _decompose_via_rows(mode: str, dry_run: bool, host: object, intake_row: Mapping | None, *, detach: bool = False) -> bool:
@@ -13610,7 +13652,13 @@ def _chair_run_deps(
                 chair_read_cache.load_entries(merged, chair_read_cache.dump_entries(cache))  # type: ignore[arg-type]
             chair_read_cache.save_cache(merged, decompose_path)
 
+    # With the workspace out of git the store is the board, and the tick reads its work from the store's rows,
+    # rendered as the files would be. It opens no work file, so it needs none to be there.
+    rows_are_the_board = mode == "store" and not workspace_git_on(profile)
+
     def work_files() -> Mapping[Path, str]:
+        if rows_are_the_board:
+            return once("files", lambda: chair_read_quarantined.store_work_files(ws, run_store.read_queue(runs_dir)))  # type: ignore[return-value]
         return once("files", lambda: chair_read_quarantined.read_work_files(ws, files_cache))  # type: ignore[return-value]
 
     def store_rows() -> list:

@@ -7,6 +7,7 @@ with no file at all."""
 import hashlib
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 from agent_tools import route, run_store
 from agent_tools.chair_read_cache import StampCache, file_stamp
@@ -113,6 +114,16 @@ def quarantined_from_rows(rows: Iterable[Mapping[str, object]]) -> list[Row]:
 
 
 WorkFiles = Mapping[Path, str]
+
+
+def store_work_files(root: Path, rows: Sequence[Mapping[str, Any]]) -> WorkFiles:
+    """Pure. The same mapping `read_work_files` returns, rendered from the store's queue rows instead of read from
+    disk: path to text for every initiative and task row with content, in path order. Nothing under `root` is opened,
+    so a tick that reads its work from this cannot see a file the store has not got, and needs no checkout."""
+    from agent_tools import queue_export  # lazy: queue_export reads nothing at import, but keeps this module light
+
+    rendered = queue_export.export_rows([dict(r) for r in rows])
+    return {root / path: text for path, text in sorted(rendered.items()) if path.startswith("work/")}
 
 
 def read_work_files(root: Path, cache: StampCache | None = None) -> WorkFiles:
