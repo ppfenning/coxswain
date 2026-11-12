@@ -152,6 +152,10 @@ cox chair answer ID OPTION [--profile PROFILE]   answer an open decision with on
 cox chair decisions [--open] [--answered] [--json] [--profile PROFILE]   list decisions asked of the operator and their answers
 cox chair watchdog [--idle-minutes IDLE_MINUTES] [--stale-minutes STALE_MINUTES] [--dry-run] [--profile PROFILE] [--install] [--uninstall] [--interval-minutes INTERVAL_MINUTES]   one-shot loop check for a five-minute timer; reads only the store
 cox chair freeze-lands [--for MINUTES] [--reason TEXT] [--off] [--profile PROFILE]   hold every land for a release cut, show the freeze, or lift it
+cox lander once [--profile PROFILE]   one pass: queue what is ready, then merge and land within the caps
+cox lander run [--interval INTERVAL] [--profile PROFILE]   pass after pass until interrupted
+cox lander status [--json] [--profile PROFILE]   every initiative in flight with its phases, and the land queue with how long each item has waited
+cox lander service [--install] [--status] [--interval INTERVAL] [--environment-file ENVIRONMENT_FILE] [--profile PROFILE]   write or show the systemd user unit; never runs systemctl
 cox host add NAME --ssh SSH --capacity CAPACITY [--weight WEIGHT] [--capabilities CAPABILITIES]   add or update a host in the table
 cox host list   one line per host: state, capacity, beat age, login
 cox host drain NAME   stop launching on a host; its live lanes finish

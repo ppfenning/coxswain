@@ -51,6 +51,10 @@ class Ports:
     file_rectify: Callable[[str, str, str, str], str | None] = lambda *_: None  # initiative, phase, title, body -> task id
     split_blocked: Callable[[str, Sequence[str]], str | None] = lambda *_: None  # initiative, phases -> follow-up id
     notify: Callable[[str, Mapping[str, Any]], None] = lambda *_: None
+    # The initiative's checkout on this machine. The record's own `repo` is the path on the host that cut the branch.
+    repo: Callable[[Mapping[str, Any]], Path] | None = None
+    # Bring one branch up to origin's copy, forward only: why it must not be moved here (it diverged), else None.
+    fetch: Callable[[Path, str], str | None] = lambda *_: None
     log: Callable[[str], None] = print
     wait_checks_s: float = 1800.0
 
@@ -65,7 +69,9 @@ class Outcome:
     events: tuple[str, ...] = field(default_factory=tuple)
 
 
-def _repo(record: Mapping[str, Any]) -> Path:
+def _repo(ports: Ports, record: Mapping[str, Any]) -> Path:
+    if ports.repo is not None:
+        return ports.repo(record)
     return Path(str(record.get("repo") or "")).expanduser()
 
 
@@ -90,9 +96,20 @@ def merge_phase(ports: Ports, initiative: str, phase: str) -> Outcome:
     record = ls.get_record(ports.conn, initiative)
     if record is None:
         return Outcome("skipped", ident, f"{initiative} has no landing record")
-    repo, tasks = _repo(record), ports.tasks(initiative)
+    repo, tasks = _repo(ports, record), ports.tasks(initiative)
+    # The phase was built on another host as often as not: its branch, and the initiative's, come from origin first.
+    diverged = ports.fetch(repo, ops.phase_branch(initiative, phase))
+    if diverged:
+        return Outcome("waiting", ident, diverged)
+    early = resolve_push_initiative((ports.meta(initiative).get("cartridge")) or {}) == "early"
+
+    def publish(branch: str) -> str | None:
+        pushed, why = ports.forge.push(repo, branch)
+        return None if pushed else f"push of {branch} failed: {why}"
+
     done = ops.merge_phase(ports.conn, repo, initiative=initiative, phase=phase, tasks=tasks, worker=ports.worker,
-                           now=ports.now(), checks=_level_checks(ports, repo, record, phase))
+                           now=ports.now(), checks=_level_checks(ports, repo, record, phase),
+                           fetch=lambda branch: ports.fetch(repo, branch), publish=publish if early else None)
     if done.status in ("busy", "not_ready"):
         return Outcome("waiting", ident, done.detail)
     if done.status == "error":
@@ -102,11 +119,8 @@ def merge_phase(ports: Ports, initiative: str, phase: str) -> Outcome:
     events = [f"phase {phase} of {initiative} merged into {record['branch']}"]
     for task in done.merged_tasks:
         ports.mark_merged(initiative, task, done.merge_sha)
-    meta = ports.meta(initiative)
-    if done.status == "merged" and resolve_push_initiative(meta.get("cartridge") or {}) == "early":
-        pushed, why = ports.forge.push(repo, str(record["branch"]))
-        if not pushed:
-            events.append(f"push of {record['branch']} failed: {why}")
+    if done.status == "merged" and done.detail:
+        events.append(done.detail)
     if done.assembled and ls.enqueue(ports.conn, ls.INITIATIVE_LAND, initiative, repo=str(record.get("repo") or ""),
                                      parent=str(record.get("parent") or ""), now=ports.now(), reason="last phase merged"):
         events.append(f"{initiative} is assembled: queued to land on {record.get('parent')}")
@@ -119,7 +133,7 @@ def _send_back(ports: Ports, record: Mapping[str, Any], phase: str, done: ops.Ph
     The conflicted merge is committed on the phase branch first, markers and all: a builder returns a patch, so the
     conflict has to be in the tree it starts from, and everything the phase already built stays where it is."""
     initiative, branch = str(record["initiative"]), str(record["branch"])
-    repo = _repo(record)
+    repo = _repo(ports, record)
     if done.cause == "guard":
         ports.notify("needs_chair", {"initiative": initiative, "phase": phase, "reason": done.detail})
         return [f"phase {phase} of {initiative}: {done.detail}"]
@@ -227,7 +241,7 @@ def land_initiative(ports: Ports, initiative: str) -> Outcome:
         return close("done", f"{initiative} already landed", _finish_landed(ports, record, tasks, None))
     if state not in ("assembled", "pr_open"):
         return close("waiting", f"{initiative} is {state}, not assembled")
-    repo, branch, parent = _repo(record), str(record["branch"]), str(record["parent"])
+    repo, branch, parent = _repo(ports, record), str(record["branch"]), str(record["parent"])
     meta = ports.meta(initiative)
     events: list[str] = []
     auto = str(meta.get("gate") or "full") == "full"
@@ -266,8 +280,8 @@ def _open_pr(ports: Ports, record: dict[str, Any], tasks: Sequence[Mapping[str, 
     """Refresh onto the parent, run the gate checks, push, and open the one pull request (or find the one already open)."""
     initiative, ident = str(record["initiative"]), ls.item_id(ls.INITIATIVE_LAND, str(record["initiative"]))
     recorded = lr.recorded_shas(record)
-    refreshed = lg.merge_into(repo, branch=branch, source=_parent_ref(repo, parent),
-                              message=f"{initiative}: merge {parent} into {branch}", recorded=recorded)
+    refreshed = ops.take_parent_forward(ports.conn, repo, initiative=initiative, parent_ref=_parent_ref(repo, parent),
+                                        worker=ports.worker, now=ports.now(), fetch=lambda b: ports.fetch(repo, b))
     if refreshed.status == "conflict":
         return Outcome("failed", ident, f"merging {parent} into {branch} conflicted in {', '.join(refreshed.paths)}",
                        tuple(_send_back_initiative(ports, record, "conflict", refreshed.detail, refreshed.paths)))
@@ -312,7 +326,7 @@ def _send_back_initiative(ports: Ports, record: Mapping[str, Any], cause: str, d
     The `integrate` branch is cut from the initiative tip, so it holds every merged phase; for a conflict the
     conflicted merge of the parent is committed on it first. Nothing already merged is rebuilt."""
     initiative, branch, parent = str(record["initiative"]), str(record["branch"]), str(record["parent"])
-    repo, phase = _repo(record), lr.INTEGRATE_PHASE
+    repo, phase = _repo(ports, record), lr.INTEGRATE_PHASE
     integrate = ops.phase_branch(initiative, phase)
     tip, _, why = lg.ensure_branch(repo, integrate, branch)
     if tip is None:
@@ -368,7 +382,7 @@ def _finish_landed(ports: Ports, record: Mapping[str, Any], tasks: Sequence[Mapp
 
 def _clean(ports: Ports, record: Mapping[str, Any]) -> list[str]:
     """Delete the landed initiative's branches, here and on origin. Only ever called after the forge says it merged."""
-    initiative, repo = str(record["initiative"]), _repo(record)
+    initiative, repo = str(record["initiative"]), _repo(ports, record)
     ok, listed = lg.git(repo, "for-each-ref", "--format=%(refname:short)", f"refs/heads/epic/{initiative}/")
     doomed = [b for b in listed.splitlines() if b] if ok else []
     if lg.rev(repo, f"refs/heads/{record['branch']}"):
@@ -441,13 +455,13 @@ def sweep(ports: Ports) -> list[str]:
         if not tasks:
             continue
         events += settle_blocked(ports, record, tasks)
-        record = ls.get_record(ports.conn, initiative) or record
-        for phase in lr.mergeable_phases(record, tasks):
-            if ops.queue_phase(ports.conn, ls.get_record(ports.conn, initiative) or record, phase, now=ports.now(), reason="sweep"):
+        current = ls.get_record(ports.conn, initiative) or record
+        for phase in lr.mergeable_phases(current, tasks):
+            if ops.queue_phase(ports.conn, ls.get_record(ports.conn, initiative) or current, phase, now=ports.now(), reason="sweep"):
                 events.append(f"sweep: queued phase {phase} of {initiative}")
-        if lr.initiative_state(record, tasks) in ("assembled", "pr_open") and ls.enqueue(
-            ports.conn, ls.INITIATIVE_LAND, initiative, repo=str(record.get("repo") or ""),
-            parent=str(record.get("parent") or ""), now=ports.now(), reason="sweep",
+        if lr.initiative_state(current, tasks) in ("assembled", "pr_open") and ls.enqueue(
+            ports.conn, ls.INITIATIVE_LAND, initiative, repo=str(current.get("repo") or ""),
+            parent=str(current.get("parent") or ""), now=ports.now(), reason="sweep",
         ):
             events.append(f"sweep: queued {initiative} to land")
     return events

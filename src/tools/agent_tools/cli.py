@@ -12173,6 +12173,9 @@ def build_parser() -> argparse.ArgumentParser:
     group, rows = _table_entry("chair")
     commands.build_parser(rows, [group], sub)
 
+    group, rows = _table_entry("lander")
+    commands.build_parser(rows, [group], sub)
+
     group, rows = _table_entry("host")
     commands.build_parser(rows, [group], sub)
 
@@ -14229,6 +14232,19 @@ def _chair_unit_text(label: str, interval: int | str, env_file: str | None, prof
     )
 
 
+def _lander_unit_text(a: argparse.Namespace, ws: Path) -> str | None:
+    """Edge-light. The lander's unit text, built from the same resolved cox, PATH and profile as the chair's; None after
+    printing why when systemd would read one of them differently from this shell."""
+    from agent_tools import lander_cli
+
+    env_file = _chair_service_environment_file(a)
+    resolved = _chair_unit_inputs("lander", env_file, _profile_path(a))
+    if isinstance(resolved, _ChairUnitRefusal):
+        print(resolved.message)
+        return None
+    return lander_cli.unit_text(resolved.cox, str(ws), int(a.interval), resolved.profile, resolved.path, env_file)
+
+
 def _chair_service_install(a: argparse.Namespace, path: Path) -> int:
     """Refuses before any write when systemd would read a value differently from the shell that ran the install."""
     text = _chair_unit_text(_holder_label(a), a.interval, _chair_service_environment_file(a), _profile_path(a))
@@ -14618,6 +14634,63 @@ def _chair_freeze_lands(a: argparse.Namespace) -> int:
     print(text)
     return 1 if text.endswith(chair_land_freeze.USAGE) else 0
 
+
+def _lander_once(a: argparse.Namespace) -> int:
+    from agent_tools import lander_cli
+    return lander_cli._once(a)
+
+
+def _lander_run(a: argparse.Namespace) -> int:
+    from agent_tools import lander_cli
+    return lander_cli._run(a)
+
+
+def _lander_status(a: argparse.Namespace) -> int:
+    from agent_tools import lander_cli
+    return lander_cli._status(a)
+
+
+def _lander_service(a: argparse.Namespace) -> int:
+    from agent_tools import lander_cli
+    return lander_cli._service(a)
+
+
+_PROFILE_ARG = commands.Arg(("--profile",), {"help": "the routing profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"})
+LANDER_GROUP = commands.Group(
+    name="lander", help="the landing worker: merges built phases and lands whole initiatives",
+    description=(
+        "The landing worker. It runs beside the chair and owns the land queue: a built phase is merged into its "
+        "initiative branch, and a whole initiative goes to its parent as one pull request."
+    ),
+    epilog="examples:\n  cox lander status\n  cox lander once\n  cox lander run --interval 30\n  cox lander service --install",
+)
+LANDER_COMMANDS = [
+    commands.Command(
+        "once", "lander", "one pass: queue what is ready, then merge and land within the caps",
+        (_PROFILE_ARG,), "agent_tools.cli:_lander_once", False, (), defaults={"profile": None},
+    ),
+    commands.Command(
+        "run", "lander", "pass after pass until interrupted",
+        (commands.Arg(("--interval",), {"type": float, "default": 30.0, "help": "seconds between passes (default: 30)"}), _PROFILE_ARG),
+        "agent_tools.cli:_lander_run", False, (), defaults={"profile": None},
+    ),
+    commands.Command(
+        "status", "lander", "every initiative in flight with its phases, and the land queue with how long each item has waited",
+        (commands.Arg(("--json",), {"action": "store_true", "help": "print the status as JSON"}), _PROFILE_ARG),
+        "agent_tools.cli:_lander_status", False, (), defaults={"profile": None},
+    ),
+    commands.Command(
+        "service", "lander", "write or show the systemd user unit; never runs systemctl",
+        (
+            commands.Arg(("--install",), {"action": "store_true", "help": "write the unit and print the systemctl lines to run"}),
+            commands.Arg(("--status",), {"action": "store_true", "help": "print the unit as it is on disk"}),
+            commands.Arg(("--interval",), {"type": int, "default": 30, "help": "seconds between passes (default: 30)"}),
+            commands.Arg(("--environment-file",), {"help": "an EnvironmentFile for the unit (default: the chair's)"}),
+            _PROFILE_ARG,
+        ),
+        "agent_tools.cli:_lander_service", False, (), defaults={"profile": None},
+    ),
+]
 
 CHAIR_GROUP = commands.Group(
     name="chair", help="the chair loop that runs the landing and launch ticks itself",
@@ -15167,6 +15240,7 @@ COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = _dispatch_t
     (PR_GROUP, PR_COMMANDS),
     (ROUTE_GROUP, ROUTE_COMMANDS),
     (CHAIR_GROUP, CHAIR_COMMANDS),
+    (LANDER_GROUP, LANDER_COMMANDS),
     (HOST_GROUP, HOST_COMMANDS),
     (ROUTER_GROUP, ROUTER_COMMANDS),
     (STEWARD_GROUP, STEWARD_COMMANDS),
