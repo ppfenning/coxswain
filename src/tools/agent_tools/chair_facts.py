@@ -167,8 +167,6 @@ class FactsDeps:
         Optional, and absent means no ceiling.
     merge_queue: the raw profile value at the top-level `merge_queue`, resolved by `merge_queue_fact`. Optional, and
         absent means the queue is off.
-    approval_hold_ticks: the raw profile value for the approval hold limit, resolved by `resolve_approval_hold_ticks`.
-        Optional, and absent means 6 ticks.
     stale_days: the raw profile value at `chair.stale_days`, resolved by `resolve_stale_days`. Optional, and
         absent means 7 days.
     stale_candidates: `stale_candidates(now) -> list[dict]`, bound in production to
@@ -278,7 +276,6 @@ class FactsDeps:
     history: Callable[[], str | None] | None = None  # chair_read_housekeeping.read_last_housekeeping; absent means no history
     housekeeping_hours: Callable[[], object] | None = None  # raw profile chair.housekeeping_hours; absent means 24 hours
     stale_days: Callable[[], object] | None = None  # raw profile chair.stale_days; absent means 7 days
-    approval_hold_ticks: Callable[[], object] | None = None  # raw approval hold limit setting; absent means 6 ticks
     max_launches_per_hour: Callable[[], object] | None = None  # raw profile chair.max_launches_per_hour; absent means the default
     shared_file_limit: Callable[[], object] | None = None  # raw profile chair.max_shared_file_initiatives; absent means 2
     serial_files: Callable[[], object] | None = None  # raw profile top-level serial_files; absent means none
@@ -1504,7 +1501,7 @@ def approved_facts(
 
 
 RELEASE_NOTE = "Released from approval on"
-# The cause `apply_release` carries in its note: the ticket's wording, and `chair_approval_hold.plan_release`'s reason text.
+# The cause `apply_release` carries in its note: the ticket's wording, and the reason text the retired hold timer wrote.
 RELEASE_CAUSES = ("approval unmerged for", "approval not merged to main or its phase branch for")
 
 
@@ -1637,7 +1634,6 @@ def intake_paths_from_rows(rows: Sequence[Row], current: str | None = None) -> l
 
 DEFAULT_HOUSEKEEPING_HOURS = 24.0
 DEFAULT_STALE_DAYS = 7  # chair.stale_days profile default
-DEFAULT_APPROVAL_HOLD_TICKS = 6  # ticks an unmerged approval may be held before the planner releases it
 DEFAULT_SHARED_FILE_LIMIT = 2  # chair.max_shared_file_initiatives profile default
 
 
@@ -1656,15 +1652,6 @@ def resolve_stale_days(value: object) -> int:
         return int(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return DEFAULT_STALE_DAYS
-
-
-def resolve_approval_hold_ticks(value: object) -> int:
-    """The raw approval hold limit, or 6 when it is missing, non-numeric, or not positive."""
-    try:
-        ticks = int(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return DEFAULT_APPROVAL_HOLD_TICKS
-    return ticks if ticks > 0 else DEFAULT_APPROVAL_HOLD_TICKS
 
 
 def resolve_max_launches_per_hour(value: object) -> int:
@@ -1697,11 +1684,22 @@ def resolve_idle_stall_minutes(value: object) -> int:
     return minutes if minutes > 0 else IDLE_STALL_MINUTES
 
 
-def resolve_steward_enabled(value: object) -> bool:
-    """The profile's raw steward setting: on only for boolean True or the string "true", else off."""
+STEWARD_RETIRED = (
+    "chair.steward is retired and ignored: the lander merges built phases and lands initiatives (cox lander run)"
+)
+
+
+def steward_asked_for(value: object) -> bool:
+    """Whether the profile still sets `chair.steward` on: boolean True or the string "true". It turns nothing on."""
     if isinstance(value, bool):
         return value
     return isinstance(value, str) and value.strip().lower() == "true"
+
+
+def resolve_steward_enabled(value: object) -> bool:
+    """Always off. The epic steward merged phases into the ticket branch and gated it; the lander does both now, from
+    its own queue, so a second actor merging into the same branch is never started, whatever the profile says."""
+    return False
 
 
 def resolve_steward_scope(value: object) -> str:
@@ -2025,9 +2023,6 @@ def gather_facts(
         "no_run_streaks": no_run_streaks_from_actions(approved, action_rows),
         "approval_holds": approval_holds_from_actions(approved, action_rows),
         "wrongly_released": list(deps.wrongly_released()),
-        "approval_hold_ticks": resolve_approval_hold_ticks(deps.approval_hold_ticks())
-        if deps.approval_hold_ticks is not None
-        else DEFAULT_APPROVAL_HOLD_TICKS,
         "steer_policy": {
             "limit": resolve_shared_file_limit(deps.shared_file_limit() if deps.shared_file_limit is not None else None),
             "serial": resolve_serial_files(deps.serial_files() if deps.serial_files is not None else None),

@@ -8995,7 +8995,7 @@ def _doctor_steward_rows(profile: dict | None) -> list[dict]:
         return [doctor._skip("steward")]
     chair = profile.get("chair")
     raw = chair.get("steward") if isinstance(chair, Mapping) else None
-    return [doctor.steward_row(chair_facts.resolve_steward_enabled(raw))]
+    return [doctor.steward_row(chair_facts.steward_asked_for(raw))]
 
 
 def _setup_doctor(a: argparse.Namespace) -> int:
@@ -13948,7 +13948,6 @@ def _chair_run_deps(
         history=lambda: chair_read_housekeeping.read_last_housekeeping(runs_dir),
         housekeeping_hours=lambda: (profile.get("chair") or {}).get("housekeeping_hours"),
         stale_days=lambda: (profile.get("chair") or {}).get("stale_days"),
-        approval_hold_ticks=lambda: (profile.get("chair") or {}).get("approval_hold_ticks"),
         max_launches_per_hour=lambda: (profile.get("chair") or {}).get("max_launches_per_hour"),
         merge_queue=lambda: profile.get("merge_queue"),
         shared_file_limit=lambda: (profile.get("chair") or {}).get("max_shared_file_initiatives"),
