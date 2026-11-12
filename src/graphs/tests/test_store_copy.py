@@ -24,6 +24,8 @@ EXPECTED_ORDER = (
     "chair_actions",
     "hosts",
     "id_sequence",
+    "landing_records",
+    "land_queue",
 )
 
 SEED = {
@@ -57,6 +59,15 @@ SEED = {
          "updated_at": "2026-09-25T00:00:00Z", "updated_by": "chair"},
     ],
     "id_sequence": [{"scope": "initiative", "next": 1}],
+    "landing_records": [
+        {"initiative": "i1", "repo": "r", "state": "building", "record_json": '{"initiative": "i1"}',
+         "created_at": "2026-09-25T00:00:00Z", "updated_at": "2026-09-25T00:00:00Z"},
+    ],
+    "land_queue": [
+        {"id": "phase_merge:i1:p1", "kind": "phase_merge", "initiative": "i1", "phase": "p1", "repo": "r", "parent": "",
+         "state": "queued", "reason": "phase built", "queued_at": "2026-09-25T00:00:00Z", "claimed_by": "",
+         "claimed_at": "", "lease_until": "", "attempts": 0, "last_error": "", "updated_at": "2026-09-25T00:00:00Z"},
+    ],
 }
 
 

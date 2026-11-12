@@ -24,7 +24,7 @@ def plan_release(facts: Facts) -> list[Action]:
     spared = {
         (t["initiative"], t["id"]) for t in facts.get("approved", [])
         if t["merged"] or t.get("branch_merged", False)
-        or (t.get("phase_done", False) and t.get("land_at", "task") in ("ticket", "level"))
+        or (t.get("phase_done", False) and t.get("land_at", "task") != "task")
     }
     stuck = [
         h for h in facts.get("approval_holds", [])

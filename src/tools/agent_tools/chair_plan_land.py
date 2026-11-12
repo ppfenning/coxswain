@@ -8,7 +8,7 @@ from agent_tools.chair_land_conflict import standing
 from agent_tools.chair_plan_partial import partial_land_action
 from agent_tools.chair_steward import event_key
 from agent_tools.chair_types import Action, ApprovedTask, Facts, InitiativeFacts
-from core.landing import phase_merge_ready
+from core.landing import is_initiative, phase_merge_ready
 
 
 def _first_of_each_id(tasks: list[ApprovedTask]) -> list[ApprovedTask]:
@@ -130,7 +130,7 @@ def ticket_phases(facts: Facts) -> dict[tuple[str, str], bool]:
 
     The phases are those in `phase_tasks` and those of the initiative's approved tasks. A phase with no `phase_tasks`
     row reads each of its approved tasks as `approved`. A `merged` state is an approved task whose PR merged."""
-    tickets = {i["id"] for i in facts.get("initiatives", []) if i.get("land_at") == "ticket"}
+    tickets = {i["id"] for i in facts.get("initiatives", []) if is_initiative(i.get("land_at"))}
     rows = {(r["initiative"], r["phase"]): r["tasks"] for r in facts.get("phase_tasks", []) if r["initiative"] in tickets}
     keys = {*rows, *((t["initiative"], t["phase"]) for t in facts["approved"] if t["initiative"] in tickets)}
     states = {
@@ -201,7 +201,7 @@ def parent_waits(facts: Facts) -> dict[tuple[str, str], str]:
             initiatives.get(initiative, {}).get("landed", ()),
         )
         for (initiative, phase), ids in by_phase.items()
-        if initiatives.get(initiative, {}).get("land_at") != "ticket"
+        if not is_initiative(initiatives.get(initiative, {}).get("land_at"))
     }
     return {key: wait for key, wait in waits.items() if wait is not None}
 

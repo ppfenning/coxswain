@@ -65,10 +65,14 @@ from core import ledger, workstore
 from core.cartridge import integration_checks_setting, test_database_setting
 from core.landing import (
     DEFAULT_LAND_AT,
+    TemplateError,
+    initiative_branch_name,
+    is_initiative,
     land_gate_level,
     need_met,
     pr_branch_name,
     resolve_land_at,
+    resolve_push_initiative,
 )
 from core.manifest import append_ledger, build_manifest, gate_diff
 from core.phase_hold import phase_holds
@@ -77,7 +81,17 @@ from graphs._contract import proposal
 from graphs.delivery import rescue_review
 from graphs.delivery.budget_estimate import estimate_budget
 from graphs.delivery.lifecycle_propose import DEFAULT_FIX_ATTEMPTS
-from harness import pool_edge, rescue_checks, rescue_select, termination, warm_pool, work_mirror
+from harness import (
+    landing_git,
+    landing_ops,
+    landing_store,
+    pool_edge,
+    rescue_checks,
+    rescue_select,
+    termination,
+    warm_pool,
+    work_mirror,
+)
 from harness.assembly import assemble
 from harness.autonomy import split_by_policy
 from harness.base_check import Expected, expected_merges, gaps, stale_base_stop
@@ -169,8 +183,9 @@ PRINCIPAL = "epic-swarm(lifecycle-propose)"
 _IDENTITY = ("-c", "user.email=epic-swarm@invalid", "-c", "user.name=epic-swarm")
 
 def opens_pr(land_at: str, grain: str) -> bool:
-    """A review PR is opened for a `task` or a `level` only when it is the configured landing granularity."""
-    return land_at == grain
+    """A review PR is opened per `task` only at land_at `task`. No phase ever opens one: the retired `level` reads as
+    `initiative`, where the one pull request is the initiative's and the lander opens it."""
+    return grain == "task" and land_at == "task"
 
 
 _DRAFT_KINDS = frozenset({"draft_pr_create", "self_modification"})
@@ -305,6 +320,196 @@ def _push_review_branch(ctx: _Ctx, task: str) -> tuple[bool, str]:
 def _push_review_ref(ctx: _Ctx, local: str, name: str) -> tuple[bool, str]:
     """Push the local branch `local` to origin as `review/<initiative>/<name>`."""
     return _git("-C", str(ctx.repo), "push", "origin", f"{local}:refs/heads/review/{ctx.initiative_id}/{name}")
+
+
+def _landing_stamp() -> str:
+    return landing_ops.stamp(datetime.now(UTC))
+
+
+def _initiative_branch_for(ctx: _Ctx, initiative: Mapping[str, Any]) -> str:
+    """The initiative branch's name: the landing record's, else a `pr/<initiative>` an earlier release left, else the
+    cartridge's template (default `init/<id>`). A template field the initiative lacks refuses the run by name."""
+    conn = ctx.store.conn if ctx.store is not None else None
+    record = landing_store.get_record(conn, ctx.initiative_id) if conn is not None else None
+    if record is not None:
+        return str(record["branch"])
+    legacy = pr_branch_name(ctx.initiative_id)
+    if landing_git.branch_ref(ctx.repo, legacy) is not None:
+        return legacy
+    try:
+        return initiative_branch_name(ctx.cartridge, initiative, ctx.default_ref.removeprefix("origin/"))
+    except TemplateError as exc:
+        raise ValueError(f"{ctx.initiative_id}: {exc}") from exc
+
+
+def _start_initiative(ctx: _Ctx, initiative: Mapping[str, Any]) -> str:
+    """Edge. Start the initiative's landing record on first use (cutting its branch from the parent) and return the
+    branch name. A record that exists is kept as it is: the parent it names no longer floats."""
+    name = _initiative_branch_for(ctx, initiative)
+    # Another host may have cut it and merged phases into it: its copy on origin comes first, forward only.
+    _fetch_phase_branches(ctx, [name])
+    if ctx.store is None:
+        tip, _, why = landing_git.ensure_branch(ctx.repo, name, ctx.default_ref)
+        if tip is None:
+            raise RuntimeError(why)
+        return name
+    record, why = ctx.retry.write(
+        lambda: landing_ops.start_record(
+            ctx.store.conn, ctx.repo, initiative=ctx.initiative_id, branch=name,
+            parent=ctx.default_ref.removeprefix("origin/"), parent_ref=ctx.default_ref, now=_landing_stamp(),
+            land_at=ctx.land_at, epic=initiative.get("epic"),
+        ),
+        _END_WRITE_WINDOW_S,
+    )
+    if record is None:
+        raise RuntimeError(f"{ctx.initiative_id}: {why}")
+    if resolve_push_initiative(ctx.cartridge) == "early":
+        _publish_branch(ctx, str(record["branch"]))
+    return str(record["branch"])
+
+
+def _foreign_needs(items: Sequence[Mapping[str, Any]], phase: str | None = None) -> list[str]:
+    """The needs that name a task of another initiative, of every task or of one phase's unsettled tasks."""
+    own = {str(i["id"]) for i in items}
+    return sorted({
+        str(n) for i in items
+        if phase is None or (i.get("phase") == phase and i.get("state") not in ("approved", "done", "dropped"))
+        for n in i.get("needs") or [] if str(n) not in own
+    })
+
+
+def _take_parent_forward(ctx: _Ctx) -> str | None:
+    """Edge. Bring the initiative branch up to its parent, for an initiative that needs another initiative's work.
+
+    That work reaches this initiative only through the parent it landed on, and the initiative branch was cut before
+    it landed. So the parent is merged forward here, under the branch lease, when it merges cleanly. Why it could not
+    be, else None: the phases that need the foreign work then stop, and every other phase builds as it is."""
+    if ctx.store is None or ctx.initiative_branch is None:
+        return None
+    branch = ctx.initiative_branch
+    record = landing_store.get_record(ctx.store.conn, ctx.initiative_id) or {}
+    parent = str(record.get("parent") or ctx.default_ref.removeprefix("origin/"))
+    parent_ref = f"origin/{parent}" if landing_git.rev(ctx.repo, f"refs/remotes/origin/{parent}") else parent
+    if landing_git.is_ancestor(ctx.repo, parent_ref, branch):
+        return None
+    early = resolve_push_initiative(ctx.cartridge) == "early"
+    try:
+        merged = ctx.retry.write(
+            lambda: landing_ops.take_parent_forward(
+                ctx.store.conn, ctx.repo, initiative=ctx.initiative_id, parent_ref=parent_ref,
+                worker=f"run:{ctx.run_id}", now=_landing_stamp(), fetch=lambda b: _fetch_initiative(ctx, b),
+                publish=(lambda b: _publish_branch(ctx, b)) if early else None,
+            ),
+            _END_WRITE_WINDOW_S,
+        )
+    except Exception as exc:
+        return f"{parent} was not merged into {branch}: {type(exc).__name__}: {exc}"
+    if merged.ok:
+        print(f"  {branch} brought up to {parent}: this initiative needs work that landed there")
+        return None
+    return f"{parent} was not merged into {branch}: {merged.detail or merged.status}"
+
+
+def _merge_checks(ctx: _Ctx, phase: str) -> landing_git.Checks | None:
+    """The level checks, to run on the merged tree when the merge joins the phase with work it has not seen."""
+    checks = ctx.level_checks
+    if not checks or landing_git.is_ancestor(ctx.repo, ctx.pr_branch(), ctx.phase_branch(phase)):
+        return None  # the phase already holds the initiative tip: the merged tree is the tree its own checks passed on
+
+    def run(tree: Path) -> tuple[bool, str]:
+        with repo_gate_lock(ctx.repo):
+            results = run_checks(tree, checks, env=_checks_env(ctx, {}, phase, "@merge"))
+        return (not (reason := _level_failure_reason(phase, results))), reason
+
+    return run
+
+
+def _merge_into_initiative(ctx: _Ctx, phase: str, items: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+    """Edge. Merge one built phase into the initiative branch, through the land queue's own operation.
+
+    None when the phase is not built (a task is still open) or this run has no store. A conflict or a red check comes
+    back as `{"status": "conflicted", ...}`: the phase stays built on its branch, its children do not start, and the
+    lander files the rectify task. A failure of the store or of git is reported the same way and never stops the run:
+    the queue item stays, and the lander merges the phase."""
+    if ctx.initiative_branch is None:
+        return None
+    with ctx.items_lock:
+        rows = [
+            {"id": i["id"], "phase": i.get("phase"), "state": i.get("state"), "needs": list(i.get("needs") or []),
+             "merged": bool(i.get("merged")), "merged_commit": i.get("merged_commit")}
+            for i in items
+        ]
+    own = [r for r in rows if r["phase"] == phase]
+    if ctx.store is None or not own or all(r["state"] in ("done", "dropped") for r in own):
+        return None  # nothing of the phase is left to land
+    # A phase is built when every task is approved (or dropped) and on the phase branch. Anything else is not whole,
+    # so it is not merged, whatever the validator said of its goal: the phases that need it are cut from this branch.
+    open_tasks = [str(r["id"]) for r in own if r["state"] not in ("approved", "done", "dropped")]
+    loose = [str(r["id"]) for r in own if r["state"] == "approved" and not r["merged"]]
+    if open_tasks or loose:
+        what = (f"task(s) {', '.join(open_tasks)} are not approved" if open_tasks
+                else f"approved task(s) {', '.join(loose)} are not merged into {ctx.phase_branch(phase)}")
+        return {"status": "not_built", "branch": ctx.initiative_branch, "assembled": False, "detail": what}
+    early = resolve_push_initiative(ctx.cartridge) == "early"
+    try:
+        done = ctx.retry.write(
+            lambda: landing_ops.merge_phase(
+                ctx.store.conn, ctx.repo, initiative=ctx.initiative_id, phase=phase, tasks=rows,
+                worker=f"run:{ctx.run_id}", now=_landing_stamp(), checks=_merge_checks(ctx, phase),
+                fetch=lambda branch: _fetch_initiative(ctx, branch),
+                publish=(lambda branch: _publish_branch(ctx, branch)) if early else None,
+            ),
+            _END_WRITE_WINDOW_S,
+        )
+    except Exception as exc:
+        return {"status": "error", "branch": ctx.initiative_branch, "detail": f"{type(exc).__name__}: {exc}"}
+    if done.status == "not_ready":
+        return {"status": "not_built", "branch": ctx.initiative_branch, "assembled": False, "detail": done.detail}
+    return {
+        "status": "merged" if done.ok else done.status, "branch": ctx.initiative_branch, "tip": done.tip,
+        "merge_sha": done.merge_sha, **({"paths": list(done.paths)} if done.paths else {}),
+        **({"detail": done.detail} if done.detail else {}), **({"cause": done.cause} if done.cause else {}),
+        "assembled": done.assembled,
+    }
+
+
+def _fetch_initiative(ctx: _Ctx, branch: str) -> str | None:
+    """Edge. Bring the initiative branch up to origin's copy, forward only. A reason when it must not be moved here:
+    origin holds commits this clone lacks and they do not fast-forward, so a merge here would fork the branch."""
+    outcome = _fetch_phase_branches(ctx, [branch]).get(branch)
+    if outcome is not None and outcome.kind == Kind.DIVERGED:
+        return f"{branch} has diverged from origin and is not merged into here: {outcome.detail}"
+    return None
+
+
+def _parent_gap(ctx: _Ctx, parent: str, items: Sequence[Mapping[str, Any]]) -> tuple[str, str] | None:
+    """Edge. Why the initiative branch in this clone does not hold parent phase `parent` yet; None when it does.
+
+    (reason, the branch that is missing here or ""). The landing record says whether the phase merged, and git says
+    whether this clone's branch holds that merge: a merge made on another host arrives by fetch, forward only. A
+    parent whose every task is done has landed on the parent branch and is not asked about."""
+    branch = str(ctx.initiative_branch)
+    with ctx.items_lock:
+        own = [str(i.get("state")) for i in items if i.get("phase") == parent]
+    if own and all(s in ("done", "dropped") for s in own):
+        return None
+    try:
+        record = landing_store.get_record(ctx.store.conn, ctx.initiative_id) if ctx.store is not None else None
+    except Exception as exc:
+        return f"the landing record of {ctx.initiative_id} could not be read: {type(exc).__name__}: {exc}", ""
+    entry = ((record or {}).get("phases") or {}).get(parent) or {}
+    if entry.get("state") != "merged":
+        return f"parent phase '{parent}' is not merged into {branch} yet; dependents start once it is", ""
+    sha = str(entry.get("merge_sha") or "")
+    if sha and not landing_git.is_ancestor(ctx.repo, sha, branch):
+        outcome = _fetch_phase_branches(ctx, [branch]).get(branch)
+        if not landing_git.is_ancestor(ctx.repo, sha, branch):
+            origin = f" ({outcome.kind.value}{': ' + outcome.detail if outcome.detail else ''})" if outcome else ""
+            return (
+                f"{branch} in this clone does not hold the merge of parent phase '{parent}' ({sha[:12]}), and origin "
+                f"did not supply it{origin}; the phase would build without its parent's work", branch,
+            )
+    return None
 
 
 def _publish_branch(ctx: _Ctx, branch: str) -> str | None:
@@ -566,7 +771,13 @@ class _Ctx:
     fix_attempts: int | None
     initiative_id: str
     default_ref: str
-    land_at: str = "ticket"
+    land_at: str = "initiative"
+    # The initiative's one branch, from its landing record: set once the run has started the record. Every phase is
+    # cut from it, each phase merges back into it when built, and its tip is what the one pull request opens from.
+    initiative_branch: str | None = None
+    # Why the initiative branch does not hold its parent's current tip, when a run that needs it asked and could
+    # not have it (a conflict, a held lease). None when it holds it, or when nothing in the initiative needs it.
+    parent_behind: str | None = None
     resume_from: str | None = None
     repo_checks: list = field(default_factory=list)
     store: Store | None = None
@@ -604,7 +815,7 @@ class _Ctx:
         return f"epic/{self.initiative_id}/{phase}"
 
     def pr_branch(self) -> str:
-        return pr_branch_name(self.initiative_id)
+        return self.initiative_branch or pr_branch_name(self.initiative_id)
 
     def pr_branch_ref(self) -> str | None:
         """The pr branch as a ref git can cut from: the local branch, else its copy on origin, else None."""
@@ -1059,44 +1270,33 @@ def _branch_head(ctx: _Ctx, branch: str) -> str:
 
 
 def _refresh_level(
-    ctx: _Ctx,
-    record: dict[str, Any],
-    phase: str,
-    parent: str | None,
-    recreate: Callable[[], dict[str, Any] | None],
-    recorded: Iterable[str] = (),
+    ctx: _Ctx, record: dict[str, Any], phase: str, recorded: Iterable[str] = ()
 ) -> dict[str, Any] | None:
-    """Restack a child onto a current parent, else merge the default ref in; the record to return when it blocks."""
-    branch, default = ctx.phase_branch(phase), ctx.default_ref
-    if ctx.land_at != "ticket" or not record.get("reused_branch") or _branch_has(ctx, default, branch):
+    """Bring a reused phase branch up to the initiative branch; the record to return when it blocks.
+
+    The initiative branch is the phase's only parent. It moves when a sibling phase merges (or when the lander takes
+    the initiative's own parent forward), and a reused phase merges that tip in before any of its tasks builds. It is
+    always a forward merge: no phase is rebased, recreated or restacked, and a merge that would drop one of
+    `recorded` is refused. Without an initiative branch (land_at task) a phase is never refreshed."""
+    if ctx.initiative_branch is None or not record.get("reused_branch"):
+        return None
+    branch, onto = ctx.phase_branch(phase), ctx.initiative_branch
+    if _branch_has(ctx, onto, branch):
         return None
     before = _branch_head(ctx, branch)
-    onto, paths = default, ()
-    # Levels can start side by side, so a parent is not always refreshed first; such a child must not wait on it.
-    stacked = parent is not None and _branch_has(ctx, default, ctx.phase_branch(parent))
-    if not stacked:
-        merged = guarded_refresh(ctx.phase_worktree(phase), branch, default, recorded)
-        ok, reason, paths = merged.ok, merged.reason, merged.paths
-    else:
-        onto = ctx.phase_branch(str(parent))
-        _, own = _git("-C", str(ctx.repo), "rev-list", "--count", f"{onto}..{branch}")
-        if own == "0":
-            early = recreate()
-            if early is not None:
-                return early
-            ok, reason, paths = True, "", ()
-        else:
-            ok, reason, paths = _rebase_reading_conflicts(ctx, phase, onto, recorded)
-    if not ok:
+    merged = guarded_refresh(ctx.phase_worktree(phase), branch, onto, recorded)
+    if not merged.ok:
         record["status"] = "blocked"
-        record["reason"] = reason
-        record["quarantined"].append({"id": phase, "phase": phase, "grain": "phase", "reason": reason})
+        record["reason"] = merged.reason
+        record["quarantined"].append({"id": phase, "phase": phase, "grain": "phase", "reason": merged.reason})
         _git("-C", str(ctx.phase_worktree(phase)), "checkout", "--detach", "-q")
         return record
     after = _branch_head(ctx, branch)
     if after != before:
         record["refreshed"] = refresh_record(branch, onto, before, after)
         print(f"  {branch} brought up to {onto}")
+        # The branch was published before it moved: origin gets the refreshed tip, or another host builds on the old one.
+        _note_push_failure(record, _publish_branch(ctx, branch))
     return None
 
 
@@ -1934,12 +2134,22 @@ def run_epic(
         # honest about what the arm just did.
         items = [dict(item) for item in initiative.get("items") or []]
         _mirror_read(ctx, items)
+        if is_initiative(ctx.land_at):
+            # Before any phase: the initiative branch is cut from its parent and recorded, so every phase forks from it.
+            ctx = replace(ctx, initiative_branch=_start_initiative(ctx, initiative))
+            if _foreign_needs(items):
+                ctx = replace(ctx, parent_behind=_take_parent_forward(ctx))
 
         parents = phase_parents(items)
         named = None if only_phases is None else frozenset(only_phases)
         seed: frozenset[str] = frozenset()
+        unmerged: dict[str, tuple[str, str]] = {}
         if named is not None:
             seed = frozenset(outside_parents_complete(items, _read_store_rows(ctx), parents, named, ctx.land_at))
+            if ctx.initiative_branch is not None:
+                # With an initiative branch a parent outside the run counts only once it is merged into that branch.
+                unmerged = {p: gap for p in sorted(seed) if (gap := _parent_gap(ctx, p, items)) is not None}
+                seed = seed - set(unmerged)
             parents = {p: ps for p, ps in parents.items() if p in named}
         waves, cyclic = compute_waves(parents if named is None else {p: ps & named for p, ps in parents.items()})
         _, binding = lane_bound(max_parallel, 0, headroom_usd() if headroom_usd else None, est_task_usd)
@@ -1981,15 +2191,17 @@ def run_epic(
         if named is not None:
             for phase in sorted(parents):
                 if missing := sorted(parents[phase] - named - seed):
+                    gap, branch = unmerged.get(missing[0], ("", ""))
                     add_phase(
                         {
                             "phase": phase,
                             "status": "blocked",
                             "parents": sorted(parents[phase]),
-                            "reason": (
+                            "reason": gap or (
                                 f"parent phase '{missing[0]}' is outside this run and its tasks are not all met "
                                 f"under land_at {ctx.land_at}; dependents do not run"
                             ),
+                            **({"missing_branch": branch} if branch else {}),
                         }
                     )
             scope = frozenset(p for p in parents if p not in {str(r["phase"]) for r in phases})
@@ -2079,11 +2291,13 @@ def _open_view(
     complete: set[str],
     launched: set[str],
     failed: Collection[str] = (),
+    whole_parents: bool = False,
 ) -> list[dict[str, Any]]:
     """`items` as the planner sees them: a ready task is held while its phase has an incomplete parent or it already launched.
 
     A task whose needs are all merged is not held for an incomplete parent, unless a parent has finished without
-    meeting its goal (`failed`): its dependents do not run.
+    meeting its goal (`failed`): its dependents do not run. With `whole_parents` (an initiative branch) no task
+    starts early: a phase is cut from the initiative branch, which holds a parent only once the whole parent merged.
     """
     closed = {p for p, ps in parents.items() if not ps <= complete}
     shut = {p for p, ps in parents.items() if ps & set(failed)}
@@ -2094,7 +2308,7 @@ def _open_view(
             return item.get("state")
         if str(item["id"]) in launched:
             return "in_progress"
-        return "blocked" if str(item.get("phase")) in shut or (str(item.get("phase")) in closed and not _needs_merged(item, by_id)) else "ready"
+        return "blocked" if str(item.get("phase")) in shut or (str(item.get("phase")) in closed and (whole_parents or not _needs_merged(item, by_id))) else "ready"
 
     return [{**item, "state": state(item)} for item in items]
 
@@ -2161,6 +2375,21 @@ def _run_lanes(
             record.update(status="complete", reason="every task in the phase is done in the store")
         if phase in serialised:
             record["serialised"] = serialised[phase]
+        if record["status"] in ("complete", "awaiting_land") and is_initiative(ctx.land_at):
+            # A built phase merges into the initiative branch here, locally: that is "phase complete", and only then
+            # may the phases that need it start. Its tasks stay approved; they are done when the initiative lands.
+            merge = _merge_into_initiative(ctx, phase, items)
+            if merge is not None:
+                record["initiative_merge"] = merge
+                if merge["status"] == "merged":
+                    record = {k: v for k, v in record.items() if k not in ("awaiting_tasks",)}
+                    if record["status"] == "awaiting_land":
+                        record.update(status="complete", reason=f"merged into {merge['branch']}")
+                elif merge["status"] == "not_built":
+                    record.update(status="partial", reason=f"phase {phase} is not merged into {merge['branch']}: {merge['detail']}")
+                else:
+                    what = merge.get("detail") or merge["status"]
+                    record.update(status="awaiting_land", reason=f"phase {phase} is built; its merge into {merge['branch']} did not go through: {what}")
         add_phase(record)
         recorded.add(phase)
         if record["status"] == "complete":
@@ -2189,7 +2418,13 @@ def _run_lanes(
             "status": "blocked",
             "parents": sorted(parents[phase]),
             "reason": (
-                f"parent phase '{bad}' is awaiting the land of {waiting} approved task(s)"
+                f"parent phase '{bad}' is built but not merged into {parent_record['initiative_merge'].get('branch')}: "
+                f"{parent_record['initiative_merge'].get('detail') or parent_record['initiative_merge'].get('status')}"
+                if parent_record.get("status") == "awaiting_land" and parent_record.get("initiative_merge")
+                else f"parent phase '{bad}' is not merged into {parent_record['initiative_merge'].get('branch')}: "
+                f"{parent_record['initiative_merge'].get('detail')}; dependents do not run"
+                if parent_record.get("initiative_merge")
+                else f"parent phase '{bad}' is awaiting the land of {waiting} approved task(s)"
                 if parent_record.get("status") == "awaiting_land"
                 else f"parent phase '{bad}' did not meet its goal; dependents do not run"
             ),
@@ -2234,7 +2469,10 @@ def _run_lanes(
             # Replan until settling a phase changes nothing, so a phase that just completed opens its children now.
             while True:
                 with ctx.items_lock:
-                    view = _open_view(items, parents, complete, launched, {p for p in recorded if p not in complete})
+                    view = _open_view(
+                        items, parents, complete, launched, {p for p in recorded if p not in complete},
+                        whole_parents=ctx.initiative_branch is not None,
+                    )
                     if scope is not None:
                         view = [
                             {**i, "state": "blocked"} if i.get("state") == "ready" and str(i.get("phase")) not in scope else i
@@ -3488,7 +3726,9 @@ def _run_phase(
     # the needs themselves: a phase that needs a task of another phase builds on the pr branch, done or not.
     with ctx.items_lock:
         stacked = bool(parents) or _needs_other_phase(items, phase)
-    pr_ref = ctx.pr_branch_ref() if stacked and ctx.land_at == "ticket" else None
+    # At initiative every phase is cut from the initiative branch, whose tip holds every merged parent phase.
+    # (`stacked` still names the phases that need another phase's work, for a run with no initiative branch.)
+    pr_ref = ctx.pr_branch_ref() if is_initiative(ctx.land_at) and (stacked or ctx.initiative_branch) else None
     base_ref = pr_ref or (ctx.phase_branch(parent) if parent else ctx.default_ref)
     quarantined: list[dict[str, Any]] = []
     record: dict[str, Any] = {
@@ -3546,6 +3786,25 @@ def _run_phase(
     if (stopped := _fetch_or_stop(ctx, record, fetch, required, loose, parent_branches)) is not None:
         return stopped
 
+    if ctx.initiative_branch is not None:
+        # The phase is cut from the initiative branch, so every parent has to be merged into it in this clone first.
+        # Nothing is quarantined: the phase starts on a later run, once the parent's merge is here.
+        for gap in filter(None, (_parent_gap(ctx, p, items) for p in parents)):
+            reason, missing = gap
+            if missing:
+                return _missing_branch_phase(record, missing, reason)
+            record.update(status="blocked", reason=reason)
+            return record
+        with ctx.items_lock:
+            foreign_needs = _foreign_needs(items, phase)
+        if ctx.parent_behind and foreign_needs:
+            # The needed work landed on the parent, and this branch could not take the parent forward.
+            record.update(
+                status="blocked",
+                reason=f"phase {phase} needs {', '.join(foreign_needs)} of another initiative, and {ctx.parent_behind}",
+            )
+            return record
+
     opened = _open_phase_worktree(ctx, phase, cut_ref, parents, cut_from)
     ok, detail, reused = opened
     record["cleared_worktrees"] = list(getattr(opened, "cleared", ()))
@@ -3556,7 +3815,9 @@ def _run_phase(
 
     # Decided before a single task builds: a reused branch missing a commit it
     # needs is either recreated (nothing of its own to lose) or blocked (something is).
-    head_moved = reused and _needs_missing(ctx, phase, needed)
+    # With an initiative branch none of this applies: the parent does not float, so a reused phase branch is never
+    # stale against it. It is behind only by what siblings merged, and `_refresh_level` merges that forward below.
+    head_moved = ctx.initiative_branch is None and reused and _needs_missing(ctx, phase, needed)
     with ctx.items_lock:
         task_states = {str(i["id"]): str(i.get("state")) for i in items}
     cherry = _phase_branch_cherry(ctx, phase, pr_ref) if head_moved else []
@@ -3664,15 +3925,7 @@ def _run_phase(
             else f"phase branch {branch} recreated from {base_ref}: its commits already landed there via squash-merge"
         )
 
-    # An approved task not yet recorded as merged has its land in flight: the branch is left as it is until that settles.
-    with ctx.items_lock:
-        land_in_flight = unlanded_kind == "awaiting_land" and any(
-            i.get("phase") == phase and i.get("state") == "approved" and not i.get("merged") for i in items
-        )
-    if land_in_flight and ctx.land_at == "ticket" and record.get("reused_branch"):
-        record["refresh_skipped"] = f"{branch} keeps its place: an approved task's land is still in flight"
-        print(f"  {record['refresh_skipped']}")
-    elif (early := _refresh_level(ctx, record, phase, parent, recreate, _locked_merges(ctx, items, phase))) is not None:
+    if (early := _refresh_level(ctx, record, phase, _locked_merges(ctx, items, phase))) is not None:
         return early
 
     # A runner whose nodes can read the world reads THIS phase's branch — not
@@ -4349,7 +4602,7 @@ def _run_phase(
     auto, gated = _policy_split(ctx, batch)
     # At ticket, with no `assume` given, nobody is asked and nobody decides: the batch is auto-cleared. Auto-cleared
     # work writes no gate diff and no ledger row, so unattended runs add nothing to a kind's graduation streak.
-    if land_gate_level(ctx.land_at) == "ticket" and ctx.assume is None:
+    if land_gate_level(ctx.land_at) == "initiative" and ctx.assume is None:
         auto, gated = [*auto, *gated], []
     auto_ids = {id(item) for item in auto}
     decisions, human_minutes = gate(gated, assume=ctx.assume) if gated else ([], 0.0)
@@ -4485,23 +4738,6 @@ def _run_phase(
         _run_level_checks(ctx, phase, record)
     if record["status"] == "complete":
         _run_level_integration(ctx, phase, str(record["base"]), record)
-
-    # At `level` a finished level gets one PR. A restart over a merged level finds the PR it already has, or opens
-    # the one a failed first attempt never made. A level stacked on one parent is based on that parent's PR branch when
-    # that PR exists, so it shows only its own commits; otherwise it falls back to the default branch.
-    if opens_pr(ctx.land_at, "level") and record["status"] == "complete":
-        default_base = ctx.default_ref.removeprefix("origin/")
-        parent_head = f"review/{ctx.initiative_id}/{parent}" if parent else None
-        parent_known, parent_pr = _existing_pr(ctx, parent_head) if parent_head else (False, "")
-        ok, detail = _open_grain_pr(
-            ctx,
-            grain="level",
-            name=phase,
-            local=branch,
-            title=f"{ctx.initiative_id}: {phase}",
-            base=parent_head if parent_head and parent_known and parent_pr else default_base,
-        )
-        record["review_pr" if ok else "review_pr_error"] = detail
 
     # docs/design/landing-model.md §5: one style_pass over the assembled phase
     # diff, run only once validate_phase itself has said the goal is met — a

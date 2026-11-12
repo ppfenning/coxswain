@@ -5,6 +5,8 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
+import pytest
+
 from harness.epic import _needs_missing, _open_phase_worktree, _open_view, _required_refs
 from tests.test_epic_driver import (  # noqa: F401 -- cart and repo are fixtures
     Runner,
@@ -105,6 +107,7 @@ class HeldSlow(Runner):
         return super().run(**kw)
 
 
+@pytest.mark.usefixtures("at_task")
 def test_c_starts_while_slow_builds_and_slow_merging_later_leaves_its_branch_alone(repo, cart, tmp_path) -> None:  # noqa: F811
     spec = [
         ("t1-probe", "p1-foundations", []),
@@ -202,6 +205,7 @@ def test_a_needed_commit_missing_from_a_reused_branch_with_its_own_commits_block
     assert not is_ancestor(repo, newer, first.phase_branch(PHASE))
 
 
+@pytest.mark.usefixtures("at_task")
 def test_a_needed_commit_missing_from_a_reused_branch_with_nothing_of_its_own_recreates_it(repo, cart, tmp_path) -> None:  # noqa: F811
     shas = first_run(repo, cart, tmp_path)
     # p1's task commits land on main with the same patches, so only t3's commit is unlanded on p2 and it is ready again.

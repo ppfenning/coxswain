@@ -167,7 +167,7 @@ def _branch_exists(repo: Path, branch: str) -> bool:
     return _git(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}", check=False).returncode == 0
 
 
-@pytest.mark.parametrize("land_at", ["ticket", "level", "task"])
+@pytest.mark.parametrize("land_at", ["ticket", "task"])
 def test_a_tick_merges_at_each_land_at(tmp_path, monkeypatch, land_at) -> None:
     repo, ws, launched, _performed, _before = _tick(tmp_path, monkeypatch, drop_executor=False, initiatives=((INITIATIVE, land_at, False),))
 
@@ -177,10 +177,6 @@ def test_a_tick_merges_at_each_land_at(tmp_path, monkeypatch, land_at) -> None:
     if land_at == "ticket":
         assert _contains(repo, LEVEL, TICKET)  # the steward created the branch, then merged the level into it
         assert not phase_lands  # the planner's own per-task lands of approved work may run; the steward lands no phase
-        assert len(_relaunches(launched)) == 1
-    elif land_at == "level":
-        assert not _branch_exists(repo, TICKET)
-        assert phase_lands == [f"land {INITIATIVE}-2 --phase {PHASE}"] and not task_lands
         assert len(_relaunches(launched)) == 1
     else:
         assert not _branch_exists(repo, TICKET)
@@ -199,12 +195,12 @@ def test_a_task_tick_relaunches_after_the_merge(tmp_path, monkeypatch) -> None:
 
 
 def test_a_failing_initiative_does_not_stop_the_next_from_merging_and_relaunching(tmp_path, monkeypatch) -> None:
-    both = (("epic-x", "ticket", True), ("epic-y", "level", True))
+    both = (("epic-x", "ticket", True), ("epic-y", "initiative", True))
     _repo_x, ws, launched, performed, _before = _tick(tmp_path, monkeypatch, drop_executor=False, initiatives=both, broken=("epic-x",))
 
     assert _events(ws, "merge_failed") == [("epic-x", "merge_failed")]
     assert _events(ws, "level_merged") == [("epic-y", "level_merged")]
-    assert _lands(launched, "--phase") == [f"land epic-y-2 --phase {PHASE}"]
+    assert _lands(launched, "--phase") == []
     assert len(_relaunches(launched, "epic-y")) == 1
     # chair_exec.perform skips a relaunch tagged after_steward when its epic's merge_level failed; the failed epic is
     # not relaunched, it is recorded with that reason, and the next epic is unaffected.
