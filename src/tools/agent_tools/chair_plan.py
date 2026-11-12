@@ -32,7 +32,14 @@ from agent_tools.chair_plan_fill import (
     host_free_slots,
     plan_fill,
 )
-from agent_tools.chair_plan_land import backoff_held, fetch_action, newest_run, plan_finish, plan_lands
+from agent_tools.chair_plan_land import (
+    backoff_held,
+    fetch_action,
+    newest_run,
+    plan_finish,
+    plan_lands,
+    plan_missed_closes,
+)
 from agent_tools.chair_plan_recover import (
     STRANDED_CAUSE,
     _initiative_first_unmet_need,
@@ -1172,7 +1179,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     idle_stall = [] if deadlock is not None else planned_idle_stall
     waiting_actions = _without_deadlocked(_waiting_actions(waiting, facts.get("waiting_reported", {})), deadlock)
     unstarted_waiting_chair = _without_deadlocked(planned_unstarted_waiting_chair, deadlock)
-    closes = [*plan_close_initiatives(facts), *plan_finish(facts)]
+    closes = [*plan_close_initiatives(facts), *plan_finish(facts), *plan_missed_closes(facts)]
     # A blocked initiative's relaunch and its paired clear_branches go; the waiting action records why.
     recovered = _withhold_lease_held(
         [a for a in _without_deadlocked(recoverable, deadlock) if not (a["kind"] in ("relaunch", "clear_branches") and a["initiative"] in waiting_ids)],

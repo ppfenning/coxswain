@@ -34,7 +34,7 @@ class ModelSummary:
     avg_turns: float
     landed_rate: float
     first_try_rate: float | None
-    cost_per_landed: float | None
+    cost_per_completion: float | None
 
 
 @dataclass(frozen=True)
@@ -63,7 +63,7 @@ def _summary(role: str, model: str, rows: Sequence[TierRow], retried: frozenset[
         avg_turns=sum(r.turns for r in rows) / len(rows),
         landed_rate=len(landed) / len(tasks),
         first_try_rate=len(first_try) / len(tasks) if role == "build" else None,
-        cost_per_landed=cost / len(landed) if landed else None,
+        cost_per_completion=cost / len(landed) if landed else None,
     )
 
 
@@ -116,7 +116,7 @@ def _cell(value: float | None, spec: str) -> str:
 def _model_line(s: ModelSummary) -> str:
     return (
         f"  {s.model}: calls {s.calls}, tasks {s.tasks}, ${s.cost_per_call:.4f}/call, turns {s.avg_turns:.1f}, "
-        f"landed {s.landed_rate:.0%}, first-try {_cell(s.first_try_rate, '.0%')}, ${_cell(s.cost_per_landed, '.4f')}/landed"
+        f"landed {s.landed_rate:.0%}, first-try {_cell(s.first_try_rate, '.0%')}, ${_cell(s.cost_per_completion, '.4f')}/completion"
     )
 
 

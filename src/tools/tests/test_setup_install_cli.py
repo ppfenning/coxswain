@@ -219,6 +219,68 @@ def test_a_real_run_without_root_creates_the_workspace_and_records_the_home(home
     assert home_env["record"].exists()
 
 
+def _chair_home_env(home_env, monkeypatch, platform):
+    _write_executable(home_env["bin"] / "cox", "#!/bin/sh\nexit 0\n")
+    (home_env["cox"] / "installs" / "coxswain").mkdir(parents=True)
+    monkeypatch.setattr("sys.platform", platform)
+    folder = {"linux": ".config/systemd/user/coxswain-chair.service",
+              "darwin": "Library/LaunchAgents/coxswain-chair.plist"}[platform]
+    return home_env["home"] / folder
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_a_real_run_writes_the_chair_service_file_and_a_rerun_keeps_a_customised_one(
+    home_env, monkeypatch, capsys, platform
+):
+    service = _chair_home_env(home_env, monkeypatch, platform)
+    assert _run(["setup", "install", "--team", "acme"]) == 0
+    out = capsys.readouterr().out
+    assert service.is_file()
+    assert "start the chair service with:" in out
+    assert str(home_env["bin"] / "cox") in service.read_text(encoding="utf-8")
+    service.write_text("customised\n", encoding="utf-8")
+    assert _run(["setup", "install", "--team", "acme"]) == 0
+    assert service.read_text(encoding="utf-8") == "customised\n"
+    assert "skip chair service — exists; pass --force-profile to rewrite" in capsys.readouterr().out
+    assert _run(["setup", "install", "--team", "acme", "--force-profile"]) == 0
+    assert "customised" not in service.read_text(encoding="utf-8")
+
+
+def test_the_written_unit_reads_back_with_the_chair_service_defaults_and_the_garage_env(
+    home_env, monkeypatch
+):
+    from agent_tools import chair_service, cli, setup_install
+
+    service = _chair_home_env(home_env, monkeypatch, "linux")
+    garage = home_env["home"] / ".config" / "agent-tools" / "garage.env"
+    garage.parent.mkdir(parents=True)
+    garage.write_text("AWS_REQUEST_CHECKSUM_CALCULATION=when_required\n", encoding="utf-8")
+    assert _run(["setup", "install", "--team", "acme"]) == 0
+    args = chair_service.unit_args(service.read_text(encoding="utf-8"))
+    assert args["label"] == setup_install.CHAIR_LABEL == cli._UNLABELED
+    assert args["interval"] == str(setup_install.CHAIR_INTERVAL)
+    assert args["env_file"] == str(garage)
+    assert build_parser().parse_args(["chair", "service", "--install"]).interval == setup_install.CHAIR_INTERVAL
+
+
+def test_a_garage_env_with_export_lines_is_not_written_into_the_unit(home_env, monkeypatch, capsys):
+    service = _chair_home_env(home_env, monkeypatch, "linux")
+    garage = home_env["home"] / ".config" / "agent-tools" / "garage.env"
+    garage.parent.mkdir(parents=True)
+    garage.write_text("export A=1\n", encoding="utf-8")
+    assert _run(["setup", "install", "--team", "acme"]) == 0
+    assert not service.exists()
+    assert "skip chair service — " in capsys.readouterr().out
+
+
+def test_a_root_install_never_writes_into_the_real_home(install_env, monkeypatch, capsys):
+    _write_executable(install_env["bin"] / "cox", "#!/bin/sh\nexit 0\n")
+    monkeypatch.setattr("sys.platform", "linux")
+    assert _run(_base_argv(install_env)) == 0
+    assert not (install_env["home"] / ".config" / "systemd").exists()
+    assert "skip chair service — no home directory is given" in capsys.readouterr().out
+
+
 def test_the_profile_path_env_var_decides_existence_and_write(home_env, tmp_path, monkeypatch, capsys):
     profile = tmp_path / "elsewhere" / "profile.yaml"
     monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(profile))

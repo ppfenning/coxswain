@@ -390,6 +390,7 @@ def lease_facts(record: Row, session: str, pid: int, host: str) -> LeaseFacts:
         "expired": bool(record.get("expired", False)),
         "until": str(record.get("until") or ""),
         "lent": bool(record.get("lent", False)),
+        **({"session_held": bool(record["session_held"])} if "session_held" in record else {}),
     }
 
 
@@ -683,7 +684,8 @@ def running_initiatives(
 
     An approved item whose merged flag is true holds nothing, live or not. An initiative with only ready tasks and no
     live run has no entry. `live` trusts an unexpired `runs:` lease or a live pid, so a finished run holds files until its lease expires.
-    Each `live_phases` pair adds an entry with `phase` set, holding the surfaces of that phase's in-progress and ready items only."""
+    Each `live_phases` pair adds an entry with `phase` set, holding the surfaces of that phase's in-progress and ready items only.
+    `state` is `running` for a live initiative or phase and `awaiting_land` for a non-live entry held by approved unmerged items."""
 
     def held(initiative: str) -> list[Row]:
         states = STEER_STATES if initiative in live else frozenset({"approved"})
@@ -699,6 +701,7 @@ def running_initiatives(
             "repo": repos.get(initiative, ""),
             "surfaces": sorted({s for i in held(initiative) for s in _surfaces_of(i)}),
             "live": initiative in live,
+            "state": "running" if initiative in live else "awaiting_land",
         }
         for initiative in sorted(set(live) | set(unlanded))
         if initiative in live or held(initiative)
@@ -715,6 +718,7 @@ def running_initiatives(
             ),
             "phase": phase,
             "live": True,
+            "state": "running",
         }
         for initiative, phase in sorted(set(live_phases))
     ]

@@ -85,7 +85,7 @@ cox stats roles [--db DB] [--runs-dir RUNS_DIR] [--json] [--cartridge-sha CARTRI
 cox stats tiers [--db DB] [--since SINCE] [--min-samples MIN_SAMPLES] [--json]   per-role model summaries, a cost-aware pick and the spend it would save
 cox stats models [--db DB] [--role ROLE] [--since SINCE] [--json]   per-role cost, tokens, turns, $/landed and first-try per model id
 cox stats causes [--runs-dir RUNS_DIR] [--since SINCE] [--json]   quarantined attempts by cause and kind, with sample reasons
-cox stats efficiency [--runs-dir RUNS_DIR] [--days DAYS] [--json]   cost per turn, cost per landed task, first-try rate, waste share, per day
+cox stats efficiency [--runs-dir RUNS_DIR] [--days DAYS] [--json]   cost per turn, cost per completion, first-try rate, waste share, per day
 cox stats gates [--db DB] [--since SINCE] [--store] [--runs-dir RUNS_DIR] [--min-sample MIN_SAMPLE] [--json]   what each review, validation and plan gate costs and how often it changes the outcome
 cox stats explain ROLE [--db DB] [--json]   the failure-class breakdown behind one role
 cox stats series [--db DB] [--json] [--cartridge-sha CARTRIDGE_SHA] [--provider-profile PROVIDER_PROFILE]   per-run summary rows read from the stats store
@@ -135,6 +135,9 @@ cox route chair release [--profile PROFILE] [--label LABEL] [--pid PID]   releas
 cox route chair status [--profile PROFILE] [--json]   the chair lock's holder and computed state
 cox route chair clear [--profile PROFILE] [--force]   remove the chair lock file, refusing a live holder unless --force
 cox route chair chat [TEXT] [--profile PROFILE] [--read] [--since SINCE] [--json] [--as-leader]   append to or read the leader chat thread (runs/leader.chat.jsonl)
+cox route chair converse send KIND [ARGS...] [--profile PROFILE] [--sender SENDER]   send the chair a directive; it applies on the chair's next tick
+cox route chair converse ask KIND [SUBJECT] [--profile PROFILE] [--sender SENDER] [--wait WAIT]   ask the chair a question and wait a bounded time for its answer
+cox route chair converse state [--profile PROFILE]   print the directives in force, the epics the chair last saw, and recent events
 cox route sync [--profile PROFILE] [--item ITEM] [--project PROJECT] [--workspace WORKSPACE] [--dry-run] [--prune-out-of-scope]   mirror the work store onto the profile's tracker
 cox route launch epic [--profile PROFILE] --initiative INITIATIVE [--repo REPO] [--fix-attempts FIX_ATTEMPTS] [--base BASE] [--dry-run] [--run-id RUN_ID] [--on ON] [--local] [--include-blocked] [--phase PHASE] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the run of one filed initiative (the epic graph; epic is its historical name)
 cox route launch decompose [--profile PROFILE] --idea PATH --initiative-id INITIATIVE_ID [--task-ids ordinal] [--local] [--detach] [--dry-run] [--run-id RUN_ID] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the decompose graph against an idea

@@ -224,11 +224,16 @@ def skip_line(name: str) -> str:
     return f"checks: {name} skipped (pytest exit 5, no tests ran)"
 
 
-def checks_detail(head: str, skipped: Sequence[str], flaky: Sequence[str] = ()) -> str:
-    """`head` first, then one skip line each, then one line per flaky note. The land prints the detail as
-    `checks: <detail>`, so `head` gets that prefix and each later line carries its own; a skip line placed first
-    would print as `checks: checks: ...`."""
-    return "\n".join([head, *(skip_line(name) for name in skipped), *(f"checks: {note}" for note in flaky)])
+def reused_line(name: str) -> str:
+    return f"checks: reused: {name} (same tree and command passed earlier)"
+
+
+def checks_detail(head: str, skipped: Sequence[str], flaky: Sequence[str] = (), reused: Sequence[str] = ()) -> str:
+    """`head` first, then one skip line each, one line per reused check, then one line per flaky note. The land
+    prints the detail as `checks: <detail>`, so `head` gets that prefix and each later line carries its own; a skip
+    line placed first would print as `checks: checks: ...`."""
+    return "\n".join([head, *(skip_line(name) for name in skipped), *(reused_line(name) for name in reused),
+                      *(f"checks: {note}" for note in flaky)])
 
 
 def phase_landable(items: list[dict[str, Any]], records: dict[str, dict[str, Any]], quarantine: bool = False) -> str | None:
@@ -476,6 +481,20 @@ def ticket_done(ticket_tasks: Sequence[str], merged: Collection[str],
                      for t in ticket_tasks if t not in held]]
 
 
+def carried_done(carried: Sequence[str], unrecorded: Collection[str] = ()) -> list[dict[str, Any]]:
+    """One mark_done per carried task, in order; a task in `unrecorded` has no record file, so its step says `recorded: False`."""
+    return [{"kind": "mark_done", "task": t, **({"recorded": False} if t in unrecorded else {})} for t in carried]
+
+
+def carry_refusal(carried: Sequence[str] | None, accounted: Collection[str]) -> list[dict[str, Any]] | None:
+    """A one-step refuse when `carried` is None (unknowable) or holds a task outside `accounted`; else None."""
+    if carried is None:
+        return [{"kind": "refuse", "reason": "the tasks the pull request carries cannot be told; nothing merged"}]
+    unaccounted = [str(t) for t in carried if not t or t not in accounted]
+    return [{"kind": "refuse", "reason": f"{', '.join(unaccounted)}: no way to tell the pull request carries the task, "
+                                          "so it cannot be marked; nothing merged"}] if unaccounted else None
+
+
 def _card_phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_records: list[dict[str, Any]],
                      repo_facts: dict[str, Any] | None, repo: str, default_branch: str = "main",
                      ticket_tasks: Sequence[str] = (), ticket_present: Collection[str] = (),
@@ -547,6 +566,10 @@ def _ticket_branch_plan(phase_record: dict[str, Any], items: list[dict[str, Any]
         return [{"kind": "clean_phase", "run": run, "phase_branch": phase_branch, "pr_branch": pr_branch,
                  "tasks": [r.get("task") for r in task_records if r.get("status") != "dropped"]},
                 *ticket_done(ticket_tasks, set(ticket_tasks), ticket_unrecorded)]
+    carried = [*dict.fromkeys([*approved_ids, *sorted(ticket_present), *ticket_unrecorded])]
+    refusal = carry_refusal(carried, ticket_tasks) if last else None
+    if refusal is not None:
+        return refusal
     quarantined = [i.get("status") == "quarantined" or (records.get(i.get("id")) or {}).get("status") == "quarantined" for i in items]
     if not phase_merge_ready("ticket", [i.get("status") for i in items], quarantined):
         return [{"kind": "refuse", "reason": f"phase {phase} is not ready to merge into {pr_branch}"}]
@@ -598,7 +621,7 @@ def _ticket_branch_plan(phase_record: dict[str, Any], items: list[dict[str, Any]
         {"kind": "merge", "squash": True, "delete_branch": True, "branch": pr_branch, "default_branch": default_branch,
          "subject": f"epic {initiative}: {phase}"},
         {"kind": "clean_phase", "run": run, "phase_branch": phase_branch, "pr_branch": pr_branch, "tasks": approved_ids},
-        *ticket_done(ticket_tasks, set(approved_ids) | set(ticket_present) | set(ticket_unrecorded), ticket_unrecorded),
+        *ticket_done(ticket_tasks, set(carried), ticket_unrecorded),
     ] if last else []
     return [
         *([{"kind": "pr_branch_cut", "branch": pr_branch, "from": default_branch, "phase": phase, "if_missing": True}] if cut else []),
@@ -670,22 +693,24 @@ def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_
         return [{"kind": "note", "reason": f"phase {phase} done: every item is done or dropped, nothing to land"}]
     approved_ids = {r.get("task") for r in task_records if r.get("status", "approved") == "approved"}
 
+    def carried_in(merged: Collection[str]) -> set[str]:
+        return (set(merged) & approved_ids) | set(ticket_present) | set(ticket_unrecorded)
+
     def finish(merged: Collection[str]) -> list[dict[str, Any]]:
+        return ticket_done(ticket_tasks, carried_in(merged), ticket_unrecorded) if ticket else carried_done(landed_tasks)
+
+    def unaccounted(merged: Collection[str]) -> list[dict[str, Any]] | None:
+        """A refuse when a task the PR carries has no mark_done: one outside the ticket's tasks, or a landed task outside `merged`."""
         if ticket:
-            return ticket_done(ticket_tasks, (set(merged) & approved_ids) | set(ticket_present) | set(ticket_unrecorded),
-                               ticket_unrecorded)
-        marked = mark_done(landed_tasks, merged)
-        unmerged = [t for t in landed_tasks if t not in marked]
-        left = [{"kind": "note", "unmerged": unmerged,
-                 "reason": f"{', '.join(unmerged)}: work not in the merged PR; left in current state"}] if unmerged else []
-        return [*left, *[{"kind": "mark_done", "task": t} for t in marked]]
+            return carry_refusal(sorted(carried_in(merged)), ticket_tasks)
+        return carry_refusal(landed_tasks, merged)
 
     if already_merged:
         clean = {"kind": "clean_phase", "run": run, "phase_branch": phase_branch, "pr_branch": pr_branch,
                  "tasks": landed_tasks}
         if ticket:
             return [clean, *ticket_done(ticket_tasks, set(ticket_tasks), ticket_unrecorded)]
-        return [clean, *finish(landed_tasks), *[{"kind": "mark_done", "task": t, "recorded": False} for t in unrecorded_items]]
+        return [clean, *finish(landed_tasks), *carried_done(unrecorded_items, unrecorded_items)]
     squash_step = {"kind": "squash_phase", "branch": phase_branch, "onto": pr_branch, "from": default_branch,
                    "subject": f"epic {initiative}: {phase}"}
     approved_files = _phase_approved_files(items, records)
@@ -706,6 +731,9 @@ def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_
     if decision["kind"] == "wait":
         # No gather is planned on a resume, so no merged set exists: every landed task is marked, as before.
         # `origin/` ref: the local branch may be absent, and its tip is the PR head when present.
+        refusal = unaccounted(landed_tasks)
+        if refusal is not None:
+            return refusal
         return [{"kind": "wait_checks", "branch": f"origin/{pr_branch}", "pr": decision["pr"]}, *after_pr(landed_tasks)]
     known = branches or {}
     approved = [records[i["id"]] for i in items if i.get("status") == "approved" and i.get("id") in records]
@@ -747,6 +775,12 @@ def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_
         build_steps = [{**s, **flagged} if i == first else s for i, s in enumerate(gather)]
     else:
         build_steps = [{"kind": "pick_branch", "branch": phase_branch, "commit_subject": f"phase {phase}"}, squash_step]
+    # Without `task_facts` there is no merged set, so every landed task is carried. A task with no fact (not
+    # approved) was never gathered and is carried too.
+    merged = set(landed_tasks) if task_facts is None else phase_landed_tasks(build_steps) | (set(landed_tasks) - set(statuses))
+    refusal = unaccounted(merged)
+    if refusal is not None:
+        return refusal
     return [
         *build_steps,
         checks_step(repo_facts or {}, pr_branch),
@@ -755,9 +789,7 @@ def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_
         {"kind": "pr_create", "title": phase_pr_title(initiative, phase, phase_record.get("initiative_title", "")),
          "body": phase_pr_body(phase_record, [*ticket_records, *task_records] if ticket else task_records), "head": pr_branch, "base": default_branch},
         {"kind": "wait_checks", "branch": pr_branch},
-        # Without `task_facts` there is no merged set, so every landed task is marked as before. A task with no
-        # fact (not approved) was never gathered and keeps being marked too.
-        *after_pr(landed_tasks if task_facts is None else phase_landed_tasks(build_steps) | (set(landed_tasks) - set(statuses))),
+        *after_pr(merged),
     ]
 
 
@@ -855,6 +887,10 @@ def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_br
 
     run, task, phase = record.get("run"), record.get("task"), record.get("phase")
     initiative = record.get("initiative")
+    carried = [task] if task else None
+    refusal = carry_refusal(carried, {task})
+    if refusal is not None:
+        return refusal
     scratch_branch = f"agents/{run}/{task}"
     phase_branch = f"epic/{initiative}/{phase}" if initiative else None
 
@@ -895,7 +931,7 @@ def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_br
         {"kind": "merge", "squash": True, "delete_branch": True, "branch": pr_branch,
          "default_branch": default_branch, "subject": subject},
         {"kind": "clean", "run": run, "task": task, "branch": scratch_branch},
-        {"kind": "mark_done", "task": task},
+        *carried_done([task], ticket_unrecorded),
         *sync,
     ]
 

@@ -85,6 +85,7 @@ class _LazyHandler:
 card_keys = _LazyModule("agent_tools.card_keys")
 chair = _LazyModule("agent_tools.chair")
 chair_capacity = _LazyModule("agent_tools.chair_capacity")
+chair_chat = _LazyModule("agent_tools.chair_chat")
 chair_dash_sync = _LazyModule("agent_tools.chair_dash_sync")
 chair_decompose_runs = _LazyModule("agent_tools.chair_decompose_runs")
 chair_exec = _LazyModule("agent_tools.chair_exec")
@@ -165,6 +166,7 @@ install_exec = _LazyModule("agent_tools.install_exec")
 install_root = _LazyModule("agent_tools.install_root")
 intake_queue = _LazyModule("agent_tools.intake_queue")
 intake_state = _LazyModule("agent_tools.intake_state")
+jsonl_log = _LazyModule("agent_tools.jsonl_log")
 lake_config = _LazyModule("agent_tools.lake_config")
 lake_lease = _LazyModule("agent_tools.lake_lease")
 land = _LazyModule("agent_tools.land")
@@ -312,7 +314,7 @@ def _runs_usage(a: argparse.Namespace) -> int:
 
 
 _SERIES_COLUMNS = ["run", "date", "cartridge_sha", "provider_profile", "calls", "turns", "cost_usd",
-                   "cache_share", "tasks_landed", "quarantined", "review_rounds", "cost_per_landed",
+                   "cache_share", "completions", "quarantined", "review_rounds", "cost_per_completion",
                    "tier_ceiling", "effort_ceiling", "launched_by"]
 
 
@@ -329,8 +331,8 @@ def _runs_series(a: argparse.Namespace) -> int:
         print(json.dumps({"rows": rows, "totals": totals}, indent=2))
     else:
         print(records.format_table(rows, _SERIES_COLUMNS))
-        print(f"totals: {totals['runs']} runs, ${totals['cost_usd']:.2f}, {totals['tasks_landed']} landed, "
-              f"{totals['quarantined']} quarantined, cost/landed {totals['cost_per_landed']}, "
+        print(f"totals: {totals['runs']} runs, ${totals['cost_usd']:.2f}, {totals['completions']} completions, "
+              f"{totals['quarantined']} quarantined, cost/completion {totals['cost_per_completion']}, "
               f"{totals['runs_landing_nothing']} landed nothing")
     if a.append:
         p = Path(a.append)
@@ -608,7 +610,7 @@ def _stats_chair(a: argparse.Namespace) -> int:
         for run_id, u in run_store.usages(runs_dir).items() if _run_in_window(runs_dir, run_id, a.since)
         for call in (u.get("calls") or [])
     ]
-    land_rows = [r for line in (_read_text_or_none(runs_dir / "land.jsonl") or "").splitlines() if isinstance(r := _json_or(line, None), dict)]
+    land_rows = list(jsonl_log.read_log(runs_dir / "land.jsonl").rows)
     prices = _chair_catalog_prices(a)
     sessions = stats_chair.session_ids(chair.read(runs_dir) if (runs_dir / chair.CHAIR_FILENAME).exists() else None, a.session or [])
     lines = [line for s in sessions for line in _chair_transcript_lines(Path(a.projects_dir).expanduser(), s)]
@@ -1645,13 +1647,17 @@ def _runs_dir_for_land(a: argparse.Namespace) -> tuple[Path | None, str | None]:
 
 
 def _land_record(runs_dir: Path, run_id: str, task: str | None) -> tuple[dict | None, str, int]:
+    """The one record file for `task` (any task when None). A named task with no file under the land's own run takes the
+    newest earlier run's, the order `_land_phase_record` uses; several files in one run stay ambiguous."""
     tasks_root = runs_dir / run_id / "tasks"
     matches = sorted(tasks_root.glob(f"*/{task}.json" if task else "*/*.json"))
+    if not matches and task:
+        matches = next((m for r in _earlier_runs(run_id) if (m := sorted((runs_dir / r / "tasks").glob(f"*/{task}.json")))), [])
     if len(matches) != 1:
         return None, str(tasks_root.resolve()), len(matches)
     path = matches[0]
     record = json.loads(path.read_text(encoding="utf-8"))
-    record.setdefault("run", run_id)
+    record.setdefault("run", path.parents[2].name)
     record.setdefault("task", path.stem)
     record.setdefault("phase", path.parent.name)
     return record, str(path), 1
@@ -1682,9 +1688,10 @@ def _land_load(runs_dir: Path, run_id: str, task: str | None) -> tuple[dict | No
             return {"run": run_id, "task": task, "phase": phases[0], **held}, str(path), 1, "store"
         return None, where, count, None
     path = Path(where)
-    stored = run_store.task_record(runs_dir, run_id, path.parent.name, path.stem) if count == 1 else None
+    filed_run = path.parents[2].name if count == 1 else run_id  # an earlier run's record is read from that run
+    stored = run_store.task_record(runs_dir, filed_run, path.parent.name, path.stem) if count == 1 else None
     if stored is not None:
-        stored = {"run": run_id, "task": path.stem, "phase": path.parent.name, **stored}
+        stored = {"run": filed_run, "task": path.stem, "phase": path.parent.name, **stored}
     record, source = _choose_record(stored, filed)
     return record, where, count, source
 
@@ -2361,6 +2368,13 @@ def _phase_needing_land(runs_dir: Path, run_id: str) -> str | None:
     return candidates[0] if len(candidates) == 1 else None
 
 
+def _last_phase_with_manifest(runs_dir: Path, run_id: str) -> str | None:
+    """Edge. The last phase, by name, that holds task records under `run_id` and has a phase record; None when none does."""
+    tasks_root = runs_dir / run_id / "tasks"
+    held = sorted(d.name for d in tasks_root.iterdir() if d.is_dir() and any(d.glob("*.json"))) if tasks_root.is_dir() else []
+    return next((p for p in reversed(held) if _land_phase_record(runs_dir, run_id, p)[0] is not None), None)
+
+
 def _checks_env(cwd: Path, cores: int = 1, capacity: int | None = None) -> dict[str, str] | None:
     """Edge. The environment a check runs in: `cwd/.venv/bin` first on PATH when the worktree has one (the venv
     `_link_venv` links), so a bare `pytest` is the project's, not a standalone tool's. With a `capacity` of 1 or more
@@ -2373,12 +2387,24 @@ def _checks_env(cwd: Path, cores: int = 1, capacity: int | None = None) -> dict[
     return capped if capped is not None else base
 
 
+def _git_common_dir(cwd: Path) -> Path | None:
+    """Edge. The repository's git common directory, shared by every worktree, or None when git cannot say."""
+    try:
+        out = subprocess.run(["git", "-C", str(cwd), "rev-parse", "--git-common-dir"], capture_output=True, text=True,
+                             check=True, timeout=30).stdout.strip()
+    except subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError:
+        return None
+    return (Path(cwd) / out).resolve() if out else None
+
+
 def _run_checks(checks: list[tuple[str, str]], cwd: Path, cores: int = 1, capacity: int | None = None) -> tuple[bool, str]:
     """Each `(name, shell line)` pair in order, run by a shell in `cwd` as the builders run it (`harness.checks`),
     stopping at the first launch error or failure and naming it by `name`, never by its command.
 
-    `cores` and `capacity` are the land's, read by the caller. With a `capacity` the passing detail names the xdist
-    worker count the checks ran with."""
+    A check that already passed on this exact tree and command is not run again (`harness.check_reuse`); the detail
+    names it. `cores` and `capacity` are the land's, read by the caller. With a `capacity` the passing detail names
+    the xdist worker count the checks ran with."""
+    from harness.check_reuse import run_checks_reusing
     from harness.checks import run_checks
     from harness.lane_workers import XDIST_VAR
     if not checks:
@@ -2386,10 +2412,16 @@ def _run_checks(checks: list[tuple[str, str]], cwd: Path, cores: int = 1, capaci
     env = _checks_env(cwd, cores, capacity)
     workers = env.get(XDIST_VAR) if env is not None and capacity is not None and capacity >= 1 else None
     note = f" (xdist workers: {workers})" if workers else ""
+    common = _git_common_dir(Path(cwd))
     skipped: list[str] = []
+    reused: list[str] = []
     flaky: list[str] = []
     for name, line in checks:
-        [result] = run_checks(Path(cwd), [{"name": name, "cmd": line}], env=env)
+        one = [{"name": name, "cmd": line}]
+        [result] = (run_checks_reusing(Path(cwd), one, ledger_dir=common, env=env) if common is not None
+                    else run_checks(Path(cwd), one, env=env))
+        if result.get("reused"):
+            reused.append(name)
         if result.get("note"):
             flaky.append(result["note"])
         if result["outcome"] == "unrunnable":
@@ -2401,7 +2433,7 @@ def _run_checks(checks: list[tuple[str, str]], cwd: Path, cores: int = 1, capaci
             return False, land.checks_detail(f"{name}: {result['output_tail'].strip()}", skipped, flaky)
         if verdict == "skip":
             skipped.append(name)
-    return True, land.checks_detail(f"{len(checks)} checks passed{note}", skipped, flaky)
+    return True, land.checks_detail(f"{len(checks)} checks passed{note}", skipped, flaky, reused)
 
 
 def _land_worktree(repo: Path, branch: str) -> Path:
@@ -3105,6 +3137,33 @@ def _mark_done_unrecorded(step: dict) -> tuple[bool, str]:
     if result is None:
         return True, f"{task} marked done with {step.get('pr') or 'no PR'}"
     return result.code == route_edit.DONE, result.text
+
+
+def _mark_remaining_done(steps: list[dict], pr: str, at: str, mark: Callable[[dict], tuple[bool, str]]) -> list[tuple[str, str]]:
+    """Edge. Mark done with `pr` every task of the `mark_done` steps in `steps`; returns `(task, reason)` for each it could
+    not. A task whose record file is missing, or that never had one, goes by its store item as `_mark_done_unrecorded` does.
+    A record `mark` fails on (False or an exception) falls back to the store item. Never raises."""
+    unmarked: list[tuple[str, str]] = []
+    for step in {s["task"]: s for s in steps if s["kind"] == "mark_done"}.values():
+        path = step.get("path")
+        has_record = step.get("recorded") is not False and path is not None and Path(path).is_file()
+        reason = ""
+        if has_record:
+            try:
+                ok, detail = mark(_mark_done_facts(step, pr, at))
+            except Exception as exc:
+                ok, detail = False, f"{type(exc).__name__}: {exc}"
+            if ok:
+                continue
+            reason = detail
+        try:
+            runs_dir = step.get("runs_dir") or (str(Path(path).resolve().parents[3]) if path else None)
+            ok, detail = _mark_done_unrecorded({**step, "runs_dir": runs_dir, "pr": pr, "at": at})
+        except Exception as exc:
+            ok, detail = False, f"{type(exc).__name__}: {exc}"
+        if not ok:
+            unmarked.append((step["task"], f"{reason}; then {detail}" if reason else detail))
+    return unmarked
 
 
 def _mark_done_facts(step: dict, pr: str, at: str) -> dict:
@@ -3905,6 +3964,10 @@ def _runs_land(a: argparse.Namespace) -> int:
             return 2
         print(f"land: {shortfall}; the list below is short", file=sys.stderr)
     phase = getattr(a, "phase", None) or (None if a.task else _phase_needing_land(runs_dir, run_id))
+    # No phase named and records in several phases: the ticket's last phase, but only to finish an already merged PR (checked below).
+    inferred = phase is None and not a.task and _land_record(runs_dir, run_id, None)[2] > 1
+    phase = _last_phase_with_manifest(runs_dir, run_id) if inferred else phase
+    inferred = inferred and phase is not None
     land_mode = work_state.work_state_mode(_lake_provider(a)[0]) if a.apply else "files"
     record, item_path, lease_task = None, None, None
     land_at, ticket_tasks = None, []
@@ -3940,6 +4003,10 @@ def _runs_land(a: argparse.Namespace) -> int:
                                       _parent_phase(runs_dir.parent / "work", initiative, phase))
                      if read_forge is not None else None)
         already_merged = merged_pr is not None
+        if inferred and not already_merged:
+            _, searched, count = _land_record(runs_dir, run_id, None)
+            print(f"land: looked in {searched}, found {count} task records, expected 1")
+            return 2
         land_at = _phase_land_at(phase_record, profile, runs_dir.parent / "work", initiative)
         ticket_items, phases = _ticket_items(runs_dir.parent / "work", initiative, runs_dir, land_mode, (phase, items)) if land.is_initiative(land_at) else ({}, [])
         ticket_tasks = list(ticket_items)
@@ -3967,6 +4034,9 @@ def _runs_land(a: argparse.Namespace) -> int:
             already_merged=already_merged, ticket_tasks=ticket_tasks, ticket_present=ticket_present,
             ticket_records=[r for r in earlier if r["task"] in ticket_present], ticket_unrecorded=ticket_unrecorded,
         )
+        if inferred:  # a re-run named by no phase, after the PR merged, leaves a task already done (by hand or by a first run) alone
+            finished = {i["id"] for i in items if i["status"] == "done"}
+            plan_steps = [s for s in plan_steps if not (s["kind"] == "mark_done" and s["task"] in finished)]
         earlier_paths = {t: p for ph in phases if ph != phase for t, p in _land_phase_record(runs_dir, run_id, ph)[2].items()}
         steps = _land_enrich(plan_steps, path=searched, worktree_root=a.worktree_root, task_paths={**earlier_paths, **task_paths},
                               umbrella=profile.get("umbrella_dir"), store_runs_dir=str(runs_dir),
@@ -4375,8 +4445,7 @@ def _mark_stopped_land(repo: Path, runs_dir: Path, rc: int, record: dict | None,
 
 
 def _append_land_log(runs_dir: Path, row: dict) -> None:
-    with (runs_dir / "land.jsonl").open("a", encoding="utf-8") as f:
-        f.write(json.dumps(row) + "\n")
+    jsonl_log.append_line(runs_dir / "land.jsonl", row, sync=True)
 
 
 def should_sync_lake(rc: int, reached: Sequence[str], extra_imports: bool, config_resolved: bool,
@@ -4469,6 +4538,7 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
     looped = False
     pr = pr or _open_pr_ref(repo, steps, forge_module)
     pr_failed: tuple[dict, str] | None = None  # the pr step that failed after the push, and why
+    merge_ran = False  # once a merge step succeeded, a later step's exception is a failed result with the tasks marked, not a traceback
     into_pr_branch = any(s["kind"] == "phase_done" for s in steps)  # only such a plan reports a pr failure instead of stopping
     i = 0
     while i < len(steps):
@@ -4525,7 +4595,16 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
                 Path(step["path"]).parent.mkdir(parents=True, exist_ok=True)
                 Path(step["path"]).write_text(json.dumps(record, indent=2), encoding="utf-8")
             step = {**_mark_done_facts(step, pr, datetime.datetime.now(datetime.UTC).isoformat()), "by": by, "mode": mode}
-        ok, detail = (merged, merge_detail) if step["kind"] == "merge" else _execute_land_step(repo, step, forge_module)
+        raised = False  # the step raised after the merge; a returned failure keeps today's stop
+        if step["kind"] == "merge":
+            ok, detail = merged, merge_detail
+        elif not merge_ran:
+            ok, detail = _execute_land_step(repo, step, forge_module)
+        else:
+            try:
+                ok, detail = _execute_land_step(repo, step, forge_module)
+            except Exception as exc:
+                ok, detail, raised = False, f"{type(exc).__name__}: {exc}", True
         if step.get("before") == "pr_create":
             # The sync may have just written `issue:`; the PR opened next must carry its `Closes`.
             steps = land.with_issue(steps, record, _land_item_facts(item_path)[1])
@@ -4545,6 +4624,7 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
             return 2, reached, pr
         print(f"{step['kind']}: {detail}")
         if ok and step["kind"] == "merge":
+            merge_ran = True
             landing = _landing_ref(detail, pr, _pr_number(steps, i, pr), step.get("default_branch", "main"))
         if ok and step["kind"] == "mark_done":
             initiative = _step_initiative(step, record)
@@ -4567,6 +4647,13 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
                 print("land: merge refused for an expected required check; waiting for checks once more")
                 i = waits[-1]
                 continue
+        if raised or (not ok and step["kind"] == "mark_done" and pr):
+            # The PR is merged: record it and mark every task whose mark_done has not run, so none keeps holding its files.
+            number = _pr_number(steps, i, pr)
+            pr = pr or (f"#{number}" if number is not None else "")
+            at = datetime.datetime.now(datetime.UTC).isoformat()
+            for task, why in _mark_remaining_done(steps[i:], pr, at, lambda s: _execute_land_step(repo, {**s, "by": by, "mode": mode}, forge_module)):
+                print(f"{task} not marked done: {why}")
         if not ok:
             remaining = [s["kind"] for s in steps[i + 1:]]
             print("stopped; remaining: " + ", ".join(remaining))
@@ -4849,7 +4936,9 @@ def _efficiency_figures(runs_dir: Path, now: str) -> dict | None:
         "date": today,
         "cost": spend,
         "landed": len(landed),
-        "per_landed": spend / len(landed) if landed else None,
+        "per_landed": spend / len(landed) if landed else None,  # deprecated alias of cost_per_completion
+        "completions": len(landed),
+        "cost_per_completion": spend / len(landed) if landed else None,
         "first_try_rate": rate,
         "measured": measured,
     }
@@ -4860,7 +4949,7 @@ def _efficiency(runs_dir: Path, now: str) -> str | None:
     figures = _efficiency_figures(runs_dir, now)
     if figures is None:
         return None
-    return route.efficiency_line(figures["cost"], figures["landed"], figures["first_try_rate"], figures["measured"])
+    return route.efficiency_line(figures["cost"], figures["completions"], figures["first_try_rate"], figures["measured"])
 
 
 def _gather_context(profile_path: Path, mode: str = "files"):
@@ -5941,6 +6030,115 @@ def _route_chair_chat(a: argparse.Namespace) -> int:
     entry = {"at": datetime.datetime.now(datetime.UTC).isoformat(), "from": sender, "text": a.text}
     path.write_text(leader_chat.append_line(existing, entry), encoding="utf-8")
     print(f"chat: {sender}: {a.text}")
+    return 0
+
+
+def _chat_state_path(workspace: Path) -> Path:
+    return workspace / "chair_chat_state.json"
+
+
+def _read_chat_doc(path: Path) -> tuple[dict, list[dict]]:
+    """Edge. The directive state and the epics the chair last saw; a missing or torn file reads as empty."""
+    try:
+        loaded = json.loads(_read_text_or_none(path) or "{}")
+    except json.JSONDecodeError:
+        loaded = {}
+    doc = loaded if isinstance(loaded, dict) else {}
+    base = chair_chat.empty_state()
+    saved = doc.get("state") if isinstance(doc.get("state"), dict) else {}
+    epics = doc.get("epics") if isinstance(doc.get("epics"), list) else []
+    return {**base, **{k: v for k, v in saved.items() if k in base}}, epics
+
+
+def _write_chat_doc(path: Path, state: dict, epics: list[dict]) -> None:
+    """Edge. Replace the file atomically; an unchanged document is not rewritten."""
+    text = json.dumps({"state": state, "epics": epics}, default=sorted, sort_keys=True)
+    if _read_text_or_none(path) == text:
+        return
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _chat_deps(ws: Path) -> chair_run.ChatDeps:
+    """Edge. The chat edges over the workspace's `courier.jsonl` and `chair_chat_state.json`; neither is the lease."""
+    courier_path, chat_path = ws / "courier.jsonl", _chat_state_path(ws)
+    return chair_run.ChatDeps(
+        read=lambda: courier.entries(_read_text_or_none(courier_path) or ""),  # a missing file is an empty bus
+        load=lambda: _read_chat_doc(chat_path)[0],
+        save=lambda state, epics: _write_chat_doc(chat_path, state, epics),
+        append=lambda entry: courier.append_file(courier_path, entry),
+        ack=lambda message_id: courier.ack_file(courier_path, message_id, chair_run.CHAT_CONSUMER),
+    )
+
+
+def _converse_append(a: argparse.Namespace, body_kind: str, payload: dict[str, str]) -> tuple[Path, str] | None:
+    """Edge. Append one chat entry to the workspace courier; the lease record is never opened. None after printing why."""
+    workspace = _courier_workspace(a)
+    if workspace is None:
+        return None
+    message_id = uuid.uuid4().hex
+    entry = chair_chat.build_message(a.sender, body_kind, payload, message_id, chair_run.CHAT_REF)
+    courier.append_file(workspace / "courier.jsonl", entry)
+    return workspace, message_id
+
+
+def _route_chair_converse_send(a: argparse.Namespace) -> int:
+    fields = _parse_fields(a.args or [])
+    if fields is None:
+        print(f"converse: bad argument in {a.args}; expected key=value")
+        return 2
+    payload = {**fields, "kind": a.kind}
+    reason = chair_chat.validate_directive(a.kind, payload)
+    if reason is not None:
+        print(f"converse: {reason}")
+        return 2
+    sent = _converse_append(a, "directive", payload)
+    if sent is None:
+        return 2
+    print(f"converse: sent {a.kind} directive {sent[1]}; the chair applies it on its next tick")
+    return 0
+
+
+def _find_chat_answer(blob: str, question_id: str) -> dict | None:
+    return next((e for e in courier.entries(blob) if e.get("event") == "chat_answer" and (e.get("fields") or {}).get("question") == question_id), None)
+
+
+def _await_chat_answer(
+    path: Path, question_id: str, wait: float, poll: float = 1.0,
+    sleep: Callable[[float], None] = time.sleep, monotonic: Callable[[], float] = time.monotonic,
+) -> dict | None:
+    """Edge. The answer entry for `question_id`, polled until `wait` seconds pass; None when none came."""
+    deadline = monotonic() + wait
+    while True:
+        found = _find_chat_answer(_read_text_or_none(path) or "", question_id)
+        left = deadline - monotonic()
+        if found is not None or left <= 0:
+            return found
+        sleep(min(poll, left))
+
+
+def _route_chair_converse_ask(a: argparse.Namespace) -> int:
+    if a.kind not in chair_chat.QUESTION_KINDS:
+        print(f"converse: unknown question {a.kind!r}; expected one of {', '.join(chair_chat.QUESTION_KINDS)}")
+        return 2
+    sent = _converse_append(a, "question", {"kind": a.kind, "subject": a.subject})
+    if sent is None:
+        return 2
+    answer = _await_chat_answer(sent[0] / "courier.jsonl", sent[1], a.wait)
+    print(answer["note"] if answer else f"converse: the chair has not answered within {a.wait:g}s; the question stays queued for its next tick")
+    return 0
+
+
+def _route_chair_converse_state(a: argparse.Namespace) -> int:
+    workspace = _courier_workspace(a)
+    if workspace is None:
+        return 2
+    state, epics = _read_chat_doc(_chat_state_path(workspace))
+    sent = courier.entries(_read_text_or_none(workspace / "courier.jsonl") or "")
+    recent = [{"event": e["event"]} for e in sent if e.get("topic") == chair_chat.LABEL and e.get("event") in ("directive_applied", "directive_refused")][-5:]
+    print(chair_chat.state_summary(state, epics, recent))
+    print("Epics are as of the chair's last acting tick; a standby or dry-run tick does not refresh them.")
     return 0
 
 
@@ -8890,7 +9088,9 @@ def _install_home_refusal(home: str, record: str | None, named: bool) -> str | N
 def _install_facts(a: argparse.Namespace) -> dict:
     """Gathers exactly what `install_plan` needs and nothing it decides:
     PATH lookups, the coxswain tool's receipt extras, the profile's existence, and the
-    config/settings paths expanded once, here. Without `--root` the checkouts,
+    config/settings paths expanded once, here, and the platform, home, cox path and
+    whether the chair service file exists, and the default garage.env and its `export` lines.
+    A `--root` install passes no home and no env file. Without `--root` the checkouts,
     profile and workspace come from the resolved coxswain home; a refusal
     raises ValueError for the caller to print."""
     config_dir = str(Path("~/.config").expanduser())
@@ -8914,6 +9114,11 @@ def _install_facts(a: argparse.Namespace) -> dict:
         registered = (listing or {}).get(setup_install.MARKETPLACE)
     tool_dir = setup_receipts.default_tool_dir(os.environ, str(Path.home()))
     paths = setup_install.layout(root)
+    # A `--root` install is a sandbox: it never writes into the real user's service folders.
+    service_home = "" if a.root else str(Path.home())
+    service_file = chair_service.service_file(sys.platform, Path(service_home)) if service_home else None
+    chair_env_file = None if a.root else _chair_default_environment_file()
+    chair_env_text = _read_text_or_none(Path(chair_env_file)) if chair_env_file else None
     return {
         "tool_extras": setup_receipts.read_tool_extras(tool_dir, setup_install.TOOL),
         "root": root,
@@ -8935,6 +9140,12 @@ def _install_facts(a: argparse.Namespace) -> dict:
         "assume": a.assume,
         "window_ceiling_usd": a.window_ceiling_usd,
         "weekly_ceiling_usd": a.weekly_ceiling_usd,
+        "platform": sys.platform,
+        "home": service_home,
+        "cox_path": shutil.which("cox"),
+        "chair_service_exists": service_file is not None and service_file.exists(),
+        "chair_env_file": chair_env_file,
+        "chair_env_exports": tuple(chair_service.export_lines(chair_env_text or "")),
     }
 
 
@@ -11385,7 +11596,7 @@ STATS_COMMANDS = [
         "agent_tools.cli:_stats_causes", False, (),
     ),
     commands.Command(
-        "efficiency", "stats", "cost per turn, cost per landed task, first-try rate, waste share, per day",
+        "efficiency", "stats", "cost per turn, cost per completion, first-try rate, waste share, per day",
         (
             commands.Arg(("--runs-dir",), {"default": "runs"}),
             commands.Arg(("--days",), {"type": int, "default": 7, "help": "UTC days to report, today included (default 7)"}),
@@ -12482,6 +12693,38 @@ ROUTE_COMMANDS = [
                     commands.Arg(("--as-leader",), {"action": "store_true", "help": "send as the lock's holder; refuses unless this process is the live holder"}),
                 ),
                 "agent_tools.cli:_route_chair_chat", False, (),
+            ),
+            commands.Command(
+                "converse", "route", "talk to the running chair through the courier, without the lease (`chat` is the leader thread)", (), None, False, (),
+                subcommands=(
+                    commands.Command(
+                        "send", "route", "send the chair a directive; it applies on the chair's next tick",
+                        (
+                            commands.Arg(("kind",), {"help": "one of: priority, hold, release, scope, feature, cut_release"}),
+                            commands.Arg(("args",), {"nargs": "*", "help": "key=value pairs, e.g. target_kind=task target=t1 rank=1"}),
+                            commands.Arg(("--profile",)),
+                            commands.Arg(("--sender",), {"default": "session"}),
+                        ),
+                        "agent_tools.cli:_route_chair_converse_send", False, (),
+                    ),
+                    commands.Command(
+                        "ask", "route", "ask the chair a question and wait a bounded time for its answer",
+                        (
+                            commands.Arg(("kind",), {"help": "one of: left_on_release, why_not_launched, what_failed"}),
+                            commands.Arg(("subject",), {"nargs": "?", "default": ""}),
+                            commands.Arg(("--profile",)),
+                            commands.Arg(("--sender",), {"default": "session"}),
+                            commands.Arg(("--wait",), {"type": float, "default": 30.0, "help": "seconds to wait for the answer (default 30)"}),
+                        ),
+                        "agent_tools.cli:_route_chair_converse_ask", False, (),
+                    ),
+                    commands.Command(
+                        "state", "route", "print the directives in force, the epics the chair last saw, and recent events",
+                        (commands.Arg(("--profile",)),),
+                        "agent_tools.cli:_route_chair_converse_state", False, (),
+                    ),
+                ),
+                sub_dest="converse_cmd", sub_required=False,
             ),
         ),
         sub_dest="chair_cmd", sub_required=False,
@@ -13833,7 +14076,10 @@ def _chair_run_deps(
     # A dry run and a missing workspace keep the plain sleep, so polling is unchanged there.
     wake = None if dry_run or not ws.is_dir() else chair_wake.wait_for_run_exit(read_bus, time.sleep, time.monotonic, CHAIR_WAKE_POLL_SECONDS)
 
+    chat = None if dry_run or not ws.is_dir() else _chat_deps(ws)
+
     return chair_run.RunDeps(
+        chat=chat,
         wait=wake,
         checkout_state=checkout_state, started_checkout=started_checkout, lands_in_flight=lands_in_flight,
         stop_lands=stop_lands, facts_deps=facts_deps, gather=_chair_gather(ws), exec_deps=exec_deps, report_deps=chair_report.Deps(echo=echo),

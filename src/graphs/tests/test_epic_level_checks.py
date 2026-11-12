@@ -7,7 +7,7 @@ import time
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
-from harness import epic
+from harness import check_reuse, epic
 from harness.epic import _level_failure_reason, _PhaseRunner
 from tests.test_epic_driver import cart, drive, git, repo  # noqa: F401
 from tests.test_epic_waves import Gated, by_phase, work
@@ -49,6 +49,7 @@ class Spy:
 def spy_on(monkeypatch) -> Spy:
     spy = Spy(epic.run_checks)
     monkeypatch.setattr(epic, "run_checks", spy)
+    monkeypatch.setattr(check_reuse, "run_checks", spy)  # the task gate runs through the ledger
     return spy
 
 
@@ -105,7 +106,7 @@ def test_two_levels_completing_at_once_run_their_level_checks_serially(repo, car
     result, _ = drive(repo, cart, tmp_path, work=spec, runner=Gated(gate=True))
 
     by = by_phase(result)
-    assert by["pa"]["status"] == by["pb"]["status"] == "complete"
+    assert by["pa"]["status"] == by["pb"]["status"] == "complete", (by["pa"].get("reason"), by["pb"].get("reason"))
     # Both level checks, then the merge check of whichever phase merged second: the initiative tip had moved under it.
     assert len(arrived) == 3
     assert {by["pa"]["initiative_merge"]["status"], by["pb"]["initiative_merge"]["status"]} == {"merged"}

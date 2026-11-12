@@ -30,11 +30,11 @@ def test_a_phase_plan_with_every_task_merged_marks_all_and_notes_none():
     assert not [s for s in steps if s.get("unmerged")]
 
 
-def test_a_phase_plan_marks_only_the_merged_set_and_names_the_other_task(monkeypatch):
+def test_a_phase_plan_with_a_carried_task_outside_the_merged_set_refuses_naming_it(monkeypatch):
     monkeypatch.setattr(land, "phase_landed_tasks", lambda steps: frozenset({"a"}))
     steps = _plan()
-    assert [s["task"] for s in steps if s["kind"] == "mark_done"] == ["a"]
-    assert [s["reason"] for s in steps if s.get("unmerged")] == ["b: work not in the merged PR; left in current state"]
+    assert [s["kind"] for s in steps] == ["refuse"]
+    assert steps[0]["reason"].startswith("b: ")
 
 
 def test_the_land_walk_prints_the_unmerged_task(capsys, tmp_path):

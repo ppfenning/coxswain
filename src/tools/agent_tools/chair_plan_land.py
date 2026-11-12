@@ -103,6 +103,29 @@ def plan_finish(facts: Facts) -> list[Action]:
     ]
 
 
+def _open_tasks(facts: Facts) -> frozenset[tuple[str, str]]:
+    """(initiative, task id) of each approved, ready or quarantined task that its initiative has not landed."""
+    landed = {i["id"]: i["landed"] for i in facts["initiatives"]}
+    rows = [
+        *((t["initiative"], t["id"]) for t in facts["approved"]),
+        *((i["id"], t["id"]) for i in facts["initiatives"] for t in i["ready_tasks"]),
+        *((q["initiative"], q["task_id"]) for q in facts["quarantines"]),
+    ]
+    return frozenset((i, t) for i, t in rows if t not in landed.get(i, set()))
+
+
+def plan_missed_closes(facts: Facts) -> list[Action]:
+    """A close_merged_task per open task a merged PR names, in PR order; a task two PRs name closes against the first."""
+    prs = facts.get("merged_prs", [])
+    open_tasks = sorted(_open_tasks(facts))
+    # Walking the PRs last to first makes the first PR the final assignment, so it wins.
+    first = {key: n for n, pr in reversed(list(enumerate(prs))) for key in open_tasks if key[1] in pr["task_ids"]}
+    return [
+        {"kind": "close_merged_task", "initiative": i, "task_id": t, "pr": prs[n]["url"], "repo": prs[n]["repo"]}
+        for (i, t), n in sorted(first.items(), key=lambda kv: (kv[1], kv[0]))
+    ]
+
+
 def lander_owned(facts: Facts) -> frozenset[tuple[str, str]]:
     """The (initiative, phase) the chair plans no land for: every phase of an initiative that lands at `initiative`.
 

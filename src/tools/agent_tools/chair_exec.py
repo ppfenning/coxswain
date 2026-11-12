@@ -5,6 +5,7 @@ Argv spellings follow `cox runs land --help` and `cox route launch epic|decompos
 """
 from __future__ import annotations
 
+import getpass
 import json
 import math
 import os
@@ -35,6 +36,7 @@ from agent_tools import (
     chair_login_check,
     chair_login_watch,
     chair_plan_prune,
+    chair_sort,
     courier,
     cox_settings,
     epic,
@@ -64,6 +66,7 @@ from agent_tools.chair_revert_exec import GitPort as RevertGitPort
 from agent_tools.chair_schedule import SCHEDULE_FILE
 from agent_tools.chair_types import Action, LandTrigger, is_fenced
 from agent_tools.land import LAND_CONFLICT_KEY, approve_to_done, conflict_note
+from agent_tools.pytest_tmp_sweep import sweep_pytest_tmp
 from agent_tools.remote_argv import LANE_HOST_TIMEOUT_S, incoming_ref, probe_argv, ssh_argv, sync_argv
 
 __all__ = [
@@ -160,7 +163,7 @@ def _no_initiative_rows() -> tuple[()]:
 class Deps:
     run: Run  # (exit code, output); the only door to cox and git
     delete_branches: Callable[[str, str], tuple[list[str], str]]  # (repo, pattern) -> (deleted names, error text)
-    acquire_lease: Callable[..., str]  # (holder, host), or (holder, host, steal=True) over an expired takeover -> refusal line or ""
+    acquire_lease: Callable[..., str]  # (holder, host), (holder, host, steal=True) over an expired takeover, or (holder, host, steal=True, takeback=True) over a session -> refusal line or ""
     record: Callable[[Action], None]
     run_id: Callable[[Action], str]  # the run whose task a land applies to; "" when unknown
     repo_for: Callable[[Action], str]  # the repository a clear_branches acts in; "" when unknown
@@ -202,6 +205,12 @@ class Deps:
     # chair_steward_exec's door: (merge_level or run_gate action, the repo's checks) -> {"event", "fields", "reason"}; None refuses both
     steward_exec: Callable[[Action, Sequence[str]], Mapping[str, Any]] | None = None
     steward_checks: Callable[[Action], Sequence[str]] = lambda action: ()  # the checks the loop already resolved for the action's repo; the executor never chooses them
+    temp_root: Path | None = None  # the system temp directory the tick sweeps stale pytest run directories under; None sweeps nothing
+    user: str = ""  # the user whose `pytest-of-<user>` directory the sweep reads
+    # An annotate_objection's cheap model step. None refuses it, which publishes needs_attention: no chair model-call
+    # helper exists in agent_tools yet, and this step must not open its own vendor path. The loop supplies the real one.
+    objection_note: chair_sort.ObjectionNote | None = None
+    mark_handled: Callable[[str], None] | None = None  # a handled key's extra sink; the recorded action already carries `key`
 
 
 def resolved_target(cartridge_target: str | None, epic_branch: str | None, initiative_branch: str | None) -> str | None:
@@ -822,8 +831,13 @@ def _clear(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
 
 def _lease(action: Action, deps: Deps) -> Result:
     holder, host = action.get("holder", ""), action.get("host", "")
-    over_expired = action.get("reason", "").startswith("takeover expired")
-    line = deps.acquire_lease(holder, host, steal=True) if over_expired else deps.acquire_lease(holder, host)
+    reason = action.get("reason", "")
+    if reason.startswith("takeback from "):
+        line = deps.acquire_lease(holder, host, steal=True, takeback=True)  # a session still holds it: the guard does not apply
+    elif reason.startswith("takeover expired"):
+        line = deps.acquire_lease(holder, host, steal=True)
+    else:
+        line = deps.acquire_lease(holder, host)
     return _result(action, "refused", line) if line else _result(action, "done")
 
 
@@ -985,6 +999,60 @@ def _widen_ticket(action: Action, deps: Deps) -> Result:
         return _result(action, "failed", reason)
     warning = store_cli.mirror_state(deps.runs_dir, action.get("initiative", ""), action.get("task_id", ""), "ready", "chair")
     return _result(action, "done", reason if warning is None else f"{reason}; {warning}")
+
+
+def _ticket_file(work_dir: Path, initiative: str, task_id: str) -> Path | None:
+    """The one ticket file under `work/<initiative>/**/<task_id>.md`; None when none matches."""
+    return next(iter(sorted((work_dir / "work" / initiative).glob(f"**/{task_id}.md"))), None)
+
+
+def _refused_note(action: Action, deps: Deps, reason: str) -> Result:
+    """A refused or failed model step publishes needs_attention and marks its key handled, so no later tick asks again.
+
+    The next tick's sort then finds the key handled and plans the needs_chair report, never another model call."""
+    _publish({**action, "epic": action.get("initiative", "")}, deps, "needs_attention", {"action": str(action["kind"]), "reason": reason})
+    if deps.mark_handled is not None and action.get("key"):
+        deps.mark_handled(action["key"])
+    return _result(action, "refused", reason)
+
+
+def _annotate_objection(action: Action, deps: Deps) -> Result:
+    """Edge. One cheap-model rebuild instruction, appended to the ticket body once; the task goes back to ready."""
+    initiative, task = action.get("initiative", ""), action.get("task_id", "")
+    objection, key = action.get("objection", ""), action.get("key", "")
+    path = _ticket_file(deps.work_dir, initiative, task) if initiative and task else None
+    if path is None or not objection or not key:
+        return _refused_note(action, deps, "annotate_objection needs a ticket, an objection and a key")
+    if deps.objection_note is None:
+        return _refused_note(action, deps, "no model step is configured for the rebuild instruction")
+    try:
+        text = deps.objection_note(objection)
+    except Exception as exc:
+        return _refused_note(action, deps, f"model step failed: {type(exc).__name__}: {exc}")
+    if not text.strip():
+        return _refused_note(action, deps, "model step refused: empty instruction")
+    try:
+        body = path.read_text(encoding="utf-8")
+        path.write_text(body.rstrip("\n") + "\n\n" + chair_sort.rebuild_note(objection, text) + "\n", encoding="utf-8")
+    except OSError as exc:
+        return _refused_note(action, deps, f"cannot annotate {task}: {exc}")
+    warning = store_cli.mirror_state(deps.runs_dir, initiative, task, "ready", "chair")
+    if deps.mark_handled is not None:
+        deps.mark_handled(key)
+    return _result(action, "done", f"annotated {task}" if warning is None else f"annotated {task}; {warning}")
+
+
+def _rebuild_quarantined(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
+    """The relaunch pair, in line: clear_branches carries current main into the kept phases, then the relaunch runs.
+
+    A clear that did not finish, or that raised a conflict, launches nothing and leaves the key unhandled."""
+    cleared = _clear({**action, "kind": "clear_branches"}, deps, blocked)
+    if cleared["status"] != "done" or "needs_chair" in cleared:
+        return {**cleared, "action": action}
+    result = _launch({**action, "kind": "relaunch"}, deps)
+    if result["status"] == "done" and deps.mark_handled is not None and action.get("key"):
+        deps.mark_handled(action["key"])
+    return {**result, "action": action}
 
 
 def _release_approvals(action: Action, deps: Deps) -> Result:
@@ -1540,7 +1608,7 @@ def _would(action: Action) -> str:
 
 
 # The kinds whose result may carry a needs_chair that is recorded as its own row after the result.
-_CARRIES_NEEDS_CHAIR = ("merge_level", "clear_branches", "review_landed", "carry_phase", "rebase_phase", "revert_land", "rerun_main")
+_CARRIES_NEEDS_CHAIR = ("merge_level", "clear_branches", "rebuild_quarantined", "review_landed", "carry_phase", "rebase_phase", "revert_land", "rerun_main")
 
 
 def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
@@ -1594,6 +1662,10 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
         return _fetch_exit(action, deps)
     if kind == "widen_ticket":
         return _widen_ticket(action, deps)
+    if kind == "annotate_objection":
+        return _annotate_objection(action, deps)
+    if kind == "rebuild_quarantined":
+        return _rebuild_quarantined(action, deps, blocked)
     if kind == "release_approvals":
         return _release_approvals(action, deps)
     if kind == "restore_approvals":
@@ -1669,6 +1741,25 @@ def _ack_run_exited(run: str, deps: Deps) -> list[str]:
         except OSError:
             continue
     return acked
+
+
+def _current_user() -> str:
+    """Edge. The login name pytest names its temp directory after; "" when the system has none."""
+    try:
+        return getpass.getuser()
+    except (OSError, KeyError):
+        return ""
+
+
+def _sweep_pytest_tmp(deps: Deps) -> list[str]:
+    """Edge. Names of the stale `pytest-of-<user>` run directories removed at the tick's clock.
+    The module's age band is the only test of life. Any failure removes nothing here and stops nothing else."""
+    if deps.temp_root is None:
+        return []
+    try:
+        return sweep_pytest_tmp(deps.temp_root, deps.user, _as_utc(deps.now()).timestamp())
+    except Exception:  # a sweep of scratch space must never fail the tick
+        return []
 
 
 def _ack_done_land_notices(deps: Deps) -> list[str]:
@@ -1845,6 +1936,15 @@ def perform(
             carried = _result(result["needs_chair"], "recorded", result["needs_chair"].get("reason", ""))
             deps.record(_recorded(carried))
             results.append(carried)
+    # After every action's result, so a caller that reads `results[0]` for its single action still gets that action's.
+    if not dry_run and (removed := _sweep_pytest_tmp(deps)):
+        swept = _result(
+            {"kind": "pytest_tmp_sweep"},  # type: ignore[typeddict-item]  # not a planned kind, so no housekeeping timer moves
+            "done",
+            f"removed stale pytest run directories: {', '.join(removed)}",
+        )
+        deps.record(_recorded(swept))
+        results.append(swept)
     return results
 
 
@@ -2419,7 +2519,9 @@ def edge_deps(
     live_check = partial(_check_login_edge, runs_dir, login_run, provider_profile)
     live_probe = partial(_probe_host_edge, runs_dir, login_run)
 
-    def acquire(_holder: str, _host: str, steal: bool = False) -> str:
+    def acquire(_holder: str, _host: str, steal: bool = False, takeback: bool = False) -> str:
+        if takeback:
+            return chair.acquire_lease(runs_dir, session, pid, host, steal=True)
         refusal, takeover = _lease_state(runs_dir, session, pid, host)
         return refusal or chair.acquire_lease(runs_dir, session, pid, host, steal=steal or takeover)
 
@@ -2447,4 +2549,6 @@ def edge_deps(
         target_branch=target_branch,
         rebase_port=lambda action: _RebaseEdge(action.get("repo") or repo_for(action)),
         phase_states=lambda initiative, phase: phase_task_states(run_store.work_items(runs_dir, initiative), phase),
+        temp_root=Path(tempfile.gettempdir()),
+        user=_current_user(),
     )

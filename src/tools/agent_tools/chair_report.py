@@ -40,8 +40,21 @@ def lands_this_tick(results: Sequence[Result]) -> int:
     return sum(1 for r in results if r["action"].get("kind") in ("land", "land_phase", "partial_land") and r["status"] == "landed")
 
 
+_TAKEBACK = "takeback from "
+
+
+def takeback_holder(results: Sequence[Result]) -> str | None:
+    """The holder named in a done take_lease whose reason starts `takeback from `; None when no result is one."""
+    named = (
+        str(r["action"].get("reason", "")).removeprefix(_TAKEBACK).split()
+        for r in results
+        if r["action"].get("kind") == "take_lease" and r["status"] == "done" and str(r["action"].get("reason", "")).startswith(_TAKEBACK)
+    )
+    return next((words[0] for words in named if words), None)
+
+
 def mode_of(actions: Sequence[Action], results: Sequence[Result]) -> str:
-    """dry-run when every result is a dry_run, else standby with its holder and host, else holding."""
+    """dry-run when every result is a dry_run, else standby with its holder and host, else a done takeback, else holding."""
     standby = next((a for a in actions if a.get("kind") == "standby"), None)
     if results and all(r["status"] == "dry_run" for r in results):
         return "dry-run"
@@ -49,6 +62,9 @@ def mode_of(actions: Sequence[Action], results: Sequence[Result]) -> str:
         return f"standby: held by {standby.get('holder', '?').partition('@')[0]} until {standby['until']}"
     if standby is not None:
         return f"standby holder={standby.get('holder', '?')} host={standby.get('host', '?')}"
+    taken_from = takeback_holder(results)
+    if taken_from is not None:
+        return f"takeback: took the chair back from {taken_from}"
     return "holding"
 
 

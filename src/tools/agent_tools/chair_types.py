@@ -32,6 +32,7 @@ class LeaseFacts(TypedDict):
     expired: bool  # another holder's takeover window has passed
     until: str  # that window's end, ISO; empty when the holder set none
     lent: NotRequired[bool]  # the live holder has lent the routine ticks; read with .get("lent", False)
+    session_held: NotRequired[bool]  # a session holds the lease informally, no takeover window; read with .get("session_held", False)
 
 
 class SmokeCommandResult(TypedDict):
@@ -140,6 +141,14 @@ class ReviewPr(TypedDict):
     merged_at: str | None
 
 
+class MergedPr(TypedDict):
+    """A merged chair PR and the task ids its body carries."""
+
+    url: str
+    repo: str
+    task_ids: list[str]
+
+
 class CarryTask(TypedDict):
     """One approved task commit to cherry-pick; run_seq is higher for a newer run."""
 
@@ -202,6 +211,7 @@ class RunningInitiative(TypedDict):
     surfaces: list[str]
     phase: NotRequired[str]  # the phase this entry runs; absent means the whole initiative
     live: NotRequired[bool]  # False when the entry exists only for unlanded approvals; a missing key means live
+    state: NotRequired[Literal["running", "awaiting_land"]]  # awaiting_land: no live run, only approved unmerged items
 
 
 class InitiativeFacts(TypedDict):
@@ -230,6 +240,8 @@ class QuarantineFacts(TypedDict):
     causes: NotRequired[list[str]]  # every quarantine cause on the current body, oldest attempt first; absent means just `cause`
     run: NotRequired[str]  # the run the remedy command names; absent means unknown
     repo: NotRequired[str]  # the repository the remedy command names; absent means unknown
+    task_state_key: NotRequired[str]  # names the harness state the task was quarantined in; absent leaves the quarantine unsorted
+    held_objection: NotRequired[str]  # the review objection text holding the task; absent leaves a review quarantine unsorted
 
 
 class EmptyDecomposeFacts(TypedDict):
@@ -587,6 +599,7 @@ class Facts(TypedDict):
     home: dict[str, str]
     run_hosts: NotRequired[dict[str, str]]  # run id to the host name that ran it; a local run is absent; absent means {}
     review_prs: NotRequired[list[ReviewPr]]  # approved tasks awaiting a review PR; absent means none
+    merged_prs: NotRequired[list[MergedPr]]  # merged chair PRs with the task ids their bodies carry; absent means none
     landing: NotRequired[list[LandingFact]]  # lands in progress on the land worker; absent means none
     running: NotRequired[list[RunningInitiative]]  # initiatives with a live lane on any machine; absent means none
     live_phases: NotRequired[list[LivePhase]]  # phases with their own live run; absent means no phase runs live
@@ -623,6 +636,8 @@ class Facts(TypedDict):
     merge_queue: NotRequired[MergeQueueFacts]  # the profile's enabled merge queue; absent means the queue is off
     # `<run1>|<run2>` of each relaunch_loop needs_chair already in the action log. Absent means [].
     relaunch_loop_reported: NotRequired[list[str]]
+    # chair_sort keys already acted on: `<task>:<state key>` for a rebuild, an objection hash for an annotation. Absent means none.
+    handled_keys: NotRequired[list[str]]
     # Land refusals still counted: refused or failed land_phase rows since the key's last landed row. Absent means [].
     land_refusals: NotRequired[list[LandRefusal]]
     land_fail_streaks: NotRequired[list[LandFailStreak]]  # per (initiative, phase), the run of identical failed-land reasons; absent means none
@@ -682,12 +697,15 @@ ActionKind = Literal[
     "unlaunched",
     "close_initiative",
     "finish_task",
+    "close_merged_task",
     "merge_level",
     "run_gate",
     "steward_event",
     "unlaunched",
     "schedule_updated",
     "requeue_task",
+    "rebuild_quarantined",
+    "annotate_objection",
 ]
 
 
@@ -719,13 +737,16 @@ class Action(TypedDict, total=False):
     awaiting_land and runs no command. deferred carries initiative, phase and land_at and runs no command: the land waits for
     the granularity land_at names. unlaunched carries initiative and reason, runs no command and writes no row.
     close_initiative carries initiative and state (done or dropped).
+    close_merged_task carries initiative, task_id, pr (the merged PR's url) and repo; it is planned only, and executing it is a later task.
     The steward's actions each carry epic and topic (both the epic id) and fields. merge_level also carries level,
     the index of the level to merge, plus land_at (how the initiative lands) and phase (the level's phase name) as
     top-level keys, never inside fields, so the reported-set key is unchanged. run_gate carries no more. steward_event also carries event, the name to publish.
     unlaunched carries initiative and reason and runs no command: why a ready initiative was not launched.
     The steward's relaunch is a relaunch carrying initiative, plus epic, topic and fields (the signature) so the executor
     can record `relaunched`. A planner relaunch carries none of those three.
-    requeue_task carries initiative, phase, task_id, reason and epoch; it is declared here and not yet planned or executed."""
+    requeue_task carries initiative, phase, task_id, reason and epoch; it is declared here and not yet planned or executed.
+    rebuild_quarantined carries initiative, task_id and key (the chair_sort state key); it clears branches onto current main, then relaunches.
+    annotate_objection carries initiative, task_id, objection (the objection text) and key (its chair_sort hash)."""
 
     kind: ActionKind
     epoch: int
@@ -742,6 +763,8 @@ class Action(TypedDict, total=False):
     reason: str  # a take_lease over an expired takeover says so; a stale_to_draft carries its stale_reason string; a quarantine needs_chair or a widen_ticket carries the trimmed reason, at most 600 characters
     remedy: str  # a quarantine needs_chair names the remedy kind choose_remedy picks for its cause
     command: list[str]  # a quarantine needs_chair carries the argv remedy_for returns for that remedy
+    objection: str  # an annotate_objection's review objection text
+    key: str  # a rebuild_quarantined or annotate_objection's chair_sort handled key
     stale_tasks: list[str]  # a stale_to_draft names the task ids found stale
     since: str  # a stale_to_draft names the ISO timestamp the staleness was detected
     carry: list[str]  # the phases a clear_branches keeps and merges main into
@@ -749,6 +772,7 @@ class Action(TypedDict, total=False):
     merged_at: str | None  # a review_landed names when that PR merged
     other: str  # a steer_clear names the running initiative it steers clear of
     other_phase: str  # a steer_clear names the phase of the running entry it steers clear of, when that entry has one
+    partner_state: str  # a steer_clear may carry the state of that entry: running or awaiting_land
     paths: list[str]  # a steer_clear names the shared paths; a widen_ticket names the repo-relative files to add to surfaces
     task_ids: list[str]  # a partial_land names the approved task ids it would land, in phase order
     quarantined: int  # a partial_land or waiting counts the phase's quarantined tasks
@@ -767,7 +791,7 @@ class Action(TypedDict, total=False):
     evidence: dict[str, object]  # a tune_lanes carries the stats and meter figures that justify the change
     proposals: list[dict[str, object]]  # a propose_tiers lists one entry per role
     body: str  # a propose_tiers carries the rendered inbox text
-    pr: int  # a revert_land names the pull request whose land turned main red
+    pr: int | str  # a revert_land names the number of the pull request whose land turned main red; a close_merged_task names the merged PR's url
     commit: str  # a revert_land names the new main commit of that land
     additions: list[str]  # a widen_ticket names the addition for each path, same order and length as paths
     state: str  # a close_initiative names the state to move the initiative to: done or dropped

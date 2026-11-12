@@ -632,6 +632,11 @@ def test_lease_is_mine_only_for_this_holder_on_a_live_lease():
     assert mine(holder=MINE, stale=True) is False
 
 
+def test_lease_facts_carries_session_held_only_when_the_record_has_it():
+    assert lease_facts({"epoch": 4, "holder": MINE, "session_held": True}, "s", 7, "h")["session_held"] is True
+    assert "session_held" not in lease_facts({"epoch": 4, "holder": MINE}, "s", 7, "h")
+
+
 def test_gather_facts_fills_every_key_from_the_fakes():
     # merge_queue and host_load_ceiling are gathered only when configured, so these fakes configure them.
     queue = {"batch_size": 3, "wait_s": 90}
@@ -642,8 +647,9 @@ def test_gather_facts_fills_every_key_from_the_fakes():
     # steward is declared on Facts and read by the planner; the next task gathers it, until then it is absent.
     # live_phases is gathered only when the deps supply it, and these fakes do not.
     # previous_schedule_feed is read by the planner; no task gathers it yet.
+    # merged_prs is read by plan_missed_closes and handled_keys by plan_recover; the facts edge gathers neither yet.
     declared = set(Facts.__annotations__) - {
-        "steward", "live_phases", "schedule_inputs", "previous_schedule_feed",
+        "steward", "live_phases", "schedule_inputs", "previous_schedule_feed", "merged_prs", "handled_keys",
     }
     assert set(facts) == declared | {"login_hosts"}
     assert facts["dispatch"] == {"max_in_flight": 2, "live_runs": 1, "hosts": []}
