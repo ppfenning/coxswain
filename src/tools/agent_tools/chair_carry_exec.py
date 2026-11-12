@@ -17,7 +17,9 @@ __all__ = ["ForgePort", "GitPort", "StorePort", "perform_carry"]
 
 
 class GitPort(Protocol):
-    def fetch_branch(self, host: str, branch: str) -> None: ...
+    def fetch_branch(self, host: str, branch: str) -> list[str] | None:
+        """Brings `branch` from `host` forward only; the lines name any branch whose diverged tip was kept on a side ref."""
+        ...
 
     def create_branch_from_main(self, name: str) -> None: ...
 
@@ -62,17 +64,18 @@ def _pr_text(action: Action) -> tuple[str, str]:
     return title, "\n".join([title, "", *tasks, "", pr_footer(None)])
 
 
-def _finish(action: Action, store: StorePort) -> Result:
+def _finish(action: Action, store: StorePort, diverged: list[str]) -> Result:
     for pick in action["picks"]:
         store.mark_landed(pick["task"], pick["run"])  # an already-on-main pick is marked with its own run
         store.set_done(pick["task"])
-    return {"action": action, "status": "done", "reason": ""}
+    return {"action": action, "status": "done", "reason": "; ".join(diverged)}
 
 
 def perform_carry(action: Action, git: GitPort, forge: ForgePort, store: StorePort) -> Result:
     initiative, phase, picks = action["initiative"], action["phase"], action["picks"]
+    diverged: list[str] = []
     for host, branch in dict.fromkeys((p["host"], p["branch"]) for p in picks):
-        git.fetch_branch(host, branch)
+        diverged.extend(git.fetch_branch(host, branch) or [])
     git.create_branch_from_main(action["pr_branch"])
     picked = 0
     for pick in picks:
@@ -83,7 +86,7 @@ def perform_carry(action: Action, git: GitPort, forge: ForgePort, store: StorePo
             return _stopped(chair_carry.conflict_stop(initiative, phase, pick["task"], conflicts))
         picked += 1
     if not picked:
-        return _finish(action, store)
+        return _finish(action, store, diverged)
     failing = git.run_checks()
     if failing:
         return _stopped(chair_carry.checks_failed_stop(initiative, phase, failing))
@@ -94,4 +97,4 @@ def perform_carry(action: Action, git: GitPort, forge: ForgePort, store: StorePo
     if failing:
         return _stopped(chair_carry.checks_failed_stop(initiative, phase, failing))
     forge.merge(pr)
-    return _finish(action, store)
+    return _finish(action, store, diverged)
