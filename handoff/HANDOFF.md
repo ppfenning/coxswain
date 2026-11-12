@@ -137,3 +137,25 @@ leaving all three suites green.
   into the initiative runs the level checks again through `repo_gate_lock`, which is a third arrival at the test's
   2-party barrier. Let only the first two arrivals wait at the barrier, then recheck the enter and exit markers.
 - No suspected defect in `epic.py` so far.
+
+## The backlog branch: state when it stopped
+
+`prereq/approved-backlog` is on origin at 872237c: 23 tasks from 9 initiatives applied clean, plus a WIP manifest
+(`prereq-backlog-manifest.json`), which lists the order and what remains.
+
+- **Skipped:** the damaged-line `courier-tolerant-durable` task. Its approval had no arbitration and the reviewers
+  were silent, so it is not really approved.
+- **Remaining (39 tasks), in manifest order:** graphs-tests-stop-failing, lane-test-runs, launch-cap, mcp-exposes,
+  merged-commit, refreshing-a-phase-branch, resumed-session, schedule-conflict-edges, sessions-converse,
+  task-marked-done, ticket-land-that-has-merged, workflow-concerns, efficiency, not-launched, task-checks.
+- **Expected conflicts:** a trial run predicts 9, each marked `expected_conflict` in the manifest: chair_exec,
+  chair_launch_why, stack_refresh, route_schedule, test_chair_facts, ticket_lint, chair_plan, and two in epic.py.
+  Several of those files are ones this build rewrites, so resolve in favour of the new landing model.
+- **Possibly already on main:** launch-cap (#1137), refreshing-a-phase-branch (#1138) and schedule-conflict-edges
+  (#1139) were fixed directly. Compare before applying, and skip what main already has.
+- **Tests:** tools passed in full (12,150) and graphs passed (3,739) part-way through. Not yet run after the last
+  picks: the tools suite, the cartridges suite and ruff.
+- `test_cli_startup.py::test_route_chair_status_startup_relative_to_baseline` fails under load and passes alone.
+- Wait on processes by process ID: a `pgrep -f` or `pkill -f` pattern matches the waiter's own shell.
+- Open PRs #1148, #1135, #1121 and #1134 are superseded by the combined PR. The operator closes them.
+- Left out, because they belong to another repository: the two dashboard initiatives.
