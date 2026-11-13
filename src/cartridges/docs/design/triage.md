@@ -45,7 +45,9 @@ substantiates.
   phases with their goals, and every sibling task's id, phase, state, title and needs. A cite naming a
   fact key not in `facts` is a fabricated citation and the answer is refused; zero cites is refused; a
   `diagnosis` that quotes no objection text from the record is refused, whatever the class. A `combine`
-  whose `into` names no open sibling (one not done, approved or dropped) is refused.
+  whose `into` names no open sibling (one not done, approved or dropped) in the task's own phase is
+  refused: phases build apart, so a sibling elsewhere may already be building without the scope, and
+  moving needs across phases can stall the phase order.
 - `emit`: by class, each with the effect the epic applies to the task —
 
   | Class | Emits | Effect on the task |
@@ -54,8 +56,8 @@ substantiates.
   | `platform_defect` | an `item_create` intake proposal (existing kind) naming the mechanism | held for a person with the mark |
   | `shape` | a `decompose` handoff (the split is decompose's job, not triage's) | held for a person with the proposed split |
   | `hold` | nothing | held for a person with the diagnosis |
-  | `drop` | nothing | dropped; a task that needed it no longer waits |
-  | `combine` | nothing | its title and body are appended to the sibling `into` names, it is dropped, and every task that needed it needs the sibling |
+  | `drop` | nothing | every task that needed it stops needing it, then it is dropped, so the board stays a valid DAG |
+  | `combine` | nothing | every task that needed it needs the sibling `into` names, the sibling takes on its needs, it is dropped, then its title and body are appended to the sibling; a step that fails undoes the earlier ones and holds the task |
 
   `genuine_reject`, the old class for an objection that stood, is read as `hold`.
 - Held means store state `blocked` with a hold reason that begins `needs you:` in the row's `extra`
@@ -109,7 +111,7 @@ never appears — only approved work may be recovered by landing.
 ## 5. Out of bounds
 
 Letting triage edit frontmatter other than `attempts`, the state it moves the task to, and the `needs`
-a `combine` moves to the sibling; changing the cap (2) itself; alert triage (`triage-propose`); the
+a `drop` or a `combine` moves; changing the cap (2) itself; alert triage (`triage-propose`); the
 router (P4). A `hold`, the successor of `genuine_reject`, is applied without the gate: it only stops the
 task and tells a person.
 

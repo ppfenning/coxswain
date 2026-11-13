@@ -12,7 +12,7 @@ The class decides what happens to the task:
 - `ticket_defect` appends an instruction to the ticket, and the task is
   built again.
 - `drop` drops the task.
-- `combine` folds the task into a named sibling task.
+- `combine` folds the task into a named sibling task in the same phase.
 - `shape`, `platform_defect` and `hold` hold the task for a person.
   `platform_defect` also files an intake.
 

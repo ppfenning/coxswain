@@ -8,7 +8,7 @@ design; this page is the graph's own shape.
 | Node | Role | Tier | Notes |
 |---|---|---|---|
 | `facts` | — | — | pure arithmetic over the work item and its attempts; no model |
-| `triage` | `triage` | deep | reads the initiative too; `{class, diagnosis, cites[], action, into?}`; a fabricated cite, zero cites, a diagnosis quoting no record text, or a `combine` into no open sibling is refused |
+| `triage` | `triage` | deep | reads the initiative too; `{class, diagnosis, cites[], action, into?}`; a fabricated cite, zero cites, a diagnosis quoting no record text, or a `combine` into no open sibling of the same phase is refused |
 | `emit` | — | — | the class table below, or an escalation when the pair already fired |
 
 **Args:** `run_id`, `date`, `cartridge` (required, no fallback), `work_item`,
@@ -23,7 +23,7 @@ flowchart TB
 
     TRIAGE["triage<br/>role: triage, deep<br/>reads the whole initiative"]
     TRIAGE --> CITE{"check_citation<br/>and check_combine"}
-    CITE -- "fabricated, zero, unquoted,<br/>or combine into no open sibling" --> REFUSE["refused<br/>ContractViolation"]
+    CITE -- "fabricated, zero, unquoted,<br/>or combine into no open sibling<br/>of the same phase" --> REFUSE["refused<br/>ContractViolation"]
     CITE -- "clean" --> FIRED{"_already_fired<br/>same (class, diagnosis)<br/>on this item?"}
 
     FIRED -- "yes" --> ESCALATE["escalated: true<br/>effect: hold<br/>no emit"]
@@ -56,8 +56,8 @@ Each answer names the `effect` the epic applies to the task.
 | `platform_defect` | an `item_create` intake proposal naming the mechanism | `hold`: the task waits for a person |
 | `shape` | a `decompose` handoff — the split is decompose's job, not triage's | `hold`: the task waits for a person with the proposed split |
 | `hold` | nothing | `hold`: a person decides, with the diagnosis |
-| `drop` | nothing | `drop`: the initiative's goal does not need the task |
-| `combine` | nothing | `combine`: the task's scope folds into the open sibling `into` names |
+| `drop` | nothing | `drop`: the initiative's goal does not need the task; tasks that needed it stop needing it |
+| `combine` | nothing | `combine`: the task's scope folds into the open sibling of the same phase `into` names |
 
 A model that still answers `genuine_reject` is read as `hold`.
 

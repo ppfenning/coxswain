@@ -287,6 +287,16 @@ def test_combine_into_no_open_sibling_is_refused(cart, into):
         triage_quarantine.run(_with_context(cart, [_ATTEMPT_1]), _runner(response))
 
 
+def test_combine_into_an_open_sibling_of_another_phase_is_refused(cart):
+    # Phases build apart: a sibling in another phase could deadlock the phase order or build without the folded scope.
+    response = {**_response("combine", "quotes missing null guard verbatim", ["attempt-1|review"], "fold it"), "into": "t3"}
+    in_p1 = {**_WORK_ITEM, "phase": "p1"}
+    with pytest.raises(ContractViolation, match="same phase"):
+        triage_quarantine.run(_with_context(cart, [_ATTEMPT_1], work_item=in_p1), _runner(response))
+    response["into"] = "t2"
+    assert triage_quarantine.run(_with_context(cart, [_ATTEMPT_1], work_item=in_p1), _runner(response))["into"] == "t2"
+
+
 def test_combine_without_initiative_context_is_refused(cart):
     response = {**_response("combine", "quotes missing null guard verbatim", ["attempt-1|review"], "fold it"), "into": "t2"}
     with pytest.raises(ContractViolation, match="combine"):

@@ -711,7 +711,9 @@ To ask for triage, the chair sets `triage_requested` on the task's row in
 the store and moves the task back to ready. It does this once for each run
 that quarantined the task. The initiative then relaunches as usual. That run
 triages the flagged task before it builds anything, whatever the task's
-attempt count, and clears the flag.
+attempt count, and clears the flag. A run that cannot read the store rows
+cannot see the flag, so it builds no task that has failed before and
+leaves it for the next run.
 
 The triage model reads the task's attempt record and the whole initiative:
 its goal, each phase and its goal, and every other task with its state,
@@ -720,8 +722,8 @@ title and needs. It must cite the record. It answers with one class:
 | Class | What happens |
 |---|---|
 | `ticket_defect` | An instruction that quotes the objection is appended to the ticket, and the task is built again in the same run. |
-| `drop` | The task is dropped. The initiative's goal does not need it, and any task that needed it no longer waits for it. |
-| `combine` | The task's scope is appended to a named sibling task, the task is dropped, and the tasks that needed it now need the sibling. |
+| `drop` | The task is dropped, because the initiative's goal does not need it. Any task that needed it stops needing it. |
+| `combine` | The task's scope is appended to a named sibling task in the same phase, and the task is dropped. The tasks that needed it now need the sibling. |
 | `shape` | The task is held for you with the split the model proposes. |
 | `platform_defect` | An intake is filed for the harness bug, and the task is held for you. |
 | `hold` | The task is held for you with the model's diagnosis. |

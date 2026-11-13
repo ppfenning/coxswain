@@ -160,7 +160,7 @@ _CLASS_GUIDE = (
     "- platform_defect: the platform, not the ticket, failed; `action` names the mechanism to fix. A person is told.\n"
     "- shape: the task is really several tasks; `action` is the split. A person is told.\n"
     "- drop: the initiative's goal does not need this task; it is dropped and tasks that need it go on.\n"
-    "- combine: this task's scope belongs in a sibling; set `into` to that sibling's id (one not done, approved or dropped).\n"
+    "- combine: this task's scope belongs in a sibling of the same phase; set `into` to that sibling's id (one not done, approved or dropped).\n"
     "- hold: a person must decide; `action` says what they must decide."
 )
 
@@ -171,8 +171,10 @@ def _class_of(raw: Any) -> str:
     return _ALIASES.get(name, name)
 
 
-def check_combine(into: str, task_id: str, context: Mapping[str, Any] | None) -> str | None:
-    """None when `into` names an open sibling of the task in `context`; otherwise why the combine is refused."""
+def check_combine(into: str, task_id: str, context: Mapping[str, Any] | None, phase: str = "") -> str | None:
+    """None when `into` names an open sibling of the task in `context`, in the task's own `phase` when it is known;
+    otherwise why the combine is refused. Phases build apart: a sibling in another phase may already be building
+    without the folded scope, and moving needs across phases can stall the phase order."""
     if not into:
         return "combine names no sibling in `into`"
     if into == task_id:
@@ -183,6 +185,8 @@ def check_combine(into: str, task_id: str, context: Mapping[str, Any] | None) ->
         return f"combine names {into!r}, which is not a sibling in this initiative"
     if str(sibling.get("state") or "") in _CLOSED:
         return f"combine names {into!r}, which is {sibling.get('state')}; scope can only fold into an open task"
+    if phase and str(sibling.get("phase") or "") != phase:
+        return f"combine names {into!r}, in phase {sibling.get('phase')}; scope folds only into a sibling in the same phase ({phase})"
     return None
 
 
@@ -322,7 +326,7 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
         raise ContractViolation(f"triage answer refused: {refusal}")
     if class_ not in EFFECTS:
         raise ContractViolation(f"triage returned an unknown class {class_!r}")
-    if class_ == "combine" and (why := check_combine(into, target, initiative_context)) is not None:
+    if class_ == "combine" and (why := check_combine(into, target, initiative_context, str(work_item.get("phase") or ""))) is not None:
         raise ContractViolation(f"triage answer refused: {why}")
 
     prior = _already_fired(attempts, class_, diagnosis, prior_records)

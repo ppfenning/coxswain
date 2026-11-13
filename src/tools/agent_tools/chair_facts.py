@@ -496,13 +496,20 @@ def _on_body(attempts: Sequence[Row], key: Key) -> list[Row]:
 
 
 # A stoppage is the harness's, not the task's: a limit, a login, the infrastructure, a stale base, an interrupted run.
-# A failed rescue checks work already built. Neither counts toward `chair.quarantine_hold_after`.
+# A failed rescue checks work already built. Neither counts toward `chair.quarantine_hold_after`, whatever cause the
+# attempt carries: a rescue_failed attempt may name code or review. The kinds are the ones the epic's cap skips
+# (`harness.epic._build_attempts`).
 _NOT_A_FAILURE = frozenset({HARNESS_CAUSE, RESCUE_FAILED_CAUSE})
+_NOT_A_BUILD = frozenset({"rescue_failed", "infra", "interrupted"})
 
 
 def task_failures(attempts: Sequence[Row], key: Key) -> int:
-    """The task's own failures over every body it had: each attempt whose cause is not a stoppage or a rescue."""
-    return sum(1 for a in attempts if _key(a) == key and str(a.get("cause") or "") not in _NOT_A_FAILURE)
+    """The task's own failures over every body it had: each build attempt whose cause is not a stoppage or a rescue."""
+    return sum(
+        1
+        for a in attempts
+        if _key(a) == key and str(a.get("cause") or "") not in _NOT_A_FAILURE and str(a.get("kind") or "") not in _NOT_A_BUILD
+    )
 
 
 def _quarantine(

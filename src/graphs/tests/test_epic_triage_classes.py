@@ -240,3 +240,137 @@ def test_a_file_needs_rewrite_changes_only_that_key(tmp_path) -> None:
     epic_module._rewrite_file_needs(path, ["c"])
     text = path.read_text(encoding="utf-8")
     assert workstore.read_item(path)["needs"] == ["c"] and "title: x" in text and text.endswith("---\n\nbody\n")
+
+
+# ── what a drop or a combine leaves on the board ─────────────────────────────
+
+
+def _dag_rows(store: Store) -> list[dict]:
+    """The store's task rows in the shape the chair's DAG check reads them."""
+    return [
+        {"id": r["task_id"], "initiative": r["initiative"], "needs": list(r.get("needs") or []), "state": r["state"]}
+        for r in store_queue.read(store.conn, INITIATIVE)
+        if r.get("kind") == "task"
+    ]
+
+
+def test_a_drop_leaves_a_board_the_chairs_dag_check_accepts(repo, cart, tmp_path) -> None:  # noqa: F811
+    from agent_tools.chair_read_dag import dag_problems
+
+    _, _, store = _drive(repo, cart, tmp_path, _answer("drop"))
+    assert _row(store, "t1-probe")["state"] == "dropped"
+    assert _row(store, "t3-cutover")["needs"] == []
+    assert dag_problems(_dag_rows(store)) == {}
+
+
+def test_a_combine_leaves_a_board_the_chairs_dag_check_accepts(repo, cart, tmp_path) -> None:  # noqa: F811
+    from agent_tools.chair_read_dag import dag_problems
+
+    _, _, store = _drive(repo, cart, tmp_path, _answer("combine", into="t2-bench"))
+    assert dag_problems(_dag_rows(store)) == {}
+
+
+def test_a_combine_into_a_sibling_of_another_phase_holds_the_task(monkeypatch, repo, cart, tmp_path) -> None:  # noqa: F811
+    # The graph refuses it too; here the epic's own check is the one under test.
+    monkeypatch.setattr(triage_quarantine, "check_combine", lambda *args, **kwargs: None)
+    _, runner, store = _drive(repo, cart, tmp_path, _answer("combine", into="t3-cutover"))
+    row = _row(store, "t1-probe")
+    assert row["state"] == "blocked" and "same phase" in row["extra"][HOLD_REASON]
+    assert _row(store, "t3-cutover")["body"] == "move traffic" and _row(store, "t3-cutover")["needs"] == ["t1-probe"]
+    assert not _built(runner, "t1-probe")
+
+
+class PerTaskTriageRunner(TriageClassRunner):
+    """Answers triage per task: the item under triage is the one the prompt's `Item:` line names."""
+
+    def run(self, *, role, tier=None, hints=None, schema, prompt, context=(), thread=None, budget_usd=None, task=None,
+            wait_if_paused=None):
+        if role == "triage":
+            item = prompt.split("Item: ", 1)[1].split("\n", 1)[0]
+            (answer,) = [a for tid, a in self.answer.items() if f"'id': '{tid}'" in item]
+            with self.lock:
+                self.calls.append({"role": role, "tier": tier, "prompt": prompt, "budget_usd": budget_usd})
+            return dict(answer)
+        return super().run(role=role, tier=tier, schema=schema, prompt=prompt, context=context, thread=thread,
+                           budget_usd=budget_usd, task=task)
+
+
+def test_a_combine_into_a_sibling_triaged_in_the_same_run_holds_the_task(repo, cart, tmp_path) -> None:  # noqa: F811
+    work = _work()
+    t2 = next(item for item in work["items"] if item["id"] == "t2-bench")
+    t2["attempts"] = [{**work["items"][0]["attempts"][0], "body_sha": workstore.body_sha(t2["body"])}]
+    kinds = {"ticket_amend": {"risk": "low", "ramp": "eligible"}, "item_create": {"risk": "medium", "ramp": "gated"}}
+    cart = {**cart, "write_kinds": {**cart["write_kinds"], **kinds}}
+    store = _store(work, flagged=("t1-probe", "t2-bench"))
+    answers = {"t1-probe": _answer("combine", into="t2-bench"), "t2-bench": _answer("drop")}
+    runner = PerTaskTriageRunner({t: new_file_patch(f"{t}.txt") for t in ("t1-probe", "t3-cutover")}, answers)
+    drive(repo, cart, tmp_path, runner=runner, work=work, store=store, work_state="store", specs=TRIAGE_SPECS)
+    t1 = _row(store, "t1-probe")
+    assert t1["state"] == "blocked" and "t2-bench" in t1["extra"][HOLD_REASON]
+    assert "Folded in" not in _row(store, "t2-bench")["body"]  # the scope still lives on t1-probe, held for a person
+
+
+def test_a_combine_whose_needs_cannot_move_writes_nothing_and_holds_the_task(monkeypatch, repo, cart, tmp_path) -> None:  # noqa: F811
+    real = epic_module._update_row
+
+    def refuse_the_dependant(ctx, task, change):
+        return "store down" if task == "t3-cutover" else real(ctx, task, change)
+
+    monkeypatch.setattr(epic_module, "_update_row", refuse_the_dependant)
+    _, runner, store = _drive(repo, cart, tmp_path, _answer("combine", into="t2-bench"))
+    assert _row(store, "t1-probe")["state"] == "blocked"
+    assert "Folded in" not in _row(store, "t2-bench")["body"]
+    assert _row(store, "t3-cutover")["needs"] == ["t1-probe"]
+    assert not _built(runner, "t1-probe")
+
+
+def test_a_combine_whose_fold_fails_puts_the_needs_and_the_state_back_and_holds_the_task(monkeypatch, repo, cart, tmp_path) -> None:  # noqa: F811
+    real = epic_module._update_row
+
+    def refuse_the_fold(ctx, task, change):
+        return "store down" if task == "t2-bench" else real(ctx, task, change)
+
+    monkeypatch.setattr(epic_module, "_update_row", refuse_the_fold)
+    _, _, store = _drive(repo, cart, tmp_path, _answer("combine", into="t2-bench"))
+    assert _row(store, "t1-probe")["state"] == "blocked"
+    assert _row(store, "t3-cutover")["needs"] == ["t1-probe"]
+    assert "Folded in" not in _row(store, "t2-bench")["body"]
+
+
+def test_when_the_queue_rows_cannot_be_read_a_task_with_attempts_is_not_built(monkeypatch, repo, cart, tmp_path) -> None:  # noqa: F811
+    monkeypatch.setattr(epic_module, "_queue_rows", lambda ctx: None)
+    _, runner, store = _drive(repo, cart, tmp_path, _answer("hold"))
+    assert not _triage_calls(runner) and not _built(runner, "t1-probe")
+    assert _row(store, "t1-probe")["state"] == "ready"  # left for the next run, which reads the flag
+    assert len(_built(runner, "t2-bench")) == 1
+
+
+def test_queue_rows_read_none_when_the_store_read_fails(monkeypatch, tmp_path) -> None:
+    from types import SimpleNamespace
+
+    def broken(conn, initiative=None, kind=None):
+        raise RuntimeError("store down")
+
+    monkeypatch.setattr(store_queue, "read", broken)
+    ctx = SimpleNamespace(store=SimpleNamespace(conn=object()), initiative_id=INITIATIVE)
+    assert epic_module._queue_rows(ctx) is None
+
+
+def test_combined_needs_give_the_sibling_the_folded_tasks_own_needs() -> None:
+    items = [
+        {"id": "x", "needs": []},
+        {"id": "a", "needs": ["x"]},
+        {"id": "b", "needs": []},
+        {"id": "c", "needs": ["a"]},
+    ]
+    assert epic_module.combined_needs(items, "a", "b") == {"c": ["b"], "b": ["x"]}
+
+
+def test_dropped_needs_take_the_dropped_task_out_of_each_dependant() -> None:
+    items = [
+        {"id": "a", "needs": []},
+        {"id": "b", "needs": ["a", "z"]},
+        {"id": "c", "needs": ["z"]},
+        {"id": "d", "needs": ["a"], "state": "dropped"},
+    ]
+    assert epic_module.dropped_needs(items, "a") == {"b": ["z"]}

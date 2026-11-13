@@ -13757,9 +13757,20 @@ def _read_handled_keys(runs_dir: Path) -> list[str]:
 
 
 def _mark_handled_key(runs_dir: Path, key: str) -> None:
+    """Add `key`, through a temp file renamed over the old one: a damaged file reads as no keys, which would announce
+    every hold and ask every triage again. A write cut short leaves the old file and no temp file, and raises."""
     keys = _read_handled_keys(runs_dir)
-    if key not in keys:
-        _handled_keys_path(runs_dir).write_text(json.dumps([*keys, key]), encoding="utf-8")
+    if key in keys:
+        return
+    path = _handled_keys_path(runs_dir)
+    fd, temp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps([*keys, key]))
+        os.replace(temp, path)
+    except BaseException:
+        Path(temp).unlink(missing_ok=True)
+        raise
 
 
 def _live_by_host(lanes: Sequence[run_store.Lane], local: str) -> dict[str, int]:

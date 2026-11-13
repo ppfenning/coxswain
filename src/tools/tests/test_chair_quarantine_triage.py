@@ -59,6 +59,12 @@ def test_failures_count_the_tasks_own_failures_across_every_body_and_no_stoppage
     assert q["causes"] == ["harness", "rescue_failed", "review", ""]
 
 
+@pytest.mark.parametrize("kind", ["rescue_failed", "infra", "interrupted"])
+def test_an_attempt_that_was_not_a_build_is_no_failure_whatever_its_cause(kind):
+    # A failed rescue checks work already built; infra and an interrupted run are stoppages. The epic's cap skips them too.
+    assert _fact({"cause": "code"}, {"cause": "review", "kind": kind})["failures"] == 1
+
+
 def test_a_blocked_row_with_the_mark_is_a_held_task_and_any_other_row_is_not():
     rows = [
         {"kind": "task", "initiative": "i", "task_id": "t1", "phase": "p1", "state": "blocked",
@@ -246,6 +252,29 @@ def test_a_refused_triage_request_puts_the_row_back_and_leaves_the_key_open(tmp_
     [result] = _perform(tmp_path, monkeypatch, store, REQUEST, handled)
     assert result["status"] in ("skipped", "failed")
     assert store.row["extra"] == {"keep": 1} and handled == []
+
+
+@pytest.mark.parametrize(
+    ("action", "added", "extra"),
+    [
+        (REQUEST, TRIAGE_FLAG, {"keep": 1}),
+        ({"kind": "hold_task", "initiative": "i", "task_id": "t1", "key": "hold:t1:i-4", "reason": f"{HOLD_MARK} x"},
+         HOLD_REASON, {"keep": 1, TRIAGE_FLAG: "triage:t1:i-3"}),
+    ],
+)
+def test_a_refused_move_takes_back_only_its_own_mark_and_keeps_another_writers_change(tmp_path, monkeypatch, action, added, extra):
+    store, handled = FakeStore("quarantined", dict(extra)), []
+
+    def another_writer_moves_the_row(*args, **kwargs):
+        store.writes.append(("state", args))
+        store.row = {**store.row, "state": "ready", "extra": {**store.row["extra"], "other": "theirs"}}
+        return chair_exec.store_cli.StateRefused("state is ready", "ready")
+
+    store.set_state = another_writer_moves_the_row  # type: ignore[method-assign]
+    [result] = _perform(tmp_path, monkeypatch, store, action, handled)
+    assert result["status"] == "skipped" and handled == []
+    assert store.row["extra"] == {**extra, "other": "theirs"}
+    assert added not in store.row["extra"] or extra.get(added) == store.row["extra"][added]
 
 
 HOLD = {"kind": "hold_task", "initiative": "i", "task_id": "t1", "key": "hold:t1:i-4", "cause": "review",

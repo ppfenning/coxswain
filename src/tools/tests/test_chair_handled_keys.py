@@ -2,6 +2,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from agent_tools import cli
 from agent_tools.chair_facts import gather_facts
 from tests.test_chair_facts import NOW, _deps
@@ -13,6 +15,20 @@ def test_a_handled_key_is_written_and_read_back_once(tmp_path: Path) -> None:
     cli._mark_handled_key(tmp_path, "k1")
     assert cli._read_handled_keys(tmp_path) == ["k1", "k2"]
     assert json.loads((tmp_path / "chair.handled_keys.json").read_text(encoding="utf-8")) == ["k1", "k2"]
+
+
+def test_a_write_cut_short_before_its_rename_leaves_the_keys_already_handled(tmp_path: Path, monkeypatch) -> None:
+    # A damaged file reads as no keys, so every hold would be announced again: the write goes to a temp file first.
+    cli._mark_handled_key(tmp_path, "k1")
+
+    def cut_short(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cli.os, "replace", cut_short)
+    with pytest.raises(OSError):
+        cli._mark_handled_key(tmp_path, "k2")
+    assert cli._read_handled_keys(tmp_path) == ["k1"]
+    assert [p.name for p in tmp_path.iterdir()] == ["chair.handled_keys.json"]
 
 
 def test_an_absent_or_damaged_handled_file_reads_as_none_handled(tmp_path: Path) -> None:

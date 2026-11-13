@@ -3562,8 +3562,10 @@ _HOLD_REASON_MAX = 600
 _CLOSED_FOR_COMBINE = frozenset({"done", "dropped", "approved"})
 
 
-def _queue_rows(ctx: _Ctx) -> dict[str, dict[str, Any]]:
-    """Task id to the initiative's store queue row, `extra` included; {} with no store or when the read fails."""
+def _queue_rows(ctx: _Ctx) -> dict[str, dict[str, Any]] | None:
+    """Task id to the initiative's store queue row, `extra` included; {} with no store, None when the read fails.
+
+    None is not "nothing flagged": the caller cannot tell which task the chair asked triage for."""
     if ctx.store is None:
         return {}
     try:
@@ -3571,8 +3573,8 @@ def _queue_rows(ctx: _Ctx) -> dict[str, dict[str, Any]]:
 
         return {str(r["task_id"]): dict(r) for r in store_queue.read(ctx.store.conn, ctx.initiative_id)}
     except Exception as exc:
-        _log.warning("queue rows of %s not read, so no task is flagged for triage: %s: %s", ctx.initiative_id, type(exc).__name__, exc)
-        return {}
+        _log.warning("queue rows of %s not read, so no flag for triage can be seen: %s: %s", ctx.initiative_id, type(exc).__name__, exc)
+        return None
 
 
 def _row_extra(row: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -3694,8 +3696,10 @@ def _closes_cycle(items: Sequence[Mapping[str, Any]]) -> bool:
 
 
 def combined_needs(items: Sequence[Mapping[str, Any]], source: str, into: str) -> dict[str, list[str]] | None:
-    """Pure. Each task that needs `source`, to its needs with `source` replaced by `into`, in order, deduplicated and
-    never naming the task itself. None when the move would close a cycle among the tasks that remain."""
+    """Pure. The needs a combine of `source` into `into` writes: each task that needs `source` needs `into` instead,
+    and `into` takes on `source`'s own needs, so the folded scope still waits for what it waited for. In order,
+    deduplicated, never naming the task itself or `source`. None when the move would close a cycle among the tasks
+    that remain."""
     changed: dict[str, list[str]] = {}
     for item in items:
         task = str(item["id"])
@@ -3704,8 +3708,85 @@ def combined_needs(items: Sequence[Mapping[str, Any]], source: str, into: str) -
             continue
         moved = dict.fromkeys(into if n == source else n for n in needs)
         changed[task] = [n for n in moved if n != task]
+    by_id = {str(i["id"]): i for i in items}
+    inherited = [str(n) for n in (by_id.get(source) or {}).get("needs") or []]
+    own = changed.get(into, [str(n) for n in (by_id.get(into) or {}).get("needs") or []])
+    grown = [n for n in dict.fromkeys([*own, *inherited]) if n not in (into, source)]
+    if grown != own or into in changed:
+        changed[into] = grown
     projected = [{**i, "needs": changed.get(str(i["id"]), list(i.get("needs") or []))} for i in items if str(i["id"]) != source]
     return None if _closes_cycle(projected) else changed
+
+
+def dropped_needs(items: Sequence[Mapping[str, Any]], source: str) -> dict[str, list[str]]:
+    """Pure. Each task that needs `source`, to its needs without it, in order. The work store refuses a task that is
+    not done and needs a dropped one (`validate_dag`); a done or dropped task's needs are no longer read, so it is left
+    as it is."""
+    return {
+        str(item["id"]): [str(n) for n in item.get("needs") or [] if str(n) != source]
+        for item in items
+        if str(item["id"]) != source and item.get("state") not in ("done", "dropped")
+        and source in [str(n) for n in item.get("needs") or []]
+    }
+
+
+def _write_needs(ctx: _Ctx, item: dict[str, Any], needs: Sequence[str]) -> str | None:
+    """One task's needs: the store row first under work_state store, then the file, then the driver's copy.
+
+    None when written. A store refusal writes nothing; under files a file that cannot be written is a refusal too,
+    under store the file is a cache and its failure is logged."""
+    task = str(item["id"])
+    if _store_authoritative(ctx) and (why := _update_row(ctx, task, lambda row: {"needs": list(needs)})) is not None:
+        return why
+    if item.get("path"):
+        try:
+            _rewrite_file_needs(Path(str(item["path"])), needs)
+        except (OSError, ValueError) as exc:
+            if not _store_authoritative(ctx):
+                return f"the needs of {task} could not be written: {exc}"
+            _log.warning("needs of %s are in the store; its ticket file was not rewritten: %s", task, exc)
+    with ctx.items_lock:
+        item["needs"] = list(needs)
+    return None
+
+
+def _move_needs(ctx: _Ctx, by_id: Mapping[str, dict[str, Any]], moves: Mapping[str, Sequence[str]]) -> tuple[dict[str, list[str]], str | None]:
+    """Write every move in `moves`, all or nothing: `(the needs each moved task had, None)`, or, when one write is
+    refused, the ones already written are put back and `({}, why)` comes back."""
+    before: dict[str, list[str]] = {}
+    for task, needs in moves.items():
+        old = [str(n) for n in by_id[task].get("needs") or []]
+        why = _write_needs(ctx, by_id[task], needs)
+        if why is not None:
+            _restore_needs(ctx, by_id, before)
+            return {}, f"the needs of {task} were not moved: {why}"
+        before[task] = old
+    return before, None
+
+
+def _restore_needs(ctx: _Ctx, by_id: Mapping[str, dict[str, Any]], before: Mapping[str, Sequence[str]]) -> None:
+    """Put back needs `_move_needs` wrote; a write that fails here is logged, as nothing more can be undone."""
+    for task, needs in before.items():
+        if (why := _write_needs(ctx, by_id[task], needs)) is not None:
+            _log.warning("needs of %s not put back to %s: %s", task, list(needs), why)
+
+
+def _drop_task(ctx: _Ctx, items: list[dict[str, Any]], item: dict[str, Any]) -> str | None:
+    """Drop a task triage found the initiative does not need; None when done, else why not, with nothing changed.
+
+    Every task that needed it stops needing it first, so the board stays a valid DAG; a drop that is then refused
+    puts those needs back."""
+    task = str(item["id"])
+    with ctx.items_lock:
+        by_id = {str(i["id"]): i for i in items}
+        snapshot = [dict(i) for i in items]
+    before, why = _move_needs(ctx, by_id, dropped_needs(snapshot, task))
+    if why is not None:
+        return why
+    if (why := _move_task(ctx, item, "dropped")) is not None:
+        _restore_needs(ctx, by_id, before)
+        return why
+    return None
 
 
 def _folded_section(item: Mapping[str, Any]) -> str:
@@ -3714,24 +3795,9 @@ def _folded_section(item: Mapping[str, Any]) -> str:
     return f"## Folded in from {task}: {item.get('title') or task}\n\n{str(item.get('body') or '').strip()}".strip()
 
 
-def _combine_task(ctx: _Ctx, items: list[dict[str, Any]], item: dict[str, Any], into: str) -> str | None:
-    """Fold `item` into its sibling `into`; None when done, else why not. Nothing is written before the checks pass.
-
-    The sibling's body gains this task's title and body (row, file and the driver's copy); every task that needed this
-    one needs the sibling instead; then this task is dropped."""
-    task = str(item["id"])
-    with ctx.items_lock:
-        by_id = {str(i["id"]): i for i in items}
-        target = by_id.get(into)
-        snapshot = [dict(i) for i in items]
-    if target is None or into == task:
-        return f"combine names {into!r}, which is not another task of this initiative"
-    if str(target.get("state")) in _CLOSED_FOR_COMBINE:
-        return f"combine names {into}, which is {target.get('state')}; scope can only fold into an open task"
-    moved = combined_needs(snapshot, task, into)
-    if moved is None:
-        return f"moving the needs on {task} to {into} would close a cycle"
-    section = _folded_section(item)
+def _fold_body(ctx: _Ctx, target: dict[str, Any], section: str) -> str | None:
+    """Append `section` to the sibling's body: the store row, then the file, then the driver's copy; None when written."""
+    into = str(target["id"])
     new_body = f"{str(target.get('body') or '').rstrip()}\n\n{section}".strip()
     if _store_authoritative(ctx):
         why = _update_row(ctx, into, lambda row: {"body": f"{str(row.get('body') or '').rstrip()}\n\n{section}".strip()})
@@ -3746,18 +3812,43 @@ def _combine_task(ctx: _Ctx, items: list[dict[str, Any]], item: dict[str, Any], 
             _log.warning("combine: %s's ticket file not rewritten, the store row holds the body: %s", into, exc)
     with ctx.items_lock:
         target["body"] = new_body
-    for dependant, needs in moved.items():
-        if _store_authoritative(ctx) and (why := _update_row(ctx, dependant, lambda row, needs=needs: {"needs": list(needs)})):
-            _log.warning("combine: needs of %s not moved to %s in the store: %s", dependant, into, why)
-        path = by_id[dependant].get("path")
-        if path:
-            try:
-                _rewrite_file_needs(Path(str(path)), needs)
-            except (OSError, ValueError) as exc:
-                _log.warning("combine: needs of %s not rewritten in its file: %s", dependant, exc)
-        with ctx.items_lock:
-            by_id[dependant]["needs"] = list(needs)
-    return _move_task(ctx, item, "dropped")
+    return None
+
+
+def _combine_task(ctx: _Ctx, items: list[dict[str, Any]], item: dict[str, Any], into: str) -> str | None:
+    """Fold `item` into its sibling `into`; None when done, else why not, with nothing changed.
+
+    The sibling must be open and in the same phase: phases build apart, so a sibling elsewhere could already be
+    building without the scope, and moving needs across phases could stall the phase order. In order, each undone if
+    a later step is refused: every task that needed this one needs the sibling instead (and the sibling takes on this
+    task's own needs), this task is dropped, then the sibling's body gains this task's title and body."""
+    task = str(item["id"])
+    with ctx.items_lock:
+        by_id = {str(i["id"]): i for i in items}
+        target = by_id.get(into)
+        snapshot = [dict(i) for i in items]
+    if target is None or into == task:
+        return f"combine names {into!r}, which is not another task of this initiative"
+    if str(target.get("state")) in _CLOSED_FOR_COMBINE:
+        return f"combine names {into}, which is {target.get('state')}; scope can only fold into an open task"
+    if str(target.get("phase") or "") != str(item.get("phase") or ""):
+        return f"combine names {into}, in phase {target.get('phase')}; scope folds only into a sibling in the same phase ({item.get('phase')})"
+    moved = combined_needs(snapshot, task, into)
+    if moved is None:
+        return f"moving the needs on {task} to {into} would close a cycle"
+    previous = str(item.get("state") or "ready")
+    before, why = _move_needs(ctx, by_id, moved)
+    if why is not None:
+        return why
+    if (why := _move_task(ctx, item, "dropped")) is not None:
+        _restore_needs(ctx, by_id, before)
+        return why
+    if (why := _fold_body(ctx, target, _folded_section(item))) is not None:
+        if (undo := _move_task(ctx, item, previous)) is not None:
+            _log.warning("combine: %s stays dropped although its scope did not fold into %s: %s", task, into, undo)
+        _restore_needs(ctx, by_id, before)
+        return f"the body of {into} was not written: {why}"
+    return None
 
 
 def _amend_in_store(
@@ -4313,8 +4404,14 @@ def _run_phase(
     # failure that needs a tweak gets its instruction before any rebuild.
     triage_batch: list[dict[str, Any]] = []
     amended: dict[str, dict[str, Any]] = {}  # task id -> the item rebuilt on its append-only amended body
-    queue_rows = _queue_rows(ctx)
-    capped = {task_id for task_id, attempts in counted_by_id.items() if len(attempts) >= cap_by_id[task_id]}
+    read_rows = _queue_rows(ctx)
+    queue_rows = read_rows or {}
+    # Unread rows hide the chair's flag: a task with any attempt might be one it asked triage for, so it is not built
+    # in this run, before or without triage. It stays ready, and the next run reads its row.
+    unread = {str(item["id"]) for item in all_ready if item.get("attempts")} if read_rows is None else set()
+    for task_id in sorted(unread):
+        print(f"  triage: {task_id} not built; its store row could not be read, so a request for triage cannot be ruled out")
+    capped = {task_id for task_id, attempts in counted_by_id.items() if len(attempts) >= cap_by_id[task_id]} - unread
     flagged = {task_id for task_id in counted_by_id if _row_extra(queue_rows.get(task_id)).get(workstore.TRIAGE_FLAG)}
     capped_ids = sorted(capped | flagged)
     folded: set[str] = set()  # siblings whose body gained a combined task's scope in this phase
@@ -4388,12 +4485,19 @@ def _run_phase(
                 hold(task_id, f"triage {class_}: {diagnosis}" + (f" Next: {action}" if action else ""))
                 continue
             if effect == "drop":
-                why = _move_task(ctx, shared.get(task_id) or dict(all_ready_by_id[task_id]), "dropped")
-                print(f"  triage: {task_id} dropped: {diagnosis}" + (f" (the drop was not written: {why})" if why else ""))
+                why = _drop_task(ctx, items, shared.get(task_id) or dict(all_ready_by_id[task_id]))
+                if why is None:
+                    print(f"  triage: {task_id} dropped: {diagnosis}")
+                else:
+                    hold(task_id, f"triage chose to drop this task, which did not apply ({why}): {diagnosis}")
                 continue
             if effect == "combine":
                 into = str(result.get("into") or "")
-                why = _combine_task(ctx, items, shared.get(task_id) or dict(all_ready_by_id[task_id]), into)
+                # A sibling triaged in this same run may itself be dropped or folded: its answer could lose this scope.
+                why = (
+                    f"{into} is itself being triaged in this run" if into in capped_ids
+                    else _combine_task(ctx, items, shared.get(task_id) or dict(all_ready_by_id[task_id]), into)
+                )
                 if why is None:
                     folded.add(into)
                     print(f"  triage: {task_id} combined into {into} and dropped: {diagnosis}")
@@ -4467,7 +4571,10 @@ def _run_phase(
     ready = [
         item for item in all_ready
         if str(item["id"]) in amended
-        or (str(item["id"]) not in capped_ids and len(counted_by_id[str(item["id"])]) < cap_by_id[str(item["id"])])
+        or (
+            str(item["id"]) not in capped_ids and str(item["id"]) not in unread
+            and len(counted_by_id[str(item["id"])]) < cap_by_id[str(item["id"])]
+        )
     ]
 
     by_id = {str(item["id"]): amended.get(str(item["id"]), item) for item in items}
