@@ -6415,12 +6415,23 @@ Coxswain is in beta — versions may change between releases
 <h1 id="triage">triage</h1>
 <p>The <code>triage</code> graph runs as the <code>triage-quarantine</code> subcommand, because
 <code>triage</code> already names alert triage. It classifies a task stranded at
-its attempt cap. <code>facts</code> turns the task's attempt record into keyed
-facts with no model. The <code>triage</code> node classifies the item and must cite
-those facts. <code>emit</code> builds the write by class: a <code>ticket_amend</code>, an
-<code>item_create</code>, a <code>decompose</code> handoff or a <code>notify</code> proposal. A
-<code>(class, diagnosis)</code> pair that already fired on the same item is
-escalated to a person instead of repeated. The epic driver invokes it.
+its attempt cap, or a quarantined task the chair sent to triage. <code>facts</code>
+turns the task's attempt record into keyed facts with no model. The
+<code>triage</code> node reads those facts and the whole initiative: its goal, its
+phases with their goals, and the other tasks. It must cite the facts.</p>
+<p>The class decides what happens to the task:</p>
+<ul>
+<li><code>ticket_defect</code> appends an instruction to the ticket, and the task is
+  built again.</li>
+<li><code>drop</code> drops the task.</li>
+<li><code>combine</code> folds the task into a named sibling task in the same phase.</li>
+<li><code>shape</code>, <code>platform_defect</code> and <code>hold</code> hold the task for a person.
+  <code>platform_defect</code> also files an intake.</li>
+</ul>
+<p>A <code>(class, diagnosis)</code> pair that already fired on the same item holds the
+task for a person instead of repeating. The epic driver invokes it, and
+<a href="../../../customize/autonomous-chair/#quarantines">the autonomous chair</a>
+says when.
 Its full specification is
 <a href="https://github.com/ppfenning/coxswain/blob/main/src/graphs/graphs/ops/triage-quarantine.md">triage-quarantine.md</a>.</p>
 <h1 id="triage_1">triage</h1>

@@ -6768,7 +6768,7 @@ records.</p>
 <tr>
 <td><code>triage-quarantine</code></td>
 <td><a href="triage/">triage</a></td>
-<td>Classifies a task stranded at its attempt cap and emits a write by class.</td>
+<td>Classifies a task at its attempt cap, or one the chair sent to triage, and applies its class.</td>
 </tr>
 <tr>
 <td><code>sweep</code></td>
@@ -6786,7 +6786,7 @@ graphs, block on them and write, which a graph may not do.</p>
 <li><code>epic</code> is <a href="epic-driver/">the epic driver</a>. <code>cox route launch epic</code>
   starts it. It walks an initiative phase by phase: <code>lifecycle</code> per ready
   task, <code>validate</code> per phase, <code>triage-quarantine</code> for a task at its attempt
-  cap. The command and driver named <code>epic</code> run one initiative. Epic is
+  cap or one the chair flagged for triage. The command and driver named <code>epic</code> run one initiative. Epic is
   the historical name. It is not the epic group of initiatives, which
   <a href="../#the-hierarchy">the hierarchy</a> describes.</li>
 <li><code>rescue</code> runs <code>rescue-review</code> on one quarantined task's kept patch.

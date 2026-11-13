@@ -6918,6 +6918,13 @@ proposal, before review and the gate see it.</p>
 starting with <code>#</code> are skipped. Each line runs through a shell from the
 repository root, so <code>cd &lt;dir&gt; &amp;&amp; &lt;cmd&gt;</code> works. The check's name is the
 line's first word.</p>
+<p>A line may end <code># fix: &lt;command&gt;</code>. The shell reads the whole line as a
+comment after the check, so the check itself is unchanged. The build runs
+the fix command first, before the checks, and keeps what it changed in the
+task's commit. A formatter is the usual case, so a style-only difference no
+longer quarantines a task:</p>
+<div class="highlight"><pre><span></span><code>cargo fmt --check  # fix: cargo fmt
+</code></pre></div>
 <p>The coxswain repository uses this to run every component suite. Its
 <code>.agent-checks</code> is:</p>
 <div class="highlight"><pre><span></span><code>cd src/tools &amp;&amp; pytest -q -n auto
