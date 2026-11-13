@@ -142,7 +142,7 @@ today. It does not mean the release is otherwise good.
 
 | Component | Repository or path | Tag | Required or flag |
 | --- | --- | --- | --- |
-| dash |  | `v2026.11.8` |  |
+| dash | `ppfenning/coxswain-dash` | `v2026.11.8` | flag: `dash`, provides `towpath` |
 
 See the [2026.11.8 release notes](2026.11.8.md) for what landed in each component.
 
