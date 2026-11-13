@@ -109,12 +109,16 @@ def _blocks(q: QuarantineFacts, kind: Recovery) -> bool:
 def _sorted_action(q: QuarantineFacts, handled: Collection[str], recovery: Recovery) -> list[Action] | None:
     """chair_sort's answer for a quarantine it names: its actions, [] for a skip. None when the sort does not name it.
 
-    A review quarantine is named by its `held_objection`. A harness quarantine is named by its `task_state_key`, and
+    A review quarantine, or a failed check past its relaunch, is named by its `held_objection`. A harness quarantine is named by its `task_state_key`, and
     only while the existing rules would retry it: a patch to rescue, a failed rescue or a repeated failure stay as they were."""
     if q["cause"] == chair_sort.HARNESS_CAUSE and "task_state_key" in q and recovery == "retry":
         keyed, state = q, q["task_state_key"]
     elif q["cause"] == chair_sort.OBJECTION_CAUSE and "held_objection" in q:
         keyed, state = {**q, "reason": q["held_objection"]}, ""
+    elif q["cause"] == "code" and recovery == "needs_chair" and "held_objection" in q:
+        # A failed check already had its one relaunch. The service annotates the ticket with the failure once, as it does a review
+        # objection, and the same failure again reaches the chair; nothing here asks for a model.
+        keyed, state = {**q, "cause": chair_sort.OBJECTION_CAUSE, "reason": q["held_objection"]}, ""
     else:
         return None
     base: Action = {"task_id": q["task_id"], "initiative": q["initiative"]}

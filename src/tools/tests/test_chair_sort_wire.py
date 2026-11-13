@@ -113,8 +113,16 @@ def test_a_failed_model_step_is_not_asked_again_on_the_next_tick(tmp_path: Path)
     assert asked == [OBJECTION]
 
 
-def test_a_missing_model_step_marks_the_key_handled_too(tmp_path: Path) -> None:
-    _ticket(tmp_path)
+def test_a_missing_model_step_writes_the_plain_instruction_and_marks_the_key_handled(tmp_path: Path) -> None:
+    path = _ticket(tmp_path)
+    handled: list[str] = []
+    action: Action = {"kind": "annotate_objection", "initiative": "i", "task_id": "t1", "objection": OBJECTION, "key": "k", "epoch": 1}
+    [result] = perform([action], _deps(tmp_path, handled), lambda: 1, False)
+    assert (result["status"], handled) == ("done", ["k"])
+    assert chair_sort.plain_instruction(OBJECTION) in path.read_text(encoding="utf-8")
+
+
+def test_an_annotation_with_no_ticket_is_refused_and_marks_the_key_handled(tmp_path: Path) -> None:
     handled: list[str] = []
     action: Action = {"kind": "annotate_objection", "initiative": "i", "task_id": "t1", "objection": OBJECTION, "key": "k", "epoch": 1}
     [result] = perform([action], _deps(tmp_path, handled), lambda: 1, False)
@@ -167,3 +175,32 @@ def test_a_tick_plans_the_sorted_actions_through_plan_tick() -> None:
     assert kinds == ["rebuild_quarantined"]
     handled = {**facts, "handled_keys": [chair_sort.state_key("t1", "abc123")]}
     assert [a for a in plan_tick(handled, NOW) if a["kind"] == "rebuild_quarantined"] == []  # type: ignore[arg-type]
+
+
+CHECK_FAILURE = "configured check failed: fmt-tool --check"
+
+
+def _code(**over) -> dict:
+    return _quarantine(**{"cause": "code", "causes": ["code", "code"], "reason": CHECK_FAILURE, "held_objection": CHECK_FAILURE, **over})
+
+
+def test_a_failed_check_is_relaunched_once_before_it_is_sorted() -> None:
+    plan = plan_recover(_facts(_code(causes=["code"])))
+    assert [a["kind"] for a in plan] == []  # the relaunch pair is the relaunch planner's, as before
+
+
+def test_a_check_that_failed_twice_plans_one_annotation_and_then_the_chair() -> None:
+    plan = plan_recover(_facts(_code()))
+    assert [a["kind"] for a in plan] == ["annotate_objection"]
+    assert plan[0]["objection"] == CHECK_FAILURE and plan[0]["key"] == chair_sort.objection_key("t1", CHECK_FAILURE)
+    again = plan_recover(_facts(_code(), [plan[0]["key"]]))
+    assert [(a["kind"], a["cause"]) for a in again] == [("needs_chair", "repeated_objection")]
+
+
+def test_the_service_annotates_without_a_model_step_from_the_failure_itself(tmp_path: Path) -> None:
+    path, handled = _ticket(tmp_path), []
+    [first] = plan_recover(_facts(_code()))
+    [result] = perform([{**first, "epoch": 1}], _deps(tmp_path, handled), lambda: 1, False)
+    text = path.read_text(encoding="utf-8")
+    assert result["status"] == "done" and handled == [first["key"]]
+    assert text.count(chair_sort.NOTE_HEADING) == 1 and CHECK_FAILURE in text and "Instruction:" in text

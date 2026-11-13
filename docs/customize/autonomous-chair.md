@@ -18,6 +18,10 @@ things in order. The default tick is 60 seconds.
 - It relaunches an initiative once its ready tasks' dependencies have
   landed.
 - It retries a quarantine caused by the harness once.
+- It sorts the quarantines it cannot retry. A task that failed a check twice,
+  or a review that objected, gets the failure written into its ticket under
+  `## Rebuild note` and goes back to ready. The same failure a second time
+  reaches you. The service writes the note itself and asks no model.
 - It fills free lanes from the work store first, then decomposes intake in
   pairs.
 - It fills lanes on the lane hosts too, after the local lanes. The lane

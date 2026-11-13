@@ -204,8 +204,8 @@ class Deps:
     target_branch: Callable[[str], str | None] | None = None  # initiative -> the branch it lands on; None or a None result keeps the repo default
     temp_root: Path | None = None  # the system temp directory the tick sweeps stale pytest run directories under; None sweeps nothing
     user: str = ""  # the user whose `pytest-of-<user>` directory the sweep reads
-    # An annotate_objection's cheap model step. None refuses it, which publishes needs_attention: no chair model-call
-    # helper exists in agent_tools yet, and this step must not open its own vendor path. The loop supplies the real one.
+    # An annotate_objection's instruction step. None writes `chair_sort.plain_instruction`, which needs no model: the
+    # service is the only chair, so a rebuild instruction must not depend on one being there.
     objection_note: chair_sort.ObjectionNote | None = None
     mark_handled: Callable[[str], None] | None = None  # a handled key's extra sink; the recorded action already carries `key`
 
@@ -1020,10 +1020,9 @@ def _annotate_objection(action: Action, deps: Deps) -> Result:
     path = _ticket_file(deps.work_dir, initiative, task) if initiative and task else None
     if path is None or not objection or not key:
         return _refused_note(action, deps, "annotate_objection needs a ticket, an objection and a key")
-    if deps.objection_note is None:
-        return _refused_note(action, deps, "no model step is configured for the rebuild instruction")
+    note = deps.objection_note or chair_sort.plain_instruction
     try:
-        text = deps.objection_note(objection)
+        text = note(objection)
     except Exception as exc:
         return _refused_note(action, deps, f"model step failed: {type(exc).__name__}: {exc}")
     if not text.strip():

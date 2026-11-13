@@ -13746,6 +13746,22 @@ def _write_reported_repos(runs_dir: Path, repos: list[str]) -> None:
     _chair_reported_repos_path(runs_dir).write_text(json.dumps(sorted(set(repos))), encoding="utf-8")
 
 
+def _handled_keys_path(runs_dir: Path) -> Path:
+    """Beside `chair.lease.json`: the sort keys the service already acted on, so a failure is rebuilt or annotated once."""
+    return runs_dir / "chair.handled_keys.json"
+
+
+def _read_handled_keys(runs_dir: Path) -> list[str]:
+    raw = _json_or(_read_text_or_none(_handled_keys_path(runs_dir)), [])
+    return [k for k in raw if isinstance(k, str)] if isinstance(raw, list) else []
+
+
+def _mark_handled_key(runs_dir: Path, key: str) -> None:
+    keys = _read_handled_keys(runs_dir)
+    if key not in keys:
+        _handled_keys_path(runs_dir).write_text(json.dumps([*keys, key]), encoding="utf-8")
+
+
 def _live_by_host(lanes: Sequence[run_store.Lane], local: str) -> dict[str, int]:
     """Live lanes per host name; a lane with no host, or on `local`, counts under the empty name."""
     names = [("" if lane.host in (None, local) else lane.host) for lane in lanes]
@@ -14481,6 +14497,7 @@ def _chair_run_deps(
         stranded_records=(lambda: stranded_inputs()[0]) if mode == "store" else None,
         missing_repos=missing_repos,
         reported_repos=reported_repos,
+        handled_keys=lambda: _read_handled_keys(runs_dir),
         run_exited=lambda: chair_read_exits.exits(runs_dir),
         attempts=attempts,
         has_patch=has_patch,
@@ -14553,6 +14570,7 @@ def _chair_run_deps(
         resolve_land=_resolve_land_with(actions, record),
         rerun_main=lambda repo, commit: chair_revert_ports.rerun_infra(runner, _gh_repo(repo), commit),
         launch_stagger_s=chair_exec.stagger_seconds((profile.get("chair") or {}).get("launch_stagger_s")),
+        mark_handled=None if dry_run else (lambda key: _mark_handled_key(runs_dir, key)),
     )
     def held() -> None:
         """Resolves each pending watch the smoke hold does not name, when its commit is green on main or main went green after it."""
