@@ -31,7 +31,8 @@ Keys by section, in section order:
   `chair.stale_days`, `analytics.snapshot_max_age_s`.
 - profile files: profile `team`, `cartridges_dir`, `skills_roots`,
   `provider_profile`, `harness_dir`, `workspace_dir`, `assume`, `router`,
-  `forge`, `tracker`, `umbrella_dir`, `umbrella_clone_dir`, `ids`, `operator`.
+  `forge`, `tracker`, `umbrella_dir`, `umbrella_clone_dir`, `ids`, `operator`,
+  `store.mode`, `upgrade_channel`.
 
 unknown: `lane_hosts` is not in the parsed profile dict, so no row carries it.
 `landing_areas.checks`, `context`, `sources` and `repo_map` are not scalar
@@ -64,6 +65,11 @@ MONTHLY_BUDGET_DESCRIPTION = "the calendar-month spend budget in USD, above zero
 BUDGET_TIMEZONE_DESCRIPTION = (
     "IANA zone that sets the month boundary; defaults to the zone of weekly_reset when set, else UTC. "
     "The default is applied by the readers, not by the profile parser"
+)
+
+UPGRADE_CHANNEL_DESCRIPTION = (
+    "what cox upgrade moves this machine to: stable, the newest release tag (the default), or edge, "
+    "the newest commit on main whose CI passed"
 )
 
 STORE_MODES = ("files", "shared")
@@ -119,6 +125,8 @@ REGISTRY: tuple[Setting, ...] = (
           "workspace_dir", "assume", "router", "forge", "tracker", "umbrella_dir", "umbrella_clone_dir", "ids")),
     Setting("profile", "operator", "profile files", PROFILE_FILE, "operator", description=OPERATOR_DESCRIPTION),
     Setting("profile", "store.mode", "profile files", PROFILE_FILE, "store.mode", description=STORE_MODE_DESCRIPTION),
+    Setting("profile", "upgrade_channel", "profile files", PROFILE_FILE, "upgrade_channel",
+            description=UPGRADE_CHANNEL_DESCRIPTION),
 )
 
 

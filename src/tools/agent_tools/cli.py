@@ -271,6 +271,7 @@ store_switch = _LazyModule("agent_tools.store_switch")
 store_url = _LazyModule("agent_tools.store_url")
 towpath_launch = _LazyModule("agent_tools.towpath_launch")
 tracker = _LazyModule("agent_tools.tracker")
+upgrade_edge = _LazyModule("agent_tools.upgrade_edge")
 upgrade_exec = _LazyModule("agent_tools.upgrade_exec")
 upgrade_plan = _LazyModule("agent_tools.upgrade_plan")
 usage_meter = _LazyModule("agent_tools.usage_meter")
@@ -10876,8 +10877,238 @@ def _upgrade_after_move(root: Path) -> list[dict]:
 
 
 def _upgrade(a: argparse.Namespace) -> int:
-    """Move the one checkout to the target tag, sync its venv, reinstall cox and the crew links, then move any
-    optional component the moved manifest pins, then run the doctor."""
+    """`--install-timer` and `--uninstall-timer` only write or remove the timer files. Otherwise the machine's channel
+    decides: edge without `--to` resolves the newest green commit on main (`_upgrade_edge`); anything else is the
+    release path, `_upgrade_move`. `--scheduled`, what the timer runs, moves only an edge machine."""
+    if a.install_timer:
+        return _upgrade_timer_install(a)
+    if a.uninstall_timer:
+        return _upgrade_timer_uninstall()
+    channel = _upgrade_channel(a)
+    if channel is None:
+        return 2
+    if a.scheduled and channel != "edge":
+        print(f"upgrade: this machine's channel is {channel}; the scheduled upgrade moves only an edge machine")
+        return 0
+    if channel == "edge" and not a.to:
+        return _upgrade_edge(a)
+    return _upgrade_move(a)
+
+
+def _upgrade_channel(a: argparse.Namespace) -> str | None:
+    """Edge. The profile's `upgrade_channel`; stable with no profile. A profile that does not parse is stable for a
+    hand-run upgrade, as before the setting existed, and None (after printing why) for `--scheduled`, which must not
+    guess. The parse error is not printed: a profile line may carry a URL."""
+    path = _profile_path(a)
+    text = _read_text_or_none(path)
+    if text is None:
+        return upgrade_edge.DEFAULT_CHANNEL
+    try:
+        return upgrade_edge.channel(route.parse_profile(text))
+    except route.ProfileError:
+        if a.scheduled:
+            print(f"refusing: the profile at {path} does not parse, so this machine's upgrade channel is unknown")
+            return None
+        print(f"note: the profile at {path} does not parse; upgrading on the {upgrade_edge.DEFAULT_CHANNEL} channel")
+        return upgrade_edge.DEFAULT_CHANNEL
+
+
+def _edge_git(checkout: Path, *args: str) -> tuple[int, str]:
+    return _real_run(["git", "-C", str(checkout), *args], None)
+
+
+def _edge_target(checkout: Path, slug: str) -> tuple[str, str, list[str]] | str:
+    """Edge. `(head, target, main's first-parent history)` after fetching main, where target is the newest commit of
+    that history whose `upgrade_edge.WORKFLOW` push run passed; else why there is none."""
+    branch = upgrade_edge.BRANCH
+    if not (checkout / ".git").exists():
+        return f"no checkout at {checkout}"
+    code, out = _edge_git(checkout, "fetch", "origin", branch)
+    if code != 0:
+        return f"git fetch origin {branch} in {checkout} exited {code}: {out.strip()}"
+    code, history = _edge_git(checkout, "rev-list", "--first-parent", f"--max-count={upgrade_edge.HISTORY}", f"origin/{branch}")
+    if code != 0:
+        return f"git rev-list origin/{branch} in {checkout} exited {code}: {history.strip()}"
+    code, head = _edge_git(checkout, "rev-parse", "HEAD")
+    if code != 0:
+        return f"git rev-parse HEAD in {checkout} exited {code}: {head.strip()}"
+    code, runs = _real_run(forge_github.ci_runs_argv(slug, upgrade_edge.WORKFLOW, branch), None)
+    if code != 0:
+        return f"cannot list the {upgrade_edge.WORKFLOW} runs on {branch} of {slug}: {runs.strip()}"
+    first_parent = [line.strip() for line in history.splitlines() if line.strip()]
+    target = upgrade_edge.newest_green(first_parent, forge_github.parse_green_shas(runs))
+    if target is None:
+        return f"none of the newest {upgrade_edge.HISTORY} commits on origin/{branch} has a passing {upgrade_edge.WORKFLOW} run"
+    return head.strip(), target, first_parent
+
+
+def _edge_added_migrations(checkout: Path, head: str, target: str) -> tuple[str, ...] | str:
+    """Edge. The store migrations `target` adds over `head`, read from git; why not when a listing fails."""
+    listings = []
+    for sha in (head, target):
+        code, out = _edge_git(checkout, "ls-tree", "--name-only", sha, upgrade_edge.MIGRATIONS_DIR)
+        if code != 0:
+            return f"git ls-tree {sha} {upgrade_edge.MIGRATIONS_DIR} exited {code}: {out.strip()}"
+        listings.append(out.splitlines())
+    return upgrade_edge.added_migrations(*listings)
+
+
+def _edge_units() -> list[str]:
+    """Edge. The chair and lander user units this machine has a file for, in that order."""
+    from agent_tools import lander_cli
+
+    home = Path.home()
+    return [path.name for path in (chair_service.unit_path(home), lander_cli.unit_path(home)) if path.exists()]
+
+
+def _edge_restart(units: list[str]) -> str | None:
+    """Edge. `try-restart` restarts only the units that are running, so a unit stopped on purpose stays stopped.
+    None on success or with no unit, else why it failed."""
+    if not units:
+        return None
+    code, out = _real_run(["systemctl", "--user", "try-restart", *units], None)
+    return None if code == 0 else f"systemctl --user try-restart {' '.join(units)} exited {code}: {out.strip()}"
+
+
+def _edge_doctor() -> str | None:
+    """Edge. The doctor of the moved install (`cox` on PATH is the checkout's own); None when it passes."""
+    argv = remote_argv.doctor_argv()
+    code, out = _real_run(argv, None)
+    if code == 0:
+        return None
+    print(out.rstrip())
+    return f"{' '.join(argv)} exited {code}"
+
+
+def _edge_record_read(path: Path) -> dict | None:
+    text = _read_text_or_none(path)
+    try:
+        data = json.loads(text) if text is not None else None
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _edge_record_write(path: Path, previous: str, chosen: str, outcome: str, detail: str = "") -> None:
+    path.write_text(json.dumps(upgrade_edge.record(_now_iso(), previous, chosen, outcome, detail), indent=2) + "\n",
+                    encoding="utf-8")
+
+
+def _upgrade_edge(a: argparse.Namespace) -> int:
+    """Move an edge machine to the newest green commit on main by `_upgrade_move`, the `--to` path. When the commit
+    changed: restart the running chair and lander units, then run the doctor. A failed move, restart or doctor moves
+    back to the previous commit and restarts again, unless the units ran a commit that adds store migrations (see
+    `upgrade_edge.may_roll_back`). The outcome is recorded beside the checkout, where `cox versions` shows it."""
+    resolved = _install_root(a)
+    if resolved is None:
+        return 2
+    root, home = resolved
+    checkout = _checkout_path(root)
+    manifest_path = Path(a.manifest) if a.manifest else checkout / "manifest.toml"
+    manifest = _load_manifest(manifest_path)
+    if manifest is None:
+        print((_NO_HOME_MANIFEST if home and not a.manifest else _NO_MANIFEST).format(manifest_path))
+        return 2
+    found = _edge_target(checkout, install.checkout_spec(manifest)["repo"])
+    if isinstance(found, str):
+        print(f"refusing: {found}")
+        return 2
+    head, target, first_parent = found
+    record_path = root / upgrade_edge.RECORD_FILE
+    last = _edge_record_read(record_path)
+    print(f"channel: edge; the newest green commit on main is {target[:12]}; this machine is at {head[:12]}")
+    verdict = upgrade_edge.decide(head, target, first_parent, last)
+    if verdict != upgrade_edge.MOVE:
+        print(upgrade_edge.verdict_line(verdict, head, target, last))
+        return 0
+    added = _edge_added_migrations(checkout, head, target)
+    if isinstance(added, str):
+        print(f"refusing: {added}")
+        return 2
+    if added:
+        print(f"edge: {target[:12]} adds store migrations {', '.join(added)}; a restarted unit applies them to the "
+              "store, and a failed doctor then cannot roll back past them")
+    units = _edge_units()
+    if a.dry_run:
+        print(f"would restart: {', '.join(units) or 'no chair or lander unit'}; would run cox setup doctor")
+        return _upgrade_move(argparse.Namespace(**{**vars(a), "to": target}))
+    code = _upgrade_move(argparse.Namespace(**{**vars(a), "to": target}))
+    if code != 0 and _edge_git(checkout, "rev-parse", "HEAD")[1].strip() == head:
+        # Refused or failed before the checkout moved (a dirty checkout, a failed fetch): nothing ran after it, so
+        # there is nothing to move back, and no record holds the commit against the next run.
+        print(f"edge: nothing moved; cox upgrade --to {target} exited {code}")
+        return 2
+    failure = None if code == 0 else f"cox upgrade --to {target} exited {code}"
+    restarted = failure is None and bool(units)
+    failure = failure or _edge_restart(units) or _edge_doctor()
+    if failure is None:
+        _edge_record_write(record_path, head, target, upgrade_edge.UPGRADED)
+        print(f"edge: upgraded {head[:12]} -> {target[:12]}")
+        return 0
+    print(f"edge: {failure}")
+    if not upgrade_edge.may_roll_back(added, restarted):
+        detail = (f"{failure}; not rolled back to {head[:12]}: {target[:12]} adds store migrations {', '.join(added)}, "
+                  f"the restarted units may have applied them, and {head[:12]} cannot open a store that has them")
+        _edge_record_write(record_path, head, target, upgrade_edge.NOT_ROLLED_BACK, detail)
+        print(f"edge: {detail}")
+        return 1
+    back = _upgrade_move(argparse.Namespace(**{**vars(a), "to": head}))
+    again = (_edge_restart(units) if restarted else None) if back == 0 else f"cox upgrade --to {head} exited {back}"
+    outcome = upgrade_edge.ROLLED_BACK if again is None else upgrade_edge.ROLLBACK_FAILED
+    detail = failure if again is None else f"{failure}; rolling back failed: {again}"
+    _edge_record_write(record_path, head, target, outcome, detail)
+    print(f"edge: rolled back {target[:12]} -> {head[:12]}: {failure}" if again is None
+          else f"edge: rollback to {head[:12]} FAILED: {again}")
+    return 1
+
+
+def _upgrade_timer_install(a: argparse.Namespace) -> int:
+    """Edge. Writes the oneshot service and its timer and prints the lines that activate them; runs no systemd tool."""
+    if sys.platform != "linux":
+        print("refusing: the upgrade timer is a systemd user timer, and this platform has no systemd")
+        return 2
+    if a.interval_minutes < 1:
+        print("refusing: --interval-minutes must be at least 1")
+        return 2
+    resolved = _chair_unit_inputs(None, _chair_default_environment_file(), _profile_path(a))
+    if isinstance(resolved, _ChairUnitRefusal):
+        print(resolved.message)
+        return 2
+    unit_dir = chair_service.unit_path(Path.home()).parent
+    files = [
+        (unit_dir / upgrade_edge.SERVICE_NAME,
+         upgrade_edge.service_text(resolved.cox, resolved.profile, resolved.path, resolved.env_file)),
+        (unit_dir / upgrade_edge.TIMER_NAME, upgrade_edge.timer_text(a.interval_minutes)),
+    ]
+    for path, text in files:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        print(path)
+    print("\n".join(["systemctl --user daemon-reload", f"systemctl --user enable --now {upgrade_edge.TIMER_NAME}"]))
+    channel = _upgrade_channel(a)
+    if channel != "edge":
+        print(f"note: this machine's channel is {channel}; the timer moves nothing until "
+              "`cox settings set profile upgrade_channel edge`")
+    return 0
+
+
+def _upgrade_timer_uninstall() -> int:
+    """Edge. Removes the timer files that exist; runs no systemd tool, so a timer still loaded keeps its last state
+    until `systemctl --user disable --now coxswain-upgrade.timer`."""
+    unit_dir = chair_service.unit_path(Path.home()).parent
+    present = [p for p in (unit_dir / upgrade_edge.SERVICE_NAME, unit_dir / upgrade_edge.TIMER_NAME) if p.exists()]
+    for path in present:
+        path.unlink()
+        print(f"removed {path}")
+    if not present:
+        print("no upgrade timer installed")
+    return 0
+
+
+def _upgrade_move(a: argparse.Namespace) -> int:
+    """Move the one checkout to the target (`--to`, a release or a commit, else the newest release tag), sync its
+    venv, reinstall cox and the crew links, then move any optional component the moved manifest pins, then run the
+    doctor."""
     resolved = _install_root(a)
     if resolved is None:
         return 2
@@ -10894,7 +11125,7 @@ def _upgrade(a: argparse.Namespace) -> int:
     if _upgrade_refused(manifest, root, options):
         return 2
     checkout_tag = _checkout_facts(checkout)["tag"]
-    target = upgrade_plan.release_tag(a.to) if a.to else upgrade_exec.newest_release(_offered_tags(checkout))
+    target = upgrade_plan.target_ref(a.to) if a.to else upgrade_exec.newest_release(_offered_tags(checkout))
     if target is None:
         print(f"refusing: {checkout} offers no release tag to upgrade to; pass --to")
         return 2
@@ -11009,6 +11240,9 @@ def _versions(a: argparse.Namespace) -> int:
     if hint:
         print(hint)
     print(records.format_table(display, ["component", "pinned_tag", "installed_tag", "status", "schema"]))
+    edge = _edge_record_read(root / upgrade_edge.RECORD_FILE)
+    if edge is not None:
+        print(upgrade_edge.record_line(edge))
     return 0
 
 
@@ -11707,7 +11941,13 @@ INSTALL_GROUP = commands.Group(
 )
 
 UPGRADE_GROUP = commands.Group(
-    name="upgrade", help="fetch and check out newer pinned versions; refuses dirty checkouts", description="", epilog="",
+    name="upgrade", help="fetch and check out newer pinned versions; refuses dirty checkouts",
+    description=(
+        "On the stable channel (the default) the checkout moves to the newest release tag.\n"
+        "On the edge channel (profile upgrade_channel: edge) it moves to the newest commit on main whose CI passed,\n"
+        "restarts the running chair and lander units, runs the doctor, and moves back when any of that fails."
+    ),
+    epilog="examples:\n  cox upgrade\n  cox upgrade --to 2026.11.8\n  cox upgrade --install-timer",
     args=(
         commands.Arg(("--root",), {"help": "the installs folder; defaults to the home's installs folder"}),
         commands.Arg(("--home",), {"help": "absolute path of the coxswain home; used when --root is omitted"}),
@@ -11716,8 +11956,13 @@ UPGRADE_GROUP = commands.Group(
         commands.Arg(("--with",), {"action": "append", "default": None, "dest": "with_", "metavar": "FLAG"}),
         commands.Arg(("--team",)),
         commands.Arg(("--workspace",)),
-        commands.Arg(("--to",)),
+        commands.Arg(("--to",), {"help": "a release version or a commit; skips the edge channel's CI lookup"}),
         commands.Arg(("--dry-run",), {"action": "store_true"}),
+        commands.Arg(("--profile",), {"help": "the routing profile that holds upgrade_channel (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
+        commands.Arg(("--scheduled",), {"action": "store_true", "help": "what the upgrade timer runs: does nothing unless this machine's channel is edge"}),
+        commands.Arg(("--install-timer",), {"action": "store_true", "help": "write the systemd user timer that runs the scheduled upgrade and print the lines that activate it; runs nothing itself"}),
+        commands.Arg(("--uninstall-timer",), {"action": "store_true", "help": "remove the timer files --install-timer wrote"}),
+        commands.Arg(("--interval-minutes",), {"type": int, "default": 30, "help": "minutes between scheduled upgrades in the installed timer (default: 30)"}),
     ),
     fn="agent_tools.cli:_upgrade",
 )
