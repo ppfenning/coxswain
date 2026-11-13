@@ -40,6 +40,16 @@ starting with `#` are skipped. Each line runs through a shell from the
 repository root, so `cd <dir> && <cmd>` works. The check's name is the
 line's first word.
 
+A line may end `# fix: <command>`. The shell reads the whole line as a
+comment after the check, so the check itself is unchanged. The build runs
+the fix command first, before the checks, and keeps what it changed in the
+task's commit. A formatter is the usual case, so a style-only difference no
+longer quarantines a task:
+
+```text
+cargo fmt --check  # fix: cargo fmt
+```
+
 The coxswain repository uses this to run every component suite. Its
 `.agent-checks` is:
 

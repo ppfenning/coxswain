@@ -18,6 +18,9 @@ things in order. The default tick is 60 seconds.
 - It relaunches an initiative once its ready tasks' dependencies have
   landed.
 - It retries a quarantine caused by the harness once.
+- It sends every other quarantine to triage before the task is built again,
+  and holds a task for you once it has failed too often. See
+  [Quarantines](#quarantines).
 - It fills free lanes from the work store first, then decomposes intake in
   pairs.
 - It fills lanes on the lane hosts too, after the local lanes. The lane
@@ -685,6 +688,87 @@ one else.
 The epic steward that used to merge levels and run a gate is removed. A
 profile that still sets `chair.steward` is read and ignored, and the doctor
 report's `steward` row says it is retired.
+
+## Quarantines
+
+A run quarantines a task it could not finish. Each quarantine carries a
+cause, and the chair handles it by that cause without asking you.
+
+| Cause | What the chair does |
+|---|---|
+| `harness` | Retries the task, or rescues its kept patch, once for each run that quarantined it. |
+| `code`, `review`, `ticket`, `unknown` | Asks for triage. The task is not built again until a model has looked at it. |
+
+A `harness` cause is a stoppage, not a fault in the task. It covers a usage
+limit, an expired login, an infrastructure failure, a stale base, an
+interrupted run, and an empty build of a task whose base was stale.
+
+The other causes mean the task needs a change before it is built again.
+
+### Triage
+
+To ask for triage, the chair sets `triage_requested` on the task's row in
+the store and moves the task back to ready. It does this once for each run
+that quarantined the task. The initiative then relaunches as usual. That run
+triages the flagged task before it builds anything, whatever the task's
+attempt count, and clears the flag. A run that cannot read the store rows
+cannot see the flag, so it builds no task that has failed before and
+leaves it for the next run.
+
+The triage model reads the task's attempt record and the whole initiative:
+its goal, each phase and its goal, and every other task with its state,
+title and needs. It must cite the record. It answers with one class:
+
+| Class | What happens |
+|---|---|
+| `ticket_defect` | An instruction that quotes the objection is appended to the ticket, and the task is built again in the same run. |
+| `drop` | The task is dropped, because the initiative's goal does not need it. Any task that needed it stops needing it. |
+| `combine` | The task's scope is appended to a named sibling task in the same phase, and the task is dropped. The tasks that needed it now need the sibling. |
+| `shape` | The task is held for you with the split the model proposes. |
+| `platform_defect` | An intake is filed for the harness bug, and the task is held for you. |
+| `hold` | The task is held for you with the model's diagnosis. |
+
+If the model gives the same class and diagnosis that an earlier triage of
+the task gave, the task is held for you.
+
+### The hold limit
+
+After a task has failed a set number of times, the chair holds it for you
+and asks for no more triage. The limit is `chair.quarantine_hold_after` in
+the profile. It defaults to 3. Setting it to 0 turns the limit off.
+
+```yaml
+chair:
+  quarantine_hold_after: 3
+```
+
+The count covers every version of the task's ticket, so an amended ticket
+keeps its earlier failures. A stoppage and a failed rescue do not count.
+
+The chair also holds a task that comes back quarantined in the same run it
+already asked triage for. This happens when triage itself could not run.
+
+### A held task
+
+A held task is in state `blocked`, and its row in the store carries a reason
+that starts with `needs you:`. You see it in three places:
+
+- The status line lists it under `needs chair` on every tick, as
+  `needs chair: <initiative>:held <task>`.
+- The dash feed shows the task as `blocked`, with the reason.
+- The inbox gets one `needs_attention` entry on the courier for each hold
+  reason.
+
+To release the task, edit its ticket if you need to, then set it back to
+ready. To give it up, drop it:
+
+```sh
+cox route edit <task> --body-file <file> --state ready
+cox route edit <task> --state dropped
+```
+
+A released task does not go to triage first. If it fails again and its
+count is still at the limit, the chair holds it again.
 
 ## Rescue
 

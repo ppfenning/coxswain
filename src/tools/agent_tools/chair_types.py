@@ -19,6 +19,7 @@ REVIEW_CLOSED_CAUSE = "review_closed"  # the needs_chair cause for a task whose 
 DEADLOCK_CAUSE = "deferred_land_deadlock"  # the needs_chair cause for a task waiting on an approved task whose land land_at defers
 HELD_FILE_CAUSE = "held_file"  # the needs_chair cause for a ticket or intake file the export held as edited by hand
 QUARANTINED_CAUSE = "quarantined"  # the cause an open quarantine reports when no attempt names one
+DEFAULT_QUARANTINE_HOLD_AFTER = 3  # `chair.quarantine_hold_after` when the profile does not set it
 
 
 class LeaseFacts(TypedDict):
@@ -241,6 +242,7 @@ class QuarantineFacts(TypedDict):
     repo: NotRequired[str]  # the repository the remedy command names; absent means unknown
     task_state_key: NotRequired[str]  # names the harness state the task was quarantined in; absent leaves the quarantine unsorted
     held_objection: NotRequired[str]  # the review objection text holding the task; absent leaves a review quarantine unsorted
+    failures: NotRequired[int]  # the task's own failures over every body, stoppages and rescues left out; absent means 0
 
 
 class EmptyDecomposeFacts(TypedDict):
@@ -424,6 +426,15 @@ class HeldFile(TypedDict):
     reason: str
     blob: str
     diff_summary: NotRequired[str]  # "" for a record written before the summary existed
+
+
+class HeldTask(TypedDict):
+    """A task a person must decide on: its store row is `blocked` and its hold reason starts `needs you:`."""
+
+    initiative: str
+    task_id: str
+    phase: str
+    reason: str  # the hold reason, mark included
 
 
 class PhaseTasks(TypedDict):
@@ -627,10 +638,15 @@ class Facts(TypedDict):
     # Per initiative, the current run of lease_held launch rows in the launch window. Absent key or initiative means no streak.
     lease_refusals: NotRequired[dict[str, LeaseRefusalStreak]]
     max_launches_per_hour: NotRequired[int]
+    # `chair.quarantine_hold_after`: the task's own failures at which it is held for a person, not triaged; 0 never holds
+    # on the count. Absent means 3.
+    quarantine_hold_after: NotRequired[int]
+    held_tasks: NotRequired[list[HeldTask]]  # tasks held for a person with the `needs you:` mark; absent means none
     merge_queue: NotRequired[MergeQueueFacts]  # the profile's enabled merge queue; absent means the queue is off
     # `<run1>|<run2>` of each relaunch_loop needs_chair already in the action log. Absent means [].
     relaunch_loop_reported: NotRequired[list[str]]
-    # chair_sort keys already acted on: `<task>:<state key>` for a rebuild, an objection hash for an annotation. Absent means none.
+    # chair_sort keys already acted on: `<task>:<state key>` for a rebuild, an objection hash for an annotation,
+    # `triage:`, `hold:` and `announced:` keys for a triage request, a hold and a hold's one courier entry. Absent means none.
     handled_keys: NotRequired[list[str]]
     # Land refusals still counted: refused or failed land_phase rows since the key's last landed row. Absent means [].
     land_refusals: NotRequired[list[LandRefusal]]
@@ -697,6 +713,9 @@ ActionKind = Literal[
     "requeue_task",
     "rebuild_quarantined",
     "annotate_objection",
+    "request_triage",
+    "hold_task",
+    "announce_hold",
 ]
 
 
@@ -732,7 +751,13 @@ class Action(TypedDict, total=False):
     unlaunched carries initiative and reason and runs no command: why a ready initiative was not launched.
     requeue_task carries initiative, phase, task_id, reason and epoch; it is declared here and not yet planned or executed.
     rebuild_quarantined carries initiative, task_id and key (the chair_sort state key); it clears branches onto current main, then relaunches.
-    annotate_objection carries initiative, task_id, objection (the objection text) and key (its chair_sort hash)."""
+    annotate_objection carries initiative, task_id, objection (the objection text) and key (its chair_sort hash); the
+    planner no longer plans it, a failure that needs a tweak goes to the model's triage instead.
+    request_triage carries initiative, task_id, cause, reason and key (`triage:<task>:<run>`): the store row is flagged
+    for triage and set back to ready, so the next run triages it before any rebuild.
+    hold_task carries initiative, task_id, cause, reason (starting `needs you:`) and key (`hold:<task>:<run>`): the store
+    row takes the reason and moves to blocked. announce_hold carries initiative, task_id, reason and key: one courier
+    entry for a held task."""
 
     kind: ActionKind
     epoch: int
@@ -750,7 +775,7 @@ class Action(TypedDict, total=False):
     remedy: str  # a quarantine needs_chair names the remedy kind choose_remedy picks for its cause
     command: list[str]  # a quarantine needs_chair carries the argv remedy_for returns for that remedy
     objection: str  # an annotate_objection's review objection text
-    key: str  # a rebuild_quarantined or annotate_objection's chair_sort handled key
+    key: str  # a rebuild_quarantined, annotate_objection, request_triage, hold_task or announce_hold's chair_sort handled key
     stale_tasks: list[str]  # a stale_to_draft names the task ids found stale
     since: str  # a stale_to_draft names the ISO timestamp the staleness was detected
     carry: list[str]  # the phases a clear_branches keeps and merges main into

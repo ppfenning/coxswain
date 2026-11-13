@@ -36,6 +36,7 @@ from agent_tools.chair_read_stranded import stranded_from_rows
 from agent_tools.chair_read_tuning import current_lanes, tuning_facts
 from agent_tools.chair_schedule_durations import END_KEY, MIX_KEY, SIZE_KEY, START_KEY
 from agent_tools.chair_types import (
+    DEFAULT_QUARANTINE_HOLD_AFTER,
     EASTERN,
     HELD_FILE_CAUSE,
     QUARANTINED_CAUSE,
@@ -48,6 +49,7 @@ from agent_tools.chair_types import (
     EpicFacts,
     Facts,
     HeldFile,
+    HeldTask,
     HoldRecord,
     HostCheck,
     IdleStallInputs,
@@ -156,6 +158,8 @@ class FactsDeps:
         Optional, and absent means 24 hours.
     max_launches_per_hour: the raw profile value at `chair.max_launches_per_hour`, resolved by
         `resolve_max_launches_per_hour`. Optional, and absent means the default.
+    quarantine_hold_after: the raw profile value at `chair.quarantine_hold_after`, resolved by
+        `resolve_quarantine_hold_after`. Optional, and absent means 3.
     shared_file_limit: the raw profile value at `chair.max_shared_file_initiatives`, resolved by
         `resolve_shared_file_limit`. Optional, and absent means 2.
     serial_files: the raw profile value at the top-level `serial_files`, resolved by `resolve_serial_files`.
@@ -251,6 +255,7 @@ class FactsDeps:
     drafts: Callable[[], int] | None = None
     missing_repos: Callable[[], list[str]] | None = None
     reported_repos: Callable[[], set[str]] | None = None
+    handled_keys: Callable[[], Sequence[str]] | None = None  # the sort's keys already acted on; None means none
     run_exited: Callable[[], Mapping[str, bool]] | None = None  # initiative to whether its newest run has an exit record; absent means {}
     remote_unfetched: Callable[[], Mapping[str, str]] | None = None  # a `RemoteUnfetched` also carries the decompose-only initiatives
     lost_runs: Callable[[], Mapping[str, str]] | None = None  # initiative to run id, for a lane whose host is stale and whose run has no exit record; absent means {}
@@ -265,6 +270,7 @@ class FactsDeps:
     housekeeping_hours: Callable[[], object] | None = None  # raw profile chair.housekeeping_hours; absent means 24 hours
     stale_days: Callable[[], object] | None = None  # raw profile chair.stale_days; absent means 7 days
     max_launches_per_hour: Callable[[], object] | None = None  # raw profile chair.max_launches_per_hour; absent means the default
+    quarantine_hold_after: Callable[[], object] | None = None  # raw profile chair.quarantine_hold_after; absent means 3
     shared_file_limit: Callable[[], object] | None = None  # raw profile chair.max_shared_file_initiatives; absent means 2
     serial_files: Callable[[], object] | None = None  # raw profile top-level serial_files; absent means none
     host_load_ceiling: Callable[[], object] | None = None  # raw profile chair.host_load_ceiling; absent means no ceiling
@@ -484,10 +490,42 @@ def newest_cause(attempts: Sequence[Row], key: Key) -> str:
     return next((str(a.get("cause") or "") for a in reversed(attempts) if _key(a) == key), "")
 
 
+def _on_body(attempts: Sequence[Row], key: Key) -> list[Row]:
+    """The task's attempts on its current body, oldest first. A row with no `on_current_body` counts."""
+    return [a for a in attempts if _key(a) == key and a.get("on_current_body", True)]
+
+
+# A stoppage is the harness's, not the task's: a limit, a login, the infrastructure, a stale base, an interrupted run.
+# A failed rescue checks work already built. Neither counts toward `chair.quarantine_hold_after`, whatever cause the
+# attempt carries: a rescue_failed attempt may name code or review. The kinds are the ones the epic's cap skips
+# (`harness.epic._build_attempts`).
+_NOT_A_FAILURE = frozenset({HARNESS_CAUSE, RESCUE_FAILED_CAUSE})
+_NOT_A_BUILD = frozenset({"rescue_failed", "infra", "interrupted"})
+
+
+def task_failures(attempts: Sequence[Row], key: Key) -> int:
+    """The task's own failures over every body it had: each build attempt whose cause is not a stoppage or a rescue."""
+    return sum(
+        1
+        for a in attempts
+        if _key(a) == key and str(a.get("cause") or "") not in _NOT_A_FAILURE and str(a.get("kind") or "") not in _NOT_A_BUILD
+    )
+
+
 def _quarantine(
-    key: Key, cause: str, attempts: Sequence[Row], has_patch: Callable[[str, str], bool]
+    key: Key,
+    cause: str,
+    attempts: Sequence[Row],
+    has_patch: Callable[[str, str], bool],
+    row: Row | None = None,
 ) -> QuarantineFacts:
-    return {
+    """One quarantine. `row` is the open quarantine's own reader row: its newest run and reason, which the sort acts on.
+
+    A review or code quarantine holds its reason as `held_objection`; a harness quarantine names its state by its
+    newest run, so it is rebuilt once per run. `failures` counts the task's own failures over every body, which
+    `chair.quarantine_hold_after` holds the task at."""
+    on_body = _on_body(attempts, key)
+    fact: QuarantineFacts = {
         "task_id": key[2],
         "initiative": key[0],
         "cause": cause,
@@ -495,6 +533,22 @@ def _quarantine(
         "has_patch": has_patch(key[0], key[2]),
         "rescue_failed": rescue_failed(attempts, key),
     }
+    if row is None:
+        return fact
+    reason, run = str(row.get("reason") or ""), str(row.get("run") or "")
+    fact = {
+        **fact,
+        "causes": [str(a.get("cause") or "") for a in on_body],
+        "reasons": [str(a.get("reason") or "") for a in on_body],
+        "run": run,
+        "reason": reason,
+        "failures": task_failures(attempts, key),
+    }
+    if cause in ("review", "code") and reason.strip():
+        fact["held_objection"] = reason
+    if cause == HARNESS_CAUSE and run:
+        fact["task_state_key"] = run
+    return fact
 
 
 def quarantine_facts(
@@ -527,6 +581,7 @@ def quarantine_facts(
 
     An initiative with a live run contributes nothing: a retry in flight is never planned again."""
     opened = list(dict.fromkeys(_key(q) for q in quarantined))
+    by_key = {_key(q): q for q in quarantined}
     landed_now = {(t["initiative"], t["phase"], t["id"]) for t in landing if t["run"]}
     # A stranded task that is also an open quarantine keeps the quarantine's newest cause, so it is not sent to the chair as stranded.
     # Matched on initiative and task id, as `chair_plan_recover._recovery` does: a stranded record's phase can be missing or old.
@@ -539,7 +594,7 @@ def quarantine_facts(
         if k not in opened and k not in landed_now and (in_store is None or (k[0], k[2]) in in_store)
     ]
     return [
-        *(_quarantine(k, newest_cause(attempts, k) or QUARANTINED_CAUSE, attempts, has_patch) for k in opened if k[0] not in live),
+        *(_quarantine(k, newest_cause(attempts, k) or QUARANTINED_CAUSE, attempts, has_patch, by_key[k]) for k in opened if k[0] not in live),
         *(_stranded_entry(ks, rows, attempts, has_patch, waiting) for ks in _by_run(stuck, rows) if ks[0][0] not in live),
     ]
 
@@ -1646,6 +1701,30 @@ def resolve_max_launches_per_hour(value: object) -> int:
     return limit if limit > 0 and not isinstance(value, bool) else DEFAULT_MAX_LAUNCHES_PER_HOUR
 
 
+def resolve_quarantine_hold_after(value: object) -> int:
+    """The profile's raw `chair.quarantine_hold_after`: a whole number of at least 0 (0 never holds on the count), else 3.
+    A bool, a fraction, a negative number and text all read as the default."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return DEFAULT_QUARANTINE_HOLD_AFTER
+    return int(value) if value >= 0 and value == int(value) else DEFAULT_QUARANTINE_HOLD_AFTER
+
+
+def held_tasks_from_rows(rows: Sequence[Row]) -> list[HeldTask]:
+    """The task rows a person must decide on, in row order: `blocked` with a hold reason that carries the mark."""
+    from core.workstore import HOLD_REASON, is_held  # lazy: core sits beside agent_tools in one venv
+
+    return [
+        {
+            "initiative": str(r.get("initiative") or ""),
+            "task_id": str(r.get("task_id") or ""),
+            "phase": str(r.get("phase") or ""),
+            "reason": str((r.get("extra") or {}).get(HOLD_REASON) or ""),
+        }
+        for r in rows
+        if r.get("kind") == "task" and is_held(r)
+    ]
+
+
 def resolve_shared_file_limit(value: object) -> int:
     """A finite number of at least 1 (a bool is not a number) as an int, else the default. inf and nan parse from a profile."""
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not 1 <= value < math.inf:
@@ -1855,6 +1934,7 @@ def gather_facts(
             deps.missing_repos() if deps.missing_repos is not None else [],
             deps.reported_repos() if deps.reported_repos is not None else set(),
         ),
+        "handled_keys": list(deps.handled_keys()) if deps.handled_keys is not None else [],
         "run_exited": dict(deps.run_exited()) if deps.run_exited is not None else {},
         "remote_unfetched": dict(unfetched),
         "remote_unfetched_decompose": list(unfetched.decompose) if isinstance(unfetched, RemoteUnfetched) else [],
@@ -1900,6 +1980,10 @@ def gather_facts(
         "max_launches_per_hour": resolve_max_launches_per_hour(
             deps.max_launches_per_hour() if deps.max_launches_per_hour is not None else None
         ),
+        "quarantine_hold_after": resolve_quarantine_hold_after(
+            deps.quarantine_hold_after() if deps.quarantine_hold_after is not None else None
+        ),
+        "held_tasks": held_tasks_from_rows(rows),
         "newest_run_host": newest_run_host,
         "run_hosts": run_host_facts(deps.run_hosts()),
         "login_hosts": login_hosts,

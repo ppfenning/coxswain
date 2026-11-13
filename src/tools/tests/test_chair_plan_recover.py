@@ -278,22 +278,41 @@ def _triaged(cause: str, reasons: list[str]) -> QuarantineFacts:
 _ONE_PAIR = [{"kind": "clear_branches", "initiative": "i"}, {"kind": "relaunch", "initiative": "i"}]
 
 
-def test_one_ticket_quarantine_on_the_current_body_plans_a_relaunch():
-    assert plan_recover(_facts([_initiative()], [_triaged("ticket", ["no goal"])])) == _ONE_PAIR
+_TRIAGE = {"kind": "request_triage", "task_id": "q1", "initiative": "i", "key": "triage:q1:r-9"}
 
 
-def test_one_code_quarantine_on_the_current_body_plans_a_relaunch():
-    assert plan_recover(_facts([_initiative()], [_triaged("code", ["import error"])])) == _ONE_PAIR
+def _without_reason(actions: list) -> list:
+    return [{k: v for k, v in a.items() if k not in ("cause", "reason")} for a in actions]
 
 
-def test_a_second_ticket_quarantine_on_the_same_body_needs_the_chair_with_both_reasons():
-    (action,) = plan_recover(_facts([_initiative()], [_triaged("ticket", ["no goal stated", "surface missing"])]))
+def test_one_ticket_quarantine_on_the_current_body_requests_triage_and_the_initiative_still_relaunches():
+    assert _without_reason(plan_recover(_facts([_initiative()], [_triaged("ticket", ["no goal"])]))) == [_TRIAGE, *_ONE_PAIR]
+
+
+def test_one_code_quarantine_on_the_current_body_requests_triage_and_the_initiative_still_relaunches():
+    assert _without_reason(plan_recover(_facts([_initiative()], [_triaged("code", ["import error"])]))) == [_TRIAGE, *_ONE_PAIR]
+
+
+def test_a_second_quarantine_on_the_same_body_below_the_hold_limit_requests_triage_for_its_own_run():
+    (action, *_) = plan_recover(_facts([_initiative()], [_triaged("ticket", ["no goal stated", "surface missing"])]))
+    assert (action["kind"], action["key"], action["reason"]) == ("request_triage", "triage:q1:r-9", "surface missing")
+
+
+def _held_already(cause: str, reasons: list[str]) -> Facts:
+    facts = _facts([_initiative()], [_triaged(cause, reasons)])
+    return {**facts, "handled_keys": ["triage:q1:r-9", "hold:q1:r-9"]}  # type: ignore[typeddict-unknown-key]
+
+
+def test_a_ticket_quarantine_the_chair_already_held_needs_the_chair_with_both_reasons():
+    (action, *pair) = plan_recover(_held_already("ticket", ["no goal stated", "surface missing"]))
+    assert pair == _ONE_PAIR  # the task waits for the chair; the initiative's other ready work still relaunches
     assert (action["kind"], action["remedy"]) == ("needs_chair", "re-ground")
     assert "no goal stated" in action["reason"] and "surface missing" in action["reason"]
 
 
-def test_a_second_code_quarantine_on_the_same_body_needs_the_chair_with_both_reasons():
-    (action,) = plan_recover(_facts([_initiative()], [_triaged("code", ["import error", "test fails"])]))
+def test_a_code_quarantine_the_chair_already_held_needs_the_chair_with_both_reasons():
+    (action, *pair) = plan_recover(_held_already("code", ["import error", "test fails"]))
+    assert pair == _ONE_PAIR  # the task waits for the chair; the initiative's other ready work still relaunches
     assert (action["kind"], action["remedy"]) == ("needs_chair", "re-ground")
     assert "import error" in action["reason"] and "test fails" in action["reason"]
 

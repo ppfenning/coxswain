@@ -17,6 +17,7 @@
 
 import pytest
 
+from graphs._contract import ContractViolation
 from graphs.ops import triage_quarantine
 from graphs.ops.triage_quarantine import check_citation, facts
 from runner import ScriptedRunner
@@ -174,7 +175,8 @@ def test_shape_emits_a_decompose_handoff(cart):
     }
 
 
-def test_genuine_reject_emits_a_notify(cart):
+def test_genuine_reject_is_read_as_a_hold_with_no_proposal(cart):
+    # genuine_reject used to emit a gated notify and leave the item ready; a person now decides through the hold mark.
     response = _response(
         "genuine_reject",
         "missing null guard was a correct objection; the build was simply wrong",
@@ -182,8 +184,8 @@ def test_genuine_reject_emits_a_notify(cart):
         "notify the owner and leave the item ready",
     )
     result = triage_quarantine.run(_args(cart, [_ATTEMPT_1]), _runner(response))
-    assert result["emit"]["kind"] == "notify"
-    assert result["escalated"] is False
+    assert (result["class"], result["effect"], result["escalated"]) == ("hold", "hold", False)
+    assert "emit" not in result
 
 
 def test_the_attempts_triage_entry_carries_class_diagnosis_and_run(cart):
@@ -208,3 +210,116 @@ def test_the_same_class_diagnosis_pair_twice_escalates_instead_of_emitting(cart)
     assert result["escalated"] is True
     assert result["prior"] == prior_triage
     assert "emit" not in result
+
+
+# The chair's quarantine classes: the model decides from the whole initiative, and each class names its effect.
+
+_CONTEXT = {
+    "goal": "make the join measurable",
+    "phases": [{"id": "p1", "goal": "probe the schema"}, {"id": "p2", "goal": "cut over"}],
+    "siblings": [
+        {"id": "t2", "phase": "p1", "state": "ready", "title": "bench the join", "needs": []},
+        {"id": "t3", "phase": "p2", "state": "todo", "title": "cut over", "needs": ["t1"]},
+        {"id": "t4", "phase": "p1", "state": "done", "title": "seed rows", "needs": []},
+        {"id": "t5", "phase": "p1", "state": "approved", "title": "index rows", "needs": []},
+        {"id": "t6", "phase": "p1", "state": "dropped", "title": "old probe", "needs": []},
+    ],
+}
+
+
+def _with_context(cart, attempts, **overrides) -> dict:
+    return _args(cart, attempts, initiative_context=_CONTEXT, **overrides)
+
+
+def test_the_prompt_carries_the_initiative_goal_phases_and_siblings(cart):
+    response = _response("hold", "quotes missing null guard verbatim", ["attempt-1|review"], "a person picks the guard")
+    runner = _runner(response)
+    triage_quarantine.run(_with_context(cart, [_ATTEMPT_1]), runner)
+    prompt = runner.calls[0]["prompt"]
+    assert "make the join measurable" in prompt and "probe the schema" in prompt and "cut over" in prompt
+    assert "t2" in prompt and "bench the join" in prompt and "t3" in prompt
+    for class_ in ("ticket_defect", "platform_defect", "shape", "drop", "combine", "hold"):
+        assert class_ in prompt
+    assert set(triage_quarantine.TRIAGE_SCHEMA["properties"]["class"]["enum"]) == {
+        "ticket_defect", "platform_defect", "shape", "drop", "combine", "hold",
+    }
+
+
+@pytest.mark.parametrize(
+    ("class_", "effect", "emits"),
+    [
+        ("ticket_defect", "rebuild", "ticket_amend"),
+        ("platform_defect", "hold", "item_create"),
+        ("shape", "hold", None),
+        ("hold", "hold", None),
+        ("drop", "drop", None),
+    ],
+)
+def test_each_class_names_the_effect_the_epic_applies(cart, class_, effect, emits):
+    response = _response(class_, "quotes missing null guard verbatim", ["attempt-1|review"], "what to do")
+    result = triage_quarantine.run(_with_context(cart, [_ATTEMPT_1]), _runner(response))
+    assert (result["class"], result["effect"]) == (class_, effect)
+    assert (result.get("emit") or {}).get("kind") == emits
+    if class_ == "shape":
+        assert result["emit"]["handoff"] == "decompose"
+
+
+def test_drop_and_hold_emit_no_proposal(cart):
+    for class_ in ("drop", "hold"):
+        response = _response(class_, "quotes missing null guard verbatim", ["attempt-1|review"], "nothing to build")
+        result = triage_quarantine.run(_with_context(cart, [_ATTEMPT_1]), _runner(response))
+        assert "emit" not in result
+
+
+def test_combine_names_the_sibling_it_folds_into(cart):
+    response = {**_response("combine", "quotes missing null guard verbatim", ["attempt-1|review"], "fold the guard in"), "into": "t2"}
+    result = triage_quarantine.run(_with_context(cart, [_ATTEMPT_1]), _runner(response))
+    assert (result["class"], result["effect"], result["into"]) == ("combine", "combine", "t2")
+    assert "emit" not in result
+
+
+@pytest.mark.parametrize("into", [None, "", "t1", "t4", "t5", "t6", "t-unknown"])
+def test_combine_into_no_open_sibling_is_refused(cart, into):
+    response = _response("combine", "quotes missing null guard verbatim", ["attempt-1|review"], "fold it")
+    if into is not None:
+        response["into"] = into
+    with pytest.raises(ContractViolation, match="combine"):
+        triage_quarantine.run(_with_context(cart, [_ATTEMPT_1]), _runner(response))
+
+
+def test_combine_into_an_open_sibling_of_another_phase_is_refused(cart):
+    # Phases build apart: a sibling in another phase could deadlock the phase order or build without the folded scope.
+    response = {**_response("combine", "quotes missing null guard verbatim", ["attempt-1|review"], "fold it"), "into": "t3"}
+    in_p1 = {**_WORK_ITEM, "phase": "p1"}
+    with pytest.raises(ContractViolation, match="same phase"):
+        triage_quarantine.run(_with_context(cart, [_ATTEMPT_1], work_item=in_p1), _runner(response))
+    response["into"] = "t2"
+    assert triage_quarantine.run(_with_context(cart, [_ATTEMPT_1], work_item=in_p1), _runner(response))["into"] == "t2"
+
+
+def test_combine_without_initiative_context_is_refused(cart):
+    response = {**_response("combine", "quotes missing null guard verbatim", ["attempt-1|review"], "fold it"), "into": "t2"}
+    with pytest.raises(ContractViolation, match="combine"):
+        triage_quarantine.run(_args(cart, [_ATTEMPT_1]), _runner(response))
+
+
+@pytest.mark.parametrize("class_", ["drop", "combine", "hold"])
+def test_every_new_class_still_passes_the_citation_check(cart, class_):
+    response = {**_response(class_, "the build failed for unrelated reasons", ["attempt-1|review"], "x"), "into": "t2"}
+    with pytest.raises(ContractViolation, match="quotes no objection text"):
+        triage_quarantine.run(_with_context(cart, [_ATTEMPT_1]), _runner(response))
+
+
+def test_a_prior_triage_record_from_the_store_escalates_a_repeat(cart):
+    prior = {"class": "drop", "diagnosis": "quotes missing null guard verbatim", "run": "r-7"}
+    response = _response("drop", "quotes missing null guard verbatim", ["attempt-1|review"], "drop it again")
+    result = triage_quarantine.run(_with_context(cart, [_ATTEMPT_1], triaged=[prior]), _runner(response))
+    assert (result["escalated"], result["prior"], result["effect"]) == (True, prior, "hold")
+    assert "emit" not in result
+
+
+def test_a_different_class_after_a_prior_record_is_not_a_repeat(cart):
+    prior = {"class": "ticket_defect", "diagnosis": "quotes missing null guard verbatim", "run": "r-7"}
+    response = _response("drop", "quotes missing null guard verbatim", ["attempt-1|review"], "drop it")
+    result = triage_quarantine.run(_with_context(cart, [_ATTEMPT_1], triaged=[prior]), _runner(response))
+    assert (result["escalated"], result["effect"]) == (False, "drop")

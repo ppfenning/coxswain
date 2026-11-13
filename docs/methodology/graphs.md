@@ -84,7 +84,7 @@ records.
 | `reconcile` | [epic-reconcile](graphs/epic-reconcile.md) | Compares an initiative's declared state with its actual state and proposes corrections. |
 | `retro` | [retro-propose](graphs/retro-propose.md) | Reads ledger rows back and proposes only doc updates it can cite. |
 | `triage` | [triage-propose](graphs/triage-propose.md) | Morning triage of an alert queue: read-only, proposes runbook corrections. |
-| `triage-quarantine` | [triage](graphs/triage.md) | Classifies a task stranded at its attempt cap and emits a write by class. |
+| `triage-quarantine` | [triage](graphs/triage.md) | Classifies a task at its attempt cap, or one the chair sent to triage, and applies its class. |
 | `sweep` | [sweep](graphs/sweep.md) | Applies one rule everywhere it matches: plan, apply, verify, review. |
 
 `delivery` holds the first five, `ops` the other six.
@@ -98,7 +98,7 @@ graphs, block on them and write, which a graph may not do.
 - `epic` is [the epic driver](graphs/epic-driver.md). `cox route launch epic`
   starts it. It walks an initiative phase by phase: `lifecycle` per ready
   task, `validate` per phase, `triage-quarantine` for a task at its attempt
-  cap. The command and driver named `epic` run one initiative. Epic is
+  cap or one the chair flagged for triage. The command and driver named `epic` run one initiative. Epic is
   the historical name. It is not the epic group of initiatives, which
   [the hierarchy](index.md#the-hierarchy) describes.
 - `rescue` runs `rescue-review` on one quarantined task's kept patch.

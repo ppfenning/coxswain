@@ -44,6 +44,21 @@ def objection_key(task_id: str, reason: str) -> str:
     return hashlib.sha256(f"{task_id}\0{_squash(reason).lower()}".encode()).hexdigest()
 
 
+def triage_key(task_id: str, run: str) -> str:
+    """The handled key for a triage request: one per task and the run that quarantined it."""
+    return f"triage:{task_id}:{run}"
+
+
+def hold_key(task_id: str, run: str) -> str:
+    """The handled key for the chair's hold of a quarantined task: one per task and the run that quarantined it."""
+    return f"hold:{task_id}:{run}"
+
+
+def announce_key(task_id: str, reason: str) -> str:
+    """The handled key for a held task's one courier entry: a new hold reason on the same task is announced again."""
+    return f"announced:{task_id}:{hashlib.sha256(_squash(reason).encode()).hexdigest()[:16]}"
+
+
 def classify(q: QuarantineFacts, task_state_key: str, handled_keys: Collection[str]) -> Sort:
     cause = q["cause"]
     if cause == HARNESS_CAUSE:

@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 import time
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from functools import partial
@@ -204,8 +204,8 @@ class Deps:
     target_branch: Callable[[str], str | None] | None = None  # initiative -> the branch it lands on; None or a None result keeps the repo default
     temp_root: Path | None = None  # the system temp directory the tick sweeps stale pytest run directories under; None sweeps nothing
     user: str = ""  # the user whose `pytest-of-<user>` directory the sweep reads
-    # An annotate_objection's cheap model step. None refuses it, which publishes needs_attention: no chair model-call
-    # helper exists in agent_tools yet, and this step must not open its own vendor path. The loop supplies the real one.
+    # An annotate_objection's cheap model step. None refuses it, which publishes needs_attention. The planner no longer
+    # plans annotate_objection: a failure that needs a tweak is triaged by the model in the next run (request_triage).
     objection_note: chair_sort.ObjectionNote | None = None
     mark_handled: Callable[[str], None] | None = None  # a handled key's extra sink; the recorded action already carries `key`
 
@@ -1039,6 +1039,105 @@ def _annotate_objection(action: Action, deps: Deps) -> Result:
     return _result(action, "done", f"annotated {task}" if warning is None else f"annotated {task}; {warning}")
 
 
+def _quarantined_row(action: Action, deps: Deps) -> tuple[Mapping[str, Any] | None, Result | None]:
+    """The action's store row while it is still quarantined, else the result that ends the action with nothing written."""
+    initiative, task = action.get("initiative", ""), action.get("task_id", "")
+    if not initiative or not task or not action.get("key"):
+        return None, _result(action, "refused", f"{action.get('kind')} needs an initiative, a task and a key")
+    stored = next((r for r in run_store.read_queue(deps.runs_dir, initiative, kind="task") if r.get("task_id") == task), None)
+    if stored is None:
+        return None, _result(action, "failed", f"no store row for {task}")
+    if stored.get("state") != "quarantined":
+        return None, _result(action, "skipped", f"{task} is {stored.get('state')}, not quarantined")
+    return stored, None
+
+
+def taken_back(current: Mapping[str, Any], before: Mapping[str, Any], added: Mapping[str, Any], removed: Collection[str]) -> dict[str, Any]:
+    """Pure. `current` extra with only this action's own change undone: each key it added that still holds its value
+    comes out, and each key it removed that nobody has written since comes back. Another writer's keys stay."""
+    kept = {k: v for k, v in current.items() if not (k in added and v == added[k])}
+    return {**kept, **{k: before[k] for k in removed if k in before and k not in current}}
+
+
+def _mark_then_move(
+    action: Action, deps: Deps, stored: Mapping[str, Any], added: Mapping[str, Any], removed: Collection[str], state: str, done: str
+) -> Result:
+    """Edge. Mark the quarantined row `stored` first (its extra with `added` set and `removed` taken out), then move it to
+    `state` with a compare-and-set on quarantined.
+
+    The key is marked handled only when both writes landed. A refused move re-reads the row and takes back only this
+    action's own mark (`taken_back`), so a writer that moved the row meanwhile keeps what it wrote."""
+    initiative, task = action["initiative"], action["task_id"]
+    key = {"initiative": initiative, "task_id": task}
+    before = dict(stored.get("extra") or {})
+    extra = {**{k: v for k, v in before.items() if k not in removed}, **added}
+    refused_row = run_store.upsert_row_detail(deps.runs_dir, {**key, "extra": extra})
+    if refused_row:
+        return _result(action, "failed", f"the store did not take the mark on {task}: {refused_row}")
+    written = store_cli.set_state(deps.runs_dir, initiative, task, state, "chair-loop", "quarantined")
+    if isinstance(written, store_cli.StateSet):
+        if deps.mark_handled is not None:
+            deps.mark_handled(action["key"])
+        return _result(action, "done", done)
+    now = next((r for r in run_store.read_queue(deps.runs_dir, initiative, kind="task") if r.get("task_id") == task), None)
+    if now is None:
+        unrestored = "the row could not be read back"
+    else:
+        unrestored = run_store.upsert_row_detail(
+            deps.runs_dir, {**key, "extra": taken_back(dict(now.get("extra") or {}), before, added, removed)}
+        )
+    note = f"; the store did not take back the mark: {unrestored}" if unrestored else ""
+    if isinstance(written, store_cli.StateRefused) and written.current not in (None, "quarantined") and not unrestored:
+        return _result(action, "skipped", f"{task} is {written.current}, not quarantined")
+    return _result(action, "failed", f"set-state {state} for {task}: {written}{note}")
+
+
+def _request_triage(action: Action, deps: Deps) -> Result:
+    """Edge. Flag a quarantined task for triage and send it back to ready, so the next run triages it before any rebuild.
+
+    The flag holds the action's key; the epic driver removes it once the task is triaged. Nothing here asks a model."""
+    from core.workstore import TRIAGE_FLAG  # lazy: core sits beside agent_tools in one venv
+
+    stored, ended = _quarantined_row(action, deps)
+    if ended is not None or stored is None:
+        return ended or _result(action, "failed", "no store row")
+    reason = action.get("reason", "")
+    done = f"{action['task_id']} sent to triage" + (f": {reason}" if reason else "")
+    return _mark_then_move(action, deps, stored, {TRIAGE_FLAG: action["key"]}, (), "ready", done)
+
+
+def _hold_task(action: Action, deps: Deps) -> Result:
+    """Edge. Hold a quarantined task for a person: its row takes the `needs you:` reason, then moves to blocked.
+
+    A triage flag left on the row is dropped: a held task is not triaged until a person releases it."""
+    from core.workstore import HOLD_REASON, TRIAGE_FLAG, hold_text  # lazy: core sits beside agent_tools in one venv
+
+    stored, ended = _quarantined_row(action, deps)
+    if ended is not None or stored is None:
+        return ended or _result(action, "failed", "no store row")
+    reason = hold_text(action.get("reason", "") or "the chair held it")
+    return _mark_then_move(action, deps, stored, {HOLD_REASON: reason}, (TRIAGE_FLAG,), "blocked", f"{action['task_id']} held: {reason}")
+
+
+def _announce_hold(action: Action, deps: Deps) -> Result:
+    """Edge. One courier entry for a held task, to the chair's inbox; the key is marked so the hold is announced once."""
+    initiative, task, reason = action.get("initiative", ""), action.get("task_id", ""), action.get("reason", "")
+    if not task or not action.get("key"):
+        return _result(action, "refused", "announce_hold needs a task and a key")
+    entry = courier.send(
+        courier.Reference("task", task), deps.label or "chair", deps.note_to, f"{task} in {initiative}: {reason}",
+        uuid.uuid4().hex, event="needs_attention", fields={"initiative": initiative, "task_id": task, "reason": reason},
+        topic=initiative or None,
+    )
+    try:
+        courier.append_file(deps.work_dir / "courier.jsonl", entry)
+    except OSError as exc:
+        return _result(action, "failed", f"the courier entry for {task} was not written: {exc}")
+    if deps.mark_handled is not None:
+        deps.mark_handled(action["key"])
+    return _result(action, "done", f"{task} announced: {reason}")
+
+
 def _rebuild_quarantined(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
     """The relaunch pair, in line: clear_branches carries current main into the kept phases, then the relaunch runs.
 
@@ -1521,6 +1620,12 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
         return _annotate_objection(action, deps)
     if kind == "rebuild_quarantined":
         return _rebuild_quarantined(action, deps, blocked)
+    if kind == "request_triage":
+        return _request_triage(action, deps)
+    if kind == "hold_task":
+        return _hold_task(action, deps)
+    if kind == "announce_hold":
+        return _announce_hold(action, deps)
     if kind == "release_approvals":
         return _release_approvals(action, deps)
     if kind == "restore_approvals":

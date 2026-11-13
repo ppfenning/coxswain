@@ -176,10 +176,8 @@ def test_the_over_budget_refusal_quarantines_the_row(repo, cart, tmp_path, store
     ("triaged", "failures", "reason_part"),
     [
         ([], ["t1-probe: triage node raised"], "triage itself failed"),
-        ([{"run_id": "epic-1:p1-foundations:t1-probe", "escalated": True, "class": "c", "diagnosis": "d"}], [], "triage repeats a prior"),
-        ([{"run_id": "epic-1:p1-foundations:t1-probe", "class": "c", "emit": {}}], [], "no direct write"),
     ],
-    ids=["triage-failed", "triage-escalated", "triage-no-proposal"],
+    ids=["triage-failed"],
 )
 def test_each_attempt_cap_refusal_quarantines_the_row(repo, cart, tmp_path, store_conn, monkeypatch, triaged, failures, reason_part):  # noqa: F811
     _fake_triage(monkeypatch, triaged, failures)
@@ -187,6 +185,27 @@ def test_each_attempt_cap_refusal_quarantines_the_row(repo, cart, tmp_path, stor
     entry = next(q for q in result["quarantined"] if q["id"] == "t1-probe")
     assert reason_part in entry["reason"] and entry["kind"] == "no_work"
     assert states["t1-probe"] == "quarantined"
+
+
+# An escalated repeat and a class with no write used to quarantine the row here as well; they now hold it for a
+# person: state blocked, with a hold reason that starts with the mark.
+@pytest.mark.parametrize(
+    ("triaged", "reason_part"),
+    [
+        ([{"run_id": "epic-1:p1-foundations:t1-probe", "escalated": True, "class": "c", "diagnosis": "d"}], "triage repeats its earlier c"),
+        ([{"run_id": "epic-1:p1-foundations:t1-probe", "class": "c", "emit": {}}], "triage c"),
+    ],
+    ids=["triage-escalated", "triage-no-proposal"],
+)
+def test_an_attempt_cap_triage_a_person_decides_holds_the_row(repo, cart, tmp_path, store_conn, monkeypatch, triaged, reason_part):  # noqa: F811
+    from harness import store_queue
+
+    _fake_triage(monkeypatch, triaged, [])
+    result, states = _drive_store(repo, cart, tmp_path, store_conn, _capped_work())
+    assert not any(q["id"] == "t1-probe" for q in result["quarantined"])
+    assert states["t1-probe"] == "blocked"
+    row = next(r for r in store_queue.read(store_conn, "demo-initiative") if r["task_id"] == "t1-probe")
+    assert row["extra"][workstore.HOLD_REASON].startswith(f"{workstore.HOLD_MARK} {reason_part}")
 
 
 def test_a_harness_fault_quarantines_the_row(repo, cart, tmp_path, store_conn):  # noqa: F811

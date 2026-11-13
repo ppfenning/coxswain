@@ -1,4 +1,5 @@
-"""The tick sorts its own quarantines: one rebuild per state key, one annotation per objection, then the chair."""
+"""The tick sorts its own quarantines: one rebuild per harness state key; a review objection goes to the model's triage
+once per state, then the task is held for a person. The annotation executor still writes one note per objection."""
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -37,7 +38,7 @@ def _facts(quarantine: dict, handled: list[str] | None = None) -> Facts:
 
 
 def _review(**over) -> dict:
-    return _quarantine(**{"cause": "review", "reason": OBJECTION, "held_objection": OBJECTION, **over})
+    return _quarantine(**{"cause": "review", "reason": OBJECTION, "held_objection": OBJECTION, "run": "i-4", "failures": 1, **over})
 
 
 def _deps(tmp_path: Path, calls: list[str], note=None, steps: list | None = None) -> Deps:
@@ -70,10 +71,18 @@ def test_quarantine_without_the_new_facts_keeps_its_recovery() -> None:
     assert [a["kind"] for a in plan_recover(_facts(_quarantine()))] == ["retry"]
 
 
-def test_held_objection_plans_one_annotation_and_the_note_lands_once(tmp_path: Path) -> None:
+def test_held_objection_plans_one_triage_request_and_no_annotation() -> None:
     plan = plan_recover(_facts(_review()))
-    assert [a["kind"] for a in plan] == ["annotate_objection"]
-    assert plan[0]["objection"] == OBJECTION and plan[0]["key"] == chair_sort.objection_key("t1", OBJECTION)
+    assert [(a["kind"], a["key"]) for a in plan] == [("request_triage", chair_sort.triage_key("t1", "i-4"))]
+
+
+def _annotation() -> Action:
+    return {"kind": "annotate_objection", "initiative": "i", "task_id": "t1", "objection": OBJECTION,
+            "key": chair_sort.objection_key("t1", OBJECTION)}
+
+
+def test_an_annotation_with_a_model_step_lands_its_note_once(tmp_path: Path) -> None:
+    plan = [_annotation()]
     path, handled, asked = _ticket(tmp_path), [], []
 
     def note(objection: str) -> str:
@@ -88,10 +97,10 @@ def test_held_objection_plans_one_annotation_and_the_note_lands_once(tmp_path: P
     assert (asked, handled) == ([OBJECTION], [plan[0]["key"]])
 
 
-def test_second_quarantine_with_the_same_objection_plans_needs_attention_and_no_model_call() -> None:
-    key = chair_sort.objection_key("t1", OBJECTION)
+def test_second_quarantine_in_the_same_state_holds_the_task_and_makes_no_model_call() -> None:
+    key = chair_sort.triage_key("t1", "i-4")
     plan = plan_recover(_facts(_review(), [key]))
-    assert [(a["kind"], a["cause"]) for a in plan] == [("needs_chair", "repeated_objection")]
+    assert [(a["kind"], a["key"]) for a in plan] == [("hold_task", chair_sort.hold_key("t1", "i-4"))]
 
 
 def test_a_failed_model_step_is_not_asked_again_on_the_next_tick(tmp_path: Path) -> None:
@@ -101,15 +110,14 @@ def test_a_failed_model_step_is_not_asked_again_on_the_next_tick(tmp_path: Path)
         asked.append(objection)
         raise RuntimeError("model down")
 
-    [first] = plan_recover(_facts(_review()))
+    first = _annotation()
     [result] = perform([{**first, "epoch": 1}], _deps(tmp_path, handled, note), lambda: 1, False)
     assert result["status"] == "refused" and "model down" in result["reason"]
     assert (asked, handled, chair_sort.NOTE_HEADING in path.read_text(encoding="utf-8")) == ([OBJECTION], [first["key"]], False)
     assert '"needs_attention"' in (tmp_path / "courier.jsonl").read_text(encoding="utf-8")
-    # The next tick reads the handled key back: it plans the report and no annotation, so the model is never asked again.
+    # The next tick plans no annotation at all: the objection goes to the model's triage in the next run.
     second = plan_recover(_facts(_review(), handled))
-    assert [(a["kind"], a["cause"]) for a in second] == [("needs_chair", "repeated_objection")]
-    perform([{**a, "epoch": 1} for a in second], _deps(tmp_path, handled, note), lambda: 1, False)
+    assert [a["kind"] for a in second] == ["request_triage"]
     assert asked == [OBJECTION]
 
 
@@ -147,18 +155,22 @@ def test_a_harness_quarantine_the_old_rules_rescue_stays_a_rescue() -> None:
     assert [a["kind"] for a in plan] == ["rescue"]
 
 
-def test_a_blank_held_objection_reports_under_its_own_cause() -> None:
-    plan = plan_recover(_facts(_review(held_objection="  ")))
+def test_a_blank_objection_still_goes_to_triage_which_reads_the_whole_record() -> None:
+    plan = plan_recover(_facts(_review(held_objection="  ", reason="  ")))
+    assert [a["kind"] for a in plan] == ["request_triage"]
+
+
+def test_a_review_objection_with_no_state_in_its_fact_reports_under_its_own_cause() -> None:
+    plan = plan_recover(_facts(_quarantine(cause="review", reason=OBJECTION, held_objection=OBJECTION)))
     assert [(a["kind"], a["cause"]) for a in plan] == [("needs_chair", "review")]
+    assert plan[0]["remedy"] == remedy_for("review", "", "t1", "")["kind"]
 
 
-def test_a_repeated_objection_carries_its_own_remedy_and_holds_back_a_sibling_retry() -> None:
-    key = chair_sort.objection_key("t1", OBJECTION)
+def test_a_held_review_quarantine_does_not_hold_back_a_sibling_retry() -> None:
     sibling = _quarantine(task_id="t2")
-    facts = {**_facts(_review(), [key]), "quarantines": [_review(), sibling]}
+    facts = {**_facts(_review(), [chair_sort.triage_key("t1", "i-4")]), "quarantines": [_review(), sibling]}
     plan = plan_recover(facts)  # type: ignore[arg-type]
-    assert [(a["kind"], a["task_id"], a["cause"]) for a in plan] == [("needs_chair", "t1", "repeated_objection")]
-    assert plan[0]["remedy"] == remedy_for("repeated_objection", "", "t1", "")["kind"]
+    assert [(a["kind"], a["task_id"]) for a in plan] == [("hold_task", "t1"), ("retry", "t2")]
 
 
 def test_a_tick_plans_the_sorted_actions_through_plan_tick() -> None:
