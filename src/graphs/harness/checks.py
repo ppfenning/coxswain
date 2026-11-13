@@ -163,6 +163,9 @@ def check_outcome(returncode: int | None, error: str | None) -> str:
 def repo_checks(text: str) -> list[dict]:
     """Parse a `.agent-checks` file: one shell command per line, pure.
 
+    A line may end `# fix: <command>`: the check then carries that `fix`, which the build runs mechanically
+    before the gate (a formatter, for example) instead of failing the task on a style-only difference.
+
     Blank lines and lines starting with `#` are ignored. Each surviving line,
     stripped, becomes an entry whose `name` and `cmd` are the stripped line
     itself, so a failure names the whole command. A duplicate `cmd` keeps only
@@ -173,8 +176,21 @@ def repo_checks(text: str) -> list[dict]:
     if not isinstance(text, str):
         return []
     lines = (stripped for stripped in (line.strip() for line in text.splitlines()) if stripped and not stripped.startswith("#"))
-    unique = dict.fromkeys(lines)  # first occurrence wins, order preserved
-    return [{"name": line, "cmd": line} for line in unique]
+    entries: dict[str, dict] = {}  # first occurrence of a cmd wins, order preserved
+    for line in lines:
+        cmd, fix = _split_fix(line)
+        entries.setdefault(cmd, {"name": line, "cmd": cmd, **({"fix": fix} if fix else {})})
+    return list(entries.values())
+
+
+_FIX_MARK = re.compile(r"\s+#\s*fix:\s*(\S.*)$")
+
+
+def _split_fix(line: str) -> tuple[str, str]:
+    """A `.agent-checks` line as (command, fix command). `cmd  # fix: other` names `other` as the check's fix, and the
+    comment never reaches the gate's shell; any other trailing comment stays part of the line."""
+    mark = _FIX_MARK.search(line)
+    return (line[: mark.start()].rstrip(), mark.group(1).strip()) if mark else (line, "")
 
 
 def fixable_checks(checks: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
