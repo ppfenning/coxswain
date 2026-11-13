@@ -248,3 +248,11 @@ def test_verdict_migrate_skip_with_migrations_declared_fails():
 
 def test_verdict_migrate_skip_with_none_declared_is_not_a_failure():
     assert rehearsal.verdict({"fresh": "pass", "upgrade": "pass", "migrate": "skip"}, [])[0] == 0
+
+
+def test_a_machine_with_no_stored_token_awaits_setup_and_a_bad_token_still_fails():
+    waiting = {"check": "claude token", "ok": False, "detail": "no token file at ~/.config/agent-tools/claude-token; run cox setup token"}
+    rows = [{"check": "uv", "ok": True, "detail": "0.9"}, waiting]
+    assert rehearsal.doctor_problem(json.dumps({"rows": rows})) is None
+    wrong = {"check": "claude token", "ok": False, "detail": "token file at ~/.config/agent-tools/claude-token has mode 644; it must be 600"}
+    assert rehearsal.doctor_problem(json.dumps({"rows": [rows[0], wrong]})).startswith("doctor: claude token failed")
