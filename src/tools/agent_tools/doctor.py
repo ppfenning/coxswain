@@ -222,6 +222,8 @@ def _claude_token_row(facts: Mapping) -> dict:
         # Passes on purpose: doctor stays green until the wiring task gathers the fact.
         return {"check": "claude token", "ok": True, "detail": _NOT_CHECKED}
     path, mode = token["path"], token["mode"]
+    if token.get("source"):
+        return {"check": "claude token", "ok": True, "detail": f"token from {token['source']} in the environment"}
     if not token["present"]:
         return {"check": "claude token", "ok": False, "detail": f"no token file at {path}; run cox setup token"}
     if token["empty"]:

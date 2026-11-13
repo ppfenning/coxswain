@@ -129,10 +129,47 @@ def test_status_no_file_runs_nothing(capsys):
     def run(argv, env):
         raise AssertionError("must not run")
 
-    code = status(True, path="/p", read_token=lambda p: None, run=run)
+    code = status(True, path="/p", read_token=lambda p: None, run=run, environ={})
     report = json.loads(capsys.readouterr().out)
     assert code == 1
     assert report["tokenFile"] is False and report["loggedIn"] is False
+
+
+def test_status_takes_a_token_kept_in_the_environment_when_there_is_no_file(capsys):
+    run, calls = recorder([(0, LOGGED_IN), (0, "ok")])
+    code = status(True, path="/p", read_token=lambda p: None, run=run, environ={TOKEN_ENV: f"  {TOKEN}\n", "A": "1"})
+    out = capsys.readouterr().out
+    report = json.loads(out)
+    assert code == 0 and report["loggedIn"] is True and report["tokenFile"] is True
+    assert report["tokenSource"] == TOKEN_ENV and TOKEN not in out, "the source is named; the value never is"
+    assert calls[0][1][TOKEN_ENV] == TOKEN and calls[0][1]["A"] == "1" and len(calls) == 2
+
+
+def test_status_prefers_the_file_over_the_environment_and_says_nothing_of_a_source(capsys):
+    run, calls = recorder([(0, LOGGED_IN)])
+    assert status(False, path="/p", read_token=lambda p: TOKEN, run=run, environ={TOKEN_ENV: "other"}) == 0
+    assert "tokenSource" not in json.loads(capsys.readouterr().out) and calls[0][1][TOKEN_ENV] == TOKEN
+
+
+def test_status_with_an_empty_environment_token_is_still_no_token(capsys):
+    def run(argv, env):
+        raise AssertionError("must not run")
+
+    assert status(True, path="/p", read_token=lambda p: None, run=run, environ={TOKEN_ENV: "  "}) == 1
+    assert json.loads(capsys.readouterr().out)["tokenFile"] is False
+
+
+def test_token_fact_counts_a_token_in_the_environment_only_when_there_is_no_file(tmp_path):
+    from agent_tools.setup_token import token_fact
+
+    missing = str(tmp_path / "claude-token")
+    assert token_fact(missing, {})["present"] is False
+    fact = token_fact(missing, {TOKEN_ENV: TOKEN})
+    assert fact == {"path": missing, "present": True, "empty": False, "mode": None, "source": TOKEN_ENV}
+    stored = tmp_path / "stored"
+    stored.write_text(TOKEN)
+    stored.chmod(0o600)
+    assert "source" not in token_fact(str(stored), {TOKEN_ENV: "other"})
 
 
 def test_status_passes_stored_token_over_caller_env(capsys):

@@ -10,6 +10,7 @@ import subprocess
 from collections.abc import Callable, Mapping
 
 from agent_tools.claude_token import (
+    TOKEN_ENV,
     claude_env,
     parse_token_text,
     status_report,
@@ -108,11 +109,17 @@ def status(
     run: Callable[[list[str], Mapping[str, str]], tuple[int, str]],
     environ: Mapping[str, str] | None = None,
 ) -> int:
+    environment = os.environ if environ is None else environ
     token = read_token(path)
+    source = "file"
+    if token is None:
+        # A token the operator keeps in the environment (an env file the shell or the service unit loads) is a
+        # stored token too: the file is only one place to keep it. Nothing is copied; the value is never printed.
+        token, source = (environment.get(TOKEN_ENV) or "").strip() or None, "environment"
     if token is None:
         report = status_report(path, False, "", None, "")
     else:
-        env = claude_env(os.environ if environ is None else environ, token)
+        env = claude_env(environment, token)
         auth_exit, auth_out = _attempt(run, _AUTH_ARGV, env, token)
         auth = _json_object(auth_out)
         if auth is None and auth_exit != 0:
@@ -124,15 +131,21 @@ def status(
         else:
             probe_exit, tail = None, ""
         report = status_report(path, True, auth_out, probe_exit, tail)
+        if source == "environment":
+            report = {**report, "tokenSource": TOKEN_ENV}
     print(json.dumps(report))
     return 0 if report["loggedIn"] is True else 1
 
 
-def token_fact(path: str) -> dict:
+def token_fact(path: str, environ: Mapping[str, str] | None = None) -> dict:
     """The mapping doctor judges. mode is the permission bits as an int, None when absent.
 
     A file that exists but cannot be read is present and not empty: empty is claimed only from text actually read.
+    With no file, a token in the environment counts: the fact then carries `source` set to the variable's name, and
+    no mode, because there is no file to protect.
     """
+    if not os.path.exists(path) and ((os.environ if environ is None else environ).get(TOKEN_ENV) or "").strip():
+        return {"path": path, "present": True, "empty": False, "mode": None, "source": TOKEN_ENV}
     try:
         with open(path, encoding="utf-8") as fh:
             mode = stat.S_IMODE(os.fstat(fh.fileno()).st_mode)
