@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from runner.claude_code_runner import _DIFF_CMD
 from runner.protocol import BudgetStop
 from runner.tool_loop import (
     TOOLS,
@@ -67,7 +68,7 @@ def test_a_read_then_an_edit_then_a_final_answer_returns_the_worktrees_staged_di
     result = run(adapter, worktree)
     assert result.stop_reason == "final"
     assert result.patch_error is None
-    assert result.patch == git(worktree, "git add -A && git diff --cached")
+    assert result.patch == git(worktree, _DIFF_CMD)
     assert "+2" in result.patch
     assert adapter.seen[1][-1]["content"] == "one\ntwo\nthree\n"
 

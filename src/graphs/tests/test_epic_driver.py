@@ -2648,6 +2648,7 @@ def test_a_phase_of_done_and_dropped_records_is_complete(repo, cart, tmp_path) -
     assert runner.calls == [], "every item was already done or dropped — nothing to build or review"
 
 
+@pytest.mark.usefixtures("at_task")
 def test_a_stale_empty_reused_branch_is_recreated_before_any_task_builds(repo, cart, tmp_path) -> None:
     """Refused day one leaves the branch equal to its base — nothing of its own to lose."""
     work = initiative(two_phases=False)
@@ -2666,6 +2667,7 @@ def test_a_stale_empty_reused_branch_is_recreated_before_any_task_builds(repo, c
     assert [p for p in second["proposals"] if p["kind"] == "stack_rebase"] == []
 
 
+@pytest.mark.usefixtures("at_task")
 def test_a_stale_reused_branch_with_its_own_commits_blocks_rather_than_building(repo, cart, tmp_path) -> None:
     work = initiative(two_phases=False)
     first, _ = drive(repo, cart, tmp_path, work=work, run_id="epic-1")
@@ -2731,6 +2733,7 @@ def _with_states(**states: str) -> dict:
     return work
 
 
+@pytest.mark.usefixtures("at_task")
 def test_a_phase_whose_unlanded_commits_are_all_approved_awaits_their_land(repo, cart, tmp_path) -> None:
     before = _stale_branch_with_two_task_commits(repo, cart, tmp_path)
     result, runner = drive(repo, cart, tmp_path, work=_with_states(t1="approved", t2="approved"), run_id="epic-2")
@@ -2742,6 +2745,7 @@ def test_a_phase_whose_unlanded_commits_are_all_approved_awaits_their_land(repo,
     assert git("rev-parse", BRANCH, cwd=repo) == before
 
 
+@pytest.mark.usefixtures("at_task")
 def test_a_ready_task_builds_beside_an_approved_unlanded_sibling(repo, cart, tmp_path) -> None:
     only_t1 = initiative(two_phases=False)
     only_t1["items"] = only_t1["items"][:1]
@@ -2763,6 +2767,7 @@ def test_a_ready_task_builds_beside_an_approved_unlanded_sibling(repo, cart, tmp
     assert result.get("exit_code") != EXIT_AWAITING_LAND
 
 
+@pytest.mark.usefixtures("at_task")
 def test_a_phase_whose_unlanded_commits_are_all_done_is_recreated_not_rebased(repo, cart, tmp_path, monkeypatch) -> None:
     _stale_branch_with_two_task_commits(repo, cart, tmp_path)
     rebases: list[str] = []
@@ -2773,6 +2778,7 @@ def test_a_phase_whose_unlanded_commits_are_all_done_is_recreated_not_rebased(re
     assert is_ancestor(repo, "main", BRANCH)
 
 
+@pytest.mark.usefixtures("at_task")
 def test_a_task_sent_back_with_rebuild_is_built_from_the_build_node(repo, cart, tmp_path) -> None:
     """Approved, built on the phase branch, main moved (the land conflicted), then `--rebuild` set it ready."""
     _stale_branch_with_two_task_commits(repo, cart, tmp_path)
@@ -2785,6 +2791,7 @@ def test_a_task_sent_back_with_rebuild_is_built_from_the_build_node(repo, cart, 
     assert not any("t1-probe" in c["prompt"] for c in runner.calls)
 
 
+@pytest.mark.usefixtures("at_task")
 def test_a_blocked_phase_prints_the_task_and_the_state_it_read(repo, cart, tmp_path, capsys) -> None:
     _stale_branch_with_two_task_commits(repo, cart, tmp_path)
     result, _ = drive(repo, cart, tmp_path, work=_with_states(t1="approved", t2="ready"), run_id="epic-2")
@@ -2800,6 +2807,7 @@ def test_blocked_line_names_the_reason_or_says_none_was_recorded() -> None:
     assert blocked_line({"phase": "p1", "status": "complete", "reason": "x"}) is None
 
 
+@pytest.mark.usefixtures("at_task")
 def test_an_awaiting_land_phase_prints_its_tasks_and_a_land_line_for_each(repo, cart, tmp_path, capsys) -> None:
     _stale_branch_with_two_task_commits(repo, cart, tmp_path)
     capsys.readouterr()
@@ -2812,6 +2820,7 @@ def test_an_awaiting_land_phase_prints_its_tasks_and_a_land_line_for_each(repo, 
         assert f"cox runs land epic-2 --task {task} --repo {repo} --apply" in lines
 
 
+@pytest.mark.usefixtures("at_task")
 def test_a_dependent_of_an_awaiting_land_phase_says_what_its_parent_waits_on(repo, cart, tmp_path, capsys) -> None:
     _stale_branch_with_two_task_commits(repo, cart, tmp_path)
     work = initiative()
@@ -2890,6 +2899,7 @@ def test_awaiting_land_lines_speak_only_for_an_awaiting_land_record() -> None:
         assert awaiting_land_lines({"phase": "p1", "status": status, "awaiting_tasks": ["t1"]}, "r-1", "/repo") == []
 
 
+@pytest.mark.usefixtures("at_task")
 def test_a_dependent_of_a_plainly_blocked_parent_keeps_the_goal_text(repo, cart, tmp_path) -> None:
     _stale_branch_with_two_task_commits(repo, cart, tmp_path)
     work = initiative()
@@ -2908,6 +2918,7 @@ def test_blocking_commits_names_each_task_once_with_the_state_read() -> None:
     ]
 
 
+@pytest.mark.usefixtures("at_task")
 def test_a_phase_of_done_and_approved_commits_is_rebased_and_proceeds(repo, cart, tmp_path, monkeypatch) -> None:
     _stale_branch_with_two_task_commits(repo, cart, tmp_path)
     rebases: list[str] = []
@@ -2922,6 +2933,7 @@ def test_a_phase_of_done_and_approved_commits_is_rebased_and_proceeds(repo, cart
     assert is_ancestor(repo, "main", BRANCH)
 
 
+@pytest.mark.usefixtures("at_task")
 def test_a_rebase_conflict_aborts_and_quarantines_the_phase(repo, cart, tmp_path) -> None:
     before = _stale_branch_with_two_task_commits(repo, cart, tmp_path, main_adds=("moved.md", "t1-probe.txt"))
     result, runner = drive(repo, cart, tmp_path, work=_with_states(t1="done", t2="approved"), run_id="epic-2")
@@ -2947,6 +2959,7 @@ def test_a_merge_conflict_quarantines_as_infra_with_a_harness_cause(repo, cart, 
     assert tuple(attempt) == (0, "infra", "harness", "merge conflict")
 
 
+@pytest.mark.usefixtures("at_task")
 def test_a_stale_branch_whose_commits_cancel_out_still_blocks(repo, cart, tmp_path) -> None:
     """Two of its own commits, net zero lines — patch-id sees two real, unlanded commits and blocks."""
     branch = "epic/demo-initiative/p1-foundations"
@@ -2967,6 +2980,7 @@ def test_a_stale_branch_whose_commits_cancel_out_still_blocks(repo, cart, tmp_pa
     assert result["phases"][0]["status"] == "blocked"
 
 
+@pytest.mark.usefixtures("at_task")
 def test_a_stale_branch_squash_merged_onto_main_is_recreated_not_blocked(repo, cart, tmp_path) -> None:
     """A commit whose patch-id already landed on main (via squash-merge) is not 'its own' anymore."""
     branch = "epic/demo-initiative/p1-foundations"
@@ -2996,6 +3010,7 @@ def test_a_stale_branch_squash_merged_onto_main_is_recreated_not_blocked(repo, c
     assert [p for p in result["proposals"] if p["kind"] == "stack_rebase"] == []
 
 
+@pytest.mark.usefixtures("at_task")
 def test_a_stale_branch_whose_diff_adds_a_line_still_blocks(repo, cart, tmp_path) -> None:
     branch = "epic/demo-initiative/p1-foundations"
     git("checkout", "-b", branch, cwd=repo)
@@ -3427,29 +3442,82 @@ def test_a_quarantined_task_records_an_attempt_on_its_own_work_item(repo, cart, 
 # ── the previous attempt's reasons and patch, carried into the ticket body ──
 
 
-def test_a_recorded_attempt_carries_its_reason_and_last_patch_into_both_prompts(repo, cart, tmp_path) -> None:
-    """What worked by hand seven times: the reference implementation and the objections, in the body."""
-    work = initiative()
+class TreeReading(Runner):
+    """A runner that reads a tree, as the real one does: each build records what it found at `repo_dir`."""
+
+    repo_dir = None
+    repo_digest = None
+    check_commands: ClassVar[list] = []
+
+    def __init__(self, patches, **kw) -> None:
+        super().__init__(patches, **kw)
+        self.seen: dict[str, list] = {}
+
+    def run(self, *, role, prompt, **kw):
+        if role == "build" and self._subject(prompt, TASK_IDS) == "t1-probe":
+            old = Path(str(self.repo_dir)) / "t1-probe-old.txt"
+            self.seen.setdefault("builds", []).append(old.read_text(encoding="utf-8") if old.is_file() else None)
+        return super().run(role=role, prompt=prompt, **kw)
+
+
+EDIT_OLD = (
+    "diff --git a/t1-probe-old.txt b/t1-probe-old.txt\n--- a/t1-probe-old.txt\n+++ b/t1-probe-old.txt\n"
+    "@@ -1 +1 @@\n-distinctive-marker\n+ok\n"
+)
+
+
+def _with_a_recorded_attempt(tmp_path, last_patch: str) -> dict:
+    work = initiative(two_phases=False)
     work["items"][0]["attempts"] = [
         {"run": "epic-0", "phase": "p1-foundations", "reason": "checks failed: state 1 failed", "ts": "t"}
     ]
     save_result(
-        {"ticket": "t1-probe", "build": {"patch": new_file_patch("t1-probe-old.txt", "distinctive-marker")}},
+        {"ticket": "t1-probe", "build": {"patch": last_patch}},
         runs_dir=tmp_path / "runs", run_id="epic-0", phase="p1-foundations", task="t1-probe",
     )
+    return work
+
+
+def test_a_rebuild_starts_from_the_last_attempt_in_its_tree_and_only_the_change_is_built(repo, cart, tmp_path) -> None:
+    """Nothing finished is regenerated: the builder finds its last attempt, whole, and returns the fix on top of it.
+
+    The attempt added a file the repo's check refuses; the rebuild changes that one line."""
+    work = _with_a_recorded_attempt(tmp_path, new_file_patch("t1-probe-old.txt", "distinctive-marker"))
+    runner = TreeReading({"t1-probe": EDIT_OLD, "t2-bench": new_file_patch("t2-bench.txt"), "t3-cutover": new_file_patch("t3-cutover.txt")})
+
+    result, runner = drive(repo, cart, tmp_path, work=work, runner=runner)
+
+    assert runner.seen["builds"] == ["distinctive-marker\n"], "one build, and the last attempt was in the tree it read"
+    for role in ("plan", "build"):
+        prompt = next(c["prompt"] for c in runner.calls if c["role"] == role and "t1-probe" in c["prompt"])
+        assert "checks failed: state 1 failed" in prompt
+        assert "Your previous attempt is in the tree you are working in, in full, as commit " in prompt
+        assert "Do not rebuild, rewrite or remove what is already there." in prompt
+        assert "```diff" not in prompt, "no reference patch to retype"
+    assert next(t for t in result["tasks"] if t["id"] == "t1-probe")["state"] == "approved"
+    # What merged is the attempt and the change as one: the file the attempt added, with the fix in it.
+    assert git("show", "epic/demo-initiative/p1-foundations:t1-probe-old.txt", cwd=repo) == "ok"
+    saved = load_result(tmp_path / "runs", "epic-1", "p1-foundations", "t1-probe")["build"]
+    assert saved["change"] == EDIT_OLD and "new file mode" in saved["patch"] and "+ok" in saved["patch"]
+    assert saved["resumed_from"] and git("worktree", "list", cwd=repo).count("--attempt--") == 0, "the attempt tree went with the run"
+
+    # The sibling with no attempts carries nothing.
+    sibling = next(c["prompt"] for c in runner.calls if c["role"] == "plan" and "t2-bench" in c["prompt"])
+    assert "## Previous attempts" not in sibling and "Your previous attempt" not in sibling
+
+
+def test_a_last_attempt_that_no_longer_applies_rides_along_as_a_reference_instead(repo, cart, tmp_path) -> None:
+    """The phase moved under it (here: the file it adds exists). The builder still gets all of it, to read."""
+    work = _with_a_recorded_attempt(tmp_path, new_file_patch("README.md", "distinctive-marker"))
 
     result, runner = drive(repo, cart, tmp_path, work=work)
 
     for role in ("plan", "build"):
         prompt = next(c["prompt"] for c in runner.calls if c["role"] == role and "t1-probe" in c["prompt"])
         assert "checks failed: state 1 failed" in prompt
-        assert "distinctive-marker" in prompt
-        assert "NOT approved" in prompt
-
-    # The sibling with no attempts carries nothing.
-    sibling = next(c["prompt"] for c in runner.calls if c["role"] == "plan" and "t2-bench" in c["prompt"])
-    assert "## Previous attempts" not in sibling
-    assert "```diff" not in sibling
+        assert "distinctive-marker" in prompt and "NOT approved" in prompt
+        assert "Your previous attempt is in the tree" not in prompt
+    assert next(t for t in result["tasks"] if t["id"] == "t1-probe")["state"] == "approved"
 
 
 def test_a_recorded_attempt_with_no_saved_result_still_carries_its_reason(repo, cart, tmp_path) -> None:

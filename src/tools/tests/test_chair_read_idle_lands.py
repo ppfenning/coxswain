@@ -73,24 +73,23 @@ def test_a_truncated_read_of_complete_checks_is_still_waiting() -> None:
 
 def test_a_merged_land_is_not_unmerged() -> None:
     merged = {**_ROW, "steps_reached": ["pr_create", "wait_checks", "merge"]}
-    assert unmerged_lands([json.dumps(_ROW), json.dumps(merged)], _NOW) == []
+    assert unmerged_lands([_ROW, merged], _NOW) == []
 
 
 def test_a_land_older_than_the_recent_window_is_skipped() -> None:
-    assert unmerged_lands([json.dumps({**_ROW, "ts": "2026-09-01T00:00:00+00:00"})], _NOW) == []
+    assert unmerged_lands([{**_ROW, "ts": "2026-09-01T00:00:00+00:00"}], _NOW) == []
 
 
 def test_rows_are_capped_newest_first() -> None:
     rows = [
-        json.dumps({**_ROW, "task": f"t{i}", "pr": f"{_PR}{i}", "ts": f"2026-10-05T01:0{i}:00+00:00"})
-        for i in range(3)
+        {**_ROW, "task": f"t{i}", "pr": f"{_PR}{i}", "ts": f"2026-10-05T01:0{i}:00+00:00"} for i in range(3)
     ]
     assert [r["task"] for r in unmerged_lands(rows, _NOW, cap=2)] == ["t2", "t1"]
 
 
 def test_waiting_since_is_the_earliest_row_for_the_pr() -> None:
     later = {**_ROW, "ts": "2026-10-05T01:30:00+00:00"}
-    assert unmerged_lands([json.dumps(_ROW), json.dumps(later)], _NOW)[0]["waiting_since"] == _TS
+    assert unmerged_lands([_ROW, later], _NOW)[0]["waiting_since"] == _TS
 
 
 def test_a_status_text_is_carried_into_forge_status(tmp_path: Path) -> None:

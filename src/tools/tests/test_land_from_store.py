@@ -264,16 +264,6 @@ def test_a_phase_lease_refused_stops_the_phase_land_before_any_step(repo, tmp_pa
     assert "phase:x/seams is being landed by other@host:5 (lease epoch 2)" in capsys.readouterr().out
 
 
-def test_files_mode_reads_no_task_state_and_takes_no_lease_and_sets_no_expectation(repo, tmp_path, monkeypatch, store, capsys):
-    rc, ran = _land(repo, tmp_path, monkeypatch, store, work_state=None)
-    assert (rc, ran[-1]) == (0, "mark_done")
-    # No task-scoped lease under files mode; the repo-scoped lease still wraps the run regardless of mode.
-    assert store.calls == [("acquire", f"land:{repo}"), ("set_state", "x", "seams-task", "done", None),
-                           ("release", f"land:{repo}", 1)]  # the existing unconditional mirror, no --expect
-    assert "state: done" in store.item.read_text(encoding="utf-8")
-    assert "land: state from" not in capsys.readouterr().err
-
-
 def test_backfill_writes_missing_task_record_files_from_the_store_and_they_plan(tmp_path, monkeypatch):
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir()

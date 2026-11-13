@@ -86,11 +86,6 @@ def test_land_at_ticket_plans_no_land_for_phase_one_while_the_epic_is_incomplete
     assert _kinds(actions, LANDS) == []
 
 
-def test_land_at_level_still_lands_phase_one_at_its_boundary(tmp_path):
-    actions, _ = _planned("level", tmp_path)
-    assert [a["phase"] for a in _kinds(actions, LANDS)] == ["p1"]
-
-
 def test_land_at_task_lands_phase_one_and_holds_phase_two(tmp_path):
     actions, backlog = _planned("task", tmp_path)
     assert [a["kind"] for a in actions][:1] == ["land_phase"]

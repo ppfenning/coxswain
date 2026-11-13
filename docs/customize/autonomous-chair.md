@@ -40,15 +40,17 @@ The status line looks like this:
 chair 09-26 12:30 EDT | lanes 1/8 | lands 0 | limits 5h 20% weekly 75%/93% | needs chair: none
 ```
 
-When the profile names a shared Postgres store, the loop also prints where
-it reads the board from. If the store is unreachable, that line reads:
+The loop also prints where it reads the board from, which is always the
+store. If the store is unreachable, that line reads:
 
 ```text
-work state: files (store unreachable)
+work state: store (unreachable)
 ```
 
-A local SQLite store keeps the ticket files as the board and needs no shared
-store; local-first stays the default.
+Nothing stands in for the store. Commands that need it fail and say so
+until it answers, and no state is written to the ticket files in the
+meantime. The store is Postgres; a local SQLite store and the `files` work
+state are retired.
 
 ## Running it
 
@@ -307,9 +309,64 @@ conflicts per path in that log. A path that conflicts often belongs in
 
 ## The workspace checkout
 
-The workspace (`work/`, `intake/`, `runs/`) is a git checkout. The loop
-keeps it in step with its upstream on every live tick. A dry run does
+The workspace (`work/`, `intake/`, `runs/`) is a git checkout by default. The
+loop keeps it in step with its upstream on every live tick. A dry run does
 neither step.
+
+With a shared store the checkout is not needed. The store holds every intake,
+initiative and task, text and state, and `work/` and `intake/` are files
+written from it. Turn the git steps off in the profile:
+
+```yaml
+chair:
+  workspace_git: false
+```
+
+The loop then pulls nothing and commits and pushes nothing. It still writes
+the files, so everything that reads them keeps working, and they are this
+machine's own copy. Any machine refreshes its copy from the store with:
+
+```sh
+cox route export
+```
+
+With git off, the tick reads its work from the store's rows, rendered as the
+files would be, and opens no work file. A decompose writes its plan to the
+store as rows on whichever machine ran it, a lane host included: a detached
+launch runs the same command in the background, to completion. The export
+still loads any ticket file the store has not got before it writes, so a
+ticket written by hand as a file is not deleted.
+
+You rarely need to run that by hand. With git off, `cox route`, `runs`,
+`lander`, `epic`, `console` and `dash` check the store's version first and
+rewrite the files only when a row changed since the last write. A file that
+is an unchanged copy of a row the store has since dropped is deleted, so a
+machine that was behind never puts the row back. A store that cannot be
+reached leaves the files as they are and the command still runs.
+
+**Cartridges stay yours.** They are written and versioned where you keep
+them; the store never becomes the place they are authored. With git off and
+a shared store, a launch to a lane host publishes the exact files of the
+chair's `cartridges/` directory to the store under the digest of those
+files, and the lane host writes that snapshot itself before the run. Nothing
+is copied from machine to machine, and a host that cannot produce the same
+digest stops the launch. A publish that fails falls back to the copy.
+
+```sh
+cox route cartridges publish             # prints the sha
+cox route cartridges fetch --sha <sha>   # writes it into cartridges_dir
+```
+
+A fetch refuses to write over cartridges a person put there or edited. Only
+a directory that is empty, or still exactly what the last fetch left, is
+replaced without `--replace`.
+
+With a shared store the courier bus is the store's `courier_log` table, one
+bus for every machine, with git on or off. The first use loads what
+`courier.jsonl` already held. `cox courier send`, `inbox` and `ack` work as
+before.
+
+The rest of this section describes the default, with git on.
 
 **Pull.** Right after the beat, the loop runs
 `git pull --ff-only --autostash` in the workspace. Uncommitted changes are
@@ -452,7 +509,40 @@ chair. [Several machines](several-machines.md) shows how to set that up.
 
 ### Starting a session beside the chair
 
-A bare `cox` session decides whether to take the chair as it starts. The
+A bare `cox` launch runs in one of two modes, and it picks the mode before it
+reads anything else about the chair.
+
+With a live chair service holding a fresh lease under another label, the
+launch attaches. It opens a Claude Code session with the chair's MCP server
+configured and resumes the operator's stored conversation with the chair. It
+works from any directory. It never reads the chair record to take it, never
+takes or steals the lease, and starts no beater. The [MCP server](mcp.md)
+page lists what the attached session can read and change.
+
+With no live chair, the launch starts the workspace session that can act as
+the chair, so a one-machine setup works as it always did. The rest of this
+section describes that session.
+
+The reason for the split: since the chair became the `coxswain-chair`
+service, a session started in the workspace only converses, and a workspace
+session that resumed could take the service's lease. Attaching over MCP
+removes that risk, and lets any Claude client that has the server configured
+do the same.
+
+The `--workspace` flag forces the workspace session even when a chair is
+live. The `--print-argv` flag shows which mode would run, and its argv,
+without starting anything. `cox session` takes both flags too.
+
+The coxswain plugin's operator commands (intake, stage, approve, land and
+status) call the MCP tools when the server is reachable and use the command
+line otherwise. So a plain Claude Code session with the server configured
+behaves like the attached one.
+
+The attached session stores its conversation id in `mcp-conversation.json`
+under `coxswain` in the state directory (`$XDG_STATE_HOME`, else
+`~/.local/state`). Every entry it sends to the chair carries that id.
+
+A workspace session decides whether to take the chair as it starts. The
 `session_takes` key under `chair:` in the profile sets the policy. These are
 the lines to add, at the top level of the profile file:
 
@@ -481,8 +571,10 @@ With `always`, a session takes or resumes a free or stale chair as `when_free`
 does. It also takes the chair from another session without showing the offer.
 
 None of the three values lets a session displace a live chair loop. The loop
-may be the systemd service or another running chair loop. A session started
-beside it opens as a non-chair session and prints one of these lines:
+may be the systemd service or another running chair loop. A bare launch
+beside it attaches over MCP, as described above. A workspace session forced
+with `--workspace`, or started beside a loop that carries the session's own
+label, opens as a non-chair session and prints one of these lines:
 
 ```text
 chair held by <label> (service)
@@ -556,148 +648,43 @@ The planner allows these routine kinds and no others:
 - `needs_chair` raises something for you to read.
 - `waiting` reports an initiative blocked on other work.
 - `deferred` reports a phase whose land is held until a later time.
-- `merge_level`, `run_gate` and `steward_event` are the [steward's](#the-steward)
-  merges, gates and events. They appear only when the steward is on.
 
 Quarantines, budget stops and anything that needs a decision stay with you.
 They show in the inbox.
 
-## The steward
+## The lander
 
-The steward runs an epic's routine steps without a model. It decides from
-facts alone, and it reports each step as a typed event on the courier bus.
-
-The steward is off by default. Turn it on with `chair.steward` in the
-agent-tools profile. These are the exact lines to add. They go at the top level
-of the profile file:
-
-```yaml
-chair:
-  steward: true
-```
-
-The profile accepts `true`, `false`, `yes` and `no` in any case. `true` and
-`yes` turn the steward on. `false`, `no` and an absent key leave it off, and the
-loop gathers no steward facts. Any other value makes the profile unreadable, and
-the error names the line.
-
-The other chair keys sit in the same block and are numbers. They are
-`housekeeping_hours`, `stale_days`, `idle_stall_minutes`, `launch_stagger_s` and
-`max_launches_per_hour`.
-
-The doctor report has a `steward` row. It shows `on` or `off`.
-
-Do not turn `chair.steward` on yet. Today the profile setting is the only part
-of the steward the run command wires. The loop does not yet pass the steward
-these inputs:
-
-- The bus entries it has already published. Without them the reported set is
-  always empty, so a quarantine is announced again on every tick. The steward
-  also relaunches on every tick and never reports `stuck`.
-- The ticket branch head and whether a level has merged. Without them the head
-  is blank and a settled level never counts as merged.
-- The executor and the checks. Without them every merge and every gate is
-  refused with `no steward executor`, and no `level_merged`, `merge_failed`,
-  `gate_passed` or `gate_failed` event is published.
-
-That wiring is separate work. The rules below describe what the steward
-decides once those inputs are wired. This page changes when that work lands.
-
-The steward follows these rules for each epic:
-
-- It announces a quarantine once. A quarantined task raises `needs_attention`
-  one time, and it is not raised again while the task stays quarantined.
-- It merges an approved level once the build, vet and unit checks pass. The
-  loop supplies those checks. The merge always comes before a relaunch.
-- It relaunches an exited epic once for each state of its tasks. If the epic
-  exits again with the same task states, it reports `stuck` and stops. It
-  never relaunches while a task is quarantined.
-- It runs the integration gate once for each ticket branch head. Gates run
-  one at a time, so two epics never gate together. Under a hard stop the
-  gate waits, because a gate run can spend what the stop protects. Merges and
-  events still go ahead.
-
-The steward acts when the loop holds the chair. It also acts while an
-interactive session holds the chair, once that session has run
-`cox chair attach --lend-routine`, because its merges, gates and events are
-routine kinds. With nothing lent, a standby loop does nothing, and the steward
-does nothing with it.
-
-A dry run shows what the steward would do before it acts:
+The chair's tick does not land initiatives. A second worker, the lander, runs
+beside it and owns the land queue:
 
 ```sh
-cox chair run --once --dry-run
+cox lander run --interval 30
+cox lander service --install
+cox lander status
 ```
 
-Each steward action appears as a line such as `would merge level 0 of <epic>`
-or `would run the gate of <epic>`. Nothing is merged, relaunched or published.
-The dry run shows the plan. It does not show whether the executor is wired.
+When a phase is built, the lander merges it into the initiative branch. When
+every phase has merged, it takes the initiative to its parent as one pull
+request. A conflict or a red check goes back to build as a rectify task. The
+[landing page](../methodology/landing.md#landing-granularity) describes the
+model.
 
-### The merge step by land_at
-
-The steward's merge step follows the initiative's `land_at` setting. The three
-values merge a level in three different ways.
-
-At `ticket`, the steward merges the level into `pr/<initiative>`. The steward
-creates that branch from the target branch the first time the initiative needs
-it.
-
-At `level`, the level lands as its own pull request, as a phase land does. The
-steward first fetches the runs that hold the level's approved tasks. A phase
-that was split lands one task at a time, each from that task's newest run. The
-land honours the land lock and waits for green checks.
-
-At `task`, the steward lands each approved task.
-
-One initiative's merge failure publishes `merge_failed` for that initiative. It
-never stops the steward from handling the other initiatives. The initiative's
-normal relaunch still runs after the failure.
-
-`run_gate` still reads `pr/<initiative>`. An initiative that lands at `level` or
-at `task` has no gate branch yet, so the gate has nothing to read for it.
-
-### The events
-
-The steward publishes eight typed events. Each is published under the epic's
-id as its topic.
-
-| Event | Fields | Wakes a model |
-| --- | --- | --- |
-| `needs_attention` | `task` | yes |
-| `level_merged` | `head`, `level` | no |
-| `merge_failed` | `head`, `level` | yes |
-| `relaunched` | `signature` | no |
-| `stuck` | `signature` | yes |
-| `gate_passed` | `head` | no |
-| `gate_failed` | `head` | yes |
-| `epic_complete` | `head` | no |
-
-`head` is the ticket branch head. `level` is the index of the level. `signature`
-is the sorted task states at the time. `task` is the id of the quarantined task.
-
-The fields of `merge_failed` and `gate_failed` are not fixed by the steward.
-The executor chooses them, and it falls back to the fields of the merge or
-gate action, which are the fields shown above. Read them by name and ignore
-any you do not know.
-
-A model is called only at epic start, at close and for the four events marked
-yes. The other four are read and acted on without one.
-
-A consumer reads the events by topic and event, and it acks under its own
-consumer name. This lists the entries that need a model:
+The lander tells the chair with a `needs_attention` entry on the courier when
+a phase is blocked, when a conflict cannot be sent back to build, and when a
+queue item has waited for an hour. A consumer reads typed entries by topic and
+event, and acks under its own consumer name:
 
 ```sh
-cox courier inbox --topic <epic> --event stuck --consumer <name> --wake
-```
-
-This acks one entry for that consumer only:
-
-```sh
+cox courier inbox --topic <initiative> --event needs_attention --consumer <name> --wake
 cox courier ack <id> --consumer <name>
 ```
 
 An ack under one consumer name hides the entry from that consumer and from no
 one else.
+
+The epic steward that used to merge levels and run a gate is removed. A
+profile that still sets `chair.steward` is read and ignored, and the doctor
+report's `steward` row says it is retired.
 
 ## Rescue
 

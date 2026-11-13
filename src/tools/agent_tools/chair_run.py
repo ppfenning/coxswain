@@ -13,11 +13,13 @@ from pathlib import Path
 from typing import NamedTuple
 
 from agent_tools import (
+    chair_chat,
     chair_exec,
     chair_land,
     chair_report,
     chair_tick_status,
     chair_timing,
+    courier,
     dash_chair_action,
     land_limit,
     land_repo_lease,
@@ -49,13 +51,16 @@ from agent_tools.notify_dispatch import dispatch
 from agent_tools.notify_events import events_from_tick
 
 __all__ = [
-    "DEFAULT_INTERVAL", "FACTS_BOUND_SECONDS", "LAND_BEAT_INTERVAL", "RELEASE_HOLD_OFF_SECONDS", "TAKEOVER_GRACE_SECONDS", "GateState",
+    "CHAT_CONSUMER", "CHAT_REF", "DEFAULT_INTERVAL", "FACTS_BOUND_SECONDS", "LAND_BEAT_INTERVAL", "RELEASE_HOLD_OFF_SECONDS", "TAKEOVER_GRACE_SECONDS",
+    "ChatDeps", "GateState",
     "LeaseRejected", "OverrunState", "ReasonState", "ReleaseState", "RestartState", "RunDeps", "TickOverrun",
     "WorkerLands", "as_holder", "error_line", "finished_land", "land_sink", "next_gate_record", "no_landing", "no_lands_in_flight", "no_lands_to_stop", "overran",
-    "overrun_limit_hit", "overrun_line", "run", "tick", "tick_timed",
+    "overrun_limit_hit", "overrun_line", "run", "tick", "tick_timed", "unacked_chat",
 ]
 
 DEFAULT_INTERVAL = 60.0
+CHAT_CONSUMER = "chair"  # the consumer name the chair acks chat entries under
+CHAT_REF = courier.Reference("proposal", "chair-chat")  # every chat entry rides this reference; a chat names no work item
 PROFILE_STALE_NOTE = "profile re-read failed; keeping the last good profile"  # a segment of the one status line
 LAND_BEAT_INTERVAL = 30.0  # half a minute, so the chair lease is beaten at least once a minute while a land runs
 FACTS_BOUND_SECONDS = 180.0  # wall clock the facts stage may take before the tick is abandoned as an overrun
@@ -130,10 +135,17 @@ class OverrunState:
 
 @dataclass
 class RestartState:
-    """The (old, new) heads and the reason when the loop stopped because its checkout moved; None otherwise. Read after `run` returns."""
+    """The (old, new) heads when the checkout moved, and the reason for any restart; None otherwise. Read after `run` returns.
+
+    A reload restart sets `reason` only, so `restarted` is the test for a restart of either cause.
+    """
 
     moved: tuple[str, str] | None = None
     reason: str | None = None
+
+    @property
+    def restarted(self) -> bool:
+        return self.reason is not None
 
 
 @dataclass
@@ -174,6 +186,7 @@ class ReasonState:
     """The why-not-launched lines of the last tick; cleared as `tick_timed` starts, so a failed tick leaves none."""
 
     lines: list[str] = field(default_factory=list)
+    items: list[dict] = field(default_factory=list)  # the same reasons as data: {"initiative", "reason"}
 
 
 class TickOverrun(Exception):
@@ -195,6 +208,18 @@ def overrun_limit_hit(consecutive: int, limit: int) -> bool:
 
 def overrun_line(bound: float, count: int, now: datetime) -> str:
     return f"chair {now.astimezone(EASTERN):%m-%d %H:%M %Z} | overrun: facts stage over {bound:g}s ({count} in a row)"
+
+
+@dataclass(frozen=True)
+class ChatDeps:
+    """The edges of the directive step. `read` gives the courier's entries, latest state each; `save` also takes the epics
+    the tick saw, so a session can print them without the lease. `ack` marks one entry read by `CHAT_CONSUMER`."""
+
+    read: Callable[[], list[dict]]
+    load: Callable[[], chair_chat.DirectiveState]
+    save: Callable[[chair_chat.DirectiveState, list[dict]], None]
+    append: Callable[[dict], None]
+    ack: Callable[[str], object]
 
 
 @dataclass(frozen=True)
@@ -249,6 +274,7 @@ class RunDeps:
     monotonic: Callable[[], float] = time.monotonic
     restart_note: str = ""  # the "restarts N in 24h" segment appended to every tick line; "" for none
     record_restart: Callable[[str], None] | None = None  # given the reason when the loop restarts
+    reload_config: Callable[[], str | None] | None = None  # between live ticks: None carries on, a string is the restart reason
     save_cache: Callable[[], None] | None = None  # run on every live stop, before the lease is released
     force_holder: bool = False  # a dry run plans as the holder even behind a live foreign lease; a live tick never reads it
     # Notifier: `notify` is `dispatch`'s call shape; `notify_config` None is the off state; no `workspace` skips the step.
@@ -264,6 +290,8 @@ class RunDeps:
     release_requested: Callable[[], bool] | None = None
     release_state: ReleaseState = field(default_factory=ReleaseState)
     reason_state: ReasonState = field(default_factory=ReasonState)
+    # The chat edges; a live holder tick applies the directives a session sent since the last one. None skips the step.
+    chat: ChatDeps | None = None
 
 
 def finished_land(action: Action, outcome: chair_land.LandResult[Result] | None) -> Result:
@@ -512,6 +540,18 @@ def _publish_tick_status(deps: RunDeps, dry_run: bool, line: str, now: datetime)
         deps.write_tick_status(deps.runs_dir, deps.current_epoch(), text)
 
 
+def _publish_reasons(deps: RunDeps, dry_run: bool, now: datetime) -> None:
+    """Leave the tick's why-not-launched reasons in the runs directory, replacing the last tick's, so a server
+    beside the chair can answer "why did this not launch". They are never recorded as actions: there is one per
+    waiting initiative per tick. A dry run and a failed write leave the file as it was."""
+    if dry_run or deps.runs_dir is None:
+        return
+    with contextlib.suppress(Exception):
+        from agent_tools import mcp_ports
+
+        (deps.runs_dir / mcp_ports.UNLAUNCHED_FILE).write_text(mcp_ports.reasons_text(deps.reason_state.items, now.isoformat()), encoding="utf-8")
+
+
 def next_gate_record(was_paused: bool, gate: CiGate, held: tuple[str, ...], epoch: int) -> Action | None:
     """The one needs_chair for a gate that has just paused; the cause carries the reason, as perform records no reason."""
     if was_paused or not gate.paused:
@@ -565,6 +605,93 @@ def _gather_bounded(deps: RunDeps, sources: dict[str, float], now: datetime, clo
     return result
 
 
+def unacked_chat(entries: Sequence[dict]) -> list[dict]:
+    """The entries addressed to the chair on the chat topic that `CHAT_CONSUMER` has not acked."""
+    return [
+        e for e in entries
+        if e.get("to") == "chair" and e.get("topic") == chair_chat.LABEL
+        and not e.get("ack") and CHAT_CONSUMER not in e.get("acks", [])
+    ]
+
+
+def _as_planned_actions(actions: Sequence[Action]) -> list[chair_chat.PlannedAction]:
+    """The planned actions in the shape `chair_chat.answer` reads: kind, the epic as topic, and scalar fields as strings."""
+    scalar = (str, int, float, bool)
+    skipped = ("kind", "epic", "initiative", "epoch", "fields")
+    return [
+        {
+            "kind": a["kind"],
+            "topic": str(a.get("epic") or a.get("initiative") or ""),
+            "fields": {
+                **{k: str(v) for k, v in a.items() if k not in skipped and isinstance(v, scalar)},
+                **{str(k): str(v) for k, v in (a.get("fields") or {}).items()},
+            },
+            "key": str(a.get("key", "")),
+            **({"event": str(a["event"])} if a.get("event") else {}),
+        }
+        for a in actions
+    ]
+
+
+def _epic_snapshot(epics: Sequence[dict]) -> list[dict]:
+    return [{"epic_id": e["epic_id"], "levels": e["levels"], "exited": e["exited"]} for e in epics]
+
+
+def _event_entry(event: dict[str, object]) -> dict:
+    """A courier entry for one event `apply_directives` returned, addressed to the session that sent the directive.
+
+    The id is the directive's id plus the event name, so a repeat of the step folds into the same entry."""
+    fields = {str(k): str(v) for k, v in dict(event["fields"]).items()}  # type: ignore[call-overload]
+    name = str(event["event"])
+    return courier.send(
+        CHAT_REF, "chair", fields.get("sender", "session"), f"{name}: {fields.get('kind', '')}",
+        f"{fields['id']}.{name}", event=name, fields=fields, topic=chair_chat.LABEL,
+    )
+
+
+def _answer_entry(message: chair_chat.ChatMessage, text: str) -> dict:
+    """The `chat_answer` entry for a question; its `question` field is the question's id, which `cox route chair converse ask` matches."""
+    return courier.send(
+        CHAT_REF, "chair", message["sender"], text, f"{message['id']}.answer",
+        event="chat_answer", fields={"question": message["id"], "kind": message["payload"].get("kind", "")}, topic=chair_chat.LABEL,
+    )
+
+
+def _chat_step(chat: ChatDeps, facts: Facts, actions: Sequence[Action], now: datetime) -> str:
+    """Edge. Apply the unacked directives, publish each event, persist the state, answer each question, then ack.
+
+    It reads the lease nowhere and writes it nowhere. An entry `parse_message` refuses is left unacked.
+    Events go out before the state is saved and entries are acked last, with ids derived from the entry's id.
+    A failure at any point leaves the entries unacked, so the next tick replays them and the repeats fold into the
+    same courier entries; saving first would instead record a directive as applied whose event was never published.
+    The returned note is "" when there was nothing to read."""
+    entries = unacked_chat(chat.read())
+    epics = list(facts.get("chat_epics", []))
+    state, events = chair_chat.apply_directives(chat.load(), entries, now.isoformat())
+    for event in events:
+        chat.append(_event_entry(event))
+    chat.save(state, _epic_snapshot(epics))
+    messages = [m for m in map(chair_chat.parse_message, entries) if m is not None]
+    questions = [m for m in messages if m["body_kind"] == "question"]
+    plan = _as_planned_actions(actions)
+    for question in questions:
+        chat.append(_answer_entry(question, chair_chat.answer(question["payload"], epics, plan)))
+    for message in messages:
+        chat.ack(message["id"])
+    applied = sum(1 for e in events if e["event"] == "directive_applied")
+    return f"chat: {applied} applied, {len(events) - applied} refused, {len(questions)} answered" if messages else ""
+
+
+def _directive_step(deps: RunDeps, acting: bool, facts: Facts, actions: Sequence[Action], now: datetime) -> str:
+    """The note of the chat step, or "" when it did not run. Only a holder's live tick runs it; a failure becomes a note, never a stop."""
+    if not acting or deps.chat is None:
+        return ""
+    try:
+        return _chat_step(deps.chat, facts, actions, now)
+    except Exception as exc:  # a broken chat file must not stop the chair's own work
+        return f"chat step failed: {exc}"
+
+
 def tick(deps: RunDeps, dry_run: bool, now: datetime) -> str:
     """The status line of one tick; `tick_timed` holds the rules and the stage seconds."""
     return tick_timed(deps, dry_run, now)[0]
@@ -608,9 +735,11 @@ def tick_timed(
     A paused CI gate holds lands and dependent relaunches and records one needs_chair when it first pauses. The pause
     is remembered after perform, and only by a tick that acts as the holder, so a tick that fails records it again.
     A live tick that changed rows hands their ids to `export_rows`; its note or failure is appended to the line.
+    A holder's live tick with `chat` set applies the directives sent since the last tick, before perform, and appends a note.
     The unlaunched reason lines of the plan are left on `deps.reason_state`, for a dry run as well.
     """
     deps.reason_state.lines = []
+    deps.reason_state.items = []
     released = _release_step(deps, dry_run, now, clock)
     if released is not None:
         return released, {}, {}
@@ -630,7 +759,9 @@ def tick_timed(
         plain, plan_s = chair_timing.timed(clock, deps.plan, facts, now)
         planned = TickPlan(plain, ())
     deps.reason_state.lines = chair_report.unlaunched_lines(planned.actions, now)
+    deps.reason_state.items = [{"initiative": a.get("initiative"), "reason": a.get("reason")} for a in planned.actions if a.get("kind") == "unlaunched"]
     acting = not dry_run and all(a.get("kind") != "standby" for a in planned.actions)
+    chat_note = _directive_step(deps, acting, facts, planned.actions, now)
     notice = next_gate_record(deps.gate_state.paused, gate, planned.held_for_ci, deps.current_epoch()) if acting and gate.paused else None
     # Fresh lane checkout actions ride the planned list: perform records each needs_chair, and the notify step pushes it.
     # perform fences an action with no epoch, so each carries the current one.
@@ -652,6 +783,7 @@ def tick_timed(
         line = error_line(exc, now, results)
     line = f"{line} | {chair_exec.NOT_PROBED}" if dry_run else line
     line = f"{line} | {note}" if note else line
+    line = f"{line} | {chat_note}" if chat_note else line
     line = f"{line} | workspace pull failed: {pull_failure}" if pull_failure else line
     line = f"{line} | {PROFILE_STALE_NOTE}" if facts.get("profile_stale") else line
     pushed = _notify_step(deps, dry_run, facts, [*actions, *standing], now)
@@ -677,6 +809,7 @@ def _attempt(deps: RunDeps, dry_run: bool) -> None:
     shown = with_note(line, deps.restart_note)
     _publish_status(deps, dry_run, shown, now, stage_seconds)
     _publish_tick_status(deps, dry_run, shown, now)
+    _publish_reasons(deps, dry_run, now)
     try:
         if timing is not None:
             # Before the status line: `_chair_run` takes its --once exit code from the last line echoed.
@@ -773,10 +906,28 @@ def _restart(deps: RunDeps, moved: tuple[str, str], reason: str) -> None:
             deps.record_restart(reason)
 
 
-def run(once: bool, interval: float, dry_run: bool, deps: RunDeps, max_overruns: int = 3) -> None:
-    """Ticks until interrupted, SIGTERM, max_overruns overruns in a row or a moved checkout, or once; a stop frees the lands, then the lease.
+def _reload_reason(deps: RunDeps) -> str | None:
+    if deps.reload_config is None:
+        return None
+    try:
+        return deps.reload_config()
+    except Exception:  # a failing reload check must not stop the chair
+        return None
 
-    The checkout is read between ticks only, so a tick in progress finishes first; a land in flight defers the restart.
+
+def _restart_for_reload(deps: RunDeps, reason: str) -> None:
+    with contextlib.suppress(Exception):  # a broken echo must not keep the chair lease held
+        deps.report_deps.echo(reason)
+    deps.restart_state.reason = reason
+    if deps.record_restart is not None:
+        with contextlib.suppress(Exception):  # a failed record must not keep the chair lease held
+            deps.record_restart(reason)
+
+
+def run(once: bool, interval: float, dry_run: bool, deps: RunDeps, max_overruns: int = 3) -> None:
+    """Ticks until interrupted, SIGTERM, max_overruns overruns in a row, a moved checkout or a reload restart, or once; a stop frees the lands, then the lease.
+
+    The reload hook and the checkout are read between ticks only, so a tick in progress finishes first; a land in flight defers the restart.
     A move that touches no chair code never restarts; a burst of code moves restarts once, after the head settles.
     """
     restore = (lambda: None) if dry_run else deps.install_sigterm()
@@ -795,6 +946,11 @@ def run(once: bool, interval: float, dry_run: bool, deps: RunDeps, max_overruns:
             else:
                 deps.wait(interval)
             if not dry_run:
+                reload_reason = _reload_reason(deps)
+                if reload_reason is not None:
+                    _restart_for_reload(deps, reload_reason)
+                    _shutdown(deps, beating, restore, dry_run)
+                    return
                 moved, reason, pending = _moved_heads(deps, pending)
                 if moved is not None:
                     _restart(deps, moved, reason)

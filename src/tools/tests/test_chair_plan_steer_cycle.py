@@ -115,24 +115,17 @@ def test_idle_ready_fires_under_a_hard_stop():
     assert [a for a in plan if a["kind"] == "launch_epic"] == []
 
 
-def test_an_approval_at_the_hold_limit_is_released_and_its_files_stop_blocking():
-    facts = _facts(
-        initiatives=[_initiative("B", ["a.py"])],
-        running=[_held("A", ["a.py"])],
-        approval_holds=[{"initiative": "A", "task_id": "A-t", "ticks": 6, "surfaces": ["a.py"]}],
-    )
-    plan = plan_tick(facts, _NOW)
-    assert [a for a in plan if a["kind"] == "release_approvals"] == [
-        {
-            "kind": "release_approvals",
-            "initiative": "A",
-            "task_ids": ["A-t"],
-            "reason": "approval not merged to main or its phase branch for 6 ticks; rebuild on the current main",
-            "epoch": 7,
-        }
-    ]
-    assert [a["initiative"] for a in plan if a["kind"] == "launch_epic"] == ["B"]
-    assert _deferred(plan) == []
+def test_an_approval_held_past_the_old_limit_is_not_released_and_its_files_keep_blocking():
+    for ticks in (6, 50):
+        facts = _facts(
+            initiatives=[_initiative("B", ["a.py"])],
+            running=[_held("A", ["a.py"])],
+            approval_holds=[{"initiative": "A", "task_id": "A-t", "ticks": ticks, "surfaces": ["a.py"]}],
+        )
+        plan = plan_tick(facts, _NOW)
+        assert [a for a in plan if a["kind"] == "release_approvals"] == []
+        assert [a for a in plan if a["kind"] == "launch_epic"] == []
+        assert {(a["initiative"], a["other"]) for a in _deferred(plan)} == {("B", "A")}
 
 
 def test_an_approval_below_the_hold_limit_is_kept():

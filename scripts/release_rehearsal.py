@@ -84,7 +84,11 @@ def verify_problems(head: str | None, sha: str, receipt: str | None, checkout: s
 
 def _awaits_setup(row: Mapping) -> bool:
     detail = str(row.get("detail", ""))
-    return (row.get("check") == "profile" and detail.startswith("missing:")) or detail == "skipped: no profile"
+    no_token = row.get("check") == "claude token" and detail.startswith("no token file") and detail.endswith("run cox setup token")
+    # The install writes the chair's service unit. On a machine that has not put the chair's tools where that unit
+    # looks yet, the row names what is missing: that is setup still to do, not an install that went wrong.
+    no_unit_tools = row.get("check") == "chair unit PATH" and detail.startswith("not found on the unit PATH:")
+    return (row.get("check") == "profile" and detail.startswith("missing:")) or detail == "skipped: no profile" or no_token or no_unit_tools
 
 
 def doctor_problem(text: str) -> str | None:

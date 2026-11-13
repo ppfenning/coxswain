@@ -7,7 +7,7 @@ import time
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
-from harness import epic
+from harness import check_reuse, epic
 from harness.epic import _level_failure_reason, _PhaseRunner
 from tests.test_epic_driver import cart, drive, git, repo  # noqa: F401
 from tests.test_epic_waves import Gated, by_phase, work
@@ -49,6 +49,7 @@ class Spy:
 def spy_on(monkeypatch) -> Spy:
     spy = Spy(epic.run_checks)
     monkeypatch.setattr(epic, "run_checks", spy)
+    monkeypatch.setattr(check_reuse, "run_checks", spy)  # the task gate runs through the ledger
     return spy
 
 
@@ -76,13 +77,20 @@ def test_a_completed_level_runs_the_level_checks_exactly_once(repo, cart, tmp_pa
 
 
 def meet_at_the_gate(monkeypatch, *, locked: bool = True) -> list[str]:
-    """Make both levels reach the gate together: each waits at a barrier before asking for the real lock."""
+    """Make both levels reach the gate together: each waits at a barrier before asking for the real lock.
+
+    Only the first two arrivals wait. A later one is a phase's merge into the initiative branch, which checks the
+    merged tree under the same lock and has no partner to meet."""
     barrier, arrived, real = threading.Barrier(2, timeout=10), [], epic.repo_gate_lock
+    count = threading.Lock()
 
     @contextmanager
     def gate(repo_path):
-        arrived.append(threading.current_thread().name)
-        barrier.wait()
+        with count:
+            arrived.append(threading.current_thread().name)
+            paired = len(arrived) <= 2
+        if paired:
+            barrier.wait()
         with real(repo_path) if locked else nullcontext():
             yield
 
@@ -98,8 +106,10 @@ def test_two_levels_completing_at_once_run_their_level_checks_serially(repo, car
     result, _ = drive(repo, cart, tmp_path, work=spec, runner=Gated(gate=True))
 
     by = by_phase(result)
-    assert by["pa"]["status"] == by["pb"]["status"] == "complete"
-    assert len(arrived) == 2
+    assert by["pa"]["status"] == by["pb"]["status"] == "complete", (by["pa"].get("reason"), by["pb"].get("reason"))
+    # Both level checks, then the merge check of whichever phase merged second: the initiative tip had moved under it.
+    assert len(arrived) == 3
+    assert {by["pa"]["initiative_merge"]["status"], by["pb"]["initiative_merge"]["status"]} == {"merged"}
     kinds = [kind for kind, _ in spy.markers]
     assert kinds == ["enter", "exit", "enter", "exit"]
     first, second = sorted(spy.spans.values())

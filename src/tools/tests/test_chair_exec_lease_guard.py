@@ -103,3 +103,10 @@ def test_the_closure_refuses_a_steal_over_a_live_unexpired_foreign_record(tmp_pa
     chair.write(tmp_path, _fresh())
     assert deps.acquire_lease("h", "host-a", steal=True) == "chair: held by other (live)"
     assert calls == []
+
+
+def test_the_closure_acquires_a_takeback_over_a_live_unexpired_foreign_record(tmp_path, monkeypatch) -> None:
+    deps, calls = _deps(tmp_path, monkeypatch)
+    chair.write(tmp_path, _fresh())
+    assert deps.acquire_lease("h", "host-a", steal=True, takeback=True) == ""
+    assert calls == [True]

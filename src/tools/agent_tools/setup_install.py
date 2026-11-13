@@ -15,7 +15,10 @@ from __future__ import annotations
 
 import posixpath
 import re
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, NamedTuple
+
+from agent_tools import chair_service
 
 if TYPE_CHECKING:
     from agent_tools.home import Locations
@@ -30,6 +33,10 @@ DEFAULT_PLUGIN = f"local-skills@{MARKETPLACE}"
 # The rule the beat checks (`checkout_env.SYNC_COMMAND`): exactly the lock, every extra.
 SYNC_ARGV = ("uv", "sync", "--frozen", "--all-extras", "--inexact", "-q")
 _HOOK_COMMAND = "agent-tools route context 2>/dev/null || true"
+# What `cox chair service --install` runs with when no flag is given.
+CHAIR_LABEL = "unlabeled"
+CHAIR_INTERVAL = 60
+_CHAIR_DEFAULT_PATH = "/usr/local/bin:/usr/bin:/bin"
 
 
 class Layout(NamedTuple):
@@ -192,6 +199,53 @@ def _workspace_steps(workspace: str) -> list:
     return [{"op": "mkdir", "path": path, "why": "create the workspace folder"} for path in folders]
 
 
+def chair_service_steps(
+    platform: str, home: str, cox_path: str | None, workspace: str, profile_file: str,
+    exists: bool = False, force: bool = False, env_file: str | None = None, env_exports: tuple[int, ...] = (),
+) -> list:
+    """The chair service file write and the activation lines the user runs, or one skip step saying why not.
+    An existing file is kept unless `force`: it may carry a label, interval or env file this default lacks.
+    The linux unit is refused, as `cox chair service --install` refuses it, when systemd would split or expand
+    a value, or when `env_file` has `export` lines (`env_exports` are their numbers).
+    Linux gets the systemd user unit, darwin the launchd agent; any other platform gets nothing."""
+    if platform not in ("linux", "darwin"):
+        return []
+    skip = {"op": "skip", "what": "chair service"}
+    if not cox_path:
+        return [{**skip, "why": "cox is not on PATH; run cox chair service --install later"}]
+    if not workspace:
+        return [{**skip, "why": "no workspace is known; run cox chair service --install later"}]
+    if not home:
+        return [{**skip, "why": "no home directory is given; run cox chair service --install later"}]
+    if exists and not force:
+        return [{**skip, "why": "exists; pass --force-profile to rewrite"}]
+    path = chair_service.path_value(cox_path, "", "", _CHAIR_DEFAULT_PATH)
+    target = str(chair_service.service_file(platform, PurePosixPath(home)))
+    if platform == "linux":
+        values = {
+            "cox": cox_path, "workspace_dir": workspace, "--label": CHAIR_LABEL, "--profile": profile_file,
+            **({"--environment-file": env_file} if env_file else {}), "PATH": path,
+        }
+        unsafe = chair_service.unsafe_values(values)
+        if unsafe:
+            return [{**skip, "why": f"systemd would split or expand {', '.join(unsafe)}; "
+                                    "use only letters, digits and . _ @ + : , / = -"}]
+        if env_file and env_exports:
+            numbers = ", ".join(str(n) for n in env_exports)
+            return [{**skip, "why": f"{env_file} has export lines ({numbers}) that EnvironmentFile= may skip; "
+                                    "use NAME=value lines"}]
+        text = chair_service.unit_text(
+            cox_path, workspace, CHAIR_LABEL, CHAIR_INTERVAL, env_file or None, profile_file, path)
+        activate = "\n".join(chair_service.systemctl_lines())
+    else:
+        text = chair_service.chair_plist_text(cox_path, workspace, CHAIR_LABEL, CHAIR_INTERVAL, path, profile_file)
+        activate = f"launchctl bootstrap gui/$(id -u) {target}"
+    return [
+        {"op": "write", "path": target, "text": text, "why": "start the chair service with the machine"},
+        {"op": "print", "text": f"start the chair service with:\n{activate}"},
+    ]
+
+
 def install_plan(
     *,
     root: str,
@@ -215,6 +269,12 @@ def install_plan(
     registered_marketplace: str | None = None,
     workspace_exists: bool = False,
     tool_extras: tuple[str, ...] = (),
+    platform: str = "linux",
+    home: str = "",
+    cox_path: str | None = None,
+    chair_service_exists: bool = False,
+    chair_env_file: str | None = None,
+    chair_env_exports: tuple[int, ...] = (),
 ) -> list:
     """Ordered setup steps for the one checkout `<installs>/coxswain`. With
     `locations`, the installs folder and the profile path come from the
@@ -229,7 +289,10 @@ def install_plan(
     `<workspaces>/main` and its folders are made unless `workspace_exists`.
     With `locations`, the last write records `<home>` at `locations.record`.
     `tool_extras` are the extras the `coxswain` uv tool already carries, read
-    from its receipt by the caller; they ride on its `uv tool install` target."""
+    from its receipt by the caller; they ride on its `uv tool install` target.
+    `platform`, `home`, `cox_path`, `chair_service_exists`, `chair_env_file` and
+    `chair_env_exports` are pre-resolved facts for the chair service file; `home` is used
+    as given, never expanded, and an existing file is kept unless `force_profile` is set."""
     default_workspace = locations is not None and not workspace
     if locations is not None and default_workspace:
         workspace = posixpath.join(locations.workspaces, "main")
@@ -279,6 +342,10 @@ def install_plan(
     if hook:
         steps.append({"op": "hook", "path": claude_settings_path,
                       "why": "add a SessionStart hook that prints route context"})
+
+    steps.extend(chair_service_steps(
+        platform, home, cox_path, workspace, profile_file, chair_service_exists, force_profile,
+        chair_env_file, chair_env_exports))
 
     if workspace:
         steps.append(catalog_link_step(workspace, paths.cartridges))

@@ -181,3 +181,21 @@ def test_repo_trees_skips_the_target_a_non_checkout_and_a_non_string() -> None:
 def test_a_profile_without_a_repo_map_passes_nothing(tmp_path) -> None:
     assert cli._decompose_repo_trees({}, tmp_path, None) == {}
     assert cli._decompose_repo_trees({"repo_map": "oops"}, tmp_path, None) == {}
+
+
+def test_a_layout_follow_up_is_filed_as_an_intake_waiting_on_the_initiative(tmp_path) -> None:
+    from agent_tools.follow_up_intake import follow_up_intake_file
+    from graphs.delivery.decompose_split import split_foreign
+
+    own = {"src/tools/agent_tools/a.py"}
+    tasks = [
+        {**_task("t1", "src/tools/agent_tools/a.py", "edit a"), "title": "t1"},
+        {**_task("t2", "src/ui/regatta.rs", "edit the dashboard"), "title": "t2"},
+    ]
+    split = split_foreign(tasks, own, {}, title="Split", own_key="coxswain")
+    ((_, text),) = follow_up_intake_file(
+        split.follow_ups[0], after=INITIATIVE, date="2026-11-10", home=str(tmp_path)
+    ).items()
+    assert f"after: [{INITIATIVE}]" in text
+    assert "~/repos/coxswain-dash" in text
+    assert "edit the dashboard" in text

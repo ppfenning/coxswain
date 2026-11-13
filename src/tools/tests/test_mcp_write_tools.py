@@ -110,7 +110,7 @@ def test_cut_release_needs_a_matching_confirm():
 
 def test_specs_report_their_safety_hints():
     tools = _tools(Recorder())
-    assert sorted(tools) == ["cut_release", "file_intake", "send_directive", "set_priority", "set_stage"]
+    assert sorted(tools) == ["cut_release", "file_intake", "send_directive", "set_priority", "set_setting", "set_stage"]
     assert all(spec.writes for spec in tools.values())
     assert {name for name, spec in tools.items() if spec.destructive} == {"cut_release"}
 

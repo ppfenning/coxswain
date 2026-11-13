@@ -153,3 +153,83 @@ def test_cli_plain_prints_the_critical_path(monkeypatch, capsys):
     _patch_edge(monkeypatch)
     assert cli._route_schedule(SimpleNamespace(profile=None, explain=None, should_jump=None)) == 0
     assert "critical path: alpha/build" in capsys.readouterr().out
+
+
+CLI = "src/tools/agent_tools/cli.py"
+README = "src/tools/README.md"
+
+
+def _queue(*phases, **extra):
+    """Phases are (initiative, id, status, parents, surfaces); the host has two free lanes."""
+    ids = list(dict.fromkeys(p[0] for p in phases))
+    return {
+        **INPUTS,
+        "hosts": [{"name": "h", "lanes": ["h-1", "h-2"], "local": True, "repos": []}],
+        "initiatives": [
+            {
+                "id": i,
+                "priority": 0,
+                "repo": "r",
+                "phases": [
+                    {"id": pid, "status": status, "parents": parents, "size": "S", "mix": "plain", "surfaces": surfaces}
+                    for init, pid, status, parents, surfaces in phases
+                    if init == i
+                ],
+            }
+            for i in ids
+        ],
+        **extra,
+    }
+
+
+def _launched(schedule):
+    return [p.key for p in schedule.launches]
+
+
+def test_a_blocked_later_phase_does_not_order_a_ready_phase_behind_it():
+    inputs = _queue(
+        ("alpha", "one", "ready", [], []),
+        ("alpha", "two", "blocked", ["one"], [CLI]),
+        ("beta", "build", "ready", [], [CLI]),
+    )
+    schedule, _ = route_schedule.plan_from_inputs(inputs, T0)
+    assert B in _launched(schedule)
+
+
+def test_a_waiting_only_initiative_does_not_order_a_ready_phase_behind_it():
+    inputs = _queue(("alpha", "build", "waiting", [], [CLI]), ("beta", "build", "ready", [], [CLI]))
+    schedule, _ = route_schedule.plan_from_inputs(inputs, T0)
+    assert B in _launched(schedule)
+
+
+def test_a_running_phase_orders_a_ready_phase_behind_it_and_explain_says_so():
+    inputs = _queue(
+        ("alpha", "build", "running", [], [CLI]),
+        ("beta", "build", "ready", [], [CLI]),
+        running=[{"initiative": "alpha", "phase": "build", "host": "h", "lane": "h-1"}],
+    )
+    schedule, context = route_schedule.plan_from_inputs(inputs, T0)
+    lines = route_schedule.explain_lines(schedule, context, "beta")
+    assert B not in _launched(schedule)
+    assert f"  waits behind alpha/build on {CLI}" in lines
+
+
+def test_a_withheld_initiative_does_not_order_work_behind_it():
+    inputs = _queue(("alpha", "build", "ready", [], [CLI]), ("beta", "build", "ready", [], [CLI]))
+    withheld, _ = route_schedule.plan_from_inputs(inputs, T0, withheld=frozenset({"alpha"}))
+    assert B in _launched(withheld)
+
+
+def test_report_shaped_queue_prints_no_waits_line_behind_a_blocked_or_waiting_phase():
+    both = [README, CLI]
+    inputs = _queue(
+        ("one", "gate", "blocked", [], both),
+        ("one", "tail", "waiting", [], both),
+        ("two", "build", "ready", [], [CLI]),
+    )
+    schedule, context = route_schedule.plan_from_inputs(inputs, T0)
+    two = route_schedule.explain_lines(schedule, context, "two")
+    one = route_schedule.explain_lines(schedule, context, "one")
+    assert ("two", "build") in _launched(schedule)
+    assert [line for line in two if line.startswith("  waits behind")] == []
+    assert [line for line in one if line.startswith("one/") and not line.endswith("not placed")] == []

@@ -363,10 +363,13 @@ def _land_checks_problems(value: Any) -> list[str]:
 
 
 def _land_at_problems(value: Any) -> list[str]:
-    """`land_at` must be the string `ticket`, `level` or `task`."""
-    if isinstance(value, str) and value in ("ticket", "level", "task"):
+    """`land_at` must be `initiative` or `task`; the alias `ticket` and the retired `level` are still read."""
+    from core.landing import ACCEPTED_LAND_AT  # lazy: keeps the import edge one way
+
+    if isinstance(value, str) and value in ACCEPTED_LAND_AT:
         return []
-    return [f"project layer overlay refuses landing_areas.land_at: must be 'ticket', 'level' or 'task', got {value!r}"]
+    allowed = ", ".join(repr(v) for v in ACCEPTED_LAND_AT)
+    return [f"project layer overlay refuses landing_areas.land_at: must be one of {allowed}, got {value!r}"]
 
 
 def _target_branch_problems(value: Any) -> list[str]:

@@ -389,10 +389,12 @@ def test_the_feeds_today_and_the_dockets_efficiency_line_agree(tmp_path):
     line = cli._efficiency(tmp_path, TODAY_NOW)
 
     assert today == {
-        "date": "2026-10-30", "cost": 6.0, "landed": 3, "per_landed": 2.0, "first_try_rate": 0.5, "measured": 2,
+        "date": "2026-10-30", "cost": 6.0, "landed": 3, "per_landed": 2.0, "completions": 3, "cost_per_completion": 2.0,
+        "first_try_rate": 0.5, "measured": 2,
     }
-    assert line == "efficiency: today $6.00 for 3 landed ($2.00 per landed task), first-try 50% of 2 measured"
-    assert line == route.efficiency_line(today["cost"], today["landed"], today["first_try_rate"], today["measured"])
+    assert today["per_landed"] == today["cost_per_completion"]
+    assert line == "efficiency: today $6.00 for 3 completions ($2.00 per completion), first-try 50% of 2 measured"
+    assert line == route.efficiency_line(today["cost"], today["completions"], today["first_try_rate"], today["measured"])
 
 
 def test_nothing_landed_gives_a_null_per_landed_and_first_try_rate(tmp_path):
@@ -401,9 +403,10 @@ def test_nothing_landed_gives_a_null_per_landed_and_first_try_rate(tmp_path):
     today = dash_feed._today_v1(tmp_path, TODAY_NOW)
 
     assert today == {
-        "date": "2026-10-30", "cost": 0.5, "landed": 0, "per_landed": None, "first_try_rate": None, "measured": 0,
+        "date": "2026-10-30", "cost": 0.5, "landed": 0, "per_landed": None, "completions": 0, "cost_per_completion": None,
+        "first_try_rate": None, "measured": 0,
     }
-    assert cli._efficiency(tmp_path, TODAY_NOW) == "efficiency: today $0.50, nothing landed yet"
+    assert cli._efficiency(tmp_path, TODAY_NOW) == "efficiency: today $0.50, nothing completed yet"
 
 
 def test_no_store_gives_a_null_today(tmp_path):

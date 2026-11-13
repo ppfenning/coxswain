@@ -5,13 +5,15 @@ from pathlib import Path
 
 import pytest
 
-from agent_tools import cli
+from agent_tools import cli, run_store
 from agent_tools.host_cmd import ChairHead
 from agent_tools.land import behind_warning
 from agent_tools.lane_hosts import LaneHost
 from agent_tools.remote_argv import base_sync_argv, ssh_argv
 from agent_tools.remote_lane import parse_remote_record, remote_record
 from agent_tools.remote_launch import ChairBase, LaunchError, _chair_base, base_refusal, launch_on_host, launch_plan
+
+pytestmark = pytest.mark.usefixtures("board_store")  # the store is the board; these launches read its rows
 
 HOST = LaneHost("box2", "me@box2", "/ws")
 CHAIR = "c" * 40
@@ -279,7 +281,10 @@ def _land_world(tmp_path, monkeypatch, capsys):
     (runs / "r1.remote.json").write_text(json.dumps(remote_record("h", "t", str(clone), _git(clone, "rev-parse", "HEAD~1"))))
     (runs / "r1.fetched.json").write_text("{}")
     provider = tmp_path / "provider.yaml"
-    provider.write_text("work_state: files\n", encoding="utf-8")
+    provider.write_text("{}\n", encoding="utf-8")
+    # The store is the board: the land reads the task's state from its row, so the row says approved.
+    assert run_store.upsert_row(runs, {"kind": "task", "initiative": "i", "task_id": "t", "phase": "p", "state": "approved",
+                                       "needs": [], "surfaces": [], "title": "t", "body": "", "extra": {}})
     profile = tmp_path / "profile.yaml"
     profile.write_text(f"provider_profile: {provider}\n", encoding="utf-8")
     seen = []

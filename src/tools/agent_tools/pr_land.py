@@ -14,6 +14,7 @@ LEVEL_MERGED = "level_merged"
 MERGE_FAILED = "merge_failed"
 
 _TASK_LINE = re.compile(r"^Task: (\S+)\s*$", re.M)
+_TASKS_LINE = re.compile(r"^[ \t]*Tasks: (.+?)\s*$", re.M)
 _PHASE_LINE = re.compile(r"^Phase: ", re.M)
 _BULLET = re.compile(r"^- ([^\s:]+): ", re.M)
 
@@ -45,11 +46,17 @@ class LandResult:
 
 
 def carried_tasks(body: str) -> tuple[str, ...]:
-    """Task ids a PR body names, in order and once each: `Task: <id>` lines, and phase bullets above `Dropped:`."""
+    """Task ids a PR body names, in order and once each: `Task:` lines, comma-separated `Tasks:` lines, and phase bullets above `Dropped:`."""
     singles = _TASK_LINE.findall(body)
     live = body.split("\nDropped:", 1)[0]
+    grouped = [
+        task
+        for line in _TASKS_LINE.findall(live)
+        for task in (part.strip() for part in line.split(","))
+        if len(task.split()) == 1
+    ]
     bullets = _BULLET.findall(live) if _PHASE_LINE.search(live) else []
-    return tuple(dict.fromkeys([*singles, *bullets]))
+    return tuple(dict.fromkeys([*singles, *grouped, *bullets]))
 
 
 def _failed(reason: str) -> LandResult:
@@ -93,6 +100,8 @@ def land_pr(repo: Path, number: int, deps: LandDeps) -> LandResult:
         return _mark(deps, pr)
     if state != "OPEN":
         return _failed(f"pull request {number} is {state.lower() or 'in an unknown state'} and was not merged")
+    if not carried_tasks(str(pr.get("body", ""))):
+        return _failed(f"pull request {number} names no tasks, so there is nothing to mark done; it was not merged")
     required = deps.required_for_pr(repo, number)
     if not required:
         return _failed(f"pull request {number}: the required checks could not be read, or none are required")

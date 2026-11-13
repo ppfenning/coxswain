@@ -28,7 +28,6 @@ def _facts(approved: list[dict], ticks: int) -> Facts:
         "stale_candidates": [],
         "stall_candidates": [],
         "home": {},
-        "approval_hold_ticks": 6,
         "running": [{"id": "A", "repo": "r", "surfaces": ["a.py"], "live": False}],
         "approval_holds": [{"initiative": "A", "task_id": "A-t", "ticks": ticks, "surfaces": ["a.py"]}],
     }
@@ -56,6 +55,7 @@ def test_a_level_landing_hold_merged_to_its_phase_branch_is_not_released():
     assert _releases(plan) == []
 
 
-def test_a_task_landing_hold_merged_nowhere_is_released():
-    plan = plan_tick(_facts([_row(branch_merged=False, land_at="task")], 6), _NOW)
-    assert [a["task_ids"] for a in _releases(plan)] == [["A-t"]]
+def test_a_task_landing_hold_merged_nowhere_is_not_released_however_long_it_held():
+    for ticks in (6, 50):
+        plan = plan_tick(_facts([_row(branch_merged=False, land_at="task")], ticks), _NOW)
+        assert _releases(plan) == []

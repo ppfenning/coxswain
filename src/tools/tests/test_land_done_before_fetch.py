@@ -27,9 +27,9 @@ def _world(tmp_path, monkeypatch, *, work_state, state):
 
 @pytest.mark.parametrize(
     ("work_state", "state", "rc", "line"),
-    [("store", "done", 3, DONE_LINE), ("store", "approved", 2, FETCH_HINT), ("files", "done", 2, FETCH_HINT)],
+    [("store", "done", 3, DONE_LINE), ("store", "approved", 2, FETCH_HINT)],
 )
-def test_the_done_check_comes_before_the_fetch_refusal_only_under_store(tmp_path, monkeypatch, capsys, work_state, state, rc, line):
+def test_the_done_check_comes_before_the_fetch_refusal(tmp_path, monkeypatch, capsys, work_state, state, rc, line):
     argv = _world(tmp_path, monkeypatch, work_state=work_state, state=state)
     assert cli.main(argv) == rc
     assert capsys.readouterr().out.strip() == line

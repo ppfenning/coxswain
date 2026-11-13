@@ -618,12 +618,12 @@ def test_render_context_appends_the_gate_line_when_given():
     assert text.splitlines()[-1] == "gate: phase"
 
 
-def test_efficiency_line_states_spend_lands_cost_per_land_and_first_try_rate():
-    assert route.efficiency_line(3.0, 4, 0.75) == "efficiency: today $3.00 for 4 landed ($0.75 per landed task), first-try 75%"
+def test_efficiency_line_states_spend_completions_cost_per_completion_and_first_try_rate():
+    assert route.efficiency_line(3.0, 4, 0.75) == "efficiency: today $3.00 for 4 completions ($0.75 per completion), first-try 75%"
 
 
-def test_efficiency_line_with_no_lands_says_nothing_landed_yet():
-    assert route.efficiency_line(1.234, 0, 0.0) == "efficiency: today $1.23, nothing landed yet"
+def test_efficiency_line_with_no_completions_says_nothing_completed_yet():
+    assert route.efficiency_line(1.234, 0, 0.0) == "efficiency: today $1.23, nothing completed yet"
 
 
 def test_efficiency_line_with_no_store_is_none():
@@ -631,15 +631,15 @@ def test_efficiency_line_with_no_store_is_none():
 
 
 def test_efficiency_line_with_no_measured_task_says_first_try_unknown():
-    assert route.efficiency_line(2.0, 1, None, 0) == "efficiency: today $2.00 for 1 landed ($2.00 per landed task), first-try unknown"
+    assert route.efficiency_line(2.0, 1, None, 0) == "efficiency: today $2.00 for 1 completions ($2.00 per completion), first-try unknown"
 
 
 def test_efficiency_line_names_how_many_tasks_the_rate_covers_when_some_are_unmeasured():
-    assert route.efficiency_line(3.0, 3, 0.5, 2) == "efficiency: today $3.00 for 3 landed ($1.00 per landed task), first-try 50% of 2 measured"
+    assert route.efficiency_line(3.0, 3, 0.5, 2) == "efficiency: today $3.00 for 3 completions ($1.00 per completion), first-try 50% of 2 measured"
 
 
 def test_render_context_puts_the_efficiency_line_after_lanes():
-    line = "efficiency: today $0.00, nothing landed yet"
+    line = "efficiency: today $0.00, nothing completed yet"
     text = route.render_context(FIXTURE_PROFILE, EMPTY_INTAKE_GROUPS, [], [], efficiency=line)
     assert text.splitlines()[2:5] == ["lanes: all clear", line, "ready: none"]
 

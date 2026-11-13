@@ -116,72 +116,9 @@ untouched.
 
 ## 8. Landing granularity
 
-`landing_areas.land_at` is `ticket`, `level` or `task`. Absent means `ticket`. `core/landing.py resolve_land_at` picks
-the initiative's `land_at` first, then the cartridge or overlay value, then `ticket`, and checks every value given.
-It is set in three places. The team cartridge sets `landing_areas.land_at`. The repo overlay `.agent/cartridge.yaml`
-may set the same key and replaces the team value. An initiative sets `land_at:` in the frontmatter of `initiative.md`
-(`core/workstore.py read_initiative`), which wins over both.
-
-The approval gate applies only at that granularity. `land_gate_level` returns the `land_at` value. At `ticket`, with no
-`assume`, `harness/epic.py` clears the batch itself and writes no gate diff and no ledger row. The person decides on
-the one pull request. At `level` and `task` the batch goes through the gate. In `agent_tools/land.py`, `gate_level`
-takes the earlier stop of the team `gate` and the rung the PR opens: `level` maps to `phase`, `ticket` to `epic`, and
-`task` keeps the team value.
-
-What each value lands:
-
-- `ticket`: one pull request per initiative. Levels and tasks open none. A task branch merges into its level branch,
-  levels stack on their parent level's branch, and the stack is the single PR. `_card_phase_plan` opens it at the last
-  level, waits for checks, squash-merges, then marks every ticket task done. A task not in the merged PR is left in its
-  state with a note.
-- `level`: one PR per completed level, in `epic.py`. It is based on the parent level's PR branch when that PR exists,
-  else on the default branch.
-- `task`: one PR per merged task against the default branch. A failed PR is a note, not a quarantine.
-
-A level is a set of tasks that can run together. It exists to order tasks and stack their branches. The harness calls
-it a phase and names its branch `epic/<initiative>/<phase>`. A level with several parents is assembled from them onto
-the default ref by `harness/assembly.py assemble`, and its record carries `assembled_from`.
-
-Status vocabulary, from `agent_tools/dash_feed.py _task_state`:
-
-| Word | Source |
-| --- | --- |
-| `ready` | Store `ready`, every need landed, no live lane. |
-| `building` | A live lane covers the task's initiative and phase. |
-| `approved` | Store `approved`, or a task `runs stranded` lists. |
-| `merged` | `approved` with `extra["merged"]` (`route.is_merged`), or `done` written at another `land_at`. |
-| `landed` | `done` at the configured `land_at`. |
-
-The merged state is stored. A task merged into its level branch stays `approved` and its row keeps `merged` and
-`merged_commit`. Only a land writes `done`. On restart a merged parent counts as `done` for `needs`, so a dependent
-level does not wait for a person.
-
-A new run builds its phase branch fresh, so a stored `merged_commit` is often not on it. That does not mean the work is
-lost. The approved commit still exists somewhere, and a restart carries it forward under four rules.
-
-- A change that has already landed is marked `done` against its pull request. Nothing is carried.
-- Otherwise the commit is fetched from origin, from the run's branch namespace, or from the building host. It is
-  cherry-picked onto the new phase branch. The approval is kept and `carried_from` records where the commit came from.
-- Only a commit that cannot be found, or that does not apply, sends the task back to `ready` for a rebuild. The reason
-  is recorded on the task.
-- A task named by an active land is never touched.
-
-A merged task is not rebuilt unless the third rule applies. At `task` a restart opens the PR of any stored merged task
-that has none. At `level` it reuses the level's PR or opens the missing one.
-
-The task cap is `--max-parallel` on the phase and epic commands. Without it the cap is the provider profile's
-`max_parallel`, a positive integer, else the free lane count (`harness/lanes.py resolve_max_parallel`).
-
-An initiative runs as waves of phases. A wave is the set of phases at the same dependency depth. Independent phases
-run at once, each on its own branch `epic/<initiative>/<phase>` and in its own lane, up to the lane count.
-
-A task starts when its own needs are approved and merged. `plan_launches` in `harness/scheduler.py` and `next_launches`
-in `harness/lanes.py` choose the tasks to start. A task need not wait for the rest of an earlier level. A child branch
-is current when the merged commits of the tasks it needs are ancestors of it.
-
-Phases whose surfaces collide are serialised, and the reason is on the phase record. A quarantined task blocks only the
-phases that depend on it. Concurrent work is limited by the lane count and by the profile keys `run_ceiling_usd` and
-`task_estimate_usd`. The run result names which limit binds.
-
-Approval stays at the configured landing granularity, by default the ticket. Running phases and tasks in parallel does
-not add a gate.
+Superseded. `landing_areas.land_at` is `initiative` (default; `ticket` is its alias, the retired `level` reads as it)
+or `task`. At `initiative` every phase is cut from one initiative branch and merges back into it locally, and a
+separate landing worker opens the initiative's one pull request. The model, the landing record, the land queue, the
+lander, rectify tasks, `on_blocked` and epic stacks are described in the methodology page "Landing", under "Landing
+granularity". The functions are in `core/landing.py`, `core/landing_record.py`, `harness/landing_git.py`,
+`harness/landing_ops.py`, `harness/landing_store.py` and `agent_tools/lander.py`.

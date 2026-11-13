@@ -381,6 +381,106 @@ def test_render_plan_prints_a_symlink_line():
     assert render_plan([catalog_link_step(WORKSPACE, CARTRIDGES)]) == f"symlink {LINK} -> {LINK_TARGET}"
 
 
+def _chair_steps(steps):
+    return [s for s in steps if s["op"] == "write" and ("coxswain-chair" in s["path"])], [
+        s for s in steps if s["op"] == "print" and s["text"].startswith("start the chair service")]
+
+
+def _chair_skips(steps):
+    return [s["why"] for s in steps if s["op"] == "skip" and s["what"] == "chair service"]
+
+
+def test_a_linux_plan_writes_the_systemd_unit_and_prints_the_systemctl_lines():
+    steps = _plan(platform="linux", home="/home/user", cox_path="/home/user/.local/bin/cox")
+    writes, prints = _chair_steps(steps)
+    assert [w["path"] for w in writes] == ["/home/user/.config/systemd/user/coxswain-chair.service"]
+    assert "ExecStart=/home/user/.local/bin/cox chair run --label unlabeled --interval 60 --profile" in writes[0]["text"]
+    assert f"WorkingDirectory={WORKSPACE}" in writes[0]["text"]
+    assert len(prints) == 1
+    assert "systemctl --user enable --now coxswain-chair.service" in prints[0]["text"]
+    assert "launchctl" not in render_plan(steps)
+
+
+def test_a_darwin_plan_writes_the_launchd_plist_and_no_systemd_step():
+    steps = _plan(platform="darwin", home="/home/user", cox_path="/opt/homebrew/bin/cox")
+    writes, prints = _chair_steps(steps)
+    plist = "/home/user/Library/LaunchAgents/coxswain-chair.plist"
+    assert [w["path"] for w in writes] == [plist]
+    assert "<key>RunAtLoad</key>" in writes[0]["text"]
+    assert len(prints) == 1
+    assert f"launchctl bootstrap gui/$(id -u) {plist}" in prints[0]["text"]
+    assert "systemctl" not in render_plan(steps)
+    assert ".service" not in render_plan(steps)
+
+
+def test_a_plan_without_a_cox_path_skips_the_chair_service_and_says_why():
+    steps = _plan(platform="linux", home="/home/user")
+    assert _chair_steps(steps) == ([], [])
+    assert _chair_skips(steps) == ["cox is not on PATH; run cox chair service --install later"]
+
+
+def test_an_unknown_platform_gets_no_chair_service_step():
+    steps = _plan(platform="win32", home="C:/home", cox_path="C:/cox.exe")
+    assert _chair_skips(steps) == []
+    assert _chair_steps(steps) == ([], [])
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_an_existing_chair_service_file_is_kept_and_a_second_run_writes_none(platform):
+    steps = _plan(platform=platform, home="/home/user", cox_path="/bin/cox", profile_exists=True,
+                  chair_service_exists=True)
+    assert _chair_steps(steps) == ([], [])
+    assert _chair_skips(steps) == ["exists; pass --force-profile to rewrite"]
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_force_profile_rewrites_an_existing_chair_service_file(platform):
+    steps = _plan(platform=platform, home="/home/user", cox_path="/bin/cox", chair_service_exists=True,
+                  force_profile=True)
+    writes, prints = _chair_steps(steps)
+    assert (len(writes), len(prints)) == (1, 1)
+    assert _chair_skips(steps) == []
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_no_home_or_no_workspace_skips_the_chair_service_with_the_reason(platform):
+    no_home = _plan(platform=platform, home="", cox_path="/bin/cox")
+    assert _chair_steps(no_home) == ([], [])
+    assert _chair_skips(no_home) == ["no home directory is given; run cox chair service --install later"]
+    no_workspace = _plan(platform=platform, home="/home/user", cox_path="/bin/cox", locations=None, workspace="")
+    assert _chair_steps(no_workspace) == ([], [])
+    assert _chair_skips(no_workspace) == ["no workspace is known; run cox chair service --install later"]
+
+
+def test_a_linux_value_systemd_would_split_gets_a_skip_naming_it_and_no_write():
+    steps = _plan(platform="linux", home="/home/user", cox_path="/home/user/my bin/cox", locations=None,
+                  workspace="/home/user/my work")
+    assert _chair_steps(steps) == ([], [])
+    assert _chair_skips(steps) == [
+        "systemd would split or expand cox, workspace_dir, PATH; use only letters, digits and . _ @ + : , / = -"]
+
+
+def test_a_darwin_plan_writes_the_plist_even_when_a_path_has_a_space():
+    steps = _plan(platform="darwin", home="/home/user", cox_path="/home/user/my bin/cox", locations=None,
+                  workspace="/home/user/my work")
+    writes, prints = _chair_steps(steps)
+    assert (len(writes), len(prints)) == (1, 1)
+    assert "<string>/home/user/my work</string>" in writes[0]["text"]
+
+
+def test_the_linux_unit_loads_the_env_file_it_is_given_and_refuses_one_with_export_lines():
+    given = _plan(platform="linux", home="/home/user", cox_path="/bin/cox", chair_env_file="/home/user/garage.env")
+    assert "EnvironmentFile=-/home/user/garage.env" in _chair_steps(given)[0][0]["text"]
+    refused = _plan(platform="linux", home="/home/user", cox_path="/bin/cox", chair_env_file="/home/user/garage.env",
+                    chair_env_exports=(2, 4))
+    assert _chair_steps(refused) == ([], [])
+    assert _chair_skips(refused) == [
+        "/home/user/garage.env has export lines (2, 4) that EnvironmentFile= may skip; use NAME=value lines"]
+    unsafe = _plan(platform="linux", home="/home/user", cox_path="/bin/cox", chair_env_file="/home/user/a b.env")
+    assert _chair_steps(unsafe) == ([], [])
+    assert "--environment-file" in _chair_skips(unsafe)[0]
+
+
 def test_root_plan_has_neither_the_mkdir_steps_nor_the_record_write():
     steps = _plan(locations=None, workspace="")
     assert not [s for s in steps if s["op"] == "mkdir"]

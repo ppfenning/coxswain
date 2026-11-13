@@ -123,3 +123,39 @@ def test_two_ready_phases_still_get_an_edge():
         withheld=frozenset(),
     )
     assert edges[("a", "p")] == frozenset({("b", "q")})
+
+
+def test_ready_phase_behind_a_waiting_parent_holds_no_edge():
+    _, edges = build_graph(
+        [
+            _ini("x", 5, _ph("p1", "waiting"), _ph("p2", surfaces=("cli.py",), parents=("p1",))),
+            _ini("y", 1, _ph("q", surfaces=("cli.py",))),
+        ]
+    )
+    assert edges[("x", "p2")] == frozenset()
+
+
+def test_ready_phase_behind_a_waiting_grandparent_holds_no_edge():
+    _, edges = build_graph(
+        [
+            _ini(
+                "x",
+                5,
+                _ph("p1", "waiting"),
+                _ph("p2", parents=("p1",)),
+                _ph("p3", surfaces=("cli.py",), parents=("p2",)),
+            ),
+            _ini("y", 1, _ph("q", surfaces=("cli.py",))),
+        ]
+    )
+    assert edges[("x", "p3")] == frozenset()
+
+
+def test_ready_phase_behind_a_ready_parent_keeps_its_edge():
+    _, edges = build_graph(
+        [
+            _ini("x", 5, _ph("p1"), _ph("p2", surfaces=("cli.py",), parents=("p1",))),
+            _ini("y", 1, _ph("q", surfaces=("cli.py",))),
+        ]
+    )
+    assert edges[("x", "p2")] == frozenset({("y", "q")})
