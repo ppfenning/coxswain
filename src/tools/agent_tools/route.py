@@ -25,6 +25,7 @@ from agent_tools import (
     card_keys,
     chair,
     decompose_empty,
+    intake_queue,
     open_queue_priority,
     queue_rows,
     release_gate,
@@ -122,7 +123,10 @@ _KNOWN_KEYS = {
     "ids",  # `slug` (default) or `sequence`; `intake_file`'s own id source, spec's `route file --intake`
     "operator",  # the human the courier and decisions address; settings_model.operator_name, "operator" when absent
     "serial_files",  # `[path, ...]` the steer rule never lets two initiatives share; an entry ending in `/` covers a directory
+    "intake_stage",  # `draft` or `ready`: the stage a session files an intake at when the caller names none
 }
+
+INTAKE_STAGES = ("draft", "ready")
 
 _JSON_KEYS = {"sources", "repo_map"}
 
@@ -131,10 +135,11 @@ TRACKER_SCOPES = ("all", "epics", "initiatives")
 _SPEND_KEYS = {"window_ceiling_usd", "weekly_ceiling_usd", "node_cap_usd", "monthly_budget_usd"}
 _SPEND_TEXT_KEYS = {"weekly_reset", "budget_timezone"}  # `Sun 04:00 America/New_York`, parsed by usage_window.parse_weekly_reset; an IANA zone name
 
-_CHAIR_KEYS = {"housekeeping_hours", "stale_days", "idle_stall_minutes", "launch_stagger_s", "max_launches_per_hour", "max_shared_file_initiatives"}  # every key `cli._chair_run_deps` reads off `profile["chair"]`
+_CHAIR_KEYS = {"housekeeping_hours", "stale_days", "idle_stall_minutes", "launch_stagger_s", "max_launches_per_hour", "max_shared_file_initiatives", "approval_hold_ticks"}  # every key `cli._chair_run_deps` reads off `profile["chair"]`
 
 _CHAIR_BOOL_WORDS = {"true": True, "yes": True, "false": False, "no": False}  # the spellings a boolean `chair:` key accepts, any case
 _CHAIR_STEWARD_SCOPES = {"all", "epics"}  # the values `chair: steward_scope:` accepts, stored lower case
+_CHAIR_SESSION_TAKES = {"never", "when_free", "always"}  # the values `chair: session_takes:` accepts, stored lower case
 
 _STORE_KEYS = {"mode"}  # the one key of the `store:` block, kept as text in `profile["store"]["mode"]`
 
@@ -178,13 +183,16 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
     floats onto the flat result, and `weekly_reset:`/`budget_timezone:` lines kept as text, quotes stripped.
     `monthly_budget_usd` must be above zero and `budget_timezone` must be an IANA zone name, else ProfileError
     names the line; neither key appears in the result when absent, and the readers apply any default;
-    and a bare `chair:` line followed by indented `housekeeping_hours:`/`stale_days:`/`idle_stall_minutes:`/`launch_stagger_s:`/`max_launches_per_hour:`/`max_shared_file_initiatives:` lines,
+    and a bare `chair:` line followed by indented `housekeeping_hours:`/`stale_days:`/`idle_stall_minutes:`/`launch_stagger_s:`/`max_launches_per_hour:`/`max_shared_file_initiatives:`/`approval_hold_ticks:` lines,
     all optional, parsed as floats into `result["chair"]` (every key `cli._chair_run_deps`
     reads off `profile["chair"]`; `log_retention_days` stays a flat top-level key, not one of
     these). The same block also takes `steward:`, a boolean (true, false, yes or no, any case)
     kept as a Python bool in `result["chair"]["steward"]`; any other value raises ProfileError.
     It also takes `steward_scope:`, text with quotes stripped, `all` or `epics` in any case, kept lower case as a str in
     `result["chair"]["steward_scope"]`; any other value raises ProfileError. The key is absent when not written and the reader applies the default `all`.
+    `intake_stage:` is `draft` or `ready`, quotes and case ignored, kept lower case; any other value raises ProfileError.
+    It also takes `session_takes:`, text with quotes stripped, `never`, `when_free` or `always` in any case, kept lower case as a str in
+    `result["chair"]["session_takes"]`; any other value raises ProfileError. The key is absent when not written and the reader applies the default `when_free`.
     A bare `store:` line followed by an indented `mode:` line is kept as text in
     `result["store"]["mode"]`. A `notify: {ntfy: <url>}` line is the one inline mapping, kept as `result["notify"]`.
 
@@ -244,6 +252,12 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
                     if scope not in _CHAIR_STEWARD_SCOPES:
                         raise ProfileError(f"line {lineno}: {raw_line}")
                     result.setdefault("chair", {})[key] = scope
+                    continue
+                if key == "session_takes":
+                    taken = value.strip("\"'").lower()
+                    if taken not in _CHAIR_SESSION_TAKES:
+                        raise ProfileError(f"line {lineno}: chair session_takes must be one of never, when_free, always: {raw_line}")
+                    result.setdefault("chair", {})[key] = taken
                     continue
                 if key not in _CHAIR_KEYS:
                     raise ProfileError(f"line {lineno}: {raw_line}")
@@ -337,6 +351,11 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
             raise ProfileError(f"line {lineno}: {raw_line} (tracker_scope is one of {', '.join(TRACKER_SCOPES)})")
         elif key == "tracker_backfill" and value not in ("true", "false"):
             raise ProfileError(f"line {lineno}: {raw_line} (tracker_backfill is true or false)")
+        elif key == "intake_stage":
+            stage_value = value.strip("\"'").lower()
+            if stage_value not in INTAKE_STAGES:
+                raise ProfileError(f"line {lineno}: {raw_line} (intake_stage is one of {', '.join(INTAKE_STAGES)})")
+            result[key] = stage_value
         else:
             result[key] = value
     # An `assume:` with no value is treated the same as an absent key, not
@@ -664,6 +683,10 @@ def intake_file(
     ids: str = "slug",
     allocate: Callable[[], str] | None = None,
     after: Sequence[str] = (),
+    stage: str | None = None,  # None writes no line, which reads as ready; a pulled or programmatic caller is unchanged
+    epic: str = "",
+    priority: int | str = "",
+    target_release: str = "",
 ) -> dict:
     """Content for `route file --intake` (spec §3):
     `intake/<date>-<slug>.md`, same frontmatter shape as the initiative
@@ -672,17 +695,25 @@ def intake_file(
 
     Under `ids="sequence"` the file is `intake/<id>.md` with the id from `allocate`; a failed allocation raises, never slugifies.
     A non-empty `after` is written last as an `after: [a, b]` list; empty leaves the file as it was.
+    A `stage` ("draft" or "ready") is written as `stage: <value>` after `repo`; None writes no line.
+    A non-empty `epic`, `priority` (a bare integer) and `target_release` follow `stage` in that order; empty writes no line.
     """
     text = body if body else title
+    staged = [
+        *([("stage", stage)] if stage is not None else []),
+        *([("epic", epic)] if epic else []),
+        *([("priority", _Raw(str(int(priority))))] if priority not in ("", None) else []),
+        *([("target_release", target_release)] if target_release else []),
+    ]
     # A pulled file keeps its old form. Sync reads a frontmatter `issue` as the item's own mirror issue, so a pull
     # must not write the source issue number there; `route_sync._issue_steps` would skip `issue_create` for it.
     origin = [("source", source), ("link", link)] if source and link else link_fields(link)
     waits = [("after", _Raw("[" + ", ".join(_yaml_scalar(a) for a in after) + "]"))] if after else []
     if ids == "sequence":
         id_ = (allocate or allocate_intake_id)()
-        return {f"intake/{id_}.md": _frontmatter([("id", id_), ("title", title), *origin, *waits], text)}
+        return {f"intake/{id_}.md": _frontmatter([("id", id_), ("title", title), *staged, *origin, *waits], text)}
     slug = _slug_or_raise(title)
-    file_text = _frontmatter([("id", slug), ("title", title), ("repo", repo), *origin, *waits], text)
+    file_text = _frontmatter([("id", slug), ("title", title), ("repo", repo), *staged, *origin, *waits], text)
     return {f"intake/{date}-{slug}.md": file_text}
 
 
@@ -1949,6 +1980,8 @@ def decompose_into_rows(
     intake = select_intake_row(run_store.read_queue(runs_dir, kind="intake"), intake_id)
     if intake is None:
         return 2, [f"routing: no intake row {intake_id}"]
+    if intake_queue.stage(intake.get("extra") or {}) == "draft":
+        return 2, [f"routing: intake {intake_id} is a draft; ready it with `cox route ready {intake_id}`"]
     plan = run(intake_input_from_row(intake))
     existing = run_store.read_queue(runs_dir, plan["id"]) if plan["tasks"] else []
     rows, failure = plan_writes(plan, intake, existing)
@@ -2314,6 +2347,12 @@ def _started_since(started, cutoff: datetime.datetime) -> bool:
     return (when if when.tzinfo else when.replace(tzinfo=datetime.UTC)) >= cutoff
 
 
+FENCED_NOTE = (
+    "the run's process still answers but its lease heartbeat stopped, so the epoch fence refuses its writes "
+    "and it is not making progress; stop that pid on its host, then relaunch."
+)  # names no pid, so other screens can reuse it
+
+
 def _status_line(row: dict, short_id: str | None = None) -> str:
     short = short_id or row.get("short_id")
     name = f"{row['id']} [{short}]" if short else row["id"]
@@ -2326,6 +2365,7 @@ def _status_line(row: dict, short_id: str | None = None) -> str:
         ["; ".join(row[key]) for key in ("quarantined", "reused") if row.get(key)]
         + [row[key] for key in ("summary", "usage") if row.get(key)]
         + _phase_tails(row)
+        + ([FENCED_NOTE] if row["state"] == "fenced" else [])
     )
     return " ".join([head, *tails])
 
@@ -2338,13 +2378,29 @@ def _phase_tails(row: dict) -> list[str]:
     return ([f"phases: {phases}"] if phases else []) + ([f"tally: {counts}"] if counts else [])
 
 
+def intake_tags(entry: Mapping) -> str:
+    """` [stage ready, repo r, epic e, priority 3, target 2026.12.0]` from an intake entry, leaving out any part
+    that is absent, empty or zero; empty when none remain. `repo` shows the last path component."""
+    priority = _int_or_zero(entry.get("priority"))
+    repo = os.path.basename(str(entry.get("repo") or "").rstrip("/"))
+    parts = [
+        *([f"stage {entry['stage']}"] if entry.get("stage") else []),
+        *([f"repo {repo}"] if repo else []),
+        *([f"epic {entry['epic']}"] if entry.get("epic") else []),
+        *([f"priority {priority}"] if priority else []),
+        *([f"target {entry['target_release']}"] if entry.get("target_release") else []),
+    ]
+    return f" [{', '.join(parts)}]" if parts else ""
+
+
 def _intake_group_line(name: str, entries: list, waiting: Mapping[str, Sequence[str]] | None = None) -> str:
-    """`waiting` (intake id to the ids it waits on) annotates a queued entry as `id (waiting on a, b)`."""
+    """`waiting` (intake id to the ids it waits on) annotates a queued entry as `id (waiting on a, b)`.
+    An entry's stage, repo, epic, priority and target release follow as `intake_tags`."""
     waits = waiting or {}
 
     def label(entry: Mapping) -> str:
         on = waits.get(entry["id"]) if name == "queued" else None
-        return f"{entry['id']} (waiting on {', '.join(on)})" if on else entry["id"]
+        return (f"{entry['id']} (waiting on {', '.join(on)})" if on else entry["id"]) + intake_tags(entry)
 
     names = ", ".join(label(entry) for entry in entries)
     return f"intake {name}: {len(entries)}" + (f" — {names}" if entries else "")
@@ -2392,36 +2448,71 @@ def chair_machine_line(mode_line: str) -> str:
     return f"chair machine {mode_line.rsplit(' (', 1)[0]}"
 
 
+def merged_event_lines(events: Sequence[Mapping]) -> list[str]:
+    """`merged: a, b into a` per `tasks_merged` event, in order; other events are skipped."""
+    return [
+        f"merged: {', '.join(str(t) for t in event.get('tasks', []))} into {event.get('into', '')}"
+        for event in events
+        if event.get("event") == "tasks_merged"
+    ]
+
+
 def render_status(rows: list, groups: dict | None = None, problems: list | None = None,
                   gate_level: str | None = None, hidden: int = 0,
                   short_ids: Mapping[str, str] | None = None,
                   waiting: Mapping[str, Sequence[str]] | None = None,
                   held: Sequence[Mapping] | None = None,
                   deferred: Mapping[str, Sequence[str]] | None = None,
-                  chair_line: str = "") -> str:
+                  chair_line: str = "",
+                  events: Mapping[str, Sequence[Mapping]] | None = None) -> str:
     """The human-readable text `agent-tools route status` prints, spec §5,
     from `status_rows`' output. One line per row: a run with no pidfile
     states only its id and state, since `pid` and `started` are both
     `None` for that row and printing them would show the word "None"
     twice for no reason. `quarantined`, `reused`, `summary` and `usage`
     are appended only when the row carries them, so a quiet run stays
-    one line. `groups`, an `intake_groups` result, appends one line per
+    one line. A fenced row ends with `FENCED_NOTE`. `groups`, an `intake_groups` result, appends one line per
     group when given, and nothing when `None`. `problems`, `state_problems`'
     output, appends one line per entry last. `hidden`, when positive, adds
     one line after the rows saying that many older runs were left out.
     `short_ids` (slug to short id) shows `slug [short]` on a row whose slug is in it.
-    `waiting` (intake id to the ids it waits on) marks queued intake entries in the group lines. `held`, rows of
-    `{"id", "reason"}`, adds a `held:` heading after the groups with one `  id: reason` line each.
+    `waiting` (intake id to the ids it waits on) marks queued intake entries in the group lines. Queued entries
+    whose `stage` is "draft" leave the queued line for an `intake drafts: N` line after it, shown only when
+    there is one, so the queued line lists what the chair plans next. Each entry shows its `intake_tags`.
+    `held`, rows of `{"id", "reason"}` and optionally the same entry keys, adds a `held:` heading after the groups
+    with one `  id [tags]: reason` line each.
     `deferred` (target release to ids, `group_deferred`'s output) adds a `deferred to <version>:` heading per target
     after the held block, in the mapping's order, with one `  id` line each.
     `chair_line`, when non-empty, is the last line, after `gate:`.
+    `events` (run id to its initiative's events) puts a `merged:` line under a row for each `tasks_merged` event.
     """
     ids = short_ids or {}
-    lines = [_status_line(row, ids.get(row["id"])) for row in rows]
+    by_run = events or {}
+    lines = [
+        line
+        for row in rows
+        for line in (_status_line(row, ids.get(row["id"])), *merged_event_lines(by_run.get(row["id"], [])))
+    ]
     lines += [f"({hidden} older runs hidden; --all shows every run)"] if hidden > 0 else []
     if groups is not None:
-        lines += [_intake_group_line(name, groups[name], waiting) for name in ("queued", "decomposed", "landed")]
-    lines += ["held:", *(f"  {h['id']}: {h['reason']}" if h.get("reason") else f"  {h['id']}" for h in held)] if held else []
+        queue = groups["queued"]
+        drafts = [e for e in queue if e.get("stage") == "draft"]
+        shown = {
+            "queued": [e for e in queue if e.get("stage") != "draft"],
+            "drafts": drafts,
+            "decomposed": groups["decomposed"],
+            "landed": groups["landed"],
+        }
+        lines += [
+            _intake_group_line(name, shown[name], waiting)
+            for name in ("queued", "drafts", "decomposed", "landed")
+            if name != "drafts" or drafts
+        ]
+    lines += (
+        ["held:", *(f"  {h['id']}{intake_tags(h)}: {h['reason']}" if h.get("reason") else f"  {h['id']}{intake_tags(h)}" for h in held)]
+        if held
+        else []
+    )
     lines += [line for target, names in (deferred or {}).items() for line in (f"deferred to {target}:", *(f"  {n}" for n in names))]
     lines += [f"problem: {p}" for p in problems or []]
     lines += [f"gate: {gate_level}"] if gate_level is not None else []
@@ -2611,16 +2702,22 @@ def _intake_entry(filename: str, text: str) -> dict:
         "done": filename.startswith("done/"),
         "path": f"intake/{os.path.basename(filename)}",
         "after": _after_list(fields.get("after")),
-        "held": str(fields.get("held", "")).strip().lower() == "true",
+        "held": intake_queue.is_held(fields),
+        "stage": intake_queue.stage(fields),
         "priority": _int_or_zero(fields.get("priority")),
+        "epic": str(fields.get("epic") or ""),
+        "target_release": str(fields.get("target_release") or ""),
+        "repo": str(fields.get("repo") or ""),
     }
 
 
 def intake_entries(files: dict) -> list:
     """Rows for the intake queue, the `intake` input `render_context` and
     `context_document` already accept: one `{"id", "title", "initiative",
-    "done", "path", "after", "held", "priority"}` per file in `files` (filename -> text, as the caller
-    listed the intake dir), sorted by filename. A filename under a
+    "done", "path", "after", "held", "stage", "priority", "epic", "target_release", "repo"}` per file in `files`
+    (filename -> text, as the caller listed the intake dir), sorted by filename. `epic`, `target_release` and `repo`
+    are strings, empty when the frontmatter has none. `held` and `stage` come from `intake_queue`, the predicate the
+    row readers use: `stage` is "draft" or "ready", and `held` is true for any draft. A filename under a
     `consumed/` prefix has already been handled and is skipped. `id` comes
     from frontmatter's `id` field, or the filename's stem when frontmatter
     has none; `title` comes from frontmatter's `title` field, or the first

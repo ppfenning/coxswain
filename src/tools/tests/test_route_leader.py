@@ -4,13 +4,21 @@ import json
 import os
 import socket
 
+import pytest
+
 from agent_tools import chair, leader_chat
-from agent_tools.cli import _leader_heartbeat_minutes, _leader_identity, _leader_launched_by, main
+from agent_tools.cli import _leader_heartbeat_minutes, _leader_identity, _leader_launched_by, _leader_take_warning, main
 
 _NOW = datetime.datetime(2026, 1, 1, 12, 0, 0, tzinfo=datetime.UTC)
 _DEAD_PID = 999999999
 _LIVE_RECORD = {"session": "alice", "pid": 4242, "host": "h1", "taken_at": _NOW.isoformat(), "heartbeat_at": _NOW.isoformat()}
 _STALE_HEARTBEAT_RECORD = {**_LIVE_RECORD, "heartbeat_at": (_NOW - datetime.timedelta(minutes=99)).isoformat()}
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_claude_pid(monkeypatch):
+    """A `CLAUDE_PID` inherited from the developer's session would change which pid `take` records."""
+    monkeypatch.delenv("CLAUDE_PID", raising=False)
 
 
 def _profile(tmp_path):
@@ -228,6 +236,71 @@ def test_identity_prefers_an_explicit_pid_over_the_parent():
     assert _leader_identity()[0] == os.getppid()
 
 
+def test_identity_explicit_pid_wins_over_a_live_claude_pid():
+    assert _leader_identity(4242, {"CLAUDE_PID": str(os.getpid())})[0] == 4242
+
+
+def test_identity_uses_a_live_claude_pid_when_no_explicit_pid_is_given():
+    assert _leader_identity(None, {"CLAUDE_PID": str(os.getpid())})[0] == os.getpid()
+
+
+def test_identity_falls_through_to_the_parent_for_a_dead_or_non_numeric_claude_pid():
+    for value in (str(_DEAD_PID), "abc", "12ab", "-5", "0", ""):
+        assert _leader_identity(None, {"CLAUDE_PID": value})[0] == os.getppid()
+
+
+def test_cli_take_with_a_live_claude_pid_records_it_and_does_not_warn(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("CLAUDE_PID", str(os.getpid()))
+    rc = main(["route", "chair", "take", "--profile", str(_profile(tmp_path))])
+    assert rc == 0
+    assert "invoking shell's" not in capsys.readouterr().out
+    assert chair.read(tmp_path / "runs")["pid"] == os.getpid()
+
+
+def test_cli_take_on_the_parent_pid_fallback_warns_once(tmp_path, capsys):
+    rc = main(["route", "chair", "take", "--profile", str(_profile(tmp_path))])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert out.count("invoking shell's") == 1
+    assert "--pid" in out
+    assert chair.read(tmp_path / "runs")["pid"] == os.getppid()
+
+
+def test_cli_take_with_an_explicit_pid_does_not_warn(tmp_path, capsys):
+    rc = main(["route", "chair", "take", "--profile", str(_profile(tmp_path)), "--pid", str(os.getpid())])
+    assert rc == 0
+    assert "invoking shell's" not in capsys.readouterr().out
+
+
+def test_cli_extend_beat_and_release_match_a_lease_taken_on_a_live_claude_pid(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("CLAUDE_PID", str(os.getpid()))
+    argv = ["--profile", str(_profile(tmp_path)), "--label", "cos1"]
+    assert main(["route", "chair", "take", *argv]) == 0
+    assert main(["route", "chair", "extend", *argv, "--hours", "2"]) == 0
+    assert main(["route", "chair", "beat", *argv, "--run", "run-7"]) == 0
+    assert chair.read(tmp_path / "runs")["runs"] == ["run-7"]
+    assert main(["route", "chair", "release", *argv]) == 0
+    assert chair.read(tmp_path / "runs") is None
+
+
+def test_cli_refused_take_prints_no_stale_lease_warning(tmp_path, capsys):
+    fresh = _fresh_iso()
+    chair.write(tmp_path / "runs", {**_LIVE_RECORD, "host": socket.gethostname(), "pid": os.getpid(), "taken_at": fresh, "heartbeat_at": fresh})
+    rc = main(["route", "chair", "take", "--profile", str(_profile(tmp_path)), "--label", "bob"])
+    assert rc == 2
+    assert "invoking shell's" not in capsys.readouterr().out
+
+
+def test_take_warning_names_the_shell_pid_only_when_nothing_durable_was_named():
+    live = {"CLAUDE_PID": str(os.getpid())}
+    assert "invoking shell's" in _leader_take_warning(77, None, {}, 77, lambda pid: True)
+    assert "invoking shell's" in _leader_take_warning(77, None, {"CLAUDE_PID": "abc"}, 77, lambda pid: True)
+    assert _leader_take_warning(77, 77, {}, 77, lambda pid: True) is None
+    assert _leader_take_warning(88, None, {}, 77, lambda pid: True) is None
+    assert _leader_take_warning(77, None, live, 77, lambda pid: True) is not None
+    assert _leader_take_warning(os.getpid(), None, live, 77, lambda pid: True) is None
+
+
 def test_cli_take_refuses_an_explicit_dead_pid_and_writes_nothing(tmp_path, capsys):
     profile = _profile(tmp_path)
     runs_dir = tmp_path / "runs"
@@ -387,3 +460,30 @@ def test_leader_status_says_not_the_chair_for_a_foreign_pid_and_session(tmp_path
 
 def test_leader_status_with_no_lease_prints_chair_none(tmp_path, monkeypatch, capsys):
     assert _leader_line(tmp_path, monkeypatch, capsys, claude_pid="1") == "chair: none\n"
+
+
+def _live_loop(monkeypatch, cgroup):
+    """The holder's pid is alive and runs `chair run`; no lease row, so the record alone names it."""
+    monkeypatch.setattr("agent_tools.cli._read_holder_inputs", lambda runs_dir: None)
+    monkeypatch.setattr("agent_tools.chair.pid_alive", lambda pid: True)
+    monkeypatch.setattr("agent_tools.cli._pid_command", lambda pid: "python -m agent_tools.cli chair run --label alice")
+    monkeypatch.setattr("agent_tools.cli._pid_cgroup", lambda pid: cgroup)
+
+
+@pytest.mark.parametrize(
+    ("cgroup", "form"),
+    [("0::/user.slice/app.slice/coxswain-chair.service\n", "service"), ("0::/user.slice/session-3.scope\n", "chair loop")],
+)
+def test_leader_status_names_a_live_loop_holder_that_is_not_this_session_and_leaves_the_lease(tmp_path, monkeypatch, capsys, cgroup, form):
+    _hold(tmp_path, pid=os.getpid())
+    _live_loop(monkeypatch, cgroup)
+    before = (tmp_path / "runs" / "chair.json").read_bytes()
+    assert _leader_line(tmp_path, monkeypatch, capsys, claude_pid="1") == f"chair held by alice ({form})\n"
+    assert (tmp_path / "runs" / "chair.json").read_bytes() == before
+
+
+def test_leader_status_still_says_held_by_this_session_when_the_caller_is_the_recorded_holder(tmp_path, monkeypatch, capsys):
+    _hold(tmp_path, pid=os.getpid())
+    _live_loop(monkeypatch, "0::/user.slice/session-3.scope\n")
+    out = _leader_line(tmp_path, monkeypatch, capsys, claude_pid=str(os.getpid()))
+    assert "chair held by" not in out

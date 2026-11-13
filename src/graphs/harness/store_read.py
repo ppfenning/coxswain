@@ -41,6 +41,7 @@ __all__ = [
     "cost_by_model",
     "current_lease",
     "gate_decisions",
+    "initiative_cost",
     "leases_with_prefix",
     "ledger_rows",
     "ledger_streak_rows",
@@ -189,6 +190,29 @@ def run_summary(conn: Connection, run_id: str) -> Row | None:
     )
     row = conn.query_one(sql, (run_id,))
     return None if row is None else summary_row(run_id, row)
+
+
+def initiative_cost(conn: Connection, initiative: str) -> Row | None:
+    """Cost over every run `<initiative>-N` as {total_usd, retry_usd}; None when the initiative has no run.
+
+    Retry cost is a task's node_calls made after its first recorded attempt, which is a failure, in any of those runs.
+    Wrong belief: attempts.seq says which attempt it was. It restarts per run and may begin at 0, so ts decides.
+    """
+    p = conn.dialect.placeholder
+    prefix = f"{initiative}-"
+    candidates = (r[0] for r in conn.query_all(f"SELECT run_id FROM runs WHERE run_id LIKE {p}", (f"{prefix}%",)))
+    ids = [r for r in candidates if r.startswith(prefix) and r[len(prefix) :].isdigit()]
+    if not ids:
+        return None
+    marks = ", ".join(p for _ in ids)
+    total = conn.query_one(f"SELECT COALESCE(SUM(cost_usd), 0) FROM node_calls WHERE run_id IN ({marks})", tuple(ids))
+    retry = conn.query_one(
+        "SELECT COALESCE(SUM(c.cost_usd), 0) FROM node_calls c"
+        f" JOIN (SELECT task_id, MIN(ts) AS first_ts FROM attempts WHERE run_id IN ({marks}) GROUP BY task_id) a"
+        f" ON a.task_id = c.task_id WHERE c.run_id IN ({marks}) AND c.ts > a.first_ts",
+        (*ids, *ids),
+    )
+    return {"total_usd": float(total[0]) if total else 0.0, "retry_usd": float(retry[0]) if retry else 0.0}
 
 
 def model_row(row: Sequence[Any]) -> Row:

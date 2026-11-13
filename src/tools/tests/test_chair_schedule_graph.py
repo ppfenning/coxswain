@@ -84,3 +84,42 @@ def test_three_initiatives_sharing_one_file_have_no_cycle():
     assert sum(len(v) for v in edges.values()) == 3
     assert _acyclic(edges)
     assert set(edges) == set(nodes)
+
+
+def test_blocked_later_phase_holds_no_edge():
+    a = _ini("a", 5, _ph("p1"), _ph("p2", "blocked", surfaces=("cli.py",), parents=("p1",)))
+    _, edges = build_graph([a, _ini("b", 1, _ph("q", surfaces=("cli.py",)))])
+    assert edges[("a", "p2")] == frozenset()
+    assert edges[("b", "q")] == frozenset()
+
+
+def test_waiting_phase_holds_no_edge():
+    _, edges = build_graph(
+        [_ini("a", 5, _ph("p", "waiting", surfaces=("cli.py",))), _ini("b", 1, _ph("q", surfaces=("cli.py",)))]
+    )
+    assert edges[("a", "p")] == frozenset()
+    assert edges[("b", "q")] == frozenset()
+
+
+def test_running_phase_keeps_its_edge():
+    _, edges = build_graph(
+        [_ini("a", 5, _ph("p", "running", surfaces=("cli.py",))), _ini("b", 1, _ph("q", surfaces=("cli.py",)))]
+    )
+    assert edges[("a", "p")] == frozenset({("b", "q")})
+
+
+def test_withheld_initiative_holds_no_edge():
+    _, edges = build_graph(
+        [_ini("a", 5, _ph("p", surfaces=("cli.py",))), _ini("b", 1, _ph("q", surfaces=("cli.py",)))],
+        withheld=frozenset({"a"}),
+    )
+    assert edges[("a", "p")] == frozenset()
+    assert edges[("b", "q")] == frozenset()
+
+
+def test_two_ready_phases_still_get_an_edge():
+    _, edges = build_graph(
+        [_ini("a", 5, _ph("p", surfaces=("cli.py",))), _ini("b", 1, _ph("q", surfaces=("cli.py",)))],
+        withheld=frozenset(),
+    )
+    assert edges[("a", "p")] == frozenset({("b", "q")})

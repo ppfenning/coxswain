@@ -8,7 +8,9 @@ from pathlib import Path
 
 from agent_tools import queue_export, route_guard, run_store
 
-HELD_KEYS = ("held", "hold_reason")
+HELD_KEYS = ("stage", "held", "hold_reason")
+STAGES = ("draft", "ready")
+_INITIATIVE_KEYS = ("held", "hold_reason")
 
 
 @dataclass(frozen=True)
@@ -58,9 +60,41 @@ def _without_key(lines: list[str], key: str) -> list[str]:
     return lines if span is None else [*lines[: span[0]], *lines[span[1] :]]
 
 
+def _reason_line(by: str, date: str, reason: str) -> str:
+    return f"hold_reason: {json.dumps(hold_reason(by, date, reason), ensure_ascii=False)}"
+
+
+def _rewritten(text: str, edit, bare: str) -> str:
+    """`edit` maps the header lines to new ones. `bare` is the front matter a file without any gets. Text stays byte for byte when `edit` changes nothing."""
+    split = _split(text)
+    if split is None:
+        return f"---\n{bare}---\n{text}"
+    eol, lines, rest = split
+    new = edit(lines)
+    return text if new == lines else _join(eol, new, rest)
+
+
+def staged_text(text: str, stage: str) -> str:
+    """The intake text with `stage` set and nothing else touched. An intake that already carries the stage comes back unchanged."""
+    return _rewritten(text, lambda lines: _with_line(lines, "stage", f"stage: {stage}"), f"stage: {stage}\n")
+
+
 def held_text(text: str, reason: str, by: str, date: str) -> str:
-    """The intake text with `held: true` and `hold_reason` set; every other line, and the body, stay byte for byte."""
-    reason_line = f"hold_reason: {json.dumps(hold_reason(by, date, reason), ensure_ascii=False)}"
+    """The intake text with `stage: draft` and `hold_reason` set and any `held` line removed; every other line, and the body, stay byte for byte."""
+    reason_line = _reason_line(by, date, reason)
+    edit = lambda lines: _with_line(_with_line(_without_key(lines, "held"), "stage", "stage: draft"), "hold_reason", reason_line)  # noqa: E731
+    return _rewritten(text, edit, f"stage: draft\n{reason_line}\n")
+
+
+def released_text(text: str) -> str:
+    """The intake text with `stage: ready`, and without `hold_reason` and `held`. An intake that is already ready and not held comes back unchanged."""
+    edit = lambda lines: _with_line(_without_key(_without_key(lines, "held"), "hold_reason"), "stage", "stage: ready")  # noqa: E731
+    return _rewritten(text, edit, "stage: ready\n")
+
+
+def _initiative_held_text(text: str, reason: str, by: str, date: str) -> str:
+    """Initiatives have no stage: `held: true` and `hold_reason`, as before."""
+    reason_line = _reason_line(by, date, reason)
     split = _split(text)
     if split is None:
         return f"---\nheld: true\n{reason_line}\n---\n{text}"
@@ -68,8 +102,7 @@ def held_text(text: str, reason: str, by: str, date: str) -> str:
     return _join(eol, _with_line(_with_line(lines, "held", "held: true"), "hold_reason", reason_line), rest)
 
 
-def released_text(text: str) -> str:
-    """The intake text without `held` and `hold_reason`. An intake that is not held comes back unchanged."""
+def _initiative_released_text(text: str) -> str:
     split = _split(text)
     if split is None:
         return text
@@ -96,6 +129,12 @@ def plan_release(rows: Sequence[Mapping], target_id: str) -> Plan:
     return _plan(rows, target_id)
 
 
+def plan_stage(rows: Sequence[Mapping], target_id: str) -> route_guard.QueuedIntake | Refused:
+    """Only a queued intake has a stage; an initiative id is refused like an unknown one."""
+    plan = _plan(rows, target_id)
+    return plan if isinstance(plan, route_guard.QueuedIntake) else Refused(f"no queued intake named {target_id}")
+
+
 def _refuse(verb: str, reason: str) -> int:
     print(f"{verb}: refused: {reason}")
     return route_guard.REFUSED
@@ -109,11 +148,27 @@ def _initiative_row(rows: Sequence[Mapping], initiative: str) -> Mapping | None:
     return next((row for row in rows if row.get("kind") == "initiative" and row.get("task_id") == initiative), None)
 
 
+def _extra_without(row: Mapping, keys: Sequence[str]) -> dict:
+    return {k: v for k, v in (row.get("extra") or {}).items() if k not in keys}
+
+
 def _row_without_held(row: Mapping) -> dict:
-    return {**row, "extra": {k: v for k, v in (row.get("extra") or {}).items() if k not in HELD_KEYS}}
+    return {**row, "extra": {**_extra_without(row, HELD_KEYS), "stage": "ready"}}
 
 
 def _row_held(row: Mapping, value: str) -> dict:
+    return {**row, "extra": {**_extra_without(row, ("held",)), "stage": "draft", "hold_reason": value}}
+
+
+def _row_staged(row: Mapping, stage: str) -> dict:
+    return {**row, "extra": {**(row.get("extra") or {}), "stage": stage}}
+
+
+def _initiative_row_without_held(row: Mapping) -> dict:
+    return {**row, "extra": _extra_without(row, _INITIATIVE_KEYS)}
+
+
+def _initiative_row_held(row: Mapping, value: str) -> dict:
     return {**row, "extra": {**(row.get("extra") or {}), "held": "true", "hold_reason": value}}
 
 
@@ -164,12 +219,26 @@ def hold(
         return _refuse("hold", plan.reason)
     date = now.date().isoformat()
     value = hold_reason(by, date, reason)
+    if isinstance(plan, route_guard.InitiativeFound):
+        return _apply("hold", ws, runs_dir, plan, rows, lambda row: _initiative_row_held(row, value), lambda text: _initiative_held_text(text, reason, by, date), value, dry_run)
     return _apply("hold", ws, runs_dir, plan, rows, lambda row: _row_held(row, value), lambda text: held_text(text, reason, by, date), value, dry_run)
 
 
 def release(ws: Path, runs_dir: Path, id: str, rows: Sequence[Mapping], *, dry_run: bool = False) -> int:
-    """Edge. Exit codes as `hold`. Releasing a target that is not held writes nothing."""
+    """Edge. Exit codes as `hold`. Releasing an initiative that is not held, or an intake that is ready and not held, writes nothing."""
     plan = plan_release(rows, id)
     if isinstance(plan, Refused):
         return _refuse("release", plan.reason)
-    return _apply("release", ws, runs_dir, plan, rows, _row_without_held, released_text, "held fields removed", dry_run)
+    if isinstance(plan, route_guard.InitiativeFound):
+        return _apply("release", ws, runs_dir, plan, rows, _initiative_row_without_held, _initiative_released_text, "held fields removed", dry_run)
+    return _apply("release", ws, runs_dir, plan, rows, _row_without_held, released_text, "stage ready, hold removed", dry_run)
+
+
+def set_stage(ws: Path, runs_dir: Path, target_id: str, stage: str, rows: Sequence[Mapping], dry_run: bool = False) -> int:
+    """Edge. The plain draft and ready moves: sets `stage` and leaves `hold_reason` alone. Exit codes as `hold`."""
+    if stage not in STAGES:
+        return _refuse("stage", f"{stage} is not a stage for {target_id}; use draft or ready")
+    plan = plan_stage(rows, target_id)
+    if isinstance(plan, Refused):
+        return _refuse("stage", plan.reason)
+    return _apply("stage", ws, runs_dir, plan, rows, lambda row: _row_staged(row, stage), lambda text: staged_text(text, stage), f"stage {stage}", dry_run)

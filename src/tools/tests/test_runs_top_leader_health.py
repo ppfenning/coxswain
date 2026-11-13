@@ -41,7 +41,7 @@ def test_no_chair_file_is_not_an_alert():
 def test_the_chair_line_and_by_column_render_from_literals():
     rows = [runs_top.row("r1", True, [], [], [], None, "loop-b", _chair("stale"))]
     lines = runs_top.render(rows, 80, _chair("stale"))
-    assert lines[0] == "chair: loop-a (stale, beat 12m ago)"
+    assert lines[0] == "chair: loop-a (stale, beat 12m ago); no chair is running: `cox chair run`"
     assert "BY" in lines[1]
     assert lines[2].rstrip().endswith("loop-b")
 

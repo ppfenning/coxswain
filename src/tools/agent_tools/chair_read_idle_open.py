@@ -1,6 +1,7 @@
 """The open idle-stall item: `open_signature` and `open_diagnosis` of `IdleStallInputs`.
 
 A `deferred_land_deadlock` needs_chair row replaces the idle_stall line for the same stall, so it counts as the open item too.
+An `idle_ready` row does the same, or the next tick would read no open signature and send again.
 
 An item is open exactly as the dashboard's open needs-chair count decides it: an unacknowledged courier entry with a
 `coxswain://needs_chair/<id>` ref (`dash_feed.open_needs_chair_ids`). The `<id>` of an idle-stall item is the
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_tools import courier
+from agent_tools.chair_idle_ready import IDLE_READY_CAUSE
 from agent_tools.chair_read_stale import read_chair_actions
 from agent_tools.chair_types import DEADLOCK_CAUSE
 from agent_tools.dash_chair_today import _ts
@@ -38,11 +40,11 @@ def _fields(row: Mapping[str, Any]) -> Mapping[str, Any]:
 def open_idle_stall(
     rows: Sequence[Mapping[str, Any]], open_items: Collection[str]
 ) -> tuple[str | None, str | None]:
-    """(signature, reason) of the newest open `idle_stall` or `deferred_land_deadlock` needs_chair row, else (None, None); a resolved one is not open."""
+    """(signature, reason) of the newest open `idle_stall`, `deferred_land_deadlock` or `idle_ready` needs_chair row, else (None, None); a resolved one is not open."""
     flat = [_fields(_iso_ts(dict(r))) for r in rows]
     mine = [
         r for r in flat
-        if r.get("kind") == "needs_chair" and r.get("cause") in (CAUSE, DEADLOCK_CAUSE) and r.get("signature") in open_items
+        if r.get("kind") == "needs_chair" and r.get("cause") in (CAUSE, DEADLOCK_CAUSE, IDLE_READY_CAUSE) and r.get("signature") in open_items
     ]
     newest = max(enumerate(mine), key=lambda p: (_ts(p[1]) or _OLDEST, p[0]), default=None)
     return (str(newest[1]["signature"]), str(newest[1].get("reason") or "")) if newest is not None else (None, None)

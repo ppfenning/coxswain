@@ -1,4 +1,8 @@
+import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import pytest
 
 from agent_tools.dash_live_agents import agents, default_context_windows
 
@@ -68,7 +72,7 @@ def test_rate_counts_last_five_minutes_of_input_output_cache_read_only_cost_coun
         turn(10, input_tokens=1, output_tokens=2, cache_read_tokens=3, cost_usd=0.125),
     ]
     (row,) = agents(turns, NOW, WINDOWS)
-    assert row["tokens_per_min"] == 121.2
+    assert row["tokens_per_min"] == 121
     assert row["cost_usd"] == 1.3750
 
 
@@ -140,13 +144,65 @@ def test_zero_cost_agent_has_float_cost():
     assert type(row["cost_usd"]) is float and row["cost_usd"] == 0.0
 
 
-def test_tokens_per_min_is_a_float_even_when_idle():
-    # The contract test's AGENT table says int; the task says round to 1 place, so float it is.
+def test_tokens_per_min_is_an_int_even_when_idle():
     (row,) = agents([turn()], NOW, WINDOWS)
-    assert type(row["tokens_per_min"]) is float and row["tokens_per_min"] == 0.0
+    assert type(row["tokens_per_min"]) is int and row["tokens_per_min"] == 0
 
 
 def test_a_turn_stamped_after_now_counts_as_age_zero():
     turns = [turn(-30, input_tokens=300), turn(-90, input_tokens=300)]
     (row,) = agents(turns, NOW, WINDOWS)
-    assert (row["tokens_per_min"], row["elapsed_s"]) == (120.0, 0)
+    assert (row["tokens_per_min"], row["elapsed_s"]) == (120, 0)
+
+
+FEED_FIXTURE = Path(__file__).parent / "fixtures" / "dash_feed_v1.json"
+FIXTURE_WINDOWS = {"claude-opus-4-7": 1_000_000, "claude-sonnet-5-5": 200_000, "claude-haiku-4-5": 200_000}
+
+
+def fixture_agents():
+    return json.loads(FEED_FIXTURE.read_text())["live"]["agents"]
+
+
+def turns_for(row):
+    """An oldest silent turn fixes elapsed_s; the newest carries the rate, cost and context fill of the fixture row."""
+    window = FIXTURE_WINDOWS[row["model"]]
+    rate_tokens = row["tokens_per_min"] * 5
+    fill_tokens = round(row["context_fill"] * window)
+    common = {
+        "agent_id": row["id"],
+        "kind": row["kind"],
+        "model": row["model"],
+        "host": row["host"],
+        "task": row["serves"],
+    }
+    return [
+        turn(row["elapsed_s"], **common),
+        turn(
+            1,
+            input_tokens=rate_tokens,
+            cache_write_tokens=fill_tokens - rate_tokens,
+            cost_usd=row["cost_usd"],
+            **common,
+        ),
+    ]
+
+
+def fixture_turns():
+    return [t for row in fixture_agents() for t in turns_for(row)]
+
+
+def test_agents_equal_the_committed_live_agents_fixture():
+    assert agents(fixture_turns(), NOW, FIXTURE_WINDOWS) == fixture_agents()
+
+
+def test_every_fixture_tokens_per_min_is_an_int_and_the_idle_agent_is_zero():
+    rows = agents(fixture_turns(), NOW, FIXTURE_WINDOWS)
+    assert all(type(r["tokens_per_min"]) is int for r in rows)
+    (idle,) = [r for r in rows if r["kind"] == "operator"]
+    assert type(idle["tokens_per_min"]) is int and idle["tokens_per_min"] == 0
+
+
+@pytest.mark.parametrize("tokens, expected", [(301, 60), (297, 59), (3, 1), (1, 0)])
+def test_a_fractional_rate_rounds_to_the_nearest_whole_token(tokens, expected):
+    (row,) = agents([turn(input_tokens=tokens)], NOW, WINDOWS)
+    assert type(row["tokens_per_min"]) is int and row["tokens_per_min"] == expected

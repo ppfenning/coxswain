@@ -1,9 +1,12 @@
+from agent_tools.chair_plan import plan_held_files
 from agent_tools.notify_core import Event, render
-from agent_tools.notify_events import events_from_tick
+from agent_tools.notify_events import SELF_CLEARING_CAUSES, events_from_tick
 
 STRANDED = {"kind": "needs_chair", "initiative": "init-a", "cause": "stranded", "reason": "no patch"}
 UNRELATED = {"kind": "needs_chair", "initiative": "init-b", "cause": "odd"}
 LOGIN = {"kind": "needs_chair", "host": "lane1", "cause": "login_lapsed"}
+UNREACHABLE = {"kind": "needs_chair", "host": "lane2", "cause": "host_unreachable", "since": "2026-11-09T04:00Z"}
+BACK = {"kind": "needs_chair", "host": "lane2", "cause": "host_back", "back_at": "2026-11-09T05:00Z"}
 STALLED = {
     "kind": "needs_chair",
     "initiative": "init-c",
@@ -72,6 +75,15 @@ def test_a_held_file_gives_one_needs_attention_event_with_its_reason_keyed_by_pa
     assert again.key == "needs_attention:work/a.md|b2"
 
 
+def test_a_workspace_only_edit_planned_by_the_chair_pushes_one_needs_attention_with_the_diff_summary():
+    row = {"path": "work/a.md", "initiative": "init-h", "reason": "edited by hand", "blob": "b1", "diff_summary": "state changed"}
+    actions = plan_held_files({"held_files": [row]})
+    (event,) = events_from_tick({}, actions)
+    assert (event.kind, event.key) == ("needs_attention", "needs_attention:work/a.md|b1")
+    assert "changed with no matching store change (state changed)" in event.body
+    assert plan_held_files({"held_files": [row], "held_reported": ["work/a.md|b1"]}) == []
+
+
 def test_a_remedy_command_is_carried_in_the_body():
     action = {**UNRELATED, "reason": "stuck", "remedy": "carry", "command": ["cox", "runs", "land", "r1"]}
     (event,) = events_from_tick({}, [action])
@@ -126,6 +138,30 @@ def test_login_with_url_clicks_through():
 def test_login_without_url_names_the_login():
     (event,) = events_from_tick({}, [LOGIN])
     assert event.click == "" and "claude login" in event.body and "lane1" in event.body
+
+
+def test_host_unreachable_gives_one_event_naming_unreachable_not_login():
+    (event,) = events_from_tick({}, [UNREACHABLE])
+    assert (event.kind, event.key) == ("host_unreachable", "host_unreachable:lane2:2026-11-09T04:00Z")
+    assert "unreachable" in event.title and "lane2" in event.title
+    assert "lapsed" not in event.body and "login" not in event.body
+
+
+def test_the_same_host_unreachable_action_twice_in_one_tick_gives_one_event():
+    assert len(events_from_tick({}, [UNREACHABLE, UNREACHABLE])) == 1
+
+
+def test_a_second_outage_on_the_same_host_keys_apart():
+    later = {**UNREACHABLE, "since": "2026-11-09T09:00Z"}
+    assert len({e.key for e in events_from_tick({}, [UNREACHABLE, later])}) == 2
+    (bare,) = events_from_tick({}, [{k: v for k, v in UNREACHABLE.items() if k != "since"}])
+    assert bare.key == "host_unreachable:lane2:"
+
+
+def test_host_back_gives_one_event_titled_host_back():
+    (event,) = events_from_tick({}, [BACK])
+    assert (event.kind, event.key) == ("host_back", "host_back:lane2:2026-11-09T05:00Z")
+    assert event.title == "Host back: lane2"
 
 
 def test_stalled_gives_stall_by_run():
@@ -197,3 +233,17 @@ def test_missing_facts_never_fire_queue_empty():
 
 def test_a_needs_chair_event_suppresses_queue_empty():
     assert [e.key for e in events_from_tick(EMPTY_FACTS, [STRANDED])] == ["needs_chair:init-a:stranded"]
+
+
+def test_idle_ready_is_not_self_clearing_and_pushes_keyed_on_subject_and_cause():
+    action = {
+        "kind": "needs_chair",
+        "initiative": "init-a",
+        "cause": "idle_ready",
+        "signature": "idle_ready:init-a,init-b",
+        "reason": "init-a waits on init-b",
+    }
+    assert "idle_ready" not in SELF_CLEARING_CAUSES
+    (event,) = events_from_tick({}, [action])
+    assert (event.kind, event.key) == ("needs_chair", "needs_chair:init-a:idle_ready")
+    assert "init-a waits on init-b" in event.body

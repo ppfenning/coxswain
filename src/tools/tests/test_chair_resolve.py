@@ -346,3 +346,47 @@ def test_print_argv_names_each_bare_cox_branch(tmp_path, monkeypatch, capsys):
         assert ("was not found" in err) == (lost in expected), err  # only a crashed record names a missing session
         assert "chair:" not in out and out.splitlines()[-2].startswith("['claude'")  # stdout keeps the argv and cwd; the branch is named on stderr
         assert (flag in out) == any("claude --resume" in text for text in expected[:1])
+
+
+def test_resolve_session_takes_reads_the_three_policies_and_defaults_the_rest_to_when_free():
+    assert [chair_resolve.resolve_session_takes(raw) for raw in ("never", "when_free", "always")] == ["never", "when_free", "always"]
+    assert chair_resolve.resolve_session_takes("  ALWAYS ") == "always"
+    assert chair_resolve.resolve_session_takes(" Never\n") == "never"
+    assert [chair_resolve.resolve_session_takes(raw) for raw in (None, 7, "", "sometimes")] == ["when_free"] * 4
+
+
+def test_a_live_chair_loop_is_observer_under_every_policy_and_names_who_holds_it():
+    loop, service, nameless = chair_resolve.SessionHolder("loop", "chair-2"), chair_resolve.SessionHolder("loop", "coxswain-service", True), chair_resolve.SessionHolder("loop")
+    assert [chair_resolve.session_take_decision(policy, loop, False).action for policy in ("never", "when_free", "always", None, "junk")] == ["observer"] * 5
+    assert chair_resolve.session_take_decision("always", loop, False) == chair_resolve.TakeDecision("observer", "chair held by chair-2 (chair loop)")
+    assert chair_resolve.session_take_decision("always", service, False) == chair_resolve.TakeDecision("observer", "chair held by coxswain-service (service)")
+    assert chair_resolve.session_take_decision("never", nameless, False).line == "chair held by ? (chair loop)"
+
+
+def test_only_explicit_take_overrides_a_live_chair_loop():
+    loop = chair_resolve.SessionHolder("loop", "chair-2")
+    assert chair_resolve.session_take_decision("never", loop, True).action == "take"
+    assert chair_resolve.session_take_decision("never", loop, False).action == "observer"
+
+
+def test_an_unrecognised_holder_kind_is_observer_under_every_policy():
+    for kind in ("Loop", "looping", ""):
+        assert [chair_resolve.session_take_decision(policy, chair_resolve.SessionHolder(kind), False).action for policy in ("never", "when_free", "always")] == ["observer"] * 3
+
+
+def test_a_free_or_stale_lease_is_taken_unless_the_policy_is_never():
+    for kind in ("free", "stale"):
+        holder = chair_resolve.SessionHolder(kind)
+        actions = [chair_resolve.session_take_decision(policy, holder, False).action for policy in ("when_free", "always", "never", None)]
+        assert actions == ["take", "take", "observer", "take"]
+
+
+def test_a_live_non_loop_session_is_taken_over_only_under_always():
+    session = chair_resolve.SessionHolder("session", "chair-2026-10-29")
+    actions = [chair_resolve.session_take_decision(policy, session, False).action for policy in ("never", "when_free", "always", "junk")]
+    assert actions == ["observer", "observer", "take", "observer"]
+
+
+def test_held_line_names_the_service_and_another_chair_loop():
+    assert chair_resolve.held_line("coxswain-service", True) == "chair held by coxswain-service (service)"
+    assert chair_resolve.held_line("chair-2", False) == "chair held by chair-2 (chair loop)"

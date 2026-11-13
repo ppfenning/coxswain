@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from harness.checks import HARNESS_FAULT_PREFIX, all_passed, quarantine_reason, run_checks
+from harness.worktree import registry_lock
 
 __all__ = ["evidence_rows", "verify_patch"]
 
@@ -100,11 +101,14 @@ def verify_patch(
     workdir.mkdir(parents=True, exist_ok=True)
     worktree = Path(tempfile.mkdtemp(prefix="rescue-", dir=workdir))
     try:
-        added = _git(repo, "worktree", "add", "--detach", str(worktree), base_ref)
+        with registry_lock():
+            added = _git(repo, "worktree", "add", "--detach", str(worktree), base_ref)
         if added.returncode != 0:
             return _outcome(False, False, [], f"{HARNESS_FAULT_PREFIX} worktree add failed: {added.stderr.strip()}")
         return _verify_in(worktree, patch, checks, apply, env)
     finally:
-        _git(repo, "worktree", "remove", "--force", str(worktree))
+        with registry_lock():
+            _git(repo, "worktree", "remove", "--force", str(worktree))
         shutil.rmtree(worktree, ignore_errors=True)
-        _git(repo, "worktree", "prune")
+        with registry_lock():
+            _git(repo, "worktree", "prune")

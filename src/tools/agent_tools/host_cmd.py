@@ -171,7 +171,11 @@ def _display_state(row: Row, live_by_host: Mapping[str, int]) -> str:
 
 def host_line(row: Row, now: datetime.datetime, live_by_host: Mapping[str, int] | None = None) -> str:
     state = _display_state(row, live_by_host or {})
-    return f"{row['name']}  {state}  cap {row['capacity']}  beat {_age(row.get('beat_at'), now)}  login {_login(row)}"
+    age = _age(row.get("beat_at"), now)
+    # Failed unreachable checks do not stamp beat_at, so it is the last time the host itself was seen.
+    if state == "unreachable":
+        return f"{row['name']}  unreachable  cap {row['capacity']}  last seen {age}  login {_login(row)}"
+    return f"{row['name']}  {state}  cap {row['capacity']}  beat {age}  login {_login(row)}"
 
 
 def env_rows(row: Row) -> list[str]:

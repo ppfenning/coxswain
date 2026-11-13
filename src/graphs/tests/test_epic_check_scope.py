@@ -120,7 +120,7 @@ def test_a_patch_adding_a_test_file_always_runs_it(run) -> None:
 def test_the_evidence_names_the_selection_and_the_tests_run(run) -> None:
     record = run(tools_edit())["record"]
     (row,) = [r for r in record["evidence"] if r["check"] == "checks:scope"]
-    assert row["output"] == "scoped checks: ran tools (narrowed to 1 file); skipped graphs; tests_run=3"
+    assert row["output"] == "scoped checks: ran tools (narrowed to 1 of 1 file); skipped graphs; tests_run=3"
     assert record["check_scope"]["tests_run"] == 3
     assert record["check_scope"]["components_skipped"] == ["graphs"]
 
