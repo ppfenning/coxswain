@@ -5027,6 +5027,8 @@ def _route_export(a: argparse.Namespace) -> int:
 
 # Commands that run before a store is configured, or configure it. Every other command needs the one store.
 _STORE_FREE = frozenset({"setup", "install", "upgrade", "versions", "settings", "dev", "release", "home", "plan"})
+# Commands in a board group that read only the files they are pointed at, so a machine with no store can run them.
+_STORE_FREE_COMMANDS = frozenset({("route", "lint")})
 STORE_DOUBLE_ENV = "COXSWAIN_STORE_DOUBLE"  # the suites' sqlite stand-in; the harness reads the same name
 
 
@@ -5034,7 +5036,7 @@ def store_refusal(head: Sequence[str], storage: object, environ: Mapping[str, st
     """Pure. Why the command line `head` may not run against the store URL `storage`; None when it may.
     The one store is Postgres. No URL, or any other kind, is refused for every command that touches the board."""
     words = [w for w in head if not w.startswith("-")]
-    if not words or words[0] in _STORE_FREE or environ.get(STORE_DOUBLE_ENV) == "sqlite":
+    if not words or words[0] in _STORE_FREE or tuple(words[:2]) in _STORE_FREE_COMMANDS or environ.get(STORE_DOUBLE_ENV) == "sqlite":
         return None
     if not isinstance(storage, str) or not storage:
         return "no store is configured: the provider profile needs a storage_url naming a postgresql:// store. Run `cox setup store --store shared`."
