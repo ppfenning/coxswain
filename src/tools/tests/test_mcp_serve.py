@@ -155,3 +155,23 @@ def test_http_needs_an_address_and_a_usable_tokens_file(served, tmp_path: Path, 
     short.write_text("client-a tooshort\n")
     assert served(argv=("--http", "127.0.0.1:8765", "--tokens-file", str(short)))[0] == 2
     assert "tokens file cannot be used" in capsys.readouterr().err
+
+
+def test_a_stdio_client_with_no_label_is_named_by_the_local_user_and_both_flag_spellings_parse(served, monkeypatch) -> None:
+    import getpass
+
+    monkeypatch.setattr(getpass, "getuser", lambda: "operator")
+    monkeypatch.delenv("COXSWAIN_MCP_CONVERSATION", raising=False)
+    _, _, ws = served(_call(1, "cut_release", {"version": "2026.11.7", "confirm": "2026.11.7"}))
+    (entry,) = [json.loads(line) for line in (ws / "courier.jsonl").read_text().splitlines()]
+    assert entry["from"] == "stdio:operator"
+    parser = cli.build_parser()
+    assert parser.parse_args(["mcp", "--http", "127.0.0.1:8765", "--token-file", "t"]).tokens_file == "t"
+    assert parser.parse_args(["mcp", "serve", "--tokens-file", "t"]).tokens_file == "t"
+
+
+def test_a_public_or_unspecified_address_is_refused_and_binds_nothing(served, tmp_path: Path, capsys) -> None:
+    tokens = tmp_path / "tokens"
+    tokens.write_text("client-a " + "t" * 24 + "\n")
+    assert served(argv=("--http", "0.0.0.0:8765", "--token-file", str(tokens)))[0] == 2
+    assert "refusing to bind" in capsys.readouterr().err

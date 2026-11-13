@@ -12581,11 +12581,11 @@ def _mcp_serve(a: argparse.Namespace) -> int:
             sys.stdout.flush()
 
         # The attached session's config carries its conversation id here, so its entries stay in one conversation.
-        caller = a.label or os.environ.get(chair_attach.CONVERSATION_ENV) or "mcp"
+        caller = a.label or os.environ.get(chair_attach.CONVERSATION_ENV) or f"stdio:{getpass.getuser()}"
         return mcp_server.serve_stdio(sys.stdin, write, mcp_server.make_handler(ports, caller))
     host, _, port = a.http.rpartition(":")
     if not host or not port.isdigit() or not a.tokens_file:
-        print("mcp: --http takes HOST:PORT with a literal address, and needs --tokens-file", file=sys.stderr)
+        print("mcp: --http takes HOST:PORT with a literal address, and needs --token-file", file=sys.stderr)
         return 2
     try:
         tokens = mcp_http.parse_tokens(Path(a.tokens_file).expanduser().read_text(encoding="utf-8"))
@@ -12606,12 +12606,12 @@ MCP_GROUP = commands.Group(
         "With no --http it speaks MCP on stdin and stdout, which is what a local client launches. "
         "--http binds only a loopback, private, tailnet or link-local address and has no TLS."
     ),
-    epilog="examples:\n  cox mcp\n  cox mcp serve --http 127.0.0.1:8765 --tokens-file tokens",
+    epilog="examples:\n  cox mcp\n  cox mcp serve --http 127.0.0.1:8765 --token-file tokens",
     args=(
         commands.Arg(("mode",), {"nargs": "?", "choices": ("serve",), "help": "optional; serving is all this command does"}),
         commands.Arg(("--http",), {"metavar": "HOST:PORT", "help": "serve over HTTP on this literal private address instead of stdin and stdout"}),
-        commands.Arg(("--tokens-file",), {"metavar": "PATH", "help": "with --http: lines of 'label token'; a token is at least 24 characters"}),
-        commands.Arg(("--label",), {"help": "who the stdio client is, on every entry it sends; default $COXSWAIN_MCP_CONVERSATION, else mcp. Over HTTP the token's label is used"}),
+        commands.Arg(("--token-file", "--tokens-file"), {"metavar": "PATH", "dest": "tokens_file", "help": "with --http: lines of 'label token'; a token is at least 24 characters"}),
+        commands.Arg(("--label",), {"help": "who the stdio client is, on every entry it sends; default $COXSWAIN_MCP_CONVERSATION, else stdio:<user>. Over HTTP the token's label is used"}),
         commands.Arg(("--profile",)),
     ),
     fn="agent_tools.cli:_mcp_serve",

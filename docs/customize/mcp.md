@@ -19,7 +19,7 @@ launches a server. A client entry looks like this:
 
 `--label NAME` names the client on every entry it sends. Without it the
 server uses `$COXSWAIN_MCP_CONVERSATION`, which a bare `cox` launch sets
-when it attaches to a live chair, and otherwise `mcp`.
+when it attaches to a live chair, and otherwise `stdio:<your user name>`.
 
 You rarely need to configure the client by hand on the chair's machine: a
 bare `cox` launch beside a live chair service opens a session with this
@@ -78,7 +78,7 @@ the lane hosts.
 ## Over HTTP
 
 ```sh
-cox mcp serve --http 127.0.0.1:8765 --tokens-file ~/.config/agent-tools/mcp-tokens
+cox mcp serve --http 127.0.0.1:8765 --token-file ~/.config/agent-tools/mcp-tokens
 ```
 
 - The address must be a literal loopback, private, tailnet or link-local
