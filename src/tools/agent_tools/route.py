@@ -31,6 +31,7 @@ from agent_tools import (
     release_gate,
     repo_path,
     run_store,
+    upgrade_edge,
 )
 from agent_tools.intake_state import intake_group, intake_index
 from agent_tools.jsonl_log import parse_log
@@ -125,6 +126,7 @@ _KNOWN_KEYS = {
     "operator",  # the human the courier and decisions address; settings_model.operator_name, "operator" when absent
     "serial_files",  # `[path, ...]` the steer rule never lets two initiatives share; an entry ending in `/` covers a directory
     "intake_stage",  # `draft` or `ready`: the stage a session files an intake at when the caller names none
+    "upgrade_channel",  # `stable` (default: release tags) or `edge` (the newest green commit on main); cox upgrade reads it
 }
 
 INTAKE_STAGES = ("draft", "ready")
@@ -192,6 +194,7 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
     It also takes `steward_scope:`, text with quotes stripped, `all` or `epics` in any case, kept lower case as a str in
     `result["chair"]["steward_scope"]`; any other value raises ProfileError. The key is absent when not written and the reader applies the default `all`.
     `intake_stage:` is `draft` or `ready`, quotes and case ignored, kept lower case; any other value raises ProfileError.
+    `upgrade_channel:` is `stable` or `edge` under the same rule.
     It also takes `session_takes:`, text with quotes stripped, `never`, `when_free` or `always` in any case, kept lower case as a str in
     `result["chair"]["session_takes"]`; any other value raises ProfileError. The key is absent when not written and the reader applies the default `when_free`.
     A bare `store:` line followed by an indented `mode:` line is kept as text in
@@ -357,6 +360,11 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
             if stage_value not in INTAKE_STAGES:
                 raise ProfileError(f"line {lineno}: {raw_line} (intake_stage is one of {', '.join(INTAKE_STAGES)})")
             result[key] = stage_value
+        elif key == "upgrade_channel":
+            channel_value = value.strip("\"'").lower()
+            if channel_value not in upgrade_edge.CHANNELS:
+                raise ProfileError(f"line {lineno}: {raw_line} (upgrade_channel is one of {', '.join(upgrade_edge.CHANNELS)})")
+            result[key] = channel_value
         else:
             result[key] = value
     # An `assume:` with no value is treated the same as an absent key, not

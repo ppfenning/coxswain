@@ -376,6 +376,22 @@ def _loads(stdout: str):
         return None
 
 
+def ci_runs_argv(slug: str, workflow: str, branch: str, limit: int = 50) -> list[str]:
+    """`gh run list` for the runs `workflow` made on pushes to `branch` of `slug`, newest first."""
+    return ["gh", "run", "list", "--repo", slug, "--workflow", workflow, "--branch", branch, "--event", "push",
+            "--json", "headSha,status,conclusion", "--limit", str(limit)]
+
+
+def parse_green_shas(stdout: str) -> tuple[str, ...]:
+    """The headSha of each completed, successful run in `ci_runs_argv` output, in order; () when it is not a list."""
+    runs = _loads(stdout)
+    if not isinstance(runs, list):
+        return ()
+    return tuple(run["headSha"] for run in runs
+                 if isinstance(run, dict) and run.get("status") == "completed" and run.get("conclusion") == "success"
+                 and isinstance(run.get("headSha"), str))
+
+
 def parse_base_ref(stdout: str) -> str | None:
     """The `baseRefName` of `gh pr view --json baseRefName` output, or None."""
     data = _loads(stdout)
