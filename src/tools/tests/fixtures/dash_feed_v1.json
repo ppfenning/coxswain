@@ -567,5 +567,6 @@
       {"at": "2026-11-06T11:00:00Z", "value": 0},
       {"at": "2026-11-06T12:00:00Z", "value": 0}
     ]
-  }
+  },
+  "health": {"skipped_total": 2, "logs": [{"log": "courier.jsonl", "skipped": 1}, {"log": "land.jsonl", "skipped": 1}]}
 }

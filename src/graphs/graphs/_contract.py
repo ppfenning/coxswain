@@ -158,6 +158,7 @@ def proposal(
     subject: str | None = None,
     subject_new: bool = False,
     attempts: int | None = None,
+    apply: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build one proposal, refusing anything the cartridge did not authorise.
 
@@ -182,6 +183,8 @@ def proposal(
     third-try pass from a first-try one. A pass that took three rounds is not
     the same evidence as a pass that took one, and the difference must survive
     the trip downstream.
+
+    `apply` is the payload the workstore code arm applies.
     """
     write_kinds = cartridge.get("write_kinds") or {}
     spec = write_kinds.get(kind)
@@ -209,4 +212,5 @@ def proposal(
         **({"subject": subject} if subject is not None else {}),
         **({"subject_new": True} if subject_new else {}),
         **({"attempts": attempts} if attempts is not None else {}),
+        **({"apply": dict(apply)} if apply is not None else {}),
     }

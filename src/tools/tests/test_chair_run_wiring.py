@@ -26,10 +26,10 @@ _FACTS_DEPS_METADATA_FIELDS = frozenset({"session", "pid", "host"})
 # what `_chair_run_deps` wires today, not an assumption: if a future change starts passing `queue=` or
 # `stranded_records=`, the assertion below fails and names the field to drop from this set.
 # `decomposed_intake` and `item_counts` are wired and so no longer listed here.
-# `merge_queue` is declared but not wired yet: the command task passes a profile reader and drops it from this set.
-# `live_phases` is likewise declared but not wired yet: the wiring task passes a reader and drops it from this set.
+# `merge_queue` is wired: it returns the raw profile value, like `max_launches_per_hour`.
+# `live_phases` is declared but not wired yet: the wiring task passes a reader and drops it from this set.
 _FACTS_DEPS_NONE_GUARDED_FIELDS = frozenset(
-    {"queue", "stranded_records", "merge_queue", "live_phases"}
+    {"queue", "stranded_records", "live_phases"}
 )
 
 # Steward sources whose dataclass default is a working callable (`[]`, `""`, `False`), so only identity shows them unwired.
