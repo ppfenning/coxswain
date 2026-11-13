@@ -163,14 +163,14 @@ def quiet_doctor(monkeypatch):
         "kind": "sqlite", "reachable": False, "runs": None, "fresh": True, "error": "no store yet"})
 
 
-def test_doctor_prints_an_ok_row_for_default_files(home, capsys, quiet_doctor):
+def test_doctor_prints_a_warning_row_for_the_retired_files_setting(home, capsys, quiet_doctor):
     _rc, out = _doctor(home, capsys, "--json")
     rows = [r for r in json.loads(out.out)["rows"] if r["check"] == "shared store"]
     assert [r["ok"] for r in rows] == [True]
-    assert "local files" in rows[0]["detail"]
+    assert "files, which is retired" in rows[0]["detail"]
     _rc, out = _doctor(home, capsys)
     line = next(row for row in out.out.splitlines() if row.startswith("shared store"))
-    assert " ok " in line and "local files" in line
+    assert " warn " in line and "files, which is retired" in line
 
 
 def test_doctor_prints_a_fail_row_naming_postgres_for_an_unreachable_shared_store(home, capsys, monkeypatch, quiet_doctor):

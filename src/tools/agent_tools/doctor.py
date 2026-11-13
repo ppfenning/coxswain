@@ -4,6 +4,7 @@ phase) builds a Facts mapping and hands it to `checks`."""
 
 from __future__ import annotations
 
+import os
 import posixpath
 import re
 from collections.abc import Callable, Mapping, Sequence
@@ -254,12 +255,21 @@ def _plugins_row(facts: Mapping) -> dict:
     return {"check": "plugins", "ok": True, "detail": "; ".join(parts)}
 
 
+_NO_POSTGRES = (
+    "no Postgres store is configured, and the local sqlite store is retired; run cox setup store --store shared "
+    "(then cox setup store switch shared to carry an old local store over)"
+)
+
+
 def _store_row(facts: Mapping, cascade: bool) -> dict:
     if cascade:
         return _skip("store")
     store = facts.get("store", _MISSING)
     if store is _MISSING:
         return _not_checked("store")
+    if store.get("kind") == "sqlite" and os.environ.get("COXSWAIN_STORE_DOUBLE") != "sqlite":  # the suites' stand-in is a store
+        # The one store is Postgres. A machine with no store yet, or an old local one, is awaiting setup: a warning.
+        return {"check": "store", "ok": True, "warn": True, "detail": _NO_POSTGRES}
     if store.get("reachable"):
         return {"check": "store", "ok": True, "detail": f"{store.get('kind')}, {store.get('runs')} runs"}
     if store.get("fresh"):
@@ -701,7 +711,7 @@ def store_rows(mode: str, store_url: str, traces_url: str, probe_results: list[P
     if mode == "files":
         if shared_url:
             return [_shared_row(True, "the profile points at a shared store while the setting says files", warn=True)]
-        return [_shared_row(True, "the run store and traces are local files, which is the default")]
+        return [_shared_row(True, "the setting says files, which is retired; run cox setup store --store shared", warn=True)]
     if mode == "shared":
         if not shared_url:
             return [_shared_row(True, "the setting says shared while the profile still points at local files", warn=True)]

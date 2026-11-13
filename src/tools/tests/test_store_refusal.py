@@ -47,3 +47,23 @@ def test_lint_reads_only_the_files_it_is_given_and_runs_without_a_store() -> Non
     assert cli.store_refusal(["route", "lint", "work/demo"], None, {}) is None
     assert cli.store_refusal(["route", "lint", "work/demo"], "sqlite:///runs/cox.db", {}) is None
     assert cli.store_refusal(["route", "status"], None, {}) is not None
+
+
+def test_a_machine_with_no_postgres_store_migrates_unleased_and_says_so(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.delenv("COXSWAIN_STORE_DOUBLE")
+    monkeypatch.setattr(cli.land_repo_lease, "acquire", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no lease is taken")))
+    taken = cli._migrate_acquire(tmp_path / "runs", ["checkout-a", "checkout-b"], "migrate-test")
+    assert [(o.path, o.granted, epoch) for o, epoch in taken] == [("checkout-a", True, None), ("checkout-b", True, None)]
+    assert "migrating this machine unleased" in capsys.readouterr().err
+
+
+def test_the_doctor_warns_about_a_local_sqlite_store_on_a_real_machine(monkeypatch) -> None:
+    from agent_tools import doctor
+
+    facts = {"store": {"kind": "sqlite", "reachable": True, "runs": 12, "fresh": False}}
+    assert doctor._store_row(facts, False) == {"check": "store", "ok": True, "detail": "sqlite, 12 runs"}, "the suites' stand-in"
+    monkeypatch.delenv("COXSWAIN_STORE_DOUBLE")
+    row = doctor._store_row(facts, False)
+    assert row["ok"] is True and row["warn"] is True and "cox setup store --store shared" in row["detail"]
+    reachable = doctor._store_row({"store": {"kind": "postgresql", "reachable": True, "runs": 12}}, False)
+    assert reachable == {"check": "store", "ok": True, "detail": "postgresql, 12 runs"}
