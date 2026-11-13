@@ -95,7 +95,14 @@ def test_notify_appends_one_courier_entry_for_the_chair(ws: Path, ports) -> None
     assert entry["fields"]["choices"] == '["split", "drop"]'
 
 
-def test_mark_done_closes_an_approved_work_file(ws: Path, ports, capsys) -> None:
+def test_mark_done_closes_an_approved_work_file(ws: Path, ports, capsys, monkeypatch) -> None:
+    import sys
+
+    from agent_tools import store_cli
+
+    # The store moves first, approved to done; the file follows it.
+    monkeypatch.setattr(store_cli, "_harness_python", lambda: Path(sys.executable))
+    store_work_state.set_state(ports.conn, "demo", "a", "approved", "tester", "p1", NOW)
     assert ports.mark_done("demo", "a", "https://forge.example/pull/1") is None
     assert "state: done" in (ws / "work" / "demo" / "p1" / "a.md").read_text()
 

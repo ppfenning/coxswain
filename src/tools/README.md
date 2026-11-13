@@ -179,7 +179,7 @@ cox setup doctor [--profile PROFILE] [--repo REPO] [--json] [--host HOST]   chec
 cox setup install [--root ROOT] --team TEAM [--workspace WORKSPACE] [--home HOME] [--provider-profile PROVIDER_PROFILE] [--skills-root SKILLS_ROOT] [--assume a|r] [--plugins] [--hook] [--force-profile] [--dry-run] [--window-ceiling-usd WINDOW_CEILING_USD] [--weekly-ceiling-usd WEEKLY_CEILING_USD]   sync the checkout's venv, install cox and write a profile for this machine
 cox setup extras [--with EXTRA] [--dry-run]   install the optional extras into this venv, pinned and hash-checked from uv.lock
 cox setup migrate [--home HOME] [--dry-run] [--apply] [--hosts] [--finish] [--old-root PATH] [--to VERSION]   plan moving this host to the one monorepo checkout; --apply migrates
-cox setup store switch files|shared [--host HOST] [--port PORT] [--database DATABASE] [--user USER] [--bucket BUCKET] [--endpoint ENDPOINT] [--region REGION] [--password-env PASSWORD_ENV] [--access-key-env ACCESS_KEY_ENV] [--secret-key-env SECRET_KEY_ENV] [--dry-run]   copy the run store and traces to the other backend, then record store.mode
+cox setup store switch files|shared [--host HOST] [--port PORT] [--database DATABASE] [--user USER] [--bucket BUCKET] [--endpoint ENDPOINT] [--region REGION] [--password-env PASSWORD_ENV] [--access-key-env ACCESS_KEY_ENV] [--secret-key-env SECRET_KEY_ENV] [--dry-run]   copy an old local run store and its traces into the shared store, then record store.mode
 cox setup token status [--probe]   report whether the stored token file exists and claude accepts it
 ```
 <!-- commands:end -->
@@ -195,8 +195,8 @@ and `cox setup migrate` point its `harness_dir`, `skills_roots` and
 `provider_profile` at the shipped `src/cartridges/providers/claude-code.yaml`
 unless `--provider-profile` names another; a team's own provider profile
 lives outside the checkout, in `<home>/providers/` or the workspace, and
-`cox setup migrate` keeps it. `cox setup store --store files|shared` picks
-the run store; see [`docs/shared-store.md`](docs/shared-store.md). New to
+`cox setup migrate` keeps it. `cox setup store --store shared` configures
+the run store, which is Postgres; see [`docs/shared-store.md`](docs/shared-store.md). New to
 the profile? [`docs/getting-started.md`](docs/getting-started.md) walks
 through it.
 

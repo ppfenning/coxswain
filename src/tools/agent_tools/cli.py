@@ -5013,9 +5013,6 @@ def _route_export(a: argparse.Namespace) -> int:
     profile = _courier_profile(a)
     if profile is None:
         return 2
-    if work_state.work_state_mode(_lake_provider(a)[0]) != "store":
-        print("export: work_state is files; the files are the board, so there is nothing to write")
-        return 0
     workspace = Path(profile["workspace_dir"]).expanduser()
     try:
         skipped = _export_board(workspace / "runs", workspace, prune_stale=not workspace_git_on(profile))
@@ -5025,6 +5022,43 @@ def _route_export(a: argparse.Namespace) -> int:
         return 1
     print(f"export: {workspace} matches the store" + (f"; skipped {len(skipped)} contentless row(s)" if skipped else ""))
     return 0
+
+
+# Commands that run before a store is configured, or configure it. Every other command needs the one store.
+_STORE_FREE = frozenset({"setup", "install", "upgrade", "versions", "settings", "dev", "release", "home", "plan"})
+STORE_DOUBLE_ENV = "COXSWAIN_STORE_DOUBLE"  # the suites' sqlite stand-in; the harness reads the same name
+
+
+def store_refusal(head: Sequence[str], storage: object, environ: Mapping[str, str]) -> str | None:
+    """Pure. Why the command line `head` may not run against the store URL `storage`; None when it may.
+    The one store is Postgres. No URL, or any other kind, is refused for every command that touches the board."""
+    words = [w for w in head if not w.startswith("-")]
+    if not words or words[0] in _STORE_FREE or environ.get(STORE_DOUBLE_ENV) == "sqlite":
+        return None
+    if not isinstance(storage, str) or not storage:
+        return "no store is configured: the provider profile needs a storage_url naming a postgresql:// store. Run `cox setup store --store shared`."
+    try:
+        shared = store_dialect.is_postgres(storage)
+    except ValueError:
+        shared = False
+    return None if shared else (
+        "the configured store is not Postgres: sqlite and file-only work state are retired. "
+        "Run `cox setup store --store shared`, then `cox setup store switch shared` to carry the old rows over."
+    )
+
+
+def _store_refusal(a: argparse.Namespace, head: Sequence[str]) -> str | None:
+    """Edge. `store_refusal` for the profile in use. A machine with no routing profile yet is not refused: it has
+    nothing configured to be wrong, and `cox setup` is how it gets one."""
+    text = _read_text_or_none(_profile_path(a))
+    if text is None:
+        return None
+    try:
+        named = route.parse_profile(text).get("provider_profile")
+    except route.ProfileError:
+        return None  # the command reports the unreadable profile itself
+    provider = store_url.read_provider_profile(named) if named else {}
+    return store_refusal(head, provider.get("storage_url"), os.environ)
 
 
 def _route_cartridges(a: argparse.Namespace) -> int:
@@ -10289,6 +10323,12 @@ def _store_choice(a: argparse.Namespace, ask: Callable[[str], str], interactive:
     return setup_store.parse_store_choice(answer) if answer.strip() else default
 
 
+_FILES_STORE_RETIRED = (
+    "the files store is retired: the one store is Postgres. Use `cox setup store --store shared` "
+    "(and `cox setup store switch shared` to carry an old local store's rows over)."
+)
+
+
 def _store_files(a: argparse.Namespace, settings_path: Path) -> int:
     if a.dry_run:
         print("dry run: would record store.mode files; nothing was written")
@@ -10376,7 +10416,8 @@ def _setup_store(a: argparse.Namespace, *, env: Mapping[str, str] | None = None,
         return 2
     settings_path = _profile_path(a)
     if choice == "files":
-        return _store_files(a, settings_path)
+        print(f"error: {_FILES_STORE_RETIRED}", file=sys.stderr)
+        return 2
     return _store_shared(a, settings_path, os.environ if env is None else env, ask, tty, probes, exclude_file)
 
 
@@ -10421,6 +10462,9 @@ def _setup_store_switch(a: argparse.Namespace, *, env: Mapping[str, str] | None 
     """Edge. Copy the run store and traces to the other backend, then record store.mode. Deletes nothing from the source."""
     env = os.environ if env is None else env
     settings_path = settings_path or _profile_path(a)
+    if a.target != "shared":
+        print(f"error: {_FILES_STORE_RETIRED}", file=sys.stderr)
+        return 2
     mode, runs_dir = _store_mode_and_runs(settings_path)
     if mode == a.target:
         print(f"store is already {mode}; nothing to do")
@@ -10429,7 +10473,7 @@ def _setup_store_switch(a: argparse.Namespace, *, env: Mapping[str, str] | None 
         print("error: the profile names no workspace_dir, so there is no runs directory to switch", file=sys.stderr)
         return 2
     profile_file = setup_store_io.default_profile_path(settings_path)
-    to_shared = a.target == "shared"
+    to_shared = True
     conn = None
     source_file = profile_file
     if to_shared:
@@ -13085,16 +13129,16 @@ SETUP_COMMANDS = [
         "agent_tools.cli:_setup_migrate", False, (),
     ),
     commands.Command(
-        "store", "setup", "choose files or a shared store for run records",
+        "store", "setup", "configure the shared Postgres store for run records",
         (
-            commands.Arg(("--store",), {"help": "files or shared; asked in a terminal when omitted, else files"}),
+            commands.Arg(("--store",), {"help": "shared; the files store is retired and is refused by name"}),
             *_STORE_FLAGS,
             commands.Arg(("--allow-unreachable",), {"action": "store_true", "help": "exit 0 even when a probe fails"}),
         ),
         "agent_tools.cli:_setup_store", False, (),
         subcommands=(
             commands.Command(
-                "switch", "setup", "copy the run store and traces to the other backend, then record store.mode",
+                "switch", "setup", "copy an old local run store and its traces into the shared store, then record store.mode",
                 (commands.Arg(("target",), {"choices": ("files", "shared")}), *_suppressed(_STORE_FLAGS)),
                 "agent_tools.cli:_setup_store_switch", False, (),
             ),
@@ -15770,6 +15814,10 @@ def main(argv: list[str] | None = None) -> int:
     a = build_parser().parse_args(head)
     if not hasattr(a, "fn"):
         return _launcher(a, tail)
+    refused = _store_refusal(a, head)
+    if refused is not None:
+        print(f"cox: {refused}", file=sys.stderr)
+        return 2
     if reads_board(head):
         _refresh_board_files(a)
     return a.fn(a)

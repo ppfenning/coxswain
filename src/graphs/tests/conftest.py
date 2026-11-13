@@ -14,6 +14,9 @@ import pytest
 from harness import termination
 from harness.serial_tests import pytest_collection_modifyitems, pytest_sessionfinish  # noqa: F401  (hooks)
 
+# sqlite is the suites' stand-in for the one real store, Postgres. Outside the suites it does not open.
+os.environ.setdefault("COXSWAIN_STORE_DOUBLE", "sqlite")
+
 CARTRIDGE = {
     "team": "acme",
     "cartridge_sha": "sha-fixture",

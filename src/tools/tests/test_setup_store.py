@@ -47,8 +47,8 @@ def test_parse_store_choice(value, expected):
     assert parse_store_choice(value) == expected
 
 
-def test_default_store_choice_is_files():
-    assert default_store_choice() == "files"
+def test_default_store_choice_is_shared():
+    assert default_store_choice() == "shared"
 
 
 def test_valid_connection_has_no_problems():

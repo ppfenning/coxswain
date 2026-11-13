@@ -3,16 +3,38 @@ import importlib.metadata
 import json
 import os
 import subprocess as sp
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from test_run_store import phases_table, run_row, runs_table, with_record
 
-from agent_tools import chair, cleanup, cli, forge_github, land, store_cli
+from agent_tools import chair, cleanup, cli, forge_github, land, run_store, store_cli
 
 _STEP_ORDER = ["pick_branch", "cherry_pick", "checks", "push", "pr_create", "wait_checks", "merge", "clean", "mark_done"]
 _ENV = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e"}
+
+# The store is the board: every land here reads task state from the sqlite test store in the test's own runs directory.
+pytestmark = pytest.mark.usefixtures("board_store")
+
+
+@pytest.fixture(autouse=True)
+def _store_leases(monkeypatch):
+    """The land's state writes go to the test store, through this interpreter. Its leases are granted in memory: a land
+    renews one before every step, and each would be a process. A test about a lease replaces these with its own."""
+    monkeypatch.setattr(store_cli, "_harness_python", lambda: Path(sys.executable))
+    monkeypatch.setattr(store_cli, "lease_acquire", lambda runs_dir, name, holder, ttl, steal=False: store_cli.LeaseGranted(1, holder))
+    monkeypatch.setattr(store_cli, "lease_renew", lambda runs_dir, name, holder, epoch, ttl: store_cli.LeaseGranted(epoch, holder))
+    monkeypatch.setattr(store_cli, "lease_release", lambda runs_dir, name, holder, epoch: store_cli.LeaseReleased())
+
+
+def _approved_in_store(tmp_path, *tasks):
+    """The board's rows for the tasks a land reads, each approved, in the test store under `tmp_path/runs`."""
+    for task in tasks or ("seams-task",):
+        assert run_store.upsert_row(tmp_path / "runs", {
+            "kind": "task", "initiative": "x", "task_id": task, "phase": "seams", "state": "approved",
+            "needs": [], "surfaces": [], "title": task, "body": "", "extra": {}})
 
 
 @pytest.fixture(autouse=True)
@@ -796,6 +818,7 @@ def _phase_two_task_fixture(tmp_path):
     item_dir = tmp_path / "work/x/seams"; item_dir.mkdir(parents=True)
     for task in ("seams-a", "seams-b"):
         (item_dir / f"{task}.md").write_text(f"---\nid: {task}\nstate: approved\n---\n\nBody.\n", encoding="utf-8")
+    _approved_in_store(tmp_path, "seams-a", "seams-b")
     return item_dir
 
 
@@ -1164,6 +1187,7 @@ def test_cli_recover_closes_the_work_item_only_for_a_real_run_that_may_close_it(
 def _apply_gated(repo, tmp_path, monkeypatch, *gate):
     task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
     (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    _approved_in_store(tmp_path)
     (tmp_path / "runs/policy.tracker.json").write_text('{"tracker": "github-projects"}', encoding="utf-8")
     ran = []
     monkeypatch.setattr(cli, "_execute_land_step", lambda _repo, step, _forge=None: (ran.append(step["kind"]) or True, "https://x/pull/7"))
@@ -1194,6 +1218,7 @@ def _apply_with_repo_lease(repo, tmp_path, monkeypatch, acquire_result, walked_r
     they are not stubbed, only silent because the fixture never gives them a reason to refuse."""
     task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
     (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    _approved_in_store(tmp_path)
     (tmp_path / "runs/policy.tracker.json").write_text('{"tracker": "github-projects"}', encoding="utf-8")
     calls = {"acquire": [], "release": [], "walked": 0}
 
@@ -1401,6 +1426,7 @@ def _apply_with_slot_store(repo, tmp_path, monkeypatch, limit, held, expire_slot
     slot's lease just before the walk's first guarded step, as an expiry would. Returns the store and the count of walks."""
     task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
     (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    _approved_in_store(tmp_path)
     (tmp_path / "runs/policy.tracker.json").write_text('{"tracker": "github-projects"}', encoding="utf-8")
     store, walks = _SlotStore(held), []
 
@@ -1495,6 +1521,7 @@ def test_cli_apply_walks_without_a_lease_when_the_store_is_not_available(repo, t
 def _apply_presynced(repo, tmp_path, monkeypatch, sync_writes_issue):
     task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
     (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    _approved_in_store(tmp_path)
     item = tmp_path / "work/x/seams/seams-task.md"; item.parent.mkdir(parents=True)
     item.write_text("---\nid: seams-task\nstate: approved\n---\nBody.\n", encoding="utf-8")
     (tmp_path / "runs/policy.tracker.json").write_text('{"tracker": "github-projects"}', encoding="utf-8")
@@ -1537,6 +1564,7 @@ def test_cli_apply_with_no_policy_stops_at_ticket_after_pr_create(repo, tmp_path
 def test_cli_apply_refuses_on_a_dirty_checkout(repo, tmp_path, capsys):
     task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
     (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    _approved_in_store(tmp_path)
     (repo / "f").write_text("dirty")
     rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs")])
     assert rc == 2
@@ -1547,6 +1575,7 @@ def test_cli_apply_refuses_when_the_pr_branch_already_exists(repo, tmp_path, cap
     monkeypatch.setattr(cli, "_remote_branch_exists", lambda _repo, _branch: True)  # a local-only leftover is rebuilt instead
     task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
     (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    _approved_in_store(tmp_path)
     sp.run(["git", "-C", str(repo), "branch", "pr/seams-task"], check=True, capture_output=True)
     rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs")])
     assert rc == 2
@@ -1556,6 +1585,7 @@ def test_cli_apply_refuses_when_the_pr_branch_already_exists(repo, tmp_path, cap
 def test_cli_apply_refuses_a_checks_launch_failure_before_push(repo, tmp_path, capsys, monkeypatch):
     task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
     (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    _approved_in_store(tmp_path)
     (repo / "pytest.ini").write_text("")  # a Python project, ignored so the repo stays clean
     (repo / ".git" / "info" / "exclude").write_text("pytest.ini\n")
     calls = []
@@ -1691,6 +1721,7 @@ def test_resume_steps_swaps_only_the_cherry_pick_and_leaves_a_non_resume_alone()
 def _apply_resume(repo, tmp_path, monkeypatch, prs=()):
     task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
     (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    _approved_in_store(tmp_path)
     (tmp_path / "runs/policy.tracker.json").write_text('{"tracker": "github-projects"}', encoding="utf-8")
     ran = []
     monkeypatch.setattr(cli, "_execute_land_step", lambda _repo, step, _forge=None: (ran.append(step["kind"]) or True, "https://x/pull/7"))
@@ -1710,7 +1741,9 @@ def test_cli_apply_adopts_a_pr_branch_that_has_an_open_pr(repo, tmp_path, capsys
 
 def test_cli_apply_refuses_a_differing_pr_branch_naming_the_diff(repo, tmp_path, capsys, monkeypatch):
     sp.run(["git", "-C", str(repo), "branch", "pr/seams-task", "main"], check=True, env=_ENV)
-    rc, ran = _apply_resume(repo, tmp_path, monkeypatch, prs=[])  # a local-only leftover is backed up instead: test_cli_land_leftover.py
+    # No repo lease to rebuild under, so the leftover is refused; with one it is backed up instead: test_cli_land_leftover.py
+    monkeypatch.setattr(cli.land_repo_lease, "acquire", lambda *_args: store_cli.NotAvailable())
+    rc, ran = _apply_resume(repo, tmp_path, monkeypatch, prs=[])
     out = capsys.readouterr().out
     assert (rc, ran) == (2, [])
     assert "already exists" in out and "local tree" in out and "files differing: f" in out
@@ -1932,6 +1965,7 @@ def test_a_successful_land_writes_one_row_reaching_merge_with_exit_0(repo, tmp_p
 def test_a_refused_land_writes_a_row_with_its_exit_code_and_no_merge_and_a_rerun_appends(repo, tmp_path):
     task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
     (task_dir / "seams-task.json").write_text(json.dumps(_record(proposals=[])), encoding="utf-8")
+    _approved_in_store(tmp_path)
     argv = ["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs")]
     assert cli.main(argv) == 2
     assert cli.main(argv) == 2
@@ -1988,6 +2022,7 @@ def _forge_land(tmp_path, forge_line=""):
     """An approved task record and open work item under `tmp_path`, plus a profile; returns the land argv."""
     task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
     (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    _approved_in_store(tmp_path)
     (tmp_path / "runs/policy.tracker.json").write_text('{"tracker": "none"}', encoding="utf-8")
     item = tmp_path / "work/x/seams/seams-task.md"; item.parent.mkdir(parents=True)
     item.write_text("---\nid: seams-task\nstate: approved\n---\nBody.\n", encoding="utf-8")

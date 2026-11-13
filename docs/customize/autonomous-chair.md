@@ -40,28 +40,17 @@ The status line looks like this:
 chair 09-26 12:30 EDT | lanes 1/8 | lands 0 | limits 5h 20% weekly 75%/93% | needs chair: none
 ```
 
-When the profile names a shared Postgres store, the loop also prints where
-it reads the board from. If the store is unreachable, that line reads:
+The loop also prints where it reads the board from, which is always the
+store. If the store is unreachable, that line reads:
 
 ```text
-work state: files (store unreachable)
+work state: store (unreachable)
 ```
 
-The files then stand in as the board until the store answers. That is safe
-only while the files are a committed copy. With `chair.workspace_git: false`
-they are a disposable copy, so set this in the provider profile beside
-`work_state: store`:
-
-```yaml
-store_required: true
-```
-
-An unreachable store then stays the board. Commands that need it fail and
-say so, and nothing is written to files that the store would later ignore.
-The line reads `work state: store (unreachable; ...)`.
-
-A local SQLite store keeps the ticket files as the board and needs no shared
-store; local-first stays the default.
+Nothing stands in for the store. Commands that need it fail and say so
+until it answers, and no state is written to the ticket files in the
+meantime. The store is Postgres; a local SQLite store and the `files` work
+state are retired.
 
 ## Running it
 

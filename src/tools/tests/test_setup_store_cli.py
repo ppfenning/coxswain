@@ -43,20 +43,6 @@ def shared_profile(home: Path) -> Path:
     return home / ".config" / "agent-tools" / "shared-store.yaml"
 
 
-def test_non_interactive_default_records_files_and_asks_nothing(home, capsys):
-    asked = []
-    assert run([], ask=asked.append) == 0
-    assert "mode: files" in settings(home)
-    assert not shared_profile(home).exists()
-    assert asked == []
-
-
-def test_files_flag(home):
-    assert run(["--store", "files"]) == 0
-    assert "mode: files" in settings(home)
-    assert not shared_profile(home).exists()
-
-
 def test_invalid_value_exits_2_naming_the_allowed_values(home, capsys):
     assert run(["--store", "cloud"]) == 2
     assert "files or shared" in capsys.readouterr().err
@@ -103,20 +89,8 @@ def test_interactive_prompt_chooses_shared_and_fills_missing_details(home):
     assert next(answers, None) is None
 
 
-def test_interactive_enter_takes_the_default_files(home):
-    prompts = []
-    assert run([], interactive=True, ask=lambda prompt: prompts.append(prompt) or "") == 0
-    assert len(prompts) == 1 and "[files]" in prompts[0]
-    assert "mode: files" in settings(home)
-
-
-def test_flag_beats_the_prompt(home):
-    assert run(["--store", "files"], interactive=True, ask=lambda _prompt: pytest.fail("prompted")) == 0
-
-
 def test_dry_run_writes_nothing(home, capsys):
     assert run([*SHARED, "--dry-run"], probes=lambda *_: pytest.fail("probed")) == 0
-    assert run(["--store", "files", "--dry-run"]) == 0
     assert settings(home) == ""
     assert not shared_profile(home).exists()
     assert "nothing was written" in capsys.readouterr().out
@@ -157,3 +131,15 @@ def test_install_plan_starts_no_service(tmp_path):
     assert argvs
     banned = ("postgres", "garage", "docker", "systemctl", "brew services")
     assert not [argv for argv in argvs if any(word in argv for word in banned)]
+
+
+def test_the_files_store_is_refused_by_name_and_nothing_is_written(home, capsys):
+    assert run(["--store", "files"]) == 2
+    assert "the files store is retired" in capsys.readouterr().err
+    assert settings(home) == "" and not shared_profile(home).exists()
+
+
+def test_with_no_flag_and_no_terminal_the_choice_is_shared_and_its_details_are_required(home, capsys):
+    asked = []
+    assert run([], ask=asked.append) != 0, "shared needs its connection details; nothing falls back to files"
+    assert asked == [] and "mode: files" not in settings(home)

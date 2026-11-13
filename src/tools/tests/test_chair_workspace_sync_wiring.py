@@ -135,7 +135,7 @@ def test_the_profile_parser_reads_chair_workspace_git_as_a_boolean() -> None:
         route.parse_profile("workspace_dir: /srv/ws\nchair:\n  workspace_git: sometimes\n")
 
 
-def test_route_export_is_a_command_and_says_files_mode_has_nothing_to_write(tmp_path, monkeypatch, capsys) -> None:
+def test_route_export_is_a_command_and_writes_the_files_from_the_store(tmp_path, monkeypatch, capsys) -> None:
     import argparse
 
     group, rows = cli._table_entry("route")
@@ -144,9 +144,9 @@ def test_route_export_is_a_command_and_says_files_mode_has_nothing_to_write(tmp_
     profile.write_text(f"workspace_dir: {tmp_path / 'ws'}\n")
     (tmp_path / "ws" / "runs").mkdir(parents=True)
     called: list = []
-    monkeypatch.setattr(cli, "_export_board", lambda runs_dir, ws: called.append(ws) or [])
+    monkeypatch.setattr(cli, "_export_board", lambda runs_dir, ws, prune_stale=False: called.append(ws) or [])
     assert cli._route_export(argparse.Namespace(profile=str(profile))) == 0
-    assert called == [] and "work_state is files" in capsys.readouterr().out
+    assert called == [tmp_path / "ws"] and "matches the store" in capsys.readouterr().out
 
 
 def test_a_detached_decompose_is_rerun_in_the_background_without_the_flag_and_with_its_run_id() -> None:

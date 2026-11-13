@@ -1,9 +1,13 @@
+import os
 import re
 import sys
 
 import pytest
 
 from harness.serial_tests import pytest_collection_modifyitems, pytest_sessionfinish  # noqa: F401  (hooks)
+
+# sqlite is the suites' stand-in for the one real store, Postgres. Outside the suites it does not open.
+os.environ.setdefault("COXSWAIN_STORE_DOUBLE", "sqlite")
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -87,3 +91,44 @@ def _no_real_usage_meter(monkeypatch, request):
     monkeypatch.setattr(usage_meter, "read", lambda *a, **k: None)
     monkeypatch.setattr(usage_meter, "implied_ceiling", lambda *a, **k: None)
     monkeypatch.setattr(usage_meter, "reconcile_implied_ceilings", lambda *a, **k: frozenset())
+
+
+@pytest.fixture
+def board_store(monkeypatch):
+    """The store as the board, for a test that drives a command end to end: queue reads and writes run for real, in
+    this interpreter's environment, against the sqlite file in the test's own runs directory. sqlite is the test
+    double for the Postgres store; nothing here reaches a real one."""
+    import sys
+    from pathlib import Path
+
+    from agent_tools import run_store
+
+    migrated: set[str] = set()
+    real_run, real_readonly = run_store._queue_run, run_store.connect_readonly
+
+    def ensure(runs_dir) -> None:
+        from harness.store_dialect import connect
+        from harness.store_migrate import default_modules, migrate
+
+        url = run_store._store_url(Path(runs_dir))
+        if not url.startswith("sqlite") or url in migrated:
+            return
+        Path(runs_dir).mkdir(parents=True, exist_ok=True)
+        conn = connect(url)
+        try:
+            migrate(conn, "2026-01-01T00:00:00Z", default_modules())
+        finally:
+            conn.close()
+        migrated.add(url)
+
+    def run(runs_dir, build):
+        ensure(runs_dir)
+        return real_run(runs_dir, build)
+
+    def readonly(runs_dir):
+        ensure(runs_dir)
+        return real_readonly(runs_dir)
+
+    monkeypatch.setattr(run_store, "_harness_python", lambda: Path(sys.executable))
+    monkeypatch.setattr(run_store, "_queue_run", run)
+    monkeypatch.setattr(run_store, "connect_readonly", readonly)

@@ -1,120 +1,46 @@
-from agent_tools import cli, work_state
-from agent_tools.work_state import work_state_mode, work_state_mode_at
+"""The store is the only board. `files` mode, in which the ticket files were the board, is retired."""
+
+from agent_tools import work_state
+
+PG = "postgresql://db.example/cox"
 
 
 def _refuse_probe(url):
-    raise AssertionError("the probe must not run for this case")
+    raise AssertionError("the mode never depends on a probe")
 
 
-def test_the_exact_string_store_selects_store_mode(monkeypatch):
-    # No storage_url: a non-Postgres store is never probed, so explicit "store" is trusted.
+def test_the_mode_is_store_whatever_the_profile_says(monkeypatch):
     monkeypatch.setattr(work_state, "_probe_store", _refuse_probe)
-    assert work_state_mode({"work_state": "store"}) == "store"
+    for profile in ({}, {"work_state": "store"}, {"work_state": "files"}, {"work_state": None}, {"work_state": "sotre"},
+                    {"storage_url": PG}, {"work_state": "files", "storage_url": PG}):
+        assert work_state.work_state_mode(profile) == "store"
+    assert work_state.work_state_mode_at("no-such-profile.yaml") == "store"
 
 
-def test_the_string_files_selects_files_mode():
-    assert work_state_mode({"work_state": "files"}) == "files"
-
-
-def test_a_missing_key_selects_files_mode():
-    assert work_state_mode({}) == "files"
-
-
-def test_a_null_selects_files_mode():
-    assert work_state_mode({"work_state": None}) == "files"
-
-
-def test_an_unknown_value_selects_files_mode():
-    assert work_state_mode({"work_state": "Store"}) == "files"
-
-
-def test_the_edge_returns_the_mode_of_the_profile_it_reads(monkeypatch):
-    monkeypatch.setattr(work_state, "read_provider_profile", lambda path: {"work_state": "store"})
-    monkeypatch.setattr(work_state, "_probe_store", _refuse_probe)
-    assert work_state_mode_at("any/path.yaml") == "store"
-
-
-def test_the_edge_yields_files_when_the_profile_reads_as_empty(monkeypatch):
-    monkeypatch.setattr(work_state, "read_provider_profile", lambda path: {})
-    assert work_state_mode_at("any/path.yaml") == "files"
-
-
-def test_explicit_files_with_a_reachable_postgres_store_stays_files_and_never_probes(monkeypatch):
-    monkeypatch.setattr(work_state, "_probe_store", _refuse_probe)
-    profile = {"work_state": "files", "storage_url": "postgresql://host/db"}
-    assert work_state_mode(profile) == "files"
-    assert work_state.resolve(profile) == ("files", "work state: files")
-
-
-def test_no_key_with_a_postgres_store_that_answers_resolves_store(monkeypatch):
+def test_a_store_that_answers_gives_the_plain_status_line(monkeypatch):
     monkeypatch.setattr(work_state, "_probe_store", lambda url: True)
-    profile = {"storage_url": "postgresql://host/db"}
-    assert work_state.resolve(profile) == ("store", "work state: store")
+    assert work_state.resolve({"storage_url": PG}) == ("store", "work state: store")
 
 
-def test_no_key_with_a_postgres_store_that_does_not_answer_resolves_files_unreachable(monkeypatch):
+def test_a_store_that_does_not_answer_is_still_the_board_and_the_line_says_so(monkeypatch):
     monkeypatch.setattr(work_state, "_probe_store", lambda url: False)
-    profile = {"storage_url": "postgresql://host/db"}
-    assert work_state.resolve(profile) == ("files", "work state: files (store unreachable)")
+    assert work_state.resolve({"work_state": "store", "storage_url": PG}) == ("store", "work state: store (unreachable)")
+    assert work_state.resolve({"storage_url": PG}) == ("store", "work state: store (unreachable)"), "nothing stands in for the store"
 
 
-def test_no_key_with_a_sqlite_storage_url_resolves_files_and_never_probes(monkeypatch):
+def test_a_profile_that_still_says_files_is_told_the_key_is_retired(monkeypatch):
     monkeypatch.setattr(work_state, "_probe_store", _refuse_probe)
-    assert work_state_mode({"storage_url": "sqlite:///cox.db"}) == "files"
+    mode, line = work_state.resolve({"work_state": "files", "storage_url": PG})
+    assert mode == "store" and "work_state: files is retired" in line and "Remove the key" in line
 
 
-def test_no_key_with_no_storage_url_resolves_files_and_never_probes(monkeypatch):
+def test_a_store_url_that_is_not_postgres_is_never_probed(monkeypatch):
     monkeypatch.setattr(work_state, "_probe_store", _refuse_probe)
-    assert work_state_mode({}) == "files"
+    assert work_state.resolve({"storage_url": "sqlite:///runs/cox.db"}) == ("store", "work state: store")
+    assert work_state.resolve({"storage_url": "not a url"}) == ("store", "work state: store")
 
 
-def test_explicit_store_with_an_unreachable_store_falls_back_to_files(monkeypatch):
-    monkeypatch.setattr(work_state, "_probe_store", lambda url: False)
-    profile = {"work_state": "store", "storage_url": "postgresql://host/db"}
-    assert work_state_mode(profile) == "files"
-    assert work_state.resolve(profile) == ("files", "work state: files (store unreachable)")
-
-
-def test_a_typo_value_resolves_files_and_never_probes(monkeypatch):
-    monkeypatch.setattr(work_state, "_probe_store", _refuse_probe)
-    assert work_state_mode({"work_state": "Store", "storage_url": "postgresql://host/db"}) == "files"
-
-
-class _ConnWhoseCloseFails:
-    def execute(self, sql):
-        return None
-
-    def close(self):
-        raise OSError("close failed")
-
-
-def test_the_probe_adds_a_connect_timeout_and_reads_a_failing_close_as_no_answer(monkeypatch):
-    opened = []
-    monkeypatch.setattr(work_state.store_dialect, "connect_readonly_url", lambda url: opened.append(url) or _ConnWhoseCloseFails())
-    assert work_state._probe_store("postgresql://host/db") is False
-    assert opened == ["postgresql://host/db?connect_timeout=3"]
-
-
-def test_route_context_turns_a_failing_provider_read_into_its_unavailable_line(monkeypatch, capsys):
-    def unreadable(_a):
-        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
-
-    monkeypatch.setattr(cli, "_lake_provider", unreadable)
-    assert cli.main(["route", "context", "--profile", "/nonexistent/profile.yaml"]) == 0
-    assert capsys.readouterr().out.startswith("routing: context unavailable (UnicodeDecodeError")
-
-
-def test_a_required_store_that_does_not_answer_stays_store_and_says_so(monkeypatch):
-    monkeypatch.setattr(work_state, "_probe_store", lambda url: False)
-    profile = {"work_state": "store", "storage_url": "postgresql://db.example/cox", "store_required": True}
-    mode, line = work_state.resolve(profile)
-    assert mode == "store" and "unreachable" in line and "store_required" in line
-    assert work_state.resolve({**profile, "store_required": False})[0] == "files", "without the setting the files stand in, as before"
-    assert work_state.resolve({**profile, "store_required": "yes"})[0] == "files", "only a true boolean turns it on"
-
-
-def test_a_required_store_never_overrides_an_explicit_files_or_a_missing_key(monkeypatch):
-    monkeypatch.setattr(work_state, "_probe_store", lambda url: False)
-    url = "postgresql://db.example/cox"
-    assert work_state.resolve({"work_state": "files", "storage_url": url, "store_required": True})[0] == "files"
-    assert work_state.resolve({"storage_url": url, "store_required": True})[0] == "files"
+def test_the_probe_adds_a_connect_timeout_unless_the_url_sets_one():
+    assert work_state._with_connect_timeout(PG) == f"{PG}?connect_timeout=3"
+    assert work_state._with_connect_timeout(f"{PG}?connect_timeout=9") == f"{PG}?connect_timeout=9"
+    assert work_state._with_connect_timeout(f"{PG}?sslmode=require") == f"{PG}?sslmode=require&connect_timeout=3"
