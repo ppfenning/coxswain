@@ -583,16 +583,21 @@ def _group_rows(rows: Iterable[Mapping]) -> dict[Any, list[Mapping]]:
     return groups
 
 
-def _initiative_progress(rows: list[dict], initiative: str) -> tuple[int, int, str | None]:
+def _initiative_progress(rows: list[dict], initiative: str, merged_done: bool = False) -> tuple[int, int, str | None]:
     """`(phases_landed, phases_total, current_phase)` for one initiative's task rows: a phase is landed when
     every one of its items is `done` or `dropped`, the same rule `console_screen._phase_progress` uses.
-    `current_phase` is the first not-yet-landed phase in sorted order, or the last phase once all have landed."""
-    by_phase: dict[str, list[str]] = {}
+    With `merged_done`, an approved task carrying the merge flag counts too: a phase merged into its initiative
+    branch is complete there, though it has not landed on the parent. `current_phase` is the first not-yet-landed
+    phase in sorted order, or the last phase once all have landed."""
+    by_phase: dict[str, list[tuple[str, bool]]] = {}
     for row in rows:
         if row.get("kind") == "task" and row.get("initiative") == initiative:
-            by_phase.setdefault(row.get("phase"), []).append(row.get("state"))
+            by_phase.setdefault(row.get("phase"), []).append((row.get("state"), route.is_merged(row)))
     phases = sorted(by_phase)
-    landed_flags = {phase: bool(states) and all(s in _LANDED_STATES for s in states) for phase, states in by_phase.items()}
+    landed_flags = {
+        phase: bool(states) and all(s in _LANDED_STATES or (merged_done and s == "approved" and merged) for s, merged in states)
+        for phase, states in by_phase.items()
+    }
     landed = sum(1 for ok in landed_flags.values() if ok)
     current = next((phase for phase in phases if not landed_flags[phase]), phases[-1] if phases else None)
     return landed, len(phases), current
@@ -670,7 +675,7 @@ def _task_state(
         return _landed_word(task, land_at)
     if state in ("dropped", "quarantined"):
         return state
-    if state == "approved" and route.is_merged(task):
+    if state == "approved" and (route.is_merged(task) or _merged_in_phase(task)):
         return "merged"
     if state == "approved" or stranded:
         return "approved"
@@ -697,7 +702,7 @@ def _task_states(
     phase covering the whole initiative (a lane that has not written a phase yet). `stranded` holds
     `(initiative, phase, task)` per task `runs stranded` lists."""
     own = _own_tasks(rows, initiative)
-    landed = {row.get("task_id") for row in own if row.get("state") in route.TERMINAL}
+    landed = {row.get("task_id") for row in own if row.get("state") in route.TERMINAL or _merged_in_phase(row)}
     lane_phases = {phase for lane_initiative, phase in live_phases if lane_initiative == initiative}
     land_at = _configured_land_at(rows, initiative)
     return [
@@ -854,6 +859,10 @@ def _phase_status(
     if tasks and all(_task_settled(task) for task in tasks):
         merged = any(task.get("state") == "approved" and route.is_merged(task) for task in tasks)
         return ("merged" if merged else "complete"), None
+    if tasks and any(_merged_in_phase(task) for task in tasks) and all(
+        _task_settled(task) or _merged_in_phase(task) for task in tasks
+    ):
+        return "approved", "built; waiting for the lander to merge it into the initiative"
     if blocked_parent is not None:
         return "blocked", f"parent {blocked_parent} is blocked"
     return "waiting", (f"waiting on {', '.join(unfinished)}" if unfinished else None)
@@ -914,6 +923,45 @@ def _priority_key(priority) -> tuple[int, int]:
         return (1, 0)
 
 
+def _landing_records(runs_dir: Path) -> list[dict]:
+    """Edge. Every landing record; none when the store has no landing tables or cannot be reached."""
+    from agent_tools import lander_ports  # lazy: it reaches the harness only inside its readers
+
+    return lander_ports.read_records(runs_dir)
+
+
+def _with_merged_phases(rows: Sequence[dict], records: Sequence[Mapping]) -> list[dict]:
+    """Pure. The queue rows with the merge flag set on each approved task of a phase the lander merged into its
+    initiative branch. The lander keeps that fact in the landing record alone and marks no task, so without this the
+    feed reads such a phase as waiting and counts none of it done."""
+    merged = {
+        (str(record.get("initiative") or ""), phase)
+        for record in records
+        for phase, entry in (record.get("phases") or {}).items()
+        if isinstance(entry, Mapping) and entry.get("state") == "merged"
+    }
+    tracked = {str(record.get("initiative") or "") for record in records}
+
+    def flags(row: Mapping) -> dict:
+        # `merged_in_phase`: the task is merged into its phase tip, which an approved task is wherever the lander tracks
+        # the initiative. `merged`: its phase is merged into the initiative branch, which only the record says.
+        key = (row.get("initiative"), row.get("phase"))
+        return {"merged_in_phase": row.get("initiative") in tracked, **({"merged": True} if key in merged else {})}
+
+    return [
+        {**row, "extra": {**(row.get("extra") if isinstance(row.get("extra"), Mapping) else {}), **flags(row)}}
+        if row.get("kind") == "task" and row.get("state") == "approved" and row.get("initiative") in tracked
+        else row
+        for row in rows
+    ]
+
+
+def _merged_in_phase(row: Mapping) -> bool:
+    """An approved task merged into its phase tip (`_with_merged_phases`): complete at its own level."""
+    extra = row.get("extra")
+    return row.get("state") == "approved" and isinstance(extra, Mapping) and bool(extra.get("merged_in_phase"))
+
+
 def _queue(runs_dir: Path, live_phases: Collection[tuple[str, str]] = ()) -> tuple[list[dict], int]:
     """Initiatives the store's queue names with at least one phase not landed (a fully landed initiative drops
     out entirely), ordered by priority, then by first appearance in `read_queue`'s row order. Capped at
@@ -924,15 +972,17 @@ def _queue(runs_dir: Path, live_phases: Collection[tuple[str, str]] = ()) -> tup
     # Not a verified age. Queue rows carry no timestamp (`run_store._QUEUE_COLUMNS`), and the
     # `harness.store_queue read` contract (run_store.py:1009) promises no row order. Row order is age only
     # if the harness returns rows in insertion order, and that is unknown from this repository.
-    rows = run_store.read_queue(runs_dir)
+    rows = _with_merged_phases(run_store.read_queue(runs_dir), _landing_records(runs_dir))
     stranded = _stranded_tasks(_task_records(runs_dir), rows)
     # Walked backwards, so the last write for each initiative is its first index.
     first_seen = {row["initiative"]: index for index, row in reversed(list(enumerate(rows))) if row.get("initiative")}
     groups = _group_rows(rows)
-    progress = {initiative: _initiative_progress(groups[initiative], initiative) for initiative in first_seen}
+    progress = {initiative: _initiative_progress(groups[initiative], initiative, merged_done=True) for initiative in first_seen}
+    # An initiative leaves the queue when it has landed on its parent, not when its phases have merged into it.
+    landed = {initiative: _initiative_progress(groups[initiative], initiative) for initiative in first_seen}
     priorities = {initiative: _priority(groups[initiative], initiative) for initiative in first_seen}
     open_initiatives = sorted(
-        (initiative for initiative in first_seen if progress[initiative][0] < progress[initiative][1]),
+        (initiative for initiative in first_seen if landed[initiative][0] < landed[initiative][1]),
         key=lambda initiative: (_priority_key(priorities[initiative]), first_seen[initiative]),
     )
     queue = [
