@@ -45,6 +45,11 @@ class Forge:
         self.calls: list[tuple] = []
         self.prs: dict[str, dict] = {}
         self.checks: tuple[bool, str] = (True, "all checks passed")
+        self.ci = True  # whether the branch carries any CI workflow the forge could report
+
+    def has_ci(self, repo, ref):
+        self.calls.append(("has_ci", ref))
+        return self.ci
 
     def push(self, repo, branch):
         self.calls.append(("push", branch))
@@ -275,6 +280,25 @@ def test_checks_still_running_leave_the_land_queued_and_red_checks_send_it_back(
     assert world.rectified[-1][1] == lr.INTEGRATE_PHASE
     assert world.record("i")["state"] == "conflicted"
     assert "merge" not in world.forge.kinds()
+
+
+def test_a_repo_with_no_ci_merges_on_the_gate_checks_without_waiting_for_the_forge(world: World) -> None:
+    world.start("i", [task("a", "p1")])
+    world.build("i", "p1")
+    world.forge.ci = False
+    world.forge.checks = (False, "no checks reported")  # what a forge with nothing to run says, for ever
+    out = lander.run_once(world.ports)[-1]
+    assert out.status == "done" and "wait_checks" not in world.forge.kinds()
+    assert any("no CI" in event for event in out.events)
+    assert world.forge.prs["init/i"]["state"] == "merged" and world.record("i")["state"] == "landed"
+
+
+def test_a_repo_with_ci_still_waits_for_its_checks(world: World) -> None:
+    world.start("i", [task("a", "p1")])
+    world.build("i", "p1")
+    world.forge.checks = (False, "pending: test")
+    assert lander.run_once(world.ports)[-1].status == "waiting"
+    assert "wait_checks" in world.forge.kinds() and "merge" not in world.forge.kinds()
 
 
 def test_two_phases_editing_one_line_a_rectify_task_is_filed_built_and_the_phase_merges(world: World) -> None:

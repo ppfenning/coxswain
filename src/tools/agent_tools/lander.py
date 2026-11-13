@@ -278,11 +278,16 @@ def land_initiative(ports: Ports, initiative: str, *, merge: bool = True, refres
             return close("waiting", f"{PERSON_GATE_NOTE}: {url}", events)
         if not merge:
             return close("waiting", f"{PREPARED_NOTE}: {url}", events)
-        green, detail = ports.forge.wait_checks(repo, ports.wait_checks_s, ref=branch)
-        if not green:
-            if "pending" in detail or "timed out" in detail:
-                return close("waiting", f"checks on {url} have not finished: {detail}", events)
-            return close("failed", f"checks failed on {url}: {detail}", [*events, *_send_back_initiative(ports, record, "checks", detail)])
+        # A branch with no CI workflow has nothing the forge could ever report, so waiting on it would hold this land,
+        # and every land behind it, for good. Its checks are the gate checks `_open_pr` ran on this branch before the push.
+        if not ports.forge.has_ci(repo, branch):
+            events.append(f"no CI on {branch}: the gate checks run before the pull request opened are its checks")
+        else:
+            green, detail = ports.forge.wait_checks(repo, ports.wait_checks_s, ref=branch)
+            if not green:
+                if "pending" in detail or "timed out" in detail:
+                    return close("waiting", f"checks on {url} have not finished: {detail}", events)
+                return close("failed", f"checks failed on {url}: {detail}", [*events, *_send_back_initiative(ports, record, "checks", detail)])
         # Into an epic branch an initiative merges with a merge commit, so the layers above it retarget cleanly; the
         # squash happens once, from the epic branch to its parent.
         ok, detail = ports.forge.merge(repo, {"kind": "merge", "squash": not stacked, "delete_branch": True, "branch": branch,
