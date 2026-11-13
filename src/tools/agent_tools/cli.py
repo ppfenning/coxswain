@@ -11070,7 +11070,7 @@ def _upgrade_timer_install(a: argparse.Namespace) -> int:
     if a.interval_minutes < 1:
         print("refusing: --interval-minutes must be at least 1")
         return 2
-    resolved = _chair_unit_inputs(None, _chair_default_environment_file(), _profile_path(a))
+    resolved = _chair_unit_inputs(None, _chair_service_environment_file(a), _profile_path(a))
     if isinstance(resolved, _ChairUnitRefusal):
         print(resolved.message)
         return 2
@@ -11963,6 +11963,7 @@ UPGRADE_GROUP = commands.Group(
         commands.Arg(("--install-timer",), {"action": "store_true", "help": "write the systemd user timer that runs the scheduled upgrade and print the lines that activate it; runs nothing itself"}),
         commands.Arg(("--uninstall-timer",), {"action": "store_true", "help": "remove the timer files --install-timer wrote"}),
         commands.Arg(("--interval-minutes",), {"type": int, "default": 30, "help": "minutes between scheduled upgrades in the installed timer (default: 30)"}),
+        commands.Arg(("--environment-file",), {"help": "with --install-timer: the NAME=value file the timer's service loads (default: ~/.config/agent-tools/garage.env)"}),
     ),
     fn="agent_tools.cli:_upgrade",
 )
