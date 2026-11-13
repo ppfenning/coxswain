@@ -40,17 +40,39 @@ substantiates.
   result `subtype` per node, the evidence array, and whether the attempts predate the ticket's last
   revision (`attempts[].ts` vs the item file's last commit). Keyed facts: `attempt-<n>|<field>`.
 - `triage` (role `triage`, deep tier, ceiling `role_budget_usd.triage` default $0.80): returns
-  `{class, diagnosis, cites[], action}` with `class` one of `ticket_defect | platform_defect | shape |
-  genuine_reject`. A cite naming a fact key not in `facts` is a fabricated citation and the answer is
-  refused; zero cites is refused; a `diagnosis` that quotes no objection text from the record is refused.
-- `emit`: by class —
-  `ticket_defect` -> a `ticket_amend` proposal (§2) carrying the exact text to append;
-  `platform_defect` -> an `item_create` intake proposal (existing kind) naming the mechanism;
-  `shape` -> a `decompose` handoff (the split is decompose's job, not triage's);
-  `genuine_reject` -> `notify` (gated, no ramp) and the item stays `ready` with the classification recorded.
-- Recorded on the work item under `attempts[].triage: {class, diagnosis, run}`; the cap is cleared by
-  the arm only on `ticket_defect`/`shape`/`platform_defect`, and NEVER twice with the same `(class,
-  diagnosis)` on one item — that pair escalates to a person with both records quoted.
+  `{class, diagnosis, cites[], action, into?}` with `class` one of `ticket_defect | platform_defect |
+  shape | drop | combine | hold`. The model reads the whole initiative beside the record: its goal, its
+  phases with their goals, and every sibling task's id, phase, state, title and needs. A cite naming a
+  fact key not in `facts` is a fabricated citation and the answer is refused; zero cites is refused; a
+  `diagnosis` that quotes no objection text from the record is refused, whatever the class. A `combine`
+  whose `into` names no open sibling (one not done, approved or dropped) is refused.
+- `emit`: by class, each with the effect the epic applies to the task —
+
+  | Class | Emits | Effect on the task |
+  |---|---|---|
+  | `ticket_defect` | a `ticket_amend` proposal (§2) carrying the exact text to append | built again in the same run on the amended body |
+  | `platform_defect` | an `item_create` intake proposal (existing kind) naming the mechanism | held for a person with the mark |
+  | `shape` | a `decompose` handoff (the split is decompose's job, not triage's) | held for a person with the proposed split |
+  | `hold` | nothing | held for a person with the diagnosis |
+  | `drop` | nothing | dropped; a task that needed it no longer waits |
+  | `combine` | nothing | its title and body are appended to the sibling `into` names, it is dropped, and every task that needed it needs the sibling |
+
+  `genuine_reject`, the old class for an objection that stood, is read as `hold`.
+- Held means store state `blocked` with a hold reason that begins `needs you:` in the row's `extra`
+  (`hold_reason`), written before the state. The chair lists a held task under `needs chair` and sends
+  one inbox entry for it.
+- Under `work_state: store`, when the cartridge names no model arm for `ticket_amend`, the epic writes an
+  append-only, ramp-eligible amendment to the task's store row itself and rebuilds on it. An amendment
+  it cannot apply goes to the gate as before; a task the chair flagged is then held, never rebuilt
+  without its instruction.
+- Recorded on the work item under `attempts[].triage: {class, diagnosis, run}`, and in the store row's
+  `extra.triage` list; the cap is cleared only on `ticket_defect`, and NEVER twice with the same `(class,
+  diagnosis)` on one item — that pair holds the task for a person, quoting the earlier run.
+
+The chair asks for triage too. A quarantine that needs a tweak (cause `code`, `review`, `ticket` or
+unknown) gets `extra.triage_requested` on its store row and goes back to `ready`. The epic triages a
+flagged task before any rebuild, whatever its attempt count, and takes the flag off once triage answered.
+A triage that could not run quarantines the task as before.
 
 ## 2. `ticket_amend`: specify, never relax  (cartridges, graphs)
 
@@ -86,8 +108,10 @@ never appears — only approved work may be recovered by landing.
 
 ## 5. Out of bounds
 
-Auto-applying `genuine_reject`; letting triage edit frontmatter other than `attempts`; changing the cap
-(2) itself; alert triage (`triage-propose`); the router (P4).
+Letting triage edit frontmatter other than `attempts`, the state it moves the task to, and the `needs`
+a `combine` moves to the sibling; changing the cap (2) itself; alert triage (`triage-propose`); the
+router (P4). A `hold`, the successor of `genuine_reject`, is applied without the gate: it only stops the
+task and tells a person.
 
 ## 6. Rules, one literal test each
 

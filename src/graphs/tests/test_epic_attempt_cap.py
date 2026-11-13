@@ -66,7 +66,7 @@ def test_two_attempts_recorded_on_the_current_body_cap_the_task_and_it_goes_to_t
     assert "t1-probe" not in builds_per_task(runner)
 
 
-def test_triage_sees_its_prior_entry_on_an_older_body_and_escalates(repo, cart, tmp_path) -> None:  # noqa: F811
+def test_triage_sees_its_prior_entry_on_an_older_body_and_escalates(repo, cart, tmp_path, capsys) -> None:  # noqa: F811
     work = initiative(two_phases=False)
     task = next(item for item in work["items"] if item["id"] == "t1-probe")
     current = workstore.body_sha(task["body"])
@@ -83,9 +83,12 @@ def test_triage_sees_its_prior_entry_on_an_older_body_and_escalates(repo, cart, 
     runner = TriageAttemptRunner({"t2-bench": new_file_patch("t2-bench.txt")})
     result, _ = drive(repo, _amend_cart(cart), tmp_path, runner=runner, work=work, specs=TRIAGE_SPECS)
 
-    entry = next(q for q in result["quarantined"] if q["id"] == "t1-probe")
-    assert "triage repeats a prior" in entry["reason"]
-    assert "epic-prior-0" in entry["reason"]
+    # A repeated (class, diagnosis) used to quarantine the task; it now holds it for a person with the mark.
+    held = next(ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("  triage: t1-probe held"))
+    assert "needs you: triage repeats its earlier ticket_defect diagnosis" in held
+    assert "epic-prior-0" in held
+    assert not any(q["id"] == "t1-probe" for q in result["quarantined"])
+    assert "t1-probe" not in builds_per_task(runner)
     assert not any(p["target"] == "t1-probe" for p in result["proposals"])
 
 

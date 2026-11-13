@@ -3565,9 +3565,9 @@ def test_a_task_at_the_attempt_cap_is_refused_and_its_sibling_still_lands(repo, 
     )
     work = workstore.read_initiative(wi)
 
-    # `cart` declares no `notify` write kind, so a `genuine_reject` classification's
-    # proposal is itself refused — triage runs, but cannot turn this into a write,
-    # and the task still ends up quarantined, plainly, for a person to decide.
+    # `genuine_reject` is read as `hold`: triage runs, writes nothing to the gate,
+    # and the task is held for a person to decide (state `blocked`), not built.
+    # It used to be quarantined here with the attempt-cap reason.
     class TriageRejectRunner(Runner):
         def run(
             self, *, role, tier=None, hints=None, schema, prompt, context=(), thread=None, budget_usd=None,
@@ -3596,15 +3596,9 @@ def test_a_task_at_the_attempt_cap_is_refused_and_its_sibling_still_lands(repo, 
     assert not any(call["role"] in ("plan", "build") and "t1-probe" in call["prompt"] for call in runner.calls)
     assert any(call["role"] == "triage" for call in runner.calls)
 
-    quarantined = {q["id"]: q for q in result["quarantined"] if q["grain"] == "task"}
-    assert set(quarantined) == {"t1-probe"}
-    reason = quarantined["t1-probe"]["reason"]
-    assert "attempt cap" in reason
-    assert "first refusal" in reason
-    assert "second refusal" in reason
-    # Attempt cap is "nothing produced", not a reviewer's rejection of a
-    # patch — docs/design/observed-record.md §3 puts it under `no_work`.
-    assert quarantined["t1-probe"]["kind"] == "no_work"
+    assert not [q for q in result["quarantined"] if q["grain"] == "task"]
+    assert workstore.read_item(wi / "p1-foundations" / "t1-probe.md")["state"] == "blocked"
+    assert not any(p["target"] == "t1-probe" for p in result["proposals"])
 
     assert is_ancestor(repo, "epic/demo-initiative/p1-foundations--t2-bench", "epic/demo-initiative/p1-foundations")
     assert "epic/demo-initiative/p1-foundations--t1-probe" not in branches(repo)

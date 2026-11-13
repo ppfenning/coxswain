@@ -3046,7 +3046,9 @@ def _write_healed_surfaces(ctx: _Ctx, task: str, surfaces: Sequence[str], notes:
 
     Functions checked for other writes of a task file's title, body or surfaces: `_rewrite_frontmatter_surfaces`
     (called only here), `_repair_file_state` (the `state:` line only), and `_apply_amend_directly`, whose only file
-    write puts back the bytes read before a refused amend. The fix-loop re-scope and correction rounds amend a ticket
+    write puts back the bytes read before a refused amend. Triage's own effects write a body (`_rewrite_file_body`, for
+    an amendment the store took or a combined sibling) and `needs` (`_rewrite_file_needs`), never surfaces or a title.
+    The fix-loop re-scope and correction rounds amend a ticket
     through the `work_state_arm` `ticket_amend` call and do not write the file themselves, so none needed routing.
     """
     try:
@@ -3549,6 +3551,262 @@ def _apply_amend_directly(
     return None, f"{why}{restored}"
 
 
+# ── the chair's triage request, and the effect of each triage class ─────────
+#
+# The chair flags a quarantined task for triage in its store row (`TRIAGE_FLAG`) and sets it back to ready. The epic
+# triages a flagged task before any rebuild, records the verdict on the row (`TRIAGE_RECORDS`) and takes the flag off,
+# then applies the class's effect: rebuild on an amended body, drop, combine into a sibling, or hold for a person with
+# the mark (`HOLD_REASON`, state blocked). docs/design/triage.md §1 holds the class table.
+
+_HOLD_REASON_MAX = 600
+_CLOSED_FOR_COMBINE = frozenset({"done", "dropped", "approved"})
+
+
+def _queue_rows(ctx: _Ctx) -> dict[str, dict[str, Any]]:
+    """Task id to the initiative's store queue row, `extra` included; {} with no store or when the read fails."""
+    if ctx.store is None:
+        return {}
+    try:
+        from harness import store_queue  # not module level: see `_mirror_read`
+
+        return {str(r["task_id"]): dict(r) for r in store_queue.read(ctx.store.conn, ctx.initiative_id)}
+    except Exception as exc:
+        _log.warning("queue rows of %s not read, so no task is flagged for triage: %s: %s", ctx.initiative_id, type(exc).__name__, exc)
+        return {}
+
+
+def _row_extra(row: Mapping[str, Any] | None) -> dict[str, Any]:
+    extra = (row or {}).get("extra")
+    return dict(extra) if isinstance(extra, Mapping) else {}
+
+
+def _update_row(ctx: _Ctx, task: str, change: Callable[[dict[str, Any]], dict[str, Any]]) -> str | None:
+    """Write `change(row)` onto one task's queue row as the store holds it now; None when written, else why not.
+
+    A stale leader, a missing row, a `change` that raises or a store error writes nothing."""
+    if ctx.store is None:
+        return "no store"
+    stale = _fenced(ctx)
+    if stale is not None:
+        return stale
+    try:
+        from harness import store_queue  # not module level: see `_mirror_read`
+
+        row = next((r for r in store_queue.read(ctx.store.conn, ctx.initiative_id) if r["task_id"] == task), None)
+        if row is None:
+            return f"no store row for {task}"
+        store_queue.upsert(ctx.store.conn, {"initiative": ctx.initiative_id, "task_id": task, **change(dict(row))})
+    except Exception as exc:
+        reason = f"store row of {task} not written: {type(exc).__name__}: {exc}"
+        _log.warning("%s", reason)
+        return reason
+    return None
+
+
+def _record_triage(ctx: _Ctx, task: str, entry: Mapping[str, Any]) -> None:
+    """The chair's flag comes off the row and the verdict is kept, so a request is answered once and a repeat is seen."""
+
+    def change(row: dict[str, Any]) -> dict[str, Any]:
+        extra = {k: v for k, v in _row_extra(row).items() if k != workstore.TRIAGE_FLAG}
+        records = [r for r in extra.get(workstore.TRIAGE_RECORDS) or [] if isinstance(r, Mapping)]
+        return {"extra": {**extra, workstore.TRIAGE_RECORDS: [*records, dict(entry)]}}
+
+    if ctx.store is not None and (why := _update_row(ctx, task, change)) is not None:
+        _log.warning("triage of %s not recorded on its row: %s", task, why)
+
+
+def _move_task(ctx: _Ctx, item: dict[str, Any], state: str) -> str | None:
+    """Move one task outside the gate; None when moved, else why not. Never called holding `items_lock`.
+
+    Under work_state store the row moves first, compare-and-set on the state the item holds, then the file's state line;
+    under files the file's line and its mirror row. The item, the driver's own copy, follows."""
+    stale = _fenced(ctx)
+    if stale is not None:
+        return stale
+    if _store_authoritative(ctx):
+        refused = _store_first(ctx, item, state)
+        if refused is not None:
+            return refused
+        if item.get("path") and not _repair_file_state(item, state):
+            _log.warning("store moved %s to %s; file state line not written, regenerate-states repairs it", item.get("id"), state)
+    else:
+        if item.get("path") and not _repair_file_state(item, state):
+            return f"the state line of {item.get('id')} could not be written"
+        _mirror_write(ctx, item, state)
+    with ctx.items_lock:
+        item["state"] = state
+    return None
+
+
+def _hold_task(ctx: _Ctx, item: dict[str, Any], reason: str) -> tuple[str, str | None]:
+    """Hold a task for a person: `(the mark's text, None)` when held, else `(text, why not)`.
+
+    Under work_state store the row's hold reason is written FIRST, so a blocked row never lacks its mark; then state
+    blocked and the file's line. Under files only the state line is written."""
+    text = workstore.hold_text(reason)
+    text = text if len(text) <= _HOLD_REASON_MAX else text[: _HOLD_REASON_MAX - 1] + "…"
+    if _store_authoritative(ctx):
+        why = _update_row(ctx, str(item["id"]), lambda row: {"extra": {**_row_extra(row), workstore.HOLD_REASON: text}})
+        if why is not None:
+            return text, why
+    return text, _move_task(ctx, item, "blocked")
+
+
+def _rewrite_file_body(path: Path, body: str) -> None:
+    """Replace the text after a work file's frontmatter with `body`; the frontmatter bytes are kept."""
+    lines = path.read_text(encoding="utf-8").split("\n")
+    end = next((i for i, line in enumerate(lines[1:], 1) if line.strip() == "---"), None) if lines[0].strip() == "---" else None
+    if end is None:
+        raise ValueError(f"{path}: no frontmatter block")
+    path.write_text("\n".join(lines[: end + 1]) + f"\n\n{body.strip()}\n", encoding="utf-8")
+
+
+def _rewrite_file_needs(path: Path, needs: Sequence[str]) -> None:
+    """Replace the `needs` key of a work file's frontmatter; every other line is kept as it was."""
+    lines = path.read_text(encoding="utf-8").split("\n")
+    end = next((i for i, line in enumerate(lines[1:], 1) if line.strip() == "---"), None)
+    if lines[0].strip() != "---" or end is None:
+        raise ValueError(f"{path}: no frontmatter block")
+    front = lines[1:end]
+    at = next((i for i, line in enumerate(front) if line.startswith("needs:")), None)
+    if at is None:
+        front = [*front, *_frontmatter_key_lines("needs", needs)]
+    else:
+        stop = next((i for i in range(at + 1, len(front)) if not front[i].startswith((" ", "-"))), len(front))
+        front = [*front[:at], *_frontmatter_key_lines("needs", needs), *front[stop:]]
+    path.write_text("\n".join(["---", *front, *lines[end:]]), encoding="utf-8")
+
+
+def _closes_cycle(items: Sequence[Mapping[str, Any]]) -> bool:
+    """Whether the needs among `items` (a need outside them ignored) contain a cycle."""
+    needs = {str(i["id"]): [str(n) for n in i.get("needs") or []] for i in items}
+    state: dict[str, int] = {}  # 1 on the path, 2 finished
+
+    def visit(node: str) -> bool:
+        state[node] = 1
+        for need in needs.get(node, ()):
+            if need in needs and (state.get(need) == 1 or (state.get(need) is None and visit(need))):
+                return True
+        state[node] = 2
+        return False
+
+    return any(state.get(node) is None and visit(node) for node in needs)
+
+
+def combined_needs(items: Sequence[Mapping[str, Any]], source: str, into: str) -> dict[str, list[str]] | None:
+    """Pure. Each task that needs `source`, to its needs with `source` replaced by `into`, in order, deduplicated and
+    never naming the task itself. None when the move would close a cycle among the tasks that remain."""
+    changed: dict[str, list[str]] = {}
+    for item in items:
+        task = str(item["id"])
+        needs = [str(n) for n in item.get("needs") or []]
+        if task == source or source not in needs:
+            continue
+        moved = dict.fromkeys(into if n == source else n for n in needs)
+        changed[task] = [n for n in moved if n != task]
+    projected = [{**i, "needs": changed.get(str(i["id"]), list(i.get("needs") or []))} for i in items if str(i["id"]) != source]
+    return None if _closes_cycle(projected) else changed
+
+
+def _folded_section(item: Mapping[str, Any]) -> str:
+    """This task's scope as the sibling's body carries it: a heading naming the task, then its own body."""
+    task = str(item["id"])
+    return f"## Folded in from {task}: {item.get('title') or task}\n\n{str(item.get('body') or '').strip()}".strip()
+
+
+def _combine_task(ctx: _Ctx, items: list[dict[str, Any]], item: dict[str, Any], into: str) -> str | None:
+    """Fold `item` into its sibling `into`; None when done, else why not. Nothing is written before the checks pass.
+
+    The sibling's body gains this task's title and body (row, file and the driver's copy); every task that needed this
+    one needs the sibling instead; then this task is dropped."""
+    task = str(item["id"])
+    with ctx.items_lock:
+        by_id = {str(i["id"]): i for i in items}
+        target = by_id.get(into)
+        snapshot = [dict(i) for i in items]
+    if target is None or into == task:
+        return f"combine names {into!r}, which is not another task of this initiative"
+    if str(target.get("state")) in _CLOSED_FOR_COMBINE:
+        return f"combine names {into}, which is {target.get('state')}; scope can only fold into an open task"
+    moved = combined_needs(snapshot, task, into)
+    if moved is None:
+        return f"moving the needs on {task} to {into} would close a cycle"
+    section = _folded_section(item)
+    new_body = f"{str(target.get('body') or '').rstrip()}\n\n{section}".strip()
+    if _store_authoritative(ctx):
+        why = _update_row(ctx, into, lambda row: {"body": f"{str(row.get('body') or '').rstrip()}\n\n{section}".strip()})
+        if why is not None:
+            return why
+    if target.get("path"):
+        try:
+            _rewrite_file_body(Path(str(target["path"])), new_body)
+        except (OSError, ValueError) as exc:
+            if not _store_authoritative(ctx):
+                return f"the body of {into} could not be written: {exc}"
+            _log.warning("combine: %s's ticket file not rewritten, the store row holds the body: %s", into, exc)
+    with ctx.items_lock:
+        target["body"] = new_body
+    for dependant, needs in moved.items():
+        if _store_authoritative(ctx) and (why := _update_row(ctx, dependant, lambda row, needs=needs: {"needs": list(needs)})):
+            _log.warning("combine: needs of %s not moved to %s in the store: %s", dependant, into, why)
+        path = by_id[dependant].get("path")
+        if path:
+            try:
+                _rewrite_file_needs(Path(str(path)), needs)
+            except (OSError, ValueError) as exc:
+                _log.warning("combine: needs of %s not rewritten in its file: %s", dependant, exc)
+        with ctx.items_lock:
+            by_id[dependant]["needs"] = list(needs)
+    return _move_task(ctx, item, "dropped")
+
+
+def _amend_in_store(
+    ctx: _Ctx, item: Mapping[str, Any], *, old_body: str, new_body: str
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Under work_state store, with no model arm for `ticket_amend`, the harness appends the amendment to the row itself.
+
+    `(rebuilt item, None)` when the row held the body triage read and took the new one; `(None, reason)` otherwise.
+    The ticket file, a cache of the row, gets the same body; a file it cannot write is logged, not a failure."""
+    task = str(item["id"])
+
+    def change(row: dict[str, Any]) -> dict[str, Any]:
+        if str(row.get("body") or "").strip() != old_body.strip():
+            raise ValueError("the stored body is not the one triage read")
+        return {"body": new_body}
+
+    why = _update_row(ctx, task, change)
+    if why is not None:
+        return None, why
+    if item.get("path"):
+        try:
+            _rewrite_file_body(Path(str(item["path"])), new_body)
+        except (OSError, ValueError) as exc:
+            _log.warning("amendment of %s is in the store; its ticket file was not rewritten: %s", task, exc)
+    return {**item, "body": new_body}, None
+
+
+def _initiative_context(initiative: Mapping[str, Any], items: Sequence[Mapping[str, Any]], task: str) -> dict[str, Any]:
+    """What triage reads beside the task: the initiative's goal, its phases with any goal recorded, and every sibling."""
+    goal = "\n\n".join(x for x in (str(initiative.get("title") or ""), str(initiative.get("body") or "").strip()) if x)
+    recorded = {
+        str(p.get("id")): str(p.get("goal") or "") for p in initiative.get("phases") or [] if isinstance(p, Mapping)
+    }
+    names = list(dict.fromkeys([
+        *(str(p.get("id")) if isinstance(p, Mapping) else str(p) for p in initiative.get("phases") or []),
+        *(str(i.get("phase")) for i in items),
+    ]))
+    return {
+        "goal": goal,
+        "phases": [{"id": p, "goal": recorded.get(p, "")} for p in names],
+        "siblings": [
+            {"id": str(i["id"]), "phase": str(i.get("phase") or ""), "state": str(i.get("state") or ""),
+             "title": str(i.get("title") or ""), "needs": [str(n) for n in i.get("needs") or []]}
+            for i in items
+            if str(i["id"]) != task
+        ],
+    }
+
+
 def _newest_attempt_text(attempts: Sequence[Mapping[str, Any]]) -> str:
     """One line naming the newest attempt by `ts` (ties keep list order); the reason is cut to 120 characters."""
     newest = sorted(attempts, key=lambda a: str(a.get("ts") or ""))[-1:]
@@ -4049,14 +4307,27 @@ def _run_phase(
     cap_by_id = {task_id: _attempt_cap_for(caused) for task_id, caused in caused_by_id.items()}
     # A capped task is launched into `triage` (docs/design/triage.md §1) rather
     # than quarantined outright: the graph classifies the attempt record and
-    # emits by class, and only a class `triage` could not turn into a write —
-    # or a repeated `(class, diagnosis)` it refuses to clear twice — still ends
-    # up quarantined here, plainly, never through `_quarantine_task`.
+    # emits by class, and only a triage that could not run still ends up
+    # quarantined here, plainly, never through `_quarantine_task`.
+    # A task the chair flagged for triage (its row's `TRIAGE_FLAG`) is triaged too, whatever its attempt count: a
+    # failure that needs a tweak gets its instruction before any rebuild.
     triage_batch: list[dict[str, Any]] = []
     amended: dict[str, dict[str, Any]] = {}  # task id -> the item rebuilt on its append-only amended body
-    capped_ids = sorted(task_id for task_id, attempts in counted_by_id.items() if len(attempts) >= cap_by_id[task_id])
+    queue_rows = _queue_rows(ctx)
+    capped = {task_id for task_id, attempts in counted_by_id.items() if len(attempts) >= cap_by_id[task_id]}
+    flagged = {task_id for task_id in counted_by_id if _row_extra(queue_rows.get(task_id)).get(workstore.TRIAGE_FLAG)}
+    capped_ids = sorted(capped | flagged)
+    folded: set[str] = set()  # siblings whose body gained a combined task's scope in this phase
+
+    def asked(task_id: str) -> str:
+        """Why the task went to triage, for a line a person reads."""
+        return _attempt_cap_reason(attempts_by_id[task_id]) if task_id in capped else "the chair asked for triage of this quarantine."
+
     if capped_ids:
         all_ready_by_id = {str(item["id"]): item for item in all_ready}
+        with ctx.items_lock:
+            shared = {str(item["id"]): item for item in items}
+            context_items = [dict(item) for item in items]
         _wait_if_paused(ctx)
         triaged, _, triage_failures = invoke_graphs(
             [
@@ -4068,6 +4339,10 @@ def _run_phase(
                         "date": ctx.date,
                         "work_item": all_ready_by_id[task_id],
                         "attempts": attempts_by_id[task_id],
+                        "initiative_context": _initiative_context(initiative, context_items, task_id),
+                        "triaged": [
+                            dict(r) for r in _row_extra(queue_rows.get(task_id)).get(workstore.TRIAGE_RECORDS) or [] if isinstance(r, Mapping)
+                        ],
                     },
                 )
                 for task_id in capped_ids
@@ -4079,7 +4354,7 @@ def _run_phase(
         )
         for failure in triage_failures:
             task_id = failure.split(":", 1)[0]
-            reason = f"{_attempt_cap_reason(attempts_by_id[task_id])} triage itself failed: {failure}"
+            reason = f"{asked(task_id)} triage itself failed: {failure}"
             quarantined.append({"id": task_id, "phase": phase, "grain": "task", "reason": reason, "kind": "no_work"})
             _quarantine_row(ctx, phase, task_id)
             print(
@@ -4087,37 +4362,46 @@ def _run_phase(
                 f"{_newest_attempt_text(attempts_by_id[task_id])}"
             )
 
+        def hold(task_id: str, reason: str) -> None:
+            """Leave the task for a person with the mark; it is not built in this run either way."""
+            text, why = _hold_task(ctx, shared.get(task_id) or dict(all_ready_by_id[task_id]), reason)
+            print(f"  triage: {task_id} held for a person: {text}" + (f" (the hold was not written: {why})" if why else ""))
+
         for result in triaged:
             task_id = str(result.get("run_id", "")).rsplit(":", 1)[-1]
             attempts = attempts_by_id[task_id]
+            class_, diagnosis, action = str(result.get("class") or ""), str(result.get("diagnosis") or ""), str(result.get("action") or "")
+            _record_triage(ctx, task_id, {"class": class_, "diagnosis": diagnosis, "run": str(result.get("run_id") or "")})
             if result.get("escalated"):
-                reason = (
-                    f"{_attempt_cap_reason(attempts)} triage repeats a prior "
-                    f"({result.get('class')!r}, {result.get('diagnosis')!r}) diagnosis; escalating to a person."
-                )
-                quarantined.append({"id": task_id, "phase": phase, "grain": "task", "reason": reason, "kind": "no_work"})
-                _quarantine_row(ctx, phase, task_id)
-                print(
-                    f"  attempt cap: {task_id} launched triage, which escalated a repeated diagnosis; "
-                    f"{_newest_attempt_text(attempts)}"
-                )
+                # The same (class, diagnosis) twice is the same reasoning restated: a person decides, by the mark.
+                print(f"  attempt cap: {task_id} launched triage, which escalated a repeated diagnosis; {_newest_attempt_text(attempts)}")
+                prior = result.get("prior") if isinstance(result.get("prior"), Mapping) else {}
+                hold(task_id, f"triage repeats its earlier {class_} diagnosis (run {prior.get('run') or 'unrecorded'}): {diagnosis}")
                 continue
 
             emitted = dict(result.get("emit") or {})
-            if "kind" not in emitted:
-                reason = (
-                    f"{_attempt_cap_reason(attempts)} triage classified this as "
-                    f"{result.get('class')!r} with no direct write; a person decides."
-                )
-                quarantined.append({"id": task_id, "phase": phase, "grain": "task", "reason": reason, "kind": "no_work"})
-                _quarantine_row(ctx, phase, task_id)
-                print(
-                    f"  attempt cap: {task_id} launched triage -> {result.get('class')} (no proposal); "
-                    f"{_newest_attempt_text(attempts)}"
-                )
+            effect = str(result.get("effect") or "")
+            if emitted.get("kind") == "item_create":
+                triage_batch.append(emitted)  # a platform defect's intake goes to the gate beside the hold
+            if effect == "hold" or ("kind" not in emitted and effect not in ("drop", "combine")):
+                print(f"  attempt cap: {task_id} launched triage -> {class_}; {_newest_attempt_text(attempts)}")
+                hold(task_id, f"triage {class_}: {diagnosis}" + (f" Next: {action}" if action else ""))
+                continue
+            if effect == "drop":
+                why = _move_task(ctx, shared.get(task_id) or dict(all_ready_by_id[task_id]), "dropped")
+                print(f"  triage: {task_id} dropped: {diagnosis}" + (f" (the drop was not written: {why})" if why else ""))
+                continue
+            if effect == "combine":
+                into = str(result.get("into") or "")
+                why = _combine_task(ctx, items, shared.get(task_id) or dict(all_ready_by_id[task_id]), into)
+                if why is None:
+                    folded.add(into)
+                    print(f"  triage: {task_id} combined into {into} and dropped: {diagnosis}")
+                else:
+                    hold(task_id, f"triage chose to combine this task into {into}, which did not apply ({why}): {diagnosis}")
                 continue
 
-            if emitted["kind"] == "ticket_amend":
+            if emitted.get("kind") == "ticket_amend":
                 old_body = str(all_ready_by_id[task_id].get("body") or "")
                 new_body = _amended_body(old_body, str(emitted.get("suggested_action", "")))
                 emitted["ramp"] = _ticket_amend_ramp(old_body, new_body)
@@ -4125,14 +4409,31 @@ def _run_phase(
                     ctx, emitted, all_ready_by_id[task_id], old_body=old_body, new_body=new_body, phase=phase,
                     quarantined=quarantined, by_id={str(item["id"]): item for item in items},
                 )
+                unwritten = ""  # why the harness's own store write of the amendment did not happen; the gate then decides
+                if (
+                    rebuilt is None
+                    and failure is None
+                    and _store_authoritative(ctx)
+                    and apply_arm_for("ticket_amend", ctx.cartridge) in (None, "workstore")
+                    and emitted["ramp"] == "eligible"
+                    and _is_append_only(old_body, new_body)
+                ):
+                    # The store is the board and no model arm is named: the harness appends the checked text itself,
+                    # led by the diagnosis, which quotes the objection (check_citation refuses one that does not).
+                    quoted = _amended_body(old_body, f"Triage: {diagnosis}\n\n{emitted.get('suggested_action', '')}")
+                    rebuilt, stored = _amend_in_store(ctx, all_ready_by_id[task_id], old_body=old_body, new_body=quoted)
+                    unwritten = stored or ""
                 if rebuilt is not None:
                     amended[task_id] = rebuilt
+                    with ctx.items_lock:
+                        if task_id in shared:
+                            shared[task_id]["body"] = rebuilt["body"]
                     print(
                         f"  attempt cap: {task_id} launched triage -> append-only ticket_amend applied; rebuilding; "
                         f"{_newest_attempt_text(attempts)}"
                     )
                     continue
-                if failure is not None:
+                if failure is not None and task_id not in flagged:
                     if not any(q.get("id") == task_id and q.get("grain") == "task" for q in quarantined):
                         reason = f"{_attempt_cap_reason(attempts)} triage proposed an append-only amendment; applying it failed: {failure}"
                         quarantined.append({"id": task_id, "phase": phase, "grain": "task", "reason": reason, "kind": "no_work"})
@@ -4142,14 +4443,32 @@ def _run_phase(
                         f"{_newest_attempt_text(attempts)}"
                     )
                     continue
+                if task_id in flagged and not any(q.get("id") == task_id and q.get("grain") == "task" for q in quarantined):
+                    # The chair asked for an instruction before any rebuild: without the amendment the task is not built.
+                    if failure is None:
+                        triage_batch.append(emitted)
+                    why = failure or unwritten or "the gate decides it"
+                    hold(task_id, f"triage proposed an amendment that was not applied ({why}): {action}")
+                    continue
+                if failure is not None:
+                    continue
             triage_batch.append(emitted)
             print(
-                f"  attempt cap: {task_id} launched triage -> {result.get('class')} ({emitted['kind']}); "
+                f"  attempt cap: {task_id} launched triage -> {class_} ({emitted.get('kind')}); "
                 f"{_newest_attempt_text(attempts)}"
             )
+    if folded:
+        with ctx.items_lock:
+            bodies = {str(item["id"]): item.get("body") for item in items if str(item["id"]) in folded}
+        all_ready = [{**item, "body": bodies[str(item["id"])]} if str(item["id"]) in bodies else item for item in all_ready]
     all_ready = [amended.get(str(item["id"]), item) for item in all_ready]
     counted_by_id = {**counted_by_id, **{task_id: [] for task_id in amended}}
-    ready = [item for item in all_ready if len(counted_by_id[str(item["id"])]) < cap_by_id[str(item["id"])]]
+    # A task that went to triage builds only on an amended body; every other one waits under the cap as before.
+    ready = [
+        item for item in all_ready
+        if str(item["id"]) in amended
+        or (str(item["id"]) not in capped_ids and len(counted_by_id[str(item["id"])]) < cap_by_id[str(item["id"])])
+    ]
 
     by_id = {str(item["id"]): amended.get(str(item["id"]), item) for item in items}
     if hasattr(ctx.runner, "verify_by_task"):
