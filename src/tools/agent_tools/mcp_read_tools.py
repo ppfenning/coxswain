@@ -29,6 +29,9 @@ class ReadPorts(NamedTuple):
     release: Callable[[], dict]
     unlaunched: Callable[[str], Sequence[Mapping]]
     events: Callable[[str | None, int], Sequence[Mapping]]
+    # `cox settings get --json`: {"sections": [{"name", "rows": [{scope, key, value, source_file, tracked, operator_only}]}]}.
+    # None on a server that runs away from the machine holding the cartridge: the tool then says so.
+    settings: Callable[[], Mapping] | None = None
 
 
 def _clip(text: object) -> str:
@@ -187,12 +190,38 @@ def recent_events(arguments: Mapping, ports: ReadPorts) -> dict:
     return fit(result, "events", "pass since=<ts of the oldest event shown> or a smaller limit for the rest")
 
 
+_SETTING_FIELDS = ("scope", "key", "value", "source_file", "tracked", "operator_only")
+
+
+def cartridge_settings(arguments: Mapping, ports: ReadPorts) -> dict:
+    """The cartridge's and profile's settings as the owner's own files hold them. Compact by default: each
+    section's name and how many settings it has. `section` gives that section's rows and `key` one setting's.
+    The server returns the facts; putting them into words is the caller's job."""
+    if ports.settings is None:
+        raise ToolError("this server cannot read the cartridge: it does not run on the machine that holds it")
+    found = [(str(s.get("name")), list(s.get("rows") or ())) for s in ports.settings().get("sections") or ()]
+    section, key = arguments.get("section"), arguments.get("key")
+    rows = [
+        {"section": name, **{f: (_clip(r.get(f)) if f == "value" and isinstance(r.get(f), str) else r.get(f)) for f in _SETTING_FIELDS}}
+        for name, held in found
+        for r in held
+        if section in (None, name) and key in (None, r.get("key"))
+    ]
+    if section is not None and section not in [name for name, _ in found]:
+        raise ToolError(f"unknown section: {section}; one of {', '.join(name for name, _ in found)}")
+    if key is not None and not rows:
+        raise ToolError(f"unknown setting: {key}")
+    if section is None and key is None:
+        return {"sections": [{"name": name, "settings": len(held)} for name, held in found]}
+    return fit({"settings": rows}, "settings", "pass key=<one setting> for a single row")
+
+
 def _schema(properties: Mapping[str, object], required: Sequence[str] = ()) -> dict:
     return {"type": "object", "properties": dict(properties), "required": list(required), "additionalProperties": False}
 
 
 def read_tools(ports: ReadPorts) -> list[ToolSpec]:
-    """The four read-only tools; none takes a confirm argument and none writes."""
+    """The five read-only tools; none takes a confirm argument and none writes."""
     return [
         ToolSpec(
             "release_status",
@@ -229,5 +258,13 @@ def read_tools(ports: ReadPorts) -> list[ToolSpec]:
             _schema({"limit": {"type": "integer"}, "since": {"type": "string"}}),
             False,
             lambda arguments, caller: recent_events(arguments, ports),
+        ),
+        ToolSpec(
+            "cartridge_settings",
+            "The cartridge's and profile's settings, read from their owner's files. Compact by default (section "
+            "names and counts); section gives that section's settings, key gives one.",
+            _schema({"section": {"type": "string"}, "key": {"type": "string"}}),
+            False,
+            lambda arguments, caller: cartridge_settings(arguments, ports),
         ),
     ]
