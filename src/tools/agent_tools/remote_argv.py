@@ -4,6 +4,8 @@ import json
 import re
 import shlex
 
+from agent_tools.chair_login_watch import PROBE_CONNECT_TIMEOUT_S
+
 # Every lane-host call must give up within this many seconds.
 LANE_HOST_TIMEOUT_S = 30
 _ALIVE_INTERVAL_S = 10
@@ -19,7 +21,7 @@ _RSYNC_BOUND_OPTIONS = ["-a", f"--timeout={LANE_HOST_TIMEOUT_S}", "-e", f"ssh -o
 
 
 def login_shell_argv(remote_argv: list[str]) -> list[str]:
-    """Run the quoted command in `$SHELL -l -i -c` so startup files that export a token are read."""
+    """Run the quoted command in `$SHELL -l -i -c` so startup files that set PATH and the toolchain are read."""
     script = 'exec "${SHELL:-/bin/sh}" -l -i -c "$1"'
     return ["/bin/sh", "-c", script, "login-shell", shlex.join(remote_argv)]
 
@@ -53,12 +55,22 @@ def ssh_argv(ssh: str, remote_argv: list[str]) -> list[str]:
     return ["ssh", *_SSH_BOUND_OPTIONS, ssh, shlex.join(inner)]
 
 
+def probe_argv(ssh: str) -> list[str]:
+    """One bare ssh connect that runs `true`: no login shell, and BatchMode so a prompt fails instead of hanging."""
+    return ["ssh", "-o", f"ConnectTimeout={PROBE_CONNECT_TIMEOUT_S}", "-o", "BatchMode=yes", ssh, "true"]
+
+
 def doctor_argv() -> list[str]:
     return ["cox", "setup", "doctor"]
 
 
 def auth_status_argv() -> list[str]:
     return ["claude", "auth", "status"]
+
+
+def token_status_argv(probe: bool = False) -> list[str]:
+    """Runs on the lane host against its own token file: no secret, no env prefix."""
+    return ["cox", "setup", "token", "status", "--probe"] if probe else ["cox", "setup", "token", "status"]
 
 
 def json_object_in(output: str) -> dict | None:

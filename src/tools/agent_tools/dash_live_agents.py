@@ -57,7 +57,7 @@ def _row(group: Sequence[tuple[datetime, Mapping]], now: datetime, windows: Mapp
         "model": last["model"],
         "host": last["host"],
         "serves": last.get("task") or last.get("initiative") or "",
-        "tokens_per_min": round(rate, 1),
+        "tokens_per_min": round(rate),
         "cost_usd": round(sum(_n(t, "cost_usd") for _, t in group), 4),
         "elapsed_s": int(_age_s(now, oldest)),
         "context_fill": _context_fill(last, windows),

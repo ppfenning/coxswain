@@ -59,9 +59,27 @@ def test_with_local_host_appends_a_synthetic_row_when_absent():
     ]
 
 
-def test_with_local_host_leaves_hosts_unchanged_when_the_local_row_already_exists():
-    hosts = [{"name": "host-b", "capacity": 4, "state": "up"}]
-    assert console_screen.with_local_host(hosts, "host-b", 3) == hosts
+def test_with_local_host_gives_the_local_row_the_local_capacity_not_the_table_capacity():
+    hosts = [{"name": "host-b", "capacity": 10, "state": "up"}]
+    assert console_screen.with_local_host(hosts, "host-b", 4) == [{"name": "host-b", "capacity": 4, "state": "up"}]
+
+
+def test_with_local_host_keeps_another_hosts_table_capacity():
+    hosts = [{"name": "host-a", "capacity": 2, "state": "up"}, {"name": "host-b", "capacity": 10, "state": "up"}]
+    assert console_screen.with_local_host(hosts, "host-b", 4) == [
+        {"name": "host-a", "capacity": 2, "state": "up"},
+        {"name": "host-b", "capacity": 4, "state": "up"},
+    ]
+
+
+def test_with_local_host_does_not_mutate_its_input_rows():
+    hosts = [{"name": "host-a", "capacity": 2, "state": "up"}, {"name": "host-b", "capacity": 10, "state": "up"}]
+    before = [dict(row) for row in hosts]
+    local_row = hosts[1]
+    result = console_screen.with_local_host(hosts, "host-b", 4)
+    assert hosts == before
+    assert local_row == {"name": "host-b", "capacity": 10, "state": "up"}
+    assert result[1] is not local_row
 
 
 def test_render_formats_timestamps_as_local_clock_time_plus_age_not_the_raw_iso_string():

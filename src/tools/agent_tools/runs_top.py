@@ -22,6 +22,8 @@ _LEASE_COLUMNS = ("LEASE", "HB", "ELAPSED")  # shown between STATUS and CEIL onc
 _LEASE_HEADERS = (*_HEADERS[:9], *_LEASE_COLUMNS, *_HEADERS[9:])
 _RIGHT = {"ATT", "TURNS", "COST", "HB", "ELAPSED"}
 _NO_RUNS = "all lanes clear"
+_CHAIR_START = "cox chair run"  # spelled as the `chair` group's epilog in cli.py spells it
+_CHAIR_DEAD = f"; no chair is running: `{_CHAIR_START}`"  # short, and kept whole by `_cut_chair` on a narrow terminal
 STALL_S = 90  # a live run whose lease heartbeat is this many seconds old reads as stalled
 
 UNSET = object()  # `render`'s "no chair argument given" default, distinct from a real `None` (no lock file).
@@ -159,7 +161,16 @@ def order(rows: list) -> list:
 def _chair_line(chair: dict | None) -> str:
     if chair is None:
         return "chair: none"
-    return f"chair: {chair['holder']} ({chair['state']}, beat {chair['minutes_ago']}m ago)"
+    head = f"chair: {chair['holder']} ({chair['state']}, beat {chair['minutes_ago']}m ago)"
+    return head + _CHAIR_DEAD if chair["state"] in ("stale", "crashed") else head
+
+
+def _cut_chair(line: str, width: int) -> str:
+    """Pure: `_cut`, except a dead-chair line gives up the end of its head, marked `…`, before the start command."""
+    room = width - len(_CHAIR_DEAD)
+    if len(line) <= width or not line.endswith(_CHAIR_DEAD) or room < 2:
+        return _cut(line, width)
+    return line[: room - 1] + "…" + _CHAIR_DEAD
 
 
 def _lease_cell(r: Row) -> str:
@@ -205,7 +216,7 @@ def render(rows: list[Row], width: int, chair=UNSET, expanded=None, detail_lines
     """Pure: the chair line (only when `chair` is passed), the header line,
     one line per row, and `detail_lines` indented two spaces under `expanded`'s
     row (nothing, if `expanded` names no row in `rows`), all cut to `width`."""
-    prefix = [] if chair is UNSET else [_chair_line(chair)]
+    prefix = [] if chair is UNSET else [_cut_chair(_chair_line(chair), width)]
     lease = _has_lease_data(rows)
     headers = _LEASE_HEADERS if lease else _HEADERS
     widths = column_widths(rows, headers)

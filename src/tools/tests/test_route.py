@@ -53,6 +53,27 @@ def test_parse_profile_omits_a_key_it_was_not_given(text, key):
     assert key not in route.parse_profile(text)
 
 
+@pytest.mark.parametrize(
+    "written, stored",
+    [("never", "never"), ("when_free", "when_free"), ("always", "always"), ("ALWAYS", "always"), ("When_Free", "when_free"), ('"never"', "never")],
+)
+def test_parse_profile_reads_chair_session_takes_lower_case(written, stored):
+    text = VALID_PROFILE + f"chair:\n  session_takes: {written}\n"
+    assert route.parse_profile(text)["chair"] == {"session_takes": stored}
+
+
+def test_parse_profile_rejects_a_chair_session_takes_outside_the_three_values():
+    with pytest.raises(route.ProfileError) as exc_info:
+        route.parse_profile(VALID_PROFILE + "chair:\n  session_takes: sometimes\n")
+    message = str(exc_info.value)
+    assert message.startswith("line 9:")
+    assert all(word in message for word in ("session_takes", "never", "when_free", "always"))
+
+
+def test_parse_profile_leaves_session_takes_out_when_not_written():
+    assert "session_takes" not in route.parse_profile(VALID_PROFILE + "chair:\n  stale_days: 3\n")["chair"]
+
+
 def test_parse_profile_unknown_key_warns_once_and_keeps_the_rest(capsys, monkeypatch):
     monkeypatch.setattr(route, "_WARNED_KEYS", set())
     text = "team: acme\nbogus_key: nope\nassume: y\n"
@@ -859,6 +880,34 @@ def test_status_rows_reads_a_pid_that_answers_without_a_held_lease_as_fenced():
     assert [(r["state"], r["fenced"]) for r in route.status_rows(entries)] == [("fenced", True), ("exited", False), ("no pidfile", False)]
 
 
+def _line_row(state, pid, started):
+    return {"id": "run-1", "state": state, "pid": pid, "started": started}
+
+
+def test_status_line_ends_a_fenced_row_with_the_fenced_note():
+    line = route._status_line(_line_row("fenced", 7, "10:00"))
+    assert line == f"run-1: fenced (pid 7, started 10:00) {route.FENCED_NOTE}"
+
+
+@pytest.mark.parametrize(
+    "row, expected",
+    [
+        (_line_row("alive", 7, "10:00"), "run-1: alive (pid 7, started 10:00)"),
+        (_line_row("exited", 7, "10:00"), "run-1: exited (pid 7, started 10:00)"),
+        (_line_row("no pidfile", None, None), "run-1: no pidfile"),
+    ],
+)
+def test_status_line_leaves_other_states_without_the_fenced_note(row, expected):
+    assert route._status_line(row) == expected
+
+
+def test_render_status_carries_the_fenced_note_for_a_fenced_row_only():
+    text = route.render_status([_line_row("fenced", 7, "10:00"), {**_line_row("alive", 8, "10:01"), "id": "run-2"}])
+    fenced_line, alive_line = text.splitlines()
+    assert fenced_line.endswith(route.FENCED_NOTE)
+    assert route.FENCED_NOTE not in alive_line
+
+
 def test_run_entries_carries_the_fenced_flag_only_for_a_readable_pidfile():
     entries = route.run_entries({"r1": "1", "r2": "junk"}, {}, {}, None, {"r1": True, "r2": True})
     assert [(e["id"], e["fenced"]) for e in entries] == [("r1", True), ("r2", False)]
@@ -1020,7 +1069,9 @@ def test_parse_frontmatter_misparses_a_bare_value_that_happens_to_start_with_a_q
     assert fields["title"] != '"draft" ship it'
 
 
-_NO_QUEUE_CONTROL = {"after": [], "held": False, "priority": 0}
+_NO_QUEUE_CONTROL = {
+    "after": [], "held": False, "stage": "ready", "priority": 0, "epic": "", "target_release": "", "repo": "",
+}
 
 
 def test_intake_entries_sorts_by_filename_and_skips_consumed_prefix():

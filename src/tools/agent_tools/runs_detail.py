@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from agent_tools import lease_standing
 from agent_tools.events import Event
 from agent_tools.progress_read import TIME_FORMAT, NodeProgress, Progress
+from agent_tools.route import FENCED_NOTE
 
 __all__ = ["NODE_ORDER", "Detail", "NodeCall", "NodeView", "detail", "render"]
 
@@ -237,6 +238,8 @@ def render(detail: Detail, width: int) -> list[str]:
     if detail.check_log:
         lines.append(f"  full output: runs/{detail.run}/{detail.check_log}")
     lines.extend(detail.flaky_notes)
+    if detail.status == "fenced":
+        lines.append(FENCED_NOTE)
     if detail.files_touched:
         lines.append(f"files: {', '.join(detail.files_touched)}")
     if detail.last_calls:

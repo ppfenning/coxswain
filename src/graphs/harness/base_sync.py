@@ -26,16 +26,16 @@ def fetch_origin(repo: Path) -> tuple[bool, str]:
     return True, "fetched origin"
 
 
-def holds(worktree: Path, commit: str) -> bool:
-    """Ancestor of HEAD, or for a single-parent commit, its patch-id matches a commit reachable from HEAD."""
+def holds(worktree: Path, commit: str, ref: str = "HEAD") -> bool:
+    """Ancestor of ref (default HEAD), or for a single-parent commit, its patch-id matches a commit reachable from ref."""
     if git(worktree, "cat-file", "-e", f"{commit}^{{commit}}")[0] != 0:
         return False
-    if git(worktree, "merge-base", "--is-ancestor", commit, "HEAD")[0] == 0:
+    if git(worktree, "merge-base", "--is-ancestor", commit, ref)[0] == 0:
         return True
     code, line = git(worktree, "rev-list", "--parents", "-n", "1", commit)
     if code != 0 or len(line.split()) != 2:
         return False
-    code, cherry = git(worktree, "cherry", "HEAD", commit, f"{commit}^")
+    code, cherry = git(worktree, "cherry", ref, commit, f"{commit}^")
     if code != 0:
         return False
     return any(row.startswith("-") for row in cherry.splitlines())

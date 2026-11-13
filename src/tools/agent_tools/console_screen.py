@@ -73,11 +73,12 @@ def newest_per_item(rows: list[dict]) -> list[dict]:
 def with_local_host(
     hosts: list[dict], local_name: str, local_capacity: int, local_versions: dict | None = None,
 ) -> list[dict]:
-    """Pure. `hosts` unchanged when a row already names `local_name`; otherwise `hosts` plus a synthetic active
-    row for it, so the local machine always has a row even before `cox host beat` first writes one.
-    `local_versions` is the login check's result for that row; with none, the row carries no `versions_json`."""
+    """Pure. The row naming `local_name` carries `local_capacity`, not the table's: the chair loop obeys its own cap on its own machine.
+    With no such row, `hosts` plus a synthetic active row for it, so the local machine always has a row even before
+    `cox host beat` first writes one. `local_versions` is the login check's result for that row; with none, the row
+    carries no `versions_json`."""
     if any(row.get("name") == local_name for row in hosts):
-        return hosts
+        return [{**row, "capacity": local_capacity} if row.get("name") == local_name else row for row in hosts]
     row = {"name": local_name, "capacity": local_capacity, "state": "active"}
     return [*hosts, row if local_versions is None else {**row, "versions_json": local_versions}]
 

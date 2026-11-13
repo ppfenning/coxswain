@@ -7,7 +7,9 @@ from agent_tools import queue_rows, route_hold
 
 NOW = datetime(2026, 11, 3, 12, 0, tzinfo=UTC)
 FREE = "---\ntitle: Idea\npriority: 2\n---\nBody\n"
-HELD = '---\ntitle: Idea\npriority: 2\nheld: true\nhold_reason: "held by pat on 2026-11-03: waiting on design"\n---\nBody\n'
+HELD = '---\ntitle: Idea\npriority: 2\nstage: draft\nhold_reason: "held by pat on 2026-11-03: waiting on design"\n---\nBody\n'
+READY = "---\ntitle: Idea\npriority: 2\nstage: ready\n---\nBody\n"
+LEGACY = '---\ntitle: Idea\nheld: true\npriority: 2\nhold_reason: "old"\n---\nBody\n'
 ROWS = [
     {"kind": "intake", "state": "queued", "task_id": "idea", "initiative": "intake", "extra": {"title": "Idea"}},
     {"kind": "intake", "state": "done", "task_id": "old", "initiative": "intake"},
@@ -32,18 +34,67 @@ def test_held_text_adds_front_matter_to_a_bare_file():
     assert route_hold.held_text("Body\n", "x", "pat", "2026-11-03").endswith('---\nBody\n')
 
 
-def test_release_removes_both_fields_and_leaves_the_rest():
-    assert route_hold.released_text(HELD) == FREE
+def test_release_sets_ready_and_removes_the_reason_and_leaves_the_rest():
+    assert route_hold.released_text(HELD) == READY
 
 
-def test_releasing_a_free_intake_returns_the_text_unchanged():
-    assert route_hold.released_text(FREE) == FREE
+def test_releasing_a_ready_intake_returns_the_text_unchanged():
+    assert route_hold.released_text(READY) == READY
+
+
+def test_held_and_released_text_drop_a_legacy_held_line():
+    assert route_hold.held_text(LEGACY, "x", "pat", "2026-11-03").count("held:") == 0
+    assert route_hold.held_text(LEGACY, "x", "pat", "2026-11-03") == (
+        '---\ntitle: Idea\npriority: 2\nhold_reason: "held by pat on 2026-11-03: x"\nstage: draft\n---\nBody\n'
+    )
+    assert route_hold.released_text(LEGACY) == READY
+
+
+def test_holding_a_draft_with_the_same_reason_returns_the_text_unchanged():
+    assert route_hold.held_text(HELD, "waiting on design", "pat", "2026-11-03") == HELD
+
+
+def test_staged_text_sets_only_the_stage():
+    assert route_hold.staged_text(FREE, "draft") == "---\ntitle: Idea\npriority: 2\nstage: draft\n---\nBody\n"
+    assert route_hold.staged_text(HELD, "ready") == HELD.replace("stage: draft", "stage: ready")
+    assert route_hold.staged_text(LEGACY, "draft") == LEGACY.replace("hold_reason: \"old\"\n", "hold_reason: \"old\"\nstage: draft\n")
+
+
+def test_staged_text_returns_the_text_unchanged_for_a_repeated_move():
+    assert route_hold.staged_text(HELD, "draft") == HELD
+    assert route_hold.staged_text(READY, "ready") == READY
+
+
+def test_staged_text_keeps_every_other_line_and_the_body_byte_for_byte():
+    text = "---\ntitle:   Odd  \n# note\ntags:\n  - a\n  - b\nstage: ready\nz: 1\n---\n\nBody  \n\n"
+    assert route_hold.staged_text(text, "draft") == text.replace("stage: ready", "stage: draft")
+
+
+def test_staged_text_adds_front_matter_to_a_bare_file():
+    assert route_hold.staged_text("Body\n", "ready") == "---\nstage: ready\n---\nBody\n"
 
 
 def test_crlf_files_keep_their_line_ending():
     text = FREE.replace("\n", "\r\n")
     assert route_hold.held_text(text, "x", "pat", "2026-11-03").count("\r\n") == text.count("\r\n") + 2
-    assert route_hold.released_text(route_hold.held_text(text, "x", "pat", "2026-11-03")) == text
+    assert route_hold.released_text(route_hold.held_text(text, "x", "pat", "2026-11-03")) == READY.replace("\n", "\r\n")
+    assert route_hold.staged_text(text, "draft").count("\r\n") == text.count("\r\n") + 1
+
+
+def test_the_row_helpers_put_stage_in_extra_and_drop_held():
+    row = {"kind": "intake", "extra": {"title": "Idea", "held": "true", "hold_reason": "r"}}
+    assert route_hold.HELD_KEYS == ("stage", "held", "hold_reason")
+    assert route_hold._row_held(row, "why")["extra"] == {"title": "Idea", "stage": "draft", "hold_reason": "why"}
+    assert route_hold._row_without_held(row)["extra"] == {"title": "Idea", "stage": "ready"}
+    assert route_hold._row_staged(row, "draft")["extra"] == {"title": "Idea", "held": "true", "hold_reason": "r", "stage": "draft"}
+    assert route_hold._row_held({"kind": "intake"}, "why")["extra"] == {"stage": "draft", "hold_reason": "why"}
+
+
+def test_the_initiative_row_helpers_keep_held_true():
+    row = {"kind": "initiative", "extra": {"id": "demo"}}
+    held = route_hold._initiative_row_held(row, "why")
+    assert held["extra"] == {"id": "demo", "held": "true", "hold_reason": "why"}
+    assert route_hold._initiative_row_without_held(held)["extra"] == {"id": "demo"}
 
 
 def test_a_queued_intake_is_planned_by_its_task_id():
@@ -91,24 +142,58 @@ def test_hold_writes_the_store_first_and_the_file_second(tmp_path, monkeypatch):
     assert route_hold.hold(ws, ws / "runs", "idea", "waiting on design", "pat", NOW, ROWS) == 0
     assert [c[0] for c in calls] == ["store", "file"]
     assert calls[0][1] == FREE and calls[1][1] == HELD
-    assert calls[0][2]["extra"] == {"title": "Idea", "held": "true", "hold_reason": "held by pat on 2026-11-03: waiting on design"}
+    assert calls[0][2]["extra"] == {"title": "Idea", "stage": "draft", "hold_reason": "held by pat on 2026-11-03: waiting on design"}
     assert calls[1][2] == [ws / "intake" / "idea.md"]
 
 
-def test_release_clears_the_row_and_the_file(tmp_path, monkeypatch):
+def test_release_readies_the_row_and_the_file(tmp_path, monkeypatch):
     ws = make_ws(tmp_path, HELD)
     calls = spy(monkeypatch, ws)
-    held_rows = [{**ROWS[0], "extra": {"title": "Idea", "held": "true", "hold_reason": "r"}}]
+    held_rows = [{**ROWS[0], "extra": {"title": "Idea", "stage": "draft", "hold_reason": "r"}}]
     assert route_hold.release(ws, ws / "runs", "idea", held_rows) == 0
-    assert calls[0][2]["extra"] == {"title": "Idea"}
-    assert (ws / "intake" / "idea.md").read_text() == FREE
+    assert calls[0][2]["extra"] == {"title": "Idea", "stage": "ready"}
+    assert (ws / "intake" / "idea.md").read_text() == READY
 
 
-def test_releasing_a_free_intake_writes_nothing(tmp_path, monkeypatch):
+def test_releasing_a_ready_intake_writes_nothing(tmp_path, monkeypatch):
+    ws = make_ws(tmp_path, READY)
+    calls = spy(monkeypatch, ws)
+    ready_rows = [{**ROWS[0], "extra": {"title": "Idea", "stage": "ready"}}]
+    assert route_hold.release(ws, ws / "runs", "idea", ready_rows) == 0
+    assert calls == []
+
+
+def test_set_stage_writes_the_stage_to_the_row_and_the_file_and_keeps_the_reason(tmp_path, monkeypatch):
+    ws = make_ws(tmp_path, HELD)
+    calls = spy(monkeypatch, ws)
+    held_rows = [{**ROWS[0], "extra": {"title": "Idea", "stage": "draft", "hold_reason": "r"}}]
+    assert route_hold.set_stage(ws, ws / "runs", "idea", "ready", held_rows, False) == 0
+    assert calls[0][2]["extra"] == {"title": "Idea", "stage": "ready", "hold_reason": "r"}
+    assert (ws / "intake" / "idea.md").read_text() == HELD.replace("stage: draft", "stage: ready")
+
+
+def test_set_stage_dry_run_and_repeat_write_nothing(tmp_path, monkeypatch, capsys):
+    ws = make_ws(tmp_path, READY)
+    calls = spy(monkeypatch, ws)
+    ready_rows = [{**ROWS[0], "extra": {"title": "Idea", "stage": "ready"}}]
+    assert route_hold.set_stage(ws, ws / "runs", "idea", "draft", ready_rows, True) == 0
+    assert route_hold.set_stage(ws, ws / "runs", "idea", "ready", ready_rows, False) == 0
+    assert capsys.readouterr().out == "would stage intake idea: stage draft\nstage: intake idea: nothing to change\n"
+    assert calls == [] and (ws / "intake" / "idea.md").read_text() == READY
+
+
+def test_set_stage_refuses_an_id_that_is_not_a_queued_intake_naming_the_id(tmp_path, monkeypatch, capsys):
     ws = make_ws(tmp_path)
     calls = spy(monkeypatch, ws)
-    assert route_hold.release(ws, ws / "runs", "idea", ROWS) == 0
-    assert calls == []
+    for id in ("old", "nope", "demo"):
+        assert route_hold.plan_stage(ROWS, id) == route_hold.Refused(f"no queued intake named {id}")
+        assert route_hold.set_stage(ws, ws / "runs", id, "draft", ROWS, False) == 2
+    assert route_hold.set_stage(ws, ws / "runs", "idea", "later", ROWS, False) == 2
+    assert capsys.readouterr().out == (
+        "stage: refused: no queued intake named old\nstage: refused: no queued intake named nope\n"
+        "stage: refused: no queued intake named demo\nstage: refused: later is not a stage for idea; use draft or ready\n"
+    )
+    assert calls == [] and (ws / "intake" / "idea.md").read_text() == FREE
 
 
 def test_dry_run_prints_the_plan_and_writes_nothing(tmp_path, monkeypatch, capsys):
@@ -145,10 +230,10 @@ def test_a_missing_intake_file_is_refused(tmp_path, monkeypatch):
 def test_a_queue_export_round_trip_keeps_the_hold():
     row = queue_rows.parse_item("intake", ("idea.md",), HELD)
     kept = queue_rows.render_item(row)
-    assert "held: 'true'\n" in kept  # the loader reads every scalar as a string, so the renderer quotes it; a reader still sees true
+    assert "stage: draft\n" in kept
     assert "hold_reason: 'held by pat on 2026-11-03: waiting on design'" in kept
     assert queue_rows.parse_item("intake", ("idea.md",), kept) == row
-    assert route_hold.released_text(kept).count("held") == 0
+    assert "hold_reason" not in route_hold.released_text(kept) and "stage: ready\n" in route_hold.released_text(kept)
 
 
 def make_initiative(ws: Path, name: str = "demo", text: str = INIT_FREE) -> Path:

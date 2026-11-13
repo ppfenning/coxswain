@@ -1,5 +1,47 @@
 from agent_tools.events import Event
-from agent_tools.runs_top import STALL_S, Row, _status, column_widths, highlight, remote_row, render, row, tail_lines
+from agent_tools.runs_top import (
+    STALL_S,
+    Row,
+    _chair_line,
+    _status,
+    column_widths,
+    highlight,
+    remote_row,
+    render,
+    row,
+    tail_lines,
+)
+
+
+def _chair(state: str) -> dict:
+    return {"holder": "loop-a", "state": state, "minutes_ago": 12}
+
+
+def test_a_stale_chair_line_says_no_chair_is_running_and_names_the_start_command():
+    assert _chair_line(_chair("stale")) == "chair: loop-a (stale, beat 12m ago); no chair is running: `cox chair run`"
+
+
+def test_a_crashed_chair_line_says_no_chair_is_running_and_names_the_start_command():
+    assert _chair_line(_chair("crashed")) == "chair: loop-a (crashed, beat 12m ago); no chair is running: `cox chair run`"
+
+
+def test_a_live_chair_line_and_no_chair_file_keep_their_lines():
+    assert _chair_line(_chair("live")) == "chair: loop-a (live, beat 12m ago)"
+    assert _chair_line(None) == "chair: none"
+
+
+def test_a_dead_chair_line_keeps_the_start_command_whole_at_80_columns():
+    for state in ("stale", "crashed"):
+        assert "`cox chair run`" in render([], 80, _chair(state))[0]
+
+
+def test_a_dead_chair_line_with_a_long_holder_gives_up_the_head_not_the_command():
+    long = {"holder": "chair-2026-11-07-session-0123456789abcdef", "state": "crashed", "minutes_ago": 1440}
+    assert render([], 80, long)[0] == "chair: chair-2026-11-07-session-012345678…; no chair is running: `cox chair run`"
+
+
+def test_a_live_chair_line_is_cut_plainly_at_the_width():
+    assert render([], 20, _chair("live"))[0] == "chair: loop-a (live,"
 
 
 def test_the_last_node_started_and_verdict_win():

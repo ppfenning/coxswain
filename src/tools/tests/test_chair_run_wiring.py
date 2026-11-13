@@ -26,9 +26,11 @@ _FACTS_DEPS_METADATA_FIELDS = frozenset({"session", "pid", "host"})
 # what `_chair_run_deps` wires today, not an assumption: if a future change starts passing `queue=` or
 # `stranded_records=`, the assertion below fails and names the field to drop from this set.
 # `decomposed_intake` and `item_counts` are wired and so no longer listed here.
-# `merge_queue` is declared but not wired yet: the command task passes a profile reader and drops it from this set.
-# `live_phases` is likewise declared but not wired yet: the wiring task passes a reader and drops it from this set.
-_FACTS_DEPS_NONE_GUARDED_FIELDS = frozenset({"queue", "stranded_records", "merge_queue", "live_phases"})
+# `merge_queue` is wired: it returns the raw profile value, like `max_launches_per_hour`.
+# `live_phases` is declared but not wired yet: the wiring task passes a reader and drops it from this set.
+_FACTS_DEPS_NONE_GUARDED_FIELDS = frozenset(
+    {"queue", "stranded_records", "live_phases"}
+)
 
 # Steward sources whose dataclass default is a working callable (`[]`, `""`, `False`), so only identity shows them unwired.
 _FACTS_DEPS_STEWARD_SOURCES = ("steward_entries", "ticket_head", "level_merged")
@@ -981,6 +983,22 @@ def test_level_merged_and_ticket_head_read_a_real_git_repository(tmp_path) -> No
     assert facts.level_merged("epic-x", "p1") is True
     assert facts.ticket_head("epic-x") == _git(repo, "rev-parse", "pr/epic-x")
     assert facts.level_merged("no-initiative", "p1") is False
+
+
+def test_the_wired_steward_ports_resolve_a_target_branch_for_a_recorded_repo_and_an_empty_one_without(tmp_path) -> None:
+    repo = _steward_repo(tmp_path)
+    (tmp_path / "work" / "no-repo").mkdir()
+    (tmp_path / "work" / "no-repo" / "initiative.md").write_text("---\ntitle: t\n---\n", encoding="utf-8")
+    home = os.path.expanduser("~")
+    target = cli._steward_target_branch_of({}, tmp_path, cli._repo_for(tmp_path, home))
+    assert (target("epic-x"), target("no-repo"), target("no-initiative")) == ("main", "", "")
+
+    run = _live_deps(tmp_path).exec_deps.steward_exec
+    assert run is not None
+    missing = run({"kind": "merge_level", "epic": "no-repo", "level": 0}, ())
+    assert missing["event"] == "merge_failed" and "no target branch is known" in missing["reason"]
+    run({"kind": "merge_level", "epic": "epic-x", "level": 0}, ())
+    assert _git(repo, "rev-parse", "pr/epic-x") == _git(repo, "rev-parse", "main")
 
 
 def test_steward_entries_reads_the_courier_bus_in_the_workspace(tmp_path) -> None:

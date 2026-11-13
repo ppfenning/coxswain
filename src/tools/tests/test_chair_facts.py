@@ -396,8 +396,53 @@ def test_a_stranded_row_takes_its_initiative_from_its_run_and_a_live_run_drops_i
     def stranded(live: tuple[str, ...]) -> list:
         return gather_facts(_deps(quarantined=(), live=live), NOW)["quarantines"]
 
-    assert stranded(()) == [{**BARE, "task_id": "s", "cause": "stranded", "harness_failures": 0}]
+    # `tasks` is the deliberate shape change: a stranded entry lists its run's tasks with their remedies.
+    assert stranded(()) == [
+        {**BARE, "task_id": "s", "cause": "stranded", "harness_failures": 0, "tasks": [{"task": "s", "run": "i-3", "remedy": None}]},
+    ]
     assert stranded(("i",)) == []
+
+
+def _stranded_entries(*rows: dict, **kw) -> list:
+    return quarantine_facts([], list(rows), [], set(), lambda i, t: False, **kw)
+
+
+def test_an_expected_stranded_row_raises_no_entry_and_a_plain_one_beside_it_still_does():
+    manual = {**STRANDED, "task": "m", "expected": True}
+    plain = {**STRANDED, "task": "p", "expected": False}
+    assert [q["task_id"] for q in _stranded_entries(manual)] == []
+    assert [q["task_id"] for q in _stranded_entries(manual, plain)] == ["p"]
+
+
+def test_two_stranded_tasks_of_one_run_give_one_entry_listing_both_with_their_remedies():
+    a = {**STRANDED, "task": "a", "remedy": "land a"}
+    b = {**STRANDED, "task": "b", "remedy": "land b"}
+    (entry,) = _stranded_entries(a, b)
+    assert (entry["task_id"], entry["cause"], entry["initiative"]) == ("a", "stranded", "i")
+    assert entry["tasks"] == [{"task": "a", "run": "i-3", "remedy": "land a"}, {"task": "b", "run": "i-3", "remedy": "land b"}]
+
+
+def test_a_single_stranded_task_gives_one_entry_with_its_original_remedy():
+    (entry,) = _stranded_entries({**STRANDED, "remedy": "cox runs land i-3 --task s --repo /r"})
+    assert entry["tasks"] == [{"task": "s", "run": "i-3", "remedy": "cox runs land i-3 --task s --repo /r"}]
+
+
+def test_stranded_tasks_of_two_runs_give_two_entries():
+    entries = _stranded_entries({**STRANDED, "run": "i-3", "task": "a"}, {**STRANDED, "run": "i-4", "task": "b"})
+    assert [(q["task_id"], q["tasks"][0]["run"]) for q in entries] == [("a", "i-3"), ("b", "i-4")]
+
+
+def test_a_task_that_is_also_an_open_quarantine_leaves_the_grouped_entry():
+    opened = [{"initiative": "i", "phase": "p1", "task": "a"}]
+    stranded = [{**STRANDED, "task": "a"}, {**STRANDED, "task": "b"}]
+    entries = quarantine_facts(opened, stranded, [], set(), lambda i, t: False)
+    assert [(q["task_id"], q["cause"]) for q in entries] == [("a", "quarantined"), ("b", "stranded")]
+    assert [t["task"] for t in entries[1]["tasks"]] == ["b"]
+
+
+def test_a_stranded_entry_carries_no_top_level_run_so_launch_history_ignores_it():
+    (entry,) = _stranded_entries(STRANDED)
+    assert "run" not in entry
 
 
 def _stranded_causes(approved: list | None, phase: str | None = "p1") -> list[str]:
@@ -596,7 +641,9 @@ def test_gather_facts_fills_every_key_from_the_fakes():
     # tuning, landed_main and land_outcomes are all filled in gather_facts now.
     # steward is declared on Facts and read by the planner; the next task gathers it, until then it is absent.
     # live_phases is gathered only when the deps supply it, and these fakes do not.
-    assert set(facts) == (set(Facts.__annotations__) - {"steward", "live_phases"}) | {"login_hosts"}
+    # previous_schedule_feed is read by the planner; no task gathers it yet.
+    declared = set(Facts.__annotations__) - {"steward", "live_phases", "schedule_inputs", "previous_schedule_feed"}
+    assert set(facts) == declared | {"login_hosts"}
     assert facts["dispatch"] == {"max_in_flight": 2, "live_runs": 1, "hosts": []}
     assert facts["initiatives"][0]["landed"] == {"z"}
     assert facts["approved"][0]["phase_done"] is True
@@ -739,7 +786,8 @@ def test_rows_drive_ready_intake_quarantined_and_stranded_facts_with_files_ignor
     assert facts["intake"] == ["q1.md"]
     assert facts["quarantines"] == [
         {"task_id": "b", "initiative": "j", "cause": "code", "harness_failures": 0, "has_patch": False, "rescue_failed": False},
-        {"task_id": "c", "initiative": "i", "cause": "stranded", "harness_failures": 0, "has_patch": False, "rescue_failed": False},
+        {"task_id": "c", "initiative": "i", "cause": "stranded", "harness_failures": 0, "has_patch": False, "rescue_failed": False,
+         "tasks": [{"task": "c", "run": "i-5", "remedy": "cox runs land i-5 --task c --repo r"}]},
     ]
 
 
@@ -760,6 +808,36 @@ def test_a_stranded_record_for_a_task_the_store_has_at_ready_makes_no_quarantine
 def test_a_stranded_record_for_a_task_the_store_has_approved_still_makes_the_stranded_quarantine():
     (q,) = gather_facts(_store_deps("approved"), NOW)["quarantines"]
     assert (q["task_id"], q["cause"]) == ("c", "stranded")
+
+
+def test_a_stranded_record_in_a_manual_repo_raises_no_quarantine_in_store_mode(tmp_path):
+    manual = tmp_path / "manual"
+    (manual / ".agent").mkdir(parents=True)
+    (manual / ".agent" / "cartridge.yaml").write_text("land: manual\n")
+    auto = tmp_path / "auto"
+    auto.mkdir()
+
+    def stranded_causes(repo: object) -> list[str]:
+        deps = replace(_store_deps("approved"), stranded_records=lambda: [{**STRANDED_RECORDS[0], "repo": str(repo)}])
+        return [q["cause"] for q in gather_facts(deps, NOW)["quarantines"]]
+
+    assert stranded_causes(auto) == ["stranded"]
+    assert stranded_causes(manual) == []
+
+
+def test_a_run_with_one_approved_and_one_unapproved_stranded_task_still_plans_one_needs_chair():
+    # `_deps` approves only "a": the run's lead task is "b", so recovery does not read the whole entry as waiting.
+    rows = ({**STRANDED, "task": "a"}, {**STRANDED, "task": "b"})
+    facts = gather_facts(_deps(quarantined=(), stranded=rows), NOW)
+    (entry,) = facts["quarantines"]
+    assert (entry["task_id"], [t["task"] for t in entry["tasks"]]) == ("b", ["a", "b"])
+    assert [a["kind"] for a in plan_recover(facts) if a["kind"] == "needs_chair"] == ["needs_chair"]
+
+
+def test_a_run_whose_stranded_tasks_are_all_approved_keeps_the_first_task_as_lead():
+    entries = quarantine_facts([], [{**STRANDED, "task": "a"}, {**STRANDED, "task": "b"}], [], set(), lambda i, t: False,
+                               waiting={("i", "a"), ("i", "b")})
+    assert [q["task_id"] for q in entries] == ["a"]
 
 
 def test_without_store_rows_a_stranded_row_missing_from_the_approved_list_is_kept():

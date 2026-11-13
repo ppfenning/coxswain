@@ -283,8 +283,23 @@ def test_an_unknown_event_is_refused():
 
 def test_needs_model_is_true_for_exactly_the_four_exception_events():
     assert {e for e in EVENTS if needs_model({"event": e})} == set(EXCEPTION_EVENTS)
-    assert len(EVENTS) == 9 and len(EXCEPTION_EVENTS) == 4
+    assert len(EXCEPTION_EVENTS) == 4
     assert not needs_model({"id": "m1"})
+
+
+_CHAT_EVENTS = ("chat_directive", "chat_question", "chat_answer", "directive_applied", "directive_refused")
+
+
+@pytest.mark.parametrize("name", _CHAT_EVENTS)
+def test_send_accepts_each_chat_event_addressed_to_the_chair(name):
+    entry = send(Reference("run", "r1"), "a", "chair", "n", "m1", event=name)
+    assert entry["event"] == name and entry["to"] == "chair"
+
+
+@pytest.mark.parametrize("name", _CHAT_EVENTS)
+def test_a_chat_event_is_not_an_exception_event(name):
+    assert name in EVENTS and name not in EXCEPTION_EVENTS
+    assert not needs_model({"event": name})
 
 
 def test_send_accepts_run_exited_and_still_refuses_an_unknown_event():

@@ -40,6 +40,11 @@ def test_a_stale_to_draft_action_stamped_at_epoch_3_is_fenced_only_at_epoch_4():
     assert (is_fenced(stale_to_draft, 3), is_fenced(stale_to_draft, 4)) == (False, True)
 
 
+def test_a_release_approvals_action_stamped_at_epoch_3_is_fenced_only_at_epoch_4():
+    release = stamp({"kind": "release_approvals", "initiative": "i", "task_ids": ["t3"], "reason": "held 6 ticks"}, 3)
+    assert (is_fenced(release, 3), is_fenced(release, 4)) == (False, True)
+
+
 def test_a_tune_lanes_action_stamped_at_epoch_3_is_fenced_only_at_epoch_4():
     tune_lanes = stamp(
         {"kind": "tune_lanes", "host": "h1", "from_lanes": 2, "to_lanes": 3, "reason": "weekly use under pace", "evidence": {}},
