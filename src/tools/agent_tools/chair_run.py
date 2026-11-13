@@ -186,6 +186,7 @@ class ReasonState:
     """The why-not-launched lines of the last tick; cleared as `tick_timed` starts, so a failed tick leaves none."""
 
     lines: list[str] = field(default_factory=list)
+    items: list[dict] = field(default_factory=list)  # the same reasons as data: {"initiative", "reason"}
 
 
 class TickOverrun(Exception):
@@ -539,6 +540,18 @@ def _publish_tick_status(deps: RunDeps, dry_run: bool, line: str, now: datetime)
         deps.write_tick_status(deps.runs_dir, deps.current_epoch(), text)
 
 
+def _publish_reasons(deps: RunDeps, dry_run: bool, now: datetime) -> None:
+    """Leave the tick's why-not-launched reasons in the runs directory, replacing the last tick's, so a server
+    beside the chair can answer "why did this not launch". They are never recorded as actions: there is one per
+    waiting initiative per tick. A dry run and a failed write leave the file as it was."""
+    if dry_run or deps.runs_dir is None:
+        return
+    with contextlib.suppress(Exception):
+        from agent_tools import mcp_ports
+
+        (deps.runs_dir / mcp_ports.UNLAUNCHED_FILE).write_text(mcp_ports.reasons_text(deps.reason_state.items, now.isoformat()), encoding="utf-8")
+
+
 def next_gate_record(was_paused: bool, gate: CiGate, held: tuple[str, ...], epoch: int) -> Action | None:
     """The one needs_chair for a gate that has just paused; the cause carries the reason, as perform records no reason."""
     if was_paused or not gate.paused:
@@ -726,6 +739,7 @@ def tick_timed(
     The unlaunched reason lines of the plan are left on `deps.reason_state`, for a dry run as well.
     """
     deps.reason_state.lines = []
+    deps.reason_state.items = []
     released = _release_step(deps, dry_run, now, clock)
     if released is not None:
         return released, {}, {}
@@ -745,6 +759,7 @@ def tick_timed(
         plain, plan_s = chair_timing.timed(clock, deps.plan, facts, now)
         planned = TickPlan(plain, ())
     deps.reason_state.lines = chair_report.unlaunched_lines(planned.actions, now)
+    deps.reason_state.items = [{"initiative": a.get("initiative"), "reason": a.get("reason")} for a in planned.actions if a.get("kind") == "unlaunched"]
     acting = not dry_run and all(a.get("kind") != "standby" for a in planned.actions)
     chat_note = _directive_step(deps, acting, facts, planned.actions, now)
     notice = next_gate_record(deps.gate_state.paused, gate, planned.held_for_ci, deps.current_epoch()) if acting and gate.paused else None
@@ -794,6 +809,7 @@ def _attempt(deps: RunDeps, dry_run: bool) -> None:
     shown = with_note(line, deps.restart_note)
     _publish_status(deps, dry_run, shown, now, stage_seconds)
     _publish_tick_status(deps, dry_run, shown, now)
+    _publish_reasons(deps, dry_run, now)
     try:
         if timing is not None:
             # Before the status line: `_chair_run` takes its --once exit code from the last line echoed.

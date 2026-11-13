@@ -113,34 +113,7 @@ def test_a_flag_before_the_verb_is_kept(home):
     assert args.dry_run is True
 
 
-def test_to_files_records_files_and_removes_the_profile(home, capsys):
-    assert switch(["switch", "shared", *FLAGS]) == 0
-    capsys.readouterr()
-    assert switch(["switch", "files"]) == 0
-    assert "mode: files" in settings(home)
-    assert not profile_file(home).exists()
-    assert_no_secret(capsys.readouterr())
-
-
-def test_failing_copy_to_files_keeps_shared_and_the_profile(home, capsys):
-    assert switch(["switch", "shared", *FLAGS]) == 0
-    capsys.readouterr()
-    before_profile = profile_file(home).read_bytes()
-    before = runs_snapshot(home)
-    assert switch(["switch", "files"], copy_store=boom) == 1
-    assert "mode: shared" in settings(home)
-    assert profile_file(home).read_bytes() == before_profile
-    assert runs_snapshot(home) == before
-    out = capsys.readouterr()
-    assert "copy_store" in out.err
-    assert_no_secret(out)
-
-
 def test_current_mode_is_a_no_op_and_a_repeat_is_safe(home, capsys):
-    assert switch(["switch", "files"]) == 0
-    out = capsys.readouterr()
-    assert "already files" in out.out
-    assert_no_secret(out)
     assert switch(["switch", "shared", *FLAGS]) == 0
     capsys.readouterr()
     assert switch(["switch", "shared", *FLAGS], copy_store=boom, copy_traces=boom) == 0
@@ -217,47 +190,8 @@ def test_doctor_prints_a_fail_row_naming_postgres_for_an_unreachable_shared_stor
     assert_no_secret(out)
 
 
-def test_to_files_with_an_unresolvable_profile_refuses_and_changes_nothing(home, capsys):
-    path = home / ".config" / "agent-tools" / "profile.yaml"
-    path.write_text(path.read_text(encoding="utf-8") + "store:\n  mode: shared\n", encoding="utf-8")
-    before = runs_snapshot(home)
+def test_switching_to_files_is_refused_and_changes_nothing(home, capsys):
+    before = settings(home)
     assert switch(["switch", "files"]) == 2
-    assert "mode: shared" in settings(home)
-    assert runs_snapshot(home) == before
-    assert "does not name a postgresql store" in capsys.readouterr().err
-
-
-def test_to_files_reads_the_provider_profile_the_settings_name(home, capsys):
-    assert switch(["switch", "shared", *FLAGS]) == 0
-    other = home / "elsewhere.yaml"
-    other.write_bytes(profile_file(home).read_bytes())
-    profile_file(home).unlink()
-    path = home / ".config" / "agent-tools" / "profile.yaml"
-    path.write_text(path.read_text(encoding="utf-8") + f"provider_profile: {other}\n", encoding="utf-8")
-    capsys.readouterr()
-    assert switch(["switch", "files"]) == 0
-    assert "mode: files" in settings(home)
-    assert_no_secret(capsys.readouterr())
-
-
-def test_to_files_default_copiers_get_the_profile_object_store_and_env(home, monkeypatch):
-    assert switch(["switch", "shared", *FLAGS]) == 0
-    seen = []
-
-    def fake_store(source, target):
-        seen.append(("store", source, target))
-        return {"runs": 1}
-
-    def fake_factory(object_store=None, env=None):
-        seen.append(("factory", object_store, env))
-        return lambda source, target: seen.append(("traces", source, target)) or {"copied": 1}
-
-    monkeypatch.setattr(store_switch, "default_copy_store", fake_store)
-    monkeypatch.setattr(store_switch, "traces_copier", fake_factory)
-    argv = ["switch", "files", "--access-key-env", "S3_ID", "--secret-key-env", "S3_SEC"]
-    assert switch(argv, copy_store=None, copy_traces=None) == 0
-    assert [s[0] for s in seen] == ["factory", "store", "traces"]
-    assert seen[0][1]["endpoint"] == "http://garage.example:3900"
-    assert seen[0][2][cli.setup_store.ACCESS_KEY_ENV] == ACCESS
-    assert seen[1][1].startswith("postgresql://") and seen[1][2].startswith("sqlite:///")
-    assert seen[2][1].startswith("s3://")
+    assert "the files store is retired" in capsys.readouterr().err
+    assert settings(home) == before

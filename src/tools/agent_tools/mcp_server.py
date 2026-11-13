@@ -9,7 +9,7 @@ from typing import NamedTuple
 
 from agent_tools.mcp_protocol import INVALID_REQUEST, PARSE_ERROR, ToolSpec, decode, encode, handle
 from agent_tools.mcp_read_tools import ReadPorts, read_tools
-from agent_tools.mcp_write_tools import Send, write_tools
+from agent_tools.mcp_write_tools import Act, Send, write_tools
 
 __all__ = ["Ports", "build_tools", "make_handler", "serve_stdio"]
 
@@ -24,13 +24,14 @@ class Ports(NamedTuple):
     now: Callable[[], str]
     known_repos: Collection[str] = ()
     known_epics: Collection[str] = ()
+    act: Act | None = None  # carries plain writes out; None on a server away from the store and the cartridge
 
 
 def build_tools(ports: Ports) -> list[ToolSpec]:
     """The read tools followed by the write tools; raises ValueError naming any tool name used twice."""
     tools = [
         *read_tools(ports.read),
-        *write_tools(ports.send, ports.now(), known_repos=ports.known_repos, known_epics=ports.known_epics),
+        *write_tools(ports.send, ports.now(), known_repos=ports.known_repos, known_epics=ports.known_epics, act=ports.act),
     ]
     names = [tool.name for tool in tools]
     duplicates = sorted({name for name in names if names.count(name) > 1})

@@ -71,6 +71,7 @@ cox runs triage TASK_ID [--json] [--profile PROFILE] [--repo PATH]   print a qua
 cox courier send REF --to TO --note NOTE [--profile PROFILE] [--event EVENT] [--topic TOPIC] [--field FIELD]   append a bus entry naming a courier reference
 cox courier inbox [--label LABEL] [--profile PROFILE] [--topic TOPIC] [--event EVENT] [--consumer CONSUMER] [--wake]   list this label's unacknowledged bus entries
 cox courier ack ID [--profile PROFILE] [--consumer CONSUMER]   acknowledge one bus entry by id
+cox mcp [serve] [--http HOST:PORT] [--token-file PATH] [--label LABEL] [--profile PROFILE]   serve the chair's tools to MCP clients
 cox versions [--root ROOT] [--home HOME] [--manifest MANIFEST]   component versions against the manifest
 cox console [--runs-dir RUNS_DIR] [--work-dir WORK_DIR] [--interval INTERVAL] [--once] [--profile PROFILE]   one screen of hosts, drafts, lanes and the chair; keys run cox commands after a y/n
 cox dash [--runs-dir RUNS_DIR] [--work-dir WORK_DIR] [--feed] [--once] [--interval INTERVAL] [--detail KIND]   a versioned JSON snapshot of the workspace: --feed streams it, --once prints one, --detail drills into one kind
@@ -79,7 +80,7 @@ cox settings set cartridge|profile|host KEY VALUE [--dry-run] [--commit] [--prof
 cox install [--root ROOT] [--home HOME] [--manifest MANIFEST] [--provider PROVIDER] [--with FLAG] [--team TEAM] [--workspace WORKSPACE] [--edge] [--dry-run]   clone/update coxswain components against the manifest
 cox upgrade [--root ROOT] [--home HOME] [--manifest MANIFEST] [--provider PROVIDER] [--with FLAG] [--team TEAM] [--workspace WORKSPACE] [--to TO] [--dry-run]   fetch and check out newer pinned versions; refuses dirty checkouts
 cox home [--profile PROFILE]   the live dashboard: runs, leader, backlog
-cox session [--profile PROFILE] [--no-plugin] [--print-argv] [CLAUDE_ARG...]   open the coxswain Claude session
+cox session [--profile PROFILE] [--no-plugin] [--print-argv] [--workspace] [CLAUDE_ARG...]   open the coxswain Claude session
 cox stats ingest [RUNS_DIR] [--db DB] [--work-store-root WORK_STORE_ROOT] [--cartridges-repo CARTRIDGES_REPO]   load usage, task, node and launch records into stats.db
 cox stats roles [--db DB] [--runs-dir RUNS_DIR] [--json] [--cartridge-sha CARTRIDGE_SHA] [--provider-profile PROVIDER_PROFILE]   landed rate, attempts-to-land and $/landed per role and model
 cox stats tiers [--db DB] [--since SINCE] [--min-samples MIN_SAMPLES] [--json]   per-role model summaries, a cost-aware pick and the spend it would save
@@ -113,6 +114,8 @@ cox route schedule [--profile PROFILE] [--explain INITIATIVE] [--should-jump INI
 cox route pull [--profile PROFILE] [--source SOURCE] [--dry-run]   file intake tickets from a source, once per link
 cox route lint INITIATIVE_DIR [--repo REPO]   static ticket lint over a filed initiative, work-shape.md §3
 cox route groups [--profile PROFILE]   print the newest plans/intake-groups/<date>.md file, work-shape.md §5
+cox route cartridges publish|fetch [--sha SHA] [--replace] [--into INTO] [--profile PROFILE]   publish this machine's cartridges to the store, or write a published snapshot here
+cox route export [--profile PROFILE]   write this machine's work/ and intake/ files from the store; nothing is committed
 cox route drift [--profile PROFILE] [--json]   items whose store state and file state differ
 cox route import [--profile PROFILE] [--workspace WORKSPACE]   load the current work item files into the store's work_items table
 cox route paths [--profile PROFILE] [--workspace WORKSPACE] [--apply] [--move ('OLD', 'NEW')]   rewrite recorded repo paths to the tilde form, dry run first
@@ -177,7 +180,7 @@ cox setup doctor [--profile PROFILE] [--repo REPO] [--json] [--host HOST]   chec
 cox setup install [--root ROOT] --team TEAM [--workspace WORKSPACE] [--home HOME] [--provider-profile PROVIDER_PROFILE] [--skills-root SKILLS_ROOT] [--assume a|r] [--plugins] [--hook] [--force-profile] [--dry-run] [--window-ceiling-usd WINDOW_CEILING_USD] [--weekly-ceiling-usd WEEKLY_CEILING_USD]   sync the checkout's venv, install cox and write a profile for this machine
 cox setup extras [--with EXTRA] [--dry-run]   install the optional extras into this venv, pinned and hash-checked from uv.lock
 cox setup migrate [--home HOME] [--dry-run] [--apply] [--hosts] [--finish] [--old-root PATH] [--to VERSION]   plan moving this host to the one monorepo checkout; --apply migrates
-cox setup store switch files|shared [--host HOST] [--port PORT] [--database DATABASE] [--user USER] [--bucket BUCKET] [--endpoint ENDPOINT] [--region REGION] [--password-env PASSWORD_ENV] [--access-key-env ACCESS_KEY_ENV] [--secret-key-env SECRET_KEY_ENV] [--dry-run]   copy the run store and traces to the other backend, then record store.mode
+cox setup store switch files|shared [--host HOST] [--port PORT] [--database DATABASE] [--user USER] [--bucket BUCKET] [--endpoint ENDPOINT] [--region REGION] [--password-env PASSWORD_ENV] [--access-key-env ACCESS_KEY_ENV] [--secret-key-env SECRET_KEY_ENV] [--dry-run]   copy an old local run store and its traces into the shared store, then record store.mode
 cox setup token status [--probe]   report whether the stored token file exists and claude accepts it
 ```
 <!-- commands:end -->
@@ -193,8 +196,8 @@ and `cox setup migrate` point its `harness_dir`, `skills_roots` and
 `provider_profile` at the shipped `src/cartridges/providers/claude-code.yaml`
 unless `--provider-profile` names another; a team's own provider profile
 lives outside the checkout, in `<home>/providers/` or the workspace, and
-`cox setup migrate` keeps it. `cox setup store --store files|shared` picks
-the run store; see [`docs/shared-store.md`](docs/shared-store.md). New to
+`cox setup migrate` keeps it. `cox setup store --store shared` configures
+the run store, which is Postgres; see [`docs/shared-store.md`](docs/shared-store.md). New to
 the profile? [`docs/getting-started.md`](docs/getting-started.md) walks
 through it.
 

@@ -152,8 +152,8 @@ def _read_text_or_none(path: Path) -> str | None:
         return None
 
 
-def run_get(profile_path: Path, as_json: bool) -> int:
-    """Edge. Read the profile, then the cartridge it names, ask git about both, print the rows."""
+def read_grouped(profile_path: Path) -> Grouped:
+    """Edge. Read the profile, then the cartridge it names, ask git about both; the rows by section, defaults last."""
     profile_text = _read_text_or_none(profile_path)
     _, profile = parse_documents(None, profile_text)
     cartridge_path = cartridge_path_for(profile)
@@ -165,7 +165,12 @@ def run_get(profile_path: Path, as_json: bool) -> int:
     }
     workspace = profile.get("workspace_dir")
     hosts = host_capacities(run_store.hosts(Path(workspace).expanduser() / "runs")) if workspace else {}
-    grouped = with_defaults(sections(cartridge, profile, hosts, tracked))
+    return with_defaults(sections(cartridge, profile, hosts, tracked))
+
+
+def run_get(profile_path: Path, as_json: bool) -> int:
+    """Edge. Print the rows `read_grouped` finds."""
+    grouped = read_grouped(profile_path)
     print(json.dumps(to_json(grouped), default=str, indent=2) if as_json else render_text(grouped))
     return 0
 

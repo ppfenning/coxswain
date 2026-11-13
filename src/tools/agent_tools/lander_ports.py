@@ -207,7 +207,7 @@ def split_initiative(ws: Path, conn: Any, repo: Path, initiative: str, phases: S
     from agent_tools import queue_export
     from core import workstore
     from harness import landing_git as lg
-    from harness import landing_store, store_write
+    from harness import landing_store
 
     work = Path(ws) / "work"
     follow = follow_up_for(work, initiative)
@@ -239,11 +239,23 @@ def split_initiative(ws: Path, conn: Any, repo: Path, initiative: str, phases: S
 
     for row in [r for r in store_read.work_items(conn, initiative) if str(r.get("phase")) in set(phases)]:
         task = str(row["task_id"])
-        with conn.transaction():
-            store_write.upsert_work_item(conn, follow, task, str(row["phase"]), str(row["state"]), list(row.get("needs") or []), stamp, worker)
-            if row.get("merged_commit") and row.get("state") == "approved":
-                store_write.record_merge(conn, follow, task, str(row["merged_commit"]), stamp, worker)
-            conn.execute(f"DELETE FROM work_items WHERE initiative = {mark} AND task_id = {mark}", (initiative, task))
+        # The row moves whole, in one statement: its text, its state and its merged commit all go with it.
+        conn.execute(
+            f"UPDATE work_items SET initiative = {mark}, updated_at = {mark}, updated_by = {mark} "
+            f"WHERE initiative = {mark} AND task_id = {mark}",
+            (follow, stamp, worker, initiative, task),
+        )
+    from harness import store_queue
+
+    head = next(iter(store_queue.read(conn, initiative, "initiative")), None)
+    if head is not None and not store_queue.read(conn, follow, "initiative"):
+        # The follow-up's own row, so the store holds it and not only the file written above.
+        store_queue.upsert(conn, {
+            **{k: v for k, v in head.items() if k not in ("holder", "epoch", "expires_at", "issue_number", "project_item_id")},
+            "initiative": follow, "task_id": follow, "title": f"{head.get('title') or initiative} (follow-up)",
+            "extra": {**(head.get("extra") or {}), "id": follow, "split_from": initiative},
+            "updated_at": stamp, "updated_by": worker,
+        })
     record = landing_store.get_record(conn, initiative)
     if record is not None and any(p in (record.get("phases") or {}) for p in phases):
         kept = {p: e for p, e in (record.get("phases") or {}).items() if p not in set(phases)}
@@ -323,7 +335,7 @@ def build(ws: Path, profile: Mapping[str, Any], *, worker: str | None = None, lo
     from core import workstore
     from core.cartridge import OVERLAY_ALLOWED_KEYS
     from core.landing import resolve_epic_stack
-    from harness import store_read
+    from harness import store_queue, store_read
 
     ws = Path(ws)
     runs_dir, work = ws / "runs", ws / "work"
@@ -334,8 +346,22 @@ def build(ws: Path, profile: Mapping[str, Any], *, worker: str | None = None, lo
     provider = read_provider_profile(profile.get("provider_profile") or "") if profile.get("provider_profile") else {}
     mode = work_state.work_state_mode(provider)
 
+    def board(initiative: str) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+        """(the initiative's own fields, its tasks' fields by id), from the store's rows. A workspace whose board is
+        its files (no rows for the initiative) is read from the files instead."""
+        rows = store_queue.read(conn, initiative)
+        head = next((r for r in rows if r.get("kind") == "initiative"), None)
+        if head is None:
+            return _frontmatter(work / initiative / "initiative.md"), files_of(initiative)
+        own = {**(head.get("extra") or {}), "title": head.get("title") or (head.get("extra") or {}).get("title") or initiative}
+        return own, {
+            str(r["task_id"]): {"title": r.get("title") or r["task_id"], "phase": r.get("phase"), "state": r.get("state"),
+                                "needs": list(r.get("needs") or [])}
+            for r in rows if r.get("kind") == "task"
+        }
+
     def repo_of(record: Mapping[str, Any]) -> Path:
-        named = _frontmatter(work / str(record["initiative"]) / "initiative.md").get("repo")
+        named = board(str(record["initiative"]))[0].get("repo")
         if isinstance(named, str) and named:
             return Path(repo_path.expand(named, home))
         return Path(str(record.get("repo") or "")).expanduser()  # `lander._repo` refuses an empty or relative one
@@ -351,10 +377,13 @@ def build(ws: Path, profile: Mapping[str, Any], *, worker: str | None = None, lo
         return found
 
     def tasks(initiative: str) -> list[dict[str, Any]]:
-        return task_rows(store_read.work_items(conn, initiative), files_of(initiative))
+        # The initiative's own row and its intake's row live in the same table; neither is a task to merge or land.
+        other = {str(r["task_id"]) for r in store_queue.read(conn, initiative) if r.get("kind") not in (None, "task")}
+        stored = [r for r in store_read.work_items(conn, initiative) if str(r["task_id"]) not in other]
+        return task_rows(stored, board(initiative)[1])
 
     def meta(initiative: str) -> dict[str, Any]:
-        own = {**_frontmatter(work / initiative / "initiative.md"), "id": initiative}
+        own = {**board(initiative)[0], "id": initiative}
         repo = Path(repo_path.expand(str(own["repo"]), home)) if own.get("repo") else None
         cartridge, error = cli._team_cartridge(dict(profile), repo, OVERLAY_ALLOWED_KEYS)
         epic = cli._read_epics(ws)[0].get(str(own.get("epic"))) if own.get("epic") else None
@@ -377,7 +406,6 @@ def build(ws: Path, profile: Mapping[str, Any], *, worker: str | None = None, lo
     def file_rectify(initiative: str, phase: str, title: str, body: str) -> str | None:
         """One ready task in `phase`, as a work file and a store row. The phase's branch is the tree it builds on."""
         from agent_tools import queue_export
-        from harness import store_write
 
         ident, exists = rectify_task(phase, tasks(initiative))
         if exists:
@@ -386,7 +414,12 @@ def build(ws: Path, profile: Mapping[str, Any], *, worker: str | None = None, lo
         try:
             workstore.write_item({"id": ident, "phase": phase, "state": "ready", "needs": [], "surfaces": [],
                                   "title": title, "body": body}, path)
-            store_write.upsert_work_item(conn, initiative, ident, phase, "ready", [], now_stamp(), name)
+            # The whole ticket goes to the store, text and all: the store is the board and the file is its copy.
+            store_queue.upsert(conn, {
+                "kind": "task", "initiative": initiative, "task_id": ident, "phase": phase, "state": "ready",
+                "needs": [], "surfaces": [], "title": title, "body": body, "extra": {"id": ident, "phase": phase},
+                "updated_at": now_stamp(), "updated_by": name,
+            })
         except Exception as exc:
             log(f"lander: rectify task for {initiative}/{phase} was not filed: {type(exc).__name__}: {exc}")
             return None

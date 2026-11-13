@@ -242,7 +242,7 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
                     raise ProfileError(f"line {lineno}: {raw_line}")
                 key, _, value = content.partition(":")
                 key, value = key.strip(), value.strip()
-                if key == "steward":
+                if key in ("steward", "workspace_git"):
                     flag = _CHAIR_BOOL_WORDS.get(value.lower())
                     if flag is None:
                         raise ProfileError(f"line {lineno}: {raw_line}")

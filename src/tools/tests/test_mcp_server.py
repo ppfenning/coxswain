@@ -9,8 +9,8 @@ from agent_tools.mcp_server import Ports, build_tools, make_handler, serve_stdio
 
 NOW = "2026-11-11T09:00:00Z"
 CALLER = "stdio-1"
-READ_NAMES = ["release_status", "queue_board", "explain", "recent_events"]
-WRITE_NAMES = ["file_intake", "set_stage", "set_priority", "send_directive", "cut_release"]
+READ_NAMES = ["release_status", "queue_board", "explain", "recent_events", "cartridge_settings"]
+WRITE_NAMES = ["file_intake", "set_stage", "set_priority", "send_directive", "cut_release", "set_setting"]
 SNAPSHOT = {"board": {"epics": [{"initiatives": [{"id": "mcp", "counts": {"merged": 2, "ready": 1}}]}]}}
 
 
@@ -49,7 +49,7 @@ def _responses(written):
     return [json.loads(line) for line in written]
 
 
-def test_build_tools_has_four_read_then_five_write_tools_without_duplicates():
+def test_build_tools_has_five_read_then_six_write_tools_without_duplicates():
     names = [tool.name for tool in build_tools(_ports(Recorder()))]
     assert names == [*READ_NAMES, *WRITE_NAMES]
     assert len(set(names)) == len(names)

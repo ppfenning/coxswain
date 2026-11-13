@@ -1180,9 +1180,7 @@ def _send_note(deps: Deps, ref: courier.Reference, text: str) -> None:
     """Edge. One courier line for `ref` appended to `work_dir/courier.jsonl`, addressed to `deps.note_to`."""
     sender = (chair.read(deps.runs_dir) or {}).get("session") or "chair"
     entry = courier.send(ref, sender, deps.note_to, text, uuid.uuid4().hex)
-    path = deps.work_dir / "courier.jsonl"
-    existing = path.read_text(encoding="utf-8") if path.exists() else ""
-    path.write_text(courier.append_line(existing, entry), encoding="utf-8")
+    courier.append_file(deps.work_dir / "courier.jsonl", entry)
 
 
 def _send_stale_draft_note(deps: Deps, initiative: str, reason: str) -> None:
@@ -1581,7 +1579,7 @@ def _ack_run_exited(run: str, deps: Deps) -> list[str]:
     returns the ids acked. A missing or unreadable file, or a failed ack, leaves the fetch result as it was."""
     path = deps.work_dir / "courier.jsonl"
     try:
-        entries = courier.entries(path.read_text(encoding="utf-8"))
+        entries = courier.entries(courier.read_text(path))
     except (OSError, ValueError):
         return []
     acked = []
@@ -1618,7 +1616,7 @@ def _ack_done_land_notices(deps: Deps) -> list[str]:
     done under `work_dir/work/*/*/*.md`; returns the ids acked. A missing or unreadable file acks nothing."""
     path = deps.work_dir / "courier.jsonl"
     try:
-        notices = courier.entries(path.read_text(encoding="utf-8"))
+        notices = courier.entries(courier.read_text(path))
     except OSError:
         return []
     if not any(not n.get("ack") for n in notices):

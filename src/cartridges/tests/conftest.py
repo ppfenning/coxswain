@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 import yaml
+
+# sqlite is the suites' stand-in for the one real store, Postgres. Outside the suites it does not open.
+os.environ.setdefault("COXSWAIN_STORE_DOUBLE", "sqlite")
 
 
 def write_cartridge(directory: Path, config: dict, context: dict[str, str] | None = None) -> Path:

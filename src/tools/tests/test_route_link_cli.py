@@ -31,6 +31,14 @@ def env(tmp_path, monkeypatch):
         return True
 
     monkeypatch.setattr(run_store, "upsert_row", upsert)
+    # The pull's source sync writes through the detail form: "" says the store took the row.
+
+    def upsert_detail(_runs_dir, row):
+        key = (row["initiative"], row["task_id"])
+        rows[key] = {**rows.get(key, {}), **row}
+        return ""
+
+    monkeypatch.setattr(run_store, "upsert_row_detail", upsert_detail)
     monkeypatch.setattr(run_store, "read_queue", lambda runs_dir, initiative=None, kind=None: list(rows.values()))
     monkeypatch.setattr(run_store, "live_lanes", lambda runs_dir, now: [])
     monkeypatch.setattr(run_store, "resolve_initiative", lambda runs_dir, token: token)
@@ -61,9 +69,11 @@ def _file_fields(env, row):
 
 
 def _no_new_intake_on_pull(env):
-    before = (sorted((env["ws"] / "intake").glob("*.md")), dict(env["rows"]))
+    # The store is the board, so the pull's sync may refresh the linked row's text from the source; what must hold
+    # is that the pull files no second intake: the same files and the same rows, by key.
+    before = (sorted((env["ws"] / "intake").glob("*.md")), sorted(env["rows"]))
     assert main(["route", "pull", "--profile", env["profile"], "--source", "fake"]) == 0
-    assert (sorted((env["ws"] / "intake").glob("*.md")), env["rows"]) == before
+    assert (sorted((env["ws"] / "intake").glob("*.md")), sorted(env["rows"])) == before
 
 
 def test_filing_an_intake_with_a_link_writes_the_row_and_the_file_alike(env):

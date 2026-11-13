@@ -92,6 +92,7 @@ chair_exec = _LazyModule("agent_tools.chair_exec")
 chair_facts = _LazyModule("agent_tools.chair_facts")
 chair_holder = _LazyModule("agent_tools.chair_holder")
 chair_resolve = _LazyModule("agent_tools.chair_resolve")
+chair_attach = _LazyModule("agent_tools.chair_attach")
 chair_land_freeze = _LazyModule("agent_tools.chair_land_freeze")
 chair_load_warn = _LazyModule("agent_tools.chair_load_warn")
 chair_login_check = _LazyModule("agent_tools.chair_login_check")
@@ -5008,6 +5009,131 @@ def _status_rows_for(runs_dir: Path, short_ids: Mapping[str, str] | None = None)
     return _with_lane_fields(route.status_rows(entries, by_run), runs, _now_iso())
 
 
+def _route_export(a: argparse.Namespace) -> int:
+    """Edge. Refresh this machine's copy of the board from the store. No git, no lease."""
+    profile = _courier_profile(a)
+    if profile is None:
+        return 2
+    workspace = Path(profile["workspace_dir"]).expanduser()
+    try:
+        skipped = _export_board(workspace / "runs", workspace, prune_stale=not workspace_git_on(profile))
+        _note_export_stamp(workspace / "runs", run_store.queue_stamp(workspace / "runs"))
+    except Exception as exc:
+        print(f"export: {type(exc).__name__}: {exc}")
+        return 1
+    print(f"export: {workspace} matches the store" + (f"; skipped {len(skipped)} contentless row(s)" if skipped else ""))
+    return 0
+
+
+# Commands that run before a store is configured, or configure it. Every other command needs the one store.
+_STORE_FREE = frozenset({"setup", "install", "upgrade", "versions", "settings", "dev", "release", "home", "plan"})
+STORE_DOUBLE_ENV = "COXSWAIN_STORE_DOUBLE"  # the suites' sqlite stand-in; the harness reads the same name
+
+
+def store_refusal(head: Sequence[str], storage: object, environ: Mapping[str, str]) -> str | None:
+    """Pure. Why the command line `head` may not run against the store URL `storage`; None when it may.
+    The one store is Postgres. No URL, or any other kind, is refused for every command that touches the board."""
+    words = [w for w in head if not w.startswith("-")]
+    if not words or words[0] in _STORE_FREE or environ.get(STORE_DOUBLE_ENV) == "sqlite":
+        return None
+    if not isinstance(storage, str) or not storage:
+        return "no store is configured: the provider profile needs a storage_url naming a postgresql:// store. Run `cox setup store --store shared`."
+    try:
+        shared = store_dialect.is_postgres(storage)
+    except ValueError:
+        shared = False
+    return None if shared else (
+        "the configured store is not Postgres: sqlite and file-only work state are retired. "
+        "Run `cox setup store --store shared`, then `cox setup store switch shared` to carry the old rows over."
+    )
+
+
+def _store_refusal(a: argparse.Namespace, head: Sequence[str]) -> str | None:
+    """Edge. `store_refusal` for the profile in use. A machine with no routing profile yet is not refused: it has
+    nothing configured to be wrong, and `cox setup` is how it gets one."""
+    text = _read_text_or_none(_profile_path(a))
+    if text is None:
+        return None
+    try:
+        named = route.parse_profile(text).get("provider_profile")
+    except route.ProfileError:
+        return None  # the command reports the unreadable profile itself
+    provider = store_url.read_provider_profile(named) if named else {}
+    return store_refusal(head, provider.get("storage_url"), os.environ)
+
+
+def _route_cartridges(a: argparse.Namespace) -> int:
+    """Edge. `publish` stores the profile's cartridges directory under its sha; `fetch` writes a stored snapshot there."""
+    from agent_tools import cartridge_snapshot  # imported here: cli loads a command module only when it runs
+
+    profile = _courier_profile(a)
+    if profile is None:
+        return 2
+    folder = a.into or profile.get("cartridges_dir")
+    if not folder:
+        print("cartridges: the profile names no cartridges_dir; pass --into")
+        return 2
+    root, runs_dir = Path(folder).expanduser(), Path(profile["workspace_dir"]).expanduser() / "runs"
+    try:
+        if a.action == "publish":
+            print(cartridge_snapshot.publish(runs_dir, root))
+            return 0
+        if not a.sha:
+            print("cartridges: fetch needs --sha")
+            return 2
+        wrote, deleted = cartridge_snapshot.fetch(runs_dir, a.sha, root, replace=a.replace)
+    except Exception as exc:
+        print(f"cartridges: {type(exc).__name__}: {exc}")
+        return 1
+    print(f"cartridges: {root} holds {a.sha[:12]} ({wrote} written, {deleted} removed)")
+    return 0
+
+
+_EXPORT_STAMP = ".export-stamp"
+# Commands that read the board from this machine's files. `chair` is not here: its tick exports for itself.
+_BOARD_READERS = frozenset({"route", "runs", "lander", "epic", "console", "dash"})
+_BOARD_WRITERS = frozenset({("route", "export"), ("route", "import"), ("route", "store-fill")})
+
+
+def _note_export_stamp(runs_dir: Path, stamp: object) -> None:
+    """Edge: remember the store version this machine's files were last written from. A failure only costs a re-export."""
+    if stamp is None:
+        return
+    with contextlib.suppress(OSError):
+        (runs_dir / _EXPORT_STAMP).write_text(json.dumps(stamp) + "\n", encoding="utf-8")
+
+
+def reads_board(head: Sequence[str]) -> bool:
+    """Pure: whether the command line `head` runs a command that reads the board files and does not write them itself."""
+    words = [w for w in head if not w.startswith("-")]
+    return bool(words) and words[0] in _BOARD_READERS and tuple(words[:2]) not in _BOARD_WRITERS
+
+
+def _refresh_board_files(a: argparse.Namespace) -> None:
+    """Edge. With the workspace out of git, bring this machine's work/ and intake/ files up to the store before a
+    command reads them: one cheap version probe, and an export only when the store changed since the last one.
+    Never raises and never prints on success: a store that cannot be reached leaves the files as they are."""
+    try:
+        text = _read_text_or_none(_profile_path(a))
+        profile = route.parse_profile(text) if text else {}
+        if not profile.get("workspace_dir") or workspace_git_on(profile):
+            return
+        if work_state.work_state_mode(_lake_provider(a)[0]) != "store":
+            return
+        workspace = Path(profile["workspace_dir"]).expanduser()
+        runs_dir = workspace / "runs"
+        stamp = run_store.queue_stamp(runs_dir)
+        if stamp is None:
+            return
+        last = _read_text_or_none(runs_dir / _EXPORT_STAMP)
+        if last is not None and last.strip() == json.dumps(stamp):
+            return
+        _export_board(runs_dir, workspace, prune_stale=True)
+        _note_export_stamp(runs_dir, stamp)
+    except Exception as exc:  # a refresh is a convenience; the command still runs on the files it has
+        print(f"export: could not refresh this machine's board files from the store: {type(exc).__name__}: {exc}", file=sys.stderr)
+
+
 def _route_drift(a: argparse.Namespace) -> int:
     """Report only: exits 0 whether or not the store and the files disagree."""
     profile_path = _profile_path(a)
@@ -5977,7 +6103,7 @@ def _chat_deps(ws: Path) -> chair_run.ChatDeps:
     """Edge. The chat edges over the workspace's `courier.jsonl` and `chair_chat_state.json`; neither is the lease."""
     courier_path, chat_path = ws / "courier.jsonl", _chat_state_path(ws)
     return chair_run.ChatDeps(
-        read=lambda: courier.entries(_read_text_or_none(courier_path) or ""),  # a missing file is an empty bus
+        read=lambda: courier.entries(courier.read_text(courier_path)),  # no bus yet is an empty bus
         load=lambda: _read_chat_doc(chat_path)[0],
         save=lambda state, epics: _write_chat_doc(chat_path, state, epics),
         append=lambda entry: courier.append_file(courier_path, entry),
@@ -6024,7 +6150,7 @@ def _await_chat_answer(
     """Edge. The answer entry for `question_id`, polled until `wait` seconds pass; None when none came."""
     deadline = monotonic() + wait
     while True:
-        found = _find_chat_answer(_read_text_or_none(path) or "", question_id)
+        found = _find_chat_answer(courier.read_text(path), question_id)
         left = deadline - monotonic()
         if found is not None or left <= 0:
             return found
@@ -6048,7 +6174,7 @@ def _route_chair_converse_state(a: argparse.Namespace) -> int:
     if workspace is None:
         return 2
     state, epics = _read_chat_doc(_chat_state_path(workspace))
-    sent = courier.entries(_read_text_or_none(workspace / "courier.jsonl") or "")
+    sent = courier.entries(courier.read_text(workspace / "courier.jsonl"))
     recent = [{"event": e["event"]} for e in sent if e.get("topic") == chair_chat.LABEL and e.get("event") in ("directive_applied", "directive_refused")][-5:]
     print(chair_chat.state_summary(state, epics, recent))
     print("Epics are as of the chair's last acting tick; a standby or dry-run tick does not refresh them.")
@@ -6594,6 +6720,53 @@ def _route_pull(a: argparse.Namespace) -> int:
     return max([_pull_source(a, profile, name, named=len(names) > 1) for name in names])
 
 
+def _taken_tickets(adapter, config) -> list | None:
+    """Edge. The tickets a source's earlier pulls took, as candidates; [] for an adapter that cannot list them, None
+    after printing when a listing fails."""
+    build = getattr(adapter, "taken_list_argv", None)
+    if build is None:
+        return []
+    unwrap = getattr(adapter, "unwrap", None) or (lambda payload, _repo: payload)
+    tickets: list = []
+    for repo in config.repos:
+        rc, out, err = _run_argv(build(config, repo))
+        try:
+            tickets.extend(adapter.read(raw) for raw in (unwrap(json.loads(out or "[]"), repo) if rc == 0 else ()))
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            rc, err = 1, f"{type(exc).__name__}: {exc}"
+        if rc != 0:
+            print(f"sync: listing the taken tickets of {repo} failed: {err}")
+            return None
+    return tickets
+
+
+def _sync_source(adapter, config, ws: Path, fresh: Sequence, dry_run: bool) -> bool:
+    """Edge. One-way sync of a source's tickets into the store's intake rows (`intake_sync`); True when it failed.
+    `fresh` are the candidates the pull just read, so a queued ticket still on the intake listing is covered too."""
+    from agent_tools import intake_sync  # imported here: cli loads a command module only when it runs
+
+    taken = _taken_tickets(adapter, config)
+    if taken is None:
+        return True
+    tickets = [*fresh, *taken]
+    if not tickets:
+        return False
+    at = datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
+    failed = False
+    for step in intake_sync.plan_sync(tickets, run_store.read_queue(ws / "runs"), at):
+        if dry_run:
+            if step.line:
+                print(f"would {step.line}")
+            continue
+        refusals = [why for why in (run_store.upsert_row_detail(ws / "runs", row) for row in step.writes) if why]
+        if refusals:
+            failed = True
+            print(f"sync: the store refused the change for {step.link}: {refusals[0]}")
+        elif step.line:
+            print(step.line)
+    return failed
+
+
 def _held_issues(ws: Path, repo_map: dict) -> dict[tuple[str, str], str]:
     """(repository, number) to `initiative/task_id` for the store rows that name both; empty when the store is unreadable."""
     keyed = ((route.row_issue_key(row, repo_map), row) for row in run_store.read_queue(ws / "runs"))
@@ -6640,6 +6813,9 @@ def _pull_source(a: argparse.Namespace, profile: dict, source: str, *, named: bo
         print(f"routing: pull wrote nothing{f' from {source}' if named else ''}: no eligible candidates")
     failed = [_pull_one(adapter, config, mapping, found, ws, a.dry_run) for mapping in plan]
     failed += [_review_one(adapter, found[link], str(_profile_path(a)), a.dry_run) for link in reviews]
+    if work_state.work_state_mode(_lake_provider(a)[0]) == "store":
+        # The store is the board, so an edit at the source reaches it here; with the files as the board there is no row to sync.
+        failed.append(_sync_source(adapter, config, ws, [c for c in found.values() if c.kind != "pr"], a.dry_run))
     return 2 if problems or any(failed) else 0
 
 
@@ -7028,6 +7204,7 @@ def _route_launch(a: argparse.Namespace) -> int:
     launch_dir = _initiative_path(runs_dir, a.initiative) if a.graph in ("epic", "rescue") else None
     stub_written = None  # the initiative.md a decompose launch created, named in the report if the launch then dies
     via_rows = False  # a decompose that runs to completion here and writes its plan as store rows
+    rows_when_detached = False  # the same decompose asked for with --detach: it is run in the background, rows and all
     if a.graph == "epic":
         initiative_id = launch_dir.name
         launch_land_at = _phase_land_at({}, profile, runs_dir.parent / "work", initiative_id)  # initiative.md, else cartridge, else ticket
@@ -7123,7 +7300,10 @@ def _route_launch(a: argparse.Namespace) -> int:
         if getattr(a, "run_id", None) is None:
             run_id = route.next_run_id(_taken_run_names(runs_dir), prefix)
         else:
-            taken = remote_lane.refuse_taken_run_id(a.run_id, set(_taken_run_names(runs_dir)))
+            # The background rerun of a detached decompose is handed its run id by the launch that named it and
+            # already opened its log, so that one id is its own and not "taken".
+            own = os.environ.get(_OWN_RUN_ID_ENV) == a.run_id
+            taken = None if own else remote_lane.refuse_taken_run_id(a.run_id, set(_taken_run_names(runs_dir)))
             if taken is not None:
                 print(taken)
                 return 2
@@ -7176,6 +7356,7 @@ def _route_launch(a: argparse.Namespace) -> int:
             print(f"routing: intake {idea_path.stem} is a draft; ready it with `cox route ready {idea_path.stem}`")
             return 2
         via_rows = _decompose_via_rows(store_mode, a.dry_run, host, intake_row, detach=bool(getattr(a, "detach", False)))
+        rows_when_detached = not via_rows and _decompose_via_rows(store_mode, a.dry_run, host, intake_row)
         if via_rows:
             pass  # the plan lands as rows after the run; the chair's export writes the files
         elif initiative_md.exists() and any(initiative_dir.glob("*/*.md")):
@@ -7209,7 +7390,10 @@ def _route_launch(a: argparse.Namespace) -> int:
         if getattr(a, "run_id", None) is None:
             run_id = route.next_run_id(_taken_run_names(runs_dir), a.initiative_id)
         else:
-            taken = remote_lane.refuse_taken_run_id(a.run_id, set(_taken_run_names(runs_dir)))
+            # The background rerun of a detached decompose is handed its run id by the launch that named it and
+            # already opened its log, so that one id is its own and not "taken".
+            own = os.environ.get(_OWN_RUN_ID_ENV) == a.run_id
+            taken = None if own else remote_lane.refuse_taken_run_id(a.run_id, set(_taken_run_names(runs_dir)))
             if taken is not None:
                 print(taken)
                 return 2
@@ -7334,6 +7518,22 @@ def _route_launch(a: argparse.Namespace) -> int:
             print(line)
         return rows_code
 
+    background = detached_rows_argv(sys.argv, run_id) if rows_when_detached else None
+    if background is not None:
+        # A detached decompose writes its plan as store rows too. This command runs again in the background without
+        # --detach, to completion: the store gets the rows from whichever machine ran it, and no ticket file has to be
+        # carried back to the chair and loaded.
+        with open(log_path, "ab") as log:
+            proc = subprocess.Popen(
+                background, env={**os.environ, _OWN_RUN_ID_ENV: run_id}, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                start_new_session=True,
+            )
+        pid_path.write_text(str(proc.pid))
+        print(f"run {run_id}")
+        print(f"pid {pid_path}")
+        print(f"log {log_path}")
+        return 0
+
     launch_env = (
         lane_capacity_env(env, _local_max_in_flight(runs_dir, dict(profile), socket.gethostname()))
         if a.graph == "epic" else env
@@ -7371,6 +7571,24 @@ def _route_launch(a: argparse.Namespace) -> int:
     print(f"pid {pid_path}")
     print(f"log {log_path}")
     return 0
+
+
+_OWN_RUN_ID_ENV = "COXSWAIN_OWN_RUN_ID"  # set for the background rerun of a detached decompose: the run id it was given
+
+
+def detached_rows_argv(argv: Sequence[str], run_id: str) -> list[str] | None:
+    """Pure. This `cox route launch decompose --detach ...` command line as the one to run in the background: the same
+    arguments without `--detach`, with the run id pinned so both processes name one run. None when `argv` is not such
+    a command line (the handler was called some other way), so the caller falls back to launching the harness itself."""
+    if "--detach" not in argv or "decompose" not in argv:
+        return None
+    kept = [arg for arg in argv if arg != "--detach"]
+    if "--run-id" in kept:
+        at = kept.index("--run-id")
+        kept[at + 1:at + 2] = [run_id]
+    elif not any(arg.startswith("--run-id=") for arg in kept):
+        kept += ["--run-id", run_id]
+    return kept
 
 
 def _decompose_via_rows(mode: str, dry_run: bool, host: object, intake_row: Mapping | None, *, detach: bool = False) -> bool:
@@ -7689,6 +7907,31 @@ def _workspace_cartridges(runs_dir: Path) -> str | None:
     return "cartridges" if (runs_dir.parent / "cartridges").is_dir() else None
 
 
+def _routing_profile_or_empty(a: argparse.Namespace) -> dict:
+    """Edge. The parsed routing profile; {} when it is missing or unreadable, which reads as every default."""
+    text = _read_text_or_none(_profile_path(a))
+    try:
+        return route.parse_profile(text) if text else {}
+    except route.ProfileError:
+        return {}
+
+
+def _published_cartridges(runs_dir: Path, profile: Mapping) -> str | None:
+    """Edge. The sha of the chair's cartridges, published to the store, when lanes read them from there: the
+    workspace is out of git, the store is shared, and the workspace holds a cartridges directory. None keeps the copy
+    by rsync (`profile` is the routing profile). A publish that fails also returns None, after saying so: the launch then copies them as before."""
+    from agent_tools import cartridge_snapshot, courier_bus
+
+    folder = _workspace_cartridges(runs_dir)  # the same directory the rsync copies
+    if workspace_git_on(profile) or folder is None or not courier_bus.uses_store(runs_dir.parent / "courier.jsonl"):
+        return None
+    try:
+        return cartridge_snapshot.publish(runs_dir, runs_dir.parent / folder)
+    except Exception as exc:
+        print(f"cartridges: could not publish to the store, copying them instead: {type(exc).__name__}: {exc}")
+        return None
+
+
 def _workspace_probe(cwd: Path) -> Callable[[list[str]], tuple[int, str]]:
     """Edge. `remote_launch`'s probe (exit code, stdout then stderr) run from `cwd`: the cartridges check names its source relative to the workspace."""
 
@@ -7728,7 +7971,7 @@ def _route_launch_on_host(
         host, initiative, run_id, _holder_label(a), launched_at, run, locate, repo, harness_dir,
         preflight=preflight, home=home, host_checkouts=_host_checkouts(run_store.hosts(runs_dir), host.name), tools=tools,
         graph=graph, intake=intake, cartridges=_workspace_cartridges(runs_dir), probe=_workspace_probe(runs_dir.parent),
-        profile=provider, phase=phase,
+        profile=provider, phase=phase, cartridge_sha=_published_cartridges(runs_dir, _routing_profile_or_empty(a)),
     )
     if isinstance(result, remote_launch.LaunchError):
         print(f"routing: launch on {host.name} failed at {result.step}: {result.message}")
@@ -8111,16 +8354,17 @@ def _runs_fetch(a: argparse.Namespace) -> int:
     return 0 if outcome == "fetched" else 2
 
 
-def _export_board(runs_dir: Path, workspace: Path) -> list[str]:
+def _export_board(runs_dir: Path, workspace: Path, prune_stale: bool = False) -> list[str]:
     """Edge. Write the whole store board under `workspace` and return the ids of the contentless rows skipped.
 
     The whole board, never one initiative: `export_files` deletes every intake/ and work/ file its rows do not name.
     So it fills the store from the files first: a decompose writes its tickets as files, and an export with no fill
     deleted them, on the chair's tick and on an epic launch alike (2026-10-06). A fill that cannot read the store
-    raises before anything is written or deleted."""
+    raises before anything is written or deleted. `prune_stale` is for a workspace out of git: see `fill_workspace`."""
     from agent_tools import store_fill  # imported here: cli loads a command module only when it runs
 
-    store_fill.fill_workspace(workspace)
+    # The argument is passed only when set, so a caller's stand-in for the plain fill keeps working.
+    store_fill.fill_workspace(workspace, prune_stale=True) if prune_stale else store_fill.fill_workspace(workspace)
     # A file with no row is not necessarily orphaned: it may be a live decompose's, whose rows are not written yet.
     live = chair_decompose_runs.live_decompose_initiatives(runs_dir)
     return queue_export.export_files(workspace, run_store.read_queue(runs_dir), hashes=queue_export.store_hashes(runs_dir), protected=live).skipped
@@ -8157,14 +8401,30 @@ def export_commit_excludes(held: Sequence[Mapping[str, str]]) -> list[str]:
     return [f":(exclude){row['path']}" for row in held if row.get("path")]
 
 
-def _chair_export_hook(runs_dir: Path, ids: tuple[str, ...]) -> str:
+def workspace_git_on(profile: Mapping) -> bool:
+    """Whether the chair keeps the workspace in git: `chair.workspace_git`, on unless the profile says false.
+
+    Off, the store is the only shared copy of the board. The work/ and intake/ trees are then this machine's own
+    files, written from the store so everything that reads them still can: the chair neither pulls the workspace
+    nor commits and pushes what it exports, and any machine refreshes its copy with `cox route export`."""
+    chair = profile.get("chair")
+    return not (isinstance(chair, Mapping) and chair.get("workspace_git") is False)
+
+
+def _chair_export_hook(runs_dir: Path, ids: tuple[str, ...], commit: bool = True) -> str:
     """Edge. Export the board, then commit the work/ and intake/ files; returns a tick-line note, "" when nothing is worth saying.
+
+    With `commit` False (`chair.workspace_git: false`) the files are written and nothing is committed or pushed.
 
     The files the export held are left out of the commit: committing one would make the hand edit this workspace's HEAD
     baseline, and the next export would overwrite it. A git failure raises, so the tick reports it as an export failure.
     A failed push is a note, never a raise."""
     workspace = runs_dir.parent
-    skipped = _export_board(runs_dir, workspace)  # fills the store from the files first; see _export_board
+    # Fills the store from the files first; see _export_board. Out of git, a stale copy of a dropped row goes first.
+    skipped = _export_board(runs_dir, workspace) if commit else _export_board(runs_dir, workspace, prune_stale=True)
+    if not commit:
+        wrote = f"export: wrote the files for {len(ids)} changed row(s); the workspace is not in git"
+        return f"{wrote}; skipped {len(skipped)} contentless row(s): {', '.join(skipped)}" if skipped else wrote
     git = ["git", "-C", str(workspace)]
     names = [name for name in ("work", "intake") if (workspace / name).exists()]  # git add refuses a path that matches nothing
     if not names:  # `git add -A --` with no path stages the whole tree
@@ -10064,6 +10324,12 @@ def _store_choice(a: argparse.Namespace, ask: Callable[[str], str], interactive:
     return setup_store.parse_store_choice(answer) if answer.strip() else default
 
 
+_FILES_STORE_RETIRED = (
+    "the files store is retired: the one store is Postgres. Use `cox setup store --store shared` "
+    "(and `cox setup store switch shared` to carry an old local store's rows over)."
+)
+
+
 def _store_files(a: argparse.Namespace, settings_path: Path) -> int:
     if a.dry_run:
         print("dry run: would record store.mode files; nothing was written")
@@ -10151,7 +10417,8 @@ def _setup_store(a: argparse.Namespace, *, env: Mapping[str, str] | None = None,
         return 2
     settings_path = _profile_path(a)
     if choice == "files":
-        return _store_files(a, settings_path)
+        print(f"error: {_FILES_STORE_RETIRED}", file=sys.stderr)
+        return 2
     return _store_shared(a, settings_path, os.environ if env is None else env, ask, tty, probes, exclude_file)
 
 
@@ -10196,6 +10463,9 @@ def _setup_store_switch(a: argparse.Namespace, *, env: Mapping[str, str] | None 
     """Edge. Copy the run store and traces to the other backend, then record store.mode. Deletes nothing from the source."""
     env = os.environ if env is None else env
     settings_path = settings_path or _profile_path(a)
+    if a.target != "shared":
+        print(f"error: {_FILES_STORE_RETIRED}", file=sys.stderr)
+        return 2
     mode, runs_dir = _store_mode_and_runs(settings_path)
     if mode == a.target:
         print(f"store is already {mode}; nothing to do")
@@ -10204,7 +10474,7 @@ def _setup_store_switch(a: argparse.Namespace, *, env: Mapping[str, str] | None 
         print("error: the profile names no workspace_dir, so there is no runs directory to switch", file=sys.stderr)
         return 2
     profile_file = setup_store_io.default_profile_path(settings_path)
-    to_shared = a.target == "shared"
+    to_shared = True
     conn = None
     source_file = profile_file
     if to_shared:
@@ -10885,7 +11155,8 @@ def _home(a: argparse.Namespace) -> int:
 def _session(a: argparse.Namespace) -> int:
     """`cox session`: the coxswain Claude session, with the argv bare `cox` uses."""
     return _launcher(
-        argparse.Namespace(launcher_profile=a.profile, no_plugin=a.session_no_plugin, print_argv=a.session_print_argv),
+        argparse.Namespace(launcher_profile=a.profile, no_plugin=a.session_no_plugin, print_argv=a.session_print_argv,
+                           workspace_session=getattr(a, "session_workspace", False)),
         a.session_extra,
     )
 
@@ -11454,6 +11725,7 @@ SESSION_GROUP = commands.Group(
         # distinct dests: the top-level parser owns no_plugin and print_argv, and argparse copies a matched subparser's namespace over it
         commands.Arg(("--no-plugin",), {"action": "store_true", "dest": "session_no_plugin", "help": "start claude without --plugin-dir"}),
         commands.Arg(("--print-argv",), {"action": "store_true", "dest": "session_print_argv", "help": "print the claude argv and cwd instead of exec'ing it"}),
+        commands.Arg(("--workspace",), {"action": "store_true", "dest": "session_workspace", "help": "force the workspace session that can act as the chair"}),
         commands.Arg(("session_extra",), {"nargs": "*", "metavar": "CLAUDE_ARG", "help": "after --: passed to claude verbatim, as bare cox does"}),
     ),
     fn="agent_tools.cli:_session",
@@ -12062,7 +12334,9 @@ def build_parser() -> argparse.ArgumentParser:
         description=__doc__,
         epilog=(
             "examples:\n"
-            "  bare cox opens the coxswain Claude session\n"
+            "  bare cox opens the coxswain Claude session: attached over MCP to a live chair service, from any\n"
+            "    directory and without touching its lease; with no live chair, the workspace session that can act\n"
+            "    as the chair. cox --workspace forces the workspace session; cox --print-argv shows which would run\n"
             "  cox home opens the towpath dashboard\n"
             "  cox session opens the coxswain Claude session, with the same argv\n"
             "  cox setup doctor checks this machine\n"
@@ -12078,6 +12352,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--profile", dest="launcher_profile", help="bare cox: the profile to launch claude against")
     p.add_argument("--no-plugin", action="store_true", help="bare cox: start claude without --plugin-dir")
     p.add_argument("--print-argv", action="store_true", help="bare cox: print the claude argv and cwd instead of exec'ing it")
+    p.add_argument("--workspace", action="store_true", dest="workspace_session", help="bare cox: force the workspace session that can act as the chair")
     p.add_argument("--version", "-V", action=_VersionAction, help="print the cox version and exit")
     sub = p.add_subparsers(dest="group", required=False)
 
@@ -12121,6 +12396,9 @@ def build_parser() -> argparse.ArgumentParser:
     commands.build_parser(rows, [group], sub)
 
     group, rows = _table_entry("courier")
+    commands.build_parser(rows, [group], sub)
+
+    group, rows = _table_entry("mcp")
     commands.build_parser(rows, [group], sub)
 
     group, rows = _table_entry("install")
@@ -12238,7 +12516,7 @@ def _courier_send(a: argparse.Namespace) -> int:
         )
     except ValueError as exc:
         print(f"courier: {exc}"); return 2
-    path.write_text(courier.append_line(_read_text_or_none(path) or "", entry), encoding="utf-8")
+    courier.append_file(path, entry)
     return 0
 
 
@@ -12270,7 +12548,7 @@ def _courier_inbox(a: argparse.Namespace) -> int:
     if workspace is None: return 2
     holder = _lock_holder_or_none(workspace / "runs")
     _print_inbox(
-        _read_text_or_none(workspace / "courier.jsonl") or "", a.label, holder,
+        courier.read_text(workspace / "courier.jsonl"), a.label, holder,
         topic=getattr(a, "topic", None), event=getattr(a, "event", None),
         consumer=getattr(a, "consumer", None), wake=getattr(a, "wake", False),
     )
@@ -12283,6 +12561,61 @@ def _courier_ack(a: argparse.Namespace) -> int:
     path = workspace / "courier.jsonl"
     if not courier.ack_file(path, a.id, getattr(a, "consumer", None)): print(f"courier: no entry {a.id}"); return 2
     return 0
+
+
+def _mcp_serve(a: argparse.Namespace) -> int:
+    """Edge. Serve the chair's MCP tools for the profile's workspace: on stdin and stdout, or over HTTP with
+    --http and a tokens file. Only protocol messages are written to stdout; everything else goes to stderr."""
+    # Imported here: cli loads a command module only when it runs.
+    from agent_tools import mcp_http, mcp_ports, mcp_server
+
+    with contextlib.redirect_stdout(sys.stderr):  # a profile problem is said on stderr, never on the protocol stream
+        profile = _courier_profile(a)
+    if profile is None:
+        return 2
+    workspace = Path(profile["workspace_dir"]).expanduser()
+    ports = mcp_ports.build(profile, _profile_path(a), lambda: sorted(_read_epics(workspace)[0]))
+    if a.http is None:
+        def write(text: str) -> None:
+            sys.stdout.write(text)
+            sys.stdout.flush()
+
+        # The attached session's config carries its conversation id here, so its entries stay in one conversation.
+        caller = a.label or os.environ.get(chair_attach.CONVERSATION_ENV) or f"stdio:{getpass.getuser()}"
+        return mcp_server.serve_stdio(sys.stdin, write, mcp_server.make_handler(ports, caller))
+    host, _, port = a.http.rpartition(":")
+    if not host or not port.isdigit() or not a.tokens_file:
+        print("mcp: --http takes HOST:PORT with a literal address, and needs --token-file", file=sys.stderr)
+        return 2
+    try:
+        tokens = mcp_http.parse_tokens(Path(a.tokens_file).expanduser().read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"mcp: the tokens file cannot be used: {exc}", file=sys.stderr)
+        return 2
+    return mcp_http.serve(host.strip("[]"), int(port), lambda label: mcp_server.make_handler(ports, label), tokens)
+
+
+MCP_GROUP = commands.Group(
+    name="mcp", help="serve the chair's tools to MCP clients",
+    description=(
+        "Serve the board, the queue and the cartridge settings to an MCP client. `cox mcp` and `cox mcp serve` are the same.\n"
+        "Run it on the machine that runs the chair and holds the cartridge.\n"
+        "Reads answer from the board as it is now. Plain writes (file an intake, set a stage or a priority, hold, "
+        "release, change a cartridge setting) run the cox command a person would type and return its outcome.\n"
+        "A release cut, a scope change and a feature switch are sent to the chair as requests.\n"
+        "With no --http it speaks MCP on stdin and stdout, which is what a local client launches. "
+        "--http binds only a loopback, private, tailnet or link-local address and has no TLS."
+    ),
+    epilog="examples:\n  cox mcp\n  cox mcp serve --http 127.0.0.1:8765 --token-file tokens",
+    args=(
+        commands.Arg(("mode",), {"nargs": "?", "choices": ("serve",), "help": "optional; serving is all this command does"}),
+        commands.Arg(("--http",), {"metavar": "HOST:PORT", "help": "serve over HTTP on this literal private address instead of stdin and stdout"}),
+        commands.Arg(("--token-file", "--tokens-file"), {"metavar": "PATH", "dest": "tokens_file", "help": "with --http: lines of 'label token'; a token is at least 24 characters"}),
+        commands.Arg(("--label",), {"help": "who the stdio client is, on every entry it sends; default $COXSWAIN_MCP_CONVERSATION, else stdio:<user>. Over HTTP the token's label is used"}),
+        commands.Arg(("--profile",)),
+    ),
+    fn="agent_tools.cli:_mcp_serve",
+)
 
 
 COURIER_GROUP = commands.Group(name="courier", help="the courier bus: hand a reference to another label", description="", epilog="")
@@ -12440,6 +12773,34 @@ ROUTE_COMMANDS = [
         "groups", "route", "print the newest plans/intake-groups/<date>.md file, work-shape.md §5",
         (commands.Arg(("--profile",)),),
         "agent_tools.cli:_route_groups", False, (),
+    ),
+    commands.Command(
+        "cartridges", "route", "publish this machine's cartridges to the store, or write a published snapshot here",
+        (
+            commands.Arg(("action",), {"choices": ("publish", "fetch")}),
+            commands.Arg(("--sha",), {"help": "the snapshot to fetch"}),
+            commands.Arg(("--replace",), {"action": "store_true", "help": "fetch over cartridges that no fetch put there"}),
+            commands.Arg(("--into",), {"help": "the directory to publish from or fetch into; default the profile's cartridges_dir"}),
+            commands.Arg(("--profile",)),
+        ),
+        "agent_tools.cli:_route_cartridges", False, (),
+        description=(
+            "Cartridges are written and versioned where their owner keeps them. The store only carries a copy of "
+            "the exact files a launch used, under the digest of those files, so a lane host can read them.\n"
+            "publish prints the sha of the profile's cartridges_dir and stores its files once.\n"
+            "fetch makes cartridges_dir hold exactly that snapshot. It refuses to write over files a person put "
+            "there or edited, unless --replace is given."
+        ),
+    ),
+    commands.Command(
+        "export", "route", "write this machine's work/ and intake/ files from the store; nothing is committed",
+        (commands.Arg(("--profile",)),),
+        "agent_tools.cli:_route_export", False, (),
+        description=(
+            "The store holds the board. This writes it out as files under the workspace so they can be read, and "
+            "removes files no row names.\nIt first loads any ticket a decompose wrote as a file and the store has "
+            "not seen. Under work_state files it does nothing."
+        ),
     ),
     commands.Command(
         "drift", "route", "items whose store state and file state differ",
@@ -12832,16 +13193,16 @@ SETUP_COMMANDS = [
         "agent_tools.cli:_setup_migrate", False, (),
     ),
     commands.Command(
-        "store", "setup", "choose files or a shared store for run records",
+        "store", "setup", "configure the shared Postgres store for run records",
         (
-            commands.Arg(("--store",), {"help": "files or shared; asked in a terminal when omitted, else files"}),
+            commands.Arg(("--store",), {"help": "shared; the files store is retired and is refused by name"}),
             *_STORE_FLAGS,
             commands.Arg(("--allow-unreachable",), {"action": "store_true", "help": "exit 0 even when a probe fails"}),
         ),
         "agent_tools.cli:_setup_store", False, (),
         subcommands=(
             commands.Command(
-                "switch", "setup", "copy the run store and traces to the other backend, then record store.mode",
+                "switch", "setup", "copy an old local run store and its traces into the shared store, then record store.mode",
                 (commands.Arg(("target",), {"choices": ("files", "shared")}), *_suppressed(_STORE_FLAGS)),
                 "agent_tools.cli:_setup_store_switch", False, (),
             ),
@@ -13567,7 +13928,13 @@ def _chair_run_deps(
                 chair_read_cache.load_entries(merged, chair_read_cache.dump_entries(cache))  # type: ignore[arg-type]
             chair_read_cache.save_cache(merged, decompose_path)
 
+    # With the workspace out of git the store is the board, and the tick reads its work from the store's rows,
+    # rendered as the files would be. It opens no work file, so it needs none to be there.
+    rows_are_the_board = mode == "store" and not workspace_git_on(profile)
+
     def work_files() -> Mapping[Path, str]:
+        if rows_are_the_board:
+            return once("files", lambda: chair_read_quarantined.store_work_files(ws, run_store.read_queue(runs_dir)))  # type: ignore[return-value]
         return once("files", lambda: chair_read_quarantined.read_work_files(ws, files_cache))  # type: ignore[return-value]
 
     def store_rows() -> list:
@@ -13977,10 +14344,13 @@ def _chair_run_deps(
 
     restart_note = "" if dry_run else chair_restart_log.restart_note(chair_restart_log.read_record(restart_path), now())
 
+    git_workspace = workspace_git_on(profile)
+
     def pull_and_sync() -> str:
-        """The live tick's pull, then the checkout sync of each repo the initiatives name; the sync never raises."""
+        """The live tick's pull (when the workspace is in git), then the checkout sync of each repo the initiatives
+        name; the sync never raises."""
         try:
-            return workspace_sync.pull_workspace(ws)
+            return workspace_sync.pull_workspace(ws) if git_workspace else ""
         finally:
             try:
                 repos = _initiative_repos(chair_read_quarantined.initiative_files(ws, work_files()), home).values()
@@ -14007,7 +14377,7 @@ def _chair_run_deps(
     } if dev_install else {}
 
     def read_bus() -> list[dict]:
-        return courier.entries(_read_text_or_none(ws / "courier.jsonl") or "")  # a missing file is an empty bus
+        return courier.entries(courier.read_text(ws / "courier.jsonl"))  # a missing file is an empty bus
 
     # A dry run and a missing workspace keep the plain sleep, so polling is unchanged there.
     wake = None if dry_run or not ws.is_dir() else chair_wake.wait_for_run_exit(read_bus, time.sleep, time.monotonic, CHAIR_WAKE_POLL_SECONDS)
@@ -14029,7 +14399,7 @@ def _chair_run_deps(
             watch=lambda w: chair_revert_watch.record_watch(record, w), held=held,
             tickets=lambda: chair_facts.read_ticket_items(ws, mode), echo=echo, **dash_wiring,
         ),
-        export_rows=(lambda ids: _chair_export_hook(runs_dir, ids)) if mode == "store" and not dry_run else None,
+        export_rows=(lambda ids: _chair_export_hook(runs_dir, ids, git_workspace)) if mode == "store" and not dry_run else None,
         notify_config=notify_core.config_from_profile(profile), workspace=ws,
         pull_workspace=None if dry_run else pull_and_sync,
         lane_checkout_actions=sync_lane_checkouts_now if has_lane_hosts and not dry_run else None,
@@ -14301,7 +14671,7 @@ def _decision_bus(a: argparse.Namespace) -> tuple[Path, str, list[dict], str] | 
     profile = _courier_profile(a)
     if profile is None: return None
     path = Path(profile["workspace_dir"]).expanduser() / "courier.jsonl"
-    blob = _read_text_or_none(path) or ""
+    blob = courier.read_text(path)
     return path, blob, courier.entries(blob), settings_model.operator_name(profile)
 
 
@@ -14326,7 +14696,7 @@ def _chair_ask(a: argparse.Namespace) -> int:
     entry = decisions.make_ask_entry(
         a.question, a.option, a.context, _holder_label(a), decision_id, _decision_now(), operator=operator
     )
-    path.write_text(courier.append_line(blob, entry), encoding="utf-8")
+    courier.append_file(path, entry)
     print(decision_id)
     return 0
 
@@ -14342,7 +14712,8 @@ def _chair_answer(a: argparse.Namespace) -> int:
     answer = decisions.make_answer_entry(
         ask_entry, a.option, answered_at=_decision_now(), message_id=uuid.uuid4().hex, operator=operator
     )
-    path.write_text(courier.ack(courier.append_line(blob, answer), ask_entry["id"]), encoding="utf-8")
+    courier.append_file(path, answer)
+    courier.ack_file(path, ask_entry["id"])
     return 0
 
 
@@ -15205,6 +15576,7 @@ def _dispatch_table(
 COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = _dispatch_table([
     (RUNS_GROUP, RUNS_COMMANDS),
     (COURIER_GROUP, COURIER_COMMANDS),
+    (MCP_GROUP, []),
     (VERSIONS_GROUP, []),
     (CONSOLE_GROUP, []),
     (DASH_GROUP, []),
@@ -15358,10 +15730,43 @@ def _launcher_session_takes(profile_arg: str | None) -> str:
     return chair_resolve.resolve_session_takes(chair_keys.get("session_takes") if isinstance(chair_keys, dict) else None)
 
 
-def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
+def _conversation_file() -> Path:
+    """Edge. Where the attached session's conversation id is stored on this machine."""
+    return chair_attach.conversation_path(os.environ.get("XDG_STATE_HOME"), Path.home())
+
+
+def _attach_over_mcp(a: argparse.Namespace, argv: list[str], extra_args: list[str], mint: Callable[[], str]) -> int:
+    """Edge. Start (or print) the session attached to the live chair over MCP: the chair's MCP server configured, the
+    operator's stored conversation id resumed, the current directory kept. Reads and writes no lease, takes nothing,
+    starts no beater and prints no inbox. `argv` is the workspace session's, read only for the plugin directory."""
+    path = _conversation_file()
+    conversation = chair_attach.read_conversation(_read_text_or_none(path))
+    if conversation is None:
+        conversation = mint()
+        with contextlib.suppress(OSError):  # an id that cannot be stored still names this session's conversation
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(chair_attach.conversation_text(conversation), encoding="utf-8")
+    plugin_root = argv[argv.index("--plugin-dir") + 1] if "--plugin-dir" in argv else None
+    attached = chair_attach.attach_argv(plugin_root, chair_attach.mcp_config("cox", conversation), extra_args)
+    if a.print_argv:
+        print(attached)
+        print(Path.cwd())
+        print("chair: a live chair service holds the chair; this session is attached to it over MCP", file=sys.stderr)
+        return 0
+    if a.launcher_profile:  # the server the session starts reads the same profile this launch did
+        os.environ["AGENT_TOOLS_PROFILE"] = str(Path(a.launcher_profile).expanduser())
+    print("chair: a live chair service holds the chair; attaching to it over MCP (cox --workspace forces the workspace session)")
+    os.execvp(attached[0], attached)
+    return 0
+
+
+def _launcher(a: argparse.Namespace, extra_args: list[str], mint: Callable[[], str] | None = None) -> int:
     """Bare `cox` (spec §7) and `cox session`: a real Claude Code session with
     the coxswain plugin loaded and the profile's workspace as cwd, off the
-    dedicated `launcher_profile` dest. The argv comes from `_session_launch`."""
+    dedicated `launcher_profile` dest. The argv comes from `_session_launch`.
+
+    With a live chair loop under another label the session attaches to it over MCP instead (`_attach_over_mcp`),
+    unless `--workspace` forces the workspace session. `mint` makes a new conversation id; a test fixes it."""
     launch = _session_launch(a.launcher_profile, a.no_plugin, extra_args)
     if isinstance(launch, int):
         return launch
@@ -15372,6 +15777,10 @@ def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
     runs_dir = Path(workspace).expanduser() / "runs"
     host = socket.gethostname()
     now = datetime.datetime.now(datetime.UTC)
+    # Before anything that reads the chair record to take, offer or resume: a live chair loop is attached to, not joined.
+    live = _live_loop_holder(runs_dir)
+    if chair_attach.attach_mode(live, f"chair-{now:%Y-%m-%d}", bool(getattr(a, "workspace_session", False))) == "mcp":
+        return _attach_over_mcp(a, argv, extra_args, mint or (lambda: uuid.uuid4().hex))
     try:
         record = chair.read(runs_dir)
     except (OSError, ValueError):
@@ -15386,7 +15795,6 @@ def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
     plan = chair_resolve.resolve_bare(record, state, host, now, _transcript_exists)
     if plan.note:
         print(plan.note, file=sys.stderr if a.print_argv else sys.stdout)
-    live = _live_loop_holder(runs_dir)
     policy = _launcher_session_takes(a.launcher_profile)
     holder = live or chair_resolve.SessionHolder({"take": "free", "resume": "stale"}.get(plan.kind, "session"))
     decision = chair_resolve.session_take_decision(policy, holder, False)
@@ -15463,7 +15871,7 @@ def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
         # chair_a.label is the label `_route_chair_take` just wrote as the holder above;
         # it is the holder, not a re-read of the file this same call just produced.
         if took:
-            _print_inbox(_read_text_or_none(Path(workspace).expanduser() / "courier.jsonl") or "", chair_a.label, chair_a.label)
+            _print_inbox(courier.read_text(Path(workspace).expanduser() / "courier.jsonl"), chair_a.label, chair_a.label)
     os.chdir(cwd)
     os.execvp(argv[0], argv)
     return 0
@@ -15507,6 +15915,12 @@ def main(argv: list[str] | None = None) -> int:
     a = build_parser().parse_args(head)
     if not hasattr(a, "fn"):
         return _launcher(a, tail)
+    refused = _store_refusal(a, head)
+    if refused is not None:
+        print(f"cox: {refused}", file=sys.stderr)
+        return 2
+    if reads_board(head):
+        _refresh_board_files(a)
     return a.fn(a)
 
 

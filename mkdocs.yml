@@ -79,6 +79,7 @@ nav:
       - Providers: customize/providers.md
       - Policy: customize/policy.md
       - Plugins: customize/plugins.md
+      - MCP server: customize/mcp.md
       - Write a skill: customize/write-a-skill.md
       - Write a graph: customize/write-a-graph.md
       - Dashboards: customize/dashboards.md

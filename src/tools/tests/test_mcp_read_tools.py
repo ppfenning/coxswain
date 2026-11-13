@@ -73,7 +73,7 @@ def _full_queue():
 
 def test_every_tool_is_read_only_and_takes_no_confirm():
     tools = read_tools(_ports())
-    assert [t.name for t in tools] == ["release_status", "queue_board", "explain", "recent_events"]
+    assert [t.name for t in tools] == ["release_status", "queue_board", "explain", "recent_events", "cartridge_settings"]
     assert all(t.writes is False and t.destructive is False for t in tools)
     assert all("confirm" not in t.input_schema["properties"] for t in tools)
 

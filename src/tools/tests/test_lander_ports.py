@@ -95,7 +95,14 @@ def test_notify_appends_one_courier_entry_for_the_chair(ws: Path, ports) -> None
     assert entry["fields"]["choices"] == '["split", "drop"]'
 
 
-def test_mark_done_closes_an_approved_work_file(ws: Path, ports, capsys) -> None:
+def test_mark_done_closes_an_approved_work_file(ws: Path, ports, capsys, monkeypatch) -> None:
+    import sys
+
+    from agent_tools import store_cli
+
+    # The store moves first, approved to done; the file follows it.
+    monkeypatch.setattr(store_cli, "_harness_python", lambda: Path(sys.executable))
+    store_work_state.set_state(ports.conn, "demo", "a", "approved", "tester", "p1", NOW)
     assert ports.mark_done("demo", "a", "https://forge.example/pull/1") is None
     assert "state: done" in (ws / "work" / "demo" / "p1" / "a.md").read_text()
 
@@ -256,3 +263,45 @@ def test_the_forge_wrapper_retargets_through_the_modules_pr_edit_and_says_when_i
     assert lander_ports.Forge(module).retarget(Path("/srv/r"), "init/b", "epic-x") == (True, "")
     assert module.calls == [("init/b", ["edit", "--base", "epic-x"])]
     assert lander_ports.Forge(object()).retarget(Path("/srv/r"), "init/b", "epic-x")[0] is False
+
+
+def _row(kind: str, task: str, **more) -> dict:
+    return {"kind": kind, "initiative": "rowed", "task_id": task, "phase": "", "state": "ready", "needs": [], "surfaces": [],
+            "title": task, "body": "", "extra": {"id": task}, **more}
+
+
+def test_the_ports_read_an_initiative_from_its_store_rows_when_it_has_no_files(ws: Path, ports) -> None:
+    from harness import store_queue
+
+    repo = ports.meta("demo")["initiative"]["repo"]
+    store_queue.upsert(ports.conn, _row("initiative", "rowed", title="Rowed title", extra={"id": "rowed", "repo": repo, "issue": 7}))
+    store_queue.upsert(ports.conn, _row("task", "x", phase="p1", title="Task X", state="approved"))
+    store_queue.upsert(ports.conn, _row("task", "y", phase="p2", title="Task Y", needs=["x"]))
+    assert not (ws / "work" / "rowed").exists()
+    rows = {t["id"]: t for t in ports.tasks("rowed")}
+    assert (rows["x"]["title"], rows["x"]["phase"], rows["x"]["state"]) == ("Task X", "p1", "approved")
+    assert (rows["y"]["title"], rows["y"]["needs"]) == ("Task Y", ["x"])
+    assert sorted(rows) == ["x", "y"], "the initiative's own row is not one of its tasks"
+    own = ports.meta("rowed")["initiative"]
+    assert (own["id"], own["title"], own["issue"], own["repo"]) == ("rowed", "Rowed title", 7, repo)
+
+
+def test_a_rectify_task_s_store_row_carries_its_text(ws: Path, ports) -> None:
+    from harness import store_queue
+
+    ports.file_rectify("demo", "p1", "Rectify phase p1", "Start from this tree.")
+    row = next(r for r in store_queue.read(ports.conn, "demo") if r["task_id"] == "p1-rectify")
+    assert (row["kind"], row["title"], row["body"], row["state"], row["phase"]) == ("task", "Rectify phase p1", "Start from this tree.", "ready", "p1")
+
+
+def test_a_split_moves_each_row_whole_and_gives_the_follow_up_its_own_row(ws: Path, ports) -> None:
+    from harness import store_queue
+
+    repo = Path(ports.meta("demo")["initiative"]["repo"])
+    store_queue.upsert(ports.conn, {**_row("initiative", "demo", title="Demo title", extra={"id": "demo", "repo": str(repo)}), "initiative": "demo"})
+    store_queue.upsert(ports.conn, {**_row("task", "b", phase="p2", title="Task B", body="the text of b", needs=["a"]), "initiative": "demo"})
+    follow = lander_ports.split_initiative(ws, ports.conn, repo, "demo", ["p2"], worker="lander-test")
+    moved = {r["task_id"]: r for r in store_queue.read(ports.conn, follow)}
+    assert (moved["b"]["title"], moved["b"]["body"], moved["b"]["needs"], moved["b"]["phase"]) == ("Task B", "the text of b", ["a"], "p2")
+    assert (moved[follow]["kind"], moved[follow]["extra"]["split_from"], moved[follow]["title"]) == ("initiative", "demo", "Demo title (follow-up)")
+    assert "b" not in {r["task_id"] for r in store_queue.read(ports.conn, "demo")}
