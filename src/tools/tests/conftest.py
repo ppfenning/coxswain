@@ -143,3 +143,10 @@ def _no_real_conversation_file(monkeypatch, tmp_path_factory):
     home = tmp_path_factory.getbasetemp() / "no-state-home"
     real = cli.chair_attach.conversation_path
     monkeypatch.setattr(cli, "_conversation_file", lambda: real(os.environ.get("XDG_STATE_HOME") or str(home), home))
+
+
+@pytest.fixture(autouse=True)
+def _no_token_in_the_environment(monkeypatch):
+    """The token status and the doctor count a token kept in the environment. A machine that keeps its real one
+    there must not change what a test sees: a test that wants one sets it."""
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)

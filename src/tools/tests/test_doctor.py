@@ -1155,3 +1155,8 @@ def test_dash_build_warning_contributes_to_exit_code_like_a_freshness_warning():
     failing = doctor.checks({})
     assert doctor.exit_code(base + dash) == doctor.exit_code(base + fresh) == 0
     assert doctor.exit_code(failing + dash) == doctor.exit_code(failing + fresh) == 1
+
+
+def test_a_token_kept_in_the_environment_passes_the_row_and_names_its_source():
+    assert _token_row(present=True, mode=None, source="CLAUDE_CODE_OAUTH_TOKEN") == {
+        "check": "claude token", "ok": True, "detail": "token from CLAUDE_CODE_OAUTH_TOKEN in the environment"}
