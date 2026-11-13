@@ -92,6 +92,9 @@ tool already has. If your shell cannot find `cox` afterwards, run
 | release | the release tag `vYYYY.M.N` | `cox install` |
 | edge | `main` | `cox install --edge` |
 
+To keep a machine on the newest commit of `main` that passed CI, use the
+[edge upgrade channel](#the-edge-upgrade-channel) instead.
+
 ## Flags
 
 Run `cox install --help` for the flags your version accepts. The ones this
@@ -201,7 +204,53 @@ cox upgrade
 `cox upgrade` moves the checkout to the newest release tag (or `--to
 VERSION`), syncs its venv, reinstalls `cox` from it with the extras it had,
 relinks the crew, moves dash if you have it, and runs the doctor. It refuses
-a checkout with uncommitted changes.
+a checkout with uncommitted changes. `--to` also takes a commit SHA.
+
+### The edge upgrade channel
+
+Each machine has an upgrade channel in its machine profile. `stable` is the
+default: `cox upgrade` moves to the newest release tag, as above. `edge`
+follows `main`, but only commits whose CI passed:
+
+```sh
+cox settings set profile upgrade_channel edge
+cox upgrade --install-timer      # writes coxswain-upgrade.service and .timer
+systemctl --user daemon-reload
+systemctl --user enable --now coxswain-upgrade.timer
+```
+
+On an edge machine, `cox upgrade` with no `--to` does these steps:
+
+1. It finds the newest commit on `origin/main` whose `ci` workflow passed on
+   the push to `main`. It never takes the tip of `main` unless the tip passed.
+2. It moves the checkout to that commit by the same path as `cox upgrade --to`.
+3. If the commit changed, it restarts the chair and lander user units that
+   are running.
+4. It runs `cox setup doctor`.
+5. If the move, a restart or the doctor fails, it moves back to the previous
+   commit and restarts the units again.
+
+The timer runs `cox upgrade --scheduled` every 30 minutes by default
+(`--interval-minutes` changes this). On a stable machine the scheduled run does
+nothing. Apart from a rollback, an edge upgrade never moves to an older
+commit. It skips a commit it has already rolled back until a newer commit
+passes CI. To try that commit again, run `cox upgrade --to SHA`.
+
+`cox versions` shows the last edge upgrade: when it ran, the previous commit,
+the chosen commit and the outcome.
+
+Store migrations go forward only. The restarted chair or lander applies a new
+commit's migrations when it opens the store. After that, an older commit
+refuses the store. So when the new commit adds a migration and the units
+restarted, a failing doctor is **not** rolled back. `cox versions` reports
+`not_rolled_back`, and the fix is a newer commit or a person. Every machine
+that shares a store must be on the same channel. Otherwise an edge machine
+can migrate the store past what a stable machine's release can open. Setting
+a machine back to `stable` moves it to the newest release on its next
+`cox upgrade`, which has the same limit.
+
+`cox install --edge` is a different thing: it installs the tip of `main`
+once, whether or not CI passed.
 
 ## Moving from 0.47 or earlier
 
