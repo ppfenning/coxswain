@@ -6420,6 +6420,7 @@ Coxswain is in beta — versions may change between releases
                    [--workspace WORKSPACE] [--to TO] [--dry-run]
                    [--profile PROFILE] [--scheduled] [--install-timer]
                    [--uninstall-timer] [--interval-minutes INTERVAL_MINUTES]
+                   [--environment-file ENVIRONMENT_FILE]
 
 On the stable channel (the default) the checkout moves to the newest release tag.
 On the edge channel (profile upgrade_channel: edge) it moves to the newest commit on main whose CI passed,
@@ -6451,6 +6452,10 @@ options:
   --interval-minutes INTERVAL_MINUTES
                         minutes between scheduled upgrades in the installed
                         timer (default: 30)
+  --environment-file ENVIRONMENT_FILE
+                        with --install-timer: the NAME=value file the timer's
+                        service loads (default: ~/.config/agent-
+                        tools/garage.env)
 
 examples:
   cox upgrade
