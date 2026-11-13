@@ -1,14 +1,12 @@
 """The edge behind the MCP server's plain writes and its cartridge reader, for a server that runs beside the store
 and on the machine that holds the cartridge.
 
-Each write is the `cox` command a person would type, run in this process with its output captured: the same code,
-the same refusals, one place that knows how. Nothing here decides anything; `argv_for` only spells the command.
+Each write is the `cox` command a person would type, run as its own process with its output captured: the same
+code, the same refusals, one place that knows how. Nothing here decides anything; `argv_for` only spells the command.
 """
 
 from __future__ import annotations
 
-import contextlib
-import io
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
@@ -51,7 +49,20 @@ def operator_only(key: str) -> bool:
     return bool(found is not None and found.operator_only)
 
 
-def local_actor(profile_path: Path, run: Callable[[list[str]], int] | None = None) -> Callable[[str, Mapping[str, object]], tuple[bool, str]]:
+def run_cox(argv: list[str]) -> tuple[int, str]:
+    """Edge. Run one `cox` command as its own process and return (exit code, everything it printed).
+    Its own process, so nothing the command or a program it starts prints can land on the server's protocol stream."""
+    import subprocess
+    import sys
+
+    try:
+        done = subprocess.run([sys.executable, "-m", "agent_tools.cli", *argv], capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return 1, f"{type(exc).__name__}: {exc}"
+    return done.returncode, (done.stdout + done.stderr)
+
+
+def local_actor(profile_path: Path, run: Callable[[list[str]], tuple[int, str]] | None = None) -> Callable[[str, Mapping[str, object]], tuple[bool, str]]:
     """Edge. The `act` port: run the command for a tool call against the profile at `profile_path` and return
     (exit 0, what it printed). An operator-only setting is refused before anything runs."""
 
@@ -62,17 +73,11 @@ def local_actor(profile_path: Path, run: Callable[[list[str]], int] | None = Non
             argv = [*argv_for(tool, args), "--profile", str(profile_path)]
         except Refused as exc:
             return False, str(exc)
-        from agent_tools import cli  # imported here: this module is loaded by the server before any command runs
-
-        said = io.StringIO()
         try:
-            with contextlib.redirect_stdout(said), contextlib.redirect_stderr(said):
-                code = (run or cli.main)(argv)
-        except SystemExit as exc:  # argparse refusing an argument
-            code = exc.code if isinstance(exc.code, int) else 2
-        except Exception as exc:  # a command that raises is a refusal the caller can read, not a dead server
+            code, said = (run or run_cox)(argv)
+        except Exception as exc:  # a command that cannot run is a refusal the caller can read, not a dead server
             return False, f"{type(exc).__name__}: {exc}"
-        return code == 0, said.getvalue().strip()[-_DETAIL_CHARS:]
+        return code == 0, said.strip()[-_DETAIL_CHARS:]
 
     return act
 

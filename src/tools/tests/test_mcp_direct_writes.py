@@ -145,17 +145,18 @@ def test_each_write_is_spelled_as_the_command_a_person_would_type() -> None:
 def test_the_actor_runs_the_command_and_returns_its_exit_and_output(tmp_path: Path, monkeypatch) -> None:
     ran: list[list[str]] = []
 
-    def run(argv: list[str]) -> int:
+    def run(argv: list[str]) -> tuple[int, str]:
         ran.append(argv)
-        print("route: x is ready")
-        return 0
+        return 0, "route: x is ready\n"
 
     act = mcp_actions.local_actor(tmp_path / "profile.yaml", run)
     assert act("set_stage", {"initiative": "x", "stage": "ready"}) == (True, "route: x is ready")
     assert ran == [["route", "ready", "x", "--profile", str(tmp_path / "profile.yaml")]]
     assert act("cut_release", {"version": "1"})[0] is False and len(ran) == 1, "nothing runs for a tool with no command"
+    refused = mcp_actions.local_actor(tmp_path / "p.yaml", lambda argv: (2, "route ready: no queued intake x\n"))
+    assert refused("set_stage", {"initiative": "x", "stage": "ready"}) == (False, "route ready: no queued intake x")
 
-    def boom(argv: list[str]) -> int:
+    def boom(argv: list[str]) -> tuple[int, str]:
         raise RuntimeError("store down")
 
     assert mcp_actions.local_actor(tmp_path / "p.yaml", boom)("set_stage", {"initiative": "x", "stage": "ready"}) == (False, "RuntimeError: store down")

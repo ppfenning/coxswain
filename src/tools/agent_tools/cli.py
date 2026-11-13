@@ -12392,6 +12392,9 @@ def build_parser() -> argparse.ArgumentParser:
     group, rows = _table_entry("courier")
     commands.build_parser(rows, [group], sub)
 
+    group, rows = _table_entry("mcp")
+    commands.build_parser(rows, [group], sub)
+
     group, rows = _table_entry("install")
     commands.build_parser(rows, [group], sub)
 
@@ -12552,6 +12555,59 @@ def _courier_ack(a: argparse.Namespace) -> int:
     path = workspace / "courier.jsonl"
     if not courier.ack_file(path, a.id, getattr(a, "consumer", None)): print(f"courier: no entry {a.id}"); return 2
     return 0
+
+
+def _mcp_serve(a: argparse.Namespace) -> int:
+    """Edge. Serve the chair's MCP tools for the profile's workspace: on stdin and stdout, or over HTTP with
+    --http and a tokens file. Only protocol messages are written to stdout; everything else goes to stderr."""
+    # Imported here: cli loads a command module only when it runs.
+    from agent_tools import mcp_http, mcp_ports, mcp_server
+
+    with contextlib.redirect_stdout(sys.stderr):  # a profile problem is said on stderr, never on the protocol stream
+        profile = _courier_profile(a)
+    if profile is None:
+        return 2
+    workspace = Path(profile["workspace_dir"]).expanduser()
+    ports = mcp_ports.build(profile, _profile_path(a), lambda: sorted(_read_epics(workspace)[0]))
+    if a.http is None:
+        def write(text: str) -> None:
+            sys.stdout.write(text)
+            sys.stdout.flush()
+
+        return mcp_server.serve_stdio(sys.stdin, write, mcp_server.make_handler(ports, a.label))
+    host, _, port = a.http.rpartition(":")
+    if not host or not port.isdigit() or not a.tokens_file:
+        print("mcp: --http takes HOST:PORT with a literal address, and needs --tokens-file", file=sys.stderr)
+        return 2
+    try:
+        tokens = mcp_http.parse_tokens(Path(a.tokens_file).expanduser().read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"mcp: the tokens file cannot be used: {exc}", file=sys.stderr)
+        return 2
+    return mcp_http.serve(host.strip("[]"), int(port), lambda label: mcp_server.make_handler(ports, label), tokens)
+
+
+MCP_GROUP = commands.Group(name="mcp", help="serve the chair's tools to MCP clients", description="", epilog="")
+MCP_COMMANDS = [
+    commands.Command(
+        "serve", "mcp", "serve the board, the queue and the cartridge settings to an MCP client",
+        (
+            commands.Arg(("--http",), {"metavar": "HOST:PORT", "help": "serve over HTTP on this literal private address instead of stdin and stdout"}),
+            commands.Arg(("--tokens-file",), {"metavar": "PATH", "help": "with --http: lines of 'label token'; a token is at least 24 characters"}),
+            commands.Arg(("--label",), {"default": "mcp", "help": "who the stdio client is, on every entry it sends; over HTTP the token's label is used"}),
+            commands.Arg(("--profile",)),
+        ),
+        "agent_tools.cli:_mcp_serve", False, (),
+        description=(
+            "Run it on the machine that runs the chair and holds the cartridge.\n"
+            "Reads answer from the board as it is now. Plain writes (file an intake, set a stage or a priority, hold, "
+            "release, change a cartridge setting) run the cox command a person would type and return its outcome.\n"
+            "A release cut, a scope change and a feature switch are sent to the chair as requests.\n"
+            "With no --http it speaks MCP on stdin and stdout, which is what a local client launches. "
+            "--http binds only a loopback, private, tailnet or link-local address and has no TLS."
+        ),
+    ),
+]
 
 
 COURIER_GROUP = commands.Group(name="courier", help="the courier bus: hand a reference to another label", description="", epilog="")
@@ -15512,6 +15568,7 @@ def _dispatch_table(
 COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = _dispatch_table([
     (RUNS_GROUP, RUNS_COMMANDS),
     (COURIER_GROUP, COURIER_COMMANDS),
+    (MCP_GROUP, MCP_COMMANDS),
     (VERSIONS_GROUP, []),
     (CONSOLE_GROUP, []),
     (DASH_GROUP, []),

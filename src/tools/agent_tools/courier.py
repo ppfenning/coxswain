@@ -20,6 +20,7 @@ EVENTS = (
     "needs_attention", "level_merged", "merge_failed", "relaunched", "stuck", "gate_passed", "gate_failed",
     "epic_complete", "run_exited",
     "chat_directive", "chat_question", "chat_answer", "directive_applied", "directive_refused",
+    "chat_action",  # a record of a write an MCP client already made; nothing acts on it
 )
 EXCEPTION_EVENTS = ("needs_attention", "merge_failed", "stuck", "gate_failed")
 _PATTERN = re.compile(r"^coxswain://([a-z]+)/(.+)$")
