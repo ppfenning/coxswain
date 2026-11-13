@@ -85,19 +85,34 @@ def _ordered(a: Node, b: Node, ranks: Mapping[str, Rank]) -> tuple[Node, Node]:
     return (a, b) if ranks[a.initiative] <= ranks[b.initiative] else (b, a)
 
 
-def conflict_edges(initiatives: Sequence[Initiative], nodes: Mapping[Key, Node]) -> frozenset[Edge]:
-    """One edge per pair of nodes in different initiatives of one repo whose surfaces overlap strictly."""
+def can_start(node: Node, withheld: frozenset[str]) -> bool:
+    """Running, or ready and not withheld; blocked, waiting and withheld nodes hold no surfaces."""
+    return node.status == "running" or (node.status == "ready" and node.initiative not in withheld)
+
+
+def conflict_edges(
+    initiatives: Sequence[Initiative],
+    nodes: Mapping[Key, Node],
+    *,
+    withheld: frozenset[str] = frozenset(),
+) -> frozenset[Edge]:
+    """One edge per pair of nodes in different initiatives of one repo whose surfaces overlap strictly.
+
+    The first node of the pair, the one the other waits behind, must be able to start.
+    """
     ranks = _ranks(initiatives)
     ordered = (
         _ordered(a, b, ranks)
         for a, b in combinations(nodes.values(), 2)
         if a.initiative != b.initiative and a.repo == b.repo and shared_paths(a.surfaces, b.surfaces)
     )
-    return frozenset((first.key, second.key) for first, second in ordered)
+    return frozenset((first.key, second.key) for first, second in ordered if can_start(first, withheld))
 
 
-def build_graph(initiatives: Sequence[Initiative]) -> tuple[dict[Key, Node], dict[Key, frozenset[Key]]]:
+def build_graph(
+    initiatives: Sequence[Initiative], *, withheld: frozenset[str] = frozenset()
+) -> tuple[dict[Key, Node], dict[Key, frozenset[Key]]]:
     """The nodes, and for each node key the keys that wait for it; every node is a key."""
     nodes = build_nodes(initiatives)
-    edges = parent_edges(initiatives, nodes) | conflict_edges(initiatives, nodes)
+    edges = parent_edges(initiatives, nodes) | conflict_edges(initiatives, nodes, withheld=withheld)
     return nodes, {k: frozenset(after for before, after in edges if before == k) for k in nodes}

@@ -116,13 +116,22 @@ def _scoped_cmd(cmd: str, plan: Plan | None) -> str:
     return cmd if plan is None or plan[1] is None else _narrowed_cmd(cmd, plan[1])
 
 
-def _full(checks: Sequence[Check], components: Sequence[str], why: str, added: Sequence[str]) -> ScopedChecks:
+def _test_counts(import_map: Mapping[str, Any], component: str, files: Sequence[str] | None) -> dict[str, int]:
+    """Test files selected out of every test file the map knows under the component; None means it runs whole."""
+    total = sum(1 for t in import_map["test_reach"] if _under(t, component))
+    return {"selected": total if files is None else len(files), "total": total}
+
+
+def _full(
+    checks: Sequence[Check], components: Sequence[str], why: str, added: Sequence[str], import_map: Mapping[str, Any]
+) -> ScopedChecks:
     return ScopedChecks(
         tuple(dict(c) for c in checks),
         {
             "components_run": list(components),
             "components_skipped": [],
             "narrowed": dict.fromkeys(components, _WHOLE),
+            "tests": {c: _test_counts(import_map, c, None) for c in components},
             "added_tests": list(added),
             "reason": dict.fromkeys(components, f"fallback {why}"),
         },
@@ -150,9 +159,9 @@ def select_checks(
     imports = {k: sorted((set(components.get(k, ())) - {k}) & set(reasons)) for k in known}
     plans = {k: _plan(k, k in seeds, imports[k], sources[k], tests_of[k], import_map) for k in known}
     if not changed_paths:
-        return _full(checks, known, "empty patch", added)
+        return _full(checks, known, "empty patch", added, import_map)
     if not any(plans.values()):
-        return _full(checks, known, "no changed path under a known component", added)
+        return _full(checks, known, "no changed path under a known component", added, import_map)
     kept = tuple(
         {**c, "cmd": c["cmd"] if comp is None else _scoped_cmd(c["cmd"], plans[comp])}
         for comp, c in owners
@@ -165,6 +174,7 @@ def select_checks(
             "components_run": run,
             "components_skipped": [k for k in known if plans[k] is None],
             "narrowed": {k: plans[k][1] if plans[k][1] is not None else _WHOLE for k in run},
+            "tests": {k: _test_counts(import_map, k, plans[k][1]) for k in run},
             "added_tests": added,
             "reason": {k: plans[k][0] for k in run},
         },
@@ -178,7 +188,8 @@ def render_selection(selection: Mapping[str, Any]) -> str:
         files = selection["narrowed"][component]
         if files == _WHOLE:
             return f"{component} (whole)"
-        return f"{component} (narrowed to {len(files)} file{'' if len(files) == 1 else 's'})"
+        total = selection["tests"][component]["total"]
+        return f"{component} (narrowed to {len(files)} of {total} file{'' if total == 1 else 's'})"
 
     ran = ", ".join(label(c) for c in selection["components_run"])
     skipped = ", ".join(selection["components_skipped"])

@@ -24,14 +24,26 @@ def assembly_order(branches: Iterable[str]) -> tuple[str, ...]:
     return tuple(sorted(set(branches)))
 
 
-def failure_cause(parent: str, previous: str, files: Iterable[str]) -> str:
-    listed = ", ".join(sorted(files)) or "none reported"
-    return f"merging {parent} after {previous} conflicted in: {listed}"
+RERERE_OFF_NOTE = " (rerere resolution could not be applied; conflict found with rerere off)"
+
+
+def failure_cause(parent: str, previous: str, files: Iterable[str], *, output: str = "", rerere_off: bool = False) -> str:
+    """`output` is git's own text, named when no file is unmerged; `rerere_off` marks a conflict found with rerere disabled."""
+    listed = ", ".join(sorted(files)) or output or "none reported"
+    return f"merging {parent} after {previous} conflicted in: {listed}{RERERE_OFF_NOTE if rerere_off else ''}"
 
 
 def git(worktree: Path, *args: str) -> tuple[int, str]:
     result = subprocess.run(["git", *IDENTITY, "-C", str(worktree), *args], capture_output=True, text=True)
     return result.returncode, (result.stdout + result.stderr).strip()
+
+
+def _unmerged(worktree: Path) -> list[str]:
+    return git(worktree, "diff", "--name-only", "--diff-filter=U")[1].splitlines()
+
+
+def _merging(worktree: Path) -> bool:
+    return git(worktree, "rev-parse", "-q", "--verify", "MERGE_HEAD")[0] == 0
 
 
 def assemble(repo: Path, worktree: Path, base_ref: str, parents: Iterable[str], target_branch: str) -> AssemblyResult:
@@ -48,9 +60,18 @@ def assemble(repo: Path, worktree: Path, base_ref: str, parents: Iterable[str], 
             continue
         code, out = git(worktree, "merge", "--no-ff", "--no-edit", parent)
         if code != 0:
-            _, listing = git(worktree, "diff", "--name-only", "--diff-filter=U")
-            git(worktree, "merge", "--abort")
-            return AssemblyResult(False, "", failure_cause(parent, previous, listing.splitlines()))
+            files = _unmerged(worktree)
+            if files or not _merging(worktree):
+                git(worktree, "merge", "--abort")
+                return AssemblyResult(False, "", failure_cause(parent, previous, files, output=out))
+            # rerere staged a recorded resolution and left the merge unfinished: commit it.
+            if git(worktree, "commit", "--no-edit")[0] != 0:
+                git(worktree, "merge", "--abort")
+                code, out = git(worktree, "-c", "rerere.enabled=false", "merge", "--no-ff", "--no-edit", parent)
+                files = _unmerged(worktree)
+                git(worktree, "merge", "--abort")
+                if code != 0:
+                    return AssemblyResult(False, "", failure_cause(parent, previous, files, output=out, rerere_off=True))
         previous = parent
     code, head = git(worktree, "rev-parse", "HEAD")
     if code != 0:

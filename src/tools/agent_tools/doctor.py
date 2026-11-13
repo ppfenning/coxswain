@@ -215,6 +215,22 @@ def _provider_row(facts: Mapping, cascade: bool) -> dict:
     return {"check": "provider", "ok": True, "detail": version}
 
 
+def _claude_token_row(facts: Mapping) -> dict:
+    token = facts.get("claude_token", _MISSING)
+    if token is _MISSING:
+        # Passes on purpose: doctor stays green until the wiring task gathers the fact.
+        return {"check": "claude token", "ok": True, "detail": _NOT_CHECKED}
+    path, mode = token["path"], token["mode"]
+    if not token["present"]:
+        return {"check": "claude token", "ok": False, "detail": f"no token file at {path}; run cox setup token"}
+    if token["empty"]:
+        return {"check": "claude token", "ok": False, "detail": f"token file at {path} is empty; run cox setup token"}
+    if mode is not None and mode & 0o077:
+        return {"check": "claude token", "ok": False,
+                "detail": f"token file at {path} has mode {mode & 0o777:o}; it must be 600"}
+    return {"check": "claude token", "ok": True, "detail": f"token file at {path}"}
+
+
 _TOOLS_PLUGIN_GROUPS = ("sources", "forges", "trackers")
 _HARNESS_PLUGIN_GROUPS = ("system_one", "runners")
 
@@ -332,9 +348,9 @@ def _unit_path_row(facts: Mapping) -> dict:
 def checks(facts: Mapping) -> list[dict]:
     """Judge a Facts mapping. Returns rows `{"check", "ok", "detail"}` in a
     fixed check order: git, forge, profile, profile paths, harness venv, core
-    importable, cartridge, project overlay, skills, provider, plugins,
-    store, workspace, schema, cast, chair unit PATH. A fact that was never gathered fails as "not checked",
-    except `cast` which passes when ungathered; a profile that fails to parse
+    importable, cartridge, project overlay, skills, provider, claude token,
+    plugins, store, workspace, schema, cast, chair unit PATH. A fact that was never gathered fails as "not checked",
+    except `cast` and `claude token`, which pass when ungathered; a profile that fails to parse
     fails every row after it as "skipped: no profile"; an empty collection
     where paths, skill roots or workspace dirs belong fails naming that
     nothing was configured to check, rather than passing vacuously."""
@@ -351,6 +367,7 @@ def checks(facts: Mapping) -> list[dict]:
         _overlay_row(facts, cascade),
         _skills_row(facts, cascade, parsed),
         _provider_row(facts, cascade),
+        _claude_token_row(facts),
         _plugins_row(facts),
         _store_row(facts, cascade),
         _workspace_row(facts, cascade),
