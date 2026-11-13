@@ -138,7 +138,7 @@ TRACKER_SCOPES = ("all", "epics", "initiatives")
 _SPEND_KEYS = {"window_ceiling_usd", "weekly_ceiling_usd", "node_cap_usd", "monthly_budget_usd"}
 _SPEND_TEXT_KEYS = {"weekly_reset", "budget_timezone"}  # `Sun 04:00 America/New_York`, parsed by usage_window.parse_weekly_reset; an IANA zone name
 
-_CHAIR_KEYS = {"housekeeping_hours", "stale_days", "idle_stall_minutes", "launch_stagger_s", "max_launches_per_hour", "max_shared_file_initiatives", "approval_hold_ticks"}  # every key `cli._chair_run_deps` reads off `profile["chair"]`
+_CHAIR_KEYS = {"housekeeping_hours", "stale_days", "idle_stall_minutes", "launch_stagger_s", "max_launches_per_hour", "max_shared_file_initiatives", "approval_hold_ticks", "quarantine_hold_after"}  # every key `cli._chair_run_deps` reads off `profile["chair"]`
 
 _CHAIR_BOOL_WORDS = {"true": True, "yes": True, "false": False, "no": False}  # the spellings a boolean `chair:` key accepts, any case
 _CHAIR_STEWARD_SCOPES = {"all", "epics"}  # the values `chair: steward_scope:` accepts, stored lower case
@@ -186,7 +186,7 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
     floats onto the flat result, and `weekly_reset:`/`budget_timezone:` lines kept as text, quotes stripped.
     `monthly_budget_usd` must be above zero and `budget_timezone` must be an IANA zone name, else ProfileError
     names the line; neither key appears in the result when absent, and the readers apply any default;
-    and a bare `chair:` line followed by indented `housekeeping_hours:`/`stale_days:`/`idle_stall_minutes:`/`launch_stagger_s:`/`max_launches_per_hour:`/`max_shared_file_initiatives:`/`approval_hold_ticks:` lines,
+    and a bare `chair:` line followed by indented `housekeeping_hours:`/`stale_days:`/`idle_stall_minutes:`/`launch_stagger_s:`/`max_launches_per_hour:`/`max_shared_file_initiatives:`/`approval_hold_ticks:`/`quarantine_hold_after:` lines,
     all optional, parsed as floats into `result["chair"]` (every key `cli._chair_run_deps`
     reads off `profile["chair"]`; `log_retention_days` stays a flat top-level key, not one of
     these). The same block also takes `steward:`, a boolean (true, false, yes or no, any case)

@@ -121,6 +121,25 @@ LAND_AT = ("initiative", "task", "ticket", "level")  # `ticket` is the alias of 
 _FRONTMATTER = "---"
 _NEW_SUFFIX = " (new)"
 
+# The chair's quarantine marks, kept in a task's store row `extra` (docs/customize/autonomous-chair.md). The chair and
+# the epic driver both read these, so the spelling lives here, beside the states.
+TRIAGE_FLAG = "triage_requested"  # set by the chair: triage the task before any rebuild; the epic removes it once triaged
+HOLD_REASON = "hold_reason"  # with state `blocked`, why a person must decide; it starts with HOLD_MARK
+HOLD_MARK = "needs you:"
+TRIAGE_RECORDS = "triage"  # the epic's triage verdicts on the task, oldest first: {class, diagnosis, run}
+
+
+def hold_text(reason: str) -> str:
+    """`reason` as one line that starts with HOLD_MARK, which is how a person's mark on a held task reads."""
+    line = " ".join(str(reason).split())
+    return line if line.startswith(HOLD_MARK) else f"{HOLD_MARK} {line}"
+
+
+def is_held(row: Mapping[str, Any]) -> bool:
+    """A task waits for a person: its state is `blocked` and its `extra` carries a hold reason with HOLD_MARK."""
+    extra = row.get("extra") if isinstance(row.get("extra"), Mapping) else {}
+    return row.get("state") == "blocked" and str(extra.get(HOLD_REASON) or "").startswith(HOLD_MARK)
+
 
 class WorkStoreError(Exception):
     """The work store on disk could not be read, or describes something impossible."""

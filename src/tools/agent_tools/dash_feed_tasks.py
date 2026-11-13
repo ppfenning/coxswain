@@ -35,11 +35,21 @@ def checks_from_scope(scope: Mapping | None) -> dict | None:
     return {"tests_selected": selected, "tests_total": total, "cpu_seconds": cpu} if ok else None
 
 
+HOLD_REASON = "hold_reason"  # core.workstore.HOLD_REASON: a held task's `needs you:` reason, kept in the row's extra
+
+
+def _reason(row: Mapping) -> str:
+    """The row's reason; a blocked row with none shows its hold reason, so a held task says what a person must decide."""
+    extra = row.get("extra") if isinstance(row.get("extra"), Mapping) else {}
+    held = str(extra.get(HOLD_REASON) or "") if row.get("state") == "blocked" else ""
+    return str(row.get("reason") or "") or held
+
+
 def _entry(
     row: Mapping, state_by_id: Mapping[str, str], attempts: Sequence, latest: Mapping, verdict: str | None,
 ) -> dict:
     task_id, state = row["task_id"], row.get("state") or ""
-    reason, reason_full = cut_reason(str(row.get("reason") or ""))
+    reason, reason_full = cut_reason(_reason(row))
     pending = waiting_on(row.get("needs") or (), state_by_id) if state == "ready" and not attempts else []
     return {
         "id": task_id,

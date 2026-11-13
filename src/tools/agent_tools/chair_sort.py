@@ -44,6 +44,21 @@ def objection_key(task_id: str, reason: str) -> str:
     return hashlib.sha256(f"{task_id}\0{_squash(reason).lower()}".encode()).hexdigest()
 
 
+def triage_key(task_id: str, run: str) -> str:
+    """The handled key for a triage request: one per task and the run that quarantined it."""
+    return f"triage:{task_id}:{run}"
+
+
+def hold_key(task_id: str, run: str) -> str:
+    """The handled key for the chair's hold of a quarantined task: one per task and the run that quarantined it."""
+    return f"hold:{task_id}:{run}"
+
+
+def announce_key(task_id: str, reason: str) -> str:
+    """The handled key for a held task's one courier entry: a new hold reason on the same task is announced again."""
+    return f"announced:{task_id}:{hashlib.sha256(_squash(reason).encode()).hexdigest()[:16]}"
+
+
 def classify(q: QuarantineFacts, task_state_key: str, handled_keys: Collection[str]) -> Sort:
     cause = q["cause"]
     if cause == HARNESS_CAUSE:
@@ -62,11 +77,6 @@ def _cut(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 1].rsplit(" ", 1)[0].rstrip() + "…"
-
-
-def plain_instruction(objection: str) -> str:
-    """The rebuild instruction written when no model step is supplied: the failure itself is the brief."""
-    return "The last attempt was rejected for the reason above. Fix exactly that, run the project's own checks before you finish, and change nothing else."
 
 
 def rebuild_note(reason: str, cheap_model_text: str) -> str:

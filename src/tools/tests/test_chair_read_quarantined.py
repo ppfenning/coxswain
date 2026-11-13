@@ -127,7 +127,7 @@ ROW = {
 
 def test_a_quarantined_row_gives_its_fact_with_body_sha_and_cause_from_the_newest_attempt():
     assert quarantined_from_rows([ROW]) == [
-        {"initiative": "a", "phase": "p1", "task": "t1", "run": "i-1", "body_sha": body_sha(BODY), "cause": "harness"}
+        {"initiative": "a", "phase": "p1", "task": "t1", "run": "i-1", "body_sha": body_sha(BODY), "cause": "harness", "reason": ""}
     ]
 
 

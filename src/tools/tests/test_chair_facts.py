@@ -401,12 +401,12 @@ _NO_REASON = {"run": "", "reason": ""}  # an open quarantine whose reader row ca
 
 def test_the_cause_and_the_count_come_from_the_same_attempts():
     (q,) = gather_facts(_deps(attempts=({**HARNESS, "cause": "code"}, HARNESS), stranded=()), NOW)["quarantines"]
-    assert q == {**BARE, "cause": "harness", "harness_failures": 1, **_NO_REASON, "causes": ["code", "harness"], "reasons": ["", ""]}
+    assert q == {**BARE, "cause": "harness", "harness_failures": 1, **_NO_REASON, "causes": ["code", "harness"], "reasons": ["", ""], "failures": 1}
 
 
 def test_a_quarantined_task_with_no_live_run_gives_a_quarantine_and_an_initiative():
     facts = gather_facts(_deps(stranded=()), NOW)
-    assert facts["quarantines"] == [{**BARE, "cause": "harness", "harness_failures": 1, **_NO_REASON, "causes": ["harness"], "reasons": [""]}]
+    assert facts["quarantines"] == [{**BARE, "cause": "harness", "harness_failures": 1, **_NO_REASON, "causes": ["harness"], "reasons": [""], "failures": 0}]
     assert [i["id"] for i in facts["initiatives"]] == ["i"]
 
 
@@ -851,7 +851,7 @@ def test_rows_drive_ready_intake_quarantined_and_stranded_facts_with_files_ignor
     assert facts["intake"] == ["intake/q1.md"]
     assert facts["quarantines"] == [
         {"task_id": "b", "initiative": "j", "cause": "code", "harness_failures": 0, "has_patch": False, "rescue_failed": False,
-         "causes": ["code"], "reasons": [""], "run": "j-9", "reason": ""},
+         "causes": ["code"], "reasons": [""], "run": "j-9", "reason": "", "failures": 1},
         {"task_id": "c", "initiative": "i", "cause": "stranded", "harness_failures": 0, "has_patch": False, "rescue_failed": False,
          "tasks": [{"task": "c", "run": "i-5", "remedy": "cox runs land i-5 --task c --repo r"}]},
     ]

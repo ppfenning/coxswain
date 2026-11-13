@@ -89,9 +89,9 @@ def quarantined_from_rows(rows: Iterable[Mapping[str, object]]) -> list[Row]:
     """Quarantine facts for rows whose `state` is "quarantined": one row per queue row, in input order.
 
     A row already names its own quarantine, so no state or attempt-matching gate is needed to find one; the
-    newest attempt in `extra["attempts"]` on the row's current `body` supplies `run` and `cause`, by the same
+    newest attempt in `extra["attempts"]` on the row's current `body` supplies `run`, `cause` and `reason`, by the same
     `body_sha`/`attempts_on_current_body` rule `quarantined_rows` uses. A row with no such attempt still gets
-    a fact, with `run` and `cause` empty."""
+    a fact, with `run`, `cause` and `reason` empty."""
     facts = []
     for row in rows:
         if row.get("state") != "quarantined":
@@ -108,6 +108,7 @@ def quarantined_from_rows(rows: Iterable[Mapping[str, object]]) -> list[Row]:
                 "run": str(newest.get("run") or ""),
                 "body_sha": body_sha(body),
                 "cause": _classify_cause(str(newest.get("cause") or "")),
+                "reason": str(newest.get("reason") or ""),
             }
         )
     return facts
